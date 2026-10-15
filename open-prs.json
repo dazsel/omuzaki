@@ -1,0 +1,8559 @@
+{
+"generated_at": "2026-10-17T17:04:21Z",
+"repo": "dazsel/omuzaki",
+"prs": [
+{
+"baseRefName": "main",
+"closingIssuesReferences": [],
+"createdAt": "2026-10-16T22:28:24Z",
+"files": [
+{
+"path": "docs/maintainers/operating.md",
+"additions": 37,
+"deletions": 0
+}
+],
+"headRefName": "local/activity-reporting",
+"isDraft": false,
+"labels": [
+{
+"id": "LA_kwDOVI1pOc8AAAAC9NJFrA",
+"name": "director-docs",
+"description": "Director's process-doc PR: no Codex review, merges on green gate",
+"color": "0e8a16"
+}
+],
+"number": 2239
+},
+{
+"baseRefName": "main",
+"closingIssuesReferences": [],
+"createdAt": "2026-10-16T21:01:18Z",
+"files": [
+{
+"path": ".github/workflows/nightly.yml",
+"additions": 27,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-embed/src/lib.rs",
+"additions": 18,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-face/benches/gpu_face.rs",
+"additions": 6,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-face/tests/gpu_hot_loop.rs",
+"additions": 6,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/tests/import.rs",
+"additions": 5,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-llm-api/tests/api_surface.rs",
+"additions": 4,
+"deletions": 2
+},
+{
+"path": "crates/omuzaki-llm-mock/tests/api_surface.rs",
+"additions": 4,
+"deletions": 2
+},
+{
+"path": "crates/omuzaki-mcp/tests/mcp_http_limits.rs",
+"additions": 9,
+"deletions": 2
+},
+{
+"path": "crates/omuzaki-ops-api/src/file_access/open/windows.rs",
+"additions": 5,
+"deletions": 2
+},
+{
+"path": "crates/omuzaki-ops-api/tests/fs_access.rs",
+"additions": 24,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops-api/tests/jobs.rs",
+"additions": 4,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-ops-api/tests/sessions_contract.rs",
+"additions": 13,
+"deletions": 6
+},
+{
+"path": "crates/omuzaki-ops/tests/executor/file_access.rs",
+"additions": 14,
+"deletions": 2
+},
+{
+"path": "crates/omuzaki-render/tests/environment.rs",
+"additions": 5,
+"deletions": 4
+},
+{
+"path": "crates/omuzaki-render/tests/hair.rs",
+"additions": 14,
+"deletions": 3
+},
+{
+"path": "crates/omuzaki-render/tests/render.rs",
+"additions": 7,
+"deletions": 5
+},
+{
+"path": "crates/omuzaki-render/tests/spot_fog.rs",
+"additions": 8,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-render/tests/support/mod.rs",
+"additions": 70,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-rig/src/pose.rs",
+"additions": 12,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-script/tests/limits.rs",
+"additions": 6,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-store/src/gc.rs",
+"additions": 16,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-test-face/tests/common/mod.rs",
+"additions": 12,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-test/src/eval/gc.rs",
+"additions": 2,
+"deletions": 2
+},
+{
+"path": "crates/omuzaki-test/src/eval/lint.rs",
+"additions": 4,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-test/src/git.rs",
+"additions": 9,
+"deletions": 2
+},
+{
+"path": "crates/omuzaki-test/src/main.rs",
+"additions": 2,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-test/tests/gc.rs",
+"additions": 42,
+"deletions": 9
+},
+{
+"path": "xtask/src/dist.rs",
+"additions": 5,
+"deletions": 2
+}
+],
+"headRefName": "local/windows-nightly-green",
+"isDraft": true,
+"labels": [],
+"number": 2235
+},
+{
+"baseRefName": "main",
+"closingIssuesReferences": [
+{
+"id": "I_kwDOVI1pOc8AAAABXiSz3w",
+"number": 2106,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/2106"
+}
+],
+"createdAt": "2026-10-16T14:47:56Z",
+"files": [
+{
+"path": ".changes/cloud-872-job-manager.md",
+"additions": 3,
+"deletions": 1
+},
+{
+"path": ".changes/local-2106-ops-runner.md",
+"additions": 20,
+"deletions": 0
+},
+{
+"path": "Cargo.lock",
+"additions": 4,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-cli/Cargo.toml",
+"additions": 3,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-cli/tests/op_conformance.rs",
+"additions": 33,
+"deletions": 45
+},
+{
+"path": "crates/omuzaki-cli/tests/op_conformance_allowlist.txt",
+"additions": 0,
+"deletions": 13
+},
+{
+"path": "crates/omuzaki-cli/tests/real_project.rs",
+"additions": 3,
+"deletions": 2
+},
+{
+"path": "crates/omuzaki-cli/tests/script_run.rs",
+"additions": 446,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-history-api/tests/roundtrip.rs",
+"additions": 1,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-ops-api/src/approval.rs",
+"additions": 22,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-ops-api/src/checks.rs",
+"additions": 20,
+"deletions": 7
+},
+{
+"path": "crates/omuzaki-ops-api/src/file_access/mod.rs",
+"additions": 16,
+"deletions": 3
+},
+{
+"path": "crates/omuzaki-ops-api/src/lib.rs",
+"additions": 6,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-ops-api/src/registry.rs",
+"additions": 10,
+"deletions": 2
+},
+{
+"path": "crates/omuzaki-ops-api/src/review.rs",
+"additions": 38,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops-api/src/runner.rs",
+"additions": 35,
+"deletions": 8
+},
+{
+"path": "crates/omuzaki-ops-api/src/scope.rs",
+"additions": 3,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-ops-api/src/session.rs",
+"additions": 17,
+"deletions": 6
+},
+{
+"path": "crates/omuzaki-ops-api/tests/sessions_contract.rs",
+"additions": 3,
+"deletions": 2
+},
+{
+"path": "crates/omuzaki-ops-mock/src/lib.rs",
+"additions": 12,
+"deletions": 9
+},
+{
+"path": "crates/omuzaki-ops/Cargo.toml",
+"additions": 3,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops/benches/run.rs",
+"additions": 219,
+"deletions": 10
+},
+{
+"path": "crates/omuzaki-ops/src/approvals.rs",
+"additions": 211,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops/src/budget.rs",
+"additions": 129,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops/src/controls.rs",
+"additions": 547,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops/src/effects.rs",
+"additions": 104,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops/src/error.rs",
+"additions": 19,
+"deletions": 3
+},
+{
+"path": "crates/omuzaki-ops/src/executor.rs",
+"additions": 202,
+"deletions": 157
+},
+{
+"path": "crates/omuzaki-ops/src/fence.rs",
+"additions": 73,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops/src/gate.rs",
+"additions": 546,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops/src/guard.rs",
+"additions": 123,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops/src/history.rs",
+"additions": 424,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops/src/jobs/lanes.rs",
+"additions": 8,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops/src/jobs/mod.rs",
+"additions": 344,
+"deletions": 71
+},
+{
+"path": "crates/omuzaki-ops/src/jobs/priority.rs",
+"additions": 52,
+"deletions": 3
+},
+{
+"path": "crates/omuzaki-ops/src/jobs/worker.rs",
+"additions": 221,
+"deletions": 18
+},
+{
+"path": "crates/omuzaki-ops/src/journal.rs",
+"additions": 49,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops/src/lib.rs",
+"additions": 45,
+"deletions": 21
+},
+{
+"path": "crates/omuzaki-ops/src/limits.rs",
+"additions": 151,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops/src/replay.rs",
+"additions": 194,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops/src/sessions.rs",
+"additions": 530,
+"deletions": 100
+},
+{
+"path": "crates/omuzaki-ops/src/simulate.rs",
+"additions": 116,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops/src/state.rs",
+"additions": 520,
+"deletions": 224
+},
+{
+"path": "crates/omuzaki-ops/src/travel.rs",
+"additions": 242,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops/tests/executor/adversarial.rs",
+"additions": 26,
+"deletions": 15
+},
+{
+"path": "crates/omuzaki-ops/tests/executor/approvals.rs",
+"additions": 221,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops/tests/executor/approvals_script.rs",
+"additions": 75,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops/tests/executor/asks.rs",
+"additions": 182,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops/tests/executor/budget.rs",
+"additions": 157,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops/tests/executor/caps.rs",
+"additions": 81,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops/tests/executor/effects.rs",
+"additions": 378,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops/tests/executor/events.rs",
+"additions": 3,
+"deletions": 3
+},
+{
+"path": "crates/omuzaki-ops/tests/executor/explicit.rs",
+"additions": 0,
+"deletions": 157
+},
+{
+"path": "crates/omuzaki-ops/tests/executor/fence.rs",
+"additions": 130,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops/tests/executor/guard.rs",
+"additions": 98,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops/tests/executor/jobs.rs",
+"additions": 213,
+"deletions": 27
+},
+{
+"path": "crates/omuzaki-ops/tests/executor/jobs_driver.rs",
+"additions": 277,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops/tests/executor/jobs_sessions.rs",
+"additions": 361,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops/tests/executor/journal.rs",
+"additions": 198,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops/tests/executor/limits.rs",
+"additions": 154,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops/tests/executor/live_actions.rs",
+"additions": 116,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops/tests/executor/main.rs",
+"additions": 39,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-ops/tests/executor/plugin_approvals.rs",
+"additions": 85,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops/tests/executor/principal_undo.rs",
+"additions": 90,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops/tests/executor/props.rs",
+"additions": 6,
+"deletions": 3
+},
+{
+"path": "crates/omuzaki-ops/tests/executor/races.rs",
+"additions": 217,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops/tests/executor/replay.rs",
+"additions": 103,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops/tests/executor/review.rs",
+"additions": 124,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops/tests/executor/sessions.rs",
+"additions": 106,
+"deletions": 18
+},
+{
+"path": "crates/omuzaki-ops/tests/executor/spend_scope.rs",
+"additions": 107,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops/tests/executor/transactions.rs",
+"additions": 3,
+"deletions": 3
+},
+{
+"path": "crates/omuzaki-ops/tests/executor/undo.rs",
+"additions": 47,
+"deletions": 35
+},
+{
+"path": "crates/omuzaki-ops/tests/executor/undo_session.rs",
+"additions": 110,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops/tests/parity.rs",
+"additions": 14,
+"deletions": 15
+},
+{
+"path": "crates/omuzaki-test/tests/macros.rs",
+"additions": 2,
+"deletions": 1
+}
+],
+"headRefName": "local/2106-sessions-approvals",
+"isDraft": true,
+"labels": [],
+"number": 2229
+},
+{
+"baseRefName": "main",
+"closingIssuesReferences": [
+{
+"id": "I_kwDOVI1pOc8AAAABXKgZ6g",
+"number": 17,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/17"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXKge-g",
+"number": 18,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/18"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXKp14Q",
+"number": 142,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/142"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXKsZFA",
+"number": 176,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/176"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXKsd0w",
+"number": 177,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/177"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXKsiZQ",
+"number": 178,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/178"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXKsnZA",
+"number": 179,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/179"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXLcyEQ",
+"number": 841,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/841"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXLc2WQ",
+"number": 842,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/842"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXLdhMA",
+"number": 853,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/853"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXUB9QQ",
+"number": 1595,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1595"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXV8IjA",
+"number": 1655,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1655"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXWfAGQ",
+"number": 1677,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1677"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXWfDIQ",
+"number": 1679,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1679"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXWfEcg",
+"number": 1680,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1680"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXWfKAA",
+"number": 1684,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1684"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXWfLbQ",
+"number": 1685,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1685"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXW28vg",
+"number": 1704,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1704"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXYzLjg",
+"number": 1775,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1775"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXcjF_A",
+"number": 1890,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1890"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXig0IA",
+"number": 2120,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/2120"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXjjpDw",
+"number": 2183,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/2183"
+}
+],
+"createdAt": "2026-10-16T14:45:25Z",
+"files": [
+{
+"path": ".changes/cloud-2183-hair-generators.md",
+"additions": 9,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-anim/src/triggers.rs",
+"additions": 1,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-anim/tests/triggers.rs",
+"additions": 15,
+"deletions": 3
+},
+{
+"path": "crates/omuzaki-char-api/src/hair.rs",
+"additions": 511,
+"deletions": 41
+},
+{
+"path": "crates/omuzaki-char-api/src/lib.rs",
+"additions": 1,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-char-api/tests/hair_taper.rs",
+"additions": 149,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char-mock/src/hair.rs",
+"additions": 2,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-char/benches/hair_cap_sweep.rs",
+"additions": 31,
+"deletions": 4
+},
+{
+"path": "crates/omuzaki-char/evidence/hair-styles.toml",
+"additions": 34,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/src/hair/compile.rs",
+"additions": 44,
+"deletions": 12
+},
+{
+"path": "crates/omuzaki-char/src/hair/gen/bangs.rs",
+"additions": 228,
+"deletions": 74
+},
+{
+"path": "crates/omuzaki-char/src/hair/gen/braid.rs",
+"additions": 38,
+"deletions": 12
+},
+{
+"path": "crates/omuzaki-char/src/hair/gen/bun.rs",
+"additions": 111,
+"deletions": 12
+},
+{
+"path": "crates/omuzaki-char/src/hair/gen/cap.rs",
+"additions": 38,
+"deletions": 24
+},
+{
+"path": "crates/omuzaki-char/src/hair/gen/curtain.rs",
+"additions": 194,
+"deletions": 19
+},
+{
+"path": "crates/omuzaki-char/src/hair/gen/curtain/body.rs",
+"additions": 170,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/src/hair/gen/curtain/strip.rs",
+"additions": 371,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/src/hair/gen/framing.rs",
+"additions": 44,
+"deletions": 9
+},
+{
+"path": "crates/omuzaki-char/src/hair/gen/mod.rs",
+"additions": 1,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/src/hair/gen/part_sweep.rs",
+"additions": 39,
+"deletions": 35
+},
+{
+"path": "crates/omuzaki-char/src/hair/gen/root.rs",
+"additions": 150,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/src/hair/gen/tail.rs",
+"additions": 433,
+"deletions": 11
+},
+{
+"path": "crates/omuzaki-char/src/hair/mod.rs",
+"additions": 1,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/src/hair/part.rs",
+"additions": 337,
+"deletions": 58
+},
+{
+"path": "crates/omuzaki-char/src/hair/physics/verlet.rs",
+"additions": 79,
+"deletions": 32
+},
+{
+"path": "crates/omuzaki-char/src/hair/tie.rs",
+"additions": 79,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/src/hair/tube.rs",
+"additions": 8,
+"deletions": 4
+},
+{
+"path": "crates/omuzaki-char/src/ops/hair/bangs/access.rs",
+"additions": 17,
+"deletions": 14
+},
+{
+"path": "crates/omuzaki-char/src/ops/hair/bangs/list_presets.rs",
+"additions": 4,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-char/src/ops/hair/bangs/mod.rs",
+"additions": 2,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/src/ops/hair/bangs/preset.rs",
+"additions": 71,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/src/ops/hair/bangs/presets.rs",
+"additions": 5,
+"deletions": 5
+},
+{
+"path": "crates/omuzaki-char/tests/hair_bangs.rs",
+"additions": 216,
+"deletions": 42
+},
+{
+"path": "crates/omuzaki-char/tests/hair_bangs_brows.rs",
+"additions": 452,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/tests/hair_braid.rs",
+"additions": 79,
+"deletions": 4
+},
+{
+"path": "crates/omuzaki-char/tests/hair_cap_sweep.rs",
+"additions": 1,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/tests/hair_check.rs",
+"additions": 238,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/tests/hair_curtain.rs",
+"additions": 1,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/tests/hair_curtain_body.rs",
+"additions": 339,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/tests/hair_curtain_strip.rs",
+"additions": 527,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/tests/hair_framing.rs",
+"additions": 54,
+"deletions": 5
+},
+{
+"path": "crates/omuzaki-char/tests/hair_framing_braid_render.rs",
+"additions": 161,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/tests/hair_framing_default.rs",
+"additions": 199,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/tests/hair_pipeline.rs",
+"additions": 31,
+"deletions": 5
+},
+{
+"path": "crates/omuzaki-char/tests/hair_style_constants.rs",
+"additions": 152,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/tests/hair_styles_sheet.rs",
+"additions": 278,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/tests/hair_tail_bun.rs",
+"additions": 947,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/tests/hair_verlet.rs",
+"additions": 34,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/tests/ops_hair_bangs.rs",
+"additions": 62,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-test-char/tests/hair_curtain_parity.rs",
+"additions": 179,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-test-char/tests/hair_framing_braid_parity.rs",
+"additions": 262,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-test-char/tests/hair_gen_bangs_parity.rs",
+"additions": 230,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-test-char/tests/hair_gen_curtain_parity.rs",
+"additions": 6,
+"deletions": 3
+},
+{
+"path": "crates/omuzaki-test-char/tests/hair_physics_verlet_core_parity.rs",
+"additions": 15,
+"deletions": 3
+},
+{
+"path": "crates/omuzaki-test-char/tests/hair_pipeline_tubes_part_parity.rs",
+"additions": 7,
+"deletions": 1
+}
+],
+"headRefName": "cloud/2183-hair-generators",
+"isDraft": false,
+"labels": [
+{
+"id": "LA_kwDOVI1pOc8AAAAC9FWqkA",
+"name": "visual",
+"description": "Needs visual sign-off from rendered evidence",
+"color": "fbca04"
+}
+],
+"number": 2227
+},
+{
+"baseRefName": "main",
+"closingIssuesReferences": [
+{
+"id": "I_kwDOVI1pOc8AAAABXK-d6Q",
+"number": 418,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/418"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXh9GXA",
+"number": 2073,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/2073"
+}
+],
+"createdAt": "2026-10-16T13:16:13Z",
+"files": [
+{
+"path": ".changes/cloud-2073-v0-settings.md",
+"additions": 7,
+"deletions": 0
+},
+{
+"path": "Cargo.lock",
+"additions": 4,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-stage/Cargo.toml",
+"additions": 3,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-stage/src/perform/host.rs",
+"additions": 89,
+"deletions": 3
+},
+{
+"path": "crates/omuzaki-stage/src/perform/mod.rs",
+"additions": 1,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-stage/src/perform/settings.rs",
+"additions": 336,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-stage/src/perform/triggers.rs",
+"additions": 38,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-stage/tests/perform_restart.rs",
+"additions": 517,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-track/Cargo.toml",
+"additions": 1,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-track/src/calibration.rs",
+"additions": 626,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-track/src/lib.rs",
+"additions": 1,
+"deletions": 0
+}
+],
+"headRefName": "local/2073-v0-settings",
+"isDraft": false,
+"labels": [],
+"number": 2223
+},
+{
+"baseRefName": "main",
+"closingIssuesReferences": [
+{
+"id": "I_kwDOVI1pOc8AAAABXLeuYg",
+"number": 873,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/873"
+}
+],
+"createdAt": "2026-10-16T12:12:53Z",
+"files": [
+{
+"path": ".changes/local-2108-mcp-surface.md",
+"additions": 9,
+"deletions": 0
+},
+{
+"path": "Cargo.lock",
+"additions": 3,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-cli/src/app.rs",
+"additions": 3,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-cli/src/cli.rs",
+"additions": 1,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-cli/src/mcp.rs",
+"additions": 10,
+"deletions": 2
+},
+{
+"path": "crates/omuzaki-cli/src/session.rs",
+"additions": 40,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-cli/tests/locale_neutral.rs",
+"additions": 152,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-history-api/tests/roundtrip.rs",
+"additions": 1,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-history-mock/src/sink.rs",
+"additions": 1,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-mcp/Cargo.toml",
+"additions": 6,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-mcp/build.rs",
+"additions": 17,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/src/access.rs",
+"additions": 56,
+"deletions": 15
+},
+{
+"path": "crates/omuzaki-mcp/src/agent.rs",
+"additions": 321,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/src/approvals.rs",
+"additions": 296,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/src/builtin.rs",
+"additions": 75,
+"deletions": 4
+},
+{
+"path": "crates/omuzaki-mcp/src/catalog.rs",
+"additions": 8,
+"deletions": 3
+},
+{
+"path": "crates/omuzaki-mcp/src/changes.rs",
+"additions": 4,
+"deletions": 4
+},
+{
+"path": "crates/omuzaki-mcp/src/describe.rs",
+"additions": 72,
+"deletions": 10
+},
+{
+"path": "crates/omuzaki-mcp/src/error.rs",
+"additions": 7,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/src/events.rs",
+"additions": 142,
+"deletions": 9
+},
+{
+"path": "crates/omuzaki-mcp/src/floats.rs",
+"additions": 110,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/src/gate.rs",
+"additions": 49,
+"deletions": 18
+},
+{
+"path": "crates/omuzaki-mcp/src/gate/tests.rs",
+"additions": 23,
+"deletions": 48
+},
+{
+"path": "crates/omuzaki-mcp/src/http.rs",
+"additions": 59,
+"deletions": 2
+},
+{
+"path": "crates/omuzaki-mcp/src/in_app.rs",
+"additions": 182,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/src/info.rs",
+"additions": 268,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/src/jobs.rs",
+"additions": 307,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/src/lib.rs",
+"additions": 80,
+"deletions": 13
+},
+{
+"path": "crates/omuzaki-mcp/src/prompts.rs",
+"additions": 78,
+"deletions": 7
+},
+{
+"path": "crates/omuzaki-mcp/src/recipes/create_character_from_sheet.rs",
+"additions": 30,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/src/recipes/make_emote_pack.rs",
+"additions": 32,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/src/recipes/make_vrchat_quest_variant.rs",
+"additions": 24,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/src/recipes/match_reference_look.rs",
+"additions": 27,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/src/recipes/mod.rs",
+"additions": 19,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/src/render.rs",
+"additions": 134,
+"deletions": 15
+},
+{
+"path": "crates/omuzaki-mcp/src/resources/doc.rs",
+"additions": 2,
+"deletions": 4
+},
+{
+"path": "crates/omuzaki-mcp/src/resources/library.rs",
+"additions": 123,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/src/resources/measure.rs",
+"additions": 2,
+"deletions": 4
+},
+{
+"path": "crates/omuzaki-mcp/src/resources/metrics.rs",
+"additions": 80,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/src/resources/mod.rs",
+"additions": 15,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/src/resources/renders.rs",
+"additions": 5,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/src/server.rs",
+"additions": 176,
+"deletions": 27
+},
+{
+"path": "crates/omuzaki-mcp/src/session.rs",
+"additions": 786,
+"deletions": 109
+},
+{
+"path": "crates/omuzaki-mcp/tests/common/jobs.rs",
+"additions": 172,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/tests/common/mod.rs",
+"additions": 3,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/tests/common/registry.rs",
+"additions": 566,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/tests/common/wire.rs",
+"additions": 184,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/tests/mcp_agent_sessions.rs",
+"additions": 624,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/tests/mcp_connection.rs",
+"additions": 33,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/tests/mcp_http.rs",
+"additions": 1,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-mcp/tests/mcp_http_sessions.rs",
+"additions": 196,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/tests/mcp_in_app.rs",
+"additions": 231,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/tests/mcp_jobs.rs",
+"additions": 261,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/tests/mcp_journal.rs",
+"additions": 3,
+"deletions": 6
+},
+{
+"path": "crates/omuzaki-mcp/tests/mcp_recipes.rs",
+"additions": 205,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/tests/mcp_resources_kinds.rs",
+"additions": 306,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/tests/mcp_roots.rs",
+"additions": 113,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/tests/mcp_task_sessions.rs",
+"additions": 351,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/tests/mcp_transcripts.rs",
+"additions": 305,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/tests/transcripts/approvals.md",
+"additions": 222,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/tests/transcripts/fences-and-pause.md",
+"additions": 226,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/tests/transcripts/in-app.md",
+"additions": 184,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/tests/transcripts/recipes.md",
+"additions": 315,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/tests/transcripts/resources.md",
+"additions": 222,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/tests/transcripts/roots.md",
+"additions": 138,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/tests/transcripts/session-tools.md",
+"additions": 195,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/tests/transcripts/stale-write.md",
+"additions": 225,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/tests/transcripts/tasks.md",
+"additions": 362,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops-api/src/jobs.rs",
+"additions": 36,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops-api/tests/jobs.rs",
+"additions": 18,
+"deletions": 3
+},
+{
+"path": "crates/omuzaki-ops/src/jobs/mod.rs",
+"additions": 4,
+"deletions": 5
+},
+{
+"path": "crates/omuzaki-ops/tests/executor/jobs.rs",
+"additions": 4,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops/tests/executor/main.rs",
+"additions": 1,
+"deletions": 1
+},
+{
+"path": "docs/decisions/0036-jobs-and-explicit-undo.md",
+"additions": 1,
+"deletions": 1
+},
+{
+"path": "docs/design/mcp-resources.md",
+"additions": 3,
+"deletions": 3
+},
+{
+"path": "docs/design/ops-api.md",
+"additions": 2,
+"deletions": 0
+},
+{
+"path": "xtask/src/models.rs",
+"additions": 7,
+"deletions": 2
+}
+],
+"headRefName": "local/2108-mcp-surface",
+"isDraft": false,
+"labels": [
+{
+"id": "LA_kwDOVI1pOc8AAAAC9Cev0A",
+"name": "area:mcp",
+"description": "Area: mcp",
+"color": "c2e0c6"
+},
+{
+"id": "LA_kwDOVI1pOc8AAAAC9bb4vQ",
+"name": "outcome:agents",
+"description": "Outcome audit bucket 2026-10-15",
+"color": "8957e5"
+},
+{
+"id": "LA_kwDOVI1pOc8AAAAC9bdMUw",
+"name": "hosted-tests",
+"description": "Maintainers: run this PR's tests on GitHub's runners in place of a local self-gate (#2212)",
+"color": "0E8A16"
+}
+],
+"number": 2221
+},
+{
+"baseRefName": "main",
+"closingIssuesReferences": [
+{
+"id": "I_kwDOVI1pOc8AAAABXc2JqA",
+"number": 1906,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1906"
+}
+],
+"createdAt": "2026-10-16T05:16:07Z",
+"files": [
+{
+"path": "docs/research/2026-10-hosted-tts-voice.md",
+"additions": 212,
+"deletions": 125
+}
+],
+"headRefName": "local/research-1906",
+"isDraft": false,
+"labels": [
+{
+"id": "LA_kwDOVI1pOc8AAAAC9bb6HQ",
+"name": "infra",
+"description": "Outcome audit bucket 2026-10-15",
+"color": "6e7781"
+}
+],
+"number": 2215
+},
+{
+"baseRefName": "cloud/2085-byom-contract",
+"closingIssuesReferences": [],
+"createdAt": "2026-10-16T05:02:14Z",
+"files": [
+{
+"path": ".changes/local-2087-import-vrm-avatar.md",
+"additions": 21,
+"deletions": 0
+},
+{
+"path": "Cargo.lock",
+"additions": 3,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-api/src/check/vrm.rs",
+"additions": 10,
+"deletions": 22
+},
+{
+"path": "crates/omuzaki-io-mock/src/formats.rs",
+"additions": 1,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-mock/src/spring.rs",
+"additions": 26,
+"deletions": 4
+},
+{
+"path": "crates/omuzaki-io-mock/tests/checks.rs",
+"additions": 10,
+"deletions": 2
+},
+{
+"path": "crates/omuzaki-io-ops/Cargo.toml",
+"additions": 3,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/src/gather/avatar_import.rs",
+"additions": 564,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/src/gather/mod.rs",
+"additions": 1,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/src/gather/springs.rs",
+"additions": 1,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-io-ops/src/lib.rs",
+"additions": 10,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-io-ops/src/msg.rs",
+"additions": 525,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/src/ops/avatar/confirm.rs",
+"additions": 98,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/src/ops/avatar/describe.rs",
+"additions": 46,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/src/ops/avatar/import.rs",
+"additions": 274,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/src/ops/avatar/map_channel.rs",
+"additions": 94,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/src/ops/avatar/mod.rs",
+"additions": 385,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/src/ops/avatar/remap.rs",
+"additions": 88,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/src/ops/check_export.rs",
+"additions": 76,
+"deletions": 11
+},
+{
+"path": "crates/omuzaki-io-ops/src/ops/import.rs",
+"additions": 229,
+"deletions": 107
+},
+{
+"path": "crates/omuzaki-io-ops/src/ops/inspect.rs",
+"additions": 78,
+"deletions": 4
+},
+{
+"path": "crates/omuzaki-io-ops/src/prepare/arkit.rs",
+"additions": 105,
+"deletions": 18
+},
+{
+"path": "crates/omuzaki-io-ops/src/prepare/arkit_shapes.rs",
+"additions": 767,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/src/prepare/avatar/expressions.rs",
+"additions": 235,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/src/prepare/avatar/gaze.rs",
+"additions": 69,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/src/prepare/avatar/materials.rs",
+"additions": 289,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/src/prepare/avatar/meshes.rs",
+"additions": 206,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/src/prepare/avatar/mod.rs",
+"additions": 269,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/src/prepare/avatar/physics.rs",
+"additions": 289,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/src/prepare/avatar/skeleton.rs",
+"additions": 263,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/src/prepare/cleanup.rs",
+"additions": 409,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/src/prepare/graph.rs",
+"additions": 141,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/src/prepare/humanoid.rs",
+"additions": 141,
+"deletions": 48
+},
+{
+"path": "crates/omuzaki-io-ops/src/prepare/mod.rs",
+"additions": 7,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-io-ops/src/prepare/tpose.rs",
+"additions": 164,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/src/report_sections.rs",
+"additions": 63,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/tests/arkit_shapes_sheet.rs",
+"additions": 89,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/tests/avatar_ops.rs",
+"additions": 550,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/tests/common/head.rs",
+"additions": 505,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/tests/common/mod.rs",
+"additions": 296,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/tests/export_imported.rs",
+"additions": 384,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/tests/import.rs",
+"additions": 87,
+"deletions": 30
+},
+{
+"path": "crates/omuzaki-io-ops/tests/ops.rs",
+"additions": 1,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-io-ops/tests/prepare_arkit.rs",
+"additions": 7,
+"deletions": 7
+},
+{
+"path": "crates/omuzaki-io-ops/tests/prepare_arkit_report.rs",
+"additions": 182,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/tests/prepare_arkit_shapes.rs",
+"additions": 326,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/tests/prepare_avatar.rs",
+"additions": 303,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/tests/prepare_avatar_expressions.rs",
+"additions": 374,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/tests/prepare_avatar_materials.rs",
+"additions": 191,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/tests/prepare_cleanup.rs",
+"additions": 485,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/tests/prepare_humanoid.rs",
+"additions": 107,
+"deletions": 2
+},
+{
+"path": "crates/omuzaki-io-ops/tests/prepare_tpose.rs",
+"additions": 120,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/tests/report_sections.rs",
+"additions": 246,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-vrm/src/lib.rs",
+"additions": 3,
+"deletions": 2
+},
+{
+"path": "crates/omuzaki-io-vrm/src/vrm1/read.rs",
+"additions": 181,
+"deletions": 43
+},
+{
+"path": "crates/omuzaki-io-vrm/src/vrm1/wire.rs",
+"additions": 108,
+"deletions": 3
+},
+{
+"path": "crates/omuzaki-io-vrm/src/vrm1/write.rs",
+"additions": 135,
+"deletions": 40
+},
+{
+"path": "crates/omuzaki-io-vrm/tests/common/mod.rs",
+"additions": 35,
+"deletions": 5
+},
+{
+"path": "crates/omuzaki-io-vrm/tests/spring_extensions.rs",
+"additions": 269,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-vrm/tests/vrm0.rs",
+"additions": 23,
+"deletions": 9
+},
+{
+"path": "crates/omuzaki-io-vrm/tests/vrm1.rs",
+"additions": 5,
+"deletions": 52
+},
+{
+"path": "crates/omuzaki-measure/Cargo.toml",
+"additions": 2,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-measure/src/lib.rs",
+"additions": 4,
+"deletions": 1
+},
+{
+"path": "docs/design/io-api.md",
+"additions": 22,
+"deletions": 0
+},
+{
+"path": "tools/arkit-shape-sheet.py",
+"additions": 167,
+"deletions": 0
+},
+{
+"path": "xtask/src/registry/mod.rs",
+"additions": 2,
+"deletions": 2
+},
+{
+"path": "xtask/src/registry/scan.rs",
+"additions": 48,
+"deletions": 11
+}
+],
+"headRefName": "local/2087-import-vrm-avatar",
+"isDraft": false,
+"labels": [
+{
+"id": "LA_kwDOVI1pOc8AAAAC9CeHUw",
+"name": "P0",
+"description": "Build first",
+"color": "b60205"
+},
+{
+"id": "LA_kwDOVI1pOc8AAAAC9bb4CA",
+"name": "outcome:stream",
+"description": "Outcome audit bucket 2026-10-15",
+"color": "d73a4a"
+}
+],
+"number": 2214
+},
+{
+"baseRefName": "main",
+"closingIssuesReferences": [
+{
+"id": "I_kwDOVI1pOc8AAAABXh9Tsw",
+"number": 2075,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/2075"
+}
+],
+"createdAt": "2026-10-16T03:30:50Z",
+"files": [
+{
+"path": ".changes/cloud-2075-gpu-expressions.md",
+"additions": 7,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-render/examples/dynamic_mesh.rs",
+"additions": 12,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-render/src/morph/gpu.rs",
+"additions": 155,
+"deletions": 53
+},
+{
+"path": "crates/omuzaki-render/src/morph/mod.rs",
+"additions": 61,
+"deletions": 7
+},
+{
+"path": "crates/omuzaki-render/src/pass/dof.rs",
+"additions": 124,
+"deletions": 43
+},
+{
+"path": "crates/omuzaki-render/src/pass/mod.rs",
+"additions": 1,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-render/src/pass/shadows.rs",
+"additions": 6,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-render/src/renderer.rs",
+"additions": 182,
+"deletions": 10
+},
+{
+"path": "crates/omuzaki-render/src/resource/mesh.rs",
+"additions": 154,
+"deletions": 35
+},
+{
+"path": "crates/omuzaki-render/src/resource/mips.rs",
+"additions": 7,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-render/src/resource/mod.rs",
+"additions": 35,
+"deletions": 13
+},
+{
+"path": "crates/omuzaki-render/src/shader/post_dof.wgsl",
+"additions": 44,
+"deletions": 13
+},
+{
+"path": "crates/omuzaki-render/src/shadow/bounds.rs",
+"additions": 43,
+"deletions": 4
+},
+{
+"path": "crates/omuzaki-render/src/shadow/fit.rs",
+"additions": 33,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-render/tests/dynamic.rs",
+"additions": 22,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-render/tests/post.rs",
+"additions": 22,
+"deletions": 0
+}
+],
+"headRefName": "cloud/2075-gpu-expressions",
+"isDraft": true,
+"labels": [
+{
+"id": "LA_kwDOVI1pOc8AAAAC9bb4CA",
+"name": "outcome:stream",
+"description": "Outcome audit bucket 2026-10-15",
+"color": "d73a4a"
+}
+],
+"number": 2211
+},
+{
+"baseRefName": "main",
+"closingIssuesReferences": [
+{
+"id": "I_kwDOVI1pOc8AAAABXMRJgQ",
+"number": 977,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/977"
+}
+],
+"createdAt": "2026-10-16T02:18:30Z",
+"files": [
+{
+"path": ".changes/cloud-977-io-fbx.md",
+"additions": 7,
+"deletions": 0
+},
+{
+"path": "Cargo.lock",
+"additions": 19,
+"deletions": 0
+},
+{
+"path": "Cargo.toml",
+"additions": 1,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-cli/Cargo.toml",
+"additions": 2,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-cli/tests/registrations.rs",
+"additions": 2,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-io-fbx/Cargo.toml",
+"additions": 24,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-fbx/src/lib.rs",
+"additions": 109,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-fbx/src/load.rs",
+"additions": 209,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-fbx/src/nodes.rs",
+"additions": 212,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-fbx/tests/common/mod.rs",
+"additions": 311,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-fbx/tests/nodes.rs",
+"additions": 355,
+"deletions": 0
+},
+{
+"path": "docs/licensing/deps/ufbx.toml",
+"additions": 5,
+"deletions": 3
+}
+],
+"headRefName": "cloud/977-io-fbx",
+"isDraft": false,
+"labels": [
+{
+"id": "LA_kwDOVI1pOc8AAAAC9L5u_Q",
+"name": "needs-rebase",
+"description": "Merge conflict with main: rebase or merge main",
+"color": "B60205"
+}
+],
+"number": 2202
+},
+{
+"baseRefName": "main",
+"closingIssuesReferences": [
+{
+"id": "I_kwDOVI1pOc8AAAABXKz08Q",
+"number": 276,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/276"
+}
+],
+"createdAt": "2026-10-16T01:37:01Z",
+"files": [
+{
+"path": "Cargo.lock",
+"additions": 2,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-history-api/Cargo.toml",
+"additions": 3,
+"deletions": 2
+},
+{
+"path": "crates/omuzaki-history-api/src/branch.rs",
+"additions": 1345,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-history-api/src/lib.rs",
+"additions": 5,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-history-api/src/snapshot.rs",
+"additions": 78,
+"deletions": 2
+},
+{
+"path": "crates/omuzaki-history-api/src/state.rs",
+"additions": 235,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-history-mock/Cargo.toml",
+"additions": 4,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-history-mock/src/branch.rs",
+"additions": 2053,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-history-mock/src/lib.rs",
+"additions": 1,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops-api/src/ctx.rs",
+"additions": 15,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops-api/tests/require_scope.rs",
+"additions": 48,
+"deletions": 0
+}
+],
+"headRefName": "cloud/276-branches-contract",
+"isDraft": false,
+"labels": [
+{
+"id": "LA_kwDOVI1pOc8AAAAC9bb3gg",
+"name": "outcome:design",
+"description": "Outcome audit bucket 2026-10-15",
+"color": "1f6feb"
+}
+],
+"number": 2200
+},
+{
+"baseRefName": "main",
+"closingIssuesReferences": [
+{
+"id": "I_kwDOVI1pOc8AAAABXLcuJw",
+"number": 840,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/840"
+}
+],
+"createdAt": "2026-10-16T01:19:09Z",
+"files": [
+{
+"path": ".changes/cloud-840-ort-run-path.md",
+"additions": 5,
+"deletions": 0
+},
+{
+"path": "Cargo.lock",
+"additions": 2,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ai-ort/Cargo.toml",
+"additions": 3,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-ai-ort/src/graph.rs",
+"additions": 3,
+"deletions": 2
+},
+{
+"path": "crates/omuzaki-ai-ort/src/session.rs",
+"additions": 63,
+"deletions": 46
+},
+{
+"path": "crates/omuzaki-ai-ort/src/session/raw.rs",
+"additions": 116,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ai-ort/tests/allocations.rs",
+"additions": 38,
+"deletions": 16
+},
+{
+"path": "crates/omuzaki-ai-ort/tests/fixtures/identity_f16.onnx",
+"additions": 0,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ai-ort/tests/fixtures/make_models.py",
+"additions": 5,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/tests/mcp_http_tokens_list.rs",
+"additions": 2,
+"deletions": 0
+},
+{
+"path": "docs/licensing/deps/first-party-fixtures.toml",
+"additions": 1,
+"deletions": 0
+},
+{
+"path": "docs/licensing/deps/half.toml",
+"additions": 8,
+"deletions": 0
+}
+],
+"headRefName": "cloud/840-ort-alloc-f16",
+"isDraft": false,
+"labels": [],
+"number": 2199
+},
+{
+"baseRefName": "main",
+"closingIssuesReferences": [
+{
+"id": "I_kwDOVI1pOc8AAAABXiDIQQ",
+"number": 2083,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/2083"
+}
+],
+"createdAt": "2026-10-16T00:03:05Z",
+"files": [
+{
+"path": ".changes/cloud-2083-lineage-url-parse.md",
+"additions": 5,
+"deletions": 0
+},
+{
+"path": "Cargo.lock",
+"additions": 1,
+"deletions": 0
+},
+{
+"path": "Cargo.toml",
+"additions": 1,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/tests/mcp_http_tokens_list.rs",
+"additions": 1,
+"deletions": 0
+},
+{
+"path": "docs/licensing/deps/url.toml",
+"additions": 7,
+"deletions": 0
+},
+{
+"path": "xtask/Cargo.toml",
+"additions": 2,
+"deletions": 0
+},
+{
+"path": "xtask/src/models.rs",
+"additions": 64,
+"deletions": 28
+}
+],
+"headRefName": "cloud/2083-lineage-url-parse",
+"isDraft": false,
+"labels": [
+{
+"id": "LA_kwDOVI1pOc8AAAAC9L5u_Q",
+"name": "needs-rebase",
+"description": "Merge conflict with main: rebase or merge main",
+"color": "B60205"
+}
+],
+"number": 2190
+},
+{
+"baseRefName": "main",
+"closingIssuesReferences": [
+{
+"id": "I_kwDOVI1pOc8AAAABXMZDzA",
+"number": 1040,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1040"
+}
+],
+"createdAt": "2026-10-15T23:41:11Z",
+"files": [
+{
+"path": ".changes/cloud-1040-performer-contract.md",
+"additions": 11,
+"deletions": 0
+},
+{
+"path": "Cargo.lock",
+"additions": 32,
+"deletions": 0
+},
+{
+"path": "crates/README.md",
+"additions": 0,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-performer-api/Cargo.toml",
+"additions": 32,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-performer-api/src/brain.rs",
+"additions": 359,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-performer-api/src/conformance.rs",
+"additions": 317,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-performer-api/src/ears.rs",
+"additions": 130,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-performer-api/src/event.rs",
+"additions": 433,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-performer-api/src/ids.rs",
+"additions": 184,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-performer-api/src/intent.rs",
+"additions": 457,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-performer-api/src/lib.rs",
+"additions": 44,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-performer-api/src/limits.rs",
+"additions": 101,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-performer-api/src/moves.rs",
+"additions": 229,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-performer-api/src/perception.rs",
+"additions": 128,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-performer-api/src/speech.rs",
+"additions": 248,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-performer-api/src/spend.rs",
+"additions": 304,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-performer-api/src/stage.rs",
+"additions": 236,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-performer-api/src/voice.rs",
+"additions": 416,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-performer-mock/Cargo.toml",
+"additions": 28,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-performer-mock/goldens/five-turns.jsonl",
+"additions": 26,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-performer-mock/src/brain.rs",
+"additions": 69,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-performer-mock/src/ears.rs",
+"additions": 37,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-performer-mock/src/lib.rs",
+"additions": 36,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-performer-mock/src/other.rs",
+"additions": 65,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-performer-mock/src/stage.rs",
+"additions": 93,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-performer-mock/src/transcript.rs",
+"additions": 67,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-performer-mock/src/voice.rs",
+"additions": 242,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-performer-mock/tests/conformance.rs",
+"additions": 314,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-performer-mock/tests/five_turns.rs",
+"additions": 483,
+"deletions": 0
+},
+{
+"path": "docs/design/ai-performer-voice-face.md",
+"additions": 3,
+"deletions": 2
+}
+],
+"headRefName": "cloud/1040-performer-contract",
+"isDraft": false,
+"labels": [],
+"number": 2176
+},
+{
+"baseRefName": "main",
+"closingIssuesReferences": [
+{
+"id": "I_kwDOVI1pOc8AAAABXKfgfQ",
+"number": 5,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/5"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXKrO1Q",
+"number": 160,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/160"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXihczg",
+"number": 2122,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/2122"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXjDnMw",
+"number": 2158,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/2158"
+}
+],
+"createdAt": "2026-10-15T23:38:20Z",
+"files": [
+{
+"path": ".changes/cloud-2158-fit-reference.md",
+"additions": 9,
+"deletions": 0
+},
+{
+"path": "Cargo.lock",
+"additions": 2,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/Cargo.toml",
+"additions": 2,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/evidence/fit-reference.toml",
+"additions": 11,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/src/fit/heatmap.rs",
+"additions": 239,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-char/src/fit/input.rs",
+"additions": 231,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/src/fit/mod.rs",
+"additions": 218,
+"deletions": 54
+},
+{
+"path": "crates/omuzaki-char/src/fit/ops.rs",
+"additions": 451,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-char/src/fit/solver.rs",
+"additions": 304,
+"deletions": 25
+},
+{
+"path": "crates/omuzaki-char/tests/fit.rs",
+"additions": 46,
+"deletions": 18
+},
+{
+"path": "crates/omuzaki-char/tests/fit_objective.rs",
+"additions": 45,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/tests/fit_ops.rs",
+"additions": 707,
+"deletions": 0
+},
+{
+"path": "docs/licensing/deps/base64.toml",
+"additions": 1,
+"deletions": 1
+},
+{
+"path": "docs/licensing/deps/image.toml",
+"additions": 1,
+"deletions": 1
+}
+],
+"headRefName": "cloud/2158-fit-reference",
+"isDraft": false,
+"labels": [
+{
+"id": "LA_kwDOVI1pOc8AAAAC9bb3gg",
+"name": "outcome:design",
+"description": "Outcome audit bucket 2026-10-15",
+"color": "1f6feb"
+}
+],
+"number": 2175
+},
+{
+"baseRefName": "main",
+"closingIssuesReferences": [
+{
+"id": "I_kwDOVI1pOc8AAAABXKkwAQ",
+"number": 71,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/71"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXKlPCA",
+"number": 77,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/77"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXKlT_Q",
+"number": 78,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/78"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXKlwUw",
+"number": 84,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/84"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXKmCbQ",
+"number": 88,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/88"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXKxwBg",
+"number": 249,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/249"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXLgpZg",
+"number": 904,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/904"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXcHAnQ",
+"number": 1875,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1875"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXiQtHQ",
+"number": 2099,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/2099"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXiswbw",
+"number": 2134,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/2134"
+}
+],
+"createdAt": "2026-10-15T23:12:06Z",
+"files": [
+{
+"path": ".changes/cloud-2134-anim-follow-ups.md",
+"additions": 7,
+"deletions": 0
+},
+{
+"path": ".changes/cloud-249-pose-set.md",
+"additions": 6,
+"deletions": 0
+},
+{
+"path": "Cargo.lock",
+"additions": 2,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-anim-api/src/lib.rs",
+"additions": 3,
+"deletions": 3
+},
+{
+"path": "crates/omuzaki-anim-api/src/life.rs",
+"additions": 162,
+"deletions": 8
+},
+{
+"path": "crates/omuzaki-anim-api/src/retarget.rs",
+"additions": 116,
+"deletions": 10
+},
+{
+"path": "crates/omuzaki-anim/Cargo.toml",
+"additions": 2,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-anim/src/animator.rs",
+"additions": 8,
+"deletions": 7
+},
+{
+"path": "crates/omuzaki-anim/src/lib.rs",
+"additions": 3,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-anim/src/life/blink.rs",
+"additions": 9,
+"deletions": 20
+},
+{
+"path": "crates/omuzaki-anim/src/life/brows.rs",
+"additions": 2,
+"deletions": 4
+},
+{
+"path": "crates/omuzaki-anim/src/life/eyes.rs",
+"additions": 18,
+"deletions": 22
+},
+{
+"path": "crates/omuzaki-anim/src/life/frame.rs",
+"additions": 31,
+"deletions": 2
+},
+{
+"path": "crates/omuzaki-anim/src/life/gaze.rs",
+"additions": 13,
+"deletions": 16
+},
+{
+"path": "crates/omuzaki-anim/src/life/head.rs",
+"additions": 10,
+"deletions": 17
+},
+{
+"path": "crates/omuzaki-anim/src/life/laugh.rs",
+"additions": 9,
+"deletions": 21
+},
+{
+"path": "crates/omuzaki-anim/src/life/lead.rs",
+"additions": 6,
+"deletions": 12
+},
+{
+"path": "crates/omuzaki-anim/src/life/mod.rs",
+"additions": 9,
+"deletions": 4
+},
+{
+"path": "crates/omuzaki-anim/src/life/mouth.rs",
+"additions": 1,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-anim/src/life/spring.rs",
+"additions": 9,
+"deletions": 4
+},
+{
+"path": "crates/omuzaki-anim/src/life/tests/contract.rs",
+"additions": 48,
+"deletions": 2
+},
+{
+"path": "crates/omuzaki-anim/src/life/tests/mod.rs",
+"additions": 1,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-anim/src/life/tests/tuning.rs",
+"additions": 98,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-anim/src/poses/clip.rs",
+"additions": 22,
+"deletions": 4
+},
+{
+"path": "crates/omuzaki-anim/src/poses/hips.rs",
+"additions": 66,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-anim/src/poses/mod.rs",
+"additions": 3,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-anim/src/poses/set.rs",
+"additions": 374,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-anim/src/retarget/mod.rs",
+"additions": 10,
+"deletions": 19
+},
+{
+"path": "crates/omuzaki-anim/src/retarget/tests.rs",
+"additions": 17,
+"deletions": 3
+},
+{
+"path": "crates/omuzaki-anim/tests/animator.rs",
+"additions": 35,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-anim/tests/hips_scale.rs",
+"additions": 121,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-anim/tests/op_pose_set.rs",
+"additions": 274,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-anim/tests/personality_tuning.rs",
+"additions": 76,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-anim/tests/pose_clips.rs",
+"additions": 6,
+"deletions": 6
+},
+{
+"path": "crates/omuzaki-anim/tests/retarget_golden.rs",
+"additions": 1,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-stage/tests/golden/perform_trace_bus.json",
+"additions": 82,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-stage/tests/perform_e2e.rs",
+"additions": 39,
+"deletions": 19
+}
+],
+"headRefName": "cloud/2134-anim-follow-ups",
+"isDraft": true,
+"labels": [
+{
+"id": "LA_kwDOVI1pOc8AAAAC9bb3gg",
+"name": "outcome:design",
+"description": "Outcome audit bucket 2026-10-15",
+"color": "1f6feb"
+}
+],
+"number": 2167
+},
+{
+"baseRefName": "main",
+"closingIssuesReferences": [
+{
+"id": "I_kwDOVI1pOc8AAAABXLeKUg",
+"number": 864,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/864"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXLeOyw",
+"number": 865,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/865"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXMvdYw",
+"number": 1214,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1214"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXiEouw",
+"number": 2085,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/2085"
+}
+],
+"createdAt": "2026-10-15T23:11:49Z",
+"files": [
+{
+"path": ".changes/cloud-2085-byom-contract.md",
+"additions": 15,
+"deletions": 0
+},
+{
+"path": "Cargo.lock",
+"additions": 33,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-avatar-api/Cargo.toml",
+"additions": 34,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-avatar-api/src/avatar.rs",
+"additions": 619,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-avatar-api/src/body.rs",
+"additions": 244,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-avatar-api/src/def.rs",
+"additions": 250,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-avatar-api/src/error.rs",
+"additions": 454,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-avatar-api/src/expression.rs",
+"additions": 364,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-avatar-api/src/gaze.rs",
+"additions": 196,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-avatar-api/src/lib.rs",
+"additions": 41,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-avatar-api/src/retained.rs",
+"additions": 735,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-avatar-api/src/summary.rs",
+"additions": 60,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-avatar-api/tests/avatar.rs",
+"additions": 574,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-avatar-api/tests/body.rs",
+"additions": 104,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-avatar-api/tests/common/mod.rs",
+"additions": 92,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-avatar-api/tests/def.rs",
+"additions": 120,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-avatar-api/tests/retained.rs",
+"additions": 251,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-avatar/Cargo.toml",
+"additions": 33,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-avatar/benches/evaluate.rs",
+"additions": 70,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-avatar/src/buffers.rs",
+"additions": 198,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-avatar/src/evaluator.rs",
+"additions": 312,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-avatar/src/lib.rs",
+"additions": 16,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-avatar/tests/alloc.rs",
+"additions": 87,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-avatar/tests/common/mod.rs",
+"additions": 121,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-avatar/tests/evaluate.rs",
+"additions": 493,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char-api/src/character.rs",
+"additions": 47,
+"deletions": 8
+},
+{
+"path": "crates/omuzaki-char-api/src/doc_key.rs",
+"additions": 8,
+"deletions": 6
+},
+{
+"path": "crates/omuzaki-char-api/src/geometry.rs",
+"additions": 16,
+"deletions": 2
+},
+{
+"path": "crates/omuzaki-char-mock/src/hair.rs",
+"additions": 1,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char-mock/src/head.rs",
+"additions": 1,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/src/body/part.rs",
+"additions": 1,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/src/hair/part.rs",
+"additions": 1,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/src/head/material.rs",
+"additions": 2,
+"deletions": 0
+},
+{
+"path": "docs/design/byom.md",
+"additions": 2,
+"deletions": 1
+}
+],
+"headRefName": "cloud/2085-byom-contract",
+"isDraft": false,
+"labels": [
+{
+"id": "LA_kwDOVI1pOc8AAAAC9CeHUw",
+"name": "P0",
+"description": "Build first",
+"color": "b60205"
+},
+{
+"id": "LA_kwDOVI1pOc8AAAAC9CfZmQ",
+"name": "lane:cloud",
+"description": "Assigned to the Claude cloud lane (builds off the owner's PC); see the pinned Cloud lane issue",
+"color": "5319E7"
+},
+{
+"id": "LA_kwDOVI1pOc8AAAAC9bb4CA",
+"name": "outcome:stream",
+"description": "Outcome audit bucket 2026-10-15",
+"color": "d73a4a"
+}
+],
+"number": 2166
+},
+{
+"baseRefName": "main",
+"closingIssuesReferences": [
+{
+"id": "I_kwDOVI1pOc8AAAABXKvWAA",
+"number": 217,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/217"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXKvaVA",
+"number": 218,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/218"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXKvfVQ",
+"number": 219,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/219"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXdCZYg",
+"number": 1920,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1920"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXhztMA",
+"number": 2043,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/2043"
+}
+],
+"createdAt": "2026-10-15T23:10:39Z",
+"files": [
+{
+"path": ".changes/cloud-2043-edit-panels.md",
+"additions": 8,
+"deletions": 0
+},
+{
+"path": "Cargo.lock",
+"additions": 12,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/Cargo.toml",
+"additions": 12,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/evidence/edit-panels.toml",
+"additions": 10,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/src/ds/schema_form/mod.rs",
+"additions": 47,
+"deletions": 11
+},
+{
+"path": "crates/omuzaki-ui/src/ds/schema_form/model.rs",
+"additions": 202,
+"deletions": 21
+},
+{
+"path": "crates/omuzaki-ui/src/ds/schema_form/show.rs",
+"additions": 469,
+"deletions": 64
+},
+{
+"path": "crates/omuzaki-ui/src/ds/schema_form/text.rs",
+"additions": 44,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/src/ds/schema_form/value.rs",
+"additions": 44,
+"deletions": 2
+},
+{
+"path": "crates/omuzaki-ui/src/lib.rs",
+"additions": 6,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-ui/src/panels/edit.rs",
+"additions": 167,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/src/panels/inspector/mod.rs",
+"additions": 378,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/src/panels/inspector/params.rs",
+"additions": 205,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/src/panels/io.rs",
+"additions": 142,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/src/panels/mod.rs",
+"additions": 11,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/src/panels/outliner/mod.rs",
+"additions": 760,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/src/panels/outliner/reorder.rs",
+"additions": 193,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/src/panels/outliner/rows.rs",
+"additions": 246,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/src/panels/outliner/tree.rs",
+"additions": 210,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/src/panels/text.rs",
+"additions": 122,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/src/panels/viewport/blit.wgsl",
+"additions": 42,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/src/panels/viewport/camera.rs",
+"additions": 201,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/src/panels/viewport/gpu.rs",
+"additions": 417,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/src/panels/viewport/mod.rs",
+"additions": 329,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/tests/inspector.rs",
+"additions": 624,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/tests/outliner.rs",
+"additions": 793,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/tests/schema_form.rs",
+"additions": 343,
+"deletions": 8
+},
+{
+"path": "crates/omuzaki-ui/tests/viewport.rs",
+"additions": 396,
+"deletions": 0
+}
+],
+"headRefName": "cloud/2043-edit-panels",
+"isDraft": false,
+"labels": [
+{
+"id": "LA_kwDOVI1pOc8AAAAC9bb3gg",
+"name": "outcome:design",
+"description": "Outcome audit bucket 2026-10-15",
+"color": "1f6feb"
+}
+],
+"number": 2164
+},
+{
+"baseRefName": "main",
+"closingIssuesReferences": [
+{
+"id": "I_kwDOVI1pOc8AAAABXMddlA",
+"number": 1075,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1075"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXMdlRw",
+"number": 1076,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1076"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXMljDg",
+"number": 1137,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1137"
+}
+],
+"createdAt": "2026-10-15T22:58:29Z",
+"files": [
+{
+"path": ".changes/cloud-1075-io-ops-fit.md",
+"additions": 7,
+"deletions": 0
+},
+{
+"path": "Cargo.lock",
+"additions": 1,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/Cargo.toml",
+"additions": 5,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/benches/fit.rs",
+"additions": 212,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/data/platforms/vrchat-pc.toml",
+"additions": 55,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/data/platforms/vrchat-quest.toml",
+"additions": 56,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/data/vrchat-performance.toml",
+"additions": 0,
+"deletions": 73
+},
+{
+"path": "crates/omuzaki-io-ops/src/fit_decimate.rs",
+"additions": 770,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/src/fit_meshes.rs",
+"additions": 560,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/src/lib.rs",
+"additions": 6,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/src/limits/eval.rs",
+"additions": 175,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/src/limits/mod.rs",
+"additions": 137,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/src/limits/stats.rs",
+"additions": 413,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/src/limits/table.rs",
+"additions": 457,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/src/vrchat_rank.rs",
+"additions": 69,
+"deletions": 501
+},
+{
+"path": "crates/omuzaki-io-ops/tests/fit_decimate.rs",
+"additions": 483,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/tests/fit_meshes.rs",
+"additions": 651,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/tests/limits.rs",
+"additions": 473,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/tests/vrchat_rank.rs",
+"additions": 63,
+"deletions": 5
+}
+],
+"headRefName": "cloud/1075-io-ops-fit-decimate",
+"isDraft": false,
+"labels": [
+{
+"id": "LA_kwDOVI1pOc8AAAAC9CeJNQ",
+"name": "P1",
+"description": "Build second",
+"color": "fbca04"
+},
+{
+"id": "LA_kwDOVI1pOc8AAAAC9CeeJQ",
+"name": "area:export",
+"description": "Area: export",
+"color": "c2e0c6"
+},
+{
+"id": "LA_kwDOVI1pOc8AAAAC9CfZmQ",
+"name": "lane:cloud",
+"description": "Assigned to the Claude cloud lane (builds off the owner's PC); see the pinned Cloud lane issue",
+"color": "5319E7"
+}
+],
+"number": 2157
+},
+{
+"baseRefName": "main",
+"closingIssuesReferences": [
+{
+"id": "I_kwDOVI1pOc8AAAABXLaM6Q",
+"number": 805,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/805"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXLaREg",
+"number": 806,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/806"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXLaUug",
+"number": 807,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/807"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXMncQw",
+"number": 1152,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1152"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXW0s0A",
+"number": 1698,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1698"
+}
+],
+"createdAt": "2026-10-15T22:55:25Z",
+"files": [
+{
+"path": ".changes/cloud-1152-http-cache.md",
+"additions": 5,
+"deletions": 0
+},
+{
+"path": "Cargo.lock",
+"additions": 41,
+"deletions": 0
+},
+{
+"path": "Cargo.toml",
+"additions": 2,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-http/Cargo.toml",
+"additions": 3,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-http/src/cache_dir.rs",
+"additions": 88,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-http/src/lib.rs",
+"additions": 78,
+"deletions": 7
+},
+{
+"path": "crates/omuzaki-http/tests/fetcher.rs",
+"additions": 75,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-stage/Cargo.toml",
+"additions": 2,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-stage/src/sheet/layout/fallback/mod.rs",
+"additions": 15,
+"deletions": 7
+},
+{
+"path": "crates/omuzaki-stage/src/sheet/layout/fallback/source.rs",
+"additions": 73,
+"deletions": 3
+},
+{
+"path": "crates/omuzaki-stage/src/sheet/layout/text.rs",
+"additions": 2,
+"deletions": 2
+},
+{
+"path": "crates/omuzaki-stage/tests/font_download.rs",
+"additions": 286,
+"deletions": 0
+},
+{
+"path": "docs/licensing/deps/directories.toml",
+"additions": 7,
+"deletions": 0
+},
+{
+"path": "docs/licensing/deps/httpdate.toml",
+"additions": 7,
+"deletions": 0
+},
+{
+"path": "docs/licensing/deps/option-ext.toml",
+"additions": 7,
+"deletions": 0
+}
+],
+"headRefName": "cloud/1152-http-cache",
+"isDraft": true,
+"labels": [],
+"number": 2156
+},
+{
+"baseRefName": "main",
+"closingIssuesReferences": [
+{
+"id": "I_kwDOVI1pOc8AAAABXW7uzg",
+"number": 1720,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1720"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXW7vZw",
+"number": 1721,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1721"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXW7wHg",
+"number": 1722,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1722"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXW7w5A",
+"number": 1723,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1723"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXW7xjg",
+"number": 1724,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1724"
+}
+],
+"createdAt": "2026-10-15T22:45:52Z",
+"files": [
+{
+"path": "Cargo.lock",
+"additions": 1,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-l10n-api/Cargo.toml",
+"additions": 1,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-l10n-api/src/check/english.rs",
+"additions": 94,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-l10n-api/src/check/messages.rs",
+"additions": 113,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-l10n-api/src/check/mod.rs",
+"additions": 138,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-l10n-api/src/check/pseudo.rs",
+"additions": 163,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-l10n-api/src/check/translations.rs",
+"additions": 144,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-l10n-api/tests/check_english.rs",
+"additions": 113,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-l10n-api/tests/check_messages.rs",
+"additions": 123,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-l10n-api/tests/check_pseudo.rs",
+"additions": 108,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-l10n-api/tests/check_translations.rs",
+"additions": 121,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-l10n-api/tests/l10n.rs",
+"additions": 8,
+"deletions": 0
+}
+],
+"headRefName": "cloud/1720-l10n-checks",
+"isDraft": false,
+"labels": [],
+"number": 2152
+},
+{
+"baseRefName": "main",
+"closingIssuesReferences": [
+{
+"id": "I_kwDOVI1pOc8AAAABXW7y6A",
+"number": 1726,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1726"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXW7zqw",
+"number": 1727,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1727"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXW70UA",
+"number": 1728,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1728"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXW71DQ",
+"number": 1729,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1729"
+}
+],
+"createdAt": "2026-10-15T22:40:58Z",
+"files": [
+{
+"path": "Cargo.lock",
+"additions": 2,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-doc/Cargo.toml",
+"additions": 2,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-doc/src/journal/mod.rs",
+"additions": 7,
+"deletions": 2
+},
+{
+"path": "crates/omuzaki-doc/src/journal/reader.rs",
+"additions": 566,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-doc/src/journal/record.rs",
+"additions": 271,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-doc/tests/fixtures/journal/v1/golden/README.md",
+"additions": 9,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-doc/tests/fixtures/journal/v1/golden/segment-000000000001.tjl",
+"additions": 0,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-doc/tests/fixtures/journal/v1/golden/segment-000000000002.tjl",
+"additions": 0,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-doc/tests/fixtures/journal/v1/golden/segment-000000000003.tjl",
+"additions": 0,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-doc/tests/journal_damage.rs",
+"additions": 259,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-doc/tests/journal_golden.rs",
+"additions": 146,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-doc/tests/journal_reader.rs",
+"additions": 1138,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-doc/tests/journal_record.rs",
+"additions": 286,
+"deletions": 0
+}
+],
+"headRefName": "cloud/1726-journal-reader",
+"isDraft": false,
+"labels": [
+{
+"id": "LA_kwDOVI1pOc8AAAAC9bb3gg",
+"name": "outcome:design",
+"description": "Outcome audit bucket 2026-10-15",
+"color": "1f6feb"
+}
+],
+"number": 2149
+},
+{
+"baseRefName": "main",
+"closingIssuesReferences": [
+{
+"id": "I_kwDOVI1pOc8AAAABXLVDSA",
+"number": 730,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/730"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXLYGYA",
+"number": 773,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/773"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXLYLPA",
+"number": 774,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/774"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXLkJiQ",
+"number": 952,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/952"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXLkOTQ",
+"number": 953,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/953"
+}
+],
+"createdAt": "2026-10-15T22:38:57Z",
+"files": [
+{
+"path": "Cargo.lock",
+"additions": 35,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-api/Cargo.toml",
+"additions": 37,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-api/src/event.rs",
+"additions": 386,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-api/src/event/payloads.rs",
+"additions": 710,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-api/src/event/registration.rs",
+"additions": 102,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-api/src/graph.rs",
+"additions": 357,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-api/src/ids.rs",
+"additions": 363,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-api/src/l10n.rs",
+"additions": 119,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-api/src/lib.rs",
+"additions": 53,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-api/src/limits.rs",
+"additions": 141,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-api/src/need.rs",
+"additions": 218,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-api/src/node.rs",
+"additions": 113,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-api/src/node/cx.rs",
+"additions": 289,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-api/src/node/error.rs",
+"additions": 148,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-api/src/node/kind.rs",
+"additions": 239,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-api/src/node/ports.rs",
+"additions": 205,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-api/src/node/registration.rs",
+"additions": 232,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-api/src/services.rs",
+"additions": 20,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-api/src/services/approvals.rs",
+"additions": 130,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-api/src/services/control.rs",
+"additions": 505,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-api/src/services/variables.rs",
+"additions": 49,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-api/src/services/wall.rs",
+"additions": 36,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-api/src/show.rs",
+"additions": 411,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-api/src/show/check.rs",
+"additions": 183,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-api/src/show/keys.rs",
+"additions": 298,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-api/src/show/paths.rs",
+"additions": 98,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-api/src/value.rs",
+"additions": 428,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-api/tests/doc.rs",
+"additions": 428,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-api/tests/event.rs",
+"additions": 392,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-api/tests/fixtures/main/applied/bonk.toml",
+"additions": 6,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-api/tests/fixtures/main/automations/bonk/graph.toml",
+"additions": 2,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-api/tests/fixtures/main/automations/bonk/nodes/cool.toml",
+"additions": 8,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-api/tests/fixtures/main/automations/bonk/nodes/count.toml",
+"additions": 8,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-api/tests/fixtures/main/automations/bonk/nodes/line.toml",
+"additions": 9,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-api/tests/fixtures/main/automations/bonk/nodes/redeem.toml",
+"additions": 8,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-api/tests/fixtures/main/automations/bonk/nodes/say.toml",
+"additions": 12,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-api/tests/fixtures/main/automations/bonk/nodes/throw.toml",
+"additions": 13,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-api/tests/fixtures/main/automations/lurk/graph.toml",
+"additions": 1,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-api/tests/fixtures/main/automations/lurk/nodes/cmd.toml",
+"additions": 6,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-api/tests/fixtures/main/automations/lurk/nodes/post.toml",
+"additions": 19,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-api/tests/fixtures/main/show.toml",
+"additions": 11,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-api/tests/node.rs",
+"additions": 260,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-api/tests/services.rs",
+"additions": 237,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-mock/Cargo.toml",
+"additions": 31,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-mock/src/approvals.rs",
+"additions": 105,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-mock/src/fixtures.rs",
+"additions": 142,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-mock/src/harness.rs",
+"additions": 732,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-mock/src/lib.rs",
+"additions": 22,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-mock/src/log.rs",
+"additions": 17,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-mock/src/runner.rs",
+"additions": 111,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-mock/src/variables.rs",
+"additions": 77,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-mock/src/wall.rs",
+"additions": 58,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-live-mock/tests/harness.rs",
+"additions": 747,
+"deletions": 0
+}
+],
+"headRefName": "cloud/730-live-contracts",
+"isDraft": false,
+"labels": [
+{
+"id": "LA_kwDOVI1pOc8AAAAC9L5u_Q",
+"name": "needs-rebase",
+"description": "Merge conflict with main: rebase or merge main",
+"color": "B60205"
+}
+],
+"number": 2147
+},
+{
+"baseRefName": "main",
+"closingIssuesReferences": [
+{
+"id": "I_kwDOVI1pOc8AAAABXK1jVQ",
+"number": 299,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/299"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXK1_zw",
+"number": 305,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/305"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXK2ibg",
+"number": 312,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/312"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXhy5eQ",
+"number": 2041,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/2041"
+}
+],
+"createdAt": "2026-10-15T22:31:22Z",
+"files": [
+{
+"path": ".changes/cloud-2041-live-ui.md",
+"additions": 6,
+"deletions": 0
+},
+{
+"path": "Cargo.lock",
+"additions": 20,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/Cargo.toml",
+"additions": 20,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/evidence/live-ui.toml",
+"additions": 10,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/src/aux_window/mod.rs",
+"additions": 22,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/src/aux_window/placement.rs",
+"additions": 110,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/src/aux_window/size.rs",
+"additions": 102,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/src/aux_window/surface.rs",
+"additions": 128,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/src/lib.rs",
+"additions": 13,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-ui/src/live/latency.rs",
+"additions": 117,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/src/live/mod.rs",
+"additions": 23,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/src/live/model.rs",
+"additions": 653,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/src/live/panel.rs",
+"additions": 660,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/src/live/registration.rs",
+"additions": 65,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/src/live/story.rs",
+"additions": 232,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/src/live/text.rs",
+"additions": 166,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/src/live/viewport.rs",
+"additions": 453,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/src/live/wiring/app.rs",
+"additions": 252,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/src/live/wiring/clock.rs",
+"additions": 97,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/src/live/wiring/mailbox.rs",
+"additions": 317,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/src/live/wiring/mod.rs",
+"additions": 54,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/src/live/wiring/rig.rs",
+"additions": 113,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/src/live/wiring/scene.rs",
+"additions": 86,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/src/live/wiring/thread.rs",
+"additions": 205,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/src/main.rs",
+"additions": 74,
+"deletions": 3
+},
+{
+"path": "crates/omuzaki-ui/src/output_window/composite.rs",
+"additions": 59,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/src/output_window/host.rs",
+"additions": 240,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/src/output_window/mod.rs",
+"additions": 28,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/src/output_window/plan.rs",
+"additions": 151,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/src/output_window/test_card.rs",
+"additions": 74,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/src/output_window/window.rs",
+"additions": 228,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/src/wiring.rs",
+"additions": 36,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/tests/live_registration.rs",
+"additions": 54,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/tests/live_viewport.rs",
+"additions": 294,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/tests/live_wiring.rs",
+"additions": 521,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/tests/live_workspace.rs",
+"additions": 774,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ui/tests/output_window.rs",
+"additions": 96,
+"deletions": 0
+}
+],
+"headRefName": "cloud/2041-live-ui",
+"isDraft": true,
+"labels": [
+{
+"id": "LA_kwDOVI1pOc8AAAAC9bb4CA",
+"name": "outcome:stream",
+"description": "Outcome audit bucket 2026-10-15",
+"color": "d73a4a"
+}
+],
+"number": 2144
+},
+{
+"baseRefName": "main",
+"closingIssuesReferences": [
+{
+"id": "I_kwDOVI1pOc8AAAABXLY47g",
+"number": 784,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/784"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXh78Vg",
+"number": 2062,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/2062"
+}
+],
+"createdAt": "2026-10-15T22:19:23Z",
+"files": [
+{
+"path": "Cargo.lock",
+"additions": 289,
+"deletions": 14
+},
+{
+"path": "Cargo.toml",
+"additions": 3,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-secrets-api/Cargo.toml",
+"additions": 23,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-secrets-api/src/error.rs",
+"additions": 87,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-secrets-api/src/label.rs",
+"additions": 70,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-secrets-api/src/lib.rs",
+"additions": 30,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-secrets-api/src/store.rs",
+"additions": 44,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-secrets-api/src/value.rs",
+"additions": 57,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-secrets-api/tests/contract.rs",
+"additions": 73,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-secrets-mock/Cargo.toml",
+"additions": 19,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-secrets-mock/src/conformance.rs",
+"additions": 90,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-secrets-mock/src/lib.rs",
+"additions": 14,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-secrets-mock/src/memory.rs",
+"additions": 89,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-secrets-mock/tests/memory.rs",
+"additions": 53,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-secrets/Cargo.toml",
+"additions": 26,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-secrets/src/error.rs",
+"additions": 101,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-secrets/src/index.rs",
+"additions": 178,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-secrets/src/lib.rs",
+"additions": 29,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-secrets/src/store.rs",
+"additions": 310,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-secrets/src/store/tests.rs",
+"additions": 604,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-secrets/tests/keychain.rs",
+"additions": 81,
+"deletions": 0
+},
+{
+"path": "docs/licensing/deps/keyring.toml",
+"additions": 8,
+"deletions": 0
+},
+{
+"path": "docs/licensing/deps/zeroize.toml",
+"additions": 8,
+"deletions": 0
+}
+],
+"headRefName": "cloud/784-secret-store",
+"isDraft": false,
+"labels": [
+{
+"id": "LA_kwDOVI1pOc8AAAAC9L5u_Q",
+"name": "needs-rebase",
+"description": "Merge conflict with main: rebase or merge main",
+"color": "B60205"
+}
+],
+"number": 2132
+},
+{
+"baseRefName": "main",
+"closingIssuesReferences": [
+{
+"id": "I_kwDOVI1pOc8AAAABXLR7UQ",
+"number": 685,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/685"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXLSC5Q",
+"number": 687,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/687"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXLZlLw",
+"number": 795,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/795"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXLdthQ",
+"number": 857,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/857"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXLiYDA",
+"number": 928,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/928"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXMnkEw",
+"number": 1153,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1153"
+}
+],
+"createdAt": "2026-10-15T22:12:51Z",
+"files": [
+{
+"path": ".changes/cloud-685-user-models.md",
+"additions": 20,
+"deletions": 0
+},
+{
+"path": "Cargo.lock",
+"additions": 22,
+"deletions": 0
+},
+{
+"path": "crates/README.md",
+"additions": 1,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-ai-api/src/progress.rs",
+"additions": 2,
+"deletions": 2
+},
+{
+"path": "crates/omuzaki-ai-api/src/registry.rs",
+"additions": 11,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ai-mock/src/runtime.rs",
+"additions": 20,
+"deletions": 5
+},
+{
+"path": "crates/omuzaki-ai-mock/src/session.rs",
+"additions": 12,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-ai/Cargo.toml",
+"additions": 18,
+"deletions": 2
+},
+{
+"path": "crates/omuzaki-ai/clippy.toml",
+"additions": 51,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ai/src/fetch/digest.rs",
+"additions": 27,
+"deletions": 2
+},
+{
+"path": "crates/omuzaki-ai/src/fetch/mod.rs",
+"additions": 70,
+"deletions": 29
+},
+{
+"path": "crates/omuzaki-ai/src/fetch/tests.rs",
+"additions": 83,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ai/src/lib.rs",
+"additions": 28,
+"deletions": 4
+},
+{
+"path": "crates/omuzaki-ai/src/ops/acknowledge.rs",
+"additions": 46,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ai/src/ops/add.rs",
+"additions": 160,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ai/src/ops/list.rs",
+"additions": 76,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ai/src/ops/mod.rs",
+"additions": 98,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ai/src/ops/remove.rs",
+"additions": 40,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ai/src/ops/select.rs",
+"additions": 47,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ai/src/ops/status.rs",
+"additions": 62,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ai/src/registry/consent.rs",
+"additions": 67,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ai/src/registry/install.rs",
+"additions": 33,
+"deletions": 15
+},
+{
+"path": "crates/omuzaki-ai/src/registry/mod.rs",
+"additions": 218,
+"deletions": 72
+},
+{
+"path": "crates/omuzaki-ai/src/registry/progress.rs",
+"additions": 73,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ai/src/registry/state.rs",
+"additions": 51,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ai/src/registry/user/import.rs",
+"additions": 36,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ai/src/registry/user/manifest.rs",
+"additions": 104,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ai/src/registry/user/mod.rs",
+"additions": 363,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ai/src/registry/user/tests.rs",
+"additions": 69,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ai/src/sandbox/limits.rs",
+"additions": 149,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ai/src/sandbox/mod.rs",
+"additions": 120,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ai/src/sandbox/session.rs",
+"additions": 445,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ai/src/sandbox/wire.rs",
+"additions": 416,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ai/src/sandbox/worker.rs",
+"additions": 224,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ai/src/slot_session/loader.rs",
+"additions": 17,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-ai/tests/catalogue.rs",
+"additions": 1,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ai/tests/common/mod.rs",
+"additions": 2,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ai/tests/common/rig.rs",
+"additions": 138,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ai/tests/consent.rs",
+"additions": 102,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ai/tests/fetch.rs",
+"additions": 1,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ai/tests/fetch_core.rs",
+"additions": 1,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ai/tests/fetch_urls.rs",
+"additions": 1,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ai/tests/ops.rs",
+"additions": 318,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ai/tests/registry.rs",
+"additions": 1,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ai/tests/sandbox.rs",
+"additions": 227,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ai/tests/slot_session.rs",
+"additions": 6,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-ai/tests/slot_session_alloc.rs",
+"additions": 41,
+"deletions": 8
+},
+{
+"path": "crates/omuzaki-ai/tests/smoke.rs",
+"additions": 64,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ai/tests/user_models.rs",
+"additions": 429,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-model-worker/Cargo.toml",
+"additions": 27,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-model-worker/src/main.rs",
+"additions": 16,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-model-worker/tests/worker.rs",
+"additions": 45,
+"deletions": 0
+},
+{
+"path": "docs/design/ai-api.md",
+"additions": 39,
+"deletions": 1
+},
+{
+"path": "tools/ci/nightly-check.sh",
+"additions": 8,
+"deletions": 0
+},
+{
+"path": "xtask/src/lint_deps.rs",
+"additions": 16,
+"deletions": 4
+}
+],
+"headRefName": "cloud/685-user-models",
+"isDraft": true,
+"labels": [],
+"number": 2126
+},
+{
+"baseRefName": "main",
+"closingIssuesReferences": [
+{
+"id": "I_kwDOVI1pOc8AAAABXMhmew",
+"number": 1108,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1108"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXMhvBA",
+"number": 1109,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1109"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXMiACg",
+"number": 1111,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1111"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXMiJDw",
+"number": 1112,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1112"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXMlJmw",
+"number": 1134,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1134"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXMw2qg",
+"number": 1226,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1226"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXM53QA",
+"number": 1297,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1297"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXM6Hqw",
+"number": 1299,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1299"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXM6P9g",
+"number": 1300,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1300"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXM-cKA",
+"number": 1336,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1336"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXNCDuA",
+"number": 1371,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1371"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXND9Kg",
+"number": 1387,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1387"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXNE0_w",
+"number": 1395,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1395"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXiSlqQ",
+"number": 2104,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/2104"
+}
+],
+"createdAt": "2026-10-15T22:10:12Z",
+"files": [
+{
+"path": "Cargo.lock",
+"additions": 48,
+"deletions": 0
+},
+{
+"path": "crates/README.md",
+"additions": 0,
+"deletions": 3
+},
+{
+"path": "crates/omuzaki-agent-api/Cargo.toml",
+"additions": 28,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent-api/src/conversations.rs",
+"additions": 145,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent-api/src/entry.rs",
+"additions": 428,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent-api/src/error.rs",
+"additions": 63,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent-api/src/event.rs",
+"additions": 212,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent-api/src/hub.rs",
+"additions": 279,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent-api/src/lib.rs",
+"additions": 80,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent-api/src/message.rs",
+"additions": 100,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent-api/src/prompts.rs",
+"additions": 104,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent-mock/Cargo.toml",
+"additions": 25,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent-mock/src/assistant.rs",
+"additions": 301,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent-mock/src/conversations.rs",
+"additions": 88,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent-mock/src/lib.rs",
+"additions": 15,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent-mock/tests/scripted.rs",
+"additions": 283,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/Cargo.toml",
+"additions": 40,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/prompts/system.md",
+"additions": 17,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/src/calls.rs",
+"additions": 435,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/src/caps.rs",
+"additions": 129,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/src/config.rs",
+"additions": 160,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/src/content.rs",
+"additions": 146,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/src/context/block.rs",
+"additions": 156,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/src/context/compact.rs",
+"additions": 591,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/src/context/mod.rs",
+"additions": 171,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/src/cut.rs",
+"additions": 82,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/src/fold.rs",
+"additions": 118,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/src/history.rs",
+"additions": 715,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/src/host.rs",
+"additions": 243,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/src/lib.rs",
+"additions": 36,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/src/link.rs",
+"additions": 580,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/src/prompts.rs",
+"additions": 104,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/src/refusal.rs",
+"additions": 76,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/src/resume.rs",
+"additions": 417,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/src/run.rs",
+"additions": 337,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/src/settings.rs",
+"additions": 128,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/src/shared.rs",
+"additions": 344,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/src/sink.rs",
+"additions": 33,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/src/stop.rs",
+"additions": 140,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/src/store/blobs.rs",
+"additions": 85,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/src/store/conversations.rs",
+"additions": 31,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/src/store/export.rs",
+"additions": 159,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/src/store/log.rs",
+"additions": 215,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/src/store/mod.rs",
+"additions": 395,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/src/store/rationale.rs",
+"additions": 48,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/src/store/resume.rs",
+"additions": 154,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/src/store/rfc3339.rs",
+"additions": 124,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/src/tools.rs",
+"additions": 252,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/src/turn.rs",
+"additions": 276,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/src/tx.rs",
+"additions": 393,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/src/wait.rs",
+"additions": 63,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/src/worker.rs",
+"additions": 125,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/tests/answer.rs",
+"additions": 210,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/tests/caps.rs",
+"additions": 185,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/tests/closure.rs",
+"additions": 966,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/tests/common/mod.rs",
+"additions": 1446,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/tests/context.rs",
+"additions": 386,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/tests/goldens/store/322033a83eab197bf22093db52c3584d7431bc130e71ee2164db3b3f29b8d7e7.png",
+"additions": 1,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/tests/goldens/store/cba2d89ecd4da07a6c1d84d912e185b52db5f93887a0f1ff1d80241cc05f3e9e.png",
+"additions": 1,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/tests/goldens/store/conversation-1.md",
+"additions": 79,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/tests/goldens/store/log.jsonl",
+"additions": 28,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/tests/pause_revoke.rs",
+"additions": 98,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/tests/prompts.rs",
+"additions": 165,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/tests/refusals.rs",
+"additions": 195,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/tests/resume.rs",
+"additions": 168,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/tests/settings.rs",
+"additions": 67,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/tests/stop.rs",
+"additions": 1055,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/tests/store.rs",
+"additions": 428,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/tests/store_export.rs",
+"additions": 340,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/tests/tools.rs",
+"additions": 234,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-agent/tests/tx.rs",
+"additions": 242,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/src/lib.rs",
+"additions": 4,
+"deletions": 2
+},
+{
+"path": "crates/omuzaki-mcp/src/render.rs",
+"additions": 20,
+"deletions": 0
+},
+{
+"path": "docs/licensing/deps/agent-store-golden-images.toml",
+"additions": 11,
+"deletions": 0
+},
+{
+"path": "docs/licensing/deps/base64.toml",
+"additions": 1,
+"deletions": 1
+},
+{
+"path": "docs/licensing/deps/blake3.toml",
+"additions": 1,
+"deletions": 1
+},
+{
+"path": "docs/licensing/deps/rmcp.toml",
+"additions": 1,
+"deletions": 1
+}
+],
+"headRefName": "cloud/1108-assistant-host",
+"isDraft": false,
+"labels": [
+{
+"id": "LA_kwDOVI1pOc8AAAAC9bb4vQ",
+"name": "outcome:agents",
+"description": "Outcome audit bucket 2026-10-15",
+"color": "8957e5"
+}
+],
+"number": 2125
+},
+{
+"baseRefName": "main",
+"closingIssuesReferences": [
+{
+"id": "I_kwDOVI1pOc8AAAABXKoeMw",
+"number": 124,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/124"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXKo0Xg",
+"number": 129,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/129"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXKt2Og",
+"number": 197,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/197"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXKt6ug",
+"number": 198,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/198"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXK8GDg",
+"number": 386,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/386"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXLTX_Q",
+"number": 706,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/706"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXiDGEg",
+"number": 2082,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/2082"
+}
+],
+"createdAt": "2026-10-15T22:05:46Z",
+"files": [
+{
+"path": ".changes/cloud-2082-cloth-runtime.md",
+"additions": 7,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char-api/src/kind.rs",
+"additions": 1,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-char-api/src/runtime.rs",
+"additions": 24,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char-api/tests/runtime_fork.rs",
+"additions": 1,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-char-mock/src/live.rs",
+"additions": 1,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-char-mock/tests/character.rs",
+"additions": 7,
+"deletions": 12
+},
+{
+"path": "crates/omuzaki-char-mock/tests/pipeline.rs",
+"additions": 1,
+"deletions": 6
+},
+{
+"path": "crates/omuzaki-char/benches/cloth_contact.rs",
+"additions": 3,
+"deletions": 2
+},
+{
+"path": "crates/omuzaki-char/benches/cloth_runtime.rs",
+"additions": 184,
+"deletions": 2
+},
+{
+"path": "crates/omuzaki-char/evidence.toml",
+"additions": 9,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/src/cloth/bake.rs",
+"additions": 302,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-char/src/cloth/collide.rs",
+"additions": 640,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-char/src/cloth/contact.rs",
+"additions": 216,
+"deletions": 5
+},
+{
+"path": "crates/omuzaki-char/src/cloth/quality.rs",
+"additions": 246,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-char/src/cloth/runtime.rs",
+"additions": 1370,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-char/tests/builder.rs",
+"additions": 2,
+"deletions": 7
+},
+{
+"path": "crates/omuzaki-char/tests/cloth_bake.rs",
+"additions": 118,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/tests/cloth_collide.rs",
+"additions": 278,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/tests/cloth_contact.rs",
+"additions": 97,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/tests/cloth_contact_replay.rs",
+"additions": 5,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-char/tests/cloth_lod.rs",
+"additions": 206,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/tests/cloth_quality.rs",
+"additions": 162,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/tests/cloth_runtime.rs",
+"additions": 454,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/tests/cloth_runtime/skirt.rs",
+"additions": 199,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-stage/src/frame/face.rs",
+"additions": 2,
+"deletions": 2
+},
+{
+"path": "crates/omuzaki-stage/src/frame/mod.rs",
+"additions": 1,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-test-char/tests/cloth_bake_springs.rs",
+"additions": 190,
+"deletions": 0
+}
+],
+"headRefName": "cloud/2082-cloth-runtime",
+"isDraft": true,
+"labels": [
+{
+"id": "LA_kwDOVI1pOc8AAAAC9bb3gg",
+"name": "outcome:design",
+"description": "Outcome audit bucket 2026-10-15",
+"color": "1f6feb"
+}
+],
+"number": 2121
+},
+{
+"baseRefName": "main",
+"closingIssuesReferences": [
+{
+"id": "I_kwDOVI1pOc8AAAABXKlYug",
+"number": 79,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/79"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXLZ40Q",
+"number": 800,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/800"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXUchDg",
+"number": 1619,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1619"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXW28Ig",
+"number": 1703,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1703"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXaxXpg",
+"number": 1849,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1849"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXeClbA",
+"number": 1961,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1961"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXiRmVg",
+"number": 2100,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/2100"
+}
+],
+"createdAt": "2026-10-15T21:47:11Z",
+"files": [
+{
+"path": ".changes/cloud-2100-rig-runtime.md",
+"additions": 13,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-anim-api/src/spring.rs",
+"additions": 8,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-char-api/src/drivers.rs",
+"additions": 4,
+"deletions": 2
+},
+{
+"path": "crates/omuzaki-io-ops/src/convert/drivers.rs",
+"additions": 135,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/src/convert/mod.rs",
+"additions": 1,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/src/gather/avatar.rs",
+"additions": 3,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/tests/gather_drivers.rs",
+"additions": 70,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-rig/benches/constraint.rs",
+"additions": 2,
+"deletions": 2
+},
+{
+"path": "crates/omuzaki-rig/benches/spring.rs",
+"additions": 17,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-rig/src/constraint.rs",
+"additions": 96,
+"deletions": 4
+},
+{
+"path": "crates/omuzaki-rig/src/full.rs",
+"additions": 38,
+"deletions": 10
+},
+{
+"path": "crates/omuzaki-rig/src/ik/feet.rs",
+"additions": 1,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-rig/src/ik/targets.rs",
+"additions": 1,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-rig/src/skin.rs",
+"additions": 1,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-rig/src/spring/mod.rs",
+"additions": 28,
+"deletions": 7
+},
+{
+"path": "crates/omuzaki-rig/src/spring/reference.rs",
+"additions": 36,
+"deletions": 9
+},
+{
+"path": "crates/omuzaki-rig/src/spring/solver.rs",
+"additions": 104,
+"deletions": 16
+},
+{
+"path": "crates/omuzaki-rig/src/spring/testdata/three_vrm.txt",
+"additions": 303,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-rig/src/spring/testdata/three_vrm_golden.mjs",
+"additions": 43,
+"deletions": 13
+},
+{
+"path": "crates/omuzaki-rig/src/spring/tests.rs",
+"additions": 302,
+"deletions": 15
+},
+{
+"path": "crates/omuzaki-rig/tests/constraint.rs",
+"additions": 247,
+"deletions": 3
+},
+{
+"path": "crates/omuzaki-rig/tests/constraint_alloc.rs",
+"additions": 2,
+"deletions": 2
+},
+{
+"path": "crates/omuzaki-rig/tests/full.rs",
+"additions": 52,
+"deletions": 5
+},
+{
+"path": "crates/omuzaki-rig/tests/spring_alloc.rs",
+"additions": 12,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-stage/src/frame/face.rs",
+"additions": 19,
+"deletions": 10
+},
+{
+"path": "crates/omuzaki-stage/src/frame/mod.rs",
+"additions": 24,
+"deletions": 10
+},
+{
+"path": "crates/omuzaki-stage/src/frame/rig.rs",
+"additions": 50,
+"deletions": 10
+},
+{
+"path": "crates/omuzaki-stage/tests/frame_drivers.rs",
+"additions": 170,
+"deletions": 0
+},
+{
+"path": "docs/design/physics-dial-wind.md",
+"additions": 218,
+"deletions": 0
+}
+],
+"headRefName": "cloud/2100-rig-runtime",
+"isDraft": false,
+"labels": [
+{
+"id": "LA_kwDOVI1pOc8AAAAC9FWpAQ",
+"name": "hold",
+"description": "Do not enqueue",
+"color": "b60205"
+},
+{
+"id": "LA_kwDOVI1pOc8AAAAC9L5u_Q",
+"name": "needs-rebase",
+"description": "Merge conflict with main: rebase or merge main",
+"color": "B60205"
+},
+{
+"id": "LA_kwDOVI1pOc8AAAAC9bb3gg",
+"name": "outcome:design",
+"description": "Outcome audit bucket 2026-10-15",
+"color": "1f6feb"
+}
+],
+"number": 2113
+},
+{
+"baseRefName": "main",
+"closingIssuesReferences": [
+{
+"id": "I_kwDOVI1pOc8AAAABXMSzWQ",
+"number": 991,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/991"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXMS7Rg",
+"number": 992,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/992"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXMTDDA",
+"number": 993,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/993"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXMTNFQ",
+"number": 994,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/994"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXMTXGA",
+"number": 995,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/995"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXMTfNQ",
+"number": 996,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/996"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXMTnlQ",
+"number": 997,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/997"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXMTvzQ",
+"number": 998,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/998"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXP5rwA",
+"number": 1452,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1452"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXh79XQ",
+"number": 2063,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/2063"
+}
+],
+"createdAt": "2026-10-15T21:41:59Z",
+"files": [
+{
+"path": "Cargo.lock",
+"additions": 35,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-api/Cargo.toml",
+"additions": 34,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-api/src/candidate.rs",
+"additions": 115,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-api/src/config.rs",
+"additions": 112,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-api/src/connector.rs",
+"additions": 182,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-api/src/estimate.rs",
+"additions": 417,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-api/src/id.rs",
+"additions": 185,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-api/src/lib.rs",
+"additions": 87,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-api/src/manifest.rs",
+"additions": 673,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-api/src/net.rs",
+"additions": 113,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-api/src/output.rs",
+"additions": 293,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-api/src/params.rs",
+"additions": 188,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-api/src/registry.rs",
+"additions": 68,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-api/src/request.rs",
+"additions": 684,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-api/src/rights.rs",
+"additions": 109,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-api/src/service.rs",
+"additions": 221,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-api/src/tray.rs",
+"additions": 222,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-api/tests/estimate.rs",
+"additions": 251,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-api/tests/manifest_toml.rs",
+"additions": 316,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-api/tests/register.rs",
+"additions": 171,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-api/tests/request.rs",
+"additions": 266,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-api/tests/tray.rs",
+"additions": 264,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-mock/Cargo.toml",
+"additions": 30,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-mock/connectors/mock-3d.connector.toml",
+"additions": 37,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-mock/connectors/mock-dcc.connector.toml",
+"additions": 30,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-mock/connectors/mock-image-paid.connector.toml",
+"additions": 37,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-mock/connectors/mock-image.connector.toml",
+"additions": 30,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-mock/connectors/mock-motion.connector.toml",
+"additions": 30,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-mock/connectors/mock-music.connector.toml",
+"additions": 30,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-mock/connectors/mock-texture.connector.toml",
+"additions": 30,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-mock/connectors/mock-voice.connector.toml",
+"additions": 37,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-mock/src/config.rs",
+"additions": 28,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-mock/src/conformance.rs",
+"additions": 691,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-mock/src/fake.rs",
+"additions": 192,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-mock/src/gen_audio.rs",
+"additions": 132,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-mock/src/gen_image.rs",
+"additions": 81,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-mock/src/gen_mesh.rs",
+"additions": 73,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-mock/src/gen_motion.rs",
+"additions": 81,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-mock/src/gen_texture.rs",
+"additions": 38,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-mock/src/inputs.rs",
+"additions": 33,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-mock/src/lib.rs",
+"additions": 45,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-mock/src/meter.rs",
+"additions": 48,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-mock/src/pace.rs",
+"additions": 34,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-mock/src/registered.rs",
+"additions": 102,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-mock/src/script.rs",
+"additions": 31,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-mock/tests/common/mod.rs",
+"additions": 93,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-mock/tests/conformance.rs",
+"additions": 373,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-mock/tests/doubles.rs",
+"additions": 73,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-mock/tests/fake.rs",
+"additions": 169,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-connect-mock/tests/generators.rs",
+"additions": 219,
+"deletions": 0
+},
+{
+"path": "docs/design/connectors.md",
+"additions": 1,
+"deletions": 1
+},
+{
+"path": "docs/licensing/deps/omuzaki-mock-connector.toml",
+"additions": 17,
+"deletions": 0
+}
+],
+"headRefName": "cloud/991-connect-contracts",
+"isDraft": false,
+"labels": [],
+"number": 2098
+},
+{
+"baseRefName": "main",
+"closingIssuesReferences": [
+{
+"id": "I_kwDOVI1pOc8AAAABXKtLhQ",
+"number": 187,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/187"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXKtQcw",
+"number": 188,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/188"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXKtUoA",
+"number": 189,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/189"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXiBlOA",
+"number": 2081,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/2081"
+}
+],
+"createdAt": "2026-10-15T21:32:42Z",
+"files": [
+{
+"path": ".changes/cloud-2081-garment-framework.md",
+"additions": 7,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/evidence/garment-framework.toml",
+"additions": 15,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/src/body/fit.rs",
+"additions": 605,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/src/body/mod.rs",
+"additions": 2,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/src/body/part.rs",
+"additions": 8,
+"deletions": 5
+},
+{
+"path": "crates/omuzaki-char/src/outfit/common.rs",
+"additions": 693,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-char/src/outfit/loft.rs",
+"additions": 599,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-char/src/outfit/mod.rs",
+"additions": 28,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/src/outfit/trim/braid.rs",
+"additions": 227,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-char/src/outfit/trim/buttons.rs",
+"additions": 242,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-char/src/outfit/trim/chain.rs",
+"additions": 285,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-char/src/outfit/trim/clasp.rs",
+"additions": 355,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-char/src/outfit/trim/decal.rs",
+"additions": 268,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-char/src/outfit/trim/lace.rs",
+"additions": 201,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-char/src/outfit/trim/mod.rs",
+"additions": 894,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-char/src/outfit/trim/piping.rs",
+"additions": 400,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-char/tests/outfit_framework.rs",
+"additions": 1200,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/tests/outfit_trim_a.rs",
+"additions": 710,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/tests/outfit_trim_b.rs",
+"additions": 560,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-test-char/tests/outfit_trim_chain_clasp_decal_lace_parity.rs",
+"additions": 375,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-test-char/tests/outfit_trim_piping_braid_buttons_parity.rs",
+"additions": 402,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-test-char/tests/support/outfit_conformance.rs",
+"additions": 1052,
+"deletions": 0
+}
+],
+"headRefName": "cloud/2081-garment-framework",
+"isDraft": false,
+"labels": [
+{
+"id": "LA_kwDOVI1pOc8AAAAC9FWpAQ",
+"name": "hold",
+"description": "Do not enqueue",
+"color": "b60205"
+},
+{
+"id": "LA_kwDOVI1pOc8AAAAC9FWqkA",
+"name": "visual",
+"description": "Needs visual sign-off from rendered evidence",
+"color": "fbca04"
+},
+{
+"id": "LA_kwDOVI1pOc8AAAAC9bb3gg",
+"name": "outcome:design",
+"description": "Outcome audit bucket 2026-10-15",
+"color": "1f6feb"
+}
+],
+"number": 2095
+},
+{
+"baseRefName": "main",
+"closingIssuesReferences": [
+{
+"id": "I_kwDOVI1pOc8AAAABXgo9eg",
+"number": 2031,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/2031"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXgyXZQ",
+"number": 2038,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/2038"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXiufzA",
+"number": 2136,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/2136"
+}
+],
+"createdAt": "2026-10-15T21:18:17Z",
+"files": [
+{
+"path": "Cargo.lock",
+"additions": 1,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-io-ops/src/ops/licence/derive.rs",
+"additions": 57,
+"deletions": 84
+},
+{
+"path": "crates/omuzaki-io-ops/src/ops/licence/terms.rs",
+"additions": 9,
+"deletions": 126
+},
+{
+"path": "crates/omuzaki-io-ops/tests/licence_applied.rs",
+"additions": 13,
+"deletions": 23
+},
+{
+"path": "crates/omuzaki-library-api/Cargo.toml",
+"additions": 1,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-library-api/src/check.rs",
+"additions": 19,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-library-api/src/lib.rs",
+"additions": 6,
+"deletions": 2
+},
+{
+"path": "crates/omuzaki-library-api/src/manifest.rs",
+"additions": 52,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-library-api/src/publisher.rs",
+"additions": 95,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-library-api/src/record.rs",
+"additions": 56,
+"deletions": 2
+},
+{
+"path": "crates/omuzaki-library-api/src/rights.rs",
+"additions": 169,
+"deletions": 3
+},
+{
+"path": "crates/omuzaki-library-api/src/rights_join.rs",
+"additions": 436,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-library-api/tests/contract.rs",
+"additions": 95,
+"deletions": 1
+}
+],
+"headRefName": "cloud/2031-library-api-market-contract",
+"isDraft": false,
+"labels": [],
+"number": 2079
+},
+{
+"baseRefName": "main",
+"closingIssuesReferences": [
+{
+"id": "I_kwDOVI1pOc8AAAABXMeVGg",
+"number": 1082,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1082"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXMmjjA",
+"number": 1145,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1145"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXMu7jw",
+"number": 1210,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1210"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXMvD8g",
+"number": 1211,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1211"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXM5FIQ",
+"number": 1291,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1291"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXM5Nkw",
+"number": 1292,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1292"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXM-EgA",
+"number": 1331,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1331"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXM_uag",
+"number": 1353,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1353"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXM_2kg",
+"number": 1354,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1354"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXTgLew",
+"number": 1550,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1550"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXTmk6g",
+"number": 1566,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1566"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXTmlaQ",
+"number": 1567,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1567"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXXoIyg",
+"number": 1745,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1745"
+},
+{
+"id": "I_kwDOVI1pOc8AAAABXiSGNA",
+"number": 2101,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/2101"
+}
+],
+"createdAt": "2026-10-15T17:07:21Z",
+"files": [
+{
+"path": "Cargo.lock",
+"additions": 808,
+"deletions": 2
+},
+{
+"path": "Cargo.toml",
+"additions": 8,
+"deletions": 0
+},
+{
+"path": "crates/README.md",
+"additions": 8,
+"deletions": 5
+},
+{
+"path": "crates/omuzaki-identity-api/src/domain.rs",
+"additions": 5,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-identity-api/tests/plugin_domain.rs",
+"additions": 61,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops-api/src/actor.rs",
+"additions": 9,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-ops-api/src/jobs.rs",
+"additions": 21,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops-api/src/session.rs",
+"additions": 19,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-ops-api/tests/cause_kinds.rs",
+"additions": 50,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops-api/tests/jobs.rs",
+"additions": 22,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-ops-api/tests/sessions_contract.rs",
+"additions": 28,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin-api/Cargo.toml",
+"additions": 34,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin-api/src/error.rs",
+"additions": 180,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin-api/src/grants.rs",
+"additions": 124,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin-api/src/lib.rs",
+"additions": 71,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin-api/src/limits.rs",
+"additions": 193,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin-api/src/manifest.rs",
+"additions": 785,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin-api/src/service.rs",
+"additions": 110,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin-api/src/setting_schema.rs",
+"additions": 321,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin-api/src/state.rs",
+"additions": 310,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin-api/src/summary.rs",
+"additions": 197,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin-api/tests/manifest.rs",
+"additions": 191,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin-api/tests/summary.rs",
+"additions": 121,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin-api/tests/wit.rs",
+"additions": 49,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin-api/wit/omuzaki-plugin.wit",
+"additions": 88,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin-mock/Cargo.toml",
+"additions": 23,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin-mock/src/conformance.rs",
+"additions": 425,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin-mock/src/fake.rs",
+"additions": 605,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin-mock/src/guest.rs",
+"additions": 126,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin-mock/src/lib.rs",
+"additions": 100,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin-mock/src/sessions.rs",
+"additions": 203,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin-mock/tests/fake.rs",
+"additions": 113,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin/Cargo.toml",
+"additions": 60,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin/benches/host.rs",
+"additions": 132,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin/benches/install.rs",
+"additions": 79,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin/src/bridge.rs",
+"additions": 117,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin/src/cache.rs",
+"additions": 99,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin/src/engine.rs",
+"additions": 110,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin/src/host.rs",
+"additions": 552,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin/src/imports.rs",
+"additions": 266,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin/src/install.rs",
+"additions": 264,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin/src/instance.rs",
+"additions": 462,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin/src/lib.rs",
+"additions": 36,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin/src/limits.rs",
+"additions": 309,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin/src/load.rs",
+"additions": 190,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin/src/log.rs",
+"additions": 269,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin/src/package.rs",
+"additions": 437,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin/src/walk.rs",
+"additions": 295,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin/src/wasi.rs",
+"additions": 444,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin/src/worker.rs",
+"additions": 121,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin/tests/common/mod.rs",
+"additions": 204,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin/tests/conformance.rs",
+"additions": 149,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin/tests/engine.rs",
+"additions": 560,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin/tests/fixtures/golden-package/a.txt",
+"additions": 1,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin/tests/fixtures/golden-package/l10n/ja/\u00fcbersicht.ftl",
+"additions": 1,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin/tests/fixtures/golden-package/nested/deeper/b.txt",
+"additions": 1,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin/tests/fixtures/golden-package/plugin.sig",
+"additions": 1,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin/tests/log.rs",
+"additions": 163,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin/tests/package.rs",
+"additions": 512,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin/tests/ticker.rs",
+"additions": 34,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-plugin/tests/wasi.rs",
+"additions": 145,
+"deletions": 0
+},
+{
+"path": "docs/decisions/0042-identity.md",
+"additions": 2,
+"deletions": 0
+},
+{
+"path": "docs/licensing/deps/caseless.toml",
+"additions": 8,
+"deletions": 0
+},
+{
+"path": "docs/licensing/deps/chacha20.toml",
+"additions": 8,
+"deletions": 0
+},
+{
+"path": "docs/licensing/deps/wasmparser.toml",
+"additions": 8,
+"deletions": 0
+},
+{
+"path": "docs/licensing/deps/wasmtime.toml",
+"additions": 5,
+"deletions": 3
+},
+{
+"path": "docs/licensing/deps/wat.toml",
+"additions": 8,
+"deletions": 0
+},
+{
+"path": "docs/licensing/deps/wit-parser.toml",
+"additions": 8,
+"deletions": 0
+},
+{
+"path": "xtask/src/affected.rs",
+"additions": 1,
+"deletions": 0
+},
+{
+"path": "xtask/src/lint_deps.rs",
+"additions": 146,
+"deletions": 8
+},
+{
+"path": "xtask/src/workspace.rs",
+"additions": 39,
+"deletions": 1
+},
+{
+"path": "xtask/tests/lint_deps.rs",
+"additions": 57,
+"deletions": 0
+}
+],
+"headRefName": "cloud/1082-plugin-api",
+"isDraft": false,
+"labels": [
+{
+"id": "LA_kwDOVI1pOc8AAAAC9L5u_Q",
+"name": "needs-rebase",
+"description": "Merge conflict with main: rebase or merge main",
+"color": "B60205"
+}
+],
+"number": 1999
+},
+{
+"baseRefName": "main",
+"closingIssuesReferences": [
+{
+"id": "I_kwDOVI1pOc8AAAABXLkqVQ",
+"number": 959,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/959"
+}
+],
+"createdAt": "2026-10-15T16:47:12Z",
+"files": [
+{
+"path": "docs/research/2026-10-windows-gpu-inference-amd-intel.md",
+"additions": 404,
+"deletions": 0
+}
+],
+"headRefName": "local/research-959",
+"isDraft": false,
+"labels": [
+{
+"id": "LA_kwDOVI1pOc8AAAAC9Cey8Q",
+"name": "area:models",
+"description": "Area: models",
+"color": "c2e0c6"
+},
+{
+"id": "LA_kwDOVI1pOc8AAAAC9Cfjdw",
+"name": "research",
+"description": "A question to answer before building",
+"color": "5319e7"
+},
+{
+"id": "LA_kwDOVI1pOc8AAAAC9bb4CA",
+"name": "outcome:stream",
+"description": "Outcome audit bucket 2026-10-15",
+"color": "d73a4a"
+}
+],
+"number": 1989
+},
+{
+"baseRefName": "main",
+"closingIssuesReferences": [
+{
+"id": "I_kwDOVI1pOc8AAAABXLHFeg",
+"number": 537,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/537"
+}
+],
+"createdAt": "2026-10-15T16:44:18Z",
+"files": [
+{
+"path": "docs/research/2026-10-gpl-free-tts.md",
+"additions": 410,
+"deletions": 0
+}
+],
+"headRefName": "local/research-537",
+"isDraft": false,
+"labels": [
+{
+"id": "LA_kwDOVI1pOc8AAAAC9CeQGw",
+"name": "area:ai-performer",
+"description": "Area: ai-performer",
+"color": "c2e0c6"
+},
+{
+"id": "LA_kwDOVI1pOc8AAAAC9Ceq7w",
+"name": "area:licensing",
+"description": "Area: licensing",
+"color": "c2e0c6"
+},
+{
+"id": "LA_kwDOVI1pOc8AAAAC9Cfjdw",
+"name": "research",
+"description": "A question to answer before building",
+"color": "5319e7"
+},
+{
+"id": "LA_kwDOVI1pOc8AAAAC9bb6HQ",
+"name": "infra",
+"description": "Outcome audit bucket 2026-10-15",
+"color": "6e7781"
+}
+],
+"number": 1987
+},
+{
+"baseRefName": "main",
+"closingIssuesReferences": [
+{
+"id": "I_kwDOVI1pOc8AAAABXP8DWA",
+"number": 1470,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1470"
+}
+],
+"createdAt": "2026-10-15T16:42:41Z",
+"files": [
+{
+"path": "docs/research/2026-10-hosted-music-sfx-generators.md",
+"additions": 273,
+"deletions": 0
+}
+],
+"headRefName": "local/research-1470",
+"isDraft": false,
+"labels": [
+{
+"id": "LA_kwDOVI1pOc8AAAAC9CeaTg",
+"name": "area:connectors",
+"description": "Area: connectors",
+"color": "c2e0c6"
+},
+{
+"id": "LA_kwDOVI1pOc8AAAAC9Ceq7w",
+"name": "area:licensing",
+"description": "Area: licensing",
+"color": "c2e0c6"
+},
+{
+"id": "LA_kwDOVI1pOc8AAAAC9Cfjdw",
+"name": "research",
+"description": "A question to answer before building",
+"color": "5319e7"
+}
+],
+"number": 1984
+},
+{
+"baseRefName": "main",
+"closingIssuesReferences": [
+{
+"id": "I_kwDOVI1pOc8AAAABXcX1PA",
+"number": 1887,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1887"
+}
+],
+"createdAt": "2026-10-15T16:42:11Z",
+"files": [
+{
+"path": "docs/licensing/deps/mediapipe-face-landmarker.toml",
+"additions": 1,
+"deletions": 1
+},
+{
+"path": "docs/research/2026-10-face-model-licences.md",
+"additions": 175,
+"deletions": 0
+}
+],
+"headRefName": "local/research-1887",
+"isDraft": false,
+"labels": [
+{
+"id": "LA_kwDOVI1pOc8AAAAC9Cfjdw",
+"name": "research",
+"description": "A question to answer before building",
+"color": "5319e7"
+},
+{
+"id": "LA_kwDOVI1pOc8AAAAC9bb4CA",
+"name": "outcome:stream",
+"description": "Outcome audit bucket 2026-10-15",
+"color": "d73a4a"
+}
+],
+"number": 1982
+},
+{
+"baseRefName": "main",
+"closingIssuesReferences": [
+{
+"id": "I_kwDOVI1pOc8AAAABXMizMA",
+"number": 1117,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1117"
+}
+],
+"createdAt": "2026-10-15T16:42:08Z",
+"files": [
+{
+"path": "docs/research/2026-10-layered-psd-round-trip.md",
+"additions": 248,
+"deletions": 0
+}
+],
+"headRefName": "local/research-1117",
+"isDraft": false,
+"labels": [
+{
+"id": "LA_kwDOVI1pOc8AAAAC9CeaTg",
+"name": "area:connectors",
+"description": "Area: connectors",
+"color": "c2e0c6"
+},
+{
+"id": "LA_kwDOVI1pOc8AAAAC9Celhg",
+"name": "area:io",
+"description": "",
+"color": "ededed"
+},
+{
+"id": "LA_kwDOVI1pOc8AAAAC9Ceq7w",
+"name": "area:licensing",
+"description": "Area: licensing",
+"color": "c2e0c6"
+},
+{
+"id": "LA_kwDOVI1pOc8AAAAC9Cfjdw",
+"name": "research",
+"description": "A question to answer before building",
+"color": "5319e7"
+}
+],
+"number": 1981
+},
+{
+"baseRefName": "main",
+"closingIssuesReferences": [
+{
+"id": "I_kwDOVI1pOc8AAAABXLeuYg",
+"number": 873,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/873"
+}
+],
+"createdAt": "2026-10-15T16:31:27Z",
+"files": [
+{
+"path": "crates/omuzaki-mcp/src/jobs.rs",
+"additions": 209,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/src/lib.rs",
+"additions": 1,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-mcp/src/render.rs",
+"additions": 16,
+"deletions": 4
+},
+{
+"path": "crates/omuzaki-mcp/src/server.rs",
+"additions": 16,
+"deletions": 4
+},
+{
+"path": "crates/omuzaki-mcp/src/session.rs",
+"additions": 117,
+"deletions": 26
+},
+{
+"path": "crates/omuzaki-mcp/tests/mcp_jobs.rs",
+"additions": 319,
+"deletions": 0
+}
+],
+"headRefName": "cloud/873-mcp-jobs",
+"isDraft": true,
+"labels": [
+{
+"id": "LA_kwDOVI1pOc8AAAAC9bb4vQ",
+"name": "outcome:agents",
+"description": "Outcome audit bucket 2026-10-15",
+"color": "8957e5"
+}
+],
+"number": 1973
+},
+{
+"baseRefName": "main",
+"closingIssuesReferences": [
+{
+"id": "I_kwDOVI1pOc8AAAABXLdJ4w",
+"number": 847,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/847"
+}
+],
+"createdAt": "2026-10-15T16:25:32Z",
+"files": [
+{
+"path": "Cargo.lock",
+"additions": 7,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-setup/Cargo.toml",
+"additions": 19,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-setup/src/flow.rs",
+"additions": 825,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-setup/src/flow/invariants.rs",
+"additions": 158,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-setup/src/lib.rs",
+"additions": 19,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-setup/src/ops.rs",
+"additions": 107,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-setup/src/probe.rs",
+"additions": 123,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-setup/src/progress.rs",
+"additions": 166,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-setup/tests/flow.rs",
+"additions": 1191,
+"deletions": 0
+}
+],
+"headRefName": "cloud/847-setup-flow",
+"isDraft": false,
+"labels": [
+{
+"id": "LA_kwDOVI1pOc8AAAAC9L5u_Q",
+"name": "needs-rebase",
+"description": "Merge conflict with main: rebase or merge main",
+"color": "B60205"
+},
+{
+"id": "LA_kwDOVI1pOc8AAAAC9bb4CA",
+"name": "outcome:stream",
+"description": "Outcome audit bucket 2026-10-15",
+"color": "d73a4a"
+}
+],
+"number": 1956
+},
+{
+"baseRefName": "main",
+"closingIssuesReferences": [
+{
+"id": "I_kwDOVI1pOc8AAAABXLUvMg",
+"number": 726,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/726"
+}
+],
+"createdAt": "2026-10-15T16:18:57Z",
+"files": [
+{
+"path": "Cargo.lock",
+"additions": 83,
+"deletions": 5
+},
+{
+"path": "crates/omuzaki-vts/Cargo.toml",
+"additions": 12,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-vts/src/lib.rs",
+"additions": 4,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-vts/src/testing/clock.rs",
+"additions": 28,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-vts/src/testing/mod.rs",
+"additions": 308,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-vts/src/testing/state.rs",
+"additions": 559,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-vts/src/testing/tests.rs",
+"additions": 533,
+"deletions": 0
+},
+{
+"path": "docs/licensing/deps/tungstenite.toml",
+"additions": 8,
+"deletions": 0
+}
+],
+"headRefName": "cloud/726-vts-mock-server",
+"isDraft": false,
+"labels": [],
+"number": 1946
+},
+{
+"baseRefName": "main",
+"closingIssuesReferences": [
+{
+"id": "I_kwDOVI1pOc8AAAABXKrAAw",
+"number": 157,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/157"
+}
+],
+"createdAt": "2026-10-15T16:16:53Z",
+"files": [
+{
+"path": ".changes/cloud-157-mitten-hands.md",
+"additions": 8,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/evidence/hands.toml",
+"additions": 13,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-char/src/body/hands/mitten.rs",
+"additions": 58,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-char/src/body/hands/mod.rs",
+"additions": 496,
+"deletions": 7
+},
+{
+"path": "crates/omuzaki-char/src/body/hands/simple.rs",
+"additions": 26,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-char/src/body/part.rs",
+"additions": 10,
+"deletions": 5
+},
+{
+"path": "crates/omuzaki-char/src/fit/solver.rs",
+"additions": 3,
+"deletions": 3
+},
+{
+"path": "crates/omuzaki-char/src/template/layout.rs",
+"additions": 9,
+"deletions": 1
+},
+{
+"path": "crates/omuzaki-char/tests/body.rs",
+"additions": 40,
+"deletions": 2
+},
+{
+"path": "crates/omuzaki-char/tests/fit.rs",
+"additions": 11,
+"deletions": 5
+},
+{
+"path": "crates/omuzaki-char/tests/hands_mitten.rs",
+"additions": 644,
+"deletions": 0
+},
+{
+"path": "crates/omuzaki-test-char/tests/char_hands_mitten_simple_parity.rs",
+"additions": 91,
+"deletions": 0
+}
+],
+"headRefName": "cloud/157-mitten-hands",
+"isDraft": false,
+"labels": [
+{
+"id": "LA_kwDOVI1pOc8AAAAC9FWqkA",
+"name": "visual",
+"description": "Needs visual sign-off from rendered evidence",
+"color": "fbca04"
+},
+{
+"id": "LA_kwDOVI1pOc8AAAAC9bb3gg",
+"name": "outcome:design",
+"description": "Outcome audit bucket 2026-10-15",
+"color": "1f6feb"
+}
+],
+"number": 1944
+},
+{
+"baseRefName": "main",
+"closingIssuesReferences": [
+{
+"id": "I_kwDOVI1pOc8AAAABXdEPpg",
+"number": 1925,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/1925"
+}
+],
+"createdAt": "2026-10-15T16:14:41Z",
+"files": [
+{
+"path": ".github/workflows/spike-build.yml",
+"additions": 185,
+"deletions": 0
+},
+{
+"path": "spikes/broadcast-out/spout-out/csrc/compat/timeapi.h",
+"additions": 6,
+"deletions": 1
+}
+],
+"headRefName": "cloud/1925-spike-build",
+"isDraft": false,
+"labels": [
+{
+"id": "LA_kwDOVI1pOc8AAAAC9bb6HQ",
+"name": "infra",
+"description": "Outcome audit bucket 2026-10-15",
+"color": "6e7781"
+}
+],
+"number": 1941
+},
+{
+"baseRefName": "main",
+"closingIssuesReferences": [
+{
+"id": "I_kwDOVI1pOc8AAAABXiamqA",
+"number": 2115,
+"repository": {
+"id": "R_kgDOVI1pOQ",
+"name": "omuzaki",
+"owner": {
+"id": "O_kgDOFGdumQ",
+"login": "dazsel"
+}
+},
+"url": "https://github.com/dazsel/omuzaki/issues/2115"
+}
+],
+"createdAt": "2026-10-15T16:05:39Z",
+"files": [
+{
+"path": ".github/workflows/nightly.yml",
+"additions": 13,
+"deletions": 1
+},
+{
+"path": ".github/workflows/runtime-litert.yml",
+"additions": 3,
+"deletions": 2
+},
+{
+"path": "docs/decisions/0061-litert-runtime.md",
+"additions": 5,
+"deletions": 2
+},
+{
+"path": "docs/design/litert-runtime.md",
+"additions": 5,
+"deletions": 2
+},
+{
+"path": "tools/litert/build.py",
+"additions": 76,
+"deletions": 24
+},
+{
+"path": "tools/litert/omz_litert_plan.cc",
+"additions": 20,
+"deletions": 4
+},
+{
+"path": "tools/litert/pins.toml",
+"additions": 27,
+"deletions": 0
+},
+{
+"path": "tools/litert/test_build.py",
+"additions": 62,
+"deletions": 17
+}
+],
+"headRefName": "cloud/1747-litert-delegation-pins",
+"isDraft": false,
+"labels": [
+{
+"id": "LA_kwDOVI1pOc8AAAAC9CeJNQ",
+"name": "P1",
+"description": "Build second",
+"color": "fbca04"
+},
+{
+"id": "LA_kwDOVI1pOc8AAAAC9CfZmQ",
+"name": "lane:cloud",
+"description": "Assigned to the Claude cloud lane (builds off the owner's PC); see the pinned Cloud lane issue",
+"color": "5319E7"
+},
+{
+"id": "LA_kwDOVI1pOc8AAAAC9bb6HQ",
+"name": "infra",
+"description": "Outcome audit bucket 2026-10-15",
+"color": "6e7781"
+}
+],
+"number": 1938
+},
+{
+"baseRefName": "main",
+"closingIssuesReferences": [],
+"createdAt": "2026-10-14T23:50:04Z",
+"files": [
+{
+"path": "docs/research/2026-10-ai-disclosure.md",
+"additions": 119,
+"deletions": 0
+}
+],
+"headRefName": "cloud/1448-ai-disclosure",
+"isDraft": true,
+"labels": [],
+"number": 1513
+}
+],
+"claimed": [
+2158,
+2134,
+2104,
+2101,
+2100,
+2082,
+2081,
+2065,
+2038,
+2031,
+2025,
+2022,
+1925,
+1895,
+1887,
+1745,
+1729,
+1727,
+1728,
+1726,
+1724,
+1723,
+1722,
+1721,
+1720,
+1698,
+1674,
+1569,
+1567,
+1566,
+1550,
+1470,
+1452,
+1424,
+1395,
+1387,
+1371,
+1354,
+1353,
+1336,
+1331,
+1300,
+1299,
+1292,
+1291,
+1247,
+1226,
+1211,
+1210,
+1190,
+1153,
+1152,
+1145,
+1137,
+1134,
+1117,
+1112,
+1111,
+1109,
+1108,
+1100,
+1098,
+1094,
+1082,
+1076,
+1075,
+1040,
+1022,
+998,
+997,
+996,
+995,
+994,
+993,
+992,
+991,
+990,
+987,
+977,
+959,
+953,
+952,
+928,
+922,
+907,
+906,
+873,
+857,
+847,
+840,
+807,
+806,
+805,
+802,
+796,
+784,
+774,
+773,
+730,
+729,
+726,
+698,
+687,
+685,
+537,
+367,
+311,
+276,
+260,
+259,
+258,
+157,
+64
+]
+}
