@@ -21,6 +21,9 @@ use crate::gate::Gate;
 use crate::limits::Limits;
 use crate::server::McpServer;
 
+mod write_deadline;
+use write_deadline::WriteDeadline;
+
 /// How long open connections get to finish when the server shuts down.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 /// Pause after a failed `accept` (out of file descriptors, say) so a persistent error can't spin the loop.
@@ -71,6 +74,11 @@ pub struct HttpOptions {
     /// closed. It is a deadline for the whole body, not a gap between chunks, so a client can't hold a connection
     /// by dripping bytes. Defaults to 30 seconds. Must not be zero, and at most [`HttpOptions::MAX_TIMEOUT`].
     pub body_timeout: Duration,
+    /// How long a response may stay blocked on a client that has stopped reading it. Such a client fills the socket's
+    /// buffers and then holds its connection, and `max_connections` with it; once a write has been pending this long,
+    /// the connection is closed and the closure is logged. Only a blocked write counts, so a quiet event stream is
+    /// never cut off. Defaults to 30 seconds. Must not be zero, and at most [`HttpOptions::MAX_TIMEOUT`].
+    pub write_timeout: Duration,
 }
 
 impl Default for HttpOptions {
@@ -85,12 +93,13 @@ impl Default for HttpOptions {
             max_sessions_per_token: 32,
             max_body_bytes: 4 * 1024 * 1024,
             body_timeout: Duration::from_secs(30),
+            write_timeout: Duration::from_secs(30),
         }
     }
 }
 
 impl HttpOptions {
-    /// The longest any timeout (`idle_timeout`, `header_timeout`, `body_timeout`) may be: 24 hours. Deadlines are
+    /// The longest any timeout (`idle_timeout`, `header_timeout`, `body_timeout`, `write_timeout`) may be: 24 hours. Deadlines are
     /// built by adding a timeout to the current time, which overflows (and panics) for a huge one such as
     /// `Duration::MAX`, the obvious spelling of "no limit". A day is longer than any client should hold a
     /// connection or a session idle, and a port that really should not time sessions out can still use it.
@@ -159,6 +168,13 @@ impl HttpOptions {
         self
     }
 
+    /// Gives a response `write_timeout` to get past a client that has stopped reading it.
+    #[must_use]
+    pub fn with_write_timeout(mut self, write_timeout: Duration) -> Self {
+        self.write_timeout = write_timeout;
+        self
+    }
+
     fn check(&self) -> Result<(), ServerError> {
         // A zero here would not be a strict limit but a port that refuses every client, so it is an error to say so.
         let zero = |name: &'static str, value: String| {
@@ -173,10 +189,14 @@ impl HttpOptions {
         if self.body_timeout.is_zero() {
             return zero("body_timeout", format!("{:?}", self.body_timeout));
         }
+        if self.write_timeout.is_zero() {
+            return zero("write_timeout", format!("{:?}", self.write_timeout));
+        }
         let timeouts = [
             ("idle_timeout", self.idle_timeout),
             ("header_timeout", self.header_timeout),
             ("body_timeout", self.body_timeout),
+            ("write_timeout", self.write_timeout),
         ];
         for (name, timeout) in timeouts {
             if timeout > Self::MAX_TIMEOUT {
@@ -233,8 +253,14 @@ impl McpServer {
         let registry = Arc::new(Registry::new(self.clone(), options.allowed_origins, limits, cancel.clone()));
         let gate = Arc::new(Gate::new(Arc::clone(&registry), options.path.clone()));
         let connections = Arc::new(Semaphore::new(options.max_connections.clamp(1, Semaphore::MAX_PERMITS)));
-        let acceptor =
-            Acceptor { listener, gate, connections, header_timeout: options.header_timeout, cancel: cancel.clone() };
+        let acceptor = Acceptor {
+            listener,
+            gate,
+            connections,
+            header_timeout: options.header_timeout,
+            write_timeout: options.write_timeout,
+            cancel: cancel.clone(),
+        };
         let accept = tokio::spawn(acceptor.run());
         tracing::info!(
             %addr, path = %options.path, ?limits, max_connections = options.max_connections,
@@ -350,6 +376,7 @@ struct Acceptor {
     gate: Arc<Gate>,
     connections: Arc<Semaphore>,
     header_timeout: Duration,
+    write_timeout: Duration,
     cancel: CancellationToken,
 }
 
@@ -376,17 +403,23 @@ impl Acceptor {
                     }
                 },
             };
-            let (gate, cancel, header_timeout) =
-                (Arc::clone(&self.gate), self.cancel.child_token(), self.header_timeout);
+            let (gate, cancel) = (Arc::clone(&self.gate), self.cancel.child_token());
+            let (header_timeout, write_timeout) = (self.header_timeout, self.write_timeout);
             tokio::spawn(async move {
-                serve_connection(stream, gate, header_timeout, cancel).await;
+                serve_connection(stream, gate, header_timeout, write_timeout, cancel).await;
                 drop(permit);
             });
         }
     }
 }
 
-async fn serve_connection(stream: TcpStream, gate: Arc<Gate>, header_timeout: Duration, cancel: CancellationToken) {
+async fn serve_connection(
+    stream: TcpStream,
+    gate: Arc<Gate>,
+    header_timeout: Duration,
+    write_timeout: Duration,
+    cancel: CancellationToken,
+) {
     let service = service_fn(move |request| {
         let gate = Arc::clone(&gate);
         async move { Ok::<_, Infallible>(gate.handle(request).await) }
@@ -396,7 +429,10 @@ async fn serve_connection(stream: TcpStream, gate: Arc<Gate>, header_timeout: Du
         // hyper adds this to `std::time::Instant::now()`, which panics on overflow, so a huge value never reaches it
         // (`HttpOptions::check` refuses one; this keeps the guarantee local).
         .header_read_timeout(header_timeout.min(HttpOptions::MAX_TIMEOUT))
-        .serve_connection(TokioIo::new(stream), service);
+        .serve_connection(
+            TokioIo::new(WriteDeadline::new(stream, write_timeout.min(HttpOptions::MAX_TIMEOUT))),
+            service,
+        );
     tokio::pin!(connection);
     tokio::select! {
         outcome = connection.as_mut() => {
