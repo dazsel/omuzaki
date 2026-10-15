@@ -38,6 +38,8 @@ fn record(seq: u64) -> OpRecord {
 struct Spy {
     /// How many records the log holds.
     total: u64,
+    /// The most records one `log` call returns, however many were asked for; 0 means as many as asked.
+    page: usize,
     undos: AtomicUsize,
     redos: AtomicUsize,
     asked: Mutex<Vec<u64>>,
@@ -77,6 +79,7 @@ impl Runner for Spy {
         if let Ok(mut asked) = self.asked.lock() {
             asked.push(after_seq);
         }
+        let limit = if self.page == 0 { limit } else { limit.min(self.page) };
         let last = self.total.min(after_seq.saturating_add(limit as u64));
         Ok(((after_seq + 1)..=last).map(record).collect())
     }
@@ -381,6 +384,13 @@ fn the_history_panel_keeps_the_newest_records_of_a_long_log() {
         assert_eq!(records.first().map_or(0, |r| r.seq), first, "{total}");
         assert_eq!(records.last().map_or(0, |r| r.seq), total, "{total}: the last record is the newest");
     }
+}
+
+#[test]
+fn a_runner_that_returns_short_pages_still_gives_the_newest_records() {
+    let spy = Spy { total: 1200, page: 100, ..Spy::default() };
+    let records = super::app::newest_records(&spy, 500).expect("readable");
+    assert_eq!((records.first().map(|r| r.seq), records.last().map(|r| r.seq)), (Some(701), Some(1200)));
 }
 
 #[test]

@@ -608,8 +608,9 @@ fn dock_widths(plan: &Plan) -> impl Fn(&str) -> Option<f32> {
     }
 }
 
-/// The newest `keep` records of the runner's log. The log is read oldest first a page at a time, so a long project's
-/// History shows its latest changes and not its first.
+/// The newest `keep` records of the runner's log. The log is read oldest first a page at a time until an empty page
+/// (a runner may return fewer than it was asked for while more remain), so a long project's History shows its latest
+/// changes and not its first.
 pub(super) fn newest_records(runner: &dyn Runner, keep: usize) -> Result<Vec<OpRecord>, OpError> {
     let grants = Grants::person();
     let (mut after, mut newest) = (0, Vec::<OpRecord>::new());
@@ -619,12 +620,8 @@ pub(super) fn newest_records(runner: &dyn Runner, keep: usize) -> Result<Vec<OpR
         if last <= after {
             return Err(OpError::internal("the op log did not advance"));
         }
-        let full = page.len() >= keep;
         after = last;
         newest.extend(page);
         newest.drain(..newest.len().saturating_sub(keep));
-        if !full {
-            return Ok(newest);
-        }
     }
 }
