@@ -520,7 +520,9 @@ mod tests {
     fn paths(node: &Node, out: &mut Vec<String>) {
         out.push(node.path.clone());
         if let Kind::Section(children) = &node.kind {
-            children.iter().for_each(|c| paths(c, out));
+            for c in children {
+                paths(c, out);
+            }
         }
     }
 
