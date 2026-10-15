@@ -15,6 +15,7 @@ use egui::{
     WidgetType, accesskit, pos2, vec2,
 };
 
+use super::ids;
 use super::segmented::roving_target;
 use super::tooltip::{Tip, TipExt as _};
 use crate::ds::a11y;
@@ -25,6 +26,9 @@ use crate::ds::strings::Msg;
 use crate::ds::theme::{Ds, ds};
 use crate::ds::tokens::{Theme, radius, size, space};
 use crate::register_contrast;
+
+/// What a tab bar's salt is namespaced by (see [`ids`]).
+const KIND: &str = "ds.tab_bar";
 
 /// Which bar a tab belongs to: it sets the height.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -142,6 +146,8 @@ pub struct TabBarOutput {
 const PAD: f32 = 12.0;
 /// The close button's square, which is also its hit target (WCAG 2.5.8).
 const CLOSE: f32 = size::MIN_TARGET;
+/// What a closable tab reserves at its right edge: the close button and the gap between it and the edge.
+const CLOSE_RESERVE: f32 = CLOSE + space::S2;
 /// Narrowest a tab gets when the bar is short of room: its icon and an ellipsis.
 const MIN_TAB: f32 = 40.0;
 /// Diameter of the agent dot.
@@ -165,7 +171,7 @@ impl<'a> Show<'a> {
         let label = if tab.icon_only { 0.0 } else { paint::text_width(&self.ctx, tab.label, &self.ds.text.strong) };
         let icon = if tab.icon.is_some() { 16.0 + if tab.icon_only { 0.0 } else { space::S6 } } else { 0.0 };
         let dot = if tab.agent_active && !tab.icon_only { DOT + space::S6 } else { 0.0 };
-        let close = if tab.closable { CLOSE } else { PAD };
+        let close = if tab.closable { CLOSE_RESERVE } else { PAD };
         PAD + icon + dot + label + close
     }
 
@@ -186,7 +192,7 @@ impl<'a> Show<'a> {
             if wanted > room && wanted > floor { ((room - floor) / (wanted - floor)).clamp(0.0, 1.0) } else { 1.0 };
 
         let (rect, outer) = ui.allocate_exact_size(vec2(wanted.min(room), height), Sense::hover());
-        let gid = self.bar.salt.map_or(outer.id, |salt| ui.make_persistent_id(salt));
+        let gid = self.bar.salt.map_or(outer.id, |salt| ids::salted(ui, KIND, salt));
         let mut group = if self.bar.salt.is_some() { ui.interact(rect, gid, Sense::hover()) } else { outer };
         let rect = paint::snap(&self.ctx, rect);
         // The list's node first, so the tabs attach to it; `accessibility` below completes it once its size is known.
@@ -246,8 +252,7 @@ impl<'a> Show<'a> {
                 let hover = paint::fade(&self.ctx, &self.ds, gid.with(i).with("hover"), self.enabled && state.hot);
                 let cut = paint_tab(ui.painter(), &self.ds, area, tab, state, hover);
                 self.accessibility(&response, i, count, tab, state.selected);
-                if tab.closable && self.close_button(ui, gid.with(("close", i)), area, tab, state, response.has_focus())
-                {
+                if tab.closable && self.close_button(ui, response.id, area, tab, state, response.has_focus()) {
                     closed = Some(i);
                 }
                 if tab.icon_only || cut {
@@ -283,12 +288,23 @@ impl<'a> Show<'a> {
         response.has_focus() && self.ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Delete))
     }
 
-    /// The close button of a tab: drawn while the tab is selected, hovered or focused, a named node always. True when
+    /// The close button of tab `tab_id`: drawn while the tab is selected, hovered or focused, a named node always. True when
     /// it was pressed.
-    fn close_button(&self, ui: &mut Ui, id: Id, area: Rect, tab: &TabItem<'_>, state: TabState, focused: bool) -> bool {
+    fn close_button(
+        &self,
+        ui: &mut Ui,
+        tab_id: Id,
+        area: Rect,
+        tab: &TabItem<'_>,
+        state: TabState,
+        focused: bool,
+    ) -> bool {
+        let id = tab_id.with("close");
         let t = &self.ds.theme;
-        let button =
-            Rect::from_center_size(pos2(area.right() - CLOSE / 2.0 - space::S2, area.center().y), vec2(CLOSE, CLOSE));
+        let button = Rect::from_center_size(
+            pos2(area.right() - CLOSE_RESERVE + CLOSE / 2.0, area.center().y),
+            vec2(CLOSE, CLOSE),
+        );
         let sense = if self.enabled { Sense::CLICK } else { Sense::hover() };
         let response = ui.interact(button, id, sense);
         let visible = state.selected || state.hot || focused || response.hovered();
@@ -311,7 +327,8 @@ impl<'a> Show<'a> {
                 let name = self.ds.text_with(Msg::TabClose, &[("label", tab.label)]);
                 WidgetInfo::labeled(WidgetType::Button, self.enabled, name)
             },
-            |_| {},
+            // The button controls the tab it closes: the tree says whose close button it is.
+            |node| node.set_controls(vec![tab_id.accesskit_id()]),
         );
         self.enabled && response.clicked()
     }
@@ -384,7 +401,7 @@ fn paint_tab(painter: &egui::Painter, ds: &Ds, area: Rect, tab: &TabItem<'_>, st
         painter.circle_filled(pos2(x + DOT / 2.0, cy), DOT / 2.0, t.agent);
         x += DOT + space::S6;
     }
-    let right = area.right() - if tab.closable { CLOSE } else { PAD };
+    let right = area.right() - if tab.closable { CLOSE_RESERVE } else { PAD };
     let room = (right - x).max(0.0);
     let font = if state.selected { &ds.text.strong } else { &ds.text.body };
     let label = Rect::from_min_max(pos2(x, area.top()), pos2(x + room, area.bottom()));

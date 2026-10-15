@@ -1,20 +1,26 @@
-//! `licence.derive`: the licence record a character's parts allow, as a query.
+//! `licence.derive`: the licence record a character's parts and application records allow, as a query.
 //!
-//! The record is the **join of the parts' source rows** (`source.rs`), and it never guesses:
+//! The record is the **join of the parts' source rows and the application records' rights** (`source.rs`), and it never guesses:
 //! - every permission is the **strictest** of the parts: the commercial status (`no`, then `unknown`, then `ok`), the
 //!   private-test flag (any part makes the character private test material) and each of the nine flags of the file's
 //!   terms (`terms::AXES`);
 //! - the licence is every distinct licence joined with SPDX `AND` (all of them apply), and the authors and attributions
 //!   are the **union** of the parts', in part-id order;
 //! - a part with **no source row counts as the most restrictive part possible**: commercial `unknown`, the default
-//!   terms, licence `LicenseRef-Unknown`. A character with no parts joins to the same floor, so nothing is ever
-//!   derived from nothing. `complete` says whether every part had a row;
+//!   terms, licence `LicenseRef-Unknown`. A character with no parts joins to the same floor, whatever it has
+//!   applied, so nothing is ever derived from nothing. `complete` says whether every part had a row;
 //! - the **name** is the character's display name and the **licence URL** is the VRM Public License 1.0 page, the
 //!   document that defines the flags, which a VRM 1.0 file must name. Neither widens a right.
 //!
 //! Every part is joined, enabled or not: a variant can switch any part on, and one record serves every variant.
+//!
+//! The library's **application records** (`characters/<id>/applied/<app>`) are joined the same way, by the `rights`
+//! they carry: an item can change things that are not parts (the face, the palette), so without them a non-commercial
+//! face style would slip past the gate. Each record is a named contribution (`applications`), joined exactly as a
+//! source row is, and it counts as the project's own only when its rights say `owned`.
 
 use omuzaki_char_api::{CharId, KindProvenance, PartId, find_kind, paths};
+use omuzaki_library_api::ApplicationRecord;
 use omuzaki_io_api::{CreditNotation, Finding, Report, UseTerms, VRM_LICENSE_URLS, VrmMeta};
 use omuzaki_ops_api::{Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
 use omuzaki_store_api::{Commercial, Consent, Provenance, Source};
@@ -24,7 +30,7 @@ use serde_json::Value;
 
 use super::source::{PartSource, source_path, sources_path};
 use super::terms::{self, commercial_rank};
-use crate::gather::avatar::LicenceRecord;
+use crate::gather::avatar::{LicenceRecord, blank_rights_field};
 
 /// The licence of a part made by one of the project's own generators. Terms stay the most restrictive: a kind says whose
 /// rights they are, not what is granted.
@@ -33,11 +39,12 @@ const PROJECT_LICENCE: &str = "LicenseRef-Omuzaki-User";
 /// The licence of a part nobody has recorded a source for.
 const UNKNOWN_LICENCE: &str = "LicenseRef-Unknown";
 
-/// Works out the licence record a character's parts allow: the strictest join of their recorded sources. Writes
-/// nothing; `licence.set` stores a record.
+/// Works out the licence record a character's parts and application records allow: the strictest join of their rights.
+/// Writes nothing; `licence.set` stores a record.
 ///
 /// Parts with no recorded source count as the most restrictive part possible, so the answer only widens as sources are
-/// recorded. `parts` shows each part's contribution and `report` lists the parts that have no source.
+/// recorded, and a character with no parts is the most restrictive record whatever it has applied. `parts` and
+/// `applications` show each contribution and `report` lists the parts that have no source.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct LicenceDerive {
@@ -45,10 +52,26 @@ pub struct LicenceDerive {
     pub character: CharId,
 }
 
+/// Where a contribution to the join comes from. Decided where the row is built, so nothing downstream guesses it from a
+/// kind string, an id prefix or a path (`application` is a valid part kind).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Contribution {
+    /// A part of the character (the default).
+    #[default]
+    Part,
+    /// A library application record, by its key under `characters/<id>/applied/`.
+    Application(String),
+    /// The most restrictive floor a character with no parts joins to.
+    Floor,
+}
+
 /// One part's contribution to the join: what its source row says, or the most restrictive values when it has none.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[allow(clippy::struct_excessive_bools)] // the row is a flat report of independent facts about one part
 pub struct PartRow {
+    /// Where the row comes from. Not part of the answer: `parts` holds parts only.
+    #[serde(skip)]
+    pub origin: Contribution,
     /// The part's id.
     pub part: String,
     /// Its kind (`hair`, `mock-garment`).
@@ -78,6 +101,79 @@ pub struct PartRow {
     pub terms: UseTerms,
 }
 
+/// One application record's contribution to the join: the item the library applied and the rights it carries.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ApplicationRow {
+    /// The application key (`hairstyle`, `headphones-2`): the last segment of the record's path.
+    pub app: String,
+    /// Where the record lives: `characters/<id>/applied/<app>`.
+    pub path: String,
+    /// The item, `publisher/name`.
+    pub item: String,
+    /// The version applied.
+    pub version: String,
+    /// Where it came from: always `Library { item: "id@version" }`.
+    pub source: Source,
+    /// The item's SPDX licence.
+    pub licence: String,
+    /// Its commercial status.
+    pub commercial: Commercial,
+    /// Whether it is private test material.
+    pub private_test: bool,
+    /// Who made it, if recorded.
+    pub author: Option<String>,
+    /// The credit that must travel with it, if any.
+    pub attribution: Option<String>,
+    /// Who the item says the result belongs to: set only when its rights carry `owned`.
+    pub owned_by: Option<String>,
+    /// The terms it grants, as a source row's are (credit required with an attribution, nothing for private test).
+    pub terms: UseTerms,
+}
+
+impl ApplicationRow {
+    fn of(input: &ApplicationInput) -> Self {
+        let record = &input.record;
+        let provenance = record.rights.to_provenance(&record.item, &record.version);
+        let owned_by = record.rights.owned.then(|| format!("{} {}@{}", OWNED_BY_ITEM, record.item, record.version));
+        let row = rights_row(&input.app, "application", &provenance, record.rights.terms.as_ref(), owned_by);
+        Self {
+            app: input.app.clone(),
+            path: input.path.clone(),
+            item: record.item.to_string(),
+            version: record.version.to_string(),
+            source: provenance.source,
+            licence: row.licence,
+            commercial: row.commercial,
+            private_test: row.private_test,
+            author: row.author,
+            attribution: row.attribution,
+            owned_by: row.owned_by,
+            terms: row.terms,
+        }
+    }
+
+    /// The contribution as a part row, so the join and the excess findings treat it as they treat a part. Its `part`
+    /// is `applied/<app>`, the place it is recorded.
+    pub(crate) fn as_row(&self) -> PartRow {
+        PartRow {
+            origin: Contribution::Application(self.app.clone()),
+            part: format!("applied/{}", self.app),
+            kind: "application".to_owned(),
+            enabled: true,
+            recorded: true,
+            kind_owned: false,
+            source: Some(self.source.clone()),
+            licence: self.licence.clone(),
+            commercial: self.commercial,
+            private_test: self.private_test,
+            author: self.author.clone(),
+            attribution: self.attribution.clone(),
+            owned_by: self.owned_by.clone(),
+            terms: self.terms.clone(),
+        }
+    }
+}
+
 /// What `licence.derive` returns.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DerivedLicence {
@@ -86,18 +182,21 @@ pub struct DerivedLicence {
     /// True when every part has a source row. When false, `record` is still the strictest join, with each part that
     /// has no row counted as the most restrictive possible.
     pub complete: bool,
-    /// The record the parts allow. Storing it with `licence.set` never needs the project-owned basis.
+    /// The record the parts and application records allow. Storing it with `licence.set` never needs the project-owned basis.
     pub record: LicenceRecord,
     /// Each part's contribution, in part-id order.
     pub parts: Vec<PartRow>,
-    /// True when any part is private test material: the character can never be exported for any purpose but private.
+    /// Each application record's contribution (`characters/<id>/applied/<app>`), in application-key order. Joined
+    /// exactly as the parts are.
+    pub applications: Vec<ApplicationRow>,
+    /// True when any part or application record is private test material: the character can never be exported for any purpose but private.
     pub private_test: bool,
-    /// True when every part is marked as the project's own (and none is private test material): a record may then grant
+    /// True when every part and application record is marked as the project's own (and none is private test material): a record may then grant
     /// more than `record` does, on the word of `owners`.
     pub project_owned: bool,
-    /// Who marked the parts as the project's own (sorted, without repeats).
+    /// Who marked the parts and application records as the project's own (sorted, without repeats).
     pub owners: Vec<String>,
-    /// The credit lines the parts require, in part-id order. A record must keep every one.
+    /// The credit lines the parts and application records require, parts first in part-id order. A record must keep every one.
     pub attributions: Vec<String>,
     /// Parts without a source row, a character without parts, and consents the record cannot hold together.
     pub report: Report,
@@ -110,7 +209,7 @@ pub struct DerivedSummary {
     pub complete: bool,
     /// Whether any part is private test material.
     pub private_test: bool,
-    /// Whether every part is the project's own.
+    /// Whether every part and application record is the project's own.
     pub project_owned: bool,
     /// Who said so.
     pub owners: Vec<String>,
@@ -130,6 +229,29 @@ impl From<&DerivedLicence> for DerivedSummary {
     }
 }
 
+impl DerivedLicence {
+    /// Every contribution to the join, the parts first and then the applications, as part rows; a character with no
+    /// parts also has the floor, so a refusal can name what limits the record.
+    pub(crate) fn contributions(&self) -> Vec<PartRow> {
+        let mut all: Vec<PartRow> =
+            self.parts.iter().cloned().chain(self.applications.iter().map(ApplicationRow::as_row)).collect();
+        if self.parts.is_empty() {
+            all.push(no_parts_floor());
+        }
+        all
+    }
+}
+
+/// An application record as the document holds it, before the join.
+#[derive(Clone, Debug)]
+pub(crate) struct ApplicationInput {
+    /// The application key.
+    pub app: String,
+    /// `characters/<id>/applied/<app>`.
+    pub path: String,
+    pub record: ApplicationRecord,
+}
+
 /// A part as the document holds it, before the join.
 #[derive(Clone, Debug)]
 pub(crate) struct PartInput {
@@ -140,6 +262,9 @@ pub(crate) struct PartInput {
     /// The part's kind is a registered generator of this project (`KindProvenance::ProjectOwned`).
     pub kind_owned: bool,
 }
+
+/// What `owned_by` starts with for an application whose item says the result is the applier's own.
+const OWNED_BY_ITEM: &str = "library item";
 
 /// Who `owned_by` names for a part whose rights come from its kind: the project's own generators.
 pub const KIND_OWNER: &str = "the project (built-in part kind)";
@@ -161,6 +286,7 @@ impl PartRow {
         let Some(source) = &input.source else {
             let owned = input.kind_owned;
             return Self {
+                origin: Contribution::Part,
                 part,
                 kind,
                 enabled,
@@ -176,29 +302,38 @@ impl PartRow {
                 terms: UseTerms::default(),
             };
         };
-        let provenance = &source.provenance;
-        let attribution = non_blank(provenance.attribution.as_deref());
-        let mut terms = source.terms.clone().unwrap_or_default();
-        if provenance.private_test {
-            terms = UseTerms::default();
-        } else if attribution.is_some() {
-            terms.credit_notation = CreditNotation::Required;
-        }
-        Self {
-            part,
-            kind,
-            enabled,
-            recorded: true,
-            kind_owned: false,
-            source: Some(provenance.source.clone()),
-            licence: provenance.licence.trim().to_owned(),
-            commercial: provenance.commercial,
-            private_test: provenance.private_test,
-            author: non_blank(provenance.author.as_deref()),
-            attribution,
-            owned_by: source.owned.as_ref().map(|o| o.asserted_by.trim().to_owned()),
-            terms,
-        }
+        let owned_by = source.owned.as_ref().map(|o| o.asserted_by.trim().to_owned());
+        let mut row = rights_row(&part, &kind, &source.provenance, source.terms.as_ref(), owned_by);
+        row.enabled = enabled;
+        row
+    }
+}
+
+/// A contribution from a provenance, the terms it was licensed under and who calls it the project's own. Private test
+/// material grants nothing, and an attribution makes credit required whatever the terms say.
+fn rights_row(part: &str, kind: &str, provenance: &Provenance, terms: Option<&UseTerms>, owned_by: Option<String>) -> PartRow {
+    let attribution = non_blank(provenance.attribution.as_deref());
+    let mut terms = terms.cloned().unwrap_or_default();
+    if provenance.private_test {
+        terms = UseTerms::default();
+    } else if attribution.is_some() {
+        terms.credit_notation = CreditNotation::Required;
+    }
+    PartRow {
+        origin: Contribution::Part,
+        part: part.to_owned(),
+        kind: kind.to_owned(),
+        enabled: true,
+        recorded: true,
+        kind_owned: false,
+        source: Some(provenance.source.clone()),
+        licence: provenance.licence.trim().to_owned(),
+        commercial: provenance.commercial,
+        private_test: provenance.private_test,
+        author: non_blank(provenance.author.as_deref()),
+        attribution,
+        owned_by,
+        terms,
     }
 }
 
@@ -234,12 +369,17 @@ fn join_licences(rows: &[PartRow]) -> String {
     }
 }
 
-/// The consent a record can hold: the one every part that has a consent agrees on. Different consents cannot be one.
-fn joint_consent(inputs: &[PartInput], report: &mut Report) -> Option<Consent> {
-    let mut consents: Vec<(&PartId, &Consent)> = Vec::new();
+/// The consent a record can hold: the one every part and application record that has a consent agrees on. Different consents cannot be one.
+fn joint_consent(inputs: &[PartInput], applications: &[ApplicationInput], report: &mut Report) -> Option<Consent> {
+    let mut consents: Vec<(String, &Consent)> = Vec::new();
     for input in inputs {
         if let Some(consent) = input.source.as_ref().and_then(|s| s.provenance.consent.as_ref()) {
-            consents.push((&input.id, consent));
+            consents.push((input.id.to_string(), consent));
+        }
+    }
+    for input in applications {
+        if let Some(consent) = input.record.rights.consent.as_ref() {
+            consents.push((format!("applied/{}", input.app), consent));
         }
     }
     let first = consents.first()?.1;
@@ -250,16 +390,50 @@ fn joint_consent(inputs: &[PartInput], report: &mut Report) -> Option<Consent> {
     report.push(
         Finding::warning(
             "licence.consent_ambiguous",
-            format!("the parts record different consents ({}), and a record holds one", named.join("; ")),
+            format!("the contributions (parts and application records) record different consents ({}), and a record holds one", named.join("; ")),
         )
         .hint("record the consent that covers the whole character in the record's provenance.consent"),
     );
     None
 }
 
-/// The join of `inputs` for the character `id` called `name`. Pure: it reads nothing, so every rule is testable alone.
-pub(crate) fn join(id: &CharId, name: &str, inputs: &[PartInput]) -> DerivedLicence {
+/// The contribution of "no parts": nothing is known, so every value is the most restrictive possible and nobody owns it.
+fn no_parts_floor() -> PartRow {
+    PartRow {
+        origin: Contribution::Floor,
+        part: "(no parts)".to_owned(),
+        kind: "floor".to_owned(),
+        enabled: true,
+        recorded: false,
+        kind_owned: false,
+        source: None,
+        licence: UNKNOWN_LICENCE.to_owned(),
+        commercial: Commercial::Unknown,
+        private_test: false,
+        author: None,
+        attribution: None,
+        owned_by: None,
+        terms: UseTerms::default(),
+    }
+}
+
+/// The join of `inputs` and `applications` for the character `id` called `name`. Pure: it reads nothing, so every rule
+/// is testable alone.
+pub(crate) fn join(
+    id: &CharId,
+    name: &str,
+    inputs: &[PartInput],
+    applications_in: &[ApplicationInput],
+) -> DerivedLicence {
     let rows: Vec<PartRow> = inputs.iter().map(PartRow::of).collect();
+    let applications: Vec<ApplicationRow> = applications_in.iter().map(ApplicationRow::of).collect();
+    // The join runs over every contribution; `rows` stays the parts, for what is said about parts alone.
+    let mut all: Vec<PartRow> = rows.iter().cloned().chain(applications.iter().map(ApplicationRow::as_row)).collect();
+    // A character with no parts is held to the most restrictive record whatever it has applied: the floor joins in, so
+    // application records can only tighten it, never replace it.
+    if rows.is_empty() {
+        all.push(no_parts_floor());
+    }
     let mut report = Report::new();
     if rows.is_empty() {
         report.push(
@@ -284,25 +458,25 @@ pub(crate) fn join(id: &CharId, name: &str, inputs: &[PartInput]) -> DerivedLice
         report.push(Finding::warning("licence.part_source_missing", message).at(path.to_string()).hint(hint));
     }
 
-    let private_test = rows.iter().any(|r| r.private_test);
+    let private_test = all.iter().any(|r| r.private_test);
     let commercial =
-        rows.iter().map(|r| r.commercial).min_by_key(|c| commercial_rank(*c)).unwrap_or(Commercial::Unknown);
-    let mut joined_terms = terms::join(rows.iter().map(|r| &r.terms));
+        all.iter().map(|r| r.commercial).min_by_key(|c| commercial_rank(*c)).unwrap_or(Commercial::Unknown);
+    let mut joined_terms = terms::join(all.iter().map(|r| &r.terms));
     // The exporters' rule (`rights.terms_exceed_provenance`): a status that is not `ok`, and private test material, carry
     // only the most restrictive value of every flag. The join of parts that are individually fine can still land here,
     // for instance when one of them is unknown.
     if commercial != Commercial::Ok || private_test {
         joined_terms = UseTerms::default();
     }
-    let authors = unique(rows.iter().filter_map(|r| r.author.clone()));
-    let attributions = unique(rows.iter().filter_map(|r| r.attribution.clone()));
+    let authors = unique(all.iter().filter_map(|r| r.author.clone()));
+    let attributions = unique(all.iter().filter_map(|r| r.attribution.clone()));
     let owners = {
-        let mut owners = unique(rows.iter().filter_map(|r| r.owned_by.clone()));
+        let mut owners = unique(all.iter().filter_map(|r| r.owned_by.clone()));
         owners.sort_unstable();
         owners
     };
     let provenance = Provenance {
-        source: rows
+        source: all
             .iter()
             .filter_map(|r| r.source.as_ref())
             .fold(None::<&Source>, |best, next| match best {
@@ -312,10 +486,10 @@ pub(crate) fn join(id: &CharId, name: &str, inputs: &[PartInput]) -> DerivedLice
             .cloned()
             .unwrap_or(Source::Authored),
         author: (!authors.is_empty()).then(|| authors.join(", ")),
-        licence: join_licences(&rows),
+        licence: join_licences(&all),
         attribution: (!attributions.is_empty()).then(|| attributions.join("; ")),
         commercial,
-        consent: joint_consent(inputs, &mut report),
+        consent: joint_consent(inputs, applications_in, &mut report),
         private_test,
     };
     let mut meta = VrmMeta::new(name, authors, VRM_LICENSE_URLS[0]);
@@ -325,10 +499,11 @@ pub(crate) fn join(id: &CharId, name: &str, inputs: &[PartInput]) -> DerivedLice
         complete: !rows.is_empty() && rows.iter().all(|r| r.recorded),
         record: LicenceRecord::new(provenance, meta),
         private_test,
-        project_owned: !rows.is_empty() && !private_test && rows.iter().all(|r| r.owned_by.is_some()),
+        project_owned: !private_test && all.iter().all(|r| r.owned_by.is_some()),
         owners,
         attributions,
         parts: rows,
+        applications,
         report,
     }
 }
@@ -341,11 +516,11 @@ pub(crate) fn no_such_character(id: &CharId) -> OpError {
     error
 }
 
-/// Reads the character's parts and their source rows from the document and joins them.
+/// Reads the character's parts, their source rows and its application records from the document and joins them.
 ///
 /// # Errors
 /// `not_found` for a character the document lacks; `invalid` (naming `parts/<part>` or `sources/<part>`) for a part id
-/// that is not a slug or a source row that does not read.
+/// that is not a slug, a source row that does not read or an application record that does not (`applied/<app>`).
 pub(crate) fn load(ctx: &OpCtx<'_>, id: &CharId) -> Result<DerivedLicence, OpError> {
     let node = ctx.doc.get(&paths::character(id)).ok_or_else(|| no_such_character(id))?;
     let name = node.get("name").and_then(Value::as_str).unwrap_or_default();
@@ -374,9 +549,45 @@ pub(crate) fn load(ctx: &OpCtx<'_>, id: &CharId) -> Result<DerivedLicence, OpErr
             source,
         });
     }
-    let mut derived = join(id, name, &inputs);
+    let applications = load_applications(ctx, id)?;
+    let mut derived = join(id, name, &inputs, &applications);
     note_orphans(ctx, id, &inputs, &mut derived.report);
     Ok(derived)
+}
+
+/// The character's application records, in application-key order.
+///
+/// # Errors
+/// `invalid`, naming `applied/<app>`, for a record that does not read, or `applied` for a node that is not a table.
+fn load_applications(ctx: &OpCtx<'_>, id: &CharId) -> Result<Vec<ApplicationInput>, OpError> {
+    let table = match ctx.doc.get(&paths::applied(id)) {
+        None => return Ok(Vec::new()),
+        Some(Value::Object(table)) => table,
+        // Fail closed: records that cannot be read must not read as "none applied".
+        Some(_) => {
+            let path = paths::applied(id);
+            return Err(OpError::invalid("applied", format!("{path} is not a table of application records"))
+                .hint("it holds one record per application, written by library.apply"));
+        }
+    };
+    let mut entries: Vec<(&String, &Value)> = table.iter().collect();
+    entries.sort_unstable_by_key(|(app, _)| app.as_str());
+    entries
+        .into_iter()
+        .map(|(app, node)| {
+            let path = paths::application(id, app);
+            let record = ApplicationRecord::from_node(node).map_err(|e| {
+                OpError::invalid(format!("applied/{app}"), format!("the application record at {path}: {e}")).hint(
+                    "a record is written by library.apply; remove it with library.detach, or apply the item again",
+                )
+            })?;
+            if let Some((_, fault)) = blank_rights_field(&record.rights.licence, record.rights.consent.as_ref()) {
+                return Err(OpError::invalid(format!("applied/{app}"), format!("the application record at {path}: {fault}"))
+                    .hint("a record is written by library.apply; remove it with library.detach, or apply the item again"));
+            }
+            Ok(ApplicationInput { app: app.clone(), path: path.to_string(), record })
+        })
+        .collect()
 }
 
 /// Source rows of parts the character no longer has: harmless, and worth a line. `part.remove` takes a part's row with it,
@@ -403,8 +614,8 @@ impl Op for LicenceDerive {
     fn meta() -> OpMeta {
         OpMeta {
             name: "licence.derive",
-            summary: "Work out the licence record a character's parts allow: the strictest join of their recorded \
-                      sources. Writes nothing; licence.set stores a record.",
+            summary: "Work out the licence record a character's parts and application records allow: the strictest \
+                      join of their rights. Writes nothing; licence.set stores a record.",
             kind: OpKind::Query,
             scope: Scope::Read,
             undo: Undo::None,
@@ -448,7 +659,7 @@ mod tests {
     }
 
     fn joined(inputs: &[PartInput]) -> DerivedLicence {
-        join(&CharId::new("mira").unwrap(), "Mira", inputs)
+        join(&CharId::new("mira").unwrap(), "Mira", inputs, &[])
     }
 
     #[test]

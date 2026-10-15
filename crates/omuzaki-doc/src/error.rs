@@ -52,6 +52,13 @@ pub enum StoreError {
         /// When it took the lock, in seconds since the Unix epoch.
         since: u64,
     },
+    /// A file this save would replace is not the one this process last read or wrote: it was changed (or created)
+    /// outside Omuzaki. The file is left untouched.
+    #[error("{} was changed outside Omuzaki since it was loaded; it was not overwritten", path.display())]
+    ChangedOnDisk {
+        /// The file.
+        path: PathBuf,
+    },
     /// `create` found a project already there.
     #[error("{} already holds a project", dir.display())]
     AlreadyExists {
@@ -80,6 +87,26 @@ pub enum StoreError {
     Symlink {
         /// The link.
         path: PathBuf,
+    },
+    /// This system or file system lacks an operation that changing `path` safely needs, so the change was refused
+    /// before the file was touched: without it an editor's save made in the same instant could be overwritten or lost.
+    #[error("{}: not changed: this system or file system has no {missing}, which changing it safely needs", path.display())]
+    NoSafeChange {
+        /// The file that was not changed.
+        path: PathBuf,
+        /// The missing operation, in words.
+        missing: &'static str,
+    },
+    /// A change to `path` is in place (a new text at the target, or the file deleted), but a step after it failed:
+    /// flushing it to disk, or tidying up the backup of what it replaced. The project has recorded the change, so the
+    /// next save carries on from it; what the change promised about surviving a crash may not hold.
+    #[error("{}: the change is in place but couldn't be made durable: {source}", path.display())]
+    NotDurable {
+        /// The file or folder the failed step was about.
+        path: PathBuf,
+        /// What the operating system said.
+        #[source]
+        source: io::Error,
     },
     /// `project.toml` has no usable `schema = N`.
     #[error("project.toml: {0}")]
