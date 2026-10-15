@@ -147,7 +147,7 @@ fn publishes_of(def: &CharacterDef) -> Result<Vec<(PartId, Publishes)>, String> 
 
 /// Checks the parts of `kinds` (every registered kind when `None`) against `base`, a character that builds.
 ///
-/// A kind `base` has a part of is checked through that part; any other kind through one extra part with its default
+/// A kind `base` has an active part of (one the build plan reaches) is checked through that part; any other kind through one extra part with its default
 /// parameters (`base` supplies what it requires). A kind that can't be built that way is listed in
 /// [`Report::unreached`], not skipped silently.
 pub fn check(base: &CharacterDef, kinds: Option<&[&str]>, probes: &Probes) -> Report {
@@ -156,7 +156,11 @@ pub fn check(base: &CharacterDef, kinds: Option<&[&str]>, probes: &Probes) -> Re
         None => omuzaki_char_api::kinds().map(|r| (r.meta)().id.to_owned()).collect(),
     };
     let mut report = Report::default();
-    let in_base: BTreeSet<&str> = base.parts.values().map(|p| p.kind.as_str()).collect();
+    // The kinds with an active part: the ones the build plan reaches (a disabled part, or one under a disabled ancestor,
+    // is never built, so it covers nothing). A base that can't be planned covers nothing.
+    let planned = plan(base).unwrap_or_default();
+    let in_base: BTreeSet<&str> =
+        planned.iter().filter_map(|part| base.parts.get(part)).map(|p| p.kind.as_str()).collect();
     // One run over `base` covers every kind it has a part of; each other kind gets a run of its own.
     let mut runs: Vec<(CharacterDef, Vec<String>)> = Vec::new();
     let base_kinds: Vec<String> = wanted.iter().filter(|k| in_base.contains(k.as_str())).cloned().collect();

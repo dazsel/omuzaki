@@ -733,14 +733,14 @@ omuzaki_char_api::register_fact!(NoteFact);
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 struct NoterParams {
-    /// Publish the red channel of `tint` instead of 7: a fact that depends on the palette.
+    /// Publish the red channel of `tint` instead of 7: a fact that depends on the palette (what the kind does by default).
     from_palette: bool,
     tint: ColourRef,
 }
 
 impl Default for NoterParams {
     fn default() -> Self {
-        Self { from_palette: false, tint: ColourRef::slot_or("outfit", ColourRef::rgb(200, 200, 200)) }
+        Self { from_palette: true, tint: ColourRef::slot_or("outfit", ColourRef::rgb(200, 200, 200)) }
     }
 }
 
@@ -814,6 +814,22 @@ fn a_palette_dependent_fact_is_refused_by_the_conformance_check_naming_the_kind_
         signature(&stale),
         signature(&fresh),
         "a palette-dependent fact is served stale: the check must refuse it"
+    );
+}
+
+#[test]
+fn a_palette_dependent_publisher_whose_only_part_is_disabled_is_still_caught() {
+    let mut def = mock_character().unwrap();
+    add(&mut def, "noter", "t-noter", 10, json!({ "from_palette": false }));
+    def.parts.get_mut(&pid("noter")).unwrap().enabled = false;
+    let probes = conformance::Probes::default().fact::<NoteFact>();
+    // The disabled part is never built, so it covers nothing: the kind is checked through a standalone part with its
+    // default parameters, which publish from the palette.
+    let report = conformance::check(&def, Some(&["t-noter"]), &probes);
+    let [violation] = report.violations.as_slice() else { panic!("one violation expected: {report:?}") };
+    assert!(
+        violation.contains("kind 't-noter'") && violation.contains("fact 't-note' depends on the palette"),
+        "{violation}"
     );
 }
 

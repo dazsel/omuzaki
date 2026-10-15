@@ -1,6 +1,7 @@
 //! Facts don't depend on the palette: every part kind linked into this binary (the mock kinds the kit characters are made
-//! of) publishes the same facts under two palettes that differ in every slot. The caching builder relies on it (see the
-//! `builder` module doc): it keys a part that reads facts on the geometry of their publishers, not their colours.
+//! of) publishes the same facts under the character's own palette and `PALETTES` others, each differing from it in every
+//! entry. The caching builder relies on it (see the `builder` module doc): it keys a part that reads facts on the
+//! geometry of their publishers, not their colours.
 
 // Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
 #![allow(clippy::expect_used, clippy::unwrap_used)]
