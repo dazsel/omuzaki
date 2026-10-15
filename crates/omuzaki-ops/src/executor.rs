@@ -19,6 +19,10 @@ use crate::state::{Edit, State};
 use crate::sync::lock;
 use crate::{ExecutorError, error};
 
+/// Records that a job is starting: called with its snapshot and arguments before its `work` can run. See
+/// [`Executor::with_job_journal`].
+pub(crate) type JobStartedHook = Arc<dyn Fn(&JobInfo, &Value) -> Result<(), OpError> + Send + Sync>;
+
 /// What a job thread needs from the executor, as shared handles: it outlives any borrow of the [`Executor`].
 #[derive(Clone)]
 pub(crate) struct Env {
@@ -27,6 +31,7 @@ pub(crate) struct Env {
     pub(crate) clock: Arc<dyn Clock>,
     pub(crate) services: Arc<Services>,
     pub(crate) project_dir: Option<Arc<ProjectDir>>,
+    pub(crate) job_started: Option<JobStartedHook>,
 }
 
 impl Env {
@@ -117,6 +122,7 @@ impl Executor {
             clock,
             services: Arc::new(Services::none()),
             project_dir: None,
+            job_started: None,
         };
         let jobs = Manager::new(env.clone(), u64::MAX);
         Ok(Self { ops: OpIndex::build(registrations)?, env, jobs, job_budget: u64::MAX })
@@ -148,6 +154,18 @@ impl Executor {
     #[must_use]
     pub fn with_project_dir(self, dir: ProjectDir) -> Self {
         self.rewired(|env| env.project_dir = Some(Arc::new(dir)))
+    }
+
+    /// The same executor, with `record` called for every job as it starts, with its snapshot and arguments (the
+    /// `JobStarted` entry of ADR 0036 decision 7). It runs before the job's thread exists, so the record is made
+    /// before `work` can have any effect; it must not block (hand the entry to the journal and return). If it
+    /// returns an error the job ends `Failed` with that error and its `work` never runs.
+    #[must_use]
+    pub fn with_job_journal(
+        self,
+        record: impl Fn(&JobInfo, &Value) -> Result<(), OpError> + Send + Sync + 'static,
+    ) -> Self {
+        self.rewired(|env| env.job_started = Some(Arc::new(record)))
     }
 
     /// The same executor, with `usd_micros` (millionths of a dollar) as the most that jobs may reserve and spend in

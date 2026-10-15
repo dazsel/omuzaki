@@ -47,6 +47,8 @@ enum How {
     Panic,
     /// Returns the nice value its thread runs at (Linux; null elsewhere).
     Nice,
+    /// Reports progress and money from inside `JobCtx::read`, where the document lock is held.
+    ReadSignals,
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]
@@ -186,6 +188,13 @@ impl Op for TestJob {
             How::Fail => Err(OpError::invalid("key", "boom")),
             How::Panic => panic!("the job's work panicked"),
             How::Nice => Ok(json!(thread_nice())),
+            How::ReadSignals => {
+                let refused = job.read(|_| {
+                    job.progress("reading", 0.25);
+                    job.spend(1).is_err()
+                });
+                Ok(json!({"refused": refused}))
+            }
         }
     }
 
@@ -723,4 +732,60 @@ fn a_timed_wait_runs_on_the_executor_clock() {
     });
     gate.release.send(()).unwrap();
     rig.exec.wait(info.id, None).unwrap();
+}
+
+#[test]
+fn signals_from_inside_a_document_read_do_not_deadlock() {
+    let rig = rig(json!({}));
+    let info = rig.exec.start(job("rs", &json!("read_signals"))).unwrap();
+    let (done, ended) = channel();
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let _ = done.send(rig.exec.wait(info.id, None));
+        });
+        let ended = ended.recv_timeout(Duration::from_secs(30)).expect("the job deadlocked inside read").unwrap();
+        assert!(matches!(ended.state, JobState::Done { .. }), "{:?}", ended.state);
+    });
+    assert_eq!(rig.at("rs"), Some(json!({"refused": true})));
+    // The progress reported under the lock went out when the read ended; the money report was refused.
+    let after = live(&rig, info.id);
+    assert_eq!(after.stage.as_deref(), Some("reading"));
+    assert_eq!(after.spent_usd_micros, 0);
+}
+
+#[test]
+fn a_result_returned_after_shutdown_began_is_discarded() {
+    let rig = rig(json!({}));
+    let gate = Gate::new("sd");
+    let info = rig.exec.start(job("sd", &json!("partial"))).unwrap();
+    gate.wait_entered();
+    rig.exec.shutdown_jobs();
+    let ended = rig.exec.wait(info.id, None).unwrap();
+    assert_eq!(ended.state, JobState::Cancelled { by: None, reason: CancelReason::Shutdown });
+    assert_eq!(rig.at("sd"), None, "the document changed after shutdown began");
+}
+
+#[test]
+fn a_job_start_is_recorded_before_its_work_runs_and_a_refused_record_stops_it() {
+    let seen: Arc<Mutex<Vec<(String, bool)>>> = Arc::default();
+    let log = Arc::clone(&seen);
+    let clock = Arc::new(FakeClock::new(Seconds(0.0)));
+    let exec =
+        Executor::new(Box::new(MemDoc::from_value(json!({}))), clock).unwrap().with_job_journal(move |_, args| {
+            let key = args["key"].as_str().unwrap_or_default().to_owned();
+            // `Echo` stores its cancel flag when `work` runs: it must not have yet.
+            let ran = FLAGS.lock().unwrap().contains_key(&key);
+            log.lock().unwrap().push((key.clone(), ran));
+            if key == "refused" { Err(OpError::unavailable("the journal is full")) } else { Ok(()) }
+        });
+    FLAGS.lock().unwrap().remove("recorded");
+    FLAGS.lock().unwrap().remove("refused");
+    let ok = exec.start(job("recorded", &json!("echo"))).unwrap();
+    assert!(matches!(exec.wait(ok.id, None).unwrap().state, JobState::Done { .. }));
+    let no = exec.start(job("refused", &json!("echo"))).unwrap();
+    let failed = exec.wait(no.id, None).unwrap();
+    assert!(matches!(failed.state, JobState::Failed { .. }), "{:?}", failed.state);
+    assert_eq!(*seen.lock().unwrap(), vec![("recorded".to_owned(), false), ("refused".to_owned(), false)]);
+    assert!(FLAGS.lock().unwrap().contains_key("recorded"));
+    assert!(!FLAGS.lock().unwrap().contains_key("refused"), "work ran although the start was refused");
 }

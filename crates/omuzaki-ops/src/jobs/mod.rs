@@ -62,6 +62,8 @@ struct Job {
     grants: Grants,
     cause: Option<Cause>,
     plan_output: Option<Value>,
+    /// The request's arguments, for the start journal.
+    args: Value,
     cancel: CancelFlag,
     cancelling: Option<Cancelling>,
     /// Micro-dollars held for this job, and how much `work` has reported spending.
@@ -110,6 +112,8 @@ pub(crate) struct Manager {
     /// Signalled on every job end and every returned thread.
     changed: Condvar,
     supervisor: AtomicBool,
+    /// Set when shutdown begins; read by a `finish` under the document lock, where the manager's lock is off limits.
+    shut: AtomicBool,
 }
 
 impl Manager {
@@ -123,7 +127,13 @@ impl Manager {
             ended: VecDeque::new(),
             closed: false,
         };
-        Arc::new(Self { env, inner: Mutex::new(inner), changed: Condvar::new(), supervisor: AtomicBool::new(false) })
+        Arc::new(Self {
+            env,
+            inner: Mutex::new(inner),
+            changed: Condvar::new(),
+            supervisor: AtomicBool::new(false),
+            shut: AtomicBool::new(false),
+        })
     }
 
     fn now(&self) -> f64 {
@@ -205,6 +215,7 @@ impl Manager {
                 grants: req.grants,
                 cause: req.cause,
                 plan_output: plan.output,
+                args: req.args,
                 cancel: CancelFlag::new(),
                 cancelling: None,
                 reserved,
@@ -241,17 +252,24 @@ impl Manager {
             job.info.state = JobState::Running;
             job.info.started_at = Some(Seconds(now));
             job.deadline = now + job.cap_secs;
+            // The start is recorded before `work` can have any effect: if the record is refused, the job fails
+            // without running.
+            let recorded = self.env.job_started.as_ref().map_or(Ok(()), |record| record(&job.info, &job.args));
             self.announce(job);
-            let mgr = Arc::clone(self);
-            let spawned =
-                std::thread::Builder::new().name(format!("omuzaki-job-{}", id.0)).spawn(move || worker::run(&mgr, id));
-            if let Err(e) = spawned {
+            let started = recorded.and_then(|()| {
+                let mgr = Arc::clone(self);
+                std::thread::Builder::new()
+                    .name(format!("omuzaki-job-{}", id.0))
+                    .spawn(move || worker::run(&mgr, id))
+                    .map(drop)
+                    .map_err(|e| OpError::internal(format!("could not start a job thread: {e}")))
+            });
+            if let Err(error) = started {
                 if let Some(job) = inner.jobs.get_mut(&id) {
                     job.thread_live = false;
                     settle(&mut inner.ledger, job, 0);
                 }
                 inner.lanes.finished(lane);
-                let error = OpError::internal(format!("could not start a job thread: {e}"));
                 self.end(inner, id, JobState::Failed { error: error.clone() }, Err(error));
             }
         }
@@ -288,6 +306,11 @@ impl Manager {
             }
             // The flag is the one handle work cloned out: flipping it still stops what outlived `work` (a stream), and
             // changes no state.
+            // Shutdown reaches a job already in `finish` too, so its failure to apply ends it `Cancelled`.
+            Phase::Finishing if reason == CancelReason::Shutdown && job.cancelling.is_none() => {
+                job.cancel.cancel();
+                job.cancelling = Some(Cancelling { by, reason, grace_until: now + GRACE_SECS });
+            }
             Phase::Working | Phase::Finishing | Phase::Ended => job.cancel.cancel(),
         }
     }
@@ -357,6 +380,8 @@ impl Manager {
         };
         let lane = job.info.lane;
         inner.lanes.returned(lane, lent);
+        // The returned thread no longer pins its ended job in the history.
+        trim(inner);
         self.dispatch(inner);
         self.changed.notify_all();
         false
@@ -544,6 +569,7 @@ impl Manager {
             let mut guard = lock(&self.inner);
             let inner = &mut *guard;
             inner.closed = true;
+            self.shut.store(true, Ordering::Release);
             let ids: Vec<JobId> = inner.jobs.keys().copied().collect();
             for id in ids {
                 self.cancel_job(inner, id, None, CancelReason::Shutdown);
