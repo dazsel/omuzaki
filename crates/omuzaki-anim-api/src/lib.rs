@@ -27,6 +27,7 @@
 //! | [`humanoid_frames`] | [`HumanoidFrames`]: the normalised-pose maths, [`HumanoidPose`] to and from a skeleton's own bone axes |
 //! | [`ik`] | [`IkGoals`] (look-at and hand/foot targets) and the [`IkSolver`] trait |
 //! | [`spring`] | VRM-compatible spring bones, colliders and the [`SpringSolver`] trait |
+//! | [`constraint`] | VRM node constraints (roll, aim, rotation): [`ConstraintSet`], its checks and run order |
 //! | [`score`] | [`Score`] (keys per channel and cues) and its allocation-free [`CompiledScore`] |
 //!
 //! ## Conventions (all stages obey them)
