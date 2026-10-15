@@ -40,10 +40,14 @@ impl Tracker for FakeTracker {
     }
 
     fn start(&mut self, device: &CameraId, config: &TrackerConfig) -> Result<Box<dyn FrameSource>, TrackError> {
+        // Starting again ends the previous session even when the new start is refused.
+        self.stop();
         if *device != FakeCamera::id() {
             return Err(TrackError::NoDevice(device.clone()));
         }
-        self.stop();
+        if config.camera.pick(&self.devices()[0].formats).is_none() {
+            return Err(TrackError::FormatUnsupported(config.camera));
+        }
         let running = Arc::new(AtomicBool::new(true));
         self.running = Some(Arc::clone(&running));
         self.delivered.store(0, Ordering::Relaxed);

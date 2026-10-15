@@ -122,3 +122,23 @@ fn a_slow_poller_gets_only_the_newest_scripted_frame() {
     assert_eq!(source.poll(Seconds(0.1)), None);
     assert!(tracker.start(&CameraId("usb:1".to_owned()), &TrackerConfig::default()).is_err());
 }
+
+#[test]
+fn start_rejects_a_camera_request_the_device_cannot_meet() {
+    let mut tracker = FakeTracker::scripted(vec![]);
+    let camera = CameraFormatRequest { pixel: Some(PixelFormat::Bgra8), ..CameraFormatRequest::default() };
+    let config = TrackerConfig { camera, ..TrackerConfig::default() };
+    assert_eq!(tracker.start(&FakeCamera::id(), &config).err(), Some(TrackError::FormatUnsupported(camera)));
+}
+
+#[test]
+fn a_refused_restart_still_stops_the_old_source() {
+    let script = vec![(Duration::ZERO, tracked(1))];
+    let mut tracker = FakeTracker::scripted(script);
+    let mut old = tracker.start(&FakeCamera::id(), &TrackerConfig::default()).unwrap();
+    assert!(old.poll(Seconds(0.0)).is_some());
+
+    let missing = CameraId("nope".to_owned());
+    assert_eq!(tracker.start(&missing, &TrackerConfig::default()).err(), Some(TrackError::NoDevice(missing)));
+    assert_eq!(old.poll(Seconds(1.0)), None, "the old session ended with the refused restart");
+}
