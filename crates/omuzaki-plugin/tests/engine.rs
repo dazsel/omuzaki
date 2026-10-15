@@ -1,6 +1,9 @@
 //! The sandbox (#1292, #1567; design §4): loading, fuel and deadlines per call kind, the CPU share and the import
 //! charge, memory caps and the all-plugins budget, the WASI stubs, and the refusals of the base world's imports.
 
+// Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 mod common;
 
 use std::time::{Duration, Instant};

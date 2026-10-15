@@ -233,7 +233,7 @@ pub fn faults<S: Subject>(subject: &S) {
         .collect();
     assert_eq!(details.len(), 3);
     assert!(details[0].contains("in init"), "{}", details[0]);
-    assert!(details[1].starts_with("out of fuel") && details[1].contains("in init"), "{}", details[1]);
+    assert!(details[1].contains("in init"), "the fuel cap or the CPU share, in init: {}", details[1]);
     assert!(details[2].contains("no thanks"), "{}", details[2]);
     assert_eq!(
         plugins.enable(&id("fine"), &person()).map(|i| i.state),

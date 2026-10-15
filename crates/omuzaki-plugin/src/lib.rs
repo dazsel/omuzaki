@@ -13,12 +13,15 @@
 
 pub mod bridge;
 mod engine;
+mod host;
 mod imports;
 mod instance;
 pub mod limits;
 pub mod load;
 pub mod log;
 mod wasi;
+mod worker;
 
 pub use engine::{EPOCH_TICK, EPOCH_TICK_MS, HostConfig, PluginEngine};
+pub use host::WasmPlugins;
 pub use instance::{Fault, InstanceKind, InstanceSetup, LoadedPlugin, StartError, insecure_seed};
