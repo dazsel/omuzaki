@@ -24,12 +24,15 @@ hour, which puts a 4 to 6 hour tail on independent work.
    requests for the crate. A top-level module is a folder `src/<module>/` or a file `src/<module>.rs` (such as
    `omuzaki-char/src/builder.rs` or `omuzaki-face/src/layer.rs`); each is one bucket, apart from `lib.rs`, which is
    shared (§3).
-2. **Nested modules and test files count against their top-level module.** `src/painter/brows.rs` counts against
-   `painter/`, and so does its test `tests/brows.rs`; `tests/hair_pipeline.rs` counts against `hair/`. A test file
-   counts against the top-level module that contains the code it tests, whatever the test file is named.
-3. **One shared slot per crate.** A pull request that changes a crate-level shared file takes the crate's single
-   shared slot: `lib.rs`, `Cargo.toml`, `build.rs`, or shared test infrastructure (`tests/common/` and any test
-   aggregator).
+2. **Nested modules, tests, benches and examples count against their top-level module.** `src/painter/brows.rs`
+   counts against `painter/`, and so does its test `tests/brows.rs`; `tests/hair_pipeline.rs` counts against `hair/`.
+   A test, bench or example counts against the top-level module whose code it exercises, whatever it is named. That
+   includes a module's own test folder and its aggregator, such as `tests/cloth_solver/` (with its `main.rs`) for
+   `cloth/` and `tests/head_quality/` for `head/`.
+3. **Everything else takes the crate's one shared slot.** Any file that belongs to no single module is shared: every
+   file at the crate root (`Cargo.toml`, `build.rs`, `clippy.toml`, `evidence.toml` and any added later), `lib.rs`,
+   shared test infrastructure (`tests/common/`, `tests/fixtures/`, an aggregator across modules), and data or tests
+   that several modules use. A pull request that changes any of them takes the shared slot.
 4. **The file-overlap check at dispatch still applies** (`tools/dispatch-check.py`). Two pull requests that touch one
    file never run at once, whatever the counts say.
 5. Every other crate keeps ADR 0053's cap of 3, and the total cap of 40 is unchanged. Adding a crate to this list is a
@@ -38,9 +41,11 @@ hour, which puts a 4 to 6 hour tail on independent work.
 ## Consequences
 
 - `docs/maintainers/operating.md` and `docs/maintainers/cloud-lane.md` state the new rule.
-- `tools/dispatch-check.py` learns per-module counting (#1743). Until it lands, leads run it with the crate ceiling
-  for tasks in these two crates, `tools/dispatch-check.py --crate-cap 8 <issue>`, which still checks file overlap and
-  the total, and count the modules by hand.
+- `tools/dispatch-check.py` learns per-module counting (#1743). Until it lands, a task whose fence lies only in these
+  two crates is checked with the crate ceiling, `tools/dispatch-check.py --crate-cap 8 <issue>`, which still checks
+  file overlap and the total, and the lead counts modules by hand. `--crate-cap` applies to every crate in the fence,
+  so a task whose fence also names another crate is checked twice: the default run decides for the other crate (its
+  cap stays 3), the `--crate-cap 8` run for these two, and the task starts only if both allow it.
 - Rejected:
   - raising the per-crate cap for every crate, since small crates still share their files;
   - counting per file only, since review load per area still needs a bound.

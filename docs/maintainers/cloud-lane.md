@@ -43,7 +43,7 @@ ADR 0053's limits:
   top-level module, with a crate ceiling of 8 and one shared slot for crate-level files (ADR 0062);
 - at most **40 open pull requests in total** across both lanes (raised as the merge rate rises; the current figure is
   on #2);
-- before starting a task, check its fence against open pull requests: `python3 tools/dispatch-check.py <issue>`. For `omuzaki-char` and `omuzaki-face` add `--crate-cap 8` and count modules by hand until #1743 lands (ADR 0062).
+- before starting a task, check its fence against open pull requests: `python3 tools/dispatch-check.py <issue>`. For a fence only in `omuzaki-char` and `omuzaki-face`, add `--crate-cap 8` and count modules by hand until #1743 lands; a fence that also names another crate needs both runs to allow it (ADR 0062).
   Until that script is on `main` (#1479), check by hand: list the files of every open pull request
   and compare them with the fence; when in doubt, ask on #2.
 
