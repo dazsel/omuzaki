@@ -47,8 +47,11 @@ pub const BUILT_IN_NODE_KEYS: [&str; 8] =
     ["name", "template", "seed", "palette", "skin_tone", "parts", "face", "weight_brushes"];
 
 /// The built-in sibling keys: the roots of the other files of the character. They are `variants`, `colourways`, `rig`,
-/// `look`, `licence`, `sources`, `applied`, `poses` and `emotes`; some are owned by crates that not every binary which
-/// parses a character links, so they cannot register.
+/// `look`, `licence`, `sources`, `applied`, `poses` and `emotes`.
+///
+/// Five are owned by other crates: `licence` by `omuzaki-io-ops`, `sources` by `omuzaki-char`, `applied` and `emotes` by
+/// `omuzaki-library-api`, and `poses` by `omuzaki-anim`. They stay in this table because no crate that parses a character
+/// links all of those owners, so they cannot register.
 pub const BUILT_IN_SIBLING_KEYS: [&str; 9] =
     ["variants", "colourways", "rig", "look", "licence", "sources", "applied", "poses", "emotes"];
 
