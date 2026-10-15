@@ -14,6 +14,7 @@
 //! Not here yet: the fake backend and the node conformance suite (`src/backend/` and `src/conformance/`).
 #![deny(missing_docs)]
 
+pub mod backend;
 mod engine;
 mod latency;
 mod mixer;
