@@ -6,6 +6,8 @@
 # A reusable workflow: a consumer (nightly's parity job, the R probe's job) calls it as a job of its own run, reads the
 # platform's SHA-256 from this workflow's outputs and downloads `litert-<version>-<platform>` from that run.
 #
+#   changes  with only-if-changed (cache-warm.yml's call), whether this push changed the build's inputs; the other jobs
+#            run only if it did. Every other caller always builds
 #   models   fetches MediaPipe's face graphs with tools/models/mediapipe-face.sh, for the check
 #   build    restores the archive from the cache, or builds it with tools/litert/build.py (notices first, so an
 #            unreviewed dependency fails fast; then the library and the check's two programs; then the archive).
@@ -27,6 +29,10 @@ on:
     inputs:
       save-cache:
         description: "Save a freshly built archive to the cache; true only from cache-warm.yml on main"
+        type: boolean
+        default: false
+      only-if-changed:
+        description: "Skip everything unless this push changed tools/litert/ or this workflow (cache-warm.yml's call)"
         type: boolean
         default: false
     outputs:
@@ -56,8 +62,43 @@ concurrency:
 permissions: {}
 
 jobs:
+  # A push payload carries no file lists, so git compares the push's two ends. Anything but a push, a new branch
+  # (`before` all zeros) or an unreachable `before` counts as changed: a doubt builds rather than skips.
+  changes:
+    name: changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      run: ${{ steps.diff.outputs.run }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: inputs.only-if-changed
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Changed paths
+        id: diff
+        env:
+          ONLY_IF_CHANGED: ${{ inputs.only-if-changed == true }}
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          run=true
+          if [ "$ONLY_IF_CHANGED" = true ] && [ "$EVENT" = push ] && [ -n "$BEFORE" ] \
+            && [ "$BEFORE" != 0000000000000000000000000000000000000000 ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            paths=$(git diff --name-only "$BEFORE" "$AFTER" -- tools/litert/ .github/workflows/runtime-litert.yml)
+            [ -n "$paths" ] || run=false
+          fi
+          echo "run=$run" >>"$GITHUB_OUTPUT"
+          echo "LiteRT build runs: $run"
+
   models:
     name: models
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -80,6 +121,8 @@ jobs:
 
   build:
     name: build (${{ matrix.platform }})
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 330
     permissions:
