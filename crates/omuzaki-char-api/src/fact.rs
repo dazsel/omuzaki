@@ -242,6 +242,9 @@ pub struct FactProbe {
     pub name: &'static str,
     /// The fact's type, matched against its [`FactRegistration`].
     pub type_id: fn() -> TypeId,
+    /// Whether what a part published under [`FactProbe::name`] is this probe's fact: a fact of another type that
+    /// shares the name is not, and its values must never be handed to [`FactProbe::differs`].
+    pub holds: fn(&Publishes) -> bool,
     /// Compares what two parts published for the fact.
     pub differs: Differs,
 }
@@ -250,7 +253,7 @@ impl FactProbe {
     /// The probe of fact `F` with its own comparison.
     #[must_use]
     pub const fn new<F: Fact>(differs: Differs) -> Self {
-        Self { name: F::NAME, type_id: TypeId::of::<F>, differs }
+        Self { name: F::NAME, type_id: TypeId::of::<F>, holds: holds_fact::<F>, differs }
     }
 
     /// The probe of fact `F` that compares values with `==`.
@@ -268,6 +271,13 @@ inventory::collect!(FactProbe);
 /// Every registered probe, in no particular order.
 pub fn probes() -> impl Iterator<Item = &'static FactProbe> {
     inventory::iter::<FactProbe>.into_iter()
+}
+
+/// Whether `published` holds values of fact `F` itself (not of another fact that shares its name). For
+/// [`FactProbe::holds`].
+#[doc(hidden)]
+pub fn holds_fact<F: Fact>(published: &Publishes) -> bool {
+    published.values::<F>().next().is_some()
 }
 
 /// Compares the values of `F` in `a` and `b` with `==`. For [`register_fact_probe!`].

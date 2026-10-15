@@ -60,11 +60,19 @@ const PROBE: &str = "palette-probe";
 /// The slot of the alternative that has one more entry than the palette (a suffix is added if the palette or a part names it).
 const EXTRA_SLOT: &str = "unused_probe_slot";
 
-/// How facts are compared, by fact name.
+/// How one fact is compared: its name and type, whether a published fact is it, and the comparison.
+struct Entry {
+    name: &'static str,
+    type_id: TypeId,
+    holds: fn(&Publishes) -> bool,
+    differs: Differs,
+}
+
+/// How facts are compared, by fact name and type.
 #[derive(Default)]
 pub struct Probes {
-    /// The comparison of each fact, with the type of the fact it was made for.
-    facts: BTreeMap<&'static str, (TypeId, Differs)>,
+    /// The comparisons, each made for one fact: a name can have several, one per type that carries it.
+    facts: Vec<Entry>,
     /// The probes read from the registry, for [`Probes::probe_problems`].
     registered: Vec<&'static FactProbe>,
 }
@@ -82,7 +90,12 @@ impl Probes {
     pub fn from_probes(probes: impl IntoIterator<Item = &'static FactProbe>) -> Self {
         let mut all = Self::default();
         for probe in probes {
-            all.facts.insert(probe.name, ((probe.type_id)(), probe.differs));
+            all.facts.push(Entry {
+                name: probe.name,
+                type_id: (probe.type_id)(),
+                holds: probe.holds,
+                differs: probe.differs,
+            });
             all.registered.push(probe);
         }
         all
@@ -95,7 +108,12 @@ impl Probes {
     where
         F::Value: PartialEq + Debug,
     {
-        self.facts.insert(F::NAME, (TypeId::of::<F>(), fact::differs_by_eq::<F>));
+        self.facts.push(Entry {
+            name: F::NAME,
+            type_id: TypeId::of::<F>(),
+            holds: fact::holds_fact::<F>,
+            differs: fact::differs_by_eq::<F>,
+        });
         self
     }
 
@@ -105,7 +123,8 @@ impl Probes {
     /// # Errors
     /// Two registered facts share a name ([`omuzaki_char_api::facts`]).
     pub fn unprobed_facts(&self) -> Result<Vec<&'static str>, String> {
-        let probed = |f: &fact::FactRegistration| self.facts.get(f.name).is_some_and(|(id, _)| *id == (f.type_id)());
+        let probed =
+            |f: &fact::FactRegistration| self.facts.iter().any(|e| e.name == f.name && e.type_id == (f.type_id)());
         Ok(fact::facts()?.into_iter().filter(|f| !probed(f)).map(|f| f.name).collect())
     }
 
@@ -467,8 +486,11 @@ fn compare(
             continue;
         }
         for name in fact_names(under_a) {
-            match probes.facts.get(name.as_str()) {
-                Some((_, differs)) => {
+            // The probe for this name whose fact is the one published: a probe made for another fact that shares the name
+            // would see no values and pass, so it is not used.
+            let probe = probes.facts.iter().find(|e| e.name == name && (e.holds)(under_a) && (e.holds)(under_b));
+            match probe {
+                Some(Entry { differs, .. }) => {
                     if let Some(what) = differs(under_a, under_b) {
                         violate(
                             format!(", fact '{name}'"),

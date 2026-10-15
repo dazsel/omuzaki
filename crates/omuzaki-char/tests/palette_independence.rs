@@ -127,3 +127,25 @@ fn the_gate_names_a_fact_without_a_probe() {
         assert!(missing.contains(&name), "{name} not reported: {missing:?}");
     }
 }
+
+#[test]
+fn check_lists_a_fact_unprobed_when_the_only_same_name_probe_is_for_another_type() {
+    // The kit's head publishes `head`. A probe for another fact that is also called "head" must not stand in
+    // for `HeadFact`'s: it sees no values and would pass any palette-dependent one.
+    omuzaki_char_api::fact! {
+        /// A fact that shares the name of `HeadFact`.
+        HeadClash = "head", omuzaki_char_api::Last<u32>;
+    }
+    let bases = kit_characters();
+    let wrong = Probes::default().fact::<HeadClash>();
+    let report = check_all(&bases, Some(&["head"]), &wrong, &BuildServices::default());
+    assert!(
+        report.unprobed.iter().any(|(kind, fact)| kind == "head" && fact == "head"),
+        "a wrong-type probe stood in: {:?}",
+        report.unprobed
+    );
+    assert!(report.violations.is_empty(), "{:?}", report.violations);
+    // With the right probe the fact is compared.
+    let report = check_all(&bases, Some(&["head"]), &Probes::registered(), &BuildServices::default());
+    assert!(!report.unprobed.iter().any(|(_, fact)| fact == "head"), "{:?}", report.unprobed);
+}
