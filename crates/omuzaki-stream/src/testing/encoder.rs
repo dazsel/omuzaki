@@ -151,12 +151,13 @@ impl Encoder for FakeEncoder {
     }
 }
 
-/// Opens [`FakeEncoder`]s. Only H.264 without alpha is offered, at any size and at a whole number of frames per second.
+/// Opens [`FakeEncoder`]s. Only H.264 without alpha is offered, at any size and at a whole number of frames per second
+/// (a ratio that divides evenly, such as `60/2`, is honoured at its quotient).
 ///
 /// The encoder's size, `fps` and `gop` come from the request (`gop` is its `keyint`), so the stream it reports is the
 /// one asked for; the factory's own configuration supplies `key_bytes`, `delta_bytes`, `fail_at_frame`, `delay` and
 /// `side_data_every`, and its `size`, `fps` and `gop` are not used. A request the fake cannot honour is refused:
-/// another codec, alpha, or a fractional frame rate. The bitrate, thread count and `realtime` hints are ignored.
+/// another codec, alpha, or a frame rate with a remainder. The bitrate, thread count and `realtime` hints are ignored.
 #[derive(Clone, Copy, Debug)]
 pub struct FakeEncoderFactory(pub FakeEncoderConfig);
 
@@ -182,12 +183,13 @@ impl EncoderFactory for FakeEncoderFactory {
             });
         }
         let (num, den) = cfg.video.fps;
-        if den != 1 {
+        // A ratio that divides evenly is honoured at its quotient (`60/2` is 30 fps); one with a remainder is refused.
+        let (Some(fps), Some(0)) = (num.checked_div(den), num.checked_rem(den)) else {
             return Err(StreamError::Config(format!(
                 "the fake encoder takes whole frames per second, not {num}/{den}"
             )));
-        }
-        Ok(Box::new(FakeEncoder::new(FakeEncoderConfig { size: cfg.video.size, fps: num, gop: cfg.keyint, ..self.0 })))
+        };
+        Ok(Box::new(FakeEncoder::new(FakeEncoderConfig { size: cfg.video.size, fps, gop: cfg.keyint, ..self.0 })))
     }
 }
 
@@ -293,6 +295,14 @@ mod tests {
             EncodeConfig::new(VideoSpec { size: SIZE, fps: (30000, 1001), alpha: AlphaKind::None }, CodecId::H264)
                 .unwrap();
         assert!(matches!(factory.create(&ntsc), Err(StreamError::Config(_))));
+        let odd =
+            EncodeConfig::new(VideoSpec { size: SIZE, fps: (61, 2), alpha: AlphaKind::None }, CodecId::H264).unwrap();
+        assert!(matches!(factory.create(&odd), Err(StreamError::Config(_))));
+        let reducible =
+            EncodeConfig::new(VideoSpec { size: SIZE, fps: (60, 2), alpha: AlphaKind::None }, CodecId::H264).unwrap();
+        let spec = factory.create(&reducible).unwrap().spec();
+        assert_eq!(spec.timebase, Timebase { num: 1, den: 30 });
+        assert_eq!(spec.video.map(|v| v.fps), Some((30, 1)));
     }
 
     #[test]

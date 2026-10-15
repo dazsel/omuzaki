@@ -9,8 +9,13 @@ use crate::timeline::AudioSource;
 /// An [`AudioSource`] that plays back scripted runs in order, then returns empty runs.
 ///
 /// A run's `len` is set from its samples when it is read, so a script states only the position and flags. A run longer
-/// than the caller's buffer is read in pieces: the first piece carries the run's gap and flags, the rest carry neither.
-/// A read into an empty buffer returns an empty result and leaves the pending run, its gap included, as it was.
+/// than the caller's buffer is read in pieces: the first piece carries the run's gap, and every piece carries its `muted`
+/// and `private` flags. A read into an empty buffer returns an empty result and leaves the pending run, its gap
+/// included, as it was.
+///
+/// A run with no samples is skipped, never returned as an empty read (which a caller takes for the end of the script).
+/// Its `gap_before` is carried onto the next piece with samples, added to that run's own gap; a gap after the last run
+/// with samples is dropped, and an empty run's flags are dropped, as no sample carries them.
 pub struct ScriptedSource {
     /// The pending runs; the front one has its first `offset` samples already returned.
     runs: VecDeque<(TapRead, Vec<f32>)>,
@@ -38,19 +43,26 @@ impl ScriptedSource {
 
 impl AudioSource for ScriptedSource {
     fn read(&mut self, out: &mut [f32]) -> TapRead {
-        let Some((run, samples)) = self.runs.front_mut() else {
-            return TapRead { start_sample: self.pos, ..TapRead::default() };
-        };
         if out.is_empty() {
             return TapRead { start_sample: self.pos, ..TapRead::default() };
         }
+        let mut carried = 0;
+        while self.runs.front().is_some_and(|(_, samples)| samples.len() == self.offset) {
+            if let Some((skipped, _)) = self.runs.pop_front() {
+                carried = u64::saturating_add(carried, skipped.gap_before);
+            }
+            self.offset = 0;
+        }
+        let Some((run, samples)) = self.runs.front_mut() else {
+            return TapRead { start_sample: self.pos, ..TapRead::default() };
+        };
         let rest = &samples[self.offset..];
         let len = out.len().min(rest.len());
         out[..len].copy_from_slice(&rest[..len]);
         let read = TapRead {
             len,
             start_sample: run.start_sample,
-            gap_before: run.gap_before,
+            gap_before: run.gap_before.saturating_add(carried),
             muted: run.muted,
             private: run.private,
         };
@@ -119,6 +131,19 @@ mod tests {
         let a = source.read(&mut buf);
         assert_eq!((a.len, a.start_sample, a.gap_before, a.muted), (5, 10, 4, true));
         assert_eq!(source.read(&mut []).len, 0);
+    }
+
+    #[test]
+    fn empty_runs_are_skipped_and_their_gap_moves_to_the_next_piece() {
+        let empty = (TapRead { start_sample: 5, gap_before: 3, muted: true, ..TapRead::default() }, Vec::new());
+        let next = (TapRead { start_sample: 20, gap_before: 4, ..TapRead::default() }, vec![1.0; 2]);
+        let trailing = (TapRead { start_sample: 30, gap_before: 9, ..TapRead::default() }, Vec::new());
+        let mut source = ScriptedSource::new(vec![empty.clone(), empty, next, trailing]);
+        let mut buf = [0.0; 8];
+        let a = source.read(&mut buf);
+        assert_eq!((a.len, a.start_sample, a.gap_before, a.muted), (2, 20, 3 + 3 + 4, false));
+        let end = source.read(&mut buf);
+        assert_eq!((end.len, end.start_sample, end.gap_before), (0, 22, 0));
     }
 
     #[test]
