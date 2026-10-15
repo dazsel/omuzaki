@@ -298,3 +298,25 @@ fn a_focused_chip_that_comes_to_fit_lets_escape_move_focus_away() {
     let focused = h.root().children_recursive().any(|n| n.accesskit_node().is_focused());
     assert!(!focused, "Escape moves focus away from a chip whose label now fits");
 }
+
+#[test]
+fn a_cut_actor_chip_exposes_its_full_name_and_is_not_a_tab_stop() {
+    let mut h = crate::ds::testing::harness_state(Settings::default(), vec2(PANEL, 400.0), 120.0_f32, |ui, room| {
+        ui.set_max_width(*room);
+        ui.add(ActorChip::new(NAME70, ActorKind::Agent));
+    });
+    h.run_steps(3);
+    assert!(painted(h.output()).iter().any(|p| p.text == NAME70 && p.elided), "the chip is cut");
+    // egui exposes a label's text as the node's value; either field carries the full name.
+    let exposed = h.root().children_recursive().any(|n| {
+        let a = n.accesskit_node();
+        a.value().is_some_and(|v| v == NAME70) || a.label().is_some_and(|l| l == NAME70)
+    });
+    assert!(exposed, "assistive technology reads the full, uncut name");
+    press(&mut h, Modifiers::NONE, Key::Tab);
+    h.run_steps(3);
+    assert!(
+        !h.root().children_recursive().any(|n| n.accesskit_node().is_focused()),
+        "a display chip is not a Tab stop"
+    );
+}

@@ -98,7 +98,8 @@ impl ActorKind {
 
 /// "● Designer": a circle with the initial plus the name. Always includes the name.
 ///
-/// It caps its width at the room the layout gives, cuts a long name with an ellipsis, and its tooltip shows the whole name on hover or keyboard focus.
+/// It caps its width at the room the layout gives and cuts a long name with an ellipsis. Its tooltip shows the whole name on hover;
+/// its accessible name is always the whole name. It is not a Tab stop.
 #[derive(Clone, Copy, Debug)]
 #[must_use = "a chip does nothing until it is added to a Ui"]
 pub struct ActorChip<'a> {
@@ -155,7 +156,8 @@ impl Widget for ActorChip<'_> {
 
 /// `edit:character`: what an op or an agent may touch. `broadcast`, `publish`, `spend`, `native`, `input` and `process` get a warning icon.
 ///
-/// It caps its width at the room the layout gives, cuts a long name with an ellipsis, and its tooltip shows the whole name on hover or keyboard focus.
+/// It caps its width at the room the layout gives and cuts a long name with an ellipsis. Its tooltip shows the whole name on hover;
+/// its accessible name is always the whole name. It is not a Tab stop.
 #[derive(Clone, Copy, Debug)]
 #[must_use = "a chip does nothing until it is added to a Ui"]
 pub struct ScopeBadge<'a> {
@@ -222,7 +224,8 @@ impl Widget for ScopeBadge<'_> {
 
 /// `~40 s · 1.2 GB · $0.12`: what running an op will cost, before it runs (P2). Omit it when the cost is trivial.
 ///
-/// It caps its width at the room the layout gives, cuts a long cost with an ellipsis, and its tooltip shows the whole cost on hover or keyboard focus.
+/// It caps its width at the room the layout gives and cuts a long cost with an ellipsis. Its tooltip shows the whole cost on hover;
+/// its accessible name is always the whole cost. It is not a Tab stop.
 #[derive(Clone, Copy, Debug)]
 #[must_use = "a chip does nothing until it is added to a Ui"]
 pub struct CostChip<'a> {
@@ -350,7 +353,8 @@ fn pill(ui: &Ui, ds: &Ds, rect: egui::Rect, status: Status, hover: f32) -> egui:
 
 /// A status as an icon, a word and a colour: "✓ Connected".
 ///
-/// It caps its width at the room the layout gives, cuts a long text with an ellipsis, and its tooltip shows the whole text on hover or keyboard focus.
+/// It caps its width at the room the layout gives and cuts a long text with an ellipsis. Its tooltip shows the whole text on hover;
+/// its accessible name is always the whole text. It is not a Tab stop.
 #[derive(Clone, Copy, Debug)]
 #[must_use = "a chip does nothing until it is added to a Ui"]
 pub struct StatusChip<'a> {
@@ -404,7 +408,9 @@ impl Widget for StatusChip<'_> {
 
 /// A measured number next to what it checks: `✓ likeness 0.88` or `▲ likeness 0.81 < 0.85`. Click opens the evidence.
 ///
-/// It caps its width at the room the layout gives and cuts a long metric with an ellipsis (the value and the limit stay whole); its tooltip shows the whole metric on hover or keyboard focus.
+/// It caps its width at the room the layout gives and cuts a long metric with an ellipsis (the value and the limit stay whole).
+/// Its tooltip shows the whole metric on hover or keyboard focus, and its accessible name is always the whole metric. It is
+/// focusable, so keyboard focus shows the tooltip too.
 #[derive(Clone, Copy, Debug)]
 #[must_use = "a chip does nothing until it is added to a Ui"]
 pub struct GateChip<'a> {
