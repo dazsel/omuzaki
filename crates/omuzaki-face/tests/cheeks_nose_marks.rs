@@ -317,6 +317,71 @@ fn hatched_blush_at_strength_zero_draws_no_patch() {
     assert_eq!(count(&base(Section::Cheeks, &weak, 1.0), |c| matches!(c, Cmd::Stroke { .. })), 0);
 }
 
+// ------------------------------------------------------------------------------------------------ puffed cheeks
+
+/// The cheeks section for `puff` (and the default blush), on the Base layer.
+fn puffed(puff: f32) -> DrawList {
+    let mut p = params(BLUSH);
+    p.cheek_puff = puff;
+    let mut out = FaceDrawing::default();
+    paint_with(Section::Cheeks, &mock_profile(), &p, mock_projection(), &mut out);
+    out[FaceLayerId::Base].clone()
+}
+
+/// The alpha of every solid stroke and fill, in order.
+fn solid_alphas(list: &DrawList) -> Vec<u8> {
+    list.cmds()
+        .iter()
+        .filter_map(|c| match c {
+            Cmd::Stroke { paint: Paint::Solid(c), .. } | Cmd::Fill { paint: Paint::Solid(c), .. } => Some(c.a),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn no_puff_adds_nothing_and_a_puff_adds_a_rim_and_a_highlight_to_each_cheek() {
+    let (rest, none) = (puffed(0.0), base(Section::Cheeks, &mock_profile(), BLUSH));
+    assert_eq!(rest.cmds(), none.cmds(), "a puff of 0 paints the same list as before");
+    let full = puffed(1.0);
+    // Per cheek: the soft shade, the crisp line and the highlight.
+    assert_eq!(full.cmds().len(), rest.cmds().len() + 6);
+    assert_eq!(count(&full, |c| matches!(c, Cmd::Stroke { .. })), 4);
+}
+
+#[test]
+fn the_puff_scales_smoothly_with_the_channel() {
+    let (half, full) = (solid_alphas(&puffed(0.5)), solid_alphas(&puffed(1.0)));
+    assert_eq!(half.len(), full.len());
+    // The last three of each cheek's commands are the puff's: shade, line, highlight; they scale by the channel.
+    let n = full.len();
+    for i in [n - 1, n - 2, n - 3, n - 4, n - 5, n - 6] {
+        let (h, f) = (f32::from(half[i]), f32::from(full[i]));
+        assert!((h - f * 0.5).abs() <= 2.0, "command {i}: {h} against {f}");
+    }
+}
+
+#[test]
+fn the_two_puffed_cheeks_mirror_each_other_and_stay_on_the_face() {
+    let list = puffed(1.0);
+    let rect = face_rect();
+    let pts = points(&list);
+    assert!(pts.iter().all(|p| p.x >= rect.x0 && p.x <= rect.x1 && p.y >= rect.y0 && p.y <= rect.y1));
+    // The rim strokes are the polylines among the strokes: the left cheek's mirrors the right's.
+    let rims: Vec<Vec<Vec2>> = list
+        .cmds()
+        .iter()
+        .filter_map(|c| match c {
+            Cmd::Stroke { path, width, .. } if *width > 0.005 => Some(points_of(&list, *path)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(rims.len(), 2);
+    for (a, b) in rims[0].iter().zip(&rims[1]) {
+        assert!((a.x + b.x).abs() < 1e-6 && (a.y - b.y).abs() < 1e-6, "{a:?} against {b:?}");
+    }
+}
+
 // ------------------------------------------------------------------------------------------------ the fringe shade
 
 #[test]
