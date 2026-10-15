@@ -23,7 +23,7 @@ The decisions in brief are ADR 0058's; this page gives the reasons and the numbe
 
 | Crate | Kind | Holds | Depends on |
 |---|---|---|---|
-| `omuzaki-plugin-api` | API | `wit/plugin.wit` as `WIT_PLUGIN: &str` (and the files under `wit/`), `Manifest` with `parse` and `check`, `PluginId`, `PluginInfo`, `PluginState`, `PluginError`, `Requests`, `CallKind` and its `Budget` table, the `Plugins` service trait | `omuzaki-core`, `omuzaki-ops-api`, `omuzaki-store-api` (`ContentHash`), `omuzaki-library-api` (`Version`, `VersionReq`), `omuzaki-l10n-api` |
+| `omuzaki-plugin-api` | API | `wit/plugin.wit` as `WIT_PLUGIN: &str` (and the files under `wit/`), `Manifest` with `parse` and `check`, `PluginId`, `PluginInfo`, `PluginState`, `PluginError`, `Requests`, `CallKind` and its `Budget` table, the `Plugins` service trait | `omuzaki-core`, `omuzaki-ops-api`, `omuzaki-store-api` (`ContentHash`), `omuzaki-library-api` (`Version`, `VersionReq`), `omuzaki-identity-api` (`KeyId`, `Domain::Plugin`, `verify`; §7, §11), `omuzaki-l10n-api` |
 | `omuzaki-plugin-mock` | Mock | `MockPlugins` (in-memory `Plugins`), `MockGuest` (a plugin written as Rust closures against the same guest interface, no wasm), `conformance` | the API crates |
 | `omuzaki-plugin` | Implementation | the component host (wasmtime 49, Cranelift), the WASI stubs (§4.1), the bridge, the compiled-code cache, the watcher, the `plugin.*` ops; `[package.metadata.omuzaki] wasm = false` (a JIT host has no place in a browser) | the API crates, `omuzaki-http-api` |
 
@@ -229,7 +229,11 @@ account uses a connector, not `fetch`.
   and `list` loads it on entry; there is no copy taken at `init` or cached per instance. A refused call returns
   `err("revoked")` (or `none`, `false`, an empty list) and adds one `warn` line.
 - **What narrows it:** the person revoking the session (`Revoked`), `plugin.grant` removing a host or `data`,
-  `plugin.disable`, `plugin.remove`, the project closing, and the session ending for any other reason.
+  `plugin.disable`, `plugin.remove`, the project closing, the session ending for any other reason, and the person
+  revoking a publisher key (identity.md D4: its trust-list entry becomes `revoked`). A revoked key disables every
+  plugin it signed (`Disabled { reason: PublisherRevoked }`): each one's session ends `Revoked`, with its in-flight
+  calls cancelled as below, and installs and updates signed by that key are refused (`PluginError::Signature`) until
+  the person trusts it again.
 - **Outstanding requests are cancelled.** Every `fetch` in flight registers its `CancelFlag` with the session. A
   narrowing swaps `LiveGrants` first, then sets the flag of every request the new grants no longer cover (all of them
   when the session ends); `HttpTransport` stops within 50 ms and the guest gets `err("revoked")`, never the response.
@@ -247,6 +251,7 @@ Tests (conformance, both hosts, on `FakeClock` with a loopback `HttpTransport` t
 | `disable_and_remove_cancel_fetch` | the same as the first, triggered by `plugin.disable` and by `plugin.remove` |
 | `data_grant_removed_between_calls` | `write` succeeds; `plugin.grant { data: false }`; the very next `read`, `write`, `remove` and `list` are refused, and the folder is unchanged |
 | `revoke_races_write` | 1,000 rounds of a `write` racing a revocation: each write either completed before the revoking op returned or was refused; no file changes after it returns |
+| `revoked_publisher_key_disables_running_plugin` | two running plugins signed by one key, one with a `fetch` waiting; the person marks the key revoked; both are `Disabled { PublisherRevoked }`, both sessions end `Revoked`, the `fetch` is cancelled as in the first row, and installing or updating a package signed by that key is refused |
 | `revoked_entry_stops` | an entry looping over `log` stops at the next import or epoch after the session is revoked, with its transaction rolled back |
 
 ## 4. The sandbox
@@ -270,7 +275,7 @@ deterministic (automation D6), so it reaches no clock and no entropy except thro
 | `wasi:clocks/monotonic-clock` | the runner's clock, as `monotonic-seconds` | `cx.now()`, the step's show time; `subscribe-*` pollables are ready when their instant ≤ that time |
 | `wasi:clocks/wall-clock` | the runner's clock since 1970-01-01 at session start, so tests stay deterministic | `cx.utc()`, the step's wall time, which D6 pins as part of the item; never the OS clock |
 | `wasi:random/random` | OS entropy: it backs the guest's `getrandom`, so keys and nonces must not be predictable | `cx.rng()`, the node's own stream (D6: the show seed forked by `"<graph>/<node>"`); never OS entropy |
-| `wasi:random/insecure`, `insecure-seed` | a ChaCha stream seeded from the content hash and the session id (deterministic, ADR 0009); tests also seed `random` through a test-only host option | `insecure` draws from `cx.rng()`; `insecure-seed` is the first 128 bits of the instance's stream, the show seed forked by `"plugin:<id>"` |
+| `wasi:random/insecure`, `insecure-seed` | a ChaCha stream seeded from the content hash and the session id (deterministic, ADR 0009); tests also seed `random` through a test-only host option | `insecure` draws from `cx.rng()`; `insecure-seed` is 128 bits drawn from the same node stream (the show seed forked by `"<graph>/<node>"`, §5.1), so two nodes of one plugin get different seeds |
 | `wasi:filesystem/types`, `preopens` | no preopens: every file call fails cleanly; files go through `data` | same |
 
 `wasi:sockets` and `wasi:http` are never linked.
@@ -358,7 +363,7 @@ Measured on `R` unless the row says otherwise; the plugin bench (§12) runs nigh
 
 | Path | Budget | Statistic | Gate | On breach |
 |---|---|---|---|---|
-| Install: hash, signature check, manifest check, compile of a 2 MiB component | ≤ 1.5 s | worst of 5 | bench `install_2mib`, nightly | reported; nothing stops |
+| Install (`plugin.install`'s `work`, off the document lock): hash, signature check, manifest check, copy, compile of a 2 MiB component | ≤ 1.5 s | worst of 5 | bench `install_2mib`, nightly | reported; nothing stops |
 | Load from the compiled-code cache, to `init` called | ≤ 20 ms | p95 | bench `load_cached`, nightly | reported |
 | `init` | 10⁹ fuel, 5 s | per call | §4.3, conformance test | fault |
 | Host-call overhead, `call` round trip with 1 KiB of JSON each way, excluding the op | ≤ 20 µs | p95 | bench `call_1kib`, nightly; same-session A/B on bridge PRs | reported |
@@ -390,11 +395,18 @@ plugin CPU and memory as their own line.
 ### 6.2 States
 
 `PluginState`: `Installed` (on disk, off), `Starting`, `Running`, `Faulted { reason, at }`, `Disabled { reason }`
-(`Person`, `Faults`, `Incompatible`), `Reloading`. **Nothing loads at launch that the person has not enabled**
+(`Person`, `Faults`, `Incompatible`, `PublisherRevoked`), `Reloading`. **Nothing loads at launch that the person has not enabled**
 (SE-04): a disabled plugin's manifest is read for the list, its component is never compiled.
 
 ### 6.3 Update, reload and removal
 
+- **Install is a job** (`OpKind::Job`, ADR 0036). `plan` checks the path and the id under the lock and changes
+  nothing. `work` runs on a `Cpu` job thread without the lock: extraction into staging, hashing, the signature check,
+  the manifest check, the copy into `plugins/<id>/<hash>/` and the component compile into the cache, with a
+  `JobCtx::checkpoint` between steps. `finish` takes the lock only to commit the registration (the installed record and
+  the approval card), as one undo step. Its time cap and cancellation are ADR 0036's (decisions 3 and 4): a cancelled
+  or capped install deletes its staging and copied files, registers nothing, and leaves the cache only what it can
+  reuse.
 - **Update** installs the new hash beside the old, carries approvals per 3.2, and swaps with a reload.
 - **Hot reload** (`plugin.reload`, or the watcher of a plugin installed with `watch`, which re-reads its source folder): the trigger is a changed
   content hash, never a timestamp. New entry calls queue; the running one finishes or meets its deadline; `shutdown`
@@ -403,13 +415,14 @@ plugin CPU and memory as their own line.
   plugin that wants to keep something writes it to its data folder, which survives.
 - **Removal** (`plugin.remove {id}`) disables, ends the session (3.4) and deletes the packages; the data folder stays
   under its owner (6.4). Its approvals and settings values are dropped; History keeps its steps under its actor. It
-  is an ordinary edit.
+  is `Undo::None`, confirmed first like `plugin.remove_data`: deleted package files, approvals and settings are
+  outside the document, so no inverse patch restores them. The dialog says so: reinstalling the package restores the
+  plugin, and its approvals are asked for again on the card.
 - **Deleting the data** (`plugin.remove_data {owner}`) deletes a data folder for good. It is `Undo::None`: the bytes
   are gone and no inverse patch brings them back, so the person confirms it first, on a dialog that names the plugin,
   the publisher and the folder's size. A data folder whose plugin is still installed is refused (remove it first).
-  The manager's "Remove and delete its data" runs the two ops in that order, behind the one confirmation.
-  `OpMeta::undo` is fixed per op, which is why the destructive half is its own op rather than an argument of
-  `plugin.remove`.
+  The manager's "Remove and delete its data" runs the two ops in that order, behind the one confirmation. Deleting
+  the data stays its own op so that removal keeps the data unless the person asks otherwise.
 
 ### 6.4 Data ownership and migration
 
@@ -466,7 +479,9 @@ agent = "confirm"              # free, confirm or never; default never
   against the registry at install. Two plugins with one id can't both be installed.
 - **Package:** a folder or a `.zip` of one: `plugin.toml`, the component, `l10n/<locale>/*.ftl`, `plugin.sig`. The
   content hash is BLAKE3 over the sorted (path, bytes) list without `plugin.sig`; the signature is an ADR 0042
-  envelope over that hash with the domain tag `omuzaki/plugin/v1`. **Extraction** is into a fresh staging folder and
+  envelope over that hash under a new `Domain::Plugin`, tag `omuzaki-plugin-v1\0` (ADR 0042's `omuzaki-<use>-v<N>\0`
+  shape). `Domain` is `omuzaki-identity-api`'s closed enum, so the variant is a cross-area contract change: an ADR 0042
+  amendment the Director approves (§11), never a tag the plugin crates define. **Extraction** is into a fresh staging folder and
   refuses the whole package on: an absolute path, a drive prefix or a `..` component; a symlink, hardlink or any entry
   that is not a regular file or folder; two entries equal after normalising (Unicode NFC, case-folded, `/` only); more
   than 256 entries or 32 MiB uncompressed. The hash is taken over the staged files, so what is hashed is what loads.
@@ -518,11 +533,11 @@ agent = "confirm"              # free, confirm or never; default never
 |---|---|---|---|---|
 | `plugin.list {}` | Query | `read` | anyone, agents included | installed plugins: `PluginInfo` (id, version, hash, publisher, licence, state, grants, worlds) |
 | `plugin.describe {id}` | Query | `read` | anyone | one plugin: manifest, requests, approvals, last faults, memory and CPU |
-| `plugin.install {path, watch?}` | Edit (`Undo::Explicit`) | `edit:settings` | person only | checks and copies a package; shows the card; does not enable |
+| `plugin.install {path, watch?}` | Job (`OpKind::Job`, `Undo::Explicit`) | `edit:settings` | person only | checks and copies a package off the lock, then registers it (6.3); shows the card; does not enable |
 | `plugin.enable {id, project?}` / `plugin.disable {id, project?}` | Edit | `edit:settings` | person only | writes `plugins.enabled`; starts or stops the instance |
 | `plugin.grant {id, scopes?, hosts?, data?}` | Edit | `edit:settings` | person only | sets what the person approves, never beyond the requests |
 | `plugin.reload {id}` | Edit | `edit:settings` | person only | 6.3 |
-| `plugin.remove {id}` | Edit | `edit:settings` | person only | 6.3; the data folder stays |
+| `plugin.remove {id}` | Edit (`Undo::None`, confirmed first) | `edit:settings` | person only | 6.3; the data folder stays; reinstalling restores the package, and approvals are asked again |
 | `plugin.remove_data {owner}` | Edit (`Undo::None`, confirmed first) | `edit:settings` | person only | deletes a removed plugin's data folder (6.3) |
 | `plugin.migrate_data {from, to}` | Edit (`Undo::Explicit`) | `edit:settings` | person only | moves a kept data folder to an installed plugin's owner (6.4) |
 | `plugin.run {id, command, args}` | Driver job (as `script.run`) | `read`; the driver checks the command's declared scope first | anyone holding that scope | runs a plugin command (14.1) inside the caller's grants (3.2); the guest runs off the document lock and its inner calls go through `JobCtx::call` in one executor-owned transaction |
@@ -575,6 +590,10 @@ pub trait Plugins: Send + Sync {
 
 `DataOwner { publisher: Publisher, installation: InstallationId }` (6.4) and `KeptData` join the types above.
 
+**`omuzaki-identity-api`** (a cross-area contract change: an ADR 0042 amendment that needs the Director's approval
+before the install work signs or verifies anything): `Domain::Plugin`, tag `omuzaki-plugin-v1\0`, added to
+`Domain::ALL`, with ADR 0042's tag tests (unique, prefix-free). The plugin crates only call `verify(Domain::Plugin, …)`.
+
 **`omuzaki-settings-api`** (its own contract task, approved by the Director before #1571): the runtime settings
 registry of §7.
 
@@ -597,8 +616,9 @@ exist.
   - `node_plugin_replay_identical`: one seed and item script run twice gives byte-identical `log_json`, the
     run-op arguments included; between the runs the host's OS clock and entropy source are advanced and reseeded.
   - `node_plugin_seed_changes_draws`: a different show seed changes the random arguments and nothing else.
-  - `node_plugin_stream_is_per_node`: under one seed, nodes at two `<graph>/<node>` paths draw different values,
-    each equal to D6's `Rng::new(seed).fork(stream)` for its path, so adding a node never shifts another's draws.
+  - `node_plugin_stream_is_per_node`: under one seed, two nodes of one plugin at two `<graph>/<node>` paths draw
+    different values from `get-random-bytes`, `insecure` and `insecure-seed`, each equal to what D6's
+    `Rng::new(seed).fork(stream)` gives for its path, so adding a node never shifts another's draws.
   - `node_instance_never_reaches_os`: the node linker is built with OS clock and entropy sources that panic, and the
     script runs.
   - `node_poll_never_blocks`: a `poll` on a timer later than the step's time traps "would block in a node activation"

@@ -6,7 +6,8 @@ area: decisions
 
 # 0058: Plugins are wasmtime components that call ops through one generic bridge, as their own sessioned actor, under fuel and memory caps (2026-10-15)
 
-**Status:** accepted (2026-10-15). It adds two approved `omuzaki-ops-api` variants. **Context:** PL-01, PL-03, PL-04; spec v3 §6, §9, §10,
+**Status:** accepted (2026-10-15). It adds two approved `omuzaki-ops-api` variants and needs one `omuzaki-identity-api`
+variant, `Domain::Plugin`, which the Director approves as an ADR 0042 amendment. **Context:** PL-01, PL-03, PL-04; spec v3 §6, §9, §10,
 §30, §39 rules 1, 2, 6, 10; ADR 0009, 0015, 0016, 0020, 0034, 0042. Design: `docs/design/plugins.md`.
 
 ## Context
@@ -60,9 +61,12 @@ manifest, rights, and how plugins relate to scripts (ADR 0034).
    Ceiling = manifest requests ∩ the person's approval ∩ the person's grants. `native`, `fs`, `process`, `input` and
    `script` are never granted; files only in the plugin's own data folder; network only through the host's `fetch`
    to hosts approved one by one; `publish`, `broadcast` and `spend` are queued for a person on every use.
-   Approvals attach to the content hash and the publisher key, never the name. **Revocation bites at once:** every
-   `http` and `data` call checks the live grant, and revoking the session or removing a grant cancels the
-   outstanding `fetch`es (design 3.4, with the tests that prove it mid-request).
+   Approvals attach to the content hash and the publisher key, never the name. Packages are signed in ADR 0042's
+   envelope under a new `Domain::Plugin` (tag `omuzaki-plugin-v1\0`), a cross-area change to `omuzaki-identity-api`'s
+   closed enum that the Director approves, not a tag the plugin crates invent. **Revocation bites at once:** every
+   `http` and `data` call checks the live grant, and revoking the session, removing a grant or revoking the publisher
+   key (identity D4) cancels the outstanding `fetch`es; a revoked key disables every plugin it signed, ends their
+   sessions and refuses installs and updates it signed (design 3.4, with the tests that prove it mid-request).
 6. **Sandbox:** no WASI except a fixed stub subset that grants nothing (so `std` guests link); 64 MiB memory, one
    table of 10,000 elements, 32 instances, a 512 KiB stack; fuel and an epoch deadline per call kind (`init` 10⁹
    fuel and 5 s; node activations 10⁶ fuel, about 1 ms on `R`, and 2 ms); a host-call bucket of 10,000 a second; `ops.call` and `plan` bytes capped at 1 MiB in and out; each call's fuel is the smaller of its cap and the plugin's remaining CPU share. A
@@ -80,8 +84,10 @@ manifest, rights, and how plugins relate to scripts (ADR 0034).
    setting; nothing loads unless enabled (SE-04). Reload swaps by content hash, drains, and hands over no state.
    **Kept data belongs to an identity:** a data folder is keyed by the verifying publisher key plus a per-install id,
    never the plugin id, so another publisher's plugin with the same id never sees it; moving data between identities
-   is a person-only op the person confirms. Removing a plugin is an ordinary edit that keeps the data; deleting the
-   data is its own `Undo::None` op, confirmed first.
+   is a person-only op the person confirms. Removing a plugin keeps the data but deletes the package, approvals and
+   settings, so it is `Undo::None` and confirmed first (reinstalling restores it; approvals are asked again);
+   deleting the data is its own `Undo::None` op, confirmed first. `plugin.install` is a job (ADR 0036): hashing,
+   verification, copying and compiling run in `work` off the document lock, and only the registration commit takes it.
    Plugin settings register at enable and leave at disable through a **runtime settings registry** in the settings
    contract (design §7 states what it must provide), its own contract task that lands, with conformance tests,
    before the plugin settings work builds on it.
@@ -108,6 +114,8 @@ manifest, rights, and how plugins relate to scripts (ADR 0034).
 - `omuzaki-ops-api` gains `CauseKind::Plugin` and `EndReason::Faulted { reason }` (approved by the Runtime lead), in
   one task with #1535's `CauseKind::Review` that also marks both enums `#[non_exhaustive]` (ADR 0054 §4).
   `Actor::Plugin` and `Transport::Plugin` already exist.
+- `omuzaki-identity-api` gains `Domain::Plugin` (`omuzaki-plugin-v1\0`), an ADR 0042 amendment that needs the
+  Director's approval before the install work lands.
 - The executor gains one plugin rule: per-use queueing of `publish`, `broadcast` and `spend` for plugin sessions.
 - `omuzaki-settings-api` gains the runtime settings registry (register, unregister, owner-tagged values), as its own
   contract task.
