@@ -67,8 +67,8 @@ pub struct Piping {
     /// How much of the bevel at the inner border there is, 0 (none) to 1.
     #[serde(default = "one")]
     pub bevel: f64,
-    /// The lip tucked under the cloth; `None` leaves it out.
-    #[serde(default = "lip", skip_serializing_if = "Option::is_none")]
+    /// The lip tucked under the cloth (the robe's strip has [`Lip::default`]); `None` leaves it out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lip: Option<Lip>,
     /// How much the rolled edge bulges out, 0 to 1.
     #[serde(default = "one")]
@@ -92,11 +92,6 @@ pub struct Piping {
 
 fn one() -> f64 {
     1.0
-}
-
-#[allow(clippy::unnecessary_wraps)] // serde's default for an optional lip: present unless left out
-fn lip() -> Option<Lip> {
-    Some(Lip::default())
 }
 
 fn tile() -> f64 {
@@ -332,8 +327,7 @@ pub fn build_cord(surface: &Surface, spec: &Cord) -> Result<MeshBuilder, TrimErr
     let swept = tube(&centres, |_| spec.radius, segments)?;
     let skin = |_: DVec3, i: usize, _: usize| points[i].skin.clone();
     let inside = |i: usize, _: usize| swept.centres[i];
-    let options =
-        GridOptions { wrap_j: true, inside: Some(&inside), skin: Skin::Per(&skin), ..GridOptions::default() };
+    let options = GridOptions { wrap_j: true, inside: Some(&inside), skin: Skin::Per(&skin), ..GridOptions::default() };
     let mut builder = MeshBuilder::new();
     builder.add_grid(&swept.grid, &options)?;
     let last = points.len() - 1;

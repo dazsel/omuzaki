@@ -363,7 +363,10 @@ fn frame_points(points: &mut [RailPoint], closed: bool) -> Result<(), TrimError>
     for (p, d) in points.iter_mut().zip(tangents) {
         let tangent = (d - p.normal * d.dot(p.normal)).try_normalize();
         let Some(tangent) = tangent else {
-            return Err(TrimError::invalid("rail", format!("it doubles back on itself at t = {}, phi = {}", p.t, p.phi)));
+            return Err(TrimError::invalid(
+                "rail",
+                format!("it doubles back on itself at t = {}, phi = {}", p.t, p.phi),
+            ));
         };
         p.tangent = tangent;
         p.side = tangent.cross(p.normal);
@@ -623,14 +626,26 @@ pub fn cylinder(
         let a = TAU * fraction(j % radial, radial);
         DVec3::new(r * a.sin(), y, r * a.cos())
     };
-    add_closed(builder, (rows.len(), radial + 1), (false, true), |i, j| basis.place(local(i, j)), &|_, _| basis.origin, skin)
+    add_closed(
+        builder,
+        (rows.len(), radial + 1),
+        (false, true),
+        |i, j| basis.place(local(i, j)),
+        &|_, _| basis.origin,
+        skin,
+    )
 }
 
 /// A box of `size` centred on the origin, along the local axes.
 ///
 /// # Errors
 /// The kit's errors for a degenerate shape.
-pub fn cuboid(builder: &mut MeshBuilder, basis: &Basis, size: DVec3, skin: &[(JointRef, f32)]) -> Result<(), TrimError> {
+pub fn cuboid(
+    builder: &mut MeshBuilder,
+    basis: &Basis,
+    size: DVec3,
+    skin: &[(JointRef, f32)],
+) -> Result<(), TrimError> {
     let axes = [basis.x * (size.x / 2.0), basis.y * (size.y / 2.0), basis.z * (size.z / 2.0)];
     for (k, sign) in [(0, 1.0), (0, -1.0), (1, 1.0), (1, -1.0), (2, 1.0), (2, -1.0)] {
         let (u, v) = (axes[(k + 1) % 3], axes[(k + 2) % 3]);
@@ -710,7 +725,12 @@ pub fn extrude(
 }
 
 /// Closes a flat convex ring with a polygon facing `outward`, wound to match.
-fn disc(builder: &mut MeshBuilder, mut ring: Vec<DVec3>, outward: DVec3, skin: &[(JointRef, f32)]) -> Result<(), TrimError> {
+fn disc(
+    builder: &mut MeshBuilder,
+    mut ring: Vec<DVec3>,
+    outward: DVec3,
+    skin: &[(JointRef, f32)],
+) -> Result<(), TrimError> {
     // Newell's normal of the ring as given: reverse the ring if it faces the other way.
     let mut newell = DVec3::ZERO;
     for (k, p) in ring.iter().enumerate() {
