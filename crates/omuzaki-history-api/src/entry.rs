@@ -3,11 +3,11 @@
 use std::sync::Arc;
 
 use omuzaki_core::time::Seconds;
-use omuzaki_doc_api::Patch;
-use omuzaki_ops_api::{Actor, OpRecord, TxId};
+use omuzaki_doc_api::{Patch, Value};
+use omuzaki_ops_api::{Actor, JobId, JobState, OpRecord, TxId};
 use serde::{Deserialize, Serialize};
 
-use crate::{HistoryExport, WallTime};
+use crate::{HistoryExport, OpenTxExport, WallTime};
 
 /// A log sequence number: the position of one entry in a project's journal. Starts at 1, grows by one per entry,
 /// continues across sessions and is never reused. `Lsn(0)` means "nothing yet".
@@ -105,6 +105,46 @@ pub enum HistoryEntry {
         tx: TxId,
         /// The stack it was dropped from.
         stack: Stack,
+    },
+    /// A job started. Durable **before** the job's `work` begins and before the start is acknowledged, so a job the
+    /// crash interrupted is known to recovery. Progress is never journalled.
+    JobStarted {
+        /// The new job.
+        job: JobId,
+        /// The op the job runs.
+        op: String,
+        /// Its arguments.
+        args: Value,
+        /// The actor that started it.
+        actor: Actor,
+        /// The actor the job runs for, when it differs from `actor`.
+        on_behalf_of: Option<Actor>,
+        /// When, in seconds on the runner's session clock (see [`HistoryEntry::Session`]); always finite.
+        at: Seconds,
+    },
+    /// A job ended. Follows the job's finish in the same lock hold as the finish's own entries.
+    JobEnded {
+        /// Which job.
+        job: JobId,
+        /// How it ended.
+        state: JobState,
+    },
+    /// A joined driver's own records left the open transaction `tx`, and `patch` was applied to undo them.
+    ///
+    /// Replay **replaces** the open transaction `tx` with `remaining` (its patch, scopes and effects, the same
+    /// [`OpenTxExport`] a snapshot holds) instead of subtracting records. That is exact whether the journal tail starts
+    /// before the job's records or after a snapshot that already merged them. `seqs` is for the audit trail only. A
+    /// crash after `TxRevert` and before the caller commits recovers the open transaction as any other (rolled back
+    /// whole).
+    TxRevert {
+        /// The open transaction the records left.
+        tx: TxId,
+        /// The op records that were removed from `tx`, for the audit trail.
+        seqs: Vec<u64>,
+        /// The revert patch that was applied.
+        patch: Patch,
+        /// `tx` after the records left: the state replay installs.
+        remaining: OpenTxExport,
     },
     /// The executor's whole history right now (cheap: steps are shared), so a snapshot can carry it. Appended when
     /// [`JournalSink::wants_mark`](crate::JournalSink::wants_mark) is true; never written to the journal file.
