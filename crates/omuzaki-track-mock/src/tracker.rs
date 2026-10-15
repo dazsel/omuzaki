@@ -6,9 +6,9 @@ use std::time::Duration;
 
 use omuzaki_anim_api::{FrameSource, TrackFrame, TrackStatus};
 use omuzaki_core::time::Seconds;
-use omuzaki_track_api::{
-    CameraFormat, CameraId, CameraInfo, LatencyStats, PixelFormat, TrackError, Tracker, TrackerConfig,
-};
+use omuzaki_track_api::camera::{CameraFormat, CameraId, CameraInfo, PixelFormat};
+use omuzaki_track_api::error::TrackError;
+use omuzaki_track_api::tracker::{LatencyStats, Tracker, TrackerConfig};
 
 use crate::FakeCamera;
 

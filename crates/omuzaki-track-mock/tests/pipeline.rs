@@ -7,10 +7,11 @@ use std::time::Duration;
 
 use omuzaki_anim_api::{Channel, DeviceProfile, FrameSource, TrackFrame, TrackStatus};
 use omuzaki_core::time::Seconds;
-use omuzaki_track_api::{
-    Camera, CameraFormat, CameraFormatRequest, CameraId, ClockMap, DeviceTime, PixelFormat, TrackError, Tracker,
-    TrackerConfig, mailbox,
-};
+use omuzaki_track_api::camera::{Camera, CameraFormat, CameraFormatRequest, CameraId, DeviceTime, PixelFormat};
+use omuzaki_track_api::clock::ClockMap;
+use omuzaki_track_api::error::TrackError;
+use omuzaki_track_api::mailbox::mailbox;
+use omuzaki_track_api::tracker::{Tracker, TrackerConfig};
 use omuzaki_track_mock::{FakeCamera, FakeTracker};
 
 const WAIT: Duration = Duration::from_millis(100);

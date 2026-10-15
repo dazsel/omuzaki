@@ -7,7 +7,7 @@ use std::thread;
 
 use omuzaki_anim_api::{ARKIT_COUNT, ChannelMask, DeviceProfile, FrameSource, TrackFrame};
 use omuzaki_core::time::Seconds;
-use omuzaki_track_api::mailbox;
+use omuzaki_track_api::mailbox::mailbox;
 
 const FRAMES: u64 = 1_000_000;
 

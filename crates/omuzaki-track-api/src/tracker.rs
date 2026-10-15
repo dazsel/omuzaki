@@ -56,7 +56,7 @@ impl Default for TrackerConfig {
 pub struct LatencyStats {
     /// Frames published.
     pub frames: u64,
-    /// Camera frames skipped because the tracker was still busy (gaps in [`CameraFrame::seq`](crate::CameraFrame)).
+    /// Camera frames skipped because the tracker was still busy (gaps in [`CameraFrame::seq`](crate::camera::CameraFrame::seq)).
     pub dropped: u64,
     /// Median.
     pub p50: Duration,
@@ -76,11 +76,11 @@ pub trait Tracker: Send {
     fn devices(&self) -> Vec<CameraInfo>;
 
     /// Starts tracking from `device` and returns the pipeline's input port, normally a
-    /// [`MailboxReader`](crate::MailboxReader). Starting again stops the previous session first, and that session's
+    /// [`MailboxReader`](crate::mailbox::MailboxReader). Starting again stops the previous session first, and that session's
     /// source then returns `None` for ever. Cold; person-initiated only (see the crate docs).
     ///
     /// # Errors
-    /// Whatever [`Camera::open`](crate::Camera::open) returns, or [`TrackError::Backend`] if the model cannot load.
+    /// Whatever [`Camera::open`](crate::camera::Camera::open) returns, or [`TrackError::Backend`] if the model cannot load.
     fn start(&mut self, device: &CameraId, config: &TrackerConfig) -> Result<Box<dyn FrameSource>, TrackError>;
 
     /// Stops the session and releases the camera; a no-op when stopped.

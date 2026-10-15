@@ -123,7 +123,7 @@ impl CameraFormatRequest {
 }
 
 /// A timestamp on the camera's own clock, in nanoseconds from an epoch the device chooses. Only differences mean
-/// anything; [`ClockMap`](crate::ClockMap) puts it on the stage clock.
+/// anything; [`ClockMap`](crate::clock::ClockMap) puts it on the stage clock.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DeviceTime(pub u64);
 
