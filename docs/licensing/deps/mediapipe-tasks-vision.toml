@@ -1,0 +1,7 @@
+section = "in-use"
+item = "@mediapipe/tasks-vision 0.10.14"
+kind = "js+wasm"
+used_for = "prototype webcam tracking"
+status = "conditions"
+condition = "ship Apache text + notices ourselves; self-host; pin 0.10.14 (later versions plan telemetry)"
+audit = "A1"

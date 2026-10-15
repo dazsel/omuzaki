@@ -1,0 +1,7 @@
+section = "models"
+item = "Piper voices `ryan`, `hfc_female`, `lessac`"
+kind = "model"
+used_for = "TTS"
+status = "NO"
+condition = "CC BY-NC-SA / research-only datasets"
+audit = "B5"

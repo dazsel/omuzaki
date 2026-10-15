@@ -1,0 +1,8 @@
+section = "rust"
+item = "Instrument Sans, Bricolage Grotesque, JetBrains Mono, Noto Sans CJK"
+kind = "font"
+used_for = "editor UI type (design-system.md)"
+status = "conditions"
+condition = "OFL-1.1: ship the notice; never sold alone. The first three are bundled unmodified (variable fonts) in `crates/omuzaki-ui/src/ds/fonts/` with their OFL texts and `NOTICES.md`; Noto Sans CJK is not bundled yet"
+audit = "(Google Fonts / Noto)"
+paths = ["crates/omuzaki-ui/src/ds/fonts/"]

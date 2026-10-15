@@ -1,0 +1,7 @@
+section = "rust"
+item = "toml, toml_edit"
+kind = "crate"
+used_for = "project files"
+status = "yes"
+audit = "(crates.io: MIT OR Apache-2.0)"
+crates = ["toml", "toml_edit"]

@@ -1,0 +1,7 @@
+section = "models"
+item = "oauth2 5.0.0 (ramosbugs/oauth2-rs)"
+kind = "crate"
+used_for = "OIDC/OAuth public client for SSO (VC-12): authorization code with PKCE, device grant, refresh (`docs/research/2026-10-sso.md`)"
+status = "conditions"
+condition = "MIT OR Apache-2.0 (crates.io index); default features (`reqwest` + `rustls-tls`, no openssl) resolve 238 crates, all permissive, checked with `cargo deny` against our `deny.toml` (2026-10-13); one needs a maintainer decision: `webpki-roots` is CDLA-Permissive-2.0, not on the allow list"
+audit = "(crates.io: MIT OR Apache-2.0)"

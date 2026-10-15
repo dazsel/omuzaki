@@ -1,0 +1,6 @@
+section = "rust"
+item = "rustls, rustls-webpki, rustls-pki-types, tokio-rustls, hyper-rustls"
+kind = "crate"
+used_for = "TLS for `HttpFetcher` (reqwest `rustls`)"
+status = "yes"
+audit = "(crates.io: Apache-2.0 OR ISC OR MIT; ISC; MIT OR Apache-2.0)"

@@ -10,9 +10,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use omuzaki_char_api::{
-    BuildCtx, BuildError, BuildOptions, BuildServices, CharId, CharacterBuilder, CharacterDef, FaceOverlay,
-    HeadSurface, MaterialSpec, MeshData, PartCategory, PartDef, PartId, PartKind, PartKindId, PartMesh, PartMeta,
-    PartOutput, Publishes, RegistryBuilder, find_kind, kinds,
+    BuildCtx, BuildError, BuildOptions, BuildServices, CharId, CharacterBuilder, CharacterDef, FaceFact, FaceOverlay,
+    HeadFact, HeadSurface, MaterialSpec, MeshData, PartCategory, PartDef, PartId, PartKind, PartKindId, PartMesh,
+    PartMeta, PartOutput, Publishes, RegistryBuilder, find_kind, kinds,
 };
 use omuzaki_core::glam::{Vec2, Vec3};
 use omuzaki_face_api::{Check, FaceLayerId, FaceProfile, FaceProjection, FaceRect, Palette, Validate, narrow};
@@ -98,11 +98,9 @@ impl PartKind for TestHead {
                 omuzaki_char_api::MaterialName::new("test-head-skin").unwrap(),
                 material("#f9d3c5", vec![overlay]),
             )],
-            publishes: Publishes {
-                head: Some(Arc::new(Ball(narrow(params.radius)))),
-                face: Some(projection),
-                ..Publishes::default()
-            },
+            publishes: Publishes::default()
+                .with::<HeadFact>(Arc::new(Ball(narrow(params.radius))))
+                .with::<FaceFact>(projection),
             warnings: vec![format!("built by {}", ctx.part)],
             ..PartOutput::default()
         })

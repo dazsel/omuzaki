@@ -1,0 +1,7 @@
+section = "models"
+item = "FLUX.1 [dev], FLUX.2 [dev], FLUX.2 klein-9B"
+kind = "model"
+used_for = "(not used)"
+status = "NO"
+condition = "non-commercial model licences"
+audit = "B6"

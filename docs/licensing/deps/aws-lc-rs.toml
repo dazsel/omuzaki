@@ -1,0 +1,7 @@
+section = "rust"
+item = "aws-lc-rs, aws-lc-sys, ring, untrusted"
+kind = "crate"
+used_for = "rustls's crypto provider and its helpers (statically built, no system OpenSSL)"
+status = "yes"
+condition = "keep the notices"
+audit = "(crates.io: ISC and OpenSSL-style notices for aws-lc; ring: ISC-style)"

@@ -1,0 +1,7 @@
+section = "rust"
+item = "webpki-root-certs"
+kind = "crate"
+used_for = "Mozilla root certificates; reached only on the wasm32 target (through rustls-platform-verifier), which `deny.toml` also checks; no native build links it"
+status = "conditions"
+condition = "CDLA-Permissive-2.0: allowed by a per-crate `deny.toml` exception and listed in `about.toml` `accepted`"
+audit = "(crates.io: CDLA-Permissive-2.0)"
