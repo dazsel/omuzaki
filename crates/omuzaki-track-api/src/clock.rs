@@ -7,6 +7,10 @@
 //! least. A mapped time is therefore the capture time plus the smallest transport delay seen, which is constant and
 //! not observable from timestamps alone; what matters downstream is that the spacing between frames is the
 //! camera's, without the jitter.
+//!
+//! That is the **arrival floor**, not the capture time. Latency measured from a mapped time to publish
+//! ([`LatencyStats`](crate::tracker::LatencyStats)) leaves the constant transport delay out. Including it needs a
+//! calibrated device-to-stage offset, which this map does not have; a later change would add one.
 
 use omuzaki_core::time::Seconds;
 
@@ -85,7 +89,8 @@ impl ClockMap {
         *self = Self { last_out: self.last_out, ..Self::new() };
     }
 
-    /// The stage time at which the frame stamped `captured` was taken, given that it `arrived` (stage clock) now.
+    /// The arrival-floor stage time of the frame stamped `captured`, given that it `arrived` (stage clock) now: its
+    /// capture time plus the smallest transport delay seen, not the capture time itself (see the module docs).
     /// Equal device times are fine. The result is **strictly increasing**: at least [`MIN_STEP`] after the previous
     /// one, also when the lower envelope drops (a frame that waited less than any before it) or the device repeats a
     /// time, so no two frames share a stage time. Hot path: no allocation.

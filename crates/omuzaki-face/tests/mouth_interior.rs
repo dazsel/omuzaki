@@ -1,7 +1,7 @@
 //! The mouth interior through the real painter: the clip, the teeth within the mouth, the tongue below the line, the
 //! lower teeth on a smile only, the rim and gloss by lip strength, and the zero-allocation guarantee.
 //!
-//! The match with the prototype is in `crates/omuzaki-test/tests/face_parity_mouth_interior.rs`.
+//! The match with the prototype is in `crates/omuzaki-test-face/tests/face_parity_mouth_interior.rs`.
 
 // A counting allocator is the only way to *prove* "no allocation"; the workspace denies unsafe code by default. Test
 // helpers may panic: a panic is a clear test failure.

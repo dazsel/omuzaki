@@ -1,4 +1,4 @@
-//! The eight probes (`crates/omuzaki-test/tests/raster_probes.rs`), copied verbatim: a spike cannot import a test file.
+//! The eight probes (`crates/omuzaki-test-face/tests/raster_probes.rs`), copied verbatim: a spike cannot import a test file.
 #![allow(clippy::all, clippy::pedantic)]
 use omuzaki_core::glam::{Affine2, Vec2};
 use omuzaki_face_api::{Cap, Cmd, Colour, DrawList, FaceLayerId, FaceLayerSpec, FaceRect, Join, Paint, PathRef, Stops};
