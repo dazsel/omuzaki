@@ -294,7 +294,7 @@ fn render_the_morph_pictures_when_asked() {
     let quad_pictures = |path: Path| {
         let mut r = renderer(path);
         let mesh = r.create_mesh_with(&quad, &slide_options(&quad, MeshUsage::Static)).unwrap();
-        let paint = r.create_material(&Material::unlit(Colour::WHITE)).unwrap();
+        let paint = r.create_material(&Material::unlit(Colour::rgb(200, 60, 60))).unwrap();
         [0.0, 0.5, 1.0].map(|weight| {
             draw(&mut r, Scene::new(ortho), vec![morphing(Instance::new(mesh, paint, Mat4::IDENTITY))], weight)
         })
