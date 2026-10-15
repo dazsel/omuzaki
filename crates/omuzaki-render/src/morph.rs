@@ -192,6 +192,27 @@ impl Slot {
     }
 }
 
+/// An instance that morphs this frame: weights, not all zero, on a live mesh that has targets.
+struct Morphing<'a> {
+    instance: &'a Instance,
+    weights: &'a [f32],
+    mesh: &'a GpuMesh,
+    input: MorphInput<'a>,
+}
+
+/// `instance`'s morph, if it has one this frame. The one rule for what needs a slot, shared by the walk that fills
+/// the slots and the count of how many there must be.
+fn morphing<'a>(instance: &'a Instance, scene: &'a Scene, meshes: &'a Arena<GpuMesh>) -> Option<Morphing<'a>> {
+    let range = instance.morph?;
+    let start = range.start as usize;
+    let weights = scene.morph_weights.get(start..start + range.len as usize)?;
+    if weights.iter().all(|w| *w == 0.0) {
+        return None;
+    }
+    let mesh = meshes.get(instance.mesh.index(), instance.mesh.generation())?;
+    Some(Morphing { instance, weights, mesh, input: mesh.morph_input()? })
+}
+
 /// The per-instance streams of the frame being drawn.
 #[derive(Default)]
 pub(crate) struct MorphPool {
@@ -225,11 +246,13 @@ impl MorphPool {
     /// Shrinks what grows with the scene or the mesh back to what the slots still hold: trailing empty slots go, and
     /// the scratch (sized for the largest mesh blended) shrinks to the largest blend left, to nothing if there is none.
     fn trim(&mut self) {
-        let before = self.slots.len();
+        // Only slots that hold nothing (evicted, or never used) go; one that is merely inactive this frame keeps its
+        // place until it idles out. The vector gives its room back only once it is more than twice what it needs, so
+        // a scene that shrinks and grows again does not reallocate it.
         while self.slots.last().is_some_and(|s| !s.active && !s.holds_memory()) {
             self.slots.pop();
         }
-        if self.slots.len() < before {
+        if self.slots.capacity() > 2 * self.slots.len() {
             self.slots.shrink_to_fit();
         }
         // Capacity follows what the slots keep, not this frame's use: a slot that alternates between a large and a small
@@ -276,16 +299,8 @@ impl MorphPool {
         scene: &Scene,
         outlined: impl Fn(&Instance) -> bool,
     ) -> Result<(), RenderError> {
-        let weights_of = |instance: &Instance| {
-            let range = instance.morph?;
-            let start = range.start as usize;
-            scene.morph_weights.get(start..start + range.len as usize)
-        };
-        // Slots are kept only as far as the last morphing instance, so a scene that shrinks gives its tail back.
-        let mut needed = 0;
-        for (i, instance) in scene.instances.iter().enumerate() {
+        for instance in &scene.instances {
             let Some(range) = instance.morph else { continue };
-            needed = i + 1;
             let Some(mesh) = meshes.get(instance.mesh.index(), instance.mesh.generation()) else { continue };
             let Some(input) = mesh.morph_input() else {
                 return Err(RenderError::invalid("instance", "it has morph weights but its mesh has no morph targets"));
@@ -295,6 +310,9 @@ impl MorphPool {
                 return Err(RenderError::invalid("instance", reason));
             }
         }
+        // Slots reach only as far as the last instance that morphs this frame, so one whose weights are all zero needs
+        // none, and a scene that shrinks gives its tail back.
+        let needed = scene.instances.iter().rposition(|i| morphing(i, scene, meshes).is_some()).map_or(0, |i| i + 1);
         if self.slots.len() < needed {
             self.slots.resize_with(needed, Slot::default);
         }
@@ -302,12 +320,9 @@ impl MorphPool {
             self.slots.iter_mut().zip(scene.instances.iter().map(Some).chain(std::iter::repeat(None)))
         {
             slot.active = false;
-            let morphing = instance.and_then(|instance| {
-                let weights = weights_of(instance).filter(|w| w.iter().any(|w| *w != 0.0))?;
-                let mesh = meshes.get(instance.mesh.index(), instance.mesh.generation())?;
-                Some((instance, weights, mesh, mesh.morph_input()?))
-            });
-            let Some((instance, weights, mesh, input)) = morphing else {
+            let Some(Morphing { instance, weights, mesh, input }) =
+                instance.and_then(|instance| morphing(instance, scene, meshes))
+            else {
                 // Counts only while there is something to release, so a released slot is reset once, not every frame.
                 if slot.holds_memory() {
                     slot.idle += 1;
@@ -584,5 +599,68 @@ mod tests {
             pool.prepare(&gpu.device, &gpu.queue, &meshes, &empty, |_| true).unwrap();
         }
         assert_eq!((pool.slots.len(), pool.bytes(), pool.flags.capacity()), (0, 0, 0), "and to nothing");
+    }
+
+    #[test]
+    fn a_scripted_run_reuses_every_buffer_and_ends_with_nothing_held() {
+        use omuzaki_core::glam::Mat4;
+        use omuzaki_render_api::{Camera, MaterialId, MeshId, MeshOptions, MorphRange};
+
+        let gpu = crate::gpu::Gpu::open_headless(crate::gpu::HeadlessOptions {
+            adapter: crate::gpu::AdapterPreference::Software,
+        })
+        .unwrap();
+        let mut meshes = Arena::default();
+        let ids: Vec<MeshId> = [
+            omuzaki_render_mock::shapes::cuboid(Vec3::ONE),
+            omuzaki_render_mock::shapes::quad(omuzaki_core::glam::Vec2::ONE),
+        ]
+        .iter()
+        .map(|mesh| {
+            let n = mesh.positions.len();
+            let deltas = vec![Vec3::X; n];
+            let set = MorphSet::from_dense(n, &[(Slug::new("a").unwrap(), &deltas, &[])], 0.0).unwrap();
+            let options = MeshOptions { morphs: Some(set), ..MeshOptions::default() };
+            let (index, generation) = meshes.insert(GpuMesh::upload(&gpu, mesh, &options).unwrap());
+            MeshId::from_parts(index, generation)
+        })
+        .collect();
+        // Growing and shrinking scenes, zero weights in the middle and at the end, two meshes, two materials (the
+        // odd one is outlined).
+        let scenes: Vec<Scene> = (0..20_usize)
+            .map(|k| {
+                let mut scene = Scene::new(Camera::default());
+                for i in 0..[1, 8, 3, 12, 2, 6, 12, 1, 5, 9][k % 10] {
+                    let material = MaterialId::from_parts(((i * 3 + k) % 2) as u32, 0);
+                    let mut instance = Instance::new(ids[(i + k) % 2], material, Mat4::IDENTITY);
+                    instance.morph = Some(MorphRange { start: i as u32, len: 1 });
+                    scene.instances.push(instance);
+                    let zero = (i * 7 + k).is_multiple_of(3) || (k.is_multiple_of(2) && i == scene.instances.len() - 1);
+                    scene.morph_weights.push(if zero { 0.0 } else { 0.25 });
+                }
+                scene
+            })
+            .collect();
+        let outlined = |instance: &Instance| instance.material.index() == 1;
+        let mut pool = MorphPool::default();
+        let held = |pool: &MorphPool| -> Vec<_> {
+            pool.slots.iter().map(|s| (s.shapes.buffer.clone(), s.smooth.buffer.clone())).collect()
+        };
+        for scene in &scenes {
+            pool.prepare(&gpu.device, &gpu.queue, &meshes, scene, outlined).unwrap();
+        }
+        let warmed = held(&pool);
+        for scene in &scenes {
+            pool.prepare(&gpu.device, &gpu.queue, &meshes, scene, outlined).unwrap();
+            for (slot, was) in pool.slots.iter().zip(&warmed) {
+                assert!(slot.shapes.buffer == was.0 && slot.smooth.buffer == was.1, "a buffer was replaced");
+            }
+        }
+        let empty = Scene::new(Camera::default());
+        for _ in 0..=IDLE_FRAMES {
+            pool.prepare(&gpu.device, &gpu.queue, &meshes, &empty, outlined).unwrap();
+        }
+        let kept = (pool.slots.len(), pool.bytes(), pool.flags.capacity(), pool.sums.capacity());
+        assert_eq!(kept, (0, 0, 0, 0), "slots, buffers and scratch are all given back");
     }
 }
