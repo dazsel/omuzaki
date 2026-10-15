@@ -1,7 +1,6 @@
 //! Getting ONNX Runtime into the process: fetch the pinned archive through the app's [`FileSource`], unpack the
 //! library (and the provider libraries that must sit beside it), and hand its path to `ort` once.
 
-use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -129,6 +128,7 @@ fn provider_library(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::io::Write;
 
     /// Serves a tiny archive per build, remembering which were asked for.
