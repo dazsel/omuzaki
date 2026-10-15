@@ -53,20 +53,6 @@ impl Expected {
 /// fix lands. Entries with the same text and overlap are one entry, since they are one defect.
 const EXPECTED_FAILURES: &[Expected] = &[
     Expected {
-        story: "tab",
-        problem: LayoutProblem::Overlap,
-        what: "Library",
-        with: Some("Close Library"),
-        defect: "a tab label overlaps its close button's label",
-    },
-    Expected {
-        story: "tab",
-        problem: LayoutProblem::Overlap,
-        what: "History",
-        with: Some("Close History"),
-        defect: "a tab label overlaps its close button's label",
-    },
-    Expected {
         story: "approval",
         problem: LayoutProblem::Overlap,
         what: "~40 s",
@@ -147,7 +133,12 @@ fn controls<S>(harness: &Harness<'_, S>) -> Vec<Control> {
 fn collect(node: Node<'_>, parent: Option<usize>, out: &mut Vec<Control>) {
     let mut operable_parent = parent;
     if operable(&node) {
-        out.push(Control { name: node.accesskit_node().label().unwrap_or_default(), rect: node.rect(), parent });
+        out.push(Control {
+            name: node.accesskit_node().label().unwrap_or_default(),
+            role: node.accesskit_node().role(),
+            rect: node.rect(),
+            parent,
+        });
         operable_parent = Some(out.len() - 1);
     }
     for child in node.children() {
@@ -237,7 +228,7 @@ fn a_planted_fixed_width_label_that_overflows_at_200_fails_and_is_named() {
 
 /// A control with no children, for the synthetic cases below.
 fn leaf(name: &str, rect: Rect, parent: Option<usize>) -> Control {
-    Control { name: name.to_owned(), rect, parent }
+    Control { name: name.to_owned(), role: Role::Unknown, rect, parent }
 }
 
 fn square(x: f32, y: f32) -> Rect {
@@ -279,4 +270,32 @@ fn an_off_screen_parent_is_flagged_even_when_its_child_is_visible() {
     assert_eq!(found.len(), 1, "only the parent is outside the window: {found:?}");
     assert_eq!(found[0].what, "parent");
     assert_eq!(found[0].problem, LayoutProblem::OutsideWindow);
+}
+
+/// A tab and its close button, as the tab bar exposes them: siblings in the tree, the button inside the tab's rectangle.
+fn tab_and_close(close: Rect) -> [Control; 2] {
+    let tab = Rect::from_min_size(pos2(0.0, 0.0), vec2(100.0, 28.0));
+    [
+        Control { name: "Library".to_owned(), role: Role::Tab, rect: tab, parent: None },
+        Control { name: "Close Library".to_owned(), role: Role::Button, rect: close, parent: None },
+    ]
+}
+
+#[test]
+fn a_tabs_close_button_inside_the_tab_is_its_affordance_not_a_collision() {
+    let inside = Rect::from_min_size(pos2(74.0, 2.0), vec2(24.0, 24.0));
+    assert!(control_overlaps(&tab_and_close(inside)).is_empty());
+}
+
+#[test]
+fn a_close_button_that_runs_out_of_its_tab_is_a_collision() {
+    let spills = Rect::from_min_size(pos2(90.0, 2.0), vec2(24.0, 24.0));
+    assert_eq!(control_overlaps(&tab_and_close(spills)).len(), 1);
+}
+
+#[test]
+fn a_button_inside_something_that_is_not_a_tab_is_still_a_collision() {
+    let mut controls = tab_and_close(Rect::from_min_size(pos2(74.0, 2.0), vec2(24.0, 24.0)));
+    controls[0].role = Role::Button;
+    assert_eq!(control_overlaps(&controls).len(), 1);
 }

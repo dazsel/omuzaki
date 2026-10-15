@@ -142,6 +142,8 @@ pub struct TabBarOutput {
 const PAD: f32 = 12.0;
 /// The close button's square, which is also its hit target (WCAG 2.5.8).
 const CLOSE: f32 = size::MIN_TARGET;
+/// What a closable tab reserves at its right edge: the close button and the gap between it and the edge.
+const CLOSE_RESERVE: f32 = CLOSE + space::S2;
 /// Narrowest a tab gets when the bar is short of room: its icon and an ellipsis.
 const MIN_TAB: f32 = 40.0;
 /// Diameter of the agent dot.
@@ -165,7 +167,7 @@ impl<'a> Show<'a> {
         let label = if tab.icon_only { 0.0 } else { paint::text_width(&self.ctx, tab.label, &self.ds.text.strong) };
         let icon = if tab.icon.is_some() { 16.0 + if tab.icon_only { 0.0 } else { space::S6 } } else { 0.0 };
         let dot = if tab.agent_active && !tab.icon_only { DOT + space::S6 } else { 0.0 };
-        let close = if tab.closable { CLOSE } else { PAD };
+        let close = if tab.closable { CLOSE_RESERVE } else { PAD };
         PAD + icon + dot + label + close
     }
 
@@ -287,8 +289,10 @@ impl<'a> Show<'a> {
     /// it was pressed.
     fn close_button(&self, ui: &mut Ui, id: Id, area: Rect, tab: &TabItem<'_>, state: TabState, focused: bool) -> bool {
         let t = &self.ds.theme;
-        let button =
-            Rect::from_center_size(pos2(area.right() - CLOSE / 2.0 - space::S2, area.center().y), vec2(CLOSE, CLOSE));
+        let button = Rect::from_center_size(
+            pos2(area.right() - CLOSE_RESERVE + CLOSE / 2.0, area.center().y),
+            vec2(CLOSE, CLOSE),
+        );
         let sense = if self.enabled { Sense::CLICK } else { Sense::hover() };
         let response = ui.interact(button, id, sense);
         let visible = state.selected || state.hot || focused || response.hovered();
@@ -384,7 +388,7 @@ fn paint_tab(painter: &egui::Painter, ds: &Ds, area: Rect, tab: &TabItem<'_>, st
         painter.circle_filled(pos2(x + DOT / 2.0, cy), DOT / 2.0, t.agent);
         x += DOT + space::S6;
     }
-    let right = area.right() - if tab.closable { CLOSE } else { PAD };
+    let right = area.right() - if tab.closable { CLOSE_RESERVE } else { PAD };
     let room = (right - x).max(0.0);
     let font = if state.selected { &ds.text.strong } else { &ds.text.body };
     let label = Rect::from_min_max(pos2(x, area.top()), pos2(x + room, area.bottom()));
