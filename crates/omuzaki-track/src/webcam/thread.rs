@@ -66,7 +66,8 @@ fn bucket_of(us: u64) -> usize {
     // `u32::MAX` microseconds, so the octave is below `OCTAVES`.
     let octave = (us / LINEAR_LIMIT_US).ilog2() as usize;
     let start = LINEAR_LIMIT_US << octave;
-    let sub = ((us - start) * SUB_BUCKETS as u64 / start) as usize;
+    // Below `SUB_BUCKETS` by construction, so the fallback is never taken.
+    let sub = usize::try_from((us - start) * SUB_BUCKETS as u64 / start).unwrap_or(SUB_BUCKETS - 1);
     (LINEAR_BUCKETS + octave * SUB_BUCKETS + sub).min(BUCKETS - 1)
 }
 
