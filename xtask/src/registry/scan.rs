@@ -144,6 +144,8 @@ pub fn scan(source: &str) -> FileScan {
     let mut frames: Vec<Frame> = Vec::new();
     let mut pending = Pending::default();
     let mut next_brace_is_mod: Option<(String, Vec<CfgAt>)> = None;
+    // Token ranges of `macro_rules!` matchers: `mod $name` there is input the macro accepts, not a module it declares.
+    let mut matchers: Vec<(usize, usize)> = Vec::new();
     let mut i = 0;
     while let Some(token) = toks.get(i) {
         let item_level = frames.iter().all(|f| matches!(f, Frame::Mod { .. }));
@@ -180,14 +182,14 @@ pub fn scan(source: &str) -> FileScan {
                 if word == "include" && is_punct(&toks, i + 1, '!') && !is_generated_include(&toks, i) {
                     out.unsupported.push(UnsupportedAt { form: Unsupported::Include, line: token.line });
                 }
-                // `mod $name;` in a macro body is still a module the scan can't name.
-                if word == "mod" && !item_level && (ident_at(&toks, i + 1).is_some() || is_punct(&toks, i + 1, '$')) {
+                if word == "mod" && !item_level && mod_in_body(&toks, i, &matchers) {
                     out.unsupported.push(UnsupportedAt { form: Unsupported::ModInBody, line: token.line });
                 }
                 if word == "macro_rules" && is_punct(&toks, i + 1, '!') {
                     if let Some(kind) = ident_at(&toks, i + 2).and_then(|name| name.strip_prefix(MACRO_PREFIX)) {
                         out.defines.push(kind.to_owned());
                     }
+                    matchers.extend(macro_matchers(&toks, i + 3));
                     i += 3; // past the name, so the definition is not read as a call
                     continue;
                 }
@@ -314,6 +316,35 @@ fn closing(toks: &[Token], open: usize) -> Option<usize> {
         }
     }
     None
+}
+
+/// Whether the `mod` at `at`, found below item level, declares a module: a name or a `$name` after it, outside the
+/// `matchers` of a `macro_rules!`, where `mod $name;` is input the macro accepts. `mod $name;` in a transcriber is
+/// still a module the scan can't name.
+fn mod_in_body(toks: &[Token], at: usize, matchers: &[(usize, usize)]) -> bool {
+    let named = ident_at(toks, at + 1).is_some() || is_punct(toks, at + 1, '$');
+    named && !matchers.iter().any(|&(from, to)| (from..=to).contains(&at))
+}
+
+/// The token ranges of the matchers in the `macro_rules!` body opening at `open`: in `{ (matcher) => { body }; ... }`
+/// the first group of each rule. A body that does not have that shape yields the rules read so far.
+fn macro_matchers(toks: &[Token], open: usize) -> Vec<(usize, usize)> {
+    let mut found = Vec::new();
+    let Some(end) = closing(toks, open) else { return found };
+    let mut at = open + 1;
+    while at < end {
+        let Some(matcher_end) = closing(toks, at) else { break };
+        found.push((at, matcher_end));
+        if !(is_punct(toks, matcher_end + 1, '=') && is_punct(toks, matcher_end + 2, '>')) {
+            break;
+        }
+        let Some(body_end) = closing(toks, matcher_end + 3) else { break };
+        at = body_end + 1;
+        if is_punct(toks, at, ';') {
+            at += 1;
+        }
+    }
+    found
 }
 
 /// Whether the `include!` at `at` is the generated `include!(concat!(env!("OUT_DIR"), "/<name>.rs"))`: the form the
@@ -614,6 +645,14 @@ const B: &[u8] = include_bytes!("b.bin");
             unsupported(source),
             [(Unsupported::Include, 1), (Unsupported::Include, 3), (Unsupported::Include, 4)]
         );
+    }
+
+    #[test]
+    fn a_mod_in_a_macro_matcher_is_input_not_a_declaration() {
+        let source = "macro_rules! parse {\n    (mod $name:ident;) => { struct Parsed; };\n    ($name:ident) => {\n        mod $name;\n    };\n}\n";
+        assert_eq!(unsupported(source), [(Unsupported::ModInBody, 4)], "only the transcriber's `mod` declares one");
+        let matcher_only = "macro_rules! parse { (mod $name:ident;) => { struct Parsed; } }\n";
+        assert_eq!(unsupported(matcher_only), []);
     }
 
     #[test]
