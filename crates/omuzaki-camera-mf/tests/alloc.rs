@@ -7,7 +7,8 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::ffi::c_void;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use omuzaki_camera_mf::modes::{
@@ -18,6 +19,9 @@ use omuzaki_track_api::camera::PixelFormat;
 struct Counting;
 
 static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
+
+// The tests share `ALLOCATIONS`, so they take turns: one test's measured window must not overlap the other's.
+static MEASURING: Mutex<()> = Mutex::new(());
 
 thread_local! {
     // The allocator is global, so it would also count the harness and runtime threads. Only the test's own thread
@@ -58,6 +62,7 @@ fn bgra(width: u32, height: u32) -> ModeInfo {
 
 #[test]
 fn nothing_allocates_after_open_even_across_a_renegotiation() {
+    let _turn = MEASURING.lock().unwrap_or_else(PoisonError::into_inner);
     // Open: size everything for the largest offered mode.
     let small = bgra(64, 48);
     let large = bgra(128, 96);
@@ -92,4 +97,35 @@ fn nothing_allocates_after_open_even_across_a_renegotiation() {
     }
     COUNTING_THIS_THREAD.with(|counting| counting.set(false));
     assert_eq!(ALLOCATIONS.load(Ordering::SeqCst) - before, 0, "the per-frame path allocated");
+}
+
+#[test]
+fn counts_only_the_test_thread() {
+    let _turn = MEASURING.lock().unwrap_or_else(PoisonError::into_inner);
+    // Spin on atomics rather than a channel or barrier: those could allocate inside the measured window.
+    let start = AtomicBool::new(false);
+    let worker_done = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            while !start.load(Ordering::SeqCst) {
+                std::hint::spin_loop();
+            }
+            // Allocates while the test thread's window is open: the counter must not see it.
+            std::hint::black_box(Vec::<u8>::with_capacity(1));
+            worker_done.store(true, Ordering::SeqCst);
+        });
+
+        COUNTING_THIS_THREAD.with(|counting| counting.set(true));
+        let before = ALLOCATIONS.load(Ordering::SeqCst);
+        start.store(true, Ordering::SeqCst);
+        while !worker_done.load(Ordering::SeqCst) {
+            std::hint::spin_loop();
+        }
+        // The one allocation this thread makes inside the window: it must be counted.
+        std::hint::black_box(Vec::<u8>::with_capacity(1));
+        let counted = ALLOCATIONS.load(Ordering::SeqCst) - before;
+        COUNTING_THIS_THREAD.with(|counting| counting.set(false));
+
+        assert_eq!(counted, 1, "the worker's allocation was counted, or the test thread's was not");
+    });
 }
