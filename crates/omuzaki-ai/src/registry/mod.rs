@@ -74,6 +74,9 @@ pub struct Shared {
     /// reports a model as active only once it is. Keyed by a per-session id; the newest session of a slot wins.
     running: Mutex<Vec<Running>>,
     next_session: AtomicU64,
+    /// Models that failed to load as a slot session's replacement, with the runtime's words: `slots` says why the
+    /// model it expected isn't the one running. Forgotten when the model loads.
+    load_failures: Mutex<Vec<(ModelRef, String)>>,
 }
 
 /// What a slot session has loaded: a model, or nothing.
@@ -157,6 +160,7 @@ impl Registry {
                 session_disabled: Mutex::new(Vec::new()),
                 running: Mutex::new(Vec::new()),
                 next_session: AtomicU64::new(0),
+                load_failures: Mutex::new(Vec::new()),
             }),
         };
         registry.reinstall(&to_reinstall);
@@ -315,9 +319,15 @@ impl Registry {
                 return Ok(Chosen::Keep { wanted });
             }
             match self.load(installed, &info) {
-                Ok(session) => return Ok(Chosen::Loaded { session, model: installed.model.clone(), wanted }),
+                Ok(session) => {
+                    self.load_failures_list().retain(|(m, _)| m != &installed.model);
+                    return Ok(Chosen::Loaded { session, model: installed.model.clone(), wanted });
+                }
                 Err(e) => {
                     tracing::warn!(model = %installed.model, "couldn't open: {e}");
+                    let mut failures = self.load_failures_list();
+                    failures.retain(|(m, _)| m != &installed.model);
+                    failures.push((installed.model.clone(), e.to_string()));
                     last = Some(e);
                 }
             }
@@ -357,6 +367,16 @@ impl Registry {
     /// Notes that session `id` is gone.
     pub(crate) fn forget_session(&self, id: u64) {
         self.running_list().retain(|r| r.id != id);
+    }
+
+    fn load_failures_list(&self) -> MutexGuard<'_, Vec<(ModelRef, String)>> {
+        self.load_failures.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Why `model` isn't running when it should be: it crashed in this app session, or a slot session couldn't load it.
+    fn trouble_with(&self, model: &ModelRef) -> Option<String> {
+        let crashed = self.session_off().iter().find(|(m, _)| m == model).map(|(_, reason)| reason.clone());
+        crashed.or_else(|| self.load_failures_list().iter().find(|(m, _)| m == model).map(|(_, e)| e.clone()))
     }
 
     fn running_list(&self) -> MutexGuard<'_, Vec<Running>> {
@@ -484,11 +504,16 @@ impl ModelRegistry for Registry {
                 let best = self.chain(&state, &info.slot, None).first().map(|i| i.model.clone());
                 // A slot session reports what it has loaded; a fallback is active only once it is.
                 let active = self.running_in(&info.slot).map_or_else(|| best.clone(), |held| held.0);
+                // What the person asked for, and so what "running something else" is measured against. A model that is
+                // only loading, with nothing known against it, is no fallback yet.
                 let expected = selected.clone().or_else(|| self.ideal(&state, &info.slot, None));
-                let fallback = expected.filter(|e| Some(e) != best.as_ref()).map(|e| {
-                    let why = self.session_off().iter().find(|(m, _)| m == &e).map(|(_, r)| format!(" ({r})"));
-                    let then = if best.is_some() { "so the slot runs its default" } else { &info.without_model };
-                    format!("{e} can't run{}, {then}", why.unwrap_or_default())
+                let fallback = expected.filter(|e| Some(e) != active.as_ref()).and_then(|e| {
+                    let trouble = self.trouble_with(&e);
+                    (Some(&e) != best.as_ref() || trouble.is_some()).then(|| {
+                        let why = trouble.map(|t| format!(" ({t})")).unwrap_or_default();
+                        let then = if active.is_some() { "so the slot runs its default" } else { &info.without_model };
+                        format!("{e} can't run{why}, {then}")
+                    })
                 });
                 SlotStatus { info, selected, active, fallback }
             })

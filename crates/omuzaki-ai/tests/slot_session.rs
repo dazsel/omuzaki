@@ -37,7 +37,8 @@ enum Event {
     /// A load began (before its delay).
     Loading,
     Loaded,
-    Reset,
+    /// `reset` reached the session, on this thread.
+    Reset(ThreadId),
     /// A `run` reached the model.
     Ran,
     /// The session was dropped, on this thread.
@@ -54,6 +55,13 @@ fn log_of(model: &ModelRef) -> Log {
     log
 }
 
+/// The threads `reset` ran on, for `model`.
+fn resets(model: &ModelRef) -> Vec<ThreadId> {
+    let log = log_of(model);
+    let log = log.lock().unwrap();
+    log.iter().filter_map(|e| if let Event::Reset(t) = e { Some(*t) } else { None }).collect()
+}
+
 fn count(model: &ModelRef, event: &Event) -> usize {
     log_of(model).lock().unwrap().iter().filter(|e| *e == event).count()
 }
@@ -65,6 +73,10 @@ struct Extras {
     /// Loads after this many earlier ones fail (the install's smoke test is the first).
     #[serde(default)]
     fail_load_after: Option<usize>,
+    /// Loading panics when a slot session's loader thread does it (the install's smoke test, on the caller's thread,
+    /// still works).
+    #[serde(default)]
+    panic_in_loader: bool,
 }
 
 /// The `fake` runtime, slowed by the model file's `load_ms`, logging loads and resets.
@@ -87,7 +99,7 @@ impl Session for Probed {
     }
 
     fn reset(&mut self) {
-        self.log.lock().unwrap().push(Event::Reset);
+        self.log.lock().unwrap().push(Event::Reset(thread::current().id()));
         self.inner.reset();
     }
 
@@ -121,6 +133,10 @@ impl Runtime for ProbeRuntime {
         let text = std::fs::read_to_string(&source.files[0].path).map_err(|e| LoadError::Format(e.to_string()))?;
         let extras: Extras = toml::from_str(&text).map_err(|e| LoadError::Format(e.to_string()))?;
         log_of(source.model).lock().unwrap().push(Event::Loading);
+        assert!(
+            !(extras.panic_in_loader && thread::current().name().is_some_and(|n| n.starts_with("slot-session"))),
+            "this model's load was set to panic"
+        );
         std::thread::sleep(Duration::from_millis(extras.load_ms));
         if extras.fail_load_after.is_some_and(|n| count(source.model, &Event::Loaded) >= n) {
             return Err(LoadError::Format("this model's load was set to fail".into()));
@@ -299,7 +315,7 @@ fn a_selection_change_answers_unavailable_until_the_new_model_is_in() {
     let models = install(&registry, &["2.0.0", "1.0.0"]);
     let (v2, v1) = (models[0].clone(), models[1].clone());
     let mut session = registry.open(&echo_slot(), None).unwrap();
-    assert_eq!(session.info().model, v1);
+    wait_for("the session to report v1", || session.info().model == v1);
     let mut out = TensorBuf::for_outputs(session.signature());
     settle(&mut *session, &mut out);
     let loads_before = count(&v2, &Event::Loaded);
@@ -322,8 +338,8 @@ fn a_selection_change_answers_unavailable_until_the_new_model_is_in() {
     assert!(took < RUN_BUDGET, "{took:?}");
     assert_eq!(result, Ok(()));
     assert!(ran(&v2) > v2_ran_before, "the new model answers");
-    assert_eq!(session.info().model, v2);
-    assert_eq!(session.info().fallback_for, None, "the selection is what runs, nothing is stood in for");
+    wait_for("the session to report v2", || session.info().model == v2);
+    wait_for("the session to report its fallback", || session.info().fallback_for.is_none());
 }
 
 #[test]
@@ -351,9 +367,9 @@ fn a_load_that_finishes_after_the_selection_moved_on_never_answers() {
     wait_for("v2's load to finish", || count(&v2, &Event::Loaded) > loads);
     settle(&mut *session, &mut out);
 
-    assert_eq!(session.info().model, v3);
+    wait_for("the session to report v3", || session.info().model == v3);
     assert_eq!(ran(&v2), ran_v2, "v2 was no longer the choice when it arrived");
-    assert_eq!(status(&registry).active, Some(v3));
+    wait_for("slots to show v3", || status(&registry).active == Some(v3.clone()));
 }
 
 #[test]
@@ -385,7 +401,7 @@ fn a_crash_falls_back_to_the_shipped_default_and_says_why() {
     let (v2, v1) = (models[0].clone(), models[1].clone());
     registry.select(&echo_slot(), Some(&v2), Requester::Person).unwrap();
     let mut session = registry.open(&echo_slot(), None).unwrap();
-    assert_eq!(session.info().model, v2);
+    wait_for("the session to report v2", || session.info().model == v2);
     let mut out = TensorBuf::for_outputs(session.signature());
     settle(&mut *session, &mut out);
     for _ in 0..2 {
@@ -398,8 +414,8 @@ fn a_crash_falls_back_to_the_shipped_default_and_says_why() {
     assert!(took < RUN_BUDGET, "{took:?}");
     settle(&mut *session, &mut out);
 
-    assert_eq!(session.info().model, v1);
-    assert_eq!(session.info().fallback_for, Some(v2.clone()));
+    wait_for("the session to report v1", || session.info().model == v1);
+    wait_for("the session to report its fallback", || session.info().fallback_for == Some(v2.clone()));
     let slot = status(&registry);
     assert_eq!(slot.active, Some(v1));
     let fallback = slot.fallback.unwrap();
@@ -483,7 +499,7 @@ fn a_fallback_that_is_still_loading_is_not_reported_as_active() {
     assert_eq!(meanwhile.active, None, "v1 is still loading: {meanwhile:?}");
     assert!(meanwhile.fallback.unwrap().contains("crashed"));
     settle(&mut *session, &mut out);
-    assert_eq!(status(&registry).active, Some(v1));
+    wait_for("slots to show v1", || status(&registry).active == Some(v1.clone()));
 }
 
 #[test]
@@ -493,7 +509,7 @@ fn an_unselected_default_that_crashes_is_recorded_too() {
     let models = install(&registry, &["1.0.0", "2.0.0"]); // 2.0.0 becomes the default
     let (v1, v2) = (models[0].clone(), models[1].clone());
     let mut session = registry.open(&echo_slot(), None).unwrap();
-    assert_eq!(session.info().model, v2);
+    wait_for("the session to report v2", || session.info().model == v2);
     let mut out = TensorBuf::for_outputs(session.signature());
     settle(&mut *session, &mut out);
     for _ in 0..2 {
@@ -502,8 +518,8 @@ fn an_unselected_default_that_crashes_is_recorded_too() {
     assert_eq!(timed_run(&mut *session, &mut out).0, Err(RunError::Unavailable));
     settle(&mut *session, &mut out);
 
-    assert_eq!(session.info().model, v1);
-    assert_eq!(session.info().fallback_for, Some(v2), "the older default stands in for the one that crashed");
+    wait_for("the session to report v1", || session.info().model == v1);
+    wait_for("the session to report its fallback", || session.info().fallback_for == Some(v2.clone()));
     let slot = status(&registry);
     assert_eq!(slot.active, Some(v1));
     assert!(slot.fallback.is_some_and(|f| f.contains("crashed")), "no selection, yet the crash is shown");
@@ -529,18 +545,18 @@ fn a_healthy_selection_or_none_clears_what_the_fallback_stood_in_for() {
     }
     assert_eq!(timed_run(&mut *session, &mut out).0, Err(RunError::Unavailable));
     settle(&mut *session, &mut out);
-    assert_eq!(session.info().fallback_for, Some(v2.clone()));
+    wait_for("the session to report its fallback", || session.info().fallback_for == Some(v2.clone()));
 
     // Back to the shipped default, which is what runs: nothing is stood in for any more (the Keep path).
     registry.select(&echo_slot(), None, Requester::Person).unwrap();
     settle(&mut *session, &mut out);
-    assert_eq!(session.info().fallback_for, None, "v1 is the default now, not a stand-in");
+    wait_for("the session to report its fallback", || session.info().fallback_for.is_none());
 
     // A healthy selection clears it too (the Load path).
     registry.select(&echo_slot(), Some(&v3), Requester::Person).unwrap();
     settle(&mut *session, &mut out);
-    assert_eq!(session.info().model, v3);
-    assert_eq!(session.info().fallback_for, None);
+    wait_for("the session to report v3", || session.info().model == v3);
+    wait_for("the session to report its fallback", || session.info().fallback_for.is_none());
 }
 
 #[test]
@@ -555,13 +571,17 @@ fn keeping_the_model_because_the_new_selection_wont_load_marks_the_fallback() {
     let mut session = registry.open(&echo_slot(), None).unwrap();
     let mut out = TensorBuf::for_outputs(session.signature());
     settle(&mut *session, &mut out);
-    assert_eq!(session.info().fallback_for, None);
+    wait_for("the session to report its fallback", || session.info().fallback_for.is_none());
 
     registry.select(&echo_slot(), Some(&v2), Requester::Person).unwrap();
     settle(&mut *session, &mut out);
 
-    assert_eq!(session.info().model, v1, "v2 wouldn't load, so v1 stays");
-    assert_eq!(session.info().fallback_for, Some(v2));
+    wait_for("the session to report v1", || session.info().model == v1);
+    wait_for("the session to report its fallback", || session.info().fallback_for == Some(v2.clone()));
+    let slot = status(&registry);
+    assert_eq!(slot.active, Some(v1));
+    let fallback = slot.fallback.expect("the selection isn't what runs");
+    assert!(fallback.contains("set to fail"), "the load failure is the reason: {fallback}");
 }
 
 #[test]
@@ -574,15 +594,16 @@ fn reset_reaches_the_current_session_and_the_one_swapped_in() {
     let mut out = TensorBuf::for_outputs(session.signature());
 
     session.reset();
-    assert_eq!(count(&v1, &Event::Reset), 1, "forwarded to the session that runs");
+    assert_eq!(resets(&v1), vec![thread::current().id()], "forwarded to the session that runs");
 
     registry.select(&echo_slot(), Some(&v2), Requester::Person).unwrap();
     assert_eq!(timed_run(&mut *session, &mut out).0, Err(RunError::Unavailable)); // starts the load
     session.reset(); // while v2 loads
     settle(&mut *session, &mut out);
 
-    assert_eq!(session.info().model, v2);
-    assert_eq!(count(&v2, &Event::Reset), 1, "replayed on the session that was swapped in");
+    wait_for("the session to report v2", || session.info().model == v2);
+    assert_eq!(resets(&v2).len(), 1, "replayed on the session that was swapped in");
+    assert!(resets(&v2).iter().all(|t| *t != thread::current().id()), "by the loader, not on the caller's thread");
 }
 
 #[test]
@@ -598,8 +619,8 @@ fn a_reset_right_after_a_selection_change_is_replayed_too() {
     session.reset(); // before any run has noticed the change
     settle(&mut *session, &mut out);
 
-    assert_eq!(session.info().model, v2);
-    assert_eq!(count(&v2, &Event::Reset), 1);
+    wait_for("the session to report v2", || session.info().model == v2);
+    assert_eq!(resets(&v2).len(), 1);
 }
 
 #[test]
@@ -630,4 +651,69 @@ fn a_crash_disable_is_not_saved_by_a_later_commit_after_a_failed_one() {
 
     drop(session);
     assert_eq!(entry(&rig.open(), "2.0.0").status, ModelStatus::Ready, "the crash was for that app session only");
+}
+
+#[test]
+fn a_load_that_panics_leaves_the_slot_unavailable_until_a_later_load_succeeds() {
+    let rig = Rig::new(&[
+        ("1.0.0", model_file("panic-1", 0, None)),
+        ("2.0.0", model_file_with("panic-2", 0, "panic_in_loader = true\n")),
+    ]);
+    let registry = rig.open();
+    let models = install(&registry, &["2.0.0", "1.0.0"]);
+    let (v2, v1) = (models[0].clone(), models[1].clone());
+    let mut session = registry.open(&echo_slot(), None).unwrap();
+    let mut out = TensorBuf::for_outputs(session.signature());
+    settle(&mut *session, &mut out);
+    let ran_before = ran(&v1);
+
+    registry.select(&echo_slot(), Some(&v2), Requester::Person).unwrap();
+    for _ in 0..30 {
+        assert_eq!(timed_run(&mut *session, &mut out).0, Err(RunError::Unavailable), "the deselected model is silent");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(ran(&v1), ran_before);
+
+    // Back to a selection that loads: the next successful load brings the slot back.
+    registry.select(&echo_slot(), None, Requester::Person).unwrap();
+    settle(&mut *session, &mut out);
+    wait_for("the session to report v1", || session.info().model == v1);
+}
+
+#[test]
+fn a_result_that_finishes_during_a_slower_one_is_never_reported_as_running() {
+    let files = [
+        ("1.0.0", model_file("stale-1", 0, None)),
+        ("2.0.0", model_file("stale-2", 100, None)),
+        ("3.0.0", model_file("stale-3", 600, None)),
+    ];
+    let rig = Rig::new(&files);
+    let registry = rig.open();
+    let models = install(&registry, &["2.0.0", "3.0.0", "1.0.0"]);
+    let (v2, v3, v1) = (models[0].clone(), models[1].clone(), models[2].clone());
+    let mut session = registry.open(&echo_slot(), None).unwrap();
+    let mut out = TensorBuf::for_outputs(session.signature());
+    settle(&mut *session, &mut out);
+    let started = count(&v2, &Event::Loading);
+    let loaded = count(&v2, &Event::Loaded);
+    let v3_started = count(&v3, &Event::Loading);
+
+    registry.select(&echo_slot(), Some(&v2), Requester::Person).unwrap();
+    assert_eq!(timed_run(&mut *session, &mut out).0, Err(RunError::Unavailable));
+    wait_for("v2 to start loading", || count(&v2, &Event::Loading) > started);
+    registry.select(&echo_slot(), Some(&v3), Requester::Person).unwrap();
+    wait_for("v2 to finish loading", || count(&v2, &Event::Loaded) > loaded);
+    wait_for("v3 to start loading", || count(&v3, &Event::Loading) > v3_started);
+
+    // v3 still has most of its 600 ms to go. v2 is not what runs, and nothing says it is.
+    for _ in 0..10 {
+        assert_eq!(timed_run(&mut *session, &mut out).0, Err(RunError::Unavailable));
+        assert_ne!(session.info().model, v2);
+        assert_ne!(status(&registry).active, Some(v2.clone()));
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    settle(&mut *session, &mut out);
+    wait_for("the session to report v3", || session.info().model == v3);
+    wait_for("slots to show v3", || status(&registry).active == Some(v3.clone()));
+    let _ = v1;
 }

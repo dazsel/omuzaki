@@ -12,12 +12,16 @@
 //!
 //! - **gate:** the session answers only while the loader has confirmed the registry's current generation for the
 //!   session it runs. After any change the answer is `Unavailable` until the loader says the same model is still
-//!   right (a moment) or its replacement is in (a load), so a deselected model never answers;
+//!   right (a moment) or its replacement is in (a load), so a deselected model never answers. A generation is
+//!   confirmed only by such an answer: with no loader, or after a load that panicked, the gate stays shut for every
+//!   newer generation until a later load succeeds (`reset` asks again);
 //! - **mailbox:** the loader publishes at most one `Ready` replacement; the run side hands it the sessions that
 //!   were swapped out or crashed, to be switched off and dropped there. If the mailbox is busy the run side keeps
 //!   them in its own preallocated queue and tries again on a later call.
 
 mod loader;
+#[cfg(test)]
+mod tests;
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -77,6 +81,14 @@ struct Shared {
     ready: AtomicBool,
     /// The newest generation at which the loader found the model it published (or the initial one) still right.
     confirmed: AtomicU64,
+    /// The newest generation of a `Ready` the run side took in. The loader writes the health metadata (`info`, the
+    /// registry's `running`) only for answers the run side has applied.
+    applied: AtomicU64,
+    /// A `reset` the session that is published next must have: the loader replays it before publishing, so the
+    /// caller's thread never runs a runtime's `reset` on a session it swaps in.
+    reset_owed: AtomicBool,
+    /// The registry generation at the last `reset`.
+    reset_gen: AtomicU64,
     /// Work for the loader: the run side sets it and unparks the thread.
     work: AtomicBool,
     closed: AtomicBool,
@@ -98,10 +110,6 @@ pub(crate) struct SlotSession {
     applied: u64,
     /// Sessions waiting for room in the mailbox. Never grows past its capacity, so pushing never allocates.
     retiring: Vec<Retired>,
-    /// A `reset` the session that is swapped in next hasn't had.
-    reset_owed: bool,
-    /// The registry generation at the last `reset`.
-    reset_at: u64,
 }
 
 impl SlotSession {
@@ -129,6 +137,9 @@ impl SlotSession {
             mailbox: Mutex::new(Mailbox { ready: None, retire: Vec::with_capacity(RETIRE_CAPACITY) }),
             ready: AtomicBool::new(false),
             confirmed: AtomicU64::new(0),
+            applied: AtomicU64::new(generation),
+            reset_owed: AtomicBool::new(false),
+            reset_gen: AtomicU64::new(generation),
             work: AtomicBool::new(false),
             closed: AtomicBool::new(false),
             info: Mutex::new(info),
@@ -143,8 +154,6 @@ impl SlotSession {
             asked: generation,
             applied: generation,
             retiring: Vec::with_capacity(RETIRE_CAPACITY),
-            reset_owed: false,
-            reset_at: generation,
         })
     }
 
@@ -159,10 +168,8 @@ impl SlotSession {
 
     /// True if the loader has confirmed registry generation `generation` for what this session runs.
     fn confirmed_for(&self, generation: u64) -> bool {
-        // Without a loader nothing can change, and answering from the session we have beats never answering.
-        self.loader.is_none()
-            || (!self.shared.ready.load(Ordering::Acquire)
-                && self.applied.max(self.shared.confirmed.load(Ordering::Acquire)) >= generation)
+        !self.shared.ready.load(Ordering::Acquire)
+            && self.applied.max(self.shared.confirmed.load(Ordering::Acquire)) >= generation
     }
 
     /// Everything the run side does besides running: wake the loader after a change, pass it retired sessions and
@@ -175,10 +182,6 @@ impl SlotSession {
         }
         self.flush();
         self.take_ready();
-        if self.reset_owed && self.confirmed_for(self.reset_at) {
-            // The loader kept this session for everything up to the reset: nothing will be swapped in for it.
-            self.reset_owed = false;
-        }
         generation
     }
 
@@ -209,18 +212,18 @@ impl SlotSession {
         let Some(Ready { replacement, generation }) = ready else { return };
         self.applied = generation;
         let old = match replacement {
-            Some(mut next) => {
-                if self.reset_owed {
-                    next.session.reset();
-                    self.reset_owed = false;
-                }
-                self.active.replace(next)
-            }
+            Some(next) => self.active.replace(next),
             None => self.active.take(),
         };
         if let Some(active) = old {
             self.retiring.push(Retired { active, why: Why::Replaced });
             self.flush();
+        }
+        // Tell the loader, which owns the health metadata, that this answer is in.
+        self.shared.applied.fetch_max(generation, Ordering::Release);
+        self.shared.work.store(true, Ordering::Release);
+        if let Some(loader) = &self.loader {
+            loader.unpark();
         }
     }
 
@@ -253,20 +256,22 @@ impl Session for SlotSession {
         }
     }
 
-    /// Cold: also restarts a loader thread that couldn't be started, which `run` must not do.
+    /// Cold: also asks the loader again for the current generation (which retries a load that panicked) and
+    /// restarts a loader thread that couldn't be started, neither of which `run` may do.
     fn reset(&mut self) {
+        // Owed first, so a load that is already under way can't publish a session that missed it.
+        self.shared.reset_gen.store(self.shared.registry.generation(), Ordering::Release);
+        self.shared.reset_owed.store(true, Ordering::Release);
         let _ = self.service();
         if let Some(active) = self.active.as_mut() {
             active.session.reset();
         }
-        self.reset_owed = true;
-        self.reset_at = self.shared.registry.generation();
         if self.loader.is_none() {
             let belief = self.active.as_ref().map(|a| a.model.clone());
             self.loader = loader::spawn(&self.shared, self.explicit.clone(), belief);
-            // Ask again: whatever changed while nobody was listening is still unanswered.
-            self.asked = self.asked.wrapping_sub(1);
         }
+        self.asked = self.asked.wrapping_sub(1);
+        let _ = self.service();
     }
 
     /// While the slot has no session (after a crash with nothing to fall back to), the model that ran last.

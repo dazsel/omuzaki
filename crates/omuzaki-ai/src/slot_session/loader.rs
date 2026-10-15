@@ -1,6 +1,7 @@
 //! The loader thread of one slot session. It owns every decision and every slow step: reading the choice chain,
-//! loading, switching a crashed model off, dropping retired sessions. The thread that calls `run` only hands it work
-//! (an unpark) and takes what it publishes (a `try_lock`).
+//! loading, replaying a reset on what it loaded, switching a crashed model off, dropping retired sessions and writing
+//! the health metadata. The thread that calls `run` only hands it work (an unpark) and takes what it publishes (a
+//! `try_lock`).
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::Ordering;
@@ -12,21 +13,45 @@ use omuzaki_ai_api::{ModelRef, Session, SessionInfo};
 use super::{Active, Ready, Shared, Why};
 use crate::registry::Chosen;
 
+#[cfg(test)]
+thread_local! {
+    /// Makes [`spawn`] fail on this thread, to test a session that has no loader.
+    pub(super) static FAIL_SPAWN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// Starts the loader for `shared`. `belief` is the model the session runs.
 pub(super) fn spawn(shared: &Arc<Shared>, explicit: Option<ModelRef>, belief: Option<ModelRef>) -> Option<Thread> {
+    #[cfg(test)]
+    if FAIL_SPAWN.with(std::cell::Cell::get) {
+        return None;
+    }
     let shared = Arc::clone(shared);
     thread::Builder::new()
         .name(format!("slot-session {}", shared.slot))
-        .spawn(move || work(&shared, Worker { explicit, belief }))
+        .spawn(move || work(&shared, Worker { explicit, belief, pending: None, last_keep: 0 }))
         .inspect_err(|e| tracing::warn!("couldn't start a slot session's loader thread: {e}"))
         .ok()
         .map(|handle| handle.thread().clone())
+}
+
+/// What a published answer will say about the slot once the run side has taken it in.
+struct Pending {
+    generation: u64,
+    /// The model that will run, if any.
+    model: Option<ModelRef>,
+    /// Its `SessionInfo`; `None` when nothing will run.
+    info: Option<SessionInfo>,
 }
 
 struct Worker {
     explicit: Option<ModelRef>,
     /// The model whose session the run side has, or will have once it takes what was published.
     belief: Option<ModelRef>,
+    /// The metadata of the last answer published and not yet shown: it describes what runs only once the run side has
+    /// applied the answer *and* nothing newer is unsettled.
+    pending: Option<Pending>,
+    /// The newest generation at which the loader found `belief` still right.
+    last_keep: u64,
 }
 
 fn work(shared: &Shared, mut worker: Worker) {
@@ -34,13 +59,13 @@ fn work(shared: &Shared, mut worker: Worker) {
         while !shared.work.swap(false, Ordering::AcqRel) {
             thread::park();
         }
-        let generation = shared.registry.generation();
         let closing = shared.closed.load(Ordering::Acquire);
-        // A runtime that panics must not take the loader with it: the session would never change model again.
+        let generation = shared.registry.generation();
+        // A runtime that panics must not take the loader with it. The generation stays unconfirmed: the slot answers
+        // `Unavailable` (an explicit answer, published here) until a later change or `reset` makes the next attempt.
         if catch_unwind(AssertUnwindSafe(|| worker.service(shared, closing))).is_err() {
             tracing::error!(slot = %shared.slot, "a model runtime panicked in the loader thread");
-            worker.belief = None;
-            shared.confirm(generation);
+            worker.nothing_runs(shared, generation);
         }
         if closing {
             return;
@@ -68,7 +93,8 @@ impl Worker {
             graveyard.push(session);
         }
         if !closing {
-            self.choose(shared);
+            self.choose(shared, &mut graveyard);
+            self.show_applied(shared);
         }
         drop(graveyard);
     }
@@ -77,36 +103,93 @@ impl Worker {
     fn switch_off(&mut self, shared: &Shared, model: &ModelRef, error: &str) {
         let reason = format!("it stopped working ({error})");
         tracing::warn!(slot = %shared.slot, %model, "{reason}; switching it off until Omuzaki restarts");
+        // It was what ran, whatever an unapplied answer may say.
+        shared.registry.report_running(shared.id, None);
         if self.belief.as_ref() == Some(model) {
             self.belief = None;
-            shared.registry.report_running(shared.id, None);
         }
         shared.registry.disable_for_session(model, &reason);
     }
 
     /// Settles what the slot should run now and publishes the answer.
-    fn choose(&mut self, shared: &Shared) {
-        // Before the chain is read, so a change that lands meanwhile makes this answer stale and the run side asks again.
-        let generation = shared.registry.generation();
-        match shared.registry.load_chain(&shared.slot, self.explicit.as_ref(), self.belief.as_ref()) {
-            Ok(Chosen::Keep { wanted }) => {
-                shared.set_fallback_for(wanted, self.belief.as_ref());
-                shared.confirm(generation);
+    fn choose(&mut self, shared: &Shared, graveyard: &mut Vec<Box<dyn Session>>) {
+        loop {
+            // Before the chain is read, so a change that lands meanwhile makes this answer stale.
+            let generation = shared.registry.generation();
+            let chosen = shared.registry.load_chain(&shared.slot, self.explicit.as_ref(), self.belief.as_ref());
+            if shared.registry.generation() != generation
+                && let Ok(Chosen::Loaded { session, .. }) = chosen
+            {
+                // The choice moved on while this loaded: it is never published, so it never shows up as running.
+                graveyard.push(session);
+                continue;
             }
-            Ok(Chosen::Loaded { session, model, wanted }) => {
-                if let Some(fallback) = wanted.as_ref().filter(|w| *w != &model) {
-                    tracing::warn!(slot = %shared.slot, %model, original = %fallback, "the slot runs a fallback");
+            match chosen {
+                Ok(Chosen::Keep { wanted }) => self.keep(shared, generation, wanted),
+                Ok(Chosen::Loaded { mut session, model, wanted }) => {
+                    if shared.reset_owed.swap(false, Ordering::AcqRel) {
+                        session.reset();
+                    }
+                    self.publish_loaded(shared, generation, Active { session, model }, wanted);
                 }
-                self.belief = Some(model.clone());
-                shared.registry.report_running(shared.id, Some(model.clone()));
-                shared.set_info(session.info(), wanted, &model);
-                shared.publish(Ready { replacement: Some(Active { session, model }), generation });
+                Err(e) => {
+                    tracing::warn!(slot = %shared.slot, "no model can run: {e}");
+                    self.nothing_runs(shared, generation);
+                }
             }
-            Err(e) => {
-                tracing::warn!(slot = %shared.slot, "no model can run: {e}");
-                self.belief = None;
-                shared.registry.report_running(shared.id, None);
-                shared.publish(Ready { replacement: None, generation });
+            return;
+        }
+    }
+
+    /// The model the session has is still the best one: refresh what it stands in for, and open the gate.
+    fn keep(&mut self, shared: &Shared, generation: u64, wanted: Option<ModelRef>) {
+        let fallback_for = wanted.filter(|w| Some(w) != self.belief.as_ref());
+        match &mut self.pending {
+            Some(pending) => {
+                if let Some(info) = &mut pending.info {
+                    info.fallback_for = fallback_for;
+                }
+            }
+            None => shared.info.lock().unwrap_or_else(PoisonError::into_inner).fallback_for = fallback_for,
+        }
+        if generation >= shared.reset_gen.load(Ordering::Acquire) {
+            // Nothing is swapped in for the change that preceded the reset, so no session needs it replayed.
+            shared.reset_owed.store(false, Ordering::Release);
+        }
+        self.last_keep = self.last_keep.max(generation);
+        shared.confirmed.fetch_max(generation, Ordering::Release);
+    }
+
+    fn publish_loaded(&mut self, shared: &Shared, generation: u64, active: Active, wanted: Option<ModelRef>) {
+        if let Some(original) = wanted.as_ref().filter(|w| **w != active.model) {
+            tracing::warn!(slot = %shared.slot, model = %active.model, %original, "the slot runs a fallback");
+        }
+        let mut info = active.session.info();
+        info.fallback_for = wanted.filter(|w| *w != active.model);
+        self.belief = Some(active.model.clone());
+        self.pending = Some(Pending { generation, model: Some(active.model.clone()), info: Some(info) });
+        shared.publish(Ready { replacement: Some(active), generation });
+    }
+
+    /// Publishes the explicit answer "nothing can run" for `generation`.
+    fn nothing_runs(&mut self, shared: &Shared, generation: u64) {
+        self.belief = None;
+        self.pending = Some(Pending { generation, model: None, info: None });
+        shared.publish(Ready { replacement: None, generation });
+    }
+
+    /// Shows the last answer in `info` and in the registry's `slots` once it is what runs: the run side has applied
+    /// it and no newer change is unsettled. An answer that was overtaken is simply never shown.
+    fn show_applied(&mut self, shared: &Shared) {
+        let Some(pending) = &self.pending else { return };
+        let settled = pending.generation.max(self.last_keep) >= shared.registry.generation();
+        if !settled || shared.applied.load(Ordering::Acquire) < pending.generation {
+            return;
+        }
+        if let Some(Pending { model, info, .. }) = self.pending.take() {
+            shared.registry.report_running(shared.id, model);
+            if let Some(info) = info {
+                *shared.info.lock().unwrap_or_else(PoisonError::into_inner) = info;
             }
         }
     }
@@ -127,11 +210,6 @@ impl Shared {
         }
     }
 
-    /// The loader checked generation `generation`: the session it has published (or the run side holds) is right.
-    fn confirm(&self, generation: u64) {
-        self.confirmed.fetch_max(generation, Ordering::Release);
-    }
-
     /// Hands the run side its answer. One nobody took yet is superseded and dropped here, off the lock.
     fn publish(&self, ready: Ready) {
         let mut mailbox = self.mailbox();
@@ -140,15 +218,5 @@ impl Shared {
         self.ready.store(true, Ordering::Release);
         drop(mailbox);
         drop(superseded);
-    }
-
-    fn set_info(&self, mut info: SessionInfo, wanted: Option<ModelRef>, running: &ModelRef) {
-        info.fallback_for = wanted.filter(|w| w != running);
-        *self.info.lock().unwrap_or_else(PoisonError::into_inner) = info;
-    }
-
-    fn set_fallback_for(&self, wanted: Option<ModelRef>, running: Option<&ModelRef>) {
-        let mut info = self.info.lock().unwrap_or_else(PoisonError::into_inner);
-        info.fallback_for = wanted.filter(|w| Some(w) != running);
     }
 }
