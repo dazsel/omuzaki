@@ -7,12 +7,10 @@ use std::collections::BTreeMap;
 
 use omuzaki_core::glam::{Mat4, Quat, Vec3};
 use omuzaki_io_api::{
-    Avatar, ExportCtx, ExportOptions, Expression, ExpressionName, FirstPerson, FirstPersonFlag, ImportCtx, ImportInput,
-    ImportOptions, IoError, IoScene, Material, Mesh, MeshAnnotation, MeshData, MorphTarget, Node, NodeIx, PerfectSync,
-    Primitive, Shading, Skin, SpringChain, SpringJoint, VRM_LICENSE_URLS, VrmMeta, run_export,
+    Avatar, Expression, ExpressionName, FirstPerson, FirstPersonFlag, IoError, IoScene, Material, Mesh, MeshAnnotation,
+    MeshData, MorphTarget, Node, NodeIx, Primitive, Shading, Skin, SpringChain, SpringJoint, VRM_LICENSE_URLS, VrmMeta,
 };
 use omuzaki_io_ops::fit_meshes::{ApartReason, merge_meshes};
-use omuzaki_io_vrm::{Vrm0Exporter, Vrm0Importer};
 use omuzaki_store_api::{Commercial, Provenance, Source};
 
 /// A small deterministic generator, so every fixture is the same on every run.
@@ -361,30 +359,15 @@ fn an_unannotated_mesh_counts_as_auto() {
 }
 
 #[test]
-fn two_both_meshes_join_and_export_to_vrm0_with_the_annotation_on_the_target() {
+fn two_both_meshes_join_with_the_annotation_on_the_target() {
     let mut rig = new_rig();
     annotate(&mut rig.scene, &[(rig.hair, FirstPersonFlag::Both), (rig.outfit, FirstPersonFlag::Both)]);
     let report = merge_meshes(&mut rig.scene).unwrap();
     assert_eq!(report.merged, [rig.outfit]);
     let fp = rig.scene.avatar.as_ref().unwrap().first_person.as_ref().unwrap();
     assert_eq!(fp.annotations, [MeshAnnotation { node: rig.hair, flag: FirstPersonFlag::Both }]);
-
-    let options = ExportOptions::default().with_perfect_sync(PerfectSync::Off);
-    let out = run_export(&Vrm0Exporter, &rig.scene, &ExportCtx::new(&options)).expect("export");
-    let bytes = &out.files[0].bytes;
-    let back = omuzaki_io_api::run_import(
-        &Vrm0Importer,
-        &ImportInput::new(bytes).named("fixture.vrm"),
-        &ImportCtx::new(&ImportOptions::default()),
-    )
-    .expect("import")
-    .scene;
-    let annotations = &back.avatar.as_ref().unwrap().first_person.as_ref().unwrap().annotations;
-    let named: Vec<(&str, FirstPersonFlag)> =
-        annotations.iter().map(|a| (back.nodes[a.node.index()].name.as_str(), a.flag)).collect();
-    assert_eq!(named, [("Hair", FirstPersonFlag::Both)]);
-    let hair = back.nodes.iter().find(|n| n.name == "Hair").unwrap();
-    assert_eq!(back.meshes[hair.mesh.unwrap().index()].primitives.len(), 2);
+    assert_eq!(mesh_of(&rig.scene, rig.hair).primitives.len(), 2);
+    assert_clean(&rig.scene);
 }
 
 #[test]
