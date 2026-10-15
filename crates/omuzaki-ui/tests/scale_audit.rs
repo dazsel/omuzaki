@@ -53,20 +53,6 @@ impl Expected {
 /// fix lands. Entries with the same text and overlap are one entry, since they are one defect.
 const EXPECTED_FAILURES: &[Expected] = &[
     Expected {
-        story: "tab",
-        problem: LayoutProblem::Overlap,
-        what: "Library",
-        with: Some("Close Library"),
-        defect: "a tab label overlaps its close button's label",
-    },
-    Expected {
-        story: "tab",
-        problem: LayoutProblem::Overlap,
-        what: "History",
-        with: Some("Close History"),
-        defect: "a tab label overlaps its close button's label",
-    },
-    Expected {
         story: "approval",
         problem: LayoutProblem::Overlap,
         what: "~40 s",
@@ -138,20 +124,33 @@ fn card(ui: &mut Ui, draw: &mut impl FnMut(&mut Ui)) {
 /// ancestor. The rule is the accessibility lint's in `ds::testing`: an interactive role, or Focus or Click.
 fn controls<S>(harness: &Harness<'_, S>) -> Vec<Control> {
     let mut out = Vec::new();
+    let mut ids = Vec::new();
     for child in harness.root().children() {
-        collect(child, None, &mut out);
+        collect(child, None, &mut out, &mut ids);
+    }
+    // A control that says it controls another operable control (a tab's close button, its tab) is linked to it.
+    for (index, (_, controlled)) in ids.iter().enumerate() {
+        out[index].controls = controlled.iter().find_map(|id| ids.iter().position(|(own, _)| own == id));
     }
     out
 }
 
-fn collect(node: Node<'_>, parent: Option<usize>, out: &mut Vec<Control>) {
+fn collect(node: Node<'_>, parent: Option<usize>, out: &mut Vec<Control>, ids: &mut Vec<(String, Vec<String>)>) {
     let mut operable_parent = parent;
     if operable(&node) {
-        out.push(Control { name: node.accesskit_node().label().unwrap_or_default(), rect: node.rect(), parent });
+        let ak = node.accesskit_node();
+        out.push(Control {
+            name: ak.label().unwrap_or_default(),
+            role: ak.role(),
+            rect: node.rect(),
+            controls: None,
+            parent,
+        });
+        ids.push((format!("{:?}", ak.id()), ak.controls().map(|c| format!("{:?}", c.id())).collect()));
         operable_parent = Some(out.len() - 1);
     }
     for child in node.children() {
-        collect(child, operable_parent, out);
+        collect(child, operable_parent, out, ids);
     }
 }
 
@@ -237,7 +236,7 @@ fn a_planted_fixed_width_label_that_overflows_at_200_fails_and_is_named() {
 
 /// A control with no children, for the synthetic cases below.
 fn leaf(name: &str, rect: Rect, parent: Option<usize>) -> Control {
-    Control { name: name.to_owned(), rect, parent }
+    Control { name: name.to_owned(), role: Role::Unknown, rect, controls: None, parent }
 }
 
 fn square(x: f32, y: f32) -> Rect {
@@ -279,4 +278,49 @@ fn an_off_screen_parent_is_flagged_even_when_its_child_is_visible() {
     assert_eq!(found.len(), 1, "only the parent is outside the window: {found:?}");
     assert_eq!(found[0].what, "parent");
     assert_eq!(found[0].problem, LayoutProblem::OutsideWindow);
+}
+
+/// Two tabs and their close buttons, as the tab bar exposes them: all siblings in the tree, each button inside its
+/// own tab's rectangle and saying it controls that tab.
+fn tabs_and_closes() -> Vec<Control> {
+    let tab = |x: f32| Rect::from_min_size(pos2(x, 0.0), vec2(100.0, 28.0));
+    let close = |x: f32| Rect::from_min_size(pos2(x + 74.0, 2.0), vec2(24.0, 24.0));
+    let control =
+        |name: &str, role, rect, controls| Control { name: name.to_owned(), role, rect, controls, parent: None };
+    vec![
+        control("Library", Role::Tab, tab(0.0), None),
+        control("Close Library", Role::Button, close(0.0), Some(0)),
+        control("History", Role::Tab, tab(100.0), None),
+        control("Close History", Role::Button, close(100.0), Some(2)),
+    ]
+}
+
+#[test]
+fn a_tabs_own_close_button_inside_the_tab_is_its_affordance_not_a_collision() {
+    assert!(control_overlaps(&tabs_and_closes()).is_empty());
+}
+
+#[test]
+fn a_close_button_that_runs_out_of_its_tab_is_a_collision() {
+    let mut controls = tabs_and_closes();
+    controls[1].rect = Rect::from_min_size(pos2(90.0, 2.0), vec2(24.0, 24.0));
+    assert!(!control_overlaps(&controls).is_empty());
+}
+
+#[test]
+fn close_library_placed_inside_the_history_tab_is_still_reported() {
+    let mut controls = tabs_and_closes();
+    controls[1].rect = Rect::from_min_size(pos2(174.0, 2.0), vec2(24.0, 24.0));
+    let found = control_overlaps(&controls);
+    assert!(
+        found.iter().any(|f| f.what == "Close Library" && f.with.as_deref() == Some("History")),
+        "another tab's close button must not be exempt: {found:?}"
+    );
+}
+
+#[test]
+fn a_button_inside_a_tab_that_does_not_control_it_is_still_a_collision() {
+    let mut controls = tabs_and_closes();
+    controls[1].controls = None;
+    assert_eq!(control_overlaps(&controls).len(), 1);
 }

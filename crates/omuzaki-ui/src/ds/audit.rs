@@ -8,6 +8,7 @@
 //!
 //! Available to this crate's tests and, with the `capture` feature, to the panels' tests.
 
+use egui::accesskit::Role;
 use egui::epaint::ClippedShape;
 use egui::{Color32, FontFamily, FullOutput, Pos2, Rect, Shape};
 
@@ -324,8 +325,13 @@ pub fn layout_findings(output: &FullOutput, window: Rect) -> Vec<LayoutFinding> 
 pub struct Control {
     /// Its accessible name.
     pub name: String,
+    /// Its AccessKit role.
+    pub role: Role,
     /// Where it is on screen.
     pub rect: Rect,
+    /// The control it says it controls through AccessKit (a tab's close button controls its tab), as an index into the
+    /// same list.
+    pub controls: Option<usize>,
     /// The nearest operable node above it in the tree, as an index into the same list. Parents come before their
     /// children in the list, so the chain of parents always ends.
     pub parent: Option<usize>,
@@ -343,15 +349,30 @@ fn is_ancestor(controls: &[Control], ancestor: usize, node: usize) -> bool {
     false
 }
 
+/// A tab and its own close button, drawn inside it: the button says it controls that tab, and lies wholly inside it.
+/// AccessKit keeps the button a sibling of the tab (a button is not a child of a tab in ARIA), so the tree does not say
+/// it is nested, but it is drawn inside the tab on purpose and the tab bar keeps the tab's label clear of it. Another
+/// tab's button, or any other button that merely sits inside a tab's rectangle, is not exempt.
+fn is_tab_close(controls: &[Control], a: usize, b: usize) -> bool {
+    let owned = |tab: usize, button: usize| {
+        let (tab_control, button_control) = (&controls[tab], &controls[button]);
+        tab_control.role == Role::Tab
+            && button_control.role == Role::Button
+            && button_control.controls == Some(tab)
+            && tab_control.rect.expand(EDGE_SLACK).contains_rect(button_control.rect)
+    };
+    owned(a, b) || owned(b, a)
+}
+
 /// Controls drawn over one another. A control drawn over its own ancestor or descendant is nesting (a row's button
-/// sits inside the row, a curve's point handles on its curve), so it is not a collision. Any other pair that
-/// overlaps is: two controls with identical rectangles, or one inside the other as siblings, are both reported.
+/// sits inside the row, a curve's point handles on its curve), and a tab's own close button inside its tab is the same
+/// by design ([`is_tab_close`]), so neither is a collision. Any other pair that overlaps is: two controls with identical rectangles, or one inside the other as siblings, are both reported.
 pub fn control_overlaps(controls: &[Control]) -> Vec<LayoutFinding> {
     let mut out = Vec::new();
     for (index, control) in controls.iter().enumerate() {
         for (other, rival) in controls.iter().enumerate().skip(index + 1) {
             let nested = is_ancestor(controls, index, other) || is_ancestor(controls, other, index);
-            if !nested && overlaps(control.rect, rival.rect) {
+            if !nested && !is_tab_close(controls, index, other) && overlaps(control.rect, rival.rect) {
                 out.push(finding(LayoutProblem::Overlap, &control.name, control.rect, Some(&rival.name)));
             }
         }
