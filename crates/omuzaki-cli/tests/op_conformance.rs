@@ -89,10 +89,12 @@ fn files_under(root: &Path) -> BTreeMap<String, Vec<u8>> {
     fn walk(root: &Path, dir: &Path, into: &mut BTreeMap<String, Vec<u8>>) {
         for entry in std::fs::read_dir(dir).expect("list the folder") {
             let path = entry.expect("read the entry").path();
+            let name = path.strip_prefix(root).expect("under the root").to_string_lossy().into_owned();
             if path.is_dir() {
+                // A directory is recorded too (as a trailing-slash key with no bytes), so an empty one counts.
+                into.insert(format!("{name}/"), Vec::new());
                 walk(root, &path, into);
             } else {
-                let name = path.strip_prefix(root).expect("under the root").to_string_lossy().into_owned();
                 into.insert(name, std::fs::read(&path).expect("read the file"));
             }
         }
@@ -220,6 +222,8 @@ fn every_registered_op_conforms() {
         registered.values().filter(|&&has| has).count(),
         allowed.len()
     );
+    // `registrations()` iterates in linker order; sort so the report is the same on every platform.
+    found.sort();
     assert!(found.is_empty(), "{}", found.join("\n"));
 }
 
