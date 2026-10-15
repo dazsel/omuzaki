@@ -38,15 +38,52 @@ const _: () = assert!(JOIN_GRACE.as_millis() + 2 * POLL.as_millis() <= 200);
 /// (a microsecond did not, on a loaded machine); a couple of milliseconds, once per start, does.
 const WARM_UP: Duration = Duration::from_millis(2);
 
-/// Width of one latency bucket, in microseconds.
+/// Width of one latency bucket in the linear range, in microseconds.
 const BUCKET_US: u64 = 100;
 
-/// Latency buckets: 0 to about 100 ms; anything slower lands in the last one (the exact worst case is kept apart).
-const BUCKETS: usize = 1024;
+/// Linear buckets: 0 up to [`LINEAR_LIMIT_US`], which holds every latency a healthy session has.
+const LINEAR_BUCKETS: usize = 1024;
+
+/// Where the linear range ends, in microseconds (102.4 ms).
+const LINEAR_LIMIT_US: u64 = LINEAR_BUCKETS as u64 * BUCKET_US;
+
+/// Buckets per doubling of latency past the linear range: a slow session's percentile is off by at most 1/8.
+const SUB_BUCKETS: usize = 8;
+
+/// Doublings past the linear range: `LINEAR_LIMIT_US << 16` is beyond `u32::MAX` microseconds, so no latency falls off
+/// the end.
+const OCTAVES: usize = 16;
+
+/// All latency buckets.
+const BUCKETS: usize = LINEAR_BUCKETS + OCTAVES * SUB_BUCKETS;
+
+/// The bucket holding a latency of `us` microseconds: 100 us wide up to 102.4 ms, then eight to each doubling.
+fn bucket_of(us: u64) -> usize {
+    if us < LINEAR_LIMIT_US {
+        return (us / BUCKET_US) as usize;
+    }
+    // `us >= LINEAR_LIMIT_US`, so the quotient is at least 1 and `ilog2` cannot fail; a latency is at most
+    // `u32::MAX` microseconds, so the octave is below `OCTAVES`.
+    let octave = (us / LINEAR_LIMIT_US).ilog2() as usize;
+    let start = LINEAR_LIMIT_US << octave;
+    let sub = ((us - start) * SUB_BUCKETS as u64 / start) as usize;
+    (LINEAR_BUCKETS + octave * SUB_BUCKETS + sub).min(BUCKETS - 1)
+}
+
+/// The upper edge of bucket `i`, in microseconds.
+fn bucket_top(i: usize) -> u64 {
+    if i < LINEAR_BUCKETS {
+        return (i as u64 + 1) * BUCKET_US;
+    }
+    let (octave, sub) = ((i - LINEAR_BUCKETS) / SUB_BUCKETS, ((i - LINEAR_BUCKETS) % SUB_BUCKETS) as u64);
+    let start = LINEAR_LIMIT_US << octave;
+    start + start * (sub + 1) / SUB_BUCKETS as u64
+}
 
 /// Counters the camera thread writes with atomic adds and [`LatencyStats`] reads: no lock, and neither side
 /// allocates or sorts. Latency goes into a fixed histogram of the whole session, so a percentile is a scan of
-/// [`BUCKETS`] counters, accurate to [`BUCKET_US`].
+/// [`BUCKETS`] counters, accurate to [`BUCKET_US`] up to [`LINEAR_LIMIT_US`] and to 1/[`SUB_BUCKETS`] of its value
+/// beyond.
 pub(super) struct Stats {
     published: AtomicU64,
     /// Camera frames skipped, by gaps in `CameraFrame::seq`. Nothing else is counted here.
@@ -77,22 +114,19 @@ impl Stats {
         // Saturating float to int: a latency is never negative, and over an hour is not a latency.
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let us = (latency.0.max(0.0) * 1e6) as u32;
-        let bucket = (u64::from(us) / BUCKET_US).min(BUCKETS as u64 - 1);
-        self.histogram[bucket as usize].fetch_add(1, Ordering::Relaxed);
+        self.histogram[bucket_of(u64::from(us))].fetch_add(1, Ordering::Relaxed);
         self.max_us.fetch_max(us, Ordering::Relaxed);
         self.samples.fetch_add(1, Ordering::Release);
     }
 
-    /// The upper edge of the bucket holding the `q`th percentile (the worst case, for the last), never above the worst
-    /// case seen.
+    /// The upper edge of the bucket holding the `q`th percentile.
     fn percentile(&self, samples: u64, q: u64) -> u64 {
         let rank = (samples * q).div_ceil(100).max(1);
         let mut seen = 0;
         for (i, count) in self.histogram.iter().enumerate() {
             seen += count.load(Ordering::Relaxed);
             if seen >= rank {
-                // The last bucket holds everything slower than the range, so only the worst case speaks for it.
-                return if i == BUCKETS - 1 { u64::MAX } else { (i as u64 + 1) * BUCKET_US };
+                return bucket_top(i);
             }
         }
         u64::from(self.max_us.load(Ordering::Relaxed))
@@ -447,15 +481,44 @@ mod tests {
         within(latency.p50, 1000);
         within(latency.p95, 1000);
         assert_eq!(latency.max, Duration::from_millis(10));
-        // A latency past the last bucket is clamped there, and the worst case stays exact.
+        // A latency past the linear range is kept apart, and the worst case stays exact.
         stats.record(Seconds(5.0));
         assert_eq!(stats.snapshot().max, Duration::from_secs(5));
-        // 5 s is past the last bucket: 1 of 101 samples, so the 10 ms group still holds p95.
+        // 1 of 101 samples, so the 10 ms group still holds p95.
         within(stats.snapshot().p95, 10_000);
+        // A slow session: most samples at 250 ms and one 5 s outlier. The median is the 250 ms, not the outlier.
         for _ in 0..200 {
             stats.record(Seconds(0.250));
         }
-        assert_eq!(stats.snapshot().p50, Duration::from_secs(5), "the overflow bucket speaks with the worst case");
+        let slow = stats.snapshot();
+        for (name, got) in [("p50", slow.p50), ("p95", slow.p95)] {
+            let got = u64::try_from(got.as_micros()).unwrap();
+            assert!(
+                (250_000..=250_000 + 250_000 / SUB_BUCKETS as u64).contains(&got),
+                "{name} {got} us, wanted 250 ms"
+            );
+        }
+        assert_eq!(slow.max, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn the_buckets_tile_every_latency_and_stay_within_their_resolution() {
+        // Each bucket starts where the one before ends, so no latency is lost or counted twice.
+        for i in 0..BUCKETS - 1 {
+            assert_eq!(bucket_of(bucket_top(i) - 1), i, "the top of bucket {i}");
+            assert_eq!(bucket_of(bucket_top(i)), i + 1, "the start of bucket {}", i + 1);
+        }
+        // The last bucket reaches past the largest latency `record` can see, and a bucket is never wider than its
+        // resolution: 100 us in the linear range, 1/8 of the value beyond.
+        assert!(bucket_top(BUCKETS - 1) > u64::from(u32::MAX));
+        for us in (0..=u64::from(u32::MAX)).step_by(99_991).chain([u64::from(u32::MAX), LINEAR_LIMIT_US - 1]) {
+            let i = bucket_of(us);
+            assert!(us < bucket_top(i), "{us} us is not below the top of bucket {i}");
+            assert!(
+                bucket_top(i) - us <= us / SUB_BUCKETS as u64 + BUCKET_US,
+                "{us} us is far from the top of bucket {i}"
+            );
+        }
     }
 
     #[test]
