@@ -37,6 +37,7 @@ use egui::{
 pub use curve::{Curve, CurveError, CurvePoint, LUT_SIZE, MAX_POINTS, MIN_POINTS, Preset};
 
 use super::dropdown::{Choice, Dropdown};
+use super::ids;
 use super::number_field::NumberField;
 use crate::ds::a11y;
 use crate::ds::contrast::{Rule, Table};
@@ -46,6 +47,9 @@ use crate::ds::text::NumberBuf;
 use crate::ds::theme::{Ds, ds};
 use crate::ds::tokens::{Theme, space};
 use crate::register_contrast;
+
+/// What a curve editor's salt is namespaced by (see [`ids`]).
+const KIND: &str = "ds.curve_editor";
 
 /// What changed a curve, for the transaction label (P3).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -230,7 +234,7 @@ impl<'a> Show<'a> {
     fn new(e: CurveEditor<'a>, ui: &mut Ui) -> Self {
         let ds = ds(ui.ctx());
         let enabled = ui.is_enabled() && e.disabled.is_none();
-        let id = e.salt.map_or_else(|| ui.next_auto_id().with("curve"), |salt| ui.make_persistent_id(salt));
+        let id = e.salt.map_or_else(|| ui.next_auto_id().with("curve"), |salt| ids::salted(ui, KIND, salt));
         Self { e, ds, enabled, id }
     }
 

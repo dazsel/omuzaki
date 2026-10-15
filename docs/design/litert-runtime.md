@@ -174,7 +174,7 @@ a panic, and never a silent fallback.
 | Value | Where | Check |
 |---|---|---|
 | A symbol's address | library load | non-null for every symbol of 3.2, else `LoadError::Runtime` naming it |
-| `TfLiteVersion()` | library load | non-null, NUL within 64 bytes, valid UTF-8, equal to `LITERT_VERSION` |
+| `TfLiteVersion()` | library load | non-null, NUL within 64 bytes, valid UTF-8, equal to `TFLITE_VERSION`: what the pinned build reports (`tflite_version` in `tools/litert/pins.toml`, TensorFlow's version string `2.22.0-dev0+selfbuilt`, not LiteRT's `2.3.0`) |
 | `omz_litert_abi()` | library load | equal to `OMZ_LITERT_ABI` |
 | `TfLiteSchemaVersion()` | library load | equal to the schema version the scan reads (3) |
 | `TfLiteModelCreate`, `TfLiteInterpreterOptionsCreate`, `omz_litert_xnnpack_create`, `TfLiteInterpreterCreate` | load | non-null, else `LoadError::Format` (model) or `LoadError::Runtime` (the rest), with the captured error text |
@@ -631,7 +631,7 @@ Each is checked by the task named, from the pinned sources, and the answer goes 
 | The Linux glibc baseline the container gives, against our supported distributions | 2 |
 | That `ImageOS` and `ImageVersion` are set on each OS where the `image` step runs (the Linux build runs in a container, where the runner's variables may not be passed through; if not, read them in a step on the host before the container starts) | 2 |
 | Whether `XNN_FLAG_DONT_SPIN_WORKERS` in the delegate's `runtime_flags` reaches pthreadpool's flags at this XNNPACK commit (the idle-CPU test proves the effect either way) | 3b |
-| That the default lazily-applied XNNPACK delegate is skipped once ours fully delegates the graph (`Interpreter::ApplyLazyDelegateProviders` returns early when `IsFullyDelegated()`), and what happens on a partially delegated user model (it would apply a second XNNPACK delegate with the interpreter's thread count, which is why `SetNumThreads` gets the same count) | 3a |
+| Answered (3a): the default XNNPACK delegate is never applied lazily through our C API. `TfLiteInterpreterCreate` builds its resolver with `CreateOpResolver()`, which at `v2.3.0` is `BuiltinOpResolverWithoutDefaultDelegates` (`tflite/core/create_op_resolver_with_builtin_ops.cc`); its constructor clears `delegate_creators_` (`tflite/core/kernels/register.h`), so `ApplyLazyDelegateProviders` has nothing to apply, fully delegated or not. On a partially delegated user model, the nodes XNNPACK doesn't take run on the builtin kernels with the interpreter's thread count, which is why `SetNumThreads` gets the same count | 3a |
 | The scan's operator allow-list against the builtin operators the archive's build actually registers, and the scan's measured cost on the landmark graph | 3a |
 | Each licence of decision 6 against the actual source tree that was built, including whether FP16 is still a separate dependency (at the pinned XNNPACK commit it appears vendored as `src/xnnpack/fp16.h`) and whether FXdiv is linked (pthreadpool's CMake fetches it; the Bazel build may not) | 2 |
 | MediaPipe's default XNNPACK thread count on desktop (`GetXnnpackDefaultNumThreads`), for the comparison in the probe's report | 6 |

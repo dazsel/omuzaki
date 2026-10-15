@@ -11,7 +11,7 @@
 //! missing channels on every call.
 //!
 //! **The record against the parts.** The stored record is a snapshot, so `CheckExport::run` also derives what the
-//! character's parts allow now and reports every field on which the record grants more (`licence.exceeds_parts`),
+//! character's parts and application records allow now and reports every field on which the record grants more (`licence.exceeds_parts`),
 //! the way `licence.describe` does. `io.export` must call `run` before it writes anything, so an export and its
 //! check can never disagree about a record that has gone stale.
 //!
@@ -90,7 +90,7 @@ impl CheckExport {
     /// This is the one path to a verdict on an export, so `io.check_export` and `io.export` share it. The record is a
     /// snapshot that goes stale when a part changes, and [`check`](Self::check), which sees the built character and the
     /// record only, cannot tell; this adds `licence.exceeds_parts` for every field on which the record grants more than
-    /// the parts allow (an error for `publish`, a warning for `private`, an error for the private-test flag in both)
+    /// the parts and application records allow (an error for `publish`, a warning for `private`, an error for the private-test flag in both)
     /// and `rights.gate_private_test` for a private test part the record forgot to flag.
     ///
     /// # Errors

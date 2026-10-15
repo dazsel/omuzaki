@@ -42,3 +42,18 @@ steps = [
     { run = ["python3", "-I", "tools/stature_lineup.py", "{out}/lineup.json", "{out}/lineup.png"] },
 ]
 images = ["lineup.png"]
+
+[[case]]
+name = "head-join"
+description = "The eye-line join of the five head presets, front, three-quarter and side, 384 px, fixed camera per view. The head surface only: the ears are left out."
+env = { OMUZAKI_HEAD_JOIN_PPM = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-char", "--test", "head_join_sheet", "render_the_head_join_when_asked", "--", "--exact"] },
+]
+images = [
+    "round-u-front.ppm", "round-u-three-quarter.ppm", "round-u-side.ppm",
+    "egg-oval-front.ppm", "egg-oval-three-quarter.ppm", "egg-oval-side.ppm",
+    "mochi-front.ppm", "mochi-three-quarter.ppm", "mochi-side.ppm",
+    "heart-front.ppm", "heart-three-quarter.ppm", "heart-side.ppm",
+    "long-front.ppm", "long-three-quarter.ppm", "long-side.ppm",
+]

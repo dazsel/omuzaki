@@ -1,0 +1,7 @@
+section = "models"
+item = "Google Cloud Text-to-Speech (Chirp 3 HD, Instant custom voice)"
+kind = "service"
+used_for = "CN-10 hosted TTS candidate"
+status = "unverified"
+condition = "price read 2026-10-15 (Chirp 3 HD US$30 per 1M characters, SSML tags except mark billable); output ownership, data retention, Instant custom voice terms and the end-user-facing restriction not read; spend scope and per-character SpendGate bound apply"
+audit = "research 2026-10-hosted-tts-voice.md"
