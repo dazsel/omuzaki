@@ -112,6 +112,8 @@ pub struct FrameOutput {
 /// What [`Stage::pin_time`] took from the stage, to give back with [`Stage::unpin_time`]: the state of the last frame.
 #[derive(Clone, Debug)]
 pub struct TimePin {
+    /// The pin that was in force, if a caller had already pinned the stage (pins nest).
+    pinned: Option<Tick>,
     tick: Tick,
     root: Mat4,
     pose: HumanoidPose,
@@ -232,20 +234,22 @@ impl Stage {
     /// on every frame, whatever the clock is and however many frames ran before. The clock itself does not move. For
     /// renders that must not depend on history: a character sheet, a still.
     pub fn pin_time(&mut self, tick: Tick) -> TimePin {
-        let pin = TimePin { tick: self.tick, root: self.root, pose: self.pose, goals: self.goals };
+        let pin = TimePin { pinned: self.pinned, tick: self.tick, root: self.root, pose: self.pose, goals: self.goals };
         self.pinned = Some(tick);
         pin
     }
 
-    /// Ends [`pin_time`](Stage::pin_time) and puts the last frame's tick, root, pose and goals back, with the rig and
-    /// the scene's instances following them, so the stage looks as it did before the pin (what the runtimes settled to
-    /// stays). Nothing is sent to the renderer.
+    /// Ends [`pin_time`](Stage::pin_time): puts back the pin that was in force before it (none, or an outer caller's),
+    /// and the last frame's tick, root, pose and goals, with the rig, the scene's instances and its frame info
+    /// following them, so the stage looks as it did before the pin (what the runtimes settled to stays). Nothing is
+    /// sent to the renderer.
     pub fn unpin_time(&mut self, pin: &TimePin) {
-        self.pinned = None;
+        self.pinned = pin.pinned;
         (self.tick, self.root, self.pose, self.goals) = (pin.tick, pin.root, pin.pose, pin.goals);
         // A solve for no time: the bones follow the restored pose without stepping the springs.
         self.rig.solve(Tick { dt: 0.0, ..pin.tick }, &pin.pose, &pin.goals);
         self.plan.fill(&mut self.scene, self.rig.skin(), pin.root);
+        self.scene.frame = FrameInfo { index: pin.tick.index, time: pin.tick.time };
     }
 
     /// Where every vertex of the character is in the frame the stage last prepared, in world space: a dynamic mesh at

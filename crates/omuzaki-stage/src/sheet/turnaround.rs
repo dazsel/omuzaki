@@ -26,7 +26,7 @@ use omuzaki_render_api::{
 
 use crate::error::StageError;
 use crate::frame::face::SETTLE_STEPS;
-use crate::frame::{FrameInput, Stage};
+use crate::frame::{FrameInput, Stage, TimePin};
 use crate::recipe::{LightRig, RecipeError};
 
 /// The long lens' vertical field of view, degrees: far enough to look like a drawing, near enough to keep depth.
@@ -89,7 +89,9 @@ pub enum SheetPose {
     Rest,
     /// A confident stance, [`hero_pose`].
     Hero,
-    /// Any pose, in the normalised space of [`HumanoidPose`]: what the pose library (RG-06) will hand a sheet.
+    /// Any pose, in the normalised space of [`HumanoidPose`]: what the pose library (RG-06) will hand a sheet. The
+    /// shot is framed by the bind-pose height, so a pose that leaves that frame (sitting, jumping, a raised arm) is
+    /// refused with [`TurnaroundError::Unsupported`], never clipped or reframed; posed framing is a follow-up on #1771.
     Custom(Box<HumanoidPose>),
 }
 
@@ -226,6 +228,10 @@ pub enum TurnaroundError {
     /// The cell is empty, or the character has no height to frame.
     #[error("{0}")]
     Invalid(String),
+    /// The pose, as drawn, reaches outside the frame the shot was made for, so the sheet would be clipped. The shot is
+    /// framed by the character's bind-pose height; framing a pose that sits, jumps or reaches is a follow-up on #1771.
+    #[error("{0}")]
+    Unsupported(String),
     /// The cell needs tiles but the lens is a perspective one, whose sub-windows are off-axis.
     #[error("a {cell}-pixel cell needs tiles of at most {tile} pixels, which only the orthographic lens can stitch without a seam")]
     TilingNeedsOrthographic {
@@ -375,23 +381,15 @@ pub fn render_turnaround(
 ) -> Result<TurnaroundSheet, TurnaroundError> {
     spec.validate()?;
     let (lights, look) = LightRig::load(LIGHT_RIG).and_then(|rig| Ok((rig.to_lights()?, rig.post(false))))?;
-    // What can fail without touching the stage comes first, so an error here leaves the caller's scene as it was.
-    let target = renderer
-        .create_target(&TargetDesc { size: UVec2::splat(1), alpha: AlphaEncoding::Straight })
-        .map_err(|e| StageError::render("the sheet's target", e))?;
-    let saved = stage.scene().clone();
-    *stage.scene_mut() = neutral_scene(&saved, Camera::default(), lights, look, spec.background);
-    let pin = stage.pin_time(SHEET_TICK);
-    let sheet = draw_sheet(stage, renderer, spec, target);
-    stage.unpin_time(&pin);
-    let released = renderer.release(ResourceRef::from(target));
-    restore_settings(stage.scene_mut(), saved);
-    match (sheet, released) {
+    let mut scope = SheetScope::enter(stage, renderer, spec.background, lights, look)?;
+    let sheet = draw_sheet(&mut scope, spec);
+    let closed = scope.close();
+    match (sheet, closed) {
         (Ok(sheet), Ok(())) => Ok(sheet),
-        (Ok(_), Err(e)) => Err(StageError::render("the sheet's target", e).into()),
+        (Ok(_), Err(e)) => Err(e.into()),
         // The drawing failure is the one to report; a failed cleanup behind it is logged, as the stage does.
-        (Err(error), released) => {
-            if let Err(cleanup) = released {
+        (Err(error), closed) => {
+            if let Err(cleanup) = closed {
                 tracing::warn!(%cleanup, "releasing the turnaround sheet's target failed too");
             }
             Err(error)
@@ -408,13 +406,73 @@ fn cell_bytes(cell: UVec2) -> Option<usize> {
     usize::try_from(bytes).ok()
 }
 
-/// Draws the four views from the stage's neutral scene.
-fn draw_sheet(
-    stage: &mut Stage,
-    renderer: &mut dyn Renderer,
-    spec: &TurnaroundSpec,
+/// Everything the sheet changes on the stage and the renderer, given back on every way out of
+/// [`render_turnaround`]: by [`close`](Self::close), or by `Drop` on an early return or a panic. One guard, so no exit
+/// path has a hand-written restore to forget. It restores:
+/// - the scene's render settings: `camera`, `lights`, `background`, `fog`, `environment`, `outline_light` and `post`
+///   ([`restore_settings`]);
+/// - the stage's last frame: its pin (an outer caller's, if any), `tick`, `root`, `pose` and `goals`, and with them the
+///   rig, the scene's `instances` and `joints`, and `frame` ([`Stage::unpin_time`]);
+/// - the sheet's own target, released.
+///
+/// What it does not give back is what the hair and cloth settled to.
+struct SheetScope<'a> {
+    stage: &'a mut Stage,
+    renderer: &'a mut dyn Renderer,
     target: TargetId,
-) -> Result<TurnaroundSheet, TurnaroundError> {
+    saved: Option<Scene>,
+    pin: Option<TimePin>,
+}
+
+impl<'a> SheetScope<'a> {
+    /// Makes the sheet's target, swaps in the neutral scene and pins the stage's time.
+    fn enter(
+        stage: &'a mut Stage,
+        renderer: &'a mut dyn Renderer,
+        background: Background,
+        lights: Vec<Light>,
+        look: Post,
+    ) -> Result<Self, StageError> {
+        // What can fail without touching the stage comes first, so an error here leaves the caller's scene as it was.
+        let target = renderer
+            .create_target(&TargetDesc { size: UVec2::splat(1), alpha: AlphaEncoding::Straight })
+            .map_err(|e| StageError::render("the sheet's target", e))?;
+        let saved = stage.scene().clone();
+        *stage.scene_mut() = neutral_scene(&saved, Camera::default(), lights, look, background);
+        let pin = stage.pin_time(SHEET_TICK);
+        Ok(Self { stage, renderer, target, saved: Some(saved), pin: Some(pin) })
+    }
+
+    /// Gives everything back, once.
+    ///
+    /// # Errors
+    /// [`StageError::Render`] if the renderer refuses to release the target; the rest is restored regardless.
+    fn restore(&mut self) -> Result<(), StageError> {
+        let (Some(saved), Some(pin)) = (self.saved.take(), self.pin.take()) else { return Ok(()) };
+        self.stage.unpin_time(&pin);
+        let released = self.renderer.release(ResourceRef::from(self.target));
+        restore_settings(self.stage.scene_mut(), saved);
+        released.map_err(|e| StageError::render("the sheet's target", e))
+    }
+
+    /// Gives everything back and reports a failed release.
+    fn close(mut self) -> Result<(), StageError> {
+        self.restore()
+    }
+}
+
+impl Drop for SheetScope<'_> {
+    fn drop(&mut self) {
+        if let Err(cleanup) = self.restore() {
+            tracing::warn!(%cleanup, "releasing the turnaround sheet's target failed");
+        }
+    }
+}
+
+/// Draws the four views from the stage's neutral scene.
+fn draw_sheet(scope: &mut SheetScope<'_>, spec: &TurnaroundSpec) -> Result<TurnaroundSheet, TurnaroundError> {
+    let target = scope.target;
+    let (stage, renderer): (&mut Stage, &mut dyn Renderer) = (&mut *scope.stage, &mut *scope.renderer);
     // A face variant staged before the call swaps in at the next tick, and with it the character's meshes and rig, so
     // that tick comes first and everything the sheet measures is read from the character it will draw.
     stage.tick(renderer, &FrameInput::default())?;
@@ -504,8 +562,26 @@ impl Run<'_> {
         stage.tick(renderer, &input)?;
         stage.settle_from_rest(self.spec.settle_steps);
         stage.redraw(renderer, &input)?;
+        let drawn = stage.drawn_vertices();
+        self.check_fits(view, &drawn)?;
         let image = self.tiles(stage, renderer)?;
-        Ok(TurnaroundView { view, image, framing: framing(stage, &self.subject, &self.shot, root) })
+        Ok(TurnaroundView { view, image, framing: framing(stage, &self.subject, &self.shot, root, &drawn) })
+    }
+
+    /// Refuses a view whose drawn vertices leave the cell vertically: the shot is framed by the bind-pose height, so
+    /// a pose that sits, jumps or reaches can fall outside it, and a clipped sheet is never returned. The width is the
+    /// cell's own: the shot frames height, and how wide a figure fits is the caller's cell shape.
+    fn check_fits(&self, view: View, drawn: &[Vec3]) -> Result<(), TurnaroundError> {
+        let (min, max) = pixel_bounds(drawn, &self.shot);
+        let rows = self.shot.cell.y as f32;
+        if min.y < 0.0 || max.y > rows {
+            return Err(TurnaroundError::Unsupported(format!(
+                "the {view:?} view's pose spans rows {:.0} to {:.0}, outside the {} rows of the cell the shot was framed \
+                 for from the bind pose's height; posed framing is a follow-up on #1771",
+                min.y, max.y, self.shot.cell.y
+            )));
+        }
+        Ok(())
     }
 
     /// Draws the stage's current scene into the cell, in tiles of at most `self.tile` pixels, and stitches them.
@@ -551,14 +627,15 @@ fn sheet_error(error: &RenderError) -> TurnaroundError {
 }
 
 /// Where the soles, crown, head centre and eye line landed, from the posed head joint and the view's projection.
-fn framing(stage: &Stage, subject: &Subject, shot: &Shot, root: Mat4) -> Framing {
+fn framing(stage: &Stage, subject: &Subject, shot: &Shot, root: Mat4, drawn: &[Vec3]) -> Framing {
     let head = stage.built().rig.skeleton.humanoid_bone(HumanoidBone::Head).and_then(|id| stage.skin().get(id.index()));
     let skin = head.copied().unwrap_or(Mat4::IDENTITY);
     let joint = skin.transform_point3(subject.head_joint);
     let up = skin.transform_vector3(Vec3::Y);
     let along = |fraction: f32| root.transform_point3(joint + up * ((subject.crown - subject.head_joint.y) * fraction));
     let head_centre = shot.pixel(along(HEAD_CENTRE_FRACTION));
-    let (crown_row, ground_row) = extreme_rows(&stage.drawn_vertices(), shot);
+    let (min, max) = pixel_bounds(drawn, shot);
+    let (crown_row, ground_row) = (min.y, max.y);
     Framing {
         px_per_m: shot.px_per_m,
         eye_line_row: shot.pixel(along(EYE_LINE_FRACTION)).y,
@@ -568,12 +645,8 @@ fn framing(stage: &Stage, subject: &Subject, shot: &Shot, root: Mat4) -> Framing
     }
 }
 
-/// The topmost and bottom-most rows any drawn vertex lands on in this view: every vertex the renderer draws (skinned
-/// by the pose, deformed by the settled runtimes, turned with the view, see [`Stage::drawn_vertices`]) is projected, so
-/// the rows are where the picture's geometry is, in every lens.
-fn extreme_rows(drawn: &[Vec3], shot: &Shot) -> (f32, f32) {
-    drawn
-        .iter()
-        .map(|p| shot.pixel(*p).y)
-        .fold((f32::INFINITY, f32::NEG_INFINITY), |(top, bottom), row| (top.min(row), bottom.max(row)))
+/// The smallest box, in cell pixels, around every drawn vertex projected through the view's camera: the rows and columns
+/// the picture's geometry spans, in every lens (see [`Stage::drawn_vertices`]).
+fn pixel_bounds(drawn: &[Vec3], shot: &Shot) -> (Vec2, Vec2) {
+    drawn.iter().map(|p| shot.pixel(*p)).fold((Vec2::INFINITY, Vec2::NEG_INFINITY), |(lo, hi), px| (lo.min(px), hi.max(px)))
 }

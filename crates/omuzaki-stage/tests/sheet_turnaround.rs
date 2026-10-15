@@ -18,6 +18,7 @@
 use std::sync::{Arc, Mutex};
 
 use omuzaki_anim_api::HumanoidBone;
+use omuzaki_anim_api::Tick;
 use omuzaki_char::builder::CachingBuilder;
 use omuzaki_char_api::{
     BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder, DynamicMesh, JointRef, PartRuntime,
@@ -25,6 +26,7 @@ use omuzaki_char_api::{
 };
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::{UVec2, Vec3};
+use omuzaki_core::time::Seconds;
 use omuzaki_face::FaceSystem;
 use omuzaki_face_api::{FaceDrawing, FaceError, FaceInput, FaceLayerSpec, FacePainter};
 use omuzaki_face_mock::{MockPainter, MockRasterizer};
@@ -813,7 +815,7 @@ fn rows_by_hand(built: &BuiltCharacter, yaw_deg: f32, ortho: bool) -> (f32, f32)
 
 #[test]
 fn the_crown_and_soles_are_projected_where_the_geometry_is_in_every_lens() {
-    // The whole character stands a metre toward the camera, so its extremes are nowhere near the axis the camera
+    // The whole character stands 40 cm toward the camera, so its extremes are nowhere near the axis the camera
     // looks along: points on the axis (z = 0) would be rows off in a perspective lens.
     let shifted = || {
         let mut character = built();
@@ -822,7 +824,7 @@ fn the_crown_and_soles_are_projected_where_the_geometry_is_in_every_lens() {
         for mesh in &mut character.meshes {
             mesh.mesh.dynamic = false;
             for p in &mut mesh.mesh.geometry.positions {
-                p.z += 1.0;
+                p.z += 0.4;
             }
         }
         character
@@ -952,6 +954,61 @@ fn the_rows_follow_a_pose_that_moves_skinned_geometry() {
     let (top, bottom) = silhouette(&posed);
     assert!((b.crown_row - top).abs() <= 1.5, "crown {} vs the picture's {top}", b.crown_row);
     assert!((b.ground_row - bottom).abs() <= 1.5, "soles {} vs the picture's {bottom}", b.ground_row);
+}
+
+#[test]
+fn the_sheet_gives_back_an_outer_pin_and_the_frame_info() {
+    let mut renderer = MockRenderer::new();
+    let mut stage = stage_clocked(&mut renderer, built(), StageClock::fixed(60.0));
+    for _ in 0..3 {
+        stage.tick(&mut renderer, &FrameInput::default()).expect("a frame");
+    }
+    let frame = stage.scene().frame;
+    assert_eq!(frame.index, 2, "three frames ran");
+
+    // A sheet leaves the scene's frame info as the stage's last frame set it.
+    render_turnaround(&mut stage, &mut renderer, &spec()).expect("the sheet renders");
+    assert_eq!(stage.scene().frame, frame, "the frame info is the last frame's again");
+
+    // A caller's own pin is still in force after the sheet: the next tick runs at the pinned tick, not the clock's.
+    let outer = Tick { index: 99, time: Seconds(9.0), dt: 0.0 };
+    let pin = stage.pin_time(outer);
+    render_turnaround(&mut stage, &mut renderer, &spec()).expect("the sheet renders under a pin");
+    let next = stage.tick(&mut renderer, &FrameInput::default()).expect("a frame").tick;
+    assert_eq!(next, outer, "the outer pin survived the sheet");
+    stage.unpin_time(&pin);
+    let after = stage.tick(&mut renderer, &FrameInput::default()).expect("a frame").tick;
+    assert_eq!(after.index, 3, "with the pin gone the clock carries on where it was");
+    stage.release(&mut renderer).expect("released");
+}
+
+#[test]
+fn a_pose_that_leaves_the_frame_fails_closed_and_the_sheet_still_gives_everything_back() {
+    let mut renderer = MockRenderer::new();
+    let mut stage = stage_clocked(&mut renderer, built(), StageClock::fixed(60.0));
+    for _ in 0..2 {
+        stage.tick(&mut renderer, &FrameInput::default()).expect("a frame");
+    }
+    let before = stage.scene().clone();
+    let targets = renderer.stats().targets;
+    // Sitting: the hips drop half a metre, far below the sole the shot was framed for.
+    let mut sitting = built().rig.bind;
+    sitting.hips_offset = Vec3::new(0.0, -0.5, 0.0);
+    let error = render_turnaround(&mut stage, &mut renderer, &spec().with_pose(SheetPose::custom(sitting)))
+        .expect_err("the pose does not fit");
+    assert!(matches!(error, TurnaroundError::Unsupported(_)), "{error}");
+    assert!(error.to_string().contains("#1771"), "the message names the follow-up: {error}");
+    // Every field the sheet saves is back: the settings, the frame info, the pin, the target.
+    assert!(same_settings(stage.scene(), &before));
+    assert_eq!(stage.scene().frame, before.frame);
+    assert_eq!(renderer.stats().targets, targets, "the sheet's target is released");
+    let next = stage.tick(&mut renderer, &FrameInput::default()).expect("a frame").tick;
+    assert_eq!(next.index, 2, "no pin is left: the clock carries on");
+    // A pose that does fit still renders.
+    let mut nudged = built().rig.bind;
+    nudged.hips_offset = Vec3::new(0.0, -0.01, 0.0);
+    render_turnaround(&mut stage, &mut renderer, &spec().with_pose(SheetPose::custom(nudged))).expect("it fits");
+    stage.release(&mut renderer).expect("released");
 }
 
 #[test]
