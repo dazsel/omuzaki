@@ -6,7 +6,7 @@ use omuzaki_core::glam::Mat4;
 use omuzaki_render_api::{Instance, JointRange, MaterialId, MeshId, Scene};
 
 use crate::error::StageError;
-use crate::upload::StageCharacter;
+use crate::upload::MeshLookup;
 
 /// What one mesh needs each frame, resolved once so the frame does no lookups by name.
 struct Draw {
@@ -21,6 +21,8 @@ struct Draw {
 /// The character's meshes in draw order.
 pub(crate) struct ScenePlan {
     draws: Vec<Draw>,
+    /// Entries the joint palette takes per frame: the sum of the draws' joint runs.
+    joints: usize,
 }
 
 impl ScenePlan {
@@ -29,7 +31,7 @@ impl ScenePlan {
     ///
     /// # Errors
     /// [`StageError::NotUploaded`] for a mesh that was not uploaded.
-    pub(crate) fn new(built: &BuiltCharacter, uploaded: &StageCharacter) -> Result<Self, StageError> {
+    pub(crate) fn new(built: &BuiltCharacter, uploaded: &impl MeshLookup) -> Result<Self, StageError> {
         let mut keyed = Vec::with_capacity(built.meshes.len());
         for built_mesh in &built.meshes {
             let mesh = &built_mesh.mesh;
@@ -50,7 +52,15 @@ impl ScenePlan {
             ));
         }
         keyed.sort_by_key(|(render_order, _)| *render_order);
-        Ok(Self { draws: keyed.into_iter().map(|(_, draw)| draw).collect() })
+        let joints = keyed.iter().map(|(_, draw)| draw.bones.len()).sum();
+        Ok(Self { draws: keyed.into_iter().map(|(_, draw)| draw).collect(), joints })
+    }
+
+    /// Grows the scene's instance and joint buffers to hold this plan's frame, so [`fill`](Self::fill) never allocates
+    /// with it. Cold: called when a plan is made for a character that a later frame will fill with.
+    pub(crate) fn reserve(&self, scene: &mut Scene) {
+        scene.instances.reserve(self.draws.len().saturating_sub(scene.instances.len()));
+        scene.joints.reserve(self.joints.saturating_sub(scene.joints.len()));
     }
 
     /// Replaces the scene's instances and joint palette with this frame's. Lights, camera and the rest stay as the

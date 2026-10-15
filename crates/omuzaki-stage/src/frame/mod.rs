@@ -3,6 +3,7 @@
 //!
 //! [`Stage::tick`] runs one frame in that order:
 //!
+//! 0. a face variant staged by [`Stage::service_variants`] is swapped in ([`face`]), so the rest of the frame runs on it;
 //! 1. the [`StageClock`] gives the frame's [`Tick`] (fixed `dt` and time, so a replay is exact, decision 0009);
 //! 2. the pose in the [`FrameInput`] goes through the character's composed rig (humanoid pose, IK, spring bones) and
 //!    out as skinning matrices ([`rig`]);
@@ -12,7 +13,9 @@
 //! 6. the [`Scene`] is refilled with instances in render order and the joint runs ([`scene`]), and rendered.
 //!
 //! After construction nothing in steps 1 to 6 allocates in stage-owned code; the renderer and the runtimes cost what
-//! they cost.
+//! they cost. That includes the frame that swaps in a new face variant: variants are built, warmed and prepared off
+//! the frame path by [`Stage::service_variants`], which the frame thread calls once per frame outside `tick`
+//! ([`face`] has the stages).
 
 pub mod face;
 pub mod pose;
@@ -25,6 +28,7 @@ use omuzaki_char_api::{BuiltCharacter, StepCtx};
 use omuzaki_core::glam::{Mat4, Vec3};
 use omuzaki_render_api::{FrameInfo, FrameReport, Quality, Renderer, Scene, TargetId};
 
+use self::face::FaceRig;
 use self::rig::{RigFrame, SkinPose};
 use self::runtimes::DynamicMeshes;
 use self::scene::ScenePlan;
@@ -111,7 +115,8 @@ pub struct Stage {
     rig: RigFrame,
     dynamic: DynamicMeshes,
     plan: ScenePlan,
-    /// The character's world matrix of the frame being run, for the face system.
+    face: Option<Box<FaceRig>>,
+    /// The character's world matrix of the last frame: the face system's and [`settle`](Stage::settle)'s.
     root: Mat4,
     scene: Scene,
     target: TargetId,
@@ -137,9 +142,19 @@ impl Stage {
     ) -> Result<Self, StageError> {
         let character = StageCharacter::upload(renderer, &built, options)?;
         match Self::prepare(&built, &character) {
-            Ok((rig, dynamic, plan)) => {
-                Ok(Self { built, character, rig, dynamic, plan, root: Mat4::IDENTITY, scene, target, quality, clock })
-            }
+            Ok((rig, dynamic, plan)) => Ok(Self {
+                built,
+                character,
+                rig,
+                dynamic,
+                plan,
+                face: None,
+                root: Mat4::IDENTITY,
+                scene,
+                target,
+                quality,
+                clock,
+            }),
             Err(error) => {
                 if let Err(cleanup) = character.release(renderer) {
                     tracing::warn!(%cleanup, "releasing a character whose stage could not start failed too");
@@ -159,9 +174,12 @@ impl Stage {
     /// Runs one frame and renders it into the stage's target.
     ///
     /// # Errors
-    /// [`StageError::Render`] if the renderer refuses a vertex update or the frame, or whatever the face update reports.
-    /// The simulations have already stepped; the next call carries on from there.
+    /// [`StageError::Render`] if the renderer refuses a vertex update or the frame, or whatever the face update reports
+    /// (a layer that fails to paint). The simulations have already stepped; the next call carries on from there. A
+    /// staged variant whose vertex refresh the renderer refuses fails the call before anything steps: the variant is
+    /// abandoned and the live character stays.
     pub fn tick(&mut self, renderer: &mut dyn Renderer, input: &FrameInput) -> Result<FrameOutput, StageError> {
+        self.swap_variant(renderer)?;
         let tick = self.clock.next(input.dt);
         self.root = input.root;
         self.rig.solve(tick, &input.pose, &input.goals);
@@ -212,7 +230,11 @@ impl Stage {
     ///
     /// # Errors
     /// [`StageError::Render`] with the first release the renderer refused.
-    pub fn release(self, renderer: &mut dyn Renderer) -> Result<(), StageError> {
+    pub fn release(mut self, renderer: &mut dyn Renderer) -> Result<(), StageError> {
+        if let Some(rig) = self.face.as_mut() {
+            // A staged variant or a retired character still holds renderer resources.
+            face::discard_switch(renderer, rig);
+        }
         self.character.release(renderer)
     }
 }
