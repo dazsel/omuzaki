@@ -276,6 +276,16 @@ fn the_comment_renders_each_constraint() {
         (json!({"type": "object", "maxProperties": 4}), "object, at most 4 properties"),
         (json!({"type": "array", "uniqueItems": true}), "array, unique items"),
         (json!({"type": "array", "uniqueItems": false}), "array"),
+        (json!({"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]}), "integer, at least 0"),
+        (json!({"oneOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]}), "integer, at least 0"),
+        (json!({"anyOf": [{"oneOf": [{"type": "integer", "maximum": 9}]}, {"type": "null"}]}), "integer, at most 9"),
+        (json!({"anyOf": [{"type": "integer"}, {"type": "string"}]}), "integer or string"),
+        (
+            json!({"anyOf": [{"type": "integer", "minimum": 0}, {"type": "string", "maxLength": 8}]}),
+            "integer, at least 0 or string, length at most 8",
+        ),
+        (json!({"anyOf": [{"type": "integer"}, {"type": "null"}], "default": 5}), "integer, default 5"),
+        (json!({"anyOf": [{"oneOf": [{"const": "A"}, {"const": "B"}]}, {"type": "null"}]}), "one of \"A\", \"B\""),
         (json!({"type": "integer", "minimum": 9_007_199_254_740_993_i64}), "integer, at least 9007199254740993"),
         (
             json!({"type": "integer", "minimum": u64::MAX, "default": i64::MIN}),
@@ -352,4 +362,19 @@ fn an_ambiguous_schema_leaves_no_partial_entries() {
     let out = english_of(&PackageText::new("omuzaki-x").with_registered(vec![bad, good]));
     assert!(out.contains("op-good-y = Good."), "{out}");
     assert!(!out.contains("op-bad-x"), "no partial entries for the ambiguous owner:\n{out}");
+}
+
+/// The order a registry gave an owner's attributes in does not change the bytes: they render in name order.
+#[test]
+fn attribute_order_does_not_change_the_bytes() {
+    let attributes =
+        vec![("summary".to_owned(), "Sums.".to_owned()), ("description".to_owned(), "Describes.".to_owned())];
+    let forward = RegisteredText { attributes: attributes.clone(), ..owner("op-x-y", "Op.") };
+    let mut reversed_attributes = attributes;
+    reversed_attributes.reverse();
+    let backward = RegisteredText { attributes: reversed_attributes, ..owner("op-x-y", "Op.") };
+    assert_eq!(
+        english_of(&PackageText::new("omuzaki-x").with_registered(vec![forward])),
+        english_of(&PackageText::new("omuzaki-x").with_registered(vec![backward])),
+    );
 }

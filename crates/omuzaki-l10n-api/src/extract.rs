@@ -8,7 +8,7 @@ use serde_json::{Map, Value};
 
 use crate::ids;
 use crate::registry::{ArgKind, MessageDecl, MessageTable, RegisteredText, TextSource};
-use crate::schema_text::{self, walk};
+use crate::schema_text::{self, is_null_schema, walk};
 
 /// Everything one package contributes to its English file.
 #[derive(Clone, Debug, Default)]
@@ -60,6 +60,11 @@ pub fn english(package: &str) -> String {
 }
 
 /// The English file of `text`. The same text, in any input order, gives the same bytes.
+///
+/// The order is fixed by the output: groups in their order, entries by id, an owner's attributes by name. The one
+/// order the output keeps is the caller's own, because it is part of the text: an enum's values follow the schema's
+/// order, and a message's `# $arg` lines follow its declaration. Both come from the same schema or declaration every
+/// time, so they are deterministic too.
 ///
 /// A package with no text gives `""`, so a crate with nothing to say keeps an empty file.
 pub fn english_of(text: &PackageText) -> String {
@@ -141,7 +146,10 @@ fn owner_entries(item: &RegisteredText, entries: &mut Vec<Entry>) {
     let group = Group::of_owner(&item.owner);
     let mut lines = comment_lines(&item.context);
     lines.push(format!("{} = {}", item.owner, pattern(&item.value)));
-    for (name, value) in &item.attributes {
+    // Attributes render in name order, so the output does not depend on the order the registry gave them in.
+    let mut attributes: Vec<&(String, String)> = item.attributes.iter().collect();
+    attributes.sort_by(|a, b| a.0.cmp(&b.0));
+    for (name, value) in attributes {
         lines.push(format!(".{name} = {}", pattern(value)));
     }
     // The owner's entries are built here and appended only when its whole schema reads. An ambiguous schema leaves no
@@ -218,8 +226,78 @@ fn comment_lines(context: &str) -> Vec<String> {
         .collect()
 }
 
-/// The argument comment of design §11: the type without `null`, then the constraints and the default, joined with `, `.
+/// The argument comment of design §11: the facts of the node, from [`facts`].
 fn type_range_default(node: &Map<String, Value>) -> String {
+    facts(node)
+}
+
+/// The facts an argument comment shows, for a node and for every alternative it allows.
+///
+/// A `null` branch is left out, and a wrapper's branches are its alternatives, so an `Option` of a type, or a `oneOf` of
+/// constants, reads the way its values do. Each alternative is described by its own type and constraints. Alternatives
+/// that describe alike appear once, and different ones follow one another joined with " or ": `integer or string`, or
+/// `integer, at least 0 or string, length at most 8`. Constants that stand alone are gathered into one `one of` phrase.
+/// The default is the node's own, or else the first alternative's.
+fn facts(node: &Map<String, Value>) -> String {
+    let alternatives = alternatives(node);
+    let mut parts: Vec<String> = Vec::new();
+    let mut values: Vec<String> = Vec::new();
+    for alternative in &alternatives {
+        // A constant gathers into `one of` only as a branch; the node's own constant reads as `only`.
+        let from_branch = !std::ptr::eq(*alternative, node);
+        if let Some(constant) = from_branch.then(|| constant_of(alternative)).flatten() {
+            let value = literal(constant);
+            if !values.contains(&value) {
+                values.push(value);
+            }
+            continue;
+        }
+        let text = describe(alternative);
+        if !text.is_empty() && !parts.contains(&text) {
+            parts.push(text);
+        }
+    }
+    if !values.is_empty() {
+        parts.push(format!("one of {}", values.join(", ")));
+    }
+    let mut text = parts.join(" or ");
+    let default =
+        node.get("default").or_else(|| alternatives.iter().find_map(|alternative| alternative.get("default")));
+    if let Some(default) = default {
+        if !text.is_empty() {
+            text.push_str(", ");
+        }
+        text.push_str("default ");
+        text.push_str(&literal(default));
+    }
+    text
+}
+
+/// The alternatives of a node: its non-null branches, each expanded the same way, or the node itself when it has none.
+fn alternatives(node: &Map<String, Value>) -> Vec<&Map<String, Value>> {
+    let branches: Vec<&Map<String, Value>> = ["oneOf", "anyOf"]
+        .into_iter()
+        .filter_map(|keyword| node.get(keyword).and_then(Value::as_array))
+        .flatten()
+        .filter(|branch| !is_null_schema(branch))
+        .filter_map(Value::as_object)
+        .collect();
+    if branches.is_empty() {
+        return vec![node];
+    }
+    branches.into_iter().flat_map(alternatives).collect()
+}
+
+/// A constant that stands alone, as a unit variant of an enum does: it has nothing that narrows it further.
+fn constant_of(node: &Map<String, Value>) -> Option<&Value> {
+    let constant = node.get("const").filter(|value| !value.is_null())?;
+    let narrowed = node.keys().any(|key| !matches!(key.as_str(), "const" | "type" | "description" | "title"));
+    (!narrowed).then_some(constant)
+}
+
+/// One alternative as its comment reads: the type without `null`, then its constraints, joined with `, `. The default
+/// is left to [`facts`].
+fn describe(node: &Map<String, Value>) -> String {
     let kinds: Vec<&str> = match node.get("type") {
         Some(Value::String(kind)) => vec![kind.as_str()],
         Some(Value::Array(kinds)) => kinds.iter().filter_map(Value::as_str).collect(),
@@ -255,9 +333,6 @@ fn type_range_default(node: &Map<String, Value>) -> String {
     }
     if let Some(constant) = node.get("const").filter(|value| !value.is_null()) {
         parts.push(format!("only {}", literal(constant)));
-    }
-    if let Some(default) = node.get("default") {
-        parts.push(format!("default {}", literal(default)));
     }
     parts.join(", ")
 }
