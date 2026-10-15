@@ -467,17 +467,16 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::disk::faults;
 
     /// Runs `f` with hard links off and folder flushes failing for this thread's saves. Needs a swap with a copied
     /// backup, or a deletion without links, which Windows doesn't reach.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn with_failing_flush<T>(f: impl FnOnce() -> T) -> T {
-        faults::LINKS_OFF.with(|on| on.set(true));
-        faults::SYNC_OFF.with(|on| on.set(true));
+        disk::faults::LINKS_OFF.with(|on| on.set(true));
+        disk::faults::SYNC_OFF.with(|on| on.set(true));
         let out = f();
-        faults::LINKS_OFF.with(|on| on.set(false));
-        faults::SYNC_OFF.with(|on| on.set(false));
+        disk::faults::LINKS_OFF.with(|on| on.set(false));
+        disk::faults::SYNC_OFF.with(|on| on.set(false));
         out
     }
 
@@ -525,7 +524,7 @@ mod tests {
     }
 
     fn kept_entries(dir: &Path) -> usize {
-        fs::read_dir(dir.join(".omuzaki/replaced")).map_or(0, |entries| entries.count())
+        fs::read_dir(dir.join(".omuzaki/replaced")).map_or(0, Iterator::count)
     }
 
     /// A burst of saves leaves one kept entry each; once those are old on both clocks, the saves that follow delete

@@ -2041,7 +2041,7 @@ mod tests {
         );
         let (wall, mono) = (SystemTime::now(), Instant::now());
         let mut retention = Retention::default();
-        let jumped = wall + Duration::from_secs(24 * 60 * 60);
+        let jumped = wall + Duration::from_hours(24);
         // The clock jumped a day forward, but no time has passed.
         assert_eq!(retention.prune(dir, jumped, mono), 0);
         assert_eq!(retention.prune(dir, jumped, mono + RETAIN_UNCHANGED / 2), 0);
