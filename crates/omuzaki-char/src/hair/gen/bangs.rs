@@ -27,11 +27,11 @@
 //! largest difference between the two.
 
 use omuzaki_char_api::{BangLayer, BangsGen, Bulge, HeadSurface, Taper, Wisp};
-use omuzaki_core::glam::{DVec3, Vec3};
+use omuzaki_core::glam::{DVec3, Vec2, Vec3};
 
 use super::cap::smoothstep;
 use crate::hair::compile::{CompiledGroup, HairGenCtx};
-use crate::hair::tube::{RING, tube_vertices};
+use crate::hair::tube::{OutwardFrame, RING, tube_vertices};
 use crate::kit::catmull::spaced_points_into;
 
 /// Control points per lock, before the Catmull-Rom resample.
@@ -248,6 +248,16 @@ fn rest_points(g: &BangsGen, head: &dyn HeadSurface, lock: &Lock) -> [Vec3; REST
     rest
 }
 
+/// The frame the tubes of this group are drawn in, as [`crate::hair::part`] builds it when the character has no torso
+/// to read: the head's own centre and vertical axis. The clearance check builds the tube with this frame, called as the
+/// part calls it (`OutwardFrame::rest` on each point), so the checked tube is the drawn one. It differs from the radius
+/// only more than 78 mm below the head centre, where the frame blends toward the body's axis (the part reads that from
+/// the character's torso, which a generator cannot see; a fringe tip that low is far below the brows).
+pub fn tube_frame(head: &dyn HeadSurface) -> OutwardFrame {
+    let centre = head.centre();
+    OutwardFrame { head: centre, body_axis: Vec2::new(centre.x, centre.z) }
+}
+
 /// Pushes the rest points out along the lines from the head's centre until the lock's tube, as [`tube_vertices`] builds
 /// it, stands at least [`SURFACE_CLEARANCE`] off the head at every sample of its surface: all ring vertices and a
 /// barycentric grid over every triangle ([`SAMPLE_SPACING`] 15 mm). Between samples a flat triangle sags below a surface
@@ -257,11 +267,12 @@ fn rest_points(g: &BangsGen, head: &dyn HeadSurface, lock: &Lock) -> [Vec3; REST
 /// lock turns) and the head's curve between rings are both included. The Catmull-Rom between control points can cut
 /// inside the head where a large hook or sweep turns the lock sharply. A ring that is already clear is not moved, so the
 /// points keep their order. Runs [`CLEARANCE_PASSES`] times at most: a push changes the frames of its neighbours, so
-/// the passes converge on a clear tube rather than reach it in one step.
+/// the passes converge on a clear tube rather than reach it in one step. The bound holds for heads whose curvature
+/// radius is at least 50 mm: every preset and template; sharper crania that `Cranium::check` accepts are #1890.
 #[allow(clippy::cast_possible_truncation)] // a millimetre fits an f32
 fn keep_clear(head: &dyn HeadSurface, width: Taper, rest: &mut [Vec3; REST_POINTS]) {
     let centre = head.centre();
-    let outward = |p: Vec3| (p - centre).normalize_or_zero();
+    let (outward, frame) = (|p: Vec3| (p - centre).normalize_or_zero(), tube_frame(head));
     let gap = |p: Vec3| {
         let d = p - centre;
         d.length() - head.radius(d.normalize_or_zero())
@@ -270,7 +281,7 @@ fn keep_clear(head: &dyn HeadSurface, width: Taper, rest: &mut [Vec3; REST_POINT
     let mut positions = [Vec3::ZERO; REST_POINTS * RING];
     let mut normals = [Vec3::ZERO; REST_POINTS * RING];
     for _ in 0..CLEARANCE_PASSES {
-        if tube_vertices(rest, &width, &THICKNESS, outward, &mut positions, &mut normals).is_err() {
+        if tube_vertices(rest, &width, &THICKNESS, |p| frame.rest(p), &mut positions, &mut normals).is_err() {
             return;
         }
         let mut deficit = [0.0_f32; REST_POINTS];

@@ -224,11 +224,12 @@ fn a_mirrored_bangs_group_compiles_to_clump_count_clumps() {
 /// barycentric grid of spacing [`bangs::SAMPLE_SPACING`] over every triangle, as the generator measures it.
 fn surface_gap(head: &dyn HeadSurface, clump: &HairClump) -> f32 {
     let centre = head.centre();
+    let frame = bangs::tube_frame(head);
     let gap = |p: Vec3| (p - centre).length() - head.radius((p - centre).normalize());
     let mut mesh = TubeMesh::new();
     let polar = vec![0.5; clump.rest.len()];
     let look = TubeLook { seed: 0.5, shade: 1.0, polar: &polar, tint: None, flip: 1.0 };
-    mesh.push(&clump.rest, &clump.width, &clump.thickness, |p| (p - centre).normalize_or_zero(), &look).unwrap();
+    mesh.push(&clump.rest, &clump.width, &clump.thickness, |p| frame.rest(p), &look).unwrap();
     let tube = mesh.finish().unwrap();
     let mut worst = f32::MAX;
     for tri in tube.indices.chunks(3) {
@@ -274,6 +275,19 @@ impl HeadSurface for Ball {
     }
     fn radius(&self, _dir: Vec3) -> f32 {
         0.11
+    }
+}
+
+/// A large sphere (radius 0.25, inside the cranium's accepted sizes): its lower half is well below the frame's blend.
+#[derive(Debug)]
+struct BigBall;
+
+impl HeadSurface for BigBall {
+    fn centre(&self) -> Vec3 {
+        Vec3::ZERO
+    }
+    fn radius(&self, _dir: Vec3) -> f32 {
+        0.25
     }
 }
 
@@ -352,6 +366,47 @@ fn every_built_taper_bulge_and_shade_passes_the_contracts_validation() {
             assert!(clump.width.validate().is_ok(), "w = {width}: {:?}", clump.width);
             assert!(clump.thickness.validate().is_ok(), "{:?}", clump.thickness);
             assert!((0.5..=1.0).contains(&clump.shade), "shade {} at {shade}", clump.shade);
+        }
+    }
+}
+
+/// A tip more than 78 mm below the head centre is where the drawn frame stops pointing away from the head's centre and
+/// blends toward the body's axis, so the drawn tube differs from a radially oriented one. Measured with
+/// [`bangs::tube_frame`], the frame the part draws with.
+#[test]
+fn a_tip_below_the_frames_transition_height_still_clears_the_head() {
+    for (name, head) in [("Egg", &Egg as &dyn HeadSurface), ("Ball", &Ball), ("BigBall", &BigBall)] {
+        for tip in [-0.085, -0.2] {
+            for width in [0.3, 0.064] {
+                for spread_deg in [5.0, 90.0] {
+                    for hook_deg in [-90.0, 90.0] {
+                        for sweep_deg in [-90.0, 90.0] {
+                            let layer = |count: u8| BangLayer {
+                                count,
+                                spread_deg,
+                                width,
+                                hook_deg,
+                                tip_heights: vec![tip],
+                                root_offset: 0.0,
+                                tip_offset: 0.0,
+                                ..BangLayer::default()
+                            };
+                            let g = BangsGen { layers: vec![layer(2), layer(3)], wisps: vec![], sweep_deg };
+                            let (id, dynamics, palette) =
+                                (GroupId::new("bangs").unwrap(), Dynamics::default(), Palette::default());
+                            let mut stream = Counting::default();
+                            let mut ctx = HairGenCtx::new(head, &palette, Quality::Live, &id, &dynamics, &mut stream);
+                            for (n, clump) in bangs::compile(&g, &mut ctx).clumps.iter().enumerate() {
+                                let gap = surface_gap(head, clump);
+                                assert!(
+                                    gap >= 0.0,
+                                    "{name}: clump {n} is {gap} m inside (tip {tip}, width {width}, spread {spread_deg}, hook {hook_deg}, sweep {sweep_deg})"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
