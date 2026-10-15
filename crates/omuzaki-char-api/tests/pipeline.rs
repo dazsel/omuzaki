@@ -11,8 +11,8 @@ use std::collections::BTreeMap;
 
 use omuzaki_char_api::{
     Assembler, BuildCtx, BuildError, BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder,
-    CharacterDef, MaterialName, MaterialSpec, MeshData, PartCategory, PartDef, PartId, PartKind, PartKindId, PartMesh,
-    PartMeta, PartOutput, Published, RegistryBuilder, build_part, part_rng, plan,
+    CharacterDef, FitFact, MaterialName, MaterialSpec, MeshData, PartCategory, PartDef, PartId, PartKind, PartKindId,
+    PartMesh, PartMeta, PartOutput, Published, RegistryBuilder, build_part, part_rng, plan,
 };
 use omuzaki_core::glam::{Vec2, Vec3};
 use omuzaki_face_api::{FaceProfile, Palette};
@@ -301,7 +301,11 @@ fn the_assembler_records_what_parts_publish_for_the_next_part() {
     let def = character(1, &[("a", 10)]);
     let (cid, options) = (char_id(), BuildOptions::default());
     let mut assembler = Assembler::new(&cid, &def, &options);
-    assert!(assembler.published().fit.is_empty());
+    assert!(assembler.published().get::<FitFact>().fits.is_empty());
     assembler.add(&id("body"), body_output(&def)).unwrap();
-    assert_eq!(assembler.published().fit.len(), 1, "the body's fit is what the next part builds against");
+    assert_eq!(
+        assembler.published().get::<FitFact>().fits.len(),
+        1,
+        "the body's fit is what the next part builds against"
+    );
 }

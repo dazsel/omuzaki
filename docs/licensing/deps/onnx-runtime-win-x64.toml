@@ -1,0 +1,7 @@
+section = "rust"
+item = "ONNX Runtime 1.28.3 win-x64 (CPU)"
+kind = "native"
+used_for = "the `onnx` runtime's pinned build (`omuzaki-ai-ort`, `builds.rs`)"
+status = "yes"
+condition = "MIT (the archive's `LICENSE`: \"Copyright (c) Microsoft Corporation\"); ship it and `ThirdPartyNotices.txt` with the licences screen. No DirectML: Microsoft publishes no DirectML build for 1.28.3 (the GitHub release has none; NuGet `Microsoft.ML.OnnxRuntime.DirectML` stops at 1.24.4). Fetched through the verified `FileSource`, never committed. URL `https://github.com/microsoft/onnxruntime/releases/download/v1.28.3/onnxruntime-win-x64-1.28.3.zip`, 78,606,946 bytes, sha256 `1d6fab48e85f948436af7c8c971d2c145cf224e2c444755dec894f8b0de11a83`"
+audit = "B2"

@@ -1,0 +1,7 @@
+section = "rust"
+item = "font-rs accumulation method (ported in `omuzaki-face/src/raster/scan.rs`)"
+kind = "code"
+used_for = "signed-area accumulation for the CPU rasteriser's coverage; a modified port (clipping, Skia edge snapping, non-zero rule)"
+status = "yes"
+condition = "Apache-2.0: attribution and licence notice in `crates/omuzaki-face/src/raster/NOTICES.md`; ship it with the licences screen"
+audit = "(Copyright 2015 Google Inc.; https://github.com/raphlinus/font-rs, Raph Levien)"
