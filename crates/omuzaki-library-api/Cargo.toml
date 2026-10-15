@@ -29,3 +29,7 @@ omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 
 [lints]
 workspace = true
+
+[package.metadata.omuzaki]
+kind = "API"
+summary = "the library contract (§28, ADR 0019): `ItemId`, `Version`, `VersionReq`; the `ItemManifest` with its canonical BLAKE3 hash, `check` and publisher `verify`; `ItemRights`; pure recipe `expand` and `check_ops`; `ApplicationRecord`; `ItemSource` with `register_library_source!`; the `Library` service trait with `Query`, `SearchPage`, `ItemInfo`, `Facets`; append-only manifest `migrations`; design in `docs/design/library.md`"

@@ -36,3 +36,7 @@ omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 
 [lints]
 workspace = true
+
+[package.metadata.omuzaki]
+kind = "API"
+summary = "the op contract (§6): `Op`, `Plan`, scopes and grants, structured errors, self-registration with `register_op!`, and the `Runner` trait every surface (MCP, CLI, UI, scripts) calls"

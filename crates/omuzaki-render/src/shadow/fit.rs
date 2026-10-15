@@ -12,6 +12,13 @@
 //!
 //! The camera does not enter at all: the map depends on the light and the casters, so moving the camera cannot move a
 //! shadow edge.
+//!
+//! **A light nearly parallel to the ground** (a low sun, a rim light) is the hard case. Its shadows reach far across the
+//! ground, so the receivers sit far along the light, and the depth range would grow without limit. The fit caps it: the
+//! far plane stops at [`RECEIVER_REACH_RADII`] window radii past the casters, and the basis stays well defined at grazing
+//! angles because the up hint switches only near vertical. What lies beyond the cap is not drawn: the lookup in
+//! `shader/toon.wgsl` treats a point past the far plane, or outside the window, as lit. So a long grazing shadow is
+//! cut off at the cap, and the rest of the ground stays lit rather than shadowed at the wrong depth.
 
 use omuzaki_core::glam::camera::rh::proj::directx;
 use omuzaki_core::glam::{Mat4, Vec3};
