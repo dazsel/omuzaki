@@ -13,6 +13,7 @@
 use omuzaki_char::builder::conformance::{Probes, check, check_all};
 use omuzaki_char_api::fact::FactProbe;
 use omuzaki_char_api::{BuildServices, CharacterDef, PartDef, PartId, PartKindId};
+use omuzaki_char_api::{HeadFact, Publishes};
 use omuzaki_char_mock::mock_character;
 use serde_json::json;
 
@@ -148,4 +149,30 @@ fn check_lists_a_fact_unprobed_when_the_only_same_name_probe_is_for_another_type
     // With the right probe the fact is compared.
     let report = check_all(&bases, Some(&["head"]), &Probes::registered(), &BuildServices::default());
     assert!(!report.unprobed.iter().any(|(_, fact)| fact == "head"), "{:?}", report.unprobed);
+}
+
+// The signature is `Differs`.
+#[allow(clippy::unnecessary_wraps)]
+fn always_differs(_: &Publishes, _: &Publishes) -> Option<String> {
+    Some("stale probe used".to_owned())
+}
+
+static STALE_HEAD: FactProbe = FactProbe::new::<HeadFact>(always_differs);
+
+/// The registered probe of `HeadFact`, which `check` should use.
+fn head_probe() -> &'static FactProbe {
+    omuzaki_char_api::fact::probes().find(|p| p.name == "head").expect("head has a probe")
+}
+
+#[test]
+fn with_two_probes_for_one_fact_check_uses_the_last_one_given() {
+    let others = || omuzaki_char_api::fact::probes().filter(|p| p.name != "head");
+    let bases = kit_characters();
+    let run = |probes: Probes| check_all(&bases, Some(&["head"]), &probes, &BuildServices::default());
+    // The stale probe first: the real one replaces it, so nothing differs.
+    let last_wins = run(Probes::from_probes(others().chain([&STALE_HEAD, head_probe()])));
+    assert!(last_wins.violations.is_empty(), "the stale probe was used: {:?}", last_wins.violations);
+    // The stale probe last: it is the one used, and it says so.
+    let stale_last = run(Probes::from_probes(others().chain([head_probe(), &STALE_HEAD])));
+    assert!(stale_last.violations.iter().any(|v| v.contains("stale probe used")), "{:?}", stale_last.violations);
 }

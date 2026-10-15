@@ -86,16 +86,12 @@ impl Probes {
     }
 
     /// The probes `probes`, as [`Probes::registered`] reads them from the registry (a later probe for the same fact
-    /// replaces an earlier one, and [`Probes::probe_problems`] reports it).
+    /// replaces an earlier one, so the last one given is the one [`check`] uses, and [`Probes::probe_problems`] still
+    /// reports the doubled registration).
     pub fn from_probes(probes: impl IntoIterator<Item = &'static FactProbe>) -> Self {
         let mut all = Self::default();
         for probe in probes {
-            all.facts.push(Entry {
-                name: probe.name,
-                type_id: (probe.type_id)(),
-                holds: probe.holds,
-                differs: probe.differs,
-            });
+            all.put(Entry { name: probe.name, type_id: (probe.type_id)(), holds: probe.holds, differs: probe.differs });
             all.registered.push(probe);
         }
         all
@@ -108,13 +104,22 @@ impl Probes {
     where
         F::Value: PartialEq + Debug,
     {
-        self.facts.push(Entry {
+        self.put(Entry {
             name: F::NAME,
             type_id: TypeId::of::<F>(),
             holds: fact::holds_fact::<F>,
             differs: fact::differs_by_eq::<F>,
         });
         self
+    }
+
+    /// Keeps `entry` as the one comparison of its fact (same name and type): a later one replaces an earlier one, so
+    /// [`check`] never reads a stale comparison.
+    fn put(&mut self, entry: Entry) {
+        match self.facts.iter_mut().find(|e| e.name == entry.name && e.type_id == entry.type_id) {
+            Some(existing) => *existing = entry,
+            None => self.facts.push(entry),
+        }
     }
 
     /// The registered facts that have no probe here, named: what the gate test keeps empty. A probe counts only when
