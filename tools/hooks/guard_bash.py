@@ -123,8 +123,9 @@ def gh_api_method(args):
 def gh_api_refusal(args, endpoint):
     """Why a `gh api` call writes, or None. GraphQL reads go by POST, so GraphQL is judged by its operation instead."""
     if endpoint == "graphql":
-        if any(a == "--input" or a.startswith("--input=") for a in args):
-            return "a GraphQL body from a file (`gh api graphql --input`), which the hook can't inspect,"
+        # A body or field read from a file or stdin (`--input`, `-F query=@file`) can't be inspected.
+        if any(a == "--input" or a.startswith("--input=") or re.match(r"^[\w.\[\]-]+=@", a) for a in args):
+            return "a GraphQL body or field from a file (`--input`, `-F name=@file`), which the hook can't inspect,"
         return "a GraphQL mutation through `gh api`" if any(GRAPHQL_MUTATION.search(a) for a in args) else None
     method = gh_api_method(args)
     return None if method in ("GET", "HEAD") else f"a `gh api` {method} call"
@@ -137,7 +138,8 @@ def gh_refusal(args):
     if not words:
         return None
     group, sub = words[0], (words[1] if len(words) > 1 else "")
-    if group == "auth" and (sub == "token" or (sub == "status" and {"-t", "--show-token"} & set(args))):
+    shows_token = any(re.match(r"^(?:-t|--show-token)(?:=(?!false$).*)?$", a, re.IGNORECASE) for a in args)
+    if group == "auth" and (sub == "token" or (sub == "status" and shows_token)):
         return f"`gh auth {sub}` prints a credential and"
     if group in GH_RESERVED and (GH_RESERVED[group] is None or sub in GH_RESERVED[group]):
         return "`" + " ".join(w for w in ("gh", group, sub) if w) + "`"
@@ -168,7 +170,9 @@ def lease_refusal(push_args, directory):
             skip = True
         elif not arg.startswith("-"):
             positional.append(arg)
-    refspecs = positional[1:]
+    # `--repo <remote>` names the remote, so every positional argument is then a refspec.
+    named_remote = any(a == "--repo" or a.startswith("--repo=") for a in push_args)
+    refspecs = positional if named_remote else positional[1:]
     if not refspecs:
         return None
     branch = current_branch(directory)

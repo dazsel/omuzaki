@@ -67,6 +67,12 @@ check 2 'gh api repos/o/r/issues/1/labels --input labels.json'
 check 2 'gh api --method=PATCH repos/o/r -F allow_auto_merge=true'
 check 2 "gh api graphql -f query='mutation { enqueuePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId } }'"
 check 2 'gh api graphql --input payload.json'
+check 2 'gh api graphql -F query=@payload.graphql'
+check 2 'gh api graphql -f query=@-'
+check 2 'gh auth status --show-token=true'
+check 2 'gh auth status -t=true'
+check 2 'git push --repo origin --force-with-lease HEAD:cloud/other' "$repo"
+check 2 'git push --repo=origin --force-with-lease cloud/other' "$repo"
 check 2 $'gh pr \\\nmerge 12'
 check 2 $'gh pr -R o/r \\\n  merge 12'
 check 2 'sh -c "gh pr merge 12"'
@@ -105,6 +111,9 @@ check 0 'gh pr checks 12 -R dazsel/omuzaki'
 check 0 'gh api repos/o/r/pulls/12/merged'
 check 0 'gh repo view'
 check 0 'gh auth status'
+check 0 'gh auth status --show-token=false'
+check 0 'git push --repo origin --force-with-lease HEAD:cloud/mine' "$repo"
+check 0 "gh api graphql -F owner=dazsel -f query='query { viewer { login } }'"
 check 0 'gh api -X GET search/issues -f q=is:open'
 check 0 "gh api graphql -f query='query { viewer { login } }'"
 check 0 'cat .config/nextest.toml'
