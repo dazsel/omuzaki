@@ -1,2 +1,1 @@
 //! scaffold
-pub mod mcp;

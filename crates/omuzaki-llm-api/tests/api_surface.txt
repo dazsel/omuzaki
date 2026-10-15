@@ -2,6 +2,7 @@ src/error.rs: pub enum LlmError {
 src/error.rs: pub fn rate_limited(retry_after: Option<Duration>) -> Self {
 src/error.rs: pub fn context_too_long(max: u64) -> Self {
 src/lib.rs: pub mod error;
+src/lib.rs: pub mod mcp;
 src/lib.rs: pub mod message;
 src/lib.rs: pub mod provider;
 src/lib.rs: pub mod stream;
@@ -9,6 +10,11 @@ src/lib.rs: pub mod usage;
 src/lib.rs: pub use inventory as __inventory;
 src/lib.rs: pub use omuzaki_core::__record_registration;
 src/lib.rs: pub trait LlmClient: Send + Sync {
+src/mcp.rs: pub struct ToolResult {
+src/mcp.rs: pub fn into_block(self, id: impl Into<String>) -> ContentBlock {
+src/mcp.rs: pub fn tool_defs(list: &Value) -> Vec<ToolDef> {
+src/mcp.rs: pub fn skipped_tools(list: &Value) -> Vec<String> {
+src/mcp.rs: pub fn tool_result(result: &Value) -> ToolResult {
 src/message.rs: pub struct TurnRequest {
 src/message.rs: pub fn new(messages: Vec<Message>, max_output: u32) -> Self {
 src/message.rs: pub fn with_system(mut self, system: Vec<SystemBlock>) -> Self {

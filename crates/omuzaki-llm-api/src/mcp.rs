@@ -3,13 +3,13 @@
 //! [`tool_defs`] turns a `tools/list` result into [`ToolDef`]s; [`tool_result`] turns a `tools/call` result into the
 //! blocks of a [`ContentBlock::ToolResult`].
 
-use omuzaki_llm_api::message::{ContentBlock, ImageMime, ImageOrigin, ToolDef};
+use crate::message::{ContentBlock, ImageMime, ImageOrigin, ToolDef};
 use serde::Serialize;
 use serde_json::Value;
 
 /// The URI prefix of a render that the MCP server serves.
 const RENDER_PREFIX: &str = "omuzaki://render/";
-/// The longest tool name the stricter provider (OpenAI) accepts.
+/// The longest tool name the stricter provider (`OpenAI`) accepts.
 const MAX_NAME: usize = 64;
 
 /// What a `tools/call` result becomes.
@@ -88,10 +88,10 @@ pub fn tool_result(result: &Value) -> ToolResult {
     let is_error = result.get("isError").and_then(Value::as_bool).unwrap_or(false);
     let items = result.get("content").and_then(Value::as_array).map_or(&[][..], Vec::as_slice);
     let mut blocks: Vec<ContentBlock> = items.iter().map(content_block).collect();
-    if blocks.is_empty() {
-        if let Some(structured) = result.get("structuredContent") {
-            blocks.push(ContentBlock::text(structured.to_string()));
-        }
+    if blocks.is_empty()
+        && let Some(structured) = result.get("structuredContent")
+    {
+        blocks.push(ContentBlock::text(structured.to_string()));
     }
     ToolResult { blocks, is_error }
 }

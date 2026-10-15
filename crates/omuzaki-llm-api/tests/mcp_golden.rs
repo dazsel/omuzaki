@@ -1,13 +1,13 @@
 //! Golden test of the MCP mapping (llm-api D3): a `tools/list` body of three tools (one with an unsafe name) and one
 //! `tools/call` result for each rule, serialised and compared with the blessed files in `tests/goldens/mcp/`.
-//! Bless after an intended change with `UPDATE_GOLDENS=1 cargo test -p omuzaki-llm --test mcp_golden`.
+//! Bless after an intended change with `UPDATE_GOLDENS=1 cargo test -p omuzaki-llm-api --test mcp_golden`.
 
 // Integration-test helpers may panic: a panic is a clear test failure.
 #![allow(clippy::unwrap_used)]
 
 use std::path::PathBuf;
 
-use omuzaki_llm::mcp::{skipped_tools, tool_defs, tool_result};
+use omuzaki_llm_api::mcp::{skipped_tools, tool_defs, tool_result};
 use serde_json::{Value, json};
 
 fn golden_path(name: &str) -> PathBuf {
