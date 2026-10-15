@@ -1,0 +1,6 @@
+section = "rust"
+item = "objc2-app-kit"
+kind = "crate"
+used_for = "`NSEvent` and `NSScreen` for the global cursor position on macOS in `spikes/mascot-window`; the spike's own workspace keeps it out of the main lockfile"
+status = "yes"
+audit = "(crates.io: objc2-app-kit 0.3.2, Zlib OR Apache-2.0 OR MIT)"
