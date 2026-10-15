@@ -650,3 +650,14 @@ pub fn take_after_retype<S: Signal, E>(
         }
     }
 }
+
+/// The stride of a native type's rows, signed (negative when the image is bottom-up in memory): the type's own
+/// `MF_MT_DEFAULT_STRIDE` if it has one, otherwise what `compute` says (Media Foundation's
+/// `MFGetStrideForBitmapInfoHeader`, which is negative for RGB32), otherwise the tight width, top-down. Resolved
+/// once, when the type is set or retyped; an absent attribute is never read as "positive".
+pub fn resolve_stride(declared: Option<u32>, compute: impl FnOnce() -> Option<i32>, tight: usize) -> isize {
+    declared
+        .map(u32::cast_signed)
+        .or_else(compute)
+        .map_or_else(|| isize::try_from(tight).unwrap_or(0), |stride| stride as isize)
+}

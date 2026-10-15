@@ -51,8 +51,8 @@ use windows::Win32::Media::MediaFoundation::{
     MF_MT_SAMPLE_SIZE, MF_MT_SUBTYPE, MF_READWRITE_DISABLE_CONVERTERS, MF_SOURCE_READER_ASYNC_CALLBACK,
     MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, MF_SOURCE_READER_FIRST_VIDEO_STREAM, MF_VERSION,
     MF2DBuffer_LockFlags_Read, MFCreateAttributes, MFCreateMemoryBuffer, MFCreateSourceReaderFromMediaSource,
-    MFEnumDeviceSources, MFSTARTUP_FULL, MFSampleExtension_DeviceTimestamp, MFSampleExtension_Discontinuity,
-    MFShutdown, MFStartup,
+    MFEnumDeviceSources, MFGetStrideForBitmapInfoHeader, MFSTARTUP_FULL, MFSampleExtension_DeviceTimestamp,
+    MFSampleExtension_Discontinuity, MFShutdown, MFStartup,
 };
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoTaskMemFree, CoUninitialize};
 use windows::Win32::System::Threading::{CreateEventW, SetEvent, WaitForSingleObject};
@@ -60,7 +60,8 @@ use windows::core::{GUID, Interface, PCWSTR, PWSTR};
 
 use crate::modes::{
     Capacity, CaptureClock, ClockSource, FrameSpan, ModeInfo, NativeSizes, RowFlip, SeqTracker, Signal, SlotFailure,
-    Take, TokenSlot, choose_mode, frame_span, is_progressive, map_hresult, reap, subtype_format, take_after_retype,
+    Take, TokenSlot, choose_mode, frame_span, is_progressive, map_hresult, reap, resolve_stride, subtype_format,
+    take_after_retype,
 };
 
 /// The reader's first video stream, as the `u32` the calls take.
@@ -470,7 +471,7 @@ fn open_stream(runtime: &Arc<MfRuntime>, id: &CameraId, request: &CameraFormatRe
     });
     let callback: IMFSourceReaderCallback = Callback { shared: Arc::clone(&shared) }.into();
     let configured = configure(&device, &callback, id, request);
-    let (reader, mode, bottom_up, capacity) = match configured {
+    let (reader, mode, stride, capacity) = match configured {
         Ok(done) => done,
         Err(e) => {
             // SAFETY: plain call; releases the camera `configure` opened before it failed.
@@ -496,7 +497,7 @@ fn open_stream(runtime: &Arc<MfRuntime>, id: &CameraId, request: &CameraFormatRe
         flip: RowFlip::new(capacity.flip),
         capacity,
         clock: CaptureClock::new(),
-        bottom_up,
+        stride,
         seq: SeqTracker::new(mode.fps_num, mode.fps_den),
         packed_locks: 0,
         oversize_logged: false,
@@ -520,7 +521,7 @@ fn configure(
     callback: &IMFSourceReaderCallback,
     id: &CameraId,
     request: &CameraFormatRequest,
-) -> Result<(IMFSourceReader, ModeInfo, bool, Capacity), TrackError> {
+) -> Result<(IMFSourceReader, ModeInfo, isize, Capacity), TrackError> {
     let reader = open_reader(device, Some(callback)).map_err(|e| err(&e, id))?;
     let available = modes(&reader).map_err(|e| err(&e, id))?;
     let list: Vec<ModeInfo> = available.iter().map(|(m, _, _)| *m).collect();
@@ -532,16 +533,25 @@ fn configure(
     Ok((
         reader,
         mode,
-        is_bottom_up(media),
+        default_stride(media, &mode),
         Capacity::for_native(&available.iter().map(|(m, n, _)| (*m, *n)).collect::<Vec<_>>()),
     ))
 }
 
-/// Whether a media type's default stride is negative, so a plain `Lock` hands over rows bottom-up. An absent
-/// attribute means top-down.
-fn is_bottom_up(media: &IMFMediaType) -> bool {
-    // SAFETY: plain call on a live media type.
-    unsafe { media.GetUINT32(&MF_MT_DEFAULT_STRIDE) }.is_ok_and(|v| v.cast_signed() < 0)
+/// The signed stride of a media type's rows (see [`resolve_stride`]), resolved once when the type is set. For a type
+/// without `MF_MT_DEFAULT_STRIDE` it is what `MFGetStrideForBitmapInfoHeader` computes, so an RGB32 type that omits the
+/// attribute still comes out negative (bottom-up).
+fn default_stride(media: &IMFMediaType, mode: &ModeInfo) -> isize {
+    // SAFETY: plain call on a live media type; an absent attribute is an error we read as "not declared".
+    let declared = unsafe { media.GetUINT32(&MF_MT_DEFAULT_STRIDE) }.ok();
+    let compute = || {
+        // The subtype's first 32 bits are the format code this call takes.
+        // SAFETY: plain call; the subtype is read from the live type.
+        let subtype = unsafe { media.GetGUID(&MF_MT_SUBTYPE) }.ok()?;
+        // SAFETY: plain call with values read from the live type.
+        unsafe { MFGetStrideForBitmapInfoHeader(subtype.data1, mode.width) }.ok()
+    };
+    resolve_stride(declared, compute, mode.format.tight_stride(mode.width).unwrap_or(0))
 }
 
 /// How a buffer was locked, which is also how it is unlocked.
@@ -623,7 +633,7 @@ enum Cost {
 fn lock_buffer(
     buffer: IMFMediaBuffer,
     mode: &ModeInfo,
-    bottom_up: bool,
+    stride: isize,
     can_flip: bool,
     id: &CameraId,
 ) -> Result<(Held, Cost), TrackError> {
@@ -678,11 +688,9 @@ fn lock_buffer(
     // SAFETY: the out-pointers outlive the call; a success locks the buffer until `Unlock`.
     unsafe { held.buffer.Lock(&raw mut start, None, Some(&raw mut len)) }.map_err(|e| err(&e, id))?;
     held.base = start;
-    // `Lock` hands over packed rows: the default stride, which is negative for a bottom-up type.
-    let tight = format.tight_stride(mode.width).unwrap_or(0);
-    let tight = isize::try_from(tight).unwrap_or(0);
-    held.pitch = if bottom_up { -tight } else { tight };
-    let top = if held.pitch < 0 { (mode.height as usize).saturating_sub(1) * tight.unsigned_abs() } else { 0 };
+    // `Lock` hands over rows at the type's default stride, negative for a bottom-up type.
+    held.pitch = stride;
+    let top = if held.pitch < 0 { (mode.height as usize).saturating_sub(1) * held.pitch.unsigned_abs() } else { 0 };
     match held.fit(mode, can_flip, len as usize, top) {
         Ok(()) => Ok((held, cost)),
         Err(why) => Err(fail(&held, why, len as usize)),
@@ -701,27 +709,36 @@ struct Live {
 }
 
 impl Live {
-    /// The sample's pixels as one buffer: its only buffer, borrowed as it is, or, for a sample in pieces, a copy in
-    /// the gather buffer made at open. A sample too big for that buffer is an error, never a new allocation.
+    /// See [`contiguous`].
     fn contiguous(&mut self, sample: &IMFSample, id: &CameraId) -> Result<IMFMediaBuffer, TrackError> {
-        // SAFETY: plain calls on a live sample.
-        let count = unsafe { sample.GetBufferCount() }.map_err(|e| err(&e, id))?;
-        if count == 1 {
-            // SAFETY: as above; index 0 exists since the count is 1.
-            return unsafe { sample.GetBufferByIndex(0) }.map_err(|e| err(&e, id));
-        }
-        // SAFETY: plain call on a live sample.
-        let total = unsafe { sample.GetTotalLength() }.map_err(|e| err(&e, id))?;
-        if total as usize > self.gather_len {
-            return Err(TrackError::Backend(format!(
-                "a sample of {total} bytes does not fit the {} bytes sized at open",
-                self.gather_len
-            )));
-        }
-        // SAFETY: both are live; the gather buffer is unlocked (the previous frame was released) and big enough.
-        unsafe { sample.CopyToBuffer(&self.gather) }.map_err(|e| err(&e, id))?;
-        Ok(self.gather.clone())
+        contiguous(sample, &self.gather, self.gather_len, id)
     }
+}
+
+/// The sample's pixels as one buffer: its only buffer, borrowed as it is, or, for a sample in pieces, a copy in the
+/// gather buffer made at open. A sample too big for that buffer is an error, never a new allocation.
+fn contiguous(
+    sample: &IMFSample,
+    gather: &IMFMediaBuffer,
+    gather_len: usize,
+    id: &CameraId,
+) -> Result<IMFMediaBuffer, TrackError> {
+    // SAFETY: plain calls on a live sample.
+    let count = unsafe { sample.GetBufferCount() }.map_err(|e| err(&e, id))?;
+    if count == 1 {
+        // SAFETY: as above; index 0 exists since the count is 1.
+        return unsafe { sample.GetBufferByIndex(0) }.map_err(|e| err(&e, id));
+    }
+    // SAFETY: plain call on a live sample.
+    let total = unsafe { sample.GetTotalLength() }.map_err(|e| err(&e, id))?;
+    if total as usize > gather_len {
+        return Err(TrackError::Backend(format!(
+            "a sample of {total} bytes does not fit the {gather_len} bytes sized at open"
+        )));
+    }
+    // SAFETY: both are live; the gather buffer is unlocked (the previous frame was released) and big enough.
+    unsafe { sample.CopyToBuffer(gather) }.map_err(|e| err(&e, id))?;
+    Ok(gather.clone())
 }
 
 // SAFETY: the reader and activator are free-threaded (multithreaded-apartment) objects; `held` points into a buffer
@@ -740,8 +757,8 @@ struct MfStream {
     /// What was sized at open; a renegotiated mode must fit it.
     capacity: Capacity,
     clock: CaptureClock,
-    /// The mode's default stride is negative, so a plain `Lock` hands over rows bottom-up.
-    bottom_up: bool,
+    /// The signed default stride of the current type: what a plain `Lock` hands over (negative: bottom-up).
+    stride: isize,
     seq: SeqTracker,
     /// Frames locked the last-resort way (see [`Cost::MayCopy`]); logged when the first happens and again at drop.
     packed_locks: u64,
@@ -770,7 +787,7 @@ impl MfStream {
             TrackError::Backend("the camera changed to a format or scan mode that cannot be handed over".into())
         })?;
         self.capacity.admits(&mode).map_err(|e| TrackError::Backend(e.into()))?;
-        self.bottom_up = is_bottom_up(&media);
+        self.stride = default_stride(&media, &mode);
         self.seq.set_rate(mode.fps_num, mode.fps_den);
         if mode != self.mode {
             self.mode = mode;
@@ -819,7 +836,7 @@ impl MfStream {
                 return Err(e);
             }
         };
-        let (held, cost) = lock_buffer(buffer, &self.mode, self.bottom_up, !self.flip.is_empty(), &self.id)?;
+        let (held, cost) = lock_buffer(buffer, &self.mode, self.stride, !self.flip.is_empty(), &self.id)?;
         if cost == Cost::MayCopy {
             self.packed_locks += 1;
             if self.packed_locks == 1 {
@@ -946,6 +963,117 @@ fn reap_stream(reaped: Reaped) {
         Shared::release(token);
     }
     drop(runtime);
+}
+
+/// What the benchmark (`benches/stream.rs`) drives: the per-frame path of `next_frame` on a synthetic sample, with no
+/// device. It runs the same functions the stream does: the token hand-off through the event-woken slot, the buffer
+/// choice, the lock, the bounds check, and the top-down copy. Not part of the API.
+#[doc(hidden)]
+pub mod bench_support {
+    use super::{
+        Arc, AtomicPtr, AtomicUsize, CameraId, ComScope, EventSignal, IMFMediaBuffer, IMFSample, MFCreateMemoryBuffer,
+        MfRuntime, ModeInfo, PixelFormat, RowFlip, Shared, Take, TokenSlot, TrackError, contiguous, err, into_token,
+        lock_buffer,
+    };
+    use std::time::Duration;
+
+    use windows::Win32::Media::MediaFoundation::MFCreateSample;
+
+    /// A synthetic one-buffer sample and everything the frame path needs around it.
+    pub struct Harness {
+        sample: IMFSample,
+        gather: IMFMediaBuffer,
+        gather_len: usize,
+        shared: Arc<Shared>,
+        mode: ModeInfo,
+        stride: isize,
+        flip: RowFlip,
+        id: CameraId,
+        // Dropped last, in this order: Media Foundation after the interfaces, COM after Media Foundation.
+        _runtime: MfRuntime,
+        _com: ComScope,
+    }
+
+    impl Harness {
+        /// A `width` x `height` sample of `format` filled with a pattern, as a bottom-up image if `stride` is negative.
+        ///
+        /// # Errors
+        /// If Media Foundation cannot start or build the sample.
+        pub fn new(format: PixelFormat, width: u32, height: u32, stride: isize) -> Result<Self, TrackError> {
+            let id = CameraId("bench".into());
+            let com = ComScope::enter()?;
+            let runtime = MfRuntime::start().map_err(|e| err(&e, &id))?;
+            let mode = ModeInfo { format, width, height, fps_num: 30, fps_den: 1 };
+            let row = format.tight_stride(width).unwrap_or(0);
+            let len = format.frame_len(height, stride.unsigned_abs().max(row)).unwrap_or(row * height as usize);
+            let bytes = u32::try_from(len).map_err(|_| TrackError::Backend("frame too large".into()))?;
+            // SAFETY: plain calls; the buffer and sample are owned by this harness.
+            let (gather, sample) = unsafe {
+                let buffer = MFCreateMemoryBuffer(bytes).map_err(|e| err(&e, &id))?;
+                let (mut start, mut max) = (std::ptr::null_mut::<u8>(), 0_u32);
+                buffer.Lock(&raw mut start, Some(&raw mut max), None).map_err(|e| err(&e, &id))?;
+                // SAFETY: the lock gives `max` writable bytes at `start`.
+                for (i, byte) in std::slice::from_raw_parts_mut(start, max as usize).iter_mut().enumerate() {
+                    *byte = (i & 0xFF).try_into().unwrap_or(0); // a repeating pattern
+                }
+                buffer.Unlock().map_err(|e| err(&e, &id))?;
+                buffer.SetCurrentLength(bytes).map_err(|e| err(&e, &id))?;
+                let sample = MFCreateSample().map_err(|e| err(&e, &id))?;
+                sample.AddBuffer(&buffer).map_err(|e| err(&e, &id))?;
+                (MFCreateMemoryBuffer(bytes).map_err(|e| err(&e, &id))?, sample)
+            };
+            let flip_len = if stride < 0 { row * height as usize } else { 0 };
+            let mut flip = RowFlip::new(flip_len);
+            flip.set_len(flip_len).map_err(|e| TrackError::Backend(e.into()))?;
+            let signal = EventSignal::new().map_err(|e| err(&e, &id))?;
+            let shared = Arc::new(Shared {
+                slot: TokenSlot::new(signal),
+                reader: AtomicPtr::new(std::ptr::null_mut()),
+                in_flight: AtomicUsize::new(0),
+            });
+            Ok(Self { sample, gather, gather_len: len, shared, mode, stride, flip, id, _runtime: runtime, _com: com })
+        }
+
+        /// The callback's side and the caller's: put the sample in the slot (waking the event) and take it back.
+        /// Returns whether it came out.
+        pub fn hand_off(&self) -> bool {
+            let Some(token) = into_token(self.sample.clone()) else { return false };
+            self.shared.slot.put(token, Shared::release);
+            match self.shared.slot.take(Duration::ZERO) {
+                Take::Item(token) => {
+                    Shared::release(token);
+                    true
+                }
+                _ => false,
+            }
+        }
+
+        /// The caller's side after the hand-off: choose the buffer, lock it, check it against its allocation, take
+        /// the top-down copy if the image is bottom-up, and release the lock. Returns the bytes of the frame.
+        ///
+        /// # Errors
+        /// As `next_frame` would.
+        pub fn lock_and_read(&mut self) -> Result<usize, TrackError> {
+            let buffer = contiguous(&self.sample, &self.gather, self.gather_len, &self.id)?;
+            let (held, _) = lock_buffer(buffer, &self.mode, self.stride, !self.flip.is_empty(), &self.id)?;
+            // SAFETY: the lock is held until `unlock` below, after the slice's last use.
+            let bytes = unsafe { held.bytes() };
+            let used = if held.pitch < 0 {
+                let row = self.flip.len() / self.mode.height as usize;
+                match self.flip.fill(bytes, held.pitch, row, self.mode.height as usize) {
+                    Ok(top_down) => top_down.len(),
+                    Err(e) => {
+                        held.unlock();
+                        return Err(TrackError::Backend(e.into()));
+                    }
+                }
+            } else {
+                bytes.len()
+            };
+            held.unlock();
+            Ok(used)
+        }
+    }
 }
 
 #[cfg(test)]

@@ -11,6 +11,13 @@ repository.workspace = true
 [dependencies]
 omuzaki-track-api = { path = "../omuzaki-track-api" }
 
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "stream"
+harness = false
+
 [target.'cfg(windows)'.dependencies]
 tracing.workspace = true
 windows.workspace = true

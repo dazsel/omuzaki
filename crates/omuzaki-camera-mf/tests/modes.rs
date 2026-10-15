@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use omuzaki_camera_mf::modes::{
     Capacity, CaptureClock, ClockSource, FrameSpan, NativeSizes, RowFlip, SeqTracker, Signal, SlotFailure, Stamp, Take,
-    TokenSlot, is_progressive, reap, take_after_retype,
+    TokenSlot, is_progressive, reap, resolve_stride, take_after_retype,
 };
 use omuzaki_track_api::camera::{CameraFormat, CameraFormatRequest, CameraId, PixelFormat};
 use omuzaki_track_api::error::TrackError;
@@ -522,4 +522,23 @@ fn a_retype_without_a_frame_waits_out_the_deadline() {
     let failing = TokenSlot::new(Flag::default());
     failing.set_retype();
     assert_eq!(take_after_retype(&failing, Duration::ZERO, |_| Err("unsupported")), Err("unsupported"));
+}
+
+#[test]
+fn an_rgb32_type_without_a_stride_resolves_to_a_bottom_up_one() {
+    // 4x3 BGRA. Media Foundation computes the stride of an RGB32 type as negative (bottom-up).
+    let tight = 4 * 4;
+    let stride = resolve_stride(None, || Some(-16), tight);
+    assert_eq!(stride, -16);
+    // A declared stride wins, with its sign (the attribute stores an i32 in a u32).
+    assert_eq!(resolve_stride(Some((-32_i32).cast_unsigned()), || Some(-16), tight), -32);
+    assert_eq!(resolve_stride(Some(32), || None, tight), 32);
+    // Neither: the tight width, top-down.
+    assert_eq!(resolve_stride(None, || None, tight), 16);
+    // The resolved stride gives a top-down frame: the last row in memory comes out first.
+    let block: Vec<u8> = (0..48).collect();
+    let mut out = [0_u8; 48];
+    copy_top_down(&block, stride, 16, 3, &mut out).unwrap();
+    assert_eq!(&out[..16], &block[32..48]);
+    assert_eq!(&out[32..], &block[..16]);
 }
