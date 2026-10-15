@@ -8,7 +8,7 @@
 mod common;
 
 use common::{cache, fixture, local, with_source};
-use omuzaki_ai_api::{DType, Dim, Runtime as _, SessionOptions, Signature, TensorBuf, TensorRef, TensorSpec};
+use omuzaki_ai_api::{DType, Dim, Provider, Runtime as _, SessionOptions, Signature, TensorBuf, TensorRef, TensorSpec};
 use omuzaki_ai_ort::OrtRuntime;
 
 /// Total on-CPU time of every thread of this process so far, in nanoseconds; `None` where the kernel doesn't say.
@@ -33,7 +33,7 @@ fn an_idle_loaded_session_does_not_spin() {
     let path = fixture("identity.onnx");
     let files = [local("model.onnx", &path)];
     // Four intra-op threads: a thread pool is where spin-waiting would show.
-    let options = SessionOptions { threads: 4, ..SessionOptions::default() };
+    let options = SessionOptions::new(vec![Provider::Cpu], 4);
     let mut session =
         with_source(&files, &[], &natives, |s| OrtRuntime.load(s, &slot, &std::collections::BTreeMap::new(), &options))
             .unwrap();

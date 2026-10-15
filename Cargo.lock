@@ -3849,6 +3849,8 @@ dependencies = [
  "omuzaki-core",
  "omuzaki-doc-api",
  "omuzaki-doc-mock",
+ "omuzaki-history-api",
+ "omuzaki-history-mock",
  "omuzaki-ops-api",
  "omuzaki-ops-mock",
  "omuzaki-store-api",
@@ -4090,8 +4092,11 @@ name = "omuzaki-stream-api"
 version = "0.0.0"
 dependencies = [
  "bytes",
+ "omuzaki-core",
+ "omuzaki-render-api",
  "schemars",
  "serde",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 
@@ -4171,6 +4176,28 @@ dependencies = [
  "sha2",
  "tempfile",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "omuzaki-track-api"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+ "omuzaki-anim-api",
+ "omuzaki-core",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "omuzaki-track-mock"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-anim-api",
+ "omuzaki-core",
+ "omuzaki-track-api",
 ]
 
 [[package]]
@@ -6950,6 +6977,7 @@ version = "0.0.0"
 dependencies = [
  "clap",
  "flate2",
+ "omuzaki-ai-api",
  "omuzaki-core",
  "omuzaki-embed",
  "omuzaki-library-api",
