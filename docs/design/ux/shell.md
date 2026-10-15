@@ -79,18 +79,20 @@ Same regions, width class M. The Library moved into a tab beside the Outliner, i
 
 A **workspace** is a saved layout plus a default context, not a mode. Any panel can be opened in any workspace (palette: "Show Library"). This is Blender's definition ("predefined window layouts") and keeps the shell small.
 
-Workspaces and panels **self-register**, like ops (spec §39 rule 2). Nothing edits a central list, so the tab bar and View menu show whatever is compiled in, ordered by an `order` key.
+Workspaces and panels **self-register**, like ops (spec §39 rule 2). Nothing edits a central list, so the tab bar and View menu show whatever is compiled in, ordered by group (a workspace's group, a panel's region), then an `order` key, then id. An id registered twice is reported, not silently dropped.
 
 ```rust
-// Sketch of the registration contract (to be settled in a `omuzaki-ui-api` crate, see section 18).
+// The registration contract, in the `omuzaki-ui-api` crate (`registry`, `panel` and `layout` modules).
 register_workspace! { id: "build", title: "Build", icon: icons::HAMMER, order: 20, group: Group::Make,
-                      default_layout: layouts::build }
+                      default_layout: layouts::build }        // fn() -> layout::Node
 register_panel! {
     id: "outliner", title: "Outliner", icon: icons::TREE, region: Region::Left,
-    min_size: [240.0, 160.0], empty: empty_states::NO_CHARACTER,
-    build: |app| Box::new(OutlinerPanel::new(app)),
+    min_size: [240.0, 160.0], order: 10, empty: empty_states::NO_CHARACTER,   // `kind` and `empty` are optional
+    build: |ctx| Box::new(OutlinerPanel::new(ctx)),           // ctx: &PanelCtx
 }
 ```
+
+A panel implements `Panel` (`ui`, plus optional `title`, `accessibility_label`, `available`, `palette_entries`). Its `PanelCtx` gives the `Runner` and the actor it runs ops as, this frame's events, typed view models and the theme kind; colours come from the egui style the shell installs. `omuzaki-ui-mock` draws a panel headless and runs the conformance check every panel crate calls.
 
 | Workspace | What you do there | Default layout | Key panels | Features | Phase |
 |---|---|---|---|---|---|
@@ -366,6 +368,6 @@ Contract gaps this design depends on (each tracked as an issue):
 - **Continuous edits**. `Runner` has no way to coalesce a drag into one op record, so 60 drags per second would flood the op log. Needs a scrub or coalesce key on `Request`.
 - **Restore to a point, branches, named versions**. `Runner::undo` pops one transaction at a time. History needs "restore to tx N" and "branch from tx N" (VC-01, VC-02).
 - **Pending approvals**. `ErrorCode::Denied` says an op "may be queued for approval", but there is no queue type or event. The approval card needs `Event::ApprovalRequested` and a resolve call with a comment and a grant.
-- **Panel and workspace registration** (`omuzaki-ui-api`).
+- **Panel and workspace registration**: `omuzaki-ui-api` (part 1 of #64); the shell and the gallery move onto it in part 2.
 - **`x-ui.*` schema annotations** carried through `schemars` into `OpInfo.schema`.
 - **`omuzaki://ui/context` and `ui.*` ops** (principles, "Agent experience").

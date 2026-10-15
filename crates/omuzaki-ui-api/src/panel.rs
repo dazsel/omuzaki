@@ -86,8 +86,13 @@ impl EmptyState {
     }
 }
 
-/// Which palette the shell is drawing with. Panels read colours from the egui style the shell sets; this says which
-/// one it is, for the few that pick assets by theme (a thumbnail backdrop).
+/// Which palette the shell is drawing with.
+///
+/// Why only this: the design tokens live in `omuzaki-ui`'s design system, an App crate that a panel in another crate
+/// can't depend on. So a panel gets the theme in two parts. The colours, type and spacing arrive through the egui
+/// `Style` that the shell installs on the context before any panel draws, which every egui widget already reads
+/// (`ui.visuals()`). This enum names the palette, for the few panels that pick assets by theme (a thumbnail
+/// backdrop). The contract then carries no colour values, which change with every design pass.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 #[non_exhaustive]
 pub enum ThemeKind {

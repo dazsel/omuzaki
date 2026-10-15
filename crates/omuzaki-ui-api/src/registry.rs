@@ -10,9 +10,10 @@
 //! ```
 //!
 //! Titles are the English words of the registration; the shell translates them through its message table.
-//! [`Registry::collect`] orders each list by `order`, then id, so the order never depends on link order. Two
-//! registrations with one id keep the first in that order (then by their `file:line` text) and report the other in
-//! [`Registry::duplicates`], never dropping it silently.
+//! [`Registry::collect`] orders each list by group (a workspace's [`Group`], a panel's [`Region`], a story's
+//! [`StoryGroup`]), then `order`, then id, so the order never depends on link order. Two registrations with one id
+//! keep the first in that order (then by their `file:line` text) and report the other in [`Registry::duplicates`],
+//! never dropping it silently.
 
 use std::any::Any;
 use std::collections::{BTreeMap, btree_map};
@@ -95,7 +96,7 @@ pub struct PanelDef {
     pub region: Region,
     /// Smallest size in points (`shell.md` section 4, rule 3).
     pub min_size: [f32; 2],
-    /// Order in the View menu and its region's tab group, lowest first.
+    /// Order within its region in the View menu and its tab group, lowest first.
     pub order: u32,
     /// Primary or dockable.
     pub kind: PanelKind,
@@ -149,7 +150,7 @@ pub struct WorkspaceDef {
     pub title: &'static str,
     /// An icon glyph.
     pub icon: &'static str,
-    /// Position among the tabs, lowest first.
+    /// Position among the tabs of its group, lowest first.
     pub order: u32,
     /// The tab group.
     pub group: Group,
@@ -185,7 +186,7 @@ pub struct StoryDef {
     pub title: &'static str,
     /// The gallery section.
     pub group: StoryGroup,
-    /// Order within the gallery, lowest first.
+    /// Order within its section, lowest first.
     pub order: u32,
     /// Makes the story's state (what its widgets edit) once.
     pub new_state: fn() -> Box<dyn Any>,
@@ -271,7 +272,7 @@ impl fmt::Display for Duplicate {
     }
 }
 
-/// Everything registered in this binary, ordered by `order` then id, one entry per id.
+/// Everything registered in this binary, ordered by group, then `order`, then id, with one entry per id.
 #[derive(Clone, Debug)]
 pub struct Registry {
     workspaces: Vec<&'static WorkspaceDef>,
@@ -291,17 +292,17 @@ impl Registry {
         Self { workspaces, panels, stories, duplicates }
     }
 
-    /// The workspaces, in tab order.
+    /// The workspaces, in tab order: by group, then order, then id.
     pub fn workspaces(&self) -> &[&'static WorkspaceDef] {
         &self.workspaces
     }
 
-    /// The panels, in View-menu order.
+    /// The panels, in View-menu order: by region, then order, then id.
     pub fn panels(&self) -> &[&'static PanelDef] {
         &self.panels
     }
 
-    /// The gallery stories, in gallery order.
+    /// The gallery stories, in gallery order: by group, then order, then id.
     pub fn stories(&self) -> &[&'static StoryDef] {
         &self.stories
     }
@@ -327,19 +328,20 @@ impl Registry {
 trait Entry: inventory::Collect {
     const KIND: DefKind;
     fn id(&self) -> &'static str;
-    fn order(&self) -> u32;
+    /// The group's position (its variant's index), then `order`.
+    fn rank(&self) -> (u8, u32);
     fn origin(&self) -> &'static str;
 }
 
 macro_rules! entry {
-    ($ty:ty, $kind:expr) => {
+    ($ty:ty, $kind:expr, $group:ident) => {
         impl Entry for $ty {
             const KIND: DefKind = $kind;
             fn id(&self) -> &'static str {
                 self.id
             }
-            fn order(&self) -> u32 {
-                self.order
+            fn rank(&self) -> (u8, u32) {
+                (self.$group as u8, self.order)
             }
             fn origin(&self) -> &'static str {
                 self.origin
@@ -347,14 +349,14 @@ macro_rules! entry {
         }
     };
 }
-entry!(WorkspaceDef, DefKind::Workspace);
-entry!(PanelDef, DefKind::Panel);
-entry!(StoryDef, DefKind::Story);
+entry!(WorkspaceDef, DefKind::Workspace, group);
+entry!(PanelDef, DefKind::Panel, region);
+entry!(StoryDef, DefKind::Story, group);
 
-/// The registrations of `T` by order, id and place; a repeated id keeps the first and is reported in `duplicates`.
+/// The registrations of `T` by group, order, id and place; a repeated id keeps the first and is reported in `duplicates`.
 fn ordered<T: Entry>(duplicates: &mut Vec<Duplicate>) -> Vec<&'static T> {
     let mut all: Vec<&'static T> = inventory::iter::<T>.into_iter().collect();
-    all.sort_by_key(|e| (e.order(), e.id(), e.origin()));
+    all.sort_by_key(|e| (e.rank(), e.id(), e.origin()));
     let mut kept: BTreeMap<&'static str, &'static str> = BTreeMap::new();
     all.retain(|e| match kept.entry(e.id()) {
         btree_map::Entry::Vacant(slot) => {
@@ -467,6 +469,18 @@ mod tests {
     show: |_, _| {} }
     crate::register_workspace! { id: "solo", title: "Solo", icon: "", order: 1, group: Group::Make,
     default_layout: || Node::pane("dup") }
+    // A later group sorts after an earlier one whatever its `order`.
+    crate::register_workspace! { id: "aaa", title: "Watch", icon: "", order: 0, group: Group::Watch,
+    default_layout: || Node::pane("dup") }
+    crate::register_panel! { id: "aaa", title: "Bottom", icon: "", region: Region::Bottom, min_size: [240.0, 160.0],
+    order: 0, build: |_| Box::new(Blank) }
+
+    #[test]
+    fn lists_are_ordered_by_group_then_order_then_id() {
+        let registry = Registry::collect();
+        assert_eq!(registry.workspaces().iter().map(|w| w.id).collect::<Vec<_>>(), ["solo", "aaa"]);
+        assert_eq!(registry.panels().iter().map(|p| p.id).collect::<Vec<_>>(), ["dup", "aaa"]);
+    }
 
     #[test]
     fn a_repeated_id_keeps_the_first_by_order_then_place_and_reports_the_other() {
@@ -481,7 +495,7 @@ mod tests {
         assert_ne!(panel.kept, panel.dropped);
         assert!(panel.to_string().starts_with("panel \"dup\" is registered more than once: kept at "), "{panel}");
         let recorded = omuzaki_core::link::registered().into_iter().filter(|r| r.package == "omuzaki-ui-api").count();
-        assert_eq!(recorded, 5, "every registration is recorded for the link gate, duplicates included");
+        assert_eq!(recorded, 7, "every registration is recorded for the link gate, duplicates included");
     }
 
     #[test]

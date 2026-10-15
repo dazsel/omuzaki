@@ -1,16 +1,19 @@
-//! A headless host for `omuzaki-ui-api` panels, and a probe panel and workspace that register themselves.
+//! A headless host for `omuzaki-ui-api` panels, a conformance check, and a probe panel and workspace that register
+//! themselves.
 //!
-//! [`MockHost`] draws a panel for one frame the way the shell does (its body, or its registered empty state while
-//! it is unavailable) in an egui context with no window, so panel crates test their panels without the app.
-//! [`ProbePanel`] and the `mock.probe` workspace give registry tests a registration from a crate of their own.
+//! [`MockHost`] collects the registry and draws any registered panel for one frame the way the shell does (its body,
+//! or its registered empty state while it is unavailable) in an egui context with no window or GPU, so panel crates
+//! test their panels without the app. [`MockHost::check`] is the conformance check every panel crate runs on its
+//! panels. [`ProbePanel`] and the `mock.probe` workspace give registry tests a registration from a crate of their own.
 #![deny(missing_docs)]
 
 use std::borrow::Cow;
+use std::panic::{self, AssertUnwindSafe};
 
-use egui::{Context, RawInput, Ui};
+use egui::{Context, Pos2, RawInput, Rect, Ui, vec2};
 use omuzaki_ui_api::layout::Node;
 use omuzaki_ui_api::panel::{PaletteEntry, Panel, PanelCtx};
-use omuzaki_ui_api::registry::{Group, PanelDef, Region};
+use omuzaki_ui_api::registry::{Group, PanelDef, Region, Registry};
 
 omuzaki_core::define_link!();
 
@@ -84,45 +87,128 @@ omuzaki_ui_api::register_workspace! {
     default_layout: || Node::pane(PROBE),
 }
 
-/// Draws panels headless, one frame at a time, as the shell would.
-#[derive(Default)]
+/// Draws registered panels headless, one frame at a time, as the shell would.
 pub struct MockHost {
     egui: Context,
+    registry: Registry,
+}
+
+impl Default for MockHost {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl MockHost {
-    /// A host with a fresh egui context.
+    /// A host over every registration linked into this binary, with a fresh egui context.
     pub fn new() -> Self {
-        Self::default()
+        Self { egui: accessible_context(), registry: Registry::collect() }
     }
 
-    /// Draws one frame of `panel`, registered as `def`, filling the window.
-    pub fn frame(&self, panel: &mut dyn Panel, def: &PanelDef, ctx: &PanelCtx<'_>) -> Frame {
-        let body = panel.available(ctx);
-        let output = self.egui.run_ui(RawInput::default(), |ui| match (body, def.empty) {
-            (true, _) => panel.ui(ui, ctx),
-            (false, Some(empty)) => {
-                ui.label(empty.reason);
-                ui.label(empty.fix);
+    /// What the host found registered.
+    pub fn registry(&self) -> &Registry {
+        &self.registry
+    }
+
+    /// Builds the panel registered as `id`, as the shell does when it first shows it.
+    pub fn open(&self, id: &str, ctx: &PanelCtx<'_>) -> Option<(&'static PanelDef, Box<dyn Panel>)> {
+        let def = self.registry.panel(id)?;
+        Some((def, (def.build)(ctx)))
+    }
+
+    /// Draws one frame of `panel`, registered as `def`, in a window of `size` points.
+    pub fn frame(&self, panel: &mut dyn Panel, def: &PanelDef, ctx: &PanelCtx<'_>, size: [f32; 2]) -> Frame {
+        draw(&self.egui, panel, def, ctx, size)
+    }
+
+    /// The conformance check for the panel registered as `id`; `ctx` should be over an empty document. Returns one
+    /// line per problem, so `assert!(problems.is_empty(), "{problems:#?}")` names them all:
+    ///
+    /// - the id is registered once and is stable: non-empty, lower-case ASCII letters, digits, `.`, `_` or `-`;
+    /// - it has a title and a screen-reader label, and its frame gives AccessKit something to announce;
+    /// - it draws with no document: its body, or (when unavailable) a registered empty state;
+    /// - nothing panics at its minimum size, at half of it, or at 1 by 1 points.
+    pub fn check(&self, id: &str, ctx: &PanelCtx<'_>) -> Vec<String> {
+        let mut problems = Vec::new();
+        let valid = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-');
+        if id.is_empty() || !id.chars().all(valid) {
+            problems.push(format!("id {id:?} is not lower-case ASCII letters, digits, '.', '_' or '-'"));
+        }
+        problems.extend(self.registry.duplicates().iter().filter(|d| d.id == id).map(ToString::to_string));
+        let Some((def, mut panel)) = self.open(id, ctx) else {
+            problems.push(format!("no panel is registered as {id:?}"));
+            return problems;
+        };
+        let label = panel.accessibility_label().or_else(|| panel.title()).unwrap_or(Cow::Borrowed(def.title));
+        if def.title.trim().is_empty() || label.trim().is_empty() {
+            problems.push(format!("{id}: the title or the screen-reader label is empty"));
+        }
+        let frame = self.frame(panel.as_mut(), def, ctx, def.min_size);
+        if !frame.body && def.empty.is_none() {
+            problems.push(format!("{id}: unavailable with no document, and registers no empty state"));
+        }
+        if frame.labels.is_empty() {
+            problems.push(format!("{id}: its frame gives AccessKit nothing to announce"));
+        }
+        let [w, h] = def.min_size;
+        for size in [[w, h], [w / 2.0, h / 2.0], [1.0, 1.0]] {
+            // A fresh context each time, so a panic can't leave state behind for the next size.
+            let egui = accessible_context();
+            let drawn = panic::catch_unwind(AssertUnwindSafe(|| draw(&egui, panel.as_mut(), def, ctx, size)));
+            if drawn.is_err() {
+                problems.push(format!("{id}: panics at {w} by {h} points", w = size[0], h = size[1]));
             }
-            (false, None) => {
-                ui.label(NO_EMPTY_STATE);
-            }
-        });
-        let shapes = output.shapes.len();
-        // No GPU here: the texture uploads are dropped on purpose (egui panics on an unhandled delta otherwise).
-        output.drop_without_applying_deltas();
-        Frame { body, shapes }
+        }
+        problems
     }
 }
 
 /// What one [`MockHost::frame`] drew.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Frame {
     /// Whether the panel's body was drawn; `false` means it was unavailable and its empty state was shown.
     pub body: bool,
     /// How many shapes egui produced.
     pub shapes: usize,
+    /// What a screen reader can announce from the frame, sorted, each text once: each AccessKit node's label, or its value when it
+    /// has no label (egui puts a text label's words in the value).
+    pub labels: Vec<String>,
+}
+
+fn accessible_context() -> Context {
+    let egui = Context::default();
+    egui.enable_accesskit();
+    egui
+}
+
+fn draw(egui: &Context, panel: &mut dyn Panel, def: &PanelDef, ctx: &PanelCtx<'_>, size: [f32; 2]) -> Frame {
+    let input =
+        RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(size[0], size[1]))), ..RawInput::default() };
+    let body = panel.available(ctx);
+    let output = egui.run_ui(input, |ui| match (body, def.empty) {
+        (true, _) => panel.ui(ui, ctx),
+        (false, Some(empty)) => {
+            ui.label(empty.reason);
+            ui.label(empty.fix);
+        }
+        (false, None) => {
+            ui.label(NO_EMPTY_STATE);
+        }
+    });
+    let shapes = output.shapes.len();
+    let mut labels: Vec<String> = output
+        .platform_output
+        .accesskit_update
+        .iter()
+        .flat_map(|update| update.nodes.iter().filter_map(|(_, node)| node.label().or_else(|| node.value()).map(str::to_owned)))
+        .filter(|label| !label.trim().is_empty())
+        .collect();
+    labels.sort_unstable();
+    // egui gives a label's words to its node and to the node of its text run.
+    labels.dedup();
+    // No GPU here: the texture uploads are dropped on purpose (egui panics on an unhandled delta otherwise).
+    output.drop_without_applying_deltas();
+    Frame { body, shapes, labels }
 }
 
 #[cfg(test)]
