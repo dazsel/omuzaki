@@ -179,7 +179,8 @@ impl<F: FnMut(&[&str], &Map<String, Value>)> Walker<F> {
         }
         // A plain `enum` list only when there are no branches: with branches, its values are the branches' own.
         if let (false, Some(Value::Array(values))) = (has_branches(node), node.get("enum")) {
-            for value in values {
+            // schemars writes an `Option` of an enum as its values plus `null`; the `null` is no value of the enum.
+            for value in values.iter().filter(|value| !value.is_null()) {
                 self.path.push(value_key(value));
                 self.emit(&Map::new());
                 self.path.pop();
@@ -276,15 +277,17 @@ fn is_null(branch: &Value) -> bool {
     matches!(branch.get("type"), Some(Value::String(kind)) if kind == "null")
 }
 
-/// The one value a branch stands for: its `const`, or the sole entry of its `enum`.
+/// The one value a branch stands for: its `const`, or the sole entry of its `enum`, not counting a `null`.
 fn single_value(node: &Map<String, Value>) -> Option<&Value> {
     if let Some(constant) = node.get("const") {
         return Some(constant);
     }
-    match node.get("enum") {
-        Some(Value::Array(values)) if values.len() == 1 => values.first(),
-        _ => None,
-    }
+    let Some(Value::Array(values)) = node.get("enum") else {
+        return None;
+    };
+    let mut values = values.iter().filter(|value| !value.is_null());
+    let only = values.next()?;
+    values.next().is_none().then_some(only)
 }
 
 /// An internally tagged variant's tag: the first property whose schema has a `const`, with its name and value.
