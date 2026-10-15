@@ -212,12 +212,12 @@ fn bind_morphs(morphs: &[&Morph<'_>], weight: f32) -> Expression {
 /// Morph weights scale directly. A colour bind moves its material colour from the base value to its target as the
 /// weight rises, and a texture-transform bind moves from the identity (scale 1, offset 0), so scaling interpolates
 /// the target from that base (`docs/design/byom.md` D3). A colour bind whose material or colour does not exist is
-/// dropped: it drives nothing. At a gain of 1 everything is copied as it is, including `is_binary`; below it the copy
-/// is continuous, because a stepped expression cannot be halved.
+/// dropped: it drives nothing. `is_binary` is always carried over.
 fn scale(source: &Expression, gain: f32, materials: &[Material]) -> Option<Expression> {
     let mut expression = Expression::new();
+    // A stepped source stays stepped: a flipbook blink must not turn into a half-offset in the atlas.
+    expression.is_binary = source.is_binary;
     if (gain - 1.0).abs() < f32::EPSILON {
-        expression.is_binary = source.is_binary;
         expression.morph_binds.clone_from(&source.morph_binds);
         expression.color_binds.clone_from(&source.color_binds);
         expression.uv_binds.clone_from(&source.uv_binds);

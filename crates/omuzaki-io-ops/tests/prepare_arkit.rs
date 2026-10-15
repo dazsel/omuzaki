@@ -272,6 +272,22 @@ fn a_colour_the_material_lacks_is_dropped_and_a_gain_of_one_copies_whole() {
 }
 
 #[test]
+fn a_half_gain_copy_of_a_binary_source_stays_binary() {
+    let (mut scene, _, material) = scene_with_material();
+    let mut blink = Expression::new();
+    blink.is_binary = true;
+    blink.uv_binds.push(UvBind { material, scale: Vec2::ONE, offset: Vec2::new(0.5, 0.0) });
+    scene.avatar.as_mut().unwrap().expressions.insert(ExpressionName::Preset(PresetExpression::Blink), blink);
+    let report = synthesise(&mut scene);
+    assert_eq!(outcome(&report, "eyeBlinkLeft"), &Synthesis::FromPreset { preset: PresetExpression::Blink, gain: 0.5 });
+    for channel in ["eyeBlinkLeft", "eyeBlinkRight"] {
+        let e = &expressions(&scene)[&name(channel)];
+        assert!(e.is_binary, "{channel}");
+        assert_eq!(e.uv_binds[0].offset, Vec2::new(0.25, 0.0));
+    }
+}
+
+#[test]
 fn no_avatar_is_a_no_op() {
     let mut scene = IoScene::new();
     let report = synthesise(&mut scene);
