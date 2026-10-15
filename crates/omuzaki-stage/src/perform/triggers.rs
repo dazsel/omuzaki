@@ -16,17 +16,31 @@ use super::host::PerformError;
 /// The most characters a key may have.
 pub const MAX_KEY_CHARS: usize = 32;
 
-/// What a rebake does to one trigger slot on the perform thread.
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub enum SlotChange {
-    /// The slot's values did not change, so it is not touched: a key held or toggled across a reload stays on.
-    Keep,
-    /// The slot gets these values (`None` empties it). A slot that is shown fades out first.
-    Set(Option<TriggerSlot>),
+/// The slots a rebake changed, ready to send: the new values of every slot, and which of them differ from what the
+/// perform thread holds. A slot that is not marked is not touched, so a key held or toggled across a reload stays on.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct Rebaked {
+    slots: [Option<TriggerSlot>; MAX_TRIGGERS],
+    /// Bit `i` is set when slot `i` changed.
+    changed: u32,
 }
 
-/// The change for every trigger slot, by slot index, from one rebake.
-pub type Rebaked = [SlotChange; MAX_TRIGGERS];
+impl Rebaked {
+    /// The changed slots by index, with their new values (`None` empties the slot).
+    pub fn changes(&self) -> impl Iterator<Item = (usize, Option<&TriggerSlot>)> {
+        self.slots.iter().enumerate().filter(|(index, _)| self.changed >> index & 1 == 1).map(|(index, slot)| (index, slot.as_ref()))
+    }
+
+    /// Marks slot `index` as changed to `slot`.
+    fn set(&mut self, index: usize, slot: Option<&TriggerSlot>) {
+        if let Some(entry) = self.slots.get_mut(index) {
+            *entry = slot.copied();
+            self.changed |= 1 << index;
+        } else {
+            debug_assert!(false, "trigger slot {index} is out of range");
+        }
+    }
+}
 
 /// A key bound to an expression.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -180,13 +194,13 @@ impl TriggerBook {
     /// shows it. `self` is left as it was, so a refused send changes nothing.
     pub(super) fn with_expressions(&self, expressions: ExpressionSet, rest: &ChannelBuf) -> (Self, Rebaked) {
         let mut next = Self { expressions, rest: *rest, slots: self.slots.clone() };
-        let mut changes: Rebaked = [SlotChange::Keep; MAX_TRIGGERS];
-        for (entry, out) in next.slots.iter_mut().zip(changes.iter_mut()) {
+        let mut changes = Rebaked::default();
+        for (index, entry) in next.slots.iter_mut().enumerate() {
             if let Some(bound) = entry {
                 let (shown, missing) = bake(&next.expressions, &next.rest, &bound.binding);
                 bound.missing = missing;
                 if shown != bound.slot {
-                    *out = SlotChange::Set(shown);
+                    changes.set(index, shown.as_ref());
                     bound.slot = shown;
                 }
             }

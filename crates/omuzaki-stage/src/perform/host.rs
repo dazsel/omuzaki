@@ -41,7 +41,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::triggers::{
-    BindOutcome, Bound, MAX_KEY_CHARS, Rebaked, SlotChange, TriggerBinding, TriggerBook, TriggerInfo, check_key,
+    BindOutcome, Bound, MAX_KEY_CHARS, Rebaked, TriggerBinding, TriggerBook, TriggerInfo, check_key,
 };
 use super::{MAX_STEPS_PER_ADVANCE, PerformOutput, Performer, STEP_HZ, Tracking};
 
@@ -856,10 +856,8 @@ impl PerformControl {
             Command::Calibration(calibration) => self.set_calibration(performer, &calibration),
             Command::Trigger { index, slot } => self.set_trigger(index, slot.as_ref()),
             Command::Triggers(slots) => {
-                for (index, change) in slots.iter().enumerate() {
-                    if let SlotChange::Set(slot) = change {
-                        self.set_trigger(index, slot.as_ref());
-                    }
+                for (index, slot) in slots.changes() {
+                    self.set_trigger(index, slot);
                 }
             }
             Command::Press { index, down } => {
