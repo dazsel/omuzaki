@@ -1,5 +1,5 @@
 [package]
-name = "omuzaki-audio"
+name = "omuzaki-speech"
 description = "The speech host (spec v3 ML-03): streaming Silero VAD, an utterance segmenter and Whisper on a worker thread, fed lock-free from the audio callback."
 version.workspace = true
 edition.workspace = true

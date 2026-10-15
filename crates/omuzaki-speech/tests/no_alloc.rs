@@ -7,8 +7,8 @@ use std::cell::Cell;
 use std::time::Duration;
 
 use common::{FakeRecognizer, fake_host};
-use omuzaki_audio::HostConfig;
-use omuzaki_audio::synth::tone;
+use omuzaki_speech::HostConfig;
+use omuzaki_speech::synth::tone;
 
 thread_local! {
     static WATCHING: Cell<bool> = const { Cell::new(false) };

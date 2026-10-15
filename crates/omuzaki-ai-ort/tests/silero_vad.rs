@@ -1,10 +1,10 @@
 //! The Silero VAD model through the `onnx` runtime. Needs `OMUZAKI_ORT_CACHE` and `OMUZAKI_SPEECH_MODELS` (the folder holding
-//! `silero_vad.onnx`, the file `omuzaki_audio::catalog` pins); skips with a message when either is unset.
+//! `silero_vad.onnx`, the file `omuzaki_speech::catalog` pins); skips with a message when either is unset.
 //!
-//! The wrapper below does what `omuzaki_audio::SileroVad` does around the model: it prefixes each 512-sample frame with
+//! The wrapper below does what `omuzaki_speech::SileroVad` does around the model: it prefixes each 512-sample frame with
 //! the last 64 samples of the previous one and carries the LSTM state in the slot's `state` / `stateN` ports. With
 //! `OMUZAKI_SPEECH_DATA` set to the `LibriVox` clips folder, the probabilities must match the Python reference golden
-//! (`omuzaki-audio/tests/golden`) within 1e-3, as the audio crate's own test does; without it the same frames are scored by a plain `ort`
+//! (`omuzaki-speech/tests/golden`) within 1e-3, as the speech crate's own test does; without it the same frames are scored by a plain `ort`
 //! session and the two must agree.
 #![allow(clippy::unwrap_used, clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a panic is a test failure
 
@@ -64,7 +64,7 @@ fn through_the_runtime(session: &mut dyn Session, audio: &[f32]) -> Vec<f32> {
         .collect()
 }
 
-/// The same frames through a plain `ort` session: what `omuzaki_audio::SileroVad` does.
+/// The same frames through a plain `ort` session: what `omuzaki_speech::SileroVad` does.
 fn through_plain_ort(model: &std::path::Path, audio: &[f32]) -> Vec<f32> {
     let mut session = OrtSession::builder().unwrap().with_intra_threads(1).unwrap().commit_from_file(model).unwrap();
     let mut state = vec![0.0f32; STATE];
@@ -137,7 +137,7 @@ fn silero_vad_through_the_onnx_runtime_matches_the_reference() {
         if clip.is_file() {
             let golden = std::fs::read_to_string(concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/../omuzaki-audio/tests/golden/vad_probabilities_aesop-52.txt"
+                "/../omuzaki-speech/tests/golden/vad_probabilities_aesop-52.txt"
             ))
             .unwrap();
             let expected: Vec<f32> = golden.lines().map(|l| l.parse().unwrap()).collect();

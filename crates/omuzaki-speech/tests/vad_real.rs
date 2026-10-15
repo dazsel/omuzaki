@@ -3,8 +3,8 @@
 
 mod common;
 
-use omuzaki_audio::segmenter::{Event, FRAME, Segmenter, SegmenterConfig};
-use omuzaki_audio::synth;
+use omuzaki_speech::segmenter::{Event, FRAME, Segmenter, SegmenterConfig};
+use omuzaki_speech::synth;
 
 fn max_probability(probabilities: &[f32]) -> f32 {
     probabilities.iter().fold(0.0f32, |m, &p| m.max(p))

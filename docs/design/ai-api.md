@@ -377,7 +377,7 @@ Scopes for the `model.*` ops, decided on review and aligned with `library.instal
 
 | Today | Becomes |
 |---|---|
-| `omuzaki-audio/src/catalog.rs` (the crate becomes `omuzaki-speech`) | `models/*.model.toml` + `register_model!`; `ModelSpec` and `find` go |
+| `omuzaki-speech/src/catalog.rs` | `models/*.model.toml` + `register_model!`; `ModelSpec` and `find` go |
 | the speech host's own `ort` session for Silero | `vad@1` sessions from the registry; `SileroVad` wraps a `Session` |
 | `Whisper::load(path)` | runtime `whisper-ggml` registered by `omuzaki-speech`; `Whisper` wraps an `asr@1` session |
 | `SpeechError::ModelMissing { catalog_id }` | `RegistryError::NoModel` / `NotInstalled` status, at wiring time |

@@ -15,11 +15,11 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use omuzaki_audio::asr::{Recognizer, Transcript};
-use omuzaki_audio::host::{AudioInput, SpeechEvent, SpeechHost};
-use omuzaki_audio::segmenter::FRAME;
-use omuzaki_audio::vad::{VoiceActivity, load_runtime};
-use omuzaki_audio::{SileroVad, SpeechError};
+use omuzaki_speech::asr::{Recognizer, Transcript};
+use omuzaki_speech::host::{AudioInput, SpeechEvent, SpeechHost};
+use omuzaki_speech::segmenter::FRAME;
+use omuzaki_speech::vad::{VoiceActivity, load_runtime};
+use omuzaki_speech::{SileroVad, SpeechError};
 
 /// Scores a frame by its energy: 0.9 above an RMS of 0.02, else 0.0. Deterministic and instant.
 pub struct EnergyVad {
@@ -66,7 +66,7 @@ impl Recognizer for FakeRecognizer {
 
 /// Starts a host over the fakes.
 pub fn fake_host(
-    config: omuzaki_audio::HostConfig,
+    config: omuzaki_speech::HostConfig,
     vad_delay: Duration,
     recognizer: FakeRecognizer,
 ) -> (SpeechHost, AudioInput) {

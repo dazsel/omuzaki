@@ -5,9 +5,9 @@ mod common;
 use std::time::{Duration, Instant};
 
 use common::{FakeRecognizer, cat, drain, fake_host, feed, feed_all};
-use omuzaki_audio::host::{ModelPaths, SpeechEvent};
-use omuzaki_audio::synth::{silence, tone};
-use omuzaki_audio::{HostConfig, SegmenterConfig, SpeechError, SpeechHost};
+use omuzaki_speech::host::{ModelPaths, SpeechEvent};
+use omuzaki_speech::synth::{silence, tone};
+use omuzaki_speech::{HostConfig, SegmenterConfig, SpeechError, SpeechHost};
 
 fn config() -> HostConfig {
     // The short 200 ms hangover keeps the 0.5 s gaps in these tests as separate utterances; the host default (600 ms)
@@ -297,7 +297,7 @@ fn a_missing_whisper_model_names_its_own_catalogue_entry() {
     };
     let dir = std::env::temp_dir();
     let present = |name: &str| {
-        let p = dir.join(format!("omuzaki-audio-test-{}-{name}", std::process::id()));
+        let p = dir.join(format!("omuzaki-speech-test-{}-{name}", std::process::id()));
         std::fs::write(&p, b"x").unwrap();
         p
     };
@@ -384,6 +384,6 @@ fn the_default_hangover_merges_a_short_pause() {
     .unwrap();
     host.request_transcripts().keep();
     feed(&mut input, &two_phrases(0.4));
-    assert_eq!(HostConfig::default().segmenter.min_silence_ms, omuzaki_audio::DEFAULT_HANGOVER_MS);
+    assert_eq!(HostConfig::default().segmenter.min_silence_ms, omuzaki_speech::DEFAULT_HANGOVER_MS);
     assert_eq!(host.stop().utterances, 1);
 }
