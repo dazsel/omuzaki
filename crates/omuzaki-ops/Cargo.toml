@@ -22,6 +22,7 @@ serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
+omuzaki-ops-mock = { path = "../omuzaki-ops-mock" }
 
 [[bench]]
 name = "run"
