@@ -206,8 +206,10 @@ fn a_lost_gap_hands_over_to_life_through_the_mailbox_without_a_jump() {
                 assert_eq!(owners.of(Channel::EYE_BLINK_LEFT), Source::Life, "step {i} ({t} s): blink is not life's");
             }
         }
+        // Only a blink that starts while the hand-off window is open, and that life owns, counts toward the total.
         let blinking = out.bus.values[Channel::EYE_BLINK_LEFT] > 0.5;
-        if t > 4.75 && blinking && !was_blinking {
+        if (4.75..12.0).contains(&t) && blinking && !was_blinking && owners.of(Channel::EYE_BLINK_LEFT) == Source::Life
+        {
             blinks += 1;
         }
         was_blinking = blinking;
