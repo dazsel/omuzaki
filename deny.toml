@@ -17,7 +17,11 @@ all-features = false
 [advisories]
 version = 2
 yanked = "deny"
-ignore = []
+ignore = [
+    # ttf-parser is unmaintained (not a vulnerability); it comes in through ab_glyph, the character-sheet text
+    # rasteriser in omuzaki-stage. Moving to the maintained skrifa/read-fonts stack is tracked in #1506.
+    { id = "RUSTSEC-2026-0192", reason = "unmaintained, not vulnerable; replacement tracked in #1506" },
+]
 
 [licenses]
 version = 2
