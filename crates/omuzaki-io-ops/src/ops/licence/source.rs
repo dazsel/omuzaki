@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::store;
-use crate::gather::avatar::{RecordError, SCHEMA, check_schema};
+use crate::gather::avatar::{RecordError, SCHEMA, blank_rights_field, check_schema};
 
 /// `characters/<id>/sources`: every part's [`PartSource`], by part id.
 pub fn sources_path(id: &CharId) -> DocPath {
@@ -108,12 +108,14 @@ impl PartSource {
                 message: format!("`schema` is {}, but this build reads only schema {SCHEMA}", self.schema),
             });
         }
-        if self.provenance.licence.trim().is_empty() {
-            return Err(SourceFault {
-                field: "provenance/licence",
-                message: "`provenance.licence` is blank: give an SPDX id, or `LicenseRef-Unknown` if nobody knows"
-                    .to_owned(),
-            });
+        if let Some((path, message)) = blank_rights_field(&self.provenance.licence, self.provenance.consent.as_ref()) {
+            // `SourceFault` fields are static: the three paths are spelled out here.
+            let field = match path {
+                "licence" => "provenance/licence",
+                "consent/person" => "provenance/consent/person",
+                _ => "provenance/consent/scope",
+            };
+            return Err(SourceFault { field, message });
         }
         match &self.owned {
             Some(owner) if owner.asserted_by.trim().is_empty() => Err(SourceFault {

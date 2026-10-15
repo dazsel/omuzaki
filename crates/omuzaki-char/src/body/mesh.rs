@@ -15,7 +15,7 @@
 //! Skin weights come from the capsule kit ([`SegmentSet::skin_mesh`]) over the bones that can move each region.
 
 use omuzaki_char_api::{BodyRegion, JointRef, MaterialName, PartMesh};
-use omuzaki_core::glam::{DVec2, DVec3, Vec2};
+use omuzaki_core::glam::{DVec2, DVec3, Vec2, Vec3};
 use omuzaki_core::mesh::MeshData;
 
 use super::junction;
@@ -329,13 +329,72 @@ pub fn skin_region(
     params: CapsuleParams,
 ) -> Result<(), KitError> {
     segments.skin_mesh(mesh, &bones_of(region), params)?;
+    let arm = match region {
+        BodyRegion::ArmL => Some(true),
+        BodyRegion::ArmR => Some(false),
+        _ => None,
+    };
+    let pair = arm.map(|left| {
+        let side = |l: omuzaki_anim_api::HumanoidBone| JointRef::Humanoid(if left { l } else { l.mirrored() });
+        (side(omuzaki_anim_api::HumanoidBone::LeftShoulder), side(omuzaki_anim_api::HumanoidBone::LeftUpperArm))
+    });
+    if let Some((shoulder, upper_arm)) = &pair {
+        reshape_hand_over(mesh, shoulder, upper_arm, |share| {
+            let x = ((share - 0.5) / (2.0 * HAND_OVER_HALF_BAND) + 0.5).clamp(0.0, 1.0);
+            x * x * (3.0 - 2.0 * x)
+        });
+    }
     smooth(mesh, SMOOTH_PASSES);
+    if let Some((shoulder, upper_arm)) = &pair {
+        reshape_hand_over(mesh, shoulder, upper_arm, |share| if share < HAND_OVER_TAIL { 0.0 } else { share });
+    }
     Ok(())
 }
 
 /// Passes of the kit's weight smoothing after the capsule weights: they take the sharpest hand-overs (where four bones
 /// meet behind a shoulder) down to what a body of this tessellation can show.
 const SMOOTH_PASSES: u32 = 4;
+
+/// The half-width of the arm's shoulder-to-upper-arm hand-over, in the shoulder's share of the weight the two bones hold
+/// together: before the smoothing, that share is passed through a smoothstep running from `0.5 - HAND_OVER_HALF_BAND`
+/// to `0.5 + HAND_OVER_HALF_BAND`. The capsule fall-off alone leaves the shoulder a share of 0.25 to 0.45 halfway down
+/// the upper arm, which a raised arm blends a still clavicle into over most of its length (#709). The smoothing that
+/// follows keeps the crease soft: it is the kit's, and by its own rule ends no sharper than the sharpened weights began. A band under 0.2 wide breaks the existing 0.35 bound on
+/// neighbouring vertices' weights once the arms are symmetrised ([`symmetrise_arms`]), on the random bodies of `body.rs`.
+const HAND_OVER_HALF_BAND: f32 = 0.2;
+
+/// The share under which the smoothing's tail of shoulder weight is dropped after it, so the shoulder bone's weight is
+/// exactly zero a few rings down the arm and not a faint trace along it.
+const HAND_OVER_TAIL: f32 = 0.1;
+
+/// Replaces, at every vertex that has both bones, the shoulder's share of their joint weight by `shape(share)`: the
+/// weight the two bones hold together stays, so every sum and every other bone's weight is unchanged. A vertex with only
+/// one of the two bones is left alone.
+fn reshape_hand_over(mesh: &mut PartMesh, shoulder: &JointRef, upper_arm: &JointRef, shape: impl Fn(f32) -> f32) {
+    let slot = |j: &JointRef| mesh.joint_bones.iter().position(|b| b == j).and_then(|i| u16::try_from(i).ok());
+    let (Some(shoulder), Some(upper)) = (slot(shoulder), slot(upper_arm)) else { return };
+    let g = &mut mesh.geometry;
+    for (joints, weights) in g.joints.iter().zip(g.weights.iter_mut()) {
+        let on =
+            |bone: u16| -> f32 { joints.iter().zip(&*weights).filter(|(j, _)| **j == bone).map(|(_, w)| *w).sum() };
+        let (s, u) = (on(shoulder), on(upper));
+        let both = s + u;
+        if s <= 0.0 || u <= 0.0 {
+            continue;
+        }
+        let kept = shape(s / both).clamp(0.0, 1.0);
+        let (new_s, new_u) = (both * kept, both * (1.0 - kept));
+        // The first slot of each bone takes its new weight; a duplicate slot (never produced by the kit) is zeroed.
+        let (mut seen_s, mut seen_u) = (false, false);
+        for (j, w) in joints.iter().zip(weights.iter_mut()) {
+            if *j == shoulder && *w > 0.0 {
+                *w = if std::mem::replace(&mut seen_s, true) { 0.0 } else { new_s };
+            } else if *j == upper && *w > 0.0 {
+                *w = if std::mem::replace(&mut seen_u, true) { 0.0 } else { new_u };
+            }
+        }
+    }
+}
 
 /// The capsule falloff for `region` in a body of this size. Limbs use the prototype's `1 / (d + e)^4` with `e` = 12 mm
 /// (the legs of `body.js` were skinned so), grown with the body (the head base's height over soft-sd's): a sharp hand-over
@@ -395,7 +454,7 @@ pub fn build_regions(
         .map(|&region| sample_rings(layout, region, detail.rows(region)).map(|r| (region, r)))
         .collect::<Result<Vec<_>, _>>()?;
     junction::shape(&mut rings, (detail.arm_rows / 3).max(3), (detail.leg_rows / 3).max(6));
-    rings
+    let mut built = rings
         .into_iter()
         .map(|(region, rings)| {
             let (start, end) = caps_of(region, &rings, detail.cap_rings);
@@ -414,7 +473,85 @@ pub fn build_regions(
             mesh.validate()?;
             Ok((region, mesh))
         })
-        .collect()
+        .collect::<Result<Vec<_>, KitError>>()?;
+    let left = built.iter().position(|(r, _)| *r == BodyRegion::ArmL);
+    let right = built.iter().position(|(r, _)| *r == BodyRegion::ArmR);
+    if let (Some(l), Some(r)) = (left, right) {
+        let mut pair = (built[l].1.clone(), built[r].1.clone());
+        symmetrise_arms(&mut pair.0, &mut pair.1);
+        pair.0.validate()?;
+        pair.1.validate()?;
+        (built[l].1, built[r].1) = pair;
+    }
+    Ok(built)
+}
+
+/// How far, in metres, a vertex of one arm may lie from the reflection of a vertex of the other and still be its image.
+const MIRROR_GAP: f32 = 1e-4;
+
+/// The nearest vertex of `of` to `point`, if it lies within [`MIRROR_GAP`].
+fn image_in(of: &[Vec3], point: Vec3) -> Option<usize> {
+    let (i, gap) =
+        of.iter().enumerate().map(|(i, q)| (i, q.distance_squared(point))).min_by(|a, b| a.1.total_cmp(&b.1))?;
+    (gap <= MIRROR_GAP * MIRROR_GAP).then_some(i)
+}
+
+/// The weight `mesh`'s vertex `v` gives each of `bones`.
+fn weights_on(mesh: &PartMesh, v: usize, bones: &[JointRef]) -> [f32; 4] {
+    let g = &mesh.geometry;
+    let mut out = [0.0; 4];
+    for (slot, w) in g.joints[v].iter().zip(&g.weights[v]) {
+        let bone = mesh.joint_bones.get(usize::from(*slot));
+        if let Some(k) = bone.and_then(|b| bones.iter().position(|x| x == b)) {
+            out[k] += *w;
+        }
+    }
+    out
+}
+
+/// Makes the two arms exact mirror images in their skin weights: the left arm takes the mean of its own weights and the
+/// right arm's reflected, and the right arm takes the left's reflected. The kit's smoothing visits vertices in mesh
+/// order, and the two arms number their vertices round the ring in opposite senses, so skinned separately they settle a
+/// few hundredths apart (more where the hand-over is steep). A mean, not a copy of one side, keeps the edges that
+/// run the other way in the mirrored arm's triangles within the neighbouring-weights bound. The arm has exactly the four
+/// bones of [`bones_of`], so nothing is dropped. A vertex with no image keeps its own skin.
+fn symmetrise_arms(left: &mut PartMesh, right: &mut PartMesh) {
+    let bones = bones_of(BodyRegion::ArmL);
+    let mirrored: Vec<JointRef> = bones
+        .iter()
+        .map(|b| match b {
+            JointRef::Humanoid(h) => JointRef::Humanoid(h.mirrored()),
+            other @ JointRef::Named(_) => other.clone(),
+        })
+        .collect();
+    let (lp, rp) = (left.geometry.positions.clone(), right.geometry.positions.clone());
+    if !left.geometry.is_skinned()
+        || left.geometry.weights.len() != lp.len()
+        || right.geometry.weights.len() != rp.len()
+    {
+        return;
+    }
+    // Both arms get all four bones as slots, in the same order, so a weight row is four numbers.
+    let slots: [u16; 4] = [0, 1, 2, 3];
+    let mean: Vec<Option<[f32; 4]>> = lp
+        .iter()
+        .enumerate()
+        .map(|(v, p)| {
+            let r = image_in(&rp, Vec3::new(-p.x, p.y, p.z))?;
+            let (a, b) = (weights_on(left, v, &bones), weights_on(right, r, &mirrored));
+            Some([0, 1, 2, 3].map(|k| f32::midpoint(a[k], b[k])))
+        })
+        .collect();
+    let right_rows: Vec<Option<[f32; 4]>> =
+        rp.iter().map(|p| image_in(&lp, Vec3::new(-p.x, p.y, p.z)).and_then(|l| mean[l])).collect();
+    for (mesh, rows, names) in [(&mut *left, &mean, &bones), (&mut *right, &right_rows, &mirrored)] {
+        let own: Vec<[f32; 4]> = (0..rows.len()).map(|v| weights_on(mesh, v, names)).collect();
+        mesh.joint_bones = names.clone();
+        let g = &mut mesh.geometry;
+        for (v, row) in rows.iter().enumerate() {
+            (g.joints[v], g.weights[v]) = (slots, row.unwrap_or(own[v]));
+        }
+    }
 }
 
 /// Every bone any region is skinned to, once.

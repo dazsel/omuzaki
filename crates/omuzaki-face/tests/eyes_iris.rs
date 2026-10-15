@@ -2,7 +2,7 @@
 //! puts inside each eye's aperture clip, that it stays inside it at the extremes of the gaze, that the shimmer is a pure
 //! function of the clock, and that painting allocates nothing once the lists are warm.
 //!
-//! The comparison with the prototype's pixels is `omuzaki-test`'s `face_parity_eye_iris.rs`.
+//! The comparison with the prototype's pixels is `omuzaki-test-face`'s `face_parity_eye_iris.rs`.
 
 // A counting allocator is the only way to *prove* "no allocation"; the workspace denies unsafe code by default.
 #![allow(unsafe_code, clippy::unwrap_used, clippy::cast_possible_truncation, clippy::cast_precision_loss)]

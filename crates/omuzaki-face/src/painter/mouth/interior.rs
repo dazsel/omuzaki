@@ -1,8 +1,10 @@
-//! The inside of an open mouth: tongue, upper and lower teeth and fangs (`face.js` 337-362).
+//! The inside of an open mouth: tongue, upper and lower teeth and fangs (`face.js` 337-362), and the fang a closed
+//! smile shows (`face.js` 319-323).
 //!
 //! Everything is clipped to the open shape's outline ([`OpenMouth::path`]), so no pixel lands outside it, and the teeth
 //! and fangs are measured from the outline's own upper edge ([`OpenMouth::top`]), so they follow the lip however it
-//! curves. The inner-mouth gradient is the shape's fill, not drawn here. A closed mouth or a kiss has no interior.
+//! curves. The inner-mouth gradient is the shape's fill, not drawn here. A closed mouth or a kiss has no interior; only
+//! a closed smile shows a fang.
 //!
 //! - **Tongue**: an ellipse resting on the bottom, with a small shine.
 //! - **Upper teeth**: a band hanging from the upper edge, as strong as the `teeth_upper` channel, and at least half
@@ -13,6 +15,8 @@
 //! - **Fangs**: two triangles hanging from the upper edge at [`FangStyle::position`] of the half-width, as opaque as
 //!   the `fangs` channel. In a mouth too narrow for the base, the outer corner stops at the mouth's corner, so the fang
 //!   narrows instead of being clipped.
+//! - **Closed-smile fang**: one small outlined triangle on the line of a closed mouth, at the corner that smiles, when
+//!   the `fangs` channel is on and the smile is wide enough.
 //!
 //! [`FangStyle::position`]: omuzaki_face_api::FangStyle::position
 
@@ -20,7 +24,8 @@ use omuzaki_core::glam::Vec2;
 use omuzaki_face_api::{Cap, Cmd, FaceLayerId, Join, Paint, narrow};
 
 use super::OpenMouth;
-use super::lips::{DEFAULT_LINE, DEFAULT_TEETH, DEFAULT_TEETH_LOWER, DEFAULT_TONGUE, along, lighten, resolve, solid};
+use super::lips::{DEFAULT_LINE, DEFAULT_TEETH, DEFAULT_TEETH_LOWER, DEFAULT_TONGUE, lighten};
+use super::shape::{Frame, Kind, along, resolve, solid};
 use crate::painter::PaintCtx;
 
 /// Samples along the teeth band, as along the open shape.
@@ -68,15 +73,30 @@ const FANG_MIN: f32 = 0.01;
 const FANG_MAX_SHARE: f32 = 0.62;
 const FANG_LEAN: f32 = 0.0008;
 const FANG_DROP: f32 = 0.0005;
+/// The closed smile's fang, scaled from the open ones: half-width and height (`0.0026` and `0.0045` against the style's
+/// `0.0030` and `0.0058`), its place (`0.55` of the half-width against `0.72`) and its outline, in metres.
+const CLOSED_FANG_WIDTH: f32 = 0.0026 / 0.0030;
+const CLOSED_FANG_HEIGHT: f32 = 0.0045 / 0.0058;
+const CLOSED_FANG_AT: f32 = 0.55 / 0.72;
+const CLOSED_FANG_OUTLINE: f32 = 0.0008;
+/// The closed fang needs a smile above this at its corner.
+const CLOSED_FANG_SMILE: f32 = 0.3;
 
-/// Paints the inside of an open mouth.
+/// Paints the inside of an open mouth, or the fang of a closed smile.
 pub(super) fn paint(ctx: &mut PaintCtx<'_>) {
-    let Some(open) = ctx.open_mouth else { return };
+    match (ctx.open_mouth, Frame::of(ctx).kind()) {
+        (Some(open), _) => open_interior(ctx, &open),
+        (None, Kind::Closed) => closed_fang(ctx),
+        (None, _) => {}
+    }
+}
+
+fn open_interior(ctx: &mut PaintCtx<'_>, open: &OpenMouth) {
     ctx.list(FaceLayerId::Base).push(Cmd::PushClip(open.path));
-    tongue(ctx, &open);
-    upper_teeth(ctx, &open);
-    lower_teeth(ctx, &open);
-    fangs(ctx, &open);
+    tongue(ctx, open);
+    upper_teeth(ctx, open);
+    lower_teeth(ctx, open);
+    fangs(ctx, open);
     ctx.list(FaceLayerId::Base).push(Cmd::PopClip);
 }
 
@@ -181,4 +201,35 @@ fn fangs(ctx: &mut PaintCtx<'_>, open: &OpenMouth) {
             .finish();
         list.push(Cmd::Fill { path: fang, paint: Paint::Solid(colour), opacity: strength.min(1.0) });
     }
+}
+
+/// The fang a closed smile shows on the corner that smiles (`u` > 0): a small outlined triangle standing on the line.
+fn closed_fang(ctx: &mut PaintCtx<'_>) {
+    let frame = Frame::of(ctx);
+    let smile = frame.smile[0];
+    if ctx.params.mouth.fangs <= FANG_BAND_ABOVE || smile <= CLOSED_FANG_SMILE {
+        return;
+    }
+    let style = &ctx.profile.mouth;
+    let teeth = resolve(&style.interior.teeth, DEFAULT_TEETH);
+    let outline = resolve(&style.line_colour, DEFAULT_LINE);
+    let (half, height) =
+        (narrow(style.fang.width) / 2.0 * CLOSED_FANG_WIDTH, narrow(style.fang.height) * CLOSED_FANG_HEIGHT);
+    let offset = frame.half_width * narrow(style.fang.position) * CLOSED_FANG_AT;
+    // The base stands on the closed line, at the same height `closed_line` draws it at this far along.
+    let u = offset / frame.half_width;
+    let y = frame.centre.y + smile * narrow(style.corner_curve) * u * u * frame.grow;
+    let x = frame.centre.x + offset;
+    // As for the open fangs, the outer base corner stops at the line's end instead of hanging past it.
+    let outer = half.min(frame.half_width - offset);
+    let list = ctx.list(FaceLayerId::Base);
+    let fang = list
+        .path()
+        .move_to(Vec2::new(x - half, y))
+        .line_to(Vec2::new(x + outer, y))
+        .line_to(Vec2::new(x, y - height))
+        .close()
+        .finish();
+    list.fill(fang, Paint::Solid(teeth));
+    list.stroke(fang, Paint::Solid(outline), CLOSED_FANG_OUTLINE);
 }

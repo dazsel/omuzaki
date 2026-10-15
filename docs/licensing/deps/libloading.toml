@@ -1,0 +1,8 @@
+section = "rust"
+item = "libloading"
+kind = "crate"
+used_for = "loads the pinned LiteRT library at run time in the `tflite` runtime (`omuzaki-ai-litert`, ADR 0061 decision 6)"
+status = "yes"
+condition = "ISC: keep the notice"
+audit = "(crates.io: ISC)"
+crates = ["libloading"]

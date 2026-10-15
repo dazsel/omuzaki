@@ -3,7 +3,8 @@
 
     dispatch-check.py ISSUE [ISSUE ...]    `go #N` or `wait #N: reasons` per task; exit 0 only if all are go
     dispatch-check.py --report             open pull requests by crate and by lane, oldest first
-    options: --crate-cap N (default 3), --total-cap N (default 40), --json (for the checks)
+    options: --crate-cap N (default 3), --total-cap N (default 40), --module-cap N (default 3), --module-ceiling N
+    (default 12), --json (for the checks)
 
 Why a script: conflicts are decided when a task starts, not when it merges (ADR 0053 sections 1.2 and 2.1). The
 Director or the cloud lead runs it once before starting work. Standard library plus `gh`; it only reads GitHub.
@@ -17,7 +18,11 @@ entry is a path or glob: backtick-quoted or bare, comma- or space-separated, one
   issue the PR closes. The native dependency links (`.../dependencies/blocked_by` and `.../dependencies/blocking`)
   count; so does a `Blocked by:` or `Depends on:` line in the body, as a fallback.
 - crate cap: the crates the fence names already have `--crate-cap` or more open PRs touching them. A wildcard crate
-  (`crates/*-api/...`) names every matching folder under `crates/`.
+  (`crates/*-api/...`) names every matching folder under `crates/`. Not for `omuzaki-char` and `omuzaki-face`, which
+  are counted per module instead (ADR 0062):
+- module cap: each top-level module of those two crates (a folder `src/<m>/` or a file `src/<m>.rs`) takes at most
+  `--module-cap` open PRs, and the crate at most `--module-ceiling`. Root files, `lib.rs`, `main.rs`, and any test,
+  bench or example not in TEST_MODULES take the crate's one shared slot, which one open PR at a time holds.
 - total cap: `--total-cap` or more open PRs in total.
 - contract first: the fence names an `*-api` crate or `omuzaki-core` and another open PR touches that crate.
 
@@ -55,6 +60,91 @@ CRATE = re.compile(r"crates/([A-Za-z0-9_-]+)(?:/|$)")
 CRATE_SEGMENT = re.compile(r"crates/([^/]+)(?:/|$)")
 WILDCARD_CRATE = re.compile(r"crates/[^/]*[*?\[]")
 CRATE_NAME = re.compile(r"[A-Za-z0-9_-]+")
+# The crates counted per top-level module (ADR 0062), with the cap per module and the ceiling for the whole crate.
+MODULE_CAPPED = frozenset({"omuzaki-char", "omuzaki-face"})
+MODULE_CAP = 3
+MODULE_CEILING = 12
+# The caps for every crate other than the module-capped ones, and for the whole repository.
+CRATE_CAP = 3
+TOTAL_CAP = 40
+# The bucket of every file that belongs to no single module: the crate's one shared slot.
+SHARED = "shared"
+# The bucket a fence entry names when it could reach any module (a glob or a folder holding several): every bucket.
+BROAD = "*"
+# Folders whose direct entries are modules, so a fence naming one of them alone could reach any of them.
+MULTI_FOLDERS = ("src", "tests", "benches", "examples")
+# Files directly under src/ that gather several modules, so they take the shared slot.
+SHARED_SRC_FILES = ("lib.rs", "main.rs")
+# Tests, benches and examples that exercise one module, by path from the crate root. A key may be a folder, which covers
+# every file under it. Anything not listed (a test with no single module, `tests/common/`, `tests/fixtures/`) is shared.
+TEST_MODULES = {
+    "omuzaki-char": {
+        "tests/accessory_rigid.rs": "accessory",
+        "tests/body.rs": "body",
+        "tests/body_shape.rs": "body",
+        "tests/builder.rs": "builder",
+        "tests/cloth_contact.rs": "cloth",
+        "tests/cloth_contact_replay.rs": "cloth",
+        "tests/cloth_live.rs": "cloth",
+        "tests/cloth_solver": "cloth",
+        "tests/hair_bangs.rs": "hair",
+        "tests/hair_braid.rs": "hair",
+        "tests/hair_cap_sweep.rs": "hair",
+        "tests/hair_curtain.rs": "hair",
+        "tests/hair_pipeline.rs": "hair",
+        "tests/head_ears.rs": "head",
+        "tests/head_part.rs": "head",
+        "tests/head_quality": "head",
+        "tests/head_shape.rs": "head",
+        "tests/head_trace.rs": "head",
+        "tests/kit_builder.rs": "kit",
+        "tests/kit_parity.rs": "kit",
+        "tests/kit_sweep.rs": "kit",
+        "tests/look_ops.rs": "ops",
+        "tests/op_layout.rs": "ops",
+        "tests/op_part_sources.rs": "ops",
+        "tests/op_variant.rs": "ops",
+        "tests/op_weights.rs": "ops",
+        "tests/ops_body.rs": "ops",
+        "tests/ops_character.rs": "ops",
+        "tests/ops_part_param.rs": "ops",
+        "tests/palette_contrast.rs": "palette",
+        "tests/palette_independence.rs": "palette",
+        "tests/palette_ops.rs": "palette",
+        "tests/skin_tone.rs": "palette",
+        "tests/template_soft_sd.rs": "template",
+        "tests/template_soft_sd.proptest-regressions": "template",
+        "tests/templates.rs": "template",
+        "benches/builder.rs": "builder",
+        "benches/cloth_contact.rs": "cloth",
+        "benches/cloth_runtime.rs": "cloth",
+        "benches/cloth_solver.rs": "cloth",
+        "benches/hair_cap_sweep.rs": "hair",
+        "benches/hair_runtime.rs": "hair",
+        "benches/hair_verlet.rs": "hair",
+        "benches/kit.rs": "kit",
+    },
+    "omuzaki-face": {
+        "tests/brows.rs": "painter",
+        "tests/cheeks_nose_marks.rs": "painter",
+        "tests/eyes_aperture.rs": "painter",
+        "tests/eyes_iris.rs": "painter",
+        "tests/mouth_interior.rs": "painter",
+        "tests/mouth_shape.rs": "painter",
+        "tests/op_expression.rs": "ops",
+        "tests/op_mapping.rs": "ops",
+        "tests/op_style.rs": "ops",
+        "tests/raster_subpixel.rs": "raster",
+        "tests/raster_unit.rs": "raster",
+        "tests/system.rs": "system",
+        "tests/underlay.rs": "underlay",
+        "benches/cheeks_nose_marks.rs": "painter",
+        "benches/face_system.rs": "system",
+        "benches/mouth_interior.rs": "painter",
+        "benches/mouth_shape.rs": "painter",
+        "benches/painter_eyes.rs": "painter",
+    },
+}
 TRUNCATED_FILES = "cannot read the changed files of #{n}; waiting until they can be read"
 UNREADABLE_ENTRY = "cannot understand the fence entry {entry}; waiting until it is fixed"
 UNRESOLVED_WILDCARD = "cannot resolve {entry}: the crates/ folder could not be read"
@@ -519,6 +609,81 @@ def crates_touched(pr):
     return {c for c in (crate_of(path) for path in pr["files"] or []) if c}
 
 
+def bucket_of(crate, rel, is_file):
+    """The bucket of a path under `crates/<crate>/` (`rel`): its module, SHARED, or BROAD for a folder spanning several.
+
+    A file is judged as a file; a folder (or a fence's literal prefix) may stand for many files, so when it holds several
+    buckets it is BROAD. A test-folder key covers everything under it; a folder that holds a keyed test and an unkeyed
+    one is BROAD too, so the unkeyed one still reaches the shared slot.
+    """
+    segs = [s for s in rel.split("/") if s]
+    if not segs or (len(segs) == 1 and segs[0] in MULTI_FOLDERS):
+        return SHARED if is_file else BROAD
+    head = segs[0]
+    name = segs[1] if len(segs) > 1 else ""
+    if head == "src":
+        if len(segs) == 2 and name in SHARED_SRC_FILES:
+            return SHARED
+        if len(segs) == 2 and name.endswith(".rs"):
+            return name[:-3]
+        if len(segs) == 2 and (is_file or "." in name):
+            return SHARED
+        return name
+    if head in ("tests", "benches", "examples"):
+        path = "/".join(segs)
+        keys = TEST_MODULES.get(crate, {})
+        for key, module in keys.items():
+            if path == key or path.startswith(key + "/"):
+                return module
+        if not is_file and any(key.startswith(path + "/") for key in keys):
+            return BROAD
+    return SHARED
+
+
+def fence_buckets(crate, rel):
+    """The buckets a fence entry under `crates/<crate>/` (`rel`) names: its literal prefix before the first glob.
+
+    A glob or a folder with no single module names every bucket (BROAD), since its matches are not known from the fence.
+    """
+    segs = rel.split("/")
+    cut = next((i for i, seg in enumerate(segs) if re.search(r"[*?\[]", seg)), len(segs))
+    return {bucket_of(crate, "/".join(segs[:cut]), is_file=False)}
+
+
+def pr_buckets(pr, crate):
+    """The buckets of `crate` that a pull request's changed files lie in, or none when its file list is unknown."""
+    prefix = f"crates/{crate}/"
+    return {bucket_of(crate, path[len(prefix):], is_file=True) for path in pr["files"] or [] if path.startswith(prefix)}
+
+
+def module_reasons(crate, others, named, module_cap, module_ceiling):
+    """The reasons a task that names these buckets of a module-capped crate must wait; empty when it may go.
+
+    `named` are the buckets its fence reaches (from fence_buckets). Every open pull request counts once in the crate's
+    ceiling, and once in each bucket it touches. A task waits when a bucket it names has `module_cap` or more, when the
+    crate has `module_ceiling` or more, or when it needs the shared slot while an open pull request holds it.
+    """
+    counts = defaultdict(list)
+    for pr in others:
+        for bucket in pr_buckets(pr, crate):
+            counts[bucket].append(pr)
+    reasons = []
+    touching = [p for p in others if crate in crates_touched(p)]
+    if len(touching) >= module_ceiling:
+        reasons.append(
+            f"crate ceiling: {crate} has {len(touching)} open PRs ({refs(touching)}) (ceiling {module_ceiling})"
+        )
+    # A BROAD fence may reach any module (only the ones with open PRs can be full) and the shared slot.
+    modules = set(counts) - {SHARED} if BROAD in named else named - {SHARED}
+    for module in sorted(modules):
+        if len(counts.get(module, [])) >= module_cap:
+            prs = counts[module]
+            reasons.append(f"module cap: {crate}/{module} has {len(prs)} open PRs ({refs(prs)}) (cap {module_cap})")
+    if (BROAD in named or SHARED in named) and counts.get(SHARED):
+        reasons.append(f"shared slot: {crate} is taken by {refs(counts[SHARED])}")
+    return reasons
+
+
 def blocked_by(body):
     """The issue and PR numbers named on a `Blocked by:` or `Depends on:` line of an issue body.
 
@@ -538,12 +703,13 @@ def refs(prs):
 
 
 def check_issue(issue, prs, crate_cap, total_cap, native_blocked=frozenset(), native_blocking=frozenset(),
-                crate_names=None, top_level=None):
+                crate_names=None, top_level=None, module_cap=MODULE_CAP, module_ceiling=MODULE_CEILING):
     """The reasons a task must wait; an empty list means go.
 
     `native_blocked` and `native_blocking` are the issue's dependency links from load_dependencies. The body's
     `Blocked by:` line is read too, as a fallback for issues without native links. `crate_names` are the folders under
     crates/, or None when they could not be read. `top_level` are the root names, or None when they could not be read.
+    `module_cap` and `module_ceiling` apply to the MODULE_CAPPED crates, which `crate_cap` does not count.
     """
     number = issue["number"]
     body = issue.get("body") or ""
@@ -559,6 +725,12 @@ def check_issue(issue, prs, crate_cap, total_cap, native_blocked=frozenset(), na
     # Crates that open PRs add do not exist on the default branch yet, so a wildcard also resolves against them.
     known = sorted(set(crate_names or []) | {c for p in others for c in crates_touched(p)}) if crate_names is not None else None
     crates = sorted({c for entry in fence for c in crates_named(entry, known)})
+    named = {}
+    for entry in fence:
+        for crate in crates_named(entry, known):
+            if crate in MODULE_CAPPED:
+                rel = entry[CRATE_SEGMENT.match(entry).end():]
+                named.setdefault(crate, set()).update(fence_buckets(crate, rel))
     for pr in others:
         if pr["files"] is None:
             continue
@@ -570,9 +742,13 @@ def check_issue(issue, prs, crate_cap, total_cap, native_blocked=frozenset(), na
             continue
         reasons.append(f"overlap with #{pr['number']} ({hit})")
     for crate in crates:
+        if crate in MODULE_CAPPED:
+            continue
         touching = [p for p in others if crate in crates_touched(p)]
         if len(touching) >= crate_cap:
             reasons.append(f"crate cap: {crate} has {len(touching)} open PRs ({refs(touching)}) (cap {crate_cap})")
+    for crate in sorted(named):
+        reasons += module_reasons(crate, others, named[crate], module_cap, module_ceiling)
     if len(others) >= total_cap:
         reasons.append(f"total cap: {len(others)} open PRs (cap {total_cap})")
     for crate in crates:
@@ -634,8 +810,16 @@ def main(argv):
     parser.add_argument("issues", nargs="*", help="issue numbers, with or without #")
     parser.add_argument("--report", action="store_true", help="print open PRs by crate and lane, oldest first")
     parser.add_argument("--json", action="store_true", help="print the check results as JSON")
-    parser.add_argument("--crate-cap", type=int, default=3, help="open PRs per crate before a task waits (default 3)")
-    parser.add_argument("--total-cap", type=int, default=40, help="open PRs in total before a task waits (default 40)")
+    # Every default in these help strings comes from its constant, so a changed cap cannot leave the help stale.
+    parser.add_argument("--crate-cap", type=int, default=CRATE_CAP,
+                        help="open PRs per crate before a task waits, for crates other than omuzaki-char and "
+                             f"omuzaki-face (default {CRATE_CAP})")
+    parser.add_argument("--total-cap", type=int, default=TOTAL_CAP,
+                        help=f"open PRs in total before a task waits (default {TOTAL_CAP})")
+    parser.add_argument("--module-cap", type=int, default=MODULE_CAP,
+                        help=f"open PRs per top-level module of omuzaki-char or omuzaki-face (default {MODULE_CAP})")
+    parser.add_argument("--module-ceiling", type=int, default=MODULE_CEILING,
+                        help=f"open PRs per omuzaki-char or omuzaki-face crate (default {MODULE_CEILING})")
     args = parser.parse_args(argv)
     if not args.issues and not args.report:
         parser.error("give issue numbers, or --report")
@@ -659,7 +843,7 @@ def main(argv):
             issue = load_issue(number)
             blocked, blocking = load_dependencies(number)
             reasons = check_issue(issue, prs, args.crate_cap, args.total_cap, blocked, blocking, crate_names,
-                                  top_level)
+                                  top_level, args.module_cap, args.module_ceiling)
             results.append({"issue": issue["number"], "go": not reasons, "reasons": reasons})
     except GhError as exc:
         print(f"dispatch-check: {exc}", file=sys.stderr)
