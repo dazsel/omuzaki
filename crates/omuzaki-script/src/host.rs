@@ -255,6 +255,11 @@ impl ScriptHost {
                         }
                         Err(Convert::Other(message)) => return Err(runtime(message)),
                     };
+                    // Rhai never sizes map keys, so the converted arguments get the same check as `params` and op
+                    // outputs before the op sees them.
+                    if let Some(kind) = oversized(&args, &limits) {
+                        return Err(EvalAltResult::ErrorTerminated(Dynamic::from(Stop::Limit(kind)), at).into());
+                    }
                     let value = run_of(&context)?.invoke(&name, args).map_err(|mut e| {
                         e.set_position(at);
                         e

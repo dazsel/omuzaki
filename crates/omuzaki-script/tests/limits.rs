@@ -378,6 +378,16 @@ fn op_arguments_nested_past_the_depth_limit_stop_the_run_before_the_call() {
 }
 
 #[test]
+fn an_op_argument_key_over_the_string_limit_stops_the_run_before_the_call() {
+    // Rhai never sizes map keys, so an identifier-form key (not a string literal) must be caught on the way out.
+    let limits = Limits { string_bytes: 5, ..Limits::console() };
+    let source = "ops::face::set_profile(#{ character_name_too_long: 1 });";
+    let (runner, result) = run_with(request(source), &Flag::default(), limits, FakeRunner::default());
+    assert_eq!(result.expect_err("key too long").kind, limit(LimitKind::StringSize));
+    assert_eq!(runner.requests().len(), 0);
+}
+
+#[test]
 fn params_nested_past_the_depth_limit_are_refused_before_the_run() {
     let depth = Limits::console().value_depth;
     let mut value = serde_json::json!(1);
