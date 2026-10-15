@@ -1,9 +1,10 @@
 //! Process exit codes: one per [`ErrorCode`], documented in `omuzaki --help`.
 //!
-//! Scripts and agents branch on the code, so it is part of the CLI's contract. A new `ErrorCode` variant cannot be
-//! missed: [`describe`] is one exhaustive `match` (no wildcard) giving every variant its number and meaning, so the
-//! crate stops compiling until the new variant has a row, and both [`for_error`] and the `--help` table read that one
-//! row. The table lists the variants by asking `ErrorCode`'s own schema, so there is no second list to forget.
+//! Scripts and agents branch on the code, so it is part of the CLI's contract. [`describe`] gives every variant its
+//! number and meaning, and both [`for_error`] and the `--help` table read that one row. `ErrorCode` is
+//! `#[non_exhaustive]`, so the compiler no longer forces a row for a new variant: it exits like a bug (code 1) until it
+//! gets one, and the uniqueness test fails for it, which is what catches the missing row. The table lists the variants
+//! by asking `ErrorCode`'s own schema, so there is no second list to forget.
 
 use std::fmt::Write as _;
 

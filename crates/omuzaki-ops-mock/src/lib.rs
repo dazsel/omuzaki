@@ -98,6 +98,12 @@ impl<D: DocWrite> Inner<D> {
         self.open.remove(&tx).ok_or_else(|| OpError::internal("checked open a moment ago"))
     }
 
+    /// Borrows an open transaction, enforcing that only its owner may touch it.
+    fn open_of(&self, tx: TxId, actor: &Actor) -> Result<&OpenTx, OpError> {
+        self.check_open(tx, actor)?;
+        self.open.get(&tx).ok_or_else(|| OpError::internal("checked open a moment ago"))
+    }
+
     /// Adds an applied patch to `tx` if it is open, or makes it a one-step transaction of its own.
     fn attach(&mut self, tx: Option<TxId>, actor: &Actor, label: &str, patch: &Patch) -> TxId {
         if let Some((tx, open)) = tx.and_then(|tx| self.open.get_mut(&tx).map(|open| (tx, open))) {
@@ -149,7 +155,11 @@ impl<D: DocWrite + Send> Runner for MockRunner<D> {
                 .hint("ask the user to grant the `read` scope for this session"));
         }
         let mut inner = self.inner();
-        let plan = op.plan(&OpCtx::new(&inner.doc, &req.actor, &inner.clock))?;
+        // As the executor builds it: the request's grants (a composite op's `plan_step` checks them) and its mode.
+        let ctx = OpCtx::new(&inner.doc, &req.actor, &inner.clock)
+            .with_grants(&req.grants)
+            .with_dry_run(req.mode == Mode::DryRun);
+        let plan = op.plan(&ctx)?;
         // A dry-run needs only `read`, except for queries, which have nothing to preview and are gated like a call.
         if req.mode == Mode::DryRun && meta.kind != OpKind::Query {
             return Ok(Outcome::new(plan));
@@ -201,8 +211,11 @@ impl<D: DocWrite + Send> Runner for MockRunner<D> {
 
     fn rollback(&self, tx: TxId, actor: &Actor) -> Result<(), OpError> {
         let mut inner = self.inner();
-        let open = inner.take_open(tx, actor)?;
-        let version = inner.doc.apply(&open.patch.inverse()).map_err(|e| OpError::conflict(e.to_string()))?;
+        // Like the executor, a rollback that conflicts leaves the transaction open for its owner to resolve or commit:
+        // it is removed only once its inverse has applied.
+        let inverse = inner.open_of(tx, actor)?.patch.inverse();
+        let version = inner.doc.apply(&inverse).map_err(|e| OpError::conflict(e.to_string()))?;
+        inner.open.remove(&tx);
         inner.emit(&Event::tx_rolled_back(tx, actor.clone(), version));
         Ok(())
     }
