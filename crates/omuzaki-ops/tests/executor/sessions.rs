@@ -7,8 +7,8 @@ use omuzaki_core::time::{FakeClock, Seconds};
 use omuzaki_doc_mock::MemDoc;
 use omuzaki_ops::Executor;
 use omuzaki_ops_api::{
-    Actor, ErrorCode, ErrorDetail, Event, Grants, PauseReason, Principals, Request, Runner, Scope, SessionChange,
-    SessionId, SessionState, Sessions,
+    Actor, Budget, ErrorCode, ErrorDetail, Event, Grants, PauseReason, Principals, Request, Runner, Scope,
+    SessionChange, SessionId, SessionState, Sessions, Spend,
 };
 use serde_json::json;
 
@@ -226,7 +226,7 @@ fn only_the_sessions_person_controls_it() {
         assert_eq!(rig.exec.pause(SessionId(1), &who).unwrap_err().code, ErrorCode::Denied, "{who:?}");
         assert_eq!(rig.exec.resume(SessionId(1), &who).unwrap_err().code, ErrorCode::Denied);
         assert_eq!(rig.exec.set_grants(SessionId(1), Grants::default(), &who).unwrap_err().code, ErrorCode::Denied);
-        assert_eq!(rig.exec.set_budget(SessionId(1), Default::default(), &who).unwrap_err().code, ErrorCode::Denied);
+        assert_eq!(rig.exec.set_budget(SessionId(1), Budget::default(), &who).unwrap_err().code, ErrorCode::Denied);
     }
     assert_eq!(rig.exec.pause(SessionId(77), &person()).unwrap_err().code, ErrorCode::NotFound);
     assert_eq!(rig.exec.session(SessionId(1)).unwrap().state, SessionState::Active);
@@ -254,7 +254,7 @@ fn controls_and_pauses_emit_one_event_per_change() {
     rig.exec.pause(SessionId(1), &person()).unwrap(); // already paused: nothing changed
     rig.exec.resume(SessionId(1), &person()).unwrap();
     rig.exec.resume(SessionId(1), &person()).unwrap();
-    rig.exec.set_budget(SessionId(1), Default::default(), &person()).unwrap();
+    rig.exec.set_budget(SessionId(1), Budget::default(), &person()).unwrap();
     let opened = rig.exec.open(session_spec("late")).unwrap();
 
     let events = drain(&rx);
@@ -320,6 +320,6 @@ fn what_the_executor_does_not_do_yet_is_unsupported() {
     let ended = rig.exec.end(SessionId(1), omuzaki_ops_api::EndReason::Closed).unwrap_err();
     assert_eq!(ended.code, ErrorCode::Unsupported);
     assert_eq!(rig.exec.undo_session(SessionId(1), &person()).unwrap_err().code, ErrorCode::Unsupported);
-    assert_eq!(rig.exec.charge(SessionId(1), Default::default()).unwrap_err().code, ErrorCode::Unsupported);
-    assert!(rig.exec.approvals().is_empty());
+    assert_eq!(rig.exec.charge(SessionId(1), Spend::default()).unwrap_err().code, ErrorCode::Unsupported);
+    assert_eq!(rig.exec.approvals().len(), 0);
 }

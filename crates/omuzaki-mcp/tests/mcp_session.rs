@@ -663,11 +663,12 @@ async fn a_connection_asks_the_registry_for_its_session_and_keeps_its_own_name_i
     h.call("face_set_blend", json!({"character": "mira", "blend": 0.4})).await;
 
     // The registry saw the client, the person and the server's grants.
-    let specs = registry.0.lock().unwrap();
-    assert_eq!(specs.len(), 1, "one session per connection");
-    assert_eq!((specs[0].client.as_str(), &specs[0].on_behalf_of), ("test-client", &alice));
-    assert_eq!(specs[0].grants, Grants::agent_default());
-    drop(specs);
+    {
+        let specs = registry.0.lock().unwrap();
+        assert_eq!(specs.len(), 1, "one session per connection");
+        assert_eq!((specs[0].client.as_str(), &specs[0].on_behalf_of), ("test-client", &alice));
+        assert_eq!(specs[0].grants, Grants::agent_default());
+    }
     // It refused, so the agent keeps the name it would have had: a runner that checks sessions refuses it too.
     assert_eq!(h.runner.records()[0].actor, Actor::Agent { id: "test-client#1".into(), model: None });
     h.disconnect().await;
