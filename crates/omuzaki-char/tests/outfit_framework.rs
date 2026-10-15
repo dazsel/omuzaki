@@ -563,19 +563,8 @@ fn a_patterned_garment_without_a_rasteriser_names_what_is_missing() {
 
 // ------------------------------------------------------------------------------------------------------- evidence
 
-/// Every trim of the library on a tube spanning `span` of the torso, placed by fractions of it.
-fn sheet_trims(span: [f64; 2]) -> Vec<TrimSpec> {
-    use omuzaki_char::outfit::trim::braid::Braid;
-    use omuzaki_char::outfit::trim::buttons::{ButtonRow, ButtonShape, ButtonStyle};
-    use omuzaki_char::outfit::trim::chain::Chain;
-    use omuzaki_char::outfit::trim::clasp::{Clasp, ClaspStyle};
-    use omuzaki_char::outfit::trim::decal::{Decal, DecalAnchor, DecalSource};
-    use omuzaki_char::outfit::trim::lace::{Lace, LacePattern};
-    use omuzaki_char::outfit::trim::piping::Piping;
-    use omuzaki_char::outfit::trim::{Finish, LIFT, RailSpec};
-    let t = |u: f64| span[0] + (span[1] - span[0]) * u;
-    let rail = |points: &[[f64; 2]], closed| RailSpec { points: points.to_vec(), closed, lift: LIFT };
-    let gold = |radius, shape| ButtonStyle { radius, shank: 0.001, shape, finish: Finish::default() };
+/// A gold star in a 4 cm square, for a drawn decal.
+fn star() -> omuzaki_face_api::DrawList {
     let mut star = omuzaki_face_api::DrawList::new();
     let points: Vec<omuzaki_core::glam::Vec2> = (0..10)
         .map(|k| {
@@ -586,19 +575,47 @@ fn sheet_trims(span: [f64; 2]) -> Vec<TrimSpec> {
         .collect();
     let path = star.path().polyline(&points).close().finish();
     star.fill(path, omuzaki_face_api::Paint::Solid(Colour::rgb(0xe0, 0xc0, 0x40)));
+    star
+}
+
+/// Every trim of the library on a tube spanning `span` of the torso, placed by fractions of it.
+fn sheet_trims(span: [f64; 2]) -> Vec<TrimSpec> {
+    use omuzaki_char::outfit::trim::braid::Braid;
+    use omuzaki_char::outfit::trim::buttons::{ButtonRow, ButtonShape, ButtonStyle};
+    use omuzaki_char::outfit::trim::chain::Chain;
+    use omuzaki_char::outfit::trim::chain::LINK;
+    use omuzaki_char::outfit::trim::clasp::{Clasp, ClaspStyle};
+    use omuzaki_char::outfit::trim::decal::{Decal, DecalAnchor, DecalSource};
+    use omuzaki_char::outfit::trim::lace::{Lace, LacePattern};
+    use omuzaki_char::outfit::trim::piping::{Cord, Lip, Piping, VEST_PIPING};
+    use omuzaki_char::outfit::trim::{Finish, RailSpec};
+    let t = |u: f64| span[0] + (span[1] - span[0]) * u;
+    let rail = RailSpec::new;
+    let strip = |rail: RailSpec, width, colour| Piping {
+        rail,
+        width,
+        thickness: 0.0008,
+        bevel: 1.0,
+        lip: Some(Lip { height: 0.0004, width: 0.002 }),
+        bulge: 1.0,
+        ramp: 5,
+        caps: true,
+        flip: false,
+        tile: 0.1,
+        finish: Finish::cloth(colour),
+    };
+    let gold = |radius, shape| ButtonStyle { radius, shank: 0.001, shape, finish: Finish::default() };
+    let star = star();
     vec![
-        TrimSpec::Piping(Piping {
-            rail: rail(&[[t(0.93), 0.25], [t(0.07), 0.25]], false),
-            width: 0.006,
-            thickness: 0.002,
-            bevel: 0.0005,
-            finish: Finish::cloth(ColourRef::rgb(0xf2, 0xea, 0xd8)),
-        }),
-        TrimSpec::Piping(Piping {
+        TrimSpec::Piping(strip(
+            rail(&[[t(0.93), 0.25], [t(0.07), 0.25]], false),
+            0.008,
+            ColourRef::rgb(0xf2, 0xea, 0xd8),
+        )),
+        TrimSpec::Cord(Cord {
             rail: rail(&[[t(0.93), 0.0], [t(0.93), 2.1], [t(0.93), 4.2]], true),
-            width: 0.008,
-            thickness: 0.004,
-            bevel: 0.002,
+            radius: VEST_PIPING,
+            segments: 6,
             finish: Finish::cloth(ColourRef::rgb(0x8a, 0x1e, 0x2c)),
         }),
         TrimSpec::Braid(Braid {
@@ -623,24 +640,25 @@ fn sheet_trims(span: [f64; 2]) -> Vec<TrimSpec> {
         TrimSpec::Chain(Chain {
             from: [t(0.64), -0.55],
             to: [t(0.64), 0.55],
-            slack: 0.15,
-            link_size: 0.005,
+            sag: 0.012,
+            bow: 0.004,
+            link_size: LINK.0,
             link_count: None,
-            wire: None,
+            pendant: true,
             finish: Finish::default(),
         }),
         TrimSpec::Clasp(Clasp {
             at: [t(0.71), 0.6],
             style: ClaspStyle::Medallion,
             size: 0.018,
-            jewel: ColourRef::rgb(0x30, 0x60, 0xd0),
+            jewel: Some(ColourRef::rgb(0x30, 0x60, 0xd0)),
             finish: Finish::default(),
         }),
         TrimSpec::Clasp(Clasp {
             at: [t(0.71), -0.6],
             style: ClaspStyle::Cross,
             size: 0.018,
-            jewel: ColourRef::rgb(0xd0, 0x20, 0x40),
+            jewel: None,
             finish: Finish::default(),
         }),
         TrimSpec::Decal(Decal {

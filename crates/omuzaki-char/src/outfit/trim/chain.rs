@@ -13,7 +13,7 @@ use omuzaki_face_api::{Check, Validate};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::clasp::pendant_cross;
+use super::clasp::{self, pendant_cross};
 use super::{Basis, Finish, TrimError, checked, feature, position, torus};
 use crate::kit::curve::fraction;
 use crate::kit::grid::MeshBuilder;
@@ -272,6 +272,9 @@ pub fn build(surface: &Surface, spec: &Chain) -> Result<MeshBuilder, TrimError> 
         let mut middle = hang.at(0.5);
         rest_on(surface, &mut middle, clearance)?;
         let basis = Basis { origin: middle, x: hang.up.cross(hang.out), y: hang.up, z: hang.out };
+        // Hung clear of the garment below the chain, as a clasp's pieces are.
+        let extra = clasp::clearance(surface, &basis, &clasp::cross_probes(scale))?;
+        let basis = basis.at(DVec3::new(0.0, 0.0, extra));
         pendant_cross(&mut builder, &basis, scale, &mix(&from, &to, 0.5))?;
     }
     Ok(builder)
