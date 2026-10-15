@@ -24,6 +24,7 @@ mod gate;
 pub mod lex; // `pub` because `lint-ui-writes` is in the binary crate, which sees this library only through its API
 mod links;
 mod scan;
+mod wiring;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
@@ -138,11 +139,12 @@ impl Condition {
     }
 }
 
-/// Whether every condition holds: `Ok(false)` as soon as one is false, otherwise `Err` with the undecided ones.
-fn all_hold(conditions: &[Condition]) -> Result<bool, Vec<&Condition>> {
+/// Whether every condition holds: `Ok(false)` as soon as one is false, otherwise `Err` with the undecided ones. With
+/// `any_target`, "holds" means "can hold on some target that ships" (`Cfg::can_be`) instead of "holds for this build".
+fn all_hold(conditions: &[Condition], any_target: bool) -> Result<bool, Vec<&Condition>> {
     let mut undecided = Vec::new();
     for condition in conditions {
-        match condition.cfg.eval() {
+        match if any_target { condition.cfg.can_be(true) } else { condition.cfg.eval() } {
             Some(false) => return Ok(false),
             Some(true) => {}
             None => undecided.push(condition),
@@ -169,6 +171,8 @@ pub struct ScannedCrate {
     files: Vec<ScannedFile>,
     /// The registrations in its library.
     lib: Vec<Registration>,
+    /// The registrations in its library on every target that could ship, not just this build's (`Cfg::can_be`).
+    lib_any_target: Vec<Registration>,
     /// The registrations in each binary's own files.
     bins: BTreeMap<String, Vec<Registration>>,
 }
@@ -180,9 +184,10 @@ impl ScannedCrate {
         self.files.iter().find(|file| file.path == *root).map(|file| &file.scan)
     }
 
-    /// The registrations its library makes.
+    /// The registrations its library makes on any target that could ship (wasm included, test code excluded): the set
+    /// the wiring lints judge a crate by, since they must not depend on the host that runs them.
     pub fn library_registrations(&self) -> &[Registration] {
-        &self.lib
+        &self.lib_any_target
     }
 
     /// The crates whose `link()` this crate's sources call, in its library and its binaries.
@@ -281,21 +286,40 @@ impl Sources {
 }
 
 /// The registrations `krate`'s build compiles, sorted into its library and its binaries: calls of the workspace's
-/// registration macros whose `cfg`s hold.
+/// registration macros whose `cfg`s hold. The library's are also listed for every target that could ship
+/// (`lib_any_target`), which the lints use so that a registration behind `cfg(target_arch = "wasm32")` still counts on
+/// a Linux host.
 fn compiled_registrations(
     krate: Crate,
     files: Vec<ScannedFile>,
     kinds: &BTreeSet<String>,
 ) -> Result<ScannedCrate, Error> {
     let conditions = file_conditions(&krate, &files);
+    let (lib, bins) = registrations_where(&krate, &files, &conditions, kinds, false)?;
+    let (lib_any_target, _) = registrations_where(&krate, &files, &conditions, kinds, true)?;
+    Ok(ScannedCrate { krate, files, lib, lib_any_target, bins })
+}
+
+/// A crate's library registrations and each binary's.
+type Compiled = (Vec<Registration>, BTreeMap<String, Vec<Registration>>);
+
+/// The registration calls whose `cfg`s hold (for this build, or on some target with `any_target`), split into the
+/// library's and each binary's.
+fn registrations_where(
+    krate: &Crate,
+    files: &[ScannedFile],
+    conditions: &BTreeMap<PathBuf, Vec<Condition>>,
+    kinds: &BTreeSet<String>,
+    any_target: bool,
+) -> Result<Compiled, Error> {
     let mut lib = Vec::new();
     let mut bins: BTreeMap<String, Vec<Registration>> = BTreeMap::new();
-    for file in &files {
+    for file in files {
         let inherited = conditions.get(&file.path).map(Vec::as_slice).unwrap_or_default();
         for call in file.scan.calls.iter().filter(|call| kinds.contains(&call.kind)) {
             let mut all: Vec<Condition> = inherited.to_vec();
             all.extend(Condition::at(&file.name, &call.cfgs));
-            let compiled = all_hold(&all).map_err(|undecided| Error::UndecidableCfg {
+            let compiled = all_hold(&all, any_target).map_err(|undecided| Error::UndecidableCfg {
                 registration: format!("{}:{} register_{}!({})", file.name, call.line, call.kind, call.name),
                 conditions: undecided
                     .iter()
@@ -313,13 +337,13 @@ fn compiled_registrations(
                 file: file.name.clone(),
                 line: call.line,
             };
-            match owning_bin(&krate, &file.path) {
+            match owning_bin(krate, &file.path) {
                 Some(bin) => bins.entry(bin).or_default().push(registration),
                 None => lib.push(registration),
             }
         }
     }
-    Ok(ScannedCrate { krate, files, lib, bins })
+    Ok((lib, bins))
 }
 
 /// The `cfg`s each file is compiled under: those on the chain of `mod` declarations from a crate root (library or

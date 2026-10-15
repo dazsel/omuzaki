@@ -37,7 +37,7 @@ pub fn lint_links(sources: &Sources) -> Vec<String> {
             .filter_map(|dep| sources.get(dep).ok())
             .collect();
         if linkable.contains(name) && !defines_link(krate) {
-            let registrations = krate.lib.len();
+            let registrations = krate.library_registrations().len();
             let why = if registrations > 0 {
                 format!("its library makes {registrations} registration(s)")
             } else {
@@ -79,7 +79,7 @@ fn is_linkable<'a>(sources: &'a Sources, krate: &'a ScannedCrate, memo: &mut BTr
     }
     let mut linkable = false;
     if krate.krate.lib.is_some() {
-        linkable = defines_link(krate) || !krate.lib.is_empty();
+        linkable = defines_link(krate) || !krate.library_registrations().is_empty();
         for dep in krate.krate.deps.iter().filter_map(|dep| sources.get(dep).ok()) {
             linkable |= is_linkable(sources, dep, memo);
         }

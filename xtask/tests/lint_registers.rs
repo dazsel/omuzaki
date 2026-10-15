@@ -47,3 +47,40 @@ fn a_crate_that_registers_nothing_needs_no_flag_and_registrations_in_tests_do_no
     let run = fixture.xtask(&["lint-registers"]);
     assert!(run.success, "{}{}", run.stdout, run.stderr);
 }
+
+#[test]
+fn a_registration_behind_another_targets_cfg_still_needs_the_flag() {
+    for gate in ["target_arch = \"wasm32\"", "windows", "not(unix)", "target_os = \"macos\""] {
+        let fixture = workspace(false);
+        fixture.write(
+            "crates/omuzaki-char/src/lib.rs",
+            &format!("#[cfg({gate})]\nomuzaki_ops_api::register_op!(Create);\n"),
+        );
+        let run = fixture.xtask(&["lint-registers"]);
+        assert!(!run.success, "cfg({gate}): {}", run.stdout);
+        assert!(run.stdout.contains("omuzaki-char: makes 1 registration(s)"), "cfg({gate}): {}", run.stdout);
+    }
+}
+
+#[test]
+fn test_only_registrations_never_need_the_flag_on_any_target() {
+    let fixture = workspace(false);
+    fixture.write(
+        "crates/omuzaki-char/src/lib.rs",
+        "#[cfg(test)]\nomuzaki_ops_api::register_op!(A);\n#[cfg(all(test, target_arch = \"wasm32\"))]\nomuzaki_ops_api::register_op!(B);\n",
+    );
+    let run = fixture.xtask(&["lint-registers"]);
+    assert!(run.success, "{}{}", run.stdout, run.stderr);
+}
+
+#[test]
+fn a_crate_that_registers_only_on_another_target_still_needs_a_link() {
+    let fixture = workspace(true);
+    fixture.write(
+        "crates/omuzaki-char/src/lib.rs",
+        "#[cfg(target_arch = \"wasm32\")]\nomuzaki_ops_api::register_op!(Create);\n",
+    );
+    let run = fixture.xtask(&["lint-links"]);
+    assert!(!run.success, "{}", run.stdout);
+    assert!(run.stdout.contains("omuzaki-char: defines no `link()`"), "{}", run.stdout);
+}

@@ -9,7 +9,7 @@ use std::path::{Component, Path, PathBuf};
 
 use toml::{Table, Value};
 
-use super::Error;
+use super::{Error, wiring};
 
 /// The build-dependency that generates a crate's `link()` calls.
 const LINK_BUILD: &str = "omuzaki-link-build";
@@ -32,7 +32,8 @@ pub struct Crate {
     /// for it (ADR 0054 section 6).
     pub registers: bool,
     /// Whether its `link()` calls are generated from the `registers` flags of its dependencies and appear in no source
-    /// file: it lists `omuzaki-link-build`, its `build.rs` calls `emit`, and its library includes `link_calls.rs`.
+    /// file: it lists `omuzaki-link-build`, its `build.rs` calls `emit` from `main`, and its library's `define_link!`
+    /// includes `link_calls.rs` (read as tokens, so a commented-out include does not count).
     pub generates_links: bool,
 }
 
@@ -62,26 +63,26 @@ pub fn load(root: &Path) -> Result<Vec<Crate>, Error> {
         by_dir.push((normalise(dir), name.clone()));
         crates.push((dir.clone(), name, manifest));
     }
-    let mut out: Vec<Crate> = crates
-        .into_iter()
-        .map(|(dir, name, manifest)| {
-            let deps = path_deps(&dir, &manifest)
-                .filter_map(|target| by_dir.iter().find(|(d, _)| *d == target).map(|(_, n)| n.clone()))
-                .collect();
-            Crate {
-                lib: library(&dir, &name, &manifest),
-                bins: binaries(&dir, &name, &manifest),
-                registers: manifest
-                    .get("package")
-                    .and_then(|p| p.get("metadata")?.get("omuzaki")?.get("registers")?.as_bool())
-                    .unwrap_or(false),
-                generates_links: generates_links(&dir, &manifest),
-                dir: dir.strip_prefix(root).unwrap_or(&dir).to_path_buf(),
-                name,
-                deps,
-            }
-        })
-        .collect();
+    let workspace_deps = workspace.get("workspace").and_then(|w| w.get("dependencies")).and_then(Value::as_table);
+    let mut out: Vec<Crate> = Vec::new();
+    for (dir, name, manifest) in crates {
+        let mut deps = Vec::new();
+        for target in path_deps(root, &dir, &manifest, workspace_deps)? {
+            deps.extend(by_dir.iter().find(|(d, _)| *d == target).map(|(_, n)| n.clone()));
+        }
+        out.push(Crate {
+            lib: library(&dir, &name, &manifest),
+            bins: binaries(&dir, &name, &manifest),
+            registers: manifest
+                .get("package")
+                .and_then(|p| p.get("metadata")?.get("omuzaki")?.get("registers")?.as_bool())
+                .unwrap_or(false),
+            generates_links: generates_links(&dir, &manifest),
+            dir: dir.strip_prefix(root).unwrap_or(&dir).to_path_buf(),
+            name,
+            deps,
+        });
+    }
     out.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(out)
 }
@@ -103,14 +104,48 @@ fn subdirs_with_manifest(parent: &Path) -> Result<Vec<PathBuf>, Error> {
     Ok(dirs)
 }
 
-/// The directories of the non-optional `path` dependencies under `[dependencies]`.
-fn path_deps<'a>(dir: &'a Path, manifest: &'a Table) -> impl Iterator<Item = PathBuf> + 'a {
-    manifest.get("dependencies").and_then(Value::as_table).into_iter().flatten().filter_map(move |(_, spec)| {
-        let spec = spec.as_table()?;
+/// The directories of the non-optional workspace dependencies under `[dependencies]`: `path` entries, and
+/// `workspace = true` entries resolved through `[workspace.dependencies]` (their `path` is relative to the workspace
+/// root). A crate from a registry or git is not a member and is left out. A dependency in a form this does not know is an
+/// error: skipping it would hide a member from the link gate.
+fn path_deps(root: &Path, dir: &Path, manifest: &Table, workspace_deps: Option<&Table>) -> Result<Vec<PathBuf>, Error> {
+    let manifest_path = dir.join("Cargo.toml");
+    let fail = |message: String| Error::Manifest { path: manifest_path.clone(), message };
+    let mut found = Vec::new();
+    for (key, entry) in manifest.get("dependencies").and_then(Value::as_table).into_iter().flatten() {
+        let Some(member) = entry.as_table() else { continue }; // `name = "1.2"`
+        let inherits = member.get("workspace").and_then(Value::as_bool) == Some(true);
+        let mut spec = Table::new();
+        if inherits {
+            match workspace_deps.and_then(|deps| deps.get(key)) {
+                Some(Value::Table(inherited)) => spec = inherited.clone(),
+                Some(_) => {}
+                None => {
+                    return Err(fail(format!(
+                        "`{key}` says `workspace = true`, but [workspace.dependencies] has no `{key}`"
+                    )));
+                }
+            }
+        }
+        let base = if inherits && !member.contains_key("path") { root } else { dir };
+        for (name, value) in member {
+            if name != "workspace" {
+                spec.insert(name.clone(), value.clone());
+            }
+        }
         let optional = spec.get("optional").and_then(Value::as_bool).unwrap_or(false);
-        let path = spec.get("path").and_then(Value::as_str).filter(|_| !optional)?;
-        Some(normalise(&dir.join(path)))
-    })
+        match spec.get("path").and_then(Value::as_str) {
+            Some(path) if !optional => found.push(normalise(&base.join(path))),
+            Some(_) => {}
+            None if inherits || ["version", "git", "registry"].iter().any(|k| spec.contains_key(*k)) => {}
+            None => {
+                return Err(fail(format!(
+                    "`{key}` is a dependency form the link gate does not read (no `path`, `version`, `git` or `workspace`)"
+                )));
+            }
+        }
+    }
+    Ok(found)
 }
 
 /// Whether the crate's `link()` calls really are generated: it lists `omuzaki-link-build` under `[build-dependencies]`,
@@ -123,9 +158,9 @@ fn generates_links(dir: &Path, manifest: &Table) -> bool {
         .is_some_and(|table| table.contains_key(LINK_BUILD));
     let build = manifest.get("package").and_then(|p| p.get("build")).and_then(Value::as_str).unwrap_or("build.rs");
     let lib = library(dir, "", manifest).map_or_else(|| PathBuf::from("src/lib.rs"), |(_, root)| root);
-    let contains =
-        |file: &Path, needle: &str| fs::read_to_string(dir.join(file)).is_ok_and(|text| text.contains(needle));
-    listed && contains(Path::new(build), "omuzaki_link_build::emit(") && contains(&lib, "/link_calls.rs")
+    let holds =
+        |file: &Path, check: fn(&str) -> bool| fs::read_to_string(dir.join(file)).is_ok_and(|text| check(&text));
+    listed && holds(Path::new(build), wiring::build_script_emits) && holds(&lib, wiring::library_includes_generated)
 }
 
 /// `[lib]` as cargo reads it: a declared path or `src/lib.rs`, named after the package unless `[lib] name` says.
