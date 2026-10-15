@@ -63,7 +63,8 @@ goes to the Director first.
 - **Good task specs prevent rework:** each review round costs a CI run, a review and a session, so the fence, the
   contract and the acceptance checks are written to be right the first time, and implementers review their own diff
   before marking it ready.
-- Each lead reports in its state issue how many sessions are alive and how many are idle.
+- Each lead notes in its state issue roughly how many sessions are alive and how many are idle, when it updates it
+  anyway; a rough count is enough.
 
 ## Flow
 
@@ -77,7 +78,8 @@ goes to the Director first.
 
 ## Handoffs
 
-- **Plan against limits.** A lead tracks its own usage. At about 70% of its limit it starts nothing new and drains:
+- **Plan against limits.** A lead keeps a rough estimate of its own usage (an estimate is enough; don't spend effort
+  measuring it). At about 70% of its limit it starts nothing new and drains:
   rounds in flight finish, pull requests merge, sessions are archived as they finish.
 - **Hand over at a quiet point.** The outgoing lead makes every session save unsaved work to `<branch>-wip` and stop,
   fills its state issue completely, posts "handover due" on #2 and stops. The owner then archives its sessions.
