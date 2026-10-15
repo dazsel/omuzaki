@@ -242,6 +242,8 @@ pub struct FactProbe {
     pub name: &'static str,
     /// The fact's type, matched against its [`FactRegistration`].
     pub type_id: fn() -> TypeId,
+    /// The fact's type name, for listings and to order them.
+    pub type_name: fn() -> &'static str,
     /// Whether what a part published under [`FactProbe::name`] is this probe's fact: a fact of another type that
     /// shares the name is not, and its values must never be handed to [`FactProbe::differs`].
     pub holds: fn(&Publishes) -> bool,
@@ -253,7 +255,13 @@ impl FactProbe {
     /// The probe of fact `F` with its own comparison.
     #[must_use]
     pub const fn new<F: Fact>(differs: Differs) -> Self {
-        Self { name: F::NAME, type_id: TypeId::of::<F>, holds: holds_fact::<F>, differs }
+        Self {
+            name: F::NAME,
+            type_id: TypeId::of::<F>,
+            type_name: std::any::type_name::<F>,
+            holds: holds_fact::<F>,
+            differs,
+        }
     }
 
     /// The probe of fact `F` that compares values with `==`.
@@ -268,9 +276,12 @@ impl FactProbe {
 
 inventory::collect!(FactProbe);
 
-/// Every registered probe, in no particular order.
+/// Every registered probe, by fact name and then type name: `inventory` yields them in link order, which differs between
+/// builds, so what is built from them (a report, which of two doubled probes wins) never depends on it.
 pub fn probes() -> impl Iterator<Item = &'static FactProbe> {
-    inventory::iter::<FactProbe>.into_iter()
+    let mut all: Vec<_> = inventory::iter::<FactProbe>.into_iter().collect();
+    all.sort_by_key(|p| (p.name, (p.type_name)()));
+    all.into_iter()
 }
 
 /// Whether `published` holds values of fact `F` itself (not of another fact that shares its name). For

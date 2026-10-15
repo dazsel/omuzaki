@@ -140,17 +140,24 @@ impl Probes {
     /// Two registered facts share a name ([`omuzaki_char_api::facts`]).
     pub fn probe_problems(&self) -> Result<Vec<String>, String> {
         let facts = fact::facts()?;
-        let mut problems = Vec::new();
+        // Sorted by fact name and type name where built, so the order never follows the registry's.
+        let mut problems: Vec<(&str, &str, String)> = Vec::new();
         let mut seen: BTreeSet<(&str, TypeId)> = BTreeSet::new();
         for probe in &self.registered {
             let id = (probe.type_id)();
             if !facts.iter().any(|f| f.name == probe.name && (f.type_id)() == id) {
-                problems.push(format!("probe '{}' matches no registered fact of that name and type", probe.name));
+                let line = format!("probe '{}' matches no registered fact of that name and type", probe.name);
+                problems.push((probe.name, (probe.type_name)(), line));
             } else if !seen.insert((probe.name, id)) {
-                problems.push(format!("fact '{}' has more than one probe", probe.name));
+                problems.push((
+                    probe.name,
+                    (probe.type_name)(),
+                    format!("fact '{}' has more than one probe", probe.name),
+                ));
             }
         }
-        Ok(problems)
+        problems.sort();
+        Ok(problems.into_iter().map(|(_, _, line)| line).collect())
     }
 }
 

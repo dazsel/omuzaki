@@ -176,3 +176,14 @@ fn with_two_probes_for_one_fact_check_uses_the_last_one_given() {
     let stale_last = run(Probes::from_probes(others().chain([head_probe(), &STALE_HEAD])));
     assert!(stale_last.violations.iter().any(|v| v.contains("stale probe used")), "{:?}", stale_last.violations);
 }
+
+#[test]
+fn probe_problems_come_back_sorted_by_fact_whatever_order_the_probes_come_in() {
+    // A doubled `head` probe and a stray "test-registered-probe" one, given in both orders.
+    let problems = |probes: [&'static FactProbe; 3]| Probes::from_probes(probes).probe_problems().expect("unique");
+    let forward = problems([head_probe(), head_probe(), &STRAY]);
+    let backward = problems([&STRAY, head_probe(), head_probe()]);
+    assert_eq!(forward, backward);
+    assert_eq!(forward.len(), 2, "{forward:?}");
+    assert!(forward[0].contains("'head'") && forward[1].contains("'test-registered-probe'"), "{forward:?}");
+}
