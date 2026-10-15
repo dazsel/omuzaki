@@ -35,7 +35,15 @@ fn help_documents_the_exit_codes() {
     let out = omuzaki(&["--help"]);
     assert_eq!(out.status.code(), Some(0));
     let help = text(&out.stdout);
-    for line in ["Exit codes:", "  0  ok", "  2  usage", "  3  invalid", "  7  unsupported", "  8  unavailable"] {
+    for line in [
+        "Exit codes:",
+        "  0  ok",
+        "  2  usage",
+        "  3  invalid",
+        "  7  unsupported",
+        "  8  unavailable",
+        "  12  problems",
+    ] {
         assert!(help.contains(line), "missing {line:?} in:\n{help}");
     }
     for command in ["ops", "help", "run", "undo", "redo", "mcp"] {

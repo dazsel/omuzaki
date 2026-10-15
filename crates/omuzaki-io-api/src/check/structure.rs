@@ -2,7 +2,11 @@
 //! without bounds worries by every consumer; that is the guarantee [`run_import`](crate::run_import) gives.
 
 use super::graph::{Tour, components};
-use crate::{Avatar, Expression, ExpressionName, Finding, IoScene, Mesh, NodeConstraint, NodeIx, Report};
+use crate::{
+    Avatar, ColliderShape, Expression, ExpressionName, Finding, IoScene, JointLimit, Mesh, NodeConstraint, NodeIx,
+    Report,
+};
+use omuzaki_core::glam::{Quat, Vec3};
 
 /// Records an out-of-range index and returns true if it was one.
 fn out_of_range(r: &mut Report, what: &str, at: &str, ix: usize, len: usize) -> bool {
@@ -324,7 +328,11 @@ fn spring_bones(scene: &IoScene, avatar: &Avatar, tour: &Tour, r: &mut Report) {
     let sb = &avatar.spring_bones;
     let nodes = scene.nodes.len();
     for (i, c) in sb.colliders.iter().enumerate() {
-        out_of_range(r, "node", &format!("avatar/springBone/colliders/{i}/node"), c.node.index(), nodes);
+        let at = format!("avatar/springBone/colliders/{i}");
+        out_of_range(r, "node", &format!("{at}/node"), c.node.index(), nodes);
+        if let Some(why) = collider_problem(&c.shape) {
+            r.push(Finding::error("avatar.collider_invalid", why).at(&at));
+        }
     }
     for (i, g) in sb.collider_groups.iter().enumerate() {
         for &c in &g.colliders {
@@ -357,6 +365,7 @@ fn spring_bones(scene: &IoScene, avatar: &Avatar, tour: &Tour, r: &mut Report) {
                 );
             }
         }
+        joint_limits(chain, &at, r);
         for n in ids {
             if let Some(first) = owner.insert(n, ci)
                 && first != ci
@@ -379,6 +388,77 @@ fn spring_bones(scene: &IoScene, avatar: &Avatar, tour: &Tour, r: &mut Report) {
                     .at(format!("{at}/center")),
                 );
             }
+        }
+    }
+}
+
+/// Largest deviation from 1 that still counts as a unit length (a plane normal, a limit's quaternion).
+const UNIT_TOLERANCE: f32 = 1e-3;
+
+fn finite(v: Vec3) -> bool {
+    v.is_finite()
+}
+
+/// Why a collider shape is unusable, if it is: a non-finite number, a negative radius or a plane normal that is not
+/// unit length.
+fn collider_problem(shape: &ColliderShape) -> Option<&'static str> {
+    let (points, radius, normal): (&[Vec3], Option<f32>, Option<Vec3>) = match shape {
+        ColliderShape::Sphere { offset, radius } | ColliderShape::SphereInside { offset, radius } => {
+            (&[*offset], Some(*radius), None)
+        }
+        ColliderShape::Capsule { offset, radius, tail } | ColliderShape::CapsuleInside { offset, radius, tail } => {
+            (&[*offset, *tail], Some(*radius), None)
+        }
+        ColliderShape::Plane { offset, normal } => (&[*offset], None, Some(*normal)),
+    };
+    if !points.iter().copied().all(finite)
+        || radius.is_some_and(|r| !r.is_finite())
+        || normal.is_some_and(|n| !finite(n))
+    {
+        return Some("a collider holds a number that isn't finite");
+    }
+    if radius.is_some_and(|r| r < 0.0) {
+        return Some("a collider's radius is negative");
+    }
+    if normal.is_some_and(|n| (n.length() - 1.0).abs() > UNIT_TOLERANCE) {
+        return Some("a plane collider's normal isn't unit length");
+    }
+    None
+}
+
+/// Why a joint limit is unusable, if it is: a negative or non-finite angle, or a rotation that is not a unit quaternion.
+fn limit_problem(limit: &JointLimit) -> Option<&'static str> {
+    let (angles, rotation): (&[f32], Quat) = match limit {
+        JointLimit::Cone { angle, rotation } | JointLimit::Hinge { angle, rotation } => (&[*angle], *rotation),
+        JointLimit::Spherical { pitch, yaw, rotation } => (&[*pitch, *yaw], *rotation),
+    };
+    if angles.iter().any(|a| !a.is_finite() || *a < 0.0) {
+        return Some("a limit's angle is negative or not finite");
+    }
+    if !rotation.is_finite() || (rotation.length() - 1.0).abs() > UNIT_TOLERANCE {
+        return Some("a limit's rotation isn't a unit quaternion");
+    }
+    None
+}
+
+/// `avatar.limit_invalid` on every bad limit; `avatar.limit_on_tail` on a limit on the chain's last joint, which the
+/// spec says to ignore.
+fn joint_limits(chain: &crate::SpringChain, at: &str, r: &mut Report) {
+    for (ji, joint) in chain.joints.iter().enumerate() {
+        let Some(limit) = &joint.limit else { continue };
+        let at = format!("{at}/joints/{ji}/limit");
+        if let Some(why) = limit_problem(limit) {
+            r.push(Finding::error("avatar.limit_invalid", why).at(&at));
+        }
+        if ji + 1 == chain.joints.len() {
+            r.push(
+                Finding::warning(
+                    "avatar.limit_on_tail",
+                    "the last joint of a chain is only a tail; its limit is ignored",
+                )
+                .at(&at)
+                .hint("move the limit to an earlier joint or drop it"),
+            );
         }
     }
 }

@@ -38,6 +38,7 @@ pub mod project;
 pub mod render;
 pub mod schema_doc;
 pub mod session;
+pub mod store;
 
 // `omuzaki` ships the product's ops, importers and exporters: the stage (which links the character, animation and face
 // crates) and the I/O crates. `main` calls this at startup (ADR 0015); `cargo xtask lint-links` checks the list.
