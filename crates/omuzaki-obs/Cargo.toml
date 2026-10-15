@@ -1,0 +1,23 @@
+[package]
+name = "omuzaki-obs"
+description = "The OBS Studio remote-control protocol (obs-websocket v5) as data: messages, the auth answer and limits (BR-19). No I/O; clean-room from the public protocol document."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+base64.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
+
+# Native only: the later client task opens a WebSocket to a local app
+[package.metadata.omuzaki]
+wasm = false
