@@ -1,0 +1,8 @@
+section = "rust"
+item = "LiteRT 2.3.0 (`omuzaki_litert`: the TFLite interpreter C API, XNNPACK delegate and our shim)"
+kind = "native"
+used_for = "the `tflite` runtime (ADR 0061), built in CI by `runtime-litert.yml` and kept as a workflow artifact"
+status = "conditions"
+condition = "Apache-2.0; ship LiteRT's LICENSE, THIRD_PARTY_NOTICES.md and licences/ in the archive. Built from tag v2.3.0 (commit 4352e261d3f1b3cda00345db5dbd75859d3bf0d3) with `tools/litert/`; the notices step fails on a linked dependency with no row (`tools/litert/licences.toml`). Google publishes no desktop build of this C API at 2.3.0, so we build it"
+audit = "(LICENSE read at v2.3.0)"
+paths = ["tools/litert"]

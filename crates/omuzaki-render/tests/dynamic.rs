@@ -121,13 +121,18 @@ fn a_bad_update_is_an_error_and_leaves_the_mesh_as_it_was() {
 }
 
 #[test]
-fn morph_targets_are_refused_until_the_morph_task_lands() {
-    // Morph targets are R3's: until it lands the renderer must say so rather than ignore the set.
+fn a_morph_set_that_does_not_fit_the_mesh_is_invalid() {
     let mut r = support::renderer();
-    let set = omuzaki_render_api::MorphSet::default();
-    let options = MeshOptions { usage: MeshUsage::Dynamic, morphs: Some(set) };
-    let refused = r.create_mesh_with(&grid::grid(4, 4), &options);
-    assert!(matches!(refused, Err(RenderError::Unsupported(_))), "{refused:?}");
+    let mesh = grid::grid(4, 4);
+    let far = omuzaki_render_api::SparseMorph {
+        name: omuzaki_core::id::Slug::new("far").unwrap(),
+        indices: vec![u32::try_from(mesh.positions.len()).unwrap()],
+        positions: vec![Vec3::X],
+        normals: vec![],
+    };
+    let set = omuzaki_render_api::MorphSet::from_targets(mesh.positions.len() + 1, vec![far]).unwrap();
+    let refused = r.create_mesh_with(&mesh, &MeshOptions { usage: MeshUsage::Dynamic, morphs: Some(set) });
+    assert!(matches!(refused, Err(RenderError::Invalid { .. })), "{refused:?}");
 }
 
 /// `mesh` with every vertex pushed out along its own normal: a cube's faces come apart, so the corner vertices that

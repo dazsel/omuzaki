@@ -10,12 +10,15 @@
 //! - [`Catalog`]: one locale's text, with the fallback chain, the missing-text report and the pseudo-locale;
 //!   [`negotiate()`] picks the locale from the OS preference list
 //! - [`Locale`], [`SHIPPED`] and [`OVERRIDES`]: the languages, defined once
+//! - [`extract`]: the generated English Fluent file of a package, from its registered text and messages (§3.3, §11)
+//! - [`schema_text`]: the argument-path walk and the title rule of an op's or a part kind's schema (§3.1)
 //! - [`pseudo()`]: the pseudo-locale transform the design system and the checks share
 //!
 //! Ids, codes and data are never translated; prose is a message id plus arguments.
 #![deny(missing_docs)]
 
 mod catalog;
+pub mod extract;
 pub mod ids;
 mod locale;
 mod macros;
@@ -23,6 +26,7 @@ mod message;
 mod negotiate;
 mod pseudo;
 mod registry;
+pub mod schema_text;
 mod text;
 
 pub use catalog::{Catalog, Missing, MissingReason};
