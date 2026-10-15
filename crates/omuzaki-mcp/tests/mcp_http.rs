@@ -13,7 +13,7 @@ use common::http::{Frozen, Port, Raw};
 use common::{FakeRunnerExt, fake_runner};
 use common::{data, text, tool};
 use omuzaki_mcp::{AccessToken, HttpOptions, McpOptions, McpServer, ServerError};
-use omuzaki_ops_api::{Actor, Grants, Runner, Scope};
+use omuzaki_ops_api::{Actor, Grants, Scope};
 use reqwest::StatusCode;
 use rmcp::model::{CallToolRequestParams, CallToolResult, ClientCapabilities, ClientConfig, Implementation};
 use rmcp::service::{RoleClient, RunningService};

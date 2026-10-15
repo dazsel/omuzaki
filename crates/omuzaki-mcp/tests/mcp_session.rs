@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use common::{FakeRunner, FakeRunnerExt, data, fake_runner, text, tool};
 use omuzaki_mcp::{McpOptions, McpServer, ServerError};
-use omuzaki_ops_api::{Actor, Cause, CauseKind, Grants, OpKind, Runner, Scope};
+use omuzaki_ops_api::{Actor, Cause, CauseKind, Grants, OpKind, Scope};
 use rmcp::ClientLifecycleMode;
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ClientCapabilities, ClientConfig, Implementation, ProtocolVersion,

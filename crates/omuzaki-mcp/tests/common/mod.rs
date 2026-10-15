@@ -10,7 +10,7 @@ use omuzaki_core::id::Slug;
 use omuzaki_doc_api::{DocPath, Patch, Value};
 use omuzaki_doc_mock::MemDoc;
 use omuzaki_ops_api::{
-    Actor, CostHint, Grants, Mode, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Request, Runner, Scope, Undo,
+    Actor, CostHint, Grants, Mode, Op, OpCtx, OpError, OpInfo, OpKind, OpMeta, Plan, Request, Runner, Scope, Undo,
 };
 use omuzaki_ops_mock::MockRunner;
 use rmcp::model::{CallToolResult, Tool};
