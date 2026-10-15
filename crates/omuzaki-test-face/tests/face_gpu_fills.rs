@@ -27,9 +27,11 @@ use omuzaki_test_face::probes::{
 /// What the issue asks of every fill probe (with [`MIN_PSNR_DB`]).
 const RULE: Tolerance = Tolerance { per_channel: 8, max_bad_fraction: 0.01 };
 const MIN_PSNR_DB: f64 = 34.0;
-/// The most the radial gradient may differ, and the most 99 % of its pixels may (decision 7.5).
+/// The most the radial gradient may differ, and the most 99 % of its pixels may (decision 7.5, measured inside the shape).
 const GRADIENT_MAX: u8 = 8;
-const GRADIENT_P99: u8 = 5;
+/// 6, not the 5 of decision 7.5: the ramp is 8-bit in Vello, and 5 needs a finer ramp or dithering (#1670's area, if ever
+/// needed). Ruled on #2002.
+const GRADIENT_P99: u8 = 6;
 
 const PROBES: [(&str, Probe); 5] = [
     ("overlapping-fills", overlapping_fills),
@@ -145,16 +147,21 @@ fn image(pixels: &[u8]) -> RgbaImage {
     straight_image(WIDTH, HEIGHT, pixels).unwrap()
 }
 
-/// The `p`-th percentile (0..=100) of the channel differences over the pixels the CPU raster inked, and the maximum.
-fn channel_difference(gpu: &[u8], cpu: &[u8], percentile: usize) -> (u8, u8) {
-    let mut diffs: Vec<u8> = gpu
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .zip(cpu.as_chunks::<4>().0)
-        .filter(|(_, c)| c[3] > 0)
-        .flat_map(|(g, c)| g.iter().zip(c).map(|(a, b)| a.abs_diff(*b)))
-        .collect();
+/// The `p`-th percentile (0..=100) and the maximum of the channel differences over the pixels whose whole 5 x 5
+/// neighbourhood the CPU raster inked. Edge pixels are left out: they are the fills' rule, and the gradient bound is
+/// about the ramp (decision 7.5).
+fn interior_difference(gpu: &[u8], cpu: &[u8], percentile: usize) -> (u8, u8) {
+    let (w, h) = (WIDTH as usize, HEIGHT as usize);
+    let inked = |x: usize, y: usize| cpu[(y * w + x) * 4 + 3] > 0;
+    let mut diffs = Vec::new();
+    for y in 2..h - 2 {
+        for x in 2..w - 2 {
+            if (y - 2..=y + 2).all(|yy| (x - 2..=x + 2).all(|xx| inked(xx, yy))) {
+                let i = (y * w + x) * 4;
+                diffs.extend((0..4).map(|k| gpu[i + k].abs_diff(cpu[i + k])));
+            }
+        }
+    }
     diffs.sort_unstable();
     let at = (diffs.len() * percentile / 100).min(diffs.len().saturating_sub(1));
     (diffs.get(at).copied().unwrap_or(0), diffs.last().copied().unwrap_or(0))
@@ -191,7 +198,7 @@ fn the_radial_gradient_is_within_decision_7_5() {
     let Some(gpu) = device() else { return };
     let (g, c) =
         (gpu_pixels(&gpu, &mut VelloRasterizer::new(), clipped_radial_gradient), cpu_pixels(clipped_radial_gradient));
-    let (p99, max) = channel_difference(&g, &c, 99);
+    let (p99, max) = interior_difference(&g, &c, 99);
     eprintln!("clipped-radial-gradient: max {max}, p99 {p99} levels per channel");
     assert!(
         max <= GRADIENT_MAX && p99 <= GRADIENT_P99,
