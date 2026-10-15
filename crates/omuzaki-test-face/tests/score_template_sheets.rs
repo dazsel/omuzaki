@@ -22,8 +22,8 @@ use omuzaki_core::time::Seconds;
 use omuzaki_face::RealPainter;
 use omuzaki_face::raster::SkiaRasterizer;
 use omuzaki_face_api::{
-    FaceDrawing, FaceInput, FacePainter, FaceProfile, FaceProjection, FaceRasterizer, FaceRect, FaceView, Palette,
-    Raster,
+    FaceDrawing, FaceInput, FaceLayerId, FacePainter, FaceProfile, FaceProjection, FaceRasterizer, FaceRect, FaceView,
+    Palette, Raster,
 };
 use serde::Deserialize;
 
@@ -105,6 +105,11 @@ fn paint_frame(score: &CompiledScore, at: Seconds, profile: &FaceProfile) -> Rgb
     let mut rasterizer = SkiaRasterizer::new();
     let mut raster = Raster::new(1, 1);
     for spec in painter.layers() {
+        // The Brows layer is a second copy of the brows already on Base: hair composites it to show brows through the
+        // bangs, and these sheets have no hair. Compositing it would draw every brow twice, darker and harder-edged.
+        if spec.id == FaceLayerId::Brows {
+            continue;
+        }
         let list = &drawing[spec.id];
         if list.is_empty() {
             continue;
@@ -202,7 +207,7 @@ fn sheet_row(id: &str, score: &Score, profile: &FaceProfile) -> RgbaImage {
 
 /// The glyphs the captions use: lower-case letters, space, comma and hyphen, five columns by seven rows, a `1` bit
 /// is ink.
-const GLYPHS: [(char, [u8; 7]); 29] = [
+const GLYPHS: [(char, [u8; 7]); 31] = [
     ('a', [0b00000, 0b00000, 0b01110, 0b00001, 0b01111, 0b10001, 0b01111]),
     ('b', [0b10000, 0b10000, 0b10110, 0b11001, 0b10001, 0b10001, 0b11110]),
     ('c', [0b00000, 0b00000, 0b01110, 0b10000, 0b10000, 0b10001, 0b01110]),
@@ -232,13 +237,17 @@ const GLYPHS: [(char, [u8; 7]); 29] = [
     (' ', [0; 7]),
     (',', [0b00000, 0b00000, 0b00000, 0b00000, 0b00110, 0b00100, 0b01000]),
     ('-', [0b00000, 0b00000, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000]),
+    (':', [0b00000, 0b00100, 0b00100, 0b00000, 0b00100, 0b00100, 0b00000]),
+    (';', [0b00000, 0b00100, 0b00100, 0b00000, 0b00100, 0b00100, 0b01000]),
 ];
 
-/// Draws `text` at `(x, y)` in ink, clipped to the image. Characters without a glyph are left out.
+/// Draws `text` at `(x, y)` in ink, clipped to the image. A character without a glyph is a panic: a caption that drops
+/// a character would hide what it says, so the test fails instead.
 fn draw_text(image: &mut RgbaImage, x: u32, y: u32, text: &str) {
     let mut pen = x;
     for c in text.chars() {
-        let Some((_, rows)) = GLYPHS.iter().find(|(g, _)| *g == c) else { continue };
+        let (_, rows) =
+            GLYPHS.iter().find(|(g, _)| *g == c).unwrap_or_else(|| panic!("no glyph for {c:?} in {text:?}"));
         for (dy, bits) in rows.iter().enumerate() {
             for dx in 0..5 {
                 if bits & (0b10000 >> dx) == 0 {
