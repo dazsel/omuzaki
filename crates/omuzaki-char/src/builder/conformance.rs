@@ -9,28 +9,43 @@
 //! compared through their `Debug` text ([`Probes::fact_by_debug`]). A kind that publishes something different under
 //! another palette is a [`Report::violations`] entry naming the kind, the part and the fact.
 //!
+//! The palettes also differ in their slot set (one with an extra slot, one without the slots no part names), and the
+//! whole comparison runs under each of the [`OPTIONS`] (both qualities, with and without `rig_export`), because a fact
+//! may depend on either; a violation names the options it showed under.
+//!
 //! Facts are compared by [`Probes`]: the built-in ones are registered, and a crate that adds a fact adds
 //! [`Probes::fact`] for it in the test that runs the check. A fact a kind publishes that no probe covers is listed in
 //! [`Report::unprobed`] instead of passing unseen. Any crate can run the check over its own kinds and characters.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
+use std::thread;
 
 use omuzaki_char_api::{
     AnchorsFact, BuildOptions, BuildServices, CharacterDef, CollidersFact, FaceFact, Fact, FitFact, HeadFact, PartDef,
-    PartId, PartKindId, Published, Publishes, StatureFact, build_part, find_kind, plan,
+    PartId, PartKindId, Published, Publishes, Quality, StatureFact, build_part, find_kind, plan,
 };
 use omuzaki_core::colour::Colour;
 use omuzaki_core::rng::Rng;
-use omuzaki_face_api::Palette;
+use omuzaki_doc_api::Value;
+use omuzaki_face_api::{Palette, PaletteSlot};
 
-/// How many palettes besides the character's own each kind is built under: the inverted one and generated ones.
+use super::named_slots;
+
+/// How many palettes of other colours each kind is built under, besides the character's own: the inverted one and
+/// generated ones. [`alternatives`] adds one with an extra slot and, if the palette has unreferenced slots, one without them.
 pub const PALETTES: usize = 5;
+/// The build options every palette is compared under: both qualities, each with and without `rig_export`. (`variant`
+/// stays `None`: variants are resolved into the definition before a build.)
+pub const OPTIONS: [(Quality, bool); 4] =
+    [(Quality::Live, false), (Quality::Live, true), (Quality::Offline, false), (Quality::Offline, true)];
 /// The seed of the generated palettes: fixed, so a failure reproduces.
 const SEED: u64 = 0x1598_fac7;
 
-/// The part the check adds for a kind the character has no part of.
+/// The id of the part the check adds for a kind the character has no part of (a suffix is added if `base` has it).
 const PROBE: &str = "palette-probe";
+/// The slot of the alternative that has one more entry than the palette (a suffix is added if the palette has it).
+const EXTRA_SLOT: &str = "unused_probe_slot";
 
 /// How one fact of two builds is compared: `None` when equal, else a description of both for the failure message.
 type Compare = fn(&Publishes, &Publishes) -> Option<String>;
@@ -110,15 +125,56 @@ fn other(c: Colour, rng: &mut Rng) -> Colour {
     Colour::rgba(pick(c.r), pick(c.g), pick(c.b), pick(c.a))
 }
 
+/// A name that `taken` doesn't hold: `base`, then `base{sep}2`, `base{sep}3`...
+fn unused_name(base: &str, sep: char, taken: impl Fn(&str) -> bool) -> String {
+    let mut name = base.to_owned();
+    let mut n = 2_u32;
+    while taken(&name) {
+        name = format!("{base}{sep}{n}");
+        n += 1;
+    }
+    name
+}
+
 /// The palettes [`check`] compares `palette` against: [`flipped`], then generated ones, each differing from `palette`
-/// in every channel of every entry. The same for the same input.
-pub fn alternatives(palette: &Palette) -> Vec<Palette> {
+/// in every channel of every entry; then one with an extra slot no part references, and (if `palette` has slots
+/// outside `referenced`) one without them, both with the colours of `palette`, so a fact that depends on the slot set
+/// is caught. The same for the same input.
+pub fn alternatives(palette: &Palette, referenced: &BTreeSet<String>) -> Vec<Palette> {
     let mut rng = Rng::new(SEED);
     let mut all = vec![flipped(palette)];
     while all.len() < PALETTES {
         all.push(Palette(palette.0.iter().map(|(slot, c)| (slot.clone(), other(*c, &mut rng))).collect()));
     }
+    let free = unused_name(EXTRA_SLOT, '_', |n| palette.0.keys().any(|s| s.as_str() == n));
+    if let Ok(slot) = PaletteSlot::new(&free) {
+        let mut extra = palette.clone();
+        extra.0.insert(slot, Colour::rgb(1, 2, 3));
+        all.push(extra);
+    }
+    let mut fewer = palette.clone();
+    fewer.0.retain(|slot, _| referenced.contains(slot.as_str()));
+    if fewer != *palette {
+        all.push(fewer);
+    }
     all
+}
+
+/// The palette slots the parts of `def` name (`@slot`), once their parameters are normalised (so defaults count).
+fn referenced_slots(def: &CharacterDef) -> BTreeSet<String> {
+    let params: Vec<Value> = def
+        .parts
+        .values()
+        .map(|part| {
+            let normalised = find_kind(part.kind.as_str()).and_then(|r| (r.check)(&part.params).ok());
+            normalised.unwrap_or_else(|| part.params.clone())
+        })
+        .collect();
+    let mut named = BTreeSet::new();
+    for p in &params {
+        named_slots(p, &mut named);
+    }
+    named.into_iter().map(|s| s.trim_start_matches('@').to_owned()).collect()
 }
 
 /// The names of the facts `publishes` holds (its `Debug` is a map from fact name to value count).
@@ -133,9 +189,10 @@ fn fact_names(publishes: &Publishes) -> Vec<String> {
 /// What every part of a character published, in build order.
 type PartsPublished = [(PartId, Publishes)];
 
-/// What every part of `def` published, in build order.
-fn publishes_of(def: &CharacterDef) -> Result<Vec<(PartId, Publishes)>, String> {
-    let (options, services) = (BuildOptions::default(), BuildServices::default());
+/// What every part of `def` published, in build order, built with `quality` and `rig_export`.
+fn publishes_of(def: &CharacterDef, quality: Quality, rig_export: bool) -> Result<Vec<(PartId, Publishes)>, String> {
+    let options = BuildOptions { quality, rig_export, ..BuildOptions::default() };
+    let services = BuildServices::default();
     let mut published = Published::default();
     let mut all = Vec::new();
     for part in plan(def).map_err(|e| e.to_string())? {
@@ -178,7 +235,8 @@ pub fn check(base: &CharacterDef, kinds: Option<&[&str]>, probes: &Probes) -> Re
             report.unreached.push((kind.clone(), "not registered".to_owned()));
             continue;
         };
-        let (Ok(kind_id), Ok(part_id)) = (PartKindId::new(kind.as_str()), PartId::new(PROBE)) else {
+        let probe = unused_name(PROBE, '-', |n| base.parts.keys().any(|id| id.as_str() == n));
+        let (Ok(kind_id), Ok(part_id)) = (PartKindId::new(kind.as_str()), PartId::new(&probe)) else {
             report.unreached.push((kind.clone(), "not a valid kind id".to_owned()));
             continue;
         };
@@ -194,22 +252,58 @@ pub fn check(base: &CharacterDef, kinds: Option<&[&str]>, probes: &Probes) -> Re
         def.parts.insert(part_id, part);
         runs.push((def, vec![kind.clone()]));
     }
-    for (def, run_kinds) in runs {
-        let under_own = match publishes_of(&def) {
+    // The runs are independent builds, so they go on separate threads; the reports are merged in run order, so the
+    // result doesn't depend on which finishes first.
+    let reports: Vec<Report> = thread::scope(|scope| {
+        let handles: Vec<_> =
+            runs.iter().map(|(def, run_kinds)| scope.spawn(move || check_run(def, run_kinds, probes))).collect();
+        handles
+            .into_iter()
+            .zip(&runs)
+            .map(|(handle, (_, run_kinds))| {
+                handle.join().unwrap_or_else(|_| Report {
+                    unreached: run_kinds.iter().map(|k| (k.clone(), "the check panicked".to_owned())).collect(),
+                    ..Report::default()
+                })
+            })
+            .collect()
+    });
+    for run in reports {
+        report.violations.extend(run.violations);
+        report.unprobed.extend(run.unprobed);
+        report.unreached.extend(run.unreached);
+    }
+    report
+}
+
+/// Builds `def` under every option set and alternative palette and reports what `run_kinds` published differently.
+fn check_run(def: &CharacterDef, run_kinds: &[String], probes: &Probes) -> Report {
+    let mut report = Report::default();
+    let alternatives = alternatives(&def.palette, &referenced_slots(def));
+    for (quality, rig_export) in OPTIONS {
+        let under_own = match publishes_of(def, quality, rig_export) {
             Ok(own) => own,
             Err(e) => {
-                report.unreached.extend(run_kinds.into_iter().map(|k| (k, format!("does not build: {e}"))));
-                continue;
+                let why = format!("does not build ({quality:?}, rig_export {rig_export}): {e}");
+                report.unreached.extend(run_kinds.iter().map(|k| (k.clone(), why.clone())));
+                break;
             }
         };
-        for (n, palette) in alternatives(&def.palette).into_iter().enumerate() {
+        let options = format!("{quality:?} quality, rig_export {rig_export}");
+        for (n, palette) in alternatives.iter().enumerate() {
             let mut changed = def.clone();
-            changed.palette = palette;
-            match publishes_of(&changed) {
-                Ok(under_other) => compare(&def, &run_kinds, (&under_own, &under_other), n, probes, &mut report),
+            changed.palette = palette.clone();
+            match publishes_of(&changed, quality, rig_export) {
+                Ok(under_other) => {
+                    compare(def, run_kinds, (&under_own, &under_other), (n, &options), probes, &mut report);
+                }
+                // The extra-slot and fewer-slot palettes are the only ones with a different slot set: a character
+                // that needs a slot they lack hides a reference from the parameters, and the colour palettes
+                // (every slot present) stay the judge of the rest.
+                Err(_) if n >= PALETTES => {}
                 Err(e) => {
-                    // A palette the kind can't build under is not a fact that depends on it, but it is not checked either.
-                    report.unreached.extend(run_kinds.iter().map(|k| (k.clone(), format!("does not build: {e}"))));
+                    let why = format!("does not build ({options}): {e}");
+                    report.unreached.extend(run_kinds.iter().map(|k| (k.clone(), why.clone())));
                     break;
                 }
             }
@@ -251,7 +345,7 @@ fn compare(
     def: &CharacterDef,
     kinds: &[String],
     (a, b): (&PartsPublished, &PartsPublished),
-    n: usize,
+    (n, options): (usize, &str),
     probes: &Probes,
     report: &mut Report,
 ) {
@@ -269,7 +363,9 @@ fn compare(
         if format!("{under_a:?}") != format!("{under_b:?}") {
             violate(
                 String::new(),
-                format!("publishes {under_a:?} under the character's palette and {under_b:?} under alternative {n}"),
+                format!(
+                    "publishes {under_a:?} under the character's palette and {under_b:?} under alternative {n} ({options})"
+                ),
             );
             continue;
         }
@@ -279,7 +375,7 @@ fn compare(
                     if let Some(what) = differs(under_a, under_b) {
                         violate(
                             format!(", fact '{name}'"),
-                            format!("fact '{name}' depends on the palette (alternative {n}): {what}"),
+                            format!("fact '{name}' depends on the palette (alternative {n}, {options}): {what}"),
                         );
                     }
                 }

@@ -735,12 +735,21 @@ omuzaki_char_api::register_fact!(NoteFact);
 struct NoterParams {
     /// Publish the red channel of `tint` instead of 7: a fact that depends on the palette (what the kind does by default).
     from_palette: bool,
+    /// Publish how many entries the palette has: a fact that depends on the slot set, not on any colour.
+    from_len: bool,
+    /// Publish `tint`'s red channel only in an offline build.
+    offline_only: bool,
     tint: ColourRef,
 }
 
 impl Default for NoterParams {
     fn default() -> Self {
-        Self { from_palette: true, tint: ColourRef::slot_or("outfit", ColourRef::rgb(200, 200, 200)) }
+        Self {
+            from_palette: true,
+            from_len: false,
+            offline_only: false,
+            tint: ColourRef::slot_or("outfit", ColourRef::rgb(200, 200, 200)),
+        }
     }
 }
 
@@ -760,7 +769,15 @@ impl PartKind for Noter {
 
     fn build(params: &NoterParams, ctx: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
         let tint = ctx.colour(&params.tint)?;
-        let note = if params.from_palette { tint.r } else { 7 };
+        let note = if params.from_len {
+            u8::try_from(ctx.palette.0.len()).unwrap_or(u8::MAX)
+        } else if params.offline_only {
+            if ctx.quality == Quality::Offline { tint.r } else { 7 }
+        } else if params.from_palette {
+            tint.r
+        } else {
+            7
+        };
         Ok(PartOutput::new().with_publishes(Publishes::default().with::<NoteFact>(note)))
     }
 }
@@ -831,6 +848,45 @@ fn a_palette_dependent_publisher_whose_only_part_is_disabled_is_still_caught() {
         violation.contains("kind 't-noter'") && violation.contains("fact 't-note' depends on the palette"),
         "{violation}"
     );
+}
+
+/// The mock character with a `noter` published from `params`.
+fn noted_with(params: Value) -> CharacterDef {
+    let mut def = mock_character().unwrap();
+    add(&mut def, "noter", "t-noter", 10, params);
+    def
+}
+
+fn only_violation(report: &conformance::Report) -> &str {
+    let [violation] = report.violations.as_slice() else { panic!("one violation expected: {report:?}") };
+    violation
+}
+
+#[test]
+fn a_fact_that_depends_on_how_many_slots_the_palette_has_is_caught() {
+    let probes = conformance::Probes::default().fact::<NoteFact>();
+    let def = noted_with(json!({ "from_palette": false, "from_len": true }));
+    let report = conformance::check(&def, Some(&["t-noter"]), &probes);
+    assert!(only_violation(&report).contains("fact 't-note' depends on the palette"), "{report:?}");
+}
+
+#[test]
+fn a_fact_that_depends_on_the_build_options_is_caught_and_names_them() {
+    let probes = conformance::Probes::default().fact::<NoteFact>();
+    let def = noted_with(json!({ "from_palette": false, "offline_only": true }));
+    let report = conformance::check(&def, Some(&["t-noter"]), &probes);
+    let violation = only_violation(&report);
+    assert!(violation.contains("depends on the palette") && violation.contains("Offline quality"), "{violation}");
+}
+
+#[test]
+fn the_probe_part_never_replaces_a_part_of_the_base() {
+    // The reader needs a `t-noter` part; the base has one under the id the probe would use first.
+    let mut def = mock_character().unwrap();
+    add(&mut def, "palette-probe", "t-noter", 10, json!({ "from_palette": false }));
+    let probes = conformance::Probes::default().fact::<NoteFact>();
+    let report = conformance::check(&def, Some(&["t-note-reader"]), &probes);
+    assert!(report.unreached.is_empty() && report.violations.is_empty(), "{report:?}");
 }
 
 #[test]
