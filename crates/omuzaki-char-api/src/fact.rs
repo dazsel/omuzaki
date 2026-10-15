@@ -356,12 +356,11 @@ impl Defaults {
             let node = link.get_or_init(|| {
                 Box::new(Node { fact: key, value: Box::new(F::Merged::default()), next: OnceLock::new() })
             });
-            if node.fact == key {
-                if let Some(m) = node.value.downcast_ref::<F::Merged>() {
-                    return m;
-                }
-                // The key is the fact's own type, so its value has the fact's merged type: unreachable. Fall through
-                // to a fresh cell rather than panic.
+            // The key is the fact's own type, so a match always has the fact's merged type; a miss moves on.
+            if node.fact == key
+                && let Some(m) = node.value.downcast_ref::<F::Merged>()
+            {
+                return m;
             }
             link = &node.next;
         }

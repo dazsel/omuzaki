@@ -39,7 +39,7 @@ fn a_change_through_one_published_is_not_seen_by_another_or_by_another_fact() {
     assert_eq!(contents(a.get::<One>()), [7], "the view that was changed keeps the change");
     assert!(contents(b.get::<One>()).is_empty(), "another Published still sees the empty value");
     assert!(contents(a.get::<Two>()).is_empty(), "another fact with the same merged type does too");
-    assert!(contents(Published::default().get::<One>()).is_empty());
+    assert_eq!(contents(Published::default().get::<One>()), Vec::<u32>::new());
 }
 
 #[test]
@@ -66,7 +66,7 @@ fn a_published_fact_never_uses_a_default() {
     a.get::<One>().lock().unwrap().push(9);
     a.absorb(&PartId::new("p").unwrap(), Publishes::default().with::<One>(3)).unwrap();
     assert_eq!(contents(a.get::<One>()), [3], "the published value replaces the default for readers");
-    assert!(contents(Published::default().get::<One>()).is_empty());
+    assert_eq!(contents(Published::default().get::<One>()), Vec::<u32>::new());
 }
 
 #[test]
@@ -83,5 +83,5 @@ fn views_are_independent_across_threads() {
             });
         }
     });
-    assert!(contents(a.get::<One>()).is_empty());
+    assert_eq!(contents(a.get::<One>()), Vec::<u32>::new());
 }
