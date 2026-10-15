@@ -14,7 +14,8 @@ use omuzaki_doc_mock::MemDoc;
 use omuzaki_ops::Executor;
 use omuzaki_ops_api::{
     CancelFlag, CancelReason, CostHint, ErrorCode, ErrorDetail, Event, Grants, JobCtx, JobId, JobInfo, JobShape,
-    JobState, Jobs, Lane, Mode, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Request, Runner, Scope, Undo, register_op,
+    JobState, Jobs, Lane, Mode, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Request, Runner, Scope, SessionId, Sessions,
+    Undo, register_op,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -961,4 +962,68 @@ fn a_panicking_journal_fails_the_start_and_gives_back_its_place_and_money() {
     let next = exec.start(job_with("jp-next", &json!("echo"), whole)).unwrap();
     assert_eq!(next.state, JobState::Running);
     assert!(matches!(exec.wait(next.id, None).unwrap().state, JobState::Done { .. }));
+}
+
+// ---- sessions and jobs ---------------------------------------------------------------------------------------------
+
+fn agent_job(key: &str, how: &Value) -> Request {
+    Request { actor: agent(), ..agent_request("test.job", json!({"key": key, "how": how})) }
+}
+
+#[test]
+fn a_job_carries_its_session_and_principal() {
+    let rig = rig(json!({}));
+    let by_agent = rig.exec.start(agent_job("j1", &json!("echo"))).unwrap();
+    assert_eq!((by_agent.session, by_agent.on_behalf_of), (Some(SessionId(1)), Some(person())));
+    let by_person = rig.exec.start(job("j2", &json!("echo"))).unwrap();
+    assert_eq!((by_person.session, by_person.on_behalf_of), (None, None));
+    rig.exec.wait(by_agent.id, None).unwrap();
+    rig.exec.wait(by_person.id, None).unwrap();
+}
+
+#[test]
+fn a_job_whose_session_is_paused_while_it_works_changes_nothing() {
+    let rig = rig(json!({}));
+    let gate = Gate::new("p1");
+    let info = rig.exec.start(agent_job("p1", &json!("block"))).unwrap();
+    gate.wait_entered();
+    rig.exec.pause(SessionId(1), &person()).unwrap();
+    gate.release.send(()).unwrap();
+
+    let ended = rig.exec.wait(info.id, None).unwrap();
+    assert!(
+        matches!(&ended.state, JobState::Failed { error } if error.code == ErrorCode::Waiting),
+        "{:?}",
+        ended.state
+    );
+    assert_eq!(rig.at("p1"), None, "the finish was refused");
+    assert!(rig.log().is_empty());
+}
+
+#[test]
+fn a_queued_job_whose_session_is_paused_never_starts() {
+    let rig = rig(json!({}));
+    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    let width = (cores / 2).clamp(1, 4);
+    let gates: Vec<Gate> = (0..width).map(|n| Gate::new(&format!("q{n}"))).collect();
+    for n in 0..width {
+        rig.exec.start(job(&format!("q{n}"), &json!("block"))).unwrap();
+    }
+    for gate in &gates {
+        gate.wait_entered();
+    }
+    let waiting = rig.exec.start(agent_job("qa", &json!("echo"))).unwrap();
+    assert_eq!(live(&rig, waiting.id).state, JobState::Queued);
+
+    rig.exec.pause(SessionId(1), &person()).unwrap();
+    for gate in &gates {
+        gate.release.send(()).unwrap();
+    }
+    let ended = rig.exec.wait(waiting.id, None).unwrap();
+    assert!(
+        matches!(&ended.state, JobState::Failed { error } if error.code == ErrorCode::Waiting),
+        "{:?}",
+        ended.state
+    );
+    assert_eq!(rig.at("qa"), None, "its work never ran");
 }

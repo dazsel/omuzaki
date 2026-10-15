@@ -655,22 +655,26 @@ impl Sessions for OneSession {
 }
 
 #[tokio::test]
-async fn a_connection_asks_the_registry_for_its_session_and_keeps_its_own_name_if_refused() {
+async fn a_connection_asks_the_registry_for_its_session_and_runs_nothing_if_refused() {
     let registry = Arc::new(OneSession::default());
     let alice = Actor::Person { name: "alice".into() };
     let options = McpOptions::default().with_sessions(registry.clone(), alice.clone());
     let h = Harness::connect_with(options, Lifecycle::Initialize).await;
-    h.call("face_set_blend", json!({"character": "mira", "blend": 0.4})).await;
+    let result = h.call("face_set_blend", json!({"character": "mira", "blend": 0.4})).await;
+    // The refusal is kept for the connection: a second call does not ask again, and runs nothing either.
+    let again = h.call("face_set_blend", json!({"character": "mira", "blend": 0.5})).await;
 
-    // The registry saw the client, the person and the server's grants.
     {
+        // The registry saw the client, the person and the server's grants, once.
         let specs = registry.0.lock().unwrap();
         assert_eq!(specs.len(), 1, "one session per connection");
         assert_eq!((specs[0].client.as_str(), &specs[0].on_behalf_of), ("test-client", &alice));
         assert_eq!(specs[0].grants, Grants::agent_default());
     }
-    // It refused, so the agent keeps the name it would have had: a runner that checks sessions refuses it too.
-    assert_eq!(h.runner.records()[0].actor, Actor::Agent { id: "test-client#1".into(), model: None });
+    // Without a session the agent has no name that could match a registered one, so nothing reaches the runner.
+    assert_eq!((result.is_error, again.is_error), (Some(true), Some(true)));
+    assert!(text(&result).contains("not needed by this test"), "{}", text(&result));
+    assert!(h.runner.records().is_empty());
     h.disconnect().await;
 }
 

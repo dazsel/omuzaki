@@ -66,6 +66,11 @@ impl Registry {
         self.of_actor(actor).map(|s| &s.on_behalf_of)
     }
 
+    /// The id and principal of `actor`'s session, for the records of what it starts.
+    pub(crate) fn session_ref(&self, actor: &Actor) -> Option<(SessionId, Actor)> {
+        self.of_actor(actor).map(|s| (s.id, s.on_behalf_of.clone()))
+    }
+
     /// What `session` may do now: its ceiling, never wider than its principal holds at this moment.
     pub(crate) fn effective(&self, session: &SessionInfo) -> Grants {
         session.grants.intersect(&self.principals.grants(&session.on_behalf_of))

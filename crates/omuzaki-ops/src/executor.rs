@@ -244,23 +244,25 @@ impl Executor {
     }
 
     /// Plans a job under the lock and starts it on the manager. `awaited` keeps its outcome for [`Runner::run`].
-    fn start_job(&self, op: Arc<dyn DynOp>, req: Request, awaited: bool) -> Result<JobInfo, OpError> {
-        let state = lock(&self.env.state);
-        state.sessions.check_active(&req.actor)?;
+    fn start_job(&self, op: Arc<dyn DynOp>, mut req: Request, awaited: bool) -> Result<JobInfo, OpError> {
+        let mut state = lock(&self.env.state);
+        // Admitted again under the lock the plan is made in: the session may have changed since `run` looked.
+        req.grants = state.sessions.admit(&req.actor, &req.grants, self.env.clock.now())?;
         let plan = self.plan(&state, &*op, &req)?;
         drop(state);
         self.jobs.start(op, req, plan, awaited)
     }
 
     /// The part of [`Runner::run`] that holds the lock.
-    fn run_locked(&self, state: &mut State, op: &dyn DynOp, req: &Request) -> Result<Outcome, OpError> {
-        // Admission ran before the lock was taken; a pause may have landed since, and must win.
-        state.sessions.check_active(&req.actor)?;
+    fn run_locked(&self, state: &mut State, op: &dyn DynOp, mut req: Request) -> Result<Outcome, OpError> {
+        // Admitted again under the lock that plans and applies: a pause or a narrowing that landed since `run` looked
+        // must win, and the grants the op plans with are the ones that hold now.
+        req.grants = state.sessions.admit(&req.actor, &req.grants, self.env.clock.now())?;
         if let Some(tx) = req.tx {
             state.check_tx(tx, &req.actor)?;
         }
         // `read` was checked before the lookup; the op's own scope is checked before it plans.
-        let plan = self.plan(state, op, req)?;
+        let plan = self.plan(state, op, &req)?;
         if checks::answers_only(op.meta(), req.mode) {
             return Ok(Outcome::new(plan));
         }
@@ -278,6 +280,20 @@ impl Executor {
     /// What `actor` may do with `grants` right now, or why it may do nothing.
     fn admit(&self, actor: &Actor, grants: &Grants) -> Result<Grants, OpError> {
         lock(&self.env.state).sessions.admit(actor, grants, self.env.clock.now())
+    }
+
+    /// Admits `actor` and runs `change` with the grants it may use, in one hold of the lock: a pause or a narrowing
+    /// cannot land between the check and the change.
+    fn with_admitted<T>(
+        &self,
+        actor: &Actor,
+        grants: &Grants,
+        change: impl FnOnce(&mut State, &Grants) -> Result<T, OpError>,
+    ) -> Result<T, OpError> {
+        self.with_state(|state| {
+            let granted = state.sessions.admit(actor, grants, self.env.clock.now())?;
+            change(state, &granted)
+        })
     }
 
     /// Runs `change` under the lock, then publishes whatever events it queued.
@@ -319,7 +335,7 @@ impl Runner for Executor {
                 return self.jobs.outcome(info.id);
             }
         }
-        self.with_state(|state| self.run_locked(state, &*op, &req))
+        self.with_state(|state| self.run_locked(state, &*op, req))
     }
 
     fn begin(&self, label: &str, actor: &Actor) -> TxId {
@@ -332,23 +348,19 @@ impl Runner for Executor {
     }
 
     fn commit(&self, tx: TxId, actor: &Actor) -> Result<(), OpError> {
-        self.admit(actor, &Grants::default())?;
-        self.with_state(|state| state.commit(tx, actor))
+        self.with_admitted(actor, &Grants::default(), |state, _| state.commit(tx, actor))
     }
 
     fn rollback(&self, tx: TxId, actor: &Actor) -> Result<(), OpError> {
-        self.admit(actor, &Grants::default())?;
-        self.with_state(|state| state.rollback(tx, actor))
+        self.with_admitted(actor, &Grants::default(), |state, _| state.rollback(tx, actor))
     }
 
     fn undo(&self, actor: &Actor, grants: &Grants) -> Result<Option<String>, OpError> {
-        let grants = self.admit(actor, grants)?;
-        self.with_state(|state| state.undo(actor, &grants))
+        self.with_admitted(actor, grants, |state, granted| state.undo(actor, granted))
     }
 
     fn redo(&self, actor: &Actor, grants: &Grants) -> Result<Option<String>, OpError> {
-        let grants = self.admit(actor, grants)?;
-        self.with_state(|state| state.redo(actor, &grants))
+        self.with_admitted(actor, grants, |state, granted| state.redo(actor, granted))
     }
 
     fn subscribe(&self, grants: &Grants) -> Result<Receiver<Event>, OpError> {

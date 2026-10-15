@@ -1,7 +1,10 @@
 //! Agent sessions: the registry, the principal, effective grants, pause and resume (design `agent-sessions.md` §3, §4.3, §6).
 //! The rig has already opened the sessions behind `agent()` (`claude#1`) and `second_agent()` (`claude#2`), for alice.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use omuzaki_core::time::{FakeClock, Seconds};
 use omuzaki_doc_mock::MemDoc;
@@ -322,4 +325,127 @@ fn what_the_executor_does_not_do_yet_is_unsupported() {
     assert_eq!(rig.exec.undo_session(SessionId(1), &person()).unwrap_err().code, ErrorCode::Unsupported);
     assert_eq!(rig.exec.charge(SessionId(1), Spend::default()).unwrap_err().code, ErrorCode::Unsupported);
     assert_eq!(rig.exec.approvals().len(), 0);
+}
+
+// ---- the check and the change are one hold of the lock ------------------------------------------------------------
+
+/// A principal source that narrows its person to `read` after `full` more questions.
+struct Narrowing(AtomicUsize);
+
+impl Principals for Narrowing {
+    fn grants(&self, _: &Actor) -> Grants {
+        let left = self.0.load(Ordering::SeqCst);
+        if left == 0 {
+            return Grants::of([Scope::Read]);
+        }
+        self.0.store(left - 1, Ordering::SeqCst);
+        Grants::person()
+    }
+}
+
+#[test]
+fn grants_are_recomputed_under_the_lock_that_applies_the_edit() {
+    let narrowing = Arc::new(Narrowing(AtomicUsize::new(usize::MAX)));
+    let clock = Arc::new(FakeClock::new(Seconds(0.0)));
+    let exec =
+        Executor::new(Box::new(MemDoc::from_value(json!({}))), clock).unwrap().with_principals(narrowing.clone());
+    let agent = exec.open(session_spec("claude")).unwrap().actor;
+
+    // The first question is the early look in `run`; the person loses the edit right before the second, which is the
+    // one made under the lock that plans and applies.
+    narrowing.0.store(1, Ordering::SeqCst);
+    let req = Request { actor: agent, ..agent_request("test.set", json!({"path": "a", "value": 1})) };
+    let e = exec.run(req).unwrap_err();
+    assert_eq!(e.code, ErrorCode::Denied, "{e}");
+    assert_eq!(exec.get(&super::path("a"), &Grants::person()).unwrap(), None);
+    assert!(exec.log(0, 10, &Grants::person()).unwrap().is_empty());
+}
+
+/// A principal source whose next question waits for the test: the thread asking holds the executor's lock meanwhile.
+#[derive(Default)]
+struct Pinned(Mutex<Option<(Sender<()>, Receiver<()>)>>);
+
+impl Pinned {
+    /// Arms the pin: the next question announces itself on the first channel and waits for the second.
+    fn arm(&self) -> (Receiver<()>, Sender<()>) {
+        let (entered, entered_rx) = channel();
+        let (release, release_rx) = channel();
+        *self.0.lock().unwrap() = Some((entered, release_rx));
+        (entered_rx, release)
+    }
+}
+
+impl Principals for Pinned {
+    fn grants(&self, _: &Actor) -> Grants {
+        let pinned = self.0.lock().unwrap().take();
+        if let Some((entered, release)) = pinned {
+            entered.send(()).unwrap();
+            release.recv().unwrap();
+        }
+        Grants::person()
+    }
+}
+
+/// Runs `control` for an agent while another thread pauses its session. The pause must land either before the control
+/// is admitted (refused) or after it ran: never between the check and the change. The control is held in its check
+/// until the pause is waiting for the lock, so a split check lets the pause through first.
+fn pause_during(
+    control: fn(&Executor, &Actor, omuzaki_ops_api::TxId) -> Result<(), omuzaki_ops_api::OpError>,
+    kind: &str,
+) {
+    let pinned = Arc::new(Pinned::default());
+    let clock = Arc::new(FakeClock::new(Seconds(0.0)));
+    let exec = Arc::new(
+        Executor::new(Box::new(MemDoc::from_value(json!({}))), clock).unwrap().with_principals(pinned.clone()),
+    );
+    let info = exec.open(session_spec("claude")).unwrap();
+    let tx = exec.begin("work", &info.actor);
+    let req = Request {
+        tx: Some(tx),
+        actor: info.actor.clone(),
+        ..agent_request("test.set", json!({"path": "a", "value": 1}))
+    };
+    exec.run(req).unwrap();
+    if kind == "undo" {
+        exec.commit(tx, &info.actor).unwrap();
+    }
+    let events = exec.subscribe(&Grants::person()).unwrap();
+
+    let (entered, release) = pinned.arm();
+    let (control_exec, actor) = (exec.clone(), info.actor.clone());
+    let controlling = std::thread::spawn(move || control(&control_exec, &actor, tx));
+    entered.recv().unwrap();
+    let (pause_exec, id) = (exec.clone(), info.id);
+    let pausing = std::thread::spawn(move || pause_exec.pause(id, &person()));
+    std::thread::sleep(Duration::from_millis(50));
+    release.send(()).unwrap();
+    controlling.join().unwrap().unwrap_or_else(|e| panic!("{kind} was refused: {e}"));
+    pausing.join().unwrap().unwrap();
+
+    let order: Vec<&str> = drain(&events)
+        .iter()
+        .filter_map(|e| match e {
+            Event::TxCommitted { .. } => Some("committed"),
+            Event::TxRolledBack { .. } => Some("rolled back"),
+            Event::Undone { .. } => Some("undone"),
+            Event::SessionChanged { .. } => Some("paused"),
+            _ => None,
+        })
+        .collect();
+    let did = match kind {
+        "commit" => "committed",
+        "rollback" => "rolled back",
+        _ => "undone",
+    };
+    assert_eq!(order, [did, "paused"], "{kind}: the pause landed in the middle of the control");
+}
+
+#[test]
+fn a_pause_never_lands_between_the_check_and_the_change_of_a_transaction_control() {
+    // The window is a race on the lock, so each shape runs several times.
+    for _ in 0..20 {
+        pause_during(|exec, actor, tx| exec.commit(tx, actor), "commit");
+        pause_during(|exec, actor, tx| exec.rollback(tx, actor), "rollback");
+        pause_during(|exec, actor, _| exec.undo(actor, &Grants::agent_default()).map(drop), "undo");
+    }
 }

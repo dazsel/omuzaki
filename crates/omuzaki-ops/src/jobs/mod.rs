@@ -166,6 +166,14 @@ impl Manager {
         awaited: bool,
     ) -> Result<JobInfo, OpError> {
         let meta = op.meta();
+        // Whose job this is, and whether that session may still start one. The lock order (manager, then document) is
+        // the one `announce` takes.
+        let owner = {
+            let state = lock(&self.env.state);
+            state.sessions.check_active(&req.actor)?;
+            state.sessions.session_ref(&req.actor)
+        };
+        let (session, on_behalf_of) = owner.map_or((None, None), |(id, person)| (Some(id), Some(person)));
         let lane = lanes::lane_of(&meta, plan.cost.as_ref());
         let reserved = reserve_micros(plan.cost.as_ref());
         let info = {
@@ -206,8 +214,8 @@ impl Manager {
                     op: meta.name.to_owned(),
                     label: meta.name.to_owned(),
                     actor: req.actor.clone(),
-                    on_behalf_of: None,
-                    session: None,
+                    on_behalf_of,
+                    session,
                     cause: req.cause.clone(),
                     lane,
                     state: JobState::Queued,
@@ -263,6 +271,17 @@ impl Manager {
     fn dispatch(self: &Arc<Self>, inner: &mut Inner) {
         while let Some((lane, id)) = inner.lanes.next_ready() {
             let now = self.now();
+            // A session paused while its job waited for a lane: the job never starts, so `work` has no effect.
+            let refused =
+                inner.jobs.get(&id).and_then(|job| lock(&self.env.state).sessions.check_active(&job.info.actor).err());
+            if let Some(error) = refused {
+                if let Some(job) = inner.jobs.get_mut(&id) {
+                    // The lane slot `next_ready` handed out is given back by `fail_start`, as for a failed spawn.
+                    job.phase = Phase::Working;
+                }
+                self.fail_start(inner, id, error);
+                continue;
+            }
             let Some(job) = inner.jobs.get_mut(&id) else {
                 inner.lanes.finished(lane);
                 continue;

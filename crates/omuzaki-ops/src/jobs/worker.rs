@@ -56,9 +56,12 @@ fn finish(mgr: &Manager, id: JobId, task: &Task, value: Value) -> Result<Outcome
     if *lock(&mgr.shut) {
         return Err(cancelled(id, CancelReason::Shutdown));
     }
-    require(&task.grants, &task.actor, task.meta.scope, task.meta.name)?;
+    // The session may have been paused or narrowed while `work` ran: what it holds now decides, under the lock that
+    // applies the result. A paused session's job ends failed and changes nothing.
+    let grants = state.sessions.admit(&task.actor, &task.grants, env.clock.now())?;
+    require(&grants, &task.actor, task.meta.scope, task.meta.name)?;
     let plan = {
-        let ctx = env.op_ctx(&state, &task.actor, &task.grants, false);
+        let ctx = env.op_ctx(&state, &task.actor, &grants, false);
         task.op.finish(&ctx, value)?
     };
     // Shutdown may have begun while `finish` ran. The flag stays locked through the apply, so a shutdown either came

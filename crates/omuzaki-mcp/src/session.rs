@@ -46,8 +46,9 @@ pub struct Session {
     serial: u64,
     /// Served over HTTP, where a request that stands alone gets a fresh handler (see [`Session::for_http`]).
     http: bool,
-    /// Fixed at the first call, so a transaction always belongs to one actor identity.
-    actor: OnceLock<Actor>,
+    /// Fixed at the first call, so a transaction always belongs to one actor identity. If the host's registry would not
+    /// open a session, the refusal is kept instead and answers every call: a connection without a session runs nothing.
+    actor: OnceLock<Result<Actor, OpError>>,
     state: Mutex<State>,
 }
 
@@ -117,33 +118,33 @@ impl Session {
         }
     }
 
-    fn actor(&self, context: &RequestContext<RoleServer>) -> &Actor {
-        self.actor.get_or_init(|| {
-            let client = context.client_info().map_or_else(|| "mcp-client".to_owned(), |info| info.name);
-            let named = Actor::Agent { id: format!("{client}#{}", self.serial), model: None };
-            let Some(host) = &self.shared.sessions else { return named };
-            // The registry names the agent. If it will not open a session the agent keeps the name it would have had,
-            // and an executor refuses it, so a failure here never widens anything.
-            let spec = SessionSpec {
-                transport: if self.http { Transport::Http { token: "mcp".to_owned() } } else { Transport::Stdio },
-                client,
-                model: None,
-                on_behalf_of: host.person.clone(),
-                grants: self.view.grants.clone(),
-                budget: Budget::default(),
-                limits: Limits::default(),
-                parent: None,
-                role: None,
-                fence: Vec::new(),
-            };
-            host.sessions.open(spec).map_or_else(
-                |e| {
-                    tracing::warn!(error = %e, "couldn't open a session for a connection");
-                    named
-                },
-                |info| info.actor,
-            )
-        })
+    fn actor(&self, context: &RequestContext<RoleServer>) -> Result<&Actor, &OpError> {
+        self.actor
+            .get_or_init(|| {
+                let client = context.client_info().map_or_else(|| "mcp-client".to_owned(), |info| info.name);
+                let Some(host) = &self.shared.sessions else {
+                    return Ok(Actor::Agent { id: format!("{client}#{}", self.serial), model: None });
+                };
+                // The registry names the agent. No other name will do: one made here could equal a registered
+                // session's actor and borrow its grants.
+                let spec = SessionSpec {
+                    transport: if self.http { Transport::Http { token: "mcp".to_owned() } } else { Transport::Stdio },
+                    client,
+                    model: None,
+                    on_behalf_of: host.person.clone(),
+                    grants: self.view.grants.clone(),
+                    budget: Budget::default(),
+                    limits: Limits::default(),
+                    parent: None,
+                    role: None,
+                    fence: Vec::new(),
+                };
+                host.sessions
+                    .open(spec)
+                    .map(|info| info.actor)
+                    .inspect_err(|e| tracing::warn!(error = %e, "couldn't open a session for a connection"))
+            })
+            .as_ref()
     }
 
     /// The op log and its notifications carry document values (patches, arguments), so reading or being notified of
@@ -225,7 +226,14 @@ impl Session {
         let Some(entry) = self.view.catalog.get(name) else {
             return render::unknown_tool(name, &self.view.catalog.similar(name)).into();
         };
-        let actor = self.actor(context).clone();
+        let actor = match self.actor(context) {
+            Ok(actor) => actor.clone(),
+            Err(refusal) => {
+                let tool = entry.tool.name.as_ref();
+                return render::failure(tool, &in_tool_names(refusal.clone(), &entry.op, tool), Some(&entry.signature))
+                    .into();
+            }
+        };
         let mut args = request.arguments.unwrap_or_default();
         let outcome = match entry.route {
             Route::Op { kind, unit_args } => match take_dry_run(&mut args)
@@ -390,7 +398,7 @@ impl Drop for Session {
         self.shared.connections.close(self.serial);
         let open = lock(&self.state).tx.take();
         // A transaction can only exist once the actor is fixed, by the same call that opened it.
-        if let (Some(open), Some(actor)) = (open, self.actor.get())
+        if let (Some(open), Some(Ok(actor))) = (open, self.actor.get())
             && let Err(e) = self.shared.runner.rollback(open.id, actor)
         {
             tracing::warn!(tx = open.id.0, label = %open.label, error = %e, "couldn't roll back an abandoned tx");
@@ -577,7 +585,8 @@ impl ServerHandler for Session {
         let log_text = reads_log && result.is_error != Some(true);
         // After the call, so a change another actor made while it ran is included, and so this call's own events
         // (which carry this session's actor) are passed over.
-        let report = if log_text { None } else { self.others_changed(self.actor(&context)) };
+        let report =
+            if log_text { None } else { self.actor(&context).ok().and_then(|actor| self.others_changed(actor)) };
         let result = match report {
             Some(report) => render::with_heads_up(result, &report),
             None => result,
