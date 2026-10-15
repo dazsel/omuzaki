@@ -2,7 +2,7 @@
 //! `omuzaki-face-api` (what the face does) and `omuzaki-render-api` (where the pixels go).
 //!
 //! This is an implementation crate: it depends on API crates only (`crates/README.md`), and leaves parity and golden
-//! tests against the JavaScript prototype to `crates/omuzaki-test/tests/` (an impl crate may not depend on `omuzaki-test`).
+//! tests against the JavaScript prototype to `crates/omuzaki-test-face/tests/` (an impl crate may not depend on `omuzaki-test`).
 //!
 //! # The frame
 //!

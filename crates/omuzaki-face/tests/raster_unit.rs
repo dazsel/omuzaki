@@ -3,7 +3,7 @@
 //! to a quarter row, hairlines), reuse of the output and scratch buffers, determinism (ADR 0009), a fuzz for panics, and the
 //! speed and allocation budget of the neutral face.
 //!
-//! Parity with Chrome's canvas is `crates/omuzaki-test/tests/raster_probes.rs`: an impl crate may not depend on `omuzaki-test`,
+//! Parity with Chrome's canvas is `crates/omuzaki-test-face/tests/raster_probes.rs`: an impl crate may not depend on `omuzaki-test`,
 //! so everything here is an assertion of its own.
 //!
 //! Where the mock counts pixels whose centre is covered, an anti-aliased raster has partial pixels, so "area" here is the
