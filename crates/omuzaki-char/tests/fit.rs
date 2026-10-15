@@ -8,6 +8,7 @@ use std::time::Instant;
 
 use omuzaki_char::fit::solver::{FitInput, FitResult, MAX_EVALUATIONS, PARAM_ORDER, Param, fit, fit_ordered, iou_of};
 use omuzaki_char::fit::{FitError, FitParams, FitView, MAX_SIDE, Silhouette, Target, render_target};
+use omuzaki_char_api::{BuildOptions, BuildServices, CharId, CharacterBuilder, CharacterDef, RegistryBuilder};
 use omuzaki_core::glam::Vec3;
 use omuzaki_core::mesh::MeshData;
 use omuzaki_core::rng::Rng;
@@ -77,7 +78,7 @@ fn recovery_templates() -> &'static [&'static str] {
 
 /// Recovery of a seeded random character from its three silhouettes.
 ///
-/// What the silhouette identifies is asserted, nothing else: `IoU`, the widths, arm length, foot size, and the share of
+/// What the silhouette identifies is asserted, nothing else: `IoU`, the widths, arm length, foot size, curves, and the share of
 /// the leg against the torso. Sole and crown are aligned, so `leg_length`, `torso_length` and the `height` axis trade
 /// off (the combination is what shows); `neck_length` is inside the torso loft and `hand_size` has no mesh yet
 /// (`hands::build` is a stub), so neither is visible and neither is asserted.
@@ -98,7 +99,7 @@ fn recovers_a_random_character_on_each_template() {
             assert_eq!(v.view, want);
             assert!(v.iou_after >= v.iou_before, "{template} {:?}", v.view);
         }
-        for p in [Param::ShoulderWidth, Param::HipWidth, Param::ArmLength, Param::FootSize] {
+        for p in [Param::ShoulderWidth, Param::HipWidth, Param::ArmLength, Param::FootSize, Param::Curves] {
             let (lo, hi) = p.range();
             let err = (p.get(&r.params) - p.get(&truth)).abs() / (hi - lo);
             assert!(err < 0.03, "{template}: {p:?} off by {err}");
@@ -206,4 +207,58 @@ fn bad_masks_and_inputs_fail_closed() {
     let mut ragged = block(Vec3::ZERO, Vec3::ONE);
     ragged.indices.pop();
     assert!(matches!(input("soft-sd", &t, &[ragged]), Err(FitError::BadMesh(_))));
+}
+
+// ------------------------------------------------------------------------------------------------ real parts
+
+/// The meshes the registry builder makes of a body-only character of `template`: in metres, as every real part is.
+fn built_body(template: &str) -> Vec<MeshData> {
+    let node = serde_json::json!({
+        "name": "Fit test",
+        "template": template,
+        "seed": 3,
+        "palette": { "skin": "#f9d3c5", "skin_shade": "#f2b4ab", "skin_line": "#c98a80" },
+        "parts": { "body": { "kind": "body", "params": {} } }
+    });
+    let def = CharacterDef::from_node(&node).unwrap();
+    let built = RegistryBuilder
+        .build(&CharId::new("t").unwrap(), &def, &BuildOptions::default(), &BuildServices::default())
+        .unwrap();
+    built.meshes.into_iter().map(|m| m.mesh.geometry).collect()
+}
+
+fn overlap(a: &Silhouette, b: &Silhouette) -> f64 {
+    assert_eq!((a.width(), a.height()), (b.width(), b.height()));
+    let both = a.pixels().iter().zip(b.pixels()).filter(|(x, y)| **x && **y).count();
+    let either = a.pixels().iter().zip(b.pixels()).filter(|(x, y)| **x || **y).count();
+    both as f64 / either as f64
+}
+
+/// The build scales the body to the character's stature before the parts that sit on it are built, so a real fixed
+/// part is in metres. The candidate body must be too: drawing the built body over a candidate of the same parameters
+/// must add nothing to the silhouette, on a template whose authored size differs from its stature (`standard`, `tall`).
+#[test]
+fn the_candidate_body_is_in_the_metres_of_the_built_parts() {
+    for template in TEMPLATES {
+        let built = built_body(template);
+        for view in VIEWS {
+            let alone = render_target(template, &FitParams::default(), &[], view, SMALL).unwrap();
+            let over = render_target(template, &FitParams::default(), &built, view, SMALL).unwrap();
+            let same = overlap(&alone, &over);
+            assert!(same >= 0.99, "{template} {view:?}: the built body and the candidate overlap by {same}");
+        }
+    }
+}
+
+#[test]
+fn rendering_a_target_checks_its_size_before_it_allocates() {
+    let render =
+        |height, fixed: &[MeshData]| render_target("mini", &FitParams::default(), fixed, FitView::Front, height);
+    for height in [0, 8, MAX_SIDE + 1, usize::MAX] {
+        assert!(matches!(render(height, &[]), Err(FitError::BadMask(_))), "{height}");
+    }
+    // A part a thousand times wider than the figure makes the width overflow the limit, not the height.
+    let wide = block(Vec3::new(-1.0e6, 0.0, 0.0), Vec3::new(1.0e6, 0.5, 0.1));
+    assert!(matches!(render(HEIGHT, &[wide]), Err(FitError::BadMask(_))));
+    assert!(render(MAX_SIDE, &[]).is_ok());
 }

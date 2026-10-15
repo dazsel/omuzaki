@@ -1,7 +1,9 @@
 //! The silhouette fit solver: deterministic coordinate descent with a golden-section line search per parameter.
 //!
-//! Each parameter in turn is searched over a bracket for the value that lowers the cost; the first sweep brackets the
-//! whole range, later ones a window round the current value that narrows each time. The result depends only on the
+//! Each parameter in turn is searched over a bracket for the value that lowers the cost. A sweep goes through every
+//! parameter once; its brackets are a window round the current value, [`WINDOW`] of the parameter's range wide in the
+//! first sweep and [`SHRINK`] times the last one's after each sweep that gained. A sweep that gains nothing is run once
+//! more at the wide window. A last move along the sweep's net displacement follows each sweep. The result depends only on the
 //! inputs and [`PARAM_ORDER`]: no threads, no randomness, and ties keep the earlier value, so a parameter the views
 //! cannot see stays at its default.
 //!
@@ -9,7 +11,7 @@
 //! crown are aligned, so `leg_length`, `torso_length` and the `height` axis trade off: the share of the leg against
 //! the torso is identified, each one alone is not. `neck_length` is not visible (the neck lies inside the torso loft)
 //! and `hand_size` is not either until `hands::build` makes a mesh; both stay at their defaults. The search stops at
-//! [`MAX_EVALUATIONS`], at a sweep that gains under [`MIN_GAIN`] twice running, or when the budget is spent.
+//! [`MAX_EVALUATIONS`] or after two sweeps in a row that each gain under [`MIN_GAIN`] mean `IoU`.
 
 use omuzaki_core::mesh::MeshData;
 
@@ -17,15 +19,16 @@ use super::{FitError, FitParams, FitView, Objective, Score, Target};
 
 /// The most evaluations (builds and scores of a candidate) one fit makes.
 pub const MAX_EVALUATIONS: usize = 600;
-/// A sweep that gains less mean `IoU` than this ends the fit.
+/// A sweep that gains less mean `IoU` than this has stalled; two stalled sweeps in a row end the fit.
 pub const MIN_GAIN: f64 = 1e-4;
 /// Golden-section steps after the first two probes of a line search.
 const STEPS: usize = 3;
-/// Width of the window of the second sweep, as a fraction of a parameter's range; later sweeps halve it.
+/// Width of the first sweep's window (and of the restart after a stalled sweep), as a fraction of a parameter's range.
 const WINDOW: f64 = 0.5;
-/// How much narrower each sweep's window is than the last.
+/// How much narrower each sweep's window is than the last, while the sweeps keep gaining.
 const SHRINK: f64 = 0.85;
-/// Two costs closer than this are the same: a parameter whose probes cost the same is not visible in the views.
+/// Two costs closer than this are the same. A parameter is not visible only if the interior probes and both ends of
+/// its bracket cost the same.
 const FLAT: f64 = 1e-12;
 /// How far past its end a sweep's net displacement is searched, in displacements.
 const PATTERN_REACH: f64 = 3.0;
@@ -34,20 +37,32 @@ const INV_PHI: f64 = 0.618_033_988_749_894_9;
 
 /// A parameter the fit moves: the 8 proportions, then the 5 body-shape axes.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-#[allow(missing_docs)] // each variant is the field of `Proportions` or `BodyShape` it names
 pub enum Param {
+    /// `Proportions::neck_length`.
     NeckLength,
+    /// `Proportions::torso_length`.
     TorsoLength,
+    /// `Proportions::shoulder_width`.
     ShoulderWidth,
+    /// `Proportions::hip_width`.
     HipWidth,
+    /// `Proportions::arm_length`.
     ArmLength,
+    /// `Proportions::leg_length`.
     LegLength,
+    /// `Proportions::hand_size` (no mesh yet, so not visible).
     HandSize,
+    /// `Proportions::foot_size`.
     FootSize,
+    /// `BodyShape::height`.
     Height,
+    /// `BodyShape::build`.
     Build,
+    /// `BodyShape::curves`.
     Curves,
+    /// `BodyShape::musculature`.
     Musculature,
+    /// `BodyShape::shoulder_hip`.
     ShoulderHip,
 }
 
@@ -257,27 +272,74 @@ impl Search<'_> {
     }
 
     /// Golden-section search of `at(t)` for `t` in `(a, b)`; `false` when the budget ran out.
-    fn line(&mut self, at: &dyn Fn(f64) -> FitParams, (mut a, mut b): (f64, f64)) -> Result<bool, FitError> {
-        let (mut c, mut d) = (b - INV_PHI * (b - a), a + INV_PHI * (b - a));
-        let Some(mut fc) = self.probe(at(c))? else { return Ok(false) };
-        let Some(mut fd) = self.probe(at(d))? else { return Ok(false) };
-        if (fc - fd).abs() < FLAT {
-            return Ok(true); // the views cannot tell the two apart: the parameter is not visible in them
+    fn line(&mut self, at: &dyn Fn(f64) -> FitParams, bracket: (f64, f64)) -> Result<bool, FitError> {
+        golden(bracket, &mut |t| self.probe(at(t)))
+    }
+}
+
+/// Golden-section search over `(a, b)` of `cost`, which gives `None` once the budget is spent (then this is `false`).
+/// Two interior probes that cost the same prove nothing at low resolution, where distinct values can rasterise alike:
+/// the ends of the bracket are probed too, and the parameter is called flat only if all four agree.
+fn golden(
+    (mut a, mut b): (f64, f64),
+    cost: &mut dyn FnMut(f64) -> Result<Option<f64>, FitError>,
+) -> Result<bool, FitError> {
+    let (mut c, mut d) = (b - INV_PHI * (b - a), a + INV_PHI * (b - a));
+    let Some(mut fc) = cost(c)? else { return Ok(false) };
+    let Some(mut fd) = cost(d)? else { return Ok(false) };
+    if (fc - fd).abs() < FLAT {
+        let Some(fa) = cost(a)? else { return Ok(false) };
+        let Some(fb) = cost(b)? else { return Ok(false) };
+        if (fa - fc).abs() < FLAT && (fb - fc).abs() < FLAT {
+            return Ok(true);
         }
-        for _ in 0..STEPS {
-            let probed = if fc < fd {
-                (b, d, fd) = (d, c, fc);
-                c = b - INV_PHI * (b - a);
-                self.probe(at(c))?.map(|f| fc = f)
-            } else {
-                (a, c, fc) = (c, d, fd);
-                d = a + INV_PHI * (b - a);
-                self.probe(at(d))?.map(|f| fd = f)
-            };
-            if probed.is_none() {
-                return Ok(false);
-            }
+    }
+    for _ in 0..STEPS {
+        let probed = if fc < fd {
+            (b, d, fd) = (d, c, fc);
+            c = b - INV_PHI * (b - a);
+            cost(c)?.map(|f| fc = f)
+        } else {
+            (a, c, fc) = (c, d, fd);
+            d = a + INV_PHI * (b - a);
+            cost(d)?.map(|f| fd = f)
+        };
+        if probed.is_none() {
+            return Ok(false);
         }
-        Ok(true)
+    }
+    Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A staircase: the interior probes at 0.382 and 0.618 of `(0, 1)` tie, the end at 1 is lower. A pixel grid does
+    /// this to a visible parameter.
+    fn stairs(t: f64) -> f64 {
+        if t > 0.9 { 0.0 } else { 1.0 }
+    }
+
+    #[test]
+    fn tied_interior_probes_do_not_make_a_parameter_flat() {
+        let mut probes = Vec::new();
+        let ok = golden((0.0, 1.0), &mut |t| {
+            probes.push(t);
+            Ok(Some(stairs(t)))
+        });
+        assert_eq!(ok, Ok(true));
+        assert!(probes.len() > 4, "the search stopped after {probes:?}");
+        assert!(probes.contains(&1.0), "the end of the bracket was not probed");
+    }
+
+    #[test]
+    fn a_constant_cost_is_flat_after_four_probes() {
+        let mut probes = 0;
+        let ok = golden((0.0, 1.0), &mut |_| {
+            probes += 1;
+            Ok(Some(0.5))
+        });
+        assert_eq!((ok, probes), (Ok(true), 4));
     }
 }

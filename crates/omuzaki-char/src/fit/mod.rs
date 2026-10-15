@@ -410,6 +410,9 @@ fn body_geometry(template: &dyn Template, params: &FitParams) -> Result<Vec<Mesh
         let (grid, centres) = mesh::ring_grid(&rings, start, end, detail.around)?;
         out.push(mesh::surface(&grid, &centres)?);
     }
+    // The build scales the body to the character's stature before it builds anything else, so the parts that stay
+    // fixed are in metres: the candidate body goes to metres too, or the two would not fit together.
+    let scale = template.stature(&layout).map_or(1.0, |s| s.scale);
     let material = MaterialName::new("body-skin").map_err(|e| FitError::Build(e.to_string()))?;
     let body = BodyParams {
         proportions: params.proportions.clone(),
@@ -418,6 +421,9 @@ fn body_geometry(template: &dyn Template, params: &FitParams) -> Result<Vec<Mesh
         ..BodyParams::default()
     };
     out.extend(hands::build(&body, &layout, &material)?.into_iter().map(|m| m.geometry));
+    for m in &mut out {
+        m.positions.iter_mut().for_each(|p| *p *= scale);
+    }
     Ok(out)
 }
 
@@ -425,7 +431,9 @@ fn body_geometry(template: &dyn Template, params: &FitParams) -> Result<Vec<Mesh
 /// with a 4 px margin. For tests and tools that need a target of a known truth.
 ///
 /// # Errors
-/// [`FitError`] if the template is unknown, the body cannot be built or a mesh is bad.
+/// [`FitError::BadMask`] if `height` is not in `9..=`[`MAX_SIDE`] or the figure is wider than [`MAX_SIDE`] pixels,
+/// before anything is allocated; otherwise [`FitError`] if the template is unknown, the body cannot be built or a mesh
+/// is bad.
 pub fn render_target(
     template: &str,
     params: &FitParams,
@@ -434,6 +442,9 @@ pub fn render_target(
     height: usize,
 ) -> Result<Silhouette, FitError> {
     const MARGIN: f32 = 4.0;
+    if height <= 2 * MARGIN as usize || height > MAX_SIDE {
+        return Err(FitError::BadMask(format!("{height} rows is outside {}..={MAX_SIDE}", 2 * MARGIN as usize + 1)));
+    }
     let template = registry::find(template).ok_or_else(|| FitError::UnknownTemplate(template.to_owned()))?;
     let mut tris = Vec::new();
     for m in body_geometry(template, params)?.iter().chain(fixed) {
@@ -441,7 +452,11 @@ pub fn render_target(
     }
     let b = bounds(&tris).ok_or_else(|| FitError::BadMesh("nothing to draw".to_owned()))?;
     let s = (height as f32 - 2.0 * MARGIN) / (b[3] - b[2]).max(f32::EPSILON);
-    let width = ((b[1] - b[0]) * s + 2.0 * MARGIN).ceil() as usize;
+    let wide = ((b[1] - b[0]) * s + 2.0 * MARGIN).ceil();
+    if !(wide >= 1.0 && wide <= MAX_SIDE as f32) {
+        return Err(FitError::BadMask(format!("the figure is {wide} px wide, over {MAX_SIDE}")));
+    }
+    let width = wide as usize;
     let map = Map { s, u0: b[0] - MARGIN / s, v0: b[3] + MARGIN / s };
     Silhouette::new(width, height, raster(&[&tris], &map, width, height))
 }
