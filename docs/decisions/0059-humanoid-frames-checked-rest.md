@@ -1,3 +1,9 @@
+---
+title: "0059: `HumanoidFrames` checks the length of `rest_local`, a breaking `omuzaki-anim-api` change (2026-10-15)"
+summary: "`HumanoidFrames` checks the length of `rest_local`, a breaking `omuzaki-anim-api` change"
+area: decisions
+---
+
 # 0059: `HumanoidFrames` checks the length of `rest_local`, a breaking `omuzaki-anim-api` change (2026-10-15)
 
 **Status:** proposed (PR #1625); accepted by the Director when merged. **Context:** #1118, #861 (`HumanoidFrames`);
