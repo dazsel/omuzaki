@@ -239,7 +239,16 @@ fn the_kind_is_registered_project_owned_and_builds_a_rigged_body_on_every_templa
             "{}: the body reaches {top} m, the neck base is at {authored} m",
             t.id()
         );
-        assert!(built.report.triangles() <= 6000, "{}: {}", t.id(), built.report.triangles());
+        // Two budgets: the body's own (§10, 6 000, the meshes that are not hands) and the whole character's, which adds
+        // the two hands' 1.2k each (#157).
+        let body_triangles: usize = built
+            .meshes
+            .iter()
+            .filter(|m| !m.mesh.name.starts_with("hand-"))
+            .map(|m| m.mesh.geometry.triangle_count())
+            .sum();
+        assert!(body_triangles <= 6000, "{}: the body is {body_triangles} triangles", t.id());
+        assert!(built.report.triangles() <= 6000 + 2 * 1200, "{}: {}", t.id(), built.report.triangles());
     }
 }
 
