@@ -165,9 +165,7 @@ impl TurnStream {
             return Ok(Next::End);
         }
         if self.cancel.is_cancelled() {
-            self.done = true;
-            // Dropping the source is what stops the provider's work; do not wait for the stream itself to drop.
-            self.source = None;
+            self.finish();
             return Err(LlmError::Cancelled);
         }
         let Some(source) = self.source.as_mut() else {
@@ -179,22 +177,29 @@ impl TurnStream {
                     // Reports are cumulative, so a smaller one is a glitch; keep the largest of each counter so what is
                     // charged never drops.
                     LlmEvent::Usage(u) => self.usage = Some(self.usage.map_or(*u, |old| keep_largest(old, *u))),
-                    LlmEvent::Stop(_) => self.done = true,
+                    LlmEvent::Stop(_) => self.finish(),
                     _ => {}
                 }
                 // A source that sends `Stop` ends the stream after it; the caller sees `End` next.
                 Ok(Next::Event(event))
             }
             Ok(Next::End) => {
-                self.done = true;
+                self.finish();
                 Ok(Next::End)
             }
             Ok(Next::Wait) => Ok(Next::Wait),
             Err(e) => {
-                self.done = true;
+                self.finish();
                 Err(e)
             }
         }
+    }
+
+    /// The one place a stream ends. Dropping the source is what stops the provider's task or connection, so it
+    /// happens here and not when the stream itself is dropped; `usage` stays readable.
+    fn finish(&mut self) {
+        self.done = true;
+        self.source = None;
     }
 
     /// The usage seen so far: the largest report of each counter. A provider bills it even when the turn then fails, so the caller charges it.
@@ -224,7 +229,7 @@ impl TurnStream {
         };
         // Whatever collect fails on ends the stream, as an error from the source does.
         if result.is_err() {
-            self.done = true;
+            self.finish();
         }
         result
     }
@@ -339,32 +344,83 @@ mod tests {
         Value::Object(serde_json::Map::new())
     }
 
-    /// A source that sets a flag when dropped.
-    struct Watched(std::sync::Arc<std::sync::atomic::AtomicBool>);
+    type Flag = std::sync::Arc<std::sync::atomic::AtomicBool>;
+
+    /// A source that plays a list, then waits forever, and sets a flag when dropped.
+    struct Watched(std::collections::VecDeque<Result<Next, LlmError>>, Flag);
 
     impl EventSource for Watched {
         fn poll(&mut self, _wait: Duration) -> Result<Next, LlmError> {
-            Ok(Next::Wait)
+            self.0.pop_front().unwrap_or(Ok(Next::Wait))
         }
     }
 
     impl Drop for Watched {
         fn drop(&mut self) {
-            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            self.1.store(true, std::sync::atomic::Ordering::SeqCst);
         }
+    }
+
+    fn watched(items: Vec<Result<Next, LlmError>>, cancel: &Cancel) -> (TurnStream, Flag) {
+        let flag = Flag::default();
+        (TurnStream::new(Box::new(Watched(items.into(), flag.clone())), cancel), flag)
+    }
+
+    fn dropped(flag: &Flag) -> bool {
+        flag.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     #[test]
     fn cancelling_drops_the_source_while_the_stream_is_alive() {
-        let dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let cancel = Cancel::new();
-        let mut s = TurnStream::new(Box::new(Watched(dropped.clone())), &cancel);
+        let (mut s, flag) = watched(Vec::new(), &cancel);
         assert!(matches!(s.try_next(), Ok(Next::Wait)));
-        assert!(!dropped.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(!dropped(&flag));
         cancel.cancel();
         assert!(matches!(s.try_next(), Err(LlmError::Cancelled)));
-        assert!(dropped.load(std::sync::atomic::Ordering::SeqCst), "source must drop on the cancelling call");
+        assert!(dropped(&flag), "source must drop on the cancelling call");
         assert!(matches!(s.try_next(), Ok(Next::End)));
+    }
+
+    #[test]
+    fn an_idle_timeout_drops_the_source_and_keeps_the_usage() {
+        let usage = Usage { input: 3, output: 2, cache_read: 0, cache_write: 0 };
+        let (mut s, flag) = watched(vec![event(LlmEvent::Usage(usage))], &Cancel::new());
+        assert!(matches!(s.collect(Duration::ZERO), Err(LlmError::Network(_))));
+        assert!(dropped(&flag));
+        assert_eq!(s.usage_so_far(), Some(usage));
+    }
+
+    #[test]
+    fn a_fold_error_drops_the_source_and_keeps_the_usage() {
+        let usage = Usage { input: 3, output: 2, cache_read: 0, cache_write: 0 };
+        let items = vec![
+            event(LlmEvent::Usage(usage)),
+            event(LlmEvent::Stop(StopReason::EndTurn)),
+            event(LlmEvent::Stop(StopReason::EndTurn)),
+        ];
+        let (mut s, flag) = watched(items, &Cancel::new());
+        // A second `Stop` is never read: the stream ended at the first, so the fold sees a turn without content and
+        // the source is gone either way.
+        let _ = s.collect(Duration::ZERO);
+        assert!(dropped(&flag));
+        assert_eq!(s.usage_so_far(), Some(usage));
+        let (mut bad, flag) = watched(vec![event(LlmEvent::Stop(StopReason::EndTurn))], &Cancel::new());
+        assert!(matches!(bad.collect(Duration::ZERO), Err(LlmError::Malformed(_))));
+        assert!(dropped(&flag));
+    }
+
+    #[test]
+    fn the_provider_ending_or_failing_drops_the_source() {
+        let (mut s, flag) = watched(vec![Ok(Next::End)], &Cancel::new());
+        assert!(matches!(s.try_next(), Ok(Next::End)));
+        assert!(dropped(&flag));
+        let (mut s, flag) = watched(vec![Err(LlmError::Auth)], &Cancel::new());
+        assert!(s.try_next().is_err());
+        assert!(dropped(&flag));
+        let (mut s, flag) = watched(vec![event(LlmEvent::Stop(StopReason::EndTurn))], &Cancel::new());
+        assert!(matches!(s.try_next(), Ok(Next::Event(_))));
+        assert!(dropped(&flag), "a Stop ends the stream, so the source is released");
     }
 
     #[test]

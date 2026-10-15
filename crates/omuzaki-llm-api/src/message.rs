@@ -4,8 +4,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Everything one turn sends.
+/// Everything one turn sends. Build it with [`TurnRequest::new`] and the `with_*` setters; it grows without breaking callers.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct TurnRequest {
     /// The system prompt, in blocks so a cache breakpoint can sit between them.
     pub system: Vec<SystemBlock>,
@@ -21,6 +22,57 @@ pub struct TurnRequest {
     pub effort: Effort,
     /// What to cache.
     pub cache: CachePlan,
+}
+
+impl TurnRequest {
+    /// A request for `messages` that may produce up to `max_output` tokens, with no system prompt, no tools,
+    /// `ToolChoice::Auto`, `Effort::Default` and no caching.
+    pub fn new(messages: Vec<Message>, max_output: u32) -> Self {
+        Self {
+            system: Vec::new(),
+            messages,
+            tools: Vec::new(),
+            tool_choice: ToolChoice::Auto,
+            max_output,
+            effort: Effort::Default,
+            cache: CachePlan { conversation: false },
+        }
+    }
+
+    /// Sets the system prompt.
+    #[must_use]
+    pub fn with_system(mut self, system: Vec<SystemBlock>) -> Self {
+        self.system = system;
+        self
+    }
+
+    /// Sets the tools the model may call.
+    #[must_use]
+    pub fn with_tools(mut self, tools: Vec<ToolDef>) -> Self {
+        self.tools = tools;
+        self
+    }
+
+    /// Sets which tool the model must or may not call.
+    #[must_use]
+    pub fn with_tool_choice(mut self, tool_choice: ToolChoice) -> Self {
+        self.tool_choice = tool_choice;
+        self
+    }
+
+    /// Sets how hard the model should think.
+    #[must_use]
+    pub fn with_effort(mut self, effort: Effort) -> Self {
+        self.effort = effort;
+        self
+    }
+
+    /// Sets what to cache.
+    #[must_use]
+    pub fn with_cache(mut self, cache: CachePlan) -> Self {
+        self.cache = cache;
+        self
+    }
 }
 
 /// One block of the system prompt.

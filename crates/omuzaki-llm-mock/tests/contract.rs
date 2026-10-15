@@ -8,8 +8,7 @@ use std::time::Duration;
 use omuzaki_llm_api::LlmClient;
 use omuzaki_llm_api::error::LlmError;
 use omuzaki_llm_api::message::{
-    CachePlan, ContentBlock, Effort, ImageMime, ImageOrigin, Message, Role, SystemBlock, ToolChoice, ToolDef,
-    TurnRequest,
+    ContentBlock, ImageMime, ImageOrigin, Message, Role, SystemBlock, ToolDef, TurnRequest,
 };
 use omuzaki_llm_api::stream::{Cancel, LlmEvent, Next, StopReason, Turn};
 use omuzaki_llm_api::usage::{Ledger, MicroUsd, PriceTable, PriceTier, Rates, Usage};
@@ -36,19 +35,11 @@ fn text(role: Role, t: &str) -> Message {
 }
 
 fn request(messages: Vec<Message>) -> TurnRequest {
-    TurnRequest {
-        system: vec![SystemBlock { text: "You help.".into(), cache_after: true }],
-        messages,
-        tools: vec![ToolDef {
-            name: "render_preview".into(),
-            description: "Render".into(),
-            input_schema: "{}".parse().unwrap(),
-        }],
-        tool_choice: ToolChoice::Auto,
-        max_output: 1024,
-        effort: Effort::Default,
-        cache: CachePlan { conversation: false },
-    }
+    let tool =
+        ToolDef { name: "render_preview".into(), description: "Render".into(), input_schema: "{}".parse().unwrap() };
+    TurnRequest::new(messages, 1024)
+        .with_system(vec![SystemBlock { text: "You help.".into(), cache_after: true }])
+        .with_tools(vec![tool])
 }
 
 /// The history of turn 2: the question, the tool call, and its result (29 bytes of text and a 512 x 512 PNG header).
@@ -106,14 +97,14 @@ fn collect_folds_the_worked_example_into_two_turns() {
 }
 
 #[test]
-fn the_ledger_bounds_turn_two_at_1176_micro_dollars() {
+fn the_ledger_bounds_turn_two_at_1177_micro_dollars() {
     let (llm, one, _) = play();
     let mut ledger = Ledger::new();
     let first = llm.requests().remove(0);
     ledger.observe(&first, &one);
     let req = turn_two(&one);
-    assert_eq!(ledger.prompt_estimate(&req, llm.info()), 5309);
-    assert_eq!(ledger.bound(&req, llm.info(), &haiku_prices()), MicroUsd(1176));
+    assert_eq!(ledger.prompt_estimate(&req, llm.info()), 5313);
+    assert_eq!(ledger.bound(&req, llm.info(), &haiku_prices()), MicroUsd(1177));
 }
 
 #[test]

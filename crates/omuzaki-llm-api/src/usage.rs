@@ -149,7 +149,9 @@ fn block_tokens(block: &ContentBlock, info: &ModelInfo) -> u64 {
         ContentBlock::Text(t) => t.len() as u64,
         ContentBlock::Image { mime, bytes, .. } => info.image_cost.tokens(image_size(*mime, bytes)),
         ContentBlock::ToolUse { id, name, input } => (id.len() + name.len() + input.to_string().len()) as u64,
-        ContentBlock::ToolResult { blocks, .. } => blocks.iter().map(|b| block_tokens(b, info)).sum(),
+        ContentBlock::ToolResult { id, blocks, .. } => {
+            id.len() as u64 + blocks.iter().map(|b| block_tokens(b, info)).sum::<u64>()
+        }
         ContentBlock::Opaque { block, .. } => block.to_string().len() as u64,
     };
     body + BLOCK_OVERHEAD
@@ -233,7 +235,7 @@ impl Ledger {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::message::{CachePlan, Effort, Message, Role, SystemBlock, ToolChoice};
+    use crate::message::{Message, Role, SystemBlock};
     use crate::stream::StopReason;
 
     fn flat(rate: u64) -> PriceTable {
@@ -247,15 +249,8 @@ mod tests {
 
     fn request(system: &str, texts: &[&str]) -> TurnRequest {
         let message = |t: &&str| Message { role: Role::User, content: vec![ContentBlock::Text((*t).into())] };
-        TurnRequest {
-            system: vec![SystemBlock { text: system.into(), cache_after: false }],
-            messages: texts.iter().map(message).collect(),
-            tools: Vec::new(),
-            tool_choice: ToolChoice::Auto,
-            max_output: 10,
-            effort: Effort::Default,
-            cache: CachePlan { conversation: false },
-        }
+        TurnRequest::new(texts.iter().map(message).collect(), 10)
+            .with_system(vec![SystemBlock { text: system.into(), cache_after: false }])
     }
 
     fn turn(answer: &str, usage: Usage) -> Turn {
@@ -308,6 +303,17 @@ mod tests {
     }
 
     #[test]
+    fn a_tool_result_counts_the_id_of_the_call_it_answers() {
+        let result = |id: &str| {
+            let block = ContentBlock::ToolResult { id: id.into(), blocks: Vec::new(), is_error: false };
+            TurnRequest::new(vec![Message { role: Role::User, content: vec![block] }], 1)
+        };
+        let short = Ledger::new().prompt_estimate(&result("t"), &model());
+        let long = Ledger::new().prompt_estimate(&result(&"t".repeat(500)), &model());
+        assert_eq!(long - short, 499);
+    }
+
+    #[test]
     fn counters_add_without_overflow() {
         let u = Usage { input: u64::MAX, output: 1, cache_read: 1, cache_write: 1 };
         assert_eq!((u.prompt(), u.tokens()), (u64::MAX, u64::MAX));
@@ -349,15 +355,8 @@ mod tests {
             caching: true,
             image_cost: ImageCost::Flat(1),
         };
-        let request = TurnRequest {
-            system: Vec::new(),
-            messages: vec![Message { role: Role::User, content: vec![ContentBlock::Text("abcd".into())] }],
-            tools: Vec::new(),
-            tool_choice: ToolChoice::Auto,
-            max_output: 0,
-            effort: Effort::Default,
-            cache: CachePlan { conversation: false },
-        };
+        let messages = vec![Message { role: Role::User, content: vec![ContentBlock::Text("abcd".into())] }];
+        let request = TurnRequest::new(messages, 0);
         let prompt = Ledger::new().prompt_estimate(&request, &info);
         assert!(prompt > 0);
         assert_eq!(Ledger::new().bound(&request, &info, &prices), MicroUsd(prompt * 5));

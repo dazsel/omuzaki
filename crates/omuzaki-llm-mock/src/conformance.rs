@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use omuzaki_llm_api::LlmClient;
 use omuzaki_llm_api::error::LlmError;
-use omuzaki_llm_api::message::{CachePlan, ContentBlock, Effort, Message, Role, SystemBlock, ToolChoice, TurnRequest};
+use omuzaki_llm_api::message::{ContentBlock, Message, Role, SystemBlock, TurnRequest};
 use omuzaki_llm_api::stream::{Cancel, LlmEvent, Next, StopReason, Turn};
 use omuzaki_llm_api::usage::Usage;
 
@@ -42,15 +42,8 @@ pub fn run(make: Make<'_>) -> Result<(), String> {
 }
 
 fn request() -> TurnRequest {
-    TurnRequest {
-        system: vec![SystemBlock { text: "You help.".into(), cache_after: false }],
-        messages: vec![Message { role: Role::User, content: vec![ContentBlock::Text("hi".into())] }],
-        tools: Vec::new(),
-        tool_choice: ToolChoice::Auto,
-        max_output: 64,
-        effort: Effort::Default,
-        cache: CachePlan { conversation: false },
-    }
+    let messages = vec![Message { role: Role::User, content: vec![ContentBlock::Text("hi".into())] }];
+    TurnRequest::new(messages, 64).with_system(vec![SystemBlock { text: "You help.".into(), cache_after: false }])
 }
 
 fn usage(input: u64, output: u64) -> LlmEvent {

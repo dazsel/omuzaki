@@ -200,8 +200,8 @@ impl Usage {
     bounds from above; Claude's tokenizer is not published, so this is our assumption, not a documented fact), plus 8
     per block, plus images at `ModelInfo::image_cost` (Anthropic: ⌈w/28⌉ × ⌈h/28⌉, retrieved 2026-10-13 from
     docs.claude.com/en/docs/build-with-claude/vision);
-  - the bound prices the whole prompt at the dearer of `input` and `cache_write` in the tier the prompt falls in, and
-    adds `max_output × output`.
+  - the bound prices the whole prompt at the maximum of the `input`, `cache_read` and `cache_write` rates in the tier
+    the prompt falls in, and adds `max_output × output`.
 
   The host sends only if the bound fits what is left (the session's money cap, and for the eval, the attempt, run,
   night and month). If not, the session pauses with a `Budget` approval (agent-sessions §8.1); nothing is sent.

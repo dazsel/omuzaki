@@ -8,6 +8,12 @@ src/lib.rs: pub use inventory as __inventory;
 src/lib.rs: pub use omuzaki_core::__record_registration;
 src/lib.rs: pub trait LlmClient: Send + Sync {
 src/message.rs: pub struct TurnRequest {
+src/message.rs: pub fn new(messages: Vec<Message>, max_output: u32) -> Self {
+src/message.rs: pub fn with_system(mut self, system: Vec<SystemBlock>) -> Self {
+src/message.rs: pub fn with_tools(mut self, tools: Vec<ToolDef>) -> Self {
+src/message.rs: pub fn with_tool_choice(mut self, tool_choice: ToolChoice) -> Self {
+src/message.rs: pub fn with_effort(mut self, effort: Effort) -> Self {
+src/message.rs: pub fn with_cache(mut self, cache: CachePlan) -> Self {
 src/message.rs: pub struct SystemBlock {
 src/message.rs: pub enum Role {
 src/message.rs: pub struct Message {
