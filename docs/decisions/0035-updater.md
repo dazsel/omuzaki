@@ -1,3 +1,9 @@
+---
+title: "0035: Updates are our own signed manifest, per-file deltas and a staged swap into versioned folders (2026-10-13)"
+summary: "Updates are our own signed manifest, per-file deltas and a staged swap into versioned folders"
+area: decisions
+---
+
 # 0035: Updates are our own signed manifest, per-file deltas and a staged swap into versioned folders (2026-10-13)
 
 **Status:** proposed. **Context:** SE-08, SE-04, QG-06; spec v3 §10, §31, §34; ADR 0017 (`Fetcher`, `FileSource`, model rollback), ADR 0021 and `docs/design/journal.md` (pre-migration snapshots), ADR 0026 (`update.channel`, D5, D9, D10). Design: `docs/design/updates.md`.

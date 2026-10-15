@@ -72,9 +72,9 @@ async fn an_agent_lists_tools_previews_applies_and_undoes_over_a_real_port() {
     let agent = port.connect(&port.agent_token(), "http-agent").await;
 
     let tools = agent.list_all_tools().await.unwrap();
-    // `agent.connection` is registered but not offered: this server's host wired no connection service.
+    // Ops withheld for a service this server doesn't wire are not tools (see `WITHHELD_WITHOUT_SERVICE`).
     let mut expected: Vec<String> =
-        port.runner.ops().iter().filter(|o| o.name != "agent.connection").map(|o| o.name.replace('.', "_")).collect();
+        common::offered_ops(port.runner.as_ref()).iter().map(|o| o.name.replace('.', "_")).collect();
     expected.extend(BUILTINS.map(str::to_owned));
     expected.sort();
     assert_eq!(tools.iter().map(|t| t.name.to_string()).collect::<Vec<_>>(), expected);

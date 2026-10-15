@@ -123,20 +123,20 @@ async fn the_tool_list_matches_the_runner_ops_exactly() {
     let tools = h.client.list_all_tools().await.unwrap();
 
     // Tool names are op names with dots as underscores: Anthropic's rule is ^[a-zA-Z0-9_-]{1,64}$.
-    // `agent.connection` is left out: this harness wires no connection service (see `mcp_connection.rs`).
+    // Ops withheld for a service this harness doesn't wire are not tools (see `WITHHELD_WITHOUT_SERVICE`).
     let mut expected: Vec<String> =
-        h.runner.ops().iter().filter(|o| o.name != "agent.connection").map(|o| o.name.replace('.', "_")).collect();
+        common::offered_ops(h.runner.as_ref()).iter().map(|o| o.name.replace('.', "_")).collect();
     expected.extend(BUILTINS.map(str::to_owned));
     expected.sort();
     let listed: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
-    assert_eq!(listed, expected, "tools/list must be exactly Runner::ops() plus the built-ins, sorted");
+    assert_eq!(listed, expected, "tools/list must be exactly the offered Runner::ops() plus the built-ins, sorted");
     for name in &listed {
         assert!(
             (1..=64).contains(&name.len()) && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
         );
     }
 
-    for info in h.runner.ops().iter().filter(|o| o.name != "agent.connection") {
+    for info in common::offered_ops(h.runner.as_ref()) {
         let t = tool(&tools, &info.name.replace('.', "_"));
         assert_eq!(t.title.as_deref(), Some(info.name), "the dotted op name is the tool's title");
         let op_schema = serde_json::to_value(&info.schema).unwrap();

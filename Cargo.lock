@@ -3356,6 +3356,7 @@ dependencies = [
  "omuzaki-anim-mock",
  "omuzaki-core",
  "omuzaki-doc-mock",
+ "omuzaki-embed",
  "omuzaki-face-api",
  "omuzaki-face-mock",
  "omuzaki-ops-api",
@@ -3746,6 +3747,7 @@ dependencies = [
  "omuzaki-core",
  "omuzaki-doc-api",
  "omuzaki-doc-mock",
+ "omuzaki-embed",
  "omuzaki-face-api",
  "omuzaki-io-api",
  "omuzaki-io-mock",
@@ -4071,9 +4073,6 @@ dependencies = [
  "image",
  "omuzaki-ai-api",
  "omuzaki-ai-ort",
- "omuzaki-anim",
- "omuzaki-anim-api",
- "omuzaki-char",
  "omuzaki-char-api",
  "omuzaki-char-mock",
  "omuzaki-core",
@@ -4084,8 +4083,6 @@ dependencies = [
  "omuzaki-io-mock",
  "omuzaki-io-ops",
  "omuzaki-ops-api",
- "omuzaki-render-api",
- "omuzaki-rig",
  "omuzaki-store-api",
  "omuzaki-track",
  "schemars",
@@ -4095,6 +4092,23 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "toml",
+]
+
+[[package]]
+name = "omuzaki-test-char"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-anim",
+ "omuzaki-anim-api",
+ "omuzaki-char",
+ "omuzaki-char-api",
+ "omuzaki-char-mock",
+ "omuzaki-core",
+ "omuzaki-render-api",
+ "omuzaki-rig",
+ "omuzaki-test",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -6872,6 +6886,7 @@ version = "0.0.0"
 dependencies = [
  "clap",
  "flate2",
+ "omuzaki-embed",
  "omuzaki-library-api",
  "serde",
  "serde_json",

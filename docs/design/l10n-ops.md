@@ -1,3 +1,9 @@
+---
+title: "Localising op-layer text (SE-03)"
+summary: "Localising op-layer text (SE-03)"
+area: design
+---
+
 # Localising op-layer text (SE-03)
 
 **Status:** accepted (2026-10-12; ADR 0023). The answers to the open questions are in section 16. **Feature:** SE-03; SE-09 adds zh-Hant later.

@@ -35,6 +35,17 @@ pub fn tool<'a>(tools: &'a [Tool], name: &str) -> &'a Tool {
     tools.iter().find(|t| t.name == name).unwrap_or_else(|| panic!("no tool {name}"))
 }
 
+// ---- what a server offers ------------------------------------------------------------------------------------
+
+/// Ops a server holds back unless its host wired the service they read (`McpOptions::with_connections`). The test
+/// servers wire none, so `tools/list` is the runner's ops minus these.
+pub const WITHHELD_WITHOUT_SERVICE: [&str; 1] = ["agent.connection"];
+
+/// The runner's ops that a server with no host services offers as tools: all but [`WITHHELD_WITHOUT_SERVICE`].
+pub fn offered_ops(runner: &dyn Runner) -> Vec<OpInfo> {
+    runner.ops().into_iter().filter(|op| !WITHHELD_WITHOUT_SERVICE.contains(&op.name)).collect()
+}
+
 // ---- ops ---------------------------------------------------------------------------------------------------
 
 /// Set the blend between a character's base face and its face-shape profile.

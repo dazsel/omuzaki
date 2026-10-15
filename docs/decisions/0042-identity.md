@@ -1,3 +1,9 @@
+---
+title: "0042: One ed25519 key per person per machine, in the keychain; one domain-tagged envelope; trust is a person's own list (2026-10-13)"
+summary: "One ed25519 key per person per machine, in the keychain; one domain-tagged envelope; trust is a person's own list"
+area: decisions
+---
+
 # 0042: One ed25519 key per person per machine, in the keychain; one domain-tagged envelope; trust is a person's own list (2026-10-13)
 
 **Status:** proposed. It adds a new API crate (`omuzaki-identity-api`) and an additive change to `omuzaki-library-api`. **Context:** SE-07, LB-07, LB-08, VC-10, VC-11, VC-12, CN-05, EX-05; spec v3 §7, §27, §28, §29, §31, §37; ADR 0009 (canonical form), ADR 0026 (settings); the secret store; the Omuzaki key; watermarking research. Design: `docs/design/identity.md`.
