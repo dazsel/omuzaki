@@ -291,15 +291,73 @@ fn the_comment_renders_each_constraint() {
             json!({"type": "integer", "minimum": u64::MAX, "default": i64::MIN}),
             "integer, at least 18446744073709551615, default -9223372036854775808",
         ),
+        (json!({"allOf": [{"type": "integer", "minimum": 0}, {"maximum": 9}]}), "integer, 0 to 9"),
+        (json!({"allOf": [{"type": "string", "enum": ["a", "b"]}, {"enum": ["b", "c"]}]}), "string, one of \"b\""),
+        (
+            json!({"allOf": [{"type": "integer", "minimum": 0}, {"type": "integer", "minimum": 3}]}),
+            "integer, at least 3",
+        ),
+        (json!({"allOf": [{"type": "integer"}, {"type": "string"}]}), "no value fits"),
+        (
+            json!({"allOf": [{"anyOf": [{"type": "integer", "minimum": 0}, {"type": "string"}]}, {"maximum": 9}]}),
+            "integer, 0 to 9 or string",
+        ),
+        (
+            json!({"anyOf": [{"allOf": [{"type": "integer", "minimum": 0}, {"maximum": 9}]}, {"type": "null"}]}),
+            "integer, 0 to 9",
+        ),
+        (
+            json!({"allOf": [{"$ref": "#/$defs/n"}], "$defs": {"n": {"type": "integer", "minimum": 0}}}),
+            "constraints not shown",
+        ),
+        (json!({"allOf": [{"type": "integer", "minimum": 0}, {"anyOf": [{"type": "null"}]}]}), "integer, at least 0"),
+        (json!({"type": "integer", "minimum": 0, "not": {"const": 3}}), "integer, at least 0, constraints not shown"),
+        (json!({"type": "string", "pattern": "^a+$"}), "string, pattern \"^a+$\""),
+        (json!({"type": "string", "format": "uri"}), "string, format \"uri\""),
     ];
+    let mut misses = Vec::new();
     for (node, expected) in rows {
         let schema = Schema::try_from(json!({"type": "object", "properties": {"arg": node}}))
             .unwrap_or_else(|error| panic!("{error}"));
         let op = RegisteredText { schema: Some(schema), ..owner("op-x-y", "Op.") };
         let out = english_of(&PackageText::new("omuzaki-x").with_registered(vec![op]));
         let want = format!("# {expected}\nop-x-y--arg = Arg\n");
-        assert!(out.contains(&want), "expected `{expected}` before the argument, got:\n{out}");
+        if !out.contains(&want) {
+            misses.push(format!("expected `{expected}`, got:\n{out}"));
+        }
     }
+    assert!(misses.is_empty(), "{}", misses.join("\n----\n"));
+}
+
+/// A description the wrapper lacks is taken from its branch, through `allOf`, `oneOf` and `anyOf`; the wrapper's own
+/// description always wins over a branch's.
+#[test]
+fn a_description_only_on_a_branch_is_used_when_the_wrapper_has_none() {
+    let rows = vec![
+        (json!({"anyOf": [{"type": "integer", "description": "Branch."}, {"type": "null"}]}), Some("Branch.")),
+        (json!({"allOf": [{"oneOf": [{"type": "integer", "description": "Deep."}]}]}), Some("Deep.")),
+        (
+            json!({"description": "Wrapper.", "anyOf": [{"type": "integer", "description": "Branch."}, {"type": "null"}]}),
+            Some("Wrapper."),
+        ),
+        (json!({"type": "integer"}), None),
+    ];
+    let mut misses = Vec::new();
+    for (node, want) in rows {
+        let schema = Schema::try_from(json!({"type": "object", "properties": {"arg": node}}))
+            .unwrap_or_else(|error| panic!("{error}"));
+        let op = RegisteredText { schema: Some(schema), ..owner("op-x-y", "Op.") };
+        let out = english_of(&PackageText::new("omuzaki-x").with_registered(vec![op]));
+        let found = out
+            .lines()
+            .skip_while(|line| *line != "op-x-y--arg = Arg")
+            .nth(1)
+            .and_then(|line| line.strip_prefix(".description = "));
+        if found != want {
+            misses.push(format!("expected {want:?}, got {found:?} in:\n{out}"));
+        }
+    }
+    assert!(misses.is_empty(), "{}", misses.join("\n----\n"));
 }
 
 /// Whitespace inside a value or an attribute reads back unchanged. The whole value is trimmed; a line's own trailing
