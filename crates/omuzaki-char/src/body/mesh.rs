@@ -329,43 +329,60 @@ pub fn skin_region(
     params: CapsuleParams,
 ) -> Result<(), KitError> {
     segments.skin_mesh(mesh, &bones_of(region), params)?;
-    smooth(mesh, SMOOTH_PASSES);
-    if let Some(left) = match region {
+    let arm = match region {
         BodyRegion::ArmL => Some(true),
         BodyRegion::ArmR => Some(false),
         _ => None,
-    } {
-        let side = |l: omuzaki_anim_api::HumanoidBone| if left { l } else { l.mirrored() };
-        use omuzaki_anim_api::HumanoidBone as B;
-        narrow_hand_over(mesh, &JointRef::Humanoid(side(B::LeftShoulder)), &JointRef::Humanoid(side(B::LeftUpperArm)));
+    };
+    let pair = arm.map(|left| {
+        let side = |l: omuzaki_anim_api::HumanoidBone| JointRef::Humanoid(if left { l } else { l.mirrored() });
+        (side(omuzaki_anim_api::HumanoidBone::LeftShoulder), side(omuzaki_anim_api::HumanoidBone::LeftUpperArm))
+    });
+    if let Some((shoulder, upper_arm)) = &pair {
+        reshape_hand_over(mesh, shoulder, upper_arm, |share| {
+            let x = ((share - 0.5) / (2.0 * HAND_OVER_HALF_BAND) + 0.5).clamp(0.0, 1.0);
+            x * x * (3.0 - 2.0 * x)
+        });
+    }
+    smooth(mesh, SMOOTH_PASSES);
+    if let Some((shoulder, upper_arm)) = &pair {
+        reshape_hand_over(mesh, shoulder, upper_arm, |share| if share < HAND_OVER_TAIL { 0.0 } else { share });
     }
     Ok(())
 }
 
-/// The half-width, in the shoulder's share of the shoulder and upper-arm weight, of the band [`narrow_hand_over`] leaves
-/// between a vertex the shoulder bone owns and one the upper arm owns: the share runs `0.5 - HAND_OVER_HALF_BAND` to
-/// `0.5 + HAND_OVER_HALF_BAND` across it. The capsule fall-off plus the smoothing leave a share of 0.25 to 0.45 halfway
-/// down the upper arm, which a raised arm blends into most of its length.
-const HAND_OVER_HALF_BAND: f32 = 0.2;
+/// Passes of the kit's weight smoothing after the capsule weights: they take the sharpest hand-overs (where four bones
+/// meet behind a shoulder) down to what a body of this tessellation can show.
+const SMOOTH_PASSES: u32 = 4;
 
-/// Narrows the hand-over from `shoulder` to `upper_arm` on an arm: each vertex keeps the weight the two bones hold
-/// together, but splits it by a smoothstep of their share across a band `2 * HAND_OVER_HALF_BAND` wide, so the shoulder
-/// bone's weight is zero wherever its share fell under the band and the arm follows the upper arm from there. The
-/// other bones' weights, and every sum, are unchanged; a vertex with only one of the two bones is left alone.
-fn narrow_hand_over(mesh: &mut PartMesh, shoulder: &JointRef, upper_arm: &JointRef) {
+/// The half-width of the arm's shoulder-to-upper-arm hand-over, in the shoulder's share of the weight the two bones hold
+/// together: before the smoothing, that share is passed through a smoothstep running from `0.5 - HAND_OVER_HALF_BAND`
+/// to `0.5 + HAND_OVER_HALF_BAND`. The capsule fall-off alone leaves the shoulder a share of 0.25 to 0.45 halfway down
+/// the upper arm, which a raised arm blends a still clavicle into over most of its length (#709). The smoothing that
+/// follows keeps the crease soft: it is the kit's, and by its own rule ends no sharper than the sharpened weights began.
+const HAND_OVER_HALF_BAND: f32 = 0.1;
+
+/// The share under which the smoothing's tail of shoulder weight is dropped after it, so the shoulder bone's weight is
+/// exactly zero a few rings down the arm and not a faint trace along it.
+const HAND_OVER_TAIL: f32 = 0.1;
+
+/// Replaces, at every vertex that has both bones, the shoulder's share of their joint weight by `shape(share)`: the
+/// weight the two bones hold together stays, so every sum and every other bone's weight is unchanged. A vertex with only
+/// one of the two bones is left alone.
+fn reshape_hand_over(mesh: &mut PartMesh, shoulder: &JointRef, upper_arm: &JointRef, shape: impl Fn(f32) -> f32) {
     let slot = |j: &JointRef| mesh.joint_bones.iter().position(|b| b == j).and_then(|i| u16::try_from(i).ok());
     let (Some(shoulder), Some(upper)) = (slot(shoulder), slot(upper_arm)) else { return };
     let g = &mut mesh.geometry;
     for (joints, weights) in g.joints.iter().zip(g.weights.iter_mut()) {
-        let on = |bone: u16| -> f32 { joints.iter().zip(&*weights).filter(|(j, _)| **j == bone).map(|(_, w)| *w).sum() };
+        let on =
+            |bone: u16| -> f32 { joints.iter().zip(&*weights).filter(|(j, _)| **j == bone).map(|(_, w)| *w).sum() };
         let (s, u) = (on(shoulder), on(upper));
         let both = s + u;
-        if s <= 0.0 || u <= 0.0 || both <= 0.0 {
+        if s <= 0.0 || u <= 0.0 {
             continue;
         }
-        let x = ((s / both - 0.5) / (2.0 * HAND_OVER_HALF_BAND) + 0.5).clamp(0.0, 1.0);
-        let share = x * x * (3.0 - 2.0 * x);
-        let (new_s, new_u) = (both * share, both * (1.0 - share));
+        let kept = shape(s / both).clamp(0.0, 1.0);
+        let (new_s, new_u) = (both * kept, both * (1.0 - kept));
         // The first slot of each bone takes its new weight; a duplicate slot (never produced by the kit) is zeroed.
         let (mut seen_s, mut seen_u) = (false, false);
         for (j, w) in joints.iter().zip(weights.iter_mut()) {
@@ -377,10 +394,6 @@ fn narrow_hand_over(mesh: &mut PartMesh, shoulder: &JointRef, upper_arm: &JointR
         }
     }
 }
-
-/// Passes of the kit's weight smoothing after the capsule weights: they take the sharpest hand-overs (where four bones
-/// meet behind a shoulder) down to what a body of this tessellation can show.
-const SMOOTH_PASSES: u32 = 4;
 
 /// The capsule falloff for `region` in a body of this size. Limbs use the prototype's `1 / (d + e)^4` with `e` = 12 mm
 /// (the legs of `body.js` were skinned so), grown with the body (the head base's height over soft-sd's): a sharp hand-over
