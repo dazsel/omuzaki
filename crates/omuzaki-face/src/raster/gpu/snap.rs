@@ -19,6 +19,9 @@ use super::gradient::point;
 /// The most halvings Skia's edge setup allows a curve (`MAX_COEFF_SHIFT`).
 const MAX_SHIFT: u32 = 6;
 
+/// Coordinates beyond this many pixels skip the curve setup: its fixed-point arithmetic would overflow (`raster/scan.rs`).
+const FIXED_RANGE: f64 = 1.0e6;
+
 /// `y` rounded to the nearest quarter, halves up, as Skia's `SnapY` does for anti-aliased edges.
 pub(super) fn snap_quarter(y: f64) -> f64 {
     (y * 4.0 + 0.5).floor() / 4.0
@@ -57,6 +60,11 @@ pub(super) fn snapped_path(els: &[PathEl], to_px: Affine, out: &mut BezPath) {
 
 /// Appends the chain for one Bézier (2 control points: quad, 3: cubic), cut where it turns in y so each piece is monotonic.
 fn chain(p: &[Point], shift: fn(&[Point]) -> u32, out: &mut BezPath) {
+    if !p.iter().all(|q| q.x.abs() <= FIXED_RANGE && q.y.abs() <= FIXED_RANGE) {
+        // Skia's fixed-point setup would overflow here (as `raster/scan.rs` guards): the curve ends in a plain line.
+        out.line_to(Point::new(p[p.len() - 1].x, snap_quarter(p[p.len() - 1].y)));
+        return;
+    }
     let mut pieces = [[Point::ZERO; 4]; 3];
     let n = chop_at_y_extrema(p, &mut pieces);
     for piece in &pieces[..n] {
@@ -177,4 +185,25 @@ fn cubic_shift(p: &[Point]) -> u32 {
     };
     let shift = diff_to_shift(delta(p[0].x, p[1].x, p[2].x, p[3].x), delta(p[0].y, p[1].y, p[2].y, p[3].y)) + 1;
     shift.min(MAX_SHIFT)
+}
+
+#[cfg(test)]
+mod tests {
+    use omuzaki_core::glam::Vec2;
+
+    use super::*;
+
+    #[test]
+    fn curves_with_huge_coordinates_end_in_a_line_instead_of_overflowing() {
+        let far = Vec2::new(3.0e30, -3.0e30);
+        let els = [
+            PathEl::Move(Vec2::ZERO),
+            PathEl::Cubic(far, far, Vec2::new(1.0, 1.0)),
+            PathEl::Quad(far, Vec2::new(2.0, 2.0)),
+            PathEl::Close,
+        ];
+        let mut out = BezPath::new();
+        snapped_path(&els, Affine::IDENTITY, &mut out);
+        assert_eq!(out.elements().len(), 4, "move, one line per curve, close");
+    }
 }

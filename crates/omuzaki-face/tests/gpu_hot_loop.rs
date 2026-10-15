@@ -236,6 +236,7 @@ fn repaint_times(other: usize) -> Option<(f64, f64)> {
 }
 
 #[test]
+#[ignore = "prints timings and asserts nothing; ~15 s on lavapipe. Run with --ignored --nocapture (the gpu_face bench has the same numbers)"]
 fn repaint_time_over_a_thousand_warmed_repaints() {
     for (what, other) in [("mouth only", MOUTH), ("whole face", WHOLE)] {
         if let Some((p50, p99)) = repaint_times(other) {

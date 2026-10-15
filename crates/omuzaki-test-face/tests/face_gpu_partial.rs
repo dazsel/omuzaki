@@ -11,14 +11,15 @@ use std::any::Any;
 use std::fmt::Write as _;
 use std::sync::{Arc, Mutex};
 
-use common::{Gpu, device, face_texture, image, read_back};
+use common::{Gpu, device, face_texture, gpu_pixels, image, read_back, two_devices};
 use omuzaki_anim_api::{Channel, ChannelBuf};
 use omuzaki_char_api::face_texture_desc;
+use omuzaki_core::glam::{Affine2, Vec2};
 use omuzaki_core::time::Seconds;
 use omuzaki_face::raster::SkiaRasterizer;
 use omuzaki_face::raster::gpu::VelloRasterizer;
 use omuzaki_face::{FaceSystem, GpuRasterizer, LayerSections, RealPainter};
-use omuzaki_face_api::{DrawList, FaceError, FaceLayerId, FaceLayerSpec, FaceView};
+use omuzaki_face_api::{Cmd, Colour, DrawList, FaceError, FaceLayerId, FaceLayerSpec, FaceRect, FaceView, Paint};
 use omuzaki_face_mock::{mock_profile, mock_projection};
 use omuzaki_render_api::{PaintTarget, Painter, PixelRect, RenderError, TextureDesc};
 use omuzaki_test::compare::Tolerance;
@@ -201,4 +202,54 @@ fn twenty_four_mixed_changes_leave_the_texture_a_full_repaint_would() {
     }
     eprintln!("{identical} of 24 partial repaints are byte-identical to the full repaint");
     assert!(failures.is_empty(), "partial repaints differ from full ones:\n{failures}");
+}
+
+/// A 64 x 64 px layer and a list of one filled ellipse, `broken` ending in a clip that is never popped and a transform
+/// that overflows (so the encode fails with the clip open).
+fn small_layer(broken: bool) -> (FaceLayerSpec, DrawList) {
+    let spec = FaceLayerSpec::for_rect(FaceRect { x0: -0.5, x1: 0.5, y0: -0.5, y1: 0.5 }, FaceLayerId::Base, 64.0);
+    let mut list = DrawList::new();
+    let ellipse = list.path().ellipse(Vec2::ZERO, 0.3, 0.2).finish();
+    list.push(Cmd::Fill { path: ellipse, paint: Paint::Solid(Colour::rgba(200, 40, 60, 255)), opacity: 1.0 });
+    if broken {
+        let clip = list.path().ellipse(Vec2::ZERO, 0.1, 0.1).finish();
+        list.push(Cmd::PushClip(clip));
+        list.push(Cmd::PushTransform(Affine2::from_scale(Vec2::splat(f32::INFINITY))));
+    }
+    (spec, list)
+}
+
+#[test]
+fn a_failed_encode_does_not_leave_the_old_picture_cached_over_a_half_built_scene() {
+    let Some(gpu) = device() else { return };
+    let (spec, good) = small_layer(false);
+    let (_, broken) = small_layer(true);
+    let mut native = (gpu.0.clone(), gpu.1.clone(), face_texture(&gpu.0, spec.size_px()));
+    let mut rasterizer = VelloRasterizer::new();
+
+    assert!(rasterizer.rasterize_native(&spec, &good, &mut native).unwrap(), "the first frame draws");
+    assert!(rasterizer.rasterize_native(&spec, &broken, &mut native).is_err(), "the broken frame fails to encode");
+    assert!(rasterizer.rasterize_native(&spec, &good, &mut native).unwrap(), "the old content comes back");
+    assert_eq!(rasterizer.sections_encoded(), 1, "so its section is encoded again, not taken from the failed one");
+
+    let fresh = gpu_pixels(&gpu, &mut VelloRasterizer::new(), &spec, &good);
+    assert_eq!(read_back(&gpu, &native.2), fresh, "and the texture shows what a fresh repaint shows");
+    assert!(fresh.chunks(4).any(|p| p[3] != 0), "the picture has ink, so equality is not two blank textures");
+}
+
+#[test]
+fn a_different_device_gets_its_own_renderer_and_textures() {
+    let Some((first, second)) = two_devices() else { return };
+    let (spec, list) = small_layer(false);
+    let mut rasterizer = VelloRasterizer::new();
+    let on_first = gpu_pixels(&first, &mut rasterizer, &spec, &list);
+
+    // The same rasteriser, the same layer size, another device: as after the renderer rebuilt its device.
+    let on_second = gpu_pixels(&second, &mut rasterizer, &spec, &list);
+    assert_eq!(on_second, on_first, "the second device draws the same picture, without a validation error");
+    assert_eq!(
+        on_second,
+        gpu_pixels(&second, &mut VelloRasterizer::new(), &spec, &list),
+        "as a fresh rasteriser would"
+    );
 }

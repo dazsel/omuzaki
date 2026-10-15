@@ -42,6 +42,21 @@ pub fn device() -> Option<Gpu> {
     }
 }
 
+/// Two devices of one adapter, or `None` after printing why there are not. They must share an instance: wgpu numbers its
+/// resources per instance, so devices of two instances can't tell each other's handles apart.
+pub fn two_devices() -> Option<(Gpu, Gpu)> {
+    let adapter = adapter()?;
+    let descriptor = wgpu::DeviceDescriptor { required_limits: adapter.limits(), ..wgpu::DeviceDescriptor::default() };
+    let make = || pollster::block_on(adapter.request_device(&descriptor));
+    match (make(), make()) {
+        (Ok(first), Ok(second)) => Some((first, second)),
+        (Err(e), _) | (_, Err(e)) => {
+            eprintln!("skipped: the adapter gave no second device ({e})");
+            None
+        }
+    }
+}
+
 /// A texture like the one `native()` hands out for a face layer.
 pub fn face_texture(device: &wgpu::Device, (width, height): (u32, u32)) -> wgpu::Texture {
     device.create_texture(&wgpu::TextureDescriptor {

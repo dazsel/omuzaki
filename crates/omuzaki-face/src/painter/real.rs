@@ -71,7 +71,9 @@ impl RealPainter {
         Ok(())
     }
 
-    /// The command range each section wrote in the last paint, for the GPU rasteriser's per-section cache.
+    /// The command range each section wrote in the last [`paint`](FacePainter::paint) or [`paint_section`](Self::paint_section)
+    /// (whichever ran last; [`paint_mouth_piece`](Self::paint_mouth_piece) leaves them as they were), for the GPU
+    /// rasteriser's per-section cache.
     pub fn sections(&self) -> &SectionRanges {
         &self.sections
     }

@@ -227,6 +227,8 @@ struct LayerState {
 /// Everything that needs a device. Created on the first paint, because Vello compiles its pipelines when its renderer is
 /// created.
 struct Gpu {
+    /// The device the renderer, the resolve pipeline and the layers' private textures belong to.
+    device: wgpu::Device,
     renderer: Renderer,
     resolve: Resolve,
 }
@@ -245,8 +247,8 @@ struct Gpu {
 /// renderer's `Rgba8Unorm` face texture holding premultiplied sRGB with `STORAGE_BINDING | RENDER_ATTACHMENT | COPY_DST`
 /// usages; only level 0 is written, and the renderer rebuilds the mips. The rasteriser submits on that queue.
 ///
-/// Use one for all of a system's layers, and with one device only: the Vello renderer belongs to the device of the first
-/// paint, and each layer has its own cache and private texture.
+/// Use one for all of a system's layers. The Vello renderer belongs to the device of the paint that made it; a paint with
+/// another device (the renderer was rebuilt after a device loss) drops that state and starts over with whole repaints.
 ///
 /// It returns `Ok(false)`, so the CPU raster draws, when `native` is not the renderer's `(Device, Queue, Texture)` (the
 /// mock renderer's targets, another backend) and when Vello can't run on the device: that is logged once and never
@@ -290,12 +292,17 @@ impl Gpu {
             pipeline_cache: None,
         };
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let made =
-            Renderer::new(device, options).map(|renderer| Self { renderer, resolve: Resolve::new(device, format) });
-        let rejected = ready(scope.pop()).flatten();
+        let made = Renderer::new(device, options).map(|renderer| Self {
+            device: device.clone(),
+            renderer,
+            resolve: Resolve::new(device, format),
+        });
+        // A scope that is still pending can't be read as "no error": count it as a failure, as `omuzaki-render` does.
+        let rejected = ready(scope.pop());
         match (made, rejected) {
-            (Ok(_), Some(error)) => Err(error.to_string()),
-            (Ok(gpu), None) => Ok(gpu),
+            (Ok(_), Some(Some(error))) => Err(error.to_string()),
+            (Ok(_), None) => Err("the device did not report whether Vello's pipelines are valid".to_owned()),
+            (Ok(gpu), Some(None)) => Ok(Self { device: device.clone(), ..gpu }),
             (Err(error), _) => Err(error.to_string()),
         }
     }
@@ -347,6 +354,9 @@ impl LayerState {
             if cache.key == Some(key) {
                 continue;
             }
+            // A failed encode leaves a half-built scene: forget its key so the content that built it is encoded again, and
+            // keep `bounds` so the next damage still covers the area it last drew.
+            cache.key = None;
             cache.scene.reset();
             encoder.encode_range(spec, list, range.clone(), spec.px_per_m, &mut cache.scene)?;
             let now = encoder.last_bounds();
@@ -395,6 +405,12 @@ impl VelloRasterizer {
             )));
         }
         check_tiling(sections, list.cmds().len())?;
+        // The renderer is rebuilt when the device is lost, but this rasteriser survives it: everything made on the old
+        // device (the Vello renderer, the resolve pipeline, the private textures) is dropped with it.
+        if self.gpu.as_ref().is_some_and(|gpu| &gpu.device != device) {
+            self.gpu = None;
+            self.layers = Default::default();
+        }
         if self.gpu.is_none() {
             match Gpu::create(device, target.format()) {
                 Ok(gpu) => self.gpu = Some(gpu),
