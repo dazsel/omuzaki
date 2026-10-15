@@ -17,6 +17,7 @@ set -uo pipefail
 REPO=dazsel/omuzaki
 CACHE=${TMPDIR:-/tmp}/omuzaki-read-token
 api() { curl -sf --max-time 30 -H "Accept: application/vnd.github+json" "$@"; }
+b64() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
 
 token() {
   local now exp tok
@@ -27,14 +28,15 @@ token() {
   [ -n "${OMUZAKI_READ_APP_ID:-}" ] && [ -n "${OMUZAKI_READ_APP_KEY_B64:-}" ] \
     || { echo "gh-read-token: OMUZAKI_READ_APP_ID and OMUZAKI_READ_APP_KEY_B64 must be set" >&2; return 1; }
   local key b64 header payload sig jwt inst resp
-  key=$(mktemp) && chmod 600 "$key" && trap 'rm -f "$key"' RETURN
-  printf '%s' "$OMUZAKI_READ_APP_KEY_B64" | base64 -d > "$key" 2>/dev/null \
-    || { echo "gh-read-token: OMUZAKI_READ_APP_KEY_B64 is not valid base64" >&2; return 1; }
-  b64() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+  # The key exists on disk only for the one signing call (no trap: bash runs RETURN traps when any function returns).
+  key=$(umask 077; mktemp) || return 1
+  if ! printf '%s' "$OMUZAKI_READ_APP_KEY_B64" | base64 -d > "$key" 2>/dev/null; then
+    rm -f "$key"; echo "gh-read-token: OMUZAKI_READ_APP_KEY_B64 is not valid base64" >&2; return 1
+  fi
   header=$(printf '{"alg":"RS256","typ":"JWT"}' | b64)
   payload=$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' $((now - 60)) $((now + 540)) "$OMUZAKI_READ_APP_ID" | b64)
-  sig=$(printf '%s.%s' "$header" "$payload" | openssl dgst -sha256 -sign "$key" -binary | b64) \
-    || { echo "gh-read-token: signing failed (is the key a PEM private key?)" >&2; return 1; }
+  sig=$(printf '%s.%s' "$header" "$payload" | openssl dgst -sha256 -sign "$key" -binary | b64); rm -f "$key"
+  [ -n "$sig" ] || { echo "gh-read-token: signing failed (is the key a PEM private key?)" >&2; return 1; }
   jwt="$header.$payload.$sig"
   inst=$(api -H "Authorization: Bearer $jwt" "https://api.github.com/repos/$REPO/installation" \
          | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["id"])') \
