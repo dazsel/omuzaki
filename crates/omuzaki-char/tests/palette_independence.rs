@@ -3,7 +3,7 @@
 //! each with and without `rig_export`) and at five seeds (the base's own and four more), a kind's part is built with the
 //! character's own palette, then with five colour alternatives that each differ from it in every entry, with one extra
 //! unreferenced slot, with the slots no part names removed (when the palette has any), and with each slot a part names
-//! removed on its own. That is one build plus up to 8 + k alternatives (k referenced slots) per option set and seed. The
+//! removed on its own. That is one build plus up to 7 + k alternatives (k referenced slots) per option set and seed. The
 //! caching builder relies on it (see the `builder` module doc): it keys a part that reads facts on the geometry of their
 //! publishers, not their colours.
 
