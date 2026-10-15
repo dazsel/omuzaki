@@ -115,6 +115,15 @@ pub struct EarCover {
     pub radius: f32,
 }
 
+impl EarCover {
+    /// The disc at `s` times its size, for a head built at the template's size and scaled to the character's stature
+    /// (the anchors are scaled the same way). The normal is a direction and stays as it is.
+    #[must_use]
+    pub fn scaled(self, s: f32) -> Self {
+        Self { centre: self.centre * s, normal: self.normal, radius: self.radius * s }
+    }
+}
+
 /// The tallest half of the outline, metres at size 1 (`oy` in the prototype): the cover's radius.
 const HALF_HEIGHT: f64 = 0.043;
 

@@ -159,8 +159,10 @@ fn ears(ctx: &BuildCtx<'_>, placed: &HeadParams, surface: &dyn HeadSurface) -> R
         if let Some(bind) = ears::anchor(&placed.ears, side, root) {
             anchors.push((name.parse().map_err(|e| ctx.fail(format!("anchor '{name}': {e}")))?, bind));
         }
+        // The head is built at the template's size and scaled to the stature afterwards, which scales the anchors but not
+        // this fact, so the disc is scaled here, the way `scale_output` scales an anchor.
         if let Some(cover) = ears::cover(&placed.ears, side, root) {
-            covers.push((side, cover));
+            covers.push((side, cover.scaled(ctx.published.scale())));
         }
     }
     Ok((meshes, anchors, covers))

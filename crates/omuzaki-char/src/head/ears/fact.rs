@@ -5,7 +5,9 @@ use super::{EarCover, Side};
 
 omuzaki_char_api::fact! {
     /// The disc each shell ear hides, keyed by side (published by `head` beside the ear anchors). Hair that notches
-    /// round an ear, or tucks locks behind it, reads it; a head with no shell ear publishes none.
+    /// round an ear, or tucks locks behind it, reads it; a head with no shell ear publishes none. Its centre and radius
+    /// are real-size metres at the character's stature, like the anchors beside it (`head` scales them by the body's
+    /// stature before publishing); its normal is a direction.
     pub EarCoverFact = "ear_cover", omuzaki_char_api::Keyed<Side, EarCover>;
 }
 
