@@ -248,8 +248,7 @@ impl<'a> Show<'a> {
                 let hover = paint::fade(&self.ctx, &self.ds, gid.with(i).with("hover"), self.enabled && state.hot);
                 let cut = paint_tab(ui.painter(), &self.ds, area, tab, state, hover);
                 self.accessibility(&response, i, count, tab, state.selected);
-                if tab.closable && self.close_button(ui, gid.with(("close", i)), area, tab, state, response.has_focus())
-                {
+                if tab.closable && self.close_button(ui, response.id, area, tab, state, response.has_focus()) {
                     closed = Some(i);
                 }
                 if tab.icon_only || cut {
@@ -285,9 +284,18 @@ impl<'a> Show<'a> {
         response.has_focus() && self.ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Delete))
     }
 
-    /// The close button of a tab: drawn while the tab is selected, hovered or focused, a named node always. True when
+    /// The close button of tab `tab_id`: drawn while the tab is selected, hovered or focused, a named node always. True when
     /// it was pressed.
-    fn close_button(&self, ui: &mut Ui, id: Id, area: Rect, tab: &TabItem<'_>, state: TabState, focused: bool) -> bool {
+    fn close_button(
+        &self,
+        ui: &mut Ui,
+        tab_id: Id,
+        area: Rect,
+        tab: &TabItem<'_>,
+        state: TabState,
+        focused: bool,
+    ) -> bool {
+        let id = tab_id.with("close");
         let t = &self.ds.theme;
         let button = Rect::from_center_size(
             pos2(area.right() - CLOSE_RESERVE + CLOSE / 2.0, area.center().y),
@@ -315,7 +323,8 @@ impl<'a> Show<'a> {
                 let name = self.ds.text_with(Msg::TabClose, &[("label", tab.label)]);
                 WidgetInfo::labeled(WidgetType::Button, self.enabled, name)
             },
-            |_| {},
+            // The button controls the tab it closes: the tree says whose close button it is.
+            |node| node.set_controls(vec![tab_id.accesskit_id()]),
         );
         self.enabled && response.clicked()
     }

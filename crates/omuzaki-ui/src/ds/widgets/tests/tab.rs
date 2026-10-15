@@ -161,3 +161,15 @@ fn a_closable_tabs_label_stays_clear_of_its_close_button_and_the_button_stays_in
         }
     }
 }
+
+#[test]
+fn each_close_button_says_it_controls_its_own_tab() {
+    let h = rig(360.0);
+    for label in ["Library", "History"] {
+        let name = format!("Close {label}");
+        let close = h.get_by_role_and_label(Role::Button, &name);
+        let node = close.accesskit_node();
+        let controlled: Vec<_> = node.controls().map(|n| n.label()).collect();
+        assert_eq!(controlled, [Some(label.to_owned())], "Close {label} controls its tab");
+    }
+}
