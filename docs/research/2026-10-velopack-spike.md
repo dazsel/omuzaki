@@ -1,3 +1,9 @@
+---
+title: "Velopack spike (UP-0), Linux half: verdict"
+summary: "Velopack spike (UP-0), Linux half: verdict"
+area: research
+---
+
 # Velopack spike (UP-0), Linux half: verdict
 
 **Design:** `docs/design/updates.md` section 1, ADR 0035. **Date:** 2026-10-13. **Code:** `spikes/update-velopack/` (standalone, not in the workspace, never shipped).

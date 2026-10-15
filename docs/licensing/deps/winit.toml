@@ -1,0 +1,6 @@
+section = "rust"
+item = "winit"
+kind = "crate"
+used_for = "the window, event loop and window-level, taskbar and click-through calls in `spikes/mascot-window` (eframe pulls the same version); the spike's own workspace keeps it out of the main lockfile"
+status = "yes"
+audit = "(crates.io: winit 0.30.13, Apache-2.0)"

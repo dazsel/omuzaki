@@ -2,7 +2,7 @@
 //! `omuzaki-face-api` (what the face does) and `omuzaki-render-api` (where the pixels go).
 //!
 //! This is an implementation crate: it depends on API crates only (`crates/README.md`), and leaves parity and golden
-//! tests against the JavaScript prototype to `crates/omuzaki-test/tests/` (an impl crate may not depend on `omuzaki-test`).
+//! tests against the JavaScript prototype to `crates/omuzaki-test-face/tests/` (an implementation crate may not depend on an App crate such as `omuzaki-test-face`).
 //!
 //! # The frame
 //!
@@ -40,6 +40,9 @@ pub mod exaggeration;
 pub mod layer;
 pub mod library;
 pub mod ops;
+/// The helpers the face ops share. They sit beside `ops/`, not in it, because the generated family list in `ops/` makes
+/// every folder there `pub`, and these are crate-private.
+mod ops_shared;
 pub mod painter;
 pub mod raster;
 pub mod system;
@@ -49,4 +52,6 @@ pub use layer::{FaceLayerPainter, GpuRasterizer};
 pub use painter::{MouthPiece, OpenMouth, PaintCtx, RealPainter, Section};
 pub use system::{FaceSystem, FaceTimings, FaceUpdate};
 
-omuzaki_core::define_link!();
+omuzaki_core::define_link! {
+    omuzaki_char_api::link();
+}

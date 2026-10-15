@@ -5,4 +5,9 @@
 //! it works inside test binaries on every platform.
 #![deny(missing_docs)]
 
+pub mod dist;
 pub mod registry;
+
+omuzaki_core::define_link! {
+    omuzaki_library_api::link();
+}

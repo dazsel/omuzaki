@@ -26,7 +26,7 @@ use crate::frame::FrameView;
 use crate::gpu::{DEPTH_FORMAT, SCENE_FORMAT};
 use crate::resource::SceneResources;
 use crate::resource::material::GpuMaterial;
-use crate::resource::mesh::{GpuMesh, smooth_normal_layout, vertex_layout};
+use crate::resource::mesh::{GpuMesh, smooth_normal_layout, vertex_layouts};
 use crate::shared::Shared;
 
 const SOURCE: &str = concat!(include_str!("../shader/common.wgsl"), include_str!("../shader/outline.wgsl"));
@@ -54,7 +54,7 @@ fn hulls<'a>(frame: &'a FrameView<'_>, resources: SceneResources<'a>) -> impl It
     frame.draws.for_pass(Pass::Outlines).filter_map(move |draw| {
         let mesh = resources.meshes.at(draw.mesh)?;
         let material = resources.materials.at(draw.material)?;
-        if !material.material.outline.is_some_and(|outline| outline.width > 0.0) {
+        if !material.draws_outline() {
             return None;
         }
         Some(Hull {
@@ -105,7 +105,10 @@ fn build_pipeline(
             module,
             entry_point: Some("vs_main"),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
-            buffers: &[Some(vertex_layout()), Some(smooth_normal_layout())],
+            buffers: &{
+                let [shape, surface] = vertex_layouts();
+                [shape, surface, Some(smooth_normal_layout())]
+            },
         },
         primitive: wgpu::PrimitiveState {
             front_face: if variant.mirrored { wgpu::FrontFace::Cw } else { wgpu::FrontFace::Ccw },
@@ -166,7 +169,11 @@ impl FramePass for Outlines {
             let Some(pipeline) = self.pipelines.get(&hull.variant) else { continue };
             pass.set_pipeline(pipeline);
             pass.set_bind_group(1, &hull.material.bind_group, &[]);
-            hull.mesh.draw_with_smooth_normals(&mut pass, hull.instance);
+            hull.mesh.draw_with_smooth_normals(
+                &mut pass,
+                hull.instance,
+                resources.morphs.outline_streams(hull.instance),
+            );
             cx.stats.draw_calls += 1;
             cx.stats.triangles += hull.mesh.triangles;
         }

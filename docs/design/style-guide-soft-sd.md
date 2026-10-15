@@ -1,3 +1,9 @@
+---
+title: "Soft SD: the default character style"
+summary: "the default Soft SD character style."
+area: design
+---
+
 # Soft SD: the default character style
 
 **Soft SD** is the pipeline's default look: a 3D chibi rendered like a soft anime CG frame. It has real volume and warm soft lighting, plus **soft cel shading, thin coloured line art and a painted anime face**. It's halfway between a plastic figure (too glossy) and flat 2D line art (no volume), and it's exactly what a real-time 3D toon renderer produces. Every new character starts here unless the user deliberately picks something else.

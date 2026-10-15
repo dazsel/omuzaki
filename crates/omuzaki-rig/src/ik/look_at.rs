@@ -258,7 +258,7 @@ fn aligned(skeleton: &Skeleton, pose: &Pose, bone: Option<BoneId>) -> Quat {
 
 /// The shortest rotation taking the unit `from` onto `to`, accurate for small angles (`Quat::from_rotation_arc` returns
 /// the identity within about 7e-4 rad).
-fn swing(from: Vec3, to: Vec3) -> Quat {
+pub(crate) fn swing(from: Vec3, to: Vec3) -> Quat {
     let dot = from.dot(to);
     if dot < -0.999 {
         return Quat::from_rotation_arc(from, to);

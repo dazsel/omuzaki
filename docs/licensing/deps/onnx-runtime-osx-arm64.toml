@@ -1,0 +1,7 @@
+section = "rust"
+item = "ONNX Runtime 1.28.3 osx-arm64 (Core ML included)"
+kind = "native"
+used_for = "the `onnx` runtime's pinned build (`omuzaki-ai-ort`, `builds.rs`)"
+status = "yes"
+condition = "MIT (the archive's `LICENSE`: \"Copyright (c) Microsoft Corporation\"); ship it and `ThirdPartyNotices.txt` with the licences screen. Core ML is part of this build. Fetched through the verified `FileSource`, never committed. URL `https://github.com/microsoft/onnxruntime/releases/download/v1.28.3/onnxruntime-osx-arm64-1.28.3.tgz`, 33,057,743 bytes, sha256 `c436bd9f47dbce6f6311ccc21de97f829b3c862c09d24aa321958cb72f0a1d32`"
+audit = "B2"

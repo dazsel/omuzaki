@@ -1,0 +1,8 @@
+section = "rust"
+item = "rhai, mlua"
+kind = "crate"
+used_for = "the script runtime (`omuzaki-script`, PL-02): the Rhai engine, pinned exactly because its `internals` feature is unstable API"
+status = "yes"
+condition = "MIT OR Apache-2.0; default features off"
+audit = "B3"
+crates = ["rhai"]

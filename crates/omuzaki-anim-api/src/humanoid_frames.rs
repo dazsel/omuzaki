@@ -32,6 +32,17 @@ use omuzaki_core::glam::{Quat, Vec4};
 
 use crate::skeleton::{HumanoidBone, HumanoidPose, Pose, Skeleton, Transform};
 
+/// The `rest_local` slice a conversion was given does not have one transform per joint of the skeleton the table was
+/// built from. Nothing is written when this is returned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("rest_local has {actual} transforms, but the skeleton has {expected} joints")]
+pub struct RestLengthMismatch {
+    /// The skeleton's joint count, as [`HumanoidFrames::new`] recorded it.
+    pub expected: usize,
+    /// The length that was given.
+    pub actual: usize,
+}
+
 /// `q` scaled to unit length, or `None` if it is zero or not finite (so a bad input can be skipped, not propagated).
 fn unit(q: Quat) -> Option<Quat> {
     Vec4::from(q).try_normalize().map(Quat::from_vec4)
@@ -60,6 +71,9 @@ pub struct HumanoidFrames {
     bindings: Vec<Binding>,
     /// The hips: the only bone whose position the pose moves. `None` for a generic skeleton.
     hips: Option<Binding>,
+    /// The skeleton's joint count. A skeleton has at most [`MAX_BONES`](crate::skeleton::MAX_BONES) of them, so a
+    /// `rest_local` of this length always fits a [`Pose`].
+    joints: usize,
 }
 
 impl HumanoidFrames {
@@ -86,7 +100,7 @@ impl HumanoidFrames {
             })
             .collect();
         let hips = bindings.iter().copied().find(|b| b.bone == HumanoidBone::Hips.index());
-        Self { bindings, hips }
+        Self { bindings, hips, joints: skeleton.len() }
     }
 
     /// How many humanoid bones the skeleton has (0 for a generic skeleton).
@@ -99,10 +113,30 @@ impl HumanoidFrames {
         self.bindings.is_empty()
     }
 
+    /// Checks `rest_local` against the joint count: the one comparison both conversions start with.
+    fn check(&self, rest_local: &[Transform]) -> Result<(), RestLengthMismatch> {
+        if rest_local.len() == self.joints {
+            Ok(())
+        } else {
+            Err(RestLengthMismatch { expected: self.joints, actual: rest_local.len() })
+        }
+    }
+
     /// `q = Wp · local · Wb⁻¹` per present bone; a bone the skeleton lacks, or a zero or non-finite result, reads as the
     /// identity; `hips_offset = Wp · (local hips translation − rest hips translation)`. `rest_local` is the skeleton's
-    /// rest transforms, indexed by joint. Hot path: no allocation.
-    pub fn to_humanoid(&self, rest_local: &[Transform], local: &Pose, out: &mut HumanoidPose) {
+    /// rest transforms, indexed by joint, and must have one entry per joint.
+    ///
+    /// # Errors
+    /// [`RestLengthMismatch`] if `rest_local` is not as long as the skeleton has joints. `out` is left untouched.
+    /// Hot path: no allocation.
+    #[inline]
+    pub fn to_humanoid(
+        &self,
+        rest_local: &[Transform],
+        local: &Pose,
+        out: &mut HumanoidPose,
+    ) -> Result<(), RestLengthMismatch> {
+        self.check(rest_local)?;
         *out = HumanoidPose::REST;
         for b in &self.bindings {
             let q = b.parent_world * local.local[b.joint].rotation * b.own_world.conjugate();
@@ -112,12 +146,26 @@ impl HumanoidFrames {
             let moved = local.local[hips.joint].translation - rest_local[hips.joint].translation;
             out.hips_offset = hips.parent_world * moved;
         }
+        Ok(())
     }
 
     /// `local = Wp⁻¹ · q · Wb` per present bone, on top of a copy of `rest_local`: humanoid bones turned by the pose,
-    /// everything else at rest. A rotation that is not finite (or is zero) leaves that bone at rest, and a non-finite
-    /// hips offset is ignored, so a bad input never reaches the renderer as a NaN matrix. Hot path: no allocation.
-    pub fn apply_humanoid(&self, rest_local: &[Transform], pose: &HumanoidPose, out: &mut Pose) {
+    /// everything else at rest. `rest_local` must have one entry per joint; since a skeleton has at most
+    /// [`MAX_BONES`](crate::skeleton::MAX_BONES) joints, that also keeps the copy inside [`Pose`]. A rotation that is not
+    /// finite (or is zero) leaves that bone at rest, and a non-finite hips offset is ignored, so a bad input never
+    /// reaches the renderer as a NaN matrix.
+    ///
+    /// # Errors
+    /// [`RestLengthMismatch`] if `rest_local` is not as long as the skeleton has joints. `out` is left untouched.
+    /// Hot path: no allocation.
+    #[inline]
+    pub fn apply_humanoid(
+        &self,
+        rest_local: &[Transform],
+        pose: &HumanoidPose,
+        out: &mut Pose,
+    ) -> Result<(), RestLengthMismatch> {
+        self.check(rest_local)?;
         out.local[..rest_local.len()].copy_from_slice(rest_local);
         for b in &self.bindings {
             let local = b.parent_world.conjugate() * pose.rotations[b.bone] * b.own_world;
@@ -130,5 +178,6 @@ impl HumanoidFrames {
         {
             out.local[hips.joint].translation += hips.parent_world.conjugate() * pose.hips_offset;
         }
+        Ok(())
     }
 }

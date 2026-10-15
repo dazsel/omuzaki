@@ -1,3 +1,9 @@
+---
+title: "The assistant runtime: host loop, context, persistence, settings and the panel contract"
+summary: "the in-app assistant's host: crates, the turn loop, Stop, context and compaction, conversation storage, settings, host-local tools and the chat panel contract (ADR 0040)."
+area: design
+---
+
 # The assistant runtime: host loop, context, persistence, settings and the panel contract
 
 **Status:** proposed (AG-01). **Decision record:**

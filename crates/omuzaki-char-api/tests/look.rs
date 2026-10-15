@@ -76,11 +76,9 @@ impl PartKind for LookBody {
     }
 
     fn build(_: &Params, _: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
-        Ok(PartOutput {
-            meshes: vec![mesh("look-skin")],
-            materials: vec![(name("look-skin"), toon(0x00f9_d3c5, true))],
-            ..PartOutput::default()
-        })
+        Ok(PartOutput::new()
+            .with_meshes(vec![mesh("look-skin")])
+            .with_materials(vec![(name("look-skin"), toon(0x00f9_d3c5, true))]))
     }
 }
 omuzaki_char_api::register_part_kind!(LookBody);
@@ -97,18 +95,58 @@ impl PartKind for LookCoat {
 
     fn build(params: &Params, _: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
         let declared = if params.stray_class { "look-lining" } else { "look-button" };
-        Ok(PartOutput {
-            meshes: vec![mesh("look-cloth"), mesh("look-button")],
-            materials: vec![
+        Ok(PartOutput::new()
+            .with_meshes(vec![mesh("look-cloth"), mesh("look-button")])
+            .with_materials(vec![
                 (name("look-cloth"), toon(0x0023_2028, false)),
                 (name("look-button"), toon(0x00dc_b66c, false)),
-            ],
-            material_classes: vec![(name(declared), MaterialClass::Metal)],
-            ..PartOutput::default()
-        })
+            ])
+            .with_material_classes(vec![(name(declared), MaterialClass::Metal)]))
     }
 }
 omuzaki_char_api::register_part_kind!(LookCoat);
+
+/// A garment that defines a material no mesh of its own uses.
+struct LookSpare;
+
+impl PartKind for LookSpare {
+    type Params = Params;
+
+    fn meta() -> PartMeta {
+        PartMeta {
+            id: "look-spare",
+            summary: "A material and no mesh.",
+            category: PartCategory::Garment,
+            requires: &[],
+        }
+    }
+
+    fn build(_: &Params, _: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
+        Ok(PartOutput::new().with_materials(vec![(name("look-spare"), toon(0x0010_1010, false))]))
+    }
+}
+omuzaki_char_api::register_part_kind!(LookSpare);
+
+/// An accessory with a mesh in a material another part defines.
+struct LookBorrow;
+
+impl PartKind for LookBorrow {
+    type Params = Params;
+
+    fn meta() -> PartMeta {
+        PartMeta {
+            id: "look-borrow",
+            summary: "A mesh, no material.",
+            category: PartCategory::Accessory,
+            requires: &[],
+        }
+    }
+
+    fn build(_: &Params, _: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
+        Ok(PartOutput::new().with_meshes(vec![mesh("look-spare")]))
+    }
+}
+omuzaki_char_api::register_part_kind!(LookBorrow);
 
 fn character(stray_class: bool) -> CharacterDef {
     let mut def: CharacterDef = serde_json::from_value(json!({
@@ -305,4 +343,64 @@ fn a_look_whose_computed_values_overflow_is_refused_and_changes_nothing() {
     }
     assert!(loud.apply_look(&big_rim).is_err());
     assert!(loud.look().is_empty());
+}
+
+#[test]
+fn an_inherited_look_that_overflows_the_rebuilt_parts_warns_and_keeps_their_materials() {
+    let mut drawn = built();
+    let wide = LookParams {
+        all: ClassLook { outline_width_scale: Some(1e30), ..ClassLook::default() },
+        ..LookParams::default()
+    };
+    drawn.apply_look(&wide).unwrap();
+    // A rebuild whose parts differ from the ones the look was checked on: lines wide enough to overflow the scale.
+    let mut rebuilt = built();
+    for spec in rebuilt.part_materials.values_mut() {
+        spec.outline = Some(Outline { colour: Colour::BLACK, width: 4e10 });
+    }
+    let changed = rebuilt.inherit_look(&drawn);
+    assert_eq!(rebuilt.materials, rebuilt.part_materials, "the parts' own materials are kept");
+    assert_eq!(changed.len(), 3, "{changed:?}");
+    let warnings: Vec<_> = rebuilt.report.parts.iter().flat_map(|p| &p.warnings).collect();
+    assert_eq!(warnings.len(), 3, "{warnings:?}");
+    assert!(warnings.iter().any(|w| w.contains("look-skin") && w.contains("inherited look")), "{warnings:?}");
+}
+
+/// The warnings `part` gets when `def` is rebuilt in a look its parts' (too wide) lines overflow.
+fn inherit_warnings(def: &CharacterDef, part: &str) -> Vec<String> {
+    let build = || {
+        RegistryBuilder
+            .build(&CharId::new("look").unwrap(), def, &BuildOptions::default(), &BuildServices::default())
+            .unwrap()
+    };
+    let mut drawn = build();
+    let wide = LookParams {
+        all: ClassLook { outline_width_scale: Some(1e30), ..ClassLook::default() },
+        ..LookParams::default()
+    };
+    drawn.apply_look(&wide).unwrap();
+    let mut rebuilt = build();
+    for spec in rebuilt.part_materials.values_mut() {
+        spec.outline = Some(Outline { colour: Colour::BLACK, width: 4e10 });
+    }
+    rebuilt.inherit_look(&drawn);
+    rebuilt.report.parts.iter().filter(|p| p.part.as_str() == part).flat_map(|p| p.warnings.clone()).collect()
+}
+
+#[test]
+fn an_inherited_look_warning_goes_to_the_part_that_defines_the_material() {
+    let mut def = character(false);
+    def.parts.insert("spare".parse().unwrap(), serde_json::from_value(json!({ "kind": "look-spare" })).unwrap());
+    // Nothing draws with the material: its owner still gets the warning.
+    assert_eq!(inherit_warnings(&def, "spare").len(), 1);
+    // The borrower is listed (and so built) before the part that defines the material it draws with.
+    def.parts.insert("a-borrow".parse().unwrap(), serde_json::from_value(json!({ "kind": "look-borrow" })).unwrap());
+    let spare = inherit_warnings(&def, "spare");
+    assert_eq!(spare.len(), 1, "{spare:?}");
+    assert!(
+        spare[0].contains("part 'spare'") && spare[0].contains("material 'look-spare'") && spare[0].contains("outline"),
+        "{spare:?}"
+    );
+    let borrow = inherit_warnings(&def, "a-borrow");
+    assert!(borrow.is_empty(), "the part that only draws with it is not blamed: {borrow:?}");
 }

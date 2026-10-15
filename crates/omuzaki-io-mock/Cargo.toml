@@ -20,3 +20,8 @@ proptest.workspace = true
 
 [lints]
 workspace = true
+
+[package.metadata.omuzaki]
+kind = "Mock"
+summary = "a small working GLB and VRM 1.0 importer/exporter with fixtures generated in code, and a baker that makes trivial morph targets"
+registers = true

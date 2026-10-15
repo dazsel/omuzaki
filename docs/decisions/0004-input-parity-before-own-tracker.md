@@ -1,3 +1,9 @@
+---
+title: "0004: Match existing input fidelity before building our own tracker (2026-10-11)"
+summary: "Match existing input fidelity before building our own tracker"
+area: decisions
+---
+
 # 0004: Match existing input fidelity before building our own tracker (2026-10-11)
 
 > **Amended 2026-10-11 (no later tier).** Item 2 is superseded: the custom tracker is not parked. Parity still ships first; the tracker then ships as ML-08 and becomes the default webcam model once it beats the MediaPipe baseline on the iPhone-labelled test set (QG-09).

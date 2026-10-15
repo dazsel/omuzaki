@@ -1,0 +1,7 @@
+section = "models"
+item = "Google Vertex AI image generation (Imagen 4, Gemini image models)"
+kind = "service"
+used_for = "CN-06 hosted image adapter candidate"
+status = "unverified"
+condition = "output: Cloud Service Specific Terms, Generative AI Services (modified 2026-10-12, read 2026-10-13): \"Generated Output is Customer Data. As between Customer and Google, Google does not assert any ownership rights\"; training needs the customer's permission; policy read 2026-10-13; barred in services directed at or likely accessed by under-18s (20(d)); Gemini Developer API terms, API shape and image-model retention not read (docs/research/2026-10-hosted-image-apis.md)"
+audit = "CN-06"

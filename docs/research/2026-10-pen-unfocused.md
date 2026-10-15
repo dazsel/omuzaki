@@ -1,3 +1,9 @@
+---
+title: "Pen position, pressure and tilt while unfocused (2026-10-13)"
+summary: "Pen position, pressure and tilt while unfocused (2026-10-13)"
+area: research
+---
+
 # Pen position, pressure and tilt while unfocused (2026-10-13)
 
 > Research pass (PF-29 spike), a follow-up to `2026-10-os-input-capture.md`. **Nothing here was run on a pen.** The research environment has no tablet, no Windows, no macOS and no X server with a digitiser, so every row is from documentation or protocol text, and the "Verdict" column says how far to trust it. The hardware part of the acceptance (device and OS build per cell) is **not done**; section 4 is the protocol that closes it, and section 5 lists what is still owed.

@@ -1,0 +1,7 @@
+section = "rust"
+item = "CMake and Clang (build tools of the Speex candidate)"
+kind = "tool"
+used_for = "building `aec-rs-sys` in `spikes/aec-bench` (CMake builds the vendored libspeexdsp, Clang is bindgen's libclang) (research 2026-10-echo-cancellation.md, #920)"
+status = "yes"
+condition = "CMake: BSD-3-Clause (`LICENSE.rst` in the Kitware repository, read 2026-10-15). Clang: Apache-2.0 with LLVM exceptions (`LICENSE.TXT` in llvm-project, read 2026-10-15). Build tools, nothing of them ships"
+audit = "research 2026-10-echo-cancellation.md section 2"

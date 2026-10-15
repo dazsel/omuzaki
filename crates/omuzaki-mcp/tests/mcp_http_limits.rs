@@ -10,16 +10,17 @@
 
 mod common;
 
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::FakeRunner;
+use common::fake_runner;
 use common::http::{Frozen, Port, Raw};
 use omuzaki_mcp::{AccessToken, HttpOptions, McpOptions, McpServer, ServerError};
 use reqwest::StatusCode;
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+use tokio::net::{TcpSocket, TcpStream};
 
 /// The headers of a POST to the port, announcing `content_length` bytes of body that the caller may never send.
 fn head(port: &Port, token: Option<&AccessToken>, content_length: usize, extra: &str) -> String {
@@ -189,6 +190,144 @@ async fn stalled_bodies_are_cut_off_at_the_timeout_and_the_port_serves_everyone_
     port.server.shutdown().await;
 }
 
+// ---- responses -----------------------------------------------------------------------------------------------------
+
+/// Reads whatever has already arrived, without waiting, and fails if the server has ended the stream. Reading all the way
+/// to `WouldBlock` matters: a close can sit behind bytes that are already buffered, and only the read after them shows it.
+fn drain_open(stream: &mut TcpStream) {
+    let mut buf = [0; 1024];
+    loop {
+        match stream.try_read(&mut buf) {
+            Ok(0) => panic!("the server ended the event stream"),
+            Ok(_) => {}
+            Err(error) => {
+                assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock, "{error}");
+                return;
+            }
+        }
+    }
+}
+
+/// The most real time a test waits for the server to get somewhere. A healthy run takes well under a second.
+const REAL_TIME_CEILING: Duration = Duration::from_secs(60);
+
+/// Whether the stalled client can stop waiting for the answer to start: a byte of it is actually waiting in the socket,
+/// found by peeking so that nothing is consumed, or the server has ended the stream (the test then fails further on,
+/// with the real reason). Readiness alone is not proof: tokio may report a socket readable when nothing is there, and a
+/// peek that would block is simply not ready yet. Any other error is a real failure and ends the test at once.
+fn answer_has_started(stream: &TcpStream) -> bool {
+    let mut byte = [0; 1];
+    let mut peek = std::pin::pin!(stream.peek(&mut byte));
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    match peek.as_mut().poll(&mut context) {
+        std::task::Poll::Pending => false,
+        std::task::Poll::Ready(Ok(_)) => true,
+        std::task::Poll::Ready(Err(error)) => {
+            panic!("the stalled connection failed before the answer started: {error}")
+        }
+    }
+}
+
+/// Gives the server's tasks real time to run while the clock stays frozen: the server's I/O moves in real time, and
+/// tokio does not auto-advance the clock while a blocking task runs.
+async fn let_the_server_run() {
+    tokio::task::spawn_blocking(|| std::thread::sleep(Duration::from_millis(20))).await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_client_that_never_reads_its_answer_loses_its_connection_at_the_write_timeout() {
+    let _frozen = Frozen::new();
+    // One connection in all: the stalled client holds the port's only slot, so the probe below waits for it.
+    let port =
+        Port::start_with(|options| options.with_max_connections(1).with_write_timeout(Duration::from_secs(30))).await;
+    let token = port.agent_token();
+
+    // A tiny receive buffer makes the server's writes block almost at once. The answer is about 13 MB, far more than
+    // the socket buffers hold, and this client never reads a byte of it.
+    let socket = TcpSocket::new_v4().unwrap();
+    socket.set_recv_buffer_size(4096).unwrap();
+    let mut stalled = socket.connect(port.server.local_addr()).await.expect("the port accepts");
+    let body = json!({
+        "jsonrpc": "2.0", "id": 7, "method": "tools/call",
+        "params": {
+            "name": "character_list_parts", "arguments": {"count": 1_000_000},
+            "_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientInfo": {"name": "stalled", "version": "1"},
+                "io.modelcontextprotocol/clientCapabilities": {},
+            },
+        },
+    })
+    .to_string();
+    let extra = "mcp-protocol-version: 2026-07-28\r\nmcp-method: tools/call\r\nmcp-name: character_list_parts\r\n";
+    stalled.write_all(head(&port, Some(&token), body.len(), extra).as_bytes()).await.unwrap();
+    stalled.write_all(body.as_bytes()).await.unwrap();
+
+    // A second client, which can get in only once the stalled connection's slot is given back.
+    let probe = {
+        let (raw, bearer) = (port.raw(), token.bearer_header());
+        tokio::spawn(
+            async move { raw.stateless_call(Some(bearer.as_str()), "project_ping", &json!({})).await.status() },
+        )
+    };
+    // The write timeout starts only once the server's write is blocked, and building a 13 MB answer takes as long as
+    // the machine makes it take. So the clock stays still until the first bytes of the answer reach the stalled
+    // client (they are left unread): from then on the server fills the tiny buffers within moments and blocks.
+    let began = std::time::Instant::now();
+    while !answer_has_started(&stalled) {
+        assert!(began.elapsed() < REAL_TIME_CEILING, "the server never started to answer");
+        let_the_server_run().await;
+    }
+    // Move the clock in steps, giving the server real time between them. Only real time bounds the loop, by a ceiling
+    // a healthy run never nears, so a slow machine makes the test slower and never red. The virtual time is bounded
+    // too, as the failure of a server that never cuts the connection off.
+    let mut advanced = Duration::ZERO;
+    while !probe.is_finished() {
+        assert!(began.elapsed() < REAL_TIME_CEILING, "the stalled connection was never cut off (real time)");
+        assert!(advanced < Duration::from_secs(60), "the stalled connection was never cut off");
+        let_the_server_run().await;
+        if probe.is_finished() {
+            break;
+        }
+        tokio::time::advance(Duration::from_secs(1)).await;
+        advanced += Duration::from_secs(1);
+    }
+    // The slot is given back only once the write has been blocked for the whole timeout, never earlier.
+    assert!(advanced >= Duration::from_secs(30), "the connection was cut off after only {advanced:?}");
+    assert_eq!(probe.await.unwrap(), StatusCode::OK, "the freed slot serves the next client");
+    drop(stalled);
+    port.server.shutdown().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_idle_event_stream_is_never_cut_off_by_the_write_timeout() {
+    let _frozen = Frozen::new();
+    let port = Port::start_with(|options| options.with_write_timeout(Duration::from_secs(30))).await;
+    let token = port.agent_token();
+    let session = port.raw().open_session(&token).await;
+    let mut stream = port.socket().await;
+    let request = format!(
+        "GET /mcp HTTP/1.1\r\nHost: {}\r\nAuthorization: {}\r\nMcp-Session-Id: {session}\r\n\
+         Accept: text/event-stream\r\n\r\n",
+        port.server.local_addr(),
+        token.bearer_header(),
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let head = read_head(&mut stream).await;
+    assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+
+    // Take what the stream has already sent, so the check below sees only what arrives after it.
+    let_the_server_run().await;
+    drain_open(&mut stream);
+
+    // Silence for twice the write timeout, with nothing pending to write: the stream must stay open, which shows as no
+    // end of stream even after everything sent in the meantime has been read.
+    tokio::time::advance(Duration::from_secs(60)).await;
+    let_the_server_run().await;
+    drain_open(&mut stream);
+    port.server.shutdown().await;
+}
+
 // ---- configuration -----------------------------------------------------------------------------------------------
 
 #[test]
@@ -197,20 +336,22 @@ fn the_defaults_are_the_documented_safe_ones() {
     assert_eq!(options.max_sessions_per_token, 32);
     assert_eq!(options.max_body_bytes, 4 * 1024 * 1024);
     assert_eq!(options.body_timeout, Duration::from_secs(30));
+    assert_eq!(options.write_timeout, Duration::from_secs(30));
     assert_eq!((options.max_connections, options.header_timeout), (64, Duration::from_secs(10)));
     assert_eq!(options.idle_timeout, Duration::from_mins(30));
 }
 
 #[tokio::test]
 async fn a_timeout_beyond_the_documented_maximum_is_refused_naming_the_field_and_the_maximum() {
-    let mcp = McpServer::new(Arc::new(FakeRunner::new()), McpOptions::default()).unwrap();
+    let mcp = McpServer::new(Arc::new(fake_runner()), McpOptions::default()).unwrap();
     let base = || HttpOptions::default().with_bind("127.0.0.1:0".parse().unwrap());
     let too_long = [Duration::MAX, HttpOptions::MAX_TIMEOUT + Duration::from_nanos(1)];
     for timeout in too_long {
-        let cases: [(&str, HttpOptions); 3] = [
+        let cases: [(&str, HttpOptions); 4] = [
             ("idle_timeout", base().with_idle_timeout(timeout)),
             ("header_timeout", base().with_header_timeout(timeout)),
             ("body_timeout", base().with_body_timeout(timeout)),
+            ("write_timeout", base().with_write_timeout(timeout)),
         ];
         for (name, options) in cases {
             let error = mcp.serve_http(options).await.err().expect("refused");
@@ -234,12 +375,13 @@ async fn timeouts_at_the_maximum_are_accepted_and_requests_are_served() {
 
 #[tokio::test]
 async fn a_limit_that_would_refuse_every_client_is_an_error_naming_it() {
-    let mcp = McpServer::new(Arc::new(FakeRunner::new()), McpOptions::default()).unwrap();
+    let mcp = McpServer::new(Arc::new(fake_runner()), McpOptions::default()).unwrap();
     let base = || HttpOptions::default().with_bind("127.0.0.1:0".parse().unwrap());
-    let cases: [(&str, HttpOptions); 3] = [
+    let cases: [(&str, HttpOptions); 4] = [
         ("max_sessions_per_token", base().with_max_sessions_per_token(0)),
         ("max_body_bytes", base().with_max_body_bytes(0)),
         ("body_timeout", base().with_body_timeout(Duration::ZERO)),
+        ("write_timeout", base().with_write_timeout(Duration::ZERO)),
     ];
     for (name, options) in cases {
         let error = mcp.serve_http(options).await.err().expect("refused");

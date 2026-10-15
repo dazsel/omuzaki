@@ -1,0 +1,8 @@
+section = "rust"
+item = "egui, eframe"
+kind = "crate"
+used_for = "editor UI; the eframe host and the egui viewport binary in `spikes/mascot-window`"
+status = "conditions"
+condition = "ship notices for bundled fonts (Ubuntu Font Licence, Bitstream Vera for Hack)"
+audit = "B1"
+crates = ["eframe", "egui"]

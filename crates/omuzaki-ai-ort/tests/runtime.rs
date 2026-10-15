@@ -52,15 +52,6 @@ fn custom_op_domains_and_external_data_are_refused_before_any_library_loads() {
 }
 
 #[test]
-fn multi_graph_models_wait_for_1186() {
-    let path = fixture("identity.onnx");
-    let files = [local("model.onnx", &path)];
-    let stage = omuzaki_ai_api::Stage { name: "a".into(), file: "model.onnx".into(), inputs: BTreeMap::new() };
-    let result = with_source(&files, &[stage], &NoNetwork, |source| OrtRuntime.probe(source));
-    assert_eq!(result, Err(LoadError::Format("multi-graph models are not supported yet".into())));
-}
-
-#[test]
 fn a_file_that_is_not_a_model_is_a_format_error() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("junk.onnx");
@@ -178,10 +169,7 @@ fn asking_for_gpu_providers_a_machine_lacks_falls_back_to_the_cpu_and_says_so() 
     };
     let path = fixture("identity.onnx");
     let files = [local("model.onnx", &path)];
-    let options = SessionOptions {
-        providers: vec![Provider::DirectMl, Provider::Cuda, Provider::WebGpu, Provider::Cpu],
-        threads: 1,
-    };
+    let options = SessionOptions::new(vec![Provider::DirectMl, Provider::Cuda, Provider::WebGpu, Provider::Cpu], 1);
     let session =
         with_source(&files, &[], &natives, |s| OrtRuntime.load_session(s, &identity_slot(), &io(), &options)).unwrap();
     assert_eq!(session.info().provider, Provider::Cpu, "no GPU in the test environment");

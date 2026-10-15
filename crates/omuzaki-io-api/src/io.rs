@@ -62,8 +62,9 @@ impl Resolver for NoResolver {
 
 /// Progress and cancellation for long imports and exports (they run as `OpKind::Job`).
 ///
-/// This duplicates what the job manager will need; when `omuzaki-ops-api` grows jobs, the two merge (a blanket impl is
-/// enough). Decided on review; see `docs/design/io-api.md`.
+/// This duplicates what the job manager needs, and the two stay separate types. An io op that runs as a job passes an
+/// adapter over its `JobCtx` instead: `omuzaki_io_ops::ops::progress::JobProgress` implements this trait by forwarding to
+/// the job. Decided on review; see `docs/design/io-api.md`.
 pub trait Progress: Send + Sync {
     /// Reports that `stage` is `fraction` (0..=1) done.
     fn stage(&self, name: &str, fraction: f32);

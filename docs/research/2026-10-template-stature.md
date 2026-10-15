@@ -1,3 +1,9 @@
+---
+title: "Template stature: how tall each body template stands"
+summary: "how tall each body template stands"
+area: research
+---
+
 # Template stature: how tall each body template stands
 
 Each template declares `default_stature_m`, the height in metres of the person it stands for. The build scales the body and

@@ -1,0 +1,7 @@
+section = "rust"
+item = "Syphon"
+kind = "native"
+used_for = "texture sharing"
+status = "yes"
+condition = "keep notices"
+audit = "B4"

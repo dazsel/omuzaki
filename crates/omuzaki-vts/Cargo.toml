@@ -18,4 +18,6 @@ workspace = true
 
 # Native only: the later client task opens a WebSocket to a local app
 [package.metadata.omuzaki]
+kind = "Implementation"
+summary = "the VTube Studio plugin API as data (CN-13): the message `Envelope`, `ApiError` and `ErrorKind`, every request, response and event the bridge uses, and the validators and limits (`CustomParamName`, `ParamValue`, `FadeTime`); clean-room from the documented wire protocol, no I/O, native only"
 wasm = false

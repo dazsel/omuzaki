@@ -1,3 +1,9 @@
+---
+title: "`omuzaki-ai-api`: the model registry and runtime contract"
+summary: "the model registry and runtime contract"
+area: design
+---
+
 # `omuzaki-ai-api`: the model registry and runtime contract
 
 **Status:** accepted (2026-10-12); the review answers are folded in (section 16). **Crates:** `crates/omuzaki-ai-api`, `crates/omuzaki-ai-mock`. **Decision record:** ADR

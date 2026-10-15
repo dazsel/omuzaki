@@ -1,3 +1,9 @@
+---
+title: "Likeness measures: `measure.face_outline`, `measure.feature_spacing`, `measure.likeness` (VF-01)"
+summary: "`measure.face_outline`, `measure.feature_spacing`, `measure.likeness` (VF-01)"
+area: design
+---
+
 # Likeness measures: `measure.face_outline`, `measure.feature_spacing`, `measure.likeness` (VF-01)
 
 **Status:** the maintainers' decisions of 2026-10-13 are folded in (§14); awaiting acceptance. **Feature:** VF-01. **Decision record:**

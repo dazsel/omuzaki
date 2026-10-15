@@ -1,0 +1,7 @@
+section = "models"
+item = "Inochi2D core, inox2d"
+kind = "code"
+used_for = "2D puppet import (EX-08)"
+status = "conditions"
+condition = "BSD-2-Clause per both repositories (2026-10-11); keep notices; inox2d is a prototype without MeshGroup support; read the format docs (`tech-docs/`) and record their licence before building the importer"
+audit = "(github.com/Inochi2D)"
