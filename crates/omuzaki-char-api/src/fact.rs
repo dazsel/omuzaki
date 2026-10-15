@@ -263,7 +263,11 @@ impl Slot {
     }
 }
 
-fn merge_all<F: Fact>(merged: &mut BTreeMap<&'static str, Merged>, part: &PartId, values: Vec<Cell>) -> Result<(), String>
+fn merge_all<F: Fact>(
+    merged: &mut BTreeMap<&'static str, Merged>,
+    part: &PartId,
+    values: Vec<Cell>,
+) -> Result<(), String>
 where
     F::Value: Clone,
     F::Merged: Clone,
