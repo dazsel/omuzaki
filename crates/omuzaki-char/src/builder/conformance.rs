@@ -41,7 +41,7 @@ pub const PALETTES: usize = 5;
 /// How many seeds each base is checked at: its own, then `SEEDS - 1` more. A fact can read the palette only on the
 /// draws some seeds give (a kind that chooses through `ctx.rng` whether to), so one seed is not enough.
 pub const SEEDS: usize = 5;
-/// The step from one swept seed to the next: added, not XORed, since XOR with the same constant twice returns to the
+/// The step from one swept seed to the next: added, not `XORed`, since XOR with the same constant twice returns to the
 /// start, so a chain of two would check one seed twice.
 const SEED_STEP: u32 = 0x9e37_79b9;
 /// The build options every palette is compared under: both qualities, each with and without `rig_export`. (`variant`
