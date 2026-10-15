@@ -1,0 +1,7 @@
+section = "rust"
+item = "meson and ninja (build tools of the optional C++ AEC3 build)"
+kind = "tool"
+used_for = "building `webrtc-audio-processing-sys` in `spikes/aec-bench` with `--features webrtc-cpp` (research 2026-10-echo-cancellation.md, #920)"
+status = "yes"
+condition = "Apache-2.0 both (`COPYING` in each repository, read 2026-10-15); build tools, nothing of them ships"
+audit = "research 2026-10-echo-cancellation.md section 2"
