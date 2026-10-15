@@ -1,0 +1,29 @@
+# The walk cycle, 1 s: keys at four gait phases (contact, passing, and the same two on the other foot, which are the
+# first two mirrored). A pose-library example and a fallback; locomotion uses the procedural gait (#1829).
+id = "walk"
+summary = "A looping walk with keys at four gait phases and the foot contacts of each."
+length = 1.0
+looped = true
+easing = "smooth"
+
+[[keys]]
+t = 0.0
+pose = "walk-contact"
+contacts = { left = true, right = true }
+
+[[keys]]
+t = 0.25
+pose = "walk-passing"
+contacts = { left = true, right = false }
+
+[[keys]]
+t = 0.5
+pose = "walk-contact"
+mirror = true
+contacts = { left = true, right = true }
+
+[[keys]]
+t = 0.75
+pose = "walk-passing"
+mirror = true
+contacts = { left = false, right = true }
