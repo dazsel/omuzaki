@@ -80,6 +80,9 @@ goes to the Director first.
   fills its state issue completely, posts "handover due" on #2 and stops. The owner then archives its sessions.
 - **The new lead** reads `CLAUDE.md`, this file, its area's manual and the state issue, absorbs each `-wip` branch into
   its pull request as a fix round, and posts "taken over".
+- **Ownership changes apply to new work.** When an area changes lead, or a task moves between areas, work already in
+  flight finishes with whoever has it (its session runs to a ready pull request, then is archived); only work not yet
+  started moves. Never stop a session mid-task to hand its work over.
 - A handover in the middle of a lot of work wastes tokens; when one is asked for mid-work, say what it costs and
   propose a better moment, then do what is decided.
 
