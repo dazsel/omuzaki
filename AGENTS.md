@@ -29,7 +29,7 @@ timeout and do not leave background processes running.
 
 ## Layout and the API-crate rules
 
-The workspace is `crates/*` plus `xtask`. The full table is in `crates/README.md`. In short:
+The workspace is `crates/*` plus `xtask`. The full table is printed by `cargo xtask crate-table`, from each crate's manifest. In short:
 
 - **API crates** (`omuzaki-core`, `*-api`) are contracts. They depend only on `omuzaki-core`, other API crates and external
   crates. Do not change one as a side effect of another task; propose the change in a Discussion first. Breaking changes

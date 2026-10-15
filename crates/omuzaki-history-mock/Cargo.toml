@@ -17,3 +17,7 @@ omuzaki-store-api = { path = "../omuzaki-store-api" }
 
 [lints]
 workspace = true
+
+[package.metadata.omuzaki]
+kind = "Mock"
+summary = "a `RecordingSink` (scriptable `admit`, `wants_mark`, `sync`, `status`) and an in-memory `MemorySnapshots`"
