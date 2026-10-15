@@ -79,7 +79,7 @@ pub use playout::{DEFAULT_CAPACITY, DelayRamp, MAX_SLEW, PlayoutDelay, PlayoutEr
 pub use pose_layer::{BoneMask, PoseLayer, PoseLayers, PoseMode};
 pub use retarget::{
     Calibration, CalibrationError, CalibrationOutcome, CalibrationPrompt, Calibrator, ChannelRange, EXAGGERATED, FAST,
-    LOOK_FULL_RAD, LostPolicy, MIN_FIT_SPAN, MIN_SPAN, OneEuroParams, Response, Retarget, RetargetConfig,
+    LOOK_FULL_RAD, LostPolicy, MIN_FIT_SPAN, MIN_SPAN, OneEuroParams, RangeSource, Response, Retarget, RetargetConfig,
 };
 pub use score::{ChannelTrack, ClipId, CompiledScore, Cue, CueKind, Ease, ExpressionId, Key, Score, ScoreError};
 pub use skeleton::{
