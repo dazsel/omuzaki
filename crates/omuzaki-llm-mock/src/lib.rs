@@ -8,16 +8,17 @@
 //!   the script, as JSON (anything else gives an empty script, which fails every turn).
 #![deny(missing_docs)]
 
+pub mod conformance;
 mod fake;
 mod script;
 
 pub use fake::FakeLlm;
 pub use script::{Expect, Injected, Script, ScriptTurn};
 
-use omuzaki_llm_api::{
-    CostModel, LlmCapability, LlmClient, LlmError, ModelInfo, Privacy, ProviderConfig, ProviderEnv, ProviderManifest,
-    register_llm_provider,
-};
+use omuzaki_llm_api::error::LlmError;
+use omuzaki_llm_api::provider::{CostModel, LlmCapability, Privacy, ProviderConfig, ProviderEnv, ProviderManifest};
+use omuzaki_llm_api::usage::ModelInfo;
+use omuzaki_llm_api::{LlmClient, register_llm_provider};
 
 omuzaki_core::define_link!();
 

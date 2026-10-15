@@ -3,7 +3,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{ContentBlock, ImageMime, TurnRequest};
+use crate::message::{ContentBlock, ImageMime, TurnRequest};
 
 /// Tokens a turn used. `input` excludes the two cache counters.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -118,7 +118,7 @@ pub struct ModelInfo {
     pub vision: bool,
     /// Accepts tools.
     pub tools: bool,
-    /// Honours [`Effort`](crate::Effort).
+    /// Honours [`Effort`](crate::message::Effort).
     pub effort: bool,
     /// Honours cache breakpoints.
     pub caching: bool,
@@ -160,6 +160,16 @@ fn block_tokens(block: &ContentBlock, info: &ModelInfo) -> u64 {
 struct Measured {
     tokens: u64,
     messages: usize,
+    /// A fingerprint of the system, the tools and the request's own messages that the measurement covers.
+    prefix: u64,
+}
+
+/// FNV-1a over the JSON of the parts of `request` that the measured tokens cover: the system, the tools and the
+/// first `messages` messages. Fixed constants, so a stored ledger compares the same across runs.
+fn fingerprint(request: &TurnRequest, messages: usize) -> u64 {
+    let covered = request.messages.get(..messages).unwrap_or(&request.messages);
+    let json = serde_json::to_vec(&(&request.system, &request.tools, covered)).unwrap_or_default();
+    json.iter().fold(0xcbf2_9ce4_8422_2325, |hash, b| (hash ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3))
 }
 
 /// Bounds a turn's cost before it is sent, with no network (llm-api D4). One ledger per conversation.
@@ -180,18 +190,21 @@ impl Ledger {
         self.measured = Some(Measured {
             tokens: usage.prompt().saturating_add(usage.output),
             messages: request.messages.len() + 1,
+            prefix: fingerprint(request, request.messages.len()),
         });
     }
 
     /// An upper estimate of the prompt of `request`, in tokens: the measured history plus an estimate of what was
     /// appended (1 token per byte of text and JSON, 8 per block, images from [`ModelInfo::image_cost`]), or an
-    /// estimate of everything on a first turn or when the history is shorter than the ledger remembers.
+    /// estimate of everything on a first turn, when the history is shorter than the ledger remembers, or when the
+    /// system, the tools or an earlier message changed since the measurement.
     pub fn prompt_estimate(&self, request: &TurnRequest, info: &ModelInfo) -> u64 {
         let messages = |from: usize| -> u64 {
             let appended = request.messages.iter().skip(from);
             appended.flat_map(|m| &m.content).map(|b| block_tokens(b, info)).sum()
         };
-        if let Some(m) = self.measured.filter(|m| m.messages <= request.messages.len()) {
+        let same_prefix = |m: &Measured| fingerprint(request, m.messages - 1) == m.prefix;
+        if let Some(m) = self.measured.filter(|m| m.messages <= request.messages.len() && same_prefix(m)) {
             return m.tokens.saturating_add(messages(m.messages));
         }
         let system: u64 = request.system.iter().map(|s| s.text.len() as u64 + BLOCK_OVERHEAD).sum();
@@ -216,6 +229,7 @@ impl Ledger {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::message::{CachePlan, Effort, Message, Role, SystemBlock, ToolChoice};
 
     fn flat(rate: u64) -> PriceTable {
         let rates = Rates { input: rate, output: 0, cache_read: 0, cache_write: 0 };
@@ -224,6 +238,46 @@ mod tests {
             source: String::new(),
             tiers: vec![PriceTier { prompt_up_to: None, rates }],
         }
+    }
+
+    fn request(system: &str, texts: &[&str]) -> TurnRequest {
+        let message = |t: &&str| Message { role: Role::User, content: vec![ContentBlock::Text((*t).into())] };
+        TurnRequest {
+            system: vec![SystemBlock { text: system.into(), cache_after: false }],
+            messages: texts.iter().map(message).collect(),
+            tools: Vec::new(),
+            tool_choice: ToolChoice::Auto,
+            max_output: 10,
+            effort: Effort::Default,
+            cache: CachePlan { conversation: false },
+        }
+    }
+
+    fn model() -> ModelInfo {
+        ModelInfo {
+            id: "m".into(),
+            context_window: 1000,
+            max_output: 10,
+            vision: false,
+            tools: false,
+            effort: false,
+            caching: false,
+            image_cost: ImageCost::Flat(1),
+        }
+    }
+
+    #[test]
+    fn measured_tokens_hold_only_while_the_prefix_is_unchanged() {
+        let first = request("sys", &["a"]);
+        let mut ledger = Ledger::new();
+        ledger.observe(&first, &Usage { input: 5_000, output: 100, cache_read: 0, cache_write: 0 });
+        let mut next = request("sys", &["a", "answer", "b"]);
+        assert_eq!(ledger.prompt_estimate(&next, &model()), 5_100 + 1 + BLOCK_OVERHEAD);
+        // A changed system prompt, or an edited earlier message, makes the measurement stale: estimate it all.
+        let edited = request("other", &["a", "answer", "b"]);
+        assert!(ledger.prompt_estimate(&edited, &model()) < 100);
+        next.messages[0] = request("sys", &["changed"]).messages.remove(0);
+        assert!(ledger.prompt_estimate(&next, &model()) < 100);
     }
 
     #[test]
