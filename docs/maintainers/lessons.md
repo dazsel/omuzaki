@@ -87,6 +87,20 @@ Leave out slips that cost nothing.
 - **The rule:** the issue's area owns it. Before starting a session, check the issue for a linked branch or pull request.
   Leads archive each sub-session in the same step that reports its pull request merged or closed.
 
+**What the watcher listens for must match what sessions are told to post** (2026-10-15).
+- **What happened:** the lead's watcher listened for `**<Area> (question):**`, but the session brief told sessions to
+  post `**Cloud (question):**`. A session's only channel for a question could be dropped while the session sat idle
+  waiting for the answer. The same manual's maintainer-only filter would also have discarded Codex's own reviews.
+- **The rule:** the protocol and its listener change in the same pull request. The watcher matches any first line
+  containing `(question):**`, and the Codex bot is an explicit, exact-login exception to the maintainer filter.
+
+**Archiving destroys unpushed work** (2026-10-15).
+- **What happened:** the archiving rule (archive a session as soon as its work is done) didn't say the work had to be
+  pushed first. A session stopped early was archived after checking only that its branch had never been pushed, not
+  its local `git status`.
+- **The rule:** archive only when `git status` is clean and the remote head matches the head the session reported. A
+  session stopped early pushes to `<branch>-wip` first. A session waiting on a question's answer stays open.
+
 ## Structure
 
 **A list every feature edits becomes a hub** (2026-10-15).

@@ -1,5 +1,5 @@
 //! The brows against the prototype's `brow-L`/`brow-R` sections: both variants, every golden expression. Skips
-//! without the assets drive. See `omuzaki_test::face_parity` for what is private.
+//! without the assets drive. See `omuzaki_test_face::face_parity` for what is private.
 //!
 //! The face rule (T-FACE) except for the share of bad pixels, 2 % instead of 1 %. A brow is a 5-10 px sliver, so
 //! nearly every pixel of its rectangle that has ink is an edge pixel. The reference's edges take only the coverages
@@ -10,8 +10,8 @@
 
 use omuzaki_face::Section;
 use omuzaki_test::compare::Tolerance;
-use omuzaki_test::face_parity::{SectionTolerance, check_section};
 use omuzaki_test::regioncmp::{T_FACE, T_FACE_MIN_PSNR_DB};
+use omuzaki_test_face::face_parity::{SectionTolerance, check_section};
 
 #[test]
 fn brows_match_the_prototype() {
