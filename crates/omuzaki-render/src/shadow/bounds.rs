@@ -35,6 +35,14 @@ impl MeshBounds {
         self.joints.extend(base.joints.iter().map(|b| Aabb { min: b.min - down, max: b.max + up }));
     }
 
+    /// Overwrites `self` with `base`'s boxes moved by `by`: where a morph that translates the mesh puts them (exact for a
+    /// rigid translation, a good centre otherwise). Allocates only if the joint count grew.
+    pub(crate) fn set_shifted(&mut self, base: &Self, by: Vec3) {
+        self.whole = Aabb { min: base.whole.min + by, max: base.whole.max + by };
+        self.joints.clear();
+        self.joints.extend(base.joints.iter().map(|b| Aabb { min: b.min + by, max: b.max + by }));
+    }
+
     /// The boxes of `mesh`, whose joint count (one past the highest weighted joint) is `joints_needed`.
     pub(crate) fn of(mesh: &MeshData, joints_needed: u32) -> Self {
         let mut whole = Aabb::EMPTY;

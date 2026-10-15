@@ -222,7 +222,9 @@ impl Renderer for WgpuRenderer {
             }
         }
         let gpu = &self.shared.gpu;
-        let uploaded = gpu.scoped("a mesh", || GpuMesh::upload(gpu, mesh, options))?;
+        // The GPU morph path reads the mesh's own vertices from a compute shader, so only then do they need `STORAGE`.
+        let blend_on_gpu = self.resources.morphs.path() == morph::MorphPath::Gpu;
+        let uploaded = gpu.scoped("a mesh", || GpuMesh::upload(gpu, mesh, options, blend_on_gpu))?;
         let (index, generation) = self.resources.meshes.insert(uploaded);
         // The GPU morph path uploads the mesh's targets once, here; a mesh it cannot hold is refused outright.
         let attached = self.resources.meshes.get(index, generation).map_or(Ok(()), |m| {
@@ -473,6 +475,7 @@ impl Renderer for WgpuRenderer {
             let stats = cx.stats;
             graph.resolve_timings(&mut encoder, scene.frame.index, recorded.ran);
             gpu.queue.submit([encoder.finish()]);
+            scene_resources.morphs.submitted();
             entry.has_frame = true;
             paints.clear();
 

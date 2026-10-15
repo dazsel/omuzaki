@@ -168,8 +168,14 @@ pub(crate) struct GpuMesh {
 }
 
 impl GpuMesh {
-    /// Uploads `mesh`, which the caller has validated along with `options`.
-    pub(crate) fn upload(gpu: &Gpu, mesh: &MeshData, options: &MeshOptions) -> Result<Self, RenderError> {
+    /// Uploads `mesh`, which the caller has validated along with `options`. `blend_on_gpu` says the renderer blends morph
+    /// targets in a compute shader, which reads the mesh's shape stream as storage.
+    pub(crate) fn upload(
+        gpu: &Gpu,
+        mesh: &MeshData,
+        options: &MeshOptions,
+        blend_on_gpu: bool,
+    ) -> Result<Self, RenderError> {
         let index_count = u32::try_from(mesh.indices.len())
             .map_err(|_| RenderError::LimitExceeded { what: "indices in a mesh", limit: u64::from(u32::MAX) })?;
         let skinned = mesh.is_skinned();
@@ -197,8 +203,11 @@ impl GpuMesh {
         // A dynamic mesh's vertex buffers are rewritten by `queue.write_buffer`; the rest never are.
         let rewritable = if dynamic { wgpu::BufferUsages::COPY_DST } else { wgpu::BufferUsages::empty() };
         // The GPU morph blend reads the mesh's own shapes as the base its targets apply to.
-        let blendable =
-            if options.morphs.is_some() { wgpu::BufferUsages::STORAGE } else { wgpu::BufferUsages::empty() };
+        let blendable = if blend_on_gpu && options.morphs.is_some() {
+            wgpu::BufferUsages::STORAGE
+        } else {
+            wgpu::BufferUsages::empty()
+        };
         let buffer = |contents: &[u8], usage| {
             gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("mesh"), contents, usage })
         };

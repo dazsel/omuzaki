@@ -46,8 +46,10 @@ struct Params {
 @group(1) @binding(2) var<storage, read> blended: array<f32>;
 @group(1) @binding(3) var<storage, read_write> directions: array<f32>;
 
-// Below this the squared length is no direction: glam's `try_normalize` fails there too.
-const MIN_LENGTH_SQUARED: f32 = 1e-30;
+// glam's `try_normalize` (the CPU path) normalises any vector whose reciprocal length is finite and non-zero, which is
+// every squared length down to the smallest normal float. The same threshold here; the one difference left is a GPU that
+// flushes subnormals, which sees squared lengths below this as zero.
+const MIN_LENGTH_SQUARED: f32 = 1.17549435e-38;
 
 @compute @workgroup_size(64)
 fn blend(@builtin(global_invocation_id) id: vec3<u32>) {

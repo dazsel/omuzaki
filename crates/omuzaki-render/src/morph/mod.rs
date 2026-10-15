@@ -27,6 +27,8 @@
 //! (conservative, never smaller than the CPU path's exact ones), and its outline directions are re-welded by a second
 //! dispatch, only when the instance re-blends.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use omuzaki_core::glam::Vec3;
 use omuzaki_render_api::{Instance, MorphSet, RenderError, Scene};
 
@@ -136,8 +138,11 @@ struct Slot {
     /// The weights `blended` holds the blend of, valid while `source` is `Some`.
     weights: Vec<f32>,
     source: Option<Source>,
-    /// The boxes of `blended`, for shadow fitting and the transparent sort.
+    /// The boxes of `blended`, for shadow fitting: exact on the CPU path, conservative on the GPU path.
     bounds: MeshBounds,
+    /// The boxes the transparent sort reads on the GPU path: the mesh's, shifted by where the weights move its centre.
+    /// (On the CPU path `bounds` is exact and the sort reads it.)
+    sort_bounds: MeshBounds,
     /// `smooth` lags `blended`; it is brought up to date when an outlined instance needs it.
     smooth_stale: bool,
     /// The instance morphs this frame, so the passes bind the slot's streams.
@@ -158,6 +163,7 @@ impl Default for Slot {
             weights: Vec::new(),
             source: None,
             bounds: MeshBounds::empty(),
+            sort_bounds: MeshBounds::empty(),
             smooth_stale: true,
             active: false,
             idle: 0,
@@ -231,6 +237,9 @@ pub(crate) struct MorphPool {
     meshes_gpu: Vec<Option<(u32, gpu::MeshGpu)>>,
     /// The dispatches to record this frame, in order.
     pending: Vec<gpu::Pending>,
+    /// The frame's dispatches were submitted ([`submitted`](Self::submitted)): until then the slots' caches are only a
+    /// promise, which the next [`prepare`](Self::prepare) takes back if the frame never got that far.
+    submitted: AtomicBool,
 }
 
 impl MorphPool {
@@ -372,6 +381,19 @@ impl MorphPool {
         Some((slot.shapes.slice()?, slot.smooth.slice()?))
     }
 
+    /// Tells the pool that the frame whose dispatches [`record`](Self::record) wrote has been submitted, so the blends it
+    /// queued are done.
+    pub(crate) fn submitted(&self) {
+        self.submitted.store(true, Ordering::Release);
+    }
+
+    /// The bounds the transparent sort reads for the instance, or `None` for the mesh's own: the blended vertices'
+    /// exact bounds on the CPU path, and on the GPU path the mesh's shifted by where the weights move its centre.
+    pub(crate) fn sort_bounds(&self, instance: u32) -> Option<&MeshBounds> {
+        let slot = self.active(instance)?;
+        Some(if slot.gpu.is_some() { &slot.sort_bounds } else { &slot.bounds })
+    }
+
     /// The bounds of the instance's blended vertices, or `None` for the mesh's own.
     pub(crate) fn bounds(&self, instance: u32) -> Option<&MeshBounds> {
         self.active(instance).map(|s| &s.bounds)
@@ -408,7 +430,17 @@ impl MorphPool {
         if self.slots.len() < needed {
             self.slots.resize_with(needed, Slot::default);
         }
-        let Self { slots, flags, sums, gpu, meshes_gpu, pending, .. } = self;
+        let Self { slots, flags, sums, gpu, meshes_gpu, pending, submitted, .. } = self;
+        // Dispatches that never reached a submitted frame (it failed after this pool's last `prepare`) were not done,
+        // whatever the slots' caches say: take those back so this frame does them again.
+        if !submitted.swap(false, Ordering::AcqRel) {
+            for p in pending.iter() {
+                if let Some(slot) = slots.get_mut(p.slot) {
+                    slot.source = None;
+                    slot.smooth_stale = true;
+                }
+            }
+        }
         pending.clear();
         let usage = wgpu::BufferUsages::VERTEX
             | wgpu::BufferUsages::COPY_DST
@@ -521,6 +553,7 @@ fn blend_on_gpu(
         on_gpu.write_params(queue, target.data.vertices, weights);
         let (down, up) = gpu::grow(weights, target.data);
         slot.bounds.set_grown(&mesh.bounds, down, up);
+        slot.sort_bounds.set_shifted(&mesh.bounds, gpu::shift(weights, target.data));
         slot.blended_from(source, weights);
         pending.push(target.pending(gpu::Step::Blend));
     }
@@ -673,7 +706,7 @@ mod tests {
             let deltas = vec![Vec3::X; n];
             let set = MorphSet::from_dense(n, &[(Slug::new("a").unwrap(), &deltas, &[])], 0.0).unwrap();
             let options = MeshOptions { morphs: Some(set), ..MeshOptions::default() };
-            let (index, generation) = meshes.insert(GpuMesh::upload(&gpu, &mesh, &options).unwrap());
+            let (index, generation) = meshes.insert(GpuMesh::upload(&gpu, &mesh, &options, false).unwrap());
             let mut scene = Scene::new(Camera::default());
             let id = MeshId::from_parts(index, generation);
             let mut instance = Instance::new(id, MaterialId::from_parts(0, 0), Mat4::IDENTITY);
@@ -712,8 +745,9 @@ mod tests {
         let deltas = vec![Vec3::X; n];
         let set = MorphSet::from_dense(n, &[(Slug::new("a").unwrap(), &deltas, &[])], 0.0).unwrap();
         let mut meshes = Arena::default();
-        let (index, generation) = meshes
-            .insert(GpuMesh::upload(gpu, &cube, &MeshOptions { morphs: Some(set), ..MeshOptions::default() }).unwrap());
+        let (index, generation) = meshes.insert(
+            GpuMesh::upload(gpu, &cube, &MeshOptions { morphs: Some(set), ..MeshOptions::default() }, false).unwrap(),
+        );
         let mut scene = Scene::new(Camera::default());
         let mut instance =
             Instance::new(MeshId::from_parts(index, generation), MaterialId::from_parts(0, 0), Mat4::IDENTITY);
@@ -816,7 +850,7 @@ mod tests {
             let deltas = vec![Vec3::X; n];
             let set = MorphSet::from_dense(n, &[(Slug::new("a").unwrap(), &deltas, &[])], 0.0).unwrap();
             let options = MeshOptions { morphs: Some(set), ..MeshOptions::default() };
-            let (index, generation) = meshes.insert(GpuMesh::upload(&gpu, mesh, &options).unwrap());
+            let (index, generation) = meshes.insert(GpuMesh::upload(&gpu, mesh, &options, on_gpu).unwrap());
             pool.attach(&gpu.device, index, generation, meshes.get(index, generation).unwrap()).unwrap();
             MeshId::from_parts(index, generation)
         })

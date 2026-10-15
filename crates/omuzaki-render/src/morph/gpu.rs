@@ -17,8 +17,9 @@ use super::MorphInput;
 const WORKGROUP: u32 = 64;
 /// Workgroups one dispatch may span on one axis, the WebGPU guarantee.
 const MAX_WORKGROUPS: u32 = 65_535;
-/// The storage buffers one pipeline binds, across both of its groups; the device must allow this many.
-const STORAGE_BUFFERS: u32 = 5;
+/// The storage buffers one pipeline binds, across both of its groups; the device must allow this many. The weld
+/// pipeline binds the most: `slot_of`, `group_first` and `members`, then `params`, `blended` and `directions`.
+const STORAGE_BUFFERS: u32 = 6;
 /// Bytes before the weights in the params buffer: the vertex count, the target count and padding.
 pub(super) const PARAMS_HEADER: u64 = 16;
 
@@ -34,7 +35,11 @@ struct Entry {
 
 /// Whether `device` can run the blend: compute with enough storage buffers. A WebGL2 device has none.
 pub(super) fn supported(device: &wgpu::Device) -> bool {
-    let limits = device.limits();
+    supported_by(&device.limits())
+}
+
+/// Whether a device with `limits` can run the blend.
+fn supported_by(limits: &wgpu::Limits) -> bool {
     limits.max_storage_buffers_per_shader_stage >= STORAGE_BUFFERS
         && limits.max_compute_workgroup_size_x >= WORKGROUP
         && limits.max_compute_invocations_per_workgroup >= WORKGROUP
@@ -110,6 +115,9 @@ pub(super) struct MeshGpu {
     /// Per target, how far it can move any vertex per unit weight on each axis: up (the largest positive delta) and
     /// down (the largest negative one, as a positive number).
     extents: Vec<Extent>,
+    /// Per target, how far the centre of the mesh's box moves at weight 1 (exact for a rigid translation): what the
+    /// transparent sort follows.
+    shifts: Vec<Vec3>,
     /// The vertices the mesh has.
     pub(super) vertices: u32,
     /// What the uploaded buffers hold, for the stats.
@@ -123,10 +131,11 @@ struct Extent {
     down: Vec3,
 }
 
-/// A storage buffer holding `data` (at least 16 bytes, which a binding needs even for an empty array).
+/// A storage buffer holding `data`, padded to at least one element (and 16 bytes): a binding to a runtime-sized array
+/// must be big enough for one, even when the array is empty.
 fn upload<T: Pod>(device: &wgpu::Device, label: &str, data: &[T], bytes: &mut u64) -> wgpu::Buffer {
     let mut raw: Vec<u8> = bytemuck::cast_slice(data).to_vec();
-    raw.resize(raw.len().max(16), 0);
+    raw.resize(raw.len().max(size_of::<T>()).max(16), 0);
     *bytes += raw.len() as u64;
     device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some(label),
@@ -170,6 +179,7 @@ impl MeshGpu {
         let total = first.last().copied().unwrap_or(0) as usize;
         let mut entries = vec![Entry::zeroed(); total];
         let mut extents = Vec::with_capacity(input.set.len());
+        let mut shifts = Vec::with_capacity(input.set.len());
         for (t, target) in input.set.targets().iter().enumerate() {
             let mut extent = Extent::default();
             for (k, &index) in target.indices.iter().enumerate() {
@@ -190,6 +200,7 @@ impl MeshGpu {
                 extent = Extent { up: extent.up.max(position), down: extent.down.max(-position) };
             }
             extents.push(extent);
+            shifts.push(centre_shift(input.base, target));
         }
 
         // The weld table by point: the vertices at each, in vertex order (the order `resmooth` sums in).
@@ -244,6 +255,7 @@ impl MeshGpu {
             blend: group("morph blend data", &pipelines.blend_data, &[(0, base), (1, &first), (2, &entries)]),
             weld: group("morph weld data", &pipelines.weld_data, &[(3, &slot_of), (4, &group_first), (5, &members)]),
             extents,
+            shifts,
             vertices: vertices_u32,
             bytes,
         })
@@ -262,6 +274,30 @@ pub(super) fn grow(weights: &[f32], mesh: &MeshGpu) -> (Vec3, Vec3) {
         down += towards_down * weight.abs();
     }
     (down, up)
+}
+
+/// How far the centre of the vertices' box moves when `target` is applied alone at weight 1.
+fn centre_shift(base: &[crate::resource::mesh::Shape], target: &omuzaki_render_api::SparseMorph) -> Vec3 {
+    let (mut before, mut after) = (
+        (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)),
+        (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)),
+    );
+    let mut moved = target.indices.iter().zip(&target.positions).peekable();
+    for (v, shape) in base.iter().enumerate() {
+        let at = Vec3::from(shape.position);
+        let to = match moved.next_if(|(index, _)| **index as usize == v) {
+            Some((_, delta)) => at + *delta,
+            None => at,
+        };
+        before = (before.0.min(at), before.1.max(at));
+        after = (after.0.min(to), after.1.max(to));
+    }
+    if base.is_empty() { Vec3::ZERO } else { ((after.0 + after.1) - (before.0 + before.1)) * 0.5 }
+}
+
+/// Where the weights move the centre of the mesh's box: the sum of each target's shift times its weight.
+pub(super) fn shift(weights: &[f32], mesh: &MeshGpu) -> Vec3 {
+    weights.iter().zip(&mesh.shifts).map(|(weight, shift)| *shift * *weight).sum()
 }
 
 /// The per-instance side of the GPU path: the params buffer and the bind groups over the instance's streams.
@@ -379,12 +415,20 @@ pub(super) fn record<'a>(
     let mut pass =
         encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("morph"), timestamp_writes: None });
     for p in pending {
-        let (Some(slot), Some(mesh)) = (slot(p.slot), mesh(p.mesh)) else { continue };
+        let (Some(slot), Some(mesh)) = (slot(p.slot), mesh(p.mesh)) else {
+            // A pending dispatch always has its slot and mesh: `prepare` queued it this frame from both.
+            debug_assert!(false, "a pending morph dispatch lost its slot or its mesh");
+            continue;
+        };
         let (pipeline, data, instance) = match p.step {
             Step::Blend => (&pipelines.blend, &mesh.blend, slot.blend.as_ref()),
             Step::Weld => (&pipelines.weld, &mesh.weld, slot.weld.as_ref()),
         };
-        let Some(instance) = instance else { continue };
+        let Some(instance) = instance else {
+            // `prepare` builds the bind group before it queues the dispatch.
+            debug_assert!(false, "a pending morph dispatch has no bind group");
+            continue;
+        };
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, data, &[]);
         pass.set_bind_group(1, instance, &[]);
@@ -403,6 +447,7 @@ mod tests {
     };
 
     use super::super::MorphPool;
+    use super::supported_by;
     use crate::arena::Arena;
     use crate::gpu::{AdapterPreference, Gpu, HeadlessOptions, WAIT_LIMIT};
     use crate::resource::mesh::GpuMesh;
@@ -503,7 +548,7 @@ mod tests {
         let n = mesh.positions.len();
         let mut meshes = Arena::default();
         let upload =
-            GpuMesh::upload(&gpu, &mesh, &MeshOptions { morphs: Some(set), ..MeshOptions::default() }).unwrap();
+            GpuMesh::upload(&gpu, &mesh, &MeshOptions { morphs: Some(set), ..MeshOptions::default() }, true).unwrap();
         let (index, generation) = meshes.insert(upload);
         let id = MeshId::from_parts(index, generation);
         let (mut gpu_pool, mut cpu_pool) = (MorphPool::new(&gpu.device), MorphPool::default());
@@ -576,5 +621,48 @@ mod tests {
         assert!(worst_position <= 1e-4, "position error {worst_position}");
         assert!(worst_normal <= 1e-4, "normal error {worst_normal}");
         assert!(worst_direction <= 1e-4, "outline direction error {worst_direction}");
+    }
+
+    /// A single triangle whose vertex 0's normal all but cancels under the target: `(0, 0, 1)` plus `(1e-16, 0, -1)`.
+    #[test]
+    fn a_normal_that_all_but_cancels_still_normalises_as_on_the_cpu() {
+        let gpu = open();
+        let mesh = MeshData {
+            positions: vec![Vec3::ZERO, Vec3::X, Vec3::Y],
+            normals: vec![Vec3::Z; 3],
+            indices: vec![0, 1, 2],
+            ..MeshData::default()
+        };
+        let target = SparseMorph {
+            name: Slug::new("cancel").unwrap(),
+            indices: vec![0],
+            positions: vec![Vec3::ZERO],
+            normals: vec![Vec3::new(1e-16, 0.0, -1.0)],
+        };
+        let set = MorphSet::from_targets(3, vec![target]).unwrap();
+        let mut meshes = Arena::default();
+        let upload =
+            GpuMesh::upload(&gpu, &mesh, &MeshOptions { morphs: Some(set), ..MeshOptions::default() }, true).unwrap();
+        let (index, generation) = meshes.insert(upload);
+        let (mut gpu_pool, mut cpu_pool) = (MorphPool::new(&gpu.device), MorphPool::default());
+        gpu_pool.attach(&gpu.device, index, generation, meshes.get(index, generation).unwrap()).unwrap();
+        let scene = scene_of(MeshId::from_parts(index, generation), &[1.0]);
+        for pool in [&mut gpu_pool, &mut cpu_pool] {
+            pool.prepare(&gpu.device, &gpu.queue, &meshes, &scene, |_| false).unwrap();
+        }
+        let shapes = gpu_pool.slots[0].shapes.buffer.as_ref().unwrap();
+        let [blended] = &run_and_read(&gpu, &gpu_pool, &[(shapes, 3 * 24)])[..] else { unreachable!("one buffer") };
+        let cpu_normal = Vec3::from(cpu_pool.slots[0].blended[0].normal);
+        assert!((cpu_normal - Vec3::X).length() < 1e-4, "the CPU normalises the sliver to +x: {cpu_normal}");
+        let gpu_normal = Vec3::new(blended[3], blended[4], blended[5]);
+        assert!((gpu_normal - cpu_normal).length() < 1e-4, "the GPU agrees: {gpu_normal} against {cpu_normal}");
+    }
+
+    #[test]
+    fn the_gpu_path_needs_six_storage_buffers() {
+        let limits = |n| wgpu::Limits { max_storage_buffers_per_shader_stage: n, ..wgpu::Limits::defaults() };
+        assert!(!supported_by(&limits(5)), "the weld pipeline binds six");
+        assert!(supported_by(&limits(6)));
+        assert!(!supported_by(&wgpu::Limits::downlevel_webgl2_defaults()), "WebGL2 has no storage buffers");
     }
 }
