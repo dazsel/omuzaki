@@ -859,3 +859,19 @@ fn a_missing_sidecar_is_not_found_and_nothing_is_stored() {
     assert_eq!(error.code, ErrorCode::NotFound, "{}", error.message);
     assert!(rig.store.is_empty());
 }
+
+#[test]
+fn a_reimport_after_a_sidecar_changed_is_a_conflict_and_an_unchanged_one_is_not() {
+    let mut rig = Rig::new();
+    write_project_file(&rig, "hero.bin", b"v1");
+    write_project_file(&rig, "hero.gltf", json!({ "buffers": [{ "uri": "hero.bin" }] }).to_string().as_bytes());
+    let op = Rig::op(json!({ "path": "hero.gltf" }));
+    rig.run(&op).unwrap();
+    let (_, patch) = rig.run(&op).unwrap();
+    assert!(patch.changes.is_empty(), "the same files again change nothing");
+
+    write_project_file(&rig, "hero.bin", b"v2");
+    let error = rig.run(&op).unwrap_err();
+    assert_eq!(error.code, ErrorCode::Conflict, "{}", error.message);
+    assert!(error.message.contains("sidecars"), "{}", error.message);
+}

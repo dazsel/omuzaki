@@ -382,13 +382,13 @@ fn refused(uri: &str, why: &str) -> IoError {
 impl Resolver for FolderFiles<'_, '_> {
     fn read(&self, uri: &str) -> Result<Vec<u8>, IoError> {
         let poisoned = || IoError::Internal("the sidecar list was poisoned".to_owned());
-        let used = {
-            let state = self.state.lock().map_err(|_| poisoned())?;
-            if let Some((_, bytes)) = state.0.iter().find(|(served, _)| served == uri) {
-                return Ok(bytes.clone());
-            }
-            state.1
-        };
+        // Held for the whole read: the importer may ask for files from several threads, and the limit is one total that
+        // each read must see the result of the one before it.
+        let mut state = self.state.lock().map_err(|_| poisoned())?;
+        if let Some((_, bytes)) = state.0.iter().find(|(served, _)| served == uri) {
+            return Ok(bytes.clone());
+        }
+        let used = state.1;
         let relative = clean_relative(uri).map_err(|why| refused(uri, &why))?;
         let joined = Path::new(&self.folder_text).join(relative);
         let joined = joined.to_str().ok_or_else(|| refused(uri, "the path is not text this machine can name"))?;
@@ -406,7 +406,6 @@ impl Resolver for FolderFiles<'_, '_> {
         if total > self.max_bytes {
             return Err(IoError::Limit { what: "input size in bytes", limit: self.max_bytes, got: total });
         }
-        let mut state = self.state.lock().map_err(|_| poisoned())?;
         state.1 = total;
         state.0.push((uri.to_owned(), bytes.clone()));
         Ok(bytes)
@@ -514,6 +513,18 @@ fn keep_existing(existing: &Value, asset: &AssetRecord, entry: DocPath) -> Resul
         return Err(OpError::conflict(format!("the record at {entry} is not an object"))
             .hint("the document is damaged; restore it from history"));
     };
+    // The same original with other files behind it (a sidecar edited since) is not the recorded asset: keeping the old
+    // record would leave the new objects referenced by nothing.
+    let files = |value: Option<&Value>| value.cloned().filter(|v| v.as_array().is_none_or(|a| !a.is_empty()));
+    for (field, wanted) in [("images", serde_json::to_value(&asset.images)), ("sidecars", serde_json::to_value(&asset.sidecars))] {
+        let wanted = wanted.map_err(|e| OpError::internal(format!("serialising the asset: {e}")))?;
+        if files(fields.get(field)) != files(Some(&wanted)) {
+            return Err(OpError::conflict(format!(
+                "this file is already recorded with different {field} ({entry}), so a file it refers to changed since it was imported"
+            ))
+            .hint("an asset keeps one version of the files behind it for now; restore the files as they were, or remove the recorded asset first"));
+        }
+    }
     let recorded = fields.get("character").and_then(Value::as_str);
     match (recorded, asset.character.as_deref()) {
         (_, None) => Ok(Patch::new()),
