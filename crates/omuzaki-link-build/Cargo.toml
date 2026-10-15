@@ -1,0 +1,25 @@
+[package]
+name = "omuzaki-link-build"
+description = "Build-script helper that generates a crate's `link()` calls from the `registers` flags of its dependencies (ADR 0054 section 6)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Named in `[build-dependencies]` by the crates whose `link()` forwards (the Apps and `omuzaki-stage`). It reads manifests
+# and writes one file; it depends on no workspace crate, so any crate may build with it.
+[package.metadata.omuzaki]
+kind = "Lib"
+summary = "build-script helper: writes a crate's `link()` calls (ADR 0015) for every dependency whose manifest sets `registers = true` under `[package.metadata.omuzaki]`, so adding a registering crate to an App is one dependency line"
+layer = "lib"
+
+[dependencies]
+toml.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

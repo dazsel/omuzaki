@@ -7,7 +7,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use omuzaki_core::time::Seconds;
 use omuzaki_doc_api::{DocPath, DocRead, DocWrite, Patch, Value};
-use omuzaki_ops_api::{Actor, Cause, Event, Grants, OpError, OpRecord, Scope, TxId, Undo};
+use omuzaki_ops_api::{Actor, Cause, Event, Grants, OpError, OpRecord, Scope, TxId, Undo, checks};
 
 use crate::error;
 
@@ -31,30 +31,22 @@ impl Step {
         Self { tx, label: label.to_owned(), patch: Patch::new(), scopes: BTreeSet::new(), explicit: None }
     }
 
-    /// Adds one applied op. Ops that changed nothing (queries inside a transaction, no-op edits) add no scope. An
-    /// `Explicit` op is recorded even with an empty patch: its effect outside the document still needs reversing, and
-    /// its scope must still gate the refusal, so a caller without it gets `Denied` and the step stays.
+    /// Adds one applied op, recording the scope [`checks::step_scope`] gives it.
     fn absorb(&mut self, op: &'static str, scope: Scope, undo: Undo, patch: &Patch) {
-        if !patch.is_empty() || undo == Undo::Explicit {
-            self.scopes.insert(scope);
-        }
+        self.scopes.extend(checks::step_scope(scope, undo, patch));
         if undo == Undo::Explicit && self.explicit.is_none() {
             self.explicit = Some(op);
         }
         self.patch.extend(patch.clone());
     }
 
-    /// Whether the step belongs in history: a step with an effect outside the document does, even if its patch is
-    /// empty, so that undo can refuse it instead of silently skipping it.
+    /// Whether the step belongs in history ([`checks::in_history`]).
     fn changes_document(&self) -> bool {
-        !self.patch.is_empty() || self.explicit.is_some()
+        checks::in_history(&self.patch, self.explicit.is_some())
     }
 
     fn require(&self, actor: &Actor, grants: &Grants, verb: &str) -> Result<(), OpError> {
-        match self.scopes.iter().find(|scope| !grants.allows(**scope)) {
-            Some(scope) => Err(error::denied(actor, &format!("{verb} {:?}", self.label), *scope)),
-            None => Ok(()),
-        }
+        checks::require_step_scopes(self.scopes.iter().copied(), grants, actor, verb, &self.label)
     }
 }
 
@@ -172,29 +164,13 @@ impl State {
         // Borrowing the open transaction first checks it *before* the document changes, and lets us add to it after
         // without a lookup that could fail.
         let joined = tx.map(|id| Self::open_tx(&mut self.open, id, &actor)).transpose()?;
-        let version = if patch.changes.is_empty() {
-            self.doc.version()
-        } else {
-            self.doc.apply(patch).map_err(|e| error::apply_failed(op, e))?
-        };
+        let version = checks::apply_patch(&mut *self.doc, patch).map_err(|e| error::apply_failed(op, e))?;
 
         let tx = joined.as_ref().map_or_else(|| next_tx(&mut self.last_tx), |open| open.step.tx);
-        let record = OpRecord {
-            seq: self.log.len() as u64 + 1,
-            op: op.to_owned(),
-            args,
-            actor,
-            cause,
-            tx,
-            at,
-            patch: patch.clone(),
-            version,
-            on_behalf_of: None,
-            approval: None,
-            effect: None,
-        };
+        let record =
+            OpRecord::new(self.log.len() as u64 + 1, op, args, actor, tx, at, patch.clone(), version).with_cause(cause);
         self.log.push(record.clone());
-        self.outbox.push(Event::OpApplied { record: record.clone() });
+        self.outbox.push(Event::op_applied(record.clone()));
 
         if let Some(open) = joined {
             open.step.absorb(op, scope, undo, patch);
@@ -229,7 +205,7 @@ impl State {
         }
         self.open.remove(&tx);
         let version = self.doc.version();
-        self.outbox.push(Event::TxRolledBack { tx, actor: actor.clone(), version });
+        self.outbox.push(Event::tx_rolled_back(tx, actor.clone(), version));
         Ok(())
     }
 
@@ -260,7 +236,7 @@ impl State {
     /// invalidate the owner's redo: running a query must not throw away the user's redo history, and one actor's
     /// edits must not throw away another's.
     fn finish(&mut self, owner: &Actor, step: Step) {
-        self.outbox.push(Event::TxCommitted { tx: step.tx, label: step.label.clone(), actor: owner.clone() });
+        self.outbox.push(Event::tx_committed(step.tx, step.label.clone(), owner.clone()));
         if step.changes_document() {
             let history = self.history(owner);
             history.redo.clear();
@@ -287,7 +263,7 @@ impl State {
         }
         // Refused and dropped, not pushed back: the document is untouched, and the next call reaches the step before.
         if let Some(op) = step.explicit {
-            return Err(error::explicit_refused(verb, &step.label, op));
+            return Err(checks::explicit_refused(verb, &step.label, op));
         }
         let patch = match direction {
             Direction::Undo => step.patch.inverse(),
@@ -307,8 +283,8 @@ impl State {
         // Undo is per actor for now, so the actor owns the step it moves; per-principal undo makes them differ.
         let (actor, owner, version) = (actor.clone(), actor.clone(), self.doc.version());
         self.outbox.push(match direction {
-            Direction::Undo => Event::Undone { tx, label: label.clone(), actor, owner, version },
-            Direction::Redo => Event::Redone { tx, label: label.clone(), actor, owner, version },
+            Direction::Undo => Event::undone(tx, label.clone(), actor, owner, version),
+            Direction::Redo => Event::redone(tx, label.clone(), actor, owner, version),
         });
         Ok(Some(label))
     }

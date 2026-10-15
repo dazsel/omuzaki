@@ -1,3 +1,9 @@
+---
+title: "0056: Review comments are flat document nodes `comments/<id>`; a task is a thread plus a plan item; comment text is data, never instructions (2026-10-15)"
+summary: "Review comments are flat document nodes `comments/<id>`; a task is a thread plus a plan item; comment text is data, never instructions"
+area: decisions
+---
+
 # 0056: Review comments are flat document nodes `comments/<id>`; a task is a thread plus a plan item; comment text is data, never instructions (2026-10-15)
 
 **Status:** proposed (cloud lead to accept on the PR). **Context:** VC-07 (#524), #1050; spec v3 §11, §12, §29, §31;

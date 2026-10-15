@@ -16,6 +16,7 @@
 
 mod actor;
 mod approval;
+pub mod checks;
 mod ctx;
 mod error;
 mod fence;
@@ -43,7 +44,7 @@ pub use jobs::{
 pub use registry::{OpRegistration, find, registrations};
 pub use runner::{ClashKind, Event, Mode, OpInfo, OpRecord, Outcome, Request, Runner, TxId};
 pub use scope::Scope;
-pub use services::{Service, Services, ServicesBuilder};
+pub use services::{ConnectionService, Service, Services, ServicesBuilder};
 pub use session::{
     Budget, EndReason, Ended, KeptTx, Limits, PauseReason, Principals, SessionChange, SessionId, SessionInfo,
     SessionSpec, SessionState, SessionTx, SessionUndo, Sessions, Spend, StopStep, Stopped, Transport,

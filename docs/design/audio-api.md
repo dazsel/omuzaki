@@ -1,3 +1,9 @@
+---
+title: "`omuzaki-audio-api`: the audio engine contract (devices, mixer, voice effects, taps, latency)"
+summary: "the audio engine contract (devices, mixer, voice effects, taps, latency)"
+area: design
+---
+
 # `omuzaki-audio-api`: the audio engine contract (devices, mixer, voice effects, taps, latency)
 
 **Status:** accepted (2026-10-12; review answers in section 11). **Decision record:**

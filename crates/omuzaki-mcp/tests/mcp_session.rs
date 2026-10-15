@@ -9,9 +9,9 @@ mod common;
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::{FakeRunner, data, text, tool};
+use common::{FakeRunner, FakeRunnerExt, data, fake_runner, text, tool};
 use omuzaki_mcp::{McpOptions, McpServer, ServerError};
-use omuzaki_ops_api::{Actor, Cause, CauseKind, Grants, OpKind, Runner, Scope};
+use omuzaki_ops_api::{Actor, Cause, CauseKind, Grants, OpKind, Scope};
 use rmcp::ClientLifecycleMode;
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ClientCapabilities, ClientConfig, Implementation, ProtocolVersion,
@@ -87,7 +87,7 @@ impl Harness {
     }
 
     async fn connect_with(options: McpOptions, lifecycle: Lifecycle) -> Self {
-        let runner = Arc::new(FakeRunner::new());
+        let runner = Arc::new(fake_runner());
         let mcp = McpServer::new(runner.clone(), options).expect("server builds");
         let (server_io, client_io) = tokio::io::duplex(64 * 1024);
         let serving = mcp.clone();
@@ -123,18 +123,20 @@ async fn the_tool_list_matches_the_runner_ops_exactly() {
     let tools = h.client.list_all_tools().await.unwrap();
 
     // Tool names are op names with dots as underscores: Anthropic's rule is ^[a-zA-Z0-9_-]{1,64}$.
-    let mut expected: Vec<String> = h.runner.ops().iter().map(|o| o.name.replace('.', "_")).collect();
+    // Ops withheld for a service this harness doesn't wire are not tools (see `WITHHELD_WITHOUT_SERVICE`).
+    let mut expected: Vec<String> =
+        common::offered_ops(h.runner.as_ref()).iter().map(|o| o.name.replace('.', "_")).collect();
     expected.extend(BUILTINS.map(str::to_owned));
     expected.sort();
     let listed: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
-    assert_eq!(listed, expected, "tools/list must be exactly Runner::ops() plus the built-ins, sorted");
+    assert_eq!(listed, expected, "tools/list must be exactly the offered Runner::ops() plus the built-ins, sorted");
     for name in &listed {
         assert!(
             (1..=64).contains(&name.len()) && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
         );
     }
 
-    for info in h.runner.ops() {
+    for info in common::offered_ops(h.runner.as_ref()) {
         let t = tool(&tools, &info.name.replace('.', "_"));
         assert_eq!(t.title.as_deref(), Some(info.name), "the dotted op name is the tool's title");
         let op_schema = serde_json::to_value(&info.schema).unwrap();
@@ -445,7 +447,7 @@ async fn a_transaction_stamps_its_cause_on_every_edit_in_it() {
     h.call("tx_commit", json!({})).await;
 
     let cause = Some(Cause { kind: CauseKind::Prompt, text: Some("make her face more oval".to_owned()) });
-    let log = h.runner.log();
+    let log = h.runner.records();
     assert_eq!(log.len(), 2);
     assert!(log.iter().all(|record| record.cause == cause), "{log:?}");
     h.disconnect().await;
@@ -460,7 +462,7 @@ async fn edits_without_a_cause_record_none_including_one_after_commit() {
     h.call("face_set_blend", json!({"character": "mira", "blend": 0.5})).await;
 
     let none = Some(Cause { kind: CauseKind::Prompt, text: None });
-    let log = h.runner.log();
+    let log = h.runner.records();
     assert_eq!(log.len(), 2);
     assert!(log.iter().all(|record| record.cause == none), "{log:?}");
     h.disconnect().await;
@@ -473,7 +475,7 @@ async fn a_blank_cause_counts_as_absent() {
     h.call("face_set_blend", json!({"character": "mira", "blend": 0.3})).await;
     h.call("tx_commit", json!({})).await;
 
-    let log = h.runner.log();
+    let log = h.runner.records();
     assert_eq!(log[0].cause, Some(Cause { kind: CauseKind::Prompt, text: None }));
     h.disconnect().await;
 }
@@ -506,7 +508,7 @@ async fn a_job_runs_outside_the_open_transaction_while_edits_still_join_it() {
     assert_eq!(export.is_error, Some(false), "{}", text(&export));
     assert!(h.runner.has_open_tx(), "the job leaves the transaction open");
 
-    let log = h.runner.log();
+    let log = h.runner.records();
     assert_eq!(log.len(), 2);
     assert_eq!(log[0].tx.0, tx, "the edit joins the transaction");
     assert_ne!(log[1].tx.0, tx, "the job never joins it");
@@ -606,7 +608,7 @@ async fn a_transaction_left_open_is_rolled_back_when_the_agent_disconnects() {
 async fn edits_are_attributed_to_the_connected_client() {
     let h = Harness::connect().await;
     h.call("face_set_blend", json!({"character": "mira", "blend": 0.4})).await;
-    let record = h.runner.log().remove(0);
+    let record = h.runner.records().remove(0);
     assert_eq!(record.actor, Actor::Agent { id: "test-client#1".into(), model: None });
     assert_eq!(record.cause.unwrap().kind, omuzaki_ops_api::CauseKind::Prompt);
     h.disconnect().await;
@@ -633,7 +635,7 @@ struct Pair {
 
 impl Pair {
     async fn connect() -> Self {
-        let runner = Arc::new(FakeRunner::new());
+        let runner = Arc::new(fake_runner());
         let server = McpServer::new(runner.clone(), McpOptions::default()).unwrap();
         let first = attach(&server).await;
         let second = attach(&server).await;
@@ -654,7 +656,7 @@ async fn each_connection_is_its_own_agent_with_its_own_transaction() {
     let other = call_on(&pair.second, "tx_commit", json!({})).await;
     assert_eq!(data(&other)["code"], "not_found");
     call_on(&pair.second, "face_set_blend", json!({"character": "mira", "blend": 0.5})).await;
-    let actors: Vec<Actor> = pair.runner.log().into_iter().map(|r| r.actor).collect();
+    let actors: Vec<Actor> = pair.runner.records().into_iter().map(|r| r.actor).collect();
     assert_eq!(actors, [Actor::Agent { id: "test-client#2".into(), model: None }]);
     call_on(&pair.first, "tx_commit", json!({})).await;
 }
@@ -689,7 +691,7 @@ async fn calls_work_under_both_protocol_lifecycles() {
         assert!(h.client.list_all_tools().await.unwrap().len() > BUILTINS.len(), "tools listed under {lifecycle:?}");
         let result = h.call("face_set_blend", json!({"character": "mira", "blend": 0.2})).await;
         assert_eq!(data(&result)["applied"], true, "apply works under {lifecycle:?}");
-        assert_eq!(h.runner.log()[0].actor, Actor::Agent { id: "test-client#1".into(), model: None });
+        assert_eq!(h.runner.records()[0].actor, Actor::Agent { id: "test-client#1".into(), model: None });
         h.disconnect().await;
     }
 }
@@ -774,7 +776,7 @@ struct Room {
 
 impl Room {
     async fn connect(agents: usize) -> Self {
-        let runner = Arc::new(FakeRunner::new());
+        let runner = Arc::new(fake_runner());
         let server = McpServer::new(runner.clone(), McpOptions::default()).unwrap();
         let mut connected = Vec::new();
         for _ in 0..agents {
@@ -1009,7 +1011,7 @@ async fn history_log_keeps_the_heads_up_position_so_later_edits_are_still_report
 
 #[tokio::test(start_paused = true)]
 async fn a_session_without_read_is_told_nothing_about_the_project() {
-    let runner = Arc::new(FakeRunner::new());
+    let runner = Arc::new(fake_runner());
     let server = McpServer::new(runner.clone(), McpOptions::default()).unwrap();
     let blind = attach(&server.with_grants(Grants::of([Scope::EditCharacter])).unwrap()).await;
     runner.person_sets_blend(0.5);

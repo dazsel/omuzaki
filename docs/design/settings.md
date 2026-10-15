@@ -1,3 +1,9 @@
+---
+title: "Settings: the registry, the store, profiles, session restore and release notes"
+summary: "the registry, the store, profiles, session restore and release notes"
+area: design
+---
+
 # Settings: the registry, the store, profiles, session restore and release notes
 
 **Status:** maintainer answers folded in (§9); awaiting acceptance. **Feature:** SE-10. **Decision record:** `docs/decisions/0026-settings.md`.

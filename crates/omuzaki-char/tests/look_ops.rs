@@ -202,7 +202,7 @@ fn a_palette_change_through_the_caching_builder_keeps_the_look() {
     builder.rebuild_materials(&mut built, &palette, &options, &services).unwrap();
     assert_eq!(built.look(), &look, "the look survives the rebuild");
 
-    let recoloured = omuzaki_char_api::CharacterDef { palette, ..def };
+    let recoloured = def.with_palette(palette);
     let mut fresh = RegistryBuilder.build(&id, &recoloured, &options, &services).unwrap();
     fresh.apply_look(&look).unwrap();
     assert_eq!(

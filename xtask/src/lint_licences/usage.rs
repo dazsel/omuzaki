@@ -4,6 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 
 use serde::Deserialize;
 
@@ -26,23 +27,54 @@ struct RawLock {
 struct RawPackage {
     name: String,
     #[serde(default)]
+    version: String,
+    /// Absent for path packages: the workspace members and any external path dependency.
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
     dependencies: Vec<String>,
 }
 
+impl RawPackage {
+    /// Whether this package is a workspace member: a path package (no `source`) with the name and version of one of
+    /// `members`. A registry or git package, or an external path package of another version, that shares a member's
+    /// name is a different package.
+    fn is_member(&self, members: &Members) -> bool {
+        self.source.is_none() && members.contains(&(self.name.clone(), self.version.clone()))
+    }
+
+    /// Whether the lock entry `dep` (`name`, `name version` or `name version (source)`) names this package.
+    fn is_named_by(&self, dep: &str) -> bool {
+        let mut parts = dep.splitn(3, ' ');
+        let name = parts.next().unwrap_or_default();
+        let version = parts.next();
+        let source = parts.next().map(|source| source.trim_matches(['(', ')']));
+        name == self.name
+            && version.is_none_or(|version| version == self.version)
+            && source.is_none_or(|source| self.source.as_deref() == Some(source))
+    }
+}
+
+/// The workspace's own crates, each as `(name, version)`.
+pub type Members = BTreeSet<(String, String)>;
+
 impl Lock {
-    /// Reads a `Cargo.lock`. `members` are the workspace's own crates: a package without a `source` that is not one of
-    /// them is an external path dependency and needs a file like any other.
-    pub fn parse(text: &str, members: &BTreeSet<String>) -> Result<Self, String> {
+    /// Reads a `Cargo.lock`. `members` are the workspace's own crates, matched by identity: a path package (no
+    /// `source`) with a member's name and version. A package that is not one of them is external, even if it shares a
+    /// member's name (from a registry, or a path package of another version); it needs a file like any other.
+    pub fn parse(text: &str, members: &Members) -> Result<Self, String> {
         let raw: RawLock = toml::from_str(text).map_err(|e: toml::de::Error| e.message().to_owned())?;
         let mut lock = Self::default();
         for package in &raw.package {
             lock.packages.insert(package.name.clone());
-            if !members.contains(&package.name) {
+            if !package.is_member(members) {
                 continue;
             }
-            // A dependency is `name`, `name version` or `name version (source)`.
-            for name in package.dependencies.iter().filter_map(|dep| dep.split(' ').next()) {
-                if !members.contains(name) {
+            for dep in &package.dependencies {
+                // A name the lock cannot resolve counts as external: the stricter reading.
+                let internal = raw.package.iter().any(|target| target.is_named_by(dep) && target.is_member(members));
+                if !internal {
+                    let name = dep.split(' ').next().unwrap_or(dep);
                     lock.direct.entry(name.to_owned()).or_default().insert(package.name.clone());
                 }
             }
@@ -72,7 +104,7 @@ const CRATES_DIR: &str = "crates";
 /// Where [`assets`] takes every file.
 const GITHUB_ASSETS_DIR: &str = ".github/assets";
 
-/// File extensions of binary assets: fonts, images, models, audio, video and meshes. Source, config and text files are
+/// File extensions of binary assets: fonts, images, models (`.onnx`, `.tflite`, `.task`, ...), audio, video and meshes. Source, config and text files are
 /// code, not assets; a third-party text file is declared by a `NOTICES.md` beside it.
 pub const ASSET_EXTENSIONS: &[&str] = &[
     "ttf",
@@ -98,6 +130,8 @@ pub const ASSET_EXTENSIONS: &[&str] = &[
     "ktx2",
     "rgb",
     "onnx",
+    "tflite",
+    "task",
     "safetensors",
     "gguf",
     "pt",
@@ -137,13 +171,34 @@ pub fn is_scanned_asset(file: &Path) -> bool {
 }
 
 /// The committed third-party material: binary assets (see [`ASSET_EXTENSIONS`]) and `NOTICES.md` under `crates/`, and
-/// everything under `.github/assets/`. Paths are relative to `root`, `/`-separated and sorted.
+/// everything under `.github/assets/`. Paths are relative to `root`, `/`-separated and sorted. In a git checkout only
+/// tracked files count, so an ignored local file never fails the lint; outside one the files on disk are walked.
 pub fn assets(root: &Path) -> Vec<String> {
-    let mut found = Vec::new();
-    walk(root, Path::new(CRATES_DIR), &mut found, &is_asset);
-    walk(root, Path::new(GITHUB_ASSETS_DIR), &mut found, &|_| true);
+    let mut found: Vec<String> = Vec::new();
+    if let Some(files) = tracked_files(root) {
+        found.extend(files.into_iter().filter(|file| is_scanned_asset(Path::new(file))));
+    } else {
+        walk(root, Path::new(CRATES_DIR), &mut found, &is_asset);
+        walk(root, Path::new(GITHUB_ASSETS_DIR), &mut found, &|_| true);
+    }
     found.sort();
     found
+}
+
+/// The files git tracks under the scanned folders, or `None` when `root` is not the top of a git checkout (or git is
+/// missing). Files deleted from the working tree but still in the index are left out.
+fn tracked_files(root: &Path) -> Option<Vec<String>> {
+    let git = |args: &[&str]| {
+        let out = Command::new("git").arg("-C").arg(root).args(args).output().ok()?;
+        out.status.success().then_some(out.stdout)
+    };
+    // A project nested in some other checkout is not a checkout of its own.
+    if !git(&["rev-parse", "--show-prefix"])?.trim_ascii().is_empty() {
+        return None;
+    }
+    let listed = git(&["ls-files", "-z", "--", CRATES_DIR, GITHUB_ASSETS_DIR])?;
+    let files = listed.split(|byte| *byte == 0).filter(|name| !name.is_empty());
+    Some(files.map(|name| String::from_utf8_lossy(name).into_owned()).filter(|f| root.join(f).is_file()).collect())
 }
 
 fn walk(root: &Path, dir: &Path, found: &mut Vec<String>, wanted: &dyn Fn(&str) -> bool) {
@@ -187,11 +242,124 @@ mod tests {
             source = "registry+https://github.com/rust-lang/crates.io-index"
             dependencies = ["serde_derive"]
             "#,
-            &["app", "core"].map(str::to_owned).into(),
+            &members(&[("app", "0.1.0"), ("core", "0.1.0")]),
         )
         .unwrap_or_default();
         assert_eq!(lock.direct.keys().collect::<Vec<_>>(), ["serde", "toml", "vendored"]);
         assert!(lock.packages.contains("core") && !lock.direct.contains_key("serde_derive"));
+    }
+
+    fn members(list: &[(&str, &str)]) -> Members {
+        list.iter().map(|(name, version)| ((*name).to_owned(), (*version).to_owned())).collect()
+    }
+
+    #[test]
+    fn an_external_path_package_of_another_version_is_not_the_member() {
+        let lock = Lock::parse(
+            r#"
+            [[package]]
+            name = "app"
+            version = "0.1.0"
+            dependencies = ["foo 0.2.0"]
+            [[package]]
+            name = "foo"
+            version = "0.1.0"
+            dependencies = ["member-only"]
+            [[package]]
+            name = "foo"
+            version = "0.2.0"
+            dependencies = ["transitive"]
+            [[package]]
+            name = "member-only"
+            version = "1.0.0"
+            source = "registry+https://example.test/index"
+            [[package]]
+            name = "transitive"
+            version = "1.0.0"
+            source = "registry+https://example.test/index"
+            "#,
+            &members(&[("app", "0.1.0"), ("foo", "0.1.0")]),
+        )
+        .unwrap_or_default();
+        let direct: Vec<_> =
+            lock.direct.iter().map(|(k, v)| (k.as_str(), v.iter().map(String::as_str).collect::<Vec<_>>())).collect();
+        assert_eq!(direct, [("foo", vec!["app"]), ("member-only", vec!["foo"])], "no `transitive`: {direct:?}");
+    }
+
+    #[test]
+    fn an_external_package_sharing_a_members_name_is_not_a_member() {
+        let lock = Lock::parse(
+            r#"
+            version = 4
+            [[package]]
+            name = "app"
+            version = "0.1.0"
+            dependencies = ["core 0.1.0", "foo 2.0.0", "foo 1.0.0 (registry+https://example.test/index)"]
+            [[package]]
+            name = "foo"
+            version = "1.0.0"
+            source = "registry+https://example.test/index"
+            [[package]]
+            name = "foo"
+            version = "2.0.0"
+            [[package]]
+            name = "core"
+            version = "0.1.0"
+            "#,
+            &members(&[("app", "0.1.0"), ("core", "0.1.0"), ("foo", "0.1.0")]),
+        )
+        .unwrap_or_default();
+        assert_eq!(lock.direct.keys().collect::<Vec<_>>(), ["foo"], "the registry `foo` is external");
+        let only_member = Lock::parse(
+            "[[package]]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"foo\"]\n[[package]]\nname = \"foo\"\nversion = \"0.1.0\"\n",
+            &members(&[("app", "0.1.0"), ("foo", "0.1.0")]),
+        )
+        .unwrap_or_default();
+        assert!(only_member.direct.is_empty());
+    }
+
+    #[test]
+    fn a_registry_package_named_like_a_member_does_not_make_a_member_of_it() {
+        let lock = Lock::parse(
+            r#"
+            [[package]]
+            name = "foo"
+            version = "1.0.0"
+            source = "registry+https://example.test/index"
+            dependencies = ["bar"]
+            [[package]]
+            name = "bar"
+            version = "1.0.0"
+            "#,
+            &members(&[("foo", "0.1.0")]),
+        )
+        .unwrap_or_default();
+        assert!(lock.direct.is_empty(), "the external `foo` is no workspace crate: {:?}", lock.direct);
+    }
+
+    fn git(root: &Path, args: &[&str]) {
+        let ok = Command::new("git").arg("-C").arg(root).args(args).status().is_ok_and(|status| status.success());
+        assert!(ok, "git {args:?}");
+    }
+
+    #[test]
+    fn only_tracked_assets_count_in_a_git_checkout() {
+        let root = tempfile::tempdir().expect("temp dir");
+        git(root.path(), &["init", "-q"]);
+        fs::create_dir_all(root.path().join("crates/a")).expect("mkdir");
+        for file in ["crates/a/tracked.onnx", "crates/a/untracked.onnx"] {
+            fs::write(root.path().join(file), "").expect("write");
+        }
+        git(root.path(), &["add", "crates/a/tracked.onnx"]);
+        assert_eq!(assets(root.path()), ["crates/a/tracked.onnx"]);
+    }
+
+    #[test]
+    fn model_formats_tflite_and_task_are_assets() {
+        for file in ["crates/a/m.tflite", "crates/a/m.TASK"] {
+            assert!(is_scanned_asset(Path::new(file)), "{file}");
+        }
+        assert!(!is_scanned_asset(Path::new("crates/a/m.taskx")));
     }
 
     #[test]

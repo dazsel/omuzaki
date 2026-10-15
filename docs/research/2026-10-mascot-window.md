@@ -1,3 +1,9 @@
+---
+title: "Mascot window: transparent, always-on-top, click-through with wgpu"
+summary: "transparent, always-on-top, click-through with wgpu"
+area: research
+---
+
 # Mascot window: transparent, always-on-top, click-through with wgpu
 
 Status: research, partial. Part of BR-25. Read against the main branch as of 2026-10-13.

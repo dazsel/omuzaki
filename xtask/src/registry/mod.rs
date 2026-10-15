@@ -24,6 +24,7 @@ mod gate;
 pub mod lex; // `pub` because `lint-ui-writes` is in the binary crate, which sees this library only through its API
 mod links;
 mod scan;
+mod wiring;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
@@ -32,7 +33,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use cfg::Cfg;
-pub use crates::Crate;
+pub use cfg::Target;
+pub use crates::{Crate, Dependency};
 pub use gate::verify;
 pub use links::lint_links;
 use scan::{CfgAt, FileScan, ModDecl};
@@ -110,6 +112,19 @@ pub enum Error {
         /// The binary asked for.
         bin: String,
     },
+    /// A feature the package being built has no way to turn on: not one of its features or optional dependencies, and
+    /// not `dep/feature` for a workspace crate it declares (the gate reads only those, so it refuses even a valid
+    /// `serde/std` rather than guess).
+    #[error(
+        "`{package}` has no feature `{feature}` the link gate can follow (`feature`, or `dep/feature` for a \
+         workspace crate)"
+    )]
+    UnknownFeature {
+        /// The package being built.
+        package: String,
+        /// The feature as given.
+        feature: String,
+    },
     /// A registration sits under a `cfg` the scan can't decide, so whether the binary should contain it is unknown.
     #[error(
         "{registration} is compiled only under {conditions}, which the link gate can't decide from the source (it \
@@ -138,11 +153,12 @@ impl Condition {
     }
 }
 
-/// Whether every condition holds: `Ok(false)` as soon as one is false, otherwise `Err` with the undecided ones.
-fn all_hold(conditions: &[Condition]) -> Result<bool, Vec<&Condition>> {
+/// Whether every condition holds: `Ok(false)` as soon as one is false, otherwise `Err` with the undecided ones. "Holds"
+/// means holds for `target`, or with `None` can hold on some target that ships (`Cfg::can_be`).
+fn all_hold<'a>(conditions: &'a [Condition], target: Option<&Target>) -> Result<bool, Vec<&'a Condition>> {
     let mut undecided = Vec::new();
     for condition in conditions {
-        match condition.cfg.eval() {
+        match target.map_or_else(|| condition.cfg.can_be(true), |target| condition.cfg.eval(target)) {
             Some(false) => return Ok(false),
             Some(true) => {}
             None => undecided.push(condition),
@@ -167,9 +183,11 @@ pub struct ScannedCrate {
     /// The crate.
     pub krate: Crate,
     files: Vec<ScannedFile>,
-    /// The registrations in its library.
+    /// The registrations in its library, for the target the scan was made for.
     lib: Vec<Registration>,
-    /// The registrations in each binary's own files.
+    /// The registrations in its library on every target that could ship, not just this build's (`Cfg::can_be`).
+    lib_any_target: Vec<Registration>,
+    /// The registrations in each binary's own files, for the target the scan was made for.
     bins: BTreeMap<String, Vec<Registration>>,
 }
 
@@ -178,6 +196,12 @@ impl ScannedCrate {
     fn lib_root_scan(&self) -> Option<&FileScan> {
         let (_, root) = self.krate.lib.as_ref()?;
         self.files.iter().find(|file| file.path == *root).map(|file| &file.scan)
+    }
+
+    /// The registrations its library makes on any target that could ship (wasm included, test code excluded): the set
+    /// the wiring lints judge a crate by, since they must not depend on the host that runs them.
+    pub fn library_registrations(&self) -> &[Registration] {
+        &self.lib_any_target
     }
 
     /// The crates whose `link()` this crate's sources call, in its library and its binaries.
@@ -193,12 +217,21 @@ pub struct Sources {
 }
 
 impl Sources {
-    /// Reads and scans the workspace at `root`.
+    /// Reads and scans the workspace at `root` for the host's own build ([`Target::host`]).
     ///
     /// # Errors
     /// An unreadable manifest, directory or source file, or [`Error::UndecidableCfg`] for a registration under a
     /// `cfg` the scan can't decide.
     pub fn scan(root: &Path) -> Result<Self, Error> {
+        Self::scan_for(root, &Target::host())
+    }
+
+    /// [`scan`](Self::scan) for a build of `target`: the `cfg`s on registrations are evaluated with its options, not the
+    /// host's, so a module built for another target is judged by what that target compiles.
+    ///
+    /// # Errors
+    /// As [`scan`](Self::scan).
+    pub fn scan_for(root: &Path, target: &Target) -> Result<Self, Error> {
         let mut read = Vec::new();
         let mut kinds = BTreeSet::new();
         for krate in crates::load(root)? {
@@ -215,7 +248,7 @@ impl Sources {
         }
         let crates = read
             .into_iter()
-            .map(|(krate, files)| compiled_registrations(krate, files, &kinds))
+            .map(|(krate, files)| compiled_registrations(krate, files, &kinds, target))
             .collect::<Result<_, _>>()?;
         Ok(Self { crates })
     }
@@ -241,13 +274,38 @@ impl Sources {
     }
 
     /// What a binary that links `package` must contain: the registrations in the libraries of `package` and of every
-    /// crate it depends on under `[dependencies]`, directly or not, plus those in the binary `bin`'s own files.
+    /// crate it links under `[dependencies]`, directly or not, plus those in the binary `bin`'s own files.
+    ///
+    /// The build's features are read from [`FEATURES_VAR`], written as `cargo --features` takes them: a gate test run
+    /// as `cargo test -p omuzaki-cli --features omuzaki-stage/wgpu` is run with
+    /// `OMUZAKI_LINK_FEATURES=omuzaki-stage/wgpu` too. Unset, it is the default build. A mismatch fails closed either
+    /// way, unless every registration of a crate only the build switched on is missing; so CI sets both from one value.
     ///
     /// # Errors
-    /// [`Error::UnknownCrate`] or [`Error::UnknownBin`].
+    /// [`Error::UnknownCrate`], [`Error::UnknownBin`] or [`Error::UnknownFeature`].
     pub fn expected(&self, package: &str, bin: Option<&str>) -> Result<Vec<Registration>, Error> {
+        let features = std::env::var(FEATURES_VAR).unwrap_or_default();
+        let features: Vec<&str> = features.split([',', ' ']).filter(|f| !f.is_empty()).collect();
+        self.expected_with_features(package, bin, &features)
+    }
+
+    /// [`expected`](Self::expected) for a build of `package` with these features on, as `cargo --features` names
+    /// them: `feature` of `package`, `package/feature`, or `dep/feature` for a dependency `package` declares under the
+    /// key `dep` (`omuzaki-stage/wgpu`). Activation follows the whole dependency graph the way Cargo resolves it:
+    /// `dep/feature`, `dep?/feature`, `dep:`, features turning on features, and what each dependency declaration asks.
+    /// An App's gate test may pass `cfg!(feature = "...")` for each optional registering dependency.
+    ///
+    /// # Errors
+    /// [`Error::UnknownCrate`], [`Error::UnknownBin`] or [`Error::UnknownFeature`].
+    pub fn expected_with_features(
+        &self,
+        package: &str,
+        bin: Option<&str>,
+        features: &[&str],
+    ) -> Result<Vec<Registration>, Error> {
         let app = self.get(package)?;
-        let mut all: Vec<Registration> = self.closure(app)?.into_iter().flat_map(|c| c.lib.iter().cloned()).collect();
+        let mut all: Vec<Registration> =
+            self.closure(app, features)?.into_iter().flat_map(|c| c.lib.iter().cloned()).collect();
         if let Some(bin) = bin {
             if !app.krate.bins.iter().any(|(name, _)| name == bin) {
                 return Err(Error::UnknownBin { package: package.to_owned(), bin: bin.to_owned() });
@@ -258,39 +316,203 @@ impl Sources {
         Ok(all)
     }
 
-    /// `app` and everything it depends on, each crate once.
-    fn closure<'a>(&'a self, app: &'a ScannedCrate) -> Result<Vec<&'a ScannedCrate>, Error> {
-        let mut seen: Vec<&ScannedCrate> = Vec::new();
-        let mut todo = vec![app];
-        while let Some(next) = todo.pop() {
-            if seen.iter().any(|c| c.krate.name == next.krate.name) {
-                continue;
+    /// The crates a build of `package` with these features links, `package` included, by name: what the expected set
+    /// is read from.
+    ///
+    /// # Errors
+    /// [`Error::UnknownCrate`] or [`Error::UnknownFeature`].
+    pub fn linked_crates(&self, package: &str, features: &[&str]) -> Result<Vec<String>, Error> {
+        Ok(self.closure(self.get(package)?, features)?.into_iter().map(|c| c.krate.name.clone()).collect())
+    }
+
+    /// `app` and every crate a build of it with these command-line `features` links, each crate once.
+    fn closure<'a>(&'a self, app: &'a ScannedCrate, features: &[&str]) -> Result<Vec<&'a ScannedCrate>, Error> {
+        let root = &app.krate;
+        let unknown = |feature: &str| Error::UnknownFeature { package: root.name.clone(), feature: feature.to_owned() };
+        let mut graph = FeatureGraph::default();
+        graph.active.insert(root.name.clone());
+        graph.enable(&root.name, "default");
+        for feature in features {
+            match feature.split_once('/') {
+                // `--features dep/feature` names a dependency of the package being built, or the package itself; the
+                // feature after the slash must exist in that crate, as Cargo requires.
+                Some((package, name)) if package == root.name => {
+                    if !root.has_feature(name) {
+                        return Err(unknown(feature));
+                    }
+                    graph.enable(&root.name, name);
+                }
+                Some((key, name)) => {
+                    let dep = root.dependencies.iter().find(|d| d.key == key.trim_end_matches('?'));
+                    let Some(dep) = dep else { return Err(unknown(feature)) };
+                    if !self.get(&dep.package)?.krate.has_feature(name) {
+                        return Err(unknown(feature));
+                    }
+                    graph.apply(root, feature);
+                }
+                None if root.has_feature(feature) => graph.enable(&root.name, feature),
+                None => return Err(unknown(feature)),
             }
-            for dep in &next.krate.deps {
-                todo.push(self.get(dep)?);
-            }
-            seen.push(next);
         }
-        Ok(seen)
+        loop {
+            let before = graph.size();
+            for package in graph.active.clone() {
+                let krate = &self.get(&package)?.krate;
+                graph.step(krate);
+            }
+            if graph.size() == before {
+                break;
+            }
+        }
+        graph.active.iter().map(|package| self.get(package)).collect()
     }
 }
 
-/// The registrations `krate`'s build compiles, sorted into its library and its binaries: calls of the workspace's
-/// registration macros whose `cfg`s hold.
+/// The environment variable [`Sources::expected`] reads the build's `--features` from.
+pub const FEATURES_VAR: &str = "OMUZAKI_LINK_FEATURES";
+
+impl Crate {
+    /// Whether `--features` may name `name` for this crate: one of its `[features]` (`default` only if declared), or
+    /// an optional dependency's implicit feature.
+    fn has_feature(&self, name: &str) -> bool {
+        self.features.iter().any(|(feature, _)| feature == name) || self.implicit(name)
+    }
+
+    /// Whether `name` is the implicit feature of an optional dependency: one declared under that key that no feature
+    /// lists as `dep:<key>`, and no explicit feature shadows.
+    fn implicit(&self, name: &str) -> bool {
+        self.dependencies.iter().any(|d| d.optional && d.key == name)
+            && !self.dep_syntax.iter().any(|key| key == name)
+            && !self.features.iter().any(|(feature, _)| feature == name)
+    }
+}
+
+/// Feature resolution over the workspace's path dependencies, as Cargo does it for one package's build: which crates
+/// are linked and which of their features are on. It grows monotonically to a fixpoint.
+///
+/// - A non-optional dependency of a linked crate is linked, with the features its declaration lists, and its
+///   `default` feature unless the declaration says `default-features = false`.
+/// - An optional dependency is linked once its crate switches it on: through its implicit feature, `dep:<key>`, or
+///   `<key>/<feature>`, which also turns `feature` on there. `<key>?/<feature>` turns `feature` on only once something
+///   else has switched the dependency on.
+/// - A feature that lists another feature turns that one on.
+///
+/// Not `cargo metadata`: the gate also runs inside test binaries where no cargo can be asked (see `crates`). The test
+/// `xtask/tests/feature_graph.rs` checks this resolution against `cargo metadata`'s on fixtures and on the workspace.
+#[derive(Default)]
+struct FeatureGraph {
+    /// The linked crates.
+    active: BTreeSet<String>,
+    /// The features on in each linked crate, implicit ones included.
+    enabled: BTreeMap<String, BTreeSet<String>>,
+    /// The optional dependencies each crate has switched on, by key.
+    switched_on: BTreeMap<String, BTreeSet<String>>,
+}
+
+impl FeatureGraph {
+    fn size(&self) -> usize {
+        let count = |map: &BTreeMap<String, BTreeSet<String>>| map.values().map(BTreeSet::len).sum::<usize>();
+        self.active.len() + count(&self.enabled) + count(&self.switched_on)
+    }
+
+    fn enable(&mut self, package: &str, feature: &str) {
+        self.enabled.entry(package.to_owned()).or_default().insert(feature.to_owned());
+    }
+
+    fn is_on(&self, krate: &Crate, dep: &Dependency) -> bool {
+        !dep.optional || self.switched_on.get(&krate.name).is_some_and(|keys| keys.contains(&dep.key))
+    }
+
+    /// Switches on `krate`'s optional dependency `key`, with its implicit feature if it has one.
+    fn switch_on(&mut self, krate: &Crate, key: &str) {
+        self.switched_on.entry(krate.name.clone()).or_default().insert(key.to_owned());
+        if krate.implicit(key) {
+            self.enable(&krate.name, key);
+        }
+    }
+
+    /// One pass over a linked crate: links its switched-on dependencies with what their declarations ask, and
+    /// applies the lists of its features that are on.
+    fn step(&mut self, krate: &Crate) {
+        for dep in &krate.dependencies {
+            if !self.is_on(krate, dep) {
+                continue;
+            }
+            self.active.insert(dep.package.clone());
+            if dep.default_features {
+                self.enable(&dep.package, "default");
+            }
+            for feature in &dep.features {
+                self.enable(&dep.package, feature);
+            }
+        }
+        for feature in self.enabled.get(&krate.name).cloned().unwrap_or_default() {
+            match krate.features.iter().find(|(name, _)| *name == feature) {
+                Some((_, list)) => list.iter().for_each(|item| self.apply(krate, item)),
+                None if krate.implicit(&feature) => self.switch_on(krate, &feature),
+                None => {} // `default` when the crate has none, or a feature Cargo would reject
+            }
+        }
+    }
+
+    /// Applies one entry of a feature list of `krate` (or of a command line building it).
+    fn apply(&mut self, krate: &Crate, item: &str) {
+        if let Some(key) = item.strip_prefix("dep:") {
+            self.switch_on(krate, key);
+        } else if let Some((key, feature)) = item.split_once('/') {
+            let weak = key.ends_with('?');
+            let key = key.trim_end_matches('?');
+            // A dependency that isn't a workspace member (`serde/std`) links no registrations.
+            let Some(dep) = krate.dependencies.iter().find(|d| d.key == key) else { return };
+            if weak && !self.is_on(krate, dep) {
+                return; // a later pass applies it again, once something else has switched the dependency on
+            }
+            if dep.optional {
+                self.switch_on(krate, key);
+            }
+            self.enable(&dep.package, feature);
+        } else {
+            self.enable(&krate.name, item);
+        }
+    }
+}
+
+/// The registrations `krate`'s build for `target` compiles, sorted into its library and its binaries: calls of the
+/// workspace's registration macros whose `cfg`s hold. The library's are also listed for every target that could ship
+/// (`lib_any_target`), which the lints use so that a registration behind `cfg(target_arch = "wasm32")` still counts on
+/// a Linux host.
 fn compiled_registrations(
     krate: Crate,
     files: Vec<ScannedFile>,
     kinds: &BTreeSet<String>,
+    target: &Target,
 ) -> Result<ScannedCrate, Error> {
     let conditions = file_conditions(&krate, &files);
+    let (lib, bins) = registrations_where(&krate, &files, &conditions, kinds, Some(target))?;
+    let (lib_any_target, _) = registrations_where(&krate, &files, &conditions, kinds, None)?;
+    Ok(ScannedCrate { krate, files, lib, lib_any_target, bins })
+}
+
+/// A crate's library registrations and each binary's.
+type Compiled = (Vec<Registration>, BTreeMap<String, Vec<Registration>>);
+
+/// The registration calls whose `cfg`s hold (for `target`, or on some target that ships when it is `None`), split into
+/// the library's and each binary's.
+fn registrations_where(
+    krate: &Crate,
+    files: &[ScannedFile],
+    conditions: &BTreeMap<PathBuf, Vec<Condition>>,
+    kinds: &BTreeSet<String>,
+    target: Option<&Target>,
+) -> Result<Compiled, Error> {
     let mut lib = Vec::new();
     let mut bins: BTreeMap<String, Vec<Registration>> = BTreeMap::new();
-    for file in &files {
+    for file in files {
         let inherited = conditions.get(&file.path).map(Vec::as_slice).unwrap_or_default();
         for call in file.scan.calls.iter().filter(|call| kinds.contains(&call.kind)) {
             let mut all: Vec<Condition> = inherited.to_vec();
             all.extend(Condition::at(&file.name, &call.cfgs));
-            let compiled = all_hold(&all).map_err(|undecided| Error::UndecidableCfg {
+            let compiled = all_hold(&all, target).map_err(|undecided| Error::UndecidableCfg {
                 registration: format!("{}:{} register_{}!({})", file.name, call.line, call.kind, call.name),
                 conditions: undecided
                     .iter()
@@ -308,13 +530,13 @@ fn compiled_registrations(
                 file: file.name.clone(),
                 line: call.line,
             };
-            match owning_bin(&krate, &file.path) {
+            match owning_bin(krate, &file.path) {
                 Some(bin) => bins.entry(bin).or_default().push(registration),
                 None => lib.push(registration),
             }
         }
     }
-    Ok(ScannedCrate { krate, files, lib, bins })
+    Ok((lib, bins))
 }
 
 /// The `cfg`s each file is compiled under: those on the chain of `mod` declarations from a crate root (library or
@@ -374,6 +596,32 @@ fn child_files(file: &Path, is_root: bool, decl: &ModDecl) -> Vec<PathBuf> {
 /// As those two.
 pub fn expected(root: &Path, package: &str, bin: Option<&str>) -> Result<Vec<Registration>, Error> {
     Sources::scan(root)?.expected(package, bin)
+}
+
+/// [`expected`] for a build of `target`: [`Sources::scan_for`] then [`Sources::expected`].
+///
+/// # Errors
+/// As those two.
+pub fn expected_for(
+    root: &Path,
+    target: &Target,
+    package: &str,
+    bin: Option<&str>,
+) -> Result<Vec<Registration>, Error> {
+    Sources::scan_for(root, target)?.expected(package, bin)
+}
+
+/// [`Sources::expected_with_features`] for the workspace at `root`.
+///
+/// # Errors
+/// As [`Sources::scan`] and [`Sources::expected_with_features`].
+pub fn expected_with_features(
+    root: &Path,
+    package: &str,
+    bin: Option<&str>,
+    features: &[&str],
+) -> Result<Vec<Registration>, Error> {
+    Sources::scan(root)?.expected_with_features(package, bin, features)
 }
 
 /// The binary that owns `file` (relative to its crate), if a binary does: a binary's root file, and everything
@@ -442,6 +690,13 @@ mod tests {
             lib: Some(("omuzaki_cli".into(), "src/lib.rs".into())),
             deps: Vec::new(),
             bins: vec![("omuzaki".into(), "src/main.rs".into()), ("fixture".into(), "src/bin/fixture.rs".into())],
+            registers: false,
+            generates_links: false,
+            lists_link_build: false,
+            optional_deps: Vec::new(),
+            dependencies: Vec::new(),
+            features: Vec::new(),
+            dep_syntax: Vec::new(),
         };
         assert_eq!(owning_bin(&krate, Path::new("src/main.rs")).as_deref(), Some("omuzaki"));
         assert_eq!(owning_bin(&krate, Path::new("src/bin/fixture.rs")).as_deref(), Some("fixture"));

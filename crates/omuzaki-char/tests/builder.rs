@@ -14,11 +14,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use omuzaki_char::builder::PartSource::{Built, Cached};
+use omuzaki_char::builder::conformance;
 use omuzaki_char::builder::{BuildTimings, CachingBuilder};
 use omuzaki_char_api::{
     Anchor, AnchorId, AnchorsFact, Attach, AttachOffset, BrushFalloff, BuildCtx, BuildError, BuildOptions,
     BuildServices, BuiltCharacter, CharId, CharacterBuilder, CharacterDef, CollidersFact, ContentHash, DynamicMesh,
-    FitFact, HeadFact, JointRef, MaterialName, MaterialSpec, MeshData, PartCategory, PartDef, PartId, PartKind,
+    FitFact, HeadFact, JointRef, Last, MaterialName, MaterialSpec, MeshData, PartCategory, PartDef, PartId, PartKind,
     PartKindId, PartMesh, PartMeta, PartOutput, PartRuntime, PoseSource, Publishes, Quality, RecolourCtx, Recoloured,
     RegistryBuilder, RuntimeCost, StepCtx, TextureData, TextureName, VariantId, VariantSet, WeightBrush, find_kind,
     resolve_variant,
@@ -122,7 +123,7 @@ fn build_prop(
     let id = material_name(ctx, prefix)?;
     let mesh = grid_mesh("prop", &id, params.rings + extra_cells, &mut ctx.rng);
     let material = MaterialSpec::toon(ctx.colour(&params.tint)?);
-    Ok(PartOutput { meshes: vec![mesh], materials: vec![(id, material)], ..PartOutput::default() })
+    Ok(PartOutput::new().with_meshes(vec![mesh]).with_materials(vec![(id, material)]))
 }
 
 /// A silent part: a grid whose jitter comes from the part's stream and whose colour from a palette slot. Its colour
@@ -213,13 +214,11 @@ impl PartKind for Lamp {
         if params.publish {
             publishes.put::<AnchorsFact>((AnchorId::new("light").unwrap(), anchor));
         }
-        Ok(PartOutput {
-            meshes: vec![mesh],
-            materials: vec![(id, material)],
-            publishes,
-            warnings: if ctx.rig_export { vec!["built for export".to_owned()] } else { Vec::new() },
-            ..PartOutput::default()
-        })
+        Ok(PartOutput::new()
+            .with_meshes(vec![mesh])
+            .with_materials(vec![(id, material)])
+            .with_publishes(publishes)
+            .with_warnings(if ctx.rig_export { vec!["built for export".to_owned()] } else { Vec::new() }))
     }
 }
 omuzaki_char_api::register_part_kind!(Lamp);
@@ -252,11 +251,7 @@ impl PartKind for Sleeper {
         IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
         let id = material_name(ctx, "t-sleeper")?;
         let mesh = grid_mesh("sleeper", &id, 2, &mut ctx.rng);
-        Ok(PartOutput {
-            meshes: vec![mesh],
-            materials: vec![(id, MaterialSpec::toon(Colour::WHITE))],
-            ..PartOutput::default()
-        })
+        Ok(PartOutput::new().with_meshes(vec![mesh]).with_materials(vec![(id, MaterialSpec::toon(Colour::WHITE))]))
     }
 }
 omuzaki_char_api::register_part_kind!(Sleeper);
@@ -274,11 +269,7 @@ impl PartKind for Twin {
     fn build(_: &Empty, ctx: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
         let id = MaterialName::new("twin").map_err(|e| ctx.fail(e.to_string()))?;
         let mesh = grid_mesh("twin", &id, 2, &mut ctx.rng);
-        Ok(PartOutput {
-            meshes: vec![mesh],
-            materials: vec![(id, MaterialSpec::toon(Colour::WHITE))],
-            ..PartOutput::default()
-        })
+        Ok(PartOutput::new().with_meshes(vec![mesh]).with_materials(vec![(id, MaterialSpec::toon(Colour::WHITE))]))
     }
 }
 omuzaki_char_api::register_part_kind!(Twin);
@@ -320,12 +311,10 @@ impl PartKind for Stripe {
             MaterialSpec::toon(params.tint.as_ref().map(|t| ctx.colour(t)).transpose()?.unwrap_or(colour));
         material.base_texture = Some(tex.clone());
         let mesh = grid_mesh("stripe", &id, 2, &mut ctx.rng);
-        Ok(PartOutput {
-            meshes: vec![mesh],
-            materials: vec![(id, material)],
-            textures: vec![(tex, texture)],
-            ..PartOutput::default()
-        })
+        Ok(PartOutput::new()
+            .with_meshes(vec![mesh])
+            .with_materials(vec![(id, material)])
+            .with_textures(vec![(tex, texture)]))
     }
 
     /// Only the material follows the palette; the texture comes from the asset, which a recolour does not read again.
@@ -473,12 +462,10 @@ impl PartKind for Wobble {
             forks: params.forks,
             asked: Arc::new(AtomicUsize::new(0)),
         };
-        Ok(PartOutput {
-            meshes: vec![mesh],
-            materials: vec![(id, MaterialSpec::toon(Colour::WHITE))],
-            runtime: Some(Box::new(sim)),
-            ..PartOutput::default()
-        })
+        Ok(PartOutput::new()
+            .with_meshes(vec![mesh])
+            .with_materials(vec![(id, MaterialSpec::toon(Colour::WHITE))])
+            .with_runtime(Box::new(sim)))
     }
 }
 omuzaki_char_api::register_part_kind!(Wobble);
@@ -540,7 +527,7 @@ impl PartKind for Dyed {
         mesh.geometry.colours = gradient(&mesh.geometry.positions, ctx.colour(&params.root)?, ctx.colour(&params.tip)?);
         let mut material = MaterialSpec::toon(Colour::WHITE);
         material.vertex_colours = true;
-        Ok(PartOutput { meshes: vec![mesh], materials: vec![(id, material)], ..PartOutput::default() })
+        Ok(PartOutput::new().with_meshes(vec![mesh]).with_materials(vec![(id, material)]))
     }
 
     fn recolour(params: &DyedParams, output: &mut PartOutput, ctx: &RecolourCtx<'_>) -> Result<Recoloured, BuildError> {
@@ -624,12 +611,10 @@ impl PartKind for Plaid {
         let mut material = MaterialSpec::toon(cloth);
         material.base_texture = Some(tex.clone());
         let mesh = grid_mesh("plaid", &id, 3, &mut ctx.rng);
-        Ok(PartOutput {
-            meshes: vec![mesh],
-            materials: vec![(id, material)],
-            textures: vec![(tex, texture)],
-            ..PartOutput::default()
-        })
+        Ok(PartOutput::new()
+            .with_meshes(vec![mesh])
+            .with_materials(vec![(id, material)])
+            .with_textures(vec![(tex, texture)]))
     }
 
     fn recolour(
@@ -735,6 +720,205 @@ fn signature(b: &BuiltCharacter) -> Vec<(&'static str, u64)> {
         ("report", digest(&b.report)),
         ("runtimes", digest(&runtimes)),
     ]
+}
+
+// ------------------------------------------------------------------------------------------------ facts and the palette
+
+omuzaki_char_api::fact! {
+    /// A byte a part publishes: constant, or (on purpose, to be refused) a channel of a palette colour.
+    pub NoteFact = "t-note", Last<u8>;
+}
+omuzaki_char_api::register_fact!(NoteFact);
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+struct NoterParams {
+    /// Publish the red channel of `tint` instead of 7: a fact that depends on the palette (what the kind does by default).
+    from_palette: bool,
+    /// Publish how many entries the palette has: a fact that depends on the slot set, not on any colour.
+    from_len: bool,
+    /// Publish `tint`'s red channel only in an offline build.
+    offline_only: bool,
+    tint: ColourRef,
+}
+
+impl Default for NoterParams {
+    fn default() -> Self {
+        Self {
+            from_palette: true,
+            from_len: false,
+            offline_only: false,
+            tint: ColourRef::slot_or("outfit", ColourRef::rgb(200, 200, 200)),
+        }
+    }
+}
+
+impl Validate for NoterParams {
+    fn check(&self, _: &mut Check) {}
+}
+
+/// Publishes a [`NoteFact`] and names a palette slot (so a palette change rebuilds it), without a recolour.
+struct Noter;
+
+impl PartKind for Noter {
+    type Params = NoterParams;
+
+    fn meta() -> PartMeta {
+        PartMeta { id: "t-noter", summary: "Publishes a note.", category: PartCategory::Accessory, requires: &[] }
+    }
+
+    fn build(params: &NoterParams, ctx: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
+        let tint = ctx.colour(&params.tint)?;
+        let note = if params.from_len {
+            u8::try_from(ctx.palette.0.len()).unwrap_or(u8::MAX)
+        } else if params.offline_only {
+            if ctx.quality == Quality::Offline { tint.r } else { 7 }
+        } else if params.from_palette {
+            tint.r
+        } else {
+            7
+        };
+        Ok(PartOutput::new().with_publishes(Publishes::default().with::<NoteFact>(note)))
+    }
+}
+omuzaki_char_api::register_part_kind!(Noter);
+
+/// Reads the [`NoteFact`] into its report: a stale view shows in the report of a cached build.
+struct Reader;
+
+impl PartKind for Reader {
+    type Params = LampParams;
+
+    fn meta() -> PartMeta {
+        PartMeta {
+            id: "t-note-reader",
+            summary: "Reports the note.",
+            category: PartCategory::Accessory,
+            requires: &["t-noter"],
+        }
+    }
+
+    fn build(_: &LampParams, ctx: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
+        Ok(PartOutput::new().with_warnings(vec![format!("note {:?}", ctx.published.get::<NoteFact>())]))
+    }
+}
+omuzaki_char_api::register_part_kind!(Reader);
+
+/// The mock character with a `noter` (publishing from the palette or not), and a `reader` after it.
+fn noted(from_palette: bool) -> CharacterDef {
+    let mut def = mock_character().unwrap();
+    add(&mut def, "noter", "t-noter", 10, json!({ "from_palette": from_palette }));
+    add(&mut def, "reader", "t-note-reader", 40, json!({ "publish": false }));
+    def
+}
+
+#[test]
+fn a_palette_dependent_fact_is_refused_by_the_conformance_check_naming_the_kind_and_the_fact() {
+    let probes = conformance::Probes::default().fact::<NoteFact>();
+    let report = conformance::check(&noted(true), Some(&["t-noter"]), &probes, &BuildServices::default());
+    let [violation] = report.violations.as_slice() else { panic!("one violation expected: {report:?}") };
+    assert!(violation.contains("kind 't-noter'") && violation.contains("part 'noter'"), "{violation}");
+    assert!(violation.contains("fact 't-note' depends on the palette"), "{violation}");
+
+    // Why the check exists: the reader is keyed on the publisher's geometry, so the cache serves it a stale note.
+    let (options, services) = live();
+    let (builder, mut def) = (CachingBuilder::new(), noted(true));
+    cached(&builder, &def, &options, &services).unwrap();
+    def.palette.0.insert(slot("outfit"), Colour::rgb(9, 8, 7));
+    let stale = cached(&builder, &def, &options, &services).unwrap().0;
+    let fresh = reference(&def, &options, &services).unwrap();
+    assert_ne!(
+        signature(&stale),
+        signature(&fresh),
+        "a palette-dependent fact is served stale: the check must refuse it"
+    );
+}
+
+#[test]
+fn a_palette_dependent_publisher_whose_only_part_is_disabled_is_still_caught() {
+    let mut def = mock_character().unwrap();
+    add(&mut def, "noter", "t-noter", 10, json!({ "from_palette": false }));
+    def.parts.get_mut(&pid("noter")).unwrap().enabled = false;
+    let probes = conformance::Probes::default().fact::<NoteFact>();
+    // The disabled part is never built, so it covers nothing: the kind is checked through a standalone part with its
+    // default parameters, which publish from the palette.
+    let report = conformance::check(&def, Some(&["t-noter"]), &probes, &BuildServices::default());
+    let [violation] = report.violations.as_slice() else { panic!("one violation expected: {report:?}") };
+    assert!(
+        violation.contains("kind 't-noter'") && violation.contains("fact 't-note' depends on the palette"),
+        "{violation}"
+    );
+}
+
+/// The mock character with a `noter` published from `params`.
+fn noted_with(params: Value) -> CharacterDef {
+    let mut def = mock_character().unwrap();
+    add(&mut def, "noter", "t-noter", 10, params);
+    def
+}
+
+fn only_violation(report: &conformance::Report) -> &str {
+    let [violation] = report.violations.as_slice() else { panic!("one violation expected: {report:?}") };
+    violation
+}
+
+#[test]
+fn a_fact_that_depends_on_how_many_slots_the_palette_has_is_caught() {
+    let probes = conformance::Probes::default().fact::<NoteFact>();
+    let def = noted_with(json!({ "from_palette": false, "from_len": true }));
+    let report = conformance::check(&def, Some(&["t-noter"]), &probes, &BuildServices::default());
+    assert!(only_violation(&report).contains("fact 't-note' depends on the palette"), "{report:?}");
+}
+
+#[test]
+fn a_fact_that_depends_on_the_build_options_is_caught_and_names_them() {
+    let probes = conformance::Probes::default().fact::<NoteFact>();
+    let def = noted_with(json!({ "from_palette": false, "offline_only": true }));
+    let report = conformance::check(&def, Some(&["t-noter"]), &probes, &BuildServices::default());
+    let violation = only_violation(&report);
+    assert!(violation.contains("depends on the palette") && violation.contains("Offline quality"), "{violation}");
+}
+
+#[test]
+fn the_probe_part_never_replaces_a_part_of_the_base() {
+    // The reader needs a `t-noter` part; the base has one under the id the probe would use first.
+    let mut def = mock_character().unwrap();
+    add(&mut def, "palette-probe", "t-noter", 10, json!({ "from_palette": false }));
+    let probes = conformance::Probes::default().fact::<NoteFact>();
+    let report = conformance::check(&def, Some(&["t-note-reader"]), &probes, &BuildServices::default());
+    assert!(report.unreached.is_empty() && report.violations.is_empty(), "{report:?}");
+}
+
+#[test]
+fn a_kind_that_needs_build_services_is_checked_when_they_are_supplied_and_unreached_when_not() {
+    let mut assets = MemAssets::new();
+    let hash = assets.put(&[200, 30, 30]);
+    let mut def = mock_character().unwrap();
+    add(&mut def, "stripe", "t-stripe", 5, json!({ "asset": hash.to_string(), "tint": "@outfit" }));
+    let probes = conformance::Probes::built_in();
+
+    let bare = conformance::check(&def, Some(&["t-stripe"]), &probes, &BuildServices::default());
+    assert_eq!(bare.unreached.len(), 1, "without the asset and the rasteriser it can't build: {bare:?}");
+
+    let full = BuildServices::default().with_assets(assets).with_rasterizer(|| Box::new(MockRasterizer));
+    let report = conformance::check(&def, Some(&["t-stripe"]), &probes, &full);
+    assert!(report.unreached.is_empty() && report.violations.is_empty(), "{report:?}");
+}
+
+#[test]
+fn a_palette_independent_fact_gives_the_same_cached_build_after_a_palette_change_and_never_rebuilds_the_reader() {
+    let probes = conformance::Probes::default().fact::<NoteFact>();
+    let report =
+        conformance::check(&noted(false), Some(&["t-noter", "t-note-reader"]), &probes, &BuildServices::default());
+    assert!(report.violations.is_empty(), "{:?}", report.violations);
+
+    let (options, services) = live();
+    let (builder, mut def) = (CachingBuilder::new(), noted(false));
+    same_as_reference("first", &builder, &def, &options, &services).unwrap();
+    def.palette.0.insert(slot("outfit"), Colour::rgb(9, 8, 7));
+    let t = same_as_reference("after a palette change", &builder, &def, &options, &services).unwrap();
+    assert!(built(&t).contains("noter"), "the publisher names the slot: {:?}", built(&t));
+    assert!(!built(&t).contains("reader") && !recoloured(&t).contains("reader"), "Q6: the reader is served");
 }
 
 /// A pose that never moves: the simulations here ignore it.
