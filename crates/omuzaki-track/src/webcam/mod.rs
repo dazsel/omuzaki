@@ -44,7 +44,7 @@ use crate::frame::RgbFrame;
 use crate::pipeline::FaceTracker;
 use crate::sample::{FaceSample, StageTimings};
 use preview::PreviewTap;
-use thread::{JOIN_FLOOR, JOIN_GRACE, Outcome, Run, STOP_SLACK, Stats, StopSignal, Worker};
+use thread::{JOIN_GRACE, Outcome, Run, STOP_SLACK, Stats, StopSignal, Worker};
 
 /// What turns an RGB frame into a face sample. [`FaceTracker`] implements it; tests script it.
 pub trait FrameTracker: Send {
@@ -427,12 +427,12 @@ impl Tracker for WebcamTracker {
 
     fn stop(&mut self) {
         let Some(Session { camera, stop, live }) = self.session.take() else { return };
-        stop.request(self.join_grace);
+        let hard_limit = stop.request(self.join_grace);
         live.store(false, Ordering::Relaxed);
-        // One deadline for both threads, `join_grace` from now: the camera thread counts the tracker's grace from the
-        // same moment, whatever it spends noticing the request, and gets a short floor when it is late. The slack is
-        // for the scheduler, so a responsive camera thread is never let go.
-        let give_up = Instant::now() + self.join_grace + JOIN_FLOOR + STOP_SLACK;
+        // One clock for both threads: the camera thread counts the tracker's grace from the request, gets a short floor
+        // when it is late, and is never allowed past the hard limit. This wait ends a slack after that limit, so
+        // whatever the camera thread does, it has finished (and handed the tracker back) before `stop` gives up on it.
+        let give_up = hard_limit + STOP_SLACK;
         while !camera.is_finished() && Instant::now() < give_up {
             std::thread::sleep(Duration::from_millis(1));
         }

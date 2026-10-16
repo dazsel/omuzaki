@@ -36,8 +36,9 @@ pub(super) const POLL: Duration = Duration::from_millis(20);
 /// this and not on top of it. A tracker that is not back by then is let go.
 pub(super) const JOIN_GRACE: Duration = Duration::from_millis(85);
 
-/// The least the camera thread gives an idle tracker thread to leave its loop, past the deadline: a thread that is
-/// merely waiting for its next job must not be taken for a stuck one because the camera thread was late.
+/// The least the camera thread gives an idle tracker thread to leave its loop, past the deadline when the camera
+/// thread is slightly late: a thread that is merely waiting for its next job must not be taken for a stuck one. It is
+/// also the margin between the deadline and the hard limit that bounds the whole shutdown.
 pub(super) const JOIN_FLOOR: Duration = Duration::from_millis(5);
 
 // One shared deadline: the grace, the floor and the outer wait's slack fit the budget.
@@ -49,14 +50,29 @@ const _: () =
 #[derive(Default)]
 pub(super) struct StopSignal {
     requested: AtomicBool,
-    deadline: OnceLock<Instant>,
+    /// The deadline, and the hard limit after it, both set by the first request.
+    limits: OnceLock<Limits>,
+}
+
+/// The two moments a stop is counted from.
+struct Limits {
+    /// When the tracker's thread has to be back.
+    deadline: Instant,
+    /// The latest the camera thread may keep waiting for it: the deadline plus [`JOIN_FLOOR`]. `stop`'s own wait
+    /// ends a slack later, so the camera thread can never finish after `stop` gave up on it.
+    hard: Instant,
 }
 
 impl StopSignal {
     /// Asks the thread to end, and sets the moment by which the tracker's thread has to be back: `within` from now.
-    pub(super) fn request(&self, within: Duration) {
-        self.deadline.get_or_init(|| Instant::now() + within);
+    /// Returns the hard limit for the camera thread's whole shutdown, which `stop` waits for.
+    pub(super) fn request(&self, within: Duration) -> Instant {
+        let limits = self.limits.get_or_init(|| {
+            let deadline = Instant::now() + within;
+            Limits { deadline, hard: deadline + JOIN_FLOOR }
+        });
         self.requested.store(true, Ordering::Release);
+        limits.hard
     }
 
     /// Whether `stop` was asked for.
@@ -64,11 +80,11 @@ impl StopSignal {
         self.requested.load(Ordering::Acquire)
     }
 
-    /// When to stop waiting for the tracker's thread: the deadline `stop` set, but at least [`JOIN_FLOOR`] from now; or,
-    /// when the thread ended by itself, `grace` from now.
+    /// When to stop waiting for the tracker's thread: the deadline `stop` set, but at least [`JOIN_FLOOR`] from now and
+    /// never past the hard limit `stop` waits for; or, when the thread ended by itself, `grace` from now.
     pub(super) fn give_up_at(&self, grace: Duration) -> Instant {
         let now = Instant::now();
-        self.deadline.get().map_or(now + grace, |&deadline| deadline.max(now + JOIN_FLOOR))
+        self.limits.get().map_or(now + grace, |l| l.deadline.max(now + JOIN_FLOOR).min(l.hard))
     }
 }
 
@@ -590,11 +606,17 @@ mod tests {
         // A second request cannot extend it.
         signal.request(Duration::from_secs(3600));
         assert!(signal.give_up_at(Duration::from_secs(60)) < before + Duration::from_secs(3600));
-        // A camera thread that is late, past the deadline, still gives an idle tracker thread the floor.
+        // A camera thread that is late never waits past the hard limit `request` returned, which is the deadline plus
+        // the floor; so `stop`'s own wait, which ends a slack after it, always outlasts the camera thread.
         let late = StopSignal::default();
-        late.request(Duration::ZERO);
+        let hard = late.request(Duration::ZERO);
+        std::thread::sleep(2 * JOIN_FLOOR);
+        assert_eq!(late.give_up_at(Duration::from_secs(60)), hard);
+        // Early enough, it still gets the floor, up to that limit.
+        let early = StopSignal::default();
+        let hard = early.request(Duration::from_millis(200));
         let asked = Instant::now();
-        assert!(late.give_up_at(Duration::ZERO) >= asked + JOIN_FLOOR);
+        assert!(early.give_up_at(Duration::ZERO) >= (asked + JOIN_FLOOR).min(hard));
     }
 
     #[test]

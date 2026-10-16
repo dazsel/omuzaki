@@ -1146,15 +1146,15 @@ fn the_default_preference_tries_the_cheapest_format_to_convert_first() {
 
 /// A camera whose `next_frame` takes 60 ms whatever the timeout says, as a driver that is slow to hand a frame back
 /// does: the camera thread notices `stop` late.
-struct Sluggish(FakeCamera);
-struct SluggishStream(Box<dyn CameraStream>);
+struct Sluggish(FakeCamera, Duration);
+struct SluggishStream(Box<dyn CameraStream>, Duration);
 impl Camera for Sluggish {
     fn enumerate(&self) -> Vec<CameraInfo> {
         self.0.enumerate()
     }
 
     fn open(&mut self, id: &CameraId, request: &CameraFormatRequest) -> Result<Box<dyn CameraStream>, TrackError> {
-        Ok(Box::new(SluggishStream(self.0.open(id, request)?)))
+        Ok(Box::new(SluggishStream(self.0.open(id, request)?, self.1)))
     }
 }
 impl CameraStream for SluggishStream {
@@ -1163,14 +1163,14 @@ impl CameraStream for SluggishStream {
     }
 
     fn next_frame(&mut self, timeout: Duration) -> Result<Option<CameraFrame<'_>>, TrackError> {
-        std::thread::sleep(Duration::from_millis(60));
+        std::thread::sleep(self.1);
         self.0.next_frame(timeout)
     }
 }
 
 #[test]
 fn a_camera_thread_that_is_slow_to_notice_stop_still_gives_the_tracker_back() {
-    let camera = Sluggish(FakeCamera::synthetic(nv12(64, 48), 10_000_000));
+    let camera = Sluggish(FakeCamera::synthetic(nv12(64, 48), 10_000_000), Duration::from_millis(60));
     // The default join grace, not the patient one: this is the real deadline.
     let mut tracker = WebcamTracker::new(
         Box::new(camera),
@@ -1185,4 +1185,25 @@ fn a_camera_thread_that_is_slow_to_notice_stop_still_gives_the_tracker_back() {
         tracker.stop();
         assert_eq!(tracker.error(), None, "the tracker came back; nothing was let go");
     }
+}
+
+/// A camera whose `next_frame` outlasts the whole stop budget: `stop` still returns within the hard limit it computed
+/// (the camera thread never waits past it, and `stop` waits a slack beyond it), and says the camera was let go.
+#[test]
+fn a_camera_that_outlasts_the_stop_deadline_is_let_go_inside_the_budget() {
+    let camera = Sluggish(FakeCamera::synthetic(nv12(64, 48), 10_000_000), Duration::from_millis(400));
+    let mut tracker = WebcamTracker::new(
+        Box::new(camera),
+        Box::new(Scripted::new(vec![true])),
+        WebcamConfig::default().with_mode(64, 48, 30),
+        standing_clock(),
+    );
+    let mut source = start(&mut tracker);
+    assert_eq!(next(&mut *source).status, TrackStatus::Tracking);
+    let stopping = Instant::now();
+    tracker.stop();
+    // The budget is 100 ms; the camera call lasts 400 ms, so waiting for it would be plain here. The margin is for a
+    // loaded machine, not a looser contract.
+    assert!(stopping.elapsed() < Duration::from_millis(300), "stop took {:?}", stopping.elapsed());
+    assert!(tracker.error().is_some(), "the camera thread was let go and that is reported");
 }

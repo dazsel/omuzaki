@@ -35,9 +35,21 @@ impl FrameConverter {
     /// [`TrackError::Backend`] for a frame the converter cannot read: a zero or odd side where the format needs an
     /// even one, data shorter than its layout, a damaged JPEG, or a pixel format this version does not know.
     pub fn convert(&mut self, frame: &CameraFrame<'_>) -> Result<RgbFrame<'_>, TrackError> {
-        convert_into(&mut self.mjpg, frame, &mut self.rgb)?;
+        convert_into(&mut self.mjpg, frame, &mut self.rgb).map_err(|e| TrackError::Backend(e.to_string()))?;
         Ok(RgbFrame { data: &self.rgb, width: frame.width, height: frame.height, stride: 3 * frame.width as usize })
     }
+}
+
+/// Why a frame could not be converted. Built without allocating, so a stream of bad frames costs the camera thread's
+/// hot loop nothing; the public [`FrameConverter::convert`] turns it into text.
+#[derive(Debug, thiserror::Error)]
+pub(super) enum Failure {
+    /// The pixel code refused the frame.
+    #[error("pixel conversion: {0}")]
+    Pixel(#[from] ConvertError),
+    /// No converter exists for this format.
+    #[error("no converter for {0:?}")]
+    NoConverter(PixelFormat),
 }
 
 /// `frame` as packed RGB8 in `rgb`, resized to fit if it is not that size already (so, no allocation once it has
@@ -46,7 +58,7 @@ pub(super) fn convert_into(
     mjpg: &mut MjpgDecoder,
     frame: &CameraFrame<'_>,
     rgb: &mut Vec<u8>,
-) -> Result<(), TrackError> {
+) -> Result<(), Failure> {
     let (w, h) = (frame.width, frame.height);
     let len = rgb_len(w, h);
     if rgb.len() != len {
@@ -76,9 +88,9 @@ pub(super) fn convert_into(
         // and offers no way to hand one back; `omuzaki-pixfmt` is outside this task's fence. Measured in
         // `tests/webcam.rs` and `benches/webcam.rs`.
         PixelFormat::Mjpg => mjpg.decode(frame.data, &mut out),
-        other => return Err(TrackError::Backend(format!("no converter for {other:?}"))),
+        other => return Err(Failure::NoConverter(other)),
     };
-    converted.map_err(|e| TrackError::Backend(format!("pixel conversion: {e}")))
+    Ok(converted?)
 }
 
 /// Bytes of a packed RGB8 frame.
