@@ -137,8 +137,10 @@ impl<B: Backend> Indexed<B> {
             return Ok(IndexState::default());
         };
         let (generation, count) = decode_head(head.expose())?;
-        // Every shard the head names has to be there: a missing one is lost labels, not a shorter list.
-        let mut shards = Vec::with_capacity(count);
+        // Every shard the head names has to be there: a missing one is lost labels, not a shorter list. `count` is
+        // read from the keychain, so it sizes nothing up front: a damaged head with a huge one stops at the first
+        // shard that is missing.
+        let mut shards = Vec::new();
         for n in 0..count {
             match self.backend.get(&shard_user(generation, n))? {
                 Some(text) => shards.push(text),

@@ -284,6 +284,25 @@ fn a_leftover_shard_of_the_next_generation_is_not_read_into_it() {
 }
 
 #[test]
+fn a_damaged_head_with_a_huge_shard_count_is_corrupt_not_an_abort() {
+    // `usize::MAX` shards would abort the process if the count were used to size a buffer.
+    for count in [usize::MAX.to_string(), "4294967296".to_owned(), "1000000".to_owned()] {
+        for shards_present in [0, 1] {
+            let store = fixture(MapBackend::default());
+            store.backend.set(HEAD_USER, &format!("0:{count}")).unwrap();
+            for n in 0..shards_present {
+                store.backend.set(&shard_user(0, n), "a/b").unwrap();
+            }
+            assert_eq!(
+                store.labels().unwrap_err(),
+                SecretError::corrupt(INDEX_WHAT),
+                "{count} shards, {shards_present} there"
+            );
+        }
+    }
+}
+
+#[test]
 fn the_last_generation_is_an_error_not_a_wrap() {
     let store = fixture(MapBackend::default());
     store.backend.set(HEAD_USER, &encode_head(u64::MAX, 1)).unwrap();
