@@ -1,6 +1,9 @@
 //! The contract of `omuzaki-secrets-api`: label rules, object safety, and a `SecretError` that never shows a value.
 
-use omuzaki_secrets_api::{SecretError, SecretLabel, SecretStore, SecretValue};
+use omuzaki_secrets_api::error::SecretError;
+use omuzaki_secrets_api::label::SecretLabel;
+use omuzaki_secrets_api::store::SecretStore;
+use omuzaki_secrets_api::value::SecretValue;
 
 fn assert_send_sync<T: Send + Sync + ?Sized>() {}
 

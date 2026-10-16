@@ -1,6 +1,8 @@
 //! [`SecretStore`]: the one trait that keeps secrets.
 
-use crate::{SecretError, SecretLabel, SecretValue};
+use crate::error::SecretError;
+use crate::label::SecretLabel;
+use crate::value::SecretValue;
 
 /// A place that keeps secrets by label: the OS keychain in the app (`omuzaki-secrets`), a map in tests
 /// (`omuzaki-secrets-mock`).

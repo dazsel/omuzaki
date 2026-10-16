@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use crate::SecretError;
+use crate::error::SecretError;
 
 /// The name of a secret, such as `automation/streamerbot` or `connector/openai`. It is the same label the settings
 /// design's `SecretRef` carries; when both land, `SecretRef` wraps a `SecretLabel`.

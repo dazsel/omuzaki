@@ -1,6 +1,6 @@
 //! `keyring::Error` to [`SecretError`].
 
-use omuzaki_secrets_api::SecretError;
+use omuzaki_secrets_api::error::SecretError;
 
 /// What to do when there is no keychain.
 fn unavailable_hint() -> &'static str {

@@ -4,7 +4,10 @@
 // A conformance suite reports a broken store by panicking with the failed check, like an `assert!`, so it may unwrap.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use omuzaki_secrets_api::{SecretError, SecretLabel, SecretStore, SecretValue};
+use omuzaki_secrets_api::error::SecretError;
+use omuzaki_secrets_api::label::SecretLabel;
+use omuzaki_secrets_api::store::SecretStore;
+use omuzaki_secrets_api::value::SecretValue;
 
 /// Removes the suite's labels when it ends, also when an assertion fails, so a real keychain is left as it was.
 struct Cleanup<'a, S: SecretStore + ?Sized> {

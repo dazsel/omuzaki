@@ -1,6 +1,6 @@
 //! [`SecretError`]: why a secret operation failed.
 
-/// Why a [`SecretStore`](crate::SecretStore) call failed. No variant holds a secret value, and none of the
+/// Why a [`SecretStore`](crate::store::SecretStore) call failed. No variant holds a secret value, and none of the
 /// `Display` texts can print one: stores build these from the label and the platform's own message only.
 ///
 /// The `Display` text is written for the person who sees it, saying what to do next. Every variant is
@@ -29,7 +29,7 @@ pub enum SecretError {
         /// Why.
         reason: String,
     },
-    /// A label is not a valid [`SecretLabel`](crate::SecretLabel).
+    /// A label is not a valid [`SecretLabel`](crate::label::SecretLabel).
     #[error("`{label}` is not a valid secret label: {reason}")]
     #[non_exhaustive]
     BadLabel {

@@ -4,7 +4,10 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use omuzaki_secrets_api::{SecretError, SecretLabel, SecretStore, SecretValue};
+use omuzaki_secrets_api::error::SecretError;
+use omuzaki_secrets_api::label::SecretLabel;
+use omuzaki_secrets_api::store::SecretStore;
+use omuzaki_secrets_api::value::SecretValue;
 
 #[derive(Default)]
 struct State {

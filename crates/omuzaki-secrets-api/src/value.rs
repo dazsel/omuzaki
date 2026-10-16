@@ -2,7 +2,7 @@
 
 use zeroize::Zeroizing;
 
-use crate::SecretError;
+use crate::error::SecretError;
 
 /// A secret's value, zeroed when dropped.
 ///
@@ -12,22 +12,22 @@ use crate::SecretError;
 ///
 /// ```compile_fail,E0277
 /// fn needs_debug<T: std::fmt::Debug>() {}
-/// needs_debug::<omuzaki_secrets_api::SecretValue>();
+/// needs_debug::<omuzaki_secrets_api::value::SecretValue>();
 /// ```
 ///
 /// ```compile_fail,E0277
 /// fn needs_display<T: std::fmt::Display>() {}
-/// needs_display::<omuzaki_secrets_api::SecretValue>();
+/// needs_display::<omuzaki_secrets_api::value::SecretValue>();
 /// ```
 ///
 /// ```compile_fail,E0277
 /// fn needs_serialize<T: serde::Serialize>() {}
-/// needs_serialize::<omuzaki_secrets_api::SecretValue>();
+/// needs_serialize::<omuzaki_secrets_api::value::SecretValue>();
 /// ```
 ///
 /// ```compile_fail,E0277
 /// fn needs_clone<T: Clone>() {}
-/// needs_clone::<omuzaki_secrets_api::SecretValue>();
+/// needs_clone::<omuzaki_secrets_api::value::SecretValue>();
 /// ```
 pub struct SecretValue(Zeroizing<String>);
 

@@ -4,7 +4,10 @@
 
 use std::sync::Arc;
 
-use omuzaki_secrets_api::{SecretError, SecretLabel, SecretStore, SecretValue};
+use omuzaki_secrets_api::error::SecretError;
+use omuzaki_secrets_api::label::SecretLabel;
+use omuzaki_secrets_api::store::SecretStore;
+use omuzaki_secrets_api::value::SecretValue;
 use omuzaki_secrets_mock::{MemorySecrets, conformance};
 
 fn label(text: &str) -> SecretLabel {
