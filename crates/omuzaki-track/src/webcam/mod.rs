@@ -24,6 +24,9 @@ mod convert;
 mod preview;
 mod thread;
 
+#[cfg(test)]
+mod stop_tests;
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;

@@ -52,6 +52,10 @@ pub(super) struct StopSignal {
     requested: AtomicBool,
     /// The deadline, and the hard limit after it, both set by the first request.
     limits: OnceLock<Limits>,
+    /// Test seam: runs inside [`request`](Self::request), once the flag is set, so a test can act on exactly the moment
+    /// `stop` was asked for. Compiled for unit tests only, so a release build has neither the field nor the call.
+    #[cfg(test)]
+    pub(super) on_request: Mutex<Option<Box<dyn Fn() + Send>>>,
 }
 
 /// The two moments a stop is counted from.
@@ -72,6 +76,10 @@ impl StopSignal {
             Limits { deadline, hard: deadline + JOIN_FLOOR }
         });
         self.requested.store(true, Ordering::Release);
+        #[cfg(test)]
+        if let Some(hook) = self.on_request.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
+            hook();
+        }
         limits.hard
     }
 
