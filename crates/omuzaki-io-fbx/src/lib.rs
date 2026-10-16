@@ -22,7 +22,7 @@
 //!
 //! This version imports the node hierarchy only. The vertex arrays and embedded images, which are most of a real file,
 //! are never read, so `Limits::max_vertices` and `Limits::max_images` cannot trip; what the file holds besides nodes is
-//! counted and reported as `fbx.content_dropped`, which a strict import turns into an error.
+//! counted and reported as `fbx.content_dropped` (animation, which is not loaded either, is detected from the file's bytes and named without a count), which a strict import turns into an error.
 //!
 //! **Untrusted input.** Every failure is an [`IoError`], never a panic. The input is capped by
 //! `Limits::max_input_bytes`, the node count by `Limits::max_nodes`, and ufbx's own memory, allocation count and
@@ -82,7 +82,7 @@ impl Importer for FbxImporter {
             return Err(IoError::unsupported("a file that is not FBX", "convert it to glTF or VRM"));
         }
         let loaded = load::load(input.bytes, ctx)?;
-        let (scene, report) = nodes::convert(&loaded, ctx)?;
+        let (scene, report) = nodes::convert(&loaded, load::mentions_animation(input.bytes), ctx)?;
         let mut outcome = ImportOutcome::new(scene, LicenceEvidence::Absent);
         outcome.report = report;
         Ok(outcome)

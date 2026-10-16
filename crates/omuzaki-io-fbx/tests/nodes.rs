@@ -320,3 +320,17 @@ fn a_limit_error_names_the_ceiling_the_load_ran_under() {
         other => panic!("expected an allocator limit, got {other:?}"),
     }
 }
+
+#[test]
+fn animation_is_reported_without_being_loaded() {
+    let mut file = maya();
+    file.model("Body", SCENE_ROOT, [0.0; 3], [0.0; 3]);
+    let plain = import(&file.bytes()).expect("a valid file");
+    assert!(!rules(&plain).contains(&"fbx.content_dropped"), "{:?}", rules(&plain));
+    file.animation();
+    let out = import(&file.bytes()).expect("the hierarchy imports whatever else the file holds");
+    let dropped =
+        out.report.findings.iter().find(|f| f.rule == "fbx.content_dropped").expect("a dropped-content finding");
+    assert!(dropped.message.ends_with("animation"), "{}", dropped.message);
+    assert_eq!(out.scene.nodes.len(), 1);
+}

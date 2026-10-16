@@ -43,6 +43,7 @@ struct Model {
 
 /// A mesh or a material, attached to a model.
 enum Extra {
+    Animation { id: i64 },
     Mesh { id: i64, model: i64 },
     Material { id: i64, model: i64 },
 }
@@ -116,6 +117,13 @@ impl FbxBuilder {
         self.extras.push(Extra::Mesh { id, model });
     }
 
+    /// An animation stack, which this version does not read.
+    pub fn animation(&mut self) {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.extras.push(Extra::Animation { id });
+    }
+
     /// A material used by `model`.
     pub fn material(&mut self, model: i64) {
         let id = self.next_id;
@@ -149,6 +157,10 @@ impl FbxBuilder {
         }
         for extra in &self.extras {
             match extra {
+                Extra::Animation { id } => {
+                    ok &= write!(objects, "\tAnimationStack: {id}, \"AnimStack::Take 001\", \"\" {{\n\t}}\n").is_ok();
+                    ok &= writeln!(connections, "\tC: \"OO\",{id},{SCENE_ROOT}").is_ok();
+                }
                 Extra::Mesh { id, model } => {
                     ok &= write!(
                         objects,

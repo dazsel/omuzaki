@@ -58,7 +58,11 @@ impl Basis {
 /// # Errors
 /// [`IoError::Limit`] over `Limits::max_nodes`, [`IoError::Cancelled`], [`IoError::Internal`] if ufbx's graph is not
 /// the tree it promises.
-pub(crate) fn convert(loaded: &SceneRoot, ctx: &ImportCtx<'_>) -> Result<(IoScene, Report), IoError> {
+pub(crate) fn convert(
+    loaded: &SceneRoot,
+    has_animation: bool,
+    ctx: &ImportCtx<'_>,
+) -> Result<(IoScene, Report), IoError> {
     let max_nodes = u64::from(ctx.options.limits.max_nodes);
     let total = loaded.nodes.len() as u64;
     // ufbx's root node is not one of ours, so it doesn't count.
@@ -109,13 +113,13 @@ pub(crate) fn convert(loaded: &SceneRoot, ctx: &ImportCtx<'_>) -> Result<(IoScen
     }
     // A cancel that came after the last periodic check still stops the import.
     ctx.progress.checkpoint("fbx.nodes", 1.0)?;
-    Ok((scene, findings(loaded)))
+    Ok((scene, findings(loaded, has_animation)))
 }
 
 /// What the conversion to canonical space changed, what ufbx repaired, and what the file holds that is not read.
-fn findings(loaded: &SceneRoot) -> Report {
+fn findings(loaded: &SceneRoot, has_animation: bool) -> Report {
     let mut report = Report::new();
-    if let Some(dropped) = dropped_content(loaded) {
+    if let Some(dropped) = dropped_content(loaded, has_animation) {
         report.push(dropped);
     }
     repairs(loaded, &mut report);
@@ -143,7 +147,7 @@ fn findings(loaded: &SceneRoot) -> Report {
 
 /// A warning naming the kinds of content the file has and this version does not read: it imports the node hierarchy only,
 /// so a model with meshes arrives as nodes without them, and the person is told.
-fn dropped_content(loaded: &SceneRoot) -> Option<Finding> {
+fn dropped_content(loaded: &SceneRoot, has_animation: bool) -> Option<Finding> {
     let counts = [
         ("meshes", loaded.meshes.len()),
         ("skins", loaded.skin_deformers.len()),
@@ -153,9 +157,12 @@ fn dropped_content(loaded: &SceneRoot) -> Option<Finding> {
         ("embedded images", loaded.videos.len()),
         ("lights", loaded.lights.len()),
         ("cameras", loaded.cameras.len()),
-        ("animation stacks", loaded.anim_stacks.len()),
     ];
-    let parts: Vec<String> = counts.iter().filter(|(_, n)| *n > 0).map(|(what, n)| format!("{n} {what}")).collect();
+    let mut parts: Vec<String> = counts.iter().filter(|(_, n)| *n > 0).map(|(what, n)| format!("{n} {what}")).collect();
+    // Animation is not loaded, so it has no count: the file either has it or does not.
+    if has_animation {
+        parts.push("animation".to_owned());
+    }
     if parts.is_empty() {
         return None;
     }

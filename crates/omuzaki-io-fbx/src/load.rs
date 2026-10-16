@@ -62,10 +62,11 @@ pub(crate) fn load(bytes: &[u8], ctx: &ImportCtx<'_>) -> Result<SceneRoot, IoErr
         load_external_files: false,
         // This version reads the node hierarchy only. Vertex arrays and embedded images are the bulk of a real file and
         // are skipped, so their size costs nothing; the meshes, materials, skins, textures and animation stacks that
-        // exist are still counted, and `nodes::convert` says they were not read.
+        // exist are still counted, and `nodes::convert` says they were not read. Animation curves are skipped too; whether
+        // the file has any is read from its bytes (`mentions_animation`).
         ignore_geometry: true,
         ignore_embedded: true,
-        ignore_animation: false,
+        ignore_animation: true,
         // Strings are read without a check, so an invalid one must stop the load instead of reaching the scene.
         unicode_error_handling: UnicodeErrorHandling::AbortLoading,
         node_depth_limit: NODE_DEPTH_LIMIT,
@@ -89,6 +90,25 @@ pub(crate) fn load(bytes: &[u8], ctx: &ImportCtx<'_>) -> Result<SceneRoot, IoErr
 #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)] // a progress bar needs no more than f32 digits
 pub(crate) fn fraction(done: u64, total: u64) -> f32 {
     if total == 0 { 0.0 } else { (done as f64 / total as f64).clamp(0.0, 1.0) as f32 }
+}
+
+/// The object name of FBX animation, in both encodings: ASCII writes it as `AnimationStack:` and in the definitions, binary
+/// as a record name.
+const ANIMATION_MARKER: &[u8] = b"AnimationStack";
+
+/// Whether the file has animation, from its bytes: curves are not loaded (they can be large and are not imported), so the
+/// object name is looked for instead. One pass over the input, which is already capped by `Limits::max_input_bytes`.
+pub(crate) fn mentions_animation(bytes: &[u8]) -> bool {
+    let first = ANIMATION_MARKER[0];
+    let mut at = 0;
+    while let Some(found) = bytes[at..].iter().position(|&b| b == first) {
+        let start = at + found;
+        if bytes[start..].starts_with(ANIMATION_MARKER) {
+            return true;
+        }
+        at = start + 1;
+    }
+    false
 }
 
 /// The memory (bytes) and allocation ceilings a load runs under for a node cap: the floor plus a share for each node the
@@ -126,6 +146,15 @@ fn map_error(error: &ufbx::Error, memory_limit: usize, allocation_limit: usize) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn animation_is_found_by_its_object_name_in_either_encoding() {
+        assert!(mentions_animation(b"Objects:  {\n\tAnimationStack: 1, \"AnimStack::Take\", \"\" {\n"));
+        assert!(mentions_animation(b"\x00\x00\x0eAnimationStack\x00"));
+        assert!(!mentions_animation(b"Objects:  {\n\tModel: 1, \"Model::A\", \"Null\" {\n"));
+        assert!(!mentions_animation(b"AnimationStac"));
+        assert!(!mentions_animation(b""));
+    }
 
     #[test]
     fn a_tight_node_cap_gets_a_tight_allocator_and_a_loose_one_the_fixed_ceilings() {
