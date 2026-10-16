@@ -28,7 +28,9 @@ toml.workspace = true
 # The GPU face rasteriser's tests create a device and wait on it; the mocks stand in for the face and render contracts.
 wgpu.workspace = true
 pollster.workspace = true
+omuzaki-char-api = { path = "../omuzaki-char-api" }
 omuzaki-face-mock = { path = "../omuzaki-face-mock" }
+omuzaki-render-api = { path = "../omuzaki-render-api" }
 omuzaki-render-mock = { path = "../omuzaki-render-mock" }
 
 # The generator behind `build.rs`: the `link()` calls come from the dependencies' `registers` flags.
