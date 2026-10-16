@@ -131,9 +131,11 @@ pub struct OutputSurface {
     pub scale_factor: f64,
 }
 
-/// Whether the window is open and what it looks like.
+/// Whether the window is open and what it looks like. Non-exhaustive, so a later state (a window being created, say)
+/// is additive: a match outside this crate keeps a wildcard arm.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum WindowState {
     /// No window.
     Closed,
