@@ -6,7 +6,7 @@ set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 SCRIPT=$HERE/../gh-read-token.sh
 W=$(mktemp -d) && trap 'rm -rf "$W"' EXIT
-mkdir "$W/bin" "$W/tmp"
+mkdir "$W/bin" "$W/tmp" "$W/home"
 REAL_OPENSSL=$(command -v openssl)
 fails=0
 ok() { echo "ok   $1"; }
@@ -15,8 +15,8 @@ check() { if eval "$2"; then ok "$1"; else bad "$1"; fi; }
 
 openssl genrsa -out "$W/key.pem" 2048 2>/dev/null || { echo "need openssl to make a test key"; exit 1; }
 export OMUZAKI_READ_APP_ID=123 OMUZAKI_READ_APP_KEY_B64=$(base64 < "$W/key.pem" | tr -d '\n')
-unset XDG_RUNTIME_DIR
-export TMPDIR=$W/tmp FAKE_LOG=$W/log FAKE_BODY=$W/body FAKE_ARGS=$W/args FAKE_MODE=good
+unset XDG_RUNTIME_DIR XDG_CACHE_HOME
+export HOME=$W/home TMPDIR=$W/tmp FAKE_LOG=$W/log FAKE_BODY=$W/body FAKE_ARGS=$W/args FAKE_MODE=good
 
 # Fake curl: logs "METHOD URL", every argument (to FAKE_ARGS) and the POST body; the Authorization header is only
 # accepted on stdin (`-H @-`), where it is classified as the fake token or a JWT and never logged. FAKE_MODE picks a failure.
@@ -63,8 +63,8 @@ FAKE
 chmod +x "$W/bin/curl"
 export PATH=$W/bin:$PATH
 run() { "$SCRIPT" "$@" 2>"$W/err" >"$W/out"; }
-fresh() { rm -rf "${W:?}/tmp/"* "$W/log" "$W/body" "$W/args"; }
-DIR=$W/tmp/omuzaki-read-token-$(id -u)
+fresh() { rm -rf "${W:?}/tmp/"* "${W:?}/home/.cache" "$W/log" "$W/body" "$W/args"; }
+DIR=$W/home/.cache/omuzaki
 CACHE=$DIR/cache
 
 bash -n "$SCRIPT" && ok "bash -n" || bad "bash -n"
@@ -74,7 +74,7 @@ fresh; run
 check "mint prints the token" '[ "$(cat "$W/out")" = FAKETOKEN ]'
 check "mint requests read-only permissions and the one repository" 'grep -q "\"repositories\":\[\"omuzaki\"\]" "$W/body" && ! grep -q write "$W/body"'
 check "cache is mode 600 in a 700 directory" '[ "$(stat -c %a "$CACHE")" = 600 ] && [ "$(stat -c %a "$DIR")" = 700 ]'
-check "no temp files left" '[ "$(ls "$DIR" | wc -l)" = 1 ] && [ "$(ls "$W/tmp" | wc -l)" = 1 ]'
+check "no temp files left" '[ "$(ls "$DIR" | wc -l)" = 1 ] && [ -z "$(ls "$W/tmp")" ]'
 check "every curl call starts with -q (no ~/.curlrc)" '[ -s "$W/log" ] && ! grep -q curl-without-q-first "$W/log"'
 check "the JWT went to curl on stdin, never in its arguments" 'grep -q auth-stdin-jwt "$W/log" && ! grep -qi -e bearer -e "eyJ" "$W/args"'
 check "stderr is empty and holds no token" '[ ! -s "$W/err" ]'
@@ -114,13 +114,18 @@ check "TERM while the key is on disk: non-zero exit, no key file left" '[ $rc -n
 rm "$W/bin/openssl"
 
 # The cache directory is verified, and refused when it is not private.
-fresh; mkdir -m 755 "$DIR"; run; rc=$?
+fresh; mkdir -p "$W/home/.cache" && mkdir -m 755 "$DIR"; run; rc=$?
 check "a group/world-readable cache directory is refused before any call" '[ $rc -ne 0 ] && grep -q "not a private directory" "$W/err" && [ ! -e "$W/log" ] && [ ! -s "$W/out" ]'
-fresh; mkdir "$W/elsewhere" && chmod 700 "$W/elsewhere"; ln -s "$W/elsewhere" "$DIR"; run; rc=$?
+fresh; mkdir -p "$W/home/.cache" "$W/elsewhere" && chmod 700 "$W/elsewhere"; ln -s "$W/elsewhere" "$DIR"; run; rc=$?
 check "a symlinked cache directory is refused, nothing written through it" '[ $rc -ne 0 ] && grep -q "not a private directory" "$W/err" && [ -z "$(ls "$W/elsewhere")" ]'
 rm -rf "$W/elsewhere"
 fresh; mkdir "$W/xdg" && chmod 700 "$W/xdg"; XDG_RUNTIME_DIR=$W/xdg run; rc=$?
-check "XDG_RUNTIME_DIR is used when set" '[ $rc -eq 0 ] && [ "$(stat -c %a "$W/xdg/omuzaki-read-token/cache")" = 600 ] && [ ! -e "$DIR" ]'
+check "XDG_RUNTIME_DIR is used when set, and TMPDIR stays empty" '[ $rc -eq 0 ] && [ "$(stat -c %a "$W/xdg/omuzaki/cache")" = 600 ] && [ ! -e "$DIR" ] && [ -z "$(ls "$W/tmp")" ]'
+fresh; XDG_CACHE_HOME=$W/xch run; rc=$?
+check "XDG_CACHE_HOME is used when set" '[ $rc -eq 0 ] && [ "$(stat -c %a "$W/xch/omuzaki")" = 700 ] && [ ! -e "$DIR" ]'
+rm -rf "$W/xch"
+fresh; HOME= run; rc=$?
+check "no usable location: refuse rather than fall back to TMPDIR" '[ $rc -ne 0 ] && grep -q refusing "$W/err" && [ -z "$(ls "$W/tmp")" ]'
 
 # --check exit paths.
 fresh; run --check; rc=$?

@@ -15,7 +15,8 @@
 #   OMUZAKI_READ_APP_KEY_B64  its private key (the .pem file), base64-encoded on one line
 # Use:   export GH_TOKEN=$(tools/gh-read-token.sh)   # then read-only `gh api ...` / curl calls use the App's budget
 #        tools/gh-read-token.sh --check              # does the token reach GitHub as the App, and how much is left?
-# The token lasts an hour; it is cached under $TMPDIR and reused while more than 10 minutes remain. Never echo it.
+# The token lasts an hour; it is cached under $XDG_RUNTIME_DIR or ~/.cache (never $TMPDIR) and reused while more than
+# 10 minutes remain. Never echo it.
 # Exit 1 with a message on stderr when the variables are missing or GitHub refuses.
 set -uo pipefail
 REPO=dazsel/omuzaki
@@ -37,12 +38,17 @@ private() {
   read -r m o < <(stat -c '%a %u' "$1" 2>/dev/null || stat -f '%Lp %u' "$1" 2>/dev/null) || return 1
   [ "$m" = "$3" ] && [ "$o" = "$(id -u)" ]
 }
-# The cache and the key tempfile live in a private directory, never loose in a shared $TMPDIR: $XDG_RUNTIME_DIR when
-# set, else a per-uid directory made 0700. Refuse unless it is a real directory of ours with mode 0700.
+# The cache and the key tempfile live in a private directory under the user's own space, never under $TMPDIR (a shared,
+# possibly non-sticky parent lets another user swap the directory): $XDG_RUNTIME_DIR/omuzaki when set, else
+# ${XDG_CACHE_HOME:-$HOME/.cache}/omuzaki. Made 0700; refuse unless it is a real directory of ours with mode 0700.
 setup_dir() {
-  if [ -n "${XDG_RUNTIME_DIR:-}" ]; then DIR=$XDG_RUNTIME_DIR/omuzaki-read-token
-  else DIR=${TMPDIR:-/tmp}/omuzaki-read-token-$(id -u); fi
-  mkdir -m 700 "$DIR" 2>/dev/null
+  local base
+  if [ -n "${XDG_RUNTIME_DIR:-}" ]; then base=$XDG_RUNTIME_DIR
+  elif [ -n "${XDG_CACHE_HOME:-}" ]; then base=$XDG_CACHE_HOME
+  elif [ -n "${HOME:-}" ]; then base=$HOME/.cache
+  else echo "gh-read-token: none of XDG_RUNTIME_DIR, XDG_CACHE_HOME or HOME is set; refusing" >&2; return 1; fi
+  DIR=$base/omuzaki
+  (umask 077; mkdir -p "$base" && mkdir -m 700 "$DIR") 2>/dev/null
   private "$DIR" -d 700 || { echo "gh-read-token: $DIR is not a private directory of ours (a real directory, owned by you, mode 0700); refusing" >&2; return 1; }
   CACHE=$DIR/cache
 }
