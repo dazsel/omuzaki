@@ -2502,6 +2502,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -4151,6 +4153,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-measure"
+version = "0.0.0"
+dependencies = [
+ "image",
+ "inventory",
+ "libm",
+ "moxcms",
+ "omuzaki-core",
+ "omuzaki-doc-mock",
+ "omuzaki-l10n-api",
+ "omuzaki-ops-api",
+ "omuzaki-store-api",
+ "omuzaki-store-mock",
+ "png",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "zune-jpeg",
+]
+
+[[package]]
 name = "omuzaki-obs"
 version = "0.0.0"
 dependencies = [
@@ -4280,9 +4304,14 @@ dependencies = [
 name = "omuzaki-script"
 version = "0.0.0"
 dependencies = [
+ "blake3",
  "omuzaki-core",
  "omuzaki-doc-api",
+ "omuzaki-doc-mock",
+ "omuzaki-embed",
  "omuzaki-ops-api",
+ "omuzaki-ops-mock",
+ "proptest",
  "rhai",
  "schemars",
  "serde",
@@ -4508,8 +4537,10 @@ dependencies = [
  "omuzaki-io-ops",
  "omuzaki-link-build",
  "omuzaki-mcp",
+ "omuzaki-ops",
  "omuzaki-ops-api",
  "omuzaki-ops-mock",
+ "omuzaki-script",
  "omuzaki-store-api",
  "omuzaki-store-mock",
  "omuzaki-track",
@@ -4575,6 +4606,9 @@ dependencies = [
  "omuzaki-ai-mock",
  "omuzaki-anim-api",
  "omuzaki-core",
+ "omuzaki-pixfmt",
+ "omuzaki-track-api",
+ "omuzaki-track-mock",
  "serde_json",
  "sha2",
  "tempfile",
