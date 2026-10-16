@@ -1,0 +1,36 @@
+# The accessories' render case (CB-43), for `tools/ci/evidence.py`: CI renders it at the PR's base and at the PR, for
+# pull requests labelled `visual`. One case file per change (see the top of tools/ci/evidence.py).
+
+[[case]]
+name = "accessories"
+description = "Every accessory kind, a row per style, on the standard and soft-sd templates: head kinds front and three-quarter, body kinds three-quarter, side and back, 256 px per tile through the mock toon renderer, the head carrying its painted face (the mock painter's eyes, brows and mouth). A body kind's tile is never narrower than the hips. Kinds with a driven rig (the wings) get a second row per style in the driven pose (folded). The glasses-layout sheets show three face layouts, then the default layout with the glasses' own eye line at -0.05."
+env = { OMUZAKI_ACCESSORY_PPM = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-char", "--test", "accessory_sheet", "render_the_accessory_sheets_when_asked", "--", "--exact"] },
+]
+images = [
+    "bell-standard.ppm",
+    "bell-soft-sd.ppm",
+    "charm-standard.ppm",
+    "charm-soft-sd.ppm",
+    "choker-standard.ppm",
+    "choker-soft-sd.ppm",
+    "glasses-standard.ppm",
+    "glasses-soft-sd.ppm",
+    "hairpin-standard.ppm",
+    "hairpin-soft-sd.ppm",
+    "halo-standard.ppm",
+    "halo-soft-sd.ppm",
+    "hat-standard.ppm",
+    "hat-soft-sd.ppm",
+    "headphones-standard.ppm",
+    "headphones-soft-sd.ppm",
+    "horns-standard.ppm",
+    "horns-soft-sd.ppm",
+    "tail-standard.ppm",
+    "tail-soft-sd.ppm",
+    "wings-standard.ppm",
+    "wings-soft-sd.ppm",
+    "glasses-layout-standard.ppm",
+    "glasses-layout-soft-sd.ppm",
+]
