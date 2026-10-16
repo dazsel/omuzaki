@@ -163,8 +163,8 @@ fn generated_sheet() {
         for channel in &made {
             let known = scene.avatar.as_ref().unwrap().expressions.keys().any(|k| k.to_string() == *channel);
             for weight in [0.5f32, 1.0] {
-                let (name, weight) = if known { (*channel, weight) } else { ("blink", 0.0) };
-                dump_expression(scene, name, weight, &out.join(format!("{channel}-{weight}.obj")));
+                let (name, posed) = if known { (*channel, weight) } else { ("blink", 0.0) };
+                dump_expression(scene, name, posed, &out.join(format!("{channel}-{weight}.obj")));
             }
         }
     }
