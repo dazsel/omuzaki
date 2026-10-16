@@ -42,7 +42,7 @@ fn every_registered_fake_conforms() {
     let mut ran = 0;
     for r in registered() {
         let m = r.parse().unwrap();
-        let requests = m.capabilities.iter().map(|d| sample_request(d.capability)).collect();
+        let requests = m.capabilities.iter().map(|d| conformance::sample_request_for(&m, d.capability)).collect();
         let found = findings(&*(r.make)(), &m, requests, Some("sk-probe-key"));
         assert_eq!(found, vec![], "{}", r.id);
         ran += 1;
@@ -267,6 +267,32 @@ fn empty_or_mislabelled_outputs_are_found() {
     }
     assert!(conformance::media_type_fits(MediaKind::Json, "application/json; charset=utf-8"));
     assert!(conformance::media_type_fits(MediaKind::Text, r#"text/plain; charset="utf-8"; format=flowed"#));
+}
+
+/// Calls whatever DCC program it is asked to: it rewrites the request's `tool` to its own before running.
+struct AnyProgram(FakeConnector);
+
+impl Connector for AnyProgram {
+    fn run(&self, m: &ConnectorManifest, req: &Request, cx: &RunCx<'_>) -> Result<RunOutput, ConnectError> {
+        let mut req = req.clone();
+        if let Request::Dcc(dcc) = &mut req {
+            m.id.as_str().clone_into(&mut dcc.tool);
+        }
+        self.0.run(m, &req, cx)
+    }
+
+    fn ping(&self, m: &ConnectorManifest, cx: &RunCx<'_>) -> Result<(), ConnectError> {
+        self.0.ping(m, cx)
+    }
+}
+
+#[test]
+fn a_dcc_request_for_another_program_is_refused() {
+    let m = manifest("mock-dcc");
+    let own = conformance::sample_request_for(&m, Capability::Dcc);
+    assert_eq!(findings(&FakeConnector::dcc(Script::default()), &m, vec![own.clone()], None), vec![]);
+    let found = findings(&AnyProgram(FakeConnector::dcc(Script::default())), &m, vec![own], None);
+    assert_eq!(checks(&found), [conformance::UNSUPPORTED_IS_REFUSED]);
 }
 
 #[test]
