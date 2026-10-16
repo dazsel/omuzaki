@@ -227,9 +227,16 @@ class Parity(unittest.TestCase):
         wheel = [numpy.zeros(2, numpy.float32), numpy.zeros(2, numpy.float32)]
         ours = numpy.array([0.0, numpy.nan, 0.25, 0.0], numpy.float32).tobytes()
         worst, problems = build.graph_parity("g", ours, wheel)
-        self.assertTrue(numpy.isnan(worst))
+        self.assertEqual(worst, 0.25)
         self.assertEqual(len(problems), 1)
         self.assertRegex(problems[0], "g output 0: ours has a non-finite")
+
+    def test_a_non_finite_output_does_not_hide_a_finite_output_over_the_gate(self):
+        wheel = [numpy.zeros(1, numpy.float32), numpy.zeros(1, numpy.float32)]
+        ours = numpy.array([numpy.inf, 0.5], numpy.float32).tobytes()
+        worst, problems = build.graph_parity("g", ours, wheel)
+        self.assertEqual(worst, 0.5, "the finite output's difference is kept, so the tolerance gate sees it")
+        self.assertEqual(len(problems), 1)
 
     def test_finite_outputs_give_the_largest_difference_and_no_problem(self):
         wheel = [numpy.zeros(2, numpy.float32), numpy.zeros(1, numpy.float32)]

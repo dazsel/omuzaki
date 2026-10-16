@@ -24,7 +24,6 @@ import functools
 import hashlib
 import io
 import json
-import math
 import os
 import re
 import shutil
@@ -584,9 +583,9 @@ def max_abs_diff(ours, reference, what: str) -> float:
 
 
 def graph_parity(graph: str, ours: bytes, expected) -> tuple[float, list[str]]:
-    """(the largest |ours - wheel| over a graph's outputs, the problems found). An output with a non-finite value is a
-    problem, not an exception, and makes the largest difference NaN, so the check still measures and reports every
-    other graph before it fails."""
+    """(the largest |ours - wheel| over a graph's finite outputs, the problems found). An output with a non-finite value
+    is a problem of its own, not an exception, and does not hide the difference of the others, so the check still
+    measures and reports every output and every graph before it fails."""
     import numpy as np  # installed by the check job
 
     worst, offset, problems = 0.0, 0, []
@@ -597,7 +596,7 @@ def graph_parity(graph: str, ours: bytes, expected) -> tuple[float, list[str]]:
             worst = max(worst, max_abs_diff(mine, tensor.ravel(), f"{graph} output {index}"))
         except Mismatch as why:
             problems.append(str(why))
-    return (math.nan if problems else worst), problems
+    return worst, problems
 
 
 def seeded_input(graph: str, shape, dtype, rng):
