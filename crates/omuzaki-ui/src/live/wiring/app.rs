@@ -19,8 +19,8 @@ use super::clock::PerformClock;
 use super::mailbox::FrameReader;
 use super::rig::{LiveRig, NoCamera, live_performer};
 use super::thread::{LoopReport, WiringError};
-use crate::aux_window::Transparency;
-use crate::output_window::{OutputPlan, OutputWindow, Program};
+use crate::aux_window::{PhysicalSize, Transparency};
+use crate::output_window::{OutputHost, OutputPlan, OutputWindow, Program};
 
 /// Why the live slice did not start.
 #[derive(Debug)]
@@ -60,6 +60,7 @@ pub struct LiveApp {
     reader: Option<FrameReader>,
     runner: Arc<dyn Runner>,
     output: OutputWindow,
+    host: OutputHost,
 }
 
 impl LiveApp {
@@ -87,6 +88,7 @@ impl LiveApp {
             reader: Some(reader),
             runner: Arc::new(executor.with_services(services)),
             output: OutputWindow::new(OutputPlan::default(), transparency),
+            host: OutputHost::new(transparency, PhysicalSize::FULL_HD),
         })
     }
 
@@ -110,10 +112,19 @@ impl LiveApp {
         &mut self.output
     }
 
+    /// The output window's host, for the `output.window.*` ops (`WindowHost` once #2146 merges). Clones share the
+    /// window.
+    pub fn output_host(&self) -> OutputHost {
+        self.host.clone()
+    }
+
     /// Draws this frame's output window (when it is open): `program`, the viewport's rendered frame, or the backdrop
-    /// alone until the viewport renders one. Call once per frame from the main viewport.
+    /// alone until the viewport renders one. Requests the host queued are carried out first, and what the window is
+    /// is published after. Call once per frame from the main viewport.
     pub fn show(&mut self, ctx: &Context, program: Option<Program>) {
+        self.host.apply(&mut self.output);
         self.output.show(ctx, program);
+        self.host.publish(&self.output, f64::from(ctx.pixels_per_point()));
     }
 
     /// The quit order (`live::wiring`): the output window closes and the render side lets go of its frames, then the
@@ -124,6 +135,7 @@ impl LiveApp {
     /// [`WiringError::Panicked`] if the perform thread had panicked.
     pub fn shutdown(&mut self) -> Result<LoopReport, WiringError> {
         self.output.set_open(false);
+        self.host.publish(&self.output, self.host.surface().scale_factor);
         self.reader = None;
         match self.rig.take() {
             Some(rig) => rig.shutdown(),

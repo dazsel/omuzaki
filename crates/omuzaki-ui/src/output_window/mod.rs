@@ -12,13 +12,16 @@
 //!   always-on-top is off unless the person turns it on. Esc or the OS close it.
 //! - Its position is remembered per monitor arrangement and restored only while that monitor exists.
 //!
-//! Until the viewport hands it the program texture it shows the [`test_card`].
+//! Until the viewport hands it the program texture it shows its backdrop; the [`test_card`] is what the evidence
+//! renders through it. The ops drive it through [`OutputHost`], shaped to #2146's `WindowHost`.
 
 pub mod composite;
+pub mod host;
 pub mod plan;
 pub mod test_card;
 pub mod window;
 
+pub use host::{HostCaps, HostError, HostState, HostSurface, OutputHost};
 pub use plan::{DEFAULT_FPS, DEFAULT_KEY, DEFAULT_TITLE, OutputBackdrop, OutputPlan, Shown};
 pub use test_card::test_card;
 pub use window::{OutputStatus, OutputWindow, Program, paint_output};

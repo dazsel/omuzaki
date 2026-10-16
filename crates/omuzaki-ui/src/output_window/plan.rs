@@ -1,7 +1,7 @@
 //! [`OutputPlan`]: what the output window should be, and the egui viewport that carries it out.
 //!
-//! The plan stands in for #298's `WindowPlan` until that contract lands; the window then implements its
-//! `WindowHost` with the plan it is given, and this type becomes a translation of it.
+//! The plan stands in for `WindowPlan` and `WindowSettings` (`omuzaki_stream_api::window`, #2146) until that contract
+//! merges; [`OutputHost`](super::OutputHost) then implements its `WindowHost` by translating them into a plan.
 
 use egui::{Color32, ViewportBuilder, WindowLevel};
 
