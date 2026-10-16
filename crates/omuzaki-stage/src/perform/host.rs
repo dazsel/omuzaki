@@ -29,13 +29,19 @@ use std::time::Duration;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
-use omuzaki_anim::{MAX_NEUTRAL_FRAMES, MIN_NEUTRAL_FRAMES, NeutralCapture, NeutralError};
-use omuzaki_anim_api::{ARKIT_COUNT, Calibration, Channel, DeviceProfile, HeadPose, RetargetConfig, Tick};
+use omuzaki_anim::{
+    MAX_NEUTRAL_FRAMES, MAX_TRIGGERS, MIN_NEUTRAL_FRAMES, NeutralCapture, NeutralError, TriggerFades, TriggerSlot,
+};
+use omuzaki_anim_api::{ARKIT_COUNT, Calibration, Channel, ChannelBuf, DeviceProfile, HeadPose, RetargetConfig, Tick};
 use omuzaki_core::glam::Vec3;
 use omuzaki_core::time::Seconds;
+use omuzaki_face_api::ExpressionSet;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::triggers::{
+    BindOutcome, Bound, MAX_KEY_CHARS, Rebaked, TriggerBinding, TriggerBook, TriggerInfo, TriggerLayer, check_key,
+};
 use super::{MAX_STEPS_PER_ADVANCE, PerformOutput, Performer, STEP_HZ, Tracking};
 
 /// Commands the queue holds before [`PerformError::QueueFull`].
@@ -53,6 +59,8 @@ const REPLY_POLL: Duration = Duration::from_millis(1);
 const BOUNDARY_EPS: f64 = 1e-9;
 /// Weight of the newest arrival gap in the [`PerformStatus::source_fps`] average.
 const FPS_SMOOTHING: f32 = 0.1;
+/// One step, in seconds: the time the trigger fades advance by each step.
+const STEP_SECS: f32 = 1.0 / STEP_HZ;
 
 /// What the ops (and the UI) can ask of the live performer. Requests are queued for the perform thread. For
 /// [`calibrate`](Self::calibrate) and [`set_calibration`](Self::set_calibration) a reply means "accepted", not
@@ -89,6 +97,67 @@ pub trait PerformHost: Send + Sync {
     /// The status the perform thread published last. Reports applied state only. Its parts are read one after the
     /// other, so they can describe slightly different instants (see [`PerformStatus`]).
     fn status(&self) -> PerformStatus;
+
+    /// Replaces the expression library the triggers bake against, and the rest face they blend onto. Every bound key is
+    /// re-baked; a key whose expression is no longer in the set stays bound and is listed as missing.
+    ///
+    /// A key held or toggled on keeps showing its expression across a reload that leaves the expression in the set,
+    /// even with new values. A key whose expression goes missing stops showing it, and must be pressed again once the
+    /// expression is back: presses of a missing key are not sent, so nothing says whether the key is still down.
+    ///
+    /// # Errors
+    /// [`PerformError::QueueFull`] or [`PerformError::Disconnected`]; nothing changes then.
+    fn set_expressions(&self, _set: ExpressionSet, _rest: ChannelBuf) -> Result<(), PerformError> {
+        Err(PerformError::Unsupported)
+    }
+
+    /// Binds `binding.key` to an expression, replacing a binding of the same key. A key that is not in the set is kept
+    /// and listed as missing; the ops refuse such a key before they get here.
+    ///
+    /// # Errors
+    /// [`PerformError::InvalidKey`] for a key that is not 1 to 32 characters, [`PerformError::TooManyTriggers`] when
+    /// every slot holds another key, or [`PerformError::QueueFull`] or [`PerformError::Disconnected`].
+    fn bind_trigger(&self, _binding: TriggerBinding) -> Result<BindOutcome, PerformError> {
+        Err(PerformError::Unsupported)
+    }
+
+    /// Binds like [`bind_trigger`](Self::bind_trigger), but refuses an expression that is not in the set, checking and
+    /// binding under one lock so a reload cannot remove it in between.
+    ///
+    /// # Errors
+    /// [`PerformError::UnknownExpression`] for an expression the set does not have, and the errors of
+    /// [`bind_trigger`](Self::bind_trigger).
+    fn bind_trigger_checked(&self, _binding: TriggerBinding) -> Result<BindOutcome, PerformError> {
+        Err(PerformError::Unsupported)
+    }
+
+    /// Removes the binding of `key`. Returns whether there was one.
+    ///
+    /// # Errors
+    /// [`PerformError::InvalidKey`], [`PerformError::QueueFull`] or [`PerformError::Disconnected`].
+    fn unbind_trigger(&self, _key: &str) -> Result<bool, PerformError> {
+        Err(PerformError::Unsupported)
+    }
+
+    /// Presses (`down`) or releases `key`. Returns whether the key shows something: `false` for a missing expression,
+    /// where pressing does nothing.
+    ///
+    /// # Errors
+    /// [`PerformError::UnknownKey`] when no trigger is bound to `key`, or [`PerformError::QueueFull`] or
+    /// [`PerformError::Disconnected`].
+    fn press(&self, _key: &str, _down: bool) -> Result<bool, PerformError> {
+        Err(PerformError::Unsupported)
+    }
+
+    /// Every binding, with whether it is showing and whether it is missing.
+    fn triggers(&self) -> Vec<TriggerInfo> {
+        Vec::new()
+    }
+
+    /// The expression library the triggers bake against (empty until [`set_expressions`](Self::set_expressions)).
+    fn expressions(&self) -> ExpressionSet {
+        ExpressionSet::default()
+    }
 }
 
 /// A partial change to the retarget's settings: only the fields that are `Some` change.
@@ -185,6 +254,18 @@ pub enum PerformError {
     /// The perform thread has stopped (its [`PerformControl`] is gone).
     #[error("the performer is not running")]
     Disconnected,
+    /// Every trigger slot holds another key, so a new key cannot be bound: unbind one first.
+    #[error("all {MAX_TRIGGERS} trigger slots are taken; unbind a key first")]
+    TooManyTriggers,
+    /// No trigger is bound to the key.
+    #[error("no trigger is bound to that key")]
+    UnknownKey,
+    /// The key is not 1 to 32 printable characters.
+    #[error("a trigger key is 1 to {MAX_KEY_CHARS} printable characters")]
+    InvalidKey,
+    /// The expression is not in the character's expression set.
+    #[error("no such expression on this character")]
+    UnknownExpression,
     /// A neutral capture is already running.
     #[error("a calibration is already running")]
     CalibrationRunning,
@@ -214,6 +295,12 @@ enum Command {
         config: RetargetConfig,
     },
     Calibration(Calibration),
+    /// One trigger slot, baked on the control side; `None` empties it.
+    Trigger { index: usize, slot: Option<TriggerSlot>, generation: u64 },
+    /// Every trigger slot whose values changed, from [`PerformHost::set_expressions`].
+    Triggers(Rebaked),
+    /// A key press (`down`) or release on a trigger slot.
+    Press { index: usize, down: bool },
 }
 
 /// The handle's two views of the settings (see the module docs). Behind a lock only the handle side takes.
@@ -252,8 +339,14 @@ struct Shared {
     acknowledged: AtomicU64,
     /// The calibration the performer is using.
     calibration: CalibrationMailbox,
+    /// For each slot, the generation of the binding whose expression is shown or wanted, or 0
+    /// (`TriggerLayer::active_generations`), published by the control each step. A binding is active when its own
+    /// generation is the one published.
+    active_triggers: [AtomicU64; MAX_TRIGGERS],
     /// Handle side only; the control never touches it.
     book: Mutex<RetargetBook>,
+    /// The trigger table. Handle side only, like `book`: the control receives baked slots.
+    triggers: Mutex<TriggerBook>,
 }
 
 /// Locks `m`; a panic elsewhere cannot leave these plain records half-written, so a poisoned lock is still good.
@@ -447,6 +540,7 @@ pub fn perform_channel(performer: &Performer) -> (PerformHandle, PerformControl)
         running: AtomicBool::new(true),
         acknowledged: AtomicU64::new(0),
         calibration: CalibrationMailbox::new(performer.retarget().calibration()),
+        active_triggers: std::array::from_fn(|_| AtomicU64::new(0)),
         book: Mutex::new(RetargetBook {
             requested: config.clone(),
             applied: config,
@@ -454,6 +548,7 @@ pub fn perform_channel(performer: &Performer) -> (PerformHandle, PerformControl)
             last_seq: 0,
             in_flight: VecDeque::with_capacity(COMMAND_QUEUE_LEN),
         }),
+        triggers: Mutex::new(TriggerBook::new()),
     });
     let control = PerformControl {
         commands: commands_rx,
@@ -467,6 +562,7 @@ pub fn perform_channel(performer: &Performer) -> (PerformHandle, PerformControl)
         skipped: 0,
         live: Live::START,
         fps: FpsMeter::default(),
+        triggers: TriggerLayer::new(TriggerFades::default()),
     };
     (PerformHandle { commands: commands_tx, shared }, control)
 }
@@ -521,6 +617,22 @@ impl PerformHandle {
     }
 }
 
+impl PerformHandle {
+    /// Binds under the book lock; with `checked`, an expression the set lacks is refused.
+    fn bind_locked(&self, binding: TriggerBinding, checked: bool) -> Result<BindOutcome, PerformError> {
+        let mut book = lock(&self.shared.triggers);
+        if checked && !book.has_expression(&binding.expression) {
+            return Err(PerformError::UnknownExpression);
+        }
+        let (slot, replaced) = book.place(&binding.key)?;
+        let (shown, missing) = book.bake(&binding);
+        let generation = book.next_generation();
+        self.send(Command::Trigger { index: slot, slot: shown, generation })?;
+        book.put(slot, Some(Bound { binding, missing, slot: shown, generation }));
+        Ok(BindOutcome { slot, replaced })
+    }
+}
+
 impl PerformHost for PerformHandle {
     fn calibrate(&self, frames: usize) -> Result<(), PerformError> {
         if self.shared.capturing.swap(true, Ordering::AcqRel) {
@@ -567,6 +679,61 @@ impl PerformHost for PerformHandle {
             retarget_seq,
             source_fps: live.fps,
         }
+    }
+
+    fn set_expressions(&self, expressions: ExpressionSet, rest: ChannelBuf) -> Result<(), PerformError> {
+        let mut book = lock(&self.shared.triggers);
+        let (next, changes) = book.with_expressions(expressions, &rest);
+        self.send(Command::Triggers(changes))?;
+        *book = next;
+        Ok(())
+    }
+
+    fn bind_trigger(&self, binding: TriggerBinding) -> Result<BindOutcome, PerformError> {
+        check_key(&binding.key)?;
+        self.bind_locked(binding, false)
+    }
+
+    fn bind_trigger_checked(&self, binding: TriggerBinding) -> Result<BindOutcome, PerformError> {
+        check_key(&binding.key)?;
+        self.bind_locked(binding, true)
+    }
+    fn unbind_trigger(&self, key: &str) -> Result<bool, PerformError> {
+        check_key(key)?;
+        let mut book = lock(&self.shared.triggers);
+        let Some((slot, _)) = book.find(key) else {
+            return Ok(false);
+        };
+        self.send(Command::Trigger { index: slot, slot: None, generation: 0 })?;
+        book.put(slot, None);
+        Ok(true)
+    }
+
+    fn press(&self, key: &str, down: bool) -> Result<bool, PerformError> {
+        let book = lock(&self.shared.triggers);
+        let (slot, bound) = book.find(key).ok_or(PerformError::UnknownKey)?;
+        if bound.missing {
+            return Ok(false);
+        }
+        self.send(Command::Press { index: slot, down })?;
+        Ok(true)
+    }
+
+    fn triggers(&self) -> Vec<TriggerInfo> {
+        let book = lock(&self.shared.triggers);
+        book.bound()
+            .map(|(slot, bound)| TriggerInfo {
+                binding: bound.binding.clone(),
+                active: self.shared.active_triggers.get(slot).is_some_and(|published| {
+                    published.load(Ordering::Acquire) == bound.generation
+                }),
+                missing: bound.missing,
+            })
+            .collect()
+    }
+
+    fn expressions(&self) -> ExpressionSet {
+        lock(&self.shared.triggers).expressions()
     }
 }
 
@@ -623,6 +790,8 @@ pub struct PerformControl {
     skipped: u64,
     live: Live,
     fps: FpsMeter,
+    /// The trigger fades, written into the performer's trigger layer before each of its steps.
+    triggers: TriggerLayer,
 }
 
 impl PerformControl {
@@ -645,13 +814,31 @@ impl PerformControl {
         self.check_stall();
         let last = first + count - 1;
         for index in first..last {
-            let out = performer.step(Tick::at_rate(index, STEP_HZ));
+            let out = self.step_performer(performer, Tick::at_rate(index, STEP_HZ));
             self.observe(&out);
         }
-        let out = performer.step(Tick::at_rate(last, STEP_HZ));
+        let out = self.step_performer(performer, Tick::at_rate(last, STEP_HZ));
         self.observe(&out);
         self.publish();
         Some(out)
+    }
+
+    /// Runs one step. The trigger fades go first, so the layer they write is the one this step resolves.
+    fn step_performer<'p>(&mut self, performer: &'p mut Performer, tick: Tick) -> PerformOutput<'p> {
+        self.triggers.step(STEP_SECS, performer.trigger_layer_mut());
+        performer.step(tick)
+    }
+
+    /// Makes the next step due at `now`, as the step after the last one run: the time that passed since is dropped, not
+    /// caught up. Call it when a loop that stopped calling [`advance`](Self::advance) (a pause) starts again, so the
+    /// performer and everything driven by its steps resume where they stopped instead of running the missed steps or
+    /// skipping over them. Before the first `advance` it does nothing.
+    pub fn rebase(&mut self, now: Seconds) {
+        if self.origin.is_some() {
+            #[allow(clippy::cast_precision_loss)] // a step count far below 2^52
+            let steps = self.next_step as f64;
+            self.origin = Some(now.0 - steps / f64::from(STEP_HZ));
+        }
     }
 
     /// Resets the performer and restarts the control's timeline with it: the next [`advance`](Self::advance) runs
@@ -661,8 +848,21 @@ impl PerformControl {
     ///
     /// A running neutral capture keeps the frames it holds and its stall clock starts over at the next `advance`;
     /// the tracking state reads `NoFrames` and the frame rate starts over, as after a new source.
+    ///
+    /// The triggers start over too: whatever expression is shown is gone at once, and no key counts as pressed, so a
+    /// held or toggled key must be pressed again to show its expression. The bindings stay. Key presses and releases
+    /// still queued from before the reset are dropped with the rest of that timeline; every other queued request
+    /// (settings, bindings, calibration) is applied.
     pub fn reset(&mut self, performer: &mut Performer) {
+        // At most the queue's length: a producer that keeps refilling it cannot hold the reset.
+        for _ in 0..COMMAND_QUEUE_LEN {
+            let Ok(command) = self.commands.try_recv() else { break };
+            if !matches!(command, Command::Press { .. }) {
+                self.run(command, performer);
+            }
+        }
         performer.reset();
+        self.triggers.reset();
         self.origin = None;
         self.next_step = 0;
         self.skipped = 0;
@@ -710,7 +910,25 @@ impl PerformControl {
                 self.shared.acknowledged.store(seq, Ordering::Release);
             }
             Command::Calibration(calibration) => self.set_calibration(performer, &calibration),
+            Command::Trigger { index, slot, generation } => self.set_trigger(index, slot.as_ref(), generation),
+            Command::Triggers(slots) => {
+                self.triggers.rebake(&slots);
+            }
+            Command::Press { index, down } => {
+                if down {
+                    self.triggers.press(index);
+                } else {
+                    self.triggers.release(index);
+                }
+            }
         }
+    }
+
+    /// Sets one trigger slot from its baked form. The control side bakes only non-empty masks and in-range indices, so
+    /// the table refuses nothing it is sent.
+    fn set_trigger(&mut self, index: usize, slot: Option<&TriggerSlot>, generation: u64) {
+        let result = self.triggers.set(index, slot, generation);
+        debug_assert_eq!(result, Ok(()), "the control side sent a slot the table refuses");
     }
 
     /// Sets the calibration and publishes it: the mailbox always holds the one in use.
@@ -788,6 +1006,9 @@ impl PerformControl {
 
     fn publish(&self) {
         self.shared.live.store(self.live.pack(), Ordering::Release);
+        for (published, generation) in self.shared.active_triggers.iter().zip(self.triggers.active_generations()) {
+            published.store(generation, Ordering::Release);
+        }
     }
 }
 

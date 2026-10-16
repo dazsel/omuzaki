@@ -15,8 +15,8 @@ use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use common::{
-    FACE_ROI, Pose, SIDE, blendshapes_script, canonical_face, detector_script, frame, geometry, graphs, grey_pixels,
-    landmarks_script, project,
+    FACE_ROI, Pose, SIDE, blendshapes_script, canonical_face, counted_graphs, detector_script, frame, geometry, graphs,
+    grey_pixels, landmarks_script, project, steady_face, textured_pixels,
 };
 use omuzaki_core::time::Seconds;
 use omuzaki_track::{FaceTracker, FaceTrackerConfig, Mode, to_track_frame};
@@ -89,5 +89,30 @@ fn track_allocates_nothing_after_warm_up_in_image_mode() {
 fn track_allocates_nothing_after_warm_up_in_video_mode() {
     let (allocations, faces) = allocations_over_300_frames(Mode::Video);
     assert!(faces > 0, "the scripted face was tracked at least some of the time");
+    assert_eq!(allocations, 0, "FaceTracker::track allocated");
+}
+
+#[test]
+fn track_allocates_nothing_on_skipped_tracked_and_detected_frames() {
+    // Seven still frames, then a jump, over and over: skipped, tracked and (every 60 frames) detected passes.
+    let (graphs, runs) =
+        counted_graphs(detector_script(true), landmarks_script(&steady_face(), FACE_ROI, 10.0), blendshapes_script());
+    let mut tracker = FaceTracker::new(graphs, &geometry(), FaceTrackerConfig::default()).unwrap();
+    let scenes = [textured_pixels(0, 2, 1), textured_pixels(24, 2, 2)];
+    let scene = |i: u32| &scenes[(i / 7 % 2) as usize];
+    for i in 0..10_u32 {
+        tracker.track(&frame(scene(i)), Seconds(f64::from(i) / 30.0)).unwrap();
+    }
+    let mut faces = 0;
+    let allocations = measure(|| {
+        for i in 10..310_u32 {
+            let (sample, _timings) = tracker.track(&frame(scene(i)), Seconds(f64::from(i) / 30.0)).unwrap();
+            faces += usize::from(sample.is_some());
+        }
+    });
+    let (detector, landmarks, _) = runs.get();
+    assert_eq!(faces, 300, "the steady face was always found");
+    assert!(detector >= 5, "the timer re-ran the detector: {detector}");
+    assert!(landmarks > 100 && landmarks < 300, "some frames were skipped and some were not: {landmarks}");
     assert_eq!(allocations, 0, "FaceTracker::track allocated");
 }

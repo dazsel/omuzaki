@@ -15,7 +15,7 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 use tokio_util::sync::{CancellationToken, DropGuard};
 
-use crate::access::{AccessToken, Registry, TokenId, TokenRecord};
+use crate::access::{AccessToken, Registry, TokenId, TokenInfo, TokenRecord};
 use crate::error::ServerError;
 use crate::gate::Gate;
 use crate::limits::Limits;
@@ -357,6 +357,12 @@ impl HttpServer {
     /// token was already revoked.
     pub async fn revoke(&self, id: TokenId) -> bool {
         self.registry.revoke(id).await
+    }
+
+    /// The live tokens in id order, for the "connected apps" panel: each one's label, grants, last use and open
+    /// sessions. A revoked token is gone. Never carries a secret or its hash.
+    pub async fn tokens(&self) -> Vec<TokenInfo> {
+        self.registry.tokens().await
     }
 
     /// Closes the port, ends every session and waits for the listener to stop.

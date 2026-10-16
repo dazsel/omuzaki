@@ -73,6 +73,15 @@ Everything the product uses or ships, and everything we use to build it:
 - **Service outputs the vendor owns or keeps rights to** (the free tiers of Meshy and Tripo), or outputs under unknown terms.
 - **Third-party IP in anything shippable:** characters, logos, a real person's likeness or voice, unless licensed and consented.
 
+## What counts as documented lineage
+
+A shipped model's `model.toml` lists its chain under `card.lineage`, and `cargo xtask models` checks it (ML-01):
+
+- **At least one `base_model` or `training_data` link.** A model trained from scratch names its dataset; a fine-tune names its base model and the data it was tuned on. `code` and `conversion` links alone don't document where a model came from.
+- **Every link has a non-blank `name` and a source `url`** (`https://`, a valid host, an optional port) **and its licence** (below). Fields are read exactly as written: nothing is trimmed, a `url` holds only printable ASCII without spaces, and a `name` holds only printable ASCII.
+- **The licence must be exactly one entry of the allow-list.** The gate accepts only these whole entries, from the "Allowed" section above: `MIT`, `MIT-0`, `Apache-2.0`, `Apache-2.0 WITH LLVM-exception`, `BSD-2-Clause`, `BSD-3-Clause`, `ISC`, `Zlib`, `BSL-1.0`, `0BSD`, `Unlicense`, `CC0-1.0`, `Unicode-3.0`, `Unicode-DFS-2016`, `MPL-2.0`, `OFL-1.1`, `CC-BY-3.0`, `CC-BY-4.0`. It doesn't parse expressions: `OR`, `AND`, parentheses and a bare exception id all fail, and a dual-licensed source names the one licence we take it under. Anything else fails, naming the model and the link: a banned licence (`CC-BY-NC-4.0`, `BUSL-1.1`, `SSPL-1.0`, `FSL-1.1-MIT`), words (`research only`), `LicenseRef-…`, a placeholder such as `unknown`, or an id nobody has cleared. Case-by-case licences (OpenRAIL, the NVIDIA Open Model License) are not on the list; a lineage link under one needs a maintainer to add it with its conditions.
+- A link whose licence isn't on the list isn't cleared: find the primary source (step 1 under "Adding anything new") or the model doesn't ship.
+
 ## User-supplied models
 
 A model a person adds to a model slot (ML-13, `docs/decisions/0016-user-supplied-models.md`) is outside this policy's scope: we don't make, ship, bundle, mirror or auto-download it, so its licence is between the person and its author. The product shows its declared licence and a "not from Omuzaki" disclaimer, records the person's acknowledgement, carries the model into the licence record of everything it makes, and warns at export when a non-commercial or unknown licence would reach a commercial use. Nothing we ship may depend on a user-supplied model, and no default, preset, tutorial or agent suggestion may point people to a model this policy bans.
