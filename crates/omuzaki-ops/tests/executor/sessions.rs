@@ -495,7 +495,7 @@ fn revoking_mid_transaction_reverts_its_edits_and_refuses_the_agent_after() {
     assert!(matches!(next.detail.as_deref(), Some(ErrorDetail::Ended { .. })), "{next:?}");
     assert_eq!(
         (rig.undo().unwrap().as_deref(), rig.at("p")),
-        (Some("test.set"), Some(json!(0))),
+        (Some(super::SET), Some(json!(0))),
         "the person's history"
     );
 }

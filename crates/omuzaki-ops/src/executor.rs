@@ -12,11 +12,15 @@ use omuzaki_ops_api::{
     Services, SessionId, TxId, checks, registrations,
 };
 
+use omuzaki_history_api::{HistoryExport, JournalSink, WallClock};
+
 use crate::ExecutorError;
 use crate::bus::Bus;
 use crate::gate::Allowance;
+use crate::history::{Direction, HistoryLimits};
 use crate::index::OpIndex;
 use crate::jobs::Manager;
+use crate::journal::Journal;
 use crate::limits::Bucket;
 use crate::sessions::Entry;
 use crate::state::{Edit, State};
@@ -35,6 +39,8 @@ pub(crate) struct Env {
     pub(crate) services: Arc<Services>,
     pub(crate) project_dir: Option<Arc<ProjectDir>>,
     pub(crate) job_started: Option<JobStartedHook>,
+    /// Every op this executor runs: the job threads need it for a driver job's inner calls and an effect's calls.
+    pub(crate) ops: Arc<OpIndex>,
     /// Whether a person can be asked: without one, a request that would queue for approval is refused instead
     /// (design §7.6, headless `omuzaki mcp`).
     pub(crate) approver: bool,
@@ -86,6 +92,7 @@ impl Env {
         let (actor, cause, tx) = by;
         state.apply_edit(Edit {
             op: meta.name,
+            summary: meta.summary,
             scope: meta.scope,
             undo: meta.undo,
             args: checks::record_args(op)?,
@@ -95,7 +102,25 @@ impl Env {
             tx,
             at: self.clock.now(),
             approval,
+            effect: plan.effect.clone(),
         })
+    }
+
+    /// Authorizes, plans and checks `op` against the current document, with the checks every runner shares
+    /// ([`checks::plan`]). `confirmed_by` is the person who confirmed the run, after an approval.
+    pub(crate) fn plan(
+        &self,
+        state: &State,
+        op: &dyn DynOp,
+        req: &Request,
+        confirmed_by: Option<&Actor>,
+    ) -> Result<Plan, OpError> {
+        let ctx = self.op_ctx(state, &req.actor, &req.grants, req.mode == Mode::DryRun);
+        let ctx = match confirmed_by {
+            Some(person) => ctx.with_confirmation(person),
+            None => ctx,
+        };
+        checks::plan(op, req, ctx)
     }
 
     /// Sends the queued events. Called after the state lock is released, so no subscriber is ever called (or waited
@@ -111,7 +136,6 @@ impl Env {
 /// the executor unchanged: its jobs stay listed, cancellable and waitable, and the configuration they run under stays
 /// the one every op sees.
 pub struct Executor {
-    pub(crate) ops: OpIndex,
     /// The document and everything that must change with it (one lock: this is the authoring plane, where
     /// correctness beats concurrency, and a single lock makes "plan, apply, log" atomic by construction), the clock,
     /// and what ops may reach beyond the document. Fixed before the executor starts: the fields have no setters.
@@ -142,6 +166,7 @@ impl Executor {
         registrations: impl IntoIterator<Item = &'static OpRegistration>,
     ) -> Result<Self, ExecutorError> {
         let env = Env {
+            ops: Arc::new(OpIndex::build(registrations)?),
             state: Arc::new(Mutex::new(State::new(doc))),
             bus: Arc::new(Bus::default()),
             clock,
@@ -152,7 +177,7 @@ impl Executor {
             review: None,
         };
         let jobs = Manager::new(env.clone(), u64::MAX);
-        Ok(Self { ops: OpIndex::build(registrations)?, env, jobs, job_budget: u64::MAX })
+        Ok(Self { env, jobs, job_budget: u64::MAX })
     }
 
     /// Applies a builder's change to the environment and the job budget, then rebuilds the job manager over them.
@@ -243,6 +268,42 @@ impl Executor {
         self.rewired(|env, _| env.review = Some(policies))
     }
 
+    /// The same executor, handing every change to `journal` (#251, design `journal.md` §5.1): each entry is appended
+    /// under the executor's lock right after its change succeeds, so journal order is history order; the journal is
+    /// asked to admit an applied edit, an undo or a redo before it is planned (never a commit or a rollback); and when
+    /// it wants a mark, the next change is followed by a [`HistoryEntry::Mark`](omuzaki_history_api::HistoryEntry)
+    /// with the history. Without it nothing is journalled and every edit is admitted.
+    #[must_use]
+    pub fn with_journal(self, journal: Arc<dyn JournalSink>) -> Self {
+        self.rewired(|env, _| lock(&env.state).set_journal(Journal::new(journal)))
+    }
+
+    /// The same executor, keeping at most `limits.undo_depth` steps per actor and `limits.log_records` records in
+    /// the in-memory op log (#150; defaults 1,000 and 10,000). Older steps and records are in the journal's archive.
+    #[must_use]
+    pub fn with_history_limits(self, limits: HistoryLimits) -> Self {
+        self.rewired(|env, _| lock(&env.state).set_limits(limits))
+    }
+
+    /// The same executor, noting in wall time when each actor last acted, so a history export leaves out actors not
+    /// seen for 30 days (`journal.md` §9). Without it, every actor's last-seen time is unknown and nobody is left out.
+    #[must_use]
+    pub fn with_wall_clock(self, wall: Arc<dyn WallClock>) -> Self {
+        self.rewired(|env, _| lock(&env.state).set_wall(wall))
+    }
+
+    /// The whole history as data: every actor's undo and redo stacks, the open transactions and the next transaction
+    /// id and op `seq`. Steps share their patches with the executor, so this copies pointers.
+    pub fn history_export(&self) -> HistoryExport {
+        lock(&self.env.state).history_export()
+    }
+
+    /// Appends a [`HistoryEntry::Mark`](omuzaki_history_api::HistoryEntry) with the history now, as a clean close
+    /// does. Without a journal it does nothing.
+    pub fn flush_history(&self) {
+        lock(&self.env.state).mark();
+    }
+
     /// Enforces the jobs' time caps and cancel deadlines against the executor's clock. A supervisor thread calls it
     /// about every 50 ms of wall time, so a host with the system clock never calls it; a host or test with a
     /// [`FakeClock`](omuzaki_core::time::FakeClock) calls it after moving the clock.
@@ -263,23 +324,6 @@ impl Executor {
         self.jobs.wait_detached(at_most);
     }
 
-    /// Authorizes, plans and checks `op` against the current document, with the checks every runner shares
-    /// ([`checks::plan`]). `confirmed_by` is the person who confirmed the run, after an approval.
-    pub(crate) fn plan(
-        &self,
-        state: &State,
-        op: &dyn DynOp,
-        req: &Request,
-        confirmed_by: Option<&Actor>,
-    ) -> Result<Plan, OpError> {
-        let ctx = self.env.op_ctx(state, &req.actor, &req.grants, req.mode == Mode::DryRun);
-        let ctx = match confirmed_by {
-            Some(person) => ctx.with_confirmation(person),
-            None => ctx,
-        };
-        checks::plan(op, req, ctx)
-    }
-
     /// The refusals that depend only on the request and the op: a job is not part of a transaction, and a driver job
     /// is not available yet.
     fn check_job_request(op: &dyn DynOp, req: &Request) -> Result<(), OpError> {
@@ -298,7 +342,7 @@ impl Executor {
         let mut state = lock(&self.env.state);
         // Admitted again under the lock the plan is made in: the session may have changed since `run` looked.
         req.grants = state.sessions.admit(&req.actor, &req.grants, self.env.clock.now())?;
-        let plan = self.plan(&state, &*op, &req, None)?;
+        let plan = self.env.plan(&state, &*op, &req, None)?;
         drop(state);
         self.jobs.start(op, req, plan, awaited)
     }
@@ -351,7 +395,7 @@ pub(crate) fn require(grants: &Grants, actor: &Actor, scope: Scope, op: &str) ->
 
 impl Runner for Executor {
     fn ops(&self) -> Vec<OpInfo> {
-        self.ops.infos()
+        self.env.ops.infos()
     }
 
     fn run(&self, req: Request) -> Result<Outcome, OpError> {
@@ -360,7 +404,7 @@ impl Runner for Executor {
         // there must know what the caller itself holds.
         let granted = self.admit(&req.actor, &req.grants)?;
         require(&granted, &req.actor, Scope::Read, &req.op)?;
-        let registration = self.ops.find(&req.op)?;
+        let registration = self.env.ops.find(&req.op)?;
         let op = (registration.decode)(req.args.clone())?;
         if op.meta().kind == OpKind::Job {
             Self::check_job_request(&*op, &req)?;
@@ -371,14 +415,14 @@ impl Runner for Executor {
                 return self.jobs.outcome(info.id);
             }
         }
-        self.with_state(|state| self.run_locked(state, &*op, req, &Allowance::default()))
+        self.with_state(|state| self.env.run_locked(state, &*op, req, &Allowance::default()))
     }
 
     fn begin(&self, label: &str, actor: &Actor) -> TxId {
         let at = self.env.clock.now();
         let entry = Entry::Call(Some(Bucket::Edits));
         self.with_state(|state| match state.sessions.admit_run(actor, &Grants::default(), at, entry) {
-            Ok(_) => state.begin(label, actor),
+            Ok(_) => state.begin(label, actor, at),
             // `begin` cannot say no: the id it hands back is never open, so every use of it is refused.
             Err(_) => state.reserve_tx(),
         })
@@ -389,15 +433,20 @@ impl Runner for Executor {
     }
 
     fn rollback(&self, tx: TxId, actor: &Actor) -> Result<(), OpError> {
-        self.with_admitted(actor, &Grants::default(), |state, _| state.rollback(tx, actor))
+        let at = self.env.clock.now();
+        self.with_admitted(actor, &Grants::default(), |state, _| {
+            // Rollback takes no grants: the effects' undo calls run with what the actor holds.
+            let grants = Env::own_grants(state, actor, at);
+            self.env.rollback_tx(state, tx, actor, &grants)
+        })
     }
 
     fn undo(&self, actor: &Actor, grants: &Grants) -> Result<Option<String>, OpError> {
-        self.with_admitted(actor, grants, |state, granted| state.undo(actor, granted))
+        self.with_admitted(actor, grants, |state, granted| self.env.travel(state, Direction::Undo, actor, granted))
     }
 
     fn redo(&self, actor: &Actor, grants: &Grants) -> Result<Option<String>, OpError> {
-        self.with_admitted(actor, grants, |state, granted| state.redo(actor, granted))
+        self.with_admitted(actor, grants, |state, granted| self.env.travel(state, Direction::Redo, actor, granted))
     }
 
     fn subscribe(&self, grants: &Grants) -> Result<Receiver<Event>, OpError> {
@@ -412,10 +461,7 @@ impl Runner for Executor {
 
     fn log(&self, after_seq: u64, limit: usize, grants: &Grants) -> Result<Vec<OpRecord>, OpError> {
         checks::require_read(grants, "read the op log")?;
-        let state = lock(&self.env.state);
-        // Sequence numbers run 1, 2, 3, ... so the records after `after_seq` start at that index.
-        let start = usize::try_from(after_seq).unwrap_or(usize::MAX);
-        Ok(state.log().iter().skip(start).take(limit).cloned().collect())
+        Ok(lock(&self.env.state).log_after(after_seq, limit))
     }
 }
 
@@ -426,7 +472,7 @@ impl Jobs for Executor {
             return Err(OpError::invalid("mode", "a job starts only in apply mode").hint("a dry-run is the plan alone"));
         }
         require(&req.grants, &req.actor, Scope::Read, &req.op)?;
-        let registration = self.ops.find(&req.op)?;
+        let registration = self.env.ops.find(&req.op)?;
         let op = (registration.decode)(req.args.clone())?;
         if op.meta().kind != OpKind::Job {
             return Err(OpError::invalid("op", format!("{} is not a job", req.op)).hint("run it with `Runner::run`"));

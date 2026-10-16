@@ -19,7 +19,7 @@ use omuzaki_doc_api::Value;
 use schemars::Schema;
 use serde_path_to_error::Segment;
 
-use crate::{DynOp, Op, OpError, OpMeta};
+use crate::{DynOp, JobShape, Op, OpError, OpMeta};
 
 /// Everything the executor and the five surfaces need to know about one op type.
 pub struct OpRegistration {
@@ -31,12 +31,20 @@ pub struct OpRegistration {
     pub decode: fn(Value) -> Result<Box<dyn DynOp>, OpError>,
     /// See [`Op::coalesces`].
     pub coalesces: fn() -> bool,
+    /// See [`Op::job_shape`]: surfaces show a driver job as one (#1110) without decoding the op.
+    pub job_shape: fn() -> JobShape,
 }
 
 impl OpRegistration {
     /// The registration for op type `T`. A `const fn` so [`register_op!`](crate::register_op) works at link time.
     pub const fn of<T: Op>() -> Self {
-        Self { meta: T::meta, schema: schema_of::<T>, decode: decode_as::<T>, coalesces: T::coalesces }
+        Self {
+            meta: T::meta,
+            schema: schema_of::<T>,
+            decode: decode_as::<T>,
+            coalesces: T::coalesces,
+            job_shape: T::job_shape,
+        }
     }
 }
 

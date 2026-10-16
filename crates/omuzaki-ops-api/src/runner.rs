@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::approval::{ApprovalRef, PendingApproval, Resolution};
 use crate::session::{Ended, SessionChange, SessionId, SessionInfo, SessionUndo};
-use crate::{Actor, Cause, Effect, Grants, JobId, JobInfo, OpError, OpKind, OpMeta, Plan, Scope, Undo};
+use crate::{Actor, Cause, Effect, Grants, JobId, JobInfo, JobShape, OpError, OpKind, OpMeta, Plan, Scope, Undo};
 
 /// Plan only, or plan and apply.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -434,7 +434,10 @@ pub enum ClashKind {
 }
 
 /// Everything a surface needs to present one op: generated from the registry, never written by hand.
+///
+/// `#[non_exhaustive]`: build one with [`OpInfo::new`] and the `with_*` methods.
 #[derive(Clone, Debug, PartialEq, Serialize)]
+#[non_exhaustive]
 pub struct OpInfo {
     /// Dotted name.
     pub name: &'static str,
@@ -452,6 +455,15 @@ pub struct OpInfo {
     /// ([`Op::coalesces`](crate::Op::coalesces)). Omitted from the JSON when false.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub coalesces: bool,
+    /// For a job, whether `work` computes a result ([`Plain`](JobShape::Plain)) or edits the document through inner
+    /// calls ([`Driver`](JobShape::Driver), one undo step that may join the caller's transaction). `Plain` for every
+    /// other op, and then absent from the JSON.
+    #[serde(skip_serializing_if = "is_plain")]
+    pub job_shape: JobShape,
+}
+
+fn is_plain(shape: &JobShape) -> bool {
+    *shape == JobShape::Plain
 }
 
 impl OpInfo {
@@ -465,6 +477,7 @@ impl OpInfo {
             undo: meta.undo,
             schema,
             coalesces: false,
+            job_shape: JobShape::Plain,
         }
     }
 
@@ -472,6 +485,13 @@ impl OpInfo {
     #[must_use]
     pub fn with_coalesces(mut self, coalesces: bool) -> Self {
         self.coalesces = coalesces;
+        self
+    }
+
+    /// The same info with [`job_shape`](Self::job_shape) set.
+    #[must_use]
+    pub fn with_job_shape(mut self, shape: JobShape) -> Self {
+        self.job_shape = shape;
         self
     }
 }

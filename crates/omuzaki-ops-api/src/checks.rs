@@ -16,7 +16,8 @@
 //!
 //! History: an applied op adds [`step_scope`] to its undo step, the step belongs in history only if
 //! [`in_history`] says so, undo and redo need every recorded scope ([`require_step_scopes`]), and a step holding an
-//! [`Undo::Explicit`] op is refused with [`explicit_refused`].
+//! [`Undo::Explicit`] op is refused with [`explicit_refused`]. A live action (an edit with [`Undo::None`], which
+//! [`check_plan`] holds to an empty patch) adds nothing to a step, so it never enters history nor clears redo.
 
 use omuzaki_doc_api::{DocVersion, DocWrite, Patch, PatchError, Value};
 
@@ -80,10 +81,12 @@ pub fn authorize(grants: &Grants, actor: &Actor, meta: OpMeta, mode: Mode) -> Re
 
 /// Refuses a plan its op may not return. A query that planned a patch would change the document through an
 /// interface everyone assumes is read-only. A job changes the document once, at finish: a plan that already carries a
-/// patch would apply twice or not at all, so it is refused in the dry-run too.
+/// patch would apply twice or not at all, so it is refused in the dry-run too. An edit with [`Undo::None`] is a **live
+/// action** (an expression, a scene switch, a sound: live state, not the document), so it may not plan a patch
+/// either: a change with nothing to undo it would be a change undo silently skips.
 ///
 /// # Errors
-/// `Internal`, naming the op, for either.
+/// `Internal`, naming the op, for any of them.
 pub fn check_plan(meta: OpMeta, plan: &Plan) -> Result<(), OpError> {
     if plan.patch.changes.is_empty() {
         return Ok(());
@@ -95,9 +98,15 @@ pub fn check_plan(meta: OpMeta, plan: &Plan) -> Result<(), OpError> {
         }
         OpKind::Job => Err(OpError::internal(format!("{} is a job but planned a change to the document", meta.name))
             .hint("this is a bug in the op: a job's plan returns no patch; its `finish` returns the change")),
+        OpKind::Edit if meta.undo == Undo::None => Err(OpError::internal(format!(
+            "{} is a live action (`Undo::None`) but planned a change to the document",
+            meta.name
+        ))
+        .hint("this is a bug in the op: an op that changes the document says `Undo::Auto`")),
         OpKind::Edit => Ok(()),
     }
 }
+
 
 /// Authorizes `req` for `op`, plans it and checks the plan: steps 3 and 4 of the [module](self) order. `ctx` is the
 /// runner's context over the document; this sets the request's grants (a composite op's
@@ -138,9 +147,11 @@ pub fn apply_patch<D: DocWrite + ?Sized>(doc: &mut D, patch: &Patch) -> Result<D
     if patch.changes.is_empty() { Ok(doc.version()) } else { doc.apply(patch) }
 }
 
-/// What a surface lists for a registered op, `coalesces` included.
+/// What a surface lists for a registered op, `coalesces` and `job_shape` included.
 pub fn op_info(registration: &OpRegistration) -> OpInfo {
-    OpInfo::new((registration.meta)(), (registration.schema)()).with_coalesces((registration.coalesces)())
+    OpInfo::new((registration.meta)(), (registration.schema)())
+        .with_coalesces((registration.coalesces)())
+        .with_job_shape((registration.job_shape)())
 }
 
 /// The scope an applied op adds to its undo step (its own `scope`, given its `undo` mode), which undo and redo then

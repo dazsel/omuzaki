@@ -337,8 +337,9 @@ fn a_running_job_does_not_block_another_actor_and_its_finish_is_one_undo_step() 
     gate.wait_entered();
     assert_eq!(live(&rig, info.id).state, JobState::Running);
 
+    let other = rig.bobs_agent();
     let began = Instant::now();
-    rig.agent_set("other", json!(1));
+    rig.set_as(&other, "other", json!(1));
     assert!(began.elapsed() < Duration::from_millis(5), "an edit by another actor waited for the job");
 
     gate.release.send(()).unwrap();
@@ -346,8 +347,8 @@ fn a_running_job_does_not_block_another_actor_and_its_finish_is_one_undo_step() 
     assert!(matches!(ended.state, JobState::Done { seq: Some(_), .. }), "{:?}", ended.state);
     assert_eq!(rig.at("a1"), Some(json!("done")));
 
-    // One undo step, on the requesting actor's history: the agent's edit is not touched.
-    assert_eq!(rig.undo().unwrap().as_deref(), Some("test.job"));
+    // One undo step, on the requesting actor's history: the other person's agent's edit is not touched.
+    assert_eq!(rig.undo().unwrap().as_deref(), Some("A job the tests drive."), "a one-op step is labelled by its summary");
     assert_eq!(rig.at("a1"), None);
     assert_eq!(rig.at("other"), Some(json!(1)));
     assert_eq!(rig.undo().unwrap(), None);

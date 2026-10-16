@@ -18,6 +18,7 @@ use crate::executor::Executor;
 use crate::gate::{Allowance, queued};
 use crate::state::State;
 use crate::sync::lock;
+use crate::travel::Abandoned;
 
 impl Sessions for Executor {
     fn open(&self, spec: SessionSpec) -> Result<SessionInfo, OpError> {
@@ -80,7 +81,7 @@ impl Sessions for Executor {
             // Only the charge that pauses asks: one budget approval per pause.
             if crossed && state.sessions.pause_one(index, actor, PauseReason::Budget, at) {
                 changed(state, id, SessionChange::Paused)?;
-                self.ask_budget(state, index, spend, at);
+                self.env.ask_budget(state, index, spend, at);
             }
             snapshot(state, id)
         })
@@ -92,7 +93,7 @@ impl Sessions for Executor {
 
     fn end(&self, id: SessionId, reason: EndReason) -> Result<Ended, OpError> {
         let at = self.env.clock.now();
-        self.with_state(|state| end_family(state, id, &reason, at))
+        self.with_state(|state| self.end_family(state, id, &reason, at))
     }
 
     fn undo_session(&self, id: SessionId, by: &Actor) -> Result<SessionUndo, OpError> {
@@ -104,12 +105,7 @@ impl Sessions for Executor {
             if state.sessions.pause_one(index, by.clone(), PauseReason::Undo, at) {
                 changed(state, id, SessionChange::Paused)?;
             }
-            let info = state.sessions.info(index).clone();
-            // A transaction whose revert conflicts is kept as an unfinished step in the agent's history, which the
-            // walk below then tries to revert like any other step.
-            let (abandoned, _kept) = state.abandon(&info.actor);
-            let grants = state.sessions.principal_grants(by);
-            Ok(state.undo_session(id, &info.actor, by, &grants, &info.client, abandoned))
+            self.env.undo_session_locked(state, id, by, at)
         })
     }
 
@@ -214,7 +210,7 @@ impl Executor {
         let resolution = Resolution { id, by: Some(by.clone()), result, at };
         state.queue_event(Event::approval_resolved(resolution.clone()));
         if revoke {
-            end_family(state, session, &EndReason::Revoked { by: by.clone(), credential: true }, at)?;
+            self.end_family(state, session, &EndReason::Revoked { by: by.clone(), credential: true }, at)?;
         }
         Ok(resolution)
     }
@@ -275,12 +271,14 @@ impl Executor {
             over_budget: carried.over_budget || matches!(need, Need::Budget { .. }),
             reviewed: carried.reviewed || matches!(need, Need::Review { .. }),
             approval: Some(ApprovalRef::new(pending.id, by.clone()).with_also(also)),
+            effect_call: false,
         };
         let run = self
+            .env
             .ops
             .find(&request.op)
             .and_then(|registration| (registration.decode)(request.args.clone()))
-            .and_then(|op| self.run_locked(state, &*op, request, &allow));
+            .and_then(|op| self.env.run_locked(state, &*op, request, &allow));
         match run {
             Ok(outcome) => Resolved::Applied { outcome },
             Err(error) => Resolved::Failed { error },
@@ -288,47 +286,49 @@ impl Executor {
     }
 }
 
-/// Ends session `id` and its sub-agents, the most recently opened first, each with `reason` (design §3.4, §4.2).
-/// Ending an ended session changes nothing. Returns what ending `id` itself did.
-fn end_family(state: &mut State, id: SessionId, reason: &EndReason, at: Seconds) -> Result<Ended, OpError> {
-    let index = state.sessions.index(id)?;
-    if let EndReason::Revoked { by, .. } = reason {
-        state.sessions.check_principal(index, by)?;
-    }
-    let mut own = Ended { abandoned: Vec::new(), kept: Vec::new(), withdrawn: Vec::new(), cancelled: Vec::new() };
-    for member in state.sessions.family(index).into_iter().rev() {
-        let member_index = state.sessions.index(member)?;
-        if state.sessions.has_ended(member_index) {
-            continue;
+impl Executor {
+    /// Ends session `id` and its sub-agents, the most recently opened first, each with `reason` (design §3.4, §4.2).
+    /// Ending an ended session changes nothing. Returns what ending `id` itself did.
+    fn end_family(&self, state: &mut State, id: SessionId, reason: &EndReason, at: Seconds) -> Result<Ended, OpError> {
+        let index = state.sessions.index(id)?;
+        if let EndReason::Revoked { by, .. } = reason {
+            state.sessions.check_principal(index, by)?;
         }
-        let ended = end_one(state, member_index, reason.clone(), at)?;
-        if member == id {
-            own = ended;
+        let mut own = Ended { abandoned: Vec::new(), kept: Vec::new(), withdrawn: Vec::new(), cancelled: Vec::new() };
+        for member in state.sessions.family(index).into_iter().rev() {
+            let member_index = state.sessions.index(member)?;
+            if state.sessions.has_ended(member_index) {
+                continue;
+            }
+            let ended = self.end_one(state, member_index, reason.clone(), at)?;
+            if member == id {
+                own = ended;
+            }
         }
+        Ok(own)
     }
-    Ok(own)
-}
 
-/// Ends one session, atomically: abandons its open transactions, withdraws its approvals, marks it ended (a revoke
-/// also drops its ceiling) and queues `SessionEnded` after the transaction and approval events.
-fn end_one(state: &mut State, index: usize, reason: EndReason, at: Seconds) -> Result<Ended, OpError> {
-    let (id, actor) = {
-        let info = state.sessions.info(index);
-        (info.id, info.actor.clone())
-    };
-    let (abandoned, kept) = state.abandon(&actor);
-    let mut withdrawn = Vec::new();
-    for entry in state.approvals.withdraw(id) {
-        let approval = entry.pending.id;
-        let result = Resolved::Withdrawn { reason: reason.clone() };
-        state.queue_event(Event::approval_resolved(Resolution { id: approval, by: None, result, at }));
-        withdrawn.push(approval);
+    /// Ends one session, atomically: abandons its open transactions, withdraws its approvals, marks it ended (a revoke
+    /// also drops its ceiling) and queues `SessionEnded` after the transaction and approval events.
+    fn end_one(&self, state: &mut State, index: usize, reason: EndReason, at: Seconds) -> Result<Ended, OpError> {
+        let (id, actor) = {
+            let info = state.sessions.info(index);
+            (info.id, info.actor.clone())
+        };
+        let Abandoned { abandoned, kept } = self.env.abandon(state, &actor, at)?;
+        let mut withdrawn = Vec::new();
+        for entry in state.approvals.withdraw(id) {
+            let approval = entry.pending.id;
+            let result = Resolved::Withdrawn { reason: reason.clone() };
+            state.queue_event(Event::approval_resolved(Resolution { id: approval, by: None, result, at }));
+            withdrawn.push(approval);
+        }
+        state.sessions.end(index, reason, at);
+        let ended = Ended { abandoned, kept, withdrawn, cancelled: Vec::new() };
+        let info = snapshot(state, id)?;
+        state.queue_event(Event::session_ended(info, ended.clone()));
+        Ok(ended)
     }
-    state.sessions.end(index, reason, at);
-    let ended = Ended { abandoned, kept, withdrawn, cancelled: Vec::new() };
-    let info = snapshot(state, id)?;
-    state.queue_event(Event::session_ended(info, ended.clone()));
-    Ok(ended)
 }
 
 /// Session `id` as it stands, for a result.

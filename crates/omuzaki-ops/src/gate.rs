@@ -26,7 +26,7 @@ use omuzaki_ops_api::{
 
 use crate::approvals::Ask;
 use crate::budget;
-use crate::executor::Executor;
+use crate::executor::Env;
 use crate::limits::{self, Bucket};
 use crate::sessions::Entry;
 use crate::state::State;
@@ -44,6 +44,17 @@ pub(crate) struct Allowance {
     pub(crate) reviewed: bool,
     /// The approval, stamped on the record. Set for every approved run.
     pub(crate) approval: Option<ApprovalRef>,
+    /// The run is an effect's inverse call during an undo, a redo or a rollback (#1091): it may not change the
+    /// document and never queues for approval.
+    pub(crate) effect_call: bool,
+}
+
+/// Where a request runs: its session, the grants it was sent with, what approvals met, and when.
+struct Run<'a> {
+    session: Option<usize>,
+    sent: &'a Grants,
+    allow: &'a Allowance,
+    at: Seconds,
 }
 
 /// A need about to be queued: what a person must give, the scope a review of a grant gives the run, and how many
@@ -60,7 +71,7 @@ impl Asked {
     }
 }
 
-impl Executor {
+impl Env {
     /// Runs `req` under the lock: the steps in the [module](self) docs. `allow` is what an approval satisfied.
     pub(crate) fn run_locked(
         &self,
@@ -69,14 +80,15 @@ impl Executor {
         mut req: Request,
         allow: &Allowance,
     ) -> Result<Outcome, OpError> {
-        let at = self.env.clock.now();
+        let at = self.clock.now();
         let meta = op.meta();
         let applies = !checks::answers_only(meta, req.mode);
         // Admitted again under the lock that plans and applies: a pause or a narrowing that landed since `run` looked
         // must win, and the grants the op plans with are the ones that hold now.
-        let entry = match allow.approval {
-            Some(_) => Entry::Approved,
-            None => Entry::Call(Some(if applies { Bucket::Edits } else { Bucket::Runs })),
+        let entry = if allow.approval.is_some() || allow.effect_call {
+            Entry::Inner
+        } else {
+            Entry::Call(Some(if applies { Bucket::Edits } else { Bucket::Runs }))
         };
         let admitted = state.sessions.admit_run(&req.actor, &req.grants, at, entry)?;
         if let Some(tx) = req.tx {
@@ -85,52 +97,65 @@ impl Executor {
         let granted = allow.scopes.iter().fold(admitted.grants, |grants, scope| grants.with(*scope));
         // What the request was sent with: a queued request keeps it, since it only narrows.
         let sent = std::mem::replace(&mut req.grants, granted);
-        let session = admitted.session;
-        let ask = |state: &mut State, asked: Asked, req: &Request| match session {
-            Some(index) => self.ask(state, index, op, (req, &sent, allow), asked, at),
-            None => refusal(req, &asked.need, Refused::NotASession),
-        };
+        let run = Run { session: admitted.session, sent: &sent, allow, at };
 
         // `read` was checked before the lookup; the op's own scope is checked before it plans.
         if checks::authorize(&req.grants, &req.actor, meta, req.mode).is_err() {
-            return Err(ask(state, Asked::of(Need::Scope { scope: meta.scope }), &req));
+            return Err(self.need(state, op, &req, &run, Asked::of(Need::Scope { scope: meta.scope })));
+        }
+        if applies {
+            state.journal.admit()?;
         }
         let plan = match self.plan(state, op, &req, allow.confirmed_by.as_ref()) {
             Ok(plan) => plan,
             Err(error) => {
                 return Err(match needs_person(&error) {
-                    Some(reason) if session.is_some() => ask(state, Asked::of(Need::Person { reason }), &req),
+                    Some(reason) if run.session.is_some() => {
+                        self.need(state, op, &req, &run, Asked::of(Need::Person { reason }))
+                    }
                     _ => error,
                 });
             }
         };
-        if let Some(index) = session
-            && let Err(refusal) = state.sessions.check_patch(index, &plan.patch)
-        {
-            // A dry run is how an agent finds out: only a refused apply is a clash worth reviewing.
-            if applies {
-                let info = state.sessions.info(index);
-                let (id, actor) = (info.id, info.actor.clone());
-                let clash = Event::clash(
-                    id,
-                    actor,
-                    meta.name,
-                    refusal.path.clone(),
-                    ClashKind::Fenced,
-                    refusal.holder.clone(),
-                    at,
-                );
-                state.queue_event(clash);
-            }
-            return Err(OpError::fenced(refusal.path, refusal.holder));
+        // An Explicit op performed its effect while it planned (ADR 0036 decision 8): if anything now refuses the
+        // apply, that effect is undone at once.
+        let effect = (req.mode == Mode::Apply).then(|| plan.effect.clone()).flatten();
+        let result = self.apply_planned(state, op, &req, &run, plan);
+        match (result, effect) {
+            (Err(error), Some(effect)) => Err(self.undo_now(state, &req, &effect, error)),
+            (result, _) => result,
+        }
+    }
+
+    /// The part of [`run_locked`](Self::run_locked) after the plan: fences, the stale-write guard, the cost, review and
+    /// budget, then the apply and the charge.
+    fn apply_planned(
+        &self,
+        state: &mut State,
+        op: &dyn DynOp,
+        req: &Request,
+        run: &Run<'_>,
+        plan: Plan,
+    ) -> Result<Outcome, OpError> {
+        let meta = op.meta();
+        let applies = !checks::answers_only(meta, req.mode);
+        if run.allow.effect_call && !plan.patch.is_empty() {
+            return Err(OpError::internal(format!(
+                "{} is an effect's inverse call but planned a change to the document",
+                meta.name
+            ))
+            .hint("this is a bug in the op: inverse calls change only what is outside the document"));
+        }
+        if let Some(index) = run.session {
+            self.check_claims(state, index, req, &plan, applies, run.at)?;
         }
         let cost = if applies { budget::usd_micros(meta.name, plan.cost.as_ref())? } else { 0 };
         if cost > 0 && !req.grants.allows(Scope::Spend) {
-            return Err(ask(state, Asked::of(Need::Scope { scope: Scope::Spend }), &req));
+            return Err(self.need(state, op, req, run, Asked::of(Need::Scope { scope: Scope::Spend })));
         }
-        if let Some(index) = session {
+        if let Some(index) = run.session {
             if applies
-                && !allow.reviewed
+                && !run.allow.reviewed
                 && let Some(requirement) = self.requirement(meta.scope, false)
             {
                 let asked = Asked {
@@ -138,23 +163,28 @@ impl Executor {
                     grant: None,
                     required: requirement.approvals,
                 };
-                return Err(self.ask(state, index, op, (&req, &sent, allow), asked, at));
+                return Err(self.need(state, op, req, run, asked));
             }
-            if !allow.over_budget
-                && let Some((needed, left)) = state.sessions.over_budget(index, cost, at)
+            if !run.allow.over_budget
+                && let Some((needed, left)) = state.sessions.over_budget(index, cost, run.at)
             {
-                return Err(ask(state, Asked::of(Need::Budget { needed, left }), &req));
+                return Err(self.need(state, op, req, run, Asked::of(Need::Budget { needed, left })));
             }
         }
         if !applies {
             return Ok(Outcome::new(plan));
         }
-        let record =
-            self.env.apply_approved(state, op, (&req.actor, &req.cause, req.tx), &plan, allow.approval.clone())?;
-        if let Some(index) = session
+        let record = self.apply_approved(
+            state,
+            op,
+            (&req.actor, &req.cause, req.tx),
+            &plan,
+            run.allow.approval.clone(),
+        )?;
+        if let Some(index) = run.session
             && cost > 0
         {
-            state.sessions.add_spend(index, cost, 0, at);
+            state.sessions.add_spend(index, cost, 0, run.at);
             let id = state.sessions.info(index).id;
             if let Some(snapshot) = state.session(id) {
                 state.queue_event(Event::session_changed(snapshot, SessionChange::Spent));
@@ -163,10 +193,63 @@ impl Executor {
         Ok(Outcome::new(plan).with_applied(record))
     }
 
+    /// The fences (design §5.3) and the stale-write guard (§5.1) on session `index`'s planned patch, dry-run and apply
+    /// alike. A refused apply is a `Clash` for the Theatre's review items; a refused dry run is how the agent finds out.
+    fn check_claims(
+        &self,
+        state: &mut State,
+        index: usize,
+        req: &Request,
+        plan: &Plan,
+        applies: bool,
+        at: Seconds,
+    ) -> Result<(), OpError> {
+        let (error, path, kind, other) = match state.sessions.check_patch(index, &plan.patch) {
+            Err(refusal) => {
+                let error = OpError::fenced(refusal.path.clone(), refusal.holder.clone());
+                (error, refusal.path, ClashKind::Fenced, refusal.holder)
+            }
+            Ok(()) => match req.base.and_then(|base| stale(state, &plan.patch, &req.actor, base)) {
+                Some((error, path, by)) => (error, path, ClashKind::Stale, Some(by)),
+                None => return Ok(()),
+            },
+        };
+        if applies {
+            let info = state.sessions.info(index);
+            let clash = Event::clash(info.id, info.actor.clone(), req.op.clone(), path, kind, other, at);
+            state.queue_event(clash);
+        }
+        Err(error)
+    }
+
+    /// Undoes an Explicit op's effect right after its apply was refused, and returns the refusal, with a hint when the
+    /// effect is still in place.
+    fn undo_now(&self, state: &mut State, req: &Request, effect: &omuzaki_ops_api::Effect, error: OpError) -> OpError {
+        match self.call(state, &effect.undo, &req.actor, &req.grants) {
+            Ok(()) => error,
+            Err(failed) => {
+                let hint = format!(
+                    "nothing changed in the document, but its effect outside it ({}) is still in place: undoing it \
+                     failed: {}",
+                    effect.summary, failed.message
+                );
+                error.hint(hint)
+            }
+        }
+    }
+
+    /// Queues `asked` for `req`, or refuses it when it has no session to queue in.
+    fn need(&self, state: &mut State, op: &dyn DynOp, req: &Request, run: &Run<'_>, asked: Asked) -> OpError {
+        match run.session {
+            Some(index) => self.ask(state, index, op, (req, run.sent, run.allow), asked, run.at),
+            None => refusal(req, &asked.need, Refused::NotASession),
+        }
+    }
+
     /// The review requirement for `scope` (`grant`: for giving it to a session), if policies are installed and ask
     /// for at least one reviewer.
     fn requirement(&self, scope: Scope, grant: bool) -> Option<ReviewRequirement> {
-        self.env.review.as_ref()?.requirement(scope, grant).filter(|r| r.approvals > 0)
+        self.review.as_ref()?.requirement(scope, grant).filter(|r| r.approvals > 0)
     }
 
     /// Queues `asked` for the request of session `index`, or refuses it when no person could meet it. `run` is the
@@ -194,8 +277,11 @@ impl Executor {
                 };
             }
         }
-        if !self.env.approver {
+        if !self.approver {
             return refusal(req, &asked.need, Refused::NoApprover);
+        }
+        if allow.effect_call {
+            return refusal(req, &asked.need, Refused::Inner);
         }
         if req.cause.as_ref().is_some_and(|cause| cause.kind == CauseKind::Script) {
             return refusal(req, &asked.need, Refused::Script);
@@ -261,7 +347,7 @@ impl Executor {
     /// Queues a budget approval with no request for session `index` (a charge from outside crossed a cap), when a
     /// person can be asked. One per budget pause, so it is not bounded by `max_pending`.
     pub(crate) fn ask_budget(&self, state: &mut State, index: usize, needed: Spend, at: Seconds) {
-        if !self.env.approver {
+        if !self.approver {
             return;
         }
         let info = state.sessions.info(index);
@@ -292,6 +378,8 @@ enum Refused {
     NoApprover,
     /// The request comes from a script, whose run would be over before anyone decided.
     Script,
+    /// The request is an effect call inside an undo, a redo or a rollback, which would be over before anyone decided.
+    Inner,
 }
 
 /// The refusal for a need nobody will be asked about: `Denied`, with the need as the detail where it has one, and a
@@ -299,6 +387,7 @@ enum Refused {
 fn refusal(req: &Request, need: &Need, why: Refused) -> OpError {
     let before = match why {
         Refused::Script => "before running the script",
+        Refused::Inner => "before undoing again",
         _ => "in advance",
     };
     match need {
@@ -308,6 +397,7 @@ fn refusal(req: &Request, need: &Need, why: Refused) -> OpError {
                     format!("use a credential that grants `{scope}`, or open the project in Omuzaki Studio")
                 }
                 Refused::Script => format!("grant `{scope}` to this session before running the script"),
+                Refused::Inner => format!("grant `{scope}` to this session, then undo again"),
                 Refused::NotASession | Refused::NoOneCanGrant => {
                     format!("grant the `{scope}` scope for this session, then retry")
                 }
@@ -318,6 +408,7 @@ fn refusal(req: &Request, need: &Need, why: Refused) -> OpError {
             let mut error = OpError::needs_person(reason.clone());
             error.hint = Some(match why {
                 Refused::Script => "a person must confirm this: run it outside the script".to_owned(),
+                Refused::Inner => "a person must undo this step".to_owned(),
                 _ => "a person must confirm this in Omuzaki Studio: no one can be asked here".to_owned(),
             });
             error
@@ -350,6 +441,26 @@ fn needs_person(error: &OpError) -> Option<String> {
         Some(ErrorDetail::NeedsPerson { reason }) => Some(reason.clone()),
         _ => None,
     }
+}
+
+/// The stale-write guard (design §5.1): the newest change, by an actor other than `actor`, after version `base` at,
+/// above or below a path `patch` changes. Returns the refusal, the path and who changed it.
+fn stale(state: &State, patch: &omuzaki_doc_api::Patch, actor: &Actor, base: omuzaki_doc_api::DocVersion) -> Option<(OpError, omuzaki_doc_api::DocPath, Actor)> {
+    let newest = patch
+        .changes
+        .iter()
+        .filter_map(|change| state.changes.newest(&change.path, Some(actor)))
+        .filter(|last| last.version > base)
+        .max_by_key(|last| last.version)?;
+    let (path, by, version) = (newest.path.clone(), newest.by.clone(), newest.version);
+    let mut error = OpError::conflict(format!(
+        "`{path}` was changed by {} after the version you planned against",
+        crate::error::who(&by)
+    ))
+    .hint(format!("re-read {path}; your next call carries the newer base"))
+    .with_detail(ErrorDetail::Changed { path: path.clone(), by: by.clone(), version });
+    error.code = ErrorCode::Conflict;
+    Some((error, path, by))
 }
 
 /// The scope a need asks for, if it is a scope.

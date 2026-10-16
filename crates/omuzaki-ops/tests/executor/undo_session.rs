@@ -84,15 +84,25 @@ fn a_running_session_is_paused_an_ended_one_can_still_be_undone_and_only_its_per
 }
 
 #[test]
-fn open_transactions_are_abandoned_and_outside_effects_are_listed() {
-    let rig = rig(json!({"a": 0, "x": 0}));
-    let explicit = rig.exec.run(agent_request("test.explicit_set", json!({"path": "x", "value": 1}))).unwrap();
+fn open_transactions_are_abandoned_and_effects_that_cannot_be_undone_are_listed_outside() {
+    let rig = rig(json!({"a": 0, "files": {}}));
+    let folder = super::effects::Folder::new();
+    let as_agent = |req: Request| Request { actor: agent(), grants: omuzaki_ops_api::Grants::agent_default(), ..req };
+    let kept = rig.exec.run(as_agent(folder.touch("kept"))).unwrap().applied.unwrap().tx;
+    let undone = rig.exec.run(as_agent(folder.touch("undone"))).unwrap().applied.unwrap().tx;
     let tx = rig.exec.begin("open", &agent());
     rig.exec.run(Request { tx: Some(tx), ..agent_request("test.set", json!({"path": "a", "value": 1})) }).unwrap();
-    let undone = rig.exec.undo_session(SessionId(1), &person()).unwrap();
-    assert_eq!(undone.abandoned, vec![tx]);
-    assert_eq!(undone.outside, vec![explicit.applied.unwrap().tx]);
-    assert_eq!((undone.step, rig.at("a"), rig.at("x")), (None, Some(json!(0)), Some(json!(1))));
+    folder.fail("undo", "kept");
+
+    let result = rig.exec.undo_session(SessionId(1), &person()).unwrap();
+    assert_eq!(result.abandoned, vec![tx]);
+    assert_eq!(result.reverted, vec![undone]);
+    assert_eq!(result.outside, vec![kept], "its effect's undo failed, so it stays applied");
+    assert_eq!(result.skipped.iter().map(|k| k.tx).collect::<Vec<_>>(), vec![kept]);
+    assert_eq!((folder.has("undone"), folder.has("kept"), rig.at("a")), (false, true, Some(json!(0))));
+    // The person's undo of the session step puts the undone effect back.
+    assert!(rig.undo().unwrap().is_some());
+    assert!(folder.has("undone"));
     // A person's own edits are not touched, nor another session's.
     rig.exec.run(request("test.set", json!({"path": "a", "value": 5}))).unwrap();
     rig.exec.undo_session(SessionId(2), &person()).unwrap();

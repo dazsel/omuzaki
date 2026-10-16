@@ -93,9 +93,10 @@ pub(crate) struct Admitted {
 pub(crate) enum Entry {
     /// An ordinary call: the session must be active, and the call draws one token from `bucket` when there is one.
     Call(Option<Bucket>),
-    /// The run a person approved: it goes ahead in a paused session (the person decided it) and was counted against
-    /// the limits when it was first sent. An ended session is still refused.
-    Approved,
+    /// A run inside one already admitted: a request a person approved (it goes ahead in a paused session, since the
+    /// person decided it, and was counted against the limits when it was first sent), or an effect call of an undo.
+    /// An ended session is still refused.
+    Inner,
 }
 
 /// Every session of this executor, oldest first.
@@ -249,7 +250,7 @@ impl Registry {
     }
 
     /// [`admit`](Self::admit) for a call that counts against a rate limit (`Entry::Call` with a bucket) or that a
-    /// person approved (`Entry::Approved`), returning the session it acts in.
+    /// person approved (`Entry::Inner`), returning the session it acts in.
     ///
     /// # Errors
     /// `Denied` without a session or after it ended, `Waiting` while it is paused (an approved run excepted), `Limited`

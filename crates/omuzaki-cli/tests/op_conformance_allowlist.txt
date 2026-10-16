@@ -1,7 +1,6 @@
 # Ops that declare no example arguments yet (how to declare them: `omuzaki-ops-api/src/registry.rs`).
 # One op name per line. This list may only shrink: give an op examples, then delete its line. A new op must ship with
 # examples, so it never belongs here. `tests/op_conformance.rs` fails on a missing op and on a stale line.
-# The second section lists edits that still declare `Undo::None` (the rule is: queries only); it shrinks the same way.
 accessory.list_anchors
 agent.connection
 body.apply_shape_preset
@@ -78,12 +77,3 @@ variant.delete
 variant.list
 variant.preview
 variant.set_override
-
-[edits with Undo::None]
-perform.calibrate
-perform.set_retarget
-# trigger.press is a live action, so it stays until #2106 gives live actions their rule (#2195).
-trigger.press
-# face.underlay.set: a view-state job with no document patch, so nothing to undo. #139 (change #2106) gives such ops their own
-# category in the conformance contract and deletes this line.
-face.underlay.set
