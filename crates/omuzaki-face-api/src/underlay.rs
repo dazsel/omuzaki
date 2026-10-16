@@ -46,6 +46,9 @@ pub enum UnderlayTargetError {
     /// The app shows no such character, or has nothing shown for it.
     #[error("{0}")]
     NotFound(String),
+    /// A newer request for the same character began after this one, so this one must not change what is shown.
+    #[error("a newer underlay request for this character replaced this one")]
+    Superseded,
     /// The app failed while showing the underlay.
     #[error("{0}")]
     Failed(String),
@@ -53,6 +56,11 @@ pub enum UnderlayTargetError {
 
 /// What `face.underlay.set` needs from the app, injected as a service. The stage implements it: it owns the head
 /// material and the textures.
+///
+/// Jobs for one character can overlap, and the CPU lane runs several at once, so a request takes a ticket with
+/// [`begin`](Self::begin) and every change it makes names that ticket. The app applies a change only while the ticket is
+/// the newest it has issued for the character, and checks that in the same step as the change, so a slower, older request
+/// can never replace what a newer one showed, nor set an opacity on pixels it did not build.
 pub trait UnderlayTarget: Send + Sync {
     /// The head of `character` as it is on screen now.
     ///
@@ -60,19 +68,27 @@ pub trait UnderlayTarget: Send + Sync {
     /// [`UnderlayTargetError::NotFound`] when the app shows no such character.
     fn head(&self, character: &str) -> Result<UnderlayHead, UnderlayTargetError>;
 
-    /// The [`UnderlayImage::key`] of the underlay now shown for `character`, if any.
+    /// The [`UnderlayImage::key`] of the underlay now shown for `character`, if any. Only a preview for planning: the
+    /// answer can be out of date by the time a job acts, which is why changes go through a ticket.
     fn shown(&self, character: &str) -> Option<String>;
 
-    /// Shows `image` under the Base layer of `character`'s face, replacing the one shown before.
-    ///
-    /// # Errors
-    /// [`UnderlayTargetError`] when the app cannot show it.
-    fn show(&self, character: &str, image: UnderlayImage) -> Result<(), UnderlayTargetError>;
+    /// Starts a request for `character` and returns its ticket. Every ticket is newer than the ones before it, and
+    /// issuing one makes the earlier tickets of this character stale.
+    fn begin(&self, character: &str) -> u64;
 
-    /// Sets the strength of the underlay shown for `character`, `0..=1`, and nothing else: a material update, with no
-    /// new pixels.
+    /// Sets the strength of the underlay shown for `character`, `0..=1`, and nothing else (no new pixels), when the
+    /// ticket is still the newest **and** the shown underlay has this `key`, both decided in one step. Returns `false`,
+    /// changing nothing, when nothing is shown or what is shown has another key: the caller then builds the pixels.
     ///
     /// # Errors
-    /// [`UnderlayTargetError::NotFound`] when nothing is shown for `character`.
-    fn set_opacity(&self, character: &str, opacity: f32) -> Result<(), UnderlayTargetError>;
+    /// [`UnderlayTargetError::Superseded`] when `ticket` is no longer the newest for `character`.
+    fn set_opacity(&self, character: &str, ticket: u64, key: &str, opacity: f32) -> Result<bool, UnderlayTargetError>;
+
+    /// Shows `image` under the Base layer of `character`'s face, replacing the one shown before, when the ticket is
+    /// still the newest for `character`.
+    ///
+    /// # Errors
+    /// [`UnderlayTargetError::Superseded`] when `ticket` is no longer the newest; [`UnderlayTargetError::Failed`] when
+    /// the app cannot show it.
+    fn show(&self, character: &str, ticket: u64, image: UnderlayImage) -> Result<(), UnderlayTargetError>;
 }

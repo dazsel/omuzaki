@@ -7,6 +7,7 @@
 //! - [`expression`]: named expressions (channel deltas) and the five lip-sync visemes
 //! - [`grammar`]: the anime grammar rule switches (FE-05), which the grammar stage in `omuzaki-anim` reads
 //! - [`paint`]: the [`FacePainter`] contract and the vector [`DrawList`] it produces, and how layers composite
+//! - [`underlay`]: what `face.underlay.set` needs from the app that shows the head (the sheet's pixels go to it as plain data)
 //! - [`palette`] and [`check`]: palette slots (colours are `omuzaki_core::colour::Colour`) and the validation helper shared
 //!   with `omuzaki-char-api`
 //!
@@ -22,7 +23,7 @@ pub mod paint;
 pub mod palette;
 pub mod profile;
 mod resolve;
-mod underlay;
+pub mod underlay;
 
 pub use baker::{BakerInput, FaceBakerConflict, FaceBakerFactory, FaceBakerRegistration, face_baker};
 pub use check::{Check, FieldRange, ParamError, ParamErrors, Validate};
@@ -48,7 +49,6 @@ pub use profile::{
     NoseKind, NoseStyle, Pupil, PupilShape, Sclera,
 };
 pub use resolve::ResolveError;
-pub use underlay::{UnderlayHead, UnderlayImage, UnderlayTarget, UnderlayTargetError};
 
 #[doc(hidden)]
 pub use inventory as __inventory;

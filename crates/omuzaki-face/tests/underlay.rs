@@ -1,6 +1,9 @@
 //! Underlay tracing (CB-25): pixel placement, alignment, opacity, composition under the Base layer, and the request type.
 //! Synthetic sheets only: nothing here reads an asset.
 
+// Integration-test helpers may panic: a panic is a clear test failure.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use std::f64::consts::FRAC_PI_2;
 
 use omuzaki_char_api::{CharId, FaceOverlay, face_texture_desc};
@@ -327,12 +330,7 @@ fn errors_name_the_field_at_fault() -> Result<(), Box<dyn std::error::Error>> {
     assert!(short.to_string().contains("sheet_rgba"), "{short}");
 
     let sheet = Sheet::new(UVec2::splat(16), &pixels)?;
-    let outside = Underlay::new(
-        &sheet,
-        PixelRect { x: 12, y: 0, width: 8, height: 8 },
-        &geometry(),
-        &IDENTITY,
-    );
+    let outside = Underlay::new(&sheet, PixelRect { x: 12, y: 0, width: 8, height: 8 }, &geometry(), &IDENTITY);
     let outside = outside.unwrap_err();
     assert_eq!(outside.field, "sheet_face");
     assert!(outside.to_string().contains("sheet_face"));
@@ -373,4 +371,23 @@ fn the_request_reads_its_json_and_rejects_unknown_fields() -> Result<(), Box<dyn
     extra["gain"] = json!(2);
     assert!(serde_json::from_value::<UnderlaySet>(extra).is_err(), "an unknown field must be refused");
     Ok(())
+}
+
+#[test]
+fn a_build_that_is_stopped_gives_up_within_a_few_rows() {
+    let pixels = coded_sheet(16);
+    let sheet = Sheet::new(UVec2::splat(16), &pixels).unwrap();
+    let asked = std::cell::Cell::new(0_u32);
+    let stop = || {
+        asked.set(asked.get() + 1);
+        true
+    };
+    let built = Underlay::build_unless(&sheet, face(4, 4, LAYER), &geometry(), &IDENTITY, &stop).unwrap();
+    assert!(built.is_none(), "a stop request ends the build");
+    assert_eq!(asked.get(), 1, "it asked once, at the first row, and stopped");
+
+    // Not stopped: the same layer `Underlay::new` gives.
+    let never = || false;
+    let layer = Underlay::build_unless(&sheet, face(4, 4, LAYER), &geometry(), &IDENTITY, &never).unwrap().unwrap();
+    assert_eq!(layer, Underlay::new(&sheet, face(4, 4, LAYER), &geometry(), &IDENTITY).unwrap());
 }

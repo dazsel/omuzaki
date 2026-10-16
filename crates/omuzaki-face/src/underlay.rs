@@ -17,15 +17,14 @@
 
 use omuzaki_char_api::{CharId, face_texture_desc};
 use omuzaki_core::glam::{UVec2, Vec3};
-use omuzaki_face_api::{
-    FaceLayerId, FaceLayerSpec, FaceProjection, PlanarWindow, UnderlayImage, narrow,
-};
+use omuzaki_face_api::underlay::UnderlayImage;
+use omuzaki_face_api::{FaceLayerId, FaceLayerSpec, FaceProjection, PlanarWindow, narrow};
 use omuzaki_ops_api::OpError;
 use omuzaki_render_api::{Mapping, Overlay, PixelRect, TextureDesc, TextureId, limits};
-use std::fmt;
 use omuzaki_store_api::ContentHash;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 /// Why an underlay could not be built: the argument at fault and what is wrong with it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -278,6 +277,25 @@ impl Underlay {
         geometry: &Geometry,
         align: &UnderlayAlign,
     ) -> Result<UnderlayLayer, UnderlayError> {
+        match Self::build_unless(sheet, sheet_face, geometry, align, &|| false)? {
+            Some(layer) => Ok(layer),
+            // `stop` above never says stop, so this is not reached; it is an error rather than a panic all the same.
+            None => Err(UnderlayError::new("underlay", "the build was stopped".to_owned())),
+        }
+    }
+
+    /// As [`Underlay::new`], but asks `stop` every [`STOP_EVERY_ROWS`] rows and gives up with `None` as soon as it says
+    /// so. A 4096 x 4096 layer is 16.7 million samples; a job passes its cancellation here so it ends promptly.
+    ///
+    /// # Errors
+    /// As [`Underlay::new`].
+    pub fn build_unless(
+        sheet: &Sheet<'_>,
+        sheet_face: PixelRect,
+        geometry: &Geometry,
+        align: &UnderlayAlign,
+        stop: &dyn Fn() -> bool,
+    ) -> Result<Option<UnderlayLayer>, UnderlayError> {
         check_face(sheet, sheet_face)?;
         align.check()?;
         let size = geometry.size();
@@ -285,14 +303,20 @@ impl Underlay {
         let registration = Registration::new(sheet_face, size, *align);
         let mut rgba = Vec::with_capacity(texture_desc.byte_len());
         for y in 0..size.y {
+            if y % STOP_EVERY_ROWS == 0 && stop() {
+                return Ok(None);
+            }
             for x in 0..size.x {
                 let at = [f64::from(x) + 0.5, f64::from(y) + 0.5];
                 rgba.extend_from_slice(&sample(sheet, registration.to_sheet(at)));
             }
         }
-        Ok(UnderlayLayer { texture_desc, rgba, window: geometry.window, opacity: 1.0 })
+        Ok(Some(UnderlayLayer { texture_desc, rgba, window: geometry.window, opacity: 1.0 }))
     }
 }
+
+/// How many rows are built between two asks of the stop flag: 16 rows of a 4096-wide layer is about 65 000 samples.
+pub const STOP_EVERY_ROWS: u32 = 16;
 
 /// Rejects a face rectangle that is empty or reaches past the sheet, naming the field at fault.
 fn check_face(sheet: &Sheet<'_>, face: PixelRect) -> Result<(), UnderlayError> {
@@ -455,6 +479,24 @@ impl UnderlayView {
 /// no document and returns an [`UnderlayView`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {
+            "character": "mira",
+            "asset": "0000000000000000000000000000000000000000000000000000000000000000",
+            "opacity": 0.5,
+            "align": { "offset": [0.0, 0.0], "scale": 1.0, "rotation": 0.0 },
+            "sheet_face": { "x": 0, "y": 0, "width": 512, "height": 512 },
+        },
+        {
+            "character": "mira",
+            "asset": "0000000000000000000000000000000000000000000000000000000000000000",
+            "opacity": 0.25,
+            "align": { "offset": [4.0, -2.0], "scale": 1.02, "rotation": 0.01 },
+        },
+    ],
+    "x-omuzaki-fixture" = "demo"
+))]
 pub struct UnderlaySet {
     /// The character whose head the sheet is traced onto.
     pub character: CharId,
