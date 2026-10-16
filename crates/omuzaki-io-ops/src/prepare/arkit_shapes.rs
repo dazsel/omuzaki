@@ -39,16 +39,19 @@ const WIDE: f32 = 0.25;
 const SQUINT: f32 = 0.35;
 
 /// How far the cheeks puff out, as a fraction of the eye spacing.
-const PUFF: f32 = 0.12;
+const PUFF: f32 = 0.08;
 
-/// How far a lip rolls in (back and toward the mouth line), as a fraction of the eye spacing.
-const ROLL: f32 = 0.06;
+/// How much of a lip's height a roll pulls in toward the mouth line (the rest of the roll goes back, by [`ROLL_BACK`]).
+const ROLL: f32 = 0.7;
+
+/// How far a rolled lip goes back, as a fraction of the eye spacing.
+const ROLL_BACK: f32 = 0.03;
 
 /// How far a lip shrugs up, as a fraction of the eye spacing.
-const SHRUG: f32 = 0.05;
+const SHRUG: f32 = 0.08;
 
 /// How far an iris moves sideways, and up or down, as a fraction of its eye's width and height.
-const LOOK: (f32, f32) = (0.25, 0.2);
+const LOOK: (f32, f32) = (0.2, 0.15);
 
 /// The symmetric source each pair of channels splits, as `(left, right, preset, morph)`: the `VRoid` morph target of
 /// that name on the face when the model has one (what synthesis binds at half weight for both sides), otherwise the
@@ -387,7 +390,8 @@ fn expressive(scene: &IoScene, m: &Landmarks, points: &[Vec<Vec3>]) -> Vec<Vec<b
     moved
 }
 
-/// `cheekPuff`: each cheek pushed out along its normals, in an ellipse beside the mouth and below the eye.
+/// `cheekPuff`: each cheek pushed out along its normals, in an ellipse beside the mouth corner and below the eye, on
+/// the part of the face that looks forward (so the head's outline does not bulge).
 fn cheek_puff(scene: &IoScene, m: &Landmarks, points: &[Vec<Vec3>]) -> Option<Shape> {
     let mouth = m.mouth?;
     let s = m.eye_spacing;
@@ -396,14 +400,14 @@ fn cheek_puff(scene: &IoScene, m: &Landmarks, points: &[Vec<Vec3>]) -> Option<Sh
     let mut deltas = Deltas::zero(scene, m.mesh);
     for (left, eye) in [(true, m.eyes[0]), (false, m.eyes[1])] {
         let sign = if left { 1.0 } else { -1.0 };
-        let x = m.middle + sign * (m.mouth_half_width + 0.3 * s);
-        let centre = Vec3::new(x, mouth.y + 0.45 * (eye.y - mouth.y), mouth.z);
-        let radii = (0.45 * s, 0.5 * (eye.y - mouth.y).abs().max(0.2 * s));
+        let x = m.middle + sign * (m.mouth_half_width + 0.2 * s);
+        let centre = Vec3::new(x, mouth.y + 0.35 * (eye.y - mouth.y), mouth.z);
+        let radii = (0.32 * s, 0.4 * (eye.y - mouth.y).abs().max(0.2 * s));
         for (p, (prim, deltas)) in deltas.positions.iter_mut().enumerate().map(|(p, d)| (p, (&points[p], d))) {
             for (v, (point, delta)) in prim.iter().zip(deltas.iter_mut()).enumerate() {
                 let normal = normals[p].get(v).copied().unwrap_or(Vec3::Z);
                 // Only the side of the face that looks forward or sideways, and nothing an expression already moves.
-                if fixed[p][v] || normal.z < -0.2 || (point.x - m.middle) * sign < 0.0 {
+                if fixed[p][v] || normal.z < 0.3 || (point.x - m.middle) * sign < 0.0 {
                     continue;
                 }
                 *delta += normal * (PUFF * s * bump(*point, centre, radii));
@@ -413,28 +417,30 @@ fn cheek_puff(scene: &IoScene, m: &Landmarks, points: &[Vec<Vec3>]) -> Option<Sh
     Some(Shape { deltas, source: "the cheeks beside the mouth".into() })
 }
 
-/// The lip shapes: the band just above or below the mouth line rolled in (back and toward the line) or raised.
+/// The lip shapes, on the band just above or below the mouth line: a roll pulls the lip in toward the line (so less of
+/// it shows) and back; a shrug raises it.
 fn lips(scene: &IoScene, m: &Landmarks, points: &[Vec<Vec3>], channel: &str) -> Option<Shape> {
     let mouth = m.mouth?;
     let s = m.eye_spacing;
     let upper = channel.ends_with("Upper");
     let roll = channel.starts_with("mouthRoll");
-    let band = 0.25 * s;
-    let centre = Vec3::new(m.middle, mouth.y + if upper { band * 0.5 } else { -band * 0.5 }, mouth.z);
-    let radii = ((m.mouth_half_width + 0.1 * s).max(0.1 * s), band);
+    let band = if roll { 0.14 * s } else { 0.2 * s };
+    let half_width = (m.mouth_half_width * 1.15).max(0.1 * s);
     let mut deltas = Deltas::zero(scene, m.mesh);
     for (prim, slots) in points.iter().zip(deltas.positions.iter_mut()) {
         for (point, slot) in prim.iter().zip(slots.iter_mut()) {
-            let on_side = if upper { point.y >= mouth.y } else { point.y <= mouth.y };
-            if !on_side || point.z < mouth.z - 0.3 * s {
+            let depth = if upper { point.y - mouth.y } else { mouth.y - point.y };
+            if !(0.0..=band).contains(&depth) || point.z < mouth.z - 0.3 * s {
                 continue;
             }
-            let w = bump(*point, centre, radii);
+            // Full strength along the middle of the mouth, easing out toward the corners.
+            let across = ((point.x - m.middle) / half_width).abs();
+            let w = if across >= 1.0 { 0.0 } else { (1.0 - across * across).powi(2) };
             *slot = if roll {
-                let toward = if upper { -1.0 } else { 1.0 };
-                Vec3::new(0.0, toward * 0.6 * ROLL * s, -ROLL * s) * w
+                Vec3::new(0.0, -depth.copysign(if upper { 1.0 } else { -1.0 }) * ROLL, -ROLL_BACK * s) * w
             } else {
-                Vec3::Y * (SHRUG * s * w)
+                // Strongest at the mouth line, nothing at the band's far edge.
+                Vec3::Y * (SHRUG * s * w * (1.0 - depth / band))
             };
         }
     }
@@ -474,11 +480,31 @@ fn look(scene: &IoScene, m: &Landmarks, points: &[Vec<Vec3>], channel: &str) -> 
         "Out" => Vec3::X * (-toward_nose * LOOK.0 * width),
         _ => return None,
     };
+    // The iris slides over the surface it sits on (the eye white), keeping its height above it, so it neither sinks
+    // into a curved eye nor floats off it.
+    let surface: Vec<Vec3> = points
+        .iter()
+        .enumerate()
+        .filter(|(p, _)| *p != iris)
+        .flat_map(|(p, prim)| prim.iter().zip(&fixed[p]).filter(|(v, still)| !**still && inside(v)).map(|(v, _)| *v))
+        .collect();
+    let height = |x: f32, y: f32| -> Option<f32> {
+        surface
+            .iter()
+            .min_by(|a, b| {
+                let d = |v: &Vec3| (v.x - x).powi(2) + (v.y - y).powi(2);
+                d(a).total_cmp(&d(b))
+            })
+            .map(|v| v.z)
+    };
     let mut deltas = Deltas::zero(scene, m.mesh);
     for (point, slot) in points[iris].iter().zip(deltas.positions[iris].iter_mut()) {
-        if inside(point) {
-            *slot = shift;
+        if !inside(point) {
+            continue;
         }
+        let (x, y) = (point.x + shift.x, point.y + shift.y);
+        let rise = height(x, y).zip(height(point.x, point.y)).map_or(0.0, |(to, from)| to - from);
+        *slot = Vec3::new(shift.x, shift.y, rise);
     }
     Some(Shape { deltas, source: format!("the {} iris", if left { "left" } else { "right" }) })
 }

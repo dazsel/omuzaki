@@ -179,6 +179,7 @@ pub(crate) fn work(import: &Import, job: &JobCtx<'_>) -> Result<Value, OpError> 
             file: name.clone(),
             format: prepared.format,
             characters: std::iter::once(id.to_string()).collect(),
+            provenance: Some(prepared.provenance.clone()),
         },
         id,
         name: character_name,

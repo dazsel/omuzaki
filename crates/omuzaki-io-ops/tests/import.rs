@@ -496,10 +496,10 @@ fn a_file_is_read_through_the_jobs_file_access() {
     std::fs::write(rig.dir.path().join("hero.vrm"), vrm_with("", CommercialUsage::Corporation, false)).unwrap();
     let (result, _) = rig.run(&Rig::op(json!({ "path": "hero.vrm", "character": "mira" }))).unwrap();
     assert_eq!(result["asset"]["file"], "hero.vrm", "the name defaults to the file's");
-    assert_eq!(result["asset"]["character"], "mira");
+    assert_eq!(result["asset"]["characters"], json!(["mira"]));
     let original = hash(&result["asset"]["original"]);
     let entry = rig.doc.get(&doc_path(&format!("assets/{original}"))).unwrap();
-    assert_eq!(entry["character"], "mira");
+    assert_eq!(entry["characters"], json!(["mira"]));
 
     let outside = rig.work(&Rig::op(json!({ "path": "/etc/hostname" })), &Signal::new(None)).unwrap_err();
     assert_eq!(outside.code, ErrorCode::Denied, "a path outside the project folder needs the fs grant");
@@ -558,30 +558,61 @@ fn refused_without_a_trace(rig: &mut Rig, file: &[u8]) -> OpError {
     error
 }
 
+/// The record the asset of `result` keeps for its own model.
+fn asset_record(rig: &Rig, result: &Value) -> Provenance {
+    let path = doc_path(&format!("assets/{}/provenance", hash(&result["asset"]["original"])));
+    serde_json::from_value(rig.doc.get(&path).expect("the asset keeps its record").clone()).unwrap()
+}
+
 #[test]
-fn an_image_stored_under_a_different_commercial_status_refuses_the_import_both_ways() {
+fn models_that_share_an_image_under_different_rights_both_import_and_keep_their_own() {
     for (first, second) in [(probe(1, 1), restrictive_probe(1, 1)), (restrictive_probe(1, 1), probe(1, 1))] {
         let mut rig = Rig::new();
-        rig.run(&bytes_op(&first)).unwrap();
-        let error = refused_without_a_trace(&mut rig, &second);
-        assert!(error.message.contains("different record"), "{}", error.message);
-        assert!(error.message.contains("Ok") && error.message.contains("No"), "names both: {}", error.message);
-        assert!(error.hint.as_deref().is_some_and(|h| h.contains("#1773")));
+        let (one, _) = rig.run(&bytes_op(&first)).unwrap();
+        let (two, _) = rig.run(&bytes_op(&second)).unwrap();
+        assert_eq!(one["asset"]["images"], two["asset"]["images"], "one shared image");
+        assert_eq!(rig.store.len(), 3, "two originals and the one image");
+        let commercial = |result: &Value| asset_record(&rig, result).commercial;
+        assert_ne!(commercial(&one), commercial(&two), "each asset carries its own model's commercial status");
+        let image = hash(&one["asset"]["images"][0]);
+        assert_eq!(rig.store.provenance(&image).unwrap().commercial, commercial(&one), "the store keeps the first");
     }
 }
 
 #[test]
-fn the_same_tuple_under_another_licence_or_credit_line_is_refused() {
+fn the_same_image_under_another_licence_or_credit_line_keeps_each_models_own() {
     let cases = [
-        (licensed_probe(1, 1, "CC-BY-4.0", ""), licensed_probe(1, 1, "CC-BY-SA-4.0", "")),
-        (licensed_probe(1, 1, "CC-BY-4.0", "Credit A"), licensed_probe(1, 1, "CC-BY-4.0", "Credit B")),
-        (licensed_probe(1, 1, "CC-BY-4.0", "Credit A"), licensed_probe(1, 1, "CC-BY-4.0", "")),
+        (("CC-BY-4.0", ""), ("CC-BY-SA-4.0", "")),
+        (("CC-BY-4.0", "Credit A"), ("CC-BY-4.0", "Credit B")),
+        (("CC-BY-4.0", "Credit A"), ("CC-BY-4.0", "")),
     ];
     for (first, second) in cases {
         let mut rig = Rig::new();
-        rig.run(&bytes_op(&first)).unwrap();
-        refused_without_a_trace(&mut rig, &second);
+        let (one, _) = rig.run(&bytes_op(&licensed_probe(1, 1, first.0, first.1))).unwrap();
+        let (two, _) = rig.run(&bytes_op(&licensed_probe(1, 1, second.0, second.1))).unwrap();
+        assert_eq!(one["asset"]["images"], two["asset"]["images"], "one shared image");
+        for (result, (licence, credit)) in [(&one, first), (&two, second)] {
+            let record = asset_record(&rig, result);
+            let attribution = (!credit.is_empty()).then(|| credit.to_owned());
+            assert_eq!((record.licence.as_str(), record.attribution), (licence, attribution), "its own model's");
+        }
     }
+}
+
+#[test]
+fn two_imports_sharing_bytes_give_the_same_records_in_either_order() {
+    let (cc_by, cc_by_sa) = (licensed_probe(1, 1, "CC-BY-4.0", "A"), licensed_probe(1, 1, "CC-BY-SA-4.0", "B"));
+    let records = |order: [&Vec<u8>; 2]| {
+        let mut rig = Rig::new();
+        let results: Vec<Value> = order.iter().map(|file| rig.run(&bytes_op(file)).unwrap().0).collect();
+        let mut out: Vec<(String, Provenance)> = results
+            .iter()
+            .map(|r| (r["asset"]["original"].as_str().unwrap().to_owned(), asset_record(&rig, r)))
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    };
+    assert_eq!(records([&cc_by, &cc_by_sa]), records([&cc_by_sa, &cc_by]));
 }
 
 #[test]
@@ -728,11 +759,13 @@ fn errors_blame_the_argument_the_file_came_from() {
 }
 
 #[test]
-fn a_conflict_names_the_consent_of_both_records() {
+fn an_original_already_stored_under_other_rights_is_refused_naming_both() {
     let mut rig = Rig::new();
-    rig.run(&bytes_op(&probe(1, 1))).unwrap();
-    let error = refused_without_a_trace(&mut rig, &restrictive_probe(1, 1));
-    assert_eq!(error.message.matches("consent None").count(), 2, "{}", error.message);
+    let file = probe(1, 1);
+    rig.store.put(&file, sample_provenance(Commercial::No)).unwrap();
+    let error = refused_without_a_trace(&mut rig, &file);
+    assert!(error.message.contains("different record"), "{}", error.message);
+    assert_eq!(error.message.matches("consent").count(), 2, "names both records: {}", error.message);
 }
 
 /// A rig whose document has the characters `mira` and `kai`.
@@ -750,9 +783,11 @@ fn import_for(rig: &mut Rig, character: Option<&str>) -> Result<(Value, Patch), 
     rig.run(&Rig::op(args))
 }
 
-fn recorded_character(rig: &Rig, result: &Value) -> Option<String> {
+fn recorded_characters(rig: &Rig, result: &Value) -> Vec<String> {
     let path = doc_path(&format!("assets/{}", hash(&result["asset"]["original"])));
-    rig.doc.get(&path).and_then(|entry| entry["character"].as_str()).map(str::to_owned)
+    let entry = rig.doc.get(&path).cloned().unwrap_or_default();
+    let list = entry["characters"].as_array().cloned().unwrap_or_default();
+    list.iter().filter_map(|c| c.as_str().map(str::to_owned)).collect()
 }
 
 #[test]
@@ -763,7 +798,7 @@ fn a_reimport_without_a_character_keeps_the_recorded_association() {
     let (_, patch) = import_for(&mut rig, None).unwrap();
     assert_eq!(patch, Patch::new(), "nothing is overwritten");
     assert_eq!(rig.doc.root(), &before);
-    assert_eq!(recorded_character(&rig, &first).as_deref(), Some("mira"));
+    assert_eq!(recorded_characters(&rig, &first), ["mira"]);
 }
 
 #[test]
@@ -777,24 +812,46 @@ fn a_reimport_with_the_same_character_is_a_no_op() {
 }
 
 #[test]
-fn a_reimport_with_another_character_is_a_conflict_naming_the_existing_one() {
+fn one_asset_serves_several_characters_and_is_stored_once() {
     let mut rig = rig_with_two_characters();
     let (first, _) = import_for(&mut rig, Some("mira")).unwrap();
-    let before = rig.doc.root().clone();
-    let error = import_for(&mut rig, Some("kai")).unwrap_err();
-    assert_eq!(error.code, ErrorCode::Conflict);
-    assert!(error.message.contains("mira") && error.message.contains("kai"), "{}", error.message);
-    assert_eq!(rig.doc.root(), &before, "the record is unchanged");
-    assert_eq!(recorded_character(&rig, &first).as_deref(), Some("mira"));
+    let objects = rig.store.len();
+    let (_, patch) = import_for(&mut rig, Some("kai")).unwrap();
+    assert_eq!(recorded_characters(&rig, &first), ["kai", "mira"], "both associations are kept");
+    assert_eq!(rig.store.len(), objects, "the object is stored once");
+    rig.doc.apply(&patch.inverse()).unwrap();
+    assert_eq!(recorded_characters(&rig, &first), ["mira"], "undoing kai's import drops only kai's association");
 }
 
 #[test]
 fn a_character_is_added_to_a_record_that_has_none() {
     let mut rig = rig_with_two_characters();
     let (first, _) = import_for(&mut rig, None).unwrap();
-    assert_eq!(recorded_character(&rig, &first), None);
+    assert_eq!(recorded_characters(&rig, &first), Vec::<String>::new());
     import_for(&mut rig, Some("kai")).unwrap();
-    assert_eq!(recorded_character(&rig, &first).as_deref(), Some("kai"));
+    assert_eq!(recorded_characters(&rig, &first), ["kai"]);
+}
+
+#[test]
+fn an_older_record_with_one_character_reads_as_a_list_and_becomes_one_when_it_changes() {
+    let mut rig = rig_with_two_characters();
+    let (first, _) = import_for(&mut rig, Some("mira")).unwrap();
+    // Write the record as an older build did: one `character`, no list, no record of its own.
+    let path = doc_path(&format!("assets/{}", hash(&first["asset"]["original"])));
+    let mut old = rig.doc.get(&path).cloned().unwrap();
+    let object = old.as_object_mut().unwrap();
+    object.remove("characters");
+    object.remove("provenance");
+    object.insert("character".into(), json!("mira"));
+    let before = rig.doc.get(&path).cloned();
+    rig.doc.apply(&Patch::new().with(path.clone(), before, Some(old))).unwrap();
+
+    let (_, patch) = import_for(&mut rig, Some("mira")).unwrap();
+    assert_eq!(patch.changes.len(), 1, "the record gains its own provenance");
+    let entry = rig.doc.get(&path).cloned().unwrap();
+    assert_eq!((entry.get("character"), &entry["characters"]), (None, &json!(["mira"])), "upgraded");
+    import_for(&mut rig, Some("kai")).unwrap();
+    assert_eq!(recorded_characters(&rig, &first), ["kai", "mira"]);
 }
 
 /// Writes `file` under the rig's project folder, creating its folders.

@@ -11,12 +11,19 @@
 //! rights (io-api D5: the conservative mapping, `Unknown` wherever the file does not settle it), and each image of the
 //! scene under that same record, so an image never carries more rights than the model it came from. The store is
 //! content addressed, so importing the same bytes again stores nothing new.
+//!
+//! **Rights per reference** (`docs/design/io-api.md`, "The asset record"). The asset record keeps the model's own
+//! provenance, and that record, not the store's, is what the model's images are used under: two models that share an
+//! identical texture under different licences or credit lines both import, and each asset carries its own. The store
+//! keeps the first record it was given for a shared object (`Store::put`); nothing reads it as the rights of a reference.
+//! The original file is the exception: identical bytes derive an identical record, so an original already stored under
+//! another record is still refused.
 //! An asset already recorded is never overwritten: a re-import of the same files without a character, or for a character
 //! it already serves, changes nothing; one for another character adds that character to the record, so one asset serves
 //! several characters (`docs/design/io-api.md`, "The asset record"). A re-import whose images or sidecars differ from
 //! the recorded ones (a file the model refers to changed) is a `Conflict`.
-//! An object is shared with another import only under an identical record; the check runs before the first write and again
-//! after each `put`, and any difference is a `Conflict` that names both records (joining records is #1773).
+//! An original stored under another record is a `Conflict` naming both records; the check runs before the first write and
+//! again after the original's `put`.
 //!
 //! **Cancellation.** The import is cancellable at every checkpoint the importer reaches. The store phase is not
 //! interrupted: the last check comes before the first `put`. The guarantee:
@@ -120,7 +127,7 @@ pub struct Import {
 }
 
 /// What the document keeps about one imported original.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct AssetRecord {
     /// The original file's content hash.
     pub(crate) original: ContentHash,
@@ -137,6 +144,10 @@ pub(crate) struct AssetRecord {
     /// order. Absent when none: the document cannot hold a `null`.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub(crate) characters: BTreeSet<String>,
+    /// The model's own record, which its images are used under (rights per reference). Absent on a record written
+    /// before references kept their own; such a record gains it when it next changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) provenance: Option<Provenance>,
 }
 
 /// The `character` key of a record written before one asset could serve several characters: read as a set of one, and
@@ -246,6 +257,7 @@ impl Import {
             .clone()
             .ok_or_else(|| OpError::internal("run_import left the scene without a provenance record"))?;
         let stored = store_files(name, bytes, &outcome.scene, &served, &provenance, store, progress, field)?;
+        let record = Some(provenance.clone());
         Ok(Imported {
             asset: AssetRecord {
                 original: stored.original,
@@ -254,6 +266,7 @@ impl Import {
                 file: name.to_owned(),
                 format: importer.info().id.to_owned(),
                 characters: self.character.iter().cloned().collect(),
+                provenance: record,
             },
             summary: outcome.scene.summary(),
             report: outcome.report,
@@ -326,11 +339,15 @@ pub(crate) struct Stored {
 
 /// Stores `bytes` (the file called `name`), every image of `scene` and every `served` sidecar, each under
 /// `provenance` (so an image never carries more rights than the model it came from). The last cancel check comes
-/// first; every object is checked against what the store already holds before the first write, and again after each
-/// `put`.
+/// first; the original is checked against what the store already holds before the first write, and again after its
+/// `put`. An image or sidecar another model stored first keeps that model's record in the store; this model's own
+/// record goes on its asset record (rights per reference, see the module docs).
+///
+/// A `put` that fails part way (an I/O error) leaves the objects already put whole, and referenced by nothing, since
+/// the asset record is written only when the job finishes; garbage collection removes them, as after a cancel.
 ///
 /// # Errors
-/// `Conflict` on a cancel, and when an object is already stored under a different record; `Internal` when the store
+/// `Conflict` on a cancel, and when the original is already stored under a different record; `Internal` when the store
 /// fails.
 #[allow(clippy::too_many_arguments)] // the model's parts and where they go; a struct would only rename them
 pub(crate) fn store_files(
@@ -372,20 +389,22 @@ pub(crate) fn store_files(
                 objects.push((hash, file.as_slice(), record));
             }
         }
-        // Checked for every object before the first write, so a refusal stores nothing.
-        for (hash, _, record) in &objects {
-            if store.contains(hash) {
-                require_same_record(store, hash, record, name)?;
-            }
+        // The original is checked before the first write, so a refusal stores nothing.
+        if let Some((hash, _, record)) = objects.first()
+            && store.contains(hash)
+        {
+            require_same_record(store, hash, record, name)?;
         }
         let mut stored = Vec::with_capacity(objects.len());
-        for (hash, bytes, record) in objects {
+        for (i, (hash, bytes, record)) in objects.into_iter().enumerate() {
             let put = store
                 .put(bytes, record.clone())
                 .map_err(|e: StoreError| OpError::internal(format!("storing {name}: {e}")))?;
             debug_assert_eq!(put, hash, "the store names an object by the hash of its bytes");
-            // `put` keeps the first record, and another import may have stored the object since the check above.
-            require_same_record(store, &put, &record, name)?;
+            // `put` keeps the first record, and another import may have stored the original since the check above.
+            if i == 0 {
+                require_same_record(store, &put, &record, name)?;
+            }
             stored.push(put);
         }
         let original = stored.remove(0);
@@ -512,9 +531,9 @@ fn describe_record(record: &Provenance) -> String {
     )
 }
 
-/// Requires the store to hold `hash` under exactly `wanted`. `Store::put` keeps the first record and the store offers
-/// no way to join two, so an object is shared between imports only when their records are identical; anything else
-/// (wider, stricter, another licence or credit line) fails closed. Joining records is follow-up #1773.
+/// Requires the store to hold the original `hash` under exactly `wanted`. Identical bytes derive an identical record, so
+/// an original stored under another one (wider, stricter, another licence or credit line) came from somewhere this
+/// import cannot vouch for, and the import fails closed.
 fn require_same_record(store: &dyn Store, hash: &ContentHash, wanted: &Provenance, name: &str) -> Result<(), OpError> {
     let stored = store
         .provenance(hash)
@@ -527,7 +546,7 @@ fn require_same_record(store: &dyn Store, hash: &ContentHash, wanted: &Provenanc
         describe_record(&stored),
         describe_record(wanted),
     ))
-    .hint("an object is shared between imports only under identical rights; sharing across different rights is not built yet (#1773)"))
+    .hint("the file is already in the project under other rights; find where it came from before importing it again"))
 }
 
 /// `Invalid` over the input limit, the same error `run_import` gives, so a hostile file is refused before it is held.
@@ -565,7 +584,10 @@ fn require_character(doc: &dyn DocRead, id: &str) -> Result<(), OpError> {
 /// entry does not serve yet (an older entry's single `character` becomes the `characters` list then), and is empty
 /// when there are none.
 pub(crate) fn record_patch(doc: &dyn DocRead, asset: &AssetRecord) -> Result<Patch, OpError> {
-    let value = serde_json::to_value(asset).map_err(|e| OpError::internal(format!("serialising the asset: {e}")))?;
+    let mut value =
+        serde_json::to_value(asset).map_err(|e| OpError::internal(format!("serialising the asset: {e}")))?;
+    // A project file cannot hold a `null`, and a record's unset fields serialise as one.
+    strip_nulls(&mut value);
     let table = DocPath::root().join(ASSETS);
     let entry = table.join(asset.original.to_string());
     match doc.get(&table) {
@@ -601,13 +623,22 @@ fn keep_existing(existing: &Value, asset: &AssetRecord, entry: DocPath) -> Resul
         }
     }
     let recorded = recorded_characters(fields);
-    if asset.characters.is_subset(&recorded) {
+    let gains_provenance = !fields.contains_key("provenance") && asset.provenance.is_some();
+    if asset.characters.is_subset(&recorded) && !gains_provenance {
         return Ok(Patch::new());
     }
     let mut updated = fields.clone();
     updated.remove(LEGACY_CHARACTER);
     let characters: Vec<Value> = recorded.union(&asset.characters).cloned().map(Value::String).collect();
-    updated.insert("characters".to_owned(), Value::Array(characters));
+    if !characters.is_empty() {
+        updated.insert("characters".to_owned(), Value::Array(characters));
+    }
+    if let Some(provenance) = asset.provenance.as_ref().filter(|_| gains_provenance) {
+        let mut value =
+            serde_json::to_value(provenance).map_err(|e| OpError::internal(format!("serialising the record: {e}")))?;
+        strip_nulls(&mut value);
+        updated.insert("provenance".to_owned(), value);
+    }
     Ok(Patch::new().with(entry, Some(existing.clone()), Some(Value::Object(updated))))
 }
 
@@ -821,6 +852,7 @@ mod tests {
             file: "a.glb".into(),
             format: "glb".into(),
             characters: BTreeSet::new(),
+            provenance: None,
         };
         let doc = omuzaki_doc_mock::MemDoc::new();
         let first = record_patch(&doc, &asset).unwrap();
