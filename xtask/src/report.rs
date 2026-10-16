@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::affected::{Analysis, Scope};
+use crate::scans::{self, Scan};
 use crate::workspace::Workspace;
 
 /// What `check --json` prints: one JSON object on one line.
@@ -33,6 +34,9 @@ pub struct Report {
     pub shards_changed: Vec<Vec<String>>,
     /// `full`, split for a test matrix.
     pub shards_full: Vec<Vec<String>>,
+    /// The workspace-scan test targets (`scans.rs`). They are the same whatever changed, even when `empty`: a change
+    /// in one crate can break a test that reads every crate, so the plan runs them on every pull request and merge group.
+    pub scans: Vec<Scan>,
 }
 
 impl Report {
@@ -64,6 +68,7 @@ impl Report {
             changed,
             full,
             link_only,
+            scans: scans::SCANS.to_vec(),
         }
     }
 }

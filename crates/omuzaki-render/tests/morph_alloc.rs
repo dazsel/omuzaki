@@ -56,13 +56,17 @@ fn scene(k: usize, meshes: [MeshId; 2], materials: [MaterialId; 2]) -> Scene {
     scene
 }
 
-#[test]
-fn a_scripted_run_of_changing_scenes_allocates_nothing_after_one_pass_and_gives_everything_back() {
+/// Runs on the GPU path, or on the CPU path forced on the same adapter.
+fn a_scripted_run_of_changing_scenes_allocates_nothing_after_one_pass_and_gives_everything_back(cpu: bool) {
     if !counting::can_attribute() {
         println!("no source paths in backtraces (a build without debug info): skipping");
         return;
     }
     let mut r = support::renderer();
+    if cpu {
+        r.force_cpu_morph().unwrap();
+    }
+    assert_eq!(r.morph_path(), if cpu { "cpu" } else { "gpu" });
     let meshes = [
         morphing_mesh(&mut r, &grid::grid(40, 40)),
         morphing_mesh(&mut r, &shapes::quad(omuzaki_core::glam::Vec2::ONE)),
@@ -123,4 +127,14 @@ fn a_scripted_run_of_changing_scenes_allocates_nothing_after_one_pass_and_gives_
         assert_eq!(totals.get(owner).copied().unwrap_or(0), 0, "{owner} allocated: {totals:?}");
     }
     assert_eq!(r.stats().gpu_bytes, baseline, "zero weights pool nothing");
+}
+
+#[test]
+fn on_the_gpu_path() {
+    a_scripted_run_of_changing_scenes_allocates_nothing_after_one_pass_and_gives_everything_back(false);
+}
+
+#[test]
+fn on_the_cpu_path() {
+    a_scripted_run_of_changing_scenes_allocates_nothing_after_one_pass_and_gives_everything_back(true);
 }

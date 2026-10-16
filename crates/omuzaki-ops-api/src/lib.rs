@@ -57,7 +57,7 @@ pub use inventory as __inventory;
 #[doc(hidden)]
 pub use omuzaki_core::__record_registration;
 
-use omuzaki_doc_api::{Patch, Value};
+use omuzaki_doc_api::{DocPath, Patch, Value};
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -207,6 +207,14 @@ pub trait Op: Serialize + DeserializeOwned + JsonSchema + Send + Sync + 'static 
     {
         false
     }
+
+    /// The document paths this op reads but may not write, computed from the parsed arguments. A review request's
+    /// subject is the plan's patch paths plus these (`docs/design/comments.md` section 8), so an op that only writes
+    /// outside the document (an export) still names what it publishes. Empty, the default, means "the whole project"
+    /// for that subject; nothing else uses it.
+    fn reads(&self) -> Vec<DocPath> {
+        Vec::new()
+    }
 }
 
 /// Object-safe view of an [`Op`], used by the registry and executor to handle ops they don't know statically.
@@ -241,6 +249,10 @@ pub trait DynOp: Send + Sync {
     fn job_shape(&self) -> JobShape {
         JobShape::Plain
     }
+    /// See [`Op::reads`].
+    fn reads(&self) -> Vec<DocPath> {
+        Vec::new()
+    }
 }
 
 impl<T: Op> DynOp for T {
@@ -266,6 +278,10 @@ impl<T: Op> DynOp for T {
 
     fn job_shape(&self) -> JobShape {
         T::job_shape()
+    }
+
+    fn reads(&self) -> Vec<DocPath> {
+        Op::reads(self)
     }
 }
 
