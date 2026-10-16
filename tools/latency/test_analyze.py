@@ -80,6 +80,57 @@ class FixedRange(unittest.TestCase):
             run(synth.build(83.0, 0.0)[0], out_range=(100, 100))
 
 
+class Followups(unittest.TestCase):
+    def test_json_lists_every_event_and_recomputes_the_p95(self):
+        frames, _ = synth.build(83.0, 0.0, slow_every=6, slow_ms=700.0)
+        report = run(frames)
+        results = report["event_results"]
+        self.assertEqual(len(results), 60)
+        self.assertEqual(sum(1 for r in results if r["status"] == "timed_out"), 10)
+        self.assertTrue(all(r["delay_ms"] is None for r in results if r["status"] == "timed_out"))
+        recomputed = [r["delay_ms"] if r["delay_ms"] is not None else report["window_ms"] for r in results]
+        self.assertEqual(analyze.percentile(recomputed, 95), report["p95_ms"])
+        self.assertEqual(analyze.percentile(recomputed, 50), report["p50_ms"])
+        self.assertEqual(max(recomputed), report["max_ms"])
+
+    def test_json_events_rebuild_the_stats_with_jitter(self):
+        report = json.loads(json.dumps(run(synth.build(83.0, 12.0)[0])))
+        delays = [r["delay_ms"] for r in report["event_results"]]
+        self.assertEqual(analyze.percentile(delays, 50), report["p50_ms"])
+        self.assertEqual(analyze.percentile(delays, 95), report["p95_ms"])
+        self.assertEqual(max(delays), report["max_ms"])
+        json.dumps(report)
+
+    def test_out_range_in_either_order_in_both_polarities(self):
+        expected = run(synth.build(83.0, 0.0)[0], out_range=(0, 200))["p50_ms"]
+        for rng in ((0, 200), (200, 0)):
+            with self.subTest(polarity="bright", rng=rng):
+                got = run(synth.build(83.0, 0.0)[0], out_range=rng)
+                self.assertAlmostEqual(got["p50_ms"], expected, delta=0.01)
+        for rng in ((255, 55), (55, 255)):
+            with self.subTest(polarity="dark", rng=rng):
+                got = run((invert_output(f) for f in synth.build(83.0, 0.0)[0]), out_bright=False, out_range=rng)
+                self.assertAlmostEqual(got["p50_ms"], expected, delta=0.01)
+
+    def test_regenerating_a_shorter_clip_leaves_exactly_the_new_frames(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(stimulus.main([d, "--events", "2"]), 0)
+            old = stimulus.clip_length(2)
+            self.assertEqual(stimulus.main([d, "--events", "1"]), 0)
+            frames = sorted(n for n in os.listdir(d) if n.endswith(".png"))
+            self.assertEqual(len(frames), stimulus.clip_length(1))
+            self.assertLess(stimulus.clip_length(1), old)
+            self.assertEqual(frames[-1], f"frame_{stimulus.clip_length(1) - 1:05d}.png")
+
+    def test_regenerating_keeps_other_files(self):
+        with tempfile.TemporaryDirectory() as d:
+            keep = os.path.join(d, "notes.txt")
+            with open(keep, "w") as f:
+                f.write("x")
+            self.assertEqual(stimulus.main([d, "--events", "1"]), 0)
+            self.assertTrue(os.path.exists(keep))
+
+
 class RejectsBadRecordings(unittest.TestCase):
     def test_flat_output_is_an_error(self):
         frames, _ = synth.build(83.0, 0.0)

@@ -113,8 +113,12 @@ fn link_cases(disk: &dyn Disk, root: &Path) {
     );
     assert!(disk.exists(&root.join("dangling")));
 
-    // Removing a folder through a link is refused and leaves the target alone.
-    assert!(disk.remove_dir_all(&root.join("dir-link")).is_err());
+    // Removing a link removes the link and leaves its target alone, a link to a file too.
+    disk.remove_dir_all(&root.join("dir-link")).unwrap();
+    assert!(!disk.exists(&root.join("dir-link")));
+    assert_eq!(disk.read(&root.join("real/f")).unwrap(), b"x");
+    disk.remove_dir_all(&root.join("file-link")).unwrap();
+    assert!(!disk.exists(&root.join("file-link")));
     assert_eq!(disk.read(&root.join("real/f")).unwrap(), b"x");
 }
 

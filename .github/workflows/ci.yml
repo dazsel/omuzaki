@@ -38,7 +38,9 @@ env:
   CARGO_INCREMENTAL: "0"
   # Smaller artifacts keep the cache and the runner's disk in budget; backtraces still have line numbers.
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
-  RUST_BACKTRACE: "1"
+  # RUST_BACKTRACE is set on the steps that run tests, not here: Swatinem/rust-cache hashes every RUST* variable of the
+  # job into its cache key, and cache-warm.yml (which saves the caches) does not set it. With it here no job found a
+  # cache ("No cache found" in all six test jobs of merge-queue run 38810711080) and each compiled every dependency.
 
 jobs:
   # Decides what the other jobs do. About two minutes with a warm cache: xtask is small.
@@ -108,7 +110,7 @@ jobs:
       - uses: ./.github/actions/setup-linux
         with:
           cache-key: lint
-          tools: cargo-deny
+          tools: cargo-deny,cargo-nextest
           free-disk: ${{ needs.plan.outputs.mode == 'workspace' }}
       - name: Cargo.lock is current
         run: cargo metadata --locked --format-version 1 >/dev/null
@@ -181,10 +183,12 @@ jobs:
       # Render and UI tests open a software Vulkan adapter (lavapipe). The setup step above installs it, so they run
       # for real here instead of being skipped. nextest runs the tests of every binary in parallel (.config/nextest.toml
       # caps the GPU ones); it does not run doctests, so `cargo test --doc` follows. `PARTS` holds crates too heavy for
-      # one job, as `name@k/n`: this job runs partition k of n (xtask/src/report.rs).
+      # one job, as `name@k/n` (partition k of n), `name@k/n!bin` (the tests outside isolated binaries) or `name@=bin` (one
+      # isolated binary): xtask/src/report.rs writes the labels, tools/ci/nextest-args.py reads them.
       - name: Test
         env:
           PARTS: ${{ matrix.parts }}
+          RUST_BACKTRACE: "1"
         run: |
           status=0
           features_for() { [[ " $* " == *" omuzaki-cli "* ]] && echo --features omuzaki-cli/test-fixtures; return 0; }
@@ -195,9 +199,21 @@ jobs:
             cargo nextest run --profile ci --locked "${packages[@]}" $(features_for $CRATES) || status=1
           fi
           for part in $PARTS; do
-            name=${part%@*}; slice=${part#*@}
+            name=${part%@*}
+            # The item says which tests it runs: a partition, a partition outside isolated binaries, or one isolated
+            # binary (tools/ci/nextest-args.py). nextest refuses a filter naming a binary that no longer exists, so the
+            # script drops those, after reading the crate's real binaries from nextest.
             # shellcheck disable=SC2046
-            cargo nextest run --profile ci --locked -p "$name" $(features_for "$name") --partition "hash:$slice" || status=1
+            if ! cargo nextest list --profile ci --locked -p "$name" $(features_for "$name") \
+                 --list-type binaries-only --message-format json >"$RUNNER_TEMP/binaries.json"; then
+              echo "::error::cannot list the test binaries of $name"; status=1; continue
+            fi
+            rc=0; selection=$(python3 -I tools/ci/nextest-args.py "$part" --list "$RUNNER_TEMP/binaries.json") || rc=$?
+            if ((rc == 10)); then echo "::notice::$part: its test binary is gone, the partitions run its tests"; continue; fi
+            if ((rc != 0)); then echo "::error::not a shard item: $part"; status=1; continue; fi
+            mapfile -t selection <<<"$selection"
+            # shellcheck disable=SC2046
+            cargo nextest run --profile ci --locked "${selection[@]}" $(features_for "$name") || status=1
           done
 
           # Doctests, once per crate: a split crate's doctests run with its first part.
@@ -234,6 +250,8 @@ jobs:
           cache-key: test
           gpu: true
       - name: Link gate tests
+        env:
+          RUST_BACKTRACE: "1"
         run: |
           set -e
           # An empty LINK_CRATES (the CLI in full scope only) runs no iteration.
