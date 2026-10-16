@@ -6,8 +6,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::{changed, host, op_error, person_only, persist};
-use crate::perform::input::InputCamera;
+use super::{changed, host, op_error, person_only, persist, put_back_camera, retained};
+use crate::perform::input::{InputCamera, InputError, SourceKind};
 
 /// Bind the camera the webcam source reads, by an id from `input.state`; `null` unbinds it. A running preview moves to
 /// the new camera. Only the person can do this, in the Omuzaki window.
@@ -40,33 +40,48 @@ impl Op for BindCamera {
         }
         person_only(ctx, "which physical camera runs is the person's choice")?;
         let host = host(ctx)?;
+        // A resume needs a webcam source and a camera to start: refused before anything changes.
+        if self.resume_preview {
+            let state = host.state();
+            if state.source != SourceKind::Webcam {
+                return Err(op_error(InputError::NothingToCapture));
+            }
+            if self.camera.is_none() {
+                return Err(op_error(InputError::NoCameraBound));
+            }
+        }
         // Checked first, so a camera that is not there is refused before anything changes.
         let before = host.bind_camera(self.camera.clone(), Mode::DryRun).map_err(op_error)?;
         let was_on = host.state().preview.is_on();
+        let mut problems = Vec::new();
         if !ctx.dry_run {
             host.bind_camera(self.camera.clone(), Mode::Apply).map_err(op_error)?;
             if self.resume_preview
                 && let Err(error) = host.preview(true, Mode::Apply)
             {
-                // Nothing is left half done: the binding goes back and the preview as it was.
-                let _ = host.bind_camera(before.clone(), Mode::Apply);
-                return Err(op_error(error));
+                match put_back_camera(host, before.as_ref(), was_on) {
+                    Ok(()) => return Err(op_error(error)),
+                    Err(left) => problems.push(format!("the preview did not start ({error}) and the change could not be taken back: {left}")),
+                }
             }
         }
         let saved = match persist::<InputCamera>(ctx, &self.camera) {
             Ok(saved) => saved,
             Err(error) => {
-                if !ctx.dry_run {
-                    // The store refused: put the host back, so what runs is what is saved.
-                    let _ = host.bind_camera(before.clone(), Mode::Apply);
-                    if was_on {
-                        let _ = host.preview(true, Mode::Apply);
+                // The store refused: put the host back, so what runs is what is saved.
+                match (ctx.dry_run, put_back_camera(host, before.as_ref(), was_on)) {
+                    (true, _) | (false, Ok(())) => return Err(error),
+                    (false, Err(left)) => {
+                        problems.push(format!("{} and the change could not be taken back: {left}", error.message));
+                        false
                     }
                 }
-                return Err(error);
             }
         };
-        let answer = json!({ "camera": self.camera, "before": before, "saved": saved, "dry_run": ctx.dry_run });
+        let mut answer = json!({ "camera": self.camera, "before": before, "saved": saved, "dry_run": ctx.dry_run });
+        if !problems.is_empty() {
+            answer["retained"] = retained(&problems);
+        }
         let name = |camera: &Option<CameraId>| camera.as_ref().map_or_else(|| "none".to_owned(), |c| c.0.clone());
         let summary = format!("camera {} to {}", name(&before), name(&self.camera));
         let mut plan = changed(Self::meta().name, "camera", before, &self.camera, summary, answer)?;

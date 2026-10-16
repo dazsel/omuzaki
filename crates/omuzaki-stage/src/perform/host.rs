@@ -296,7 +296,7 @@ enum Command {
     },
     Calibration(Calibration),
     /// One trigger slot, baked on the control side; `None` empties it.
-    Trigger { index: usize, slot: Option<TriggerSlot> },
+    Trigger { index: usize, slot: Option<TriggerSlot>, generation: u64 },
     /// Every trigger slot whose values changed, from [`PerformHost::set_expressions`].
     Triggers(Rebaked),
     /// A key press (`down`) or release on a trigger slot.
@@ -339,9 +339,10 @@ struct Shared {
     acknowledged: AtomicU64,
     /// The calibration the performer is using.
     calibration: CalibrationMailbox,
-    /// The slots whose triggers are shown or wanted, one bit each (`TriggerLayer::active_mask`), published by the
-    /// control each step.
-    active_triggers: AtomicU32,
+    /// For each slot, the generation of the binding whose expression is shown or wanted, or 0
+    /// (`TriggerLayer::active_generations`), published by the control each step. A binding is active when its own
+    /// generation is the one published.
+    active_triggers: [AtomicU64; MAX_TRIGGERS],
     /// Handle side only; the control never touches it.
     book: Mutex<RetargetBook>,
     /// The trigger table. Handle side only, like `book`: the control receives baked slots.
@@ -539,7 +540,7 @@ pub fn perform_channel(performer: &Performer) -> (PerformHandle, PerformControl)
         running: AtomicBool::new(true),
         acknowledged: AtomicU64::new(0),
         calibration: CalibrationMailbox::new(performer.retarget().calibration()),
-        active_triggers: AtomicU32::new(0),
+        active_triggers: std::array::from_fn(|_| AtomicU64::new(0)),
         book: Mutex::new(RetargetBook {
             requested: config.clone(),
             applied: config,
@@ -617,6 +618,24 @@ impl PerformHandle {
 }
 
 impl PerformHandle {
+    /// [`set_expressions`](PerformHost::set_expressions) that never waits for the ops side: when another thread holds
+    /// the trigger table it does nothing and says so, for a caller on a real-time thread to try again next frame.
+    ///
+    /// # Errors
+    /// [`PerformError::QueueFull`] when the table is busy or the performer has too many requests waiting, and
+    /// [`PerformError::Disconnected`]; nothing changes then.
+    pub fn try_set_expressions(&self, expressions: ExpressionSet, rest: ChannelBuf) -> Result<(), PerformError> {
+        let mut book = match self.shared.triggers.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return Err(PerformError::QueueFull),
+        };
+        let (next, changes) = book.with_expressions(expressions, &rest);
+        self.send(Command::Triggers(changes))?;
+        *book = next;
+        Ok(())
+    }
+
     /// Binds under the book lock; with `checked`, an expression the set lacks is refused.
     fn bind_locked(&self, binding: TriggerBinding, checked: bool) -> Result<BindOutcome, PerformError> {
         let mut book = lock(&self.shared.triggers);
@@ -625,8 +644,9 @@ impl PerformHandle {
         }
         let (slot, replaced) = book.place(&binding.key)?;
         let (shown, missing) = book.bake(&binding);
-        self.send(Command::Trigger { index: slot, slot: shown })?;
-        book.put(slot, Some(Bound { binding, missing, slot: shown }));
+        let generation = book.next_generation();
+        self.send(Command::Trigger { index: slot, slot: shown, generation })?;
+        book.put(slot, Some(Bound { binding, missing, slot: shown, generation }));
         Ok(BindOutcome { slot, replaced })
     }
 }
@@ -702,7 +722,7 @@ impl PerformHost for PerformHandle {
         let Some((slot, _)) = book.find(key) else {
             return Ok(false);
         };
-        self.send(Command::Trigger { index: slot, slot: None })?;
+        self.send(Command::Trigger { index: slot, slot: None, generation: 0 })?;
         book.put(slot, None);
         Ok(true)
     }
@@ -719,11 +739,12 @@ impl PerformHost for PerformHandle {
 
     fn triggers(&self) -> Vec<TriggerInfo> {
         let book = lock(&self.shared.triggers);
-        let active = self.shared.active_triggers.load(Ordering::Acquire);
         book.bound()
             .map(|(slot, bound)| TriggerInfo {
                 binding: bound.binding.clone(),
-                active: active >> slot & 1 == 1,
+                active: self.shared.active_triggers.get(slot).is_some_and(|published| {
+                    published.load(Ordering::Acquire) == bound.generation
+                }),
                 missing: bound.missing,
             })
             .collect()
@@ -907,7 +928,7 @@ impl PerformControl {
                 self.shared.acknowledged.store(seq, Ordering::Release);
             }
             Command::Calibration(calibration) => self.set_calibration(performer, &calibration),
-            Command::Trigger { index, slot } => self.set_trigger(index, slot.as_ref()),
+            Command::Trigger { index, slot, generation } => self.set_trigger(index, slot.as_ref(), generation),
             Command::Triggers(slots) => {
                 self.triggers.rebake(&slots);
             }
@@ -923,8 +944,8 @@ impl PerformControl {
 
     /// Sets one trigger slot from its baked form. The control side bakes only non-empty masks and in-range indices, so
     /// the table refuses nothing it is sent.
-    fn set_trigger(&mut self, index: usize, slot: Option<&TriggerSlot>) {
-        let result = self.triggers.set(index, slot);
+    fn set_trigger(&mut self, index: usize, slot: Option<&TriggerSlot>, generation: u64) {
+        let result = self.triggers.set(index, slot, generation);
         debug_assert_eq!(result, Ok(()), "the control side sent a slot the table refuses");
     }
 
@@ -1003,7 +1024,9 @@ impl PerformControl {
 
     fn publish(&self) {
         self.shared.live.store(self.live.pack(), Ordering::Release);
-        self.shared.active_triggers.store(self.triggers.active_mask(), Ordering::Release);
+        for (published, generation) in self.shared.active_triggers.iter().zip(self.triggers.active_generations()) {
+            published.store(generation, Ordering::Release);
+        }
     }
 }
 

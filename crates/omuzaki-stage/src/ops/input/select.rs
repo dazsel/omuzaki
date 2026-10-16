@@ -5,8 +5,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::{changed, host, mode, op_error, persist};
-use crate::perform::input::{InputSource, SourceKind};
+use super::{changed, host, mode, op_error, persist, put_back_source, retained};
+use crate::perform::input::{InputError, InputSource, SourceKind};
 
 /// Choose what drives the face: `webcam`, `iphone` or `life_layer` (no capture; the life layer moves the face alone).
 /// This only picks the kind: it binds no camera and starts no capture, and a running preview of another kind stops.
@@ -35,30 +35,51 @@ impl Op for Select {
     fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
         ctx.require_person("choosing the tracking source changes what the camera is used for")?;
         let host = host(ctx)?;
+        // A resume needs something to capture from the requested source: refused before anything changes, in a dry
+        // run too.
+        if self.resume_preview {
+            match self.source {
+                SourceKind::LifeLayer => return Err(op_error(InputError::NothingToCapture)),
+                SourceKind::Iphone => return Err(op_error(InputError::Unsupported(SourceKind::Iphone))),
+                SourceKind::Webcam => {
+                    let state = host.state();
+                    match state.camera {
+                        None => return Err(op_error(InputError::NoCameraBound)),
+                        Some(camera) if !state.camera_present => return Err(op_error(InputError::no_camera(camera))),
+                        Some(_) => {}
+                    }
+                }
+            }
+        }
         let was_on = host.state().preview.is_on();
         let before = host.select(self.source, mode(ctx)).map_err(op_error)?;
+        let mut problems = Vec::new();
         if self.resume_preview
             && !ctx.dry_run
             && let Err(error) = host.preview(true, mode(ctx))
         {
-            // Nothing is left half done: the source goes back.
-            let _ = host.select(before, mode(ctx));
-            return Err(op_error(error));
+            match put_back_source(host, before, was_on) {
+                Ok(()) => return Err(op_error(error)),
+                Err(left) => problems.push(format!("the preview did not start ({error}) and the change could not be taken back: {left}")),
+            }
         }
         let saved = match persist::<InputSource>(ctx, &self.source) {
             Ok(saved) => saved,
             Err(error) => {
-                if !ctx.dry_run {
-                    // The store refused: put the host back, so what runs is what is saved.
-                    let _ = host.select(before, mode(ctx));
-                    if was_on {
-                        let _ = host.preview(true, mode(ctx));
+                // The store refused: put the host back, so what runs is what is saved.
+                match (ctx.dry_run, put_back_source(host, before, was_on)) {
+                    (true, _) | (false, Ok(())) => return Err(error),
+                    (false, Err(left)) => {
+                        problems.push(format!("{} and the change could not be taken back: {left}", error.message));
+                        false
                     }
                 }
-                return Err(error);
             }
         };
-        let answer = json!({ "source": self.source, "before": before, "saved": saved, "dry_run": ctx.dry_run });
+        let mut answer = json!({ "source": self.source, "before": before, "saved": saved, "dry_run": ctx.dry_run });
+        if !problems.is_empty() {
+            answer["retained"] = retained(&problems);
+        }
         let summary = format!("tracking source {before:?} to {:?}", self.source);
         let mut plan = changed(Self::meta().name, "source", before, self.source, summary, answer)?;
         // A change of source stops a running preview: undoing it brings the preview back too.

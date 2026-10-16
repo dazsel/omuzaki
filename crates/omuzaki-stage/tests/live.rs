@@ -828,6 +828,28 @@ fn committing_the_owed_work_ends_the_debt() {
     assert!(live.live().owed().is_empty());
 }
 
+#[test]
+fn a_late_commit_of_a_replaced_scenes_work_is_ignored() {
+    let mut live = Live::new(MockRenderer::new(), vec![], Quality::live(), Painter::None);
+    let mut def = scene_def();
+    live.live().scenes().post(resolved(&def));
+    live.frame();
+    let late = live.live().owed();
+    assert!(late.ground.is_some(), "scene A adds a ground");
+    // Scene B removes it before A's work is committed: nothing is owed against the renderer's (empty) baseline.
+    def.scene.ground.kind = omuzaki_stage_api::GroundKind::None;
+    live.live().scenes().post(resolved(&def));
+    live.frame();
+    assert!(live.live().owed().is_empty());
+    // A's work finishes late and is committed: the renderer's ground is A's, which B does not want.
+    live.inner.as_mut().unwrap().stage_mut().commit_scene(&late);
+    // Scene C wants the ground again: the renderer is still owed it, because A's commit was not recorded.
+    def.scene.ground.kind = omuzaki_stage_api::GroundKind::Shadow;
+    live.live().scenes().post(resolved(&def));
+    live.frame();
+    assert!(live.live().owed().ground.is_some(), "a stale commit must not hide the debt");
+}
+
 #[cfg(feature = "wgpu")]
 #[test]
 fn the_fake_trace_renders_on_the_software_adapter() {

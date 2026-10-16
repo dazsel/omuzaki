@@ -132,7 +132,8 @@ fn a_poster_and_the_perform_thread_hand_over_without_losing_a_source() {
         std::thread::yield_now();
     }
     poster.join().unwrap();
-    slot.swap_into(&mut performer);
+    while slot.swap_into(&mut performer) {}
+    assert!(!slot.has_posted(), "the newest posted source was taken, with no other operation to make room");
     slot.collect();
     drop(slot);
     drop(performer);

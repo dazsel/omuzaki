@@ -1130,3 +1130,59 @@ fn a_failed_release_after_a_resize_still_rebinds_the_face_system() {
     // The refused release left the old textures behind; that is the renderer's to clean up, not this test's.
     stage.release(&mut renderer).expect("released");
 }
+
+#[test]
+fn a_live_stage_installs_the_expressions_of_the_character_a_variant_swap_brings() {
+    use omuzaki_stage::perform::host::PerformHost as _;
+    use omuzaki_stage::perform::input::SourceSlot;
+    use omuzaki_stage::perform::live::LiveStage;
+
+    let mut renderer = Spy::new(false);
+    let stage = stage_on(&mut renderer, 32, true);
+    let performer = {
+        let parts = omuzaki_stage::perform::PerformerParts {
+            source: Box::new(omuzaki_stage::perform::input::NoSource),
+            retarget: Box::new(omuzaki_anim::retarget::ArkitRetarget::new(omuzaki_anim_api::DeviceProfile::Webcam)),
+            life: Box::new(omuzaki_anim::life::Life::new(omuzaki_anim_api::LifeConfig::new(7))),
+            animator: Box::new(omuzaki_anim_mock::animator::MockAnimator),
+        };
+        omuzaki_stage::perform::Performer::new(
+            parts,
+            omuzaki_anim_api::ChannelBuf::NEUTRAL,
+            omuzaki_anim_api::HumanoidPose::REST,
+        )
+    };
+    let mut live = LiveStage::new(
+        performer,
+        stage,
+        Arc::new(SourceSlot::new()),
+        Quality::live(),
+        omuzaki_render_api::budget::LIVE_GPU,
+    )
+    .expect("the loop starts");
+    let wanted = live.stage().built().face.as_ref().expect("the mock has a face").profile.expressions.clone();
+    assert_eq!(live.handle().expressions(), wanted, "installed at the start");
+    // Another character's set is installed by the app: the swap must put the face's own back.
+    live.handle()
+        .set_expressions(omuzaki_face_api::ExpressionSet::starter(), omuzaki_anim_api::ChannelBuf::NEUTRAL)
+        .unwrap();
+    assert_ne!(live.handle().expressions(), wanted);
+    let mut rng = Rng::new(571);
+    let revision = live.stage().revision();
+    let mut swapped_at = None;
+    for (frame, step) in (0..=900).enumerate() {
+        live.stage_mut().scene_mut().camera = camera_for(live.stage(), sweep(&mut rng, step));
+        // A frame per performer step: `now` is the middle of step `frame`.
+        let now = omuzaki_core::time::Seconds((frame as f64 + 0.5) / f64::from(omuzaki_stage::perform::STEP_HZ));
+        live.frame(&mut renderer, now).expect("frame");
+        if live.stage().revision() != revision {
+            swapped_at = Some(frame);
+            // The next frame refreshes the triggers' expressions (and the performer takes the request).
+            live.frame(&mut renderer, omuzaki_core::time::Seconds((frame as f64 + 1.5) / 60.0)).expect("frame");
+            break;
+        }
+    }
+    assert!(swapped_at.is_some(), "the zoom sweep switched variants");
+    assert_eq!(live.handle().expressions(), wanted, "the swap installed the character's expressions again");
+    live.into_stage().release(&mut renderer).expect("released");
+}

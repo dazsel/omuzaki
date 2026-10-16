@@ -392,16 +392,21 @@ impl Stage {
         self.owed
     }
 
-    /// Records that everything in `owed` (from [`set_scene`](Self::set_scene)) reached the renderer, and stops owing it.
+    /// Records that the work in `owed` (from an earlier [`set_scene`](Self::set_scene)) reached the renderer, and stops
+    /// owing it. Only what the current scene still owes is recorded: work for a scene that has since been replaced is
+    /// ignored, so a late commit of a ground the current scene removed cannot make the renderer's ground look right.
     /// A part of the debt that `owed` does not name stays owed.
     pub fn commit_scene(&mut self, owed: &Owed) {
-        self.applier.commit(owed);
+        let mut current = Owed::default();
         if owed.ground.is_some() && owed.ground == self.owed.ground {
+            current.ground = owed.ground;
             self.owed.ground = None;
         }
         if owed.skin_floor.is_some() && owed.skin_floor == self.owed.skin_floor {
+            current.skin_floor = owed.skin_floor;
             self.owed.skin_floor = None;
         }
+        self.applier.commit(&current);
     }
 
     /// How many times a variant swap replaced the character: changes when its face profile (and so its expressions) may

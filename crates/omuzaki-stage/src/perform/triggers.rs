@@ -60,12 +60,14 @@ pub(super) struct TriggerLayer {
     /// The shown slot was replaced while it showed: what fades out is the old binding's expression, and the slot now
     /// belongs to a new binding that has not been pressed, so it is not listed active.
     shown_replaced: bool,
+    /// The generation of the binding each slot holds, as the control side numbered it (0: none).
+    generations: [u64; MAX_TRIGGERS],
 }
 
 impl TriggerLayer {
     /// No slots, nothing pressed.
     pub(super) fn new(fades: TriggerFades) -> Self {
-        Self { triggers: Triggers::new(fades), fades, slots: [None; MAX_TRIGGERS], wanted: None, shown: None, shown_replaced: false }
+        Self { triggers: Triggers::new(fades), fades, slots: [None; MAX_TRIGGERS], wanted: None, shown: None, shown_replaced: false, generations: [0; MAX_TRIGGERS] }
     }
 
     /// Advances the fade by `dt` and writes the trigger layer.
@@ -95,6 +97,13 @@ impl TriggerLayer {
         self.wanted.into_iter().chain(shown).fold(0, |mask, index| mask | 1 << index)
     }
 
+    /// The generation of the binding in each active slot, 0 for a slot that is not active: what the handle matches
+    /// against the generation of the binding it lists.
+    pub(super) fn active_generations(&self) -> [u64; MAX_TRIGGERS] {
+        let mask = self.active_mask();
+        std::array::from_fn(|index| if mask >> index & 1 == 1 { self.generations[index] } else { 0 })
+    }
+
     /// Key down on `index`: a toggle flips it, a hold shows it. An empty slot is ignored.
     pub(super) fn press(&mut self, index: usize) {
         let Some(Some(slot)) = self.slots.get(index) else { return };
@@ -119,8 +128,16 @@ impl TriggerLayer {
     ///
     /// # Errors
     /// The slot errors of [`Triggers::set_slot`]; nothing changes then.
-    pub(super) fn set(&mut self, index: usize, slot: Option<&TriggerSlot>) -> Result<(), TriggerError> {
+    pub(super) fn set(
+        &mut self,
+        index: usize,
+        slot: Option<&TriggerSlot>,
+        generation: u64,
+    ) -> Result<(), TriggerError> {
         self.set_values(index, slot)?;
+        if let Some(entry) = self.generations.get_mut(index) {
+            *entry = generation;
+        }
         // Another binding now owns the slot: what still fades out belongs to the old one.
         if self.shown == Some(index) {
             self.shown_replaced = true;
@@ -287,6 +304,9 @@ pub(super) struct Bound {
     pub(super) missing: bool,
     /// The slot last sent to the perform thread for this key, so a rebake sends only what changed.
     pub(super) slot: Option<TriggerSlot>,
+    /// Which binding of this slot this is: a new one for every bind, kept across a rebake. The perform thread publishes
+    /// the generation it shows next to the slot's activity, so a listing never credits a new binding with the old one's.
+    pub(super) generation: u64,
 }
 
 /// The control side's table: the bindings by slot, the set they bake against and the rest face they blend onto.
@@ -295,12 +315,14 @@ pub(super) struct TriggerBook {
     expressions: ExpressionSet,
     rest: ChannelBuf,
     slots: [Option<Bound>; MAX_TRIGGERS],
+    /// The generation the last bind took.
+    generation: u64,
 }
 
 impl TriggerBook {
     /// An empty table with no expressions: every bind is missing until the set arrives.
     pub(super) fn new() -> Self {
-        Self { expressions: ExpressionSet::default(), rest: ChannelBuf::NEUTRAL, slots: std::array::from_fn(|_| None) }
+        Self { expressions: ExpressionSet::default(), rest: ChannelBuf::NEUTRAL, slots: std::array::from_fn(|_| None), generation: 0 }
     }
 
     /// The expression library the table bakes against.
@@ -334,6 +356,12 @@ impl TriggerBook {
         self.slots.iter().position(Option::is_none).map(|slot| (slot, false)).ok_or(PerformError::TooManyTriggers)
     }
 
+    /// A generation no earlier binding had, for the next bind.
+    pub(super) fn next_generation(&mut self) -> u64 {
+        self.generation += 1;
+        self.generation
+    }
+
     /// Stores `bound` in `slot` (`None` clears it). `slot` comes from [`place`](Self::place) or [`find`](Self::find),
     /// so it is always in range.
     pub(super) fn put(&mut self, slot: usize, bound: Option<Bound>) {
@@ -354,7 +382,7 @@ impl TriggerBook {
     /// returned with it. A slot that bakes to the same values is kept, because replacing a slot ends the press that
     /// shows it. `self` is left as it was, so a refused send changes nothing.
     pub(super) fn with_expressions(&self, expressions: ExpressionSet, rest: &ChannelBuf) -> (Self, Rebaked) {
-        let mut next = Self { expressions, rest: *rest, slots: self.slots.clone() };
+        let mut next = Self { expressions, rest: *rest, slots: self.slots.clone(), generation: self.generation };
         let mut changes = Rebaked::default();
         for (index, entry) in next.slots.iter_mut().enumerate() {
             if let Some(bound) = entry {
