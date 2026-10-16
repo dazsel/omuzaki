@@ -212,6 +212,9 @@ pub struct Restored {
     /// The output window's last open request as saved (`output.window`), for the app to open the window with; `None`
     /// when nothing was saved or the stored value was not usable (then a finding names the key).
     pub output_window: Option<omuzaki_doc_api::Value>,
+    /// Calibrations in the settings that could not be used, as `(character, device class)`: kept as they were and not
+    /// rewritten by a later save (see [`CalibrationStore::unreadable`]).
+    pub unreadable_calibrations: Vec<(String, String)>,
     /// What could not be applied, in words: a performer that is gone, a queue that is full.
     pub problems: Vec<String>,
 }
@@ -237,11 +240,14 @@ pub fn restore(
         note("the retarget dials", &error);
     }
 
+    // One request for the whole set: sixteen hotkeys, the dials and the calibration must fit the performer's queue
+    // together before its first step.
     let mut bound = 0;
-    for binding in settings.get::<PerformTriggers>().unwrap_or_default() {
-        match host.bind_trigger(binding) {
-            Ok(_) => bound += 1,
-            Err(error) => note("a hotkey", &error),
+    let hotkeys = settings.get::<PerformTriggers>().unwrap_or_default();
+    if !hotkeys.is_empty() {
+        match host.bind_triggers(hotkeys) {
+            Ok(outcomes) => bound = outcomes.len(),
+            Err(error) => note("the hotkeys", &error),
         }
     }
 
@@ -272,7 +278,16 @@ pub fn restore(
         Some(Source::Default) | None => None,
         Some(_) => snapshot.value(OUTPUT_WINDOW).cloned(),
     };
-    Restored { findings, missing_camera, calibration: calibrated, triggers: bound, output_window, problems }
+    let unreadable_calibrations = calibrations.unreadable();
+    Restored {
+        findings,
+        missing_camera,
+        calibration: calibrated,
+        triggers: bound,
+        output_window,
+        unreadable_calibrations,
+        problems,
+    }
 }
 
 /// Writes the live retarget dials and hotkeys to the settings: what [`restore`] reads. Call it after a `perform.*` or
@@ -281,7 +296,8 @@ pub fn restore(
 /// # Errors
 /// The first [`SettingError`] the store refuses; nothing after it is written.
 pub fn save(host: &dyn PerformHost, settings: &dyn Settings, by: &Actor) -> Result<(), SettingError> {
-    let applied = host.status().retarget;
+    // What was asked for, not only what the performer has applied: a `perform.set_retarget` that is still queued counts.
+    let applied = host.requested_retarget();
     let prefs = RetargetPrefs {
         smoothing: applied.smoothing,
         exaggeration: applied.exaggeration,
@@ -297,8 +313,11 @@ pub fn save(host: &dyn PerformHost, settings: &dyn Settings, by: &Actor) -> Resu
 /// Saves the host's calibration for `character` (under the device class it was made for), keeping the calibrations of
 /// every other character and device.
 ///
+/// Every other entry is written back as it was read, an unreadable one included ([`CalibrationStore::unreadable`]).
+///
 /// # Errors
-/// [`SettingError`] when the calibration or the character id cannot be kept, or the store refuses the write.
+/// [`SettingError`] when the calibration or the character id cannot be kept, when the stored calibrations could not be
+/// read at all (nothing is written then), or when the store refuses the write.
 pub fn save_calibration(
     host: &dyn PerformHost,
     settings: &dyn Settings,
@@ -306,6 +325,13 @@ pub fn save_calibration(
     by: &Actor,
 ) -> Result<(), SettingError> {
     let key = PerformCalibrations::META.key;
+    // A stored value that could not be read at all reads as empty: saving now would write over what is in the file.
+    if settings.findings().iter().any(|finding| finding.error.key == key) {
+        return Err(SettingError::invalid(
+            key,
+            "the saved calibrations could not be read; fix or remove them before saving another",
+        ));
+    }
     let mut store = settings.get::<PerformCalibrations>()?;
     let calibration: Calibration = host.calibration();
     store.save(character, calibration).map_err(|e| SettingError::invalid(key, e.to_string()))?;

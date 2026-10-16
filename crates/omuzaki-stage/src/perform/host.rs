@@ -40,7 +40,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::triggers::{
-    BindOutcome, Bound, MAX_KEY_CHARS, Rebaked, TriggerBinding, TriggerBook, TriggerInfo, TriggerLayer, check_key,
+    BindBatch, BindOutcome, Bound, MAX_KEY_CHARS, Rebaked, TriggerBinding, TriggerBook, TriggerInfo, TriggerLayer, check_key,
 };
 use super::{MAX_STEPS_PER_ADVANCE, PerformOutput, Performer, STEP_HZ, Tracking};
 
@@ -129,6 +129,22 @@ pub trait PerformHost: Send + Sync {
     /// [`bind_trigger`](Self::bind_trigger).
     fn bind_trigger_checked(&self, _binding: TriggerBinding) -> Result<BindOutcome, PerformError> {
         Err(PerformError::Unsupported)
+    }
+
+    /// Binds every one of `bindings` as [`bind_trigger`](Self::bind_trigger) would, in order, in one request: they take
+    /// one place in the performer's queue however many there are, so a full set of 16 can be restored before the
+    /// performer has taken a step. Either all of them bind or none does.
+    ///
+    /// # Errors
+    /// As [`bind_trigger`](Self::bind_trigger), for the first binding that fails.
+    fn bind_triggers(&self, _bindings: Vec<TriggerBinding>) -> Result<Vec<BindOutcome>, PerformError> {
+        Err(PerformError::Unsupported)
+    }
+
+    /// The retarget settings once every request made so far has run: what a caller that just changed them (and may be
+    /// about to save them) means, where [`status`](Self::status) shows only what the performer has applied.
+    fn requested_retarget(&self) -> RetargetConfig {
+        self.status().retarget
     }
 
     /// Removes the binding of `key`. Returns whether there was one.
@@ -299,6 +315,8 @@ enum Command {
     Trigger { index: usize, slot: Option<TriggerSlot>, generation: u64 },
     /// Every trigger slot whose values changed, from [`PerformHost::set_expressions`].
     Triggers(Rebaked),
+    /// A batch of binds in one request, from [`PerformHost::bind_triggers`].
+    BindBatch(BindBatch),
     /// A key press (`down`) or release on a trigger slot.
     Press { index: usize, down: bool },
 }
@@ -698,6 +716,30 @@ impl PerformHost for PerformHandle {
         check_key(&binding.key)?;
         self.bind_locked(binding, true)
     }
+    fn bind_triggers(&self, bindings: Vec<TriggerBinding>) -> Result<Vec<BindOutcome>, PerformError> {
+        let mut book = lock(&self.shared.triggers);
+        // Worked out on a copy, so a refusal part way changes nothing.
+        let mut next = book.clone();
+        let mut batch = BindBatch::new();
+        let mut outcomes = Vec::with_capacity(bindings.len());
+        for binding in bindings {
+            check_key(&binding.key)?;
+            let (slot, replaced) = next.place(&binding.key)?;
+            let (shown, missing) = next.bake(&binding);
+            let generation = next.next_generation();
+            batch.set(slot, shown, generation);
+            next.put(slot, Some(Bound { binding, missing, slot: shown, generation }));
+            outcomes.push(BindOutcome { slot, replaced });
+        }
+        self.send(Command::BindBatch(batch))?;
+        *book = next;
+        Ok(outcomes)
+    }
+
+    fn requested_retarget(&self) -> RetargetConfig {
+        self.book().requested.clone()
+    }
+
     fn unbind_trigger(&self, key: &str) -> Result<bool, PerformError> {
         check_key(key)?;
         let mut book = lock(&self.shared.triggers);
@@ -913,6 +955,11 @@ impl PerformControl {
             Command::Trigger { index, slot, generation } => self.set_trigger(index, slot.as_ref(), generation),
             Command::Triggers(slots) => {
                 self.triggers.rebake(&slots);
+            }
+            Command::BindBatch(batch) => {
+                for (index, slot, generation) in batch.binds() {
+                    self.set_trigger(index, slot, generation);
+                }
             }
             Command::Press { index, down } => {
                 if down {

@@ -340,3 +340,100 @@ fn the_output_window_settings_come_back_exactly_and_a_bad_one_names_its_key() {
     assert_eq!(named, ["output.window"], "{restored:?}");
     assert_eq!(restored.output_window, None, "nothing usable to open the window with");
 }
+
+#[test]
+fn a_full_set_of_hotkeys_the_dials_and_the_calibration_all_restore_before_the_first_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().to_path_buf();
+    let names = ["happy", "angry", "surprised", "sad"];
+    let saved = {
+        let mut app = App::start(&path, &["a"]);
+        for i in 0..MAX_TRIGGERS {
+            let mode = if i % 2 == 0 { "toggle" } else { "hold" };
+            app.op("trigger.bind", json!({ "key": format!("F{}", i + 1), "expression": names[i % 4], "mode": mode }))
+                .unwrap();
+            app.steps(1);
+        }
+        app.op("perform.set_retarget", json!({ "smoothing": 0.65, "head_gain": 1.5 })).unwrap();
+        app.steps(2);
+        app.handle.set_calibration(calibration_of(0.3)).unwrap();
+        app.steps(2);
+        save(&app.handle, &*app.store, &App::person()).unwrap();
+        save_calibration(&app.handle, &*app.store, CHARACTER, &App::person()).unwrap();
+        let view = app.view();
+        app.quit();
+        view
+    };
+    assert_eq!(saved.triggers.len(), MAX_TRIGGERS);
+
+    // A new run restores with no performer step in between: 16 hotkeys, the dials and the calibration, one queue.
+    let mut app = App::start(&path, &["a"]);
+    let restored = restore(&app.handle, &*app.input, &*app.store, CHARACTER, DeviceProfile::Webcam);
+    assert!(restored.problems.is_empty(), "{:?}", restored.problems);
+    assert_eq!(restored.triggers, MAX_TRIGGERS);
+    assert!(restored.calibration);
+    app.steps(8);
+    assert_eq!(app.view(), saved, "everything was applied, none of it dropped by a full queue");
+}
+
+#[test]
+fn saving_right_after_an_op_saves_what_the_op_asked_for() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().to_path_buf();
+    let app = App::start(&path, &["a"]);
+    // The op only queues its change; no performer step has run when `save` is called.
+    app.op("perform.set_retarget", json!({ "smoothing": 0.9, "mirror": false })).unwrap();
+    assert_ne!(app.handle.status().retarget.smoothing.to_bits(), 0.9_f32.to_bits(), "not applied yet");
+    save(&app.handle, &*app.store, &App::person()).unwrap();
+    let saved = app.store.get::<PerformRetarget>().unwrap();
+    assert_eq!(saved.smoothing.to_bits(), 0.9_f32.to_bits());
+    assert!(!saved.mirror);
+}
+
+#[test]
+fn one_corrupt_calibration_neither_hides_the_others_nor_is_written_over() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().to_path_buf();
+    {
+        let mut app = App::start(&path, &["a"]);
+        app.handle.set_calibration(calibration_of(0.3)).unwrap();
+        app.steps(2);
+        save_calibration(&app.handle, &*app.store, CHARACTER, &App::person()).unwrap();
+        app.quit();
+    }
+    // A second character's entry is corrupt beside the good one (a hand edit, or a newer build's shape).
+    let file = path.join("data").join("machine.toml");
+    {
+        let app = App::start(&path, &["a"]);
+        let mut value = serde_json::to_value(app.store.get::<PerformCalibrations>().unwrap()).unwrap();
+        value["mira"] = json!({ "webcam": { "profile": "webcam", "ranges": "garbage" } });
+        app.store.set_raw("perform.calibrations", value, Layer::Base, Mode::Apply, &App::person()).unwrap();
+        app.quit();
+    }
+
+    let mut app = App::start(&path, &["a"]);
+    let restored = app.restore(CHARACTER);
+    assert!(restored.calibration, "the good calibration still comes back: {restored:?}");
+    assert_eq!(restored.unreadable_calibrations, [("mira".to_owned(), "webcam".to_owned())]);
+    // Saving a third character's calibration keeps both: the good one and the corrupt one as it was.
+    save_calibration(&app.handle, &*app.store, "noor", &App::person()).unwrap();
+    app.quit();
+    let written = std::fs::read_to_string(&file).unwrap();
+    assert!(written.contains("garbage"), "the unreadable entry was not rewritten:\n{written}");
+    let again = App::start(&path, &["a"]);
+    let store = again.store.get::<PerformCalibrations>().unwrap();
+    assert!(store.for_character(CHARACTER, DeviceProfile::Webcam).is_some());
+    assert!(store.for_character("noor", DeviceProfile::Webcam).is_some());
+    assert_eq!(store.unreadable().len(), 1);
+}
+
+/// A calibration every range of which depends on `seed`.
+fn calibration_of(seed: f32) -> Calibration {
+    use omuzaki_anim_api::{Channel, ChannelRange};
+    let mut calibration = Calibration::identity(DeviceProfile::Webcam);
+    for (i, info) in Channel::arkit().iter().enumerate() {
+        let lo = seed * 0.1 + i as f32 * 0.001;
+        calibration.set_range(info.channel, ChannelRange { lo, hi: lo + 0.5 + seed });
+    }
+    calibration
+}
