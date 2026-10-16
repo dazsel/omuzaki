@@ -164,7 +164,6 @@ const STEPS_OVERHEAD: u64 = 12 + 2 + 1 + 40;
 /// The digest the summary turn is given: what is pending, the plan, the step labels, and as much of the person's and
 /// the model's text as fits, all under 40 % of the window together, newest first. Images and tool results are left out.
 /// Every section is bounded, so a long conversation's labels cannot push the summary request past the window.
-
 pub(crate) fn digest(entries: &[Entry], plan: Option<&str>, pending: Option<&str>, window: u64) -> String {
     let limit = (window * DIGEST_PERCENT / 100).saturating_sub(u64::try_from(SUMMARY_ASK.len()).unwrap_or(0) + 64);
     let mut head = String::new();
