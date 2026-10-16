@@ -25,7 +25,7 @@ Hosted run. When no author can build, a maintainer dispatches ci.yml on the PR b
 re-runs this job. `check` then also accepts a successful hosted run, found through the API, that is ALL of: event
 `workflow_dispatch`; workflow path `.github/workflows/ci.yml`; `head_sha` equal to the pull request head; conclusion
 success with every `test (...)` job success (skipped or cancelled does not count); and the pull request changes nothing
-under `.github/`, `tools/ci/`, `xtask/` or `.config/`, because a dispatched run executes the branch's own workflow, CI
+under `.github/`, `tools/ci/`, `xtask/`, `.config/`, `.cargo/` or `rust-toolchain*`, because a dispatched run executes the branch's own workflow, CI
 scripts and planner, so a PR that edits them could vouch for itself. Such a PR needs a human `Self-gate:` line.
 Needs `actions: read` besides `pull-requests: read`.
 """
@@ -103,9 +103,10 @@ def attested_sha(comments, allowed):
 
 CI_WORKFLOW = ".github/workflows/ci.yml"
 # What the dispatched run executes from the PR branch to decide its own verdict: the workflow files and the actions they
-# use, the scripts that plan, aggregate and attest, xtask (which computes the affected set) and the nextest profile. A PR
+# use, the scripts that plan, aggregate and attest, xtask (which computes the affected set), the nextest profile and
+# Cargo's own configuration (`.cargo/` can set a runner for `cargo run -p xtask`) and toolchain pin. A PR
 # touching any of them could make its own hosted run green, so it needs a human `Self-gate:` line.
-PROTECTED = (".github/", "tools/ci/", "xtask/", ".config/")
+PROTECTED = (".github/", "tools/ci/", "xtask/", ".config/", ".cargo/", "rust-toolchain")
 
 
 def workflow_file(run):
@@ -153,7 +154,7 @@ def verdict(comments, heads, allowed, runs=(), files=()):
         f"self-gate: no trusted `Self-gate: pass at <sha7>` line names the head {short} ({seen}). Run "
         f"`cargo xtask check --affected` on this head, post `Self-gate: pass at {short} (cargo xtask check --affected, "
         f"<n> tests)` on its own line in a comment, then re-run this job. Or, if the PR changes nothing under "
-        f".github/, tools/ci/, xtask/ or .config/, dispatch ci.yml with hosted_tests=true on the branch and re-run this job."
+        f".github/, tools/ci/, xtask/, .config/, .cargo/ or rust-toolchain, dispatch ci.yml with hosted_tests=true on the branch and re-run this job."
     )
 
 
