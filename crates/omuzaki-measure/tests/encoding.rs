@@ -212,3 +212,34 @@ fn a_jpeg_whose_profile_chunks_disagree_is_refused_not_read_as_untagged() {
     let message = refusal(&jpeg);
     assert!(message.contains("embedded colour profile is incomplete"), "{message}");
 }
+
+#[test]
+fn a_png_cicp_chunk_outranks_every_other_colour_chunk() {
+    let srgb_cicp = chunk(*b"cICP", &[1, 13, 0, 1]);
+    let display_p3 = chunk(*b"cICP", &[12, 13, 0, 1]);
+    let bt2020_pq = chunk(*b"cICP", &[9, 16, 0, 1]);
+    let srgb_chunk = chunk(*b"sRGB", &[0]);
+    let linear = chunk(*b"gAMA", &100_000u32.to_be_bytes());
+    // Display P3 and BT.2020 PQ are refused, naming the code points.
+    let p3 = with_chunks(&png_2x2(), &[display_p3.clone()]);
+    assert_eq!(
+        refusal(&p3),
+        "The image is not sRGB (a cICP colour declaration (primaries 12, transfer 13, matrix 0)). Convert it to sRGB and try again."
+    );
+    assert!(refusal(&with_chunks(&png_2x2(), &[bt2020_pq])).contains("primaries 9, transfer 16"));
+    // cICP wins over a lower-precedence sRGB chunk that would have accepted the file...
+    assert!(refusal(&with_chunks(&png_2x2(), &[display_p3, srgb_chunk])).contains("cICP"));
+    // ...and an sRGB cICP wins over a linear gamma that would have refused it.
+    let accepted = with_chunks(&png_2x2(), &[srgb_cicp.clone(), linear]);
+    assert!(decode(&accepted, ContentHash::of(&accepted), FIELD).is_ok());
+    // Over an embedded Display P3 profile, too.
+    let profile = icc_profile([0.5151, 0.2412, -0.0011], [0.2919, 0.6922, 0.0419], [0.1572, 0.0666, 0.7841]);
+    let mut tagged = Vec::new();
+    let mut encoder = PngEncoder::new(&mut tagged);
+    encoder.set_icc_profile(profile).unwrap();
+    let pixels = [9_u8, 8, 7, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+    encoder.write_image(&pixels, 2, 2, ExtendedColorType::Rgb8).unwrap();
+    assert!(refusal(&tagged).contains("embedded colour profile"), "the profile alone is refused");
+    let png = with_chunks(&tagged, &[srgb_cicp]);
+    assert!(decode(&png, ContentHash::of(&png), FIELD).is_ok());
+}

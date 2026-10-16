@@ -98,6 +98,9 @@ pub(crate) struct PngColour {
     pub(crate) srgb: bool,
     /// Whether the file has an `iCCP` chunk, an embedded profile.
     pub(crate) iccp: bool,
+    /// The `cICP` chunk's four code points (colour primaries, transfer function, matrix coefficients, full-range flag,
+    /// ITU-T H.273), when present. The PNG specification gives it precedence over every other colour chunk.
+    pub(crate) cicp: Option<[u8; 4]>,
     /// The `gAMA` chunk's gamma times 100 000 (sRGB is 45 455), when present.
     pub(crate) gamma: Option<u32>,
     /// The `cHRM` chunk's eight values (white x and y, red, green, blue), times 100 000, when present.
@@ -114,6 +117,7 @@ pub(crate) fn png_colour(bytes: &[u8]) -> PngColour {
             b"IDAT" | b"IEND" => break,
             b"sRGB" => colour.srgb = true,
             b"iCCP" => colour.iccp = true,
+            b"cICP" if data.len() == 4 => colour.cicp = data.try_into().ok(),
             b"gAMA" if data.len() == 4 => colour.gamma = be_u32(data, 0),
             b"cHRM" if data.len() == 32 => {
                 colour.chromaticities = Some(std::array::from_fn(|i| be_u32(data, 4 * i).unwrap_or(0)));
@@ -124,6 +128,9 @@ pub(crate) fn png_colour(bytes: &[u8]) -> PngColour {
     }
     colour
 }
+
+/// The `cICP` code points that mean sRGB: BT.709 primaries, the sRGB transfer function, RGB (identity matrix), full range.
+const CICP_SRGB: [u8; 4] = [1, 13, 0, 1];
 
 /// The sRGB gamma, times 100 000, and how far a file's gamma may stray from it: the two agree to within 0.005.
 pub(crate) const SRGB_GAMMA: u32 = 45_455;
@@ -137,6 +144,14 @@ const CHROMATICITY_TOLERANCE: u32 = 100;
 /// untagged, and is read as sRGB, as the web and most image tools read it. An embedded profile decides on its own; a PNG
 /// with an `sRGB` chunk is sRGB whatever its gamma says, as the PNG specification has it; a JPEG in CMYK is not read.
 pub(crate) fn non_srgb(bytes: &[u8], format: ImageFormat, icc: Option<&[u8]>) -> Option<String> {
+    // A PNG's `cICP` chunk outranks `iCCP`, `sRGB`, `gAMA` and `cHRM` (PNG colour chunk precedence), so it decides first.
+    if format == ImageFormat::Png
+        && let Some([primaries, transfer, matrix, full_range]) = png_colour(bytes).cicp
+    {
+        return (![primaries, transfer, matrix, full_range].eq(&CICP_SRGB)).then(|| {
+            format!("a cICP colour declaration (primaries {primaries}, transfer {transfer}, matrix {matrix})")
+        });
+    }
     if let Some(profile) = icc {
         return (!icc::is_srgb(profile)).then(|| "an embedded colour profile that is not sRGB".to_owned());
     }
