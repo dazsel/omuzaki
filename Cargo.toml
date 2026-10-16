@@ -36,7 +36,8 @@ fluent-langneg = "0.14" # locale negotiation (Apache-2.0), omuzaki-l10n-api
 fluent-syntax = "0.12" # Fluent parser for the l10n checks (Apache-2.0 OR MIT), omuzaki-l10n-api
 futures-util = { version = "0.3", default-features = false, features = ["std"] }   # drives the response body stream (MIT OR Apache-2.0), omuzaki-llm; already in the lock
 getrandom = "0.4"
-intl-memoizer = "0.5"   # named for the exact-integer FluentType in omuzaki-l10n-api (Apache-2.0 OR MIT; already a fluent-bundle dependency)
+keyring = "4.2"   # OS keychain: Windows Credential Manager, macOS Keychain, Linux Secret Service (MIT OR Apache-2.0), omuzaki-secrets
+intl-memoizer ="0.5"   # named for the exact-integer FluentType in omuzaki-l10n-api (Apache-2.0 OR MIT; already a fluent-bundle dependency)
 harfrust = "0.14"   # OpenType shaping (MIT): Arabic joining, Devanagari conjuncts, Thai marks in the sheet text fallback, omuzaki-stage
 glam = { version = "0.34", features = ["serde", "bytemuck"] }
 hound = "3.5"   # WAV reading in the speech host benchmark (Apache-2.0), omuzaki-audio
@@ -81,6 +82,7 @@ wgpu = "30"
 windows = { version = "0.62", features = ["Win32_Media_MediaFoundation", "Win32_System_Com", "Win32_Foundation", "Win32_Security", "Win32_System_Threading"] }   # Media Foundation and COM (MIT OR Apache-2.0), omuzaki-camera-mf
 windows-core = "0.62"   # the `implement` macro for the camera's COM callback (MIT OR Apache-2.0), omuzaki-camera-mf
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem"] } # the Windows side of the same: reparse-point-aware opens, final-path checks
+zeroize = "1.9"   # zeroes a secret value on drop (Apache-2.0 OR MIT; already in the lock), omuzaki-secrets-api
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] } # unpacks the ONNX Runtime Windows.zip archives (MIT), omuzaki-ai-native
 vello = { version = "=0.11.0", default-features = false, features = ["wgpu"] }   # GPU vector face painter (Apache-2.0 OR MIT), omuzaki-face's GPU rasteriser (#1433)
 whisper-rs = "0.16"   # whisper.cpp built from source (Unlicense crate, MIT library); omuzaki-audio
