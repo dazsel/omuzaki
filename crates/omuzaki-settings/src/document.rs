@@ -265,7 +265,8 @@ fn splice(text: &str, segments: &[&str], new: Option<&toml_edit::Value>) -> Resu
             (true, _) | (false, None) => Ok(text.to_owned()),
             (false, Some(Item::Value(old))) => remove_line(text, table, leaf, old)
                 .ok_or_else(|| format!("`{leaf}` shares its line with other text, so it cannot be removed in place")),
-            (false, Some(_)) => Err(format!("`{leaf}` is a table, not a value")),
+            (false, Some(Item::Table(t))) if t.is_dotted() => Err(dotted_table(leaf)),
+            (false, Some(_)) => Ok(remove_sections(text, &doc, segments)),
         };
     };
     let repr = new.to_string();
@@ -273,7 +274,17 @@ fn splice(text: &str, segments: &[&str], new: Option<&toml_edit::Value>) -> Resu
     if !missing {
         match table.get(leaf) {
             Some(Item::Value(old)) => return replace_span(text, old, repr),
-            Some(_) => return Err(format!("`{leaf}` is a table, not a value")),
+            Some(Item::Table(t)) if t.is_dotted() => return Err(dotted_table(leaf)),
+            Some(_) => {
+                // A setting stored as `[a.b]` tables or `[[a.b]]` entries is replaced whole: those sections go, then
+                // the new value is written where a new key would go.
+                let cleared = remove_sections(text, &doc, segments);
+                return if cleared == text {
+                    Err(format!("`{leaf}` cannot be replaced in place"))
+                } else {
+                    splice(&cleared, segments, Some(new))
+                };
+            }
             None => {}
         }
     }
@@ -282,16 +293,89 @@ fn splice(text: &str, segments: &[&str], new: Option<&toml_edit::Value>) -> Resu
         return insert_after(text, last_value(table), 0, &format!("{} = {repr}", path.join(".")))
             .ok_or_else(|| "a dotted key without a value".to_owned());
     }
-    if prefix.is_empty() {
-        return Err(format!("`{leaf}` has no area to put it under"));
-    }
     let line = format!("{} = {repr}", Key::new(*leaf).display_repr());
+    if prefix.is_empty() {
+        // A key of the top level goes after the last top-level value, or before the first header.
+        if let Some(last) = last_value(table) {
+            return insert_after(text, Some(last), 0, &line).ok_or_else(|| "no place for the key".to_owned());
+        }
+        let mut headers = Vec::new();
+        collect_headers(doc.as_item(), &mut Vec::new(), &mut headers);
+        let at = headers.iter().map(|(_, start)| line_start(text, *start)).min().unwrap_or(text.len());
+        let eol = eol_of(text);
+        let gap = if at == text.len() && !text.is_empty() && !text.ends_with('\n') { eol } else { "" };
+        return Ok(format!("{}{gap}{line}{eol}{}", &text[..at], &text[at..]));
+    }
     if !missing && !table.is_implicit() {
         let header = table.span().ok_or_else(|| "a table without a header".to_owned())?;
         insert_after(text, last_value(table), header.end, &line).ok_or_else(|| "no place for the key".to_owned())
     } else {
         let header: Vec<_> = prefix.iter().map(|s| Key::new(*s).display_repr().into_owned()).collect();
         Ok(append_table(text, &header.join("."), &line))
+    }
+}
+
+fn dotted_table(leaf: &str) -> String {
+    format!("`{leaf}` is written as dotted keys, which cannot be replaced as one value in place")
+}
+
+/// Deletes every `[header]` / `[[header]]` section at or under `path` (each runs to the next header, less the comment
+/// lines that sit directly above that header), so a setting stored as tables can be removed or replaced whole.
+fn remove_sections(text: &str, doc: &Document<&str>, path: &[&str]) -> String {
+    let mut headers = Vec::new();
+    collect_headers(doc.as_item(), &mut Vec::new(), &mut headers);
+    headers.sort_by_key(|(_, start)| *start);
+    let (mut out, mut cursor) = (String::new(), 0);
+    for (i, (header_path, start)) in headers.iter().enumerate() {
+        if header_path.len() < path.len() || !header_path.iter().zip(path).all(|(a, b)| a == b) {
+            continue;
+        }
+        let from = line_start(text, *start);
+        let next = headers.get(i + 1).map_or(text.len(), |(_, next)| comments_above(text, line_start(text, *next)));
+        out.push_str(&text[cursor.min(from)..from]);
+        cursor = next.max(line_end(text, *start));
+    }
+    out.push_str(&text[cursor.min(text.len())..]);
+    out
+}
+
+/// Start of the run of `#` comment lines directly above the line at `pos` (no blank line between), or `pos`.
+fn comments_above(text: &str, mut pos: usize) -> usize {
+    while pos > 0 {
+        let before = line_start(text, pos - 1);
+        if !text[before..pos].trim_start().starts_with('#') {
+            break;
+        }
+        pos = before;
+    }
+    pos
+}
+
+/// The path and header offset of every `[table]` and `[[array of tables]]` entry in the document.
+fn collect_headers(item: &Item, path: &mut Vec<String>, out: &mut Vec<(Vec<String>, usize)>) {
+    let children = |table: &Table, path: &mut Vec<String>, out: &mut Vec<(Vec<String>, usize)>| {
+        for (key, child) in table {
+            path.push(key.to_owned());
+            collect_headers(child, path, out);
+            path.pop();
+        }
+    };
+    match item {
+        Item::Table(table) if !table.is_dotted() => {
+            if let (false, Some(span)) = (path.is_empty(), table.span()) {
+                out.push((path.clone(), span.start));
+            }
+            children(table, path, out);
+        }
+        Item::ArrayOfTables(array) => {
+            for table in array {
+                if let Some(span) = table.span() {
+                    out.push((path.clone(), span.start));
+                }
+                children(table, path, out);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -635,6 +719,34 @@ mod tests {
         assert_eq!(run(drop_edit("audio.bindings")), text.replace("bindings = { voice = \"x\" }, ", ""));
         let empty = apply(Some("audio = {}\n"), &[set_edit("audio.k", json!(1))]).unwrap();
         assert_eq!(empty, "audio = { k = 1 }\n");
+    }
+
+    #[test]
+    fn a_setting_stored_as_tables_is_replaced_or_removed_whole_with_the_rest_untouched() {
+        for eol in ["\n", "\r\n"] {
+            let text = "# top\n[audio]\ngain = 1\n\n# the bindings\n[audio.bindings] # b\nvoice = \"x\"\n\n\
+                        [audio.bindings.deep]\nk = 1\n\n# next section\n[other]\nz = 2\n"
+                .replace('\n', eol);
+            let replaced = apply(Some(&text), &[set_edit("audio.bindings", json!({ "voice": "y" }))]).unwrap();
+            let expected = "# top\n[audio]\ngain = 1\nbindings = { voice = \"y\" }\n\n# the bindings\n# next section\n[other]\nz = 2\n"
+                .replace('\n', eol);
+            assert_eq!(replaced, expected, "{eol:?}");
+            let removed = apply(Some(&text), &[drop_edit("audio.bindings")]).unwrap();
+            let expected =
+                "# top\n[audio]\ngain = 1\n\n# the bindings\n# next section\n[other]\nz = 2\n".replace('\n', eol);
+            assert_eq!(removed, expected, "{eol:?}");
+        }
+    }
+
+    #[test]
+    fn a_setting_stored_as_an_array_of_tables_is_replaced_or_removed_whole() {
+        let text = "a = 1\n[[list]]\nx = 1\n[[list]]\nx = 2\n[list.sub]\ny = 1\n[keep]\nk = 1\n";
+        let replaced = apply(Some(text), &[set_edit("list", json!([{ "x": 9 }]))]).unwrap();
+        assert_eq!(replaced, "a = 1\nlist = [{ x = 9 }]\n[keep]\nk = 1\n");
+        let removed = apply(Some(text), &[drop_edit("list")]).unwrap();
+        assert_eq!(removed, "a = 1\n[keep]\nk = 1\n");
+        let sub = apply(Some(text), &[set_edit("list.x", json!(1))]);
+        assert!(matches!(sub, Err(ApplyError::Conflict(_))), "a key under an array of tables is refused: {sub:?}");
     }
 
     #[test]

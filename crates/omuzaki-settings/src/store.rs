@@ -19,7 +19,7 @@ use omuzaki_settings_api::session::SessionStore;
 use serde_json::Value;
 use toml_edit::DocumentMut;
 
-use crate::backend::{Backend, Edited, FileBackend, Updated};
+use crate::backend::{Backend, Edited, FileBackend, Quarantined, Updated};
 use crate::document::{self, ApplyError, Edit};
 use crate::ephemeral::Ephemeral;
 use crate::locked;
@@ -32,6 +32,9 @@ pub const DEBOUNCE: Duration = Duration::from_millis(250);
 pub const MAX_DELAY: Duration = Duration::from_secs(2);
 
 const SCOPES: [SettingScope; 2] = [SettingScope::User, SettingScope::Machine];
+
+/// How often a file that keeps changing under a quarantine is read again before it is left in place.
+const QUARANTINE_ATTEMPTS: u32 = 3;
 
 /// A registered key with its default, serialised once.
 struct Key {
@@ -248,34 +251,47 @@ impl Inner {
                 }
             };
             match document::parse(&text) {
-                Ok(doc) => {
-                    for key in self.keys.iter().filter(|k| k.reg.meta.scope == scope) {
-                        load_key(key, &doc, file, &mut out);
-                    }
-                }
+                Ok(doc) => self.load_scope(scope, &doc, &mut out),
                 Err(error) => broken.push((scope, text, error)),
             }
         }
         for (scope, text, error) in broken {
-            out.findings.push(self.broken_file(scope, &text, &error, apply && !unread));
+            self.recover(scope, text, error, apply && !unread, &mut out);
         }
         Ok(out)
     }
 
-    /// The finding for a file that does not parse; `apply` moves it aside first, if it is still the text that was read.
-    fn broken_file(&self, scope: SettingScope, text: &str, parse_error: &str, apply: bool) -> SettingFinding {
+    fn load_scope(&self, scope: SettingScope, doc: &DocumentMut, out: &mut Loaded) {
         let file = self.backend.file_name(scope);
-        let moved = if apply {
-            match self.backend.quarantine(scope, text) {
-                Ok(Some(name)) => format!("moved to {name}"),
-                Ok(None) => "changed on disk since it was read, so left in place".to_owned(),
-                Err(e) => format!("could not be moved aside: {e}"),
-            }
-        } else {
-            "left in place".to_owned()
+        for key in self.keys.iter().filter(|k| k.reg.meta.scope == scope) {
+            load_key(key, doc, file, out);
+        }
+    }
+
+    /// Deals with a file that did not parse: with `apply`, moves it aside, but only while it is still the text that
+    /// failed. If another process replaced it first, the new text is read instead (and, if broken too, tried again).
+    fn recover(&self, scope: SettingScope, mut text: String, mut error: String, apply: bool, out: &mut Loaded) {
+        let file = self.backend.file_name(scope);
+        let mut finding = |what: &str, error: &str| {
+            let reason = format!("{file} does not parse ({error}); using the defaults; {what}");
+            let error = SettingError::new("", SettingErrorKind::Storage { reason });
+            out.findings.push(SettingFinding::new(error, Value::Null, file));
         };
-        let reason = format!("{file} does not parse ({parse_error}); using the defaults; {moved}");
-        SettingFinding::new(SettingError::new("", SettingErrorKind::Storage { reason }), Value::Null, file)
+        if !apply {
+            return finding("left in place", &error);
+        }
+        for _ in 0..QUARANTINE_ATTEMPTS {
+            match self.backend.quarantine(scope, &text) {
+                Ok(Quarantined::Moved(name)) => return finding(&format!("moved to {name}"), &error),
+                Ok(Quarantined::Changed(None)) => return,
+                Ok(Quarantined::Changed(Some(fresh))) => match document::parse(&fresh) {
+                    Ok(doc) => return self.load_scope(scope, &doc, out),
+                    Err(e) => (text, error) = (fresh, e),
+                },
+                Err(e) => return finding(&format!("could not be moved aside: {e}"), &error),
+            }
+        }
+        finding("kept changing, so left in place", &error);
     }
 
     fn effective(st: &State, key: &Key) -> (Value, Source) {

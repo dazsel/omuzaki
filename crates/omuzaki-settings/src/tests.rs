@@ -754,3 +754,46 @@ fn a_quarantine_followed_by_a_failed_write_is_reported_as_such() {
     store.flush().unwrap();
     assert!(rig.user_text().contains("scale = 120"), "the pending change landed once the folder was gone");
 }
+
+#[test]
+fn a_file_repaired_by_another_process_before_the_quarantine_is_read_again_not_defaulted() {
+    let rig = Rig::new();
+    rig.write_user("[ui\nscale = ");
+    let mut backend = FileBackend::new(rig.paths.clone());
+    let user_file = rig.user_file();
+    backend.before_quarantine = Some(Box::new(move || fs::write(&user_file, "[ui]\nscale = 130\n").unwrap()));
+    let store = Store::with_backend(Box::new(backend), registrations());
+    assert_eq!(get::<Scale>(&store), 130, "the repaired text is what loads");
+    assert_eq!(store.findings(), Vec::new());
+    assert!(!Rig::names_in(rig.paths.config()).iter().any(|n| n.contains(".broken-")));
+    assert_eq!(rig.user_text(), "[ui]\nscale = 130\n");
+}
+
+#[test]
+fn a_file_replaced_by_another_broken_text_is_moved_and_one_that_vanished_is_not_reported() {
+    let rig = Rig::new();
+    rig.write_user("[ui\nscale = ");
+    let mut backend = FileBackend::new(rig.paths.clone());
+    let user_file = rig.user_file();
+    let first = AtomicBool::new(true);
+    backend.before_quarantine = Some(Box::new(move || {
+        if first.swap(false, Ordering::SeqCst) {
+            fs::write(&user_file, "[other\n").unwrap();
+        }
+    }));
+    let store = Store::with_backend(Box::new(backend), registrations());
+    assert_eq!(get::<Scale>(&store), 100);
+    let names = Rig::names_in(rig.paths.config());
+    let broken: Vec<_> = names.iter().filter(|n| n.contains(".broken-")).collect();
+    assert_eq!(broken.len(), 1, "{names:?}");
+    assert_eq!(fs::read_to_string(rig.paths.config().join(broken[0])).unwrap(), "[other\n", "the file as found");
+    assert_eq!(store.findings().len(), 1);
+
+    let rig = Rig::new();
+    rig.write_user("[ui\nscale = ");
+    let mut backend = FileBackend::new(rig.paths.clone());
+    let user_file = rig.user_file();
+    backend.before_quarantine = Some(Box::new(move || fs::remove_file(&user_file).unwrap()));
+    let store = Store::with_backend(Box::new(backend), registrations());
+    assert_eq!((get::<Scale>(&store), store.findings()), (100, Vec::new()));
+}

@@ -37,6 +37,15 @@ pub(crate) enum Edited {
     Unparsable,
 }
 
+/// What [`quarantine`](Backend::quarantine) found.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Quarantined {
+    /// The file was renamed to this name.
+    Moved(String),
+    /// The file no longer held the text the caller read: it is as found (`None` when it is gone), and was not moved.
+    Changed(Option<String>),
+}
+
 /// How an [`update`](Backend::update) went.
 pub(crate) struct Updated {
     /// The name the file was moved to because it did not parse, even if the write after it then failed.
@@ -50,9 +59,9 @@ pub(crate) trait Backend: Send + Sync {
     /// The file's text, or `None` when it does not exist.
     fn read(&self, scope: SettingScope) -> Result<Option<String>, SettingError>;
 
-    /// Under the file's lock: renames the file to `<name>.broken-<utc>` and returns that name, but only if it still
-    /// holds `expected`. `None` means another process replaced it meanwhile, and nothing was moved.
-    fn quarantine(&self, scope: SettingScope, expected: &str) -> Result<Option<String>, SettingError>;
+    /// Under the file's lock: renames the file to `<name>.broken-<utc>`, but only if it still holds `expected`;
+    /// otherwise nothing is moved and the text found now is returned.
+    fn quarantine(&self, scope: SettingScope, expected: &str) -> Result<Quarantined, SettingError>;
 
     /// Under the file's lock: re-reads it, shows the text to `edit` and writes what it returns. `backup` is the app
     /// version for the `.bak-<version>` copy to make first, if the file exists and has none yet.
@@ -77,6 +86,9 @@ pub(crate) struct FileBackend {
     /// Runs under the lock right after a broken file was moved aside, before the replacement is written.
     #[cfg(test)]
     pub(crate) after_move: Option<Box<dyn Fn() + Send + Sync>>,
+    /// Runs before a quarantine takes the lock: a test swaps the file here, as another process would.
+    #[cfg(test)]
+    pub(crate) before_quarantine: Option<Box<dyn Fn() + Send + Sync>>,
 }
 
 impl FileBackend {
@@ -88,6 +100,8 @@ impl FileBackend {
             after_read: None,
             #[cfg(test)]
             after_move: None,
+            #[cfg(test)]
+            before_quarantine: None,
         }
     }
 
@@ -215,13 +229,17 @@ impl Backend for FileBackend {
         }
     }
 
-    fn quarantine(&self, scope: SettingScope, expected: &str) -> Result<Option<String>, SettingError> {
+    fn quarantine(&self, scope: SettingScope, expected: &str) -> Result<Quarantined, SettingError> {
+        #[cfg(test)]
+        if let Some(hook) = &self.before_quarantine {
+            hook();
+        }
         let path = self.path(scope);
         let _lock = self.lock(&path)?;
-        if self.read(scope)?.as_deref() != Some(expected) {
-            return Ok(None);
+        match self.read(scope)? {
+            Some(text) if text == expected => self.move_aside(scope).map(Quarantined::Moved),
+            found => Ok(Quarantined::Changed(found)),
         }
-        self.move_aside(scope).map(Some)
     }
 
     fn update(
@@ -352,10 +370,15 @@ mod tests {
         fs::write(&file, "[ui").unwrap();
         // Another process repaired the file after this one read the broken text.
         fs::write(&file, "ok = 1\n").unwrap();
-        assert_eq!(backend.quarantine(SettingScope::User, "[ui").unwrap(), None);
+        let found = backend.quarantine(SettingScope::User, "[ui").unwrap();
+        assert_eq!(found, Quarantined::Changed(Some("ok = 1\n".to_owned())), "the text found now comes back");
         assert_eq!(fs::read_to_string(&file).unwrap(), "ok = 1\n");
-        let name = backend.quarantine(SettingScope::User, "ok = 1\n").unwrap().unwrap();
+        let Quarantined::Moved(name) = backend.quarantine(SettingScope::User, "ok = 1\n").unwrap() else {
+            panic!("the unchanged file is moved");
+        };
         assert!(name.starts_with("settings.toml.broken-") && !file.exists());
+        fs::remove_file(dir.path().join(&name)).unwrap();
+        assert_eq!(backend.quarantine(SettingScope::User, "x").unwrap(), Quarantined::Changed(None));
     }
 
     #[test]
