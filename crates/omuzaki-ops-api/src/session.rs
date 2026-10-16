@@ -202,7 +202,8 @@ pub struct SessionInfo {
     pub parent: Option<SessionId>,
     /// The role file's name, for sub-agents.
     pub role: Option<String>,
-    /// The effective grants: the ceiling intersected with the principal's grants.
+    /// The effective grants: the ceiling intersected with the principal's grants and, for a sub-agent, with the
+    /// effective grants of each ancestor (narrowing a parent narrows its sub-agents).
     pub grants: Grants,
     /// Document paths the session claims (see [`fence`](crate::fence)). Empty claims nothing and is not fenced.
     pub fence: Vec<DocPath>,
@@ -230,7 +231,8 @@ pub struct SessionInfo {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "change", rename_all = "snake_case")]
 pub enum SessionChange {
-    /// Its grants changed.
+    /// Its grants changed: it was given a new ceiling, or an ancestor's change moved its effective grants (one event
+    /// for the session and one for each sub-agent below it whose effective grants moved).
     Grants {
         /// Who changed them.
         by: Actor,
@@ -357,10 +359,12 @@ pub trait Sessions: Send + Sync {
     /// As [`pause`](Self::pause); `Denied` if the session's budget still blocks it.
     fn resume(&self, id: SessionId, by: &Actor) -> Result<SessionInfo, OpError>;
 
-    /// Replaces the session's ceiling, up to the principal's own grants and never by an agent.
+    /// Replaces the session's ceiling, up to the principal's own grants and, for a sub-agent, its parent's current
+    /// effective grants; never by an agent. Sub-agents below the session hold at most what it holds, so each one whose
+    /// effective grants move with it gets its own [`SessionChange::Grants`] event.
     ///
     /// # Errors
-    /// As [`pause`](Self::pause); `Denied` if `grants` exceed the principal's.
+    /// As [`pause`](Self::pause); `Denied` if `grants` exceed the principal's or the parent's.
     fn set_grants(&self, id: SessionId, grants: Grants, by: &Actor) -> Result<SessionInfo, OpError>;
 
     /// Replaces the session's budget.

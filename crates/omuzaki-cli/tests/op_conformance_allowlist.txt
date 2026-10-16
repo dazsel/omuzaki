@@ -72,11 +72,6 @@ rig.weights.brush
 rig.weights.clear
 rig.weights.mirror
 rig.weights.report
-# trigger.*: merged by #1954 before the workspace scans ran on every change; examples and undo are #2195.
-trigger.bind
-trigger.list
-trigger.press
-trigger.unbind
 variant.clear_override
 variant.create
 variant.delete
@@ -90,6 +85,8 @@ output.window.close
 output.window.open
 perform.calibrate
 perform.set_retarget
-trigger.bind
+# trigger.press is a live action, so it stays until #2106 gives live actions their rule (#2195).
 trigger.press
-trigger.unbind
+# face.underlay.set: a view-state job with no document patch, so nothing to undo. #139 (change #2106) gives such ops their own
+# category in the conformance contract and deletes this line.
+face.underlay.set

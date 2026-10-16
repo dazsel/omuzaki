@@ -243,6 +243,77 @@ fn samples_a_sink_does_not_take_are_counted_as_dropped() {
 }
 
 #[test]
+fn an_overwrite_ring_reports_the_samples_its_reader_fell_behind_by() {
+    let engine = MockEngine::new();
+    engine.apply(&one_bus()).unwrap();
+    let mut request = ring_request(TapPoint::BusPostFader(bus_id("a")));
+    request.policy = DropPolicy::Overwrite;
+    request.capacity = Seconds(100.0 / 48_000.0);
+    let (mut reader, _) = engine.tap_ring(&request).unwrap();
+    engine.advance(100);
+    assert_eq!(engine.status().tap_drops[0].dropped, 0, "a ring that just fits has lost nothing");
+    // The reader is 150 samples behind a ring of 100 after 250 samples.
+    engine.advance(150);
+    assert_eq!((engine.status().tap_drops[0].consumer.as_str(), engine.status().tap_drops[0].dropped), ("test", 150));
+    let mut out = [0.0f32; 256];
+    assert_eq!(reader.read(&mut out).len, 100);
+    assert_eq!(reader.overwritten(), 150, "the reader's own count agrees with the engine's");
+    engine.advance(60);
+    assert_eq!(engine.status().tap_drops[0].dropped, 150, "a reader that caught up loses nothing more");
+}
+
+#[test]
+fn a_negative_ring_length_is_refused_even_when_it_rounds_to_zero() {
+    let engine = MockEngine::new();
+    engine.apply(&one_bus()).unwrap();
+    for seconds in [-1.0e-6, -1.0e-9, -0.4 / 48_000.0] {
+        let mut request = ring_request(TapPoint::BusPostFader(bus_id("a")));
+        request.capacity = Seconds(seconds);
+        assert!(matches!(engine.tap_ring(&request), Err(AudioError::Internal(_))), "tap {seconds}");
+        let mut feed = feed_request("f", true);
+        feed.capacity = Seconds(seconds);
+        assert!(matches!(engine.feed(&feed), Err(AudioError::Internal(_))), "feed {seconds}");
+    }
+    let mut zero = ring_request(TapPoint::BusPostFader(bus_id("a")));
+    zero.capacity = Seconds(0.0);
+    assert!(engine.tap_ring(&zero).is_ok(), "zero stays a one-sample ring");
+}
+
+#[test]
+fn apply_closes_a_two_channel_tap_whose_bus_became_stereo() {
+    let engine = MockEngine::new();
+    let mut graph = one_bus();
+    engine.apply(&graph).unwrap();
+    let mut request = ring_request(TapPoint::BusPostFader(bus_id("a")));
+    request.format.mono = false;
+    let (reader, _) = engine.tap_ring(&request).unwrap();
+    let (mono_reader, _) = engine.tap_ring(&ring_request(TapPoint::BusPostFader(bus_id("a")))).unwrap();
+    graph.buses[0].channels = Channels::Stereo;
+    engine.apply(&graph).unwrap();
+    assert!(reader.writer_gone(), "a scalar ring cannot carry the stereo bus: it is closed");
+    assert!(!mono_reader.writer_gone(), "a mono down-mix of the same bus stays open");
+    assert_eq!(engine.status().tap_drops.len(), 1);
+}
+
+#[test]
+fn apply_closes_a_tap_whose_capture_offset_changed() {
+    let engine = MockEngine::new();
+    let mut graph = one_bus();
+    graph.buses[0].chain = vec![null_node(12)];
+    engine.apply(&graph).unwrap();
+    let request = ring_request(TapPoint::BusPostChain(bus_id("a")));
+    let (reader, info) = engine.tap_ring(&request).unwrap();
+    assert!((info.capture_offset.0 - 12.0 / 48_000.0).abs() < 1e-12);
+    engine.apply(&graph).unwrap();
+    assert!(!reader.writer_gone(), "the same graph keeps the tap");
+    graph.buses[0].chain = vec![null_node(20)];
+    engine.apply(&graph).unwrap();
+    assert!(reader.writer_gone(), "the offset the tap was told is stale: it is closed");
+    let (_reopened, info) = engine.tap_ring(&request).unwrap();
+    assert!((info.capture_offset.0 - 20.0 / 48_000.0).abs() < 1e-12, "a new tap gets the new offset");
+}
+
+#[test]
 fn a_voice_taps_change_moves_the_open_taps() {
     // `mic` plays a 0.5 feed with its fader at minus infinity. `captions` defaults to raw (before the chain: 0.5);
     // once `voice_taps` says heard (after the fader: 0), the tap that is already open follows.
