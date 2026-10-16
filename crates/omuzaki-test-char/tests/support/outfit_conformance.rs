@@ -14,7 +14,9 @@
 //!   it; a failure names the vertex, the region, where along it and how deep;
 //! - **body**: no vertex is inside any region of the body fit, and no point of any triangle is either: each triangle is
 //!   tested whole against convex hulls that contain the region (GJK, proving it clear with a separating plane or
-//!   reporting it), so a crossing of any depth is caught, never sampled past;
+//!   reporting it), so a crossing of any depth is caught, never sampled past. A hull spans two sections the fit itself
+//!   reports, with a margin for the frames turning between them and for the fit's own curve bulging past the straight
+//!   line between them (a body's profiles are cubic);
 //! - **closure**: after welding coincident positions every edge is shared by at most two triangles wound opposite ways,
 //!   and the boundary edges form exactly [`Garment::open_borders`] loops;
 //! - **skin**: every mesh passes `PartMesh::validate` (weights normalised, joints listed) and every joint is in the rig;
@@ -76,8 +78,8 @@ pub const REGIONS: [BodyRegion; 8] = [
 ];
 /// The part id the garment is built as.
 pub const PART: &str = "garment";
-/// Sections per region in the lookup table a vertex is located with.
-const TABLE: usize = 256;
+/// Sections per region in the lookup table a vertex is located with, and the rows the crossing test's hulls start from.
+pub const TABLE: usize = 256;
 /// Positions closer than this weld into one vertex, metres.
 const WELD: f64 = 1e-6;
 
@@ -208,8 +210,9 @@ pub fn run<K: Garment>(params: &K::Params, services: &BuildServices) -> Result<V
             let body = fits.first().ok_or_else(|| format!("{case}: no body fit"))?;
             let inner = before.outer_fit().ok_or_else(|| format!("{case}: no fit under the garment"))?;
             let body_table = Tables::of(body.as_ref());
+            let body_pieces = body_pieces(body.as_ref(), &body_table);
             let inner_table = Tables::of(inner.as_ref());
-            let min_clearance = check_clearance(output, &body_table, &inner_table, &regions, ease)
+            let min_clearance = check_clearance(output, &body_table, &body_pieces, &inner_table, &regions, ease)
                 .map_err(|e| format!("{case}: {e}"))?;
             check_closure(output, K::open_borders(params)).map_err(|e| format!("{case}: {e}"))?;
             check_skin(output, &stack.published).map_err(|e| format!("{case}: {e}"))?;
@@ -257,6 +260,20 @@ struct Slice {
     across: DVec3,
     through: DVec3,
     radii: DVec2,
+}
+
+/// The section of `region` at `t`, as the fit reports it, with its plane's frame.
+fn slice(fit: &dyn BodyFit, region: BodyRegion, t: f64) -> Option<Slice> {
+    let s = fit.section(region, t as f32)?;
+    let (across, through) = section_basis(region, s.axis);
+    Some(Slice {
+        t,
+        centre: s.centre.as_dvec3(),
+        axis: s.axis.as_dvec3().normalize(),
+        across: across.as_dvec3(),
+        through: through.as_dvec3(),
+        radii: s.radii.as_dvec2(),
+    })
 }
 
 impl Slice {
@@ -307,22 +324,7 @@ impl Tables {
         let tables = REGIONS
             .iter()
             .filter_map(|&region| {
-                let rows = (0..=TABLE)
-                    .map(|k| {
-                        let t = k as f64 / TABLE as f64;
-                        let s = fit.section(region, t as f32)?;
-                        let axis = s.axis.as_dvec3().normalize();
-                        let (across, through) = section_basis(region, s.axis);
-                        Some(Slice {
-                            t,
-                            centre: s.centre.as_dvec3(),
-                            axis,
-                            across: across.as_dvec3(),
-                            through: through.as_dvec3(),
-                            radii: s.radii.as_dvec2(),
-                        })
-                    })
-                    .collect::<Option<Vec<_>>>()?;
+                let rows = (0..=TABLE).map(|k| slice(fit, region, k as f64 / TABLE as f64)).collect::<Option<Vec<_>>>()?;
                 let reach = |s: &Slice| DVec3::splat(s.radii.max_element());
                 let lo = rows.iter().map(|s| s.centre - reach(s)).reduce(DVec3::min)?;
                 let hi = rows.iter().map(|s| s.centre + reach(s)).reduce(DVec3::max)?;
@@ -408,13 +410,13 @@ fn ellipse_distance(q: DVec2, r: DVec2) -> f64 {
 fn check_clearance(
     output: &PartOutput,
     body: &Tables,
+    pieces: &[(BodyRegion, Vec<Piece>)],
     inner: &Tables,
     covered: &[BodyRegion],
     ease: f64,
 ) -> Result<f64, String> {
     let mut least = f64::INFINITY;
     let mut located = 0_usize;
-    let pieces = body_pieces(body);
     for mesh in &output.meshes {
         let g = &mesh.geometry;
         let p = |i: u32| g.positions[i as usize].as_dvec3();
@@ -453,7 +455,7 @@ fn check_clearance(
         }
         for (n, tri) in g.indices.chunks_exact(3).enumerate() {
             let [a, b, c] = [p(tri[0]), p(tri[1]), p(tri[2])];
-            if let Some(r) = triangle_reach(&pieces, [a, b, c]) {
+            if let Some(r) = triangle_reach(pieces, [a, b, c]) {
                 return Err(format!(
                     "triangle {n} of `{}` reaches the body: region {:?} near t = {:.3}, within {:.3} mm of it",
                     mesh.name,
@@ -479,6 +481,10 @@ const SUB_SLAB_STEP: f64 = 0.0002;
 const MAX_SUB_SLABS: usize = 64;
 /// The most GJK iterations before the test gives up proving a triangle clear (and reports it, to stay conservative).
 const GJK_ITERATIONS: usize = 64;
+/// How many times its estimate a sub-slab's margin allows for the fit straying from the straight lerp between its ends
+/// ([`stray`]). The estimate is exact for a cubic; the factor covers the rest (a knot inside the sub-slab, a turning
+/// frame, `f32` rounding), whose terms are smaller by orders of the sub-slab's length.
+const STRAY_SAFETY: f64 = 2.0;
 
 /// A triangle that reaches a region of the body: the region, about where along it, and how near the region's hull it
 /// comes (0 when it passes into it), metres.
@@ -493,13 +499,17 @@ pub struct Reach {
 }
 
 /// A convex piece that contains one sub-slab of a region: the convex hull of its two end sections (filled ellipses),
-/// and the margin within which the interpolated region may stand outside that hull.
+/// and the margin within which the region between them may stand outside that hull.
 ///
-/// Between two sections the suite's region is the union over `s` of the filled ellipse of `lerp(e0, e1, s)`: centre
-/// and radii interpolate linearly, so with fixed frames each such point is the same convex combination of points of
-/// the two end ellipses, and lies in their hull. The frames are normalised lerps, which turn by at most the angle
-/// between the ends; a point therefore lies within `rx·|A0 - A1| + ry·|B0 - B1|` of the hull (`A`, `B` the across and
-/// through directions, `rx`, `ry` the larger radii), which is `margin`.
+/// The margin has two parts:
+/// - **Turning frames.** The union over `s` of the filled ellipses of `lerp(e0, e1, s)` (centre and radii lerped, the
+///   frames normalised lerps): with fixed frames each such point is the same convex combination of points of the two
+///   end ellipses, and lies in their hull. The frames turn by at most the angle between the ends, so a point lies
+///   within `rx·|A0 - A1| + ry·|B0 - B1|` of the hull (`A`, `B` the across and through directions, `rx`, `ry` the larger
+///   radii).
+/// - **The fit's own curve** ([`stray`]). The fit's sections are not that lerp: a body's profiles are cubic in `t`, so
+///   between two sampled sections a waist or a chest bulges past the straight line between them. This part bounds how
+///   far.
 struct Piece {
     ends: [Slice; 2],
     margin: f64,
@@ -507,9 +517,9 @@ struct Piece {
 }
 
 impl Piece {
-    fn new(e0: Slice, e1: Slice) -> Self {
+    fn new(e0: Slice, e1: Slice, stray: f64) -> Self {
         let r = e0.radii.max(e1.radii);
-        let margin = r.x * e0.across.distance(e1.across) + r.y * e0.through.distance(e1.through);
+        let margin = r.x * e0.across.distance(e1.across) + r.y * e0.through.distance(e1.through) + stray;
         let extent = |e: &Slice| {
             let along = |k: usize| {
                 let (a, b) = (e.across.to_array()[k] * e.radii.x, e.through.to_array()[k] * e.radii.y);
@@ -535,21 +545,85 @@ impl Piece {
     }
 }
 
-/// The pieces of `table`, every slab split until its radii change by at most [`SUB_SLAB_STEP`].
-fn pieces(table: &RegionTable) -> Vec<Piece> {
+/// A bound on `max |e(s)|` over `0..=1` for a function with `e(0) = e(1) = 0`, from its values at `s` = 1/4, 1/2 and
+/// 3/4.
+///
+/// Such a cubic is `e(s) = s(1 - s)(α + βs)`: the quarter values give `α = 8e₁ - 8e₃/3` and `α + β = 8e₃ - 8e₁/3`, and
+/// as `s(1 - s) ≤ 1/4` and `α + βs` is linear, `|e| ≤ max(|α|, |α + β|) / 4` everywhere. That is exact for the cubic
+/// (and tight for a parabola). What the cubic misses shows at `s = 1/2`, where it predicts `2(e₁ + e₃)/3`; twice that
+/// residual is added.
+fn cubic_bound(e1: f64, e2: f64, e3: f64) -> f64 {
+    let alpha = 8.0 * e1 - 8.0 * e3 / 3.0;
+    let beta_end = 8.0 * e3 - 8.0 * e1 / 3.0;
+    let residual = (e2 - 2.0 * (e1 + e3) / 3.0).abs();
+    alpha.abs().max(beta_end.abs()) / 4.0 + 2.0 * residual
+}
+
+/// [`cubic_bound`] for each component of a vector, combined: a bound on the vector's length.
+fn cubic_bound3(e1: DVec3, e2: DVec3, e3: DVec3) -> f64 {
+    DVec3::new(cubic_bound(e1.x, e2.x, e3.x), cubic_bound(e1.y, e2.y, e3.y), cubic_bound(e1.z, e2.z, e3.z)).length()
+}
+
+/// How far a point of the fit's region between sections `e0` and `e1` may stand from the matching point of
+/// `lerp(e0, e1, s)`, metres: the bound the piece's margin adds for the fit's own curve.
+///
+/// A point of a section is `centre + across·rx·u + through·ry·v` with `u² + v² ≤ 1`, so the fit's point and the lerp's
+/// differ by at most `|Δcentre| + rx·|Δacross| + |Δrx| + ry·|Δthrough| + |Δry|`. Each difference is zero at both
+/// ends and is bounded over the sub-slab by [`cubic_bound`] from the fit sampled at its quarters. `None` where the fit
+/// has no section there.
+fn stray(fit: &dyn BodyFit, region: BodyRegion, e0: &Slice, e1: &Slice) -> Option<f64> {
+    let differences = [0.25, 0.5, 0.75]
+        .into_iter()
+        .map(|s| {
+            let lerped = e0.lerp(e1, s);
+            let real = slice(fit, region, lerped.t)?;
+            Some((
+                real.centre - lerped.centre,
+                real.across - lerped.across,
+                real.through - lerped.through,
+                real.radii - lerped.radii,
+            ))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let [(c1, a1, b1, r1), (c2, a2, b2, r2), (c3, a3, b3, r3)] = differences[..] else {
+        return None;
+    };
+    let r = e0.radii.max(e1.radii);
+    let bound = cubic_bound3(c1, c2, c3)
+        + r.x * cubic_bound3(a1, a2, a3)
+        + cubic_bound(r1.x, r2.x, r3.x)
+        + r.y * cubic_bound3(b1, b2, b3)
+        + cubic_bound(r1.y, r2.y, r3.y);
+    Some(STRAY_SAFETY * bound)
+}
+
+/// The pieces of `table`, the region of `fit` it samples: every slab between two rows split until its radii change by
+/// at most [`SUB_SLAB_STEP`], each sub-slab's ends sampled from the fit itself (not lerped between the rows), and its
+/// margin grown by how far the fit strays from the lerp between them ([`stray`]). `None` where the fit has no section.
+fn pieces(fit: &dyn BodyFit, table: &RegionTable) -> Option<Vec<Piece>> {
     let mut out = Vec::new();
     for pair in table.rows.windows(2) {
         let (a, b) = (pair[0], pair[1]);
         let change = (b.radii - a.radii).abs().max_element();
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a small positive ratio, clamped
+        #[allow(clippy::cast_sign_loss)] // a small positive ratio, clamped
         let k = ((change / SUB_SLAB_STEP).ceil() as usize).clamp(1, MAX_SUB_SLABS);
-        for i in 0..k {
-            #[allow(clippy::cast_precision_loss)] // tiny counts
-            let (s0, s1) = (i as f64 / k as f64, (i + 1) as f64 / k as f64);
-            out.push(Piece::new(a.lerp(&b, s0), a.lerp(&b, s1)));
+        let at = |i: usize| {
+            if i == 0 {
+                Some(a)
+            } else if i == k {
+                Some(b)
+            } else {
+                slice(fit, table.region, a.t + (b.t - a.t) * i as f64 / k as f64)
+            }
+        };
+        let mut start = a;
+        for i in 1..=k {
+            let end = at(i)?;
+            out.push(Piece::new(start, end, stray(fit, table.region, &start, &end)?));
+            start = end;
         }
     }
-    out
+    Some(out)
 }
 
 /// The point of triangle `abc` nearest `p` (Ericson, Real-Time Collision Detection 5.1.5).
@@ -666,8 +740,9 @@ fn triangle_reach(body: &[(BodyRegion, Vec<Piece>)], [a, b, c]: [DVec3; 3]) -> O
     None
 }
 
-/// The convex pieces of every region of `tables`.
-fn body_pieces(tables: &Tables) -> Vec<(BodyRegion, Vec<Piece>)> {
+/// The convex pieces of every region of `tables`, the table of `fit`.
+fn body_pieces(fit: &dyn BodyFit, tables: &Tables) -> Vec<(BodyRegion, Vec<Piece>)> {
+    let pieces = |t: &RegionTable| pieces(fit, t).expect("a fit with sections at its rows has them between the rows");
     tables.0.iter().map(|t| (t.region, pieces(t))).collect()
 }
 
@@ -678,7 +753,7 @@ pub fn inside(fit: &dyn BodyFit, p: DVec3) -> bool {
 
 /// Where triangle `tri` reaches a region of `fit`, as the suite's crossing check sees it.
 pub fn crossing(fit: &dyn BodyFit, tri: [DVec3; 3]) -> Option<Reach> {
-    triangle_reach(&body_pieces(&Tables::of(fit)), tri)
+    triangle_reach(&body_pieces(fit, &Tables::of(fit)), tri)
 }
 
 /// The region of the body `p` is inside, if any.

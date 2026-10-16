@@ -5,6 +5,11 @@
 //! it, the inner border. Each sample of the rail is a rung of 11 vertices (9 without a lip), in this order: the lip
 //! tucked under the cloth (2), the rolled edge (3, a quarter-turn arc of a half-ellipse), then the face across the band
 //! at the fractions [`FRACS`] (6), its last stretch bevelled down to the cloth. The constants are the prototype's.
+//!
+//! **Skin.** Every vertex of the strip is skinned like the garment at its own place on the surface (the `[t, phi]` it
+//! was laid at), not like the rail sample its rung starts from: a band laid across a bone's hand-over (a hem round a
+//! hip, a diagonal front) bends with the cloth under each of its edges. The end caps are skinned the same way, vertex by
+//! vertex, so they move with the rungs they close.
 
 use omuzaki_char_api::JointRef;
 use omuzaki_core::glam::{DVec2, DVec3};
@@ -129,14 +134,22 @@ fn across(a: [f64; 2], b: [f64; 2], f: f64) -> [f64; 2] {
     [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f]
 }
 
-/// One rung of the strip from its free edge `a` to its inner border `b`: its vertices, lip first, each with its `v`
-/// across the texture.
+/// A vertex of a rung: where it is, its `v` across the texture, and the place on the surface it was laid at (what it is
+/// skinned by).
+#[derive(Copy, Clone, Debug)]
+struct RungVertex {
+    point: DVec3,
+    v: f64,
+    at: [f64; 2],
+}
+
+/// One rung of the strip from its free edge `a` to its inner border `b`: its vertices, lip first.
 fn rung(
     surface: &Surface,
     spec: &Piping,
     (a, b): ([f64; 2], [f64; 2]),
     (bulge, lift): (f64, f64),
-) -> Result<Vec<(DVec3, f64)>, TrimError> {
+) -> Result<Vec<RungVertex>, TrimError> {
     let (p_a, n_a) = on(surface, a)?;
     let toward = on(surface, across(a, b, INWARD_AT))?.0 - p_a;
     let inward = (toward - n_a * toward.dot(n_a))
@@ -148,21 +161,29 @@ fn rung(
     let (half, middle) = ((lift + thick + lip) / 2.0, (lift - thick - lip) / 2.0);
     let mut out = Vec::with_capacity(11);
     if let Some(l) = &spec.lip {
-        let (p, n) = on(surface, across(a, b, l.width / spec.width))?;
-        out.push((p + n * (-thick - FACE_MARGIN), V_EDGE));
-        out.push((p_a + n_a * (-thick - lip), V_EDGE));
+        let under = across(a, b, l.width / spec.width);
+        let (p, n) = on(surface, under)?;
+        out.push(RungVertex { point: p + n * (-thick - FACE_MARGIN), v: V_EDGE, at: under });
+        out.push(RungVertex { point: p_a + n_a * (-thick - lip), v: V_EDGE, at: a });
     }
     let reach = (BULGE.0 * bulge).max(BULGE.1);
     for j in [3.0_f64, 2.0, 1.0] {
         let theta = std::f64::consts::FRAC_PI_2 - std::f64::consts::PI * j / 4.0;
-        out.push((p_a + outward * (reach * theta.cos()) + n_a * (middle + half * theta.sin()), V_EDGE));
+        let point = p_a + outward * (reach * theta.cos()) + n_a * (middle + half * theta.sin());
+        out.push(RungVertex { point, v: V_EDGE, at: a });
     }
     for f in FRACS {
         let bevel = sstep(BEVEL_FROM.0, BEVEL_FROM.1, f) * spec.bevel;
-        let (p, n) = on(surface, across(a, b, f))?;
-        out.push((p + n * (lift * (1.0 - bevel) + FACE_MARGIN), V_EDGE + V_FACE * f));
+        let at = across(a, b, f);
+        let (p, n) = on(surface, at)?;
+        out.push(RungVertex { point: p + n * (lift * (1.0 - bevel) + FACE_MARGIN), v: V_EDGE + V_FACE * f, at });
     }
     Ok(out)
+}
+
+/// The skin of the garment at `at` on `surface`.
+fn skin_at(surface: &Surface, at: [f64; 2]) -> Vec<(JointRef, f32)> {
+    surface.weights().at(at[0].clamp(0.0, 1.0))
 }
 
 /// The strip `spec` describes on `surface`: one rung per rail sample, an open sheet (closed at its ends with flat caps
@@ -188,11 +209,11 @@ pub fn build(surface: &Surface, spec: &Piping) -> Result<MeshBuilder, TrimError>
         rungs.push(rung(surface, spec, (a, b), (bulge, spec.rail.lift))?);
     }
     let cols = rungs[0].len();
-    let grid = Grid::from_fn(rungs.len(), cols, |i, j| rungs[i][j].0)?;
+    let grid = Grid::from_fn(rungs.len(), cols, |i, j| rungs[i][j].point)?;
     // Below the cloth, under the band: the sheet faces away from it.
     let inside = |i: usize, _: usize| points[i].on_surface - points[i].normal * (spec.thickness * 4.0);
-    let uv = |i: usize, j: usize| DVec2::new(points[i].distance / spec.tile, rungs[i][j].1);
-    let skin = |_: DVec3, i: usize, _: usize| points[i].skin.clone();
+    let uv = |i: usize, j: usize| DVec2::new(points[i].distance / spec.tile, rungs[i][j].v);
+    let skin = |_: DVec3, i: usize, j: usize| skin_at(surface, rungs[i][j].at);
     let options = GridOptions {
         wrap_i: rail.closed(),
         inside: Some(&inside),
@@ -204,12 +225,52 @@ pub fn build(surface: &Surface, spec: &Piping) -> Result<MeshBuilder, TrimError>
     builder.add_grid(&grid, &options)?;
     if spec.caps && !rail.closed() {
         for (i, outward) in [(0, -points[0].tangent), (last, points[last].tangent)] {
-            let ring: Vec<DVec3> = rungs[i].iter().map(|(p, _)| *p).collect();
-            fan(&mut builder, &ring, outward, &points[i].skin)?;
+            cap(&mut builder, surface, &rungs[i], outward)?;
         }
     }
     Ok(builder)
 }
+
+/// Closes the end of a strip at `rung` with a flat cap facing `outward`, each vertex skinned as the rung's vertex it
+/// sits on.
+///
+/// The kit skins a grid vertex by vertex, so the cap is a grid of two rows: a zigzag of triangles between the band's
+/// face (the rung's last six vertices, but the last) in one row and the rolled edge and lip beneath it, back round to
+/// the inner border, in the other. Every diagonal then runs from the face down to the edge or lip under it, never
+/// between two face vertices, which on cloth that curves inward would fold. A rung has an odd count (the face's 6, the
+/// edge's 3 and the lip's 2 or none), so the midpoint of the closing edge, from the inner border back under the band to
+/// the lip, is added: that edge is an open border of the strip, so no rung's edge is split, and the zigzag never joins
+/// the midpoint to both ends of it.
+fn cap(builder: &mut MeshBuilder, surface: &Surface, rung: &[RungVertex], outward: DVec3) -> Result<(), TrimError> {
+    let (Some(first), Some(last)) = (rung.first(), rung.last()) else {
+        return Err(TrimError::invalid("piping", "a rung has no vertices"));
+    };
+    let mut ring = rung.to_vec();
+    ring.push(RungVertex {
+        point: last.point.midpoint(first.point),
+        v: f64::midpoint(last.v, first.v),
+        at: across(last.at, first.at, 0.5),
+    });
+    if ring.len() % 2 == 1 || ring.len() < 2 + FRACS.len() {
+        return Err(TrimError::invalid("piping", format!("a rung of {} vertices has no zigzag cap", rung.len())));
+    }
+    let half = ring.len() / 2;
+    // One row from the face's first vertex up to its second last (it ends `half` vertices after the start), the other
+    // from the vertex before the face back round to the inner border.
+    ring.rotate_left(rung.len() - 1 - half);
+    let rows: Vec<RungVertex> = ring[..half].iter().chain(ring[half..].iter().rev()).copied().collect();
+    let grid = Grid::from_fn(2, half, |i, j| rows[i * half + j].point)?;
+    let centre = ring.iter().map(|r| r.point).sum::<DVec3>() * fraction(1, ring.len());
+    let behind = centre - outward * CAP_BEHIND;
+    let inside = |_: usize, _: usize| behind;
+    let skin = |_: DVec3, i: usize, j: usize| skin_at(surface, rows[i * half + j].at);
+    let options = GridOptions { inside: Some(&inside), skin: Skin::Per(&skin), ..GridOptions::default() };
+    builder.add_grid(&grid, &options)?;
+    Ok(())
+}
+
+/// How far behind an end cap its normals are oriented away from, metres: any small distance into the strip.
+const CAP_BEHIND: f64 = 0.001;
 
 /// Closes a flat ring with a fan from its centroid facing `outward` (the prototype's end caps).
 fn fan(builder: &mut MeshBuilder, ring: &[DVec3], outward: DVec3, skin: &[(JointRef, f32)]) -> Result<(), TrimError> {
