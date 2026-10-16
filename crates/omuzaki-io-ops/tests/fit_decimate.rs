@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::f32::consts::PI;
 
 use omuzaki_core::glam::{Vec2, Vec3};
-use omuzaki_io_api::{IoScene, Mesh, MeshData, MorphTarget, Primitive};
+use omuzaki_io_api::{IoScene, Mesh, MeshData, MorphTarget, Node, Primitive};
 use omuzaki_io_ops::fit_decimate::{DecimateOptions, decimate, decimate_scene};
 
 /// A UV sphere with `stacks` rows and `slices` columns; the seam column and the poles are duplicated vertices, as in
@@ -360,6 +360,28 @@ fn a_share_a_small_primitive_cannot_use_goes_to_the_others() {
     let after: Vec<usize> = reports.iter().map(|r| r.triangles.1).collect();
     assert_eq!(after[0], 100, "the primitive that is under its share is left as it is");
     assert!(after[1].abs_diff(900) <= 20, "{after:?}: the second gets what the first could not use");
+}
+
+#[test]
+fn a_mesh_drawn_by_two_nodes_is_budgeted_for_both_instances() {
+    // 2,000 triangles drawn by two nodes render 4,000. For a scene budget of 1,000 the mesh gets a target of 500, so the
+    // two instances render 1,000 together, not the 2,000 that a target of 1,000 would leave.
+    let mut scene = IoScene::new();
+    let mut mesh = Mesh::new("shared");
+    mesh.primitives.push(grid(50, 20, Vec2::new(0.1, 0.1)));
+    let mesh = scene.add_mesh(mesh);
+    for name in ["left", "right"] {
+        let mut node = Node::new(name);
+        node.mesh = Some(mesh);
+        let ix = scene.add_node(node);
+        scene.roots.push(ix);
+    }
+    assert_eq!(scene.meshes[0].primitives[0].mesh.triangle_count(), 2_000);
+    let options = DecimateOptions { lock_boundary: false, ..DecimateOptions::new(0) };
+    let reports = decimate_scene(&mut scene, 1_000, &options).unwrap();
+    let rendered = 2 * reports[0].triangles.1;
+    assert!((900..=1_000).contains(&rendered), "the two instances render {rendered} triangles");
+    assert_eq!(scene.meshes[0].primitives[0].mesh.triangle_count(), reports[0].triangles.1);
 }
 
 #[test]

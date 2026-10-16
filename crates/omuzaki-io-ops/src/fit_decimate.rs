@@ -124,8 +124,12 @@ pub fn decimate(primitive: &mut Primitive, options: &DecimateOptions) -> Result<
 
 /// Splits `total` across the scene's primitives in proportion to their surface area (at least 100 each, or the
 /// primitive's own count when that is smaller, and at most its own count: what a small primitive cannot use goes to the
-/// others), then decimates each with `options` (its `target_triangles` is
-/// replaced by the share). Reports come in mesh order, then primitive order.
+/// others), then decimates each with `options` (its `target_triangles` is replaced by the share). Reports come in mesh
+/// order, then primitive order.
+///
+/// `total` is the budget of the *rendered* scene, which counts a mesh once for every node that draws it (as
+/// [`AvatarStats`](crate::limits::AvatarStats) does): a primitive of a mesh drawn by two nodes weighs twice in the split,
+/// and its target is its share divided by the two. A mesh no node draws weighs once.
 ///
 /// The scene is changed only if every primitive succeeds and the result passes [`IoScene::check`].
 ///
@@ -139,13 +143,31 @@ pub fn decimate_scene(
 ) -> Result<Vec<DecimateReport>, IoError> {
     let slots: Vec<(usize, usize)> =
         scene.meshes.iter().enumerate().flat_map(|(m, mesh)| (0..mesh.primitives.len()).map(move |p| (m, p))).collect();
-    let areas: Vec<f64> = slots.iter().map(|&(m, p)| surface_area(&scene.meshes[m].primitives[p])).collect();
-    let counts: Vec<usize> = slots.iter().map(|&(m, p)| scene.meshes[m].primitives[p].mesh.triangle_count()).collect();
+    // How many nodes draw each mesh: the rendered scene has one instance of its triangles for each.
+    let mut users = vec![0_usize; scene.meshes.len()];
+    for mesh in scene.nodes.iter().filter_map(|node| node.mesh) {
+        if let Some(count) = users.get_mut(mesh.index()) {
+            *count += 1;
+        }
+    }
+    let instances: Vec<usize> = slots.iter().map(|&(m, _)| users[m].max(1)).collect();
+    #[allow(clippy::cast_precision_loss)] // instance counts are far below 2^52
+    let areas: Vec<f64> = slots
+        .iter()
+        .zip(&instances)
+        .map(|(&(m, p), &n)| surface_area(&scene.meshes[m].primitives[p]) * n as f64)
+        .collect();
+    let counts: Vec<usize> = slots
+        .iter()
+        .zip(&instances)
+        .map(|(&(m, p), &n)| scene.meshes[m].primitives[p].mesh.triangle_count().saturating_mul(n))
+        .collect();
     let shares = split_budget(&areas, &counts, total);
     let mut results = Vec::with_capacity(slots.len());
-    for (&(m, p), &share) in slots.iter().zip(&shares) {
+    for ((&(m, p), &share), &n) in slots.iter().zip(&shares).zip(&instances) {
         let mut copy = scene.meshes[m].primitives[p].clone();
-        let report = decimate(&mut copy, &DecimateOptions { target_triangles: share, ..*options })?;
+        // The share is rendered triangles; each instance gets an equal part, rounded down so the scene stays in budget.
+        let report = decimate(&mut copy, &DecimateOptions { target_triangles: share / n, ..*options })?;
         results.push((copy, report));
     }
     let mut originals = Vec::with_capacity(results.len());
