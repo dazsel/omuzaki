@@ -103,7 +103,8 @@ impl Connector for FakeConnector {
         estimate_from_manifest(m, req)
     }
 
-    /// For each output in order: stop if cancelled; wait the script's latency; stop with `CapReached` if its price
+    /// A DCC request for another program is `Unsupported`. Then, for each output in order: stop if cancelled; wait
+    /// the script's latency (stopping if it was cancelled meanwhile); stop with `CapReached` if its price
     /// would pass the cap; stop with the scripted failure at its index; make it; report its price to the meter
     /// (stopping, the output kept, if the meter refuses).
     fn run(&self, m: &ConnectorManifest, req: &Request, cx: &RunCx<'_>) -> Result<RunOutput, ConnectError> {
@@ -111,6 +112,11 @@ impl Connector for FakeConnector {
         let capability = req.capability();
         if m.declares(capability).is_none() || capability != self.generator.capability() {
             return Err(ConnectError::unsupported(format!("{} does not make {capability}", m.id)));
+        }
+        if let Request::Dcc(dcc) = req
+            && dcc.tool != m.id.as_str()
+        {
+            return Err(ConnectError::unsupported(format!("{} is not the DCC program {}", m.id, dcc.tool)));
         }
         let count = req.count();
         let estimate =
@@ -128,6 +134,10 @@ impl Connector for FakeConnector {
             }
             if self.script.latency_s > 0.0 {
                 cx.pace.wait(self.script.latency_s, cx.progress);
+                // A wait returns early on a cancel: nothing more is made or billed.
+                if cx.progress.is_cancelled() {
+                    return stop(outputs, usage, ConnectError::Cancelled);
+                }
             }
             let needed = usage.usd_micros.saturating_add(price);
             if needed > cx.cap_usd_micros {
