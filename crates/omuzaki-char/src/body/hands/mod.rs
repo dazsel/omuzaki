@@ -393,7 +393,7 @@ fn thumb(hand: &Hand, block: &Block, splay_deg: f64) -> Result<Thumb, KitError> 
         Grid::from_fn(centres.len(), THUMB_SEGMENTS + 1, |k, j| ring(centres[k], tangent(k), radii(THUMB_T[k]), j))?;
 
     // The stem's ring, behind the root along the thumb's line and seated inside the palm's section there. The ring is
-    // tilted, so it reaches up to its radius along the hand either way: the room is the palm's smallest section over
+    // tilted, so it reaches up to its radius along the hand either way: the space is the palm's smallest section over
     // that stretch, which (each curve rising to one peak and falling) is at one of its ends or the middle.
     let reach = THUMB_RADIUS * s;
     let behind = root - direction * reach;
@@ -402,14 +402,14 @@ fn thumb(hand: &Hand, block: &Block, splay_deg: f64) -> Result<Thumb, KitError> 
         .map(|x| block.section(station(x)))
         .into_iter()
         .fold((f64::INFINITY, f64::INFINITY), |(w, t), (a, b)| (w.min(a), t.min(b)));
-    let room =
+    let space =
         (STEM_ROOM * half_width * s * hand.palm_width, STEM_ROOM * half_thick * s * PALM_FLATTEN.min(BACK_PLUMP));
-    let fit = (room.0.min(room.1) / reach).min(1.0);
-    let spare = |room: f64| (room - fit * reach).max(0.0);
+    let fit = (space.0.min(space.1) / reach).min(1.0);
+    let slack = |space: f64| (space - fit * reach).max(0.0);
     let seat = hand.world(DVec3::new(
         behind.x,
-        behind.y.clamp(-spare(room.0), spare(room.0)),
-        behind.z.clamp(-spare(room.1), spare(room.1)),
+        behind.y.clamp(-slack(space.0), slack(space.0)),
+        behind.z.clamp(-slack(space.1), slack(space.1)),
     ));
     let (ra, rb) = radii(0.0);
     let stem_rows = [(seat, (ra * fit, rb * fit)), (centres[0], (ra, rb))];
