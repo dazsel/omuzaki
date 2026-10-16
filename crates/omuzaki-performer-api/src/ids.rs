@@ -147,11 +147,7 @@ macro_rules! string_id {
     };
 }
 
-string_id!(
-    VoiceId,
-    "^[a-z0-9][a-z0-9_-]{0,63}/[A-Za-z0-9._-]{1,128}$",
-    "A voice: <model or connector id>/<voice>."
-);
+string_id!(VoiceId, "^[a-z0-9][a-z0-9_-]{0,63}/[A-Za-z0-9._-]{1,128}$", "A voice: <model or connector id>/<voice>.");
 string_id!(PersonaRevision, "^[0-9a-f]{12}$", "A persona revision: 12 hex characters of the BLAKE3 of its TOML.");
 
 #[cfg(test)]

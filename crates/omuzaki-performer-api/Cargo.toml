@@ -1,6 +1,6 @@
 [package]
 name = "omuzaki-performer-api"
-description = "Contract for the AI performer (ADR 0031, ADR 0041): persona, intents and the inline tag grammar, the Brain, Voice, Ears, Stage and Perception seams, PerformerEvent and the transcript, AiLine, limits, and the voice and face types (SpendGate, VoiceLead, VoiceCatalog, BigMovePlanner)."
+description = "Contract for the AI performer (ADR 0031, ADR 0041): intents, the Brain, Voice, Ears, Stage and Perception seams, PerformerEvent and the transcript, AiLine, limits, and the voice and face types (SpendGate, VoiceLead, VoiceCatalog, BigMovePlanner)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,6 +11,7 @@ repository.workspace = true
 [dependencies]
 schemars.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 omuzaki-anim-api = { path = "../omuzaki-anim-api" }
 omuzaki-char-api = { path = "../omuzaki-char-api" }
@@ -21,7 +22,6 @@ omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-stage-api = { path = "../omuzaki-stage-api" }
 
 [dev-dependencies]
-serde_json.workspace = true
 toml.workspace = true
 
 [lints]
@@ -29,4 +29,4 @@ workspace = true
 
 [package.metadata.omuzaki]
 kind = "API"
-summary = "the AI performer's contract (ADR 0031, ADR 0041): `Persona`, `Intent` with `GazeTarget`, `PlaceId` and the closed `StyleTag` set, the inline tag grammar's `Tag` and `ParseIssue`, the seams `Brain`, `Voice`, `Ears`, `Stage` and `Perception`, `PerformerEvent` and the JSON Lines `TranscriptLine`, `AiLine` (not yet a live event kind, #1915), the limits, and the voice and face types `SpendGate`, `VoiceAssignment`, `VoiceCatalog`, `VoiceLead`, `TalkState`, `MoveContext`, `StyleKnobs` and the per-frame `BigMovePlanner`; design in `docs/design/ai-performer.md` and `docs/design/ai-performer-voice-face.md`"
+summary = "the AI performer's contract (ADR 0031, ADR 0041): `Intent` with `GazeTarget`, `PlaceId` and the closed `StyleTag` set, the seams `Brain` (non-blocking `TurnStream` of `BrainEvent`s), `Voice` with `SpeechHandle`, `Ears` with `Heard`, `Stage` with `Inventory` and `Perception`, `PerformerEvent` and the JSON Lines `TranscriptLine`, `AiLine` (not yet a live event kind, #1915), the limits, `VoiceId` and `PersonaRevision`, the voice and face types `SpendGate`, `VoiceAssignment`, `VoiceCatalog`, `VoiceLead`, `CutProbe`, `TalkState`, `MoveContext`, `StyleKnobs` and the per-frame `BigMovePlanner`, and the conformance checks every implementation passes; design in `docs/design/ai-performer.md` and `docs/design/ai-performer-voice-face.md`"
