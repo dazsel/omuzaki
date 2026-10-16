@@ -6,6 +6,10 @@
 #                  `cargo xtask check --affected` on its own machine and attests it with a `Self-gate: pass at <sha7>`
 #                  comment line; `self-gate` fails unless the latest trusted line names the head (tools/ci/self-gate.py).
 #                  A push that only merges main into the branch runs nothing: the queue tests against main anyway.
+#   hosted tests   a maintainer (or the merge loop, when CI has spare capacity) dispatches this workflow on a same-repo PR
+#                  branch with `hosted_tests=true`: the plan measures against the merge base with main, lint and the
+#                  test matrix run on what is affected, as in the queue, `self-gate` is skipped and `gate` passes only
+#                  if every test job succeeded. It is the alternative to a `Self-gate:` line when no author can build.
 #   merge queue    fmt, clippy and the lints on EVERYTHING affected (dependents included), the full test matrix, plus
 #                  the Windows cross-build. The queue builds the exact commit that will land on main, so this is the
 #                  authoritative run, and it is exactly as strict as before.
@@ -23,6 +27,13 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
     types: [checks_requested]
+  # Hosted tests for a PR branch (see above). Dispatching needs write access; the input must be true or `gate` fails.
+  workflow_dispatch:
+    inputs:
+      hosted_tests:
+        description: "Run the affected tests on GitHub's runners instead of relying on a Self-gate line"
+        type: boolean
+        default: false
 
 # A newer push to a PR supersedes its run in progress. Merge-queue runs are never cancelled: each has its own group
 # (its commit SHA), and cancelling one would eject the pull requests in it.
@@ -49,7 +60,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # Draft pull requests get no CI (it would queue behind real work); `ready_for_review` starts it.
-    if: github.event.pull_request.draft != true
+    if: github.event.pull_request.draft != true && (github.event_name != 'workflow_dispatch' || inputs.hosted_tests)
     outputs:
       skip: ${{ steps.heads.outputs.skip }}
       owned: ${{ steps.heads.outputs.owned }}
@@ -88,7 +99,7 @@ jobs:
           EVENT: ${{ github.event_name }}
           # A PR is measured against its base branch; a merge-queue run against the commit the queue built on, so the
           # scope is the union of every PR in the group.
-          BASE: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || format('origin/{0}', github.base_ref) }}
+          BASE: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || format('origin/{0}', github.base_ref || 'main') }}
         run: |
           cargo run --locked --quiet -p xtask -- check --format json --shards 6 --base "$BASE" >"$RUNNER_TEMP/report.json"
           cat "$RUNNER_TEMP/report.json"
@@ -102,7 +113,7 @@ jobs:
     timeout-minutes: 30
     env:
       LINT_CRATES: ${{ needs.plan.outputs.lint_crates }}
-      BASE: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || format('origin/{0}', github.base_ref) }}
+      BASE: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || format('origin/{0}', github.base_ref || 'main') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -323,6 +334,7 @@ jobs:
         env:
           NEEDS: ${{ toJSON(needs) }}
           EVENT: ${{ github.event_name }}
+          HOSTED: ${{ github.event_name == 'workflow_dispatch' && inputs.hosted_tests }}
         run: |
           python3 -I - <<'PY'
           import json, os, sys
@@ -339,6 +351,14 @@ jobs:
           # Pull requests are held to the self-gate line; only a pull request skips it (the queue has no such job).
           if results.get("plan") == "success" and os.environ["EVENT"] == "pull_request" and results.get("self-gate") != "success":
               bad.append("self-gate")
+          # Hosted tests replace the self-gate line, so every test job must have run and succeeded: a skipped one
+          # (which the generic rule above lets through) would pass the gate without tests. A dispatch without
+          # `hosted_tests` runs nothing and must not pass either.
+          if os.environ["EVENT"] == "workflow_dispatch":
+              if os.environ["HOSTED"] != "true" or results.get("plan") != "success":
+                  bad.append("hosted_tests")
+              elif needs["plan"]["outputs"].get("has_tests") == "true" and results.get("test") != "success":
+                  bad.append("test")
           if bad:
               print("gate failed: " + ", ".join(sorted(set(bad))))
               sys.exit(1)

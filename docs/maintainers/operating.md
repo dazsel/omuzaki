@@ -145,6 +145,11 @@ How work is cut into large changes, one agent and one PR each, is in [`large-cha
   only to clear a jam or for a security fix.
 - **The `run-nightly` label** runs the full nightly (Windows and Linux) on a PR head. A lead adds it to a same-repo PR;
   the merge loop dispatches `nightly.yml`, removes the label and comments the run link. One label is one run.
+- **Hosted tests** are the alternative to a `Self-gate:` line when no author can build locally. A maintainer runs
+  `gh workflow run ci.yml -R dazsel/omuzaki --ref <branch> -f hosted_tests=true` on a same-repo PR branch (dispatching
+  needs write access): the affected tests run on GitHub's runners, `self-gate` is skipped and that run's `gate` passes
+  only if every test job succeeded. The merge loop starts it by itself only when CI has spare capacity (the repo is
+  capped at 60 concurrent jobs, which is why PR runs skip the tests).
 - **Merge `main` into a pull request only on a conflict.** When a failure in `main` itself is fixed, the Director
   updates every pull request that was red on it, in the same check-in.
 - **Freeze triggers** (ADR 0053 §1.3): the open total passes its cap, CI waits over 30 minutes, or opens exceed
