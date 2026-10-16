@@ -18,7 +18,7 @@ pub const MIN_RATIO: f64 = 1.0;
 pub const MAX_RATIO: f64 = 3.0;
 /// How far from the middle of the body each leg's inner wall may reach, metres: the two legs' cloth touches there
 /// rather than crossing.
-pub const MID_GAP: f64 = 0.0005;
+pub const MID_GAP: f64 = 0.0015;
 /// The leg's width ratio starts to grow over this much of the leg after the gusset, as a fraction of the leg region.
 pub const RATIO_RAMP: f64 = 0.10;
 /// The length over which a cuff rises to its full roll, as a fraction of the leg region (about 6 mm on soft-sd).

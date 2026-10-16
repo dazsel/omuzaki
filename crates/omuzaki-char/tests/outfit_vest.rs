@@ -27,8 +27,9 @@ fn services() -> BuildServices {
     BuildServices::default().with_rasterizer(|| Box::new(MockRasterizer))
 }
 
+/// The outline of the prototype's vest: the default without the armholes it lacks.
 fn profile() -> Profile {
-    VestParams::default().profile()
+    VestParams { armhole: 0.0, ..VestParams::default() }.profile()
 }
 
 /// The vest alone on the soft-sd template, default shape.
@@ -53,7 +54,10 @@ fn the_vest_passes_the_suite_on_every_template_and_shape() {
     assert_eq!(rows.len(), 12, "4 templates x 3 shapes");
     for row in &rows {
         assert!(row.min_clearance_mm >= 0.5 * row.ease_mm, "{row:?}: half the ease at least");
-        assert!(row.triangles >= 14_000 && row.triangles <= 16_000, "{row:?}: the prototype's 14160 plus the caps");
+        assert!(
+            row.triangles >= 16_500 && row.triangles <= 17_200,
+            "{row:?}: the prototype's 14160 vest and 2358 button triangles, plus the caps"
+        );
     }
 }
 
@@ -75,6 +79,7 @@ fn a_patterned_vest_without_piping_seams_or_buttons_passes_too() {
 fn a_wider_cloth_and_a_deeper_neck_pass_too() {
     let mut params = VestParams { thickness: 0.006, neck_depth: NECK_DEPTH + 0.08, ..VestParams::default() };
     params.common.ease = 0.006;
+    params.buttons.count = 0;
     conformance::assert_conforms::<Vest>(&params, &services());
 }
 
@@ -107,6 +112,20 @@ fn the_outline_is_the_prototypes() {
 }
 
 #[test]
+fn the_armholes_cut_the_sides_and_leave_the_front_and_back_alone() {
+    let (plain, cut) = (profile(), VestParams::default().profile());
+    for phi in [FRAC_PI_2, -FRAC_PI_2, FRAC_PI_2 + 0.2, -FRAC_PI_2 - 0.2] {
+        assert!((plain.top(phi) - cut.top(phi) - cut.armhole).abs() < 1e-12, "the floor is flat at {phi}");
+    }
+    for phi in [0.0, 0.4, 0.6, PI, PI - 0.3, -0.6] {
+        assert_eq!(plain.top(phi), cut.top(phi), "the rim is the prototype's at {phi}");
+    }
+    let between = cut.top(1.2);
+    assert!(cut.top(FRAC_PI_2) < between && between < plain.top(1.2), "the edge climbs back: {between}");
+    assert_eq!(cut.hem(FRAC_PI_2), plain.hem(FRAC_PI_2), "the hem is untouched");
+}
+
+#[test]
 fn both_halves_of_the_outline_meet_at_the_sides_and_are_mirrored() {
     let p = profile();
     for side in [FRAC_PI_2, -FRAC_PI_2] {
@@ -119,6 +138,7 @@ fn both_halves_of_the_outline_meet_at_the_sides_and_are_mirrored() {
         assert_eq!(p.top(phi), p.top(-phi));
         assert_eq!(p.hem(phi), p.hem(-phi));
         assert!(p.top(phi) > p.hem(phi), "a panel at {phi}");
+        assert!(VestParams::default().profile().top(phi) > p.hem(phi), "and with the armholes");
     }
 }
 
@@ -143,9 +163,9 @@ fn the_vest_is_the_prototypes_pieces_in_order() {
     let vest = mesh(&output, "garment-vest");
     let g = &vest.geometry;
     // Two 35 x 85 shells, two piping tubes of 85 rings of 7, five seams (13, 15, 11, 15, 11, 13 rings... of 6), then
-    // the caps of the seams' ten tips, 5 points each.
+    // the caps of the six seams' twelve tips, 5 points each.
     let seams = (13 + 2 * 15 + 2 * 11 + 13) * 6;
-    assert_eq!(g.positions.len(), 2 * 35 * 85 + 2 * 85 * 7 + seams + 10 * 5);
+    assert_eq!(g.positions.len(), 2 * 35 * 85 + 2 * 85 * 7 + seams + 12 * 5);
     assert_eq!(g.colours.len(), g.positions.len(), "the vest has vertex colours");
     let at = |k: usize| omuzaki_core::glam::Vec3::new(g.colours[k][0], g.colours[k][1], g.colours[k][2]);
     // The lining is constant, the outer shell darker toward the hem, the piping and seams brighter than white.
@@ -233,13 +253,14 @@ fn piping_and_seams_and_buttons_are_each_optional() {
     assert_eq!(full - count(&params), 2 * 85 * 7, "the piping is two tubes");
     params.piping = true;
     params.seams = false;
-    assert_eq!(full - count(&params), (13 + 2 * 15 + 2 * 11 + 13) * 6 + 10 * 5, "the seams and their caps");
+    assert_eq!(full - count(&params), (13 + 2 * 15 + 2 * 11 + 13) * 6 + 12 * 5, "the seams and their caps");
     params.seams = true;
     params.buttons.count = 0;
     let output = soft_sd_vest(&params);
     assert_eq!(output.meshes.len(), 1, "no buttons mesh");
-    params.buttons.count = 5;
-    assert!(count(&params) > full, "more buttons");
+    params.buttons.count = 4;
+    params.buttons.spacing = 0.018;
+    assert!(count(&params) > full, "four buttons, not three");
 }
 
 #[test]
@@ -259,7 +280,8 @@ fn the_buttons_take_their_finish_and_radius_from_the_parameters() {
 #[test]
 fn the_neck_depth_moves_the_v() {
     let lowest_rim = |depth: f64| {
-        let params = VestParams { neck_depth: depth, ..VestParams::default() };
+        let mut params = VestParams { neck_depth: depth, ..VestParams::default() };
+        params.buttons.count = 0;
         let output = soft_sd_vest(&params);
         // The outer shell's rim row at the front (column 42, the last row) is the V's tip.
         mesh(&output, "garment-vest").geometry.positions[34 * 85 + 42].y
@@ -340,7 +362,16 @@ fn parameters_are_checked_and_round_trip() {
     assert!(bad(&|p| p.rim = 2.0).contains("rim"));
     assert!(bad(&|p| p.neck_depth = f64::INFINITY).contains("neck_depth"));
     assert!(bad(&|p| p.hem.side = -0.1).contains("hem/side"));
-    assert!(bad(&|p| p.neck_depth = 0.55).contains("neck_depth"), "a sliver of a panel");
+    assert!(
+        bad(&|p| {
+            p.rim = 0.35;
+            p.neck_depth = 0.2;
+        })
+        .contains("outline"),
+        "a V that runs into the hem"
+    );
+    assert!(bad(&|p| p.armhole = 0.7).contains("outline"), "an armhole that cuts down to the hem");
+    assert!(bad(&|p| p.armhole = -0.1).contains("armhole"));
     assert!(bad(&|p| p.buttons.count = 65).contains("count"));
     assert!(bad(&|p| p.buttons.radius = 0.0).contains("radius"));
     assert!(bad(&|p| p.buttons.first = 1.5).contains("first"));

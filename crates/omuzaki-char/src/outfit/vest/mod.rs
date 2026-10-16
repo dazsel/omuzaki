@@ -22,7 +22,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use self::pieces::{SEAM_LIFT, Surfaces, add_piping, add_seams, add_shell, buttons};
-use self::profile::{HEM_BACK, HEM_FRONT, HEM_SIDE, MIN_PANEL, NECK_DEPTH, Profile, RIM_HEIGHT};
+use self::profile::{ARMHOLE_DEPTH, HEM_BACK, HEM_FRONT, HEM_SIDE, MIN_PANEL, NECK_DEPTH, Profile, RIM_HEIGHT};
 use super::common::{FabricStyle, Garment, GarmentCommon, GarmentError, GarmentOutput, LAYER_VEST, MAX_EASE};
 use super::trim::buttons::{ButtonShape, ButtonStyle, GOLD_RADIUS, MAX_BUTTONS};
 use super::trim::{Finish, feature};
@@ -133,6 +133,9 @@ pub struct VestParams {
     pub neck_depth: f64,
     /// The hem.
     pub hem: HemSpec,
+    /// How far the armholes cut down from the rim at the sides, as a fraction of the torso region; 0 for none. The arm
+    /// hangs against the side of the torso, so a vest without armholes goes through it.
+    pub armhole: f64,
     /// Piping round the rim and the hem.
     pub piping: bool,
     /// Raised seams: the centre front, two darts, the sides and the back.
@@ -153,6 +156,7 @@ impl Default for VestParams {
             rim: RIM_HEIGHT,
             neck_depth: NECK_DEPTH,
             hem: HemSpec::default(),
+            armhole: ARMHOLE_DEPTH,
             piping: true,
             seams: true,
             buttons: ButtonsSpec::default(),
@@ -169,6 +173,7 @@ impl VestParams {
             hem_front: self.hem.front,
             hem_side: self.hem.side,
             hem_back: self.hem.back,
+            armhole: self.armhole,
         }
     }
 
@@ -197,12 +202,16 @@ impl Validate for VestParams {
         for (name, hem) in [("hem/front", self.hem.front), ("hem/side", self.hem.side), ("hem/back", self.hem.back)] {
             c.range(name, hem, 0.0, 0.6);
         }
+        c.range("armhole", self.armhole, 0.0, 0.7);
         c.nested("buttons", &self.buttons);
         let panel = self.profile().panel();
         if panel.is_finite() && panel < MIN_PANEL {
             c.fail(
-                "neck_depth",
-                format!("the V's tip and the rim at the back are only {panel} of the torso above the hem: at least {MIN_PANEL}"),
+                "outline",
+                format!(
+                    "the V's tip, the back of the neck and the armholes leave only {panel} of the torso above the hem: at \
+                     least {MIN_PANEL}"
+                ),
             );
         }
     }

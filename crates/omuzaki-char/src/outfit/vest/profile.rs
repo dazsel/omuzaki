@@ -5,7 +5,9 @@
 //! placeholders below are the prototype's metres on the soft-sd body ([`along`] converts), kept as named constants in
 //! this one place.
 
-use std::f64::consts::PI;
+use std::f64::consts::{FRAC_PI_2, PI};
+
+use crate::kit::curve::sstep;
 
 /// The soft-sd torso's bottom, metres: the height `t = 0` is at on the body the placeholders were fitted to.
 const REFERENCE_BOTTOM: f64 = 0.325;
@@ -35,6 +37,11 @@ pub const HEM_BACK: f64 = along(0.356);
 /// Placeholder: how far the rim dips at the back of the neck (the prototype's `0.0125`).
 pub const BACK_DIP: f64 = of_torso(0.0125);
 
+/// Placeholder: how far the armholes cut down from the rim at the sides, as a fraction of the torso. The prototype has no
+/// armholes (its sleeves are the shirt's); here the arm hangs against the side of the torso, so the vest must leave it
+/// room from the underarm up (0.46 of the torso puts the floor 0.456 up it, 0.425 m on the soft-sd body).
+pub const ARMHOLE_DEPTH: f64 = 0.46;
+
 /// The front rim reaches the shoulder height at this `|sin phi|` (about 47 degrees either side of the V).
 const V_KNEE: f64 = 0.74;
 /// The curve of the V's sides.
@@ -47,6 +54,11 @@ const HEM_POWER: f64 = 0.9;
 const DIP_KNEE: f64 = 0.60;
 /// How the angles bunch toward the front: `phi` goes as `|u|^FRONT_BIAS` for `u` from -1 to 1.
 const FRONT_BIAS: f64 = 1.5;
+
+/// The armhole's floor is flat within this many radians of the side (`phi = +-pi/2`)...
+const ARMHOLE_FLAT: f64 = 0.22;
+/// ...and climbs back to the rim over this many more.
+const ARMHOLE_RAMP: f64 = 0.70;
 
 /// The least gap between the V tip and the highest hem, as a fraction of the torso: under this the panel is a sliver.
 pub const MIN_PANEL: f64 = 0.08;
@@ -64,6 +76,8 @@ pub struct Profile {
     pub hem_side: f64,
     /// The hem at the centre back.
     pub hem_back: f64,
+    /// How far the armholes cut down from the rim at the sides; 0 for none (the prototype's).
+    pub armhole: f64,
 }
 
 impl Profile {
@@ -73,14 +87,21 @@ impl Profile {
     }
 
     /// The rim's height at angle `phi` (0 at the front): a power-curve notch in the front half, a shallow dip in the
-    /// back half.
+    /// back half, and an armhole cut into each side.
     pub fn top(&self, phi: f64) -> f64 {
         let (s, c) = (phi.sin().abs(), phi.cos());
-        if c >= 0.0 {
+        let neck = if c >= 0.0 {
             self.tip() + self.neck_depth * (s / V_KNEE).min(1.0).powf(V_POWER)
         } else {
             self.rim - BACK_DIP * (1.0 - s / DIP_KNEE).max(0.0).powi(2)
-        }
+        };
+        neck - self.armhole * self.cut(phi)
+    }
+
+    /// How much of the armhole is cut at `phi`: 1 on its floor, easing to 0 at its edges.
+    fn cut(&self, phi: f64) -> f64 {
+        let from_side = (phi.abs() - FRAC_PI_2).abs();
+        1.0 - sstep(ARMHOLE_FLAT, ARMHOLE_FLAT + ARMHOLE_RAMP, from_side)
     }
 
     /// The hem's height at angle `phi`. The two halves meet at the sides.
@@ -102,7 +123,7 @@ impl Profile {
     /// The least height of the rim over the highest hem: the panel's smallest extent, as a fraction of the torso.
     pub fn panel(&self) -> f64 {
         let hems = self.hem_front.max(self.hem_side).max(self.hem_back);
-        (self.tip() - hems).min(self.rim - BACK_DIP - hems)
+        (self.tip() - hems).min(self.rim - BACK_DIP - hems).min(self.rim - self.armhole - hems)
     }
 }
 
