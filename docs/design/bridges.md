@@ -335,7 +335,7 @@ a generic OSC sender), recorded as evidence.
 |---|---|---|---|---|
 | `vts_server.status` | query | `read` | may | `{}` → running, bound address, tools (name, developer, paired, connected, last request), refused counts by id, events not produced, the non-affiliation line; never a token |
 | `vts_server.catalog` | query | `perform` | may | `{}` → the subject (name, opaque id), hotkeys, expressions, the parameter table; what a tool may see |
-| `vts_server.feed` | live action | `perform` | refused unless the actor is a shim session (a `Transport::Plugin` session whose client starts `vts-`) | `{params, mode}` → the slot and gate; refused 454 / 453 as §5.3 |
+| `vts_server.feed` | live action | `perform` | refused unless the calling session id is in the shim's own table of the sessions it opened (the shim registers these ops and checks that table; the client name is never consulted) | `{params, mode}` → the slot and gate; refused 454 / 453 as §5.3 |
 | `vts_server.param_create` | live action | `perform` | as `feed` | `{name, min, max, default}` → created; over 100 refused |
 | `vts_server.param_delete` | live action | `perform` | as `feed` | `{name}` → deleted, its claims released, every armed slot that names it disarmed |
 | `vts_server.start` | live action | `perform` | never (`OpError::person_only`) | `{port?}` → binds if `bridges.vts_server.enabled` |
