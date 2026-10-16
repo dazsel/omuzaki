@@ -234,6 +234,16 @@ pub enum Verdict {
     Warn,
     /// The budget row applies to other tiers than the one the report claims, so it is not judged.
     OtherTier,
+    /// A `scaled` number for a row the spec never converts (latency, installer size): shown, never judged.
+    NotConverted,
+    /// A pessimistic GPU estimate with no central estimate of the same row in a `scaled` report. The pessimistic number is
+    /// only a warning beside the central one (spec §10), so alone it is a fault in the report and fails a gating run.
+    Unpaired,
+}
+
+/// Whether spec §10 never converts a row to another machine: "Latency and installer size: never converted."
+fn never_converted(key: &str) -> bool {
+    key.starts_with("latency.") || key == "installer.size"
 }
 
 /// Which findings a call wants.
@@ -309,7 +319,13 @@ impl Report {
             }
             comparable
         });
-        let rows = metrics.into_iter().map(|m| row(m, budgets, previous, class)).collect();
+        // A pessimistic GPU estimate counts as a warning only beside a central estimate of the same row.
+        let centrals: Vec<String> =
+            metrics.iter().filter(|m| m.estimate == Estimate::Central).map(|m| m.key.clone()).collect();
+        if class == Class::Scaled && metrics.iter().any(|m| never_converted(&m.key)) {
+            notes.push("latency and installer size are never converted (spec §10): shown, not judged".to_owned());
+        }
+        let rows = metrics.into_iter().map(|m| row(m, budgets, previous, class, &centrals)).collect();
         Self { schema: SCHEMA, class, machine, provenance: None, rows, notes }
     }
 
@@ -373,6 +389,7 @@ impl Report {
                     out.push(format!("{key}: over budget on the pessimistic estimate (warning)"));
                 }
                 Verdict::UnitMismatch => out.push(format!("{key}: unit differs from the budget")),
+                Verdict::Unpaired => out.push(format!("{key}: a pessimistic estimate without a central estimate")),
                 _ => {}
             }
             if r.metric.dropped > 0 {
@@ -472,13 +489,16 @@ impl Report {
     }
 }
 
-fn row(metric: Metric, budgets: &[Budget], previous: Option<&Report>, class: Class) -> Row {
+fn row(metric: Metric, budgets: &[Budget], previous: Option<&Report>, class: Class, centrals: &[String]) -> Row {
     // Spec §10 downgrades a pessimistic estimate only for a scaled GPU row; everything else is compared directly.
     let may_warn = class == Class::Scaled && metric.key.starts_with("gpu.") && metric.estimate == Estimate::Pessimistic;
     let budget = budgets.iter().find(|b| b.key == metric.key);
     let value = budget.and_then(|b| metric.statistic(b.statistic));
+    let unpaired = may_warn && !centrals.contains(&metric.key);
     let verdict = match (budget, budget.and_then(|b| b.limit), value) {
         (None, ..) => Verdict::NoBudget,
+        (Some(_), ..) if class == Class::Scaled && never_converted(&metric.key) => Verdict::NotConverted,
+        (Some(_), ..) if unpaired => Verdict::Unpaired,
         (Some(_), Some(l), _) if l.unit != metric.unit => Verdict::UnitMismatch,
         (Some(_), Some(l), Some(v)) if v <= l.value => Verdict::Within,
         (Some(_), Some(_), Some(_)) if may_warn => Verdict::Warn,
@@ -528,7 +548,7 @@ mod tests {
 
     const SPEC: &str = "## 10. P\n| Key | Item | Budget | Tier | Statistic | Gate |\n|-|-|-|-|-|-|\n\
 | `physics.step` | p | ≤ 0.5 ms | `R` | p95 | g |\n| `ram.runtime` | r | ≤ 400 MB | `R` | max over 5 min | g |\n| `gpu.frame` | f | ≤ 1.5 ms | `R`, `U` | p95 | g |\n\
-| `asr.live` | a | CPU ≤ 1.5 %, GPU ≤ 1 ms | `R` | mean | g |\n";
+| `asr.live` | a | CPU ≤ 1.5 %, GPU ≤ 1 ms | `R` | mean | g |\n| `latency.desktop` | l | ≤ 50 ms | `D` | p95 | g |\n";
 
     fn machine(vcpus: usize) -> Machine {
         Machine { vcpus, os: "linux".into(), arch: "x86_64".into() }
@@ -655,6 +675,33 @@ mod tests {
         assert_eq!(warned.violations(), ["gpu.frame: over budget on the pessimistic estimate (warning)"]);
         assert!(warned.to_markdown().contains("`gpu.frame` (pessimistic)"));
         assert_eq!(scaled(2000, 2000, Class::Scaled).failures(), ["gpu.frame: over budget",]);
+    }
+
+    #[test]
+    fn a_pessimistic_gpu_estimate_without_a_central_one_fails_and_judges_nothing() {
+        let alone = Report::build(
+            machine(4),
+            vec![us("gpu.frame", 1000).pessimistic()],
+            &parse_spec(SPEC).unwrap(),
+            None,
+            Class::Scaled,
+            vec![],
+        );
+        assert_eq!(alone.rows[0].verdict, Verdict::Unpaired);
+        assert_eq!(alone.judged(), 0, "so a strict scaled run reports NothingToJudge");
+        assert_eq!(alone.failures(), ["gpu.frame: a pessimistic estimate without a central estimate"]);
+    }
+
+    #[test]
+    fn a_scaled_latency_or_installer_row_is_shown_and_never_judged() {
+        let build = |metrics, class| Report::build(machine(4), metrics, &parse_spec(SPEC).unwrap(), None, class, vec![]);
+        let latency = Metric::single("latency.desktop", Unit::Ms, 10_000.0).unwrap();
+        let scaled = build(vec![latency.clone()], Class::Scaled);
+        assert_eq!(scaled.rows[0].verdict, Verdict::NotConverted);
+        assert_eq!((scaled.judged(), scaled.failures()), (0, Vec::<String>::new()));
+        assert!(scaled.notes.iter().any(|n| n.contains("never converted")));
+        // Measured on the machine itself, the same number is judged.
+        assert_eq!(build(vec![latency], Class::Measured).rows[0].verdict, Verdict::Over);
     }
 
     #[test]
