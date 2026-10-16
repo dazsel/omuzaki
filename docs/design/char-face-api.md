@@ -448,7 +448,7 @@ Body types (CB-04) and five-finger hands (RG-09) are P0, so the body kind's para
 | `hair_root` `hair_mid` `hair_tip` | the hair gradient |
 | `outfit_a` `outfit_b` `trim` | garments: two main colours and the accent |
 
-**Hooks for non-human templates (CB-05) and exploration (CB-93).** `BodyRegion` is `#[non_exhaustive]` so non-human regions (wings, tails, extra limbs) arrive as new variants. `Skeleton::new` in anim-api requires the 15 humanoid bones, so a non-human template needs a generic constructor there (under CB-05). Exploration needs every parameter's range: today `Check::range` only validates, so the inspector and CB-93 wait for range introspection (index gap G10: `Check` records ranges once it moves to `omuzaki-core`).
+**Hooks for non-human templates (CB-05) and exploration (CB-93).** `BodyRegion` is `#[non_exhaustive]` so non-human regions (wings, tails, extra limbs) arrive as new variants. `Skeleton::new` in anim-api requires the 15 humanoid bones, so a non-human template needs a generic constructor there (under CB-05). Exploration needs every parameter's range, and for the face profile it has them: `Check::range` records each range it checks as a `FieldRange`, `Validate::ranges` returns them (so they cannot drift from the checks), and `face.describe_style` exposes them. The inspector and CB-93 still wait for the same for body parameters (index gap G10: `Check` records ranges once it moves to `omuzaki-core`).
 
 ## Prototype crosswalk
 
