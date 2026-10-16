@@ -384,7 +384,7 @@ impl FakeBranches {
     }
 
     /// The session a new branch is made for. An agent makes branches only for its own session, and one it makes
-    /// without saying is made for it (design 8.2).
+    /// without saying is made for it (design 8.2); an agent with no session here has none to make it for.
     fn new_branch_owner(
         state: &FakeState,
         by: &Actor,
@@ -394,13 +394,13 @@ impl FakeBranches {
             return Ok(asked);
         }
         match (asked, Self::session_of(state, by)) {
+            (_, None) => Err(BranchError::Denied(
+                "an agent makes a branch for its own session, and no session of yours runs here".to_owned(),
+            )),
             (Some(asked), Some(own)) if asked != own => {
                 Err(BranchError::Denied("an agent makes a branch only for its own session".to_owned()))
             }
-            (Some(_), None) => {
-                Err(BranchError::Denied("no session of yours runs here to make a branch for".to_owned()))
-            }
-            (asked, own) => Ok(asked.or(own)),
+            (asked, Some(own)) => Ok(Some(asked.unwrap_or(own))),
         }
     }
 
@@ -688,7 +688,10 @@ impl Branches for FakeBranches {
     fn switch(&self, to: &BranchId, by: &Actor) -> Result<Switched, BranchError> {
         Self::person_only(by, "switching the folder")?;
         let mut state = lock(&self.state);
-        self.live(to)?;
+        // The destination has to be whole, like the lane a real switch would load: its head point and its document.
+        let target = self.live(to)?;
+        self.store.point(&target.head)?;
+        Self::document(&state, &target)?;
         let from = state.folder.clone();
         if from == *to {
             return Ok(Switched::new(from, to.clone()));
@@ -1859,14 +1862,185 @@ mod tests {
         assert_eq!(plain, Err(BranchError::PointNotFound(missing)));
         assert_eq!(seen(&fake), before, "nothing was written");
 
-        // Switching away from it fails the same way, and moves neither the folder nor a lane.
+        // Switching to it is refused before anything moves, and so is switching away once it is the folder.
         fake.set_document(&BranchId::main(), json!({"v": "main"}));
+        let aria = fork(&fake, "aria", &person())?;
         let events = fake.subscribe();
-        fake.switch(&id, &person())?;
+        assert_eq!(fake.switch(&id, &person()), Err(BranchError::PointNotFound(missing)));
+        fake.switch(&aria.id, &person())?;
+        let mut broken = aria.clone();
+        broken.head = missing;
+        store.put_branch(broken);
         let away = fake.switch(&BranchId::main(), &person());
         assert_eq!(away, Err(BranchError::PointNotFound(missing)));
-        assert_eq!(fake.folder(), id, "still where it was");
+        assert_eq!(fake.folder(), aria.id, "still where it was");
         assert_eq!(events.try_iter().filter(|e| matches!(e, BranchEvent::Switched { .. })).count(), 1);
+        Ok(())
+    }
+
+    /// Everything a call could change, as text: branches (bin included), points and their trees, the folder, the open
+    /// lanes, the next id, the documents.
+    fn everything(fake: &FakeBranches) -> String {
+        let store = fake.store();
+        let branches = store.list().unwrap_or_default();
+        let points: Vec<_> = lock(&store.state).points.iter().map(|(id, (p, t))| (*id, p.clone(), t.clone())).collect();
+        let this = store.this().map(|b| b.id).ok();
+        let state = lock(&fake.state);
+        format!(
+            "{branches:?} {points:?} {this:?} {:?} {:?} {} {:?}",
+            state.folder, state.open, state.next_id, state.docs
+        )
+    }
+
+    /// A project that can be refused in every way a fixture makes possible: an agent with a session on main, a branch
+    /// that agent made (with a point of its own), a branch in the bin, and branches the test scripted without a head
+    /// or without a document.
+    struct Rig {
+        fake: FakeBranches,
+        events: Receiver<BranchEvent>,
+        main: BranchId,
+        aria: BranchInfo,
+        mine: BranchInfo,
+        mine_point: PointId,
+        bad_head: BranchId,
+        no_doc: BranchId,
+        missing: PointId,
+        start: PointId,
+    }
+
+    fn refusal_rig() -> Result<Rig, Box<dyn Error>> {
+        let (fake, _) = fake()?;
+        agent_on_main(&fake);
+        let main = BranchId::main();
+        let aria = fork(&fake, "aria", &person())?;
+        let mine = fake.create(NewBranch::new(name("mine")?, main.clone()), &agent())?;
+        fake.set_document(&mine.id, json!({"v": "mine"}));
+        let mine_point = fake.checkpoint(&mine.id, "mine", None, &agent())?;
+        let missing = PointId(ContentHash::of(b"no such point"));
+        let start = fake.store().this()?.head;
+        let (bad_head, no_doc) = (BranchId::new("00000000000000a1")?, BranchId::new("00000000000000a2")?);
+        for (id, text, head) in [(&bad_head, "bad-head", missing), (&no_doc, "no-doc", start)] {
+            // Whole but for the one thing: it inherited main's first point, so main's states are its history.
+            let mut info = BranchInfo::new(id.clone(), name(text)?, head, 1, WallTime(0), person());
+            info.inherits = Contains::new().with(main.clone(), Version::new(1, start));
+            fake.store().put_branch(info);
+        }
+        fake.set_document(&bad_head, json!({"v": 1}));
+        fake.set_document(&aria.id, json!({"v": "aria"}));
+        fake.delete(&aria.id, &person())?;
+        let events = fake.subscribe();
+        Ok(Rig { fake, events, main, aria, mine, mine_point, bad_head, no_doc, missing, start })
+    }
+
+    /// Runs a call that must be refused, and checks it left the store as it found it and announced nothing.
+    macro_rules! check {
+        ($rig:expr, $what:expr, $call:expr) => {{
+            let before = everything(&$rig.fake);
+            let result = $call.map(|_| ());
+            assert!(result.is_err(), "{} was not refused", $what);
+            assert_eq!(everything(&$rig.fake), before, "{} changed the store", $what);
+            assert!($rig.events.try_recv().is_err(), "{} announced something", $what);
+        }};
+    }
+
+    fn new_branch(text: &str, from: &BranchId) -> Result<NewBranch, Box<dyn Error>> {
+        Ok(NewBranch::new(name(text)?, from.clone()))
+    }
+
+    fn nobody() -> Result<BranchId, Box<dyn Error>> {
+        Ok(BranchId::new("00000000000000ff")?)
+    }
+
+    #[test]
+    fn a_refused_create_or_checkpoint_leaves_the_store_as_it_was() -> Test {
+        let rig = refusal_rig()?;
+        let (fake, main) = (&rig.fake, &rig.main);
+        let stranger = Actor::Agent { id: "no session".to_owned(), model: None };
+        check!(rig, "create: taken name", fake.create(new_branch("mine", main)?, &person()));
+        check!(rig, "create: unknown source", fake.create(new_branch("x", &nobody()?)?, &person()));
+        check!(rig, "create: agent without a session", fake.create(new_branch("x", main)?, &stranger));
+        let for_twelve = new_branch("x", main)?.for_session(SessionId(12));
+        check!(rig, "create: agent without a session, for one", fake.create(for_twelve, &stranger));
+        let for_other = new_branch("x", main)?.for_session(SessionId(99));
+        check!(rig, "create: agent for another session", fake.create(for_other, &agent()));
+        check!(rig, "create: head missing", fake.create(new_branch("x", &rig.bad_head)?, &person()));
+        check!(rig, "create: no document", fake.create(new_branch("x", &rig.no_doc)?, &person()));
+        let foreign = new_branch("x", main)?.at(StateRef::point(rig.mine_point));
+        check!(rig, "create: another branch's point", fake.create(foreign, &person()));
+        let unknown_tx = new_branch("x", main)?.at(StateRef::tx(TxId(9)));
+        check!(rig, "create: unknown transaction", fake.create(unknown_tx, &person()));
+        fake.script_open_transaction(main, true);
+        check!(rig, "create: open transaction", fake.create(new_branch("x", main)?, &person()));
+        check!(rig, "checkpoint: open transaction", fake.checkpoint(main, "x", None, &person()));
+        fake.script_open_transaction(main, false);
+        check!(rig, "checkpoint: unknown branch", fake.checkpoint(&nobody()?, "x", None, &person()));
+        check!(rig, "checkpoint: head missing", fake.checkpoint(&rig.bad_head, "x", None, &person()));
+        check!(rig, "checkpoint: no document", fake.checkpoint(&rig.no_doc, "x", None, &person()));
+        let review = fake.checkpoint(&rig.bad_head, "x", Some(String::new()), &agent());
+        check!(rig, "checkpoint: review on a branch not its own", review);
+        Ok(())
+    }
+
+    #[test]
+    fn a_refused_switch_or_lane_leaves_the_store_as_it_was() -> Test {
+        let rig = refusal_rig()?;
+        let (fake, main) = (&rig.fake, &rig.main);
+        check!(rig, "switch: agent", fake.switch(&rig.mine.id, &agent()));
+        check!(rig, "switch: unknown", fake.switch(&nobody()?, &person()));
+        check!(rig, "switch: in the bin", fake.switch(&rig.aria.id, &person()));
+        check!(rig, "switch: head missing", fake.switch(&rig.bad_head, &person()));
+        check!(rig, "switch: no document", fake.switch(&rig.no_doc, &person()));
+        fake.script_open_transaction(main, true);
+        check!(rig, "switch: open transaction", fake.switch(&rig.mine.id, &person()));
+        fake.script_open_transaction(main, false);
+        check!(rig, "lane: unknown", fake.lane(&nobody()?));
+        check!(rig, "lane: nothing scripted", fake.lane(&rig.bad_head));
+
+        // The folder's own head is gone: the switch away cannot record it, so it opens and moves nothing.
+        let spare = fork(fake, "spare", &person())?;
+        fake.switch(&rig.mine.id, &person())?;
+        let mut broken = fake.store().get(&rig.mine.id).ok_or("mine")?;
+        broken.head = rig.missing;
+        fake.store().put_branch(broken);
+        rig.events.try_iter().for_each(drop); // the setup announced its own events
+        check!(rig, "switch: the folder's head missing", fake.switch(&spare.id, &person()));
+        Ok(())
+    }
+
+    #[test]
+    fn a_refused_rename_delete_undelete_review_or_restore_leaves_the_store_as_it_was() -> Test {
+        let rig = refusal_rig()?;
+        let (fake, main) = (&rig.fake, &rig.main);
+        let (mine, aria) = (&rig.mine.id, &rig.aria.id);
+        check!(rig, "rename: main", fake.rename(main, name("trunk")?, None, &person()));
+        check!(rig, "rename: taken name", fake.rename(mine, name("bad-head")?, None, &person()));
+        check!(rig, "rename: agent, not its branch", fake.rename(&rig.bad_head, name("x")?, None, &agent()));
+        check!(rig, "rename: unknown", fake.rename(&nobody()?, name("x")?, None, &person()));
+        check!(rig, "delete: main", fake.delete(main, &person()));
+        check!(rig, "delete: agent, not its branch", fake.delete(&rig.bad_head, &agent()));
+        check!(rig, "delete: already in the bin", fake.delete(aria, &person()));
+        fake.script_lane(mine, Arc::new(NoRunner), Arc::new(NoSessions));
+        fake.lane(mine)?;
+        rig.events.try_iter().for_each(drop); // the setup announced its own events
+        check!(rig, "delete: open lane", fake.delete(mine, &person()));
+        check!(rig, "undelete: not in the bin", fake.undelete(mine, &person()));
+        check!(rig, "undelete: agent, not its branch", fake.undelete(aria, &agent()));
+        fork(fake, "aria", &person())?;
+        rig.events.try_iter().for_each(drop);
+        check!(rig, "undelete: name taken", fake.undelete(aria, &person()));
+        check!(rig, "review: agent", fake.review(mine, ReviewDecision::MarkMerged, &agent()));
+        check!(rig, "review: nothing waiting", fake.review(mine, ReviewDecision::MarkMerged, &person()));
+
+        let all = Grants::person();
+        let start = StateRef::point(rig.start);
+        check!(rig, "restore: now", fake.restore(main, StateRef::Now, &person(), &all));
+        check!(rig, "restore: head missing", fake.restore(&rig.bad_head, start.clone(), &person(), &all));
+        check!(rig, "restore: no document", fake.restore(&rig.no_doc, start.clone(), &person(), &all));
+        check!(rig, "restore: unknown transaction", fake.restore(main, StateRef::tx(TxId(9)), &person(), &all));
+        let read_only = Grants::of([Scope::Read]);
+        check!(rig, "restore: read only", fake.restore(main, start.clone(), &person(), &read_only));
+        fake.script_open_transaction(main, true);
+        check!(rig, "restore: open transaction", fake.restore(main, start, &person(), &all));
         Ok(())
     }
 

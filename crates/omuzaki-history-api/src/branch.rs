@@ -904,7 +904,8 @@ pub trait Branches: Send + Sync {
     /// # Errors
     /// [`BranchError::NameTaken`], [`BranchError::NotFound`] for the source branch, [`BranchError::Busy`] when an open
     /// transaction on the source blocks the fork, [`BranchError::Invalid`] for a state that is not the source's,
-    /// [`BranchError::Denied`] for an agent that makes a branch for another session, [`BranchError::PointNotFound`]
+    /// [`BranchError::Denied`] for an agent that makes a branch for another session or has no session to make it
+    /// for, [`BranchError::PointNotFound`]
     /// when the source's head (or a point named by `new.at`) is not in the store, or [`BranchError::Io`].
     fn create(&self, new: NewBranch, by: &Actor) -> Result<BranchInfo, BranchError>;
 
@@ -930,8 +931,8 @@ pub trait Branches: Send + Sync {
     /// # Errors
     /// [`BranchError::NotFound`], [`BranchError::Busy`] for an open transaction or a changed file,
     /// [`BranchError::LaneLimit`], [`BranchError::Denied`] for an agent or a plugin, or
-    /// [`BranchError::PointNotFound`] when the folder branch's head is not in the store. Nothing changes when it
-    /// fails.
+    /// [`BranchError::PointNotFound`] when the head of the folder branch or of `to` is not in the store. Everything
+    /// that can fail is checked before anything changes, so a failed switch changes nothing.
     fn switch(&self, to: &BranchId, by: &Actor) -> Result<Switched, BranchError>;
 
     /// Renames a branch and sets its title. A person may rename any branch; an agent only one made for its session
