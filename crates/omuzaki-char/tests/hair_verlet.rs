@@ -579,3 +579,36 @@ fn a_seeded_sweep_of_overlapping_triples_leaves_no_tip_inside() {
     eprintln!("30 000 overlapping triples: deepest tip {deepest:.2e} m inside radius + margin");
     assert!(deepest <= 1e-4, "{deepest} m inside");
 }
+
+#[test]
+fn a_seeded_sweep_of_four_to_six_overlapping_spheres_leaves_no_tip_inside() {
+    // Spheres all reaching one spot (a head, neck, shoulders and chest stack): the fallback for one pair can land in any
+    // of the others, so this measures the worst residual at `UNWEDGE_ROUNDS` rounds beyond the pair and triple sweeps.
+    let unit = |rng: &mut Rng| {
+        Vec3::new(rng.range_f32(-1.0, 1.0), rng.range_f32(-1.0, 1.0), rng.range_f32(-1.0, 1.0)).normalize_or(Vec3::Y)
+    };
+    let mut deepest = f32::NEG_INFINITY;
+    let mut cases = 0_u32;
+    for count in 4_u32..=6 {
+        for seed in [1991, 7, 42] {
+            let mut rng = Rng::new(seed + u64::from(count));
+            for iterations in [1, 2] {
+                for _ in 0..3000 {
+                    let ca = Vec3::new(0.0, 0.7, 0.0);
+                    let ra = rng.range_f32(0.03, 0.1);
+                    let mut spheres = vec![(ca, ra)];
+                    for _ in 1..count {
+                        let r = rng.range_f32(0.02, 0.08);
+                        spheres.push((ca + unit(&mut rng) * (ra + r) * rng.range_f32(0.2, 0.95), r));
+                    }
+                    let near = ca.lerp(spheres[1].0, rng.range_f32(0.0, 1.0)) + unit(&mut rng) * rng.range_f32(0.0, 0.01);
+                    let parent = near + unit(&mut rng) * 0.1;
+                    deepest = deepest.max(wedged(&spheres, parent, near, iterations));
+                    cases += 1;
+                }
+            }
+        }
+    }
+    eprintln!("{cases} stacks of 4 to 6 overlapping spheres: deepest tip {deepest:.2e} m inside radius + margin");
+    assert!(deepest <= 1e-5, "{deepest} m inside");
+}
