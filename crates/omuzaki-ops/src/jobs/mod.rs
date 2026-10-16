@@ -166,6 +166,14 @@ impl Manager {
         awaited: bool,
     ) -> Result<JobInfo, OpError> {
         let meta = op.meta();
+        // Whose job this is, and whether that session may still start one. The lock order (manager, then document) is
+        // the one `announce` takes.
+        let owner = {
+            let state = lock(&self.env.state);
+            state.sessions.check_active(&req.actor)?;
+            state.sessions.session_ref(&req.actor)
+        };
+        let (session, on_behalf_of) = owner.map_or((None, None), |(id, person)| (Some(id), Some(person)));
         let lane = lanes::lane_of(&meta, plan.cost.as_ref());
         let reserved = reserve_micros(plan.cost.as_ref());
         let info = {
@@ -206,8 +214,8 @@ impl Manager {
                     op: meta.name.to_owned(),
                     label: meta.name.to_owned(),
                     actor: req.actor.clone(),
-                    on_behalf_of: None,
-                    session: None,
+                    on_behalf_of,
+                    session,
                     cause: req.cause.clone(),
                     lane,
                     state: JobState::Queued,
@@ -263,15 +271,34 @@ impl Manager {
     fn dispatch(self: &Arc<Self>, inner: &mut Inner) {
         while let Some((lane, id)) = inner.lanes.next_ready() {
             let now = self.now();
-            let Some(job) = inner.jobs.get_mut(&id) else {
-                inner.lanes.finished(lane);
-                continue;
+            // The session is re-admitted and the job marked running under one hold of the state lock, so a pause lands
+            // either before (the job never starts and `work` has no effect) or after (a running job, whose `finish`
+            // is refused). The grants are narrowed again: roots revoked while the job waited are not readable by `work`.
+            let started = {
+                let mut state = lock(&self.env.state);
+                let Some(job) = inner.jobs.get_mut(&id) else {
+                    inner.lanes.finished(lane);
+                    continue;
+                };
+                // The lane slot `next_ready` handed out is given back by `fail_start`, as for a failed spawn.
+                job.phase = Phase::Working;
+                match state.sessions.admit(&job.info.actor, &job.grants, Seconds(now)) {
+                    Ok(grants) => {
+                        job.grants = grants;
+                        job.thread_live = true;
+                        job.info.state = JobState::Running;
+                        job.info.started_at = Some(Seconds(now));
+                        job.deadline = now + job.cap_secs;
+                        Ok(())
+                    }
+                    Err(error) => Err(error),
+                }
             };
-            job.phase = Phase::Working;
-            job.thread_live = true;
-            job.info.state = JobState::Running;
-            job.info.started_at = Some(Seconds(now));
-            job.deadline = now + job.cap_secs;
+            if let Err(error) = started {
+                self.fail_start(inner, id, error);
+                continue;
+            }
+            let Some(job) = inner.jobs.get(&id) else { continue };
             self.announce(job);
             let mgr = Arc::clone(self);
             let spawned =

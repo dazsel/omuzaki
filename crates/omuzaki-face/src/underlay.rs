@@ -9,17 +9,58 @@
 //! Opacity is the overlay's strength: changing it is a material update, never a repaint. Alignment changes the pixels, so
 //! it rebuilds the layer. That rebuild runs on change, not per frame, and is the only place this module allocates.
 //!
-//! `face.underlay.set` is view state, not a document edit. Its op registration and the stage wiring are separate work; the request
-//! and view types land here, so the op is a thin wrapper over them.
+//! `face.underlay.set` is a job and view state, not a document edit (`ops/underlay`). `plan` only validates. The job
+//! reads the sheet from the asset store, asks the app for the head (`UnderlayTarget::head`), builds the layer and hands
+//! it to the app as plain data (`UnderlayImage`, `UnderlayTarget::show`), or, when only the opacity changed, sets
+//! just the opacity (`UnderlayTarget::set_opacity`). What the app does with it (the dynamic texture, the overlay before
+//! the Base overlay on the head material) is the stage's. The contract lives in `omuzaki-face-api`.
 
 use omuzaki_char_api::{CharId, face_texture_desc};
 use omuzaki_core::glam::{UVec2, Vec3};
-use omuzaki_face_api::{FaceError, FaceLayerId, FaceLayerSpec, FaceProjection, PlanarWindow, narrow};
+use omuzaki_face_api::underlay::UnderlayImage;
+use omuzaki_face_api::{FaceLayerId, FaceLayerSpec, FaceProjection, PlanarWindow, narrow};
 use omuzaki_ops_api::OpError;
 use omuzaki_render_api::{Mapping, Overlay, PixelRect, TextureDesc, TextureId, limits};
 use omuzaki_store_api::ContentHash;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::fmt;
+
+/// Why an underlay could not be built: the argument at fault and what is wrong with it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnderlayError {
+    /// The argument to fix: `sheet_face`, `px_per_m`, `align.scale`, `opacity`, `sheet_size`, ...
+    pub field: String,
+    /// What is wrong, naming the field.
+    pub message: String,
+}
+
+impl UnderlayError {
+    fn new(field: &str, message: String) -> Self {
+        Self { field: field.to_owned(), message }
+    }
+}
+
+impl fmt::Display for UnderlayError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for UnderlayError {}
+
+impl From<OpError> for UnderlayError {
+    /// An argument check's refusal, keeping its field (`align.scale`, ...).
+    fn from(error: OpError) -> Self {
+        Self { field: error.field.clone().unwrap_or_else(|| "align".to_owned()), message: error.message }
+    }
+}
+
+impl From<UnderlayError> for OpError {
+    fn from(error: UnderlayError) -> Self {
+        OpError::invalid(&error.field, error.message)
+    }
+}
 
 /// The locked sheet: straight-alpha sRGB RGBA8, rows top to bottom, as the asset store holds it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -32,24 +73,23 @@ impl<'a> Sheet<'a> {
     /// The sheet of `size` pixels with `rgba` pixels.
     ///
     /// # Errors
-    /// [`FaceError::Invalid`] naming `sheet_size` for a zero side, or `sheet_rgba` when its length is not
+    /// [`UnderlayError`] naming `sheet_size` for a zero side, or `sheet_rgba` when its length is not
     /// `4 * width * height`.
-    pub fn new(size: UVec2, rgba: &'a [u8]) -> Result<Self, FaceError> {
+    pub fn new(size: UVec2, rgba: &'a [u8]) -> Result<Self, UnderlayError> {
         if size.x == 0 || size.y == 0 {
-            return Err(FaceError::Invalid(format!(
-                "sheet_size is {}x{}; both sides must be at least 1",
-                size.x, size.y
-            )));
+            return Err(UnderlayError::new(
+                "sheet_size",
+                format!("sheet_size is {}x{}; both sides must be at least 1", size.x, size.y),
+            ));
         }
-        let expected = byte_len(size)
-            .ok_or_else(|| FaceError::Invalid(format!("sheet_size {}x{} is too large", size.x, size.y)))?;
+        let expected = byte_len(size).ok_or_else(|| {
+            UnderlayError::new("sheet_size", format!("sheet_size {}x{} is too large", size.x, size.y))
+        })?;
         if rgba.len() != expected {
-            return Err(FaceError::Invalid(format!(
-                "sheet_rgba has {} bytes; a {}x{} RGBA sheet needs {expected}",
-                rgba.len(),
-                size.x,
-                size.y
-            )));
+            return Err(UnderlayError::new(
+                "sheet_rgba",
+                format!("sheet_rgba has {} bytes; a {}x{} RGBA sheet needs {expected}", rgba.len(), size.x, size.y),
+            ));
         }
         Ok(Self { size, rgba })
     }
@@ -167,73 +207,129 @@ impl Registration {
     }
 }
 
+/// The shape of an underlay before any pixel exists: its size and where it lands. Cheap, so `plan` can check a request
+/// against it without building anything.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Geometry {
+    spec: FaceLayerSpec,
+    window: PlanarWindow,
+}
+
+impl Geometry {
+    /// The Base layer's size and window for `projection` and a head centred at `head_centre` in bind space, at
+    /// `px_per_m`.
+    ///
+    /// # Errors
+    /// [`UnderlayError`] naming `px_per_m` when it is not finite and above zero, or when the layer's side would exceed
+    /// [`limits::GUARANTEED_TEXTURE_SIZE`].
+    pub fn new(projection: &FaceProjection, head_centre: Vec3, px_per_m: f32) -> Result<Self, UnderlayError> {
+        // Checked before sizing: a NaN or zero density would otherwise round the layer to 1x1 without complaint.
+        if !(px_per_m.is_finite() && px_per_m > 0.0) {
+            return Err(UnderlayError::new(
+                "px_per_m",
+                format!("px_per_m is {px_per_m}; it must be finite and above zero"),
+            ));
+        }
+        let spec = FaceLayerSpec::for_layer(FaceLayerId::Base, projection, px_per_m);
+        let (w, h) = spec.size_px();
+        let limit = limits::GUARANTEED_TEXTURE_SIZE;
+        if w > limit || h > limit {
+            return Err(UnderlayError::new(
+                "px_per_m",
+                format!("px_per_m {px_per_m} makes the underlay {w}x{h} px; a side may be at most {limit} px"),
+            ));
+        }
+        Ok(Self { spec, window: projection.planar(FaceLayerId::Base, head_centre) })
+    }
+
+    /// The layer's width and height in pixels.
+    pub fn size(&self) -> UVec2 {
+        let (w, h) = self.spec.size_px();
+        UVec2::new(w, h)
+    }
+
+    /// Where the underlay lands in bind space: the Base layer's window.
+    pub fn window(&self) -> PlanarWindow {
+        self.window
+    }
+}
+
 /// Builds underlays. `Underlay::new` is the one constructor; the layer it returns owns the pixels.
 pub struct Underlay;
 
 impl Underlay {
     /// The underlay of `sheet`: the pixels of `sheet_face` (the sheet's face rectangle, in sheet pixels) at the Base
-    /// layer's resolution (`px_per_m`), moved by `align`. Its window is the Base layer's window over `projection` for a
-    /// head centred at `head_centre` in bind space, and its opacity starts at 1.
+    /// layer's resolution (`geometry`), moved by `align`. Its window is the Base layer's window, and its opacity starts
+    /// at 1.
     ///
     /// The sample at each layer pixel centre is bilinear over premultiplied colour, so a half-transparent sheet pixel
     /// does not darken its neighbours. At identity alignment and a sheet face the same size as the layer, every layer
     /// pixel reads exactly one sheet pixel (the 1:1 case).
     ///
     /// # Errors
-    /// [`FaceError::Invalid`] naming `sheet_face` when it is empty or leaves the sheet; naming `px_per_m` when it is not
-    /// finite and above zero, or when the layer's side would exceed [`limits::GUARANTEED_TEXTURE_SIZE`]; or naming the
-    /// `align` field at fault (see [`UnderlayAlign::check`]). Every check runs before the pixel buffer is allocated.
+    /// [`UnderlayError`] naming `sheet_face` when it is empty or leaves the sheet, or the `align` field at fault (see
+    /// [`UnderlayAlign::check`]). Every check runs before the pixel buffer is allocated.
     // The name is deliberate: this constructor builds the layer, so the return type is not `Self`.
     #[allow(clippy::new_ret_no_self)]
     pub fn new(
         sheet: &Sheet<'_>,
         sheet_face: PixelRect,
-        projection: &FaceProjection,
-        head_centre: Vec3,
-        px_per_m: f32,
+        geometry: &Geometry,
         align: &UnderlayAlign,
-    ) -> Result<UnderlayLayer, FaceError> {
+    ) -> Result<UnderlayLayer, UnderlayError> {
+        match Self::build_unless(sheet, sheet_face, geometry, align, &|| false)? {
+            Some(layer) => Ok(layer),
+            // `stop` above never says stop, so this is not reached; it is an error rather than a panic all the same.
+            None => Err(UnderlayError::new("underlay", "the build was stopped".to_owned())),
+        }
+    }
+
+    /// As [`Underlay::new`], but asks `stop` every [`STOP_EVERY_ROWS`] rows and gives up with `None` as soon as it says
+    /// so. A 4096 x 4096 layer is 16.7 million samples; a job passes its cancellation here so it ends promptly.
+    ///
+    /// # Errors
+    /// As [`Underlay::new`].
+    pub fn build_unless(
+        sheet: &Sheet<'_>,
+        sheet_face: PixelRect,
+        geometry: &Geometry,
+        align: &UnderlayAlign,
+        stop: &dyn Fn() -> bool,
+    ) -> Result<Option<UnderlayLayer>, UnderlayError> {
         check_face(sheet, sheet_face)?;
-        align.check().map_err(|e| FaceError::Invalid(e.to_string()))?;
-        // Checked before sizing: a NaN or zero density would otherwise round the layer to 1x1 without complaint.
-        if !(px_per_m.is_finite() && px_per_m > 0.0) {
-            return Err(FaceError::Invalid(format!("px_per_m is {px_per_m}; it must be finite and above zero")));
-        }
-        let spec = FaceLayerSpec::for_layer(FaceLayerId::Base, projection, px_per_m);
-        let (w, h) = spec.size_px();
-        let limit = limits::GUARANTEED_TEXTURE_SIZE;
-        if w > limit || h > limit {
-            return Err(FaceError::Invalid(format!(
-                "px_per_m {px_per_m} makes the underlay {w}x{h} px; a side may be at most {limit} px"
-            )));
-        }
-        let texture_desc = face_texture_desc(&spec);
-        let registration = Registration::new(sheet_face, UVec2::new(w, h), *align);
+        align.check()?;
+        let size = geometry.size();
+        let texture_desc = face_texture_desc(&geometry.spec);
+        let registration = Registration::new(sheet_face, size, *align);
         let mut rgba = Vec::with_capacity(texture_desc.byte_len());
-        for y in 0..h {
-            for x in 0..w {
+        for y in 0..size.y {
+            if y % STOP_EVERY_ROWS == 0 && stop() {
+                return Ok(None);
+            }
+            for x in 0..size.x {
                 let at = [f64::from(x) + 0.5, f64::from(y) + 0.5];
                 rgba.extend_from_slice(&sample(sheet, registration.to_sheet(at)));
             }
         }
-        Ok(UnderlayLayer {
-            texture_desc,
-            rgba,
-            window: projection.planar(FaceLayerId::Base, head_centre),
-            opacity: 1.0,
-        })
+        Ok(Some(UnderlayLayer { texture_desc, rgba, window: geometry.window, opacity: 1.0 }))
     }
 }
 
+/// How many rows are built between two asks of the stop flag: 16 rows of a 4096-wide layer is about 65 000 samples.
+pub const STOP_EVERY_ROWS: u32 = 16;
+
 /// Rejects a face rectangle that is empty or reaches past the sheet, naming the field at fault.
-fn check_face(sheet: &Sheet<'_>, face: PixelRect) -> Result<(), FaceError> {
+fn check_face(sheet: &Sheet<'_>, face: PixelRect) -> Result<(), UnderlayError> {
     if face.width > 0 && face.height > 0 && face.fits(sheet.size) {
         return Ok(());
     }
-    Err(FaceError::Invalid(format!(
-        "sheet_face is {}x{} at ({}, {}); it must be non-empty and inside the {}x{} sheet",
-        face.width, face.height, face.x, face.y, sheet.size.x, sheet.size.y
-    )))
+    Err(UnderlayError::new(
+        "sheet_face",
+        format!(
+            "sheet_face is {}x{} at ({}, {}); it must be non-empty and inside the {}x{} sheet",
+            face.width, face.height, face.x, face.y, sheet.size.x, sheet.size.y
+        ),
+    ))
 }
 
 /// Bilinear sample of the sheet at continuous point `at`, premultiplied and rounded to `0..=255`. Texel centres sit at
@@ -306,10 +402,10 @@ impl UnderlayLayer {
     /// Sets the overlay strength. It changes no pixels, so it is a material update, not a repaint.
     ///
     /// # Errors
-    /// [`FaceError::Invalid`] naming `opacity` unless it is a number within `0..=1`.
-    pub fn set_opacity(&mut self, opacity: f64) -> Result<(), FaceError> {
+    /// [`UnderlayError`] naming `opacity` unless it is a number within `0..=1`.
+    pub fn set_opacity(&mut self, opacity: f64) -> Result<(), UnderlayError> {
         if !opacity_in_range(opacity) {
-            return Err(FaceError::Invalid(format!("opacity is {opacity}; it must be between 0 and 1")));
+            return Err(UnderlayError::new("opacity", format!("opacity is {opacity}; it must be between 0 and 1")));
         }
         self.opacity = narrow(opacity);
         Ok(())
@@ -323,6 +419,19 @@ impl UnderlayLayer {
             texture,
             mapping: Mapping::Planar { min: w.min, max: w.max, fade_from: w.fade_from, fade_to: w.fade_to },
             strength: self.opacity,
+        }
+    }
+}
+
+impl UnderlayLayer {
+    /// The layer as the plain data the app takes, tagged with the `key` of what it was built from. Moves the pixels.
+    pub fn into_image(self, key: String) -> UnderlayImage {
+        UnderlayImage {
+            key,
+            size: self.texture_desc.size,
+            rgba: self.rgba,
+            opacity: self.opacity,
+            placement: self.window,
         }
     }
 }
@@ -349,16 +458,20 @@ pub struct UnderlayView {
 }
 
 impl UnderlayView {
+    /// The view of an underlay placed at `window` with strength `opacity`.
+    pub fn new(window: PlanarWindow, opacity: f32) -> Self {
+        Self {
+            min: window.min.to_array(),
+            max: window.max.to_array(),
+            fade_from: window.fade_from,
+            fade_to: window.fade_to,
+            opacity,
+        }
+    }
+
     /// The description of `layer`.
     pub fn of(layer: &UnderlayLayer) -> Self {
-        let w = layer.window;
-        Self {
-            min: w.min.to_array(),
-            max: w.max.to_array(),
-            fade_from: w.fade_from,
-            fade_to: w.fade_to,
-            opacity: layer.opacity,
-        }
+        Self::new(layer.window, layer.opacity)
     }
 }
 
@@ -366,6 +479,24 @@ impl UnderlayView {
 /// no document and returns an [`UnderlayView`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {
+            "character": "mira",
+            "asset": "0000000000000000000000000000000000000000000000000000000000000000",
+            "opacity": 0.5,
+            "align": { "offset": [0.0, 0.0], "scale": 1.0, "rotation": 0.0 },
+            "sheet_face": { "x": 0, "y": 0, "width": 512, "height": 512 },
+        },
+        {
+            "character": "mira",
+            "asset": "0000000000000000000000000000000000000000000000000000000000000000",
+            "opacity": 0.25,
+            "align": { "offset": [4.0, -2.0], "scale": 1.02, "rotation": 0.01 },
+        },
+    ],
+    "x-omuzaki-fixture" = "demo"
+))]
 pub struct UnderlaySet {
     /// The character whose head the sheet is traced onto.
     pub character: CharId,
@@ -375,6 +506,11 @@ pub struct UnderlaySet {
     pub opacity: f64,
     /// Fine registration of the sheet over the face.
     pub align: UnderlayAlign,
+    /// The sheet's face rectangle, in sheet pixels. Left out, the app's own rectangle for the character's locked sheet
+    /// is used ([`UnderlayHead::sheet_face`](omuzaki_face_api::underlay::UnderlayHead::sheet_face)); the op refuses when
+    /// there is neither.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sheet_face: Option<PixelRect>,
 }
 
 impl UnderlaySet {

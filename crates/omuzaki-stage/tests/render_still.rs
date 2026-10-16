@@ -13,6 +13,12 @@ use omuzaki_render_mock::MockRenderer;
 use omuzaki_stage::StageError;
 use omuzaki_stage::ops::render::still::{Shot, StillLight, StillSpec, encode_png, render_stills};
 use omuzaki_stage::recipe::LightRig;
+use omuzaki_stage::scene::frame::frame;
+use omuzaki_stage::scene::landmarks::Landmarks;
+use omuzaki_stage_api::{CameraDef, Framing};
+
+#[path = "scene/templates.rs"]
+mod templates;
 
 const SIDE: u32 = 64;
 
@@ -196,4 +202,94 @@ fn a_shot_renders_the_same_pixels_at_any_position() {
     let mut renderer = MockRenderer::new();
     let stills = render_stills(&mut renderer, character(), &spec, &[front(), side(), front()]).expect("renders");
     assert_eq!(stills[0].image, stills[2].image, "the same shot at positions 0 and 2 is identical");
+}
+
+/// #1978: a still shows the character in its base pose, the pose its landmarks are measured in, so the hands preset
+/// puts the hands, which hang out at the sides in a template's bind pose, in the middle of the frame. In the T-pose
+/// the hands are elsewhere and the middle band at the sides is empty background.
+#[test]
+fn the_hands_shot_shows_the_hands_at_the_sides_of_the_middle_band() {
+    let cell = UVec2::new(240, 135);
+    let aspect = 16.0 / 9.0;
+    for template in templates::TEMPLATES {
+        let built = templates::build(template);
+        let landmarks = Landmarks::measure(&built).expect("the template measures");
+        let camera = frame(Framing::Hands, &landmarks, &CameraDef::preset(Framing::Hands), aspect).expect("it frames");
+        let mut still_spec = spec();
+        still_spec.size = cell;
+        let stills =
+            render_stills(&mut MockRenderer::new(), built, &still_spec, &[Shot::new(camera)]).expect("it renders");
+        let image = &stills[0].image;
+        let pixel = |x: u32, y: u32| {
+            let at = ((y * cell.x + x) * 4) as usize;
+            [image.rgba8[at], image.rgba8[at + 1], image.rgba8[at + 2]]
+        };
+        let background = pixel(0, 0);
+        // The hand tips stand at about 0.15 and 0.85 of the width, at the height of the middle of the frame.
+        let band = (cell.y * 2 / 5)..(cell.y * 3 / 5);
+        for (side, columns) in [("left", 0..cell.x / 4), ("right", cell.x * 3 / 4..cell.x)] {
+            let skin = band
+                .clone()
+                .flat_map(|y| columns.clone().map(move |x| (x, y)))
+                .filter(|&(x, y)| pixel(x, y) != background)
+                .count();
+            assert!(skin > 20, "{template}: {skin} pixels of the {side} hand in the middle band");
+        }
+    }
+}
+
+/// Codex on #2177: the warm-up of the springs and runtimes (hair here) runs under the base pose too, not under the
+/// T-pose the stage starts in. The mock's bind turns the head, which the head's hair chain follows; the reference is
+/// the same sequence on a stage driven by hand, base pose first.
+#[test]
+fn the_runtimes_settle_under_the_base_pose() {
+    use omuzaki_anim_api::{ChannelBuf, HumanoidBone, HumanoidPose};
+    use omuzaki_core::glam::Quat;
+    use omuzaki_render_api::{AlphaEncoding, TargetDesc};
+    use omuzaki_stage::UploadOptions;
+    use omuzaki_stage::frame::face::{FaceRig, SETTLE_STEPS};
+    use omuzaki_stage::frame::{FrameInput, Stage, StageClock};
+
+    let turned = || {
+        let mut built = character();
+        built.rig.bind.set(HumanoidBone::Head, Quat::from_rotation_z(0.6));
+        built
+    };
+    let built = turned();
+    let shot = front();
+    let spec = spec();
+    let stills =
+        render_stills(&mut MockRenderer::new(), turned(), &spec, std::slice::from_ref(&shot)).expect("renders");
+
+    let mut renderer = MockRenderer::new();
+    let target =
+        renderer.create_target(&TargetDesc { size: spec.size, alpha: AlphaEncoding::Straight }).expect("a target");
+    let mut scene = omuzaki_render_api::Scene::new(shot.camera);
+    scene.lights.clone_from(&spec.light.lights);
+    scene.background = spec.light.background;
+    scene.post = spec.light.post;
+    scene.outline_light = spec.light.outline_light;
+    let mut base = HumanoidPose::REST;
+    omuzaki_stage::frame::pose::seed_base_pose(&built.rig, &mut base);
+    let mut stage = Stage::new(
+        &mut renderer,
+        built,
+        UploadOptions::default(),
+        scene,
+        target,
+        Quality::offline(),
+        StageClock::fixed(60.0),
+    )
+    .expect("the stage starts");
+    stage.set_face(&mut renderer, FaceRig::standard()).expect("the face binds");
+    let frame = FrameInput { pose: base, ..FrameInput::default() };
+    stage.tick(&mut renderer, &frame).expect("a frame");
+    stage.settle(SETTLE_STEPS);
+    stage.tick(&mut renderer, &frame).expect("a frame");
+    stage.scene_mut().camera = shot.camera;
+    let shown = FrameInput { channels: ChannelBuf::NEUTRAL, ..frame };
+    stage.redraw(&mut renderer, &shown).expect("a redraw");
+    let by_hand = renderer.read_target(stage.target()).expect("the target reads");
+    stage.release(&mut renderer).expect("released");
+    assert_eq!(stills[0].image, by_hand, "the still is the base pose settled under the base pose");
 }
