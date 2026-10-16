@@ -468,7 +468,9 @@ fn deleting_the_active_profile_is_one_event_attributed_to_the_actor_who_asked() 
     let got = events.drain();
     assert_eq!(got.len(), 1, "one swap and one event for the switch and the delete together");
     assert_eq!(got[0].cause, ChangeCause::ProfileSwitched { from: Some(p), to: None });
-    assert!(s.changes(5).iter().take(1).all(|c| c.actor == agent()), "never attributed to the system");
+    let newest = s.changes(1);
+    assert_eq!(newest.len(), 1, "the delete is logged");
+    assert_eq!(newest[0].actor, agent(), "never attributed to the system");
 }
 
 #[test]
@@ -486,7 +488,9 @@ fn reload_applies_hand_edits_as_one_event_with_the_reloaded_cause() {
     let keys: Vec<_> = got[0].changes.iter().map(|c| c.key.as_str()).collect();
     assert_eq!(keys, ["quality.tier", "ui.scale"]);
     assert_eq!((s.get::<UiScale>().unwrap(), s.get::<QualityTier>().unwrap()), (150, Tier::High));
-    assert!(s.changes(2).iter().all(|c| c.actor == agent()));
+    let log = s.changes(2);
+    assert_eq!(log.len(), 2, "both reloaded keys are logged");
+    assert!(log.iter().all(|c| c.actor == agent()));
     // Reloading again, with the files as they were read, changes nothing: no swap, no event.
     let snapshot = s.snapshot();
     assert_eq!(s.reload(Mode::Apply, &agent()).unwrap().changed, 0);
@@ -740,4 +744,20 @@ fn overwriting_a_profile_keeps_a_rejected_value_it_did_not_write() {
     assert_eq!(s.findings().len(), 1);
     s.reload(Mode::Apply, &person()).unwrap();
     assert_eq!(s.findings().len(), 1, "the rejected raw entry is still in the profile's file");
+}
+
+#[test]
+fn canonically_equivalent_profile_names_are_one_name() {
+    let s = MemorySettings::default();
+    let composed = "caf\u{e9}";
+    let decomposed = "cafe\u{301}";
+    let p = s.save_profile(composed, ProfileSource::Current, false, Mode::Apply, &person()).unwrap();
+    let again = s.save_profile(decomposed, ProfileSource::Current, false, Mode::Apply, &person());
+    assert!(matches!(again, Err(ref e) if matches!(e.kind, SettingErrorKind::ProfileExists { .. })), "{again:?}");
+    let other = s.save_profile("Other", ProfileSource::Current, false, Mode::Apply, &person()).unwrap();
+    let renamed = s.rename_profile(&other.id, decomposed, Mode::Apply, &person());
+    assert!(renamed.is_err(), "rename onto an equivalent name conflicts");
+    let over = s.save_profile(decomposed, ProfileSource::Current, true, Mode::Apply, &person()).unwrap();
+    assert_eq!((over.id, over.name.as_str()), (p.id, composed), "overwrite finds the stored profile");
+    assert_eq!(s.profiles().len(), 2);
 }

@@ -35,6 +35,7 @@ use omuzaki_settings_api::event::{
 };
 use omuzaki_settings_api::meta::{Apply, InProfile, SettingScope};
 use omuzaki_settings_api::profile::{ProfileId, ProfileInfo, ProfileSource, validate_name};
+use unicode_normalization::UnicodeNormalization;
 use omuzaki_settings_api::registry::{self, SettingRegistration};
 use omuzaki_settings_api::service::{Layer, ListFilter, Resolved, Settings, Snapshot, Source};
 use omuzaki_settings_api::session::{SessionState, SessionStore, WindowGeometry};
@@ -151,13 +152,22 @@ fn effective(base: &BTreeMap<String, Value>, active: Option<(&ProfileId, &Profil
     Snapshot::new(entries)
 }
 
+/// A profile name as the store keeps it: trimmed and checked by the contract, then in NFC, so canonically equivalent
+/// spellings (`"é"` and `"e\u{301}"`) are one name for matching, overwrite and conflict checks.
+fn profile_name(raw: &str) -> Result<String, SettingError> {
+    Ok(validate_name(raw)?.nfc().collect())
+}
+
+/// The keys whose value differs. Every snapshot holds every registered key, so a key absent from `before` is a broken
+/// invariant: it is reported as a change from its default rather than silently dropped.
 fn diff(before: &Snapshot, after: &Snapshot) -> Vec<Change> {
     after
         .iter()
         .filter_map(|(key, now, _)| {
-            let was = before.value(key)?;
-            let apply = registry::find(key).map_or(Apply::Live, |r| r.meta.apply);
-            (was != now).then(|| Change::new(key, was.clone(), now.clone(), apply))
+            let reg = registry::find(key);
+            let was = before.value(key).cloned().unwrap_or_else(|| reg.map_or(Value::Null, |r| r.default_json()));
+            let apply = reg.map_or(Apply::Live, |r| r.meta.apply);
+            (&was != now).then(|| Change::new(key, was, now.clone(), apply))
         })
         .collect()
 }
@@ -473,7 +483,7 @@ impl Settings for MemorySettings {
         mode: Mode,
         by: &Actor,
     ) -> Result<ProfileInfo, SettingError> {
-        let name = validate_name(name)?;
+        let name = profile_name(name)?;
         let mut st = locked(&self.state);
         let values = match from {
             ProfileSource::Profile(id) => st.live.profiles.get(&id).ok_or_else(|| unknown_profile(&id))?.values.clone(),
@@ -511,7 +521,7 @@ impl Settings for MemorySettings {
     }
 
     fn rename_profile(&self, id: &ProfileId, name: &str, mode: Mode, by: &Actor) -> Result<ProfileInfo, SettingError> {
-        let name = validate_name(name)?;
+        let name = profile_name(name)?;
         let mut st = locked(&self.state);
         let plan = st.plan(|layers| {
             if layers.profiles.iter().any(|(other, p)| other != id && p.name == name) {

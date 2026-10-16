@@ -4234,6 +4234,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "unicode-normalization",
 ]
 
 [[package]]
