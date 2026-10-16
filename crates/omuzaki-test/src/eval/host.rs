@@ -374,8 +374,11 @@ fn open_runner(project: &Path, connections: &Connections) -> Result<Arc<dyn Runn
     Ok(open_executor(project, connections)?.0)
 }
 
+/// A project's executor, as the runner and as the session registry.
+type Opened = (Arc<dyn Runner>, Arc<dyn Sessions>);
+
 /// The executor of `project`, as the runner it is and as the session registry it holds.
-fn open_executor(project: &Path, connections: &Connections) -> Result<(Arc<dyn Runner>, Arc<dyn Sessions>), HostError> {
+fn open_executor(project: &Path, connections: &Connections) -> Result<Opened, HostError> {
     // The ops are linked into the binary that calls this; `link()` keeps the linker from dropping them (ADR 0015).
     omuzaki_cli::link();
     let executor = omuzaki_cli::session::open_executor_with(&cli_for(project)?, connections)
