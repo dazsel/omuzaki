@@ -1,6 +1,6 @@
 [package]
 name = "omuzaki-test"
-description = "Test harness: tolerant golden-image comparison, per-branch golden manifests in git over a content-addressed image store, and the `omuzaki-test` CLI."
+description = "Test harness: tolerant golden-image comparison, per-branch golden manifests in git over a content-addressed image store, the agent eval harness, and the `omuzaki-test` CLI."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,26 +11,47 @@ repository.workspace = true
 [dependencies]
 blake3.workspace = true
 clap.workspace = true
+# A random token for the rating page's session (the OS source, as `omuzaki-mcp` uses for its access tokens).
+getrandom.workspace = true
 image.workspace = true
+# The scripted driver is an MCP client of the in-process (or spawned) server: the child-process pipes are plain async
+# streams, and the duplex pipe of the in-process host needs tokio's io utilities.
+rmcp = { workspace = true, features = ["client", "transport-async-rw"] }
+tokio = { workspace = true, features = ["io-util", "process", "time"] }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# `FileSource` pins are SHA-256 (ADR 0017): the eval-set store indexes its items by it.
+sha2.workspace = true
 thiserror.workspace = true
 toml.workspace = true
+# `TestSetKind` and `FileSource`: the eval sets are what a model suite (`Slot::evaluate`) reads its fixtures from.
+omuzaki-ai-api = { path = "../omuzaki-ai-api" }
 omuzaki-core = { path = "../omuzaki-core" }
+# Fixtures start from an empty project folder: `Project::create` makes it.
+omuzaki-doc = { path = "../omuzaki-doc" }
+# The in-process host builds the runner with the constructor `omuzaki mcp` uses (`session::open_runner`), so an eval
+# cannot drift from the product (design 6.1), and calls `link()` so the ops are linked in.
+omuzaki-cli = { path = "../omuzaki-cli" }
+# `Runner::get` takes a `DocPath`, which `omuzaki-ops-api` does not re-export: the `doc.*` checks read snapshots with it.
+omuzaki-doc-api = { path = "../omuzaki-doc-api" }
+# The MCP catalog names every tool after its op (`face_set_profile` for `face.set_profile`): the transcript is read in op
+# names through it (`ToolNames`), and the scripted driver serves the runner with it (src/eval/host.rs).
+omuzaki-mcp = { path = "../omuzaki-mcp" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
 
 [dev-dependencies]
 tempfile.workspace = true
 # The eval check library's tests (tests/eval_checks.rs): the shared mock runner over an in-memory document, with demo ops.
-omuzaki-doc-api = { path = "../omuzaki-doc-api" }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 omuzaki-ops-mock = { path = "../omuzaki-ops-mock" }
 # The macro recorder and player over the real executor (tests/macros.rs): an implementation crate may not depend on the
 # executor, so the end-to-end tests live here.
 omuzaki-ops = { path = "../omuzaki-ops" }
 omuzaki-script = { path = "../omuzaki-script" }
+# The render checks fetch the renders both projects made from one asset store (tests/eval_checks_render.rs).
+omuzaki-store-mock = { path = "../omuzaki-store-mock" }
 # The real-format round trip (tests/gather_real_gltf.rs): the gather of `omuzaki-io-ops` through omuzaki-io-gltf, which no
 # implementation crate may test against.
 omuzaki-char-api = { path = "../omuzaki-char-api" }
@@ -42,15 +63,16 @@ omuzaki-io-ops = { path = "../omuzaki-io-ops" }
 # The real-model tests and bench of the face tracker (tests/track_models.rs, benches/track.rs): an implementation crate
 # can't dev-depend on the `onnx` runtime, so the tracker meets it here. Gated on OMUZAKI_TRACK_MODELS + OMUZAKI_ORT_CACHE.
 criterion.workspace = true
-omuzaki-ai-api = { path = "../omuzaki-ai-api" }
 omuzaki-ai-ort = { path = "../omuzaki-ai-ort" }
 omuzaki-track = { path = "../omuzaki-track" }
-# The runtime-archive source of those tests checks the pinned SHA-256 (ADR 0017).
-sha2.workspace = true
 
 [[bench]]
 name = "track"
 harness = false
+
+# `link()` calls for the crates that register and are linked here (`omuzaki-cli`, `omuzaki-mcp`): ADR 0015, ADR 0054 section 6.
+[build-dependencies]
+omuzaki-link-build = { path = "../omuzaki-link-build" }
 
 [lints]
 workspace = true
@@ -58,5 +80,6 @@ workspace = true
 # Native only: test harness on the build machine
 [package.metadata.omuzaki]
 kind = "App"
-summary = "golden-image compare (tolerant, premultiplied), bless, evidence reports and PR comments, `verify` of manifests against the object store, and a branch-safe `gc` of unreferenced objects"
+summary = "golden-image compare (tolerant, premultiplied), bless, evidence reports and PR comments, `verify` of manifests against the object store, and a branch-safe `gc` of unreferenced objects; and the agent eval harness (`eval`): checks, scripted driver, runner, gate, eval sets, rating page and lint"
 wasm = false
+registers = true

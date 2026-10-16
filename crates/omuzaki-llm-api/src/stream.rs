@@ -223,7 +223,19 @@ impl TurnStream {
         let Some(source) = self.source.as_mut() else {
             return Ok(Next::End);
         };
-        match source.poll(wait) {
+        let polled = source.poll(wait);
+        // A cancel that lands while the poll blocks can race with any outcome: the provider's task may finish the
+        // channel (`End`), or an event or error may already be queued. The contract is that the first call after
+        // `cancel()` returns only `Cancelled`, so the flag, read again, wins over every poll result. A usage report
+        // the poll carried is still counted, because the provider bills it.
+        if self.cancel.is_cancelled() {
+            if let Ok(Next::Event(LlmEvent::Usage(u))) = &polled {
+                self.usage = Some(self.usage.map_or(*u, |old| keep_largest(old, *u)));
+            }
+            self.finish();
+            return Err(LlmError::Cancelled);
+        }
+        match polled {
             Ok(Next::Event(event)) => {
                 match &event {
                     // Reports are cumulative, so a smaller one is a glitch; keep the largest of each counter so what is
@@ -267,8 +279,13 @@ impl TurnStream {
     /// [`try_next`](Self::try_next) or [`next_timeout`](Self::next_timeout) has returned an event, or an earlier
     /// `collect` has read some, it refuses and changes nothing.
     ///
+    /// `idle` is the longest gap between two events. A provider's keep-alive frames (SSE comments) are not events, so
+    /// they keep the connection open but do not extend `idle`; a turn that stays quiet that long fails here even
+    /// while the connection is healthy.
+    ///
     /// # Errors
-    /// `Unsupported` if an event was already taken from the stream; the turn's error; `Network` if nothing arrives within `idle`; `Malformed` if the events break the order of
+    /// `Unsupported` if an event was already taken from the stream; the turn's error; `Network` if no event arrives
+    /// within `idle`; `Malformed` if the events break the order of
     /// llm-api D3 (no `Stop`, no `Usage`, an unclosed or nested call, invalid JSON arguments).
     pub fn collect(&mut self, idle: Duration) -> Result<Turn, LlmError> {
         if self.taken {
@@ -315,8 +332,19 @@ struct OpenCall {
     json: String,
 }
 
+/// Where a turn is in the order of llm-api D3: `Retrying`*, one `Start`, content and `Usage`, one `Stop`.
+#[derive(Default, PartialEq, Eq)]
+enum Phase {
+    /// Before `Start`: only `Retrying` and `Start` may arrive.
+    #[default]
+    Waiting,
+    /// After `Start`: content and usage may arrive.
+    Started,
+}
+
 #[derive(Default)]
 struct Fold {
+    phase: Phase,
     model: String,
     blocks: Vec<ContentBlock>,
     text: String,
@@ -332,10 +360,30 @@ impl Fold {
         }
     }
 
+    /// Checks that `event` may come now. A source that breaks the order would otherwise give a plausible but invalid
+    /// turn, with the served model lost or replaced.
+    fn check_order(&self, event: &LlmEvent) -> Result<(), LlmError> {
+        match (&self.phase, event) {
+            (Phase::Waiting, LlmEvent::Retrying { .. } | LlmEvent::Start { .. }) | (Phase::Started, _) => {}
+            (Phase::Waiting, _) => return Err(LlmError::Malformed("content arrived before Start".into())),
+        }
+        match (&self.phase, event) {
+            (Phase::Started, LlmEvent::Retrying { .. }) => {
+                Err(LlmError::Malformed("Retrying arrived after Start".into()))
+            }
+            (Phase::Started, LlmEvent::Start { .. }) => Err(LlmError::Malformed("a second Start arrived".into())),
+            _ => Ok(()),
+        }
+    }
+
     fn push(&mut self, event: LlmEvent) -> Result<(), LlmError> {
+        self.check_order(&event)?;
         match event {
             LlmEvent::Retrying { .. } => self.retries = self.retries.saturating_add(1),
-            LlmEvent::Start { model, .. } => self.model = model,
+            LlmEvent::Start { model, .. } => {
+                self.model = model;
+                self.phase = Phase::Started;
+            }
             LlmEvent::TextDelta(t) => self.text.push_str(&t),
             LlmEvent::ToolUseStart { id, name, .. } => {
                 if let Some(open) = &self.call {
@@ -373,6 +421,9 @@ impl Fold {
         self.flush_text();
         if self.call.is_some() {
             return Err(LlmError::Malformed("the stream ended inside a tool call".into()));
+        }
+        if self.phase == Phase::Waiting {
+            return Err(LlmError::Malformed("the stream ended without a Start".into()));
         }
         let stop = self.stop.ok_or_else(|| LlmError::Malformed("the stream ended without a stop".into()))?;
         let usage = usage.ok_or_else(|| LlmError::Malformed("the turn stopped without reporting usage".into()))?;
@@ -433,6 +484,82 @@ mod tests {
         flag.load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    /// A source whose poll blocks until the cancel flag is set from another thread, as a provider's channel does when
+    /// its task sees the cancel and finishes.
+    struct EndsOnCancel(Cancel);
+
+    impl EventSource for EndsOnCancel {
+        fn poll(&mut self, _wait: Duration) -> Result<Next, LlmError> {
+            while !self.0.is_cancelled() {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            Ok(Next::End)
+        }
+    }
+
+    #[test]
+    fn a_cancel_during_a_blocked_poll_is_cancelled_and_not_end() {
+        let cancel = Cancel::new();
+        let mut s = TurnStream::new(Box::new(EndsOnCancel(cancel.clone())), &cancel);
+        let from_elsewhere = {
+            let cancel = cancel.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(30));
+                cancel.cancel();
+            })
+        };
+        assert!(matches!(s.next_timeout(Duration::from_secs(5)), Err(LlmError::Cancelled)));
+        from_elsewhere.join().unwrap_or_else(|_| panic!("the canceller panicked"));
+        assert!(matches!(s.try_next(), Ok(Next::End)));
+        let cancel = Cancel::new();
+        let mut s = TurnStream::new(Box::new(EndsOnCancel(cancel.clone())), &cancel);
+        let canceller = {
+            let cancel = cancel.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(30));
+                cancel.cancel();
+            })
+        };
+        assert!(matches!(s.collect(Duration::from_secs(5)), Err(LlmError::Cancelled)));
+        canceller.join().unwrap_or_else(|_| panic!("the canceller panicked"));
+    }
+
+    /// A source that is cancelled while its poll runs and then reports `result`: the race of a cancel landing
+    /// between the queue read and the flag read.
+    struct CancelsThenReturns(Cancel, Option<Result<Next, LlmError>>);
+
+    impl EventSource for CancelsThenReturns {
+        fn poll(&mut self, _wait: Duration) -> Result<Next, LlmError> {
+            self.0.cancel();
+            self.1.take().unwrap_or(Ok(Next::End))
+        }
+    }
+
+    #[test]
+    fn a_cancel_during_a_poll_beats_an_event_a_stop_and_an_error() {
+        let outcomes = [
+            event(LlmEvent::TextDelta("x".into())),
+            event(LlmEvent::Stop(StopReason::EndTurn)),
+            Err(LlmError::Network("late".into())),
+        ];
+        for outcome in outcomes {
+            let cancel = Cancel::new();
+            let mut s = TurnStream::new(Box::new(CancelsThenReturns(cancel.clone(), Some(outcome))), &cancel);
+            assert!(matches!(s.try_next(), Err(LlmError::Cancelled)));
+            assert!(matches!(s.try_next(), Ok(Next::End)));
+        }
+    }
+
+    #[test]
+    fn a_usage_report_caught_by_a_cancel_is_still_counted() {
+        let cancel = Cancel::new();
+        let usage = Usage { input: 7, ..Usage::default() };
+        let mut s =
+            TurnStream::new(Box::new(CancelsThenReturns(cancel.clone(), Some(event(LlmEvent::Usage(usage))))), &cancel);
+        assert!(matches!(s.try_next(), Err(LlmError::Cancelled)));
+        assert_eq!(s.usage_so_far(), Some(usage));
+    }
+
     #[test]
     fn cancelling_drops_the_source_while_the_stream_is_alive() {
         let cancel = Cancel::new();
@@ -448,7 +575,7 @@ mod tests {
     #[test]
     fn an_idle_timeout_drops_the_source_and_keeps_the_usage() {
         let usage = Usage { input: 3, output: 2, cache_read: 0, cache_write: 0 };
-        let (mut s, flag) = watched(vec![event(LlmEvent::Usage(usage))], &Cancel::new());
+        let (mut s, flag) = watched(vec![event(LlmEvent::start("m")), event(LlmEvent::Usage(usage))], &Cancel::new());
         assert!(matches!(s.collect(Duration::ZERO), Err(LlmError::Network(_))));
         assert!(dropped(&flag));
         assert_eq!(s.usage_so_far(), Some(usage));
@@ -520,12 +647,18 @@ mod tests {
         let big = Usage::new(10, 5).with_cache_read(3).with_cache_write(2);
         let small = Usage::new(4, 9).with_cache_read(1);
         let items = || {
-            vec![event(LlmEvent::Usage(big)), event(LlmEvent::Usage(small)), event(LlmEvent::Stop(StopReason::EndTurn))]
+            vec![
+                event(LlmEvent::start("m")),
+                event(LlmEvent::Usage(big)),
+                event(LlmEvent::Usage(small)),
+                event(LlmEvent::Stop(StopReason::EndTurn)),
+            ]
         };
         let want = Usage::new(10, 9).with_cache_read(3).with_cache_write(2);
         let mut pulled = stream(items(), &Cancel::new());
-        assert!(matches!(pulled.try_next(), Ok(Next::Event(_))));
-        assert!(matches!(pulled.try_next(), Ok(Next::Event(_))));
+        for _ in 0..3 {
+            assert!(matches!(pulled.try_next(), Ok(Next::Event(_))));
+        }
         assert_eq!(pulled.usage_so_far(), Some(want));
         let mut folded = stream(items(), &Cancel::new());
         let turn = folded.collect(Duration::ZERO).unwrap_or_else(|e| panic!("{e}"));
@@ -578,6 +711,7 @@ mod tests {
     #[test]
     fn text_around_a_call_stays_in_order_and_empty_arguments_are_an_empty_object() {
         let items = vec![
+            event(LlmEvent::start("m")),
             event(LlmEvent::TextDelta("a".into())),
             event(LlmEvent::TextDelta("b".into())),
             event(LlmEvent::tool_use_start("t", "n")),
@@ -590,6 +724,65 @@ mod tests {
         let call = ContentBlock::tool_use("t", "n", empty_object());
         let want = vec![ContentBlock::Text("ab".into()), call, ContentBlock::Text("c".into())];
         assert_eq!(turn.message.content, want);
+    }
+
+    fn collect_error(items: Vec<LlmEvent>) -> LlmError {
+        let items = items.into_iter().map(event).collect();
+        stream(items, &Cancel::new()).collect(Duration::ZERO).err().unwrap_or_else(|| panic!("the order was accepted"))
+    }
+
+    fn text() -> LlmEvent {
+        LlmEvent::TextDelta("a".into())
+    }
+
+    fn stop() -> LlmEvent {
+        LlmEvent::Stop(StopReason::EndTurn)
+    }
+
+    #[test]
+    fn a_turn_without_a_start_is_malformed_and_never_has_an_empty_model() {
+        assert!(matches!(collect_error(vec![text(), usage(), stop()]), LlmError::Malformed(_)));
+        assert!(matches!(collect_error(vec![usage(), stop()]), LlmError::Malformed(_)));
+        assert!(matches!(collect_error(vec![stop()]), LlmError::Malformed(_)));
+    }
+
+    #[test]
+    fn content_before_start_is_rejected_for_every_content_event() {
+        let content = [
+            text(),
+            LlmEvent::tool_use_start("t", "n"),
+            LlmEvent::ToolUseInput("{}".into()),
+            LlmEvent::tool_use_end("t"),
+            LlmEvent::opaque("p", Value::Null),
+        ];
+        for event in content {
+            let got = collect_error(vec![event.clone(), LlmEvent::start("m"), usage(), stop()]);
+            assert!(matches!(got, LlmError::Malformed(_)), "{event:?} before Start was accepted");
+        }
+    }
+
+    #[test]
+    fn a_second_start_is_rejected_and_does_not_replace_the_served_model() {
+        let items = vec![LlmEvent::start("first"), LlmEvent::start("second"), text(), usage(), stop()];
+        assert!(matches!(collect_error(items), LlmError::Malformed(_)));
+    }
+
+    #[test]
+    fn retrying_after_start_is_rejected() {
+        let late = LlmEvent::retrying(1, Duration::ZERO, "late");
+        assert!(matches!(
+            collect_error(vec![LlmEvent::start("m"), text(), late, usage(), stop()]),
+            LlmError::Malformed(_)
+        ));
+    }
+
+    #[test]
+    fn retries_then_start_then_content_is_accepted_and_counts_the_retries() {
+        let retry = |n| LlmEvent::retrying(n, Duration::ZERO, "r");
+        let items = vec![retry(1), retry(2), LlmEvent::start("m"), text(), usage(), stop()];
+        let items = items.into_iter().map(event).collect();
+        let turn = stream(items, &Cancel::new()).collect(Duration::ZERO).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!((turn.retries, turn.model.as_str()), (2, "m"));
     }
 
     #[test]
