@@ -4,17 +4,20 @@
 //!
 //! wgpu allocates inside its own calls (an encoder, a pass, a queue write, a submit), so the total can't be zero; what
 //! the workspace controls is its own code. Every allocation is attributed to the first frame of its backtrace that is
-//! not std plumbing (the render crate's counting allocator, shared): the stage, the face, the renderer and Vello's scene
-//! encoding must make none, and wgpu's share is bounded so a per-frame object created by mistake shows up.
+//! not std plumbing (`omuzaki_render_mock::counting`, shared with the renderer's hot-loop tests): the stage, the face,
+//! the renderer and Vello's scene encoding must make none, and wgpu's share is bounded so a per-frame object created by
+//! mistake shows up.
 
 // Integration tests may panic: a panic is a clear test failure.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-// The counting allocator is installed only in this test binary, so the other tests run on the plain allocator.
-#[path = "../../omuzaki-render/tests/support/counting.rs"]
-mod counting;
-#[path = "face_gpu/support.rs"]
 mod support;
+
+// The counting allocator is installed only in this test binary, so the other tests run on the plain allocator.
+use omuzaki_render_mock::counting;
+
+#[global_allocator]
+static ALLOCATOR: counting::Counting = counting::Counting::new(env!("CARGO_PKG_NAME"));
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -30,10 +33,10 @@ const WARM_UP: u32 = 60;
 /// Frames counted.
 const FRAMES: u32 = 24;
 /// The most wgpu may allocate per frame for the face's GPU paints on top of a frame whose face is still. Measured with
-/// wgpu 30: 234 on lavapipe and 235 on a hardware GPU, for the layers this face repaints, each about 27 for
-/// the rasteriser's recording (the compute and render passes, three queue writes), about 20 for the renderer's encoder,
-/// timestamps and submit, and the rest for the mip rebuild's passes. A bind group, buffer or texture made per frame by
-/// mistake would push it past this.
+/// wgpu 30: about 240 on lavapipe and on a hardware GPU, for the layers this face repaints, each about 30 for the
+/// rasteriser's recording (the compute and render passes, three queue writes, the counters' copy and mapping), about 20
+/// for the renderer's encoder, timestamps and submit, and the rest for the mip rebuild's passes. A bind group, buffer or
+/// texture made per frame by mistake would push it past this.
 const FACE_WGPU_PER_FRAME: usize = 300;
 
 /// Each owner's allocations per frame over [`FRAMES`] steady-state frames of a stage with `rig`, whose face changes every

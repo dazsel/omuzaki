@@ -149,6 +149,19 @@ impl GpuTimer {
         encoder.write_timestamp(&self.queries, end);
     }
 
+    /// Gives back the pair [`begin_paint`](Self::begin_paint) handed out for `end`: that paint's commands were dropped,
+    /// so nothing writes the pair. Paints run one at a time, so the pair is the last one handed out.
+    pub(crate) fn cancel_paint(&mut self, end: u32) {
+        debug_assert_eq!(end, PAINT_BASE + 2 * self.paints - 1, "a paint's pair is the last one handed out");
+        self.paints = self.paints.saturating_sub(1);
+    }
+
+    /// How many paints are timed since the last frame was resolved.
+    #[cfg(test)]
+    pub(crate) fn paints_timed(&self) -> u32 {
+        self.paints
+    }
+
     /// Resolves this frame's timestamps (and those of the paints since the last frame) into a free read-back slot,
     /// labelled `frame`. Returns whether it did; if every slot is still waiting on the GPU, the frame goes unmeasured.
     pub(crate) fn resolve(&mut self, encoder: &mut wgpu::CommandEncoder, frame: u64, ran: [bool; Pass::COUNT]) -> bool {

@@ -101,23 +101,38 @@ impl<'a> GpuPaintTarget<'a> {
     }
 
     /// Applies the staged writes, then submits what the painter recorded through `native()`, and returns the rectangle
-    /// that changed (`None` if nothing did). Call only when the painter succeeded.
-    pub(crate) fn commit(self) -> Option<PixelRect> {
+    /// that changed (`None` if nothing did) and the timestamp pair the submitted commands write (its end query), which
+    /// the caller gives back if the submit turns out invalid. Call only when the painter succeeded.
+    pub(crate) fn commit(mut self) -> (Option<PixelRect>, Option<u32>) {
         let mut changed = None;
         for (rect, range) in &self.staging.writes {
             self.texture.write(self.gpu, *rect, &self.staging.bytes[range.clone()]);
             changed = Some(changed.map_or(*rect, |c| union(c, *rect)));
         }
-        let Some((_, _, _, mut encoder)) = self.native else { return changed };
-        if let (Some(timer), Some(end)) = (self.timer, self.timed) {
+        let Some((_, _, _, mut encoder)) = self.native.take() else { return (changed, None) };
+        // The span is the submitted commands' now: dropping the target must not give it back.
+        let timed = self.timed.take();
+        if let (Some(timer), Some(end)) = (self.timer.as_deref(), timed) {
             timer.end_paint(&mut encoder, end);
         }
         self.gpu.queue.submit([encoder.finish()]);
         // A painter that drew without saying where may have drawn anywhere.
         let drawn = if self.marked { self.damage } else { Some(PixelRect::full(self.texture.desc.size)) };
-        match (changed, drawn) {
+        let changed = match (changed, drawn) {
             (Some(a), Some(b)) => Some(union(a, b)),
             (a, b) => a.or(b),
+        };
+        (changed, timed)
+    }
+}
+
+impl Drop for GpuPaintTarget<'_> {
+    /// A target dropped without [`commit`](GpuPaintTarget::commit) (the painter failed, or the paint's error scope
+    /// did) drops what the painter recorded unsubmitted, so its timestamp pair is given back: nothing will write it, and
+    /// `PaintTextures` must not count it.
+    fn drop(&mut self) {
+        if let (Some(timer), Some(end)) = (self.timer.as_deref_mut(), self.timed.take()) {
+            timer.cancel_paint(end);
         }
     }
 }
@@ -180,6 +195,7 @@ mod tests {
     use omuzaki_render_api::{AlphaEncoding, TextureDesc};
 
     use super::*;
+    use crate::frame::timing::GpuTimer;
     use crate::gpu::{AdapterPreference, HeadlessOptions};
     use crate::shared::Shared;
 
@@ -202,7 +218,7 @@ mod tests {
         let mut staging = Staging::default();
         let mut target = GpuPaintTarget::new(&shared.gpu, &texture, &mut staging, None);
         paint(&mut target);
-        target.commit()
+        target.commit().0
     }
 
     fn rect(x: u32, y: u32, width: u32, height: u32) -> PixelRect {
@@ -244,6 +260,25 @@ mod tests {
             None,
             "a rectangle outside the texture changes nothing"
         );
+    }
+
+    #[test]
+    fn a_native_paint_that_is_dropped_gives_its_timestamp_pair_back_and_a_committed_one_keeps_it() {
+        let (shared, texture) = setup();
+        let Some(mut timer) = GpuTimer::new(&shared.gpu.device, &shared.gpu.queue, shared.gpu.timestamps) else {
+            println!("skipped: this adapter has no timestamps inside encoders");
+            return;
+        };
+        let mut staging = Staging::default();
+        let mut target = GpuPaintTarget::new(&shared.gpu, &texture, &mut staging, Some(&mut timer));
+        target.native();
+        drop(target);
+        assert_eq!(timer.paints_timed(), 0, "the painter failed: its commands were never submitted, so not timed");
+        let mut target = GpuPaintTarget::new(&shared.gpu, &texture, &mut staging, Some(&mut timer));
+        target.native();
+        let (_, submitted) = target.commit();
+        assert!(submitted.is_some(), "the submitted paint's pair is reported");
+        assert_eq!(timer.paints_timed(), 1, "and counted");
     }
 
     #[test]

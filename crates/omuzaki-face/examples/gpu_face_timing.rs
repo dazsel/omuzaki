@@ -13,7 +13,7 @@
 //!
 //! Every repaint follows a load: a compute pass that keeps the GPU busy for about 2 ms, submitted just before it. That
 //! does two things. The GPU runs at the clocks of a busy frame (with nothing else to do it drops to its idle clock, and
-//! every pass on it takes many times longer: that is its power policy, not the face, and the stage's `face` bench shows
+//! every pass on it takes many times longer: that is its power policy, not the face, and the `face` bench of `omuzaki-test-stage` shows
 //! it), and the repaint's commands are queued before the GPU reaches them, so no timestamp waits on the CPU (the old
 //! probe's flaw: its timestamps, in separate submissions, measured the GPU waiting for Vello's CPU work).
 //!

@@ -8,8 +8,10 @@
 
 mod support;
 // The counting allocator is installed only in this test binary, so the other tests run on the plain allocator.
-#[path = "support/counting.rs"]
-mod counting;
+use omuzaki_render_mock::counting;
+
+#[global_allocator]
+static ALLOCATOR: counting::Counting = counting::Counting::new(env!("CARGO_PKG_NAME"));
 
 use std::collections::BTreeMap;
 

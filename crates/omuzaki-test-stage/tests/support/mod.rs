@@ -11,8 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use image::RgbaImage;
 use omuzaki_anim_api::Channel;
-use omuzaki_char::builder::CachingBuilder;
-use omuzaki_char_api::{BuildOptions, BuildServices, CharId, CharacterBuilder, JointRef};
+use omuzaki_char_api::{BuildOptions, BuildServices, CharId, CharacterBuilder, JointRef, RegistryBuilder};
 use omuzaki_char_mock::mock_character;
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::{UVec2, Vec3};
@@ -153,9 +152,10 @@ fn face_camera(stage: &Stage) -> Camera {
 /// A stage of the mock character on `renderer`, `size` pixels square, with `rig`, the face textures at `px_per_m` and
 /// the face filling the frame.
 pub fn face_stage(renderer: &mut dyn Renderer, rig: FaceRig, size: u32, px_per_m: f32) -> Stage {
-    let builder = CachingBuilder::new();
+    // The part kinds the mock character is built from register themselves in the crates the stage links.
+    omuzaki_stage::link();
     let def = mock_character().expect("the mock character parses");
-    let built = builder
+    let built = RegistryBuilder
         .build(&CharId::new("mock").expect("an id"), &def, &BuildOptions::default(), &BuildServices::default())
         .expect("the mock character builds");
     let target = renderer

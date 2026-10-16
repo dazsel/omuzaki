@@ -22,7 +22,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::any::Any;
 use std::cell::Cell;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -1290,4 +1290,73 @@ fn a_live_stage_installs_the_expressions_of_the_character_a_variant_swap_brings(
     assert!(swapped_at.is_some(), "the zoom sweep switched variants");
     assert_eq!(live.handle().expressions(), wanted, "the swap installed the character's expressions again");
     live.into_stage().release(&mut renderer).expect("released");
+}
+
+// ---- the rig's GPU rasteriser goes from each face system to the next ----
+
+/// A GPU rasteriser that counts the paints it is offered and declines them (the mock renderer's targets are no wgpu
+/// tuple), so the CPU raster draws: a test sees whether the rig still hands paints to it.
+struct ProbeGpu(Arc<AtomicUsize>);
+
+impl GpuRasterizer for ProbeGpu {
+    fn rasterize_native(&mut self, _: &FaceLayerSpec, _: &DrawList, _: &mut dyn Any) -> Result<bool, FaceError> {
+        self.0.fetch_add(1, Ordering::Relaxed);
+        Ok(false)
+    }
+}
+
+/// The mock rig with a [`ProbeGpu`] counting into `offered`.
+fn probed_rig(offered: &Arc<AtomicUsize>) -> FaceRig {
+    mock_rig().with_gpu_rasterizer(Box::new(ProbeGpu(Arc::clone(offered))))
+}
+
+/// Paints offered to the GPU rasteriser by a frame whose face changes (a blink), then by one that changes it back.
+fn offered_by_a_blink(stage: &mut Stage, renderer: &mut Spy, offered: &AtomicUsize) -> usize {
+    let before = offered.load(Ordering::Relaxed);
+    stage.tick(renderer, &blink(true)).expect("frame");
+    stage.tick(renderer, &blink(false)).expect("frame");
+    offered.load(Ordering::Relaxed) - before
+}
+
+#[test]
+fn the_gpu_rasteriser_follows_the_face_into_a_new_variants_face_system() {
+    let offered = Arc::new(AtomicUsize::new(0));
+    let mut renderer = Spy::new(false);
+    let mut stage = stage_about_to_zoom(&mut renderer, probed_rig(&offered));
+    assert!(offered_by_a_blink(&mut stage, &mut renderer, &offered) > 0, "the first face system has the rasteriser");
+    // The close-up has its own face window, so it gets a face system of its own.
+    tick_at(&mut stage, &mut renderer, 0.8).expect("the switching frame");
+    assert_eq!(stage.built().variant, Some(id("close-up")));
+    stage.service_variants(&mut renderer, &FrameInput::default()).expect("the old face system is released");
+    assert!(offered_by_a_blink(&mut stage, &mut renderer, &offered) > 0, "the new face system got the rasteriser");
+    stage.release(&mut renderer).expect("released");
+}
+
+#[test]
+fn the_gpu_rasteriser_stays_with_a_face_system_a_variant_keeps() {
+    let offered = Arc::new(AtomicUsize::new(0));
+    let mut renderer = Spy::new(false);
+    let fixture = fixture_from(mock_character().unwrap(), brows_variants());
+    let mut stage = stage_from(&mut renderer, 32, true, probed_rig(&offered), fixture);
+    tick_at(&mut stage, &mut renderer, START_COVERAGE).expect("frame");
+    tick_at(&mut stage, &mut renderer, 0.8).expect("the switching frame");
+    assert_eq!(stage.built().variant, Some(id("close-up")), "the brows variant swapped in, keeping the face system");
+    assert!(offered_by_a_blink(&mut stage, &mut renderer, &offered) > 0, "the kept face system still has it");
+    stage.release(&mut renderer).expect("released");
+}
+
+#[test]
+fn the_gpu_rasteriser_follows_the_face_into_the_face_system_a_resize_makes() {
+    let offered = Arc::new(AtomicUsize::new(0));
+    let mut renderer = Spy::new(false);
+    // The real painter, whose layers follow the density (the mock painter's are fixed).
+    let rig = FaceRig::standard().with_gpu_rasterizer(Box::new(ProbeGpu(Arc::clone(&offered))));
+    let mut stage = stage_with_rig(&mut renderer, 32, false, rig);
+    stage.tick(&mut renderer, &FrameInput::default()).expect("frame");
+    stage.resize_face(&mut renderer, FACE_PX_PER_M / 2.0).expect("resized");
+    let before = offered.load(Ordering::Relaxed);
+    stage.tick(&mut renderer, &FrameInput::default()).expect("the frame after the resize repaints every layer");
+    assert!(offered.load(Ordering::Relaxed) > before, "the new face system was offered its repaint");
+    assert!(offered_by_a_blink(&mut stage, &mut renderer, &offered) > 0, "and keeps the rasteriser");
+    stage.release(&mut renderer).expect("released");
 }

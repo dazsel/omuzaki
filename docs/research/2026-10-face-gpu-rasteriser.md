@@ -149,6 +149,6 @@ A warm repaint now makes 27 allocations, all wgpu's (the passes and three queue 
 (the face's commands and the mip rebuild, the renderer's `PaintTextures`) is 0.24 ms p50 and 0.30 ms p95 with the face
 changing every frame. Paced at 30 fps with the mock character, the 4090 has so little to do that it stays at its idle
 clock, and everything on it takes about 14 times as long: the face paint 3.4 ms p50, the rest of the frame 0.98 ms
-(0.07 ms unpaced). Reading `gpu.face_paint` paced (spec v3 §10) therefore needs the budget scene's real load, or a fixed
-GPU clock, on `Dev`; with the mock character it measures the GPU's power policy. Trusted shader modules (no bounds
+(0.07 ms unpaced). With the mock character that measures the GPU's power policy, not the face, so `gpu.face_paint` is
+read at a steady GPU clock and the paced number is reported beside it (spec v3 §10, ruled on #2222). Trusted shader modules (no bounds
 checks) would take another 20 % off the raster; they need `unsafe`, so they are not used.

@@ -20,7 +20,7 @@
 // Bench helpers may panic: a panic is a clear failure.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-#[path = "../tests/face_gpu/support.rs"]
+#[path = "../tests/support/mod.rs"]
 mod support;
 
 use std::sync::Arc;

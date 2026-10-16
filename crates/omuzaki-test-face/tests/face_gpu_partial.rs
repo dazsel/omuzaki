@@ -92,6 +92,11 @@ impl Target {
     fn pixels(&mut self) -> Vec<u8> {
         read_native(&mut self.native)
     }
+
+    /// The rectangles painters reported changing since the last call.
+    fn take_damage(&mut self) -> Vec<PixelRect> {
+        std::mem::take(&mut self.damage)
+    }
 }
 
 impl PaintTarget for Target {
@@ -149,19 +154,107 @@ fn a_mouth_only_change_encodes_only_the_mouth_and_an_unchanged_frame_encodes_not
     let shared = Shared::default();
     let mut system = system(&shared);
     update(&mut system, &channels(&[]));
-    let mut target = Target::new(&gpu, &base_spec(&system));
+    let spec = base_spec(&system);
+    let (width, height) = spec.size_px();
+    let whole = PixelRect { x: 0, y: 0, width, height };
+    let mut target = Target::new(&gpu, &spec);
     paint_base(&mut system, &mut target);
     assert_eq!(shared.encoded(), 7, "the first paint encodes every section");
+    assert_eq!(target.take_damage(), vec![whole], "and reports the whole layer as changed");
     let before = target.pixels();
 
     paint_base(&mut system, &mut target);
     assert_eq!(shared.encoded(), 0, "an unchanged frame encodes nothing");
+    assert_eq!(
+        target.take_damage(),
+        vec![PixelRect { x: 0, y: 0, width: 0, height: 0 }],
+        "and reports nothing changed"
+    );
     assert_eq!(target.pixels(), before, "and leaves the texture as it was");
 
     update(&mut system, &channels(&[(Channel::JAW_OPEN, 0.6)]));
     paint_base(&mut system, &mut target);
     assert_eq!(shared.encoded(), 1, "a mouth-only change encodes the mouth section alone");
-    assert_ne!(target.pixels(), before, "and the picture changed");
+    let after = target.pixels();
+    let changed = changed_pixels(&before, &after, width).expect("the picture changed");
+    let damage = target.take_damage();
+    assert_eq!(damage.len(), 1, "one report per paint: {damage:?}");
+    let rect = damage[0];
+    assert!(rect.width * rect.height < width * height / 4, "a mouth-sized rectangle, not the layer: {rect:?}");
+    assert!(
+        contains(rect, changed),
+        "the reported rectangle {rect:?} holds every pixel that changed ({changed:?}), so the mips over it are enough"
+    );
+}
+
+/// The smallest rectangle holding every pixel that differs between two `width`-wide pictures; `None` if none does.
+fn changed_pixels(before: &[u8], after: &[u8], width: u32) -> Option<PixelRect> {
+    let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0, 0);
+    for (at, (a, b)) in before.chunks(4).zip(after.chunks(4)).enumerate() {
+        if a != b {
+            let at = u32::try_from(at).unwrap();
+            let (x, y) = (at % width, at / width);
+            (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x + 1), y1.max(y + 1));
+        }
+    }
+    (x1 > x0).then(|| PixelRect { x: x0, y: y0, width: x1 - x0, height: y1 - y0 })
+}
+
+/// Whether `outer` holds all of `inner`.
+fn contains(outer: PixelRect, inner: PixelRect) -> bool {
+    outer.x <= inner.x
+        && outer.y <= inner.y
+        && outer.x + outer.width >= inner.x + inner.width
+        && outer.y + outer.height >= inner.y + inner.height
+}
+
+/// Paints the Base layer of `system` into `target` and drops what the painter recorded, as the renderer does when the
+/// paint fails after the painter returned, then tells the system so, as the stage does.
+fn paint_base_and_drop(system: &mut FaceSystem, target: &mut Target, gpu: &Gpu) {
+    system.layer_painter(FaceLayerId::Base).expect("Base is painted").paint(target).expect("the GPU path draws");
+    target.native.3 = gpu.0.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    system.gpu_paint_failed(FaceLayerId::Base);
+}
+
+#[test]
+fn after_a_paint_the_renderer_dropped_the_next_one_redraws_the_whole_layer() {
+    let Some(gpu) = device() else { return };
+    let run = |report_failure: bool| {
+        let shared = Shared::default();
+        let mut live = system(&shared);
+        update(&mut live, &channels(&[]));
+        let spec = base_spec(&live);
+        let mut target = Target::new(&gpu, &spec);
+        paint_base(&mut live, &mut target);
+        // A blink the renderer never draws: its commands are dropped.
+        update(&mut live, &channels(&[(Channel::EYE_BLINK_LEFT, 1.0), (Channel::EYE_BLINK_RIGHT, 1.0)]));
+        if report_failure {
+            paint_base_and_drop(&mut live, &mut target, &gpu);
+        } else {
+            live.layer_painter(FaceLayerId::Base).unwrap().paint(&mut target).unwrap();
+            target.native.3 = gpu.0.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        }
+        // Then only the mouth moves.
+        let last = [(Channel::EYE_BLINK_LEFT, 1.0), (Channel::EYE_BLINK_RIGHT, 1.0), (Channel::JAW_OPEN, 0.6)];
+        update(&mut live, &channels(&last));
+        target.take_damage();
+        paint_base(&mut live, &mut target);
+        let damage = target.take_damage();
+        // The same frame from scratch.
+        let mut fresh_system = system(&Shared::default());
+        update(&mut fresh_system, &channels(&last));
+        let mut fresh = Target::new(&gpu, &spec);
+        paint_base(&mut fresh_system, &mut fresh);
+        (target.pixels() == fresh.pixels(), damage, spec.size_px())
+    };
+    let (matches, damage, (width, height)) = run(true);
+    assert!(matches, "after the dropped paint the texture shows what a fresh repaint shows");
+    assert_eq!(damage, vec![PixelRect { x: 0, y: 0, width, height }], "because the next paint redrew the whole layer");
+    let (matches_unreported, _, _) = run(false);
+    assert!(
+        !matches_unreported,
+        "without the report the blink would never reach the texture, or this test aims at nothing"
+    );
 }
 
 #[test]

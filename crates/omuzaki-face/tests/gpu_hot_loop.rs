@@ -26,13 +26,14 @@ use omuzaki_face_api::{
 use omuzaki_face_mock::{mock_profile, mock_projection};
 
 /// The most allocations one warmed repaint makes on the calling thread, measured on lavapipe and on a hardware Vulkan
-/// driver over 32 repaints after 50 warm-up ones (27 for either change), and the spread allowed around it. The count is
-/// wgpu's: the compute pass and its dispatches, the resolve's render pass and the three queue writes (scene, config,
-/// origin). Fingerprinting, encoding, packing the scene and the bookkeeping allocate nothing (`gpu_encode.rs` and the
-/// stage's `face_gpu_alloc.rs`, which attributes every allocation). It was 816 while Vello's own renderer ran the stages,
+/// driver over 32 repaints after 50 warm-up ones (30 for either change), and the spread allowed around it. The count is
+/// wgpu's: the compute pass and its dispatches, the resolve's render pass, the three queue writes (scene, config,
+/// origin), and the copy and mapping of Vello's counters that catch a scene outgrowing its buffers. Fingerprinting,
+/// encoding, packing the scene and the bookkeeping allocate nothing (`gpu_encode.rs`, and `face_gpu_alloc.rs` in
+/// `omuzaki-test-stage`, which attributes every allocation). It was 816 while Vello's own renderer ran the stages,
 /// building its bind groups, buffers and recording on every repaint.
-const MOUTH_ONLY_ALLOCS: usize = 27;
-const WHOLE_FACE_ALLOCS: usize = 27;
+const MOUTH_ONLY_ALLOCS: usize = 30;
+const WHOLE_FACE_ALLOCS: usize = 30;
 const SPREAD: usize = 2;
 /// What the occasional repaint may pay on top: wgpu's periodic cleanup of its resource tables (none in the 32 measured).
 const SPIKE: usize = 50;

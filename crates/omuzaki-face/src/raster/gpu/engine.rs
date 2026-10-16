@@ -12,10 +12,15 @@
 //! anti-aliasing, the mode the face uses; the version is pinned, so they cannot drift apart unnoticed (the face GPU
 //! tests compare every probe against the CPU raster).
 
+mod bump;
+
 use vello::Scene;
 use vello::peniko::Color;
 use vello_encoding::{BufferSizes, ConfigUniform, RenderConfig, Resolver, WorkgroupSize};
 use vello_shaders::{BindType, ComputeShader};
+
+pub(crate) use self::bump::Grow;
+use self::bump::{BumpReads, Capacity};
 
 /// The Vello stages this engine dispatches, in the order they run.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -322,7 +327,12 @@ impl Scratch {
             size,
             usage: wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::COPY_DST
-                | if res == Res::IndirectCount { wgpu::BufferUsages::INDIRECT } else { wgpu::BufferUsages::empty() },
+                | match res {
+                    Res::IndirectCount => wgpu::BufferUsages::INDIRECT,
+                    // The counters are copied out after every repaint, to be read back (`bump`).
+                    Res::Bump => wgpu::BufferUsages::COPY_SRC,
+                    _ => wgpu::BufferUsages::empty(),
+                },
             mapped_at_creation: false,
         })
     }
@@ -361,6 +371,8 @@ pub(super) struct LayerTarget {
     /// The bind groups of every stage, and the scratch generation they were made for. `None` after anything they name
     /// was remade.
     groups: Option<(u64, [wgpu::BindGroup; STAGES])>,
+    /// The read-backs of Vello's counters after this layer's repaints.
+    bumps: BumpReads,
 }
 
 impl LayerTarget {
@@ -379,12 +391,18 @@ impl LayerTarget {
             gradients_view,
             ramps: Vec::new(),
             groups: None,
+            bumps: BumpReads::new(device),
         }
     }
 
     /// Forgets the bind groups: the texture the fine stage writes was remade.
     pub(super) fn out_changed(&mut self) {
         self.groups = None;
+    }
+
+    /// Forgets what the last paint recorded: the renderer dropped its commands.
+    pub(super) fn paint_dropped(&mut self) {
+        self.bumps.forget_recorded();
     }
 }
 
@@ -434,11 +452,17 @@ pub(super) struct Engine {
     packed: Vec<u8>,
     scratch: Option<Scratch>,
     atlas: wgpu::TextureView,
+    /// How large Vello's bump-allocated buffers are now: its own sizes, grown when a scene needs more.
+    capacity: Capacity,
+    /// The most bytes one storage binding may hold on this device: where growing stops.
+    max_binding: u64,
 }
 
 impl Engine {
-    /// Compiles every stage for `device`. Slow (pipeline compilation): one per rasteriser, on the first paint.
-    pub(super) fn new(device: &wgpu::Device) -> Self {
+    /// Compiles every stage for `device`, with Vello's own buffer sizes or, for tests of the overflow path, every
+    /// bump-allocated buffer at `bump_entries` entries. Slow (pipeline compilation): one per rasteriser, on the first
+    /// paint.
+    pub(super) fn new(device: &wgpu::Device, bump_entries: Option<u32>) -> Self {
         let atlas = device
             .create_texture(&wgpu::TextureDescriptor {
                 label: Some("face-vello-atlas"),
@@ -457,7 +481,17 @@ impl Engine {
             packed: Vec::new(),
             scratch: None,
             atlas,
+            capacity: bump_entries.map_or_else(Capacity::vello, Capacity::uniform),
+            max_binding: device.limits().max_storage_buffer_binding_size.min(device.limits().max_buffer_size),
         }
+    }
+
+    /// Reads the counters of `target`'s earlier repaints that have come back and, when one ran out of room, grows the
+    /// buffers it ran out of. `None` when nothing failed; after `Grew` the caller repaints the layer whole, after
+    /// `Exhausted` it gives the layer to the CPU raster. Never waits.
+    pub(super) fn check_overflow(&mut self, target: &mut LayerTarget) -> Option<Grow> {
+        let failed = target.bumps.poll()?;
+        Some(self.capacity.grow(&failed, self.max_binding))
     }
 
     /// Records the rasterisation of `frame` into `encoder`, writing the frame's scene and config into `target`'s buffers
@@ -477,7 +511,8 @@ impl Engine {
         if !images.images.is_empty() {
             return Err("the scene draws images, which the face rasteriser does not support".to_owned());
         }
-        let config = RenderConfig::new(&layout, frame.width, frame.height, &Color::TRANSPARENT);
+        let mut config = RenderConfig::new(&layout, frame.width, frame.height, &Color::TRANSPARENT);
+        self.capacity.apply(&mut config, &layout);
         if self.packed.is_empty() {
             // wgpu refuses an empty binding; the config says the scene is empty, so this word is never read (as Vello).
             self.packed.resize(std::mem::size_of::<u32>(), u8::MAX);
@@ -525,52 +560,64 @@ impl Engine {
         });
         let mut pass =
             encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("face-vello"), timestamp_writes });
-        let wg = &config.workgroup_counts;
         let indirect = &scratch.buffers[Res::IndirectCount as usize];
-        let stages = &self.stages;
-        let mut run = |stage: Stage, size: Dispatch<'_>| {
-            // `Stage::ALL` lists the stages by discriminant, so both arrays are indexed by it (a test checks).
-            let (compiled, group) = (&stages[stage as usize], &groups[stage as usize]);
-            match size {
-                // Vello skips empty dispatches too (vello#637): some drivers mishandle them.
-                Dispatch::Direct((x, y, z)) if x == 0 || y == 0 || z == 0 => {}
-                Dispatch::Direct((x, y, z)) => {
-                    pass.set_pipeline(&compiled.pipeline);
-                    pass.set_bind_group(0, group, &[]);
-                    pass.dispatch_workgroups(x, y, z);
-                }
-                Dispatch::Indirect(buffer) => {
-                    pass.set_pipeline(&compiled.pipeline);
-                    pass.set_bind_group(0, group, &[]);
-                    pass.dispatch_workgroups_indirect(buffer, 0);
-                }
-            }
-        };
-        run(Stage::PathtagReduce, Dispatch::Direct(wg.path_reduce));
-        if wg.use_large_path_scan {
-            run(Stage::PathtagReduce2, Dispatch::Direct(wg.path_reduce2));
-            run(Stage::PathtagScan1, Dispatch::Direct(wg.path_scan1));
-            run(Stage::PathtagScanLarge, Dispatch::Direct(wg.path_scan));
-        } else {
-            run(Stage::PathtagScanSmall, Dispatch::Direct(wg.path_scan));
-        }
-        run(Stage::BboxClear, Dispatch::Direct(wg.bbox_clear));
-        run(Stage::Flatten, Dispatch::Direct(wg.flatten));
-        run(Stage::DrawReduce, Dispatch::Direct(wg.draw_reduce));
-        run(Stage::DrawLeaf, Dispatch::Direct(wg.draw_leaf));
-        run(Stage::ClipReduce, Dispatch::Direct(wg.clip_reduce));
-        run(Stage::ClipLeaf, Dispatch::Direct(wg.clip_leaf));
-        run(Stage::Binning, Dispatch::Direct(wg.binning));
-        run(Stage::TileAlloc, Dispatch::Direct(wg.tile_alloc));
-        run(Stage::PathCountSetup, Dispatch::Direct(wg.path_count_setup));
-        run(Stage::PathCount, Dispatch::Indirect(indirect));
-        run(Stage::Backdrop, Dispatch::Direct(wg.backdrop));
-        run(Stage::Coarse, Dispatch::Direct(wg.coarse));
-        run(Stage::PathTilingSetup, Dispatch::Direct(wg.path_tiling_setup));
-        run(Stage::PathTiling, Dispatch::Indirect(indirect));
-        run(Stage::Fine, Dispatch::Direct(wg.fine));
+        record_stages(&mut pass, &self.stages, groups, &config.workgroup_counts, indirect);
+        drop(pass);
+        // The counters this repaint bumps, read back on a later paint: a scene too big for the buffers grows them.
+        target.bumps.record(encoder, &scratch.buffers[Res::Bump as usize]);
         Ok(())
     }
+}
+
+/// Records the stages' dispatches into `pass`, in Vello's order, skipping the ones the scene gives no work.
+fn record_stages(
+    pass: &mut wgpu::ComputePass<'_>,
+    stages: &[Compiled; STAGES],
+    groups: &[wgpu::BindGroup; STAGES],
+    wg: &vello_encoding::WorkgroupCounts,
+    indirect: &wgpu::Buffer,
+) {
+    let mut run = |stage: Stage, size: Dispatch<'_>| {
+        // `Stage::ALL` lists the stages by discriminant, so both arrays are indexed by it (a test checks).
+        let (compiled, group) = (&stages[stage as usize], &groups[stage as usize]);
+        match size {
+            // Vello skips empty dispatches too (vello#637): some drivers mishandle them.
+            Dispatch::Direct((x, y, z)) if x == 0 || y == 0 || z == 0 => {}
+            Dispatch::Direct((x, y, z)) => {
+                pass.set_pipeline(&compiled.pipeline);
+                pass.set_bind_group(0, group, &[]);
+                pass.dispatch_workgroups(x, y, z);
+            }
+            Dispatch::Indirect(buffer) => {
+                pass.set_pipeline(&compiled.pipeline);
+                pass.set_bind_group(0, group, &[]);
+                pass.dispatch_workgroups_indirect(buffer, 0);
+            }
+        }
+    };
+    run(Stage::PathtagReduce, Dispatch::Direct(wg.path_reduce));
+    if wg.use_large_path_scan {
+        run(Stage::PathtagReduce2, Dispatch::Direct(wg.path_reduce2));
+        run(Stage::PathtagScan1, Dispatch::Direct(wg.path_scan1));
+        run(Stage::PathtagScanLarge, Dispatch::Direct(wg.path_scan));
+    } else {
+        run(Stage::PathtagScanSmall, Dispatch::Direct(wg.path_scan));
+    }
+    run(Stage::BboxClear, Dispatch::Direct(wg.bbox_clear));
+    run(Stage::Flatten, Dispatch::Direct(wg.flatten));
+    run(Stage::DrawReduce, Dispatch::Direct(wg.draw_reduce));
+    run(Stage::DrawLeaf, Dispatch::Direct(wg.draw_leaf));
+    run(Stage::ClipReduce, Dispatch::Direct(wg.clip_reduce));
+    run(Stage::ClipLeaf, Dispatch::Direct(wg.clip_leaf));
+    run(Stage::Binning, Dispatch::Direct(wg.binning));
+    run(Stage::TileAlloc, Dispatch::Direct(wg.tile_alloc));
+    run(Stage::PathCountSetup, Dispatch::Direct(wg.path_count_setup));
+    run(Stage::PathCount, Dispatch::Indirect(indirect));
+    run(Stage::Backdrop, Dispatch::Direct(wg.backdrop));
+    run(Stage::Coarse, Dispatch::Direct(wg.coarse));
+    run(Stage::PathTilingSetup, Dispatch::Direct(wg.path_tiling_setup));
+    run(Stage::PathTiling, Dispatch::Indirect(indirect));
+    run(Stage::Fine, Dispatch::Direct(wg.fine));
 }
 
 /// How a stage is dispatched: a fixed workgroup count, or the count an earlier stage wrote into a buffer.

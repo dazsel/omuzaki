@@ -11,7 +11,6 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 #![allow(clippy::disallowed_methods, reason = "a test writing its own evidence pictures; not an op")]
 
-#[path = "face_gpu/support.rs"]
 mod support;
 
 use std::path::PathBuf;
@@ -21,6 +20,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use omuzaki_render::NativePaintTarget;
 use omuzaki_render_api::{PaintTarget, Renderer, TextureDesc};
 use omuzaki_stage::frame::Stage;
+use omuzaki_stage::frame::face::FaceRig;
 use omuzaki_test::regioncmp::{Rect, RegionReport, T_FACE, T_FACE_MIN_PSNR_DB, compare_region, write_side_by_side};
 use support::{Counted, PROBE_PX_PER_M, cpu_rig, expression, face_stage, gpu_rig, renderer, rgba};
 
@@ -119,6 +119,29 @@ fn after_a_device_loss_the_face_is_drawn_whole_again() {
     let report = compare_region(&picture, &expected, Rect::full(SIZE, SIZE), T_FACE).unwrap();
     assert!(report.passes(T_FACE_MIN_PSNR_DB), "the repainted face differs from the CPU path: {}", report.stats);
     for stage in [stage, reference] {
+        stage.release(&mut renderer).unwrap();
+    }
+}
+
+#[test]
+fn on_a_software_adapter_the_production_rig_paints_the_face_with_the_cpu_raster() {
+    // `renderer()` asks for the software adapter unless `WGPU_ADAPTER_NAME` names another one.
+    if std::env::var_os("WGPU_ADAPTER_NAME").is_some() {
+        eprintln!("skipped: WGPU_ADAPTER_NAME picks the adapter, which may be a hardware one");
+        return;
+    }
+    let Some(mut renderer) = renderer() else { return };
+    let mut production = face_stage(&mut renderer, FaceRig::standard(), SIZE, PROBE_PX_PER_M);
+    let mut cpu = face_stage(&mut renderer, cpu_rig(), SIZE, PROBE_PX_PER_M);
+    let frames = 3;
+    let (production_frame, cpu_frame) =
+        (run(&mut production, &mut renderer, frames), run(&mut cpu, &mut renderer, frames));
+    assert!(
+        production_frame == cpu_frame,
+        "the production rig's GPU rasteriser is hardware-only: on lavapipe it declines and the CPU raster draws the very \
+         same frame"
+    );
+    for stage in [production, cpu] {
         stage.release(&mut renderer).unwrap();
     }
 }

@@ -617,13 +617,13 @@ fn a_gpu_painter_that_fails_has_its_commands_dropped_and_the_old_pixels_stay() {
 }
 
 #[test]
-fn a_gpu_painters_commands_are_timed_under_paint_textures() {
+fn a_gpu_painters_commands_are_timed_under_paint_textures_and_a_failed_ones_are_not() {
     let mut r = support::renderer();
     if !r.capabilities().gpu_timings {
         println!("skipped: the device has no timestamp queries inside encoders");
         return;
     }
-    let size = UVec2::new(256, 256);
+    let size = UVec2::new(512, 512);
     let face = r.create_texture(&TextureDesc::colour(size).dynamic(), None).unwrap();
     let mut material = Material::unlit(Colour::BLACK);
     material.overlays.push(Overlay { texture: face, mapping: Mapping::Uv, strength: 1.0 });
@@ -632,29 +632,42 @@ fn a_gpu_painters_commands_are_timed_under_paint_textures() {
     let mut s = scene(Colour::BLACK);
     s.instances.push(Instance::new(mesh, material, Mat4::IDENTITY));
     let target = r.create_target(&TargetDesc { size: UVec2::new(64, 64), alpha: AlphaEncoding::Straight }).unwrap();
-    // Timings arrive a frame or two late: paint and render until one with the paint in it comes back.
-    let mut timed = None;
-    for frame in 0..20_u64 {
-        r.paint_texture(face, &mut |target: &mut dyn PaintTarget| {
+    let pixels = vec![128; 512 * 512 * 4];
+    // Even frames: a GPU painter's 64 clears of the whole texture. Odd frames: a GPU painter that records clears and
+    // then fails, and a `write_rgba` of the whole texture, so both frames rebuild the same mips. The failed paint's
+    // timestamp pair is the one the even frame's paint wrote last: counted, it would make the odd frame as long.
+    let (mut native, mut written) = (None, None);
+    for frame in 0..24_u64 {
+        let painter_fails = frame % 2 == 1;
+        let result = r.paint_texture(face, &mut |target: &mut dyn PaintTarget| {
             let Some((_, _, texture, encoder)) = target.native().downcast_mut::<NativePaintTarget>() else {
                 return Err(RenderError::Backend("no native target".into()));
             };
-            let shade = if frame % 2 == 0 { 0.0 } else { 1.0 };
-            for _ in 0..8 {
+            for clear in 0..64 {
+                let shade = f64::from(clear % 2);
                 clear_level_zero(texture, encoder, wgpu::Color { r: shade, g: 0.5, b: 0.0, a: 1.0 });
             }
-            Ok(())
-        })
-        .unwrap();
+            if painter_fails { Err(RenderError::Backend("the painter gave up".into())) } else { Ok(()) }
+        });
+        assert_eq!(result.is_err(), painter_fails);
+        if painter_fails {
+            r.update_texture(face, PixelRect::full(size), &pixels).unwrap();
+        }
         s.frame.index = frame;
         let report = r.render(target, &s, &plain()).unwrap();
         r.wait_idle().unwrap();
-        if let Some(t) = report.gpu.and_then(|g| g.passes.get(Pass::PaintTextures)) {
-            timed = Some(t);
+        if let Some(timings) = report.gpu
+            && let Some(t) = timings.passes.get(Pass::PaintTextures)
+        {
+            *(if timings.frame % 2 == 0 { &mut native } else { &mut written }) = Some(t.0);
         }
     }
-    let timed = timed.expect("a frame after a GPU paint reports PaintTextures");
-    assert!(timed.0 > 0.0, "the painter's eight clears took GPU time: {timed:?}");
+    let (native, written) = (native.expect("an even frame was timed"), written.expect("an odd frame was timed"));
+    println!("PaintTextures: {native:.6} s with the GPU painter's clears, {written:.6} s with write_rgba");
+    assert!(
+        native > 2.0 * written,
+        "the painter's 64 clears are timed ({native} s), and the failed painter's pair is not ({written} s for the mips)"
+    );
 }
 
 #[test]
