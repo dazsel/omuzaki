@@ -2,6 +2,7 @@
 //! [`AssistantHost::stop`](crate::AssistantHost); this is the rest, in the design's order.
 
 use omuzaki_agent_api::entry::Entry;
+use omuzaki_agent_api::error::HostError;
 use omuzaki_agent_api::event::AssistantEvent;
 use omuzaki_llm_api::message::Role;
 use omuzaki_ops_api::StopStep;
@@ -38,10 +39,20 @@ impl Worker {
         self.shared.record(Entry::stopped(Some(read)));
         let steps_before = self.session_info().map_or(0, |info| info.steps);
         let step = match self.sessions.stop(self.session, &self.cfg.principal) {
-            Ok(stopped) => Some(stopped.step),
-            Err(_) => None,
+            Ok(stopped) => {
+                self.shared.emit(AssistantEvent::Paused);
+                Some(stopped.step)
+            }
+            Err(error) => {
+                // Never ignored: the person is told. A session that has ended rolled its transaction back; otherwise
+                // the transaction is still open and the host closes it before the next message (`close_prior_tx`).
+                self.shared.emit(AssistantEvent::Error(HostError::Mcp(format!("Stop was refused: {}", error.message))));
+                if self.ended().is_some() {
+                    run.tx_open = false;
+                }
+                None
+            }
         };
-        self.shared.emit(AssistantEvent::Paused);
         // The executor owns the transaction once it has accepted the Stop. If it did not, the transaction is still
         // ours and stays tracked for the next answer.
         if step.is_some() {

@@ -76,7 +76,7 @@ impl Worker {
             other => other,
         };
         self.conclude(&mut run, result);
-        self.tx_unconfirmed = run.tx_open;
+        self.tx_unconfirmed = run.tx_open.then(|| std::mem::take(&mut run.text));
     }
 
     fn drive(&mut self, run: &mut AnswerRun, msg: &UserMessage) -> Result<(), Flow> {
@@ -200,9 +200,9 @@ impl Worker {
     /// did not take) is closed here, before this message is admitted, so this answer never joins it. It is committed as
     /// its own step; if the executor refuses again it is discarded, and the person is told.
     fn close_prior_tx(&mut self, run: &mut AnswerRun) -> Result<(), Flow> {
-        if !std::mem::take(&mut self.tx_unconfirmed) {
+        let Some(rationale) = self.tx_unconfirmed.take() else {
             return Ok(());
-        }
+        };
         // The executor may have closed it since (a session that ended rolls it back): then there is nothing to close.
         let Some(open) = self.session_info().and_then(|info| info.open_tx) else {
             return Ok(());
@@ -210,7 +210,10 @@ impl Worker {
         run.tx = Some(open);
         run.tx_open = true;
         if self.commit_tx(run)? {
+            // The step keeps what the answer that made it wrote, not this message's (still empty) text.
+            let own = std::mem::replace(&mut run.text, rationale);
             self.write_step(run, "");
+            run.text = own;
             run.tx = None;
             return Ok(());
         }

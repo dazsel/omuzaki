@@ -711,3 +711,29 @@ fn a_pending_stop_is_a_step_only_if_the_log_names_its_transaction() {
         "a higher step count is not this transaction's commit"
     );
 }
+
+#[test]
+fn a_stop_the_executor_refuses_is_shown_and_the_transaction_is_closed_before_the_next_message() {
+    let rig = Rig::with(
+        script(vec![call_turn("", &[("c1", "face_set_profile", "{}")]), long_text(20), say_turn("fine")]),
+        RigOptions { hold_after: Some(FIRST_TURN_EVENTS + 2), ..RigOptions::default() },
+        standard_server,
+    );
+    rig.sessions.set_stop(StopBehaviour::Refused, 0.0);
+    rig.host.send(UserMessage::new("go")).unwrap();
+    Rig::wait_for("the transaction", || {
+        rig.server.called("tx_begin") == 1 && rig.server.called("face_set_profile") == 1
+    });
+    rig.host.stop();
+    let events = rig.until_done(0.0);
+    assert!(
+        events.iter().any(|e| matches!(e, AssistantEvent::Error(HostError::Mcp(t)) if t.contains("Stop was refused"))),
+        "{events:?}"
+    );
+    assert!(rig.sessions.open_tx().is_some(), "the executor kept the transaction open");
+    rig.gate.open();
+    rig.sessions.set_stop(StopBehaviour::Committed, 0.0);
+    rig.say("again", 0.0);
+    assert!(rig.sessions.open_tx().is_none(), "the next message closed it first");
+    assert_eq!(rig.sink.entries().iter().filter(|e| matches!(e, Entry::Step { .. })).count(), 1);
+}

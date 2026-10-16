@@ -62,11 +62,13 @@ impl EventHub {
     }
 
     /// Queues `event`. Returns `false`, queueing nothing, once [`stop`](Self::stop) has been called, except for
-    /// `Paused` and `Done`, which are always accepted. With no receiver the event is dropped and `true` is returned:
+    /// `Paused`, `Done` and `Error`, which are always accepted (an error is state the person must see, for example a
+    /// Stop the executor refused, not output). With no receiver the event is dropped and `true` is returned:
     /// a panel opened late reads `transcript()` instead.
     pub fn send(&self, event: AssistantEvent) -> bool {
         let mut shared = self.lock();
-        if shared.stopped && !matches!(event, AssistantEvent::Paused | AssistantEvent::Done) {
+        if shared.stopped && !matches!(event, AssistantEvent::Paused | AssistantEvent::Done | AssistantEvent::Error(_))
+        {
             return false;
         }
         if let AssistantEvent::TextDelta(text) = &event {
@@ -79,7 +81,7 @@ impl EventHub {
         true
     }
 
-    /// Stop's synchronous half, under the queue's lock: nothing but `Paused` and `Done` is accepted from now on, and
+    /// Stop's synchronous half, under the queue's lock: nothing but `Paused`, `Done` and `Error` is accepted from now on, and
     /// every unread `TextDelta`, `ToolCall`, `Question` and `Plan` is withdrawn. Unread `ToolResult`, `Waiting`,
     /// `Budget`, `Limit`, `Error`, `Paused` and `Resumed` stay, because they are state, not output. Calling it again
     /// withdraws nothing and reports the same `text_read`.
@@ -170,15 +172,17 @@ mod tests {
     }
 
     #[test]
-    fn after_stop_only_paused_and_done_are_accepted() {
+    fn after_stop_only_paused_done_and_errors_are_accepted() {
         let hub = EventHub::new();
         let rx = hub.subscribe();
         hub.stop();
         assert!(!hub.send(delta("late")));
         assert!(!hub.send(AssistantEvent::Resumed));
         assert!(hub.send(AssistantEvent::Paused));
+        assert!(hub.send(AssistantEvent::Error(crate::error::HostError::Busy)));
         assert!(hub.send(AssistantEvent::Done));
         assert_eq!(rx.try_recv(), Some(AssistantEvent::Paused));
+        assert_eq!(rx.try_recv(), Some(AssistantEvent::Error(crate::error::HostError::Busy)));
         assert_eq!(rx.try_recv(), Some(AssistantEvent::Done));
         assert_eq!(rx.try_recv(), None);
     }

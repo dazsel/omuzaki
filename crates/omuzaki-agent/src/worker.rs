@@ -50,8 +50,9 @@ pub(crate) struct Worker {
     /// An answer just ended: the prompt list is refetched (§7).
     pub refetch_after_answer: bool,
     /// An answer ended without the executor confirming its transaction closed (a refused commit, a failed Stop). The
-    /// transaction is still the host's to close, so the next answer picks it up and commits it.
-    pub tx_unconfirmed: bool,
+    /// transaction is still the host's to close before the next message is admitted; this is what that answer's model
+    /// wrote, the rationale of the step it will become.
+    pub tx_unconfirmed: Option<String>,
 }
 
 impl Worker {

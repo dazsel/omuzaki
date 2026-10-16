@@ -196,13 +196,16 @@ fn the_next_message_never_joins_a_transaction_the_last_one_left_open() {
     );
     rig.say("make it round", 0.0);
     rig.say("and wider", 0.0);
-    let steps: Vec<String> = rig
+    let steps: Vec<(String, String)> = rig
         .sink
         .entries()
         .into_iter()
-        .filter_map(|e| if let Entry::Step { label, .. } = e { Some(label) } else { None })
+        .filter_map(|e| if let Entry::Step { label, rationale, .. } = e { Some((label, rationale)) } else { None })
         .collect();
     assert_eq!(steps.len(), 2, "one step per message: {steps:?}");
+    assert_eq!(steps[0].1, "done", "the recovered step keeps the rationale of the answer that made it");
+    assert_eq!(steps[1].1, "done again");
+    assert!(steps[0].0.contains("make it round") && steps[1].0.contains("and wider"), "{steps:?}");
     assert_eq!(rig.server.called("tx_begin"), 2, "the second message opened its own transaction");
     assert!(rig.sessions.open_tx().is_none());
 }

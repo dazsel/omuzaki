@@ -335,6 +335,8 @@ pub enum StopBehaviour {
     Committed,
     /// Returns `Pending`; the open transaction closes `close_after` seconds of clock time later.
     Pending { close_after: f64 },
+    /// Refuses the Stop and leaves the transaction open.
+    Refused,
 }
 
 struct SessionsState {
@@ -686,6 +688,9 @@ impl Sessions for FakeSessions {
             std::thread::sleep(Duration::from_millis(1));
         }
         let mut st = self.st();
+        if matches!(behaviour, StopBehaviour::Refused) {
+            return Err(OpError::conflict("the executor is busy"));
+        }
         let had_tx = st.info.open_tx.take();
         match behaviour {
             StopBehaviour::Committed => {
@@ -696,6 +701,7 @@ impl Sessions for FakeSessions {
                 let step = had_tx.map_or(StopStep::None, |t| StopStep::Committed(t.tx));
                 Ok(Stopped { step, jobs: vec![] })
             }
+            StopBehaviour::Refused => unreachable!("returned above"),
             StopBehaviour::Pending { close_after } => {
                 st.info.open_tx = had_tx;
                 st.close_open_tx_at = Some(self.clock.now().0 + close_after);
