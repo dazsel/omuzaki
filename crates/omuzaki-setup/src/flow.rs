@@ -1,5 +1,6 @@
 //! The state machine (design section 3). It decides which step is showing and what the host must do next.
 
+use crate::ops::{Ids, Op, Reply};
 use crate::probe::{Cameras, IPhone, LanguageOffer, OutputKind, Permission, Probes, TrackerModel};
 use crate::progress::{Progress, Step, Timers};
 use std::collections::BTreeSet;
@@ -192,15 +193,6 @@ pub struct View {
     pub elapsed_ms: [u64; 6],
 }
 
-/// A host operation that failed or was refused, kept until the person tries again.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Failed {
-    Input,
-    Output,
-    Character,
-    Calibration,
-}
-
 /// What the person asked for on Input that waits for the host to apply the source.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum Then {
@@ -208,15 +200,6 @@ enum Then {
     Continue,
     /// "Skip for now" (the life layer).
     Skip,
-}
-
-/// How far the calibration got in this sitting (not persisted).
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum Calibration {
-    Idle,
-    /// Running, with the `request` of its [`Effect::StartCalibration`].
-    Running(u32),
-    Done,
 }
 
 /// The first-run machine. Every state handles every event; one that makes no sense is ignored with no effects.
@@ -227,26 +210,27 @@ pub struct SetupFlow {
     /// Steps skipped by the person; probe-made gaps are derived in [`Self::progress`].
     skipped: BTreeSet<Step>,
     finished: bool,
+    /// The source the person selected (preselected on a first run until they choose).
     input: Option<InputChoice>,
-    /// The source the host has applied; `None` before one ever was (the life layer is then in effect).
-    host_input: Option<InputChoice>,
-    /// The `input.select` request waiting for its answer.
-    in_flight: Option<(u32, InputChoice)>,
-    next_request: u32,
-    /// What the host refused or failed, shown as a note until tried again.
-    failed: BTreeSet<Failed>,
+    /// The host's side of `input.select`.
+    input_op: Op<InputChoice>,
+    ids: Ids,
     /// Move on when the host has applied the selected source.
     then: Option<Then>,
-    /// The output the host has added.
-    host_output: Option<OutputKind>,
-    /// The `ShowTestPattern` request waiting for its answer.
-    output_flight: Option<(u32, OutputKind)>,
-    /// Continue was pressed on Output before the host answered.
-    output_then: bool,
-    /// The `ApplyCharacter` request waiting for its answer.
-    character_flight: Option<(u32, CharacterChoice)>,
+    /// The output the person selected.
     output: Option<OutputKind>,
-    calibration: Calibration,
+    /// The host's side of adding the output with its test pattern.
+    output_op: Op<OutputKind>,
+    /// Continue was pressed on Output before the host answered.
+    output_then: Option<Then>,
+    /// The card the person chose on Character.
+    character: Option<CharacterChoice>,
+    /// The host's side of carrying that card out.
+    character_op: Op<CharacterChoice>,
+    /// The person asked for a calibration run (Continue on Calibrate) and has not given up on it.
+    calibration_wanted: bool,
+    /// The host's side of the calibration: a stored result of this sitting is "applied", a run is "in flight".
+    calibration_op: Op<()>,
     permission_requested: bool,
     timers: Timers,
     last_ms: Option<u64>,
@@ -276,17 +260,16 @@ impl SetupFlow {
             skipped,
             finished,
             input,
-            host_input: current.input.or(skipped_input.then_some(InputChoice::LifeLayerOnly)),
-            in_flight: None,
-            next_request: 0,
-            failed: BTreeSet::new(),
+            input_op: Op::new(current.input.or(skipped_input.then_some(InputChoice::LifeLayerOnly))),
+            ids: Ids::default(),
             then: None,
-            host_output: current.output,
-            output_flight: None,
-            output_then: false,
-            character_flight: None,
             output: current.output,
-            calibration: Calibration::Idle,
+            output_op: Op::new(current.output),
+            output_then: None,
+            character: None,
+            character_op: Op::new(None),
+            calibration_wanted: false,
+            calibration_op: Op::new(None),
             permission_requested: false,
             timers: Timers::default(),
             last_ms: None,
@@ -325,6 +308,7 @@ impl SetupFlow {
             Event::Refused { request } => self.answered(request, false, &mut fx),
             Event::Back => {
                 self.then = None;
+                self.output_then = None;
                 if let Some(prev) = self.prev_shown() {
                     self.go(prev, &mut fx);
                 }
@@ -337,22 +321,8 @@ impl SetupFlow {
             }
             Event::ChooseCharacter(c) => self.choose_character(c, &mut fx),
             Event::ChooseInput(c) => self.choose_input(c, &mut fx),
-            Event::CalibrationDone { request } => {
-                if self.step == Step::Calibrate
-                    && self.calibration == Calibration::Running(request)
-                    && self.calibrate_possible()
-                {
-                    self.calibration = Calibration::Done;
-                    self.skipped.remove(&Step::Calibrate);
-                    self.advance(&mut fx);
-                }
-            }
-            Event::CalibrationFailed { request } => {
-                if self.calibration == Calibration::Running(request) {
-                    self.calibration = Calibration::Idle;
-                    self.failed.insert(Failed::Calibration);
-                }
-            }
+            Event::CalibrationDone { request } => self.answered_calibration(request, true, &mut fx),
+            Event::CalibrationFailed { request } => self.answered_calibration(request, false, &mut fx),
             Event::ChooseOutput(k) => self.choose_output(k, &mut fx),
             Event::Finish => {
                 if self.step == Step::GoLive {
@@ -402,7 +372,7 @@ impl SetupFlow {
                     || (*s == Step::Calibrate
                         && !(self.input.is_none() && self.source_choosable())
                         && !self.calibrate_possible()
-                        && self.calibration != Calibration::Done)
+                        && self.calibration_op.applied().is_none())
             })
             .collect();
         Progress { step: self.step, skipped, finished: self.finished }
@@ -430,12 +400,12 @@ impl SetupFlow {
                 if self.input == Some(InputChoice::Iphone) && p.iphone != IPhone::Paired {
                     notes.push(Note::IphoneNotPaired);
                 }
-                if self.failed.contains(&Failed::Input) && !self.settled() {
+                if self.input_op.failed(self.input) {
                     notes.push(Note::InputNotApplied);
                 }
             }
-            Step::Character if self.failed.contains(&Failed::Character) => notes.push(Note::CharacterNotApplied),
-            Step::Output if self.failed.contains(&Failed::Output) && !self.output_settled() => {
+            Step::Character if self.character_op.failed(self.character) => notes.push(Note::CharacterNotApplied),
+            Step::Output if self.output_op.failed(self.output) => {
                 notes.push(Note::OutputNotApplied);
                 if p.recommended_output.is_none() {
                     notes.push(Note::OutputUnavailable);
@@ -453,7 +423,7 @@ impl SetupFlow {
             },
             _ => {}
         }
-        if self.step == Step::Calibrate && self.failed.contains(&Failed::Calibration) {
+        if self.step == Step::Calibrate && self.calibration_op.failed(self.calibration_want()) {
             notes.push(Note::CalibrationNotDone);
         }
         notes
@@ -537,12 +507,12 @@ impl SetupFlow {
 
     /// Moves to `step`: persist first, then show, so a crash right after showing resumes at the shown step.
     fn go(&mut self, step: Step, fx: &mut Vec<Effect>) {
-        if self.step == Step::Calibrate && matches!(self.calibration, Calibration::Running(_)) {
+        if self.step == Step::Calibrate {
             // The overlay's cancel sends no event, so leaving the step is what ends a run.
-            self.calibration = Calibration::Idle;
+            self.calibration_wanted = false;
+            self.calibration_op.cancel();
         }
         self.step = step;
-        self.failed.remove(&Failed::Calibration);
         self.sync(fx);
         fx.push(Effect::Show(step));
     }
@@ -557,18 +527,105 @@ impl SetupFlow {
         match self.step {
             Step::Welcome => self.advance(fx),
             Step::Input => self.continue_input(fx),
-            // Back to an already calibrated step: Continue keeps the stored result.
-            Step::Calibrate if self.calibration == Calibration::Done => self.advance(fx),
-            Step::Calibrate
-                if self.input.is_some() && self.calibrate_possible() && self.calibration == Calibration::Idle =>
-            {
-                let request = self.new_request();
-                self.calibration = Calibration::Running(request);
-                self.failed.remove(&Failed::Calibration);
-                fx.push(Effect::StartCalibration { request });
-            }
+            Step::Calibrate => self.continue_calibrate(fx),
             Step::Output => self.continue_output(fx),
             _ => {}
+        }
+    }
+
+    /// Numbers and sends what the person wants, for each kind of operation. Nothing is sent while a request of
+    /// the kind is outstanding or the host already holds the wish; the answer to the outstanding one follows up.
+    fn pump_input(&mut self, fx: &mut Vec<Effect>) {
+        if let Some((request, source)) = self.input_op.ask(self.input, &mut self.ids) {
+            fx.push(Effect::SelectInput { request, source });
+        }
+    }
+
+    fn pump_output(&mut self, fx: &mut Vec<Effect>) {
+        if let Some((request, output)) = self.output_op.ask(self.output, &mut self.ids) {
+            fx.push(Effect::ShowTestPattern { request, output });
+        }
+    }
+
+    fn pump_character(&mut self, fx: &mut Vec<Effect>) {
+        if let Some((request, choice)) = self.character_op.ask(self.character, &mut self.ids) {
+            fx.push(Effect::ApplyCharacter { request, choice });
+        }
+    }
+
+    fn pump_calibration(&mut self, fx: &mut Vec<Effect>) {
+        if let Some((request, ())) = self.calibration_op.ask(self.calibration_want(), &mut self.ids) {
+            fx.push(Effect::StartCalibration { request });
+        }
+    }
+
+    fn calibration_want(&self) -> Option<()> {
+        self.calibration_wanted.then_some(())
+    }
+
+    /// The host answered a request. Stale or unknown answers change nothing.
+    fn answered(&mut self, request: u32, ok: bool, fx: &mut Vec<Effect>) {
+        if self.input_op.owns(request) {
+            let reply = self.input_op.reply(ok, self.input);
+            if reply == Some(Reply::Failed) {
+                self.then = None;
+            } else if self.input_op.settled(self.input) {
+                self.finish_input(fx);
+            } else {
+                self.pump_input(fx);
+            }
+        } else if self.output_op.owns(request) {
+            let reply = self.output_op.reply(ok, self.output);
+            if reply == Some(Reply::Failed) {
+                self.output_then = None;
+            } else {
+                if reply == Some(Reply::Applied) {
+                    self.skipped.remove(&Step::Output);
+                }
+                if self.output_op.settled(self.output) {
+                    if self.output_then.take().is_some() && self.step == Step::Output {
+                        self.advance(fx);
+                    }
+                } else {
+                    self.pump_output(fx);
+                }
+            }
+        } else if self.character_op.owns(request) {
+            if self.character_op.reply(ok, self.character) == Some(Reply::Failed) {
+                return;
+            }
+            if !self.character_op.settled(self.character) {
+                self.pump_character(fx);
+            } else if self.step == Step::Character {
+                self.advance(fx);
+            }
+        }
+    }
+
+    /// The host reports the calibration run `request`. Probes gate STARTING a run; a stored result of the active
+    /// run counts whatever the probes say now.
+    fn answered_calibration(&mut self, request: u32, ok: bool, fx: &mut Vec<Effect>) {
+        if !self.calibration_op.owns(request) {
+            return;
+        }
+        if self.calibration_op.reply(ok, self.calibration_want()) == Some(Reply::Failed) {
+            self.calibration_wanted = false;
+        } else if ok {
+            self.calibration_wanted = false;
+            self.skipped.remove(&Step::Calibrate);
+            if self.step == Step::Calibrate {
+                self.advance(fx);
+            }
+        }
+    }
+
+    /// Continue on Calibrate: a stored result moves on; otherwise a run is started if the probes allow one.
+    fn continue_calibrate(&mut self, fx: &mut Vec<Effect>) {
+        if self.calibration_op.applied().is_some() {
+            self.advance(fx);
+        } else if self.input.is_some() && self.calibrate_possible() {
+            self.calibration_wanted = true;
+            self.pump_calibration(fx);
         }
     }
 
@@ -583,152 +640,18 @@ impl SetupFlow {
         if choice == InputChoice::Webcam {
             self.request_camera(fx);
         }
-        if self.settled() {
+        if self.input_op.settled(self.input) {
             if self.input_ready() {
                 self.advance(fx);
             }
         } else {
             self.then = Some(Then::Continue);
-            self.pump(fx);
-        }
-    }
-
-    /// True when the host has applied the selected source and no request is outstanding. Even the life layer is
-    /// applied through the host: an explicit choice must be saved, or a restart would find no source at all.
-    fn settled(&self) -> bool {
-        self.input.is_some() && self.in_flight.is_none() && self.host_input == self.input
-    }
-
-    /// Asks the host for the selected source when it is not applied and no request is outstanding.
-    fn pump(&mut self, fx: &mut Vec<Effect>) {
-        let Some(source) = self.input else { return };
-        if self.in_flight.is_some() || self.settled() {
-            return;
-        }
-        let request = self.new_request();
-        self.in_flight = Some((request, source));
-        self.failed.remove(&Failed::Input);
-        fx.push(Effect::SelectInput { request, source });
-    }
-
-    /// Numbers a host request; ids are never reused within a sitting, so an answer finds only its own request.
-    fn new_request(&mut self) -> u32 {
-        let request = self.next_request;
-        self.next_request = self.next_request.wrapping_add(1);
-        request
-    }
-
-    /// The host answered a request. Stale or unknown answers change nothing.
-    fn answered(&mut self, request: u32, applied: bool, fx: &mut Vec<Effect>) {
-        if self.output_flight.is_some_and(|(id, _)| id == request) {
-            self.answered_output(applied, fx);
-        } else if self.character_flight.is_some_and(|(id, _)| id == request) {
-            self.answered_character(applied, fx);
-        } else {
-            self.answered_input(request, applied, fx);
-        }
-    }
-
-    fn answered_input(&mut self, request: u32, applied: bool, fx: &mut Vec<Effect>) {
-        let Some((id, source)) = self.in_flight else { return };
-        if id != request {
-            return;
-        }
-        self.in_flight = None;
-        if applied {
-            self.host_input = Some(source);
-        } else if self.input == Some(source) {
-            self.failed.insert(Failed::Input);
-            self.then = None;
-            return;
-        }
-        // The person may have chosen again while this was out; then the latest choice is asked for next.
-        if self.settled() {
-            self.finish_then(fx);
-        } else {
-            self.pump(fx);
-        }
-    }
-
-    fn choose_character(&mut self, choice: CharacterChoice, fx: &mut Vec<Effect>) {
-        if self.step != Step::Character || self.character_flight.is_some() {
-            return;
-        }
-        match choice {
-            CharacterChoice::Keep if !self.probes.project_open => {}
-            // Keeping the open project writes nothing, so there is nothing to wait for.
-            CharacterChoice::Keep => self.advance(fx),
-            _ => {
-                let request = self.new_request();
-                self.character_flight = Some((request, choice));
-                self.failed.remove(&Failed::Character);
-                fx.push(Effect::ApplyCharacter { request, choice });
-            }
-        }
-    }
-
-    fn answered_character(&mut self, applied: bool, fx: &mut Vec<Effect>) {
-        self.character_flight = None;
-        if !applied {
-            self.failed.insert(Failed::Character);
-        } else if self.step == Step::Character {
-            self.advance(fx);
-        }
-    }
-
-    /// True when the host has added the selected output and no request is outstanding.
-    fn output_settled(&self) -> bool {
-        self.output.is_some() && self.output_flight.is_none() && self.host_output == self.output
-    }
-
-    fn choose_output(&mut self, kind: OutputKind, fx: &mut Vec<Effect>) {
-        if self.step != Step::Output || self.probes.recommended_output != Some(kind) {
-            return;
-        }
-        self.output = Some(kind);
-        self.pump_output(fx);
-    }
-
-    fn pump_output(&mut self, fx: &mut Vec<Effect>) {
-        let Some(output) = self.output else { return };
-        if self.output_flight.is_some() || self.output_settled() {
-            return;
-        }
-        let request = self.new_request();
-        self.output_flight = Some((request, output));
-        self.failed.remove(&Failed::Output);
-        fx.push(Effect::ShowTestPattern { request, output });
-    }
-
-    /// Continue on Output: only an output the host has added moves on; otherwise ask and wait.
-    fn continue_output(&mut self, fx: &mut Vec<Effect>) {
-        if self.output.is_none() {
-            return;
-        }
-        if self.output_settled() {
-            self.advance(fx);
-        } else {
-            self.output_then = true;
-            self.pump_output(fx);
-        }
-    }
-
-    fn answered_output(&mut self, applied: bool, fx: &mut Vec<Effect>) {
-        let Some((_, output)) = self.output_flight.take() else { return };
-        if !applied {
-            self.failed.insert(Failed::Output);
-            self.output_then = false;
-            return;
-        }
-        self.host_output = Some(output);
-        self.skipped.remove(&Step::Output);
-        if self.output_settled() && std::mem::take(&mut self.output_then) && self.step == Step::Output {
-            self.advance(fx);
+            self.pump_input(fx);
         }
     }
 
     /// Carries out what was waiting for the source to be applied, if the person is still on Input.
-    fn finish_then(&mut self, fx: &mut Vec<Effect>) {
+    fn finish_input(&mut self, fx: &mut Vec<Effect>) {
         let then = self.then.take();
         if self.step != Step::Input {
             return;
@@ -751,7 +674,49 @@ impl SetupFlow {
             Some(InputChoice::Iphone) => self.probes.iphone == IPhone::Paired,
             Some(InputChoice::LifeLayerOnly) => true,
         };
-        source_ready && self.settled()
+        source_ready && self.input_op.settled(self.input)
+    }
+
+    fn choose_character(&mut self, choice: CharacterChoice, fx: &mut Vec<Effect>) {
+        if self.step != Step::Character {
+            return;
+        }
+        match choice {
+            CharacterChoice::Keep if !self.probes.project_open => {}
+            // Keeping the open project writes nothing, so there is nothing to wait for.
+            CharacterChoice::Keep => self.advance(fx),
+            _ => {
+                self.character = Some(choice);
+                self.pump_character(fx);
+                if self.character_op.settled(self.character) {
+                    self.advance(fx);
+                }
+            }
+        }
+    }
+
+    fn choose_output(&mut self, kind: OutputKind, fx: &mut Vec<Effect>) {
+        if self.step != Step::Output || self.probes.recommended_output != Some(kind) {
+            return;
+        }
+        self.output = Some(kind);
+        self.pump_output(fx);
+        if self.output_op.settled(self.output) {
+            self.skipped.remove(&Step::Output);
+        }
+    }
+
+    /// Continue on Output: only an output the host has added moves on; otherwise ask and wait.
+    fn continue_output(&mut self, fx: &mut Vec<Effect>) {
+        if self.output.is_none() {
+            return;
+        }
+        if self.output_op.settled(self.output) {
+            self.advance(fx);
+        } else {
+            self.output_then = Some(Then::Continue);
+            self.pump_output(fx);
+        }
     }
 
     fn skip(&mut self, fx: &mut Vec<Effect>) {
@@ -760,20 +725,21 @@ impl SetupFlow {
                 // "Skip for now" is the life layer chosen like any source: saved through the host, and the step waits.
                 self.set_input(InputChoice::LifeLayerOnly);
                 self.then = Some(Then::Skip);
-                if self.settled() {
-                    self.finish_then(fx);
+                if self.input_op.settled(self.input) {
+                    self.finish_input(fx);
                 } else {
-                    self.pump(fx);
+                    self.pump_input(fx);
                 }
                 return;
             }
             Step::Calibrate => {
                 // "Use defaults" gives up any stored result of this sitting too.
-                self.calibration = Calibration::Idle;
+                self.calibration_wanted = false;
+                self.calibration_op.forget();
                 self.skipped.insert(Step::Calibrate);
             }
             Step::Output => {
-                self.output_then = false;
+                self.output_then = None;
                 self.skipped.insert(Step::Output);
             }
             _ => return,
@@ -795,15 +761,15 @@ impl SetupFlow {
         }
         self.skipped.remove(&Step::Input);
         self.set_input(choice);
-        self.pump(fx);
+        self.pump_input(fx);
     }
 
     /// Every change of source goes through here: a calibration belongs to the source it ran on.
     fn set_input(&mut self, choice: InputChoice) {
         if self.input != Some(choice) {
-            self.calibration = Calibration::Idle;
+            self.calibration_wanted = false;
+            self.calibration_op.forget();
             self.then = None;
-            self.failed.remove(&Failed::Input);
             if choice != InputChoice::Webcam {
                 // A pending camera dialog belongs to the webcam source.
                 self.permission_requested = false;
@@ -837,3 +803,6 @@ impl SetupFlow {
         }
     }
 }
+
+#[cfg(test)]
+mod invariants;

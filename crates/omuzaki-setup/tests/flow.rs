@@ -1046,8 +1046,14 @@ fn a_character_choice_waits_for_the_host_and_keep_does_not() {
     let fx = send_raw(&mut f, &[Event::ChooseCharacter(CharacterChoice::ImportVrm)]);
     assert!(matches!(fx.as_slice(), [Effect::ApplyCharacter { choice: CharacterChoice::ImportVrm, .. }]), "{fx:?}");
     assert_eq!(f.view().step, Step::Character);
+    // A later choice waits for the outstanding request, then is asked for in its turn.
     assert_eq!(send_raw(&mut f, &[Event::ChooseCharacter(CharacterChoice::Sample)]), no_effects(), "one at a time");
-    send_raw(&mut f, &[Event::Refused { request: request_of(&fx) }]);
+    let next = send_raw(&mut f, &[Event::Refused { request: request_of(&fx) }]);
+    assert!(matches!(next.as_slice(), [Effect::ApplyCharacter { choice: CharacterChoice::Sample, .. }]), "{next:?}");
+    assert_eq!(f.view().step, Step::Character);
+    assert!(!f.view().notes.contains(&Note::CharacterNotApplied), "the refused card was already left");
+    // Refusing the card the person still wants keeps the step with a note, and choosing again asks again.
+    send_raw(&mut f, &[Event::Refused { request: request_of(&next) }]);
     assert_eq!(f.view().step, Step::Character);
     assert!(f.view().notes.contains(&Note::CharacterNotApplied));
     let again = send_raw(&mut f, &[Event::ChooseCharacter(CharacterChoice::Sample)]);
@@ -1093,4 +1099,48 @@ fn a_calibration_result_belongs_to_its_run_and_a_failed_run_can_be_started_again
     let third = send_raw(&mut f, &[Event::Next]);
     let fx = send_raw(&mut f, &[Event::CalibrationDone { request: request_of(&third) }]);
     assert!(fx.contains(&Effect::Show(Step::Output)), "{fx:?}");
+}
+
+#[test]
+fn a_changed_recommendation_mid_flight_is_followed_up_whether_the_old_request_succeeds_or_fails() {
+    for ok in [true, false] {
+        let mut f = at_output();
+        let old = send_raw(&mut f, &[Event::ChooseOutput(OutputKind::Spout), Event::Next]);
+        let ndi = Probes { recommended_output: Some(OutputKind::Ndi), ..probes() };
+        send_raw(&mut f, &[Event::Probed(ndi)]);
+        assert_eq!(send_raw(&mut f, &[Event::ChooseOutput(OutputKind::Ndi)]), no_effects(), "one at a time");
+        let answer = if ok {
+            Event::Applied { request: request_of(&old) }
+        } else {
+            Event::Refused { request: request_of(&old) }
+        };
+        let fx = send_raw(&mut f, &[answer]);
+        assert!(matches!(fx.as_slice(), [Effect::ShowTestPattern { output: OutputKind::Ndi, .. }]), "{ok}: {fx:?}");
+        assert_eq!(f.view().step, Step::Output, "Continue was for the old card");
+        let fx = send_raw(&mut f, &[Event::Next, Event::Applied { request: request_of(&fx) }]);
+        assert!(fx.contains(&Effect::Show(Step::GoLive)), "{fx:?}");
+    }
+}
+
+#[test]
+fn a_stored_calibration_result_counts_even_if_the_probe_dropped_meanwhile() {
+    let mut f = SetupFlow::new(probes(), Progress { step: Step::Calibrate, ..Progress::default() }, webcam());
+    let run = request_of(&send_raw(&mut f, &[Event::Next]));
+    send_raw(&mut f, &[Event::Probed(Probes { cameras: Cameras::None, ..probes() })]);
+    assert_eq!(f.view().step, Step::Calibrate, "no jump under the person");
+    let fx = send_raw(&mut f, &[Event::CalibrationDone { request: run }]);
+    assert!(fx.contains(&Effect::Show(Step::Output)), "{fx:?}");
+    // The probe coming back and Back to Calibrate: the stored result still lets Continue move on.
+    send_raw(&mut f, &[Event::Probed(probes()), Event::Back]);
+    assert_eq!(f.view().step, Step::Calibrate);
+    assert_eq!(f.progress().skipped, Vec::<Step>::new());
+    send_raw(&mut f, &[Event::Next]);
+    assert_eq!(f.view().step, Step::Output);
+    // A run whose probe never came back can still be failed, and a new run starts when the probe returns.
+    let mut g = SetupFlow::new(probes(), Progress { step: Step::Calibrate, ..Progress::default() }, webcam());
+    let run = request_of(&send_raw(&mut g, &[Event::Next]));
+    send_raw(&mut g, &[Event::Probed(Probes { tracker: TrackerModel::Unavailable, ..probes() })]);
+    send_raw(&mut g, &[Event::CalibrationFailed { request: run }, Event::Probed(probes())]);
+    let again = send_raw(&mut g, &[Event::Next]);
+    assert!(matches!(again.as_slice(), [Effect::StartCalibration { .. }]), "{again:?}");
 }

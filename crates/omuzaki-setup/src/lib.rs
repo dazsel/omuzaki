@@ -10,6 +10,7 @@
 //! - [`flow`]: the machine itself.
 
 pub mod flow;
+mod ops;
 pub mod probe;
 pub mod progress;
 
