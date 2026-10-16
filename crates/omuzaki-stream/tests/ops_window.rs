@@ -12,9 +12,9 @@ use omuzaki_doc_mock::MemDoc;
 use omuzaki_ops_api::{
     Actor, ErrorCode, Grants, OpCtx, OpError, OpKind, Plan, Scope, Services, ServicesBuilder, Undo, find,
 };
-use omuzaki_stream::service::{PaletteSource, WindowHost};
-use omuzaki_stream::window::{
-    Backdrop, OutputSurface, WindowCaps, WindowError, WindowPlan, WindowSettings, WindowState,
+use omuzaki_stream_api::window::{
+    Backdrop, OutputSurface, PaletteSource, WindowCaps, WindowError, WindowHost, WindowPlan, WindowSettings,
+    WindowState,
 };
 use serde_json::{Value, json};
 
@@ -53,7 +53,7 @@ impl WindowHost for FakeHost {
             return Err(WindowError::Host("no display".into()));
         }
         self.opens.lock().unwrap().push((*plan, settings.clone()));
-        *self.state.lock().unwrap() = WindowState::Open { physical: plan.physical, backdrop: settings.backdrop };
+        *self.state.lock().unwrap() = WindowState::open(plan.physical, settings.backdrop);
         Ok(())
     }
     fn close(&self) {
@@ -86,8 +86,14 @@ fn person() -> Actor {
     Actor::Person { name: "host".into() }
 }
 
+/// Looks an op up after linking this crate's registrations into the test binary (ADR 0015).
+fn registered(name: &str) -> Option<&'static omuzaki_ops_api::OpRegistration> {
+    omuzaki_stream::link();
+    find(name)
+}
+
 fn call(op: &str, args: Value, services: Option<&Services>, dry_run: bool) -> Result<Plan, OpError> {
-    let op = (find(op).expect("the op registers itself").decode)(args)?;
+    let op = (registered(op).expect("the op registers itself").decode)(args)?;
     let (doc, clock, actor) = (MemDoc::new(), FakeClock::new(Seconds(0.0)), person());
     let ctx = OpCtx::new(&doc, &actor, &clock).with_dry_run(dry_run);
     match services {
@@ -108,7 +114,7 @@ fn the_ops_declare_their_kind_scope_and_undo() {
         (NAMES[2], OpKind::Query, Scope::Read),
         (NAMES[3], OpKind::Query, Scope::Read),
     ] {
-        let meta = (find(name).expect("registered").meta)();
+        let meta = (registered(name).expect("registered").meta)();
         assert_eq!((meta.name, meta.kind, meta.scope, meta.undo), (name, kind, scope, Undo::None));
     }
 }
@@ -146,7 +152,7 @@ fn transparent_is_kept_on_a_host_that_has_it() {
     let (host, palette) = (FakeHost::new(true), green_palette());
     let opened = answer(NAMES[0], json!({ "backdrop": "transparent" }), &services(&host, &palette));
     assert_eq!((opened["fallback"].clone(), opened["backdrop"].clone()), (json!(false), json!("transparent")));
-    assert_eq!(host.state(), WindowState::Open { physical: UVec2::new(1920, 1080), backdrop: Backdrop::Transparent });
+    assert_eq!(host.state(), WindowState::open(UVec2::new(1920, 1080), Backdrop::Transparent));
 }
 
 #[test]
@@ -156,7 +162,7 @@ fn transparent_on_a_host_without_it_falls_back_to_the_key_and_says_so() {
     let opened = answer(NAMES[0], json!({ "backdrop": "transparent", "key": "#0047bb" }), &services);
     assert_eq!((opened["fallback"].clone(), opened["backdrop"].clone()), (json!(true), json!({ "key": "#0047bb" })));
     let blue = Backdrop::Key("#0047bb".parse().unwrap());
-    assert_eq!(host.state(), WindowState::Open { physical: UVec2::new(1920, 1080), backdrop: blue });
+    assert_eq!(host.state(), WindowState::open(UVec2::new(1920, 1080), blue));
     // Without a key of its own the fallback is the default chroma green.
     let opened = answer(NAMES[0], json!({ "backdrop": "transparent" }), &services);
     assert_eq!(opened["backdrop"], json!({ "key": "#00b140" }));
@@ -235,7 +241,7 @@ fn without_the_services_every_op_is_unavailable() {
 fn actor_matrix_a_person_may_do_all_and_an_agent_only_the_queries() {
     let (person, agent) = (Grants::person(), Grants::agent_default());
     for name in NAMES {
-        let scope = (find(name).expect("registered").meta)().scope;
+        let scope = (registered(name).expect("registered").meta)().scope;
         let query = name.ends_with("status") || name.ends_with("suggest_key");
         assert!(person.allows(scope), "{name}: a person is allowed");
         assert_eq!(agent.allows(scope), query, "{name}: an agent is denied the actions and allowed the queries");

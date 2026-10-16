@@ -13,10 +13,11 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::service::{PaletteSource, WindowHost};
-use crate::window::{
-    Backdrop, DEFAULT_KEY, SizePolicy, WindowError, WindowSettings, WindowState, check_title, pick_key, plan,
+use omuzaki_stream_api::window::{
+    Backdrop, DEFAULT_KEY, PaletteSource, SizePolicy, WindowError, WindowHost, WindowSettings, WindowState,
 };
+
+use crate::window::{check_title, pick_key, plan};
 
 /// What to put behind the character.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

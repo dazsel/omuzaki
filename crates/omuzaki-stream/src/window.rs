@@ -3,7 +3,7 @@
 //!
 //! Window capture is the fallback for capture tools with no Spout, NDI or camera route (BR-01, BR-02, BR-04), so the
 //! default backdrop is a **key colour**, which every tool can capture, not transparency, which only some can. The window
-//! itself (the OS surface) belongs to the Live UI; it reaches this module through [`WindowHost`](crate::service::WindowHost)
+//! itself (the OS surface) belongs to the Live UI; it reaches this module through [`WindowHost`](omuzaki_stream_api::window::WindowHost)
 //! and is told what to build by a [`WindowPlan`], so the part a person's capture tool depends on is tested without a
 //! display:
 //!
@@ -15,108 +15,18 @@
 
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::UVec2;
+use omuzaki_stream_api::window::{
+    DEFAULT_KEY, MAX_SCALE, MAX_SCALE_FACTOR, MAX_TITLE_CHARS, MIN_SCALE, MIN_SCALE_FACTOR, MIN_TITLE_CHARS,
+    SizePolicy, WindowError, WindowPlan,
+};
 use serde::{Deserialize, Serialize};
 
-/// The window title when none is asked for. It never changes: capture tools re-find the window by it.
-pub const DEFAULT_TITLE: &str = "Omuzaki Output";
-/// The default key colour: chroma green, `#00b140`.
-pub const DEFAULT_KEY: Colour = Colour::hex(0x0000_b140);
-/// The shortest title, in characters.
-pub const MIN_TITLE_CHARS: usize = 1;
-/// The longest title, in characters.
-pub const MAX_TITLE_CHARS: usize = 64;
-/// The smallest display scale factor [`plan`] accepts.
-pub const MIN_SCALE_FACTOR: f64 = 0.5;
-/// The largest display scale factor [`plan`] accepts.
-pub const MAX_SCALE_FACTOR: f64 = 4.0;
-/// The smallest [`SizePolicy::Scale`] factor.
-pub const MIN_SCALE: f32 = 0.1;
-/// The largest [`SizePolicy::Scale`] factor.
-pub const MAX_SCALE: f32 = 2.0;
 /// The most physical pixels a scaled window has per side.
 pub const MAX_SIDE: u32 = 8192;
 /// The key candidates [`pick_key`] chooses from, in order of preference: chroma green, magenta, chroma blue.
 pub const KEY_CANDIDATES: [Colour; 3] = [DEFAULT_KEY, Colour::hex(0x00ff_00ff), Colour::hex(0x0000_47bb)];
 /// A key whose [`KeyChoice::margin`] is below this distance is too close to a palette colour to key cleanly.
 pub const COLLISION_MARGIN: f32 = 120.0;
-
-/// What the window shows behind the character.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Backdrop {
-    /// A transparent surface. Only some capture tools and some hosts support it ([`WindowCaps::transparent`]).
-    Transparent,
-    /// A flat key colour, which every capture tool can remove.
-    Key(Colour),
-}
-
-/// How big the window's client area is.
-#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SizePolicy {
-    /// Exactly the output size in physical pixels, at any DPI scale factor.
-    Output,
-    /// The output size times a factor (`0.1` to `2.0`), rounded: a smaller preview-sized window.
-    Scale(f32),
-}
-
-/// What to open: the title, the backdrop, the size policy and the cursor.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct WindowSettings {
-    /// The window title; see [`check_title`].
-    pub title: String,
-    /// What shows behind the character.
-    pub backdrop: Backdrop,
-    /// The client area size.
-    pub size: SizePolicy,
-    /// Hide the mouse cursor over the window, so it is not captured.
-    pub hide_cursor: bool,
-}
-
-impl Default for WindowSettings {
-    /// `"Omuzaki Output"`, the `#00b140` key, exact output size, cursor hidden.
-    fn default() -> Self {
-        Self {
-            title: DEFAULT_TITLE.to_owned(),
-            backdrop: Backdrop::Key(DEFAULT_KEY),
-            size: SizePolicy::Output,
-            hide_cursor: true,
-        }
-    }
-}
-
-/// The exact size to give the window, computed by [`plan`].
-#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct WindowPlan {
-    /// The client area in physical pixels: what a capture tool grabs.
-    pub physical: UVec2,
-    /// The same size in logical units (`physical / scale_factor`), for window systems that size in logical units.
-    pub logical: (f64, f64),
-    /// The display scale factor the plan was made for.
-    pub scale_factor: f64,
-}
-
-/// Why a window cannot be planned or opened.
-#[derive(Clone, Debug, PartialEq, thiserror::Error)]
-#[non_exhaustive]
-pub enum WindowError {
-    /// The display scale factor is NaN or outside [`MIN_SCALE_FACTOR`] to [`MAX_SCALE_FACTOR`].
-    #[error("the display scale factor {0} must be {MIN_SCALE_FACTOR} to {MAX_SCALE_FACTOR}")]
-    ScaleFactor(f64),
-    /// The [`SizePolicy::Scale`] factor is NaN or outside [`MIN_SCALE`] to [`MAX_SCALE`].
-    #[error("the window scale {0} must be {MIN_SCALE} to {MAX_SCALE}")]
-    Scale(f32),
-    /// The output has a zero side.
-    #[error("the output size {0}x{1} must be at least 1x1")]
-    EmptyOutput(u32, u32),
-    /// The title is empty, too long or holds a control character.
-    #[error("the title must be {MIN_TITLE_CHARS} to {MAX_TITLE_CHARS} characters with no control characters")]
-    Title,
-    /// The host could not open the window; the text says why. For [`WindowHost`](crate::service::WindowHost)
-    /// implementers.
-    #[error("the window could not be opened: {0}")]
-    Host(String),
-}
 
 /// Plans the window: the physical size, the logical size and the scale factor it was made for.
 ///
@@ -208,37 +118,4 @@ fn redmean(a: Colour, b: Colour) -> f32 {
     #[allow(clippy::cast_possible_truncation)] // a distance below 766 fits an f32
     let distance = squared.sqrt() as f32;
     distance
-}
-
-/// What a window host can do.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WindowCaps {
-    /// It can make a transparent surface ([`Backdrop::Transparent`]).
-    pub transparent: bool,
-    /// It can keep the window above others.
-    pub always_on_top: bool,
-}
-
-/// The output the window shows and the display it opens on: what [`plan`] needs and the ops cannot know.
-#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct OutputSurface {
-    /// The output size in pixels.
-    pub size: UVec2,
-    /// The scale factor of the display the window opens on.
-    pub scale_factor: f64,
-}
-
-/// Whether the window is open and what it looks like.
-#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
-pub enum WindowState {
-    /// No window.
-    Closed,
-    /// The window is open.
-    Open {
-        /// Its client area in physical pixels.
-        physical: UVec2,
-        /// What it shows behind the character.
-        backdrop: Backdrop,
-    },
 }

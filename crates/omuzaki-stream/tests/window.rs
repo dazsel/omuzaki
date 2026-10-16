@@ -5,10 +5,8 @@
 
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::UVec2;
-use omuzaki_stream::window::{
-    COLLISION_MARGIN, DEFAULT_KEY, DEFAULT_TITLE, MAX_SIDE, SizePolicy, WindowError, WindowSettings, check_title,
-    pick_key, plan,
-};
+use omuzaki_stream::window::{COLLISION_MARGIN, MAX_SIDE, check_title, pick_key, plan};
+use omuzaki_stream_api::window::{DEFAULT_KEY, DEFAULT_TITLE, SizePolicy, WindowError, WindowSettings};
 
 const FHD: UVec2 = UVec2::new(1920, 1080);
 
@@ -110,5 +108,5 @@ fn titles_are_one_to_sixty_four_printable_characters() {
 fn the_default_settings_are_the_documented_ones() {
     let s = WindowSettings::default();
     assert_eq!((s.title.as_str(), s.size, s.hide_cursor), ("Omuzaki Output", SizePolicy::Output, true));
-    assert_eq!(s.backdrop, omuzaki_stream::window::Backdrop::Key(colour("#00b140")));
+    assert_eq!(s.backdrop, omuzaki_stream_api::window::Backdrop::Key(colour("#00b140")));
 }

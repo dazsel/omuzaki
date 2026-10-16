@@ -4349,6 +4349,7 @@ dependencies = [
  "bytes",
  "omuzaki-core",
  "omuzaki-history-api",
+ "omuzaki-ops-api",
  "omuzaki-render-api",
  "schemars",
  "serde",
