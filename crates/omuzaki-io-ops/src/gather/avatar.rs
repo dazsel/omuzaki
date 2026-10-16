@@ -194,6 +194,8 @@ fn is_blank(text: &str) -> bool {
 /// - **Expressions:** the 18 presets as empty placeholders. An expression that drives nothing is legal and does
 ///   nothing; the face baker replaces the entries it realises, by name.
 /// - **Spring bones:** the rig's chains and colliders ([`springs::to_io`]), lengths scaled like the rest of the scene.
+/// - **Bone drivers:** `Follow` drivers as node constraints ([`drivers::to_io`](crate::convert::drivers::to_io)); a
+///   `Channel` driver is left out with a warning, since the scene has no animation clips yet.
 /// - **First person:** head and hair meshes are `thirdPersonOnly` (the wearer would see the inside of their own head),
 ///   every other mesh of a known part kind is `both`. A mesh of a kind nobody registered is left at `auto`.
 /// - **Look-at:** bone gaze from the point between the eye bones, relative to the head bone. Without both eye bones
@@ -209,6 +211,7 @@ pub fn add_avatar(gathered: &mut Gathered, built: &BuiltCharacter) -> Result<(),
     avatar.expressions =
         PresetExpression::ALL.into_iter().map(|preset| (ExpressionName::Preset(preset), Expression::new())).collect();
     avatar.spring_bones = springs::to_io(&rig.springs, gathered.scale, &mut gathered.report);
+    avatar.constraints = crate::convert::drivers::to_io(&rig.drivers, &mut gathered.report);
     avatar.first_person = Some(first_person(built, &gathered.scene));
     avatar.look_at = look_at(&rig.skeleton, &gathered.scene.nodes);
     if avatar.look_at.is_none() {

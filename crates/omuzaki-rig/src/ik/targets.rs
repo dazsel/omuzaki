@@ -114,7 +114,7 @@ pub struct HandTarget {
 impl HandTarget {
     /// Solves the arm and turns the hand so the palm lands on the frame. Returns `false`, leaving the pose alone, if the
     /// skeleton lacks the arm bones, any field is not finite, or either rotation does not normalise to a unit
-    /// quaternion (see [`unit_rotation`]).
+    /// quaternion (see `unit_rotation`).
     ///
     /// The position error is that of the two-bone solve (inside 98% of the reach, under half a millimetre); an
     /// out-of-reach frame is approached with a straight arm. The angle is exact at full weight.
