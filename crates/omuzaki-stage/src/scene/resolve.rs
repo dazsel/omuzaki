@@ -179,7 +179,7 @@ impl ResolvedScene {
     /// Nothing is written on an error, so `self` still holds the last scene that resolved.
     ///
     /// # Errors
-    /// [`StageError::Scene`] for a figure whose root isn't a translation and a yaw, whose height isn't finite and above
+    /// [`StageError::Scene`] for a figure whose root isn't a floor translation (`y = 0`) and a yaw, whose height isn't finite and above
     /// 0 or whose landmarks aren't finite (path `cast.<id>`), for a light, the depth of field or the ground radius
     /// that comes out non-finite (a huge position; paths `lighting.lights`, `scene.post.depth_of_field`,
     /// `scene.ground`), for a cast whose subject has no figure (path `scene.subject`; an empty cast
@@ -281,11 +281,13 @@ impl ResolvedScene {
 /// Tolerance for the shape of a figure's root.
 const ROOT_TOLERANCE: f32 = 1e-4;
 
-/// True when `root` is a translation and a yaw (`Figure::root`'s contract): finite, with orthonormal axes, a
-/// determinant of +1 and the vertical axis still +Y, so a pitch or a roll is refused.
+/// True when `root` is a translation along the floor and a yaw (`Figure::root`'s contract): finite, with orthonormal
+/// axes, a determinant of +1, the vertical axis still +Y (a pitch or a roll is refused) and no lift, since a cast
+/// member's root is `(x, 0, z)` and stands on the ground.
 fn is_translation_and_yaw(root: &Affine3A) -> bool {
     let axes = root.matrix3;
     root.is_finite()
+        && root.translation.y.abs() <= ROOT_TOLERANCE
         && (axes.transpose() * axes).abs_diff_eq(Mat3A::IDENTITY, ROOT_TOLERANCE)
         && (axes.determinant() - 1.0).abs() <= ROOT_TOLERANCE
         && axes.y_axis.abs_diff_eq(Vec3::Y.into(), ROOT_TOLERANCE)
@@ -307,7 +309,7 @@ fn landmarks_finite(landmarks: &Landmarks) -> bool {
 fn check_figure(id: &MemberId, figure: &Figure) -> Result<(), StageError> {
     let refuse = |why: &str| Err(scene_error(SceneError::new(format!("cast.{id}"), why)));
     if !is_translation_and_yaw(&figure.root) {
-        return refuse("the figure's root must be a translation and a yaw rotation");
+        return refuse("the figure's root must be a translation along the floor (y = 0) and a yaw rotation");
     }
     if !(figure.height_m.is_finite() && figure.height_m > 0.0) {
         return refuse("the figure's height must be finite and above 0");
@@ -318,18 +320,20 @@ fn check_figure(id: &MemberId, figure: &Figure) -> Result<(), StageError> {
     Ok(())
 }
 
-/// True when every number of `light` is finite.
-fn light_finite(light: &Light) -> bool {
+/// True when every number of `light` is finite and a range is above 0, which the render contract requires: a range
+/// of `1e-30` times a height of `1e-30` underflows to 0 here, after the scene check has passed it.
+fn light_usable(light: &Light) -> bool {
     match *light {
         Light::Directional { to_light, intensity, .. } => to_light.is_finite() && intensity.is_finite(),
         Light::Hemisphere { intensity, .. } => intensity.is_finite(),
         Light::Point { position, intensity, range, .. } => {
-            position.is_finite() && intensity.is_finite() && range.is_finite()
+            position.is_finite() && intensity.is_finite() && range.is_finite() && range > 0.0
         }
         Light::Spot { position, direction, intensity, range, cone_outer_deg, penumbra, .. } => {
             position.is_finite()
                 && direction.is_finite()
                 && [intensity, range, cone_outer_deg, penumbra].iter().all(|v| v.is_finite())
+                && range > 0.0
         }
         // `Light` is not non-exhaustive today; a new kind must be added here, not waved through.
         #[allow(unreachable_patterns)]
@@ -342,8 +346,11 @@ fn light_finite(light: &Light) -> bool {
 /// The cameras are checked as they are built.
 fn finite_or_error(lights: &LightBuf, post: &Post, ground: &ResolvedGround) -> Result<(), StageError> {
     let unusable = |path: &str, what: &str| Err(scene_error(SceneError::new(path, format!("{what} isn't a finite number"))));
-    if !lights.as_slice().iter().all(light_finite) {
-        return unusable("lighting.lights", "a resolved light");
+    if !lights.as_slice().iter().all(light_usable) {
+        return Err(scene_error(SceneError::new(
+            "lighting.lights",
+            "a resolved light isn't a finite number, or its range came out at or below 0",
+        )));
     }
     let dof_finite = post
         .depth_of_field

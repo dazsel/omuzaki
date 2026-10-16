@@ -3,7 +3,8 @@
 
     evidence.py run --crates "omuzaki-char ..." [--changed FILE] --before DIR --after DIR --out OUT [--title TEXT]
 
-Reads every `crates/*/evidence.toml` from the AFTER checkout. A case is selected when its crate is named, or when a
+Reads every `crates/*/evidence.toml` and `crates/*/evidence/*.toml` from the AFTER checkout. New cases go in their own
+file, `crates/<crate>/evidence/<change>.toml`, so two branches never edit the same file; case names stay unique per crate. A case is selected when its crate is named, or when a
 file it runs (a script, an example, its manifest) is listed in FILE. It runs each selected case in both checkouts
 (the merge base and the PR head), then writes under OUT:
 
@@ -13,7 +14,7 @@ file it runs (a script, an example, its manifest) is listed in FILE. It runs eac
     comment.md                                                 the PR comment (with the {{LINKS}} marker to fill in)
     stats.json                                                 per image: changed pixels, max difference
 
-A manifest is a list of cases (see crates/omuzaki-char/evidence.toml):
+A manifest file is a list of cases (see crates/omuzaki-char/evidence.toml):
 
     [[case]]
     name = "head-part"                       # lower-case words and dashes; the folder name
@@ -56,9 +57,10 @@ def font(size):
         return ImageFont.load_default()
 
 
-def declared_paths(crate, case):
-    """Repo-relative files a case runs: script and file arguments of its commands, `--example` sources, its manifest."""
-    paths = {f"crates/{crate}/evidence.toml"}
+def declared_paths(crate, case, manifest="evidence.toml"):
+    """Repo-relative files a case runs: script and file arguments of its commands, `--example` sources, and its own
+    manifest file (`manifest` is its path under the crate folder)."""
+    paths = {f"crates/{crate}/{manifest}"}
     for step in case["steps"]:
         argv = step["run"]
         paths.update(a for a in argv if "{" not in a and "/" in a)
@@ -73,18 +75,22 @@ def load_cases(repo, crates, changed=()):
     manifest is in `changed`: a change confined to a sheet tool reaches no crate, yet it changes what the case draws.
     Raises ValueError on a malformed manifest."""
     cases = []
-    for path in sorted(Path(repo, "crates").glob("*/evidence.toml")):
-        crate = path.parent.name
+    crates_dir = Path(repo, "crates")
+    manifests = [(p.parent.name, p.name, p, "evidence.toml") for p in crates_dir.glob("*/evidence.toml")]
+    manifests += [(p.parent.parent.name, p.name, p, f"evidence/{p.name}") for p in crates_dir.glob("*/evidence/*.toml")]
+    seen = {}  # (crate, case name) -> the manifest that declared it
+    for crate, _, path, manifest in sorted(manifests, key=lambda m: (m[0], m[3] != "evidence.toml", m[1])):
         data = tomllib.loads(path.read_text(encoding="utf-8"))
-        seen = set()
         for case in data.get("case", []):
             name = case.get("name", "")
-            if not NAME.match(name) or name in seen:
-                raise ValueError(f"{path}: case name {name!r} must be unique lower-case words joined by dashes")
-            seen.add(name)
+            if not NAME.match(name):
+                raise ValueError(f"{path}: case name {name!r} must be lower-case words joined by dashes")
+            if (crate, name) in seen:
+                raise ValueError(f"case name {name!r} of crate {crate} is declared twice: in {seen[crate, name]} and {path}")
+            seen[crate, name] = path
             if not case.get("steps") or not case.get("images"):
                 raise ValueError(f"{path}: case {name} needs steps and images")
-            if crate in crates or declared_paths(crate, case) & set(changed):
+            if crate in crates or declared_paths(crate, case, manifest) & set(changed):
                 cases.append((crate, case))
     return cases
 
@@ -233,7 +239,7 @@ def comment(records, title, note):
     if note:
         lines += [note, ""]
     if not records:
-        lines += ["No declared cases for the crates this change reaches (see `crates/*/evidence.toml`).", ""]
+        lines += ["No declared cases for the crates this change reaches (see `crates/*/evidence.toml` and `crates/*/evidence/*.toml`).", ""]
     else:
         lines += ["{{LINKS}}", "", "| case | image | size | changed pixels | max difference (0-255) |", "|---|---|---|---|---|"]
         for r in records:

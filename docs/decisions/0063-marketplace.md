@@ -30,4 +30,4 @@ ADR 0057 D11 said the marketplace reuses the shared-source protocol as `MarketSt
 - Six tasks follow (design §5.3); T1 needs the Director's approval of the new API crate and the root `Cargo.toml` hub sign-off, T2 (the additive `omuzaki-library-api` contract) the Director's approval and lands first.
 - A hostile or buggy store can refuse to serve, but cannot substitute an item, a licence or a receipt.
 - A copied item file keeps its rights and provenance but is not protected from copying; the design says so.
-- Open, the owner's (design §8): Q1 hosted backend, Q2 payments, Q3 moderation, Q10 which licence templates ship, Q11 packs, Q12 an app-version requirement. Tasks needing a real backend wait on them; the client is built and tested against `FakeMarket`.
+- Open, the owner's (design §8): Q1 hosted backend, Q2 payments, Q3 moderation. Decided by the Documents and versioning lead (design §8): Q10 licence templates (`CC0-1.0` and `CC-BY-4.0`, custom `LicenseRef-` text allowed), Q11 packs (later), Q12 app-version requirement (none). Tasks needing a real backend wait on them; the client is built and tested against `FakeMarket`.
