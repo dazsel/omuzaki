@@ -258,6 +258,8 @@ fn summary(chosen: &Chosen, result: &FitResult) -> Value {
         "patch": patch(&before, &result.params),
         "iou_before": result.iou_before,
         "iou_after": result.iou_after,
+        "cost_before": result.cost_before,
+        "cost_after": result.cost_after,
         "per_view": per_view,
         "evaluations": result.evaluations,
     })

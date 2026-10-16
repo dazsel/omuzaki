@@ -1,7 +1,18 @@
 //! Silhouette fit of body proportions and shape against sheet views (CB-03).
 //!
 //! This module holds the objective: the CPU orthographic silhouette of the built character, aligned to a target mask
-//! at sole and crown, scored by `IoU` and a boundary-distance term. [`solver`] searches the body's parameters with it.
+//! at sole and crown and across by its mean column, and scored by `IoU`. [`solver`] searches the body's parameters
+//! with it.
+//!
+//! **Two `IoU`s.** The number reported is the `IoU` of the centre-sampled silhouette, sampled as the target is. The
+//! cost is `1 -` the `IoU` of each pixel's coverage from 2 by 2 samples: the centre-sampled one moves in whole-pixel
+//! steps, and a line search stalls on its plateaus. Earlier the cost also carried a boundary-distance term on the
+//! centre-sampled masks; it moved in the same steps and pulled the weakly seen axes off the truth (`curves` on
+//! `standard`, three 384-row views: off by 0.041 of its range with it, 0.018 without), so it is gone.
+//!
+//! **Alignment.** Matching the model's mean column to the target's (rather than the box's middle, whose ends are
+//! whole pixels) keeps the true body at an `IoU` of about 0.997 against its own 256-row silhouettes; the box alone left
+//! it up to half a pixel off sideways, 0.981 on `standard` with mitten hands, below the recovery test's 0.985.
 //!
 //! Mask pixels are row-major from the top-left. A view is looked at orthographically with the character facing `+z`:
 //! front shows body `x` across, side shows `z` across (forward to the right), back shows `-x`.
@@ -25,8 +36,9 @@ pub mod solver;
 
 /// The longest side of a mask, in pixels: the caller downsizes a larger sheet view first, so a fit stays cheap.
 pub const MAX_SIDE: usize = 512;
-/// Weight of the boundary distance (mean chamfer distance over the mask height) against `1 - IoU` in the cost.
-const BOUNDARY_WEIGHT: f64 = 1.0;
+/// Samples per pixel side for the coverage the cost reads: 2 by 2 makes the cost change smoothly with sub-pixel moves
+/// of the outline, which the centre-sampled mask only shows in whole-pixel steps (plateaus a line search stalls on).
+const SUPERSAMPLE: usize = 2;
 
 /// Why a fit cannot run.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -128,7 +140,7 @@ impl Silhouette {
     }
 
     /// The mask with isolated specks removed: a pixel is character if most of its 3 by 3 neighbourhood is. A speck
-    /// outside the figure would otherwise stretch its box (and with it the alignment) and fill the boundary term.
+    /// outside the figure would otherwise stretch its box and shift its mean column (and with them the alignment).
     fn denoised(&self) -> Self {
         let (w, h) = (self.width, self.height);
         let at = |x: isize, y: isize| {
@@ -153,25 +165,6 @@ impl Silhouette {
             (t, b, l, r) = (t.min(y), b.max(y + 1), l.min(x), r.max(x + 1));
         }
         (t, b, l, r)
-    }
-
-    /// Character pixels with a background (or the edge) as a 4-neighbour.
-    fn boundary(&self) -> Vec<usize> {
-        let (w, h) = (self.width, self.height);
-        (0..w * h)
-            .filter(|&i| {
-                let (y, x) = (i / w, i % w);
-                self.on[i]
-                    && (x == 0
-                        || y == 0
-                        || x + 1 == w
-                        || y + 1 == h
-                        || !self.on[i - 1]
-                        || !self.on[i + 1]
-                        || !self.on[i - w]
-                        || !self.on[i + w])
-            })
-            .collect()
     }
 }
 
@@ -228,78 +221,75 @@ fn bounds<'a>(tris: impl IntoIterator<Item = &'a Tri>) -> Option<[f32; 4]> {
     })
 }
 
-/// Fills the triangles into a `w` by `h` mask (both windings, pixel centres).
+/// Fills the triangles into a `w` by `h` mask (both windings, pixel centres): for each row of pixel centres a triangle
+/// crosses, the span between the two points where the row's centre line meets its edges.
 fn raster(tris: &[&[Tri]], map: &Map, w: usize, h: usize) -> Vec<bool> {
     let mut on = vec![false; w * h];
     for tri in tris.iter().flat_map(|t| t.iter()) {
         let p = tri.map(|[u, v]| [(u - map.u0) * map.s, (map.v0 - v) * map.s]);
-        let edge = |a: [f32; 2], b: [f32; 2], x: f32, y: f32| (b[0] - a[0]) * (y - a[1]) - (b[1] - a[1]) * (x - a[0]);
-        let area = edge(p[0], p[1], p[2][0], p[2][1]);
+        let area = (p[1][0] - p[0][0]) * (p[2][1] - p[0][1]) - (p[1][1] - p[0][1]) * (p[2][0] - p[0][0]);
         if area == 0.0 {
             continue;
         }
-        let lo = |f: fn(f32, f32) -> f32, k: usize| f(f(p[0][k], p[1][k]), p[2][k]);
-        let x0 = (lo(f32::min, 0) - 0.5).ceil().max(0.0) as usize;
-        let x1 = ((lo(f32::max, 0) - 0.5).floor().max(-1.0) + 1.0).min(w as f32) as usize;
-        let y0 = (lo(f32::min, 1) - 0.5).ceil().max(0.0) as usize;
-        let y1 = ((lo(f32::max, 1) - 0.5).floor().max(-1.0) + 1.0).min(h as f32) as usize;
+        let (ymin, ymax) = (p[0][1].min(p[1][1]).min(p[2][1]), p[0][1].max(p[1][1]).max(p[2][1]));
+        let y0 = (ymin - 0.5).ceil().max(0.0) as usize;
+        let y1 = ((ymax - 0.5).floor().max(-1.0) + 1.0).min(h as f32) as usize;
         for y in y0..y1 {
-            for x in x0..x1 {
-                let (cx, cy) = (x as f32 + 0.5, y as f32 + 0.5);
-                let w0 = edge(p[1], p[2], cx, cy) / area;
-                let w1 = edge(p[2], p[0], cx, cy) / area;
-                if w0 >= 0.0 && w1 >= 0.0 && w0 + w1 <= 1.0 {
-                    on[y * w + x] = true;
+            let cy = y as f32 + 0.5;
+            let (mut xl, mut xr) = (f32::INFINITY, f32::NEG_INFINITY);
+            for (a, b) in [(p[0], p[1]), (p[1], p[2]), (p[2], p[0])] {
+                let (da, db) = (a[1] - cy, b[1] - cy);
+                if da * db > 0.0 {
+                    continue;
                 }
+                if (da - db).abs() < f32::MIN_POSITIVE {
+                    // An edge along the row's centre line: both its ends are on the row.
+                    (xl, xr) = (xl.min(a[0]).min(b[0]), xr.max(a[0]).max(b[0]));
+                } else {
+                    let x = a[0] + da / (da - db) * (b[0] - a[0]);
+                    (xl, xr) = (xl.min(x), xr.max(x));
+                }
+            }
+            if xl > xr {
+                continue;
+            }
+            let x0 = (xl - 0.5).ceil().max(0.0) as usize;
+            let x1 = ((xr - 0.5).floor().max(-1.0) + 1.0).min(w as f32) as usize;
+            if x0 < x1 {
+                on[y * w + x0..y * w + x1].fill(true);
             }
         }
     }
     on
 }
 
-/// Distance in pixels from each pixel to the nearest of `seeds` (a 1 / sqrt 2 chamfer, two passes).
-fn distance(seeds: &[usize], w: usize, h: usize) -> Vec<f32> {
-    let mut d = vec![f32::MAX / 4.0; w * h];
-    for &i in seeds {
-        d[i] = 0.0;
+/// The mean column of `mask`'s character pixels, at pixel centres (the mask is never blank once checked).
+fn mean_column(mask: &Silhouette) -> f64 {
+    let (mut sum, mut n) = (0.0f64, 0usize);
+    for (i, _) in mask.on.iter().enumerate().filter(|(_, on)| **on) {
+        sum += (i % mask.width) as f64 + 0.5;
+        n += 1;
     }
-    let relax = |d: &mut [f32], i: usize, j: usize, c: f32| d[i] = d[i].min(d[j] + c);
-    let (w, h) = (w.cast_signed(), h.cast_signed());
-    let step = |d: &mut [f32], x: isize, y: isize, dx: isize, dy: isize, c: f32| {
-        let (nx, ny) = (x + dx, y + dy);
-        if nx >= 0 && ny >= 0 && nx < w && ny < h {
-            relax(d, (y * w + x) as usize, (ny * w + nx) as usize, c);
-        }
-    };
-    for y in 0..h {
-        for x in 0..w {
-            for (dx, dy, c) in
-                [(-1, 0, 1.0), (0, -1, 1.0), (-1, -1, std::f32::consts::SQRT_2), (1, -1, std::f32::consts::SQRT_2)]
-            {
-                step(&mut d, x, y, dx, dy, c);
-            }
-        }
-    }
-    for y in (0..h).rev() {
-        for x in (0..w).rev() {
-            for (dx, dy, c) in
-                [(1, 0, 1.0), (0, 1, 1.0), (1, 1, std::f32::consts::SQRT_2), (-1, 1, std::f32::consts::SQRT_2)]
-            {
-                step(&mut d, x, y, dx, dy, c);
-            }
-        }
-    }
-    d
+    sum / n.max(1) as f64
 }
 
-/// A target view prepared once: its alignment, boundary and distance field, and the fixed parts' projection.
+/// A target view prepared once: its alignment and the fixed parts' projection.
 struct ViewObjective {
     view: FitView,
     mask: Silhouette,
     extent: (usize, usize, usize, usize),
-    boundary: Vec<usize>,
-    field: Vec<f32>,
+    /// The target's mean column (pixel centres), what the model's own mean column is matched to.
+    centroid: f64,
     fixed: Vec<Tri>,
+}
+
+/// One candidate against one view: what [`ViewObjective::score`] measures.
+struct ViewScore {
+    /// `IoU` of the centre-sampled model mask with the target: the number reported, sampled as the target is.
+    iou: f64,
+    /// `IoU` of the model's [`SUPERSAMPLE`]d pixel coverage with the target: what the cost reads, because it changes
+    /// smoothly as the body moves by less than a pixel, where the centre-sampled one moves in steps.
+    soft_iou: f64,
 }
 
 impl ViewObjective {
@@ -312,38 +302,70 @@ impl ViewObjective {
         Map { s, u0: f32::midpoint(b[0], b[1]) - centre / s, v0: b[3] + top as f32 / s }
     }
 
-    /// The pixels the body `tris` and the fixed parts cover, aligned to the target; `None` if there is nothing to draw.
-    fn model_pixels(&self, body: &[Tri]) -> Option<Vec<bool>> {
+    /// The map for the body `tris`: crown and sole on the target's rows (as [`Self::align`]), then shifted across so
+    /// the model's mean column, read from its coverage, falls on the target's. Matching the box's middle alone left
+    /// the model up to half a pixel off sideways, since the target's extent is whole pixels: on a 256-row view that
+    /// cost the true body itself up to 2% of `IoU`. `None` if there is nothing to draw.
+    fn aligned_map(&self, body: &[Tri]) -> Option<Map> {
         let b = bounds(self.fixed.iter().chain(body))?;
-        Some(raster(&[&self.fixed, body], &self.align(b), self.mask.width, self.mask.height))
+        let mut map = self.align(b);
+        let w = self.mask.width;
+        let (mut sum, mut total) = (0.0f64, 0.0f64);
+        for (i, &c) in self.coverage(body, &map).iter().enumerate() {
+            sum += f64::from(c) * ((i % w) as f64 + 0.5);
+            total += f64::from(c);
+        }
+        if total > 0.0 {
+            map.u0 += ((sum / total - self.centroid) as f32) / map.s;
+        }
+        Some(map)
     }
 
-    /// `(iou, boundary distance over height)` of the body `tris` plus the fixed parts against the target.
-    fn score(&self, body: &[Tri]) -> (f64, f64) {
-        let (w, h) = (self.mask.width, self.mask.height);
-        let Some(on) = self.model_pixels(body) else { return (0.0, 1.0) };
-        let (mut inter, mut union) = (0usize, 0usize);
-        for (&a, &t) in on.iter().zip(&self.mask.on) {
-            inter += usize::from(a && t);
-            union += usize::from(a || t);
+    /// Each pixel's share covered by the body `tris` and the fixed parts under `map`, from [`SUPERSAMPLE`] by
+    /// [`SUPERSAMPLE`] samples, as a count of covered samples.
+    fn coverage(&self, body: &[Tri], map: &Map) -> Vec<u16> {
+        let (w, h, k) = (self.mask.width, self.mask.height, SUPERSAMPLE);
+        let fine = Map { s: map.s * k as f32, u0: map.u0, v0: map.v0 };
+        let mut counts = vec![0u16; w * h];
+        for (i, _) in raster(&[&self.fixed, body], &fine, w * k, h * k).iter().enumerate().filter(|(_, on)| **on) {
+            let (y, x) = (i / (w * k), i % (w * k));
+            counts[(y / k) * w + x / k] += 1;
         }
-        let iou = inter as f64 / union as f64;
-        let own = Silhouette { width: w, height: h, on };
-        let seeds = own.boundary();
-        let mean =
-            |of: &[usize], field: &[f32]| of.iter().map(|&i| f64::from(field[i])).sum::<f64>() / of.len().max(1) as f64;
-        let near = distance(&seeds, w, h);
-        let d = f64::midpoint(mean(&seeds, &self.field), mean(&self.boundary, &near));
-        (iou, d / h as f64)
+        counts
+    }
+
+    /// The pixels the body `tris` and the fixed parts cover, aligned to the target and centre-sampled as the target is;
+    /// `None` if there is nothing to draw.
+    fn model_pixels(&self, body: &[Tri]) -> Option<Vec<bool>> {
+        let map = self.aligned_map(body)?;
+        Some(raster(&[&self.fixed, body], &map, self.mask.width, self.mask.height))
+    }
+
+    /// The body `tris` plus the fixed parts against the target (see [`ViewScore`]); `None` if there is nothing to draw.
+    fn score(&self, body: &[Tri]) -> Option<ViewScore> {
+        let map = self.aligned_map(body)?;
+        let samples = (SUPERSAMPLE * SUPERSAMPLE) as f64;
+        let (mut inter, mut union) = (0.0f64, 0.0f64);
+        for (&c, &t) in self.coverage(body, &map).iter().zip(&self.mask.on) {
+            let c = f64::from(c) / samples;
+            (inter, union) = if t { (inter + c, union + 1.0) } else { (inter, union + c) };
+        }
+        let on = raster(&[&self.fixed, body], &map, self.mask.width, self.mask.height);
+        let (mut both, mut either) = (0usize, 0usize);
+        for (&a, &t) in on.iter().zip(&self.mask.on) {
+            both += usize::from(a && t);
+            either += usize::from(a || t);
+        }
+        Some(ViewScore { iou: both as f64 / either.max(1) as f64, soft_iou: inter / union.max(f64::MIN_POSITIVE) })
     }
 }
 
 /// How well a candidate matches the targets.
 #[derive(Clone, Debug)]
 pub(crate) struct Score {
-    /// What the search minimises: `1 - IoU` plus the boundary term, averaged over the views.
+    /// What the search minimises: `1 -` the coverage `IoU`, averaged over the views.
     pub cost: f64,
-    /// Mean `IoU` over the views.
+    /// Mean centre-sampled `IoU` over the views.
     pub iou: f64,
     /// `IoU` per view, in the order of the targets.
     pub per_view: Vec<f64>,
@@ -397,13 +419,12 @@ impl Objective {
             if !mask.on.contains(&true) {
                 return Err(FitError::BadMask("nothing but specks".to_owned()));
             }
-            let boundary = mask.boundary();
-            let field = distance(&boundary, mask.width, mask.height);
             let mut tris = Vec::new();
             for m in fixed {
                 tris.extend(project(t.view, m)?);
             }
-            views.push(ViewObjective { view: t.view, extent: mask.extent(), mask, boundary, field, fixed: tris });
+            let centroid = mean_column(&mask);
+            views.push(ViewObjective { view: t.view, extent: mask.extent(), centroid, mask, fixed: tris });
         }
         Ok(Self { template, views, base: BodyParams::default() })
     }
@@ -441,9 +462,9 @@ impl Objective {
         let mut cost = 0.0;
         for v in &self.views {
             let tris = meshes.iter().map(|m| project(v.view, m)).collect::<Result<Vec<_>, _>>()?.concat();
-            let (iou, edge) = v.score(&tris);
-            cost += 1.0 - iou + BOUNDARY_WEIGHT * edge;
-            per_view.push(iou);
+            let score = v.score(&tris).unwrap_or(ViewScore { iou: 0.0, soft_iou: 0.0 });
+            cost += 1.0 - score.soft_iou;
+            per_view.push(score.iou);
         }
         let n = per_view.len() as f64;
         Ok(Score { cost: cost / n, iou: per_view.iter().sum::<f64>() / n, per_view })
