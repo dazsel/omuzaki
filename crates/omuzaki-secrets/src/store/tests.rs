@@ -165,7 +165,7 @@ impl<B: Backend> Deref for Fixture<B> {
 
 fn fixture<B: Backend>(backend: B) -> Fixture<B> {
     let dir = tempfile::tempdir().unwrap();
-    Fixture { store: Indexed::new(backend, DirLock::new(dir.path())), dir }
+    Fixture { store: Indexed::new(backend, DirLock::new(dir.path(), LOCK_FILE)), dir }
 }
 
 fn label(text: &str) -> SecretLabel {
@@ -208,23 +208,91 @@ fn deleting_the_last_label_removes_every_index_entry() {
 fn an_unreadable_index_is_corrupt_not_skipped() {
     let corrupt = SecretError::corrupt(INDEX_WHAT);
     // (head, shard 0 of generation 0): a bad label, a blank record, a trailing newline, an empty shard, a bad head,
-    // and a head with nothing behind it.
+    // an old-style head with no shard count, and a head with nothing behind it.
     let cases = [
-        (Some("0"), Some("a/b\nNOT A LABEL")),
-        (Some("0"), Some("a/b\n\nc/d")),
-        (Some("0"), Some("a/b\n")),
-        (Some("0"), Some("")),
-        (Some("zero"), Some("a/b")),
-        (Some("0"), None),
+        ("0:1", Some("a/b\nNOT A LABEL")),
+        ("0:1", Some("a/b\n\nc/d")),
+        ("0:1", Some("a/b\n")),
+        ("0:1", Some("")),
+        ("zero:1", Some("a/b")),
+        ("0", Some("a/b")),
+        ("0:0", Some("a/b")),
+        ("0:1", None),
     ];
     for (head, shard) in cases {
         let store = fixture(MapBackend::default());
-        store.backend.set(HEAD_USER, head.unwrap()).unwrap();
+        store.backend.set(HEAD_USER, head).unwrap();
         if let Some(shard) = shard {
             store.backend.set(&shard_user(0, 0), shard).unwrap();
         }
         assert_eq!(store.labels().unwrap_err(), corrupt, "{head:?} {shard:?}");
     }
+}
+
+/// A store with 40 maximum-length labels, and how many shards the list has.
+fn full_store() -> (Fixture<MapBackend>, Vec<SecretLabel>, usize) {
+    let store = fixture(MapBackend::default());
+    let all: Vec<_> = (0..40).map(long_label).collect();
+    for l in &all {
+        set_ok(&*store, l);
+    }
+    let head = store.backend.get(HEAD_USER).unwrap().unwrap();
+    let (_, count) = decode_head(head.expose()).unwrap();
+    assert!(count > 3, "{count} shards");
+    (store, all, count)
+}
+
+#[test]
+fn a_lost_shard_is_corrupt_not_a_shorter_list() {
+    // Any one of the shards the head names going missing, first, middle or last, is an error, not fewer labels.
+    let (_, _, count) = full_store();
+    for lost in [0, 1, count - 1] {
+        let (store, _, _) = full_store();
+        let head = store.backend.get(HEAD_USER).unwrap().unwrap();
+        let (generation, _) = decode_head(head.expose()).unwrap();
+        store.backend.remove(&shard_user(generation, lost)).unwrap();
+        assert_eq!(store.labels().unwrap_err(), SecretError::corrupt(INDEX_WHAT), "shard {lost}");
+        // And a change refuses to build on it rather than publishing a list that forgets the lost labels.
+        assert!(store.set(&label("0/new"), SecretValue::new("v")).is_err(), "shard {lost}");
+    }
+}
+
+#[test]
+fn a_stray_shard_past_the_count_is_ignored_and_cleared_by_the_next_change() {
+    let (store, all, count) = full_store();
+    let head = store.backend.get(HEAD_USER).unwrap().unwrap();
+    let (generation, _) = decode_head(head.expose()).unwrap();
+    store.backend.set(&shard_user(generation, count), "a/stray").unwrap();
+    assert_eq!(store.labels().unwrap(), all, "the stray shard is not read");
+    store.delete(&all[0]).unwrap();
+    assert_eq!(store.labels().unwrap(), all[1..], "and not read after a change either");
+}
+
+#[test]
+fn a_leftover_shard_of_the_next_generation_is_not_read_into_it() {
+    // A failed earlier attempt left a long run of shards at the generation a later, shorter change publishes.
+    let (store, all, count) = full_store();
+    let head = store.backend.get(HEAD_USER).unwrap().unwrap();
+    let (generation, _) = decode_head(head.expose()).unwrap();
+    for n in 0..count + 2 {
+        store.backend.set(&shard_user(generation + 1, n), "a/leftover").unwrap();
+    }
+    store.set(&label("0/first"), SecretValue::new("v")).unwrap();
+    let listed = store.labels().unwrap();
+    assert_eq!(listed.len(), all.len() + 1);
+    assert!(!listed.contains(&label("a/leftover")));
+}
+
+#[test]
+fn the_last_generation_is_an_error_not_a_wrap() {
+    let store = fixture(MapBackend::default());
+    store.backend.set(HEAD_USER, &encode_head(u64::MAX, 1)).unwrap();
+    store.backend.set(&shard_user(u64::MAX, 0), "a/b").unwrap();
+    // It still reads, and every change says why it cannot go on instead of panicking or wrapping to generation 0.
+    assert_eq!(store.labels().unwrap(), [label("a/b")]);
+    assert_eq!(store.set(&label("c/d"), SecretValue::new("v")).unwrap_err(), SecretError::corrupt(INDEX_WHAT));
+    assert_eq!(store.delete(&label("a/b")).unwrap_err(), SecretError::corrupt(INDEX_WHAT));
+    assert_eq!(store.labels().unwrap(), [label("a/b")], "the failed changes left the list as it was");
 }
 
 #[test]
@@ -334,7 +402,8 @@ fn a_set_into_an_empty_store_that_fails_still_works_when_retried() {
 fn separate_handles_in_one_process_do_not_lose_each_others_labels() {
     let keychain = Arc::new(MapBackend { pause: Some(Duration::from_micros(200)), ..MapBackend::default() });
     let dir = tempfile::tempdir().unwrap();
-    let handles: Vec<_> = (0..8).map(|_| Indexed::new(Arc::clone(&keychain), DirLock::new(dir.path()))).collect();
+    let handles: Vec<_> =
+        (0..8).map(|_| Indexed::new(Arc::clone(&keychain), DirLock::new(dir.path(), LOCK_FILE))).collect();
     thread::scope(|scope| {
         for (n, handle) in handles.iter().enumerate() {
             scope.spawn(move || {
@@ -355,7 +424,7 @@ fn two_process_child() {
     let Ok(job) = std::env::var("OMUZAKI_SECRETS_TEST_CHILD") else { return };
     let (keychain, rest) = job.split_once('|').unwrap();
     let (lock_dir, id) = rest.split_once('|').unwrap();
-    let store = Indexed::new(DirBackend { dir: keychain.into() }, DirLock::new(Path::new(lock_dir)));
+    let store = Indexed::new(DirBackend { dir: keychain.into() }, DirLock::new(Path::new(lock_dir), LOCK_FILE));
     for i in 0..10 {
         set_ok(&store, &label(&format!("p{id}/l{i}")));
     }
@@ -381,7 +450,7 @@ fn separate_processes_do_not_lose_each_others_labels() {
     for mut child in running {
         assert!(child.wait().unwrap().success());
     }
-    let store = Indexed::new(DirBackend { dir: keychain.path().into() }, DirLock::new(lock_dir.path()));
+    let store = Indexed::new(DirBackend { dir: keychain.path().into() }, DirLock::new(lock_dir.path(), LOCK_FILE));
     let listed = store.labels().unwrap();
     assert_eq!(listed.len(), 4 * 10, "{listed:?}");
     assert!(listed.iter().all(|l| store.contains(l).unwrap()));
@@ -393,7 +462,7 @@ fn waits_for_the_lock(op: impl FnOnce(&Indexed<MapBackend>) + Send + 'static) {
     let store = Arc::new(fixture(MapBackend::default()));
     set_ok(&**store, &label("a/b"));
     let writes_before = store.backend.users();
-    let held = DirLock::new(store.dir.path()).acquire().unwrap();
+    let held = DirLock::new(store.dir.path(), LOCK_FILE).acquire().unwrap();
     let (done, finished) = mpsc::channel();
     let worker = Arc::clone(&store);
     let handle = thread::spawn(move || {
@@ -425,7 +494,7 @@ fn delete_waits_for_the_lock_before_it_removes_the_secret() {
 #[test]
 fn a_data_directory_that_cannot_exist_is_an_error_not_a_panic() {
     let file = tempfile::NamedTempFile::new().unwrap();
-    let store = Indexed::new(MapBackend::default(), DirLock::new(&file.path().join("inside-a-file")));
+    let store = Indexed::new(MapBackend::default(), DirLock::new(&file.path().join("inside-a-file"), LOCK_FILE));
     assert!(matches!(store.labels(), Err(SecretError::Backend { .. })));
     assert!(matches!(store.set(&label("a/b"), SecretValue::new("v")), Err(SecretError::Backend { .. })));
     assert!(store.backend.users().is_empty(), "no secret is written without the lock");
@@ -441,4 +510,24 @@ fn a_shard_is_never_wider_than_the_budget_whatever_is_stored() {
         let text = store.backend.get(user).unwrap().unwrap();
         assert!(text.expose().encode_utf16().count() * 2 <= SHARD_BUDGET, "{user}");
     }
+}
+
+#[test]
+fn a_namespace_has_a_keychain_service_and_a_lock_file_of_its_own() {
+    let dir = tempfile::tempdir().unwrap();
+    for bad in ["", "A", "a_b", "a/b", "a b", &"x".repeat(41)] {
+        assert!(matches!(KeychainSecrets::in_namespace(bad, dir.path()), Err(SecretError::Rejected { .. })), "{bad:?}");
+    }
+    let one = KeychainSecrets::in_namespace("one", dir.path()).unwrap();
+    let two = KeychainSecrets::in_namespace("two-2", dir.path()).unwrap();
+    let app = KeychainSecrets::new(dir.path());
+    assert_eq!(one.0.backend.service, "omuzaki.one");
+    assert_eq!(two.0.backend.service, "omuzaki.two-2");
+    assert_eq!(app.0.backend.service, SERVICE);
+    // Taking the lock is the first thing every listing does, so the lock files show even where there is no keychain.
+    let _ = (one.labels(), two.labels(), app.labels());
+    let mut files: Vec<_> =
+        fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+    files.sort();
+    assert_eq!(files, ["secrets-one.lock", "secrets-two-2.lock", "secrets.lock"]);
 }

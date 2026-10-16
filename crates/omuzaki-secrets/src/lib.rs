@@ -9,7 +9,12 @@
 //!   smallest keychain limit (Windows: 2,560 bytes, counted in UTF-16), and a change is published as a whole new
 //!   generation of shards before one head record switches to it, so a failed write leaves the old list readable.
 //! - One writer at a time: storing, deleting and listing hold an exclusive lock on [`LOCK_FILE`] in the data
-//!   directory given to [`KeychainSecrets::new`], across every handle and every Omuzaki process that uses it.
+//!   directory given to [`KeychainSecrets::new`], across every handle and every Omuzaki process that uses it. The
+//!   label list belongs to the keychain service and its lock to the directory, so all Omuzaki processes of one OS
+//!   user pass the app's one local data directory; [`KeychainSecrets::in_namespace`] is a service and a lock of its
+//!   own, for tests and tools that must not share the app's list.
+//! - The head record names the shards it needs (`generation:count`), so a lost shard is
+//!   [`Corrupt`](omuzaki_secrets_api::error::SecretError::Corrupt), never a shorter list.
 //! - A machine with no keychain (Linux without a Secret Service daemon) is
 //!   [`SecretError::Unavailable`](omuzaki_secrets_api::error::SecretError::Unavailable) with a hint. There is **no file
 //!   fallback**: a secret is in the keychain or it is not stored.

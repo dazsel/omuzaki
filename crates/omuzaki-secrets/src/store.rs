@@ -35,18 +35,21 @@ fn describe(user: &str) -> &str {
 }
 
 /// The platform keychain through `keyring`. Holds no connection: the keychain is opened on first use.
-#[derive(Debug, Default)]
-pub(crate) struct KeyringBackend;
+#[derive(Debug)]
+pub(crate) struct KeyringBackend {
+    /// The keychain service every entry of this store is filed under.
+    service: String,
+}
 
 impl KeyringBackend {
-    fn entry(user: &str) -> Result<keyring::Entry, SecretError> {
-        keyring::Entry::new(SERVICE, user).map_err(|e| map_error(e, describe(user)))
+    fn entry(&self, user: &str) -> Result<keyring::Entry, SecretError> {
+        keyring::Entry::new(&self.service, user).map_err(|e| map_error(e, describe(user)))
     }
 }
 
 impl Backend for KeyringBackend {
     fn get(&self, user: &str) -> Result<Option<SecretValue>, SecretError> {
-        match Self::entry(user)?.get_password() {
+        match self.entry(user)?.get_password() {
             Ok(text) => Ok(Some(SecretValue::new(text))),
             Err(keyring::Error::NoEntry) => Ok(None),
             Err(e) => Err(map_error(e, describe(user))),
@@ -54,11 +57,11 @@ impl Backend for KeyringBackend {
     }
 
     fn set(&self, user: &str, text: &str) -> Result<(), SecretError> {
-        Self::entry(user)?.set_password(text).map_err(|e| map_error(e, describe(user)))
+        self.entry(user)?.set_password(text).map_err(|e| map_error(e, describe(user)))
     }
 
     fn remove(&self, user: &str) -> Result<(), SecretError> {
-        match Self::entry(user)?.delete_credential() {
+        match self.entry(user)?.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(e) => Err(map_error(e, describe(user))),
         }
@@ -78,9 +81,9 @@ pub(crate) struct DirLock {
 pub(crate) struct Held(File);
 
 impl DirLock {
-    /// A lock on `data_dir/secrets.lock`. Nothing is created until the first [`acquire`](Self::acquire).
-    pub(crate) fn new(data_dir: &Path) -> Self {
-        Self { path: data_dir.join(LOCK_FILE) }
+    /// A lock on the file `name` in `data_dir`. Nothing is created until the first [`acquire`](Self::acquire).
+    pub(crate) fn new(data_dir: &Path, name: &str) -> Self {
+        Self { path: data_dir.join(name) }
     }
 
     /// Waits for the lock.
@@ -133,37 +136,43 @@ impl<B: Backend> Indexed<B> {
         let Some(head) = self.backend.get(HEAD_USER)? else {
             return Ok(IndexState::default());
         };
-        let generation = decode_head(head.expose())?;
-        let mut shards = Vec::new();
-        while let Some(text) = self.backend.get(&shard_user(generation, shards.len()))? {
-            shards.push(text);
-        }
-        // A head with no shard behind it names a list that was never written: say so, do not read it as empty.
-        if shards.is_empty() {
-            return Err(SecretError::corrupt(INDEX_WHAT));
+        let (generation, count) = decode_head(head.expose())?;
+        // Every shard the head names has to be there: a missing one is lost labels, not a shorter list.
+        let mut shards = Vec::with_capacity(count);
+        for n in 0..count {
+            match self.backend.get(&shard_user(generation, n))? {
+                Some(text) => shards.push(text),
+                None => return Err(SecretError::corrupt(INDEX_WHAT)),
+            }
         }
         let labels = decode(shards.iter().map(SecretValue::expose))?;
-        Ok(IndexState { labels, current: Some((generation, shards.len())) })
+        Ok(IndexState { labels, current: Some((generation, count)) })
     }
 
     /// Makes `labels` the index: the next generation's shards in full, then the head, then the old shards go. A
     /// failure before the head leaves the old index as it was; one after it leaves unreferenced clutter.
     fn publish(&self, labels: &BTreeSet<SecretLabel>, from: Option<(u64, usize)>) -> Result<(), SecretError> {
-        let next = from.map_or(0, |(generation, _)| generation + 1);
+        // A head already at the last generation cannot be stepped past: say so, never wrap to one that may have
+        // stale shards behind it.
+        let next = match from {
+            None => 0,
+            Some((generation, _)) => generation.checked_add(1).ok_or_else(|| SecretError::corrupt(INDEX_WHAT))?,
+        };
         let shards = encode(labels);
         if shards.is_empty() {
             self.backend.remove(HEAD_USER)?;
         } else {
-            for (n, text) in shards.iter().enumerate() {
-                self.backend.set(&shard_user(next, n), text)?;
-            }
-            // A shard left past the end by an earlier attempt at this generation would be read as part of it.
+            // Shards an earlier, failed attempt at this generation left behind are replaced or cleared first, so
+            // none is left beyond the end once this generation is published.
             let mut n = shards.len();
             while self.backend.get(&shard_user(next, n))?.is_some() {
                 self.backend.remove(&shard_user(next, n))?;
                 n += 1;
             }
-            self.backend.set(HEAD_USER, &encode_head(next))?;
+            for (n, text) in shards.iter().enumerate() {
+                self.backend.set(&shard_user(next, n), text)?;
+            }
+            self.backend.set(HEAD_USER, &encode_head(next, shards.len()))?;
         }
         if let Some((old, count)) = from {
             for n in 0..count {
@@ -220,18 +229,41 @@ impl<B: Backend> SecretStore for Indexed<B> {
 /// Cheap to create and to share. The keychain is opened on first use, so a machine without one fails the first call
 /// with [`SecretError::Unavailable`], not construction.
 ///
-/// Every `set`, `delete` and `labels` holds a lock on `secrets.lock` in the data directory, so the label list has one
-/// writer at a time across every handle and every Omuzaki process that uses the same directory. The file holds
-/// nothing: no secret and no label ever touches the disk.
+/// Every `set`, `delete` and `labels` holds a lock on a file in the data directory, so the label list has one writer
+/// at a time across every handle and every Omuzaki process that shares the keychain service **and** the data
+/// directory. The file holds nothing: no secret and no label ever touches the disk.
+///
+/// The keychain service and the lock file go together: the label list belongs to the service, and its lock to the
+/// directory. [`new`](Self::new) is the service `omuzaki` and `secrets.lock`, so every Omuzaki process of one OS
+/// user has to pass the app's one local data directory. Anything that must not share that list, such as a test,
+/// uses [`in_namespace`](Self::in_namespace), which has a service and a lock file of its own.
 #[derive(Debug)]
 pub struct KeychainSecrets(Indexed<KeyringBackend>);
 
 impl KeychainSecrets {
-    /// A store over the platform keychain, with its lock file in `data_dir` (the app's local data directory). The
-    /// directory is created on first use.
+    /// The store the app uses: the keychain service `omuzaki`, with its lock file in `data_dir` (the app's local data
+    /// directory). The directory is created on first use.
     #[must_use]
     pub fn new(data_dir: impl AsRef<Path>) -> Self {
-        Self(Indexed::new(KeyringBackend, DirLock::new(data_dir.as_ref())))
+        let backend = KeyringBackend { service: SERVICE.to_owned() };
+        Self(Indexed::new(backend, DirLock::new(data_dir.as_ref(), LOCK_FILE)))
+    }
+
+    /// A store with a namespace of its own: the keychain service `omuzaki.<namespace>` and the lock file
+    /// `secrets-<namespace>.lock` in `data_dir`. It shares no label list and no lock with [`new`](Self::new) or with
+    /// another namespace, wherever their data directories are. For tests and tools that must not touch the app's
+    /// secrets.
+    ///
+    /// # Errors
+    /// [`SecretError::Rejected`] when `namespace` is not 1 to 40 characters of `a-z`, `0-9` and `-`.
+    pub fn in_namespace(namespace: &str, data_dir: impl AsRef<Path>) -> Result<Self, SecretError> {
+        let valid = (1..=40).contains(&namespace.len())
+            && namespace.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+        if !valid {
+            return Err(SecretError::rejected("a namespace is 1 to 40 characters of a-z, 0-9 and -"));
+        }
+        let backend = KeyringBackend { service: format!("{SERVICE}.{namespace}") };
+        Ok(Self(Indexed::new(backend, DirLock::new(data_dir.as_ref(), &format!("secrets-{namespace}.lock")))))
     }
 }
 

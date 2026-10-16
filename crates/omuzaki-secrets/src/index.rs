@@ -3,10 +3,11 @@
 //! One entry per label cannot be listed portably, so the labels are also written to *shards*, and one *head* record
 //! says which set of shards is current:
 //!
-//! - the head, user name `@labels`, holds a generation number;
-//! - generation `g` is the shards `@labels.g.0`, `@labels.g.1`, and so on, each holding labels one per line in
-//!   sorted order, contiguous from 0. A shard stays under [`SHARD_BUDGET`] because Windows Credential Manager caps one
-//!   credential at 2,560 bytes; a long list becomes more shards, never a failed write;
+//! - the head, user name `@labels`, holds `generation:count`;
+//! - generation `g` is the shards `@labels.g.0`, `@labels.g.1`, and so on up to `count`, each holding labels one per
+//!   line in sorted order. A shard stays under [`SHARD_BUDGET`] because Windows Credential Manager caps one
+//!   credential at 2,560 bytes; a long list becomes more shards, never a failed write. Reading needs every one of the
+//!   `count` shards: a missing one is [`SecretError::Corrupt`], not a shorter list;
 //! - no head means no labels.
 //!
 //! A change writes the next generation's shards in full and only then switches the head, so a failure part-way
@@ -42,14 +43,23 @@ pub(crate) fn shard_user(generation: u64, n: usize) -> String {
     format!("{HEAD_USER}.{generation}.{n}")
 }
 
-/// The head record that makes `generation` current.
-pub(crate) fn encode_head(generation: u64) -> String {
-    generation.to_string()
+/// The head record that makes `generation` current, with the number of shards it has (at least 1).
+pub(crate) fn encode_head(generation: u64, shards: usize) -> String {
+    format!("{generation}:{shards}")
 }
 
-/// Reads the head record. Anything but a plain number is [`SecretError::Corrupt`].
-pub(crate) fn decode_head(text: &str) -> Result<u64, SecretError> {
-    text.parse().map_err(|_| SecretError::corrupt(INDEX_WHAT))
+/// Reads the head record: the generation and how many shards it must have. Anything but exactly what
+/// [`encode_head`] writes is [`SecretError::Corrupt`].
+pub(crate) fn decode_head(text: &str) -> Result<(u64, usize), SecretError> {
+    let corrupt = || SecretError::corrupt(INDEX_WHAT);
+    let (generation, shards) = text.split_once(':').ok_or_else(corrupt)?;
+    let generation: u64 = generation.parse().map_err(|_| corrupt())?;
+    let shards: usize = shards.parse().map_err(|_| corrupt())?;
+    // The canonical form only: no sign, no leading zeros, and an index with labels has a shard.
+    if shards == 0 || encode_head(generation, shards) != text {
+        return Err(corrupt());
+    }
+    Ok((generation, shards))
 }
 
 /// The width of `text` as the widest keychain stores it, in bytes.
@@ -147,9 +157,12 @@ mod tests {
     }
 
     #[test]
-    fn the_head_is_a_plain_number() {
-        assert_eq!(decode_head(&encode_head(7)).unwrap(), 7);
-        for text in ["", "x", "-1", "1\n", " 1"] {
+    fn the_head_is_exactly_a_generation_and_a_shard_count() {
+        assert_eq!(decode_head(&encode_head(7, 3)).unwrap(), (7, 3));
+        assert_eq!(decode_head(&encode_head(u64::MAX, 1)).unwrap(), (u64::MAX, 1));
+        // An old-style bare number, no shards, signs, leading zeros, spaces and trailing text are all corrupt.
+        for text in ["", "x", "7", "7:", ":3", "7:0", "-1:1", "+7:3", "07:3", "7:03", "7:3\\n", " 7:3", "7:3:1", "7:x"]
+        {
             assert_eq!(decode_head(text).unwrap_err(), SecretError::corrupt(INDEX_WHAT), "{text:?}");
         }
     }
