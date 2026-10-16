@@ -19,8 +19,9 @@ use vello::peniko::Color;
 use vello_encoding::{BufferSizes, ConfigUniform, RenderConfig, Resolver, WorkgroupSize};
 use vello_shaders::{BindType, ComputeShader};
 
-pub(crate) use self::bump::Grow;
-use self::bump::{BumpReads, Capacity};
+pub use self::bump::BumpCapacity;
+pub(crate) use self::bump::Recovery;
+use self::bump::{BumpReads, Made};
 
 /// The Vello stages this engine dispatches, in the order they run.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -453,16 +454,15 @@ pub(super) struct Engine {
     scratch: Option<Scratch>,
     atlas: wgpu::TextureView,
     /// How large Vello's bump-allocated buffers are now: its own sizes, grown when a scene needs more.
-    capacity: Capacity,
+    capacity: BumpCapacity,
     /// The most bytes one storage binding may hold on this device: where growing stops.
     max_binding: u64,
 }
 
 impl Engine {
-    /// Compiles every stage for `device`, with Vello's own buffer sizes or, for tests of the overflow path, every
-    /// bump-allocated buffer at `bump_entries` entries. Slow (pipeline compilation): one per rasteriser, on the first
-    /// paint.
-    pub(super) fn new(device: &wgpu::Device, bump_entries: Option<u32>) -> Self {
+    /// Compiles every stage for `device`, with Vello's own buffer sizes or, for tests of the overflow path, `capacity`.
+    /// Slow (pipeline compilation): one per rasteriser, on the first paint.
+    pub(super) fn new(device: &wgpu::Device, capacity: Option<BumpCapacity>) -> Self {
         let atlas = device
             .create_texture(&wgpu::TextureDescriptor {
                 label: Some("face-vello-atlas"),
@@ -481,17 +481,16 @@ impl Engine {
             packed: Vec::new(),
             scratch: None,
             atlas,
-            capacity: bump_entries.map_or_else(Capacity::vello, Capacity::uniform),
+            capacity: capacity.unwrap_or_else(BumpCapacity::vello),
             max_binding: device.limits().max_storage_buffer_binding_size.min(device.limits().max_buffer_size),
         }
     }
 
     /// Reads the counters of `target`'s earlier repaints that have come back and, when one ran out of room, grows the
-    /// buffers it ran out of. `None` when nothing failed; after `Grew` the caller repaints the layer whole, after
+    /// buffers it ran out of. `None` when every one had room; after `Repaint` the caller repaints the layer whole, after
     /// `Exhausted` it gives the layer to the CPU raster. Never waits.
-    pub(super) fn check_overflow(&mut self, target: &mut LayerTarget) -> Option<Grow> {
-        let failed = target.bumps.poll()?;
-        Some(self.capacity.grow(&failed, self.max_binding))
+    pub(super) fn check_overflow(&mut self, target: &mut LayerTarget) -> Option<Recovery> {
+        target.bumps.poll(&mut self.capacity, self.max_binding)
     }
 
     /// Records the rasterisation of `frame` into `encoder`, writing the frame's scene and config into `target`'s buffers
@@ -563,8 +562,9 @@ impl Engine {
         let indirect = &scratch.buffers[Res::IndirectCount as usize];
         record_stages(&mut pass, &self.stages, groups, &config.workgroup_counts, indirect);
         drop(pass);
-        // The counters this repaint bumps, read back on a later paint: a scene too big for the buffers grows them.
-        target.bumps.record(encoder, &scratch.buffers[Res::Bump as usize]);
+        // The counters this repaint bumps, read back a frame or two later: a scene too big for the buffers grows them.
+        let made = Made::new(self.capacity, config.gpu.width_in_tiles, config.gpu.height_in_tiles);
+        target.bumps.record(device, encoder, &scratch.buffers[Res::Bump as usize], made);
         Ok(())
     }
 }

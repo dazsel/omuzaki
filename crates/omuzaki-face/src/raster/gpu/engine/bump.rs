@@ -1,11 +1,14 @@
 //! Vello's bump-allocated buffers: how big they are, and the check that tells, a frame or two later, whether a repaint
 //! needed more than they had.
 //!
-//! Vello's stages allocate lines, bins, tiles, segments, blend spill and per-tile command lists by bumping counters in
-//! one small buffer, against the capacities the config names. A scene that needs more sets `failed` and draws nothing,
-//! so the engine copies the counters out after every repaint into a buffer of the layer's own, maps it without waiting
-//! (`map_async`, read on a later paint once the GPU has run it), and on a failure grows what ran out and repaints the
-//! layer whole. Nothing on the frame path waits on the GPU.
+//! Vello's stages allocate lines, bins, tiles, segment counts, segments, blend spill and per-tile command lists by
+//! bumping counters in one small buffer. Most stages check their counter against the size the config names and set
+//! `failed` when it passes, which stops the stages after them; coarse bumps the segments counter with no check at all
+//! (Vello 0.11), so a scene that outgrows the segments buffer draws wrong with nothing failed. The engine therefore
+//! copies the counters out after every repaint into a buffer of the layer's own, maps it without waiting (`map_async`,
+//! read once the GPU has run that repaint) and compares every counter with the capacity that repaint was made with; a
+//! repaint that ran out of anything grows what ran out and has its layer repainted whole. Nothing on the frame path waits
+//! on the GPU.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -19,31 +22,68 @@ const STAGE_FLATTEN: u32 = 0x4;
 const STAGE_PATH_COUNT: u32 = 0x8;
 const STAGE_COARSE: u32 = 0x10;
 
-/// The entries of each bump-allocated buffer. The bin data buffer also holds the draw objects' info in front of the bins;
-/// `binning` counts the bins alone.
+/// The command words coarse gives every tile up front (`shader/shared/ptcl.wgsl`): its dynamic allocations, which the
+/// `ptcl` counter counts, start after `tiles * PTCL_INITIAL_ALLOC` words.
+const PTCL_INITIAL_ALLOC: u32 = 64;
+
+/// The number of bump-allocated buffers.
+const BUFFERS: usize = 7;
+
+/// Per buffer, in [`BumpCapacity::entries`] order, the stage whose `failed` flag says it ran out. Segments have none:
+/// no stage checks their counter.
+const FLAGS: [u32; BUFFERS] =
+    [STAGE_FLATTEN, STAGE_BINNING, STAGE_TILE_ALLOC, STAGE_PATH_COUNT, 0, STAGE_COARSE, STAGE_COARSE];
+
+/// How many entries each of Vello's bump-allocated buffers holds. The GPU rasteriser starts at Vello's own sizes
+/// ([`vello`](Self::vello)) and grows a buffer when a repaint needs more; tests of that path start it smaller
+/// ([`VelloRasterizer::with_bump_capacity`](super::super::VelloRasterizer::with_bump_capacity)).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub(super) struct Capacity {
-    lines: u32,
-    binning: u32,
-    tiles: u32,
-    seg_counts: u32,
-    segments: u32,
-    blend: u32,
-    ptcl: u32,
+pub struct BumpCapacity {
+    /// Flattened lines (`LineSoup`), which the flatten stage writes.
+    pub lines: u32,
+    /// Bin entries, which binning writes after the draw objects' info (the info is not counted here).
+    pub binning: u32,
+    /// Tiles of every path's bounding box, which tile allocation reserves.
+    pub tiles: u32,
+    /// Segment counts (one per line crossing a tile), which path counting writes.
+    pub seg_counts: u32,
+    /// Segments, which coarse reserves and path tiling writes. Vello checks no limit here.
+    pub segments: u32,
+    /// Blend-stack spill words, which coarse reserves for deep clip stacks.
+    pub blend: u32,
+    /// Per-tile command-list words, which coarse writes: every tile's first block, then the blocks it allocates.
+    pub ptcl: u32,
 }
 
-/// What a grow found.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Grow {
-    /// Larger buffers are set; the next repaint fits (or fails again and grows again).
-    Grew,
-    /// A buffer is already as large as the device allows: the GPU can't draw this scene.
+/// What a check of a layer's earlier repaints found. Ordered so the graver one wins when several come back at once.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Recovery {
+    /// The layer's picture may be wrong: a repaint ran out of room (the buffers now hold what it needed, grown by this
+    /// check or by an earlier one for another layer), or one went unchecked. Repaint the layer whole.
+    Repaint,
+    /// A buffer a repaint ran out of is already as large as the device allows: the GPU can't draw this scene.
     Exhausted,
 }
 
-impl Capacity {
-    /// Vello's own sizes (`BufferSizes::new`'s fixed ones), the engine's start.
-    pub(super) fn vello() -> Self {
+/// What a repaint was made with: the capacities its config named, and where coarse's dynamic command blocks start
+/// (after every tile's first block, so it depends on the repaint's size).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(super) struct Made {
+    pub(super) capacity: BumpCapacity,
+    pub(super) ptcl_start: u32,
+}
+
+impl Made {
+    /// What a repaint `width_in_tiles` x `height_in_tiles` tiles large made with `capacity` has.
+    pub(super) fn new(capacity: BumpCapacity, width_in_tiles: u32, height_in_tiles: u32) -> Self {
+        let ptcl_start = width_in_tiles.saturating_mul(height_in_tiles).saturating_mul(PTCL_INITIAL_ALLOC);
+        Self { capacity, ptcl_start }
+    }
+}
+
+impl BumpCapacity {
+    /// Vello's own sizes (`BufferSizes::new`'s fixed ones), the rasteriser's start.
+    pub fn vello() -> Self {
         let sizes = BufferSizes::new(&Layout::default(), &WorkgroupCounts::default());
         Self {
             lines: sizes.lines.len(),
@@ -56,10 +96,36 @@ impl Capacity {
         }
     }
 
-    /// Every buffer at `entries` entries: for tests that check the overflow path.
-    pub(super) fn uniform(entries: u32) -> Self {
+    /// Every buffer at `entries` entries (at least one).
+    pub fn uniform(entries: u32) -> Self {
         let n = entries.max(1);
         Self { lines: n, binning: n, tiles: n, seg_counts: n, segments: n, blend: n, ptcl: n }
+    }
+
+    /// The entries of every buffer, in a fixed order ([`FLAGS`] and `grow` follow it).
+    fn entries(&self) -> [u32; BUFFERS] {
+        [self.lines, self.binning, self.tiles, self.seg_counts, self.segments, self.blend, self.ptcl]
+    }
+
+    /// The entries of every buffer, in [`entries`](Self::entries) order, to change.
+    fn entries_mut(&mut self) -> [&mut u32; BUFFERS] {
+        [
+            &mut self.lines,
+            &mut self.binning,
+            &mut self.tiles,
+            &mut self.seg_counts,
+            &mut self.segments,
+            &mut self.blend,
+            &mut self.ptcl,
+        ]
+    }
+
+    /// What a repaint's counters `bump` say each buffer needed, in [`entries`](Self::entries) order. Every check Vello
+    /// makes is "counter past size" except coarse's command lists, whose counter counts only the blocks allocated after
+    /// `ptcl_start`.
+    fn used(bump: &BumpAllocators, ptcl_start: u32) -> [u32; BUFFERS] {
+        let ptcl = ptcl_start.saturating_add(bump.ptcl);
+        [bump.lines, bump.binning, bump.tile, bump.seg_counts, bump.segments, bump.blend, ptcl]
     }
 
     /// Writes these capacities into `config`: the buffer sizes the scratch is made with, and the limits the stages
@@ -83,41 +149,47 @@ impl Capacity {
         gpu.ptcl_size = sizes.ptcl.len();
     }
 
-    /// Grows what `bump`, a failed repaint's counters, says ran out: each buffer whose stage failed or whose counter
-    /// passed its size doubles, at least to the counter, at most to what one binding may hold (`max_binding` bytes).
-    /// A stage that fails stops the ones after it, so their counters are short: every buffer is also raised to at least
-    /// Vello's own size (which only a capacity set below it, a test's, is under), and a later stage that still fails
-    /// grows on its own failure.
-    pub(super) fn grow(&mut self, bump: &BumpAllocators, max_binding: u64) -> Grow {
+    /// Checks the counters `bump` of a repaint made with `made` and grows these capacities (the ones the next repaint
+    /// gets) to what it needed. `None` if it had room for everything and nothing failed.
+    ///
+    /// Every counter is compared with the capacity that repaint had, failed or not: coarse never flags the segments it
+    /// runs out of. A buffer it ran out of grows to at least twice what it had and past its counter (a power of two), at
+    /// most to what one binding may hold (`max_binding` bytes). A stage that fails stops the ones after it, so their
+    /// counters are short: every buffer is also raised to at least Vello's own size (which only a capacity set below
+    /// it, a test's, is under), and a later stage that still runs out grows on its own report. A failed flag with no
+    /// counter past its size (which Vello's checks don't produce) grows its stage's buffers all the same.
+    pub(super) fn grow(&mut self, bump: &BumpAllocators, made: &Made, max_binding: u64) -> Option<Recovery> {
+        let had = made.capacity.entries();
+        let used = Self::used(bump, made.ptcl_start);
+        let past: [bool; BUFFERS] = std::array::from_fn(|at| used[at] > had[at]);
+        let counted = past.contains(&true);
+        if !counted && bump.failed == 0 {
+            return None;
+        }
         // Bytes per entry, and Vello's own sizes.
         let sizes = BufferSizes::new(&Layout::default(), &WorkgroupCounts::default());
-        let vello = Self::vello();
-        let failed = |stage| bump.failed & stage != 0;
-        let (mut grown, mut at_limit) = (false, false);
-        let mut grow = |entries: &mut u32, used: u32, failed: bool, floor: u32, entry_bytes: u64| {
-            let limit = u32::try_from(max_binding / entry_bytes.max(1)).unwrap_or(u32::MAX);
-            let mut wanted = (*entries).max(floor);
-            if failed || used > *entries {
-                wanted = wanted.max(entries.saturating_mul(2)).max(used.saturating_add(1).next_power_of_two());
+        let bytes = [
+            entry_bytes(sizes.lines),
+            entry_bytes(sizes.bin_data),
+            entry_bytes(sizes.tiles),
+            entry_bytes(sizes.seg_counts),
+            entry_bytes(sizes.segments),
+            entry_bytes(sizes.blend_spill),
+            entry_bytes(sizes.ptcl),
+        ];
+        let vello = Self::vello().entries();
+        let mut exhausted = false;
+        for (at, entries) in self.entries_mut().into_iter().enumerate() {
+            let ran_out = past[at] || (!counted && bump.failed & FLAGS[at] != 0);
+            let limit = u32::try_from(max_binding / bytes[at].max(1)).unwrap_or(u32::MAX);
+            let mut wanted = vello[at];
+            if ran_out {
+                wanted = wanted.max(had[at].saturating_mul(2)).max(used[at].saturating_add(1).next_power_of_two());
             }
-            let wanted = wanted.min(limit);
-            if wanted > *entries {
-                *entries = wanted;
-                grown = true;
-            } else if failed || used > *entries {
-                at_limit = true;
-            }
-        };
-        grow(&mut self.lines, bump.lines, failed(STAGE_FLATTEN), vello.lines, entry_bytes(sizes.lines));
-        grow(&mut self.binning, bump.binning, failed(STAGE_BINNING), vello.binning, entry_bytes(sizes.bin_data));
-        grow(&mut self.tiles, bump.tile, failed(STAGE_TILE_ALLOC), vello.tiles, entry_bytes(sizes.tiles));
-        let path_count = failed(STAGE_PATH_COUNT);
-        grow(&mut self.seg_counts, bump.seg_counts, path_count, vello.seg_counts, entry_bytes(sizes.seg_counts));
-        let coarse = failed(STAGE_COARSE);
-        grow(&mut self.segments, bump.segments, coarse, vello.segments, entry_bytes(sizes.segments));
-        grow(&mut self.blend, bump.blend, coarse, vello.blend, entry_bytes(sizes.blend_spill));
-        grow(&mut self.ptcl, bump.ptcl, coarse, vello.ptcl, entry_bytes(sizes.ptcl));
-        if grown || !at_limit { Grow::Grew } else { Grow::Exhausted }
+            *entries = (*entries).max(wanted.min(limit));
+            exhausted |= ran_out && *entries <= had[at];
+        }
+        Some(if exhausted { Recovery::Exhausted } else { Recovery::Repaint })
     }
 }
 
@@ -126,15 +198,15 @@ fn entry_bytes<T>(_: BufferSize<T>) -> u64 {
     std::mem::size_of::<T>() as u64
 }
 
-/// Where a counters read-back is.
+/// Where a counters read-back is, and what the repaint it reads was made with.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum State {
     /// Free for the next repaint.
     Idle,
-    /// A repaint's commands copy the counters in; mapping waits until they are submitted, at the next paint.
-    Recorded,
+    /// A repaint's commands copy the counters in; mapping waits until they are submitted, at the next check.
+    Recorded(Made),
     /// Mapping asked for; `ready` says when it is done.
-    Mapping,
+    Mapping(Made),
 }
 
 /// What the map callback reports in `ready`.
@@ -150,20 +222,9 @@ struct Slot {
     ready: Arc<AtomicU8>,
 }
 
-/// How many repaints of a layer can be in flight before one goes unchecked: the GPU runs a frame or two behind.
-const SLOTS: usize = 3;
-
-/// A layer's read-backs of Vello's counters.
-pub(super) struct BumpReads {
-    slots: [Slot; SLOTS],
-}
-
-/// The bytes of the counters.
-const BYTES: u64 = std::mem::size_of::<BumpAllocators>() as u64;
-
-impl BumpReads {
-    pub(super) fn new(device: &wgpu::Device) -> Self {
-        let slot = || Slot {
+impl Slot {
+    fn new(device: &wgpu::Device) -> Self {
+        Self {
             buffer: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("face-vello-bump-read"),
                 size: BYTES,
@@ -172,27 +233,56 @@ impl BumpReads {
             }),
             state: State::Idle,
             ready: Arc::new(AtomicU8::new(PENDING)),
-        };
-        Self { slots: [slot(), slot(), slot()] }
+        }
+    }
+}
+
+/// The read-backs a layer starts with: the stage's GPU runs a frame or two behind, so a read-back is free again by the
+/// time the next repaint but two is recorded.
+const FIRST_SLOTS: usize = 3;
+/// The most read-backs a layer makes. A GPU further behind than its first ones (a benchmark that submits a batch of
+/// repaints before it polls) gets more, made once and kept, so every repaint is still checked; past this many a repaint
+/// goes unchecked, and the layer is repainted whole once a read-back is free again.
+const MAX_SLOTS: usize = 128;
+
+/// A layer's read-backs of Vello's counters.
+pub(super) struct BumpReads {
+    /// Made with room for [`MAX_SLOTS`], so adding one never reallocates the list.
+    slots: Vec<Slot>,
+    /// A repaint found no free read-back, so nothing checks it.
+    unchecked: bool,
+}
+
+/// The bytes of the counters.
+const BYTES: u64 = std::mem::size_of::<BumpAllocators>() as u64;
+
+impl BumpReads {
+    pub(super) fn new(device: &wgpu::Device) -> Self {
+        let mut slots = Vec::with_capacity(MAX_SLOTS);
+        slots.extend((0..FIRST_SLOTS).map(|_| Slot::new(device)));
+        Self { slots, unchecked: false }
     }
 
-    /// Moves the read-backs along and returns the counters of a repaint that failed, if one came back. Asks for the
-    /// mapping of the read-backs recorded by earlier paints (each was submitted since: the renderer submits a paint as
-    /// soon as the painter returns) and reads those that are mapped. Never waits.
-    pub(super) fn poll(&mut self) -> Option<BumpAllocators> {
-        let mut failed = None;
+    /// Moves the read-backs along and checks the counters of every repaint that came back against what it was made
+    /// with ([`BumpCapacity::grow`], which grows `capacity`): `Exhausted` if one ran out of what can't grow, else
+    /// `Repaint` if one ran out or a repaint went unchecked and a read-back is free again, else `None`. Asks for the
+    /// mapping of the read-backs recorded since the last check (each
+    /// was submitted since: the renderer submits a paint as soon as the painter returns) and reads those that are
+    /// mapped. Never waits.
+    pub(super) fn poll(&mut self, capacity: &mut BumpCapacity, max_binding: u64) -> Option<Recovery> {
+        let mut found = None;
         for slot in &mut self.slots {
             match slot.state {
                 State::Idle => {}
-                State::Recorded => {
+                State::Recorded(made) => {
                     slot.ready.store(PENDING, Ordering::Release);
                     let ready = Arc::clone(&slot.ready);
                     slot.buffer.slice(..).map_async(wgpu::MapMode::Read, move |result| {
                         ready.store(if result.is_ok() { MAPPED } else { UNMAPPABLE }, Ordering::Release);
                     });
-                    slot.state = State::Mapping;
+                    slot.state = State::Mapping(made);
                 }
-                State::Mapping => match slot.ready.load(Ordering::Acquire) {
+                State::Mapping(made) => match slot.ready.load(Ordering::Acquire) {
                     PENDING => {}
                     MAPPED => {
                         let bump = slot
@@ -203,31 +293,53 @@ impl BumpReads {
                             .and_then(|bytes| bytemuck::try_pod_read_unaligned::<BumpAllocators>(&bytes).ok());
                         slot.buffer.unmap();
                         slot.state = State::Idle;
-                        if let Some(bump) = bump.filter(|bump| bump.failed != 0) {
-                            failed = Some(bump);
-                        }
+                        found = found.max(bump.and_then(|bump| capacity.grow(&bump, &made, max_binding)));
                     }
                     _ => slot.state = State::Idle,
                 },
             }
         }
-        failed
+        if self.unchecked && self.slots.iter().any(|slot| slot.state == State::Idle) {
+            // The repaint that found no free read-back may have run out of room unseen: the next one is checked.
+            self.unchecked = false;
+            found = found.max(Some(Recovery::Repaint));
+        }
+        found
     }
 
-    /// Records the copy of `bump`, the counters this repaint's stages just bumped, into a free read-back. With none free
-    /// (the GPU is more than [`SLOTS`] repaints behind) this repaint goes unchecked: a scene too big for the buffers
-    /// fails on the next one too, which is checked.
-    pub(super) fn record(&mut self, encoder: &mut wgpu::CommandEncoder, bump: &wgpu::Buffer) {
-        if let Some(slot) = self.slots.iter_mut().find(|slot| slot.state == State::Idle) {
-            encoder.copy_buffer_to_buffer(bump, 0, &slot.buffer, 0, BYTES);
-            slot.state = State::Recorded;
+    /// Records the copy of `bump`, the counters this repaint's stages just bumped, into a free read-back, with what the
+    /// repaint was `made` with. With none free (the GPU is that many repaints behind) it makes one on `device`, up to
+    /// [`MAX_SLOTS`]; past that this repaint goes unchecked, and the first [`poll`](Self::poll) that finds a read-back
+    /// free again asks for a whole repaint, which is checked: a layer that then stops changing is never left showing a
+    /// repaint that ran out of room.
+    pub(super) fn record(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        bump: &wgpu::Buffer,
+        made: Made,
+    ) {
+        let free = match self.slots.iter().position(|slot| slot.state == State::Idle) {
+            Some(at) => Some(at),
+            None if self.slots.len() < MAX_SLOTS => {
+                self.slots.push(Slot::new(device));
+                Some(self.slots.len() - 1)
+            }
+            None => None,
+        };
+        match free.and_then(|at| self.slots.get_mut(at)) {
+            Some(slot) => {
+                encoder.copy_buffer_to_buffer(bump, 0, &slot.buffer, 0, BYTES);
+                slot.state = State::Recorded(made);
+            }
+            None => self.unchecked = true,
         }
     }
 
     /// Forgets the copy the last paint recorded: the renderer dropped its commands, so it never ran.
     pub(super) fn forget_recorded(&mut self) {
         for slot in &mut self.slots {
-            if slot.state == State::Recorded {
+            if matches!(slot.state, State::Recorded(_)) {
                 slot.state = State::Idle;
             }
         }
@@ -238,55 +350,133 @@ impl BumpReads {
 mod tests {
     use super::*;
 
-    fn bump(failed: u32) -> BumpAllocators {
-        BumpAllocators { failed, ..BumpAllocators::default() }
+    /// What a repaint with no tiles made with `capacity` has (its command lists start at 0).
+    fn made(capacity: BumpCapacity) -> Made {
+        Made::new(capacity, 0, 0)
+    }
+
+    fn failed(flags: u32) -> BumpAllocators {
+        BumpAllocators { failed: flags, ..BumpAllocators::default() }
     }
 
     #[test]
-    fn a_failed_stage_doubles_its_buffers_and_a_counter_past_its_size_reaches_it() {
-        let mut capacity = Capacity::vello();
-        let report = BumpAllocators { lines: (1 << 22) + 5, ..bump(STAGE_FLATTEN) };
-        assert_eq!(capacity.grow(&report, u64::MAX), Grow::Grew);
-        assert_eq!(capacity.lines, 1 << 23, "at least the counter, rounded to a power of two");
-        assert_eq!(capacity.tiles, Capacity::vello().tiles, "a stage that did not fail keeps its size");
-        assert_eq!(capacity.grow(&bump(STAGE_COARSE), u64::MAX), Grow::Grew);
-        let vello = Capacity::vello();
-        assert_eq!((capacity.ptcl, capacity.segments), (vello.ptcl * 2, vello.segments * 2), "coarse's buffers double");
+    fn a_repaint_with_room_for_everything_needs_nothing() {
+        let vello = BumpCapacity::vello();
+        let mut capacity = vello;
+        let report = BumpAllocators { lines: vello.lines, segments: vello.segments, ..failed(0) };
+        assert_eq!(capacity.grow(&report, &made(vello), u64::MAX), None, "a counter at its size fits");
+        assert_eq!(capacity, vello);
+    }
+
+    #[test]
+    fn segments_past_their_capacity_grow_although_nothing_failed() {
+        // Coarse bumps the segments counter with no check, so this is all a segments overflow leaves.
+        let vello = BumpCapacity::vello();
+        let mut capacity = vello;
+        let report = BumpAllocators { segments: vello.segments + 5, ..failed(0) };
+        assert_eq!(capacity.grow(&report, &made(vello), u64::MAX), Some(Recovery::Repaint));
+        assert_eq!(capacity.segments, vello.segments * 2, "twice what the repaint had, past the counter");
+        assert_eq!(BumpCapacity { segments: vello.segments, ..capacity }, vello, "nothing else grows");
+    }
+
+    #[test]
+    fn segments_that_run_out_once_the_segment_counts_grew_are_caught() {
+        // The review's case on #2222: path counting runs out, so coarse never runs and the segments counter is short;
+        // with the counts grown, the next repaint runs coarse, which runs out of segments and flags nothing.
+        let vello = BumpCapacity::vello();
+        let mut capacity = vello;
+        let counts = BumpAllocators { seg_counts: vello.seg_counts + 1, ..failed(STAGE_PATH_COUNT) };
+        assert_eq!(capacity.grow(&counts, &made(vello), u64::MAX), Some(Recovery::Repaint));
+        assert_eq!((capacity.seg_counts, capacity.segments), (vello.seg_counts * 2, vello.segments));
+        let grown = capacity;
+        let segments = BumpAllocators { seg_counts: vello.seg_counts + 1, segments: vello.segments + 1, ..failed(0) };
+        assert_eq!(capacity.grow(&segments, &made(grown), u64::MAX), Some(Recovery::Repaint));
+        assert_eq!(capacity.segments, vello.segments * 2);
+    }
+
+    #[test]
+    fn command_lists_count_from_after_every_tiles_first_block() {
+        let vello = BumpCapacity::vello();
+        let had = Made::new(vello, 16, 16);
+        assert_eq!(had.ptcl_start, 16 * 16 * PTCL_INITIAL_ALLOC);
+        let mut capacity = vello;
+        let within = BumpAllocators { ptcl: vello.ptcl - had.ptcl_start, ..failed(0) };
+        assert_eq!(
+            capacity.grow(&within, &had, u64::MAX),
+            None,
+            "the first blocks and the counted ones fill it exactly"
+        );
+        let past = BumpAllocators { ptcl: vello.ptcl - had.ptcl_start + 1, ..failed(0) };
+        assert_eq!(capacity.grow(&past, &had, u64::MAX), Some(Recovery::Repaint), "a counter under the size alone");
+        assert_eq!(capacity.ptcl, vello.ptcl * 2);
+    }
+
+    #[test]
+    fn a_repaint_made_before_another_layer_grew_the_buffers_is_repainted_without_growing_again() {
+        let vello = BumpCapacity::vello();
+        let mut capacity = vello;
+        let report = BumpAllocators { lines: vello.lines + 1, ..failed(STAGE_FLATTEN) };
+        assert_eq!(capacity.grow(&report, &made(vello), u64::MAX), Some(Recovery::Repaint));
+        let grown = capacity;
+        assert_eq!(capacity.grow(&report, &made(vello), u64::MAX), Some(Recovery::Repaint), "its picture is wrong too");
+        assert_eq!(capacity, grown);
+    }
+
+    #[test]
+    fn a_failed_flag_with_no_counter_past_its_size_grows_its_stages_buffers() {
+        let vello = BumpCapacity::vello();
+        let mut capacity = vello;
+        assert_eq!(capacity.grow(&failed(STAGE_COARSE), &made(vello), u64::MAX), Some(Recovery::Repaint));
+        assert_eq!((capacity.blend, capacity.ptcl), (vello.blend * 2, vello.ptcl * 2));
+        assert_eq!((capacity.segments, capacity.lines), (vello.segments, vello.lines));
     }
 
     #[test]
     fn a_failure_raises_capacities_below_vellos_own_to_vellos_own() {
-        let mut capacity = Capacity::uniform(64);
-        assert_eq!(capacity.grow(&bump(STAGE_FLATTEN), u64::MAX), Grow::Grew);
-        let vello = Capacity::vello();
+        let tiny = BumpCapacity::uniform(64);
+        let mut capacity = tiny;
+        let report = BumpAllocators { lines: 65, ..failed(STAGE_FLATTEN) };
+        assert_eq!(capacity.grow(&report, &made(tiny), u64::MAX), Some(Recovery::Repaint));
+        let vello = BumpCapacity::vello();
         assert_eq!(capacity.tiles, vello.tiles, "a later stage that never ran gets Vello's size, not a guess");
-        assert_eq!(capacity.lines, vello.lines, "and the failed one at least that");
+        assert_eq!(capacity.lines, vello.lines, "and the one that ran out at least that");
     }
 
     #[test]
     fn growth_stops_at_what_one_binding_may_hold() {
-        // 400 bytes: 100 command-list or blend entries (4 bytes each), fewer segments than there are now.
-        let mut capacity = Capacity::vello();
-        let ptcl = capacity.ptcl;
-        assert_eq!(capacity.grow(&bump(STAGE_COARSE), u64::from(ptcl) * 4 * 3 / 2), Grow::Grew);
-        assert_eq!(capacity.ptcl, ptcl * 3 / 2, "capped at the binding's size");
-        assert_eq!(capacity.grow(&bump(STAGE_COARSE), 400), Grow::Exhausted, "nothing of coarse's can grow now");
+        // Command-list words are 4 bytes: a binding of 1.5 times the buffer holds 1.5 times its words.
+        let vello = BumpCapacity::vello();
+        let mut capacity = vello;
+        let report = BumpAllocators { ptcl: vello.ptcl + 1, ..failed(STAGE_COARSE) };
+        let binding = u64::from(vello.ptcl) * 4 * 3 / 2;
+        assert_eq!(capacity.grow(&report, &made(vello), binding), Some(Recovery::Repaint));
+        assert_eq!(capacity.ptcl, vello.ptcl * 3 / 2, "capped at the binding's size");
+        let capped = capacity;
+        let again = BumpAllocators { ptcl: capped.ptcl + 1, ..failed(STAGE_COARSE) };
+        assert_eq!(capacity.grow(&again, &made(capped), binding), Some(Recovery::Exhausted), "it can't grow now");
+    }
+
+    #[test]
+    fn the_graver_recovery_wins() {
+        assert_eq!(Some(Recovery::Repaint).max(Some(Recovery::Exhausted)), Some(Recovery::Exhausted));
+        assert_eq!(None.max(Some(Recovery::Repaint)), Some(Recovery::Repaint));
     }
 
     #[test]
     fn the_capacities_reach_the_config_the_stages_check() {
         let layout = Layout { bin_data_start: 10, ..Layout::default() };
         let mut config = RenderConfig::new(&layout, 64, 64, &vello::peniko::Color::TRANSPARENT);
-        Capacity::uniform(300).apply(&mut config, &layout);
+        BumpCapacity::uniform(300).apply(&mut config, &layout);
         assert_eq!(config.gpu.lines_size, 300);
         assert_eq!(config.gpu.binning_size, 300, "the bins come after the draw objects' info");
         assert_eq!(config.buffer_sizes.bin_data.len(), 310);
         assert_eq!((config.gpu.ptcl_size, config.buffer_sizes.ptcl.len()), (300, 300));
+        assert_eq!(config.gpu.segments_size, 300);
     }
 
     #[test]
     fn vellos_own_sizes_are_the_start() {
-        let capacity = Capacity::vello();
+        let capacity = BumpCapacity::vello();
         assert_eq!((capacity.lines, capacity.ptcl, capacity.binning), (1 << 21, 1 << 23, 1 << 18));
     }
 }

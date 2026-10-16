@@ -25,7 +25,8 @@ use vello::kurbo::{Affine, BezPath, Cap as KCap, Join as KJoin, Rect, Stroke};
 use vello::peniko::{ColorStop, Fill};
 
 use self::clip::{OpenStack, Transforms};
-use self::engine::{Engine, Frame, Grow, LayerTarget};
+pub use self::engine::BumpCapacity;
+use self::engine::{Engine, Frame, LayerTarget, Recovery};
 use self::fill::{Bounds, fill_bez};
 use self::gradient::brush;
 use self::resolve::Resolve;
@@ -291,8 +292,8 @@ pub struct VelloRasterizer {
     damage: [u32; 4],
     /// Where the next paint writes the GPU timestamps of its passes, for the timing probe.
     pass_timestamps: Option<(wgpu::QuerySet, u32)>,
-    /// The entries every bump-allocated buffer starts with, instead of Vello's sizes: for tests of the overflow path.
-    bump_entries: Option<u32>,
+    /// The sizes Vello's bump-allocated buffers start at, instead of Vello's own: for tests of the overflow path.
+    bump_capacity: Option<BumpCapacity>,
     /// What has been logged once: a scene outgrowing Vello's buffers, a layer too large for its bins.
     logged_overflow: bool,
     logged_too_large: bool,
@@ -315,13 +316,14 @@ impl VelloRasterizer {
         self.encoded
     }
 
-    /// Starts every one of Vello's bump-allocated buffers (lines, bins, tiles, segments, blend spill, command lists) at
-    /// `entries` entries instead of Vello's sizes, so a test can make a scene outgrow them. However they start, a repaint
-    /// that outgrows them is found from its counters a frame or two later; the buffers grow and the layer is repainted
-    /// whole.
+    /// Starts Vello's bump-allocated buffers (lines, bins, tiles, segment counts, segments, blend spill, command lists)
+    /// at `capacity` instead of Vello's sizes, so a test can make a scene outgrow them. However they start, a repaint that
+    /// outgrows any of them is found from its counters a frame or two later, without waiting on the GPU (on a later
+    /// paint, or when the stage asks [`repaint_needed`](GpuRasterizer::repaint_needed)); the buffers grow and the layer
+    /// is repainted whole.
     #[must_use]
-    pub fn with_bump_capacity(mut self, entries: u32) -> Self {
-        self.bump_entries = Some(entries);
+    pub fn with_bump_capacity(mut self, capacity: BumpCapacity) -> Self {
+        self.bump_capacity = Some(capacity);
         self
     }
 
@@ -339,9 +341,13 @@ impl Gpu {
     ///
     /// wgpu reports a device too weak for Vello (too few storage buffers per stage, say) as a validation error, not as an
     /// `Err`, so the creation runs in an error scope and an error counts as a failure.
-    fn create(device: &wgpu::Device, format: wgpu::TextureFormat, bump_entries: Option<u32>) -> Result<Self, String> {
+    fn create(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        capacity: Option<BumpCapacity>,
+    ) -> Result<Self, String> {
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let engine = Engine::new(device, bump_entries);
+        let engine = Engine::new(device, capacity);
         let gpu = Self { device: device.clone(), engine, resolve: Resolve::new(device, format) };
         // A scope that is still pending can't be read as "no error": count it as a failure, as `omuzaki-render` does.
         match ready(scope.pop()) {
@@ -444,7 +450,7 @@ impl VelloRasterizer {
         if self.hardware_only && device.adapter_info().device_type == wgpu::DeviceType::Cpu {
             return Err("it is a software adapter".to_owned());
         }
-        Gpu::create(device, format, self.bump_entries)
+        Gpu::create(device, format, self.bump_capacity)
     }
 
     /// Records the drawing of `list` into `native`'s encoder, redoing only what the sections' ranges say changed.
@@ -477,38 +483,13 @@ impl VelloRasterizer {
         if self.too_many_bins(width, height) {
             return Ok(false);
         }
-        // The renderer is rebuilt when the device is lost, but this rasteriser survives it: everything made on the old
-        // device (the engine, the resolve pipeline, the textures) is dropped with it.
-        if self.gpu.as_ref().is_some_and(|gpu| &gpu.device != device) {
-            self.gpu = None;
-            self.layers = Default::default();
-        }
-        if self.gpu.is_none() {
-            match self.make_gpu(device, target.format()) {
-                Ok(gpu) => self.gpu = Some(gpu),
-                Err(e) => {
-                    tracing::warn!(
-                        "the face falls back to the CPU raster: the GPU rasteriser declines this device ({e})"
-                    );
-                    self.unavailable = Some(device.clone());
-                    return Ok(false);
-                }
-            }
-        }
-        let Some(gpu) = self.gpu.as_mut() else {
-            return Err(FaceError::Raster("the GPU state is missing after it was made".to_owned()));
-        };
-        if gpu.resolve.format() != target.format() {
-            gpu.resolve = Resolve::new(device, target.format());
-            self.layers = Default::default();
-        }
-        let layer = &mut self.layers[spec.id as usize];
-        layer.ensure_private(device, &gpu.resolve, width, height);
-        layer.ensure_target(target);
-        if !recover_overflow(&mut gpu.engine, layer, &mut self.logged_overflow) {
-            self.unavailable = Some(device.clone());
+        let index = spec.id as usize;
+        if !self.prepare(device, target, index, (width, height))? {
             return Ok(false);
         }
+        let (Some(gpu), layer) = (self.gpu.as_mut(), &mut self.layers[index]) else {
+            return Err(FaceError::Raster("the GPU state is missing after it was made".to_owned()));
+        };
 
         // From here the target no longer shows the cached scenes until the repaint below finishes.
         let was_painted = std::mem::replace(&mut layer.painted, false);
@@ -557,6 +538,79 @@ impl VelloRasterizer {
 }
 
 impl VelloRasterizer {
+    /// Makes what layer `at` is drawn with on `device` into `target` (a `width` x `height` texture), if it is not made
+    /// yet, and reads back what earlier repaints of it found. `false` when the rasteriser declines the device (Vello's
+    /// stages can't run there, it is a software adapter and the rasteriser is hardware-only, or the scene outgrew what
+    /// the device's buffers hold).
+    fn prepare(
+        &mut self,
+        device: &wgpu::Device,
+        target: &wgpu::Texture,
+        at: usize,
+        (width, height): (u32, u32),
+    ) -> Result<bool, FaceError> {
+        // The renderer is rebuilt when the device is lost, but this rasteriser survives it: everything made on the old
+        // device (the engine, the resolve pipeline, the textures) is dropped with it.
+        if self.gpu.as_ref().is_some_and(|gpu| &gpu.device != device) {
+            self.gpu = None;
+            self.layers = Default::default();
+        }
+        if self.gpu.is_none() {
+            match self.make_gpu(device, target.format()) {
+                Ok(gpu) => self.gpu = Some(gpu),
+                Err(e) => {
+                    tracing::warn!(
+                        "the face falls back to the CPU raster: the GPU rasteriser declines this device ({e})"
+                    );
+                    self.unavailable = Some(device.clone());
+                    return Ok(false);
+                }
+            }
+        }
+        let Some(gpu) = self.gpu.as_mut() else {
+            return Err(FaceError::Raster("the GPU state is missing after it was made".to_owned()));
+        };
+        if gpu.resolve.format() != target.format() {
+            gpu.resolve = Resolve::new(device, target.format());
+            self.layers = Default::default();
+        }
+        let layer = &mut self.layers[at];
+        layer.ensure_private(device, &gpu.resolve, width, height);
+        layer.ensure_target(target);
+        // A caller that paints without asking `repaint_needed` first still gets an earlier repaint's overflow repaired.
+        self.check_layer(at);
+        Ok(self.unavailable.as_ref() != Some(device))
+    }
+
+    /// Reads the counters of layer `at`'s earlier repaints that have come back, never waiting, and returns whether one
+    /// of them left the layer's picture wrong: it outgrew Vello's buffers (or went unchecked). The buffers then grow and
+    /// the layer is marked for a whole repaint, or, when the device can't hold the scene, the rasteriser declines the
+    /// device, so the repaint falls to the CPU raster.
+    fn check_layer(&mut self, at: usize) -> bool {
+        let (Some(gpu), Some(layer)) = (self.gpu.as_mut(), self.layers.get_mut(at)) else { return false };
+        let Some(recovery) = layer.vello.as_mut().and_then(|vello| gpu.engine.check_overflow(vello)) else {
+            return false;
+        };
+        layer.painted = false;
+        match recovery {
+            Recovery::Repaint => {
+                if !std::mem::replace(&mut self.logged_overflow, true) {
+                    tracing::warn!(
+                        "a face repaint outgrew Vello's buffers (or went unchecked); they grow and the layer is drawn \
+                         again whole"
+                    );
+                }
+            }
+            Recovery::Exhausted => {
+                tracing::warn!(
+                    "the face falls back to the CPU raster: its scene needs more than the device's buffers hold"
+                );
+                self.unavailable = Some(gpu.device.clone());
+            }
+        }
+        true
+    }
+
     /// Whether a `width` x `height` layer has more bins than Vello's coarse stage draws right (logged once).
     fn too_many_bins(&mut self, width: u32, height: u32) -> bool {
         let too_many = width.div_ceil(BIN_SIDE) * height.div_ceil(BIN_SIDE) > MAX_BINS;
@@ -566,28 +620,6 @@ impl VelloRasterizer {
             );
         }
         too_many
-    }
-}
-
-/// Grows Vello's buffers when an earlier repaint of `layer` outgrew them (it drew nothing) and makes the layer repaint
-/// whole. `false` when the device can't hold the scene, so the CPU raster must draw it. `logged` keeps the growth to one
-/// warning.
-fn recover_overflow(engine: &mut Engine, layer: &mut LayerState, logged: &mut bool) -> bool {
-    match layer.vello.as_mut().and_then(|vello| engine.check_overflow(vello)) {
-        Some(Grow::Grew) => {
-            if !std::mem::replace(logged, true) {
-                tracing::warn!("a face repaint outgrew Vello's buffers; they grow and the layer is drawn again whole");
-            }
-            layer.painted = false;
-            true
-        }
-        Some(Grow::Exhausted) => {
-            tracing::warn!(
-                "the face falls back to the CPU raster: its scene needs more than the device's buffers hold"
-            );
-            false
-        }
-        None => true,
     }
 }
 
@@ -620,6 +652,10 @@ impl GpuRasterizer for VelloRasterizer {
     fn last_damage(&self) -> Option<PixelRect> {
         let [x, y, width, height] = self.damage;
         Some(PixelRect { x, y, width, height })
+    }
+
+    fn repaint_needed(&mut self, layer: FaceLayerId) -> bool {
+        self.check_layer(layer as usize)
     }
 
     fn paint_failed(&mut self, layer: FaceLayerId) {

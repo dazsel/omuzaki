@@ -17,6 +17,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use omuzaki_face::raster::gpu::{BumpCapacity, VelloRasterizer};
 use omuzaki_render::NativePaintTarget;
 use omuzaki_render_api::{PaintTarget, Renderer, TextureDesc};
 use omuzaki_stage::frame::Stage;
@@ -28,6 +29,9 @@ use support::{Counted, PROBE_PX_PER_M, cpu_rig, expression, face_stage, gpu_rig,
 const SIZE: u32 = 256;
 /// Frames run before the compared one, so every section has changed at least once on both stages.
 const FRAMES: u32 = 40;
+/// How many frames a face that outgrew the GPU's buffers may take to be repaired: its counters come back a frame or
+/// two after the repaint (the GPU runs behind), and the repaint is the frame after.
+const REPAIR_FRAMES: u32 = 6;
 
 /// Runs `frames` frames of [`expression`] and returns the last one's picture.
 fn run(stage: &mut Stage, renderer: &mut dyn Renderer, frames: u32) -> image::RgbaImage {
@@ -118,6 +122,58 @@ fn after_a_device_loss_the_face_is_drawn_whole_again() {
     let expected = rgba(&renderer.read_target(reference.target()).unwrap());
     let report = compare_region(&picture, &expected, Rect::full(SIZE, SIZE), T_FACE).unwrap();
     assert!(report.passes(T_FACE_MIN_PSNR_DB), "the repainted face differs from the CPU path: {}", report.stats);
+    for stage in [stage, reference] {
+        stage.release(&mut renderer).unwrap();
+    }
+}
+
+/// Ticks `stage` and `reference` through `frames` frames of one held face and compares their last frames.
+fn held(stage: &mut Stage, reference: &mut Stage, renderer: &mut dyn Renderer, frames: u32) -> RegionReport {
+    let face = expression(3);
+    for _ in 0..frames {
+        stage.tick(renderer, &face).unwrap();
+        reference.tick(renderer, &face).unwrap();
+    }
+    let (picture, expected) = (renderer.read_target(stage.target()).unwrap(), renderer.read_target(reference.target()));
+    compare_region(&rgba(&picture), &rgba(&expected.unwrap()), Rect::full(SIZE, SIZE), T_FACE).unwrap()
+}
+
+#[test]
+fn a_face_that_outgrows_the_gpu_buffers_is_repaired_while_it_does_not_change() {
+    let Some(mut renderer) = renderer() else { return };
+    let drawn = Arc::new(AtomicUsize::new(0));
+    // Buffers far too small for any layer: the first frame's repaints all run out of room and draw nothing.
+    let tiny = VelloRasterizer::new().with_bump_capacity(BumpCapacity::uniform(64));
+    let mut stage = face_stage(&mut renderer, gpu_rig(Box::new(Counted::wrapping(tiny, &drawn))), SIZE, PROBE_PX_PER_M);
+    let mut reference = face_stage(&mut renderer, cpu_rig(), SIZE, PROBE_PX_PER_M);
+    let layers = stage.character().face_layers().count();
+
+    let first = held(&mut stage, &mut reference, &mut renderer, 1);
+    assert!(
+        !first.passes(T_FACE_MIN_PSNR_DB),
+        "the overflowing frame drew the face right, or this test aims at nothing"
+    );
+    assert_eq!(drawn.load(Ordering::Relaxed), layers, "the first frame painted every layer on the GPU");
+    // The same face from here on: no layer changes, yet the stage learns of the overflow and repaints.
+    let repaired = held(&mut stage, &mut reference, &mut renderer, REPAIR_FRAMES);
+    eprintln!("{REPAIR_FRAMES} frames after the overflow, the face against the CPU path: {}", repaired.stats);
+    assert!(drawn.load(Ordering::Relaxed) > layers, "nothing was painted again after the overflow");
+    assert!(repaired.passes(T_FACE_MIN_PSNR_DB), "the face was not repaired: {}", repaired.stats);
+    for stage in [stage, reference] {
+        stage.release(&mut renderer).unwrap();
+    }
+}
+
+#[test]
+fn a_face_that_fits_is_painted_once_while_it_does_not_change() {
+    let Some(mut renderer) = renderer() else { return };
+    let drawn = Arc::new(AtomicUsize::new(0));
+    let mut stage = face_stage(&mut renderer, gpu_rig(Box::new(Counted::new(&drawn))), SIZE, PROBE_PX_PER_M);
+    let mut reference = face_stage(&mut renderer, cpu_rig(), SIZE, PROBE_PX_PER_M);
+    let layers = stage.character().face_layers().count();
+    let report = held(&mut stage, &mut reference, &mut renderer, REPAIR_FRAMES + 2);
+    assert_eq!(drawn.load(Ordering::Relaxed), layers, "a held face that fits Vello's buffers is never asked for again");
+    assert!(report.passes(T_FACE_MIN_PSNR_DB), "the held face differs from the CPU path: {}", report.stats);
     for stage in [stage, reference] {
         stage.release(&mut renderer).unwrap();
     }

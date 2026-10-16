@@ -1310,6 +1310,50 @@ fn probed_rig(offered: &Arc<AtomicUsize>) -> FaceRig {
     mock_rig().with_gpu_rasterizer(Box::new(ProbeGpu(Arc::clone(offered))))
 }
 
+/// A GPU rasteriser that records the layers it is offered and declines them, and asks, once, for the layer the test
+/// names to be painted again: as the Vello rasteriser does when a repaint it recorded turns out to have outgrown a GPU
+/// buffer.
+struct AskingGpu {
+    offered: Arc<Mutex<Vec<FaceLayerId>>>,
+    ask: Arc<Mutex<Option<FaceLayerId>>>,
+}
+
+impl GpuRasterizer for AskingGpu {
+    fn rasterize_native(&mut self, spec: &FaceLayerSpec, _: &DrawList, _: &mut dyn Any) -> Result<bool, FaceError> {
+        self.offered.lock().expect("unpoisoned").push(spec.id);
+        Ok(false)
+    }
+
+    fn repaint_needed(&mut self, layer: FaceLayerId) -> bool {
+        let mut ask = self.ask.lock().expect("unpoisoned");
+        let asked = *ask == Some(layer);
+        if asked {
+            *ask = None;
+        }
+        asked
+    }
+}
+
+#[test]
+fn a_layer_the_gpu_rasteriser_asks_for_is_painted_again_while_the_face_does_not_change() {
+    let (offered, ask) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Mutex::new(None)));
+    let gpu = AskingGpu { offered: Arc::clone(&offered), ask: Arc::clone(&ask) };
+    let mut renderer = Spy::new(false);
+    let mut stage = stage_with_rig(&mut renderer, 32, false, mock_rig().with_gpu_rasterizer(Box::new(gpu)));
+    let take = || std::mem::take(&mut *offered.lock().expect("unpoisoned"));
+    let held = FrameInput::default();
+    stage.tick(&mut renderer, &held).expect("frame");
+    let layer = *take().first().expect("the first frame offers every layer");
+    stage.tick(&mut renderer, &held).expect("frame");
+    assert_eq!(take(), [], "an unchanged face is not painted");
+    *ask.lock().expect("unpoisoned") = Some(layer);
+    stage.tick(&mut renderer, &held).expect("frame");
+    assert_eq!(take(), [layer], "the layer asked for, and only it, is painted again with the same face");
+    stage.tick(&mut renderer, &held).expect("frame");
+    assert_eq!(take(), [], "once");
+    stage.release(&mut renderer).expect("released");
+}
+
 /// Paints offered to the GPU rasteriser by a frame whose face changes (a blink), then by one that changes it back.
 fn offered_by_a_blink(stage: &mut Stage, renderer: &mut Spy, offered: &AtomicUsize) -> usize {
     let before = offered.load(Ordering::Relaxed);

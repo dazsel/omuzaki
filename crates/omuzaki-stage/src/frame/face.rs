@@ -9,7 +9,9 @@
 //! 2. **map and paint**, in step 5: [`FaceSystem::update`] maps the bus with the palette-resolved profile and says which
 //!    layers changed; exactly those are painted into their textures with [`FaceLayerPainter`]. With the
 //!    [`standard`](FaceRig::standard) rig on the wgpu renderer and a hardware adapter, that paint is the GPU rasteriser
-//!    recording into the renderer's own encoder through `PaintTarget::native` (#2074): no pixels cross to the CPU.
+//!    recording into the renderer's own encoder through `PaintTarget::native` (#2074): no pixels cross to the CPU. A
+//!    layer the GPU rasteriser asks for ([`FaceSystem::gpu_repaint_needed`]: an earlier GPU paint of it turned out, a
+//!    frame or two later, to have outgrown a buffer) is painted too, although it did not change.
 //!
 //! # Variant switches never run inside `tick`
 //!
@@ -657,6 +659,12 @@ impl Stage {
         }
         let mut first_error = None;
         for layer in FaceLayerId::ALL {
+            // A GPU paint of an earlier frame can turn out, a frame or two later, to have drawn the layer wrong (it
+            // outgrew a GPU buffer): repaint it although the face did not change, or a face that stopped changing would
+            // keep the wrong picture.
+            if bound.system.gpu_repaint_needed(layer) {
+                rig.unpainted[layer as usize] = true;
+            }
             if !rig.unpainted[layer as usize] {
                 continue;
             }

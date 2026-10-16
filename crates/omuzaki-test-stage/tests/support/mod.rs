@@ -58,7 +58,12 @@ pub struct Counted {
 impl Counted {
     /// `VelloRasterizer::new` (which draws on software adapters too), counting into `drawn`.
     pub fn new(drawn: &Arc<AtomicUsize>) -> Self {
-        Self { inner: VelloRasterizer::new(), drawn: Arc::clone(drawn) }
+        Self::wrapping(VelloRasterizer::new(), drawn)
+    }
+
+    /// `inner`, counting into `drawn`.
+    pub fn wrapping(inner: VelloRasterizer, drawn: &Arc<AtomicUsize>) -> Self {
+        Self { inner, drawn: Arc::clone(drawn) }
     }
 
     fn count(&self, drawn: Result<bool, FaceError>) -> Result<bool, FaceError> {
@@ -101,6 +106,10 @@ impl GpuRasterizer for Counted {
 
     fn paint_failed(&mut self, layer: FaceLayerId) {
         self.inner.paint_failed(layer);
+    }
+
+    fn repaint_needed(&mut self, layer: FaceLayerId) -> bool {
+        self.inner.repaint_needed(layer)
     }
 }
 

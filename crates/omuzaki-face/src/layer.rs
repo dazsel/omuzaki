@@ -55,6 +55,16 @@ pub trait GpuRasterizer: Send {
         None
     }
 
+    /// Whether `layer` must be painted again although its draw list did not change: a paint this rasteriser recorded
+    /// earlier turned out to have drawn it wrong (it outgrew a GPU buffer, say), which a GPU rasteriser learns a frame
+    /// or two later without waiting on the GPU. The rasteriser has already arranged for the next paint of `layer` to
+    /// redraw it whole (or to decline, so the CPU raster draws it). The stage asks once a frame for every layer, so a
+    /// face that stops changing is still repaired; it must not allocate or wait. The default never asks.
+    fn repaint_needed(&mut self, layer: FaceLayerId) -> bool {
+        let _ = layer;
+        false
+    }
+
     /// The renderer refused the last paint of `layer` after this rasteriser recorded it (`Renderer::paint_texture`
     /// returned an error), so the texture shows what it showed before: the next paint must redraw the layer whole, not
     /// only what changed since. The stage calls it. The default keeps nothing to forget.

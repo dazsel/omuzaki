@@ -164,6 +164,12 @@ impl FaceSystem {
         }
     }
 
+    /// Whether the registered GPU rasteriser (if any) needs `layer` painted again although nothing changed
+    /// ([`GpuRasterizer::repaint_needed`]): an earlier GPU paint of it drew it wrong. The stage asks once a frame.
+    pub fn gpu_repaint_needed(&mut self, layer: FaceLayerId) -> bool {
+        self.gpu.as_mut().is_some_and(|gpu| gpu.repaint_needed(layer))
+    }
+
     /// Tells the registered GPU rasteriser (if any) that the renderer refused the last paint of `layer`
     /// ([`GpuRasterizer::paint_failed`]), so the next paint redraws it whole. The stage calls it when
     /// `Renderer::paint_texture` fails.
