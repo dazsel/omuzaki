@@ -1,6 +1,8 @@
 //! The GPU encoder's tests (`raster::gpu::SceneEncoder`): unbalanced pushes and pops, determinism, the bounds under
 //! nested transforms, and the allocation count of a warm re-encode. None needs a GPU: it checks the encoding, not pixels.
 
+// The GPU rasteriser exists on native targets only (#2207).
+#![cfg(not(target_arch = "wasm32"))]
 // A counting allocator is the only way to *prove* an allocation budget; the workspace denies unsafe code by default.
 // Tests may unwrap: a panic is a clear failure.
 #![allow(unsafe_code, clippy::unwrap_used, clippy::expect_used)]
