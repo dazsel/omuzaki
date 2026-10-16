@@ -341,8 +341,8 @@ fn sweeping_close_from_open_to_shut_keeps_the_lash_on_the_lid() {
 
 // ------------------------------------------------------------------------------------------------ rendered continuity
 
-/// Which pixels of the Base layer (the mock face's 1548 px wide frame at the default density) a one-path fill of `path`
-/// from `list` lights (more than a third covered), as `(width, height, lit)`.
+/// Which pixels of the Base layer a one-path fill of `path`
+/// from `list` lights (more than a third covered), as `(width, height, lit)`, rendered 1548 px wide.
 fn lit_pixels(list: &DrawList, path: omuzaki_face_api::PathRef) -> (usize, usize, Vec<bool>) {
     let mut one = DrawList::new();
     let mut builder = one.path();
@@ -357,15 +357,19 @@ fn lit_pixels(list: &DrawList, path: omuzaki_face_api::PathRef) -> (usize, usize
     }
     let copied = builder.finish();
     one.fill(copied, Paint::Solid(Colour::rgb(255, 255, 255)));
-    let spec = FaceLayerSpec::for_layer(FaceLayerId::Base, &mock_projection(), DEFAULT_PX_PER_M);
+    // The density that makes the layer exactly 1548 px wide, the width the issue's bound is stated at.
+    let projection = mock_projection();
+    let px_per_m = 1548.0 / projection.rect.width();
+    let spec = FaceLayerSpec::for_layer(FaceLayerId::Base, &projection, px_per_m);
     let mut raster = Raster::new(1, 1);
-    SkiaRasterizer::new().rasterize(&spec, &one, spec.px_per_m, &mut raster).unwrap();
+    SkiaRasterizer::new().rasterize(&spec, &one, px_per_m, &mut raster).unwrap();
+    assert_eq!(raster.width, 1548, "the continuity check renders at 1548 px wide");
     let covered = raster.pixels.as_chunks::<4>().0.iter().map(|px| px[3] > 85).collect();
     (raster.width as usize, raster.height as usize, covered)
 }
 
-/// The pixels at the aperture's outer point that the continuity test leaves out (about 2 mm at the default density).
-const OUTER_TIP_PX: usize = 8;
+/// The pixels at each corner of the aperture that the continuity test leaves out (about 2 mm).
+const CORNER_PX: usize = 8;
 
 #[test]
 fn sweeping_close_the_lash_and_the_lid_never_disagree_by_more_than_a_pixel_at_1548_px() {
@@ -388,12 +392,15 @@ fn sweeping_close_the_lash_and_the_lid_never_disagree_by_more_than_a_pixel_at_15
             };
             let ((w, h, lid), (_, _, band)) = (lit_pixels(&list, clip), lit_pixels(&list, lash));
             let at = |m: &[bool], x: usize, y: usize| m[y * w + x];
-            // The outer corner's last pixels are left out: there the aperture's edge turns steeply down to its point
-            // while the lash line carries on level into the flick, so they are a shape difference, not a disagreement.
-            let outermost = (0..w).rev().find(|x| (0..h).any(|y| at(&lid, *x, y))).unwrap_or(0);
+            // The outer_px pixels at each corner are left out: there the aperture's edge turns steeply down to its point
+            // while the lash line carries on (level into the flick at the outer corner), so they are a shape
+            // difference at a tip, not a disagreement along the lid.
+            let column_lit = |x: usize| (0..h).any(|y| at(&lid, x, y));
+            let (inner_px, outer_px) =
+                ((0..w).find(|x| column_lit(*x)).unwrap_or(0), (0..w).rev().find(|x| column_lit(*x)).unwrap_or(0));
             for y in 1..h - 1 {
-                for x in 1..w - OUTER_TIP_PX.max(1) {
-                    if x + OUTER_TIP_PX > outermost || !at(&lid, x, y) || at(&lid, x, y - 1) {
+                for x in inner_px + CORNER_PX..outer_px.saturating_sub(CORNER_PX) {
+                    if !at(&lid, x, y) || at(&lid, x, y - 1) {
                         continue;
                     }
                     let near = (y - 1..=y + 1).any(|yy| (x - 1..=x + 1).any(|xx| at(&band, xx, yy)));
