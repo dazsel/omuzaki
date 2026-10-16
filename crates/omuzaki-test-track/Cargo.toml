@@ -1,6 +1,6 @@
 [package]
 name = "omuzaki-test-track"
-description = "Cross-crate tests of the track area: the face tracker on its real graphs through the ONNX Runtime wrapper, and the per-frame bench."
+description = "Cross-crate tests of the track area: the face tracker on its real graphs through the ONNX Runtime wrapper, the per-frame bench, and the `track_roi` timing probe for the reference machine."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -16,6 +16,8 @@ criterion.workspace = true
 tempfile.workspace = true
 # The runtime-archive source of the tests checks the pinned SHA-256 (ADR 0017).
 sha2.workspace = true
+# The timing probe test writes the `manifest.json` of a stand-in model folder.
+serde_json.workspace = true
 omuzaki-ai-api = { path = "../omuzaki-ai-api" }
 omuzaki-ai-ort = { path = "../omuzaki-ai-ort" }
 omuzaki-core = { path = "../omuzaki-core" }
@@ -31,5 +33,5 @@ workspace = true
 # Native only: tests on the build machine
 [package.metadata.omuzaki]
 kind = "App"
-summary = "the track area's real-model tests and bench: the face tracker on the MediaPipe graphs through ONNX Runtime (opens, finds no face in a flat frame, repeatable bit for bit, allocates nothing in the steady state on the Rust and the native side, refuses a damaged file), gated on OMUZAKI_TRACK_MODELS"
+summary = "the track area's real-model tests and bench: the face tracker on the MediaPipe graphs through ONNX Runtime (opens, finds no face in a flat frame, repeatable bit for bit, allocates nothing in the steady state on the Rust and the native side, refuses a damaged file), gated on OMUZAKI_TRACK_MODELS, and the `track_roi_timing` probe example the nightly cross-builds for Windows"
 wasm = false

@@ -4527,11 +4527,9 @@ version = "0.0.0"
 dependencies = [
  "blake3",
  "clap",
- "criterion",
  "getrandom 0.4.3",
  "image",
  "omuzaki-ai-api",
- "omuzaki-ai-ort",
  "omuzaki-char-api",
  "omuzaki-char-mock",
  "omuzaki-cli",
@@ -4551,7 +4549,6 @@ dependencies = [
  "omuzaki-script",
  "omuzaki-store-api",
  "omuzaki-store-mock",
- "omuzaki-track",
  "rmcp",
  "schemars",
  "serde",
@@ -4613,6 +4610,7 @@ dependencies = [
  "omuzaki-ai-ort",
  "omuzaki-core",
  "omuzaki-track",
+ "serde_json",
  "sha2",
  "tempfile",
 ]
