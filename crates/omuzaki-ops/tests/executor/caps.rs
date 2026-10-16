@@ -2,6 +2,7 @@
 //! log stay the same size however long a session runs, sequence numbers keep counting, and a conflict whose cause is
 //! older than what the executor knows says so.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use omuzaki_core::time::{FakeClock, Seconds};
@@ -68,7 +69,7 @@ fn a_conflict_older_than_the_session_says_so() {
     // A restored step whose patch the document no longer matches: the change came before this executor.
     let patch = Patch::new().with(DocPath::parse("a").unwrap(), Some(json!(1)), Some(json!(2)));
     let mut actor = ActorHistory::new(person(), WallTime(0));
-    actor.undo.push(StepExport::new(TxId(1), "old", Arc::new(patch), Default::default()));
+    actor.undo.push(StepExport::new(TxId(1), "old", Arc::new(patch), BTreeSet::default()));
     let mut history = HistoryExport::empty();
     history.actors.push(actor);
     let clock = Arc::new(FakeClock::new(Seconds(0.0)));

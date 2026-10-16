@@ -28,8 +28,11 @@ struct Pause {
     release: Sender<()>,
 }
 
+/// The job's side of one pause: it says it arrived, then waits to be let go.
+type JobSide = (Sender<()>, Arc<Mutex<Receiver<()>>>);
+
 /// The job's side, by key.
-static PAUSES: LazyLock<Mutex<HashMap<String, (Sender<()>, Arc<Mutex<Receiver<()>>>)>>> = LazyLock::new(Mutex::default);
+static PAUSES: LazyLock<Mutex<HashMap<String, JobSide>>> = LazyLock::new(Mutex::default);
 
 impl Pause {
     fn new(key: &str) -> Self {
