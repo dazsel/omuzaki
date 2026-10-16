@@ -230,9 +230,10 @@ local and cloud sessions, every role, and leads. A cloud session leaves no other
 - **An activity marker,** at the end of every pull request or issue comment and every final report. It is one hidden
   line covering the work since your previous marker; leave out fields that don't apply:
   ```
-  <!-- agent-activity: id=<id> model=<model> lane=<lane> role=<role> area=<area> pr=<n> issue=<n> start=<ISO 8601 UTC> end=<ISO 8601 UTC> tokens_in=<n> tokens_out=<n> handoff=<id> -->
+  <!-- agent-activity: id=<id> model=<model> lane=<lane> role=<role> area=<area> pr=<n> issue=<n> start=<ISO 8601 UTC> end=<ISO 8601 UTC> tokens_in=<n> tokens_out=<n> cache_write=<n> cache_read=<n> handoff=<id> -->
   ```
-  `handoff` names the agent the work passes to.
+  Token types are reported separately, never summed: `tokens_in` is uncached input, `tokens_out` output, and
+  `cache_write` and `cache_read` the prompt cache. `handoff` names the agent the work passes to.
 - **Leads and the Director:** decisions open with `**<Area> lead (ruling):**` or `**Director (ruling…)**`, sign-offs
   with `**Director (sign-off): signed at <sha7>**`, and status posts with `**<Area> lead (status):**`. They carry the
   marker too.
