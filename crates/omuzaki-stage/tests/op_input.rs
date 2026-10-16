@@ -82,7 +82,7 @@ fn every_op_declares_its_kind_scope_and_undo() {
         ("input.select", OpKind::Edit, Scope::EditSettings, Undo::Explicit),
         ("input.bind_camera", OpKind::Edit, Scope::EditSettings, Undo::Explicit),
         ("input.preview", OpKind::Edit, Scope::Perform, Undo::Explicit),
-        ("input.request_camera", OpKind::Edit, Scope::Perform, Undo::None),
+        ("input.request_camera", OpKind::Edit, Scope::Perform, Undo::Explicit),
         ("input.state", OpKind::Query, Scope::Read, Undo::None),
     ];
     for (name, kind, scope, undo) in cases {

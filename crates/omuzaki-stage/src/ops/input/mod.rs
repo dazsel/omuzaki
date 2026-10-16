@@ -7,7 +7,7 @@
 //! | `input.select {source}` | `edit:settings` | Confirm (queued for the person) | the inverse `input.select` |
 //! | `input.bind_camera {camera}` | `edit:settings` | Never (`person_only`, refused, not queued) | the inverse `input.bind_camera` |
 //! | `input.preview {on}` | `perform` | Confirm (it starts a capture) | the inverse `input.preview` |
-//! | `input.request_camera` | `perform` | Never (the OS dialog is the person's) | none |
+//! | `input.request_camera` | `perform` | Never (the OS dialog is the person's) | none: the OS permission is the person's to revoke |
 //! | `input.state` | `read` | free | none (a query) |
 //!
 //! The two choices are Machine settings (`input.source`, `input.camera`): when the App registers a

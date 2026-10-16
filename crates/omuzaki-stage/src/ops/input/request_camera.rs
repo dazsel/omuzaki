@@ -8,8 +8,10 @@ use serde_json::json;
 use super::{host, person_only};
 
 /// Ask the OS for camera access (its own dialog, where it has one) and answer `granted`, `denied` or `unknown`. Only
-/// the person can do this, in the Omuzaki window.
+/// the person can do this, in the Omuzaki window. It changes nothing the app can take back (only the person can, in
+/// the OS settings), so it carries no undo call.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(extend("examples" = [{}]))]
 pub struct RequestCamera {}
 
 impl Op for RequestCamera {
@@ -19,7 +21,7 @@ impl Op for RequestCamera {
             summary: "Show the OS camera permission prompt (person only) and answer the permission.",
             kind: OpKind::Edit,
             scope: Scope::Perform,
-            undo: Undo::None,
+            undo: Undo::Explicit,
         }
     }
 

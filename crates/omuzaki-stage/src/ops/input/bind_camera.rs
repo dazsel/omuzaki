@@ -12,6 +12,7 @@ use crate::perform::input::InputCamera;
 /// Bind the camera the webcam source reads, by an id from `input.state`; `null` unbinds it. A running preview moves to
 /// the new camera. Only the person can do this, in the Omuzaki window.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(extend("examples" = [{ "camera": "fake:0" }, { "camera": null }]))]
 pub struct BindCamera {
     /// The camera's id, as `input.state` lists it, or `null` to unbind.
     pub camera: Option<CameraId>,

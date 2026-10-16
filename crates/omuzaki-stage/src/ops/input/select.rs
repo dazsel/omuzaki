@@ -11,6 +11,7 @@ use crate::perform::input::{InputSource, SourceKind};
 /// Choose what drives the face: `webcam`, `iphone` or `life_layer` (no capture; the life layer moves the face alone).
 /// This only picks the kind: it binds no camera and starts no capture, and a running preview of another kind stops.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(extend("examples" = [{ "source": "webcam" }, { "source": "life_layer" }]))]
 pub struct Select {
     /// `webcam`, `iphone` or `life_layer`.
     pub source: SourceKind,

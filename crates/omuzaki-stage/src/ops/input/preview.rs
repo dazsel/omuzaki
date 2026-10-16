@@ -10,6 +10,7 @@ use super::{changed, host, mode, op_error};
 /// Start (`on: true`) or stop the live mirror: the tracker runs on the bound camera and drives the face. Starting a
 /// running preview or stopping a stopped one changes nothing. A preview never outlives the app.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(extend("examples" = [{ "on": true }, { "on": false }]))]
 pub struct Preview {
     /// `true` to start, `false` to stop.
     pub on: bool,

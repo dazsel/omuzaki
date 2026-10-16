@@ -9,6 +9,7 @@ use super::{host, to_value};
 /// Read the tracking input: the source kind, the bound camera and whether it is plugged in, the preview, the camera
 /// permission, the cameras there are (listing them opens none) and whether a face is tracked.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(extend("examples" = [{}]))]
 pub struct State {}
 
 impl Op for State {
