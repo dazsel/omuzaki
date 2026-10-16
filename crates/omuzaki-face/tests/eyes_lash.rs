@@ -14,10 +14,11 @@ use std::hint::black_box;
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::Vec2;
 use omuzaki_core::time::Seconds;
+use omuzaki_face::raster::SkiaRasterizer;
 use omuzaki_face::{RealPainter, Section};
 use omuzaki_face_api::{
-    Cmd, ColourRef, DEFAULT_PX_PER_M, DrawList, EyeParams, FaceDrawing, FaceInput, FaceLayerId, FaceMapping,
-    FaceProfile, FaceView, Paint, PaintParams, PathEl,
+    Cmd, ColourRef, DEFAULT_PX_PER_M, DrawList, EyeParams, FaceDrawing, FaceInput, FaceLayerId, FaceLayerSpec,
+    FaceMapping, FaceProfile, FaceRasterizer, FaceView, Paint, PaintParams, PathEl, Raster,
 };
 use omuzaki_face_mock::mock_projection;
 
@@ -336,6 +337,75 @@ fn sweeping_close_from_open_to_shut_keeps_the_lash_on_the_lid() {
             assert!(names.contains(&"closed"), "close {close}: {names:?}");
         }
     }
+}
+
+// ------------------------------------------------------------------------------------------------ rendered continuity
+
+/// Which pixels of the Base layer (the mock face's 1548 px wide frame at the default density) a one-path fill of `path`
+/// from `list` lights (more than a third covered), as `(width, height, lit)`.
+fn lit_pixels(list: &DrawList, path: omuzaki_face_api::PathRef) -> (usize, usize, Vec<bool>) {
+    let mut one = DrawList::new();
+    let mut builder = one.path();
+    for el in list.elements(path) {
+        builder = match *el {
+            PathEl::Move(p) => builder.move_to(p),
+            PathEl::Line(p) => builder.line_to(p),
+            PathEl::Quad(c, p) => builder.quad_to(c, p),
+            PathEl::Cubic(a, b, p) => builder.cubic_to(a, b, p),
+            PathEl::Close => builder.close(),
+        };
+    }
+    let copied = builder.finish();
+    one.fill(copied, Paint::Solid(Colour::rgb(255, 255, 255)));
+    let spec = FaceLayerSpec::for_layer(FaceLayerId::Base, &mock_projection(), DEFAULT_PX_PER_M);
+    let mut raster = Raster::new(1, 1);
+    SkiaRasterizer::new().rasterize(&spec, &one, spec.px_per_m, &mut raster).unwrap();
+    let covered = raster.pixels.as_chunks::<4>().0.iter().map(|px| px[3] > 85).collect();
+    (raster.width as usize, raster.height as usize, covered)
+}
+
+/// The pixels at the aperture's outer point that the continuity test leaves out (about 2 mm at the default density).
+const OUTER_TIP_PX: usize = 8;
+
+#[test]
+fn sweeping_close_the_lash_and_the_lid_never_disagree_by_more_than_a_pixel_at_1548_px() {
+    // The lash line is centred on the upper lid, so every pixel of the aperture's upper edge (a lit pixel with an unlit
+    // one above it) must have a lash pixel within one pixel of it, in every frame of a fine sweep of `close`, for narrow,
+    // normal and wide openings.
+    let profile = profile();
+    let mut worst = 0_usize;
+    for open in [0.6, 1.0, 1.9] {
+        for step in 0..=60_u8 {
+            let close = f32::from(step) / 60.0;
+            let list = paint(&profile, &params(eye(open, close, 0.0, 0.0), eye(open, close, 0.0, 0.0)));
+            let (Some(clip), Some(lash)) = (
+                list.cmds().iter().find_map(|c| if let Cmd::PushClip(path) = c { Some(*path) } else { None }),
+                fills(&list, LASH).first().copied(),
+            ) else {
+                // Shut: the closed curve stands in, and the aperture is gone.
+                assert!(order(&list).contains(&"closed"), "open {open} close {close}");
+                continue;
+            };
+            let ((w, h, lid), (_, _, band)) = (lit_pixels(&list, clip), lit_pixels(&list, lash));
+            let at = |m: &[bool], x: usize, y: usize| m[y * w + x];
+            // The outer corner's last pixels are left out: there the aperture's edge turns steeply down to its point
+            // while the lash line carries on level into the flick, so they are a shape difference, not a disagreement.
+            let outermost = (0..w).rev().find(|x| (0..h).any(|y| at(&lid, *x, y))).unwrap_or(0);
+            for y in 1..h - 1 {
+                for x in 1..w - OUTER_TIP_PX.max(1) {
+                    if x + OUTER_TIP_PX > outermost || !at(&lid, x, y) || at(&lid, x, y - 1) {
+                        continue;
+                    }
+                    let near = (y - 1..=y + 1).any(|yy| (x - 1..=x + 1).any(|xx| at(&band, xx, yy)));
+                    if !near {
+                        worst += 1;
+                        println!("open {open} close {close:.3}: lid edge pixel ({x}, {y}) has no lash within 1 px");
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(worst, 0, "{worst} lid-edge pixels are more than 1 px from the lash");
 }
 
 // ------------------------------------------------------------------------------------------------ allocation

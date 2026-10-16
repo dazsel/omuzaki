@@ -436,11 +436,10 @@ fn the_star_is_as_wide_as_it_is_tall_in_iris_half_widths() {
     let star = list
         .cmds()
         .iter()
-        .filter_map(|c| match c {
+        .find_map(|c| match c {
             Cmd::Fill { path, .. } if list.elements(*path).len() == 11 => Some(points(&one(&list, *path))),
             _ => None,
         })
-        .next()
         .expect("a ten-point star outline");
     let (min, max) = star.iter().fold((Vec2::MAX, Vec2::MIN), |(lo, hi), p| (lo.min(*p), hi.max(*p)));
     let (w, h) = (max.x - min.x, max.y - min.y);
