@@ -15,13 +15,18 @@
 //! that is off) has no value to probe from, so it reports none.
 //!
 //! **The cost is linear.** A probe checks a copy of the part in which the other entries of the maps on the way to the
-//! number are left out, so it costs one entry rather than the whole part, and one scratch copy per number is written
-//! into by every probe instead of being cloned per probe. If the kind refuses that smaller copy (a rule that ties
-//! entries together), the number is probed in the whole part. A part whose stored parameters fail the check is
-//! described from the defaults with the stored values laid over them, so its own entries are listed; a number only
-//! the part holds has no default to probe from and reports no range.
+//! number are left out (except the ones other values name by key, as a streak names a group), so it costs one entry
+//! rather than the whole part, and one scratch copy per number is written into by every probe instead of being cloned
+//! per probe. Entries are found by key, not by walking the map. That assumes the entries of a map do not constrain one
+//! another, which cannot be proved of a kind's `check`: so for each parameter the entries share, the found bounds of all
+//! entries are set at once and the kind must accept the whole part, and a kind that refuses (a sum over the entries)
+//! has that parameter probed in the whole part instead. A rule tying two different parameters of different entries is
+//! not found this way. A part whose stored parameters fail the check is described from the defaults with the stored
+//! values laid over them, so its own entries are listed; a number only the part holds has no default to probe from and
+//! reports no range. A stored tag that names no variant is still listed, with every variant, so it can be set.
 
-use std::collections::HashMap;
+use std::cell::OnceCell;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::num::FpCategory;
 
@@ -194,6 +199,11 @@ pub(crate) struct Params {
     entries: Vec<Param>,
     /// Where each path is in `entries`, so a lookup does not scan the part.
     index: HashMap<String, usize>,
+    /// For each map (by path) the entries other parts of the tree name by key (a streak's `groups`), which a probe keeps
+    /// beside the entry it is about so the kind's own cross-references still hold.
+    named: HashMap<String, Vec<String>>,
+    /// The range of every number, found when first asked for (see [`Self::ranges`]).
+    ranges: OnceCell<HashMap<String, Range>>,
 }
 
 impl Params {
@@ -217,7 +227,9 @@ impl Params {
             members(&schema, Some(&overlay), "", None, &mut entries);
         }
         let index = entries.iter().enumerate().map(|(i, p)| (p.path.clone(), i)).collect();
-        Ok(Self { kind, schema, defaults, current, stored: stored.clone(), entries, index })
+        let base = current.as_ref().unwrap_or(&defaults);
+        let named = named_entries(base, &entries);
+        Ok(Self { kind, schema, defaults, current, stored: stored.clone(), entries, index, named, ranges: OnceCell::new() })
     }
 
     /// The values to show as current: the normalised ones, or the stored ones when they do not pass the check.
@@ -286,33 +298,41 @@ impl Params {
 
     /// The tree to probe the number at `path` in, which the probes then write that number into (every probe writes the
     /// same slot, so nothing needs restoring between them). The entries of the maps on the way, other than the one the
-    /// path goes through, are left out: a bound is a rule on the parameter and its own entry, so the check costs what
-    /// one entry costs rather than what the whole part does, which keeps `describe` linear in the part. If the kind
-    /// refuses the smaller tree (a rule that ties entries together), the whole of `base` is used instead.
+    /// path goes through and the ones other values name by key, are left out, so the check costs what one entry costs
+    /// rather than what the whole part does. If the kind refuses the smaller tree, the whole of `base` is used.
     fn scratch(&self, path: &str, prune: bool) -> Value {
         let steps: Vec<&str> = path.split('/').collect();
         let pruned = if prune { self.spine(self.base(), "", &steps) } else { self.base().clone() };
         if prune && (self.kind.check)(&pruned).is_err() { self.base().clone() } else { pruned }
     }
 
-    /// A copy of `node`, at `prefix`, without the map entries that `steps` do not go through.
+    /// A copy of `node`, at `prefix`, without the map entries that `steps` do not go through (a map entry is found by
+    /// its key, not by walking the map).
     fn spine(&self, node: &Value, prefix: &str, steps: &[&str]) -> Value {
         let Some((step, rest)) = steps.split_first() else { return node.clone() };
         let child = |name: &str| if prefix.is_empty() { name.to_owned() } else { format!("{prefix}/{name}") };
         match node {
-            Value::Object(fields) => {
-                let is_map = self.entry(prefix).is_some_and(|p| p.ty == Ty::Map);
+            Value::Object(fields) if self.entry(prefix).is_some_and(|p| p.ty == Ty::Map) => {
+                let named = self.named.get(prefix).map_or(&[][..], Vec::as_slice);
+                let keys = std::iter::once(*step).chain(named.iter().map(String::as_str));
                 Value::Object(
-                    fields
-                        .iter()
-                        .filter(|(key, _)| !is_map || key == step)
-                        .map(|(key, item)| {
-                            let item = if key == step { self.spine(item, &child(key), rest) } else { item.clone() };
-                            (key.clone(), item)
-                        })
-                        .collect(),
+                    keys.filter_map(|key| {
+                        let item = fields.get(key)?;
+                        let item = if key == *step { self.spine(item, &child(key), rest) } else { item.clone() };
+                        Some((key.to_owned(), item))
+                    })
+                    .collect(),
                 )
             }
+            Value::Object(fields) => Value::Object(
+                fields
+                    .iter()
+                    .map(|(key, item)| {
+                        let item = if key == step { self.spine(item, &child(key), rest) } else { item.clone() };
+                        (key.clone(), item)
+                    })
+                    .collect(),
+            ),
             Value::Array(items) => Value::Array(
                 items
                     .iter()
@@ -338,7 +358,85 @@ impl Params {
     /// The legal range of the number at `param`, found by probing (see the module docs). `None` for anything that is
     /// not a number or has no value to probe from.
     fn range(&self, param: &Param) -> Option<Range> {
-        self.range_in(param, true)
+        match self.ranges.get() {
+            Some(found) => found.get(&param.path).cloned(),
+            // One number (a refusal's hint) is probed in the whole part when it sits in a map entry: it is a single
+            // search, and the whole part is what the entries' independence is tested against.
+            None => self.range_in(param, self.template(&param.path).is_none()),
+        }
+    }
+
+    /// The range of every number of the part. Each is probed in its own map entry (see [`Self::scratch`]), which assumes
+    /// the entries of a map do not constrain one another. That cannot be proved of a kind's `check`, so it is tested
+    /// where it would show: for every parameter that map entries share (`groups/*/length`), all the entries' values are
+    /// set to their found bounds at once, and the kind must accept the whole part. A kind that refuses (a sum over the
+    /// entries, an ordering between them) has that parameter probed in the whole part instead, at the cost of the
+    /// whole part per probe. A rule that ties two different parameters of different entries is not found this way.
+    fn ranges(&self) -> &HashMap<String, Range> {
+        self.ranges.get_or_init(|| {
+            let numbers = self.entries.iter().filter(|p| matches!(p.ty, Ty::Number | Ty::Integer));
+            let mut found: HashMap<String, Range> =
+                numbers.clone().filter_map(|p| Some((p.path.clone(), self.range_in(p, true)?))).collect();
+            let mut shared: BTreeMap<String, Vec<&Param>> = BTreeMap::new();
+            for param in numbers {
+                if let Some(template) = self.template(&param.path) {
+                    shared.entry(template).or_default().push(param);
+                }
+            }
+            for members in shared.values().filter(|m| m.len() > 1) {
+                if self.entries_agree(members, &found) {
+                    continue;
+                }
+                for param in members {
+                    match self.range_in(param, false) {
+                        Some(range) => found.insert(param.path.clone(), range),
+                        None => found.remove(&param.path),
+                    };
+                }
+            }
+            found
+        })
+    }
+
+    /// Whether the kind accepts the whole part with every one of `members` (the same parameter in each entry of a map)
+    /// at its found upper bound, and again at its lower bound. A bound the kind refuses at the edge itself (an open
+    /// one) is left out of the test.
+    fn entries_agree(&self, members: &[&Param], found: &HashMap<String, Range>) -> bool {
+        [true, false].into_iter().all(|upper| {
+            let mut probe = self.base().clone();
+            for param in members {
+                let Some(range) = found.get(&param.path) else { continue };
+                let (edge, open) = if upper { (&range.max, range.open_max) } else { (&range.min, range.open_min) };
+                if let (Some(edge), false) = (edge, open)
+                    && set_at(&mut probe, &param.path, Some(Value::Number(edge.clone())), false).is_err()
+                {
+                    return false;
+                }
+            }
+            (self.kind.check)(&probe).is_ok()
+        })
+    }
+
+    /// `path` with the key of every map entry on the way written `*`, or `None` if it goes through no map.
+    fn template(&self, path: &str) -> Option<String> {
+        let (mut prefix, mut out, mut keyed, mut after_map) = (String::new(), String::new(), false, false);
+        for step in path.split('/') {
+            if !out.is_empty() {
+                out.push('/');
+            }
+            if after_map {
+                out.push('*');
+                keyed = true;
+            } else {
+                out.push_str(step);
+            }
+            if !prefix.is_empty() {
+                prefix.push('/');
+            }
+            prefix.push_str(step);
+            after_map = self.entry(&prefix).is_some_and(|p| p.ty == Ty::Map);
+        }
+        keyed.then_some(out)
     }
 
     /// [`Self::range`], probing the pruned tree or (`prune` false) the whole of the part.
@@ -403,12 +501,39 @@ impl Params {
                     entry.insert(key.to_owned(), value.clone());
                 }
             }
-            if let Some(range) = self.range(param) {
+            if let Some(range) = self.ranges().get(&param.path) {
                 range.write(&mut entry);
             }
         }
         Value::Object(entry)
     }
+}
+
+/// For every map in `entries`, the keys of its entries that some string value in `base` equals (a streak naming the
+/// group it paints): the entries a probe has to keep so such references still resolve.
+fn named_entries(base: &Value, entries: &[Param]) -> HashMap<String, Vec<String>> {
+    fn strings<'a>(value: &'a Value, into: &mut HashSet<&'a str>) {
+        match value {
+            Value::String(text) => {
+                into.insert(text);
+            }
+            Value::Array(items) => items.iter().for_each(|item| strings(item, into)),
+            Value::Object(fields) => fields.values().for_each(|item| strings(item, into)),
+            _ => {}
+        }
+    }
+    let mut values = HashSet::new();
+    strings(base, &mut values);
+    entries
+        .iter()
+        .filter(|p| p.ty == Ty::Map)
+        .filter_map(|p| {
+            let Value::Object(held) = at(base, &p.path)? else { return None };
+            let mut named: Vec<String> = held.keys().filter(|key| values.contains(key.as_str())).cloned().collect();
+            named.sort_unstable();
+            (!named.is_empty()).then(|| (p.path.clone(), named))
+        })
+        .collect()
 }
 
 /// The last step of `path` when it lies directly below `parent` (`""` is the root).
@@ -469,8 +594,17 @@ fn node(schema: &Value, current: Option<&Value>, path: &str, described: Option<&
         .or_else(|| chosen.and_then(|a| text(a, "description")))
         .or_else(|| described.map(str::to_owned));
     let mut children = Vec::new();
-    let expanded = chosen.is_some_and(|alt| members(alt, current, path, description.as_deref(), &mut children));
+    let mut expanded = chosen.is_some_and(|alt| members(alt, current, path, description.as_deref(), &mut children));
     mark_tag(&alternatives, path, &mut children);
+    // A value whose tag matches no variant (a stored `"bogus"`) has no members to list; its tag is still listed, so the
+    // part can be repaired by setting it.
+    if chosen.is_none()
+        && current.is_some_and(Value::is_object)
+        && let Some((key, names)) = tag_of(&alternatives)
+    {
+        children.push(tag_param(path, key, names));
+        expanded = true;
+    }
     out.push(Param {
         path: path.to_owned(),
         ty: ty_of(chosen.or_else(|| alternatives.first().copied()), choices(&alternatives)),
@@ -484,29 +618,51 @@ fn node(schema: &Value, current: Option<&Value>, path: &str, described: Option<&
     out.extend(children);
 }
 
-/// Makes the tag of a tagged enum a choice of every variant's name, not just the one the value is in: `children` are the
-/// members of the branch the value holds, and the tag is the property each object branch fixes to a constant.
-fn mark_tag(alternatives: &[&Value], path: &str, children: &mut [Param]) {
+/// The tag of a tagged enum and the names of its variants: the property that each object branch of `alternatives`
+/// fixes to a constant text (the first such by name, when there are several).
+fn tag_of(alternatives: &[&Value]) -> Option<(String, Vec<String>)> {
     let branches: Vec<&Map<String, Value>> = alternatives
         .iter()
         .filter(|a| type_name(a) == Some("object"))
         .filter_map(|a| a.get("properties")?.as_object())
         .collect();
-    let [first, _, ..] = branches.as_slice() else { return };
+    let [first, _, ..] = branches.as_slice() else { return None };
     let tags = first.iter().filter_map(|(key, p)| p.get("const")?.as_str().map(|_| key));
-    let mut names: Vec<(&String, Vec<String>)> = tags
+    let mut tagged: Vec<(&String, Vec<String>)> = tags
         .map(|key| (key, branches.iter().filter_map(|b| b.get(key)?.get("const")?.as_str().map(str::to_owned)).collect()))
         .filter(|(_, names): &(_, Vec<String>)| names.len() == branches.len())
         .collect();
-    names.sort_unstable_by_key(|(key, _)| *key);
-    let Some((key, names)) = names.into_iter().next() else { return };
-    let tag_path = if path.is_empty() { key.clone() } else { format!("{path}/{key}") };
-    if let Some(child) = children.iter_mut().find(|c| c.path == tag_path) {
-        child.ty = Ty::Choice(names);
+    tagged.sort_unstable_by_key(|(key, _)| *key);
+    tagged.into_iter().next().map(|(key, names)| (key.clone(), names))
+}
+
+/// The listing of a tag at `path`/`key` that offers every variant.
+fn tag_param(path: &str, key: String, names: Vec<String>) -> Param {
+    Param {
+        path: if path.is_empty() { key } else { format!("{path}/{key}") },
+        ty: Ty::Choice(names),
+        description: Some(
+            "Which variant this is; setting it switches to that variant, which starts from its own defaults.".to_owned(),
+        ),
+        unit: None,
+        pattern: None,
+        optional: false,
+        tag: true,
+        expanded: false,
+    }
+}
+
+/// Makes the tag of a tagged enum a choice of every variant's name, not just the one the value is in: `children` are the
+/// members of the branch the value holds.
+fn mark_tag(alternatives: &[&Value], path: &str, children: &mut [Param]) {
+    let Some((key, names)) = tag_of(alternatives) else { return };
+    let tag = tag_param(path, key, names);
+    if let Some(child) = children.iter_mut().find(|c| c.path == tag.path) {
+        child.ty = tag.ty;
         child.tag = true;
-        child.description.get_or_insert_with(|| {
-            "Which variant this is; setting it switches to that variant, which starts from its own defaults.".to_owned()
-        });
+        if child.description.is_none() {
+            child.description = tag.description;
+        }
     }
 }
 

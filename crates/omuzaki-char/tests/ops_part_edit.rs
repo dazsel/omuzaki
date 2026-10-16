@@ -7,6 +7,7 @@
 
 mod common;
 
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use common::{apply, assert_error, plan, project, refused, round_trip};
@@ -50,11 +51,18 @@ mod wide {
     pub struct WideParams {
         /// Groups by name.
         pub groups: BTreeMap<String, Group>,
+        /// Groups named by other values, as a hair streak names the groups it paints: each must exist.
+        pub refs: Vec<String>,
     }
 
     impl Validate for WideParams {
         fn check(&self, c: &mut Check) {
             super::GROUPS_CHECKED.fetch_add(self.groups.len(), Ordering::Relaxed);
+            for (i, name) in self.refs.iter().enumerate() {
+                if !self.groups.contains_key(name) {
+                    c.fail(&format!("refs/{i}"), format!("there is no group `{name}`"));
+                }
+            }
             for (name, group) in &self.groups {
                 c.range(&format!("groups/{name}/a"), group.a, 0.0, 1.0);
                 c.range(&format!("groups/{name}/b"), group.b, 0.0, 2.0);
@@ -84,10 +92,62 @@ mod wide {
     }
 
     register_part_kind!(Wide);
+
+    /// One share of a whole.
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+    #[serde(default, deny_unknown_fields)]
+    pub struct Share {
+        /// Its part, `0..=1`.
+        pub a: f64,
+    }
+
+    impl Default for Share {
+        fn default() -> Self {
+            Self { a: 0.1 }
+        }
+    }
+
+    /// Shares that together must not exceed one: the entries constrain one another.
+    #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+    #[serde(default, deny_unknown_fields)]
+    pub struct CoupledParams {
+        /// Shares by name.
+        pub shares: BTreeMap<String, Share>,
+    }
+
+    impl Validate for CoupledParams {
+        fn check(&self, c: &mut Check) {
+            for (name, share) in &self.shares {
+                c.range(&format!("shares/{name}/a"), share.a, 0.0, 1.0);
+            }
+            if self.shares.values().map(|s| s.a).sum::<f64>() > 1.0 {
+                c.fail("shares", "must not add up to more than 1");
+            }
+        }
+    }
+
+    /// The `coupled` kind: builds nothing.
+    pub struct Coupled;
+
+    impl PartKind for Coupled {
+        type Params = CoupledParams;
+
+        fn meta() -> PartMeta {
+            PartMeta { id: "coupled", summary: "Shares of a whole.", category: PartCategory::Accessory, requires: &[] }
+        }
+
+        fn build(_: &CoupledParams, _: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
+            Ok(PartOutput::default())
+        }
+    }
+
+    register_part_kind!(Coupled);
 }
 
 /// Groups the `wide` kind's validator has looked at.
 static GROUPS_CHECKED: AtomicUsize = AtomicUsize::new(0);
+/// Held by the tests that use the `wide` kind, so the counter reads one test's work.
+static WIDE: Mutex<()> = Mutex::new(());
 
 fn describe(doc: &MemDoc, part: &str) -> Value {
     plan(doc, "part.describe", json!({"character": "mock", "part": part})).unwrap().output.unwrap()
@@ -206,10 +266,13 @@ fn repairing_a_sparse_invalid_part_writes_only_what_differs_from_the_defaults() 
 
 // ------------------------------------------------------------------------------------------------ cost
 
-/// The groups the validator looks at over one `describe` of a `wide` part of `n` groups.
-fn groups_checked_describing(n: usize) -> usize {
+/// The groups the validator looks at over one `describe` of a `wide` part of `n` groups, `named` of them named by
+/// `refs`.
+fn groups_checked_describing(n: usize, named: usize) -> usize {
     let groups: serde_json::Map<String, Value> = (0..n).map(|i| (format!("g{i:03}"), json!({}))).collect();
-    let doc = with_probe("wide", &json!({ "groups": groups }));
+    let refs: Vec<String> = (0..named).map(|i| format!("g{i:03}")).collect();
+    let doc = with_probe("wide", &json!({ "groups": groups, "refs": refs }));
+    let _only = WIDE.lock().unwrap();
     let before = GROUPS_CHECKED.load(Ordering::Relaxed);
     let d = describe(&doc, "probe");
     assert_eq!(d["valid"], true);
@@ -221,18 +284,45 @@ fn groups_checked_describing(n: usize) -> usize {
 
 #[test]
 fn describe_does_work_in_proportion_to_the_part_not_its_square() {
-    // Tests of one binary run in parallel and share the counter: this one is the only user of the `wide` kind.
-    let (small, large) = (groups_checked_describing(10), groups_checked_describing(20));
-    // Linear doubles; a probe that checks the whole part quadruples.
-    assert!(large * 10 <= small * 25, "10 groups checked {small} groups, 20 checked {large}: more than linear");
-    assert!(large > small, "the larger part costs more");
+    // Linear doubles; a probe that checks the whole part quadruples. Named groups (a streak's) are kept in every probe.
+    for named in [0, 2] {
+        let (small, large) = (groups_checked_describing(10, named), groups_checked_describing(20, named));
+        assert!(large * 10 <= small * 25, "{named} named: 10 groups checked {small}, 20 checked {large}: not linear");
+        assert!(large > small, "the larger part costs more");
+    }
 }
 
 #[test]
 fn a_range_does_not_depend_on_the_other_entries() {
+    let _only = WIDE.lock().unwrap();
     let one = describe(&with_probe("wide", &json!({"groups": {"g1": {"b": 0.25}}})), "probe");
     let many =
         describe(&with_probe("wide", &json!({"groups": {"g0": {}, "g1": {"b": 0.25}, "g2": {"c": 2.0}}})), "probe");
     let find = |d: &Value, path: &str| d["parameters"].as_array().unwrap().iter().find(|p| p["path"] == path).cloned();
     assert_eq!(find(&one, "groups/g1/b"), find(&many, "groups/g1/b"));
+}
+
+#[test]
+fn entries_that_constrain_one_another_get_the_range_the_whole_part_gives() {
+    let d = describe(&with_probe("coupled", &json!({"shares": {"x": {"a": 0.25}, "y": {"a": 0.5}}})), "probe");
+    let find = |path: &str| d["parameters"].as_array().unwrap().iter().find(|p| p["path"] == path).cloned().unwrap();
+    // The bound is the last float the sum accepts, so it is the exact share to within the last digits.
+    let max = |path: &str| find(path)["maximum"].as_f64().unwrap();
+    assert!((max("shares/x/a") - 0.5).abs() < 1e-12, "x may take what y leaves: {}", max("shares/x/a"));
+    assert!((max("shares/y/a") - 0.75).abs() < 1e-12, "{}", max("shares/y/a"));
+}
+
+#[test]
+fn a_stored_tag_that_names_no_variant_is_listed_and_repaired_by_setting_it() {
+    let bad = json!({"groups": {"z": {"generator": {"type": "bogus"}}}});
+    let mut doc = with_probe("mock-hair", &bad);
+    let d = describe(&doc, "probe");
+    assert_eq!(d["valid"], false);
+    let tag = d["parameters"].as_array().unwrap().iter().find(|p| p["path"] == "groups/z/generator/type").cloned();
+    let tag = tag.expect("the tag is listed so it can be set");
+    assert!(tag["values"].as_array().unwrap().contains(&json!("cap")), "{tag}");
+    assert_eq!(tag["current"], json!("bogus"));
+
+    round_trip(&mut doc, "part.set_param", set("probe", "groups/z/generator/type", &json!("cap")));
+    assert_eq!(describe(&doc, "probe")["valid"], true);
 }
