@@ -179,10 +179,24 @@ impl Server {
         Self::with(Vec::new(), routes.into_iter().map(|(k, r)| (k.to_owned(), r.into())).collect())
     }
 
+    /// As [`routed`](Self::routed), on `127.0.0.1:port` (a port a dropped server has just left, for the tests that
+    /// need two different servers at one address).
+    pub fn routed_on(port: u16, routes: Vec<(&str, Vec<Reply>)>) -> Self {
+        Self::bound(
+            &format!("127.0.0.1:{port}"),
+            Vec::new(),
+            routes.into_iter().map(|(k, r)| (k.to_owned(), r.into())).collect(),
+        )
+    }
+
     fn with(replies: Vec<Reply>, routes: Vec<(String, VecDeque<Reply>)>) -> Self {
+        Self::bound("127.0.0.1:0", replies, routes)
+    }
+
+    fn bound(addr: &str, replies: Vec<Reply>, routes: Vec<(String, VecDeque<Reply>)>) -> Self {
         let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
         let state: Shared = Arc::new(Mutex::new(State { replies: replies.into(), routes, ..State::default() }));
-        let listener = runtime.block_on(TcpListener::bind("127.0.0.1:0")).unwrap();
+        let listener = runtime.block_on(TcpListener::bind(addr)).unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let shared = Arc::clone(&state);
         runtime.spawn(async move {

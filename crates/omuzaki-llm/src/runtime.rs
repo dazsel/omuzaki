@@ -9,12 +9,22 @@ use omuzaki_llm_api::error::LlmError;
 use omuzaki_llm_api::provider::RuntimeHandle;
 use tokio::runtime::{Builder, Handle, Runtime};
 
-/// A runtime this crate started; the handle keeps it alive until the last client built on it is dropped.
-struct Dedicated(Arc<Runtime>);
+use crate::openai::probe::ProbeCache;
+
+/// What a [`RuntimeHandle`] holds: the tokio handle, the runtime itself when this crate started it (so it lives until
+/// the last client built on it is dropped), and the capability answers probed through it.
+///
+/// The probe answers live here and not in a process-wide table because an answer is true of one server at one moment:
+/// a host that is rebuilt, or a test that reuses a loopback port, must not inherit another server's answer.
+struct Host {
+    handle: Handle,
+    _owned: Option<Arc<Runtime>>,
+    probes: ProbeCache,
+}
 
 /// Wraps the host's runtime `handle` for [`ProviderEnv`](omuzaki_llm_api::provider::ProviderEnv).
 pub fn from_handle(handle: Handle) -> RuntimeHandle {
-    RuntimeHandle::new(handle)
+    RuntimeHandle::new(Host { handle, _owned: None, probes: ProbeCache::default() })
 }
 
 /// Starts a one-worker runtime and returns the handle that owns it.
@@ -28,7 +38,12 @@ pub fn dedicated() -> Result<RuntimeHandle, LlmError> {
         .enable_all()
         .build()
         .map_err(|e| LlmError::Unsupported(format!("cannot start the LLM runtime: {e}")))?;
-    Ok(RuntimeHandle::new(Dedicated(Arc::new(runtime))))
+    let runtime = Arc::new(runtime);
+    Ok(RuntimeHandle::new(Host {
+        handle: runtime.handle().clone(),
+        _owned: Some(runtime),
+        probes: ProbeCache::default(),
+    }))
 }
 
 /// The tokio handle inside `runtime`.
@@ -37,13 +52,21 @@ pub fn dedicated() -> Result<RuntimeHandle, LlmError> {
 /// `Unsupported` if `runtime` is neither from [`from_handle`] nor from [`dedicated`] (the fake's
 /// `RuntimeHandle::none()`, for one).
 pub(crate) fn handle_of(runtime: &RuntimeHandle) -> Result<Handle, LlmError> {
-    if let Some(handle) = runtime.downcast_ref::<Handle>() {
-        return Ok(handle.clone());
-    }
-    if let Some(Dedicated(runtime)) = runtime.downcast_ref::<Dedicated>() {
-        return Ok(runtime.handle().clone());
-    }
-    Err(LlmError::Unsupported("the provider needs a tokio runtime handle (runtime::dedicated or from_handle)".into()))
+    host_of(runtime).map(|host| host.handle.clone())
+}
+
+/// The probe answers of `runtime`.
+///
+/// # Errors
+/// As [`handle_of`].
+pub(crate) fn probes_of(runtime: &RuntimeHandle) -> Result<&ProbeCache, LlmError> {
+    host_of(runtime).map(|host| &host.probes)
+}
+
+fn host_of(runtime: &RuntimeHandle) -> Result<&Host, LlmError> {
+    runtime.downcast_ref::<Host>().ok_or_else(|| {
+        LlmError::Unsupported("the provider needs a tokio runtime handle (runtime::dedicated or from_handle)".into())
+    })
 }
 
 /// Runs `future` on `handle` and waits for its result on the calling thread, which may or may not be inside a

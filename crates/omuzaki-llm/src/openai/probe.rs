@@ -13,7 +13,7 @@
 //!   override or the 8,192 default.
 
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use omuzaki_llm_api::error::LlmError;
@@ -35,20 +35,19 @@ pub(crate) struct Capabilities {
     pub vision: bool,
 }
 
-type Cache = Mutex<HashMap<(String, String), Capabilities>>;
+/// What probing found, per full base URL and model. One lives in each runtime handle (see `runtime::Host`).
+#[derive(Clone, Default)]
+pub(crate) struct ProbeCache(Arc<Mutex<HashMap<(String, String), Capabilities>>>);
 
-fn cache() -> &'static Cache {
-    static CACHE: OnceLock<Cache> = OnceLock::new();
-    CACHE.get_or_init(Cache::default)
-}
+impl ProbeCache {
+    /// The cached answer for `model` at `endpoint`.
+    pub(crate) fn get(&self, endpoint: &Endpoint, model: &str) -> Option<Capabilities> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).get(&(endpoint.base.clone(), model.to_owned())).copied()
+    }
 
-/// The cached answer for `model` at `endpoint`.
-pub(crate) fn cached(endpoint: &Endpoint, model: &str) -> Option<Capabilities> {
-    cache().lock().unwrap_or_else(PoisonError::into_inner).get(&(endpoint.base.clone(), model.to_owned())).copied()
-}
-
-fn remember(endpoint: &Endpoint, model: &str, found: Capabilities) {
-    cache().lock().unwrap_or_else(PoisonError::into_inner).insert((endpoint.base.clone(), model.to_owned()), found);
+    fn insert(&self, endpoint: &Endpoint, model: &str, found: Capabilities) {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).insert((endpoint.base.clone(), model.to_owned()), found);
+    }
 }
 
 /// A server and key to ask.
@@ -115,11 +114,12 @@ pub(crate) async fn probe(
     key: Option<&SecretValue>,
     model: &str,
     limit: Duration,
+    cache: &ProbeCache,
 ) -> Result<Capabilities, LlmError> {
     let mut found = Capabilities { context_window: None, tools: true, vision: true };
     if !endpoint.loopback {
         // Metadata requests and probes would tell a remote host which model is asked for and cost money.
-        remember(endpoint, model, found);
+        cache.insert(endpoint, model, found);
         return Ok(found);
     }
     let ask = Ask { http, endpoint, key, limit };
@@ -166,6 +166,6 @@ pub(crate) async fn probe(
     if !vision_known {
         found.vision = ask.accepts(probe_body(model, false, true)).await?;
     }
-    remember(endpoint, model, found);
+    cache.insert(endpoint, model, found);
     Ok(found)
 }

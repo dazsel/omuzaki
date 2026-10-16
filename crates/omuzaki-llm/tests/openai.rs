@@ -354,6 +354,24 @@ fn probes_are_cached_per_endpoint_and_model() {
 }
 
 #[test]
+fn a_new_server_on_a_reused_port_is_probed_afresh() {
+    // Two different servers, one after the other, at one address. The first accepts tools and images; the second
+    // takes neither. A probe answer left over from the first would make the second look capable.
+    let first = Rig::plain(vec![accepts(), accepts()]);
+    let port: u16 = first.server.url.rsplit(':').next().and_then(|p| p.parse().ok()).unwrap();
+    let client = OpenAiClient::new(&first.config("m"), &first.env()).unwrap();
+    let capable = client.info();
+    assert!(capable.tools && capable.vision);
+    drop(first);
+    let second =
+        Rig { server: Server::routed_on(port, vec![(CHAT, vec![rejects(), rejects()])]), runtime: runtime_handle() };
+    let client = OpenAiClient::new(&second.config("m"), &second.env()).unwrap();
+    let incapable = client.info();
+    assert!(!incapable.tools && !incapable.vision, "{incapable:?}");
+    assert_eq!(chat_count(&second), 2, "the new server was asked, not remembered");
+}
+
+#[test]
 fn a_probe_that_says_nothing_is_an_error_and_is_not_cached() {
     let rig = Rig::plain(vec![Reply::status(500, "{}"), accepts(), accepts()]);
     let config = rig.config("flaky");

@@ -5,7 +5,7 @@
 //! are probed once per endpoint and model ([`probe`]); a model the server rejects tools or images for is marked so.
 
 mod decode;
-mod probe;
+pub(crate) mod probe;
 mod wire;
 
 use std::sync::Arc;
@@ -28,7 +28,7 @@ use crate::engine::{self, Decoder, Fail, Job, Protocol, Timeouts, redact_error};
 use crate::http::{Endpoint, HeaderValue, Http, Request, bearer, fetch_metadata};
 use crate::prices::local_prices;
 use crate::retry::random_seed;
-use crate::runtime::{block_on, handle_of};
+use crate::runtime::{block_on, handle_of, probes_of};
 use probe::{FALLBACK_CONTEXT, probe};
 
 /// An image costs this many tokens in the pre-request bound; these servers publish no tile rule, so one flat figure
@@ -141,7 +141,8 @@ impl OpenAiClient {
         let http = Http::new(&endpoint)?;
         let handle = handle_of(&env.runtime)?;
         let key = key_ref(config, env);
-        let found = if let Some(found) = probe::cached(&endpoint, &model) {
+        let probes = probes_of(&env.runtime)?.clone();
+        let found = if let Some(found) = probes.get(&endpoint, &model) {
             found
         } else {
             let secret = key.as_ref().and_then(|(label, store)| store.get(label));
@@ -151,7 +152,7 @@ impl OpenAiClient {
             let (http, endpoint, model) = (http.clone(), endpoint.clone(), model.clone());
             let (limit, whole) = (timeouts.metadata, timeouts.probe);
             block_on(&handle, async move {
-                tokio::time::timeout(whole, probe(&http, &endpoint, secret.as_ref(), &model, limit))
+                tokio::time::timeout(whole, probe(&http, &endpoint, secret.as_ref(), &model, limit, &probes))
                     .await
                     .unwrap_or_else(|_| Err(LlmError::Network("the capability probe took too long".into())))
             })??
