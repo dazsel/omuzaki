@@ -501,3 +501,11 @@ fn an_acknowledgement_needs_a_named_person() {
     let error = project.import(args, None).unwrap_err();
     assert_eq!((error.code, error.field.as_deref()), (ErrorCode::Invalid, Some("acknowledge")));
 }
+
+#[test]
+fn the_first_character_of_a_new_project_is_an_imported_avatar() {
+    let mut project = Project::new();
+    project.doc = MemDoc::from_value(json!({}));
+    let id = project.imported(&model(), &json!({}));
+    assert!(project.value(&format!("characters/{id}/avatar")).is_some(), "the character table is made with it");
+}

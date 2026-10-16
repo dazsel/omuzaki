@@ -52,7 +52,7 @@ const EYE_TOP: f64 = 0.0145;
 const EYE_BOTTOM: f64 = 0.0105;
 /// Mouth centre below the skull centre and its half width.
 const MOUTH_BELOW_CENTRE: f64 = 0.04;
-const MOUTH_HALF_WIDTH: f64 = 0.0125;
+pub const MOUTH_HALF_WIDTH: f64 = 0.0125;
 /// How far the jaw drops at `Fcl_MTH_A`.
 const JAW_DROP: f64 = 0.012;
 

@@ -6,7 +6,8 @@
   and builds the face channels the model can express. It returns one plain-language report, what the model will drive,
   how long each stage took, and a confirm token (#2087).
 - Face shapes a model lacks are made from its geometry: one-eye blinks and one-sided smiles split from symmetric ones,
-  wide and squinting eyes, puffed cheeks, rolled and shrugged lips, and eyes that look around (#1090).
+  wide eyes that show more white, squinting eyes, puffed cheeks that keep the face's outline smooth, rolled and
+  shrugged lips, and eyes that look around; each one shades as it is shaped (#1090).
 - `io.import` with `as: avatar` and the token makes it a character in one undoable step, asks you to acknowledge a
   model whose terms let only its author perform as it, and records the model's own terms. `avatar.remap`,
   `avatar.map_channel` and `avatar.describe` adjust and explain it afterwards (#1333, #868, #869).

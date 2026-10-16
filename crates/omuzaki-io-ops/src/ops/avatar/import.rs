@@ -217,7 +217,14 @@ pub(crate) fn finish(ctx: &OpCtx<'_>, result: Value) -> Result<Plan, OpError> {
     let mut patch = record_patch(ctx.doc, &imported.asset)?;
     let def = serde_json::to_value(&imported.def).map_err(|e| OpError::internal(format!("writing the avatar node: {e}")))?;
     let node = json!({ "name": imported.name, "avatar": def });
-    patch = patch.with(paths::character(&imported.id), None, Some(node));
+    let character = paths::character(&imported.id);
+    // A new project has no character table until its first character.
+    if let Some((table, _)) = character.split_last()
+        && ctx.doc.get(&table).is_none()
+    {
+        patch = patch.with(table, None, Some(json!({})));
+    }
+    patch = patch.with(character, None, Some(node));
     let part = PartId::new(AVATAR_PART).map_err(|e| OpError::internal(format!("the avatar part id: {e}")))?;
     let row = row_patch(ctx, &imported.id, &part, &imported.row)?;
     patch.changes.extend(row.changes);

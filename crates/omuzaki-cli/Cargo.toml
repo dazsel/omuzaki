@@ -50,6 +50,8 @@ omuzaki-store-api = { path = "../omuzaki-store-api" }
 
 [dev-dependencies]
 tempfile.workspace = true
+# The model `tests/op_conformance.rs`'s `avatar` fixture generates and imports.
+omuzaki-io-api = { path = "../omuzaki-io-api" }
 # The registration scan behind the link gate (`tests/registrations.rs`, ADR 0015).
 xtask = { path = "../../xtask" }
 

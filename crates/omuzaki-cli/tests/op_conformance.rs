@@ -5,11 +5,15 @@
 //! Examples are declared on the args type (`OpRegistration::examples`). Ops with none are listed in
 //! `op_conformance_allowlist.txt`, which may only shrink: an op that is missing from it and has no examples fails, and
 //! so does a line for an op that now has examples. The suite prints the list's size.
+//!
+//! An example runs on the project its op names with `x-omuzaki-fixture`: `demo`, an empty project (the default), or
+//! `avatar`, a project holding one character imported from a generated VRM (`avatar_fixture`).
 
 // Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 #![allow(clippy::disallowed_methods, reason = "the test reads the project folder to prove an op left it alone")]
 
+mod avatar_fixture;
 mod common;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -20,12 +24,17 @@ use omuzaki_cli::project::SavedProject;
 use omuzaki_core::time::SystemClock;
 use omuzaki_doc_api::{DocPath, Value};
 use omuzaki_ops::Executor;
-use omuzaki_ops_api::{Actor, Grants, Mode, OpKind, OpRegistration, ProjectDir, Request, Runner, Undo, registrations};
+use omuzaki_ops_api::{
+    Actor, Grants, Mode, OpKind, OpRegistration, ProjectDir, Request, Runner, Services, Undo, registrations,
+};
 
 const ALLOWLIST: &str = include_str!("op_conformance_allowlist.txt");
 
-/// The one fixture project there is: an empty project named `demo`.
+/// The fixture an example runs on when its op names none: an empty project named `demo`.
 const DEFAULT_FIXTURE: &str = "demo";
+
+/// Every fixture an op can name.
+const FIXTURES: [&str; 2] = [DEFAULT_FIXTURE, avatar_fixture::NAME];
 
 /// What a run can leave behind: the document tree, every file under the project folder, and the op log's length.
 #[derive(PartialEq, Debug)]
@@ -44,20 +53,17 @@ struct Rig {
 
 impl Rig {
     fn new(reg: &'static OpRegistration, fixture: Option<&str>) -> Result<Self, String> {
-        match fixture.unwrap_or(DEFAULT_FIXTURE) {
-            DEFAULT_FIXTURE => {}
-            other => {
-                return Err(format!(
-                    "names fixture `{other}`, and the conformance test knows only `{DEFAULT_FIXTURE}`"
-                ));
-            }
-        }
-        let dir = common::new_project();
+        let (dir, services) = match fixture.unwrap_or(DEFAULT_FIXTURE) {
+            DEFAULT_FIXTURE => (common::new_project(), Services::none()),
+            avatar_fixture::NAME => avatar_fixture::project().map_err(|e| format!("the `avatar` fixture: {e}"))?,
+            other => return Err(format!("names fixture `{other}`, and the conformance test knows only {FIXTURES:?}")),
+        };
         let doc = SavedProject::open(dir.path()).map_err(|e| format!("opening the fixture failed: {e}"))?;
         let project = ProjectDir::open(dir.path()).map_err(|e| format!("opening the fixture folder failed: {e}"))?;
         let runner = Executor::with_registrations(Box::new(doc), Arc::new(SystemClock::new()), [reg])
             .map_err(|e| e.to_string())?
-            .with_project_dir(project);
+            .with_project_dir(project)
+            .with_services(services);
         let actor = Actor::Person { name: "conformance".to_owned() };
         Ok(Self { runner, dir, actor, grants: Grants::person() })
     }

@@ -11,7 +11,7 @@ mod common;
 use std::path::PathBuf;
 
 use common::def;
-use common::head::{dump_expression, head};
+use common::head::{MOUTH_HALF_WIDTH, dump_expression, head};
 use omuzaki_core::glam::Vec3;
 use omuzaki_io_api::{ARKIT_52, ExportOptions, IoScene, Mesh, preflight};
 use omuzaki_io_ops::prepare::arkit::{Synthesis, synthesise};
@@ -46,7 +46,117 @@ fn the_landmarks_find_both_eyes_and_the_mouth_below_them() {
     assert!((m.eye_spacing - 0.064).abs() < 0.01, "about 6.4 cm apart: {}", m.eye_spacing);
     let mouth = m.mouth.expect("aa opens a mouth");
     assert!(mouth.y < left.y - 0.03, "the mouth is below the eyes: {mouth}");
-    assert!(m.mouth_half_width > 0.005, "{}", m.mouth_half_width);
+    // The lips' width, not the jaw skin's that follows `aa` a little out to the cheeks.
+    #[allow(clippy::cast_possible_truncation)]
+    let lips = MOUTH_HALF_WIDTH as f32;
+    assert!((0.8 * lips..1.3 * lips).contains(&m.mouth_half_width), "{} for lips {lips}", m.mouth_half_width);
+}
+
+/// The primitive of the face whose material is called `name`.
+fn primitive(scene: &IoScene, name: &str) -> usize {
+    let face = face(scene);
+    face.primitives
+        .iter()
+        .position(|p| p.material.is_some_and(|m| scene.materials[m.index()].name == name))
+        .unwrap_or_else(|| panic!("no {name} primitive"))
+}
+
+#[test]
+fn a_wide_eye_lifts_the_top_of_its_white_with_the_lid_and_leaves_the_iris() {
+    let mut scene = head().scene;
+    generate(&mut scene, &["eyeWideLeft"]);
+    let t = target(&scene, "eyeWideLeft");
+    let (white, iris, lash) = (primitive(&scene, "EyeWhite"), primitive(&scene, "Iris"), primitive(&scene, "Lash"));
+    let face = face(&scene);
+    let m = landmarks(&scene).unwrap();
+    let eye = m.eyes[0];
+    // The lash's lower edge in the middle of the eye, and how far it lifts.
+    let lash_lift = face.primitives[lash]
+        .mesh
+        .positions
+        .iter()
+        .zip(&face.primitives[lash].morph_targets[t].positions)
+        .filter(|(p, _)| p.x > m.middle && (p.x - eye.x).abs() < 0.002)
+        .map(|(_, d)| d.y)
+        .fold(0.0, f32::max);
+    assert!(lash_lift > 0.002, "the lid lifts: {lash_lift}");
+    let (positions, deltas) =
+        (&face.primitives[white].mesh.positions, &face.primitives[white].morph_targets[t].positions);
+    let top = positions.iter().zip(deltas).filter(|(p, _)| p.x > m.middle).max_by(|a, b| a.0.y.total_cmp(&b.0.y));
+    let (top, lift) = top.unwrap();
+    assert!((eye.x - top.x).abs() < 0.003, "the white's top is above the eye's centre: {top}");
+    assert!(
+        (lift.y - lash_lift).abs() < 0.15 * lash_lift,
+        "the white's top follows the lid: {} for {lash_lift}",
+        lift.y
+    );
+    for (p, d) in positions.iter().zip(deltas) {
+        if p.y < eye.y - 1e-4 || p.x < m.middle {
+            assert_eq!(*d, Vec3::ZERO, "the lower half and the other eye stay: {p}");
+        }
+    }
+    assert!(face.primitives[iris].morph_targets[t].positions.iter().all(|d| *d == Vec3::ZERO), "the iris stays");
+}
+
+#[test]
+fn the_cheek_puff_is_one_smooth_bulge_that_leaves_the_jaw_to_aa() {
+    let mut scene = head().scene;
+    let m = landmarks(&scene).unwrap();
+    generate(&mut scene, &["cheekPuff"]);
+    let (puff, aa) = (target(&scene, "cheekPuff"), target(&scene, "Fcl_MTH_A"));
+    let face = face(&scene);
+    let skin = &face.primitives[primitive(&scene, "Skin")];
+    let (points, moves, opens) =
+        (&skin.mesh.positions, &skin.morph_targets[puff].positions, &skin.morph_targets[aa].positions);
+    let most = moves.iter().map(|d| d.length()).fold(0.0, f32::max);
+    assert!(most > 0.05 * m.eye_spacing, "the cheeks puff: {most}");
+    // Where `aa` opens the jaw all the way, the puff has gone.
+    let travel = opens.iter().map(|d| d.length()).fold(0.0, f32::max);
+    for (d, open) in moves.iter().zip(opens) {
+        if open.length() > 0.9 * travel {
+            assert!(d.length() < 0.01 * most, "the open jaw is aa's: {}", d.length());
+        }
+    }
+    // No crease and no corner: along every edge of the skin the puff changes gently. A cut where it meets the jaw
+    // changed it by more than the edge's own length.
+    let steepest = skin
+        .mesh
+        .indices
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .flat_map(|&[a, b, c]| [(a, b), (b, c), (c, a)])
+        .map(|(a, b)| {
+            let (a, b) = (a as usize, b as usize);
+            moves[a].distance(moves[b]) / points[a].distance(points[b]).max(1e-9)
+        })
+        .fold(0.0, f32::max);
+    assert!(steepest < 0.5, "the puff's steepest change along an edge: {steepest}");
+}
+
+#[test]
+fn shapes_made_from_landmarks_shade_as_they_are_shaped() {
+    let mut scene = head().scene;
+    generate(&mut scene, &["cheekPuff", "mouthShrugUpper", "eyeBlinkLeft"]);
+    let face = face(&scene);
+    for name in ["cheekPuff", "mouthShrugUpper"] {
+        let t = target(&scene, name);
+        let mut turned = 0;
+        for primitive in &face.primitives {
+            let target = &primitive.morph_targets[t];
+            // A primitive the shape turns nothing on carries no normal deltas; one it does carries one per vertex.
+            assert!(target.normals.is_empty() || target.normals.len() == primitive.mesh.positions.len(), "{name}");
+            for (n, d) in primitive.mesh.normals.iter().zip(&target.normals) {
+                // A turned normal is still a unit normal.
+                assert!(((*n + *d).length() - n.length()).abs() < 1e-4, "{name}: a normal delta keeps the length");
+                turned += usize::from(d.length() > 1e-3);
+            }
+        }
+        assert!(turned > 10, "{name} turns the normals it moves: {turned}");
+    }
+    // A split of a source without normals (the test head's targets have none) gets them the same way.
+    let blink = target(&scene, "eyeBlinkLeft");
+    assert!(face.primitives.iter().any(|p| p.morph_targets[blink].normals.iter().any(|d| d.length() > 1e-3)));
 }
 
 #[test]

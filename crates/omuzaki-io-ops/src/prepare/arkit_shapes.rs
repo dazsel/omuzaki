@@ -6,10 +6,13 @@
 //!   sagittal plane with a smooth falloff ([`FALLOFF`] of the moved region's half-width each side of the middle), so
 //!   the left and right halves sum to the source exactly and each channel moves one side only.
 //! - **Shapes from landmarks.** The vertices the blink moves are the upper lids, which locate the eyes; the vertices
-//!   `aa` moves are the jaw and lower lip, whose upper edge is the mouth line. From those: `eyeWide*` lifts each lid a
-//!   quarter of its closing travel, `eyeSquint*` lowers it a third, `cheekPuff` pushes the cheeks out along their normals,
-//!   `mouthRoll*` and `mouthShrug*` roll the lips inward or raise them, and `eyeLook*` moves an iris, when the eyes have
-//!   one of their own (the smallest separate part inside each eye that the blink does not move).
+//!   `aa` opens most are the jaw and lower lip, whose upper edge is the mouth line. From those: `eyeWide*` lifts each lid
+//!   a quarter of its closing travel and the top of the eye white with it, `eyeSquint*` lowers it a third, `cheekPuff`
+//!   pushes the cheeks out along their normals, `mouthRoll*` and `mouthShrug*` roll the lips inward or raise them, and
+//!   `eyeLook*` moves an iris, when the eyes have one of their own (the smallest separate part inside each eye that the
+//!   blink does not move).
+//! - **Normals.** A shape whose source has no normal deltas (every shape made from landmarks) gets them from the
+//!   surface it moves to, so it shades as it is shaped.
 //!
 //! Every amount is a fraction of the distance between the eyes ([`Landmarks::eye_spacing`]), so a shape fits any head
 //! size; the fractions are starting values for art review, judged on contact sheets (`tools/arkit-shape-sheet.py`).
@@ -21,7 +24,7 @@
 
 use std::collections::BTreeMap;
 
-use omuzaki_core::glam::Vec3;
+use omuzaki_core::glam::{Quat, Vec3};
 use omuzaki_io_api::{Expression, ExpressionName, IoScene, MorphBind, MorphTarget, NodeIx, PresetExpression};
 
 use super::arkit::{ChannelOutcome, Synthesis};
@@ -32,6 +35,10 @@ pub const FALLOFF: f32 = 0.15;
 /// A vertex counts as moved when its delta is longer than this fraction of the eye spacing.
 const MOVED: f32 = 1e-4;
 
+/// The share of `aa`'s largest move above which a vertex counts as opened (the lower lip and jaw, not the skin that
+/// follows them a little).
+const OPENED: f32 = 0.5;
+
 /// How much of a lid's closing travel `eyeWide*` lifts it.
 const WIDE: f32 = 0.25;
 
@@ -39,7 +46,7 @@ const WIDE: f32 = 0.25;
 const SQUINT: f32 = 0.35;
 
 /// How far the cheeks puff out, as a fraction of the eye spacing.
-const PUFF: f32 = 0.15;
+const PUFF: f32 = 0.1;
 
 /// How much of a lip's height a roll pulls in toward the mouth line (the rest of the roll goes back, by [`ROLL_BACK`]).
 const ROLL: f32 = 0.7;
@@ -49,6 +56,9 @@ const ROLL_BACK: f32 = 0.03;
 
 /// How far a lip shrugs up, as a fraction of the eye spacing.
 const SHRUG: f32 = 0.08;
+
+/// How far past the mouth's corners a lip shape fades out, as a fraction of the mouth's half-width.
+const CORNER_FADE: f32 = 0.6;
 
 /// How far an iris moves sideways, and up or down, as a fraction of its eye's width and height.
 const LOOK: (f32, f32) = (0.2, 0.12);
@@ -177,9 +187,13 @@ pub fn landmarks(scene: &IoScene) -> Option<Landmarks> {
         .get(&ExpressionName::Preset(PresetExpression::Aa))
         .and_then(|aa| expression_deltas(scene, aa).remove(&mesh))
         .and_then(|jaw| {
-            let opened: Vec<Vec3> = moved_vertices(&jaw, &points, MOVED * eye_spacing).map(|(p, _)| p).collect();
+            // What `aa` opens: the lower lip and the jaw by most of the travel, the skin around them by less. Only the
+            // first counts, or a jaw whose skin follows a little out to the cheeks would make the mouth face-wide.
+            let travel = moved_vertices(&jaw, &points, 0.0).map(|(_, d)| d.length()).fold(0.0, f32::max);
+            let threshold = (OPENED * travel).max(MOVED * eye_spacing);
+            let opened: Vec<Vec3> = moved_vertices(&jaw, &points, threshold).map(|(p, _)| p).collect();
             let top = opened.iter().map(|p| p.y).fold(f32::NEG_INFINITY, f32::max);
-            // The mouth line is the upper edge of what opens; its width is that of the moved vertices near it.
+            // The mouth line is the upper edge of what opens; its width is that of the opened vertices near it.
             let band: Vec<&Vec3> = opened.iter().filter(|p| top - p.y < 0.1 * eye_spacing).collect();
             let half = band.iter().map(|p| (p.x - middle).abs()).fold(0.0, f32::max);
             let z = band.iter().map(|p| p.z).fold(f32::NEG_INFINITY, f32::max);
@@ -285,10 +299,14 @@ pub fn worth_generating(outcome: &ChannelOutcome) -> bool {
 /// build, never one the file has. A scene without a blink that moves two eyes is left alone.
 pub fn generate(scene: &mut IoScene, channels: &[&str]) -> Vec<ChannelOutcome> {
     let marks = landmarks(scene);
+    let surface = marks.as_ref().map(|m| Surface::new(scene, m.mesh));
     let mut outcomes = Vec::with_capacity(channels.len());
     // A name outside the `ARKit` table is no channel: it gets no outcome (the outcome holds the table's own name).
     for channel in channels.iter().filter_map(|c| omuzaki_io_api::ARKIT_52.iter().copied().find(|a| a == c)) {
-        let shape = marks.as_ref().and_then(|m| make(scene, m, channel));
+        let mut shape = marks.as_ref().and_then(|m| make(scene, m, channel));
+        if let (Some(shape), Some(m), Some(surface)) = (&mut shape, &marks, &surface) {
+            surface.shade(scene, m.mesh, &mut shape.deltas);
+        }
         let how = match (shape, &marks) {
             (Some(shape), Some(m)) if !shape.deltas.is_zero() && add_shape(scene, m.mesh, channel, &shape.deltas) => {
                 Synthesis::Generated { source: shape.source }
@@ -329,8 +347,9 @@ fn make(scene: &IoScene, m: &Landmarks, channel: &str) -> Option<Shape> {
     match channel {
         "eyeWideLeft" | "eyeWideRight" => {
             let left = side(channel)?;
-            let deltas = lid(left)?.scaled(&points, &|_| -WIDE);
-            Some(Shape { deltas, source: "the lid of the blink, lifted".into() })
+            let mut deltas = lid(left)?.scaled(&points, &|_| -WIDE);
+            lift_white(scene, m, &points, left, &mut deltas);
+            Some(Shape { deltas, source: "the lid of the blink, lifted, with the eye white".into() })
         }
         "eyeSquintLeft" | "eyeSquintRight" => {
             let left = side(channel)?;
@@ -341,6 +360,98 @@ fn make(scene: &IoScene, m: &Landmarks, channel: &str) -> Option<Shape> {
         "mouthRollUpper" | "mouthRollLower" | "mouthShrugUpper" | "mouthShrugLower" => lips(scene, m, &points, channel),
         _ if channel.starts_with("eyeLook") => look(scene, m, &points, channel),
         _ => None,
+    }
+}
+
+/// The face mesh as one surface, for the normal deltas of a generated shape: its triangles, its vertices welded by
+/// position (a seam's two copies and two primitives' shared edge shade as one), and each welded point's normal at rest.
+struct Surface {
+    /// Per primitive, each vertex's welded point.
+    point_of: Vec<Vec<usize>>,
+    /// Per primitive, its triangles.
+    triangles: Vec<Vec<[usize; 3]>>,
+    /// Each welded point's area-weighted normal at rest, not normalised.
+    rest: Vec<Vec3>,
+}
+
+impl Surface {
+    /// The surface of mesh `mesh`.
+    fn new(scene: &IoScene, mesh: usize) -> Self {
+        // Positions closer than a micrometre are one point.
+        const WELD: f32 = 1e6;
+        let points = positions(scene, mesh);
+        let mut welded: BTreeMap<[i64; 3], usize> = BTreeMap::new();
+        let point_of: Vec<Vec<usize>> = points
+            .iter()
+            .map(|prim| {
+                prim.iter()
+                    .map(|p| {
+                        #[allow(clippy::cast_possible_truncation, reason = "a face is metres across, far inside i64")]
+                        let key = (*p * WELD).round().to_array().map(|c| c as i64);
+                        let next = welded.len();
+                        *welded.entry(key).or_insert(next)
+                    })
+                    .collect()
+            })
+            .collect();
+        let triangles: Vec<Vec<[usize; 3]>> = scene.meshes[mesh]
+            .primitives
+            .iter()
+            .map(|p| {
+                let count = p.mesh.positions.len();
+                let corner = |i: u32| usize::try_from(i).ok().filter(|&i| i < count);
+                let indices: Vec<usize> = if p.mesh.indices.is_empty() {
+                    (0..count - count % 3).collect()
+                } else {
+                    p.mesh.indices.iter().filter_map(|&i| corner(i)).collect()
+                };
+                indices.as_chunks::<3>().0.to_vec()
+            })
+            .collect();
+        let mut surface = Self { point_of, triangles, rest: Vec::new() };
+        surface.rest = surface.normals(&points, welded.len());
+        surface
+    }
+
+    /// Each welded point's area-weighted normal with the vertices at `points`.
+    fn normals(&self, points: &[Vec<Vec3>], count: usize) -> Vec<Vec3> {
+        let mut out = vec![Vec3::ZERO; count];
+        for ((tris, ids), prim) in self.triangles.iter().zip(&self.point_of).zip(points) {
+            for &[a, b, c] in tris {
+                let face = (prim[b] - prim[a]).cross(prim[c] - prim[a]);
+                for v in [a, b, c] {
+                    out[ids[v]] += face;
+                }
+            }
+        }
+        out
+    }
+
+    /// Gives `deltas` the normal deltas of the surface it moves to, when it has none (a shape made from landmarks, or
+    /// split from a source without them), so the shading follows the moved surface: each vertex's own normal turned as
+    /// its welded point's normal turns, which keeps the file's hard edges and smoothing.
+    fn shade(&self, scene: &IoScene, mesh: usize, deltas: &mut Deltas) {
+        // A turn smaller than this (about 0.001 degree) is no turn.
+        const TURNED: f32 = 2e-5;
+        if deltas.normals.iter().flatten().any(|d| *d != Vec3::ZERO) {
+            return;
+        }
+        let moved: Vec<Vec<Vec3>> = positions(scene, mesh)
+            .iter()
+            .zip(&deltas.positions)
+            .map(|(p, d)| p.iter().zip(d).map(|(p, d)| *p + *d).collect())
+            .collect();
+        let after = self.normals(&moved, self.rest.len());
+        for (p, primitive) in scene.meshes[mesh].primitives.iter().enumerate() {
+            for (v, own) in primitive.mesh.normals.iter().enumerate() {
+                let id = self.point_of[p][v];
+                let (from, to) = (self.rest[id].normalize_or_zero(), after[id].normalize_or_zero());
+                if from == Vec3::ZERO || to == Vec3::ZERO || from.distance(to) < TURNED {
+                    continue;
+                }
+                deltas.normals[p][v] = Quat::from_rotation_arc(from, to) * *own - *own;
+            }
+        }
     }
 }
 
@@ -385,61 +496,155 @@ fn expressive(scene: &IoScene, m: &Landmarks, points: &[Vec<Vec3>]) -> Vec<Vec<b
     moved
 }
 
-/// `cheekPuff`: each cheek pushed out along its normals, in an ellipse beside the mouth corner and below the eye, on
-/// the part of the face that looks forward (so the head's outline does not bulge).
+/// `cheekPuff`: each cheek pushed out along its normals, in an ellipse beside the mouth corner and below the eye,
+/// fading out toward the back of the head and as far as an expression moves the skin (the jaw `aa` opens, the lips),
+/// so the face's outline stays one smooth curve: a hard cut at either would leave a corner.
 fn cheek_puff(scene: &IoScene, m: &Landmarks, points: &[Vec<Vec3>]) -> Option<Shape> {
     let mouth = m.mouth?;
     let s = m.eye_spacing;
-    let fixed = expressive(scene, m, points);
+    let share = expressive_share(scene, m, points);
     let normals: Vec<&Vec<Vec3>> = scene.meshes[m.mesh].primitives.iter().map(|p| &p.mesh.normals).collect();
     let mut deltas = Deltas::zero(scene, m.mesh);
     for (left, eye) in [(true, m.eyes[0]), (false, m.eyes[1])] {
         let sign = if left { 1.0 } else { -1.0 };
         let x = m.middle + sign * (m.mouth_half_width + 0.45 * s);
-        let centre = Vec3::new(x, mouth.y + 0.2 * (eye.y - mouth.y), mouth.z);
-        let radii = (0.5 * s, 0.45 * (eye.y - mouth.y).abs().max(0.2 * s));
+        // A broad, low bulge: from under the eye down past the mouth corner toward the jaw, where `aa`'s share takes
+        // over, so its slopes stay gentle and its edges soft.
+        let centre = Vec3::new(x, mouth.y, mouth.z);
+        let radii = (0.6 * s, 0.75 * (eye.y - mouth.y).abs().max(0.2 * s));
         for (p, (prim, deltas)) in deltas.positions.iter_mut().enumerate().map(|(p, d)| (p, (&points[p], d))) {
             for (v, (point, delta)) in prim.iter().zip(deltas.iter_mut()).enumerate() {
-                let normal = normals[p].get(v).copied().unwrap_or(Vec3::Z);
-                // The face that looks forward or sideways, fading out toward the back of the head (a hard cut would
-                // leave a crease), and nothing an expression already moves.
-                if fixed[p][v] || (point.x - m.middle) * sign < 0.0 {
+                if (point.x - m.middle) * sign < 0.0 {
                     continue;
                 }
+                let normal = normals[p].get(v).copied().unwrap_or(Vec3::Z);
                 let facing = smoothstep(-0.2, 0.4, normal.z);
-                *delta += normal * (PUFF * s * facing * bump(*point, centre, radii));
+                // Squared, so the puff meets what an expression moves fully with no crease.
+                let free = (1.0 - share[p][v]).powi(2);
+                *delta += normal * (PUFF * s * facing * bump(*point, centre, radii) * free);
             }
         }
     }
     Some(Shape { deltas, source: "the cheeks beside the mouth".into() })
 }
 
+/// How far the preset expressions move each vertex of the face mesh, as a share of each one's largest move: 0 where
+/// none moves it, 1 where one moves it all the way (the lips a mouth shape opens). Smooth wherever the expressions are,
+/// so a shape scaled by it fades into theirs.
+fn expressive_share(scene: &IoScene, m: &Landmarks, points: &[Vec<Vec3>]) -> Vec<Vec<f32>> {
+    let mut share: Vec<Vec<f32>> = points.iter().map(|p| vec![0.0; p.len()]).collect();
+    let presets =
+        scene.avatar.iter().flat_map(|a| &a.expressions).filter(|(n, _)| matches!(n, ExpressionName::Preset(_)));
+    for (_, expression) in presets {
+        let Some(d) = expression_deltas(scene, expression).remove(&m.mesh) else { continue };
+        let most = d.positions.iter().flatten().map(|d| d.length()).fold(0.0, f32::max);
+        if most <= MOVED * m.eye_spacing {
+            continue;
+        }
+        for (shares, deltas) in share.iter_mut().zip(&d.positions) {
+            for (share, delta) in shares.iter_mut().zip(deltas) {
+                *share = share.max(delta.length() / most);
+            }
+        }
+    }
+    share
+}
+
+/// Stretches the upper half of one eye's white up with its lid, which `deltas` lifts, so the wider opening shows white
+/// and not the skin behind it. Each white vertex above the eye's centre follows the lid edge above it by its share of
+/// the way from the centre to the white's top there. The white is the widest part of the face mesh inside the eye that
+/// nothing moves (a primitive of its own, as in `VRoid`'s `EyeWhite`); the iris and the lower half stay. A model
+/// whose white already reaches behind the lid only stretches what the lid hid.
+fn lift_white(scene: &IoScene, m: &Landmarks, points: &[Vec<Vec3>], left: bool, deltas: &mut Deltas) {
+    const NEAREST: usize = 4;
+    let eye = usize::from(!left);
+    let (centre, (width, travel)) = (m.eyes[eye], m.eye_size[eye]);
+    let fixed = expressive(scene, m, points);
+    let lid: Vec<(Vec3, Vec3)> = moved_vertices(deltas, points, MOVED * m.eye_spacing).collect();
+    let inside = |p: &Vec3| {
+        ((p.x - centre.x) / (0.75 * width)).powi(2) + ((p.y - centre.y) / (0.9 * travel.max(1e-6))).powi(2) <= 1.0
+    };
+    // Per primitive the lid does not touch, its still vertices in this eye when most of its vertices on this side are;
+    // the white is the one that spans the eye widest.
+    let white = points
+        .iter()
+        .enumerate()
+        .filter(|(p, _)| deltas.positions[*p].iter().all(|d| *d == Vec3::ZERO))
+        .filter_map(|(p, prim)| {
+            let in_eye: Vec<usize> = (0..prim.len()).filter(|&v| !fixed[p][v] && inside(&prim[v])).collect();
+            let side_only = prim.iter().filter(|v| (v.x - m.middle) * if left { 1.0 } else { -1.0 } > 0.0).count();
+            let (lo, hi) = in_eye
+                .iter()
+                .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), &v| (lo.min(prim[v].x), hi.max(prim[v].x)));
+            (in_eye.len() >= 3 && in_eye.len() * 2 >= side_only).then_some((p, in_eye, hi - lo))
+        })
+        .max_by(|a, b| a.2.total_cmp(&b.2));
+    let Some((p, in_eye, _)) = white else { return };
+    if lid.is_empty() {
+        return;
+    }
+    let prim = &points[p];
+    let column = 0.1 * width;
+    let lifts: Vec<(usize, Vec3)> = in_eye
+        .iter()
+        .filter(|&&v| prim[v].y > centre.y)
+        .filter_map(|&v| {
+            let at = prim[v];
+            let top = in_eye.iter().map(|&w| prim[w]).filter(|w| (w.x - at.x).abs() < column).map(|w| w.y);
+            let top = top.fold(f32::NEG_INFINITY, f32::max);
+            let share = ((at.y - centre.y) / (top - centre.y)).clamp(0.0, 1.0);
+            // The lid edge above: its nearest lifted vertices to the white's top there, blended by inverse distance.
+            let mut nearest: Vec<(f32, Vec3)> =
+                lid.iter().map(|(q, d)| ((q.x - at.x).powi(2) + (q.y - top).powi(2), *d)).collect();
+            nearest.sort_by(|a, b| a.0.total_cmp(&b.0));
+            nearest.truncate(NEAREST);
+            let (sum, weight) = nearest.iter().fold((Vec3::ZERO, 0.0), |(sum, weight), &(d2, d)| {
+                let w = 1.0 / (d2 + 1e-12);
+                (sum + d * w, weight + w)
+            });
+            (top > centre.y && weight > 0.0).then(|| (v, sum / weight * share))
+        })
+        .collect();
+    for (v, lift) in lifts {
+        deltas.positions[p][v] += lift;
+    }
+}
+
 /// The lip shapes, on the band just above or below the mouth line: a roll pulls the lip in toward the line (so less of
-/// it shows) and back; a shrug raises it.
+/// it shows) and back; a shrug raises it, its edge on the line staying so the mouth stays closed. The whole lip moves alike from corner to corner; past the corners the move
+/// fades out over [`CORNER_FADE`] of the mouth's half-width, and there the skin on the other side of the line follows,
+/// since only between the lips is the surface open: skin pulled apart there would crease.
 fn lips(scene: &IoScene, m: &Landmarks, points: &[Vec<Vec3>], channel: &str) -> Option<Shape> {
     let mouth = m.mouth?;
     let s = m.eye_spacing;
     let upper = channel.ends_with("Upper");
     let roll = channel.starts_with("mouthRoll");
     let band = if roll { 0.1 * s } else { 0.2 * s };
-    let half_width = (m.mouth_half_width * 1.15).max(0.1 * s);
+    let half = m.mouth_half_width.max(0.1 * s);
+    let fade = CORNER_FADE * half;
     let mut deltas = Deltas::zero(scene, m.mesh);
     for (prim, slots) in points.iter().zip(deltas.positions.iter_mut()) {
         for (point, slot) in prim.iter().zip(slots.iter_mut()) {
             let depth = if upper { point.y - mouth.y } else { mouth.y - point.y };
-            if !(0.0..=band).contains(&depth) || point.z < mouth.z - 0.3 * s {
+            let across = (point.x - m.middle).abs();
+            if depth.abs() > band || point.z < mouth.z - 0.3 * s || across >= half + fade {
                 continue;
             }
-            // Full strength along the middle of the mouth, easing out toward the corners.
-            let across = ((point.x - m.middle) / half_width).abs();
-            let w = if across >= 1.0 { 0.0 } else { (1.0 - across * across).powi(2) };
+            let along = 1.0 - smoothstep(half, half + fade, across);
             // Strongest at the mouth line, easing to nothing at the band's far edge, so the skin beyond never creases.
             let ease = (1.0 - (depth / band).powi(2)).powi(2);
-            *slot = if roll {
-                let toward_line = if upper { -1.0 } else { 1.0 };
-                Vec3::new(0.0, toward_line * ROLL * depth, -ROLL_BACK * s) * (w * ease)
-            } else {
-                Vec3::Y * (SHRUG * s * w * ease)
+            // The other side of the line moves only past the corners, coming in as the lip's own move fades.
+            let share = if depth >= 0.0 { 1.0 } else { smoothstep(half, half + 0.5 * fade, across) };
+            let w = along * ease * share;
+            *slot = match (roll, depth >= 0.0) {
+                (true, true) => {
+                    let toward_line = if upper { -1.0 } else { 1.0 };
+                    Vec3::new(0.0, toward_line * ROLL * depth, -ROLL_BACK * s) * w
+                }
+                // Past a corner the skin below a rolled lip goes back with it; pulling it toward the line is the lip's.
+                (true, false) => Vec3::new(0.0, 0.0, -ROLL_BACK * s) * w,
+                // A shrug keeps the lips together: the edge on the mouth line stays, and the lip rises above it.
+                (false, _) => Vec3::Y * (SHRUG * s * w * smoothstep(0.0, 0.3 * band, depth)),
             };
         }
     }
