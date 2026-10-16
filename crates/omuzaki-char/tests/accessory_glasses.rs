@@ -20,6 +20,10 @@ use serde_json::json;
 
 /// Triangles one accessory kind may use at live quality.
 const TRIANGLE_BUDGET: usize = 2000;
+/// How far the far lens may stand past the head's outline in a three-quarter view, metres. At the default eye spacing
+/// the far eye itself is near the outline from 35 degrees, so its lens shows past it by about its own distance off the
+/// face (1 cm) and the rim's wire, never by the extra a flat lens gains where the head curves away from it.
+const FAR_LENS_PAST_OUTLINE: f32 = 0.015;
 
 #[test]
 fn every_style_builds_closed_shells_on_the_four_templates() {
@@ -44,6 +48,12 @@ fn the_kind_is_an_accessory_that_needs_the_head_and_refuses_frames_that_reach_th
     for bad in [json!({ "gap": 0.0 }), json!({ "eye_y": 5.0 })] {
         assert!((registration.check)(&bad).is_err(), "{bad} should be refused");
     }
+}
+
+/// Metres per unit of the face layout: the scale the head was built at (the face layout is in the template's head's
+/// units, and the head is scaled to the character's real size).
+fn face_scale(s: &accessory_common::Scene) -> f32 {
+    s.built.stature.map_or(1.0, |stature| stature.scale)
 }
 
 /// The vertices in front of the face: the lenses and rims, not the arms running back along the head.
@@ -98,15 +108,90 @@ fn the_glasses_follow_the_characters_face_layout() {
 #[test]
 fn the_frames_stay_6_mm_off_the_face_and_below_the_brow_line() {
     let layout = FaceLayout::default();
-    let brow = (layout.eye_y + layout.brow_gap) as f32;
     for template in TEMPLATES {
         for (name, params) in styles("glasses") {
             let s = built_scene(template, "glasses", params.clone(), None);
+            let brow = (layout.eye_y + layout.brow_gap) as f32 * face_scale(&s);
             let near = front(&s).iter().map(|p| above_head(s.head.as_ref(), *p)).fold(f32::MAX, f32::min);
             assert!(near >= 0.006, "glasses {name} on {template}: {near} m from the face");
             let c = s.head.centre();
             let top = front(&s).iter().map(|p| p.y - c.y).fold(f32::MIN, f32::max);
             assert!(top < brow, "glasses {name} on {template}: the frame reaches {top} m, the brow is at {brow}");
+        }
+    }
+}
+
+#[test]
+fn the_lenses_sit_over_the_painted_eyes_on_every_template() {
+    // The painted face is projected from the front through the head's overlay window, which is the face layout scaled
+    // with the head: seen from the front, each lens's centre is on its painted eye (the layout's eye, scaled).
+    let layout = FaceLayout::default();
+    for template in TEMPLATES {
+        for (name, params) in styles("glasses") {
+            let s = built_scene(template, "glasses", params.clone(), None);
+            let (c, k) = (s.head.centre(), face_scale(&s));
+            let lens = mesh_named(&s.built, "-lens");
+            let left: Vec<Vec3> = lens.geometry.positions.iter().copied().filter(|p| p.x > c.x).collect();
+            let (lo, hi) =
+                left.iter().fold((Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |(l, h), p| (l.min(*p), h.max(*p)));
+            let centre = (lo + hi) / 2.0 - c;
+            let eye = Vec3::new(layout.eye_spacing as f32, layout.eye_y as f32, 0.0) * k;
+            let off = (centre.truncate() - eye.truncate()).length();
+            // The lens stands straight in front of the eye; its outline (a cat-eye's lifted corner, the wrap round the
+            // head) moves the middle of its extent by a few millimetres at most.
+            assert!(
+                off <= 0.1 * eye.x,
+                "glasses {name} on {template}: the lens is {off} m from its eye, seen from the front"
+            );
+        }
+    }
+}
+
+/// How far the far lens and its rim (the character's right, in front of the face) stand past the head's outline when the
+/// head is seen from `azimuth_deg` towards its left, metres: the largest margin, over their vertices, between a vertex
+/// and the head's own outline at the vertex's height.
+fn far_side_past_the_outline(s: &accessory_common::Scene, azimuth_deg: f32) -> f32 {
+    let (sin, cos) = azimuth_deg.to_radians().sin_cos();
+    // Screen right for a camera on that azimuth, looking at the head.
+    let right = Vec3::new(cos, 0.0, -sin);
+    let c = s.head.centre();
+    // The head's outline at each millimetre of height: the leftmost its surface reaches on screen. Latitudes a quarter
+    // degree apart put samples of every longitude into every millimetre.
+    let mut outline = std::collections::BTreeMap::<i32, f32>::new();
+    for k in 0..360 {
+        for j in 0..=720 {
+            let (theta, phi) = ((k as f32).to_radians(), (j as f32 / 4.0 - 90.0).to_radians());
+            let d = Vec3::new(theta.sin() * phi.cos(), phi.sin(), theta.cos() * phi.cos());
+            let q = d * s.head.radius(d);
+            let edge = outline.entry((q.y * 1000.0).round() as i32).or_insert(f32::MAX);
+            *edge = edge.min(q.dot(right));
+        }
+    }
+    let edge_at = |y: f32| {
+        let mm = (y * 1000.0).round() as i32;
+        outline.range(mm - 1..=mm + 1).map(|(_, edge)| *edge).fold(f32::MAX, f32::min)
+    };
+    front(s)
+        .iter()
+        .filter(|p| p.x < c.x)
+        .map(|p| edge_at(p.y - c.y) - (*p - c).dot(right))
+        .filter(|past| past.is_finite() && *past < 1.0)
+        .fold(f32::MIN, f32::max)
+}
+
+#[test]
+fn seen_from_three_quarters_the_far_lens_keeps_to_the_heads_outline() {
+    // The lenses wrap round the head, so from a three-quarter view (35 degrees, the evidence sheet's) the far lens's
+    // outer edge stays at the outline instead of standing out past it.
+    for template in ["soft-sd", "standard"] {
+        for (name, params) in styles("glasses") {
+            let s = built_scene(template, "glasses", params.clone(), None);
+            let past = far_side_past_the_outline(&s, 35.0);
+            println!("glasses {name} on {template}: the far lens stands {past:.4} m past the head's outline");
+            assert!(
+                past <= FAR_LENS_PAST_OUTLINE,
+                "glasses {name} on {template}: the far lens stands {past} m past the head"
+            );
         }
     }
 }
@@ -236,15 +321,18 @@ fn every_documented_preset_is_among_the_styles_the_sweeps_use() {
 
 #[test]
 fn an_eye_line_override_keeps_the_brow_where_the_layout_puts_it() {
-    // The default layout's brow is at -0.09 + 0.08 = -0.01. Moving the glasses' eye line up to -0.05 leaves 0.04 m
-    // under the brow, not the layout's 0.08: frames that would reach past it are refused.
-    let err = scene(&character("soft-sd", "glasses", json!({ "eye_y": -0.05 }), None))
-        .err()
-        .expect("full-size frames reach the brow")
-        .to_string();
-    assert!(err.contains("brow"), "{err}");
-    let s = built_scene("soft-sd", "glasses", json!({ "eye_y": -0.05, "size": 0.6 }), None);
-    let c = s.head.centre();
-    let top = front(&s).iter().map(|p| p.y - c.y).fold(f32::MIN, f32::max);
-    assert!(top < -0.01, "the frames reach {top}, the brow is at -0.01");
+    // The default layout's brow is at -0.09 + 0.08 = -0.01 (face-layout units, scaled with the head). Moving the
+    // glasses' eye line up to -0.05 leaves 0.04 under the brow, not the layout's 0.08: frames that would reach past it
+    // are refused, and small ones stay under it.
+    for template in ["soft-sd", "standard"] {
+        let err = scene(&character(template, "glasses", json!({ "eye_y": -0.05 }), None))
+            .err()
+            .unwrap_or_else(|| panic!("{template}: full-size frames reach the brow"))
+            .to_string();
+        assert!(err.contains("brow"), "{template}: {err}");
+        let s = built_scene(template, "glasses", json!({ "eye_y": -0.05, "size": 0.5 }), None);
+        let (c, brow) = (s.head.centre(), -0.01 * face_scale(&s));
+        let top = front(&s).iter().map(|p| p.y - c.y).fold(f32::MIN, f32::max);
+        assert!(top < brow, "{template}: the frames reach {top}, the brow is at {brow}");
+    }
 }
