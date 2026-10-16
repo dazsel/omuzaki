@@ -570,3 +570,27 @@ fn store_error_carries_a_reason() {
     assert_eq!(e.reason(), "disk full");
     assert_eq!(e.to_string(), "setup progress store: disk full");
 }
+
+#[test]
+fn skipping_input_after_calibrating_discards_the_calibration() {
+    let mut f = SetupFlow::new(probes(), Progress { step: Step::Calibrate, ..Progress::default() }, webcam());
+    send(&mut f, &[Event::Next, Event::CalibrationDone, Event::Back, Event::Back]);
+    assert_eq!(f.view().step, Step::Input);
+    assert_eq!(f.progress().skipped, Vec::<Step>::new());
+    let fx = send(&mut f, &[Event::Skip]);
+    assert_eq!(f.view().input, Some(InputChoice::LifeLayerOnly));
+    assert_eq!(f.progress().skipped, [Step::Input, Step::Calibrate]);
+    assert!(fx.contains(&Effect::Persist(f.progress())));
+    // Back to the same webcam keeps nothing either: the run belonged to the discarded source.
+    send(&mut f, &[Event::Back, Event::ChooseInput(InputChoice::Webcam), Event::Next]);
+    assert_eq!(f.view().step, Step::Calibrate);
+    assert_eq!(send(&mut f, &[Event::Next]), [Effect::StartCalibration]);
+}
+
+#[test]
+fn skipping_calibrate_after_a_result_records_the_skip() {
+    let mut f = SetupFlow::new(probes(), Progress { step: Step::Calibrate, ..Progress::default() }, webcam());
+    send(&mut f, &[Event::Next, Event::CalibrationDone, Event::Back, Event::Skip]);
+    assert_eq!(f.progress().skipped, [Step::Calibrate]);
+    assert_eq!(f.progress().step, Step::Output);
+}

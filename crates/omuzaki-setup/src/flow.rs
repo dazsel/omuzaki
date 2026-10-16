@@ -454,10 +454,12 @@ impl SetupFlow {
     fn skip(&mut self, fx: &mut Vec<Effect>) {
         match self.step {
             Step::Input => {
-                self.input = Some(InputChoice::LifeLayerOnly);
+                self.set_input(InputChoice::LifeLayerOnly);
                 self.skipped.insert(Step::Input);
             }
             Step::Calibrate => {
+                // "Use defaults" gives up any stored result of this sitting too.
+                self.calibration = Calibration::Idle;
                 self.skipped.insert(Step::Calibrate);
             }
             Step::Output => {
@@ -479,8 +481,12 @@ impl SetupFlow {
             }
         }
         self.skipped.remove(&Step::Input);
+        self.set_input(choice);
+    }
+
+    /// Every change of source goes through here: a calibration belongs to the source it ran on.
+    fn set_input(&mut self, choice: InputChoice) {
         if self.input != Some(choice) {
-            // A calibration belongs to the source it ran on.
             self.calibration = Calibration::Idle;
         }
         self.input = Some(choice);
