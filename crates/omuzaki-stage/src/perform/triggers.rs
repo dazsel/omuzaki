@@ -109,6 +109,10 @@ impl TriggerLayer {
 
     /// Applies a rebake. A slot whose values changed fades its old values out and, if its key is still pressed, fades
     /// the new ones in, so a held or toggled expression survives a reload that changes it.
+    ///
+    /// A slot that comes back empty (its expression left the set) ends its press for good. While it is empty the
+    /// control side does not send the key's presses or releases, so nothing says whether the key is still down when the
+    /// expression returns, and showing it again could stick: the key shows it again the next time it is pressed.
     pub(super) fn rebake(&mut self, changes: &Rebaked) {
         for (index, slot) in changes.changes() {
             let pressed = self.wanted == Some(index);
