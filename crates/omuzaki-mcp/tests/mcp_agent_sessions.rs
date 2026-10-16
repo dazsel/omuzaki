@@ -224,18 +224,20 @@ async fn events_that_keep_arriving_do_not_extend_the_pause_hold() {
     let mcp = McpServer::new(studio.clone(), options(&studio).with_pause_hold(Duration::from_millis(200))).unwrap();
     let agent = Agent::connect(&mcp, "claude-code").await;
     studio.pause(Sessions::sessions(studio.as_ref())[0].id, &Studio::person()).unwrap();
-    // A feed that never goes quiet: every wait is ready at once.
+    // A feed that never goes quiet: a thread edits as fast as it can, so every wait is ready at once.
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let noise = {
-        let studio = studio.clone();
-        tokio::spawn(async move {
-            loop {
+        let (studio, stop) = (studio.clone(), stop.clone());
+        std::thread::spawn(move || {
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
                 studio.person_sets_blend(0.5);
-                tokio::time::sleep(Duration::from_millis(2)).await;
             }
         })
     };
-    let result = tokio::time::timeout(Duration::from_secs(5), agent.blend(0.4)).await.expect("the hold ends");
-    noise.abort();
+    let result = tokio::time::timeout(Duration::from_secs(5), agent.blend(0.4)).await;
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    noise.join().unwrap();
+    let result = result.expect("the hold ends at its deadline");
     assert_eq!(data(&result)["code"], "waiting");
 }
 
