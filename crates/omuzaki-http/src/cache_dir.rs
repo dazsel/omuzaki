@@ -78,8 +78,11 @@ mod tests {
 
     #[test]
     fn the_real_function_returns_an_absolute_path_on_this_host() {
-        // CI hosts have a home folder, and none sets the variable to a relative path.
+        // CI hosts have a home folder. A relative override is supported and returned as given, so absoluteness is only
+        // asserted when the variable is not set.
         let dir = app_cache_dir().expect("a cache folder on this host");
-        assert!(dir.is_absolute(), "{}", dir.display());
+        if std::env::var_os(CACHE_DIR_ENV).is_none_or(|v| v.is_empty()) {
+            assert!(dir.is_absolute(), "{}", dir.display());
+        }
     }
 }

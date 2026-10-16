@@ -238,9 +238,31 @@ fn offline_the_sheet_reports_the_missing_characters_and_the_hint_lists_them() {
 }
 
 #[test]
+fn the_hint_does_not_tell_the_user_to_download_for_a_character_no_font_covers() {
+    let glyph = |character, downloadable| omuzaki_stage::sheet::layout::MissingGlyph {
+        character,
+        reason: String::new(),
+        downloadable,
+    };
+    assert_eq!(
+        PinnedFonts::offline_hint(&[glyph('ж', false)]).unwrap(),
+        "no available font covers: ж",
+        "nothing to connect for"
+    );
+    assert_eq!(
+        PinnedFonts::offline_hint(&[glyph('山', true), glyph('ж', false)]).unwrap(),
+        "connect once to download these fonts; no font drew: 山; no available font covers: ж"
+    );
+}
+
+#[test]
 fn the_hint_cuts_a_long_list_and_counts_the_rest() {
     let missing: Vec<_> = ('a'..='z')
-        .map(|character| omuzaki_stage::sheet::layout::MissingGlyph { character, reason: String::new() })
+        .map(|character| omuzaki_stage::sheet::layout::MissingGlyph {
+            character,
+            reason: String::new(),
+            downloadable: true,
+        })
         .collect();
     let hint = PinnedFonts::offline_hint(&missing).unwrap();
     assert!(hint.ends_with("a b c d e f g h i j k l and 14 more"), "{hint}");

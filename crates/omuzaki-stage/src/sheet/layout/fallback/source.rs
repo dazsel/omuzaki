@@ -188,15 +188,25 @@ impl PinnedFonts {
     }
 
     /// What export tells the user when fonts are missing (offline, say): the characters that could not be drawn and
-    /// how to fix it. `None` when nothing is missing.
+    /// how to fix it. Connecting is only suggested for characters a downloadable font would draw; a character no
+    /// catalog font covers is listed apart, without that advice. `None` when nothing is missing.
     pub fn offline_hint(missing: &[MissingGlyph]) -> Option<String> {
-        if missing.is_empty() {
-            return None;
+        let list = |downloadable: bool| {
+            let characters: Vec<String> =
+                missing.iter().filter(|m| m.downloadable == downloadable).map(|m| m.character.to_string()).collect();
+            let more = characters.len().saturating_sub(MAX_HINT_CHARACTERS);
+            let tail = if more > 0 { format!(" and {more} more") } else { String::new() };
+            let shown = characters.iter().take(MAX_HINT_CHARACTERS).cloned().collect::<Vec<_>>().join(" ");
+            (!characters.is_empty()).then(|| format!("{shown}{tail}"))
+        };
+        let mut parts = Vec::new();
+        if let Some(fetchable) = list(true) {
+            parts.push(format!("connect once to download these fonts; no font drew: {fetchable}"));
         }
-        let listed: Vec<String> = missing.iter().take(MAX_HINT_CHARACTERS).map(|m| m.character.to_string()).collect();
-        let more = missing.len().saturating_sub(MAX_HINT_CHARACTERS);
-        let tail = if more > 0 { format!(" and {more} more") } else { String::new() };
-        Some(format!("connect once to download these fonts; no font drew: {}{tail}", listed.join(" ")))
+        if let Some(uncovered) = list(false) {
+            parts.push(format!("no available font covers: {uncovered}"));
+        }
+        (!parts.is_empty()).then(|| parts.join("; "))
     }
 }
 

@@ -168,9 +168,10 @@ fn install_crypto_provider() {
 ///
 /// # Blocking
 ///
-/// [`Fetcher::open`] blocks the calling thread and cannot be cancelled. With the defaults it can take about 90 s
+/// [`Fetcher::open`] blocks the calling thread and cannot be cancelled. With the defaults it can take about 210 s
 /// before it returns an error: three tries, each waiting up to the 30 s read timeout for the response headers, plus
-/// the backoff between them. Call it from a worker thread, never from a UI or frame loop.
+/// the waits between them, which are the backoff or, on a 429 or 503 with a `Retry-After`, that delay (at most 60 s each,
+/// see [`HttpFetcherBuilder::max_retry_after`]). Call it from a worker thread, never from a UI or frame loop.
 ///
 /// It also must not be called from inside an async runtime: reqwest's blocking client panics there. Use
 /// `spawn_blocking` (or a plain thread) when the caller is async.

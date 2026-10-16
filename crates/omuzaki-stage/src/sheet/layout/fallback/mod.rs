@@ -109,6 +109,9 @@ pub struct MissingGlyph {
     pub character: char,
     /// Why no font drew it.
     pub reason: String,
+    /// Whether a font that could draw it exists but could not be loaded (offline, say), so connecting would help. `false`
+    /// for a character no catalog font covers.
+    pub downloadable: bool,
 }
 
 /// Which fonts a sheet used and which characters it could not draw. Meant for the sheet's provenance and for export to
@@ -133,7 +136,7 @@ struct Slot {
 pub(super) struct Fallback {
     config: FontConfig,
     slots: Vec<Slot>,
-    missing: Mutex<BTreeMap<char, String>>,
+    missing: Mutex<BTreeMap<char, (String, bool)>>,
 }
 
 impl Fallback {
@@ -158,25 +161,29 @@ impl Fallback {
     /// missing, with the reason a font could not be had.
     pub(super) fn face_for(&self, c: char, weight: Weight) -> Option<Arc<Face>> {
         let Class::Script(families) = classify(c, self.config.han) else {
-            self.note_missing(c, "its script is not covered by any fallback font".to_owned());
+            self.note_missing(c, "its script is not covered by any fallback font".to_owned(), false);
             return None;
         };
         // The coverage table names the one font that can draw `c`, so the others are never downloaded to ask.
         let mut reason = "no fallback font has a glyph for it".to_owned();
+        let mut downloadable = false;
         for family in families.into_iter().filter(|f| coverage::covers(*f, c)) {
             match self.face(family, weight) {
                 Ok(face) if face.covers(c) => return Some(Arc::clone(face)),
                 Ok(_) => {}
-                Err(e) => reason = format!("the {family:?} font could not be loaded: {e}"),
+                Err(e) => {
+                    reason = format!("the {family:?} font could not be loaded: {e}");
+                    downloadable = true;
+                }
             }
         }
-        self.note_missing(c, reason);
+        self.note_missing(c, reason, downloadable);
         None
     }
 
     /// Remembers a character no font drew. The first reason wins, so the report is stable.
-    pub(super) fn note_missing(&self, c: char, reason: String) {
-        self.missing.lock().unwrap_or_else(PoisonError::into_inner).entry(c).or_insert(reason);
+    pub(super) fn note_missing(&self, c: char, reason: String, downloadable: bool) {
+        self.missing.lock().unwrap_or_else(PoisonError::into_inner).entry(c).or_insert((reason, downloadable));
     }
 
     pub(super) fn report(&self) -> FontReport {
@@ -187,7 +194,7 @@ impl Fallback {
             .map(|f| FaceUsed { family: f.spec.family, file: f.spec.file_name, sha256: f.sha256.clone() })
             .collect();
         let missing = self.missing.lock().unwrap_or_else(PoisonError::into_inner);
-        let missing = missing.iter().map(|(c, r)| MissingGlyph { character: *c, reason: r.clone() }).collect();
+        let missing = missing.iter().map(|(c, (r, d))| MissingGlyph { character: *c, reason: r.clone(), downloadable: *d }).collect();
         FontReport { han: self.config.han, faces, missing }
     }
 }
