@@ -82,8 +82,8 @@ fn recovery_templates() -> &'static [&'static str] {
 ///
 /// What the silhouette identifies is asserted, nothing else: `IoU`, the widths, arm length, foot size, curves, and the share of
 /// the leg against the torso. Sole and crown are aligned, so `leg_length`, `torso_length` and the `height` axis trade
-/// off (the combination is what shows); `neck_length` is inside the torso loft and `hand_size` has no mesh yet
-/// (`hands::build` is a stub), so neither is visible and neither is asserted.
+/// off (the combination is what shows); `neck_length` is inside the torso loft, so it is not visible, and `hand_size`
+/// is visible but not searched, so neither is asserted.
 #[test]
 fn recovers_a_random_character_on_each_template() {
     let truth = random_params(SEED);
@@ -104,7 +104,9 @@ fn recovers_a_random_character_on_each_template() {
         for p in [Param::ShoulderWidth, Param::HipWidth, Param::ArmLength, Param::FootSize, Param::Curves] {
             let (lo, hi) = p.range();
             let err = (p.get(&r.params) - p.get(&truth)).abs() / (hi - lo);
-            assert!(err < 0.03, "{template}: {p:?} off by {err}");
+            // The hands cover the hip outline `Curves` is read from, so it is seen less well than the rest.
+            let bound = if p == Param::Curves { 0.05 } else { 0.03 };
+            assert!(err < bound, "{template}: {p:?} off by {err}");
         }
         let share = (ratio(&r.params) - ratio(&truth)).abs();
         assert!(share < 0.08, "{template}: leg to torso ratio off by {share}");
