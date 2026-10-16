@@ -150,8 +150,8 @@ impl LifeLayer for Life {
         src.sanitize();
         let taken = bus.owners.human_mask();
         let config = &self.config;
-        let gate = Gate::new(taken);
-        self.ease.advance(gate, dt, config.params.face.hand_back_s);
+        let free = Gate::new(taken);
+        self.ease.advance(free, dt, config.params.face.hand_back_s);
         let loud = unit(cues.loudness);
         let frame = Frame {
             params: &config.params,
@@ -160,7 +160,7 @@ impl LifeLayer for Life {
             noise: &self.noise,
             src: &src,
             taken,
-            gate,
+            gate: free,
             ease: self.ease,
             laugh_arcs: config.laugh_arcs,
             dt,
