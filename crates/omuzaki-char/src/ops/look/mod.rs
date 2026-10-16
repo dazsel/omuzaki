@@ -10,7 +10,7 @@
 //! | [`set_preset`] | `look.set_preset`: draw the character in a preset, clearing or keeping the overrides |
 //! | [`set_param`] | `look.set_param`: set or clear one override |
 //! | [`list_presets`] | `look.list_presets`: the registered presets, a query |
-//! | [`access`] | reading the look node, writing it back, and the refusals the ops share |
+//! | `access` | reading the look node, writing it back, and the refusals the ops share |
 
 pub mod list_presets;
 pub mod set_param;
