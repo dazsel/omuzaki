@@ -107,3 +107,7 @@ Also flag anything the public-repository policy forbids (`CLAUDE.md`, "The repos
 that aren't the project's own and recordings of real people; unpublished business, pricing or product plans.
 Correctness, performance and architecture breaches are P1; practice and
 documentation gaps are P2.
+
+Report defects, not preferences: each finding says what goes wrong (behaviour, a crash, a budget, a contract, a missing
+test or doc). No style preferences, no changes for hypothetical future callers, no rewrites of working code. Every
+finding is fixed in its pull request, so each one must be worth a fix round.
