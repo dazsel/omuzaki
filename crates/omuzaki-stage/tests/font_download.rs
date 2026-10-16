@@ -238,6 +238,23 @@ fn offline_the_sheet_reports_the_missing_characters_and_the_hint_lists_them() {
 }
 
 #[test]
+fn a_missing_source_or_folder_is_not_cured_by_connecting() {
+    // No font source at all (`latin_only`): nothing was tried over the network, so the hint must not suggest it.
+    let mut sheet = SheetLayout::with_fonts(
+        Page::paper(Paper::A4, Orientation::Portrait, Dpi::D150),
+        Theme::light(),
+        FontConfig::latin_only(),
+    )
+    .unwrap();
+    let style = TextStyle::new(24.0, Weight::Regular, omuzaki_core::colour::Colour::BLACK);
+    sheet.text_on_baseline("山田", &style, (40.0, 200), Align::Left, None);
+    let missing = sheet.font_report().missing;
+    assert_eq!(missing.iter().map(|m| m.character).collect::<Vec<_>>(), vec!['山', '田']);
+    assert!(missing.iter().all(|m| !m.downloadable), "{missing:?}");
+    assert_eq!(PinnedFonts::offline_hint(&missing).unwrap(), "no available font covers: 山 田");
+}
+
+#[test]
 fn the_hint_does_not_tell_the_user_to_download_for_a_character_no_font_covers() {
     let glyph = |character, downloadable| omuzaki_stage::sheet::layout::MissingGlyph {
         character,

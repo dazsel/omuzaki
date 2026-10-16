@@ -173,7 +173,8 @@ impl Fallback {
                 Ok(_) => {}
                 Err(e) => {
                     reason = format!("the {family:?} font could not be loaded: {e}");
-                    downloadable = true;
+                    // Only a failed download is cured by connecting; no source, or an unreadable folder, is not.
+                    downloadable = matches!(e, FontError::Fetch { .. });
                 }
             }
         }
