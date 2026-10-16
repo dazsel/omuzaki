@@ -62,7 +62,11 @@ fn fixture_reply(name: &str) -> Reply {
 
 /// `text` with every character as a JSON `\\u` escape: the same string once decoded.
 fn json_escaped(text: &str) -> String {
-    text.chars().map(|c| format!("\\u{:04x}", u32::from(c))).collect()
+    use std::fmt::Write as _;
+    text.chars().fold(String::new(), |mut out, c| {
+        let _ = write!(out, "\\u{:04x}", u32::from(c));
+        out
+    })
 }
 
 fn ok_reply() -> Reply {

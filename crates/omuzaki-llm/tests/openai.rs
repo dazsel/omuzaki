@@ -586,7 +586,11 @@ fn silence_after_an_event_times_out_at_one_idle_interval() {
 
 #[test]
 fn a_turn_error_message_is_redacted_whatever_its_json_spelling() {
-    let escaped: String = common::KEY.chars().map(|c| format!("\\u{:04x}", u32::from(c))).collect();
+    let escaped = common::KEY.chars().fold(String::new(), |mut out, c| {
+        use std::fmt::Write as _;
+        let _ = write!(out, "\\u{:04x}", u32::from(c));
+        out
+    });
     for key_text in [common::KEY.to_owned(), escaped] {
         let echo = format!(r#"{{"error":{{"message":"unauthorised {key_text}","type":"invalid_request_error"}}}}"#);
         let rig = Rig::probed(vec![Reply::status(400, &echo)]);
