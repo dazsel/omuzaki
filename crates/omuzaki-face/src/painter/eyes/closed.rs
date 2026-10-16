@@ -7,7 +7,7 @@
 use omuzaki_core::glam::Vec2;
 use omuzaki_face_api::{Cap, Cmd, FaceLayerId, Join, Paint};
 
-use super::aperture::{Eye, Lid};
+use super::aperture::Eye;
 use super::{FALLBACK_COLOUR, Side};
 use crate::painter::PaintCtx;
 use crate::painter::fixed_colour;
@@ -32,38 +32,23 @@ const LASH_OUT: f32 = 0.003;
 const LASH_DOWN: f32 = 0.005;
 const LASH_WIDTH: f32 = 0.0018;
 
-/// Paints one eye if it is shut, as the happy arc or the relaxed curve.
+/// Paints one eye's closed curve, as much of it as the eye is shut (see [`Eye::shut`]): the relaxed lash curve, or the
+/// happy arc as `arc` grows, rising from the open eye's upper lid as the eye shuts, so the curve is at the lid where the
+/// open pieces still show and in its own place once they are gone. One formula for every combination of blink, arc and
+/// squeeze: its weight, shape and position are all continuous in each of them.
 pub(super) fn paint(ctx: &mut PaintCtx<'_>, side: Side) {
     let eye = Eye::new(ctx.profile, ctx.params, side);
-    let squeeze = ctx.params.effects.squeeze;
-    if !eye.shows_closed(squeeze) {
+    let weight = eye.closed_weight();
+    if weight <= 0.0 {
         return;
     }
-    let arc = eye.arc_like();
-    // The arc grows from the lowered lid line: over the open eye's upper lid until the eye is the `^` itself.
-    let growth = if eye.lid() == Lid::Open { eye.arc_growth() } else { 1.0 };
-    let shape: fn(f32) -> f32 = if arc {
-        |u| ARC_BASE + ARC_HEIGHT * (1.0 - u * u)
-    } else {
-        |u| RELAXED_BASE - RELAXED_BOW * (1.0 - u * u) + RELAXED_SLOPE * u
-    };
-    // An eye the squeeze has just shut starts from the lens the open eye shrank to and drifts to the curve's own place
-    // as the squeeze goes on, so the geometry is continuous where the open pieces give way. A blink or an arc has no
-    // such open eye to follow (`drift` is 1).
-    let drift = if arc { 1.0 } else { eye.handover_drift(squeeze) };
+    let (shut, grown) = (eye.shut(), eye.arc_growth());
     let height = |u: f32| {
-        if arc {
-            growth * shape(u) + (1.0 - growth) * eye.top(u)
-        } else {
-            drift * shape(u) + (1.0 - drift) * eye.midline(u)
-        }
+        let relaxed = RELAXED_BASE - RELAXED_BOW * (1.0 - u * u) + RELAXED_SLOPE * u;
+        let arc = ARC_BASE + ARC_HEIGHT * (1.0 - u * u);
+        let shape = (1.0 - grown) * relaxed + grown * arc;
+        (1.0 - shut) * eye.top(u.clamp(-1.0, 1.0)) + shut * shape
     };
-    // A squeeze turns the eye into the chevron of `effects`: the closed curve and its lashes fade out as the chevron
-    // fades in, and take over from the open eye at full strength where it shuts, so there is no jump at any squeeze.
-    let opacity = eye.closed_strength(squeeze);
-    if opacity <= 0.0 {
-        return;
-    }
     let colour = fixed_colour(&ctx.profile.eyes.lash.colour, FALLBACK_COLOUR);
     let mut points = [Vec2::ZERO; POINTS];
     for (i, p) in points.iter_mut().enumerate() {
@@ -80,9 +65,11 @@ pub(super) fn paint(ctx: &mut PaintCtx<'_>, side: Side) {
         width: WIDTH,
         cap: Cap::Round,
         join: Join::Round,
-        opacity,
+        opacity: weight,
     });
-    if !arc {
+    // The three small lashes belong to the relaxed curve: they give way as the arc grows.
+    let lashes = weight * (1.0 - grown);
+    if lashes > 0.0 {
         for u in LASHES {
             let from = eye.point(u, height(u));
             let to = from + Vec2::new(eye.outward() * LASH_OUT, -LASH_DOWN);
@@ -93,7 +80,7 @@ pub(super) fn paint(ctx: &mut PaintCtx<'_>, side: Side) {
                 width: LASH_WIDTH,
                 cap: Cap::Round,
                 join: Join::Round,
-                opacity,
+                opacity: lashes,
             });
         }
     }

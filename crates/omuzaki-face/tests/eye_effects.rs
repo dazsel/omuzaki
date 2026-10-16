@@ -766,15 +766,11 @@ fn squeezing_an_open_eye_hands_over_to_the_closed_curve_without_a_jump() {
             None
         };
         open_seen |= open.is_some();
-        if let (Some(open), true) = (open, closed > 0.0) {
-            both_seen = true;
-            // While one fades out the other fades in: together they stay one eye's worth of ink.
-            assert!((0.9..=1.1).contains(&(open + closed)), "squeeze {squeeze}: open {open} and closed {closed}");
-        }
-        // The visible eye, open or closed, never changes by more than one step of the fades.
+        both_seen |= open.is_some() && closed > 0.0;
+        // The visible eye, open or closed, never changes by more than one step of the fades (the open pieces fade over
+        // 0.2 of openness, the closed curve over the squeeze itself).
         let shown = open.unwrap_or(0.0) + closed;
         if let Some(before) = last {
-            // The curve fades about 1 / 0.08 per unit of squeeze, so a step of 0.005 may lose 0.0625 of it.
             assert!((before - shown).abs() < 0.13, "squeeze {squeeze}: the eye went from {before} to {shown}");
         }
         last = Some(shown);
@@ -783,6 +779,63 @@ fn squeezing_an_open_eye_hands_over_to_the_closed_curve_without_a_jump() {
         open_seen && both_seen,
         "the sweep never showed the open eye ({open_seen}) fading into the curve ({both_seen})"
     );
+}
+
+/// 201 frames of the eyes as one input runs from 0 to 1 while the others are held, from `set(params, value)`.
+fn sweep(set: impl Fn(&mut PaintParams, f32)) -> Vec<DrawList> {
+    let profile = profile();
+    (0..=200_u16)
+        .map(|step| {
+            let mut p = params(|_, _| {});
+            p.left_eye = omuzaki_face_api::EyeParams { open: 1.0, close: 0.0, arc: 0.0, lower_lid: 0.0 };
+            p.right_eye = p.left_eye;
+            set(&mut p, f32::from(step) / 200.0);
+            paint(&profile, &p).into_base()
+        })
+        .collect()
+}
+
+/// The worst step of a sweep and the median of the steps that move, in ink.
+fn worst_and_median(frames: &[DrawList]) -> (u64, u64) {
+    let moved: Vec<u64> = frames.windows(2).map(|w| ink_moved(FaceLayerId::Base, &w[0], &w[1])).collect();
+    let mut moving: Vec<u64> = moved.iter().copied().filter(|m| *m > 0).collect();
+    moving.sort_unstable();
+    (moved.iter().copied().max().unwrap(), moving[moving.len() / 2])
+}
+
+#[test]
+fn combined_effects_sweep_as_smoothly_as_each_alone() {
+    // The rendered ink of a sweep never has a step over three times the median step, however the effects combine:
+    // an arc under a squeeze, a squeeze starting in the middle of a blink, and each alone.
+    let sweeps: [(&str, Vec<DrawList>); 5] = [
+        ("arc", sweep(|p, v| (p.left_eye.arc, p.right_eye.arc) = (v, v))),
+        ("squeeze", sweep(|p, v| p.effects.squeeze = v)),
+        (
+            "arc under a squeeze of 0.5",
+            sweep(|p, v| {
+                p.effects.squeeze = 0.5;
+                (p.left_eye.arc, p.right_eye.arc) = (v, v);
+            }),
+        ),
+        (
+            "squeeze during a blink of 0.8",
+            sweep(|p, v| {
+                p.effects.squeeze = v;
+                (p.left_eye.close, p.right_eye.close) = (0.8, 0.8);
+            }),
+        ),
+        (
+            "blink under a squeeze of 0.5",
+            sweep(|p, v| {
+                p.effects.squeeze = 0.5;
+                (p.left_eye.close, p.right_eye.close) = (v, v);
+            }),
+        ),
+    ];
+    for (name, frames) in &sweeps {
+        let (worst, median) = worst_and_median(frames);
+        assert!(worst <= 3 * median, "{name}: the worst step moved {worst}, the median step {median}");
+    }
 }
 
 // ------------------------------------------------------------------------------------------------ allocation

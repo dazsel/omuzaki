@@ -218,8 +218,8 @@ fn squeeze(ctx: &mut PaintCtx<'_>, side: Side, strength: f32) {
     let eye = Eye::new(ctx.profile, ctx.params, side);
     let colour = fixed_colour(&ctx.profile.eyes.lash.colour, FALLBACK_COLOUR);
     let (arm, vertex) = (SQUEEZE_ARM, SQUEEZE_VERTEX);
-    // How far the open eye has given way: `0` while its pieces show, `1` once they are gone (see `Eye::open_fade`).
-    let gone = if eye.is_open() { 1.0 - eye.open_fade(ctx.params.effects.squeeze) } else { 1.0 };
+    // How far the open eye has given way: `0` while its pieces show, `1` once they are gone (see `Eye::shut`).
+    let gone = eye.shut();
     let reach = strength.clamp(0.0, 1.0);
     // The vertex sits where the lids meet at its place along the eye: the middle of the narrowing aperture while the open
     // eye shows, and its own place once the eye is gone.

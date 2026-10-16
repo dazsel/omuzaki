@@ -192,7 +192,7 @@ fn puffed_cheek(ctx: &mut PaintCtx<'_>, style: &CheekStyle, puff: f32, side: f32
     let darker = |c: u8| (f32::from(c) * PUFF_LINE_DARKEN).round().clamp(0.0, 255.0);
     // Between 0 and 255 by construction.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let line = Colour::rgb(darker(blush.r) as u8, darker(blush.g) as u8, darker(blush.b) as u8);
+    let line = Colour::rgba(darker(blush.r) as u8, darker(blush.g) as u8, darker(blush.b) as u8, blush.a);
     let shade = with_alpha(FRINGE_COLOUR, PUFF_SHADE_ALPHA * puff);
     let list = ctx.list(FaceLayerId::Base);
     let path = list.path().polyline(&rim).finish();

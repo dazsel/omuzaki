@@ -46,7 +46,7 @@ const FALLBACK_COLOUR: Colour = Colour::rgb(128, 128, 128);
 pub(super) fn paint(ctx: &mut PaintCtx<'_>) {
     for side in [Side::Left, Side::Right] {
         let eye = Eye::new(ctx.profile, ctx.params, side);
-        // The open pieces start here; a squeeze that is shutting the eye fades them all together (see `open_fade`).
+        // The open pieces start here; an eye that is shutting (a blink, an arc or a squeeze) fades them all together (see `open_fade`).
         let mark = ctx.list(FaceLayerId::Base).cmds().len();
         if eye.is_open() {
             let outline = aperture::outline(ctx.list(FaceLayerId::Base), &eye);
@@ -60,7 +60,7 @@ pub(super) fn paint(ctx: &mut PaintCtx<'_>) {
         lid::paint(ctx, side);
         crease::paint(ctx, side);
         lash::paint(ctx, side);
-        let fade = eye.open_fade(ctx.params.effects.squeeze);
+        let fade = eye.open_fade();
         if fade < 1.0 {
             ctx.list(FaceLayerId::Base).scale_opacity_from(mark, fade);
         }

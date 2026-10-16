@@ -71,11 +71,11 @@ const MIN_GAP: f32 = 0.004;
 const SAD_POINT_SPAN: f32 = 0.4;
 /// The point is full from a tilt of `1 / SAD_POINT_RAMP` toward sad, so a faint sadness does not leave a half-open corner.
 const SAD_POINT_RAMP: f32 = 4.0;
-/// How much openness a squeeze fades the open eye over, above [`SHUT_BELOW`].
-const HANDOVER_BAND: f32 = 0.2;
-/// An eye whose openness is below this is shut (`op < 0.08`).
+/// An eye whose openness is below this is wholly shut (`op < 0.08`): its open pieces are gone.
 const SHUT_BELOW: f32 = 0.08;
-/// A lid with `arc` at or above this is a happy ^ arc (`smileEye > 0.5`).
+/// The openness over which the open eye gives way to the shut one, above [`SHUT_BELOW`]: at `0.28` it is wholly open.
+const SHUT_BAND: f32 = 0.2;
+/// A lid with `arc` at or above this is a happy ^ arc (`smileEye > 0.5`), wholly shut.
 const ARC_FROM: f32 = 0.5;
 /// An arc starts to show, over the open eye, from this value.
 const ARC_BAND_FROM: f32 = 0.2;
@@ -154,17 +154,6 @@ impl Shape {
     }
 }
 
-/// How an eye is drawn: open, or shut as one of two curves (drawn elsewhere).
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub(super) enum Lid {
-    /// The aperture, eye white, iris and the rest.
-    Open,
-    /// Shut as a happy ^ arc (`arc >= 0.5`: ^^ eyes, a wink).
-    Arc,
-    /// Shut as the relaxed lash curve (a blink, or openness near 0).
-    Relaxed,
-}
-
 /// One eye's geometry: where it is, how big, and the shape of its opening this frame.
 #[derive(Copy, Clone, Debug)]
 pub(super) struct Eye {
@@ -176,11 +165,14 @@ pub(super) struct Eye {
     shape: Shape,
     /// Effective openness: `open`, closed by the blink, by the arc and by the squeeze, `0..=1.9`.
     open: f32,
-    /// The same without the squeeze: how open the eye would be if it were not squeezed.
-    unsqueezed: f32,
+    /// How shut the eye is, `0..=1`: see [`Eye::new`].
+    shut: f32,
+    /// How far an arc has grown, `0..=1` (`0` to [`ARC_BAND_FROM`], `1` from [`ARC_FROM`]).
+    arc_growth: f32,
+    /// The squeeze effect, `0..=1`.
+    squeeze: f32,
     tilt: f32,
     low_lid: f32,
-    arc: f32,
 }
 
 impl Eye {
@@ -197,85 +189,51 @@ impl Eye {
         // A blink or wink closes the lid in proportion; an arc closes it too (the prototype's `1 - smileEye`).
         // A squeeze closes the lid too, as it turns the eye into a `>` or `<`.
         let squeeze = params.effects.squeeze.clamp(0.0, 1.0);
-        let unsqueezed =
-            eye.open.clamp(0.0, MAX_OPEN) * (1.0 - eye.close.clamp(0.0, 1.0)) * (1.0 - eye.arc.clamp(0.0, 1.0));
-        let open = unsqueezed * (1.0 - squeeze);
+        let open = eye.open.clamp(0.0, MAX_OPEN)
+            * (1.0 - eye.close.clamp(0.0, 1.0))
+            * (1.0 - eye.arc.clamp(0.0, 1.0))
+            * (1.0 - squeeze);
+        // One amount says how shut the eye is, whatever shuts it, so that no two effects can disagree about it. The
+        // blink, the arc and the squeeze all lower `open`, and the eye is shut as `open` falls through the band above
+        // `SHUT_BELOW`; an arc is also shut by its own growth from `ARC_BAND_FROM` to `ARC_FROM`. The larger of the two
+        // counts (a maximum is continuous and changes no faster than its fastest input), so every piece that is
+        // weighted by `shut` is continuous in every channel together.
+        let by_openness = 1.0 - ((open - SHUT_BELOW) / SHUT_BAND).clamp(0.0, 1.0);
+        let arc_growth = ((eye.arc - ARC_BAND_FROM) / (ARC_FROM - ARC_BAND_FROM)).clamp(0.0, 1.0);
+        let shut = by_openness.max(arc_growth);
         Self {
             side,
             centre: Vec2::new(x as f32, (layout.eye_y - style.drop) as f32),
             width: (layout.eye_width * style.scale) as f32,
             shape: Shape::new(&style.aperture),
             open,
-            unsqueezed,
+            shut,
+            arc_growth,
+            squeeze,
             tilt: params.eye_tilt,
             low_lid: eye.lower_lid,
-            arc: eye.arc,
         }
     }
 
-    /// Whether the squeeze (not a blink or an arc) is what is shutting this eye.
-    fn squeeze_shut(&self, squeeze: f32) -> bool {
-        squeeze > 0.0 && self.unsqueezed > SHUT_BELOW && self.arc < ARC_FROM
+    /// How shut the eye is, `0` wholly open to `1` wholly shut (see [`Eye::new`]).
+    pub(super) fn shut(&self) -> f32 {
+        self.shut
     }
 
-    /// How much of the open eye's pieces show, `0..=1`. A squeeze that shuts an open eye fades them out over the
-    /// last [`HANDOVER_BAND`] of openness before [`SHUT_BELOW`], where the closed curve takes over, so no piece
-    /// vanishes in one step. Everything else is `1`.
-    pub(super) fn open_fade(&self, squeeze: f32) -> f32 {
-        let by_squeeze = if self.squeeze_shut(squeeze) && self.open < SHUT_BELOW + HANDOVER_BAND {
-            ((self.open - SHUT_BELOW) / HANDOVER_BAND).clamp(0.0, 1.0)
-        } else {
-            1.0
-        };
-        by_squeeze * (1.0 - self.arc_growth_while_open())
+    /// How much of the open eye's pieces show: the share of the eye that is not shut.
+    pub(super) fn open_fade(&self) -> f32 {
+        1.0 - self.shut
     }
 
-    /// How far an arc has grown, `0..=1`: `0` up to [`ARC_BAND_FROM`], then rising to `1` where the eye becomes the
-    /// happy `^` ([`ARC_FROM`]). In between the open pieces fade out as the arc fades in.
+    /// How much of the closed curve shows: the shut share of the eye, fading out as the squeeze grows, because the
+    /// chevron (at the squeeze's own strength) takes over from it.
+    pub(super) fn closed_weight(&self) -> f32 {
+        self.shut * (1.0 - self.squeeze)
+    }
+
+    /// How far an arc has grown, `0..=1`: the closed curve is the relaxed lash curve at `0` and the happy `^` at `1`.
     pub(super) fn arc_growth(&self) -> f32 {
-        ((self.arc - ARC_BAND_FROM) / (ARC_FROM - ARC_BAND_FROM)).clamp(0.0, 1.0)
-    }
-
-    /// [`Eye::arc_growth`] while the open eye is still the one drawn, `0` otherwise.
-    fn arc_growth_while_open(&self) -> f32 {
-        if self.lid() == Lid::Open { self.arc_growth() } else { 0.0 }
-    }
-
-    /// Whether the closed curve is the happy arc: the eye is an arc, or an arc is growing over the open eye.
-    pub(super) fn arc_like(&self) -> bool {
-        self.lid() == Lid::Arc || self.arc_growth_while_open() > 0.0
-    }
-
-    /// How much of the closed curve shows when a squeeze (`squeeze`, `0..=1`) is what shut the eye: it comes in as the
-    /// open pieces fade out (see [`Eye::open_fade`]), is at full strength where they are gone, and fades out to nothing
-    /// at full squeeze, where the chevron has fully replaced it. An eye shut by a blink or an arc just fades with the
-    /// squeeze.
-    pub(super) fn closed_strength(&self, squeeze: f32) -> f32 {
-        // Only an eye the squeeze itself is shutting crossfades; an arc, a blink or no squeeze keeps the plain fade.
-        let arc_in = if self.lid() == Lid::Open { self.arc_growth() } else { 1.0 };
-        if self.squeeze_shut(squeeze) {
-            self.takeover(squeeze) * (1.0 - self.open_fade(squeeze))
-        } else {
-            (1.0 - squeeze.clamp(0.0, 1.0)) * arc_in
-        }
-    }
-
-    /// The closed curve's share once it has taken over from an open eye the squeeze is shutting: full where the
-    /// openness reaches [`SHUT_BELOW`], then fading out with the squeeze.
-    fn takeover(&self, squeeze: f32) -> f32 {
-        ((1.0 - squeeze.clamp(0.0, 1.0)) * self.unsqueezed / SHUT_BELOW).min(1.0)
-    }
-
-    /// Whether the closed curve is drawn: the eye is shut, or a squeeze is fading its open pieces out.
-    pub(super) fn shows_closed(&self, squeeze: f32) -> bool {
-        self.lid() != Lid::Open || self.open_fade(squeeze) < 1.0
-    }
-
-    /// How far the closed curve of an eye shut by the squeeze has moved from the open eye it took over from, `0..=1`:
-    /// `0` where it takes over (it lies on the lens the open eye had shrunk to), `1` at full squeeze, where it is
-    /// invisible anyway. An eye shut by a blink or an arc is `1`: the curve is drawn in its own place, as in the prototype.
-    pub(super) fn handover_drift(&self, squeeze: f32) -> f32 {
-        if self.squeeze_shut(squeeze) { 1.0 - self.takeover(squeeze) } else { 1.0 }
+        self.arc_growth
     }
 
     /// The middle of the aperture at `u`: halfway between the lids.
@@ -283,20 +241,9 @@ impl Eye {
         f32::midpoint(self.top(u), self.bottom(u))
     }
 
-    /// How the eye is drawn: the open aperture, or which shut curve (`closedEye`'s `dir`).
-    pub(super) fn lid(&self) -> Lid {
-        if self.arc >= ARC_FROM {
-            Lid::Arc
-        } else if self.open < SHUT_BELOW {
-            Lid::Relaxed
-        } else {
-            Lid::Open
-        }
-    }
-
-    /// True when the aperture is drawn.
+    /// True when any of the aperture shows.
     pub(super) fn is_open(&self) -> bool {
-        self.lid() == Lid::Open
+        self.shut < 1.0
     }
 
     /// Half the eye's width in metres: one eye unit.
@@ -682,21 +629,70 @@ mod tests {
         }
     }
 
-    fn lid_of(open: f32, close: f32, arc: f32) -> Lid {
+    fn shut_of(open: f32, close: f32, arc: f32, squeeze: f32) -> f32 {
+        eye_with(open, close, arc, squeeze).shut()
+    }
+
+    fn eye_with(open: f32, close: f32, arc: f32, squeeze: f32) -> Eye {
         let mut params = rest_params(open, 0.0, 0.0);
         params.left_eye = EyeParams { open, close, arc, lower_lid: 0.0 };
-        Eye::new(&FaceProfile::default(), &params, Side::Left).lid()
+        params.effects.squeeze = squeeze;
+        Eye::new(&FaceProfile::default(), &params, Side::Left)
     }
 
     #[test]
-    fn the_lid_is_shut_by_a_blink_an_arc_or_no_openness() {
-        assert_eq!(lid_of(1.0, 0.0, 0.0), Lid::Open);
-        assert_eq!(lid_of(0.0, 0.0, 0.0), Lid::Relaxed);
-        assert_eq!(lid_of(1.0, 1.0, 0.0), Lid::Relaxed, "a blink");
-        assert_eq!(lid_of(1.0, 0.95, 0.0), Lid::Relaxed, "a nearly complete blink");
-        assert_eq!(lid_of(1.0, 0.0, 0.5), Lid::Arc, "arc 0.5 is a happy arc");
-        assert_eq!(lid_of(1.0, 1.0, 1.0), Lid::Arc, "the arc wins over a blink");
-        assert_eq!(lid_of(1.0, 0.5, 0.0), Lid::Open, "half a blink is a narrow open eye");
+    fn the_eye_is_shut_by_a_blink_an_arc_a_squeeze_or_no_openness() {
+        let (open, shut) = (|s: f32| s < 1e-6, |s: f32| s > 1.0 - 1e-6);
+        assert!(open(shut_of(1.0, 0.0, 0.0, 0.0)));
+        assert!(shut(shut_of(0.0, 0.0, 0.0, 0.0)));
+        assert!(shut(shut_of(1.0, 1.0, 0.0, 0.0)), "a blink");
+        assert!(shut(shut_of(1.0, 0.95, 0.0, 0.0)), "a nearly complete blink");
+        assert!(shut(shut_of(1.0, 0.0, 0.5, 0.0)), "arc 0.5 is a happy arc");
+        assert!(shut(shut_of(1.0, 1.0, 1.0, 0.0)), "the arc and a blink together");
+        assert!(shut(shut_of(1.0, 0.0, 0.0, 0.95)), "a squeeze");
+        let half = shut_of(1.0, 0.5, 0.0, 0.0);
+        assert!(half < 1e-6, "half a blink is a narrow open eye, not a shut one: {half}");
+    }
+
+    /// The smallest step of any input that the bounds below are checked at.
+    const STEP: f32 = 1e-3;
+
+    /// The numbers every piece of the eye's blend is made from: the open pieces' opacity, the closed curve's weight,
+    /// the arc's growth (which weights the lashes), and the curve's height at a few places along it.
+    fn blend(open: f32, close: f32, arc: f32, squeeze: f32) -> [f32; 8] {
+        let e = eye_with(open, close, arc, squeeze);
+        let (shut, grown) = (e.shut(), e.arc_growth());
+        let height = |u: f32| {
+            let relaxed = -0.06 - 0.16 * (1.0 - u * u) + 0.10 * u;
+            let arc = -0.05 + 0.40 * (1.0 - u * u);
+            (1.0 - shut) * e.top(u) + shut * ((1.0 - grown) * relaxed + grown * arc)
+        };
+        [e.open_fade(), e.closed_weight(), grown, height(-0.9), height(-0.4), height(0.0), height(0.5), height(1.0)]
+    }
+
+    proptest! {
+        /// The blend is continuous in every channel and in their combinations: a small step in any one input moves no
+        /// piece's opacity by more than a constant times the step (and the curve's position by more than a larger one).
+        #[test]
+        fn a_small_step_in_any_input_moves_every_piece_by_at_most_a_constant_times_the_step(
+            open in 0.0_f32..1.9,
+            close in 0.0_f32..1.0,
+            arc in 0.0_f32..1.0,
+            squeeze in 0.0_f32..1.0,
+            which in 0usize..4,
+        ) {
+            let start = [open, close, arc, squeeze];
+            let mut next = start;
+            // Never past the end of the input's range.
+            next[which] = (next[which] + STEP).min([1.9, 1.0, 1.0, 1.0][which]);
+            let step = next[which] - start[which];
+            let (a, b) = (blend(open, close, arc, squeeze), blend(next[0], next[1], next[2], next[3]));
+            for (i, (x, y)) in a.iter().zip(&b).enumerate() {
+                // Opacities and weights move at most 12 per unit of input; positions (eye units) at most 60.
+                let bound = if i < 3 { 12.0 } else { 60.0 } * step + 1e-5;
+                prop_assert!((x - y).abs() <= bound, "piece {i}: {x} to {y} for a step of {step} in input {which}");
+            }
+        }
     }
 
     #[test]

@@ -340,6 +340,33 @@ fn solid_alphas(list: &DrawList) -> Vec<u8> {
 }
 
 #[test]
+fn the_puffed_rim_keeps_the_alpha_of_the_blush_colour() {
+    for alpha in [0_u8, 100] {
+        let mut profile = mock_profile();
+        profile.cheeks.colour = ColourRef::Fixed(Colour::rgba(200, 100, 50, alpha));
+        let mut p = params(BLUSH);
+        p.cheek_puff = 1.0;
+        let mut out = FaceDrawing::default();
+        paint_with(Section::Cheeks, &profile, &p, mock_projection(), &mut out);
+        // The rim line is the blush colour darkened: its alpha can never exceed the blush colour's own.
+        let rim: Vec<u8> = out[FaceLayerId::Base]
+            .cmds()
+            .iter()
+            .filter_map(|c| match c {
+                Cmd::Stroke { paint: Paint::Solid(c), .. }
+                    if c.r < 200 && c.g < 100 && c.b < 50 && (c.r, c.g, c.b) != (0, 0, 0) =>
+                {
+                    Some(c.a)
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(!rim.is_empty(), "alpha {alpha}: no rim line was drawn");
+        assert!(rim.iter().all(|&a| a <= alpha), "alpha {alpha}: the rim is more opaque than the blush: {rim:?}");
+    }
+}
+
+#[test]
 fn no_puff_adds_nothing_and_a_puff_adds_a_rim_and_a_highlight_to_each_cheek() {
     let (rest, none) = (puffed(0.0), base(Section::Cheeks, &mock_profile(), BLUSH));
     assert_eq!(rest.cmds(), none.cmds(), "a puff of 0 paints the same list as before");
