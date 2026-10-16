@@ -15,17 +15,28 @@ check() { if eval "$2"; then ok "$1"; else bad "$1"; fi; }
 
 openssl genrsa -out "$W/key.pem" 2048 2>/dev/null || { echo "need openssl to make a test key"; exit 1; }
 export OMUZAKI_READ_APP_ID=123 OMUZAKI_READ_APP_KEY_B64=$(base64 < "$W/key.pem" | tr -d '\n')
-export TMPDIR=$W/tmp FAKE_LOG=$W/log FAKE_BODY=$W/body FAKE_MODE=good
+unset XDG_RUNTIME_DIR
+export TMPDIR=$W/tmp FAKE_LOG=$W/log FAKE_BODY=$W/body FAKE_ARGS=$W/args FAKE_MODE=good
 
-# Fake curl: logs "METHOD URL" and the POST body (never headers), answers by URL; FAKE_MODE picks a failure.
+# Fake curl: logs "METHOD URL", every argument (to FAKE_ARGS) and the POST body; the Authorization header is only
+# accepted on stdin (`-H @-`), where it is classified as the fake token or a JWT and never logged. FAKE_MODE picks a failure.
 cat > "$W/bin/curl" <<'FAKE'
 #!/usr/bin/env bash
 method=GET url= body=
+printf '%s\n' "$@" >> "$FAKE_ARGS"
 while [ $# -gt 0 ]; do
   case $1 in
     -X) method=$2; shift ;;
     -d) body=$2; shift ;;
-    -H|--max-time) shift ;;
+    -H) if [ "$2" = @- ]; then
+          IFS= read -r hdr
+          case $hdr in
+            "Authorization: Bearer FAKETOKEN") echo "auth-stdin-token" >> "$FAKE_LOG" ;;
+            "Authorization: Bearer "?*) echo "auth-stdin-jwt" >> "$FAKE_LOG" ;;
+          esac
+        fi
+        shift ;;
+    --max-time) shift ;;
     http*) url=$1 ;;
   esac
   shift
@@ -51,9 +62,9 @@ FAKE
 chmod +x "$W/bin/curl"
 export PATH=$W/bin:$PATH
 run() { "$SCRIPT" "$@" 2>"$W/err" >"$W/out"; }
-fresh() { rm -f "$W"/tmp/* "$W/log" "$W/body"; }
-cache=$(id -u)
-CACHE=$W/tmp/omuzaki-read-token-$cache
+fresh() { rm -rf "${W:?}/tmp/"* "$W/log" "$W/body" "$W/args"; }
+DIR=$W/tmp/omuzaki-read-token-$(id -u)
+CACHE=$DIR/cache
 
 bash -n "$SCRIPT" && ok "bash -n" || bad "bash -n"
 
@@ -61,8 +72,9 @@ bash -n "$SCRIPT" && ok "bash -n" || bad "bash -n"
 fresh; run
 check "mint prints the token" '[ "$(cat "$W/out")" = FAKETOKEN ]'
 check "mint requests read-only permissions and the one repository" 'grep -q "\"repositories\":\[\"omuzaki\"\]" "$W/body" && ! grep -q write "$W/body"'
-check "cache is mode 600" '[ "$(stat -c %a "$CACHE")" = 600 ]'
-check "no temp files left" '[ "$(ls "$W/tmp" | wc -l)" = 1 ]'
+check "cache is mode 600 in a 700 directory" '[ "$(stat -c %a "$CACHE")" = 600 ] && [ "$(stat -c %a "$DIR")" = 700 ]'
+check "no temp files left" '[ "$(ls "$DIR" | wc -l)" = 1 ] && [ "$(ls "$W/tmp" | wc -l)" = 1 ]'
+check "the JWT went to curl on stdin, never in its arguments" 'grep -q auth-stdin-jwt "$W/log" && ! grep -qi -e bearer -e "eyJ" "$W/args"'
 check "stderr is empty and holds no token" '[ ! -s "$W/err" ]'
 
 # Cache hit: no further mint.
@@ -85,7 +97,7 @@ check "GitHub refusing the token fails with a message" '[ $rc -ne 0 ] && grep -q
 fresh; OMUZAKI_READ_APP_ID= run; rc=$?
 check "missing variables fail with a message" '[ $rc -ne 0 ] && grep -q "must be set" "$W/err"'
 fresh; OMUZAKI_READ_APP_KEY_B64='!!notbase64' run; rc=$?
-check "bad key fails and leaves no key file" '[ $rc -ne 0 ] && [ -z "$(ls "$W/tmp")" ]'
+check "bad key fails and leaves no key file" '[ $rc -ne 0 ] && [ -z "$(ls "$DIR")" ]'
 
 # Interrupt during signing: the fake openssl sends TERM to the script (its grandparent), then exits; the key must not survive.
 cat > "$W/bin/openssl" <<FAKE
@@ -96,12 +108,22 @@ FAKE
 chmod +x "$W/bin/openssl"
 # The runner may start us with TERM ignored or blocked (an ignored signal can't be trapped), so restore it first.
 fresh; python3 -I -c 'import os, signal, sys; signal.signal(signal.SIGTERM, signal.SIG_DFL); signal.pthread_sigmask(signal.SIG_UNBLOCK, [signal.SIGTERM]); os.execv(sys.argv[1], sys.argv[1:])' "$SCRIPT" 2>"$W/err" >"$W/out"; rc=$?
-check "TERM while the key is on disk: non-zero exit, no key file left" '[ $rc -ne 0 ] && [ -z "$(ls "$W/tmp")" ]'
+check "TERM while the key is on disk: non-zero exit, no key file left" '[ $rc -ne 0 ] && [ -z "$(ls "$DIR")" ]'
 rm "$W/bin/openssl"
+
+# The cache directory is verified, and refused when it is not private.
+fresh; mkdir -m 755 "$DIR"; run; rc=$?
+check "a group/world-readable cache directory is refused before any call" '[ $rc -ne 0 ] && grep -q "not a private directory" "$W/err" && [ ! -e "$W/log" ] && [ ! -s "$W/out" ]'
+fresh; mkdir "$W/elsewhere" && chmod 700 "$W/elsewhere"; ln -s "$W/elsewhere" "$DIR"; run; rc=$?
+check "a symlinked cache directory is refused, nothing written through it" '[ $rc -ne 0 ] && grep -q "not a private directory" "$W/err" && [ -z "$(ls "$W/elsewhere")" ]'
+rm -rf "$W/elsewhere"
+fresh; mkdir "$W/xdg" && chmod 700 "$W/xdg"; XDG_RUNTIME_DIR=$W/xdg run; rc=$?
+check "XDG_RUNTIME_DIR is used when set" '[ $rc -eq 0 ] && [ "$(stat -c %a "$W/xdg/omuzaki-read-token/cache")" = 600 ] && [ ! -e "$DIR" ]'
 
 # --check exit paths.
 fresh; run --check; rc=$?
 check "--check ok shows the budget" '[ $rc -eq 0 ] && grep -q "budget left: 4999/5000" "$W/out"'
+check "--check sent the token on stdin, never in arguments" '[ "$(grep -c auth-stdin-token "$W/log")" = 2 ] && ! grep -q -e FAKETOKEN -e Bearer "$W/args"'
 for m in ratefail ratebad; do FAKE_MODE=$m run --check; rc=$?
   check "--check fails when the rate-limit lookup fails ($m)" '[ $rc -ne 0 ] && grep -q "rate-limit lookup failed" "$W/err" && ! grep -q "^ok" "$W/out"'; done
 fresh; FAKE_MODE=refuse run --check; rc=$?
