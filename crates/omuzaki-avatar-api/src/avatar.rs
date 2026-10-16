@@ -568,10 +568,12 @@ pub fn texture_bytes(texture: &TextureData) -> u64 {
 
 /// Checks the geometry a source mesh keeps for itself: an undrawn mesh keeps every primitive's (export has no runtime
 /// mesh to read), a drawn one none (its runtime meshes hold it), and what is kept is a valid mesh whose morph targets
-/// fit it and match the mesh's target names.
+/// fit it. Across its primitives the kept targets follow glTF's rule, as `IoScene::check` does
+/// (`scene.morph_target_mismatch`): every primitive that has targets has the same number, and a name table, when the
+/// mesh has one, names exactly that many.
 fn check_kept_geometry(source: usize, mesh: &RetainedMesh) -> Result<(), AvatarError> {
     let drawn = !mesh.instances.is_empty();
-    let mut targets = None;
+    let mut targets: Option<(usize, usize)> = None;
     for (at, primitive) in mesh.primitives.iter().enumerate() {
         match (&primitive.geometry, drawn) {
             (None, false) => return Err(AvatarError::undrawn_geometry(source, at)),
@@ -595,16 +597,23 @@ fn check_kept_geometry(source: usize, mesh: &RetainedMesh) -> Result<(), AvatarE
                         )));
                     }
                 }
-                if geometry.morph_targets.len() > targets.unwrap_or(0) {
-                    targets = Some(geometry.morph_targets.len());
+                let count = geometry.morph_targets.len();
+                match targets {
+                    Some((first, others)) if count != 0 && count != others => {
+                        return Err(invalid(format!(
+                            "{count} morph targets, where primitive {first} of the same mesh has {others}"
+                        )));
+                    }
+                    None if count != 0 => targets = Some((at, count)),
+                    _ => {}
                 }
             }
         }
     }
     let names = mesh.morph_target_names.len();
-    match targets {
-        Some(targets) if names != 0 && names != targets => Err(AvatarError::morph_names(source, names, targets)),
-        None if !drawn && names != 0 => Err(AvatarError::morph_names(source, names, 0)),
-        _ => Ok(()),
+    let count = targets.map_or(0, |(_, count)| count);
+    if !drawn && names != 0 && names != count {
+        return Err(AvatarError::morph_names(source, names, count));
     }
+    Ok(())
 }
