@@ -78,7 +78,7 @@ const SHUT_BELOW: f32 = 0.08;
 /// A lid with `arc` at or above this is a happy ^ arc (`smileEye > 0.5`).
 const ARC_FROM: f32 = 0.5;
 /// An arc starts to show, over the open eye, from this value.
-const ARC_BAND_FROM: f32 = 0.35;
+const ARC_BAND_FROM: f32 = 0.2;
 /// Largest openness (the mapping's own bound).
 const MAX_OPEN: f32 = 1.9;
 

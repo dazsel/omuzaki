@@ -181,7 +181,7 @@ fn render_the_closed_and_smiling_eyes_when_asked() {
     // A wink (the left eye closes as the happy arc, the right stays open) and the happy `^^`.
     save("eyes-wink.png", eyes_picture(&profile, |p| p.left_eye.arc = 1.0));
     save("eyes-happy.png", eyes_picture(&profile, |p| (p.left_eye.arc, p.right_eye.arc) = (1.0, 1.0)));
-    // The arc from 0 to 1 in nine steps: the open eye fades out from 0.35 as the `^` grows from the lowered lid.
+    // The arc from 0 to 1 in nine steps: the open eye fades out from 0.2 as the `^` grows from the lowered lid.
     let arcs: Vec<_> = (0..9_u8)
         .map(|i| {
             let arc = f32::from(i) / 8.0;
