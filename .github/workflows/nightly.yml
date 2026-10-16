@@ -80,7 +80,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Test (all targets)
-        run: cargo test --locked --workspace --all-targets
+        # --no-fail-fast: one failing test binary must not hide the others (a git_clean failure hid known_texts, 10-16).
+        run: cargo test --locked --workspace --all-targets --no-fail-fast
 
   # The GPU face rasteriser's timing probe (#1433 B1), cross-built for Windows so the owner can run it on their GPU machine
   # (#1658). No secrets, no self-hosted runner; the toolchain is the one rust-toolchain.toml pins, as in ci.yml's win-cross.
