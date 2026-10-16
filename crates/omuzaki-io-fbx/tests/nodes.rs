@@ -301,3 +301,22 @@ fn a_cancel_while_the_hierarchy_is_wired_or_at_the_last_check_still_stops_the_im
         assert!(matches!(r, Err(IoError::Cancelled)), "{stage}: {r:?}");
     }
 }
+
+#[test]
+fn a_limit_error_names_the_ceiling_the_load_ran_under() {
+    // With a node cap of 2 the load runs under a tight allocator (about 16 MiB and 100,000 allocations). A file with tens
+    // of thousands of models runs into it, and the error says that ceiling, not ufbx's fixed 1 GiB or 32,000,000.
+    let mut file = maya();
+    for i in 0..30_000 {
+        file.model(&format!("N{i}"), SCENE_ROOT, [0.0; 3], [0.0; 3]);
+    }
+    let options = ImportOptions::default().with_limits(Limits { max_nodes: 2, ..Limits::default() });
+    let r = run_import(&FbxImporter, &ImportInput::new(&file.bytes()), &ImportCtx::new(&options));
+    match r {
+        Err(IoError::Limit { what, limit, got }) if what != "node count" => {
+            assert!(limit <= 17 << 20, "{what}: the error names a limit of {limit}, not the one applied");
+            assert_eq!(got, limit + 1);
+        }
+        other => panic!("expected an allocator limit, got {other:?}"),
+    }
+}

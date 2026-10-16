@@ -80,7 +80,7 @@ pub(crate) fn load(bytes: &[u8], ctx: &ImportCtx<'_>) -> Result<SceneRoot, IoErr
         ..LoadOpts::default()
     };
     // A progress cancel is reported by ufbx as `Cancelled`; check the handle once more for a cancel that raced the end.
-    let scene = ufbx::load_memory(bytes, opts).map_err(|e| map_error(&e))?;
+    let scene = ufbx::load_memory(bytes, opts).map_err(|e| map_error(&e, memory_limit, allocation_limit))?;
     ctx.progress.checkpoint(STAGE, 1.0)?;
     Ok(scene)
 }
@@ -101,8 +101,9 @@ pub(crate) fn ceilings(max_nodes: u32) -> (usize, usize) {
     )
 }
 
-/// Maps ufbx's error onto the contract's.
-fn map_error(error: &ufbx::Error) -> IoError {
+/// Maps ufbx's error onto the contract's. The limits are the ceilings this load ran under (see [`ceilings`]), which the
+/// error names, not the fixed maxima.
+fn map_error(error: &ufbx::Error, memory_limit: usize, allocation_limit: usize) -> IoError {
     let what = error.description.to_string();
     let limit = |what: &'static str, limit: usize| IoError::Limit {
         what,
@@ -112,10 +113,8 @@ fn map_error(error: &ufbx::Error) -> IoError {
     };
     match error.type_ {
         ErrorType::Cancelled => IoError::Cancelled,
-        ErrorType::MemoryLimit | ErrorType::OutOfMemory => {
-            limit("memory used to read the file in bytes", MEMORY_LIMIT_BYTES)
-        }
-        ErrorType::AllocationLimit => limit("allocations made to read the file", ALLOCATION_LIMIT),
+        ErrorType::MemoryLimit | ErrorType::OutOfMemory => limit("memory used to read the file in bytes", memory_limit),
+        ErrorType::AllocationLimit => limit("allocations made to read the file", allocation_limit),
         ErrorType::NodeDepthLimit => limit("node hierarchy depth", NODE_DEPTH_LIMIT as usize),
         ErrorType::UnrecognizedFileFormat | ErrorType::UnsupportedVersion => {
             IoError::unsupported(what, "convert it to glTF or VRM")
