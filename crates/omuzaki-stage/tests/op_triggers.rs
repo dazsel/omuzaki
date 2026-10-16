@@ -19,7 +19,7 @@ use omuzaki_anim_mock::animator::MockAnimator;
 use omuzaki_core::time::{FakeClock, Seconds};
 use omuzaki_doc_mock::MemDoc;
 use omuzaki_face_api::{ExpressionId, ExpressionSet};
-use omuzaki_ops_api::{Actor, ErrorCode, OpCtx, OpError, ServicesBuilder, find};
+use omuzaki_ops_api::{Actor, Effect, ErrorCode, OpCtx, OpError, Plan, ServicesBuilder, Undo, find};
 use omuzaki_stage::perform::host::{PerformControl, PerformError, PerformHandle, PerformHost, perform_channel};
 use omuzaki_stage::perform::triggers::{BindOutcome, TriggerBinding};
 use omuzaki_stage::perform::{Performer, PerformerParts, STEP_HZ};
@@ -272,6 +272,26 @@ fn a_rebake_that_changes_a_toggled_expression_keeps_it_on() {
 }
 
 #[test]
+fn an_expression_that_goes_missing_ends_its_press_and_the_key_must_be_pressed_again() {
+    let mut rig = starter_rig();
+    rig.handle.press("F3", true).unwrap(); // `surprised`, held
+    rig.steps(40);
+    assert_eq!(rig.step().wide, Source::Trigger);
+    let mut without = ExpressionSet::starter();
+    assert!(without.0.remove(&id("surprised")).is_some());
+    rig.handle.set_expressions(without, ChannelBuf::NEUTRAL).unwrap();
+    // While the expression is missing a press or release of F3 does not reach the performer, so nothing can say
+    // whether the key is still down when the expression returns; showing it again could stick.
+    assert_eq!(rig.handle.press("F3", false), Ok(false));
+    rig.handle.set_expressions(ExpressionSet::starter(), ChannelBuf::NEUTRAL).unwrap();
+    rig.steps(60);
+    assert_ne!(rig.step().wide, Source::Trigger, "the returned expression stays hidden until its key is pressed");
+    rig.handle.press("F3", true).unwrap();
+    rig.steps(40);
+    assert_eq!(rig.step().wide, Source::Trigger, "pressed again, it shows");
+}
+
+#[test]
 fn a_reset_drops_the_shown_expression_at_once_and_keeps_the_bindings() {
     let mut rig = starter_rig();
     rig.handle.press("F1", true).unwrap();
@@ -325,15 +345,20 @@ fn a_binding_whose_expression_left_the_set_is_listed_missing_and_does_nothing() 
     assert!(!rig.handle.triggers().iter().any(|t| t.missing), "sad is back");
 }
 
-/// Runs `op` with `handle` as the performer.
-fn run(handle: &PerformHandle, op: &str, args: Value, dry_run: bool) -> Result<Value, OpError> {
+/// Plans `op` with `handle` as the performer.
+fn run_plan(handle: &PerformHandle, op: &str, args: Value, dry_run: bool) -> Result<Plan, OpError> {
     let host: Arc<dyn PerformHost> = Arc::new(handle.clone());
     let services = ServicesBuilder::new().insert::<dyn PerformHost>(host).build();
     let (doc, clock) = (MemDoc::new(), FakeClock::new(Seconds(0.0)));
     let actor = Actor::Person { name: "performer".into() };
     let ctx = OpCtx::new(&doc, &actor, &clock).with_dry_run(dry_run).with_services(&services);
     let op = (find(op).expect("the op registers itself").decode)(args)?;
-    Ok(op.plan(&ctx)?.output.unwrap_or(Value::Null))
+    op.plan(&ctx)
+}
+
+/// Runs `op` with `handle` as the performer and returns its answer.
+fn run(handle: &PerformHandle, op: &str, args: Value, dry_run: bool) -> Result<Value, OpError> {
+    Ok(run_plan(handle, op, args, dry_run)?.output.unwrap_or(Value::Null))
 }
 
 #[test]
@@ -356,6 +381,89 @@ fn an_unknown_expression_is_not_found_with_a_did_you_mean_hint() {
     assert_eq!(error.code, ErrorCode::NotFound);
     assert!(error.hint.as_deref().unwrap_or_default().contains("happy"), "{:?}", error.hint);
     assert_eq!(rig.handle.triggers().len(), 4, "nothing was bound");
+}
+
+/// Every binding as `(key, expression, mode)`, in slot order, so two states compare.
+fn table(rig: &Rig) -> Vec<(String, String, TriggerMode)> {
+    rig.handle
+        .triggers()
+        .into_iter()
+        .map(|t| (t.binding.key, t.binding.expression.as_str().to_owned(), t.binding.mode))
+        .collect()
+}
+
+/// Runs one of an effect's stored calls.
+fn replay(rig: &Rig, call: &omuzaki_ops_api::OpCall) {
+    run(&rig.handle, &call.op, call.args.clone(), false).expect("a stored call runs");
+}
+
+#[test]
+fn binding_a_new_key_is_undone_by_unbinding_it() {
+    let rig = starter_rig();
+    let before = table(&rig);
+    let plan = run_plan(&rig.handle, "trigger.bind", json!({ "key": "f5", "expression": "happy" }), false).unwrap();
+    let Effect { undo, redo, .. } = plan.effect.expect("a bind outside the document records its effect");
+    assert_eq!(undo.op, "trigger.unbind");
+    assert_eq!(undo.args, json!({ "key": "f5" }));
+    assert_eq!(redo.op, "trigger.bind");
+    assert_eq!(redo.args, json!({ "key": "f5", "expression": "happy", "mode": "toggle" }));
+    assert_eq!(rig.handle.triggers().len(), 5);
+    replay(&rig, &undo);
+    assert_eq!(table(&rig), before, "undo removes the new key");
+    replay(&rig, &undo); // idempotent: unbinding an unbound key changes nothing
+    assert_eq!(table(&rig), before);
+    replay(&rig, &redo);
+    assert_eq!(rig.handle.triggers().len(), 5, "redo binds it again");
+}
+
+#[test]
+fn rebinding_a_key_is_undone_by_binding_what_it_was() {
+    let rig = starter_rig();
+    let before = table(&rig);
+    let plan =
+        run_plan(&rig.handle, "trigger.bind", json!({ "key": "f1", "expression": "sad", "mode": "hold" }), false)
+            .unwrap();
+    let effect = plan.effect.expect("a bind records its effect");
+    assert_eq!(effect.undo.op, "trigger.bind");
+    assert_eq!(
+        effect.undo.args,
+        json!({ "key": "F1", "expression": "happy", "mode": "toggle" }),
+        "the key as it was bound"
+    );
+    assert_ne!(table(&rig), before);
+    replay(&rig, &effect.undo);
+    assert_eq!(table(&rig), before, "undo puts the old binding back, in its slot");
+    replay(&rig, &effect.redo);
+    assert_eq!(table(&rig)[0], ("f1".to_owned(), "sad".to_owned(), TriggerMode::Hold));
+}
+
+#[test]
+fn unbinding_is_undone_by_binding_the_key_again_and_an_unbound_key_records_nothing() {
+    let rig = starter_rig();
+    let plan = run_plan(&rig.handle, "trigger.unbind", json!({ "key": "f2" }), false).unwrap();
+    let effect = plan.effect.expect("removing a binding records its effect");
+    assert_eq!(effect.undo.op, "trigger.bind");
+    assert_eq!(effect.undo.args, json!({ "key": "F2", "expression": "angry", "mode": "toggle" }));
+    assert_eq!(effect.redo.op, "trigger.unbind");
+    assert_eq!(rig.handle.triggers().len(), 3);
+    replay(&rig, &effect.undo);
+    assert!(table(&rig).contains(&("F2".to_owned(), "angry".to_owned(), TriggerMode::Toggle)));
+    replay(&rig, &effect.redo);
+    assert_eq!(rig.handle.triggers().len(), 3, "redo removes it again");
+
+    let none = run_plan(&rig.handle, "trigger.unbind", json!({ "key": "F9" }), false).unwrap();
+    assert!(none.effect.is_none(), "nothing was bound, so there is nothing to undo");
+}
+
+#[test]
+fn a_dry_run_records_no_effect_and_the_edits_declare_explicit_undo() {
+    let rig = starter_rig();
+    for (op, args) in
+        [("trigger.bind", json!({ "key": "F5", "expression": "happy" })), ("trigger.unbind", json!({ "key": "F1" }))]
+    {
+        assert!(run_plan(&rig.handle, op, args, true).unwrap().effect.is_none(), "{op}: a dry run changes nothing");
+        assert_eq!(((find(op).unwrap().meta)()).undo, Undo::Explicit, "{op} has effects outside the document");
+    }
 }
 
 #[test]

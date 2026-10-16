@@ -16,11 +16,18 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 
+use omuzaki_anim_api::{Calibration, DeviceProfile, RetargetConfig};
 use omuzaki_cli::project::SavedProject;
 use omuzaki_core::time::SystemClock;
 use omuzaki_doc_api::{DocPath, Value};
 use omuzaki_ops::Executor;
-use omuzaki_ops_api::{Actor, Grants, Mode, OpKind, OpRegistration, ProjectDir, Request, Runner, Undo, registrations};
+use omuzaki_ops_api::{
+    Actor, Grants, Mode, OpKind, OpRegistration, ProjectDir, Request, Runner, ServicesBuilder, Undo, registrations,
+};
+use omuzaki_stage::perform::Tracking;
+use omuzaki_stage::perform::host::{
+    CalibrationState, PerformError, PerformHost, PerformStatus, RetargetChange, RetargetReceipt,
+};
 
 const ALLOWLIST: &str = include_str!("op_conformance_allowlist.txt");
 
@@ -33,6 +40,38 @@ struct State {
     tree: Option<Value>,
     files: BTreeMap<String, Vec<u8>>,
     log: usize,
+}
+
+/// The performer an op's example runs against: none. It lists no triggers and refuses every request, which is all a
+/// dry-run of the `trigger.*` examples reaches (`trigger.list` is the one that reads it).
+struct IdleHost;
+
+impl PerformHost for IdleHost {
+    fn calibrate(&self, _frames: usize) -> Result<(), PerformError> {
+        Err(PerformError::Unsupported)
+    }
+
+    fn set_retarget(&self, _change: RetargetChange) -> Result<RetargetReceipt, PerformError> {
+        Err(PerformError::Unsupported)
+    }
+
+    fn set_calibration(&self, _calibration: Calibration) -> Result<(), PerformError> {
+        Err(PerformError::Unsupported)
+    }
+
+    fn calibration(&self) -> Calibration {
+        Calibration::identity(DeviceProfile::Arkit)
+    }
+
+    fn status(&self) -> PerformStatus {
+        PerformStatus {
+            tracking: Tracking::NoFrames,
+            calibration: CalibrationState::Idle,
+            retarget: RetargetConfig::default(),
+            retarget_seq: 0,
+            source_fps: 0.0,
+        }
+    }
 }
 
 struct Rig {
@@ -57,6 +96,7 @@ impl Rig {
         let project = ProjectDir::open(dir.path()).map_err(|e| format!("opening the fixture folder failed: {e}"))?;
         let runner = Executor::with_registrations(Box::new(doc), Arc::new(SystemClock::new()), [reg])
             .map_err(|e| e.to_string())?
+            .with_services(ServicesBuilder::new().insert::<dyn PerformHost>(Arc::new(IdleHost)).build())
             .with_project_dir(project);
         let actor = Actor::Person { name: "conformance".to_owned() };
         Ok(Self { runner, dir, actor, grants: Grants::person() })

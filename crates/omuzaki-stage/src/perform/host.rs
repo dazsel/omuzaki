@@ -103,6 +103,10 @@ pub trait PerformHost: Send + Sync {
     /// Replaces the expression library the triggers bake against, and the rest face they blend onto. Every bound key is
     /// re-baked; a key whose expression is no longer in the set stays bound and is listed as missing.
     ///
+    /// A key held or toggled on keeps showing its expression across a reload that leaves the expression in the set,
+    /// even with new values. A key whose expression goes missing stops showing it, and must be pressed again once the
+    /// expression is back: presses of a missing key are not sent, so nothing says whether the key is still down.
+    ///
     /// # Errors
     /// [`PerformError::QueueFull`] or [`PerformError::Disconnected`]; nothing changes then.
     fn set_expressions(&self, _set: ExpressionSet, _rest: ChannelBuf) -> Result<(), PerformError> {
