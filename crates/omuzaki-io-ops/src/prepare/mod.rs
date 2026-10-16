@@ -6,5 +6,6 @@ pub mod arkit;
 pub mod arkit_shapes;
 pub mod avatar;
 pub mod cleanup;
+pub(crate) mod graph;
 pub mod humanoid;
 pub mod tpose;

@@ -144,6 +144,7 @@ fn generation_is_deterministic() {
 /// synthesis alone builds it (a symmetric preset at half weight, or nothing), `after/` as the generator makes it.
 #[test]
 #[ignore = "writes OBJ files for tools/arkit-shape-sheet.py; run by hand"]
+#[allow(clippy::disallowed_methods, reason = "test tooling: the dump is plain files the sheet script reads")]
 fn generated_sheet() {
     let Some(dir) = std::env::var_os("OMUZAKI_SHEET_DIR").map(PathBuf::from) else { return };
     let mut before = head().scene;

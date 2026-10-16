@@ -400,17 +400,19 @@ fn cheek_puff(scene: &IoScene, m: &Landmarks, points: &[Vec<Vec3>]) -> Option<Sh
     let mut deltas = Deltas::zero(scene, m.mesh);
     for (left, eye) in [(true, m.eyes[0]), (false, m.eyes[1])] {
         let sign = if left { 1.0 } else { -1.0 };
-        let x = m.middle + sign * (m.mouth_half_width + 0.2 * s);
-        let centre = Vec3::new(x, mouth.y + 0.35 * (eye.y - mouth.y), mouth.z);
-        let radii = (0.32 * s, 0.4 * (eye.y - mouth.y).abs().max(0.2 * s));
+        let x = m.middle + sign * (m.mouth_half_width + 0.45 * s);
+        let centre = Vec3::new(x, mouth.y + 0.2 * (eye.y - mouth.y), mouth.z);
+        let radii = (0.5 * s, 0.45 * (eye.y - mouth.y).abs().max(0.2 * s));
         for (p, (prim, deltas)) in deltas.positions.iter_mut().enumerate().map(|(p, d)| (p, (&points[p], d))) {
             for (v, (point, delta)) in prim.iter().zip(deltas.iter_mut()).enumerate() {
                 let normal = normals[p].get(v).copied().unwrap_or(Vec3::Z);
-                // Only the side of the face that looks forward or sideways, and nothing an expression already moves.
-                if fixed[p][v] || normal.z < 0.3 || (point.x - m.middle) * sign < 0.0 {
+                // The face that looks forward or sideways, fading out toward the back of the head (a hard cut would
+                // leave a crease), and nothing an expression already moves.
+                if fixed[p][v] || (point.x - m.middle) * sign < 0.0 {
                     continue;
                 }
-                *delta += normal * (PUFF * s * bump(*point, centre, radii));
+                let facing = smoothstep(-0.2, 0.4, normal.z);
+                *delta += normal * (PUFF * s * facing * bump(*point, centre, radii));
             }
         }
     }
@@ -424,7 +426,7 @@ fn lips(scene: &IoScene, m: &Landmarks, points: &[Vec<Vec3>], channel: &str) -> 
     let s = m.eye_spacing;
     let upper = channel.ends_with("Upper");
     let roll = channel.starts_with("mouthRoll");
-    let band = if roll { 0.14 * s } else { 0.2 * s };
+    let band = if roll { 0.1 * s } else { 0.2 * s };
     let half_width = (m.mouth_half_width * 1.15).max(0.1 * s);
     let mut deltas = Deltas::zero(scene, m.mesh);
     for (prim, slots) in points.iter().zip(deltas.positions.iter_mut()) {
@@ -436,11 +438,13 @@ fn lips(scene: &IoScene, m: &Landmarks, points: &[Vec<Vec3>], channel: &str) -> 
             // Full strength along the middle of the mouth, easing out toward the corners.
             let across = ((point.x - m.middle) / half_width).abs();
             let w = if across >= 1.0 { 0.0 } else { (1.0 - across * across).powi(2) };
+            // Strongest at the mouth line, easing to nothing at the band's far edge, so the skin beyond never creases.
+            let ease = (1.0 - (depth / band).powi(2)).powi(2);
             *slot = if roll {
-                Vec3::new(0.0, -depth.copysign(if upper { 1.0 } else { -1.0 }) * ROLL, -ROLL_BACK * s) * w
+                let toward_line = if upper { -1.0 } else { 1.0 };
+                Vec3::new(0.0, toward_line * ROLL * depth, -ROLL_BACK * s) * (w * ease)
             } else {
-                // Strongest at the mouth line, nothing at the band's far edge.
-                Vec3::Y * (SHRUG * s * w * (1.0 - depth / band))
+                Vec3::Y * (SHRUG * s * w * ease)
             };
         }
     }
@@ -488,25 +492,40 @@ fn look(scene: &IoScene, m: &Landmarks, points: &[Vec<Vec3>], channel: &str) -> 
         .filter(|(p, _)| *p != iris)
         .flat_map(|(p, prim)| prim.iter().zip(&fixed[p]).filter(|(v, still)| !**still && inside(v)).map(|(v, _)| *v))
         .collect();
-    let height = |x: f32, y: f32| -> Option<f32> {
-        surface
-            .iter()
-            .min_by(|a, b| {
-                let d = |v: &Vec3| (v.x - x).powi(2) + (v.y - y).powi(2);
-                d(a).total_cmp(&d(b))
-            })
-            .map(|v| v.z)
-    };
     let mut deltas = Deltas::zero(scene, m.mesh);
     for (point, slot) in points[iris].iter().zip(deltas.positions[iris].iter_mut()) {
         if !inside(point) {
             continue;
         }
         let (x, y) = (point.x + shift.x, point.y + shift.y);
-        let rise = height(x, y).zip(height(point.x, point.y)).map_or(0.0, |(to, from)| to - from);
-        *slot = Vec3::new(shift.x, shift.y, rise);
+        let rise = surface_height(&surface, x, y)
+            .zip(surface_height(&surface, point.x, point.y))
+            .map_or(0.0, |(to, from)| to - from);
+        // A little clearance, half the iris's own height above the surface, so it never sinks into a coarse eye white.
+        let clearance = surface_height(&surface, point.x, point.y).map_or(0.0, |h| 0.5 * (point.z - h).max(0.0));
+        *slot = Vec3::new(shift.x, shift.y, rise + clearance);
     }
     Some(Shape { deltas, source: format!("the {} iris", if left { "left" } else { "right" }) })
+}
+
+/// The height (`z`) of `surface` at `(x, y)`: the inverse-distance blend of its nearest points, so it is smooth however
+/// coarse the surface is; `None` for no surface.
+fn surface_height(surface: &[Vec3], x: f32, y: f32) -> Option<f32> {
+    const NEAREST: usize = 6;
+    let mut nearest: Vec<(f32, f32)> = surface.iter().map(|v| ((v.x - x).powi(2) + (v.y - y).powi(2), v.z)).collect();
+    nearest.sort_by(|a, b| a.0.total_cmp(&b.0));
+    nearest.truncate(NEAREST);
+    let (sum, weight) = nearest.iter().fold((0.0, 0.0), |(sum, weight), &(d2, z)| {
+        let w = 1.0 / (d2 + 1e-12);
+        (sum + z * w, weight + w)
+    });
+    (weight > 0.0).then(|| sum / weight)
+}
+
+/// 0 below `edge0`, 1 above `edge1`, a smoothstep between.
+fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
+    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 /// Adds `deltas` to mesh `mesh` as a new morph target named `channel` (on every primitive that has targets or that

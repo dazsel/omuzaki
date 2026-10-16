@@ -28,8 +28,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use omuzaki_core::glam::{Mat4, Vec3};
+use omuzaki_core::glam::Vec3;
 use omuzaki_io_api::{Avatar, Finding, HUMAN_BONES, HumanBoneName, Humanoid, IoScene, NodeIx, Report};
+
+use super::graph;
 
 /// Which node plays each humanoid bone, with how it was found.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -335,45 +337,6 @@ fn want(found: &Found, bone: HumanBoneName) -> Want {
 
 type Found = BTreeMap<HumanBoneName, (usize, MatchHow)>;
 
-/// Every node once, parents before children and siblings in order, each with the parent it was reached through. Nodes
-/// that no root reaches (a cycle, which a valid scene never has) are left out.
-fn hierarchy_order(scene: &IoScene, parent: &[Option<usize>]) -> Vec<(usize, Option<usize>)> {
-    let mut order = Vec::with_capacity(scene.nodes.len());
-    let mut seen = vec![false; scene.nodes.len()];
-    let mut stack: Vec<(usize, Option<usize>)> =
-        parent.iter().enumerate().rev().filter(|(_, p)| p.is_none()).map(|(i, _)| (i, None)).collect();
-    while let Some((n, via)) = stack.pop() {
-        if !seen.get(n).copied().unwrap_or(true) {
-            seen[n] = true;
-            order.push((n, via));
-            let kids = scene.nodes.get(n).map(|nd| nd.children.iter().map(|c| c.index()));
-            stack.extend(kids.into_iter().flatten().rev().map(|c| (c, Some(n))));
-        }
-    }
-    order
-}
-
-/// The rest position of every node, from one pass over `order`: each node's world matrix is its parent's times its
-/// own local one, so the work is linear in the node count. Also returns the number of matrix multiplications done.
-fn world_positions(scene: &IoScene, order: &[(usize, Option<usize>)]) -> (Vec<Vec3>, usize) {
-    let mut world = vec![Mat4::IDENTITY; scene.nodes.len()];
-    let mut multiplies = 0;
-    for &(n, via) in order {
-        let Some(nd) = scene.nodes.get(n) else { continue };
-        let t = &nd.transform;
-        let local = Mat4::from_scale_rotation_translation(t.scale, t.rotation, t.translation);
-        let m = match via.and_then(|p| world.get(p)) {
-            Some(&up) => {
-                multiplies += 1;
-                up * local
-            }
-            None => local,
-        };
-        world[n] = m;
-    }
-    (world.iter().map(|m| m.transform_point3(Vec3::ZERO)).collect(), multiplies)
-}
-
 /// The candidate hierarchy: each candidate's nearest candidate ancestor (so non-joint nodes between joints are
 /// transparent), its candidate children in scene order, and the skeletons, which are the trees of that hierarchy, each
 /// as its sorted candidates and ordered by lowest node.
@@ -430,16 +393,9 @@ struct Cx<'a> {
 impl<'a> Cx<'a> {
     fn new(scene: &'a IoScene) -> Self {
         let n = scene.nodes.len();
-        let mut parent = vec![None; n];
-        for (i, node) in scene.nodes.iter().enumerate() {
-            for c in &node.children {
-                if let Some(slot) = parent.get_mut(c.index()) {
-                    *slot = Some(i);
-                }
-            }
-        }
-        let order = hierarchy_order(scene, &parent);
-        let (world, _) = world_positions(scene, &order);
+        let parent = graph::parents(scene);
+        let order = graph::hierarchy_order(scene, &parent, &|_| true);
+        let world: Vec<Vec3> = graph::world(scene, &order).matrices.iter().map(|m| m.w_axis.truncate()).collect();
         let joints: BTreeSet<usize> =
             scene.skins.iter().flat_map(|s| s.joints.iter().map(|j| j.index())).filter(|&j| j < n).collect();
         let cand: Vec<usize> = if scene.skins.is_empty() { (0..n).collect() } else { joints.into_iter().collect() };
@@ -890,53 +846,4 @@ fn check_found(scene: &IoScene, cx: &Cx<'_>, found: &Found, report: &mut Report)
 /// Sets `scene.avatar.humanoid` (creating the avatar if there is none).
 pub fn apply(scene: &mut IoScene, proposal: &HumanoidProposal) {
     scene.avatar.get_or_insert_with(Avatar::new).humanoid = proposal.humanoid.clone();
-}
-
-#[cfg(test)]
-mod tests {
-    use omuzaki_core::glam::{Quat, Vec3};
-    use omuzaki_io_api::{IoScene, Node};
-
-    use super::{hierarchy_order, world_positions};
-
-    fn parents(scene: &IoScene) -> Vec<Option<usize>> {
-        let mut parent = vec![None; scene.nodes.len()];
-        for (i, nd) in scene.nodes.iter().enumerate() {
-            for c in &nd.children {
-                parent[c.index()] = Some(i);
-            }
-        }
-        parent
-    }
-
-    #[test]
-    fn world_transforms_take_one_multiplication_per_node() {
-        // Listed leaf first so that index order is not hierarchy order.
-        let mut scene = IoScene::new();
-        let n = 10_000;
-        let ids: Vec<_> = (0..n).map(|_| scene.add_node(Node::new("j").at(Vec3::Y))).collect();
-        for w in ids.windows(2) {
-            scene.attach(w[1], w[0]);
-        }
-        scene.roots.push(ids[n - 1]);
-        let order = hierarchy_order(&scene, &parents(&scene));
-        let (world, multiplies) = world_positions(&scene, &order);
-        assert_eq!(multiplies, n - 1, "one per node that has a parent");
-        assert_eq!(world[0], Vec3::new(0.0, 10_000.0, 0.0), "the deepest node sits n steps up");
-    }
-
-    #[test]
-    fn world_positions_compose_scale_rotation_and_translation() {
-        let mut scene = IoScene::new();
-        let root = scene.add_node(Node::new("root").at(Vec3::new(1.0, 0.0, 0.0)));
-        scene.nodes[root.index()].transform.rotation = Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
-        scene.nodes[root.index()].transform.scale = Vec3::splat(2.0);
-        let child = scene.add_node(Node::new("child").at(Vec3::new(1.0, 0.0, 0.0)));
-        scene.attach(root, child);
-        let order = hierarchy_order(&scene, &parents(&scene));
-        let (world, multiplies) = world_positions(&scene, &order);
-        assert_eq!(multiplies, 1);
-        // Scaled by 2, turned a quarter about Z (+X becomes +Y), then moved by the root's translation.
-        assert!((world[child.index()] - Vec3::new(1.0, 2.0, 0.0)).length() < 1e-5);
-    }
 }

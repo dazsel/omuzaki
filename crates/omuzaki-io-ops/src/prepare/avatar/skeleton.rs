@@ -19,11 +19,12 @@
 use std::collections::BTreeSet;
 
 use omuzaki_anim_api::{BoneDef, BoneId, HumanoidBone, MAX_BONES, Skeleton, Transform};
-use omuzaki_core::glam::{Mat4, Quat, Vec3};
+use omuzaki_core::glam::{Mat4, Quat};
 use omuzaki_core::id::Slug;
 use omuzaki_io_api::{Finding, IoScene, NodeIx, Report};
 
 use crate::convert::bones::from_file;
+use crate::prepare::graph;
 
 /// The skeleton made from a scene, with the node each bone came from.
 #[derive(Clone, Debug)]
@@ -60,57 +61,6 @@ impl Rig {
         let (_, rotation, translation) = world.to_scale_rotation_translation();
         Some(Mat4::from_rotation_translation(unit(rotation), translation).inverse() * world)
     }
-}
-
-/// The parent of every node, by index (`None` for a root or a node nothing lists as a child).
-pub(crate) fn parents(scene: &IoScene) -> Vec<Option<usize>> {
-    let mut parent = vec![None; scene.nodes.len()];
-    for (i, node) in scene.nodes.iter().enumerate() {
-        for child in &node.children {
-            if let Some(slot) = parent.get_mut(child.index()) {
-                *slot = Some(i);
-            }
-        }
-    }
-    parent
-}
-
-/// The nodes in depth-first order from the scene's roots, children in file order, then every node no root reaches
-/// (by index, each with its own subtree): every node once, parents before children. `keep` prunes a subtree.
-pub(crate) fn hierarchy_order(scene: &IoScene, parent: &[Option<usize>], keep: &dyn Fn(usize) -> bool) -> Vec<usize> {
-    let n = scene.nodes.len();
-    let mut seen = vec![false; n];
-    let mut order = Vec::with_capacity(n);
-    let tops =
-        scene.roots.iter().map(|r| r.index()).chain((0..n).filter(|&i| parent.get(i).copied().flatten().is_none()));
-    for top in tops {
-        let mut stack = vec![top];
-        while let Some(i) = stack.pop() {
-            if i >= n || seen[i] || !keep(i) {
-                continue;
-            }
-            seen[i] = true;
-            order.push(i);
-            let children = scene.nodes[i].children.iter().rev().map(|c| c.index());
-            stack.extend(children.filter(|&c| parent.get(c).copied().flatten() == Some(i)));
-        }
-    }
-    order
-}
-
-/// Every node's world matrix (scale included) and whether its scale and its ancestors' are all one, computed once in
-/// hierarchy order: one matrix multiplication per node.
-pub(crate) fn world_matrices(scene: &IoScene, parent: &[Option<usize>]) -> (Vec<Mat4>, Vec<bool>) {
-    let n = scene.nodes.len();
-    let (mut world, mut unit_scale) = (vec![Mat4::IDENTITY; n], vec![true; n]);
-    for i in hierarchy_order(scene, parent, &|_| true) {
-        let t = &scene.nodes[i].transform;
-        let local = Mat4::from_scale_rotation_translation(t.scale, t.rotation, t.translation);
-        let up = parent.get(i).copied().flatten();
-        world[i] = up.map_or(local, |p| world[p] * local);
-        unit_scale[i] = t.scale == Vec3::ONE && up.is_none_or(|p| unit_scale[p]);
-    }
-    (world, unit_scale)
 }
 
 /// The nodes something moves with (see the module docs), closed under ancestors.
@@ -218,10 +168,13 @@ fn bone_name(name: &str, index: usize, taken: &mut BTreeSet<String>) -> String {
 /// A report with `avatar.too_many_bones` when the needed nodes are over [`MAX_BONES`], or `avatar.skeleton_invalid`
 /// naming the rule the bones break (a required humanoid bone missing, a humanoid bone under the wrong parent).
 pub(crate) fn build(scene: &IoScene) -> Result<Rig, Report> {
-    let parent = parents(scene);
-    let (world, unit_scale) = world_matrices(scene, &parent);
+    let parent = graph::parents(scene);
+    let graph::World { matrices: world, unit_scale, .. } = graph::world_of(scene);
     let need = needed(scene, &parent);
-    let order = hierarchy_order(scene, &parent, &|i| need.get(i).copied().unwrap_or(false));
+    let order: Vec<usize> = graph::hierarchy_order(scene, &parent, &|i| need.get(i).copied().unwrap_or(false))
+        .into_iter()
+        .map(|(i, _)| i)
+        .collect();
     if order.len() > MAX_BONES {
         let msg = format!("the model moves {} nodes; at most {MAX_BONES} can be bones", order.len());
         let hint = "remove unused bones from the model, or merge accessory bones, then import it again";

@@ -16,7 +16,8 @@ use omuzaki_anim_api::{HumanoidFrames, HumanoidPose, Transform};
 use omuzaki_core::glam::{Quat, Vec3};
 use omuzaki_io_api::{Finding, IoScene, NodeIx, Report};
 
-use super::avatar::skeleton::{self, parents, unit, world_matrices};
+use super::avatar::skeleton::{self, unit};
+use super::graph;
 
 /// A limb more than this many degrees off its T axis is turned onto it.
 pub const CORRECT_ABOVE_DEG: f32 = 1.0;
@@ -100,9 +101,9 @@ pub fn normalise_rest(scene: &mut IoScene) -> RestReport {
 /// Turns node `at` by the swing that points it (toward `tail`) along `axis`, when it is more than
 /// [`CORRECT_ABOVE_DEG`] off; returns the angle it turned, in degrees.
 fn swing_onto(scene: &mut IoScene, at: NodeIx, tail: NodeIx, axis: Vec3) -> Option<f32> {
-    let parent = parents(scene);
-    let (world, _) = world_matrices(scene, &parent);
-    let position = |n: NodeIx| world.get(n.index()).map(|m| m.w_axis.truncate());
+    let parent = graph::parents(scene);
+    let world = graph::world(scene, &graph::hierarchy_order(scene, &parent, &|_| true));
+    let position = |n: NodeIx| world.position(n.index());
     let direction = (position(tail)? - position(at)?).try_normalize()?;
     let degrees = direction.angle_between(axis).to_degrees();
     if degrees.is_nan() || degrees <= CORRECT_ABOVE_DEG {
@@ -111,7 +112,7 @@ fn swing_onto(scene: &mut IoScene, at: NodeIx, tail: NodeIx, axis: Vec3) -> Opti
     let swing = Quat::from_rotation_arc(direction, axis);
     // In world space the bone turns by `swing` about its own origin; in its parent's frame that is the swing seen from
     // the parent: `Pw⁻¹ · swing · Pw · local`.
-    let up = parent.get(at.index()).copied().flatten().and_then(|p| world.get(p));
+    let up = parent.get(at.index()).copied().flatten().and_then(|p| world.matrices.get(p));
     let parent_rotation = up.map_or(Quat::IDENTITY, |m| unit(m.to_scale_rotation_translation().1));
     let node = scene.nodes.get_mut(at.index())?;
     let local = parent_rotation.conjugate() * swing * parent_rotation * node.transform.rotation;
@@ -131,8 +132,8 @@ fn check_thumb(scene: &IoScene, side: &str, humanoid: &omuzaki_io_api::Humanoid,
         .filter_map(|b| humanoid.node(&format!("{side}{b}")))
         .collect();
     let (Some(&root), Some(&next)) = (chain.first(), chain.get(1)) else { return };
-    let (world, _) = world_matrices(scene, &parents(scene));
-    let position = |n: NodeIx| world.get(n.index()).map(|m| m.w_axis.truncate());
+    let world = graph::world_of(scene);
+    let position = |n: NodeIx| world.position(n.index());
     let (Some(a), Some(b)) = (position(root), position(next)) else { return };
     let Some(direction) = (b - a).try_normalize() else { return };
     let sign = if side == "left" { 1.0 } else { -1.0 };

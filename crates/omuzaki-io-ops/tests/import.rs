@@ -846,8 +846,8 @@ fn an_older_record_with_one_character_reads_as_a_list_and_becomes_one_when_it_ch
     let before = rig.doc.get(&path).cloned();
     rig.doc.apply(&Patch::new().with(path.clone(), before, Some(old))).unwrap();
 
-    let (_, patch) = import_for(&mut rig, Some("mira")).unwrap();
-    assert_eq!(patch.changes.len(), 1, "the record gains its own provenance");
+    let (_, upgrade) = import_for(&mut rig, Some("mira")).unwrap();
+    assert_eq!(upgrade.changes.len(), 1, "the record gains its own provenance");
     let entry = rig.doc.get(&path).cloned().unwrap();
     assert_eq!((entry.get("character"), &entry["characters"]), (None, &json!(["mira"])), "upgraded");
     import_for(&mut rig, Some("kai")).unwrap();
