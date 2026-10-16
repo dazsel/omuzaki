@@ -5,14 +5,17 @@ use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 
 use egui::Ui;
+use omuzaki_anim::TriggerMode;
 use omuzaki_anim_api::RetargetConfig;
 use omuzaki_doc_api::{DocPath, Value};
+use omuzaki_face_api::ExpressionId;
 use omuzaki_ops_api::checks::op_info;
 use omuzaki_ops_api::{Actor, Event, Grants, OpError, OpInfo, OpRecord, Outcome, Plan, Request, Runner, TxId, find};
 use omuzaki_stage::perform::Tracking;
 use omuzaki_stage::perform::host::{CalibrationState, PerformStatus};
+use omuzaki_stage::perform::triggers::{TriggerBinding, TriggerInfo};
 
-use super::model::{LiveModel, OP_CALIBRATE, OP_SET_RETARGET};
+use super::model::{LiveModel, OP_CALIBRATE, OP_SET_RETARGET, OP_TRIGGER_BIND, OP_TRIGGER_LIST, OP_TRIGGER_UNBIND};
 use super::panel::LivePanel;
 use crate::aux_window::Transparency;
 use crate::ds::gallery::Group;
@@ -54,28 +57,59 @@ impl LiveState {
         PerformStatus { tracking, calibration, retarget, retarget_seq: 1, source_fps }
     }
 
+    /// What `trigger.list` answers in this state: `F1` on Happy and `F2` on Surprised, with Happy showing while the
+    /// face is tracked.
+    pub fn triggers(self) -> Vec<TriggerInfo> {
+        let info = |key: &str, expression: &str, active: bool| TriggerInfo {
+            binding: TriggerBinding {
+                key: key.to_owned(),
+                expression: ExpressionId::new(expression).unwrap_or_else(|_| unreachable!("a starter id")),
+                mode: TriggerMode::Toggle,
+            },
+            active,
+            missing: false,
+        };
+        vec![info("F1", "happy", self == Self::Calibrating), info("F2", "surprised", false)]
+    }
+
     /// The workspace on `runner`, showing this state, with a closed output window at the default plan.
     pub fn panel(self, runner: &dyn Runner) -> LivePanel {
         let mut model = LiveModel::new(runner);
         model.set_status(self.status());
+        model.set_triggers(self.triggers());
         let output = OutputWindow::new(OutputPlan::default(), Transparency::Fallback);
         LivePanel::with_model(model, Some(Arc::new(Mutex::new(output))))
     }
 }
 
-/// A runner with no document that offers `perform.calibrate` and `perform.set_retarget` and accepts them without
-/// doing anything. It has no `perform.status`, so the workspace shows whatever status its model is given
-/// ([`LiveModel::set_status`]): the gallery and the evidence pictures pick a [`LiveState`] that way.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct StoryRunner;
+/// A runner with no document that offers `perform.calibrate`, `perform.set_retarget` and the trigger ops, and accepts
+/// them without doing anything; `trigger.list` lists its state's bindings ([`LiveState::triggers`]). It has no
+/// `perform.status`, so the workspace shows whatever status its model is given ([`LiveModel::set_status`]): the gallery
+/// and the evidence pictures pick a [`LiveState`] that way.
+#[derive(Clone, Copy, Debug)]
+pub struct StoryRunner(pub LiveState);
+
+impl Default for StoryRunner {
+    fn default() -> Self {
+        Self(LiveState::Calibrating)
+    }
+}
 
 impl Runner for StoryRunner {
     fn ops(&self) -> Vec<OpInfo> {
-        [OP_CALIBRATE, OP_SET_RETARGET].into_iter().filter_map(find).map(op_info).collect()
+        [OP_CALIBRATE, OP_SET_RETARGET, OP_TRIGGER_BIND, OP_TRIGGER_UNBIND, OP_TRIGGER_LIST]
+            .into_iter()
+            .filter_map(find)
+            .map(op_info)
+            .collect()
     }
 
-    fn run(&self, _req: Request) -> Result<Outcome, OpError> {
-        Ok(Outcome::new(Plan::default()))
+    fn run(&self, req: Request) -> Result<Outcome, OpError> {
+        if req.op != OP_TRIGGER_LIST {
+            return Ok(Outcome::new(Plan::default()));
+        }
+        let triggers = serde_json::to_value(self.0.triggers()).map_err(|e| OpError::internal(e.to_string()))?;
+        Ok(Outcome::new(Plan::answer(serde_json::json!({ "triggers": triggers }))))
     }
 
     fn begin(&self, _label: &str, _actor: &Actor) -> TxId {
@@ -121,8 +155,8 @@ struct State {
 
 impl Default for State {
     fn default() -> Self {
-        let runner = StoryRunner;
-        let panel = LiveState::Calibrating.panel(&runner);
+        let runner = StoryRunner::default();
+        let panel = runner.0.panel(&runner);
         Self { runner, panel, actor: Actor::Person { name: "gallery".into() } }
     }
 }

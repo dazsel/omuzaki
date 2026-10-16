@@ -1,7 +1,7 @@
 //! The Live workspace (#305): its op calls go through the real executor and the stage's own `perform.*` ops over a
 //! fake `PerformHost`, so the names and arguments are the ones the ops on main declare; controls whose ops aren't on
 //! main are disabled and say why; the panel is keyboard-reachable in reading order, labelled for AccessKit, speaks only
-//! through its message table, and has at least four hotkey rows.
+//! through its message table, and has at least four hotkey rows, which bind and unbind through the trigger ops.
 //!
 //! Set `OMUZAKI_LIVE_EVIDENCE_DIR=/some/dir` to write the evidence pictures (idle, calibrating and tracking lost at
 //! 1366 × 768 and 1920 × 1080).
@@ -19,6 +19,7 @@ use omuzaki_anim_api::{Calibration, DeviceProfile, RetargetConfig};
 use omuzaki_core::time::{FakeClock, Seconds};
 use omuzaki_doc_api::{DocPath, Value};
 use omuzaki_doc_mock::MemDoc;
+use omuzaki_face_api::ExpressionSet;
 use omuzaki_ops::Executor;
 use omuzaki_ops_api::{
     Actor, Event, Grants, OpError, OpInfo, OpRecord, Outcome, Request, Runner, ServicesBuilder, TxId, find,
@@ -27,6 +28,7 @@ use omuzaki_stage::perform::Tracking;
 use omuzaki_stage::perform::host::{
     CalibrationState, PerformError, PerformHost, PerformStatus, RetargetChange, RetargetReceipt,
 };
+use omuzaki_stage::perform::triggers::{BindOutcome, TriggerBinding, TriggerInfo};
 use omuzaki_ui::ds::audit::plain_english;
 use omuzaki_ui::ds::strings::{English, Pseudo};
 use omuzaki_ui::ds::testing::{
@@ -44,6 +46,7 @@ struct FakeHost {
     status: Mutex<Option<PerformStatus>>,
     calibrations: Mutex<Vec<usize>>,
     changes: Mutex<Vec<RetargetChange>>,
+    triggers: Mutex<Vec<TriggerBinding>>,
 }
 
 impl FakeHost {
@@ -74,6 +77,35 @@ impl PerformHost for FakeHost {
     fn status(&self) -> PerformStatus {
         self.status.lock().unwrap().clone().unwrap_or_else(|| LiveState::Idle.status())
     }
+
+    fn expressions(&self) -> ExpressionSet {
+        ExpressionSet::starter()
+    }
+
+    fn bind_trigger(&self, binding: TriggerBinding) -> Result<BindOutcome, PerformError> {
+        let mut book = self.triggers.lock().unwrap();
+        let replaced = book.iter().position(|b| b.key.eq_ignore_ascii_case(&binding.key));
+        let slot = if let Some(slot) = replaced {
+            book[slot] = binding;
+            slot
+        } else {
+            book.push(binding);
+            book.len() - 1
+        };
+        Ok(BindOutcome { slot, replaced: replaced.is_some() })
+    }
+
+    fn unbind_trigger(&self, key: &str) -> Result<bool, PerformError> {
+        let mut book = self.triggers.lock().unwrap();
+        let before = book.len();
+        book.retain(|b| !b.key.eq_ignore_ascii_case(key));
+        Ok(book.len() < before)
+    }
+
+    fn triggers(&self) -> Vec<TriggerInfo> {
+        let book = self.triggers.lock().unwrap();
+        book.iter().map(|binding| TriggerInfo { binding: binding.clone(), active: false, missing: false }).collect()
+    }
 }
 
 /// The real executor with the fake host in its services, recording every request on its way through.
@@ -85,7 +117,15 @@ struct Recording {
 impl Recording {
     fn new(host: Arc<FakeHost>) -> Self {
         omuzaki_ui::link();
-        let ops = ["perform.calibrate", "perform.set_retarget", "perform.status"].map(|op| find(op).expect("linked"));
+        let ops = [
+            "perform.calibrate",
+            "perform.set_retarget",
+            "perform.status",
+            "trigger.bind",
+            "trigger.unbind",
+            "trigger.list",
+        ]
+        .map(|op| find(op).expect("linked"));
         let services = ServicesBuilder::new().insert::<dyn PerformHost>(host).build();
         let inner = Executor::with_registrations(Box::new(MemDoc::new()), Arc::new(FakeClock::new(Seconds(0.0))), ops)
             .expect("an executor")
@@ -219,27 +259,17 @@ fn the_smoothing_slider_commits_through_perform_set_retarget() {
 fn controls_whose_ops_are_not_on_main_are_disabled_with_not_available_yet() {
     let host = Arc::new(FakeHost::default());
     let mut h = live(&host);
-    for (role, name) in [
-        (Role::Button, "Choose a camera"),
-        (Role::ComboBox, "Camera"),
-        (Role::CheckBox, "Mirrored preview"),
-        (Role::Button, "Add hotkey"),
-        (Role::Button, "Remove Happy"),
-    ] {
+    for (role, name) in
+        [(Role::Button, "Choose a camera"), (Role::ComboBox, "Camera"), (Role::CheckBox, "Mirrored preview")]
+    {
         assert!(is_disabled(&h, role, name), "{name} is disabled");
     }
     // The reason shows on keyboard focus: the tooltip says "Not available yet".
-    named(&h, Role::Button, "Add hotkey").focus();
-    h.run_steps(4);
-    assert!(
-        all_strings(&h).iter().any(|s| s.starts_with("Not available yet: binding hotkeys")),
-        "the tooltip says why"
-    );
     named(&h, Role::Button, "Choose a camera").focus();
     h.run_steps(4);
     assert!(all_strings(&h).iter().any(|s| s.starts_with("Not available yet: choosing a camera")));
-    // Nothing but the status read ran: no op was called under a guessed name.
-    assert!(h.state().runner.ops_run().iter().all(|op| op == "perform.status"));
+    // Nothing but the reads ran: no op was called under a guessed name.
+    assert!(h.state().runner.ops_run().iter().all(|op| op == "perform.status" || op == "trigger.list"));
 }
 
 #[test]
@@ -247,6 +277,8 @@ fn a_build_without_the_perform_ops_says_so_and_has_no_drop_target_without_io_imp
     let h = workspace(NoOps, LivePanel::new(&NoOps, None), vec2(1366.0, 1400.0));
     assert!(is_disabled(&h, Role::Button, "Calibrate"));
     assert!(is_disabled(&h, Role::Slider, "Smoothing"));
+    assert!(is_disabled(&h, Role::Button, "Happy trigger: Not bound"), "no trigger ops, no binding");
+    assert!(is_disabled(&h, Role::Button, "Add hotkey"));
     assert!(!all_strings(&h).iter().any(|s| s.contains("Drop a VRM")), "absent, not broken");
     assert!(all_strings(&h).iter().any(|s| s == "Waiting for the performer"));
 }
@@ -317,8 +349,11 @@ fn the_output_toggle_opens_the_window_and_shows_its_size_and_fallback() {
     let plan = OutputPlan { backdrop: OutputBackdrop::Transparent { fallback: DEFAULT_KEY }, ..OutputPlan::default() };
     let output: SharedOutput =
         Arc::new(Mutex::new(OutputWindow::new(plan, omuzaki_ui::aux_window::Transparency::Fallback)));
-    let panel = LivePanel::with_model(LiveState::Idle.panel(&StoryRunner).model().clone(), Some(Arc::clone(&output)));
-    let mut h = workspace(StoryRunner, panel, vec2(1366.0, 1400.0));
+    let panel = LivePanel::with_model(
+        LiveState::Idle.panel(&StoryRunner(LiveState::Idle)).model().clone(),
+        Some(Arc::clone(&output)),
+    );
+    let mut h = workspace(StoryRunner(LiveState::Idle), panel, vec2(1366.0, 1400.0));
     let strings = all_strings(&h);
     assert!(strings.iter().any(|s| s == "1920 × 1080 px"), "the size shows");
     assert!(strings.iter().any(|s| s.starts_with("fallback")), "the fallback shows");
@@ -329,8 +364,8 @@ fn the_output_toggle_opens_the_window_and_shows_its_size_and_fallback() {
 
 #[test]
 fn a_build_without_an_output_window_disables_the_toggle() {
-    let model = LiveState::Idle.panel(&StoryRunner).model().clone();
-    let h = workspace(StoryRunner, LivePanel::with_model(model, None), vec2(1366.0, 1400.0));
+    let model = LiveState::Idle.panel(&StoryRunner(LiveState::Idle)).model().clone();
+    let h = workspace(StoryRunner(LiveState::Idle), LivePanel::with_model(model, None), vec2(1366.0, 1400.0));
     assert!(is_disabled(&h, Role::Switch, "Output window"));
 }
 
@@ -339,7 +374,7 @@ fn evidence_pictures_of_idle_calibrating_and_tracking_lost() {
     let dir = std::env::var_os("OMUZAKI_LIVE_EVIDENCE_DIR");
     for state in LiveState::ALL {
         for (w, h) in [(1366.0, 768.0), (1920.0, 1080.0)] {
-            let panel = state.panel(&StoryRunner);
+            let panel = state.panel(&StoryRunner(state));
             let mut harness = Harness::builder().with_size(vec2(w, h)).wgpu().build_ui_state(
                 |ui, world: &mut World<StoryRunner>| {
                     omuzaki_ui::ds::apply_settings(ui.ctx(), Settings::default());
@@ -348,7 +383,7 @@ fn evidence_pictures_of_idle_calibrating_and_tracking_lost() {
                         world.panel.ui(ui, &world.runner, &world.actor);
                     });
                 },
-                World { runner: StoryRunner, panel, actor: person() },
+                World { runner: StoryRunner(state), panel, actor: person() },
             );
             harness.run_steps(4);
             let image = harness.render().expect("a software or hardware adapter renders");
@@ -430,4 +465,76 @@ fn a_status_that_fails_to_read_clears_and_reports() {
     with_status.refresh(&Recorder::default(), &person());
     assert_eq!(with_status.failure().map(|f| f.op), Some("perform.status"));
     assert_eq!(with_status.calibration(), None::<CalibrationState>);
+}
+
+#[test]
+fn a_trigger_button_binds_the_next_key_press_and_remove_unbinds_it() {
+    let host = Arc::new(FakeHost::default());
+    let mut h = live(&host);
+    assert!(is_disabled(&h, Role::Button, "Remove Happy"), "nothing to remove yet");
+    named(&h, Role::Button, "Happy trigger: Not bound").click();
+    h.run_steps(2);
+    named(&h, Role::Button, "Press a key for Happy; Escape cancels").focus();
+    h.run_steps(1);
+    press_for(&mut h, Modifiers::NONE, Key::F1, 1);
+    h.run_steps(2);
+    let args = h.state().runner.last("trigger.bind").expect("trigger.bind ran");
+    assert_eq!(args, object(&[("key", Value::from("F1")), ("expression", Value::from("happy"))]));
+    assert!((find("trigger.bind").expect("registered").decode)(args).is_ok(), "the op decodes what the UI sends");
+    assert_eq!(host.triggers().len(), 1, "the binding reached the performer");
+    named(&h, Role::Button, "Happy trigger: F1");
+
+    // A chord, on another row.
+    named(&h, Role::Button, "Angry trigger: Not bound").click();
+    h.run_steps(2);
+    press_for(&mut h, Modifiers::CTRL, Key::F2, 1);
+    h.run_steps(2);
+    named(&h, Role::Button, "Angry trigger: Ctrl+F2");
+
+    // Rebinding a row moves its key: the old one is let go.
+    named(&h, Role::Button, "Happy trigger: F1").click();
+    h.run_steps(2);
+    press_for(&mut h, Modifiers::NONE, Key::F3, 1);
+    h.run_steps(2);
+    assert_eq!(h.state().runner.last("trigger.unbind"), Some(object(&[("key", Value::from("F1"))])));
+    named(&h, Role::Button, "Happy trigger: F3");
+
+    // Escape ends the wait without binding anything.
+    let binds = h.state().runner.ops_run().iter().filter(|op| *op == "trigger.bind").count();
+    named(&h, Role::Button, "Sad trigger: Not bound").click();
+    h.run_steps(2);
+    press_for(&mut h, Modifiers::NONE, Key::Escape, 1);
+    h.run_steps(2);
+    named(&h, Role::Button, "Sad trigger: Not bound");
+    assert_eq!(h.state().runner.ops_run().iter().filter(|op| *op == "trigger.bind").count(), binds);
+
+    named(&h, Role::Button, "Remove Happy").click();
+    h.run_steps(2);
+    assert_eq!(h.state().runner.last("trigger.unbind"), Some(object(&[("key", Value::from("F3"))])));
+    named(&h, Role::Button, "Happy trigger: Not bound");
+    assert_eq!(host.triggers().len(), 1, "only Angry's key is left");
+}
+
+#[test]
+fn add_hotkey_shows_the_next_mood_until_every_mood_has_a_row() {
+    let host = Arc::new(FakeHost::default());
+    let mut h = live(&host);
+    assert!(!all_strings(&h).iter().any(|s| s == "Relaxed"));
+    named(&h, Role::Button, "Add hotkey").click();
+    h.run_steps(2);
+    named(&h, Role::Button, "Relaxed trigger: Not bound");
+    assert!(is_disabled(&h, Role::Button, "Add hotkey"), "every mood has a row");
+}
+
+#[test]
+fn a_binding_made_elsewhere_gets_its_own_row() {
+    let host = Arc::new(FakeHost::default());
+    let binding = TriggerBinding {
+        key: "F9".into(),
+        expression: omuzaki_face_api::ExpressionId::new("ee").unwrap(),
+        mode: omuzaki_anim::TriggerMode::Hold,
+    };
+    host.bind_trigger(binding).unwrap();
+    let h = live(&host);
+    named(&h, Role::Button, "ee trigger: F9");
 }

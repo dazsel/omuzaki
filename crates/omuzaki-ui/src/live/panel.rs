@@ -6,7 +6,7 @@
 
 use std::sync::{Arc, Mutex, PoisonError};
 
-use egui::{Id, RichText, ScrollArea, Sense, Ui, WidgetInfo, WidgetType, vec2};
+use egui::{Event, Key, Modifiers, RichText, ScrollArea, Sense, Ui, WidgetInfo, WidgetType, vec2};
 use omuzaki_ops_api::{Actor, Runner};
 use omuzaki_stage::perform::Tracking;
 use omuzaki_stage::perform::host::CalibrationState;
@@ -26,12 +26,20 @@ use crate::output_window::OutputWindow;
 /// Seconds between `perform.status` reads while the workspace is shown.
 pub const REFRESH_S: f64 = 0.25;
 
-/// The expressions the hotkey table lists, in order.
-const EXPRESSIONS: [Word; HOTKEY_ROWS] =
-    [Word::ExpressionHappy, Word::ExpressionSurprised, Word::ExpressionAngry, Word::ExpressionSad];
+/// The moods the hotkey table offers, in order: the first [`HOTKEY_ROWS`] always have a row, Add hotkey shows the rest.
+/// Each is an expression of the starter set (`ExpressionSet::starter`), by its id.
+const MOODS: [(&str, Word); 5] = [
+    ("happy", Word::ExpressionHappy),
+    ("surprised", Word::ExpressionSurprised),
+    ("angry", Word::ExpressionAngry),
+    ("sad", Word::ExpressionSad),
+    ("relaxed", Word::ExpressionRelaxed),
+];
 
 /// Width of a hotkey's trigger cell: room for a key chord such as `Ctrl+Shift+F12`.
 const TRIGGER_WIDTH: f32 = 140.0;
+/// Width of a hotkey's action cell: room for the longest mood's name.
+const ACTION_WIDTH: f32 = 120.0;
 
 /// The one character V0 offers.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -49,6 +57,10 @@ pub struct LivePanel {
     output: Option<SharedOutput>,
     /// The `ctx` time of the last status read.
     refreshed: Option<f64>,
+    /// The expression whose trigger button waits for a key press.
+    capturing: Option<String>,
+    /// Mood rows shown: [`HOTKEY_ROWS`], and more after Add hotkey.
+    moods: usize,
 }
 
 impl LivePanel {
@@ -59,7 +71,7 @@ impl LivePanel {
 
     /// The workspace showing `model` (the gallery story and tests).
     pub fn with_model(model: LiveModel, output: Option<SharedOutput>) -> Self {
-        Self { model, output, refreshed: None }
+        Self { model, output, refreshed: None, capturing: None, moods: HOTKEY_ROWS }
     }
 
     /// The model.
@@ -96,7 +108,7 @@ impl LivePanel {
         camera(ui);
         self.calibrate(ui, runner, actor);
         self.smoothing(ui, runner, actor);
-        hotkeys(ui);
+        self.hotkeys(ui, runner, actor);
     }
 
     fn character(&mut self, ui: &mut Ui, runner: &dyn Runner, actor: &Actor) {
@@ -270,35 +282,166 @@ impl LivePanel {
     }
 }
 
-/// The hotkey table: [`HOTKEY_ROWS`] rows of trigger and action, and add and remove, all waiting on the trigger ops.
-fn hotkeys(ui: &mut Ui) {
-    let ctx = ui.ctx().clone();
-    let title = text(&ctx, Word::HotkeysSection);
-    let reason = not_yet(&ctx, Ops::hotkeys(), Word::NotYetHotkeys).unwrap_or_default();
-    Section::new(&title).default_open(true).id_salt("live.hotkeys").show(ui, |ui| {
+impl LivePanel {
+    /// The hotkey table: a row per mood (at least [`HOTKEY_ROWS`]) and per other bound expression, each with its key and
+    /// a remove button. A trigger button waits for the next key press (with its modifiers) and binds it; Escape or Tab
+    /// cancels.
+    fn hotkeys(&mut self, ui: &mut Ui, runner: &dyn Runner, actor: &Actor) {
+        let ctx = ui.ctx().clone();
+        let title = text(&ctx, Word::HotkeysSection);
+        let missing = missing_reason(&ctx, self.model.ops().hotkeys());
+        if missing.is_some() {
+            self.capturing = None;
+        }
+        if let Some(key) = self.captured_key(ui)
+            && let Some(expression) = self.capturing.take()
+        {
+            self.model.bind_hotkey(runner, actor, &key, &expression);
+        }
+        Section::new(&title).default_open(true).id_salt("live.hotkeys").show(ui, |ui| {
+            let (trigger, action) = (text(&ctx, Word::HotkeyTrigger), text(&ctx, Word::HotkeyAction));
+            // Rows of fixed-width cells, not a grid: a grid sizes its columns from the last frame, which would cut the
+            // buttons' labels on the first.
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = space::S16;
+                cell(ui, TRIGGER_WIDTH, |ui| ui.label(RichText::new(&*trigger).strong()));
+                cell(ui, ACTION_WIDTH, |ui| ui.label(RichText::new(&*action).strong()));
+            });
+            for (expression, name) in self.rows(&ctx) {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = space::S16;
+                    self.hotkey_row(ui, runner, actor, &expression, &name, missing.as_deref());
+                });
+            }
+            let (label, every) = (text(&ctx, Word::HotkeyAdd), text(&ctx, Word::HotkeyEveryMood));
+            let add = Button::new(&label).icon(icons::PLUS);
+            let add = match missing.as_deref() {
+                Some(reason) => add.disabled(reason),
+                None => add.disabled_if(self.moods >= MOODS.len(), &every),
+            };
+            if ui.add(add).clicked() {
+                self.moods = (self.moods + 1).min(MOODS.len());
+            }
+        });
+    }
+
+    /// The rows: the moods shown, then every other bound expression (bound by an agent, say), by its id.
+    fn rows(&self, ctx: &egui::Context) -> Vec<(String, String)> {
+        let moods = MOODS.iter().take(self.moods).map(|(id, word)| ((*id).to_owned(), text(ctx, *word).into_owned()));
+        let others = self
+            .model
+            .triggers()
+            .iter()
+            .map(|info| info.binding.expression.as_str())
+            .filter(|id| !MOODS.iter().take(self.moods).any(|(mood, _)| mood == id))
+            .map(|id| (id.to_owned(), id.to_owned()));
+        moods.chain(others).collect()
+    }
+
+    fn hotkey_row(
+        &mut self,
+        ui: &mut Ui,
+        runner: &dyn Runner,
+        actor: &Actor,
+        expression: &str,
+        name: &str,
+        missing: Option<&str>,
+    ) {
+        let ctx = ui.ctx().clone();
+        let bound = self.model.trigger_for(expression).cloned();
+        let capturing = self.capturing.as_deref() == Some(expression);
         let unbound = text(&ctx, Word::HotkeyUnbound);
-        let (trigger, action) = (text(&ctx, Word::HotkeyTrigger), text(&ctx, Word::HotkeyAction));
-        egui::Grid::new(Id::new("live.hotkeys.grid")).num_columns(3).spacing(vec2(space::S16, space::S8)).show(
-            ui,
-            |ui| {
-                ui.label(RichText::new(&*trigger).strong());
-                ui.label(RichText::new(&*action).strong());
-                ui.end_row();
-                for expression in EXPRESSIONS {
-                    let name = text(&ctx, expression);
-                    let key = say(&ctx, Word::HotkeyTriggerOf, &[("action", &name), ("key", &unbound)]);
-                    let remove = say(&ctx, Word::HotkeyRemove, &[("action", &name)]);
-                    ui.add(
-                        Button::new(&unbound).ghost().min_width(TRIGGER_WIDTH).accessible_label(&key).disabled(&reason),
-                    );
-                    ui.label(&*name);
-                    ui.add(Button::new(&remove).icon(icons::TRASH).ghost().disabled(&reason));
-                    ui.end_row();
+        let key = bound.as_ref().map_or(&*unbound, |info| info.binding.key.as_str());
+        let (shown, label) = if capturing {
+            let press = say(&ctx, Word::HotkeyPress, &[("action", name)]);
+            (text(&ctx, Word::HotkeyWaiting).into_owned(), press)
+        } else {
+            (key.to_owned(), say(&ctx, Word::HotkeyTriggerOf, &[("action", name), ("key", key)]))
+        };
+        let button = Button::new(&shown).ghost().min_width(TRIGGER_WIDTH).accessible_label(&label);
+        let button = match missing {
+            Some(reason) => button.disabled(reason),
+            None => button,
+        };
+        let response = cell(ui, TRIGGER_WIDTH, |ui| ui.add(button));
+        if response.clicked() {
+            self.capturing = if capturing { None } else { Some(expression.to_owned()) };
+        }
+        if capturing && response.lost_focus() {
+            // Focus moved elsewhere (Tab, a click): the wait ends without a bind.
+            self.capturing = None;
+        }
+        cell(ui, ACTION_WIDTH, |ui| ui.label(name));
+        let short = text(&ctx, Word::HotkeyRemoveShort);
+        let remove = say(&ctx, Word::HotkeyRemove, &[("action", name)]);
+        let nothing = text(&ctx, Word::HotkeyNothingBound);
+        let button = Button::new(&short).icon(icons::TRASH).ghost().accessible_label(&remove);
+        let button = match (missing, &bound) {
+            (Some(reason), _) => button.disabled(reason),
+            (None, None) => button.disabled(&nothing),
+            (None, Some(_)) => button,
+        };
+        if ui.add(button).clicked()
+            && let Some(info) = &bound
+        {
+            self.model.unbind_hotkey(runner, actor, &info.binding.key);
+        }
+        match &bound {
+            Some(info) if info.missing => {
+                ui.add(StatusChip::new(Status::Warn, &text(&ctx, Word::HotkeyMissing)));
+            }
+            Some(info) if info.active => {
+                ui.add(StatusChip::new(Status::Ok, &text(&ctx, Word::HotkeyShowing)));
+            }
+            _ => {}
+        }
+    }
+
+    /// While a trigger button waits: the key pressed this frame, as the chord to bind, taken from the input so nothing
+    /// else acts on it. Escape ends the wait without a bind; Tab is left alone and moves focus, which ends it too.
+    fn captured_key(&mut self, ui: &Ui) -> Option<String> {
+        self.capturing.as_ref()?;
+        let (key, modifiers) = ui.input(|i| {
+            i.events.iter().find_map(|event| match event {
+                Event::Key { key, pressed: true, repeat: false, modifiers, .. } if *key != Key::Tab => {
+                    Some((*key, *modifiers))
                 }
-            },
-        );
-        ui.add(Button::new(&text(&ctx, Word::HotkeyAdd)).icon(icons::PLUS).disabled(&reason));
-    });
+                _ => None,
+            })
+        })?;
+        ui.ctx().input_mut(|i| i.consume_key(modifiers, key));
+        if key == Key::Escape {
+            self.capturing = None;
+            return None;
+        }
+        Some(chord(modifiers, key))
+    }
+}
+
+/// A cell `width` wide in a row, holding what `add` adds at its left.
+fn cell<R>(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let size = vec2(width, ui.spacing().interact_size.y);
+    let layout = egui::Layout::left_to_right(egui::Align::Center);
+    ui.allocate_ui_with_layout(size, layout, |ui| {
+        ui.set_min_width(width);
+        add(ui)
+    })
+    .inner
+}
+
+/// The name a key press is bound under: its modifiers, then the key, as `Ctrl+Shift+F12`.
+fn chord(modifiers: Modifiers, key: Key) -> String {
+    let mut name = String::new();
+    for (held, word) in
+        [(modifiers.ctrl, "Ctrl"), (modifiers.alt, "Alt"), (modifiers.shift, "Shift"), (modifiers.mac_cmd, "Cmd")]
+    {
+        if held {
+            name.push_str(word);
+            name.push('+');
+        }
+    }
+    name.push_str(key.name());
+    name
 }
 
 /// A target that takes a dropped file; returns its path when one is dropped while the pointer is over it.

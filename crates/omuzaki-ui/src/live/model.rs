@@ -8,6 +8,7 @@ use omuzaki_doc_api::Value;
 use omuzaki_ops_api::{Actor, Grants, Mode, OpError, Request, Runner};
 use omuzaki_stage::perform::Tracking;
 use omuzaki_stage::perform::host::{CalibrationState, PerformStatus};
+use omuzaki_stage::perform::triggers::TriggerInfo;
 use serde::Deserialize as _;
 
 /// `perform.calibrate`: start a neutral capture.
@@ -18,6 +19,12 @@ pub const OP_SET_RETARGET: &str = "perform.set_retarget";
 pub const OP_STATUS: &str = "perform.status";
 /// `io.import`: import a model file into the project.
 pub const OP_IMPORT: &str = "io.import";
+/// `trigger.bind`: bind a key to a face expression.
+pub const OP_TRIGGER_BIND: &str = "trigger.bind";
+/// `trigger.unbind`: remove a key's binding.
+pub const OP_TRIGGER_UNBIND: &str = "trigger.unbind";
+/// `trigger.list`: the bindings, and which one is showing.
+pub const OP_TRIGGER_LIST: &str = "trigger.list";
 
 /// Frames the Calibrate button asks for: 10 s at a webcam's 30 fps (the prompt says 10 seconds).
 pub const CALIBRATE_FRAMES: u64 = 300;
@@ -50,6 +57,12 @@ pub struct Ops {
     pub status: bool,
     /// `io.import` is registered.
     pub import: bool,
+    /// `trigger.bind` is registered.
+    pub trigger_bind: bool,
+    /// `trigger.unbind` is registered.
+    pub trigger_unbind: bool,
+    /// `trigger.list` is registered.
+    pub trigger_list: bool,
 }
 
 impl Ops {
@@ -62,6 +75,9 @@ impl Ops {
             set_retarget: has(OP_SET_RETARGET),
             status: has(OP_STATUS),
             import: has(OP_IMPORT),
+            trigger_bind: has(OP_TRIGGER_BIND),
+            trigger_unbind: has(OP_TRIGGER_UNBIND),
+            trigger_list: has(OP_TRIGGER_LIST),
         }
     }
 
@@ -89,9 +105,16 @@ impl Ops {
         Control::NotYet
     }
 
-    /// Hotkey add and remove: `trigger.bind`, `trigger.unbind` and `trigger.list` are not on main.
-    pub const fn hotkeys() -> Control {
-        Control::NotYet
+    /// The hotkey table: it binds, unbinds and lists, so it needs all three trigger ops.
+    pub fn hotkeys(self) -> Control {
+        [
+            (self.trigger_bind, OP_TRIGGER_BIND),
+            (self.trigger_unbind, OP_TRIGGER_UNBIND),
+            (self.trigger_list, OP_TRIGGER_LIST),
+        ]
+        .into_iter()
+        .find(|(registered, _)| !registered)
+        .map_or(Control::Ready, |(_, op)| Control::Missing(op))
     }
 }
 
@@ -109,6 +132,7 @@ pub struct Failure {
 pub struct LiveModel {
     ops: Ops,
     status: Option<PerformStatus>,
+    triggers: Vec<TriggerInfo>,
     smoothing: f64,
     failure: Option<Failure>,
     imported: Option<String>,
@@ -122,7 +146,7 @@ impl LiveModel {
 
     /// The model with these ops (the gallery story builds one without a runner).
     pub fn with_ops(ops: Ops) -> Self {
-        Self { ops, status: None, smoothing: 0.0, failure: None, imported: None }
+        Self { ops, status: None, triggers: Vec::new(), smoothing: 0.0, failure: None, imported: None }
     }
 
     /// The ops.
@@ -133,6 +157,21 @@ impl LiveModel {
     /// The performer's status as last read.
     pub fn status(&self) -> Option<&PerformStatus> {
         self.status.as_ref()
+    }
+
+    /// The key bindings as `trigger.list` last listed them.
+    pub fn triggers(&self) -> &[TriggerInfo] {
+        &self.triggers
+    }
+
+    /// The binding that shows `expression`, if a key is bound to it.
+    pub fn trigger_for(&self, expression: &str) -> Option<&TriggerInfo> {
+        self.triggers.iter().find(|info| info.binding.expression.as_str() == expression)
+    }
+
+    /// Replaces the listed bindings (the story's states, and tests).
+    pub fn set_triggers(&mut self, triggers: Vec<TriggerInfo>) {
+        self.triggers = triggers;
     }
 
     /// The smoothing value the slider shows.
@@ -181,8 +220,15 @@ impl LiveModel {
         self.status = Some(status);
     }
 
-    /// Reads `perform.status`. A failure clears the status (the workspace shows "waiting for the performer").
+    /// Reads `perform.status` and the key bindings. A failure clears what it was reading (the workspace shows
+    /// "waiting for the performer").
     pub fn refresh(&mut self, runner: &dyn Runner, actor: &Actor) {
+        self.refresh_status(runner, actor);
+        self.refresh_triggers(runner, actor);
+    }
+
+    /// Reads `perform.status`.
+    fn refresh_status(&mut self, runner: &dyn Runner, actor: &Actor) {
         if !self.ops.status {
             return;
         }
@@ -195,6 +241,48 @@ impl LiveModel {
                 self.status = None;
                 self.fail(OP_STATUS, &error);
             }
+        }
+    }
+
+    /// Reads `trigger.list`.
+    fn refresh_triggers(&mut self, runner: &dyn Runner, actor: &Actor) {
+        if !self.ops.trigger_list {
+            return;
+        }
+        let read = run(runner, actor, OP_TRIGGER_LIST, object(&[])).and_then(|mut output| {
+            let triggers = output.get_mut("triggers").map(Value::take).unwrap_or_default();
+            Vec::<TriggerInfo>::deserialize(triggers)
+                .map_err(|e| OpError::internal(format!("{OP_TRIGGER_LIST} answered {e}")))
+        });
+        match read {
+            Ok(triggers) => self.triggers = triggers,
+            Err(error) => {
+                self.triggers.clear();
+                self.fail(OP_TRIGGER_LIST, &error);
+            }
+        }
+    }
+
+    /// Runs `trigger.bind`: `key` shows `expression`, toggled by each press (the op's default). A key that showed
+    /// another expression moves to this one (the op replaces it); the table is read again so it shows the result.
+    pub fn bind_hotkey(&mut self, runner: &dyn Runner, actor: &Actor, key: &str, expression: &str) {
+        let old = self.trigger_for(expression).map(|info| info.binding.key.clone());
+        let args = object(&[("key", Value::from(key)), ("expression", Value::from(expression))]);
+        if !self.act(runner, actor, self.ops.trigger_bind, OP_TRIGGER_BIND, args) {
+            return;
+        }
+        // One key per expression in the table: once the new key is bound, the one it had before is let go.
+        match old.filter(|old| !old.eq_ignore_ascii_case(key)) {
+            Some(old) => self.unbind_hotkey(runner, actor, &old),
+            None => self.refresh_triggers(runner, actor),
+        }
+    }
+
+    /// Runs `trigger.unbind` on `key`, then reads the table again.
+    pub fn unbind_hotkey(&mut self, runner: &dyn Runner, actor: &Actor, key: &str) {
+        let args = object(&[("key", Value::from(key))]);
+        if self.act(runner, actor, self.ops.trigger_unbind, OP_TRIGGER_UNBIND, args) {
+            self.refresh_triggers(runner, actor);
         }
     }
 
@@ -296,13 +384,16 @@ mod tests {
         assert_eq!(ops.calibrate(), Control::Ready);
         assert_eq!(ops.smoothing(), Control::Missing(OP_SET_RETARGET));
         assert_eq!(ops.import(), Control::Missing(OP_IMPORT));
-        assert_eq!((Ops::camera(), Ops::hotkeys()), (Control::NotYet, Control::NotYet));
+        assert_eq!(Ops::camera(), Control::NotYet);
+        assert_eq!(ops.hotkeys(), Control::Missing(OP_TRIGGER_BIND));
+        let triggers = Ops { trigger_bind: true, trigger_unbind: true, ..Ops::default() };
+        assert_eq!(triggers.hotkeys(), Control::Missing(OP_TRIGGER_LIST), "the table needs all three");
     }
 
     #[test]
     fn an_action_whose_op_is_not_registered_does_nothing() {
         let mut model = LiveModel::with_ops(Ops::default());
-        let runner = crate::live::story::StoryRunner;
+        let runner = crate::live::story::StoryRunner::default();
         let actor = Actor::Person { name: "p".into() };
         model.calibrate(&runner, &actor);
         model.import(&runner, &actor, "x.vrm");
