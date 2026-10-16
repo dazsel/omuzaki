@@ -3,14 +3,19 @@
 mod common;
 
 use common::{avatar, ix, skin};
-use omuzaki_anim_api::{BoneId, Channel, ChannelMask, SpringChain, SpringParams, SpringSet};
+use omuzaki_anim_api::{
+    BoneId, Channel, ChannelMask, Collider, ColliderGroup, ColliderShape, HumanoidBone, SpringChain, SpringParams,
+    SpringSet,
+};
+use omuzaki_avatar_api::avatar::ImportedAvatar;
 use omuzaki_avatar_api::avatar::texture_bytes;
 use omuzaki_avatar_api::error::AvatarError;
 use omuzaki_avatar_api::expression::{ColourBind, ExprIx, MorphBind, UvBind};
 use omuzaki_avatar_api::gaze::{AvatarGaze, AvatarLookAt};
 use omuzaki_avatar_api::retained::{Retained, RetainedMaterial};
 use omuzaki_avatar_api::retained::{
-    RetainedAnnotation, RetainedFirstPerson, RetainedMesh, RetainedNode, RetainedPrimitive, RetainedSkin,
+    RetainedAnnotation, RetainedCollider, RetainedColliderGroup, RetainedFirstPerson, RetainedMesh, RetainedNode,
+    RetainedPrimitive, RetainedSkin, RetainedSpringChain, RetainedSpringJoint,
 };
 use omuzaki_char_api::{BoneName, FaceOverlay, JointRef, MaterialName, TextureData, TextureName};
 use omuzaki_core::glam::Vec3;
@@ -102,9 +107,41 @@ fn materials_and_textures_are_checked_as_upload_will_check_them() {
 /// A change that breaks one index of a retained graph.
 type Breaks = fn(&mut Retained);
 
-/// Primitives that became the runtime meshes `meshes`, with no material in the file.
-fn prims(meshes: &[u16]) -> Vec<RetainedPrimitive> {
-    meshes.iter().map(|m| RetainedPrimitive::new(*m)).collect()
+/// A retained graph with one source mesh per entry of `sources` (its name, the runtime meshes its primitives became and
+/// its target names), each drawn by a node of its own: node `i` draws mesh `i`.
+fn sources(sources: &[(&str, &[u16], &[&str])]) -> Retained {
+    let mut r = Retained::new();
+    for (i, (name, runtime, names)) in (0u32..).zip(sources) {
+        r.nodes.push(RetainedNode::new(*name).with_mesh(i, None));
+        let names = names.iter().map(|n| (*n).to_owned()).collect();
+        let mesh = RetainedMesh::new(*name, vec![RetainedPrimitive::new(); runtime.len()]);
+        r.meshes.push(mesh.with_instance(i, runtime.to_vec()).with_morph_target_names(names));
+    }
+    r
+}
+
+/// One source mesh of one primitive, drawn by two nodes: node 0 made runtime mesh 0 and node 1 made runtime mesh 1.
+fn instanced() -> Retained {
+    let mut r = Retained::new();
+    r.nodes = vec![RetainedNode::new("Hand.L").with_mesh(0, None), RetainedNode::new("Hand.R").with_mesh(0, None)];
+    r.meshes = vec![
+        RetainedMesh::new("Glove", vec![RetainedPrimitive::new()]).with_instance(0, vec![0]).with_instance(1, vec![1]),
+    ];
+    r
+}
+
+/// A spring set of one chain, `hair`, over the hips and spine, colliding with the group `head`.
+fn hair_springs(a: &ImportedAvatar) -> SpringSet {
+    let bone = |b| a.skeleton.humanoid_bone(b).unwrap_or(BoneId(u16::MAX));
+    let mut chain =
+        SpringChain::new("hair", &[bone(HumanoidBone::Hips), bone(HumanoidBone::Spine)], SpringParams::default());
+    chain.collider_groups = vec!["head".to_owned()];
+    let sphere = ColliderShape::Sphere { offset: Vec3::ZERO, radius: 0.1 };
+    let group = ColliderGroup {
+        name: "head".to_owned(),
+        colliders: vec![Collider { bone: bone(HumanoidBone::Head), shape: sphere }],
+    };
+    SpringSet { chains: vec![chain], groups: vec![group] }
 }
 
 #[test]
@@ -113,12 +150,21 @@ fn every_index_of_the_retained_scene_graph_is_checked() {
     let r = &mut a.retained;
     r.nodes = vec![RetainedNode::new("Root").with_children(vec![1]), RetainedNode::new("Face").with_mesh(0, Some(0))];
     r.roots = vec![0];
-    r.meshes = vec![RetainedMesh::new("Face", vec![RetainedPrimitive::new(0).with_material(0)])];
+    r.meshes =
+        vec![RetainedMesh::new("Face", vec![RetainedPrimitive::new().with_material(0)]).with_instance(1, vec![0])];
     r.skins = vec![RetainedSkin::new("skin", vec![0, 1], vec![Mat4::IDENTITY; 2]).with_skeleton(0)];
     r.materials = vec![RetainedMaterial::new(skin(), Material::new("Skin", Shading::Unlit))];
+    let sphere = ColliderShape::Sphere { offset: Vec3::ZERO, radius: 0.1 };
+    r.springs.colliders = vec![RetainedCollider::new(1, sphere)];
+    r.springs.groups = vec![RetainedColliderGroup::new("", vec![0])];
+    let joints = vec![
+        RetainedSpringJoint::new(0, SpringParams::default()),
+        RetainedSpringJoint::new(1, SpringParams::default()),
+    ];
+    r.springs.chains = vec![RetainedSpringChain::new("", joints).with_groups(vec![0]).with_center(0)];
     assert_eq!(a.validate(), Ok(()), "a consistent graph");
 
-    let broken: [(&str, Breaks); 9] = [
+    let broken: [(&str, Breaks); 15] = [
         ("node 0's child", |r| r.nodes[0].children = vec![2]),
         ("node 1's mesh", |r| r.nodes[1].mesh = Some(1)),
         ("node 1's skin", |r| r.nodes[1].skin = Some(1)),
@@ -127,6 +173,12 @@ fn every_index_of_the_retained_scene_graph_is_checked() {
         ("skin 0's joint", |r| r.skins[0].joints = vec![0, 7]),
         ("skin 0's joint", |r| r.skins[0].skeleton = Some(9)),
         ("mesh 0's material", |r| r.meshes[0].primitives[0].material = Some(3)),
+        ("mesh 0's instance node", |r| r.meshes[0].instances[0].node = 7),
+        ("spring collider 0's node", |r| r.springs.colliders[0].node = 2),
+        ("collider group 0's collider", |r| r.springs.groups[0].colliders = vec![0, 1]),
+        ("spring chain 0's joint", |r| r.springs.chains[0].joints[1].node = 2),
+        ("spring chain 0's collider group", |r| r.springs.chains[0].groups = vec![1]),
+        ("spring chain 0's center", |r| r.springs.chains[0].center = Some(5)),
         ("a first-person annotation's node", |r| {
             r.first_person = Some(vec![RetainedAnnotation::new(4, RetainedFirstPerson::Auto)]);
         }),
@@ -161,38 +213,98 @@ fn every_index_of_the_retained_scene_graph_is_checked() {
 
 #[test]
 fn retained_source_meshes_group_every_mesh_once_and_name_its_targets() {
-    let names = || vec!["Fcl_ALL_A".to_owned(), "Fcl_EYE_Close".to_owned()];
+    const NAMES: &[&str] = &["Fcl_ALL_A", "Fcl_EYE_Close"];
     let mut a = avatar(false, 2, &[]);
     // A second runtime mesh, from the same source mesh's second primitive: the two share one name table.
     a.meshes.push(a.meshes[0].clone());
-    a.retained.meshes = vec![RetainedMesh::new("Face", prims(&[0, 1])).with_morph_target_names(names())];
+    a.retained = sources(&[("Face", &[0, 1], NAMES)]);
     assert_eq!(a.validate(), Ok(()), "two primitives of one mesh share its names");
 
-    a.retained.meshes = vec![RetainedMesh::new("Face", prims(&[0])).with_morph_target_names(names())];
+    a.retained = sources(&[("Face", &[0], NAMES)]);
     assert_eq!(a.validate(), Err(AvatarError::mesh_grouping(1, 0)), "a mesh from no source mesh");
-    a.retained.meshes = vec![RetainedMesh::new("Face", prims(&[0, 1])), RetainedMesh::new("Body", prims(&[1]))];
+    a.retained = sources(&[("Face", &[0, 1], &[]), ("Body", &[1], &[])]);
     assert_eq!(a.validate(), Err(AvatarError::mesh_grouping(1, 2)), "a mesh from two");
-    a.retained.meshes = vec![RetainedMesh::new("Face", prims(&[0, 1, 2]))];
+    a.retained = sources(&[("Face", &[0, 1, 2], &[])]);
     assert_eq!(a.validate(), Err(AvatarError::unknown_primitive(0, 2)), "a mesh that isn't there");
 
-    a.retained.meshes =
-        vec![RetainedMesh::new("Face", prims(&[0, 1])).with_morph_target_names(vec!["Fcl_ALL_A".into()])];
+    a.retained = sources(&[("Face", &[0, 1], &["Fcl_ALL_A"])]);
     assert_eq!(a.validate(), Err(AvatarError::morph_names(0, 1, 2)), "a name missing");
-    a.retained.meshes = vec![RetainedMesh::new("Face", prims(&[0])), RetainedMesh::new("Hair", prims(&[1]))];
+    a.retained = sources(&[("Face", &[0], &[]), ("Hair", &[1], &[])]);
     assert_eq!(a.validate(), Ok(()), "a file that names no targets");
 
     // A primitive without targets beside one with them, under one name table (glTF allows it).
     a.meshes[1].morphs = None;
-    a.retained.meshes = vec![RetainedMesh::new("Face", prims(&[0, 1])).with_morph_target_names(names())];
+    a.retained = sources(&[("Face", &[0, 1], NAMES)]);
     assert_eq!(a.validate(), Ok(()));
-    a.retained.meshes = vec![
-        RetainedMesh::new("Face", prims(&[0])),
-        RetainedMesh::new("Hair", prims(&[1])).with_morph_target_names(names()),
-    ];
+    a.retained = sources(&[("Face", &[0], &[]), ("Hair", &[1], NAMES)]);
     assert_eq!(a.validate(), Err(AvatarError::morph_names(1, 2, 0)), "names for a mesh with no targets");
 
-    a.retained.meshes = Vec::new();
+    a.retained = Retained::new();
     assert_eq!(a.validate(), Ok(()), "nothing kept is fine for a hand-built avatar");
+}
+
+#[test]
+fn a_mesh_drawn_by_two_nodes_is_one_runtime_mesh_per_node() {
+    let mut a = avatar(false, 1, &["happy"]);
+    a.meshes.push(a.meshes[0].clone());
+    a.expressions[0].morph = vec![MorphBind::new(0, 0, 0.25).with_node(0), MorphBind::new(1, 0, 0.75).with_node(1)];
+    a.retained = instanced();
+    assert_eq!(a.validate(), Ok(()), "each node's instance is its own runtime mesh, and each bind names its own");
+
+    let mut b = a.clone();
+    b.expressions[0].morph[1] = MorphBind::new(1, 0, 0.75).with_node(0);
+    assert_eq!(b.validate(), Err(AvatarError::morph_bind_instance(0, 1, 0)), "a bind naming the other instance");
+
+    let mut b = a.clone();
+    b.retained.meshes[0].instances[1].meshes = vec![0, 1];
+    assert_eq!(b.validate(), Err(AvatarError::instance_primitives(0, 1, 2, 1)), "one runtime mesh per primitive");
+    let mut b = a.clone();
+    b.retained.meshes[0].instances.pop();
+    assert_eq!(b.validate(), Err(AvatarError::node_instances(1, 0, 0)), "a drawing node with no instance");
+    let mut b = a.clone();
+    b.retained.meshes[0].instances[1].node = 0;
+    assert_eq!(b.validate(), Err(AvatarError::node_instances(0, 0, 2)), "a node listed twice");
+    let mut b = a.clone();
+    b.retained.nodes[1].mesh = None;
+    assert_eq!(b.validate(), Err(AvatarError::instance_node(0, 1)), "an instance at a node that draws nothing");
+    let mut b = a.clone();
+    b.retained.meshes[0].instances[1].meshes = vec![0];
+    assert_eq!(b.validate(), Err(AvatarError::mesh_grouping(0, 2)), "two instances sharing one runtime mesh");
+}
+
+#[test]
+fn retained_spring_records_keep_the_files_shape_and_name_runtime_entries_once() {
+    let mut a = avatar(false, 0, &[]);
+    a.springs = hair_springs(&a);
+    a.retained.nodes = vec![RetainedNode::new("Hips"), RetainedNode::new("Spine"), RetainedNode::new("Head")];
+    let sphere = ColliderShape::Sphere { offset: Vec3::ZERO, radius: 0.1 };
+    let plane = ColliderShape::Plane { offset: Vec3::ZERO, normal: Vec3::Y };
+    let joints = || {
+        vec![RetainedSpringJoint::new(0, SpringParams::default()), RetainedSpringJoint::new(1, SpringParams::default())]
+    };
+    let s = &mut a.retained.springs;
+    // Collider 0 is shared by two groups, collider 1 is in none, and both groups and both chains share a name.
+    s.colliders = vec![RetainedCollider::new(2, sphere), RetainedCollider::new(2, plane)];
+    s.groups =
+        vec![RetainedColliderGroup::new("", vec![0]).with_runtime("head"), RetainedColliderGroup::new("", vec![0])];
+    s.chains = vec![
+        RetainedSpringChain::new("Hair", joints()).with_groups(vec![0, 1]).with_runtime("hair"),
+        RetainedSpringChain::new("Hair", vec![RetainedSpringJoint::new(2, SpringParams::default())]),
+    ];
+    assert_eq!(a.validate(), Ok(()), "shared and ungrouped colliders, repeated names, a chain the solver can't run");
+
+    let mut b = a.clone();
+    b.retained.springs.chains[1].runtime = Some("hair".to_owned());
+    assert_eq!(b.validate(), Err(AvatarError::shared_runtime_spring("chain", "hair")));
+    let mut b = a.clone();
+    b.retained.springs.chains[0].runtime = Some("fringe".to_owned());
+    assert_eq!(b.validate(), Err(AvatarError::unknown_runtime_spring("chain", "fringe")));
+    let mut b = a.clone();
+    b.retained.springs.groups[1].runtime = Some("head".to_owned());
+    assert_eq!(b.validate(), Err(AvatarError::shared_runtime_spring("collider group", "head")));
+    let mut b = a.clone();
+    b.retained.springs.groups[0].runtime = Some("body".to_owned());
+    assert_eq!(b.validate(), Err(AvatarError::unknown_runtime_spring("collider group", "body")));
 }
 
 #[test]

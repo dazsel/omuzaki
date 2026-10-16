@@ -469,3 +469,25 @@ fn a_bad_gaze_channel_cannot_cancel_or_swamp_a_good_one() {
     assert!((run.weights.expression(look_up) - 0.25).abs() < 1e-5, "a negative channel reads as 0");
     assert_eq!(run.weights.expression(look_down), 0.0);
 }
+
+#[test]
+fn two_instances_of_one_source_mesh_deform_on_their_own() {
+    use omuzaki_avatar_api::expression::MorphBind;
+    use omuzaki_avatar_api::retained::{RetainedMesh, RetainedNode, RetainedPrimitive};
+    // One source mesh drawn by two nodes: the importer makes one runtime mesh per drawing node, and the file's two
+    // binds, one per node, on the same target at 0.25 and 0.75, each move only their own instance.
+    let mut a = avatar(false, &["happy"]);
+    a.drivers.set(Channel::CUSTOM_00, Some(ix(&a, "happy")));
+    a.meshes.push(common::mesh(1));
+    a.expressions[0].morph = vec![MorphBind::new(0, 0, 0.25).with_node(0), MorphBind::new(1, 0, 0.75).with_node(1)];
+    a.retained.nodes =
+        vec![RetainedNode::new("Hand.L").with_mesh(0, None), RetainedNode::new("Hand.R").with_mesh(0, None)];
+    a.retained.meshes = vec![
+        RetainedMesh::new("Glove", vec![RetainedPrimitive::new()]).with_instance(0, vec![0]).with_instance(1, vec![1]),
+    ];
+    let mut run = Run::new(&a);
+    run.eval(&[(Channel::CUSTOM_00, 1.0)]);
+    assert_eq!((run.weights.mesh(0), run.weights.mesh(1)), (&[0.25][..], &[0.75][..]), "not 1.0 in one shared slot");
+    run.eval(&[(Channel::CUSTOM_00, 0.5)]);
+    assert_eq!((run.weights.mesh(0), run.weights.mesh(1)), (&[0.125][..], &[0.375][..]));
+}

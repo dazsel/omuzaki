@@ -1,11 +1,13 @@
 //! `Retained` round-trips through serde bit for bit: off-grid linear colours, the whole `MToon` block, passthrough,
-//! the meta (with its 0.x extras) and the thumbnail.
+//! the meta (with its 0.x extras), the thumbnail, mesh instances and the file's spring records.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // fixture helpers outside #[test] functions
 
-use omuzaki_anim_api::BoneId;
+use omuzaki_anim_api::spring::JointLimit;
+use omuzaki_anim_api::{BoneId, ColliderShape, SpringParams};
 use omuzaki_avatar_api::retained::{
-    Retained, RetainedAnnotation, RetainedFirstPerson, RetainedImage, RetainedMaterial, RetainedMesh, RetainedNode,
-    RetainedPrimitive, RetainedSkin, RetainedTransform,
+    Retained, RetainedAnnotation, RetainedCollider, RetainedColliderGroup, RetainedFirstPerson, RetainedImage,
+    RetainedMaterial, RetainedMesh, RetainedNode, RetainedPrimitive, RetainedSkin, RetainedSpringChain,
+    RetainedSpringJoint, RetainedSprings, RetainedTransform,
 };
 use omuzaki_char_api::MaterialName;
 use omuzaki_core::glam::{Mat4, Quat, Vec3, Vec4};
@@ -67,15 +69,42 @@ fn retained() -> Retained {
     r.skins = vec![
         RetainedSkin::new("skin", vec![1], vec![Mat4::from_translation(Vec3::new(0.0, -0.123, 0.0))]).with_skeleton(0),
     ];
-    let primitive = |m: u16| RetainedPrimitive::new(m).with_material(0);
+    let primitive = RetainedPrimitive::new().with_material(0);
     r.meshes = vec![
-        RetainedMesh::new("Face", vec![primitive(0), RetainedPrimitive::new(1)])
+        RetainedMesh::new("Face", vec![primitive, RetainedPrimitive::new()])
+            .with_instance(2, vec![0, 1])
             .with_morph_target_names(vec!["Fcl_ALL_A".into(), "Fcl_EYE_Close_L".into()]),
-        RetainedMesh::new("Body", vec![primitive(2)]),
+        RetainedMesh::new("Body", vec![primitive]),
     ];
+    r.springs = springs();
     r.meta = Some(meta);
     r.passthrough = passthrough;
     r
+}
+
+/// The file's spring records at their most awkward: collider 0 is shared by two groups, collider 2 is in none, two
+/// groups share an empty name, two chains share a name, and one chain was not made into a runtime chain.
+fn springs() -> RetainedSprings {
+    let params = SpringParams { hit_radius: 0.123, stiffness: 0.9999, drag_force: 0.5, ..SpringParams::default() };
+    let hinge = JointLimit::hinge(0.123).rotated(Quat::from_rotation_z(0.5));
+    let mut s = RetainedSprings::new();
+    s.colliders = vec![
+        RetainedCollider::new(1, ColliderShape::SphereInside { offset: Vec3::splat(0.123), radius: 0.9999 }),
+        RetainedCollider::new(1, ColliderShape::Plane { offset: Vec3::ZERO, normal: Vec3::Y }),
+        RetainedCollider::new(2, ColliderShape::Capsule { offset: Vec3::ZERO, radius: 0.1, tail: Vec3::X }),
+    ];
+    s.groups = vec![
+        RetainedColliderGroup::new("", vec![0, 1]).with_runtime("group_0"),
+        RetainedColliderGroup::new("", vec![0]).with_runtime("group_1"),
+    ];
+    s.chains = vec![
+        RetainedSpringChain::new("Hair", vec![RetainedSpringJoint::new(1, params).with_limit(hinge)])
+            .with_groups(vec![1, 0, 1])
+            .with_center(0)
+            .with_runtime("hair"),
+        RetainedSpringChain::new("Hair", vec![RetainedSpringJoint::new(2, SpringParams::default())]),
+    ];
+    s
 }
 
 fn colours(m: &Material) -> Vec<u32> {
@@ -115,7 +144,8 @@ fn passthrough_and_a_present_null_extras_survive() {
     let back: Retained = serde_json::from_str(&serde_json::to_string(&retained()).unwrap()).unwrap();
     assert_eq!(back.materials[0].source.passthrough.extras, Some(json!(null)));
     assert_eq!(back.meshes[0].morph_target_names, ["Fcl_ALL_A", "Fcl_EYE_Close_L"], "the file's names, not slugs");
-    assert_eq!(back.meshes[0].primitives, [RetainedPrimitive::new(0).with_material(0), RetainedPrimitive::new(1)]);
+    assert_eq!(back.meshes[0].primitives, [RetainedPrimitive::new().with_material(0), RetainedPrimitive::new()]);
+    assert_eq!(back.meshes[0].instance(2).map(|i| i.meshes.as_slice()), Some(&[0, 1][..]), "the node's instance");
     assert_eq!((back.nodes[0].children.as_slice(), back.roots.as_slice()), (&[1, 2][..], &[0][..]), "the scene graph");
     assert_eq!(back.nodes[1].transform, r_transform(&retained()), "a transform, bit for bit");
     assert_eq!((back.nodes[2].mesh, back.nodes[2].skin), (Some(0), Some(0)));
@@ -128,6 +158,24 @@ fn passthrough_and_a_present_null_extras_survive() {
     let read: Retained = serde_json::from_str(&serde_json::to_string(&none).unwrap()).unwrap();
     assert_eq!(read.first_person, None, "no firstPerson block stays absent, not empty");
     assert!(back.passthrough.extensions.contains_key("EXT_studio"));
+}
+
+#[test]
+fn the_files_spring_records_survive_exactly() {
+    let r = retained();
+    let back: Retained = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
+    assert_eq!(back.springs, springs(), "shared and ungrouped colliders, repeated names, groups by index");
+    let (shared, ungrouped) = (&back.springs.groups, &back.springs.colliders[2]);
+    assert_eq!((shared[0].colliders.as_slice(), shared[1].colliders.as_slice()), (&[0, 1][..], &[0][..]));
+    assert!(shared.iter().all(|g| g.name.is_empty()), "empty names stay empty, not made unique");
+    assert!(!shared.iter().any(|g| g.colliders.contains(&2)) && ungrouped.node == 2, "a collider in no group is kept");
+    let chains = &back.springs.chains;
+    assert_eq!((chains[0].name.as_str(), chains[1].name.as_str()), ("Hair", "Hair"));
+    assert_eq!((chains[0].runtime.as_deref(), chains[1].runtime.as_deref()), (Some("hair"), None));
+    assert_eq!(chains[0].groups, [1, 0, 1], "group order and repeats as the file has them");
+    let bits = |j: &RetainedSpringJoint| [j.params.hit_radius.to_bits(), j.params.stiffness.to_bits()];
+    assert_eq!(bits(&chains[0].joints[0]), [0.123f32.to_bits(), 0.9999f32.to_bits()], "parameters bit for bit");
+    assert_eq!(chains[0].joints[0].limit, springs().chains[0].joints[0].limit, "the limit and its rotation");
 }
 
 #[test]

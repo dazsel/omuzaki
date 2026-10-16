@@ -8,7 +8,8 @@
 //!
 //! Everything here serialises (the prepared avatar may be cached in the store), and serde round trips are bit for bit.
 
-use omuzaki_anim_api::BoneId;
+use omuzaki_anim_api::spring::JointLimit;
+use omuzaki_anim_api::{BoneId, ColliderShape, SpringParams};
 use omuzaki_char_api::MaterialName;
 use omuzaki_core::glam::{Mat4, Quat, Vec3};
 use omuzaki_io_api::{FirstPersonFlag, ImageMime, Material, Passthrough, Texture, VrmMeta};
@@ -145,13 +146,12 @@ impl Default for RetainedTransform {
     }
 }
 
-/// One primitive of a source mesh: the runtime mesh it became and the source material it drew.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// One primitive of a source mesh: the source material it draws. The runtime meshes it became are in the mesh's
+/// [`instances`](RetainedMesh::instances), one per node that draws the mesh.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
 pub struct RetainedPrimitive {
-    /// The runtime mesh made from it, an index into `ImportedAvatar::meshes`.
-    pub mesh: u16,
     /// Its material, an index into [`Retained::materials`]; `None` when the file gave it none (glTF's default
     /// material), so export writes none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -159,9 +159,9 @@ pub struct RetainedPrimitive {
 }
 
 impl RetainedPrimitive {
-    /// The primitive that became runtime mesh `mesh`, with no material in the file.
-    pub const fn new(mesh: u16) -> Self {
-        Self { mesh, material: None }
+    /// A primitive with no material in the file.
+    pub const fn new() -> Self {
+        Self { material: None }
     }
 
     /// Records its material (builder style).
@@ -169,6 +169,27 @@ impl RetainedPrimitive {
     pub const fn with_material(mut self, material: u32) -> Self {
         self.material = Some(material);
         self
+    }
+}
+
+/// One node that draws a source mesh, and the runtime meshes its primitives became there. A mesh drawn by several
+/// nodes becomes one set of runtime meshes per node, so each instance deforms and is morphed on its own (a morph bind
+/// names its instance's runtime mesh).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct RetainedInstance {
+    /// The drawing node, an index into [`Retained::nodes`].
+    pub node: u32,
+    /// The runtime mesh each primitive became at this node, in primitive order: indices into
+    /// `ImportedAvatar::meshes`.
+    pub meshes: Vec<u16>,
+}
+
+impl RetainedInstance {
+    /// The instance drawn at `node`, whose primitives became the runtime meshes `meshes`.
+    pub fn new(node: u32, meshes: Vec<u16>) -> Self {
+        Self { node, meshes }
     }
 }
 
@@ -257,16 +278,20 @@ impl RetainedAnnotation {
     }
 }
 
-/// One mesh of the file. Its primitives became separate runtime meshes (one material each), and they share its
-/// morph-target names: glTF names targets per mesh, not per primitive.
+/// One mesh of the file. Each of its primitives becomes a runtime mesh (one material each) at every node that draws
+/// it, and they share its morph-target names: glTF names targets per mesh, not per primitive. A mesh no node draws has
+/// no instance and no runtime mesh.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
 pub struct RetainedMesh {
     /// The mesh's name in the file.
     pub name: String,
-    /// Its primitives, in file order: the runtime mesh each became and its material.
+    /// Its primitives, in file order, with their materials.
     pub primitives: Vec<RetainedPrimitive>,
+    /// The nodes that draw it, in node order, each with the runtime meshes its primitives became there.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub instances: Vec<RetainedInstance>,
     /// Its morph-target names as the file has them (`extras.targetNames`, `Fcl_ALL_A`), one per target; empty when
     /// the file names none. The runtime names are slugs (`SparseMorph::name`), so these are what export writes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -274,9 +299,16 @@ pub struct RetainedMesh {
 }
 
 impl RetainedMesh {
-    /// The mesh `name` with `primitives`, with no target names.
+    /// The mesh `name` with `primitives`, drawn by no node yet, with no target names.
     pub fn new(name: impl Into<String>, primitives: Vec<RetainedPrimitive>) -> Self {
-        Self { name: name.into(), primitives, morph_target_names: Vec::new() }
+        Self { name: name.into(), primitives, instances: Vec::new(), morph_target_names: Vec::new() }
+    }
+
+    /// Adds the instance drawn at `node`, whose primitives became the runtime meshes `meshes` (builder style).
+    #[must_use]
+    pub fn with_instance(mut self, node: u32, meshes: Vec<u16>) -> Self {
+        self.instances.push(RetainedInstance::new(node, meshes));
+        self
     }
 
     /// Sets its morph-target names (builder style).
@@ -284,6 +316,170 @@ impl RetainedMesh {
     pub fn with_morph_target_names(mut self, names: Vec<String>) -> Self {
         self.morph_target_names = names;
         self
+    }
+
+    /// The instance drawn at `node`, if that node draws this mesh.
+    pub fn instance(&self, node: u32) -> Option<&RetainedInstance> {
+        self.instances.iter().find(|i| i.node == node)
+    }
+}
+
+/// One spring collider of the file (`VRMC_springBone.colliders[*]`), in the file's collider list: groups name it by
+/// index, so one collider can be in several groups, or in none.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct RetainedCollider {
+    /// The node it moves with, an index into [`Retained::nodes`].
+    pub node: u32,
+    /// Its shape in that node's space, as the file has it.
+    pub shape: ColliderShape,
+}
+
+impl RetainedCollider {
+    /// A collider of `shape` on `node`.
+    pub const fn new(node: u32, shape: ColliderShape) -> Self {
+        Self { node, shape }
+    }
+}
+
+/// One collider group of the file (`VRMC_springBone.colliderGroups[*]`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct RetainedColliderGroup {
+    /// Its name as the file has it: it may be empty, or the same as another group's.
+    pub name: String,
+    /// Its colliders, as indices into [`RetainedSprings::colliders`], in file order.
+    pub colliders: Vec<u32>,
+    /// The name of the runtime group made from it (`SpringSet::groups`, unique), or `None` when the importer
+    /// made none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<String>,
+}
+
+impl RetainedColliderGroup {
+    /// The group `name` over `colliders`, made into no runtime group yet.
+    pub fn new(name: impl Into<String>, colliders: Vec<u32>) -> Self {
+        Self { name: name.into(), colliders, runtime: None }
+    }
+
+    /// Records the runtime group made from it (builder style).
+    #[must_use]
+    pub fn with_runtime(mut self, runtime: impl Into<String>) -> Self {
+        self.runtime = Some(runtime.into());
+        self
+    }
+}
+
+/// One joint of a spring chain of the file.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct RetainedSpringJoint {
+    /// The node that swings, an index into [`Retained::nodes`].
+    pub node: u32,
+    /// Its parameters as the file has them.
+    pub params: SpringParams,
+    /// Its angular limit (`VRMC_springBone_limit`), if the file gives one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<JointLimit>,
+}
+
+impl RetainedSpringJoint {
+    /// The joint at `node` with `params` and no limit.
+    pub const fn new(node: u32, params: SpringParams) -> Self {
+        Self { node, params, limit: None }
+    }
+
+    /// Sets its limit (builder style).
+    #[must_use]
+    pub const fn with_limit(mut self, limit: JointLimit) -> Self {
+        self.limit = Some(limit);
+        self
+    }
+}
+
+/// One spring chain of the file (`VRMC_springBone.springs[*]`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct RetainedSpringChain {
+    /// Its name as the file has it: it may be empty, or the same as another chain's.
+    pub name: String,
+    /// Its joints, root first.
+    pub joints: Vec<RetainedSpringJoint>,
+    /// The collider groups it collides with, as indices into [`RetainedSprings::groups`], in file order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<u32>,
+    /// The node whose space it is simulated in, an index into [`Retained::nodes`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub center: Option<u32>,
+    /// The name of the runtime chain made from it (`SpringSet::chains`, unique), or `None` when the importer made
+    /// none (a chain the solver cannot run, reported at import).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<String>,
+}
+
+impl RetainedSpringChain {
+    /// The chain `name` over `joints`, with no groups and no centre, made into no runtime chain yet.
+    pub fn new(name: impl Into<String>, joints: Vec<RetainedSpringJoint>) -> Self {
+        Self { name: name.into(), joints, groups: Vec::new(), center: None, runtime: None }
+    }
+
+    /// Sets the collider groups it uses (builder style).
+    #[must_use]
+    pub fn with_groups(mut self, groups: Vec<u32>) -> Self {
+        self.groups = groups;
+        self
+    }
+
+    /// Sets its centre node (builder style).
+    #[must_use]
+    pub fn with_center(mut self, center: u32) -> Self {
+        self.center = Some(center);
+        self
+    }
+
+    /// Records the runtime chain made from it (builder style).
+    #[must_use]
+    pub fn with_runtime(mut self, runtime: impl Into<String>) -> Self {
+        self.runtime = Some(runtime.into());
+        self
+    }
+}
+
+/// The file's spring records, by index as the file has them (`VRMC_springBone`).
+///
+/// The runtime [`SpringSet`](omuzaki_anim_api::SpringSet) is what the solver runs: colliders inside uniquely named
+/// groups, chains naming groups by name. It cannot say that one collider is shared by two groups, that a collider is
+/// in no group, or that two groups or chains share a name, so the file's own records are kept here, exactly, and
+/// export writes them (D8), as it writes retained materials. Each group and chain names the runtime entry made from
+/// it, so the report and a later edit can find it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct RetainedSprings {
+    /// Every collider, in file order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub colliders: Vec<RetainedCollider>,
+    /// Every collider group, in file order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<RetainedColliderGroup>,
+    /// Every chain, in file order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chains: Vec<RetainedSpringChain>,
+}
+
+impl RetainedSprings {
+    /// No spring records.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// True if the file had no colliders, groups or chains.
+    pub fn is_empty(&self) -> bool {
+        self.colliders.is_empty() && self.groups.is_empty() && self.chains.is_empty()
     }
 }
 
@@ -308,14 +504,17 @@ pub struct Retained {
     /// The nodes with no parent that make up the default scene, as indices into `nodes`, in file order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub roots: Vec<u32>,
-    /// The file's meshes, in file order: which runtime meshes each one's primitives became, and its morph-target
-    /// names, so export rebuilds each mesh with its primitives and its one `extras.targetNames` table. Empty for an
-    /// avatar that has none to keep.
+    /// The file's meshes, in file order: which runtime meshes each one's primitives became at each node that draws
+    /// it, and its morph-target names, so export rebuilds each mesh once, with its primitives and its one
+    /// `extras.targetNames` table. Empty for an avatar that has none to keep.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub meshes: Vec<RetainedMesh>,
     /// The file's skins, in file order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skins: Vec<RetainedSkin>,
+    /// The file's spring colliders, groups and chains, by index as the file has them.
+    #[serde(default, skip_serializing_if = "RetainedSprings::is_empty")]
+    pub springs: RetainedSprings,
     /// The file's own first-person annotations (`VRMC_vrm.firstPerson`), by node and in file order; `None` when the
     /// file has no `firstPerson` block, so export tells "absent", "empty" and an explicit `auto` apart. The runtime
     /// list (`ImportedAvatar::first_person`) is resolved per mesh and cannot.

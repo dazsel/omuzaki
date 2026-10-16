@@ -214,12 +214,15 @@ impl ImportedAvatar {
     ///   targets that fit its vertices, and draws a material the avatar has;
     /// - every material passes the renderer's rules, draws only textures the avatar has and composites no face layers
     ///   (an imported avatar has no painted face), and every texture's pixels match its description;
-    /// - the retained source meshes, when kept, list every runtime mesh exactly once, and their target names fit;
     /// - every index the retained scene graph holds (children, roots, meshes, skins, joints, materials, bones,
-    ///   first-person annotations, morph-bind nodes) points into its list, and every retained skin has one inverse bind
-    ///   matrix per joint, or none;
+    ///   instance nodes, first-person annotations, morph-bind nodes, spring colliders, groups, joints and centres)
+    ///   points into its list, every retained skin has one inverse bind matrix per joint, or none, and each retained
+    ///   spring group or chain names a runtime one that exists, and no other record names it;
+    /// - the retained source meshes, when kept, list every node that draws them once, one runtime mesh per primitive
+    ///   at each, every runtime mesh exactly once overall, and their target names fit;
     /// - every anchor follows a bone the skeleton has;
-    /// - every morph bind names a mesh and a target that exist, and every colour and UV bind a material that exists;
+    /// - every morph bind names a mesh and a target that exist, and, when it names a source node and the source meshes
+    ///   are kept, a mesh of that node's instance; every colour and UV bind names a material that exists;
     /// - every driver names an expression that exists, and gaze channels drive expressions only on the native `ARKit`
     ///   route;
     /// - the springs and constraints fit the skeleton.
@@ -236,8 +239,8 @@ impl ImportedAvatar {
             self.validate_mesh(index, mesh)?;
         }
         self.validate_materials()?;
-        self.validate_retained_meshes()?;
         self.validate_retained_graph()?;
+        self.validate_retained_meshes()?;
         for (id, anchor) in &self.anchors {
             self.resolve(&anchor.bone, || format!("anchor {id}"))?;
         }
@@ -289,33 +292,56 @@ impl ImportedAvatar {
         Ok(())
     }
 
-    /// The retained source meshes, when there are any: every runtime mesh comes from exactly one, and a source mesh's
-    /// target names, when it has any, count the targets of each of its primitives that has targets (glTF requires them
-    /// all to have the same number).
+    /// The retained source meshes, when there are any:
+    /// - each instance lists one runtime mesh per primitive, at a node that draws that source mesh, and every node
+    ///   that draws a source mesh is one of its instances exactly once;
+    /// - every runtime mesh comes from exactly one primitive of one instance;
+    /// - a source mesh's target names, when it has any, count the targets of each of its runtime meshes that has
+    ///   targets (glTF requires every primitive of a mesh to have the same number).
+    ///
+    /// Runs after [`validate_retained_graph`](Self::validate_retained_graph), so every node index is in range.
     fn validate_retained_meshes(&self) -> Result<(), AvatarError> {
-        let sources = &self.retained.meshes;
-        if sources.is_empty() {
+        let r = &self.retained;
+        if r.meshes.is_empty() {
             return Ok(());
         }
         let mut groups = vec![0usize; self.meshes.len()];
-        for (source, retained) in sources.iter().enumerate() {
+        for (source, retained) in r.meshes.iter().enumerate() {
             let names = retained.morph_target_names.len();
-            let mut fits_a_primitive = names == 0;
-            for primitive in &retained.primitives {
-                let index = usize::from(primitive.mesh);
-                let (Some(mesh), Some(count)) = (self.meshes.get(index), groups.get_mut(index)) else {
-                    return Err(AvatarError::unknown_primitive(source, index));
-                };
-                *count += 1;
-                match mesh.morph_count() {
-                    0 => {}
-                    targets if names == 0 || targets == names => fits_a_primitive = true,
-                    targets => return Err(AvatarError::morph_names(source, names, targets)),
+            let mut fits_a_primitive = names == 0 || retained.instances.is_empty();
+            for instance in &retained.instances {
+                let draws_it =
+                    r.nodes.get(as_index(instance.node)).is_some_and(|n| n.mesh.map(as_index) == Some(source));
+                if !draws_it {
+                    return Err(AvatarError::instance_node(source, instance.node));
+                }
+                if instance.meshes.len() != retained.primitives.len() {
+                    let (meshes, primitives) = (instance.meshes.len(), retained.primitives.len());
+                    return Err(AvatarError::instance_primitives(source, instance.node, meshes, primitives));
+                }
+                for &mesh in &instance.meshes {
+                    let at = usize::from(mesh);
+                    let (Some(mesh), Some(count)) = (self.meshes.get(at), groups.get_mut(at)) else {
+                        return Err(AvatarError::unknown_primitive(source, at));
+                    };
+                    *count += 1;
+                    match mesh.morph_count() {
+                        0 => {}
+                        targets if names == 0 || targets == names => fits_a_primitive = true,
+                        targets => return Err(AvatarError::morph_names(source, names, targets)),
+                    }
                 }
             }
             if !fits_a_primitive {
                 // Names for a mesh none of whose primitives has a target.
                 return Err(AvatarError::morph_names(source, names, 0));
+            }
+        }
+        for (node, drawn) in r.nodes.iter().enumerate().filter_map(|(n, node)| Some((n, as_index(node.mesh?)))) {
+            let instances =
+                r.meshes.get(drawn).map_or(0, |m| m.instances.iter().filter(|i| as_index(i.node) == node).count());
+            if instances != 1 {
+                return Err(AvatarError::node_instances(node, drawn, instances));
             }
         }
         match groups.iter().position(|g| *g != 1) {
@@ -325,33 +351,30 @@ impl ImportedAvatar {
     }
 
     /// The retained scene graph: every index it holds points into the list it names, so export can rebuild the file's
-    /// nodes, meshes and skins without a bounds check.
+    /// nodes, meshes, skins and springs without a bounds check.
     fn validate_retained_graph(&self) -> Result<(), AvatarError> {
         let r = &self.retained;
-        let check = |at: &dyn Fn() -> String, index: u32, len: usize| {
-            let index = usize::try_from(index).unwrap_or(usize::MAX);
-            if index < len { Ok(()) } else { Err(AvatarError::retained_index(at(), index, len)) }
-        };
+        let nodes = r.nodes.len();
         for (n, node) in r.nodes.iter().enumerate() {
             for &child in &node.children {
-                check(&|| format!("node {n}'s child"), child, r.nodes.len())?;
+                check_index(&|| format!("node {n}'s child"), child, nodes)?;
             }
             if let Some(mesh) = node.mesh {
-                check(&|| format!("node {n}'s mesh"), mesh, r.meshes.len())?;
+                check_index(&|| format!("node {n}'s mesh"), mesh, r.meshes.len())?;
             }
             if let Some(skin) = node.skin {
-                check(&|| format!("node {n}'s skin"), skin, r.skins.len())?;
+                check_index(&|| format!("node {n}'s skin"), skin, r.skins.len())?;
             }
             if let Some(bone) = node.bone {
-                check(&|| format!("node {n}'s bone"), u32::from(bone.0), self.skeleton.len())?;
+                check_index(&|| format!("node {n}'s bone"), u32::from(bone.0), self.skeleton.len())?;
             }
         }
         for &root in &r.roots {
-            check(&|| "a root".to_owned(), root, r.nodes.len())?;
+            check_index(&|| "a root".to_owned(), root, nodes)?;
         }
         for (s, skin) in r.skins.iter().enumerate() {
             for &joint in skin.joints.iter().chain(&skin.skeleton) {
-                check(&|| format!("skin {s}'s joint"), joint, r.nodes.len())?;
+                check_index(&|| format!("skin {s}'s joint"), joint, nodes)?;
             }
             if !skin.inverse_bind.is_empty() && skin.inverse_bind.len() != skin.joints.len() {
                 return Err(AvatarError::skin_inverse_bind(s, skin.inverse_bind.len(), skin.joints.len()));
@@ -359,31 +382,78 @@ impl ImportedAvatar {
         }
         for (m, mesh) in r.meshes.iter().enumerate() {
             for material in mesh.primitives.iter().filter_map(|p| p.material) {
-                check(&|| format!("mesh {m}'s material"), material, r.materials.len())?;
+                check_index(&|| format!("mesh {m}'s material"), material, r.materials.len())?;
+            }
+            for instance in &mesh.instances {
+                check_index(&|| format!("mesh {m}'s instance node"), instance.node, nodes)?;
             }
         }
         for annotation in r.first_person.iter().flatten() {
-            check(&|| "a first-person annotation's node".to_owned(), annotation.node, r.nodes.len())?;
+            check_index(&|| "a first-person annotation's node".to_owned(), annotation.node, nodes)?;
         }
         for (e, expression) in self.expressions.iter().enumerate() {
             for node in expression.morph.iter().filter_map(|b| b.node) {
-                check(&|| format!("expression {e}'s morph bind node"), node, r.nodes.len())?;
+                check_index(&|| format!("expression {e}'s morph bind node"), node, nodes)?;
             }
         }
-        Ok(())
+        self.validate_retained_springs()
     }
 
-    fn validate_expression(&self, index: usize, expression: &AvatarExpression) -> Result<(), AvatarError> {
+    /// The retained spring records: every collider, joint and centre names a node, every group names colliders and
+    /// every chain names groups that exist, and each runtime chain or group named is in the spring set and named by one
+    /// record only.
+    fn validate_retained_springs(&self) -> Result<(), AvatarError> {
+        let (r, springs) = (&self.retained, &self.retained.springs);
+        let nodes = r.nodes.len();
+        for (c, collider) in springs.colliders.iter().enumerate() {
+            check_index(&|| format!("spring collider {c}'s node"), collider.node, nodes)?;
+        }
+        for (g, group) in springs.groups.iter().enumerate() {
+            for &collider in &group.colliders {
+                check_index(&|| format!("collider group {g}'s collider"), collider, springs.colliders.len())?;
+            }
+        }
+        for (c, chain) in springs.chains.iter().enumerate() {
+            for joint in &chain.joints {
+                check_index(&|| format!("spring chain {c}'s joint"), joint.node, nodes)?;
+            }
+            for &group in &chain.groups {
+                check_index(&|| format!("spring chain {c}'s collider group"), group, springs.groups.len())?;
+            }
+            if let Some(center) = chain.center {
+                check_index(&|| format!("spring chain {c}'s center"), center, nodes)?;
+            }
+        }
+        let (chains, groups) = (&self.springs.chains, &self.springs.groups);
+        let claimed = springs.chains.iter().filter_map(|c| c.runtime.as_deref());
+        claim_each_once("chain", claimed, |name| chains.iter().any(|c| c.name == name))?;
+        let claimed = springs.groups.iter().filter_map(|g| g.runtime.as_deref());
+        claim_each_once("collider group", claimed, |name| groups.iter().any(|g| g.name == name))
+    }
+
+    fn validate_expression(&self, at: usize, expression: &AvatarExpression) -> Result<(), AvatarError> {
         for bind in &expression.morph {
             let target_exists =
                 self.meshes.get(usize::from(bind.mesh)).is_some_and(|m| usize::from(bind.target) < m.morph_count());
             if !target_exists {
-                return Err(AvatarError::morph_out_of_range(index, bind.mesh, bind.target));
+                return Err(AvatarError::morph_out_of_range(at, bind.mesh, bind.target));
+            }
+            if let Some(node) = bind.node.filter(|_| !self.retained.meshes.is_empty()) {
+                // The node's instance must hold the mesh the bind moves, so export writes the bind on that node.
+                let instance = self
+                    .retained
+                    .nodes
+                    .get(as_index(node))
+                    .and_then(|n| n.mesh)
+                    .and_then(|m| self.retained.meshes.get(as_index(m)).and_then(|m| m.instance(node)));
+                if !instance.is_some_and(|i| i.meshes.contains(&bind.mesh)) {
+                    return Err(AvatarError::morph_bind_instance(at, bind.mesh, node));
+                }
             }
         }
         let materials = expression.colour.iter().map(|b| &b.material).chain(expression.uv.iter().map(|b| &b.material));
         for material in materials {
-            self.material(material, || format!("expression {index} ({})", expression.name))?;
+            self.material(material, || format!("expression {at} ({})", expression.name))?;
         }
         Ok(())
     }
@@ -415,6 +485,34 @@ impl ImportedAvatar {
 fn find_expression(expressions: &[AvatarExpression], name: &ExpressionName) -> Option<ExprIx> {
     let index = expressions.iter().position(|e| &e.name == name)?;
     u16::try_from(index).ok().map(ExprIx)
+}
+
+/// A retained `u32` index as a `usize` (saturating on a 16-bit target, where it is out of range anyway).
+fn as_index(i: u32) -> usize {
+    usize::try_from(i).unwrap_or(usize::MAX)
+}
+
+/// Checks that `index`, held by what `at` names, points into a list of `len`.
+fn check_index(at: &dyn Fn() -> String, i: u32, len: usize) -> Result<(), AvatarError> {
+    if as_index(i) < len { Ok(()) } else { Err(AvatarError::retained_index(at(), as_index(i), len)) }
+}
+
+/// Checks that every runtime `kind` name in `claims` exists and appears in `claims` once.
+fn claim_each_once<'a>(
+    kind: &'static str,
+    claims: impl Iterator<Item = &'a str>,
+    exists: impl Fn(&str) -> bool,
+) -> Result<(), AvatarError> {
+    let mut seen = std::collections::BTreeSet::new();
+    for claim in claims {
+        if !exists(claim) {
+            return Err(AvatarError::unknown_runtime_spring(kind, claim));
+        }
+        if !seen.insert(claim) {
+            return Err(AvatarError::shared_runtime_spring(kind, claim));
+        }
+    }
+    Ok(())
 }
 
 /// What drives an imported avatar's face, borrowed: what the expression evaluator and the look-at stage read

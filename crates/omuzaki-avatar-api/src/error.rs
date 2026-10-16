@@ -146,7 +146,7 @@ pub enum AvatarError {
         /// How many targets the runtime mesh has.
         targets: usize,
     },
-    /// A retained source mesh lists a runtime mesh the avatar does not have.
+    /// An instance of a retained source mesh lists a runtime mesh the avatar does not have.
     #[error("source mesh {source_mesh} lists mesh {mesh}, which the avatar does not have")]
     #[non_exhaustive]
     UnknownPrimitive {
@@ -155,14 +155,80 @@ pub enum AvatarError {
         /// The runtime mesh it lists.
         mesh: usize,
     },
-    /// A runtime mesh is listed by no retained source mesh, or by more than one.
-    #[error("mesh {mesh} belongs to {groups} source meshes; every mesh comes from exactly one")]
+    /// A runtime mesh is listed by no instance of a retained source mesh, or by more than one.
+    #[error("mesh {mesh} is listed by {groups} source-mesh instances; every mesh comes from exactly one")]
     #[non_exhaustive]
     MeshGrouping {
         /// The runtime mesh.
         mesh: usize,
-        /// How many source meshes list it.
+        /// How many instances list it.
         groups: usize,
+    },
+    /// An instance of a retained source mesh does not list one runtime mesh per primitive.
+    #[error("source mesh {source_mesh}'s instance at node {node} lists {meshes} meshes for {primitives} primitives")]
+    #[non_exhaustive]
+    InstancePrimitives {
+        /// The source mesh, an index into `Retained::meshes`.
+        source_mesh: usize,
+        /// The drawing node, an index into `Retained::nodes`.
+        node: u32,
+        /// How many runtime meshes the instance lists.
+        meshes: usize,
+        /// How many primitives the source mesh has.
+        primitives: usize,
+    },
+    /// A retained source mesh lists an instance at a node that does not draw it.
+    #[error("source mesh {source_mesh} lists an instance at node {node}, which does not draw it")]
+    #[non_exhaustive]
+    InstanceNode {
+        /// The source mesh, an index into `Retained::meshes`.
+        source_mesh: usize,
+        /// The node, an index into `Retained::nodes`.
+        node: u32,
+    },
+    /// A node draws a retained source mesh that lists it as an instance other than once.
+    #[error(
+        "node {node} draws source mesh {source_mesh}, which lists it {instances} times; it lists each drawing node once"
+    )]
+    #[non_exhaustive]
+    NodeInstances {
+        /// The node, an index into `Retained::nodes`.
+        node: usize,
+        /// The source mesh it draws.
+        source_mesh: usize,
+        /// How many instances at that node the source mesh lists.
+        instances: usize,
+    },
+    /// A morph bind names a source node whose instance does not include the runtime mesh it moves.
+    #[error(
+        "expression {expression} moves mesh {mesh} and names node {node}, whose instance does not include that mesh"
+    )]
+    #[non_exhaustive]
+    MorphBindInstance {
+        /// The expression index.
+        expression: usize,
+        /// The runtime mesh the bind moves.
+        mesh: u16,
+        /// The source node it names.
+        node: u32,
+    },
+    /// A retained spring record names a runtime chain or group the spring set does not have.
+    #[error("a retained {kind} became the spring set's {kind} '{name}', which the set does not have")]
+    #[non_exhaustive]
+    UnknownRuntimeSpring {
+        /// `chain` or `collider group`.
+        kind: &'static str,
+        /// The runtime name it gives.
+        name: String,
+    },
+    /// Two retained spring records name the same runtime chain or group: each file record becomes its own.
+    #[error("two retained {kind}s became the spring set's {kind} '{name}'; each becomes its own")]
+    #[non_exhaustive]
+    SharedRuntimeSpring {
+        /// `chain` or `collider group`.
+        kind: &'static str,
+        /// The runtime name they share.
+        name: String,
     },
     /// A retained record indexes past the list it points into.
     #[error("{at} is {index}, but there are only {len}")]
@@ -280,6 +346,36 @@ impl AvatarError {
     /// [`AvatarError::MeshGrouping`].
     pub const fn mesh_grouping(mesh: usize, groups: usize) -> Self {
         Self::MeshGrouping { mesh, groups }
+    }
+
+    /// [`AvatarError::InstancePrimitives`].
+    pub const fn instance_primitives(source_mesh: usize, node: u32, meshes: usize, primitives: usize) -> Self {
+        Self::InstancePrimitives { source_mesh, node, meshes, primitives }
+    }
+
+    /// [`AvatarError::InstanceNode`].
+    pub const fn instance_node(source_mesh: usize, node: u32) -> Self {
+        Self::InstanceNode { source_mesh, node }
+    }
+
+    /// [`AvatarError::NodeInstances`].
+    pub const fn node_instances(node: usize, source_mesh: usize, instances: usize) -> Self {
+        Self::NodeInstances { node, source_mesh, instances }
+    }
+
+    /// [`AvatarError::MorphBindInstance`].
+    pub const fn morph_bind_instance(expression: usize, mesh: u16, node: u32) -> Self {
+        Self::MorphBindInstance { expression, mesh, node }
+    }
+
+    /// [`AvatarError::UnknownRuntimeSpring`].
+    pub fn unknown_runtime_spring(kind: &'static str, name: impl Into<String>) -> Self {
+        Self::UnknownRuntimeSpring { kind, name: name.into() }
+    }
+
+    /// [`AvatarError::SharedRuntimeSpring`].
+    pub fn shared_runtime_spring(kind: &'static str, name: impl Into<String>) -> Self {
+        Self::SharedRuntimeSpring { kind, name: name.into() }
     }
 
     /// [`AvatarError::RetainedIndex`].
