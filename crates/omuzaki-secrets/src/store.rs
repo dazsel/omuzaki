@@ -151,15 +151,25 @@ impl<B: Backend> Indexed<B> {
         Ok(IndexState { labels, current: Some((generation, count)) })
     }
 
-    /// Makes `labels` the index: the next generation's shards in full, then the head, then the old shards go. A
-    /// failure before the head leaves the old index as it was; one after it leaves unreferenced clutter.
-    fn publish(&self, labels: &BTreeSet<SecretLabel>, from: Option<(u64, usize)>) -> Result<(), SecretError> {
-        // A head already at the last generation cannot be stepped past: say so, never wrap to one that may have
-        // stale shards behind it.
-        let next = match from {
-            None => 0,
-            Some((generation, _)) => generation.checked_add(1).ok_or_else(|| SecretError::corrupt(INDEX_WHAT))?,
-        };
+    /// The generation a change to the index is published as. A head already at the last generation cannot be stepped
+    /// past: that is [`SecretError::Corrupt`], never a wrap to one that may have stale shards behind it. A change
+    /// asks first, before it touches the secret entry.
+    fn next_generation(from: Option<(u64, usize)>) -> Result<u64, SecretError> {
+        match from {
+            None => Ok(0),
+            Some((generation, _)) => generation.checked_add(1).ok_or_else(|| SecretError::corrupt(INDEX_WHAT)),
+        }
+    }
+
+    /// Makes `labels` the index as generation `next` (from [`next_generation`](Self::next_generation)): that
+    /// generation's shards in full, then the head, then the old shards go. A failure before the head leaves the old
+    /// index as it was; one after it leaves unreferenced clutter.
+    fn publish(
+        &self,
+        labels: &BTreeSet<SecretLabel>,
+        from: Option<(u64, usize)>,
+        next: u64,
+    ) -> Result<(), SecretError> {
         let shards = encode(labels);
         if shards.is_empty() {
             self.backend.remove(HEAD_USER)?;
@@ -203,24 +213,29 @@ impl<B: Backend> SecretStore for Indexed<B> {
     fn set(&self, label: &SecretLabel, value: SecretValue) -> Result<(), SecretError> {
         value.check_storable()?;
         let _held = self.lock.acquire()?;
-        // The entry first: a failure between the two steps leaves a readable secret missing from `labels`, which
-        // setting it again repairs, never a listed label with nothing behind it.
-        self.backend.set(label.as_str(), value.expose())?;
+        // The index is read and checked first: a damaged list, or a head with no generation left to publish, refuses
+        // the change before it replaces a secret or leaves one that nothing lists.
         let mut index = self.read_index()?;
-        if index.labels.insert(label.clone()) {
-            self.publish(&index.labels, index.current)?;
+        let next = if index.labels.insert(label.clone()) { Some(Self::next_generation(index.current)?) } else { None };
+        // Then the entry, before the list: a failure between the two steps leaves a readable secret missing from
+        // `labels`, which setting it again repairs, never a listed label with nothing behind it.
+        self.backend.set(label.as_str(), value.expose())?;
+        if let Some(next) = next {
+            self.publish(&index.labels, index.current, next)?;
         }
         Ok(())
     }
 
     fn delete(&self, label: &SecretLabel) -> Result<(), SecretError> {
         let _held = self.lock.acquire()?;
-        // The entry first: a failure between the two steps leaves a listed label with no secret, which the person
-        // sees as missing and deleting again clears, never a stored secret that nothing lists.
-        self.backend.remove(label.as_str())?;
+        // The index is read and checked first, as in `set`: a change that cannot be listed does not touch the secret.
         let mut index = self.read_index()?;
-        if index.labels.remove(label) {
-            self.publish(&index.labels, index.current)?;
+        let next = if index.labels.remove(label) { Some(Self::next_generation(index.current)?) } else { None };
+        // Then the entry, before the list: a failure between the two steps leaves a listed label with no secret,
+        // which the person sees as missing and deleting again clears, never a stored secret that nothing lists.
+        self.backend.remove(label.as_str())?;
+        if let Some(next) = next {
+            self.publish(&index.labels, index.current, next)?;
         }
         Ok(())
     }

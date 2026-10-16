@@ -302,6 +302,58 @@ fn a_damaged_head_with_a_huge_shard_count_is_corrupt_not_an_abort() {
     }
 }
 
+/// A store whose list is damaged (`head` and the shard 0 of the generation `head` names, if any), holding a secret
+/// `old/one` with the value `old`, and the label `new/one` with no secret.
+fn damaged_store(head: &str, shard_generation: Option<u64>) -> Fixture<MapBackend> {
+    let store = fixture(MapBackend::default());
+    store.backend.set(HEAD_USER, head).unwrap();
+    if let Some(generation) = shard_generation {
+        store.backend.set(&shard_user(generation, 0), "old/one").unwrap();
+    }
+    store.backend.set("old/one", "old").unwrap();
+    store
+}
+
+#[test]
+fn a_change_the_list_cannot_take_leaves_the_secret_entry_untouched() {
+    // A damaged head (and a lost shard) and a head at the last generation: the list refuses every change.
+    let last = encode_head(u64::MAX, 1);
+    // (head, generation of its shard, whether the list can still be read). A list that cannot be read refuses every
+    // change; one that can be read but has no generation left refuses only what it would have to publish.
+    let cases = [("garbage", None, false), ("0:2", Some(0), false), (last.as_str(), Some(u64::MAX), true)];
+    for (head, generation, readable) in cases {
+        let corrupt = SecretError::corrupt(INDEX_WHAT);
+        let store = damaged_store(head, generation);
+        let users_before = store.backend.users();
+
+        // Replacing a secret the list already has: refused with an unreadable list, and with a readable one it
+        // changes no list, so it goes through (the next test).
+        if !readable {
+            assert_eq!(store.set(&label("old/one"), SecretValue::new("new")).unwrap_err(), corrupt, "{head}");
+            assert_eq!(store.backend.entries.lock().unwrap()["old/one"], "old", "{head}: set replaced a value");
+        }
+        // Adding a new one: refused, and no entry is left that nothing lists.
+        assert_eq!(store.set(&label("new/one"), SecretValue::new("v")).unwrap_err(), corrupt, "{head}");
+        assert_eq!(store.backend.users(), users_before, "{head}: set left an entry nothing lists");
+
+        // Deleting a listed secret: refused, and it stays.
+        assert_eq!(store.delete(&label("old/one")).unwrap_err(), corrupt, "{head}");
+        assert_eq!(store.backend.entries.lock().unwrap()["old/one"], "old", "{head}: delete removed a secret");
+        assert_eq!(store.backend.users(), users_before, "{head}");
+    }
+}
+
+#[test]
+fn at_the_last_generation_a_change_that_needs_no_publish_still_works() {
+    // Setting a listed label again changes no list, so it does not need a next generation.
+    let store = damaged_store(&encode_head(u64::MAX, 1), Some(u64::MAX));
+    store.set(&label("old/one"), SecretValue::new("new")).unwrap();
+    assert_eq!(store.backend.entries.lock().unwrap()["old/one"], "new");
+    // And deleting one the list never had changes no list either.
+    store.delete(&label("never/listed")).unwrap();
+    assert_eq!(store.labels().unwrap(), [label("old/one")]);
+}
+
 #[test]
 fn the_last_generation_is_an_error_not_a_wrap() {
     let store = fixture(MapBackend::default());
