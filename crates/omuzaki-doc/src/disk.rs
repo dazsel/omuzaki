@@ -356,6 +356,8 @@ struct Hooks<'a> {
     flush_file_off: Cell<bool>,
     /// Make looking at the target fail with an error other than "not found" after a deletion moved it aside (tests only).
     look_off: Cell<bool>,
+    /// Make every [`rename_no_replace`] fail after this many have succeeded (tests only).
+    rename_fails_after: Cell<Option<u32>>,
     /// Take Windows's replacement without a swap on any system (tests only).
     windows_shaped: Cell<bool>,
     /// Pretend the system has no file identities, as on Windows: a linked backup records none (tests only).
@@ -508,6 +510,7 @@ impl Default for Hooks<'_> {
             sync_off: Cell::new(faults::sync_off()),
             flush_file_off: Cell::new(false),
             look_off: Cell::new(false),
+            rename_fails_after: Cell::new(None),
             windows_shaped: Cell::new(false),
             ids_off: Cell::new(false),
             copy_fails: Cell::new(false),
@@ -570,6 +573,12 @@ impl Hooks<'_> {
 
     /// [`rename_no_replace`], unless a test turned it off.
     fn rename_no_replace(&self, from: &Path, to: &Path) -> io::Result<bool> {
+        if let Some(left) = self.rename_fails_after.get() {
+            if left == 0 {
+                return Err(io::Error::other("moving the file failed (forced by a test)"));
+            }
+            self.rename_fails_after.set(Some(left - 1));
+        }
         if self.no_replace_off.get() { Err(io::ErrorKind::Unsupported.into()) } else { rename_no_replace(from, to) }
     }
 }
@@ -1446,6 +1455,22 @@ fn quarantine_name(path: &Path) -> PathBuf {
     path.with_file_name(name)
 }
 
+/// The error for a target that couldn't be looked at when the rescue of the file moved aside from it failed as well:
+/// both failures, and where the file is. A rescue that failed before the move leaves it at `quarantine`; one that
+/// failed after the move (flushing) names the file's new place.
+fn stranded(path: &Path, source: io::Error, quarantine: &Path, rescue: StoreError) -> StoreError {
+    let moved_to = match &rescue {
+        StoreError::Io { path: to, .. } if fs::symlink_metadata(quarantine).is_err() => Some(to.clone()),
+        _ => None,
+    };
+    StoreError::Stranded {
+        path: path.to_path_buf(),
+        source,
+        kept_at: moved_to.unwrap_or_else(|| quarantine.to_path_buf()),
+        rescue: Box::new(rescue),
+    }
+}
+
 /// Removes the file at `path` if it is the backed-up one; false if another file was there, which is kept.
 fn unlink_held(dir: &Path, path: &Path, held: &Held, hooks: &Hooks<'_>) -> Result<bool, StoreError> {
     // The move aside never replaces an occupied quarantine name, and where there is no rename that won't replace,
@@ -1471,9 +1496,11 @@ fn unlink_held(dir: &Path, path: &Path, held: &Held, hooks: &Hooks<'_>) -> Resul
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
             Err(e) => {
                 // Whether the name is taken is unknown, but the file moved aside must not stay under its hidden name:
-                // it is kept, and the error that is returned is still the one for the target.
-                drop(preserve(dir, &quarantine, hooks));
-                return Err(StoreError::io(path, e));
+                // it is kept. If keeping it fails too, the error also says where the file is.
+                return Err(match preserve(dir, &quarantine, hooks) {
+                    Ok(_) => StoreError::io(path, e),
+                    Err(rescue) => stranded(path, e, &quarantine, rescue),
+                });
             }
         }
         // The target is gone from its name: the deletion has happened, and what follows only tidies up.
@@ -2665,5 +2692,24 @@ mod tests {
         assert!(items.iter().any(|(n, t)| n.ends_with(".displaced") && t == "x = 1\n"), "{items:?}");
         let names: Vec<_> = fs::read_dir(d).unwrap().map(|e| e.unwrap().file_name()).collect();
         assert!(names.iter().all(|n| !n.to_string_lossy().ends_with(".del")), "{names:?}");
+    }
+
+    /// When the target can't be looked at after the move aside and the file can't be moved into the replaced folder
+    /// either, the error carries both failures and names the hidden file, which is still whole there.
+    #[test]
+    fn a_failed_look_and_a_failed_rescue_report_where_the_file_is() {
+        let tmp = TempDir::new().unwrap();
+        let d = tmp.path();
+        write(d, "a.toml", "x = 1\n");
+        let hooks = Hooks::default();
+        hooks.look_off.set(true);
+        hooks.rename_fails_after.set(Some(1)); // the move aside succeeds; the move into the replaced folder fails
+        let err = remove_checked_with(d, &["a".to_owned()], Some(ContentHash::of(b"x = 1\n")), &hooks).unwrap_err();
+        let StoreError::Stranded { kept_at, rescue, .. } = &err else { panic!("{err}") };
+        assert!(kept_at.to_string_lossy().ends_with(".del"), "{kept_at:?}");
+        assert_eq!(fs::read_to_string(kept_at).unwrap(), "x = 1\n", "the original is whole where the error says");
+        assert!(rescue.to_string().contains("forced by a test"), "{rescue}");
+        let text = err.to_string();
+        assert!(text.contains(&kept_at.display().to_string()) && text.contains("looking at the file failed"), "{text}");
     }
 }
