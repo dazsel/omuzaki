@@ -34,6 +34,8 @@ use self::rig::{RigFrame, SkinPose};
 use self::runtimes::DynamicMeshes;
 use self::scene::ScenePlan;
 use crate::error::StageError;
+use crate::scene::apply::{Applier, Owed, reserve};
+use crate::scene::resolve::ResolvedScene;
 use crate::upload::{StageCharacter, UploadOptions};
 
 /// Where a frame's `dt` and time come from.
@@ -51,9 +53,17 @@ impl StageClock {
         Self { fps: Some(fps), index: 0, time: 0.0 }
     }
 
-    /// A clock that advances by the `dt` each frame brings ([`FrameInput::dt`]): live use.
+    /// A clock that advances by the `dt` each frame brings ([`FrameInput::dt`]): live use. A stage on this clock numbers
+    /// its frames by submission, not by tick: every render, a [`redraw`](Stage::redraw) included, gets an index one
+    /// higher than the last, so `omuzaki-budget`'s scheduler can tell reports apart through a pause or a loop of the
+    /// timeline (`FrameInfo::index`, #821). The timeline position goes in `FrameInfo::time`.
     pub fn live() -> Self {
         Self { fps: None, index: 0, time: 0.0 }
+    }
+
+    /// Whether this is the measured clock of [`live`](Self::live).
+    fn is_live(&self) -> bool {
+        self.fps.is_none()
     }
 
     /// The next frame's tick. A fixed clock ignores `measured_dt`.
@@ -116,6 +126,7 @@ pub struct TimePin {
     pinned: Option<Tick>,
     tick: Tick,
     root: Mat4,
+    input_root: Mat4,
     pose: HumanoidPose,
     goals: IkGoals,
 }
@@ -128,8 +139,17 @@ pub struct Stage {
     dynamic: DynamicMeshes,
     plan: ScenePlan,
     face: Option<Box<FaceRig>>,
-    /// The character's world matrix of the last frame: the face system's and [`settle`](Stage::settle)'s.
+    /// The character's world matrix of the last frame: the subject's root times the input's. The face system's and
+    /// [`settle`](Stage::settle)'s.
     root: Mat4,
+    /// The input's own root of the last frame, so a new subject root can recompute `root`.
+    input_root: Mat4,
+    /// The scene's transform of the subject member, applied above every frame's root ([`set_scene`](Stage::set_scene)).
+    subject_root: Mat4,
+    /// What the scene has committed for the renderer ([`commit_scene`](Stage::commit_scene)).
+    applier: Applier,
+    /// Renders submitted so far; numbers the frames of a live clock.
+    submissions: u64,
     /// The pose and goals of the last frame: what [`settle`](Stage::settle) solves the rig with.
     pose: HumanoidPose,
     goals: IkGoals,
@@ -160,8 +180,15 @@ impl Stage {
         clock: StageClock,
     ) -> Result<Self, StageError> {
         let character = StageCharacter::upload(renderer, &built, options)?;
+        // Room for the most lights a scene may have, so a later `set_scene` never grows the list.
+        let mut scene = scene;
+        reserve(&mut scene);
         match Self::prepare(&built, &character) {
             Ok((rig, dynamic, plan)) => Ok(Self {
+                input_root: Mat4::IDENTITY,
+                subject_root: Mat4::IDENTITY,
+                applier: Applier::new(),
+                submissions: 0,
                 built,
                 character,
                 rig,
@@ -205,12 +232,13 @@ impl Stage {
     pub fn tick(&mut self, renderer: &mut dyn Renderer, input: &FrameInput) -> Result<FrameOutput, StageError> {
         self.swap_variant(renderer)?;
         let tick = self.pinned.unwrap_or_else(|| self.clock.next(input.dt));
-        self.root = input.root;
+        self.input_root = input.root;
+        self.root = self.subject_root * input.root;
         self.pose = input.pose;
         self.goals = input.goals;
         self.tick = tick;
         self.rig.solve(tick, &input.pose, &input.goals);
-        let pose = SkinPose { character: &self.built.rig, skin: self.rig.skin(), root: input.root };
+        let pose = SkinPose { character: &self.built.rig, skin: self.rig.skin(), root: self.root };
         let ctx = StepCtx { dt: tick.dt, time: tick.time, pose: &pose, wind: input.wind };
         DynamicMeshes::step(&mut self.built.runtimes, &ctx);
         let prepared = self
@@ -219,8 +247,8 @@ impl Stage {
             .and_then(|uploads| self.update_face(renderer, tick, input).map(|()| uploads));
         // Filled even when the frame can't be prepared: a variant swapped in at the top of this tick, and the scene
         // must not go on naming the character it retired (its meshes are released).
-        self.plan.fill(&mut self.scene, self.rig.skin(), input.root);
-        self.scene.frame = FrameInfo { index: tick.index, time: tick.time };
+        self.plan.fill(&mut self.scene, self.rig.skin(), self.root);
+        self.scene.frame = self.frame_info(tick);
         let uploads = prepared?;
         let report = renderer
             .render(self.target, &self.scene, &self.quality)
@@ -234,7 +262,7 @@ impl Stage {
     /// on every frame, whatever the clock is and however many frames ran before. The clock itself does not move. For
     /// renders that must not depend on history: a character sheet, a still.
     pub fn pin_time(&mut self, tick: Tick) -> TimePin {
-        let pin = TimePin { pinned: self.pinned, tick: self.tick, root: self.root, pose: self.pose, goals: self.goals };
+        let pin = TimePin { pinned: self.pinned, tick: self.tick, root: self.root, input_root: self.input_root, pose: self.pose, goals: self.goals };
         self.pinned = Some(tick);
         pin
     }
@@ -245,7 +273,8 @@ impl Stage {
     /// sent to the renderer.
     pub fn unpin_time(&mut self, pin: &TimePin) {
         self.pinned = pin.pinned;
-        (self.tick, self.root, self.pose, self.goals) = (pin.tick, pin.root, pin.pose, pin.goals);
+        (self.tick, self.root, self.input_root, self.pose, self.goals) =
+            (pin.tick, pin.root, pin.input_root, pin.pose, pin.goals);
         // A solve for no time: the bones follow the restored pose without stepping the springs.
         self.rig.solve(Tick { dt: 0.0, ..pin.tick }, &pin.pose, &pin.goals);
         self.plan.fill(&mut self.scene, self.rig.skin(), pin.root);
@@ -293,6 +322,47 @@ impl Stage {
         })
     }
 
+    /// The frame info of a render at `tick`, and the submission it counts. A live clock numbers by submission, so every
+    /// render is one higher than the last whatever the timeline does (pause, loop, restart); every other clock, and a
+    /// pinned stage, number by the tick, which repeats on purpose for a render that must not depend on history.
+    fn frame_info(&mut self, tick: Tick) -> FrameInfo {
+        self.submissions += 1;
+        let index = if self.clock.is_live() && self.pinned.is_none() { self.submissions } else { tick.index };
+        FrameInfo { index, time: tick.time }
+    }
+
+    /// Makes the renderer quality of the following frames `quality`: what the frame-budget scheduler decided.
+    pub fn set_quality(&mut self, quality: Quality) {
+        self.quality = quality;
+    }
+
+    /// The quality frames render at.
+    pub fn quality(&self) -> &Quality {
+        &self.quality
+    }
+
+    /// Takes a resolved scene (camera, lights, background, post look) into the stage, for the next frame: copies it
+    /// into the [`Scene`] without allocating ([`apply::Applier`](crate::scene::apply)), and puts the character where the
+    /// scene's subject member stands, `subject_root`, above the root each frame's input brings. Returns the work the
+    /// renderer is owed beyond the copy (a ground disc, the skin floor) and which stays owed until
+    /// [`commit_scene`](Self::commit_scene) says it was done; a value-only change owes nothing.
+    ///
+    /// Allocation-free for a scene the lights of which fit ([`MAX_LIGHTS`](omuzaki_render_api::limits::MAX_LIGHTS)).
+    pub fn set_scene(&mut self, resolved: &ResolvedScene, subject_root: Mat4) -> Owed {
+        let owed = self.applier.apply(resolved, &mut self.scene);
+        if subject_root != self.subject_root {
+            self.subject_root = subject_root;
+            // A paused stage redraws from `root`, so it moves with the subject at once.
+            self.root = subject_root * self.input_root;
+        }
+        owed
+    }
+
+    /// Records that everything in `owed` (from [`set_scene`](Self::set_scene)) reached the renderer.
+    pub fn commit_scene(&mut self, owed: &Owed) {
+        self.applier.commit(owed);
+    }
+
     /// The scene as the next frame will start from: set the camera, lights and post settings here.
     pub fn scene_mut(&mut self) -> &mut Scene {
         &mut self.scene
@@ -317,7 +387,7 @@ impl Stage {
         self.update_face(renderer, self.tick, input)?;
         self.plan.fill(&mut self.scene, self.rig.skin(), self.root);
         // What the last tick wrote into the scene, so a redraw before any tick doesn't render the caller's frame info.
-        self.scene.frame = FrameInfo { index: self.tick.index, time: self.tick.time };
+        self.scene.frame = self.frame_info(self.tick);
         let report = renderer
             .render(self.target, &self.scene, &self.quality)
             .map_err(|source| StageError::render("the still", source))?;

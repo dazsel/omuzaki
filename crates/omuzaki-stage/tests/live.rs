@@ -39,6 +39,14 @@ use omuzaki_stage::frame::{Stage, StageClock};
 use omuzaki_stage::perform::host::PerformHost;
 use omuzaki_stage::perform::input::{InputError, InputHost, LiveInput, NoPrompt, PreviewState, SourceKind, SourceSlot};
 use omuzaki_stage::perform::live::{LiveFrame, LiveStage};
+use omuzaki_stage::scene::resolve::{CheckedScene, Figure, ResolvedScene};
+use omuzaki_stage_api::{
+    Anchor, CameraDef, CameraId as SceneCameraId, CastMember, Framing, LightDef, LightId, LightShape, MemberId, SceneDef,
+    SceneSettings,
+};
+use omuzaki_char_api::{BuildOptions, BuildServices, CharId, CharacterBuilder, RegistryBuilder};
+use omuzaki_render_api::{Colour, Light};
+use std::collections::BTreeMap;
 use omuzaki_stage::perform::triggers::TriggerBinding;
 use omuzaki_stage::perform::{STEP_HZ, Tracking};
 use omuzaki_stage::{StageError, UploadOptions};
@@ -506,6 +514,7 @@ fn the_scheduler_measures_every_submission_and_steps_quality_down_over_budget() 
     assert!(live.live().scheduler().smoothed().is_some(), "the scheduler measured the frames");
     assert!(!changes.is_empty(), "two frames' worth of GPU time per frame steps quality down");
     assert!(live.live().scheduler().rungs() > 0);
+    assert_eq!(*live.live().stage().quality(), live.live().scheduler().quality(), "the stage renders at the scheduler's quality");
 }
 
 #[test]
@@ -568,6 +577,132 @@ fn the_real_face_painter_runs_live_and_its_cost_is_reported() {
         times[times.len() / 2],
         times[times.len() * 99 / 100]
     );
+}
+
+/// The scene document the live tests post: the mock character, two cameras and three lights.
+fn scene_def() -> SceneDef {
+    let mut def = SceneDef::new(SceneSettings::named("Live"));
+    def.cast.insert(MemberId::new("kiri").unwrap(), CastMember::new(CharId::new("mock").unwrap()));
+    for (name, framing) in [("front", Framing::Full), ("close", Framing::Bust)] {
+        def.cameras.insert(SceneCameraId::new(name).unwrap(), CameraDef::preset(framing));
+    }
+    for (name, azimuth) in [("key", 30.0), ("fill", -50.0), ("rim", 150.0)] {
+        let light = LightDef {
+            role: None,
+            colour: Colour::WHITE,
+            intensity: 1.0,
+            shadow: false,
+            anchor: Anchor::Subject,
+            shape: LightShape::Directional { azimuth, elevation: 40.0 },
+        };
+        def.lighting.lights.insert(LightId::new(name).unwrap(), light);
+    }
+    def
+}
+
+/// Resolves `def` for a 16:9 frame, as the scene service does before posting.
+fn resolved(def: &SceneDef) -> ResolvedScene {
+    omuzaki_stage::link();
+    let mock = omuzaki_char_mock::mock_character().expect("the fixture parses");
+    let built = RegistryBuilder
+        .build(&CharId::new("mock").unwrap(), &mock, &BuildOptions::default(), &BuildServices::default())
+        .expect("the mock character builds");
+    let landmarks = omuzaki_stage::scene::landmarks::Landmarks::measure(&built).unwrap();
+    let figures = BTreeMap::from([(
+        MemberId::new("kiri").unwrap(),
+        Figure::new(&CastMember::new(CharId::new("mock").unwrap()), landmarks),
+    )]);
+    let mut out = ResolvedScene::new();
+    out.resolve_into(CheckedScene::new(def).unwrap(), &figures, 16.0 / 9.0).unwrap();
+    out
+}
+
+#[test]
+fn live_submissions_are_numbered_through_a_pause_a_redraw_and_a_restart() {
+    let mut live = Live::new(MockRenderer::new(), vec![("cam", turning(12.0, sweep))], Quality::live(), Painter::Mock);
+    live.go_live("cam");
+    let mut reported = Vec::new();
+    let mut scene_indices = Vec::new();
+    let mut run = |live: &mut Live<MockRenderer>, n: u64| {
+        for _ in 0..n {
+            let frame = live.frame();
+            reported.push(frame.output.report.frame);
+            scene_indices.push(live.live().stage().scene().frame.index);
+        }
+    };
+    run(&mut live, 20);
+    live.inner.as_mut().unwrap().set_paused(true);
+    run(&mut live, 20); // the paused loop redraws the same timeline position
+    live.inner.as_mut().unwrap().set_paused(false);
+    live.inner.as_mut().unwrap().restart(); // the timeline goes back to tick 0
+    run(&mut live, 20);
+    assert_eq!(reported.len(), 60);
+    assert!(reported.windows(2).all(|pair| pair[1] > pair[0]), "every submission is numbered above the last: {reported:?}");
+    assert_eq!(reported, scene_indices, "the report names the submission the scene carried");
+    assert!(live.live().scheduler().smoothed().is_some(), "the scheduler measured throughout");
+}
+
+#[test]
+fn a_posted_scene_shows_in_the_next_frame_and_edits_follow() {
+    let mut live = Live::new(MockRenderer::new(), vec![], Quality::live(), Painter::None);
+    live.frames(3);
+    let mailbox = live.live().scenes();
+    let mut def = scene_def();
+    let first = resolved(&def);
+    mailbox.post(first.clone());
+    live.frame();
+    let stage = live.live().stage();
+    assert_eq!(stage.scene().lights, first.lights.as_slice(), "the lights reach the next frame");
+    assert_eq!(stage.scene().camera, first.cameras[first.active.unwrap()].1);
+    let (camera, lights) = (stage.scene().camera, stage.scene().lights.clone());
+    // The renderer owes the ground of the first scene; the app does that and commits it.
+    let owed = live.live().owed();
+    assert!(!owed.is_empty(), "a first scene with a ground owes the renderer a disc");
+    live.inner.as_mut().unwrap().stage_mut().commit_scene(&owed);
+
+    // A light colour edit and a camera yaw edit.
+    def.lighting.lights.get_mut(&LightId::new("key").unwrap()).unwrap().colour = Colour::rgb(255, 0, 0);
+    for camera in def.cameras.values_mut() {
+        camera.yaw = 25.0;
+    }
+    mailbox.post(resolved(&def));
+    live.frame();
+    let stage = live.live().stage();
+    assert_ne!(stage.scene().camera, camera, "the camera yaw shows");
+    assert_ne!(stage.scene().lights, lights, "the light colour shows");
+    assert!(stage.scene().lights.iter().any(|l| matches!(l, Light::Directional { colour, .. } if *colour == Colour::rgb(255, 0, 0))));
+    assert!(live.live().owed().is_empty(), "values only: the renderer is owed nothing");
+
+    // The subject moves: every instance of the character follows it, below the root each frame brings.
+    let before: Vec<Mat4> = live.live().stage().scene().instances.iter().map(|i| i.transform).collect();
+    let step = Mat4::from_translation(Vec3::new(0.5, 0.0, 0.0));
+    live.inner.as_mut().unwrap().set_subject_root(step);
+    live.frame();
+    let after: Vec<Mat4> = live.live().stage().scene().instances.iter().map(|i| i.transform).collect();
+    assert!(!before.is_empty());
+    assert!(before.iter().zip(&after).all(|(b, a)| (*a - step * *b).abs_diff_eq(Mat4::ZERO, 1e-5)), "the instances moved by the subject root");
+}
+
+#[test]
+fn applying_a_scene_allocates_nothing_in_the_frames_after_it() {
+    let mut live = Live::new(Quiet(Recorder::new(false)), vec![("cam", turning(30.0, sweep))], Quality::live(), Painter::None);
+    live.go_live("cam");
+    let mailbox = live.live().scenes();
+    let mut def = scene_def();
+    mailbox.post(resolved(&def));
+    live.frames(120);
+    // A value-only edit, posted off the loop; taking it swaps, and nothing on the frame thread allocates or frees.
+    def.lighting.lights.get_mut(&LightId::new("rim").unwrap()).unwrap().intensity = 2.0;
+    mailbox.post(resolved(&def));
+    let (result, allocations) = allocations_in(|| {
+        for _ in 0..600 {
+            live.try_frame()?;
+        }
+        Ok::<(), StageError>(())
+    });
+    result.unwrap();
+    assert_eq!(allocations, 0, "600 live frames after a scene allocated {allocations} times");
+    assert!(live.live().stage().scene().lights.iter().any(|l| matches!(l, Light::Directional { intensity, .. } if *intensity == 2.0)));
 }
 
 #[cfg(feature = "wgpu")]
