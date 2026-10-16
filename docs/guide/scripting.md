@@ -146,11 +146,12 @@ and the column.
 | Result size (JSON bytes) | 65536 | 65536 |
 | Nesting of values passed in or out | 64 | 64 |
 
-The nesting limit applies to a value that crosses the sandbox: the result, `params`, and the arguments and answers of
-ops. Inside a script, how deep arrays and maps nest is bounded by the array and map limits. Memory is the heap the run
-holds, counted as it allocates, and it includes what the data limits do not count (a map's keys, for one). A program
-that runs scripts must install `omuzaki_script::MemoryBudget` as its global allocator, and a run refuses to start
-without it.
+Operations are every step the script takes, including the steps of a function you pass to `map`, `filter` and the other
+array helpers. The nesting limit applies to a value that crosses the sandbox: the result, `params`, and the arguments
+and answers of ops. Inside a script, how deep arrays and maps nest is bounded by the array and map limits. Memory is the
+heap the run holds, counted as it allocates, and it includes what the data limits do not count (a map's keys, for one).
+A program that runs scripts must install `omuzaki_script::MemoryBudget` as its global allocator, and a run refuses to
+start without it.
 
 `script.run` takes `seconds` (1 to 600, 120 if you leave it out). Output past the cap becomes one "output truncated"
 line. Stop in the console, or cancelling the job, ends the run within one operation and rolls it back.

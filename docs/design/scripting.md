@@ -223,7 +223,7 @@ the same engine serves both and never holds a borrow across a job. `run` is a me
 | Limit | Console (person) | `script.run` (job) | Enforced by |
 |---|---|---|---|
 | Source size | 64 KiB | 64 KiB | the host, before parsing |
-| Operations (Rhai's count) | 10⁶ | 10⁷ | `set_max_operations` |
+| Operations (every tick, callbacks included) | 10⁶ | 10⁷ | `on_progress`, counted by the host |
 | Inner op calls | 10 000 | 10 000 | the bindings |
 | Call depth / expression depth | 64 / 64 (32 in functions) | same | `set_max_call_levels`, `set_max_expr_depths` |
 | String / array / map size | 1 MiB / 100 000 / 10 000 | same | Rhai's size limits |
@@ -242,13 +242,18 @@ the same engine serves both and never holds a borrow across a job. `run` is a me
   multiply a value (`array.pad`, `string.replace`) are checked before they copy, and every other one is bounded by
   what the run already holds. The peak is read again before the run commits, so a last call that passed the limit
   and freed its memory again still fails the run.
-- **Turning a value into text** (`print`, `debug`, `log`, `to_string`, `to_debug`, `${...}` interpolation, `+` and `+=`
-  with a string, the message of an uncaught `throw`) is built into a sink that stops at the output or string limit, so
-  formatting a value costs that limit and not the size of the value. Every one of these paths first checks whether the
-  run is already over its memory limit and, if so, formats nothing and ends the run with `Limit(Memory)`. Rhai formats
-  an interpolated item by calling `to_string` and, if that call fails, formats the whole value itself; so `to_string`
-  never fails (it answers a cut or empty text and flags the run), and a stop that is due is held back for at most three
-  ticks, or until a repeated operation count shows the tick before was the one inside that call.
+- **Turning a value into text** (`print`, `debug`, `log`, `to_string`, `to_debug`, `${...}` interpolation, `+`, `+=`
+  and `append` with a string, a map's `to_json`, the message of an uncaught `throw`) is built into a sink that stops at
+  the output or string limit, so formatting a value costs that limit and not the size of the value. The host registers
+  its own version of each for every type Rhai's packages have one for (and for any value), and each one never fails:
+  it answers the text cut at the limit and flags the run, which ends with `Limit(StringSize)`; a run that must stop
+  (already over its memory limit, or with any other reason found) gets an empty text and ends at its next operation.
+  Never failing matters because Rhai formats an interpolated part by calling `to_string` and, if that call fails in
+  any way, formats the whole value itself, unbounded. The call's first step is an operation tick, so the run never
+  stops at that tick: it is the first tick after Rhai clones its call state for a call from native code, which the
+  host sees (cloning the engine's tag marks the run), and a stop found there is delivered at the next tick. Rhai's
+  own operation limit is off for the same reason (it fires inside that tick), and because Rhai's count drops what a
+  callback of `map` or `filter` did; the host counts every tick instead.
 - **Closures** are accepted only as the callback of `try_op` or of an array function (`map`, `filter`, `reduce`, ...), so
   none outlives its call: what a closure captures is not counted by Rhai's limits either.
 - **Values that cross in** (`params`, op results) are measured as a whole before they are converted: all slots, all

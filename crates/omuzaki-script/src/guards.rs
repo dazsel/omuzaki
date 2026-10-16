@@ -9,18 +9,22 @@
 //! - `string.replace(find, with)` makes a result as long as the matches times `with`, and Rhai builds it before it
 //!   checks its length.
 //!
-//! Turning a value into text (`print`, `debug`, `to_string`, `to_debug`, `log`) is the third: Rhai builds the whole text
-//! before any limit looks at it, and a value can hold more text than the output or string limit allows (a map's keys
-//! are the budget's, not the data limits'). The text is built here into a sink that stops at the limit instead.
+//! Turning a value into text is the third. Rhai builds the whole text before any limit looks at it, and a value can
+//! hold more text than the output or string limit allows (a map's keys are the budget's, not the data limits'). Every
+//! path Rhai has for it (listed at [`install_formatting`]) is replaced here by one that builds into a sink that stops
+//! at the limit, answers the text cut there, and never fails, so Rhai never falls back to formatting a value itself.
 //!
-//! Both are registered again here under the same signatures, which take precedence over the package's, and check the
-//! projected size first. Every other function of the packages that builds a bigger value (`+` on arrays and strings,
-//! `split`, `keys`, `to_chars`, `filter`) is bounded by what the run already holds, and stays within one operation of
-//! the budget: it adds at most a copy of what the script could already see.
+//! `pad` and `replace` are registered again here under the same signatures, which take precedence over the package's,
+//! and check the projected size first. Every other function of the packages that builds a bigger value (`+` on arrays
+//! and strings, `split`, `keys`, `to_chars`, `filter`) is bounded by what the run already holds, and stays within one
+//! operation of the budget: it adds at most a copy of what the script could already see.
 
 use std::fmt::{self, Write};
 
-use rhai::{Array, Dynamic, Engine, EvalAltResult, INT, ImmutableString, Map, NativeCallContext, Position};
+use rhai::{
+    Array, Dynamic, Engine, EvalAltResult, FLOAT, FloatWrapper, FnPtr, INT, ImmutableString, Map, NativeCallContext,
+    Position,
+};
 
 use crate::host::{Stop, terminate_at};
 use crate::{LimitKind, Limits, budget};
@@ -217,45 +221,141 @@ impl Write for Bounded {
     }
 }
 
-/// An element of an array or map as Rhai prints it: a string in quotes, a character plain, a container in its
-/// brackets, anything else in its debug form. Rhai's own text for a container is made of these.
-fn write_element(sink: &mut Bounded, value: &Dynamic) -> fmt::Result {
+/// Which of Rhai's two forms of a value: the text form (`print`, `to_string`, `${...}`, `+` with a string) or the
+/// debug form (`debug`, `to_debug`, and every element of an array or map).
+#[derive(Clone, Copy)]
+pub(crate) enum Form {
+    Text,
+    Debug,
+}
+
+/// `value` in `form`, as Rhai's own functions for it write it (`print_debug_functions` in rhai's
+/// `packages/string_basic.rs`), into `sink`. An error only says the sink is full.
+fn write_value(sink: &mut Bounded, value: &Dynamic, form: Form) -> fmt::Result {
     if let Some(array) = value.read_lock::<Array>() {
+        write_array(sink, &array)
+    } else if let Some(map) = value.read_lock::<Map>() {
+        write_map(sink, &map)
+    } else if let Some(text) = value.read_lock::<ImmutableString>() {
+        write_string(sink, &text, form)
+    } else if let Some(character) = value.read_lock::<char>() {
+        sink.write_char(*character)
+    } else if let Some(function) = value.read_lock::<FnPtr>() {
+        write_fn_ptr(sink, &function)
+    } else if value.is_unit() {
+        write_unit(sink, form)
+    } else {
+        // Numbers, booleans and ranges: Rhai writes them with the value's own `Display` or `Debug`.
+        match form {
+            Form::Text => write!(sink, "{value}"),
+            Form::Debug => write!(sink, "{value:?}"),
+        }
+    }
+}
+
+/// `[a, b]`, each element in its debug form (`format_array`).
+fn write_array(sink: &mut Bounded, array: &Array) -> fmt::Result {
+    sink.write_str("[")?;
+    for (index, item) in array.iter().enumerate() {
+        if index > 0 {
+            sink.write_str(", ")?;
+        }
+        write_value(sink, item, Form::Debug)?;
+    }
+    sink.write_str("]")
+}
+
+/// `#{"k": v}`, each value in its debug form (`format_map`).
+fn write_map(sink: &mut Bounded, map: &Map) -> fmt::Result {
+    sink.write_str("#{")?;
+    for (index, (key, item)) in map.iter().enumerate() {
+        if index > 0 {
+            sink.write_str(", ")?;
+        }
+        write!(sink, "{key:?}: ")?;
+        write_value(sink, item, Form::Debug)?;
+    }
+    sink.write_str("}")
+}
+
+/// A string as itself, or quoted and escaped in the debug form (`print_string`, `debug_string`).
+fn write_string(sink: &mut Bounded, text: &str, form: Form) -> fmt::Result {
+    match form {
+        Form::Text => sink.write_str(text),
+        Form::Debug => write!(sink, "{text:?}"),
+    }
+}
+
+/// `Fn(name)` in both forms (`debug_fn_ptr`, and the any-value `to_string`): never the captured values.
+fn write_fn_ptr(sink: &mut Bounded, function: &FnPtr) -> fmt::Result {
+    write!(sink, "{function}")
+}
+
+/// Nothing, or `()` in the debug form (`print_unit`, `debug_unit`).
+fn write_unit(sink: &mut Bounded, form: Form) -> fmt::Result {
+    match form {
+        Form::Text => Ok(()),
+        Form::Debug => sink.write_str("()"),
+    }
+}
+
+/// A float as Rhai writes one (`print_f64`, `debug_f64`).
+fn write_float(sink: &mut Bounded, number: FLOAT, form: Form) -> fmt::Result {
+    match form {
+        Form::Text => write!(sink, "{}", FloatWrapper::new(number)),
+        Form::Debug => write!(sink, "{:?}", FloatWrapper::new(number)),
+    }
+}
+
+/// A map as JSON, as Rhai's `to_json` writes it (`format_map_as_json` in rhai's `api/json.rs`).
+fn write_json_map(sink: &mut Bounded, map: &Map) -> fmt::Result {
+    sink.write_str("{")?;
+    for (index, (key, item)) in map.iter().enumerate() {
+        if index > 0 {
+            sink.write_str(",")?;
+        }
+        write!(sink, "{key:?}:")?;
+        write_json(sink, item)?;
+    }
+    sink.write_str("}")
+}
+
+/// One value of [`write_json_map`] (`format_dynamic_as_json`).
+fn write_json(sink: &mut Bounded, value: &Dynamic) -> fmt::Result {
+    if let Some(map) = value.read_lock::<Map>() {
+        write_json_map(sink, &map)
+    } else if let Some(array) = value.read_lock::<Array>() {
         sink.write_str("[")?;
         for (index, item) in array.iter().enumerate() {
             if index > 0 {
-                sink.write_str(", ")?;
+                sink.write_str(",")?;
             }
-            write_element(sink, item)?;
+            write_json(sink, item)?;
         }
         sink.write_str("]")
-    } else if let Some(map) = value.read_lock::<Map>() {
-        sink.write_str("#{")?;
-        for (index, (key, item)) in map.iter().enumerate() {
-            if index > 0 {
-                sink.write_str(", ")?;
-            }
-            write!(sink, "{key:?}: ")?;
-            write_element(sink, item)?;
+    } else if let Some(function) = value.read_lock::<FnPtr>() {
+        if !function.is_curried() {
+            return write!(sink, "{:?}", function.fn_name());
         }
-        sink.write_str("}")
-    } else if let Some(character) = value.read_lock::<char>() {
-        sink.write_char(*character)
+        write!(sink, "[{:?}", function.fn_name())?;
+        for item in function.iter_curry() {
+            sink.write_str(",")?;
+            write_json(sink, item)?;
+        }
+        sink.write_str("]")
+    } else if value.is_unit() {
+        sink.write_str("null")
     } else {
         write!(sink, "{value:?}")
     }
 }
 
-/// `value` as text (`debug` for the debug form), at most `room` bytes of it, and whether more was left out.
-pub(crate) fn format_bounded(value: &Dynamic, debug: bool, room: usize) -> (String, bool) {
+/// `value` as text in `form`, at most `room` bytes of it, and whether more was left out.
+pub(crate) fn format_bounded(value: &Dynamic, form: Form, room: usize) -> (String, bool) {
+    #[cfg(test)]
+    FORMATS.with(|count| count.set(count.get() + 1));
     let mut sink = Bounded::new(room);
-    let _ = if value.is_array() || value.is_map() {
-        write_element(&mut sink, value)
-    } else if debug {
-        write!(sink, "{value:?}")
-    } else {
-        write!(sink, "{value}")
-    };
+    let _ = write_value(&mut sink, value, form); // an error only says the sink is full, which `cut` records
     let cut = sink.cut;
     (sink.into_text(), cut)
 }
@@ -263,72 +363,124 @@ pub(crate) fn format_bounded(value: &Dynamic, debug: bool, room: usize) -> (Stri
 /// `value` as Rhai's `Display` writes it, at most `room` bytes of it.
 pub(crate) fn display_bounded(value: &Dynamic, room: usize) -> String {
     let mut sink = Bounded::new(room);
-    let _ = write!(sink, "{value}");
+    let _ = write!(sink, "{value}"); // as in `format_bounded`
     sink.into_text()
 }
 
-/// Registers bounded `print`, `debug`, `to_string` and `to_debug` for any value, an array and a map (the spellings
-/// Rhai's own versions of them have for containers). `print` and `debug` answer the text cut at the output limit plus
-/// one byte, which is enough for the output to see it is over and mark itself truncated; `to_string` and `to_debug`
-/// (which interpolation and `+` use) answer the text cut at the string limit and flag the run, which then stops with
-/// `Limit(StringSize)` at its next tick or before it commits.
+#[cfg(test)]
+thread_local! {
+    /// How many times a value was formatted here on this thread, by a function of [`install_formatting`] or by `log`;
+    /// the coverage test of the formatting paths reads it.
+    pub(crate) static FORMATS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// One way of answering a text to Rhai: the form, the most bytes, and whether a text cut there stops the run.
+#[derive(Clone, Copy)]
+struct Formatter {
+    form: Form,
+    room: usize,
+    /// A text cut at the string limit ends the run with `Limit(StringSize)`; one cut at the output limit is the
+    /// output's to report (its "output truncated" line), and the run goes on.
+    cut_stops: bool,
+}
+
+impl Formatter {
+    /// The text `write` produces, cut at the room. Never fails: Rhai calls these from places where it swallows an
+    /// error and formats the whole value itself instead. A run that must stop gets an empty text, and one whose text
+    /// was cut at the string limit is marked to stop; either way it stops at its next tick (`Run::progress`).
+    fn answer(
+        self,
+        context: &NativeCallContext<'_>,
+        write: impl FnOnce(&mut Bounded) -> fmt::Result,
+    ) -> ImmutableString {
+        #[cfg(test)]
+        FORMATS.with(|count| count.set(count.get() + 1));
+        let run = crate::host::run_of(context).ok();
+        if run.as_ref().is_some_and(|run| run.stopping()) {
+            return ImmutableString::new();
+        }
+        let mut sink = Bounded::new(self.room);
+        let _ = write(&mut sink); // an error only says the sink is full, which `cut` records
+        if let (true, true, Some(run)) = (sink.cut, self.cut_stops, &run) {
+            run.note_stop(Stop::Limit(LimitKind::StringSize));
+        }
+        sink.into_text().into()
+    }
+}
+
+/// Registers bounded versions of every function Rhai turns a value into text with. Read from rhai 1.26.1 with the
+/// packages a run loads (core, logic, more-string, array, map, math), they are:
 ///
-/// They must answer rather than raise, and answer a text the engine's size check accepts: Rhai builds an interpolated
-/// string, and `"a" + value`, by calling `to_string` and, when that fails for any reason (an error, or a result over
-/// the string limit), formatting the whole value itself (`print_with_func`), which is the unbounded build this avoids.
+/// - `${...}`: the evaluator (`Expr::InterpolatedString` in `eval/expr.rs`) writes a string part as it is and calls
+///   `to_string` for any other through `print_with_func`;
+/// - `print(x)` and `debug(x)`, and `x.to_string()` and `x.to_debug()`: `print_debug_functions` in
+///   `packages/string_basic.rs`, with versions for any value and for a string, a character, a boolean, `()`, a float,
+///   a function pointer (`debug` and `to_debug` only), an array and a map (whose elements it formats with `to_debug`);
+/// - `s + x`, `x + s`, `s += x` and `s.append(x)` for a value that is not a string, a character or `()` (which have
+///   versions that only join text): `string_functions` in `packages/string_more.rs`, through `print_with_func`;
+/// - `m.to_json()`: `packages/map_basic.rs`, through `format_map_as_json` in `api/json.rs`.
+///
+/// `print_with_func` calls the function and, if that call fails in any way, formats the whole value with its `Display`
+/// or `Debug` instead. The call can fail at its own first tick (Rhai's operation limit, which a run turns off, or the
+/// progress callback; `Run::progress` never stops there), in the function (these never fail), or when Rhai checks the
+/// size of the result (these answer at most the string limit). Rhai's exact-type versions are found before any version
+/// that takes any value, so each is registered here for the same types; for one signature, a function registered on the
+/// engine is found before a package's. Integers and ranges have only the any-value version. (A blob, a timestamp, an
+/// `f32` and the other integer types have their own versions too, but a run can't hold one: their packages aren't
+/// loaded and nothing converts to them.)
+///
+/// `print` and `debug` cut at the output limit plus one byte, which is enough for the output to see it is over and mark
+/// itself truncated (or at the string limit if that is smaller); the others cut at the string limit and flag the run.
 pub(crate) fn install_formatting(engine: &mut Engine, limits: &Limits) {
+    let string = Formatter { form: Form::Text, room: limits.string_bytes, cut_stops: true };
     let output_room = limits.output_bytes.saturating_add(1);
-    let string_room = limits.string_bytes;
-    for (name, debug, output) in
-        [("print", false, true), ("debug", true, true), ("to_string", false, false), ("to_debug", true, false)]
-    {
-        let room = if output { output_room } else { string_room };
-        let answer = move |context: &NativeCallContext<'_>, value: &Dynamic| -> ImmutableString {
-            if over_budget(context) {
-                return ImmutableString::new();
-            }
-            let (text, cut) = format_bounded(value, debug, room);
-            if cut && !output {
-                // The run ends at its next tick; see `Run::pending_stop`.
-                if let Ok(run) = crate::host::run_of(context) {
-                    run.note_string_overflow();
-                }
-            }
-            text.into()
-        };
-        engine.register_fn(name, move |context: NativeCallContext<'_>, value: &mut Dynamic| answer(&context, value));
-        engine.register_fn(name, move |context: NativeCallContext<'_>, array: &mut Array| {
-            let held = Dynamic::from_array(std::mem::take(array));
-            let result = answer(&context, &held);
-            *array = held.into_array().unwrap_or_default();
-            result
-        });
-        engine.register_fn(name, move |context: NativeCallContext<'_>, map: &mut Map| {
-            let held = Dynamic::from_map(std::mem::take(map));
-            let result = answer(&context, &held);
-            *map = held.try_cast::<Map>().unwrap_or_default();
-            result
-        });
+    let output =
+        if output_room < string.room { Formatter { room: output_room, cut_stops: false, ..string } } else { string };
+    for (name, formatter) in [
+        ("print", output),
+        ("debug", Formatter { form: Form::Debug, ..output }),
+        ("to_string", string),
+        ("to_debug", Formatter { form: Form::Debug, ..string }),
+    ] {
+        register_formatter(engine, name, formatter);
     }
-    install_concatenation(engine, string_room);
+    install_concatenation(engine, string);
+    engine.register_fn("to_json", move |context: NativeCallContext<'_>, map: &mut Map| {
+        string.answer(&context, |sink| write_json_map(sink, map))
+    });
 }
 
-/// Whether the run is already over its memory limit (and now marked to end with `Limit(Memory)`). Asked before any
-/// formatting: the answer is then an empty text, and the run stops at its next tick or before it commits.
-fn over_budget(context: &NativeCallContext<'_>) -> bool {
-    crate::host::run_of(context).is_ok_and(|run| run.over_budget())
-}
-
-/// The text of `item` for a concatenation, cut at `room` bytes (the run is flagged when it was cut).
-fn text_for_concat(context: &NativeCallContext<'_>, item: &Dynamic, room: usize) -> String {
-    if over_budget(context) {
-        return String::new();
-    }
-    let (text, cut) = format_bounded(item, false, room);
-    if let (true, Ok(run)) = (cut, crate::host::run_of(context)) {
-        run.note_string_overflow();
-    }
-    text
+/// Registers `name` for any value and for each type Rhai's package has its own version of (see
+/// [`install_formatting`]). Values are taken by reference where they can be large, so nothing is copied to format it.
+fn register_formatter(engine: &mut Engine, name: &str, formatter: Formatter) {
+    let form = formatter.form;
+    engine.register_fn(name, move |context: NativeCallContext<'_>, value: &mut Dynamic| {
+        formatter.answer(&context, |sink| write_value(sink, value, form))
+    });
+    engine.register_fn(name, move |context: NativeCallContext<'_>, text: &mut ImmutableString| {
+        formatter.answer(&context, |sink| write_string(sink, text, form))
+    });
+    engine.register_fn(name, move |context: NativeCallContext<'_>, character: char| {
+        formatter.answer(&context, |sink| sink.write_char(character))
+    });
+    engine.register_fn(name, move |context: NativeCallContext<'_>, value: bool| {
+        formatter.answer(&context, |sink| write!(sink, "{value}"))
+    });
+    engine.register_fn(name, move |context: NativeCallContext<'_>, (): ()| {
+        formatter.answer(&context, |sink| write_unit(sink, form))
+    });
+    engine.register_fn(name, move |context: NativeCallContext<'_>, number: FLOAT| {
+        formatter.answer(&context, |sink| write_float(sink, number, form))
+    });
+    engine.register_fn(name, move |context: NativeCallContext<'_>, function: &mut FnPtr| {
+        formatter.answer(&context, |sink| write_fn_ptr(sink, function))
+    });
+    engine.register_fn(name, move |context: NativeCallContext<'_>, array: &mut Array| {
+        formatter.answer(&context, |sink| write_array(sink, array))
+    });
+    engine.register_fn(name, move |context: NativeCallContext<'_>, map: &mut Map| {
+        formatter.answer(&context, |sink| write_map(sink, map))
+    });
 }
 
 /// `first` and `second` joined in a string of exactly their length: a map's keys are the budget's, so a key built here
@@ -340,25 +492,27 @@ fn join(first: &str, second: &str) -> String {
     joined
 }
 
-/// Registers `string + value`, `string += value` and `value + string` for any value, replacing the package's.
-///
-/// The package's versions format `value` through `print_with_func`, which calls `to_string` and, when anything fails on
-/// the way (the per-operation stop of a run that is over its budget is one, since that call ticks first), formats the
-/// value in full. These format it here, bounded, with no call to fail.
-fn install_concatenation(engine: &mut Engine, room: usize) {
+/// Registers `string + value`, `string += value`, `string.append(value)` and `value + string` for any value, replacing
+/// the package's, which format `value` through `print_with_func` (see [`install_formatting`]).
+fn install_concatenation(engine: &mut Engine, text: Formatter) {
+    let format = move |context: &NativeCallContext<'_>, item: &Dynamic| {
+        text.answer(context, |sink| write_value(sink, item, Form::Text))
+    };
     engine.register_fn(
         "+",
         move |context: NativeCallContext<'_>, string: &mut ImmutableString, item: Dynamic| -> ImmutableString {
-            join(string, &text_for_concat(&context, &item, room)).into()
+            join(string, &format(&context, &item)).into()
         },
     );
-    engine.register_fn("+=", move |context: NativeCallContext<'_>, string: &mut ImmutableString, item: Dynamic| {
-        *string = join(string, &text_for_concat(&context, &item, room)).into();
-    });
+    for name in ["+=", "append"] {
+        engine.register_fn(name, move |context: NativeCallContext<'_>, string: &mut ImmutableString, item: Dynamic| {
+            *string = join(string, &format(&context, &item)).into();
+        });
+    }
     engine.register_fn(
         "+",
         move |context: NativeCallContext<'_>, item: &mut Dynamic, string: &str| -> ImmutableString {
-            join(&text_for_concat(&context, item, room), string).into()
+            join(&format(&context, item), string).into()
         },
     );
 }

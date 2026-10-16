@@ -1,7 +1,7 @@
 //! The Rhai engine: one fresh engine per run, the limits, cancel, output and error mapping.
 
-use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, PoisonError, RwLock};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock};
 
 use omuzaki_core::time::{Clock, SystemClock};
 use omuzaki_doc_api::{DocPath, Value};
@@ -22,6 +22,7 @@ use crate::budget;
 use crate::check::{Diagnostic, effective_grants};
 use crate::closures;
 use crate::convert::{Convert, from_json, oversized, oversized_fields, size_kind, to_json};
+use crate::guards::Form;
 use crate::{Calls, Cancel, LimitKind, Limits, OutputKind, OutputLine, PlannedCall, ScriptError, ScriptErrorKind};
 
 /// What to run and as whom.
@@ -66,12 +67,45 @@ pub(crate) enum Stop {
     Limit(LimitKind),
 }
 
+impl Stop {
+    fn kind(self) -> ScriptErrorKind {
+        match self {
+            Self::Cancelled => ScriptErrorKind::Cancelled,
+            Self::Limit(kind) => ScriptErrorKind::Limit(kind),
+        }
+    }
+
+    /// What a run that ended for this reason reports when it has no error of Rhai's to quote.
+    fn message(self) -> &'static str {
+        match self {
+            Self::Cancelled => "the run was cancelled",
+            Self::Limit(LimitKind::Memory) => "the run held more memory than the limit",
+            Self::Limit(LimitKind::StringSize) => "a text was longer than the string limit",
+            Self::Limit(LimitKind::Operations) => "the run passed its operation limit",
+            Self::Limit(LimitKind::Time) => "the run passed its wall-clock limit",
+            Self::Limit(_) => "the run passed one of its limits",
+        }
+    }
+}
+
 /// Why an op is not callable from a script, carried like [`Stop`] so a script can't catch it.
 #[derive(Clone)]
 pub(crate) struct Refusal(pub(crate) Arc<OpError>);
 
-/// The most ticks a due stop is held back; see [`Run::progress`].
-const GRACE_TICKS: u32 = 3;
+/// The engine's tag: the run, reachable from the context of every native call ([`run_of`]).
+///
+/// Rhai keeps the tag in its call state, and clones that state each time native code calls back into the engine
+/// (`NativeCallContext::call_native_fn_raw`, `FnPtr::call_within_context`). Cloning the tag marks the run, so
+/// [`Run::progress`] knows the next tick is the first one of such a call. Nothing else clones it: [`run_of`] borrows
+/// it.
+pub(crate) struct Tag(Arc<Run>);
+
+impl Clone for Tag {
+    fn clone(&self) -> Self {
+        self.0.fresh.store(true, Ordering::Relaxed);
+        Self(self.0.clone())
+    }
+}
 
 /// The run's services, borrowed from `run`'s caller.
 struct Lent {
@@ -98,15 +132,15 @@ pub(crate) struct Run {
     reads: AtomicU32,
     /// JSON bytes of the dry-run plans kept so far.
     plan_bytes: AtomicUsize,
-    /// A stop a formatting function asked for: 0 none, 1 `StringSize` (its text was cut at the string limit), 2
-    /// `Memory` (the run was already over its memory limit when asked to format). Rhai swallows an error from
-    /// `to_string` and formats the value in full, so the function answers a short text instead and the run stops at the
-    /// next tick or before it commits.
-    pending_stop: AtomicU8,
-    /// Ticks that found a reason to stop and were let pass; see [`Run::progress`].
-    held_ticks: AtomicU32,
-    /// The operation count of the last tick.
-    last_ops: AtomicU64,
+    /// The reason the run must stop, set once by the first one found: by a progress tick (cancel, time, memory,
+    /// operations), or by a formatting function (a text cut at the string limit, or a run already over its memory
+    /// limit). The run ends at the next tick that may stop it ([`Run::progress`]), or before it commits.
+    due: OnceLock<Stop>,
+    /// Rhai operations so far, counted here: every tick, in every call context (see [`Run::progress`]).
+    ops: AtomicU64,
+    /// Set when Rhai clones its call state for a call made from native code ([`Tag`]); the next tick is that call's
+    /// first.
+    fresh: AtomicBool,
     output: Mutex<Output>,
     plans: Mutex<Vec<PlannedCall>>,
 }
@@ -245,60 +279,64 @@ impl Run {
         (clock.now().0 - started >= f64::from(self.limits.seconds)).then_some(Stop::Limit(LimitKind::Time))
     }
 
-    /// Records that a text was cut at the string limit; the run ends with `Limit(StringSize)`.
-    pub(crate) fn note_string_overflow(&self) {
-        self.pending_stop.fetch_max(1, Ordering::SeqCst);
+    /// Marks the run to end for `stop`, unless an earlier reason already did.
+    pub(crate) fn note_stop(&self, stop: Stop) {
+        let _ = self.due.set(stop); // a reason found earlier stands
     }
 
-    /// Whether the run already holds more than its memory limit; if so the run is marked to end with `Limit(Memory)`.
-    /// Every formatting path asks this first and formats nothing when it is true: a value the run could only copy past
-    /// its limit is not worth formatting, and formatting it is what costs several times its size.
-    pub(crate) fn over_budget(&self) -> bool {
-        let over = budget::used_here() > self.limits.memory_bytes;
-        if over {
-            self.pending_stop.fetch_max(2, Ordering::SeqCst);
+    /// The reason the run must stop, if one was found.
+    fn due(&self) -> Option<Stop> {
+        self.due.get().copied()
+    }
+
+    /// Whether the run must stop: a reason was found, or it already holds more than its memory limit (which is then
+    /// the reason). Every formatting path asks this first and formats nothing when it is true: the run is ending, and
+    /// a value it could only copy past its limit is not worth formatting.
+    pub(crate) fn stopping(&self) -> bool {
+        if self.due.get().is_none() && budget::used_here() > self.limits.memory_bytes {
+            self.note_stop(Stop::Limit(LimitKind::Memory));
         }
-        over
+        self.due.get().is_some()
     }
 
-    /// The stop a formatting function asked for, if one did.
-    fn requested_stop(&self) -> Option<LimitKind> {
-        match self.pending_stop.load(Ordering::SeqCst) {
-            0 => None,
-            1 => Some(LimitKind::StringSize),
-            _ => Some(LimitKind::Memory),
-        }
-    }
-
-    /// The engine's per-operation check: `Some` ends the run. `ops` is the operation count Rhai passes.
+    /// The engine's per-operation check: `Some` ends the run.
     ///
-    /// A stop that is due (cancel, time or memory) is held back for a few ticks, never more than [`GRACE_TICKS`], and
-    /// delivered at the first tick whose count repeats the one before it. The reason is Rhai's interpolated string: it
-    /// calls `to_string` through a function whose own tick comes first, on a copy of the run state, and it swallows an
-    /// error from that call, formatting the value in full instead (`print_with_func`). A stop delivered there would not
-    /// stop the run and would make that unbounded formatting happen. That tick is the only one that does not advance
-    /// the count, so the next tick, the real one, repeats it: a repeated count proves the tick before was that one.
-    /// While a stop is held, the formatting paths see the run is over its limit and format nothing
-    /// ([`Run::over_budget`]). Only an adversary that lines the end of the hold up with such a tick gets a value
-    /// formatted in full, once; the memory it adds is caught by the peak check before the run commits.
-    fn progress(&self, ops: u64, started: f64, clock: &dyn Clock) -> Option<Dynamic> {
-        let repeated = self.last_ops.swap(ops, Ordering::Relaxed) == ops;
-        if let Some(kind) = self.requested_stop() {
-            return Some(Dynamic::from(Stop::Limit(kind)));
+    /// The check never ends the run inside a formatting call, so Rhai can never fall back to its own formatting. Rhai
+    /// builds `${...}` by calling `to_string` through `NativeCallContext::call_native_fn_raw`, whose first step is a
+    /// tick of its own; an error from that tick is swallowed (`print_with_func`) and the whole value is formatted by
+    /// Rhai instead, unbounded. That tick is always the first one after Rhai clones its call state for the call, which
+    /// clones the [`Tag`]. So the first tick after a clone may find a reason to stop but never delivers it; the run
+    /// stops at the next tick (outside the call, or inside a callback's body), and meanwhile every formatting function
+    /// answers an empty text ([`Run::stopping`]). A callback's body ticks again after its first tick, so such first
+    /// ticks come in a row only while one native call makes native calls of its own (`contains` or `==` comparing
+    /// elements), and the hold is bounded by that call's own work.
+    ///
+    /// Operations are counted here, and Rhai's own operation limit is off: it fires inside that same first tick, and
+    /// Rhai's count loses what a call made from native code did (a callback of `map` ticks on a clone that is dropped).
+    fn progress(&self, started: f64, clock: &dyn Clock) -> Option<Dynamic> {
+        let ops = self.ops.fetch_add(1, Ordering::Relaxed).saturating_add(1);
+        let first_of_call = self.fresh.swap(false, Ordering::Relaxed);
+        if self.due.get().is_none()
+            && let Some(stop) = self.reason(ops, started, clock)
+        {
+            self.note_stop(stop);
         }
-        // A callback that outlives its lease stops at once: nothing it can reach is borrowed any more.
-        if self.lent.read().unwrap_or_else(PoisonError::into_inner).is_none() {
-            return Some(Dynamic::from(Stop::Cancelled));
-        }
-        let reason = if budget::used_here() > self.limits.memory_bytes {
-            Some(Dynamic::from(Stop::Limit(LimitKind::Memory)))
-        } else {
-            self.stop(started, clock).map(Dynamic::from)
-        };
-        if reason.is_some() && !repeated && self.held_ticks.fetch_add(1, Ordering::SeqCst) < GRACE_TICKS {
+        if first_of_call {
             return None;
         }
-        reason
+        self.due().map(Dynamic::from)
+    }
+
+    /// Why the run must stop at a tick with `ops` operations counted, if it must.
+    fn reason(&self, ops: u64, started: f64, clock: &dyn Clock) -> Option<Stop> {
+        if ops > self.limits.operations {
+            return Some(Stop::Limit(LimitKind::Operations));
+        }
+        if budget::used_here() > self.limits.memory_bytes {
+            return Some(Stop::Limit(LimitKind::Memory));
+        }
+        // Includes a callback that outlives its lease, which stops at once: nothing it can reach is borrowed any more.
+        self.stop(started, clock)
     }
 
     fn print(&self, kind: OutputKind, text: &str) {
@@ -316,8 +354,12 @@ impl Run {
     }
 }
 
+/// The run a native call belongs to. Borrows the tag rather than cloning it, which would mark the run ([`Tag`]).
 pub(crate) fn run_of(context: &NativeCallContext<'_>) -> Result<Arc<Run>, Box<EvalAltResult>> {
-    context.tag().and_then(|tag| tag.clone().try_cast::<Arc<Run>>()).ok_or_else(|| runtime("no run is active"))
+    context
+        .tag()
+        .and_then(|tag| tag.read_lock::<Tag>().map(|tag| tag.0.clone()))
+        .ok_or_else(|| runtime("no run is active"))
 }
 
 /// A failed op as the error a script sees: the `OpError` as a map, plus the `op` and the `line` and `column` of the call.
@@ -401,7 +443,8 @@ impl ScriptHost {
         crate::guards::install(&mut engine, &self.limits);
         let limits = &self.limits;
         engine
-            .set_max_operations(limits.operations)
+            // Off: the run counts operations itself (`Run::progress`), since Rhai's own limit fires inside formatting.
+            .set_max_operations(0)
             .set_max_call_levels(limits.call_depth)
             .set_max_expr_depths(limits.expr_depth, limits.fn_expr_depth)
             .set_max_string_size(limits.string_bytes)
@@ -416,7 +459,7 @@ impl ScriptHost {
 
     fn engine(&self, run: &Arc<Run>, started: f64) -> Engine {
         let mut engine = self.base_engine();
-        engine.set_default_tag(Dynamic::from(run.clone()));
+        engine.set_default_tag(Dynamic::from(Tag(run.clone())));
         let sink = run.clone();
         engine.on_print(move |text| sink.print(OutputKind::Print, text));
         let sink = run.clone();
@@ -426,16 +469,21 @@ impl ScriptHost {
         let room = self.limits.output_bytes.saturating_add(1);
         // By reference: a by-value argument is a copy of the whole value, which is what this is trying not to make.
         engine.register_fn("log", move |value: &mut Dynamic| {
-            if sink.over_budget() {
+            if sink.stopping() {
                 return;
             }
-            sink.print(OutputKind::Note, &crate::guards::format_bounded(value, false, room).0);
+            sink.print(OutputKind::Note, &crate::guards::format_bounded(value, Form::Text, room).0);
         });
         let sink = run.clone();
         // A float would otherwise reach the math package's `log(x)` (the logarithm), so it is overloaded too.
-        engine.register_fn("log", move |value: f64| sink.print(OutputKind::Note, &value.to_string()));
+        engine.register_fn("log", move |value: f64| {
+            sink.print(
+                OutputKind::Note,
+                &crate::guards::format_bounded(&Dynamic::from_float(value), Form::Text, room).0,
+            );
+        });
         let (watch, clock) = (run.clone(), self.clock.clone());
-        engine.on_progress(move |ops| watch.progress(ops, started, clock.as_ref()));
+        engine.on_progress(move |_| watch.progress(started, clock.as_ref()));
         engine
     }
 
@@ -527,9 +575,9 @@ impl ScriptHost {
             sent: AtomicU32::new(0),
             reads: AtomicU32::new(0),
             plan_bytes: AtomicUsize::new(2),
-            pending_stop: AtomicU8::new(0),
-            held_ticks: AtomicU32::new(0),
-            last_ops: AtomicU64::new(0),
+            due: OnceLock::new(),
+            ops: AtomicU64::new(0),
+            fresh: AtomicBool::new(false),
             output: Mutex::new(Output::default()),
             plans: Mutex::new(Vec::new()),
         });
@@ -601,17 +649,23 @@ impl ScriptHost {
         if let Some(stray) = closures::stray(&ast) {
             return Err(located(ScriptErrorKind::Parse, stray.message, stray.at, None));
         }
-        let value = evaluate(&engine, &ast, &run.request.params, &self.limits)?;
+        let value = evaluate(&engine, &ast, &run.request.params, &self.limits);
+        // A reason to stop that no tick could deliver yet (found at the first tick of a call, or by a formatting
+        // function) ends the run all the same: whether the script then finished, or failed for a reason that only
+        // arose because it ran on (a text it went on to build was too long), it was bound to stop for this one.
+        if let Some(stop) = run.due() {
+            return Err(match value {
+                Err(error) if error.kind == stop.kind() => error,
+                Err(error) => {
+                    ScriptError { message: stop.message().to_owned(), kind: stop.kind(), op_error: None, ..error }
+                }
+                Ok(_) => fail(stop.kind(), stop.message()),
+            });
+        }
+        let value = value?;
         // The progress tick reads the live heap between operations; the last operation (or the conversion of the
         // result) can pass the budget and free it again before another tick, so the peak is read here, before anything
         // becomes durable.
-        match run.requested_stop() {
-            Some(LimitKind::Memory) => {
-                return Err(fail(ScriptErrorKind::Limit(LimitKind::Memory), "the run held more memory than the limit"));
-            }
-            Some(kind) => return Err(fail(ScriptErrorKind::Limit(kind), "a text was longer than the string limit")),
-            None => {}
-        }
         if budget::peak_here() > self.limits.memory_bytes {
             return Err(fail(
                 ScriptErrorKind::Limit(LimitKind::Memory),
@@ -706,7 +760,6 @@ fn classify(error: &EvalAltResult, room: usize) -> ScriptError {
     let at = error.position();
     let (kind, op_error) = match error {
         EvalAltResult::ErrorInFunctionCall(_, _, inner, _) => return classify(inner, room),
-        EvalAltResult::ErrorTooManyOperations(_) => (ScriptErrorKind::Limit(LimitKind::Operations), None),
         EvalAltResult::ErrorStackOverflow(_) => (ScriptErrorKind::Limit(LimitKind::Depth), None),
         EvalAltResult::ErrorDataTooLarge(typ, _) => (ScriptErrorKind::Limit(size_kind(typ)), None),
         EvalAltResult::ErrorTerminated(token, _) => match token.clone().try_cast::<Stop>() {
@@ -797,9 +850,9 @@ mod tests {
             sent: AtomicU32::new(0),
             reads: AtomicU32::new(0),
             plan_bytes: AtomicUsize::new(2),
-            pending_stop: AtomicU8::new(0),
-            held_ticks: AtomicU32::new(0),
-            last_ops: AtomicU64::new(0),
+            due: OnceLock::new(),
+            ops: AtomicU64::new(0),
+            fresh: AtomicBool::new(false),
             output: Mutex::new(Output::default()),
             plans: Mutex::new(Vec::new()),
         })
@@ -823,7 +876,7 @@ mod tests {
         assert!(kept.lent.read().unwrap().is_none(), "the slot is empty once `lend` returns");
         let after = kept.invoke("face.set_profile", Value::Null, Position::NONE).unwrap_err();
         assert!(is_cancel(&after), "a late call stops as cancelled");
-        assert!(kept.progress(1, 0.0, &SystemClock::new()).is_some(), "a late progress tick stops the engine");
+        assert!(kept.progress(0.0, &SystemClock::new()).is_some(), "a late progress tick stops the engine");
         assert_eq!(reached.load(Ordering::SeqCst), 1, "nothing reached the services after the lease");
     }
 
@@ -1051,6 +1104,8 @@ mod peak {
             ("value plus string", r#"let s = m + "a";"#, "limit", 1),
             ("string append", r#"let s = "a"; s += m;"#, "limit", 1),
             ("interpolated array", "let s = `${[m]}`;", "limit", 1),
+            ("string append call", r#"let s = "a"; s.append(m);"#, "limit", 1),
+            ("JSON", "let s = m.to_json();", "limit", 0),
         ] {
             let (result, peak) = peak_of(&format!("{build} {statement}"));
             match (ends, &result) {
@@ -1165,5 +1220,178 @@ mod peak {
         let (result, _) =
             peak_of(r#"let s = "abc"; s.replace('b', "XY"); s.replace("XY", 'z'); s.replace('a', 'q'); s"#);
         assert_eq!(result.expect("runs").value, "qzc");
+    }
+
+    /// A large map: twenty half-megabyte keys, about 10 MiB, far more text than the 1 MiB string limit.
+    fn large_map() -> String {
+        format!("{LONG_KEY} let m = #{{}}; for i in 0..20 {{ m[k + i] = 1; }}")
+    }
+
+    /// A run that has passed its memory limit while it builds an interpolated part formats none of it, whichever tick
+    /// the stop falls due at. Rhai swallows a stop delivered at the first tick of its own `to_string` call and formats
+    /// the whole value itself, several times its size, so the peak shows whether one got through. Passing the map to
+    /// `f` copies it, which passes the limit; the pads in `f` move the tick at which the stop is due relative to the
+    /// `to_string` call that formats what `f` returns.
+    #[test]
+    fn a_run_over_its_memory_limit_never_formats_a_large_map_in_full() {
+        let tight = Limits { memory_bytes: 15 << 20, ..Limits::console() };
+        // What the run holds once one copy of the map has passed the limit: it stops there.
+        let (result, base) = peak_with(tight.clone(), &format!("{} let over = m;", large_map()));
+        assert_eq!(result.expect_err("over the limit").kind, ScriptErrorKind::Limit(LimitKind::Memory));
+        let one_format = tight.string_bytes;
+        for pads in 0..8 {
+            let f = format!("fn f(x) {{ {} x }}", "1;".repeat(pads));
+            let (result, peak) =
+                peak_with(tight.clone(), &format!("{f}\n{} let s = `${{f(m)}}`; s.len()", large_map()));
+            let kind = result.expect_err("over the limit").kind;
+            assert_eq!(kind, ScriptErrorKind::Limit(LimitKind::Memory), "{pads} pads");
+            assert!(
+                peak <= base + one_format + (1 << 20),
+                "{pads} pads: peak {} KiB, from {} KiB when the run passed its limit",
+                peak >> 10,
+                base >> 10
+            );
+        }
+    }
+
+    /// A run whose operation budget runs out inside an interpolation, at any tick up to and including the one of Rhai's
+    /// own `to_string` call, stops with `Limit(Operations)` and never formats the map in full. Rhai's operation limit
+    /// fired inside that call, where its error is swallowed and the whole value formatted instead.
+    #[test]
+    fn an_operation_budget_running_out_mid_interpolation_never_formats_a_large_map_in_full() {
+        let (_, base) = peak_of(&large_map());
+        let script = format!("{} let s = `${{m}}`;", large_map());
+        let run = |operations| peak_with(Limits { operations, ..Limits::console() }, &script);
+        let runs_out = |operations| {
+            matches!(run(operations).0, Err(ScriptError { kind: ScriptErrorKind::Limit(LimitKind::Operations), .. }))
+        };
+        // The fewest operations with which the run does not run out: the budget is spent mid-interpolation just below.
+        let (mut low, mut high) = (1, Limits::console().operations);
+        while low < high {
+            let middle = low + (high - low) / 2;
+            if runs_out(middle) { low = middle + 1 } else { high = middle }
+        }
+        // The template copies the map once (what the run already holds, as the module docs of `guards` say), and a
+        // bounded format adds at most the string limit; formatting in full would be several copies more.
+        let allowed = base + Limits::console().string_bytes + (1 << 20);
+        for operations in low.saturating_sub(8)..=low {
+            let (result, peak) = run(operations);
+            let kind = result.expect_err("stops").kind;
+            if operations < low {
+                assert_eq!(kind, ScriptErrorKind::Limit(LimitKind::Operations), "{operations} operations");
+            }
+            assert!(
+                peak <= base + allowed,
+                "{operations} operations: peak {} KiB, from {} KiB before the template",
+                peak >> 10,
+                base >> 10
+            );
+        }
+    }
+
+    /// A value of every type a run can hold, and a function pointer (which the closure check keeps out of a variable;
+    /// the engine is driven directly here). rhai 1.26.1's `print_debug_functions` has versions of its own for the
+    /// first eight, which are found before any version for any value; integers and ranges reach the any-value one.
+    const TYPES: [&str; 11] = [
+        "()",
+        "true",
+        "'c'",
+        "\"text\"",
+        "2.5",
+        "|x| x",
+        "[1, 'c', \"s\", ()]",
+        "#{ a: [2.0], b: \"t\" }",
+        "42",
+        "1..5",
+        "1..=5",
+    ];
+
+    /// Every way a script turns a value `v` into text.
+    const PATHS: [&str; 11] = [
+        "`${v}`",
+        "`a${v}b`",
+        "v.to_string()",
+        "v.to_debug()",
+        "print(v)",
+        "debug(v)",
+        "\"a\" + v",
+        "v + \"a\"",
+        "let s = \"a\"; s += v; s",
+        "let s = \"a\"; s.append(v); s",
+        "log(v)",
+    ];
+
+    /// The text a script answers or prints, and how many times one of the bounded functions formatted a value.
+    fn formatted(source: &str) -> (String, Vec<String>, usize) {
+        let host = ScriptHost::new(&[], Limits::console());
+        let run = Arc::new(Run {
+            lent: RwLock::new(None),
+            limits: Limits::console(),
+            request: RunRequest {
+                name: "coverage".into(),
+                source: source.into(),
+                actor: Actor::Person { name: "tester".into() },
+                grants: Grants::person(),
+                tx: None,
+                params: JsonMap::new(),
+                dry_run: false,
+            },
+            sent: AtomicU32::new(0),
+            reads: AtomicU32::new(0),
+            plan_bytes: AtomicUsize::new(2),
+            due: OnceLock::new(),
+            ops: AtomicU64::new(0),
+            fresh: AtomicBool::new(false),
+            output: Mutex::new(Output::default()),
+            plans: Mutex::new(Vec::new()),
+        });
+        let engine = host.engine(&run, host.clock.now().0);
+        let before = crate::guards::FORMATS.with(std::cell::Cell::get);
+        let value = run.lend(&NoCalls, &Never, || engine.eval::<Dynamic>(source)).expect(source);
+        let count = crate::guards::FORMATS.with(std::cell::Cell::get) - before;
+        let lines = run.output.lock().unwrap().lines.iter().map(|line| line.text.clone()).collect();
+        (value.to_string(), lines, count)
+    }
+
+    /// The same, from Rhai's own functions.
+    fn rhais(source: &str) -> (String, Vec<String>) {
+        let lines = Arc::new(Mutex::new(Vec::<String>::new()));
+        let mut plain = Engine::new();
+        let capture = lines.clone();
+        plain.on_print(move |text| capture.lock().unwrap().push(text.to_owned()));
+        let capture = lines.clone();
+        plain.on_debug(move |text, _, _| capture.lock().unwrap().push(text.to_owned()));
+        let value = plain.eval::<Dynamic>(source).expect(source);
+        let lines = lines.lock().unwrap().clone();
+        (value.to_string(), lines)
+    }
+
+    /// Every formatting path, for every type a script can hold, goes through the bounded functions and answers what
+    /// Rhai's own would. The exceptions are where Rhai formats nothing: a string in a template is copied as it is, and
+    /// joining a string with a string, a character or `()` has a version of its own that copies text the run holds.
+    #[test]
+    fn every_formatting_path_uses_the_bounded_functions_for_every_type() {
+        for value in TYPES {
+            for path in PATHS {
+                let source = format!("let v = {value}; {path}");
+                let (ours, our_lines, count) = formatted(&source);
+                let copies_text = match value.as_bytes()[0] {
+                    b'"' => {
+                        !path.contains("to_") && !path.contains("print") && !path.contains("debug") && path != "log(v)"
+                    }
+                    b'\'' | b'(' => path.contains('+') || path.contains("append"),
+                    _ => false,
+                };
+                assert!(count > 0 || copies_text, "{source}: formatted by Rhai's own function");
+                if path != "log(v)" {
+                    assert_eq!((ours, our_lines), rhais(&source), "{source}");
+                }
+            }
+        }
+        // `to_json` is a map's alone.
+        let source = r#"let v = #{ a: [2.0, 'c', ()], b: "t\u0001", c: #{ d: true } }; v.to_json()"#;
+        let (ours, _, count) = formatted(source);
+        assert!(count > 0, "to_json: formatted by Rhai's own function");
+        assert_eq!(ours, rhais(source).0, "to_json");
     }
 }
