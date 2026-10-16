@@ -4511,6 +4511,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-ui-api"
+version = "0.0.0"
+dependencies = [
+ "egui",
+ "inventory",
+ "omuzaki-core",
+ "omuzaki-ops-api",
+ "serde",
+]
+
+[[package]]
+name = "omuzaki-ui-mock"
+version = "0.0.0"
+dependencies = [
+ "egui",
+ "omuzaki-core",
+ "omuzaki-doc-mock",
+ "omuzaki-ops-api",
+ "omuzaki-ops-mock",
+ "omuzaki-ui-api",
+]
+
+[[package]]
 name = "omuzaki-update-api"
 version = "0.0.0"
 dependencies = [
