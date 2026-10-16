@@ -8,6 +8,11 @@
 //! locks `1..` over and behind the ear, and its lock `0` frames the cheek; the **right** side hangs every lock in
 //! S-waves. A path is resampled by [`spaced_points`] to [`TUCKED_POINTS`] (tucked) or [`HANGING_POINTS`] points.
 //!
+//! **Scale.** When [`FramingGen::outline_radius`] is set (the default) and no lock heights are given, the outline and
+//! `spread` are scaled to the head the hair is built on (its half-width over that radius), and the default tail is made
+//! of surface-anchored points, so the default locks frame the face on any head: down the temple and cheek in front of the
+//! ear, then round the jaw to under the chin. A file without the field is taken in metres, as before.
+//!
 //! **The projection.** With [`FramingLocks::front_radius`] set the projection is the prototype's exactly: a point outside
 //! the front disc gets no depth and lands on the side of the head at the height its direction gives. Without it the
 //! head's half-width is the radius and such a point slides in along `x` to keep its authored height. The jaw and
@@ -70,6 +75,8 @@ const FALLBACK_LENGTH: f64 = 0.3;
 
 /// Compiles the group: `count` locks for each side asked for, left first.
 pub fn compile(g: &FramingGen, ctx: &mut HairGenCtx<'_>) -> CompiledGroup {
+    let scaled = scaled_to_head(g, f64::from(ctx.head.radius(Vec3::X)));
+    let g = &scaled;
     let rh =
         g.locks.as_ref().and_then(|l| l.front_radius).unwrap_or_else(|| f64::from(ctx.head.radius(Vec3::X))).max(1e-3);
     let exact = g.locks.as_ref().is_some_and(|l| l.front_radius.is_some());
@@ -83,6 +90,23 @@ pub fn compile(g: &FramingGen, ctx: &mut HairGenCtx<'_>) -> CompiledGroup {
         }
     }
     CompiledGroup::tubes(clumps)
+}
+
+/// `g` with its outline and spread scaled to a head of half-width `half_width`, when it says what half-width they were
+/// drawn for ([`FramingGen::outline_radius`]) and gives no lock heights of its own (those are the prototype's metres).
+/// A non-finite or zero half-width leaves `g` as it is.
+fn scaled_to_head(g: &FramingGen, half_width: f64) -> FramingGen {
+    let mut out = g.clone();
+    let Some(drawn_for) = g.outline_radius.filter(|r| r.is_finite() && *r > 0.0) else { return out };
+    if g.locks.is_some() || !half_width.is_finite() || half_width <= 0.0 {
+        return out;
+    }
+    let scale = half_width / drawn_for;
+    for row in &mut out.edge {
+        *row = [row[0] * scale, row[1] * scale];
+    }
+    out.spread *= scale;
+    out
 }
 
 /// How many clumps [`compile`] makes, from the parameters alone: `count` per side asked for.
