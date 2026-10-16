@@ -6,7 +6,7 @@ use std::f64::consts::PI;
 use omuzaki_char_api::JointRef;
 use omuzaki_core::glam::{DVec2, DVec3};
 
-use super::profile::{Profile, along, angles};
+use super::profile::{Profile, along};
 use crate::kit::curve::{TAU, fraction, lerp, sstep};
 use crate::kit::grid::{Grid, GridOptions, MeshBuilder, Skin};
 use crate::kit::sweep::tube;
@@ -126,7 +126,7 @@ pub fn add_shell(
     surfaces: &Surfaces,
     tile: Option<f64>,
 ) -> Result<(), GarmentError> {
-    let phis = angles(SHELL_SEGMENTS);
+    let phis = profile.columns(SHELL_SEGMENTS);
     let cols = phis.len();
     for (surface, lining) in [(&surfaces.outer, false), (&surfaces.inner, true)] {
         let (heights, points) = shell_points(profile, surface, &phis)?;
@@ -199,7 +199,7 @@ fn loop_tube(builder: &mut MeshBuilder, centres: &[DVec3], skins: &[Skinning]) -
 /// # Errors
 /// The surfaces' errors; [`GarmentError::Invalid`] for a loop whose points coincide; the kit's.
 pub fn add_piping(builder: &mut MeshBuilder, profile: &Profile, mid: &Surface) -> Result<(), GarmentError> {
-    let mut phis = angles(SHELL_SEGMENTS);
+    let mut phis = profile.columns(SHELL_SEGMENTS);
     phis.pop();
     for edge in [Profile::top, Profile::hem] {
         let heights: Vec<f64> = phis.iter().map(|&phi| edge(profile, phi)).collect();
