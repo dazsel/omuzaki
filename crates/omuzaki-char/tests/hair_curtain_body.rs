@@ -20,6 +20,9 @@ use omuzaki_face_api::Palette;
 /// The section's radius fraction a point must reach: 3 % under the surface (a few millimetres on a shoulder) is the keep-out's interpolation between the 64
 /// sections it samples (this check reads 400), which the margin it keeps more than covers.
 const CLEAR: f32 = 0.97;
+/// What a pushed strand may give back below its push, as a fraction of the section's radius with a 7 mm margin: the
+/// measured worst is 0.947, about 5 mm of a shoulder's radius short of the 10 mm clearance it is pushed to.
+const GIVE_BACK: f32 = 0.92;
 const TEMPLATES: [&str; 4] = ["soft-sd", "mini", "standard", "tall"];
 
 /// A head ellipsoid from the head part's default cranium, raised to sit on `template`'s neck.
@@ -243,4 +246,92 @@ fn the_curtains_first_row_tucks_under_the_cap_along_the_back_on_every_template()
         assert!(with < 0.006, "{template}: the first row stands {with} m from the cap");
         assert!(without > with, "{template}: the tuck is what closes the gap ({without} m without it)");
     }
+}
+
+/// The chest's frontal plane: the furthest forward the torso reaches over its upper half.
+fn chest_front(fit: &dyn BodyFit) -> f32 {
+    (0..=40)
+        .filter_map(|i| fit.section(BodyRegion::Torso, 0.5 + 0.5 * i as f32 / 40.0))
+        .map(|s| s.centre.z + s.radii.y)
+        .fold(f32::MIN, f32::max)
+}
+
+/// Where the hair has finished settling behind the arms: 0.6 head half-widths below the head's lowest point.
+fn settled_below(head: &Head) -> f32 {
+    below_head(head) - 0.6 * head.axes.x
+}
+
+/// The head's lowest point: hair above it is the face's, not the fall's.
+fn below_head(head: &Head) -> f32 {
+    head.centre.y - head.radius(Vec3::NEG_Y)
+}
+
+#[test]
+fn the_fall_hangs_behind_the_chest_and_the_arms_on_every_template_and_shape() {
+    let g = CurtainGen::default();
+    let front = CurtainGen { in_front: true, ..CurtainGen::default() };
+    for template in TEMPLATES {
+        for (shape_name, shape) in bodies() {
+            let (fit, head) = setup(template, &shape);
+            let plane = chest_front(&fit);
+            let reach = |g: &CurtainGen| {
+                let (clumps, _) = compile(g, &head, Some(&fit), 3);
+                clumps
+                    .iter()
+                    .flat_map(|c| c.rest.iter())
+                    .filter(|p| p.y < settled_below(&head))
+                    .map(|p| p.z)
+                    .fold(f32::MIN, f32::max)
+            };
+            let behind = reach(&g);
+            assert!(behind <= plane, "{template}/{shape_name}: the fall reaches z {behind}, past the chest at {plane}");
+            eprintln!(
+                "{template}/{shape_name}: furthest z {behind:.3} (chest {plane:.3}); in front {:.3}",
+                reach(&front)
+            );
+        }
+    }
+    // The switch does something: asked to hang in front, the hair reaches well further forward than behind the arms.
+    for template in ["standard", "tall"] {
+        let (fit, head) = setup(template, &BodyShape::default());
+        let reach = |g: &CurtainGen| {
+            let (clumps, _) = compile(g, &head, Some(&fit), 3);
+            clumps
+                .iter()
+                .flat_map(|c| c.rest.iter())
+                .filter(|p| p.y < settled_below(&head))
+                .map(|p| p.z)
+                .fold(f32::MIN, f32::max)
+        };
+        assert!(reach(&front) > reach(&g) + 0.05, "{template}: in_front changes nothing");
+    }
+}
+
+#[test]
+fn a_strand_never_comes_back_toward_the_body_below_where_it_was_pushed() {
+    let g = CurtainGen { in_front: true, ..CurtainGen::default() }; // hair over the chest, so strands are pushed there
+    let mut pushed_strands = 0;
+    for template in TEMPLATES {
+        for (shape_name, shape) in bodies() {
+            let (fit, head) = setup(template, &shape);
+            let sections = sections_of(&fit);
+            let (clumps, _) = compile(&g, &head, Some(&fit), 3);
+            let (bare, _) = compile(&g, &head, None, 3);
+            for (n, (c, b)) in clumps.iter().zip(&bare).enumerate() {
+                let Some(first) = c.rest.iter().zip(&b.rest).position(|(p, q)| p.distance(*q) > 0.001) else {
+                    continue;
+                };
+                pushed_strands += 1;
+                for (k, p) in c.rest.iter().enumerate().skip(first) {
+                    // A few millimetres inside the margin it was pushed to is the most it may give back.
+                    let rho = rho_in_body(&sections, *p, 0.007);
+                    assert!(
+                        rho >= GIVE_BACK,
+                        "{template}/{shape_name}: guide {n} was pushed at point {first} and is {rho} of the way out at {k}"
+                    );
+                }
+            }
+        }
+    }
+    assert!(pushed_strands > 0, "no strand was pushed, so nothing was checked");
 }

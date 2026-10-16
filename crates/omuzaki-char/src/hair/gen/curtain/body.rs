@@ -23,6 +23,9 @@ const BACK_STEP: f32 = 0.004;
 const BACK_STEPS: usize = 100;
 /// How far into the next segment a segment's slice reaches, as a fraction of the segment.
 const BEND_SLACK: f32 = 0.25;
+/// The hair hangs this far behind the arms' back surface, metres, and eases onto that plane over [`BEHIND_SOFT`].
+const BEHIND_MARGIN: f32 = 0.012;
+const BEHIND_SOFT: f32 = 0.04;
 /// Radii below this make the ellipse test meaningless.
 const MIN_RADIUS: f32 = 1e-4;
 
@@ -30,6 +33,8 @@ const MIN_RADIUS: f32 = 1e-4;
 #[derive(Clone, Debug)]
 pub struct BodyKeepOut {
     chains: Vec<Vec<Section>>,
+    /// The back surface of the arms: the frontal plane the hair hangs behind (`None` for a fit without arms).
+    behind_arms: Option<f32>,
 }
 
 impl BodyKeepOut {
@@ -39,8 +44,39 @@ impl BodyKeepOut {
             .iter()
             .map(|region| (0..SAMPLES).filter_map(|i| fit.section(*region, sample_t(i))).collect::<Vec<Section>>())
             .filter(|chain| chain.len() >= 2)
-            .collect();
-        Self { chains }
+            .collect::<Vec<Vec<Section>>>();
+        // The arms' back surface, over their upper part, where the hair would otherwise hang down their outside.
+        let behind_arms = [BodyRegion::ArmL, BodyRegion::ArmR]
+            .iter()
+            .flat_map(|region| (0..SAMPLES / 2).filter_map(move |i| fit.section(*region, sample_t(i))))
+            .map(|s| s.centre.z - s.radii.y)
+            .reduce(f32::min);
+        Self { chains, behind_arms }
+    }
+
+    /// `p` drawn back behind the arms, for hair that falls past the shoulders: below `from_y` (the head's lowest point)
+    /// the further it is the more its `z` is compressed (smoothly, so no strand folds) toward the arms' back surface
+    /// less [`BEHIND_MARGIN`]; by `over` metres below it the compression is complete. A fit without arms, or a point
+    /// already behind, is left alone.
+    pub fn hang_behind(&self, p: Vec3, from_y: f32, over: f32) -> Vec3 {
+        let Some(back) = self.behind_arms else { return p };
+        if !p.is_finite() || over <= 0.0 {
+            return p;
+        }
+        let limit = back - BEHIND_MARGIN;
+        let start = limit - BEHIND_SOFT;
+        let t = ((from_y - p.y) / over).clamp(0.0, 1.0);
+        let weight = t * t * (3.0 - 2.0 * t);
+        if p.z <= start || weight <= 0.0 {
+            return p;
+        }
+        let compressed = start + BEHIND_SOFT * ((p.z - start) / BEHIND_SOFT).tanh();
+        Vec3::new(p.x, p.y, p.z + (compressed - p.z) * weight)
+    }
+
+    /// The `z` of the arms' back surface, for tests.
+    pub fn behind_arms(&self) -> Option<f32> {
+        self.behind_arms
     }
 
     /// `p` moved out of every region by the smallest amount that leaves it `margin` clear of the region's surface;
