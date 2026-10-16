@@ -153,11 +153,17 @@ def verdict(comments, heads, allowed, runs=(), files=()):
         return True, f"self-gate: hosted run {hosted} on {heads[0][:MIN_SHA]}"
     seen = f"the latest trusted line names {sha}" if sha else "no trusted comment has one"
     short = heads[0][:MIN_SHA]
+    protected = ", ".join(f"`{path}`" for path in PROTECTED)
+    if any(path.startswith(PROTECTED) for path in files):
+        hosted_hint = (f" This PR touches a protected path ({protected}), so hosted tests cannot vouch for it: only a "
+                       f"human `Self-gate:` line counts.")
+    else:
+        hosted_hint = (f" Or dispatch ci.yml with hosted_tests=true on the branch and re-run this job; that works only for "
+                       f"a PR that touches none of {protected}.")
     return False, (
         f"self-gate: no trusted `Self-gate: pass at <sha7>` line names the head {short} ({seen}). Run "
         f"`cargo xtask check --affected` on this head, post `Self-gate: pass at {short} (cargo xtask check --affected, "
-        f"<n> tests)` on its own line in a comment, then re-run this job. Or, if the PR changes nothing under "
-        f".github/, tools/ci/, xtask/, .config/, .cargo/ or rust-toolchain, dispatch ci.yml with hosted_tests=true on the branch and re-run this job."
+        f"<n> tests)` on its own line in a comment, then re-run this job." + hosted_hint
     )
 
 

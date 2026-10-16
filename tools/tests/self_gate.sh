@@ -167,5 +167,17 @@ PY
 [[ $(cap 29) == 2900 ]] && pass "a list just under the cap is returned whole" || fail "list under cap"
 [[ $(cap 30) == none ]] && pass "a list at the API cap is refused (fail closed)" || fail "list at cap"
 
+# The failure message: a PR touching a protected path is told only a human line counts; others may use hosted tests.
+msg() { python3 -I - "$GATE" "$1" <<'PY'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("sg", sys.argv[1]); sg = importlib.util.module_from_spec(spec); spec.loader.exec_module(sg)
+print(sg.verdict([], ["a" * 40], set(), [], json.loads(sys.argv[2]))[1])
+PY
+}
+m=$(msg '["Cargo.lock","docs/a.md"]')
+[[ $m == *"only a human"* && $m == *'`Cargo.toml`'* && $m != *"Or dispatch"* ]] && pass "a protected-path PR is told only a human line counts" || fail "protected message: $m"
+m=$(msg '["docs/a.md"]')
+[[ $m == *"Or dispatch ci.yml with hosted_tests=true"* && $m == *'`deny.toml`'* ]] && pass "an ordinary PR is offered hosted tests and told the protected paths" || fail "ordinary message: $m"
+
 python3 -I "$GATE" >/dev/null 2>&1 && fail "missing arguments should be an error" || pass "missing arguments are an error"
 exit $((failures > 0))
