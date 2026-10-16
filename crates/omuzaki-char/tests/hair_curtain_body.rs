@@ -3,6 +3,8 @@
 //! placed on each template's neck.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::cast_precision_loss, clippy::needless_range_loop)]
+// Geometry helpers in f32 over the API's f64 parameters, with the usual one-letter names of the triangle maths.
+#![allow(clippy::cast_possible_truncation, clippy::many_single_char_names)]
 
 use omuzaki_char::hair::compile::{Forked, GroupGeometry, HairGenCtx};
 use omuzaki_char::hair::r#gen::cap::fill_shell;
@@ -61,8 +63,8 @@ fn setup(template: &str, shape: &BodyShape) -> (TemplateFit, Head) {
         centre: Vec3::new(c.centre[0] as f32, (c.centre[1] + rise) as f32, c.centre[2] as f32),
         axes: Vec3::new(
             c.half_width as f32,
-            (0.5 * (c.half_height_up + c.half_height_down_back)) as f32,
-            (0.5 * (c.half_depth_front + c.half_depth_back)) as f32,
+            c.half_height_up.midpoint(c.half_height_down_back) as f32,
+            c.half_depth_front.midpoint(c.half_depth_back) as f32,
         ),
     };
     (TemplateFit::new(layout), head)
@@ -95,7 +97,7 @@ fn mesh(g: &CurtainGen, head: &Head, fit: &dyn BodyFit, seed: u64) -> (Vec<omuza
 fn sections_of(fit: &dyn BodyFit) -> Vec<omuzaki_char_api::Section> {
     [BodyRegion::Torso, BodyRegion::ArmL, BodyRegion::ArmR, BodyRegion::LegL, BodyRegion::LegR]
         .into_iter()
-        .flat_map(|region| (0..=400).filter_map(move |i| Some((region, i as f32 / 400.0))))
+        .flat_map(|region| (0..=400).map(move |i| (region, i as f32 / 400.0)))
         .filter_map(|(region, t)| fit.section(region, t))
         .collect()
 }

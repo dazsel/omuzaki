@@ -6,6 +6,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // helpers build fixtures; a bad one should stop the test with its reason
 #![allow(clippy::float_cmp, clippy::cast_precision_loss)] // exact values that were copied, not computed; indices are small
+#![allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // f32 geometry over the API's f64 numbers
 
 use std::collections::BTreeMap;
 
@@ -358,7 +359,7 @@ fn the_checks_name_each_tail_and_bun_field() {
     assert!(tail_with(&|g| g.root[1] = 400.0).contains("root/phi_deg"));
     assert!(tail_with(&|g| g.root[0] = f64::INFINITY).contains("root"));
     assert!(tail_with(&|g| g.width.start = 0.0).contains("width"));
-    assert!(tail_with(&|_| ()).is_empty());
+    assert_eq!(tail_with(&|_| ()), "");
     let bun_with = |f: &dyn Fn(&mut BunGen)| {
         let mut g = BunGen::default();
         f(&mut g);
@@ -367,7 +368,7 @@ fn the_checks_name_each_tail_and_bun_field() {
     assert!(bun_with(&|g| g.wraps = 7.0).contains("wraps"));
     assert!(bun_with(&|g| g.centre[1] = f64::NAN).contains("centre"));
     assert!(bun_with(&|g| g.thickness.base = 0.0).contains("thickness"));
-    assert!(bun_with(&|_| ()).is_empty());
+    assert_eq!(bun_with(&|_| ()), "");
 }
 
 #[test]
@@ -623,7 +624,7 @@ fn another_part_attaches_to_a_published_tail_anchor() {
         .filter(|m| m.part.as_str() == "charm")
         .flat_map(|m| m.mesh.geometry.positions.clone())
         .collect();
-    assert!(!charm.is_empty());
+    assert_ne!(charm.len(), 0, "the charm has no vertices");
     let middle = charm.iter().copied().sum::<Vec3>() / charm.len() as f32;
     assert!((middle - root).length() < 0.15, "the charm hangs at {middle:?}, the anchor is at {root:?}");
 }
@@ -635,7 +636,7 @@ fn a_disabled_group_publishes_nothing() {
         g.enabled = false;
     }
     let built = build(&character("standard", &hair, None)).unwrap();
-    assert!(built.rig.springs.chains.is_empty());
+    assert_eq!(built.rig.springs.chains.len(), 0, "a disabled tail adds no chain");
     assert!(!built.anchors.keys().any(|(p, _)| p.as_str() == "hair"));
 }
 

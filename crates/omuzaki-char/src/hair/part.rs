@@ -371,14 +371,13 @@ fn skin_runs(mesh: &mut MeshData, runs: &[Run<'_>]) -> Result<Vec<JointRef>, Str
     let mut joints = vec![JointRef::HEAD];
     let mut bases: Vec<(&str, usize)> = Vec::new();
     for run in runs {
-        let base = match bases.iter().find(|(name, _)| *name == run.chain.name) {
-            Some((_, base)) => *base,
-            None => {
-                let base = joints.len();
-                joints.extend(run.chain.bones.iter().cloned().map(JointRef::Named));
-                bases.push((run.chain.name.as_str(), base));
-                base
-            }
+        let base = if let Some((_, base)) = bases.iter().find(|(name, _)| *name == run.chain.name) {
+            *base
+        } else {
+            let base = joints.len();
+            joints.extend(run.chain.bones.iter().cloned().map(JointRef::Named));
+            bases.push((run.chain.name.as_str(), base));
+            base
         };
         let index =
             |bone: usize| u16::try_from(base + bone).map_err(|_| "more joints than a mesh can index".to_owned());

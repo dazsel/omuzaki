@@ -216,7 +216,7 @@ fn sheet_row(built: &BuiltCharacter) -> Vec<[u8; 3]> {
             },
         ];
         scene.post = Post { exposure: 1.0, tonemap: Tonemap::None, ..Post::default() };
-        scene.instances = instances.clone();
+        scene.instances.clone_from(&instances);
         let quality = Quality { samples: 4, ..Quality::offline() };
         let image = renderer.render_image(UVec2::splat(VIEW), AlphaEncoding::Straight, &scene, &quality).unwrap();
         for y in 0..VIEW {

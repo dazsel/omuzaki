@@ -20,8 +20,11 @@ fn errors(generator: Generator) -> String {
     c.finish().err().map(|e| e.to_string()).unwrap_or_default()
 }
 
+/// One case: the path that must fail, and the edit that breaks it.
+type Case<'a, G> = (&'a str, &'a dyn Fn(&mut G));
+
 /// Edits one default `G` with each case's closure: every case must fail, naming `groups/g/generator/<path>`.
-fn every_case_fails<G: Clone + Default>(wrap: fn(G) -> Generator, cases: &[(&str, &dyn Fn(&mut G))]) {
+fn every_case_fails<G: Clone + Default>(wrap: fn(G) -> Generator, cases: &[Case<'_, G>]) {
     assert_eq!(errors(wrap(G::default())), "", "the default passes");
     for (path, edit) in cases {
         let mut g = G::default();
@@ -159,11 +162,12 @@ fn the_bangs_check_every_layer_and_wisp_value() {
 
 #[test]
 fn guides_check_each_clump_shade() {
-    let mut g = GuidesGen::default();
-    g.clumps = vec![GuideClump {
-        points: vec![GuidePoint::Head([0.0; 3]), GuidePoint::Head([0.0, -0.1, 0.0])],
-        ..GuideClump::default()
-    }];
+    let mut g = GuidesGen {
+        clumps: vec![GuideClump {
+            points: vec![GuidePoint::Head([0.0; 3]), GuidePoint::Head([0.0, -0.1, 0.0])],
+            ..GuideClump::default()
+        }],
+    };
     assert_eq!(errors(Generator::Guides(g.clone())), "");
     g.clumps[0].shade = NAN;
     assert!(errors(Generator::Guides(g.clone())).contains("groups/g/generator/clumps/0/shade:"));

@@ -133,8 +133,8 @@ pub fn gather_locks(root: &Root, head: &dyn HeadSurface, count: u8, end: DVec3) 
                     let dir = DQuat::IDENTITY.slerp(turn, t) * start;
                     let rise = smoothstep(t, GATHER_RISE_FROM, 1.0);
                     let over = smoothstep(t, GATHER_CAP_FROM.0, GATHER_CAP_FROM.1);
-                    let ride = (GATHER_LIFT + stack) * (1.0 - over) + (GATHER_CAP_LIFT + stack) * over;
-                    let lift = ride * (1.0 - rise) + end_offset * rise;
+                    let along_scalp = (GATHER_LIFT + stack) * (1.0 - over) + (GATHER_CAP_LIFT + stack) * over;
+                    let lift = along_scalp * (1.0 - rise) + end_offset * rise;
                     let p = centre + dir * (f64::from(head.radius(dir.as_vec3())) + lift);
                     root.keep_outside(head, p).as_vec3()
                 })

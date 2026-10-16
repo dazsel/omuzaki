@@ -230,7 +230,7 @@ fn tie(shape: &Shape, width: Taper) -> Tie {
 }
 
 /// The axis sample where the tie sits.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a small, non-negative index
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)] // a small, non-negative index
 fn tie_sample(shape: &Shape) -> usize {
     ((shape.tie_at * (AXIS_SAMPLES - 1) as f64).round() as usize).min(AXIS_SAMPLES - 1)
 }
@@ -248,27 +248,27 @@ fn jitter(i: usize) -> f64 {
 
 /// Clump `i` of `n`: [`REST_POINTS`] rest points, root first.
 #[allow(clippy::cast_precision_loss)] // indices are small
-fn clump(g: &TailGen, shape: &Shape, head: &dyn HeadSurface, i: usize, n: usize) -> Vec<Vec3> {
-    let radius = ((i as f64 + 0.5) / n as f64).sqrt();
-    let angle = i as f64 * GOLDEN_ANGLE;
+fn clump(g: &TailGen, shape: &Shape, head: &dyn HeadSurface, index: usize, count: usize) -> Vec<Vec3> {
+    let radius = ((index as f64 + 0.5) / count as f64).sqrt();
+    let angle = index as f64 * GOLDEN_ANGLE;
     let (cu, cv) = (radius * angle.cos(), radius * angle.sin());
-    let scale = 1.0 - LENGTH_JITTER * jitter(i);
+    let scale = 1.0 - LENGTH_JITTER * jitter(index);
     let wave = &g.wave;
     let amplitude = sane(wave.amplitude, 0.0, 0.2, 0.0);
     let frequency = sane(wave.frequency, 0.0, 12.0, 0.0);
-    let phase = sane(wave.phase, -7.0, 7.0, 0.0) + i as f64 * PHASE_STEP;
+    let phase = sane(wave.phase, -7.0, 7.0, 0.0) + index as f64 * PHASE_STEP;
     let curl = sane(wave.curl, -0.2, 0.2, 0.0);
     let (g0, g1) = (sane(wave.growth[0], 0.0, 1.0, 0.0), sane(wave.growth[1], 0.0, 1.0, 1.0));
     let root = shape.root.point;
     let mut points = [DVec3::ZERO; AXIS_SAMPLES];
-    for (k, (point, f)) in points.iter_mut().zip(&shape.frames).enumerate() {
-        let s = k as f64 / (AXIS_SAMPLES - 1) as f64;
-        let grow = amplitude * smoothstep(s, g0, g1);
-        let arg = TAU * frequency * s + phase;
-        let sideways = grow * arg.sin() + curl * smoothstep(s, CURL_FROM, 1.0).powi(2);
+    for (k, (point, frame)) in points.iter_mut().zip(&shape.frames).enumerate() {
+        let along = k as f64 / (AXIS_SAMPLES - 1) as f64;
+        let grow = amplitude * smoothstep(along, g0, g1);
+        let arg = TAU * frequency * along + phase;
+        let sideways = grow * arg.sin() + curl * smoothstep(along, CURL_FROM, 1.0).powi(2);
         let depth = grow * DEPTH_SWAY * (arg + PI / 2.0).sin();
-        let on_axis = root + (f.p - root) * scale;
-        let p = on_axis + (f.u * cu + f.v * cv) * shape.bunch(s) + f.u * sideways + f.v * depth;
+        let on_axis = root + (frame.p - root) * scale;
+        let p = on_axis + (frame.u * cu + frame.v * cv) * shape.bunch(along) + frame.u * sideways + frame.v * depth;
         *point = shape.root.keep_outside(head, p);
     }
     let mut spaced = [DVec3::ZERO; REST_POINTS];
