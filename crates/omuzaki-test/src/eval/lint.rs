@@ -5,8 +5,12 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 
-use super::provenance::{PrivateList, refusals};
+use omuzaki_ops_api::OpInfo;
+
+use super::provenance::{PrivateList, fixture_refusals, refusals};
 use super::{Discovery, TaskFile};
+
+pub mod registry;
 
 /// The shortest run of shared words that counts as a prompt appearing in a tool description.
 pub const LEAK_WORDS: usize = 8;
@@ -95,6 +99,8 @@ pub struct Inputs<'a> {
     pub private: &'a PrivateList,
     /// Tool descriptions and instructions, or `None` when the prompt-leak check cannot run.
     pub tool_texts: Option<&'a [ToolText]>,
+    /// The registered ops, or `None` when the op-scope rule cannot run.
+    pub ops: Option<&'a [OpInfo]>,
 }
 
 /// Runs every rule; the result is sorted by file, then message.
@@ -110,6 +116,9 @@ pub fn lint(inputs: &Inputs<'_>) -> Vec<Finding> {
     out.extend(provenance_findings(d, inputs.private));
     if let Some(texts) = inputs.tool_texts {
         out.extend(leak_findings(d, texts));
+    }
+    if let Some(ops) = inputs.ops {
+        out.extend(registry::op_findings(d, ops));
     }
     out.sort();
     out
@@ -171,6 +180,12 @@ fn task_findings(inputs: &Inputs<'_>, file: &TaskFile) -> Vec<Finding> {
         if !ids.insert(check.id.as_str()) {
             say(format!("duplicate check id `{}`", check.id));
         }
+        if !crate::eval::run::is_plain_name(&check.id) {
+            say(format!(
+                "check id `{}` must be letters, digits, dots, dashes and underscores, not starting with a dot: the evidence is named after it",
+                check.id
+            ));
+        }
     }
     out
 }
@@ -183,21 +198,22 @@ fn stem(file: &TaskFile) -> String {
 fn provenance_findings(d: &Discovery, private: &PrivateList) -> Vec<Finding> {
     let mut out = Vec::new();
     for (path, set) in &d.set_files {
+        out.extend(kind_and_split(set).into_iter().map(|m| finding(path, format!("set `{}`: {m}", set.id))));
         for item in &set.items {
             out.extend(refusals(item, private).into_iter().map(|m| finding(path, format!("set `{}`: {m}", set.id))));
         }
     }
     for fixture in &d.fixtures {
-        for reference in fixture.fixture.set_items() {
-            let found = d.sets.get(&reference.set).map(|set| set.items.iter().find(|i| i.hash == reference.item));
-            let problems = match found {
-                None => vec![format!("refers to unknown eval set `{}`", reference.set)],
-                Some(None) => vec![format!("item {} is not in eval set `{}`", reference.item, reference.set)],
-                Some(Some(item)) => refusals(item, private),
-            };
-            out.extend(problems.into_iter().map(|m| finding(&fixture.path, m)));
-        }
+        out.extend(fixture_refusals(&fixture.fixture, &d.sets, private).into_iter().map(|m| finding(&fixture.path, m)));
     }
+    out
+}
+
+/// `kind` is `real` or `synthetic` and `split` is `dev` or `holdout` (the model contract's `TestSetKind`, design 11.3).
+fn kind_and_split(set: &super::provenance::EvalSet) -> Vec<String> {
+    let mut out = Vec::new();
+    out.extend(set.kind_of().err().map(|e| e.to_string()));
+    out.extend(set.is_holdout().err().map(|e| e.to_string()));
     out
 }
 

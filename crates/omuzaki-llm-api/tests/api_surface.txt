@@ -1,14 +1,25 @@
 src/error.rs: pub enum LlmError {
 src/error.rs: pub fn rate_limited(retry_after: Option<Duration>) -> Self {
 src/error.rs: pub fn context_too_long(max: u64) -> Self {
+src/image.rs: pub const MAX_IMAGE_SIDE: u32 = 768;
+src/image.rs: pub const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
+src/image.rs: pub fn size(mime: ImageMime, bytes: &[u8]) -> Option<(u32, u32)> {
 src/lib.rs: pub mod error;
+src/lib.rs: pub mod image;
+src/lib.rs: pub mod mcp;
 src/lib.rs: pub mod message;
 src/lib.rs: pub mod provider;
 src/lib.rs: pub mod stream;
 src/lib.rs: pub mod usage;
+src/lib.rs: pub mod validate;
 src/lib.rs: pub use inventory as __inventory;
 src/lib.rs: pub use omuzaki_core::__record_registration;
 src/lib.rs: pub trait LlmClient: Send + Sync {
+src/mcp.rs: pub struct ToolResult {
+src/mcp.rs: pub fn into_block(self, id: impl Into<String>) -> ContentBlock {
+src/mcp.rs: pub fn tool_defs(list: &Value) -> Vec<ToolDef> {
+src/mcp.rs: pub fn skipped_tools(list: &Value) -> Vec<String> {
+src/mcp.rs: pub fn tool_result(result: &Value) -> ToolResult {
 src/message.rs: pub struct TurnRequest {
 src/message.rs: pub fn new(messages: Vec<Message>, max_output: u32) -> Self {
 src/message.rs: pub fn with_system(mut self, system: Vec<SystemBlock>) -> Self {
@@ -48,7 +59,9 @@ src/provider.rs: pub fn new<T: Any + Send + Sync>(handle: T) -> Self {
 src/provider.rs: pub fn none() -> Self {
 src/provider.rs: pub fn downcast_ref<T: Any>(&self) -> Option<&T> {
 src/provider.rs: pub struct ProviderConfig {
+src/provider.rs: pub model: Option<String>,
 src/provider.rs: pub fn new(id: impl Into<String>, kind: impl Into<String>, endpoint: impl Into<String>) -> Self {
+src/provider.rs: pub fn with_model(mut self, model: impl Into<String>) -> Self {
 src/provider.rs: pub fn with_key(mut self, key: SecretRef) -> Self {
 src/provider.rs: pub fn with_allow_remote(mut self, allow_remote: bool) -> Self {
 src/provider.rs: pub fn with_prices(mut self, prices: PriceTable) -> Self {
@@ -60,12 +73,16 @@ src/provider.rs: pub struct ProviderEnv {
 src/provider.rs: pub fn new(secrets: Arc<dyn SecretStore>, runtime: RuntimeHandle) -> Self {
 src/provider.rs: pub enum LlmCapability {
 src/provider.rs: pub enum Privacy {
+src/provider.rs: pub fn for_endpoint(endpoint: &str) -> Self {
+src/provider.rs: pub fn endpoint_host(endpoint: &str) -> Option<&str> {
+src/provider.rs: pub fn is_loopback_endpoint(endpoint: &str) -> bool {
 src/provider.rs: pub enum CostModel {
 src/provider.rs: pub struct ProviderManifest {
 src/provider.rs: pub fn new(
 src/provider.rs: pub type BuildFn = fn(&ProviderConfig, &ProviderEnv) -> Result<Box<dyn LlmClient>, LlmError>;
 src/provider.rs: pub type ListModelsFn = fn(&ProviderConfig, &ProviderEnv) -> Result<Vec<ModelInfo>, LlmError>;
 src/provider.rs: pub struct LlmProvider {
+src/provider.rs: pub fn manifest_for(&self, config: &ProviderConfig) -> ProviderManifest {
 src/provider.rs: pub enum RegistryError {
 src/provider.rs: pub fn providers() -> Vec<&'static LlmProvider> {
 src/provider.rs: pub fn duplicate_kind(kind: &'static str, first: impl Into<String>, second: impl Into<String>) -> Self {
@@ -101,6 +118,7 @@ src/usage.rs: pub fn with_cache_read(mut self, cache_read: u64) -> Self {
 src/usage.rs: pub fn with_cache_write(mut self, cache_write: u64) -> Self {
 src/usage.rs: pub fn prompt(&self) -> u64 {
 src/usage.rs: pub fn tokens(&self) -> u64 {
+src/usage.rs: pub fn cost(&self, prices: &PriceTable) -> MicroUsd {
 src/usage.rs: pub struct MicroUsd(pub u64);
 src/usage.rs: pub struct Rates {
 src/usage.rs: pub fn new(input: u64, output: u64) -> Self {
@@ -125,3 +143,6 @@ src/usage.rs: pub fn new() -> Self {
 src/usage.rs: pub fn observe(&mut self, request: &TurnRequest, turn: &Turn) {
 src/usage.rs: pub fn prompt_estimate(&self, request: &TurnRequest, info: &ModelInfo) -> u64 {
 src/usage.rs: pub fn bound(&self, request: &TurnRequest, info: &ModelInfo, prices: &PriceTable) -> MicroUsd {
+src/validate.rs: pub const MAX_CACHE_BREAKPOINTS: usize = 4;
+src/validate.rs: pub const MAX_TOOL_NAME: usize = 64;
+src/validate.rs: pub fn request(req: &TurnRequest, info: &ModelInfo) -> Result<(), LlmError> {
