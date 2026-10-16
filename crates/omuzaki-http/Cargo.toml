@@ -27,5 +27,6 @@ workspace = true
 # Native only: the blocking reqwest client and its TLS stack have no wasm32 build
 [package.metadata.omuzaki]
 kind = "Implementation"
+net = "downloads over HTTPS (reqwest with rustls); https only"
 summary = "`HttpFetcher`, the HTTPS `Fetcher` over reqwest with rustls and the `ring` provider (the OS trust store): https only, at most five redirects (each https), three tries with backoff on connect errors, timeouts, 5xx and 429, `Range` resume with a checked `Content-Range`, streamed bodies with an idle read timeout; native only; `allow_loopback_http` is a test aid"
 wasm = false

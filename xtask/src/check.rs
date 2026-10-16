@@ -465,7 +465,11 @@ mod tests {
             ]
         );
         // The link-only crate's gate covers its own scan; the other three scan targets still run.
-        assert_eq!(got.len(), 20, "the same trailing steps as ever, plus three scans, lint-scans and lint-net: {got:?}");
+        assert_eq!(
+            got.len(),
+            20,
+            "the same trailing steps as ever, plus three scans, lint-scans and lint-net: {got:?}"
+        );
     }
 
     #[test]
