@@ -37,6 +37,8 @@ pub mod ops;
 pub(crate) mod registered;
 mod saved;
 mod store;
+#[doc(hidden)]
+pub mod testing;
 
 pub use budget::MemoryBudget;
 pub use calls::{Calls, Cancel, PlannedCall, RunnerCalls};

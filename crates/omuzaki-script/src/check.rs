@@ -167,14 +167,7 @@ impl ScriptHost {
 
     pub(crate) fn analyze(&self, source: &str) -> Analysis {
         let mut report = CheckReport::default();
-        let mut ceiling_error = None;
-        match ceiling_of(source) {
-            Ok(ceiling) => report.ceiling = ceiling,
-            Err(problem) => {
-                report.parse_errors.push(problem.clone());
-                ceiling_error = Some(problem);
-            }
-        }
+        // The size comes first: nothing reads, scans or parses a source that is over the limit.
         if source.len() > self.limits().source_bytes {
             report.parse_errors.push(Diagnostic {
                 message: format!(
@@ -185,7 +178,15 @@ impl ScriptHost {
                 line: 1,
                 column: 1,
             });
-            return Analysis { report, ceiling_error };
+            return Analysis { report, ceiling_error: None };
+        }
+        let mut ceiling_error = None;
+        match ceiling_of(source) {
+            Ok(ceiling) => report.ceiling = ceiling,
+            Err(problem) => {
+                report.parse_errors.push(problem.clone());
+                ceiling_error = Some(problem);
+            }
         }
         match self.base_engine().compile(source) {
             Err(error) => {

@@ -24,7 +24,7 @@ const MAX_ENTRIES: usize = 100_000;
 
 /// A recording that held 100,000 edits and left later ones out.
 #[derive(Clone, Debug, PartialEq, thiserror::Error)]
-#[error("the recording held more than 100000 edits and left the later ones out, so it is not complete")]
+#[error("the recording held more than {} edits and left the later ones out, so it is not complete", MAX_ENTRIES)]
 pub struct Overflowed {
     /// The macro of the edits that were kept: the first ones, not the whole session.
     pub partial: Macro,

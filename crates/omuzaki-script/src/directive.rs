@@ -107,6 +107,27 @@ impl Cursor {
         self.step(close.map_or(1, |offset| offset + 1));
     }
 
+    /// Past a raw string that starts here (`#"..."#`, with any number of `#` on each end), if one does; whether it
+    /// did. Raw strings have no escapes and may span lines.
+    fn skip_raw_string(&mut self) -> bool {
+        let hashes = self.chars[self.at..].iter().take_while(|c| **c == '#').count();
+        if self.chars.get(self.at + hashes) != Some(&'"') {
+            return false;
+        }
+        self.code_on_line = true;
+        self.step(hashes + 1);
+        while !self.done() {
+            let closes = self.here() == '"'
+                && self.chars[self.at + 1..].iter().take(hashes).filter(|c| **c == '#').count() == hashes;
+            if closes {
+                self.step(hashes + 1);
+                return true;
+            }
+            self.step(1);
+        }
+        true
+    }
+
     /// The line comment that starts here, as a directive if it is one. The cursor ends at the end of the line.
     fn line_comment(&mut self) -> Option<Directive> {
         let (line, column, after_code) = (self.line, self.column, self.code_on_line);
@@ -143,6 +164,7 @@ pub(crate) fn directives(source: &str) -> Vec<Directive> {
             Some(Mode::Code { braces }) => match (here, next) {
                 ('/', Some('/')) => found.extend(cursor.line_comment()),
                 ('/', Some('*')) => cursor.skip_block_comment(),
+                ('#', _) if cursor.skip_raw_string() => {}
                 ('"', _) => {
                     cursor.code_on_line = true;
                     cursor.skip_string();

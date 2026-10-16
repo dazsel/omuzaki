@@ -357,9 +357,14 @@ impl ScriptHost {
         let sink = run.clone();
         engine.on_debug(move |text, _, _| sink.print(OutputKind::Note, text));
         let sink = run.clone();
-        // A float would otherwise reach the math package's `log(x)` (the logarithm), so it is overloaded too.
-        engine.register_fn("log", move |value: Dynamic| sink.print(OutputKind::Note, &value.to_string()));
+        // The text is cut at the output limit while it is built, not after: see `guards`.
+        let room = self.limits.output_bytes.saturating_add(1);
+        // By reference: a by-value argument is a copy of the whole value, which is what this is trying not to make.
+        engine.register_fn("log", move |value: &mut Dynamic| {
+            sink.print(OutputKind::Note, &crate::guards::format_bounded(value, false, room).0);
+        });
         let sink = run.clone();
+        // A float would otherwise reach the math package's `log(x)` (the logarithm), so it is overloaded too.
         engine.register_fn("log", move |value: f64| sink.print(OutputKind::Note, &value.to_string()));
         let (watch, clock) = (run.clone(), self.clock.clone());
         engine.on_progress(move |_| watch.progress(started, clock.as_ref()));
@@ -918,6 +923,58 @@ mod peak {
         let (result, peak) = peak_of(&format!("{LONG_KEY} let m = #{{}}; for i in 0..2000 {{ m[k + i] = 1; }}"));
         assert_eq!(result.expect_err("stops").kind, ScriptErrorKind::Limit(LimitKind::Memory));
         assert!(peak <= limit + (4 << 20), "held {} MiB with a {} MiB budget", peak >> 20, limit >> 20);
+    }
+
+    /// Turning a value into text builds the whole text before any output limit looks at it, unless it is bounded.
+    #[test]
+    fn formatting_a_huge_value_stops_at_the_limit_instead_of_building_it() {
+        // 300 half-megabyte keys: about 150 MiB, under the budget, and each key is more than the output limit.
+        let build = format!("{LONG_KEY} let m = #{{}}; for i in 0..300 {{ m[k + i] = 1; }}");
+        let (_, held) = peak_of(&build);
+        for (name, statement, ends) in [
+            ("log", "log(m);", "ok"),
+            ("print", "print(m);", "ok"),
+            ("debug", "debug(m);", "ok"),
+            ("to_string", "let s = m.to_string();", "limit"),
+        ] {
+            let (result, peak) = peak_of(&format!("{build} {statement}"));
+            match (ends, &result) {
+                ("ok", Ok(outcome)) => {
+                    assert!(
+                        outcome.output.iter().any(|line| line.text == "output truncated"),
+                        "{name}: {:?}",
+                        outcome.output
+                    );
+                }
+                ("limit", Err(error)) => {
+                    assert_eq!(error.kind, ScriptErrorKind::Limit(LimitKind::StringSize), "{name}: {error}");
+                }
+                _ => panic!("{name}: {:?}", result.as_ref().map(|o| &o.output)),
+            }
+            assert!(
+                peak <= held + (8 << 20),
+                "{name}: held {} MiB over the {} MiB it started with",
+                peak >> 20,
+                held >> 20
+            );
+        }
+    }
+
+    /// The bounded versions say what Rhai's own do for values that fit.
+    #[test]
+    fn bounded_formatting_matches_rhais_own_for_values_that_fit() {
+        let script = r#"let v = [1, "a", #{ k: 2.5, j: [()] }, (), true, 'c', 1.0e10];
+            print(v); debug(v); print(v.to_string()); print(v.to_debug()); print(`${v}`);"#;
+        let (ours, _) = peak_of(script);
+        let ours: Vec<String> = ours.expect("runs").output.into_iter().map(|line| line.text).collect();
+        let lines = Arc::new(Mutex::new(Vec::<String>::new()));
+        let mut plain = Engine::new();
+        let capture = lines.clone();
+        plain.on_print(move |text| capture.lock().unwrap().push(text.to_owned()));
+        let capture = lines.clone();
+        plain.on_debug(move |text, _, _| capture.lock().unwrap().push(text.to_owned()));
+        plain.run(script).unwrap();
+        assert_eq!(ours, *lines.lock().unwrap());
     }
 
     #[test]

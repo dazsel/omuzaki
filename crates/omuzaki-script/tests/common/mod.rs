@@ -275,3 +275,15 @@ pub fn run_with(
     let result = host(&runner, limits, &clock).run(request, &calls(&runner), cancel);
     (runner, result)
 }
+
+/// [`run_with`] on the real clock, for a caller that wants the wall-clock limit to be able to expire (the fuzz target).
+pub fn run_on_system_clock(
+    request: RunRequest,
+    cancel: &dyn Cancel,
+    limits: Limits,
+    runner: FakeRunner,
+) -> (Arc<FakeRunner>, Result<ScriptOutcome, ScriptError>) {
+    let runner = Arc::new(runner);
+    let result = ScriptHost::new(&runner.ops(), limits).run(request, &calls(&runner), cancel);
+    (runner, result)
+}

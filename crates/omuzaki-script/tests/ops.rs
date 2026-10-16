@@ -529,14 +529,16 @@ impl JobDoc for Doc {
 struct Calls {
     sent: Mutex<Vec<(String, Value, Mode)>>,
     cancel_after_first: Option<Arc<Signal>>,
-    /// How long each request takes.
-    delay: std::time::Duration,
+    /// A fake clock, and how far each request moves it.
+    ticks: Option<(Arc<FakeClock>, Seconds)>,
 }
 
 impl JobCalls for Calls {
     fn call(&self, op: &str, args: Value, mode: Mode) -> Result<Outcome, OpError> {
         self.sent.lock().unwrap().push((op.to_owned(), args, mode));
-        std::thread::sleep(self.delay);
+        if let Some((clock, by)) = &self.ticks {
+            clock.advance(*by);
+        }
         if let Some(signal) = &self.cancel_after_first {
             signal.cancelled.cancel();
         }
@@ -556,7 +558,10 @@ fn work(args: Value, doc: Value, calls: &Calls, signal: &Signal) -> Result<Value
     let actor = alice();
     let document = Doc(mem);
     let ctx = JobCtx::new(JobId(1), &actor, &document, signal).with_calls(calls).with_plan_output(&planned);
-    op.work(&ctx)
+    match &calls.ticks {
+        Some((clock, _)) => omuzaki_script::testing::with_replay_clock(clock.clone(), || op.work(&ctx)),
+        None => op.work(&ctx),
+    }
 }
 
 #[test]
@@ -673,14 +678,15 @@ fn replay_holds_a_macro_to_the_call_limit() {
 
 #[test]
 fn replay_stops_at_the_seconds_it_was_given() {
-    let calls = Calls { delay: std::time::Duration::from_millis(600), ..Calls::default() };
+    // The clock is fake: each call moves it 0.6 s, and 1 s is allowed, so it stops after the second.
+    let clock = Arc::new(FakeClock::new(Seconds(0.0)));
+    let calls = Calls { ticks: Some((clock, Seconds(0.6))), ..Calls::default() };
     let steps: Vec<Value> = (0..5).map(|_| json!({ "op": "fake.set", "args": { "path": "a", "value": 1 } })).collect();
     let doc = json!({ "scripts": { "slow": { "name": "Slow", "kind": "macro", "steps": steps } } });
     let error = work(json!({ "id": "slow", "seconds": 1 }), doc, &calls, &Signal::default()).unwrap_err();
     assert_eq!(error.code, ErrorCode::Invalid, "{error}");
     assert!(error.message.contains("1-second limit"), "{error}");
-    let sent = calls.sent.lock().unwrap().len();
-    assert!((2..5).contains(&sent), "it stopped partway, after {sent} steps");
+    assert_eq!(calls.sent.lock().unwrap().len(), 2, "it stopped after the call that crossed the deadline");
 }
 
 #[test]
@@ -705,7 +711,8 @@ fn a_saved_macros_dry_run_plans_are_held_to_the_result_limit_together() {
 #[test]
 fn replay_fails_when_the_deadline_passes_during_its_last_call() {
     // One step, so no later step is left to notice: the check after the call must.
-    let calls = Calls { delay: std::time::Duration::from_millis(1_200), ..Calls::default() };
+    let clock = Arc::new(FakeClock::new(Seconds(0.0)));
+    let calls = Calls { ticks: Some((clock, Seconds(1.2))), ..Calls::default() };
     let doc = json!({ "scripts": { "one": { "name": "One", "kind": "macro", "steps": [
         { "op": "fake.set", "args": { "path": "a", "value": 1 } }
     ] } } });
@@ -713,6 +720,18 @@ fn replay_fails_when_the_deadline_passes_during_its_last_call() {
     assert_eq!(error.code, ErrorCode::Invalid, "{error}");
     assert!(error.message.contains("1-second limit"), "{error}");
     assert_eq!(calls.sent.lock().unwrap().len(), 1, "the call was made; its result is not committed");
+}
+
+#[test]
+fn replay_is_cancelled_when_the_cancel_arrives_during_its_last_call() {
+    let signal = Arc::new(Signal::default());
+    let calls = Calls { cancel_after_first: Some(signal.clone()), ..Calls::default() };
+    let doc = json!({ "scripts": { "one": { "name": "One", "kind": "macro", "steps": [
+        { "op": "fake.set", "args": { "path": "a", "value": 1 } }
+    ] } } });
+    let error = work(json!({ "id": "one" }), doc, &calls, &signal).unwrap_err();
+    assert_eq!(error.code, ErrorCode::Cancelled, "a cancel during the only call is not a success: {error}");
+    assert_eq!(calls.sent.lock().unwrap().len(), 1);
 }
 
 #[test]

@@ -9,10 +9,16 @@
 //! - `string.replace(find, with)` makes a result as long as the matches times `with`, and Rhai builds it before it
 //!   checks its length.
 //!
+//! Turning a value into text (`print`, `debug`, `to_string`, `to_debug`, `log`) is the third: Rhai builds the whole text
+//! before any limit looks at it, and a value can hold more text than the output or string limit allows (a map's keys
+//! are the budget's, not the data limits'). The text is built here into a sink that stops at the limit instead.
+//!
 //! Both are registered again here under the same signatures, which take precedence over the package's, and check the
 //! projected size first. Every other function of the packages that builds a bigger value (`+` on arrays and strings,
 //! `split`, `keys`, `to_chars`, `filter`) is bounded by what the run already holds, and stays within one operation of
 //! the budget: it adds at most a copy of what the script could already see.
+
+use std::fmt::{self, Write};
 
 use rhai::{Array, Dynamic, Engine, EvalAltResult, INT, ImmutableString, Map, NativeCallContext, Position};
 
@@ -86,6 +92,7 @@ fn too_large(what: &str, at: Position) -> Box<EvalAltResult> {
 
 /// Registers the checked versions of `pad` and `replace`.
 pub(crate) fn install(engine: &mut Engine, limits: &Limits) {
+    install_formatting(engine, limits);
     let limits = limits.clone();
     let pad_limits = limits.clone();
     engine.register_fn(
@@ -172,4 +179,118 @@ pub(crate) fn install(engine: &mut Engine, limits: &Limits) {
             by_string(&context, text, &find.to_string(), &with.to_string())
         },
     );
+}
+
+/// A text being built that stops taking more at `room` bytes, so formatting a huge value costs `room` and no more.
+pub(crate) struct Bounded {
+    text: String,
+    room: usize,
+    /// Set when something did not fit.
+    pub(crate) cut: bool,
+}
+
+impl Bounded {
+    pub(crate) fn new(room: usize) -> Self {
+        Self { text: String::new(), room, cut: false }
+    }
+
+    pub(crate) fn into_text(self) -> String {
+        self.text
+    }
+}
+
+impl Write for Bounded {
+    fn write_str(&mut self, part: &str) -> fmt::Result {
+        let left = self.room.saturating_sub(self.text.len());
+        if part.len() <= left {
+            self.text.push_str(part);
+            return Ok(());
+        }
+        // Keep what fits, on a character boundary, and refuse the rest so the formatter stops walking the value.
+        let mut end = left;
+        while !part.is_char_boundary(end) {
+            end -= 1;
+        }
+        self.text.push_str(&part[..end]);
+        self.cut = true;
+        Err(fmt::Error)
+    }
+}
+
+/// An element of an array or map as Rhai prints it: a string in quotes, a character plain, a container in its
+/// brackets, anything else in its debug form. Rhai's own text for a container is made of these.
+fn write_element(sink: &mut Bounded, value: &Dynamic) -> fmt::Result {
+    if let Some(array) = value.read_lock::<Array>() {
+        sink.write_str("[")?;
+        for (index, item) in array.iter().enumerate() {
+            if index > 0 {
+                sink.write_str(", ")?;
+            }
+            write_element(sink, item)?;
+        }
+        sink.write_str("]")
+    } else if let Some(map) = value.read_lock::<Map>() {
+        sink.write_str("#{")?;
+        for (index, (key, item)) in map.iter().enumerate() {
+            if index > 0 {
+                sink.write_str(", ")?;
+            }
+            write!(sink, "{key:?}: ")?;
+            write_element(sink, item)?;
+        }
+        sink.write_str("}")
+    } else if let Some(character) = value.read_lock::<char>() {
+        sink.write_char(*character)
+    } else {
+        write!(sink, "{value:?}")
+    }
+}
+
+/// `value` as text (`debug` for the debug form), at most `room` bytes of it, and whether more was left out.
+pub(crate) fn format_bounded(value: &Dynamic, debug: bool, room: usize) -> (String, bool) {
+    let mut sink = Bounded::new(room);
+    let _ = if value.is_array() || value.is_map() {
+        write_element(&mut sink, value)
+    } else if debug {
+        write!(sink, "{value:?}")
+    } else {
+        write!(sink, "{value}")
+    };
+    let cut = sink.cut;
+    (sink.into_text(), cut)
+}
+
+/// Registers bounded `print`, `debug`, `to_string` and `to_debug` for any value, an array and a map (the spellings
+/// Rhai's own versions of them have for containers). `print` and `debug` answer the text cut at the output limit plus
+/// one byte, which is enough for the output to see it is over and mark itself truncated; `to_string` and `to_debug`
+/// (which interpolation and `+` use) refuse a text over the string limit, as Rhai does after building it.
+pub(crate) fn install_formatting(engine: &mut Engine, limits: &Limits) {
+    let output_room = limits.output_bytes.saturating_add(1);
+    let string_room = limits.string_bytes;
+    for (name, debug, output) in
+        [("print", false, true), ("debug", true, true), ("to_string", false, false), ("to_debug", true, false)]
+    {
+        let room = if output { output_room } else { string_room };
+        let answer =
+            move |context: &NativeCallContext<'_>, value: &Dynamic| -> Result<ImmutableString, Box<EvalAltResult>> {
+                let (text, cut) = format_bounded(value, debug, room);
+                if cut && !output {
+                    return Err(too_large("Length of string", context.call_position()));
+                }
+                Ok(text.into())
+            };
+        engine.register_fn(name, move |context: NativeCallContext<'_>, value: &mut Dynamic| answer(&context, value));
+        engine.register_fn(name, move |context: NativeCallContext<'_>, array: &mut Array| {
+            let held = Dynamic::from_array(std::mem::take(array));
+            let result = answer(&context, &held);
+            *array = held.into_array().unwrap_or_default();
+            result
+        });
+        engine.register_fn(name, move |context: NativeCallContext<'_>, map: &mut Map| {
+            let held = Dynamic::from_map(std::mem::take(map));
+            let result = answer(&context, &held);
+            *map = held.try_cast::<Map>().unwrap_or_default();
+            result
+        });
+    }
 }

@@ -1,7 +1,7 @@
 //! `script.run`: run a script, or replay a saved macro, as a driver job.
 
 use omuzaki_core::id::Slug;
-use omuzaki_core::time::{Clock, SystemClock};
+use omuzaki_core::time::Clock;
 use omuzaki_doc_api::{Patch, Value};
 use omuzaki_ops_api::{
     CostHint, ErrorDetail, Grants, JobCtx, JobShape, Mode, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo,
@@ -182,7 +182,7 @@ impl Op for ScriptRun {
             .map_err(|e| OpError::internal(format!("the planned script does not read back: {e}")))?;
         match planned {
             Planned::Script { name, source } => self.run_script(job, name, source),
-            Planned::Macro { steps, .. } => replay(job, &steps, self.dry_run, self.seconds.unwrap_or(DEFAULT_SECONDS)),
+            Planned::Macro { steps, .. } => replay(job, &steps, self.dry_run, self.seconds.unwrap_or(DEFAULT_SECONDS), crate::testing::replay_clock().as_ref()),
         }
     }
 
@@ -195,7 +195,13 @@ impl Op for ScriptRun {
 /// to what a script is: a step a script couldn't call (a job, an edit with outside effects, `script.run`) is refused
 /// before anything is sent, at most [`Limits::calls`] steps run, and the clock stops it after `seconds`.
 #[allow(clippy::cast_precision_loss)] // a progress fraction
-fn replay(job: &JobCtx<'_>, steps: &[RecordedCall], dry_run: bool, seconds: u32) -> Result<Value, OpError> {
+fn replay(
+    job: &JobCtx<'_>,
+    steps: &[RecordedCall],
+    dry_run: bool,
+    seconds: u32,
+    clock: &dyn Clock,
+) -> Result<Value, OpError> {
     let limits = Limits::job(Some(seconds));
     if steps.len() > limits.calls as usize {
         return Err(limit_error(
@@ -211,7 +217,6 @@ fn replay(job: &JobCtx<'_>, steps: &[RecordedCall], dry_run: bool, seconds: u32)
         }
     }
     let mode = if dry_run { Mode::DryRun } else { Mode::Apply };
-    let clock = SystemClock::new();
     let started = clock.now().0;
     let mut plans = Vec::new();
     let mut plan_bytes = 0_usize;
@@ -241,6 +246,8 @@ fn replay(job: &JobCtx<'_>, steps: &[RecordedCall], dry_run: bool, seconds: u32)
             plans.push(planned);
         }
     }
+    // The last call can be cancelled too, with no later step to notice: look again before succeeding.
+    job.checkpoint("macro", 1.0)?;
     Ok(json!({ "value": null, "output": [], "calls": steps.len(), "tx": null, "plans": plans }))
 }
 

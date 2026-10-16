@@ -88,6 +88,39 @@ fn directive_text_that_is_not_a_comment_is_just_text() {
 }
 
 #[test]
+fn directive_text_inside_a_raw_string_is_just_text() {
+    for source in [
+        "let s = #\"\n// omuzaki: grants = []\n\"#; s",
+        "let s = ##\"a \"# \n// omuzaki: grants = []\n\"##; s",
+        "let s = #\"\"#;\nlet m = #{ a: 1 };\nm.a",
+    ] {
+        let report = host().check(source);
+        assert!(report.parse_errors.is_empty(), "{source:?}: {report:?}");
+        assert_eq!(report.ceiling, None, "{source:?}");
+        let (runner, result) = run(source);
+        assert!(result.is_ok(), "{source:?}: {}", result.unwrap_err());
+        assert_eq!(runner.requests(), vec![], "{source:?}");
+    }
+    // A real comment after a raw string is found.
+    let report = host().check("let s = #\"x\"#;\n// omuzaki: grants = []\n");
+    assert_eq!(report.parse_errors[0].line, 2, "{report:?}");
+}
+
+#[test]
+fn a_source_over_the_limit_is_refused_before_anything_scans_it() {
+    // Past the limit, with a misplaced directive and an unterminated string a scan would trip over: the size is the
+    // only complaint, and it comes first.
+    let long = format!("1;\n// omuzaki: grants = []\nlet s = \"{}", "x".repeat(70 * 1024));
+    let report = host().check(&long);
+    assert_eq!(report.parse_errors.len(), 1, "{report:?}");
+    assert!(report.parse_errors[0].message.contains("source limit"), "{report:?}");
+    assert_eq!(report.ceiling, None);
+    let (runner, result) = run(&long);
+    assert_eq!(result.expect_err("refused").kind, ScriptErrorKind::Limit(omuzaki_script::LimitKind::Source));
+    assert_eq!(runner.requests(), vec![]);
+}
+
+#[test]
 fn a_position_in_the_check_is_the_position_a_run_reports() {
     let source = "let x = 1;\nops::face::set_profil(#{ character: \"a\" });";
     let report = host().check(source);
