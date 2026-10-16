@@ -128,6 +128,31 @@ mod tests {
     }
 
     #[test]
+    fn refitting_from_positions_matches_refitting_from_shapes() {
+        let quad = skinned_quad();
+        let skin: Vec<Surface> = (0..4)
+            .map(|i| {
+                let mut surface: Surface = bytemuck::Zeroable::zeroed();
+                surface.joints = quad.joints[i];
+                surface.weights = quad.weights[i];
+                surface
+            })
+            .collect();
+        let shapes: Vec<Shape> = quad
+            .positions
+            .iter()
+            .zip(&quad.normals)
+            .map(|(p, n)| Shape { position: p.to_array(), normal: n.to_array() })
+            .collect();
+        let (mut from_shapes, mut from_points) = (MeshBounds::empty(), MeshBounds::empty());
+        from_shapes.refit(2, &shapes, &skin);
+        from_points.refit_points(2, &quad.positions, &skin);
+        assert_eq!(from_shapes.whole, from_points.whole);
+        assert_eq!(from_shapes.joints, from_points.joints);
+        assert_eq!(from_points.whole, MeshBounds::of(&quad, 2).whole);
+    }
+
+    #[test]
     fn a_rigid_mesh_is_its_vertex_box_moved_by_the_model() {
         let cube = shapes::cuboid(Vec3::splat(0.5));
         let bounds = MeshBounds::of(&cube, 0);

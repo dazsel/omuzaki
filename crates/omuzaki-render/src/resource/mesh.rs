@@ -425,6 +425,12 @@ impl GpuMesh {
         dispatch
     }
 
+    /// Whether the outline directions and the bounds lag the vertices, for tests that count what a frame refreshed.
+    #[cfg(test)]
+    pub(crate) fn lags(&self) -> Option<(bool, bool)> {
+        self.shadow.as_ref().map(|s| (s.smooth_stale, s.bounds_stale))
+    }
+
     /// A dispatch that welds this mesh's outline directions never ran (its frame did not reach the queue): they lag
     /// again.
     pub(crate) fn directions_lost(&mut self) {

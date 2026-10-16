@@ -189,6 +189,19 @@ pub(crate) fn fit(to_light: Vec3, casters: &Aabb, receivers: &Aabb, map_size: u3
 mod tests {
     use super::*;
 
+    #[test]
+    fn the_box_of_points_holds_every_point_whatever_the_count() {
+        let point = |i: u32| Vec3::new(i as f32, -(i as f32) * 2.0, (i % 5) as f32);
+        for count in [0u32, 1, 3, 4, 5, 8, 9, 101] {
+            let points: Vec<Vec3> = (0..count).map(point).collect();
+            let mut want = Aabb::EMPTY;
+            for p in &points {
+                want.include(*p);
+            }
+            assert_eq!(Aabb::of_points(&points), want, "{count} points");
+        }
+    }
+
     const SIZE: u32 = 1024;
     const BIAS: f32 = 0.01;
     const TO_LIGHT: Vec3 = Vec3::new(-0.8, 1.6, 2.2);
