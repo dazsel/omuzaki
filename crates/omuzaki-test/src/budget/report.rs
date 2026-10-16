@@ -12,7 +12,7 @@ pub const REGRESSION_LIMIT: f64 = 0.10;
 /// start-up or memory reading moves more than 10% from run to run on a shared runner.
 pub const MIN_REGRESSION_SAMPLES: u64 = 30;
 /// Layout version of the JSON, bumped when a field changes meaning.
-pub const SCHEMA: u32 = 1;
+pub const SCHEMA: u32 = 2;
 
 /// What a report's numbers are, in the sense of spec §10 ("Numbers from other hardware"). The class decides what may
 /// fail a gating run; the caller states it because only the caller knows what machine it ran on.
@@ -21,14 +21,14 @@ pub const SCHEMA: u32 = 1;
 pub enum Class {
     /// Taken on any other machine (a cloud runner, a laptop): printed with the machine, never gates.
     Reported,
-    /// Taken on the tier it is claimed for: judged against the budget directly. The runner refuses it until a report
-    /// carries the tier, OS build, GPU and driver provenance spec §10 requires.
+    /// Taken on the tier it is claimed for: judged against the budget directly. The runner needs the
+    /// [`Provenance`] spec §10 requires (tier, OS build, GPU adapter, backend).
     Measured,
-    /// Taken on another machine and converted by a spec rule: judged against the budget directly. Refused by the runner
-    /// for the same reason as [`Class::Measured`].
+    /// Taken on another machine and converted by a spec rule: judged against the budget directly. Needs the same
+    /// [`Provenance`] plus the scaling rule.
     Scaled,
     /// A PR against main on the same machine, alternating runs in one session: a budgeted metric more than 10% worse
-    /// fails.
+    /// fails. A strict run needs the session named in both reports ([`Provenance::session`]).
     Relative,
 }
 
@@ -78,6 +78,71 @@ impl Machine {
             vcpus: std::thread::available_parallelism().map_or(0, std::num::NonZero::get),
             os: std::env::consts::OS.to_owned(),
             arch: std::env::consts::ARCH.to_owned(),
+        }
+    }
+}
+
+/// What spec §10 ("Numbers from other hardware") asks a gating number to state, given by the caller because only the
+/// caller knows it. Names the kind of hardware, not a machine: no device ids.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Provenance {
+    /// The tier the numbers are claimed for.
+    pub tier: String,
+    /// The operating system build.
+    pub os_build: String,
+    /// The GPU adapter.
+    pub gpu_adapter: String,
+    /// The graphics driver or backend.
+    pub backend: String,
+    /// For `scaled` numbers, the spec rule that converted them.
+    pub scaling_rule: Option<String>,
+    /// An id shared by the alternating runs of one session, which a `relative` comparison needs from both reports.
+    pub session: Option<String>,
+}
+
+impl Provenance {
+    /// Read `OMUZAKI_BUDGET_TIER`, `_OS_BUILD`, `_GPU`, `_BACKEND`, `_SCALING_RULE` and `_SESSION`; `None` when none is
+    /// set. An empty variable counts as not set.
+    pub fn from_env() -> Option<Self> {
+        let var = |k: &str| std::env::var(format!("OMUZAKI_BUDGET_{k}")).ok().filter(|v| !v.trim().is_empty());
+        let found = Self {
+            tier: var("TIER").unwrap_or_default(),
+            os_build: var("OS_BUILD").unwrap_or_default(),
+            gpu_adapter: var("GPU").unwrap_or_default(),
+            backend: var("BACKEND").unwrap_or_default(),
+            scaling_rule: var("SCALING_RULE"),
+            session: var("SESSION"),
+        };
+        (found != Self::default()).then_some(found)
+    }
+
+    /// Whether this provenance (or none) is enough for a gating `class`.
+    ///
+    /// # Errors
+    /// [`BudgetError::Provenance`] naming the variables that are missing, for `measured` and `scaled`.
+    pub fn require(provenance: Option<&Self>, class: Class) -> Result<(), BudgetError> {
+        let (needs_rule, name) = match class {
+            Class::Measured => (false, "measured"),
+            Class::Scaled => (true, "scaled"),
+            Class::Reported | Class::Relative => return Ok(()),
+        };
+        let none = Self::default();
+        let p = provenance.unwrap_or(&none);
+        let mut missing = Vec::new();
+        for (value, var) in
+            [(&p.tier, "TIER"), (&p.os_build, "OS_BUILD"), (&p.gpu_adapter, "GPU"), (&p.backend, "BACKEND")]
+        {
+            if value.trim().is_empty() {
+                missing.push(format!("OMUZAKI_BUDGET_{var}"));
+            }
+        }
+        if needs_rule && p.scaling_rule.is_none() {
+            missing.push("OMUZAKI_BUDGET_SCALING_RULE".to_owned());
+        }
+        if missing.is_empty() {
+            Ok(())
+        } else {
+            Err(BudgetError::Provenance { class: name.to_owned(), missing: missing.join(", ") })
         }
     }
 }
@@ -171,6 +236,8 @@ pub struct Report {
     pub class: Class,
     /// The box it ran on.
     pub machine: Machine,
+    /// What the caller stated about the hardware and the session, if anything.
+    pub provenance: Option<Provenance>,
     /// One row per metric, ordered by key.
     pub rows: Vec<Row>,
     /// Things a reader needs to judge the numbers (a missing counter, an incomparable previous run).
@@ -197,7 +264,19 @@ impl Report {
             comparable
         });
         let rows = metrics.into_iter().map(|m| row(m, budgets, previous)).collect();
-        Self { schema: SCHEMA, class, machine, rows, notes }
+        Self { schema: SCHEMA, class, machine, provenance: None, rows, notes }
+    }
+
+    /// This report with the provenance the caller stated.
+    #[must_use]
+    pub fn with_provenance(mut self, provenance: Option<Provenance>) -> Self {
+        self.provenance = provenance;
+        self
+    }
+
+    /// How many rows with a §10 budget have a value from the previous report: what a `relative` run can fail on.
+    pub fn compared_budgeted(&self) -> usize {
+        self.rows.iter().filter(|r| r.budget.is_some() && r.previous.is_some()).count()
     }
 
     /// Every finding: rows over budget, with a unit mismatch, truncated, or more than [`REGRESSION_LIMIT`] worse than the
@@ -276,6 +355,23 @@ impl Report {
             "| Key | Samples | p50 | p95 | p99 | max | Budget | Verdict | Change |".to_owned(),
             "|---|---|---|---|---|---|---|---|---|".to_owned(),
         ];
+        if let Some(p) = &self.provenance {
+            let optional =
+                |label: &str, v: &Option<String>| v.as_ref().map(|v| format!(", {label} {v}")).unwrap_or_default();
+            lines.insert(3, String::new());
+            lines.insert(
+                4,
+                format!(
+                    "Provenance: tier {}, OS build {}, GPU {}, backend {}{}{}.",
+                    p.tier,
+                    p.os_build,
+                    p.gpu_adapter,
+                    p.backend,
+                    optional("scaling rule", &p.scaling_rule),
+                    optional("session", &p.session)
+                ),
+            );
+        }
         for r in &self.rows {
             let (u, st) = (r.metric.unit, &r.metric.stats);
             let change = r
@@ -420,6 +516,7 @@ mod tests {
         assert!(judged.rows[0].regression, "the change is still reported");
         assert_eq!(judged.failures(), Vec::<String>::new());
         assert_eq!(judged.violations(), ["other: regression of 900.0%"]);
+        assert_eq!(judged.compared_budgeted(), 0, "so a strict relative run has nothing to judge");
     }
 
     #[test]

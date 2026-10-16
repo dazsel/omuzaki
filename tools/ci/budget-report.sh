@@ -5,11 +5,16 @@
 #
 # --out       folder for report.md and report.json (default: target/budget)
 # --previous  last night's report.json, for the regression check (more than 10% worse is a regression)
-# --class     what the numbers are, in the spec's §10 sense: reported (default) or relative. measured and scaled are
-#             refused until reports carry the tier provenance §10 requires.
+# --class     what the numbers are, in the spec's §10 sense: reported (default), relative, measured or scaled.
 # --strict    exit non-zero on the findings the class gates on (relative: a budgeted metric more than 10% worse than
-#             --previous, and an error without a comparable --previous). Without it the run only reports. Numbers of class `reported`
-#             (any cloud runner) never gate, so --strict with the default class cannot fail on a slow machine (§10).
+#             --previous; an error when no budgeted metric was compared or the session differs). Without it the run only
+#             reports. Numbers of class `reported` (any cloud runner) never gate, so --strict with the default class
+#             cannot fail on a slow machine (§10).
+#
+# Environment (the provenance a gating class states; the report prints it):
+#   OMUZAKI_BUDGET_TIER, _OS_BUILD, _GPU, _BACKEND   required by --class measured and scaled
+#   OMUZAKI_BUDGET_SCALING_RULE                      also required by --class scaled
+#   OMUZAKI_BUDGET_SESSION                           required by --class relative --strict, equal in --previous
 #
 # The nightly step calls this script with --previous pointing at the artifact of the last green night.
 set -euo pipefail

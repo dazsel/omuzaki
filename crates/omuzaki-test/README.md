@@ -252,6 +252,27 @@ The comment itself carries what is needed to decide: which images, the bad-pixel
 each image the golden's hash before and after (shortened to 12 characters; the manifest diff in the PR has them in full).
 The goldens are `<hash>.png` in the object store folder the comment names.
 
+## The budget harness
+
+`omuzaki_test::budget` measures the spec §10 budgets and reports them (G-BUD). `tools/ci/budget-report.sh` runs it: a
+synthetic busy-wait system and the process's peak memory, judged against the budget table parsed from the spec, and
+written to `target/budget/report.md` and `report.json` (`--out` changes the folder). Area test crates build a
+`budget::report::Report` from their own `budget::timing::Recorder` tracks the same way.
+
+```sh
+tools/ci/budget-report.sh [--out DIR] [--previous report.json] [--class CLASS] [--strict]
+```
+
+- `--previous` compares with an earlier `report.json`: a budgeted metric more than 10% worse is a regression, and so
+  is a metric without a budget that has 30 samples or more. A previous report from another machine is ignored with a note.
+- `--class` states what the numbers are, in the spec's sense. `reported` (the default, and any cloud runner) never
+  gates. `measured` and `scaled` are judged against the budget and need the provenance variables
+  `OMUZAKI_BUDGET_TIER`, `_OS_BUILD`, `_GPU` and `_BACKEND` (and `_SCALING_RULE` for `scaled`), which the report prints.
+  `relative` compares with `--previous` only.
+- `--strict` makes the findings the class gates on a failure. A strict `relative` run needs the same
+  `OMUZAKI_BUDGET_SESSION` in the run and in the previous report, and fails only on a budgeted metric; the harness's
+  own metrics have no budget, so it is refused until an area test crate reports one.
+
 ## Not here yet
 
 Headless wgpu rendering of the fixed scenes (the other half of the spec's golden-render harness) needs the renderer

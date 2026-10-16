@@ -35,12 +35,21 @@ pub enum BudgetError {
     /// A gating run (class other than `reported`) had violations.
     #[error("{0}")]
     Violations(String),
-    /// A `measured` or `scaled` run was requested but the report cannot yet carry the provenance spec §10 requires.
-    #[error("class `{0}` needs tier, OS build, GPU and driver provenance (spec §10), which reports do not carry yet")]
-    Provenance(String),
-    /// A strict `relative` run had no comparable previous report, so nothing was compared.
-    #[error("a strict `relative` run needs a previous report from the same machine to compare against")]
+    /// A `measured` or `scaled` run did not state the provenance spec §10 requires of a gating number.
+    #[error("class `{class}` needs provenance (spec §10): {missing} not given")]
+    Provenance {
+        /// The class that was asked for.
+        class: String,
+        /// The missing items, as the names of their `OMUZAKI_BUDGET_*` variables.
+        missing: String,
+    },
+    /// A strict `relative` run had nothing it may fail on: no previous report from the same machine, or none of the
+    /// compared metrics has a §10 budget.
+    #[error("a strict `relative` run needs a previous report from the same machine with a budgeted metric to compare")]
     NoBaseline,
+    /// A strict `relative` run could not show that both reports came from alternating runs of one session.
+    #[error("a strict `relative` run needs the same OMUZAKI_BUDGET_SESSION in this run and in the previous report")]
+    NoSession,
     /// A measurement class name was not one of `reported`, `measured`, `scaled`, `relative`.
     #[error("unknown measurement class `{0}`")]
     Class(String),
