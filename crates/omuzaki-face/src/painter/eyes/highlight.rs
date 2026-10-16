@@ -5,7 +5,7 @@
 //!
 //! | Profile | Replaces (JS) |
 //! |---|---|
-//! | `highlights.shape` | the glossy blob; the `heart` effect (above 0.5) swaps in the heart, the `star` effect a four-point star |
+//! | `highlights.shape` | the glossy blob; the `heart` and `star` effects crossfade the heart and the four-point star in from any nonzero strength, the profile's own shape giving way as they grow (the prototype swapped the heart in above 0.5, which pops) |
 //! | `highlights.size`, `offset` | the blob's `0.30` radius and its `(0.28, 0.22)` place, in iris radii |
 //! | `highlights.second` | the small spark's opacity (`0.65`) |
 //! | `highlights.shimmer` | `P.refl` as the strength of the band and the two stars |
