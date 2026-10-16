@@ -155,8 +155,8 @@ impl Op for Fill {
     fn plan(&self, _ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
         let mut patch = Patch::new();
         for n in 0..10_000 {
-            let path = DocPath::parse(&format!("filled/p{n}")).map_err(|e| OpError::invalid("path", e.to_string()))?;
-            patch = patch.with(path, None, Some(json!(n)));
+            let at = DocPath::parse(&format!("filled/p{n}")).map_err(|e| OpError::invalid("path", e.to_string()))?;
+            patch = patch.with(at, None, Some(json!(n)));
         }
         Ok(Plan::edit(patch))
     }
