@@ -3,9 +3,11 @@
 //!
 //! - One keychain **service name**, [`SERVICE`] (`omuzaki`); one entry per label, with the label as the entry's user
 //!   name.
-//! - The keychain APIs cannot list entries in one portable way, so Omuzaki keeps its own labels in one extra entry
-//!   (the *label index*, labels only, never values). [`labels`](omuzaki_secrets_api::SecretStore::labels) therefore
-//!   lists Omuzaki's entries and never another program's.
+//! - The keychain APIs cannot list entries in one portable way, so Omuzaki keeps its own labels in a few extra entries
+//!   (the *label index*, labels only, never values; split so no entry is over the smallest keychain limit).
+//!   [`labels`](omuzaki_secrets_api::SecretStore::labels) therefore lists Omuzaki's entries and never another
+//!   program's. Stores in one process share a lock around index changes; another program changing the index at the
+//!   same moment is caught by reading it back and making the change again.
 //! - A machine with no keychain (Linux without a Secret Service daemon) is
 //!   [`SecretError::Unavailable`](omuzaki_secrets_api::SecretError::Unavailable) with a hint. There is **no file
 //!   fallback**: a secret is in the keychain or it is not stored.

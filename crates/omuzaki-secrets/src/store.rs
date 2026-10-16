@@ -1,12 +1,12 @@
 //! [`KeychainSecrets`]: the label index over a [`Backend`], and the `keyring` backend.
 
 use std::collections::BTreeSet;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use omuzaki_secrets_api::{SecretError, SecretLabel, SecretStore, SecretValue};
 
 use crate::error::map_error;
-use crate::index::{INDEX_USER, INDEX_WHAT, decode, encode};
+use crate::index::{INDEX_WHAT, decode, encode, is_shard_user, shard_user};
 
 /// The keychain service name every Omuzaki entry is filed under.
 pub const SERVICE: &str = "omuzaki";
@@ -24,7 +24,7 @@ pub(crate) trait Backend: Send + Sync {
 
 /// What an entry is called in an error.
 fn describe(user: &str) -> &str {
-    if user == INDEX_USER { INDEX_WHAT } else { user }
+    if is_shard_user(user) { INDEX_WHAT } else { user }
 }
 
 /// The platform keychain through `keyring`. Holds no connection: the keychain is opened on first use.
@@ -58,17 +58,28 @@ impl Backend for KeyringBackend {
     }
 }
 
+/// How many times one change to the index is tried before giving up. Each try re-reads the index, so a change another
+/// program's write overwrote is made again.
+const SETTLE_ATTEMPTS: usize = 4;
+
 /// Entries keyed by label plus the label index, over any [`Backend`].
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct Indexed<B> {
     backend: B,
-    /// Serialises changes to the label index within this process (read, change, write).
-    index_lock: Mutex<()>,
+    /// Serialises changes to the label index (read, change, write). Handles over the same keychain share one.
+    index_lock: Arc<Mutex<()>>,
 }
 
 impl<B: Backend> Indexed<B> {
+    /// A store with a lock of its own: right for a backend only this store reaches.
+    #[cfg(test)]
     pub(crate) fn new(backend: B) -> Self {
-        Self { backend, index_lock: Mutex::new(()) }
+        Self::sharing(backend, Arc::default())
+    }
+
+    /// A store that serialises its index changes with every other store holding `index_lock`.
+    pub(crate) fn sharing(backend: B, index_lock: Arc<Mutex<()>>) -> Self {
+        Self { backend, index_lock }
     }
 
     fn lock(&self) -> MutexGuard<'_, ()> {
@@ -76,18 +87,47 @@ impl<B: Backend> Indexed<B> {
         self.index_lock.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn read_index(&self) -> Result<BTreeSet<SecretLabel>, SecretError> {
-        match self.backend.get(INDEX_USER)? {
-            Some(text) => decode(text.expose()),
-            None => Ok(BTreeSet::new()),
+    /// The labels and how many shards hold them.
+    fn read_index(&self) -> Result<(BTreeSet<SecretLabel>, usize), SecretError> {
+        let mut shards = Vec::new();
+        while let Some(text) = self.backend.get(&shard_user(shards.len()))? {
+            shards.push(text);
         }
+        let labels = decode(shards.iter().map(SecretValue::expose))?;
+        Ok((labels, shards.len()))
     }
 
-    fn write_index(&self, labels: &BTreeSet<SecretLabel>) -> Result<(), SecretError> {
-        if labels.is_empty() {
-            return self.backend.remove(INDEX_USER);
+    /// Writes `labels` as shards 0..n, then removes the `previous` shards past n, last first, so the shards stay
+    /// contiguous if a call fails part-way.
+    fn write_index(&self, labels: &BTreeSet<SecretLabel>, previous: usize) -> Result<(), SecretError> {
+        let shards = encode(labels);
+        for (n, text) in shards.iter().enumerate() {
+            self.backend.set(&shard_user(n), text)?;
         }
-        self.backend.set(INDEX_USER, &encode(labels))
+        for n in (shards.len()..previous).rev() {
+            self.backend.remove(&shard_user(n))?;
+        }
+        Ok(())
+    }
+
+    /// Makes the index list `label` (`listed`) or not, then reads the index again to see the change held: another
+    /// program may have written the same shard between this read and write, which a lock in this process cannot
+    /// stop. The change is made again, up to [`SETTLE_ATTEMPTS`] times.
+    fn settle(&self, label: &SecretLabel, listed: bool) -> Result<(), SecretError> {
+        let _guard = self.lock();
+        for _ in 0..SETTLE_ATTEMPTS {
+            let (mut labels, shards) = self.read_index()?;
+            if labels.contains(label) == listed {
+                return Ok(());
+            }
+            if listed {
+                labels.insert(label.clone());
+            } else {
+                labels.remove(label);
+            }
+            self.write_index(&labels, shards)?;
+        }
+        Err(SecretError::backend("the label list kept changing under another program's writes"))
     }
 }
 
@@ -101,32 +141,22 @@ impl<B: Backend> SecretStore for Indexed<B> {
     }
 
     fn labels(&self) -> Result<Vec<SecretLabel>, SecretError> {
-        Ok(self.read_index()?.into_iter().collect())
+        Ok(self.read_index()?.0.into_iter().collect())
     }
 
     fn set(&self, label: &SecretLabel, value: SecretValue) -> Result<(), SecretError> {
         value.check_storable()?;
-        let _guard = self.lock();
         // The entry first: a failure between the two steps leaves a readable secret missing from `labels`, which
         // setting it again repairs, never a listed label with nothing behind it.
         self.backend.set(label.as_str(), value.expose())?;
-        let mut labels = self.read_index()?;
-        if labels.insert(label.clone()) {
-            self.write_index(&labels)?;
-        }
-        Ok(())
+        self.settle(label, true)
     }
 
     fn delete(&self, label: &SecretLabel) -> Result<(), SecretError> {
-        let _guard = self.lock();
         // The entry first: a failure between the two steps leaves a listed label with no secret, which the person
         // sees as missing and deleting again clears, never a stored secret that nothing lists.
         self.backend.remove(label.as_str())?;
-        let mut labels = self.read_index()?;
-        if labels.remove(label) {
-            self.write_index(&labels)?;
-        }
-        Ok(())
+        self.settle(label, false)
     }
 }
 
@@ -134,14 +164,23 @@ impl<B: Backend> SecretStore for Indexed<B> {
 ///
 /// Cheap to create and to share. The keychain is opened on first use, so a machine without one fails the first call
 /// with [`SecretError::Unavailable`], not construction.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct KeychainSecrets(Indexed<KeyringBackend>);
 
 impl KeychainSecrets {
-    /// A store over the platform keychain.
+    /// A store over the platform keychain. Every store in the process shares one index lock, so handles made
+    /// separately do not overwrite each other's changes to the label list.
     #[must_use]
     pub fn new() -> Self {
-        Self(Indexed::new(KeyringBackend))
+        static INDEX_LOCK: OnceLock<Arc<Mutex<()>>> = OnceLock::new();
+        let lock = INDEX_LOCK.get_or_init(Arc::default);
+        Self(Indexed::sharing(KeyringBackend, Arc::clone(lock)))
+    }
+}
+
+impl Default for KeychainSecrets {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
