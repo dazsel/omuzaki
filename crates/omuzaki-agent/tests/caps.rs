@@ -47,7 +47,7 @@ fn three_calls_of_one_turn_run_in_the_emitted_order_one_at_a_time_and_are_answer
         .server
         .calls()
         .iter()
-        .filter(|(name, _)| name != "tx_begin" && name != "tx_commit")
+        .filter(|(name, _)| name != "tx_begin" && name != "tx_commit" && name != "history_log")
         .map(|(_, args)| args["n"].as_i64().unwrap())
         .collect();
     assert_eq!(order, [1, 2, 3]);

@@ -96,10 +96,10 @@ impl Worker {
             return;
         }
         let closed = |reply: Option<crate::link::ToolReply>| reply.is_some_and(|r| !r.is_error);
-        if closed(self.call_after_stop("tx_commit")) {
+        if closed(self.call_after_stop("tx_commit", None)) {
             run.tx_open = false;
             self.write_step(run, " (stopped)");
-        } else if closed(self.call_after_stop("tx_rollback")) {
+        } else if closed(self.call_after_stop("tx_rollback", None)) {
             run.tx_open = false;
             run.tx = None;
             self.shared.emit(AssistantEvent::Error(HostError::Mcp(

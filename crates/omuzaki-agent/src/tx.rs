@@ -110,8 +110,12 @@ impl Worker {
 
     /// Calls a tool that Stop's own ending needs, when the usual cancel flag would end a call at once: no cancel, bounded
     /// in real time instead. `None` if the call failed or took too long.
-    pub(crate) fn call_after_stop(&self, name: &str) -> Option<ToolReply> {
-        let pending = self.link.call_tool(name, None, omuzaki_llm_api::stream::Cancel::new(), None);
+    pub(crate) fn call_after_stop(
+        &self,
+        name: &str,
+        args: Option<serde_json::Map<String, serde_json::Value>>,
+    ) -> Option<ToolReply> {
+        let pending = self.link.call_tool(name, args, omuzaki_llm_api::stream::Cancel::new(), None);
         let started = std::time::Instant::now();
         loop {
             match pending.poll(std::time::Duration::from_millis(1)) {

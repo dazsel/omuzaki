@@ -170,8 +170,10 @@ impl ScriptedServer {
         self.add(tool, move |_, _| outcome.clone());
     }
 
+    /// The calls the model's work made. The host's own reads of the op log (`history_log`, for Stop's bookkeeping) are
+    /// not counted; `called("history_log")` still counts them.
     pub fn calls(&self) -> Vec<(String, Value)> {
-        lock(&self.log).calls.clone()
+        lock(&self.log).calls.iter().filter(|(n, _)| n != "history_log").cloned().collect()
     }
 
     pub fn called(&self, name: &str) -> usize {
@@ -899,14 +901,16 @@ pub fn standard_server(sessions: &Arc<FakeSessions>) -> ScriptedServer {
     // `history_log`: the committed transactions, as `omuzaki-mcp` answers it: the log as JSON in a text block, and no
     // `structuredContent`.
     let log = Arc::clone(sessions);
-    server.add(tool("history_log", "history.log", "builtin", true), move |_, _| {
+    server.add(tool("history_log", "history.log", "builtin", true), move |args, _| {
+        let after = args.get("after_n").and_then(Value::as_u64).unwrap_or(0);
         let events: Vec<Value> = log
             .committed()
             .iter()
             .enumerate()
+            .filter(|(n, _)| *n as u64 + 1 > after)
             .map(|(n, tx)| json!({"n": n + 1, "event": {"event": "tx_committed", "tx": tx, "label": "l", "actor": "system"}}))
             .collect();
-        Outcome::text(&json!({"latest": events.len(), "events": events, "note": "the log"}).to_string())
+        Outcome::text(&json!({"latest": log.committed().len(), "events": events, "note": "the log"}).to_string())
     });
     // The transaction tools change the fake session only when they succeed, so a test that replaces one with a refusal
     // leaves the transaction open, like the executor does.

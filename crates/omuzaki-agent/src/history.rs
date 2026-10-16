@@ -40,11 +40,26 @@ impl Worker {
     /// The log's events, or `None` if it cannot be read. Everything others changed that was not seen before is kept for
     /// the model.
     fn read_log(&mut self) -> Option<Vec<Value>> {
-        let reply = self.call_after_stop("history_log").filter(|reply| !reply.is_error)?;
-        let log: Value = serde_json::from_str(&plain_text(&reply.blocks)).ok()?;
-        let events = log.get("events")?.as_array()?.clone();
+        let (events, _) = self.read_log_after(self.log_seen)?;
         self.keep_changes_of_others(&events);
         Some(events)
+    }
+
+    /// The events numbered above `after`, and the log's newest number.
+    fn read_log_after(&self, after: u64) -> Option<(Vec<Value>, u64)> {
+        let args = serde_json::json!({ "after_n": after }).as_object().cloned();
+        let reply = self.call_after_stop("history_log", args).filter(|reply| !reply.is_error)?;
+        let log: Value = serde_json::from_str(&plain_text(&reply.blocks)).ok()?;
+        let latest = log.get("latest").and_then(Value::as_u64).unwrap_or(0);
+        Some((log.get("events")?.as_array()?.clone(), latest))
+    }
+
+    /// Moves the cursor to the log's head. Called when an answer starts, after the message's context has told the model
+    /// what others changed, so a later Stop lists only what happened since. Reads no events.
+    pub(crate) fn sync_log_head(&mut self) {
+        if let Some((_, latest)) = self.read_log_after(u64::MAX) {
+            self.log_seen = self.log_seen.max(latest);
+        }
     }
 
     fn keep_changes_of_others(&mut self, events: &[Value]) {

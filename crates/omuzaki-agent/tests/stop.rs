@@ -893,15 +893,17 @@ fn lagging_log(sessions: &Arc<FakeSessions>, visible: &Arc<std::sync::atomic::At
     let log = Arc::clone(sessions);
     let visible = Arc::clone(visible);
     server.add(tool("history_log", "history.log", "builtin", true), move |_, _| {
-        let mut events = vec![serde_json::json!({"n": 1, "event": {"event": "op_applied",
-            "record": {"op": "hair.set_colour", "actor": {"kind": "person", "name": "Sam"}}}})];
+        let mut events = Vec::new();
         if visible.load(std::sync::atomic::Ordering::SeqCst) {
+            events.push(serde_json::json!({"n": 20, "event": {"event": "op_applied",
+                "record": {"op": "hair.set_colour", "actor": {"kind": "person", "name": "Sam"}}}}));
             for (n, tx) in log.committed().iter().enumerate() {
-                events.push(serde_json::json!({"n": n + 2, "event": {"event": "tx_committed", "tx": tx, "label": "l",
+                events.push(serde_json::json!({"n": 30 + n, "event": {"event": "tx_committed", "tx": tx, "label": "l",
                     "actor": {"kind": "agent", "id": "a"}}}));
             }
         }
-        Outcome::text(&serde_json::json!({"latest": events.len(), "events": events}).to_string())
+        let latest = events.iter().filter_map(|e| e["n"].as_u64()).max().unwrap_or(0);
+        Outcome::text(&serde_json::json!({"latest": latest, "events": events}).to_string())
     });
     server
 }
@@ -979,4 +981,46 @@ fn a_stop_during_the_recovery_commit_keeps_the_rationale_of_the_answer_that_made
         .collect();
     assert_eq!(steps.len(), 1, "{steps:?}");
     assert!(steps[0].contains("RATIONALE-ONE"), "{steps:?}");
+}
+
+#[test]
+fn a_stop_lists_only_the_changes_made_after_the_answer_began_not_older_ones() {
+    let others: Arc<std::sync::Mutex<Vec<serde_json::Value>>> = Arc::default();
+    let change = |n: u64, op: &str| {
+        serde_json::json!({"n": n, "event": {"event": "op_applied",
+            "record": {"op": op, "actor": {"kind": "person", "name": "Sam"}}}})
+    };
+    others.lock().unwrap().push(change(1, "old.change"));
+    let shared = Arc::clone(&others);
+    let rig = Rig::with(
+        script(vec![call_turn("", &[("c1", "face_set_profile", "{}")]), long_text(20), say_turn("fine")]),
+        RigOptions { hold_after: Some(FIRST_TURN_EVENTS + 2), ..RigOptions::default() },
+        move |sessions| {
+            let server = standard_server(sessions);
+            let log = Arc::clone(sessions);
+            server.add(tool("history_log", "history.log", "builtin", true), move |args, _| {
+                let after = args.get("after_n").and_then(serde_json::Value::as_u64).unwrap_or(0);
+                let mut events = shared.lock().unwrap().clone();
+                for (i, tx) in log.committed().iter().enumerate() {
+                    events.push(serde_json::json!({"n": 100 + i, "event": {"event": "tx_committed", "tx": tx,
+                        "label": "l", "actor": {"kind": "agent", "id": "a"}}}));
+                }
+                let latest = events.iter().filter_map(|e| e["n"].as_u64()).max().unwrap_or(0);
+                events.retain(|e| e["n"].as_u64().unwrap_or(0) > after);
+                Outcome::text(&serde_json::json!({"latest": latest, "events": events}).to_string())
+            });
+            server
+        },
+    );
+    rig.sessions.set_stop(StopBehaviour::Pending { close_after: 0.0 }, 0.0);
+    rig.host.send(UserMessage::new("go")).unwrap();
+    Rig::wait_for("the edit", || rig.server.called("face_set_profile") == 1);
+    others.lock().unwrap().push(change(2, "new.change"));
+    rig.host.stop();
+    rig.until_done(0.1);
+    rig.gate.open();
+    rig.say("again", 0.0);
+    let context = request_text(rig.llm.requests().last().unwrap());
+    assert!(context.contains("new.change"), "{context}");
+    assert!(!context.contains("old.change"), "older changes were already told: {context}");
 }

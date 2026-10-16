@@ -85,6 +85,7 @@ impl Worker {
         self.plan.clear();
         self.ensure_tools()?;
         self.admit(msg);
+        self.sync_log_head();
         loop {
             self.gate(run)?;
             if !run.final_turn
