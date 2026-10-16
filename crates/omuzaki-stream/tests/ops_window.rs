@@ -146,7 +146,8 @@ fn always_on_top_is_asked_of_a_host_that_can_and_answered_false_by_one_that_cann
     assert_eq!(opened["always_on_top"], true);
     assert!(host.opens.lock().unwrap()[0].1.always_on_top);
 
-    let flat = Arc::new(FakeHost { caps: WindowCaps::new(true, false), ..Arc::try_unwrap(FakeHost::new(true)).ok().unwrap() });
+    let flat =
+        Arc::new(FakeHost { caps: WindowCaps::new(true, false), ..Arc::try_unwrap(FakeHost::new(true)).ok().unwrap() });
     let opened = answer(NAMES[0], json!({ "always_on_top": true }), &services(&flat, &palette));
     assert_eq!(opened["always_on_top"], false, "the host said it cannot, so it is not asked");
     assert!(!flat.opens.lock().unwrap()[0].1.always_on_top);
@@ -160,7 +161,11 @@ fn status_says_when_the_window_is_minimised() {
     let open = host.state();
     *host.state.lock().unwrap() = open.with_minimised(true);
     assert_eq!(answer(NAMES[2], json!({}), &services)["minimised"], true);
-    assert_eq!(WindowState::Closed.with_minimised(true), WindowState::Closed, "a closed window has nothing to minimise");
+    assert_eq!(
+        WindowState::Closed.with_minimised(true),
+        WindowState::Closed,
+        "a closed window has nothing to minimise"
+    );
 }
 
 #[test]

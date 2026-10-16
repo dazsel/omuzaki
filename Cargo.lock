@@ -3636,6 +3636,7 @@ dependencies = [
  "omuzaki-store",
  "omuzaki-store-api",
  "omuzaki-stream",
+ "omuzaki-stream-api",
  "schemars",
  "serde",
  "serde_json",
