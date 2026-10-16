@@ -626,11 +626,92 @@ pub struct BangsGen {
     pub wisps: Vec<Wisp>,
     /// How far the whole fringe sweeps toward the character's right, degrees.
     pub sweep_deg: f64,
+    /// The radius that turns a tip height into the polar angle the lock ends at (`acos(height / radius)`), metres.
+    /// `None` uses the head's own radius straight up, so a style keeps its shape when the head is scaled; a value pins
+    /// it (the prototype used one fixed radius for its one head).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tip_radius: Option<f64>,
 }
 
 impl Default for BangsGen {
     fn default() -> Self {
-        Self { layers: vec![BangLayer::default()], wisps: Vec::new(), sweep_deg: 7.0 }
+        Self { layers: vec![BangLayer::default()], wisps: Vec::new(), sweep_deg: 7.0, tip_radius: None }
+    }
+}
+
+/// The ranges a fringe's values may take ([`BangsGen`]'s `Validate`). The generator clamps anything that reaches it
+/// unchecked; these are what a stored fringe may hold, and what `hair.bangs.*` refuses outside of.
+pub mod bangs_limits {
+    /// Layers in a fringe.
+    pub const LAYERS: (usize, usize) = (1, 6);
+    /// Clumps in a layer.
+    pub const CLUMPS: (u8, u8) = (1, 30);
+    /// Tip heights listed per layer (one per clump at most).
+    pub const TIP_HEIGHTS: (usize, usize) = (1, 30);
+    /// Wisps in a fringe.
+    pub const WISPS: (usize, usize) = (0, 8);
+    /// A tip height, head-local, either way, metres.
+    pub const HEIGHT: f64 = 0.5;
+    /// The sweep, either way, degrees.
+    pub const SWEEP_DEG: f64 = 60.0;
+    /// The tip hook, either way, degrees.
+    pub const HOOK_DEG: f64 = 45.0;
+    /// A layer's fan half-angle, degrees.
+    pub const SPREAD_DEG: (f64, f64) = (5.0, 90.0);
+    /// A layer's shade.
+    pub const SHADE: (f64, f64) = (0.5, 1.0);
+    /// A clump's width at its widest, metres.
+    pub const WIDTH: (f64, f64) = (0.002, 0.2);
+    /// A layer's root and tip distances from the skull, metres.
+    pub const OFFSET: (f64, f64) = (0.0, 0.2);
+    /// A wisp's width, metres.
+    pub const WISP_WIDTH: (f64, f64) = (0.002, 0.1);
+    /// A wisp's angle from the front, either way, degrees.
+    pub const WISP_PHI_DEG: f64 = 90.0;
+    /// The radius that turns a tip height into an angle ([`BangsGen::tip_radius`](super::BangsGen::tip_radius)), metres.
+    pub const TIP_RADIUS: (f64, f64) = (0.05, 0.5);
+}
+
+impl Validate for BangsGen {
+    fn check(&self, c: &mut Check) {
+        use bangs_limits as lim;
+        let (lo, hi) = lim::LAYERS;
+        if !(lo..=hi).contains(&self.layers.len()) {
+            c.fail("layers", format!("{} layers is out of range: use {lo} to {hi}", self.layers.len()));
+        }
+        for (i, l) in self.layers.iter().enumerate() {
+            let at = |name: &str| format!("layers/{i}/{name}");
+            count(&at("count"), c, u32::from(l.count), u32::from(lim::CLUMPS.0), u32::from(lim::CLUMPS.1));
+            let (lo, hi) = lim::TIP_HEIGHTS;
+            if !(lo..=hi).contains(&l.tip_heights.len()) {
+                c.fail(
+                    &at("tip_heights"),
+                    format!("{} heights is out of range: use {lo} to {hi}", l.tip_heights.len()),
+                );
+            }
+            for (k, h) in l.tip_heights.iter().enumerate() {
+                c.range(&format!("{}/{k}", at("tip_heights")), *h, -lim::HEIGHT, lim::HEIGHT);
+            }
+            c.range(&at("spread_deg"), l.spread_deg, lim::SPREAD_DEG.0, lim::SPREAD_DEG.1);
+            c.range(&at("width"), l.width, lim::WIDTH.0, lim::WIDTH.1);
+            c.range(&at("hook_deg"), l.hook_deg, -lim::HOOK_DEG, lim::HOOK_DEG);
+            c.range(&at("root_offset"), l.root_offset, lim::OFFSET.0, lim::OFFSET.1);
+            c.range(&at("tip_offset"), l.tip_offset, lim::OFFSET.0, lim::OFFSET.1);
+            c.range(&at("shade"), l.shade, lim::SHADE.0, lim::SHADE.1);
+        }
+        let (lo, hi) = lim::WISPS;
+        if !(lo..=hi).contains(&self.wisps.len()) {
+            c.fail("wisps", format!("{} wisps is out of range: use {lo} to {hi}", self.wisps.len()));
+        }
+        for (i, w) in self.wisps.iter().enumerate() {
+            c.range(&format!("wisps/{i}/phi_deg"), w.phi_deg, -lim::WISP_PHI_DEG, lim::WISP_PHI_DEG);
+            c.range(&format!("wisps/{i}/tip_height"), w.tip_height, -lim::HEIGHT, lim::HEIGHT);
+            c.range(&format!("wisps/{i}/width"), w.width, lim::WISP_WIDTH.0, lim::WISP_WIDTH.1);
+        }
+        c.range("sweep_deg", self.sweep_deg, -lim::SWEEP_DEG, lim::SWEEP_DEG);
+        if let Some(r) = self.tip_radius {
+            c.range("tip_radius", r, lim::TIP_RADIUS.0, lim::TIP_RADIUS.1);
+        }
     }
 }
 
@@ -1261,19 +1342,7 @@ impl Validate for HairGroup {
                 c.nested("generator/width", &g.width);
                 c.nested("generator/thickness", &g.thickness);
             }
-            Generator::Bangs(g) => {
-                if g.layers.is_empty() {
-                    c.fail("generator/layers", "needs at least one layer");
-                }
-                for (i, l) in g.layers.iter().enumerate() {
-                    count(&format!("generator/layers/{i}/count"), c, u32::from(l.count), 1, 30);
-                    c.range(&format!("generator/layers/{i}/spread_deg"), l.spread_deg, 5.0, 90.0);
-                    c.range(&format!("generator/layers/{i}/shade"), l.shade, 0.5, 1.0);
-                    if l.tip_heights.is_empty() {
-                        c.fail(&format!("generator/layers/{i}/tip_heights"), "needs at least one height");
-                    }
-                }
-            }
+            Generator::Bangs(g) => c.nested("generator", g),
             Generator::Tail(g) => {
                 count("generator/count", c, u32::from(g.count), 1, 30);
                 c.range("generator/length", g.length, 0.05, 1.5);

@@ -32,6 +32,7 @@ use omuzaki_face_api::{FaceLayerId, Palette, narrow};
 use omuzaki_render_api::{AlphaMode, Outline};
 
 use super::compile::{self, CompiledEntry, Dispatch, GroupGenerator, GroupGeometry, draws_tubes, enabled};
+use super::r#gen::bangs;
 use super::tube::{CAP_VERTICES, OutwardFrame, RING, TubeError, TubeLook, TubeMesh, polar_angles, vertex_colour};
 
 /// Where along the torso the body's vertical axis is read, from hips (0) to neck base (1): the upper back, where long
@@ -96,6 +97,7 @@ pub fn build_with(
     apply_streaks(params, ctx.palette, &mut entries).map_err(|e| ctx.fail(e.to_string()))?;
 
     let frame = OutwardFrame { head: head.centre(), body_axis: body_axis(ctx, head.centre()) };
+    clear_fringes(params, head.as_ref(), &frame, &mut entries).map_err(|e| ctx.fail(e))?;
     let mut warnings = Vec::new();
     let (stat, dynamic) = mesh_groups(&entries, &frame, &mut warnings).map_err(|e| ctx.fail(e.to_string()))?;
 
@@ -126,6 +128,27 @@ pub fn build_with(
         out.meshes.push(part_mesh(true, geometry));
     }
     Ok(out)
+}
+
+/// Lifts every bangs group's locks off the head, measured in `frame`, the frame the tubes are drawn in. This runs here,
+/// not in the generator, because the frame reads the torso as well as the head, and a lock cleared in the head's own
+/// frame can still enter the skull in the drawn one (below the frame's blend height, 78 mm under the head's centre).
+/// Only bangs groups are touched: the other generators' tubes are as their generators make them.
+fn clear_fringes(
+    params: &HairParams,
+    head: &dyn omuzaki_char_api::HeadSurface,
+    frame: &OutwardFrame,
+    entries: &mut [CompiledEntry],
+) -> Result<(), String> {
+    for entry in entries {
+        if let Some(group) = params.groups.get(&entry.id)
+            && matches!(group.generator, Generator::Bangs(_))
+        {
+            bangs::keep_clear(head, frame, &mut entry.group.clumps)
+                .map_err(|e| format!("the bangs group '{}': {e}", entry.id))?;
+        }
+    }
+    Ok(())
 }
 
 /// The hair's streak and shade pass over every clump of every group, in compile order.
