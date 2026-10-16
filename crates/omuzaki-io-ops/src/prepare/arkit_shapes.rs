@@ -45,8 +45,14 @@ const WIDE: f32 = 0.25;
 /// How much of a lid's closing travel `eyeSquint*` lowers it.
 const SQUINT: f32 = 0.35;
 
-/// How far the cheeks puff out, as a fraction of the eye spacing.
-const PUFF: f32 = 0.1;
+/// How far the cheeks puff out at the middle of the puff, as a fraction of the eye spacing.
+const PUFF: f32 = 0.08;
+
+/// The puff's half-width, as a fraction of the eye spacing.
+const PUFF_WIDTH: f32 = 0.6;
+
+/// How far the puff stays from the mouth's corner and from the eye's lower edge, as a fraction of the eye spacing.
+const PUFF_CLEAR: f32 = 0.15;
 
 /// How much of a lip's height a roll pulls in toward the mouth line (the rest of the roll goes back, by [`ROLL_BACK`]).
 const ROLL: f32 = 0.7;
@@ -263,14 +269,6 @@ fn split(deltas: &Deltas, points: &[Vec<Vec3>], middle: f32) -> (Deltas, Deltas)
 /// `a − b`, vertex by vertex.
 fn subtract(a: &[Vec<Vec3>], b: &[Vec<Vec3>]) -> Vec<Vec<Vec3>> {
     a.iter().zip(b).map(|(a, b)| a.iter().zip(b).map(|(a, b)| *a - *b).collect()).collect()
-}
-
-/// A bump: 1 at the centre of the ellipse with radii `radii` around `centre` (in x and y), falling smoothly to 0 at its
-/// edge.
-fn bump(p: Vec3, centre: Vec3, radii: (f32, f32)) -> f32 {
-    let (dx, dy) = ((p.x - centre.x) / radii.0, (p.y - centre.y) / radii.1);
-    let r2 = dx * dx + dy * dy;
-    if r2 >= 1.0 { 0.0 } else { (1.0 - r2) * (1.0 - r2) }
 }
 
 /// One generated shape: the deltas it moves the face mesh by, and where it came from (for the report).
@@ -496,58 +494,41 @@ fn expressive(scene: &IoScene, m: &Landmarks, points: &[Vec<Vec3>]) -> Vec<Vec<b
     moved
 }
 
-/// `cheekPuff`: each cheek pushed out along its normals, in an ellipse beside the mouth corner and below the eye,
-/// fading out toward the back of the head and as far as an expression moves the skin (the jaw `aa` opens, the lips),
-/// so the face's outline stays one smooth curve: a hard cut at either would leave a corner.
+/// `cheekPuff`: each cheek pushed out along its normals over an ellipse that reaches from below the eye down to the
+/// jaw and from beside the mouth corner round to the side of the head, clear of the lips and the eyes by its
+/// placement. The push falls off with a smoothstep of the distance from the ellipse's centre, so it meets the still
+/// skin at its edge with no slope (C1): the outline stays one curve and the shading has no crease. It fades out toward
+/// the back of the head too.
 fn cheek_puff(scene: &IoScene, m: &Landmarks, points: &[Vec<Vec3>]) -> Option<Shape> {
     let mouth = m.mouth?;
     let s = m.eye_spacing;
-    let share = expressive_share(scene, m, points);
     let normals: Vec<&Vec<Vec3>> = scene.meshes[m.mesh].primitives.iter().map(|p| &p.mesh.normals).collect();
     let mut deltas = Deltas::zero(scene, m.mesh);
-    for (left, eye) in [(true, m.eyes[0]), (false, m.eyes[1])] {
+    for (side, (left, eye)) in [(true, m.eyes[0]), (false, m.eyes[1])].into_iter().enumerate() {
         let sign = if left { 1.0 } else { -1.0 };
-        let x = m.middle + sign * (m.mouth_half_width + 0.45 * s);
-        // A broad, low bulge: from under the eye down past the mouth corner toward the jaw, where `aa`'s share takes
-        // over, so its slopes stay gentle and its edges soft.
-        let centre = Vec3::new(x, mouth.y, mouth.z);
-        let radii = (0.6 * s, 0.75 * (eye.y - mouth.y).abs().max(0.2 * s));
+        // Highest just above the mouth corner; below it the puff tapers over the longer way down to the jaw, so the
+        // underside, turned from the light, stays a gentle slope.
+        let height = eye.y - mouth.y;
+        let centre_y = mouth.y + 0.1 * height;
+        let up = (eye.y - 0.5 * m.eye_size[side].1 - PUFF_CLEAR * s - centre_y).max(0.2 * s);
+        let down = 1.4 * height;
+        let width = PUFF_WIDTH * s;
+        let inner = m.mouth_half_width + PUFF_CLEAR * s;
+        let centre = Vec3::new(m.middle + sign * (inner + width), centre_y, mouth.z);
         for (p, (prim, deltas)) in deltas.positions.iter_mut().enumerate().map(|(p, d)| (p, (&points[p], d))) {
             for (v, (point, delta)) in prim.iter().zip(deltas.iter_mut()).enumerate() {
-                if (point.x - m.middle) * sign < 0.0 {
+                let reach = if point.y >= centre.y { up } else { down };
+                let r = ((point.x - centre.x) / width).hypot((point.y - centre.y) / reach);
+                if r >= 1.0 || (point.x - m.middle) * sign < 0.0 {
                     continue;
                 }
                 let normal = normals[p].get(v).copied().unwrap_or(Vec3::Z);
                 let facing = smoothstep(-0.2, 0.4, normal.z);
-                // Squared, so the puff meets what an expression moves fully with no crease.
-                let free = (1.0 - share[p][v]).powi(2);
-                *delta += normal * (PUFF * s * facing * bump(*point, centre, radii) * free);
+                *delta += normal * (PUFF * s * facing * (1.0 - smoothstep(0.0, 1.0, r)));
             }
         }
     }
     Some(Shape { deltas, source: "the cheeks beside the mouth".into() })
-}
-
-/// How far the preset expressions move each vertex of the face mesh, as a share of each one's largest move: 0 where
-/// none moves it, 1 where one moves it all the way (the lips a mouth shape opens). Smooth wherever the expressions are,
-/// so a shape scaled by it fades into theirs.
-fn expressive_share(scene: &IoScene, m: &Landmarks, points: &[Vec<Vec3>]) -> Vec<Vec<f32>> {
-    let mut share: Vec<Vec<f32>> = points.iter().map(|p| vec![0.0; p.len()]).collect();
-    let presets =
-        scene.avatar.iter().flat_map(|a| &a.expressions).filter(|(n, _)| matches!(n, ExpressionName::Preset(_)));
-    for (_, expression) in presets {
-        let Some(d) = expression_deltas(scene, expression).remove(&m.mesh) else { continue };
-        let most = d.positions.iter().flatten().map(|d| d.length()).fold(0.0, f32::max);
-        if most <= MOVED * m.eye_spacing {
-            continue;
-        }
-        for (shares, deltas) in share.iter_mut().zip(&d.positions) {
-            for (share, delta) in shares.iter_mut().zip(deltas) {
-                *share = share.max(delta.length() / most);
-            }
-        }
-    }
-    share
 }
 
 /// Stretches the upper half of one eye's white up with its lid, which `deltas` lifts, so the wider opening shows white
@@ -782,13 +763,5 @@ mod tests {
         assert_eq!(left_share(0.0, 0.0, 0.1), 0.5);
         assert!((left_share(0.05, 0.0, 0.1) - 0.84375).abs() < 1e-6);
         assert_eq!((left_share(0.2, 0.0, 0.0), left_share(-0.2, 0.0, 0.0), left_share(0.0, 0.0, 0.0)), (1.0, 0.0, 0.5));
-    }
-
-    #[test]
-    fn a_bump_is_one_at_its_centre_and_zero_at_its_edge() {
-        let c = Vec3::ZERO;
-        assert_eq!(bump(c, c, (1.0, 2.0)), 1.0);
-        assert_eq!(bump(Vec3::X, c, (1.0, 2.0)), 0.0);
-        assert_eq!(bump(Vec3::new(0.0, 1.0, 0.0), c, (1.0, 2.0)), 0.5625);
     }
 }

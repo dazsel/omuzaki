@@ -99,26 +99,23 @@ fn a_wide_eye_lifts_the_top_of_its_white_with_the_lid_and_leaves_the_iris() {
 }
 
 #[test]
-fn the_cheek_puff_is_one_smooth_bulge_that_leaves_the_jaw_to_aa() {
+fn the_cheek_puff_is_one_smooth_bulge_clear_of_the_lips_and_eyes() {
     let mut scene = head().scene;
     let m = landmarks(&scene).unwrap();
     generate(&mut scene, &["cheekPuff"]);
-    let (puff, aa) = (target(&scene, "cheekPuff"), target(&scene, "Fcl_MTH_A"));
+    let puff = target(&scene, "cheekPuff");
     let face = face(&scene);
-    let skin = &face.primitives[primitive(&scene, "Skin")];
-    let (points, moves, opens) =
-        (&skin.mesh.positions, &skin.morph_targets[puff].positions, &skin.morph_targets[aa].positions);
+    let skin = primitive(&scene, "Skin");
+    for (p, primitive) in face.primitives.iter().enumerate() {
+        let moved = primitive.morph_targets[puff].positions.iter().any(|d| *d != Vec3::ZERO);
+        assert_eq!(moved, p == skin, "only the skin puffs, not the lips, eyes or brows (primitive {p})");
+    }
+    let skin = &face.primitives[skin];
+    let (points, moves) = (&skin.mesh.positions, &skin.morph_targets[puff].positions);
     let most = moves.iter().map(|d| d.length()).fold(0.0, f32::max);
     assert!(most > 0.05 * m.eye_spacing, "the cheeks puff: {most}");
-    // Where `aa` opens the jaw all the way, the puff has gone.
-    let travel = opens.iter().map(|d| d.length()).fold(0.0, f32::max);
-    for (d, open) in moves.iter().zip(opens) {
-        if open.length() > 0.9 * travel {
-            assert!(d.length() < 0.01 * most, "the open jaw is aa's: {}", d.length());
-        }
-    }
-    // No crease and no corner: along every edge of the skin the puff changes gently. A cut where it meets the jaw
-    // changed it by more than the edge's own length.
+    // No crease and no corner: along every edge of the skin the puff changes gently, and it meets the still skin with
+    // no slope (a cut where it met the jaw changed it by about 1.1 of the edge's length).
     let steepest = skin
         .mesh
         .indices
@@ -131,7 +128,39 @@ fn the_cheek_puff_is_one_smooth_bulge_that_leaves_the_jaw_to_aa() {
             moves[a].distance(moves[b]) / points[a].distance(points[b]).max(1e-9)
         })
         .fold(0.0, f32::max);
-    assert!(steepest < 0.5, "the puff's steepest change along an edge: {steepest}");
+    assert!(steepest < 0.3, "the puff's steepest change along an edge: {steepest}");
+}
+
+/// Each vertex's normal as the surface of the face's primitives gives it, `moved` by `target` (or at rest when `None`):
+/// the area-weighted normals of its triangles, the vertices welded by position across seams and primitives.
+#[allow(clippy::cast_possible_truncation, reason = "a head is metres across, far inside i64 micrometres")]
+fn surface_normals(face: &Mesh, target: Option<usize>) -> Vec<Vec<Vec3>> {
+    let key = |p: Vec3| (p * 1e6).round().to_array().map(|c| c as i64);
+    let placed = |pr: &omuzaki_io_api::Primitive| -> Vec<Vec3> {
+        let deltas = target.map(|t| &pr.morph_targets[t].positions);
+        pr.mesh.positions.iter().enumerate().map(|(v, p)| *p + deltas.map_or(Vec3::ZERO, |d| d[v])).collect()
+    };
+    let mut sums: std::collections::BTreeMap<[i64; 3], Vec3> = std::collections::BTreeMap::new();
+    for pr in &face.primitives {
+        let (rest, at) = (&pr.mesh.positions, placed(pr));
+        for &[a, b, c] in pr.mesh.indices.as_chunks::<3>().0 {
+            let [a, b, c] = [a, b, c].map(|i| i as usize);
+            let n = (at[b] - at[a]).cross(at[c] - at[a]);
+            for v in [a, b, c] {
+                *sums.entry(key(rest[v])).or_default() += n;
+            }
+        }
+    }
+    face.primitives
+        .iter()
+        .map(|pr| {
+            pr.mesh
+                .positions
+                .iter()
+                .map(|p| sums.get(&key(*p)).copied().unwrap_or_default().normalize_or_zero())
+                .collect()
+        })
+        .collect()
 }
 
 #[test]
@@ -153,6 +182,22 @@ fn shapes_made_from_landmarks_shade_as_they_are_shaped() {
             }
         }
         assert!(turned > 10, "{name} turns the normals it moves: {turned}");
+        // The turned normals are the deformed surface's own: wherever the file's normal is the rest surface's, the
+        // normal plus its delta is the moved surface's, within a degree and a half.
+        let (rest, moved) = (surface_normals(face, None), surface_normals(face, Some(t)));
+        let mut checked = 0;
+        for (p, primitive) in face.primitives.iter().enumerate() {
+            let normals = &primitive.morph_targets[t].normals;
+            for (v, n) in primitive.mesh.normals.iter().enumerate() {
+                if normals.is_empty() || n.angle_between(rest[p][v]).to_degrees() > 1.0 {
+                    continue;
+                }
+                let shaded = (*n + normals[v]).angle_between(moved[p][v]).to_degrees();
+                assert!(shaded < 1.5, "{name}: primitive {p} vertex {v} shades {shaded} degrees off its surface");
+                checked += 1;
+            }
+        }
+        assert!(checked > 100, "{name}: the check reached the moved skin: {checked}");
     }
     // A split of a source without normals (the test head's targets have none) gets them the same way.
     let blink = target(&scene, "eyeBlinkLeft");
