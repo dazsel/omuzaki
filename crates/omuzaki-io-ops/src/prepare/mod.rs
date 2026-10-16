@@ -2,4 +2,5 @@
 //! export (spec v3 §27, EX-12).
 
 pub mod arkit;
+pub mod cleanup;
 pub mod humanoid;
