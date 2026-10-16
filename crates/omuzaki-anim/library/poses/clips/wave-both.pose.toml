@@ -1,0 +1,19 @@
+# Key pose "wave-both" for the clips beside it (RG-06). Degrees, Euler XYZ, VRM normalised space; see src/poses/mod.rs.
+id = "wave-both"
+summary = "Both arms raised with the elbows bent and the hands open: a two-handed hello."
+tags = ["clip-key"]
+mirrorable = true
+
+[bones]
+leftUpperArm = [0.0, -20.0, 20.0]
+leftLowerArm = [0.0, 0.0, 85.0]
+leftHand = [0.0, 0.0, -10.0]
+rightUpperArm = [0.0, 20.0, -20.0]
+rightLowerArm = [0.0, 0.0, -85.0]
+rightHand = [0.0, 0.0, 10.0]
+
+[hands.left]
+shape = "open"
+
+[hands.right]
+shape = "open"

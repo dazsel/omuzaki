@@ -9,9 +9,11 @@ mod common;
 
 use common::new_project;
 use omuzaki_cli::cli::try_parse_from;
-use omuzaki_cli::session::open_runner;
+use omuzaki_cli::session::open_executor_with;
+use omuzaki_mcp::Connections;
 use omuzaki_ops_api::{
-    Actor, ErrorCode, FsMode, Grants, Mode, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Request, Runner, Scope, Undo,
+    Actor, Budget, ErrorCode, FsMode, Grants, Limits, Mode, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Request, Runner,
+    Scope, SessionSpec, Sessions, Transport, Undo,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -43,9 +45,24 @@ impl Op for ProbeRead {
 
 omuzaki_ops_api::register_op!(ProbeRead);
 
-fn runner(project: &str) -> Result<std::sync::Arc<dyn Runner>, OpError> {
+fn runner(project: &str) -> Result<std::sync::Arc<omuzaki_ops::Executor>, OpError> {
     let cli = try_parse_from(["omuzaki", "--project", project, "ops"]).expect("valid command line");
-    open_runner(&cli)
+    let executor = open_executor_with(&cli, &Connections::default())?;
+    // The probe is an agent, and agents need a session.
+    let session = SessionSpec {
+        transport: Transport::Stdio,
+        client: "probe".to_owned(),
+        model: None,
+        on_behalf_of: Actor::Person { name: "tester".to_owned() },
+        grants: Grants::person(),
+        budget: Budget::default(),
+        limits: Limits::default(),
+        parent: None,
+        role: None,
+        fence: Vec::new(),
+    };
+    executor.open(session)?;
+    Ok(executor)
 }
 
 fn probe(runner: &dyn Runner, path: &str) -> Result<serde_json::Value, OpError> {
@@ -53,7 +70,7 @@ fn probe(runner: &dyn Runner, path: &str) -> Result<serde_json::Value, OpError> 
         op: "test.probe_read".to_owned(),
         args: json!({ "path": path }),
         mode: Mode::DryRun,
-        actor: Actor::Agent { id: "probe".to_owned(), model: None },
+        actor: Actor::Agent { id: "probe#1".to_owned(), model: None },
         grants: Grants::agent_default(),
         cause: None,
         tx: None,
