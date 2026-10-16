@@ -1,6 +1,6 @@
 [package]
 name = "omuzaki-audio-mock"
-description = "The reference offline audio engine and a MockEngine service for op tests, plus the `null` node kind (spec v3 §39 rule 6; ADR 0018)."
+description = "The reference offline audio engine, a MockEngine service, the scripted FakeBackend, seeded test signals and the node conformance suite, plus the `null` node kind (spec v3 §39 rule 6; ADR 0018)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -17,5 +17,5 @@ workspace = true
 
 [package.metadata.omuzaki]
 kind = "Mock"
-summary = "the single-threaded reference `OfflineEngine` (`OfflineRender`, written to be obviously correct), the `MockEngine` service (`AudioEngine` over fixed devices, real tap and feed rings driven by `advance`), and the `mock.null` node kind"
+summary = "the single-threaded reference `OfflineEngine` (`OfflineRender`, written to be obviously correct), the `MockEngine` service (`AudioEngine` over fixed devices, real tap and feed rings driven by `advance`), the scripted `FakeBackend`, the seeded `signals`, the `conformance` suite for node kinds, and the `mock.null` node kind"
 registers = true
