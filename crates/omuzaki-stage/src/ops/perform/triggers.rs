@@ -86,8 +86,9 @@ pub struct Bind {
     /// `toggle` (each press shows or hides it) or `hold` (shows while the key is down). Default `toggle`.
     #[serde(default = "default_mode")]
     pub mode: TriggerMode,
-    /// Put back a binding whose expression is gone from the character: kept, and listed as missing, instead of refused.
-    /// The stored undo of an edit sets it, so undoing works while the expression is missing. Default `false`.
+    /// Used by undo; callers leave it unset. Puts back a binding whose expression is gone from the character: kept, and
+    /// listed as missing, instead of refused. The stored undo and redo of an edit set it, so undoing works while the
+    /// expression is missing. Default `false`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub restore: bool,
 }
