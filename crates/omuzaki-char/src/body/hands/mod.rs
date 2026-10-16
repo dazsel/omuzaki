@@ -71,10 +71,12 @@ const TIP_RAMP: (f64, f64) = (0.030, 0.050);
 
 /// The thumb's rings, from root to tip (dense at both ends so the root blends in and the tip rounds), and their size.
 const THUMB_T: [f64; 11] = [0.0, 0.1, 0.22, 0.36, 0.5, 0.64, 0.76, 0.86, 0.93, 0.975, 1.0];
-pub(super) const THUMB_SEGMENTS: usize = 16;
+pub(super) const THUMB_SEGMENTS: usize = 18;
 /// The thumb curls towards the palm by `BEND_N * t^2` and sideways by `BEND_T * t`.
 const THUMB_BEND: (f64, f64) = (0.003, -0.002);
 const THUMB_RADIUS: f64 = 0.0075;
+/// How much of the palm's half-width and half-thickness the thumb's open root ring may use.
+const ROOT_ROOM: f64 = 0.9;
 const THUMB_TAPER: f64 = 0.25;
 /// Where along the thumb its tip cap begins (a quarter ellipse), and how much narrower it is across than through.
 const THUMB_CAP: f64 = 0.80;
@@ -331,20 +333,26 @@ fn thumb(hand: &Hand, block: &Block, splay_deg: f64) -> Result<(Grid, Vec<DVec3>
     let length = t.length * hand.thumb_length;
     // Centres in the hand's own numbers (`x` along, `y` thumb side, `z` palm), then in the world.
     let bend = (THUMB_BEND.0 * s, THUMB_BEND.1 * s);
-    // A stem ring runs the root back into the palm, so the thumb stays attached where the layout's joint lies outside a
-    // narrow palm: back along the thumb's line by one root radius, and no further from the axis than half the palm's
-    // half-width there.
+    let mut centres: Vec<DVec3> = THUMB_T
+        .iter()
+        .map(|&k| hand.world(root + direction * (length * k) + DVec3::new(0.0, bend.1 * k, bend.0 * k * k)))
+        .collect();
+    // The root ring is open and the layout's joint can lie outside a narrow palm, so the ring is placed to lie wholly
+    // inside the palm's section there: it shrinks until it fits, and its centre moves towards the axis as far as the
+    // room left by its radius allows. (A ball round the centre holds the whole ring, whatever way it is turned.)
     let u = (root.x / hand.palm_length - hand.table.shift) / s;
-    let reach = 0.5 * block.section(u.clamp(block.stations[0], LAST_STATION)).0 * s * hand.palm_width;
-    let mut behind = root - direction * (THUMB_RADIUS * s);
-    behind.y = behind.y.clamp(-reach, reach);
-    let stem = hand.world(behind);
-    let mut centres = vec![stem];
-    centres.extend(
-        THUMB_T
-            .iter()
-            .map(|&k| hand.world(root + direction * (length * k) + DVec3::new(0.0, bend.1 * k, bend.0 * k * k))),
+    let (half_width, half_thick) = block.section(u.clamp(block.stations[0], LAST_STATION));
+    let room = DVec3::new(
+        0.0,
+        ROOT_ROOM * half_width * s * hand.palm_width,
+        ROOT_ROOM * half_thick * s * PALM_FLATTEN.min(BACK_PLUMP),
     );
+    let reach = THUMB_RADIUS * s;
+    let root_fit = (room.y.min(room.z) / reach).min(1.0);
+    let spare = |room: f64| (room - root_fit * reach).max(0.0);
+    let seat =
+        DVec3::new(root.x, root.y.clamp(-spare(room.y), spare(room.y)), root.z.clamp(-spare(room.z), spare(room.z)));
+    centres[0] = hand.world(seat);
     let radii = |k: f64| {
         let base = THUMB_RADIUS * (1.0 - THUMB_TAPER * k) * s;
         let cap =
@@ -354,16 +362,18 @@ fn thumb(hand: &Hand, block: &Block, splay_deg: f64) -> Result<(Grid, Vec<DVec3>
     let last = centres.len() - 1;
     let grid = Grid::from_fn(centres.len(), THUMB_SEGMENTS + 1, |k, j| {
         let tangent = match k {
-            0 => centres[1] - centres[0],
-            // The root ring keeps the thumb's own direction, whatever way the stem comes in.
-            1 => centres[2] - centres[1],
+            // The first rings keep the thumb's own direction, wherever the root ring was seated.
+            0 => centres[1] - hand.world(root),
+            1 => centres[2] - hand.world(root),
             _ if k == last => centres[k] - centres[k - 1],
             _ => centres[k + 1] - centres[k - 1],
         }
         .normalize_or_zero();
         let normal = (hand.frame.palm - tangent * hand.frame.palm.dot(tangent)).normalize_or_zero();
         let binormal = tangent.cross(normal).normalize_or_zero();
-        let (ra, rb) = radii(THUMB_T[k.saturating_sub(1)]);
+        let (ra, rb) = radii(THUMB_T[k]);
+        let fit = if k == 0 { root_fit } else { 1.0 };
+        let (ra, rb) = (ra * fit, rb * fit);
         let (sn, c) = (fraction(j, THUMB_SEGMENTS) * TAU).sin_cos();
         centres[k] + normal * (c * ra) + binormal * (sn * rb)
     })?;
@@ -393,10 +403,8 @@ fn left_hand(hand: &Hand, style: &Style) -> Result<(MeshBuilder, Block), KitErro
     )?;
     let (grid, centres) = thumb(hand, &block, style.splay_deg)?;
     let inside = |i: usize, _j: usize| centres[i];
-    let colour = |i: usize, _j: usize, _p: DVec3| {
-        tone(sstep(THUMB_TIP_RAMP.0, THUMB_TIP_RAMP.1, fraction(i.saturating_sub(1), 10)))
-    };
-    let skin = |_p: DVec3, i: usize, _j: usize| thumb_skin(THUMB_T[i.saturating_sub(1)]);
+    let colour = |i: usize, _j: usize, _p: DVec3| tone(sstep(THUMB_TIP_RAMP.0, THUMB_TIP_RAMP.1, fraction(i, 10)));
+    let skin = |_p: DVec3, i: usize, _j: usize| thumb_skin(THUMB_T[i]);
     builder.add_grid(
         &grid,
         &GridOptions {
