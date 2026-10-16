@@ -1,12 +1,17 @@
 //! Underlay tracing (CB-25): pixel placement, alignment, opacity, composition under the Base layer, and the request type.
 //! Synthetic sheets only: nothing here reads an asset.
 
+// Integration-test helpers may panic: a panic is a clear test failure.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use std::f64::consts::FRAC_PI_2;
 
 use omuzaki_char_api::{CharId, FaceOverlay, face_texture_desc};
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::{Mat4, UVec2, Vec2, Vec3};
-use omuzaki_face::underlay::{Registration, Sheet, Underlay, UnderlayAlign, UnderlayLayer, UnderlaySet, UnderlayView};
+use omuzaki_face::underlay::{
+    Geometry, Registration, Sheet, Underlay, UnderlayAlign, UnderlayLayer, UnderlaySet, UnderlayView,
+};
 use omuzaki_face_api::{FaceLayerId, FaceLayerSpec, FaceProjection, FaceRect};
 use omuzaki_render_api::{
     AlphaEncoding, Background, Camera, Instance, Material, PixelRect, Projection, Quality, Renderer, RendererExt,
@@ -23,6 +28,11 @@ fn projection() -> FaceProjection {
 }
 
 const PX_PER_M: f32 = 20.0;
+
+/// The 8 x 8 Base layer of the 0.4 m window at 20 px/m.
+fn geometry() -> Geometry {
+    Geometry::new(&projection(), Vec3::ZERO, PX_PER_M).unwrap()
+}
 const LAYER: u32 = 8;
 const IDENTITY: UnderlayAlign = UnderlayAlign::IDENTITY;
 
@@ -59,7 +69,7 @@ fn layer_pixel(layer: &UnderlayLayer, x: u32, y: u32) -> [u8; 4] {
 fn identity_at_the_sheets_scale_copies_the_face_rect_pixel_for_pixel() {
     let pixels = coded_sheet(16);
     let sheet = Sheet::new(UVec2::splat(16), &pixels).unwrap();
-    let layer = Underlay::new(&sheet, face(4, 4, LAYER), &projection(), Vec3::ZERO, PX_PER_M, &IDENTITY).unwrap();
+    let layer = Underlay::new(&sheet, face(4, 4, LAYER), &geometry(), &IDENTITY).unwrap();
     assert_eq!(layer.texture_desc().size, UVec2::splat(LAYER));
     // The corners are the first and last pixels of the loop; both must land on the face rectangle's corners.
     for y in 0..LAYER {
@@ -82,7 +92,7 @@ fn a_sheet_twice_the_layer_size_gives_each_block_its_own_colour() {
     }
     let sheet = Sheet::new(UVec2::splat(16), &pixels).unwrap();
     let whole = PixelRect { x: 0, y: 0, width: 16, height: 16 };
-    let layer = Underlay::new(&sheet, whole, &projection(), Vec3::ZERO, PX_PER_M, &IDENTITY).unwrap();
+    let layer = Underlay::new(&sheet, whole, &geometry(), &IDENTITY).unwrap();
     for y in 0..LAYER {
         for x in 0..LAYER {
             assert_eq!(layer_pixel(&layer, x, y), [low_byte(x * 30), low_byte(y * 30), 40, 255]);
@@ -96,7 +106,7 @@ fn a_whole_pixel_offset_moves_the_picture_right() {
     let pixels = coded_sheet(16);
     let sheet = Sheet::new(UVec2::splat(16), &pixels).unwrap();
     let align = UnderlayAlign { offset: [1.0, 0.0], ..IDENTITY };
-    let layer = Underlay::new(&sheet, face(4, 4, LAYER), &projection(), Vec3::ZERO, PX_PER_M, &align).unwrap();
+    let layer = Underlay::new(&sheet, face(4, 4, LAYER), &geometry(), &align).unwrap();
     for y in 0..LAYER {
         for x in 0..LAYER - 1 {
             assert_eq!(layer_pixel(&layer, x + 1, y), texel_at(&pixels, 16, 4 + x, 4 + y), "column {x} moved right");
@@ -125,7 +135,7 @@ fn scale_two_doubles_the_picture_about_the_face_centre() {
     let pixels = ramp_sheet(32);
     let sheet = Sheet::new(UVec2::splat(32), &pixels).unwrap();
     let align = UnderlayAlign { scale: 2.0, ..IDENTITY };
-    let layer = Underlay::new(&sheet, face(12, 12, 16), &projection(), Vec3::ZERO, PX_PER_M, &align).unwrap();
+    let layer = Underlay::new(&sheet, face(12, 12, 16), &geometry(), &align).unwrap();
     for y in 0..LAYER {
         for x in 0..LAYER {
             assert_eq!(layer_pixel(&layer, x, y), [low_byte(8 * (16 + x)), 0, 0, 255], "pixel ({x}, {y})");
@@ -140,7 +150,7 @@ fn a_quarter_turn_moves_the_picture_from_plus_x_to_plus_y() {
     let pixels = ramp_sheet(32);
     let sheet = Sheet::new(UVec2::splat(32), &pixels).unwrap();
     let align = UnderlayAlign { rotation: FRAC_PI_2, ..IDENTITY };
-    let layer = Underlay::new(&sheet, face(12, 12, 16), &projection(), Vec3::ZERO, PX_PER_M, &align).unwrap();
+    let layer = Underlay::new(&sheet, face(12, 12, 16), &geometry(), &align).unwrap();
     for y in 0..LAYER {
         for x in 0..LAYER {
             assert_eq!(layer_pixel(&layer, x, y), [low_byte(100 + 16 * y), 0, 0, 255], "pixel ({x}, {y})");
@@ -162,7 +172,7 @@ fn bilinear_sampling_is_premultiplied_so_an_edge_does_not_darken() {
     }
     let sheet = Sheet::new(UVec2::splat(8), &pixels).unwrap();
     let align = UnderlayAlign { offset: [0.5, 0.0], ..IDENTITY };
-    let layer = Underlay::new(&sheet, face(0, 0, 8), &projection(), Vec3::ZERO, PX_PER_M, &align).unwrap();
+    let layer = Underlay::new(&sheet, face(0, 0, 8), &geometry(), &align).unwrap();
     for y in 0..LAYER {
         assert_eq!(layer_pixel(&layer, 1, y), [128, 128, 128, 128], "row {y}");
     }
@@ -172,16 +182,20 @@ fn bilinear_sampling_is_premultiplied_so_an_edge_does_not_darken() {
 fn px_per_m_is_checked_before_the_layer_is_sized_or_allocated() {
     let pixels = coded_sheet(16);
     let sheet = Sheet::new(UVec2::splat(16), &pixels).unwrap();
-    let build =
-        |px_per_m: f32| Underlay::new(&sheet, face(4, 4, LAYER), &projection(), Vec3::ZERO, px_per_m, &IDENTITY);
+    let build = |px_per_m: f32| {
+        let geometry = Geometry::new(&projection(), Vec3::ZERO, px_per_m)?;
+        Underlay::new(&sheet, face(4, 4, LAYER), &geometry, &IDENTITY)
+    };
     // NaN, zero and negative would each round to a 1x1 layer without complaint, so each is refused by name.
     for px_per_m in [f32::NAN, f32::INFINITY, 0.0, -20.0] {
         let err = build(px_per_m).unwrap_err();
+        assert_eq!(err.field, "px_per_m", "{px_per_m}: {err}");
         assert!(err.to_string().contains("px_per_m"), "{px_per_m}: {err}");
     }
     // 1e6 px/m is a 400 000 px side: refused against the renderer's limit, before any buffer exists.
-    let err = build(1.0e6).unwrap_err().to_string();
-    assert!(err.contains("px_per_m") && err.contains("4096"), "{err}");
+    let err = build(1.0e6).unwrap_err();
+    assert_eq!(err.field, "px_per_m");
+    assert!(err.message.contains("px_per_m") && err.message.contains("4096"), "{err}");
 }
 
 #[test]
@@ -190,12 +204,12 @@ fn partly_transparent_pixels_are_premultiplied_and_the_outside_is_clear() -> Res
     let pixels = [200_u8, 100, 50, 128].repeat(16 * 16);
     let sheet = Sheet::new(UVec2::splat(16), &pixels)?;
     let whole = PixelRect { x: 0, y: 0, width: 16, height: 16 };
-    let layer = Underlay::new(&sheet, whole, &projection(), Vec3::ZERO, PX_PER_M, &IDENTITY)?;
+    let layer = Underlay::new(&sheet, whole, &geometry(), &IDENTITY)?;
     assert_eq!(layer_pixel(&layer, 3, 3), [100, 50, 25, 128]);
 
     // Sampled a whole sheet away, every texel is outside the sheet: the layer is transparent, not a repeated edge.
     let far = UnderlayAlign { offset: [400.0, 0.0], ..IDENTITY };
-    let clear = Underlay::new(&sheet, whole, &projection(), Vec3::ZERO, PX_PER_M, &far)?;
+    let clear = Underlay::new(&sheet, whole, &geometry(), &far)?;
     assert!(clear.rgba().iter().all(|&b| b == 0));
     Ok(())
 }
@@ -230,7 +244,7 @@ proptest! {
 fn opacity_is_the_overlay_strength_and_changes_no_pixels() -> Result<(), Box<dyn std::error::Error>> {
     let pixels = coded_sheet(16);
     let sheet = Sheet::new(UVec2::splat(16), &pixels)?;
-    let mut layer = Underlay::new(&sheet, face(4, 4, LAYER), &projection(), Vec3::ZERO, PX_PER_M, &IDENTITY)?;
+    let mut layer = Underlay::new(&sheet, face(4, 4, LAYER), &geometry(), &IDENTITY)?;
     let before = layer.rgba().to_vec();
     let mut renderer = MockRenderer::new();
     let texture = renderer.create_texture(layer.texture_desc(), Some(layer.rgba()))?;
@@ -290,7 +304,7 @@ fn the_underlay_sits_under_the_base_and_hides_at_zero_opacity() -> Result<(), Bo
     let blue = [0_u8, 0, 255, 255].repeat(16 * 16);
     let sheet = Sheet::new(UVec2::splat(16), &blue)?;
     let whole = PixelRect { x: 0, y: 0, width: 16, height: 16 };
-    let mut layer = Underlay::new(&sheet, whole, &projection(), Vec3::ZERO, PX_PER_M, &IDENTITY)?;
+    let mut layer = Underlay::new(&sheet, whole, &geometry(), &IDENTITY)?;
     let clear = vec![0_u8; (LAYER * LAYER * 4) as usize];
     let red = [255_u8, 0, 0, 255].repeat((LAYER * LAYER) as usize);
     let (white, blue_px) = ([255_u8, 255, 255, 255], [0_u8, 0, 255, 255]);
@@ -312,28 +326,27 @@ fn the_underlay_sits_under_the_base_and_hides_at_zero_opacity() -> Result<(), Bo
 fn errors_name_the_field_at_fault() -> Result<(), Box<dyn std::error::Error>> {
     let pixels = coded_sheet(16);
     let short = Sheet::new(UVec2::splat(16), &pixels[..10]).unwrap_err();
+    assert_eq!(short.field, "sheet_rgba");
     assert!(short.to_string().contains("sheet_rgba"), "{short}");
 
     let sheet = Sheet::new(UVec2::splat(16), &pixels)?;
-    let outside = Underlay::new(
-        &sheet,
-        PixelRect { x: 12, y: 0, width: 8, height: 8 },
-        &projection(),
-        Vec3::ZERO,
-        PX_PER_M,
-        &IDENTITY,
-    );
-    assert!(outside.unwrap_err().to_string().contains("sheet_face"));
+    let outside = Underlay::new(&sheet, PixelRect { x: 12, y: 0, width: 8, height: 8 }, &geometry(), &IDENTITY);
+    let outside = outside.unwrap_err();
+    assert_eq!(outside.field, "sheet_face");
+    assert!(outside.to_string().contains("sheet_face"));
 
     let zero_scale = UnderlayAlign { scale: 0.0, ..IDENTITY };
-    let bad_scale = Underlay::new(&sheet, face(0, 0, LAYER), &projection(), Vec3::ZERO, PX_PER_M, &zero_scale);
-    assert!(bad_scale.unwrap_err().to_string().contains("align.scale"));
+    let bad_scale = Underlay::new(&sheet, face(0, 0, LAYER), &geometry(), &zero_scale);
+    let bad_scale = bad_scale.unwrap_err();
+    assert_eq!(bad_scale.field, "align.scale");
+    assert!(bad_scale.to_string().contains("align.scale"));
 
     let request = |opacity: f64, align: UnderlayAlign| UnderlaySet {
         character: CharId::new("char-a").unwrap(),
         asset: ContentHash([0; 32]),
         opacity,
         align,
+        sheet_face: None,
     };
     assert_eq!(request(1.5, IDENTITY).validate().unwrap_err().field.as_deref(), Some("opacity"));
     let nan_offset = UnderlayAlign { offset: [f64::NAN, 0.0], ..IDENTITY };
@@ -358,4 +371,23 @@ fn the_request_reads_its_json_and_rejects_unknown_fields() -> Result<(), Box<dyn
     extra["gain"] = json!(2);
     assert!(serde_json::from_value::<UnderlaySet>(extra).is_err(), "an unknown field must be refused");
     Ok(())
+}
+
+#[test]
+fn a_build_that_is_stopped_gives_up_within_a_few_rows() {
+    let pixels = coded_sheet(16);
+    let sheet = Sheet::new(UVec2::splat(16), &pixels).unwrap();
+    let asked = std::cell::Cell::new(0_u32);
+    let stop = || {
+        asked.set(asked.get() + 1);
+        true
+    };
+    let built = Underlay::build_unless(&sheet, face(4, 4, LAYER), &geometry(), &IDENTITY, &stop).unwrap();
+    assert!(built.is_none(), "a stop request ends the build");
+    assert_eq!(asked.get(), 1, "it asked once, at the first row, and stopped");
+
+    // Not stopped: the same layer `Underlay::new` gives.
+    let never = || false;
+    let layer = Underlay::build_unless(&sheet, face(4, 4, LAYER), &geometry(), &IDENTITY, &never).unwrap().unwrap();
+    assert_eq!(layer, Underlay::new(&sheet, face(4, 4, LAYER), &geometry(), &IDENTITY).unwrap());
 }
