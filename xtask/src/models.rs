@@ -256,7 +256,8 @@ fn kind_name(kind: LineageKind) -> &'static str {
 /// and no userinfo. It may hold only printable ASCII without spaces (0x21 to 0x7E), so no whitespace, control or
 /// non-ASCII character reaches the parser. Beyond the parser: a domain has two or more labels of letters, digits and
 /// inner `-` (at most 63 characters each, which the parser doesn't enforce), and an IP host is written the way it is
-/// parsed (`https://12345` reads as `0.0.48.57`, and is refused); an empty port (`host:`) and port 0 fail.
+/// parsed (`https://12345` reads as `0.0.48.57`, and is refused; IPv6 may be spelled any valid way); an empty
+/// authority (`https:///host`), an empty port (`host:`) and port 0 fail.
 fn is_https_url(url: &str) -> bool {
     if !url.chars().all(|c| matches!(c, '!'..='~')) {
         return false;
@@ -264,7 +265,8 @@ fn is_https_url(url: &str) -> bool {
     let Some(rest) = url.strip_prefix("https://") else { return false };
     let Ok(parsed) = url::Url::parse(url) else { return false };
     let authority = &rest[..rest.find(['/', '?', '#', '\\']).unwrap_or(rest.len())];
-    if parsed.scheme() != "https"
+    if authority.is_empty()
+        || parsed.scheme() != "https"
         || !parsed.username().is_empty()
         || parsed.password().is_some()
         || authority.contains('@')
@@ -284,9 +286,12 @@ fn is_https_url(url: &str) -> bool {
             };
             domain.contains('.') && domain.split('.').all(label)
         }
-        Some(url::Host::Ipv4(_) | url::Host::Ipv6(_)) => parsed.host_str().is_some_and(|host| {
-            rest.strip_prefix(host).is_some_and(|tail| tail.is_empty() || tail.starts_with([':', '/', '?', '#']))
-        }),
+        // Any valid IPv6 spelling (expanded, upper case) is one address; only an IPv4 host must be spelled as it parses.
+        Some(url::Host::Ipv6(_)) => true,
+        Some(url::Host::Ipv4(_)) => {
+            let raw = authority.rsplit_once(':').map_or(authority, |(host, _)| host);
+            parsed.host_str() == Some(raw)
+        }
         None => false,
     }
 }
@@ -1184,7 +1189,16 @@ url = "https://data.example/tiny-corpus"
         // A 63-character label and a digit-bearing last label that still holds a letter pass.
         assert!(is_https_url("https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example.com"));
         assert!(is_https_url("https://1.example.co2"));
-        for ok in ["https://127.0.0.1/x", "https://8.8.8.8:8443?q=1", "https://[::1]/x", "https://[2001:db8::1]:443/"] {
+        for ok in [
+            "https://127.0.0.1/x",
+            "https://8.8.8.8:8443?q=1",
+            "https://[::1]/x",
+            "https://[2001:db8::1]:443/",
+            "https://[2001:0db8::1]/source",
+            "https://[2001:0DB8:0:0:0:0:0:1]/source",
+            "https://[2001:DB8::1]:443",
+            "https://[::ffff:1.2.3.4]/x",
+        ] {
             assert!(is_https_url(ok), "{ok}");
         }
         for url in ["https://data.example/tiny", "https://data.example:8443?q=1", "https://a-b.example.com#frag"] {
@@ -1207,6 +1221,14 @@ url = "https://data.example/tiny-corpus"
             "https://a-.example.com",
             "https://a..example.com",
             "https://example.com:",
+            "https:///example.com:",
+            "https:///@example.com/",
+            "https:///example.com/x",
+            "https://\\example.com/x",
+            "https:\\\\example.com/x",
+            "https:\\\\\\example.com:",
+            "https://[2001:db8::1",
+            "https://[2001:db8::1]x",
             "https://999.999.999.999/",
             "https://1.2.3.0x100/source",
             "https://user:pass@host.example/",
