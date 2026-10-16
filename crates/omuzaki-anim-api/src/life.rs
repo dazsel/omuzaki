@@ -473,21 +473,30 @@ pub enum Personality {
 }
 
 impl LifeParams {
-    /// The starting numbers for a personality. The multipliers are first guesses; they are tuned against the
-    /// liveliness metrics (spec §15), and only this function changes when they are.
+    /// The starting numbers for a personality, tuned against the liveliness metrics (spec §15) on a still face. The
+    /// measurement is `omuzaki-anim/tests/personality_tuning.rs`: eight seeds of two minutes at 60 fps, every run
+    /// inside the at-rest band with no frozen window of 0.5 s, and the means below.
+    ///
+    /// | Preset | Blinks a minute | Saccades a second | Change a second |
+    /// |---|---|---|---|
+    /// | Natural | 18.2 | 0.22 | 0.0352 |
+    /// | Energetic | 19.7 | 0.45 | 0.0385 |
+    /// | Calm | 16.7 | 0.22 | 0.0326 |
+    /// | Shy | 18.7 | 0.32 | 0.0375 |
+    /// | Sleepy | 15.7 | 0.15 | 0.0305 |
     pub fn for_personality(personality: Personality) -> Self {
         let mut p = Self::default();
         match personality {
             Personality::Natural => {}
-            Personality::Energetic => p.tune(0.8, 0.7, 1.4, 1.15, 1.0),
-            Personality::Calm => p.tune(1.3, 1.3, 0.6, 0.9, 1.0),
+            Personality::Energetic => p.tune(0.7, 0.7, 2.0, 1.2, 1.0),
+            Personality::Calm => p.tune(1.4, 1.3, 0.65, 0.9, 1.0),
             Personality::Shy => {
-                p.tune(1.0, 1.0, 0.7, 1.0, 1.6);
-                p.gaze.glance_gap_s = p.gaze.glance_gap_s.scaled(0.6);
-                p.gaze.glance_x = p.gaze.glance_x.scaled(1.3);
+                p.tune(1.0, 1.0, 0.75, 1.0, 1.6);
+                p.gaze.glance_gap_s = p.gaze.glance_gap_s.scaled(0.7);
+                p.gaze.glance_x = p.gaze.glance_x.scaled(1.15);
             }
             Personality::Sleepy => {
-                p.tune(0.85, 1.5, 0.8, 0.8, 1.0);
+                p.tune(1.1, 1.5, 0.85, 0.8, 1.0);
                 p.blink.close_s = p.blink.close_s.scaled(1.6);
                 p.blink.open_s = p.blink.open_s.scaled(1.8);
                 p.gaze.glance_gap_s = p.gaze.glance_gap_s.scaled(1.5);
