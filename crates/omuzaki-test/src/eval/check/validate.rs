@@ -19,7 +19,7 @@
 
 use super::report::Verdict;
 use super::value::well_formed;
-use crate::eval::task::{Bind, Change, CheckKind, QueryExpect, RenderDiffExpect};
+use crate::eval::task::{Bind, Change, CheckKind, QueryExpect, Region, RenderDiffExpect};
 
 fn invalid(what: impl std::fmt::Display) -> Verdict {
     Verdict::error(format!("invalid check: {what}"))
@@ -44,9 +44,34 @@ pub(super) fn kind(kind: &CheckKind) -> Result<(), Verdict> {
         }
         CheckKind::LogApplied { op } | CheckKind::LogNotApplied { op } => named("op", op),
         CheckKind::LogWithin { ops } => ops.iter().try_for_each(|op| named("ops", op)),
-        CheckKind::DocRange { min, max, .. } => bounds("min", "max", *min, *max, true),
-        CheckKind::DocChange { change, at_least, relative, .. } => movement(Some(*change), *at_least, *relative),
-        CheckKind::RenderDiff { expect, .. } => render_expect(expect),
+        CheckKind::DocEquals { path, .. } | CheckKind::DocExists { path } | CheckKind::DocAbsent { path } => {
+            doc_path("path", path)
+        }
+        CheckKind::DocRange { path, min, max } => {
+            doc_path("path", path)?;
+            bounds("min", "max", *min, *max, true)
+        }
+        CheckKind::DocChange { path, change, at_least, relative } => {
+            doc_path("path", path)?;
+            movement(Some(*change), *at_least, *relative)
+        }
+        CheckKind::DocChangedOnly { paths } => {
+            if paths.is_empty() {
+                return Err(invalid("`paths` is empty: nothing may change, which is what `doc.unchanged` says"));
+            }
+            paths.iter().try_for_each(|p| doc_path("paths", p))
+        }
+        CheckKind::DocUnchanged { paths } => paths.iter().try_for_each(|p| doc_path("paths", p)),
+        CheckKind::RenderDiff { render, region, expect } => {
+            named("render op", &render.op)?;
+            if let Region::Rect(numbers) = region
+                && (numbers.len() != 4 || !numbers.iter().all(|n| n.is_finite() && *n >= 0.0))
+            {
+                return Err(invalid("a `region` rect is `[x, y, w, h]`: four finite, non-negative numbers"));
+            }
+            render_expect(expect)
+        }
+        CheckKind::RenderSame { render } => named("render op", &render.op),
         _ => Ok(()),
     }
 }
@@ -62,6 +87,11 @@ pub(super) fn bind(bind: &Bind) -> Result<(), Verdict> {
 
 fn named(field: &str, name: &str) -> Result<(), Verdict> {
     if name.trim().is_empty() { Err(invalid(format!("`{field}` names an empty op"))) } else { Ok(()) }
+}
+
+/// A document path or glob: the segments `DocPath` allows (no empty segment, no leading or trailing `/`).
+fn doc_path(field: &str, path: &str) -> Result<(), Verdict> {
+    omuzaki_doc_api::DocPath::parse(path).map(drop).map_err(|e| invalid(format!("`{field}`: {e}")))
 }
 
 fn finite(field: &str, value: f64) -> Result<(), Verdict> {

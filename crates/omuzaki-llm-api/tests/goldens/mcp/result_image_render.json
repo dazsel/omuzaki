@@ -1,0 +1,17 @@
+{
+  "blocks": [
+    {
+      "Image": {
+        "mime": "Png",
+        "bytes": [
+          137,
+          80,
+          78,
+          71
+        ],
+        "origin": "Render"
+      }
+    }
+  ],
+  "is_error": false
+}
