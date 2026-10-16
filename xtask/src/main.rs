@@ -35,6 +35,7 @@ mod lint_ui_writes;
 mod models;
 mod process;
 mod report;
+mod scans;
 mod wasm_link_proof;
 mod workspace;
 

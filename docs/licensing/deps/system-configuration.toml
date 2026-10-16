@@ -1,0 +1,6 @@
+section = "rust"
+item = "system-configuration(-sys), windows-registry"
+kind = "crate"
+used_for = "reqwest's `system-proxy` feature: reads the operating system's proxy settings on macOS and Windows"
+status = "yes"
+audit = "(crates.io: MIT OR Apache-2.0)"

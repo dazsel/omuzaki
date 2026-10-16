@@ -1,0 +1,12 @@
+# Key pose "walk-passing" for the clips beside it (RG-06). Degrees, Euler XYZ, VRM normalised space; see src/poses/mod.rs.
+id = "walk-passing"
+summary = "Walk, passing: the left leg carries the weight and the right leg swings through, the hips at their highest."
+tags = ["clip-key"]
+mirrorable = true
+hips_offset = [0.0, 0.01, 0.0]
+
+[bones]
+rightUpperLeg = [-10.0, 0.0, 0.0]
+rightLowerLeg = [45.0, 0.0, 0.0]
+leftUpperArm = [0.0, 0.0, -65.0]
+rightUpperArm = [0.0, 0.0, 65.0]
