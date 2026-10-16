@@ -105,18 +105,17 @@ def stimulus_events(stim, counters, threshold, open_frames):
 
 
 def pair(events, crossings, fps, max_latency_ms):
-    """`(delays, missed)`: the delay in ms of each event's first output crossing within `max_latency_ms`, and the number
-    of events with no such crossing."""
-    delays, missed, j = [], 0, 0
+    """One entry per event: the delay in ms of its first output crossing within `max_latency_ms`, or `None`."""
+    results, j = [], 0
     for e in events:
         while j < len(crossings) and crossings[j] < e:
             j += 1
         if j < len(crossings) and (crossings[j] - e) * 1000 / fps <= max_latency_ms:
-            delays.append((crossings[j] - e) * 1000 / fps)
+            results.append((crossings[j] - e) * 1000 / fps)
             j += 1
         else:
-            missed += 1
-    return delays, missed
+            results.append(None)
+    return results
 
 
 def summarise(delays):
@@ -141,11 +140,15 @@ def analyse(frames, width, fps, layout, stim_origin, out_roi, out_bright=True, o
         raise ValueError("the recording has no frames")
     stim = oriented(stim, layout["mouth_open_luma"] == "bright")
     out = oriented(out, out_bright)
-    if out_range and not out_bright:
-        out_range = (255 - out_range[0], 255 - out_range[1])
+    if out_range:
+        # The flip puts a dark signal's levels in the samples' orientation; sorting accepts either order.
+        flipped = out_range if out_bright else (255 - out_range[0], 255 - out_range[1])
+        out_range = tuple(sorted(flipped))
     events, rejected = stimulus_events(stim, counters, calibrate(stim), layout["open_frames"])
     crossings = rising_crossings(out, calibrate(out, out_range))
-    delays, missed = pair(events, crossings, fps, max_latency_ms)
+    results = pair(events, crossings, fps, max_latency_ms)
+    delays = [d for d in results if d is not None]
+    missed = len(results) - len(delays)
     if not delays or len(events) < MIN_EVENTS:
         raise ValueError(f"{len(events)} usable stimulus events ({rejected} rejected by the counter), {len(delays)} "
                          f"with an output crossing; at least {MIN_EVENTS} events and one response are needed")
@@ -153,7 +156,10 @@ def analyse(frames, width, fps, layout, stim_origin, out_roi, out_bright=True, o
     # percentiles up instead of dropping out of them.
     report = summarise(delays + [max_latency_ms] * missed)
     report.update({"frames": len(stim), "stimulus_events": len(events), "rejected_by_counter": rejected,
-                   "missed": missed, "delays_ms": [round(d, 2) for d in delays]})
+                   "missed": missed, "window_ms": max_latency_ms,
+                   "event_results": [
+                       {"frame": e, "status": "answered" if d is not None else "timed_out",
+                        "delay_ms": d} for e, d in zip(events, results)]})
     return report
 
 
@@ -178,11 +184,12 @@ def main(argv):
     ap.add_argument("--out-polarity", choices=("bright", "dark"), default="bright",
                     help="whether the output signal is bright (a jawOpen marker patch) or dark when the mouth is open")
     ap.add_argument("--out-range", type=lambda t: parse_ints(t, 2), default=None,
-                    help="CLOSED,OPEN grey levels of the signal at jawOpen 0 and 1, as it appears in the recording "
-                         "(for --out-polarity dark, CLOSED is above OPEN); default: the observed 2nd and 98th percentile")
+                    help="the two grey levels of the signal at jawOpen 0 and 1, as they appear in the recording "
+                         "(e.g. 230,40 for a dark-when-open mouth); either order is accepted; default: the "
+                         "observed 2nd and 98th percentile")
     ap.add_argument("--max-latency-ms", type=float, default=MAX_LATENCY_MS)
     ap.add_argument("--budget-ms", type=float, default=None, help="exit 1 if p95 is above this (V0: 100)")
-    ap.add_argument("--json", action="store_true", help="print the report as JSON, with every delay")
+    ap.add_argument("--json", action="store_true", help="print the report as JSON, with every event's frame, status and delay")
     args = ap.parse_args(argv)
     with open(args.layout) as f:
         layout = json.load(f)
