@@ -122,7 +122,7 @@ impl LiveApp {
     /// alone until the viewport renders one. Requests the host queued are carried out first, and what the window is
     /// is published after. Call once per frame from the main viewport.
     pub fn show(&mut self, ctx: &Context, program: Option<Program>) {
-        self.host.apply(&mut self.output);
+        self.host.take_requests(&mut self.output);
         self.output.show(ctx, program);
         self.host.publish(&self.output, f64::from(ctx.pixels_per_point()));
     }

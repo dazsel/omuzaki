@@ -4,7 +4,7 @@
 //! [`state`](OutputHost::state), all on `&self` and callable from any thread.
 //!
 //! None of them waits for the render loop. `open` and `close` queue a request (the newest one wins); the UI thread
-//! carries it out at the start of its next frame ([`apply`](OutputHost::apply)) and publishes what the window is
+//! carries it out at the start of its next frame ([`take_requests`](OutputHost::take_requests)) and publishes what the window is
 //! after drawing it ([`publish`](OutputHost::publish)). The lock is held only to copy a request or a snapshot, never
 //! across a frame. When #2146 merges, `WindowHost` is implemented by forwarding to these methods, with its
 //! `WindowPlan` and `WindowSettings` translated into an [`OutputPlan`].
@@ -123,7 +123,7 @@ impl OutputHost {
     }
 
     /// UI thread, start of a frame: carries out the newest request on `window`.
-    pub fn apply(&self, window: &mut OutputWindow) {
+    pub fn take_requests(&self, window: &mut OutputWindow) {
         let request = self.lock().pending.take();
         match request {
             Some(Request::Open(plan)) => {
@@ -178,7 +178,7 @@ mod tests {
         let plan = OutputPlan { size: PhysicalSize::new(1280, 720), ..OutputPlan::default() };
         std::thread::spawn(move || ops.open(plan)).join().expect("the op thread").expect("queued");
         assert_eq!(host.state(), HostState::Closed, "nothing changes until the UI thread runs");
-        host.apply(&mut window);
+        host.take_requests(&mut window);
         host.publish(&window, 1.25);
         let open =
             HostState::Open { physical: PhysicalSize::new(1280, 720), backdrop: OutputBackdrop::Key(DEFAULT_KEY) };
@@ -192,14 +192,14 @@ mod tests {
         let (host, mut window) = host();
         host.open(OutputPlan::default()).expect("queued");
         host.close();
-        host.apply(&mut window);
+        host.take_requests(&mut window);
         host.publish(&window, 1.0);
         assert_eq!(host.state(), HostState::Closed, "the close came last");
         host.open(OutputPlan::default()).expect("queued");
-        host.apply(&mut window);
+        host.take_requests(&mut window);
         host.close();
         host.close();
-        host.apply(&mut window);
+        host.take_requests(&mut window);
         host.publish(&window, 1.0);
         assert_eq!(host.state(), HostState::Closed);
         assert!(!window.status().open);

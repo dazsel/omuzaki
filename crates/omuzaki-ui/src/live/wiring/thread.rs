@@ -212,7 +212,7 @@ impl PerformLoop {
     fn pass(&mut self, now: Seconds) {
         for _ in 0..MAX_LOOP_COMMANDS {
             let Ok(command) = self.inbox.try_recv() else { break };
-            self.apply(command);
+            self.run_command(command);
         }
         if let Some(out) = self.control.advance(&mut self.performer, now) {
             self.writer.publish(&LiveFrame::from_output(&out));
@@ -221,7 +221,7 @@ impl PerformLoop {
         self.stats.skipped.store(self.control.skipped_steps(), Ordering::Release);
     }
 
-    fn apply(&mut self, command: LoopCommand) {
+    fn run_command(&mut self, command: LoopCommand) {
         match command {
             LoopCommand::Source(source) => self.performer.set_source(source),
         }
