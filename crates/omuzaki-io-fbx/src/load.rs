@@ -24,6 +24,14 @@ pub(crate) const TARGET_AXES: CoordinateAxes = CoordinateAxes {
 pub(crate) const MEMORY_LIMIT_BYTES: usize = 1 << 30;
 /// The most allocations ufbx may make for each of those two, so a hostile file can't spend time on millions of tiny ones.
 pub(crate) const ALLOCATION_LIMIT: usize = 32_000_000;
+/// What ufbx may use on top of the fixed floor for each node the caller allows: a node, its name, its properties and the
+/// parsed document behind them. Generous (a node is about a kilobyte), so a real file never reaches it.
+const MEMORY_PER_NODE_BYTES: usize = 64 << 10;
+/// The memory a file may use whatever its node cap: the document and the settings have a fixed cost.
+const MEMORY_FLOOR_BYTES: usize = 16 << 20;
+/// Allocations ufbx may make for each node the caller allows, and the floor under them.
+const ALLOCATIONS_PER_NODE: usize = 256;
+const ALLOCATION_FLOOR: usize = 100_000;
 /// The deepest node hierarchy accepted. ufbx's default is unlimited, and a deep chain is a cheap way to exhaust a stack.
 pub(crate) const NODE_DEPTH_LIMIT: u32 = 1024;
 
@@ -40,11 +48,10 @@ pub(crate) fn load(bytes: &[u8], ctx: &ImportCtx<'_>) -> Result<SceneRoot, IoErr
         Ok(()) => ProgressResult::Continue,
         Err(_) => ProgressResult::Cancel,
     };
-    let allocator = || AllocatorOpts {
-        memory_limit: MEMORY_LIMIT_BYTES,
-        allocation_limit: ALLOCATION_LIMIT,
-        ..AllocatorOpts::default()
-    };
+    // The caller's node cap sets how much ufbx may build, up to the fixed ceilings: a tight cap gets a tight allocator,
+    // so a file cannot make the load spend far more than the caller allowed before the count is checked afterwards.
+    let (memory_limit, allocation_limit) = ceilings(ctx.options.limits.max_nodes);
+    let allocator = || AllocatorOpts { memory_limit, allocation_limit, ..AllocatorOpts::default() };
     let opts = LoadOpts {
         temp_allocator: allocator(),
         result_allocator: allocator(),
@@ -53,7 +60,12 @@ pub(crate) fn load(bytes: &[u8], ctx: &ImportCtx<'_>) -> Result<SceneRoot, IoErr
         no_format_from_content: true,
         no_format_from_extension: true,
         load_external_files: false,
-        ignore_animation: true,
+        // This version reads the node hierarchy only. Vertex arrays and embedded images are the bulk of a real file and
+        // are skipped, so their size costs nothing; the meshes, materials, skins, textures and animation stacks that
+        // exist are still counted, and `nodes::convert` says they were not read.
+        ignore_geometry: true,
+        ignore_embedded: true,
+        ignore_animation: false,
         // Strings are read without a check, so an invalid one must stop the load instead of reaching the scene.
         unicode_error_handling: UnicodeErrorHandling::AbortLoading,
         node_depth_limit: NODE_DEPTH_LIMIT,
@@ -79,6 +91,16 @@ pub(crate) fn fraction(done: u64, total: u64) -> f32 {
     if total == 0 { 0.0 } else { (done as f64 / total as f64).clamp(0.0, 1.0) as f32 }
 }
 
+/// The memory (bytes) and allocation ceilings a load runs under for a node cap: the floor plus a share for each node the
+/// caller allows, never over the fixed ceilings.
+pub(crate) fn ceilings(max_nodes: u32) -> (usize, usize) {
+    let nodes = usize::try_from(max_nodes).unwrap_or(usize::MAX);
+    (
+        MEMORY_FLOOR_BYTES.saturating_add(nodes.saturating_mul(MEMORY_PER_NODE_BYTES)).min(MEMORY_LIMIT_BYTES),
+        ALLOCATION_FLOOR.saturating_add(nodes.saturating_mul(ALLOCATIONS_PER_NODE)).min(ALLOCATION_LIMIT),
+    )
+}
+
 /// Maps ufbx's error onto the contract's.
 fn map_error(error: &ufbx::Error) -> IoError {
     let what = error.description.to_string();
@@ -99,5 +121,19 @@ fn map_error(error: &ufbx::Error) -> IoError {
             IoError::unsupported(what, "convert it to glTF or VRM")
         }
         _ => IoError::Malformed { message: what, at: None },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_tight_node_cap_gets_a_tight_allocator_and_a_loose_one_the_fixed_ceilings() {
+        let (memory, allocations) = ceilings(2);
+        assert!(memory < 17 << 20 && allocations < 200_000, "{memory} {allocations}");
+        // The default cap of 100,000 nodes reaches the fixed memory ceiling; its allocation share is under the fixed one.
+        assert_eq!(ceilings(100_000), (MEMORY_LIMIT_BYTES, 25_700_000));
+        assert_eq!(ceilings(u32::MAX), (MEMORY_LIMIT_BYTES, ALLOCATION_LIMIT));
     }
 }

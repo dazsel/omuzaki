@@ -8,6 +8,10 @@ use crate::load::{TARGET_AXES, fraction};
 
 /// The longest a creator string is kept, in characters; it is from an untrusted file and only a diagnostic.
 const GENERATOR_CHARS: usize = 200;
+/// How many nodes pass between two cancellation checks while the hierarchy is built.
+const CHECKPOINT_EVERY: usize = 4096;
+/// The most repair warnings reported one by one; a hostile file can make ufbx list many, and the rest are counted.
+const MAX_REPAIR_FINDINGS: usize = 20;
 /// How far a unit scale may be from one metre and still count as metres (ufbx rounds near powers of ten itself).
 const UNIT_TOLERANCE: f64 = 1e-9;
 
@@ -80,7 +84,7 @@ pub(crate) fn convert(loaded: &SceneRoot, ctx: &ImportCtx<'_>) -> Result<(IoScen
             });
         }
         ix[n] = Some(scene.add_node(converted));
-        if n % 4096 == 0 {
+        if n % CHECKPOINT_EVERY == 0 {
             ctx.progress.checkpoint("fbx.nodes", fraction(n as u64, total))?;
         }
     }
@@ -90,22 +94,31 @@ pub(crate) fn convert(loaded: &SceneRoot, ctx: &ImportCtx<'_>) -> Result<(IoScen
             .flatten()
             .ok_or_else(|| IoError::Internal("an FBX node refers to a node that was not read".to_owned()))
     };
-    for node in loaded.nodes.iter().filter(|n| !n.is_root) {
+    for (k, node) in loaded.nodes.iter().filter(|n| !n.is_root).enumerate() {
         let me = lookup(node)?;
         let children = node.children.iter().map(|c| lookup(c)).collect::<Result<Vec<_>, _>>()?;
         scene.nodes[me.index()].children = children;
+        if k % CHECKPOINT_EVERY == 0 {
+            ctx.progress.checkpoint("fbx.hierarchy", fraction(k as u64, total))?;
+        }
     }
     scene.roots = loaded.root_node.children.iter().map(|c| lookup(c)).collect::<Result<_, _>>()?;
     let creator = loaded.metadata.creator.trim();
     if !creator.is_empty() {
         scene.source_generator = Some(creator.chars().take(GENERATOR_CHARS).collect());
     }
+    // A cancel that came after the last periodic check still stops the import.
+    ctx.progress.checkpoint("fbx.nodes", 1.0)?;
     Ok((scene, findings(loaded)))
 }
 
-/// What the conversion to canonical space changed.
+/// What the conversion to canonical space changed, what ufbx repaired, and what the file holds that is not read.
 fn findings(loaded: &SceneRoot) -> Report {
     let mut report = Report::new();
+    if let Some(dropped) = dropped_content(loaded) {
+        report.push(dropped);
+    }
+    repairs(loaded, &mut report);
     let unit = loaded.settings.original_unit_meters;
     if (unit - 1.0).abs() > UNIT_TOLERANCE {
         report.push(
@@ -126,4 +139,67 @@ fn findings(loaded: &SceneRoot) -> Report {
         report.push(Finding::info("fbx.axes_converted", message).at("GlobalSettings"));
     }
     report
+}
+
+/// A warning naming the kinds of content the file has and this version does not read: it imports the node hierarchy only,
+/// so a model with meshes arrives as nodes without them, and the person is told.
+fn dropped_content(loaded: &SceneRoot) -> Option<Finding> {
+    let counts = [
+        ("meshes", loaded.meshes.len()),
+        ("skins", loaded.skin_deformers.len()),
+        ("blend shapes", loaded.blend_deformers.len()),
+        ("materials", loaded.materials.len()),
+        ("textures", loaded.textures.len()),
+        ("embedded images", loaded.videos.len()),
+        ("lights", loaded.lights.len()),
+        ("cameras", loaded.cameras.len()),
+        ("animation stacks", loaded.anim_stacks.len()),
+    ];
+    let parts: Vec<String> = counts.iter().filter(|(_, n)| *n > 0).map(|(what, n)| format!("{n} {what}")).collect();
+    if parts.is_empty() {
+        return None;
+    }
+    let message = format!("this version reads the node hierarchy only; not imported: {}", parts.join(", "));
+    Some(
+        Finding::warning("fbx.content_dropped", message)
+            .at("Objects")
+            .hint("convert the model to glTF or VRM to keep its content"),
+    )
+}
+
+/// The repairs ufbx made to a partly broken file, as warnings: a clamped index, a duplicate object id or a removed
+/// element can change the hierarchy that was read. Warnings about what this version skips on purpose (external files,
+/// geometry and embedded data, OBJ directives) are left out.
+fn repairs(loaded: &SceneRoot, report: &mut Report) {
+    use ufbx::WarningType as W;
+    let relevant: Vec<_> = loaded
+        .metadata
+        .warnings
+        .iter()
+        .filter(|w| {
+            !matches!(
+                w.type_,
+                W::MissingExternalFile
+                    | W::ImplicitMtl
+                    | W::MissingGeometryData
+                    | W::BadVertexWAttribute
+                    | W::MissingPolygonMapping
+                    | W::BadBase64Content
+                    | W::EmptyFaceRemoved
+                    | W::UnknownObjDirective
+            )
+        })
+        .collect();
+    for warning in relevant.iter().take(MAX_REPAIR_FINDINGS) {
+        let what: String = warning.description.to_string().chars().take(200).collect();
+        let times = if warning.count > 1 { format!(" ({} times)", warning.count) } else { String::new() };
+        report.push(Finding::warning("fbx.repaired", format!("ufbx repaired the file: {what}{times}")).at("Objects"));
+    }
+    if relevant.len() > MAX_REPAIR_FINDINGS {
+        let more = relevant.len() - MAX_REPAIR_FINDINGS;
+        report.push(
+            Finding::warning("fbx.repaired", format!("ufbx made {more} more repairs that are not listed"))
+                .at("Objects"),
+        );
+    }
 }

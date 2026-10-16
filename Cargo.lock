@@ -3625,6 +3625,7 @@ dependencies = [
  "omuzaki-core",
  "omuzaki-doc",
  "omuzaki-doc-api",
+ "omuzaki-io-fbx",
  "omuzaki-io-gltf",
  "omuzaki-io-ops",
  "omuzaki-io-vrm",

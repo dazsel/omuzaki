@@ -17,10 +17,17 @@
 //! |---|---|---|
 //! | `fbx.units_converted` | info | the file's unit scale was not metres |
 //! | `fbx.axes_converted` | info | the file's axes were not right-handed Y-up with the front toward +Z |
+//! | `fbx.content_dropped` | warning | the file has meshes, skins, materials, textures, lights, cameras or animation, which this version does not import |
+//! | `fbx.repaired` | warning | ufbx repaired the file (a duplicate object id, a bad connection, a truncated array) and the hierarchy may differ from what was written |
+//!
+//! This version imports the node hierarchy only. The vertex arrays and embedded images, which are most of a real file,
+//! are never read, so `Limits::max_vertices` and `Limits::max_images` cannot trip; what the file holds besides nodes is
+//! counted and reported as `fbx.content_dropped`, which a strict import turns into an error.
 //!
 //! **Untrusted input.** Every failure is an [`IoError`], never a panic. The input is capped by
 //! `Limits::max_input_bytes`, the node count by `Limits::max_nodes`, and ufbx's own memory, allocation count and
-//! hierarchy depth by the constants in [`load`]. Progress and cancellation go through `Progress::checkpoint`.
+//! hierarchy depth by the constants in [`load`]; the node cap also sets how much memory ufbx may use while it builds the
+//! scene, so a tight cap gets a tight allocator. Progress and cancellation go through `Progress::checkpoint`.
 #![deny(missing_docs)]
 
 mod load;
