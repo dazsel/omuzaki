@@ -59,6 +59,9 @@ fn welded(m: &PartMesh) -> Vec<[usize; 3]> {
     tris.filter(|t| t[0] != t[1] && t[1] != t[2] && t[0] != t[2]).collect()
 }
 
+/// The vertices of one ring of the thumb: its segments round, and the first vertex repeated.
+const THUMB_RING: usize = 17;
+
 /// The segments round the block's ring and the rings in the block, per style (`hands::mitten` and `hands::simple`).
 fn block_vertices(style: HandStyle) -> (usize, usize) {
     let around = if style == HandStyle::Mitten { 28 } else { 30 };
@@ -66,7 +69,7 @@ fn block_vertices(style: HandStyle) -> (usize, usize) {
 }
 
 /// Every directed edge once, and its reverse once, but for the two open ends the prototype leaves: the wrist ring (a
-/// cuff hides it) and the thumb's root ring (inside the palm). Closed and consistently wound everywhere else.
+/// cuff hides it) and the thumb's stem ring (inside the palm). Closed and consistently wound everywhere else.
 fn assert_watertight(label: &str, m: &PartMesh, style: HandStyle) {
     let (ring, block) = block_vertices(style);
     let mut ids: HashMap<[i64; 3], usize> = HashMap::new();
@@ -75,7 +78,7 @@ fn assert_watertight(label: &str, m: &PartMesh, style: HandStyle) {
     for (k, p) in m.geometry.positions.iter().enumerate() {
         let next = ids.len();
         let id = *ids.entry(q(*p)).or_insert(next);
-        if k < ring || (block..block + 19).contains(&k) {
+        if k < ring || (block..block + THUMB_RING).contains(&k) {
             open.insert(id);
         }
     }
@@ -353,7 +356,6 @@ fn the_wrist_end_lies_inside_the_forearm_at_every_size_and_template() {
 fn the_thumb_root_lands_on_the_layouts_joint_whatever_the_palm_and_spread() {
     use omuzaki_anim_api::HumanoidBone::LeftThumbProximal;
     let (_, block) = block_vertices(HandStyle::Mitten);
-    let thumb_ring = 18; // the thumb's segments round a ring: the 19th vertex repeats the first
     for template in TEMPLATES {
         for (palm_length, palm_width, thumb_length, spread) in
             [(2.0, 0.5, 1.0, 30.0), (0.5, 2.0, 2.0, -30.0), (2.0, 2.0, 0.5, 30.0), (1.0, 1.0, 1.0, 0.0)]
@@ -362,13 +364,51 @@ fn the_thumb_root_lands_on_the_layouts_joint_whatever_the_palm_and_spread() {
                 HandParams { palm_length, palm_width, thumb_length, thumb_spread_deg: spread, ..Default::default() };
             let (layout, parts) = built(template, &params(HandStyle::Mitten, hand, 1.0));
             let positions = &mesh(&parts, "hand-l").geometry.positions;
-            let root = positions[block..block + thumb_ring].iter().copied().sum::<Vec3>() / thumb_ring as f32;
+            // The thumb's first ring is the stem inside the palm; the root ring follows it.
+            let ring = &positions[block + THUMB_RING..block + 2 * THUMB_RING];
+            let root = ring[..THUMB_RING - 1].iter().copied().sum::<Vec3>() / (THUMB_RING - 1) as f32;
             let joint = layout.joint64(LeftThumbProximal).unwrap().as_vec3();
             let error = root.distance(joint);
             assert!(
                 error < 1e-4,
                 "{template} length {palm_length} width {palm_width} spread {spread}: the thumb root is {error} m off"
             );
+        }
+    }
+}
+
+#[test]
+fn the_thumbs_first_ring_lies_in_the_palm_at_every_extreme_and_template() {
+    use omuzaki_anim_api::HumanoidBone::{LeftHand, LeftLowerArm};
+    let (ring, block) = block_vertices(HandStyle::Mitten);
+    for template in TEMPLATES {
+        for size in [0.5, 1.0, 2.0] {
+            for hand in extremes() {
+                let (layout, parts) = built(template, &params(HandStyle::Mitten, hand.clone(), size));
+                let (wrist, elbow) = (layout.joint64(LeftHand).unwrap(), layout.joint64(LeftLowerArm).unwrap());
+                let axis = (wrist - elbow).normalize().as_vec3();
+                let wrist = wrist.as_vec3();
+                let positions = &mesh(&parts, "hand-l").geometry.positions;
+                let first = &positions[block..block + THUMB_RING - 1];
+                let centre = first.iter().copied().sum::<Vec3>() / first.len() as f32;
+                let along = |p: Vec3| (p - wrist).dot(axis);
+                let off = centre - wrist - axis * along(centre);
+                let side = off.normalize_or_zero();
+                // The block's ring nearest the thumb's first ring along the arm, and how far it reaches towards the thumb.
+                let nearest = positions[..block]
+                    .chunks_exact(ring)
+                    .min_by(|a, b| {
+                        let d = |r: &[Vec3]| (along(r[0]) - along(centre)).abs();
+                        d(a).total_cmp(&d(b))
+                    })
+                    .unwrap();
+                let reach = nearest.iter().map(|p| (*p - wrist).dot(side)).fold(f32::MIN, f32::max);
+                assert!(
+                    off.length() < reach,
+                    "{template} size {size} {hand:?}: the thumb's first ring is {} m from the axis, the palm reaches {reach} m",
+                    off.length()
+                );
+            }
         }
     }
 }

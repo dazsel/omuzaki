@@ -10,7 +10,7 @@
 //! **What a silhouette identifies.** Widths, arm length, foot size and the shape axes show in the outline. Sole and
 //! crown are aligned, so `leg_length`, `torso_length` and the `height` axis trade off: the share of the leg against
 //! the torso is identified, each one alone is not. `neck_length` is not visible (the neck lies inside the torso loft)
-//! and `hand_size` is visible (`hands::build` makes a mesh) but not searched; both stay at their defaults. The search
+//! and stays at its default. `hand_size` is visible (`hands::build` makes a mesh) and searched like the rest. The search
 //! stops at [`MAX_EVALUATIONS`] or after two sweeps in a row that each gain under [`MIN_GAIN`] mean `IoU`.
 
 use omuzaki_core::mesh::MeshData;
@@ -50,7 +50,7 @@ pub enum Param {
     ArmLength,
     /// `Proportions::leg_length`.
     LegLength,
-    /// `Proportions::hand_size` (no mesh yet, so not visible).
+    /// `Proportions::hand_size` (visible once `hands::build` makes a mesh).
     HandSize,
     /// `Proportions::foot_size`.
     FootSize,
