@@ -104,6 +104,21 @@ CI_WORKFLOW = ".github/workflows/ci.yml"
 WORKFLOW_DIR = ".github/workflows/"
 
 
+def workflow_file(run):
+    """A run's workflow path without the `@ref` suffix GitHub may append."""
+    return (run.get("path") or "").split("@")[0]
+
+
+def is_test_job(job):
+    """Whether `job` is a test shard that must have succeeded.
+
+    When the plan has no tests the whole matrix is skipped before it expands, and GitHub records one skipped job named
+    with the raw `${{ matrix.name }}` expression. That job is no shard (an empty plan is a legitimate pass); a skipped
+    real shard, named `test (3)`, still counts and fails the proof.
+    """
+    return job["name"].startswith("test (") and "${{" not in job["name"]
+
+
 def hosted_proof(runs, head, files):
     """The id of a hosted run that proves `head` (rules in the module doc), or None.
 
@@ -112,8 +127,8 @@ def hosted_proof(runs, head, files):
     if any(path.startswith(WORKFLOW_DIR) for path in files):
         return None
     for run in sorted(runs, key=lambda r: r["id"], reverse=True):
-        tests = [job for job in run.get("jobs", []) if job["name"].startswith("test (")]
-        if (run.get("event") == "workflow_dispatch" and run.get("path") == CI_WORKFLOW
+        tests = [job for job in run.get("jobs", []) if is_test_job(job)]
+        if (run.get("event") == "workflow_dispatch" and workflow_file(run) == CI_WORKFLOW
                 and run.get("head_sha") == head and run.get("conclusion") == "success"
                 and all(job["conclusion"] == "success" for job in tests)):
             return run["id"]
@@ -173,7 +188,7 @@ def fetch_hosted(repo, number, head):
     base = f"{api}/repos/{repo}"
     runs = api_get(f"{base}/actions/runs?event=workflow_dispatch&head_sha={head}&per_page=100")["workflow_runs"]
     runs = [dict(run, jobs=api_get(f"{base}/actions/runs/{run['id']}/jobs?per_page=100&filter=latest")["jobs"])
-            for run in runs if run.get("path") == CI_WORKFLOW and run.get("conclusion") == "success"]
+            for run in runs if workflow_file(run) == CI_WORKFLOW and run.get("conclusion") == "success"]
     files, page = set(), 1
     while True:
         batch = api_get(f"{base}/pulls/{number}/files?per_page=100&page={page}")

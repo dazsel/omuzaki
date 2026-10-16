@@ -139,6 +139,11 @@ hosted "$(run workflow_dispatch .github/workflows/ci.yml "$HEAD" success skipped
     && fail "(d) skipped test" || pass "(d) a skipped test job does not count"
 hosted "$(run workflow_dispatch .github/workflows/ci.yml "$HEAD" success cancelled)" "$DOCS" "$HEAD" \
     && fail "(d) cancelled test" || pass "(d) a cancelled test job does not count"
+hosted "$(run workflow_dispatch .github/workflows/ci.yml@refs/heads/x "$HEAD" success success)" "$DOCS" "$HEAD" \
+    && pass "a ref-qualified workflow path counts" || fail "ref-qualified path"
+EMPTY='[{"id":8,"event":"workflow_dispatch","path":".github/workflows/ci.yml","head_sha":"'$HEAD'","conclusion":"success","jobs":[{"name":"plan","conclusion":"success"},{"name":"test (${{ matrix.name }})","conclusion":"skipped"}]}]'
+hosted "$EMPTY" "$DOCS" "$HEAD" && pass "an empty plan (matrix never expanded) passes" || fail "empty plan"
+hosted "$EMPTY" '[".github/workflows/ci.yml"]' "$HEAD" && fail "empty plan, workflow edit" || pass "an empty plan does not excuse a workflow edit"
 hosted "$GOOD" '["docs/a.md",".github/workflows/ci.yml"]' "$HEAD" \
     && fail "(e) workflow edit" || pass "(e) a PR that edits a workflow needs a human line"
 hosted "$GOOD" '[".github/workflows/new.yml"]' "$HEAD" && fail "(e) other workflow" || pass "(e) any file under workflows counts"
