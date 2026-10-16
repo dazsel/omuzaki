@@ -1,0 +1,11 @@
+# omuzaki-test: the agent eval harness (QG-03): checks, scripted driver, runner, gate, eval sets, rating page and lint
+
+- **Checks (#258, #1674, #1895):** the `doc.*` kinds read whole-document snapshots with path globs; `render.diff` and `render.same` compare the renders both projects made (fetched from an asset store) at a per-channel tolerance of 2. The `log.*` checks read a transcript of MCP tool names (`face_set_profile`) as the op names a task writes, through the server's catalog; a name nothing explains is a harness error. An array index too large to address is absent, not malformed.
+- **Scripted driver (#259):** `Host` serves a runner with `omuzaki-mcp` over an in-memory pipe to an rmcp client (or runs `omuzaki mcp` as a scrubbed child process); scripts replay as an agent's calls, with `expect` and `assert` lines; the transcript is JSON lines and `eval promote` turns it back into a script.
+- **Runner (#367):** `eval run` builds each fixture once, plays attempts on copies, grades on separate runners, keeps the evidence and appends `eval-history.jsonl` and `eval-runs.jsonl`; the oracle scripts (fail scripts, the empty script) must end as they must. `eval gc` removes old run folders unless an issue or a promoted script names them.
+- **Gate (#260):** `eval gate` flags per-task and per-suite regressions from the reference driver's history, with Wilson intervals. The CI steps and the report script are not here (a follow-up).
+- **Eval sets (#922):** a content store verified on every read, `eval sets verify | add | holdout-check`, a `FileSource` over the store, and the lint's `kind` and `split` rules.
+- **Rating (#698):** `eval rate` (a local page, 20 results a week) and `eval agreement`.
+- **Lint (#796):** the prompt-leak rule reads the linked registry; a check or binding may call only registered read-only queries.
+- **Private list (#802):** one file, `docs/licensing/private-material.toml`, read by the eval loader (`omuzaki-test/evals/private.toml` is gone) and by `cargo xtask lint-seed` (its hard-coded copy is gone).
+- `omuzaki-test` now depends on `omuzaki-cli`, `omuzaki-mcp`, `omuzaki-doc`, `omuzaki-doc-api`, `omuzaki-ai-api`, `rmcp` (client), `tokio`, `sha2` and `getrandom` (all already in the workspace).
