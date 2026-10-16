@@ -34,6 +34,13 @@ pub(crate) fn fixed_colour(colour: &ColourRef, fallback: Colour) -> Colour {
     }
 }
 
+/// `colour` with its own alpha multiplied by `factor` (clamped to `0..=1`). A strength scales what the profile resolved
+/// to: a transparent or translucent colour stays that much more transparent, instead of its alpha being replaced.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // the product is within 0..=255
+pub(crate) fn scaled(colour: Colour, factor: f32) -> Colour {
+    Colour { a: (f32::from(colour.a) * factor.clamp(0.0, 1.0)).round() as u8, ..colour }
+}
+
 /// One part of the face, in the order [`RealPainter`] paints them.
 ///
 /// The order is the prototype's (cheek wash, brows, eyes, nose, mouth) with the two sections the prototype lacked

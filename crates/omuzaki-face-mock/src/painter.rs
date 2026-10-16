@@ -4,8 +4,8 @@ use omuzaki_anim_api::Channel;
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::Vec2;
 use omuzaki_face_api::{
-    Cap, Cmd, ColourExt, ColourRef, DrawList, FaceDrawing, FaceError, FaceInput, FaceLayerId, FaceLayerSpec,
-    FacePainter, FaceProfile, FaceProjection, FaceRect, Join, MouthParams, Paint, PaintParams, Stops, narrow,
+    Cap, Cmd, ColourRef, DrawList, FaceDrawing, FaceError, FaceInput, FaceLayerId, FaceLayerSpec, FacePainter,
+    FaceProfile, FaceProjection, FaceRect, Join, MouthParams, Paint, PaintParams, Stops, narrow,
 };
 
 /// Raster density the mock suggests for the base layer: 2 000 px/m puts a 0.4 m wide face at 800 px.
@@ -77,6 +77,12 @@ impl Default for MockPainter {
     }
 }
 
+/// `c` with its own alpha multiplied by `factor` (clamped to `0..=1`), as in the real painter.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // the product is within 0..=255
+fn scaled(c: Colour, factor: f32) -> Colour {
+    Colour { a: (f32::from(c.a) * factor.clamp(0.0, 1.0)).round() as u8, ..c }
+}
+
 fn solid(c: Colour) -> Paint {
     Paint::Solid(c)
 }
@@ -124,7 +130,7 @@ impl FacePainter for MockPainter {
         // Cheeks first, so features draw over them.
         let base = &mut out[FaceLayerId::Base];
         let blush =
-            fixed(&profile.cheeks.colour).faded((params.blush * narrow(profile.cheeks.strength)).clamp(0.0, 1.0));
+            scaled(fixed(&profile.cheeks.colour), (params.blush * narrow(profile.cheeks.strength)).clamp(0.0, 1.0));
         for side in [-1.0_f32, 1.0] {
             let centre = Vec2::new(side * narrow(profile.layout.blush_spacing), narrow(profile.layout.blush_y));
             let path = base
@@ -209,7 +215,7 @@ fn paint_eye(list: &mut DrawList, profile: &FaceProfile, params: &PaintParams, s
     let tears = params.effects.tears;
     if tears > 0.01 {
         let drop = list.path().ellipse(centre + Vec2::new(0.0, -half_h - 0.01), 0.004, 0.006).finish();
-        list.fill(drop, solid(fixed(&profile.eyes.tear).faded(tears)));
+        list.fill(drop, solid(scaled(fixed(&profile.eyes.tear), tears)));
     }
 }
 

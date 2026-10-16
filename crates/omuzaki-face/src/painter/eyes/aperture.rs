@@ -67,6 +67,8 @@ const SAD_INNER_UP: f32 = 0.16;
 const SAD_OUTER_DROP: f32 = 0.10;
 /// The lids never meet closer than this, so a nearly shut eye keeps a hairline of white.
 const MIN_GAP: f32 = 0.004;
+/// How much openness a squeeze fades the open eye over, above [`SHUT_BELOW`].
+const HANDOVER_BAND: f32 = 0.2;
 /// An eye whose openness is below this is shut (`op < 0.08`).
 const SHUT_BELOW: f32 = 0.08;
 /// A lid with `arc` at or above this is a happy ^ arc (`smileEye > 0.5`).
@@ -205,13 +207,55 @@ impl Eye {
         }
     }
 
-    /// How much of the closed curve shows when a squeeze (`squeeze`, `0..=1`) is what shut the eye. The open pieces
-    /// vanish the moment the openness falls under [`SHUT_BELOW`], so the closed curve takes over at full strength there
-    /// and fades out to nothing at full squeeze (where the chevron has fully replaced it): no jump at the switch. An
-    /// eye already shut by a blink or an arc just fades with the squeeze.
+    /// Whether the squeeze (not a blink or an arc) is what is shutting this eye.
+    fn squeeze_shut(&self, squeeze: f32) -> bool {
+        squeeze > 0.0 && self.unsqueezed > SHUT_BELOW && self.arc < ARC_FROM
+    }
+
+    /// How much of the open eye's pieces show, `0..=1`. A squeeze that shuts an open eye fades them out over the
+    /// last [`HANDOVER_BAND`] of openness before [`SHUT_BELOW`], where the closed curve takes over, so no piece
+    /// vanishes in one step. Everything else is `1`.
+    pub(super) fn open_fade(&self, squeeze: f32) -> f32 {
+        if self.squeeze_shut(squeeze) && self.open < SHUT_BELOW + HANDOVER_BAND {
+            ((self.open - SHUT_BELOW) / HANDOVER_BAND).clamp(0.0, 1.0)
+        } else {
+            1.0
+        }
+    }
+
+    /// How much of the closed curve shows when a squeeze (`squeeze`, `0..=1`) is what shut the eye: it comes in as the
+    /// open pieces fade out (see [`Eye::open_fade`]), is at full strength where they are gone, and fades out to nothing
+    /// at full squeeze, where the chevron has fully replaced it. An eye shut by a blink or an arc just fades with the
+    /// squeeze.
     pub(super) fn closed_strength(&self, squeeze: f32) -> f32 {
-        let fade = 1.0 - squeeze.clamp(0.0, 1.0);
-        if self.unsqueezed > SHUT_BELOW { (fade * self.unsqueezed / SHUT_BELOW).min(1.0) } else { fade }
+        if self.unsqueezed > SHUT_BELOW {
+            self.takeover(squeeze) * (1.0 - self.open_fade(squeeze))
+        } else {
+            1.0 - squeeze.clamp(0.0, 1.0)
+        }
+    }
+
+    /// The closed curve's share once it has taken over from an open eye the squeeze is shutting: full where the
+    /// openness reaches [`SHUT_BELOW`], then fading out with the squeeze.
+    fn takeover(&self, squeeze: f32) -> f32 {
+        ((1.0 - squeeze.clamp(0.0, 1.0)) * self.unsqueezed / SHUT_BELOW).min(1.0)
+    }
+
+    /// Whether the closed curve is drawn: the eye is shut, or a squeeze is fading its open pieces out.
+    pub(super) fn shows_closed(&self, squeeze: f32) -> bool {
+        self.lid() != Lid::Open || self.open_fade(squeeze) < 1.0
+    }
+
+    /// How far the closed curve of an eye shut by the squeeze has moved from the open eye it took over from, `0..=1`:
+    /// `0` where it takes over (it lies on the lens the open eye had shrunk to), `1` at full squeeze, where it is
+    /// invisible anyway. An eye shut by a blink or an arc is `1`: the curve is drawn in its own place, as in the prototype.
+    pub(super) fn handover_drift(&self, squeeze: f32) -> f32 {
+        if self.unsqueezed > SHUT_BELOW { 1.0 - self.takeover(squeeze) } else { 1.0 }
+    }
+
+    /// The middle of the aperture at `u`: halfway between the lids.
+    pub(super) fn midline(&self, u: f32) -> f32 {
+        f32::midpoint(self.top(u), self.bottom(u))
     }
 
     /// How the eye is drawn: the open aperture, or which shut curve (`closedEye`'s `dir`).

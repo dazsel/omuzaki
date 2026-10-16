@@ -8,11 +8,9 @@
 //! metres, is [`HEAD_TO_PLANE`] lower here.
 
 use omuzaki_core::glam::{Affine2, Vec2};
-use omuzaki_face_api::{
-    BlushKind, Cap, CheekStyle, Cmd, Colour, ColourExt, FaceLayerId, FaceRect, Join, Paint, Stops, narrow,
-};
+use omuzaki_face_api::{BlushKind, Cap, CheekStyle, Cmd, Colour, FaceLayerId, FaceRect, Join, Paint, Stops, narrow};
 
-use crate::painter::{PaintCtx, fixed_colour};
+use crate::painter::{PaintCtx, fixed_colour, scaled};
 
 /// Radius of the warm wash (the prototype's `0.17`).
 const WASH_RADIUS: f32 = 0.17;
@@ -199,7 +197,7 @@ fn puffed_cheek(ctx: &mut PaintCtx<'_>, style: &CheekStyle, puff: f32, side: f32
     let list = ctx.list(FaceLayerId::Base);
     let path = list.path().polyline(&rim).finish();
     list.stroke(path, Paint::Solid(shade), PUFF_SHADE_WIDTH);
-    list.stroke(path, Paint::Solid(line.faded(PUFF_LINE_ALPHA * puff)), PUFF_LINE_WIDTH);
+    list.stroke(path, Paint::Solid(scaled(line, PUFF_LINE_ALPHA * puff)), PUFF_LINE_WIDTH);
     let at = centre + Vec2::new(side * PUFF_HIGHLIGHT_AT.x * radii.x, PUFF_HIGHLIGHT_AT.y * radii.y);
     let spot = list.path().ellipse(at, PUFF_HIGHLIGHT_RADII.x * radii.x, PUFF_HIGHLIGHT_RADII.y * radii.y).finish();
     list.fill(spot, Paint::Solid(with_alpha(PUFF_HIGHLIGHT_COLOUR, PUFF_HIGHLIGHT_ALPHA * puff)));

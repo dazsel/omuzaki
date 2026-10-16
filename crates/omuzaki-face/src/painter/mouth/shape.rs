@@ -17,11 +17,9 @@
 //! once the draw list is warm (the point arrays live on the stack).
 
 use omuzaki_core::glam::Vec2;
-use omuzaki_face_api::{
-    Cap, Cmd, Colour, ColourExt, FaceLayerId, Join, MouthParams, MouthStyle, Paint, PathRef, Stops, narrow,
-};
+use omuzaki_face_api::{Cap, Cmd, Colour, FaceLayerId, Join, MouthParams, MouthStyle, Paint, PathRef, Stops, narrow};
 
-use crate::painter::{PaintCtx, fixed_colour};
+use crate::painter::{PaintCtx, fixed_colour, scaled};
 
 /// Below this opening (after the press has taken its share) the mouth is a closed line.
 const CLOSED_BELOW: f32 = 0.06;
@@ -288,7 +286,7 @@ pub(super) fn smoothstep(t: f32) -> f32 {
 
 /// `colour` at `alpha` as a solid paint.
 pub(super) fn solid(colour: Colour, alpha: f32) -> Paint {
-    Paint::Solid(colour.faded(alpha))
+    Paint::Solid(scaled(colour, alpha))
 }
 
 /// Position along a path of sample `i` out of `n`, from `-1` to `1`.

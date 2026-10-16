@@ -4,12 +4,12 @@
 //! [`Crease::lift`]: omuzaki_face_api::Crease::lift
 
 use omuzaki_core::glam::Vec2;
-use omuzaki_face_api::{ColourExt, FaceLayerId, Paint, narrow};
+use omuzaki_face_api::{FaceLayerId, Paint, narrow};
 
 use super::aperture::Eye;
 use super::{FALLBACK_COLOUR, Side};
 use crate::painter::PaintCtx;
-use crate::painter::fixed_colour;
+use crate::painter::{fixed_colour, scaled};
 
 /// Points on the curve (`i = 0..=20`), from `u` [`FROM`] over [`SPAN`] (to 1.0).
 const POINTS: usize = 21;
@@ -38,5 +38,5 @@ pub(super) fn paint(ctx: &mut PaintCtx<'_>, side: Side) {
     }
     let list = ctx.list(FaceLayerId::Base);
     let path = list.path().polyline(&points).finish();
-    list.stroke(path, Paint::Solid(fixed_colour(&style.colour, FALLBACK_COLOUR).faded(strength)), WIDTH);
+    list.stroke(path, Paint::Solid(scaled(fixed_colour(&style.colour, FALLBACK_COLOUR), strength)), WIDTH);
 }

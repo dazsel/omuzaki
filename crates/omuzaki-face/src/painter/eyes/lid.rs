@@ -11,12 +11,12 @@
 //! [`LowerLidStyle::cheek_line`]: omuzaki_face_api::LowerLidStyle::cheek_line
 
 use omuzaki_core::glam::Vec2;
-use omuzaki_face_api::{Colour, ColourExt, FaceLayerId, Paint, narrow};
+use omuzaki_face_api::{Colour, FaceLayerId, Paint, narrow};
 
 use super::aperture::Eye;
 use super::{FALLBACK_COLOUR, Side};
 use crate::painter::PaintCtx;
-use crate::painter::fixed_colour;
+use crate::painter::{fixed_colour, scaled};
 
 /// Points on each of the lines (`i = 0..=24`).
 const POINTS: usize = 25;
@@ -52,14 +52,14 @@ pub(super) fn paint(ctx: &mut PaintCtx<'_>, side: Side) {
     let line_alpha = narrow(style.line);
     if line_alpha > 0.0 {
         let points = along(&eye, LINE_FROM, LINE_SPAN, 0.0);
-        stroke(ctx, &points, colour.faded(line_alpha), LINE_WIDTH);
+        stroke(ctx, &points, scaled(colour, line_alpha), LINE_WIDTH);
     }
     let strength = ((eye.lower_lid() - SMILE_FROM) / SMILE_RANGE).clamp(0.0, 1.0);
     if style.cheek_line && eye.lower_lid() > SMILE_FROM && strength > 0.0 {
         let line = along(&eye, SMILE_LINE_FROM, SMILE_LINE_SPAN, 0.0);
-        stroke(ctx, &line, colour.faded(SMILE_LINE_ALPHA * strength), SMILE_LINE_WIDTH);
+        stroke(ctx, &line, scaled(colour, SMILE_LINE_ALPHA * strength), SMILE_LINE_WIDTH);
         let rim = along(&eye, RIM_FROM, RIM_SPAN, -RIM_BELOW);
-        stroke(ctx, &rim, RIM_COLOUR.faded(RIM_ALPHA * strength), RIM_WIDTH);
+        stroke(ctx, &rim, scaled(RIM_COLOUR, RIM_ALPHA * strength), RIM_WIDTH);
     }
 }
 

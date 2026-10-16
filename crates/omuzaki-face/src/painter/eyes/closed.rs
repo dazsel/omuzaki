@@ -35,14 +35,24 @@ const LASH_WIDTH: f32 = 0.0018;
 /// Paints one eye if it is shut, as the happy arc or the relaxed curve.
 pub(super) fn paint(ctx: &mut PaintCtx<'_>, side: Side) {
     let eye = Eye::new(ctx.profile, ctx.params, side);
-    let height: fn(f32) -> f32 = match eye.lid() {
-        Lid::Open => return,
-        Lid::Arc => |u| ARC_BASE + ARC_HEIGHT * (1.0 - u * u),
-        Lid::Relaxed => |u| RELAXED_BASE - RELAXED_BOW * (1.0 - u * u) + RELAXED_SLOPE * u,
+    let squeeze = ctx.params.effects.squeeze;
+    if !eye.shows_closed(squeeze) {
+        return;
+    }
+    let arc = eye.lid() == Lid::Arc;
+    let shape: fn(f32) -> f32 = if arc {
+        |u| ARC_BASE + ARC_HEIGHT * (1.0 - u * u)
+    } else {
+        |u| RELAXED_BASE - RELAXED_BOW * (1.0 - u * u) + RELAXED_SLOPE * u
     };
+    // An eye the squeeze has just shut starts from the lens the open eye shrank to and drifts to the curve's own place
+    // as the squeeze goes on, so the geometry is continuous where the open pieces give way. A blink or an arc has no
+    // such open eye to follow (`drift` is 1).
+    let drift = if arc { 1.0 } else { eye.handover_drift(squeeze) };
+    let height = |u: f32| drift * shape(u) + (1.0 - drift) * eye.midline(u);
     // A squeeze turns the eye into the chevron of `effects`: the closed curve and its lashes fade out as the chevron
     // fades in, and take over from the open eye at full strength where it shuts, so there is no jump at any squeeze.
-    let opacity = eye.closed_strength(ctx.params.effects.squeeze);
+    let opacity = eye.closed_strength(squeeze);
     if opacity <= 0.0 {
         return;
     }
@@ -64,7 +74,7 @@ pub(super) fn paint(ctx: &mut PaintCtx<'_>, side: Side) {
         join: Join::Round,
         opacity,
     });
-    if eye.lid() == Lid::Relaxed {
+    if !arc {
         for u in LASHES {
             let from = eye.point(u, height(u));
             let to = from + Vec2::new(eye.outward() * LASH_OUT, -LASH_DOWN);

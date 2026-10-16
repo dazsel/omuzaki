@@ -132,6 +132,19 @@ fn changed_pixels(layer: FaceLayerId, a: &DrawList, b: &DrawList) -> usize {
     ra.pixels.as_chunks::<4>().0.iter().zip(rb.pixels.as_chunks::<4>().0).filter(|(x, y)| x != y).count()
 }
 
+/// The summed absolute difference of all four channels of two rasterisations of `layer`: how much ink moved.
+fn ink_moved(layer: FaceLayerId, a: &DrawList, b: &DrawList) -> u64 {
+    let spec = FaceLayerSpec::for_layer(layer, &projection(), DEFAULT_PX_PER_M);
+    let raster = |list: &DrawList| {
+        let mut r = Raster::new(1, 1);
+        SkiaRasterizer::new().rasterize(&spec, list, spec.px_per_m, &mut r).unwrap();
+        r
+    };
+    let (ra, rb) = (raster(a), raster(b));
+    assert_eq!((ra.width, ra.height), (rb.width, rb.height));
+    ra.pixels.iter().zip(&rb.pixels).map(|(x, y)| u64::from(x.abs_diff(*y))).sum()
+}
+
 /// All the points of a list's paths.
 fn points(list: &DrawList) -> Vec<Vec2> {
     list.cmds()
@@ -547,6 +560,69 @@ fn a_squeeze_crossfades_the_closed_eye_into_the_chevron_with_no_jump() {
 }
 
 #[test]
+fn rendered_squeeze_steps_move_no_more_ink_than_their_neighbours_at_the_handover() {
+    let profile = profile();
+    let frame = |squeeze: f32| {
+        let mut p = params(|e, _| e.squeeze = squeeze);
+        p.left_eye = omuzaki_face_api::EyeParams { open: 1.0, close: 0.0, arc: 0.0, lower_lid: 0.0 };
+        p.right_eye = p.left_eye;
+        paint(&profile, &p).into_base()
+    };
+    let mut moved = Vec::new();
+    let mut last = frame(0.0);
+    for step in 1..=200_u16 {
+        let now = frame(f32::from(step) / 200.0);
+        moved.push((step, ink_moved(FaceLayerId::Base, &last, &now)));
+        last = now;
+    }
+    let mut sorted: Vec<u64> = moved.iter().map(|(_, m)| *m).collect();
+    sorted.sort_unstable();
+    let median = sorted[sorted.len() / 2];
+    // Before the open pieces were faded, the step where the squeeze shut the eye moved about seven times the ink of an
+    // ordinary step; the closed curve's drift to its own place makes the steps after it a little busier, never that.
+    let (at, worst) = moved.iter().copied().max_by_key(|(_, m)| *m).unwrap();
+    assert!(
+        worst <= 3 * median,
+        "the step to squeeze {} moved {worst}, the median step {median}",
+        f32::from(at) / 200.0
+    );
+}
+
+#[test]
+fn eye_lines_keep_the_alpha_of_their_resolved_colours() {
+    use omuzaki_face_api::{ColourRef, Paint};
+    for alpha in [0_u8, 100] {
+        let mut profile = profile();
+        let tinted = ColourRef::Fixed(Colour::rgba(10, 20, 30, alpha));
+        profile.eyes.lash.colour = tinted.clone();
+        profile.eyes.lash.lower = 1.0;
+        profile.eyes.lower_lid.colour = tinted.clone();
+        profile.eyes.lower_lid.line = 1.0;
+        profile.eyes.crease.colour = tinted;
+        profile.eyes.crease.strength = 1.0;
+        let drawn = paint(&profile, &params(|_, _| {})).into_base();
+        let alphas: Vec<u8> = drawn
+            .cmds()
+            .iter()
+            .filter_map(|c| match c {
+                Cmd::Fill { paint: Paint::Solid(c), .. } | Cmd::Stroke { paint: Paint::Solid(c), .. }
+                    if (c.r, c.g, c.b) == (10, 20, 30) =>
+                {
+                    Some(c.a)
+                }
+                _ => None,
+            })
+            .collect();
+        // Both eyes: the lash line, the lower lash, the lid line and the crease at least.
+        assert!(alphas.len() >= 8, "alpha {alpha}: only {} pieces drew in the colour", alphas.len());
+        assert!(
+            alphas.iter().all(|&a| a <= alpha),
+            "alpha {alpha}: a piece was drawn more opaque than its colour: {alphas:?}"
+        );
+    }
+}
+
+#[test]
 fn the_spiral_keeps_the_alpha_of_the_iris_ring_colour() {
     let mut profile = profile();
     profile.eyes.iris.ring = omuzaki_face_api::ColourRef::Fixed(Colour::rgba(10, 20, 30, 0));
@@ -569,8 +645,8 @@ fn the_spiral_keeps_the_alpha_of_the_iris_ring_colour() {
 #[test]
 fn squeezing_an_open_eye_hands_over_to_the_closed_curve_without_a_jump() {
     let profile = profile();
-    let mut open_seen = false;
-    let mut last_shown: Option<f32> = None;
+    let (mut open_seen, mut both_seen) = (false, false);
+    let mut last: Option<f32> = None;
     for step in 0..=200_u16 {
         let squeeze = f32::from(step) / 200.0;
         let mut p = params(|e, _| e.squeeze = squeeze);
@@ -578,28 +654,31 @@ fn squeezing_an_open_eye_hands_over_to_the_closed_curve_without_a_jump() {
         p.right_eye = p.left_eye;
         let drawn = paint(&profile, &p).into_base();
         let closed = closed_opacity(&drawn);
-        // An open eye is drawn with a clip round its iris; a shut one has none.
-        let open = drawn.cmds().iter().any(|c| matches!(c, Cmd::PushClip(_)));
-        if open {
-            open_seen = true;
-            assert!(closed == 0.0, "squeeze {squeeze}: an open eye and a closed curve together");
+        // An open eye is drawn with a clip round its iris, its first fill is the eye white: its opacity is the open
+        // pieces' share.
+        let open = if drawn.cmds().iter().any(|c| matches!(c, Cmd::PushClip(_))) {
+            drawn.cmds().iter().find_map(|c| if let Cmd::Fill { opacity, .. } = c { Some(*opacity) } else { None })
         } else {
-            // The closed curve is there from the first frame the open eye is gone, and strong where it takes over.
-            assert!(closed > 0.0 || squeeze >= 1.0, "squeeze {squeeze}: neither eye is drawn");
-            if closed > 0.0 {
-                match last_shown {
-                    None => assert!(closed >= 0.95, "squeeze {squeeze}: the closed curve takes over at only {closed}"),
-                    // The curve fades about 1 / 0.08 per unit of squeeze, so a step of 0.005 may lose 0.0625 of it.
-                    Some(last) => assert!(
-                        last - closed < 0.07,
-                        "squeeze {squeeze}: the closed curve jumped from {last} to {closed}"
-                    ),
-                }
-                last_shown = Some(closed);
-            }
+            None
+        };
+        open_seen |= open.is_some();
+        if let (Some(open), true) = (open, closed > 0.0) {
+            both_seen = true;
+            // While one fades out the other fades in: together they stay one eye's worth of ink.
+            assert!((0.9..=1.1).contains(&(open + closed)), "squeeze {squeeze}: open {open} and closed {closed}");
         }
+        // The visible eye, open or closed, never changes by more than one step of the fades.
+        let shown = open.unwrap_or(0.0) + closed;
+        if let Some(before) = last {
+            // The curve fades about 1 / 0.08 per unit of squeeze, so a step of 0.005 may lose 0.0625 of it.
+            assert!((before - shown).abs() < 0.13, "squeeze {squeeze}: the eye went from {before} to {shown}");
+        }
+        last = Some(shown);
     }
-    assert!(open_seen, "the sweep never drew the open eye");
+    assert!(
+        open_seen && both_seen,
+        "the sweep never showed the open eye ({open_seen}) fading into the curve ({both_seen})"
+    );
 }
 
 // ------------------------------------------------------------------------------------------------ allocation

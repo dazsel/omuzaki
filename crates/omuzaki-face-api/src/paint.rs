@@ -417,6 +417,18 @@ impl DrawList {
         self.push(Cmd::Stroke { path, paint, width, cap: Cap::Round, join: Join::Round, opacity: 1.0 });
     }
 
+    /// Multiplies the opacity of every fill and stroke from command `from` on by `factor` (clamped to `0..=1`), so a
+    /// group of pieces painted in sequence can be faded together without knowing what they are.
+    pub fn scale_opacity_from(&mut self, from: usize, factor: f32) {
+        let factor = factor.clamp(0.0, 1.0);
+        for cmd in self.cmds.iter_mut().skip(from) {
+            match cmd {
+                Cmd::Fill { opacity, .. } | Cmd::Stroke { opacity, .. } => *opacity *= factor,
+                _ => {}
+            }
+        }
+    }
+
     /// The commands, in drawing order.
     pub fn cmds(&self) -> &[Cmd] {
         &self.cmds

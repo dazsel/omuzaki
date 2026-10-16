@@ -23,12 +23,12 @@
 //! [`Lash::inner_tick`]: omuzaki_face_api::Lash::inner_tick
 
 use omuzaki_core::glam::Vec2;
-use omuzaki_face_api::{Colour, ColourExt, FaceLayerId, Paint, narrow};
+use omuzaki_face_api::{Colour, FaceLayerId, Paint, narrow};
 
 use super::aperture::{Eye, smooth01};
 use super::{FALLBACK_COLOUR, Side};
 use crate::painter::PaintCtx;
-use crate::painter::fixed_colour;
+use crate::painter::{fixed_colour, scaled};
 
 /// Segments along the lash line; the polygon has `N + 1` points on each edge.
 const SEGMENTS: usize = 44;
@@ -76,7 +76,7 @@ pub(super) fn paint(ctx: &mut PaintCtx<'_>, side: Side) {
     lash_line(ctx, &eye, colour, thickness, flick);
     let lower = narrow(style.lower).clamp(0.0, 1.0);
     if lower > 0.0 {
-        lower_lash(ctx, &eye, colour.faded(lower));
+        lower_lash(ctx, &eye, scaled(colour, lower));
     }
     if style.inner_tick {
         inner_tick(ctx, &eye);

@@ -13,11 +13,11 @@
 //! [`Lips::strength`]: omuzaki_face_api::Lips::strength
 
 use omuzaki_core::glam::{Affine2, Vec2};
-use omuzaki_face_api::{Cap, Cmd, Colour, ColourExt, FaceLayerId, Join, Paint, Stops, narrow};
+use omuzaki_face_api::{Cap, Cmd, Colour, FaceLayerId, Join, Paint, Stops, narrow};
 
 use super::OpenMouth;
 use super::shape::{Frame, Kind, lerp};
-use crate::painter::{PaintCtx, fixed_colour};
+use crate::painter::{PaintCtx, fixed_colour, scaled};
 
 // The tongue (outside this change) takes its helpers from here.
 pub(super) use super::shape::solid;
@@ -143,9 +143,9 @@ pub(super) fn paint_gloss(ctx: &mut PaintCtx<'_>) {
         centre,
         radius: rx,
         stops: Stops::new(&[
-            (0.0, tint.faded(GLOSS_ALPHA[0] * strength)),
-            (0.6, tint.faded(GLOSS_ALPHA[1] * strength)),
-            (1.0, tint.faded(0.0)),
+            (0.0, scaled(tint, GLOSS_ALPHA[0] * strength)),
+            (0.6, scaled(tint, GLOSS_ALPHA[1] * strength)),
+            (1.0, scaled(tint, 0.0)),
         ]),
     };
     let list = ctx.list(FaceLayerId::Base);
@@ -176,7 +176,7 @@ pub(super) fn paint_rim(ctx: &mut PaintCtx<'_>) {
     let line = fixed_colour(&ctx.profile.mouth.line_colour, DEFAULT_LINE);
     let tint = tint(ctx);
     let (colour, width) =
-        if glossy { (darken(tint, DARKEN).faded(RIM_DARK_ALPHA), RIM_DARK_WIDTH) } else { (line, RIM_PLAIN_WIDTH) };
+        if glossy { (scaled(darken(tint, DARKEN), RIM_DARK_ALPHA), RIM_DARK_WIDTH) } else { (line, RIM_PLAIN_WIDTH) };
     let fade = open.fade;
     let outer = Paint::Solid(mix(line, colour, fade));
     let outer_width = outer_width(ctx, &open, width);
