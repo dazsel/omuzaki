@@ -64,6 +64,7 @@
 
 mod disk;
 mod error;
+pub mod journal;
 mod known;
 mod layout;
 mod lock;

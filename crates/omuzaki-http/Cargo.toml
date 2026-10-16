@@ -1,0 +1,31 @@
+[package]
+name = "omuzaki-http"
+description = "The HTTPS client behind the Fetcher contract: HttpFetcher over reqwest with rustls, https only, bounded redirects and retries, streaming bodies."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# `rustls-no-provider` leaves the crypto provider to us: `ring` below, installed in `HttpFetcherBuilder::build`.
+reqwest = { workspace = true, features = ["blocking", "rustls-no-provider", "system-proxy"] }
+rustls = { workspace = true, features = ["tls12", "logging"] }
+omuzaki-ai-api = { path = "../omuzaki-ai-api" }
+
+[dev-dependencies]
+bytes.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+tokio = { workspace = true, features = ["net", "time"] }
+
+[lints]
+workspace = true
+
+# Native only: the blocking reqwest client and its TLS stack have no wasm32 build
+[package.metadata.omuzaki]
+kind = "Implementation"
+summary = "`HttpFetcher`, the HTTPS `Fetcher` over reqwest with rustls and the `ring` provider (the OS trust store): https only, at most five redirects (each https), three tries with backoff on connect errors, timeouts, 5xx and 429, `Range` resume with a checked `Content-Range`, streamed bodies with an idle read timeout; native only; `allow_loopback_http` is a test aid"
+wasm = false
