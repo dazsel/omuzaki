@@ -31,7 +31,7 @@
 pub struct Limits {
     /// Longest source, in bytes, checked before parsing.
     pub source_bytes: usize,
-    /// Rhai operations.
+    /// Rhai operations: every step, the steps of a callback passed to an array function included.
     pub operations: u64,
     /// Inner op calls, and `get(path)` reads, which are counted with them.
     pub calls: u32,
@@ -76,14 +76,16 @@ impl Limits {
     /// Stack for the engine's own frames, in bytes.
     pub(crate) const STACK_BASE: usize = 16 * 1024 * 1024;
 
-    /// The Rhai-enforced limits that Rhai reads 0 as "unlimited" for, so 0 would lift the limit instead of
-    /// tightening it. A run with any of them at 0 is refused ([`Limits::zero_engine_limit`]).
+    /// The limits a 0 would read as "unlimited" for: Rhai's call, expression and size limits, and `operations`, which
+    /// the host counts itself (`Run::progress`) and holds to the same rule, so a 0 never means unlimited. A run with
+    /// any of them at 0 is refused ([`Limits::zero_engine_limit`]).
     const ENGINE_FIELDS: [&'static str; 7] =
         ["operations", "call_depth", "expr_depth", "fn_expr_depth", "string_bytes", "array_len", "map_len"];
 
-    /// The name of the first engine-enforced limit that is 0, if any: Rhai treats 0 there as no limit at all, which
-    /// is the opposite of what a caller tightening a limit means. [`ScriptHost::run`](crate::ScriptHost::run) fails
-    /// closed on it. The other limits (`calls`, `seconds`, the output and size caps) are ours and deny at 0.
+    /// The name of the first limit that is 0 among those where 0 reads as no limit at all (Rhai's call, expression and
+    /// size limits, and `operations`), which is the opposite of what a caller tightening a limit means.
+    /// [`ScriptHost::run`](crate::ScriptHost::run) fails closed on it. The other limits (`calls`, `seconds`, the output
+    /// and size caps) deny at 0.
     pub fn zero_engine_limit(&self) -> Option<&'static str> {
         let values = [
             self.operations,
