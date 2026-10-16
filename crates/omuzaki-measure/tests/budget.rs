@@ -198,3 +198,69 @@ fn the_jpeg_fixtures_are_the_kinds_they_are_named_and_stay_small() {
 /// ```
 #[allow(dead_code, reason = "documentation: the generator the fixtures were made with")]
 fn fixture_generator() {}
+
+/// A JPEG with `chunks` APP2 chunks of 65 519 profile bytes each (about 64 KiB apiece) after its start, the way a camera
+/// writes a long profile.
+fn jpeg_with_profile_chunks(chunks: usize) -> Vec<u8> {
+    let fixture = include_bytes!("fixtures/baseline_444.jpg");
+    let mut jpeg = fixture[..2].to_vec();
+    for _ in 0..chunks {
+        jpeg.extend([0xFF, 0xE2]);
+        jpeg.extend(u16::try_from(2 + 14 + 65_519).unwrap().to_be_bytes());
+        jpeg.extend(b"ICC_PROFILE\0\x01\x01");
+        jpeg.extend(vec![0_u8; 65_519]);
+    }
+    jpeg.extend(&fixture[2..]);
+    jpeg
+}
+
+#[test]
+fn a_declared_jpeg_profile_over_the_budget_is_refused_before_a_decoder_is_built() {
+    // 510 chunks: about 33 MB declared, which two copies put over the 64 MiB cap. The refusal comes from the declared
+    // length alone, so the decode allocates next to nothing beyond the input it was handed.
+    let jpeg = jpeg_with_profile_chunks(510);
+    let (result, peak) = peak_of(|| decode(&jpeg, ContentHash::of(&jpeg), FIELD));
+    let error = result.unwrap_err();
+    assert_eq!(error.code, ErrorCode::Invalid);
+    assert!(error.message.starts_with("The image is 96 × 64"), "{}", error.message);
+    assert!(peak < 1 << 20, "a refused declaration allocated {peak} bytes");
+}
+
+#[test]
+fn an_oversized_png_profile_is_refused_while_the_header_is_read_and_never_inflated_past_its_bound() {
+    // A 40 MiB profile of zeros compresses to about 40 KiB, so the file is tiny; inflated it is over the 16 MiB a profile
+    // may take. The decoder stops at the bound, so the decode holds a few times that at most, never the 40 MiB the chunk
+    // claims twice over (the bare decoder took 111 MB on this file).
+    let mut png = Vec::new();
+    let mut encoder = PngEncoder::new(&mut png);
+    encoder.set_icc_profile(vec![0_u8; 40 << 20]).unwrap();
+    encoder.write_image(&pattern(8, 8, 3), 8, 8, ExtendedColorType::Rgb8).unwrap();
+    assert!(png.len() < 1 << 20, "the crafted PNG is {} bytes", png.len());
+    let (result, peak) = peak_of(|| decode(&png, ContentHash::of(&png), FIELD));
+    let error = result.unwrap_err();
+    assert_eq!(error.code, ErrorCode::Invalid);
+    assert!(error.message.contains("inflates to more than 16 MiB"), "{}", error.message);
+    assert!(peak <= 48 << 20, "an oversized profile took {peak} bytes before it was refused");
+}
+
+#[test]
+fn a_profile_and_a_pixel_area_that_each_fit_are_accepted_together() {
+    // A 16-bit RGBA PNG planned at about 60 MiB, with a 3 MiB profile. The profile is held twice only while it is
+    // copied, before any pixel buffer exists, and once beside the pixels: 60 + 3 = 63 MiB, inside the 64 MiB cap. The
+    // old single sum, 60 + 2 × 3 = 66 MiB, refused it. The profile is not a valid sRGB one, so the decode ends at the
+    // colour check, past the budget: that is what shows the budget let it through.
+    let mut png = Vec::new();
+    let mut encoder = PngEncoder::new(&mut png);
+    let mut profile = vec![0_u8; 3 << 20];
+    profile[..4].copy_from_slice(&(3_u32 << 20).to_be_bytes());
+    encoder.set_icc_profile(profile).unwrap();
+    let side = 1_764;
+    let samples: Vec<u8> =
+        pattern(side, side, 4).iter().flat_map(|&byte| (u16::from(byte) * 257).to_ne_bytes()).collect();
+    encoder.write_image(&samples, side, side, ExtendedColorType::Rgba16).unwrap();
+    let plan = predicted_peak(&png).unwrap();
+    let (cap, mib) = (64_u64 << 20, 1_u64 << 20);
+    assert!(plan + 2 * (3 * mib) > cap && plan + 3 * mib <= cap, "the plan is {plan} bytes: adjust the side");
+    let error = decode(&png, ContentHash::of(&png), FIELD).unwrap_err();
+    assert!(error.message.contains("colour profile"), "{}", error.message);
+}

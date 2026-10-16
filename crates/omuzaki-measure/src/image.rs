@@ -39,6 +39,12 @@ fn max_decoded_bytes() -> u64 {
     u64::from(MAX_DECODED_MIB) << 20
 }
 
+/// The most a PNG's embedded profile may inflate to: a quarter of the decoded cap. The decoder holds one copy and
+/// `icc_profile` returns another, so two of them stay well inside the cap; real profiles are a few KiB.
+fn max_profile_bytes() -> u64 {
+    max_decoded_bytes() / 4
+}
+
 /// Where the pixels come from. JSON: `{"asset": "b3:…"}` for an image in the store, or `{"path": "refs/front.png"}` for
 /// a file the grants allow (relative paths resolve from the project folder).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -149,17 +155,18 @@ pub fn decode(bytes: &[u8], hash: ContentHash, field: &str) -> Result<Rgba8, OpE
     if !fits(plan.width, plan.height, plan.peak) {
         return Err(too_large(field, plan.width, plan.height));
     }
-    let mut input = reader(bytes).map_err(|error| unreadable(field, &error))?;
-    input.limits(limits());
-    let mut decoder = input.into_decoder().map_err(|error| unreadable(field, &error))?;
-    // A JPEG's declared profile length is read before `icc_profile` copies any of it.
+    // A JPEG decoder keeps the profile it finds while it is built, so the declared length is judged before that, and
+    // before `icc_profile` copies it. A PNG profile was bounded while `plan` read its header, and a profile past the bound refused there.
     if let Some(declared) = header::jpeg_icc_declared_len(bytes)
-        && !fits(plan.width, plan.height, peak_with_profile(plan.peak, declared))
+        && !profile_fits(&plan, bytes.len() as u64, declared)
     {
         return Err(too_large(field, plan.width, plan.height));
     }
+    let mut input = reader(bytes).map_err(|error| unreadable(field, &error))?;
+    input.limits(limits());
+    let mut decoder = input.into_decoder().map_err(|error| unreadable(field, &error))?;
     let icc = decoder.icc_profile().map_err(|error| unreadable(field, &error))?;
-    if !fits(plan.width, plan.height, peak_with_profile(plan.peak, icc.as_ref().map_or(0, |p| p.len() as u64))) {
+    if !profile_fits(&plan, bytes.len() as u64, icc.as_ref().map_or(0, |p| p.len() as u64)) {
         return Err(too_large(field, plan.width, plan.height));
     }
     if let Some(found) = header::non_srgb(bytes, format, icc.as_deref()) {
@@ -175,14 +182,15 @@ pub fn decode(bytes: &[u8], hash: ContentHash, field: &str) -> Result<Rgba8, OpE
     Ok(Rgba8 { width, height, pixels: rgba.into_raw(), hash })
 }
 
-/// The peak of a decode that holds an embedded profile of `profile` bytes, over `base`, the decode's peak without it. The
-/// profile lives twice while `icc_profile` returns its copy: the decoder keeps its own, and the returned copy is the
-/// other. Then the returned copy is dropped, and the pixel decode holds the decoder's copy alone. The peak is the larger
-/// of the two phases: `base + 2 * profile` while copying, `base + profile` while decoding. The declared length is checked
-/// before the copy for a JPEG; a PNG profile is inflated by the `png` crate while its header is read, under the budget
-/// as its own limit, before this crate sees it.
-fn peak_with_profile(base: u64, profile: u64) -> u64 {
-    (base + 2 * profile).max(base + profile)
+/// Whether an embedded profile of `profile` bytes keeps both phases of the decode within the cap. The phases are
+/// separate in time. First the profile is copied out: the decoder holds its own copy and `icc_profile` returns the
+/// other, with the encoded input and the decoder's state live and no pixel buffer yet. Then the returned copy is
+/// dropped and the pixels are decoded with the decoder's copy still held: the plan's peak plus one profile. Each phase
+/// is checked on its own, and the profile counts twice only in the first.
+fn profile_fits(plan: &Plan, input_len: u64, profile: u64) -> bool {
+    let copy_phase = input_len + DECODER_STATE_BYTES + 2 * profile;
+    let decode_phase = plan.peak + profile;
+    fits(plan.width, plan.height, copy_phase.max(decode_phase))
 }
 
 /// The predicted peak of decoding `bytes`, from the header alone: the decoder's scratch, its output and the RGBA8 the
@@ -225,7 +233,21 @@ fn plan(bytes: &[u8], format: ImageFormat) -> Result<Plan, String> {
         let output = if frame.sampling.len() == 1 { 1 } else { 3 };
         (frame.width, frame.height, output, coefficient_bytes(&frame))
     } else {
-        let decoder = reader(bytes).and_then(ImageReader::into_decoder).map_err(|error| error.to_string())?;
+        // The PNG decoder inflates the `iCCP` profile while it reads the header, so the decoder is built under a limit
+        // on what it may allocate for it. The `png` crate does not report a profile past that limit, or a corrupt one:
+        // it drops it, and the image would read as untagged sRGB. So a file that has the chunk and yields no profile is
+        // refused here, not guessed at.
+        let mut input = reader(bytes).map_err(|error| error.to_string())?;
+        let mut limits = Limits::default();
+        limits.max_alloc = Some(max_profile_bytes());
+        input.limits(limits);
+        let mut decoder = input.into_decoder().map_err(|error| error.to_string())?;
+        if header::png_colour(bytes).iccp && decoder.icc_profile().map_err(|error| error.to_string())?.is_none() {
+            return Err(format!(
+                "its embedded colour profile is corrupt or inflates to more than {} MiB",
+                max_profile_bytes() >> 20
+            ));
+        }
         let (width, height) = decoder.dimensions();
         let output = u64::from(decoder.color_type().bytes_per_pixel());
         // The PNG decoder fills a frame-sized scratch buffer alongside its output, and keeps the rows it filters
@@ -300,25 +322,41 @@ fn at(field: &str, mut error: OpError) -> OpError {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_SIDE, fits, max_decoded_bytes, peak_with_profile};
+    use super::{MAX_SIDE, Plan, max_decoded_bytes, profile_fits};
 
-    #[test]
-    fn a_profile_counts_twice_while_it_is_copied() {
-        // Two copies are live while the returned copy exists: the copying phase is the larger, so it sets the peak.
-        assert_eq!(peak_with_profile(1_000, 10), 1_020);
+    const MIB: u64 = 1 << 20;
+
+    fn plan(peak: u64) -> Plan {
+        Plan { width: 1, height: 1, peak }
     }
 
     #[test]
-    fn the_budget_accepts_the_exact_cap_and_refuses_one_byte_over_with_two_copies() {
+    fn a_profile_counts_twice_only_while_it_is_copied() {
         let cap = max_decoded_bytes();
-        let base = 1 << 20;
-        // The largest profile whose two copies fit: 2 * profile = cap - base.
-        let fits_exactly = (cap - base) / 2;
-        assert!(fits(1, 1, peak_with_profile(base, fits_exactly)));
-        // One byte more and the copies are over the cap, even though one copy alone would fit.
-        assert!(!fits(1, 1, peak_with_profile(base, fits_exactly + 1)));
-        assert!(fits(1, 1, base + fits_exactly + 1), "one copy alone fits, so the second copy is what refuses it");
+        // Small image: the copy phase is the larger. Two copies of 32 MiB are exactly the cap and a byte more is over,
+        // though the decode phase (one copy over the plan) fits easily.
+        let input = 1_000;
+        let state = super::DECODER_STATE_BYTES;
+        let exact = (cap - input - state) / 2;
+        assert!(profile_fits(&plan(input + state + 5 * MIB), input, exact));
+        assert!(!profile_fits(&plan(input + state + 5 * MIB), input, exact + 1));
+    }
+
+    #[test]
+    fn the_copy_phase_does_not_carry_the_pixel_buffers_of_the_plan() {
+        // A plan of 44 MiB with a 12 MiB profile: the old single sum was 44 + 24 = 68 MiB and refused it, but the copy
+        // phase holds only the input and the decoder state beside the two profiles (about 24 MiB) and the decode phase
+        // 44 + 12 = 56 MiB. Both fit.
+        assert!(profile_fits(&plan(44 * MIB), 1_000, 12 * MIB));
+    }
+
+    #[test]
+    fn the_decode_phase_is_refused_one_byte_over_the_cap() {
+        let cap = max_decoded_bytes();
+        let profile = 3 * MIB;
+        assert!(profile_fits(&plan(cap - profile), 1_000, profile));
+        assert!(!profile_fits(&plan(cap - profile + 1), 1_000, profile));
         // The side limit is unaffected by the profile.
-        assert!(!fits(MAX_SIDE + 1, 1, 0));
+        assert!(!profile_fits(&Plan { width: MAX_SIDE + 1, height: 1, peak: 0 }, 0, 0));
     }
 }

@@ -96,6 +96,8 @@ pub(crate) fn jpeg_icc_declared_len(bytes: &[u8]) -> Option<u64> {
 pub(crate) struct PngColour {
     /// Whether the file has an `sRGB` chunk.
     pub(crate) srgb: bool,
+    /// Whether the file has an `iCCP` chunk, an embedded profile.
+    pub(crate) iccp: bool,
     /// The `gAMA` chunk's gamma times 100 000 (sRGB is 45 455), when present.
     pub(crate) gamma: Option<u32>,
     /// The `cHRM` chunk's eight values (white x and y, red, green, blue), times 100 000, when present.
@@ -111,6 +113,7 @@ pub(crate) fn png_colour(bytes: &[u8]) -> PngColour {
         match kind {
             b"IDAT" | b"IEND" => break,
             b"sRGB" => colour.srgb = true,
+            b"iCCP" => colour.iccp = true,
             b"gAMA" if data.len() == 4 => colour.gamma = be_u32(data, 0),
             b"cHRM" if data.len() == 32 => {
                 colour.chromaticities = Some(std::array::from_fn(|i| be_u32(data, 4 * i).unwrap_or(0)));
