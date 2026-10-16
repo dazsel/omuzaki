@@ -29,7 +29,7 @@ pub struct CacheDirError;
 pub fn app_cache_dir() -> Result<PathBuf, CacheDirError> {
     let env = std::env::var_os(CACHE_DIR_ENV);
     let base = BaseDirs::new();
-    resolve(env.as_deref(), base.as_ref().map(|dirs| dirs.cache_dir()))
+    resolve(env.as_deref(), base.as_ref().map(directories::BaseDirs::cache_dir))
 }
 
 /// [`app_cache_dir`] with the environment passed in, so tests need not touch the process environment.

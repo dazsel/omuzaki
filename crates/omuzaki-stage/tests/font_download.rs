@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use omuzaki_ai::VerifiedCache;
-use omuzaki_ai_api::{FetchError, FileSource, NoProgress, PinnedFile, Progress, Sha256};
+use omuzaki_ai_api::{FetchError, FileSource, NoProgress, Progress, Sha256};
 use omuzaki_http::HttpFetcher;
 use omuzaki_stage::sheet::layout::{
     Align, Dpi, Family, FontConfig, FontError, FontSource, FontSpec, HanVariant, Orientation, Page, Paper, PinnedFonts,

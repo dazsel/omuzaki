@@ -4,3 +4,4 @@ kind = "crate"
 used_for = "Parses the HTTP-date form of `Retry-After` in `omuzaki-http`; already in the build through hyper"
 status = "yes"
 audit = "(crates.io: MIT OR Apache-2.0)"
+crates = ["httpdate"]
