@@ -11,7 +11,7 @@
 # is committed to the repo. The contact sheet is uploaded unzipped (`archive: false`), so its link opens as a picture in
 # the browser for anyone signed in with access to the repository.
 #
-# To add a case, see tools/ci/evidence.py and crates/omuzaki-char/evidence.toml.
+# To add a case, put it in crates/<crate>/evidence/<change>.toml; see tools/ci/evidence.py and crates/omuzaki-char/evidence.toml.
 name: Visual evidence
 
 on:
