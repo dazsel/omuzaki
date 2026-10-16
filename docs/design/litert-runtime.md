@@ -470,7 +470,7 @@ jobs:
     # small C smoke program: TfLiteVersion, omz_litert_abi, the three face graphs fetched by
     # tools/models/mediapipe-face.sh. Each graph's delegation to XNNPACK must equal its pin in tools/litert/pins.toml,
     # in either direction (counted by a plan program built with the library; the detector and landmarks are fully
-    # delegated, the blendshapes graph keeps 1 of its 182 nodes on a builtin kernel, the same on every platform), and
+    # delegated, the blendshapes graph keeps 1 of its 182 nodes on a builtin kernel, its last STRIDED_SLICE, which drops a dimension and so carries a `shrink_axis_mask` that XNNPACK refuses; the pin names that op, and another op fails even at the same count; all the same on every platform), and
     # every output must be within 1e-4 of the ai-edge-litert wheel (7.2), the builtin-kernel node included
   # no release job: publishing waits for the owner's decision (8.5)
 ```

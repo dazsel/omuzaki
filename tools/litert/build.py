@@ -559,17 +559,28 @@ def delegated(printed: str) -> tuple[int, int, int, list[str]]:
     return taken, total, partitions, left
 
 
-def delegation_problem(graph: str, taken: int, total: int, partitions: int) -> str:
+def op_name(op: str) -> str:
+    """An op as the plan prints it, named: "45" is "STRIDED_SLICE (45)" through pins.toml's [builtin_ops]; a custom op or
+    an unnamed number prints as it is."""
+    name = PINS["builtin_ops"].get(op)
+    return f"{name} ({op})" if name else op
+
+
+def delegation_problem(graph: str, taken: int, total: int, partitions: int, left: list[str]) -> str:
     """Why the delegation differs from pins.toml's [delegation] row for `graph`, or "" when it matches. "all" pins full
-    delegation whatever the node count; a number pins that many of `of` nodes. Either direction is a change."""
+    delegation whatever the node count; a number pins that many of `of` nodes. `left_out` pins the ops of the nodes
+    left on builtin kernels. Either direction is a change: fewer nodes, more nodes, another op, another partition count."""
     pin = PINS["delegation"][graph]
     full = pin["nodes"] == "all"
     expected = (total, total) if full else (pin["nodes"], pin["of"])
-    if (taken, total) == expected and partitions == pin["partitions"]:
+    pinned_ops = sorted(str(op) for op in pin.get("left_out", []))
+    if (taken, total) == expected and partitions == pin["partitions"] and sorted(left) == pinned_ops:
         return ""
     pinned = "all nodes" if full else f"{pin['nodes']} of {pin['of']} nodes"
-    return (f"{graph}: XNNPACK took {taken} of {total} nodes in {partitions} partitions; pinned {pinned} in "
-            f"{pin['partitions']} (tools/litert/pins.toml)")
+    named = lambda ops: ", ".join(op_name(op) for op in ops) or "none"
+    return (f"{graph}: XNNPACK took {taken} of {total} nodes in {partitions} partitions, leaving {named(sorted(left))} "
+            f"on builtin kernels; pinned {pinned} in {pin['partitions']}, leaving {named(pinned_ops)} "
+            f"(tools/litert/pins.toml)")
 
 
 def max_abs_diff(ours, reference, what: str) -> float:
@@ -648,7 +659,7 @@ def cmd_check(args):
         produced = work / f"{graph}.out"
         printed = dict(line.split(" ", 1) for line in run([*smoke, model, produced, *inputs]).splitlines())
         taken, total, partitions, left = delegated(run([programs / f"omz_litert_plan{executable}", model]))
-        problems.append(delegation_problem(graph, taken, total, partitions))
+        problems.append(delegation_problem(graph, taken, total, partitions, left))
         ours = produced.read_bytes()
         expect(f"{graph} output bytes", len(ours), sum(tensor.nbytes for tensor in expected))
         worst, parity = graph_parity(graph, ours, expected)
@@ -657,7 +668,7 @@ def cmd_check(args):
             problems.append(f"{graph}: omz_litert_capture_errors caught no text for a refused shape")
         if worst > tolerance:
             problems.append(f"{graph}: max |ours - wheel| = {worst:.3g}, over the {tolerance} gate")
-        builtin = ", ".join(left) or "none"
+        builtin = ", ".join(op_name(op) for op in left) or "none"
         rows.append(f"| {graph} | {taken} of {total} in {partitions} | {builtin} | {worst:.3g} | "
                     f"{printed.get('error', '')[:80].replace('|', '/')} |")
     write_summary(f"### Check {args.platform}\n\n`TfLiteVersion()` {loaded['version']}, "

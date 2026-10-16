@@ -178,16 +178,22 @@ class ReadBack(unittest.TestCase):
 
 class Delegation(unittest.TestCase):
     def test_the_measured_counts_match_the_pins(self):
-        self.assertEqual(build.delegation_problem("face_detector", 160, 160, 1), "")
-        self.assertEqual(build.delegation_problem("face_blendshapes", 181, 182, 1), "")
+        self.assertEqual(build.delegation_problem("face_detector", 164, 164, 1, []), "")
+        self.assertEqual(build.delegation_problem("face_landmarks_detector", 471, 471, 1, []), "")
+        self.assertEqual(build.delegation_problem("face_blendshapes", 181, 182, 1, ["45"]), "")
 
     def test_a_change_in_either_direction_fails(self):
-        cases = [("face_detector", 159, 160, 1), ("face_detector", 160, 160, 2),
-                 ("face_blendshapes", 182, 182, 1), ("face_blendshapes", 180, 182, 1),
-                 ("face_blendshapes", 181, 183, 1), ("face_blendshapes", 181, 182, 2)]
-        for graph, taken, total, partitions in cases:
+        cases = [("face_detector", 163, 164, 1, ["3"]), ("face_detector", 164, 164, 2, []),
+                 ("face_blendshapes", 182, 182, 1, []), ("face_blendshapes", 180, 182, 1, ["45", "3"]),
+                 ("face_blendshapes", 181, 183, 1, ["45"]), ("face_blendshapes", 181, 182, 2, ["45"])]
+        for graph, taken, total, partitions, left in cases:
             with self.subTest(graph=graph, taken=taken, total=total, partitions=partitions):
-                self.assertIn("pinned", build.delegation_problem(graph, taken, total, partitions))
+                self.assertIn("pinned", build.delegation_problem(graph, taken, total, partitions, left))
+
+    def test_another_op_left_out_fails_at_the_same_count_and_names_both(self):
+        why = build.delegation_problem("face_blendshapes", 181, 182, 1, ["22"])
+        self.assertIn("leaving 22 on builtin kernels", why)
+        self.assertIn("leaving STRIDED_SLICE (45)", why)
 
     def test_every_face_graph_has_a_pin(self):
         self.assertEqual(sorted(build.PINS["delegation"]), sorted(build.FACE_GRAPHS))
