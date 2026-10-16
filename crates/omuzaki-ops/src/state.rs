@@ -7,9 +7,12 @@ use std::collections::{BTreeSet, HashMap};
 
 use omuzaki_core::time::Seconds;
 use omuzaki_doc_api::{DocPath, DocRead, DocWrite, Patch, Value};
-use omuzaki_ops_api::{Actor, Cause, Event, Grants, OpError, OpRecord, Scope, TxId, Undo, checks};
+use omuzaki_ops_api::{
+    Actor, Cause, Event, Grants, OpError, OpRecord, Scope, SessionId, SessionInfo, SessionTx, TxId, Undo, checks,
+};
 
 use crate::error;
+use crate::sessions::Registry;
 
 /// One undo step: everything a transaction changed, as one combined patch.
 ///
@@ -117,11 +120,22 @@ pub(crate) struct State {
     /// has no `Hash` or `Ord`).
     histories: Vec<History>,
     outbox: Vec<Event>,
+    /// The agent sessions and their principals. Under the same lock as the rest, so a pause and the check that honours
+    /// it cannot interleave.
+    pub(crate) sessions: Registry,
 }
 
 impl State {
     pub(crate) fn new(doc: Box<dyn DocWrite>) -> Self {
-        Self { doc, log: Vec::new(), last_tx: 0, open: HashMap::new(), histories: Vec::new(), outbox: Vec::new() }
+        Self {
+            doc,
+            log: Vec::new(),
+            last_tx: 0,
+            open: HashMap::new(),
+            histories: Vec::new(),
+            outbox: Vec::new(),
+            sessions: Registry::new(),
+        }
     }
 
     pub(crate) fn doc(&self) -> &dyn DocRead {
@@ -140,6 +154,29 @@ impl State {
     /// Queues an event that no edit produced (a job changed state), behind everything queued so far.
     pub(crate) fn queue_event(&mut self, event: Event) {
         self.outbox.push(event);
+    }
+
+    /// One session as the panel shows it: the registry's record with the effective grants and the open transaction
+    /// filled in. With several open transactions, the oldest is the one shown.
+    pub(crate) fn session_info(&self, session: &SessionInfo) -> SessionInfo {
+        let open_tx = self
+            .open
+            .iter()
+            .filter(|(_, open)| open.owner == session.actor)
+            .min_by_key(|(tx, _)| **tx)
+            .map(|(tx, open)| SessionTx { tx: *tx, label: open.step.label.clone() });
+        SessionInfo { grants: self.sessions.effective(session), open_tx, ..session.clone() }
+    }
+
+    /// The snapshot of session `id`, if there is one.
+    pub(crate) fn session(&self, id: SessionId) -> Option<SessionInfo> {
+        self.sessions.find(id).map(|s| self.session_info(s))
+    }
+
+    /// Reserves a transaction id that is never opened, for a `begin` that was refused: `Runner::begin` cannot return an
+    /// error, so the id it hands back fails closed on every later use.
+    pub(crate) fn reserve_tx(&mut self) -> TxId {
+        next_tx(&mut self.last_tx)
     }
 
     /// Opens a transaction owned by `actor`.
@@ -167,8 +204,12 @@ impl State {
         let version = checks::apply_patch(&mut *self.doc, patch).map_err(|e| error::apply_failed(op, e))?;
 
         let tx = joined.as_ref().map_or_else(|| next_tx(&mut self.last_tx), |open| open.step.tx);
-        let record =
+        let principal = self.sessions.principal_of(&actor).cloned();
+        let mut record =
             OpRecord::new(self.log.len() as u64 + 1, op, args, actor, tx, at, patch.clone(), version).with_cause(cause);
+        if let Some(person) = principal {
+            record = record.with_on_behalf_of(person);
+        }
         self.log.push(record.clone());
         self.outbox.push(Event::op_applied(record.clone()));
 
@@ -238,6 +279,7 @@ impl State {
     fn finish(&mut self, owner: &Actor, step: Step) {
         self.outbox.push(Event::tx_committed(step.tx, step.label.clone(), owner.clone()));
         if step.changes_document() {
+            self.sessions.count_step(owner);
             let history = self.history(owner);
             history.redo.clear();
             history.undo.push(step);

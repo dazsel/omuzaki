@@ -8,10 +8,17 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
-/// `crates/omuzaki-test/evals/private.toml`: what must never produce an eval record.
+/// `docs/licensing/private-material.toml`: what must never produce an eval record (the file `cargo xtask lint-seed`
+/// reads too).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PrivateList {
+    /// Names, matched case-insensitively as substrings of an item's path.
+    #[serde(default)]
+    pub names: Vec<String>,
+    /// Face-profile ids; read by `cargo xtask lint-seed`, and accepted here so the two lints share one file.
+    #[serde(default)]
+    pub face_profile_ids: Vec<String>,
     /// Path prefixes such as `characters/example-private/`, matched as whole path components anywhere in a path (after `.`, `..`
     /// and doubled separators are resolved).
     #[serde(default)]
@@ -35,6 +42,20 @@ pub enum Source {
     PublicDomain,
     /// Under a licence that allows commercial use and use in test fixtures.
     Licensed,
+}
+
+impl Source {
+    /// The word a manifest uses for the source.
+    #[must_use]
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Synthetic => "synthetic",
+            Self::Own => "own",
+            Self::Cc0 => "cc0",
+            Self::PublicDomain => "public-domain",
+            Self::Licensed => "licensed",
+        }
+    }
 }
 
 /// The record that says an item may be used.
@@ -79,9 +100,9 @@ pub struct Item {
 pub struct EvalSet {
     /// The set's id.
     pub id: String,
-    /// `real` or `synthetic`.
+    /// `real` or `synthetic` ([`EvalSet::kind_of`] checks it).
     pub kind: String,
-    /// `dev` or `holdout`.
+    /// `dev` or `holdout` ([`EvalSet::is_holdout`] checks it).
     pub split: String,
     /// One line for people.
     pub summary: String,
@@ -90,11 +111,61 @@ pub struct EvalSet {
     pub items: Vec<Item>,
 }
 
+/// Why an eval set's `kind` or `split` is not one the harness knows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BadField {
+    /// `kind` or `split`.
+    pub field: &'static str,
+    /// What the manifest says.
+    pub found: String,
+    /// What is allowed.
+    pub allowed: &'static str,
+}
+
+impl std::fmt::Display for BadField {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "`{}` is `{}`; it must be {}", self.field, self.found, self.allowed)
+    }
+}
+
+impl EvalSet {
+    /// The set's kind as the model contract spells it (ADR 0017).
+    ///
+    /// # Errors
+    /// [`BadField`] when `kind` is neither `real` nor `synthetic`.
+    pub fn kind_of(&self) -> Result<omuzaki_ai_api::TestSetKind, BadField> {
+        match self.kind.as_str() {
+            "real" => Ok(omuzaki_ai_api::TestSetKind::Real),
+            "synthetic" => Ok(omuzaki_ai_api::TestSetKind::Synthetic),
+            other => Err(BadField { field: "kind", found: other.to_owned(), allowed: "`real` or `synthetic`" }),
+        }
+    }
+
+    /// Whether the set is held out: `true` for `split = "holdout"`.
+    ///
+    /// # Errors
+    /// [`BadField`] when `split` is neither `dev` nor `holdout`.
+    pub fn is_holdout(&self) -> Result<bool, BadField> {
+        match self.split.as_str() {
+            "dev" => Ok(false),
+            "holdout" => Ok(true),
+            other => Err(BadField { field: "split", found: other.to_owned(), allowed: "`dev` or `holdout`" }),
+        }
+    }
+
+    /// Whether the set is test-only (design 11.3): every `real` set and every `holdout` split may never appear in a
+    /// training manifest. A set whose kind or split is unreadable counts as protected: fail closed.
+    #[must_use]
+    pub fn is_protected(&self) -> bool {
+        self.kind_of().map_or(true, |k| k == omuzaki_ai_api::TestSetKind::Real) || self.is_holdout().unwrap_or(true)
+    }
+}
+
 /// All known eval sets by id, so a fixture's `{ set, item }` can be resolved to a record.
 pub type EvalSets = BTreeMap<String, EvalSet>;
 
 /// Where `file` of a private-list message is shown from.
-pub const PRIVATE_LIST_FILE: &str = "crates/omuzaki-test/evals/private.toml";
+pub const PRIVATE_LIST_FILE: &str = "docs/licensing/private-material.toml";
 
 /// A path as lowercase components: `\` is a separator, empty and `.` components are dropped and `..` pops one, so
 /// `characters/./Example-private//a.png` and `x/../characters/example-private/a.png` both read `characters, example-private, a.png`.
@@ -128,6 +199,13 @@ impl PrivateList {
                 if !wanted.is_empty() && path.windows(wanted.len()).any(|w| w == wanted.as_slice()) {
                     return Some(format!("path prefix `{prefix}`"));
                 }
+            }
+        }
+        if let Some(path) = &item.path {
+            let lower = path.to_lowercase();
+            if let Some(name) = self.names.iter().find(|name| !name.is_empty() && lower.contains(&name.to_lowercase()))
+            {
+                return Some(format!("name `{name}`"));
             }
         }
         let hash = bare_hash(&item.hash);
@@ -174,12 +252,34 @@ fn record_problems(hash: &str, record: &Provenance) -> Vec<String> {
     reasons
 }
 
+/// Every reason the eval sets `fixture` refers to may not be used: an unknown set, an item the set does not hold, or an
+/// item that is refused ([`refusals`]). Empty when the fixture may be built.
+///
+/// The lint reports these by file; the runner refuses the task before any attempt.
+#[must_use]
+pub fn fixture_refusals(fixture: &super::fixture::Fixture, sets: &EvalSets, private: &PrivateList) -> Vec<String> {
+    let mut out = Vec::new();
+    for reference in fixture.set_items() {
+        let found = sets.get(&reference.set).map(|set| set.items.iter().find(|i| i.hash == reference.item));
+        match found {
+            None => out.push(format!("refers to unknown eval set `{}`", reference.set)),
+            Some(None) => out.push(format!("item {} is not in eval set `{}`", reference.item, reference.set)),
+            Some(Some(item)) => out.extend(refusals(item, private)),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn private() -> PrivateList {
-        PrivateList { prefixes: vec!["characters/example-private/".into()], hashes: vec!["b3:DEAD".into()] }
+        PrivateList {
+            prefixes: vec!["characters/example-private/".into()],
+            hashes: vec!["b3:DEAD".into()],
+            ..PrivateList::default()
+        }
     }
 
     fn record(source: Source) -> Provenance {
@@ -212,7 +312,23 @@ mod tests {
             &private(),
         );
         assert_eq!(found.len(), 1, "{found:?}");
-        assert!(found[0].contains("private list") && found[0].contains("private.toml"), "{found:?}");
+        assert!(found[0].contains("private list") && found[0].contains("private-material.toml"), "{found:?}");
+    }
+
+    #[test]
+    fn a_listed_name_in_a_path_is_refused_whatever_its_case() {
+        let list = PrivateList { names: vec!["Zorblax".into()], ..PrivateList::default() };
+        let found = refusals(&item(Some("assets/ZORBLAX-fanart/a.png"), "b3:01", Some(record(Source::Cc0))), &list);
+        assert!(found.iter().any(|f| f.contains("name `Zorblax`")), "{found:?}");
+        let clean = refusals(&item(Some("assets/other/a.png"), "b3:01", Some(record(Source::Cc0))), &list);
+        assert_eq!(clean.len(), 0, "{clean:?}");
+    }
+
+    #[test]
+    fn the_shared_private_list_file_parses_as_this_loader_reads_it() {
+        let text = include_str!("../../../../docs/licensing/private-material.toml");
+        let list: PrivateList = toml::from_str(text).unwrap();
+        assert!(!list.names.is_empty() && !list.prefixes.is_empty() && !list.face_profile_ids.is_empty());
     }
 
     #[test]
