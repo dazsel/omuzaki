@@ -158,9 +158,13 @@ pub(crate) fn rebuild(input: &RebuildInput<'_>, info: &ModelInfo) -> Option<Vec<
     Some(blocks)
 }
 
+/// Bytes kept back for the labels line: its heading, a separator, the newline and the "(N earlier not shown)" suffix.
+const STEPS_OVERHEAD: u64 = 12 + 2 + 1 + 40;
+
 /// The digest the summary turn is given: what is pending, the plan, the step labels, and as much of the person's and
 /// the model's text as fits, all under 40 % of the window together, newest first. Images and tool results are left out.
 /// Every section is bounded, so a long conversation's labels cannot push the summary request past the window.
+
 pub(crate) fn digest(entries: &[Entry], plan: Option<&str>, pending: Option<&str>, window: u64) -> String {
     let limit = (window * DIGEST_PERCENT / 100).saturating_sub(u64::try_from(SUMMARY_ASK.len()).unwrap_or(0) + 64);
     let mut head = String::new();
@@ -181,8 +185,8 @@ pub(crate) fn digest(entries: &[Entry], plan: Option<&str>, pending: Option<&str
         .collect();
     let mut kept_labels: Vec<&str> = Vec::new();
     for label in labels.iter().rev() {
-        // `; ` between labels, and room for the heading.
-        if !fits(used, &format!("Steps made: {label}; ")) {
+        // The heading, `; ` between labels, the newline and the "(N earlier not shown)" suffix all count.
+        if !fits(used + STEPS_OVERHEAD, label) {
             break;
         }
         used += u64::try_from(label.len()).unwrap_or(u64::MAX) + 2;
@@ -501,6 +505,19 @@ mod tests {
         assert!(text.len() <= 4_000, "{} bytes is over 40 % of a 10,000-token window", text.len());
         assert!(text.contains("earlier not shown"));
         assert!(text.contains("number 1999"), "the newest labels are the ones kept");
+    }
+
+    #[test]
+    fn the_steps_line_with_its_suffix_never_passes_the_digest_limit() {
+        for window in [1_000_u64, 1_234, 10_000] {
+            for width in 1..60 {
+                let entries: Vec<Entry> =
+                    (0..500).map(|i| Entry::step(omuzaki_ops_api::TxId(i), "s".repeat(width), "r")).collect();
+                let text = digest(&entries, None, None, window);
+                let limit = (window * DIGEST_PERCENT / 100) as usize - (SUMMARY_ASK.len() + 64);
+                assert!(text.len() <= limit, "window {window}, width {width}: {} > {limit}", text.len());
+            }
+        }
     }
 
     #[test]
