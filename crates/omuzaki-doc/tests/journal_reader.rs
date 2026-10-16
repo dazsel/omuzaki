@@ -573,3 +573,201 @@ fn a_discontinuous_segment_without_a_valid_frame_is_a_torn_tail() {
     assert_eq!(lsns(&scan), [1, 2, 3]);
     assert_eq!(scan.end, End::TornTail { at: at(2, 0, 3) });
 }
+
+#[test]
+fn a_stale_segment_after_a_zero_tail_is_never_a_start() {
+    // Segment 1 holds 1-3 and a zero tail; segment 2 advertises first LSN 4 but is not a recovery session.
+    let dir = tempfile::tempdir().unwrap();
+    let mut first = segment(1, &commits(1, 3));
+    first.extend([0u8; 40]);
+    put(dir.path(), 1, &first);
+    put(dir.path(), 2, &segment(4, &commits(4, 5)));
+    for from in 0..=3 {
+        let scan = Reader::scan(dir.path(), Lsn(from)).unwrap();
+        assert_eq!((lsns(&scan), scan.end), ((from + 1..=3).collect::<Vec<_>>(), End::Clean), "from {from}");
+    }
+}
+
+#[test]
+fn damage_is_counted_only_up_to_a_prepared_or_bad_header_segment() {
+    let records = commits(1, 3);
+    for ender in [SegmentHeader::prepared().encode().to_vec(), vec![0xAA; HEADER_LEN]] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut first = segment(1, &records);
+        let torn = first.len() - 3;
+        first.truncate(torn);
+        put(dir.path(), 1, &first);
+        put(dir.path(), 2, &ender);
+        put(dir.path(), 3, &segment(3, &commits(3, 6)));
+        let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
+        assert_eq!(lsns(&scan), [1, 2]);
+        assert_eq!(scan.end, End::TornTail { at: at(1, offset_of(&records, 2), 2) });
+    }
+}
+
+#[test]
+fn a_session_record_that_does_not_decode_is_not_the_recovery_exception() {
+    let records = commits(1, 4);
+    let full = segment(1, &records);
+    let dir = tempfile::tempdir().unwrap();
+    put(dir.path(), 1, &full[..full.len() - 3]);
+    let mut bogus = SegmentHeader::new(Lsn(4)).encode().to_vec();
+    write_frame(Lsn(4), kind::SESSION, 0, b"{}", &mut bogus).unwrap();
+    put(dir.path(), 2, &bogus);
+    let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
+    assert_eq!(lsns(&scan), [1, 2, 3]);
+    assert!(matches!(scan.end, End::Damaged { later_valid: 1, .. }), "{:?}", scan.end);
+}
+
+/// How a generated segment ends.
+#[derive(Clone, Copy, PartialEq)]
+enum Tail {
+    Eof,
+    Zeros,
+}
+
+/// What a generated segment is.
+#[derive(Clone, Copy, PartialEq)]
+enum Shape {
+    /// A real header at `first`, then `n` records (the first a `session` when `session` is set).
+    Real {
+        first: u64,
+        n: u64,
+        session: bool,
+        tail: Tail,
+    },
+    Prepared,
+    BadHeader,
+    Newer,
+}
+
+fn build(shape: Shape) -> Vec<u8> {
+    match shape {
+        Shape::Real { first, n, session: sess, tail } => {
+            let mut records = commits(first, first + n);
+            records.truncate(usize::try_from(n).unwrap());
+            if sess && n > 0 {
+                records[0] = session(first);
+            }
+            let mut bytes = segment(first, &records);
+            if tail == Tail::Zeros {
+                bytes.extend([0u8; 40]);
+            }
+            bytes
+        }
+        Shape::Prepared => SegmentHeader::prepared().encode().to_vec(),
+        Shape::BadHeader => vec![0xAA; HEADER_LEN],
+        Shape::Newer => newer(segment(1, &commits(1, 1))),
+    }
+}
+
+/// What the naive model says a scan returns: the LSNs, and how it ended as `(kind, segment index)`.
+type Model = Result<(Vec<u64>, char, usize), ()>;
+
+/// A plain walk from the first segment, written from journal.md 8.2 and nothing else.
+fn model(layout: &[Shape]) -> Model {
+    let mut out = Vec::new();
+    let mut i = 0;
+    let mut expected;
+    loop {
+        let Some(&shape) = layout.get(i) else { return Ok((out, 'C', i)) };
+        let Shape::Real { first, n, tail, .. } = shape else {
+            return match shape {
+                Shape::Prepared => Ok((out, 'C', i)),
+                Shape::BadHeader => Ok((out, 'T', i)),
+                _ => Err(()),
+            };
+        };
+        out.extend(first..first + n);
+        expected = first + n;
+        let next = layout.get(i + 1).copied();
+        let continues = match (tail, next) {
+            (_, None) | (Tail::Eof, Some(Shape::Prepared)) => return Ok((out, 'C', i + 1)),
+            (Tail::Eof, Some(Shape::BadHeader)) => return Ok((out, 'T', i + 1)),
+            (Tail::Eof, Some(Shape::Newer)) => return Err(()),
+            (Tail::Eof, Some(Shape::Real { first, .. })) => {
+                if first != expected {
+                    let later: u64 = layout[i + 1..]
+                        .iter()
+                        .take_while(|s| !matches!(s, Shape::Prepared | Shape::BadHeader))
+                        .map(|s| if let Shape::Real { n, .. } = s { *n } else { 0 })
+                        .sum();
+                    return Ok((out, if later > 0 { 'D' } else { 'T' }, i + 1));
+                }
+                true
+            }
+            (Tail::Zeros, Some(Shape::Real { first, n, session: true, .. })) => n > 0 && first == expected,
+            (Tail::Zeros, Some(_)) => false,
+        };
+        if !continues {
+            return Ok((out, 'C', i + 1));
+        }
+        i += 1;
+    }
+}
+
+#[test]
+fn random_layouts_match_the_naive_walk() {
+    let mut state = 0x2545_f491_4f6c_dd1d_u64;
+    let mut rand = move |bound: u64| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state % bound
+    };
+    for round in 0..1500 {
+        let count = 1 + rand(5);
+        let mut layout = Vec::new();
+        let mut expected = 1;
+        for idx in 0..count {
+            let shape = match if idx == 0 { 0 } else { rand(10) } {
+                0..=3 => Shape::Real {
+                    first: expected,
+                    n: rand(4),
+                    session: false,
+                    tail: if rand(2) == 0 { Tail::Eof } else { Tail::Zeros },
+                },
+                4 | 5 => Shape::Real { first: expected, n: 1 + rand(3), session: true, tail: Tail::Eof },
+                6 => Shape::Real {
+                    first: 1 + rand(expected + 3),
+                    n: 1 + rand(3),
+                    session: rand(2) == 0,
+                    tail: Tail::Eof,
+                },
+                7 => Shape::Prepared,
+                8 => Shape::BadHeader,
+                _ => Shape::Newer,
+            };
+            if let Shape::Real { first, n, .. } = shape {
+                expected = first + n;
+            }
+            layout.push(shape);
+        }
+        let dir = tempfile::tempdir().unwrap();
+        for (idx, shape) in layout.iter().enumerate() {
+            put(dir.path(), u64::try_from(idx).unwrap() + 1, &build(*shape));
+        }
+        let want = model(&layout);
+        let last = want.as_ref().map_or(0, |(lsns, ..)| lsns.last().copied().unwrap_or(0));
+        for from in 0..=last {
+            let got = Reader::scan(dir.path(), Lsn(from));
+            match (&want, got) {
+                (Err(()), Err(JournalError::TooNew { .. })) => {}
+                (Ok((lsns_want, kind, seg)), Ok(scan)) => {
+                    let filtered: Vec<u64> = lsns_want.iter().copied().filter(|&l| l > from).collect();
+                    assert_eq!(lsns(&scan), filtered, "round {round} from {from}");
+                    let (got_kind, got_seg) = match scan.end {
+                        End::Clean => ('C', None),
+                        End::TornTail { at } => ('T', Some(at.segment)),
+                        End::Damaged { at, .. } => ('D', Some(at.segment)),
+                    };
+                    assert_eq!(got_kind, *kind, "round {round} from {from}");
+                    if let Some(got_seg) = got_seg {
+                        assert_eq!(got_seg, u64::try_from(*seg).unwrap() + 1, "round {round} from {from}");
+                    }
+                }
+                (want, got) => panic!("round {round} from {from}: model {:?}, scan {got:?}", want.is_ok()),
+            }
+        }
+    }
+}

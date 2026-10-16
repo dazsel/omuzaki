@@ -60,33 +60,39 @@ pub struct Scan {
 pub struct Reader;
 
 impl Reader {
-    /// Reads the segments of `dir`, in sequence order, from the one holding `from + 1`, and returns every record after
-    /// `from` up to where the log ends.
+    /// Reads the segments of `dir` in sequence order, from the first, and returns every record after `from` up to
+    /// where the log ends.
     ///
     /// # Scan rules
-    /// Journal.md 8.2, as this reader applies it. Every rule is tested in `tests/journal_reader.rs`.
-    /// 1. **Logical ends.** A prepared segment, a segment with a bad header, a zero-filled tail, and the end of the last
-    ///    segment end the log. Nothing after one is read, chosen as a start, or allowed to fail the scan.
-    /// 2. **Start.** Among the segments before the first logical end whose first LSNs strictly increase in sequence
-    ///    order, the last one with first LSN at most `from + 1`. A segment that restarts at an earlier LSN is never a
-    ///    start: it is reached from the one before and reported as damage. With `from` 0, or when no segment
-    ///    qualifies (earlier ones deleted), the first segment; the first record's LSN shows the gap.
-    /// 3. **Old damage.** Before the scan has reached `from + 1`, a bad frame, a gap or a zero run in the start segment
-    ///    is skipped by looking for the frame `from + 1` after it: the snapshot covers that prefix. If there is no
-    ///    such frame, that is the end of the log.
-    /// 4. **Reachability.** A file is opened only when the scan reaches it. Unreadable or unlistable files after a
-    ///    logical end are ignored, as is a newer-format header there; reaching a newer header or an unknown required
-    ///    kind is [`JournalError::TooNew`].
-    /// 5. **Rotation.** The log continues into the next segment only from an exact end of file, when it starts one past
-    ///    the last record; after a bad frame or a zero tail only into a recovery `session` (8.5).
-    /// 6. **Classification.** After a bad frame or a discontinuous segment, the valid frames after it are counted. None
-    ///    is a [`End::TornTail`]; some is [`End::Damaged`], also when the work budget runs out (then a lower bound).
-    ///    Files that can't be read are counted as holding none.
+    /// Journal.md 8.2, as this reader applies it. The invariant: **nothing beyond a logical end can change the result
+    /// of a scan**, other than being counted as damage when valid frames lie after a *bad* frame. Every rule is tested
+    /// in `tests/journal_reader.rs`, and a randomized test checks the walk against a naive model.
+    /// 1. **One walk.** There is no separate start selection: the scan walks the segments from the first, and keeps
+    ///    the records after `from`. Segments before the base are read, because that is what shows a later segment is
+    ///    reachable and not stale. (When earlier segments were deleted, the walk starts at the first one left and the
+    ///    first record's LSN shows the gap.)
+    /// 2. **Logical ends.** A prepared segment, a segment with a bad header, a zero-filled tail, a bad frame and the end
+    ///    of the last segment end the log, and nothing after one is read, except under rules 3 and 4.
+    /// 3. **One boundary decision.** After each segment, one function decides from the segment's stop reason and the
+    ///    next segment's header: after an exact end of file the log continues if the next segment starts one past the
+    ///    last record (a rotation), and a segment that doesn't is a discontinuity; after a zero tail or a bad frame it
+    ///    continues only into a recovery `session` (8.5), a segment that begins one past the last good record with a
+    ///    CRC-valid, decodable `session` record.
+    /// 4. **Old damage.** A bad frame before the base (the snapshot covers it) doesn't end the scan: it looks for the
+    ///    frame `from + 1` after it in the same segment, and failing that it continues into a next segment that starts
+    ///    after the damage and no later than `from + 1`. A zero tail is never old damage.
+    /// 5. **Reachability.** A file is opened only when the walk reaches it. A newer-format header or an unknown
+    ///    required kind there is [`JournalError::TooNew`], and an unreadable file is [`JournalError::Io`]; the same
+    ///    beyond a logical end is ignored.
+    /// 6. **Classification.** After a bad frame or a discontinuity the valid frames after it are counted, in the rest of
+    ///    its segment and in the later segments up to a prepared or bad-header one. None is a [`End::TornTail`], some
+    ///    is [`End::Damaged`], also when the work budget runs out (then a lower bound). A file that can't be read
+    ///    holds none.
     ///
     /// # Errors
-    /// [`JournalError::Io`] for a folder, or a file the scan reaches, that can't be read. [`JournalError::TooNew`] as
-    /// in rule 4: nothing is returned, because the project opens read-only (4.5).
-    /// [`JournalError::BadPayload`] from [`decode`].
+    /// [`JournalError::Io`] for a folder, or a file the walk reaches, that can't be read. [`JournalError::TooNew`] as
+    /// in rule 5: nothing is returned, because the project opens read-only (4.5). [`JournalError::BadPayload`] from
+    /// [`decode`], for a record after `from`.
     ///
     /// Looking past a bad frame for valid ones has a fixed work budget. If it runs out, the result is
     /// [`End::Damaged`] and its `later_valid` is a lower bound, at least 1.
@@ -101,18 +107,17 @@ impl Reader {
     #[doc(hidden)]
     pub fn scan_with_budget(dir: &Path, from: Lsn, budget: usize) -> Result<Scan, JournalError> {
         let segments = list_segments(dir)?;
-        let start = start_index(&segments, from);
         let mut scanner = Scanner {
             segments: &segments,
             from,
             records: Vec::new(),
             after: from,
-            next: from,
+            next: Lsn(0),
             done: false,
             budget,
             exhausted: false,
         };
-        let end = scanner.run(start)?;
+        let end = scanner.run()?;
         Ok(Scan { records: scanner.records, end })
     }
 }
@@ -123,17 +128,28 @@ struct Segment {
     path: PathBuf,
 }
 
-type Head = Result<SegmentHeader, HeaderFault>;
+/// What a segment's header says.
+enum Class {
+    Real(SegmentHeader),
+    /// Prepared and unused (first LSN 0): ends the log.
+    Prepared,
+    /// A header that doesn't read: ends the log, or is a newer format ([`HeaderFault::TooNew`]).
+    Fault(HeaderFault),
+}
 
 impl Segment {
-    /// What the header says. Opened when asked for, so an unreadable file only matters once the scan reaches it.
-    fn head(&self) -> Result<Head, JournalError> {
+    /// What the header says. Opened when asked for, so an unreadable file only matters once the walk reaches it.
+    fn class(&self) -> Result<Class, JournalError> {
         let mut head = Vec::with_capacity(HEADER_LEN);
         let limit = offset_u64(HEADER_LEN);
         fs::File::open(&self.path)
             .and_then(|file| file.take(limit).read_to_end(&mut head))
             .map_err(io_error(&self.path))?;
-        Ok(SegmentHeader::decode(&head))
+        Ok(match SegmentHeader::decode(&head) {
+            Ok(header) if header.is_prepared() => Class::Prepared,
+            Ok(header) => Class::Real(header),
+            Err(fault) => Class::Fault(fault),
+        })
     }
 }
 
@@ -163,25 +179,6 @@ fn list_segments(dir: &Path) -> Result<Vec<Segment>, JournalError> {
     }
     segments.sort_by_key(|s| s.seq);
     Ok(segments)
-}
-
-/// The segment a scan from `from` starts in (rule 2 of [`Reader::scan`]). Headers are read only up to the first segment
-/// that starts past `from + 1`, a logical end, or one that can't be read.
-fn start_index(segments: &[Segment], from: Lsn) -> usize {
-    if from == Lsn(0) {
-        return 0;
-    }
-    let wanted = from.0.saturating_add(1);
-    let (mut start, mut previous) = (0, 0);
-    for (idx, segment) in segments.iter().enumerate() {
-        let Ok(Ok(header)) = segment.head() else { break };
-        if header.is_prepared() || header.first.0 <= previous || header.first.0 > wanted {
-            break;
-        }
-        previous = header.first.0;
-        start = idx;
-    }
-    start
 }
 
 /// The most payload bytes one scan hashes or skims while it looks past a bad frame (journal.md 8.2): 256 MiB, a
@@ -273,6 +270,18 @@ enum Stop {
     Bad(usize),
 }
 
+/// What happens at the end of a segment (rule 3 of [`Reader::scan`]).
+enum Boundary {
+    /// The log continues in the next segment.
+    Continue(SegmentHeader),
+    /// The log ends here: clean after an exact end or a zero tail, classified by looking past it after a bad frame.
+    End,
+    /// The next segment's header is bad, after an exact end of file: a torn tail.
+    Torn,
+    /// The next segment doesn't start where the log left off.
+    Discontinuity,
+}
+
 struct Scanner<'a> {
     segments: &'a [Segment],
     from: Lsn,
@@ -305,12 +314,19 @@ impl Scanner<'_> {
         count
     }
 
-    /// Valid frames in the segments from index `first` on, past their headers; a file that can't be read holds none.
-    fn count_from(&mut self, first: usize) -> usize {
+    /// Valid frames in the segments from index `first` on, past their headers, up to a prepared or bad-header one
+    /// (rule 6). A file that can't be read, or is a newer format, holds none.
+    fn count_after(&mut self, first: usize) -> usize {
         let mut count = 0;
         for segment in self.segments.iter().skip(first) {
-            if let Ok(bytes) = Self::read(segment) {
-                count += self.count_in(&bytes, HEADER_LEN);
+            match segment.class() {
+                Ok(Class::Real(_)) => {
+                    if let Ok(bytes) = Self::read(segment) {
+                        count += self.count_in(&bytes, HEADER_LEN);
+                    }
+                }
+                Ok(Class::Fault(HeaderFault::TooNew { .. })) | Err(_) => {}
+                Ok(Class::Prepared | Class::Fault(_)) => break,
             }
         }
         count
@@ -323,70 +339,108 @@ impl Scanner<'_> {
         if later_valid > 0 { End::Damaged { at, later_valid } } else { End::TornTail { at } }
     }
 
-    /// Reads the segments in order from index `idx` (rules 2 to 5 of journal.md 8.2) until the log ends.
-    fn run(&mut self, mut idx: usize) -> Result<End, JournalError> {
-        loop {
-            let Some(segment) = self.segments.get(idx) else {
-                return Ok(End::Clean);
-            };
-            let header = match segment.head()? {
-                Err(HeaderFault::TooNew { version }) => return Err(JournalError::TooNew { version, kind: None }),
-                Err(_) => return Ok(End::TornTail { at: self.position(segment, 0) }),
-                Ok(header) if header.is_prepared() => return Ok(End::Clean),
-                Ok(header) => header,
-            };
+    /// Walks the segments in order until the log ends (rules 1 to 3 of [`Reader::scan`]).
+    fn run(&mut self) -> Result<End, JournalError> {
+        let segments = self.segments;
+        let Some(first) = segments.first() else {
+            return Ok(End::Clean);
+        };
+        let mut header = match first.class()? {
+            Class::Real(header) => header,
+            Class::Prepared => return Ok(End::Clean),
+            Class::Fault(HeaderFault::TooNew { version }) => return Err(JournalError::TooNew { version, kind: None }),
+            Class::Fault(_) => return Ok(End::TornTail { at: self.position(first, 0) }),
+        };
+        for (idx, segment) in segments.iter().enumerate() {
             self.next = header.first;
             self.done = false;
             let bytes = Self::read(segment)?;
-            let next_segment = self.segments.get(idx + 1);
-            match self.read_frames(&bytes)? {
-                Stop::ZeroTail => {
-                    if next_segment.is_some_and(|next| self.starts_recovery_session(next)) {
-                        idx += 1;
-                        continue;
-                    }
-                    return Ok(End::Clean);
+            let stop = self.read_frames(&bytes)?;
+            let next = segments.get(idx + 1);
+            match (self.boundary(next, &stop)?, next) {
+                (Boundary::Continue(next_header), _) => header = next_header,
+                (Boundary::End, _) => {
+                    let Stop::Bad(offset) = stop else {
+                        return Ok(End::Clean);
+                    };
+                    let later_valid = self.count_in(&bytes, offset + 1) + self.count_after(idx + 1);
+                    return Ok(self.bad_end(self.position(segment, offset), later_valid));
                 }
-                Stop::Eof => match next_segment {
-                    None => return Ok(End::Clean),
-                    Some(next) => match next.head()? {
-                        Ok(h) if h.is_prepared() => return Ok(End::Clean),
-                        Ok(h) if self.done || h.first != self.next => {
-                            let later_valid = self.count_from(idx + 1);
-                            return Ok(self.bad_end(self.position(next, 0), later_valid));
-                        }
-                        _ => idx += 1,
-                    },
-                },
-                Stop::Bad(offset) => {
-                    if next_segment.is_some_and(|next| self.starts_recovery_session(next)) {
-                        idx += 1;
-                        continue;
-                    }
-                    let at = self.position(segment, offset);
-                    let later_valid = self.count_in(&bytes, offset + 1) + self.count_from(idx + 1);
-                    return Ok(self.bad_end(at, later_valid));
+                (Boundary::Torn, Some(next)) => return Ok(End::TornTail { at: self.position(next, 0) }),
+                (Boundary::Discontinuity, Some(next)) => {
+                    let later_valid = self.count_after(idx + 1);
+                    return Ok(self.bad_end(self.position(next, 0), later_valid));
                 }
+                (Boundary::Torn | Boundary::Discontinuity, None) => return Ok(End::Clean),
             }
         }
+        Ok(End::Clean)
+    }
+
+    /// What follows a segment that stopped for `stop`, given the segment after it, if any. The one decision that the
+    /// walk makes at every boundary.
+    fn boundary(&self, next: Option<&Segment>, stop: &Stop) -> Result<Boundary, JournalError> {
+        let Some(next) = next else {
+            return Ok(Boundary::End);
+        };
+        let exact = matches!(stop, Stop::Eof);
+        let class = match next.class() {
+            Ok(class) => class,
+            // Only an exact end of file leads into the next file; for the others it is a look, not a read.
+            Err(err) if exact => return Err(err),
+            Err(_) => return Ok(Boundary::End),
+        };
+        Ok(match class {
+            Class::Fault(HeaderFault::TooNew { version }) if exact => {
+                return Err(JournalError::TooNew { version, kind: None });
+            }
+            Class::Fault(_) if exact => Boundary::Torn,
+            Class::Real(header) if exact => {
+                if !self.done && header.first == self.next {
+                    Boundary::Continue(header)
+                } else {
+                    Boundary::Discontinuity
+                }
+            }
+            Class::Real(header) => {
+                if self.starts_recovery_session(next, &header)
+                    || (matches!(stop, Stop::Bad(_)) && self.skips_old_damage(&header))
+                {
+                    Boundary::Continue(header)
+                } else {
+                    Boundary::End
+                }
+            }
+            Class::Prepared | Class::Fault(_) => Boundary::End,
+        })
     }
 
     /// Whether `segment` is the one an earlier recovery started (8.5): it begins one past the last good record, with a
-    /// `session` record. A segment that can't be read is not one.
-    fn starts_recovery_session(&self, segment: &Segment) -> bool {
-        let Ok(Ok(header)) = segment.head() else {
-            return false;
-        };
-        if header.is_prepared() || self.done || header.first != self.next {
+    /// `session` record that is valid and decodes. A segment that can't be read is not one.
+    fn starts_recovery_session(&self, segment: &Segment, header: &SegmentHeader) -> bool {
+        if self.done || header.first != self.next {
             return false;
         }
         let Ok(bytes) = Self::read(segment) else {
             return false;
         };
-        read_frame(tail(&bytes, HEADER_LEN)).is_ok_and(|f| f.kind == kind::SESSION && f.lsn == header.first)
+        read_frame(tail(&bytes, HEADER_LEN)).is_ok_and(|frame| {
+            frame.kind == kind::SESSION
+                && frame.lsn == header.first
+                && matches!(decode(&frame), Ok(Some(Record::Session(_))))
+        })
     }
 
-    /// Looks for the frame `from + 1` after `offset`: the next record the snapshot doesn't cover. Rule 3 of
+    /// Whether a bad frame the snapshot covers (rule 4) is followed by `header`'s segment: it starts after the damage
+    /// and no later than the base.
+    fn skips_old_damage(&self, header: &SegmentHeader) -> bool {
+        !self.done
+            && self.next <= self.from
+            && self.next < header.first
+            && header.first.0 <= self.from.0.saturating_add(1)
+    }
+
+    /// Looks for the frame `from + 1` after `offset`: the next record the snapshot doesn't cover. Rule 4 of
     /// [`Reader::scan`]. Spends the resync budget.
     fn find_base(&mut self, bytes: &[u8], offset: usize) -> Option<usize> {
         let wanted = self.from.0.checked_add(1)?;
@@ -426,8 +480,8 @@ impl Scanner<'_> {
                     continue;
                 }
                 Err(FrameEnd::Short) if rest.is_empty() => return Ok(Stop::Eof),
-                Err(FrameEnd::Zero) => Stop::ZeroTail,
-                Err(FrameEnd::Short) if rest.iter().all(|&b| b == 0) => Stop::ZeroTail,
+                Err(FrameEnd::Zero) => return Ok(Stop::ZeroTail),
+                Err(FrameEnd::Short) if rest.iter().all(|&b| b == 0) => return Ok(Stop::ZeroTail),
                 Ok(_) | Err(_) => Stop::Bad(offset),
             };
             // Damage before the base is old (8.2): skip to the record after it, if there is one.
