@@ -34,7 +34,7 @@ omuzaki-l10n-api = { path = "../omuzaki-l10n-api" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-render = { path = "../omuzaki-render" }
 omuzaki-render-api = { path = "../omuzaki-render-api" }
-omuzaki-stage = { path = "../omuzaki-stage", features = ["wgpu"] }
+omuzaki-stage = { path = "../omuzaki-stage" }
 tracing.workspace = true
 wgpu.workspace = true
 
