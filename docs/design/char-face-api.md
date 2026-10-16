@@ -371,7 +371,7 @@ A hairstyle is `HairParams { shading, physics, groups }`. Each group has `enable
 |---|---|---|
 | `cap` | scalp shell | hairline front and back (degrees from the top), ear notch, thickness |
 | `part_sweep` | scalp locks from the part line | part angles, count, end angles and heights, width, thickness |
-| `framing` | locks framing the face (tuck behind the ear on one side, hang to the chest on the other) | side, count, spread, an `[y, x]` inner-edge outline traced from the sheet, a free `tail` of guide points, wave |
+| `framing` | locks framing the face (tuck behind the ear on one side, hang to the chest on the other) | side, count, spread, an `[y, x]` inner-edge outline traced from the sheet, a free `tail` of guide points, wave, and optional `locks` (the prototype's own heights: `top`, `upper`, `lower`, `cheek`, `tuck_a`, `tuck_b`, `tuck_max_x`, the ear points `ear_top` and `ear_back`, `drop`, `end`); with `locks` unset the outline's rows and the `tail` are used |
 | `braid` | braid crown | path angles and heights, strands, lobes, swing, strand width |
 | `curtain` | long wavy hair | count, spread, root heights, lengths, a body-axis `envelope`, wave and curl, columns per strip |
 | `bangs` | close-up fringe | layers (count, spread, per-lock tip heights, width, hook, offsets, shade), wisps, sweep |
