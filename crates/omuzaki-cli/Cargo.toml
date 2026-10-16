@@ -45,6 +45,7 @@ omuzaki-io-ops = { path = "../omuzaki-io-ops" }
 omuzaki-io-vrm = { path = "../omuzaki-io-vrm" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-stage = { path = "../omuzaki-stage" }
+omuzaki-stream = { path = "../omuzaki-stream" }
 omuzaki-store = { path = "../omuzaki-store" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
 
@@ -55,6 +56,8 @@ omuzaki-anim-api = { path = "../omuzaki-anim-api" }
 # The expressions and the camera ids the idle hosts list.
 omuzaki-face-api = { path = "../omuzaki-face-api" }
 omuzaki-track-api = { path = "../omuzaki-track-api" }
+# The output window and palette the conformance rig gives the `output.window.*` examples (`tests/window_host/`).
+omuzaki-stream-api = { path = "../omuzaki-stream-api" }
 # The registration scan behind the link gate (`tests/registrations.rs`, ADR 0015).
 xtask = { path = "../../xtask" }
 
@@ -72,4 +75,4 @@ summary = "the `omuzaki` command: ops, help, run (dry-run/JSON), undo/redo, all 
 wasm = false
 # Held only to link their registrations in (`omuzaki_cli::link`, ADR 0015); this crate's source calls none of their API.
 # A change to one of them runs just `tests/registrations.rs` here (`cargo xtask check --affected`), not every test.
-link_only = ["omuzaki-io-gltf", "omuzaki-io-ops", "omuzaki-io-vrm", "omuzaki-stage"]
+link_only = ["omuzaki-io-gltf", "omuzaki-io-ops", "omuzaki-io-vrm", "omuzaki-stage", "omuzaki-stream"]
