@@ -26,6 +26,8 @@
 //! for a link after the check cannot redirect the open (see [`open`] for what that does and does not cover).
 
 mod form;
+#[cfg(any(test, feature = "fuzzing"))]
+pub mod fuzzing;
 mod open;
 mod project;
 mod resolve;
