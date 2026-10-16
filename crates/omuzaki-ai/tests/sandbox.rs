@@ -94,7 +94,12 @@ fn a_run_past_the_deadline_is_crashed_within_50_ms_and_the_worker_is_killed() {
     assert_eq!(run(&mut session, &[1.0]), Err(RunError::Crashed));
     let took = start.elapsed();
     assert!(took < stall + Duration::from_millis(50), "the stall took {took:?} to be called");
-    assert!(!session.worker_running());
+    // The kill is sent by then; the OS ends the process a moment later.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while session.worker_running() {
+        assert!(Instant::now() < deadline, "the worker outlived its kill");
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
 
 #[test]
