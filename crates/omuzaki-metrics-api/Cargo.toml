@@ -18,7 +18,7 @@ criterion.workspace = true
 proptest.workspace = true
 serde_json.workspace = true
 
-# Only built for the model checker: `RUSTFLAGS="--cfg loom" cargo test -p omuzaki-metrics-api --release loom`.
+# Only built for the model checker: `RUSTFLAGS="--cfg loom" cargo test -p omuzaki-metrics-api --release --lib loom`.
 [target.'cfg(loom)'.dev-dependencies]
 loom.workspace = true
 

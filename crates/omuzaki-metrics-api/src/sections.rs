@@ -442,6 +442,17 @@ impl AudioMetrics {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+    use proptest::test_runner::{Config, RngSeed};
+
+    /// Deterministic unless `PROPTEST_RNG_SEED` is set, and without regression files: a failure found that way becomes
+    /// an ordinary test (as in `omuzaki-core/tests/pack.rs`).
+    fn config() -> Config {
+        let mut config = Config { failure_persistence: None, ..Config::default() };
+        if matches!(config.rng_seed, RngSeed::Random) {
+            config.rng_seed = RngSeed::Fixed(0x5EED);
+        }
+        config
+    }
 
     fn ms() -> impl Strategy<Value = f32> {
         -1.0e6f32..1.0e6
@@ -506,6 +517,8 @@ mod tests {
     }
 
     proptest! {
+        #![proptest_config(config())]
+
         #[test]
         fn frame_round_trips(m in frame()) {
             prop_assert_eq!(FrameMetrics::from_words(&m.to_words()), Some(m));

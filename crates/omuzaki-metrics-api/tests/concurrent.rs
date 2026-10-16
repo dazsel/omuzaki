@@ -8,7 +8,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use omuzaki_core::time::Seconds;
-use omuzaki_metrics_api::{FrameMetrics, metrics};
+use omuzaki_metrics_api::metrics;
+use omuzaki_metrics_api::sections::FrameMetrics;
 
 /// Stops the writer thread when dropped, so a failed assertion in the reader ends the test instead of hanging the scope.
 struct StopOnDrop<'a>(&'a AtomicBool);

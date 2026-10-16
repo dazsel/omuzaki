@@ -15,21 +15,20 @@
 #![deny(missing_docs)]
 
 mod cell;
-mod sections;
 mod words;
 
 pub mod budget;
+pub mod sections;
 
 use std::sync::Arc;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-pub use budget::{BudgetKey, BudgetUse};
+use budget::BudgetUse;
 use cell::SeqCell;
-use sections::{AUDIO_WORDS, FRAME_WORDS, PERFORM_WORDS, TRACKER_WORDS};
-pub use sections::{
-    AudioMetrics, CalibrationPhase, FacePressure, FrameMetrics, PerformMetrics, TrackerMetrics, TrackingState,
+use sections::{
+    AUDIO_WORDS, AudioMetrics, FRAME_WORDS, FrameMetrics, PERFORM_WORDS, PerformMetrics, TRACKER_WORDS, TrackerMetrics,
 };
 
 /// One consistent reading of every section, with the budget rows derived from them.
@@ -150,6 +149,7 @@ mod tests {
     use omuzaki_core::time::Seconds;
 
     use super::*;
+    use crate::budget::BudgetKey;
 
     #[test]
     fn every_section_is_none_before_its_first_publish() {

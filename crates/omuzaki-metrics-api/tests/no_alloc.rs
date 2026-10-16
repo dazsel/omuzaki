@@ -9,7 +9,8 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
 use omuzaki_core::time::Seconds;
-use omuzaki_metrics_api::{AudioMetrics, FrameMetrics, PerformMetrics, TrackerMetrics, metrics};
+use omuzaki_metrics_api::metrics;
+use omuzaki_metrics_api::sections::{AudioMetrics, FrameMetrics, PerformMetrics, TrackerMetrics};
 
 struct Counting;
 // Both are per thread, so tests running in parallel never count each other's allocations. `const` init with no

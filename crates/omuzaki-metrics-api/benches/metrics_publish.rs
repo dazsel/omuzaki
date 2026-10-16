@@ -8,7 +8,8 @@ use std::time::Duration;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use omuzaki_core::time::Seconds;
-use omuzaki_metrics_api::{FrameMetrics, metrics};
+use omuzaki_metrics_api::metrics;
+use omuzaki_metrics_api::sections::FrameMetrics;
 
 fn frame() -> FrameMetrics {
     let mut m = FrameMetrics::new(Seconds(12.5));
