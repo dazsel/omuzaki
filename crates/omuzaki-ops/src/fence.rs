@@ -23,13 +23,13 @@ pub(crate) struct FenceRefusal {
 /// session's fence is checked first, so a refusal names a holder whenever there is one.
 pub(crate) fn check_fence(own: &[DocPath], others: &[(&Actor, &[DocPath])], patch: &Patch) -> Result<(), FenceRefusal> {
     for change in &patch.changes {
-        let path = &change.path;
-        let held = others.iter().find(|(_, fence)| fence.iter().any(|entry| overlaps(path, entry)));
+        let changed = &change.path;
+        let held = others.iter().find(|(_, fence)| fence.iter().any(|entry| overlaps(changed, entry)));
         if let Some((holder, _)) = held {
-            return Err(FenceRefusal { path: path.clone(), holder: Some((*holder).clone()) });
+            return Err(FenceRefusal { path: changed.clone(), holder: Some((*holder).clone()) });
         }
-        if !fence_covers(own, path) {
-            return Err(FenceRefusal { path: path.clone(), holder: None });
+        if !fence_covers(own, changed) {
+            return Err(FenceRefusal { path: changed.clone(), holder: None });
         }
     }
     Ok(())

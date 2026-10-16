@@ -11,6 +11,8 @@ use omuzaki_ops_api::{
     Transport,
 };
 
+use crate::gate::Allowance;
+
 /// One queued approval and what the executor needs to act on it.
 pub(crate) struct Entry {
     /// What the person sees.
@@ -23,6 +25,9 @@ pub(crate) struct Entry {
     /// For a review: how many distinct reviewers must approve, and who has so far.
     pub(crate) required: u8,
     pub(crate) reviewers: Vec<Actor>,
+    /// What earlier approvals of the same request already met: a run that hits a second need keeps the first, so
+    /// the person is asked once for each.
+    pub(crate) carried: Allowance,
 }
 
 /// What [`Queue::push`] stores for a request.
@@ -33,6 +38,7 @@ pub(crate) struct Ask {
     pub(crate) request: Option<(Request, Plan)>,
     pub(crate) grant: Option<Scope>,
     pub(crate) required: u8,
+    pub(crate) carried: Allowance,
     pub(crate) at: Seconds,
 }
 
@@ -72,6 +78,7 @@ impl Queue {
             grant: ask.grant,
             required: ask.required,
             reviewers: Vec::new(),
+            carried: ask.carried,
         });
         pending
     }
@@ -195,7 +202,10 @@ mod tests {
 
     #[test]
     fn batch_keys_name_the_session_op_and_need() {
-        assert_eq!(batch_key(SessionId(3), Some("vrm.export"), &Need::Scope { scope: Scope::Publish }), "3/vrm.export/scope:publish");
+        assert_eq!(
+            batch_key(SessionId(3), Some("vrm.export"), &Need::Scope { scope: Scope::Publish }),
+            "3/vrm.export/scope:publish"
+        );
         assert_eq!(batch_key(SessionId(3), None, &Need::Pairing { client: "c".into() }), "3/-/pairing");
     }
 }

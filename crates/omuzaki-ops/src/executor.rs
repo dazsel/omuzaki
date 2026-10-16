@@ -355,9 +355,11 @@ impl Runner for Executor {
     }
 
     fn run(&self, req: Request) -> Result<Outcome, OpError> {
-        let req = self.admitted(req)?;
-        // Plans and conflict messages carry document values, so nothing runs without `read`, not even a dry-run.
-        require(&req.grants, &req.actor, Scope::Read, &req.op)?;
+        // Plans and conflict messages carry document values, so nothing runs without `read`, not even a dry-run. The
+        // request keeps the grants it was sent with: they are narrowed again under the lock, and an approval queued
+        // there must know what the caller itself holds.
+        let granted = self.admit(&req.actor, &req.grants)?;
+        require(&granted, &req.actor, Scope::Read, &req.op)?;
         let registration = self.ops.find(&req.op)?;
         let op = (registration.decode)(req.args.clone())?;
         if op.meta().kind == OpKind::Job {

@@ -11,7 +11,7 @@ use omuzaki_core::time::Seconds;
 use omuzaki_doc_api::{DocPath, Patch};
 use omuzaki_ops_api::{
     Actor, Budget, EndReason, ErrorCode, ErrorDetail, Grants, OpError, PauseReason, Principals, Scope, SessionChange,
-    SessionId, SessionInfo, SessionSpec, SessionState, Spend, fence_overlap, fence_within, normalize_fence,
+    SessionId, SessionInfo, SessionSpec, SessionState, Spend, Transport, fence_overlap, fence_within, normalize_fence,
 };
 
 use crate::budget;
@@ -591,10 +591,11 @@ impl Registry {
     }
 
     /// Checks an agent's `patch` against the fences (design §5.3): its own, when it has one, and every other live
-    /// session's outside its family. Plugins are never fenced, and with no fenced session there is nothing to check.
+    /// session's outside its family. Plugin sessions are never fenced (a plugin acts for its caller, who is checked),
+    /// and with no fenced session there is nothing to check.
     pub(crate) fn check_patch(&self, index: usize, patch: &Patch) -> Result<(), FenceRefusal> {
         let session = &self.sessions[index].info;
-        if self.fenced == 0 || !matches!(session.actor, Actor::Agent { .. }) || patch.is_empty() {
+        if self.fenced == 0 || session.transport == Transport::Plugin || patch.is_empty() {
             return Ok(());
         }
         let others: Vec<(&Actor, &[DocPath])> = self
@@ -602,7 +603,10 @@ impl Registry {
             .iter()
             .enumerate()
             .filter(|(other, s)| {
-                s.is_live() && !s.info.fence.is_empty() && *other != index && !self.related(Some(index), session.parent, *other)
+                s.is_live()
+                    && !s.info.fence.is_empty()
+                    && *other != index
+                    && !self.related(Some(index), session.parent, *other)
             })
             .map(|(_, s)| (&s.info.actor, s.info.fence.as_slice()))
             .collect();
@@ -781,7 +785,10 @@ mod tests {
         }
         registry.end(0, EndReason::Closed, Seconds(2.0));
         let e = registry.admit(&info.actor, &Grants::person(), Seconds(3.0)).unwrap_err();
-        assert_eq!((e.code, e.detail.as_deref()), (ErrorCode::Denied, Some(&ErrorDetail::Ended { reason: EndReason::Closed })));
+        assert_eq!(
+            (e.code, e.detail.as_deref()),
+            (ErrorCode::Denied, Some(&ErrorDetail::Ended { reason: EndReason::Closed }))
+        );
         assert_eq!(registry.pause(info.id, &alice, Seconds(3.0)).unwrap_err().code, ErrorCode::Conflict);
     }
 

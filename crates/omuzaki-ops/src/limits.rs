@@ -115,11 +115,9 @@ fn limited(name: &str, per_minute: u32, wait: f64) -> OpError {
         seconds = seconds.next_up();
     }
     let limit = format!("{name} = {per_minute}");
-    let mut error = OpError::denied(format!(
-        "this session reached its rate limit ({limit}); retry in {seconds:.3} s"
-    ))
-    .hint("slow down: wait the time in the detail, then retry")
-    .with_detail(ErrorDetail::RetryAfter { seconds, limit });
+    let mut error = OpError::denied(format!("this session reached its rate limit ({limit}); retry in {seconds:.3} s"))
+        .hint("slow down: wait the time in the detail, then retry")
+        .with_detail(ErrorDetail::RetryAfter { seconds, limit });
     error.code = ErrorCode::Limited;
     error
 }

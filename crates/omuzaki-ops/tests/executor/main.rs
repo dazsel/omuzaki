@@ -6,17 +6,28 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::needless_pass_by_value)]
 
 mod adversarial;
+mod approvals;
+mod approvals_script;
+mod asks;
+mod budget;
 mod events;
 mod explicit;
+mod fence;
 mod file_access;
 mod jobs;
+mod limits;
 mod ops;
+mod plugin_approvals;
 mod props;
+mod races;
+mod review;
 mod run;
 mod services;
 mod sessions;
+mod spend_scope;
 mod transactions;
 mod undo;
+mod undo_session;
 
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;

@@ -34,8 +34,8 @@ use crate::state::State;
 /// What an approval satisfied for the one run it allows. The default allows nothing extra: an ordinary request.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Allowance {
-    /// A scope given for this run only.
-    pub(crate) scope: Option<Scope>,
+    /// Scopes given for this run only.
+    pub(crate) scopes: Vec<Scope>,
     /// The person who confirmed the run ([`OpCtx::confirmed_by`](omuzaki_ops_api::OpCtx::confirmed_by)).
     pub(crate) confirmed_by: Option<Actor>,
     /// The run may pass the session's budget.
@@ -82,15 +82,12 @@ impl Executor {
         if let Some(tx) = req.tx {
             state.check_tx(tx, &req.actor)?;
         }
-        let granted = match allow.scope {
-            Some(scope) => admitted.grants.with(scope),
-            None => admitted.grants,
-        };
+        let granted = allow.scopes.iter().fold(admitted.grants, |grants, scope| grants.with(*scope));
         // What the request was sent with: a queued request keeps it, since it only narrows.
         let sent = std::mem::replace(&mut req.grants, granted);
         let session = admitted.session;
         let ask = |state: &mut State, asked: Asked, req: &Request| match session {
-            Some(index) => self.ask(state, index, op, req, &sent, asked, at),
+            Some(index) => self.ask(state, index, op, (req, &sent, allow), asked, at),
             None => refusal(req, &asked.need, Refused::NotASession),
         };
 
@@ -114,7 +111,15 @@ impl Executor {
             if applies {
                 let info = state.sessions.info(index);
                 let (id, actor) = (info.id, info.actor.clone());
-                let clash = Event::clash(id, actor, meta.name, refusal.path.clone(), ClashKind::Fenced, refusal.holder.clone(), at);
+                let clash = Event::clash(
+                    id,
+                    actor,
+                    meta.name,
+                    refusal.path.clone(),
+                    ClashKind::Fenced,
+                    refusal.holder.clone(),
+                    at,
+                );
                 state.queue_event(clash);
             }
             return Err(OpError::fenced(refusal.path, refusal.holder));
@@ -133,12 +138,12 @@ impl Executor {
                     grant: None,
                     required: requirement.approvals,
                 };
-                return Err(self.ask(state, index, op, &req, &sent, asked, at));
+                return Err(self.ask(state, index, op, (&req, &sent, allow), asked, at));
             }
             if !allow.over_budget
                 && let Some((needed, left)) = state.sessions.over_budget(index, cost, at)
             {
-                return Err(self.ask(state, index, op, &req, &sent, Asked::of(Need::Budget { needed, left }), at));
+                return Err(ask(state, Asked::of(Need::Budget { needed, left }), &req));
             }
         }
         if !applies {
@@ -164,19 +169,19 @@ impl Executor {
         self.env.review.as_ref()?.requirement(scope, grant).filter(|r| r.approvals > 0)
     }
 
-    /// Queues `asked` for the request `req` of session `index`, or refuses it when no person could meet it. Returns
-    /// the error the caller gets: `Waiting` with [`ErrorDetail::Queued`] when it queued.
-    #[allow(clippy::too_many_arguments)] // The request, where it came from and what it needs: one call site each.
+    /// Queues `asked` for the request of session `index`, or refuses it when no person could meet it. `run` is the
+    /// request as planned, the grants it was sent with, and what earlier approvals of it met. Returns the error the
+    /// caller gets: `Waiting` with [`ErrorDetail::Queued`] when it queued.
     fn ask(
         &self,
         state: &mut State,
         index: usize,
         op: &dyn DynOp,
-        req: &Request,
-        sent: &Grants,
+        run: (&Request, &Grants, &Allowance),
         mut asked: Asked,
         at: Seconds,
     ) -> OpError {
+        let (req, sent, allow) = run;
         if let Need::Scope { scope } = asked.need {
             if !state.sessions.may_grant(index, scope, sent) {
                 return refusal(req, &asked.need, Refused::NoOneCanGrant);
@@ -219,6 +224,7 @@ impl Executor {
             request: Some((stored, preview)),
             grant: asked.grant,
             required: asked.required,
+            carried: Allowance { approval: None, ..allow.clone() },
             at,
         };
         let pending = state.approvals.push(ask);
@@ -230,7 +236,14 @@ impl Executor {
     /// The card's preview: `req` dry-run with `asked` met, as if the person had approved it (the session's principal
     /// confirms, a scope is given). A request whose preview fails, or whose patch a fence refuses, is not worth
     /// asking about.
-    fn preview(&self, state: &State, index: usize, op: &dyn DynOp, req: &Request, asked: &Asked) -> Result<Plan, OpError> {
+    fn preview(
+        &self,
+        state: &State,
+        index: usize,
+        op: &dyn DynOp,
+        req: &Request,
+        asked: &Asked,
+    ) -> Result<Plan, OpError> {
         let mut grants = req.grants.clone();
         for scope in [asked.grant, scope_of(&asked.need)].into_iter().flatten() {
             grants = grants.with(scope);
@@ -238,7 +251,10 @@ impl Executor {
         let dry = Request { mode: Mode::DryRun, grants, ..req.clone() };
         let principal = &state.sessions.info(index).on_behalf_of;
         let plan = self.plan(state, op, &dry, Some(principal))?;
-        state.sessions.check_patch(index, &plan.patch).map_err(|refusal| OpError::fenced(refusal.path, refusal.holder))?;
+        state
+            .sessions
+            .check_patch(index, &plan.patch)
+            .map_err(|refusal| OpError::fenced(refusal.path, refusal.holder))?;
         Ok(plan)
     }
 
@@ -257,13 +273,13 @@ impl Executor {
             request: None,
             grant: None,
             required: 1,
+            carried: Allowance::default(),
             at,
         };
         let pending = state.approvals.push(ask);
         state.queue_event(Event::approval_requested(pending));
     }
 }
-
 
 /// Why a need was refused instead of queued.
 #[derive(Copy, Clone)]

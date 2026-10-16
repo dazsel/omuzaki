@@ -92,7 +92,7 @@ impl Sessions for Executor {
 
     fn end(&self, id: SessionId, reason: EndReason) -> Result<Ended, OpError> {
         let at = self.env.clock.now();
-        self.with_state(|state| end_family(state, id, reason, at))
+        self.with_state(|state| end_family(state, id, &reason, at))
     }
 
     fn undo_session(&self, id: SessionId, by: &Actor) -> Result<SessionUndo, OpError> {
@@ -214,7 +214,7 @@ impl Executor {
         let resolution = Resolution { id, by: Some(by.clone()), result, at };
         state.queue_event(Event::approval_resolved(resolution.clone()));
         if revoke {
-            end_family(state, session, EndReason::Revoked { by: by.clone(), credential: true }, at)?;
+            end_family(state, session, &EndReason::Revoked { by: by.clone(), credential: true }, at)?;
         }
         Ok(resolution)
     }
@@ -259,17 +259,21 @@ impl Executor {
     /// need met for this run only (design §4.4, §7.1). A second need it hits is queued as a new approval, named in
     /// the failure.
     fn run_approved(&self, state: &mut State, entry: Entry, by: &Actor) -> Resolved {
-        let Entry { pending, request, grant, reviewers, .. } = entry;
+        let Entry { pending, request, grant, reviewers, carried, .. } = entry;
         let Some(request) = request else { return Resolved::Applied { outcome: Outcome::new(Plan::default()) } };
         let also: Vec<Actor> = reviewers.into_iter().filter(|reviewer| reviewer != by).collect();
+        let need = &pending.need;
+        // This approval's need, on top of what earlier approvals of the same request met.
+        let mut scopes = carried.scopes;
+        scopes.extend(grant.into_iter().chain(match need {
+            Need::Scope { scope } => Some(*scope),
+            _ => None,
+        }));
         let allow = Allowance {
-            scope: match pending.need {
-                Need::Scope { scope } => Some(scope),
-                _ => grant,
-            },
-            confirmed_by: matches!(pending.need, Need::Person { .. }).then(|| by.clone()),
-            over_budget: matches!(pending.need, Need::Budget { .. }),
-            reviewed: matches!(pending.need, Need::Review { .. }),
+            scopes,
+            confirmed_by: if matches!(need, Need::Person { .. }) { Some(by.clone()) } else { carried.confirmed_by },
+            over_budget: carried.over_budget || matches!(need, Need::Budget { .. }),
+            reviewed: carried.reviewed || matches!(need, Need::Review { .. }),
             approval: Some(ApprovalRef::new(pending.id, by.clone()).with_also(also)),
         };
         let run = self
@@ -286,9 +290,9 @@ impl Executor {
 
 /// Ends session `id` and its sub-agents, the most recently opened first, each with `reason` (design §3.4, §4.2).
 /// Ending an ended session changes nothing. Returns what ending `id` itself did.
-fn end_family(state: &mut State, id: SessionId, reason: EndReason, at: Seconds) -> Result<Ended, OpError> {
+fn end_family(state: &mut State, id: SessionId, reason: &EndReason, at: Seconds) -> Result<Ended, OpError> {
     let index = state.sessions.index(id)?;
-    if let EndReason::Revoked { by, .. } = &reason {
+    if let EndReason::Revoked { by, .. } = reason {
         state.sessions.check_principal(index, by)?;
     }
     let mut own = Ended { abandoned: Vec::new(), kept: Vec::new(), withdrawn: Vec::new(), cancelled: Vec::new() };
@@ -342,4 +346,72 @@ fn changed(state: &mut State, id: SessionId, what: SessionChange) -> Result<(), 
 /// The approval is not queued: it was resolved or withdrawn, or never existed.
 fn gone(id: ApprovalId) -> OpError {
     OpError::not_found(format!("approval {} is gone", id.0)).hint("it was decided or withdrawn already")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use omuzaki_core::time::FakeClock;
+    use omuzaki_doc_mock::MemDoc;
+    use omuzaki_ops_api::{ErrorCode, Limits, SessionState, Transport};
+
+    use super::*;
+    use crate::approvals::Ask;
+
+    /// An executor with one session paused for pairing and its `Pairing` approval queued. Nothing public queues one
+    /// yet (the transport's `request_pairing`, `bridges.md` §4, is a later contract change), so the test puts it there
+    /// the way that call will.
+    fn paired() -> (Executor, SessionId, ApprovalId) {
+        let clock = Arc::new(FakeClock::new(Seconds(0.0)));
+        let exec = Executor::new(Box::new(MemDoc::new()), clock).unwrap();
+        let alice = Actor::Person { name: "alice".into() };
+        let spec = SessionSpec {
+            transport: Transport::Http { token: "bridge".into() },
+            client: "vts-tool".into(),
+            model: None,
+            on_behalf_of: alice.clone(),
+            grants: Grants::agent_default(),
+            budget: Budget::default(),
+            limits: Limits::default(),
+            parent: None,
+            role: None,
+            fence: Vec::new(),
+        };
+        let info = exec.open(spec).unwrap();
+        let id = {
+            let mut state = lock(&exec.env.state);
+            assert!(state.sessions.pause_one(0, alice, PauseReason::Pairing, Seconds(0.0)));
+            let ask = Ask {
+                session: info.id,
+                actor: info.actor.clone(),
+                need: Need::Pairing { client: info.client.clone() },
+                request: None,
+                grant: None,
+                required: 1,
+                carried: Allowance::default(),
+                at: Seconds(0.0),
+            };
+            state.approvals.push(ask).id
+        };
+        (exec, info.id, id)
+    }
+
+    #[test]
+    fn pairing_resumes_the_session_and_refusing_it_revokes_the_session() {
+        let alice = Actor::Person { name: "alice".into() };
+        let (exec, session, id) = paired();
+        assert_eq!(exec.resume(session, &alice).unwrap_err().code, ErrorCode::Denied, "only the card pairs");
+        let raise = Decision::RaiseBudget { budget: Budget::default() };
+        assert_eq!(exec.resolve(id, raise, &alice).unwrap_err().code, ErrorCode::Invalid);
+        let resolution = exec.resolve(id, Decision::Approve, &alice).unwrap();
+        assert!(matches!(resolution.result, Resolved::Applied { .. }));
+        assert_eq!(exec.session(session).unwrap().state, SessionState::Active);
+
+        let (exec, session, id) = paired();
+        exec.resolve(id, Decision::Reject { comment: None }, &alice).unwrap();
+        let state = exec.session(session).unwrap().state;
+        let revoked = EndReason::Revoked { by: alice, credential: true };
+        assert!(matches!(state, SessionState::Ended { reason, .. } if reason == revoked));
+    }
 }
