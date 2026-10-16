@@ -34,6 +34,12 @@ const FORBIDDEN: &[&str] = &[
     "_from_env(",
 ];
 
+/// `Backends::all()` as the argument of `enumerate_adapters(` is only a filter over the backends the instance already
+/// started, so it is fine; it must stay `all()` so that a `WGPU_BACKEND=gl` opt-in still finds its adapters.
+fn is_enumeration(line: &str, pattern: &str) -> bool {
+    pattern == "Backends::all()" && line.contains("enumerate_adapters(wgpu::Backends::all())")
+}
+
 /// What is wrong in one file's `source`, as `file:line: message` strings.
 fn violations(file: &str, source: &str) -> Vec<String> {
     if ALLOWED.contains(&file) {
@@ -44,7 +50,7 @@ fn violations(file: &str, source: &str) -> Vec<String> {
         .enumerate()
         .filter(|(_, line)| !line.trim_start().starts_with("//"))
         .flat_map(|(i, line)| {
-            FORBIDDEN.iter().filter(|p| line.contains(**p)).map(move |p| {
+            FORBIDDEN.iter().filter(|p| line.contains(**p) && !is_enumeration(line, p)).map(move |p| {
                 format!(
                     "{file}:{}: `{p}` starts every wgpu backend, GL included, which crashes the process at exit on WSL \
                      with NVIDIA's D3D12 driver; open the instance through the shared helper \
@@ -98,6 +104,7 @@ fn a_default_instance_fails_with_file_line_and_the_reason() {
     assert!(found[0].starts_with("crates/x/tests/t.rs:2:"), "{found:?}");
     assert!(found[0].contains("crashes the process at exit on WSL"), "{found:?}");
     assert_eq!(violations("crates/x/tests/t.rs", "let a = wgpu::Backends::all();").len(), 1);
+    assert_eq!(violations("crates/x/tests/t.rs", "i.enumerate_adapters(wgpu::Backends::all())").len(), 0);
     assert_eq!(violations("crates/x/tests/t.rs", "InstanceDescriptor::new_without_display_handle_from_env()").len(), 1);
 }
 
