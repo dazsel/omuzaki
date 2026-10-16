@@ -415,50 +415,98 @@ fn the_thumb_root_lands_on_the_layouts_joint_whatever_the_palm_and_spread() {
     }
 }
 
-/// Whether `p` lies inside the polygon `poly`, both as points in the plane (even-odd rule).
-fn inside_polygon(p: [f32; 2], poly: &[[f32; 2]]) -> bool {
-    let mut inside = false;
-    for (a, b) in poly.iter().zip(poly.iter().cycle().skip(1)) {
-        if (a[1] > p[1]) != (b[1] > p[1]) && p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0] {
-            inside = !inside;
+/// The extremes, and the two palm-and-spread combinations a review found the thumb's open ring leaving the palm at.
+fn thumb_cases() -> Vec<HandParams> {
+    let mut all = extremes();
+    for (palm_length, palm_width, thumb_spread_deg) in [(2.0, 0.5, 30.0), (1.0, 0.5, -30.0)] {
+        all.push(HandParams { palm_length, palm_width, thumb_spread_deg, ..HandParams::default() });
+    }
+    all
+}
+
+/// Whether `p` lies inside the closed tube made of `triangles` (indices into `positions`), which runs along `axis`: the
+/// triangles are cut by the plane through `p` across `axis`, and a ray from `p` within that plane crosses the cut an
+/// odd number of times. The cut is the surface's own section at `p`'s place along the axis, whatever its shape.
+fn inside_cut(p: Vec3, positions: &[Vec3], triangles: impl Iterator<Item = [u32; 3]>, axis: Vec3) -> bool {
+    let e1 = axis.any_orthonormal_vector();
+    let e2 = axis.cross(e1);
+    let level = |q: Vec3| (q - p).dot(axis);
+    let flat = |q: Vec3| ((q - p).dot(e1), (q - p).dot(e2));
+    let mut crossings = 0;
+    for t in triangles {
+        let corners = t.map(|v| positions[v as usize]);
+        // Where the triangle's edges cross the plane (a corner on it counts as above): none, or the two ends of the
+        // triangle's piece of the cut.
+        let cut: Vec<(f32, f32)> = [(0, 1), (1, 2), (2, 0)]
+            .into_iter()
+            .filter_map(|(a, b)| {
+                let (sa, sb) = (level(corners[a]), level(corners[b]));
+                ((sa >= 0.0) != (sb >= 0.0)).then(|| flat(corners[a] + (corners[b] - corners[a]) * (sa / (sa - sb))))
+            })
+            .collect();
+        if let [(xa, ya), (xb, yb)] = cut[..] {
+            // The ray runs along `e1` from `p`, the origin here.
+            if (ya > 0.0) != (yb > 0.0) && xa + (xb - xa) * (ya / (ya - yb)) > 0.0 {
+                crossings += 1;
+            }
         }
     }
-    inside
+    crossings % 2 == 1
+}
+
+/// The triangles of `m`, as index triples.
+fn triangles(m: &PartMesh) -> impl Iterator<Item = [u32; 3]> + '_ {
+    m.geometry.indices.chunks_exact(3).map(|t| [t[0], t[1], t[2]])
+}
+
+/// Whether `p` lies inside the hand's palm-and-finger block: the triangles among its first `pieces.thumb` vertices.
+fn inside_block(p: Vec3, m: &PartMesh, pieces: &Pieces, axis: Vec3) -> bool {
+    let limit = u32::try_from(pieces.thumb).unwrap();
+    inside_cut(p, &m.geometry.positions, triangles(m).filter(|t| t.iter().all(|&v| v < limit)), axis)
 }
 
 #[test]
 fn every_vertex_of_the_thumbs_open_stem_ring_lies_in_the_palm_at_every_extreme_and_template() {
     use omuzaki_anim_api::HumanoidBone::{LeftHand, LeftLowerArm};
-    let pieces = Pieces::of(HandStyle::Mitten);
     for template in TEMPLATES {
         for size in [0.5, 1.0, 2.0] {
-            for hand in extremes() {
-                let (layout, parts) = built(template, &params(HandStyle::Mitten, hand.clone(), size));
-                let (wrist, elbow) = (layout.joint64(LeftHand).unwrap(), layout.joint64(LeftLowerArm).unwrap());
-                let axis = (wrist - elbow).normalize().as_vec3();
-                let wrist = wrist.as_vec3();
-                let positions = &mesh(&parts, "hand-l").geometry.positions;
-                // Any two directions across the arm: a point's place in the section is what matters.
-                let e1 = axis.any_orthonormal_vector();
-                let e2 = axis.cross(e1);
-                let flat = |p: Vec3| [(p - wrist).dot(e1), (p - wrist).dot(e2)];
-                let along = |p: Vec3| (p - wrist).dot(axis);
-                for v in &positions[pieces.stem_ring()] {
-                    // The block's ring nearest this vertex along the arm is the palm's section there.
-                    let nearest = pieces
-                        .block(positions)
-                        .chunks_exact(pieces.ring)
-                        .min_by(|a, b| (along(a[0]) - along(*v)).abs().total_cmp(&(along(b[0]) - along(*v)).abs()))
-                        .unwrap();
-                    let section: Vec<[f32; 2]> = nearest.iter().map(|p| flat(*p)).collect();
-                    assert!(
-                        inside_polygon(flat(*v), &section),
-                        "{template} size {size} {hand:?}: a vertex of the thumb's stem ring is outside the palm"
-                    );
+            for hand in thumb_cases() {
+                for style in [HandStyle::Mitten, HandStyle::Simple] {
+                    let pieces = Pieces::of(style);
+                    let (layout, parts) = built(template, &params(style, hand.clone(), size));
+                    let (wrist, elbow) = (layout.joint64(LeftHand).unwrap(), layout.joint64(LeftLowerArm).unwrap());
+                    let axis = (wrist - elbow).normalize().as_vec3();
+                    let m = mesh(&parts, "hand-l");
+                    for &v in &m.geometry.positions[pieces.stem_ring()] {
+                        assert!(
+                            inside_block(v, m, &pieces, axis),
+                            "{template} {style:?} size {size} {hand:?}: a vertex of the thumb's stem ring is outside \
+                             the palm's surface"
+                        );
+                    }
                 }
             }
         }
     }
+}
+
+#[test]
+fn the_palm_test_finds_a_point_outside_the_surface() {
+    // The containment test itself: the block's own centre line is inside, and a point pushed out past the widest
+    // section is not.
+    use omuzaki_anim_api::HumanoidBone::{LeftHand, LeftLowerArm};
+    let pieces = Pieces::of(HandStyle::Mitten);
+    let (layout, parts) = built("soft-sd", &params(HandStyle::Mitten, HandParams::default(), 1.0));
+    let (wrist, elbow) = (layout.joint64(LeftHand).unwrap(), layout.joint64(LeftLowerArm).unwrap());
+    let axis = (wrist - elbow).normalize().as_vec3();
+    let m = mesh(&parts, "hand-l");
+    let ring = &m.geometry.positions[5 * pieces.ring..6 * pieces.ring - 1];
+    let centre = ring.iter().copied().sum::<Vec3>() / ring.len() as f32;
+    assert!(inside_block(centre, m, &pieces, axis));
+    let out = ring[0] + (ring[0] - centre) * 0.05;
+    assert!(!inside_block(out, m, &pieces, axis));
+    let just_in = centre + (ring[0] - centre) * 0.95;
+    assert!(inside_block(just_in, m, &pieces, axis));
 }
 
 /// Renders the left hand of the built body (front and side) through the mock toon renderer when
@@ -558,31 +606,39 @@ fn the_wrist_end_is_white_and_the_tips_are_the_warmer_tint_relative_to_it() {
     assert!(colours.iter().all(|c| c[..3].iter().all(|v| (0.91..=1.0).contains(v))));
 }
 
+/// The whole character with the body of `p` on `template`: its left forearm's direction, its `arm.L` mesh and its
+/// `hand-l` mesh.
+fn arm_and_hand(template: &str, p: &BodyParams) -> (Vec3, PartMesh, PartMesh) {
+    use omuzaki_anim_api::HumanoidBone::{LeftHand, LeftLowerArm};
+    use omuzaki_char_api::{BuildOptions, BuildServices, CharId, CharacterBuilder, CharacterDef, RegistryBuilder};
+    let node = serde_json::json!({
+        "name": "Hands",
+        "template": template,
+        "seed": 3,
+        "parts": { "body": { "kind": "body", "params": serde_json::to_value(p).unwrap() } }
+    });
+    let def = CharacterDef::from_node(&node).unwrap();
+    let built = RegistryBuilder
+        .build(&CharId::new("t").unwrap(), &def, &BuildOptions::default(), &BuildServices::default())
+        .unwrap();
+    let part = |name: &str| built.meshes.iter().find(|m| m.mesh.name == name).unwrap().mesh.clone();
+    let layout = registry::find(template).unwrap().try_layout(&p.proportions, &p.shape, &p.hand).unwrap();
+    let axis = (layout.joint64(LeftHand).unwrap() - layout.joint64(LeftLowerArm).unwrap()).normalize().as_vec3();
+    (axis, part("arm.L"), part("hand-l"))
+}
+
 #[test]
 fn the_open_wrist_ring_lies_inside_the_forearms_surface_on_every_template_size_and_extreme() {
-    use omuzaki_anim_api::HumanoidBone::LeftHand;
-    use omuzaki_char::template::layout::section_basis;
-    use omuzaki_char_api::BodyRegion;
     for template in TEMPLATES {
         for size in [0.5, 1.0, 2.0] {
-            for hand in extremes() {
+            for hand in thumb_cases() {
                 for style in [HandStyle::Mitten, HandStyle::Simple] {
-                    let (layout, parts) = built(template, &params(style, hand.clone(), size));
-                    let arm = layout.region(BodyRegion::ArmL).unwrap();
-                    let wrist = layout.joint64(LeftHand).unwrap();
-                    for p in &mesh(&parts, "hand-l").geometry.positions[Pieces::of(style).wrist_ring()] {
-                        let point = p.as_dvec3();
-                        let axis = arm.section(1.0).axis;
-                        let t = 1.0 - (wrist - point).dot(axis) / arm.length();
-                        let section = arm.section(t);
-                        let (across, through) = section_basis(BodyRegion::ArmL, section.axis.as_vec3());
-                        let d = point - section.centre;
-                        let x = d.dot(across.as_dvec3()) / section.radii.x;
-                        let y = d.dot(through.as_dvec3()) / section.radii.y;
+                    let (axis, arm, hand_mesh) = arm_and_hand(template, &params(style, hand.clone(), size));
+                    for &v in &hand_mesh.geometry.positions[Pieces::of(style).wrist_ring()] {
                         assert!(
-                            x * x + y * y <= 1.0,
-                            "{template} {style:?} size {size} {hand:?}: a wrist ring vertex is at {} of the forearm",
-                            (x * x + y * y).sqrt()
+                            inside_cut(v, &arm.geometry.positions, triangles(&arm), axis),
+                            "{template} {style:?} size {size} {hand:?}: a vertex of the wrist sleeve's open ring is \
+                             outside the forearm's surface"
                         );
                     }
                 }
