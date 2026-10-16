@@ -214,7 +214,8 @@ impl ImportedAvatar {
     ///   targets that fit its vertices, and draws a material the avatar has;
     /// - every material passes the renderer's rules, draws only textures the avatar has and composites no face layers
     ///   (an imported avatar has no painted face), and every texture's pixels match its description;
-    /// - the retained morph-target names, when kept, line up with every mesh's targets;
+    /// - the retained morph-target names, when kept, have one list per mesh, each empty (the file named none) or naming
+    ///   every target;
     /// - every anchor follows a bone the skeleton has;
     /// - every morph bind names a mesh and a target that exist, and every colour and UV bind a material that exists;
     /// - every driver names an expression that exists, and gaze channels drive expressions only on the native `ARKit`
@@ -291,11 +292,17 @@ impl ImportedAvatar {
         if names.is_empty() {
             return Ok(());
         }
-        // Every index either side has: a list for a mesh that doesn't exist is as wrong as a mesh without its list.
+        // Every index either side has: a list for a mesh that doesn't exist is as wrong as a mesh without its list. An
+        // empty list means the file named none of that mesh's targets (glTF names are optional per mesh), so it fits
+        // any mesh; a list with names names every target.
         for index in 0..names.len().max(self.meshes.len()) {
             let kept = names.get(index).map(Vec::len);
             let targets = self.meshes.get(index).map(AvatarMesh::morph_count);
-            if kept != targets {
+            let fits = match (kept, targets) {
+                (Some(kept), Some(targets)) => kept == 0 || kept == targets,
+                _ => false,
+            };
+            if !fits {
                 return Err(AvatarError::morph_names(index, kept.unwrap_or(0), targets.unwrap_or(0)));
             }
         }

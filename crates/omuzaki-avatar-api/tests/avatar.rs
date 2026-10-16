@@ -103,6 +103,16 @@ fn retained_morph_names_line_up_with_every_meshs_targets() {
     assert_eq!(a.validate(), Err(AvatarError::morph_names(0, 1, 2)), "a name missing");
     a.retained.morph_names = vec![vec!["Fcl_ALL_A".into(), "Fcl_EYE_Close".into()], Vec::new()];
     assert_eq!(a.validate(), Err(AvatarError::morph_names(1, 0, 0)), "a list for a mesh that isn't there");
+
+    // A second mesh whose targets the file left unnamed: its list is empty, beside a named one.
+    a.meshes.push(a.meshes[0].clone());
+    assert_eq!(a.validate(), Ok(()), "named and unnamed meshes mix");
+    a.retained.morph_names = vec![Vec::new(), vec!["Fcl_ALL_A".into(), "Fcl_EYE_Close".into()]];
+    assert_eq!(a.validate(), Ok(()));
+    a.retained.morph_names = vec![vec!["Fcl_ALL_A".into(), "Fcl_EYE_Close".into()]];
+    assert_eq!(a.validate(), Err(AvatarError::morph_names(1, 0, 2)), "a mesh without its list");
+    a.retained.morph_names = vec![Vec::new(), Vec::new()];
+    assert_eq!(a.validate(), Ok(()), "a file that named nothing");
     a.retained.morph_names = Vec::new();
     assert_eq!(a.validate(), Ok(()), "nothing kept is fine for a hand-built avatar");
 }
