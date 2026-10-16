@@ -793,12 +793,29 @@ pub fn free_prices() -> PriceTable {
 pub struct Gate {
     open: std::sync::atomic::AtomicBool,
     pub delivered: AtomicUsize,
+    /// The host asked for an event while the stream was held: everything delivered has been handled.
+    pub parked: std::sync::atomic::AtomicBool,
     after: usize,
 }
 
 impl Gate {
     pub fn open(&self) {
+        self.parked.store(false, Ordering::Release);
         self.open.store(true, Ordering::Release);
+    }
+}
+
+/// The clock the host sees: the rig's [`FakeClock`], counting how often the host reads it. A wait on the clock reads it
+/// every millisecond, so a new read after an advance shows the host has looked at the new time.
+pub struct WatchedClock {
+    inner: Arc<FakeClock>,
+    pub reads: AtomicUsize,
+}
+
+impl Clock for WatchedClock {
+    fn now(&self) -> Seconds {
+        self.reads.fetch_add(1, Ordering::AcqRel);
+        self.inner.now()
     }
 }
 
@@ -818,6 +835,7 @@ impl EventSource for Held {
         let held =
             !self.gate.open.load(Ordering::Acquire) && self.gate.delivered.load(Ordering::Acquire) >= self.gate.after;
         if held {
+            self.gate.parked.store(true, Ordering::Release);
             std::thread::sleep(Duration::from_millis(1));
             return Ok(Next::Wait);
         }
@@ -847,6 +865,8 @@ pub struct Rig {
     pub sink: Arc<RecordingSink>,
     pub llm: Arc<FakeLlm>,
     pub clock: Arc<FakeClock>,
+    /// The clock as the host reads it.
+    pub host_clock: Arc<WatchedClock>,
     pub host: AssistantHost,
     pub rx: EventReceiver,
     pub gate: Arc<Gate>,
@@ -980,7 +1000,8 @@ impl Rig {
         }
         let link =
             McpClientLink::connect(client_io, &RuntimeHandle::new(rt.handle().clone())).expect("client connects");
-        let mut cfg = HostConfig::new(person(), sink.clone(), clock.clone(), options.prices)
+        let watched = Arc::new(WatchedClock { inner: clock.clone(), reads: AtomicUsize::new(0) });
+        let mut cfg = HostConfig::new(person(), sink.clone(), watched.clone(), options.prices)
             .with_caps(options.caps)
             .with_history(options.history)
             .with_max_output(options.max_output);
@@ -993,6 +1014,7 @@ impl Rig {
         let gate = Arc::new(Gate {
             open: std::sync::atomic::AtomicBool::new(options.hold_after.is_none()),
             delivered: AtomicUsize::new(0),
+            parked: std::sync::atomic::AtomicBool::new(false),
             after: options.hold_after.unwrap_or(0),
         });
         let mut info = llm.info().clone();
@@ -1002,7 +1024,7 @@ impl Rig {
         let client: Arc<dyn LlmClient> = Arc::new(GatedLlm { inner: llm.clone(), gate: Arc::clone(&gate), info });
         let host = AssistantHost::start(link, client, sessions.clone(), SessionId(1), cfg);
         let rx = host.events();
-        Self { rt, server, sessions, sink, llm, clock, host, rx, gate, server_peer }
+        Self { rt, server, sessions, sink, llm, clock, host_clock: watched, host, rx, gate, server_peer }
     }
 
     /// Sends `text` and returns every event up to `Done`, advancing the fake clock by `tick` seconds per millisecond of
@@ -1028,6 +1050,27 @@ impl Rig {
                 self.clock.advance(Seconds(tick));
             }
             std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// Waits until the stream is held and the host has handled every event it delivered, so what the test does next
+    /// meets the host at rest. (`RigOptions::hold_after` holds it.)
+    pub fn wait_parked(&self) {
+        Self::wait_for("the host to be parked at the held stream", || {
+            self.gate.parked.load(std::sync::atomic::Ordering::Acquire)
+        });
+    }
+
+    /// Moves the host's clock forward `step` seconds at a time, each step only after the host has read the clock again
+    /// since the last one, until `done` holds. The time the host waited is then fixed by the steps, not by how fast the
+    /// machine ran.
+    pub fn advance_while_host_waits(&self, step: f64, done: impl Fn() -> bool) {
+        while !done() {
+            let reads = self.host_clock.reads.load(Ordering::Acquire);
+            self.clock.advance(Seconds(step));
+            Self::wait_for("the host to look at the new time", || {
+                done() || self.host_clock.reads.load(Ordering::Acquire) > reads
+            });
         }
     }
 

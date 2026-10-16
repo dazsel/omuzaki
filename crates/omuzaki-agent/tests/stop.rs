@@ -71,9 +71,8 @@ fn after_stop_returns_nothing_new_is_readable_across_a_thousand_seeded_interleav
             standard_server,
         );
         rig.host.send(UserMessage::new("go")).unwrap();
-        Rig::wait_for("the held stream", || rig.gate.delivered.load(std::sync::atomic::Ordering::Acquire) >= hold);
-        // Let the host flush what it has, then read a seeded part of it.
-        std::thread::sleep(std::time::Duration::from_millis(2));
+        // Once the host is parked at the held stream it has flushed what it has; then read a seeded part of it.
+        rig.wait_parked();
         let mut read = String::new();
         let queued_to_read = rng.next(hold);
         for _ in 0..queued_to_read {
@@ -103,8 +102,7 @@ fn the_next_request_carries_only_the_text_that_was_read() {
         standard_server,
     );
     rig.host.send(UserMessage::new("go")).unwrap();
-    Rig::wait_for("the held stream", || rig.gate.delivered.load(std::sync::atomic::Ordering::Acquire) >= 6);
-    std::thread::sleep(std::time::Duration::from_millis(2));
+    rig.wait_parked();
     let mut read = String::new();
     if let Some(AssistantEvent::TextDelta(t)) = rig.rx.try_recv() {
         read.push_str(&t);
@@ -227,7 +225,7 @@ fn the_host_asks_the_executor_once_never_pauses_or_commits_and_a_second_stop_cha
         assert_eq!(rig.server.called("tx_commit") + rig.server.called("tx_rollback"), 0);
         assert_eq!(events.iter().filter(|e| matches!(e, AssistantEvent::Paused)).count(), 1, "{state:?}");
         assert_eq!(events.iter().filter(|e| matches!(e, AssistantEvent::Done)).count(), 1);
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        // `stop` queues synchronously on the caller's thread and the host is idle after `Done`, so there is nothing to wait for.
         assert!(rig.rx.try_recv().is_none(), "a second stop emits nothing");
     }
 }
@@ -378,10 +376,7 @@ fn stop_after_a_compaction_in_the_same_answer_does_not_panic_and_keeps_what_was_
         standard_server,
     );
     rig.host.send(UserMessage::new("go")).unwrap();
-    Rig::wait_for("the held stream", || {
-        rig.gate.delivered.load(std::sync::atomic::Ordering::Acquire) >= HEAVY_TURN_EVENTS + SUMMARY_TURN_EVENTS + 3
-    });
-    std::thread::sleep(std::time::Duration::from_millis(2));
+    rig.wait_parked();
     rig.host.stop();
     let events = rig.until_done(0.0);
     assert!(matches!(events.last(), Some(AssistantEvent::Done)));
@@ -474,8 +469,7 @@ fn text_a_transcript_showed_is_not_cut_by_stop() {
         standard_server,
     );
     rig.host.send(UserMessage::new("go")).unwrap();
-    Rig::wait_for("the held stream", || rig.gate.delivered.load(std::sync::atomic::Ordering::Acquire) >= 8);
-    std::thread::sleep(std::time::Duration::from_millis(2));
+    rig.wait_parked();
     // A panel opened late never reads the deltas; it shows the transcript.
     let shown = assistant_text(&rig.host.transcript());
     assert!(!shown.is_empty());
@@ -529,8 +523,7 @@ fn stop_after_a_compaction_cuts_by_the_text_read_since_the_summary_not_the_whole
         standard_server,
     );
     rig.host.send(UserMessage::new("go")).unwrap();
-    Rig::wait_for("the held stream", || rig.gate.delivered.load(std::sync::atomic::Ordering::Acquire) >= held);
-    std::thread::sleep(std::time::Duration::from_millis(2));
+    rig.wait_parked();
     // The person has read the ten bytes before the summary and "BBBBB" after it, not "CCCCC".
     let mut read = 0;
     while read < 15 {
@@ -571,8 +564,7 @@ fn compacting_does_not_count_unread_text_as_displayed() {
         standard_server,
     );
     rig.host.send(UserMessage::new("go")).unwrap();
-    Rig::wait_for("the held stream", || rig.gate.delivered.load(std::sync::atomic::Ordering::Acquire) >= held);
-    std::thread::sleep(std::time::Duration::from_millis(2));
+    rig.wait_parked();
     // The person read nothing: the compaction's own look at the transcript showed them nothing.
     rig.host.stop();
     rig.until_done(0.0);

@@ -12,7 +12,7 @@ use common::*;
 use omuzaki_agent_api::Assistant;
 use omuzaki_agent_api::event::AssistantEvent;
 use omuzaki_agent_api::message::UserMessage;
-use omuzaki_core::time::{Clock, Seconds};
+use omuzaki_core::time::Clock;
 use omuzaki_llm_api::message::ContentBlock;
 use omuzaki_ops_api::{Actor, ApprovalId, ErrorDetail, Need, PauseReason, SessionState};
 
@@ -165,12 +165,11 @@ fn a_second_limit_goes_to_the_model_and_a_long_wait_is_cut_to_ten_seconds() {
         RigOptions::default(),
         edit_server(vec![limited(60.0), limited(60.0)]),
     );
-    // The clock is moved by hand, once: after the first (limited) call the host sits in its rate-limit wait, which it
-    // started at clock time 0, so ten seconds on the clock end the wait and no more are ever added.
+    // The clock is moved by hand, a second at a time, each step only once the host has read the clock again: the wait
+    // ends on the tenth step after the host began it, however fast or slow the machine is.
     rig.host.send(UserMessage::new("go")).unwrap();
     Rig::wait_for("the limited call", || rig.server.called("face_set_profile") == 1);
-    std::thread::sleep(std::time::Duration::from_millis(100));
-    rig.clock.advance(Seconds(10.0));
+    rig.advance_while_host_waits(1.0, || rig.server.called("face_set_profile") == 2);
     rig.until_done(0.0);
     assert_eq!(rig.server.called("face_set_profile"), 2);
     let waited = rig.clock.now().0;
