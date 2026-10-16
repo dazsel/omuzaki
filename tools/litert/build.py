@@ -583,30 +583,33 @@ def delegation_problem(graph: str, taken: int, total: int, partitions: int, left
             f"(tools/litert/pins.toml)")
 
 
-def max_abs_diff(ours, reference, what: str) -> float:
-    """The largest |ours - reference|; a NaN or infinity on either side fails, since NaN compares false to any gate."""
+def max_abs_diff(ours, reference, what: str) -> tuple[float, str]:
+    """(the largest |ours - reference| over the pairs where both sides are finite, the problem found or ""). Any
+    non-finite value on either side is a problem of its own (count and first index), since NaN compares false to any
+    gate; it never hides the finite pairs' difference, so the tolerance gate still sees it."""
     import numpy as np  # installed by the check job
 
-    for side, values in (("ours", ours), ("the wheel's", reference)):
-        if not np.all(np.isfinite(values)):
-            raise Mismatch(f"{what}: {side} has a non-finite value")
-    return float(np.max(np.abs(ours.astype(np.float64) - reference.astype(np.float64)), initial=0.0))
+    finite = np.isfinite(ours) & np.isfinite(reference)
+    worst = float(np.max(np.abs(ours.astype(np.float64) - reference.astype(np.float64))[finite], initial=0.0))
+    bad = np.flatnonzero(~finite)
+    problem = f"{what}: {bad.size} non-finite value(s), the first at index {bad[0]}" if bad.size else ""
+    return worst, problem
 
 
 def graph_parity(graph: str, ours: bytes, expected) -> tuple[float, list[str]]:
-    """(the largest |ours - wheel| over a graph's finite outputs, the problems found). An output with a non-finite value
-    is a problem of its own, not an exception, and does not hide the difference of the others, so the check still
-    measures and reports every output and every graph before it fails."""
+    """(the largest |ours - wheel| over a graph's finite pairs, the problems found). A non-finite output value is a
+    problem of its own, not an exception, and does not hide the difference of the others, so the check still measures
+    and reports every output and every graph before it fails."""
     import numpy as np  # installed by the check job
 
     worst, offset, problems = 0.0, 0, []
     for index, tensor in enumerate(expected):
         mine = np.frombuffer(ours, dtype=tensor.dtype, count=tensor.size, offset=offset)
         offset += tensor.nbytes
-        try:
-            worst = max(worst, max_abs_diff(mine, tensor.ravel(), f"{graph} output {index}"))
-        except Mismatch as why:
-            problems.append(str(why))
+        difference, problem = max_abs_diff(mine, tensor.ravel(), f"{graph} output {index}")
+        worst = max(worst, difference)
+        if problem:
+            problems.append(problem)
     return worst, problems
 
 

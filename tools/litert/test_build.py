@@ -209,25 +209,28 @@ except ImportError:  # the build job has no numpy; the check job runs these too,
 class Parity(unittest.TestCase):
     def test_the_largest_difference_is_returned(self):
         ours, reference = numpy.array([1.0, 2.0], numpy.float32), numpy.array([1.0, 2.5], numpy.float32)
-        self.assertEqual(build.max_abs_diff(ours, reference, "out"), 0.5)
+        self.assertEqual(build.max_abs_diff(ours, reference, "out"), (0.5, ""))
 
-    def test_a_nan_output_fails(self):
-        with self.assertRaisesRegex(build.Mismatch, "ours has a non-finite"):
-            build.max_abs_diff(numpy.array([numpy.nan], numpy.float32), numpy.zeros(1, numpy.float32), "out")
+    def test_nan_plus_finite_keeps_the_finite_difference_and_reports_the_nan(self):
+        ours, reference = numpy.array([numpy.nan, 0.5], numpy.float32), numpy.zeros(2, numpy.float32)
+        worst, problem = build.max_abs_diff(ours, reference, "out")
+        self.assertEqual(worst, 0.5)
+        self.assertEqual(problem, "out: 1 non-finite value(s), the first at index 0")
 
-    def test_an_infinite_difference_fails(self):
-        huge = numpy.array([numpy.inf], numpy.float32)
-        with self.assertRaisesRegex(build.Mismatch, "the wheel's has a non-finite"):
-            build.max_abs_diff(numpy.zeros(1, numpy.float32), huge, "out")
-
-    def test_a_non_finite_value_on_either_side_fails(self):
-        finite = numpy.zeros(2, numpy.float32)
+    def test_a_non_finite_value_on_either_side_is_reported_with_count_and_first_index(self):
+        finite = numpy.zeros(3, numpy.float32)
         for bad in (numpy.nan, numpy.inf):
-            broken = numpy.array([0.0, bad], numpy.float32)
-            with self.assertRaisesRegex(build.Mismatch, "non-finite"):
-                build.max_abs_diff(broken, finite, "out")
-            with self.assertRaisesRegex(build.Mismatch, "non-finite"):
-                build.max_abs_diff(finite, broken, "out")
+            broken = numpy.array([0.0, bad, bad], numpy.float32)
+            for ours, reference in ((broken, finite), (finite, broken)):
+                self.assertEqual(build.max_abs_diff(ours, reference, "out"),
+                                 (0.0, "out: 2 non-finite value(s), the first at index 1"))
+
+    def test_nan_plus_finite_over_the_gate_fails_on_both_counts(self):
+        wheel = [numpy.zeros(2, numpy.float32)]
+        ours = numpy.array([numpy.nan, 0.5], numpy.float32).tobytes()
+        worst, problems = build.graph_parity("g", ours, wheel)
+        self.assertEqual(worst, 0.5, "the tolerance gate sees the finite difference")
+        self.assertEqual(problems, ["g output 0: 1 non-finite value(s), the first at index 0"])
 
     def test_a_non_finite_output_is_a_problem_and_the_other_outputs_are_still_measured(self):
         wheel = [numpy.zeros(2, numpy.float32), numpy.zeros(2, numpy.float32)]
@@ -235,14 +238,7 @@ class Parity(unittest.TestCase):
         worst, problems = build.graph_parity("g", ours, wheel)
         self.assertEqual(worst, 0.25)
         self.assertEqual(len(problems), 1)
-        self.assertRegex(problems[0], "g output 0: ours has a non-finite")
-
-    def test_a_non_finite_output_does_not_hide_a_finite_output_over_the_gate(self):
-        wheel = [numpy.zeros(1, numpy.float32), numpy.zeros(1, numpy.float32)]
-        ours = numpy.array([numpy.inf, 0.5], numpy.float32).tobytes()
-        worst, problems = build.graph_parity("g", ours, wheel)
-        self.assertEqual(worst, 0.5, "the finite output's difference is kept, so the tolerance gate sees it")
-        self.assertEqual(len(problems), 1)
+        self.assertRegex(problems[0], "g output 0: 1 non-finite")
 
     def test_finite_outputs_give_the_largest_difference_and_no_problem(self):
         wheel = [numpy.zeros(2, numpy.float32), numpy.zeros(1, numpy.float32)]
