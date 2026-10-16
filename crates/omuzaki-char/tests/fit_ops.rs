@@ -16,9 +16,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use common::{assert_error, at, mock_node};
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use common::{assert_error, at, build, mock_node};
+use image::{ExtendedColorType, ImageEncoder, codecs::png::PngEncoder};
 use omuzaki_char::fit::solver::{FitInput, PARAM_ORDER, Param, iou_of};
-use omuzaki_char::fit::{FitParams, FitView, Target, render_target};
+use omuzaki_char::fit::{FitParams, FitView, Silhouette, Target, render_target};
+use omuzaki_core::mesh::MeshData;
 use omuzaki_core::rng::Rng;
 use omuzaki_core::time::FakeClock;
 use omuzaki_doc_api::{Change, DocPath, DocRead, DocWrite, Patch};
@@ -69,14 +73,37 @@ const HEIGHT: usize = 384;
 const VIEWS: [FitView; 3] = [FitView::Front, FitView::Side, FitView::Back];
 const TEMPLATES: [&str; 4] = ["soft-sd", "mini", "standard", "tall"];
 
+/// The mock character on `template` with a real body alone (stored at `params`, if given), so the fit draws nothing
+/// else.
 fn project_on(template: &str, params: Option<&FitParams>) -> MemDoc {
+    with_parts(template, params, json!({}))
+}
+
+/// The mock character on `template` with a real body (stored at `params`, if given) and the `others` parts beside it.
+fn with_parts(template: &str, params: Option<&FitParams>, others: Value) -> MemDoc {
     let mut node = mock_node();
     node["template"] = json!(template);
-    node["parts"]["body"]["kind"] = json!("body");
+    node["parts"] = others;
+    node["parts"]["body"] = json!({ "kind": "body" });
     if let Some(p) = params {
         node["parts"]["body"]["params"] = json!({ "proportions": p.proportions, "shape": p.shape });
     }
     MemDoc::from_value(json!({ "characters": { "mock": node } }))
+}
+
+/// A real head and hair beside the body, built by their own kinds.
+fn head_and_hair() -> Value {
+    json!({ "head": { "kind": "head" }, "hair": { "kind": "hair" } })
+}
+
+/// `mask` as a PNG: an opaque black figure on a transparent ground.
+fn png_of(mask: &Silhouette) -> Vec<u8> {
+    let data: Vec<u8> =
+        mask.pixels().iter().flat_map(|&on| if on { [0, 0, 0, 255] } else { [255, 255, 255, 0] }).collect();
+    let (w, h) = (u32::try_from(mask.width()).unwrap(), u32::try_from(mask.height()).unwrap());
+    let mut out = Vec::new();
+    PngEncoder::new(&mut out).write_image(&data, w, h, ExtendedColorType::Rgba8).unwrap();
+    out
 }
 
 fn project() -> MemDoc {
@@ -472,9 +499,8 @@ fn proposed(out: &Value) -> FitParams {
 
 /// #2158's acceptance: through the op, on the solver's own synthetic silhouettes (#1958's seed, three 384-row views),
 /// the proposal recovers what a silhouette identifies within the solver test's tolerances: the `IoU`, the widths, arm
-/// length, foot size and the leg's share. The weakly seen axes (`curves`, and `hand_size` once the hands show) have
-/// bounds that depend on the hands, so the solver's own recovery test (`tests/fit.rs`) holds them; the op runs the same
-/// fit. All four templates in a release build; one in a debug build, where the solver's test fits all four.
+/// length, foot size, curves and the leg's share. All four templates in a release build; one in a debug build, where
+/// the solver's test fits all four.
 #[test]
 fn fit_reference_recovers_the_solvers_test_character_within_its_tolerances() {
     let truth = random_params(SEED);
@@ -492,7 +518,7 @@ fn fit_reference_recovers_the_solvers_test_character_within_its_tolerances() {
         let fitted = proposed(out);
         let iou = out["iou_after"].as_f64().unwrap();
         let mut errors = Vec::new();
-        for p in [Param::ShoulderWidth, Param::HipWidth, Param::ArmLength, Param::FootSize] {
+        for p in [Param::ShoulderWidth, Param::HipWidth, Param::ArmLength, Param::FootSize, Param::Curves] {
             let (lo, hi) = p.range();
             errors.push((p, (p.get(&fitted) - p.get(&truth)).abs() / (hi - lo)));
         }
@@ -509,21 +535,160 @@ fn fit_reference_recovers_the_solvers_test_character_within_its_tolerances() {
     }
 }
 
-/// Decodes base64 (the standard alphabet, padded), for writing the evidence images.
-fn from_base64(text: &str) -> Vec<u8> {
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let sextets: Vec<u32> = text
-        .bytes()
-        .filter(|&c| c != b'=')
-        .map(|c| u32::try_from(ALPHABET.iter().position(|&a| a == c).unwrap()).unwrap())
+/// The three forms of a view give the same fit: text rows, a base64 PNG, and a PNG in the asset store.
+#[test]
+fn rows_a_png_and_a_stored_png_fit_alike() {
+    let (doc, store) = (project(), Arc::new(MemStore::default()));
+    let shown = [FitView::Front, FitView::Side];
+    let masks: Vec<Silhouette> =
+        shown.iter().map(|&v| render_target("soft-sd", &truth(), &[], v, ROWS).unwrap()).collect();
+    let as_png: Vec<Value> = shown
+        .iter()
+        .zip(&masks)
+        .map(|(&v, m)| json!({ "view": view_name(v), "png": BASE64.encode(png_of(m)) }))
         .collect();
-    let mut out = Vec::new();
-    for group in sextets.chunks(4) {
-        let n = group.iter().enumerate().fold(0, |n, (i, &s)| n | (s << (18 - 6 * i)));
-        let [_, a, b, c] = n.to_be_bytes();
-        out.extend_from_slice(&[a, b, c][..group.len() - 1]);
+    let as_asset: Vec<Value> = shown
+        .iter()
+        .zip(&masks)
+        .map(|(&v, m)| {
+            let hash = store.put(&png_of(m), common_provenance()).unwrap();
+            json!({ "view": view_name(v), "asset": hash })
+        })
+        .collect();
+    let answer_of = |views: Value| {
+        let args = json!({ "character": "mock", "views": views, "heatmaps": false });
+        answer(&run_job(&doc, &store, "fit.reference", &args).unwrap()).clone()
+    };
+    let from_rows = answer_of(views());
+    assert_eq!(answer_of(Value::Array(as_png)), from_rows);
+    assert_eq!(answer_of(Value::Array(as_asset)), from_rows);
+}
+
+/// What a store the test fills itself records: the test's own material.
+fn common_provenance() -> Provenance {
+    Provenance {
+        source: omuzaki_store_api::Source::Authored,
+        author: None,
+        licence: "LicenseRef-Omuzaki-User".into(),
+        attribution: None,
+        commercial: omuzaki_store_api::Commercial::Unknown,
+        consent: None,
+        private_test: false,
     }
-    out
+}
+
+#[test]
+fn bad_pngs_and_assets_are_refused_by_their_field() {
+    let (doc, store) = (project(), Arc::new(MemStore::default()));
+    let mask = render_target("soft-sd", &truth(), &[], FitView::Front, ROWS).unwrap();
+    let ok = rows_of("soft-sd", &truth(), FitView::Front, ROWS);
+    let cases = [
+        (json!({ "view": "front", "png": "not base64!" }), ErrorCode::Invalid, Some("views/0/png"), "base64"),
+        (
+            json!({ "view": "front", "png": BASE64.encode(b"not a png") }),
+            ErrorCode::Invalid,
+            Some("views/0/png"),
+            "doesn't decode",
+        ),
+        (
+            json!({ "view": "front", "rows": ok, "png": BASE64.encode(png_of(&mask)) }),
+            ErrorCode::Invalid,
+            Some("views/0/rows"),
+            "exactly one",
+        ),
+        (json!({ "view": "front" }), ErrorCode::Invalid, Some("views/0/rows"), "exactly one"),
+        (
+            json!({ "view": "front", "asset": ContentHash::of(b"never stored") }),
+            ErrorCode::NotFound,
+            None,
+            "can't be read",
+        ),
+    ];
+    for (view, code, field, text) in cases {
+        let e = dry_run(&doc, &store, "fit.reference", json!({ "character": "mock", "views": [view] })).unwrap_err();
+        assert_eq!((e.code, e.field.as_deref()), (code, field), "{e:?}");
+        assert!(e.message.contains(text), "{}", e.message);
+    }
+    // An asset needs the store: an app that wired none is told so.
+    let hash = store.put(&png_of(&mask), common_provenance()).unwrap();
+    let args = json!({ "character": "mock", "views": [{ "view": "front", "asset": hash }] });
+    let e = common::plan(&doc, "fit.reference", args).unwrap_err();
+    assert_eq!(e.code, ErrorCode::Unavailable, "{e:?}");
+}
+
+/// The meshes of every part but the body, as built at `params`: what a reference of the whole character shows.
+fn other_parts(doc: &MemDoc) -> Vec<MeshData> {
+    build(doc, "mock").meshes.into_iter().filter(|m| m.part.as_str() != "body").map(|m| m.mesh.geometry).collect()
+}
+
+/// A reference of the whole character (body, head and hair) fits the body inside it when the other parts are drawn
+/// with the body, following its joints; fitting the body alone against it reaches less.
+#[test]
+fn the_other_parts_are_drawn_with_the_body() {
+    const PART_ROWS: usize = 96;
+    let store = Arc::new(MemStore::default());
+    let fixed = other_parts(&with_parts("soft-sd", Some(&truth()), head_and_hair()));
+    assert!(!fixed.is_empty(), "the head and hair build");
+    let shown = [FitView::Front, FitView::Side];
+    let views: Value = shown
+        .iter()
+        .map(|&v| {
+            let m = render_target("soft-sd", &truth(), &fixed, v, PART_ROWS).unwrap();
+            let rows: Vec<String> = m
+                .pixels()
+                .chunks(m.width())
+                .map(|r| r.iter().map(|&on| if on { '#' } else { '.' }).collect())
+                .collect();
+            json!({ "view": view_name(v), "rows": rows })
+        })
+        .collect();
+    let doc = with_parts("soft-sd", None, head_and_hair());
+    let fit = |parts: Option<Value>| {
+        let mut args = json!({ "character": "mock", "views": views, "heatmaps": false });
+        if let Some(parts) = parts {
+            args["parts"] = parts;
+        }
+        answer(&run_job(&doc, &store, "fit.reference", &args).unwrap()).clone()
+    };
+    let (drawn, alone) = (fit(None), fit(Some(json!([]))));
+    assert_eq!(drawn["parts"], json!(["hair", "head"]), "every enabled part by default, in the character's order");
+    assert_eq!(alone["parts"], json!([]));
+    let (with, without) = (drawn["iou_after"].as_f64().unwrap(), alone["iou_after"].as_f64().unwrap());
+    let leg = |a: &Value| a["patch"]["proportions"]["leg_length"].as_f64().unwrap_or(1.0);
+    eprintln!(
+        "whole-character reference: IoU {with:.4} with the parts drawn, {without:.4} without; legs {} / {} (truth 1.25)",
+        leg(&drawn),
+        leg(&alone)
+    );
+    assert!(with >= 0.97, "{with}");
+    assert!(with > without, "{with} against {without}");
+    assert!((leg(&drawn) - 1.25).abs() < (leg(&alone) - 1.25).abs(), "drawing the parts recovers the legs better");
+}
+
+#[test]
+fn the_parts_asked_for_are_checked() {
+    let store = Arc::new(MemStore::default());
+    let mut doc = with_parts("standard", None, head_and_hair());
+    let plan = |doc: &MemDoc, parts: Value| {
+        dry_run(doc, &store, "fit.reference", json!({ "character": "mock", "views": views(), "parts": parts }))
+    };
+    let e = plan(&doc, json!(["tail"])).unwrap_err();
+    assert_error(&e, ErrorCode::Invalid, "parts/0", &["no part `tail`"], &["head", "hair"]);
+    let e = plan(&doc, json!(["body"])).unwrap_err();
+    assert_error(&e, ErrorCode::Invalid, "parts/0", &["the body"], &[]);
+    assert_eq!(plan(&doc, json!(["hair", "hair"])).unwrap().output.unwrap()["parts"], json!(["hair"]));
+    let off = Patch {
+        changes: vec![Change {
+            path: DocPath::parse("characters/mock/parts/head/enabled").unwrap(),
+            before: None,
+            after: Some(json!(false)),
+        }],
+    };
+    doc.apply(&off).unwrap();
+    let e = plan(&doc, json!(["head"])).unwrap_err();
+    assert_error(&e, ErrorCode::Invalid, "parts/0", &["disabled"], &["part.set_enabled"]);
+    let default = dry_run(&doc, &store, "fit.reference", json!({ "character": "mock", "views": views() })).unwrap();
+    assert_eq!(default.output.unwrap()["parts"], json!(["hair"]), "a disabled part is left out by default");
 }
 
 /// Writes the front and side heatmaps of a synthetic character, for the evidence sheet
@@ -536,7 +701,7 @@ fn write_the_heatmaps_when_asked() {
     let views = views_of("soft-sd", &truth(), &[FitView::Front, FitView::Side], SHEET_ROWS);
     let plan = run_job(&doc, &store, "fit.reference", &json!({ "character": "mock", "views": views })).unwrap();
     for v in answer(&plan)["per_view"].as_array().unwrap() {
-        let png = from_base64(v["heatmap_png"].as_str().unwrap());
+        let png = BASE64.decode(v["heatmap_png"].as_str().unwrap()).unwrap();
         std::fs::write(format!("{dir}/heatmap-{}.png", v["view"].as_str().unwrap()), png).unwrap();
     }
 }

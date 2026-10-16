@@ -16,56 +16,64 @@
 //! **Neither op writes the asset store.** `fit.reference` returns its heatmaps inline as base64 PNG, so a caller with
 //! only `read` changes nothing anywhere, and nothing derived from a caller's reference is given a licence record.
 //!
-//! The reference silhouettes arrive inline as rows of text (`#` character, `.` background), the interim the task
-//! allows until sheet images can be decoded here. The fit is deterministic, so `fit.apply` writes exactly what
-//! `fit.reference` proposed for the same arguments and the same stored body. Only the body is fitted: the other parts
-//! are not part of the silhouette.
+//! **Inputs** ([`input`](super::input)): each view's silhouette as text rows, a base64 PNG, or a PNG in the asset
+//! store. **Parts**: the character's other parts (head, hair, accessories, garments) are drawn into the silhouette with
+//! every candidate body, as built on the stored body (the solver's fixed parts, built once in the job), so a reference
+//! of the whole character fits the body inside it; `parts` picks which (all enabled ones by default, `[]` for the body
+//! alone). They stay where the stored body put them, as the head and hair do when the body changes today (the head
+//! is placed from its own parameters, #825); the neck and anything else built on the body's joints is drawn as on the
+//! stored body. The fit is deterministic, so `fit.apply` writes exactly what `fit.reference` proposed for the same
+//! arguments and the same stored character.
 
-use omuzaki_char_api::{BodyParams, BodyShape, CharId, PartId, Proportions, paths};
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use omuzaki_char_api::{BodyParams, BodyShape, CharId, CharacterDef, PartId, Proportions, paths};
+use omuzaki_core::mesh::MeshData;
 use omuzaki_doc_api::Change;
 use omuzaki_face_api::Validate;
 use omuzaki_ops_api::{CostHint, JobCtx, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
+use omuzaki_store_api::Store;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::heatmap::heatmap;
+use super::input::{ViewMask, from_fit, parse_views};
 use super::solver::{FitInput, FitResult, MAX_EVALUATIONS, PARAM_ORDER, fit_from};
-use super::{FitError, FitParams, FitView, MAX_SIDE, Objective, Silhouette, Target, base64, png};
+use super::{FitError, FitParams, FitView, Objective, Target};
 use crate::ops::character::access;
+use crate::ops::weights::build_character;
 
 /// The kind id of the body part.
 const BODY_KIND: &str = "body";
-/// The most views a fit takes: front, side and back.
-const MAX_VIEWS: usize = 3;
 /// The time a fit is expected to take, shown before it starts: a release build on a loaded desktop fitted three
-/// 256-row views in 4 to 33 s and three 512-row views (the largest) in 28 to 57 s. The job manager's time cap is four
-/// times the estimate.
+/// 384-row views of the body in 25 to 38 s each, four at once. The job manager's time cap is four times the estimate.
 const FIT_SECONDS: f32 = 60.0;
 
-/// A reference silhouette.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ViewMask {
-    /// The view: `front`, `side` or `back`.
-    pub view: String,
-    /// The mask, top row first: `#` is character, `.` is background. All rows are the same length, at most 512 wide
-    /// and 512 rows, and at least one pixel is `#`.
-    pub rows: Vec<String>,
-}
-
 /// Fits the character's body proportions and shape to reference silhouettes and reports the proposal without changing
-/// anything: the parameter patch, the `IoU` before (the body as stored) and after (mean and per view), and per view a
-/// difference heatmap as a base64 PNG (red where the fitted body is outside the reference, blue where the reference is
-/// outside it, with the `IoU` printed in a legend strip). A job: the fit runs off the document lock, and a dry run
-/// only checks the arguments.
+/// anything: the parameter patch, the `IoU` and the cost before (the character as stored) and after (mean and per
+/// view), and per view a difference heatmap as a base64 PNG (red where the fitted character is outside the reference,
+/// blue where the reference is outside it, with the `IoU` printed in a legend strip). The other parts are drawn with
+/// the body (`parts`). A job: the fit runs off the document lock, and a dry run only checks the arguments.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "views": [{"view": "front", "rows": [
+            "..........", "...####...", "...####...", "..######..", "..######..", "...####...", "...#..#...", ".........."
+        ]}], "heatmaps": false}
+    ],
+    "x-omuzaki-fixture" = "character"
+))]
 pub struct FitReference {
     /// The character whose body is fitted.
     pub character: CharId,
     /// The reference silhouettes, one per view (`front`, `side`, `back`), 1 to 3.
     pub views: Vec<ViewMask>,
+    /// The other parts drawn into the silhouette with the body, by id. Omitted (or `null`): every enabled part, in
+    /// the character's order. `[]`: the body alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parts: Option<Vec<PartId>>,
     /// Whether to return the heatmaps (default true). A caller that needs only the numbers leaves them out.
     #[serde(default = "with_heatmaps")]
     pub heatmaps: bool,
@@ -76,76 +84,27 @@ fn with_heatmaps() -> bool {
 }
 
 /// Fits the character's body to reference silhouettes and writes the result into the body's `proportions` and
-/// `shape`, as one undoable step. It is the fit `fit.reference` proposes for the same arguments, from the body as
+/// `shape`, as one undoable step. It is the fit `fit.reference` proposes for the same arguments, from the character as
 /// stored; it is refused if the body changes while the fit runs. A job: a dry run only checks the arguments.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "views": [{"view": "front", "rows": [
+            "..........", "...####...", "...####...", "..######..", "..######..", "...####...", "...#..#...", ".........."
+        ]}]}
+    ],
+    "x-omuzaki-fixture" = "character"
+))]
 pub struct FitApply {
     /// The character whose body is fitted.
     pub character: CharId,
     /// The reference silhouettes, one per view (`front`, `side`, `back`), 1 to 3.
     pub views: Vec<ViewMask>,
-}
-
-fn parse_view(i: usize, v: &ViewMask) -> Result<Target, OpError> {
-    let field = |what: &str| format!("views/{i}/{what}");
-    let view = match v.view.as_str() {
-        "front" => FitView::Front,
-        "side" => FitView::Side,
-        "back" => FitView::Back,
-        other => {
-            return Err(OpError::invalid(field("view"), format!("`{other}` is not a view"))
-                .hint("valid views: front, side, back"));
-        }
-    };
-    let height = v.rows.len();
-    let width = v.rows.first().map_or(0, |r| r.chars().count());
-    if height == 0 || height > MAX_SIDE || width == 0 || width > MAX_SIDE {
-        return Err(OpError::invalid(
-            field("rows"),
-            format!("{width} x {height} is outside 1..={MAX_SIDE} on each side"),
-        )
-        .hint("downsize the silhouette first"));
-    }
-    let mut on = Vec::with_capacity(width * height);
-    for (y, row) in v.rows.iter().enumerate() {
-        if row.chars().count() != width {
-            return Err(OpError::invalid(field("rows"), format!("row {y} is not {width} wide"))
-                .hint("every row is as long as the first"));
-        }
-        for c in row.chars() {
-            on.push(match c {
-                '#' => true,
-                '.' => false,
-                other => {
-                    return Err(OpError::invalid(field("rows"), format!("row {y} holds `{other}`"))
-                        .hint("rows use `#` for character and `.` for background"));
-                }
-            });
-        }
-    }
-    let mask = Silhouette::new(width, height, on).map_err(|e| from_fit(&e))?;
-    Ok(Target { view, mask })
-}
-
-/// The targets of `views`, checked for the count and each mask.
-fn parse_views(views: &[ViewMask]) -> Result<Vec<Target>, OpError> {
-    if views.is_empty() || views.len() > MAX_VIEWS {
-        return Err(OpError::invalid("views", format!("{} views given", views.len()))
-            .hint("give one silhouette per view: front, side, back"));
-    }
-    views.iter().enumerate().map(|(i, v)| parse_view(i, v)).collect()
-}
-
-/// The refusal for a fit error: the input is at fault, except when a candidate body cannot be built.
-fn from_fit(e: &FitError) -> OpError {
-    match e {
-        FitError::NoTargets | FitError::DuplicateView(_) => {
-            OpError::invalid("views", e.to_string()).hint("give one silhouette per view, at least one")
-        }
-        FitError::BadMask(_) => OpError::invalid("views", e.to_string()).hint("give a mask with some `#` pixels"),
-        _ => OpError::internal(format!("the fit failed: {e}")),
-    }
+    /// The other parts drawn into the silhouette with the body, by id. Omitted (or `null`): every enabled part, in
+    /// the character's order. `[]`: the body alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parts: Option<Vec<PartId>>,
 }
 
 /// What `plan` chose and `work` fits: the character's only body part as stored when the job was planned. It is the
@@ -157,10 +116,12 @@ struct Chosen {
     template: String,
     body: BodyParams,
     views: Vec<String>,
+    /// The other parts drawn with the body.
+    parts: Vec<PartId>,
 }
 
 /// The character's only body part, as stored, with its parameters checked.
-fn load(ctx: &OpCtx<'_>, character: &CharId) -> Result<(String, PartId, BodyParams), OpError> {
+fn load(ctx: &OpCtx<'_>, character: &CharId) -> Result<(CharacterDef, PartId, BodyParams), OpError> {
     let def = access::load(ctx, character)?;
     let mut bodies = def.parts.iter().filter(|(_, p)| p.kind.as_str() == BODY_KIND);
     let (part, stored) = match (bodies.next(), bodies.next()) {
@@ -185,21 +146,59 @@ fn load(ctx: &OpCtx<'_>, character: &CharId) -> Result<(String, PartId, BodyPara
         return Err(OpError::invalid(format!("{field}/{}", first.path), first.message.clone())
             .hint("repair the body's parameters with part.set_param, then retry"));
     }
-    Ok((def.template.to_string(), part.clone(), params))
+    let part = part.clone();
+    Ok((def, part, params))
 }
 
-/// The plan both ops share: the arguments and the stored body checked under the lock (each mask parsed, the views
-/// distinct and not only specks, the template known), with no fitting.
-fn plan_fit(ctx: &OpCtx<'_>, character: &CharId, views: &[ViewMask]) -> Result<Plan, OpError> {
-    let (template, part, body) = load(ctx, character)?;
-    let targets = parse_views(views)?;
+/// The parts drawn with the body: `asked`, each checked to be one of the character's enabled parts other than the
+/// body, or every enabled part other than the body when nothing is asked.
+fn pick_parts(def: &CharacterDef, body: &PartId, asked: Option<&[PartId]>) -> Result<Vec<PartId>, OpError> {
+    let Some(asked) = asked else {
+        return Ok(def.parts.iter().filter(|(id, p)| *id != body && p.enabled).map(|(id, _)| id.clone()).collect());
+    };
+    let mut picked = Vec::with_capacity(asked.len());
+    for (i, id) in asked.iter().enumerate() {
+        let field = format!("parts/{i}");
+        let Some(part) = def.parts.get(id) else {
+            let known: Vec<String> = def.parts.keys().filter(|k| *k != body).map(ToString::to_string).collect();
+            return Err(OpError::invalid(field, format!("there is no part `{id}`"))
+                .hint(format!("parts of this character: {}", known.join(", "))));
+        };
+        if id == body {
+            return Err(OpError::invalid(field, format!("`{id}` is the body, which the fit always draws"))
+                .hint("list only the other parts to draw with it"));
+        }
+        if !part.enabled {
+            return Err(OpError::invalid(field, format!("part `{id}` is disabled, so it is not built"))
+                .hint("enable it with part.set_enabled, or leave it out"));
+        }
+        if !picked.contains(id) {
+            picked.push(id.clone());
+        }
+    }
+    Ok(picked)
+}
+
+/// The plan both ops share: the arguments and the stored character checked under the lock (each mask decoded, the
+/// views distinct and not only specks, the template known, the parts the character's own), with no fitting.
+fn plan_fit(
+    ctx: &OpCtx<'_>,
+    character: &CharId,
+    views: &[ViewMask],
+    parts: Option<&[PartId]>,
+) -> Result<Plan, OpError> {
+    let (def, part, body) = load(ctx, character)?;
+    let targets = parse_views(views, ctx.service::<dyn Store>().ok())?;
+    let template = def.template.to_string();
     Objective::new(&template, &targets, &[]).map_err(|e| from_fit(&e))?;
+    let parts = pick_parts(&def, &part, parts)?;
     let chosen = Chosen {
         character: character.clone(),
         part,
         template,
         body,
         views: views.iter().map(|v| v.view.clone()).collect(),
+        parts,
     };
     Ok(Plan {
         output: Some(to_value(&chosen)?),
@@ -215,10 +214,34 @@ fn chosen(job: &JobCtx<'_>) -> Result<Chosen, OpError> {
         .map_err(|e| OpError::internal(format!("the fit job's plan output is malformed: {e}")))
 }
 
+/// The meshes of the parts drawn with the body: the character as stored, built on the planned body, with every mesh of
+/// `chosen.parts`. Empty when none is drawn.
+fn parts_in_job(job: &JobCtx<'_>, chosen: &Chosen) -> Result<Vec<MeshData>, OpError> {
+    if chosen.parts.is_empty() {
+        return Ok(Vec::new());
+    }
+    let node = job.read(|doc| doc.get(&paths::character(&chosen.character)).cloned()).ok_or_else(|| {
+        access::not_found("character", format!("character `{}` was removed while the fit ran", chosen.character))
+    })?;
+    let mut def = CharacterDef::from_node(&node)
+        .map_err(|e| OpError::invalid("character", format!("character `{}` no longer loads: {e}", chosen.character)))?;
+    // Built on the body the plan chose, so the parts sit where the fit starts.
+    if let Some(body) = def.parts.get_mut(&chosen.part) {
+        body.params = to_value(&chosen.body)?;
+    }
+    let built = build_character(&chosen.character, &def)?;
+    Ok(built.meshes.into_iter().filter(|m| chosen.parts.contains(&m.part)).map(|m| m.mesh.geometry).collect())
+}
+
 /// Runs the fit of `chosen` against `views` in a job: progress after each evaluation, and a cancel stops it.
-fn fit_in_job(job: &JobCtx<'_>, chosen: &Chosen, views: &[ViewMask]) -> Result<(Vec<Target>, FitResult), OpError> {
-    let targets = parse_views(views)?;
-    let input = FitInput { template: &chosen.template, targets: &targets, fixed: &[] };
+fn fit_in_job(
+    job: &JobCtx<'_>,
+    chosen: &Chosen,
+    views: &[ViewMask],
+) -> Result<(Vec<Target>, Vec<MeshData>, FitResult), OpError> {
+    let targets = parse_views(views, job.service::<dyn Store>().ok())?;
+    let parts = parts_in_job(job, chosen)?;
+    let input = FitInput { template: &chosen.template, targets: &targets, fixed: &parts };
     #[allow(clippy::cast_precision_loss)] // counts up to MAX_EVALUATIONS, far inside f32's exact integers
     let mut watch = |done: usize| {
         job.progress("fitting", done as f32 / MAX_EVALUATIONS as f32);
@@ -228,7 +251,7 @@ fn fit_in_job(job: &JobCtx<'_>, chosen: &Chosen, views: &[ViewMask]) -> Result<(
         FitError::Stopped => OpError::cancelled(job.id()),
         other => from_fit(&other),
     })?;
-    Ok((targets, result))
+    Ok((targets, parts, result))
 }
 
 /// `{name: value}` of the parameters of `fit` that differ from `before`, in [`PARAM_ORDER`].
@@ -255,6 +278,7 @@ fn summary(chosen: &Chosen, result: &FitResult) -> Value {
     json!({
         "character": chosen.character,
         "part": chosen.part,
+        "parts": chosen.parts,
         "patch": patch(&before, &result.params),
         "iou_before": result.iou_before,
         "iou_after": result.iou_after,
@@ -273,15 +297,21 @@ fn view_name(view: FitView) -> &'static str {
     }
 }
 
-/// The heatmap of each view as a base64 PNG, in the targets' order: the fitted body, with the stored hands, against
-/// the target as the fit saw it.
-fn heatmaps(chosen: &Chosen, targets: &[Target], result: &FitResult) -> Result<Vec<String>, OpError> {
-    let objective = Objective::new(&chosen.template, targets, &[]).map_err(|e| from_fit(&e))?.with_body(&chosen.body);
+/// The heatmap of each view as a base64 PNG, in the targets' order: the fitted body with the stored hands and the
+/// parts drawn with it, against the target as the fit saw it.
+fn heatmaps(
+    chosen: &Chosen,
+    targets: &[Target],
+    parts: &[MeshData],
+    result: &FitResult,
+) -> Result<Vec<String>, OpError> {
+    let objective = Objective::new(&chosen.template, targets, parts).map_err(|e| from_fit(&e))?.with_body(&chosen.body);
     let masks = objective.masks(&result.params).map_err(|e| from_fit(&e))?;
     masks
         .iter()
         .map(|m| {
-            heatmap(&m.model, &m.target).map(|image| base64::encode(&png::encode(&image))).map_err(|e| from_fit(&e))
+            let png = heatmap(&m.model, &m.target).and_then(|image| image.png()).map_err(|e| from_fit(&e))?;
+            Ok(BASE64.encode(png))
         })
         .collect()
 }
@@ -300,15 +330,15 @@ impl Op for FitReference {
     }
 
     fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
-        plan_fit(ctx, &self.character, &self.views)
+        plan_fit(ctx, &self.character, &self.views, self.parts.as_deref())
     }
 
     fn work(&self, job: &JobCtx<'_>) -> Result<Value, OpError> {
         let chosen = chosen(job)?;
-        let (targets, result) = fit_in_job(job, &chosen, &self.views)?;
+        let (targets, parts, result) = fit_in_job(job, &chosen, &self.views)?;
         let mut out = summary(&chosen, &result);
         if self.heatmaps {
-            let maps = heatmaps(&chosen, &targets, &result)?;
+            let maps = heatmaps(&chosen, &targets, &parts, &result)?;
             if let Some(views) = out["per_view"].as_array_mut() {
                 for (v, png) in views.iter_mut().zip(maps) {
                     v["heatmap_png"] = json!(png);
@@ -356,12 +386,12 @@ impl Op for FitApply {
     }
 
     fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
-        plan_fit(ctx, &self.character, &self.views)
+        plan_fit(ctx, &self.character, &self.views, self.parts.as_deref())
     }
 
     fn work(&self, job: &JobCtx<'_>) -> Result<Value, OpError> {
         let chosen = chosen(job)?;
-        let (_, result) = fit_in_job(job, &chosen, &self.views)?;
+        let (_, _, result) = fit_in_job(job, &chosen, &self.views)?;
         let fitted = Fitted {
             summary: summary(&chosen, &result),
             proportions: result.params.proportions,
@@ -377,8 +407,8 @@ impl Op for FitApply {
     fn finish(&self, ctx: &OpCtx<'_>, result: Value) -> Result<Plan, OpError> {
         let fitted: Fitted = serde_json::from_value(result)
             .map_err(|e| OpError::internal(format!("the fit's result is malformed: {e}")))?;
-        let (template, part, stored) = load(ctx, &self.character)?;
-        if !still_fits(&fitted, &part, &template, &stored) {
+        let (def, part, stored) = load(ctx, &self.character)?;
+        if !still_fits(&fitted, &part, def.template.as_str(), &stored) {
             return Err(OpError::conflict(format!(
                 "the body of character `{}` changed while the fit ran",
                 self.character

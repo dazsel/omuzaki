@@ -5,6 +5,8 @@
 //! printed in a built-in 3 by 5 pixel font, so the number travels with the image. The result depends only on the two
 //! masks.
 
+use image::{ExtendedColorType, ImageEncoder, codecs::png::PngEncoder};
+
 use super::{FitError, Silhouette};
 
 /// A straight-alpha RGBA picture, row-major from the top-left.
@@ -39,6 +41,19 @@ impl RgbaImage {
     /// The bytes as `RGBARGBA..`, for an encoder.
     pub fn to_bytes(&self) -> Vec<u8> {
         self.pixels.iter().flatten().copied().collect()
+    }
+
+    /// The picture as a PNG (8-bit RGBA): the same bytes for the same picture.
+    ///
+    /// # Errors
+    /// [`FitError::Encode`] if the encoder refuses it (a side over `u32::MAX`, which no heatmap reaches).
+    pub fn png(&self) -> Result<Vec<u8>, FitError> {
+        let side = |n: usize| u32::try_from(n).map_err(|_| FitError::Encode(format!("{n} pixels is too wide")));
+        let mut out = Vec::new();
+        PngEncoder::new(&mut out)
+            .write_image(&self.to_bytes(), side(self.width)?, side(self.height)?, ExtendedColorType::Rgba8)
+            .map_err(|e| FitError::Encode(e.to_string()))?;
+        Ok(out)
     }
 }
 

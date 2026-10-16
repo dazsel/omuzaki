@@ -5,10 +5,10 @@
 //! with it.
 //!
 //! **Two `IoU`s.** The number reported is the `IoU` of the centre-sampled silhouette, sampled as the target is. The
-//! cost is `1 -` the `IoU` of each pixel's coverage from 2 by 2 samples: the centre-sampled one moves in whole-pixel
-//! steps, and a line search stalls on its plateaus. Earlier the cost also carried a boundary-distance term on the
-//! centre-sampled masks; it moved in the same steps and pulled the weakly seen axes off the truth (`curves` on
-//! `standard`, three 384-row views: off by 0.041 of its range with it, 0.018 without), so it is gone.
+//! cost is `1 -` the `IoU` of each pixel's coverage from 2 by 2 samples, plus #159's boundary-distance term (a
+//! symmetric chamfer distance between the centre-sampled outlines, over the mask height), which keeps two bodies that
+//! overlap the target equally apart when their outlines lie at different distances from it. The centre-sampled `IoU`
+//! alone moves in whole-pixel steps, and a line search stalls on its plateaus; the coverage `IoU` changes smoothly.
 //!
 //! **Alignment.** Matching the model's mean column to the target's (rather than the box's middle, whose ends are
 //! whole pixels) keeps the true body at an `IoU` of about 0.997 against its own 256-row silhouettes; the box alone left
@@ -28,14 +28,17 @@ use crate::body::{hands, junction, mesh};
 use crate::kit::KitError;
 use crate::template::{Template, registry};
 
-pub mod base64;
 pub mod heatmap;
+pub mod input;
 pub mod ops;
-pub mod png;
 pub mod solver;
 
 /// The longest side of a mask, in pixels: the caller downsizes a larger sheet view first, so a fit stays cheap.
 pub const MAX_SIDE: usize = 512;
+/// How many of its 8 neighbours a target pixel must disagree with to count as noise ([`Silhouette::denoised`]).
+const SPECK: usize = 7;
+/// Weight of the boundary distance (mean chamfer distance over the mask height) against `1 - IoU` in the cost (#159).
+const BOUNDARY_WEIGHT: f64 = 1.0;
 /// Samples per pixel side for the coverage the cost reads: 2 by 2 makes the cost change smoothly with sub-pixel moves
 /// of the outline, which the centre-sampled mask only shows in whole-pixel steps (plateaus a line search stalls on).
 const SUPERSAMPLE: usize = 2;
@@ -68,6 +71,9 @@ pub enum FitError {
     /// The caller's watch stopped the fit before it ended (`solver::fit_from`).
     #[error("the fit was stopped before it ended")]
     Stopped,
+    /// A heatmap could not be encoded as a PNG.
+    #[error("cannot encode the heatmap: {0}")]
+    Encode(String),
 }
 
 impl From<KitError> for FitError {
@@ -139,19 +145,25 @@ impl Silhouette {
         &self.on
     }
 
-    /// The mask with isolated specks removed: a pixel is character if most of its 3 by 3 neighbourhood is. A speck
-    /// outside the figure would otherwise stretch its box and shift its mean column (and with them the alignment).
+    /// The mask with isolated specks and pinholes removed: a pixel that disagrees with at least [`SPECK`] of its 8
+    /// neighbours (outside the mask counts as background) takes their value. A speck outside the figure would
+    /// otherwise stretch its box and shift its mean column (and with them the alignment), and fill the boundary term.
+    /// Thin features (a strand of hair, a finger a pixel or two wide) keep at least two neighbours like themselves, so
+    /// they stay: a majority filter would erase them from the target while the model still draws them.
     fn denoised(&self) -> Self {
         let (w, h) = (self.width, self.height);
         let at = |x: isize, y: isize| {
-            usize::from(
-                x >= 0 && y >= 0 && (x as usize) < w && (y as usize) < h && self.on[y as usize * w + x as usize],
-            )
+            x >= 0 && y >= 0 && (x as usize) < w && (y as usize) < h && self.on[y as usize * w + x as usize]
         };
         let on = (0..w * h)
             .map(|i| {
                 let (x, y) = ((i % w).cast_signed(), (i / w).cast_signed());
-                (-1..=1).map(|dy| (-1..=1).map(|dx| at(x + dx, y + dy)).sum::<usize>()).sum::<usize>() >= 5
+                let here = self.on[i];
+                let unlike = (-1..=1)
+                    .flat_map(|dy| (-1..=1).map(move |dx| (dx, dy)))
+                    .filter(|&(dx, dy)| (dx, dy) != (0, 0) && at(x + dx, y + dy) != here)
+                    .count();
+                if unlike >= SPECK { !here } else { here }
             })
             .collect();
         Self { width: w, height: h, on }
@@ -165,6 +177,25 @@ impl Silhouette {
             (t, b, l, r) = (t.min(y), b.max(y + 1), l.min(x), r.max(x + 1));
         }
         (t, b, l, r)
+    }
+
+    /// Character pixels with a background (or the edge) as a 4-neighbour.
+    fn boundary(&self) -> Vec<usize> {
+        let (w, h) = (self.width, self.height);
+        (0..w * h)
+            .filter(|&i| {
+                let (y, x) = (i / w, i % w);
+                self.on[i]
+                    && (x == 0
+                        || y == 0
+                        || x + 1 == w
+                        || y + 1 == h
+                        || !self.on[i - 1]
+                        || !self.on[i + 1]
+                        || !self.on[i - w]
+                        || !self.on[i + w])
+            })
+            .collect()
     }
 }
 
@@ -263,6 +294,41 @@ fn raster(tris: &[&[Tri]], map: &Map, w: usize, h: usize) -> Vec<bool> {
     on
 }
 
+/// Distance in pixels from each pixel to the nearest of `seeds` (a 1 / sqrt 2 chamfer, two passes).
+fn distance(seeds: &[usize], w: usize, h: usize) -> Vec<f32> {
+    let mut d = vec![f32::MAX / 4.0; w * h];
+    for &i in seeds {
+        d[i] = 0.0;
+    }
+    let relax = |d: &mut [f32], i: usize, j: usize, c: f32| d[i] = d[i].min(d[j] + c);
+    let (w, h) = (w.cast_signed(), h.cast_signed());
+    let step = |d: &mut [f32], x: isize, y: isize, dx: isize, dy: isize, c: f32| {
+        let (nx, ny) = (x + dx, y + dy);
+        if nx >= 0 && ny >= 0 && nx < w && ny < h {
+            relax(d, (y * w + x) as usize, (ny * w + nx) as usize, c);
+        }
+    };
+    for y in 0..h {
+        for x in 0..w {
+            for (dx, dy, c) in
+                [(-1, 0, 1.0), (0, -1, 1.0), (-1, -1, std::f32::consts::SQRT_2), (1, -1, std::f32::consts::SQRT_2)]
+            {
+                step(&mut d, x, y, dx, dy, c);
+            }
+        }
+    }
+    for y in (0..h).rev() {
+        for x in (0..w).rev() {
+            for (dx, dy, c) in
+                [(1, 0, 1.0), (0, 1, 1.0), (1, 1, std::f32::consts::SQRT_2), (-1, 1, std::f32::consts::SQRT_2)]
+            {
+                step(&mut d, x, y, dx, dy, c);
+            }
+        }
+    }
+    d
+}
+
 /// The mean column of `mask`'s character pixels, at pixel centres (the mask is never blank once checked).
 fn mean_column(mask: &Silhouette) -> f64 {
     let (mut sum, mut n) = (0.0f64, 0usize);
@@ -273,13 +339,15 @@ fn mean_column(mask: &Silhouette) -> f64 {
     sum / n.max(1) as f64
 }
 
-/// A target view prepared once: its alignment and the fixed parts' projection.
+/// A target view prepared once: its alignment, boundary and distance field, and the fixed parts' projection.
 struct ViewObjective {
     view: FitView,
     mask: Silhouette,
     extent: (usize, usize, usize, usize),
     /// The target's mean column (pixel centres), what the model's own mean column is matched to.
     centroid: f64,
+    boundary: Vec<usize>,
+    field: Vec<f32>,
     fixed: Vec<Tri>,
 }
 
@@ -290,6 +358,9 @@ struct ViewScore {
     /// `IoU` of the model's [`SUPERSAMPLE`]d pixel coverage with the target: what the cost reads, because it changes
     /// smoothly as the body moves by less than a pixel, where the centre-sampled one moves in steps.
     soft_iou: f64,
+    /// The mean boundary distance (symmetric chamfer, centre-sampled masks) over the mask height: two bodies that
+    /// overlap the target equally but whose outlines lie at different distances from it do not tie.
+    edge: f64,
 }
 
 impl ViewObjective {
@@ -350,20 +421,31 @@ impl ViewObjective {
             let c = f64::from(c) / samples;
             (inter, union) = if t { (inter + c, union + 1.0) } else { (inter, union + c) };
         }
-        let on = raster(&[&self.fixed, body], &map, self.mask.width, self.mask.height);
+        let (w, h) = (self.mask.width, self.mask.height);
+        let on = raster(&[&self.fixed, body], &map, w, h);
         let (mut both, mut either) = (0usize, 0usize);
         for (&a, &t) in on.iter().zip(&self.mask.on) {
             both += usize::from(a && t);
             either += usize::from(a || t);
         }
-        Some(ViewScore { iou: both as f64 / either.max(1) as f64, soft_iou: inter / union.max(f64::MIN_POSITIVE) })
+        let own = Silhouette { width: w, height: h, on };
+        let seeds = own.boundary();
+        let mean =
+            |of: &[usize], field: &[f32]| of.iter().map(|&i| f64::from(field[i])).sum::<f64>() / of.len().max(1) as f64;
+        let near = distance(&seeds, w, h);
+        let d = f64::midpoint(mean(&seeds, &self.field), mean(&self.boundary, &near));
+        Some(ViewScore {
+            iou: both as f64 / either.max(1) as f64,
+            soft_iou: inter / union.max(f64::MIN_POSITIVE),
+            edge: d / h as f64,
+        })
     }
 }
 
 /// How well a candidate matches the targets.
 #[derive(Clone, Debug)]
 pub(crate) struct Score {
-    /// What the search minimises: `1 -` the coverage `IoU`, averaged over the views.
+    /// What the search minimises: `1 -` the coverage `IoU` plus the boundary term, averaged over the views.
     pub cost: f64,
     /// Mean centre-sampled `IoU` over the views.
     pub iou: f64,
@@ -424,7 +506,17 @@ impl Objective {
                 tris.extend(project(t.view, m)?);
             }
             let centroid = mean_column(&mask);
-            views.push(ViewObjective { view: t.view, extent: mask.extent(), centroid, mask, fixed: tris });
+            let boundary = mask.boundary();
+            let field = distance(&boundary, mask.width, mask.height);
+            views.push(ViewObjective {
+                view: t.view,
+                extent: mask.extent(),
+                centroid,
+                mask,
+                boundary,
+                field,
+                fixed: tris,
+            });
         }
         Ok(Self { template, views, base: BodyParams::default() })
     }
@@ -462,8 +554,8 @@ impl Objective {
         let mut cost = 0.0;
         for v in &self.views {
             let tris = meshes.iter().map(|m| project(v.view, m)).collect::<Result<Vec<_>, _>>()?.concat();
-            let score = v.score(&tris).unwrap_or(ViewScore { iou: 0.0, soft_iou: 0.0 });
-            cost += 1.0 - score.soft_iou;
+            let score = v.score(&tris).unwrap_or(ViewScore { iou: 0.0, soft_iou: 0.0, edge: 1.0 });
+            cost += 1.0 - score.soft_iou + BOUNDARY_WEIGHT * score.edge;
             per_view.push(score.iou);
         }
         let n = per_view.len() as f64;
@@ -472,7 +564,7 @@ impl Objective {
 }
 
 /// The geometry of the body part `base` with the proportions and shape of `params`: what `Body::build` makes, without
-/// the skin that a silhouette never reads.
+/// the skin that a silhouette never reads, in metres.
 fn body_geometry(template: &dyn Template, base: &BodyParams, params: &FitParams) -> Result<Vec<MeshData>, FitError> {
     let body = BodyParams { proportions: params.proportions.clone(), shape: params.shape.clone(), ..base.clone() };
     let layout = template.try_layout(&body.proportions, &body.shape, &body.hand)?;

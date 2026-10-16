@@ -3613,7 +3613,9 @@ dependencies = [
 name = "omuzaki-char"
 version = "0.0.0"
 dependencies = [
+ "base64",
  "criterion",
+ "image",
  "inventory",
  "libm",
  "omuzaki-anim-api",

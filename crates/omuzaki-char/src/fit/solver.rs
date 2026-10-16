@@ -4,12 +4,11 @@
 //! parabolic step through the lowest probe and its neighbours, which the smooth cost (the coverage `IoU`, see the
 //! [module](super) docs) rewards with a far closer value than another golden step would. A sweep goes through every
 //! parameter once; its brackets are a window round the current value, [`WINDOW`] of the parameter's range wide in the
-//! first sweep and [`SHRINK`] times the last one's after each sweep that gained. A parameter whose whole line search at
-//! the wide window cost the same everywhere cannot be seen in these views: the narrower sweeps skip it, and the next
-//! wide one looks again. A sweep that gains nothing is run once more at the wide window. A last move along the sweep's
-//! net displacement follows each sweep. The result depends only on the inputs and [`PARAM_ORDER`]: no threads, no
-//! randomness, and a tie keeps the lower parameter value within a line search and the earlier line's value across
-//! them, so a parameter the views cannot see stays where the fit started.
+//! first sweep and [`SHRINK`] times the last one's after each sweep that gained. A sweep that gains nothing is run once
+//! more at the wide window. A last move along the sweep's net displacement follows each sweep. Every sweep searches
+//! every parameter: whether one shows depends on the others, which keep moving. The result depends only on the inputs
+//! and [`PARAM_ORDER`]: no threads, no randomness, and a tie keeps the lower parameter value within a line search and
+//! the earlier line's value across them, so a parameter the views cannot see stays where the fit started.
 //! [`fit`] starts from the default body; [`fit_from`] starts from a given one (an op's stored body), and since only a
 //! strictly cheaper candidate replaces the start, its result never costs more than the body it started from.
 //!
@@ -226,8 +225,8 @@ pub fn fit_ordered(input: &FitInput<'_>, order: &[Param]) -> Result<FitResult, F
 
 /// Fits the body to `input` in [`PARAM_ORDER`], starting from `body`'s proportions and shape (each value clamped into
 /// its parameter's range) and building every candidate with `body`'s hands, which the fit does not move. The baseline
-/// `IoU`s are those of `body` itself, and the result never costs more than it: what an op fitting a stored character
-/// needs, so a fit cannot make the body it claims to fit worse.
+/// `IoU`s are those of `body` itself (with `input`'s fixed parts), and the result never costs more than it: what an op
+/// fitting a stored character needs, so a fit cannot make the body it claims to fit worse.
 ///
 /// `watch` is called before every evaluation with the number made so far (at most [`MAX_EVALUATIONS`]); returning
 /// `false` stops the fit with [`FitError::Stopped`]. A job reports its progress and checks for a cancel there.
@@ -240,18 +239,35 @@ pub fn fit_from(
     watch: &mut dyn FnMut(usize) -> bool,
 ) -> Result<FitResult, FitError> {
     let objective = Objective::new(input.template, input.targets, input.fixed)?.with_body(body);
-    let mut start = FitParams { proportions: body.proportions.clone(), shape: body.shape.clone() };
+    let mut params = FitParams { proportions: body.proportions.clone(), shape: body.shape.clone() };
     for p in PARAM_ORDER {
-        let (lo, hi) = p.range();
-        let value = p.get(&start).clamp(lo, hi);
-        p.set(&mut start, value);
+        let value = p.get(&params).clamp(p.range().0, p.range().1);
+        p.set(&mut params, value);
     }
-    descend(&objective, start, &PARAM_ORDER, watch)
+    descend(&objective, params, &PARAM_ORDER, watch)
+}
+
+/// What a descent scores candidates with: the silhouette [`Objective`], or a test's own cost.
+trait Cost {
+    /// The score of `params`.
+    fn score(&self, params: &FitParams) -> Result<Score, FitError>;
+    /// The views the scores' `per_view` are in.
+    fn view_list(&self) -> Vec<FitView>;
+}
+
+impl Cost for Objective {
+    fn score(&self, params: &FitParams) -> Result<Score, FitError> {
+        self.evaluate(params)
+    }
+
+    fn view_list(&self) -> Vec<FitView> {
+        self.views().collect()
+    }
 }
 
 /// The descent itself: from `start`, in `order`, with `watch` asked before each evaluation (see [`fit_from`]).
 fn descend(
-    objective: &Objective,
+    objective: &dyn Cost,
     start: FitParams,
     order: &[Param],
     watch: &mut dyn FnMut(usize) -> bool,
@@ -259,7 +275,7 @@ fn descend(
     if !watch(0) {
         return Err(FitError::Stopped);
     }
-    let first = objective.evaluate(&start)?;
+    let first = objective.score(&start)?;
     let mut search = Search {
         objective,
         params: start,
@@ -271,15 +287,10 @@ fn descend(
     };
     let mut width = WINDOW;
     let mut stalled = false;
-    let mut flat = vec![false; order.len()];
     loop {
-        let wide = width >= WINDOW;
         let before = search.best.cost;
         let sweep_start = search.params.clone();
-        for (i, &p) in order.iter().enumerate() {
-            if flat[i] && !wide {
-                continue;
-            }
+        for &p in order {
             let (lo, hi) = p.range();
             let at = p.get(&search.params);
             let half = (width * (hi - lo)) / 2.0;
@@ -293,9 +304,6 @@ fn descend(
             if !search.line(&along, bracket)? {
                 break;
             }
-            if wide {
-                flat[i] = search.line_was_flat();
-            }
         }
         search.pattern_move(&sweep_start)?;
         let gained = before - search.best.cost >= MIN_GAIN;
@@ -306,7 +314,8 @@ fn descend(
         (width, stalled) = if gained { (width * SHRINK, false) } else { (WINDOW, true) };
     }
     let per_view = objective
-        .views()
+        .view_list()
+        .into_iter()
         .zip(first.per_view.iter().zip(&search.best.per_view))
         .map(|(view, (&iou_before, &iou_after))| ViewFit { view, iou_before, iou_after })
         .collect();
@@ -323,14 +332,14 @@ fn descend(
 
 /// The state of a descent: the best parameters so far and the cost they reach.
 struct Search<'a, 'w> {
-    objective: &'a Objective,
+    objective: &'a dyn Cost,
     params: FitParams,
     best: Score,
     keep: Keep,
     evaluations: usize,
     /// Asked before each evaluation whether the fit goes on (see [`fit_from`]).
     watch: &'w mut dyn FnMut(usize) -> bool,
-    /// The probes `(t, cost)` of the current line search, for its parabolic step and for telling a flat parameter.
+    /// The probes `(t, cost)` of the current line search, for its parabolic step.
     probes: Vec<(f64, f64)>,
 }
 
@@ -381,7 +390,7 @@ impl Search<'_, '_> {
             return Err(FitError::Stopped);
         }
         self.evaluations += 1;
-        let score = self.objective.evaluate(&candidate)?;
+        let score = self.objective.score(&candidate)?;
         let cost = score.cost;
         self.probes.push((t, cost));
         if self.keep.replaces(cost, t) {
@@ -419,13 +428,6 @@ impl Search<'_, '_> {
             Some(t) => Ok(self.probe(t, at(t))?.is_some()),
             None => Ok(true),
         }
-    }
-
-    /// Whether every probe of the last line search cost the same (within [`FLAT`]): its parameter does not show.
-    fn line_was_flat(&self) -> bool {
-        let (lo, hi) =
-            self.probes.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &(_, f)| (lo.min(f), hi.max(f)));
-        hi - lo < FLAT
     }
 }
 
@@ -661,6 +663,59 @@ mod tests {
         let f = |t: f64| (t - 0.5) * (t - 0.5);
         let mut centred: Vec<(f64, f64)> = [0.0, 0.5, 1.0].iter().map(|&t| (t, f(t))).collect();
         assert_eq!(parabola_step(&mut centred), None);
+    }
+
+    /// A cost in which `leg_length` shows only once `musculature` is past 0.3: musculature is searched last, so the
+    /// legs are flat through the whole first sweep and show from the second. Every other parameter has a gentle bowl
+    /// at its default, so their line searches cost what a visible parameter's does. It records the evaluation at which
+    /// the legs first move off their start while they show.
+    #[derive(Default)]
+    struct Coupled {
+        evaluations: std::cell::Cell<usize>,
+        legs_moved: std::cell::Cell<Option<usize>>,
+    }
+
+    impl Cost for Coupled {
+        fn score(&self, p: &FitParams) -> Result<Score, FitError> {
+            let n = self.evaluations.get() + 1;
+            self.evaluations.set(n);
+            let (musculature, legs) = (Param::Musculature.get(p), Param::LegLength.get(p));
+            if musculature > 0.3 && (legs - 1.0).abs() > 0.1 && self.legs_moved.get().is_none() {
+                self.legs_moved.set(Some(n));
+            }
+            // Once they show, the legs lower the cost, most at 1.4, so moving musculature past 0.3 pays even with
+            // the legs still at 1.
+            let shown = if musculature > 0.3 { 0.2 - (legs - 1.4).powi(2) } else { 0.0 };
+            let rest = FitParams::default();
+            let bowls: f64 = PARAM_ORDER
+                .iter()
+                .filter(|q| !matches!(q, Param::LegLength | Param::Musculature))
+                .map(|q| 0.01 * (q.get(p) - q.get(&rest)).powi(2))
+                .sum();
+            let cost = (musculature - 0.5).powi(2) - shown + bowls;
+            Ok(Score { cost, iou: 1.0 - cost, per_view: vec![1.0 - cost] })
+        }
+
+        fn view_list(&self) -> Vec<FitView> {
+            vec![FitView::Front]
+        }
+    }
+
+    /// Whether a parameter shows can change as the others move, so every sweep searches every parameter: the legs here
+    /// move in the second sweep, not only once a stalled descent widens its window again.
+    #[test]
+    fn a_parameter_that_shows_only_once_another_moves_is_searched_in_the_next_sweep() {
+        let cost = Coupled::default();
+        let r = descend(&cost, FitParams::default(), &PARAM_ORDER, &mut |_| true).unwrap();
+        let (legs, musculature) = (Param::LegLength.get(&r.params), Param::Musculature.get(&r.params));
+        assert!((musculature - 0.5).abs() < 0.01, "musculature {musculature}");
+        assert!((legs - 1.4).abs() < 0.01, "legs {legs}");
+        // A sweep is a line search per parameter (5 to 8 evaluations each) and a pattern move; the legs come first in
+        // the order, so the second sweep moves them within two sweeps' evaluations.
+        let moved = cost.legs_moved.get().unwrap();
+        let two_sweeps = 2 * (PARAM_ORDER.len() + 1) * 8;
+        eprintln!("the legs moved at evaluation {moved} of {}", r.evaluations);
+        assert!(moved <= two_sweeps, "the legs first moved at evaluation {moved}, after {two_sweeps}");
     }
 
     #[test]

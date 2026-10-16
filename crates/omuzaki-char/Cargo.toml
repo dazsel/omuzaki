@@ -11,6 +11,8 @@ repository.workspace = true
 # Every dependency the crate's modules will need is declared here, so adding a module does not edit this file.
 # Impl crates may not depend on `omuzaki-test`, an App crate.
 [dependencies]
+base64.workspace = true
+image.workspace = true
 inventory.workspace = true
 libm.workspace = true
 schemars.workspace = true

@@ -24,11 +24,6 @@ const SMALL: usize = 112;
 /// Seconds a release-build fit may take in the recovery test before it counts as a hang. The four templates' fits run
 /// at once, each reading 2 by 2 coverage of three 384-row views, so one takes a few times what it takes alone.
 const REGRESSION_LIMIT_S: f64 = 120.0;
-/// How far, in pixels per side of the recovery test's front view, the fitted body's waist and hips may be from the
-/// truth's. `curves` is held by these widths, not by its own value: ±1 moves the waist ∓30% and the hips ±22%
-/// (`template/shape.rs`), so 0.03 of its range is about half a pixel per side at 384 rows, and `hip_width` and `build`
-/// move the same outline. The silhouette shows the widths, not how they split between the axes.
-const OUTLINE_PX: f64 = 1.0;
 /// The seeded draw the recovery test fits. Other draws land between about 0.95 and 0.99 (see the PR body).
 const SEED: u64 = 2;
 /// How far from the default the random characters reach, as a fraction of each parameter's half-range.
@@ -58,37 +53,6 @@ fn run(template: &str, targets: &[Target], fixed: &[MeshData]) -> FitResult {
     fit(&FitInput { template, targets, fixed }).unwrap()
 }
 
-/// The torso's width in pixels at each row of a front view: the run of character pixels through the figure's middle
-/// column (0 where the middle column is background, between the legs).
-fn torso_widths(mask: &Silhouette) -> Vec<usize> {
-    let (w, on) = (mask.width(), mask.pixels());
-    let (sum, n) = on.iter().enumerate().filter(|(_, o)| **o).fold((0, 0), |(s, n), (i, _)| (s + i % w, n + 1));
-    let mid = sum / n.max(1);
-    on.chunks(w)
-        .map(|row| {
-            if !row[mid] {
-                return 0;
-            }
-            let left = row[..mid].iter().rev().take_while(|o| **o).count();
-            let right = row[mid + 1..].iter().take_while(|o| **o).count();
-            left + right + 1
-        })
-        .collect()
-}
-
-/// The waist and hip rows of a front view's torso widths. Below the armpits (the first row past the widest one, the
-/// arms' span, where the run narrows by a fifth as the arms part from the torso) down to the crotch (the first row
-/// where the middle is background): the waist is the narrowest row in the upper 60%, the hips the widest row below it.
-fn waist_and_hips(widths: &[usize]) -> (usize, usize) {
-    let span = (0..widths.len()).max_by_key(|&y| (widths[y], std::cmp::Reverse(y))).unwrap();
-    let armpit = (span + 1..widths.len()).find(|&y| widths[y] * 5 < widths[y - 1] * 4).unwrap();
-    let crotch = (armpit..widths.len()).find(|&y| widths[y] == 0).unwrap();
-    let upper = armpit + (crotch - armpit) * 3 / 5;
-    let waist = (armpit..upper).min_by_key(|&y| (widths[y], y)).unwrap();
-    let hips = (waist..crotch).max_by_key(|&y| (widths[y], std::cmp::Reverse(y))).unwrap();
-    (waist, hips)
-}
-
 fn input(template: &str, targets: &[Target], fixed: &[MeshData]) -> Result<FitResult, FitError> {
     fit(&FitInput { template, targets, fixed })
 }
@@ -115,11 +79,10 @@ fn block(min: Vec3, max: Vec3) -> MeshData {
 
 /// Recovery of a seeded random character from its three silhouettes.
 ///
-/// What the silhouette identifies is asserted, nothing else: `IoU`, the widths, arm length, foot size, the waist and hip
-/// outline (for `curves`, see [`OUTLINE_PX`]), and the share of the leg against the torso. Sole and crown are aligned,
-/// so `leg_length`, `torso_length` and the `height` axis trade off (the combination is what shows); `neck_length` is
-/// inside the torso loft and `hand_size` has no mesh yet (`hands::build` is a stub), so neither is visible and neither
-/// is asserted.
+/// What the silhouette identifies is asserted, nothing else: `IoU`, the widths, arm length, foot size, curves, and the share of
+/// the leg against the torso. Sole and crown are aligned, so `leg_length`, `torso_length` and the `height` axis trade
+/// off (the combination is what shows); `neck_length` is inside the torso loft and `hand_size` has no mesh yet
+/// (`hands::build` is a stub), so neither is visible and neither is asserted.
 ///
 /// All four templates are fitted, in every build: the four fits are independent, so they run side by side, and a debug
 /// build (CI's) takes about the time of one.
@@ -142,8 +105,24 @@ fn recovers_a_random_character_on_each_template() {
             .collect();
         running.into_iter().map(|fit| fit.join().unwrap()).collect::<Vec<_>>()
     });
+    let asserted = [Param::ShoulderWidth, Param::HipWidth, Param::ArmLength, Param::FootSize, Param::Curves];
+    let error = |p: Param, r: &FitResult| {
+        let (lo, hi) = p.range();
+        (p.get(&r.params) - p.get(&truth)).abs() / (hi - lo)
+    };
+    // Every template's numbers first, so a failure shows all four.
+    for (template, r, took) in &fits {
+        let errors: Vec<String> = asserted.iter().map(|&p| format!("{} {:.4}", p.name(), error(p, r))).collect();
+        eprintln!(
+            "{template}: {took:?}, {} evaluations, IoU {:.4} -> {:.4}, off by {}, leg to torso {:.4}",
+            r.evaluations,
+            r.iou_before,
+            r.iou_after,
+            errors.join(", "),
+            (ratio(&r.params) - ratio(&truth)).abs()
+        );
+    }
     for (template, r, took) in fits {
-        eprintln!("{template}: {took:?}, {} evaluations, IoU {:.4} -> {:.4}", r.evaluations, r.iou_before, r.iou_after);
         assert!(r.evaluations <= MAX_EVALUATIONS);
         assert!(r.iou_after >= 0.985, "{template}: IoU {}", r.iou_after);
         assert_eq!(r.per_view.len(), 3);
@@ -151,25 +130,9 @@ fn recovers_a_random_character_on_each_template() {
             assert_eq!(v.view, want);
             assert!(v.iou_after >= v.iou_before, "{template} {:?}", v.view);
         }
-        for p in [Param::ShoulderWidth, Param::HipWidth, Param::ArmLength, Param::FootSize] {
-            let (lo, hi) = p.range();
-            let err = (p.get(&r.params) - p.get(&truth)).abs() / (hi - lo);
+        for p in asserted {
+            let err = error(p, &r);
             assert!(err < 0.03, "{template}: {p:?} off by {err}");
-        }
-        // `curves` through the outline it makes: the waist and hip widths of the fitted body's front view against the
-        // truth's, row for row (both views have the crown and sole on the same rows). Its own error is only reported.
-        let front = |p: &FitParams| torso_widths(&render_target(template, p, &[], FitView::Front, HEIGHT).unwrap());
-        let (want, got) = (front(&truth), front(&r.params));
-        let (waist, hips) = waist_and_hips(&want);
-        let (lo, hi) = Param::Curves.range();
-        let curves = (Param::Curves.get(&r.params) - Param::Curves.get(&truth)).abs() / (hi - lo);
-        for (name, y) in [("waist", waist), ("hips", hips)] {
-            let off = want[y].abs_diff(got[y]) as f64 / 2.0;
-            eprintln!(
-                "{template}: {name} at row {y}: {} px against {} px ({off} px a side); curves off by {curves:.3}",
-                got[y], want[y]
-            );
-            assert!(off <= OUTLINE_PX, "{template}: the {name} is {off} px a side off (curves off by {curves})");
         }
         let share = (ratio(&r.params) - ratio(&truth)).abs();
         assert!(share < 0.08, "{template}: leg to torso ratio off by {share}");
