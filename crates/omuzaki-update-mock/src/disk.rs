@@ -479,6 +479,12 @@ impl Disk for FakeDisk {
         }
         match inner.nodes.get(&path) {
             Some(Node::Dir) => {}
+            // A link is removed itself, whatever it points at, and its target is kept: `std::fs::remove_dir_all`
+            // does not follow it.
+            Some(Node::Link { .. }) => {
+                inner.nodes.remove(&path);
+                return Ok(());
+            }
             Some(_) => return Err(not_a_folder(&path)),
             None => return Err(not_found(&path)),
         }

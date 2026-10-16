@@ -461,12 +461,18 @@ fn a_folder_link_is_walked_through_by_every_operation() {
     assert!(!disk.exists(&p("real/deep")));
     disk.symlink("f", &p("via/inner"), LinkKind::File).unwrap();
     assert!(disk.snapshot().contains_key(&p("real/inner")));
-    // The link itself is a link: listed so, not removed as a folder, and a rename moves the link, not the target.
+    // The link itself is a link: listed so, and a rename moves the link, not the target.
     assert!(disk.list_dir(&p("")).unwrap().iter().any(|e| e.name == "via" && e.is_symlink));
-    assert_eq!(kind_of(disk.remove_dir_all(&p("via"))), ErrorKind::NotADirectory);
     disk.rename(&p("via"), &p("moved-link")).unwrap();
     assert_eq!(disk.read(&p("moved-link/f")).unwrap(), b"x");
     assert!(!disk.exists(&p("via")));
+    // Removing the link removes only the link; what it points at stays (as `std::fs::remove_dir_all` does).
+    disk.remove_dir_all(&p("moved-link")).unwrap();
+    assert!(!disk.exists(&p("moved-link")));
+    assert_eq!(disk.read(&p("real/f")).unwrap(), b"x");
+    disk.symlink("f", &p("flink"), LinkKind::File).unwrap();
+    disk.remove_dir_all(&p("flink")).unwrap();
+    assert!(!disk.exists(&p("flink")) && disk.exists(&p("real/f")));
 }
 
 #[test]
