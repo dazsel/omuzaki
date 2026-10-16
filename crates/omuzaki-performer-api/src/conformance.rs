@@ -197,7 +197,10 @@ pub fn heard_sequence(events: &[Heard]) -> Result<(), String> {
                 if *utterance != next_utterance {
                     return Err(format!("event {i} ({e:?}): utterance {next_utterance} was next"));
                 }
-                next_utterance += 1;
+                let Some(next) = next_utterance.checked_add(1) else {
+                    return fail("no utterance can follow u64::MAX");
+                };
+                next_utterance = next;
                 open = false;
             }
         }
