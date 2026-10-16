@@ -1,0 +1,118 @@
+//! The vest's outline: where its rim (neck and V) and hem run round the torso, as heights along the torso region.
+//!
+//! The prototype cuts the vest from height functions of the angle round the body (`vestTop`, `vestHem`, `vestAngles`).
+//! Here every height is a fraction `t` of the torso region, so the vest follows whatever torso the fit has; the
+//! placeholders below are the prototype's metres on the soft-sd body ([`along`] converts), kept as named constants in
+//! this one place.
+
+use std::f64::consts::PI;
+
+/// The soft-sd torso's bottom, metres: the height `t = 0` is at on the body the placeholders were fitted to.
+const REFERENCE_BOTTOM: f64 = 0.325;
+/// The soft-sd torso's length, metres.
+const REFERENCE_LENGTH: f64 = 0.22;
+
+/// The fraction of the torso region a height of the soft-sd body (metres) is at: how the placeholders are written.
+pub const fn along(y: f64) -> f64 {
+    (y - REFERENCE_BOTTOM) / REFERENCE_LENGTH
+}
+
+/// A length of the soft-sd body (metres) as a fraction of its torso.
+pub const fn of_torso(length: f64) -> f64 {
+    length / REFERENCE_LENGTH
+}
+
+/// Placeholder: the rim's height at the shoulders (`VY.topY`).
+pub const RIM_HEIGHT: f64 = along(0.5265);
+/// Placeholder: how far the V tip is below the rim (`VY.topY - VY.tipV`).
+pub const NECK_DEPTH: f64 = of_torso(0.5265 - 0.432);
+/// Placeholder: the hem's height at the centre front (`VY.tipHem`).
+pub const HEM_FRONT: f64 = along(0.336);
+/// Placeholder: the hem's height at the sides (`VY.sideHem`).
+pub const HEM_SIDE: f64 = along(0.362);
+/// Placeholder: the hem's height at the centre back (the prototype's `0.356`).
+pub const HEM_BACK: f64 = along(0.356);
+/// Placeholder: how far the rim dips at the back of the neck (the prototype's `0.0125`).
+pub const BACK_DIP: f64 = of_torso(0.0125);
+
+/// The front rim reaches the shoulder height at this `|sin phi|` (about 47 degrees either side of the V).
+const V_KNEE: f64 = 0.74;
+/// The curve of the V's sides.
+const V_POWER: f64 = 1.1;
+/// The front hem reaches the side height at this `|sin phi|`.
+const HEM_KNEE: f64 = 0.85;
+/// The curve of the front hem.
+const HEM_POWER: f64 = 0.9;
+/// The back rim dips within this `|sin phi|` of the centre back.
+const DIP_KNEE: f64 = 0.60;
+/// How the angles bunch toward the front: `phi` goes as `|u|^FRONT_BIAS` for `u` from -1 to 1.
+const FRONT_BIAS: f64 = 1.5;
+
+/// The least gap between the V tip and the highest hem, as a fraction of the torso: under this the panel is a sliver.
+pub const MIN_PANEL: f64 = 0.08;
+
+/// The vest's outline, as heights along the torso region (`0` at its bottom, `1` at its top).
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Profile {
+    /// The rim's height at the shoulders and the sides of the neck.
+    pub rim: f64,
+    /// How far the V tip is below the rim.
+    pub neck_depth: f64,
+    /// The hem at the centre front.
+    pub hem_front: f64,
+    /// The hem at the sides.
+    pub hem_side: f64,
+    /// The hem at the centre back.
+    pub hem_back: f64,
+}
+
+impl Profile {
+    /// The V tip's height: the rim's lowest point, at the centre front.
+    pub fn tip(&self) -> f64 {
+        self.rim - self.neck_depth
+    }
+
+    /// The rim's height at angle `phi` (0 at the front): a power-curve notch in the front half, a shallow dip in the
+    /// back half.
+    pub fn top(&self, phi: f64) -> f64 {
+        let (s, c) = (phi.sin().abs(), phi.cos());
+        if c >= 0.0 {
+            self.tip() + self.neck_depth * (s / V_KNEE).min(1.0).powf(V_POWER)
+        } else {
+            self.rim - BACK_DIP * (1.0 - s / DIP_KNEE).max(0.0).powi(2)
+        }
+    }
+
+    /// The hem's height at angle `phi`. The two halves meet at the sides.
+    pub fn hem(&self, phi: f64) -> f64 {
+        let (s, c) = (phi.sin().abs(), phi.cos());
+        if c >= 0.0 {
+            self.hem_front + (self.hem_side - self.hem_front) * (s / HEM_KNEE).min(1.0).powf(HEM_POWER)
+        } else {
+            self.hem_back + (self.hem_side - self.hem_back) * s * s
+        }
+    }
+
+    /// The height at fraction `f` of the way from the hem (0) to the rim (1) at angle `phi`.
+    pub fn between(&self, phi: f64, f: f64) -> f64 {
+        let hem = self.hem(phi);
+        hem + f * (self.top(phi) - hem)
+    }
+
+    /// The least height of the rim over the highest hem: the panel's smallest extent, as a fraction of the torso.
+    pub fn panel(&self) -> f64 {
+        let hems = self.hem_front.max(self.hem_side).max(self.hem_back);
+        (self.tip() - hems).min(self.rim - BACK_DIP - hems)
+    }
+}
+
+/// `n + 1` angles from `-pi` to `pi`, bunched toward the front where the V tip needs the rows (the prototype's
+/// `vestAngles`). The first and last are the same point at the back.
+pub fn angles(n: usize) -> Vec<f64> {
+    (0..=n)
+        .map(|k| {
+            let u = crate::kit::curve::fraction(k, n) * 2.0 - 1.0;
+            u.signum() * u.abs().powf(FRONT_BIAS) * PI
+        })
+        .collect()
+}
