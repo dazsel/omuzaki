@@ -34,6 +34,19 @@ const COEFFICIENT_BLOCK_BYTES: u64 = 64 * 2;
 /// Huffman tables for a JPEG. Measured at about 45 KiB for a PNG, and allowed for at 64 KiB.
 const DECODER_STATE_BYTES: u64 = 64 << 10;
 
+/// The most a PNG's profile may inflate to when the encoded input is `input_len` bytes: the bound every PNG gets, and no
+/// more than a quarter of what the cap leaves beside the input and the decoder's state. Half of that is for the copy phase
+/// (two copies of the profile), and the inflate buffer of the decoder grows by doubling, so it can briefly hold twice the
+/// bound while it fills. There is a floor so that the decoder's other allocations (text chunks) are never starved. A
+/// profile past the bound is dropped by the decoder, never retained.
+fn profile_bound(input_len: u64) -> u64 {
+    let room = max_decoded_bytes().saturating_sub(input_len.saturating_add(DECODER_STATE_BYTES)) / 4;
+    max_profile_bytes().min(room).max(PROFILE_BOUND_FLOOR)
+}
+
+/// The smallest bound on a profile (and on the decoder's metadata) whatever the input.
+const PROFILE_BOUND_FLOOR: u64 = 1 << 20;
+
 /// The decoded cap in bytes.
 fn max_decoded_bytes() -> u64 {
     u64::from(MAX_DECODED_MIB) << 20
@@ -163,11 +176,14 @@ pub fn decode(bytes: &[u8], hash: ContentHash, field: &str) -> Result<Rgba8, OpE
     {
         return Err(too_large(field, plan.width, plan.height));
     }
-    // A PNG whose `cICP` chunk decides the colour never has its profile read, and the decoder is built under the profile
-    // bound too, so a large `iCCP` beside it is dropped at that bound instead of being inflated under the whole budget.
+    // A PNG whose `cICP` chunk decides the colour never has its profile read. The decoder is built so that it keeps at most
+    // what the plan leaves room for beside the pixels (it holds one copy while it decodes), so a profile that is too large
+    // is dropped by the decoder instead of being retained under the budget.
     let cicp_decides = format == ImageFormat::Png && header::png_colour(bytes).cicp.is_some();
+    // Half of what the plan leaves, since the inflate buffer can briefly hold twice what it ends with.
+    let retained = max_profile_bytes().min(max_decoded_bytes().saturating_sub(plan.peak) / 2).max(PROFILE_BOUND_FLOOR);
     let mut input = reader(bytes).map_err(|error| unreadable(field, &error))?;
-    input.limits(if cicp_decides { limits_with_alloc(max_profile_bytes()) } else { limits() });
+    input.limits(if cicp_decides { limits_with_alloc(retained) } else { limits() });
     let mut decoder = input.into_decoder().map_err(|error| unreadable(field, &error))?;
     let icc = if cicp_decides { None } else { decoder.icc_profile().map_err(|error| unreadable(field, &error))? };
     // The decoder yields no profile for APP2 chunks it cannot put together (a sequence number out of range, a count that
@@ -254,7 +270,7 @@ fn plan(bytes: &[u8], format: ImageFormat) -> Result<Plan, String> {
         // refused here, not guessed at.
         let mut input = reader(bytes).map_err(|error| error.to_string())?;
         let mut limits = Limits::default();
-        limits.max_alloc = Some(max_profile_bytes());
+        limits.max_alloc = Some(profile_bound(bytes.len() as u64));
         input.limits(limits);
         let mut decoder = input.into_decoder().map_err(|error| error.to_string())?;
         // A `cICP` chunk decides the colour on its own (PNG colour chunk precedence), so a profile beside it is not looked at:
@@ -263,7 +279,7 @@ fn plan(bytes: &[u8], format: ImageFormat) -> Result<Plan, String> {
         if colour.iccp && colour.cicp.is_none() && decoder.icc_profile().map_err(|error| error.to_string())?.is_none() {
             return Err(format!(
                 "its embedded colour profile is corrupt or inflates to more than {} MiB",
-                max_profile_bytes() >> 20
+                (profile_bound(bytes.len() as u64) + (1 << 19)) >> 20
             ));
         }
         let (width, height) = decoder.dimensions();

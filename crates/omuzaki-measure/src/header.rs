@@ -107,20 +107,25 @@ pub(crate) struct PngColour {
     pub(crate) chromaticities: Option<[u32; 8]>,
 }
 
-/// Reads the colour chunks of a PNG, stopping at the first image data chunk. Chunk CRCs are the decoder's to check.
+/// Reads the colour chunks of a PNG, stopping at the first image data chunk. A colour chunk counts only if its CRC is
+/// right, and only the first of each kind does: the decoder drops an ancillary chunk with a bad CRC and keeps the first
+/// of a repeated one, and what is measured must be what the decoder decodes with.
 pub(crate) fn png_colour(bytes: &[u8]) -> PngColour {
     let mut colour = PngColour::default();
     let mut at = 8; // past the signature
     while let (Some(length), Some(kind)) = (be_u32(bytes, at), bytes.get(at + 4..at + 8)) {
         let data = bytes.get(at + 8..).and_then(|rest| rest.get(..length as usize)).unwrap_or_default();
+        // The chunk's own CRC follows its data. A chunk that is cut short, or whose CRC is wrong, is not one.
+        let valid = data.len() == length as usize
+            && matches!(be_u32(bytes, at.saturating_add(8).saturating_add(length as usize)), Some(stored) if stored == crc32(kind, data));
         match kind {
             b"IDAT" | b"IEND" => break,
-            b"sRGB" => colour.srgb = true,
+            b"sRGB" if valid => colour.srgb = true,
+            // An embedded profile is noted whatever its CRC: a bad one is refused later, never read as no profile.
             b"iCCP" => colour.iccp = true,
-            // The decoder keeps the first `cICP` and treats a repeat as a bad ancillary chunk, so the first is the one that counts.
-            b"cICP" if data.len() == 4 && colour.cicp.is_none() => colour.cicp = data.try_into().ok(),
-            b"gAMA" if data.len() == 4 => colour.gamma = be_u32(data, 0),
-            b"cHRM" if data.len() == 32 => {
+            b"cICP" if valid && data.len() == 4 && colour.cicp.is_none() => colour.cicp = data.try_into().ok(),
+            b"gAMA" if valid && data.len() == 4 && colour.gamma.is_none() => colour.gamma = be_u32(data, 0),
+            b"cHRM" if valid && data.len() == 32 && colour.chromaticities.is_none() => {
                 colour.chromaticities = Some(std::array::from_fn(|i| be_u32(data, 4 * i).unwrap_or(0)));
             }
             _ => {}
@@ -128,6 +133,18 @@ pub(crate) fn png_colour(bytes: &[u8]) -> PngColour {
         at = at.saturating_add(12).saturating_add(length as usize);
     }
     colour
+}
+
+/// The CRC-32 of a chunk's type and data (ISO 3309, as the PNG specification has it).
+fn crc32(kind: &[u8], data: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFF_u32;
+    for &byte in kind.iter().chain(data) {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            crc = if crc & 1 == 1 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
+        }
+    }
+    !crc
 }
 
 /// The `cICP` code points that mean sRGB: BT.709 primaries, the sRGB transfer function, RGB (identity matrix), full range.

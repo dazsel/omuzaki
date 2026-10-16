@@ -286,3 +286,46 @@ fn a_jpeg_whose_input_held_twice_is_over_the_cap_is_refused_before_a_decoder_is_
     assert!(error.message.starts_with("The image is 96 × 64"), "{}", error.message);
     assert!(peak < 1 << 20, "a refused input allocated {peak} bytes");
 }
+
+/// The CRC-32 of a PNG chunk (ISO 3309).
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFF_u32;
+    for &byte in bytes {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            crc = if crc & 1 == 1 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
+        }
+    }
+    !crc
+}
+
+/// `png` with an sRGB `cICP` chunk before its image data, and zeros after its end until it is `len` bytes.
+fn with_srgb_cicp_padded_to(png: &[u8], len: usize) -> Vec<u8> {
+    let idat = png.windows(4).position(|window| window == b"IDAT").unwrap() - 4;
+    let data = [1_u8, 13, 0, 1];
+    let mut out = png[..idat].to_vec();
+    out.extend(4_u32.to_be_bytes());
+    out.extend(b"cICP");
+    out.extend(data);
+    out.extend(crc32(&[b"cICP".as_slice(), data.as_slice()].concat()).to_be_bytes());
+    out.extend(&png[idat..]);
+    out.resize(len, 0);
+    out
+}
+
+#[test]
+fn a_profile_beside_an_srgb_cicp_is_not_retained_past_the_budget_with_the_callers_buffer() {
+    // A tiny PNG with a profile that inflates to 15 MiB, an sRGB `cICP`, and zeros after its end that make the encoded
+    // input 50 MiB. Read as a PNG the input is held once, 50 MiB, and the profile the decoder would keep is 15 MiB more:
+    // over the 64 MiB cap together with the pixels. The decoder is bounded to what is left, so the profile is dropped, and
+    // the input plus everything the decode held stays inside the cap.
+    let mut png = Vec::new();
+    let mut encoder = PngEncoder::new(&mut png);
+    encoder.set_icc_profile(vec![0_u8; 15 << 20]).unwrap();
+    encoder.write_image(&pattern(8, 8, 3), 8, 8, ExtendedColorType::Rgb8).unwrap();
+    let padded = with_srgb_cicp_padded_to(&png, 50 << 20);
+    let (result, peak) = peak_of(|| decode(&padded, ContentHash::of(&padded), FIELD));
+    let held = peak + padded.len();
+    assert!(held <= 64 << 20, "the decode and its input held {held} bytes");
+    assert!(result.is_ok(), "an sRGB cICP decides the colour, so the profile beside it is no reason to refuse");
+}

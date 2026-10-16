@@ -281,3 +281,55 @@ fn a_large_png_with_an_srgb_cicp_still_decodes() {
     let decoded = decode(&png, ContentHash::of(&png), FIELD).expect("a big sRGB PNG decodes");
     assert_eq!((decoded.width, decoded.height), (1500, 1500));
 }
+
+/// `chunk(...)` with its CRC made wrong, the way a corrupt file has it.
+fn with_bad_crc(mut chunk: Vec<u8>) -> Vec<u8> {
+    let last = chunk.len() - 1;
+    chunk[last] ^= 0xFF;
+    chunk
+}
+
+/// A 2x2 RGB PNG that embeds a Display P3 profile.
+fn display_p3_png() -> Vec<u8> {
+    let profile = icc_profile([0.5151, 0.2412, -0.0011], [0.2919, 0.6922, 0.0419], [0.1572, 0.0666, 0.7841]);
+    let mut out = Vec::new();
+    let mut encoder = PngEncoder::new(&mut out);
+    encoder.set_icc_profile(profile).unwrap();
+    let pixels = [9_u8, 8, 7, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+    encoder.write_image(&pixels, 2, 2, ExtendedColorType::Rgb8).unwrap();
+    out
+}
+
+#[test]
+fn a_colour_chunk_with_a_bad_crc_is_ignored_as_the_decoder_ignores_it() {
+    // The decoder drops an ancillary chunk whose CRC is wrong, so an sRGB `cICP` with a corrupt CRC beside a Display P3
+    // profile leaves the profile as the colour: refused. The same chunk with its CRC right is accepted.
+    let srgb_cicp = chunk(*b"cICP", &[1, 13, 0, 1]);
+    let corrupt = with_chunks(&display_p3_png(), &[with_bad_crc(srgb_cicp.clone())]);
+    assert!(refusal(&corrupt).contains("embedded colour profile"), "the corrupt cICP must not decide");
+    let intact = with_chunks(&display_p3_png(), &[srgb_cicp]);
+    assert!(decode(&intact, ContentHash::of(&intact), FIELD).is_ok());
+    // An `sRGB` chunk with a bad CRC does not override a linear gamma either.
+    let linear = chunk(*b"gAMA", &100_000u32.to_be_bytes());
+    let png = with_chunks(&png_2x2(), &[linear, with_bad_crc(chunk(*b"sRGB", &[0]))]);
+    assert!(refusal(&png).contains("a gamma of 1.00"));
+}
+
+#[test]
+fn the_first_gamma_and_the_first_primaries_are_the_ones_that_count() {
+    let linear = chunk(*b"gAMA", &100_000u32.to_be_bytes());
+    let srgb_gamma = chunk(*b"gAMA", &45_455u32.to_be_bytes());
+    let linear_first = with_chunks(&png_2x2(), &[linear.clone(), srgb_gamma.clone()]);
+    assert!(refusal(&linear_first).contains("a gamma of 1.00"));
+    let srgb_first = with_chunks(&png_2x2(), &[srgb_gamma, linear]);
+    assert!(decode(&srgb_first, ContentHash::of(&srgb_first), FIELD).is_ok());
+    let srgb: Vec<u8> = SRGB_PRIMARIES.iter().flat_map(|value| value.to_be_bytes()).collect();
+    let mut wide = SRGB_PRIMARIES;
+    wide[2] = 70_000;
+    wide[3] = 30_000;
+    let wide: Vec<u8> = wide.iter().flat_map(|value| value.to_be_bytes()).collect();
+    let wide_first = with_chunks(&png_2x2(), &[chunk(*b"cHRM", &wide), chunk(*b"cHRM", &srgb)]);
+    assert!(refusal(&wide_first).contains("primaries other than sRGB's"));
+    let srgb_first = with_chunks(&png_2x2(), &[chunk(*b"cHRM", &srgb), chunk(*b"cHRM", &wide)]);
+    assert!(decode(&srgb_first, ContentHash::of(&srgb_first), FIELD).is_ok());
+}
