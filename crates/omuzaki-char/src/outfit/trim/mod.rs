@@ -682,9 +682,13 @@ pub struct Bevel {
     pub segments: usize,
 }
 
+/// The longest a bevel's corner offset grows, in bevel sizes: three.js's cap on a sharp corner's mitre (`sqrt(2)`).
+const MAX_MITRE: f64 = std::f64::consts::SQRT_2;
+
 /// The flat `outline` (local x, y; counter-clockwise) extruded along local z from 0 to `depth`, its edges bevelled as
 /// three.js's `ExtrudeGeometry` does: the faces are the outline at `-bevel.thickness` and `depth + bevel.thickness`, and
-/// between them the outline grows by up to `bevel.size` (each edge moved out by that much, corners mitred). The faces
+/// between them the outline grows by up to `bevel.size` (each edge moved out by that much, corners mitred, a mitre
+/// never longer than [`MAX_MITRE`] sizes). The faces
 /// are filled as the convex pieces `faces` lists (index lists into `outline`), so a concave outline closes too.
 ///
 /// # Errors
@@ -706,14 +710,16 @@ pub fn extrude(
     if (0..n).any(|k| outline[k].distance(outline[(k + 1) % n]) <= 0.0 || !outline[k].is_finite()) {
         return Err(TrimError::invalid("outline", "its points must be finite and each differ from the next"));
     }
-    // Each corner's mitre: the offset that moves both its edges out by 1.
+    // Each corner's mitre: the offset that moves both its edges out by 1, no longer than three.js lets it grow (its
+    // `getBevelVec` shortens a sharp corner's mitre to that length, "to prevent crazy spikes").
     let mitres: Vec<DVec2> = (0..n)
         .map(|k| {
             let (a, b, c) = (outline[(k + n - 1) % n], outline[k], outline[(k + 1) % n]);
             // Each edge has length (checked above), so its outward normal is a unit vector.
             let out = |d: DVec2| DVec2::new(d.y, -d.x).normalize();
             let (n1, n2) = (out(b - a), out(c - b));
-            (n1 + n2) / (1.0 + n1.dot(n2)).max(1e-6)
+            let mitre = (n1 + n2) / (1.0 + n1.dot(n2)).max(1e-6);
+            mitre.clamp_length_max(MAX_MITRE)
         })
         .collect();
     // The layers from the back face to the front: the bevel's steps, then the same steps mirrored at the front.
