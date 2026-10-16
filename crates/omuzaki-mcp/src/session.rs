@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use omuzaki_history_api::JournalStatus;
 use omuzaki_ops_api::{
-    Actor, Budget, Cause, CauseKind, Grants, Limits, Mode, OpError, OpKind, Request, Runner, Scope, SessionSpec,
-    SessionState, Transport,
+    Actor, Budget, Cause, CauseKind, ErrorCode, ErrorDetail, Grants, Limits, Mode, OpError, OpKind, PauseReason,
+    Request, Runner, Scope, SessionSpec, SessionState, Sessions, Transport,
 };
 use rmcp::ErrorData as McpError;
 use rmcp::handler::server::ServerHandler;
@@ -148,21 +148,36 @@ impl Session {
             .as_ref()
     }
 
-    /// What this connection may read right now. Without a session registry that is the server's grants. With one, a
-    /// connection reads nothing until its session is admitted (a refused `Sessions::open` closes resources as it
-    /// closes the tools), and every request asks the registry again: a session that has been paused or ended, or whose
-    /// grants were narrowed since, reads accordingly, never more than the server's grants.
-    fn session_grants(&self, context: &RequestContext<RoleServer>) -> Result<Grants, McpError> {
-        let Some(host) = &self.shared.sessions else { return Ok(self.view.grants.clone()) };
+    /// What this connection's session stands for right now (see [`standing`]), asked of the registry again on every
+    /// request.
+    fn standing(&self, context: &RequestContext<RoleServer>) -> Result<Standing, McpError> {
         let denied = |why: String| McpError::invalid_request(why, Some(json!({"code": "denied"})));
-        let actor =
-            self.actor(context).map_err(|e| denied(format!("this connection has no session: {}", e.message)))?;
-        let info =
-            host.sessions.session_of(actor).ok_or_else(|| denied("this connection's session is gone".to_owned()))?;
-        if info.state != SessionState::Active {
-            return Err(denied(format!("this connection's session is not active ({:?})", info.state)));
+        let actor = if self.shared.sessions.is_none() {
+            None
+        } else {
+            Some(
+                self.actor(context)
+                    .map_err(|e| denied(format!("this connection has no session: {}", e.message)))?
+                    .clone(),
+            )
+        };
+        standing(self.shared.sessions.as_ref().map(|h| &h.sessions), actor.as_ref(), &self.view.grants).map_err(denied)
+    }
+
+    /// What this connection may read right now: the server's grants narrowed by its session's. A paused session still
+    /// reads (design §4.3: the document, the log and its own record stay readable); one that has ended, or that the
+    /// registry no longer has, reads nothing.
+    fn session_grants(&self, context: &RequestContext<RoleServer>) -> Result<Grants, McpError> {
+        self.standing(context).map(|s| s.grants)
+    }
+
+    /// What a notification feed needs to ask the registry again later, without the request that started it.
+    fn watch(&self, context: &RequestContext<RoleServer>) -> Watch {
+        Watch {
+            sessions: self.shared.sessions.as_ref().map(|h| Arc::clone(&h.sessions)),
+            actor: self.actor(context).ok().cloned(),
+            ceiling: self.view.grants.clone(),
         }
-        Ok(self.view.grants.intersect(&info.grants))
     }
 
     /// The op log and its notifications carry document values (patches, arguments), so reading or being notified of
@@ -173,10 +188,6 @@ impl Session {
             return Ok(());
         }
         Err(McpError::invalid_request(read_needed(what), Some(json!({"code": "denied", "scope": "read"}))))
-    }
-
-    fn has_read(&self) -> bool {
-        self.view.grants.allows(Scope::Read)
     }
 
     /// The op log as JSON (events numbered above `after`, or all of them), catching this session up with it: having
@@ -200,8 +211,8 @@ impl Session {
 
     /// `history_log`: the log resource's body, for clients that can't read resources. `after_n` keeps only the events
     /// numbered above it.
-    fn history_log(&self, args: &JsonObject) -> Result<CallToolResult, OpError> {
-        if !self.has_read() {
+    fn history_log(&self, args: &JsonObject, grants: &Grants) -> Result<CallToolResult, OpError> {
+        if !grants.allows(Scope::Read) {
             return Err(OpError::denied(read_needed("reading the op log")));
         }
         let after = args.get("after_n").map(|n| {
@@ -215,8 +226,8 @@ impl Session {
 
     /// What other actors changed since this session was last told, if anything, moving its position forward so each
     /// change is reported once. Needs `read` for the same reason the log does: it names paths and ops.
-    fn others_changed(&self, me: &Actor) -> Option<Report> {
-        if !self.view.grants.allows(Scope::Read) {
+    fn others_changed(&self, me: &Actor, grants: &Grants) -> Option<Report> {
+        if !grants.allows(Scope::Read) {
             return None;
         }
         let mut state = lock(&self.state);
@@ -253,6 +264,9 @@ impl Session {
             }
         };
         let mut args = request.arguments.unwrap_or_default();
+        // The registry's word now, not the one at connection setup: grants may have been narrowed and the session
+        // paused or ended since.
+        let standing = self.standing(context).map_err(|e| OpError::denied(e.message.to_string()));
         let outcome = match entry.route {
             Route::Op { kind, unit_args } => match take_dry_run(&mut args)
                 .and_then(|dry_run| check_args(&args, &entry.tool.input_schema).map(|()| dry_run))
@@ -263,7 +277,7 @@ impl Session {
             Route::Builtin(builtin) => match check_args(&args, &entry.tool.input_schema) {
                 // Reading the log keeps nothing between calls, so a request that stands alone can still do it.
                 Ok(()) if builtin != Builtin::Log && self.http && stands_alone(context) => Err(needs_a_session()),
-                Ok(()) => self.run_builtin(builtin, args, actor).await,
+                Ok(()) => self.run_builtin(builtin, args, actor, &standing).await,
                 Err(e) => Err(e),
             },
         };
@@ -329,7 +343,13 @@ impl Session {
         Reply { result, unsaved }
     }
 
-    async fn run_builtin(&self, builtin: Builtin, args: JsonObject, actor: Actor) -> Result<Reply, OpError> {
+    async fn run_builtin(
+        &self,
+        builtin: Builtin,
+        args: JsonObject,
+        actor: Actor,
+        standing: &Result<Standing, OpError>,
+    ) -> Result<Reply, OpError> {
         match builtin {
             Builtin::Undo | Builtin::Redo => {
                 let grants = self.view.grants.clone();
@@ -343,8 +363,15 @@ impl Session {
                 let result = render::history(builtin, label.as_deref());
                 Ok(if changed { self.confirm_saved(result).await } else { result.into() })
             }
-            Builtin::Log => self.history_log(&args).map(Reply::from),
-            Builtin::TxBegin => self.begin_tx(args, actor).await.map(Reply::from),
+            Builtin::Log => self.history_log(&args, &standing.clone()?.grants).map(Reply::from),
+            Builtin::TxBegin => {
+                // `Executor::begin` cannot refuse, and for a paused session it hands back a transaction that was never
+                // opened; so the refusal is made here, before it runs.
+                if let Some((by, reason)) = standing.clone()?.paused {
+                    return Err(paused(by, reason));
+                }
+                self.begin_tx(args, actor).await.map(Reply::from)
+            }
             Builtin::TxCommit | Builtin::TxRollback => self.finish_tx(builtin == Builtin::TxCommit, actor).await,
         }
     }
@@ -481,6 +508,53 @@ fn needs_a_session() -> OpError {
     .hint("connect with the `initialize` handshake (protocol 2025-11-25 or earlier); other tools work without one")
 }
 
+/// What a session stands for at the moment the registry is asked.
+#[derive(Clone)]
+struct Standing {
+    /// What it may do: the server's grants narrowed by the session's effective ones.
+    grants: Grants,
+    /// Who paused it and why, when it is paused.
+    paused: Option<(Actor, PauseReason)>,
+}
+
+/// The standing of `actor`'s session in `sessions`, or why it has none: the registry no longer has it, or it ended.
+/// Without a registry the server's grants stand. A paused session stands (design §4.3: it may still read).
+fn standing(sessions: Option<&Arc<dyn Sessions>>, actor: Option<&Actor>, ceiling: &Grants) -> Result<Standing, String> {
+    let (Some(sessions), Some(actor)) = (sessions, actor) else {
+        return Ok(Standing { grants: ceiling.clone(), paused: None });
+    };
+    let info = sessions.session_of(actor).ok_or_else(|| "this connection's session is gone".to_owned())?;
+    let paused = match &info.state {
+        SessionState::Active => None,
+        SessionState::Paused { by, reason } => Some((by.clone(), *reason)),
+        SessionState::Ended { .. } => return Err("this connection's session has ended".to_owned()),
+    };
+    Ok(Standing { grants: ceiling.intersect(&info.grants), paused })
+}
+
+/// A notification feed's way back to the registry.
+struct Watch {
+    sessions: Option<Arc<dyn Sessions>>,
+    actor: Option<Actor>,
+    ceiling: Grants,
+}
+
+impl Watch {
+    /// `Some(true)` while the session may read, `Some(false)` while it may not (yet), `None` once it is over.
+    fn may_read(&self) -> Option<bool> {
+        standing(self.sessions.as_ref(), self.actor.as_ref(), &self.ceiling).ok().map(|s| s.grants.allows(Scope::Read))
+    }
+}
+
+/// The session is paused: nothing ran, and a person must resume it.
+fn paused(by: Actor, reason: PauseReason) -> OpError {
+    let mut error = OpError::conflict(format!("this session is paused ({reason:?})"))
+        .hint("wait for a person to resume it; do not retry")
+        .with_detail(ErrorDetail::Paused { by, reason });
+    error.code = ErrorCode::Waiting;
+    error
+}
+
 /// `tx_begin`'s optional `cause`. The argument check already made it a string; this enforces its length, which the
 /// argument check doesn't read from the schema. A blank cause counts as absent, so it is never stamped on an edit.
 fn cause_arg(value: Option<Value>) -> Result<Option<String>, OpError> {
@@ -603,8 +677,12 @@ impl ServerHandler for Session {
         let log_text = reads_log && result.is_error != Some(true);
         // After the call, so a change another actor made while it ran is included, and so this call's own events
         // (which carry this session's actor) are passed over.
-        let report =
-            if log_text { None } else { self.actor(&context).ok().and_then(|actor| self.others_changed(actor)) };
+        let report = if log_text {
+            None
+        } else {
+            let grants = self.session_grants(&context).ok();
+            self.actor(&context).ok().zip(grants).and_then(|(actor, grants)| self.others_changed(actor, &grants))
+        };
         let result = match report {
             Some(report) => render::with_heads_up(result, &report),
             None => result,
@@ -713,11 +791,18 @@ impl ServerHandler for Session {
         let mut state = lock(&self.state);
         lock(&state.subscribed).insert(uri);
         if state.feed.is_none() {
+            let watch = self.watch(&context);
             let (mut updates, peer) = (Updates::new(&self.shared.hub, &self.shared.providers), context.peer);
             let subscribed = Arc::clone(&state.subscribed);
             state.feed = Some(AbortOnDrop(tokio::spawn(async move {
                 while updates.arrived().await {
                     let wanted = lock(&subscribed).clone();
+                    // Asked again for every batch: a session that lost `read` is told nothing, one that ended no more.
+                    match watch.may_read() {
+                        Some(true) => {}
+                        Some(false) => continue,
+                        None => return,
+                    }
                     for uri in updates.changed(&wanted) {
                         if peer.notify_resource_updated(ResourceUpdatedNotificationParam::new(uri)).await.is_err() {
                             return;
@@ -787,12 +872,19 @@ impl ServerHandler for Session {
             return Ok(());
         }
         let mut updates = Updates::new(&self.shared.hub, &self.shared.providers);
+        let watch = self.watch(context.request_context());
         loop {
             tokio::select! {
                 () = context.cancelled() => return Ok(()),
                 arrived = updates.arrived() => {
                     if !arrived {
                         return Ok(());
+                    }
+                    // As in `subscribe`: asked again for every batch.
+                    match watch.may_read() {
+                        Some(true) => {}
+                        Some(false) => continue,
+                        None => return Ok(()),
                     }
                     for uri in updates.changed(&wanted) {
                         if context.sink().notify_resource_updated(&uri).await.is_err() {

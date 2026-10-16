@@ -71,9 +71,14 @@ impl Registry {
         self.of_actor(actor).map(|s| (s.id, s.on_behalf_of.clone()))
     }
 
-    /// What `session` may do now: its ceiling, never wider than its principal holds at this moment.
+    /// What `session` may do now: its ceiling, never wider than its principal holds at this moment, nor than what each
+    /// ancestor holds now (narrowing a parent narrows its sub-agents).
     pub(crate) fn effective(&self, session: &SessionInfo) -> Grants {
-        session.grants.intersect(&self.principals.grants(&session.on_behalf_of))
+        let own = session.grants.intersect(&self.principals.grants(&session.on_behalf_of));
+        match session.parent.and_then(|p| self.find(p)) {
+            Some(parent) => own.intersect(&self.effective(parent)),
+            None => own,
+        }
     }
 
     /// Opens a session. The record is stored with the ceiling in `grants`.
@@ -228,11 +233,18 @@ impl Registry {
         ))
     }
 
-    /// Replaces the ceiling of session `id`, up to what its principal holds.
+    /// Replaces the ceiling of session `id`, up to what its principal holds and, for a sub-agent, what its parent holds
+    /// now.
     pub(crate) fn set_grants(&mut self, id: SessionId, grants: Grants, by: &Actor) -> Result<SessionChange, OpError> {
         let index = self.control(id, by)?;
         if !within(&grants, &self.principals.grants(&self.sessions[index].on_behalf_of)) {
             return Err(OpError::denied("the grants exceed those of the person the session works for"));
+        }
+        if let Some(parent) = self.sessions[index].parent.and_then(|p| self.find(p))
+            && !within(&grants, &self.effective(parent))
+        {
+            return Err(OpError::denied("the grants exceed those of the session's parent")
+                .hint("a sub-agent holds at most what its parent holds"));
         }
         self.sessions[index].grants = grants;
         Ok(SessionChange::Grants { by: by.clone() })
@@ -317,6 +329,8 @@ fn paused(by: &Actor, reason: PauseReason) -> OpError {
 
 #[cfg(test)]
 mod tests {
+    use omuzaki_ops_api::Scope;
+
     use super::*;
 
     fn spec() -> SessionSpec {
@@ -332,6 +346,27 @@ mod tests {
             role: None,
             fence: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_sub_agent_never_holds_more_than_its_parent_holds_now() {
+        let alice = Actor::Person { name: "alice".into() };
+        let mut registry = Registry::new();
+        let parent = registry.open(spec(), Seconds(0.0)).unwrap();
+        let child = registry.open(SessionSpec { parent: Some(parent.id), ..spec() }, Seconds(0.0)).unwrap();
+        // Widening the child past its parent is refused, as at open.
+        let refused = registry.set_grants(child.id, Grants::person(), &alice).unwrap_err();
+        assert_eq!(refused.code, ErrorCode::Denied);
+        // Narrowing the parent narrows the child, and a grandchild below it.
+        let grandchild = registry.open(SessionSpec { parent: Some(child.id), ..spec() }, Seconds(0.0)).unwrap();
+        registry.set_grants(parent.id, Grants::of([Scope::Read]), &alice).unwrap();
+        for index in [1, 2] {
+            let held = registry.effective(&registry.sessions[index]);
+            assert_eq!(held, Grants::of([Scope::Read]), "session {}", registry.sessions[index].id.0);
+        }
+        assert_eq!(grandchild.parent, Some(child.id));
+        // And the child cannot be raised back above the narrowed parent.
+        assert_eq!(registry.set_grants(child.id, spec().grants, &alice).unwrap_err().code, ErrorCode::Denied);
     }
 
     /// Nothing sets these pauses yet (budgets and pairing are other tasks), so the state is put there by hand.

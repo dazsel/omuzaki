@@ -727,11 +727,65 @@ async fn resources_follow_the_sessions_current_state_and_grants() {
     registry.live.lock().unwrap().as_mut().unwrap().grants = Grants::agent_default();
     assert!(log().await.is_ok());
 
-    // A paused session reads nothing until it resumes.
+    // A paused session still reads (design §4.3); one that has ended reads nothing.
     let paused = SessionState::Paused { by: alice, reason: PauseReason::Person };
     registry.live.lock().unwrap().as_mut().unwrap().state = paused;
-    assert!(log().await.is_err(), "a paused session's resources are closed");
+    assert!(log().await.is_ok(), "the log stays readable while paused");
+    assert!(h.client.list_resources(None).await.is_ok());
+    let over = SessionState::Ended { reason: omuzaki_ops_api::EndReason::Closed, at: omuzaki_core::time::Seconds(1.0) };
+    registry.live.lock().unwrap().as_mut().unwrap().state = over;
+    assert!(log().await.is_err(), "an ended session's resources are closed");
     assert!(h.client.list_resources(None).await.is_err());
+    h.disconnect().await;
+}
+
+/// A harness whose session the test can change, with `alice` as the person.
+async fn admitted_harness() -> (Harness, Arc<OneSession>, Actor) {
+    let registry = Arc::new(OneSession::default());
+    let alice = Actor::Person { name: "alice".into() };
+    *registry.live.lock().unwrap() = Some(admitted_session(&alice));
+    let options = McpOptions::default().with_sessions(registry.clone(), alice.clone());
+    (Harness::connect_with(options, Lifecycle::Initialize).await, registry, alice)
+}
+
+#[tokio::test]
+async fn the_log_tool_follows_the_sessions_current_grants() {
+    let (h, registry, _) = admitted_harness().await;
+    assert_ne!(h.call("history_log", json!({})).await.is_error, Some(true));
+    // The person narrows the session below `read`.
+    registry.live.lock().unwrap().as_mut().unwrap().grants = Grants::of([Scope::EditCharacter]);
+    let log = h.call("history_log", json!({})).await;
+    assert_eq!(log.is_error, Some(true), "a revoked read closes the log tool too");
+    assert!(text(&log).contains("`read` scope"), "{}", text(&log));
+    h.disconnect().await;
+}
+
+#[tokio::test]
+async fn tx_begin_is_refused_while_the_session_is_paused() {
+    let (h, registry, alice) = admitted_harness().await;
+    registry.live.lock().unwrap().as_mut().unwrap().state =
+        SessionState::Paused { by: alice, reason: PauseReason::Person };
+    let begin = h.call("tx_begin", json!({"label": "oval face"})).await;
+    assert_eq!(begin.is_error, Some(true));
+    assert!(text(&begin).contains("paused"), "{}", text(&begin));
+    assert!(!h.runner.has_open_tx(), "nothing was reserved with the runner");
+    // Resumed, it opens as usual.
+    registry.live.lock().unwrap().as_mut().unwrap().state = SessionState::Active;
+    assert_ne!(h.call("tx_begin", json!({"label": "oval face"})).await.is_error, Some(true));
+    h.disconnect().await;
+}
+
+#[tokio::test]
+async fn a_subscription_goes_quiet_when_read_is_revoked() {
+    let (mut h, registry, _) = admitted_harness().await;
+    #[allow(deprecated)] // the legacy subscribe call is what clients on the `initialize` lifecycle use
+    h.client.subscribe(SubscribeRequestParams::new("omuzaki://log")).await.unwrap();
+    h.call("face_set_blend", json!({"character": "mira", "blend": 0.5})).await;
+    assert_eq!(h.next_update().await, "omuzaki://log");
+    registry.live.lock().unwrap().as_mut().unwrap().grants = Grants::of([Scope::EditCharacter]);
+    h.call("face_set_blend", json!({"character": "mira", "blend": 0.6})).await;
+    let none = tokio::time::timeout(Duration::from_millis(300), h.updates.recv()).await;
+    assert!(none.is_err(), "no notification names the document after read was revoked: {none:?}");
     h.disconnect().await;
 }
 
