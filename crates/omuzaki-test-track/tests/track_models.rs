@@ -1,9 +1,10 @@
 //! The face tracker on its real graphs, through the `onnx` runtime: the model folder `tools/models/mediapipe-face.sh`
 //! writes opens and loads, a frame with no face finds none, a run is repeatable bit for bit, the steady state allocates
-//! nothing and a damaged file is refused. Gated on `OMUZAKI_TRACK_MODELS` (that folder) and `OMUZAKI_ORT_CACHE` (the
+//! nothing, in Rust and in ONNX Runtime's own code, and a damaged file is refused. Gated on `OMUZAKI_TRACK_MODELS` (that folder) and `OMUZAKI_ORT_CACHE` (the
 //! pinned ONNX Runtime archive, as in `omuzaki-ai-ort`); each test prints a line and passes when one is unset.
 //!
-//! This file holds the only `GlobalAlloc` in its binary; the counter is per thread, so tests don't see each other.
+//! This file holds the only `GlobalAlloc` in its binary, and (through `native_alloc`) the only interposed C allocator;
+//! both counters are per thread, so tests don't see each other.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a panic is a test failure
 
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -19,6 +20,11 @@ use sha2::Digest;
 use track_support::DirSource;
 
 mod track_support;
+
+// ONNX Runtime allocates in C++, past Rust's `#[global_allocator]`; this counts the calling thread's C allocator calls
+// (#1600). It is `omuzaki-ai-ort`'s test support, shared by path; `build.rs` exports its symbols to the runtime.
+#[path = "../../omuzaki-ai-ort/tests/common/native_alloc.rs"]
+mod native_alloc;
 
 thread_local! {
     static WATCHING: Cell<bool> = const { Cell::new(false) };
@@ -145,14 +151,36 @@ fn bits(sample: &FaceSample) -> Vec<u32> {
         .collect()
 }
 
-/// Allocations the calling thread makes inside `body`.
-fn allocations(body: impl FnOnce()) -> usize {
+/// What the calling thread allocated inside a body.
+#[derive(Debug)]
+struct Counts {
+    /// Allocations through Rust's allocator (`alloc` and `realloc`).
+    rust: usize,
+    /// Allocations made inside ONNX Runtime and the C library, past Rust's allocator; `None` where they can't be counted.
+    native: Option<usize>,
+}
+
+/// Allocations the calling thread makes inside `body`, split into Rust's and the native side's. The C allocator sees
+/// both (Rust's `System` allocator calls it), so the native count is what is left after Rust's own are taken off.
+fn allocations(body: impl FnOnce()) -> Counts {
     ALLOCATIONS.with(|n| n.set(0));
+    native_alloc::start();
     WATCHING.with(|w| w.set(true));
     body();
     WATCHING.with(|w| w.set(false));
-    ALLOCATIONS.with(Cell::get)
+    let c_calls = native_alloc::stop();
+    let rust = ALLOCATIONS.with(Cell::get);
+    Counts { rust, native: native_alloc::SUPPORTED.then(|| c_calls.saturating_sub(rust)) }
 }
+
+/// The most native allocations 300 steady-state calls may make. Measured with the pinned models and ONNX Runtime
+/// 1.28.3, one intra-op thread: 86 651 or 86 652 over 300 `track` calls (about 289 a call: the detector, the landmark
+/// graph on its region and the blendshape graph) and 577 804 over 300 `track_roi` calls (about 1 926 a call), the same
+/// in five runs. So ONNX Runtime does allocate in the steady state, unlike the Rust side. The ceilings carry 1 % of
+/// tolerance for a runtime build that differs in the last few allocations; a graph or runtime change that adds more to
+/// the hot path trips them. Raise one only with the new measurement in the commit message.
+const NATIVE_CEILING_TRACK: usize = 87_600;
+const NATIVE_CEILING_TRACK_ROI: usize = 583_600;
 
 #[test]
 fn track_allocates_nothing_after_warm_up() {
@@ -169,19 +197,33 @@ fn track_allocates_nothing_after_warm_up() {
         let _ = tracker.track(&frame(&pixels), next()).unwrap();
         tracker.track_roi(&frame(&pixels), ROI, next()).unwrap();
     }
+    // With the interposition not taking hold, a native count of zero would prove nothing.
+    if native_alloc::SUPPORTED {
+        assert!(native_alloc::interposed(), "the C allocator interposition did not take hold; see native_alloc.rs");
+    } else {
+        eprintln!("track_allocates_nothing_after_warm_up: native allocations are not counted on this platform");
+    }
     let counted = allocations(|| {
         for _ in 0..300 {
             let _ = tracker.track(&frame(&pixels), next()).unwrap();
         }
     });
-    assert_eq!(counted, 0, "allocations over 300 `track` calls");
+    eprintln!("300 `track` calls: {counted:?}");
+    assert_eq!(counted.rust, 0, "Rust allocations over 300 `track` calls");
+    if let Some(native) = counted.native {
+        assert!(native <= NATIVE_CEILING_TRACK, "native allocations over 300 `track` calls: {native}");
+    }
     // `track` finds no face in the gradient, so the landmark, blendshape and pose stages run through `track_roi`.
     let counted = allocations(|| {
         for _ in 0..300 {
             tracker.track_roi(&frame(&pixels), ROI, next()).unwrap();
         }
     });
-    assert_eq!(counted, 0, "allocations over 300 `track_roi` calls");
+    eprintln!("300 `track_roi` calls: {counted:?}");
+    assert_eq!(counted.rust, 0, "Rust allocations over 300 `track_roi` calls");
+    if let Some(native) = counted.native {
+        assert!(native <= NATIVE_CEILING_TRACK_ROI, "native allocations over 300 `track_roi` calls: {native}");
+    }
 }
 
 #[test]
