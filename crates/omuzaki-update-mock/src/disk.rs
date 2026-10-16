@@ -205,11 +205,23 @@ impl Inner {
     /// A file, or a link marked [`LinkKind::File`], above the last component is `NotADirectory`; a missing one, or a
     /// link to nothing, is `NotFound`; more than [`MAX_LINK_HOPS`] links in one path is a loop.
     fn resolve(&self, path: &Path, follow_last: bool, create: bool) -> io::Result<(PathBuf, Vec<PathBuf>)> {
+        self.resolve_within(path, follow_last, create, &mut 0)
+    }
+
+    /// [`Inner::resolve`] spending from `hops`, which a nested resolution (the target of a file link) shares with the
+    /// outer one, so a cycle of links ends in a loop error however it is spelled.
+    fn resolve_within(
+        &self,
+        path: &Path,
+        follow_last: bool,
+        create: bool,
+        hops: &mut u32,
+    ) -> io::Result<(PathBuf, Vec<PathBuf>)> {
         if !path.is_absolute() {
             return Err(invalid("path is not absolute"));
         }
         let mut queue = steps(path);
-        let (mut found, mut missing, mut hops) = (PathBuf::new(), Vec::new(), 0_u32);
+        let (mut found, mut missing) = (PathBuf::new(), Vec::new());
         while let Some(step) = queue.pop_front() {
             let name = match step {
                 Step::Reset(root) => {
@@ -229,13 +241,13 @@ impl Inner {
             match self.nodes.get(&here) {
                 Some(Node::Link { .. }) if last && !follow_last => found = here,
                 Some(Node::Link { target, kind }) => {
-                    hops += 1;
-                    if hops > MAX_LINK_HOPS {
+                    *hops += 1;
+                    if *hops > MAX_LINK_HOPS {
                         return Err(loop_error(path));
                     }
                     if !last && !matches!(kind, LinkKind::Dir) {
                         // A file link cannot be walked through; a dangling one is still "not found", as on a real disk.
-                        let (goes_to, _) = self.resolve(&found.join(target), true, false)?;
+                        let (goes_to, _) = self.resolve_within(&found.join(target), true, false, hops)?;
                         return Err(if self.is_dir(&goes_to) || self.nodes.contains_key(&goes_to) {
                             not_a_folder(&here)
                         } else {

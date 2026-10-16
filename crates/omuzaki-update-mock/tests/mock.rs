@@ -506,6 +506,19 @@ fn a_file_link_above_a_path_is_not_a_folder_and_a_dangling_link_is_not_found() {
 }
 
 #[test]
+fn a_file_link_whose_target_leads_back_through_itself_is_a_loop_not_a_stack_overflow() {
+    let disk = disk_with_dir();
+    // `a -> a/x`: reading `a` needs `a/x`, which needs `a` again.
+    disk.symlink("a/x", &p("a"), LinkKind::File).unwrap();
+    // And a folder link that returns to the file link: `b -> b/y`.
+    disk.symlink("b/y", &p("b"), LinkKind::Dir).unwrap();
+    for path in ["a", "a/x", "b/y"] {
+        let err = disk.read(&p(path)).unwrap_err();
+        assert!(err.to_string().contains("symbolic links"), "{path}: {err}");
+    }
+}
+
+#[test]
 fn a_loop_of_links_fails_instead_of_hanging() {
     let disk = disk_with_dir();
     disk.symlink("b", &p("a"), LinkKind::Dir).unwrap();
