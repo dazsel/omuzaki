@@ -1,7 +1,8 @@
 //! The face tracker on its real graphs, through the `onnx` runtime: the model folder `tools/models/mediapipe-face.sh`
 //! writes opens and loads, a frame with no face finds none, a run is repeatable bit for bit, the steady state allocates
-//! nothing, in Rust and in ONNX Runtime's own code, and a damaged file is refused. Gated on `OMUZAKI_TRACK_MODELS` (that folder) and `OMUZAKI_ORT_CACHE` (the
-//! pinned ONNX Runtime archive, as in `omuzaki-ai-ort`); each test prints a line and passes when one is unset.
+//! nothing in Rust and stays under a measured ceiling in ONNX Runtime's own code, and a damaged file is refused. Gated
+//! on `OMUZAKI_TRACK_MODELS` (that folder) and `OMUZAKI_ORT_CACHE` (the pinned ONNX Runtime archive, as in
+//! `omuzaki-ai-ort`); each test prints a line and passes when one is unset.
 //!
 //! This file holds the only `GlobalAlloc` in its binary, and (through `native_alloc`) the only interposed C allocator;
 //! both counters are per thread, so tests don't see each other.
@@ -183,8 +184,8 @@ const NATIVE_CEILING_TRACK: usize = 87_600;
 const NATIVE_CEILING_TRACK_ROI: usize = 583_600;
 
 #[test]
-fn track_allocates_nothing_after_warm_up() {
-    let Some((models, natives)) = env("track_allocates_nothing_after_warm_up") else { return };
+fn track_allocates_nothing_in_rust_after_warm_up() {
+    let Some((models, natives)) = env("track_allocates_nothing_in_rust_after_warm_up") else { return };
     let pixels = gradient();
     let mut tracker = tracker(&models, &natives, Mode::Video);
     // Video mode wants strictly increasing timestamps, so every call, `track` or `track_roi`, takes the next tick.
@@ -201,7 +202,7 @@ fn track_allocates_nothing_after_warm_up() {
     if native_alloc::SUPPORTED {
         assert!(native_alloc::interposed(), "the C allocator interposition did not take hold; see native_alloc.rs");
     } else {
-        eprintln!("track_allocates_nothing_after_warm_up: native allocations are not counted on this platform");
+        eprintln!("track_allocates_nothing_in_rust_after_warm_up: native allocations are not counted on this platform");
     }
     let counted = allocations(|| {
         for _ in 0..300 {
