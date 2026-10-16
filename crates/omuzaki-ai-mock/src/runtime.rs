@@ -6,6 +6,8 @@
 //! bias = 0.0
 //! crash_after = 3      # optional: every run after the third crashes, like a dying sandboxed worker
 //! refuse = "custom op domain com.example"   # optional: the probe refuses the model with this reason
+//! stall_ms = 500       # optional: every run sleeps this long first, like a model that hangs
+//! grab_mb = 64         # optional: loading allocates and touches this much memory, like a model over its memory cap
 //!
 //! [[inputs]]
 //! name = "x"
@@ -40,6 +42,12 @@ pub struct FakeModel {
     /// When set, probing refuses the model with this reason (stands in for custom ops or native code).
     #[serde(default)]
     pub refuse: Option<String>,
+    /// Every run sleeps this many milliseconds before it answers.
+    #[serde(default)]
+    pub stall_ms: Option<u64>,
+    /// Loading allocates and touches this many MiB, then lets them go.
+    #[serde(default)]
+    pub grab_mb: Option<u64>,
     /// The model's inputs, with its own names.
     pub inputs: Vec<TensorSpec>,
     /// Its outputs.
@@ -93,11 +101,18 @@ impl Runtime for FakeRuntime {
         }
         slot.accepts(&model.signature().with_slot_names(io))
             .map_err(|m| LoadError::Format(format!("doesn't fit the slot: {m:?}")))?;
-        let session = FakeSession::affine(slot.clone(), model.scale, model.bias).reporting(source.model.clone());
-        Ok(Box::new(match model.crash_after {
-            Some(n) => session.crashing_after(n),
-            None => session,
-        }))
+        if let Some(mib) = model.grab_mb {
+            let bytes = usize::try_from(mib.saturating_mul(1 << 20)).unwrap_or(usize::MAX);
+            std::hint::black_box(vec![1u8; bytes]);
+        }
+        let mut session = FakeSession::affine(slot.clone(), model.scale, model.bias).reporting(source.model.clone());
+        if let Some(n) = model.crash_after {
+            session = session.crashing_after(n);
+        }
+        if let Some(ms) = model.stall_ms {
+            session = session.stalling(std::time::Duration::from_millis(ms));
+        }
+        Ok(Box::new(session))
     }
 }
 

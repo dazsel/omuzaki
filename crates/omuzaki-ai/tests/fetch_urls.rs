@@ -1,5 +1,6 @@
 //! URL fall-through and HTTP range resume of the verified cache (ADR 0017 decisions 2 and 3). Bodies are in memory: no
 //! network, no sleeping. The fetch core's smoke tests are in `fetch_core.rs`.
+#![allow(clippy::disallowed_methods, reason = "tests set up their fixtures on disk; the fence is for ops")]
 
 mod common;
 

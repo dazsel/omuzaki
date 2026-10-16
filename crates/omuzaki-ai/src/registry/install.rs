@@ -2,11 +2,14 @@
 
 use omuzaki_ai_api::{
     Check, EvalEnv, EvalError, EvalLevel, EvalReport, FetchError, FileSource, LoadError, LocalFile, ModelManifest,
-    ModelRef, ModelSource, Progress, RegistryError, Session, SlotInfo, SlotRef, Version, find_runtime, find_slot,
+    ModelRef, ModelSource, Progress, RegistryError, Session, Sha256, SlotInfo, SlotRef, Version, find_runtime,
+    find_slot,
 };
 
+use super::Candidate;
 use super::Registry;
 use super::catalogue::Registered;
+use super::progress::{FileShare, SlotDownload};
 use super::state::{Health, Installed, State};
 
 /// The evaluation environment of a smoke test: fixtures through the registry's cache, and another slot's default
@@ -23,16 +26,17 @@ impl EvalEnv for Env<'_> {
     fn shipped(&self, slot: &SlotRef) -> Result<Box<dyn Session>, EvalError> {
         let needs = || EvalError::Needs(slot.clone());
         let info = find_slot(slot).map(|s| s.info()).ok_or_else(needs)?;
-        let candidates: Vec<_> = {
+        let candidates: Vec<Candidate> = {
             let state = self.registry.lock();
-            self.registry.defaults(&state, slot).into_iter().cloned().collect()
+            self.registry.defaults(&state, slot).into_iter().map(Candidate::from).collect()
         };
-        candidates.iter().find_map(|installed| self.registry.load(installed, &info).ok()).ok_or_else(needs)
+        candidates.iter().find_map(|candidate| self.registry.load(candidate, &info).ok()).ok_or_else(needs)
     }
 }
 
-/// The words for a failed smoke test: every check that missed its floor, with its number.
-fn failure_reason(report: &EvalReport) -> String {
+/// The words for a failed smoke test, for a shipped install and a user model alike: every check that missed its
+/// floor, with its number.
+pub(super) fn failure_reason(report: &EvalReport) -> String {
     let misses: Vec<String> = report.failures().map(describe).collect();
     if misses.is_empty() {
         return "its smoke test measured nothing".into();
@@ -95,6 +99,8 @@ impl Registry {
         manifest: &ModelManifest,
         progress: &dyn Progress,
     ) -> Result<Vec<LocalFile>, RegistryError> {
+        let total = manifest.size();
+        let mut before = 0;
         manifest
             .files
             .iter()
@@ -102,7 +108,9 @@ impl Registry {
                 let pin = file.pin().ok_or_else(|| {
                     RegistryError::Manifest(vec![omuzaki_ai_api::ManifestError::NoUrl(file.name.clone())])
                 })?;
-                let path = self.files.get(&pin, progress).map_err(from_fetch)?;
+                let share = FileShare { inner: progress, before, size: file.size, total };
+                let path = self.files.get(&pin, &share).map_err(from_fetch)?;
+                before += file.size;
                 Ok(LocalFile { name: file.name.clone(), path })
             })
             .collect()
@@ -150,7 +158,10 @@ impl Registry {
         }
         let manifest = &entry.manifest;
         let info = Self::slot_info(&manifest.slot)?;
-        let files = self.fetch_files(manifest, progress)?;
+        let files = {
+            let downloading = SlotDownload { inner: progress, registry: self, slot: manifest.slot.clone() };
+            self.fetch_files(manifest, &downloading)?
+        };
         let mut session = match self.load_files(model, manifest, &info, &files) {
             Ok(session) => session,
             Err(e @ RegistryError::Load(_)) => return self.refuse(model, e.to_string(), None, e),
@@ -244,16 +255,23 @@ impl Registry {
         Ok(())
     }
 
-    /// Forgets the cached files of a removed model that no installed model still uses. Best effort: a file that
-    /// can't be deleted only costs disk, and the cache checks files again before it hands them out.
-    fn delete_blobs(&self, manifest: &ModelManifest, state: &State) {
-        for file in &manifest.files {
-            let shared = state.installed.iter().any(|i| i.manifest.files.iter().any(|f| f.sha256 == file.sha256));
+    /// Forgets the cached files of a removed model that no installed or added model in `state` still uses. Best
+    /// effort: a file that can't be deleted only costs disk, and the cache checks files again before it hands them out.
+    pub(super) fn delete_blobs(&self, manifest: &ModelManifest, state: &State) {
+        self.forget_unused(manifest.files.iter().map(|f| f.sha256), state);
+    }
+
+    /// Deletes the cached files with these hashes that no installed or added model in `state` uses.
+    pub(super) fn forget_unused(&self, hashes: impl IntoIterator<Item = Sha256>, state: &State) {
+        for sha256 in hashes {
+            let uses = |m: &ModelManifest| m.files.iter().any(|f| f.sha256 == sha256);
+            let shared =
+                state.installed.iter().any(|i| uses(&i.manifest)) || state.user.iter().any(|u| uses(&u.manifest));
             if shared {
                 continue;
             }
-            if let Err(e) = self.files.forget(file.sha256) {
-                tracing::warn!(sha256 = %file.sha256, "couldn't delete a removed model's file: {e}");
+            if let Err(e) = self.files.forget(sha256) {
+                tracing::warn!(%sha256, "couldn't delete a model file no model uses: {e}");
             }
         }
     }

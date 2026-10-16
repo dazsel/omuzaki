@@ -1,14 +1,15 @@
 //! `run` on a slot session allocates nothing: not in the steady state (1000 runs, once the output buffers have
 //! grown), and not across a selection change or a crash either, where the loader thread does the allocating; also
 //! while commits and the loader contend for the session's mailbox. The
-//! counting allocator is the one from `omuzaki-ai-mock`'s `hot_loop` test; it counts only on the measuring thread.
-
+//! counting allocator is the one from `omuzaki-ai-mock`'s `hot_loop` test; it counts only on the measuring thread, per
+//! thread.
+#![allow(clippy::disallowed_methods, reason = "tests set up their fixtures on disk; the fence is for ops")]
 // A counting allocator is the only way to *prove* "no allocation"; the workspace denies unsafe code by default.
 #![allow(unsafe_code, clippy::unwrap_used)]
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 mod common;
 
@@ -20,18 +21,18 @@ use omuzaki_ai_mock::MemFetcher;
 
 struct Counting;
 
-static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
-
 thread_local! {
     // `const` init with no destructor: reading it never allocates, so it is safe inside the allocator.
     static MEASURING: Cell<bool> = const { Cell::new(false) };
+    // Per thread, so tests that measure at the same time never count each other's allocations.
+    static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
 }
 
 // SAFETY: every method forwards to `System` unchanged; the counter is the only addition.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         if MEASURING.try_with(Cell::get).unwrap_or(false) {
-            ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+            let _ = ALLOCATIONS.try_with(|n| n.set(n.get() + 1));
         }
         unsafe { System.alloc(layout) }
     }
@@ -45,11 +46,11 @@ unsafe impl GlobalAlloc for Counting {
 static GLOBAL: Counting = Counting;
 
 fn measure(f: impl FnOnce()) -> usize {
-    let before = ALLOCATIONS.load(Ordering::Relaxed);
+    let before = ALLOCATIONS.with(Cell::get);
     MEASURING.with(|m| m.set(true));
     f();
     MEASURING.with(|m| m.set(false));
-    ALLOCATIONS.load(Ordering::Relaxed) - before
+    ALLOCATIONS.with(Cell::get) - before
 }
 
 const MODELS: &str = "echo-fake";
@@ -199,4 +200,36 @@ fn run_allocates_nothing_while_commits_and_the_loader_contend_for_the_mailbox() 
         drop(stopping);
         assert!(churn.join().unwrap() > 0, "the other thread committed while the session ran");
     });
+}
+
+/// A user model's session (#1153): the registry's side of the pipe allocates nothing per run once its buffers have
+/// grown; the worker, another process, is not this thread's budget.
+#[test]
+fn a_sandboxed_run_allocates_nothing_on_the_caller_side() {
+    use omuzaki_ai::sandbox::{self, DEFAULT_MEMORY_MIB, LoadSpec, Model};
+    use omuzaki_ai_api::{RuntimeId, SessionOptions};
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("m.fake.toml");
+    std::fs::write(&path, model_file("sandboxed", None)).unwrap();
+    let (model, runtime) = (omuzaki_ai_mock::fake_model(), RuntimeId::new("fake").unwrap());
+    let slot = omuzaki_ai_mock::echo_signature();
+    let io = std::collections::BTreeMap::new();
+    let spec = LoadSpec { slot: &slot, io: &io, options: SessionOptions::default(), stall: Duration::from_secs(30) };
+    let files = vec![("m.fake.toml".to_owned(), path)];
+    let natives = VerifiedCache::new(dir.path().join(CACHE_DIR), MemFetcher::new());
+    let settings = common::rig::worker_settings(DEFAULT_MEMORY_MIB);
+    let mut session =
+        sandbox::load(&settings, &Model { model: &model, runtime: &runtime, files, stages: &[] }, spec, &natives)
+            .unwrap();
+    let mut out = TensorBuf::for_outputs(session.signature());
+    let x = [0.5f32; 960];
+    session.run(&[TensorRef::f32(&x, &[x.len()])], &mut out).unwrap();
+    let allocations = measure(|| {
+        for _ in 0..1000 {
+            session.run(&[TensorRef::f32(&x, &[x.len()])], &mut out).unwrap();
+        }
+    });
+    assert_eq!(allocations, 0);
+    assert_eq!(out[0].as_f32().unwrap(), x);
 }

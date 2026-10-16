@@ -11,27 +11,34 @@
 //! models and the sandbox come later.
 
 mod catalogue;
+mod consent;
 mod import;
 mod install;
+mod progress;
 mod state;
 #[cfg(test)]
 mod tests;
+mod user;
 
 use std::borrow::Cow;
 use std::ops::Deref;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, Weak};
 
 use omuzaki_ai_api::{
-    CatalogueEntry, EvalReport, FileSource, ImportError, LoadError, ModelEntry, ModelManifest, ModelRef, ModelRegistry,
-    ModelStatus, NoProgress, Origin, Provider, RegistryError, Requester, Session, SessionOptions, SlotInfo, SlotMode,
-    SlotRef, SlotStatus, Stream, SyncReport, Version, find_slot, slots,
+    CatalogueEntry, ConsentLookup, EvalReport, FileSource, ImportError, LoadError, ModelEntry, ModelManifest, ModelRef,
+    ModelRegistry, ModelStatus, NoConsentRecords, NoProgress, Origin, Provider, RegistryError, Requester, Session,
+    SessionOptions, SlotInfo, SlotMode, SlotRef, SlotStatus, Stream, SyncReport, Version, find_slot, slots,
 };
+use omuzaki_update_api::clock::WallClock;
 
+use crate::sandbox::SandboxSettings;
 use crate::slot_session::{self, Loader, SlotSession};
 use catalogue::Registered;
+pub use consent::IMPERSONATION_WARNING;
+use consent::Imitation;
 use state::{Health, Loaded, State};
 
 /// The person's settings the registry reads. Only what shipped models need today.
@@ -82,6 +89,15 @@ pub struct Shared {
     /// Models that failed to load as a slot session's replacement, with the runtime's words: `slots` says why the
     /// model it expected isn't the one running. Forgotten when the model loads.
     load_failures: Mutex<Vec<(ModelRef, String)>>,
+    /// Where consent records for models that imitate a real person are found (SE-05). [`NoConsentRecords`] until the
+    /// app wires its lookup.
+    consent: RwLock<Arc<dyn ConsentLookup>>,
+    /// The calendar time an acknowledgement records.
+    clock: RwLock<Arc<dyn WallClock>>,
+    /// How user models' worker processes are started.
+    sandbox: RwLock<SandboxSettings>,
+    /// The download fraction of each slot whose install is fetching files.
+    downloads: Mutex<Vec<(SlotRef, f32)>>,
 }
 
 impl Drop for Shared {
@@ -165,6 +181,10 @@ impl Registry {
                 loader: Arc::new(Loader::new()),
                 loader_failure: Mutex::new(None),
                 load_failures: Mutex::new(Vec::new()),
+                consent: RwLock::new(Arc::new(NoConsentRecords)),
+                clock: RwLock::new(Arc::new(user::SystemWallClock)),
+                sandbox: RwLock::new(SandboxSettings::default()),
+                downloads: Mutex::new(Vec::new()),
             }),
         };
         registry.reinstall(&to_reinstall);
@@ -175,6 +195,37 @@ impl Registry {
     /// be rebuilt. For the Models page and the log.
     pub fn notes(&self) -> &[String] {
         &self.notes
+    }
+
+    /// Wires the app's consent lookup (SE-05) in place of [`NoConsentRecords`]. Call it again whenever the records it
+    /// reads may have changed (a project was opened, a record was added): the open slot sessions look at their models
+    /// again, as after any change.
+    pub fn set_consent(&self, lookup: Arc<dyn ConsentLookup>) {
+        *self.consent.write().unwrap_or_else(PoisonError::into_inner) = lookup;
+        self.changed(&self.lock());
+    }
+
+    /// Sets the clock acknowledgements record their time by (the system's calendar clock by default).
+    pub fn set_clock(&self, clock: Arc<dyn WallClock>) {
+        *self.clock.write().unwrap_or_else(PoisonError::into_inner) = clock;
+    }
+
+    /// Sets how the worker processes that run user models are started (by default `omuzaki-model-worker` beside the
+    /// running executable, with [`DEFAULT_MEMORY_MIB`](crate::sandbox::DEFAULT_MEMORY_MIB)).
+    pub fn set_sandbox(&self, settings: SandboxSettings) {
+        *self.sandbox.write().unwrap_or_else(PoisonError::into_inner) = settings;
+    }
+
+    fn sandbox(&self) -> SandboxSettings {
+        self.sandbox.read().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    fn consent(&self) -> Arc<dyn ConsentLookup> {
+        Arc::clone(&self.consent.read().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    fn clock(&self) -> Arc<dyn WallClock> {
+        Arc::clone(&self.clock.read().unwrap_or_else(PoisonError::into_inner))
     }
 
     /// The state, locked. A panic elsewhere can't leave it half-written (writes happen on a copy), so a poisoned lock
@@ -243,7 +294,8 @@ impl Registry {
         manifest.min_app_version > self.app_version
     }
 
-    /// The reason a catalogued model can't be used, if there is one.
+    /// The reason a known model can't be used, if there is one: its registration or check failed, the app is too old,
+    /// it failed or crashed, or it claims to imitate a person in a slot whose models can't.
     fn disabled(&self, state: &State, entry: &Registered) -> Option<String> {
         if let Some(problem) = &entry.problem {
             return Some(problem.clone());
@@ -252,40 +304,103 @@ impl Registry {
             let needs = entry.manifest.min_app_version;
             return Some(format!("it needs Omuzaki {needs} or newer (this is {}); update the app", self.app_version));
         }
-        state.health(&entry.model).map(|h| h.reason.clone())
+        if let Some(health) = state.health(&entry.model) {
+            return Some(health.reason.clone());
+        }
+        consent::refusal(&entry.manifest)
     }
 
-    /// The installed model that can run now, if `model` is one. The app's current registration decides when there
-    /// is one (a raised `min_app_version` or a refused manifest disables an installed model, the same as `models`
-    /// reports); a version the app no longer registers is judged by the manifest kept in the state file.
-    fn usable<'a>(&self, state: &'a State, model: &ModelRef) -> Option<&'a state::Installed> {
-        let installed = state.installed(model)?;
-        if state.revoked(model) {
-            return None;
+    /// Where a known model stands, first match wins (`docs/design/ai-api.md` section 7).
+    fn status(&self, state: &State, entry: &Registered) -> ModelStatus {
+        if state.revoked(&entry.model) {
+            return ModelStatus::Revoked;
         }
-        let disabled = match self.catalogue.iter().find(|r| &r.model == model) {
-            Some(entry) => self.disabled(state, entry).is_some(),
-            None => state.health(model).is_some() || self.too_new(&installed.manifest),
+        if let Some(reason) = self.disabled(state, entry) {
+            return ModelStatus::Disabled { reason };
+        }
+        if entry.origin == Origin::User {
+            if !state.acknowledged(&entry.model, &entry.manifest) {
+                return ModelStatus::NeedsAcknowledgement;
+            }
+        } else if state.installed(&entry.model).is_none() {
+            return ModelStatus::NotInstalled;
+        }
+        match consent::judge(&entry.manifest, &*self.consent()) {
+            Imitation::NeedsConsent { .. } => ModelStatus::NeedsConsent,
+            Imitation::Fine => ModelStatus::Ready,
+        }
+    }
+
+    /// Why a known model that isn't `Ready` can't be selected or opened, in words; `None` if it is ready.
+    fn not_ready_because(&self, state: &State, entry: &Registered) -> Option<String> {
+        match self.status(state, entry) {
+            ModelStatus::Ready => None,
+            ModelStatus::Revoked => Some("it was withdrawn by the model catalogue".into()),
+            ModelStatus::Disabled { reason } => Some(reason),
+            ModelStatus::NotInstalled => Some("it isn't installed yet; install it first".into()),
+            ModelStatus::NeedsAcknowledgement => Some(user::NEEDS_ACKNOWLEDGEMENT.into()),
+            ModelStatus::NeedsConsent => match consent::judge(&entry.manifest, &*self.consent()) {
+                Imitation::NeedsConsent { person, likeness } => {
+                    Some(Imitation::needs_consent_reason(&person, likeness))
+                }
+                Imitation::Fine => None,
+            },
+            other => Some(format!("its status is {other:?}")),
+        }
+    }
+
+    /// `model` as the registry knows it in `state`: the person's model, the app's registration, or a version only the
+    /// state file still knows. `None` if it is none of them.
+    fn registered(&self, state: &State, model: &ModelRef) -> Option<Registered> {
+        if let Some(user) = state.user(model) {
+            return Some(Registered::user(user));
+        }
+        if let Some(entry) = self.catalogue.iter().find(|r| &r.model == model) {
+            return Some(entry.clone());
+        }
+        self.known(state).into_iter().find(|r| &r.model == model)
+    }
+
+    /// The model, if it can run now: a user model the person added and acknowledged, or an installed shipped one,
+    /// either `Ready`. The app's current registration decides when there is one (a raised `min_app_version` or a
+    /// refused manifest disables an installed model, the same as `models` reports); a version the app no longer
+    /// registers is judged by the manifest kept in the state file.
+    fn usable<'a>(&self, state: &'a State, model: &ModelRef) -> Option<Runnable<'a>> {
+        let (runnable, registered) = if let Some(user) = state.user(model) {
+            (Runnable { model: &user.model, manifest: &user.manifest, origin: Origin::User }, Registered::user(user))
+        } else {
+            let installed = state.installed(model)?;
+            let registered = self.catalogue.iter().find(|r| &r.model == model).cloned().unwrap_or_else(|| Registered {
+                manifest: installed.manifest.clone(),
+                model: model.clone(),
+                problem: None,
+                origin: Origin::Shipped,
+            });
+            (Runnable { model: &installed.model, manifest: &installed.manifest, origin: Origin::Shipped }, registered)
         };
-        (!disabled).then_some(installed)
+        (self.status(state, &registered) == ModelStatus::Ready).then_some(runnable)
     }
 
     /// The slot's shipped defaults, best first: the one it records (so a rollback holds), then the newest installed
     /// model the app can run. What `open` falls back to and what an evaluation that needs "the shipped model" uses;
-    /// the person's selection is no part of it.
-    fn defaults<'a>(&self, state: &'a State, slot: &SlotRef) -> Vec<&'a state::Installed> {
-        let recorded = state.slot(slot).and_then(|r| r.default.as_ref()).and_then(|m| self.usable(state, m));
+    /// the person's selection is no part of it, and neither is any model the person added.
+    fn defaults<'a>(&self, state: &'a State, slot: &SlotRef) -> Vec<Runnable<'a>> {
+        let recorded = state
+            .slot(slot)
+            .and_then(|r| r.default.as_ref())
+            .and_then(|m| self.usable(state, m))
+            .filter(|r| r.origin != Origin::User);
         let newest = state
             .installed
             .iter()
             // Only this slot's models may run in it: another slot's model could fit the same tensors and skip this
             // slot's evaluation. Filtered before picking the newest, or a newer model elsewhere would hide it.
-            .filter(|i| &i.manifest.slot == slot && self.usable(state, &i.model).is_some())
-            .max_by_key(|i| i.manifest.version);
-        let mut out: Vec<&state::Installed> = Vec::new();
-        for installed in recorded.into_iter().chain(newest).filter(|i| &i.manifest.slot == slot) {
-            if !out.iter().any(|o| o.model == installed.model) {
-                out.push(installed);
+            .filter_map(|i| self.usable(state, &i.model).filter(|r| &r.manifest.slot == slot))
+            .max_by_key(|r| r.manifest.version);
+        let mut out: Vec<Runnable<'a>> = Vec::new();
+        for runnable in recorded.into_iter().chain(newest).filter(|r| &r.manifest.slot == slot) {
+            if !out.iter().any(|o| o.model == runnable.model) {
+                out.push(runnable);
             }
         }
         out
@@ -293,13 +408,13 @@ impl Registry {
 
     /// The models to try for `slot`, best first: the explicit one, the selection, then the [`defaults`](Self::defaults).
     /// Models that can't run, or belong to another slot, are left out.
-    fn chain<'a>(&self, state: &'a State, slot: &SlotRef, explicit: Option<&ModelRef>) -> Vec<&'a state::Installed> {
+    fn chain<'a>(&self, state: &'a State, slot: &SlotRef, explicit: Option<&ModelRef>) -> Vec<Runnable<'a>> {
         let selected = state.slot(slot).and_then(|r| r.selected.as_ref());
         let named = [explicit, selected].into_iter().flatten().filter_map(|m| self.usable(state, m));
-        let mut out: Vec<&state::Installed> = Vec::new();
-        for installed in named.filter(|i| &i.manifest.slot == slot).chain(self.defaults(state, slot)) {
-            if !out.iter().any(|o| o.model == installed.model) {
-                out.push(installed);
+        let mut out: Vec<Runnable<'a>> = Vec::new();
+        for runnable in named.filter(|r| &r.manifest.slot == slot).chain(self.defaults(state, slot)) {
+            if !out.iter().any(|o| o.model == runnable.model) {
+                out.push(runnable);
             }
         }
         out
@@ -331,7 +446,8 @@ impl Registry {
     ) -> (u64, Result<Chosen, RegistryError>) {
         let (generation, candidates) = {
             let state = self.lock();
-            let candidates: Vec<state::Installed> = self.chain(&state, slot, explicit).into_iter().cloned().collect();
+            let candidates: Vec<Candidate> =
+                self.chain(&state, slot, explicit).into_iter().map(Candidate::from).collect();
             (self.generation(), candidates)
         };
         let info = match Self::slot_info(slot) {
@@ -368,8 +484,8 @@ impl Registry {
 
     /// [`load`](Self::load), with a runtime that panics recorded as a load failure like any other: one broken runtime
     /// must not take the loader thread (and every slot session) or the caller with it.
-    fn load_caught(&self, installed: &state::Installed, info: &SlotInfo) -> Result<Box<dyn Session>, RegistryError> {
-        catch_unwind(AssertUnwindSafe(|| self.load(installed, info)))
+    fn load_caught(&self, candidate: &Candidate, info: &SlotInfo) -> Result<Box<dyn Session>, RegistryError> {
+        catch_unwind(AssertUnwindSafe(|| self.load(candidate, info)))
             .unwrap_or_else(|_| Err(RegistryError::Load(LoadError::Runtime(LOAD_PANICKED.to_owned()))))
     }
 
@@ -468,16 +584,11 @@ impl Registry {
         if self.usable(state, model).is_some() {
             return None;
         }
-        if state.installed(model).is_none() {
-            return Some("it isn't installed".to_owned());
-        }
-        if state.revoked(model) {
-            return Some("it was withdrawn by the model catalogue".to_owned());
-        }
-        let registered = self.catalogue.iter().find(|r| &r.model == model).and_then(|r| self.disabled(state, r));
+        let entry =
+            self.registered(state, model).filter(|r| r.origin == Origin::User || state.installed(model).is_some());
+        let Some(entry) = entry else { return Some("it isn't installed".to_owned()) };
         Some(
-            registered
-                .or_else(|| state.health(model).map(|h| h.reason.clone()))
+            self.not_ready_because(state, &entry)
                 .unwrap_or_else(|| format!("it needs a newer Omuzaki than {}", self.app_version)),
         )
     }
@@ -508,11 +619,15 @@ impl Registry {
         find_slot(slot).map(|s| s.info()).ok_or_else(|| RegistryError::UnknownSlot(slot.clone()))
     }
 
-    /// Loads `installed` in this process with the manifest's providers, filtered by the person's settings, and the
-    /// slot's thread count.
-    fn load(&self, installed: &state::Installed, info: &SlotInfo) -> Result<Box<dyn Session>, RegistryError> {
-        let locals = self.fetch_files(&installed.manifest, &NoProgress)?;
-        self.load_files(&installed.model, &installed.manifest, info, &locals)
+    /// Loads `candidate` with the manifest's providers, filtered by the person's settings, and the slot's thread
+    /// count: a shipped model in this process, from files the cache verifies (downloading what it lacks); a user model
+    /// from the files `add` imported.
+    fn load(&self, candidate: &Candidate, info: &SlotInfo) -> Result<Box<dyn Session>, RegistryError> {
+        if candidate.origin == Origin::User {
+            return self.load_user(&candidate.model, &candidate.manifest, info);
+        }
+        let locals = self.fetch_files(&candidate.manifest, &NoProgress)?;
+        self.load_files(&candidate.model, &candidate.manifest, info, &locals)
     }
 
     fn options(&self, manifest: &ModelManifest, info: &SlotInfo) -> SessionOptions {
@@ -526,15 +641,11 @@ impl Registry {
     }
 
     fn entry(&self, state: &State, entry: &Registered, active: Option<&ModelRef>) -> ModelEntry {
-        let status = match self.disabled(state, entry) {
-            _ if state.revoked(&entry.model) => ModelStatus::Revoked,
-            Some(reason) => ModelStatus::Disabled { reason },
-            None if state.installed(&entry.model).is_some() => ModelStatus::Ready,
-            None => ModelStatus::NotInstalled,
-        };
+        let status = self.status(state, entry);
         let eval = state
             .installed(&entry.model)
             .and_then(|i| i.eval.clone())
+            .or_else(|| state.user(&entry.model).and_then(|u| u.eval.clone()))
             .or_else(|| state.health(&entry.model).and_then(|h| h.eval.clone()));
         entry_of(&entry.manifest, &entry.model, entry.origin, status, active == Some(&entry.model), eval)
     }
@@ -543,6 +654,7 @@ impl Registry {
     /// of the same model never hides them), then installed versions nothing else lists.
     fn known(&self, state: &State) -> Vec<Registered> {
         let mut out: Vec<Registered> = self.catalogue.clone();
+        out.extend(Self::user_models(state));
         let imports = state.imports.iter().filter(|i| !i.revoked).chain(state.imports.iter().filter(|i| i.revoked));
         for import in imports {
             if !out.iter().any(|r| r.model == import.model) {
@@ -565,6 +677,27 @@ impl Registry {
             }
         }
         out
+    }
+}
+
+/// A model the choice chain can run, as the state file holds it.
+#[derive(Clone, Copy)]
+pub(super) struct Runnable<'a> {
+    pub model: &'a ModelRef,
+    pub manifest: &'a ModelManifest,
+    pub origin: Origin,
+}
+
+/// A [`Runnable`] the loader keeps after the state is unlocked.
+pub(super) struct Candidate {
+    model: ModelRef,
+    manifest: ModelManifest,
+    origin: Origin,
+}
+
+impl From<Runnable<'_>> for Candidate {
+    fn from(r: Runnable<'_>) -> Self {
+        Self { model: r.model.clone(), manifest: r.manifest.clone(), origin: r.origin }
     }
 }
 
@@ -603,6 +736,7 @@ fn entry_of(
         status,
         active,
         eval,
+        imitates: manifest.card.imitates.clone(),
     }
 }
 
@@ -648,9 +782,17 @@ impl ModelRegistry for Registry {
         }
         if let Some(wanted) = model {
             let state = self.lock();
-            let elsewhere = self.known(&state).into_iter().find(|r| &r.model == wanted && &r.manifest.slot != slot);
-            if elsewhere.is_some() {
-                return Err(RegistryError::WrongSlot { model: wanted.clone(), wanted: slot.clone() });
+            if let Some(entry) = self.registered(&state, wanted) {
+                if &entry.manifest.slot != slot {
+                    return Err(RegistryError::WrongSlot { model: wanted.clone(), wanted: slot.clone() });
+                }
+                // Waiting for the person is not a failure to fall back from: the caller named this model, so say why
+                // it can't run rather than quietly running another.
+                let status = self.status(&state, &entry);
+                if matches!(status, ModelStatus::NeedsAcknowledgement | ModelStatus::NeedsConsent) {
+                    let reason = self.not_ready_because(&state, &entry).unwrap_or_default();
+                    return Err(RegistryError::NotUsable { model: wanted.clone(), reason });
+                }
             }
         }
         let (generation, chosen) = self.load_chain(slot, model, &[], &[]);
@@ -676,6 +818,10 @@ impl ModelRegistry for Registry {
         self.install_model(model, progress)
     }
 
+    fn downloading(&self, slot: &SlotRef) -> Option<f32> {
+        self.download_fraction(slot)
+    }
+
     fn rollback(&self, slot: &SlotRef) -> Result<ModelRef, RegistryError> {
         self.rollback_slot(slot)
     }
@@ -683,32 +829,29 @@ impl ModelRegistry for Registry {
     fn add(
         &self,
         request: omuzaki_ai_api::AddModel,
-        _progress: &dyn omuzaki_ai_api::Progress,
+        progress: &dyn omuzaki_ai_api::Progress,
     ) -> Result<ModelEntry, RegistryError> {
-        let what = request.manifest.map_or_else(|| request.slot.to_string(), |m| m.id.to_string());
-        Err(RegistryError::UnknownModel(format!("{what}: adding your own models isn't available yet")))
+        self.add_user_model(request, progress)
     }
 
-    fn acknowledge(&self, model: &ModelRef, _person: &str) -> Result<(), RegistryError> {
-        Err(RegistryError::UnknownModel(model.to_string()))
+    fn acknowledge(&self, model: &ModelRef, person: &str) -> Result<(), RegistryError> {
+        self.acknowledge_user_model(model, person)
     }
 
-    fn select(&self, slot: &SlotRef, model: Option<&ModelRef>, _by: Requester) -> Result<(), RegistryError> {
+    fn select(&self, slot: &SlotRef, model: Option<&ModelRef>, by: Requester) -> Result<(), RegistryError> {
         Self::slot_info(slot)?;
         let mut state = self.lock();
         if let Some(model) = model {
-            let known = self.known(&state);
-            let found = known.iter().find(|r| &r.model == model);
-            let found = found.ok_or_else(|| RegistryError::UnknownModel(model.to_string()))?;
+            let found = self.registered(&state, model).ok_or_else(|| RegistryError::UnknownModel(model.to_string()))?;
             if &found.manifest.slot != slot {
                 return Err(RegistryError::WrongSlot { model: model.clone(), wanted: slot.clone() });
             }
-            if self.usable(&state, model).is_none() {
-                let reason = if state.revoked(model) {
-                    "it was withdrawn by the model catalogue".into()
-                } else {
-                    self.disabled(&state, found).unwrap_or_else(|| "it isn't installed yet; install it first".into())
-                };
+            // ADR 0016 rule 5: an agent never switches to a model the person hasn't accepted; it asks them instead.
+            let status = self.status(&state, &found);
+            if by == Requester::Agent && status == ModelStatus::NeedsAcknowledgement {
+                return Err(RegistryError::NeedsPerson(model.clone()));
+            }
+            if let Some(reason) = self.not_ready_because(&state, &found) {
                 return Err(RegistryError::NotUsable { model: model.clone(), reason });
             }
         }
@@ -718,6 +861,9 @@ impl ModelRegistry for Registry {
     }
 
     fn remove(&self, model: &ModelRef) -> Result<(), RegistryError> {
+        if self.lock().user(model).is_some() {
+            return self.remove_user_model(model);
+        }
         self.remove_model(model)
     }
 

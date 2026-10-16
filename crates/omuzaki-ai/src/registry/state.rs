@@ -49,6 +49,33 @@ pub(super) struct Import {
     pub revoked: bool,
 }
 
+/// A model the person added. A failed one is kept too, with its `problem`, so it is listed as disabled with the reason.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(super) struct UserModel {
+    pub model: ModelRef,
+    pub manifest: ModelManifest,
+    /// Why it can't be used, if it can't.
+    #[serde(default)]
+    pub problem: Option<String>,
+    pub eval: Option<EvalReport>,
+}
+
+/// A person's acknowledgement of the disclaimer for one digest under one manifest (ADR 0016 rule 2).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(super) struct Acknowledgement {
+    pub digest: Sha256,
+    /// The hash of the manifest the person saw ([`manifest_hash`]): the digest covers only the files, and a manifest
+    /// that changes the card (dropping `imitates`, say) or the licence must be accepted again. A record without it
+    /// covers nothing.
+    #[serde(default)]
+    pub manifest: Option<Sha256>,
+    pub person: String,
+    /// The `DISCLAIMER_VERSION` whose words were accepted. A later version doesn't void this.
+    pub disclaimer_version: u32,
+    /// Seconds since the Unix epoch.
+    pub at: u64,
+}
+
 /// The whole file.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub(super) struct State {
@@ -64,6 +91,12 @@ pub(super) struct State {
     /// The highest catalogue epoch seen.
     #[serde(default)]
     pub catalogue_epoch: u32,
+    /// Models the person added, failed ones included.
+    #[serde(default)]
+    pub user: Vec<UserModel>,
+    /// One acknowledgement per model digest.
+    #[serde(default)]
+    pub acknowledgements: Vec<Acknowledgement>,
 }
 
 impl State {
@@ -75,6 +108,16 @@ impl State {
     pub fn revoked(&self, model: &ModelRef) -> bool {
         let mut records = self.imports.iter().filter(|i| &i.model == model).peekable();
         records.peek().is_some() && records.all(|i| i.revoked)
+    }
+
+    pub fn user(&self, model: &ModelRef) -> Option<&UserModel> {
+        self.user.iter().find(|u| &u.model == model)
+    }
+
+    /// True if the person accepted `model`'s files under exactly this `manifest`.
+    pub fn acknowledged(&self, model: &ModelRef, manifest: &ModelManifest) -> bool {
+        let hash = manifest_hash(manifest);
+        self.acknowledgements.iter().any(|a| a.digest == model.digest && a.manifest.is_some() && a.manifest == hash)
     }
 
     pub fn health(&self, model: &ModelRef) -> Option<&Health> {
@@ -107,6 +150,14 @@ impl State {
         self.health.retain(|h| h.model != health.model);
         self.health.push(health);
     }
+}
+
+/// The SHA-256 of a manifest's canonical form (its JSON, in field order): what an acknowledgement covers beyond the
+/// files. `None` only if it can't be written, which then covers nothing.
+pub(super) fn manifest_hash(manifest: &ModelManifest) -> Option<Sha256> {
+    use sha2::Digest;
+    let text = serde_json::to_vec(manifest).ok()?;
+    Some(Sha256(sha2::Sha256::digest(&text).into()))
 }
 
 /// Where the state file lives.

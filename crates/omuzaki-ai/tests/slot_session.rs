@@ -3,6 +3,7 @@
 //! and `reset` reaches whatever runs next. A wrapper around the `fake` runtime
 //! (`slot-probe`) adds a load delay and records loads and resets; the models are the identity, as the slot's smoke
 //! test requires, and differ in their `load_ms` and `crash_after` lines.
+#![allow(clippy::disallowed_methods, reason = "tests set up their fixtures on disk; the fence is for ops")]
 #![allow(clippy::unwrap_used)] // helpers outside `#[test]` fns: a panic is a clear test failure
 
 mod common;
@@ -524,7 +525,11 @@ fn a_fallback_that_is_still_loading_is_not_reported_as_active() {
     }
     assert_eq!(timed_run(&mut *session, &mut out).0, Err(RunError::Unavailable)); // the crash
 
-    wait_for("the crash to show", || status(&registry).fallback.is_some_and(|f| f.contains("crashed")));
+    // Running on, as a stream does: if the mailbox was taken when v2 failed, its report waits for the next run.
+    wait_for("the crash to show", || {
+        assert_eq!(timed_run(&mut *session, &mut out).0, Err(RunError::Unavailable), "v1 is still loading");
+        status(&registry).fallback.is_some_and(|f| f.contains("crashed"))
+    });
     let meanwhile = status(&registry);
     assert_eq!(meanwhile.active, None, "v1 is still loading: {meanwhile:?}");
     assert!(meanwhile.fallback.unwrap().contains("crashed"));

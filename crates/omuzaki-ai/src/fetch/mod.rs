@@ -8,6 +8,8 @@
 mod digest;
 mod download;
 mod record;
+#[cfg(test)]
+mod tests;
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
@@ -21,7 +23,7 @@ use download::{Ended, Stop, Target, copy};
 use record::Record;
 
 /// The progress stage name downloads report under.
-const STAGE: &str = "download";
+pub(crate) const STAGE: &str = "download";
 
 /// A [`FileSource`] that downloads pinned files through a [`Fetcher`], verifies them and keeps them under a root
 /// folder. Safe to share across threads and processes: files appear by atomic rename and are checked before that.
@@ -48,32 +50,6 @@ impl<F: Fetcher> VerifiedCache<F> {
     /// The fetcher this cache downloads through.
     pub fn fetcher(&self) -> &F {
         &self.fetcher
-    }
-
-    /// The cached blob if it is there and valid; invalid blobs are deleted. A blob whose size and mtime match its
-    /// record is trusted; any other is hashed again and kept only if it still matches. `size` is the pin's length, or
-    /// `None` when only the hash is known: the hash check then stands alone, and it is the stronger test anyway.
-    /// An error other than "missing" is returned, never read as missing: the caller must not download over a blob it
-    /// could not inspect, nor report a blob as absent because its deletion failed.
-    fn cached(sha256: Sha256, size: Option<u64>, paths: &Paths) -> Result<bool, FetchError> {
-        let meta = match fs::metadata(&paths.blob) {
-            Ok(meta) => meta,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
-            Err(e) => return Err(io_err(&paths.blob, &e)),
-        };
-        if size.is_none_or(|size| meta.len() == size) {
-            if Record::read(&paths.rec) == Some(Record::of(&meta)) {
-                return Ok(true);
-            }
-            if sha256_file(&paths.blob)? == sha256 {
-                write_record(paths)?;
-                return Ok(true);
-            }
-        }
-        tracing::warn!(path = %paths.blob.display(), "cached file does not match its pin; fetching it again");
-        delete(&paths.blob)?;
-        delete(&paths.rec)?;
-        Ok(false)
     }
 
     /// Downloads the pin from one URL into place.
@@ -199,7 +175,7 @@ impl<F: Fetcher> FileSource for VerifiedCache<F> {
         // unlocked check could delete the good one another caller has just published. The others wait here and then
         // find the blob; without the lock, resumable downloads would also append to the same partial file.
         let _lock = PinLock::acquire(&paths)?;
-        if Self::cached(pin.sha256, Some(pin.size), &paths)? {
+        if cached(pin.sha256, Some(pin.size), &paths)? {
             return Ok(paths.blob);
         }
         fs::create_dir_all(&paths.dir).map_err(|e| io_err(&paths.dir, &e))?;
@@ -229,7 +205,7 @@ impl<F: Fetcher> FileSource for VerifiedCache<F> {
         // Under the pin's lock, as `get` is: a bad blob is deleted here, and that must not hit a good one `get` has
         // just published.
         let _lock = PinLock::acquire(&paths)?;
-        Ok(Self::cached(sha256, None, &paths)?.then_some(paths.blob))
+        Ok(cached(sha256, None, &paths)?.then_some(paths.blob))
     }
 
     fn forget(&self, sha256: Sha256) -> Result<(), FetchError> {
@@ -239,6 +215,62 @@ impl<F: Fetcher> FileSource for VerifiedCache<F> {
         delete(&paths.rec)?;
         delete(&paths.blob)
     }
+}
+
+/// The cached blob if it is there and valid; invalid blobs are deleted. A blob whose size and mtime match its
+/// record is trusted; any other is hashed again and kept only if it still matches. `size` is the pin's length, or
+/// `None` when only the hash is known: the hash check then stands alone, and it is the stronger test anyway.
+/// An error other than "missing" is returned, never read as missing: the caller must not download over a blob it
+/// could not inspect, nor report a blob as absent because its deletion failed.
+fn cached(sha256: Sha256, size: Option<u64>, paths: &Paths) -> Result<bool, FetchError> {
+    let meta = match fs::metadata(&paths.blob) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(io_err(&paths.blob, &e)),
+    };
+    if size.is_none_or(|size| meta.len() == size) {
+        if Record::read(&paths.rec) == Some(Record::of(&meta)) {
+            return Ok(true);
+        }
+        if sha256_file(&paths.blob)? == sha256 {
+            write_record(paths)?;
+            return Ok(true);
+        }
+    }
+    tracing::warn!(path = %paths.blob.display(), "cached file does not match its pin; fetching it again");
+    delete(&paths.blob)?;
+    delete(&paths.rec)?;
+    Ok(false)
+}
+
+/// Copies a local file into the cache under `root` (the folder a [`VerifiedCache`] over the same root reads), hashing
+/// it while it copies, and stores it as a verified blob with its record, as a download would be: under the hash's
+/// lock, by atomic rename, accepting the same verified blob another writer stored first. Returns its SHA-256 and size.
+/// This is how a model the person adds enters the cache: its bytes are only known once they are read, so there is no
+/// pin to [`get`](FileSource::get).
+///
+/// # Errors
+/// [`FetchError::Io`] naming the cache file for a cache that can't be written; `source` errors are `Io` too, with the
+/// path the caller gave (the caller words them); [`FetchError::Cancelled`] when `progress` says stop.
+pub(crate) fn import(root: &Path, source: &Path, progress: &dyn Progress) -> Result<(Sha256, u64), FetchError> {
+    let mut from = File::open(source).map_err(|e| io_err(source, &e))?;
+    let dir = root.join("sha256");
+    fs::create_dir_all(&dir).map_err(|e| io_err(&dir, &e))?;
+    let mut tmp = tempfile::Builder::new().suffix(".tmp").tempfile_in(&dir).map_err(|e| io_err(&dir, &e))?;
+    let tmp_path = tmp.path().to_owned();
+    let (sha256, size) = digest::copy_hashing((&mut from, source), (tmp.as_file_mut(), &tmp_path), progress)?;
+    let paths = Paths::new(root, sha256);
+    tmp.as_file().sync_all().map_err(|e| io_err(tmp.path(), &e))?;
+    let _lock = PinLock::acquire(&paths)?;
+    // The same bytes may be there already (added before, or shipped): keep them. A blob there that fails its check is
+    // deleted first, so a corrupted cache can't block an import where a rename doesn't overwrite (Windows).
+    if !cached(sha256, Some(size), &paths)? {
+        if let Err(e) = tmp.persist(&paths.blob) {
+            accept_existing(&PinnedFile::new(std::iter::empty::<String>(), sha256, size), &paths, &e.error)?;
+        }
+        write_record(&paths)?;
+    }
+    Ok((sha256, size))
 }
 
 /// Where one pin's files live.
@@ -350,6 +382,15 @@ fn stop_error(url: &str, stop: Stop) -> FetchError {
 
 fn net(url: &str, reason: &str) -> FetchError {
     FetchError::Network { url: url.to_owned(), reason: reason.to_owned() }
+}
+
+/// A fetch error's words without the cache's path, for anything an agent can read (where the person's data folder is,
+/// is theirs).
+pub(crate) fn words_without_path(e: &FetchError) -> String {
+    match e {
+        FetchError::Io { reason, .. } => format!("the model cache: {reason}"),
+        other => other.to_string(),
+    }
 }
 
 fn io_err(path: &Path, e: &io::Error) -> FetchError {

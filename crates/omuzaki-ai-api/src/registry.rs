@@ -73,6 +73,10 @@ pub struct ModelEntry {
     pub active: bool,
     /// Its latest evaluation (the smoke test for user models and installed upgrades).
     pub eval: Option<EvalReport>,
+    /// The real person it imitates, from its card ([`ModelCard::imitates`](crate::ModelCard::imitates)): every
+    /// surface that lists it shows the impersonation warning (SE-05).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imitates: Option<String>,
 }
 
 impl ModelEntry {
@@ -285,6 +289,13 @@ pub trait ModelRegistry: Send + Sync {
     /// # Errors
     /// [`RegistryError::UnknownModel`], [`RegistryError::Io`].
     fn remove(&self, model: &ModelRef) -> Result<(), RegistryError>;
+
+    /// How far the download of the install running for `slot` has got, from 0 to 1, if one is downloading: what
+    /// `model.status` reports while a first run fetches the slot's model. The default says nothing is downloading.
+    fn downloading(&self, slot: &SlotRef) -> Option<f32> {
+        let _ = slot;
+        None
+    }
 
     /// Takes one verified model catalogue (`docs/design/updates.md` section 8), all or nothing: new versions are
     /// imported as [`Origin::Catalogue`] (installable like shipped ones, the version they supersede kept as the
