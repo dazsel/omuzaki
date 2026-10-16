@@ -53,6 +53,16 @@ mod wide {
         pub groups: BTreeMap<String, Group>,
         /// Groups named by other values, as a hair streak names the groups it paints: each must exist.
         pub refs: Vec<String>,
+        /// Pins that name a group inside an object, as a hair collider names its bone: nothing checks the name.
+        pub pins: Vec<Pin>,
+    }
+
+    /// A reference held inside an object.
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+    #[serde(deny_unknown_fields)]
+    pub struct Pin {
+        /// The group it names.
+        pub group: String,
     }
 
     impl Validate for WideParams {
@@ -341,9 +351,16 @@ fn repairing_a_sparse_invalid_part_writes_only_what_differs_from_the_defaults() 
 /// The groups the validator looks at over one `describe` of a `wide` part of `n` groups, `named` of them named by
 /// `refs`.
 fn groups_checked_describing(n: usize, named: usize) -> usize {
-    let groups: serde_json::Map<String, Value> = (0..n).map(|i| (format!("g{i:03}"), json!({}))).collect();
     let refs: Vec<String> = (0..named).map(|i| format!("g{i:03}")).collect();
-    let doc = with_probe("wide", &json!({ "groups": groups, "refs": refs }));
+    groups_checked(n, &json!({ "refs": refs }))
+}
+
+/// The groups the validator looks at over one `describe` of a `wide` part of `n` groups and the other fields `more`.
+fn groups_checked(n: usize, more: &Value) -> usize {
+    let groups: serde_json::Map<String, Value> = (0..n).map(|i| (format!("g{i:03}"), json!({}))).collect();
+    let mut params = more.clone();
+    params["groups"] = Value::Object(groups);
+    let doc = with_probe("wide", &params);
     let _only = WIDE.lock().unwrap();
     let before = GROUPS_CHECKED.load(Ordering::Relaxed);
     let d = describe(&doc, "probe");
@@ -369,6 +386,20 @@ fn describe_does_work_in_proportion_to_the_part_not_its_square() {
     assert!(large > small, "the larger part costs more");
     // None named, and a few named, as before.
     let (small, large) = (groups_checked_describing(10, 2), groups_checked_describing(20, 2));
+    assert!(large * 10 <= small * 25, "10 groups checked {small}, 20 checked {large}: not linear");
+}
+
+#[test]
+fn describe_stays_linear_when_every_group_is_named_from_inside_an_object() {
+    // As hair colliders name their bones: `{"group": "g007"}` objects in a list, one per group. A probe carries a few
+    // pins and so keeps a few groups; one that kept every group a pin names would check the whole part per number.
+    let pinned = |n: usize| {
+        let pins: Vec<Value> = (0..n).map(|i| json!({"group": format!("g{i:03}")})).collect();
+        let checked = groups_checked(n, &json!({ "pins": pins }));
+        eprintln!("{n} groups, each pinned: {checked} groups checked");
+        checked
+    };
+    let (small, large) = (pinned(10), pinned(20));
     assert!(large * 10 <= small * 25, "10 groups checked {small}, 20 checked {large}: not linear");
 }
 

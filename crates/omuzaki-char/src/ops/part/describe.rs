@@ -16,10 +16,12 @@
 //!
 //! **The cost is linear.** A probe checks a copy of the part that leaves out what the number does not depend on: the
 //! other entries of the maps on the way to it, the list items more than one away from it (so a "at least two
-//! points" rule still holds), and all but the first few items or entries of any list or map off the path. A lone value that names an entry by key is kept with it, and lists of such names (a
-//! streak's `groups`) are stripped of the keys of the entries left out, so the references do not grow the probe. The
-//! check then costs one entry rather than the whole part, one scratch copy per number is written into by every probe
-//! instead of being cloned per probe, and entries are found by key, not by walking the map. That assumes the entries of
+//! points" rule still holds), and all but the first few items or entries of any list or map off the path. An entry that
+//! a value left in the probe names by key (a streak's group, a collider's bone) is kept with it, found from the probe's
+//! own bounded copy rather than from the whole part, so references held by entries that were left out never pull theirs
+//! in; and lists of such names (a streak's `groups`) are stripped of the keys of the entries left out. The check then
+//! costs one entry rather than the whole part, one scratch copy per number is written into by every probe instead of
+//! being cloned per probe, and entries are found by key, not by walking the map. That assumes the entries of
 //! a map do not constrain one another, which cannot be proved of a kind's `check`: so for each parameter that entries
 //! or list items share, the found bounds of all of them are set at once and the kind must accept the whole part, and a
 //! kind that refuses (a sum over the entries) has that parameter probed in the whole part instead. A rule tying two
@@ -30,7 +32,7 @@
 //! listed, with every variant, so it can be set.
 
 use std::cell::OnceCell;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::num::FpCategory;
 
@@ -208,9 +210,6 @@ pub(crate) struct Params {
     entries: Vec<Param>,
     /// Where each path is in `entries`, so a lookup does not scan the part.
     index: HashMap<String, usize>,
-    /// For each map (by path) the entries other parts of the tree name by key (a streak's `groups`), which a probe keeps
-    /// beside the entry it is about so the kind's own cross-references still hold.
-    named: HashMap<String, Vec<String>>,
     /// The base with every list of names that are map keys (a streak's `groups`) stripped of them, so a probe that leaves
     /// entries out does not keep, copy and check a reference to each.
     lean: Value,
@@ -241,7 +240,6 @@ impl Params {
         let index = entries.iter().enumerate().map(|(i, p)| (p.path.clone(), i)).collect();
         let base = current.as_ref().unwrap_or(&defaults);
         let lean = without_key_lists(base, &entries);
-        let named = named_entries(&lean, &entries);
         Ok(Self {
             kind,
             schema,
@@ -250,7 +248,6 @@ impl Params {
             stored: stored.clone(),
             entries,
             index,
-            named,
             lean,
             ranges: OnceCell::new(),
         })
@@ -322,38 +319,62 @@ impl Params {
 
     /// The tree to probe the number at `path` in, and where the number is in it. Every probe writes the same slot, so
     /// nothing needs restoring between them. The entries of the maps on the way, other than the one the path goes
-    /// through and the ones a lone value names by key, and the items of the lists on the way more than one away from
-    /// the item the path goes through, are left out: the check then costs what one entry costs rather than what the
-    /// whole part does. If the kind refuses the smaller tree, the whole of `base` is used.
+    /// through and the ones a value in the probe names by key, and the items of the lists on the way more than one away
+    /// from the item the path goes through, are left out: the check then costs what one entry costs rather than what
+    /// the whole part does. If the kind refuses the smaller tree, the whole of `base` is used.
+    ///
+    /// The entries to keep for references are found from the probe itself, not from the whole part: a first copy keeps
+    /// none, the values in it name some entries of the maps it passes through, and those are added (with whatever they
+    /// name in turn) until nothing new is named. Every copy is bounded, so what the references add is too: a list of
+    /// colliders cut to its first few items names the bones of those few, not of all of them.
     fn scratch(&self, path: &str, prune: bool) -> (Value, String) {
         if !prune {
             return (self.base().clone(), path.to_owned());
         }
         let steps: Vec<&str> = path.split('/').collect();
-        let mut mapped = Vec::with_capacity(steps.len());
-        let pruned = self.spine(&self.lean, "", &steps, &mut mapped);
-        if (self.kind.check)(&pruned).is_ok() { (pruned, mapped.join("/")) } else { (self.base().clone(), path.to_owned()) }
+        let mut kept = Kept::new();
+        loop {
+            let mut mapped = Vec::with_capacity(steps.len());
+            let mut maps = Vec::new();
+            let pruned = self.spine(&self.lean, "", &steps, &mut mapped, &kept, &mut maps);
+            if !kept.add_named(&pruned, &maps) {
+                return if (self.kind.check)(&pruned).is_ok() {
+                    (pruned, mapped.join("/"))
+                } else {
+                    (self.base().clone(), path.to_owned())
+                };
+            }
+        }
     }
 
     /// A copy of `node`, at `prefix`, without what `scratch` leaves out; `mapped` collects the steps of the path as
-    /// they are in the copy (a list item's position moves when the items before it are left out).
-    fn spine(&self, node: &Value, prefix: &str, steps: &[&str], mapped: &mut Vec<String>) -> Value {
+    /// they are in the copy (a list item's position moves when the items before it are left out), and `maps` the maps
+    /// the copy passes through, by path, so the entries the copy's values name can be found in them.
+    fn spine<'a>(
+        &self,
+        node: &'a Value,
+        prefix: &str,
+        steps: &[&str],
+        mapped: &mut Vec<String>,
+        kept: &Kept,
+        maps: &mut Vec<(String, &'a Map<String, Value>)>,
+    ) -> Value {
         let Some((step, rest)) = steps.split_first() else { return node.clone() };
         let child = |name: &str| if prefix.is_empty() { name.to_owned() } else { format!("{prefix}/{name}") };
         let holder = self.entry(prefix);
         match node {
             Value::Object(fields) if holder.is_some_and(|p| p.ty == Ty::Map) => {
-                let named = self.named.get(prefix).map_or(&[][..], Vec::as_slice);
-                // The key of the path, once, then the entries named by lone values (which may include the same key).
-                let keys = std::iter::once(*step).chain(named.iter().map(String::as_str).filter(|key| key != step));
+                maps.push((prefix.to_owned(), fields));
+                // The key of the path, once, then the entries the probe's values name (which may include the same key).
+                let keys = std::iter::once(*step).chain(kept.of(prefix).filter(|key| key != step));
                 mapped.push((*step).to_owned());
                 Value::Object(
                     keys.filter_map(|key| {
                         let item = fields.get(key)?;
                         let item = if key == *step {
-                            self.spine(item, &child(key), rest, mapped)
+                            self.spine(item, &child(key), rest, mapped, kept, maps)
                         } else {
-                            self.shrink(item, &child(key))
+                            self.shrink(item, &child(key), kept, maps)
                         };
                         Some((key.to_owned(), item))
                     })
@@ -367,9 +388,9 @@ impl Params {
                         .iter()
                         .map(|(key, item)| {
                             let item = if key == step {
-                                self.spine(item, &child(key), rest, mapped)
+                                self.spine(item, &child(key), rest, mapped, kept, maps)
                             } else {
-                                self.shrink(item, &child(key))
+                                self.shrink(item, &child(key), kept, maps)
                             };
                             (key.clone(), item)
                         })
@@ -392,7 +413,11 @@ impl Params {
                         .take(hi + 1 - lo)
                         .map(|(i, item)| {
                             let place = child(&i.to_string());
-                            if at == Some(i) { self.spine(item, &place, rest, mapped) } else { self.shrink(item, &place) }
+                            if at == Some(i) {
+                                self.spine(item, &place, rest, mapped, kept, maps)
+                            } else {
+                                self.shrink(item, &place, kept, maps)
+                            }
                         })
                         .collect(),
                 )
@@ -402,30 +427,41 @@ impl Params {
     }
 
     /// A copy of `value`, at `path`, that a probe carries as context only: a list is cut to its first `CONTEXT` items and
-    /// a map to its first `CONTEXT` entries (and the ones lone values name), all the way down, so what the probe copies
-    /// and the kind then checks does not grow with the part. A kind that needs more (a minimum length of more than
-    /// `CONTEXT`) refuses the copy, and the probe then uses the whole part.
-    fn shrink(&self, value: &Value, path: &str) -> Value {
+    /// a map to its first `CONTEXT` entries (and the ones `kept` names), all the way down, so what the probe copies and
+    /// the kind then checks does not grow with the part. A kind that needs more (a minimum length of more than
+    /// `CONTEXT`) refuses the copy, and the probe then uses the whole part. `maps` collects the maps it passes through.
+    fn shrink<'a>(
+        &self,
+        value: &'a Value,
+        path: &str,
+        kept: &Kept,
+        maps: &mut Vec<(String, &'a Map<String, Value>)>,
+    ) -> Value {
         let child = |name: &str| format!("{path}/{name}");
         match value {
             Value::Array(items) => Value::Array(
-                items.iter().take(CONTEXT).enumerate().map(|(i, item)| self.shrink(item, &child(&i.to_string()))).collect(),
+                items
+                    .iter()
+                    .take(CONTEXT)
+                    .enumerate()
+                    .map(|(i, item)| self.shrink(item, &child(&i.to_string()), kept, maps))
+                    .collect(),
             ),
             Value::Object(fields) if self.entry(path).is_some_and(|p| p.ty == Ty::Map) => {
-                let named = self.named.get(path).map_or(&[][..], Vec::as_slice);
+                maps.push((path.to_owned(), fields));
                 let first = fields.keys().take(CONTEXT).map(String::as_str);
-                let mut keys: Vec<&str> = first.chain(named.iter().map(String::as_str)).collect();
+                let mut keys: Vec<&str> = first.chain(kept.of(path)).collect();
                 keys.sort_unstable();
                 keys.dedup();
                 Value::Object(
                     keys.into_iter()
-                        .filter_map(|key| Some((key.to_owned(), self.shrink(fields.get(key)?, &child(key)))))
+                        .filter_map(|key| Some((key.to_owned(), self.shrink(fields.get(key)?, &child(key), kept, maps))))
                         .collect(),
                 )
             }
-            Value::Object(fields) => {
-                Value::Object(fields.iter().map(|(key, item)| (key.clone(), self.shrink(item, &child(key)))).collect())
-            }
+            Value::Object(fields) => Value::Object(
+                fields.iter().map(|(key, item)| (key.clone(), self.shrink(item, &child(key), kept, maps))).collect(),
+            ),
             other => other.clone(),
         }
     }
@@ -617,31 +653,44 @@ fn without_key_lists(base: &Value, entries: &[Param]) -> Value {
     if keys.is_empty() { base.clone() } else { strip(base, &keys) }
 }
 
-/// For every map in `entries`, the keys of its entries that some string value in `base` equals (a streak naming the
-/// group it paints): the entries a probe has to keep so such references still resolve.
-fn named_entries(base: &Value, entries: &[Param]) -> HashMap<String, Vec<String>> {
-    fn strings<'a>(value: &'a Value, into: &mut HashSet<&'a str>) {
-        match value {
-            Value::String(text) => {
-                into.insert(text);
-            }
-            Value::Array(items) => items.iter().for_each(|item| strings(item, into)),
-            Value::Object(fields) => fields.values().for_each(|item| strings(item, into)),
-            _ => {}
-        }
+/// For each map a probe passes through (by its path in the part), the keys of the entries the probe keeps because a
+/// value in it names them (a streak's group, a collider's bone): see [`Params::scratch`].
+struct Kept(HashMap<String, BTreeSet<String>>);
+
+impl Kept {
+    /// None kept yet.
+    fn new() -> Self {
+        Self(HashMap::new())
     }
-    let mut values = HashSet::new();
-    strings(base, &mut values);
-    entries
-        .iter()
-        .filter(|p| p.ty == Ty::Map)
-        .filter_map(|p| {
-            let Value::Object(held) = at(base, &p.path)? else { return None };
-            let mut named: Vec<String> = held.keys().filter(|key| values.contains(key.as_str())).cloned().collect();
-            named.sort_unstable();
-            (!named.is_empty()).then(|| (p.path.clone(), named))
-        })
-        .collect()
+
+    /// The keys kept in the map at `path`.
+    fn of(&self, path: &str) -> impl Iterator<Item = &str> {
+        self.0.get(path).into_iter().flatten().map(String::as_str)
+    }
+
+    /// Adds the keys of `maps` (the maps `probe` passes through, with every entry they hold in the part) that a string
+    /// value of `probe` equals. Returns whether any was new. Both are bounded by the probe's size, not the part's.
+    fn add_named(&mut self, probe: &Value, maps: &[(String, &Map<String, Value>)]) -> bool {
+        fn strings<'v>(value: &'v Value, into: &mut BTreeSet<&'v str>) {
+            match value {
+                Value::String(text) => {
+                    into.insert(text);
+                }
+                Value::Array(items) => items.iter().for_each(|item| strings(item, into)),
+                Value::Object(fields) => fields.values().for_each(|item| strings(item, into)),
+                _ => {}
+            }
+        }
+        let mut values = BTreeSet::new();
+        strings(probe, &mut values);
+        let mut grew = false;
+        for (path, held) in maps {
+            for text in values.iter().filter(|text| held.contains_key(**text)) {
+                grew |= self.0.entry(path.clone()).or_default().insert((*text).to_owned());
+            }
+        }
+        grew
+    }
 }
 
 /// The last step of `path` when it lies directly below `parent` (`""` is the root).
@@ -1196,6 +1245,30 @@ mod tests {
 
         set_at(&mut params, "a", Some(json!({"only": 1})), false).unwrap();
         assert_eq!(at(&params, "a"), Some(&json!({"only": 1})), "replacing keeps nothing of the old object");
+    }
+
+    #[test]
+    fn a_probe_keeps_only_the_groups_its_own_colliders_name() {
+        // A hair collider follows a bone by name, and a bone named like a group (`g007`) reads as a reference to it.
+        // Each probe carries a few colliders, so it keeps the few groups those name, not every group some collider
+        // names: with every group named, a probe that kept them all would cost the whole part, for every number.
+        let kind = find_kind("hair").unwrap();
+        let defaults = (kind.defaults)();
+        let group = defaults["groups"].as_object().unwrap().values().next().unwrap().clone();
+        let largest_probe = |n: usize| {
+            let mut stored = defaults.clone();
+            stored["groups"] = Value::Object((0..n).map(|i| (format!("g{i:03}"), group.clone())).collect());
+            stored["physics"]["colliders"] = (0..n)
+                .map(|i| json!({"bone": {"named": format!("g{i:03}")}, "centre": [0.0, 0.0, 0.0], "radius": 0.05}))
+                .collect();
+            let params = Params::new(kind, &stored).unwrap();
+            assert!(params.current.is_ok(), "{:?}", params.current);
+            let numbers = params.entries.iter().filter(|p| matches!(p.ty, Ty::Number | Ty::Integer));
+            numbers.map(|p| params.scratch(&p.path, true).0["groups"].as_object().map_or(0, Map::len)).max().unwrap()
+        };
+        let (small, large) = (largest_probe(12), largest_probe(24));
+        assert!(small <= 2 * CONTEXT + 1, "a probe of 12 groups kept {small}");
+        assert_eq!(small, large, "what a probe keeps does not grow with the part");
     }
 
     #[test]
