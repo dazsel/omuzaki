@@ -124,6 +124,7 @@ fn every_rest_point_stands_clear_of_the_head_even_at_the_extremes() {
 fn the_clumps_gather_at_the_tie_and_fan_out_after_it() {
     let g = TailGen { count: 12, ..tail::ponytail() };
     let (clumps, _) = compile_tail(&g);
+    let clumps = &clumps[..usize::from(g.count)];
     let tie_at = (tail::TIE_LENGTH / g.length) as f32;
     let width_at = |t: f32| {
         let k = (t * (tail::REST_POINTS - 1) as f32).round() as usize;
@@ -297,8 +298,9 @@ fn a_bad_prefix_is_an_error_not_a_panic() {
 fn the_bun_winds_round_a_ball_that_rests_on_the_head() {
     for g in [bun::low_bun(), bun::high_bun(), BunGen::default()] {
         let (strands, draws) = compile_bun(&g);
-        assert_eq!(strands.len(), usize::from(g.strands));
+        assert_eq!(strands.len(), bun::clump_count(&g));
         assert_eq!(draws, 0);
+        let strands = &strands[..usize::from(g.strands)];
         let anchors = bun::anchors(&g, &Ball);
         let centre = anchors.iter().find(|(n, _)| *n == "bun_centre").unwrap().1.position;
         let reach = bun::LAYER_STEP as f32 * f32::from(bun::LAYERS);
@@ -450,11 +452,60 @@ impl PartKind for ClearanceProbe {
                 return Err(ctx.fail(format!("rest point {p:?} is {d} from a shoulder joint")));
             }
         }
+        check_gather(params, &entries, head.as_ref()).map_err(|m| ctx.fail(m))?;
         Ok(PartOutput::new())
     }
 }
 
 omuzaki_char_api::register_part_kind!(ClearanceProbe);
+
+/// Every gather lock stays within a few millimetres of the bare head (or the cap's shell over it) until it rises, and ends
+/// inside its tie or bun.
+fn check_gather(
+    params: &HairParams,
+    entries: &[omuzaki_char::hair::compile::CompiledEntry],
+    head: &dyn HeadSurface,
+) -> Result<(), String> {
+    use omuzaki_char::hair::compile::GroupGeometry;
+    let off = |p: Vec3| (p - head.centre()).length() - head.radius((p - head.centre()).normalize());
+    for entry in entries {
+        let Some(group) = params.groups.get(&entry.id) else { continue };
+        let (own, gather) = match &group.generator {
+            Generator::Tail(g) => (usize::from(g.count), usize::from(g.gather)),
+            Generator::Bun(g) => (usize::from(g.strands), usize::from(g.gather)),
+            _ => continue,
+        };
+        assert!(gather > 0, "the presets have gather locks");
+        let side = own + gather;
+        for (k, clump) in entry.group.clumps.iter().enumerate() {
+            if k % side < own {
+                continue;
+            }
+            let rise = (clump.rest.len() as f32 * 0.7) as usize;
+            for p in &clump.rest[..rise] {
+                if !(0.006..=0.028).contains(&off(*p)) {
+                    return Err(format!("gather lock {k} of '{}' is {} off the head", entry.id, off(*p)));
+                }
+            }
+            let end = *clump.rest.last().ok_or("an empty gather lock")?;
+            let inside = match (&group.generator, &entry.group.geometry) {
+                (Generator::Tail(_), GroupGeometry::Tied { ties }) => {
+                    let tie = ties.get(k / side).ok_or("a tie per side")?;
+                    (end - tie.centre).length() < tie.radius
+                }
+                (Generator::Bun(g), _) => {
+                    let centre = bun::anchors(g, head).iter().find(|(n, _)| *n == "bun_centre").unwrap().1.position;
+                    (end - centre).length() < g.radius as f32
+                }
+                _ => false,
+            };
+            if !inside {
+                return Err(format!("gather lock {k} of '{}' ends at {end:?}, outside its tie or bun", entry.id));
+            }
+        }
+    }
+    Ok(())
+}
 
 fn pid(s: &str) -> PartId {
     PartId::new(s).unwrap()
@@ -509,8 +560,8 @@ fn triangles(built: &BuiltCharacter, part: &str) -> usize {
     built.report.parts.iter().filter(|p| p.part.as_str() == part).map(|p| p.triangles).sum()
 }
 
-/// The most triangles one tail or bun hairstyle may add: a quarter of a Good-rank avatar's 32,000.
-const TRIANGLE_BUDGET: usize = 8_000;
+/// The most triangles one tail or bun hairstyle may add: a third of a Good-rank avatar's 32,000.
+const TRIANGLE_BUDGET: usize = 10_000;
 
 #[test]
 fn every_preset_builds_on_every_template_clear_of_head_and_shoulders() {
@@ -636,12 +687,13 @@ fn render_the_presets_when_asked() {
 fn the_tail_is_one_mass_of_broad_overlapping_locks_at_the_tie() {
     let g = tail::ponytail();
     let (clumps, _) = compile_tail(&g);
+    let clumps = &clumps[..usize::from(g.count)];
     assert!((7..=9).contains(&clumps.len()), "{} locks", clumps.len());
     assert!(clumps.iter().all(|c| (0.025..=0.035).contains(&c.width.start) && c.width.mid >= c.width.start));
     // Near the tie every lock's centre is well within half a lock width of the others', so no background shows.
     let k = 2;
     let mean = clumps.iter().map(|c| c.rest[k]).sum::<Vec3>() / clumps.len() as f32;
-    for c in &clumps {
+    for c in clumps {
         assert!((c.rest[k] - mean).length() < 0.5 * c.width.start as f32, "a lock stands {} off the bunch", (c.rest[k] - mean).length());
     }
     // And the tips are pointed.
@@ -822,4 +874,35 @@ fn the_tie_mesh_has_its_own_material_and_recolours_alone() {
     let done = recolour_part(&after, &PartId::new("hair").unwrap(), &BuildServices::default(), &mut out);
     assert_eq!(done, Ok(Recoloured::Done));
     assert_eq!(key(&out), key(&rebuilt));
+}
+
+#[test]
+fn gather_locks_are_counted_finite_and_can_be_turned_off() {
+    let g = tail::ponytail();
+    assert_eq!(compile_tail(&g).0.len(), usize::from(g.count + g.gather));
+    let off = TailGen { gather: 0, ..g.clone() };
+    assert_eq!(compile_tail(&off).0.len(), usize::from(off.count));
+    assert_eq!(tail::clump_count(&off), usize::from(off.count));
+    let bad = TailGen { root: [f64::NAN; 3], gather: 4, ..g };
+    let (clumps, _) = compile_tail(&bad);
+    assert_eq!(clumps.len(), tail::clump_count(&bad));
+    assert!(clumps.iter().flat_map(|c| &c.rest).all(|p| p.is_finite()));
+    let bun = bun::high_bun();
+    assert_eq!(compile_bun(&bun).0.len(), usize::from(bun.strands + bun.gather));
+    let no_gather = BunGen { gather: 0, ..bun };
+    assert_eq!(compile_bun(&no_gather).0.len(), usize::from(no_gather.strands));
+}
+
+#[test]
+fn the_gather_locks_are_broad_and_start_on_the_back_hairline() {
+    let g = tail::ponytail();
+    let locks = &compile_tail(&g).0[usize::from(g.count)..];
+    assert!(locks.iter().all(|c| c.width.mid >= 0.045 && c.width.start < c.width.mid), "broad over the head, pointed at the nape");
+    // They start low and spread across the back, and all end at one point, the tie.
+    let starts: Vec<Vec3> = locks.iter().map(|c| c.rest[0]).collect();
+    let (lo, hi) = starts.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| (lo.min(p.x), hi.max(p.x)));
+    assert!(hi - lo > 0.1, "the gather starts {} wide", hi - lo);
+    assert!(starts.iter().all(|p| p.y < CENTRE.y), "the gather starts below the middle of the head");
+    let ends: Vec<Vec3> = locks.iter().map(|c| *c.rest.last().unwrap()).collect();
+    assert!(ends.iter().all(|e| *e == ends[0]));
 }

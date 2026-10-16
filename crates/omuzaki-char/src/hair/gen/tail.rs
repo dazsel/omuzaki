@@ -23,6 +23,10 @@
 //! `amplitude * grow(s) * sin(2 pi frequency s + phase + i * PHASE_STEP)`, growing in over `growth`, and `curl` bends the
 //! tip (squared smoothstep over the last [`CURL_FROM`]..1).
 //!
+//! **Gather locks.** [`TailGen::gather`] broad flat locks (after the tail's own) sweep from the back and side hairline
+//! along the scalp, a few millimetres off it, and rise into the middle of the tie, so a style with a cap reads as hair
+//! swept up into the gather ([`gather_locks`]); the presets have them, and `0` turns them off.
+//!
 //! **The tie.** One [`Tie`] torus round the gather at the tie, hiding where the locks start; the part draws it in its own
 //! material.
 //!
@@ -44,7 +48,8 @@ use omuzaki_core::glam::{DQuat, DVec3, Quat, Vec3};
 use omuzaki_core::id::SlugError;
 
 use super::cap::smoothstep;
-use super::root::{Root, sane};
+pub use super::root::REFERENCE_HEAD_RADIUS;
+use super::root::{GATHER_SHADE, GATHER_THICKNESS, Root, gather_locks, gather_width, head_scale, sane};
 use crate::hair::compile::{CompiledGroup, GroupGeometry, HairGenCtx};
 use crate::hair::tie::Tie;
 use crate::kit::catmull::spaced_points_into;
@@ -53,8 +58,6 @@ use crate::kit::catmull::spaced_points_into;
 pub const REST_POINTS: usize = 28;
 /// Samples along the axis (a multiple of 2, 3, 4 and 5, so every chain length lands on a sample).
 pub const AXIS_SAMPLES: usize = 61;
-/// The crown radius of the head the lengths below are written for (the `standard` template's), metres.
-pub const REFERENCE_HEAD_RADIUS: f64 = 0.1;
 /// Length of the straight tie neck, from the root to where the tail starts to bend (scaled), metres.
 pub const TIE_LENGTH: f64 = 0.008;
 /// Length over which the tail bends from leaving the head to hanging (scaled), metres.
@@ -98,6 +101,7 @@ pub fn ponytail() -> TailGen {
         spread_deg: 12.0,
         droop: 1.0,
         lean: 0.3,
+        gather: 6,
         wave: Wave { amplitude: 0.012, frequency: 1.0, ..Wave::default() },
         width: Taper { start: 0.030, mid: 0.036, tip: 0.005, tip_at: 0.55 },
         ..TailGen::default()
@@ -114,6 +118,7 @@ pub fn twintails() -> TailGen {
         spread_deg: 12.0,
         droop: 1.0,
         lean: -0.12,
+        gather: 5,
         wave: Wave { amplitude: 0.010, frequency: 1.0, ..Wave::default() },
         width: Taper { start: 0.030, mid: 0.036, tip: 0.005, tip_at: 0.55 },
         ..TailGen::default()
@@ -144,7 +149,7 @@ struct Shape {
 impl Shape {
     fn new(g: &TailGen, head: &dyn HeadSurface) -> Self {
         let root = Root::new(g.root, DEFAULT_ROOT, head);
-        let scale = (f64::from(head.radius(Vec3::Y)) / REFERENCE_HEAD_RADIUS).clamp(0.5, 2.0);
+        let scale = head_scale(head);
         let length = sane(g.length, 0.05, 1.5, 0.4);
         let droop = sane(g.droop, 0.0, 1.0, 0.0);
         let lean = sane(g.lean, -1.0, 1.0, 0.0);
@@ -199,30 +204,40 @@ pub fn compile(g: &TailGen, ctx: &mut HairGenCtx<'_>) -> CompiledGroup {
         tip_at: g.width.tip_at,
     };
     let count = usize::from(g.count);
-    let clumps = (0..count)
+    let mut clumps: Vec<_> = (0..count)
         .map(|i| {
             let rest = clump(g, &shape, ctx.head, i, count);
             ctx.clump(rest, width, g.thickness, SHADE - SHADE_RANGE * jitter(i))
         })
         .collect();
+    // The gather locks end in the middle of the tie.
+    let end = shape.frames[tie_sample(&shape)].p;
+    for rest in gather_locks(&shape.root, ctx.head, g.gather, end) {
+        clumps.push(ctx.clump(rest, gather_width(shape.scale), GATHER_THICKNESS, GATHER_SHADE));
+    }
     CompiledGroup { clumps, geometry: GroupGeometry::Tied { ties: vec![tie(&shape, width)] } }
 }
 
 /// The band round the gather, where the tie neck ends.
 #[allow(clippy::cast_possible_truncation)] // positions are f32 downstream
 fn tie(shape: &Shape, width: Taper) -> Tie {
-    let at = (shape.tie_at * (AXIS_SAMPLES - 1) as f64).round() as usize;
     Tie {
-        centre: shape.frames[at.min(AXIS_SAMPLES - 1)].p.as_vec3(),
+        centre: shape.frames[tie_sample(shape)].p.as_vec3(),
         axis: shape.root.outward.as_vec3(),
         radius: (shape.tie_radius + TIE_STAND_OFF * width.start) as f32,
         tube: (TIE_TUBE * width.start) as f32,
     }
 }
 
-/// How many clumps [`compile`] makes: [`TailGen::count`].
+/// The axis sample where the tie sits.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a small, non-negative index
+fn tie_sample(shape: &Shape) -> usize {
+    ((shape.tie_at * (AXIS_SAMPLES - 1) as f64).round() as usize).min(AXIS_SAMPLES - 1)
+}
+
+/// How many clumps [`compile`] makes: [`TailGen::count`] locks, then [`TailGen::gather`] gather locks.
 pub fn clump_count(g: &TailGen) -> usize {
-    usize::from(g.count)
+    usize::from(g.count) + usize::from(g.gather)
 }
 
 /// The fixed pattern in `0..1` that shortens and darkens clump `i`.

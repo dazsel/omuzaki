@@ -713,6 +713,9 @@ pub struct TailGen {
     /// How the hanging part leans, `-1..=1`: positive toward the head's vertical axis (a ponytail hugging the back of
     /// the neck), negative away from it (twintails swinging out over the shoulders).
     pub lean: f64,
+    /// Gather locks: broad flat locks that sweep from the back and side hairline up into the tie, so the hair reads as
+    /// gathered rather than cut off (`0` for none, the default; the presets set some).
+    pub gather: u8,
 }
 
 impl Default for TailGen {
@@ -729,6 +732,7 @@ impl Default for TailGen {
             tie_radius: 0.008,
             chain_bones: 5,
             lean: 0.0,
+            gather: 0,
         }
     }
 }
@@ -749,6 +753,9 @@ pub struct BunGen {
     pub width: Taper,
     /// Strand thickness.
     pub thickness: Bulge,
+    /// Gather locks: broad flat locks that sweep from the back and side hairline up into the bun's base (`0` for none,
+    /// the default; the presets set some).
+    pub gather: u8,
 }
 
 impl Default for BunGen {
@@ -760,6 +767,7 @@ impl Default for BunGen {
             wraps: 1.5,
             width: Taper { start: 0.02, mid: 0.034, tip: 0.012, tip_at: 0.5 },
             thickness: Bulge { base: 0.012, swell: 0.006 },
+            gather: 0,
         }
     }
 }
@@ -1470,6 +1478,7 @@ fn check_generator_values(generator: &Generator, c: &mut Check) {
             c.range(&g("tie_radius"), x.tie_radius, 0.002, 0.05);
             count(&g("chain_bones"), c, u32::from(x.chain_bones), 4, 6);
             c.range(&g("lean"), x.lean, -1.0, 1.0);
+            count(&g("gather"), c, u32::from(x.gather), 0, 12);
             c.nested(&g("width"), &x.width);
             c.nested(&g("thickness"), &x.thickness);
         }
@@ -1477,6 +1486,7 @@ fn check_generator_values(generator: &Generator, c: &mut Check) {
             c.nested(&g("centre"), &GuidePoint::Surface(x.centre));
             c.range(&g("centre/phi_deg"), x.centre[1], -360.0, 360.0);
             c.range(&g("wraps"), x.wraps, 0.0, 6.0);
+            count(&g("gather"), c, u32::from(x.gather), 0, 12);
             c.nested(&g("width"), &x.width);
             c.nested(&g("thickness"), &x.thickness);
         }
