@@ -665,7 +665,7 @@ fn build(shape: Shape) -> Vec<u8> {
 type Model = Result<(Vec<u64>, char, usize), ()>;
 
 /// A plain walk from the first segment, written from journal.md 8.2 and nothing else.
-fn model(layout: &[Shape]) -> Model {
+fn model(layout: &[Shape], from: u64) -> Model {
     let mut out = Vec::new();
     let mut i = 0;
     let mut expected;
@@ -686,10 +686,11 @@ fn model(layout: &[Shape]) -> Model {
             (Tail::Eof, Some(Shape::BadHeader)) => return Ok((out, 'T', i + 1)),
             (Tail::Eof, Some(Shape::Newer)) => return Err(()),
             (Tail::Eof, Some(Shape::Real { first, .. })) => {
-                if first != expected {
+                let covered = expected <= from && expected < first && first <= from + 1;
+                if first != expected && !covered {
                     let later: u64 = layout[i + 1..]
                         .iter()
-                        .take_while(|s| !matches!(s, Shape::Prepared | Shape::BadHeader))
+                        .take_while(|s| matches!(s, Shape::Real { .. }))
                         .map(|s| if let Shape::Real { n, .. } = s { *n } else { 0 })
                         .sum();
                     return Ok((out, if later > 0 { 'D' } else { 'T' }, i + 1));
@@ -747,9 +748,13 @@ fn random_layouts_match_the_naive_walk() {
         for (idx, shape) in layout.iter().enumerate() {
             put(dir.path(), u64::try_from(idx).unwrap() + 1, &build(*shape));
         }
-        let want = model(&layout);
-        let last = want.as_ref().map_or(0, |(lsns, ..)| lsns.last().copied().unwrap_or(0));
+        let last = layout
+            .iter()
+            .map(|shape| if let Shape::Real { first, n, .. } = shape { first + n } else { 0 })
+            .max()
+            .unwrap_or(0);
         for from in 0..=last {
+            let want = model(&layout, from);
             let got = Reader::scan(dir.path(), Lsn(from));
             match (&want, got) {
                 (Err(()), Err(JournalError::TooNew { .. })) => {}
@@ -795,4 +800,33 @@ fn the_frame_that_exposes_a_gap_before_the_base_is_the_base() {
     put(dir.path(), 1, &segment(1, &records));
     let scan = Reader::scan(dir.path(), Lsn(5)).unwrap();
     assert_eq!((lsns(&scan), scan.end), ((6..=10).collect::<Vec<_>>(), End::Clean));
+}
+
+#[test]
+fn a_gap_covered_by_the_base_does_not_block_the_scan() {
+    // Segment 1 ends exactly after LSN 3, segment 2 starts at 6; the snapshot is at 5.
+    let dir = tempfile::tempdir().unwrap();
+    put(dir.path(), 1, &segment(1, &commits(1, 3)));
+    put(dir.path(), 2, &segment(6, &commits(6, 8)));
+    let scan = Reader::scan(dir.path(), Lsn(5)).unwrap();
+    assert_eq!((lsns(&scan), scan.end), (vec![6, 7, 8], End::Clean));
+    // A gap the base doesn't cover is a discontinuity.
+    let scan = Reader::scan(dir.path(), Lsn(3)).unwrap();
+    assert_eq!(lsns(&scan), Vec::<u64>::new());
+    assert_eq!(scan.end, End::Damaged { at: at(2, 0, 3), later_valid: 3, search_complete: true });
+}
+
+#[test]
+fn damage_counting_stops_at_a_newer_format_segment() {
+    let records = commits(1, 3);
+    let dir = tempfile::tempdir().unwrap();
+    let mut first = segment(1, &records);
+    let torn = first.len() - 3;
+    first.truncate(torn);
+    put(dir.path(), 1, &first);
+    put(dir.path(), 2, &newer(segment(3, &commits(3, 3))));
+    put(dir.path(), 3, &segment(3, &commits(3, 6)));
+    let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
+    assert_eq!(lsns(&scan), [1, 2]);
+    assert_eq!(scan.end, End::TornTail { at: at(1, offset_of(&records, 2), 2) });
 }

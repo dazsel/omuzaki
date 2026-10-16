@@ -83,14 +83,15 @@ impl Reader {
     ///    last record (a rotation), and a segment that doesn't is a discontinuity; after a zero tail or a bad frame it
     ///    continues only into a recovery `session` (8.5), a segment that begins one past the last good record with a
     ///    CRC-valid, decodable `session` record.
-    /// 4. **Old damage.** A bad frame before the base (the snapshot covers it) doesn't end the scan: it looks for the
-    ///    frame `from + 1` after it in the same segment, and failing that it continues into a next segment that starts
-    ///    after the damage and no later than `from + 1`. A zero tail is never old damage.
+    /// 4. **Old damage.** A bad frame or a gap before the base (the snapshot covers it) doesn't end the scan: after a bad
+    ///    frame it looks for the frame `from + 1` in the same segment, and failing that, like after an exact end of
+    ///    file, it continues into a next segment that starts after the last good record and no later than `from + 1`.
+    ///    A zero tail is never old damage.
     /// 5. **Reachability.** A file is opened only when the walk reaches it. A newer-format header or an unknown
     ///    required kind there is [`JournalError::TooNew`], and an unreadable file is [`JournalError::Io`]; the same
     ///    beyond a logical end is ignored.
     /// 6. **Classification.** After a bad frame or a discontinuity the valid frames after it are counted, in the rest of
-    ///    its segment and in the later segments up to a prepared or bad-header one. None is a [`End::TornTail`], some
+    ///    its segment and in the later segments up to a prepared, bad-header or newer-format one. None is a [`End::TornTail`], some
     ///    is [`End::Damaged`], also when the work budget runs out (then `search_complete` is false). A file that can't be read
     ///    holds none.
     ///
@@ -319,8 +320,8 @@ impl Scanner<'_> {
         count
     }
 
-    /// Valid frames in the segments from index `first` on, past their headers, up to a prepared or bad-header one
-    /// (rule 6). A file that can't be read, or is a newer format, holds none.
+    /// Valid frames in the segments from index `first` on, past their headers, up to a header that ends the log
+    /// (prepared, bad or newer format: rule 6). A file that can't be read holds none.
     fn count_after(&mut self, first: usize) -> usize {
         let mut count = 0;
         for segment in self.segments.iter().skip(first) {
@@ -330,7 +331,7 @@ impl Scanner<'_> {
                         count += self.count_in(&bytes, HEADER_LEN);
                     }
                 }
-                Ok(Class::Fault(HeaderFault::TooNew { .. })) | Err(_) => {}
+                Err(_) => {}
                 Ok(Class::Prepared | Class::Fault(_)) => break,
             }
         }
@@ -404,7 +405,7 @@ impl Scanner<'_> {
             }
             Class::Fault(_) if exact => Boundary::Torn,
             Class::Real(header) if exact => {
-                if !self.done && header.first == self.next {
+                if (!self.done && header.first == self.next) || self.skips_old_damage(&header) {
                     Boundary::Continue(header)
                 } else {
                     Boundary::Discontinuity
@@ -439,8 +440,8 @@ impl Scanner<'_> {
         })
     }
 
-    /// Whether a bad frame the snapshot covers (rule 4) is followed by `header`'s segment: it starts after the damage
-    /// and no later than the base.
+    /// Whether the damage or gap the snapshot covers (rule 4) is followed by `header`'s segment: it starts after the
+    /// last good record and no later than the base.
     fn skips_old_damage(&self, header: &SegmentHeader) -> bool {
         !self.done
             && self.next <= self.from
