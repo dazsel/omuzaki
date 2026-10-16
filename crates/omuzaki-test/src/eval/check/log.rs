@@ -25,24 +25,71 @@ fn same_args(preview: &Value, applied: &Value) -> bool {
 }
 
 impl Checker {
-    fn applied(&self) -> impl Iterator<Item = &ToolCall> {
-        self.transcript.calls.iter().filter(|c| c.applied())
+    /// The transcript's calls in registered op names, built once. The transcript records what the server was called
+    /// with, which is an MCP tool name (`face_set_profile`); a task writes op names (`face.set_profile`). A name is
+    /// read through the server's catalog ([`ToolNames`](crate::eval::transcript::ToolNames)), or accepted as it is when
+    /// it is already a registered op. A name that is neither is a transcript the harness cannot read, and fails every
+    /// `log.*` check as an `error`: guessing would let `log.within` reject ordinary edits, or `log.previewed` pass
+    /// because it never recognised the edits it was to look at.
+    fn calls(&self) -> Result<&[ToolCall], Verdict> {
+        self.calls
+            .get_or_init(|| {
+                let registered: Vec<&str> = self.result.ops().iter().map(|info| info.name).collect();
+                self.transcript
+                    .calls
+                    .iter()
+                    .map(|call| {
+                        let op = match self.tool_names.as_ref().and_then(|names| names.op_of(&call.op)) {
+                            Some(op) => op,
+                            None if registered.contains(&call.op.as_str())
+                                || self.tool_names.as_ref().is_some_and(|names| names.knows_op(&call.op)) =>
+                            {
+                                call.op.as_str()
+                            }
+                            None => {
+                                return Err(Verdict::error(format!(
+                                    "the transcript calls `{}`, which is neither a tool of the server nor a registered op",
+                                    call.op
+                                )));
+                            }
+                        };
+                        Ok(ToolCall { op: op.to_owned(), ..call.clone() })
+                    })
+                    .collect()
+            })
+            .as_deref()
+            .map_err(Clone::clone)
+    }
+
+    fn applied(&self) -> Result<impl Iterator<Item = &ToolCall>, Verdict> {
+        Ok(self.calls()?.iter().filter(|c| c.applied()))
     }
 
     pub(super) fn log_applied(&self, op: &str, expected: bool) -> Verdict {
-        let found = self.applied().any(|c| glob_match(op, &c.op));
+        let found = match self.applied() {
+            Ok(mut applied) => applied.any(|c| glob_match(op, &c.op)),
+            Err(verdict) => return verdict,
+        };
         Verdict::when(found == expected, format!("`{op}` {} applied", if found { "was" } else { "was never" }))
     }
 
     pub(super) fn log_within(&self, ops: &[String]) -> Verdict {
-        match self.applied().find(|c| !ops.iter().any(|allowed| glob_match(allowed, &c.op))) {
+        let mut applied = match self.applied() {
+            Ok(applied) => applied,
+            Err(verdict) => return verdict,
+        };
+        match applied.find(|c| !ops.iter().any(|allowed| glob_match(allowed, &c.op))) {
             Some(call) => Verdict::fail(format!("`{}` was applied but is not in the allowed list", call.op)),
             None => Verdict::pass("every applied op is allowed"),
         }
     }
 
     pub(super) fn log_max_errors(&self, n: u64) -> Verdict {
-        let errors = self.transcript.calls.iter().filter(|c| !c.ok).count();
+        let calls = match self.calls() {
+            Ok(calls) => calls,
+            Err(verdict) => return verdict,
+        };
+        let errors = calls.iter().filter(|c| !c.ok).count();
         Verdict::when(
             u64::try_from(errors).is_ok_and(|e| e <= n),
             format!("{errors} tool calls returned an error; at most {n} allowed"),
@@ -53,7 +100,10 @@ impl Checker {
     /// the preview carries over the wire).
     pub(super) fn log_previewed(&self) -> Verdict {
         let edits: Vec<&str> = self.result.ops().iter().filter(|i| i.kind == OpKind::Edit).map(|i| i.name).collect();
-        let calls = &self.transcript.calls;
+        let calls = match self.calls() {
+            Ok(calls) => calls,
+            Err(verdict) => return verdict,
+        };
         for (index, call) in calls.iter().enumerate().filter(|(_, c)| c.applied() && edits.contains(&c.op.as_str())) {
             let previewed = calls[..index]
                 .iter()

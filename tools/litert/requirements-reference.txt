@@ -1,0 +1,15 @@
+# The nightly parity job's second reference (tools/models/litert_reference.py): onnxruntime and the three packages it
+# imports, for CPython 3.12 on linux-x64 and win-x64. numpy comes from requirements-check.txt. Installed with
+# `pip install --require-hashes --no-deps --only-binary :all: -r`, so nothing is resolved or fetched unpinned.
+# A hash line is one wheel: the manylinux x86_64 and win_amd64 wheels of the pinned release (or its universal wheel).
+onnxruntime==1.26.0 \
+    --hash=sha256:9b6dd70599005bd1bf29779f04a91978b92b5e719c11a20068a8f8e535f725b6 \
+    --hash=sha256:a26374dc7fbcaae593601086b242120e13f2310558df0991da6dd8b8fac00414
+flatbuffers==25.12.19 \
+    --hash=sha256:7634f50c427838bb021c2d66a3d1168e9d199b0607e6329399f04846d42e20b4
+packaging==26.3 \
+    --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
+protobuf==7.36.2 \
+    --hash=sha256:89f23aa53c24553a2416fd4fd1ec06f74fa42b14b546d8883128813f775bbfd2 \
+    --hash=sha256:a300819d441e078a5608c0d3c709796bb548136058fda017ae51d425b44fd353 \
+    --hash=sha256:bdb3a345d48db958e6ce1f18e508beb0cc981d64f24088427549c866cd039f1e
