@@ -6,6 +6,7 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used, dead_code)]
 
+use std::fmt::Write as _;
 use std::time::Duration;
 
 use omuzaki_mcp::McpServer;
@@ -130,7 +131,8 @@ impl Wire {
                 Direction::ToClient => "<--",
             };
             let shown = normalised(message.clone());
-            out.push_str(&format!("\n`{arrow}`\n```json\n{}\n```\n", serde_json::to_string_pretty(&shown).unwrap()));
+            let block = serde_json::to_string_pretty(&shown).unwrap();
+            let _ = write!(out, "\n`{arrow}`\n```json\n{block}\n```\n");
         }
         out
     }
@@ -161,6 +163,7 @@ fn normalised(mut message: Value) -> Value {
 }
 
 /// Compares `text` with the committed transcript `name`, or writes it when `UPDATE_TRANSCRIPTS` is set.
+#[allow(clippy::disallowed_methods, reason = "a test reads and writes its committed transcript; the fence is for ops")]
 pub fn check_transcript(name: &str, text: &str) {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/transcripts").join(format!("{name}.md"));
     if std::env::var_os("UPDATE_TRANSCRIPTS").is_some() {

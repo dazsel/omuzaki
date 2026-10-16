@@ -38,14 +38,18 @@ fn shortened(number: &Number) -> Option<Number> {
         return None;
     }
     let wide = number.as_f64()?;
+    // Exact comparisons are the point here: "the same number" means the same bits.
     // Narrowing is the point: the value is kept only if it survives the round trip exactly.
     #[allow(clippy::cast_possible_truncation)]
     let narrow = wide as f32;
-    if !narrow.is_finite() || f64::from(narrow) != wide {
+    if !narrow.is_finite() || f64::from(narrow).to_bits() != wide.to_bits() {
         return None;
     }
     let shortest: f64 = format!("{narrow}").parse().ok()?;
-    (shortest != wide).then(|| Number::from_f64(shortest)).flatten()
+    if shortest.to_bits() == wide.to_bits() {
+        return None;
+    }
+    Number::from_f64(shortest)
 }
 
 #[cfg(test)]

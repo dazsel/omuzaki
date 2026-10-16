@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::registry::Studio;
-use common::{data, text};
+use common::{FakeRunnerExt, data, text};
 use omuzaki_mcp::{McpOptions, McpServer, ServerError};
 use omuzaki_ops_api::{Actor, ApprovalId, Decision, EndReason, Grants, Scope, Sessions, Transport};
 use rmcp::model::{CallToolRequestParams, CallToolResult, ClientCapabilities, ClientConfig, Implementation};
@@ -136,7 +136,6 @@ async fn disconnecting_mid_transaction_ends_the_session_and_abandons_the_transac
     assert_eq!(reason, EndReason::Disconnected);
     assert_eq!(ended.abandoned.len(), 1, "the open transaction was abandoned through the registry");
     assert!(!studio.runner.has_open_tx());
-    use common::FakeRunnerExt;
     assert_eq!(studio.runner.blend(), None, "the abandoned edits were reverted");
 }
 
@@ -146,7 +145,7 @@ async fn the_registry_ending_a_session_closes_its_connection() {
     let agent = Agent::connect(&server(&studio), "claude-code").await;
     agent.blend(0.4).await;
     let by = Studio::person();
-    studio.registry_ends(Sessions::sessions(studio.as_ref())[0].id, EndReason::Revoked { by, credential: false });
+    studio.registry_ends(Sessions::sessions(studio.as_ref())[0].id, &EndReason::Revoked { by, credential: false });
     // The server side of the connection ends on its own, without the client leaving first.
     let served = tokio::time::timeout(Duration::from_secs(5), agent.served).await.expect("the connection closes");
     served.expect("task").expect("ends cleanly");
@@ -215,7 +214,7 @@ async fn a_call_still_paused_after_the_hold_says_nothing_ran() {
     assert_eq!(data(&result)["code"], "waiting");
     assert!(text(&result).contains("the person paused this session; nothing ran"), "{}", text(&result));
     assert_eq!(data(&result)["detail"]["kind"], "paused");
-    assert!(studio.runner.records().is_empty());
+    assert_eq!(studio.runner.records(), []);
     agent.disconnect().await;
 }
 

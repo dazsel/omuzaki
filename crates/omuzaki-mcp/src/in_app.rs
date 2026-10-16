@@ -155,6 +155,7 @@ impl McpServer {
     /// [`ServerError::NoRegistry`] if the server was built without a session registry, and
     /// [`ServerError::SessionRefused`] with the registry's reason (an unknown parent, a ceiling above the person's or
     /// the parent's), before any stream exists.
+    #[allow(clippy::unused_async, clippy::unused_async_trait_impl)] // async so the host awaits it like any link; opening is quick and local today
     pub async fn connect_in_app(&self, spec: InAppSpec) -> Result<InAppLink, ServerError> {
         let host = self.shared().sessions.clone().ok_or(ServerError::NoRegistry)?;
         // Before the open, so an end that follows at once is not missed.

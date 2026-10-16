@@ -221,7 +221,7 @@ impl Library for OneItem {
         let info = ItemInfo {
             id: item.clone(),
             version: Version::parse("1.0.0").unwrap(),
-            hash: hash.clone(),
+            hash,
             title: manifest.title.clone(),
             summary: manifest.summary.clone(),
             section: Section::Hair,
@@ -289,7 +289,7 @@ async fn in_app_link() {
     let mut wire = Wire::over(link.client_io, "assistant-ui", json!({})).await;
     wire.call("session_info", json!({})).await;
     wire.call("face_set_blend", json!({"character": "mira", "blend": 0.4})).await;
-    studio.registry_ends(session, EndReason::Revoked { by: Studio::person(), credential: false });
+    studio.registry_ends(session, &EndReason::Revoked { by: Studio::person(), credential: false });
     assert!(matches!(end.closed().await, EndReason::Revoked { .. }));
     check_transcript(
         "in-app",

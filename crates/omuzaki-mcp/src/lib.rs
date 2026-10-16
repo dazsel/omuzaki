@@ -71,7 +71,7 @@
 //!   retry, caught up by the heads-up, goes through.
 //! - **Waiting.** A call refused because a person must act comes back `waiting`, never retried by this crate beyond the
 //!   rules below: *paused* says "the person paused this session; nothing ran"; *queued* says "approval #N asks the
-//!   person to ...; nothing ran; don't retry; call approval_wait or carry on". A call refused for a **pause** is held
+//!   person to ...; nothing ran; don't retry; call `approval_wait` or carry on". A call refused for a **pause** is held
 //!   up to [`McpOptions::with_pause_hold`] (20 s) for the person to resume the session, then runs once more. A call
 //!   refused by a **rate limit** that frees up within 2 s in all is slowed, not failed; a longer wait is `limited`
 //!   with the time to wait.
@@ -239,4 +239,6 @@ pub use server::{McpOptions, McpServer};
 pub use session::Session;
 
 // This crate registers ops (`agent.connection`), so the app that calls it links them in (ADR 0015).
-omuzaki_core::define_link!();
+omuzaki_core::define_link! {
+    omuzaki_library_api::link();
+}

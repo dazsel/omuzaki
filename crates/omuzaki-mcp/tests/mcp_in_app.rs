@@ -133,7 +133,7 @@ async fn revoking_from_the_registry_resolves_closed_and_the_stream_reaches_eof()
     let id = link.session();
     let (client, end) = client_of(link).await;
     let by = Studio::person();
-    studio.registry_ends(id, EndReason::Revoked { by: by.clone(), credential: false });
+    studio.registry_ends(id, &EndReason::Revoked { by: by.clone(), credential: false });
     let reason = tokio::time::timeout(Duration::from_secs(5), end.closed()).await.expect("closed resolves");
     assert_eq!(reason, EndReason::Revoked { by, credential: false });
     // The stream ends: the client's connection closes.
@@ -175,6 +175,7 @@ async fn a_server_without_a_registry_cannot_open_one() {
 
 /// Listening sockets this process owns, found through `/proc`: the link must not have added one.
 #[cfg(target_os = "linux")]
+#[allow(clippy::disallowed_methods, reason = "a test reads /proc; the fence is for ops")]
 fn listening_sockets() -> usize {
     use std::collections::BTreeSet;
     let mut ours = BTreeSet::new();

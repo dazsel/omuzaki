@@ -107,7 +107,7 @@ async fn a_session_the_registry_revokes_with_its_credential_takes_the_token_and_
     rig.open(&token).await;
     rig.open(&token).await;
     let first = Sessions::sessions(rig.studio.as_ref())[0].id;
-    rig.studio.registry_ends(first, EndReason::Revoked { by: Studio::person(), credential: true });
+    rig.studio.registry_ends(first, &EndReason::Revoked { by: Studio::person(), credential: true });
 
     // The token stops working, so a reconnect with the old secret gets 401, and the other session ends too.
     for _ in 0..300 {
@@ -126,7 +126,7 @@ async fn a_session_the_registry_revokes_without_its_credential_leaves_the_token_
     let token = rig.server.issue("Codex", Grants::agent_default()).unwrap();
     let id = rig.open(&token).await;
     let session = Sessions::sessions(rig.studio.as_ref())[0].id;
-    rig.studio.registry_ends(session, EndReason::Revoked { by: Studio::person(), credential: false });
+    rig.studio.registry_ends(session, &EndReason::Revoked { by: Studio::person(), credential: false });
 
     // The ended session's connection is closed, so its id no longer answers; the token itself still works.
     for _ in 0..300 {

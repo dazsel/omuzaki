@@ -258,7 +258,7 @@ mod tests {
 
     #[test]
     fn a_connection_that_leaves_disconnects_unless_it_was_quiet_for_the_idle_timeout() {
-        let idle = Duration::from_secs(1800);
+        let idle = Duration::from_mins(30);
         let token = credential(idle);
         assert_eq!(
             end_reason(false, None, Duration::from_hours(10)),
@@ -268,8 +268,14 @@ mod tests {
         assert_eq!(end_reason(false, Some(&token), Duration::from_secs(5)), EndReason::Disconnected);
         assert_eq!(end_reason(false, Some(&token), idle), EndReason::IdleTimeout);
         // The port's clock runs a moment ahead of this crate's, so a hair short still counts.
-        assert_eq!(end_reason(false, Some(&token), idle - Duration::from_millis(50)), EndReason::IdleTimeout);
-        assert_eq!(end_reason(false, Some(&token), idle - Duration::from_secs(1)), EndReason::Disconnected);
+        assert_eq!(
+            end_reason(false, Some(&token), idle.saturating_sub(Duration::from_millis(50))),
+            EndReason::IdleTimeout
+        );
+        assert_eq!(
+            end_reason(false, Some(&token), idle.saturating_sub(Duration::from_secs(1))),
+            EndReason::Disconnected
+        );
     }
 
     #[test]

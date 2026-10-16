@@ -419,7 +419,7 @@ fn result(blocks: Vec<String>, data: Value, is_error: bool) -> CallToolResult {
 /// Plain data as JSON. These types can't fail to serialise; if one ever does, say so in the output rather than
 /// panicking or dropping the field silently.
 fn value_of<T: Serialize + ?Sized>(value: &T) -> Value {
-    serde_json::to_value(value).map(floats::tidied).unwrap_or_else(|e| json!({"serialisation_error": e.to_string()}))
+    serde_json::to_value(value).map_or_else(|e| json!({"serialisation_error": e.to_string()}), floats::tidied)
 }
 
 /// Indented JSON: the form agents read best.

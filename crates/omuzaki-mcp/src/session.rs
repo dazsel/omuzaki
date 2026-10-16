@@ -477,29 +477,25 @@ impl Session {
         };
         let registry = self.shared.sessions.as_ref().map(|host| &host.sessions);
         let path_text = crate::changes::plain(&path.to_string(), 100);
-        match holder {
-            Some(holder) => {
-                let fence = registry.and_then(|r| r.session_of(holder)).map(|info| paths(&info.fence));
-                let theirs =
-                    fence.filter(|f| !f.is_empty()).map(|f| format!(" (their fence: {f})")).unwrap_or_default();
-                error.message = format!(
-                    "Refused: {path_text} is held by {}{theirs}. Nothing changed.",
-                    crate::changes::actor_label(holder)
-                );
-                error.hint = Some("Work on a part you hold, or ask the person to release it.".to_owned());
-            }
-            None => {
-                let mine = self
-                    .link
-                    .get()
-                    .and_then(|link| link.as_ref().ok())
-                    .zip(registry)
-                    .and_then(|(link, r)| r.session_of(&link.actor))
-                    .map(|info| paths(&info.fence))
-                    .unwrap_or_default();
-                error.message = format!("Refused: {path_text} is outside your fence ({mine}). Nothing changed.");
-                error.hint = Some("Edit only inside your fence, or ask the person to widen it.".to_owned());
-            }
+        if let Some(holder) = holder {
+            let fence = registry.and_then(|r| r.session_of(holder)).map(|info| paths(&info.fence));
+            let theirs = fence.filter(|f| !f.is_empty()).map(|f| format!(" (their fence: {f})")).unwrap_or_default();
+            error.message = format!(
+                "Refused: {path_text} is held by {}{theirs}. Nothing changed.",
+                crate::changes::actor_label(holder)
+            );
+            error.hint = Some("Work on a part you hold, or ask the person to release it.".to_owned());
+        } else {
+            let mine = self
+                .link
+                .get()
+                .and_then(|link| link.as_ref().ok())
+                .zip(registry)
+                .and_then(|(link, r)| r.session_of(&link.actor))
+                .map(|info| paths(&info.fence))
+                .unwrap_or_default();
+            error.message = format!("Refused: {path_text} is outside your fence ({mine}). Nothing changed.");
+            error.hint = Some("Edit only inside your fence, or ask the person to widen it.".to_owned());
         }
         error
     }
@@ -782,14 +778,14 @@ impl Session {
                     .await);
             }
             if tokio::time::timeout_at(deadline, arrivals.changed()).await.is_err() {
-                return Ok(self.still_pending(id, registry.as_ref()));
+                return Ok(Self::still_pending(id, registry.as_ref()));
             }
         }
     }
 
     /// The answer when `approval_wait` ran out of time: the approval is still waiting for the person (or its outcome
     /// is no longer in the feed).
-    fn still_pending(&self, id: omuzaki_ops_api::ApprovalId, registry: &dyn Sessions) -> Reply {
+    fn still_pending(id: omuzaki_ops_api::ApprovalId, registry: &dyn Sessions) -> Reply {
         let waiting = approvals::is_pending(registry, id);
         let text = if waiting {
             format!(

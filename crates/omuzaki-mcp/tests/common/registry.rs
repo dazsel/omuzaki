@@ -17,7 +17,7 @@ use omuzaki_ops_api::{
     Actor, ApprovalId, ApprovalRequest, Budget, Decision, EndReason, Ended, ErrorCode, ErrorDetail, Event, Grants,
     Mode, Need, OpError, OpInfo, OpKind, OpRecord, Outcome, PauseReason, PendingApproval, Plan, Request, Resolution,
     Resolved, Runner, SessionChange, SessionId, SessionInfo, SessionSpec, SessionState, SessionTx, SessionUndo,
-    Sessions, Spend, Transport, TxId,
+    Sessions, Spend, TxId,
 };
 
 use super::{FakeRunner, fake_runner, fake_runner_with};
@@ -135,7 +135,7 @@ impl Studio {
     }
 
     /// The registry ends a session on its own (a person revoked it, the project closed).
-    pub fn registry_ends(&self, id: SessionId, reason: EndReason) {
+    pub fn registry_ends(&self, id: SessionId, reason: &EndReason) {
         self.end_session(id, reason).expect("ends");
     }
 
@@ -159,7 +159,7 @@ impl Studio {
         info.clone()
     }
 
-    fn end_session(&self, id: SessionId, reason: EndReason) -> Result<Ended, OpError> {
+    fn end_session(&self, id: SessionId, reason: &EndReason) -> Result<Ended, OpError> {
         let (info, tx) = {
             let mut state = self.lock();
             let session = state
@@ -521,7 +521,7 @@ impl Sessions for Studio {
     }
 
     fn end(&self, id: SessionId, reason: EndReason) -> Result<Ended, OpError> {
-        self.end_session(id, reason)
+        self.end_session(id, &reason)
     }
 
     fn undo_session(&self, _: SessionId, _: &Actor) -> Result<SessionUndo, OpError> {

@@ -76,7 +76,7 @@ impl ResourceProvider for LibraryProvider {
         };
         let id = ItemId::new(item).map_err(|e| OpError::not_found(e.to_string()))?;
         let version = version.map(Version::parse).transpose().map_err(|e| OpError::not_found(e.to_string()))?;
-        let detail = self.library.describe(&id, version.as_ref()).map_err(library_error)?;
+        let detail = self.library.describe(&id, version.as_ref()).map_err(|e| library_error(&e))?;
         let text = serde_json::to_string_pretty(&item_json(&detail)?)
             .map_err(|e| OpError::internal(format!("couldn't encode {uri}: {e}")))?;
         Ok(vec![ResourceContents::text(text, uri).with_mime_type(JSON)])
@@ -84,14 +84,13 @@ impl ResourceProvider for LibraryProvider {
 }
 
 /// The library's refusal as the op error a client sees.
-fn library_error(error: LibraryError) -> OpError {
+fn library_error(error: &LibraryError) -> OpError {
     let message = error.to_string();
     match error {
         LibraryError::NotFound(_) | LibraryError::NoMatchingVersion { .. } => OpError::not_found(message),
         LibraryError::Ambiguous { .. } => OpError::conflict(message),
         LibraryError::Unsupported { .. } => OpError::unsupported(message),
-        // `LibraryError::Storage`, and any kind added later.
-        _ => OpError::internal(message),
+        LibraryError::Storage(_) => OpError::internal(message),
     }
 }
 

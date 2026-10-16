@@ -75,7 +75,7 @@ fn conversation() -> String {
             "name": "character_create", "arguments": {"misspelt_argument": 1}}}),
         json!({"jsonrpc": "2.0", "id": 5, "method": "prompts/list", "params": {}}),
     ];
-    messages.iter().map(|m| format!("{m}\n")).collect()
+    messages.iter().map(Value::to_string).collect::<Vec<_>>().join("\n") + "\n"
 }
 
 fn mcp_output(project: &Path, env: &[(&str, &str)]) -> String {
@@ -83,7 +83,16 @@ fn mcp_output(project: &Path, env: &[(&str, &str)]) -> String {
     mcp.arg("--project").arg(project).arg("mcp");
     let (code, stdout, stderr) = run(mcp, &conversation());
     assert_eq!(code, Some(0), "{stderr}");
-    stdout
+    // The server answers requests as they finish, so the replies may arrive in any order: compare them by id.
+    let mut replies: Vec<(u64, &str)> = stdout
+        .lines()
+        .map(|line| {
+            let id = serde_json::from_str::<Value>(line).ok().and_then(|m| m["id"].as_u64());
+            (id.unwrap_or(0), line)
+        })
+        .collect();
+    replies.sort_unstable();
+    replies.into_iter().map(|(_, line)| format!("{line}\n")).collect()
 }
 
 #[test]
@@ -93,7 +102,20 @@ fn the_mcp_surface_is_byte_identical_under_every_locale_and_in_english() {
         settings().into_iter().map(|env| (env.clone(), mcp_output(project.path(), &env))).collect();
     let (first_env, first) = &outputs[0];
     for (env, output) in &outputs {
-        assert_eq!(output, first, "{env:?} differs from {first_env:?}");
+        if output != first {
+            let (a, b): (Vec<&str>, Vec<&str>) = (first.lines().collect(), output.lines().collect());
+            let at = a.iter().zip(&b).position(|(x, y)| x != y);
+            let shown = at.map(|i| {
+                let at_byte = a[i].bytes().zip(b[i].bytes()).position(|(x, y)| x != y).unwrap_or(0);
+                let from = at_byte.saturating_sub(80);
+                (
+                    i,
+                    a[i].get(from..(from + 200).min(a[i].len())).unwrap_or(""),
+                    b[i].get(from..(from + 200).min(b[i].len())).unwrap_or(""),
+                )
+            });
+            panic!("{env:?} differs from {first_env:?}: {shown:?} ({} vs {} lines)", a.len(), b.len());
+        }
     }
 
     // What was compared is the whole surface: the guide, the tools, a refused call and the prompt list.
