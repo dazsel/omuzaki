@@ -236,16 +236,14 @@ pub enum Verdict {
 }
 
 /// Which findings a call wants.
-#[derive(Clone, Copy)]
-struct Scope {
-    /// Rows over their budget.
-    budget: bool,
-    /// Rows worse than the previous run.
-    regressions: bool,
-    /// Count a regression only on a row that has a budget.
-    budgeted_only: bool,
-    /// Rows over budget on a pessimistic estimate.
-    warnings: bool,
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Scope {
+    /// Everything, warnings included (what a report prints).
+    Everything,
+    /// What fails a `measured` or `scaled` run: rows over their budget.
+    Budget,
+    /// What fails a `relative` run: regressions of rows that have a budget.
+    Regressions,
 }
 
 /// Whether a budget row's tier cell (`R`, `R`, `U`, `any`, `as R`) covers the `claimed` tier.
@@ -346,7 +344,7 @@ impl Report {
     /// Every finding: rows over budget, with a unit mismatch, truncated, or more than [`REGRESSION_LIMIT`] worse than the
     /// previous run. Whether a finding fails a run is [`Report::failures`].
     pub fn violations(&self) -> Vec<String> {
-        self.findings(Scope { budget: true, regressions: true, budgeted_only: false, warnings: true })
+        self.findings(Scope::Everything)
     }
 
     /// The findings that fail a gating run of this report's class. `reported` numbers never gate; `measured` and
@@ -356,24 +354,22 @@ impl Report {
     pub fn failures(&self) -> Vec<String> {
         match self.class {
             Class::Reported => Vec::new(),
-            Class::Measured | Class::Scaled => {
-                self.findings(Scope { budget: true, regressions: false, budgeted_only: false, warnings: false })
-            }
-            Class::Relative => {
-                self.findings(Scope { budget: false, regressions: true, budgeted_only: true, warnings: false })
-            }
+            Class::Measured | Class::Scaled => self.findings(Scope::Budget),
+            Class::Relative => self.findings(Scope::Regressions),
         }
     }
 
     fn findings(&self, scope: Scope) -> Vec<String> {
-        let Scope { budget, regressions, budgeted_only, warnings } = scope;
+        let budget = scope != Scope::Regressions;
+        let regressions = scope != Scope::Budget;
+        let budgeted_only = scope == Scope::Regressions;
         let mut out = Vec::new();
         for r in &self.rows {
             let key = &r.metric.key;
             match r.verdict {
                 Verdict::Over if budget => out.push(format!("{key}: over budget")),
-                Verdict::Warn if warnings => {
-                    out.push(format!("{key}: over budget on the pessimistic estimate (warning)"))
+                Verdict::Warn if scope == Scope::Everything => {
+                    out.push(format!("{key}: over budget on the pessimistic estimate (warning)"));
                 }
                 Verdict::UnitMismatch => out.push(format!("{key}: unit differs from the budget")),
                 _ => {}
@@ -608,7 +604,7 @@ mod tests {
     #[test]
     fn a_worsening_from_a_zero_baseline_is_a_regression() {
         let before = report(vec![us("physics.step", 0)], None);
-        assert_eq!(before.rows[0].previous, Some(0.0));
+        assert_eq!(before.rows[0].value, Some(0.0));
         let worse = report(vec![us("physics.step", 400)], Some(&before));
         assert!(worse.rows[0].regression && worse.rows[0].change_pct.is_none());
         assert_eq!(worse.failures(), ["physics.step: regression from zero"]);
