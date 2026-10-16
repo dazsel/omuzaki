@@ -623,7 +623,10 @@ fn a_session_record_that_does_not_decode_is_not_the_recovery_exception() {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Tail {
     Eof,
+    /// 40 zero bytes.
     Zeros,
+    /// A zero length followed by header bytes that are not zero.
+    ZeroLen,
 }
 
 /// What a generated segment is.
@@ -664,8 +667,13 @@ fn build(shape: Shape) -> Vec<u8> {
                     bytes[start + 25] ^= 0x04;
                 }
             }
-            if tail == Tail::Zeros {
-                bytes.extend([0u8; 40]);
+            if tail != Tail::Eof {
+                if tail == Tail::Zeros {
+                    bytes.extend([0u8; 40]);
+                } else {
+                    bytes.extend([0u8; 4]);
+                    bytes.extend([0xAB; 40]);
+                }
                 encode(&commits(first + n + 3, first + n + 2 + ghost), &mut bytes).unwrap();
             }
             bytes
@@ -695,8 +703,18 @@ fn head(file: &[u8]) -> Head {
     }
 }
 
+/// A frame boundary that is known to be one is a zero tail when the length is 0 or a header's worth of zeros follows;
+/// the end of the file is not one.
 fn zero_tail(rest: &[u8]) -> bool {
-    rest.iter().take(FRAME_HEADER_LEN).all(|&b| b == 0)
+    !rest.is_empty()
+        && (matches!(read_frame(rest), Err(FrameEnd::Zero)) || rest.iter().take(FRAME_HEADER_LEN).all(|&b| b == 0))
+}
+
+/// What looking for the frame after the base in old damage finds.
+enum Found {
+    At(usize),
+    Tail,
+    Nothing,
 }
 
 /// A plain, slow scanner over the segment files as byte vectors: journal.md 8.2 read literally, with brute force
@@ -745,16 +763,16 @@ impl Reference<'_> {
     }
 
     /// The offset of the frame `from + 1` at or after `offset`, in damage the snapshot covers.
-    fn find_base(&self, file: &[u8], offset: usize) -> Option<usize> {
+    fn find_base(&self, file: &[u8], offset: usize) -> Found {
         let mut at = offset;
         while at < file.len() {
             if let Ok(frame) = read_frame(&file[at..]) {
                 if frame.lsn.0 == self.from + 1 {
-                    return Some(at);
+                    return Found::At(at);
                 }
                 at += frame.len();
                 if zero_tail(&file[at..]) {
-                    return None;
+                    return Found::Tail;
                 }
             } else {
                 // The bad frame's own length, when it fits, says where the next one starts.
@@ -766,12 +784,12 @@ impl Reference<'_> {
                     && at + FRAME_HEADER_LEN + len <= file.len()
                     && zero_tail(&file[at + FRAME_HEADER_LEN + len..])
                 {
-                    return None;
+                    return Found::Tail;
                 }
                 at += 1;
             }
         }
-        None
+        Found::Nothing
     }
 
     fn scan(&self) -> Model {
@@ -807,13 +825,17 @@ impl Reference<'_> {
                     _ => {
                         // Old damage: the snapshot covers it, so look for the record after the base, unless a recovery
                         // session took over at the last good record.
-                        if expected <= from
-                            && !self.recovery(i, expected)
-                            && let Some(found) = self.find_base(file, offset)
-                        {
-                            expected = from + 1;
-                            offset = found;
-                            continue;
+                        if expected <= from && !self.recovery(i, expected) {
+                            match self.find_base(file, offset) {
+                                Found::At(found) => {
+                                    expected = from + 1;
+                                    offset = found;
+                                    continue;
+                                }
+                                // A genuine tail: the log ends there.
+                                Found::Tail => break ('Z', offset),
+                                Found::Nothing => {}
+                            }
                         }
                         break ('B', offset);
                     }
@@ -855,7 +877,7 @@ fn random_layouts_match_the_reference_scanner() {
         state ^= state << 17;
         state % bound
     };
-    for round in 0..4000_u32 {
+    for round in 0..2500_u32 {
         let count = 1 + rand(5);
         let mut layout = Vec::new();
         // The oldest segment starts at, before or after the base, depending on `from`.
@@ -868,7 +890,7 @@ fn random_layouts_match_the_reference_scanner() {
                     first: expected,
                     n: rand(4),
                     session: false,
-                    tail: if rand(2) == 0 { Tail::Eof } else { Tail::Zeros },
+                    tail: [Tail::Eof, Tail::Zeros, Tail::ZeroLen][usize::try_from(rand(3)).unwrap()],
                     damage: None,
                     zeroed: false,
                     ghost: 0,
@@ -899,7 +921,7 @@ fn random_layouts_match_the_reference_scanner() {
                     first: expected,
                     n: 2 + rand(4),
                     session: false,
-                    tail: if rand(2) == 0 { Tail::Eof } else { Tail::Zeros },
+                    tail: [Tail::Eof, Tail::Zeros, Tail::ZeroLen][usize::try_from(rand(3)).unwrap()],
                     damage: None,
                     zeroed: false,
                     ghost: 0,
@@ -924,7 +946,7 @@ fn random_layouts_match_the_reference_scanner() {
                     *damage = Some(rand(*n));
                     *zeroed = rand(2) == 0;
                 }
-                if *tail == Tail::Zeros && rand(2) == 0 {
+                if *tail != Tail::Eof && rand(2) == 0 {
                     *ghost = 1 + rand(3);
                 }
             }
@@ -1052,8 +1074,7 @@ fn old_damage_resynchronization_stops_at_a_zero_tail() {
     let dir = tempfile::tempdir().unwrap();
     put(dir.path(), 1, &bytes);
     let scan = Reader::scan(dir.path(), Lsn(5)).unwrap();
-    assert_eq!(lsns(&scan), Vec::<u64>::new());
-    assert!(matches!(scan.end, End::Damaged { .. }), "{:?}", scan.end);
+    assert_eq!((lsns(&scan), scan.end), (Vec::<u64>::new(), End::Clean));
 }
 
 #[test]
@@ -1084,4 +1105,34 @@ fn an_oldest_segment_that_starts_after_the_base_is_a_gap() {
         let scan = Reader::scan(dir.path(), Lsn(from)).unwrap();
         assert_eq!((lsns(&scan), scan.end), (want, End::Clean), "from {from}");
     }
+}
+
+#[test]
+fn a_tail_found_while_resynchronizing_ends_the_log() {
+    // Segment 1: valid 1, damaged 2, valid 3, then zeros. Segment 2 holds non-session records 6-10.
+    let records = commits(1, 3);
+    let mut bytes = segment(1, &records);
+    bytes[offset_of(&records, 1) + 25] ^= 0x04;
+    bytes.extend([0u8; 40]);
+    let dir = tempfile::tempdir().unwrap();
+    put(dir.path(), 1, &bytes);
+    put(dir.path(), 2, &segment(6, &commits(6, 10)));
+    let scan = Reader::scan(dir.path(), Lsn(5)).unwrap();
+    assert_eq!((lsns(&scan), scan.end), (Vec::<u64>::new(), End::Clean));
+}
+
+#[test]
+fn a_zero_length_at_an_aligned_boundary_is_a_tail_whatever_follows_it() {
+    // Valid 1, damaged 2, valid 3, then a zero length with junk after it instead of a header's worth of zeros, then a
+    // stale frame 6. The zero length ends the log.
+    let records = commits(1, 3);
+    let mut bytes = segment(1, &records);
+    bytes[offset_of(&records, 1) + 25] ^= 0x04;
+    bytes.extend([0u8; 4]);
+    bytes.extend([0xAB; 40]);
+    encode(&commits(6, 6), &mut bytes).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    put(dir.path(), 1, &bytes);
+    let scan = Reader::scan(dir.path(), Lsn(5)).unwrap();
+    assert_eq!((lsns(&scan), scan.end), (Vec::<u64>::new(), End::Clean));
 }

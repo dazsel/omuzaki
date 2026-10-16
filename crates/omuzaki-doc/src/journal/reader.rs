@@ -88,7 +88,9 @@ impl Reader {
     ///    file, it continues into a next segment that starts after the last good record and no later than `from + 1`.
     ///    A zero tail is never old damage, and zeros
     ///    are a tail only at a frame boundary the search has established (after a valid frame, or where the bad
-    ///    frame's own length says the next one starts), never at an arbitrary offset inside damage.
+    ///    frame's own length says the next one starts), never at an arbitrary offset inside damage. At such a
+    ///    boundary a zero length is a tail, whatever follows it, and a tail found that way ends the log (rule 2): it
+    ///    is not a bad frame that a later segment could continue past.
     /// 5. **Reachability.** A file is opened only when the walk reaches it. A newer-format header or an unknown
     ///    required kind there is [`JournalError::TooNew`], and an unreadable file is [`JournalError::Io`]; the same
     ///    beyond a logical end is ignored.
@@ -242,9 +244,21 @@ fn count_frames(bytes: &[u8], budget: &mut usize) -> (usize, bool) {
     (count, false)
 }
 
-/// Whether `rest` is a zero tail (journal.md 8.2): empty, or zeros for the length of a frame header.
+/// Whether a frame boundary at the start of `rest` is a zero tail (journal.md 8.2): a zero length, or zeros for the
+/// length of a frame header. The end of the file is not one. Only for a boundary that is known to be one.
 fn is_zero_tail(rest: &[u8]) -> bool {
-    rest.iter().take(FRAME_HEADER_LEN).all(|&b| b == 0)
+    !rest.is_empty()
+        && (matches!(read_frame(rest), Err(FrameEnd::Zero)) || rest.iter().take(FRAME_HEADER_LEN).all(|&b| b == 0))
+}
+
+/// What looking for the frame after the base found in old damage.
+enum Resync {
+    /// The frame, at this offset.
+    Base(usize),
+    /// A zero tail first: the log ends there, whatever lies after it.
+    Tail,
+    /// Neither.
+    Nothing,
 }
 
 /// The payload length a frame at the start of `rest` would have: in `1..=MAX_PAYLOAD` and fitting the data.
@@ -470,22 +484,24 @@ impl Scanner<'_> {
 
     /// Looks for the frame `from + 1` at or after `offset`: the next record the snapshot doesn't cover. Rule 4 of
     /// [`Reader::scan`]. Spends the resync budget.
-    fn find_base(&mut self, bytes: &[u8], offset: usize) -> Option<usize> {
-        let wanted = self.from.0.checked_add(1)?;
+    fn find_base(&mut self, bytes: &[u8], offset: usize) -> Resync {
+        let Some(wanted) = self.from.0.checked_add(1) else {
+            return Resync::Nothing;
+        };
         let mut at = offset;
         while at < bytes.len() {
             let rest = tail(bytes, at);
             match probe(rest, &mut self.budget) {
                 Probe::Exhausted => {
                     self.exhausted = true;
-                    return None;
+                    return Resync::Nothing;
                 }
-                Probe::Frame(frame) if frame.lsn.0 == wanted => return Some(at),
+                Probe::Frame(frame) if frame.lsn.0 == wanted => return Resync::Base(at),
                 Probe::Frame(frame) => {
                     at += frame.len();
                     // A frame boundary the search has established: a zero tail here ends the log.
                     if is_zero_tail(tail(bytes, at)) {
-                        return None;
+                        return Resync::Tail;
                     }
                 }
                 Probe::No => {
@@ -495,13 +511,13 @@ impl Scanner<'_> {
                         && let Some(len) = frame_len(rest)
                         && is_zero_tail(tail(bytes, at + FRAME_HEADER_LEN + len))
                     {
-                        return None;
+                        return Resync::Tail;
                     }
                     at += 1;
                 }
             }
         }
-        None
+        Resync::Nothing
     }
 
     /// Reads the frames of one segment, keeping the records after `from`.
@@ -531,13 +547,18 @@ impl Scanner<'_> {
             };
             // Damage before the base is old (8.2): skip to the record after it, if there is one. Not when a recovery
             // session follows the last good record: the rest of this segment was discarded.
-            if self.next <= self.from
-                && !self.recovers_into(next)
-                && let Some(found) = self.find_base(bytes, offset)
-            {
-                self.next = Lsn(self.from.0 + 1);
-                offset = found;
-                continue;
+            if self.next <= self.from && !self.recovers_into(next) {
+                match self.find_base(bytes, offset) {
+                    Resync::Base(found) => {
+                        self.next = Lsn(self.from.0 + 1);
+                        offset = found;
+                        continue;
+                    }
+                    // A genuine end of the log, not damage: it must not become a bad frame that a later segment
+                    // could continue past.
+                    Resync::Tail => return Ok(Stop::ZeroTail),
+                    Resync::Nothing => {}
+                }
             }
             return Ok(stop);
         }
