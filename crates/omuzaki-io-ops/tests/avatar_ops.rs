@@ -430,3 +430,35 @@ fn the_edits_need_edit_character_and_describe_needs_read() {
     assert!(Grants::agent_default().allows(Scope::EditCharacter), "an agent with edit:character may");
     assert!(!Grants::of([Scope::Read]).allows(Scope::EditCharacter), "an agent without it may not");
 }
+
+/// Prints the evidence #2087 asks for: a generated VRM's report in its four sections, with each stage's time on the
+/// real clock. The model is the original test head (`tests/common/head.rs`) written by the mock VRM 1.0 writer.
+#[test]
+#[ignore = "prints evidence for the pull request; run by hand with --nocapture"]
+fn evidence_report() {
+    use omuzaki_io_ops::report_sections::{Section, section};
+    let mut scene = common::head::head().scene;
+    scene.meta.terms.avatar_permission = AvatarPermission::Everyone;
+    scene.meta.terms.credit_notation = CreditNotation::Required;
+    let project = Project::new();
+    let path = project.file("Head.vrm", &vrm_bytes(&scene));
+    let clock = omuzaki_core::time::SystemClock::new();
+    let op = (find("io.inspect").unwrap().decode)(json!({ "path": path.to_str().unwrap(), "as": "avatar" })).unwrap();
+    let dir = ProjectDir::open(project.dir.path()).unwrap();
+    let ctx = OpCtx::new(&project.doc, &project.actor, &clock)
+        .with_grants(&project.grants)
+        .with_project_dir(&dir)
+        .with_services(&project.services);
+    let out = op.plan(&ctx).unwrap().output.unwrap();
+    let report = report_of(&out);
+    for wanted in [Section::Mapped, Section::MadeForYou, Section::NotUsed, Section::Rights] {
+        let rows: Vec<String> = report
+            .findings
+            .iter()
+            .filter(|f| section(&f.rule) == wanted)
+            .map(|f| format!("  - {} ({}): {}", f.rule, f.location.as_deref().unwrap_or("-"), f.message))
+            .collect();
+        println!("{wanted:?}: {} findings\n{}", rows.len(), rows.join("\n"));
+    }
+    println!("summary: {}", serde_json::to_string_pretty(&out["avatar"]["summary"]).unwrap());
+}
