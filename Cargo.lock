@@ -3636,9 +3636,11 @@ name = "omuzaki-cli"
 version = "0.0.0"
 dependencies = [
  "clap",
+ "omuzaki-anim-api",
  "omuzaki-core",
  "omuzaki-doc",
  "omuzaki-doc-api",
+ "omuzaki-face-api",
  "omuzaki-io-gltf",
  "omuzaki-io-ops",
  "omuzaki-io-vrm",
@@ -3649,6 +3651,7 @@ dependencies = [
  "omuzaki-stage",
  "omuzaki-store",
  "omuzaki-store-api",
+ "omuzaki-track-api",
  "schemars",
  "serde",
  "serde_json",
@@ -4289,6 +4292,7 @@ dependencies = [
  "omuzaki-anim",
  "omuzaki-anim-api",
  "omuzaki-anim-mock",
+ "omuzaki-budget",
  "omuzaki-char",
  "omuzaki-char-api",
  "omuzaki-char-mock",
@@ -4306,6 +4310,7 @@ dependencies = [
  "omuzaki-render-api",
  "omuzaki-render-mock",
  "omuzaki-rig",
+ "omuzaki-settings-api",
  "omuzaki-stage-api",
  "omuzaki-store-api",
  "omuzaki-store-mock",
@@ -4554,6 +4559,29 @@ dependencies = [
  "tempfile",
  "toml",
  "tracing",
+]
+
+[[package]]
+name = "omuzaki-ui-api"
+version = "0.0.0"
+dependencies = [
+ "egui",
+ "inventory",
+ "omuzaki-core",
+ "omuzaki-ops-api",
+ "serde",
+]
+
+[[package]]
+name = "omuzaki-ui-mock"
+version = "0.0.0"
+dependencies = [
+ "egui",
+ "omuzaki-core",
+ "omuzaki-doc-mock",
+ "omuzaki-ops-api",
+ "omuzaki-ops-mock",
+ "omuzaki-ui-api",
 ]
 
 [[package]]
