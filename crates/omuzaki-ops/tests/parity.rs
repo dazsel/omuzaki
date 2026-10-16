@@ -13,7 +13,8 @@ use omuzaki_doc_api::{DocPath, Patch};
 use omuzaki_doc_mock::MemDoc;
 use omuzaki_ops::Executor;
 use omuzaki_ops_api::{
-    Actor, ErrorCode, Grants, Mode, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Request, Runner, Scope, Undo, register_op,
+    Actor, Budget, ErrorCode, Grants, Limits, Mode, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Request, Runner, Scope,
+    SessionSpec, Sessions, Transport, Undo, register_op,
 };
 use omuzaki_ops_mock::MockRunner;
 use schemars::JsonSchema;
@@ -189,8 +190,23 @@ fn person() -> Actor {
     Actor::Person { name: "alice".into() }
 }
 
+fn agent_session() -> SessionSpec {
+    SessionSpec {
+        transport: Transport::Stdio,
+        client: "claude".into(),
+        model: None,
+        on_behalf_of: person(),
+        grants: Grants::person(),
+        budget: Budget::default(),
+        limits: Limits::default(),
+        parent: None,
+        role: None,
+        fence: Vec::new(),
+    }
+}
+
 fn agent() -> Actor {
-    Actor::Agent { id: "agent-1".into(), model: None }
+    Actor::Agent { id: "claude#1".into(), model: None }
 }
 
 /// The executor and the mock over the same starting document. Every call goes to both and asserts that they answer
@@ -204,6 +220,9 @@ impl Pair {
     fn new() -> Self {
         let clock = Arc::new(FakeClock::new(Seconds(0.0)));
         let exec = Executor::new(Box::new(MemDoc::from_value(json!({}))), clock).unwrap();
+        // The mock has no sessions: the executor's one is the agent `agent()` names.
+        let session = exec.open(agent_session()).unwrap();
+        assert_eq!(session.actor, agent());
         Self { exec, mock: MockRunner::new(MemDoc::from_value(json!({}))) }
     }
 

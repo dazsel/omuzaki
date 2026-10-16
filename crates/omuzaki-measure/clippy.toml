@@ -1,0 +1,51 @@
+# The file fence for a crate that registers ops (docs/design/ops-api.md section 5): its code reaches files only
+# through `OpCtx::fs_access` and the `CanonicalPath` it returns, whose opens never follow a link. Opening by path would
+# let a link swapped in after the check redirect the open. A legitimate use (a test fixture, the CLI reading what the
+# person typed) is allowed where it is, with `#[allow(clippy::disallowed_methods)]` and a one-line reason.
+#
+# Clippy reads this file instead of the workspace's `clippy.toml`, so the workspace settings are repeated first;
+# `crates/omuzaki-ops-api/tests/fs_fence.rs` checks that every op crate has this fence and that the copies agree.
+
+# Workspace settings (from the root `clippy.toml`).
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+
+disallowed-methods = [
+    { path = "std::fs::File::open", reason = "ops reach files only through `OpCtx::fs_access` and the `CanonicalPath` it returns; allow a legitimate use locally, with its reason" },
+    { path = "std::fs::File::create", reason = "ops reach files only through `OpCtx::fs_access` and the `CanonicalPath` it returns; allow a legitimate use locally, with its reason" },
+    { path = "std::fs::File::create_new", reason = "ops reach files only through `OpCtx::fs_access` and the `CanonicalPath` it returns; allow a legitimate use locally, with its reason" },
+    { path = "std::fs::OpenOptions::open", reason = "ops reach files only through `OpCtx::fs_access` and the `CanonicalPath` it returns; allow a legitimate use locally, with its reason" },
+    { path = "std::fs::DirBuilder::create", reason = "ops reach files only through `OpCtx::fs_access` and the `CanonicalPath` it returns; allow a legitimate use locally, with its reason" },
+    { path = "std::fs::read", reason = "ops reach files only through `OpCtx::fs_access` and the `CanonicalPath` it returns; allow a legitimate use locally, with its reason" },
+    { path = "std::fs::read_to_string", reason = "ops reach files only through `OpCtx::fs_access` and the `CanonicalPath` it returns; allow a legitimate use locally, with its reason" },
+    { path = "std::fs::write", reason = "ops reach files only through `OpCtx::fs_access` and the `CanonicalPath` it returns; allow a legitimate use locally, with its reason" },
+    { path = "std::fs::exists", reason = "ops reach files only through `OpCtx::fs_access` and the `CanonicalPath` it returns; allow a legitimate use locally, with its reason" },
+    { path = "std::fs::create_dir", reason = "ops reach files only through `OpCtx::fs_access` and the `CanonicalPath` it returns; allow a legitimate use locally, with its reason" },
+    { path = "std::fs::create_dir_all", reason = "ops reach files only through `OpCtx::fs_access` and the `CanonicalPath` it returns; allow a legitimate use locally, with its reason" },
+    { path = "std::fs::remove_file", reason = "ops reach files only through `OpCtx::fs_access` and the `CanonicalPath` it returns; allow a legitimate use locally, with its reason" },
+    { path = "std::fs::remove_dir", reason = "ops reach files only through `OpCtx::fs_access` and the `CanonicalPath` it returns; allow a legitimate use locally, with its reason" },
+    { path = "std::fs::remove_dir_all", reason = "ops reach files only through `OpCtx::fs_access` and the `CanonicalPath` it returns; allow a legitimate use locally, with its reason" },
+    { path = "std::fs::rename", reason = "ops reach files only through `OpCtx::fs_access` and the `CanonicalPath` it returns; allow a legitimate use locally, with its reason" },
+    { path = "std::fs::copy", reason = "ops reach files only through `OpCtx::fs_access` and the `CanonicalPath` it returns; allow a legitimate use locally, with its reason" },
+    { path = "std::fs::hard_link", reason = "ops reach files only through `OpCtx::fs_access` and the `CanonicalPath` it returns; allow a legitimate use locally, with its reason" },
+    { path = "std::fs::soft_link", reason = "ops reach files only through `OpCtx::fs_access` and the `CanonicalPath` it returns; allow a legitimate use locally, with its reason" },
+    { path = "std::fs::set_permissions", reason = "ops reach files only through `OpCtx::fs_access` and the `CanonicalPath` it returns; allow a legitimate use locally, with its reason" },
+    { path = "std::fs::read_link", reason = "ops reach files only through `OpCtx::fs_access` and the `CanonicalPath` it returns; allow a legitimate use locally, with its reason" },
+    { path = "std::fs::read_dir", reason = "ops reach files only through `OpCtx::fs_access` and the `CanonicalPath` it returns; allow a legitimate use locally, with its reason" },
+    { path = "std::fs::metadata", reason = "ops reach files only through `OpCtx::fs_access` and the `CanonicalPath` it returns; allow a legitimate use locally, with its reason" },
+    { path = "std::fs::symlink_metadata", reason = "ops reach files only through `OpCtx::fs_access` and the `CanonicalPath` it returns; allow a legitimate use locally, with its reason" },
+    { path = "std::fs::canonicalize", reason = "ops reach files only through `OpCtx::fs_access` and the `CanonicalPath` it returns; allow a legitimate use locally, with its reason" },
+    { path = "std::os::unix::fs::symlink", reason = "ops reach files only through `OpCtx::fs_access` and the `CanonicalPath` it returns; allow a legitimate use locally, with its reason", allow-invalid = true },
+    { path = "std::os::windows::fs::symlink_file", reason = "ops reach files only through `OpCtx::fs_access` and the `CanonicalPath` it returns; allow a legitimate use locally, with its reason", allow-invalid = true },
+    { path = "std::os::windows::fs::symlink_dir", reason = "ops reach files only through `OpCtx::fs_access` and the `CanonicalPath` it returns; allow a legitimate use locally, with its reason", allow-invalid = true },
+    { path = "std::path::Path::exists", reason = "ops reach files only through `OpCtx::fs_access` and the `CanonicalPath` it returns; allow a legitimate use locally, with its reason" },
+    { path = "std::path::Path::try_exists", reason = "ops reach files only through `OpCtx::fs_access` and the `CanonicalPath` it returns; allow a legitimate use locally, with its reason" },
+    { path = "std::path::Path::is_file", reason = "ops reach files only through `OpCtx::fs_access` and the `CanonicalPath` it returns; allow a legitimate use locally, with its reason" },
+    { path = "std::path::Path::is_dir", reason = "ops reach files only through `OpCtx::fs_access` and the `CanonicalPath` it returns; allow a legitimate use locally, with its reason" },
+    { path = "std::path::Path::is_symlink", reason = "ops reach files only through `OpCtx::fs_access` and the `CanonicalPath` it returns; allow a legitimate use locally, with its reason" },
+    { path = "std::path::Path::metadata", reason = "ops reach files only through `OpCtx::fs_access` and the `CanonicalPath` it returns; allow a legitimate use locally, with its reason" },
+    { path = "std::path::Path::symlink_metadata", reason = "ops reach files only through `OpCtx::fs_access` and the `CanonicalPath` it returns; allow a legitimate use locally, with its reason" },
+    { path = "std::path::Path::read_link", reason = "ops reach files only through `OpCtx::fs_access` and the `CanonicalPath` it returns; allow a legitimate use locally, with its reason" },
+    { path = "std::path::Path::read_dir", reason = "ops reach files only through `OpCtx::fs_access` and the `CanonicalPath` it returns; allow a legitimate use locally, with its reason" },
+    { path = "std::path::Path::canonicalize", reason = "ops reach files only through `OpCtx::fs_access` and the `CanonicalPath` it returns; allow a legitimate use locally, with its reason" },
+]
