@@ -17,6 +17,12 @@
 //! its file are evaluated (`cfg::Cfg`): `#[cfg(test)]` code is left out, and a `cfg` the scan can't decide (a cargo
 //! feature) is an error, never a guess. Binary targets (`src/main.rs`, `src/bin/`) count for their own binary only;
 //! `tests/`, `benches/` and `examples/` never ship.
+//!
+//! The module forms the scan can't follow are errors too, found anywhere in a `src/` tree: a `mod` inside a body (a
+//! macro's `mod $name;` included), an `include!` other than the generated `include!(concat!(env!("OUT_DIR"), ...))`
+//! that the build scripts write (ADR 0015), a `#[cfg_attr(..., path = ...)]` on a `mod`, and a `#[path]` on an inline `mod` block
+//! ([`Error::UnsupportedModule`]). Each would compile files the scan can't name, so each is refused with its place and
+//! what to write instead.
 
 mod cfg;
 mod crates;
@@ -137,6 +143,15 @@ pub enum Error {
         /// The undecided predicates and where each one is written.
         conditions: String,
     },
+    /// A module form the scan can't follow, so the files it compiles are unknown. The gate refuses rather than skip
+    /// them, because a skipped file would hide its registrations (ADR 0015).
+    #[error("{location}: unsupported module form: {form}; see ADR 0015")]
+    UnsupportedModule {
+        /// The file and line the form is on: `crates/<name>/src/<file>.rs:<line>`.
+        location: String,
+        /// What was found and what to write instead.
+        form: &'static str,
+    },
 }
 
 /// A `cfg` predicate and where it is written.
@@ -220,8 +235,8 @@ impl Sources {
     /// Reads and scans the workspace at `root` for the host's own build ([`Target::host`]).
     ///
     /// # Errors
-    /// An unreadable manifest, directory or source file, or [`Error::UndecidableCfg`] for a registration under a
-    /// `cfg` the scan can't decide.
+    /// An unreadable manifest, directory or source file, [`Error::UndecidableCfg`] for a registration under a `cfg`
+    /// the scan can't decide, or [`Error::UnsupportedModule`] for a module form it can't follow.
     pub fn scan(root: &Path) -> Result<Self, Error> {
         Self::scan_for(root, &Target::host())
     }
@@ -240,9 +255,16 @@ impl Sources {
             for file in rust_files(&dir.join("src"))? {
                 let source = fs::read_to_string(&file).map_err(|source| Error::Read { path: file.clone(), source })?;
                 let scan = scan::scan(&source);
+                let name = slashes(file.strip_prefix(root).unwrap_or(&file));
+                if let Some(found) = scan.unsupported.first() {
+                    return Err(Error::UnsupportedModule {
+                        location: format!("{name}:{}", found.line),
+                        form: found.form.describe(),
+                    });
+                }
                 kinds.extend(scan.defines.iter().cloned());
                 let path = file.strip_prefix(&dir).unwrap_or(&file).to_path_buf();
-                files.push(ScannedFile { name: slashes(file.strip_prefix(root).unwrap_or(&file)), path, scan });
+                files.push(ScannedFile { path, name, scan });
             }
             read.push((krate, files));
         }
@@ -540,8 +562,8 @@ fn registrations_where(
 }
 
 /// The `cfg`s each file is compiled under: those on the chain of `mod` declarations from a crate root (library or
-/// binary) down to it, plus the file's own `#![cfg]`s. A file no declaration reaches (one `include!`d from generated
-/// code, say) keeps only its own.
+/// binary) down to it, plus the file's own `#![cfg]`s. A file no declaration reaches keeps only its own. (A file that
+/// some other way compiles in, such as `include!`, is refused before this point rather than left unread.)
 fn file_conditions(krate: &Crate, files: &[ScannedFile]) -> BTreeMap<PathBuf, Vec<Condition>> {
     let by_path: BTreeMap<&Path, &ScannedFile> = files.iter().map(|f| (f.path.as_path(), f)).collect();
     let own = |file: &ScannedFile| Condition::at(&file.name, &file.scan.inner_cfgs).collect::<Vec<_>>();
