@@ -350,7 +350,10 @@ fn dropped_off_thread_since(model: &ModelRef, mark: usize) -> bool {
 
 #[test]
 fn a_selection_change_keeps_the_old_model_answering_until_the_new_one_is_in() {
-    let rig = Rig::new(&[("1.0.0", model_file("swap-1", 0, None)), ("2.0.0", model_file("swap-2", 200, None))]);
+    let rig = Rig::new(&[
+        ("1.0.0", model_file("swap-1", 0, None)),
+        ("2.0.0", model_file_with("swap-2", 0, "hold_in_loader = true\n")),
+    ]);
     let registry = rig.open();
     let models = install(&registry, &["2.0.0", "1.0.0"]);
     let (v2, v1) = (models[0].clone(), models[1].clone());
@@ -361,33 +364,27 @@ fn a_selection_change_keeps_the_old_model_answering_until_the_new_one_is_in() {
     let ran_before = ran(&v1);
     let v2_ran_before = ran(&v2); // the install's smoke test ran it once
 
+    // v2 is held in its load: the old model answers for as long as the test says.
     registry.select(&echo_slot(), Some(&v2), Requester::Person).unwrap();
-    let started = Instant::now();
-    let mut checked = false;
-    let during = run_until(&mut *session, &mut out, |s| {
-        if !checked && count(&v2, &Event::Loading) > loads_before && count(&v2, &Event::Loaded) == loads_before {
-            // Mid-load: the old model is what answers, and the health meter says what it waits for.
-            let slot = status(&registry);
-            assert_eq!(slot.active, Some(v1.clone()));
-            assert!(slot.fallback.as_ref().is_some_and(|f| f.contains("is loading")), "{slot:?}");
-            assert_eq!(s.info().fallback_for, Some(v2.clone()));
-            checked = true;
-        }
-        count(&v2, &Event::Loaded) > loads_before
-    });
-
-    assert!(started.elapsed() >= Duration::from_millis(150), "the 200 ms load happened on another thread");
-    assert!(during.iter().all(Result::is_ok), "the old model answers while the new one loads: {during:?}");
-    assert!(ran(&v1) > ran_before, "the old model answered");
-    assert!(checked, "the load was seen in progress");
-    // The load is done: within two runs the new model answers.
-    std::thread::sleep(Duration::from_millis(50));
-    let v2_before = ran(&v2);
-    for _ in 0..2 {
+    wait_for("v2 to start loading", || count(&v2, &Event::Loading) > loads_before);
+    let slot = status(&registry);
+    assert_eq!(slot.active, Some(v1.clone()));
+    assert!(slot.fallback.as_ref().is_some_and(|f| f.contains("is loading")), "{slot:?}");
+    assert_eq!(session.info().fallback_for, Some(v2.clone()));
+    for _ in 0..3 {
         let (result, took) = timed_run(&mut *session, &mut out);
         assert!(took < RUN_BUDGET, "{took:?}");
-        assert_eq!(result, Ok(()));
+        assert_eq!(result, Ok(()), "the old model answers while the new one loads");
+        assert_eq!(session.info().model, v1);
     }
+    assert!(ran(&v1) > ran_before, "the old model answered");
+    assert_eq!(count(&v2, &Event::Loaded), loads_before, "the load was seen in progress");
+    release_loader(&v2);
+    wait_for("v2 to finish loading", || count(&v2, &Event::Loaded) > loads_before);
+    // The load is done: the new model takes over without a run noticing a swap.
+    run_until(&mut *session, &mut out, |s| s.info().model == v2);
+    let v2_before = ran(&v2);
+    assert_eq!(timed_run(&mut *session, &mut out).0, Ok(()));
     assert!(ran(&v2) > v2_before.max(v2_ran_before), "the new model answers");
     assert_eq!(session.info().model, v2);
     assert_eq!(session.info().fallback_for, None);
@@ -398,7 +395,7 @@ fn a_selection_change_keeps_the_old_model_answering_until_the_new_one_is_in() {
 fn a_load_that_finishes_after_the_selection_moved_on_never_answers() {
     let files = [
         ("1.0.0", model_file("obsolete-1", 0, None)),
-        ("2.0.0", model_file("obsolete-2", 200, None)),
+        ("2.0.0", model_file_with("obsolete-2", 0, "hold_in_loader = true\n")),
         ("3.0.0", model_file("obsolete-3", 0, None)),
     ];
     let rig = Rig::new(&files);
@@ -416,6 +413,7 @@ fn a_load_that_finishes_after_the_selection_moved_on_never_answers() {
     assert_eq!(timed_run(&mut *session, &mut out).0, Ok(()), "the old model answers meanwhile");
     wait_for("v2 to start loading", || count(&v2, &Event::Loading) > starts);
     registry.select(&echo_slot(), Some(&v3), Requester::Person).unwrap();
+    release_loader(&v2);
     wait_for("v2's load to finish", || count(&v2, &Event::Loaded) > loads);
     run_until(&mut *session, &mut out, |s| s.info().model == v3);
 
@@ -646,7 +644,10 @@ fn keeping_the_model_because_the_new_selection_wont_load_marks_the_fallback() {
 
 #[test]
 fn reset_reaches_the_current_session_and_the_one_swapped_in() {
-    let rig = Rig::new(&[("1.0.0", model_file("reset-1", 0, None)), ("2.0.0", model_file("reset-2", 200, None))]);
+    let rig = Rig::new(&[
+        ("1.0.0", model_file("reset-1", 0, None)),
+        ("2.0.0", model_file_with("reset-2", 0, "hold_in_loader = true\n")),
+    ]);
     let registry = rig.open();
     let models = install(&registry, &["2.0.0", "1.0.0"]);
     let (v2, v1) = (models[0].clone(), models[1].clone());
@@ -660,6 +661,7 @@ fn reset_reaches_the_current_session_and_the_one_swapped_in() {
     assert_eq!(timed_run(&mut *session, &mut out).0, Ok(()), "v1 answers while v2 loads");
     session.reset(); // while v2 loads
     assert_eq!(resets(&v1).len(), 2, "the session that answers is reset at once, here");
+    release_loader(&v2);
     run_until(&mut *session, &mut out, |s| s.info().model == v2);
     assert_eq!(resets(&v2).len(), 1, "replayed on the session that was swapped in");
     assert!(resets(&v2).iter().all(|t| *t != thread::current().id()), "by the loader, not on the caller's thread");
@@ -667,7 +669,10 @@ fn reset_reaches_the_current_session_and_the_one_swapped_in() {
 
 #[test]
 fn a_reset_right_after_a_selection_change_is_replayed_too() {
-    let rig = Rig::new(&[("1.0.0", model_file("early-1", 0, None)), ("2.0.0", model_file("early-2", 100, None))]);
+    let rig = Rig::new(&[
+        ("1.0.0", model_file("early-1", 0, None)),
+        ("2.0.0", model_file_with("early-2", 0, "hold_in_loader = true\n")),
+    ]);
     let registry = rig.open();
     let models = install(&registry, &["2.0.0", "1.0.0"]);
     let v2 = models[0].clone();
@@ -675,7 +680,8 @@ fn a_reset_right_after_a_selection_change_is_replayed_too() {
     let mut out = TensorBuf::for_outputs(session.signature());
 
     registry.select(&echo_slot(), Some(&v2), Requester::Person).unwrap();
-    session.reset(); // before any run has noticed the change
+    session.reset(); // before any run has noticed the change, and while v2 loads
+    release_loader(&v2);
     run_until(&mut *session, &mut out, |s| s.info().model == v2);
     assert_eq!(resets(&v2).len(), 1);
 }
@@ -815,7 +821,10 @@ fn a_result_that_finishes_during_a_slower_one_is_never_reported_as_running() {
 
 #[test]
 fn removing_the_running_model_stops_it_at_once_while_its_replacement_loads() {
-    let rig = Rig::new(&[("1.0.0", model_file("gone-1", 300, None)), ("2.0.0", model_file("gone-2", 0, None))]);
+    let rig = Rig::new(&[
+        ("1.0.0", model_file_with("gone-1", 0, "hold_in_loader = true\n")),
+        ("2.0.0", model_file("gone-2", 0, None)),
+    ]);
     let registry = rig.open();
     let models = install(&registry, &["1.0.0", "2.0.0"]); // 2.0.0 is the default and runs
     let (v1, v2) = (models[0].clone(), models[1].clone());
@@ -831,6 +840,7 @@ fn removing_the_running_model_stops_it_at_once_while_its_replacement_loads() {
     assert!(took < RUN_BUDGET, "{took:?}");
     let slot = status(&registry);
     assert_eq!(slot.active, None, "nothing answers while v1 loads: {slot:?}");
+    release_loader(&v1);
     settle(&mut *session, &mut out);
 
     assert_eq!(ran(&v2), ran_before, "the removed model never answered again");
