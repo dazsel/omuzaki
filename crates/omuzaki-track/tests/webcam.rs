@@ -1059,14 +1059,14 @@ fn a_stream_of_rejected_timestamps_still_gives_the_one_lost_frame() {
     );
     let config = TrackerConfig::default().with_lost_after(Duration::from_millis(30));
     let mut source = tracker.start(&FakeCamera::id(), &config).unwrap();
-    let tracked = next(&mut *source);
-    assert_eq!(tracked.status, TrackStatus::Tracking);
+    let first = next(&mut *source);
+    assert_eq!(first.status, TrackStatus::Tracking);
     // From here on every frame the camera delivers is stamped before the first. None is a sign of life, and the camera
     // never goes quiet in the `next_frame` sense, so only the rule run on a rejected frame can say the face is gone.
     quiet.store(true, Ordering::Release);
     let lost = next(&mut *source);
     assert_eq!(lost.status, TrackStatus::Lost);
-    assert_eq!(lost.seq, tracked.seq, "a notice repeats the last frame's seq");
+    assert_eq!(lost.seq, first.seq, "a notice repeats the last frame's seq");
     assert_eq!(tracker.error(), None, "the stream is still running: this is the stall rule, not the stream's end");
     // Plenty more rejected frames, many times `lost_after`, and still only the one lost frame.
     let rejected = tracker.failures().backwards;
