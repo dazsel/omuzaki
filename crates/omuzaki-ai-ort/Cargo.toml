@@ -12,17 +12,27 @@ repository.workspace = true
 # The provider features only compile ort's CUDA / DirectML / Core ML / WebGPU option types; `load-dynamic` (the workspace
 # setting) means no ONNX Runtime is linked or downloaded at build time.
 ort = { workspace = true, features = ["cuda", "directml", "coreml", "webgpu"] }
+tracing.workspace = true
+omuzaki-ai-api = { path = "../omuzaki-ai-api" }
+omuzaki-ai-native = { path = "../omuzaki-ai-native" }
+omuzaki-core = { path = "../omuzaki-core" }
+
+[features]
+# Re-exports the model scan (`scan_model`) for the fuzz target in `fuzz/` (#1653); never on in a build.
+fuzzing = []
+
+[dev-dependencies]
 flate2.workspace = true
 tar.workspace = true
 tempfile.workspace = true
-tracing.workspace = true
-omuzaki-ai-api = { path = "../omuzaki-ai-api" }
-omuzaki-core = { path = "../omuzaki-core" }
 zip.workspace = true
-
-[dev-dependencies]
 hound.workspace = true
 sha2.workspace = true
+
+# Gated on OMUZAKI_ORT_CACHE; a plain `main` with `Instant`, so it adds no dependency.
+[[bench]]
+name = "pipeline"
+harness = false
 
 [lints]
 workspace = true

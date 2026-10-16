@@ -16,6 +16,7 @@ omuzaki-render-api = { path = "../omuzaki-render-api" }
 
 [dev-dependencies]
 criterion.workspace = true
+proptest.workspace = true
 omuzaki-anim-mock = { path = "../omuzaki-anim-mock" }
 omuzaki-render-mock = { path = "../omuzaki-render-mock" }
 

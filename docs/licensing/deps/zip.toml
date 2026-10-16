@@ -1,7 +1,7 @@
 section = "rust"
 item = "zip 9.0.2 (`deflate-flate2` only: the one flate2 backend, no zopfli, zlib-rs, AES, bzip2, zstd or lzma)"
 kind = "crate"
-used_for = "reads the Windows ONNX Runtime `.zip` archives in `omuzaki-ai-ort`"
+used_for = "reads the Windows ONNX Runtime `.zip` archives in `omuzaki-ai-native`"
 status = "yes"
 audit = "(crates.io: `license = \"MIT\"`; `LICENSE`: \"Copyright (c) 2014 Mathijs van de Nes\")"
 crates = ["zip"]

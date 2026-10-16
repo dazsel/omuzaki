@@ -283,7 +283,7 @@ mod tests {
     #[test]
     fn instructions_list_the_granted_scopes() {
         let text = instructions(&Grants::agent_default(), &guidance());
-        assert!(text.contains("read, edit:character, edit:scene, edit:library, edit:settings, render."));
+        assert!(text.contains("read, edit:character, edit:scene, edit:library, edit:settings, render, review."));
         assert!(!text.contains("publish"));
     }
 }

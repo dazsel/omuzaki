@@ -1,0 +1,38 @@
+[package]
+name = "omuzaki-ai-litert"
+description = "The `tflite` runtime: LiteRT's interpreter with XNNPACK, loaded from a pinned archive at run time, behind a model scan that refuses anything off its allow-list before LiteRT sees the bytes (ADR 0061)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Declared here, not in `[workspace.dependencies]`: the root manifest is outside this crate's task fence (#1749).
+# The official FlatBuffers runtime: its verifier and accessors read the model (src/scan.rs).
+flatbuffers = "25.12.19"
+# Loads the pinned LiteRT library at run time; nothing native is linked at build time (src/library.rs).
+libloading = "0.9"
+omuzaki-ai-api = { path = "../omuzaki-ai-api" }
+omuzaki-ai-native = { path = "../omuzaki-ai-native" }
+omuzaki-core = { path = "../omuzaki-core" }
+# LiteRT's own error text when a load or run fails (src/session.rs); the run returns a fixed message.
+tracing.workspace = true
+# Stages the copy of the archive under its digest's folder (src/library.rs).
+tempfile.workspace = true
+
+[dev-dependencies]
+flate2.workspace = true
+sha2.workspace = true
+tar.workspace = true
+
+[lints]
+workspace = true
+
+# Native only: the LiteRT library is loaded from disk, and wasm32 has none.
+[package.metadata.omuzaki]
+kind = "Implementation"
+summary = "the `tflite` runtime (ADR 0061): LiteRT's interpreter C API and the XNNPACK delegate, loaded from a pinned archive through `omuzaki-ai-native` with its version and shim ABI checked; a FlatBuffers model scan refuses anything off design §5's allow-list (custom and stateful ops, variables, external data, a second subgraph) before LiteRT sees the bytes; native only; design in `docs/design/litert-runtime.md`"
+registers = true
+wasm = false

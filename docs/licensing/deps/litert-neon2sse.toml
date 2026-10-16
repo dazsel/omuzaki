@@ -1,0 +1,7 @@
+section = "rust"
+item = "NEON_2_SSE"
+kind = "native"
+used_for = "linked into the `tflite` runtime's library (`omuzaki_litert`) on x86-64: NEON intrinsics on SSE"
+status = "conditions"
+condition = "BSD-style (Intel): keep the notice, no endorsement; ship the notice in the archive (its licence file in `licences/` and its entry in `THIRD_PARTY_NOTICES.md`). Pinned by LiteRT v2.3.0's Bazel workspace; mapped in `tools/litert/licences.toml`"
+audit = "(LICENSE read at a15b489e)"

@@ -1,0 +1,7 @@
+section = "rust"
+item = "ml_dtypes"
+kind = "native"
+used_for = "linked into the `tflite` runtime's library (`omuzaki_litert`): float8 types in TFLite's kernels"
+status = "conditions"
+condition = "Apache-2.0; ship the notice in the archive (its licence file in `licences/` and its entry in `THIRD_PARTY_NOTICES.md`). Pinned by LiteRT v2.3.0's Bazel workspace; mapped in `tools/litert/licences.toml`"
+audit = "(LICENSE and LICENSE.eigen read at 00d98cd9)"

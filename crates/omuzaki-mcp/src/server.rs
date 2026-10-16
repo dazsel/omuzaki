@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use omuzaki_history_api::JournalSink;
-use omuzaki_ops_api::{Grants, OpInfo, Runner};
+use omuzaki_ops_api::{Actor, Grants, OpInfo, Runner, Sessions};
 use rmcp::ServiceExt;
 use rmcp::model::Tool;
 use rmcp::service::RoleServer;
@@ -46,6 +46,22 @@ pub struct McpOptions {
     connections: Option<Connections>,
     /// The journal the host runs, if it has one: a reply to a change waits for it (see [`McpOptions::with_journal`]).
     journal: Option<Journal>,
+    /// Where the server opens a session for each connection's agent, and the person they work for.
+    sessions: Option<SessionHost>,
+}
+
+/// The executor's session registry and the person every connection works for. A stand-in that #358 (MCP sessions
+/// through the executor's registry) replaces with the real open and end wiring.
+#[derive(Clone)]
+pub(crate) struct SessionHost {
+    pub sessions: Arc<dyn Sessions>,
+    pub person: Actor,
+}
+
+impl std::fmt::Debug for SessionHost {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionHost").field("person", &self.person).finish_non_exhaustive()
+    }
 }
 
 impl Default for McpOptions {
@@ -58,7 +74,7 @@ impl McpOptions {
     /// Options with these grants.
     #[must_use]
     pub fn with_grants(grants: Grants) -> Self {
-        Self { grants, providers: Vec::new(), prompts: Vec::new(), connections: None, journal: None }
+        Self { grants, providers: Vec::new(), prompts: Vec::new(), connections: None, journal: None, sessions: None }
     }
 
     /// Also serves the resources of `provider`: it is listed, templated and readable alongside the built-in ones.
@@ -89,6 +105,16 @@ impl McpOptions {
         self
     }
 
+    /// Opens a session in `sessions` for each connection's agent, working for `person`, and uses the actor the registry
+    /// builds. An executor refuses agents without a session, so the host that runs one wires this. Without it the
+    /// server names the agent itself, which only a runner that does not check sessions accepts. A stand-in: #358
+    /// replaces it with the real open and end wiring (a connection's session is not ended yet).
+    #[must_use]
+    pub fn with_sessions(mut self, sessions: Arc<dyn Sessions>, person: Actor) -> Self {
+        self.sessions = Some(SessionHost { sessions, person });
+        self
+    }
+
     /// Also offers `prompt` (a recipe) to agents whose session has every op in its [`needs`](PromptDef::needs). A
     /// prompt with the name of one already added, built-in or the host's, replaces it.
     #[must_use]
@@ -110,6 +136,8 @@ pub(crate) struct Shared {
     pub connection_wired: bool,
     /// The host's journal, which replies to changes wait for. `None` means replies don't wait.
     pub journal: Option<Arc<dyn JournalSink>>,
+    /// The registry that names each connection's agent, if the host wired one.
+    pub sessions: Option<SessionHost>,
     next_session: AtomicU64,
 }
 
@@ -171,6 +199,7 @@ impl McpServer {
             connections: options.connections.unwrap_or_default(),
             connection_wired,
             journal: options.journal.map(|journal| journal.0),
+            sessions: options.sessions,
             next_session: AtomicU64::new(1),
         };
         Ok(Self { shared: Arc::new(shared), view: Arc::new(view) })

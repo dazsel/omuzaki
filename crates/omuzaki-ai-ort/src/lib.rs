@@ -23,7 +23,10 @@
 //! - **Refusals** (ADR 0016 rule 4): custom-op domains and external data are refused before ONNX Runtime sees the
 //!   bytes ([`scan`]); `register_custom_ops_library` is never called. Models load from memory, so a relative
 //!   external-data path could not resolve anyway.
-//! - **Multi-graph models** (`[[stages]]`) are not supported yet; probe and load refuse them.
+//! - **Multi-graph models** (`[[stages]]`) run as one session (`pipeline`): one ONNX Runtime session per stage with the
+//!   same options, stage inputs read from slot inputs or earlier stages' outputs, intermediate tensors in buffers reused
+//!   by every run. `probe` reports the slot inputs the stages read and every stage output as `<stage>.<port>`; the
+//!   manifest's `io` maps slot outputs to those names. [`OrtRuntime::load_session`] is for single graphs only.
 //!
 //! The runtime registers itself as `onnx`; link this crate and [`omuzaki_ai_api::find_runtime`] finds it.
 #![deny(missing_docs)]
@@ -31,6 +34,7 @@
 pub mod builds;
 mod graph;
 mod library;
+mod pipeline;
 mod scan;
 mod session;
 
@@ -42,6 +46,8 @@ use omuzaki_ai_api::{
 
 pub use graph::Skipped;
 pub use library::{Loaded, loaded, prefer_providers};
+#[cfg(feature = "fuzzing")] // the model scan, for the fuzz target in `fuzz/` (#1653); never on in a build
+pub use scan::{Scan, ScanError, scan_model};
 pub use session::OrtModelSession;
 
 /// The runtime id manifests name in `runtime`.
@@ -56,7 +62,9 @@ register_runtime!(OrtRuntime);
 /// The model's one graph, read whole: the main file of a single-graph model.
 fn main_graph(source: &ModelSource<'_>) -> Result<Vec<u8>, LoadError> {
     if !source.stages.is_empty() {
-        return Err(LoadError::Format("multi-graph models are not supported yet".to_owned()));
+        return Err(LoadError::Format(
+            "a multi-graph model loads through `Runtime::load`, not `load_session`".to_owned(),
+        ));
     }
     let file = source.files.first().ok_or_else(|| LoadError::MissingFile("(the main model file)".to_owned()))?;
     let bytes = std::fs::read(&file.path).map_err(|_| LoadError::MissingFile(file.name.clone()))?;
@@ -73,6 +81,9 @@ impl Runtime for OrtRuntime {
     }
 
     fn probe(&self, source: &ModelSource<'_>) -> Result<Probe, LoadError> {
+        if !source.stages.is_empty() {
+            return pipeline::probe(source);
+        }
         let bytes = main_graph(source)?;
         let opset = scan::scan_model(&bytes).ok().and_then(|scan| scan.opset);
         let loaded = library::ensure_loaded(source.natives, &[])?;
@@ -87,6 +98,9 @@ impl Runtime for OrtRuntime {
         io: &BTreeMap<String, String>,
         options: &SessionOptions,
     ) -> Result<Box<dyn omuzaki_ai_api::Session>, LoadError> {
+        if !source.stages.is_empty() {
+            return pipeline::load(source, slot, io, options);
+        }
         Ok(Box::new(self.load_session(source, slot, io, options)?))
     }
 }
