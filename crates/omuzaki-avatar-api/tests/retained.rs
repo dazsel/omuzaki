@@ -4,8 +4,8 @@
 
 use omuzaki_anim_api::BoneId;
 use omuzaki_avatar_api::retained::{
-    Retained, RetainedImage, RetainedMaterial, RetainedMesh, RetainedNode, RetainedPrimitive, RetainedSkin,
-    RetainedTransform,
+    Retained, RetainedAnnotation, RetainedFirstPerson, RetainedImage, RetainedMaterial, RetainedMesh, RetainedNode,
+    RetainedPrimitive, RetainedSkin, RetainedTransform,
 };
 use omuzaki_char_api::MaterialName;
 use omuzaki_core::glam::{Mat4, Quat, Vec3, Vec4};
@@ -60,6 +60,10 @@ fn retained() -> Retained {
         RetainedNode::new("Face").with_mesh(0, Some(0)),
     ];
     r.roots = vec![0];
+    r.first_person = Some(vec![
+        RetainedAnnotation::new(2, RetainedFirstPerson::ThirdPersonOnly),
+        RetainedAnnotation::new(1, RetainedFirstPerson::Auto),
+    ]);
     r.skins = vec![
         RetainedSkin::new("skin", vec![1], vec![Mat4::from_translation(Vec3::new(0.0, -0.123, 0.0))]).with_skeleton(0),
     ];
@@ -116,6 +120,13 @@ fn passthrough_and_a_present_null_extras_survive() {
     assert_eq!(back.nodes[1].transform, r_transform(&retained()), "a transform, bit for bit");
     assert_eq!((back.nodes[2].mesh, back.nodes[2].skin), (Some(0), Some(0)));
     assert_eq!(back.skins, retained().skins, "joints, inverse binds and the skeleton root");
+    assert_eq!(back.first_person, retained().first_person, "annotations by node, an explicit auto kept");
+    let text = serde_json::to_string(&back).unwrap();
+    assert!(text.contains("\"thirdPersonOnly\""), "flags as the file writes them: {text}");
+    let mut none = back.clone();
+    none.first_person = None;
+    let read: Retained = serde_json::from_str(&serde_json::to_string(&none).unwrap()).unwrap();
+    assert_eq!(read.first_person, None, "no firstPerson block stays absent, not empty");
     assert!(back.passthrough.extensions.contains_key("EXT_studio"));
 }
 

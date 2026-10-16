@@ -11,7 +11,7 @@
 use omuzaki_anim_api::BoneId;
 use omuzaki_char_api::MaterialName;
 use omuzaki_core::glam::{Mat4, Quat, Vec3};
-use omuzaki_io_api::{ImageMime, Material, Passthrough, Texture, VrmMeta};
+use omuzaki_io_api::{FirstPersonFlag, ImageMime, Material, Passthrough, Texture, VrmMeta};
 use omuzaki_store_api::ContentHash;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -203,6 +203,60 @@ impl RetainedSkin {
     }
 }
 
+/// A first-person flag as the file writes it (`firstPerson.meshAnnotations[*].type`).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RetainedFirstPerson {
+    /// `auto`: split by head weights.
+    Auto,
+    /// `both`.
+    Both,
+    /// `thirdPersonOnly`.
+    ThirdPersonOnly,
+    /// `firstPersonOnly`.
+    FirstPersonOnly,
+}
+
+impl From<FirstPersonFlag> for RetainedFirstPerson {
+    fn from(flag: FirstPersonFlag) -> Self {
+        match flag {
+            FirstPersonFlag::Auto => Self::Auto,
+            FirstPersonFlag::Both => Self::Both,
+            FirstPersonFlag::ThirdPersonOnly => Self::ThirdPersonOnly,
+            FirstPersonFlag::FirstPersonOnly => Self::FirstPersonOnly,
+        }
+    }
+}
+
+impl From<RetainedFirstPerson> for FirstPersonFlag {
+    fn from(flag: RetainedFirstPerson) -> Self {
+        match flag {
+            RetainedFirstPerson::Auto => Self::Auto,
+            RetainedFirstPerson::Both => Self::Both,
+            RetainedFirstPerson::ThirdPersonOnly => Self::ThirdPersonOnly,
+            RetainedFirstPerson::FirstPersonOnly => Self::FirstPersonOnly,
+        }
+    }
+}
+
+/// One first-person annotation of the file: a node and its flag.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct RetainedAnnotation {
+    /// The node with the mesh, an index into [`Retained::nodes`].
+    pub node: u32,
+    /// Its flag.
+    pub flag: RetainedFirstPerson,
+}
+
+impl RetainedAnnotation {
+    /// The annotation of `node` with `flag`.
+    pub const fn new(node: u32, flag: RetainedFirstPerson) -> Self {
+        Self { node, flag }
+    }
+}
+
 /// One mesh of the file. Its primitives became separate runtime meshes (one material each), and they share its
 /// morph-target names: glTF names targets per mesh, not per primitive.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -262,6 +316,11 @@ pub struct Retained {
     /// The file's skins, in file order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skins: Vec<RetainedSkin>,
+    /// The file's own first-person annotations (`VRMC_vrm.firstPerson`), by node and in file order; `None` when the
+    /// file has no `firstPerson` block, so export tells "absent", "empty" and an explicit `auto` apart. The runtime
+    /// list (`ImportedAvatar::first_person`) is resolved per mesh and cannot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_person: Option<Vec<RetainedAnnotation>>,
     /// The VRM meta (licence, authors, the thumbnail as an index into `images`), or `None` for a plain glTF. Its
     /// 0.x extras, which io-api's own serialisation leaves out, are kept too ([`meta_serde`]).
     #[serde(default, skip_serializing_if = "Option::is_none", with = "meta_serde")]

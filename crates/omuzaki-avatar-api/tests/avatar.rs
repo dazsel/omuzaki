@@ -9,7 +9,9 @@ use omuzaki_avatar_api::error::AvatarError;
 use omuzaki_avatar_api::expression::{ColourBind, ExprIx, MorphBind, UvBind};
 use omuzaki_avatar_api::gaze::{AvatarGaze, AvatarLookAt};
 use omuzaki_avatar_api::retained::{Retained, RetainedMaterial};
-use omuzaki_avatar_api::retained::{RetainedMesh, RetainedNode, RetainedPrimitive, RetainedSkin};
+use omuzaki_avatar_api::retained::{
+    RetainedAnnotation, RetainedFirstPerson, RetainedMesh, RetainedNode, RetainedPrimitive, RetainedSkin,
+};
 use omuzaki_char_api::{BoneName, FaceOverlay, JointRef, MaterialName, TextureData, TextureName};
 use omuzaki_core::glam::Vec3;
 use omuzaki_core::glam::{Mat4, UVec2, Vec2, Vec4};
@@ -116,7 +118,7 @@ fn every_index_of_the_retained_scene_graph_is_checked() {
     r.materials = vec![RetainedMaterial::new(skin(), Material::new("Skin", Shading::Unlit))];
     assert_eq!(a.validate(), Ok(()), "a consistent graph");
 
-    let broken: [(&str, Breaks); 8] = [
+    let broken: [(&str, Breaks); 9] = [
         ("node 0's child", |r| r.nodes[0].children = vec![2]),
         ("node 1's mesh", |r| r.nodes[1].mesh = Some(1)),
         ("node 1's skin", |r| r.nodes[1].skin = Some(1)),
@@ -125,6 +127,9 @@ fn every_index_of_the_retained_scene_graph_is_checked() {
         ("skin 0's joint", |r| r.skins[0].joints = vec![0, 7]),
         ("skin 0's joint", |r| r.skins[0].skeleton = Some(9)),
         ("mesh 0's material", |r| r.meshes[0].primitives[0].material = Some(3)),
+        ("a first-person annotation's node", |r| {
+            r.first_person = Some(vec![RetainedAnnotation::new(4, RetainedFirstPerson::Auto)]);
+        }),
     ];
     for (at, break_it) in broken {
         let mut b = a.clone();
@@ -132,6 +137,21 @@ fn every_index_of_the_retained_scene_graph_is_checked() {
         let e = b.validate().unwrap_err();
         assert!(matches!(&e, AvatarError::RetainedIndex { at: got, .. } if got == at), "{at}: {e:?}");
     }
+    let mut b = a.clone();
+    b.retained.first_person = Some(vec![RetainedAnnotation::new(1, RetainedFirstPerson::ThirdPersonOnly)]);
+    assert_eq!(b.validate(), Ok(()), "an annotation on an existing node");
+    b.retained.first_person = Some(Vec::new());
+    assert_eq!(b.validate(), Ok(()), "an empty firstPerson block is kept as such");
+
+    let mut b = a.clone();
+    b.expressions = vec![omuzaki_avatar_api::expression::AvatarExpression::new(common::name("happy"))];
+    b.meshes[0] = common::head_mesh(1);
+    b.expressions[0].morph.push(MorphBind::new(0, 0, 1.0).with_node(1));
+    assert_eq!(b.validate(), Ok(()), "a bind naming the instance it moves");
+    b.expressions[0].morph[0] = MorphBind::new(0, 0, 1.0).with_node(9);
+    let e = b.validate().unwrap_err();
+    assert!(matches!(&e, AvatarError::RetainedIndex { at, .. } if at == "expression 0's morph bind node"), "{e:?}");
+
     let mut b = a.clone();
     b.retained.skins[0].inverse_bind.pop();
     assert_eq!(b.validate(), Err(AvatarError::skin_inverse_bind(0, 1, 2)));

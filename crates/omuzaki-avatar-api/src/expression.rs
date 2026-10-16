@@ -35,12 +35,23 @@ pub struct MorphBind {
     pub target: u16,
     /// The target's weight at expression weight 1 (VRM `weight`, `0..=1`).
     pub weight: f32,
+    /// The node the file's bind names, an index into
+    /// [`Retained::nodes`](crate::retained::Retained::nodes): a source mesh can be drawn by several nodes, and a bind
+    /// moves only the instance it names, so export writes this node back. `None` for a bind made by hand.
+    pub node: Option<u32>,
 }
 
 impl MorphBind {
-    /// A bind of `target` on `mesh` reaching `weight`.
+    /// A bind of `target` on `mesh` reaching `weight`, naming no source node.
     pub const fn new(mesh: u16, target: u16, weight: f32) -> Self {
-        Self { mesh, target, weight }
+        Self { mesh, target, weight, node: None }
+    }
+
+    /// Records the source node the file's bind names (builder style).
+    #[must_use]
+    pub const fn with_node(mut self, node: u32) -> Self {
+        self.node = Some(node);
+        self
     }
 }
 

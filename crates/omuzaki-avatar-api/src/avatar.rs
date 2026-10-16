@@ -215,8 +215,9 @@ impl ImportedAvatar {
     /// - every material passes the renderer's rules, draws only textures the avatar has and composites no face layers
     ///   (an imported avatar has no painted face), and every texture's pixels match its description;
     /// - the retained source meshes, when kept, list every runtime mesh exactly once, and their target names fit;
-    /// - every index the retained scene graph holds (children, roots, meshes, skins, joints, materials, bones) points
-    ///   into its list, and every retained skin has one inverse bind matrix per joint, or none;
+    /// - every index the retained scene graph holds (children, roots, meshes, skins, joints, materials, bones,
+    ///   first-person annotations, morph-bind nodes) points into its list, and every retained skin has one inverse bind
+    ///   matrix per joint, or none;
     /// - every anchor follows a bone the skeleton has;
     /// - every morph bind names a mesh and a target that exist, and every colour and UV bind a material that exists;
     /// - every driver names an expression that exists, and gaze channels drive expressions only on the native `ARKit`
@@ -359,6 +360,14 @@ impl ImportedAvatar {
         for (m, mesh) in r.meshes.iter().enumerate() {
             for material in mesh.primitives.iter().filter_map(|p| p.material) {
                 check(&|| format!("mesh {m}'s material"), material, r.materials.len())?;
+            }
+        }
+        for annotation in r.first_person.iter().flatten() {
+            check(&|| "a first-person annotation's node".to_owned(), annotation.node, r.nodes.len())?;
+        }
+        for (e, expression) in self.expressions.iter().enumerate() {
+            for node in expression.morph.iter().filter_map(|b| b.node) {
+                check(&|| format!("expression {e}'s morph bind node"), node, r.nodes.len())?;
             }
         }
         Ok(())
