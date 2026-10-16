@@ -11,10 +11,15 @@
 //! skinned by its place along the arm to the two bones either side of it, so the wing bends smoothly at the joints.
 //!
 //! **Fold.** `fold_channel` is one of the `customNN` channels of the animation bus. The three frame bones are driven by
-//! it ([`BoneDriver`]): at `1` the wing is spread as built, at `0` the shoulder, elbow and wrist turn about the wings' plane normal
-//! (out of the back, as the attachment turns it) into a V hanging down the back. Every bone turns about that one axis, so no
-//! vertex ever leaves its plane: the folded and the spread wings are equally clear of the back, and the shells keep their topology. A channel
-//! nobody drives is `0`, so a wing with nothing driving the channel is folded.
+//! it ([`BoneDriver`]): at `1` the wing is spread as built, at `0` it is folded about its root on the shoulder blade. The
+//! shoulder, elbow and wrist turn about the wings' plane normal (out of the back, as the attachment turns it) so the arm
+//! runs out along the shoulder blade and the hand turns down the side of the back, and the elbow and the wrist are drawn
+//! in towards the shoulder, closing the wing like a fan: the folded wing lies flat on the upper back, from the root's
+//! height down towards the waist and above the hips, inside the back's width (a fairy's lobes, which all grow from the
+//! shoulder, turn down the back as one). The hand, from the wrist out, belongs to the flutter chain and keeps its length.
+//! Every bone turns about that one axis and moves within the plane, so no
+//! vertex ever leaves it: the folded and the spread wings are equally clear of the back, and the shells keep their
+//! topology. A channel nobody drives is `0`, so a wing with nothing driving the channel is folded.
 //!
 //! **Flutter.** `flap_0` and `flap_1` form a spring chain ([`SpringChain`](omuzaki_anim_api::SpringChain)) in world space:
 //! the outer part of the wing trails the arm as it moves and settles. Only the flutter bones are simulated; the frame
@@ -67,6 +72,23 @@ struct Preset {
     feathers: u8,
 }
 
+/// How a kind folds about its root: the turn of the shoulder, the elbow and the wrist about the wings' plane normal,
+/// each relative to the bone before, degrees, positive down; and the share of its spread length the upper arm and the
+/// forearm keep, the elbow and the wrist drawn in towards the shoulder like the ribs of a closing fan.
+struct Fold {
+    turn_deg: [f64; 3],
+    reach: f64,
+}
+
+/// A wing that hangs from its arm (feathers, a membrane, blades): the upper arm runs out and a little down along the
+/// shoulder blade (25 degrees below level, from 31 above), the forearm a little lower (35 below) and the hand turns down
+/// the side of the back (110 below), with the elbow and the wrist drawn in to 30 % of their reach. What hangs from the
+/// arm then lies over the upper back, from the root's height to above the hips, inside the back's width.
+const ARM_FOLD: Fold = Fold { turn_deg: [56.5, -5.2, 52.4], reach: 0.3 };
+/// A fairy's wing, whose lobes all grow from the shoulder: the whole wing turns 120 degrees down about the root and is
+/// drawn in to 60 %, so the lobes lie down the back below the root.
+const LOBE_FOLD: Fold = Fold { turn_deg: [120.0, 0.0, 0.0], reach: 0.6 };
+
 impl WingKind {
     fn preset(self) -> Preset {
         match self {
@@ -74,6 +96,13 @@ impl WingKind {
             Self::Bat => Preset { span: 0.5, chord: 0.28, feathers: 0 },
             Self::Fairy => Preset { span: 0.34, chord: 0.2, feathers: 0 },
             Self::Mechanical => Preset { span: 0.5, chord: 0.3, feathers: 7 },
+        }
+    }
+
+    fn fold(self) -> &'static Fold {
+        match self {
+            Self::Fairy => &LOBE_FOLD,
+            Self::Feathered | Self::Bat | Self::Mechanical => &ARM_FOLD,
         }
     }
 }
@@ -165,9 +194,6 @@ const JOINT_RADIUS: f64 = 0.018;
 /// The directions of the three arm segments in the wing's plane (`x` outward, `y` up), at the spread pose, and each
 /// segment's share of the span.
 const ARM: [([f64; 2], f64); 3] = [([0.85, 0.52], 0.4), ([0.96, 0.28], 0.33), ([0.9, -0.1], 0.27)];
-/// How far the three frame bones turn about the back axis to fold, degrees (shoulder, elbow, wrist), positive down: the
-/// arm ends up hanging down the back, a little out, in a shallow V.
-const FOLD_DEG: [f64; 3] = [110.0, -31.0, 2.0];
 
 /// The `wings` kind.
 pub struct Wings;
@@ -419,8 +445,9 @@ impl Wings {
                 .map_err(|e| ctx.fail(format!("wing bone name: {e}")))?;
             let rest = Transform::from_translation(placed[i].as_vec3());
             let id = rig.add_bone(ExtraBone { name: bone.clone(), parent: parent.clone(), rest });
-            // The channel runs from the folded pose (0) to the spread one (1): the same bone, turned about the back axis.
-            let fold = DQuat::from_axis_angle(axis, (-s * FOLD_DEG[i]).to_radians());
+            // The channel runs from the folded pose (0) to the spread one (1): the same bone, turned about the back axis
+            // and, past the shoulder, drawn in towards its parent. Turning about the root keeps the shoulder where it is.
+            let fold = DQuat::from_axis_angle(axis, (-s * p.kind.fold().turn_deg[i]).to_radians());
             let (to, from) = if i == 0 {
                 let inverse = parent_rotation.inverse();
                 let to =
@@ -428,7 +455,8 @@ impl Wings {
                 (to, Transform { rotation: (inverse * fold).as_quat(), ..to })
             } else {
                 let to = Transform::from_translation((placed[i] - before).as_vec3());
-                (to, Transform { rotation: fold.as_quat(), ..to })
+                let drawn_in = ((placed[i] - before) * p.kind.fold().reach).as_vec3();
+                (to, Transform { translation: drawn_in, rotation: fold.as_quat() })
             };
             rig.drivers.push(BoneDriver::channel(id, channel, from, to));
             parent = JointRef::Named(bone);

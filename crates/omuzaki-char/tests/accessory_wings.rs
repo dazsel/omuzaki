@@ -9,10 +9,10 @@ mod accessory_common;
 use accessory_common::{
     TEMPLATES, assert_closed, assert_mirror_symmetric, assert_recolours_in_place, assert_rides_the_bone,
     assert_skins_to_the_built_mesh_at_bind, assert_weights_valid, back_of_the_torso, bind_pose, build_budget_ms,
-    build_ms, built_scene, character, closed_volume, meshes, skinned, styles, vertices,
+    build_ms, built_scene, character, closed_volume, meshes, rest_joint, skinned, styles, vertices,
 };
 use omuzaki_anim_api::{Channel, ChannelBuf, HumanoidBone, Pose};
-use omuzaki_char_api::{BuiltCharacter, find_kind};
+use omuzaki_char_api::{BodyRegion, BuiltCharacter, find_kind};
 use omuzaki_core::glam::{Quat, Vec3};
 use serde_json::json;
 
@@ -120,6 +120,54 @@ fn spread_is_the_built_shape_and_fold_turns_the_frame() {
         // Halfway is between: the channel is continuous.
         let half = width(&wing_vertices(&b, &folded(&b, channel, 0.5)));
         assert!(fold_width < half && half < spread_width, "{template}: {fold_width} < {half} < {spread_width}");
+    }
+}
+
+#[test]
+fn a_folded_wing_lies_on_the_upper_back_from_its_root_towards_the_waist() {
+    // Folded, a wing pivots at its root on the shoulder blade and lies along the back: its top is within a few
+    // centimetres of the root's height, it ends above the hips, and below the waist nothing stands out past the side
+    // of the torso (a tip poking out there reads as a skirt from the front).
+    let channel = Channel::custom(0).unwrap();
+    let standard_neck = rest_joint(&built_scene("standard", "wings", json!({}), None).built, HumanoidBone::Neck).y;
+    for template in TEMPLATES {
+        for (name, params) in styles("wings") {
+            let s = built_scene(template, "wings", params.clone(), None);
+            let b = &s.built;
+            let what = format!("wings {name} on {template}");
+            // Metres at a standard body: the wings are sized by the body.
+            let k = rest_joint(b, HumanoidBone::Neck).y / standard_neck;
+            let root = {
+                let skeleton = &b.rig.skeleton;
+                let mut world = Pose::IDENTITY;
+                skeleton.world_pose(&skeleton.rest_pose(), &mut world);
+                world.local[skeleton.find("wings_acc_l_shoulder").unwrap().index()].translation
+            };
+            let points = wing_vertices(b, &folded(b, channel, 0.0));
+            let top = points.iter().map(|p| p.y).fold(f32::MIN, f32::max);
+            let bottom = points.iter().map(|p| p.y).fold(f32::MAX, f32::min);
+            assert!(
+                (top - root.y).abs() <= 0.03 * k,
+                "{what}: the folded wing's top is {} m from its root's height",
+                top - root.y
+            );
+            let hips = rest_joint(b, HumanoidBone::Hips).y;
+            assert!(bottom >= hips, "{what}: the folded wing reaches {} m below the hips", hips - bottom);
+            let waist = rest_joint(b, HumanoidBone::Spine).y;
+            let (low, high) = (
+                s.fit.section(BodyRegion::Torso, 0.0).unwrap().centre.y,
+                s.fit.section(BodyRegion::Torso, 1.0).unwrap().centre.y,
+            );
+            for p in points.iter().filter(|p| p.y < waist) {
+                let side =
+                    s.fit.section(BodyRegion::Torso, ((p.y - low) / (high - low)).clamp(0.0, 1.0)).unwrap().radii.x;
+                assert!(
+                    p.x.abs() <= side + 0.01 * k,
+                    "{what}: below the waist a vertex stands {} m past the side of the torso",
+                    p.x.abs() - side
+                );
+            }
+        }
     }
 }
 
