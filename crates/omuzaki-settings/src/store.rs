@@ -49,6 +49,9 @@ struct Dirty {
     /// The new value, or `None` to remove the key.
     value: Option<Value>,
     version: u32,
+    /// A key whose change must be written for this one to be: the removal of a retired name waits for the new name,
+    /// so a refused write of the new name cannot lose the value.
+    needs: Option<String>,
 }
 
 struct State {
@@ -316,10 +319,13 @@ impl Inner {
         if value.is_none() {
             // A removed key must not come back from a name it was renamed from, so those go too.
             for old in key.reg.renamed_from {
-                st.dirty.insert((*old).to_owned(), Dirty { scope, value: None, version: 1 });
+                st.dirty.insert(
+                    (*old).to_owned(),
+                    Dirty { scope, value: None, version: 1, needs: Some(key.reg.meta.key.to_owned()) },
+                );
             }
         }
-        st.dirty.insert(key.reg.meta.key.to_owned(), Dirty { scope, value, version });
+        st.dirty.insert(key.reg.meta.key.to_owned(), Dirty { scope, value, version, needs: None });
         st.touch();
         self.wake.notify_all();
     }
@@ -354,11 +360,16 @@ impl Inner {
                 .filter(|(_, d)| d.scope == scope)
                 .map(|(key, d)| Edit { key: key.clone(), value: d.value.clone().map(|v| (v, d.version)) })
                 .collect();
+            let needs: BTreeMap<String, String> = pending
+                .iter()
+                .filter(|(_, d)| d.scope == scope)
+                .filter_map(|(key, d)| d.needs.clone().map(|n| (key.clone(), n)))
+                .collect();
             if edits.is_empty() {
                 continue;
             }
             let backup = backups.contains(&scope).then_some(self.app_version);
-            let (Updated { moved_aside, outcome }, refused) = self.write_scope(scope, backup, &edits);
+            let (Updated { moved_aside, outcome }, refused) = self.write_scope(scope, backup, &edits, &needs);
             if let Some(name) = moved_aside {
                 recovered.push(self.moved_while_writing(scope, &name, outcome.is_ok()));
             }
@@ -406,9 +417,10 @@ impl Inner {
         scope: SettingScope,
         backup: Option<&str>,
         edits: &[Edit],
+        needs: &BTreeMap<String, String>,
     ) -> (Updated, Vec<(String, String)>) {
         let mut refused = Vec::new();
-        let updated = self.backend.update(scope, backup, &mut |text| match document::apply_each(text, edits) {
+        let updated = self.backend.update(scope, backup, &mut |text| match document::apply_each(text, edits, needs) {
             Ok(applied) => {
                 refused = applied.refused;
                 Ok(if Some(applied.text.as_str()) == text { Edited::Unchanged } else { Edited::Write(applied.text) })
@@ -496,8 +508,11 @@ fn load_key(key: &Key, doc: &DocumentMut, file: &str, out: &mut Loaded) {
         out.migrated.push(scope);
     }
     if let Some(old) = renamed_from {
-        out.moved.insert(name.to_owned(), Dirty { scope, value: Some(value.clone()), version: reg.meta.version });
-        out.moved.insert(old.to_owned(), Dirty { scope, value: None, version: 1 });
+        out.moved.insert(
+            name.to_owned(),
+            Dirty { scope, value: Some(value.clone()), version: reg.meta.version, needs: None },
+        );
+        out.moved.insert(old.to_owned(), Dirty { scope, value: None, version: 1, needs: Some(name.to_owned()) });
     }
     out.stored.insert(name.to_owned(), value);
 }

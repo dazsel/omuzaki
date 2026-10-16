@@ -5,6 +5,8 @@
 //! A key `ui.scale` is `scale` under `[ui]`. A key's stored version lives in the `[versions]` table, which lists only
 //! keys above version 1; that table name is therefore reserved and no setting may use `versions` as its area.
 
+use std::collections::BTreeMap;
+
 use serde_json::Value;
 use toml_edit::{Document, DocumentMut, InlineTable, Item, Key, Table, TableLike};
 
@@ -124,7 +126,18 @@ pub(crate) struct Applied {
 /// `[tables]` is replaced or removed whole. A shape that cannot be edited in place (a key under an array of tables, a
 /// new key in a dotted inline table) is refused, never a rewrite of the file. A new file is built whole, with the
 /// `format` marker.
-pub(crate) fn apply_each(text: Option<&str>, edits: &[Edit]) -> Result<Applied, ApplyError> {
+pub(crate) fn apply_each(
+    text: Option<&str>,
+    edits: &[Edit],
+    needs: &BTreeMap<String, String>,
+) -> Result<Applied, ApplyError> {
+    // An edit that needs another's key is made after the others, and only if that one was made.
+    let ordered: Vec<&Edit> = edits
+        .iter()
+        .filter(|e| !needs.contains_key(&e.key))
+        .chain(edits.iter().filter(|e| needs.contains_key(&e.key)))
+        .collect();
+    let mut made: Vec<&str> = Vec::new();
     let mut refused = Vec::new();
     let mut note = |edit: &Edit, error: ApplyError| match error {
         ApplyError::Conflict(reason) => {
@@ -137,9 +150,16 @@ pub(crate) fn apply_each(text: Option<&str>, edits: &[Edit]) -> Result<Applied, 
         Some(t) if !t.trim().is_empty() => {
             parse(t).map_err(ApplyError::Unparsable)?;
             let mut current = t.to_owned();
-            for edit in edits {
+            for edit in ordered {
+                if let Some(wait) = unmet(needs, &made, edit) {
+                    note(edit, ApplyError::Conflict(wait))?;
+                    continue;
+                }
                 match apply_one(&current, edit) {
-                    Ok(done) => current = done,
+                    Ok(done) => {
+                        current = done;
+                        made.push(&edit.key);
+                    }
                     Err(error) => note(edit, error)?,
                 }
             }
@@ -147,10 +167,17 @@ pub(crate) fn apply_each(text: Option<&str>, edits: &[Edit]) -> Result<Applied, 
         }
         _ => {
             let mut doc = DocumentMut::new();
-            for edit in edits {
+            for edit in ordered {
+                if let Some(wait) = unmet(needs, &made, edit) {
+                    note(edit, ApplyError::Conflict(wait))?;
+                    continue;
+                }
                 let mut next = doc.clone();
                 match edit_document(&mut next, edit) {
-                    Ok(()) => doc = next,
+                    Ok(()) => {
+                        doc = next;
+                        made.push(&edit.key);
+                    }
                     Err(error) => note(edit, error)?,
                 }
             }
@@ -161,10 +188,16 @@ pub(crate) fn apply_each(text: Option<&str>, edits: &[Edit]) -> Result<Applied, 
     Ok(Applied { text, refused })
 }
 
+/// Why `edit` must wait: the key it needs was not written.
+fn unmet(needs: &BTreeMap<String, String>, made: &[&str], edit: &Edit) -> Option<String> {
+    let wanted = needs.get(&edit.key)?;
+    (!made.contains(&wanted.as_str())).then(|| format!("kept until `{wanted}` can be written"))
+}
+
 /// [`apply_each`] for callers that want every edit or an error.
 #[cfg(test)]
 pub(crate) fn apply(text: Option<&str>, edits: &[Edit]) -> Result<String, ApplyError> {
-    let applied = apply_each(text, edits)?;
+    let applied = apply_each(text, edits, &BTreeMap::new())?;
     match applied.refused.into_iter().next() {
         Some((key, reason)) => Err(ApplyError::Conflict(format!("`{key}`: {reason}"))),
         None => Ok(applied.text),
@@ -311,7 +344,7 @@ fn splice(text: &str, segments: &[&str], new: Option<&toml_edit::Value>) -> Resu
             }
             Some(Item::Value(v)) => {
                 return match v.as_inline_table() {
-                    Some(inline) => splice_inline(text, inline, &prefix[i + 1..], leaf, new),
+                    Some(inline) => splice_inline(text, segments, inline, &prefix[i + 1..], leaf, new),
                     None => not_a_table(text, segment, new),
                 };
             }
@@ -325,7 +358,7 @@ fn splice(text: &str, segments: &[&str], new: Option<&toml_edit::Value>) -> Resu
             (true, _) | (false, None) => Ok(text.to_owned()),
             (false, Some(Item::Value(old))) => remove_line(text, table, leaf, old)
                 .ok_or_else(|| format!("`{leaf}` shares its line with other text, so it cannot be removed in place")),
-            (false, Some(Item::Table(t))) if t.is_dotted() => Err(dotted_table(leaf)),
+            (false, Some(Item::Table(t))) if t.is_dotted() => peel_dotted(text, segments, &first_leaf_of(t), None),
             (false, Some(_)) => Ok(remove_sections(text, &doc, segments)),
         };
     };
@@ -334,7 +367,7 @@ fn splice(text: &str, segments: &[&str], new: Option<&toml_edit::Value>) -> Resu
     if !missing {
         match table.get(leaf) {
             Some(Item::Value(old)) => return replace_span(text, old, repr),
-            Some(Item::Table(t)) if t.is_dotted() => return Err(dotted_table(leaf)),
+            Some(Item::Table(t)) if t.is_dotted() => return peel_dotted(text, segments, &first_leaf_of(t), Some(new)),
             Some(_) => {
                 // A setting stored as `[a.b]` tables or `[[a.b]]` entries is replaced whole: those sections go, then
                 // the new value is written where a new key would go.
@@ -375,8 +408,46 @@ fn splice(text: &str, segments: &[&str], new: Option<&toml_edit::Value>) -> Resu
     }
 }
 
-fn dotted_table(leaf: &str) -> String {
-    format!("`{leaf}` is written as dotted keys, which cannot be replaced as one value in place")
+/// A setting written as dotted keys (`mig.percent = 125`) is a table of several assignments, each on a line of its
+/// own. They are removed one at a time, each by the plain-value rules, until the setting is gone; then the new value, if
+/// any, goes where a new key would. `first` is the path from the setting to its first assignment.
+fn peel_dotted(
+    text: &str,
+    segments: &[&str],
+    first: &[String],
+    new: Option<&toml_edit::Value>,
+) -> Result<String, String> {
+    let full: Vec<&str> = segments.iter().copied().chain(first.iter().map(String::as_str)).collect();
+    let one = splice(text, &full, None)?;
+    if one == text {
+        return Err(format!("`{}` is written as dotted keys that cannot be removed in place", segments.join(".")));
+    }
+    splice(&one, segments, new)
+}
+
+/// The path, below a dotted table, to the first assignment in it.
+fn first_leaf_of(table: &Table) -> Vec<String> {
+    let mut path = Vec::new();
+    let mut current = table.iter().next();
+    while let Some((key, item)) = current {
+        path.push(key.to_owned());
+        current = match item {
+            Item::Table(t) if t.is_dotted() => t.iter().next(),
+            _ => None,
+        };
+    }
+    path
+}
+
+/// The same for a dotted inline table.
+fn first_leaf_of_inline(table: &InlineTable) -> Vec<String> {
+    let mut path = Vec::new();
+    let mut current = table.iter().next();
+    while let Some((key, value)) = current {
+        path.push(key.to_owned());
+        current = value.as_inline_table().filter(|t| t.is_dotted()).and_then(|t| t.iter().next());
+    }
+    path
 }
 
 /// Deletes every `[header]` / `[[header]]` section at or under `path` (each runs to the next header, less the comment
@@ -455,6 +526,7 @@ fn replace_span(text: &str, old: &toml_edit::Value, repr: &str) -> Result<String
 /// [`splice`] inside an inline table `{ ... }`: the value, entry or text of the braces changes, nothing outside them.
 fn splice_inline(
     text: &str,
+    segments: &[&str],
     inline: &InlineTable,
     prefix: &[&str],
     leaf: &str,
@@ -471,13 +543,19 @@ fn splice_inline(
     let Some(new) = new else {
         return match (missing, table.get_key_value(leaf)) {
             (true, _) | (false, None) => Ok(text.to_owned()),
-            (false, Some((key, item))) => remove_entry(text, key, item),
+            (false, Some((key, item))) => match item.as_value().and_then(toml_edit::Value::as_inline_table) {
+                Some(t) if t.is_dotted() => peel_dotted(text, segments, &first_leaf_of_inline(t), None),
+                _ => remove_entry(text, key, item),
+            },
         };
     };
     let repr = new.to_string();
     let repr = repr.trim();
     if !missing && let Some(old) = table.get(leaf) {
-        return replace_span(text, old, repr);
+        return match old.as_inline_table() {
+            Some(t) if t.is_dotted() => peel_dotted(text, segments, &first_leaf_of_inline(t), Some(new)),
+            _ => replace_span(text, old, repr),
+        };
     }
     if table.is_dotted() {
         return Err("a dotted inline table cannot take a new key in place".to_owned());
@@ -842,6 +920,109 @@ mod tests {
         assert_eq!(run(nested, "a.x.y.w"), "a = { x.y.z = 1, \"q r\".s = 3, e = 4 }\r\n");
         assert_eq!(run(nested, "a.q r.s"), "a = { x.y.z = 1, x.y.w = 2, e = 4 }\r\n");
         assert_eq!(run(nested, "a.e"), "a = { x.y.z = 1, x.y.w = 2, \"q r\".s = 3 }\r\n");
+    }
+
+    #[test]
+    fn a_setting_written_as_dotted_keys_is_replaced_or_removed_whole_with_the_rest_untouched() {
+        for eol in ["\n", "\r\n"] {
+            let under_header =
+                "# top\n[ui]\nmig.percent = 125 # n\nmig.unit = \"x\"\nkeep = 1\n\n[other]\nk = 1\n".replace('\n', eol);
+            let changed = apply(Some(&under_header), &[set_edit("ui.mig", json!(150))]).unwrap();
+            let expected = "# top\n[ui]\nkeep = 1\nmig = 150\n\n[other]\nk = 1\n".replace('\n', eol);
+            assert_eq!(changed, expected, "{eol:?}");
+            let cleared = apply(Some(&under_header), &[drop_edit("ui.mig")]).unwrap();
+            assert_eq!(cleared, "# top\n[ui]\nkeep = 1\n\n[other]\nk = 1\n".replace('\n', eol), "{eol:?}");
+
+            let at_root = "a = 1\nui.mig.percent = 125\nz = 2\n".replace('\n', eol);
+            let changed = apply(Some(&at_root), &[set_edit("ui.mig", json!(150))]).unwrap();
+            assert_eq!(changed, "a = 1\nz = 2\n\n[ui]\nmig = 150\n".replace('\n', eol), "{eol:?}");
+
+            let inline = "ui = { mig.percent = 125, mig.unit = 1, k = 2 } # c\n".replace('\n', eol);
+            let changed = apply(Some(&inline), &[set_edit("ui.mig", json!(150))]).unwrap();
+            assert_eq!(changed, "ui = { k = 2, mig = 150 } # c\n".replace('\n', eol), "{eol:?}");
+            let cleared = apply(Some(&inline), &[drop_edit("ui.mig")]).unwrap();
+            assert_eq!(cleared, "ui = { k = 2 } # c\n".replace('\n', eol), "{eol:?}");
+        }
+    }
+
+    /// Every way the loader accepts a table-valued setting `ui.mig = { percent = 125 }`.
+    const SHAPES: [&str; 8] = [
+        "[ui]\nmig = { percent = 125 }\n",
+        "[ui]\nmig.percent = 125\n",
+        "[ui.mig]\npercent = 125\n",
+        "ui.mig.percent = 125\n",
+        "ui = { mig = { percent = 125 } }\n",
+        "ui = { mig.percent = 125 }\n",
+        "[ui]\nmig = { percent = 125 }\n[ui.sub]\nz = 1\n",
+        "[ui]\nmig.percent = 125\nmig.unit = 1\n[ui.sub]\nz = 1\n",
+    ];
+
+    proptest! {
+        #[test]
+        fn every_shape_the_loader_accepts_can_be_changed_reset_and_reopened(
+            shape in 0..SHAPES.len(),
+            crlf in proptest::bool::ANY,
+            comments in proptest::bool::ANY,
+            object in proptest::bool::ANY,
+        ) {
+            let lead = if comments { "u0 = 1\n# c1\n" } else { "u0 = 1\n" };
+            let trail = if comments { "# c2\n[uother]\nk = 1\n" } else { "[uother]\nk = 1\n" };
+            let mut text = format!("{lead}{}{trail}", SHAPES[shape]);
+            if crlf {
+                text = text.replace('\n', "\r\n");
+            }
+            // The lines that are not the setting's own (or a header it may share) must all survive, in order.
+            let own = |l: &str| l.is_empty() || ["mig", "percent", "unit", "[ui", "ui =", "z = 1"].iter().any(|m| l.contains(m));
+            let unrelated: Vec<&str> = text.lines().filter(|l| !own(l)).collect();
+            let kept = |new: &str| {
+                let mut rest = new.lines();
+                unrelated.iter().all(|l| rest.any(|n| n == *l))
+            };
+            let value = if object { json!({ "percent": 7, "x": 1 }) } else { json!(150) };
+            let changed = apply(Some(&text), &[set_edit("ui.mig", value.clone())]).unwrap();
+            prop_assert_eq!(lookup(&parse(&changed).unwrap(), "ui.mig"), Some(value));
+            prop_assert!(kept(&changed), "lost unrelated lines\n{:?}\n{:?}", text, changed);
+            if crlf {
+                prop_assert_eq!(changed.matches('\n').count(), changed.matches("\r\n").count());
+            }
+            let cleared = apply(Some(&text), &[drop_edit("ui.mig")]).unwrap();
+            prop_assert_eq!(lookup(&parse(&cleared).unwrap(), "ui.mig"), None);
+            prop_assert!(kept(&cleared), "lost unrelated lines\n{:?}\n{:?}", text, cleared);
+            let strip = |t: &str| {
+                let mut json = item_to_json(parse(t).unwrap().as_item());
+                remove_path(&mut json, &["ui", "mig"]);
+                json
+            };
+            prop_assert_eq!(strip(&text), strip(&changed));
+            prop_assert_eq!(strip(&text), strip(&cleared));
+            prop_assert!(apply(Some(&changed), &[set_edit("ui.mig", json!(150))]).is_ok());
+        }
+
+        #[test]
+        fn a_refused_edit_leaves_the_file_and_the_other_edits_alone(text in layouts()) {
+            if text.trim().is_empty() || !text.contains("name = 'v'") {
+                return Ok(());
+            }
+            // `name` is a plain value, so nothing can go under it.
+            let good = set_edit("ui.tier", json!("hi"));
+            let bad = set_edit("name.x", json!(1));
+            let both = apply_each(Some(&text), &[good.clone(), bad], &BTreeMap::new()).unwrap();
+            let only = apply_each(Some(&text), &[good], &BTreeMap::new()).unwrap();
+            prop_assert_eq!(both.text, only.text);
+            prop_assert_eq!(both.refused.len(), 1);
+        }
+    }
+
+    #[test]
+    fn an_edit_that_needs_a_refused_edit_waits_and_changes_nothing() {
+        let text = "area = 0\n[legacy]\nvalue = 7\n";
+        let edits = [set_edit("area.new", json!(7)), drop_edit("legacy.value")];
+        let needs = BTreeMap::from([("legacy.value".to_owned(), "area.new".to_owned())]);
+        let done = apply_each(Some(text), &edits, &needs).unwrap();
+        assert_eq!(done.text, text, "the destination was refused, so the source stays");
+        assert_eq!(done.refused.len(), 2);
+        let ok = apply_each(Some("[legacy]\nvalue = 7\n"), &edits, &needs).unwrap();
+        assert!(ok.refused.is_empty() && ok.text.contains("new = 7") && !ok.text.contains("value"), "{}", ok.text);
     }
 
     #[test]

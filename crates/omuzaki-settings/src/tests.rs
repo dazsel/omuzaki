@@ -99,6 +99,25 @@ impl Setting for Migrated {
     }
 }
 
+/// Moved from `legacy.value` (another area), so a file can refuse its new place while the old one is readable.
+struct Moved;
+impl Setting for Moved {
+    type Value = i32;
+    const META: SettingMeta = SettingMeta::new(
+        "area.new",
+        "moved",
+        SettingScope::User,
+        AgentWrite::Free,
+        InProfile::Excluded,
+        Apply::Live,
+        1,
+    );
+    const RENAMED_FROM: &'static [&'static str] = &["legacy.value"];
+    fn default() -> i32 {
+        0
+    }
+}
+
 struct Renamed;
 impl Setting for Renamed {
     type Value = i32;
@@ -129,6 +148,7 @@ fn registrations() -> Vec<&'static SettingRegistration> {
             SettingRegistration::of::<Scale>(p),
             SettingRegistration::of::<Migrated>(p),
             SettingRegistration::of::<Renamed>(p),
+            SettingRegistration::of::<Moved>(p),
         ]
     })
     .iter()
@@ -875,4 +895,47 @@ fn a_refused_migration_edit_keeps_the_backup_owed_until_a_write_makes_it() {
     store.flush().unwrap();
     assert_eq!(fs::read_to_string(&backup).unwrap(), repaired, "the pre-migration file was copied first");
     assert!(rig.user_text().contains("mig = 150") && rig.user_text().contains("\"ui.mig\" = 3"));
+}
+
+#[test]
+fn a_renamed_setting_whose_new_place_is_refused_keeps_its_old_value_across_reopening() {
+    let rig = Rig::new();
+    rig.write_user("area = 0\n[legacy]\nvalue = 7\n");
+    let store = rig.open();
+    assert_eq!(get::<Moved>(&store), 7, "read from the old name");
+    set::<Theme>(&store, &"light".to_owned());
+    assert!(store.flush().is_err(), "the new place is refused");
+    drop(store);
+    let text = rig.user_text();
+    assert!(text.contains("value = 7") && text.contains("theme = \"light\""), "the source stayed: {text}");
+    assert_eq!(get::<Moved>(&rig.open()), 7, "reopened");
+    // Once the new place is free, the value moves and the old name goes.
+    rig.write_user("[legacy]\nvalue = 7\n");
+    let store = rig.open();
+    store.flush().unwrap();
+    let text = rig.user_text();
+    assert!(text.contains("new = 7") && !text.contains("value"), "{text}");
+}
+
+#[test]
+fn a_setting_written_as_dotted_keys_under_a_header_changes_resets_and_reopens_with_crlf() {
+    let rig = Rig::new();
+    let old = "# top\r\n[ui]\r\nmig.percent = 125 # n\r\n\r\n# other\r\n[other]\r\nk = 1\r\n";
+    rig.write_user(old);
+    let store = rig.open();
+    assert_eq!(get::<Migrated>(&store), 125);
+    set::<Migrated>(&store, &150);
+    store.flush().unwrap();
+    let text = rig.user_text();
+    assert!(text.contains("mig = 150") && !text.contains("percent") && text.contains("\"ui.mig\" = 3"), "{text}");
+    assert!(text.contains("# other\r\n[other]\r\nk = 1\r\n") && text.starts_with("# top\r\n[ui]\r\n"), "{text}");
+    assert_eq!(text.matches('\n').count(), text.matches("\r\n").count(), "no bare LF: {text:?}");
+    drop(store);
+    let store = rig.open();
+    assert_eq!(get::<Migrated>(&store), 150, "reopened");
+    store.reset("ui.mig", Layer::Auto, Mode::Apply, &person()).unwrap();
+    store.flush().unwrap();
+    assert!(!rig.user_text().contains("mig"), "{}", rig.user_text());
+    drop(store);
+    assert_eq!(get::<Migrated>(&rig.open()), 100);
 }
