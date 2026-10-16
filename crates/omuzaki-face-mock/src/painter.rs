@@ -260,7 +260,7 @@ fn paint_fangs(
     half_w: f32,
     ends: (f32, f32),
 ) {
-    if m.fangs <= 0.01 {
+    if m.fangs <= 0.01 || !profile.has_fangs() {
         return;
     }
     let style = &profile.mouth.fang;
@@ -446,6 +446,22 @@ mod tests {
             .collect();
         assert!(!alphas.is_empty(), "no fang was drawn");
         assert!(alphas.iter().all(|&a| a == 0), "transparent teeth drew opaque fangs: {alphas:?}");
+    }
+
+    #[test]
+    fn a_profile_with_no_fangs_draws_none() {
+        let mut profile = mock_profile();
+        profile.mouth.fang.kind = omuzaki_face_api::FangKind::None;
+        let draw = |fangs: f32| {
+            let mut p = FaceMapping::default().rest_params();
+            p.mouth.open = 0.8;
+            p.mouth.fangs = fangs;
+            let input = FaceInput { profile: &profile, params: &p, time: Seconds(0.0), view: FaceView::default() };
+            let mut out = FaceDrawing::new();
+            MockPainter::default().paint(&input, &mut out).unwrap();
+            out[FaceLayerId::Base].clone()
+        };
+        assert_eq!(draw(1.0), draw(0.0));
     }
 
     #[test]

@@ -116,7 +116,8 @@ fn tongue(ctx: &mut PaintCtx<'_>, open: &OpenMouth) {
 
 fn upper_teeth(ctx: &mut PaintCtx<'_>, open: &OpenMouth) {
     let mouth = &ctx.params.mouth;
-    let band = mouth.teeth_upper.max(if mouth.fangs > FANG_BAND_ABOVE { FANG_BAND } else { 0.0 });
+    let fanged = ctx.profile.has_fangs() && mouth.fangs > FANG_BAND_ABOVE;
+    let band = mouth.teeth_upper.max(if fanged { FANG_BAND } else { 0.0 });
     if band <= BAND_MIN {
         return;
     }
@@ -177,7 +178,8 @@ fn lower_teeth(ctx: &mut PaintCtx<'_>, open: &OpenMouth) {
 
 fn fangs(ctx: &mut PaintCtx<'_>, open: &OpenMouth) {
     let strength = ctx.params.mouth.fangs;
-    if strength <= FANG_MIN {
+    // A character with no fangs paints none, whatever the channel says (a score or a person can still write it).
+    if strength <= FANG_MIN || !ctx.profile.has_fangs() {
         return;
     }
     let style = &ctx.profile.mouth.fang;
@@ -212,7 +214,11 @@ fn fangs(ctx: &mut PaintCtx<'_>, open: &OpenMouth) {
 fn closed_fang(ctx: &mut PaintCtx<'_>, opacity: f32) {
     let frame = Frame::of(ctx);
     let smile = frame.smile[0];
-    if ctx.params.mouth.fangs <= FANG_BAND_ABOVE || smile <= CLOSED_FANG_SMILE || opacity <= 0.0 {
+    if !ctx.profile.has_fangs()
+        || ctx.params.mouth.fangs <= FANG_BAND_ABOVE
+        || smile <= CLOSED_FANG_SMILE
+        || opacity <= 0.0
+    {
         return;
     }
     let style = &ctx.profile.mouth;
