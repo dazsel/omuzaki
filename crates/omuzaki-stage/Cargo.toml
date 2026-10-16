@@ -26,6 +26,7 @@ unicode-bidi.workspace = true
 unicode-normalization.workspace = true
 omuzaki-ai-api = { path = "../omuzaki-ai-api" }
 omuzaki-anim-api = { path = "../omuzaki-anim-api" }
+omuzaki-budget = { path = "../omuzaki-budget" }
 omuzaki-char-api = { path = "../omuzaki-char-api" }
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-doc-api = { path = "../omuzaki-doc-api" }
@@ -33,6 +34,7 @@ omuzaki-face-api = { path = "../omuzaki-face-api" }
 omuzaki-io-api = { path = "../omuzaki-io-api" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-render-api = { path = "../omuzaki-render-api" }
+omuzaki-settings-api = { path = "../omuzaki-settings-api" }
 omuzaki-stage-api = { path = "../omuzaki-stage-api" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
 omuzaki-track-api = { path = "../omuzaki-track-api" }
