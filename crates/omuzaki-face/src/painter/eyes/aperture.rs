@@ -232,7 +232,8 @@ impl Eye {
     /// at full squeeze, where the chevron has fully replaced it. An eye shut by a blink or an arc just fades with the
     /// squeeze.
     pub(super) fn closed_strength(&self, squeeze: f32) -> f32 {
-        if self.unsqueezed > SHUT_BELOW {
+        // Only an eye the squeeze itself is shutting crossfades; an arc, a blink or no squeeze keeps the plain fade.
+        if self.squeeze_shut(squeeze) {
             self.takeover(squeeze) * (1.0 - self.open_fade(squeeze))
         } else {
             1.0 - squeeze.clamp(0.0, 1.0)
@@ -254,7 +255,7 @@ impl Eye {
     /// `0` where it takes over (it lies on the lens the open eye had shrunk to), `1` at full squeeze, where it is
     /// invisible anyway. An eye shut by a blink or an arc is `1`: the curve is drawn in its own place, as in the prototype.
     pub(super) fn handover_drift(&self, squeeze: f32) -> f32 {
-        if self.unsqueezed > SHUT_BELOW { 1.0 - self.takeover(squeeze) } else { 1.0 }
+        if self.squeeze_shut(squeeze) { 1.0 - self.takeover(squeeze) } else { 1.0 }
     }
 
     /// The middle of the aperture at `u`: halfway between the lids.

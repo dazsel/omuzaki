@@ -181,6 +181,8 @@ fn render_the_closed_and_smiling_eyes_when_asked() {
     // A wink (the left eye closes as the happy arc, the right stays open) and the happy `^^`.
     save("eyes-wink.png", eyes_picture(&profile, |p| p.left_eye.arc = 1.0));
     save("eyes-happy.png", eyes_picture(&profile, |p| (p.left_eye.arc, p.right_eye.arc) = (1.0, 1.0)));
+    // The arc part-way (0.5 to 0.9): the eye is still there, closing into the `^`.
+    save("eyes-arc-sweep.png", strip(&[0.5, 0.7, 0.9].map(|arc| eye_picture(&profile, |p| p.left_eye.arc = arc))));
     save("eyes-blink-closed.png", eyes_picture(&profile, |p| (p.left_eye.close, p.right_eye.close) = (1.0, 1.0)));
     // Smiling lids: the cheek raises the lower lid, 0 to 0.6 in four steps; the line and its rim fade in from 0.15.
     let smile: Vec<_> = [0.0, 0.2, 0.35, 0.6].map(|lift| eye_picture(&profile, |p| p.left_eye.lower_lid = lift)).into();

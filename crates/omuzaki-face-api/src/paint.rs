@@ -782,6 +782,31 @@ mod tests {
         l.stroke(q, Paint::Solid(Colour::rgb(0, 0, 0)), 0.002);
     }
 
+    #[test]
+    fn scale_opacity_from_scales_fills_and_strokes_from_the_mark_on() {
+        let mut l = DrawList::new();
+        paint_sample(&mut l, 0.02);
+        let mark = l.cmds().len();
+        paint_sample(&mut l, 0.03);
+        l.push(Cmd::PopClip);
+        l.scale_opacity_from(mark, 0.5);
+        let opacities: Vec<Option<f32>> = l
+            .cmds()
+            .iter()
+            .map(|c| match c {
+                Cmd::Fill { opacity, .. } | Cmd::Stroke { opacity, .. } => Some(*opacity),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(opacities, [Some(1.0), Some(1.0), Some(0.5), Some(0.5), None], "only the commands from the mark");
+        // A second scaling multiplies, a factor over 1 is clamped, and a mark past the end touches nothing.
+        l.scale_opacity_from(mark, 0.5);
+        l.scale_opacity_from(mark, 4.0);
+        l.scale_opacity_from(99, 0.0);
+        assert!(matches!(l.cmds()[2], Cmd::Fill { opacity, .. } if (opacity - 0.25).abs() < 1e-6));
+        assert!(matches!(l.cmds()[0], Cmd::Fill { opacity, .. } if opacity == 1.0));
+    }
+
     fn sample(rx: f32) -> DrawList {
         let mut l = DrawList::new();
         paint_sample(&mut l, rx);

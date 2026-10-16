@@ -652,6 +652,34 @@ fn the_chevron_grows_from_the_lids_and_stays_inside_the_open_eye() {
 }
 
 #[test]
+fn an_eye_closing_into_an_arc_is_drawn_and_continuous_at_every_step() {
+    let profile = profile();
+    let mut last: Option<f32> = None;
+    for step in 0..=100_u8 {
+        let arc = f32::from(step) / 100.0;
+        let mut p = params(|_, _| {});
+        p.left_eye = omuzaki_face_api::EyeParams { open: 1.0, close: 0.0, arc, lower_lid: 0.0 };
+        p.right_eye = p.left_eye;
+        let drawn = paint(&profile, &p).into_base();
+        let open = drawn.cmds().iter().any(|c| matches!(c, Cmd::PushClip(_)));
+        let closed = closed_opacity(&drawn);
+        // Either the open eye or the arc is drawn, at full strength: never neither (arcs of 0.5 to 0.92 used to be).
+        assert!(open || closed > 0.99, "arc {arc}: neither the open eye nor the arc is drawn (closed at {closed})");
+        let shown = if open { 1.0 } else { closed };
+        if let Some(before) = last {
+            assert!((before - shown).abs() < 0.01, "arc {arc}: the eye went from {before} to {shown}");
+        }
+        last = Some(shown);
+    }
+    for arc in [0.5_f32, 0.7, 0.9] {
+        let mut p = params(|_, _| {});
+        p.left_eye = omuzaki_face_api::EyeParams { open: 1.0, close: 0.0, arc, lower_lid: 0.0 };
+        p.right_eye = p.left_eye;
+        assert!(closed_opacity(&paint(&profile, &p).into_base()) > 0.99, "arc {arc}");
+    }
+}
+
+#[test]
 fn eye_lines_keep_the_alpha_of_their_resolved_colours() {
     use omuzaki_face_api::{ColourRef, Paint};
     for alpha in [0_u8, 100] {
