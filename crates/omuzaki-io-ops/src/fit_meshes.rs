@@ -456,8 +456,9 @@ fn basic_pair(scene: &IoScene, facts: &Facts, target: NodeIx, other: NodeIx) -> 
     }
     // Baking takes the inverse transpose of the source's matrix for its normals, so a source that cannot be inverted
     // stays apart as much as a target that cannot.
-    if let Some(&node) =
-        [target, other].iter().find(|n| local_matrix(&scene.nodes[n.index()].transform).determinant().abs() < MIN_DETERMINANT)
+    if let Some(&node) = [target, other]
+        .iter()
+        .find(|n| local_matrix(&scene.nodes[n.index()].transform).determinant().abs() < MIN_DETERMINANT)
     {
         return Err(ApartReason::SingularTransform { node });
     }

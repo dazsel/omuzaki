@@ -317,7 +317,7 @@ fn expand_bounds(stats: &mut toml::Table, tiers: usize) -> Result<(), String> {
     let axes: Vec<toml::Value> = match &row {
         toml::Value::String(word) if word == UNSUPPORTED => vec![row.clone(); 3],
         toml::Value::Array(cells) => {
-            let mut axes: Vec<Vec<toml::Value>> = vec![Vec::with_capacity(cells.len()); 3];
+            let mut axes: Vec<Vec<toml::Value>> = vec![Vec::new(); 3];
             for cell in cells {
                 match cell.as_array().filter(|triple| triple.len() == 3) {
                     Some(triple) => axes.iter_mut().zip(triple).for_each(|(axis, v)| axis.push(v.clone())),
@@ -326,7 +326,12 @@ fn expand_bounds(stats: &mut toml::Table, tiers: usize) -> Result<(), String> {
             }
             axes.into_iter().map(toml::Value::Array).collect()
         }
-        other => return Err(format!("must be an array of [x, y, z] triples or '{UNSUPPORTED}', not a {}", other.type_str())),
+        other => {
+            return Err(format!(
+                "must be an array of [x, y, z] triples or '{UNSUPPORTED}', not a {}",
+                other.type_str()
+            ));
+        }
     };
     for axis in &axes {
         parse_row(axis, tiers)?;
