@@ -22,7 +22,7 @@ use omuzaki_performer_api::moves::{BigMovePlanner, MoveContext, OWNED_CHANNELS, 
 use omuzaki_performer_api::perception::{Glance, GlanceSource, Perception, PerceptionError};
 use omuzaki_performer_api::speech::{SpeakHow, SpeechHandle, SpeechState, Voice, VoiceError};
 use omuzaki_performer_api::spend::{SpendError, SpendGate};
-use omuzaki_performer_api::stage::{ClipInfo, Inventory, Stage};
+use omuzaki_performer_api::stage::{ClipInfo, Inventory, Refusal, Stage, StageError};
 use omuzaki_performer_api::voice::{CutState, VoiceInfo, VoiceLead, VoiceProvider};
 use omuzaki_performer_mock::{
     FakeCatalog, FakeCut, FakePerception, FakeVoice, FakeWallet, LeadCall, RecordingLead, RecordingStage, RestPlanner,
@@ -157,10 +157,51 @@ fn the_sequence_check_catches_broken_streams() {
             Heard::onset(s(3.0)),
             Heard::final_text(2, "b", s(3.0), s(4.0)),
         ],
+        vec![Heard::onset(s(1.0)), Heard::final_text(1, "a", s(1.0), s(2.0))],
+        vec![
+            Heard::onset(s(1.0)),
+            Heard::final_text(0, "a", s(1.0), s(2.0)),
+            Heard::onset(s(3.0)),
+            Heard::final_text(2, "b", s(3.0), s(4.0)),
+        ],
     ];
     for events in bad {
         assert!(conformance::heard_sequence(&events).is_err(), "{events:?}");
     }
+    let good = [
+        Heard::onset(s(1.0)),
+        Heard::final_text(0, "a", s(1.0), s(2.0)),
+        Heard::onset(s(3.0)),
+        Heard::rejected(s(3.5)),
+        Heard::onset(s(4.0)),
+        Heard::final_text(1, "b", s(4.0), s(5.0)),
+    ];
+    conformance::heard_sequence(&good).unwrap();
+}
+
+/// A stage whose member has nothing to emote with and that refuses every intent.
+struct RefusingStage;
+
+impl Stage for RefusingStage {
+    fn apply(&self, _: &MemberId, _: &Intent, _: Seconds) -> Result<(), StageError> {
+        Err(StageError::Refused(Refusal::UnknownExpression))
+    }
+
+    fn release(&self, _: &MemberId, _: Seconds) {}
+
+    fn inventory(&self, member: &MemberId) -> Result<Inventory, StageError> {
+        if *member == mochi() {
+            Ok(Inventory::new(vec![], vec![], vec![], vec![]))
+        } else {
+            Err(StageError::unknown_member(member))
+        }
+    }
+}
+
+#[test]
+fn the_stage_check_needs_a_valid_intent_taken_even_with_no_expressions() {
+    let why = conformance::stage(&RefusingStage, &mochi()).unwrap_err();
+    assert!(why.starts_with("apply: LookAt"), "{why}");
 }
 
 #[test]

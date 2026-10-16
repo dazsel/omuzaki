@@ -13,7 +13,7 @@ use omuzaki_stage_api::ids::MemberId;
 
 use crate::ears::Heard;
 use crate::ids::VoiceId;
-use crate::intent::Intent;
+use crate::intent::{GazeTarget, Intent};
 use crate::limits::CHUNK_MAX_CHARS;
 use crate::moves::{Addressee, BigMovePlanner, Floor, MoveContext, OWNED_CHANNELS, StyleKnobs, TalkState};
 use crate::speech::{SpeakHow, SpeechHandle, SpeechState, Voice, VoiceError};
@@ -157,15 +157,15 @@ fn bad_chunks(rig: &mut dyn VoiceRig) -> Result<(), String> {
 }
 
 /// Checks a sequence an [`Ears`](crate::ears::Ears) produced: times never go back, every utterance is `Onset`, at most
-/// one `Held`, then `Final` or `Rejected`; `Final`s count up and end after they start; nothing but `Muted(false)`
-/// follows `Muted(true)`.
+/// one `Held`, then `Final` or `Rejected`; `Final`s are numbered 0, 1, 2… with no gaps (a `Rejected` takes no number)
+/// and end after they start; nothing but `Muted(false)` follows `Muted(true)`.
 ///
 /// # Errors
 /// The first event that breaks a rule, with its index.
 pub fn heard_sequence(events: &[Heard]) -> Result<(), String> {
     let mut last = f64::NEG_INFINITY;
     let (mut open, mut held, mut muted) = (false, false, false);
-    let mut next_utterance: Option<u64> = None;
+    let mut next_utterance: u64 = 0;
     for (i, e) in events.iter().enumerate() {
         let fail = |why: &str| Err(format!("event {i} ({e:?}): {why}"));
         if let Some(t) = e.time() {
@@ -191,10 +191,13 @@ pub fn heard_sequence(events: &[Heard]) -> Result<(), String> {
             Heard::Rejected { .. } | Heard::Final { .. } if !open => return fail("ends an utterance that never began"),
             Heard::Rejected { .. } => open = false,
             Heard::Final { utterance, start, end, .. } => {
-                if end.0 < start.0 || next_utterance.is_some_and(|n| *utterance < n) {
-                    return fail("ends before it starts, or its number went back");
+                if end.0 < start.0 {
+                    return fail("ends before it starts");
                 }
-                next_utterance = Some(utterance + 1);
+                if *utterance != next_utterance {
+                    return Err(format!("event {i} ({e:?}): utterance {next_utterance} was next"));
+                }
+                next_utterance += 1;
                 open = false;
             }
         }
@@ -203,7 +206,8 @@ pub fn heard_sequence(events: &[Heard]) -> Result<(), String> {
 }
 
 /// Checks a [`Stage`] with `member` in its scene: it reports an inventory, refuses an unknown member and a name
-/// outside the inventory, takes one inside it, and releases without failing.
+/// outside the inventory, takes a look at the camera (which every inventory allows) and an expression from the
+/// inventory when it has one, and releases without failing.
 ///
 /// # Errors
 /// The first failing case.
@@ -218,10 +222,10 @@ pub fn stage(stage: &dyn Stage, member: &MemberId) -> Result<(), String> {
         Err(StageError::Refused(Refusal::UnknownExpression)) => {}
         other => return Err(format!("apply: an unknown expression gave {other:?}")),
     }
-    if let Some(known) = inventory.expressions.first() {
-        stage
-            .apply(member, &Intent::emote(known.clone(), 1.0, 1.5), Seconds(0.0))
-            .map_err(|e| format!("apply: a known expression was refused: {e}"))?;
+    let valid = std::iter::once(Intent::look_at(GazeTarget::Camera, 1.0))
+        .chain(inventory.expressions.first().map(|known| Intent::emote(known.clone(), 1.0, 1.5)));
+    for intent in valid {
+        stage.apply(member, &intent, Seconds(0.0)).map_err(|e| format!("apply: {intent:?} was refused: {e}"))?;
     }
     stage.release(member, Seconds(0.0));
     Ok(())
