@@ -10,11 +10,14 @@ use omuzaki_llm_api::error::LlmError;
 use omuzaki_llm_api::message::{ContentBlock, Message, Role, TurnRequest};
 use omuzaki_llm_api::stream::{Cancel, EventSource, LlmEvent, Next, TurnStream};
 use omuzaki_llm_api::usage::{ImageCost, ModelInfo};
+use omuzaki_llm_api::validate;
 
 use crate::script::{Expect, Script, ScriptTurn};
 
 /// A deterministic [`LlmClient`] that plays a [`Script`]: the same script always gives the same events. It opens no
-/// socket and starts no thread; delays move a [`FakeClock`] instead of sleeping.
+/// socket and starts no thread; delays move a [`FakeClock`] instead of sleeping. It runs the request checks of
+/// [`omuzaki_llm_api::validate`] before it consumes a turn, against the model limits it advertises (64,000 output
+/// tokens, images, tools and caching).
 pub struct FakeLlm {
     script: Script,
     info: ModelInfo,
@@ -73,6 +76,9 @@ impl LlmClient for FakeLlm {
         if cancel.is_cancelled() {
             return Err(LlmError::Cancelled);
         }
+        // The checks a real client makes come first and cost no scripted turn, so a test cannot pass a flow that a
+        // real client would refuse.
+        validate::request(&req, &self.info)?;
         let mut state = self.lock();
         let number = state.next + 1;
         state.next = number;
@@ -171,8 +177,9 @@ impl Playback {
         if let Some(injected) = &turn.error {
             items.insert(injected.before.min(items.len()), Item::Fail(injected.error.clone()));
         }
-        let retries = (1..=turn.retries)
-            .map(|attempt| Item::Event(LlmEvent::retrying(attempt, Duration::ZERO, "scripted retry")));
+        let wait = Duration::from_millis(turn.retry_after_ms);
+        let retries =
+            (1..=turn.retries).map(|attempt| Item::Event(LlmEvent::retrying(attempt, wait, "scripted retry")));
         let items: VecDeque<Item> = retries.chain(items).collect();
         let delay = Duration::from_millis(turn.delay_ms).as_secs_f64();
         let ready_at = clock.now().0;
