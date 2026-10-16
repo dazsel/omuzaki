@@ -240,7 +240,13 @@ the same engine serves both and never holds a borrow across a job. `run` is a me
   It costs under 1 ns per allocation on the run's thread and nothing measurable on other threads. The count is read
   once per operation, so a single native call could pass the limit by what it allocates; the two functions that
   multiply a value (`array.pad`, `string.replace`) are checked before they copy, and every other one is bounded by
-  what the run already holds.
+  what the run already holds. The peak is read again before the run commits, so a last call that passed the limit
+  and freed its memory again still fails the run.
+- **Turning a value into text** (`print`, `debug`, `log`, `to_string`, `to_debug`, `${...}` interpolation, `+` and `+=`
+  with a string, the message of an uncaught `throw`) is built into a sink that stops at the output or string limit, so
+  formatting a value costs that limit and not the size of the value. Rhai formats an interpolated item by calling
+  `to_string` and, if that call fails, formats the whole value itself; so a stop due at the call's own tick is held for
+  one operation, and `to_string` answers a cut text and flags the run (`Limit(StringSize)`) instead of failing.
 - **Closures** are accepted only as the callback of `try_op` or of an array function (`map`, `filter`, `reduce`, ...), so
   none outlives its call: what a closure captures is not counted by Rhai's limits either.
 - **Values that cross in** (`params`, op results) are measured as a whole before they are converted: all slots, all
@@ -258,8 +264,15 @@ the same engine serves both and never holds a borrow across a job. `run` is a me
 |---|---|---|---|
 | `script.check {source}` | Query | `read` | Parses and resolves, without running: the ops named with line and column; unknown ops; for argument maps written as literals, unknown and missing fields against each op's schema; the scopes the script needs; the effective ceiling; parse errors. The console runs it as you type |
 | `script.run {source \| id, params?, dry_run?, seconds?}` | Job (driver) | `script` | Runs a script (section 4). Source capped at 64 KiB; refused if `script.check` finds errors. Returns `ScriptOutcome` or the `ScriptError` as an `OpError` with code `invalid` and a `detail` carrying line and column |
-| `script.save {id, name, source \| steps, place}` / `script.delete {id, place}` | Edit | `script` | `place: project` writes the document node `scripts/<id>` (undoable); `place: mine` writes My scripts through a `ScriptStore` service (`Undo::Explicit`, empty patch, like the settings ops) (section 7) |
+| `script.save {id, name, source \| steps, place}` / `script.delete {id, place}` | Edit | `script` | `place: project` writes the document node `scripts/<id>` (a real patch: journalled and branchable, and removed by `script.delete`; Ctrl+Z refuses the step while the op's undo is `Explicit`, see below); `place: mine` writes My scripts through a `ScriptStore` service (`Undo::Explicit`, empty patch, like the settings ops) (section 7) |
 | `script.list {}` | Query | `read` | Project scripts and macros, with last author and content hash |
+
+`script.save` and `script.delete` are one op each for both places, and an op's undo mode is fixed per op type, so both
+are `Undo::Explicit`. Today that means Ctrl+Z refuses a step that holds either, for the project place too (the executor
+reverses no effects yet, ADR 0036 decision 9); a person takes a saved item back with `script.delete`, or with
+`script.save` of the old content. A script cannot call them (a rollback could not undo the My scripts write).
+Undoing a project save from history needs the project place to be an op of its own with `Undo::Auto`; that is a change
+to the op set for the Agents and ops lead to decide.
 
 - **A `script` scope, held by no default agent ceiling.** An agent gets it per session or per credential from the
   person, like `publish`. `script.save` needs it too: otherwise an agent could write a script for the person to run
@@ -312,7 +325,7 @@ the same engine serves both and never holds a borrow across a job. `run` is a me
   op this build lacks is listed as unavailable, naming the op, like a library item (D3 rule 3).
 - **Where macros live:** in **My scripts** by default (`<config dir>/omuzaki/scripts/<id>.macro.jsonl`, next to
   `<id>.rhai`; a personal habit travels across projects, like layouts), or in the project ("Save to project") as a
-  document node `scripts/<id>` (`{name, kind: macro, steps}`), where it is undoable, journalled, branchable and
+  document node `scripts/<id>` (`{name, kind: macro, steps}`), where it is journalled, branchable and
   visible to agents through `script.list`. Saved scripts live in the same two places.
 - **Replay** runs the steps as one transaction labelled with the macro's name, through the same `Calls` path as a
   script (grants, limits, refusals; from the console over `RunnerCalls`, as a driver job when an agent or the

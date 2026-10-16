@@ -107,6 +107,25 @@ fn directive_text_inside_a_raw_string_is_just_text() {
 }
 
 #[test]
+fn hash_runs_cannot_make_the_directive_scan_quadratic() {
+    // Each shape made the scan reread a long run of `#` once per character: 60,000 characters is billions of reads if
+    // it does, and well under a millisecond if it doesn't. The bound is loose enough for a loaded CI worker.
+    let hashes = "#".repeat(60_000);
+    let quotes = format!("#{}\"{}", "#".repeat(30_000), "\"".repeat(29_000));
+    let spaced = "# ".repeat(30_000);
+    let host = host();
+    for (name, source) in [("hashes", hashes), ("quotes after a long opener", quotes), ("spaced hashes", spaced)] {
+        let started = std::time::Instant::now();
+        let report = host.check(&source);
+        let (_, result) = run(&source);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2), "{name}: took {:?}", started.elapsed());
+        // Not valid scripts, so each ends in a parse error; the point is that they end at all.
+        assert!(!report.parse_errors.is_empty(), "{name}");
+        assert!(result.is_err(), "{name}");
+    }
+}
+
+#[test]
 fn a_source_over_the_limit_is_refused_before_anything_scans_it() {
     // Past the limit, with a misplaced directive and an unterminated string a scan would trip over: the size is the
     // only complaint, and it comes first.

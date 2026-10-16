@@ -260,10 +260,22 @@ pub(crate) fn format_bounded(value: &Dynamic, debug: bool, room: usize) -> (Stri
     (sink.into_text(), cut)
 }
 
+/// `value` as Rhai's `Display` writes it, at most `room` bytes of it.
+pub(crate) fn display_bounded(value: &Dynamic, room: usize) -> String {
+    let mut sink = Bounded::new(room);
+    let _ = write!(sink, "{value}");
+    sink.into_text()
+}
+
 /// Registers bounded `print`, `debug`, `to_string` and `to_debug` for any value, an array and a map (the spellings
 /// Rhai's own versions of them have for containers). `print` and `debug` answer the text cut at the output limit plus
 /// one byte, which is enough for the output to see it is over and mark itself truncated; `to_string` and `to_debug`
-/// (which interpolation and `+` use) refuse a text over the string limit, as Rhai does after building it.
+/// (which interpolation and `+` use) answer the text cut at the string limit and flag the run, which then stops with
+/// `Limit(StringSize)` at its next tick or before it commits.
+///
+/// They must answer rather than raise, and answer a text the engine's size check accepts: Rhai builds an interpolated
+/// string, and `"a" + value`, by calling `to_string` and, when that fails for any reason (an error, or a result over
+/// the string limit), formatting the whole value itself (`print_with_func`), which is the unbounded build this avoids.
 pub(crate) fn install_formatting(engine: &mut Engine, limits: &Limits) {
     let output_room = limits.output_bytes.saturating_add(1);
     let string_room = limits.string_bytes;
@@ -271,14 +283,16 @@ pub(crate) fn install_formatting(engine: &mut Engine, limits: &Limits) {
         [("print", false, true), ("debug", true, true), ("to_string", false, false), ("to_debug", true, false)]
     {
         let room = if output { output_room } else { string_room };
-        let answer =
-            move |context: &NativeCallContext<'_>, value: &Dynamic| -> Result<ImmutableString, Box<EvalAltResult>> {
-                let (text, cut) = format_bounded(value, debug, room);
-                if cut && !output {
-                    return Err(too_large("Length of string", context.call_position()));
+        let answer = move |context: &NativeCallContext<'_>, value: &Dynamic| -> ImmutableString {
+            let (text, cut) = format_bounded(value, debug, room);
+            if cut && !output {
+                // The run ends at its next tick; see `Run::string_overflow`.
+                if let Ok(run) = crate::host::run_of(context) {
+                    run.note_string_overflow();
                 }
-                Ok(text.into())
-            };
+            }
+            text.into()
+        };
         engine.register_fn(name, move |context: NativeCallContext<'_>, value: &mut Dynamic| answer(&context, value));
         engine.register_fn(name, move |context: NativeCallContext<'_>, array: &mut Array| {
             let held = Dynamic::from_array(std::mem::take(array));
@@ -293,4 +307,46 @@ pub(crate) fn install_formatting(engine: &mut Engine, limits: &Limits) {
             result
         });
     }
+    install_concatenation(engine, string_room);
+}
+
+/// The text of `item` for a concatenation, cut at `room` bytes (the run is flagged when it was cut).
+fn text_for_concat(context: &NativeCallContext<'_>, item: &Dynamic, room: usize) -> String {
+    let (text, cut) = format_bounded(item, false, room);
+    if let (true, Ok(run)) = (cut, crate::host::run_of(context)) {
+        run.note_string_overflow();
+    }
+    text
+}
+
+/// `first` and `second` joined in a string of exactly their length: a map's keys are the budget's, so a key built here
+/// must not hold the spare capacity a growing `String` would.
+fn join(first: &str, second: &str) -> String {
+    let mut joined = String::with_capacity(first.len() + second.len());
+    joined.push_str(first);
+    joined.push_str(second);
+    joined
+}
+
+/// Registers `string + value`, `string += value` and `value + string` for any value, replacing the package's.
+///
+/// The package's versions format `value` through `print_with_func`, which calls `to_string` and, when anything fails on
+/// the way (the per-operation stop of a run that is over its budget is one, since that call ticks first), formats the
+/// value in full. These format it here, bounded, with no call to fail.
+fn install_concatenation(engine: &mut Engine, room: usize) {
+    engine.register_fn(
+        "+",
+        move |context: NativeCallContext<'_>, string: &mut ImmutableString, item: Dynamic| -> ImmutableString {
+            join(string, &text_for_concat(&context, &item, room)).into()
+        },
+    );
+    engine.register_fn("+=", move |context: NativeCallContext<'_>, string: &mut ImmutableString, item: Dynamic| {
+        *string = join(string, &text_for_concat(&context, &item, room)).into();
+    });
+    engine.register_fn(
+        "+",
+        move |context: NativeCallContext<'_>, item: &mut Dynamic, string: &str| -> ImmutableString {
+            join(&text_for_concat(&context, item, room), string).into()
+        },
+    );
 }

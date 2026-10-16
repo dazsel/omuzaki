@@ -1,6 +1,6 @@
 //! The Rhai engine: one fresh engine per run, the limits, cancel, output and error mapping.
 
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use omuzaki_core::time::{Clock, SystemClock};
@@ -95,6 +95,11 @@ pub(crate) struct Run {
     reads: AtomicU32,
     /// JSON bytes of the dry-run plans kept so far.
     plan_bytes: AtomicUsize,
+    /// Set when a formatting function cut its text at the string limit. Rhai swallows an error from `to_string` and
+    /// formats the value in full, so the function answers the cut text instead and the run stops at the next tick.
+    string_overflow: AtomicBool,
+    /// Set by the first tick that finds a reason to stop and lets it pass; see [`Run::progress`].
+    grace_given: AtomicBool,
     output: Mutex<Output>,
     plans: Mutex<Vec<PlannedCall>>,
 }
@@ -233,11 +238,38 @@ impl Run {
         (clock.now().0 - started >= f64::from(self.limits.seconds)).then_some(Stop::Limit(LimitKind::Time))
     }
 
+    /// Records that a text was cut at the string limit; the run ends with `Limit(StringSize)`.
+    pub(crate) fn note_string_overflow(&self) {
+        self.string_overflow.store(true, Ordering::SeqCst);
+    }
+
+    /// The engine's per-operation check: `Some` ends the run.
+    ///
+    /// The first tick that finds a reason to stop (cancel, time or memory) lets that one operation pass and ends the run
+    /// at the next, which still comes before the script can do anything more. Rhai calls `to_string` for an
+    /// interpolated string through a function whose own tick comes first and whose error it swallows, falling back to
+    /// formatting the value in full: a stop delivered there would not stop the run, and would make that unbounded
+    /// formatting happen. The one operation of delay lets the bounded `to_string` run instead for the usual shape (a
+    /// value copied, then interpolated at once). A memory overshoot in that operation is caught by the peak check
+    /// before the run commits. Residual: a run that has already passed its limit and then interpolates a value with
+    /// two or more ticks in between formats that value once in full, at about 4.5 times its size, before it stops.
     fn progress(&self, started: f64, clock: &dyn Clock) -> Option<Dynamic> {
-        if budget::used_here() > self.limits.memory_bytes {
-            return Some(Dynamic::from(Stop::Limit(LimitKind::Memory)));
+        if self.string_overflow.load(Ordering::SeqCst) {
+            return Some(Dynamic::from(Stop::Limit(LimitKind::StringSize)));
         }
-        self.stop(started, clock).map(Dynamic::from)
+        // A callback that outlives its lease stops at once: nothing it can reach is borrowed any more.
+        if self.lent.read().unwrap_or_else(PoisonError::into_inner).is_none() {
+            return Some(Dynamic::from(Stop::Cancelled));
+        }
+        let reason = if budget::used_here() > self.limits.memory_bytes {
+            Some(Dynamic::from(Stop::Limit(LimitKind::Memory)))
+        } else {
+            self.stop(started, clock).map(Dynamic::from)
+        };
+        if reason.is_some() && !self.grace_given.swap(true, Ordering::SeqCst) {
+            return None;
+        }
+        reason
     }
 
     fn print(&self, kind: OutputKind, text: &str) {
@@ -463,6 +495,8 @@ impl ScriptHost {
             sent: AtomicU32::new(0),
             reads: AtomicU32::new(0),
             plan_bytes: AtomicUsize::new(2),
+            string_overflow: AtomicBool::new(false),
+            grace_given: AtomicBool::new(false),
             output: Mutex::new(Output::default()),
             plans: Mutex::new(Vec::new()),
         });
@@ -535,6 +569,18 @@ impl ScriptHost {
             return Err(located(ScriptErrorKind::Parse, stray.message, stray.at, None));
         }
         let value = evaluate(&engine, &ast, &run.request.params, &self.limits)?;
+        // The progress tick reads the live heap between operations; the last operation (or the conversion of the
+        // result) can pass the budget and free it again before another tick, so the peak is read here, before anything
+        // becomes durable.
+        if run.string_overflow.load(Ordering::SeqCst) {
+            return Err(fail(ScriptErrorKind::Limit(LimitKind::StringSize), "a text was longer than the string limit"));
+        }
+        if budget::peak_here() > self.limits.memory_bytes {
+            return Err(fail(
+                ScriptErrorKind::Limit(LimitKind::Memory),
+                "the run held more memory than the memory limit",
+            ));
+        }
         let too_big = serde_json::to_vec(&value).map_or(true, |json| json.len() > self.limits.result_bytes);
         if too_big {
             return Err(fail(ScriptErrorKind::Limit(LimitKind::Result), "the result is larger than the result limit"));
@@ -585,7 +631,8 @@ fn evaluate(
     let mut scope = Scope::new();
     let params = to_dynamic(params).map_err(|e| fail(ScriptErrorKind::Runtime, &e.to_string()))?;
     scope.push_constant_dynamic("params", params);
-    let returned = engine.eval_ast_with_scope::<Dynamic>(&mut scope, ast).map_err(|e| classify(&e))?;
+    let returned =
+        engine.eval_ast_with_scope::<Dynamic>(&mut scope, ast).map_err(|e| classify(&e, limits.string_bytes))?;
     to_json(returned, limits.value_depth).map_err(|e| match e {
         Convert::Depth => fail(ScriptErrorKind::Limit(LimitKind::Depth), "the result is nested deeper than the limit"),
         Convert::Other(message) => fail(ScriptErrorKind::Runtime, &format!("the result is not JSON: {message}")),
@@ -615,11 +662,13 @@ pub(crate) fn located(kind: ScriptErrorKind, message: String, at: Position, op_e
     ScriptError { kind, line, column, op_error, message, output: Vec::new() }
 }
 
-/// Maps Rhai's error to ours, looking through the wrappers a call inside a script function adds.
-fn classify(error: &EvalAltResult) -> ScriptError {
+/// Maps Rhai's error to ours, looking through the wrappers a call inside a script function adds. A thrown value is
+/// described in at most `room` bytes: Rhai's own text for it formats the whole value, after the run has stopped
+/// counting its memory, and a thrown map can hold more than the budget.
+fn classify(error: &EvalAltResult, room: usize) -> ScriptError {
     let at = error.position();
     let (kind, op_error) = match error {
-        EvalAltResult::ErrorInFunctionCall(_, _, inner, _) => return classify(inner),
+        EvalAltResult::ErrorInFunctionCall(_, _, inner, _) => return classify(inner, room),
         EvalAltResult::ErrorTooManyOperations(_) => (ScriptErrorKind::Limit(LimitKind::Operations), None),
         EvalAltResult::ErrorStackOverflow(_) => (ScriptErrorKind::Limit(LimitKind::Depth), None),
         EvalAltResult::ErrorDataTooLarge(typ, _) => (ScriptErrorKind::Limit(size_kind(typ)), None),
@@ -639,8 +688,18 @@ fn classify(error: &EvalAltResult) -> ScriptError {
         },
         _ => (ScriptErrorKind::Runtime, None),
     };
-    let message = op_error.as_ref().map_or_else(|| error.to_string(), |e| e.message.clone());
+    let message = op_error.as_ref().map_or_else(|| describe(error, room), |e| e.message.clone());
     located(kind, message, at, op_error)
+}
+
+/// Rhai's text for `error`, with a thrown value cut at `room` bytes while it is formatted.
+fn describe(error: &EvalAltResult, room: usize) -> String {
+    match error {
+        EvalAltResult::ErrorRuntime(thrown, at) if !thrown.is_unit() && !thrown.is_string() => {
+            EvalAltResult::ErrorRuntime(crate::guards::display_bounded(thrown, room).into(), *at).to_string()
+        }
+        _ => error.to_string(),
+    }
 }
 
 /// The `OpError` an inner call's failure carried into the script (a map that names the op).
@@ -701,6 +760,8 @@ mod tests {
             sent: AtomicU32::new(0),
             reads: AtomicU32::new(0),
             plan_bytes: AtomicUsize::new(2),
+            string_overflow: AtomicBool::new(false),
+            grace_given: AtomicBool::new(false),
             output: Mutex::new(Output::default()),
             plans: Mutex::new(Vec::new()),
         })
@@ -887,7 +948,12 @@ mod peak {
 
     /// Runs `source` under the console limits and returns how it ended and the most heap it held, in bytes.
     fn peak_of(source: &str) -> (Result<ScriptOutcome, ScriptError>, usize) {
-        let host = ScriptHost::new(&[], Limits::console());
+        peak_with(Limits::console(), source)
+    }
+
+    /// As [`peak_of`], under `limits`.
+    fn peak_with(limits: Limits, source: &str) -> (Result<ScriptOutcome, ScriptError>, usize) {
+        let host = ScriptHost::new(&[], limits);
         let request = RunRequest {
             name: "peak".into(),
             source: source.into(),
@@ -935,11 +1001,18 @@ mod peak {
         // 300 half-megabyte keys: about 150 MiB, under the budget, and each key is more than the output limit.
         let build = format!("{LONG_KEY} let m = #{{}}; for i in 0..300 {{ m[k + i] = 1; }}");
         let (_, held) = peak_of(&build);
-        for (name, statement, ends) in [
-            ("log", "log(m);", "ok"),
-            ("print", "print(m);", "ok"),
-            ("debug", "debug(m);", "ok"),
-            ("to_string", "let s = m.to_string();", "limit"),
+        // The last number is the copies of the value the statement makes before it formats anything.
+        for (name, statement, ends, copies) in [
+            ("log", "log(m);", "ok", 0),
+            ("print", "print(m);", "ok", 0),
+            ("debug", "debug(m);", "ok", 0),
+            ("to_string", "let s = m.to_string();", "limit", 0),
+            // Rhai builds these by calling `to_string` and, if that fails, formatting the whole value itself.
+            ("interpolation", "let s = `a${m}b`;", "limit", 1),
+            ("string plus value", r#"let s = "a" + m;"#, "limit", 1),
+            ("value plus string", r#"let s = m + "a";"#, "limit", 1),
+            ("string append", r#"let s = "a"; s += m;"#, "limit", 1),
+            ("interpolated array", "let s = `${[m]}`;", "limit", 1),
         ] {
             let (result, peak) = peak_of(&format!("{build} {statement}"));
             match (ends, &result) {
@@ -951,17 +1024,57 @@ mod peak {
                     );
                 }
                 ("limit", Err(error)) => {
-                    assert_eq!(error.kind, ScriptErrorKind::Limit(LimitKind::StringSize), "{name}: {error}");
+                    assert!(
+                        matches!(error.kind, ScriptErrorKind::Limit(LimitKind::StringSize | LimitKind::Memory)),
+                        "{name}: {error}"
+                    );
                 }
                 _ => panic!("{name}: {:?}", result.as_ref().map(|o| &o.output)),
             }
+            // Formatting in full is several times the value; the copy a script makes to interpolate or add a value
+            // is the one extra it is allowed (and is what the memory limit then stops).
+            let allowed = copies * held + (8 << 20);
             assert!(
-                peak <= held + (8 << 20),
+                peak <= held + allowed,
                 "{name}: held {} MiB over the {} MiB it started with",
                 peak >> 20,
                 held >> 20
             );
         }
+    }
+
+    /// The message of an uncaught `throw` is Rhai's text for the thrown value, built after the run stopped counting.
+    #[test]
+    fn throwing_a_huge_value_reports_it_cut_at_the_limit() {
+        let build = format!("{LONG_KEY} let m = #{{}}; for i in 0..300 {{ m[k + i] = 1; }}");
+        let (_, held) = peak_of(&build);
+        let (result, peak) = peak_of(&format!("{build} throw m;"));
+        let error = result.expect_err("a thrown value is an error");
+        assert_eq!(error.kind, ScriptErrorKind::Runtime, "{}", error.message.len());
+        assert!(error.message.starts_with("Runtime error: #{"), "{}", &error.message[..40]);
+        assert!(error.message.len() <= Limits::console().string_bytes + 64, "{} bytes", error.message.len());
+        // `throw m` copies the value once (a copy of what the script already holds, as the module docs of `guards` say);
+        // formatting it in full would be several more.
+        assert!(peak <= 2 * held + (8 << 20), "held {} MiB with {} MiB to start", peak >> 20, held >> 20);
+        // A small thrown value keeps Rhai's own text.
+        let (result, _) = peak_of("throw #{ a: 1 };");
+        let mut small = Map::new();
+        small.insert("a".into(), Dynamic::from(1_i64));
+        let rhais = EvalAltResult::ErrorRuntime(Dynamic::from_map(small), Position::new(1, 1)).to_string();
+        assert_eq!(result.expect_err("thrown").message, rhais);
+    }
+
+    /// The last operation can pass the budget and free what it took before another progress tick looks.
+    #[test]
+    fn a_final_call_that_passed_the_budget_cannot_commit() {
+        // 256 KiB of text; the last `+` of four copies makes a 768 KiB string while a 512 KiB one and the original are
+        // alive: about 1.5 MiB at once, against a 1.2 MiB budget, released again when the call returns.
+        let build = r#"let s = "x"; while s.len < 200000 { s += s; } "#;
+        let tight = Limits { memory_bytes: 1_200_000, ..Limits::console() };
+        let (result, _) = peak_with(tight.clone(), &format!("{build} (s + s + s).len()"));
+        assert_eq!(result.expect_err("over budget").kind, ScriptErrorKind::Limit(LimitKind::Memory));
+        let (result, _) = peak_with(tight, &format!("{build} (s + s).len()"));
+        assert_eq!(result.expect("a smaller last call commits").value, 524_288);
     }
 
     /// The bounded versions say what Rhai's own do for values that fit.

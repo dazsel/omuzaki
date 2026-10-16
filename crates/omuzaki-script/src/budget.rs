@@ -155,8 +155,9 @@ pub(crate) fn used_here() -> usize {
     LIVE.with(|live| usize::try_from(live.get()).unwrap_or(0))
 }
 
-/// The most bytes the current thread held beyond its start while it was last counting (or is counting now).
-#[cfg(test)]
+/// The most bytes the current thread held beyond its start while it was last counting (or is counting now). The run
+/// reads it before it commits: the progress tick sees the live figure only between operations, and a final native call
+/// can reach past the budget and release it again before the next tick.
 pub(crate) fn peak_here() -> usize {
     PEAK.with(|peak| usize::try_from(peak.get()).unwrap_or(0))
 }

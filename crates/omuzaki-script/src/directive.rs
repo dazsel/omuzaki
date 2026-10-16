@@ -107,25 +107,32 @@ impl Cursor {
         self.step(close.map_or(1, |offset| offset + 1));
     }
 
-    /// Past a raw string that starts here (`#"..."#`, with any number of `#` on each end), if one does; whether it
-    /// did. Raw strings have no escapes and may span lines.
-    fn skip_raw_string(&mut self) -> bool {
-        let hashes = self.chars[self.at..].iter().take_while(|c| **c == '#').count();
-        if self.chars.get(self.at + hashes) != Some(&'"') {
-            return false;
-        }
+    /// How many `#` follow, starting at `from`: one pass over the run, so a caller that steps past the run reads each
+    /// character once.
+    fn hashes_from(&self, from: usize) -> usize {
+        self.chars.get(from..).map_or(0, |rest| rest.iter().take_while(|c| **c == '#').count())
+    }
+
+    /// Past a raw string that starts here (`#"..."#`, with any number of `#` on each end), if one does; otherwise past
+    /// the run of `#` (they are code). Raw strings have no escapes and may span lines.
+    ///
+    /// Linear in the source: a run of `#` with no quote after it is stepped over whole (each of its `#` would find the
+    /// same missing quote), and a quote inside the string reads only the `#` that directly follow it.
+    fn skip_raw_string(&mut self) {
         self.code_on_line = true;
+        let hashes = self.hashes_from(self.at);
+        if self.chars.get(self.at + hashes) != Some(&'"') {
+            self.step(hashes);
+            return;
+        }
         self.step(hashes + 1);
         while !self.done() {
-            let closes = self.here() == '"'
-                && self.chars[self.at + 1..].iter().take(hashes).filter(|c| **c == '#').count() == hashes;
-            if closes {
+            if self.here() == '"' && self.hashes_from(self.at + 1) >= hashes {
                 self.step(hashes + 1);
-                return true;
+                return;
             }
             self.step(1);
         }
-        true
     }
 
     /// The line comment that starts here, as a directive if it is one. The cursor ends at the end of the line.
@@ -164,7 +171,7 @@ pub(crate) fn directives(source: &str) -> Vec<Directive> {
             Some(Mode::Code { braces }) => match (here, next) {
                 ('/', Some('/')) => found.extend(cursor.line_comment()),
                 ('/', Some('*')) => cursor.skip_block_comment(),
-                ('#', _) if cursor.skip_raw_string() => {}
+                ('#', _) => cursor.skip_raw_string(),
                 ('"', _) => {
                     cursor.code_on_line = true;
                     cursor.skip_string();
