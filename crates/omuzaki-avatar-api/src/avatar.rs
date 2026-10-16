@@ -20,7 +20,7 @@ use omuzaki_store_api::ContentHash;
 use crate::error::AvatarError;
 use crate::expression::{AvatarExpression, ChannelDrivers, ExprIx};
 use crate::gaze::{AvatarGaze, AvatarLookAt, LookDirection};
-use crate::retained::Retained;
+use crate::retained::{Retained, RetainedMesh};
 
 /// The most meshes, and the most expressions, an avatar may have: binds and drivers index them with a `u16`.
 pub const MAX_INDEXED: usize = u16::MAX as usize + 1;
@@ -336,6 +336,7 @@ impl ImportedAvatar {
                 // Names for a mesh none of whose primitives has a target.
                 return Err(AvatarError::morph_names(source, names, 0));
             }
+            check_kept_geometry(source, retained)?;
         }
         for (node, drawn) in r.nodes.iter().enumerate().filter_map(|(n, node)| Some((n, as_index(node.mesh?)))) {
             let instances =
@@ -563,4 +564,47 @@ pub fn texture_bytes(texture: &TextureData) -> u64 {
         bytes += width * height * 4;
     }
     bytes
+}
+
+/// Checks the geometry a source mesh keeps for itself: an undrawn mesh keeps every primitive's (export has no runtime
+/// mesh to read), a drawn one none (its runtime meshes hold it), and what is kept is a valid mesh whose morph targets
+/// fit it and match the mesh's target names.
+fn check_kept_geometry(source: usize, mesh: &RetainedMesh) -> Result<(), AvatarError> {
+    let drawn = !mesh.instances.is_empty();
+    let mut targets = None;
+    for (at, primitive) in mesh.primitives.iter().enumerate() {
+        match (&primitive.geometry, drawn) {
+            (None, false) => return Err(AvatarError::undrawn_geometry(source, at)),
+            (Some(_), true) => return Err(AvatarError::drawn_geometry(source, at)),
+            (None, true) => {}
+            (Some(geometry), false) => {
+                let invalid = |reason: String| AvatarError::retained_geometry_invalid(source, at, reason);
+                geometry.to_mesh_data()?.validate().map_err(|e| invalid(e.to_string()))?;
+                let vertices = geometry.positions.len();
+                for (t, target) in geometry.morph_targets.iter().enumerate() {
+                    if target.positions.len() != vertices {
+                        return Err(invalid(format!(
+                            "morph target {t} has {} position deltas for {vertices} vertices",
+                            target.positions.len()
+                        )));
+                    }
+                    if !target.normals.is_empty() && target.normals.len() != vertices {
+                        return Err(invalid(format!(
+                            "morph target {t} has {} normal deltas for {vertices} vertices",
+                            target.normals.len()
+                        )));
+                    }
+                }
+                if geometry.morph_targets.len() > targets.unwrap_or(0) {
+                    targets = Some(geometry.morph_targets.len());
+                }
+            }
+        }
+    }
+    let names = mesh.morph_target_names.len();
+    match targets {
+        Some(targets) if names != 0 && names != targets => Err(AvatarError::morph_names(source, names, targets)),
+        None if !drawn && names != 0 => Err(AvatarError::morph_names(source, names, 0)),
+        _ => Ok(()),
+    }
 }

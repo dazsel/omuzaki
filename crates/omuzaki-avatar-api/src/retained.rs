@@ -11,11 +11,17 @@
 use omuzaki_anim_api::spring::JointLimit;
 use omuzaki_anim_api::{BoneId, ColliderShape, SpringParams};
 use omuzaki_char_api::MaterialName;
-use omuzaki_core::glam::{Mat4, Quat, Vec3};
-use omuzaki_io_api::{FirstPersonFlag, ImageMime, Material, Passthrough, Texture, VrmMeta};
+use omuzaki_core::glam::{Mat4, Quat, Vec2, Vec3};
+use omuzaki_core::id::Slug;
+use omuzaki_core::mesh::{ExtraAttribute, MeshData};
+use omuzaki_io_api::{
+    FirstPersonFlag, ImageMime, Material, MaterialIx, MorphTarget, Passthrough, Primitive, Texture, VrmMeta,
+};
 use omuzaki_store_api::ContentHash;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+
+use crate::error::AvatarError;
 
 /// One source material, under the runtime name the importer gave it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -148,7 +154,7 @@ impl Default for RetainedTransform {
 
 /// One primitive of a source mesh: the source material it draws. The runtime meshes it became are in the mesh's
 /// [`instances`](RetainedMesh::instances), one per node that draws the mesh.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
 pub struct RetainedPrimitive {
@@ -156,12 +162,16 @@ pub struct RetainedPrimitive {
     /// material), so export writes none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub material: Option<u32>,
+    /// Its geometry and morph targets, kept only for a mesh no node draws: such a mesh has no runtime mesh to read
+    /// them from. A drawn primitive's geometry is its runtime mesh's, so this is `None` there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geometry: Option<RetainedGeometry>,
 }
 
 impl RetainedPrimitive {
-    /// A primitive with no material in the file.
+    /// A primitive with no material and no kept geometry.
     pub const fn new() -> Self {
-        Self { material: None }
+        Self { material: None, geometry: None }
     }
 
     /// Records its material (builder style).
@@ -169,6 +179,156 @@ impl RetainedPrimitive {
     pub const fn with_material(mut self, material: u32) -> Self {
         self.material = Some(material);
         self
+    }
+
+    /// Keeps its geometry, for a mesh no node draws (builder style).
+    #[must_use]
+    pub fn with_geometry(mut self, geometry: RetainedGeometry) -> Self {
+        self.geometry = Some(geometry);
+        self
+    }
+}
+
+/// A named per-vertex attribute beyond the standard set, as a serde mirror of
+/// [`ExtraAttribute`] (whose name is a validated slug).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct RetainedAttribute {
+    /// The attribute's name.
+    pub name: String,
+    /// Floats per vertex, `1..=4`.
+    pub components: u8,
+    /// `components` floats for every vertex, vertex after vertex.
+    pub data: Vec<f32>,
+}
+
+impl RetainedAttribute {
+    /// The attribute `name` of `components` floats per vertex.
+    pub fn new(name: impl Into<String>, components: u8, data: Vec<f32>) -> Self {
+        Self { name: name.into(), components, data }
+    }
+}
+
+/// One morph target's deltas, a serde mirror of [`MorphTarget`].
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct RetainedMorphTarget {
+    /// Position deltas, one per base vertex.
+    pub positions: Vec<Vec3>,
+    /// Normal deltas, or empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub normals: Vec<Vec3>,
+}
+
+impl RetainedMorphTarget {
+    /// A target with these position and normal deltas.
+    pub fn new(positions: Vec<Vec3>, normals: Vec<Vec3>) -> Self {
+        Self { positions, normals }
+    }
+}
+
+/// Everything an io-api [`Primitive`] holds besides its material: the mesh data and the morph targets. Kept for a
+/// source mesh no node draws, so export can write it back although the runtime never built a mesh from it.
+/// Conversion to and from a [`Primitive`] is exact, bit for bit.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct RetainedGeometry {
+    /// Vertex positions.
+    pub positions: Vec<Vec3>,
+    /// Normals, one per vertex.
+    pub normals: Vec<Vec3>,
+    /// Texture coordinates, or empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub uvs: Vec<Vec2>,
+    /// Linear vertex colours, or empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub colours: Vec<[f32; 4]>,
+    /// Skinning joints, or empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub joints: Vec<[u16; 4]>,
+    /// Skinning weights, or empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub weights: Vec<[f32; 4]>,
+    /// Extra attributes, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra: Vec<RetainedAttribute>,
+    /// The triangle list.
+    pub indices: Vec<u32>,
+    /// Morph targets, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub morph_targets: Vec<RetainedMorphTarget>,
+}
+
+impl RetainedGeometry {
+    /// The geometry and morph targets of `primitive`, without its material.
+    pub fn from_primitive(primitive: &Primitive) -> Self {
+        let m = &primitive.mesh;
+        Self {
+            positions: m.positions.clone(),
+            normals: m.normals.clone(),
+            uvs: m.uvs.clone(),
+            colours: m.colours.clone(),
+            joints: m.joints.clone(),
+            weights: m.weights.clone(),
+            extra: m
+                .extra
+                .iter()
+                .map(|a| RetainedAttribute::new(a.name.as_str(), a.components, a.data.clone()))
+                .collect(),
+            indices: m.indices.clone(),
+            morph_targets: primitive
+                .morph_targets
+                .iter()
+                .map(|t| RetainedMorphTarget::new(t.positions.clone(), t.normals.clone()))
+                .collect(),
+        }
+    }
+
+    /// The mesh data alone, for [`MeshData::validate`].
+    ///
+    /// # Errors
+    /// [`AvatarError::ExtraAttributeName`] if an extra attribute's name is not a valid slug.
+    pub fn to_mesh_data(&self) -> Result<MeshData, AvatarError> {
+        let extra = self
+            .extra
+            .iter()
+            .map(|a| {
+                let name = Slug::new(a.name.clone()).map_err(|why| AvatarError::extra_attribute_name(&a.name, why))?;
+                Ok(ExtraAttribute { name, components: a.components, data: a.data.clone() })
+            })
+            .collect::<Result<Vec<_>, AvatarError>>()?;
+        Ok(MeshData {
+            positions: self.positions.clone(),
+            normals: self.normals.clone(),
+            uvs: self.uvs.clone(),
+            colours: self.colours.clone(),
+            joints: self.joints.clone(),
+            weights: self.weights.clone(),
+            extra,
+            indices: self.indices.clone(),
+        })
+    }
+
+    /// The primitive this geometry came from, drawing `material`.
+    ///
+    /// # Errors
+    /// [`AvatarError::ExtraAttributeName`] if an extra attribute's name is not a valid slug.
+    pub fn to_primitive(&self, material: Option<MaterialIx>) -> Result<Primitive, AvatarError> {
+        let mut primitive = Primitive::new(self.to_mesh_data()?);
+        primitive.material = material;
+        primitive.morph_targets = self
+            .morph_targets
+            .iter()
+            .map(|t| {
+                let mut target = MorphTarget::new(t.positions.clone());
+                target.normals.clone_from(&t.normals);
+                target
+            })
+            .collect();
+        Ok(primitive)
     }
 }
 
@@ -280,8 +440,8 @@ impl RetainedAnnotation {
 
 /// One mesh of the file. Each of its primitives becomes a runtime mesh (one material each) at every node that draws
 /// it, and they share its morph-target names: glTF names targets per mesh, not per primitive. A mesh no node draws has
-/// no instance and no runtime mesh.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// no instance and no runtime mesh, so its primitives carry their geometry ([`RetainedPrimitive::geometry`]) instead.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
 pub struct RetainedMesh {

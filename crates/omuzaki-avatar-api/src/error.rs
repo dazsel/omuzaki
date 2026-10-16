@@ -5,6 +5,7 @@
 
 use omuzaki_anim_api::{Channel, ConstraintError, SpringError};
 use omuzaki_char_api::{JointRef, MaterialName, TextureName};
+use omuzaki_core::id::SlugError;
 use omuzaki_core::mesh::MeshError;
 use omuzaki_render_api::RenderError;
 
@@ -212,6 +213,44 @@ pub enum AvatarError {
         /// The source node it names.
         node: u32,
     },
+    /// A primitive of a source mesh no node draws keeps no geometry, so export could not write it.
+    #[error("source mesh {mesh}'s primitive {primitive} is drawn by no node and keeps no geometry")]
+    #[non_exhaustive]
+    UndrawnGeometry {
+        /// The source mesh, an index into `Retained::meshes`.
+        mesh: usize,
+        /// The primitive, an index into the mesh's primitives.
+        primitive: usize,
+    },
+    /// A primitive of a drawn source mesh also keeps geometry: its runtime mesh is the one copy.
+    #[error("source mesh {mesh}'s primitive {primitive} is drawn and also keeps geometry; the runtime mesh holds it")]
+    #[non_exhaustive]
+    DrawnGeometry {
+        /// The source mesh, an index into `Retained::meshes`.
+        mesh: usize,
+        /// The primitive, an index into the mesh's primitives.
+        primitive: usize,
+    },
+    /// The geometry kept for an undrawn primitive is not a valid mesh, or its morph targets do not fit it.
+    #[error("source mesh {mesh}'s primitive {primitive}: kept geometry is invalid: {reason}")]
+    #[non_exhaustive]
+    RetainedGeometryInvalid {
+        /// The source mesh, an index into `Retained::meshes`.
+        mesh: usize,
+        /// The primitive, an index into the mesh's primitives.
+        primitive: usize,
+        /// The broken rule.
+        reason: String,
+    },
+    /// A kept extra vertex attribute has a name that is not a valid slug.
+    #[error("kept extra attribute '{name}' has an invalid name: {why}")]
+    #[non_exhaustive]
+    ExtraAttributeName {
+        /// The name as kept.
+        name: String,
+        /// Why it is not a slug.
+        why: SlugError,
+    },
     /// A retained spring record names a runtime chain or group the spring set does not have.
     #[error("a retained {kind} became the spring set's {kind} '{name}', which the set does not have")]
     #[non_exhaustive]
@@ -366,6 +405,26 @@ impl AvatarError {
     /// [`AvatarError::MorphBindInstance`].
     pub const fn morph_bind_instance(expression: usize, mesh: u16, node: u32) -> Self {
         Self::MorphBindInstance { expression, mesh, node }
+    }
+
+    /// [`AvatarError::UndrawnGeometry`].
+    pub const fn undrawn_geometry(mesh: usize, primitive: usize) -> Self {
+        Self::UndrawnGeometry { mesh, primitive }
+    }
+
+    /// [`AvatarError::DrawnGeometry`].
+    pub const fn drawn_geometry(mesh: usize, primitive: usize) -> Self {
+        Self::DrawnGeometry { mesh, primitive }
+    }
+
+    /// [`AvatarError::RetainedGeometryInvalid`].
+    pub fn retained_geometry_invalid(mesh: usize, primitive: usize, reason: impl Into<String>) -> Self {
+        Self::RetainedGeometryInvalid { mesh, primitive, reason: reason.into() }
+    }
+
+    /// [`AvatarError::ExtraAttributeName`].
+    pub fn extra_attribute_name(name: impl Into<String>, why: SlugError) -> Self {
+        Self::ExtraAttributeName { name: name.into(), why }
     }
 
     /// [`AvatarError::UnknownRuntimeSpring`].
