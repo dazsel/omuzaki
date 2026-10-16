@@ -42,7 +42,12 @@ pub(crate) fn is_srgb(profile: &[u8]) -> bool {
             .is_some_and(|got| got.iter().zip(want).all(|(got, want)| (got - want).abs() <= XYZ_TOLERANCE))
     };
     let curve_matches = |signature: [u8; 4]| tag(signature).is_some_and(is_srgb_curve);
-    xyz_matches(*b"rXYZ", RED_XYZ)
+    // A lookup-table transform (`A2B0`, `A2B1`, `A2B2`) takes priority over the matrix and curves when a colour is
+    // converted, and defines device colours this check does not read: a profile with one is not shown to be sRGB.
+    let has_lookup_table =
+        [*b"A2B0", *b"A2B1", *b"A2B2"].into_iter().any(|signature| declares_tag(profile, count, signature));
+    !has_lookup_table
+        && xyz_matches(*b"rXYZ", RED_XYZ)
         && xyz_matches(*b"gXYZ", GREEN_XYZ)
         && xyz_matches(*b"bXYZ", BLUE_XYZ)
         && xyz_matches(*b"wtpt", D50_WHITE)
@@ -57,6 +62,14 @@ fn tag_count(profile: &[u8]) -> Option<usize> {
     let count = usize::try_from(be_u32(profile, 128)?).ok()?;
     let present = profile.len().saturating_sub(132) / 12;
     (count <= MAX_TAGS && count <= present).then_some(count)
+}
+
+/// Whether the table declares a tag with `signature`, whatever its offset and size say.
+fn declares_tag(profile: &[u8], count: usize, signature: [u8; 4]) -> bool {
+    (0..count).any(|entry| {
+        let at = 132 + 12 * entry;
+        profile.get(at..at + 4) == Some(signature.as_slice())
+    })
 }
 
 /// The data of the tag with `signature`, found by scanning the `count` entries of the table in place: no entry is
@@ -220,6 +233,37 @@ mod tests {
 
     fn srgb_parametric() -> Vec<u8> {
         srgb_with(&parametric_tag([2.4, 1.0 / 1.055, 0.055 / 1.055, 1.0 / 12.92, 0.04045]))
+    }
+
+    #[test]
+    fn a_lookup_table_transform_beside_the_srgb_matrix_and_curves_is_not_srgb() {
+        let curve = parametric_tag([2.4, 1.0 / 1.055, 0.055 / 1.055, 1.0 / 12.92, 0.04045]);
+        for lut in [b"A2B0", b"A2B1", b"A2B2"] {
+            let profile = profile(&[
+                (b"rXYZ", xyz_tag(SRGB_RED)),
+                (b"gXYZ", xyz_tag(SRGB_GREEN)),
+                (b"bXYZ", xyz_tag(SRGB_BLUE)),
+                (b"wtpt", xyz_tag(D50)),
+                (b"rTRC", curve.clone()),
+                (b"gTRC", curve.clone()),
+                (b"bTRC", curve.clone()),
+                (lut, b"mft2\0\0\0\0".to_vec()),
+            ]);
+            assert!(!is_srgb(&profile), "{}", String::from_utf8_lossy(lut));
+        }
+    }
+
+    #[test]
+    fn a_tag_counts_as_declared_whatever_its_offset_and_size_say() {
+        // One table entry: `A2B0` at an offset far past the end of the profile.
+        let mut table = vec![0_u8; 128];
+        table.extend(1_u32.to_be_bytes());
+        table.extend(b"A2B0");
+        table.extend(u32::MAX.to_be_bytes());
+        table.extend(u32::MAX.to_be_bytes());
+        assert!(super::declares_tag(&table, 1, *b"A2B0"));
+        assert!(!super::declares_tag(&table, 1, *b"A2B1"));
+        assert!(super::find_tag(&table, 1, *b"A2B0").is_none(), "its data is not there to be read");
     }
 
     #[test]
