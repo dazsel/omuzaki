@@ -90,8 +90,18 @@ impl RigFrame {
 
     /// [`solve`](Self::solve) with this frame's `channels` for the bone drivers. Hot path: no allocation.
     pub(crate) fn solve_with_channels(&mut self, tick: Tick, pose: &HumanoidPose, goals: &IkGoals, channels: &ChannelBuf) {
-        *self.channels = *channels;
+        self.set_channels(channels);
         self.solve(tick, pose, goals);
+    }
+
+    /// The channel values the bone drivers read on the next [`solve`](Self::solve).
+    pub(crate) fn channels(&self) -> &ChannelBuf {
+        &self.channels
+    }
+
+    /// Sets the channel values the bone drivers read on the next [`solve`](Self::solve), without solving.
+    pub(crate) fn set_channels(&mut self, channels: &ChannelBuf) {
+        *self.channels = *channels;
     }
 
     /// Clears what the IK solvers and the spring bones carry from earlier frames (velocities, owed time); the goals

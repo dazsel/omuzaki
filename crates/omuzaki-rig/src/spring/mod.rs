@@ -5,7 +5,7 @@
 //! the section `SpringBone Algorithm`): Verlet integration of each joint's tail with inertia, stiffness and gravity, a constraint
 //! that keeps the tail at the bone's length, push-out from sphere and capsule colliders (and, from `VRMC_springBone_extended_collider`, push-in to the
 //! inside of a sphere or capsule and push-out of a plane's back side), and then the bone is rotated
-//! to point at the tail. A joint's `VRMC_springBone_limit` (cone, hinge or spherical, see [`limit`]) holds the tail's direction
+//! to point at the tail. A joint's `VRMC_springBone_limit` (cone, hinge or spherical, see the `limit` module) holds the tail's direction
 //! inside its range right after the inertia update and again after each collider push. Chains are updated root to tip, and a chain hanging off another chain's joint after it.
 //!
 //! # Provenance
@@ -37,11 +37,12 @@
 //!   | head turn     | 30  | 12.5 mm (4.1)   | 1.3 mm (0.4)  |
 //!   | head turn     | 60  | 4.2 mm (1.4)    | 0.3 mm (0.1)  |
 //!
-//!   It costs re-placing the animated bones and colliders each sub-step instead of once a frame: 2% at 60 fps and 12%
-//!   at 30 fps on the 300-joint bench (106 to 108 µs, 197 to 222 µs). A bone that did not move skips the blend, so a still
-//!   pose steps bit for bit as a held one at any frame rate. The first frame (and the one after a reset or a warm-up)
-//!   has no previous pose and is held. [`VrmSpringSolver::set_pose_interpolation`]`(false)` holds the pose as `pose`
-//!   enters [`step`](omuzaki_anim_api::SpringSolver::step), as the spec's single step per frame and three-vrm do; the
+//!   It costs re-placing the animated bones and colliders each sub-step instead of once a frame: 2% at 60 fps and 3% at
+//!   30 fps on the 300-joint bench, held pose against interpolated (96 to 98 µs, 190 to 196 µs). A bone that did not
+//!   move skips the blend, so a still pose steps bit for bit as a held one at any frame rate. The first frame (and the
+//!   one after a reset or a warm-up) has no previous pose and is held.
+//!   [`VrmSpringSolver::set_pose_interpolation`]`(false)` holds the pose as `pose` enters
+//!   [`step`](omuzaki_anim_api::SpringSolver::step), as the spec's single step per frame and three-vrm do; the
 //!   comparisons with them run that way.
 //! - **A frame too short for a sub-step** (above 120 fps) keeps every tail where it is and re-aims the bones at them
 //!   from that frame's pose. The oracle holds such a frame the same way (#1849: comparing a held solver against an
@@ -52,7 +53,7 @@
 //! - **Tails start at rest in the pose they are first seen in**, and again after [`reset`](omuzaki_anim_api::SpringSolver::reset),
 //!   so a character that first appears away from the origin does not whip its hair into place.
 //! - **A limit sits in the head's rest frame under its parent's current rotation**, as the limit spec's `Rotation` listing
-//!   has it, so it bounds the swing rather than following the bone. Its order in the step is quoted in [`limit`]'s docs. A
+//!   has it, so it bounds the swing rather than following the bone. Its order in the step is quoted in the `limit` module's docs. A
 //!   limit on a chain's last joint is ignored, as the spec requires.
 //! - **A zero-length pair does not move.** A joint on top of the next one has no direction to swing in; it keeps its
 //!   rest rotation.

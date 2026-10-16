@@ -100,7 +100,7 @@ impl<I: IkSolver, S: SpringSolver> FullRig<I, S> {
     }
 
     /// Adds the node-constraint stage, which runs after IK and before the springs. The solver must have been built with
-    /// [`VrmConstraintSolver::new`] against this rig's skeleton (the same [`Skeleton`](omuzaki_anim_api::Skeleton) this
+    /// [`VrmConstraintSolver::new`] against this rig's skeleton (the same [`Skeleton`] this
     /// rig was made from): the solver stores no skeleton to check against, so a solver built for another one writes to
     /// the wrong bones. Replaces any earlier set. Cold: call it before the frame loop, not in it.
     #[must_use]

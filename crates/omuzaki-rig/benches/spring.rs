@@ -19,6 +19,9 @@ mod spring_rig;
 fn solver(c: &mut Criterion) {
     let rig = spring_rig::hair_rig(30, 11);
     let mut solver = VrmSpringSolver::new(&rig.set, &rig.skeleton).expect("the rig's springs are valid");
+    // The baseline holds the animated pose across the sub-steps, as the spec and three-vrm do; interpolation is on by
+    // default, and is measured against this below.
+    solver.set_pose_interpolation(false);
     let mut pose = rig.skeleton.rest_pose();
 
     // At 60 fps a frame is two 120 Hz sub-steps; at 30 fps, four.
@@ -36,7 +39,6 @@ fn solver(c: &mut Criterion) {
     // The same frames with the animated pose interpolated across the sub-steps (#79): the cost of re-placing the
     // animated bones and colliders every sub-step instead of once a frame.
     let mut interpolated = VrmSpringSolver::new(&rig.set, &rig.skeleton).expect("the rig's springs are valid");
-    interpolated.set_pose_interpolation(true);
     for (name, fps) in [("60 fps (2 sub-steps)", 60.0), ("30 fps (4 sub-steps)", 30.0)] {
         let mut frame = 0_u64;
         c.bench_function(&format!("step, 300 joints, {name}, pose interpolated"), |b| {

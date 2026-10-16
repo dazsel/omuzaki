@@ -1,14 +1,16 @@
 //! The character's bone drivers in the stage's frame (#800): a channel-driven bone moves with its channel every frame,
-//! and the drivers run before the springs, so a spring chain under a driven bone follows it in the same frame.
+//! and the drivers run before the springs, so a spring chain under a driven bone follows it in the same frame; a pin
+//! gives the driven bones back their channels when it ends.
 
 // Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-use omuzaki_anim_api::{BoneDef, BoneId, Channel, ChannelBuf, Skeleton, SpringChain, SpringParams, Transform};
+use omuzaki_anim_api::{BoneDef, BoneId, Channel, ChannelBuf, Skeleton, SpringChain, SpringParams, Tick, Transform};
 use omuzaki_char_api::{
     BoneDriver, BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder, JointRef, RegistryBuilder,
 };
 use omuzaki_core::glam::{Mat4, Quat, UVec2, Vec3};
+use omuzaki_core::time::Seconds;
 use omuzaki_render_api::{AlphaEncoding, Camera, Projection, Quality, Renderer, Scene, TargetDesc};
 use omuzaki_render_mock::MockRenderer;
 use omuzaki_stage::UploadOptions;
@@ -146,4 +148,23 @@ fn a_spring_chain_under_a_driven_bone_follows_it_in_the_same_frame() {
     driven.release(&mut driven_renderer).expect("the stage releases");
     resting.release(&mut rest_renderer).expect("the stage releases");
     open.release(&mut open_renderer).expect("the stage releases");
+}
+
+/// A pinned frame with other channels doesn't leave its driven bones behind: unpinning poses them with the channels
+/// of the last frame before the pin, as it does the rest of the rig.
+#[test]
+fn unpinning_time_gives_the_driven_bones_back_their_channels() {
+    let mut renderer = MockRenderer::new();
+    let (character, [wing, ..]) = winged(true);
+    let mut stage = staged(&mut renderer, character);
+    stage.tick(&mut renderer, &folding(0.0)).expect("renders");
+    let open = posed(&stage, wing);
+
+    let pin = stage.pin_time(Tick { index: 7, time: Seconds(1.0), dt: 0.0 });
+    stage.tick(&mut renderer, &folding(1.0)).expect("renders under the pin");
+    assert!(!posed(&stage, wing).abs_diff_eq(open, 1e-3), "the pinned frame folded the wing");
+    stage.unpin_time(&pin);
+
+    assert!(posed(&stage, wing).abs_diff_eq(open, 1e-5), "the wing is open again, as before the pin");
+    stage.release(&mut renderer).expect("the stage releases");
 }
