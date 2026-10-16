@@ -101,3 +101,35 @@ fn a_device_vello_cannot_run_on_is_declined_every_time_and_nothing_is_drawn() {
     }
     assert!(common::read_back(&(device, queue), &texture).iter().all(|&b| b == 0), "a declined paint wrote pixels");
 }
+
+#[test]
+fn a_device_that_cannot_run_vello_does_not_stop_a_capable_device_that_comes_later() {
+    let Some(adapter) = common::adapter() else { return };
+    let weak = wgpu::DeviceDescriptor {
+        required_limits: wgpu::Limits::downlevel_defaults(),
+        ..wgpu::DeviceDescriptor::default()
+    };
+    let strong = wgpu::DeviceDescriptor { required_limits: adapter.limits(), ..wgpu::DeviceDescriptor::default() };
+    // Both from one adapter, so one instance: wgpu numbers resources per instance and could not tell two instances apart.
+    let (Ok(weak), Ok(strong)) =
+        (pollster::block_on(adapter.request_device(&weak)), pollster::block_on(adapter.request_device(&strong)))
+    else {
+        eprintln!("skipped: the adapter has no downlevel device or no second device");
+        return;
+    };
+    let mut list = DrawList::new();
+    overlapping_fills(&mut list);
+    let mut rasterizer = VelloRasterizer::new();
+
+    let mut on_weak = (weak.0.clone(), weak.1.clone(), common::face_texture(&weak.0, spec().size_px()));
+    assert!(!rasterizer.rasterize_native(&spec(), &list, &mut on_weak).unwrap(), "the weak device was declined");
+
+    // As after the renderer rebuilt its device: the same rasteriser, now with a device Vello can run on.
+    let drawn = common::gpu_pixels(&strong, &mut rasterizer, &spec(), &list);
+    assert_eq!(
+        drawn,
+        common::gpu_pixels(&strong, &mut VelloRasterizer::new(), &spec(), &list),
+        "the capable device draws what a fresh rasteriser draws"
+    );
+    assert!(drawn.chunks(4).any(|p| p[3] != 0), "and it is not blank");
+}

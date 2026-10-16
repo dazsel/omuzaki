@@ -30,6 +30,7 @@ use self::sections::{LayerCache, check_tiling, fingerprint};
 use self::snap::snapped_path;
 use crate::layer::GpuRasterizer;
 use crate::painter::LayerSections;
+use crate::raster::cpu::check;
 
 /// The most a layer may be per side, as in the CPU raster.
 const MAX_SIDE: u32 = 16_384;
@@ -117,6 +118,8 @@ impl SceneEncoder {
         self.transforms.clear();
         self.clips.clear();
         for (index, cmd) in cmds.iter().enumerate() {
+            // The CPU raster's check, so a non-finite list is an error on both paths and not a blank or odd picture.
+            check(range.start + index, cmd, list)?;
             let current = self.transforms.top().map_or(to_px, |t| *t);
             self.command(range.start + index, cmd, current, list, scene)?;
         }
@@ -168,7 +171,9 @@ impl SceneEncoder {
                 style.miter_limit = MITER_LIMIT;
                 let reach = if join == Join::Miter { MITER_LIMIT } else { 1.0 };
                 let [a, b, c, d, ..] = to_px.as_coeffs();
-                let scale = a.hypot(b).max(c.hypot(d));
+                // The Frobenius norm is at least the largest singular value, so it bounds the stroke's reach under a shear
+                // too, where the longest column alone would not.
+                let scale = (a * a + b * b + c * c + d * d).sqrt();
                 self.bounds.add(&self.path, to_px, 0.5 * f64::from(width) * scale * reach);
                 scene.stroke(&style, to_px, &brush(paint, opacity, &mut self.stops), None, &self.path);
             }
@@ -252,7 +257,7 @@ struct Gpu {
 ///
 /// It returns `Ok(false)`, so the CPU raster draws, when `native` is not the renderer's `(Device, Queue, Texture)` (the
 /// mock renderer's targets, another backend) and when Vello can't run on the device: that is logged once and never
-/// retried. Don't register it on a software adapter such as lavapipe: those check correctness only and are far slower
+/// retried on that device (a paint with another device tries again). Don't register it on a software adapter such as lavapipe: those check correctness only and are far slower
 /// than the CPU raster (decision 7.3). Registering it is the stage's job.
 #[derive(Default)]
 pub struct VelloRasterizer {
@@ -261,8 +266,8 @@ pub struct VelloRasterizer {
     scene: Scene,
     gpu: Option<Gpu>,
     layers: [LayerState; FaceLayerId::COUNT],
-    /// Vello can't run on the device: every paint declines.
-    unavailable: bool,
+    /// The device Vello can't run on: paints on it decline, and a paint on another device tries again.
+    unavailable: Option<wgpu::Device>,
     /// How many sections the last paint encoded.
     encoded: usize,
 }
@@ -392,9 +397,10 @@ impl VelloRasterizer {
         let Some((device, queue, target)) = native.downcast_mut::<Native>().map(|n| (&n.0, &n.1, &n.2)) else {
             return Ok(false);
         };
-        if self.unavailable {
+        if self.unavailable.as_ref() == Some(device) {
             return Ok(false);
         }
+        self.unavailable = None;
         let (width, height) = spec.size_px();
         if (target.width(), target.height()) != (width, height) {
             return Err(FaceError::Raster(format!(
@@ -416,7 +422,7 @@ impl VelloRasterizer {
                 Ok(gpu) => self.gpu = Some(gpu),
                 Err(e) => {
                     tracing::warn!("the face falls back to the CPU raster: Vello can't run on this device ({e})");
-                    self.unavailable = true;
+                    self.unavailable = Some(device.clone());
                     return Ok(false);
                 }
             }

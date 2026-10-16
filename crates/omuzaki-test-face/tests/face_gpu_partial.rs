@@ -19,7 +19,10 @@ use omuzaki_core::time::Seconds;
 use omuzaki_face::raster::SkiaRasterizer;
 use omuzaki_face::raster::gpu::VelloRasterizer;
 use omuzaki_face::{FaceSystem, GpuRasterizer, LayerSections, RealPainter};
-use omuzaki_face_api::{Cmd, Colour, DrawList, FaceError, FaceLayerId, FaceLayerSpec, FaceRect, FaceView, Paint};
+use omuzaki_face_api::{
+    Cap, Cmd, Colour, DrawList, FaceError, FaceLayerId, FaceLayerSpec, FaceRasterizer, FaceRect, FaceView, Join, Paint,
+    Raster,
+};
 use omuzaki_face_mock::{mock_profile, mock_projection};
 use omuzaki_render_api::{PaintTarget, Painter, PixelRect, RenderError, TextureDesc};
 use omuzaki_test::compare::Tolerance;
@@ -252,4 +255,50 @@ fn a_different_device_gets_its_own_renderer_and_textures() {
         gpu_pixels(&second, &mut VelloRasterizer::new(), &spec, &list),
         "as a fresh rasteriser would"
     );
+}
+
+#[test]
+fn a_non_finite_opacity_is_an_error_on_the_gpu_path_as_on_the_cpu_path() {
+    let Some(gpu) = device() else { return };
+    let spec = FaceLayerSpec::for_rect(FaceRect { x0: -0.5, x1: 0.5, y0: -0.5, y1: 0.5 }, FaceLayerId::Base, 64.0);
+    let mut list = DrawList::new();
+    let ellipse = list.path().ellipse(Vec2::ZERO, 0.3, 0.2).finish();
+    list.push(Cmd::Fill { path: ellipse, paint: Paint::Solid(Colour::rgba(200, 40, 60, 255)), opacity: f32::NAN });
+    let mut native = (gpu.0.clone(), gpu.1.clone(), face_texture(&gpu.0, spec.size_px()));
+    let error = VelloRasterizer::new().rasterize_native(&spec, &list, &mut native).unwrap_err();
+    assert!(matches!(error, FaceError::Raster(_)), "{error:?}");
+    assert!(
+        SkiaRasterizer::new().rasterize(&spec, &list, spec.px_per_m, &mut Raster::new(1, 1)).is_err(),
+        "the CPU raster rejects the same list"
+    );
+}
+
+#[test]
+fn a_sheared_stroke_leaves_no_stale_ink_when_it_goes_away() {
+    let Some(gpu) = device() else { return };
+    let spec = FaceLayerSpec::for_rect(FaceRect { x0: -0.5, x1: 0.5, y0: -0.5, y1: 0.5 }, FaceLayerId::Base, 256.0);
+    // A wide round-capped dash under a shear whose rows are longer than its columns: the stroke reaches further
+    // sideways than the longest column says.
+    let mut stroked = DrawList::new();
+    let dash = stroked.path().move_to(Vec2::new(-0.01, 0.0)).line_to(Vec2::new(0.01, 0.0)).finish();
+    stroked.push(Cmd::PushTransform(Affine2::from_cols(Vec2::new(1.0, 0.0), Vec2::new(1.0, 0.5), Vec2::ZERO)));
+    stroked.push(Cmd::Stroke {
+        path: dash,
+        paint: Paint::Solid(Colour::rgba(200, 40, 60, 255)),
+        width: 0.1,
+        cap: Cap::Round,
+        join: Join::Round,
+        opacity: 1.0,
+    });
+    stroked.push(Cmd::PopTransform);
+    let gone = DrawList::new();
+
+    let mut native = (gpu.0.clone(), gpu.1.clone(), face_texture(&gpu.0, spec.size_px()));
+    let mut rasterizer = VelloRasterizer::new();
+    assert!(rasterizer.rasterize_native(&spec, &stroked, &mut native).unwrap());
+    let ink = read_back(&gpu, &native.2).chunks(4).filter(|p| p[3] != 0).count();
+    assert!(ink > 0, "the dash has ink to go stale");
+    assert!(rasterizer.rasterize_native(&spec, &gone, &mut native).unwrap());
+    let left: usize = read_back(&gpu, &native.2).chunks(4).filter(|p| p[3] != 0).count();
+    assert_eq!(left, 0, "{left} pixels of the old dash are left after the repaint");
 }
