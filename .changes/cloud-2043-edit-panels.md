@@ -5,3 +5,4 @@
 - `panels::inspector`: the selected part's form from `part.describe` (its probed ranges and defaults), edits through `part.set_param`, one gesture one transaction (#219).
 - `panels::viewport`: the stage on the app's wgpu device through an `egui_wgpu` callback, an orbit camera, rendering only when something changed; its picture is `render_stills`' for the same camera (#217).
 - `panels::edit::EditFocus` (the open character and the selection) and `panels::io::Io` (what a panel reads and runs each frame) are shared by the three panels.
+- The three panels register with `omuzaki-ui-api` (`register_panel!`: outliner left, inspector right, viewport centre as the primary panel), take the shell's `EditFocus` view model and pass `MockHost::check`; the viewport takes `ViewportServices` from the view models too and says it needs a GPU until the shell shares them.
