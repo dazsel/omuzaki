@@ -525,7 +525,11 @@ fn a_fallback_that_is_still_loading_is_not_reported_as_active() {
     }
     assert_eq!(timed_run(&mut *session, &mut out).0, Err(RunError::Unavailable)); // the crash
 
-    wait_for("the crash to show", || status(&registry).fallback.is_some_and(|f| f.contains("crashed")));
+    // Running on, as a stream does: if the mailbox was taken when v2 failed, its report waits for the next run.
+    wait_for("the crash to show", || {
+        assert_eq!(timed_run(&mut *session, &mut out).0, Err(RunError::Unavailable), "v1 is still loading");
+        status(&registry).fallback.is_some_and(|f| f.contains("crashed"))
+    });
     let meanwhile = status(&registry);
     assert_eq!(meanwhile.active, None, "v1 is still loading: {meanwhile:?}");
     assert!(meanwhile.fallback.unwrap().contains("crashed"));
