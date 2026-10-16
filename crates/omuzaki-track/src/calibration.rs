@@ -358,7 +358,7 @@ mod tests {
         assert!(written["mira"]["webcam"].is_object() && written["noor"]["webcam"].is_object());
         // Recalibrating that very character replaces its entry: the person's own fix.
         loaded.save("kiri", tuned(DeviceProfile::Webcam)).unwrap();
-        assert!(loaded.unreadable().is_empty());
+        assert_eq!(loaded.unreadable(), Vec::<(String, String)>::new());
     }
 
     #[test]
