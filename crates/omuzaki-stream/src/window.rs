@@ -11,7 +11,7 @@
 //!   factor, so a capture tool grabs one pixel per output pixel;
 //! - [`pick_key`]: the first of three keying colours that stays farthest from every colour in the cast's palette;
 //! - [`check_title`]: capture tools find the window again by its title, so a title is short, printable and stable
-//!   ([`DEFAULT_TITLE`] never changes).
+//!   ([`DEFAULT_TITLE`](omuzaki_stream_api::window::DEFAULT_TITLE) never changes).
 
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::UVec2;
