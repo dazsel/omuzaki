@@ -48,9 +48,6 @@ const FIXED_RANGE: f32 = 1.0e6;
 /// A forward-differencing step this many rows long (16.16) is snapped to whole rows; a shorter one to quarter rows.
 const STEEP: i64 = 2 << 16;
 
-/// A part of a band shorter than this share of its height is dropped (a crossing at a band's end).
-const MIN_PART: f32 = 1.0e-4;
-
 /// Bands per pixel row. Skia snaps every edge end to a quarter row (`snap_y_fixed`), so inside a band every edge that
 /// reaches it crosses it whole.
 const BANDS: usize = 4;
@@ -350,10 +347,6 @@ pub(super) struct Scan {
     row_edges: Vec<usize>,
     /// The crossings of the bands of one row, grouped by band.
     pieces: Vec<Piece>,
-    /// Where pieces of one band cross, as fractions of its height.
-    splits: Vec<f32>,
-    /// One part of a band between crossings: the x of each piece at its start and end, and its direction.
-    parts: Vec<(f32, f32, i8)>,
     /// One band's deltas (a row of cells) while a union is resolved.
     band: Vec<f32>,
 }
@@ -629,10 +622,13 @@ impl Scan {
     ///   when they are the same. A figure-8's crossing is the first case: its lobes are +1 and -1, so the pixel gets
     ///   |a - b| instead of the ideal a + b, a slight under-coverage notch. Skia's analytic AA does the same, so
     ///   Chrome parity holds;
+    /// - the order of a band's edges is their x at its top, as Skia's (`aaa_walk_edges` in `SkScan_AAAPath.cpp` sorts a
+    ///   step's edges by x at its start and spans from the first edge that leaves zero winding to the one that
+    ///   returns to it). Edges that cross inside a band are not cut at the crossing, so the union is not the exact
+    ///   geometric one there; Chrome 141 reads the same as this (`omuzaki-test-face/tests/raster_supersample.rs`);
     /// - overlap is found per direction, so two same-winding layers whose edges of opposite directions cross inside
-    ///   one pixel are still summed (#2170);
-    /// - cutting a band at the crossings of its edges costs more than linearly in the pieces that cross inside it
-    ///   (400 mutually crossing slivers take 7 ms a row set); a face never has more than a few.
+    ///   one pixel are summed. Skia sorts them together, merges them into one span and gives the full pixel; the sum
+    ///   gives the same there (Chrome 141: 255 where the exact union is 0.85).
     ///
     /// The resolve follows the accumulation of Skia's analytic AA (`SkScan_AAAPath`, through tiny-skia's
     /// `scan/path_aa.rs`, BSD-3-Clause); the parity probes in `omuzaki-test-face` are the check against Chrome.
@@ -704,11 +700,10 @@ impl Scan {
     }
 
     /// Resolves row `y` as a union of its layers, replacing the coverage the sum gave. In each quarter-row band the
-    /// edges are taken in x order with a running winding, and only those that make it enter or leave zero are added: the
-    /// ones inside an overlap cannot change what is covered. The prefix sum of those is then exact (a ring's hole still
-    /// cuts, since its edges take the winding to zero). Edges that cross inside a band swap their order there, so the
-    /// band is cut at every crossing and each part resolved on its own, weighted by its height. Only the columns the
-    /// edges reach are touched.
+    /// edges are taken in the order of their x at the top of the band with a running winding, and only those that make
+    /// it enter or leave zero are added: the ones inside an overlap cannot change what is covered. The prefix sum of
+    /// those is then exact for that order (a ring's hole still cuts, since its edges take the winding to zero). Only
+    /// the columns the edges reach are touched.
     fn union_row<T>(&mut self, y: usize, row: &mut [T], convert: impl Fn(f32) -> T) {
         #[allow(clippy::cast_precision_loss)] // raster widths are far below 2^24
         let width = self.width as f32;
@@ -754,37 +749,24 @@ impl Scan {
 
     /// Adds the boundary of the union of one band's pieces (`self.pieces[range]`) to `self.band`.
     fn union_band(&mut self, range: std::ops::Range<usize>) {
-        // The band's parts: between its ends, every place two pieces swap order.
-        self.splits.clear();
-        self.splits.extend([0.0, 1.0]);
-        for (i, p) in self.pieces[range.clone()].iter().enumerate() {
-            for q in &self.pieces[range.start + i + 1..range.end] {
-                let (before, after) = (p.top - q.top, p.bottom - q.bottom);
-                if before * after < 0.0 {
-                    self.splits.push(before / (before - after));
-                }
+        // Skia orders a step's edges by x at its start and takes the first edge that leaves zero winding and the one
+        // that returns to it, whatever happens between them (`aaa_walk_edges`); so do we, per quarter-row band.
+        let pieces = &mut self.pieces[range];
+        pieces.sort_unstable_by(|p, q| {
+            p.top.total_cmp(&q.top).then(p.bottom.total_cmp(&q.bottom)).then(p.dir.cmp(&q.dir))
+        });
+        let mut winding = 0_i32;
+        for piece in pieces.iter() {
+            let next = winding + i32::from(piece.dir);
+            if (winding == 0) != (next == 0) {
+                add_span(
+                    &mut self.band,
+                    f32::from(piece.dir),
+                    piece.top.min(piece.bottom),
+                    piece.top.max(piece.bottom),
+                );
             }
-        }
-        self.splits.sort_unstable_by(f32::total_cmp);
-        for part in 0..self.splits.len() - 1 {
-            let (t0, t1) = (self.splits[part], self.splits[part + 1]);
-            if t1 - t0 < MIN_PART {
-                continue;
-            }
-            self.parts.clear();
-            for p in &self.pieces[range.clone()] {
-                let at = |t: f32| p.top + (p.bottom - p.top) * t;
-                self.parts.push((at(t0), at(t1), p.dir));
-            }
-            self.parts.sort_unstable_by(|p, q| (p.0 + p.1).total_cmp(&(q.0 + q.1)).then(p.2.cmp(&q.2)));
-            let mut winding = 0_i32;
-            for &(x0, x1, dir) in &self.parts {
-                let next = winding + i32::from(dir);
-                if (winding == 0) != (next == 0) {
-                    add_span(&mut self.band, f32::from(dir) * (t1 - t0), x0.min(x1), x0.max(x1));
-                }
-                winding = next;
-            }
+            winding = next;
         }
     }
 }
@@ -1050,7 +1032,9 @@ mod tests {
     }
 
     /// Codex's sloped case: left edges (5.1, 4) to (6.1, 5) and (5.2, 4) to (5.8, 5) both cross pixel 5 although they
-    /// end in different cells, and their right edges are elsewhere. The union covers the pixel from the nearer edge.
+    /// end in different cells, and their right edges are elsewhere. The first edge in x order at the top (5.1) bounds
+    /// the span, as in Skia, so the pixel gets its coverage alone (0.4); the plain sum would give 0.9. Chrome 141 reads
+    /// 98 (0.384) in `raster_supersample.rs`.
     #[test]
     fn sloped_layers_that_end_in_different_cells_still_form_a_union() {
         let (a, b) = ((5.1, 6.1), (5.2, 5.8));
@@ -1058,37 +1042,54 @@ mod tests {
         polygon(&mut s, &slanted(a, 20.0));
         polygon(&mut s, &slanted(b, 19.0));
         let cov = coverage(&mut s);
-        let want = left_union_fraction(a, b, 5);
+        let want = left_union_fraction(a, a, 5);
         assert!((cov[4 * W + 5] - want).abs() < 0.01, "pixel (5, 4): {} vs {want}", cov[4 * W + 5]);
     }
 
-    /// Codex's crossing case: left edges 5.1 to 5.9 and 5.8 to 5.2 swap order halfway down the row, so the union
-    /// follows whichever is nearer (0.675 of the pixel). They cross on a band boundary, so the plain sum already gets
-    /// this one right (0.677): it pins the result, and the next test is the one that needs the split.
+    /// Codex's crossing case: left edges 5.1 to 5.9 and 5.8 to 5.2 swap order halfway down the row. The span starts at
+    /// the one that is first at the top (5.1, 0.5 of the pixel); the exact envelope would give 0.675. Chrome 141 reads
+    /// 129 (0.506), the first edge's, in `raster_supersample.rs`.
     #[test]
-    fn edges_that_cross_on_a_band_boundary_follow_the_nearer_one() {
+    fn edges_that_cross_on_a_band_boundary_follow_the_first_one() {
         let (a, b) = ((5.1, 5.9), (5.8, 5.2));
         let mut s = scan();
         polygon(&mut s, &slanted(a, 20.0));
         polygon(&mut s, &slanted(b, 19.0));
         let cov = coverage(&mut s);
-        let want = left_union_fraction(a, b, 5);
-        assert!((want - 0.675).abs() < 0.01, "the oracle {want}");
+        let want = left_union_fraction(a, a, 5);
         assert!((cov[4 * W + 5] - want).abs() < 0.01, "pixel (5, 4): {} vs {want}", cov[4 * W + 5]);
     }
 
     /// Edges that cross strictly inside a quarter-row band: the left sides (5, 4) to (7, 4.25) and (7, 4) to (5, 4.25)
-    /// swap order halfway down the band, at x = 6 and y = 4.125. The union is
-    /// the nearer one on each side of the crossing, which takes the first band of row 4 to 0.125 of pixel (5, 4) and
-    /// 0.25 of pixel (6, 4); taking one whole edge, as the plain sum does, gives 0.0625 and 0.1875.
+    /// swap order halfway down the band, at x = 6. The first at the top (x = 5) bounds the span, which gives pixels
+    /// (5, 4) and (6, 4) 0.0625 and 0.1875 (alpha 16 and 48, as Chrome 141 reads); the exact envelope would give
+    /// 0.125 and 0.25.
     #[test]
-    fn edges_that_cross_inside_a_band_switch_at_the_crossing() {
+    fn edges_that_cross_inside_a_band_follow_the_first_one() {
         let mut s = scan();
         polygon(&mut s, &[(5.0, 4.0), (20.0, 4.0), (20.0, 4.25), (7.0, 4.25)]);
         polygon(&mut s, &[(7.0, 4.0), (19.0, 4.0), (19.0, 4.25), (5.0, 4.25)]);
         let cov = coverage(&mut s);
-        assert!((cov[4 * W + 5] - 0.125).abs() < 0.005, "pixel (5, 4): {}", cov[4 * W + 5]);
-        assert!((cov[4 * W + 6] - 0.25).abs() < 0.005, "pixel (6, 4): {}", cov[4 * W + 6]);
+        assert!((cov[4 * W + 5] - 0.0625).abs() < 0.005, "pixel (5, 4): {}", cov[4 * W + 5]);
+        assert!((cov[4 * W + 6] - 0.1875).abs() < 0.005, "pixel (6, 4): {}", cov[4 * W + 6]);
+    }
+
+    /// Codex's near-coincident crossing: two quarter-row-high layers whose left edges start 1/256 px apart and end 78 px
+    /// apart in the other order. Every interior pixel is a quarter covered, alpha 64 (Chrome 141 reads 64); a union that
+    /// dropped the sliver of the band before the order flips would give 63.
+    #[test]
+    fn a_crossing_next_to_the_top_of_a_band_loses_nothing() {
+        let mut s = Scan::default();
+        s.reset(256, 8);
+        polygon(&mut s, &[(10.0, 4.0), (200.0, 4.0), (200.0, 4.25), (88.0, 4.25)]);
+        polygon(&mut s, &[(10.003_906_25, 4.0), (190.0, 4.0), (190.0, 4.25), (10.0, 4.25)]);
+        let mut alphas = vec![];
+        s.sweep(|y, x0, row| {
+            if y == 4 {
+                alphas.push(row[100 - x0]);
+            }
+        });
+        assert_eq!(alphas, [64]);
     }
 
     /// More repeated contours than a small counter holds (the union's winding is a wide integer, and the
