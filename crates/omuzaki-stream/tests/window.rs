@@ -32,12 +32,14 @@ fn scale_policy_rounds_the_output_size() {
 }
 
 #[test]
-fn scale_policy_keeps_each_side_within_one_and_the_maximum() {
+fn scale_policy_keeps_each_side_within_one_and_the_maximum_and_the_aspect_ratio() {
     assert_eq!(plan(UVec2::new(4, 4), SizePolicy::Scale(0.1), 1.0).unwrap().physical, UVec2::new(1, 1));
     assert_eq!(
         plan(UVec2::new(7680, 4320), SizePolicy::Scale(2.0), 1.0).unwrap().physical,
-        UVec2::new(MAX_SIDE, MAX_SIDE)
+        UVec2::new(MAX_SIDE, 4608),
+        "one common scale keeps 16:9 when the longer side reaches the maximum"
     );
+    assert_eq!(plan(UVec2::new(3, 20000), SizePolicy::Scale(1.0), 1.0).unwrap().physical, UVec2::new(1, MAX_SIDE));
 }
 
 #[test]

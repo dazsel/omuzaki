@@ -99,7 +99,7 @@ impl Op for Open {
     fn meta() -> OpMeta {
         OpMeta {
             name: "output.window.open",
-            summary: "Open the clean output window (exact output size, key colour backdrop) for a capture tool.",
+            summary: "Open the clean output window for a capture tool: the output's exact size and a key colour backdrop by default, or a scaled size and a transparent backdrop.",
             kind: OpKind::Edit,
             scope: Scope::Perform,
             undo: Undo::None,

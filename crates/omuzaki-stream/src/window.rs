@@ -122,7 +122,7 @@ pub enum WindowError {
 ///
 /// With [`SizePolicy::Output`] the physical size is `output` itself for any `scale_factor` from
 /// [`MIN_SCALE_FACTOR`] to [`MAX_SCALE_FACTOR`]; with [`SizePolicy::Scale`] it is `round(output * s)`, at least `1` and
-/// at most [`MAX_SIDE`] per side. The logical size is `physical / scale_factor`.
+/// at most [`MAX_SIDE`] per side (a scale that would pass it is lowered for both sides, so the aspect ratio holds). The logical size is `physical / scale_factor`.
 ///
 /// # Errors
 /// [`WindowError::ScaleFactor`] for a NaN, zero or out-of-range factor, [`WindowError::Scale`] for a bad
@@ -136,9 +136,7 @@ pub fn plan(output: UVec2, policy: SizePolicy, scale_factor: f64) -> Result<Wind
     }
     let physical = match policy {
         SizePolicy::Output => output,
-        SizePolicy::Scale(s) if (MIN_SCALE..=MAX_SCALE).contains(&s) => {
-            UVec2::new(scaled_side(output.x, s), scaled_side(output.y, s))
-        }
+        SizePolicy::Scale(s) if (MIN_SCALE..=MAX_SCALE).contains(&s) => scaled_size(output, s),
         SizePolicy::Scale(s) => return Err(WindowError::Scale(s)),
     };
     Ok(WindowPlan {
@@ -148,10 +146,14 @@ pub fn plan(output: UVec2, policy: SizePolicy, scale_factor: f64) -> Result<Wind
     })
 }
 
-/// One side of a [`SizePolicy::Scale`] window: rounded, then kept within `1..=MAX_SIDE`.
+/// The [`SizePolicy::Scale`] window: `output * scale`, with one common scale that keeps the longer side within
+/// [`MAX_SIDE`] so the aspect ratio survives, then each side rounded to at least `1`.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped to 1..=MAX_SIDE before the cast
-fn scaled_side(side: u32, scale: f32) -> u32 {
-    (f64::from(side) * f64::from(scale)).round().clamp(1.0, f64::from(MAX_SIDE)) as u32
+fn scaled_size(output: UVec2, scale: f32) -> UVec2 {
+    let longest = f64::from(output.x.max(output.y));
+    let scale = f64::from(scale).min(f64::from(MAX_SIDE) / longest);
+    let side = |side: u32| (f64::from(side) * scale).round().clamp(1.0, f64::from(MAX_SIDE)) as u32;
+    UVec2::new(side(output.x), side(output.y))
 }
 
 /// Checks a window title: [`MIN_TITLE_CHARS`] to [`MAX_TITLE_CHARS`] characters, none a control character.
