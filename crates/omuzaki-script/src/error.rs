@@ -1,6 +1,6 @@
 //! What a failed run reports: where, why, and the output printed before it.
 
-use omuzaki_ops_api::OpError;
+use omuzaki_ops_api::{ErrorCode, ErrorDetail, OpError};
 use serde::{Deserialize, Serialize};
 
 /// Which limit of the table in `docs/design/scripting.md` section 5 a run hit.
@@ -21,6 +21,9 @@ pub enum LimitKind {
     ArraySize,
     /// A map larger than [`Limits::map_len`](crate::Limits::map_len).
     MapSize,
+    /// The run's thread holds more heap than [`Limits::memory_bytes`](crate::Limits::memory_bytes), counted by
+    /// [`MemoryBudget`](crate::MemoryBudget).
+    Memory,
     /// The wall-clock cap, read from the host's clock.
     Time,
     /// The result is larger than [`Limits::result_bytes`](crate::Limits::result_bytes) of JSON.
@@ -80,4 +83,41 @@ pub struct ScriptError {
     pub message: String,
     /// What the script printed before it failed.
     pub output: Vec<OutputLine>,
+}
+
+impl ScriptError {
+    /// This failure as the `OpError` a caller of an op sees, which decides an exit code or a tool answer: an inner
+    /// call's own error for [`ScriptErrorKind::Op`]; a cancel as `Cancelled`; everything else (a parse error, a limit,
+    /// a refusal, a script error) as `Invalid` on `source`, with the position in the detail and at the end of the
+    /// message, and what the script printed before it failed as the hint.
+    pub fn to_op_error(&self) -> OpError {
+        match (self.kind, &self.op_error) {
+            (ScriptErrorKind::Op, Some(op_error)) => op_error.clone(),
+            (ScriptErrorKind::Cancelled, _) => OpError {
+                code: ErrorCode::Cancelled,
+                message: self.message.clone(),
+                field: None,
+                hint: None,
+                detail: None,
+            },
+            _ => {
+                let mut mapped = OpError::invalid(
+                    "source",
+                    format!("{} (line {}, column {})", self.message, self.line, self.column),
+                )
+                .with_detail(ErrorDetail::Position { line: self.line, column: self.column });
+                if !self.output.is_empty() {
+                    let printed: Vec<&str> = self.output.iter().map(|line| line.text.as_str()).collect();
+                    mapped = mapped.hint(format!("it printed before failing: {}", printed.join(" | ")));
+                }
+                mapped
+            }
+        }
+    }
+}
+
+/// A limit a macro hit while it played, as the `OpError` a script run that hit the same limit gives.
+pub(crate) fn limit_error(kind: LimitKind, message: String) -> OpError {
+    ScriptError { kind: ScriptErrorKind::Limit(kind), line: 1, column: 1, op_error: None, message, output: Vec::new() }
+        .to_op_error()
 }

@@ -36,6 +36,10 @@ pub struct ScriptTurn {
     /// Emit this many `Retrying` events before the first event.
     #[serde(default)]
     pub retries: u8,
+    /// The wait, in milliseconds, each of those `Retrying` events reports: the server's `retry-after`. A real provider
+    /// is played a `429` with this `retry-after` (in whole seconds, rounded up) for each retry.
+    #[serde(default)]
+    pub retry_after_ms: u64,
     /// Milliseconds of `FakeClock` time between events.
     #[serde(default)]
     pub delay_ms: u64,
@@ -110,6 +114,13 @@ impl ScriptTurn {
     #[must_use]
     pub fn with_retries(mut self, retries: u8) -> Self {
         self.retries = retries;
+        self
+    }
+
+    /// Reports a wait of `ms` milliseconds in each `Retrying` event.
+    #[must_use]
+    pub fn with_retry_after_ms(mut self, ms: u64) -> Self {
+        self.retry_after_ms = ms;
         self
     }
 

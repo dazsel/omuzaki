@@ -12,3 +12,14 @@ steps = [
     { run = ["cargo", "test", "--locked", "-p", "omuzaki-stage", "--test", "scene_framing_sheet", "write_the_framing_sheet_when_asked", "--", "--exact"] },
 ]
 images = ["framing-16x9.png", "framing-9x16.png"]
+
+# The kit character performing live (#2072): the scripted head sweep through `LiveInput`, the performer and the stage,
+# 1 s in, on the software adapter (lavapipe), with the real face painter.
+[[case]]
+name = "live-fake-trace"
+description = "LiveStage: the mock character 1 s into a scripted ±0.4 rad head sweep, wgpu on lavapipe, CPU face painter."
+env = { OMUZAKI_STAGE_PNG = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-stage", "--features", "wgpu", "--test", "live", "the_fake_trace_renders_on_the_software_adapter", "--", "--exact"] },
+]
+images = ["live-fake-trace.png"]

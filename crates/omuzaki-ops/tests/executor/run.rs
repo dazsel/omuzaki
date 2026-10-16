@@ -154,7 +154,7 @@ fn a_missing_scope_is_denied_with_a_hint_naming_it_and_nothing_changes() {
     let e = rig.exec.run(req.clone()).unwrap_err();
     assert_eq!(e.code, ErrorCode::Denied);
     assert!(e.hint.as_deref().unwrap().contains("publish"), "{e}");
-    assert!(e.message.contains("agent claude-1") && e.message.contains("test.publish"), "{e}");
+    assert!(e.message.contains("agent claude#1") && e.message.contains("test.publish"), "{e}");
     assert_eq!(rig.at("a"), Some(json!(1)));
     assert!(rig.log().is_empty() && drain(&rx).is_empty());
 
