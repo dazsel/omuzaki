@@ -487,11 +487,19 @@ fn a_returning_import_takes_one_host_call_token() {
     assert_eq!(plugin.init("{}"), Ok(()), "{calls} calls inside the burst of {HOST_CALL_BURST}");
 }
 
-/// A bridge whose op list takes longer than `init`'s deadline.
-struct SlowList;
+/// A bridge each of whose calls takes longer than `init`'s deadline, then answers with nothing: an error, no schema,
+/// no ops.
+struct Slow;
 
-impl omuzaki_plugin::bridge::OpBridge for SlowList {
+impl Slow {
+    fn wait() {
+        std::thread::sleep(Duration::from_millis(CallKind::Init.budget().deadline_ms + 200));
+    }
+}
+
+impl omuzaki_plugin::bridge::OpBridge for Slow {
     fn call(&self, op: &str, _: &str) -> Result<String, omuzaki_ops_api::OpError> {
+        Self::wait();
         Err(omuzaki_ops_api::OpError::not_found(format!("no op `{op}`")))
     }
 
@@ -500,29 +508,53 @@ impl omuzaki_plugin::bridge::OpBridge for SlowList {
     }
 
     fn describe(&self, _: &str) -> Option<String> {
+        Self::wait();
         None
     }
 
     fn list(&self) -> Vec<String> {
-        std::thread::sleep(Duration::from_millis(CallKind::Init.budget().deadline_ms + 200));
+        Self::wait();
         Vec::new()
     }
 }
 
-#[test]
-fn an_import_whose_work_passes_the_deadline_faults_before_its_result_reaches_the_guest() {
+/// Runs `init` calling the `ops` import `name` (core type `params`) with `args` against [`Slow`]: the call must fault
+/// with a timeout once the bridge returns, whatever it returned.
+fn slow_import_faults(name: &str, params: &str, args: &str) {
     let (engine, clock) = engine();
-    let list = Lowered {
-        alias: r#"(alias export $ops "list" (func $list'))"#.into(),
-        name: "list".into(),
-        core_import: r#"(import "env" "list" (func $list (param i32)))"#.into(),
+    let import = Lowered {
+        alias: format!(r#"(alias export $ops "{name}" (func ${name}'))"#),
+        name: name.into(),
+        core_import: format!(r#"(import "env" "{name}" (func ${name} (param {params})))"#),
     };
     let imports = format!("{HOST_IMPORT}{WORLD_IMPORTS}");
-    let bytes = component(&imports, &[list], &init_doing("(call $list (i32.const 32))"), 1);
+    let bytes = component(&imports, &[import], &init_doing(&format!("(call ${name} {args})")), 1);
     let compiled = load::compile(&engine, &bytes).unwrap();
     let mut setup = setup(log("slow", clock), 1);
-    setup.bridge = Arc::new(SlowList);
+    setup.bridge = Arc::new(Slow);
     let mut plugin = omuzaki_plugin::LoadedPlugin::start(&engine, &compiled, setup).unwrap_or_else(|e| panic!("{e:?}"));
     let fault = plugin.init("{}").unwrap_err();
-    assert_eq!((fault.kind, fault.detail.as_str()), (FaultKind::Timeout, "deadline in init"));
+    assert_eq!((fault.kind, fault.detail.as_str()), (FaultKind::Timeout, "deadline in init"), "ops.{name}");
+}
+
+const OP_AND_ARGS: &str = "(i32.const 100) (i32.const 1) (i32.const 104) (i32.const 2) (i32.const 32)";
+
+#[test]
+fn a_slow_call_that_fails_faults_at_the_deadline_before_its_error_reaches_the_guest() {
+    slow_import_faults("call", "i32 i32 i32 i32 i32", OP_AND_ARGS);
+}
+
+#[test]
+fn a_slow_plan_that_fails_faults_at_the_deadline_before_its_error_reaches_the_guest() {
+    slow_import_faults("plan", "i32 i32 i32 i32 i32", OP_AND_ARGS);
+}
+
+#[test]
+fn a_slow_describe_with_no_schema_faults_at_the_deadline() {
+    slow_import_faults("describe", "i32 i32 i32", "(i32.const 100) (i32.const 1) (i32.const 32)");
+}
+
+#[test]
+fn a_slow_list_faults_at_the_deadline_before_its_result_reaches_the_guest() {
+    slow_import_faults("list", "i32", "(i32.const 32)");
 }

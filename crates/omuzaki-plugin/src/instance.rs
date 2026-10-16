@@ -123,8 +123,10 @@ pub(crate) fn enter(cx: &mut StoreContextMut<'_, StoreData>, bytes: usize) -> wa
     Ok(allowed)
 }
 
-/// Traps when the entry call's deadline has passed.
-fn check_deadline(cx: &StoreContextMut<'_, StoreData>) -> wasmtime::Result<()> {
+/// Traps when the entry call's deadline has passed. An import calls it again as soon as the work behind it (a bridge
+/// call) returns, whatever that returned: a deadline passed there is a fault before anything reaches the guest (design
+/// §4.3). It takes no host-call token and no fuel.
+pub(crate) fn check_deadline(cx: &StoreContextMut<'_, StoreData>) -> wasmtime::Result<()> {
     if let Some(call) = cx.data().call
         && Instant::now() >= call.deadline
     {
@@ -133,12 +135,9 @@ fn check_deadline(cx: &StoreContextMut<'_, StoreData>) -> wasmtime::Result<()> {
     Ok(())
 }
 
-/// Charges the bytes an import hands back to the guest, [`IMPORT_FUEL_PER_BYTE`] each, after checking the deadline
-/// again. The call already took its host-call token and its fixed charge in [`enter`].
+/// Charges the bytes an import hands back to the guest: [`IMPORT_FUEL_PER_BYTE`] each, and nothing else. The call
+/// already took its host-call token and its fixed charge in [`enter`].
 pub(crate) fn charge_returned(cx: &mut StoreContextMut<'_, StoreData>, bytes: usize) -> wasmtime::Result<()> {
-    // The work behind the import (a bridge call, say) may have run past the entry's deadline: that is a fault before
-    // its result reaches the guest (design §4.3).
-    check_deadline(cx)?;
     let charge = IMPORT_FUEL_PER_BYTE.saturating_mul(bytes as u64);
     let fuel = cx.get_fuel()?;
     if fuel < charge {
