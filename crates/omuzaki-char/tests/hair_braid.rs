@@ -8,7 +8,7 @@ use omuzaki_char::hair::compile::{Dispatch, HairGenCtx, UnitStream, compile_grou
 use omuzaki_char::hair::r#gen::braid;
 use omuzaki_char_api::{
     BangsGen, BraidGen, CurtainGen, Dynamics, FramingGen, Generator, GroupId, HairGroup, HairParams, HairRng, HairSide,
-    HeadSurface, Quality,
+    HeadSurface, Quality, TaperShape,
 };
 use omuzaki_core::glam::Vec3;
 use omuzaki_core::rng::Rng;
@@ -80,14 +80,16 @@ fn every_strand_has_eighty_points_and_stands_outside_the_head() {
 }
 
 #[test]
-fn the_shade_falls_by_two_hundredths_a_strand_and_the_width_is_the_strand_width() {
+fn the_shade_falls_by_two_hundredths_a_strand_and_the_width_is_the_prototypes_plateau() {
     let g = BraidGen::default();
     let (clumps, _) = compile_with(&g);
     for (n, clump) in clumps.iter().enumerate() {
         let k = n % usize::from(g.strands);
         assert!((f64::from(clump.shade) - (0.98 - 0.02 * k as f64)).abs() < 1e-6, "clump {n}");
-        assert_eq!(clump.width.start, g.strand_width);
+        assert_eq!(clump.width.start, 0.5 * g.strand_width);
+        assert_eq!(clump.width.mid, g.strand_width);
         assert_eq!(clump.width.tip, 0.4 * g.strand_width);
+        assert_eq!(clump.width.shape, TaperShape::plateau(0.04, 0.08));
         assert_eq!(clump.thickness.base, g.strand_thickness);
         assert_eq!(clump.thickness.swell, 0.0);
     }
@@ -167,4 +169,59 @@ fn a_framing_group_is_bilateral_only_when_it_makes_both_sides() {
     assert!(is_bilateral(&framing(HairSide::Both)));
     assert!(!is_bilateral(&framing(HairSide::Left)));
     assert!(!is_bilateral(&framing(HairSide::Right)));
+}
+
+#[test]
+fn the_width_ramps_match_the_prototypes_formula() {
+    // `0.024 · (t > 0.92 ? lerp(1, 0.4, (t - 0.92) / 0.08) : 1) · (t < 0.04 ? lerp(0.5, 1, t / 0.04) : 1)`
+    let g = BraidGen::default();
+    let (clumps, _) = compile_with(&g);
+    let width = clumps[0].width;
+    let prototype = |t: f64| {
+        let tip = if t > 0.92 { 1.0 + (0.4 - 1.0) * (t - 0.92) / 0.08 } else { 1.0 };
+        let root = if t < 0.04 { 0.5 + 0.5 * t / 0.04 } else { 1.0 };
+        0.024 * tip * root
+    };
+    for step in 0..=200 {
+        let t = f64::from(step) / 200.0;
+        let ours = f64::from(width.at(t as f32));
+        assert!((ours - prototype(t)).abs() < 1e-6, "t {t}: {ours} against {}", prototype(t));
+    }
+}
+
+#[test]
+fn a_non_finite_parameter_keeps_the_clump_count_and_the_points_finite() {
+    let g = BraidGen { across: f64::NAN, out: f64::INFINITY, lobes: f64::NAN, strand_width: f64::NAN, ..BraidGen::default() };
+    let (clumps, _) = compile_with(&g);
+    assert_eq!(clumps.len(), braid::clump_count(&g));
+    for clump in &clumps {
+        assert!(clump.rest.iter().all(|p| p.is_finite()), "a rest point is not finite");
+        assert!(clump.width.at(0.5).is_finite());
+    }
+}
+
+#[test]
+fn each_out_of_range_braid_value_fails_naming_its_field() {
+    use omuzaki_face_api::Validate;
+    let bad = |g: BraidGen| {
+        let group = HairGroup { enabled: true, mirror: false, dynamics: Dynamics::default(), generator: Generator::Braid(g) };
+        let mut c = omuzaki_face_api::Check::new();
+        group.check(&mut c);
+        c.finish().err().map(|e| e.to_string()).unwrap_or_default()
+    };
+    assert_eq!(bad(BraidGen::default()), "");
+    let d = BraidGen::default;
+    for (field, g) in [
+        ("path_from_deg", BraidGen { path_from_deg: f64::NAN, ..d() }),
+        ("path_to_deg", BraidGen { path_to_deg: 400.0, ..d() }),
+        ("height_front", BraidGen { height_front: 3.0, ..d() }),
+        ("height_back", BraidGen { height_back: f64::INFINITY, ..d() }),
+        ("across", BraidGen { across: -0.01, ..d() }),
+        ("out", BraidGen { out: 1.0, ..d() }),
+        ("strand_width", BraidGen { strand_width: 0.001, ..d() }),
+        ("strand_thickness", BraidGen { strand_thickness: 0.0, ..d() }),
+    ] {
+        let text = bad(g);
+        assert!(text.contains(&format!("generator/{field}:")), "{field}: {text}");
+    }
 }
