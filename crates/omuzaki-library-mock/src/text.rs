@@ -1,4 +1,4 @@
-//! Free-text matching for search (design D13): lowercased, accent-folded (NFKD), split into words, with character
+//! Free-text matching for search (design D13): lowercased, accent-folded (NFKD for non-CJK), split into words, with character
 //! bigrams for CJK, ranked exact id or title, then tag, then word prefix, then fuzzy. Naive on purpose: every query
 //! re-reads the manifest, which is what makes it an oracle for an index.
 
@@ -8,13 +8,33 @@ use unicode_normalization::{UnicodeNormalization, char::is_combining_mark};
 /// A fuzzy match needs words at least this long (design D13: edit distance 1 for words of five letters or more).
 const FUZZY_MIN_LEN: usize = 5;
 
-/// Lowercases, decomposes (NFKD) and drops combining marks, so `Éclat` and `eclat` are one word.
+/// Lowercases, and for non-CJK text decomposes (NFKD) and drops combining marks, so `Éclat` and `eclat` are one word.
+/// CJK characters stay composed (NFKC): decomposing would split a Hangul syllable into Jamo and a voiced kana (`が`)
+/// into a base and a mark, and the mark would then be dropped or split the word.
 pub(crate) fn fold(s: &str) -> String {
-    s.nfkd().filter(|c| !is_combining_mark(*c)).flat_map(char::to_lowercase).collect()
+    s.nfkc()
+        .flat_map(|c| {
+            let parts: Vec<char> = if is_cjk(c) { vec![c] } else { c.to_string().nfkd().collect() };
+            parts
+        })
+        .filter(|c| !is_combining_mark(*c))
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
+/// Kana, Han (with extension A) and Korean: Hangul syllables, Jamo and compatibility Jamo, all of which are written
+/// without spaces between words and so are indexed as bigrams.
 fn is_cjk(c: char) -> bool {
-    matches!(c, '\u{3040}'..='\u{30FF}' | '\u{3400}'..='\u{4DBF}' | '\u{4E00}'..='\u{9FFF}' | '\u{AC00}'..='\u{D7AF}')
+    matches!(
+        c,
+        '\u{1100}'..='\u{11FF}'
+            | '\u{3040}'..='\u{30FF}'
+            | '\u{3130}'..='\u{318F}'
+            | '\u{3400}'..='\u{4DBF}'
+            | '\u{4E00}'..='\u{9FFF}'
+            | '\u{A960}'..='\u{A97F}'
+            | '\u{AC00}'..='\u{D7FF}'
+    )
 }
 
 /// The searchable words of already-folded text. A run of CJK characters has no spaces to split on, so it is indexed as
@@ -90,6 +110,18 @@ mod tests {
     #[test]
     fn folding_drops_accents_and_case() {
         assert_eq!(fold("Éclat DORÉ"), "eclat dore");
+    }
+
+    #[test]
+    fn cjk_stays_composed_while_latin_accents_fold() {
+        assert_eq!(fold("푸른머리"), "푸른머리", "Hangul syllables are not decomposed into Jamo");
+        assert_eq!(fold("がぎ"), "がぎ", "voiced kana keep their marks");
+        assert_eq!(fold("ＥＣＬＡＴ Doré"), "eclat dore");
+    }
+
+    #[test]
+    fn korean_runs_become_bigrams_like_the_rest_of_cjk() {
+        assert_eq!(tokens(&fold("푸른머리")), ["푸른", "른머", "머리"]);
     }
 
     #[test]

@@ -87,9 +87,7 @@ fn an_item_is_publishable_only_if_its_assets_are() {
     let mut library = MockLibrary::new();
     library.insert(m.clone(), ItemScope::Mine).unwrap();
     assert!(!publishable(&library, &id), "an asset of unknown provenance fails closed");
-    let hidden = library
-        .search(&Query { usable_for: Some(Usage::Publish), limit: 100, ..Query::default() })
-        .unwrap();
+    let hidden = library.search(&Query { usable_for: Some(Usage::Publish), limit: 100, ..Query::default() }).unwrap();
     assert!(hidden.items.iter().all(|i| i.id.as_str() != id), "and is not offered for publishing");
 
     let mut cleared = Provenance { private_test: false, ..private_test_asset() };
@@ -101,4 +99,25 @@ fn an_item_is_publishable_only_if_its_assets_are() {
     cleared.commercial = Commercial::No;
     library.set_asset_provenance([(hash, cleared)]);
     assert!(!publishable(&library, &id), "a non-commercial asset blocks it");
+}
+
+#[test]
+fn a_cjk_query_finds_a_title_that_contains_it_in_korean_japanese_and_chinese() {
+    let mut library = MockLibrary::new();
+    for (slug, title) in [("ko", "푸른머리"), ("ja", "ぎんがみ"), ("zh", "银白长发")] {
+        let mut m = fixtures::setting();
+        m.id = format!("test/colourways/{slug}");
+        m.title = title.into();
+        m.summary = "Nothing relevant.".into();
+        m.tags.clear();
+        library.insert(m, ItemScope::FirstParty).unwrap();
+    }
+    let hits = |text: &str| -> Vec<String> {
+        let q = Query { text: Some(text.into()), limit: 100, ..Query::default() };
+        library.search(&q).unwrap().items.into_iter().map(|i| i.id.to_string()).collect()
+    };
+    assert_eq!(hits("머리"), ["test/colourways/ko"], "Korean: a syllable bigram inside the title");
+    assert_eq!(hits("푸른"), ["test/colourways/ko"]);
+    assert_eq!(hits("がみ"), ["test/colourways/ja"], "Japanese: voiced kana keep their marks");
+    assert_eq!(hits("长发"), ["test/colourways/zh"], "Chinese: a bigram inside the title");
 }
