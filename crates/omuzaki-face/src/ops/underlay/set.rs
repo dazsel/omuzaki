@@ -25,11 +25,11 @@ impl Op for UnderlaySet {
             name: "face.underlay.set",
             summary: "Show a reference sheet under a character's painted face at an opacity and alignment, to trace \
                       the features; changes the view only, not the project",
-            // A job, so the sheet is read and resampled off the document lock. `Auto` because the plan has an empty patch:
-            // the document is not touched, so there is nothing to undo, and a view change adds no undo step.
+            // A job, so the sheet is read and resampled off the document lock. `Undo::None` because it changes the view
+            // and not the project: no patch, no undo step, and nothing for `history_undo` to revert.
             kind: OpKind::Job,
             scope: Scope::Render,
-            undo: Undo::Auto,
+            undo: Undo::None,
         }
     }
 

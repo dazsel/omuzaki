@@ -13,7 +13,7 @@ use omuzaki_doc_mock::MemDoc;
 use omuzaki_face_api::underlay::{UnderlayHead, UnderlayImage, UnderlayTarget, UnderlayTargetError};
 use omuzaki_face_api::{FaceProjection, FaceRect};
 use omuzaki_ops::Executor;
-use omuzaki_ops_api::{Actor, Grants, Mode, OpKind, Request, Runner, ServicesBuilder, find};
+use omuzaki_ops_api::{Actor, Grants, Mode, OpKind, Request, Runner, ServicesBuilder, Undo, find};
 use omuzaki_store_api::{Commercial, Store};
 use omuzaki_store_mock::{MemStore, conformance::sample_provenance};
 use serde_json::{Value, json};
@@ -70,6 +70,11 @@ fn a_view_state_job_runs_through_the_executor_and_leaves_no_undo_step() {
     let registration = find("face.underlay.set").expect("registered");
     let meta = (registration.meta)();
     assert_eq!(meta.kind, OpKind::Job, "the read, decode and resample run off the document lock");
+    assert_eq!(
+        meta.undo,
+        Undo::None,
+        "a view change has no patch, so no undo step and nothing for history_undo to revert"
+    );
 
     let store = Arc::new(MemStore::new());
     let sheet = RgbaImage::from_pixel(16, 16, Rgba([10, 20, 30, 255]));
