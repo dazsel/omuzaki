@@ -49,12 +49,15 @@ pub struct Verdict {
     pub after: Option<Value>,
     /// One line saying why.
     pub detail: String,
+    /// The store hashes of the renders the check made, for the runner to keep as evidence (design 7.3).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub renders: Vec<String>,
 }
 
 impl Verdict {
     /// A pass with `detail`.
     pub fn pass(detail: impl Into<String>) -> Self {
-        Self { outcome: Outcome::Pass, before: None, after: None, detail: detail.into() }
+        Self { outcome: Outcome::Pass, before: None, after: None, detail: detail.into(), renders: Vec::new() }
     }
 
     /// A fail with `detail`.
@@ -70,6 +73,13 @@ impl Verdict {
     /// A pass when `ok`, else a fail, with `detail` either way.
     pub fn when(ok: bool, detail: impl Into<String>) -> Self {
         if ok { Self::pass(detail) } else { Self::fail(detail) }
+    }
+
+    /// The same verdict naming the renders it was made from, as store hashes.
+    #[must_use]
+    pub fn with_renders(mut self, renders: Vec<String>) -> Self {
+        self.renders = renders;
+        self
     }
 
     /// The same verdict recording the values it compared.
@@ -100,6 +110,9 @@ pub struct CheckResult {
     pub after: Option<Value>,
     /// One line saying why.
     pub detail: String,
+    /// The store hashes of the renders the check made.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub renders: Vec<String>,
 }
 
 impl CheckResult {
@@ -118,6 +131,7 @@ impl CheckResult {
             before: verdict.before,
             after: verdict.after,
             detail: verdict.detail,
+            renders: verdict.renders,
         }
     }
 }

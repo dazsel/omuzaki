@@ -63,26 +63,13 @@ fn substitute(value: &mut Value, names: &Names) -> Result<(), Verdict> {
 /// The first `{name}` still in a string or key of `value`: braces round a plain name, as a placeholder is written.
 fn unresolved(value: &Value) -> Option<String> {
     match value {
-        Value::String(text) => placeholder_in(text),
+        Value::String(text) => crate::eval::placeholder::first_in(text),
         Value::Array(items) => items.iter().find_map(unresolved),
-        Value::Object(map) => map.iter().find_map(|(key, v)| placeholder_in(key).or_else(|| unresolved(v))),
+        Value::Object(map) => {
+            map.iter().find_map(|(key, v)| crate::eval::placeholder::first_in(key).or_else(|| unresolved(v)))
+        }
         _ => None,
     }
-}
-
-fn placeholder_in(text: &str) -> Option<String> {
-    let mut rest = text;
-    while let Some(open) = rest.find('{') {
-        let after = &rest[open + 1..];
-        let close = after.find('}')?;
-        let name = &after[..close];
-        let plain = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-');
-        if !name.is_empty() && name.chars().all(plain) {
-            return Some(name.to_owned());
-        }
-        rest = after;
-    }
-    None
 }
 
 /// Every JSON pointer into an op's output that the check names.
@@ -101,12 +88,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn placeholders_are_braces_round_a_plain_name() {
-        assert_eq!(placeholder_in("a {main} b").as_deref(), Some("main"));
-        assert_eq!(placeholder_in("{0.id}").as_deref(), Some("0.id"));
-        assert_eq!(placeholder_in("x { y } {z-1}").as_deref(), Some("z-1"));
-        assert_eq!(placeholder_in("{\"a\": 1} {}"), None);
-        assert_eq!(placeholder_in("open { only"), None);
+    fn a_name_nothing_defines_is_found_in_strings_and_keys() {
         assert_eq!(unresolved(&json!({"k": ["fine", {"{gone}": 1}]})).as_deref(), Some("gone"));
+        assert_eq!(unresolved(&json!({"k": "{\"a\": 1}"})), None);
     }
 }
