@@ -1673,6 +1673,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aedcfb3409746eddb02b9e19ebda1c3394f759a152e48ee875a0844d1b955484"
 
 [[package]]
+name = "flatbuffers"
+version = "25.12.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "35f6839d7b3b98adde531effaf34f0c2badc6f4735d26fe74709d8e513a96ef3"
+dependencies = [
+ "bitflags 2.13.2",
+ "rustc_version",
+]
+
+[[package]]
 name = "flate2"
 version = "1.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3393,6 +3403,7 @@ dependencies = [
 name = "omuzaki-ai-litert"
 version = "0.0.0"
 dependencies = [
+ "flatbuffers",
  "flate2",
  "libloading 0.9.0",
  "omuzaki-ai-api",
@@ -3401,6 +3412,7 @@ dependencies = [
  "sha2",
  "tar",
  "tempfile",
+ "tracing",
 ]
 
 [[package]]
@@ -3679,6 +3691,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "toml_edit",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3729,11 +3742,13 @@ dependencies = [
  "omuzaki-render-api",
  "omuzaki-render-mock",
  "omuzaki-store-api",
+ "omuzaki-store-mock",
  "pollster",
  "proptest",
  "schemars",
  "serde",
  "serde_json",
+ "serde_path_to_error",
  "thiserror 2.0.21",
  "tiny-skia",
  "toml",
@@ -4547,6 +4562,14 @@ dependencies = [
  "rustix 1.1.5",
  "tempfile",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "omuzaki-update-mock"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-ai-api",
+ "omuzaki-update-api",
 ]
 
 [[package]]

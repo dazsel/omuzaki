@@ -8,9 +8,9 @@ use std::fmt;
 
 use omuzaki_face_api::{FaceMark, FaceProfile, Validate};
 use omuzaki_ops_api::OpError;
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
+use serde_path_to_error::Segment;
 
 use super::path::{Template, channel, kind_of, unknown_key};
 
@@ -108,10 +108,75 @@ fn section<T: DeserializeOwned + Default>(
     let at = format!("face/{name}");
     let template = defaults.profile.get(name).unwrap_or(&Value::Null);
     let repaired = repair(value, template, &at, problems);
-    T::deserialize(repaired).unwrap_or_else(|e| {
-        problems.push(Problem::at(&at, format!("doesn't read: {e}")));
-        T::default()
-    })
+    read(repaired, template, &at, problems)
+}
+
+/// Reads `value` as a `T` and lists every leaf that doesn't read, each at its own path (`face/nose/kind`, not
+/// `face/nose`). `serde_path_to_error` names the first bad leaf; that leaf is put back to its default in `template` and
+/// the value read again, so the next one is found too. Each round removes one bad leaf of a finite value, so it ends.
+/// A failure with no leaf to name or no default to put back is reported at `at` and reads as the default.
+fn read<T: DeserializeOwned + Default>(mut value: Value, template: &Value, at: &str, problems: &mut Vec<Problem>) -> T {
+    loop {
+        let error = match serde_path_to_error::deserialize::<_, T>(value.clone()) {
+            Ok(read) => return read,
+            Err(error) => error,
+        };
+        let steps = leaf_steps(error.path());
+        let leaf = steps
+            .as_ref()
+            .map_or_else(|| at.to_owned(), |steps| steps.iter().fold(at.to_owned(), |p, s| format!("{p}/{s}")));
+        problems.push(Problem::at(&leaf, error.inner().to_string()));
+        let restored = steps.is_some_and(|steps| restore_default(&mut value, template, &steps));
+        if !restored {
+            return T::default();
+        }
+    }
+}
+
+/// The keys and positions `path` goes through, or `None` when it passes through something a JSON value has no key for.
+fn leaf_steps(path: &serde_path_to_error::Path) -> Option<Vec<String>> {
+    path.iter()
+        .map(|segment| match segment {
+            Segment::Map { key } => Some(key.clone()),
+            Segment::Seq { index } => Some(index.to_string()),
+            Segment::Enum { .. } | Segment::Unknown => None,
+        })
+        .collect()
+}
+
+/// Puts the leaf at `steps` of `value` back to what `template` holds there. `false` when there is no such leaf in
+/// either, or it already holds the default, so a caller that retries cannot loop.
+fn restore_default(value: &mut Value, template: &Value, steps: &[String]) -> bool {
+    let (mut here, mut default) = (value, template);
+    for step in steps {
+        let (Some(next_value), Some(next_default)) = (child_mut(here, step), child(default, step)) else {
+            return false;
+        };
+        (here, default) = (next_value, next_default);
+    }
+    if *here == *default {
+        return false;
+    }
+    *here = default.clone();
+    true
+}
+
+/// The child of `node` at key or position `step`.
+fn child<'v>(node: &'v Value, step: &str) -> Option<&'v Value> {
+    match node {
+        Value::Object(map) => map.get(step),
+        Value::Array(items) => items.get(step.parse::<usize>().ok()?),
+        _ => None,
+    }
+}
+
+/// The child of `node` at key or position `step`, to change.
+fn child_mut<'v>(node: &'v mut Value, step: &str) -> Option<&'v mut Value> {
+    match node {
+        Value::Object(map) => map.get_mut(step),
+        Value::Array(items) => items.get_mut(step.parse::<usize>().ok()?),
+        _ => None,
+    }
 }
 
 /// The resting bus layer: a map of channel name to number. Each name must be a channel and each value a number inside the
@@ -163,10 +228,7 @@ fn marks(face: &Value, defaults: &Template, problems: &mut Vec<Problem>) -> Vec<
         .map(|(i, item)| {
             let at = format!("face/marks/{i}");
             let repaired = repair(item, &defaults.mark, &at, problems);
-            FaceMark::deserialize(repaired).unwrap_or_else(|e| {
-                problems.push(Problem::at(&at, format!("doesn't read: {e}")));
-                FaceMark::default()
-            })
+            read(repaired, &defaults.mark, &at, problems)
         })
         .collect()
 }
@@ -216,6 +278,7 @@ fn repair(value: &Value, template: &Value, at: &str, problems: &mut Vec<Problem>
 mod tests {
     use super::*;
     use crate::ops_shared::path::template;
+    use serde_json::json;
 
     #[test]
     fn a_default_face_has_no_problems() {
@@ -232,5 +295,16 @@ mod tests {
         for expected in ["face/eyes/scale", "face/eyes/iris/width", "face/eyes/iris/bogus"] {
             assert!(paths.iter().any(|p| p == expected), "{expected} missing from {paths:?}");
         }
+    }
+
+    #[test]
+    fn a_leaf_that_cannot_be_put_back_is_reported_once_and_reads_as_the_default() {
+        let mut problems = Vec::new();
+        // The template has no `kind` to restore, so the read gives up after naming the leaf instead of looping.
+        let read: omuzaki_face_api::NoseStyle =
+            super::read(json!({ "kind": "dott" }), &Value::Null, "face/nose", &mut problems);
+        assert_eq!(read, omuzaki_face_api::NoseStyle::default());
+        let paths: Vec<&str> = problems.iter().map(|p| p.path.as_str()).collect();
+        assert_eq!(paths, ["face/nose/kind"]);
     }
 }
