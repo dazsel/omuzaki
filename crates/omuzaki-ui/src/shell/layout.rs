@@ -98,6 +98,28 @@ impl Node {
         }
     }
 
+    /// The node with `extra` panels joined to the tab group of `anchor` (a lone `anchor` becomes a group).
+    fn joined(self, anchor: &str, extra: &[&str]) -> Self {
+        let is_anchor = |n: &Self| matches!(n, Self::Pane { panel } if panel == anchor);
+        let with_extra = |mut children: Vec<Self>| {
+            children.extend(extra.iter().map(|p| Self::pane(p)));
+            children
+        };
+        match self {
+            Self::Pane { .. } if is_anchor(&self) => Self::Tabs { children: with_extra(vec![self]), active: 0 },
+            Self::Pane { .. } => self,
+            Self::Tabs { children, active } if children.iter().any(is_anchor) => {
+                Self::Tabs { children: with_extra(children), active }
+            }
+            Self::Tabs { children, active } => {
+                Self::Tabs { children: children.into_iter().map(|c| c.joined(anchor, extra)).collect(), active }
+            }
+            Self::Split { dir, children, shares } => {
+                Self::Split { dir, children: children.into_iter().map(|c| c.joined(anchor, extra)).collect(), shares }
+            }
+        }
+    }
+
     /// The node without the panels `keep` refuses, and without containers that became empty. `None` when nothing is left.
     fn pruned(&self, keep: &dyn Fn(&str) -> bool) -> Option<Self> {
         match self {
@@ -178,6 +200,46 @@ impl Layout {
         root.sanitise_shares();
         let repaired = Self { version: VERSION, root };
         if repaired.contains(known.primary) { repaired } else { default.clone() }
+    }
+
+    /// This layout without `panels`. A layout that would be left empty is returned unchanged.
+    #[must_use]
+    pub fn without(&self, panels: &[&str]) -> Self {
+        self.root.pruned(&|p| !panels.contains(&p)).map_or_else(|| self.clone(), Self::new)
+    }
+
+    /// This layout with the root split's children sized in points: a child whose first panel `wanted` gives a width for
+    /// takes it, and the others share what is left of `total` equally. A layout whose root is not a split is unchanged.
+    #[must_use]
+    pub fn with_root_widths(mut self, wanted: &dyn Fn(&str) -> Option<f32>, total: f32) -> Self {
+        if let Node::Split { children, shares, .. } = &mut self.root {
+            let fixed: Vec<Option<f32>> = children
+                .iter()
+                .map(|child| {
+                    let mut panels = Vec::new();
+                    child.collect(&mut panels);
+                    panels.first().and_then(|first| wanted(first))
+                })
+                .collect();
+            let flexible = fixed.iter().filter(|w| w.is_none()).count().max(1);
+            let rest = (total - fixed.iter().flatten().sum::<f32>()).max(1.0) / flexible as f32;
+            *shares = fixed.iter().map(|w| w.unwrap_or(rest)).collect();
+        }
+        self
+    }
+
+    /// This layout with the `moved` panels folded into the tab group of `anchor`, for a window too small to show them
+    /// apart (Library beside the Outliner, Agent and History beside the Inspector). Panels the layout lacks are
+    /// skipped, and so is the whole fold when `anchor` is missing.
+    #[must_use]
+    pub fn folded(&self, anchor: &str, moved: &[&str]) -> Self {
+        let present: Vec<&str> = moved.iter().copied().filter(|p| *p != anchor && self.contains(p)).collect();
+        if present.is_empty() || !self.contains(anchor) {
+            return self.clone();
+        }
+        self.root
+            .pruned(&|p| !present.contains(&p))
+            .map_or_else(|| self.clone(), |root| Self::new(root.joined(anchor, &present)))
     }
 
     /// The docking widget's tree for this layout, keyed by `id` (egui keeps its scroll and drag state under it).
@@ -371,6 +433,52 @@ mod tests {
         assert_eq!(shares, [2.0, 1.0]);
         // The docking widget accepts the result.
         fixed.to_tree("t");
+    }
+
+    #[test]
+    fn folding_joins_panels_to_an_anchors_tab_group_and_a_lone_anchor_becomes_a_group() {
+        let folded = build().folded("inspector", &["agent", "history"]);
+        assert_eq!(
+            folded.panels(),
+            ["outliner", "library", "viewport", "expressions", "inspector", "agent", "history"]
+        );
+        let Node::Split { children, shares, .. } = &folded.root else { panic!("root is a split") };
+        // The old Agent and History group is gone, and the split left holding only the Inspector is flattened.
+        assert_eq!(children[2], Node::tabs(&["inspector", "agent", "history"]));
+        assert_eq!(shares.len(), 3);
+        // An anchor that already sits in a group takes the others into it.
+        let library = build().folded("outliner", &["library", "history"]);
+        assert_eq!(
+            library.panels(),
+            ["outliner", "library", "history", "viewport", "expressions", "inspector", "agent"]
+        );
+        // Nothing to join, or no anchor: unchanged.
+        assert_eq!(build().folded("inspector", &["nothing"]), build());
+        assert_eq!(build().folded("nothing", &["agent"]), build());
+    }
+
+    #[test]
+    fn root_widths_give_docks_their_points_and_share_the_rest() {
+        let wanted = |p: &str| match p {
+            "outliner" => Some(240.0),
+            "inspector" => Some(300.0),
+            _ => None,
+        };
+        let sized = build().with_root_widths(&wanted, 1366.0);
+        let Node::Split { shares, .. } = &sized.root else { panic!("root is a split") };
+        assert_eq!(shares, &[240.0, 826.0, 300.0]);
+        let one = Layout::new(Node::pane("viewport"));
+        assert_eq!(one.clone().with_root_widths(&wanted, 1366.0), one);
+    }
+
+    #[test]
+    fn without_drops_panels_but_never_empties_the_layout() {
+        assert_eq!(
+            build().without(&["outliner", "library"]).panels(),
+            ["viewport", "expressions", "inspector", "agent", "history"]
+        );
+        let one = Layout::new(Node::pane("viewport"));
+        assert_eq!(one.without(&["viewport"]), one);
     }
 
     #[test]
