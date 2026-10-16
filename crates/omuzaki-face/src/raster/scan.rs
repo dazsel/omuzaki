@@ -5,9 +5,10 @@
 //! and edge end to a quarter pixel, replaces a curve by line segments taken from fixed-point forward differencing, and
 //! rounds some positions to whole rows. To land on the same pixels this module repeats those steps, then sums the exact
 //! signed area of the resulting polygon per pixel by the accumulation-buffer method of `font-rs` (`add_span` is a port of
-//! its `draw_line`: each edge adds its trapezoid area to a row of deltas and a prefix sum turns the deltas into coverage). The non-zero rule is
-//! `min(|winding area|, 1)`, except in a row where layers of one winding overlap (the edge count passes 1): there
-//! the row is resolved again as a union, one quarter-row band at a time, from the edges themselves (see
+//! its `draw_line`: each edge adds its trapezoid area to a row of deltas and a prefix sum turns the deltas into
+//! coverage). The non-zero rule is `min(|winding area|, 1)`. In a row where two edges of one direction cross the same
+//! cell in the same quarter-row band (layers of one winding sharing a pixel), that sum would add their partial areas,
+//! so the row is resolved again as a union, one quarter-row band at a time, from the edges themselves (see
 //! [`Scan::sweep`]).
 //!
 //! The steps, each pinned by a comparison against Chrome (`crates/omuzaki-test-face/tests/raster_probes.rs`):
@@ -46,6 +47,9 @@ const FIXED_RANGE: f32 = 1.0e6;
 
 /// A forward-differencing step this many rows long (16.16) is snapped to whole rows; a shorter one to quarter rows.
 const STEEP: i64 = 2 << 16;
+
+/// A part of a band shorter than this share of its height is dropped (a crossing at a band's end).
+const MIN_PART: f32 = 1.0e-4;
 
 /// Bands per pixel row. Skia snaps every edge end to a quarter row (`snap_y_fixed`), so inside a band every edge that
 /// reaches it crosses it whole.
@@ -252,17 +256,24 @@ fn cubic_chain(p: [Vec2; 4]) -> Chain {
     chain
 }
 
-/// One cell of the accumulation buffer.
-#[derive(Copy, Clone, Debug, Default, PartialEq)]
-struct Cell {
-    /// The signed area delta.
-    area: f32,
-    /// The edges that end in this cell, one counter per quarter-row band: an edge adds to the bands it crosses, in the
-    /// cell where it ends in the row. The low nibble counts edges that run down, the high nibble those that run up
-    /// (each saturates at 15). The prefix sum of the difference is the band's winding. Layers of one winding share this
-    /// pixel when a nibble passes 1, or when the winding goes from or to zero by more than one here; the area sum cannot
-    /// tell, since an edge that crosses half a row adds half, and a thin layer's two edges cancel.
-    count: [u8; BANDS],
+/// One bit per quarter-row band in each of the cells' nibbles: the pattern `claim` repeats along a row.
+const EVERY_CELL: u64 = 0x1111_1111_1111_1111;
+
+/// Takes the cells `first..past` for the bands in `bands` (bit `b` for band `b`) in `words`, where cell `c`'s bands are
+/// bits `4c..4c + 4`, and returns whether any of them was taken already.
+fn claim(words: &mut [u64], first: usize, past: usize, bands: u64) -> bool {
+    let (lo, hi) = (first * 4, past * 4 - 1);
+    let (w0, w1) = (lo / 64, hi / 64);
+    let head = u64::MAX << (lo % 64);
+    let tail = u64::MAX >> (63 - hi % 64);
+    let mut hit = false;
+    for (w, word) in (w0..=w1).zip(&mut words[w0..=w1]) {
+        let mask =
+            (EVERY_CELL * bands) & (if w == w0 { head } else { u64::MAX }) & (if w == w1 { tail } else { u64::MAX });
+        hit |= *word & mask != 0;
+        *word |= mask;
+    }
+    hit
 }
 
 /// One snapped, clipped edge as accumulated, kept so a row with overlapping layers can be resolved again: `a.y < b.y`
@@ -274,13 +285,13 @@ struct Edge {
     dir: i8,
 }
 
-/// An edge's crossing of one quarter-row band: from `x0` to `x1` (`x0 <= x1`), ordered by `mid`.
+/// An edge's crossing of one quarter-row band.
 #[derive(Copy, Clone, Debug)]
 struct Piece {
     band: usize,
-    x0: f32,
-    x1: f32,
-    mid: f32,
+    /// Where the edge is at the band's top and bottom.
+    top: f32,
+    bottom: f32,
     dir: i8,
 }
 
@@ -301,7 +312,7 @@ impl Edge {
         let dxdy = (self.b.x - self.a.x) / (self.b.y - self.a.y);
         let at = |y: f32| (self.a.x + dxdy * (y - self.a.y)).clamp(0.0, width);
         let (xt, xb) = (at(top), at(bottom));
-        Some(Piece { band, x0: xt.min(xb), x1: xt.max(xb), mid: 0.5 * (xt + xb), dir: self.dir })
+        Some(Piece { band, top: xt, bottom: xb, dir: self.dir })
     }
 }
 
@@ -312,8 +323,18 @@ pub(super) struct Scan {
     height: usize,
     /// Cells per row: the raster width plus two, because an edge at the right border writes two cells.
     stride: usize,
-    /// Signed area deltas and edge counts, all zero between paths (the sweep clears what it reads).
-    acc: Vec<Cell>,
+    /// Signed area deltas, all zero between paths (the sweep clears what it reads).
+    acc: Vec<f32>,
+    /// Which cells the edges that run down (and up) cross in each quarter-row band, four bits per cell (one per band):
+    /// `occupied[(y * 2 + direction) * words..][..words]`. An edge that crosses a cell already taken by another of the
+    /// same direction in the same band is a second layer of one winding sharing that pixel's partial coverage, which
+    /// the area sum cannot tell (an edge that crosses half a row adds half, and a thin layer's two edges cancel); it
+    /// marks the row in `overlapping`. A bit set never wraps, however many contours are stacked.
+    occupied: Vec<u64>,
+    /// Words of `occupied` per row and direction.
+    words: usize,
+    /// The rows where a second layer shares a cell with the first.
+    overlapping: Vec<bool>,
     /// The rows and columns touched since the last sweep.
     dirty: Dirty,
     /// One row of alpha, handed to the sweep's consumer.
@@ -327,10 +348,14 @@ pub(super) struct Scan {
     row_start: Vec<usize>,
     row_fill: Vec<usize>,
     row_edges: Vec<usize>,
-    /// The crossings of one band, sorted by x.
+    /// The crossings of the bands of one row, grouped by band.
     pieces: Vec<Piece>,
+    /// Where pieces of one band cross, as fractions of its height.
+    splits: Vec<f32>,
+    /// One part of a band between crossings: the x of each piece at its start and end, and its direction.
+    parts: Vec<(f32, f32, i8)>,
     /// One band's deltas (a row of cells) while a union is resolved.
-    band: Vec<Cell>,
+    band: Vec<f32>,
 }
 
 #[derive(Copy, Clone, Debug, Default)]
@@ -354,16 +379,23 @@ impl Scan {
             self.height = height;
             self.stride = width + 2;
             self.acc.clear();
-            self.acc.resize(self.stride * height, Cell::default());
+            self.acc.resize(self.stride * height, 0.0);
+            self.words = (self.stride * BANDS).div_ceil(64);
+            self.occupied.clear();
+            self.occupied.resize(height * 2 * self.words, 0);
+            self.overlapping.clear();
+            self.overlapping.resize(height, false);
             self.row.clear();
             self.row.resize(width, 0);
             self.union.clear();
             self.union.resize(width, 0.0);
             self.band.clear();
-            self.band.resize(self.stride, Cell::default());
+            self.band.resize(self.stride, 0.0);
         } else if self.dirty.min_y < self.dirty.max_y {
             // A path was fed and never swept: start clean.
-            self.acc.fill(Cell::default());
+            self.acc.fill(0.0);
+            self.occupied.fill(0);
+            self.overlapping.fill(false);
         }
         self.dirty = Dirty::NONE;
         self.edges.clear();
@@ -502,6 +534,13 @@ impl Scan {
         self.accumulate(a, b);
     }
 
+    /// Takes the cells `first..past` of row `y` in the bands `bands` (bit `b` for band `b`) for an edge of direction
+    /// `dir`; whether some were taken already.
+    fn claim_cells(&mut self, y: usize, dir: i8, first: usize, past: usize, bands: u64) -> bool {
+        let at = (y * 2 + usize::from(dir < 0)) * self.words;
+        claim(&mut self.occupied[at..at + self.words], first, past, bands)
+    }
+
     /// Adds the signed area of one edge (inside the raster, `y` increasing downward) to the accumulation buffer.
     fn accumulate(&mut self, a: Vec2, b: Vec2) {
         if a.y == b.y {
@@ -532,14 +571,19 @@ impl Scan {
             self.dirty.min_x = self.dirty.min_x.min(x0i);
             self.dirty.max_x = self.dirty.max_x.max(x1i + 1);
             add_span(&mut self.acc[row..row + self.stride], d, x0, x1);
-            let counter = &mut self.acc[row + x1i].count;
-            let step = if count_dir > 0 { 0x01 } else { 0x10 };
-            let mask = if count_dir > 0 { 0x0F } else { 0xF0 };
-            for count in &mut counter[first_band.saturating_sub(y * BANDS)..(last_band - y * BANDS).min(BANDS)] {
-                if *count & mask != mask {
-                    *count += step;
-                }
-            }
+            let bands = first_band.saturating_sub(y * BANDS)..(last_band - y * BANDS).min(BANDS);
+            // The cells the edge crosses in this row, for the bands it crosses. A band of it covers fewer cells than
+            // the row does, so two layers may be flagged that share no cell in one band; the union resolve then finds
+            // nothing to change, which costs time and not correctness. Layers whose edges run in opposite directions
+            // are not seen (see the known limit on `sweep_with`).
+            let shared = self.claim_cells(
+                y,
+                count_dir,
+                x0i,
+                x1i.max(x0i + 1),
+                ((1 << bands.end) - 1) & !((1 << bands.start) - 1),
+            );
+            self.overlapping[y] |= shared;
             x = x_next;
         }
         self.dirty.min_y = self.dirty.min_y.min(y_first);
@@ -574,16 +618,23 @@ impl Scan {
     /// hole. The magnitude (`abs`) is taken because the sign of the winding carries no coverage, and the clamp then
     /// saturates a pixel that two same-winding layers fully cover.
     ///
-    /// A row where a band's winding (`count`) goes from or to zero by more than one in a cell holds layers of one winding
-    /// whose edges cross the same pixel, and there the sum is wrong at that partly covered pixel: it adds their partial
-    /// areas. Skia's analytic AA fills from the outer edge in, so the row is resolved again by [`Scan::union_row`], which keeps
-    /// only the edges where the winding enters or leaves zero. Chrome's alphas for such rows are in
-    /// `omuzaki-test-face/tests/raster_supersample.rs`.
+    /// A row where two edges of one direction cross the same cell in the same quarter-row band (found while the edges
+    /// are fed, from `occupied`) holds layers of one winding whose edges cross the same pixel, and there the sum is
+    /// wrong at that partly covered pixel: it adds their partial areas. Skia's analytic AA fills from the outer edge
+    /// in, so the row is resolved again by [`Scan::union_row`], which keeps only the edges where the winding enters or
+    /// leaves zero. Chrome's alphas for such rows are in `omuzaki-test-face/tests/raster_supersample.rs`.
     ///
-    /// Known limit: the sum is over area, so two regions that share a pixel subtract when their windings are opposite,
-    /// and add when they are the same. A figure-8's crossing is the first case: its lobes are +1 and -1, so the pixel
-    /// gets |a - b| instead of the ideal a + b, a slight under-coverage notch. Skia's analytic AA does the same, so Chrome
-    /// parity holds. The resolve follows the accumulation of Skia's analytic AA (`SkScan_AAAPath`, through tiny-skia's
+    /// Known limits:
+    /// - the sum is over area, so two regions that share a pixel subtract when their windings are opposite, and add
+    ///   when they are the same. A figure-8's crossing is the first case: its lobes are +1 and -1, so the pixel gets
+    ///   |a - b| instead of the ideal a + b, a slight under-coverage notch. Skia's analytic AA does the same, so
+    ///   Chrome parity holds;
+    /// - overlap is found per direction, so two same-winding layers whose edges of opposite directions cross inside
+    ///   one pixel are still summed (#2170);
+    /// - cutting a band at the crossings of its edges costs more than linearly in the pieces that cross inside it
+    ///   (400 mutually crossing slivers take 7 ms a row set); a face never has more than a few.
+    ///
+    /// The resolve follows the accumulation of Skia's analytic AA (`SkScan_AAAPath`, through tiny-skia's
     /// `scan/path_aa.rs`, BSD-3-Clause); the parity probes in `omuzaki-test-face` are the check against Chrome.
     fn sweep_with<T: Copy>(
         &mut self,
@@ -602,25 +653,15 @@ impl Scan {
         for y in dirty.min_y..dirty.max_y {
             let cells = &mut self.acc[y * self.stride..(y + 1) * self.stride];
             let mut sum = 0.0_f32;
-            let mut winding = [0_i8; BANDS];
-            let mut overlap = false;
             for x in dirty.min_x..=last {
-                let cell = std::mem::take(&mut cells[x]);
-                sum += cell.area;
-                if cell.count != [0; BANDS] {
-                    for (w, c) in winding.iter_mut().zip(cell.count) {
-                        let (down, up) = (c & 0x0F, c >> 4);
-                        #[allow(clippy::cast_possible_wrap)] // nibbles, at most 15
-                        let next = *w + down as i8 - up as i8;
-                        // Layers that share a pixel share its partial coverage.
-                        overlap |= down > 1 || up > 1 || ((*w == 0) != (next == 0) && (*w).abs().max(next.abs()) > 1);
-                        *w = next;
-                    }
-                }
+                sum += cells[x];
+                cells[x] = 0.0;
                 if x < self.width {
                     row[x] = convert(sum.abs().min(1.0));
                 }
             }
+            let overlap = std::mem::take(&mut self.overlapping[y]);
+            self.occupied[y * 2 * self.words..(y + 1) * 2 * self.words].fill(0);
             if overlap {
                 if !bucketed {
                     self.bucket_edges();
@@ -665,7 +706,9 @@ impl Scan {
     /// Resolves row `y` as a union of its layers, replacing the coverage the sum gave. In each quarter-row band the
     /// edges are taken in x order with a running winding, and only those that make it enter or leave zero are added: the
     /// ones inside an overlap cannot change what is covered. The prefix sum of those is then exact (a ring's hole still
-    /// cuts, since its edges take the winding to zero). Only the columns the edges reach are touched.
+    /// cuts, since its edges take the winding to zero). Edges that cross inside a band swap their order there, so the
+    /// band is cut at every crossing and each part resolved on its own, weighted by its height. Only the columns the
+    /// edges reach are touched.
     fn union_row<T>(&mut self, y: usize, row: &mut [T], convert: impl Fn(f32) -> T) {
         #[allow(clippy::cast_precision_loss)] // raster widths are far below 2^24
         let width = self.width as f32;
@@ -675,7 +718,8 @@ impl Scan {
             for band in y * BANDS..(y + 1) * BANDS {
                 if let Some(piece) = self.edges[i].piece(band, width) {
                     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped to 0 <= x <= width
-                    let (first, past) = (piece.x0 as usize, piece.x1.ceil() as usize + 1);
+                    let (first, past) =
+                        (piece.top.min(piece.bottom) as usize, piece.top.max(piece.bottom).ceil() as usize + 1);
                     lo = lo.min(first);
                     hi = hi.max(past);
                     self.pieces.push(piece);
@@ -686,24 +730,18 @@ impl Scan {
         if lo >= hi {
             return;
         }
-        self.pieces.sort_unstable_by(|p, q| p.band.cmp(&q.band).then(p.mid.total_cmp(&q.mid)).then(p.dir.cmp(&q.dir)));
+        self.pieces.sort_unstable_by_key(|p| p.band);
         self.union[lo..hi].fill(0.0);
         let mut at = 0;
         while at < self.pieces.len() {
             let band = self.pieces[at].band;
-            let mut winding = 0_i8;
-            while let Some(piece) = self.pieces.get(at).filter(|p| p.band == band) {
-                let next = winding + piece.dir;
-                if (winding == 0) != (next == 0) {
-                    add_span(&mut self.band, f32::from(piece.dir), piece.x0, piece.x1);
-                }
-                winding = next;
-                at += 1;
-            }
+            let len = self.pieces[at..].iter().take_while(|p| p.band == band).count();
+            self.union_band(at..at + len);
+            at += len;
             let mut sum = 0.0_f32;
             for (i, cell) in self.band[lo..hi].iter_mut().enumerate() {
-                sum += cell.area;
-                *cell = Cell::default();
+                sum += *cell;
+                *cell = 0.0;
                 if let Some(out) = self.union.get_mut(lo + i) {
                     *out += 0.25 * sum.abs().min(1.0);
                 }
@@ -713,38 +751,74 @@ impl Scan {
             *out = convert(c);
         }
     }
+
+    /// Adds the boundary of the union of one band's pieces (`self.pieces[range]`) to `self.band`.
+    fn union_band(&mut self, range: std::ops::Range<usize>) {
+        // The band's parts: between its ends, every place two pieces swap order.
+        self.splits.clear();
+        self.splits.extend([0.0, 1.0]);
+        for (i, p) in self.pieces[range.clone()].iter().enumerate() {
+            for q in &self.pieces[range.start + i + 1..range.end] {
+                let (before, after) = (p.top - q.top, p.bottom - q.bottom);
+                if before * after < 0.0 {
+                    self.splits.push(before / (before - after));
+                }
+            }
+        }
+        self.splits.sort_unstable_by(f32::total_cmp);
+        for part in 0..self.splits.len() - 1 {
+            let (t0, t1) = (self.splits[part], self.splits[part + 1]);
+            if t1 - t0 < MIN_PART {
+                continue;
+            }
+            self.parts.clear();
+            for p in &self.pieces[range.clone()] {
+                let at = |t: f32| p.top + (p.bottom - p.top) * t;
+                self.parts.push((at(t0), at(t1), p.dir));
+            }
+            self.parts.sort_unstable_by(|p, q| (p.0 + p.1).total_cmp(&(q.0 + q.1)).then(p.2.cmp(&q.2)));
+            let mut winding = 0_i32;
+            for &(x0, x1, dir) in &self.parts {
+                let next = winding + i32::from(dir);
+                if (winding == 0) != (next == 0) {
+                    add_span(&mut self.band, f32::from(dir) * (t1 - t0), x0.min(x1), x0.max(x1));
+                }
+                winding = next;
+            }
+        }
+    }
 }
 
 /// Spreads `d` (a signed height) over the cells an edge piece crosses in one row, from `x0` to `x1` (x0 <= x1).
-fn add_span(acc: &mut [Cell], d: f32, x0: f32, x1: f32) {
+fn add_span(acc: &mut [f32], d: f32, x0: f32, x1: f32) {
     let x0_floor = x0.floor();
     let x1_ceil = x1.ceil();
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clipped to 0 <= x <= width
     let (x0i, x1i) = (x0_floor as usize, x1_ceil as usize);
     if x1i <= x0i + 1 {
         let xmf = 0.5 * (x0 + x1) - x0_floor;
-        acc[x0i].area += d - d * xmf;
-        acc[x0i + 1].area += d * xmf;
+        acc[x0i] += d - d * xmf;
+        acc[x0i + 1] += d * xmf;
     } else {
         let s = (x1 - x0).recip();
         let x0f = x0 - x0_floor;
         let a0 = 0.5 * s * (1.0 - x0f) * (1.0 - x0f);
         let x1f = x1 - x1_ceil + 1.0;
         let am = 0.5 * s * x1f * x1f;
-        acc[x0i].area += d * a0;
+        acc[x0i] += d * a0;
         if x1i == x0i + 2 {
-            acc[x0i + 1].area += d * (1.0 - a0 - am);
+            acc[x0i + 1] += d * (1.0 - a0 - am);
         } else {
             let a1 = s * (1.5 - x0f);
-            acc[x0i + 1].area += d * (a1 - a0);
+            acc[x0i + 1] += d * (a1 - a0);
             for cell in &mut acc[x0i + 2..x1i - 1] {
-                cell.area += d * s;
+                *cell += d * s;
             }
             #[allow(clippy::cast_precision_loss)] // the span is at most the raster width
             let a2 = a1 + (x1i - x0i - 3) as f32 * s;
-            acc[x1i - 1].area += d * (1.0 - a2 - am);
+            acc[x1i - 1] += d * (1.0 - a2 - am);
         }
-        acc[x1i].area += d * am;
+        acc[x1i] += d * am;
     }
 }
 
@@ -952,6 +1026,86 @@ mod tests {
         assert!((cov[12 * W + 10] - 0.4).abs() < 0.01, "hole left edge {}", cov[12 * W + 10]);
         assert!((cov[12 * W + 22] - 0.1).abs() < 0.01, "hole right edge {}", cov[12 * W + 22]);
         assert!(cov[12 * W + 15] < 1e-5, "hole {}", cov[12 * W + 15]);
+    }
+
+    /// The coverage of pixel `(px, py)` of the union of two same-winding polygons whose only slanted sides are the left
+    /// edges `a` and `b` (each `(x at the top, x at the bottom)` of a row of height 1): the right of the pixel is
+    /// covered from the nearer of the two edges. Integrated over 2000 sample heights; it shares no code with the scan.
+    #[allow(clippy::cast_precision_loss)] // small indices
+    fn left_union_fraction(a: (f32, f32), b: (f32, f32), px: usize) -> f32 {
+        let at = |e: (f32, f32), t: f32| e.0 + (e.1 - e.0) * t;
+        let mut sum = 0.0_f32;
+        for i in 0..2000 {
+            let t = (i as f32 + 0.5) / 2000.0;
+            let left = at(a, t).min(at(b, t));
+            sum += ((px + 1) as f32 - left).clamp(0.0, 1.0);
+        }
+        sum / 2000.0
+    }
+
+    /// A one-row polygon with a slanted left side from `(left.0, 4)` to `(left.1, 5)` and a vertical right side at
+    /// `right`.
+    fn slanted(left: (f32, f32), right: f32) -> [(f32, f32); 4] {
+        [(left.0, 4.0), (right, 4.0), (right, 5.0), (left.1, 5.0)]
+    }
+
+    /// Codex's sloped case: left edges (5.1, 4) to (6.1, 5) and (5.2, 4) to (5.8, 5) both cross pixel 5 although they
+    /// end in different cells, and their right edges are elsewhere. The union covers the pixel from the nearer edge.
+    #[test]
+    fn sloped_layers_that_end_in_different_cells_still_form_a_union() {
+        let (a, b) = ((5.1, 6.1), (5.2, 5.8));
+        let mut s = scan();
+        polygon(&mut s, &slanted(a, 20.0));
+        polygon(&mut s, &slanted(b, 19.0));
+        let cov = coverage(&mut s);
+        let want = left_union_fraction(a, b, 5);
+        assert!((cov[4 * W + 5] - want).abs() < 0.01, "pixel (5, 4): {} vs {want}", cov[4 * W + 5]);
+    }
+
+    /// Codex's crossing case: left edges 5.1 to 5.9 and 5.8 to 5.2 swap order halfway down the row, so the union
+    /// follows whichever is nearer (0.675 of the pixel). They cross on a band boundary, so the plain sum already gets
+    /// this one right (0.677): it pins the result, and the next test is the one that needs the split.
+    #[test]
+    fn edges_that_cross_on_a_band_boundary_follow_the_nearer_one() {
+        let (a, b) = ((5.1, 5.9), (5.8, 5.2));
+        let mut s = scan();
+        polygon(&mut s, &slanted(a, 20.0));
+        polygon(&mut s, &slanted(b, 19.0));
+        let cov = coverage(&mut s);
+        let want = left_union_fraction(a, b, 5);
+        assert!((want - 0.675).abs() < 0.01, "the oracle {want}");
+        assert!((cov[4 * W + 5] - want).abs() < 0.01, "pixel (5, 4): {} vs {want}", cov[4 * W + 5]);
+    }
+
+    /// Edges that cross strictly inside a quarter-row band: the left sides (5, 4) to (7, 4.25) and (7, 4) to (5, 4.25)
+    /// swap order halfway down the band, at x = 6 and y = 4.125. The union is
+    /// the nearer one on each side of the crossing, which takes the first band of row 4 to 0.125 of pixel (5, 4) and
+    /// 0.25 of pixel (6, 4); taking one whole edge, as the plain sum does, gives 0.0625 and 0.1875.
+    #[test]
+    fn edges_that_cross_inside_a_band_switch_at_the_crossing() {
+        let mut s = scan();
+        polygon(&mut s, &[(5.0, 4.0), (20.0, 4.0), (20.0, 4.25), (7.0, 4.25)]);
+        polygon(&mut s, &[(7.0, 4.0), (19.0, 4.0), (19.0, 4.25), (5.0, 4.25)]);
+        let cov = coverage(&mut s);
+        assert!((cov[4 * W + 5] - 0.125).abs() < 0.005, "pixel (5, 4): {}", cov[4 * W + 5]);
+        assert!((cov[4 * W + 6] - 0.25).abs() < 0.005, "pixel (6, 4): {}", cov[4 * W + 6]);
+    }
+
+    /// More repeated contours than a small counter holds (the union's winding is a wide integer, and the
+    /// occupancy is a bit that cannot wrap) draw what one does.
+    #[test]
+    fn two_hundred_repeated_contours_draw_what_one_does() {
+        let square = [(5.3, 4.6), (17.8, 4.6), (17.8, 12.9), (5.3, 12.9)];
+        let mut single = scan();
+        polygon(&mut single, &square);
+        let mut many = scan();
+        for _ in 0..200 {
+            polygon(&mut many, &square);
+        }
+        let (one, many) = (coverage(&mut single), coverage(&mut many));
+        for i in 0..W * H {
+            assert!((one[i] - many[i]).abs() < 1e-5, "pixel {i}: once {}, 200 times {}", one[i], many[i]);
+        }
     }
 
     /// A figure-8: its two lobes wind +1 and -1 and meet at a crossing. This pins the current behaviour, a known limit and

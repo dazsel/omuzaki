@@ -345,11 +345,15 @@ stored without headers; the judge's forced tool, random image order and agreemen
 
 ### D11. Dependencies, licences and the one HTTP stack
 
-**One TLS stack.** `omuzaki-llm` uses the workspace's `reqwest` with the features that `omuzaki-http` sets: `rustls`,
-whose single crypto provider is `aws-lc-rs`, and `system-proxy`; it adds only the non-TLS features `stream` and
-`http2` for async SSE. No second provider (`ring` was proposed and rejected on review: two crypto providers in one
-binary are two TLS stacks to audit and patch). If `aws-lc-rs` ever breaks the mingw build, that is a
-workspace-wide change on its own issue, never a per-crate choice.
+**One TLS stack.** `omuzaki-llm` uses the workspace's `reqwest` with the features that `omuzaki-http` sets:
+`rustls-no-provider` with `ring` as the single crypto provider, installed once by the code that builds a client, and
+`system-proxy`; it adds only the non-TLS features `stream` and `http2` for async SSE. No second provider: two crypto
+providers in one binary are two TLS stacks to audit and patch. `aws-lc-rs` was the first choice and the Director's
+ruling on #1504 (comment 6187912672) replaced it with `ring`, because `aws-lc-sys` needs NASM (and CMake on some
+targets) on every Windows build, and its prebuilt objects would be opaque code we ship; `ring` carries its own
+pre-generated assembly and builds with a plain C toolchain. What this gives up is rustls's post-quantum hybrid key
+exchange, which only the aws-lc provider offers today; revisit it if a feature needs post-quantum TLS. A provider
+change is a workspace-wide decision on its own issue, never a per-crate choice.
 
 **The same client as `omuzaki-http`, without linking it** (implementation crates don't link each other): the same
 `[workspace.dependencies]` entry and TLS and proxy features (one `reqwest` build), the user agent `Omuzaki/<version>`,
@@ -365,7 +369,7 @@ an API crate, that module becomes its implementation and nothing else changes.
 | Crate | Use | Licence | Note |
 |---|---|---|---|
 | `reqwest` 0.13 (in tree) | HTTP client; the workspace's `rustls` and `system-proxy`, plus `stream`, `http2` | MIT OR Apache-2.0 | register row and TLS rows come with `omuzaki-http` |
-| `rustls` 0.23, `aws-lc-rs`, `rustls-platform-verifier` 0.7 | TLS, crypto, OS trust store | Apache-2.0 OR ISC OR MIT; ISC AND (Apache-2.0 OR ISC); MIT OR Apache-2.0 | already registered by `omuzaki-http` |
+| `rustls` 0.23, `ring`, `rustls-platform-verifier` 0.7 | TLS, crypto, OS trust store | Apache-2.0 OR ISC OR MIT; Apache-2.0 AND ISC; MIT OR Apache-2.0 | already registered by `omuzaki-http` |
 | `sse-stream` 0.2 (in tree via rmcp) | SSE framing | MIT OR Apache-2.0 | needs its own register row |
 | `base64` 0.23, `futures-util` 0.3 (in tree) | images, body stream | MIT OR Apache-2.0 | |
 
