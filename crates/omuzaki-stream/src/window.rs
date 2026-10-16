@@ -36,7 +36,8 @@ pub const COLLISION_MARGIN: f32 = 120.0;
 ///
 /// # Errors
 /// [`WindowError::ScaleFactor`] for a NaN, zero or out-of-range factor, [`WindowError::Scale`] for a bad
-/// [`SizePolicy::Scale`], [`WindowError::EmptyOutput`] for a zero side.
+/// [`SizePolicy::Scale`], [`WindowError::EmptyOutput`] for a zero side, [`WindowError::Unsupported`] for a policy
+/// newer than this code.
 pub fn plan(output: UVec2, policy: SizePolicy, scale_factor: f64) -> Result<WindowPlan, WindowError> {
     if !(MIN_SCALE_FACTOR..=MAX_SCALE_FACTOR).contains(&scale_factor) {
         return Err(WindowError::ScaleFactor(scale_factor));
@@ -48,6 +49,7 @@ pub fn plan(output: UVec2, policy: SizePolicy, scale_factor: f64) -> Result<Wind
         SizePolicy::Output => output,
         SizePolicy::Scale(s) if (MIN_SCALE..=MAX_SCALE).contains(&s) => scaled_size(output, s),
         SizePolicy::Scale(s) => return Err(WindowError::Scale(s)),
+        other => return Err(WindowError::Unsupported(format!("size policy {other:?}"))),
     };
     Ok(WindowPlan::new(
         physical,

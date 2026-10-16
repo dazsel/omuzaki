@@ -89,6 +89,7 @@ fn window_error(field: &str, error: &WindowError) -> OpError {
         // The host's own surface is unusable: nothing in the request can repair it.
         WindowError::ScaleFactor(_) | WindowError::EmptyOutput(..) => OpError::conflict(error.to_string())
             .hint("the display or the output reports an unusable size; check them, then ask again"),
+        WindowError::Unsupported(_) => OpError::unsupported(error.to_string()),
         _ => OpError::invalid(field, error.to_string()),
     }
 }
