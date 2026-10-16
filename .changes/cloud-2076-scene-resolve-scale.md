@@ -4,3 +4,4 @@
 - `ResolvedScene::resolve_into` refuses a point or spot light whose range resolves to 0 or below (a tiny range on a tiny figure), instead of handing the renderer a light it rejects (#2020).
 - It also refuses a figure root lifted in Y: a cast member's root is `(x, 0, z)` (#2020).
 - The framing contact sheet also writes a 1:1 sheet. A new test checks the landmarks against the vertices the stage draws in its base pose (the bind pose, decision 0014), and the hands preset centres both hands at 16:9, 9:16 and 1:1.
+- Stills (`render_stills`, so the framing contact sheet, library previews and the sheet's turnaround) show the character in its base pose, the bind pose, as decision 0014 §4 says, not the T-pose. The hands preset was framing the bind-pose hands while the still drew the T-pose, so it showed the hips (#1978).

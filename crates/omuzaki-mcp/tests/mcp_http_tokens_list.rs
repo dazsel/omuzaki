@@ -30,6 +30,8 @@ struct Port {
 
 impl Port {
     async fn start() -> Self {
+        // reqwest is built without a crypto provider, so every client (rmcp's and the raw one) needs `ring` installed first.
+        common::http::install_crypto_provider();
         let mcp = McpServer::new(Arc::new(fake_runner()), McpOptions::default()).expect("server builds");
         let options = HttpOptions::default().with_bind("127.0.0.1:0".parse().unwrap());
         let server = mcp.serve_http(options).await.expect("port opens");

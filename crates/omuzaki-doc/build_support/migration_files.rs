@@ -71,7 +71,9 @@ mod tests {
         let decls = module_decls(dir.path()).unwrap();
         let mods: Vec<&str> = decls.lines().filter(|l| l.starts_with("mod ")).collect();
         assert_eq!(mods, ["mod m0002_add_field;", "mod m0003_rename_things;"]);
-        assert!(decls.contains(dir.path().to_str().unwrap()));
+        // The path is written as an escaped Rust literal (`{:?}`), so on Windows its backslashes are doubled (#1431).
+        let escaped = format!("{:?}", dir.path().to_string_lossy());
+        assert!(decls.contains(escaped.trim_matches('"')));
     }
 
     #[test]

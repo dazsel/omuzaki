@@ -18,8 +18,6 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 toml.workspace = true
-vello.workspace = true
-wgpu.workspace = true
 omuzaki-anim-api = { path = "../omuzaki-anim-api" }
 omuzaki-char-api = { path = "../omuzaki-char-api" }
 omuzaki-core = { path = "../omuzaki-core" }
@@ -29,6 +27,13 @@ omuzaki-io-api = { path = "../omuzaki-io-api" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-render-api = { path = "../omuzaki-render-api" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
+
+# The GPU rasteriser (`raster::gpu`) is native only: wgpu's WebGPU types on wasm32 are not `Send`, which `GpuRasterizer` needs
+# (#2207). On the web the face draws with the CPU raster, the same fallback as everywhere else.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tracing.workspace = true
+vello.workspace = true
+wgpu.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true

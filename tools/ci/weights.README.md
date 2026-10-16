@@ -1,7 +1,64 @@
 # weights.json
 
-Estimated seconds of wall time one crate adds to a CI test job (compile plus nextest run), used by
-`cargo xtask check --format json` (`xtask/src/report.rs`) to balance the test jobs. Crates not listed weigh `default`.
+Estimated seconds of wall time one crate adds to a CI test job (compile of the workspace crates plus nextest run, with
+the dependency cache warm), used by `cargo xtask check --format json` (`xtask/src/report.rs`) to balance the test jobs.
+Crates not listed weigh `default`.
+
+## Current numbers (2026-10-15, issue #2118)
+
+Measured on the six test jobs of merge-queue run 38810711080 (24 affected crates). For every `cargo nextest run` call:
+seconds from the first workspace crate's `Compiling` line to `Starting N tests` (the compile that stays when the
+dependency cache is warm, links included) plus the `Summary` time (the run).
+
+| Group (one call)                                         | compile | run | weight |
+| -------------------------------------------------------- | ------: | --: | -----: |
+| audio-api, identity-mock, ops-api, script                |      59 |   5 |     64 |
+| face, history-api, io-ops, ops, settings-api, xtask      |     189 |  38 |    227 |
+| mcp, ops-mock, test, test-face                           |     243 |   9 |    252 |
+| anim, history-mock, link-probe, stage, take-api          |     231 | 137 |    368 |
+| cli, library-api, test-char                              |     272 |   3 |    275 |
+| `omuzaki-ui` (two calls before: 39 + 15 s and 43 + 5 s)  |      40 |  20 |     60 |
+| `omuzaki-char` partitions 1/4, 2/4, 3/4, 4/4 (one call each) | 66, 76, 36, 80 | 395, 663, 173, 345 | |
+
+A group's weight is split over its crates in proportion to the old estimate. Crates that run did not appear in this run
+keep the old estimate scaled by the same factor as the groups together (1.65), and `default` too.
+
+- `omuzaki-ui` is 60 and pinned to one part (`parts`). Its tests take 20 s; each extra call recompiled it for 4.8 to
+  5.1 minutes (no dependency cache, see `.github/workflows/ci.yml`), so splitting it cost a shard 5 minutes to save 5
+  seconds.
+- `omuzaki-char::palette_independence` is `isolated`: three tests in one binary took 419, 450 and 466 s wherever they
+  landed (partition 2/4 here), against 60 to 175 s for the next slowest. As its own item (80 s compile plus 466 s) it
+  fills one shard, and the crate's four partitions skip it (`omuzaki-char@k/4!palette_independence`). nextest hashes a
+  test name to its partition whatever else is filtered out, so every other test stays in the partition it had.
+  Partition 2/4 without those three tests ended about 270 s after it started. `part_weights` are each partition's
+  compile plus run on that basis: 465, 340, 245, 415 (sum 1465); `omuzaki-char` is 2011 = 1465 + 546.
+
+### Per-binary times behind the `omuzaki-char` split
+
+Every test that took 10 s or more in the four `omuzaki-char` calls of run 38810711080 (`PASS [secs]` lines, summed per
+binary and partition; four tests run at once on the 4-vCPU runner, so these include contention). The three
+`palette_independence` tests are the only ones above 320 s; nextest hashes the rest across the four partitions.
+
+| Binary | partition (call) | tests of 10 s or more | sum, s | longest, s |
+| --- | --- | ---: | ---: | ---: |
+| `palette_independence` | 2/4 | 3 | 1335 | 466 |
+| `cloth_contact` | 1/4 | 2 | 390 | 372 |
+| `body` | 4/4 | 2 | 417 | 317 |
+| `body` | 2/4 | 2 | 196 | 175 |
+| `body_shape` | 3/4 | 2 | 191 | 170 |
+| `body` | 1/4 | 2 | 168 | 91 |
+| `head_ears` | 2/4 | 1 | 146 | 146 |
+| `cloth_live` | 3/4, 2/4 | 2 + 1 | 105 + 61 | 91, 61 |
+| `cloth_solver` | 3/4, 2/4 | 2 + 2 | 95 + 87 | 77, 76 |
+
+With `palette_independence` taken out, the partitions' run times are 395, about 270, 173 and 345 s, and the plan packs
+the 24 crates of that run into six shards of 538 to 550 s (slowest over mean 1.01; the unit test
+`the_recorded_run_packs_into_six_shards_with_the_slowest_within_20_percent_of_the_mean`).
+
+Refresh the table from a full-workspace merge-queue run whenever the shard durations drift apart (the slowest shard more
+than 20% over the mean).
+
+The notes below are the earlier derivation, kept for the formula and the pinned-partition reasoning.
 
 How the numbers were derived, per crate, from the test-job logs of merge-queue run 38596279345 (all six test jobs, plus
 run 38589415493 for `omuzaki-char`'s per-binary times):
