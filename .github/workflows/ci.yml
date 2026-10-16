@@ -6,6 +6,13 @@
 #                  `cargo xtask check --affected` on its own machine and attests it with a `Self-gate: pass at <sha7>`
 #                  comment line; `self-gate` fails unless the latest trusted line names the head (tools/ci/self-gate.py).
 #                  A push that only merges main into the branch runs nothing: the queue tests against main anyway.
+#   hosted tests   the alternative to a `Self-gate:` line when no author can build. A maintainer (or the merge loop,
+#                  when CI has spare capacity) dispatches this workflow on a same-repo PR branch with
+#                  `hosted_tests=true`: plan, lint and the affected test matrix run as in the queue, and that run's
+#                  `gate` passes only if every test job succeeded. Then the PR run's failed jobs are re-run and its
+#                  `self-gate` accepts the verified dispatch run for the head (tools/ci/self-gate.py). Not for PRs that
+#                  change .github/, tools/ci/, xtask/, .config/, .cargo/, rust-toolchain*, clippy.toml, rustfmt.toml or
+#                  deny.toml, or edit the root Cargo.toml outside [workspace.dependencies]: the dispatch runs the branch's own copy of them.
 #   merge queue    fmt, clippy and the lints on EVERYTHING affected (dependents included), the full test matrix, plus
 #                  the Windows cross-build. The queue builds the exact commit that will land on main, so this is the
 #                  authoritative run, and it is exactly as strict as before.
@@ -23,6 +30,13 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
     types: [checks_requested]
+  # Hosted tests for a PR branch (see above). Dispatching needs write access; the input must be true or `gate` fails.
+  workflow_dispatch:
+    inputs:
+      hosted_tests:
+        description: "Run the affected tests on GitHub's runners instead of relying on a Self-gate line"
+        type: boolean
+        default: false
 
 # A newer push to a PR supersedes its run in progress. Merge-queue runs are never cancelled: each has its own group
 # (its commit SHA), and cancelling one would eject the pull requests in it.
@@ -49,7 +63,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # Draft pull requests get no CI (it would queue behind real work); `ready_for_review` starts it.
-    if: github.event.pull_request.draft != true
+    if: github.event.pull_request.draft != true && (github.event_name != 'workflow_dispatch' || inputs.hosted_tests)
     outputs:
       skip: ${{ steps.heads.outputs.skip }}
       owned: ${{ steps.heads.outputs.owned }}
@@ -88,7 +102,7 @@ jobs:
           EVENT: ${{ github.event_name }}
           # A PR is measured against its base branch; a merge-queue run against the commit the queue built on, so the
           # scope is the union of every PR in the group.
-          BASE: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || format('origin/{0}', github.base_ref) }}
+          BASE: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || format('origin/{0}', github.base_ref || 'main') }}
         run: |
           cargo run --locked --quiet -p xtask -- check --format json --shards 6 --base "$BASE" >"$RUNNER_TEMP/report.json"
           cat "$RUNNER_TEMP/report.json"
@@ -102,7 +116,7 @@ jobs:
     timeout-minutes: 30
     env:
       LINT_CRATES: ${{ needs.plan.outputs.lint_crates }}
-      BASE: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || format('origin/{0}', github.base_ref) }}
+      BASE: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || format('origin/{0}', github.base_ref || 'main') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -282,7 +296,7 @@ jobs:
           packages=(); for name in $CROSS_CRATES; do packages+=(-p "$name"); done
           cargo build --locked --target x86_64-pc-windows-gnu "${packages[@]}"
 
-  # Pull requests only: the tests ran on the session's own machine, so check its word. Reads comments with the job's
+  # Pull requests only: the tests ran on the session's own machine (or in a verified hosted run), so check. Reads comments with the job's
   # own read-only token and runs no pull request code beyond this one script; it runs even on a push that only merged
   # main, because the attestation of the earlier head still has to hold.
   self-gate:
@@ -295,11 +309,17 @@ jobs:
       contents: read
       issues: read
       pull-requests: read
+      actions: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           sparse-checkout: tools/ci
           persist-credentials: false
+      # self-gate.py reads the root manifests with tomllib (Python 3.11+); without it every root-manifest edit would
+      # count as protected, so the version is pinned here instead of left to the runner image.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
       - name: Latest trusted Self-gate line names the head
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -317,29 +337,16 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    permissions: {}
+    permissions:
+      contents: read
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: tools/ci
+          persist-credentials: false
       - name: Aggregate
         env:
           NEEDS: ${{ toJSON(needs) }}
           EVENT: ${{ github.event_name }}
-        run: |
-          python3 -I - <<'PY'
-          import json, os, sys
-          needs = json.loads(os.environ["NEEDS"])
-          results = {name: job["result"] for name, job in needs.items()}
-          for name, result in results.items():
-              print(f"{name}: {result}")
-          bad = [name for name, result in results.items() if result not in ("success", "skipped")]
-          # A push that only merged main skips lint on purpose (plan's `skip`); otherwise lint always runs once plan
-          # succeeded, and skipped there means something upstream went wrong.
-          merge_only = needs["plan"]["outputs"].get("skip") == "true"
-          if results.get("plan") == "success" and results.get("lint") != "success" and not merge_only:
-              bad.append("lint")
-          # Pull requests are held to the self-gate line; only a pull request skips it (the queue has no such job).
-          if results.get("plan") == "success" and os.environ["EVENT"] == "pull_request" and results.get("self-gate") != "success":
-              bad.append("self-gate")
-          if bad:
-              print("gate failed: " + ", ".join(sorted(set(bad))))
-              sys.exit(1)
-          PY
+          HOSTED: ${{ github.event_name == 'workflow_dispatch' && inputs.hosted_tests }}
+        run: python3 -I tools/ci/gate-aggregate.py

@@ -1,7 +1,7 @@
 section = "rust"
-item = "image (png only)"
+item = "image (png and jpeg)"
 kind = "crate"
-used_for = "golden renders, thumbnails"
+used_for = "golden renders, thumbnails; reference images for the likeness measures, omuzaki-measure (VF-01)"
 status = "yes"
 audit = "(crates.io: MIT OR Apache-2.0)"
 crates = ["image"]

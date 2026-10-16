@@ -1,0 +1,7 @@
+section = "rust"
+item = "moxcms"
+kind = "crate"
+used_for = "ICC and cICP colour conversion to sRGB for the likeness measures (omuzaki-measure, VF-01); the colour engine the image crate already uses"
+status = "yes"
+audit = "(crates.io: BSD-3-Clause OR Apache-2.0)"
+crates = ["moxcms"]

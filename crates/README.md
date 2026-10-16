@@ -70,7 +70,6 @@ A crate whose folder uses `omuzaki_embed::modules` (ADR 0054) lists that folder 
 
 **Planned crates** (not in the workspace yet):
 
-- `omuzaki-llm` (Implementation): not in the workspace yet (design): the Anthropic Messages and OpenAI-compatible chat providers (HTTP over the workspace `reqwest` and rustls stack shared with `omuzaki-http`, SSE, retries before the first event, cancellation within 50 ms), the price data, model listing and probing, and the MCP tool and result mapping; tested against a loopback fake server, no network in CI
 - `omuzaki-agent-api` (API): not in the workspace yet: the in-app assistant's panel contract (`Assistant`, `UserMessage`, `ContextChip`, `AssistantEvent`, `HostError`) and `RationaleSource` for "Explain this"; design in `docs/design/agent-runtime.md`, ADR 0040
 - `omuzaki-agent-mock` (Mock): not in the workspace yet: `ScriptedAssistant`, which plays an event script on `FakeClock` for panel tests and the gallery
 - `omuzaki-agent` (Implementation): not in the workspace yet: `AssistantHost`, the assistant's turn loop over an in-process MCP client and `dyn LlmClient`, the context builder and compaction, the host-local tools and the conversation store; links API crates and rmcp's client only, never `omuzaki-mcp` or `omuzaki-ops`
