@@ -100,7 +100,9 @@ fn the_smooth_tip_is_exactly_the_floor_and_never_nan() {
 fn the_plateau_shape_is_the_braid_strands_width() {
     let taper = Taper::new(0.012, 0.024, 0.0096).with_shape(TaperShape::plateau(0.04, 0.08));
     let prototype = |t: f64| {
-        0.024 * if t > 0.92 { 1.0 + (0.4 - 1.0) * (t - 0.92) / 0.08 } else { 1.0 } * if t < 0.04 { 0.5 + 0.5 * t / 0.04 } else { 1.0 }
+        0.024
+            * if t > 0.92 { 1.0 + (0.4 - 1.0) * (t - 0.92) / 0.08 } else { 1.0 }
+            * if t < 0.04 { 0.5 + 0.5 * t / 0.04 } else { 1.0 }
     };
     for step in 0..=1000 {
         let t = f64::from(step) / 1000.0;
@@ -117,7 +119,10 @@ fn files_without_a_shape_parse_and_save_the_same() {
     let taper: Taper = serde_json::from_str(old).unwrap();
     assert_eq!(taper, Taper::new(0.03, 0.05, 0.006));
     assert_eq!(serde_json::to_string(&taper).unwrap(), old);
-    assert_eq!(serde_json::to_string(&Taper::default()).unwrap(), r#"{"start":0.04,"mid":0.05,"tip":0.01,"tip_at":0.8}"#);
+    assert_eq!(
+        serde_json::to_string(&Taper::default()).unwrap(),
+        r#"{"start":0.04,"mid":0.05,"tip":0.01,"tip_at":0.8}"#
+    );
 }
 
 #[test]

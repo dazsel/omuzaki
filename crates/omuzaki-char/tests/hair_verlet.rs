@@ -601,7 +601,8 @@ fn a_seeded_sweep_of_four_to_six_overlapping_spheres_leaves_no_tip_inside() {
                         let r = rng.range_f32(0.02, 0.08);
                         spheres.push((ca + unit(&mut rng) * (ra + r) * rng.range_f32(0.2, 0.95), r));
                     }
-                    let near = ca.lerp(spheres[1].0, rng.range_f32(0.0, 1.0)) + unit(&mut rng) * rng.range_f32(0.0, 0.01);
+                    let near =
+                        ca.lerp(spheres[1].0, rng.range_f32(0.0, 1.0)) + unit(&mut rng) * rng.range_f32(0.0, 0.01);
                     let parent = near + unit(&mut rng) * 0.1;
                     deepest = deepest.max(wedged(&spheres, parent, near, iterations));
                     cases += 1;

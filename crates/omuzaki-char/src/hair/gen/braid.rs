@@ -4,7 +4,7 @@
 //! **The path.** Per side (`+x` first, then `-x`) there are [`CONTROL_POINTS`] control points at azimuth
 //! `side · lerp(path_from_deg, path_to_deg, t)`, `t = k / (CONTROL_POINTS - 1)`. The braid line's height at that azimuth
 //! blends from [`BraidGen::height_front`] to [`BraidGen::height_back`] as the part sweep's does
-//! ([`braid_direction`]), and each point sits on the head surface in that direction, `LIFT + RISE · smoothstep(t, 0,
+//! ([`braid_direction_with`]), and each point sits on the head surface in that direction, `LIFT + RISE · smoothstep(t, 0,
 //! 0.2)` metres out. The path is resampled to [`REST_POINTS`] by the geometry kit's Catmull-Rom.
 //!
 //! **The strands.** Per side, [`BraidGen::strands`] strands with phase `ph0 = k · 2π / strands`. At path point `i` of
@@ -28,7 +28,7 @@ use omuzaki_char_api::{BraidGen, Bulge, HeadSurface, Taper, TaperShape};
 use omuzaki_core::glam::{DVec3, Vec3};
 
 use super::cap::smoothstep;
-use super::part_sweep::braid_direction;
+use super::part_sweep::braid_direction_with;
 use crate::hair::compile::{CompiledGroup, HairGenCtx};
 use crate::kit::catmull::spaced_points_into;
 
@@ -100,6 +100,7 @@ fn sanitised(g: &BraidGen) -> BraidGen {
         out: fix(g.out, d.out),
         strand_width: fix(g.strand_width, d.strand_width),
         strand_thickness: fix(g.strand_thickness, d.strand_thickness),
+        height_radius: g.height_radius.filter(|r| r.is_finite()),
     }
 }
 
@@ -115,7 +116,8 @@ fn control_points(g: &BraidGen, head: &dyn HeadSurface, side: f64, out: &mut [DV
     for (k, point) in out.iter_mut().enumerate() {
         let t = k as f64 / (CONTROL_POINTS - 1) as f64;
         let phi = side * (g.path_from_deg + (g.path_to_deg - g.path_from_deg) * t).to_radians();
-        let dir = braid_direction(g.height_front, g.height_back, head, phi);
+        let crown = g.height_radius.unwrap_or_else(|| f64::from(head.radius(Vec3::Y)));
+        let dir = braid_direction_with(g.height_front, g.height_back, crown, phi);
         let offset = LIFT + RISE * smoothstep(t, RISE_REACH.0, RISE_REACH.1);
         *point = on_head(head, dir, offset);
     }

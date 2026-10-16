@@ -492,7 +492,8 @@ impl Default for FramingGen {
 /// The heights and points a framing lock passes through, which `edge` and `tail` cannot say: the prototype's
 /// hand-placed `Y_TOP`, `Y_UPPER`, `Y_LOWER`, `Y_CHEEK`, `Y_TUCK_A`, `Y_TUCK_B`, `X_TUCK_MAX`, `EAR_TOP`, `EAR_BACK`,
 /// `DROP` and `Y_END`. Every height and point is head-local (metres from the head centre); `x` is for the character's
-/// left (+x) and is mirrored for the right. The prototype's `RH` is not stored: it is the head's own half-width.
+/// left (+x) and is mirrored for the right. The prototype's `RH` is [`front_radius`](Self::front_radius); without it the
+/// head's own half-width stands in.
 ///
 /// The left side tucks locks `1..` behind the ear and lets lock `0` frame the cheek; the right side hangs every lock
 /// to its `end` height.
@@ -522,6 +523,17 @@ pub struct FramingLocks {
     pub drop: Vec<[f64; 3]>,
     /// Where each hanging lock ends, by lock index (the last entry serves any further lock), `1..=12`.
     pub end: Vec<f64>,
+    /// `[z, z]` depths (head-local) of the two points that end the cheek-framing lock at the jaw.
+    pub jaw_z: [f64; 2],
+    /// `[z, z]` depths (head-local) of a hanging lock at the cheek and at the chest; the chest depth falls by `0.006`
+    /// per lock index.
+    pub chest_z: [f64; 2],
+    /// The prototype's `RH`, the radius of the front projection `surfAt` lays points on, metres. When set, the
+    /// projection is the prototype's exactly: a point outside the disc gets no depth and lands on the side of the head
+    /// at the height its direction gives. When `None` the head's half-width is the radius, and such a point slides in
+    /// along `x` so it keeps the height it was authored at.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub front_radius: Option<f64>,
 }
 
 impl FramingLocks {
@@ -539,6 +551,9 @@ impl FramingLocks {
             ear_back: [0.2, -0.05, -0.08],
             drop: vec![[0.19, -0.1, -0.1], [0.18, -0.16, -0.12], [0.17, -0.22, -0.12], [0.16, -0.3, -0.12]],
             end: vec![-0.4, -0.45, -0.5, -0.55, -0.6],
+            jaw_z: [0.05, 0.07],
+            chest_z: [0.055, 0.085],
+            front_radius: None,
         }
     }
 }
@@ -578,6 +593,14 @@ impl Validate for FramingLocks {
         };
         point(c, "ear_top", &self.ear_top);
         point(c, "ear_back", &self.ear_back);
+        for (name, z) in [("jaw_z", &self.jaw_z), ("chest_z", &self.chest_z)] {
+            for (i, v) in z.iter().enumerate() {
+                c.range(&format!("{name}/{i}"), *v, -1.5, 1.5);
+            }
+        }
+        if let Some(r) = self.front_radius {
+            c.range("front_radius", r, 0.01, 1.0);
+        }
         if !(1..=8).contains(&self.drop.len()) {
             c.fail("drop", format!("{} points is out of range: use 1 to 8", self.drop.len()));
         }
@@ -611,6 +634,10 @@ pub struct BraidGen {
     pub strand_width: f64,
     /// Thickness of one strand.
     pub strand_thickness: f64,
+    /// The radius the path's height is turned into an angle with (the prototype's constant `0.205`, metres). `None`
+    /// uses the head's own crown radius.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height_radius: Option<f64>,
 }
 
 impl Default for BraidGen {
@@ -626,6 +653,7 @@ impl Default for BraidGen {
             out: 0.0055,
             strand_width: 0.024,
             strand_thickness: 0.014,
+            height_radius: None,
         }
     }
 }
@@ -1373,6 +1401,9 @@ impl Validate for HairGroup {
                 // The narrowest part of a strand is 0.4 of its width, which a width must be allowed to reach.
                 c.range("generator/strand_width", g.strand_width, 0.0025, 0.3);
                 c.range("generator/strand_thickness", g.strand_thickness, 0.0005, 0.05);
+                if let Some(r) = g.height_radius {
+                    c.range("generator/height_radius", r, 0.01, 1.0);
+                }
             }
             Generator::Curtain(g) => {
                 count("generator/count", c, u32::from(g.count), 1, 120);

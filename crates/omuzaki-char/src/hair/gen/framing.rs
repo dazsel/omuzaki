@@ -8,6 +8,11 @@
 //! locks `1..` over and behind the ear, and its lock `0` frames the cheek; the **right** side hangs every lock in
 //! S-waves. A path is resampled by [`spaced_points`] to [`TUCKED_POINTS`] (tucked) or [`HANGING_POINTS`] points.
 //!
+//! **The projection.** With [`FramingLocks::front_radius`] set the projection is the prototype's exactly: a point outside
+//! the front disc gets no depth and lands on the side of the head at the height its direction gives. Without it the
+//! head's half-width is the radius and such a point slides in along `x` to keep its authored height. The jaw and
+//! chest depths are [`FramingLocks::jaw_z`] and [`FramingLocks::chest_z`].
+//!
 //! **Where the heights come from.** With [`FramingGen::locks`] set, the heights are the prototype's own: the lock is
 //! built from its forehead, lower, cheek, tuck, ear, drop and end values. With `locks` unset, the outline's rows are
 //! the forehead heights and `tail` (authored for the left side, mirrored for the right) supplies the free points after
@@ -65,11 +70,13 @@ const FALLBACK_LENGTH: f64 = 0.3;
 
 /// Compiles the group: `count` locks for each side asked for, left first.
 pub fn compile(g: &FramingGen, ctx: &mut HairGenCtx<'_>) -> CompiledGroup {
-    let rh = f64::from(ctx.head.radius(Vec3::X)).max(1e-3);
+    let rh =
+        g.locks.as_ref().and_then(|l| l.front_radius).unwrap_or_else(|| f64::from(ctx.head.radius(Vec3::X))).max(1e-3);
+    let exact = g.locks.as_ref().is_some_and(|l| l.front_radius.is_some());
     let mut clumps = Vec::with_capacity(clump_count(g));
     for &side in sides(g) {
         for i in 0..usize::from(g.count) {
-            let lock = Lock { g, side, i: index(i), rh, tucked: side > 0.0 && i >= 1 };
+            let lock = Lock { g, side, i: index(i), rh, exact, tucked: side > 0.0 && i >= 1 };
             let rest = lock.rest(ctx);
             let width = Taper { start: (g.width.start + START_STEP * lock.i).min(WIDTH_MAX), ..g.width };
             clumps.push(ctx.clump(rest, width, g.thickness, 1.0 - SHADE_STEP * lock.i));
@@ -127,8 +134,10 @@ struct Lock<'g> {
     side: f64,
     /// The lock's index on its side, as a number.
     i: f64,
-    /// The head's half-width, the front projection's radius.
+    /// The front projection's radius: the locks' `front_radius`, else the head's half-width.
     rh: f64,
+    /// Whether `surf_at` is the prototype's exactly (`front_radius` was given).
+    exact: bool,
     tucked: bool,
 }
 
@@ -154,8 +163,9 @@ impl Lock<'_> {
     /// `surfAt`: the point on the head at head-local `(x, y)` in front projection, pushed out by `off`.
     fn surf_at(&self, head: &dyn HeadSurface, x: f64, y: f64, off: f64) -> DVec3 {
         let mut dx = x.abs().min(self.rh * SURFACE_X_LIMIT);
-        // Where the point lies outside the front disc, slide it in along `x` so the authored height `y` is kept.
-        if dx * dx + y * y > self.rh * self.rh {
+        // Where the point lies outside the front disc, slide it in along `x` so the authored height `y` is kept. The
+        // prototype does not: it gives such a point no depth.
+        if !self.exact && dx * dx + y * y > self.rh * self.rh {
             dx = (self.rh * self.rh - y * y).max(0.0).sqrt();
         }
         let dx = if x < 0.0 { -dx } else { dx };
@@ -213,8 +223,8 @@ impl Lock<'_> {
         let fx = frame_x(edge, locks.cheek);
         if sign > 0.0 {
             // The cheek lock takes the wave's tip curl at its two points, so `wave.curl` moves it too.
-            pts.push(at(sign * (fx + 0.006 + sway.tip(0.5)), locks.cheek - 0.005, 0.05));
-            pts.push(at(sign * (fx - 0.004 + sway.tip(1.0)), locks.cheek - 0.035, 0.07));
+            pts.push(at(sign * (fx + 0.006 + sway.tip(0.5)), locks.cheek - 0.005, locks.jaw_z[0]));
+            pts.push(at(sign * (fx - 0.004 + sway.tip(1.0)), locks.cheek - 0.035, locks.jaw_z[1]));
         } else {
             let end =
                 locks.end.get(self.i_usize().min(locks.end.len().saturating_sub(1))).copied().unwrap_or(locks.cheek);
@@ -223,7 +233,8 @@ impl Lock<'_> {
                 let t = f64::from(step) / 6.0;
                 let sideways =
                     x0 + 0.03 * smoothstep(t, 0.0, 0.5) + sway.side(t * sway.turns) * sway.grow(t) + sway.tip(t);
-                let depth = lerp(0.055, 0.085 - 0.006 * lock, smoothstep(t, 0.0, 0.4)) + sway.depth(t * sway.turns);
+                let depth = lerp(locks.chest_z[0], locks.chest_z[1] - 0.006 * lock, smoothstep(t, 0.0, 0.4))
+                    + sway.depth(t * sway.turns);
                 pts.push(at(sign * sideways, lerp(locks.cheek, end, t), depth));
             }
         }
@@ -331,7 +342,7 @@ mod tests {
     #[test]
     fn surface_projection_keeps_the_authored_height() {
         let g = FramingGen::default();
-        let lock = Lock { g: &g, side: 1.0, i: 0.0, rh: 0.2, tucked: false };
+        let lock = Lock { g: &g, side: 1.0, i: 0.0, rh: 0.2, exact: false, tucked: false };
         // Outside the front disc (0.18² + y² > 0.2²), and the default lower point y = -0.2 on the rim.
         for y in [-0.15, -0.1, 0.0, 0.1, -0.2] {
             let p = lock.surf_at(&Ball, 0.18, y, 0.0);

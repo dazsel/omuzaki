@@ -191,7 +191,13 @@ fn the_width_ramps_match_the_prototypes_formula() {
 
 #[test]
 fn a_non_finite_parameter_keeps_the_clump_count_and_the_points_finite() {
-    let g = BraidGen { across: f64::NAN, out: f64::INFINITY, lobes: f64::NAN, strand_width: f64::NAN, ..BraidGen::default() };
+    let g = BraidGen {
+        across: f64::NAN,
+        out: f64::INFINITY,
+        lobes: f64::NAN,
+        strand_width: f64::NAN,
+        ..BraidGen::default()
+    };
     let (clumps, _) = compile_with(&g);
     assert_eq!(clumps.len(), braid::clump_count(&g));
     for clump in &clumps {
@@ -204,7 +210,8 @@ fn a_non_finite_parameter_keeps_the_clump_count_and_the_points_finite() {
 fn each_out_of_range_braid_value_fails_naming_its_field() {
     use omuzaki_face_api::Validate;
     let bad = |g: BraidGen| {
-        let group = HairGroup { enabled: true, mirror: false, dynamics: Dynamics::default(), generator: Generator::Braid(g) };
+        let group =
+            HairGroup { enabled: true, mirror: false, dynamics: Dynamics::default(), generator: Generator::Braid(g) };
         let mut c = omuzaki_face_api::Check::new();
         group.check(&mut c);
         c.finish().err().map(|e| e.to_string()).unwrap_or_default()
@@ -220,8 +227,19 @@ fn each_out_of_range_braid_value_fails_naming_its_field() {
         ("out", BraidGen { out: 1.0, ..d() }),
         ("strand_width", BraidGen { strand_width: 0.001, ..d() }),
         ("strand_thickness", BraidGen { strand_thickness: 0.0, ..d() }),
+        ("height_radius", BraidGen { height_radius: Some(0.0), ..d() }),
     ] {
         let text = bad(g);
         assert!(text.contains(&format!("generator/{field}:")), "{field}: {text}");
     }
+}
+
+#[test]
+fn a_height_radius_turns_the_braid_lines_height_into_its_own_angle() {
+    // A larger radius flattens the angle the same height gives, so the path sits at another height on the head.
+    let plain = compile_with(&BraidGen::default()).0;
+    let wide = compile_with(&BraidGen { height_radius: Some(0.5), ..BraidGen::default() }).0;
+    assert_ne!(plain[0].rest, wide[0].rest);
+    let same = compile_with(&BraidGen { height_radius: Some(f64::from(R)), ..BraidGen::default() }).0;
+    assert_eq!(plain[0].rest, same[0].rest, "the head's own crown radius is the default");
 }
