@@ -25,8 +25,9 @@ Hosted run. When no author can build, a maintainer dispatches ci.yml on the PR b
 re-runs this job. `check` then also accepts a successful hosted run, found through the API, that is ALL of: event
 `workflow_dispatch`; workflow path `.github/workflows/ci.yml`; `head_sha` equal to the pull request head; conclusion
 success with every `test (...)` job success (skipped or cancelled does not count); and the pull request changes nothing
-under `.github/workflows/`, because a dispatched run executes the branch's own workflow file, so a PR that edits it
-could vouch for itself. Such a PR needs a human `Self-gate:` line. Needs `actions: read` besides `pull-requests: read`.
+under `.github/`, `tools/ci/`, `xtask/` or `.config/`, because a dispatched run executes the branch's own workflow, CI
+scripts and planner, so a PR that edits them could vouch for itself. Such a PR needs a human `Self-gate:` line.
+Needs `actions: read` besides `pull-requests: read`.
 """
 
 import argparse
@@ -101,7 +102,10 @@ def attested_sha(comments, allowed):
 
 
 CI_WORKFLOW = ".github/workflows/ci.yml"
-WORKFLOW_DIR = ".github/workflows/"
+# What the dispatched run executes from the PR branch to decide its own verdict: the workflow files and the actions they
+# use, the scripts that plan, aggregate and attest, xtask (which computes the affected set) and the nextest profile. A PR
+# touching any of them could make its own hosted run green, so it needs a human `Self-gate:` line.
+PROTECTED = (".github/", "tools/ci/", "xtask/", ".config/")
 
 
 def workflow_file(run):
@@ -124,7 +128,7 @@ def hosted_proof(runs, head, files):
 
     `runs` are workflow runs, each with its `jobs`; `files` are the (current and previous) paths the pull request changes.
     """
-    if any(path.startswith(WORKFLOW_DIR) for path in files):
+    if any(path.startswith(PROTECTED) for path in files):
         return None
     for run in sorted(runs, key=lambda r: r["id"], reverse=True):
         tests = [job for job in run.get("jobs", []) if is_test_job(job)]
@@ -149,7 +153,7 @@ def verdict(comments, heads, allowed, runs=(), files=()):
         f"self-gate: no trusted `Self-gate: pass at <sha7>` line names the head {short} ({seen}). Run "
         f"`cargo xtask check --affected` on this head, post `Self-gate: pass at {short} (cargo xtask check --affected, "
         f"<n> tests)` on its own line in a comment, then re-run this job. Or, if the PR changes nothing under "
-        f".github/workflows/, dispatch ci.yml with hosted_tests=true on the branch and re-run this job."
+        f".github/, tools/ci/, xtask/ or .config/, dispatch ci.yml with hosted_tests=true on the branch and re-run this job."
     )
 
 

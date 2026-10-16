@@ -149,8 +149,8 @@ How work is cut into large changes, one agent and one PR each, is in [`large-cha
   dispatches `gh workflow run ci.yml -R dazsel/omuzaki --ref <branch> -f hosted_tests=true` on a same-repo PR branch
   (dispatching needs write access), and when that run succeeds re-runs the PR run's failed jobs
   (`gh run rerun <run id> --failed`): `self-gate` then accepts the successful dispatch run for the head, because
-  GitHub's required `gate` is the PR run's, not the dispatch's. A PR that changes anything under `.github/workflows/`
-  is excluded (the dispatch runs the branch's own workflow) and needs a human `Self-gate:` line. The merge loop starts
+  GitHub's required `gate` is the PR run's, not the dispatch's. A PR that changes anything under `.github/`,
+  `tools/ci/`, `xtask/` or `.config/` is excluded (the dispatch runs the branch's own workflow, scripts and planner) and needs a human `Self-gate:` line. The merge loop starts
   the dispatch and re-run by itself only when CI has spare capacity (the repo is capped at 60 concurrent jobs, which
   is why PR runs skip the tests).
 - **Merge `main` into a pull request only on a conflict.** When a failure in `main` itself is fixed, the Director
