@@ -8,8 +8,8 @@ use std::io::{Cursor, Read};
 
 use ::image::{DynamicImage, ImageDecoder, ImageError, ImageFormat, ImageReader, Limits};
 use moxcms::{
-    CicpColorPrimaries, CicpProfile, ColorProfile, DataColorSpace, Layout, MatrixCoefficients, TransferCharacteristics,
-    TransformOptions,
+    Chromaticity, CicpColorPrimaries, CicpProfile, ColorPrimaries, ColorProfile, DataColorSpace, Layout,
+    MatrixCoefficients, ToneReprCurve, TransferCharacteristics, TransformOptions, XyY,
 };
 use omuzaki_ops_api::{FsMode, OpCtx, OpError};
 use omuzaki_store_api::{ContentHash, Store, StoreError};
@@ -145,36 +145,146 @@ pub fn decode(bytes: &[u8], hash: ContentHash, field: &str) -> Result<Rgba8, OpE
         .and_then(|()| budget.reserve(u64::from(width) * u64::from(height) * 4))
         .map_err(|error| decode_error(bytes, field, error))?;
     let icc = decoder.icc_profile().map_err(|error| unreadable(field, &error))?;
-    let cicp = if format == ImageFormat::Png { png_cicp(bytes) } else { None };
+    if format == ImageFormat::Jpeg && is_cmyk(bytes) {
+        // The decoder hands back RGB it has already made from the inks, with no way to get the ink values a CMYK profile
+        // needs, so no CMYK image can be converted faithfully: its colours cannot be known.
+        let why = if icc.is_some() {
+            "a CMYK image whose ink values the decoder does not give, so its colour profile cannot be applied"
+        } else {
+            "a CMYK image without a colour profile"
+        };
+        return Err(colour_unsupported(field, why));
+    }
+    let declared = if format == ImageFormat::Png { png_colour(bytes, icc) } else { Declared::from_icc(icc) };
     let dynamic = DynamicImage::from_decoder(decoder).map_err(|error| decode_error(bytes, field, error))?;
     let rgba = dynamic.into_rgba8();
     let (width, height) = rgba.dimensions();
-    let pixels = to_srgb(rgba.into_raw(), cicp, icc, field)?;
+    let pixels = to_srgb(rgba.into_raw(), declared, field)?;
     Ok(Rgba8 { width, height, pixels, hash })
 }
 
-/// The `cICP` code points of a PNG, as the `png` decoder validated them (it drops one out of order or with a bad CRC).
-fn png_cicp(bytes: &[u8]) -> Option<CicpProfile> {
+/// Whether a JPEG has four components (CMYK or YCCK), from its headers.
+fn is_cmyk(bytes: &[u8]) -> bool {
+    use zune_jpeg::zune_core::bytestream::ZCursor;
+    use zune_jpeg::zune_core::colorspace::ColorSpace;
+    let mut decoder = zune_jpeg::JpegDecoder::new(ZCursor::new(bytes));
+    decoder.decode_headers().is_ok() && matches!(decoder.input_colorspace(), Some(ColorSpace::CMYK | ColorSpace::YCCK))
+}
+
+/// The colour space a file declares for its pixels, in the order of the PNG specification: `cICP`, an embedded profile,
+/// the `sRGB` chunk, then `gAMA` and `cHRM`. With none of them the pixels are sRGB.
+enum Declared {
+    /// Untagged, or tagged sRGB by the `sRGB` chunk: the pixels are sRGB already.
+    Srgb,
+    /// A `cICP` declaration.
+    Cicp(CicpProfile),
+    /// An embedded ICC profile.
+    Icc(Vec<u8>),
+    /// A PNG's `gAMA` (the file gamma times 100 000, when present) and `cHRM` (white, red, green, blue as x, y, when
+    /// present), which define its colour space when nothing else does.
+    Chunks { gamma: Option<u32>, chromaticities: Option<[(f64, f64); 4]> },
+}
+
+impl Declared {
+    fn from_icc(icc: Option<Vec<u8>>) -> Self {
+        icc.map_or(Self::Srgb, Self::Icc)
+    }
+}
+
+/// The colour declaration of a PNG as the `png` decoder validated it (it drops a chunk that is out of order, repeated or
+/// has a bad CRC); `image` exposes only the profile, which is passed in.
+fn png_colour(bytes: &[u8], icc: Option<Vec<u8>>) -> Declared {
     let mut decoder = png::Decoder::new(Cursor::new(bytes));
     decoder.set_ignore_text_chunk(true);
     decoder.set_ignore_iccp_chunk(true);
-    let reader = decoder.read_info().ok()?;
-    let code = reader.info().coding_independent_code_points?;
-    Some(CicpProfile {
-        color_primaries: CicpColorPrimaries::try_from(code.color_primaries).ok()?,
-        transfer_characteristics: TransferCharacteristics::try_from(code.transfer_function).ok()?,
-        matrix_coefficients: MatrixCoefficients::try_from(code.matrix_coefficients).ok()?,
-        full_range: code.is_video_full_range_image,
-    })
+    let Ok(reader) = decoder.read_info() else { return Declared::from_icc(icc) };
+    let info = reader.info();
+    if let Some(code) = info.coding_independent_code_points
+        && let (Ok(color_primaries), Ok(transfer_characteristics), Ok(matrix_coefficients)) = (
+            CicpColorPrimaries::try_from(code.color_primaries),
+            TransferCharacteristics::try_from(code.transfer_function),
+            MatrixCoefficients::try_from(code.matrix_coefficients),
+        )
+    {
+        return Declared::Cicp(CicpProfile {
+            color_primaries,
+            transfer_characteristics,
+            matrix_coefficients,
+            full_range: code.is_video_full_range_image,
+        });
+    }
+    if info.coding_independent_code_points.is_some() {
+        // A `cICP` whose code points `moxcms` does not know: the colour is declared and cannot be converted.
+        return Declared::Icc(Vec::new());
+    }
+    if let Some(icc) = icc {
+        return Declared::Icc(icc);
+    }
+    if info.srgb.is_some() {
+        return Declared::Srgb;
+    }
+    let gamma = info.gama_chunk.map(png::ScaledFloat::into_scaled);
+    let chromaticities = info.chrm_chunk.map(|chrm| {
+        [chrm.white, chrm.red, chrm.green, chrm.blue]
+            .map(|(x, y)| (f64::from(x.into_value()), f64::from(y.into_value())))
+    });
+    if gamma.is_none() && chromaticities.is_none() {
+        Declared::Srgb
+    } else {
+        Declared::Chunks { gamma, chromaticities }
+    }
 }
 
-/// Converts straight RGBA8 `pixels` from the colour space the file declares to sRGB. A `cICP` declaration outranks an
-/// embedded profile (PNG colour chunk precedence); with neither, the pixels are sRGB already. Only a profile `moxcms`
-/// cannot parse or transform is refused.
-fn to_srgb(pixels: Vec<u8>, cicp: Option<CicpProfile>, icc: Option<Vec<u8>>, field: &str) -> Result<Vec<u8>, OpError> {
-    let srgb = ColorProfile::new_srgb();
-    let source = match (cicp, icc) {
-        (Some(code), _) => {
+/// The sRGB file gamma (1 / 2.2 nearly, `gAMA` 45 455) and how far a file's may stray and still be called sRGB: two units
+/// of rounding in the fourth decimal either way of the nominal 1 / 2.2.
+const SRGB_GAMMA: u32 = 45_455;
+const GAMMA_TOLERANCE: u32 = 500;
+
+/// The sRGB primaries and white point as `cHRM` writes them (x, y for white, red, green, blue), and the rounding a file's
+/// four-decimal values may differ by.
+const SRGB_CHROMATICITIES: [(f64, f64); 4] = [(0.3127, 0.3290), (0.64, 0.33), (0.30, 0.60), (0.15, 0.06)];
+const CHROMATICITY_TOLERANCE: f64 = 0.0015;
+
+/// The profile a PNG's `gAMA` and `cHRM` define, or `None` when they describe sRGB (a `gAMA` near 1 / 2.2 and primaries
+/// within rounding of sRGB's, or either one absent): the pixels need no conversion then. A missing `cHRM` means sRGB's
+/// primaries; a missing `gAMA` means sRGB's curve. A gamma near sRGB's beside other primaries keeps the sRGB curve.
+#[allow(clippy::cast_possible_truncation, reason = "the colour engine works in f32; a chunk's values have five digits")]
+fn chunk_profile(gamma: Option<u32>, chromaticities: Option<[(f64, f64); 4]>) -> Option<ColorProfile> {
+    let srgb_gamma = gamma.is_none_or(|g| g.abs_diff(SRGB_GAMMA) <= GAMMA_TOLERANCE);
+    let srgb_primaries = chromaticities.is_none_or(|c| {
+        c.iter().zip(SRGB_CHROMATICITIES).all(|(got, want)| {
+            (got.0 - want.0).abs() <= CHROMATICITY_TOLERANCE && (got.1 - want.1).abs() <= CHROMATICITY_TOLERANCE
+        })
+    });
+    if srgb_gamma && srgb_primaries {
+        return None;
+    }
+    let mut profile = ColorProfile::new_srgb();
+    // `new_srgb` carries an sRGB `cICP`, and the engine takes the transfer curve from a `cICP` over the curves set below.
+    profile.cicp = None;
+    if let Some([white, red, green, blue]) = chromaticities {
+        let point = |(x, y): (f64, f64)| Chromaticity { x: x as f32, y: y as f32 };
+        profile.update_rgb_colorimetry(
+            XyY { x: white.0, y: white.1, yb: 1.0 },
+            ColorPrimaries { red: point(red), green: point(green), blue: point(blue) },
+        );
+    }
+    if let (false, Some(gamma)) = (srgb_gamma, gamma) {
+        // The file gamma is the exponent from linear light to the stored value, so the decoding curve is its inverse.
+        let curve = ToneReprCurve::Parametric(vec![(100_000.0 / f64::from(gamma)) as f32]);
+        profile.red_trc = Some(curve.clone());
+        profile.green_trc = Some(curve.clone());
+        profile.blue_trc = Some(curve);
+    }
+    Some(profile)
+}
+
+/// Converts straight RGBA8 `pixels` from the colour space the file declares to sRGB. Only a declaration `moxcms` cannot
+/// parse or transform is refused.
+fn to_srgb(pixels: Vec<u8>, declared: Declared, field: &str) -> Result<Vec<u8>, OpError> {
+    let source = match declared {
+        Declared::Srgb => return Ok(pixels),
+        Declared::Cicp(code) => {
             let is_srgb = code.color_primaries == CicpColorPrimaries::Bt709
                 && code.transfer_characteristics == TransferCharacteristics::Srgb
                 && code.full_range;
@@ -183,15 +293,23 @@ fn to_srgb(pixels: Vec<u8>, cicp: Option<CicpProfile>, icc: Option<Vec<u8>>, fie
             }
             let mut profile = ColorProfile::new_srgb();
             profile.update_rgb_colorimetry_from_cicp(code);
-            if profile.cicp.is_none() || !code.full_range {
+            // `new_srgb` carries a `cICP` of its own, so only the one just set proves the declaration was understood.
+            let understood = profile.cicp.is_some_and(|set| {
+                set.color_primaries == code.color_primaries
+                    && set.transfer_characteristics == code.transfer_characteristics
+            });
+            if !understood || !code.full_range {
                 return Err(colour_unsupported(field, "a cICP colour declaration the colour engine cannot transform"));
             }
             profile
         }
-        (None, Some(icc)) => ColorProfile::new_from_slice(&icc).map_err(|error| {
+        Declared::Icc(icc) => ColorProfile::new_from_slice(&icc).map_err(|error| {
             colour_unsupported(field, &format!("an embedded colour profile that cannot be read ({error})"))
         })?,
-        (None, None) => return Ok(pixels),
+        Declared::Chunks { gamma, chromaticities } => match chunk_profile(gamma, chromaticities) {
+            Some(profile) => profile,
+            None => return Ok(pixels),
+        },
     };
     if source.color_space != DataColorSpace::Rgb {
         return Err(colour_unsupported(field, "an embedded colour profile that is not RGB"));
@@ -199,8 +317,9 @@ fn to_srgb(pixels: Vec<u8>, cicp: Option<CicpProfile>, icc: Option<Vec<u8>>, fie
     let cannot = |error: moxcms::CmsError| {
         colour_unsupported(field, &format!("a colour profile that cannot be converted ({error})"))
     };
-    let transform =
-        source.create_transform_8bit(Layout::Rgba, &srgb, Layout::Rgba, TransformOptions::default()).map_err(cannot)?;
+    let transform = source
+        .create_transform_8bit(Layout::Rgba, &ColorProfile::new_srgb(), Layout::Rgba, TransformOptions::default())
+        .map_err(cannot)?;
     let mut out = vec![0_u8; pixels.len()];
     transform.transform(&pixels, &mut out).map_err(cannot)?;
     Ok(out)

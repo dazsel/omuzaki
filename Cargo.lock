@@ -4150,6 +4150,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "zune-jpeg",
 ]
 
 [[package]]

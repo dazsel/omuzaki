@@ -15,6 +15,7 @@ image = { workspace = true, features = ["jpeg"] }
 # `png` reads a PNG's validated cICP chunk, which `image` does not expose; `moxcms` is the colour engine `image` already uses.
 png = "0.18"
 moxcms = "0.8"
+zune-jpeg.workspace = true
 libm.workspace = true
 omuzaki-l10n-api = { path = "../omuzaki-l10n-api" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }

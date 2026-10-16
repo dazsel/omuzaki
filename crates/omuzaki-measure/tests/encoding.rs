@@ -171,9 +171,6 @@ fn an_untagged_image_and_an_srgb_cicp_stay_unchanged() {
     assert_eq!(first_pixel(&flat_png([200, 120, 60], None)), [200, 120, 60, 255]);
     let srgb = with_chunks(&flat_png([200, 120, 60], None), &[chunk(*b"cICP", &[1, 13, 0, 1])]);
     assert_eq!(first_pixel(&srgb), [200, 120, 60, 255]);
-    // gAMA and cHRM alone are not a colour space the measure acts on: the image is read as sRGB.
-    let gamma = with_chunks(&flat_png([200, 120, 60], None), &[chunk(*b"gAMA", &100_000u32.to_be_bytes())]);
-    assert_eq!(first_pixel(&gamma), [200, 120, 60, 255]);
 }
 
 #[test]
@@ -197,4 +194,75 @@ fn a_bmp_is_refused_by_name_before_it_is_read() {
     let bmp = [b"BM".as_slice(), &[0; 52]].concat();
     let error = decode(&bmp, ContentHash::of(&bmp), FIELD).unwrap_err();
     assert!(error.message.contains("it is a BMP file, and a measure reads only PNG and JPEG"), "{}", error.message);
+}
+
+/// The sRGB encoding of a linear value in [0, 1], in 8-bit steps, unrounded.
+fn srgb_encode(linear: f64) -> f64 {
+    255.0 * if linear <= 0.003_130_8 { 12.92 * linear } else { 1.055 * linear.powf(1.0 / 2.4) - 0.055 }
+}
+
+/// A `cHRM` chunk from (white, red, green, blue) x and y, in units of 1e-5 as the chunk stores them.
+fn chrm(values: [(u32, u32); 4]) -> Vec<u8> {
+    let data: Vec<u8> = values.iter().flat_map(|&(x, y)| [x, y]).flat_map(u32::to_be_bytes).collect();
+    chunk(*b"cHRM", &data)
+}
+
+#[test]
+fn a_linear_gamma_png_is_converted_not_read_as_srgb() {
+    // `gAMA` 1.0 says the stored values are linear light. Per the PNG specification that is its colour space, so 128 is
+    // 0.502 linear, which sRGB stores as 188. Read as sRGB it would stay 128.
+    let png = with_chunks(&flat_png([128, 64, 200], None), &[chunk(*b"gAMA", &100_000u32.to_be_bytes())]);
+    let got = first_pixel(&png);
+    for (channel, source) in [128_u8, 64, 200].into_iter().enumerate() {
+        let expected = srgb_encode(f64::from(source) / 255.0);
+        assert!(
+            (f64::from(got[channel]) - expected).abs() <= TOLERANCE,
+            "channel {channel}: {} vs {expected:.2}",
+            got[channel]
+        );
+    }
+    assert!(got[0] >= 186, "128 linear should be about 188 in sRGB, got {}", got[0]);
+}
+
+#[test]
+fn the_srgb_equivalent_gamma_is_unchanged() {
+    // 45 455 is 1 / 2.2 to the file's precision, and with no `cHRM` (or sRGB's own) there is nothing to convert.
+    let gamma = chunk(*b"gAMA", &45_455u32.to_be_bytes());
+    let png = with_chunks(&flat_png([128, 64, 200], None), std::slice::from_ref(&gamma));
+    assert_eq!(first_pixel(&png), [128, 64, 200, 255]);
+    let srgb = chrm([(31_270, 32_900), (64_000, 33_000), (30_000, 60_000), (15_000, 6_000)]);
+    let with_chrm = with_chunks(&flat_png([128, 64, 200], None), &[gamma, srgb]);
+    assert_eq!(first_pixel(&with_chrm), [128, 64, 200, 255]);
+    // The `sRGB` chunk outranks a gamma that says otherwise.
+    let chunk_wins = with_chunks(
+        &flat_png([128, 64, 200], None),
+        &[chunk(*b"gAMA", &100_000u32.to_be_bytes()), chunk(*b"sRGB", &[0])],
+    );
+    assert_eq!(first_pixel(&chunk_wins), [128, 64, 200, 255]);
+}
+
+#[test]
+fn chromaticities_alone_define_the_primaries_and_the_srgb_curve_is_kept() {
+    // Display P3's primaries and white point, no `gAMA`: the stored values are on sRGB's curve with P3's primaries.
+    let p3 = chrm([(31_270, 32_900), (68_000, 32_000), (26_500, 69_000), (15_000, 6_000)]);
+    for source in P3_COLOURS {
+        let png = with_chunks(&flat_png(source, None), std::slice::from_ref(&p3));
+        assert_converted(first_pixel(&png), source);
+    }
+}
+
+#[test]
+fn a_cmyk_jpeg_without_a_profile_is_refused() {
+    let jpeg = include_bytes!("fixtures/cmyk.jpg");
+    let error = decode(jpeg, ContentHash::of(jpeg), FIELD).unwrap_err();
+    assert_eq!(error.code, ErrorCode::Invalid);
+    assert!(error.message.contains("a CMYK image without a colour profile"), "{}", error.message);
+}
+
+#[test]
+fn a_cmyk_jpeg_with_a_profile_is_refused_because_the_decoder_gives_no_ink_values() {
+    // The decoder converts the inks to RGB itself and offers no way to read them, so a CMYK profile cannot be applied.
+    let tagged = with_icc_jpeg(include_bytes!("fixtures/cmyk.jpg"), &display_p3_profile());
+    let error = decode(&tagged, ContentHash::of(&tagged), FIELD).unwrap_err();
+    assert!(error.message.contains("whose ink values the decoder does not give"), "{}", error.message);
 }
