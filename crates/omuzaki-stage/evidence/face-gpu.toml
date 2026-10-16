@@ -1,0 +1,12 @@
+# Render case for `tools/ci/evidence.py` (#2074): the live stage's face drawn on the GPU through `PaintTarget::native`,
+# beside the same frame with the face's CPU raster, and their comparison under the face goldens' rule. On lavapipe at
+# probe density.
+
+[[case]]
+name = "face-gpu"
+description = "The mock character's stage, frame 40 of a talking, blinking face: the face painted on the GPU straight into the renderer (left), the CPU raster written with write_rgba (middle), and the side-by-side comparison."
+env = { OMUZAKI_FACE_INTEROP_OUT = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-stage", "--test", "face_gpu_interop", "--", "--exact", "the_live_stage_paints_its_face_on_the_gpu_and_the_frame_matches_the_cpu_path"] },
+]
+images = ["stage-face-gpu.png", "stage-face-cpu.png", "stage-face-gpu-vs-cpu.png"]

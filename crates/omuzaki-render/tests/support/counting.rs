@@ -1,8 +1,11 @@
-//! A global allocator that attributes allocations to who asked for them, for the hot-loop test.
+//! A global allocator that attributes allocations to who asked for them, for the hot-loop tests.
 //!
 //! Every allocation made on the measuring thread while [`measure`] runs is attributed to the first backtrace frame whose
-//! source file is not the standard library's or this file's. Counting is off while the hook itself runs (taking a
-//! backtrace allocates), and off outside [`measure`].
+//! source file is not the standard library's or this file's: the crate under test ([`OWN`]), another workspace crate
+//! ([`WORKSPACE`]), tests and mocks, wgpu ([`WGPU`]), Vello ([`VELLO`]) or any other dependency. Counting is off while the
+//! hook itself runs (taking a backtrace allocates), and off outside [`measure`]. The stage's face test
+//! (`crates/omuzaki-stage/tests/face_gpu_alloc.rs`) includes this file too: the stage is where the renderer and the face
+//! painter meet.
 //!
 //! **A hook that takes backtraces must never run inside someone else's backtrace.** `std::backtrace::Backtrace` holds a
 //! process-wide, non-reentrant lock while it captures, and capturing allocates. With `RUST_BACKTRACE=1` (CI sets it)
@@ -12,8 +15,9 @@
 //! any lock, and the hook stands aside. [`measure_within`] adds a deadline, so a hang of any other kind aborts with a
 //! message instead of freezing the run.
 
-// A counting allocator is the only way to *measure* allocation; the workspace denies unsafe code by default.
-#![allow(unsafe_code, clippy::expect_used, clippy::unwrap_used)]
+// A counting allocator is the only way to *measure* allocation; the workspace denies unsafe code by default. Each test
+// binary that includes this file reads the owners it cares about, so some items go unused in each.
+#![allow(unsafe_code, dead_code, clippy::expect_used, clippy::unwrap_used)]
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::backtrace::Backtrace;
@@ -32,24 +36,44 @@ thread_local! {
     static BY_OWNER: RefCell<BTreeMap<&'static str, usize>> = const { RefCell::new(BTreeMap::new()) };
 }
 
+/// The crate under test's own code.
+pub const OWN: &str = "this crate";
+/// Another crate of the workspace (an API crate, a sibling implementation).
+pub const WORKSPACE: &str = "other workspace crates";
+/// The test itself and the mocks it drives.
+pub const TESTS: &str = "test and mock";
+/// wgpu and its parts (wgpu-core, wgpu-hal, naga): allocations inside its calls, which no caller can avoid.
+pub const WGPU: &str = "wgpu";
+/// Vello and the crates it encodes scenes with (`vello_encoding`, peniko, kurbo).
+pub const VELLO: &str = "vello";
+/// Every other dependency.
+pub const DEPENDENCIES: &str = "other dependencies";
+/// No frame of the backtrace had a source path.
+pub const UNATTRIBUTED: &str = "unattributed";
+
 /// Who owns an allocation, from a backtrace. Lines look like `   3: name` followed by `             at path:line:col`.
 fn owner(backtrace: &str) -> &'static str {
+    let own = concat!("crates/", env!("CARGO_PKG_NAME"), "/src/");
     for path in backtrace.lines().filter_map(|l| l.trim_start().strip_prefix("at ")) {
         if path.starts_with("/rustc/") || path.contains("support/counting.rs") {
             continue; // alloc, core and std plumbing, and this hook: look further out for who asked
         }
         // The crate under test is compiled from its own directory, so its files have relative paths.
-        return if path.starts_with("./src/") || path.contains("/omuzaki-render/src/") {
-            "omuzaki-render"
-        } else if path.contains("/omuzaki-render-api/") {
-            "render-api"
-        } else if path.starts_with("./tests/") || path.contains("/omuzaki-render-mock/") {
-            "test and mock"
+        return if path.starts_with("./src/") || path.contains(own) {
+            OWN
+        } else if path.starts_with("./tests/") || path.contains("-mock/") || path.contains("/tests/") {
+            TESTS
+        } else if path.contains("crates/omuzaki-") {
+            WORKSPACE
+        } else if path.contains("/wgpu") || path.contains("/naga-") {
+            WGPU
+        } else if path.contains("/vello") || path.contains("/peniko-") || path.contains("/kurbo-") {
+            VELLO
         } else {
-            "wgpu and other dependencies"
+            DEPENDENCIES
         };
     }
-    "unattributed"
+    UNATTRIBUTED
 }
 
 /// Where allocations made while a dependency captures its own backtrace are filed: they are that dependency's

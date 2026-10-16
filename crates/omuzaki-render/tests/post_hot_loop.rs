@@ -83,7 +83,7 @@ fn the_renderers_own_code_allocates_nothing_per_frame_with_every_effect_on() {
     for (name, quality) in qualities() {
         let per_frame = allocations_per_frame(quality, 20);
         println!("{name}: allocations per frame by owner: {per_frame:?}");
-        for owner in ["omuzaki-render", "render-api", "test and mock", "unattributed"] {
+        for owner in [counting::OWN, counting::WORKSPACE, counting::TESTS, counting::UNATTRIBUTED] {
             assert_eq!(
                 per_frame.get(owner).copied().unwrap_or(0),
                 0,
@@ -103,7 +103,10 @@ fn wgpus_share_stays_bounded_with_every_effect_on() {
     }
     for (name, quality) in qualities() {
         let per_frame = allocations_per_frame(quality, 20);
-        let wgpu = per_frame.get("wgpu and other dependencies").copied().unwrap_or(0);
+        let wgpu = [counting::WGPU, counting::DEPENDENCIES]
+            .iter()
+            .map(|owner| per_frame.get(owner).copied().unwrap_or(0))
+            .sum::<usize>();
         println!("{name}: wgpu allocated {wgpu} times per frame");
         assert!(wgpu <= 450, "{name}: wgpu allocated {wgpu} times per frame: {per_frame:?}");
     }

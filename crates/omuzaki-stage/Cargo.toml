@@ -66,7 +66,12 @@ omuzaki-char-mock = { path = "../omuzaki-char-mock" }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 omuzaki-face-mock = { path = "../omuzaki-face-mock" }
 omuzaki-render-mock = { path = "../omuzaki-render-mock" }
+# The wgpu renderer for the tests and the bench of the face drawn on the GPU (#151, #2074): the stage is where the face
+# and the renderer meet, and as a dev-dependency (not the `wgpu` feature) those tests run in every stage test run.
+omuzaki-render = { path = "../omuzaki-render" }
 omuzaki-store-mock = { path = "../omuzaki-store-mock" }
+# The face goldens' comparison rule (`regioncmp::T_FACE`) for the GPU face against the CPU path.
+omuzaki-test = { path = "../omuzaki-test" }
 omuzaki-track-mock = { path = "../omuzaki-track-mock" }
 # The registration scan behind the link gate (`tests/registrations.rs`, ADR 0015).
 xtask = { path = "../../xtask" }
@@ -83,6 +88,11 @@ harness = false
 
 [[bench]]
 name = "perform"
+harness = false
+
+# The live stage drawing the face through `PaintTarget::native` on the GPU (#2074).
+[[bench]]
+name = "face"
 harness = false
 
 [lints]

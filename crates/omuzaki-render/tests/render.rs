@@ -560,28 +560,101 @@ fn gpu_painters_get_the_documented_native_tuple_and_their_work_is_ordered_before
 
     let mut downcast_worked = false;
     r.paint_texture(face, &mut |target: &mut dyn PaintTarget| {
-        let Some((_device, queue, texture)) = target.native().downcast_mut::<NativePaintTarget>() else {
+        let Some((_device, _queue, texture, encoder)) = target.native().downcast_mut::<NativePaintTarget>() else {
             return target.write_rgba(PixelRect::full(size), &[0; 64]);
         };
         downcast_worked = true;
-        // A GPU painter draws with its own commands; writing straight to the texture is the smallest stand-in.
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &[255, 0, 255, 255].repeat(16),
-            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(16), rows_per_image: Some(4) },
-            wgpu::Extent3d { width: 4, height: 4, depth_or_array_layers: 1 },
-        );
+        // A GPU painter records into the renderer's encoder and never submits; clearing level 0 is the smallest
+        // stand-in for its commands.
+        clear_level_zero(texture, encoder, wgpu::Color { r: 1.0, g: 0.0, b: 1.0, a: 1.0 });
         Ok(())
     })
     .unwrap();
-    assert!(downcast_worked, "native() must hand a GPU painter (Device, Queue, Texture)");
+    assert!(downcast_worked, "native() must hand a GPU painter (Device, Queue, Texture, CommandEncoder)");
     let image = draw(&mut r, &s, &plain());
     assert_close(pixel(&image, 32, 32), [255, 0, 255, 255], 2, "the GPU-painted magenta");
+}
+
+/// Records a clear of `texture`'s level 0 to `colour` into `encoder`: a GPU painter's work in one pass.
+fn clear_level_zero(texture: &wgpu::Texture, encoder: &mut wgpu::CommandEncoder, colour: wgpu::Color) {
+    let level_zero =
+        texture.create_view(&wgpu::TextureViewDescriptor { mip_level_count: Some(1), ..Default::default() });
+    drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("a GPU painter"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: &level_zero,
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations { load: wgpu::LoadOp::Clear(colour), store: wgpu::StoreOp::Store },
+        })],
+        ..Default::default()
+    }));
+}
+
+#[test]
+fn a_gpu_painter_that_fails_has_its_commands_dropped_and_the_old_pixels_stay() {
+    let mut r = support::renderer();
+    let size = UVec2::new(4, 4);
+    let face = r.create_texture(&TextureDesc::colour(size).dynamic(), None).unwrap();
+    let mut material = Material::unlit(Colour::BLACK);
+    material.overlays.push(Overlay { texture: face, mapping: Mapping::Uv, strength: 1.0 });
+    let material = r.create_material(&material).unwrap();
+    let mesh = r.create_mesh(&shapes::quad(Vec2::splat(0.5))).unwrap();
+    let mut s = scene(Colour::BLACK);
+    s.instances.push(Instance::new(mesh, material, Mat4::IDENTITY));
+    r.update_texture(face, PixelRect::full(size), &[0, 0, 255, 255].repeat(16)).unwrap();
+
+    let result = r.paint_texture(face, &mut |target: &mut dyn PaintTarget| {
+        let Some((_, _, texture, encoder)) = target.native().downcast_mut::<NativePaintTarget>() else {
+            return Ok(());
+        };
+        clear_level_zero(texture, encoder, wgpu::Color { r: 1.0, g: 0.0, b: 0.0, a: 1.0 });
+        Err(RenderError::Backend("the painter gave up after recording".into()))
+    });
+    assert!(result.is_err());
+    let image = draw(&mut r, &s, &plain());
+    assert_close(pixel(&image, 32, 32), [0, 0, 255, 255], 2, "the recorded red was never submitted");
+}
+
+#[test]
+fn a_gpu_painters_commands_are_timed_under_paint_textures() {
+    let mut r = support::renderer();
+    if !r.capabilities().gpu_timings {
+        println!("skipped: the device has no timestamp queries inside encoders");
+        return;
+    }
+    let size = UVec2::new(256, 256);
+    let face = r.create_texture(&TextureDesc::colour(size).dynamic(), None).unwrap();
+    let mut material = Material::unlit(Colour::BLACK);
+    material.overlays.push(Overlay { texture: face, mapping: Mapping::Uv, strength: 1.0 });
+    let material = r.create_material(&material).unwrap();
+    let mesh = r.create_mesh(&shapes::quad(Vec2::splat(0.5))).unwrap();
+    let mut s = scene(Colour::BLACK);
+    s.instances.push(Instance::new(mesh, material, Mat4::IDENTITY));
+    let target = r.create_target(&TargetDesc { size: UVec2::new(64, 64), alpha: AlphaEncoding::Straight }).unwrap();
+    // Timings arrive a frame or two late: paint and render until one with the paint in it comes back.
+    let mut timed = None;
+    for frame in 0..20_u64 {
+        r.paint_texture(face, &mut |target: &mut dyn PaintTarget| {
+            let Some((_, _, texture, encoder)) = target.native().downcast_mut::<NativePaintTarget>() else {
+                return Err(RenderError::Backend("no native target".into()));
+            };
+            let shade = if frame % 2 == 0 { 0.0 } else { 1.0 };
+            for _ in 0..8 {
+                clear_level_zero(texture, encoder, wgpu::Color { r: shade, g: 0.5, b: 0.0, a: 1.0 });
+            }
+            Ok(())
+        })
+        .unwrap();
+        s.frame.index = frame;
+        let report = r.render(target, &s, &plain()).unwrap();
+        r.wait_idle().unwrap();
+        if let Some(t) = report.gpu.and_then(|g| g.passes.get(Pass::PaintTextures)) {
+            timed = Some(t);
+        }
+    }
+    let timed = timed.expect("a frame after a GPU paint reports PaintTextures");
+    assert!(timed.0 > 0.0, "the painter's eight clears took GPU time: {timed:?}");
 }
 
 #[test]

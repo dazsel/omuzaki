@@ -55,7 +55,7 @@ fn a_frame_lit_by_an_environment_allocates_nothing_in_the_renderers_own_code() {
     let totals = counting::measure(|| (30..50).for_each(|i| frame(&mut renderer, i)));
     let per_frame: std::collections::BTreeMap<_, _> = totals.into_iter().map(|(owner, n)| (owner, n / 20)).collect();
     println!("allocations per frame by owner: {per_frame:?}");
-    for owner in ["omuzaki-render", "render-api", "test and mock", "unattributed"] {
+    for owner in [counting::OWN, counting::WORKSPACE, counting::TESTS, counting::UNATTRIBUTED] {
         assert_eq!(per_frame.get(owner).copied().unwrap_or(0), 0, "{owner} allocated per frame: {per_frame:?}");
     }
 }

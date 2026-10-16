@@ -150,11 +150,26 @@ impl FaceSystem {
         self.gpu = gpu;
     }
 
+    /// Takes the registered GPU rasteriser out, leaving none: the stage moves it from a face system it replaces to the
+    /// new one, so the rasteriser's pipelines are compiled once, not once per system.
+    pub fn take_gpu_rasterizer(&mut self) -> Option<Box<dyn GpuRasterizer>> {
+        self.gpu.take()
+    }
+
     /// Tells the registered GPU rasteriser (if any) that the renderer's device was lost or rebuilt, so it drops what it
     /// made on the old one ([`GpuRasterizer::device_lost`]). The stage calls it when it rebuilds the renderer.
     pub fn gpu_device_lost(&mut self) {
         if let Some(gpu) = self.gpu.as_mut() {
             gpu.device_lost();
+        }
+    }
+
+    /// Tells the registered GPU rasteriser (if any) that the renderer refused the last paint of `layer`
+    /// ([`GpuRasterizer::paint_failed`]), so the next paint redraws it whole. The stage calls it when
+    /// `Renderer::paint_texture` fails.
+    pub fn gpu_paint_failed(&mut self, layer: FaceLayerId) {
+        if let Some(gpu) = self.gpu.as_mut() {
+            gpu.paint_failed(layer);
         }
     }
 

@@ -90,7 +90,7 @@ fn a_frame_with_blended_instances_allocates_nothing_in_the_renderers_own_code() 
     }
     let per_frame = allocations_per_frame(20);
     println!("allocations per frame by owner: {per_frame:?}");
-    for owner in ["omuzaki-render", "render-api", "test and mock", "unattributed"] {
+    for owner in [counting::OWN, counting::WORKSPACE, counting::TESTS, counting::UNATTRIBUTED] {
         assert_eq!(per_frame.get(owner).copied().unwrap_or(0), 0, "{owner} allocated per frame: {per_frame:?}");
     }
 }

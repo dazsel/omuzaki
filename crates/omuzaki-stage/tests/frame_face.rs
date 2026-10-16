@@ -1128,3 +1128,81 @@ fn a_failed_release_after_a_resize_still_rebinds_the_face_system() {
     // The refused release left the old textures behind; that is the renderer's to clean up, not this test's.
     stage.release(&mut renderer).expect("released");
 }
+
+// ---- #1485: replacing a rig mid-switch, and a painter failing during one ----
+
+#[test]
+fn replacing_a_rig_while_its_build_is_in_flight_never_swaps_in_the_old_rigs_variant() {
+    let (mut renderer, deferred) = (Spy::new(false), Deferred::default());
+    let mut stage = stage_about_to_zoom(&mut renderer, mock_rig_on(Box::new(deferred.clone())));
+    let stats = renderer.stats();
+    stage.scene_mut().camera = camera_for(&stage, 0.8);
+    stage.service_variants(&mut renderer, &FrameInput::default()).expect("the build is requested");
+    assert_eq!(deferred.pending(), 1, "a build is in flight, or this test aims at nothing");
+
+    // The new rig has no source: nothing it does may come from the old rig's build.
+    stage.set_face(&mut renderer, mock_rig()).expect("the new rig binds");
+    deferred.run_all();
+    for _ in 0..3 {
+        tick_at(&mut stage, &mut renderer, 0.8).expect("the stage runs");
+    }
+    assert_eq!(stage.built().variant, Some(id("game")), "the old rig's finished build was never staged or swapped in");
+    assert_eq!(renderer.stats(), stats, "and nothing it built reached the renderer");
+    stage.release(&mut renderer).expect("released");
+    assert_eq!(held(renderer.stats()), (0, 0, 0), "nothing leaked");
+}
+
+/// The mock painter, failing while `fail` is set.
+struct FailingPainter {
+    inner: MockPainter,
+    fail: Arc<AtomicBool>,
+}
+
+impl omuzaki_face_api::FacePainter for FailingPainter {
+    fn layers(&self) -> &[FaceLayerSpec] {
+        omuzaki_face_api::FacePainter::layers(&self.inner)
+    }
+
+    fn paint(
+        &mut self,
+        input: &omuzaki_face_api::FaceInput<'_>,
+        out: &mut omuzaki_face_api::FaceDrawing,
+    ) -> Result<(), FaceError> {
+        if self.fail.load(Ordering::Relaxed) {
+            return Err(FaceError::Invalid("the painter was told to fail".into()));
+        }
+        omuzaki_face_api::FacePainter::paint(&mut self.inner, input, out)
+    }
+}
+
+#[test]
+fn a_painter_failing_while_a_switch_is_staged_is_reported_and_the_current_variant_keeps_drawing() {
+    let fail = Arc::new(AtomicBool::new(false));
+    let painter_fail = Arc::clone(&fail);
+    let rig = FaceRig::new(Box::new(move |projection, _| {
+        let painter = FailingPainter { inner: MockPainter::new(*projection), fail: Arc::clone(&painter_fail) };
+        FaceSystem::new(Box::new(painter), Box::new(MockRasterizer))
+    }))
+    .with_executor(Box::new(InlineExecutor));
+    let mut renderer = Spy::new(false);
+    let mut stage = stage_about_to_zoom(&mut renderer, rig);
+    let stats = renderer.stats();
+
+    // The close-up has its own face window, so staging it warms a new face system, whose painter fails.
+    stage.scene_mut().camera = camera_for(&stage, 0.8);
+    fail.store(true, Ordering::Relaxed);
+    let error = stage.service_variants(&mut renderer, &FrameInput::default()).expect_err("the painter fails");
+    assert!(matches!(error, StageError::Face { .. }), "the painter's failure is reported as the face's: {error}");
+    assert!(error.to_string().contains("told to fail"), "{error}");
+    assert_eq!(renderer.stats(), stats, "nothing was left staged on the renderer");
+
+    // The current variant keeps drawing; once the painter recovers, the switch goes through.
+    fail.store(false, Ordering::Relaxed);
+    stage.tick(&mut renderer, &FrameInput::default()).expect("the current variant draws");
+    assert_eq!(stage.built().variant, Some(id("game")));
+    tick_at(&mut stage, &mut renderer, 0.8).expect("the switch is staged again");
+    tick_at(&mut stage, &mut renderer, 0.8).expect("and swapped in");
+    assert_eq!(stage.built().variant, Some(id("close-up")));
+    stage.release(&mut renderer).expect("released");
+    assert_eq!(held(renderer.stats()), (0, 0, 0), "nothing leaked");
+}

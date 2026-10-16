@@ -64,7 +64,7 @@ fn morphing_allocates_nothing_in_this_crate_after_warm_up(cpu: bool) {
         }
     });
     println!("allocations over 20 frames by owner: {totals:?}");
-    for owner in ["omuzaki-render", "render-api", "unattributed"] {
+    for owner in [counting::OWN, counting::WORKSPACE, counting::UNATTRIBUTED] {
         assert_eq!(totals.get(owner).copied().unwrap_or(0), 0, "{owner} allocated: {totals:?}");
     }
 }

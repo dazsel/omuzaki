@@ -91,15 +91,14 @@ fn a_device_vello_cannot_run_on_is_declined_every_time_and_nothing_is_drawn() {
         eprintln!("skipped: the adapter has no downlevel device");
         return;
     };
-    let texture = common::face_texture(&device, spec().size_px());
-    let mut native = (device.clone(), queue.clone(), texture.clone());
+    let mut native = common::native(&(device, queue), spec().size_px());
     let mut list = DrawList::new();
     overlapping_fills(&mut list);
     let mut rasterizer = VelloRasterizer::new();
     for attempt in 0..3 {
         assert!(!rasterizer.rasterize_native(&spec(), &list, &mut native).unwrap(), "attempt {attempt} drew");
     }
-    assert!(common::read_back(&(device, queue), &texture).iter().all(|&b| b == 0), "a declined paint wrote pixels");
+    assert!(common::read_native(&mut native).iter().all(|&b| b == 0), "a declined paint wrote pixels");
 }
 
 #[test]
@@ -121,7 +120,7 @@ fn a_device_that_cannot_run_vello_does_not_stop_a_capable_device_that_comes_late
     overlapping_fills(&mut list);
     let mut rasterizer = VelloRasterizer::new();
 
-    let mut on_weak = (weak.0.clone(), weak.1.clone(), common::face_texture(&weak.0, spec().size_px()));
+    let mut on_weak = common::native(&weak, spec().size_px());
     assert!(!rasterizer.rasterize_native(&spec(), &list, &mut on_weak).unwrap(), "the weak device was declined");
 
     // As after the renderer rebuilt its device: the same rasteriser, now with a device Vello can run on.

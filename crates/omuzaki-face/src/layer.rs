@@ -3,7 +3,7 @@
 use std::any::Any;
 
 use omuzaki_core::glam::UVec2;
-use omuzaki_face_api::{DrawList, FaceError, FaceLayerSpec, FaceRasterizer};
+use omuzaki_face_api::{DrawList, FaceError, FaceLayerId, FaceLayerSpec, FaceRasterizer};
 use omuzaki_render_api::{PaintTarget, Painter, PixelRect, RenderError};
 
 use crate::painter::LayerSections;
@@ -47,6 +47,20 @@ pub trait GpuRasterizer: Send {
     /// rasteriser can't always tell the new device from the old one by comparing them (wgpu numbers its resources per
     /// instance, and a rebuilt renderer is a new instance). The default has nothing to drop.
     fn device_lost(&mut self) {}
+
+    /// The rectangle of the layer the last call that returned `Ok(true)` changed, in pixels, which the painter reports
+    /// to the renderer (`PaintTarget::mark_damage`) so it refreshes only that part of the texture. An empty rectangle
+    /// means nothing changed. The default, `None`, doesn't know: the renderer then counts the whole texture.
+    fn last_damage(&self) -> Option<PixelRect> {
+        None
+    }
+
+    /// The renderer refused the last paint of `layer` after this rasteriser recorded it (`Renderer::paint_texture`
+    /// returned an error), so the texture shows what it showed before: the next paint must redraw the layer whole, not
+    /// only what changed since. The stage calls it. The default keeps nothing to forget.
+    fn paint_failed(&mut self, layer: FaceLayerId) {
+        let _ = layer;
+    }
 }
 
 /// The renderer's [`Painter`] for one face layer, from [`FaceSystem::layer_painter`](crate::FaceSystem::layer_painter).
@@ -103,6 +117,9 @@ impl Painter for FaceLayerPainter<'_> {
                 None => gpu.rasterize_native(&self.spec, self.list, native),
             };
             if drawn.map_err(|e| render_error(&e))? {
+                if let Some(damage) = gpu.last_damage() {
+                    target.mark_damage(damage);
+                }
                 return Ok(());
             }
         }

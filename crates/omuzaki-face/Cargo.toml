@@ -31,8 +31,11 @@ omuzaki-store-api = { path = "../omuzaki-store-api" }
 # The GPU rasteriser (`raster::gpu`) is native only: wgpu's WebGPU types on wasm32 are not `Send`, which `GpuRasterizer` needs
 # (#2207). On the web the face draws with the CPU raster, the same fallback as everywhere else.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+bytemuck.workspace = true
 tracing.workspace = true
 vello.workspace = true
+vello_encoding.workspace = true
+vello_shaders.workspace = true
 wgpu.workspace = true
 
 [dev-dependencies]

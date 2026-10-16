@@ -76,6 +76,9 @@ fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
     }
 }
 
+/// The renderer's native handle: the device, the queue, the layer's texture and the encoder a painter records into.
+type Native = (wgpu::Device, wgpu::Queue, wgpu::Texture, wgpu::CommandEncoder);
+
 fn main() {
     let Some((device, queue)) = device() else { return };
     let spec =
@@ -93,10 +96,11 @@ fn main() {
             | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
-    let mut native: Box<dyn Any> = Box::new((device.clone(), queue, texture));
+    let encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    let mut native: Box<dyn Any> = Box::new((device.clone(), queue.clone(), texture, encoder));
     let mut rasterizer = VelloRasterizer::new();
     println!(
-        "gpu_face: {width}x{height} px, {FRAMES} repaints (alternating two lists) after {WARM_UP} warm-up (CPU encode + GPU render + resolve)"
+        "gpu_face: {width}x{height} px, {FRAMES} repaints (alternating two lists) after {WARM_UP} warm-up (CPU encode and record, submit, GPU raster and resolve, waited for)"
     );
     for (name, build) in [("fills", fills as fn(&mut DrawList, f32)), ("clipped radial gradient", clipped_gradient)] {
         // A repaint of an unchanged list does no work, so the frames alternate two lists that differ by a small shift.
@@ -112,6 +116,14 @@ fn main() {
             if !matches!(drawn, Ok(true)) {
                 println!("{name}: the rasteriser did not draw: {drawn:?}");
                 return;
+            }
+            // The renderer submits what the painter recorded once it returns; the bench does the same.
+            if let Some((_, _, _, encoder)) = native.downcast_mut::<Native>() {
+                let recorded = std::mem::replace(
+                    encoder,
+                    device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default()),
+                );
+                queue.submit([recorded.finish()]);
             }
             // The paint is done when the GPU is, not when the commands are queued.
             if let Err(e) = device.poll(wgpu::PollType::wait_indefinitely()) {

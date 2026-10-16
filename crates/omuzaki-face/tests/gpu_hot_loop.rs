@@ -72,7 +72,9 @@ static GLOBAL: Counting = Counting;
 /// Everything a repaint needs: a device, the layer's texture, the rasteriser and the frames it alternates between.
 struct Setup {
     device: wgpu::Device,
-    native: (wgpu::Device, wgpu::Queue, wgpu::Texture),
+    /// What the renderer's `native()` hands the rasteriser: the device, the queue, the layer's texture and the encoder it
+    /// records into.
+    native: (wgpu::Device, wgpu::Queue, wgpu::Texture, wgpu::CommandEncoder),
     spec: FaceLayerSpec,
     rasterizer: VelloRasterizer,
     /// The drawing and its section ranges of the neutral face, the face with the mouth open, and a face with everything
@@ -136,8 +138,9 @@ fn setup() -> Option<Setup> {
             | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
+    let encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     Some(Setup {
-        native: (device.clone(), queue, texture),
+        native: (device.clone(), queue, texture, encoder),
         device,
         spec,
         rasterizer: VelloRasterizer::new(),
@@ -147,8 +150,9 @@ fn setup() -> Option<Setup> {
 }
 
 impl Setup {
-    /// Paints `frame`, a different one from the last, through the sections path.
-    fn repaint(&mut self, frame: usize) {
+    /// Paints `frame`, a different one from the last, through the sections path: what the rasteriser itself does,
+    /// recording into the encoder. The submit is the renderer's, so it is [`submit`](Self::submit), outside.
+    fn record(&mut self, frame: usize) {
         let (drawing, sections) = &self.frames[frame];
         let drawn = self
             .rasterizer
@@ -157,10 +161,29 @@ impl Setup {
         assert!(drawn, "the rasteriser declined the wgpu tuple");
     }
 
-    /// One repaint of the change under test: the neutral face and `other` in turn.
-    fn alternate(&mut self, other: usize) {
+    /// Submits what the last paint recorded, as the renderer does when the painter returns, with a fresh encoder for the
+    /// next one.
+    fn submit(&mut self) {
+        let fresh = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        let recorded = std::mem::replace(&mut self.native.3, fresh);
+        self.native.1.submit([recorded.finish()]);
+    }
+
+    fn repaint(&mut self, frame: usize) {
+        self.record(frame);
+        self.submit();
+    }
+
+    /// The next frame of the change under test: the neutral face and `other` in turn.
+    fn next_frame(&mut self, other: usize) -> usize {
         let frame = if self.next == 0 { other } else { NEUTRAL };
         self.next = 1 - self.next;
+        frame
+    }
+
+    /// One repaint of the change under test, submitted.
+    fn alternate(&mut self, other: usize) {
+        let frame = self.next_frame(other);
         self.repaint(frame);
     }
 
@@ -178,7 +201,14 @@ fn check_allocations(other: usize, pinned: usize, what: &str) {
     s.warm(other);
     // The first repaint after the device went idle also pays for waking it, so it is not counted.
     s.alternate(other);
-    let counts: Vec<usize> = (0..32).map(|_| count_allocations(|| s.alternate(other))).collect();
+    let counts: Vec<usize> = (0..32)
+        .map(|_| {
+            let frame = s.next_frame(other);
+            let counted = count_allocations(|| s.record(frame));
+            s.submit();
+            counted
+        })
+        .collect();
     eprintln!("allocations per warmed repaint, {what}: {counts:?}");
     let mut sorted = counts.clone();
     sorted.sort_unstable();
@@ -204,7 +234,8 @@ fn an_unchanged_repaint_allocates_nothing() {
     s.warm(MOUTH);
     s.repaint(NEUTRAL);
     s.repaint(NEUTRAL);
-    let allocations = count_allocations(|| s.repaint(NEUTRAL));
+    let allocations = count_allocations(|| s.record(NEUTRAL));
+    s.submit();
     assert_eq!(allocations, 0, "fingerprinting the sections of an unchanged face allocated");
     assert_eq!(s.rasterizer.sections_encoded(), 0);
 }

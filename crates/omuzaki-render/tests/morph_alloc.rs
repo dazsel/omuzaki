@@ -97,7 +97,7 @@ fn a_scripted_run_of_changing_scenes_allocates_nothing_after_one_pass_and_gives_
         }
     });
     println!("allocations over {SCENES} scenes by owner: {totals:?}");
-    for owner in ["omuzaki-render", "render-api", "unattributed"] {
+    for owner in [counting::OWN, counting::WORKSPACE, counting::UNATTRIBUTED] {
         assert_eq!(totals.get(owner).copied().unwrap_or(0), 0, "{owner} allocated: {totals:?}");
     }
     assert!(bytes.iter().all(|b| *b == warmed), "a pooled buffer was created or dropped in the second pass: {bytes:?}");
@@ -123,7 +123,7 @@ fn a_scripted_run_of_changing_scenes_allocates_nothing_after_one_pass_and_gives_
         }
     });
     println!("allocations over zero-weight scenes by owner: {totals:?}");
-    for owner in ["omuzaki-render", "render-api", "unattributed"] {
+    for owner in [counting::OWN, counting::WORKSPACE, counting::UNATTRIBUTED] {
         assert_eq!(totals.get(owner).copied().unwrap_or(0), 0, "{owner} allocated: {totals:?}");
     }
     assert_eq!(r.stats().gpu_bytes, baseline, "zero weights pool nothing");

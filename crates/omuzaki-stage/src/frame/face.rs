@@ -48,7 +48,9 @@ use omuzaki_char_api::{
 use omuzaki_core::glam::{Mat4, Vec2, Vec3};
 use omuzaki_core::time::Seconds;
 use omuzaki_face::raster::cpu::SkiaRasterizer;
-use omuzaki_face::{FaceSystem, RealPainter};
+#[cfg(not(target_arch = "wasm32"))]
+use omuzaki_face::raster::gpu::VelloRasterizer;
+use omuzaki_face::{FaceSystem, GpuRasterizer, RealPainter};
 use omuzaki_face_api::{FaceLayerId, FaceProfile, FaceProjection, FaceView, Palette};
 use omuzaki_render_api::{Projection, Renderer};
 
@@ -229,6 +231,9 @@ struct Resolved {
 /// asks for it.
 pub struct FaceRig {
     factory: FaceFactory,
+    /// The GPU rasteriser waiting for the first face system. From then on it moves from each system to the one that
+    /// replaces it (variant switches, density changes), so its compiled pipelines outlive face systems.
+    gpu: Option<Box<dyn GpuRasterizer>>,
     source: Option<CharacterSource>,
     settle_steps: u32,
     bound: Option<Bound>,
@@ -252,6 +257,7 @@ impl FaceRig {
     pub fn new(factory: FaceFactory) -> Self {
         Self {
             factory,
+            gpu: None,
             source: None,
             settle_steps: SETTLE_STEPS,
             bound: None,
@@ -265,11 +271,40 @@ impl FaceRig {
         }
     }
 
-    /// The production rig: the real painter and the CPU rasteriser (the GPU one registers on the system later).
+    /// The production rig: the real painter (kept by value, so the GPU rasteriser repaints only the sections that
+    /// changed), the CPU rasteriser as the fallback, and on native targets the GPU rasteriser, which draws straight into
+    /// the renderer's face textures through `PaintTarget::native` when the renderer is the wgpu one on a hardware adapter
+    /// (`VelloRasterizer::hardware_only`); anywhere else the CPU raster is written instead.
     pub fn standard() -> Self {
-        Self::new(Box::new(|projection, px_per_m| {
-            FaceSystem::new(Box::new(RealPainter::new(*projection, px_per_m)), Box::new(SkiaRasterizer::new()))
-        }))
+        let rig = Self::new(Box::new(|projection, px_per_m| {
+            FaceSystem::real(RealPainter::new(*projection, px_per_m), Box::new(SkiaRasterizer::new()))
+        }));
+        #[cfg(not(target_arch = "wasm32"))]
+        let rig = rig.with_gpu_rasterizer(Box::new(VelloRasterizer::hardware_only()));
+        rig
+    }
+
+    /// Draws the face layers with `gpu` (installed on the first face system, then handed from each system to the one
+    /// that replaces it). A face system the factory makes with a rasteriser of its own keeps it until then.
+    #[must_use]
+    pub fn with_gpu_rasterizer(mut self, gpu: Box<dyn GpuRasterizer>) -> Self {
+        self.gpu = Some(gpu);
+        self
+    }
+
+    /// Gives `new` the GPU rasteriser of the system it replaces, or the rig's own if this is the first system or the
+    /// last one had none. Moving a box allocates nothing, so this is safe inside the swap.
+    fn hand_over_gpu(&mut self, old: Option<&mut FaceSystem>, new: &mut FaceSystem) {
+        if let Some(gpu) = old.and_then(FaceSystem::take_gpu_rasterizer).or_else(|| self.gpu.take()) {
+            new.set_gpu_rasterizer(Some(gpu));
+        }
+    }
+
+    /// Keeps the GPU rasteriser of a face system that goes away with no successor, for the next one.
+    fn keep_gpu(&mut self, old: &mut FaceSystem) {
+        if let Some(gpu) = old.take_gpu_rasterizer() {
+            self.gpu = Some(gpu);
+        }
     }
 
     /// Lets the stage switch variants and apply palettes by rebuilding from `source`.
@@ -315,12 +350,19 @@ impl FaceRig {
     /// one keeps its fingerprints, so only layers whose picture changed repaint). No face unbinds it.
     fn commit_bound(&mut self, resolved: Option<Resolved>, px_per_m: f32) {
         let Some(Resolved { profile, projection, head }) = resolved else {
-            self.bound = None;
+            if let Some(mut old) = self.bound.take() {
+                self.keep_gpu(&mut old.system);
+            }
             return;
         };
         let system = match self.bound.take() {
             Some(old) if old.projection == projection => old.system,
-            _ => (self.factory)(&projection, px_per_m),
+            old => {
+                let mut system = (self.factory)(&projection, px_per_m);
+                let mut old = old.map(|old| old.system);
+                self.hand_over_gpu(old.as_mut(), &mut system);
+                system
+            }
         };
         self.bound = Some(Bound { system, profile, projection, head });
     }
@@ -422,6 +464,21 @@ impl Stage {
         Ok(())
     }
 
+    /// Tells the face that the renderer was rebuilt after a device loss: its GPU rasteriser drops everything it made on
+    /// the old device (`GpuRasterizer::device_lost`), and every face layer is painted again on the next
+    /// [`tick`](Stage::tick). Call it before that tick: the rasteriser cannot always tell a rebuilt device from the old one
+    /// (wgpu numbers resources per instance). A no-op without a face rig.
+    pub fn face_device_lost(&mut self) {
+        let Some(rig) = self.face.as_mut() else { return };
+        if let Some(gpu) = rig.gpu.as_mut() {
+            gpu.device_lost();
+        }
+        if let Some(bound) = rig.bound.as_mut() {
+            bound.system.gpu_device_lost();
+        }
+        rig.unpainted = [true; FaceLayerId::COUNT];
+    }
+
     /// Warms the rig's spring bones and the part runtimes (hair, cloth, tails) by `steps` steps of [`SETTLE_DT`], under
     /// the last frame's pose, goals and root, so the first frame doesn't start from a rest shape ([`SETTLE_STEPS`] is
     /// the usual count). Each step solves the rig and then steps the runtimes on the solved skeleton. The stage clock
@@ -471,8 +528,10 @@ impl Stage {
             && let Some(rig) = self.face.as_mut()
         {
             // A new system, because the painter's layer specs carry the density. It is warmed here, not in the next
-            // tick, and every layer is owed a paint: the new textures are empty.
-            rig.bound = None;
+            // tick, and every layer is owed a paint: the new textures are empty. The GPU rasteriser carries over.
+            if let Some(mut old) = rig.bound.take() {
+                rig.keep_gpu(&mut old.system);
+            }
             let bound = rig.bind(&self.built, self.character.face_px_per_m()).and_then(|()| rig.warm_bound());
             resized?;
             return bound;
@@ -574,6 +633,8 @@ impl Stage {
             match renderer.paint_texture(texture, &mut painter) {
                 Ok(()) => rig.unpainted[layer as usize] = false,
                 Err(source) => {
+                    // What a GPU rasteriser recorded for this paint was dropped: its retry must redraw the layer whole.
+                    bound.system.gpu_paint_failed(layer);
                     first_error.get_or_insert_with(|| {
                         StageError::render(format!("painting the {layer:?} face layer"), source)
                     });
@@ -778,8 +839,19 @@ impl Stage {
                     tracing::error!("a staged variant kept a face system the rig no longer has; the face is unbound");
                 }
             }
-            NextBound::Fresh(next) => rig.retiring.bound = rig.bound.replace(*next),
-            NextBound::Unbound => rig.retiring.bound = rig.bound.take(),
+            NextBound::Fresh(mut next) => {
+                let mut live = rig.bound.take();
+                rig.hand_over_gpu(live.as_mut().map(|live| &mut live.system), &mut next.system);
+                rig.bound = Some(*next);
+                rig.retiring.bound = live;
+            }
+            NextBound::Unbound => {
+                let mut live = rig.bound.take();
+                if let Some(live) = live.as_mut() {
+                    rig.keep_gpu(&mut live.system);
+                }
+                rig.retiring.bound = live;
+            }
         }
         // A new layer texture is empty, and the face system's fingerprints still say its picture was shown.
         for layer in FaceLayerId::ALL {
