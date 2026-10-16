@@ -5,10 +5,7 @@ use std::sync::Arc;
 
 use egui::Context;
 use omuzaki_anim_api::{ChannelBuf, HumanoidPose};
-use omuzaki_core::time::SystemClock;
-use omuzaki_doc_api::{DocPath, DocRead, DocVersion, DocWrite, Patch, PatchError, Value};
 use omuzaki_face_api::ExpressionSet;
-use omuzaki_ops::{Executor, ExecutorError};
 use omuzaki_ops_api::{Runner, ServicesBuilder};
 use omuzaki_stage::perform::host::{PerformError, PerformHost};
 use omuzaki_track_api::camera::{CameraId, CameraInfo};
@@ -21,6 +18,7 @@ use super::rig::{LiveRig, NoCamera, live_performer};
 use super::thread::{LoopReport, WiringError};
 use crate::aux_window::{PhysicalSize, Transparency};
 use crate::output_window::{OutputHost, OutputPlan, OutputWindow, Program};
+use crate::wiring::{self, ExecutorError};
 
 /// Why the live slice did not start.
 #[derive(Debug)]
@@ -82,11 +80,11 @@ impl LiveApp {
         let host = rig.host().map_err(|_| StartError::Wiring(WiringError::Stopped))?;
         host.set_expressions(ExpressionSet::starter(), ChannelBuf::NEUTRAL).map_err(StartError::Perform)?;
         let services = ServicesBuilder::new().insert::<dyn PerformHost>(host).build();
-        let executor = Executor::new(Box::new(NoDocument), Arc::new(SystemClock::new())).map_err(StartError::Ops)?;
+        let runner = wiring::runner(services).map_err(StartError::Ops)?;
         Ok(Self {
             rig: Some(rig),
             reader: Some(reader),
-            runner: Arc::new(executor.with_services(services)),
+            runner,
             output: OutputWindow::new(OutputPlan::default(), transparency),
             host: OutputHost::new(transparency, PhysicalSize::FULL_HD),
         })
@@ -180,26 +178,5 @@ impl Tracker for NoTracker {
 
     fn latency(&self) -> LatencyStats {
         LatencyStats::default()
-    }
-}
-
-/// The document of an app with no project open: empty, and it refuses every change. The live ops don't touch it.
-#[derive(Clone, Copy, Debug, Default)]
-struct NoDocument;
-
-impl DocRead for NoDocument {
-    fn get(&self, _path: &DocPath) -> Option<&Value> {
-        None
-    }
-
-    fn version(&self) -> DocVersion {
-        DocVersion(0)
-    }
-}
-
-impl DocWrite for NoDocument {
-    fn apply(&mut self, patch: &Patch) -> Result<DocVersion, PatchError> {
-        let first = patch.changes.first().map_or_else(DocPath::root, |change| change.path.clone());
-        Err(PatchError::Unreachable { path: first, reason: "no project is open".to_owned() })
     }
 }
