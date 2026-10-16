@@ -14,7 +14,7 @@ use crate::caps::{Counters, limit_note};
 use crate::context::person_text;
 use crate::store::cut_rationale;
 use crate::turn::TurnMode;
-use crate::tx::{self, Close, Closed, TxState};
+use crate::tx::{self, Close, CloseCalls, Closed, TxState};
 use crate::worker::Worker;
 
 /// Why an answer ends other than by finishing (the error side of the loop's `?`).
@@ -162,7 +162,7 @@ impl Worker {
             // If the budget still blocks it, the gate waits for the person instead.
             let _ = self.sessions.resume(self.session, &self.cfg.principal);
         }
-        let blocks = self.user_blocks(msg);
+        let blocks = self.user_blocks(msg, run.answer);
         self.push_user(blocks);
         run.admitted = true;
     }
@@ -210,7 +210,8 @@ impl Worker {
 
     /// One message, one undo step: a transaction an earlier answer left Unclosed is closed here, before this message
     /// runs, so this answer never joins it: committed as its own step with its own rationale, else discarded (the person
-    /// is told). If the executor refuses both, this message does not run and ends `Unclosed` too.
+    /// is told). If the executor refuses both, this message does not run and ends `Unclosed` too. Stop cuts these
+    /// closes short: the transaction stays Closing with its own rationale, and Stop's ending closes it.
     fn close_prior_tx(&mut self) -> Result<(), Flow> {
         if !self.tx.as_ref().is_some_and(|t| t.state == TxState::Unclosed) {
             return Ok(());
@@ -219,8 +220,9 @@ impl Worker {
             self.settle_ended_session();
             return Ok(());
         }
-        match self.close_in_order(&[Close::Commit, Close::Rollback]) {
+        match self.close_in_order(&[Close::Commit, Close::Rollback], CloseCalls::Interruptible) {
             Closed::Committed | Closed::Retained => Ok(()),
+            Closed::Interrupted => Err(Flow::Stopped),
             Closed::RolledBack => {
                 self.shared.emit(AssistantEvent::Error(HostError::Mcp(
                     "the changes of the previous answer could not be kept as an undo step and were discarded".into(),
@@ -239,6 +241,7 @@ impl Worker {
 
     /// How an answer ends (D2.8): commit and say `Done`; or hand over to Stop's ending, or the session's end.
     fn conclude(&mut self, run: &mut AnswerRun, result: Result<(), Flow>) {
+        self.settle_pending();
         // What the model wrote is the rationale of the answer's step, however the transaction closes.
         if let Some(t) = self.tx.as_mut()
             && t.answer == run.answer
@@ -292,6 +295,7 @@ impl Worker {
     /// executor is asked to stop, the cutoff is recorded). Deciding and ending the answer happen under one lock, so a
     /// Stop either lands before this and is honoured, or finds the answer over.
     fn end(&mut self, run: &mut AnswerRun) {
+        self.settle_pending();
         let ending = self.ending_event();
         {
             let mut ctl = self.shared.lock();
@@ -307,6 +311,7 @@ impl Worker {
 
     /// The answer is over: new messages are accepted again, and its end is sent, in one lock section.
     pub(crate) fn finish(&mut self) {
+        self.settle_pending();
         let ending = self.ending_event();
         let mut ctl = self.shared.lock();
         ctl.running = false;

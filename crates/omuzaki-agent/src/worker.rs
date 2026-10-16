@@ -1,6 +1,6 @@
 //! The host thread's state and the checks it makes between steps.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use omuzaki_agent_api::event::{AssistantEvent, PlanItem};
 use omuzaki_core::time::Seconds;
@@ -18,15 +18,6 @@ use crate::wait;
 /// How often a paused session is looked at (D2.6).
 const PAUSE_POLL: f64 = 0.25;
 
-/// A call's result that arrived after Stop (D4): shown to the model in the next message's context.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct LateResult {
-    pub tool: String,
-    pub outcome: String,
-    /// The heads-up the result carried, which the model has not seen (`history.rs`).
-    pub heads_up: Option<crate::history::HeadsUp>,
-}
-
 /// Everything the host thread owns.
 pub(crate) struct Worker {
     pub shared: Arc<Shared>,
@@ -40,7 +31,6 @@ pub(crate) struct Worker {
     pub ledger: Ledger,
     /// The server's `tools/list`, fetched once.
     pub tools: Option<Vec<ToolInfo>>,
-    pub late: Arc<Mutex<Vec<LateResult>>>,
     pub plan: Vec<PlanItem>,
     /// Tokens of the last turn's prompt and answer: a lower bound of the next prompt, for the 75 % compaction trigger.
     pub measured: u64,
@@ -97,8 +87,10 @@ impl Worker {
     }
 
     /// Checked before each turn and call: Stop, a revoked session, and a pause (D4). A pause finishes nothing and keeps
-    /// the transaction open; the wait ends when the session is active again.
+    /// the transaction open; the wait ends when the session is active again. Heads-ups the host received and gave no one
+    /// are stored as owed first (`history.rs`).
     pub(crate) fn gate(&mut self, run: &mut AnswerRun) -> Result<(), Flow> {
+        self.settle_pending();
         self.check_stop()?;
         match self.session_info().map(|i| i.state) {
             None => Err(Flow::Revoked(EndReason::Closed)),

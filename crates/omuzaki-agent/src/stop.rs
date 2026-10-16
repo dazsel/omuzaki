@@ -14,7 +14,7 @@ use omuzaki_ops_api::StopStep;
 
 use crate::cut::cut_history;
 use crate::run::AnswerRun;
-use crate::tx::{Close, Closed, STOPPED_SUFFIX, TxState};
+use crate::tx::{Close, CloseCalls, Closed, STOPPED_SUFFIX, TxState};
 use crate::wait;
 use crate::worker::Worker;
 
@@ -32,16 +32,17 @@ impl Worker {
     /// to stop (it pauses the session, cancels its jobs, reverts what they did and commits what is left), and the
     /// transaction is settled (D4 step 6). Then the answer ends.
     pub(crate) fn finish_stopped(&mut self, run: &mut AnswerRun) {
+        let read = self.shared.lock().stop_text_read.unwrap_or(0);
+        // Its own answer: the `User` entry of this answer was recorded first, and the cutoff names it. Stored before the
+        // history is cut, and also when the host is being dropped: `stop()` has cut the transcript already, and a
+        // reopened host reads the cut from here.
+        self.shared.record(Entry::stopped(Some(read)).in_answer(run.answer));
         if self.shared.lock().shutdown {
-            // The host is being dropped: ending the session rolls the transaction back, which is what was asked.
-            self.tx = None;
+            self.shut_down_tx();
             self.finish();
             return;
         }
-        let read = self.shared.lock().stop_text_read.unwrap_or(0);
         self.cut_history(run, read);
-        // Its own answer: the `User` entry of this answer was recorded first, and the cutoff names it.
-        self.shared.record(Entry::stopped(Some(read)).in_answer(run.answer));
         self.adopt_open_tx(TxState::Closing);
         if let Some(t) = self.tx.as_mut() {
             // Whatever it was (the answer's, or an earlier one's still Unclosed), the Stop now closes it.
@@ -65,6 +66,16 @@ impl Worker {
         self.finish();
     }
 
+    /// The host is being dropped: ending the session rolls an open transaction back, which is what was asked. One whose
+    /// close was sent may have committed first; it is retained (stored), so the host that reopens this conversation
+    /// reads its outcome.
+    fn shut_down_tx(&mut self) {
+        match self.tx.as_ref().map(|t| t.state) {
+            Some(TxState::Closing) => self.retain_tx(),
+            _ => self.tx = None,
+        }
+    }
+
     /// Settles the tracked transaction by what the executor's Stop answered.
     fn settle_stopped(&mut self, step: StopStep) {
         let Some(t) = self.tx.as_ref() else { return };
@@ -82,7 +93,7 @@ impl Worker {
     /// it: then the host closes it as after a refused Stop.
     fn settle_or_close_self(&mut self) {
         if self.shared.lock().shutdown {
-            self.tx = None;
+            self.shut_down_tx();
         } else if self.executor_holds_tx() {
             self.close_after_refused_stop();
         } else {
@@ -101,8 +112,8 @@ impl Worker {
             self.settle_ended_session();
             return;
         }
-        let told = match self.close_in_order(&[Close::Commit, Close::Rollback]) {
-            Closed::Committed | Closed::Retained => return,
+        let told = match self.close_in_order(&[Close::Commit, Close::Rollback], CloseCalls::Bounded) {
+            Closed::Committed | Closed::Retained | Closed::Interrupted => return,
             Closed::RolledBack => "the changes of this answer could not be kept as an undo step and were discarded",
             Closed::Unclosed => "the changes of this answer are still open; your next message closes them first",
         };

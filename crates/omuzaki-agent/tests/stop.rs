@@ -969,8 +969,8 @@ fn a_stop_while_the_previous_answers_changes_are_closed_cuts_only_the_new_answer
                 if n.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
                     return Outcome::failure("cannot commit now");
                 }
-                // The second commit is the next message's close of the first answer's changes: held until the test has
-                // pressed Stop.
+                // The second commit is the next message's close of the first answer's changes: applied, its reply held
+                // (MCP waiting on the journal) until Stop abandons it.
                 commit.commit_open_tx();
                 Outcome::text("tx committed").held(&g)
             });
@@ -983,9 +983,10 @@ fn a_stop_while_the_previous_answers_changes_are_closed_cuts_only_the_new_answer
     rig.host.send(UserMessage::new("two")).unwrap();
     Rig::wait_for("the close of the first answer's changes", || commits.load(std::sync::atomic::Ordering::SeqCst) == 2);
     rig.host.stop();
-    gate.notify_one();
     let events = rig.until_done(0.0);
     assert_eq!(events.last(), Some(&AssistantEvent::Done), "{events:?}");
+    // Stop abandoned the held commit; the executor had applied it, so the step comes from the log.
+    rig.settle_steps(1);
 
     let entries = rig.sink.entries();
     let user_two = entries.iter().position(|e| matches!(e, Entry::User { text, .. } if text == "two")).unwrap();

@@ -10,7 +10,7 @@
 //! |---|---|
 //! | **Open** | `tx_begin` succeeded; the answer's edits and driver jobs join it. |
 //! | **Closing** | A close was asked (`tx_commit`, `tx_rollback`, or `Sessions::stop`) or a commit was cut short (Stop cancelled the call, the link failed), so the executor may have applied it. Not confirmed yet. |
-//! | **Retained** | The executor confirmed it no longer holds it (`SessionInfo::open_tx` names another or none), but not whether it became a step. Kept ([`Retained`], `Worker::retained`) until the log shows its outcome (`history.rs`). |
+//! | **Retained** | The executor confirmed it no longer holds it (`SessionInfo::open_tx` names another or none), but not whether it became a step. Stored as an `Entry::Retained` and kept in `Worker::retained` until the log shows its outcome; a reopened host takes it back from the store (`history.rs`). |
 //! | **Committed** (final) | It is an undo step: its `Step` entry is recorded, once, with its rationale. |
 //! | **Rolled back** (final) | Its edits were reverted; no step. |
 //! | **Unclosed** (the failed state) | Every close the host tried was refused and the executor still holds it open. The person is told; the host keeps it, and the next message closes it before anything else. |
@@ -36,9 +36,15 @@
 //!
 //! Which closes are tried: at the end of an answer, the commit only, so changes a refused commit leaves open are kept for
 //! the next message rather than lost; after Stop, the executor's own close (it commits what is left), and if the executor
-//! refuses the Stop, the host's commit and then its rollback; for an Unclosed transaction at the next message, the commit
-//! and then the rollback. Every close outside the answer's own run is a call Stop cannot cut short (bounded in real
-//! time), so a Stop pressed meanwhile never leaves a close half-done.
+//! refuses the Stop, the host's commit and then its rollback (each waited for, bounded in real time: nothing else would
+//! close it); for an Unclosed transaction at the next message, the commit and then the rollback, which Stop cuts short
+//! like any call of the answer ([`CloseCalls`]): the transaction stays Closing with its own rationale and Stop's ending
+//! closes it, so `Done` never waits on MCP's journal.
+//!
+//! **The invariant** (`history.rs`): a mark advances only after what it stands for is stored where every later path
+//! reads it. For a transaction: it leaves `Worker::tx` only once its outcome is stored (a `Step`), confirmed to need
+//! none (rolled back), or stored as owed (`Retained`); a host being dropped retains one whose close was sent rather than
+//! forget it.
 //!
 //! **How an answer ends.** With `Done` when the transaction it leaves is none, Committed, Rolled back or Retained: its
 //! closure is confirmed, and a Retained step is recorded when the log shows it, asynchronously, so a stopped answer still
@@ -53,7 +59,6 @@ use omuzaki_ops_api::SessionTx;
 use serde_json::json;
 
 use crate::content::plain_text;
-use crate::history::Retained;
 use crate::link::{ToolInfo, ToolKind, ToolReply};
 use crate::run::{AnswerRun, Flow};
 use crate::worker::Worker;
@@ -123,6 +128,20 @@ pub(crate) enum Closed {
     RolledBack,
     Retained,
     Unclosed,
+    /// Stop was pressed during an interruptible close: the transaction is Closing, with its rationale, for Stop's
+    /// ending to settle.
+    Interrupted,
+}
+
+/// Whether Stop can cut the closes short.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum CloseCalls {
+    /// The next message's close of an Unclosed transaction: Stop abandons the call at once, and its ending (the
+    /// executor's Stop) closes the transaction instead, within D4's 100 ms even while MCP waits on the journal.
+    Interruptible,
+    /// The host's own closes after the executor refused Stop: nothing else would close the transaction, so each is
+    /// waited for, bounded in real time.
+    Bounded,
 }
 
 /// A tool's kind. A tool with no kind (an older server) counts as an edit, or as a query when it says it is read-only.
@@ -224,7 +243,7 @@ impl Worker {
     /// The executor no longer holds the tracked transaction, and its outcome is the log's to tell: Retained.
     pub(crate) fn retain_tx(&mut self) {
         if let Some(t) = self.tx.take() {
-            self.retain(Retained { tx: t.tx, rationale: t.rationale, suffix: t.suffix });
+            self.retain(&t.tx, &t.rationale, t.suffix);
         }
     }
 
@@ -268,10 +287,10 @@ impl Worker {
         }
     }
 
-    /// Tries `closes` in order on the tracked transaction, each by a call Stop cannot cut short, until the executor
-    /// confirms one or no longer holds the transaction. Refusals are shown. When every close fails and the executor
-    /// still holds it, the transaction is Unclosed.
-    pub(crate) fn close_in_order(&mut self, closes: &[Close]) -> Closed {
+    /// Tries `closes` in order on the tracked transaction until the executor confirms one or no longer holds the
+    /// transaction. Refusals are shown. When every close fails and the executor still holds it, the transaction is
+    /// Unclosed. With no tracked transaction there is nothing to close (`Retained`: the executor holds nothing of it).
+    pub(crate) fn close_in_order(&mut self, closes: &[Close], calls: CloseCalls) -> Closed {
         let Some(t) = self.tx.as_mut() else { return Closed::Retained };
         t.state = TxState::Closing;
         for &close in closes {
@@ -279,7 +298,15 @@ impl Worker {
                 self.retain_tx();
                 return Closed::Retained;
             }
-            match self.call_after_stop(close.tool(), None) {
+            let reply = match calls {
+                CloseCalls::Bounded => self.call_after_stop(close.tool(), None),
+                CloseCalls::Interruptible => match self.call_plain(close.tool(), None) {
+                    Ok(reply) => Some(reply),
+                    Err(Flow::Stopped) => return Closed::Interrupted,
+                    Err(_) => None,
+                },
+            };
+            match reply {
                 Some(reply) if !reply.is_error => {
                     return match close {
                         Close::Commit => {
@@ -329,8 +356,10 @@ impl Worker {
                 None => {}
             }
         };
-        if let Some(reply) = &reply {
-            self.took_reply(reply);
+        match &reply {
+            Some(reply) => self.took_reply(reply),
+            // Abandoned or failed: the server may have answered (`history.rs`).
+            None => self.log.dirty = true,
         }
         reply
     }

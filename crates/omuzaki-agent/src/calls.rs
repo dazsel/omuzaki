@@ -12,11 +12,16 @@ use rmcp::model::JsonObject;
 use serde_json::Value;
 
 use crate::content::{plain_text, tool_result_blocks};
+use crate::history::{Delivery, delivery_of, heads_up_of};
 use crate::link::{LateFn, LinkError, ReplyBlock, ToolInfo, ToolReply};
 use crate::refusal::{self, Refusal};
 use crate::run::{AnswerRun, Flow};
 use crate::tx::{self, TxUse};
-use crate::worker::{LateResult, Worker};
+use crate::worker::Worker;
+
+/// What one call gives the model: its result blocks, whether it failed, and what the result tells the model once it is
+/// stored (`history.rs`).
+pub(crate) type CallOutcome = (Vec<ContentBlock>, bool, Option<Delivery>);
 
 /// The longest a rate-limit pause is honoured (D2.6).
 const MAX_RETRY_WAIT: f64 = 10.0;
@@ -126,19 +131,22 @@ impl Worker {
     ) -> Result<ToolReply, Flow> {
         let cancel = self.shared.fresh_cancel();
         let pending = self.link.call_tool(name, args, cancel, late);
-        loop {
+        let flow = loop {
             match pending.poll(Duration::from_millis(1)) {
                 Some(Ok(Ok(reply))) => {
                     self.took_reply(&reply);
                     return Ok(reply);
                 }
-                Some(Ok(Err(LinkError::Cancelled))) => return Err(Flow::Stopped),
                 Some(Ok(Err(LinkError::Protocol(text)))) => return Ok(protocol_reply(&text)),
-                Some(Ok(Err(LinkError::Closed)) | Err(_)) => return Err(self.link_down()),
-                None if self.shared.stopping() => return Err(Flow::Stopped),
+                Some(Ok(Err(LinkError::Cancelled))) => break Flow::Stopped,
+                Some(Ok(Err(LinkError::Closed)) | Err(_)) => break self.link_down(),
+                None if self.shared.stopping() => break Flow::Stopped,
                 None => {}
             }
-        }
+        };
+        // Abandoned: the server may have answered, moving its seen cursor past a heads-up the host never got.
+        self.log.dirty = true;
+        Err(flow)
     }
 
     /// The flow for a link that closed: the session's own end if it has one.
@@ -189,7 +197,7 @@ impl Worker {
         } else {
             self.mcp_call(run, call, info.as_ref())
         };
-        let (blocks, is_error) = match outcome {
+        let (blocks, is_error, delivery) = match outcome {
             Ok(done) => done,
             Err(flow) => {
                 let text = in_flight_text(&flow);
@@ -200,6 +208,12 @@ impl Worker {
         self.shared.emit(AssistantEvent::tool_result(&call.id, !is_error));
         let stored = self.store_blocks(&blocks);
         self.shared.record(Entry::tool_result(&call.id, !is_error, stored));
+        // Stored, and the model gets it in this turn's results: what it carries is told. Any other heads-up of the call
+        // (a refusal the host acted on) is owed.
+        if let Some(delivery) = delivery {
+            self.deliver(&delivery);
+        }
+        self.settle_pending();
         Ok(if is_error {
             ContentBlock::tool_error(call.id.clone(), blocks)
         } else {
@@ -225,27 +239,30 @@ impl Worker {
     }
 
     /// A call to the server: classified, joined to the transaction, and given D2.6's behaviour.
-    fn mcp_call(
-        &mut self,
-        run: &mut AnswerRun,
-        call: &ToolCall,
-        info: Option<&ToolInfo>,
-    ) -> Result<(Vec<ContentBlock>, bool), Flow> {
+    fn mcp_call(&mut self, run: &mut AnswerRun, call: &ToolCall, info: Option<&ToolInfo>) -> Result<CallOutcome, Flow> {
         let kind = tx::kind_of(info);
         let undo_like = matches!(call.name.as_str(), "history_undo" | "history_redo");
         if undo_like && self.tx_open() {
-            return Ok(note_result(tx::UNDO_WHILE_OPEN));
+            let (blocks, is_error) = note_result(tx::UNDO_WHILE_OPEN);
+            return Ok((blocks, is_error, None));
         }
         if tx::tx_use(kind) == TxUse::Join
             && !self.tx_open()
             && let Some(refused) = self.begin_tx(run)?
         {
-            self.delivered("tx_begin", None, &refused);
-            return Ok(tool_result_blocks(&call.name, &refused));
+            return Ok(self.given(&call.name, None, &refused));
         }
         let reply = self.send_with_refusals(run, call)?;
-        self.delivered(&call.name, Some(&call.input), &reply);
-        Ok(tool_result_blocks(&call.name, &reply))
+        Ok(self.given(&call.name, Some(&call.input), &reply))
+    }
+
+    /// `reply` as the result the model is given for its call of `tool`: its blocks, and what it tells the model, kept
+    /// out of the owed heads-ups until the result is stored.
+    pub(crate) fn given(&mut self, tool: &str, args: Option<&Value>, reply: &ToolReply) -> CallOutcome {
+        let delivery = delivery_of(tool, args, reply);
+        self.hold_for_delivery(&delivery);
+        let (blocks, is_error) = tool_result_blocks(tool, reply);
+        (blocks, is_error, Some(delivery))
     }
 
     fn arguments(call: &ToolCall) -> Option<JsonObject> {
@@ -313,21 +330,22 @@ impl Worker {
         result
     }
 
-    /// What records a result that arrives after Stop: an entry, and a note for the next message's context (D4).
+    /// What records a result that arrives after Stop (D4): its entry, and a `Notice` for the heads-up it carries,
+    /// together. Both are owed to the next message's context, which tells the model the call finished and what others
+    /// changed (`history.rs`).
     fn late_callback(&self, call: &ToolCall) -> LateFn {
         let shared = Arc::clone(&self.shared);
-        let late = Arc::clone(&self.late);
-        let (id, tool) = (call.id.clone(), call.name.clone());
+        let id = call.id.clone();
         Box::new(move |result| {
             // A link that closed before the result came is not a result.
             let Ok(reply) = result else { return };
             let (ok, text) = (!reply.is_error, plain_text(&reply.blocks));
-            let outcome = if ok { "applied".to_owned() } else { format!("failed: {}", tx::first_line(&text)) };
-            if let Ok(mut late) = late.lock() {
-                late.push(LateResult { tool, outcome, heads_up: crate::history::heads_up_of(&reply) });
-            }
             // The id is suffixed so a resumed history does not read this as the answer to the original call.
-            shared.record(Entry::tool_result(format!("{id}:late"), ok, vec![StoredBlock::Text(text)]));
+            let mut entries = vec![Entry::tool_result(format!("{id}:late"), ok, vec![StoredBlock::Text(text)])];
+            if let Some(heads_up) = heads_up_of(&reply) {
+                entries.push(Entry::notice(heads_up.after, heads_up.upto, heads_up.json));
+            }
+            shared.record_all(entries);
         })
     }
 }

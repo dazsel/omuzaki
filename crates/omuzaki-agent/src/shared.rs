@@ -3,6 +3,11 @@
 //! One lock, [`Control`], guards everything Stop must change atomically with the event queue: the stopped flag, the
 //! text of the turn in flight, the transcript and the open question. The queue ([`EventHub`]) has its own lock, always
 //! taken inside this one, never the other way round.
+//!
+//! Every entry is appended to the store and to the transcript under one more lock, `records`, taken outside the other
+//! two. So the store and the transcript hold the same entries in the same order, also when the host thread and a
+//! late-result callback record at once, and what is owed to the model (`owed_since_context`) is decided against the
+//! same order a reopened host reads.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -60,6 +65,8 @@ pub(crate) struct Control {
 pub(crate) struct Shared {
     pub hub: EventHub,
     pub ctl: Mutex<Control>,
+    /// Held while an entry is appended to the store and the transcript (see the module docs).
+    records: Mutex<()>,
     /// Mirrors `Control::stopping` for loops that poll it without taking the lock.
     stop_flag: AtomicBool,
     pub clock: Arc<dyn Clock>,
@@ -103,6 +110,7 @@ impl Shared {
         Self {
             hub: EventHub::new(),
             ctl: Mutex::new(ctl),
+            records: Mutex::new(()),
             stop_flag: AtomicBool::new(false),
             clock,
             sink,
@@ -170,13 +178,68 @@ impl Shared {
         }
     }
 
-    /// Records an entry in the transcript and the store. A store failure is shown to the person and does not stop the
+    fn records(&self) -> MutexGuard<'_, ()> {
+        self.records.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Records an entry in the store and the transcript. A store failure is shown to the person and does not stop the
     /// answer: losing the log must not lose the work.
     pub(crate) fn record(&self, entry: Entry) {
-        if let Err(error) = self.sink.append(&entry) {
-            self.emit(AssistantEvent::Error(error));
+        self.record_all(vec![entry]);
+    }
+
+    /// Records `entries` with nothing recorded between them.
+    pub(crate) fn record_all(&self, entries: Vec<Entry>) {
+        let _records = self.records();
+        self.append_unlocked(entries);
+    }
+
+    fn append_unlocked(&self, entries: Vec<Entry>) {
+        for entry in entries {
+            if let Err(error) = self.sink.append(&entry) {
+                self.emit(AssistantEvent::Error(error));
+            }
+            self.lock().transcript.push(entry);
         }
-        self.lock().transcript.push(entry);
+    }
+
+    /// What the model is owed: the `Notice` entries and the late results (`<call>:late`) recorded since the last
+    /// `Context` entry.
+    pub(crate) fn owed(&self) -> Vec<Entry> {
+        Self::owed_in(&self.lock().transcript)
+    }
+
+    fn owed_in(transcript: &[Entry]) -> Vec<Entry> {
+        let since = transcript.iter().rposition(|e| matches!(e, Entry::Context { .. })).map_or(0, |at| at + 1);
+        transcript[since..].iter().filter(|e| matches!(e, Entry::Notice { .. }) || is_late(e)).cloned().collect()
+    }
+
+    /// Records a message's `Context` entry with what is owed in it. Under the record lock, `build` is given the owed
+    /// entries and a lookup of the tool each call id belongs to, and returns the entry to record (or `None` for an empty
+    /// context, recording nothing) with whatever the caller wants back. Nothing can be recorded between reading what is
+    /// owed and recording the context, so an owed entry is either in this context or recorded after it and owed to the
+    /// next one, in the store as in the transcript.
+    pub(crate) fn record_context<T>(
+        &self,
+        build: impl FnOnce(&[Entry], &dyn Fn(&str) -> Option<String>) -> Option<(Entry, T)>,
+    ) -> Option<T> {
+        let _records = self.records();
+        let (owed, calls) = {
+            let ctl = self.lock();
+            let calls: Vec<(String, String)> = ctl
+                .transcript
+                .iter()
+                .filter_map(|e| match e {
+                    Entry::ToolCall { id, tool, .. } => Some((id.clone(), tool.clone())),
+                    _ => None,
+                })
+                .collect();
+            (Self::owed_in(&ctl.transcript), calls)
+        };
+        let tool_of = |id: &str| calls.iter().find(|(call, _)| call == id).map(|(_, tool)| tool.clone());
+        let (context, back) = build(&owed, &tool_of)?;
+        self.append_unlocked(vec![context]);
+        Some(back)
     }
 
     /// Records the finished turn's entry and drops the live text it replaces in one step, so a panel reading the
@@ -184,6 +247,7 @@ impl Shared {
     /// person had been shown before it is recorded or stored, so a turn that finishes after Stop cannot bring unread
     /// text back. Returns the blocks as recorded.
     pub(crate) fn record_turn(&self, mut blocks: Vec<ContentBlock>) -> Vec<ContentBlock> {
+        let _records = self.records();
         let entry = {
             let mut ctl = self.lock();
             if let Some(read) = ctl.stop_text_read {
@@ -283,4 +347,9 @@ impl Shared {
     pub(crate) fn ended_error() -> HostError {
         HostError::SessionEnded
     }
+}
+
+/// Whether `entry` is a result that arrived after Stop: its id is the call's, suffixed `:late`.
+pub(crate) fn is_late(entry: &Entry) -> bool {
+    matches!(entry, Entry::ToolResult { id, .. } if id.ends_with(":late"))
 }

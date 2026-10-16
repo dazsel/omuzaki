@@ -72,7 +72,6 @@ impl AssistantHost {
             messages: Vec::new(),
             ledger: Ledger::new(),
             tools: None,
-            late: Arc::default(),
             plan: Vec::new(),
             measured: 0,
             tx: None,
@@ -106,7 +105,8 @@ impl Worker {
     fn run(&mut self, commands: &Receiver<Cmd>) {
         self.messages = messages_from_entries_with(&self.cfg.history, self.cfg.sink.as_ref());
         self.shared.record(Entry::session(self.session, SessionNote::Opened));
-        self.start_log();
+        let history = self.cfg.history.clone();
+        self.start_log(&history);
         loop {
             self.service_prompts();
             self.reconcile_when_due();
@@ -122,8 +122,12 @@ impl Worker {
         self.close_session();
     }
 
-    /// Ends the session if it is still live, once, and closes the link.
+    /// Ends the session if it is still live, once, and closes the link. First, what memory still holds of the log is
+    /// stored: heads-ups no one was given, and one last read if a call was abandoned or an outcome is retained, so a
+    /// host reopened on this conversation finds it in the store (`history.rs`).
     fn close_session(&mut self) {
+        self.settle_pending();
+        self.reconcile_now();
         if let Some(info) = self.session_info()
             && !matches!(info.state, SessionState::Ended { .. })
         {

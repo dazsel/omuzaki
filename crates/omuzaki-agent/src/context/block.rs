@@ -6,10 +6,12 @@
 
 use std::time::Duration;
 
+use omuzaki_agent_api::entry::{AnswerId, Entry};
 use omuzaki_agent_api::message::{ContextChip, UserMessage};
 use omuzaki_llm_api::message::{ContentBlock, ImageMime, ImageOrigin};
 
 use crate::content::{plain_text, wrap_data};
+use crate::history::{Delivery, delivery_of, owed_sections};
 use crate::link::{ReplyBlock, ToolReply};
 use crate::worker::Worker;
 
@@ -21,8 +23,9 @@ const DESCRIBE_TOOL: &str = "project_describe";
 const SESSION_INFO_TOOL: &str = "session_info";
 
 impl Worker {
-    /// The blocks of the context for `msg`; empty when there is nothing to add.
-    pub(crate) fn context_block(&mut self, msg: &UserMessage) -> Vec<ContentBlock> {
+    /// The blocks of the context for `msg`, the message of `answer`; empty when there is nothing to add. The text is
+    /// stored as the answer's `Context` entry before anything it carries counts as told (see `history.rs`).
+    pub(crate) fn context_block(&mut self, msg: &UserMessage, answer: AnswerId) -> Vec<ContentBlock> {
         let mut sections: Vec<String> = Vec::new();
         let mut images: Vec<ContentBlock> = Vec::new();
 
@@ -37,25 +40,60 @@ impl Worker {
                 }
             }
         }
-        if let Some(summary) = self.describe_if_new() {
-            sections.push(wrap_data(DESCRIBE_TOOL, &summary));
+        // The summary and `session_info`'s heads-up are given in this context: their heads-ups wait for it.
+        let mut deliveries = Vec::new();
+        let describe = self.describe_if_new(&mut deliveries);
+        if let Some(summary) = &describe {
+            sections.push(wrap_data(DESCRIBE_TOOL, summary));
         }
-        if let Some(heads_up) = self.heads_up() {
+        if let Some(heads_up) = self.heads_up(&mut deliveries) {
             sections.push(wrap_data(SESSION_INFO_TOOL, &heads_up));
         }
-        // Late results first: a heads-up one carried joins the changes held for this message.
-        sections.extend(self.late_notes());
-        sections.extend(self.missed_note());
+        let mut chips = Vec::new();
         for chip in &msg.chips {
-            self.chip_section(chip, &mut sections, &mut images);
+            self.chip_section(chip, &mut chips, &mut images);
         }
+        for delivery in &deliveries {
+            self.hold_for_delivery(delivery);
+        }
+        // Every other heads-up received so far is owed: stored now, so this context gives it.
+        self.settle_pending();
 
-        if sections.is_empty() && images.is_empty() {
-            return Vec::new();
-        }
+        let told = self.log.told.clone();
+        let shared = std::sync::Arc::clone(&self.shared);
+        let recorded = shared.record_context(|owed, tool_of| {
+            let (owed_sections, given) = owed_sections(owed, &told, tool_of);
+            sections.extend(owed_sections);
+            sections.extend(chips);
+            if sections.is_empty() && owed.is_empty() {
+                return None;
+            }
+            let text = if sections.is_empty() {
+                String::new()
+            } else {
+                format!("Context for this message:\n{}", sections.join("\n"))
+            };
+            Some((Entry::context(text.clone()).in_answer(answer), (text, given)))
+        });
+        let text = match recorded {
+            // Stored: what it carries is told.
+            Some((text, given)) => {
+                for (after, upto) in given.spans() {
+                    self.log.told.insert(after, upto);
+                }
+                for delivery in &deliveries {
+                    self.deliver(delivery);
+                }
+                if describe.is_some() {
+                    self.last_describe = describe;
+                }
+                text
+            }
+            None => String::new(),
+        };
         let mut blocks = Vec::with_capacity(images.len() + 1);
-        if !sections.is_empty() {
-            blocks.push(ContentBlock::text(format!("Context for this message:\n{}", sections.join("\n"))));
+        if !text.is_empty() {
+            blocks.push(ContentBlock::text(text));
         }
         blocks.extend(images);
         blocks
@@ -83,42 +121,24 @@ impl Worker {
         self.call_plain(tool, None).ok().filter(|reply| !reply.is_error)
     }
 
-    /// The project summary: in full the first time, afterwards only when it changed. A heads-up leads its text, so
-    /// the model reads it here when the summary is given.
-    fn describe_if_new(&mut self) -> Option<String> {
+    /// The project summary: in full the first time, afterwards only when it changed (`last_describe`, set once the
+    /// context that gives it is stored). A heads-up leads its text, so the model reads it there.
+    fn describe_if_new(&mut self, deliveries: &mut Vec<Delivery>) -> Option<String> {
         let reply = self.optional_call(DESCRIBE_TOOL)?;
         let text = plain_text(&reply.blocks);
         if self.last_describe.as_deref() == Some(text.as_str()) {
             return None;
         }
-        self.delivered(DESCRIBE_TOOL, None, &reply);
-        self.last_describe = Some(text.clone());
+        deliveries.push(delivery_of(DESCRIBE_TOOL, None, &reply));
         Some(text)
     }
 
     /// What others changed since the last answer, from the structured result of `session_info`.
-    fn heads_up(&mut self) -> Option<String> {
+    fn heads_up(&mut self, deliveries: &mut Vec<Delivery>) -> Option<String> {
         let reply = self.optional_call(SESSION_INFO_TOOL)?;
         let heads_up = crate::history::heads_up_of(&reply)?;
-        self.delivered(SESSION_INFO_TOOL, None, &reply);
+        deliveries.push(delivery_of(SESSION_INFO_TOOL, None, &reply));
         Some(heads_up.json)
-    }
-
-    /// Results that arrived after Stop, once, in the next message (D4).
-    fn late_notes(&mut self) -> Vec<String> {
-        let late = match self.late.lock() {
-            Ok(mut late) => std::mem::take(&mut *late),
-            Err(_) => return Vec::new(),
-        };
-        // The outcome can carry the first line of a server's result, so the whole note is data like any tool result.
-        late.into_iter()
-            .map(|l| {
-                if let Some(heads_up) = l.heads_up {
-                    self.log.hold(heads_up);
-                }
-                wrap_data("late_result", &format!("[your call `{}` finished after the stop: {}]", l.tool, l.outcome))
-            })
-            .collect()
     }
 
     fn chip_section(&mut self, chip: &ContextChip, sections: &mut Vec<String>, images: &mut Vec<ContentBlock>) {

@@ -169,6 +169,48 @@ pub enum Entry {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         answer: Option<AnswerId>,
     },
+    /// The context block the host gave the model before the person's text (D5): the UI context, the project summary,
+    /// what others changed, results that arrived after a Stop. Stored before anything it carries counts as told, so a
+    /// compaction and a continued conversation give the model what it was given.
+    #[non_exhaustive]
+    Context {
+        /// The answer it opened.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        answer: Option<AnswerId>,
+        /// Its text block, as sent; images are not kept.
+        text: String,
+    },
+    /// Changes by others the model is owed: a heads-up of a result it did not receive, or what the host's own read of
+    /// the op log returned that no heads-up had told. Owed until the next `Context` entry, which carries it.
+    #[non_exhaustive]
+    Notice {
+        /// The op-log events it accounts for: numbered above `after`, up to `upto`.
+        after: u64,
+        /// See `after`.
+        upto: u64,
+        /// What the model is told.
+        text: String,
+    },
+    /// A transaction the executor confirmed closed whose outcome the op log has not shown yet. It becomes a `Step` when
+    /// the log shows it committed, or is `Settled` when it shows it rolled back. Stored so a host reopened before then
+    /// still reads it.
+    #[non_exhaustive]
+    Retained {
+        /// The transaction.
+        tx: TxId,
+        /// The label of the step it would be.
+        label: String,
+        /// The rationale of the step it would be, cut like a step's.
+        rationale: String,
+        /// Its outcome is in the op log above this event number.
+        after: u64,
+    },
+    /// A retained transaction that did not become a step: the log showed it rolled back, or can no longer show it.
+    #[non_exhaustive]
+    Settled {
+        /// The transaction.
+        tx: TxId,
+    },
 }
 
 impl Entry {
@@ -237,20 +279,43 @@ impl Entry {
         Self::Stopped { text_read, answer: None }
     }
 
-    /// The same entry, naming `id` as its answer. Only a `User` and a `Stopped` entry carry one; others are unchanged.
+    /// The context block of a message.
+    pub fn context(text: impl Into<String>) -> Self {
+        Self::Context { answer: None, text: text.into() }
+    }
+
+    /// Changes by others owed to the model, for the events numbered above `after` up to `upto`.
+    pub fn notice(after: u64, upto: u64, text: impl Into<String>) -> Self {
+        Self::Notice { after, upto, text: text.into() }
+    }
+
+    /// A transaction whose outcome the op log will show above event `after`.
+    pub fn retained(tx: TxId, label: impl Into<String>, rationale: impl Into<String>, after: u64) -> Self {
+        Self::Retained { tx, label: label.into(), rationale: rationale.into(), after }
+    }
+
+    /// A retained transaction that made no step.
+    pub fn settled(tx: TxId) -> Self {
+        Self::Settled { tx }
+    }
+
+    /// The same entry, naming `id` as its answer. Only a `User`, a `Stopped` and a `Context` entry carry one; others are
+    /// unchanged.
     #[must_use]
     pub fn in_answer(mut self, id: AnswerId) -> Self {
         match &mut self {
-            Self::User { answer, .. } | Self::Stopped { answer, .. } => *answer = Some(id),
+            Self::User { answer, .. } | Self::Stopped { answer, .. } | Self::Context { answer, .. } => {
+                *answer = Some(id);
+            }
             _ => {}
         }
         self
     }
 
-    /// The answer a `User` or `Stopped` entry names, if it names one.
+    /// The answer a `User`, `Stopped` or `Context` entry names, if it names one.
     pub fn answer_id(&self) -> Option<AnswerId> {
         match self {
-            Self::User { answer, .. } | Self::Stopped { answer, .. } => *answer,
+            Self::User { answer, .. } | Self::Stopped { answer, .. } | Self::Context { answer, .. } => *answer,
             _ => None,
         }
     }
@@ -298,6 +363,10 @@ mod tests {
             Entry::compacted_with_render("Summary: ...", StoredBlock::image(ImageMime::Png, "cd".repeat(32))),
             Entry::stopped(None),
             Entry::stopped(Some(120)).in_answer(AnswerId(3)),
+            Entry::context("Context for this message: ...").in_answer(AnswerId(3)),
+            Entry::notice(4, 9, "hair.set_colour by Sam"),
+            Entry::retained(TxId(31), "Assistant: oval (stopped)", "the jaw reads round", 12),
+            Entry::settled(TxId(32)),
         ]
     }
 
@@ -319,6 +388,10 @@ mod tests {
             "compacted",
             "stopped",
             "stopped",
+            "context",
+            "notice",
+            "retained",
+            "settled",
         ];
         for (entry, kind) in every_entry().into_iter().zip(kinds) {
             let value = serde_json::to_value(&entry).unwrap();
@@ -334,10 +407,7 @@ mod tests {
         let numbered = Entry::stopped(Some(5)).in_answer(AnswerId(2));
         assert_eq!(serde_json::to_value(&numbered).unwrap()["answer"], 2);
         assert_eq!(numbered.answer_id(), Some(AnswerId(2)));
-        assert_eq!(
-            Entry::charge(Usage::new(1, 1), 1).in_answer(AnswerId(2)).answer_id(),
-            None,
-            "only User and Stopped"
-        );
+        assert_eq!(Entry::charge(Usage::new(1, 1), 1).in_answer(AnswerId(2)).answer_id(), None, "not a charge");
+        assert_eq!(Entry::context("c").in_answer(AnswerId(2)).answer_id(), Some(AnswerId(2)));
     }
 }

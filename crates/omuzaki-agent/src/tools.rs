@@ -7,8 +7,9 @@ use omuzaki_agent_api::event::{AssistantEvent, PlanItem, PlanStatus, QuestionId}
 use omuzaki_llm_api::message::{ContentBlock, ImageOrigin, ToolDef};
 use serde_json::{Value, json};
 
+use crate::calls::CallOutcome;
 use crate::calls::ToolCall;
-use crate::content::{reply_blocks, tool_result_blocks, wrap_data};
+use crate::content::{reply_blocks, wrap_data};
 use crate::link::LinkError;
 use crate::run::{AnswerRun, Flow};
 use crate::worker::Worker;
@@ -115,16 +116,13 @@ fn parse_plan(input: &Value) -> Result<Vec<PlanItem>, String> {
 
 impl Worker {
     /// Runs one host-local tool. None of them opens the transaction.
-    pub(crate) fn host_tool(
-        &mut self,
-        run: &mut AnswerRun,
-        call: &ToolCall,
-    ) -> Result<(Vec<ContentBlock>, bool), Flow> {
+    pub(crate) fn host_tool(&mut self, run: &mut AnswerRun, call: &ToolCall) -> Result<CallOutcome, Flow> {
+        let plain = |(blocks, is_error): (Vec<ContentBlock>, bool)| (blocks, is_error, None);
         match call.name.as_str() {
-            ASK_PERSON => self.ask_person(run, &call.input),
-            UPDATE_PLAN => Ok(self.update_plan(&call.input)),
+            ASK_PERSON => self.ask_person(run, &call.input).map(plain),
+            UPDATE_PLAN => Ok(plain(self.update_plan(&call.input))),
             DISCARD_CHANGES => self.discard_changes(),
-            _ => self.read_resource(&call.input),
+            _ => self.read_resource(&call.input).map(plain),
         }
     }
 
@@ -139,13 +137,13 @@ impl Worker {
         }
     }
 
-    fn discard_changes(&mut self) -> Result<(Vec<ContentBlock>, bool), Flow> {
+    fn discard_changes(&mut self) -> Result<CallOutcome, Flow> {
         match self.rollback_tx()? {
-            None => Ok(text_result("there were no changes in this answer to discard", false)),
-            Some(reply) => {
-                self.delivered("tx_rollback", None, &reply);
-                Ok(tool_result_blocks(DISCARD_CHANGES, &reply))
+            None => {
+                let (blocks, is_error) = text_result("there were no changes in this answer to discard", false);
+                Ok((blocks, is_error, None))
             }
+            Some(reply) => Ok(self.given(DISCARD_CHANGES, None, &reply)),
         }
     }
 

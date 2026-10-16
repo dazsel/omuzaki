@@ -341,6 +341,12 @@ impl Worker {
             .collect();
         let (latest, earlier) =
             users.split_last().map_or((String::new(), Vec::new()), |(l, e)| (l.clone(), e.to_vec()));
+        // The latest message keeps the context it was given: what it carried (others' changes, late results) is marked
+        // told, and the model may not have read it in a turn yet.
+        let latest = match latest_context(&entries) {
+            Some(context) => format!("{context}\n{latest}"),
+            None => latest,
+        };
         let input = RebuildInput {
             system: &system,
             tools: &tools,
@@ -389,8 +395,20 @@ impl Worker {
         self.ledger = Ledger::new();
         self.measured = 0;
         run.compacted = true;
+        // The rebuilt history no longer holds the project summary an earlier message gave: the next message gives it.
+        self.last_describe = None;
         Ok(())
     }
+}
+
+/// The text of the `Context` entry of the latest message in `entries`, if it had one.
+fn latest_context(entries: &[Entry]) -> Option<String> {
+    let user = entries.iter().rposition(|e| matches!(e, Entry::User { .. }))?;
+    let answer = entries[user].answer_id();
+    entries[user..].iter().find_map(|e| match e {
+        Entry::Context { text, .. } if !text.is_empty() && e.answer_id() == answer => Some(text.clone()),
+        _ => None,
+    })
 }
 
 #[cfg(test)]

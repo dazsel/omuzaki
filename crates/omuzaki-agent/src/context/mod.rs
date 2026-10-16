@@ -131,8 +131,12 @@ impl Worker {
 
     /// The blocks of a user message: the context built at send time, then what the person typed (with a note for each
     /// chip).
-    pub(crate) fn user_blocks(&mut self, msg: &UserMessage) -> Vec<ContentBlock> {
-        let mut blocks = self.context_block(msg);
+    pub(crate) fn user_blocks(
+        &mut self,
+        msg: &UserMessage,
+        answer: omuzaki_agent_api::entry::AnswerId,
+    ) -> Vec<ContentBlock> {
+        let mut blocks = self.context_block(msg, answer);
         blocks.push(ContentBlock::text(person_text(&msg.text, &msg.chips)));
         blocks
     }

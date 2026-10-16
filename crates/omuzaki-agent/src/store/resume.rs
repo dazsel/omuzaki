@@ -36,7 +36,11 @@ fn is_interrupted(entries: &[Entry]) -> bool {
     {
         return false;
     }
-    let Some(last) = entries.iter().rev().find(|e| !matches!(e, Entry::Session { .. })) else {
+    // Bookkeeping recorded after an answer is not part of it: session notes, what is owed to the model, outcomes read
+    // from the op log later.
+    let Some(last) = entries.iter().rev().find(|e| {
+        !matches!(e, Entry::Session { .. } | Entry::Notice { .. } | Entry::Retained { .. } | Entry::Settled { .. })
+    }) else {
         return false;
     };
     match last {

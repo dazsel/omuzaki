@@ -14,8 +14,8 @@ const INTERRUPTED: &str = "interrupted: the studio closed";
 /// The result a call gets when the answer was stopped before it ran.
 const STOPPED_BEFORE_RUN: &str = "not run: stopped by the person";
 
-/// Rebuilds the model's messages from stored entries. The per-message context blocks were not stored and are not
-/// recreated; images come back as a note, since this variant reads no blobs.
+/// Rebuilds the model's messages from stored entries: each message with the context block it was given (its text; the
+/// images of the UI context are not stored), images of results come back as a note, since this variant reads no blobs.
 #[allow(dead_code)]
 pub(crate) fn messages_from_entries(entries: &[Entry]) -> Vec<Message> {
     Rebuild::new(None).run(entries)
@@ -38,6 +38,8 @@ struct Rebuild<'a> {
     answer_skip: usize,
     /// The answer in progress, as its `User` entry names it.
     answer: Option<AnswerId>,
+    /// Where the person's text of the answer in progress is: its message and block, for its context to go before it.
+    person_at: Option<(usize, usize)>,
 }
 
 impl<'a> Rebuild<'a> {
@@ -50,6 +52,7 @@ impl<'a> Rebuild<'a> {
             answer_from: 0,
             answer_skip: 0,
             answer: None,
+            person_at: None,
         }
     }
 
@@ -77,9 +80,17 @@ impl<'a> Rebuild<'a> {
                 Entry::User { text, chips, answer, .. } => {
                     self.close_open(false);
                     self.push(Role::User, vec![ContentBlock::text(person_text(text, chips))]);
+                    self.person_at =
+                        self.messages.len().checked_sub(1).map(|m| (m, self.messages[m].content.len() - 1));
                     self.answer_from = self.messages.len();
                     self.answer_skip = 0;
                     self.answer = *answer;
+                }
+                // The context the message was given goes before the person's text, as it was sent.
+                Entry::Context { text, answer, .. } if !text.is_empty() && *answer == self.answer => {
+                    if let Some((m, b)) = self.person_at.take() {
+                        self.messages[m].content.insert(b, ContentBlock::text(text.clone()));
+                    }
                 }
                 // Stop cut its answer's text to what the person had seen; the turns stored before it were whole.
                 Entry::Stopped { text_read, answer, .. } => {

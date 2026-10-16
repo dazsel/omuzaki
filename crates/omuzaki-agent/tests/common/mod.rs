@@ -51,15 +51,18 @@ use serde_json::{Value, json};
 pub struct Outcome {
     pub result: CallToolResult,
     pub gate: Option<Arc<tokio::sync::Notify>>,
+    /// The server has moved the session's position and written the heads-up before the gate holds the reply, as when
+    /// the reply is ready but not yet taken: a cancel then loses the heads-up.
+    pub heads_up_first: bool,
 }
 
 impl Outcome {
     pub fn text(text: &str) -> Self {
-        Self { result: CallToolResult::success(vec![ContentBlock::text(text)]), gate: None }
+        Self { result: CallToolResult::success(vec![ContentBlock::text(text)]), gate: None, heads_up_first: false }
     }
 
     pub fn failure(text: &str) -> Self {
-        Self { result: CallToolResult::error(vec![ContentBlock::text(text)]), gate: None }
+        Self { result: CallToolResult::error(vec![ContentBlock::text(text)]), gate: None, heads_up_first: false }
     }
 
     /// An error as `omuzaki-mcp` renders it: `structuredContent { ok: false, code, message, hint, detail }`.
@@ -68,18 +71,28 @@ impl Outcome {
             json!({"ok": false, "op": "x", "code": code, "message": format!("{code}!"), "hint": "h", "detail": detail});
         let mut result = CallToolResult::error(vec![ContentBlock::text(format!("x failed [{code}]"))]);
         result.structured_content = Some(data);
-        Self { result, gate: None }
+        Self { result, gate: None, heads_up_first: false }
     }
 
     pub fn image(png: &[u8]) -> Self {
         use base64::Engine;
         let data = base64::engine::general_purpose::STANDARD.encode(png);
-        Self { result: CallToolResult::success(vec![ContentBlock::image(data, "image/png")]), gate: None }
+        Self {
+            result: CallToolResult::success(vec![ContentBlock::image(data, "image/png")]),
+            gate: None,
+            heads_up_first: false,
+        }
     }
 
     pub fn held(mut self, gate: &Arc<tokio::sync::Notify>) -> Self {
         self.gate = Some(Arc::clone(gate));
         self
+    }
+
+    /// Held, with the heads-up already written (see `heads_up_first`).
+    pub fn held_after_heads_up(mut self, gate: &Arc<tokio::sync::Notify>) -> Self {
+        self.heads_up_first = true;
+        self.held(gate)
     }
 }
 
@@ -190,6 +203,11 @@ impl ScriptedServer {
         lock(&self.log).host_log_reads
     }
 
+    /// How many `notifications/cancelled` the client sent: calls it abandoned instead of waiting for.
+    pub fn cancelled(&self) -> usize {
+        lock(&self.log).cancelled
+    }
+
     pub fn called(&self, name: &str) -> usize {
         lock(&self.log).calls.iter().filter(|(n, _)| n == name).count()
     }
@@ -245,19 +263,19 @@ impl ServerHandler for ScriptedServer {
             hook(&name, &args);
         }
         let outcome = behaviour(&args, index);
+        let mut result = outcome.result;
+        // As `omuzaki-mcp` does, after the call: every result but a successful log read moves the session's position to
+        // the log's head and carries what others did since. A call cancelled at the gate never gets here, unless the
+        // heads-up was written first.
+        let reads_log = name == "history_log" && result.is_error != Some(true);
+        let sessions = lock(&self.log_of).clone().filter(|_| !reads_log);
+        let early = if outcome.heads_up_first { sessions.as_ref().and_then(|s| s.heads_up()) } else { None };
         if let Some(gate) = &outcome.gate {
             gate.notified().await;
         }
         lock(&self.log).in_flight -= 1;
-        let mut result = outcome.result;
-        // As `omuzaki-mcp` does, after the call: every result but a successful log read moves the session's position to
-        // the log's head and carries what others did since. A call cancelled at the gate never gets here.
-        let reads_log = name == "history_log" && result.is_error != Some(true);
-        let sessions = lock(&self.log_of).clone();
-        if let Some(sessions) = sessions
-            && !reads_log
-            && let Some((text, data)) = sessions.heads_up()
-        {
+        let late = if outcome.heads_up_first { early } else { sessions.and_then(|s| s.heads_up()) };
+        if let Some((text, data)) = late {
             match result.content.first_mut().and_then(|c| c.as_text().map(|t| t.text.clone())) {
                 Some(first) => result.content[0] = ContentBlock::text(format!("{text}\n\n{first}")),
                 None => result.content.insert(0, ContentBlock::text(text)),
@@ -267,6 +285,14 @@ impl ServerHandler for ScriptedServer {
             result.structured_content = Some(structured);
         }
         Ok(result.into())
+    }
+
+    async fn on_cancelled(
+        &self,
+        _notification: rmcp::model::CancelledNotificationParam,
+        _context: rmcp::service::NotificationContext<RoleServer>,
+    ) {
+        lock(&self.log).cancelled += 1;
     }
 
     async fn list_prompts(
@@ -1029,7 +1055,10 @@ impl LlmClient for GatedLlm {
     }
 }
 
+// Fields drop in this order: the host first, so it closes its session while the runtime and the server still run.
 pub struct Rig {
+    pub host: AssistantHost,
+    pub rx: EventReceiver,
     pub rt: tokio::runtime::Runtime,
     pub server: ScriptedServer,
     pub sessions: Arc<FakeSessions>,
@@ -1038,8 +1067,6 @@ pub struct Rig {
     pub clock: Arc<FakeClock>,
     /// The clock as the host reads it.
     pub host_clock: Arc<WatchedClock>,
-    pub host: AssistantHost,
-    pub rx: EventReceiver,
     pub gate: Arc<Gate>,
     pub server_peer: Arc<Mutex<Option<rmcp::service::Peer<RoleServer>>>>,
 }
@@ -1064,6 +1091,8 @@ pub struct RigOptions {
     /// The sink holds `put_blob` until `rig.sink.hold_blobs` is cleared, from the call after `hold_blobs_after` ones.
     pub hold_blobs: bool,
     pub hold_blobs_after: usize,
+    /// The executor (and its op log) of an earlier rig, for a host reopened on the same server.
+    pub sessions: Option<Arc<FakeSessions>>,
 }
 
 impl Default for RigOptions {
@@ -1081,6 +1110,7 @@ impl Default for RigOptions {
             fail_blobs: false,
             hold_blobs: false,
             hold_blobs_after: 0,
+            sessions: None,
         }
     }
 }
@@ -1146,7 +1176,7 @@ impl Rig {
         let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().expect("runtime");
         let llm = Arc::new(FakeLlm::new(script));
         let clock = llm.clock();
-        let sessions = FakeSessions::new(clock.clone());
+        let sessions = options.sessions.clone().unwrap_or_else(|| FakeSessions::new(clock.clone()));
         let server = make_server(&sessions);
         let sink = Arc::new(RecordingSink::default());
         sink.fail_blobs.store(options.fail_blobs, std::sync::atomic::Ordering::SeqCst);

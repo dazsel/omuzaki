@@ -15,6 +15,7 @@ use omuzaki_agent_api::Assistant;
 use omuzaki_agent_api::entry::Entry;
 use omuzaki_agent_api::event::AssistantEvent;
 use omuzaki_agent_api::message::UserMessage;
+use omuzaki_core::time::Clock as _;
 
 /// A small deterministic generator, so a failing interleaving can be replayed from its seed.
 struct Lcg(u64);
@@ -435,4 +436,285 @@ fn the_models_own_log_read_counts_as_told() {
     rig.say("again", 0.0);
     let request = request_text(rig.llm.requests().last().unwrap());
     assert_eq!(request.matches("read.by.the.model").count(), 1, "in the model's own read only: {request}");
+}
+
+/// A turn that ends the answer with a prompt big enough that the next message compacts before its first turn.
+fn heavy_ending(text: &str) -> omuzaki_llm_mock::ScriptTurn {
+    omuzaki_llm_mock::ScriptTurn::new(vec![
+        omuzaki_llm_api::stream::LlmEvent::start("m"),
+        omuzaki_llm_api::stream::LlmEvent::TextDelta(text.into()),
+        omuzaki_llm_api::stream::LlmEvent::Usage(omuzaki_llm_api::usage::Usage::new(15_001, 10)),
+        omuzaki_llm_api::stream::LlmEvent::Stop(omuzaki_llm_api::stream::StopReason::EndTurn),
+    ])
+}
+
+/// A `tx_commit` that somebody else's edit precedes: its heads-up reaches the host, never the model directly.
+fn commit_after_an_edit_by_others(sessions: &Arc<FakeSessions>) -> ScriptedServer {
+    let server = standard_server(sessions);
+    let s = Arc::clone(sessions);
+    server.add(tool("tx_commit", "tx.commit", "builtin", false), move |_, _| {
+        s.other_change("during.the.commit");
+        s.commit_open_tx();
+        Outcome::text("tx committed")
+    });
+    server
+}
+
+#[test]
+fn stop_during_the_close_of_unclosed_changes_does_not_wait_for_the_journal() {
+    // The next message's commit of the first answer's changes is applied, and its reply waits on the journal (held,
+    // never released): Stop abandons it at once, and the step keeps the first answer's rationale.
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let commits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (g, n) = (Arc::clone(&gate), Arc::clone(&commits));
+    let rig = Rig::with(
+        script(vec![call_turn("RATIONALE-ONE ", &[("c1", "face_set_profile", "{}")]), say_turn("done"), say_turn("x")]),
+        RigOptions::default(),
+        move |sessions| {
+            let server = standard_server(sessions);
+            let s = Arc::clone(sessions);
+            server.add(tool("tx_commit", "tx.commit", "builtin", false), move |_, _| {
+                if n.fetch_add(1, Ordering::SeqCst) == 0 {
+                    return Outcome::failure("cannot commit now");
+                }
+                s.commit_open_tx();
+                Outcome::text("tx committed").held(&g)
+            });
+            server
+        },
+    );
+    assert_eq!(rig.say("one", 0.0).last(), Some(&AssistantEvent::Unclosed));
+    rig.host.send(UserMessage::new("two")).unwrap();
+    Rig::wait_for("the close of the first answer's changes", || commits.load(Ordering::SeqCst) == 2);
+    let clicked = rig.clock.now().0;
+    rig.host.stop();
+    let events = rig.until_done(0.0);
+    assert_eq!(events.last(), Some(&AssistantEvent::Done), "{events:?}");
+    assert!(rig.clock.now().0 - clicked <= 0.1, "Done within D4's 100 ms");
+    Rig::wait_for("the abandoned commit", || rig.server.cancelled() == 1);
+    assert_eq!(rig.server.called("tx_rollback"), 0, "nothing was discarded");
+    rig.settle_steps(1);
+    let steps = rig.steps();
+    assert_eq!(steps.len(), 1, "{steps:?}");
+    assert!(steps[0].2.contains("RATIONALE-ONE"), "the first answer's rationale: {steps:?}");
+    drop(gate);
+}
+
+#[test]
+fn a_host_closed_before_the_log_shows_a_stopped_commit_records_the_step_when_it_reopens() {
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let g = Arc::clone(&gate);
+    let rig = Rig::with(
+        script(vec![call_turn("WHY-ONE ", &[("c1", "face_set_profile", "{}")]), say_turn("done")]),
+        RigOptions::default(),
+        move |sessions| {
+            let server = standard_server(sessions);
+            let s = Arc::clone(sessions);
+            // The commit is applied; its reply is still on its way when Stop cuts the call.
+            server.add(tool("tx_commit", "tx.commit", "builtin", false), move |_, _| {
+                s.commit_open_tx();
+                Outcome::text("tx committed").held(&g)
+            });
+            server
+        },
+    );
+    rig.sessions.set_log_lag(true);
+    rig.host.send(UserMessage::new("go")).unwrap();
+    Rig::wait_for("the commit", || rig.server.called("tx_commit") == 1);
+    rig.host.stop();
+    assert_eq!(rig.until_done(0.0).last(), Some(&AssistantEvent::Done));
+    // Closed at once, before the log has shown the commit.
+    let entries = rig.sink.entries();
+    assert!(entries.iter().any(|e| matches!(e, Entry::Retained { .. })), "the pending outcome is stored");
+    assert!(rig.steps().is_empty());
+    let sessions = Arc::clone(&rig.sessions);
+    drop(rig);
+
+    sessions.set_state(omuzaki_ops_api::SessionState::Active);
+    sessions.open_caught_up();
+    sessions.release_log();
+    let reopened = Rig::with(
+        script(vec![say_turn("hi")]),
+        RigOptions { history: entries, sessions: Some(sessions), ..RigOptions::default() },
+        standard_server,
+    );
+    reopened.settle_steps(1);
+    let steps = reopened.steps();
+    assert_eq!(steps.len(), 1, "{steps:?}");
+    assert!(steps[0].1.ends_with("(stopped)") && steps[0].2.contains("WHY-ONE"), "{steps:?}");
+    drop(gate);
+}
+
+#[test]
+fn notices_owed_when_the_host_closes_are_given_by_the_reopened_host() {
+    let rig = Rig::with(
+        script(vec![call_turn("", &[("c1", "face_set_profile", "{}")]), say_turn("done")]),
+        RigOptions::default(),
+        commit_after_an_edit_by_others,
+    );
+    rig.say("go", 0.0);
+    let entries = rig.sink.entries();
+    assert!(entries.iter().any(|e| matches!(e, Entry::Notice { .. })), "the commit's heads-up is stored as owed");
+    let sessions = Arc::clone(&rig.sessions);
+    drop(rig);
+
+    sessions.set_state(omuzaki_ops_api::SessionState::Active);
+    sessions.open_caught_up();
+    let reopened = Rig::with(
+        script(vec![say_turn("ok")]),
+        RigOptions { history: entries, sessions: Some(sessions), ..RigOptions::default() },
+        standard_server,
+    );
+    reopened.say("again", 0.0);
+    let request = request_text(reopened.llm.requests().last().unwrap());
+    assert_eq!(request.matches("during.the.commit").count(), 1, "{request}");
+}
+
+#[test]
+fn a_heads_up_lost_with_an_abandoned_internal_call_is_read_back_from_the_log() {
+    // Somebody edits; the server writes `session_info`'s heads-up and moves the session's position past the edit, and
+    // the reply is still on its way when Stop cuts the call. No transaction is retained, yet the edit must reach the
+    // model.
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let held = Arc::new(AtomicBool::new(false));
+    let (g, h) = (Arc::clone(&gate), Arc::clone(&held));
+    let rig = Rig::with(script(vec![say_turn("ok")]), RigOptions::default(), move |sessions| {
+        let server = with_session_info(sessions);
+        let s = Arc::clone(sessions);
+        server.add(tool("session_info", "session.info", "builtin", true), move |_, n| {
+            if n > 0 {
+                return Outcome::text("session 1");
+            }
+            s.other_change("lost.with.the.reply");
+            h.store(true, Ordering::SeqCst);
+            Outcome::text("session 1").held_after_heads_up(&g)
+        });
+        server
+    });
+    rig.host.send(UserMessage::new("go")).unwrap();
+    Rig::wait_for("the held reply", || held.load(Ordering::SeqCst));
+    rig.host.stop();
+    assert_eq!(rig.until_done(0.0).last(), Some(&AssistantEvent::Done));
+    assert!(rig.steps().is_empty(), "no transaction was retained");
+    rig.say("again", 0.0);
+    let request = request_text(rig.llm.requests().last().unwrap());
+    assert_eq!(request.matches("lost.with.the.reply").count(), 1, "{request}");
+    drop(gate);
+}
+
+#[test]
+fn a_compaction_before_the_first_turn_keeps_the_owed_notices_the_context_gave() {
+    let rig = Rig::with(
+        script(vec![
+            call_turn("", &[("c1", "face_set_profile", "{}")]),
+            heavy_ending("DONE-ONE"),
+            say_turn("SUMMARY-TEXT"),
+            say_turn("ok"),
+        ]),
+        RigOptions { window: Some(20_000), prices: free_prices(), ..RigOptions::default() },
+        commit_after_an_edit_by_others,
+    );
+    rig.say("one", 0.0);
+    rig.say("two", 0.0);
+    let requests = rig.llm.requests();
+    assert_eq!(requests.len(), 4, "the second message compacted first");
+    let request = request_text(requests.last().unwrap());
+    assert!(request.contains("SUMMARY-TEXT"), "{request}");
+    assert_eq!(request.matches("during.the.commit").count(), 1, "kept through the compaction: {request}");
+}
+
+#[test]
+fn a_compaction_before_the_first_turn_keeps_a_late_result_the_context_gave() {
+    let heavy_call = omuzaki_llm_mock::ScriptTurn::new(vec![
+        omuzaki_llm_api::stream::LlmEvent::start("m"),
+        omuzaki_llm_api::stream::LlmEvent::tool_use_start("c1", "render_preview"),
+        omuzaki_llm_api::stream::LlmEvent::tool_use_end("c1"),
+        omuzaki_llm_api::stream::LlmEvent::Usage(omuzaki_llm_api::usage::Usage::new(15_001, 10)),
+        omuzaki_llm_api::stream::LlmEvent::Stop(omuzaki_llm_api::stream::StopReason::ToolUse),
+    ]);
+    let rig = Rig::with(
+        script(vec![heavy_call, say_turn("SUMMARY-TEXT"), say_turn("ok")]),
+        RigOptions { window: Some(20_000), prices: free_prices(), late_server: true, ..RigOptions::default() },
+        standard_server,
+    );
+    rig.host.send(UserMessage::new("go")).unwrap();
+    let mut seen = Vec::new();
+    Rig::wait_for("the call", || {
+        seen.extend(std::iter::from_fn(|| rig.rx.try_recv()));
+        seen.iter().any(|e| matches!(e, AssistantEvent::ToolCall { .. }))
+    });
+    rig.host.stop();
+    rig.until_done(0.0);
+    Rig::wait_for("the late result", || {
+        rig.sink.entries().iter().any(|e| matches!(e, Entry::ToolResult { id, .. } if id == "c1:late"))
+    });
+    rig.say("again", 0.0);
+    let requests = rig.llm.requests();
+    assert_eq!(requests.len(), 3, "the second message compacted first");
+    let request = request_text(requests.last().unwrap());
+    assert!(request.contains("SUMMARY-TEXT") && request.contains("finished after the stop"), "{request}");
+    assert_eq!(request.matches("late.change").count(), 1, "kept through the compaction: {request}");
+}
+
+#[test]
+fn a_heads_up_lost_with_an_abandoned_call_survives_closing_the_host() {
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let held = Arc::new(AtomicBool::new(false));
+    let (g, h) = (Arc::clone(&gate), Arc::clone(&held));
+    let rig = Rig::with(script(vec![]), RigOptions::default(), move |sessions| {
+        let server = with_session_info(sessions);
+        let s = Arc::clone(sessions);
+        server.add(tool("session_info", "session.info", "builtin", true), move |_, n| {
+            if n > 0 {
+                return Outcome::text("session 1");
+            }
+            s.other_change("lost.before.closing");
+            h.store(true, Ordering::SeqCst);
+            Outcome::text("session 1").held_after_heads_up(&g)
+        });
+        server
+    });
+    rig.host.send(UserMessage::new("go")).unwrap();
+    Rig::wait_for("the held reply", || held.load(Ordering::SeqCst));
+    rig.host.stop();
+    rig.until_done(0.0);
+    let sessions = Arc::clone(&rig.sessions);
+    let sink = Arc::clone(&rig.sink);
+    // Closed before another message could read the log: closing reads it, and stores what the model is owed.
+    drop(rig);
+    let entries = sink.entries();
+    assert!(entries.iter().any(|e| matches!(e, Entry::Notice { text, .. } if text.contains("lost.before.closing"))));
+
+    sessions.set_state(omuzaki_ops_api::SessionState::Active);
+    sessions.open_caught_up();
+    let reopened = Rig::with(
+        script(vec![say_turn("ok")]),
+        RigOptions { history: entries, sessions: Some(sessions), ..RigOptions::default() },
+        with_session_info,
+    );
+    reopened.say("again", 0.0);
+    let request = request_text(reopened.llm.requests().last().unwrap());
+    assert_eq!(request.matches("lost.before.closing").count(), 1, "{request}");
+    drop(gate);
+}
+
+#[test]
+fn a_host_dropped_while_stopping_still_stores_the_cutoff() {
+    // The first turn is stored whole before Stop; the person read none of it. Dropping the host right after Stop must
+    // still store the cutoff, or a reopened conversation would show text nobody read.
+    let rig = Rig::with(
+        script(vec![call_turn("FIRST-TURN-TEXT ", &[("c1", "render_preview", "{}")]), long_text(20)]),
+        RigOptions { hold_after: Some(7 + 2), ..RigOptions::default() },
+        standard_server,
+    );
+    rig.host.send(UserMessage::new("go")).unwrap();
+    rig.wait_parked();
+    rig.host.stop();
+    let sink = Arc::clone(&rig.sink);
+    drop(rig);
+    let entries = sink.entries();
+    assert!(entries.iter().any(|e| matches!(e, Entry::Stopped { .. })), "{entries:?}");
+    let (resumed, markdown) = store_replay(&entries);
+    assert_eq!(assistant_text(&resumed.entries), "", "nothing was read");
+    assert!(!markdown.contains("FIRST-TURN-TEXT"), "{markdown}");
 }
