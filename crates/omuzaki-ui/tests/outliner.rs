@@ -470,8 +470,14 @@ fn s4(count: usize) -> (f64, f64) {
 
 #[test]
 fn bench_s4_ten_thousand_rows_cost_what_forty_do() {
-    let (small_ms, small_alloc) = s4(40);
-    let (big_ms, big_alloc) = s4(10_000);
+    // Best of three medians per size: a loaded machine slows whole runs, and the fastest one shows the cost of the work.
+    let best = |rows: usize| {
+        let runs: Vec<(f64, f64)> = (0..3).map(|_| s4(rows)).collect();
+        let fastest = runs.iter().map(|r| r.0).fold(f64::INFINITY, f64::min);
+        (fastest, runs[0].1)
+    };
+    let (small_ms, small_alloc) = best(40);
+    let (big_ms, big_alloc) = best(10_000);
     eprintln!(
         "S4: 40 rows {:.3} ms/frame, {small_alloc:.1} allocations; 10,000 rows {:.3} ms/frame, {big_alloc:.1} allocations",
         small_ms * 1000.0,

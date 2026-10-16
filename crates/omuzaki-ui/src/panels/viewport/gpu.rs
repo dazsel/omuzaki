@@ -11,12 +11,13 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
 use eframe::egui_wgpu::{self, CallbackResources, CallbackTrait, ScreenDescriptor};
-use omuzaki_anim_api::ChannelBuf;
+use omuzaki_anim_api::{ChannelBuf, HumanoidPose};
 use omuzaki_char_api::BuiltCharacter;
 use omuzaki_core::glam::UVec2;
 use omuzaki_render::WgpuRenderer;
 use omuzaki_render_api::{AlphaEncoding, Camera, Quality, Renderer, Scene, TargetDesc, TargetId};
 use omuzaki_stage::frame::face::{FaceRig, SETTLE_STEPS};
+use omuzaki_stage::frame::pose::seed_base_pose;
 use omuzaki_stage::frame::{FrameInput, Stage, StageClock};
 use omuzaki_stage::ops::render::still::StillLight;
 use omuzaki_stage::{StageError, UploadOptions};
@@ -56,6 +57,8 @@ pub struct Gpu {
     light: StillLight,
     quality: Quality,
     stage: Option<Stage>,
+    /// The character as sculpted: what a still shows when nothing animates it (decision 0014 section 4).
+    base: HumanoidPose,
     target: Option<(TargetId, UVec2)>,
     blit: Blit,
     /// The target's texture bound for the blit; remade when the target is.
@@ -71,7 +74,7 @@ impl Gpu {
         let renderer = WgpuRenderer::from_device(&state.adapter, state.device.clone(), state.queue.clone())
             .map_err(|e| e.to_string())?;
         let blit = Blit::new(&state.device, state.target_format);
-        Ok(Self { renderer, light, quality, stage: None, target: None, blit, bound: None })
+        Ok(Self { renderer, light, quality, stage: None, base: HumanoidPose::REST, target: None, blit, bound: None })
     }
 
     /// Installs a `Gpu` for `state` in its callback resources, once; later calls do nothing.
@@ -136,15 +139,17 @@ impl Gpu {
             if let Some(old) = self.stage.take() {
                 old.release(&mut self.renderer).map_err(stage_error)?;
             }
-            self.stage =
-                Some(stage(&mut self.renderer, built, &self.light, self.quality, target).map_err(stage_error)?);
+            let (staged, base) =
+                stage(&mut self.renderer, built, &self.light, self.quality, target).map_err(stage_error)?;
+            self.stage = Some(staged);
+            self.base = base;
             job.render = true;
             job.error = None;
         }
         let Some(stage) = self.stage.as_mut() else { return Ok(()) };
         if std::mem::take(&mut job.render) {
             stage.scene_mut().camera = job.camera;
-            let input = FrameInput { channels: ChannelBuf::NEUTRAL, ..FrameInput::default() };
+            let input = FrameInput { channels: ChannelBuf::NEUTRAL, pose: self.base, ..FrameInput::default() };
             stage.redraw(&mut self.renderer, &input).map_err(stage_error)?;
             job.renders += 1;
         }
@@ -194,31 +199,37 @@ impl Drop for Gpu {
 }
 
 /// Stages `built` on `target` as a still is staged: the light rig's scene, the face bound, the rig settled and one tick
-/// run, so a redraw from a camera is the still from that camera.
+/// run, so a redraw from a camera is the still from that camera. Also returns the base pose the redraws show.
 fn stage(
     renderer: &mut dyn Renderer,
     built: BuiltCharacter,
     light: &StillLight,
     quality: Quality,
     target: TargetId,
-) -> Result<Stage, StageError> {
+) -> Result<(Stage, HumanoidPose), StageError> {
     let mut scene = Scene::new(Camera::default());
     scene.lights.clone_from(&light.lights);
     scene.background = light.background;
     scene.post = light.post;
     scene.outline_light = light.outline_light;
     let has_face = built.face.is_some();
+    // As stills do: the sculpted pose, not the T-pose of `FrameInput::default()`.
+    let mut base = HumanoidPose::REST;
+    seed_base_pose(&built.rig, &mut base);
     let mut stage =
         Stage::new(renderer, built, UploadOptions::default(), scene, target, quality, StageClock::fixed(FPS))?;
     let ready = (|| {
         if has_face {
             stage.set_face(renderer, FaceRig::standard())?;
         }
+        let frame = FrameInput { pose: base, ..FrameInput::default() };
+        // The stage starts in the T-pose; the warm-up has to run under the base pose.
+        stage.tick(renderer, &frame)?;
         stage.settle(SETTLE_STEPS);
-        stage.tick(renderer, &FrameInput::default())
+        stage.tick(renderer, &frame)
     })();
     match ready {
-        Ok(_) => Ok(stage),
+        Ok(_) => Ok((stage, base)),
         Err(e) => {
             if let Err(cleanup) = stage.release(renderer) {
                 tracing::warn!(%cleanup, "releasing a stage that failed to start failed too");
