@@ -298,12 +298,21 @@ impl MockLibrary {
                 }
             }
         }
+        // Fail closed: a step whose item cannot be named or found cannot be shown to be publishable.
         m.steps.iter().find_map(|step| {
             let Step::Item(nested) = step else { return None };
-            let (Ok(id), Ok(req)) = (ItemId::new(&nested.item), VersionReq::parse(&nested.version)) else {
-                return None;
+            let Ok(id) = ItemId::new(&nested.item) else {
+                return Some(format!("step names an invalid item id `{}`", nested.item));
             };
-            self.pick(&id, &req).ok().and_then(|found| self.publish_blocker(found, depth + 1))
+            let Ok(req) = VersionReq::parse(&nested.version) else {
+                return Some(format!("step `{}` has an invalid version requirement `{}`", nested.item, nested.version));
+            };
+            match self.pick(&id, &req) {
+                Ok(found) => self.publish_blocker(found, depth + 1),
+                Err(_) => {
+                    Some(format!("step `{}@{}` is not held, so its rights are unknown", nested.item, nested.version))
+                }
+            }
         })
     }
 

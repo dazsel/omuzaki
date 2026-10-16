@@ -121,3 +121,40 @@ fn a_cjk_query_finds_a_title_that_contains_it_in_korean_japanese_and_chinese() {
     assert_eq!(hits("がみ"), ["test/colourways/ja"], "Japanese: voiced kana keep their marks");
     assert_eq!(hits("长发"), ["test/colourways/zh"], "Chinese: a bigram inside the title");
 }
+
+fn bundle_naming(item: &str, version: &str) -> omuzaki_library_api::ItemManifest {
+    let mut m = fixtures::bundle();
+    m.id = "test/outfits/probe".into();
+    m.steps = vec![omuzaki_library_api::Step::Item(omuzaki_library_api::ItemStep {
+        item: item.into(),
+        version: version.into(),
+        params: std::collections::BTreeMap::default(),
+        bind: std::collections::BTreeMap::default(),
+        when: None,
+    })];
+    m
+}
+
+#[test]
+fn a_bundle_step_naming_an_item_that_is_not_held_is_not_publishable() {
+    let mut library = MockLibrary::fixtures();
+    library.insert(bundle_naming("test/hair/nonexistent", "^1"), ItemScope::FirstParty).unwrap();
+    assert!(!publishable(&library, "test/outfits/probe"), "an unheld item's rights are unknown: fail closed");
+    let mut other = MockLibrary::fixtures();
+    other.insert(bundle_naming("test/hair/ribbon", "^9"), ItemScope::FirstParty).unwrap();
+    assert!(!publishable(&other, "test/outfits/probe"), "no held version satisfies the requirement");
+}
+
+#[test]
+fn a_bundle_step_with_an_unparseable_id_or_version_never_reaches_publishability() {
+    // `check` refuses both, so such a bundle cannot be held and so cannot report `publish_ok: true`.
+    let mut library = MockLibrary::fixtures();
+    for (item, version) in [("Not An Id", "^1"), ("test/hair/ribbon", "not a version")] {
+        let why = match library.insert(bundle_naming(item, version), ItemScope::FirstParty) {
+            Err(LibraryError::Storage(why)) => why,
+            other => panic!("expected a refusal, got {other:?}"),
+        };
+        assert!(why.contains("fails check"), "{why}");
+    }
+    assert!(library.describe(&"test/outfits/probe".parse().unwrap(), None).is_err(), "nothing was held");
+}
