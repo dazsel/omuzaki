@@ -1,0 +1,13 @@
+# The mitten hands (#157). Read by tools/ci/evidence.py; the format is documented at the top of that script.
+
+[[case]]
+name = "hands"
+description = "The left mitten hand, front and side, 384 px, close camera: on soft-sd and standard with the thumb opened 25 degrees and 1.3 long, and on soft-sd with the palm twice as long and half as wide and the thumb spread 30 degrees (its joint lies outside the palm, so the root ring is seated inside it)."
+env = { OMUZAKI_HANDS_PPM = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-char", "--test", "hands_mitten", "render_the_hands_when_asked", "--", "--exact"] },
+]
+images = [
+    "soft-sd-front.ppm", "soft-sd-side.ppm", "standard-front.ppm", "standard-side.ppm",
+    "soft-sd-narrow-front.ppm", "soft-sd-narrow-side.ppm",
+]

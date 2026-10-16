@@ -354,21 +354,34 @@ fn the_wrist_end_lies_inside_the_forearm_at_every_size_and_template() {
 
 #[test]
 fn the_thumb_root_lands_on_the_layouts_joint_whatever_the_palm_and_spread() {
-    use omuzaki_anim_api::HumanoidBone::LeftThumbProximal;
+    use omuzaki_anim_api::HumanoidBone::{LeftThumbDistal, LeftThumbProximal};
     let (_, block) = block_vertices(HandStyle::Mitten);
+    let centre = |ring: &[Vec3]| ring[..THUMB_RING - 1].iter().copied().sum::<Vec3>() / (THUMB_RING - 1) as f32;
     for template in TEMPLATES {
-        for (palm_length, palm_width, thumb_length, spread) in [(0.5, 2.0, 2.0, -30.0), (1.0, 1.0, 1.0, 0.0)] {
+        for (palm_length, palm_width, thumb_length, spread, joint_inside_palm) in [
+            (0.5, 2.0, 2.0, -30.0, true),
+            (1.0, 1.0, 1.0, 0.0, true),
+            (2.0, 0.5, 1.0, 30.0, false),
+            (2.0, 2.0, 0.5, 30.0, false),
+        ] {
             let hand =
                 HandParams { palm_length, palm_width, thumb_length, thumb_spread_deg: spread, ..Default::default() };
             let (layout, parts) = built(template, &params(HandStyle::Mitten, hand, 1.0));
             let positions = &mesh(&parts, "hand-l").geometry.positions;
-            let ring = &positions[block..block + THUMB_RING];
-            let root = ring[..THUMB_RING - 1].iter().copied().sum::<Vec3>() / (THUMB_RING - 1) as f32;
             let joint = layout.joint64(LeftThumbProximal).unwrap().as_vec3();
-            let error = root.distance(joint);
+            let label = format!("{template} length {palm_length} width {palm_width} spread {spread}");
+            // Where the joint lies inside the palm, the open root ring sits on it exactly.
+            if joint_inside_palm {
+                let error = centre(&positions[block..block + THUMB_RING]).distance(joint);
+                assert!(error < 1e-4, "{label}: the thumb root is {error} m off");
+            }
+            // Where it lies outside a narrow palm, the root ring is seated inside the palm instead, and the thumb
+            // itself still starts at the joint: the next ring is a tenth of the thumb along from it.
+            let thumb = layout.joint64(LeftThumbDistal).unwrap().as_vec3().distance(joint);
+            let next = centre(&positions[block + THUMB_RING..block + 2 * THUMB_RING]).distance(joint);
             assert!(
-                error < 1e-4,
-                "{template} length {palm_length} width {palm_width} spread {spread}: the thumb root is {error} m off"
+                next < 0.2 * thumb,
+                "{label}: the thumb's second ring is {next} m from the joint (thumb {thumb} m)"
             );
         }
     }
@@ -420,8 +433,10 @@ fn every_vertex_of_the_thumbs_first_ring_lies_in_the_palm_at_every_extreme_and_t
 }
 
 /// Renders the left hand of the built body (front and side) through the mock toon renderer when
-/// `OMUZAKI_HANDS_PPM=<directory>` is set, as binary PPM files, on soft-sd and standard, with the thumb opened and
-/// lengthened so its placement shows. The fingertip tint is the hands' vertex colours.
+/// `OMUZAKI_HANDS_PPM=<directory>` is set, as binary PPM files: on soft-sd and standard with the thumb opened and
+/// lengthened so its placement shows, and on soft-sd at the extreme where the thumb's joint lies outside the palm
+/// (palm twice as long and half as wide, thumb spread 30 degrees), so the seated root ring shows. The fingertip tint
+/// is the hands' vertex colours.
 #[test]
 #[allow(clippy::disallowed_methods, reason = "test evidence, written to a folder the developer names; not an op")]
 fn render_the_hands_when_asked() {
@@ -436,13 +451,19 @@ fn render_the_hands_when_asked() {
     let Some(directory) = std::env::var_os("OMUZAKI_HANDS_PPM") else { return };
     let directory = std::path::PathBuf::from(directory);
     std::fs::create_dir_all(&directory).unwrap();
-    for template in ["soft-sd", "standard"] {
+    let opened = serde_json::json!({ "thumb_spread_deg": 25.0, "thumb_length": 1.3 });
+    let narrow = serde_json::json!({ "palm_length": 2.0, "palm_width": 0.5, "thumb_spread_deg": 30.0 });
+    for (label, template, hand) in [
+        ("soft-sd", "soft-sd", opened.clone()),
+        ("standard", "standard", opened),
+        ("soft-sd-narrow", "soft-sd", narrow),
+    ] {
         let node = serde_json::json!({
             "name": "Hands",
             "template": template,
             "seed": 3,
             "palette": { "skin": "#f9d3c5", "skin_shade": "#f2b4ab", "skin_line": "#c98a80" },
-            "parts": { "body": { "kind": "body", "params": { "hand": { "thumb_spread_deg": 25.0, "thumb_length": 1.3 } } } }
+            "parts": { "body": { "kind": "body", "params": { "hand": hand } } }
         });
         let def = CharacterDef::from_node(&node).unwrap();
         let built = RegistryBuilder
@@ -486,7 +507,7 @@ fn render_the_hands_when_asked() {
                     ppm.extend([r, g, b]);
                 }
             }
-            std::fs::write(directory.join(format!("{template}-{view}.ppm")), ppm).unwrap();
+            std::fs::write(directory.join(format!("{label}-{view}.ppm")), ppm).unwrap();
         }
     }
 }
