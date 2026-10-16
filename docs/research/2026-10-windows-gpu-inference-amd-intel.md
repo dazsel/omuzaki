@@ -274,7 +274,7 @@ blendshapes, `vad`}:
 | Cold load | `load` wall time, including plugin registration and first shader compile | registry budget; first-run stall |
 | First `run` | wall time of run 1 after load | shader compilation can land here |
 | Steady latency | paced at 30 fps, at least 20 s warm-up, then at least 3,000 timed runs: mean, p50, p95, p99. Deadline-based pacing, so a late run does not shift the next | the tier-R method (spec v3 section 10): a tight loop keeps the GPU at high clocks and reads faster than a stream will. Per-graph numbers are diagnostics |
-| CPU per frame | process CPU time (Windows `GetProcessTimes`) over the 3,000 paced runs, divided by 3,000 | `cpu.total` counts every cycle (spec v3 section 10) |
+| CPU per frame | process CPU time (Windows `GetProcessTimes`) over the 3,000 paced runs, divided by 3,000. A diagnostic and the input to the relative part of rule 3; the absolute `cpu.total` gate comes from the five-minute budget-scene run in section 6.4 | `cpu.total` counts every cycle (spec v3 section 10) |
 | Idle CPU | load the session, then 10 s of no `run` calls; CPU ms per second | the "never spin-wait" rule: must be under 1 ms/s |
 | Placement | session log or `with_disable_cpu_fallback`: nodes on GPU against CPU | partial coverage means mixed execution |
 | Parity | max absolute difference of each output against the CPU output on the same inputs, judged against the per-output tolerances in section 6.4 | ADR 0009 rule 2: a cross-platform numeric test states its tolerance |
@@ -286,7 +286,10 @@ blendshapes, `vad`}:
 The per-graph numbers in 6.3 are diagnostics. They cannot decide the default, because `track_roi` leaves out the
 detector, the frame hand-off and the rest of `track.face` (the bench says so itself). The decision uses the complete
 tracker path (camera frame in, channels out) in the budget scene of spec v3 section 10, once with the CPU provider and
-once with the candidate, both paced at 30 fps with the same warm-up and frame count. F3 therefore extends the probe
+once with the candidate, both paced at 30 fps with the same warm-up (at least 20 s). Two window lengths apply. The
+per-graph diagnostics and the latency percentiles use at least 3,000 measured frames. The absolute gates, `cpu.total`
+(mean) and `ram.runtime` (max), are specified over 5 minutes, so the budget-scene run behind rules 3 and 7 records
+**9,000 measured frames** (5 min at 30 fps); a 100 s run would miss late memory growth and slow CPU drift. F3 therefore extends the probe
 to drive `FaceTracker` end to end, not only single graphs.
 
 **Parity tolerances (proposed, fixed here before the probe is built; a change needs a commit before the run).** FP32
@@ -295,23 +298,30 @@ per output, as max absolute difference against the CPU output on the same inputs
 
 | Output | Tolerance |
 | --- | --- |
-| Landmarks (normalised image coordinates) | 2e-3 (about half a pixel on a 256 px crop) |
+| Landmarks x, y (normalised image coordinates; the graph's `Identity` output divided by the 256 px input) | 2e-3 (about half a pixel on a 256 px crop) |
+| Landmark z (same scaling) | 4e-3 (twice x and y: depth is the least constrained coordinate; proposed) |
+| Landmark presence (`Identity_1` logit, compared after sigmoid) | 1e-2 on the probability, which is at most 4e-2 on the logit because the sigmoid's slope is at most 0.25 |
 | Blendshape scores (0 to 1) | 1e-2 |
-| Detector box coordinates (normalised) | 2e-3 |
-| Detector scores after sigmoid | 1e-2 |
+| Detector box coordinates (the `regressors` output, normalised to the 128 px input) | 2e-3 |
+| Detector keypoints (six x, y pairs, same output and scaling as the box) | 2e-3 each; the two eye keypoints set the ROI rotation, and 2e-3 of the 128 px input is about 0.26 px against an eye distance of roughly 40 px, under half a degree of rotation (inference) |
+| Detector scores after sigmoid (`classificators`) | 1e-2 |
 | `vad` speech probability | 1e-2 |
 | Final published tracker channels (full path) | 2e-2 |
 
+The presence value and the detector score also drive branches (face found or lost, which detection wins). On every
+frame where the CPU run's value sits farther than the tolerance from its decision threshold, the GPU run must take
+the same branch; frames inside the band are reported, not failed.
+
 **Rules.** A GPU provider becomes the Windows default for a slot only if, on `R`:
 1. every node runs on it (no CPU fallback) for that model;
-2. the complete tracker path's p95 is at most the CPU path's p95 and at most the 5 ms `track.face` budget;
+2. for a face slot (`detector`, `landmarks`, `blendshapes`), the complete tracker path's p95 is at most the CPU path's p95 and at most the 5 ms `track.face` budget. For any other slot the candidate is judged on that slot's own end-to-end workload and budget: `vad@1` runs the speech host's `asr.listen` scene (mean at most 0.5% of 8 cores over 5 min, spec v3 section 10), and `tts@1` runs its own paced synthesis workload against the real-time-factor and first-chunk thresholds proposed in the GPL-free TTS research note (spike item 6) until the spec has `tts.*` rows. A non-face slot is never judged by `FaceTracker`;
 3. CPU per frame is at least 25% lower than the CPU path, **and** `cpu.total` of the full budget scene, both
-   configurations (phone and webcam), passes its absolute gate (mean at most 3% of 8 cores). The relative drop alone
+   configurations (phone and webcam), over the 9,000-frame run passes its absolute gate (mean at most 3% of 8 cores). The relative drop alone
    does not pass: 8% to 6% would still be twice the budget;
 4. idle CPU is under 1 ms per second;
 5. every output stays inside the tolerance table above;
 6. first-run latency is hidden by a warm-up inside `load`;
-7. `ram.runtime` of the budget scene with the provider on stays at or under 400 MB on each hardware graphics backend, measured as in section 6.3.
+7. `ram.runtime` of the budget scene with the provider on, maximum over the 9,000-frame run, stays at or under 400 MB on each hardware graphics backend, measured as in section 6.3.
 
 If rank 1 fails 1 to 7 for the face graphs but passes for a larger model such as `tts@1`, GPU is enabled per slot, not
 globally (manifests already list providers per model). If it fails everywhere and DirectML 1.24.4 passes, the question
@@ -324,9 +334,9 @@ with the numbers.
 | --- | --- |
 | Does plugin 0.4.0 register against core 1.28.3, and do contrib-op schemas match? | The CI smoke job and the Python A/B script (section 6.1) |
 | Does the WebGPU plugin help any model at tier `R`? | Section 6.3 on `R` |
-| Does it work on Intel GPUs (the "subgroup size 32" pin)? | No Intel GPU is available in CI or at `R`. Needs an Intel owner machine or a volunteer run of the same bundle: new `needs-owner` item |
+| Does it work on Intel GPUs (the "subgroup size 32" pin)? | A test to run on Intel hardware when the work is scheduled (Director ruling: not a legal question). No Intel GPU is available in CI or at `R`, so it needs an Intel owner machine or a volunteer run of the same bundle: `needs-owner` item F9 |
 | Is `dxcompiler.dll` required? | The ablation row |
-| Is the Windows ML redistribution grant acceptable (indemnity, end-user terms)? | Director and owner; only matters if rank 3 is wanted |
+| Is the redistribution grant acceptable? | Settled by Director ruling: the WebGPU plugin EP is MIT, and the DirectML fallback ships under its own redistributable licence, recorded in the register when it is added. No separate legal review. The Windows ML grant matters only if rank 3 is wanted |
 | Which `ort` features above API 24 does the workspace use? | A grep for APIs gated at `api-25`..`api-27` (F7); needed only for rank 2 |
 | Can Dawn be steered to the iGPU or dGPU? | Read the plugin's option list for the pinned version; test on a two-GPU laptop |
 | Why did Microsoft stop DirectML packages after 1.24.4, and will they return? | Ask upstream on microsoft/onnxruntime; no answer found. Not blocking |
