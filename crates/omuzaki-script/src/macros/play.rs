@@ -36,13 +36,14 @@ pub struct PlayError {
 /// # Errors
 /// As [`play_within`].
 pub fn play(runner: &dyn Runner, m: &Macro, actor: &Actor, grants: &Grants) -> Result<PlayReport, PlayError> {
-    play_within(runner, m, actor, grants, &Limits::console())
+    play_within(runner, m, actor, grants, &Limits::console(), &SystemClock::new())
 }
 
-/// [`play`] held to `limits`, which a macro is held to as a script is: a step a script's calls are refused (a job, an
-/// edit with effects outside the document, which the rollback can't undo, and `script.run`, which would recurse) before
-/// anything starts, more than [`Limits::calls`] steps are refused before anything starts, and the transaction is rolled
-/// back when the clock passes [`Limits::seconds`], which is checked after every call, the last one included.
+/// [`play`] held to `limits`, with the time read from `clock` (a test passes a fake one). A macro is held to them as a
+/// script is: a step a script's calls are refused (a job, an edit with effects outside the document, which the rollback
+/// can't undo, and `script.run`, which would recurse) before anything starts, more than [`Limits::calls`] steps are
+/// refused before anything starts, and the transaction is rolled back when the clock passes [`Limits::seconds`], which
+/// is checked after every call, the last one included.
 ///
 /// # Errors
 /// A [`PlayError`] naming the first step that failed; everything the macro did is rolled back first. If the rollback
@@ -54,6 +55,7 @@ pub fn play_within(
     actor: &Actor,
     grants: &Grants,
     limits: &Limits,
+    clock: &dyn Clock,
 ) -> Result<PlayReport, PlayError> {
     if m.steps.is_empty() {
         return Ok(PlayReport { steps: 0 });
@@ -84,7 +86,6 @@ pub fn play_within(
         }
         PlayError { step, op: op.to_owned(), error }
     };
-    let clock = SystemClock::new();
     let started = clock.now().0;
     for (index, step) in m.steps.iter().enumerate() {
         let request = Request {

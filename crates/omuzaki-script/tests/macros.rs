@@ -6,7 +6,9 @@
 mod common;
 
 use common::{Entry, FakeRunner};
-use omuzaki_core::time::Seconds;
+use std::sync::Arc;
+
+use omuzaki_core::time::{Clock, FakeClock, Seconds, SystemClock};
 use omuzaki_doc_api::{DocPath, DocVersion, Patch, Value};
 use omuzaki_ops_api::{Actor, Cause, CauseKind, ErrorCode, Event, Grants, Mode, OpRecord, TxId};
 use omuzaki_script::{FileError, Limits, Macro, MacroRecorder, RecordedCall, from_jsonl, play, play_within, to_jsonl};
@@ -497,14 +499,15 @@ fn play_refuses_a_macro_over_the_call_limit_before_a_transaction_begins() {
     let runner = FakeRunner::default();
     let steps: Vec<(&str, Value)> = (0..3).map(|_| ("face.set_profile", json!({ "character": "a" }))).collect();
     let limits = Limits { calls: 2, ..Limits::console() };
-    let error = play_within(&runner, &macro_of(&steps), &alice(), &Grants::person(), &limits).expect_err("3 > 2");
+    let error = play_within(&runner, &macro_of(&steps), &alice(), &Grants::person(), &limits, &SystemClock::new())
+        .expect_err("3 > 2");
     assert_eq!((error.step, error.op.as_str()), (3, "face.set_profile"));
     assert_eq!(error.error.code, ErrorCode::Invalid, "{error}");
     assert!(error.error.message.contains("3 steps, over the 2-call limit"), "{error}");
     assert_eq!((runner.begins(), runner.requests().len()), (0, 0));
     // The same macro within the limit plays, and `play` holds a macro to the console's 10,000.
     let ok = Limits { calls: 3, ..Limits::console() };
-    play_within(&runner, &macro_of(&steps), &alice(), &Grants::person(), &ok).expect("3 <= 3");
+    play_within(&runner, &macro_of(&steps), &alice(), &Grants::person(), &ok, &SystemClock::new()).expect("3 <= 3");
     let long: Vec<(&str, Value)> = (0..10_001).map(|_| ("face.set_profile", json!({ "character": "a" }))).collect();
     assert!(play(&FakeRunner::default(), &macro_of(&long), &alice(), &Grants::person()).is_err());
 }
@@ -513,14 +516,16 @@ fn play_refuses_a_macro_over_the_call_limit_before_a_transaction_begins() {
 fn play_rolls_back_when_the_clock_passes_the_seconds_even_on_the_last_call() {
     for steps in [3_usize, 1] {
         let runner = FakeRunner::default();
-        // Each request takes 600 ms. With 3 steps the deadline passes during the second; with one step it passes
-        // during the only (last) call, which no later step is left to notice.
-        *runner.on_request.lock().unwrap() = Some(Box::new(move |_| {
-            std::thread::sleep(std::time::Duration::from_millis(if steps == 1 { 1_200 } else { 600 }));
-        }));
+        // The clock is fake: each request moves it. With 3 steps the deadline passes during the second (0.6 s each,
+        // 1 s allowed); with one step it passes during the only, last call, which no later step is left to notice.
+        let clock = Arc::new(FakeClock::new(Seconds(0.0)));
+        let ticking = clock.clone();
+        let each = if steps == 1 { 1.2 } else { 0.6 };
+        *runner.on_request.lock().unwrap() = Some(Box::new(move |_| ticking.advance(Seconds(each))));
         let all: Vec<(&str, Value)> = (0..steps).map(|_| ("face.set_profile", json!({ "character": "a" }))).collect();
         let limits = Limits { seconds: 1, ..Limits::console() };
-        let error = play_within(&runner, &macro_of(&all), &alice(), &Grants::person(), &limits).expect_err("too slow");
+        let error = play_within(&runner, &macro_of(&all), &alice(), &Grants::person(), &limits, clock.as_ref())
+            .expect_err("too slow");
         assert_eq!(error.error.code, ErrorCode::Invalid, "{error}");
         assert!(error.error.message.contains("1-second limit"), "{error}");
         assert_eq!(error.step, steps.min(2), "the step during which the deadline passed");
