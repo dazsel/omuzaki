@@ -56,6 +56,11 @@ omuzaki-anim-api = { path = "../omuzaki-anim-api" }
 omuzaki-char-api = { path = "../omuzaki-char-api" }
 # ...and runs the same design as an MCP client over `omuzaki mcp`'s server.
 rmcp = { workspace = true, features = ["client"] }
+# ...and renders its turnaround through the deterministic mock renderer.
+omuzaki-render-api = { path = "../omuzaki-render-api" }
+omuzaki-render-mock = { path = "../omuzaki-render-mock" }
+# ...and writes it as a VRM through the io crates the binary links, reading it back.
+omuzaki-io-api = { path = "../omuzaki-io-api" }
 # The expressions and the camera ids the idle hosts list.
 omuzaki-face-api = { path = "../omuzaki-face-api" }
 omuzaki-track-api = { path = "../omuzaki-track-api" }
