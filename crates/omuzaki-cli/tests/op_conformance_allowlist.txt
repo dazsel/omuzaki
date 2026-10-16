@@ -77,6 +77,11 @@ rig.weights.brush
 rig.weights.clear
 rig.weights.mirror
 rig.weights.report
+# trigger.*: merged by #1954 before the workspace scans ran on every change; examples and undo are #2195.
+trigger.bind
+trigger.list
+trigger.press
+trigger.unbind
 variant.clear_override
 variant.create
 variant.delete
@@ -90,3 +95,6 @@ output.window.close
 output.window.open
 perform.calibrate
 perform.set_retarget
+trigger.bind
+trigger.press
+trigger.unbind
