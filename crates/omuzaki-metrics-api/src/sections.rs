@@ -336,14 +336,7 @@ pub struct TrackerMetrics {
 impl TrackerMetrics {
     /// An all-zero section published at `at`.
     pub fn new(at: Seconds) -> Self {
-        Self {
-            at,
-            track_ms_p50: 0.0,
-            track_ms_p95: 0.0,
-            track_ms_max: 0.0,
-            tracker_frames: 0,
-            tracker_dropped: 0,
-        }
+        Self { at, track_ms_p50: 0.0, track_ms_p95: 0.0, track_ms_max: 0.0, tracker_frames: 0, tracker_dropped: 0 }
     }
 
     pub(crate) fn to_words(self) -> [u64; TRACKER_WORDS] {
