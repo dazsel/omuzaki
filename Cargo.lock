@@ -4567,6 +4567,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-update-mock"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-ai-api",
+ "omuzaki-update-api",
+]
+
+[[package]]
 name = "omuzaki-vts"
 version = "0.0.0"
 dependencies = [

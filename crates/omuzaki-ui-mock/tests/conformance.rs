@@ -6,7 +6,7 @@ use omuzaki_ops_api::Actor;
 use omuzaki_ops_mock::MockRunner;
 use omuzaki_ui_api::panel::{Panel, PanelCtx};
 use std::borrow::Cow;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use omuzaki_ui_api::layout::Node;
 use omuzaki_ui_api::registry::{Group, Region};
@@ -105,6 +105,31 @@ impl Panel for LateInit {
     }
 }
 
+/// Whether an [`Exclusive`] panel is alive: the stand-in for a resource only one instance can hold (a camera, a port).
+static EXCLUSIVE_TAKEN: AtomicBool = AtomicBool::new(false);
+
+/// Holds the exclusive token for its lifetime, as a panel that owns a device does; a second live instance can't build.
+struct Exclusive;
+
+impl Exclusive {
+    fn take() -> Self {
+        assert!(!EXCLUSIVE_TAKEN.swap(true, Ordering::SeqCst), "the token is held by another instance");
+        Self
+    }
+}
+
+impl Drop for Exclusive {
+    fn drop(&mut self) {
+        EXCLUSIVE_TAKEN.store(false, Ordering::SeqCst);
+    }
+}
+
+impl Panel for Exclusive {
+    fn ui(&mut self, ui: &mut egui::Ui, _ctx: &PanelCtx<'_>) {
+        ui.label("Exclusive");
+    }
+}
+
 /// A fine panel whose id two workspaces also use.
 struct Shared;
 
@@ -137,6 +162,10 @@ omuzaki_ui_api::register_panel! {
 omuzaki_ui_api::register_panel! {
     id: "late-init", title: "Late init", icon: "", region: Region::Left, min_size: [240.0, 160.0], order: 9,
     build: |_| Box::new(LateInit::default()),
+}
+omuzaki_ui_api::register_panel! {
+    id: "exclusive", title: "Exclusive", icon: "", region: Region::Left, min_size: [240.0, 160.0], order: 11,
+    build: |_| Box::new(Exclusive::take()),
 }
 omuzaki_ui_api::register_panel! {
     id: "shared", title: "Shared", icon: "", region: Region::Left, min_size: [240.0, 160.0], order: 8,
@@ -242,4 +271,14 @@ fn a_build_that_panics_is_a_named_problem_and_never_a_panic() {
     let ctx = PanelCtx::new(&runner, &actor);
     let host = MockHost::new();
     assert_eq!(host.check("bad-build", &ctx), ["bad-build: its build panics"]);
+}
+
+#[test]
+fn a_panel_holding_an_exclusive_resource_passes_because_one_instance_lives_at_a_time() {
+    let runner = MockRunner::new(MemDoc::new());
+    let actor = Actor::System;
+    let ctx = PanelCtx::new(&runner, &actor);
+    let host = MockHost::new();
+    assert_eq!(host.check("exclusive", &ctx), Vec::<String>::new());
+    assert!(!EXCLUSIVE_TAKEN.load(Ordering::SeqCst), "check leaves no instance alive");
 }

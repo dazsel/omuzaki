@@ -129,7 +129,9 @@ impl MockHost {
     /// - it draws with no document: its body, or (when unavailable) a registered empty state;
     /// - it has a non-empty title (the panel's override, else the registered one) and, when it overrides the
     ///   screen-reader label, a non-empty label; its frame gives AccessKit something to announce;
-    /// - nothing panics at its minimum size, at half of it, or at 1 by 1 points.
+    /// - nothing panics at its minimum size, at half of it, or at 1 by 1 points. Each size is drawn on a freshly built
+    ///   panel, and only one instance is alive at a time (as in the shell), so a panel that holds an exclusive resource
+    ///   for its lifetime passes.
     pub fn check(&self, id: &str, ctx: &PanelCtx<'_>) -> Vec<String> {
         let mut problems = Vec::new();
         let valid = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-');
@@ -160,6 +162,9 @@ impl MockHost {
         if panel.accessibility_label().is_some_and(|label| label.trim().is_empty()) {
             problems.push(format!("{id}: the screen-reader label is empty"));
         }
+        // The shell holds one instance at a time, so this one goes before the sizes build theirs: a panel that holds
+        // an exclusive resource (a device, a port, a file lock) for its lifetime must not fail its own check.
+        drop(panel);
         let [w, h] = def.min_size;
         for (index, size) in [def.min_size, [w / 2.0, h / 2.0], [1.0, 1.0]].into_iter().enumerate() {
             // A fresh panel and a fresh context for each size: a panel that sets itself up on its first draw must be
