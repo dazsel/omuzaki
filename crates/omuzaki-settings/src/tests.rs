@@ -604,3 +604,129 @@ fn profiles_are_not_stored_and_session_state_is_kept_in_memory() {
     store.session().begin_open(Path::new("/p/a")).unwrap();
     assert_eq!(store.session().state().opening.as_deref(), Some(Path::new("/p/a")));
 }
+
+#[test]
+fn nothing_is_moved_aside_when_the_other_file_cannot_be_read() {
+    let rig = Rig::new();
+    rig.write_user("[ui\nscale = ");
+    // A folder where machine.toml should be: reading it fails.
+    fs::create_dir_all(rig.machine_file()).unwrap();
+    let store = rig.open();
+    assert!(rig.user_file().exists(), "start-up leaves the broken file for a later pass");
+    assert!(store.findings().iter().any(|f| f.error.to_string().contains("left in place")), "{:?}", store.findings());
+    let error = store.reload(Mode::Apply, &person()).unwrap_err();
+    assert!(matches!(error.kind, SettingErrorKind::Storage { .. }));
+    assert!(rig.user_file().exists(), "a failed reload changes nothing on disk");
+    assert!(!Rig::names_in(rig.paths.config()).iter().any(|n| n.contains(".broken-")));
+}
+
+/// A store whose writer pauses inside its first write, after the file is read and while the lock is held.
+fn paused_store(rig: &Rig, on_first: impl Fn() + Send + Sync + 'static) -> Store {
+    let first = AtomicBool::new(true);
+    let mut backend = FileBackend::new(rig.paths.clone());
+    backend.after_read = Some(Box::new(move || {
+        if first.swap(false, Ordering::SeqCst) {
+            on_first();
+        }
+    }));
+    Store::with_backend(Box::new(backend), registrations())
+}
+
+#[test]
+fn a_reload_waits_for_a_flush_in_progress_and_then_keeps_what_it_wrote() {
+    let rig = Rig::new();
+    let (entered_tx, entered_rx) = mpsc::channel::<()>();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let (entered_tx, release_rx) = (Mutex::new(entered_tx), Mutex::new(release_rx));
+    let store = paused_store(&rig, move || {
+        entered_tx.lock().unwrap().send(()).unwrap();
+        release_rx.lock().unwrap().recv().unwrap();
+    });
+    set::<Scale>(&store, &111);
+    entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    thread::scope(|scope| {
+        let reload = scope.spawn(|| store.reload(Mode::Apply, &person()));
+        thread::sleep(Duration::from_millis(200));
+        assert!(!reload.is_finished(), "the reload must not read the file while a flush is about to replace it");
+        release_tx.send(()).unwrap();
+        reload.join().unwrap().unwrap();
+    });
+    assert_eq!(get::<Scale>(&store), 111);
+    store.flush().unwrap();
+    assert!(rig.user_text().contains("scale = 111"));
+    assert_eq!(get::<Scale>(&store), 111, "the snapshot did not go back to the old file text");
+}
+
+#[test]
+fn a_reload_drops_the_finding_for_a_value_a_pending_edit_replaces() {
+    let rig = Rig::new();
+    let (entered_tx, entered_rx) = mpsc::channel::<()>();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let (entered_tx, release_rx) = (Mutex::new(entered_tx), Mutex::new(release_rx));
+    // The writer is held inside its first flush, so the edit stays pending while the reload runs.
+    let store = paused_store(&rig, move || {
+        entered_tx.lock().unwrap().send(()).unwrap();
+        release_rx.lock().unwrap().recv().unwrap();
+    });
+    set::<Theme>(&store, &"light".to_owned());
+    entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    release_tx.send(()).unwrap();
+    store.flush().unwrap();
+    rig.write_user("[ui]\nscale = 900\ntheme = \"light\"\n");
+    set::<Scale>(&store, &111);
+    store.reload(Mode::Apply, &person()).unwrap();
+    assert_eq!(get::<Scale>(&store), 111);
+    assert_eq!(store.findings(), Vec::new(), "the bad stored 900 is about to be written over");
+}
+
+#[test]
+fn reset_removes_the_retired_name_too_so_reopening_does_not_bring_it_back() {
+    let rig = Rig::new();
+    rig.write_user("[ui]\nold_name = 7\nnew_name = 3\n");
+    let store = rig.open();
+    assert_eq!(get::<Renamed>(&store), 3);
+    store.reset("ui.new_name", Layer::Auto, Mode::Apply, &person()).unwrap();
+    drop(store);
+    assert!(!rig.user_text().contains("old_name") && !rig.user_text().contains("new_name"), "{}", rig.user_text());
+    assert_eq!(get::<Renamed>(&rig.open()), 0);
+}
+
+#[test]
+fn a_versions_item_that_is_not_a_table_fails_the_write_instead_of_dropping_the_stamp() {
+    let rig = Rig::new();
+    rig.write_user("versions = 7\n");
+    let store = rig.open();
+    set::<Migrated>(&store, &150);
+    let error = store.flush().unwrap_err();
+    assert!(error.to_string().contains("versions"), "{error}");
+    assert_eq!(rig.user_text(), "versions = 7\n", "nothing was half-written");
+    assert!(store.findings().iter().any(|f| f.from == "write"));
+    assert_eq!(get::<Migrated>(&store), 150);
+}
+
+#[test]
+fn a_file_found_broken_during_a_write_is_reported_as_a_finding() {
+    let rig = Rig::new();
+    let store = rig.open();
+    rig.write_user("not = [toml");
+    set::<Scale>(&store, &120);
+    store.flush().unwrap();
+    let findings = store.findings();
+    let moved = findings.iter().find(|f| f.from == "settings.toml").expect("a finding for the moved file");
+    assert!(moved.error.to_string().contains("moved to settings.toml.broken-"), "{moved:?}");
+}
+
+#[test]
+fn a_panicked_writer_is_reported_and_the_drop_still_writes_the_pending_changes() {
+    let rig = Rig::new();
+    let store = paused_store(&rig, || panic!("the writer fails once"));
+    set::<Scale>(&store, &111);
+    let start = Instant::now();
+    while !store.findings().iter().any(|f| f.error.to_string().contains("writer thread stopped")) {
+        assert!(start.elapsed() < crate::MAX_DELAY * 3, "the dead writer was never reported");
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!rig.user_file().exists());
+    drop(store);
+    assert!(rig.user_text().contains("scale = 111"));
+}

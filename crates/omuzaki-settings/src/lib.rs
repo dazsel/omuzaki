@@ -20,8 +20,9 @@
 //!   replaces it. A value stored at a newer version than this build knows is kept the same way.
 //! - **Migrations run in memory.** A migrated value is written back only when its key is next written, and the first
 //!   write after a migration copies the file to `<name>.bak-<app version>` (once per version).
-//! - **Stale temporary files are removed by age**, not by asking whether the owning process is alive, which std cannot
-//!   do portably. Holding the file lock already proves no live writer of this file exists.
+//! - **Stale temporary files are removed by age**, and only those named for the file being written, not by asking
+//!   whether the owning process is alive, which std cannot do portably. Holding the file lock already proves no live
+//!   writer of this file exists; another file's writer in the folder may only be slow.
 //! - **Profiles and session state are not stored here yet.** No profile exists and `session()` is in memory.
 
 mod backend;

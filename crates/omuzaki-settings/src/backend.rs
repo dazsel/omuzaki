@@ -4,7 +4,9 @@
 //! replace, so two processes never merge from the same old text. The lock file is never the data file and is never
 //! deleted.
 
+use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions, TryLockError};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -25,10 +27,6 @@ const LOCK_POLL: Duration = Duration::from_millis(10);
 /// A temporary file this old belongs to a process that died mid-write: a live write takes milliseconds.
 const STALE_TEMP_AGE: Duration = Duration::from_secs(60);
 
-/// A rename over a file another process holds open can fail briefly on Windows (D5): retry this often.
-const RENAME_ATTEMPTS: u32 = 3;
-const RENAME_PAUSE: Duration = Duration::from_millis(50);
-
 /// What the merge closure decided about the text it was shown.
 pub(crate) enum Edited {
     /// Replace the file with this text.
@@ -39,13 +37,22 @@ pub(crate) enum Edited {
     Unparsable,
 }
 
+/// How an [`update`](Backend::update) went.
+pub(crate) struct Updated {
+    /// The name the file was moved to because it did not parse, even if the write after it then failed.
+    pub moved_aside: Option<String>,
+    /// Whether the new text is in place.
+    pub outcome: Result<(), SettingError>,
+}
+
 /// Storage for the two settings files.
 pub(crate) trait Backend: Send + Sync {
     /// The file's text, or `None` when it does not exist.
     fn read(&self, scope: SettingScope) -> Result<Option<String>, SettingError>;
 
-    /// Renames the file to `<name>.broken-<utc>` and returns that name.
-    fn quarantine(&self, scope: SettingScope) -> Result<String, SettingError>;
+    /// Under the file's lock: renames the file to `<name>.broken-<utc>` and returns that name, but only if it still
+    /// holds `expected`. `None` means another process replaced it meanwhile, and nothing was moved.
+    fn quarantine(&self, scope: SettingScope, expected: &str) -> Result<Option<String>, SettingError>;
 
     /// Under the file's lock: re-reads it, shows the text to `edit` and writes what it returns. `backup` is the app
     /// version for the `.bak-<version>` copy to make first, if the file exists and has none yet.
@@ -54,7 +61,7 @@ pub(crate) trait Backend: Send + Sync {
         scope: SettingScope,
         backup: Option<&str>,
         edit: &mut dyn FnMut(Option<&str>) -> Result<Edited, String>,
-    ) -> Result<(), SettingError>;
+    ) -> Updated;
 
     /// The file's name, for messages.
     fn file_name(&self, scope: SettingScope) -> &'static str;
@@ -123,17 +130,9 @@ impl FileBackend {
     }
 }
 
-impl Backend for FileBackend {
-    fn read(&self, scope: SettingScope) -> Result<Option<String>, SettingError> {
-        let path = self.path(scope);
-        match fs::read_to_string(&path) {
-            Ok(text) => Ok(Some(text)),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(storage(&path, "read", &e)),
-        }
-    }
-
-    fn quarantine(&self, scope: SettingScope) -> Result<String, SettingError> {
+impl FileBackend {
+    /// Renames the file to `<name>.broken-<utc>`; the caller holds the file's lock.
+    fn move_aside(&self, scope: SettingScope) -> Result<String, SettingError> {
         let path = self.path(scope);
         let stamp = utc_stamp(SystemTime::now());
         let mut name = format!("{}.broken-{stamp}", self.file_name(scope));
@@ -146,15 +145,18 @@ impl Backend for FileBackend {
         Ok(name)
     }
 
-    fn update(
+    fn update_locked(
         &self,
         scope: SettingScope,
         backup: Option<&str>,
         edit: &mut dyn FnMut(Option<&str>) -> Result<Edited, String>,
+        moved_aside: &mut Option<String>,
     ) -> Result<(), SettingError> {
         let path = self.path(scope);
         let _lock = self.lock(&path)?;
-        remove_stale_temps(path.parent().unwrap_or(Path::new(".")));
+        if let Some(name) = path.file_name() {
+            remove_stale_temps(path.parent().unwrap_or(Path::new(".")), name);
+        }
         let mut current = self.read(scope)?;
         #[cfg(test)]
         if let Some(hook) = &self.after_read {
@@ -163,7 +165,7 @@ impl Backend for FileBackend {
         let reason = |reason: String| SettingError::new("", SettingErrorKind::Storage { reason });
         let mut edited = edit(current.as_deref()).map_err(reason)?;
         if matches!(edited, Edited::Unparsable) {
-            self.quarantine(scope)?;
+            *moved_aside = Some(self.move_aside(scope)?);
             current = None;
             edited = edit(None).map_err(reason)?;
         }
@@ -171,13 +173,57 @@ impl Backend for FileBackend {
             return Ok(());
         };
         if let (Some(version), Some(_)) = (backup, &current) {
-            let copy = path.with_file_name(format!("{}.bak-{version}", self.file_name(scope)));
-            // Once per app version: an existing copy is the file as it was before the first migrated write.
-            if !copy.exists() {
-                fs::copy(&path, &copy).map_err(|e| storage(&copy, "back up to", &e))?;
-            }
+            self.back_up(&path, scope, version)?;
         }
-        replace(&path, &text).map_err(|e| storage(&path, "write", &e))
+        write_atomic(&path, &text).map_err(|e| storage(&path, "write", &e))
+    }
+
+    /// Copies the file to `<name>.bak-<version>` once per app version: an existing copy is the file as it was before
+    /// the first migrated write. The copy is made beside the name and renamed in, so a failed copy never leaves a
+    /// truncated backup that a retry would take for the real one.
+    fn back_up(&self, path: &Path, scope: SettingScope, version: &str) -> Result<(), SettingError> {
+        let copy = path.with_file_name(format!("{}.bak-{version}", self.file_name(scope)));
+        if copy.exists() {
+            return Ok(());
+        }
+        let partial = path.with_file_name(format!("{}.bak-{version}.partial", self.file_name(scope)));
+        let made = fs::copy(path, &partial).and_then(|_| fs::rename(&partial, &copy));
+        if let Err(e) = made {
+            drop(fs::remove_file(&partial));
+            return Err(storage(&copy, "back up to", &e));
+        }
+        Ok(())
+    }
+}
+
+impl Backend for FileBackend {
+    fn read(&self, scope: SettingScope) -> Result<Option<String>, SettingError> {
+        let path = self.path(scope);
+        match fs::read_to_string(&path) {
+            Ok(text) => Ok(Some(text)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(storage(&path, "read", &e)),
+        }
+    }
+
+    fn quarantine(&self, scope: SettingScope, expected: &str) -> Result<Option<String>, SettingError> {
+        let path = self.path(scope);
+        let _lock = self.lock(&path)?;
+        if self.read(scope)?.as_deref() != Some(expected) {
+            return Ok(None);
+        }
+        self.move_aside(scope).map(Some)
+    }
+
+    fn update(
+        &self,
+        scope: SettingScope,
+        backup: Option<&str>,
+        edit: &mut dyn FnMut(Option<&str>) -> Result<Edited, String>,
+    ) -> Updated {
+        let mut moved_aside = None;
+        let outcome = self.update_locked(scope, backup, edit, &mut moved_aside);
+        Updated { moved_aside, outcome }
     }
 
     fn file_name(&self, scope: SettingScope) -> &'static str {
@@ -193,23 +239,12 @@ fn storage(path: &Path, doing: &str, e: &io::Error) -> SettingError {
     SettingError::new("", SettingErrorKind::Storage { reason })
 }
 
-fn replace(path: &Path, text: &str) -> io::Result<()> {
-    let mut attempt = 1;
-    loop {
-        match write_atomic(path, text) {
-            Err(e) if e.kind() == io::ErrorKind::PermissionDenied && attempt < RENAME_ATTEMPTS => {
-                attempt += 1;
-                thread::sleep(RENAME_PAUSE);
-            }
-            done => return done,
-        }
-    }
-}
-
-/// Removes the temporary files of writers that died. Holding the lock means no live writer of this file exists, and a
-/// writer of another file in the folder finishes in milliseconds, so only an old temp is stale. Best effort.
-fn remove_stale_temps(dir: &Path) {
+/// Removes the temporary files that earlier writes of `target` left behind. Holding the lock means no live writer of
+/// this file exists, so an old temp named for this file is a dead writer's; a temp of another file in the folder may
+/// belong to a writer that is only slow, so it is left alone. Best effort.
+fn remove_stale_temps(dir: &Path, target: &OsStr) {
     let Ok(entries) = fs::read_dir(dir) else { return };
+    let prefix = temp_prefix(target);
     for entry in entries.flatten() {
         let old = entry
             .metadata()
@@ -217,10 +252,17 @@ fn remove_stale_temps(dir: &Path) {
             .ok()
             .and_then(|t| SystemTime::now().duration_since(t).ok())
             .is_some_and(|age| age >= STALE_TEMP_AGE);
-        if old && entry.file_name().to_str().is_some_and(is_write_atomic_temp) {
+        if old && entry.file_name().to_str().is_some_and(|n| n.starts_with(&prefix) && is_write_atomic_temp(n)) {
             drop(fs::remove_file(entry.path()));
         }
     }
+}
+
+/// The start of the names `write_atomic` gives the temporary files of `target`: `.<hash of its file name>-`.
+fn temp_prefix(target: &OsStr) -> String {
+    let mut hasher = DefaultHasher::new();
+    target.hash(&mut hasher);
+    format!(".{:016x}-", hasher.finish())
 }
 
 /// `omuzaki_core::fsx::write_atomic` names its temporary files `.<16 hex>-<pid>-<16 hex>-<n>.tmp`.
@@ -272,17 +314,70 @@ mod tests {
     }
 
     #[test]
-    fn a_stale_temp_is_removed_by_the_next_lock_holder_and_a_fresh_one_is_not() {
+    fn a_stale_temp_of_this_file_is_removed_and_a_fresh_one_or_another_files_is_not() {
         let dir = tempfile::tempdir().unwrap();
         let backend = FileBackend::new(Paths::new(dir.path(), dir.path().join("data")));
-        let stale = dir.path().join(".0123456789abcdef-4242-fedcba9876543210-1.tmp");
-        let fresh = dir.path().join(".0123456789abcdef-4243-fedcba9876543210-2.tmp");
-        for p in [&stale, &fresh] {
+        let mine = temp_prefix(OsStr::new("settings.toml"));
+        let stale = dir.path().join(format!("{mine}4242-fedcba9876543210-1.tmp"));
+        let fresh = dir.path().join(format!("{mine}4243-fedcba9876543210-2.tmp"));
+        let other = dir.path().join(format!("{}4244-fedcba9876543210-3.tmp", temp_prefix(OsStr::new("machine.toml"))));
+        for p in [&stale, &fresh, &other] {
             fs::write(p, "half").unwrap();
         }
         let old = SystemTime::now() - STALE_TEMP_AGE - Duration::from_secs(5);
-        File::options().write(true).open(&stale).unwrap().set_modified(old).unwrap();
-        backend.update(SettingScope::User, None, &mut |_| Ok(Edited::Write("a = 1\n".into()))).unwrap();
-        assert!(!stale.exists() && fresh.exists());
+        for p in [&stale, &other] {
+            File::options().write(true).open(p).unwrap().set_modified(old).unwrap();
+        }
+        let done = backend.update(SettingScope::User, None, &mut |_| Ok(Edited::Write("a = 1\n".into())));
+        done.outcome.unwrap();
+        assert!(!stale.exists(), "this file's dead writer");
+        assert!(fresh.exists(), "too young to be dead");
+        assert!(other.exists(), "another file's writer may be alive, however old its temp");
+    }
+
+    #[test]
+    fn a_file_replaced_before_the_quarantine_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = FileBackend::new(Paths::new(dir.path(), dir.path().join("data")));
+        let file = dir.path().join("settings.toml");
+        fs::write(&file, "[ui").unwrap();
+        // Another process repaired the file after this one read the broken text.
+        fs::write(&file, "ok = 1\n").unwrap();
+        assert_eq!(backend.quarantine(SettingScope::User, "[ui").unwrap(), None);
+        assert_eq!(fs::read_to_string(&file).unwrap(), "ok = 1\n");
+        let name = backend.quarantine(SettingScope::User, "ok = 1\n").unwrap().unwrap();
+        assert!(name.starts_with("settings.toml.broken-") && !file.exists());
+    }
+
+    #[test]
+    fn a_failed_backup_copy_leaves_no_backup_and_a_retry_makes_the_whole_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = FileBackend::new(Paths::new(dir.path(), dir.path().join("data")));
+        let file = dir.path().join("settings.toml");
+        fs::write(&file, "old = 1\n").unwrap();
+        let blocker = dir.path().join("settings.toml.bak-9.partial");
+        fs::create_dir(&blocker).unwrap();
+        let write = |backend: &FileBackend| {
+            backend.update(SettingScope::User, Some("9"), &mut |_| Ok(Edited::Write("new = 2\n".into()))).outcome
+        };
+        assert!(write(&backend).is_err());
+        assert!(!dir.path().join("settings.toml.bak-9").exists());
+        assert_eq!(fs::read_to_string(&file).unwrap(), "old = 1\n", "the file is not replaced without its backup");
+        fs::remove_dir(&blocker).unwrap();
+        write(&backend).unwrap();
+        assert_eq!(fs::read_to_string(dir.path().join("settings.toml.bak-9")).unwrap(), "old = 1\n");
+        assert_eq!(fs::read_to_string(&file).unwrap(), "new = 2\n");
+    }
+
+    #[test]
+    fn a_file_found_broken_while_writing_is_reported_as_moved() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = FileBackend::new(Paths::new(dir.path(), dir.path().join("data")));
+        fs::write(dir.path().join("settings.toml"), "[ui").unwrap();
+        let done = backend.update(SettingScope::User, None, &mut |text| {
+            Ok(if text.is_some() { Edited::Unparsable } else { Edited::Write("a = 1\n".into()) })
+        });
+        done.outcome.unwrap();
+        assert!(done.moved_aside.is_some_and(|n| n.starts_with("settings.toml.broken-")));
     }
 }

@@ -19,7 +19,7 @@ use omuzaki_settings_api::session::SessionStore;
 use serde_json::Value;
 use toml_edit::DocumentMut;
 
-use crate::backend::{Backend, Edited, FileBackend};
+use crate::backend::{Backend, Edited, FileBackend, Updated};
 use crate::document::{self, ApplyError, Edit};
 use crate::ephemeral::Ephemeral;
 use crate::locked;
@@ -186,8 +186,13 @@ impl Drop for Store {
         locked(&self.inner.state).closing = true;
         self.inner.wake.notify_all();
         match self.writer.take() {
-            // The writer flushes once more as it exits (a clean exit flushes).
-            Some(handle) => drop(handle.join()),
+            // The writer flushes once more as it exits (a clean exit flushes). One that panicked did not, so the
+            // changes it left are written here.
+            Some(handle) => {
+                if handle.join().is_err() {
+                    self.inner.flush_quietly();
+                }
+            }
             None => self.inner.flush_quietly(),
         }
     }
@@ -223,40 +228,47 @@ impl Inner {
         self.wake.notify_all();
     }
 
-    /// Reads both files. `apply` moves an unparsable file aside; `strict` fails on a file that cannot be read, where
-    /// start-up reports it and goes on.
+    /// Reads both files. `apply` moves an unparsable file aside, but only once both files have been read, so a failed
+    /// read leaves the disk as it was; `strict` fails on a file that cannot be read, where start-up reports it and goes
+    /// on.
     fn load(&self, apply: bool, strict: bool) -> Result<Loaded, SettingError> {
         let mut out = Loaded::default();
+        let mut broken = Vec::new();
+        let mut unread = false;
         for scope in SCOPES {
             let file = self.backend.file_name(scope);
             let text = match self.backend.read(scope) {
-                Ok(text) => text,
+                Ok(Some(text)) => text,
+                Ok(None) => continue,
                 Err(e) if strict => return Err(e),
                 Err(e) => {
                     out.findings.push(SettingFinding::new(e, Value::Null, file));
+                    unread = true;
                     continue;
                 }
             };
-            let doc = text.and_then(|t| match document::parse(&t) {
-                Ok(doc) => Some(doc),
-                Err(e) => {
-                    out.findings.push(self.broken_file(scope, &e, apply));
-                    None
+            match document::parse(&text) {
+                Ok(doc) => {
+                    for key in self.keys.iter().filter(|k| k.reg.meta.scope == scope) {
+                        load_key(key, &doc, file, &mut out);
+                    }
                 }
-            });
-            let Some(doc) = doc else { continue };
-            for key in self.keys.iter().filter(|k| k.reg.meta.scope == scope) {
-                load_key(key, &doc, file, &mut out);
+                Err(error) => broken.push((scope, text, error)),
             }
+        }
+        for (scope, text, error) in broken {
+            out.findings.push(self.broken_file(scope, &text, &error, apply && !unread));
         }
         Ok(out)
     }
 
-    fn broken_file(&self, scope: SettingScope, parse_error: &str, apply: bool) -> SettingFinding {
+    /// The finding for a file that does not parse; `apply` moves it aside first, if it is still the text that was read.
+    fn broken_file(&self, scope: SettingScope, text: &str, parse_error: &str, apply: bool) -> SettingFinding {
         let file = self.backend.file_name(scope);
         let moved = if apply {
-            match self.backend.quarantine(scope) {
-                Ok(name) => format!("moved to {name}"),
+            match self.backend.quarantine(scope, text) {
+                Ok(Some(name)) => format!("moved to {name}"),
+                Ok(None) => "changed on disk since it was read, so left in place".to_owned(),
                 Err(e) => format!("could not be moved aside: {e}"),
             }
         } else {
@@ -281,8 +293,14 @@ impl Inner {
 
     fn mark_dirty(&self, st: &mut State, key: &Key, value: Option<Value>) {
         let version = if value.is_some() { key.reg.meta.version } else { 1 };
-        let dirty = Dirty { scope: key.reg.meta.scope, value, version };
-        st.dirty.insert(key.reg.meta.key.to_owned(), dirty);
+        let scope = key.reg.meta.scope;
+        if value.is_none() {
+            // A removed key must not come back from a name it was renamed from, so those go too.
+            for old in key.reg.renamed_from {
+                st.dirty.insert((*old).to_owned(), Dirty { scope, value: None, version: 1 });
+            }
+        }
+        st.dirty.insert(key.reg.meta.key.to_owned(), Dirty { scope, value, version });
         st.touch();
         self.wake.notify_all();
     }
@@ -309,6 +327,7 @@ impl Inner {
             (st.dirty.clone(), st.needs_backup.clone())
         };
         let mut failure = None;
+        let mut recovered = Vec::new();
         for scope in SCOPES {
             let edits: Vec<Edit> = pending
                 .iter()
@@ -319,12 +338,17 @@ impl Inner {
                 continue;
             }
             let backup = backups.contains(&scope).then_some(self.app_version);
-            match self.write_scope(scope, backup, &edits) {
+            let Updated { moved_aside, outcome } = self.write_scope(scope, backup, &edits);
+            if let Some(name) = moved_aside {
+                recovered.push(self.moved_while_writing(scope, &name));
+            }
+            match outcome {
                 Ok(()) => self.settle(scope, &pending),
                 Err(e) => failure = failure.or(Some(e)),
             }
         }
         let mut st = locked(&self.state);
+        st.findings.extend(recovered);
         st.first_dirty = (!st.dirty.is_empty()).then(Instant::now);
         st.write_error.clone_from(&failure);
         if failure.is_some() {
@@ -333,7 +357,14 @@ impl Inner {
         failure.map_or(Ok(()), Err)
     }
 
-    fn write_scope(&self, scope: SettingScope, backup: Option<&str>, edits: &[Edit]) -> Result<(), SettingError> {
+    /// The finding for a file that stopped parsing between the last read and a write, and was moved aside by it.
+    fn moved_while_writing(&self, scope: SettingScope, name: &str) -> SettingFinding {
+        let file = self.backend.file_name(scope);
+        let reason = format!("{file} did not parse when it was written; moved to {name}; a new file holds the changes");
+        SettingFinding::new(SettingError::new("", SettingErrorKind::Storage { reason }), Value::Null, file)
+    }
+
+    fn write_scope(&self, scope: SettingScope, backup: Option<&str>, edits: &[Edit]) -> Updated {
         self.backend.update(scope, backup, &mut |text| match document::apply(text, edits) {
             Ok(new) if Some(new.as_str()) == text => Ok(Edited::Unchanged),
             Ok(new) => Ok(Edited::Write(new)),
@@ -528,15 +559,20 @@ impl Settings for Store {
 
     fn reload(&self, mode: Mode, by: &Actor) -> Result<SwitchReport, SettingError> {
         let inner = &*self.inner;
+        // Held from the read to the swap: a flush that finished in between would leave the read text older than the
+        // file, and the swap would put that old value back.
+        let _one_at_a_time = locked(&inner.flush_gate);
         let mut loaded = inner.load(mode == Mode::Apply, true)?;
         let mut st = locked(&inner.state);
-        // A change this process has not written yet is newer than the file.
+        // A change this process has not written yet is newer than the file, and so is any complaint about the value it
+        // will replace.
         for (key, dirty) in &st.dirty {
             match &dirty.value {
                 Some(v) => loaded.stored.insert(key.clone(), v.clone()),
                 None => loaded.stored.remove(key),
             };
         }
+        loaded.findings.retain(|f| !st.dirty.contains_key(&f.error.key));
         let changes: Vec<Change> = inner
             .keys
             .iter()
@@ -573,7 +609,13 @@ impl Settings for Store {
     fn findings(&self) -> Vec<SettingFinding> {
         let st = locked(&self.inner.state);
         let write = st.write_error.iter().map(|e| SettingFinding::new(e.clone(), Value::Null, "write"));
-        st.findings.iter().cloned().chain(write).collect()
+        // A writer that ended while the store is open has panicked; its changes wait for `flush` and for the drop.
+        let stopped = self.writer.as_ref().is_some_and(JoinHandle::is_finished).then(|| {
+            let reason = "the writer thread stopped; pending changes are written by `flush` and when the store drops";
+            let error = SettingError::new("", SettingErrorKind::Storage { reason: reason.to_owned() });
+            SettingFinding::new(error, Value::Null, "write")
+        });
+        st.findings.iter().cloned().chain(write).chain(stopped).collect()
     }
 
     fn subscribe(&self) -> Subscription<SettingsEvent> {
