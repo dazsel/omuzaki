@@ -40,6 +40,7 @@ mod error;
 mod executor;
 mod index;
 mod jobs;
+mod sessions;
 mod state;
 mod sync;
 

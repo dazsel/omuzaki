@@ -379,19 +379,22 @@ check; no check can see a write through a handle that is already open. So the di
   seconds of a save; a longer grace time is a one-constant change (`RETAIN_UNCHANGED`).
 - **No atomic swap, no save over a file.** A file that exists is replaced only by an atomic swap (`RENAME_EXCHANGE`
   on Linux, `RENAME_SWAP` on macOS); where the system or file system has none, the save refuses with
-  `StoreError::NoSafeChange` before the file is touched, never falling back to a plain rename. A new file needs a hard
-  link or a rename that won't replace, and a deletion the same, or it is refused the same way. The capability table is
-  in the `omuzaki-doc` `disk` module.
-- **Windows, the one non-atomic cell.** Windows has no atomic swap, so on NTFS a save keeps the original by hard link
-  and then replaces it with `std::fs::rename`; an editor's atomic save in the same instant can be overwritten (the
-  checked file survives in the `.kept` entry), and the first use in a process says so on standard error. A writer
-  holding the file open without delete sharing (most editors) makes the rename fail, and the save reports it. On FAT
-  and exFAT (no hard links) the save is refused.
+  `StoreError::NoSafeChange` before the file is touched, never falling back to a plain rename (Windows: the next
+  item). A new file needs a hard link or a rename that won't replace, and a deletion the same, or it is refused the
+  same way. The capability table is in the `omuzaki-doc` `disk` module.
+- **Windows: an atomic rename over the file.** Windows has no atomic swap, so on NTFS a save keeps the original by
+  hard link and then renames the new file over it in one step, with POSIX semantics (`SetFileInformationByHandle`
+  with `FileRenameInfoEx`, Windows 10 1607 or later). A volume without that rename (FAT, exFAT, older Windows) is
+  refused before anything moves. Moves into the replaced folder and a deletion's move aside use the no-replace rename
+  (`FileRenameInfo`), atomic on every volume. Every cell of the capability table is atomic or refused. Unlike the swap,
+  the rename can't hand back what it displaced, so an editor's save that lands between the hash check and the rename
+  is replaced; the checked file survives in the `.kept` entry.
 - **What is tested where.** CI (Linux) tests a write through a handle opened before the save: made before the check
   it is refused and nothing is lost, made after the check its bytes are in the `.kept` entry and pruning keeps it. It
   also tests the pruning rules: young entries, changed entries,
   `.displaced` entries and other files stay, and one pass deletes at most the entries kept since the last pass plus
-  16 (`owed + PRUNE_CATCH_UP`), which keeps pace with a burst of saves. The Windows behaviour is not tested in CI.
+  16 (`owed + PRUNE_CATCH_UP`), which keeps pace with a burst of saves. The Windows rename and its refusal are tested
+  natively in the nightly Windows job.
 - **Crash safety.** The hard-linked entry's folder is not flushed (that would add a folder sync to every save): after a
   power loss the handles that could write into it are gone too, and what it held when kept is the text the save
   replaced. A copied backup's folder is flushed once, after the displaced file takes its name.
@@ -433,11 +436,12 @@ writes them declares next to its code with `register_derived_path!("<glob>")` in
   session = "5f0c…"            # the session it was taken in
   created = 2026-10-12T14:32:05Z
   trigger = "auto"             # session, auto, close, pre-migration, pre-restore, pre-recovery,
-                               # pre-agent-session, manual or named
+                               # pre-agent-session, manual, named or take
   label = "Hair › bangs 9 locks"   # the last transaction's label
   history = "…"                # the history export at lsn (local only; not mirrored by default)
   thumbnail = "…" # optional: the last transaction's thumbnail, for the restore preview
   name = "before the oval face"    # named versions only (VC-01)
+  stem = "…"                   # takes only (ADR 0052): the take's stem; never `name`, which pins a named version
   keep_until = 2027-01-10      # pins: pre-migration +90 days, pre-recovery +30 days; absent: retention decides
   [verified]
   at = 2026-10-12T14:32:06Z
@@ -487,6 +491,7 @@ manifest's `assets` list, the commit view's units and missing blobs, the push ad
 | recovery | raw, before writing anything | pinned 30 days |
 | bulk agent session | on request (`backup.snapshot`) | the session controls call it (VC-09) |
 | named version | on request | pinned until the name is removed (VC-01) |
+| take | the state a recording or replay save pins, at the take's start (recording) or its save (replay), ADR 0052 | pinned until the take is deleted; the take's stem is `stem`, not `name` |
 
 VC-09's "hourly" and "daily" are retention buckets over these: the 10-minute cadence guarantees at least one
 snapshot in every hour with changes.

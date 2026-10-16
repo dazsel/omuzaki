@@ -46,8 +46,9 @@ impl Disk for StdDisk {
     }
 
     fn remove_dir_all(&self, path: &Path) -> io::Result<()> {
-        // A symlink, even one to a folder, is refused: it is neither followed into its target nor removed.
-        if fs::symlink_metadata(path)?.is_dir() {
+        // A symlink is removed itself and its target is kept: `fs::remove_dir_all` does not follow it.
+        let meta = fs::symlink_metadata(path)?;
+        if meta.is_dir() || meta.is_symlink() {
             fs::remove_dir_all(path)
         } else {
             Err(io::Error::new(io::ErrorKind::InvalidInput, "not a folder"))

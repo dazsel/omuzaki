@@ -1,0 +1,6 @@
+section = "rust"
+item = "omuzaki-http"
+kind = "crate"
+used_for = "our own: `HttpFetcher`, the HTTPS `Fetcher`"
+status = "yes"
+audit = "(this repository)"

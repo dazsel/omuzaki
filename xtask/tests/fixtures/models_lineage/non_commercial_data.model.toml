@@ -1,0 +1,31 @@
+id = "tiny"
+version = "1.0.0"
+name = "Tiny"
+slot = "test_echo@1"
+runtime = "fake"
+providers = ["cpu"]
+
+[[files]]
+name = "tiny.fake.toml"
+sha256 = "e5b9c1f03be8153f32f0df28a9196840741698957730b384a262d2b9517bb99c"
+size = 226
+urls = ["https://models.example/tiny/1.0.0/tiny.fake.toml"]
+
+[card]
+register = "Tiny model"
+authors = "Omuzaki"
+
+[card.licence]
+spdx = "MIT"
+
+[[card.lineage]]
+kind = "base_model"
+name = "Tiny base 1"
+licence = "Apache-2.0"
+url = "https://data.example/base"
+
+[[card.lineage]]
+kind = "training_data"
+name = "Face set 2"
+licence = "CC-BY-NC-4.0"
+url = "https://data.example/faces"
