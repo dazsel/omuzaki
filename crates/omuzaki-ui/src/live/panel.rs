@@ -12,17 +12,17 @@ use omuzaki_stream_api::window::{Backdrop as Shown, DEFAULT_TITLE, WindowState};
 
 use super::input::Permission;
 use super::model::{
-    Backdrop, Control, HOTKEY_ROWS, LiveModel, OP_CALIBRATE, OP_SET_RETARGET, SMOOTHING_RANGE,
-    WindowChoice,
+    Backdrop, Control, HOTKEY_ROWS, LiveModel, OP_CALIBRATE, OP_SET_RETARGET, SMOOTHING_RANGE, WindowChoice,
 };
 use super::text::{Word, say, text};
 use crate::ds::a11y;
 use crate::ds::icons;
+use crate::ds::paint;
 use crate::ds::theme::ds;
 use crate::ds::tokens::{Status, space};
 use crate::ds::widgets::{
-    Button, Choice, Dropdown, EmptyState, FormRow, OpCall, ParamEvent, ParamSlider, Section, Segment, Segmented,
-    StatusChip, Tip, TipExt as _, Toggle,
+    Button, Choice, Dropdown, EmptyState, OpCall, ParamEvent, ParamSlider, Section, Segment, Segmented, StatusChip,
+    Tip, TipExt as _, Toggle,
 };
 
 /// Seconds between `perform.status` reads while the workspace is shown.
@@ -38,10 +38,17 @@ const MOODS: [(&str, Word); 5] = [
     ("relaxed", Word::ExpressionRelaxed),
 ];
 
-/// Width of a hotkey's trigger cell: room for a key chord such as `Ctrl+Shift+F12`.
+/// The widest a hotkey's trigger cell gets: room for a key chord such as `Ctrl+Shift+F12`. A longer chord, or one
+/// wider than [`TRIGGER_SHARE`] of a narrow dock, ends in an ellipsis (the tooltip has it whole).
 const TRIGGER_WIDTH: f32 = 140.0;
-/// Width of a hotkey's action cell: room for the longest mood's name.
-const ACTION_WIDTH: f32 = 120.0;
+/// The narrowest a hotkey's trigger cell gets: a function key and its padding.
+const TRIGGER_MIN: f32 = 72.0;
+/// The most of the row the trigger cell takes.
+const TRIGGER_SHARE: f32 = 0.45;
+/// The narrowest a hotkey's action cell gets; a longer name ends in an ellipsis.
+const ACTION_MIN: f32 = 56.0;
+/// The status icon before a hotkey's action, in points.
+const ICON_CELL: f32 = 14.0;
 
 /// The one character V0 offers.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -116,10 +123,10 @@ impl LivePanel {
             let kit = text(&ctx, Word::CharacterKit);
             let choices = [Choice::new(Character::Kit, &kit)];
             let mut chosen = Character::Kit;
+            // The section's title is the label a person reads; the dropdown carries it as its accessible name and takes
+            // the dock's whole width, which a narrow dock needs for a camera's or a character's name.
             let label = text(&ctx, Word::CharacterLabel);
-            FormRow::new(&label).show(ui, |ui, name| {
-                ui.add(Dropdown::new(name, &mut chosen, &choices).id_salt("live.character.pick").stretch())
-            });
+            ui.add(Dropdown::new(&label, &mut chosen, &choices).id_salt("live.character.pick").stretch());
             // "Drop a VRM" exists only where the import op does: absent, not broken.
             if self.model.ops().import() == Control::Ready {
                 let dropped = drop_zone(ui, &text(&ctx, Word::DropVrm));
@@ -144,22 +151,30 @@ impl LivePanel {
         Section::new(&title).default_open(true).id_salt("live.camera").show(ui, |ui| {
             let view = self.model.input().cloned();
             let cameras = view.as_ref().map_or(&[][..], |view| &view.cameras[..]);
+            // A bound camera that is unplugged is no longer listed; it keeps a row of its own, so the picker still
+            // says which camera the input waits for.
+            let gone = view
+                .as_ref()
+                .and_then(|view| view.camera.as_deref())
+                .filter(|id| !cameras.iter().any(|camera| camera.id == *id))
+                .map(|id| say(&ctx, Word::CameraGone, &[("camera", id)]));
             let none = text(&ctx, Word::CameraNone);
             let mut choices = vec![Choice::new(None, &none)];
             choices.extend(cameras.iter().enumerate().map(|(i, camera)| Choice::new(Some(i), &camera.name)));
-            let bound = cameras.iter().position(|camera| camera.bound);
+            choices.extend(gone.as_deref().map(|label| Choice::new(Some(cameras.len()), label)));
+            let bound = cameras.iter().position(|camera| camera.bound).or(gone.as_ref().map(|_| cameras.len()));
             let mut chosen = bound;
             let label = text(&ctx, Word::CameraLabel);
-            FormRow::new(&label).show(ui, |ui, name| {
-                let dropdown = Dropdown::new(name, &mut chosen, &choices).id_salt("live.camera.pick").stretch();
-                ui.add(match reason.as_deref() {
-                    Some(reason) => dropdown.disabled(reason),
-                    None => dropdown,
-                })
-            });
-            if chosen != bound {
-                let camera = chosen.and_then(|i| cameras.get(i)).map(|camera| camera.id.as_str());
-                self.model.bind_camera(runner, actor, camera);
+            let dropdown = Dropdown::new(&label, &mut chosen, &choices).id_salt("live.camera.pick").stretch();
+            ui.add(disable(dropdown, reason.as_deref(), Dropdown::disabled));
+            match chosen {
+                _ if chosen == bound => {}
+                None => self.model.bind_camera(runner, actor, None),
+                Some(i) => {
+                    if let Some(camera) = cameras.get(i) {
+                        self.model.bind_camera(runner, actor, Some(&camera.id));
+                    }
+                }
             }
             if cameras.is_empty() {
                 // The empty state of shell.md section 13: the life layer has the face until a camera tracks it.
@@ -202,7 +217,7 @@ impl LivePanel {
             Permission::Unknown | Permission::Granted => {}
         }
         if view.camera.is_some() && !view.camera_present {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.add(StatusChip::new(Status::Warn, &text(&ctx, Word::CameraUnplugged)));
                 let retry = text(&ctx, Word::CameraRetry);
                 if ui.add(Button::new(&retry).icon(icons::ARROW_COUNTER_CLOCKWISE)).clicked() {
@@ -276,11 +291,11 @@ impl LivePanel {
             let mut choice = self.model.window_choice();
             let (key, clear) = (text(&ctx, Word::OutputKey), text(&ctx, Word::OutputTransparent));
             let segments = [Segment::new(Backdrop::Key, &key), Segment::new(Backdrop::Transparent, &clear)];
+            // Its two options name themselves; the whole width keeps both whole in a narrow dock.
             let backdrop = text(&ctx, Word::OutputBackdrop);
-            FormRow::new(&backdrop).show(ui, |ui, name| {
-                let segmented = Segmented::new(name, &mut choice.backdrop, &segments).id_salt("live.output.backdrop");
-                ui.add(disable(segmented, missing.as_deref(), Segmented::disabled))
-            });
+            let segmented =
+                Segmented::new(&backdrop, &mut choice.backdrop, &segments).id_salt("live.output.backdrop").stretch();
+            ui.add(disable(segmented, missing.as_deref(), Segmented::disabled));
             let on_top = text(&ctx, Word::OutputOnTop);
             let toggle = Toggle::switch(&on_top, &mut choice.on_top).id_salt("live.output.on_top");
             ui.add(disable(toggle, missing.as_deref(), Toggle::disabled));
@@ -322,7 +337,8 @@ impl LivePanel {
     /// The health strip: tracking state, frame rate and latency on one line (nothing in it takes the keyboard).
     fn health(&self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
-        ui.horizontal(|ui| {
+        // Wrapped: in a narrow dock the frame rate and latency move to a second line rather than widen the panel.
+        ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = space::S16;
             ui.label(RichText::new(text(&ctx, Word::HealthSection)).strong());
             let (status, word) = match self.model.tracking() {
@@ -332,15 +348,21 @@ impl LivePanel {
                 Some(Tracking::Lost) => (Status::Warn, Word::HealthLost),
             };
             ui.add(StatusChip::new(status, &text(&ctx, word)));
+            // Each reading stays on one line: a wrap moves it whole, never splits "29" from "fps".
+            let reading =
+                |ui: &mut Ui, line: String| ui.add(egui::Label::new(line).wrap_mode(egui::TextWrapMode::Extend));
             if let Some(status) = self.model.status() {
                 let fps = format!("{:.0}", status.source_fps);
-                ui.label(say(&ctx, Word::HealthFps, &[("fps", &fps)]));
+                reading(ui, say(&ctx, Word::HealthFps, &[("fps", &fps)]));
             }
             let latency = text(&ctx, Word::HealthLatency);
             let reason = text(&ctx, Word::NotYetLatency);
             // The tip only adds detail to a plain label; nothing reads its response.
-            let _ = ui.label(format!("{latency}: —")).tip(Tip::new(&latency).detail(&reason));
+            let _ = reading(ui, format!("{latency}: —")).tip(Tip::new(&latency).detail(&reason));
         });
+        if self.model.tracking() == Some(Tracking::Lost) {
+            ui.label(RichText::new(text(&ctx, Word::HealthLostLine)).font(ds(&ctx).text.small.clone()));
+        }
     }
 
     fn failure(&self, ui: &mut Ui) {
@@ -369,17 +391,20 @@ impl LivePanel {
         }
         Section::new(&title).default_open(true).id_salt("live.hotkeys").show(ui, |ui| {
             let (trigger, action) = (text(&ctx, Word::HotkeyTrigger), text(&ctx, Word::HotkeyAction));
-            // Rows of fixed-width cells, not a grid: a grid sizes its columns from the last frame, which would cut the
-            // buttons' labels on the first.
+            let rows = self.rows(&ctx);
+            let keys: Vec<String> = rows.iter().map(|(expression, _)| self.trigger_text(&ctx, expression)).collect();
+            let columns = Columns::fit(ui, &keys);
+            // Rows of cells sized from this frame's width, not a grid: a grid sizes its columns from the last frame,
+            // which would cut the buttons' labels on the first, and a fixed width would push a narrow dock wider.
             ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = space::S16;
-                cell(ui, TRIGGER_WIDTH, |ui| ui.label(RichText::new(&*trigger).strong()));
-                cell(ui, ACTION_WIDTH, |ui| ui.label(RichText::new(&*action).strong()));
+                ui.spacing_mut().item_spacing.x = space::S8;
+                cell(ui, columns.trigger, |ui| ui.label(RichText::new(&*trigger).strong()));
+                cell(ui, columns.action, |ui| ui.label(RichText::new(&*action).strong()));
             });
-            for (expression, name) in self.rows(&ctx) {
+            for (expression, name) in rows {
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = space::S16;
-                    self.hotkey_row(ui, runner, actor, &expression, &name, missing.as_deref());
+                    ui.spacing_mut().item_spacing.x = space::S8;
+                    self.hotkey_row(ui, runner, actor, (&expression, &name), columns, missing.as_deref());
                 });
             }
             let (label, every) = (text(&ctx, Word::HotkeyAdd), text(&ctx, Word::HotkeyEveryMood));
@@ -412,8 +437,8 @@ impl LivePanel {
         ui: &mut Ui,
         runner: &dyn Runner,
         actor: &Actor,
-        expression: &str,
-        name: &str,
+        (expression, name): (&str, &str),
+        columns: Columns,
         missing: Option<&str>,
     ) {
         let ctx = ui.ctx().clone();
@@ -421,18 +446,20 @@ impl LivePanel {
         let capturing = self.capturing.as_deref() == Some(expression);
         let unbound = text(&ctx, Word::HotkeyUnbound);
         let key = bound.as_ref().map_or(&*unbound, |info| info.binding.key.as_str());
-        let (shown, label) = if capturing {
-            let press = say(&ctx, Word::HotkeyPress, &[("action", name)]);
-            (text(&ctx, Word::HotkeyWaiting).into_owned(), press)
+        let shown = self.trigger_text(&ctx, expression);
+        let label = if capturing {
+            say(&ctx, Word::HotkeyPress, &[("action", name)])
         } else {
-            (key.to_owned(), say(&ctx, Word::HotkeyTriggerOf, &[("action", name), ("key", key)]))
+            say(&ctx, Word::HotkeyTriggerOf, &[("action", name), ("key", key)])
         };
-        let button = Button::new(&shown).ghost().min_width(TRIGGER_WIDTH).accessible_label(&label);
+        let button = Button::new(&shown).ghost().accessible_label(&label);
         let button = match missing {
             Some(reason) => button.disabled(reason),
             None => button,
         };
-        let response = cell(ui, TRIGGER_WIDTH, |ui| ui.add(button));
+        // Exactly the column's width: a chord too long for it ends in an ellipsis rather than widening the dock.
+        let (_, rect) = ui.allocate_space(vec2(columns.trigger, ui.spacing().interact_size.y));
+        let response = button.show_at(ui, egui::Id::new(("live.hotkey", expression)), rect);
         if response.clicked() {
             self.capturing = if capturing { None } else { Some(expression.to_owned()) };
         }
@@ -440,7 +467,14 @@ impl LivePanel {
             // Focus moved elsewhere (Tab, a click): the wait ends without a bind.
             self.capturing = None;
         }
-        cell(ui, ACTION_WIDTH, |ui| ui.label(name));
+        // The row's state sits on its action, so a narrow dock keeps each row on one line: a showing expression gets
+        // the Ok icon and colour, one the character lacks the Warn ones, each saying why on hover and to a screen reader.
+        let state = bound.as_ref().and_then(|info| match (info.missing, info.active) {
+            (true, _) => Some((Status::Warn, Word::HotkeyMissing)),
+            (false, true) => Some((Status::Ok, Word::HotkeyShowing)),
+            (false, false) => None,
+        });
+        cell(ui, columns.action, |ui| action_cell(ui, name, state));
         let short = text(&ctx, Word::HotkeyRemoveShort);
         let remove = say(&ctx, Word::HotkeyRemove, &[("action", name)]);
         let nothing = text(&ctx, Word::HotkeyNothingBound);
@@ -455,14 +489,16 @@ impl LivePanel {
         {
             self.model.unbind_hotkey(runner, actor, &info.binding.key);
         }
-        match &bound {
-            Some(info) if info.missing => {
-                ui.add(StatusChip::new(Status::Warn, &text(&ctx, Word::HotkeyMissing)));
-            }
-            Some(info) if info.active => {
-                ui.add(StatusChip::new(Status::Ok, &text(&ctx, Word::HotkeyShowing)));
-            }
-            _ => {}
+    }
+
+    /// What a row's trigger button says: its key, "Not bound", or "Press a key…" while it waits.
+    fn trigger_text(&self, ctx: &egui::Context, expression: &str) -> String {
+        if self.capturing.as_deref() == Some(expression) {
+            return text(ctx, Word::HotkeyWaiting).into_owned();
+        }
+        match self.model.trigger_for(expression) {
+            Some(info) => info.binding.key.clone(),
+            None => text(ctx, Word::HotkeyUnbound).into_owned(),
         }
     }
 
@@ -485,6 +521,52 @@ impl LivePanel {
         }
         Some(chord(modifiers, key))
     }
+}
+
+/// The hotkey table's column widths for the room the table has: the trigger cell takes its share (between
+/// [`TRIGGER_MIN`] and [`TRIGGER_WIDTH`]), the Remove button its natural width, and the action the rest.
+#[derive(Copy, Clone, Debug)]
+struct Columns {
+    trigger: f32,
+    action: f32,
+}
+
+impl Columns {
+    /// The widths for rows whose trigger buttons say `keys`: the trigger column as wide as its widest button needs,
+    /// within its bounds, so the action keeps the room a narrow dock has.
+    fn fit(ui: &Ui, keys: &[String]) -> Self {
+        let ctx = ui.ctx();
+        let room = ui.available_width();
+        let remove = Button::new(&text(ctx, Word::HotkeyRemoveShort)).icon(icons::TRASH).ghost().width(ctx);
+        let widest = keys.iter().map(|key| Button::new(key).ghost().width(ctx)).fold(TRIGGER_MIN, f32::max);
+        let trigger = widest.min(TRIGGER_WIDTH).min((room * TRIGGER_SHARE).max(TRIGGER_MIN));
+        let action = (room - trigger - remove - 2.0 * space::S8).max(ACTION_MIN);
+        Self { trigger, action }
+    }
+}
+
+/// A hotkey row's action: its name, and when the row has a state, that state's icon and colour before it, with the
+/// state's words as the tooltip and the accessible description.
+fn action_cell(ui: &mut Ui, name: &str, state: Option<(Status, Word)>) {
+    let Some((status, word)) = state else {
+        ui.add(egui::Label::new(name).truncate());
+        return;
+    };
+    let ds = ds(ui.ctx());
+    let colour = ds.theme.status(status);
+    ui.spacing_mut().item_spacing.x = space::S4;
+    let (icon, _) = ui.allocate_exact_size(vec2(ICON_CELL, ICON_CELL), Sense::hover());
+    paint::icon(ui.painter(), &ds, icon.center(), icons::status(status), ICON_CELL, colour, true);
+    let words = text(ui.ctx(), word);
+    let label = ui.add(egui::Label::new(RichText::new(name).color(colour)).truncate());
+    a11y::describe(
+        &label,
+        || WidgetInfo::labeled(WidgetType::Label, true, name),
+        |node| {
+            node.set_description(words.to_string());
+        },
+    );
+    let _ = label.tip(Tip::new(&words));
 }
 
 /// A cell `width` wide in a row, holding what `add` adds at its left.

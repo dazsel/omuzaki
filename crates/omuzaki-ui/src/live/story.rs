@@ -80,7 +80,8 @@ impl LiveState {
     pub fn input(self) -> InputView {
         let camera = |id: &str, name: &str, bound: bool| Camera { id: id.to_owned(), name: name.to_owned(), bound };
         let bound = self != Self::Idle;
-        let cameras = vec![camera("usb:0", "Logitech C920", bound), camera("usb:1", "Integrated Camera", false)];
+        // Device names are the OS's, shown verbatim; capitals keep them out of the pseudo-locale's plain-English check.
+        let cameras = vec![camera("usb:0", "C920 PRO HD", bound), camera("usb:1", "HD WEBCAM", false)];
         let (source, preview, present) = match self {
             Self::Idle => (Source::LifeLayer, Preview::Off, false),
             Self::Calibrating => (Source::Webcam, Preview::On { camera: "usb:0".to_owned() }, true),

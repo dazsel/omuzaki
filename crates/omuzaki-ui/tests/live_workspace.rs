@@ -29,14 +29,14 @@ use omuzaki_stage::perform::host::{
     CalibrationState, PerformError, PerformHost, PerformStatus, RetargetChange, RetargetReceipt,
 };
 use omuzaki_stage::perform::triggers::{BindOutcome, TriggerBinding, TriggerInfo};
+use omuzaki_stream_api::window::WindowHost;
+use omuzaki_ui::aux_window::{PhysicalSize, Transparency};
 use omuzaki_ui::ds::audit::plain_english;
 use omuzaki_ui::ds::strings::{English, Pseudo};
 use omuzaki_ui::ds::testing::{
     all_strings, harness_state, press_for, reading_order_violations, tab_through, unlabelled_interactive,
 };
 use omuzaki_ui::ds::{Settings, set_strings};
-use omuzaki_stream_api::window::WindowHost;
-use omuzaki_ui::aux_window::{PhysicalSize, Transparency};
 use omuzaki_ui::live::input::{self, Camera, InputView, Permission, Preview, Source};
 use omuzaki_ui::live::model::{CALIBRATE_FRAMES, HOTKEY_ROWS, LiveModel, OP_IMPORT, Ops};
 use omuzaki_ui::live::panel::LivePanel;
@@ -285,6 +285,12 @@ fn live_on(runner: Recording) -> Harness<'static, World<Recording>> {
     workspace(runner, panel, vec2(1366.0, 1600.0))
 }
 
+/// Reads the status again now, as the panel does every quarter second.
+fn reread(h: &mut Harness<'_, World<Recording>>) {
+    let world = h.state_mut();
+    world.panel.model_mut().refresh(&world.runner, &world.actor);
+}
+
 /// Chooses `option` in the dropdown named `name`, as a screen reader (or an agent driving the UI) does.
 fn choose(h: &mut Harness<'_, World<Recording>>, name: &str, option: &str) {
     let (target_node, target_tree) = named(h, Role::ComboBox, name).accesskit_node().locate();
@@ -368,7 +374,11 @@ fn controls_whose_ops_are_not_on_main_are_disabled_with_not_available_yet() {
     assert!(all_strings(&h).iter().any(|s| s.starts_with("Not available yet: choosing a camera")));
     // Nothing but the reads ran: no op was called under a name this build doesn't have.
     let reads = ["perform.status", "trigger.list", "output.window.status"];
-    assert!(h.state().runner.ops_run().iter().all(|op| reads.contains(&op.as_str())), "{:?}", h.state().runner.ops_run());
+    assert!(
+        h.state().runner.ops_run().iter().all(|op| reads.contains(&op.as_str())),
+        "{:?}",
+        h.state().runner.ops_run()
+    );
 }
 
 #[test]
@@ -450,7 +460,10 @@ fn the_output_switch_opens_and_closes_the_window_through_its_ops() {
     let host = Arc::new(FakeHost::default());
     let mut h = live(&host);
     let mut window = OutputWindow::new(OutputPlan::default(), Transparency::Fallback);
-    assert!(all_strings(&h).iter().any(|s| s == "Capture it as the window “Omuzaki Output”"), "closed: where to find it");
+    assert!(
+        all_strings(&h).iter().any(|s| s == "Capture it as the window “Omuzaki Output”"),
+        "closed: where to find it"
+    );
     named(&h, Role::Switch, "Output window").click();
     h.run_steps(2);
     let args = h.state().runner.last("output.window.open").expect("the switch ran the op");
@@ -459,10 +472,14 @@ fn the_output_switch_opens_and_closes_the_window_through_its_ops() {
     // The app's UI thread opens it on its next frame; the panel's next read shows it.
     h.state().runner.ui_frame(&mut window);
     assert!(window.status().open && !window.plan().always_on_top, "open, and not on top unless asked");
-    h.state_mut().panel.model_mut().refresh(&h.state().runner, &person());
+    reread(&mut h);
     h.run_steps(2);
     assert!(all_strings(&h).iter().any(|s| s == "1920 × 1080 px over #00b140"), "{:?}", all_strings(&h));
-    assert!(named(&h, Role::Switch, "Output window").accesskit_node().is_toggled().is_some());
+    assert_eq!(
+        named(&h, Role::Switch, "Output window").accesskit_node().toggled(),
+        Some(egui::accesskit::Toggled::True),
+        "the switch shows the window open"
+    );
 
     named(&h, Role::Switch, "Output window").click();
     h.run_steps(2);
@@ -479,7 +496,7 @@ fn backdrop_and_keep_on_top_reopen_an_open_window_and_a_fallback_says_so() {
     named(&h, Role::Switch, "Output window").click();
     h.run_steps(2);
     h.state().runner.ui_frame(&mut window);
-    h.state_mut().panel.model_mut().refresh(&h.state().runner, &person());
+    reread(&mut h);
     h.run_steps(2);
 
     named(&h, Role::RadioButton, "Transparent").click();
@@ -487,7 +504,7 @@ fn backdrop_and_keep_on_top_reopen_an_open_window_and_a_fallback_says_so() {
     let args = h.state().runner.last("output.window.open").expect("re-opened");
     assert_eq!(args["backdrop"], "transparent");
     h.state().runner.ui_frame(&mut window);
-    h.state_mut().panel.model_mut().refresh(&h.state().runner, &person());
+    reread(&mut h);
     h.run_steps(2);
     // This host has no verified transparent surface: the window took the key, and the panel says so.
     assert!(all_strings(&h).iter().any(|s| s.starts_with("fallback")), "{:?}", all_strings(&h));
@@ -501,7 +518,11 @@ fn backdrop_and_keep_on_top_reopen_an_open_window_and_a_fallback_says_so() {
 
 #[test]
 fn a_minimised_window_says_it_cannot_be_captured() {
-    let h = workspace(StoryRunner(LiveState::TrackingLost), LiveState::TrackingLost.panel(&StoryRunner(LiveState::TrackingLost)), vec2(1366.0, 1600.0));
+    let h = workspace(
+        StoryRunner(LiveState::TrackingLost),
+        LiveState::TrackingLost.panel(&StoryRunner(LiveState::TrackingLost)),
+        vec2(1366.0, 1600.0),
+    );
     assert!(all_strings(&h).iter().any(|s| s.starts_with("Minimised")), "{:?}", all_strings(&h));
 }
 
@@ -520,8 +541,9 @@ fn the_camera_section_binds_a_camera_and_tracks_through_the_input_ops() {
     named(&h, Role::Switch, "Track my face").click();
     h.run_steps(2);
     let ops = h.state().runner.ops_run();
-    let tail: Vec<&str> = ops.iter().rev().take(3).rev().map(String::as_str).collect();
-    assert_eq!(tail, ["input.select", "input.preview", "input.state"], "the webcam source, then the capture");
+    let reads = ["input.state", "perform.status", "trigger.list", "output.window.status"];
+    let actions: Vec<&str> = ops.iter().map(String::as_str).filter(|op| !reads.contains(op)).collect();
+    assert_eq!(actions, ["input.bind_camera", "input.select", "input.preview"], "the webcam source, then the capture");
     assert_eq!(h.state().runner.last(input::OP_SELECT), Some(object(&[("source", Value::from("webcam"))])));
     assert_eq!(h.state().runner.last(input::OP_PREVIEW), Some(object(&[("on", Value::from(true))])));
     assert!(all_strings(&h).iter().any(|s| s == "Tracking from Logitech C920"), "{:?}", all_strings(&h));
@@ -568,16 +590,22 @@ fn the_camera_permission_is_asked_through_its_op_and_a_refusal_says_where_to_all
 #[test]
 fn evidence_pictures_of_idle_calibrating_and_tracking_lost() {
     let dir = std::env::var_os("OMUZAKI_LIVE_EVIDENCE_DIR");
+    let dock = live_dock_share();
     for state in LiveState::ALL {
         for (w, h) in [(1366.0, 768.0), (1920.0, 1080.0)] {
             let panel = state.panel(&StoryRunner(state));
             let mut harness = Harness::builder().with_size(vec2(w, h)).wgpu().build_ui_state(
-                |ui, world: &mut World<StoryRunner>| {
+                move |ui, world: &mut World<StoryRunner>| {
                     omuzaki_ui::ds::apply_settings(ui.ctx(), Settings::default());
-                    let fill = omuzaki_ui::ds::Theme::of(omuzaki_ui::ds::ThemeKind::Dark).bg1;
-                    egui::Frame::new().fill(fill).inner_margin(16.0).show(ui, |ui| {
-                        world.panel.ui(ui, &world.runner, &world.actor);
-                    });
+                    let theme = omuzaki_ui::ds::Theme::of(omuzaki_ui::ds::ThemeKind::Dark);
+                    // The Perform workspace's default layout: the Live panel docked right at its registered share,
+                    // beside the viewport's place (the viewport itself is the edit panels' change).
+                    let panel = egui::Frame::new().fill(theme.bg1).inner_margin(12.0);
+                    egui::Panel::right("live.dock")
+                        .exact_size((w * dock).round())
+                        .frame(panel)
+                        .show(ui, |ui| world.panel.ui(ui, &world.runner, &world.actor));
+                    egui::CentralPanel::default().frame(egui::Frame::new().fill(theme.bg0)).show(ui, |_| {});
                 },
                 World { runner: StoryRunner(state), panel, actor: person() },
             );
@@ -592,6 +620,17 @@ fn evidence_pictures_of_idle_calibrating_and_tracking_lost() {
             }
         }
     }
+}
+
+/// The Live panel's share of the width in the Perform workspace's registered default layout.
+fn live_dock_share() -> f32 {
+    use omuzaki_ui_api::layout::Node;
+    omuzaki_ui::link();
+    let host = omuzaki_ui_mock::MockHost::new();
+    let perform = host.registry().workspace("perform").expect("registered");
+    let Node::Split { children, shares, .. } = (perform.default_layout)() else { panic!("a split") };
+    let live = children.iter().position(|child| *child == Node::pane("live")).expect("the Live panel is in it");
+    shares[live] / shares.iter().sum::<f32>()
 }
 
 /// A runner with no ops at all: a build that links none of the perform ops.

@@ -172,7 +172,10 @@ mod tests {
         let ops = host.clone();
         let mut settings = WindowSettings::default();
         settings.always_on_top = true;
-        std::thread::spawn(move || ops.open(&plan(1280, 720), &settings)).join().expect("the op thread").expect("queued");
+        std::thread::spawn(move || ops.open(&plan(1280, 720), &settings))
+            .join()
+            .expect("the op thread")
+            .expect("queued");
         assert_eq!(host.state(), WindowState::Closed, "nothing changes until the UI thread runs");
         host.take_requests(&mut window);
         host.publish(&window, 1.25);

@@ -4512,6 +4512,8 @@ dependencies = [
  "omuzaki-render-api",
  "omuzaki-render-mock",
  "omuzaki-stage",
+ "omuzaki-stream",
+ "omuzaki-stream-api",
  "omuzaki-track-api",
  "omuzaki-track-mock",
  "omuzaki-ui-api",

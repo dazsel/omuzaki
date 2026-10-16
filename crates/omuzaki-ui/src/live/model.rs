@@ -382,8 +382,7 @@ impl LiveModel {
             return;
         }
         let read = run(runner, actor, OP_WINDOW_STATUS, object(&[])).and_then(|output| {
-            WindowState::deserialize(output)
-                .map_err(|e| OpError::internal(format!("{OP_WINDOW_STATUS} answered {e}")))
+            WindowState::deserialize(output).map_err(|e| OpError::internal(format!("{OP_WINDOW_STATUS} answered {e}")))
         });
         match read {
             Ok(state) => self.window = Some(state),
