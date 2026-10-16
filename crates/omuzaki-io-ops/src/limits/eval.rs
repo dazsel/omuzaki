@@ -91,7 +91,7 @@ pub fn findings(eval: &Evaluation, table: &LimitTable, target_tier: usize) -> Re
     for verdict in &eval.stats {
         let unit = table.stat(&verdict.key).map_or("", |limit| limit.unit.suffix());
         let value = format!("{}{unit}", format_number(verdict.value));
-        let rule = format!("limits.{}.{}", table.platform, verdict.key);
+        let rule = format!("limits.{}.{}", table.id, verdict.key);
         match verdict.tier {
             StatTier::Unsupported if verdict.value > 0.0 => {
                 let note = table.unsupported_note.as_deref().unwrap_or("not supported on this platform");

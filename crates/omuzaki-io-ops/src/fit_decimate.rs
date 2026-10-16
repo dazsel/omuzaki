@@ -129,7 +129,8 @@ pub fn decimate(primitive: &mut Primitive, options: &DecimateOptions) -> Result<
 ///
 /// `total` is the budget of the *rendered* scene, which counts a mesh once for every node that draws it (as
 /// [`AvatarStats`](crate::limits::AvatarStats) does): a primitive of a mesh drawn by two nodes weighs twice in the split,
-/// and its target is its share divided by the two. A mesh no node draws weighs once.
+/// and its target is its share divided by the two. A mesh no node draws is not in the rendered scene: it takes no share, is not
+/// decimated and has no report.
 ///
 /// The scene is changed only if every primitive succeeds and the result passes [`IoScene::check`].
 ///
@@ -141,8 +142,6 @@ pub fn decimate_scene(
     total: usize,
     options: &DecimateOptions,
 ) -> Result<Vec<DecimateReport>, IoError> {
-    let slots: Vec<(usize, usize)> =
-        scene.meshes.iter().enumerate().flat_map(|(m, mesh)| (0..mesh.primitives.len()).map(move |p| (m, p))).collect();
     // How many nodes draw each mesh: the rendered scene has one instance of its triangles for each.
     let mut users = vec![0_usize; scene.meshes.len()];
     for mesh in scene.nodes.iter().filter_map(|node| node.mesh) {
@@ -150,7 +149,15 @@ pub fn decimate_scene(
             *count += 1;
         }
     }
-    let instances: Vec<usize> = slots.iter().map(|&(m, _)| users[m].max(1)).collect();
+    // A mesh no node draws is not in the rendered scene: it takes no share and is left as it is.
+    let slots: Vec<(usize, usize)> = scene
+        .meshes
+        .iter()
+        .enumerate()
+        .filter(|&(m, _)| users[m] > 0)
+        .flat_map(|(m, mesh)| (0..mesh.primitives.len()).map(move |p| (m, p)))
+        .collect();
+    let instances: Vec<usize> = slots.iter().map(|&(m, _)| users[m]).collect();
     #[allow(clippy::cast_precision_loss)] // instance counts are far below 2^52
     let areas: Vec<f64> = slots
         .iter()

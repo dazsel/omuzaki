@@ -32,21 +32,18 @@ const MIB: f64 = 1024.0 * 1024.0;
 const ANDROID_UNSUPPORTED: [&str; 6] =
     ["lights", "cloths", "cloth_vertices", "physics_colliders", "physics_rigidbodies", "audio_sources"];
 
-/// The rows of one platform's table, keyed by stat name: the supported rows only, with the three bounds axes put back
-/// together as one `bounds` row of `[x, y, z]` per tier.
+/// The rows of one platform's table, keyed by stat name, as the file writes them: the supported rows only, with the one
+/// `bounds` row of `[x, y, z]` per tier.
 fn table(platform: &str) -> BTreeMap<String, Value> {
     let text = if platform == "pc" { PC_LIMITS } else { ANDROID_LIMITS };
     let file: Value = toml::from_str(text).unwrap();
-    let mut rows: BTreeMap<String, Value> = file["limits"]["stats"]
+    let rows: BTreeMap<String, Value> = file["limits"]["stats"]
         .as_table()
         .unwrap()
         .iter()
         .filter(|(_, v)| v.is_array())
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
-    let axes = ["bounds_x", "bounds_y", "bounds_z"].map(|key| rows.remove(key).unwrap());
-    let per_tier = (0..4).map(|tier| Value::Array(axes.iter().map(|axis| axis[tier].clone()).collect())).collect();
-    rows.insert("bounds".to_string(), Value::Array(per_tier));
     rows
 }
 

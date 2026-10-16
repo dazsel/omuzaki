@@ -70,7 +70,7 @@ impl LimitsError {
 /// its own with [`register_limit_table!`](crate::register_limit_table) next to the code that uses it, so no list here
 /// names the platforms.
 pub struct BuiltinTable {
-    /// The platform id, which must equal the file stem and the table's `platform`.
+    /// The platform id, which is the file stem; it becomes the table's `id`.
     pub id: &'static str,
     /// The data file's text.
     pub text: &'static str,
@@ -111,13 +111,7 @@ static TABLES: LazyLock<Vec<(&'static str, Result<LimitTable, LimitsError>)>> = 
             let table = if repeated.contains(&id) {
                 Err(LimitsError::new(&file, Some("platform"), "is registered more than once"))
             } else {
-                LimitTable::parse_named(&file, entry.text).and_then(|table| {
-                    if table.platform == id {
-                        Ok(table)
-                    } else {
-                        Err(LimitsError::new(&file, Some("platform"), "must equal the file stem"))
-                    }
-                })
+                LimitTable::parse_named(&file, entry.text).map(|table| LimitTable { id: id.to_string(), ..table })
             };
             (id, table)
         })

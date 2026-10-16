@@ -598,7 +598,17 @@ fn a_singular_target_transform_is_not_baked_into() {
     let before = scene.clone();
     let report = merge_meshes(&mut scene).unwrap();
     assert_eq!(scene, before);
-    assert_eq!(report.apart[0].reason, ApartReason::SingularTransform);
+    assert_eq!(report.apart[0].reason, ApartReason::SingularTransform { node: a });
+}
+
+#[test]
+fn a_singular_source_transform_stays_apart_and_no_normal_goes_non_finite() {
+    let (mut scene, _, _, b) = props();
+    scene.nodes[b.index()].transform.scale = Vec3::new(1.0, 0.0, 1.0);
+    let before = scene.clone();
+    let report = merge_meshes(&mut scene).unwrap();
+    assert_eq!(scene, before);
+    assert_eq!(report.apart[0].reason, ApartReason::SingularTransform { node: b });
 }
 
 #[test]

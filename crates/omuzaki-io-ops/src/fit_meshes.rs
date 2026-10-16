@@ -60,8 +60,12 @@ pub enum ApartReason {
         /// The node that can move.
         node: NodeIx,
     },
-    /// The target node's transform can't be inverted, so nothing can be baked into its space.
-    SingularTransform,
+    /// A node's transform can't be inverted (`node` is the target or the node that would join it), so nothing can be
+    /// baked into its space or have its normals carried across.
+    SingularTransform {
+        /// The node whose transform is singular.
+        node: NodeIx,
+    },
 }
 
 impl std::fmt::Display for ApartReason {
@@ -75,7 +79,7 @@ impl std::fmt::Display for ApartReason {
             Self::TooManyJoints => f.write_str("the joined skin would exceed 65536 joints"),
             Self::Parent => f.write_str("the nodes have different parents"),
             Self::Moves { node } => write!(f, "node {} can move at run time", node.0),
-            Self::SingularTransform => f.write_str("the target node's transform can't be inverted"),
+            Self::SingularTransform { node } => write!(f, "node {} has a transform that can't be inverted", node.0),
         }
     }
 }
@@ -450,8 +454,12 @@ fn basic_pair(scene: &IoScene, facts: &Facts, target: NodeIx, other: NodeIx) -> 
     if facts.flag(target) != facts.flag(other) {
         return Err(ApartReason::FirstPerson);
     }
-    if local_matrix(&scene.nodes[target.index()].transform).determinant().abs() < MIN_DETERMINANT {
-        return Err(ApartReason::SingularTransform);
+    // Baking takes the inverse transpose of the source's matrix for its normals, so a source that cannot be inverted
+    // stays apart as much as a target that cannot.
+    if let Some(&node) =
+        [target, other].iter().find(|n| local_matrix(&scene.nodes[n.index()].transform).determinant().abs() < MIN_DETERMINANT)
+    {
+        return Err(ApartReason::SingularTransform { node });
     }
     Ok(())
 }

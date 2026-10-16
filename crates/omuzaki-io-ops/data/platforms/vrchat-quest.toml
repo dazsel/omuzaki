@@ -4,12 +4,12 @@
 #
 # Each row is [Excellent, Good, Medium, Poor]: an avatar's tier is the first column its value fits in, and anything
 # above Poor is Very Poor. The page's wording: "If you go above these numbers for any category, you'll be bumped into
-# the next rank." Counts are plain numbers, bounds are metres per axis (bounds_x, bounds_y, bounds_z), and texture_mib
+# the next rank." Counts are plain numbers, bounds are metres, one [x, y, z] per tier, and texture_mib
 # is in megabytes as the page prints them (compared in MiB, 1024 * 1024 bytes). The page's boolean rows (particle
 # trails, particle collision) are written as 0 (False) and 1 (True).
 
 [limits]
-platform = "vrchat-quest"
+platform = "VRChat"
 version = "Avatar Performance Ranking, page dated 2026-04-21"
 source = "https://creators.vrchat.com/avatars/avatar-performance-ranking-system/"
 retrieved = "2026-10-12"
@@ -26,9 +26,7 @@ mips = true
 
 [limits.stats]
 triangles = [7500, 10000, 15000, 20000]
-bounds_x = [2.5, 4, 5, 5]
-bounds_y = [2.5, 4, 6, 6]
-bounds_z = [2.5, 4, 5, 5]
+bounds = [[2.5, 2.5, 2.5], [4, 4, 4], [5, 6, 5], [5, 6, 5]]
 texture_mib = [10, 18, 25, 40]
 skinned_meshes = [1, 1, 2, 2]
 basic_meshes = [1, 1, 2, 2]

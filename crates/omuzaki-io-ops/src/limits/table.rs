@@ -29,7 +29,7 @@ const MIB: f64 = 1024.0 * 1024.0;
 pub enum Unit {
     /// A plain number: triangles, bones, components.
     Count,
-    /// Metres along one axis (bounds are three stats, one per axis).
+    /// Metres along one axis (a file's one `bounds` row is three stats, one per axis).
     Metres,
     /// Mebibytes of texture memory (1024 * 1024 bytes), under the table's [`TextureEstimate`].
     Mib,
@@ -83,7 +83,11 @@ pub struct StatLimit {
 /// A platform's published limits.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LimitTable {
-    /// The platform's id, a lower-case slug that equals the file stem (`vrchat-quest`). Rule ids use it.
+    /// The id of the table (`vrchat-quest`): the file stem of a built-in table, which sets it; for a table parsed from
+    /// text alone, the platform name as a lower-case slug. Rule ids use it.
+    pub id: String,
+    /// The platform's name as people read it (`VRChat`). Several ids may share one name (`vrchat-pc`, `vrchat-quest`),
+    /// which is how a listing groups them.
     pub platform: String,
     /// The platform's own version, or the date of the page the numbers came from.
     pub version: String,
@@ -153,7 +157,7 @@ impl LimitTable {
     /// Fails, naming `file` and the key, if the text is not a valid table (see the module docs).
     pub fn parse_named(file: &str, text: &str) -> Result<Self, LimitsError> {
         let raw: RawFile = toml::from_str(text).map_err(|e| LimitsError::from_toml(file, e))?;
-        let raw = raw.limits;
+        let mut raw = raw.limits;
         let fail = |key: &str, reason: String| LimitsError::new(file, Some(key), reason);
         for (key, value) in [
             ("platform", &raw.platform),
@@ -165,9 +169,6 @@ impl LimitTable {
             if value.trim().is_empty() {
                 return Err(fail(key, "is empty".into()));
             }
-        }
-        if !is_slug(&raw.platform) {
-            return Err(fail("platform", "must be a lower-case slug (a-z, 0-9, '-')".into()));
         }
         if parse_date(&raw.retrieved).is_none() {
             return Err(fail("retrieved", format!("'{}' is not a YYYY-MM-DD date", raw.retrieved)));
@@ -183,6 +184,7 @@ impl LimitTable {
                 return Err(fail(key, format!("{bits} is not a non-negative number")));
             }
         }
+        expand_bounds(&mut raw.stats, raw.tiers.len()).map_err(|reason| fail("stats.bounds", reason))?;
         if let Some(key) = raw.stats.keys().find(|key| stat_def(key).is_none()) {
             return Err(fail(&format!("stats.{key}"), "is not a stat (see the stat registry)".into()));
         }
@@ -196,6 +198,7 @@ impl LimitTable {
             stats.push(StatLimit { key: def.key.to_string(), unit: def.unit, per_tier, unsupported });
         }
         Ok(Self {
+            id: slug(&raw.platform),
             platform: raw.platform,
             version: raw.version,
             source: raw.source,
@@ -216,7 +219,7 @@ impl LimitTable {
     /// Fails if a limit is not a finite number, which no parsed table holds.
     pub fn to_toml(&self) -> Result<String, LimitsError> {
         let mut stats = toml::Table::new();
-        for stat in &self.stats {
+        for stat in self.stats.iter().filter(|stat| !BOUNDS_AXES.contains(&stat.key.as_str())) {
             let value = if stat.unsupported {
                 toml::Value::String(UNSUPPORTED.into())
             } else {
@@ -228,6 +231,9 @@ impl LimitTable {
                 )
             };
             stats.insert(stat.key.clone(), value);
+        }
+        if let Some(bounds) = self.bounds_row() {
+            stats.insert(BOUNDS.into(), bounds);
         }
         let raw = RawFile {
             limits: RawTable {
@@ -245,6 +251,20 @@ impl LimitTable {
             profile: None,
         };
         toml::to_string(&raw).map_err(|e| LimitsError::new("limit table", None, e.to_string()))
+    }
+
+    /// The three bounds axes as the one `bounds` row a file writes, or `None` if the table caps none of them.
+    fn bounds_row(&self) -> Option<toml::Value> {
+        let axes: Vec<&StatLimit> = BOUNDS_AXES.iter().filter_map(|key| self.stat(key)).collect();
+        let first = axes.first()?;
+        if first.unsupported {
+            return Some(toml::Value::String(UNSUPPORTED.into()));
+        }
+        let cell = |limit: Option<f64>| limit.map_or_else(|| toml::Value::String(UNLIMITED.into()), toml::Value::Float);
+        let tiers = (0..first.per_tier.len())
+            .map(|t| toml::Value::Array(axes.iter().map(|axis| cell(axis.per_tier[t])).collect()))
+            .collect();
+        Some(toml::Value::Array(tiers))
     }
 
     /// The limits of one stat, or `None` if the table does not cap it.
@@ -268,8 +288,53 @@ pub fn stale(table: &LimitTable, today: &str, max_age_days: u32) -> bool {
     }
 }
 
-fn is_slug(text: &str) -> bool {
-    !text.is_empty() && text.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+/// The platform name as a lower-case slug: letters and digits kept, every run of anything else one `-`.
+pub(super) fn slug(text: &str) -> String {
+    let mut out = String::new();
+    for c in text.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+        } else if !out.is_empty() && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    out.trim_end_matches('-').to_string()
+}
+
+/// The file's one bounds row, and the three axis stats it stands for.
+const BOUNDS: &str = "bounds";
+const BOUNDS_AXES: [&str; 3] = ["bounds_x", "bounds_y", "bounds_z"];
+
+/// Replaces the file's `bounds` row, `[[x, y, z], ...]` with one triple per tier (or `"unsupported"`), by the three
+/// axis stats the registry caps. A file that writes an axis on its own is refused: the schema has the one row.
+fn expand_bounds(stats: &mut toml::Table, tiers: usize) -> Result<(), String> {
+    if let Some(axis) = BOUNDS_AXES.iter().find(|axis| stats.contains_key(**axis)) {
+        return Err(format!("is written as one row of [x, y, z] per tier, not as '{axis}'"));
+    }
+    let Some(row) = stats.remove(BOUNDS) else {
+        return Ok(());
+    };
+    let axes: Vec<toml::Value> = match &row {
+        toml::Value::String(word) if word == UNSUPPORTED => vec![row.clone(); 3],
+        toml::Value::Array(cells) => {
+            let mut axes: Vec<Vec<toml::Value>> = vec![Vec::with_capacity(cells.len()); 3];
+            for cell in cells {
+                match cell.as_array().filter(|triple| triple.len() == 3) {
+                    Some(triple) => axes.iter_mut().zip(triple).for_each(|(axis, v)| axis.push(v.clone())),
+                    None => return Err("must have an [x, y, z] triple for each tier".into()),
+                }
+            }
+            axes.into_iter().map(toml::Value::Array).collect()
+        }
+        other => return Err(format!("must be an array of [x, y, z] triples or '{UNSUPPORTED}', not a {}", other.type_str())),
+    };
+    for axis in &axes {
+        parse_row(axis, tiers)?;
+    }
+    for (key, axis) in BOUNDS_AXES.iter().zip(axes) {
+        stats.insert((*key).into(), axis);
+    }
+    Ok(())
 }
 
 fn check_tiers(tiers: &[String]) -> Result<(), String> {

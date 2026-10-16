@@ -118,6 +118,15 @@ fn cube(cells: u32) -> Primitive {
     Primitive::new(mesh)
 }
 
+/// Adds `mesh` to the scene and a root node that draws it, so it is in the rendered scene.
+fn draw(scene: &mut IoScene, mesh: Mesh) {
+    let mesh = scene.add_mesh(mesh);
+    let mut node = Node::new("holder");
+    node.mesh = Some(mesh);
+    let ix = scene.add_node(node);
+    scene.roots.push(ix);
+}
+
 fn diagonal(p: &Primitive) -> f32 {
     let (lo, hi) = p
         .mesh
@@ -326,7 +335,7 @@ fn a_scene_budget_follows_surface_area_with_a_floor() {
     {
         let mut mesh = Mesh::new("m");
         mesh.primitives.push(grid(w, h, scale));
-        scene.add_mesh(mesh);
+        draw(&mut scene, mesh);
     }
     let sizes: Vec<usize> = scene.meshes.iter().map(|m| m.primitives[0].mesh.triangle_count()).collect();
     assert_eq!(sizes, [30_000, 10_000, 160]);
@@ -351,7 +360,7 @@ fn a_share_a_small_primitive_cannot_use_goes_to_the_others() {
     for (w, h, scale) in [(10, 5, Vec2::new(1.0, 1.0)), (50, 19, Vec2::new(0.01, 0.01))] {
         let mut mesh = Mesh::new("m");
         mesh.primitives.push(grid(w, h, scale));
-        scene.add_mesh(mesh);
+        draw(&mut scene, mesh);
     }
     let sizes: Vec<usize> = scene.meshes.iter().map(|m| m.primitives[0].mesh.triangle_count()).collect();
     assert_eq!(sizes, [100, 1_900]);
@@ -448,8 +457,27 @@ fn a_failed_scene_decimation_leaves_the_scene_alone() {
     mesh.primitives.push(grid(20, 20, Vec2::splat(0.01)));
     mesh.primitives.push(grid(20, 20, Vec2::splat(0.01)));
     mesh.primitives[1].mesh.normals.pop();
-    scene.add_mesh(mesh);
+    draw(&mut scene, mesh);
     let before = scene.clone();
     assert!(decimate_scene(&mut scene, 400, &DecimateOptions::new(0)).is_err());
     assert_eq!(scene, before);
+}
+
+#[test]
+fn a_mesh_no_node_draws_takes_no_share_and_is_left_alone() {
+    // A huge orphan mesh next to a drawn one of the same triangle count. The orphan is not rendered, so the drawn mesh
+    // gets the whole budget (and not the sliver its area would leave next to the orphan), and the orphan is untouched.
+    let mut scene = IoScene::new();
+    let mut orphan = Mesh::new("orphan");
+    orphan.primitives.push(grid(50, 20, Vec2::new(100.0, 100.0)));
+    scene.add_mesh(orphan);
+    let mut drawn = Mesh::new("drawn");
+    drawn.primitives.push(grid(50, 20, Vec2::new(0.1, 0.1)));
+    draw(&mut scene, drawn);
+    let before = scene.meshes[0].clone();
+    let options = DecimateOptions { lock_boundary: false, ..DecimateOptions::new(0) };
+    let reports = decimate_scene(&mut scene, 1_000, &options).unwrap();
+    assert_eq!(reports.len(), 1, "one report, for the drawn mesh");
+    assert!((900..=1_000).contains(&reports[0].triangles.1), "{:?}", reports[0].triangles);
+    assert_eq!(scene.meshes[0], before);
 }

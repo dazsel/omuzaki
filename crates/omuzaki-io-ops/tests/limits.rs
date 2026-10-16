@@ -126,7 +126,8 @@ fn every_registered_table_parses_and_names_only_registry_stats_in_registry_order
     assert!(ids.windows(2).all(|pair| pair[0] < pair[1]), "ids are sorted and unique: {ids:?}");
     for id in &ids {
         let table = builtin(id);
-        assert_eq!(table.platform, *id, "the platform id is the file stem");
+        assert_eq!(table.id, *id, "the table id is the file stem");
+        assert!(!table.platform.trim().is_empty(), "{id}: the platform name is set");
         let registry: Vec<&str> = STATS.iter().map(|d| d.key).collect();
         let keys: Vec<&str> = table.stats.iter().map(|s| s.key.as_str()).collect();
         let mut at = 0;
@@ -163,7 +164,10 @@ fn a_table_round_trips_through_toml() {
     for id in builtin_ids() {
         let table = builtin(id);
         let text = table.to_toml().unwrap();
-        assert_eq!(&LimitTable::parse(&text).unwrap(), table, "{id}");
+        // The text holds no id: a built-in's comes from its registration.
+        let parsed = LimitTable { id: table.id.clone(), ..LimitTable::parse(&text).unwrap() };
+        assert_eq!(&parsed, table, "{id}");
+        assert!(text.contains("bounds = [["), "{id}: bounds are written as the one documented row");
     }
     let with_unlimited =
         LimitTable::parse(&table_text(HEADER, "triangles = [10, \"-\"]\nlights = \"unsupported\"")).unwrap();
@@ -206,8 +210,9 @@ fn a_malformed_table_names_the_file_and_the_key() {
     assert_eq!(LimitTable::parse(&table_text(&twice, "")).unwrap_err().key(), Some("tiers"));
     let no_tiers = HEADER.replace("[\"Good\", \"Poor\"]", "[]");
     assert_eq!(LimitTable::parse(&table_text(&no_tiers, "")).unwrap_err().key(), Some("tiers"));
-    let shout = HEADER.replace("\"test\"", "\"Test Platform\"");
-    assert_eq!(LimitTable::parse(&table_text(&shout, "")).unwrap_err().key(), Some("platform"));
+    // The platform is a name people read, not a slug: several ids share it, and the id is the file stem.
+    let named = HEADER.replace("\"test\"", "\"Test Platform (Quest)\"");
+    assert_eq!(LimitTable::parse(&table_text(&named, "")).unwrap().id, "test-platform-quest");
     let extra = format!("{HEADER}\nfavourite = 3");
     assert!(LimitTable::parse(&table_text(&extra, "")).unwrap_err().to_string().contains("favourite"));
     assert!(LimitTable::parse("not toml at all =").is_err());
@@ -243,7 +248,7 @@ fn the_quest_note_is_the_platforms_wording() {
 #[test]
 fn a_one_tier_table_accepts_at_the_limit_and_refuses_one_over() {
     let header = HEADER.replace("[\"Good\", \"Poor\"]", "[\"accept\"]");
-    let table = LimitTable::parse(&table_text(&header, "triangles = [70000]\nbounds_y = [2]")).unwrap();
+    let table = LimitTable::parse(&table_text(&header, "triangles = [70000]\nbounds = [[0, 2, 0]]")).unwrap();
     let at = AvatarStats { triangles: 70_000, bounds: [0.0, 2.0, 0.0], ..AvatarStats::default() };
     assert_eq!(evaluate(&at, &table).tier, Some(0));
     let over = AvatarStats { triangles: 70_001, ..at };
@@ -442,5 +447,27 @@ fn a_platform_registers_its_own_table_and_the_data_file_names_are_the_ids() {
     // `data/platforms/<id>.toml`, and a lookup of anything else says so.
     let error = builtin_checked("nope").unwrap_err();
     assert_eq!(error.file(), "data/platforms");
-    assert!(builtin_ids().all(|id| builtin(id).platform == id));
+    assert!(builtin_ids().all(|id| builtin(id).id == id));
+    // Both VRChat ids share one platform name, so a listing groups them.
+    assert_eq!(builtin("vrchat-pc").platform, builtin("vrchat-quest").platform);
+}
+
+#[test]
+fn bounds_are_one_row_of_x_y_z_per_tier() {
+    let parse = |rows: &str| LimitTable::parse(&table_text(HEADER, rows));
+    let table = parse("bounds = [[1, 2, 3], [4, 5, \"-\"]]").unwrap();
+    assert_eq!(table.stat("bounds_y").unwrap().per_tier, [Some(2.0), Some(5.0)]);
+    assert_eq!(table.stat("bounds_z").unwrap().per_tier, [Some(3.0), None]);
+    assert!(table.to_toml().unwrap().contains("bounds = [[1.0, 2.0, 3.0], [4.0, 5.0, \"-\"]]"));
+    assert!(parse("bounds = \"unsupported\"").unwrap().stat("bounds_x").unwrap().unsupported);
+    for (rows, why) in [
+        ("bounds_x = [1, 2]", "an axis on its own"),
+        ("bounds = [[1, 2, 3]]", "one triple for two tiers"),
+        ("bounds = [[1, 2], [3, 4]]", "a pair"),
+        ("bounds = [1, 2]", "numbers instead of triples"),
+        ("bounds = [[1, 2, 3], [-4, 5, 6]]", "a negative limit"),
+        ("bounds = 4", "not an array"),
+    ] {
+        assert_eq!(parse(rows).unwrap_err().key(), Some("stats.bounds"), "{why}");
+    }
 }
