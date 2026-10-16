@@ -547,3 +547,28 @@ fn an_undrawn_meshs_target_names_must_match_its_kept_targets() {
     a.retained.meshes[1].morph_target_names.pop();
     assert_eq!(a.validate(), Err(AvatarError::morph_names(1, 1, 2)));
 }
+
+/// An avatar whose undrawn source mesh has one primitive per entry of `targets`, each with that many morph targets,
+/// and the target names `names`.
+fn undrawn_primitives(targets: &[usize], names: &[&str]) -> ImportedAvatar {
+    let mut a = with_undrawn(RetainedPrimitive::new());
+    let primitives = targets.iter().map(|&t| RetainedPrimitive::new().with_geometry(triangle(t, 3))).collect();
+    a.retained.meshes[1] =
+        RetainedMesh::new("Spare", primitives).with_morph_target_names(names.iter().map(|n| (*n).to_owned()).collect());
+    a
+}
+
+#[test]
+fn every_primitive_of_an_undrawn_mesh_with_targets_has_the_same_number() {
+    let invalid = |a: &ImportedAvatar| matches!(a.validate(), Err(AvatarError::RetainedGeometryInvalid { .. }));
+    // One and two targets: invalid with no names, and with two names (which would match the larger count alone).
+    assert!(invalid(&undrawn_primitives(&[1, 2], &[])), "{:?}", undrawn_primitives(&[1, 2], &[]).validate());
+    assert!(invalid(&undrawn_primitives(&[2, 1], &["A", "B"])), "the smaller count after the larger one too");
+    assert!(invalid(&undrawn_primitives(&[1, 2], &["A", "B"])));
+    // A primitive without targets beside ones with two is glTF-valid, as `IoScene::check` has it.
+    assert_eq!(undrawn_primitives(&[2, 0, 2], &["A", "B"]).validate(), Ok(()));
+    assert_eq!(undrawn_primitives(&[0, 0], &[]).validate(), Ok(()));
+    // A name table must name exactly the targets.
+    assert_eq!(undrawn_primitives(&[2, 2], &["A"]).validate(), Err(AvatarError::morph_names(1, 1, 2)));
+    assert_eq!(undrawn_primitives(&[0], &["A"]).validate(), Err(AvatarError::morph_names(1, 1, 0)));
+}

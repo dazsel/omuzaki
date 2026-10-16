@@ -4,16 +4,20 @@
 #![allow(clippy::unwrap_used, clippy::large_enum_variant, clippy::type_complexity)] // a test fake: a poisoned lock should panic
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 
 use omuzaki_core::time::{FakeClock, Seconds};
-use omuzaki_doc_api::{DocPath, Patch, Value};
+use omuzaki_doc_api::{DocPath, Patch, Value, lookup};
 use omuzaki_ops_api::{
     Actor, Event, Grants, OpError, OpInfo, OpKind, OpMeta, OpRecord, Outcome, Plan, Request, Runner, Scope, TxId, Undo,
 };
 use omuzaki_script::{Cancel, Limits, RunRequest, RunnerCalls, ScriptError, ScriptHost, ScriptOutcome};
 use schemars::Schema;
+
+/// A run refuses to start without the memory budget as the global allocator.
+#[global_allocator]
+static ALLOCATOR: omuzaki_script::MemoryBudget = omuzaki_script::MemoryBudget::system();
 
 /// What the fake runner was asked, in order.
 #[derive(Clone, Debug, PartialEq)]
@@ -37,11 +41,20 @@ pub struct FakeRunner {
     pub fail_commit: AtomicBool,
     /// The next rollback fails (once) and leaves the transaction open, as the real runner does on a conflict.
     pub fail_rollback: AtomicBool,
+    /// What `get` reads; `Null` (nothing) until a test sets it.
+    pub document: Mutex<Value>,
+    /// The subscribers' ends; `emit` sends to all of them.
+    senders: Mutex<Vec<Sender<Event>>>,
 }
 
 impl FakeRunner {
     pub fn entries(&self) -> Vec<Entry> {
         self.log.lock().unwrap().clone()
+    }
+
+    /// Sends `event` to every subscriber, as the runner does when something happens.
+    pub fn emit(&self, event: &Event) {
+        self.senders.lock().unwrap().iter().for_each(|sender| drop(sender.send(event.clone())));
     }
 
     pub fn requests(&self) -> Vec<Request> {
@@ -81,14 +94,45 @@ fn info_with(name: &'static str, kind: OpKind, undo: Undo) -> OpInfo {
     OpInfo::new(meta, Schema::from(true))
 }
 
+/// An op with a real argument schema and a scope, so the check has fields and scopes to look at.
+fn info_schema(name: &'static str, kind: OpKind, scope: Scope, schema: Value) -> OpInfo {
+    let undo = if kind == OpKind::Edit { Undo::Auto } else { Undo::None };
+    let meta = OpMeta { name, summary: "a fake op", kind, scope, undo };
+    OpInfo::new(meta, Schema::try_from(schema).unwrap())
+}
+
 impl Runner for FakeRunner {
     fn ops(&self) -> Vec<OpInfo> {
         vec![
             info("face.fail", OpKind::Edit),
-            info("face.set_profile", OpKind::Edit),
+            info_schema(
+                "face.set_profile",
+                OpKind::Edit,
+                Scope::EditCharacter,
+                serde_json::json!({
+                    "type": "object",
+                    "properties": { "character": { "type": "string" }, "profile": { "type": "string" }, "blend": { "type": "number" } },
+                    "required": ["character"],
+                    "additionalProperties": false,
+                }),
+            ),
+            info_schema(
+                "face.set_blend",
+                OpKind::Edit,
+                Scope::EditCharacter,
+                serde_json::json!({ "type": "object", "properties": { "character": { "type": "string" }, "blend": { "type": "number" } } }),
+            )
+            .with_coalesces(true),
+            info_schema(
+                "export.publish_clip",
+                OpKind::Edit,
+                Scope::Publish,
+                serde_json::json!({ "type": "object", "properties": { "clip": { "type": "string" } } }),
+            ),
             info("measure.likeness", OpKind::Query),
             info("measure.report", OpKind::Query),
             info("render.video", OpKind::Job),
+            info("script.run", OpKind::Job),
             info_with("file.write", OpKind::Edit, Undo::Explicit),
         ]
     }
@@ -105,7 +149,11 @@ impl Runner for FakeRunner {
             hook(n);
         }
         match op.as_str() {
-            "face.set_profile" => {
+            "face.set_profile" if args["character"] == "nobody" => {
+                Err(OpError::not_found("no character called nobody")
+                    .hint("list the characters with `get(\"characters\")`"))
+            }
+            "face.set_profile" | "face.set_blend" | "export.publish_clip" => {
                 let mut plan = Plan::edit(Patch::default());
                 plan.output = Some(args);
                 Ok(Outcome::new(plan))
@@ -147,12 +195,17 @@ impl Runner for FakeRunner {
         Err(OpError::unsupported("fake"))
     }
 
-    fn subscribe(&self, _: &Grants) -> Result<Receiver<Event>, OpError> {
-        Err(OpError::unsupported("fake"))
+    fn subscribe(&self, grants: &Grants) -> Result<Receiver<Event>, OpError> {
+        if !grants.allows(Scope::Read) {
+            return Err(OpError::denied("subscribing needs read"));
+        }
+        let (sender, receiver) = channel();
+        self.senders.lock().unwrap().push(sender);
+        Ok(receiver)
     }
 
-    fn get(&self, _: &DocPath, _: &Grants) -> Result<Option<Value>, OpError> {
-        Ok(None)
+    fn get(&self, path: &DocPath, _: &Grants) -> Result<Option<Value>, OpError> {
+        Ok(lookup(&self.document.lock().unwrap(), path).cloned())
     }
 
     fn log(&self, _: u64, _: usize, _: &Grants) -> Result<Vec<OpRecord>, OpError> {
@@ -220,5 +273,17 @@ pub fn run_with(
     let runner = Arc::new(runner);
     let clock = Arc::new(FakeClock::new(Seconds(0.0)));
     let result = host(&runner, limits, &clock).run(request, &calls(&runner), cancel);
+    (runner, result)
+}
+
+/// [`run_with`] on the real clock, for a caller that wants the wall-clock limit to be able to expire (the fuzz target).
+pub fn run_on_system_clock(
+    request: RunRequest,
+    cancel: &dyn Cancel,
+    limits: Limits,
+    runner: FakeRunner,
+) -> (Arc<FakeRunner>, Result<ScriptOutcome, ScriptError>) {
+    let runner = Arc::new(runner);
+    let result = ScriptHost::new(&runner.ops(), limits).run(request, &calls(&runner), cancel);
     (runner, result)
 }
