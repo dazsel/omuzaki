@@ -277,6 +277,80 @@ fn closest_on_triangle(p: DVec3, a: DVec3, b: DVec3, c: DVec3) -> DVec3 {
     [on(a, b), on(b, c), on(c, a)].into_iter().min_by(|x, y| x.distance(p).total_cmp(&y.distance(p))).unwrap_or(a)
 }
 
+/// Each vertex's skin as a map from joint to weight, read back through the builder's bone list.
+fn skins(builder: &MeshBuilder) -> Vec<HashMap<JointRef, f32>> {
+    let m = builder.mesh();
+    m.joints
+        .iter()
+        .zip(&m.weights)
+        .map(|(j, w)| {
+            let mut skin = HashMap::new();
+            for (joint, weight) in j.iter().zip(w).filter(|(_, w)| **w > 0.0) {
+                *skin.entry(builder.bones()[usize::from(*joint)].clone()).or_insert(0.0) += *weight;
+            }
+            skin
+        })
+        .collect()
+}
+
+fn torso_surface() -> Surface {
+    let fit: Arc<dyn BodyFit> = Arc::new(TorsoFit::new(&omuzaki_char_api::BodyParams::default()));
+    Surface::new(fit, BodyRegion::Torso, 2.0, 0.004).unwrap()
+}
+
+#[test]
+fn a_decal_is_skinned_row_by_row_and_refused_past_the_regions_end() {
+    let surface = torso_surface();
+    // Tall enough to cross the torso's hand-overs from one bone to the next.
+    let sheet = decal::sheet(&surface, [0.5, 0.0], [0.05, 0.2], 0.0).unwrap();
+    let per_vertex = skins(&sheet);
+    let rows = decal::CELLS + 1;
+    let distinct = |row: usize| per_vertex[row * rows].clone();
+    assert!(distinct(0).len() > 1 || distinct(rows - 1).len() > 1, "the sheet crosses a hand-over");
+    assert_ne!(distinct(0), distinct(rows - 1), "the top and bottom rows are skinned where they lie");
+    // Unturned, each row lies at one height, so all of it carries that height's skin.
+    for i in 0..rows {
+        for j in 0..rows {
+            assert_eq!(per_vertex[i * rows + j], distinct(i), "vertex {j} of row {i}");
+        }
+    }
+    // At either end of the region a sheet would fold onto the end ring: it is refused instead.
+    for t in [0.0, 1.0] {
+        let error = decal::sheet(&surface, [t, 0.0], [0.03, 0.03], 0.0).expect_err("past the end");
+        assert!(error.to_string().contains("past the end of the region"), "{error}");
+    }
+    // A flat sheet (no height) fits at the very end.
+    assert!(decal::sheet(&surface, [1.0, 0.0], [0.03, 0.0], 0.0).is_ok());
+}
+
+#[test]
+fn a_one_link_chain_is_skinned_half_to_each_end() {
+    let surface = torso_surface();
+    let (from, to) = ([0.1, 0.3], [0.9, -0.3]);
+    let spec = Chain {
+        from,
+        to,
+        sag: 0.0,
+        bow: 0.0,
+        link_size: chain::LINK.0,
+        link_count: Some(1),
+        pendant: false,
+        finish: Finish::default(),
+    };
+    let built = chain::build(&surface, &spec).unwrap();
+    let mut expected: HashMap<JointRef, f32> = HashMap::new();
+    for (joint, w) in surface.weights().at(from[0]).into_iter().chain(surface.weights().at(to[0])) {
+        *expected.entry(joint).or_insert(0.0) += w / 2.0;
+    }
+    assert!(expected.len() <= 4, "the test's blend fits four influences unchanged: {expected:?}");
+    for skin in skins(&built) {
+        assert_eq!(skin.len(), expected.len(), "{skin:?} for {expected:?}");
+        for (joint, w) in &expected {
+            assert!((skin[joint] - w).abs() < 1e-4, "{joint:?}: {} for {w}", skin[joint]);
+        }
+    }
+}
+
 #[test]
 fn decals_sit_just_off_the_surface_and_in_front_of_the_garment_on_every_template() {
     let decal =

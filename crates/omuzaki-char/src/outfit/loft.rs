@@ -81,6 +81,22 @@ impl Ring {
         DVec2::new(sup(phi.sin(), self.exponent) * self.radii.x, sup(phi.cos(), self.exponent) * self.radii.y)
     }
 
+    /// Where the ray from the centre through `q` (in the ring's plane, `(across, through)`) meets the ring: the angle
+    /// of that point, and how far `q` lies outside it along the ray (negative inside). The superellipse
+    /// `|x/rx|^e + |y/ry|^e = 1` meets the ray at `s = 1 / (|x̂/rx|^e + |ŷ/ry|^e)^(1/e)`, and its angle has
+    /// `sin phi = ±|x/rx|^(e/2)` and `cos phi = ±|y/ry|^(e/2)`, the inverse of [`Ring::point`]'s `sup`. At the centre
+    /// itself the ray is taken toward the front.
+    pub fn along_ray(&self, q: DVec2) -> (f64, f64) {
+        let e = self.exponent;
+        let length = q.length();
+        let dir = if length > 0.0 { q / length } else { DVec2::Y };
+        let s = ((dir.x / self.radii.x).abs().powf(e) + (dir.y / self.radii.y).abs().powf(e)).powf(-1.0 / e);
+        let on = dir * s;
+        let sin = on.x.signum() * (on.x / self.radii.x).abs().powf(e / 2.0);
+        let cos = on.y.signum() * (on.y / self.radii.y).abs().powf(e / 2.0);
+        (sin.atan2(cos), length - s)
+    }
+
     /// The point at angle `phi`.
     pub fn point(&self, phi: f64) -> DVec3 {
         let q = self.local(phi);
@@ -103,7 +119,8 @@ impl Ring {
 /// The section of `region` of `fit` at `t`, with `offset` added to both radii and cut with `exponent`.
 ///
 /// # Errors
-/// [`GarmentError::NoSection`] if the fit has none there; [`GarmentError::Invalid`] for a non-finite `t` or `offset`, an
+/// [`GarmentError::NoSection`] if the fit has none there; [`GarmentError::Invalid`] for a `t` outside `0..=1` (where a
+/// fit's sections are defined) or a non-finite `offset`, an
 /// exponent outside [`MIN_EXPONENT`]..=[`MAX_EXPONENT`], or a ring whose radii come out below [`MIN_RADIUS`] or
 /// not finite.
 pub fn ring_at(
@@ -113,8 +130,8 @@ pub fn ring_at(
     exponent: f64,
     offset: f64,
 ) -> Result<Ring, GarmentError> {
-    if !t.is_finite() || !offset.is_finite() {
-        return Err(GarmentError::invalid("ring", format!("t = {t} and offset = {offset} must be finite")));
+    if !(0.0..=1.0).contains(&t) || !offset.is_finite() {
+        return Err(GarmentError::invalid("ring", format!("t = {t} must be in 0..=1 and offset = {offset} finite")));
     }
     check_exponent(exponent)?;
     #[allow(clippy::cast_possible_truncation)] // a fit is sampled in f32
@@ -357,7 +374,8 @@ impl Surface {
     /// the normal is their cross product turned away from the ring's centre.
     ///
     /// # Errors
-    /// As [`Surface::point`]; [`GarmentError::Invalid`] where the surface is degenerate (a tangent of no length).
+    /// As [`Surface::point`]; [`GarmentError::Invalid`] where the surface is degenerate (a tangent of no length, or
+    /// two parallel tangents).
     pub fn at(&self, t: f64, phi: f64) -> Result<SurfacePoint, GarmentError> {
         let ring = self.ring(t)?;
         let point = self.shaped(&ring, t, phi)?;
@@ -367,7 +385,9 @@ impl Surface {
         let (Some(along), Some(around)) = (along, around) else {
             return Err(GarmentError::invalid("surface", format!("degenerate at t = {t}, phi = {phi}")));
         };
-        let mut normal = around.cross(along).normalize_or_zero();
+        let Some(mut normal) = around.cross(along).try_normalize() else {
+            return Err(GarmentError::invalid("surface", format!("its tangents are parallel at t = {t}, phi = {phi}")));
+        };
         if normal.dot(point - ring.centre) < 0.0 {
             normal = -normal;
         }
@@ -408,8 +428,7 @@ impl Surface {
             let ring = self.ring(t)?;
             let d = p - ring.centre;
             let q = DVec2::new(d.dot(ring.across), d.dot(ring.through));
-            let phi = (q.x / ring.radii.x).atan2(q.y / ring.radii.y);
-            let outside = q.length() - ring.local(phi).length();
+            let (phi, outside) = ring.along_ray(q);
             if best.is_none_or(|b| outside.abs() < b.outside.abs()) {
                 best = Some(Projection { t, phi, outside });
             }

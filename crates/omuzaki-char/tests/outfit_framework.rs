@@ -402,6 +402,13 @@ fn rings_are_tps_sections_with_outward_normals() {
 fn rings_refuse_bad_input() {
     let fit = torso();
     assert!(ring_at(fit.as_ref(), BodyRegion::Torso, f64::NAN, 2.0, 0.0).is_err());
+    // A fit's sections are defined on 0..=1 only: past the ends is refused, not clamped to the end ring.
+    for t in [-1.0, -1e-9, 1.0 + 1e-9, 2.0] {
+        assert!(ring_at(fit.as_ref(), BodyRegion::Torso, t, 2.0, 0.0).is_err(), "t = {t}");
+    }
+    for t in [0.0, 1.0] {
+        assert_eq!(ring_at(fit.as_ref(), BodyRegion::Torso, t, 2.0, 0.0).unwrap().t, t);
+    }
     assert!(ring_at(fit.as_ref(), BodyRegion::Torso, 0.5, 1.0, 0.0).is_err(), "rounder than an ellipse");
     assert!(ring_at(fit.as_ref(), BodyRegion::Torso, 0.5, 2.0, -1.0).is_err(), "collapsed");
     assert!(ring_at(fit.as_ref(), BodyRegion::ArmL, 0.5, 2.0, 0.0).is_err(), "the fit has no arms");
@@ -452,6 +459,65 @@ fn a_surface_point_has_an_outward_frame_on_the_surface() {
         assert!(s.normal.dot(s.along).abs() < 1e-6 && s.normal.dot(s.around).abs() < 1e-6);
         let ring = surface.ring(t).unwrap();
         assert!(s.normal.dot(s.point - ring.centre) > 0.0, "outward");
+    }
+}
+
+#[test]
+fn a_surface_whose_tangents_are_parallel_is_an_error_not_a_zero_normal() {
+    // Every point on one line: moving along the region and round it both slide along the same direction.
+    let surface =
+        Surface::new(torso(), BodyRegion::Torso, 2.0, 0.004).unwrap().with_shape(|_, t, phi| DVec3::X * (t + phi));
+    let error = surface.at(0.5, 1.0).expect_err("no normal");
+    assert!(error.to_string().contains("parallel"), "{error}");
+}
+
+#[test]
+fn projection_measures_along_the_ray_on_a_square_cut() {
+    let surface = Surface::new(torso(), BodyRegion::Torso, 4.0, 0.0).unwrap();
+    for (t, phi) in [(0.5, 0.3), (0.4, 0.8), (0.6, 2.2), (0.5, -1.3)] {
+        let ring = surface.ring(t).unwrap();
+        let on = ring.point(phi);
+        let radius = on.distance(ring.centre);
+        for k in [0.5, 0.9, 1.0, 1.2, 2.0] {
+            // On the ray from the centre through the ring's point at `phi`, `k` of the way to it.
+            let p = ring.centre + (on - ring.centre) * k;
+            let at = surface.project(p).unwrap().expect("over the torso");
+            assert!(
+                (at.outside - (k - 1.0) * radius).abs() < 1e-6,
+                "{t}, {phi}, {k}: {} for {}",
+                at.outside,
+                (k - 1.0) * radius
+            );
+            assert!(
+                (ring.point(at.phi) - on).length() < 1e-6,
+                "{t}, {phi}, {k}: the angle names the ring's point on the ray"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_suite_finds_a_triangle_through_the_body_between_its_corners() {
+    let fit = torso();
+    let ring = ring_at(fit.as_ref(), BodyRegion::Torso, 0.5, 2.0, 0.0).unwrap();
+    // A sliver: one edge runs straight through the torso, its corners and centroid all outside it.
+    let tri = [ring.centre - ring.across * 0.5, ring.centre + ring.across * 0.5, ring.centre + ring.through * 1.0];
+    assert!(tri.iter().all(|p| !conformance::inside(fit.as_ref(), *p)), "corners outside");
+    assert!(!conformance::inside(fit.as_ref(), (tri[0] + tri[1] + tri[2]) / 3.0), "centroid outside");
+    let hit = conformance::crossing(fit.as_ref(), tri).expect("the crossing is found");
+    assert!(conformance::inside(fit.as_ref(), hit));
+    // And a triangle wholly outside has no crossing.
+    let clear = tri.map(|p| p + ring.through * 2.0);
+    assert_eq!(conformance::crossing(fit.as_ref(), clear), None);
+}
+
+#[test]
+fn the_build_budget_holds_in_the_test_profile_too() {
+    let budget = conformance::build_budget_ms();
+    if cfg!(debug_assertions) {
+        assert_eq!(budget, conformance::MAX_BUILD_MS * conformance::UNOPTIMISED_SLOWDOWN);
+    } else {
+        assert_eq!(budget, conformance::MAX_BUILD_MS);
     }
 }
 

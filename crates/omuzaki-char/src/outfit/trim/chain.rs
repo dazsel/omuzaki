@@ -201,8 +201,10 @@ pub fn add_links(
     for (k, link) in links.iter().enumerate() {
         let x = link.along;
         let facing = out.cross(x).try_normalize().unwrap_or_else(|| x.any_orthonormal_vector());
-        let y = if k % 2 == 0 { facing } else { out };
-        let basis = Basis { origin: link.centre, x, y, z: x.cross(y).normalize_or_zero() };
+        // Every other link a quarter turn round the chain: its plane holds the chain and `out` (`x x facing`, which is
+        // `out` square to the chain), so each basis is orthonormal however the chain bows.
+        let y = if k % 2 == 0 { facing } else { x.cross(facing) };
+        let basis = Basis { origin: link.centre, x, y, z: x.cross(y) };
         torus(builder, &basis, (LINK.0 * scale, LINK.1 * scale), LINK_SEGMENTS, stretch, &skin(k))?;
     }
     Ok(())
@@ -265,9 +267,11 @@ pub fn build(surface: &Surface, spec: &Chain) -> Result<MeshBuilder, TrimError> 
         rest_on(surface, &mut link.centre, clearance)?;
     }
     let (from, to) = (surface.weights().at(spec.from[0]), surface.weights().at(spec.to[0]));
-    let last = chain.len().max(2) - 1;
+    // Link `k` sits `(k + 0.5) / n` of the way along the chain, so it is skinned that share from the start to the end.
+    let n = chain.len();
+    let share = |k: usize| (fraction(k, n) + fraction(1, n) / 2.0).clamp(0.0, 1.0);
     let mut builder = MeshBuilder::new();
-    add_links(&mut builder, &chain, hang.out, scale, &|k| mix(&from, &to, fraction(k.min(last), last)))?;
+    add_links(&mut builder, &chain, hang.out, scale, &|k| mix(&from, &to, share(k)))?;
     if spec.pendant {
         let mut middle = hang.at(0.5);
         rest_on(surface, &mut middle, clearance)?;

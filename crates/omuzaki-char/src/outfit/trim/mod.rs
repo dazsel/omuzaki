@@ -649,19 +649,23 @@ pub fn cylinder(
 /// A box of `size` centred on the origin, along the local axes.
 ///
 /// # Errors
-/// The kit's errors for a degenerate shape.
+/// [`TrimError::Invalid`] for a size that isn't positive; the kit's errors for a degenerate shape.
 pub fn cuboid(
     builder: &mut MeshBuilder,
     basis: &Basis,
     size: DVec3,
     skin: &[(JointRef, f32)],
 ) -> Result<(), TrimError> {
-    let axes = [basis.x * (size.x / 2.0), basis.y * (size.y / 2.0), basis.z * (size.z / 2.0)];
+    if !(size.is_finite() && size.min_element() > 0.0) {
+        return Err(TrimError::invalid("box", format!("its size {size} must be positive")));
+    }
+    let units = [basis.x, basis.y, basis.z];
+    let axes = [units[0] * (size.x / 2.0), units[1] * (size.y / 2.0), units[2] * (size.z / 2.0)];
     for (k, sign) in [(0, 1.0), (0, -1.0), (1, 1.0), (1, -1.0), (2, 1.0), (2, -1.0)] {
         let (u, v) = (axes[(k + 1) % 3], axes[(k + 2) % 3]);
         let centre = basis.origin + axes[k] * sign;
         let ring = vec![centre - u - v, centre + u - v, centre + u + v, centre - u + v];
-        disc(builder, ring, axes[k].normalize_or_zero() * sign, skin)?;
+        disc(builder, ring, units[k] * sign, skin)?;
     }
     Ok(())
 }
@@ -684,7 +688,8 @@ pub struct Bevel {
 /// are filled as the convex pieces `faces` lists (index lists into `outline`), so a concave outline closes too.
 ///
 /// # Errors
-/// [`TrimError::Invalid`] for fewer than 3 outline points; the kit's errors for a degenerate shape.
+/// [`TrimError::Invalid`] for fewer than 3 outline points, a point that isn't finite or one repeated in a row; the
+/// kit's errors for a degenerate shape.
 pub fn extrude(
     builder: &mut MeshBuilder,
     basis: &Basis,
@@ -698,11 +703,15 @@ pub fn extrude(
     if n < 3 {
         return Err(TrimError::invalid("outline", format!("{n} points: an outline needs 3")));
     }
+    if (0..n).any(|k| outline[k].distance(outline[(k + 1) % n]) <= 0.0 || !outline[k].is_finite()) {
+        return Err(TrimError::invalid("outline", "its points must be finite and each differ from the next"));
+    }
     // Each corner's mitre: the offset that moves both its edges out by 1.
     let mitres: Vec<DVec2> = (0..n)
         .map(|k| {
             let (a, b, c) = (outline[(k + n - 1) % n], outline[k], outline[(k + 1) % n]);
-            let out = |d: DVec2| DVec2::new(d.y, -d.x).normalize_or_zero();
+            // Each edge has length (checked above), so its outward normal is a unit vector.
+            let out = |d: DVec2| DVec2::new(d.y, -d.x).normalize();
             let (n1, n2) = (out(b - a), out(c - b));
             (n1 + n2) / (1.0 + n1.dot(n2)).max(1e-6)
         })
