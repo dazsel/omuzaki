@@ -5,6 +5,7 @@
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -555,7 +556,7 @@ impl FakeSessions {
             changes.len()
         );
         for (n, op) in &changes {
-            text.push_str(&format!("\n- Sam applied {op} (n={n})"));
+            let _ = write!(text, "\n- Sam applied {op} (n={n})");
         }
         let listed: Vec<Value> = changes
             .iter()

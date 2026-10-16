@@ -90,10 +90,10 @@ fn stop_in_each_phase_closes_the_transaction_cuts_only_its_own_answer_and_replay
         let first = say_turn("FIRST-ANSWER");
         let edits = call_turn("Editing. ", &[("c1", "face_set_profile", "{}"), ("c2", "render_preview", "{}")]);
         // Events before the second answer's second turn: the first answer's 4, then the edit turn's 4 + 3 × 2.
-        let hold = matches!(phase, Phase::Stream).then_some(4 + 10 + 2);
+        let stream_hold = matches!(phase, Phase::Stream).then_some(4 + 10 + 2);
         let rig = Rig::with(
             script(vec![first, edits, long_text(20), say_turn("spare")]),
-            RigOptions { hold_after: hold, ..RigOptions::default() },
+            RigOptions { hold_after: stream_hold, ..RigOptions::default() },
             move |sessions| {
                 let server = with_session_info(sessions);
                 let held = |name: &str| match phase {
@@ -168,11 +168,9 @@ struct Covered {
     lagged: usize,
 }
 
-/// One seeded run: an answer of a few turns of calls, changes by others landing before random calls, a Stop at a random
-/// event (or none), a random way the executor takes it, a log that may lag, and a commit that may be refused once.
-/// Then a message that delivers what is held, and the checks.
-fn one_interleaving(seed: u64, covered: &mut Covered) {
-    let mut rng = Lcg(seed);
+/// A seeded answer: one to three turns of one to two calls (an edit or a query), then a closing turn; and the number of
+/// events the answer streams. Spare turns follow, for the messages after it.
+fn seeded_turns(rng: &mut Lcg) -> (Vec<omuzaki_llm_mock::ScriptTurn>, usize) {
     let mut turns = Vec::new();
     let mut answer_events = 0;
     for t in 0..=rng.next(3) {
@@ -190,7 +188,60 @@ fn one_interleaving(seed: u64, covered: &mut Covered) {
     answer_events += 4;
     // Leftover turns of a stopped answer are played by the next messages; spares keep the script from running out.
     turns.extend((0..6).map(|i| say_turn(&format!("SPARE{i}"))));
+    (turns, answer_events)
+}
 
+/// The server of a seeded run: `session_info`; commits and rollbacks refused while `refusing` is set; and, while `armed`
+/// is set, a change by somebody else before a seeded third of the calls, each named in `told`.
+fn seeded_server(
+    sessions: &Arc<FakeSessions>,
+    refusing: &Arc<AtomicBool>,
+    armed: &Arc<AtomicBool>,
+    told: &Arc<Mutex<Vec<String>>>,
+    seed: u64,
+) -> ScriptedServer {
+    sessions.other_change("before.zero");
+    sessions.other_change("before.one");
+    sessions.open_caught_up();
+    let server = with_session_info(sessions);
+    let (commit, r) = (Arc::clone(sessions), Arc::clone(refusing));
+    server.add(tool("tx_commit", "tx.commit", "builtin", false), move |_, _| {
+        if r.load(Ordering::SeqCst) {
+            return Outcome::failure("cannot commit now");
+        }
+        commit.commit_open_tx();
+        Outcome::text("tx committed")
+    });
+    let (rollback, r) = (Arc::clone(sessions), Arc::clone(refusing));
+    server.add(tool("tx_rollback", "tx.rollback", "builtin", false), move |_, _| {
+        if r.load(Ordering::SeqCst) {
+            return Outcome::failure("cannot roll back now");
+        }
+        rollback.rollback_open_tx();
+        Outcome::text("tx rolled back")
+    });
+    let (others, a, t, inject) =
+        (Arc::clone(sessions), Arc::clone(armed), Arc::clone(told), Mutex::new(Lcg(seed ^ 0x9e37_79b9)));
+    server.on_call(move |name, args| {
+        // The start read's hook can run just after the test sees it counted; it is not one to land before.
+        let start_read =
+            name == "history_log" && args.get("after_n").and_then(serde_json::Value::as_u64) == Some(u64::MAX);
+        if a.load(Ordering::SeqCst) && !start_read && inject.lock().unwrap().next(3) == 0 {
+            let mut told = t.lock().unwrap();
+            let op = format!("other.change.{}", told.len());
+            others.other_change(&op);
+            told.push(op);
+        }
+    });
+    server
+}
+
+/// One seeded run: an answer of a few turns of calls, changes by others landing before random calls, a Stop at a random
+/// event (or none), a random way the executor takes it, a log that may lag, and a commit that may be refused once.
+/// Then a message that delivers what is held, and the checks.
+fn one_interleaving(seed: u64, covered: &mut Covered) {
+    let mut rng = Lcg(seed);
+    let (turns, answer_events) = seeded_turns(&mut rng);
     let stop_at = (rng.next(4) != 0).then(|| 1 + rng.next(answer_events - 1));
     let stop_how = match rng.next(4) {
         0 => StopBehaviour::Committed,
@@ -206,43 +257,9 @@ fn one_interleaving(seed: u64, covered: &mut Covered) {
     // refused Stop.
     let refusing = Arc::new(AtomicBool::new(refuse_first_commit));
     let told: Arc<Mutex<Vec<String>>> = Arc::default();
-    let inject = Arc::new(Mutex::new(Lcg(seed ^ 0x9e37_79b9)));
-    let (a, t, inj, r) = (Arc::clone(&armed), Arc::clone(&told), Arc::clone(&inject), Arc::clone(&refusing));
-    let rig = Rig::with(script(turns), RigOptions { hold_after: stop_at, ..RigOptions::default() }, move |sessions| {
-        sessions.other_change("before.zero");
-        sessions.other_change("before.one");
-        sessions.open_caught_up();
-        let server = with_session_info(sessions);
-        let (commit, refuse_rollback) = (Arc::clone(sessions), Arc::clone(&r));
-        server.add(tool("tx_commit", "tx.commit", "builtin", false), move |_, _| {
-            if r.load(Ordering::SeqCst) {
-                return Outcome::failure("cannot commit now");
-            }
-            commit.commit_open_tx();
-            Outcome::text("tx committed")
-        });
-        let rollback = Arc::clone(sessions);
-        server.add(tool("tx_rollback", "tx.rollback", "builtin", false), move |_, _| {
-            if refuse_rollback.load(Ordering::SeqCst) {
-                return Outcome::failure("cannot roll back now");
-            }
-            rollback.rollback_open_tx();
-            Outcome::text("tx rolled back")
-        });
-        let others = Arc::clone(sessions);
-        server.on_call(move |name, args| {
-            // The start read's hook can run just after the test sees it counted; it is not one to land before.
-            let start_read =
-                name == "history_log" && args.get("after_n").and_then(serde_json::Value::as_u64) == Some(u64::MAX);
-            if a.load(Ordering::SeqCst) && !start_read && inj.lock().unwrap().next(3) == 0 {
-                let mut told = t.lock().unwrap();
-                let op = format!("other.change.{}", told.len());
-                others.other_change(&op);
-                told.push(op);
-            }
-        });
-        server
-    });
+    let (r, a, t) = (Arc::clone(&refusing), Arc::clone(&armed), Arc::clone(&told));
+    let options = RigOptions { hold_after: stop_at, ..RigOptions::default() };
+    let rig = Rig::with(script(turns), options, move |sessions| seeded_server(sessions, &r, &a, &t, seed));
     rig.sessions.set_stop(stop_how, 0.0);
     rig.sessions.set_log_lag(lag);
     // The host has read where its numbering starts; only then may others' changes land.

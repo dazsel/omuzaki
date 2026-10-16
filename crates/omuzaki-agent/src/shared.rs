@@ -31,7 +31,7 @@ pub(crate) struct OpenQuestion {
 // need a variant for each combination.
 #[allow(clippy::struct_excessive_bools)]
 pub(crate) struct Control {
-    /// An answer is in progress, from an accepted `send` until just before its `Done`.
+    /// An answer is in progress, from an accepted `send` until just before its end (`Done` or `Unclosed`).
     pub running: bool,
     /// Stop was pressed for the answer in progress.
     pub stopping: bool,
@@ -155,7 +155,8 @@ impl Shared {
         self.hub.reset();
     }
 
-    /// Queues an event for the panel. False once Stop has been pressed, except for `Paused` and `Done`.
+    /// Queues an event for the panel. False once Stop has been pressed, except for `Paused`, `Error` and the answer's
+    /// end.
     pub(crate) fn emit(&self, event: AssistantEvent) -> bool {
         let _guard = self.lock();
         self.hub.send(event)
