@@ -710,6 +710,9 @@ pub struct TailGen {
     pub tie_radius: f64,
     /// Bones in the tail's spring chain (`4..=6`), root to tip.
     pub chain_bones: u8,
+    /// How the hanging part leans, `-1..=1`: positive toward the head's vertical axis (a ponytail hugging the back of
+    /// the neck), negative away from it (twintails swinging out over the shoulders).
+    pub lean: f64,
 }
 
 impl Default for TailGen {
@@ -723,8 +726,9 @@ impl Default for TailGen {
             wave: Wave::default(),
             width: Taper::default(),
             thickness: Bulge::default(),
-            tie_radius: 0.012,
+            tie_radius: 0.008,
             chain_bones: 5,
+            lean: 0.0,
         }
     }
 }
@@ -871,6 +875,8 @@ pub struct HairShading {
     pub shade: ColourRef,
     /// Strand-line colour.
     pub line: ColourRef,
+    /// Colour of the hair tie that gathers a tail or bun (a tail or bun).
+    pub tie: ColourRef,
     /// Outline colour. The default is the prototype's hair outline, `#a47868` (hair's own, not the `#8c685c` line colour).
     pub outline: ColourRef,
     /// Angel-ring highlight colour.
@@ -904,6 +910,7 @@ impl Default for HairShading {
             tip: ColourRef::rgb(0xdc, 0xc4, 0xb0),
             shade: ColourRef::rgb(0xb0, 0x8e, 0x88),
             line: ColourRef::rgb(0x8c, 0x68, 0x5c),
+            tie: ColourRef::rgb(0xb4, 0x4e, 0x5e),
             outline: ColourRef::rgb(0xa4, 0x78, 0x68),
             ring: ColourRef::rgb(0xff, 0xf4, 0xe8),
             ring_strength: 0.22,
@@ -1462,6 +1469,7 @@ fn check_generator_values(generator: &Generator, c: &mut Check) {
             c.range(&g("spread_deg"), x.spread_deg, 0.0, 120.0);
             c.range(&g("tie_radius"), x.tie_radius, 0.002, 0.05);
             count(&g("chain_bones"), c, u32::from(x.chain_bones), 4, 6);
+            c.range(&g("lean"), x.lean, -1.0, 1.0);
             c.nested(&g("width"), &x.width);
             c.nested(&g("thickness"), &x.thickness);
         }

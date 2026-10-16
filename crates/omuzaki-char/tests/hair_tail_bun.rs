@@ -124,14 +124,15 @@ fn every_rest_point_stands_clear_of_the_head_even_at_the_extremes() {
 fn the_clumps_gather_at_the_tie_and_fan_out_after_it() {
     let g = TailGen { count: 12, ..tail::ponytail() };
     let (clumps, _) = compile_tail(&g);
+    let tie_at = (tail::TIE_LENGTH / g.length) as f32;
     let width_at = |t: f32| {
         let k = (t * (tail::REST_POINTS - 1) as f32).round() as usize;
         let points: Vec<Vec3> = clumps.iter().map(|c| c.rest[k]).collect();
         let mean = points.iter().copied().sum::<Vec3>() / points.len() as f32;
         points.iter().map(|p| (*p - mean).length()).fold(0.0, f32::max)
     };
-    let tie = width_at(tail::TIE_AT as f32);
-    assert!(tie <= 2.0 * g.tie_radius as f32 + 0.004, "the bunch at the tie is {tie} across");
+    let tie = width_at(tie_at);
+    assert!(tie <= 2.0 * g.tie_radius as f32 + 0.006, "the bunch at the tie is {tie} across");
     assert!(width_at(1.0) > 2.0 * tie, "the tips fan out: {} against the tie's {tie}", width_at(1.0));
 }
 
@@ -627,4 +628,198 @@ fn render_the_presets_when_asked() {
             }
         }
     }
+}
+
+// ------------------------------------------------------------------------------------------------ the look of a tail
+
+#[test]
+fn the_tail_is_one_mass_of_broad_overlapping_locks_at_the_tie() {
+    let g = tail::ponytail();
+    let (clumps, _) = compile_tail(&g);
+    assert!((7..=9).contains(&clumps.len()), "{} locks", clumps.len());
+    assert!(clumps.iter().all(|c| (0.025..=0.035).contains(&c.width.start) && c.width.mid >= c.width.start));
+    // Near the tie every lock's centre is well within half a lock width of the others', so no background shows.
+    let k = 2;
+    let mean = clumps.iter().map(|c| c.rest[k]).sum::<Vec3>() / clumps.len() as f32;
+    for c in &clumps {
+        assert!((c.rest[k] - mean).length() < 0.5 * c.width.start as f32, "a lock stands {} off the bunch", (c.rest[k] - mean).length());
+    }
+    // And the tips are pointed.
+    assert!(clumps[0].width.at(1.0) < 0.3 * clumps[0].width.at(0.5));
+}
+
+#[test]
+fn the_tie_band_sits_fifteen_to_twenty_millimetres_off_the_scalp_and_hides_the_gather() {
+    use omuzaki_char::hair::compile::GroupGeometry;
+    for name in PRESETS {
+        let g = tail_preset(name);
+        let (gid, dynamics, palette) = (id("tail"), Dynamics::default(), Palette::default());
+        let mut rng = Counting::default();
+        let mut ctx = HairGenCtx::new(&Ball, &palette, Quality::Live, &gid, &dynamics, &mut rng);
+        let group = tail::compile(&g, &mut ctx);
+        let GroupGeometry::Tied { ties } = &group.geometry else { panic!("a tail is tied") };
+        let [tie] = ties.as_slice() else { panic!("one tie per tail") };
+        assert!((0.015..=0.021).contains(&outside(tie.centre)), "{name}: the tie is {} off the scalp", outside(tie.centre));
+        // The ring clears the bunch plus half a lock, so the locks start inside it.
+        assert!(tie.radius > g.tie_radius as f32 + 0.3 * g.width.start as f32);
+        assert!(tie.tube > 0.004);
+    }
+}
+
+#[test]
+fn the_tail_bends_to_hang_within_a_few_centimetres_of_the_tie() {
+    for name in PRESETS {
+        let g = tail_preset(name);
+        let rest = &compile_tail(&g).0[0].rest;
+        // Arc length along the clump at each point.
+        let mut arc = 0.0;
+        let mut direction_after = None;
+        for w in rest.windows(2) {
+            let step = (w[1] - w[0]).length();
+            if arc >= 0.060 && direction_after.is_none() {
+                direction_after = Some((w[1] - w[0]) / step);
+            }
+            arc += step;
+        }
+        let d = direction_after.unwrap();
+        assert!(d.y < -0.75, "{name}: 6 cm along, the tail still runs {d:?}");
+    }
+}
+
+#[test]
+fn a_mirrored_group_has_a_tie_per_tail() {
+    use omuzaki_char::hair::compile::GroupGeometry;
+    let params = params_of("twin", Generator::Tail(tail::twintails()), true);
+    let mut forked = Rng::new(1);
+    let mut s = stream(HairRng::Forked, &mut forked).unwrap();
+    let entries = compile_groups(&params, &Dispatch, &Ball, &Palette::default(), Quality::Live, s.as_mut()).unwrap();
+    let GroupGeometry::Tied { ties } = &entries[0].group.geometry else { panic!("tied") };
+    assert_eq!(ties.len(), 2);
+    assert_eq!(ties[1].centre.x, -ties[0].centre.x);
+    assert_eq!(ties[1].axis.x, -ties[0].axis.x);
+}
+
+#[test]
+fn the_tie_band_is_a_closed_outward_torus() {
+    use omuzaki_char::hair::tie::{self, Tie};
+    let t = Tie { centre: Vec3::new(0.1, 0.3, 0.0), axis: Vec3::X, radius: 0.02, tube: 0.006 };
+    let m = tie::mesh(&[t]).unwrap();
+    m.validate().unwrap();
+    assert!(tie::mesh(&[]).is_none());
+    let mut outward = 0;
+    for tri in m.indices.chunks(3) {
+        let p = |i: u32| m.positions[i as usize];
+        let n = (p(tri[1]) - p(tri[0])).cross(p(tri[2]) - p(tri[0]));
+        let vertex_normal = m.normals[tri[0] as usize];
+        if n.dot(vertex_normal) > 0.0 {
+            outward += 1;
+        }
+    }
+    assert!(outward * 10 > m.indices.len() / 3 * 9, "{outward} of {} triangles face out", m.indices.len() / 3);
+    // Every vertex is one tube radius from the ring's centre line, about the axis X.
+    for p in &m.positions {
+        let d = *p - t.centre;
+        let across = Vec3::new(0.0, d.y, d.z).length();
+        let ring = ((across - t.radius).powi(2) + d.x.powi(2)).sqrt();
+        assert!((ring - t.tube).abs() < 1e-5);
+    }
+}
+
+// ------------------------------------------------------------------------------------------------ skinning to the chain
+
+/// The mesh of the hair part's `name`, and the bone ids its joints name.
+fn hair_mesh<'a>(built: &'a BuiltCharacter, name: &str) -> (&'a omuzaki_char_api::PartMesh, Vec<usize>) {
+    let m = &built.meshes.iter().find(|m| m.mesh.name == name).unwrap().mesh;
+    let bones = m.joint_bones.iter().map(|j| built.rig.bone(j).unwrap().index()).collect();
+    (m, bones)
+}
+
+/// Where the mesh's vertices are when the skeleton is posed with `pose`.
+fn skinned(built: &BuiltCharacter, mesh: &omuzaki_char_api::PartMesh, bones: &[usize], pose: &omuzaki_anim_api::Pose) -> Vec<Vec3> {
+    let mut world = omuzaki_anim_api::Pose::IDENTITY;
+    built.rig.skeleton.world_pose(pose, &mut world);
+    let inverse = built.rig.inverse_bind();
+    let matrix = |slot: u16| {
+        let bone = bones[usize::from(slot)];
+        world.local[bone].to_mat4() * inverse[bone]
+    };
+    let g = &mesh.geometry;
+    (0..g.positions.len())
+        .map(|v| {
+            let mut p = Vec3::ZERO;
+            for (j, w) in g.joints[v].iter().zip(g.weights[v]) {
+                if w > 0.0 {
+                    p += w * matrix(*j).transform_point3(g.positions[v]);
+                }
+            }
+            p
+        })
+        .collect()
+}
+
+#[test]
+fn the_locks_follow_their_chain_bones_and_the_rest_pose_is_unchanged() {
+    for template in ["soft-sd", "standard"] {
+        let built = build(&character(template, &presets()[1].1, None)).unwrap();
+        let (mesh, bones) = hair_mesh(&built, "hair-static");
+        mesh.validate().unwrap();
+        // The head, then each side's five chain bones.
+        assert_eq!(mesh.joint_bones.len(), 1 + 2 * 5, "{template}");
+        // Rest: skinning reproduces the mesh.
+        let rest = built.rig.skeleton.rest_pose();
+        let at_rest = skinned(&built, mesh, &bones, &rest);
+        let worst = at_rest.iter().zip(&mesh.geometry.positions).map(|(a, b)| (*a - *b).length()).fold(0.0, f32::max);
+        assert!(worst < 1e-4, "{template}: the rest pose moves a vertex by {worst}");
+        // Pose the third bone of the left chain: the locks it carries move, the root of the tail does not.
+        let bone = built.rig.bone(&mesh.joint_bones[1 + 2]).unwrap().index();
+        let mut posed = rest.clone();
+        posed.local[bone].rotation = Quat::from_rotation_z(0.6) * posed.local[bone].rotation;
+        let moved = skinned(&built, mesh, &bones, &posed);
+        let dist = |v: usize| (moved[v] - mesh.geometry.positions[v]).length();
+        let tip_moved = (0..moved.len()).filter(|v| dist(*v) > 0.02).count();
+        assert!(tip_moved > 0, "{template}: posing a chain bone moves no vertex");
+        let g = &mesh.geometry;
+        let head_only = (0..moved.len()).filter(|v| g.weights[*v][0] > 0.999).count();
+        assert!(head_only > 0, "{template}: the roots of the locks are the head's");
+        assert!((0..moved.len()).filter(|v| g.weights[*v][0] > 0.999).all(|v| dist(v) < 1e-5));
+        // The right chain's locks do not move: no vertex they carry has weight on the left chain's bones.
+        let right = (0..moved.len()).filter(|v| g.positions[*v].x < -0.01).all(|v| dist(v) < 1e-5);
+        assert!(right, "{template}: the right tail moved with the left chain");
+    }
+}
+
+/// The hair part's own output for `def`.
+fn hair_output(def: &CharacterDef) -> omuzaki_char_api::PartOutput {
+    use omuzaki_char_api::{Assembler, build_part, plan};
+    let (id, options, services) = (CharId::new("t").unwrap(), BuildOptions::default(), BuildServices::default());
+    let mut assembler = Assembler::new(&id, def, &options);
+    let mut result = None;
+    for part in plan(def).unwrap() {
+        let out = build_part(def, &part, &options, &services, assembler.published()).unwrap();
+        if part.as_str() == "hair" {
+            result = Some(build_part(def, &part, &options, &services, assembler.published()).unwrap());
+        }
+        assembler.add(&part, out).unwrap();
+    }
+    result.unwrap()
+}
+
+#[test]
+fn the_tie_mesh_has_its_own_material_and_recolours_alone() {
+    use omuzaki_char_api::{Recoloured, recolour_part};
+    use omuzaki_face_api::ColourRef;
+    let mut hair = presets()[0].1.clone();
+    let before = character("standard", &hair, None);
+    hair.shading.tie = ColourRef::rgb(1, 2, 3);
+    let after = character("standard", &hair, None);
+    let mut out = hair_output(&before);
+    let ties = out.meshes.iter().find(|m| m.name == "hair-ties").unwrap();
+    assert_eq!(ties.material.as_str(), "hair-tie");
+    assert_ne!(ties.material, out.meshes.iter().find(|m| m.name == "hair-static").unwrap().material);
+    let rebuilt = hair_output(&after);
+    let key = |o: &omuzaki_char_api::PartOutput| format!("{:?}\n{:?}", o.meshes, o.materials);
+    assert_ne!(key(&out), key(&rebuilt), "the tie colour really changes the output");
+    let done = recolour_part(&after, &PartId::new("hair").unwrap(), &BuildServices::default(), &mut out);
+    assert_eq!(done, Ok(Recoloured::Done));
+    assert_eq!(key(&out), key(&rebuilt));
 }
