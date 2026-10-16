@@ -1,0 +1,6 @@
+section = "rust"
+item = "rustls-platform-verifier (and -android), rustls-native-certs, security-framework(-sys), schannel, core-foundation, openssl-probe"
+kind = "crate"
+used_for = "certificate checks against the operating system's trust store on Windows, macOS and Linux"
+status = "yes"
+audit = "(crates.io: MIT OR Apache-2.0)"

@@ -7,11 +7,13 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::cast_precision_loss,
-    clippy::cast_possible_truncation
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss
 )]
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use nalgebra::{Rotation3, Vector3};
 use omuzaki_ai_api::{DType, RunError, Session, SessionInfo, Signature, TensorBuf, TensorRef};
@@ -211,13 +213,15 @@ pub fn blendshapes_script() -> Vec<Vec<TensorBuf>> {
 pub struct Counted {
     inner: FakeSession,
     runs: Arc<AtomicU64>,
+    fail: Arc<AtomicBool>,
 }
 
 impl Counted {
-    /// Wraps `inner`; the second value reads the count.
-    pub fn new(inner: FakeSession) -> (Self, Arc<AtomicU64>) {
+    /// Wraps `inner`; the second value reads the count and the third makes every run fail while it is set.
+    pub fn new(inner: FakeSession) -> (Self, Arc<AtomicU64>, Arc<AtomicBool>) {
         let runs = Arc::new(AtomicU64::new(0));
-        (Self { inner, runs: Arc::clone(&runs) }, runs)
+        let fail = Arc::new(AtomicBool::new(false));
+        (Self { inner, runs: Arc::clone(&runs), fail: Arc::clone(&fail) }, runs, fail)
     }
 }
 
@@ -227,6 +231,9 @@ impl Session for Counted {
     }
 
     fn run(&mut self, inputs: &[TensorRef<'_>], outputs: &mut [TensorBuf]) -> Result<(), RunError> {
+        if self.fail.load(Ordering::Relaxed) {
+            return Err(RunError::Failed("scripted failure".into()));
+        }
         self.inner.run(inputs, outputs)?;
         self.runs.fetch_add(1, Ordering::Relaxed);
         Ok(())
@@ -249,6 +256,8 @@ pub struct Runs {
     pub landmarks: Arc<AtomicU64>,
     /// The blendshape model.
     pub blendshapes: Arc<AtomicU64>,
+    /// While set, every blendshape run fails.
+    pub fail_blendshapes: Arc<AtomicBool>,
 }
 
 impl Runs {
@@ -268,12 +277,13 @@ pub fn counted_graphs(
     landmarks: Vec<Vec<TensorBuf>>,
     blendshapes: Vec<Vec<TensorBuf>>,
 ) -> (FaceGraphs, Runs) {
-    let (d, detector_runs) = Counted::new(FakeSession::scripted(detector_signature(), detector));
-    let (l, landmark_runs) = Counted::new(FakeSession::scripted(landmarks_signature(), landmarks));
-    let (b, blendshape_runs) = Counted::new(FakeSession::scripted(blendshapes_signature(), blendshapes));
+    let (d, detector_runs, _) = Counted::new(FakeSession::scripted(detector_signature(), detector));
+    let (l, landmark_runs, _) = Counted::new(FakeSession::scripted(landmarks_signature(), landmarks));
+    let (b, blendshape_runs, fail_blendshapes) =
+        Counted::new(FakeSession::scripted(blendshapes_signature(), blendshapes));
     (
         FaceGraphs { detector: Box::new(d), landmarks: Box::new(l), blendshapes: Box::new(b) },
-        Runs { detector: detector_runs, landmarks: landmark_runs, blendshapes: blendshape_runs },
+        Runs { detector: detector_runs, landmarks: landmark_runs, blendshapes: blendshape_runs, fail_blendshapes },
     )
 }
 
@@ -298,4 +308,45 @@ pub fn grey_pixels() -> Vec<u8> {
 /// A tightly packed frame over `pixels`.
 pub fn frame(pixels: &[u8]) -> RgbFrame<'_> {
     RgbFrame { data: pixels, width: SIDE, height: SIDE, stride: SIDE as usize * 3 }
+}
+
+/// A `SIDE` x `SIDE` frame of soft triangle-wave stripes shifted `shift` pixels to the right, with `noise` levels of
+/// deterministic per-pixel sensor noise (a hash of the pixel and `seed`). One pixel of shift changes a stripe by about
+/// three levels, so slow drift stays under the scheme's skip threshold for a frame or two and a fast turn does not.
+pub fn textured_pixels(shift: u32, noise: u32, seed: u32) -> Vec<u8> {
+    let mut pixels = Vec::with_capacity((SIDE * SIDE * 3) as usize);
+    for y in 0..SIDE {
+        for x in 0..SIDE {
+            let phase = (x + shift) % 64;
+            let stripe = 40 + 5 * if phase < 32 { phase } else { 64 - phase };
+            let hash = (x.wrapping_mul(73_856_093) ^ y.wrapping_mul(19_349_663) ^ seed.wrapping_mul(83_492_791)) >> 7;
+            let jitter = if noise == 0 { 0 } else { (hash % (2 * noise + 1)) as i32 - noise as i32 };
+            let level = (stripe as i32 + jitter).clamp(0, 255) as u8;
+            pixels.extend([level; 3]);
+        }
+    }
+    pixels
+}
+
+/// The scripted face moved and scaled so that the ROI tracking derives from its landmarks is `FACE_ROI` again: level
+/// eyes, a bounding box centred in the frame with a long side of `FACE_ROI.width / 1.5`. With it, a landmark script made
+/// for `FACE_ROI` stays right on every tracked frame, as a face that does not move would.
+pub fn steady_face() -> Vec<[f32; 3]> {
+    let mut points = project(&canonical_face(), &Pose::facing(0.2, -0.1, 0.05), SIDE, SIDE);
+    points[263][1] = points[33][1];
+    let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+    for p in &points {
+        for axis in 0..2 {
+            lo[axis] = lo[axis].min(p[axis]);
+            hi[axis] = hi[axis].max(p[axis]);
+        }
+    }
+    let long = (hi[0] - lo[0]).max(hi[1] - lo[1]);
+    let scale = FACE_ROI.width / 1.5 / long;
+    for p in &mut points {
+        p[0] = 0.5 + (p[0] - f32::midpoint(lo[0], hi[0])) * scale;
+        p[1] = 0.5 + (p[1] - f32::midpoint(lo[1], hi[1])) * scale;
+        p[2] *= scale;
+    }
+    points
 }

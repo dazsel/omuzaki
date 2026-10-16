@@ -66,7 +66,7 @@ pub fn sample(population: Population, index: u64) -> HeadParams {
             });
             HeadParams {
                 cranium,
-                outline: HeadOutline { half_width, top, height, exponent, chin, cheek_puff },
+                outline: HeadOutline { half_width, top, height, exponent, exponent_lower: None, chin, cheek_puff },
                 ..HeadParams::default()
             }
         }
@@ -84,7 +84,7 @@ pub fn sample(population: Population, index: u64) -> HeadParams {
             });
             HeadParams {
                 cranium,
-                outline: HeadOutline { half_width, top, height, exponent, chin, cheek_puff },
+                outline: HeadOutline { half_width, top, height, exponent, exponent_lower: None, chin, cheek_puff },
                 ..HeadParams::default()
             }
         }
@@ -186,6 +186,7 @@ pub fn private() -> Option<Vec<(&'static str, HeadParams)>> {
                 top: c.top - y0,
                 height: c.height,
                 exponent: c.exponent,
+                exponent_lower: None,
                 chin,
                 cheek_puff: c.puff,
             },
