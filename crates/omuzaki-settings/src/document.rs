@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 
 use serde_json::Value;
-use toml_edit::{Document, DocumentMut, InlineTable, Item, Key, Table, TableLike};
+use toml_edit::{Document, DocumentMut, InlineTable, Item, Key, RawString, Table, TableLike};
 
 /// The table that lists the stored version of every key above version 1.
 const VERSIONS: &str = "versions";
@@ -400,6 +400,8 @@ fn splice(text: &str, segments: &[&str], new: Option<&toml_edit::Value>) -> Resu
     let mut table = doc.as_table();
     // `base` is where the dotted keys under the last real table (root or `[header]`) begin in the path.
     let (mut resolved, mut base) = (0, 0);
+    // The nearest table that has a header of its own (or is the root): the one whose lines hold the dotted keys.
+    let mut real = doc.as_table();
     for (i, segment) in prefix.iter().enumerate() {
         match table.get(segment) {
             None => break,
@@ -407,6 +409,7 @@ fn splice(text: &str, segments: &[&str], new: Option<&toml_edit::Value>) -> Resu
                 table = next;
                 if !next.is_dotted() {
                     base = i + 1;
+                    real = next;
                 }
             }
             Some(Item::Value(v)) => {
@@ -423,8 +426,8 @@ fn splice(text: &str, segments: &[&str], new: Option<&toml_edit::Value>) -> Resu
     let Some(new) = new else {
         return match (missing, table.get(leaf)) {
             (true, _) | (false, None) => Ok(text.to_owned()),
-            (false, Some(Item::Value(old))) => remove_line(text, table, leaf, old)
-                .ok_or_else(|| format!("`{leaf}` shares its line with other text, so it cannot be removed in place")),
+            (false, Some(Item::Value(old))) => remove_line(text, &pairs_of(text, real), table.key(leaf), old)
+                .ok_or_else(|| format!("`{leaf}` has no position in the file, so it cannot be removed in place")),
             (false, Some(Item::Table(t))) if t.is_dotted() => peel_dotted(text, segments, &first_leaf_of(t), None),
             (false, Some(_)) => Ok(remove_sections(text, &doc, segments)),
         };
@@ -450,25 +453,32 @@ fn splice(text: &str, segments: &[&str], new: Option<&toml_edit::Value>) -> Resu
     }
     if table.is_dotted() {
         let path: Vec<_> = segments[base..].iter().map(|s| Key::new(*s).display_repr().into_owned()).collect();
-        return insert_after(text, last_value(table), 0, &format!("{} = {repr}", path.join(".")))
-            .ok_or_else(|| "a dotted key without a value".to_owned());
+        return insert_after(
+            text,
+            last_value(text, real, table).as_ref(),
+            None,
+            &format!("{} = {repr}", path.join(".")),
+        )
+        .ok_or_else(|| "a dotted key without a value".to_owned());
     }
     let line = format!("{} = {repr}", Key::new(*leaf).display_repr());
     if prefix.is_empty() {
         // A key of the top level goes after the last top-level value, or before the first header.
-        if let Some(last) = last_value(table) {
-            return insert_after(text, Some(last), 0, &line).ok_or_else(|| "no place for the key".to_owned());
+        if let Some(last) = last_value(text, real, table) {
+            return insert_after(text, Some(&last), None, &line).ok_or_else(|| "no place for the key".to_owned());
         }
         let mut headers = Vec::new();
-        collect_headers(doc.as_item(), &mut Vec::new(), &mut headers);
-        let at = headers.iter().map(|(_, start)| line_start(text, *start)).min().unwrap_or(text.len());
+        collect_headers(text, doc.as_item(), &mut Vec::new(), &mut headers);
+        let at = headers.iter().map(|h| h.from).min().unwrap_or(text.len());
         let eol = eol_of(text);
         let gap = if at == text.len() && !text.is_empty() && !text.ends_with('\n') { eol } else { "" };
         return Ok(format!("{}{gap}{line}{eol}{}", &text[..at], &text[at..]));
     }
     if !missing && !table.is_implicit() {
         let header = table.span().ok_or_else(|| "a table without a header".to_owned())?;
-        insert_after(text, last_value(table), header.end, &line).ok_or_else(|| "no place for the key".to_owned())
+        let header_end = decor_span(table.decor().suffix(), header.end).end;
+        insert_after(text, last_value(text, real, table).as_ref(), Some(header_end), &line)
+            .ok_or_else(|| "no place for the key".to_owned())
     } else {
         let header: Vec<_> = prefix.iter().map(|s| Key::new(*s).display_repr().into_owned()).collect();
         Ok(append_table(text, &header.join("."), &line))
@@ -517,64 +527,78 @@ fn first_leaf_of_inline(table: &InlineTable) -> Vec<String> {
     path
 }
 
+/// A `[table]` or `[[array of tables]]` header, placed by the parser's decor: the table's leading decor holds the blank
+/// lines, comments and indent before the `[`, so nothing is searched for in the file itself.
+struct Header {
+    /// The setting path the header names.
+    path: Vec<String>,
+    /// Where the header's own line begins.
+    from: usize,
+    /// Where the run of comment lines directly above the header (no blank line between) begins; `from` when none.
+    lead: usize,
+}
+
 /// Deletes every `[header]` / `[[header]]` section at or under `path` (each runs to the next header, less the comment
 /// lines that sit directly above that header), so a setting stored as tables can be removed or replaced whole.
 fn remove_sections(text: &str, doc: &Document<&str>, path: &[&str]) -> String {
     let mut headers = Vec::new();
-    collect_headers(doc.as_item(), &mut Vec::new(), &mut headers);
-    headers.sort_by_key(|(_, start)| *start);
+    collect_headers(text, doc.as_item(), &mut Vec::new(), &mut headers);
+    headers.sort_by_key(|h| h.from);
     let (mut out, mut cursor) = (String::new(), 0);
-    for (i, (header_path, start)) in headers.iter().enumerate() {
-        if header_path.len() < path.len() || !header_path.iter().zip(path).all(|(a, b)| a == b) {
+    for (i, header) in headers.iter().enumerate() {
+        if header.path.len() < path.len() || !header.path.iter().zip(path).all(|(a, b)| a == b) {
             continue;
         }
-        let from = line_start(text, *start);
-        // The next header on a later line (an implicit parent reports a position inside its first child's header).
-        let next = headers[i + 1..]
-            .iter()
-            .find(|(_, later)| line_start(text, *later) > line_start(text, *start))
-            .map_or(text.len(), |(_, later)| comments_above(text, line_start(text, *later)));
-        out.push_str(&text[cursor.min(from)..from]);
-        cursor = next.max(line_end(text, *start));
+        let next = headers.get(i + 1).map_or(text.len(), |later| later.lead);
+        out.push_str(&text[cursor.min(header.from)..header.from]);
+        cursor = next.max(header.from);
     }
     out.push_str(&text[cursor.min(text.len())..]);
     out
 }
 
-/// Start of the run of `#` comment lines directly above the line at `pos` (no blank line between), or `pos`.
-fn comments_above(text: &str, mut pos: usize) -> usize {
-    while pos > 0 {
-        let before = line_start(text, pos - 1);
-        if !text[before..pos].trim_start().starts_with('#') {
+/// Where a header's line and its comment run begin, from the header's leading decor (`prefix`). The decor holds only
+/// blanks and comments, so reading its lines cannot mistake the inside of a string for a comment.
+fn header_lines(text: &str, prefix: std::ops::Range<usize>) -> (usize, usize) {
+    let decor = &text[prefix.clone()];
+    let line = decor.rfind('\n').map_or(0, |i| i + 1);
+    let mut lead = line;
+    while lead > 0 {
+        let before = decor[..lead - 1].rfind('\n').map_or(0, |i| i + 1);
+        if !decor[before..lead].trim_start().starts_with('#') {
             break;
         }
-        pos = before;
+        lead = before;
     }
-    pos
+    (prefix.start + line, prefix.start + lead)
 }
 
-/// The path and header offset of every `[table]` and `[[array of tables]]` entry in the document.
-fn collect_headers(item: &Item, path: &mut Vec<String>, out: &mut Vec<(Vec<String>, usize)>) {
-    let children = |table: &Table, path: &mut Vec<String>, out: &mut Vec<(Vec<String>, usize)>| {
+/// The path and position of every `[table]` and `[[array of tables]]` header in the document. Implicit tables (`a` of
+/// `[a.b]`) and dotted ones have no header text of their own and are left out.
+fn collect_headers(text: &str, item: &Item, path: &mut Vec<String>, out: &mut Vec<Header>) {
+    let children = |table: &Table, path: &mut Vec<String>, out: &mut Vec<Header>| {
         for (key, child) in table {
             path.push(key.to_owned());
-            collect_headers(child, path, out);
+            collect_headers(text, child, path, out);
             path.pop();
         }
     };
+    let push = |table: &Table, path: &[String], out: &mut Vec<Header>| {
+        if let Some(span) = table.span() {
+            let (from, lead) = header_lines(text, decor_span(table.decor().prefix(), span.start));
+            out.push(Header { path: path.to_vec(), from, lead });
+        }
+    };
     match item {
-        // A dotted table (`ui.theme = 1`) has no header of its own, but a `[ui.mig]` section can hang under it.
         Item::Table(table) => {
-            if let (false, false, Some(span)) = (path.is_empty(), table.is_dotted(), table.span()) {
-                out.push((path.clone(), span.start));
+            if !path.is_empty() && !table.is_dotted() && !table.is_implicit() {
+                push(table, path, out);
             }
             children(table, path, out);
         }
         Item::ArrayOfTables(array) => {
             for table in array {
-                if let Some(span) = table.span() {
-                    out.push((path.clone(), span.start));
-                }
+                push(table, path, out);
                 children(table, path, out);
             }
         }
@@ -600,11 +624,15 @@ fn splice_inline(
     leaf: &str,
     new: Option<&toml_edit::Value>,
 ) -> Result<String, String> {
-    let (mut table, mut resolved) = (inline, 0);
+    // `owner` is the nearest enclosing table that is not dotted: the braces that hold the entry's commas.
+    let (mut table, mut owner, mut resolved) = (inline, inline, 0);
     for (i, segment) in prefix.iter().enumerate() {
         let Some(value) = table.get(segment) else { break };
         let Some(next) = value.as_inline_table() else { return not_a_table(text, segment, new) };
         table = next;
+        if !next.is_dotted() {
+            owner = next;
+        }
         resolved = i + 1;
     }
     let missing = resolved < prefix.len();
@@ -613,7 +641,7 @@ fn splice_inline(
             (true, _) | (false, None) => Ok(text.to_owned()),
             (false, Some((key, item))) => match item.as_value().and_then(toml_edit::Value::as_inline_table) {
                 Some(t) if t.is_dotted() => peel_dotted(text, segments, &first_leaf_of_inline(t), None),
-                _ => remove_entry(text, inline, key, item),
+                _ => remove_entry(text, owner, key),
             },
         };
     };
@@ -633,139 +661,247 @@ fn splice_inline(
         entry = format!("{} = {{ {entry} }}", Key::new(*segment).display_repr());
     }
     let span = table.span().ok_or_else(|| "an inline table without a position".to_owned())?;
-    let last = table.iter().filter_map(|(_, v)| v.span()).map(|s| s.end).max();
-    Ok(match last {
-        Some(end) => format!("{}, {entry}{}", &text[..end], &text[end..]),
-        None => format!("{} {entry} {}", &text[..=span.start], &text[span.start + 1..]),
+    let mut entries = Vec::new();
+    leaves(table, &mut entries);
+    let Some(last) = entries.last() else {
+        return Ok(format!("{} {entry} {}", &text[..=span.start], &text[span.start + 1..]));
+    };
+    let (Some(value), Some(after)) = (last.value.span(), value_after(last.value)) else {
+        return Err("an inline entry without a position".to_owned());
+    };
+    // A comment after the last value (in its trailing decor) belongs to that entry, so the new one goes on its own line
+    // after the comment, with the comma straight after the value; otherwise it follows the value on the same line.
+    Ok(match same_line_comment_end(text, value.end, after).1 {
+        Some(comment) => {
+            let before_key = decor_span(last.key.leaf_decor().prefix(), value.start);
+            let indent =
+                text[before_key.clone()].rfind('\n').map_or("  ", |i| &text[before_key.start + i + 1..before_key.end]);
+            let eol = eol_of(text);
+            format!("{},{}{eol}{indent}{entry}{}", &text[..value.end], &text[value.end..comment], &text[comment..])
+        }
+        None => format!("{}, {entry}{}", &text[..value.end], &text[value.end..]),
     })
+}
+
+/// The span of a decor string, or, when the parser kept none because the string is empty, the empty span at `at`: the
+/// place where that decor would be (right before a key, right after a value or header).
+fn decor_span(raw: Option<&RawString>, at: usize) -> std::ops::Range<usize> {
+    raw.and_then(RawString::span).unwrap_or(at..at)
+}
+
+/// The end of a value's trailing decor.
+fn value_after(value: &toml_edit::Value) -> Option<usize> {
+    Some(decor_span(value.decor().suffix(), value.span()?.end).end)
+}
+
+/// One `key = value` entry of an inline table, looking through dotted keys (`a.b = 1` is one entry, whose key is `b`).
+struct Leaf<'a> {
+    key: &'a Key,
+    value: &'a toml_edit::Value,
+}
+
+/// The entries of an inline table that is not dotted, in the order of the text.
+fn leaves<'a>(table: &'a InlineTable, out: &mut Vec<Leaf<'a>>) {
+    for (name, value) in table {
+        let Some((key, _)) = table.get_key_value(name) else { continue };
+        match value.as_inline_table() {
+            Some(inner) if inner.is_dotted() => leaves(inner, out),
+            _ => out.push(Leaf { key, value }),
+        }
+    }
+    out.sort_by_key(|l| l.key.span().map(|s| s.start));
+}
+
+/// Where an inline entry sits, all of it given by the parser: the leading decor of its key (blanks, comments and
+/// newlines after the previous comma or the `{`), its value, and the value's trailing decor, which ends at the comma
+/// or the `}` that follows.
+struct Placed {
+    /// The leading decor; the entry itself starts where it ends.
+    lead: std::ops::Range<usize>,
+    /// The end of the value.
+    value_end: usize,
+    /// The end of the value's trailing decor: the position of the comma or closing brace after it.
+    after: usize,
+}
+
+impl Placed {
+    /// `boundary` is where the entry's leading decor would be if empty: right after the previous comma or the `{`.
+    fn of(leaf: &Leaf<'_>, boundary: usize) -> Option<Self> {
+        Some(Self {
+            lead: decor_span(leaf.key.leaf_decor().prefix(), boundary),
+            value_end: leaf.value.span()?.end,
+            after: value_after(leaf.value)?,
+        })
+    }
 }
 
 /// Deletes one entry of an inline table: its key, value and own trailing comment, and the one comma that separated it
 /// from its neighbour. The neighbours' comments and the layout's newlines stay, and a line left empty goes.
-fn remove_entry(text: &str, root: &InlineTable, key: &Key, item: &Item) -> Result<String, String> {
-    let (Some(key_span), Some(value_span)) = (key.span(), item.as_value().and_then(toml_edit::Value::span)) else {
-        return Err("an inline entry without a position".to_owned());
-    };
-    // The entry starts where the whitespace and comments before it (the key's leading decor, which toml_edit records on
-    // the last name of a dotted chain, `c` of `a.b.c`) end. Nothing is read back from the text to find the key's start.
-    let start = key.leaf_decor().prefix().and_then(toml_edit::RawString::span).map_or(key_span.start, |lead| lead.end);
-    // The entry's own span, then the one comma that goes with it (when it is not inside that span).
-    let (entry, comma_cut) = match next_separator(text, value_span.end) {
-        // `entry ... ,`: the entry goes with its comma and a comment that shares the comma's line.
-        Some((true, comma)) => (start..same_line_comment_end(text, comma + 1), None),
-        // The last entry, with no comma after it: the comma before it goes, and the entry with its comment.
-        Some((false, _)) => {
-            let end = trailing_comment_end(text, value_span.end);
-            let mut ends = Vec::new();
-            value_ends(root, &mut ends);
-            let before = ends.into_iter().filter(|end| *end <= start).max();
-            match before.and_then(|end| comma_between(text, end, start)) {
-                // Only blanks between the comma and the entry: they go as one piece.
-                Some(comma) if text[comma + 1..start].trim_matches([' ', '\t']).is_empty() => (comma..end, None),
-                other => (start..end, other),
-            }
-        }
-        None => return Err("an inline entry followed by something unexpected".to_owned()),
-    };
-    let mut out = text.to_owned();
-    let at = entry.start;
-    out.replace_range(entry, "");
-    // The entry's own line, if nothing but blanks is left on it, goes too.
-    let (line_from, line_to) = (line_start(&out, at), line_end(&out, at));
-    if line_to > line_from && out[line_from..line_to].trim().is_empty() {
-        out.replace_range(line_from..line_to, "");
+/// `owner` is the nearest enclosing inline table that is not dotted: its entries are what the commas separate, so the
+/// neighbour is found there even when the entry sits in a table nested inside a dotted one or an entry's value.
+///
+/// Every position comes from the parser: the entry starts where its key's leading decor ends, its value ends where the
+/// value's span does, the comma after it is where the value's trailing decor ends, and the comma before it is where
+/// the previous entry's trailing decor ends. Decor holds only blanks, comments and newlines, so the one search made
+/// inside it (for the end of a comment line) cannot be fooled by a string.
+fn remove_entry(text: &str, owner: &InlineTable, key: &Key) -> Result<String, String> {
+    let unplaced = || "an inline entry without a position".to_owned();
+    let mut entries = Vec::new();
+    leaves(owner, &mut entries);
+    // The decor before the `}`; empty (and unrecorded) it sits right before the brace.
+    let brace = owner.span().ok_or_else(unplaced)?;
+    let mut placed: Vec<Placed> = Vec::new();
+    for leaf in &entries {
+        let boundary = placed.last().map_or(brace.start + 1, |prev| prev.after + 1);
+        placed.push(Placed::of(leaf, boundary).ok_or_else(unplaced)?);
     }
-    if let Some(comma) = comma_cut {
+    let i = entries.iter().position(|l| l.key.span() == key.span()).ok_or_else(unplaced)?;
+    let (me, start) = (&placed[i], placed[i].lead.end);
+    let trailing = decor_span(Some(owner.trailing()), brace.end - 1);
+    let comma_after = i + 1 < placed.len() || trailing.start > me.after;
+    if comma_after {
+        // `entry ... ,`: the entry goes with its comma and a comment that shares the comma's line (that comment is in the
+        // leading decor of whatever follows the comma).
+        let decor_end = placed.get(i + 1).map_or(trailing.end, |next| next.lead.end);
+        let (blanks, comment) = same_line_comment_end(text, me.after + 1, decor_end);
+        return Ok(finish_removal(text, start..comment.unwrap_or(blanks), me.lead.start, decor_end, None));
+    }
+    // The last entry, with no comma after it: the comma before it goes, and the entry with its comment.
+    let (_, comment) = same_line_comment_end(text, me.value_end, me.after);
+    let mut cut = start..comment.unwrap_or(me.value_end);
+    let (mut lead_from, mut comma_cut) = (me.lead.start, None);
+    if let Some(prev) = i.checked_sub(1).map(|j| &placed[j]) {
+        if text[prev.after + 1..start].trim_matches([' ', '\t']).is_empty() {
+            // Only blanks between the comma and the entry: they go as one piece.
+            cut.start = prev.after;
+            lead_from = prev.value_end;
+        } else {
+            comma_cut = Some(prev.after);
+        }
+    }
+    Ok(finish_removal(text, cut, lead_from, me.after, comma_cut))
+}
+
+/// Cuts `cut` (and the single comma byte `comma`, if any) out of `text`. When the cut leaves its line blank the line
+/// goes too: `lead_from..cut.start` and `cut.end..tail_to` are decor regions, so a newline found in them is a real line
+/// ending, and no newline in them means the line holds the braces or another entry.
+fn finish_removal(
+    text: &str,
+    mut cut: std::ops::Range<usize>,
+    lead_from: usize,
+    tail_to: usize,
+    comma: Option<usize>,
+) -> String {
+    let line_from = text[lead_from..cut.start].rfind('\n').map(|i| lead_from + i + 1);
+    let line_to = text[cut.end..tail_to].find('\n').map(|i| cut.end + i);
+    if let (Some(from), Some(to)) = (line_from, line_to)
+        && text[from..cut.start].trim().is_empty()
+        && text[cut.end..to].trim().is_empty()
+    {
+        cut = from..to + 1;
+    }
+    let mut out = text.to_owned();
+    out.replace_range(cut, "");
+    if let Some(comma) = comma {
         out.replace_range(comma..=comma, "");
     }
-    Ok(out)
+    out
 }
 
-/// The end of a `# comment` that follows `from` on the same line after blanks, or `from` when there is none.
-fn trailing_comment_end(text: &str, from: usize) -> usize {
-    let rest = &text[from..];
-    let blanks = rest.len() - rest.trim_start_matches([' ', '\t']).len();
-    if rest[blanks..].starts_with('#') {
-        from + blanks + rest[blanks..].find(['\r', '\n']).unwrap_or(rest.len() - blanks)
-    } else {
-        from
-    }
+/// Within the decor `text[from..bound]` (blanks, then maybe a `# comment` that ends at the line): the end of the blanks,
+/// and the end of the comment when there is one.
+fn same_line_comment_end(text: &str, from: usize, bound: usize) -> (usize, Option<usize>) {
+    let rest = &text[from..bound];
+    let after_blanks = rest.trim_start_matches([' ', '\t']);
+    let blanks = from + rest.len() - after_blanks.len();
+    let comment =
+        after_blanks.starts_with('#').then(|| blanks + after_blanks.find(['\r', '\n']).unwrap_or(after_blanks.len()));
+    (blanks, comment)
 }
 
-/// The end of `from` plus the blanks and, when one follows on the same line, the `# comment` after it.
-fn same_line_comment_end(text: &str, from: usize) -> usize {
-    let rest = &text[from..];
-    let blanks = rest.len() - rest.trim_start_matches([' ', '\t']).len();
-    if rest[blanks..].starts_with('#') {
-        from + blanks + rest[blanks..].find(['\r', '\n']).unwrap_or(rest.len() - blanks)
-    } else {
-        from + blanks
-    }
+/// Where a key-value pair sits in a table, from the parser: the leading decor of its key and the end of its value's
+/// trailing decor.
+struct Pair {
+    /// The span of the pair's last key name, to tell pairs apart.
+    key: Option<std::ops::Range<usize>>,
+    /// The key's leading decor; the last line of it is the pair's indent.
+    lead: std::ops::Range<usize>,
+    /// The end of the value's trailing decor: the line ends here (the next byte is the line ending, or the end of file).
+    end: usize,
 }
 
-/// The end of every value in an inline table, looking through dotted entries (whose own span is only a name).
-fn value_ends(table: &InlineTable, out: &mut Vec<usize>) {
-    for (_, value) in table {
-        match value.as_inline_table() {
-            Some(inner) if inner.is_dotted() => value_ends(inner, out),
-            _ => out.extend(value.span().map(|span| span.end)),
+/// The pairs of a table that has a header (or is the root), dotted keys included, in the order of the text. The parser
+/// records a key's leading decor only when it is not empty, and an empty one sits where the line before ends, so each
+/// pair's line is bounded by the one before it (or by the header).
+fn pairs_of(text: &str, real: &Table) -> Vec<Pair> {
+    fn collect<'a>(table: &'a Table, out: &mut Vec<(&'a Key, &'a toml_edit::Value)>) {
+        for (name, item) in table {
+            let Some(key) = table.key(name) else { continue };
+            match item {
+                Item::Value(v) => out.push((key, v)),
+                Item::Table(t) if t.is_dotted() => collect(t, out),
+                _ => {}
+            }
         }
     }
+    let mut found = Vec::new();
+    collect(real, &mut found);
+    found.sort_by_key(|(key, _)| key.span().map(|s| s.start));
+    let mut boundary = real.span().map_or(0, |header| {
+        let end = decor_span(real.decor().suffix(), header.end).end;
+        end + line_ending_len(text, end)
+    });
+    let mut out = Vec::new();
+    for (key, value) in found {
+        let Some(end) = value_after(value) else { continue };
+        out.push(Pair { key: key.span(), lead: decor_span(key.leaf_decor().prefix(), boundary), end });
+        boundary = end + line_ending_len(text, end);
+    }
+    out
 }
 
-/// What follows `from` after blanks, newlines and comments: `Some((true, at))` for a comma, `Some((false, at))` for the
-/// closing brace, `None` for anything else.
-fn next_separator(text: &str, from: usize) -> Option<(bool, usize)> {
-    let mut at = from;
-    while let Some(c) = text[at..].chars().next() {
-        match c {
-            ',' => return Some((true, at)),
-            '}' => return Some((false, at)),
-            '#' => at += text[at..].find('\n').unwrap_or(text.len() - at),
-            c if c.is_whitespace() => at += c.len_utf8(),
-            _ => return None,
+/// The length of the line ending the parser placed at `at` (a pair's end): 2 for `\r\n`, 1 for `\n`, 0 at the end of file.
+fn line_ending_len(text: &str, at: usize) -> usize {
+    if text[at..].starts_with("\r\n") { 2 } else { usize::from(text[at..].starts_with('\n')) }
+}
+
+/// Puts `line` on a new line after the line of the last pair `last` (or after the header line, whose trailing decor
+/// ends at `header_end`, when there is none), indented like that pair.
+fn insert_after(text: &str, last: Option<&Pair>, header_end: Option<usize>, line: &str) -> Option<String> {
+    let (end, indent) = match (last, header_end) {
+        (Some(pair), _) => {
+            let decor = &text[pair.lead.clone()];
+            (pair.end, decor.rfind('\n').map_or(decor, |i| &decor[i + 1..]))
         }
-    }
-    None
-}
-
-/// The comma between the end of one entry and the start of the next, past blanks, newlines and comments.
-fn comma_between(text: &str, from: usize, to: usize) -> Option<usize> {
-    match next_separator(text, from) {
-        Some((true, at)) if at < to => Some(at),
-        _ => None,
-    }
-}
-
-/// Puts `line` on a new line after the line of the last value `last` (or after the line holding `header_end` when
-/// there is none), indented like that value's line.
-fn insert_after(text: &str, last: Option<std::ops::Range<usize>>, header_end: usize, line: &str) -> Option<String> {
-    if last.is_none() && header_end == 0 {
-        return None;
-    }
-    let after = line_end(text, last.as_ref().map_or(header_end, |v| v.end));
-    let indent_from = last.map_or(after, |v| line_start(text, v.start));
-    let indent: String = text[indent_from..].chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+        (None, Some(end)) => (end, ""),
+        (None, None) => return None,
+    };
+    let after = end + line_ending_len(text, end);
     let eol = eol_of(text);
     let mut out = text[..after].to_owned();
     if !out.ends_with('\n') {
         out.push_str(eol);
     }
-    out.extend([indent.as_str(), line, eol]);
+    out.extend([indent, line, eol]);
     out.push_str(&text[after..]);
     Some(out)
 }
 
-/// The span of the last-written value of a table, looking through its dotted keys but not its `[sub.tables]`.
-fn last_value(table: &Table) -> Option<std::ops::Range<usize>> {
-    table
-        .iter()
-        .filter_map(|(_, item)| match item {
-            Item::Value(v) => v.span(),
-            Item::Table(t) if t.is_dotted() => last_value(t),
-            _ => None,
-        })
-        .max_by_key(|span| span.end)
+/// The last-written pair of `table` (a table with a header, or a dotted table in one; `real` is the one with the
+/// header), looking through its dotted keys but not its `[sub.tables]`.
+fn last_value(text: &str, real: &Table, table: &Table) -> Option<Pair> {
+    fn keys(table: &Table, out: &mut Vec<Option<std::ops::Range<usize>>>) {
+        for (name, item) in table {
+            match item {
+                Item::Value(_) => out.extend(table.key(name).map(Key::span)),
+                Item::Table(t) if t.is_dotted() => keys(t, out),
+                _ => {}
+            }
+        }
+    }
+    let mut mine = Vec::new();
+    keys(table, &mut mine);
+    pairs_of(text, real).into_iter().filter(|pair| mine.contains(&pair.key)).max_by_key(|pair| pair.end)
 }
 
 /// Adds a `[header]` section with one line at the end of the file, after a blank line.
@@ -782,25 +918,15 @@ fn append_table(text: &str, header: &str, line: &str) -> String {
     out
 }
 
-/// Deletes the line holding `key = old` when it holds nothing else but a comment.
-fn remove_line(text: &str, table: &Table, key: &str, old: &toml_edit::Value) -> Option<String> {
-    let key_span = table.key(key)?.span()?;
-    let value_span = old.span()?;
-    let start = line_start(text, key_span.start);
-    let end = line_end(text, value_span.end);
-    let before = &text[start..key_span.start];
-    let after = text[value_span.end..end].trim();
-    let alone = !before.contains(['=', '{', ',', '[', '#']) && (after.is_empty() || after.starts_with('#'));
-    alone.then(|| format!("{}{}", &text[..start], &text[end..]))
-}
-
-fn line_start(text: &str, at: usize) -> usize {
-    text[..at].rfind('\n').map_or(0, |i| i + 1)
-}
-
-/// The offset just past the line that holds `at`, its line ending included.
-fn line_end(text: &str, at: usize) -> usize {
-    text[at..].find('\n').map_or(text.len(), |i| at + i + 1)
+/// Deletes the line holding `key = old`: from where the key's leading decor puts the line's start (the decor begins at a
+/// line start and holds the comments above the key, which stay) to the line ending after the value's trailing decor.
+fn remove_line(text: &str, pairs: &[Pair], key: Option<&Key>, old: &toml_edit::Value) -> Option<String> {
+    let span = key?.span();
+    let pair = pairs.iter().find(|p| p.key == span && value_after(old) == Some(p.end))?;
+    let decor = &text[pair.lead.clone()];
+    let start = pair.lead.start + decor.rfind('\n').map_or(0, |i| i + 1);
+    let end = pair.end + line_ending_len(text, pair.end);
+    Some(format!("{}{}", &text[..start], &text[end..]))
 }
 
 /// The file's line ending, by its first line.
@@ -813,6 +939,9 @@ fn eol_of(text: &str) -> &'static str {
 
 #[cfg(test)]
 mod differential;
+
+#[cfg(test)]
+mod forms;
 
 #[cfg(test)]
 mod tests {
@@ -1202,8 +1331,10 @@ mod tests {
 
     #[test]
     fn a_shape_that_cannot_be_edited_in_place_is_refused_not_rewritten() {
+        // A new key beside a dotted entry goes after it (the dotted table's own braces take no new key).
         let text = "a = { b.c = 1 }\n";
-        let result = apply(Some(text), &[set_edit("a.d", json!(1))]);
+        assert_eq!(apply(Some(text), &[set_edit("a.d", json!(1))]).unwrap(), "a = { b.c = 1, d = 1 }\n");
+        let result = apply(Some(text), &[set_edit("a.b.d", json!(1))]);
         assert!(matches!(result, Err(ApplyError::Conflict(_))), "{result:?}");
         let result = apply(Some("[[arr]]\nx = 1\n"), &[set_edit("arr.y", json!(1))]);
         assert!(matches!(result, Err(ApplyError::Conflict(_))), "{result:?}");
