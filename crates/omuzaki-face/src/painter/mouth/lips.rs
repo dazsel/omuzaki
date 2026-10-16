@@ -164,7 +164,7 @@ pub(super) fn paint_gloss(ctx: &mut PaintCtx<'_>) {
 }
 
 /// Paints the rim round an open mouth: a dark outer edge and, on a lip face, a light inner rim over it. A flat face
-/// gets the plain mouth line. Nothing for a closed mouth or a kiss.
+/// gets the plain mouth line. Nothing for a closed mouth or a kiss, except while a kiss gives way to the open shape.
 ///
 /// At the switch the outer edge is the closed line (its colour, and a width that makes up what the lens does not cover
 /// of the line's thickness, so the painted height does not change), and it becomes the open mouth's rim over

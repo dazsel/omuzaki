@@ -3,8 +3,8 @@
 //!
 //! Everything is clipped to the open shape's outline ([`OpenMouth::path`]), so no pixel lands outside it, and the teeth
 //! and fangs are measured from the outline's own upper edge ([`OpenMouth::top`]), so they follow the lip however it
-//! curves. The inner-mouth gradient is the shape's fill, not drawn here. A closed mouth or a kiss has no interior; only
-//! a closed smile shows a fang.
+//! curves. The inner-mouth gradient is the shape's fill, not drawn here. A closed mouth or a kiss has no interior (only
+//! a closed smile shows a fang), except while a kiss gives way to the open shape: then it paints at the partial `reveal`.
 //!
 //! - **Tongue**: an ellipse resting on the bottom, with a small shine.
 //! - **Upper teeth**: a band hanging from the upper edge, as strong as the `teeth_upper` channel, and at least half

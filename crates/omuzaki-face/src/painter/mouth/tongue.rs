@@ -1,7 +1,7 @@
 //! The tongue poking out under an open mouth (`face.js` 369-379): a rounded tab with a centre groove and a shine.
 //!
 //! The tab starts just above the open shape's lowest edge and hangs below it, never above, growing with the `tongue`
-//! channel. Not for a closed mouth or a kiss. Colours come from the resting tongue's colour in the profile and the lip
+//! channel. Not for a closed mouth or a kiss, except while a kiss gives way to the open shape (then at the partial `reveal`). Colours come from the resting tongue's colour in the profile and the lip
 //! tint: the tab is a touch lighter than the tongue, outlined in the rim's dark.
 
 use omuzaki_core::glam::Vec2;
