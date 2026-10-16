@@ -70,7 +70,7 @@ impl Mouth {
             ];
             for (smile_channel, frown_channel, texture, side) in corners {
                 let wobble = frame.sided_texture(texture, CORNER_PERIOD_S, side);
-                out.nudge(smile_channel, frown_channel, params.face.mouth_noise * wobble);
+                out.nudge(smile_channel, frown_channel, frame.ease.mouth * params.face.mouth_noise * wobble);
             }
             if frame.systems.coupling {
                 out.put(Channel::BLUSH, (src[Channel::BLUSH] + flush).min(1.0));

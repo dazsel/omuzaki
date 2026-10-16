@@ -137,7 +137,7 @@ impl Wander {
             if frame.systems.gaze {
                 let wobble =
                     frame.noise(texture, DRIFT_PERIOD_S[axis], 0.0) + gaze.drift_sine[axis] * frame.slow_sine(gaze.drift_hz[axis], phase);
-                gaze.drift * wobble
+                frame.ease.gaze * gaze.drift * wobble
             } else {
                 0.0
             }

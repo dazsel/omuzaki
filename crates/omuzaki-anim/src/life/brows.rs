@@ -52,7 +52,7 @@ impl Brows {
             return;
         }
         self.bank.write(out, &pos);
-        let amplitude = frame.params.face.brow_noise;
+        let amplitude = frame.ease.brows * frame.params.face.brow_noise;
         let sides = [
             (Channel::BROW_OUTER_UP_LEFT, Channel::BROW_DOWN_LEFT, Texture::BrowLeft, Side::Left),
             (Channel::BROW_OUTER_UP_RIGHT, Channel::BROW_DOWN_RIGHT, Texture::BrowRight, Side::Right),

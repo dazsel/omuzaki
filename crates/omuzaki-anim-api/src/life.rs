@@ -360,6 +360,9 @@ pub struct FaceParams {
     pub lid_drift_hz: f32,
     /// A brow kick varies by up to this much from one syllable to the next, so no two are identical.
     pub brow_kick_jitter: f32,
+    /// After a person lets go of a region, its texture noise and couplings ease in over this long, seconds, so
+    /// handing back has no jump. `0` brings them in at once.
+    pub hand_back_s: f32,
 }
 
 impl Default for FaceParams {
@@ -383,6 +386,7 @@ impl Default for FaceParams {
             lid_drift_sine: 0.4,
             lid_drift_hz: 1.21,
             brow_kick_jitter: 0.03,
+            hand_back_s: 0.2,
         }
     }
 }

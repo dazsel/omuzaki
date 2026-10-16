@@ -48,10 +48,13 @@ impl Eyes {
     pub fn step(&mut self, frame: &Frame<'_>, mouth: MouthOut, laugh: &LaughOut, out: &mut Out<'_>) {
         let (face, src) = (&frame.params.face, frame.src);
         let coupling = frame.systems.coupling;
-        let widen = if coupling { face.surprise_widen * surprise(face, src) } else { 0.0 };
-        let squint = if frame.systems.laugh { face.laugh_squint * laugh.weight } else { 0.0 };
+        // The couplings ease in after a hand-back, and are off while a person drives the eyes, so the springs follow
+        // the plain source then.
+        let ease = frame.ease.eyes;
+        let widen = if coupling { ease * face.surprise_widen * surprise(face, src) } else { 0.0 };
+        let squint = if frame.systems.laugh { ease * face.laugh_squint * laugh.weight } else { 0.0 };
         let pos = self.bank.track(frame, frame.params.springs.eye, frame.gate.eyes, |i, c| {
-            let smile = if coupling { face.smile_to_lids * mouth.smile[i % 2].max(0.0) } else { 0.0 };
+            let smile = if coupling { ease * face.smile_to_lids * mouth.smile[i % 2].max(0.0) } else { 0.0 };
             match i / 2 {
                 0 => (src[c] + widen).min(1.0),
                 1 => raised(src[c], squint, face.coupled_lid_cap),
@@ -65,7 +68,7 @@ impl Eyes {
         if frame.systems.texture {
             let phase = frame.traits.drift_phase[2];
             let wobble = frame.noise(Texture::Lid, DRIFT_PERIOD_S, 0.0) + face.lid_drift_sine * frame.slow_sine(face.lid_drift_hz, phase);
-            let drift = face.lid_drift * wobble;
+            let drift = frame.ease.eyes * face.lid_drift * wobble;
             out.nudge(Channel::EYE_WIDE_LEFT, Channel::EYE_SQUINT_LEFT, drift);
             out.nudge(Channel::EYE_WIDE_RIGHT, Channel::EYE_SQUINT_RIGHT, drift);
         }

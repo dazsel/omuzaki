@@ -105,7 +105,7 @@ impl Head {
         let talk = 1.0 + head.talk_gain * self.talk;
         let mut offset = [0.0; 3];
         for (i, delta) in offset.iter_mut().enumerate() {
-            *delta = head.noise_rad[i] * talk * frame.texture(NOISE_TEXTURE[i], NOISE_PERIOD_S[i]);
+            *delta = frame.ease.head * head.noise_rad[i] * talk * frame.texture(NOISE_TEXTURE[i], NOISE_PERIOD_S[i]);
         }
         if frame.systems.breathing {
             offset[1] -= head.breath_pitch_rad * self.breath.sin();
