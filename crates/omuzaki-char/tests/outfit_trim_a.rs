@@ -9,6 +9,7 @@
 #[path = "../../omuzaki-test-char/tests/support/outfit_conformance.rs"]
 mod conformance;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use omuzaki_char::kit::grid::MeshBuilder;
@@ -21,7 +22,7 @@ use omuzaki_char::outfit::trim::{
     Finish, LIFT, METAL_PROGRAM, MetalStyle, RAIL_STEP, Rail, RailSpec, TrimError, TrimSpec, add_trim,
 };
 use omuzaki_char_api::{
-    BodyFit, BodyRegion, BuildCtx, BuildError, BuildServices, MaterialClass, PartCategory, PartKind, PartMeta,
+    BodyFit, BodyRegion, BuildCtx, BuildError, BuildServices, JointRef, MaterialClass, PartCategory, PartKind, PartMeta,
     PartOutput,
 };
 use omuzaki_char_mock::TorsoFit;
@@ -143,7 +144,7 @@ fn trims() -> Vec<TrimSpec> {
         TrimSpec::Braid(Braid {
             rail: rail(&[[0.5, -0.4], [0.3, -0.5]], false),
             strands: 3,
-            lobes: 8,
+            lobes: 4,
             strand_width: 0.002,
             finish: Finish::cloth(ColourRef::rgb(0xc8, 0x9a, 0x3c)),
         }),
@@ -418,15 +419,19 @@ fn a_braid_has_a_closed_strand_per_strand_above_its_rail() {
     let spec = Braid {
         rail: rail(&[[0.5, -0.4], [0.3, -0.5]], false),
         strands: 4,
-        lobes: 6,
+        lobes: 2,
         strand_width: 0.002,
         finish: Finish::default(),
     };
     let built = omuzaki_char::outfit::trim::braid::build(&surface, &spec).unwrap();
     assert!(built.triangle_count() > 0);
-    for bad in
-        [Braid { strands: 1, ..spec.clone() }, Braid { lobes: 0, ..spec.clone() }, Braid { strand_width: 0.0, ..spec }]
-    {
+    for bad in [
+        Braid { strands: 1, ..spec.clone() },
+        Braid { lobes: 0, ..spec.clone() },
+        Braid { strand_width: 0.0, ..spec.clone() },
+        // Lobes too short for four strands to pass each other on this 4 to 5 cm rail.
+        Braid { lobes: 12, ..spec },
+    ] {
         assert!(omuzaki_char::outfit::trim::braid::build(&surface, &bad).is_err());
     }
 }
@@ -470,4 +475,223 @@ fn trim_specs_round_trip_and_reject_unknown_fields() {
     assert!(serde_json::from_value::<TrimSpec>(typo).is_err());
     let schema = schemars::schema_for!(TrimmedParams);
     assert!(serde_json::to_string(&schema).unwrap().contains("button_row"));
+}
+
+// ------------------------------------------------------------------------------------- skin across a hand-over
+
+/// Each vertex's skin as a map from joint to weight, read back through the builder's bone list.
+fn skins(builder: &MeshBuilder) -> Vec<HashMap<JointRef, f32>> {
+    let m = builder.mesh();
+    m.joints
+        .iter()
+        .zip(&m.weights)
+        .map(|(j, w)| {
+            let mut skin = HashMap::new();
+            for (joint, weight) in j.iter().zip(w).filter(|(_, w)| **w > 0.0) {
+                *skin.entry(builder.bones()[usize::from(*joint)].clone()).or_insert(0.0) += *weight;
+            }
+            skin
+        })
+        .collect()
+}
+
+/// The largest difference of any joint's weight between two skins.
+fn skin_difference(a: &HashMap<JointRef, f32>, b: &HashMap<JointRef, f32>) -> f32 {
+    a.keys().chain(b.keys()).map(|j| (a.get(j).unwrap_or(&0.0) - b.get(j).unwrap_or(&0.0)).abs()).fold(0.0, f32::max)
+}
+
+/// A blend as a map, as [`skins`] reads it back.
+fn as_map(blend: Vec<(JointRef, f32)>) -> HashMap<JointRef, f32> {
+    let mut skin = HashMap::new();
+    for (joint, w) in blend.into_iter().filter(|(_, w)| *w > 0.0) {
+        *skin.entry(joint).or_insert(0.0) += w;
+    }
+    skin
+}
+
+/// Vertices per rung of a strip with a lip, and the first face vertex in a rung (after the lip's 2 and the edge's 3).
+const RUNG: usize = 11;
+const FIRST_FACE: usize = 5;
+
+#[test]
+fn a_band_across_a_hand_over_is_skinned_like_the_cloth_under_each_vertex() {
+    let surface = torso_surface();
+    // A band 6 cm wide from a rail round the front, and the same band laid diagonally: each spans a hand-over between
+    // two torso bones, so its free edge and its inner border sit on differently weighted cloth.
+    for rail_spec in [rail(&[[0.55, -0.6], [0.55, 0.6]], false), rail(&[[0.62, -0.6], [0.42, 0.6]], false)] {
+        let spec = Piping { caps: true, ..strip(rail_spec, 0.06) };
+        let built = piping::build(&surface, &spec).unwrap();
+        let per_vertex = skins(&built);
+        let rail = Rail::from_polyline_on_surface(&surface, &spec.rail, spec.rail.step).unwrap();
+        let mut spread = 0.0_f32;
+        for (i, p) in rail.points().iter().enumerate() {
+            let a = [p.t, p.phi];
+            let b = omuzaki_char::outfit::trim::param_offset(&surface, a, p.side, spec.width).unwrap();
+            // Each face vertex is skinned as the cloth at its own place across the band, as the garment under it is.
+            for (k, f) in piping::FRACS.iter().enumerate() {
+                let t = (a[0] + (b[0] - a[0]) * f).clamp(0.0, 1.0);
+                let expected = as_map(surface.weights().at(t));
+                let got = &per_vertex[i * RUNG + FIRST_FACE + k];
+                assert!(skin_difference(got, &expected) < 1e-4, "rung {i}, face vertex {k}: {got:?} for {expected:?}");
+            }
+            // The rolled edge is on the free edge, at the rail.
+            let edge = as_map(surface.weights().at(p.t.clamp(0.0, 1.0)));
+            assert!(skin_difference(&per_vertex[i * RUNG + 3], &edge) < 1e-4, "rung {i}'s rolled edge");
+            spread = spread.max(skin_difference(&per_vertex[i * RUNG + 3], &per_vertex[i * RUNG + RUNG - 1]));
+        }
+        println!("{:?}: the inner border's weights differ from the free edge's by up to {spread:.3}", spec.rail.points);
+        assert!(spread > 0.2, "the band crosses a hand-over (the free edge's weights would be wrong at its inner border)");
+
+        // The end caps are skinned vertex by vertex too: each cap vertex on a rung vertex carries that vertex's skin,
+        // so a bent band doesn't open at its ends. And every cap triangle faces out of the strip's end.
+        let m = built.mesh();
+        let strip_vertices = rail.points().len() * RUNG;
+        let strip_triangles = (rail.points().len() - 1) * (RUNG - 1) * 2;
+        let ends = [(0, -rail.points()[0].tangent), (rail.points().len() - 1, rail.points().last().unwrap().tangent)];
+        let cap_vertices = (m.positions.len() - strip_vertices) / 2;
+        let cap_triangles = (m.indices.len() / 3 - strip_triangles) / 2;
+        assert_eq!(cap_vertices, RUNG + 1, "a cap is the rung plus the closing edge's midpoint");
+        for (c, (row, outward)) in ends.into_iter().enumerate() {
+            let first = strip_vertices + c * cap_vertices;
+            let mut matched = 0;
+            for v in first..first + cap_vertices {
+                let on = (0..RUNG).find(|&k| m.positions[v] == m.positions[row * RUNG + k]);
+                if let Some(k) = on {
+                    matched += 1;
+                    assert!(skin_difference(&per_vertex[v], &per_vertex[row * RUNG + k]) < 1e-6, "cap {c}, vertex {k}");
+                }
+            }
+            assert_eq!(matched, RUNG, "every rung vertex is on the cap");
+            let tris = &m.indices[(strip_triangles + c * cap_triangles) * 3..(strip_triangles + (c + 1) * cap_triangles) * 3];
+            let facing: Vec<f64> = tris
+                .chunks_exact(3)
+                .map(|tri| {
+                    let [a, b, d] = [0, 1, 2].map(|k| m.positions[tri[k] as usize].as_dvec3());
+                    (b - a).cross(d - a).normalize_or_zero().dot(outward)
+                })
+                .collect();
+            assert!(facing.iter().all(|f| *f > 0.0), "cap {c}: a triangle folds back into the strip: {facing:?}");
+        }
+    }
+}
+
+// ------------------------------------------------------------------------------------------ braids don't touch
+
+/// Each strand's centre line: the centre of each of its rings ([`braid`]'s strands are equal blocks of rings of
+/// `ROUND + 1` vertices, the last repeating the first).
+fn strand_centres(built: &MeshBuilder, strands: usize) -> Vec<Vec<DVec3>> {
+    const ROUND: usize = 8;
+    let positions = &built.mesh().positions;
+    let per = positions.len() / strands;
+    (0..strands)
+        .map(|s| {
+            positions[s * per..(s + 1) * per]
+                .chunks_exact(ROUND + 1)
+                .map(|ring| ring[..ROUND].iter().map(|p| p.as_dvec3()).sum::<DVec3>() / ROUND as f64)
+                .collect()
+        })
+        .collect()
+}
+
+/// The least distance between segments `p0 p1` and `q0 q1` (Ericson 5.1.9).
+fn segment_distance(p0: DVec3, p1: DVec3, q0: DVec3, q1: DVec3) -> f64 {
+    let (d1, d2, r) = (p1 - p0, q1 - q0, p0 - q0);
+    let (a, e, f) = (d1.length_squared(), d2.length_squared(), d2.dot(r));
+    let (s, t) = if a <= 1e-30 && e <= 1e-30 {
+        (0.0, 0.0)
+    } else if a <= 1e-30 {
+        (0.0, (f / e).clamp(0.0, 1.0))
+    } else {
+        let c = d1.dot(r);
+        if e <= 1e-30 {
+            ((-c / a).clamp(0.0, 1.0), 0.0)
+        } else {
+            let b = d1.dot(d2);
+            let denom = a * e - b * b;
+            let mut s = if denom > 0.0 { ((b * f - c * e) / denom).clamp(0.0, 1.0) } else { 0.0 };
+            let mut t = (b * s + f) / e;
+            if t < 0.0 {
+                t = 0.0;
+                s = (-c / a).clamp(0.0, 1.0);
+            } else if t > 1.0 {
+                t = 1.0;
+                s = ((b - c) / a).clamp(0.0, 1.0);
+            }
+            (s, t)
+        }
+    };
+    (p0 + d1 * s).distance(q0 + d2 * t)
+}
+
+/// The least distance between two polylines.
+fn polyline_distance(p: &[DVec3], q: &[DVec3]) -> f64 {
+    let mut least = f64::INFINITY;
+    for a in p.windows(2) {
+        let (lo, hi) = (a[0].min(a[1]), a[0].max(a[1]));
+        for b in q.windows(2) {
+            // Segments whose boxes are further apart than the best so far can't beat it.
+            let gap = (b[0].min(b[1]) - hi).max(lo - b[0].max(b[1])).max(DVec3::ZERO);
+            if gap.length() < least {
+                least = least.min(segment_distance(a[0], a[1], b[0], b[1]));
+            }
+        }
+    }
+    least
+}
+
+#[test]
+fn braid_strands_never_touch_each_other() {
+    use omuzaki_char::outfit::trim::braid;
+    let surface = torso_surface();
+    let open = rail(&[[0.5, -0.4], [0.3, -0.5]], false);
+    let closed = rail(&[[0.45, 0.0], [0.45, 2.1], [0.45, 4.2]], true);
+    // The closed two-strand fixture (whose strands used to meet where they crossed), a closed three-strand braid, and
+    // two to six strands on an open rail, from loose to as dense as the strands allow.
+    let mut cases = vec![(closed.clone(), 2, 40, 0.0015), (closed, 3, 40, 0.0015)];
+    for strands in braid::MIN_STRANDS..=braid::MAX_STRANDS {
+        for lobes in [2, 6, 12] {
+            cases.push((open.clone(), strands, lobes, 0.002));
+        }
+    }
+    for (rail_spec, strands, lobes, strand_width) in cases {
+        let spec = Braid { rail: rail_spec, strands, lobes, strand_width, finish: Finish::default() };
+        let built = match braid::build(&surface, &spec) {
+            Ok(built) => built,
+            Err(e) => {
+                // Refused only where its lobes leave a strand no more than the gap along the rail.
+                let lobe = Rail::length_on(&surface, &spec.rail).unwrap() / f64::from(lobes);
+                assert!(lobe / f64::from(strands) <= braid::GAP * strand_width * 1.02, "{strands} x {lobes}: {e}");
+                assert!(e.to_string().contains("lobes"), "{e}");
+                continue;
+            }
+        };
+        let centres = strand_centres(&built, strands as usize);
+        let mut least = f64::INFINITY;
+        for j in 0..centres.len() {
+            for k in j + 1..centres.len() {
+                least = least.min(polyline_distance(&centres[j], &centres[k]));
+            }
+        }
+        // Two round strands of this width touch when their centre lines are a width apart.
+        println!("{strands} strands, {lobes} lobes: centre lines {:.3} widths apart at least", least / strand_width);
+        assert!(least >= strand_width, "{strands} strands, {lobes} lobes: {:.3} mm apart", least * 1e3);
+    }
+}
+
+#[test]
+fn the_winding_radius_is_the_least_that_keeps_strands_apart() {
+    use omuzaki_char::outfit::trim::braid::{pair_distance, winding_radius};
+    let gap = 0.002;
+    // On a long lobe the strands barely lean, so they need a circle whose chord between neighbours is the gap.
+    for n in 2..=6_u32 {
+        let r = winding_radius(n, 10.0, gap).unwrap();
+        let chord = gap / (2.0 * (std::f64::consts::PI / f64::from(n)).sin());
+        assert!((r - chord).abs() < 1e-3 * chord, "{n}: {r} for {chord}");
+        // Every pair clears the gap, and a slightly smaller circle doesn't.
+        assert!((1..n).all(|d| pair_distance(r, 10.0, d, n) >= gap));
+        assert!((1..n).any(|d| pair_distance(r * 0.99, 10.0, d, n) < gap));
+    }
+    // A lobe that leaves each strand no more than the gap along the rail has no radius at all.
+    assert_eq!(winding_radius(3, 3.0 * gap, gap), None);
+    assert!(winding_radius(3, 3.3 * gap, gap).is_some());
 }

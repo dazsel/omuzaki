@@ -1,9 +1,17 @@
-//! Braid and rope trim: round strands weaving over and under each other along a rail.
+//! Braid and rope trim: round strands laid over and under each other along a rail.
 //!
-//! Strand `k` of `n` follows the rail with a phase of `k / n` of a turn: it swings across the rail as `sin(theta)` and
-//! rises and falls as `sin(2 theta)`, so neighbouring strands pass over and under each other where they cross (the
-//! three-strand braid, generalised to `n`). On an open rail the strands taper to points at both ends; on a closed rail
-//! they wrap, and the braid repeats a whole number of times round it.
+//! Strand `k` of `n` winds round the rail on a circle, a phase of `k / n` of a turn ahead of strand 0: across the rail
+//! as `R sin(theta)` and up off it as `R (1 + cos(theta))`, `theta` growing by a whole turn each repeat (a lobe) along
+//! the rail's length. Seen from above the strands cross from side to side; where two cross, one passes over the other.
+//! On an open rail the strands taper to points at both ends; on a closed rail they wrap, and the braid repeats a whole
+//! number of times round it.
+//!
+//! **No strand touches another.** At any point of the rail the strands sit on one circle, `1/n` of a turn apart, and
+//! two strands `d` steps apart that are `u` apart in `theta` are `sqrt(c²u² + 4R² sin²((u - 2πd/n) / 2))` apart, where
+//! `c` is the lobe's length over a turn: the distance between two helices of one pitch depends only on `u`. The circle's
+//! radius `R` is the least for which that distance stays at least [`GAP`] strand widths for every `d` and `u`
+//! ([`winding_radius`]). A lobe too short for its strands (`lobe / n` at most that gap) has no such radius, and the
+//! build refuses it, naming the lobes.
 
 use omuzaki_core::glam::DVec3;
 use omuzaki_face_api::{Check, ColourRef, Validate};
@@ -27,10 +35,15 @@ const PER_LOBE: f64 = 16.0;
 const ROUND: usize = 8;
 /// The share of an open braid's length over which its strands taper to a point at each end.
 const TAPER: f64 = 0.04;
-/// How far a strand swings across the rail, in strand widths per strand.
-const SWING: f64 = 0.4;
-/// How far a strand rises and falls, in strand widths.
-const RISE: f64 = 0.5;
+/// The least distance between two strands' centre lines, in strand widths: they never touch, with a twentieth of a
+/// width to spare.
+pub const GAP: f64 = 1.05;
+/// Samples of a strand pair's distance over a turn of `u` when its minimum is sought ([`pair_distance`]).
+const PAIR_SAMPLES: usize = 128;
+/// Halvings of the search for the winding radius.
+const RADIUS_STEPS: usize = 48;
+/// The largest winding radius tried, in strand widths, before a braid is refused as too dense.
+const MAX_RADIUS: f64 = 64.0;
 
 /// Strands braided along a rail.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -70,39 +83,105 @@ impl Validate for Braid {
 /// The braid `spec` describes on `surface`: one closed tube per strand.
 ///
 /// # Errors
-/// [`TrimError::ZeroLengthRail`] for a rail without length; [`TrimError::Invalid`] for a spec that fails validation.
+/// [`TrimError::ZeroLengthRail`] for a rail without length; [`TrimError::Invalid`] for a spec that fails validation,
+/// or whose lobes are too short for its strands to pass each other.
 pub fn build(surface: &Surface, spec: &Braid) -> Result<MeshBuilder, TrimError> {
     checked(spec)?;
     // Fine enough for every repeat to have its samples, and never coarser than the rail asks.
     let length = Rail::length_on(surface, &spec.rail)?;
     let step = (length / (f64::from(spec.lobes) * PER_LOBE)).min(spec.rail.step);
     let rail = Rail::from_polyline_on_surface(surface, &spec.rail, step)?;
+    let lobe = rail_length(&rail) / f64::from(spec.lobes);
+    let radius = winding_radius(spec.strands, lobe, GAP * spec.strand_width).ok_or_else(|| {
+        TrimError::invalid(
+            "lobes",
+            format!(
+                "{} lobes of {:.1} mm leave {:.2} mm a strand along the rail: {} strands {:.1} mm wide need more than \
+                 {GAP} widths each; use fewer lobes or a longer rail",
+                spec.lobes,
+                lobe * 1e3,
+                lobe / f64::from(spec.strands) * 1e3,
+                spec.strands,
+                spec.strand_width * 1e3
+            ),
+        )
+    })?;
     let mut builder = MeshBuilder::new();
     for k in 0..spec.strands {
-        builder.merge(&strand(&rail, spec, k)?)?;
+        builder.merge(&strand(&rail, spec, k, radius)?)?;
     }
     Ok(builder)
 }
 
-/// Strand `k` of the braid along `rail`.
+/// The length of `rail` along its samples, metres: what the lobes divide.
+fn rail_length(rail: &Rail) -> f64 {
+    rail.points().last().map_or(0.0, |p| p.distance)
+}
+
+/// The least distance between two strands of a braid wound on a circle of radius `radius` with lobes `lobe` long, `d`
+/// of `n` steps apart round it (`0 < d < n`): `min over u of sqrt(c²u² + 4R² sin²((u - Δ) / 2))` with `c = lobe / 2π`,
+/// `Δ = 2πd/n` (see the module docs). Beyond a turn either side, `cu` alone exceeds a lobe; inside, the minimum is
+/// found by sampling and a golden-section search round the best sample.
+pub fn pair_distance(radius: f64, lobe: f64, d: u32, n: u32) -> f64 {
+    let c = lobe / TAU;
+    let delta = TAU * f64::from(d) / f64::from(n);
+    let f = |u: f64| (c * u).powi(2) + (2.0 * radius * ((u - delta) / 2.0).sin()).powi(2);
+    let span = 2.0 * TAU;
+    let h = span * fraction(1, PAIR_SAMPLES);
+    let at = |k: usize| -TAU + span * fraction(k, PAIR_SAMPLES);
+    let best = (0..=PAIR_SAMPLES).map(at).min_by(|a, b| f(*a).total_cmp(&f(*b))).unwrap_or(0.0);
+    let (mut lo, mut hi) = (best - h, best + h);
+    let g = 0.5 * (5.0_f64.sqrt() - 1.0);
+    for _ in 0..60 {
+        let (x, y) = (hi - g * (hi - lo), lo + g * (hi - lo));
+        if f(x) < f(y) {
+            hi = y;
+        } else {
+            lo = x;
+        }
+    }
+    f(f64::midpoint(lo, hi)).min(f(best)).sqrt()
+}
+
+/// The radius of the circle `strands` strands wind round, lobes `lobe` long, for every two of them to stay at least
+/// `gap` apart centre to centre: the least such radius, to within a part in 2^48 of the search's range. `None` when no
+/// radius does it, which happens when `lobe / strands` is at most `gap` (two neighbours then meet however wide the
+/// circle).
+pub fn winding_radius(strands: u32, lobe: f64, gap: f64) -> Option<f64> {
+    let clear = |radius: f64| (1..strands).all(|d| pair_distance(radius, lobe, d, strands) >= gap);
+    let (mut lo, mut hi) = (0.0, MAX_RADIUS * gap);
+    if !(lobe.is_finite() && gap > 0.0 && clear(hi)) {
+        return None;
+    }
+    for _ in 0..RADIUS_STEPS {
+        let mid = f64::midpoint(lo, hi);
+        if clear(mid) {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    Some(hi)
+}
+
+/// Strand `k` of the braid along `rail`, wound on a circle of `radius` round it.
 #[allow(clippy::many_single_char_names)] // widths, radii and frame axes, as the braid's geometry names them
-fn strand(rail: &Rail, spec: &Braid, k: u32) -> Result<MeshBuilder, TrimError> {
+fn strand(rail: &Rail, spec: &Braid, k: u32, radius: f64) -> Result<MeshBuilder, TrimError> {
     let points = rail.points();
-    let (w, r) = (spec.strand_width, spec.strand_width / 2.0);
-    let swing = SWING * w * f64::from(spec.strands);
+    let r = spec.strand_width / 2.0;
     let phase = TAU * f64::from(k) / f64::from(spec.strands);
+    let total = rail_length(rail);
     let last = points.len() - 1;
     let centres: Vec<DVec3> = points
         .iter()
-        .enumerate()
-        .map(|(i, p)| {
-            let theta = TAU * f64::from(spec.lobes) * fraction(i, last) + phase;
-            let up = r + RISE * w * 0.5 * (1.0 + (2.0 * theta).sin());
-            p.point + p.side * (swing * theta.sin()) + p.normal * up
+        .map(|p| {
+            // By length, not by sample: the rail's samples are uniform in [t, phi], so lobes stay even.
+            let theta = TAU * f64::from(spec.lobes) * (p.distance / total) + phase;
+            p.point + p.side * (radius * theta.sin()) + p.normal * (r + radius * (1.0 + theta.cos()))
         })
         .collect();
     let closed = rail.closed();
-    let radius = |i: usize| {
+    let thickness = |i: usize| {
         if closed {
             return r;
         }
@@ -126,7 +205,7 @@ fn strand(rail: &Rail, spec: &Braid, k: u32) -> Result<MeshBuilder, TrimError> {
         let up = points[i].normal;
         let n = (up - tangent * up.dot(tangent)).try_normalize().unwrap_or_else(|| tangent.any_orthonormal_vector());
         let b = tangent.cross(n);
-        let rad = radius(i);
+        let rad = thickness(i);
         for j in 0..=ROUND {
             let a = TAU * fraction(j % ROUND, ROUND);
             rings.push(*c + (n * a.cos() + b * a.sin()) * rad);

@@ -20,12 +20,12 @@ use omuzaki_char::outfit::common::{
 use omuzaki_char::outfit::loft::{RegionWeights, SOFT_SQUARE, Surface, ring_at};
 use omuzaki_char::outfit::trim::{TrimSpec, add_trim};
 use omuzaki_char_api::{
-    BodyFit, BodyRegion, BuildCtx, BuildError, BuildServices, FitFact, JointRef, PartCategory, PartKind, PartMeta,
+    BodyFit, BodyRegion, BodyShape, BuildCtx, BuildError, BuildServices, FitFact, JointRef, PartCategory, PartKind, PartMeta,
     PartOutput,
 };
 use omuzaki_char_mock::TorsoFit;
 use omuzaki_core::colour::Colour;
-use omuzaki_core::glam::{DVec3, Vec2};
+use omuzaki_core::glam::{DVec2, DVec3, Vec2};
 use omuzaki_face_api::{Check, ColourRef, Validate};
 use omuzaki_face_mock::MockRasterizer;
 use schemars::JsonSchema;
@@ -567,6 +567,105 @@ fn the_suite_finds_a_triangle_grazing_a_limb_by_ten_micrometres() {
     let x = r + 1e-5;
     let tri = [DVec3::new(x, 0.3, 0.4), DVec3::new(x, 0.7, 0.4), DVec3::new(x, 0.5, -0.4)];
     assert_eq!(conformance::crossing(&Limb, tri), None);
+}
+
+/// Where the standard body bulges most past the convex hull of the suite's table rows: the region, the direction, the
+/// section there (centre, its support along the direction), the hull's support along it and the margin a hull of the
+/// rows alone allows for its frames turning; `side` is the section's other axis, square to the direction.
+struct Bulge {
+    region: BodyRegion,
+    t: f64,
+    direction: DVec3,
+    axis: DVec3,
+    side: DVec3,
+    centre: DVec3,
+    surface: f64,
+    hull: f64,
+    turning: f64,
+}
+
+impl Bulge {
+    /// How far the section reaches past the rows' hull and its turning margin.
+    fn reach(&self) -> f64 {
+        self.surface - self.hull - self.turning
+    }
+}
+
+/// A section of `fit` at `t` as (centre, axis, across, through, radii), at full precision.
+fn section64(fit: &dyn BodyFit, region: BodyRegion, t: f64) -> (DVec3, DVec3, DVec3, DVec3, DVec2) {
+    let s = fit.section(region, t as f32).expect("a section");
+    let (across, through) = omuzaki_char::template::layout::section_basis(region, s.axis);
+    (s.centre.as_dvec3(), s.axis.as_dvec3().normalize(), across.as_dvec3(), through.as_dvec3(), s.radii.as_dvec2())
+}
+
+/// How far the ellipse of a section reaches along unit `d`.
+fn support(section: (DVec3, DVec3, DVec3, DVec3, DVec2), d: DVec3) -> f64 {
+    let (centre, _, across, through, r) = section;
+    centre.dot(d) + (r.x * across.dot(d)).hypot(r.y * through.dot(d))
+}
+
+/// Of every slab between two table rows of the standard body, away from the ends of its region (where the regions
+/// meet), the one where a section between the rows reaches furthest past both rows' ellipses and the margin a hull of
+/// the rows allows for its turning frames (to either side, to the front or to the back): a cubic profile's bulge past
+/// the chord, where nothing else would cover it.
+fn widest_bulge(fit: &dyn BodyFit) -> Bulge {
+    let rows = conformance::TABLE;
+    let mut best: Option<Bulge> = None;
+    for region in conformance::REGIONS {
+        for k in rows / 8..rows - rows / 8 {
+            let (t0, t1) = (k as f64 / rows as f64, (k + 1) as f64 / rows as f64);
+            let (e0, e1) = (section64(fit, region, t0), section64(fit, region, t1));
+            let r = e0.4.max(e1.4);
+            let turning = r.x * e0.2.distance(e1.2) + r.y * e0.3.distance(e1.3);
+            for i in 1..16 {
+                let t = t0 + (t1 - t0) * f64::from(i) / 16.0;
+                let real = section64(fit, region, t);
+                let (centre, axis, across, through, _) = real;
+                for (direction, side) in [(across, through), (-across, through), (through, across), (-through, across)] {
+                    let (surface, hull) =
+                        (support(real, direction), support(e0, direction).max(support(e1, direction)));
+                    let found = Bulge { region, t, direction, axis, side, centre, surface, hull, turning };
+                    if best.as_ref().is_none_or(|b| found.reach() > b.reach()) {
+                        best = Some(found);
+                    }
+                }
+            }
+        }
+    }
+    best.expect("the body has regions")
+}
+
+#[test]
+fn the_suite_finds_a_graze_where_the_body_bulges_past_its_table_rows() {
+    // The body's profiles are cubic in `t`, so between two of the suite's table rows a section can reach past both
+    // rows' ellipses, and past their convex hull with its margin for turning frames. A triangle grazing the body there,
+    // by less than that bulge, is proved clear by any hull built on the rows alone; the crossing test must find it.
+    let def = conformance::character("standard", &BodyShape::default(), &[]);
+    let stack = conformance::build(def, &services()).expect("the body builds");
+    let fit = stack.published.get::<FitFact>().fits.first().expect("a body fit").clone();
+    let bulge = widest_bulge(fit.as_ref());
+    let reach = bulge.reach();
+    println!(
+        "{:?} at t = {:.4}: the section reaches {:.2} µm past the rows' hull and its {:.3} µm turning margin",
+        bulge.region,
+        bulge.t,
+        reach * 1e6,
+        bulge.turning * 1e6
+    );
+    assert!(reach > 1e-6, "the standard body bulges past its rows somewhere, by {:.3} µm", reach * 1e6);
+    // A flat triangle across the bulge, in the plane half the bulge inside the section's furthest point: it passes into
+    // the body, and stays beyond the hull of the rows and its margin.
+    let offset = bulge.surface - reach / 2.0;
+    let on = bulge.centre + bulge.direction * (offset - bulge.centre.dot(bulge.direction));
+    let tri = |at: DVec3| {
+        let (along, side) = (bulge.axis * 0.004, bulge.side * 0.01);
+        [at - along + side, at + along + side, at - side]
+    };
+    assert!(offset > bulge.hull + bulge.turning, "the triangle's plane is beyond the rows' hull and its margin");
+    let hit = conformance::crossing(fit.as_ref(), tri(on)).expect("the graze between the rows is found");
+    assert_eq!(hit.region, bulge.region);
+    // A millimetre further out, the same triangle is proved clear.
+    assert_eq!(conformance::crossing(fit.as_ref(), tri(on + bulge.direction * 0.001)), None);
 }
 
 #[test]
