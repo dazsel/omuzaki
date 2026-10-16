@@ -3,5 +3,5 @@ item = "Vello's dependencies, 21 further crates: peniko 0.6.1, kurbo 0.13.1, col
 kind = "crate"
 used_for = "transitive dependencies of vello over wgpu (`cargo tree -p vello` minus `cargo tree -p wgpu`, 2026-10-12)"
 status = "yes"
-condition = "all permissive; we take the MIT or Apache-2.0 option; none non-commercial. `cargo deny` stays the gate when adds vello to the workspace"
+condition = "all permissive; we take the MIT or Apache-2.0 option; none non-commercial. `cargo deny` is the gate; the workspace uses these through vello in `omuzaki-face` (#1666)"
 audit = "(crates.io manifests)"
