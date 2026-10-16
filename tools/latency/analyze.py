@@ -159,7 +159,7 @@ def analyse(frames, width, fps, layout, stim_origin, out_roi, out_bright=True, o
                    "missed": missed, "window_ms": max_latency_ms,
                    "event_results": [
                        {"frame": e, "status": "answered" if d is not None else "timed_out",
-                        "delay_ms": None if d is None else round(d, 2)} for e, d in zip(events, results)]})
+                        "delay_ms": d} for e, d in zip(events, results)]})
     return report
 
 
@@ -184,8 +184,9 @@ def main(argv):
     ap.add_argument("--out-polarity", choices=("bright", "dark"), default="bright",
                     help="whether the output signal is bright (a jawOpen marker patch) or dark when the mouth is open")
     ap.add_argument("--out-range", type=lambda t: parse_ints(t, 2), default=None,
-                    help="CLOSED,OPEN grey levels of the signal at jawOpen 0 and 1, as it appears in the recording "
-                         "(for --out-polarity dark, CLOSED is above OPEN); default: the observed 2nd and 98th percentile")
+                    help="the two grey levels of the signal at jawOpen 0 and 1, as they appear in the recording "
+                         "(e.g. 230,40 for a dark-when-open mouth); either order is accepted; default: the "
+                         "observed 2nd and 98th percentile")
     ap.add_argument("--max-latency-ms", type=float, default=MAX_LATENCY_MS)
     ap.add_argument("--budget-ms", type=float, default=None, help="exit 1 if p95 is above this (V0: 100)")
     ap.add_argument("--json", action="store_true", help="print the report as JSON, with every event's frame, status and delay")

@@ -90,7 +90,15 @@ class Followups(unittest.TestCase):
         self.assertTrue(all(r["delay_ms"] is None for r in results if r["status"] == "timed_out"))
         recomputed = [r["delay_ms"] if r["delay_ms"] is not None else report["window_ms"] for r in results]
         self.assertEqual(analyze.percentile(recomputed, 95), report["p95_ms"])
-        self.assertAlmostEqual(analyze.percentile(recomputed, 50), report["p50_ms"], delta=0.01)  # delays are rounded to 0.01
+        self.assertEqual(analyze.percentile(recomputed, 50), report["p50_ms"])
+        self.assertEqual(max(recomputed), report["max_ms"])
+
+    def test_json_events_rebuild_the_stats_with_jitter(self):
+        report = json.loads(json.dumps(run(synth.build(83.0, 12.0)[0])))
+        delays = [r["delay_ms"] for r in report["event_results"]]
+        self.assertEqual(analyze.percentile(delays, 50), report["p50_ms"])
+        self.assertEqual(analyze.percentile(delays, 95), report["p95_ms"])
+        self.assertEqual(max(delays), report["max_ms"])
         json.dumps(report)
 
     def test_out_range_in_either_order_in_both_polarities(self):
