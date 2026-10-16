@@ -261,3 +261,25 @@ fn a_tasks_results_come_newest_run_first_whatever_order_they_were_appended_in() 
     let found = sample(&discovery(), &PrivateList::default(), &history, &runs_of(&history), &[], 1);
     assert_eq!(found[0].run, new.run);
 }
+
+#[test]
+fn an_item_with_only_some_of_its_questions_answered_is_asked_about_again() {
+    // `b.two` has two questions. A batch that stopped between rows left only the first answer.
+    let history = [record("b.two", 1, AttemptOutcome::Pass, "reference")];
+    let runs = runs_of(&history);
+    let id = "2026-10-13T1000Z-nightly/b.two/1";
+    let answer = |question: &str| Rating {
+        item: id.to_owned(),
+        task: "b.two".to_owned(),
+        attempt: 1,
+        question: question.to_owned(),
+        answer: Answer::Yes,
+        rater: "r".to_owned(),
+        at: "2026-10-13T10:00Z".to_owned(),
+    };
+    let none = PrivateList::default();
+    let part = [answer("Is it blue?")];
+    assert_eq!(sample(&discovery(), &none, &history, &runs, &part, 5).len(), 1);
+    let whole = [answer("Is it blue?"), answer("Is it tall?")];
+    assert_eq!(sample(&discovery(), &none, &history, &runs, &whole, 5).len(), 0);
+}

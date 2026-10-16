@@ -198,23 +198,31 @@ fn relative(root: &Path, path: &Path) -> PathBuf {
     path.strip_prefix(root).unwrap_or(path).to_owned()
 }
 
-/// Scripts of the task whose file stem is `stem`, in `dir`.
-fn scripts_of(dir: &Path, stem: &str) -> Result<Vec<Script>, EvalError> {
+/// Whether the file `name` is a script of the task whose stem is `stem` (`<stem>.<name>.<pass|fail>.jsonl`), and if so
+/// whether it must pass.
+fn script_kind(name: &str, stem: &str) -> Option<bool> {
+    let rest = name.strip_prefix(stem).and_then(|r| r.strip_prefix('.'))?;
+    let (middle, expect_pass) = if let Some(m) = rest.strip_suffix(".pass.jsonl") {
+        (m, true)
+    } else {
+        (rest.strip_suffix(".fail.jsonl")?, false)
+    };
+    (!middle.is_empty()).then_some(expect_pass)
+}
+
+/// Scripts of the task whose file stem is `stem`, in `dir`. `stems` are the stems of all the tasks in `dir`: a script
+/// that is also a script of a longer stem (`foo.bar.correct.pass.jsonl` with tasks `foo` and `foo.bar`) belongs to the
+/// longer one only, so one task never replays another's oracle.
+fn scripts_of(dir: &Path, stem: &str, stems: &[String]) -> Result<Vec<Script>, EvalError> {
     let mut scripts = Vec::new();
     for path in read_dir_sorted(dir)? {
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
-        let Some(rest) = name.strip_prefix(stem).and_then(|r| r.strip_prefix('.')) else { continue };
-        let (middle, expect_pass) = if let Some(m) = rest.strip_suffix(".pass.jsonl") {
-            (m, true)
-        } else if let Some(m) = rest.strip_suffix(".fail.jsonl") {
-            (m, false)
-        } else {
+        let Some(expect_pass) = script_kind(name, stem) else { continue };
+        if stems.iter().any(|other| other.len() > stem.len() && script_kind(name, other).is_some()) {
             continue;
-        };
-        if !middle.is_empty() {
-            let bytes = fs::read(&path).map_err(io_err(&path))?;
-            scripts.push(Script { file_name: name.to_owned(), expect_pass, bytes });
         }
+        let bytes = fs::read(&path).map_err(io_err(&path))?;
+        scripts.push(Script { file_name: name.to_owned(), expect_pass, bytes });
     }
     Ok(scripts)
 }
@@ -231,18 +239,21 @@ pub fn discover(root: &Path) -> Result<Discovery, EvalError> {
         let evals = crate_dir.join("evals");
         let mut files = Vec::new();
         task_toml_files(&evals, true, &mut files)?;
-        for path in files {
-            let bytes = fs::read(&path).map_err(io_err(&path))?;
+        let stem_of = |p: &Path| p.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_owned();
+        for path in &files {
+            let bytes = fs::read(path).map_err(io_err(path))?;
             match parse::<Task>(&bytes) {
                 Ok(task) => {
-                    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
-                    let scripts = scripts_of(path.parent().unwrap_or(&evals), stem)?;
-                    let path = relative(root, &path);
+                    let dir = path.parent().unwrap_or(&evals);
+                    let stems: Vec<String> =
+                        files.iter().filter(|p| p.parent() == Some(dir)).map(|p| stem_of(p)).collect();
+                    let scripts = scripts_of(dir, &stem_of(path), &stems)?;
+                    let path = relative(root, path);
                     found.tasks.push(TaskFile { path, crate_name: crate_name.clone(), task, bytes, scripts });
                 }
                 Err(reason) => {
                     let unknown_kinds = unknown_kinds(&bytes);
-                    found.unparsed.push(Unparsed { path: relative(root, &path), reason, unknown_kinds });
+                    found.unparsed.push(Unparsed { path: relative(root, path), reason, unknown_kinds });
                 }
             }
         }

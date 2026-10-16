@@ -66,7 +66,7 @@ pub fn sample(
     ratings: &[Rating],
     count: usize,
 ) -> Vec<Item> {
-    let rated: BTreeSet<&str> = ratings.iter().map(|r| r.item.as_str()).collect();
+    let answered: BTreeSet<(&str, &str)> = ratings.iter().map(|r| (r.item.as_str(), r.question.as_str())).collect();
     let trusted: BTreeSet<&str> = runs.iter().filter(|r| r.valid).map(|r| r.run.as_str()).collect();
     let mut newest_first: Vec<&AttemptRecord> = history.iter().collect();
     newest_first
@@ -87,7 +87,8 @@ pub fn sample(
             continue;
         }
         let id = item_id(&record.run, &record.task, record.attempt);
-        if rated.contains(id.as_str()) {
+        // Rated means every question has an answer: an item whose batch stopped between rows is asked about again.
+        if file.task.rubric_for_people.iter().all(|q| answered.contains(&(id.as_str(), q.as_str()))) {
             continue;
         }
         per_task.entry(file.task.id.as_str()).or_default().push(Item {

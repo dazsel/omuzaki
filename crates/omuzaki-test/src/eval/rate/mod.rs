@@ -109,8 +109,18 @@ pub fn read(path: &Path) -> Result<Vec<Rating>, RateError> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(source) => return Err(RateError::Io { path: path.to_owned(), source }),
     };
-    let all: Vec<Rating> = text
-        .lines()
+    // A last line with no newline is a write that stopped half way (`append_all` cuts it before the next write). It is
+    // not a rating yet, so it is not an error here: a restart after a crash can read the file and go on. Any other line
+    // that cannot be read still is.
+    let torn_tail = !text.is_empty() && !text.ends_with('\n');
+    let lines: Vec<&str> = text.lines().collect();
+    let complete = if torn_tail && serde_json::from_str::<Rating>(lines.last().copied().unwrap_or_default()).is_err() {
+        &lines[..lines.len() - 1]
+    } else {
+        &lines[..]
+    };
+    let all: Vec<Rating> = complete
+        .iter()
         .enumerate()
         .filter(|(_, l)| !l.trim().is_empty())
         .map(|(index, line)| {
@@ -121,10 +131,15 @@ pub fn read(path: &Path) -> Result<Vec<Rating>, RateError> {
             })
         })
         .collect::<Result<_, _>>()?;
-    // An answer counts once: the first line for an item and a question stands (a failed batch that was written again
-    // leaves the same answers twice in an older file).
+    // An answer counts once: the first line of a rater for an item and a question stands (a failed batch that was written
+    // again leaves the same answers twice in an older file). Two raters' answers are both kept: each is a vote.
     let mut seen = std::collections::BTreeSet::new();
-    Ok(all.into_iter().filter(|r| seen.insert((r.item.clone(), r.question.clone()))).collect())
+    Ok(all.into_iter().filter(|r| seen.insert(key_of(r))).collect())
+}
+
+/// What makes an answer the same answer: who gave it, to which question about which result.
+fn key_of(rating: &Rating) -> (String, String, String) {
+    (rating.item.clone(), rating.question.clone(), rating.rater.clone())
 }
 
 /// Appends a rating as one line, with one `write` of the whole line to a file in append mode.
@@ -163,12 +178,12 @@ pub fn append_all(path: &Path, ratings: &[Rating]) -> Result<(), RateError> {
         }
     }
     // Each answer is written once: a batch that failed part-way and is sent again finds its first rows already there.
-    let present: std::collections::BTreeSet<(String, String)> = String::from_utf8_lossy(&existing[..kept])
+    let present: std::collections::BTreeSet<(String, String, String)> = String::from_utf8_lossy(&existing[..kept])
         .lines()
         .filter_map(|l| serde_json::from_str::<Rating>(l).ok())
-        .map(|r| (r.item, r.question))
+        .map(|r| key_of(&r))
         .collect();
-    for rating in ratings.iter().filter(|r| !present.contains(&(r.item.clone(), r.question.clone()))) {
+    for rating in ratings.iter().filter(|r| !present.contains(&key_of(r))) {
         lines.push_str(&serde_json::to_string(rating).map_err(|e| io_err(io::Error::other(e)))?);
         lines.push('\n');
     }
@@ -228,6 +243,33 @@ mod tests {
         // An older file with a row twice reads it once.
         fs::write(&path, format!("{}\n{}\n", line(&batch[0]), line(&batch[0]))).unwrap();
         assert_eq!(read(&path).unwrap().len(), 1);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn two_raters_answers_to_the_same_question_are_both_kept_and_a_torn_tail_is_not_an_error() {
+        let dir = std::env::temp_dir().join(format!("ratings-raters-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("r.jsonl");
+        let by = |rater: &str, answer: Answer| Rating { rater: rater.to_owned(), ..rating("i/1", "Q?", answer) };
+        append_all(&path, &[by("ann", Answer::Yes)]).unwrap();
+        append_all(&path, &[by("bob", Answer::No)]).unwrap();
+        // The same rater again adds nothing.
+        append_all(&path, &[by("ann", Answer::No)]).unwrap();
+        let read_back = read(&path).unwrap();
+        assert_eq!(
+            read_back.iter().map(|r| (r.rater.as_str(), r.answer)).collect::<Vec<_>>(),
+            [("ann", Answer::Yes), ("bob", Answer::No)]
+        );
+        // A restart after a write that stopped half way: the file reads, without the torn row.
+        let torn = serde_json::to_string(&by("cy", Answer::Yes)).unwrap();
+        let mut text = fs::read_to_string(&path).unwrap();
+        text.push_str(&torn[..torn.len() / 2]);
+        fs::write(&path, &text).unwrap();
+        assert_eq!(read(&path).unwrap().len(), 2);
+        // A bad line that is not the last one is still an error.
+        fs::write(&path, format!("not json\n{}\n", serde_json::to_string(&by("ann", Answer::Yes)).unwrap())).unwrap();
+        assert!(read(&path).is_err());
         fs::remove_dir_all(&dir).unwrap();
     }
 
