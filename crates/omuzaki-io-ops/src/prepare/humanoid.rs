@@ -512,6 +512,14 @@ impl<'a> Cx<'a> {
         d.y < 0.0 && -d.y > d.x.abs()
     }
 
+    /// Whether the chain that starts at `b` leads steeply down from `a`: its lowest joint lies further below `a` than
+    /// to the side. A leg is judged by where it goes, not by its first joint, which many rigs (`VRoid` among them) set
+    /// wider of the hips than below them.
+    fn leads_down(&self, a: usize, b: usize) -> bool {
+        let lowest = self.chain(b).into_iter().min_by(|x, y| self.y(*x).total_cmp(&self.y(*y))).unwrap_or(b);
+        self.is_down(a, lowest)
+    }
+
     fn is_up(&self, a: usize, b: usize) -> bool {
         let d = self.delta(a, b);
         d.y > 0.0 && d.y >= d.x.abs()
@@ -552,7 +560,7 @@ impl<'a> Cx<'a> {
                 continue;
             }
             let kids = self.kids(n);
-            let downs = kids.iter().filter(|&&k| self.is_down(n, k)).count();
+            let downs = kids.iter().filter(|&&k| self.leads_down(n, k)).count();
             if downs >= 2 && kids.iter().any(|&k| self.is_up(n, k)) {
                 return Some(n);
             }
@@ -572,7 +580,7 @@ impl<'a> Cx<'a> {
         let Some(hips) = self.find_hips() else { return out };
         put("hips".into(), hips);
         let kids = self.kids(hips);
-        let downs: Vec<usize> = kids.iter().copied().filter(|&k| self.is_down(hips, k)).collect();
+        let downs: Vec<usize> = kids.iter().copied().filter(|&k| self.leads_down(hips, k)).collect();
         if let Some((l, r)) = self.extremes(&downs) {
             for (side, start) in [("left", l), ("right", r)] {
                 let chain = self.chain(start);

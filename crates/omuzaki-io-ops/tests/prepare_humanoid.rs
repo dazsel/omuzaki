@@ -595,3 +595,19 @@ fn a_skirt_joint_below_the_feet_does_not_break_the_legs() {
         assert_eq!(p.humanoid.node(name), nodes[slot], "{name}");
     }
 }
+
+#[test]
+fn legs_set_wider_of_the_hips_than_below_them_are_still_found() {
+    // VRoid's proportions: each upper leg sits further to the side of the hips than below them, so the first joint
+    // alone does not point down; the leg as a whole does.
+    let owned = nameless();
+    let names: Vec<&str> = owned.iter().map(String::as_str).collect();
+    let (mut scene, nodes) = rig(&names, &[], false);
+    for (slot, x) in [(9, 0.1f32), (13, -0.1)] {
+        scene.nodes[nodes[slot].unwrap().index()].transform.translation = Vec3::new(x, -0.05, 0.0);
+    }
+    let p = auto_map(&scene, &BTreeMap::new()).unwrap();
+    for (slot, name) in [(9, "leftUpperLeg"), (10, "leftLowerLeg"), (11, "leftFoot"), (13, "rightUpperLeg"), (15, "rightFoot")] {
+        assert_eq!(p.humanoid.node(name), nodes[slot], "{name}");
+    }
+}
