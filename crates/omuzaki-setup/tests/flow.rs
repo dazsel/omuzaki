@@ -340,7 +340,7 @@ fn no_recommended_output_leaves_the_step_out_and_probe_changes_never_jump() {
     assert_eq!(f.progress().skipped, [Step::Output]);
     f.handle(Event::Probed(probes()), 0);
     assert_eq!(f.view().step, Step::Welcome);
-    let mut g = SetupFlow::new(probes(), Progress { step: Step::Output, ..Progress::default() }, Current::default());
+    let mut g = SetupFlow::new(probes(), Progress { step: Step::Output, ..Progress::default() }, webcam());
     g.handle(Event::Probed(Probes { recommended_output: None, ..probes() }), 0);
     assert_eq!(g.view().step, Step::Output);
     assert!(g.view().shown.contains(&Step::Output), "the current step stays listed");
@@ -768,12 +768,16 @@ fn a_source_from_the_settings_is_not_applied_again() {
 }
 
 #[test]
-fn skip_on_input_moves_on_at_once_without_an_op() {
+fn skip_on_input_saves_the_life_layer_through_the_host_then_moves_on() {
     let mut f = flow(probes());
     to_input(&mut f);
-    let fx = send(&mut f, &[Event::Skip]);
-    assert_eq!(selects(&fx), 0, "the life layer is the default and writes nothing");
+    let fx = send_raw(&mut f, &[Event::Skip]);
+    assert!(matches!(fx.first(), Some(Effect::SelectInput { source: InputChoice::LifeLayerOnly, .. })), "{fx:?}");
+    assert_eq!(f.view().step, Step::Input, "not before the answer");
+    assert!(!f.progress().skipped.contains(&Step::Input));
+    send_raw(&mut f, &[Event::Applied { request: request_of(&fx) }]);
     assert_eq!(f.view().step, Step::Output);
+    assert_eq!(f.progress().skipped, [Step::Input, Step::Calibrate]);
 }
 
 #[test]
@@ -828,13 +832,73 @@ fn a_saved_webcam_with_the_permission_undecided_asks_the_os_on_continue() {
 }
 
 #[test]
-fn skip_on_input_with_nothing_applied_moves_on_at_once() {
-    let mut f = flow(probes());
-    to_input(&mut f);
-    let fx = send(&mut f, &[Event::Skip]);
-    assert_eq!(selects(&fx), 0);
-    assert_eq!(f.view().step, Step::Output);
-    assert_eq!(f.progress().skipped, [Step::Input, Step::Calibrate]);
+fn an_explicit_life_layer_choice_is_saved_and_survives_a_restart() {
+    for explicit in [Event::ChooseInput(InputChoice::LifeLayerOnly), Event::Skip] {
+        let mut f = flow(probes());
+        to_input(&mut f);
+        let fx = send_raw(&mut f, &[explicit]);
+        assert!(matches!(fx.first(), Some(Effect::SelectInput { source: InputChoice::LifeLayerOnly, .. })), "{fx:?}");
+        send_raw(&mut f, &[Event::Applied { request: request_of(&fx) }, Event::Next]);
+        assert_eq!(f.view().step, Step::Output);
+        // Restart: the host's settings now hold the life layer, and the saved progress is where we were.
+        let saved = f.progress();
+        let mut g = SetupFlow::new(probes(), saved, Current { input: Some(InputChoice::LifeLayerOnly), output: None });
+        assert_eq!(g.view().step, Step::Output);
+        assert!(!g.view().shown.contains(&Step::Calibrate));
+        send(&mut g, &[Event::Back, Event::Next]);
+        let fx = send(&mut g, &[Event::Next]);
+        assert!(!fx.iter().any(|e| matches!(e, Effect::StartCalibration { .. })), "{fx:?}");
+        assert_ne!(g.view().step, Step::Calibrate);
+    }
+}
+
+#[test]
+fn a_resume_past_input_without_a_saved_source_asks_for_it_again() {
+    let saved = Progress { step: Step::Calibrate, ..Progress::default() };
+    let mut f = SetupFlow::new(probes(), saved, Current::default());
+    assert_eq!(f.view().step, Step::Input);
+    let fx = send(&mut f, &[Event::Back, Event::Next, Event::Next]);
+    assert!(!fx.iter().any(|e| matches!(e, Effect::StartCalibration { .. })), "{fx:?}");
+}
+
+#[test]
+fn resuming_derives_the_step_from_the_saved_progress_and_settings() {
+    let sources = [None, Some(InputChoice::Webcam), Some(InputChoice::Iphone), Some(InputChoice::LifeLayerOnly)];
+    let cameras = [Cameras::None, GRANTED];
+    for source in sources {
+        for camera in cameras {
+            for iphone in [IPhone::NotPaired, IPhone::Paired] {
+                for step in Step::ALL {
+                    for skipped_input in [false, true] {
+                        let p = Probes { cameras: camera, iphone, ..probes() };
+                        let skipped = if skipped_input { vec![Step::Input] } else { Vec::new() };
+                        let saved = Progress { step, skipped, finished: false };
+                        let current = Current { input: source, output: None };
+                        let mut f = SetupFlow::new(p, saved, current);
+                        let v = f.view();
+                        let case = format!("{source:?} {camera:?} {iphone:?} {step:?} {skipped_input}");
+                        assert!(v.shown.contains(&v.step), "{case}");
+                        if v.step > Step::Input {
+                            assert!(v.input.is_some(), "a step past Input has a source: {case}");
+                        }
+                        // Calibration never starts for the life layer, or without a source.
+                        let fx = send(&mut f, &[Event::Next]);
+                        let started = fx.iter().any(|e| matches!(e, Effect::StartCalibration { .. }));
+                        if started {
+                            assert!(
+                                matches!(f.view().input, Some(InputChoice::Webcam | InputChoice::Iphone)),
+                                "{case}"
+                            );
+                        }
+                        if v.input == Some(InputChoice::LifeLayerOnly) {
+                            assert!(!v.shown.contains(&Step::Calibrate) || v.step == Step::Calibrate, "{case}");
+                            assert!(!started, "{case}");
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[test]

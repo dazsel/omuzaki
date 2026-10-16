@@ -293,6 +293,10 @@ impl SetupFlow {
             started_ms: None,
             persisted,
         };
+        if flow.input.is_none() && flow.step > Step::Input {
+            // Past Input without a saved source: the choice was lost, so ask for it again.
+            flow.step = Step::Input;
+        }
         if !flow.is_shown(flow.step) {
             flow.step = flow.next_shown().unwrap_or(Step::GoLive);
         }
@@ -555,7 +559,9 @@ impl SetupFlow {
             Step::Input => self.continue_input(fx),
             // Back to an already calibrated step: Continue keeps the stored result.
             Step::Calibrate if self.calibration == Calibration::Done => self.advance(fx),
-            Step::Calibrate if self.calibrate_possible() && self.calibration == Calibration::Idle => {
+            Step::Calibrate
+                if self.input.is_some() && self.calibrate_possible() && self.calibration == Calibration::Idle =>
+            {
                 let request = self.new_request();
                 self.calibration = Calibration::Running(request);
                 self.failed.remove(&Failed::Calibration);
@@ -587,17 +593,10 @@ impl SetupFlow {
         }
     }
 
-    /// True when the host has applied the selected source and no request is outstanding. The life layer is the
-    /// default, so it needs no request while nothing else was ever applied.
+    /// True when the host has applied the selected source and no request is outstanding. Even the life layer is
+    /// applied through the host: an explicit choice must be saved, or a restart would find no source at all.
     fn settled(&self) -> bool {
-        match self.input {
-            None => false,
-            Some(choice) => {
-                self.in_flight.is_none()
-                    && (self.host_input == Some(choice)
-                        || (choice == InputChoice::LifeLayerOnly && self.host_input.is_none()))
-            }
-        }
+        self.input.is_some() && self.in_flight.is_none() && self.host_input == self.input
     }
 
     /// Asks the host for the selected source when it is not applied and no request is outstanding.
@@ -758,8 +757,7 @@ impl SetupFlow {
     fn skip(&mut self, fx: &mut Vec<Effect>) {
         match self.step {
             Step::Input => {
-                // The life layer needs no request while nothing else was applied; otherwise the applied source is
-                // dropped through the host first, and the step waits for that.
+                // "Skip for now" is the life layer chosen like any source: saved through the host, and the step waits.
                 self.set_input(InputChoice::LifeLayerOnly);
                 self.then = Some(Then::Skip);
                 if self.settled() {
