@@ -35,10 +35,10 @@ use omuzaki_settings_api::event::{
 };
 use omuzaki_settings_api::meta::{Apply, InProfile, SettingScope};
 use omuzaki_settings_api::profile::{ProfileId, ProfileInfo, ProfileSource, validate_name};
-use unicode_normalization::UnicodeNormalization;
 use omuzaki_settings_api::registry::{self, SettingRegistration};
 use omuzaki_settings_api::service::{Layer, ListFilter, Resolved, Settings, Snapshot, Source};
 use omuzaki_settings_api::session::{SessionState, SessionStore, WindowGeometry};
+use unicode_normalization::UnicodeNormalization;
 
 #[derive(Clone, Debug)]
 struct Profile {
@@ -165,7 +165,10 @@ fn diff(before: &Snapshot, after: &Snapshot) -> Vec<Change> {
         .iter()
         .filter_map(|(key, now, _)| {
             let reg = registry::find(key);
-            let was = before.value(key).cloned().unwrap_or_else(|| reg.map_or(Value::Null, |r| r.default_json()));
+            let was = before
+                .value(key)
+                .cloned()
+                .unwrap_or_else(|| reg.map_or(Value::Null, SettingRegistration::default_json));
             let apply = reg.map_or(Apply::Live, |r| r.meta.apply);
             (&was != now).then(|| Change::new(key, was, now.clone(), apply))
         })
