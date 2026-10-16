@@ -500,15 +500,56 @@ fn projection_measures_along_the_ray_on_a_square_cut() {
 fn the_suite_finds_a_triangle_through_the_body_between_its_corners() {
     let fit = torso();
     let ring = ring_at(fit.as_ref(), BodyRegion::Torso, 0.5, 2.0, 0.0).unwrap();
-    // A sliver: one edge runs straight through the torso, its corners and centroid all outside it.
-    let tri = [ring.centre - ring.across * 0.5, ring.centre + ring.across * 0.5, ring.centre + ring.through * 1.0];
+    // A sliver: one edge cuts 4 mm into the front of the torso, its corners and centroid all outside it.
+    let front = ring.centre + ring.through * (ring.radii.y - 0.004);
+    let tri = [front - ring.across * 0.055, front + ring.across * 0.055, front + ring.through * 0.05];
     assert!(tri.iter().all(|p| !conformance::inside(fit.as_ref(), *p)), "corners outside");
     assert!(!conformance::inside(fit.as_ref(), (tri[0] + tri[1] + tri[2]) / 3.0), "centroid outside");
-    let hit = conformance::crossing(fit.as_ref(), tri).expect("the crossing is found");
+    let hit = conformance::crossing(fit.as_ref(), tri).unwrap().expect("the crossing is found");
     assert!(conformance::inside(fit.as_ref(), hit));
     // And a triangle wholly outside has no crossing.
-    let clear = tri.map(|p| p + ring.through * 2.0);
-    assert_eq!(conformance::crossing(fit.as_ref(), clear), None);
+    let clear = tri.map(|p| p + ring.through * 0.5);
+    assert_eq!(conformance::crossing(fit.as_ref(), clear).unwrap(), None);
+}
+
+/// A body of one region: a straight cylinder of radius [`LIMB`] along y from 0 to 1 m, as a 5 cm limb.
+#[derive(Debug)]
+struct Limb;
+
+/// The limb's radius, metres.
+const LIMB: f32 = 0.05;
+
+impl BodyFit for Limb {
+    fn section(&self, region: BodyRegion, t: f32) -> Option<omuzaki_char_api::Section> {
+        (region == BodyRegion::Torso).then(|| omuzaki_char_api::Section {
+            centre: omuzaki_core::glam::Vec3::new(0.0, t, 0.0),
+            axis: omuzaki_core::glam::Vec3::Y,
+            radii: Vec2::splat(LIMB),
+        })
+    }
+
+    fn joint(&self, joint: &omuzaki_char_api::JointRef) -> Option<omuzaki_core::glam::Vec3> {
+        (*joint == omuzaki_char_api::JointRef::HIPS).then_some(omuzaki_core::glam::Vec3::ZERO)
+    }
+}
+
+#[test]
+fn the_suite_finds_a_triangle_grazing_a_limb_by_half_a_millimetre() {
+    let (r, depth) = (f64::from(LIMB), 0.0005);
+    // Flat in the plane x = r - depth: it dips into the limb along a strip 2 sqrt(2 r depth) ≈ 14 mm wide, round z = 0,
+    // while its corners and centroid stay well clear of it on either side.
+    let x = r - depth;
+    let tri = [DVec3::new(x, 0.46, 0.05), DVec3::new(x, 0.54, 0.05), DVec3::new(x, 0.5, -0.05)];
+    assert!(tri.iter().all(|p| !conformance::inside(&Limb, *p)), "corners outside");
+    assert!(!conformance::inside(&Limb, (tri[0] + tri[1] + tri[2]) / 3.0), "the centroid is clear of the strip");
+    let hit = conformance::crossing(&Limb, tri).unwrap().expect("the graze is found");
+    assert!(hit.z.abs() < 0.0071, "inside the strip: {hit}");
+    // Moved out by a millimetre it no longer touches.
+    assert_eq!(conformance::crossing(&Limb, tri.map(|p| p + DVec3::X * 0.001)).unwrap(), None);
+    // A metre-long triangle grazing the same way is refused: the suite won't check it at a coarser spacing.
+    let huge = [DVec3::new(x, 0.0, 0.5), DVec3::new(x, 1.0, 0.5), DVec3::new(x, 0.5, -0.5)];
+    let refused = conformance::crossing(&Limb, huge).expect_err("too large to probe");
+    assert!(refused.contains("subdivide"), "{refused}");
 }
 
 #[test]
