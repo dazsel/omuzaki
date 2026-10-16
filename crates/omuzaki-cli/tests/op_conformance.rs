@@ -15,6 +15,7 @@
 #![allow(clippy::disallowed_methods, reason = "the test reads the project folder to prove an op left it alone")]
 
 mod common;
+mod window_host;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -156,7 +157,7 @@ impl Rig {
         let runner = Executor::with_registrations(Box::new(doc), Arc::new(SystemClock::new()), [reg])
             .map_err(|e| e.to_string())?
             .with_services(
-                ServicesBuilder::new()
+                window_host::with_window(ServicesBuilder::new())
                     .insert::<dyn PerformHost>(Arc::new(IdleHost))
                     .insert::<dyn InputHost>(Arc::new(IdleInput))
                     .build(),

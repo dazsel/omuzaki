@@ -37,6 +37,19 @@ fn source_over_64_kib_is_refused_before_parsing() {
 }
 
 #[test]
+fn get_reads_count_against_the_call_limit_with_the_calls() {
+    // 10,000 reads are fine on their own...
+    let (_, result) = run("let n = 0; for i in 0..10000 { get(\"a/b\"); n += 1; } n");
+    assert_eq!(result.expect("10,000 reads").calls, 0, "a read is not reported as a call");
+    // ...and the 10,001st stops the run, whether reads or calls make up the count.
+    let (_, error) = fails("for i in 0..10001 {\n  get(\"a/b\");\n}");
+    assert_eq!(error.kind, limit(LimitKind::Calls));
+    let (runner, error) = fails(&format!("for i in 0..5000 {{ get(\"a/b\"); }}\nfor i in 0..5001 {{\n  {EDIT}\n}}"));
+    assert_eq!(error.kind, limit(LimitKind::Calls));
+    assert_eq!(runner.requests().len(), 5000, "5,000 reads left room for 5,000 calls");
+}
+
+#[test]
 fn endless_loop_stops_at_the_operation_limit() {
     let (_, error) = fails(&format!("{EDIT}\nloop {{ }}"));
     assert_at(&error, limit(LimitKind::Operations), 2, 6);
@@ -242,6 +255,41 @@ fn a_dry_run_plans_every_call_and_opens_nothing() {
 }
 
 #[test]
+fn dry_run_plans_are_bounded_like_the_result() {
+    let limits = Limits { result_bytes: 600, ..Limits::console() };
+    let mut dry = request(&format!("for i in 0..50 {{\n  {EDIT}\n}}"));
+    dry.dry_run = true;
+    let (runner, result) = run_with(dry, &Flag::default(), limits.clone(), FakeRunner::default());
+    let error = result.expect_err("the plans outgrow the limit");
+    assert_eq!(error.kind, limit(LimitKind::Result), "{error}");
+    assert!(runner.requests().len() < 50, "it stopped part way: {}", runner.requests().len());
+    runner.assert_rolled_back();
+    // Within the limit the plans are all listed.
+    let mut small = request(EDIT);
+    small.dry_run = true;
+    let (_, result) = run_with(small, &Flag::default(), limits, FakeRunner::default());
+    assert_eq!(result.expect("one plan fits").plans.len(), 1);
+}
+
+#[test]
+#[allow(clippy::result_large_err)] // the closure returns the run's own error
+fn the_plans_count_their_own_brackets_and_commas_against_the_result_limit() {
+    let three = format!("{EDIT} {EDIT} {EDIT}");
+    let plans_json = |limits: Limits| {
+        let mut dry = request(&three);
+        dry.dry_run = true;
+        let (_, result) = run_with(dry, &Flag::default(), limits, FakeRunner::default());
+        result.map(|outcome| serde_json::to_vec(&outcome.plans).expect("serialises").len())
+    };
+    let exact = plans_json(Limits::console()).expect("fits the console's limit");
+    // Exactly the size of the serialized array is allowed; one byte less is not.
+    let at = Limits { result_bytes: exact, ..Limits::console() };
+    assert_eq!(plans_json(at).expect("exactly the limit"), exact);
+    let under = Limits { result_bytes: exact - 1, ..Limits::console() };
+    assert_eq!(plans_json(under).expect_err("one byte over").kind, limit(LimitKind::Result));
+}
+
+#[test]
 fn a_cancel_during_the_last_call_stops_the_commit() {
     let runner = FakeRunner::default();
     let flag = Arc::new(Flag::default());
@@ -317,13 +365,42 @@ fn params_over_the_collection_limits_are_refused_before_the_run() {
 
 #[test]
 fn an_op_output_over_a_collection_limit_stops_the_run() {
-    // 9 bytes lets the edit's `character` key through; the report's 10-byte key is over. Rhai checks the size of a
-    // native function's string, array and map values itself, but not map keys.
+    // The report's 10-byte key is over a 9-byte limit. Rhai checks the size of a native function's string, array and
+    // map values itself, but not map keys.
     let limits = Limits { string_bytes: 9, ..Limits::console() };
-    let source = format!("{EDIT}\nlet r = ops::measure::report(#{{}}).len(); r");
-    let (runner, result) = run_with(request(&source), &Flag::default(), limits, FakeRunner::default());
-    assert_at(&result.expect_err("too long"), limit(LimitKind::StringSize), 2, 23);
+    let source = "let r = ops::measure::report(#{}).len(); r";
+    let (runner, result) = run_with(request(source), &Flag::default(), limits, FakeRunner::default());
+    assert_at(&result.expect_err("too long"), limit(LimitKind::StringSize), 1, 23);
     runner.assert_rolled_back();
+}
+
+#[test]
+fn the_keys_of_a_whole_value_are_held_to_the_string_limit_together() {
+    // Each key is within 12 bytes, but the keys of the two maps add up to 20: one value, one budget.
+    let two_maps = serde_json::json!({ "a": { "key_number_1": 1 }, "b": { "key_number_2": 2 } });
+    let limits = Limits { string_bytes: 12, ..Limits::console() };
+    let with_params = || {
+        let mut req = request("params");
+        req.params = two_maps.as_object().expect("an object").clone();
+        req
+    };
+    let (_, result) = run_with(with_params(), &Flag::default(), limits, FakeRunner::default());
+    assert_at(&result.expect_err("too many key bytes"), limit(LimitKind::StringSize), 1, 1);
+    let roomy = Limits { string_bytes: 30, ..Limits::console() };
+    let (_, result) = run_with(with_params(), &Flag::default(), roomy, FakeRunner::default());
+    result.expect("within the limit");
+}
+
+#[test]
+fn many_small_strings_are_held_to_the_string_limit_together() {
+    // Values converted into the script are measured as a whole, before they are converted: 40 strings of 3 bytes are
+    // 120 bytes of strings, over a 100-byte limit, though no one string is.
+    let strings: Vec<_> = (0..40).map(|_| serde_json::json!("abc")).collect();
+    let limits = Limits { string_bytes: 100, ..Limits::console() };
+    let mut req = request("params");
+    req.params = serde_json::json!({ "all": strings }).as_object().expect("an object").clone();
+    let (_, result) = run_with(req, &Flag::default(), limits, FakeRunner::default());
+    assert_at(&result.expect_err("too much text"), limit(LimitKind::StringSize), 1, 1);
 }
 
 #[test]
@@ -425,4 +502,40 @@ fn a_zero_engine_limit_is_refused_instead_of_lifting_the_limit() {
         assert_eq!(runner.entries(), [], "{name}: nothing ran");
     }
     assert_eq!(Limits::console().zero_engine_limit(), None);
+}
+
+/// Runs an edit, then `sort` and `dedup` with a comparer that runs `inside` first, and checks the run ends with
+/// `kind` and rolls the edit back. The array functions that call a comparer end with the first error it raises,
+/// unchanged: a limit or a refusal inside the comparer ends the run, instead of being read as an answer while the edit
+/// commits.
+fn assert_comparer_limit(limits: &Limits, inside: &str, kind: LimitKind) {
+    for call in ["a.sort(|x, y| { BODY x - y })", "a.dedup(|x, y| { BODY x == y })"] {
+        let source = format!("{EDIT}\nlet a = [3, 1, 2];\n{}", call.replace("BODY", inside));
+        let (runner, result) = run_with(request(&source), &Flag::default(), limits.clone(), FakeRunner::default());
+        let error = result.expect_err(call);
+        assert_eq!(error.kind, limit(kind), "{call}: {error}");
+        assert_eq!(runner.requests().len(), 1, "{call}: the edit was sent");
+        runner.assert_rolled_back();
+    }
+}
+
+#[test]
+fn the_call_limit_inside_a_comparer_ends_the_run_and_rolls_it_back() {
+    // With one call allowed, the edit spends it and the comparer's `get` is over the limit.
+    assert_comparer_limit(&Limits { calls: 1, ..Limits::console() }, "get(\"a/b\");", LimitKind::Calls);
+}
+
+#[test]
+fn a_pad_refused_inside_a_comparer_ends_the_run_and_rolls_it_back() {
+    // `pad` refuses before it copies: a thousand copies of a map with a half-megabyte key would be 500 MiB.
+    let inside = "let k = \"x\"; while k.len < 500000 { k += k; } let m = #{}; m[k] = 1; let b = []; b.pad(1000, m);";
+    assert_comparer_limit(&Limits::console(), inside, LimitKind::Memory);
+}
+
+/// An error a comparer throws ends the sort with it too, and a script can catch it, as any thrown value.
+#[test]
+fn an_error_a_comparer_throws_ends_the_sort_and_can_be_caught() {
+    let (_, result) =
+        run("let a = [3, 1, 2];\nlet r = 0;\ntry { a.sort(|x, y| throw \"no order\"); } catch (e) { r = e; }\nr");
+    assert_eq!(result.expect("caught").value, "no order");
 }
