@@ -11,6 +11,7 @@
 #![allow(clippy::disallowed_methods, reason = "the test reads the project folder to prove an op left it alone")]
 
 mod common;
+mod window_host;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -20,7 +21,9 @@ use omuzaki_cli::project::SavedProject;
 use omuzaki_core::time::SystemClock;
 use omuzaki_doc_api::{DocPath, Value};
 use omuzaki_ops::Executor;
-use omuzaki_ops_api::{Actor, Grants, Mode, OpKind, OpRegistration, ProjectDir, Request, Runner, Undo, registrations};
+use omuzaki_ops_api::{
+    Actor, Grants, Mode, OpKind, OpRegistration, ProjectDir, Request, Runner, ServicesBuilder, Undo, registrations,
+};
 
 const ALLOWLIST: &str = include_str!("op_conformance_allowlist.txt");
 
@@ -57,6 +60,7 @@ impl Rig {
         let project = ProjectDir::open(dir.path()).map_err(|e| format!("opening the fixture folder failed: {e}"))?;
         let runner = Executor::with_registrations(Box::new(doc), Arc::new(SystemClock::new()), [reg])
             .map_err(|e| e.to_string())?
+            .with_services(window_host::with_window(ServicesBuilder::new()).build())
             .with_project_dir(project);
         let actor = Actor::Person { name: "conformance".to_owned() };
         Ok(Self { runner, dir, actor, grants: Grants::person() })

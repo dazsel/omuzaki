@@ -51,6 +51,8 @@ omuzaki-store-api = { path = "../omuzaki-store-api" }
 
 [dev-dependencies]
 tempfile.workspace = true
+# The output window and palette the conformance rig gives the `output.window.*` examples (`tests/window_host/`).
+omuzaki-stream-api = { path = "../omuzaki-stream-api" }
 # The registration scan behind the link gate (`tests/registrations.rs`, ADR 0015).
 xtask = { path = "../../xtask" }
 

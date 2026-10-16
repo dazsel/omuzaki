@@ -109,4 +109,5 @@ fn the_default_settings_are_the_documented_ones() {
     let s = WindowSettings::default();
     assert_eq!((s.title.as_str(), s.size, s.hide_cursor), ("Omuzaki Output", SizePolicy::Output, true));
     assert_eq!(s.backdrop, omuzaki_stream_api::window::Backdrop::Key(colour("#00b140")));
+    assert!(!s.always_on_top, "off unless the person turns it on");
 }

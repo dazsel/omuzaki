@@ -33,6 +33,11 @@ pub enum BackdropKind {
 /// Open the clean output window for a capture tool to grab.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend("examples" = [
+    {},
+    { "backdrop": "key", "key": "#ff00ff", "scale": 0.5, "title": "Omuzaki Output" },
+    { "backdrop": "transparent", "always_on_top": true },
+]))]
 pub struct Open {
     /// `key` (default) or `transparent`.
     #[serde(default)]
@@ -48,21 +53,28 @@ pub struct Open {
     /// window by it, so change it only when a tool needs another.
     #[serde(default)]
     pub title: Option<String>,
+    /// Keep the window above other windows. Default `false`. A host that cannot is answered with
+    /// `always_on_top: false`.
+    #[serde(default)]
+    pub always_on_top: Option<bool>,
 }
 
 /// Close the clean output window. Does nothing when it is closed.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend("examples" = [{}]))]
 pub struct Close {}
 
-/// Report whether the clean output window is open, and its size and backdrop.
+/// Report whether the clean output window is open, and its size, backdrop and whether it is minimised.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend("examples" = [{}]))]
 pub struct Status {}
 
 /// Suggest the key colour that cannot be confused with the cast's palette.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend("examples" = [{}, { "scene": "main" }]))]
 pub struct SuggestKey {
     /// The scene whose cast to check. Default: the scene on air.
     #[serde(default)]
@@ -95,6 +107,7 @@ impl Open {
         if let Some(scale) = self.scale {
             settings.size = SizePolicy::Scale(scale);
         }
+        settings.always_on_top = self.always_on_top.unwrap_or(false);
         Ok(settings)
     }
 }
@@ -115,10 +128,13 @@ impl Op for Open {
         let host = ctx.service::<dyn WindowHost>()?;
         let surface = host.surface();
         let window = plan(surface.size, settings.size, surface.scale_factor).map_err(|e| window_error("scale", &e))?;
-        let fallback = settings.backdrop == Backdrop::Transparent && !host.capabilities().transparent;
+        let caps = host.capabilities();
+        let fallback = settings.backdrop == Backdrop::Transparent && !caps.transparent;
         if fallback {
             settings.backdrop = Backdrop::Key(self.key.unwrap_or(DEFAULT_KEY));
         }
+        // Resolved like the backdrop: the host is never asked for what it said it cannot do.
+        settings.always_on_top &= caps.always_on_top;
         let opened = !ctx.dry_run;
         if opened {
             host.open(&window, &settings).map_err(|e| window_error("backdrop", &e))?;
@@ -128,6 +144,7 @@ impl Op for Open {
             "fallback": fallback,
             "title": settings.title,
             "backdrop": settings.backdrop,
+            "always_on_top": settings.always_on_top,
             "physical": window.physical,
             "logical": window.logical,
             "scale_factor": window.scale_factor,
@@ -160,7 +177,7 @@ impl Op for Status {
     fn meta() -> OpMeta {
         OpMeta {
             name: "output.window.status",
-            summary: "Say whether the clean output window is open, and its size and backdrop.",
+            summary: "Say whether the clean output window is open, and its size, backdrop and whether it is minimised.",
             kind: OpKind::Query,
             scope: Scope::Read,
             undo: Undo::None,

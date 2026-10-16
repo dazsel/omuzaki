@@ -46,7 +46,7 @@ pub enum SizePolicy {
     Scale(f32),
 }
 
-/// What to open: the title, the backdrop, the size policy and the cursor.
+/// What to open: the title, the backdrop, the size policy, the cursor and the stacking.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct WindowSettings {
@@ -58,16 +58,21 @@ pub struct WindowSettings {
     pub size: SizePolicy,
     /// Hide the mouse cursor over the window, so it is not captured.
     pub hide_cursor: bool,
+    /// Keep the window above other windows. Off unless the person turns it on, and `true` only when
+    /// [`WindowCaps::always_on_top`] allows it (the ops resolve it, as they do the backdrop).
+    #[serde(default)]
+    pub always_on_top: bool,
 }
 
 impl Default for WindowSettings {
-    /// `"Omuzaki Output"`, the `#00b140` key, exact output size, cursor hidden.
+    /// `"Omuzaki Output"`, the `#00b140` key, exact output size, cursor hidden, not on top.
     fn default() -> Self {
         Self {
             title: DEFAULT_TITLE.to_owned(),
             backdrop: Backdrop::Key(DEFAULT_KEY),
             size: SizePolicy::Output,
             hide_cursor: true,
+            always_on_top: false,
         }
     }
 }
@@ -139,6 +144,10 @@ pub enum WindowState {
         physical: UVec2,
         /// What it shows behind the character.
         backdrop: Backdrop,
+        /// It is minimised. A minimised window presents nothing, so no capture tool can grab it; a person or an
+        /// agent restores it rather than trusting that it is on air.
+        #[serde(default)]
+        minimised: bool,
     },
 }
 
@@ -167,10 +176,19 @@ impl OutputSurface {
 }
 
 impl WindowState {
-    /// An open window with a client area of `physical` pixels showing `backdrop`.
+    /// An open window, not minimised, with a client area of `physical` pixels showing `backdrop`.
     #[must_use]
     pub const fn open(physical: UVec2, backdrop: Backdrop) -> Self {
-        Self::Open { physical, backdrop }
+        Self::Open { physical, backdrop, minimised: false }
+    }
+
+    /// The same state, minimised or not; a closed window stays closed.
+    #[must_use]
+    pub const fn with_minimised(self, minimised: bool) -> Self {
+        match self {
+            Self::Open { physical, backdrop, .. } => Self::Open { physical, backdrop, minimised },
+            Self::Closed => Self::Closed,
+        }
     }
 }
 
@@ -188,8 +206,12 @@ pub trait WindowHost: Service {
     fn surface(&self) -> OutputSurface;
 
     /// Opens the window with exactly `plan.physical` pixels of client area. Opening while a window is open replaces
-    /// it. `settings.backdrop` is already resolved: it is `Transparent` only if [`capabilities`](Self::capabilities)
-    /// allows it.
+    /// it. `settings.backdrop` and `settings.always_on_top` are already resolved: `Transparent` and `true` only where
+    /// [`capabilities`](Self::capabilities) allows them.
+    ///
+    /// A host whose windows belong to a UI thread may queue the request and return `Ok` at once: the window then
+    /// appears on that thread's next frame, and [`state`](Self::state) reports `Open` from then on. A surface that
+    /// fails after the queueing shows as `state` staying `Closed`.
     ///
     /// # Errors
     /// [`WindowError::Host`] when the surface cannot be made.
@@ -198,7 +220,7 @@ pub trait WindowHost: Service {
     /// Closes the window. Closing a closed window does nothing.
     fn close(&self);
 
-    /// Whether a window is open and its size and backdrop.
+    /// Whether a window is open, and its size, backdrop and whether it is minimised.
     fn state(&self) -> WindowState;
 }
 

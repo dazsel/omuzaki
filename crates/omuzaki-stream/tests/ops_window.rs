@@ -131,10 +131,48 @@ fn open_then_status_shows_the_planned_size() {
     assert_eq!(opened["title"], "Omuzaki Output");
     assert_eq!(
         answer(NAMES[2], json!({}), &services),
-        json!({ "state": "open", "physical": [1920, 1080], "backdrop": { "key": "#00b140" } })
+        json!({ "state": "open", "physical": [1920, 1080], "backdrop": { "key": "#00b140" }, "minimised": false })
     );
     let (planned, settings) = host.opens.lock().unwrap()[0].clone();
     assert_eq!((planned.physical, settings.hide_cursor), (UVec2::new(1920, 1080), true));
+    assert!(!settings.always_on_top, "the window is not kept on top unless asked");
+    assert_eq!(opened["always_on_top"], false);
+}
+
+#[test]
+fn always_on_top_is_asked_of_a_host_that_can_and_answered_false_by_one_that_cannot() {
+    let (host, palette) = (FakeHost::new(true), green_palette());
+    let opened = answer(NAMES[0], json!({ "always_on_top": true }), &services(&host, &palette));
+    assert_eq!(opened["always_on_top"], true);
+    assert!(host.opens.lock().unwrap()[0].1.always_on_top);
+
+    let flat = Arc::new(FakeHost { caps: WindowCaps::new(true, false), ..Arc::try_unwrap(FakeHost::new(true)).ok().unwrap() });
+    let opened = answer(NAMES[0], json!({ "always_on_top": true }), &services(&flat, &palette));
+    assert_eq!(opened["always_on_top"], false, "the host said it cannot, so it is not asked");
+    assert!(!flat.opens.lock().unwrap()[0].1.always_on_top);
+}
+
+#[test]
+fn status_says_when_the_window_is_minimised() {
+    let (host, palette) = (FakeHost::new(true), green_palette());
+    let services = services(&host, &palette);
+    answer(NAMES[0], json!({}), &services);
+    let open = host.state();
+    *host.state.lock().unwrap() = open.with_minimised(true);
+    assert_eq!(answer(NAMES[2], json!({}), &services)["minimised"], true);
+    assert_eq!(WindowState::Closed.with_minimised(true), WindowState::Closed, "a closed window has nothing to minimise");
+}
+
+#[test]
+fn every_declared_example_decodes() {
+    for name in NAMES {
+        let reg = registered(name).expect("registered");
+        let examples = reg.examples();
+        assert!(!examples.is_empty(), "{name} declares examples");
+        for args in examples {
+            assert!((reg.decode)(args.clone()).is_ok(), "{name}: {args}");
+        }
+    }
 }
 
 #[test]
