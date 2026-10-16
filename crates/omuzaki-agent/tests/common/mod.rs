@@ -166,6 +166,16 @@ impl ScriptedServer {
         tools.push(ToolSpec { tool, behaviour: Arc::new(behaviour) });
     }
 
+    /// A tool whose result carries `structuredContent`, like the ones `omuzaki-mcp` renders.
+    pub fn add_structured(&self, tool: Tool, data: impl Fn(&JsonObject, usize) -> Value + Send + Sync + 'static) {
+        self.add(tool, move |args, call| {
+            let value = data(args, call);
+            let mut result = CallToolResult::success(vec![ContentBlock::text("ok")]);
+            result.structured_content = Some(value);
+            Outcome { result, gate: None }
+        });
+    }
+
     pub fn add_fixed(&self, tool: Tool, outcome: Outcome) {
         self.add(tool, move |_, _| outcome.clone());
     }
@@ -344,6 +354,8 @@ struct SessionsState {
     close_open_tx_at: Option<f64>,
     /// A pending stop reverts every edit, so closing it makes no step.
     pending_reverts: bool,
+    /// The ids of the transactions committed so far, as the server's history shows them.
+    committed: Vec<u64>,
     session_polls: usize,
 }
 
@@ -395,6 +407,7 @@ impl FakeSessions {
             stop_hold: 0.0,
             close_open_tx_at: None,
             pending_reverts: false,
+            committed: Vec::new(),
             session_polls: 0,
         };
         Arc::new(Self { state: Mutex::new(state), clock })
@@ -432,9 +445,20 @@ impl FakeSessions {
     /// An open transaction closed by a commit: one more step.
     pub fn commit_open_tx(&self) {
         let mut st = self.st();
-        if st.info.open_tx.take().is_some() {
+        if let Some(tx) = st.info.open_tx.take() {
             st.info.steps += 1;
+            st.committed.push(tx.tx.0);
         }
+    }
+
+    /// A step that is not the answer's transaction (a person granted an approval the session had retained).
+    pub fn bump_steps(&self) {
+        self.st().info.steps += 1;
+    }
+
+    /// The ids of the committed transactions.
+    pub fn committed(&self) -> Vec<u64> {
+        self.st().committed.clone()
     }
 
     pub fn set_open_tx(&self, tx: Option<SessionTx>) {
@@ -535,10 +559,13 @@ impl Sessions for FakeSessions {
         if let Some(at) = st.close_open_tx_at
             && self.clock.now().0 >= at
         {
-            st.info.open_tx = None;
+            let closed = st.info.open_tx.take();
             st.close_open_tx_at = None;
             if !st.pending_reverts {
                 st.info.steps += 1;
+                if let Some(tx) = closed {
+                    st.committed.push(tx.tx.0);
+                }
             }
         }
         Some(st.info.clone())
@@ -662,8 +689,9 @@ impl Sessions for FakeSessions {
         let had_tx = st.info.open_tx.take();
         match behaviour {
             StopBehaviour::Committed => {
-                if had_tx.is_some() {
+                if let Some(tx) = &had_tx {
                     st.info.steps += 1;
+                    st.committed.push(tx.tx.0);
                 }
                 let step = had_tx.map_or(StopStep::None, |t| StopStep::Committed(t.tx));
                 Ok(Stopped { step, jobs: vec![] })
@@ -687,6 +715,9 @@ pub struct RecordingSink {
     /// Makes `put_blob` wait (and say so in `blob_waiting`) until this is cleared, so a test can act mid-store.
     pub hold_blobs: std::sync::atomic::AtomicBool,
     pub blob_waiting: std::sync::atomic::AtomicBool,
+    /// How many `put_blob` calls have been made, and how many pass before `hold_blobs` holds the next.
+    pub blob_calls: std::sync::atomic::AtomicUsize,
+    pub hold_blobs_after: std::sync::atomic::AtomicUsize,
     /// Makes the append of a `Step` wait (and say so in `step_waiting`) until this is cleared.
     pub hold_steps: std::sync::atomic::AtomicBool,
     pub step_waiting: std::sync::atomic::AtomicBool,
@@ -711,7 +742,10 @@ impl EntrySink for RecordingSink {
     }
 
     fn put_blob(&self, bytes: &[u8], mime: ImageMime) -> Result<StoredBlock, HostError> {
-        while self.hold_blobs.load(std::sync::atomic::Ordering::SeqCst) {
+        let call = self.blob_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        while self.hold_blobs.load(std::sync::atomic::Ordering::SeqCst)
+            && call >= self.hold_blobs_after.load(std::sync::atomic::Ordering::SeqCst)
+        {
             self.blob_waiting.store(true, std::sync::atomic::Ordering::SeqCst);
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
@@ -818,8 +852,9 @@ pub struct RigOptions {
     pub late_server: bool,
     /// The sink refuses to keep images.
     pub fail_blobs: bool,
-    /// The sink holds `put_blob` until `rig.sink.hold_blobs` is cleared.
+    /// The sink holds `put_blob` until `rig.sink.hold_blobs` is cleared, from the call after `hold_blobs_after` ones.
     pub hold_blobs: bool,
+    pub hold_blobs_after: usize,
 }
 
 impl Default for RigOptions {
@@ -836,6 +871,7 @@ impl Default for RigOptions {
             late_server: false,
             fail_blobs: false,
             hold_blobs: false,
+            hold_blobs_after: 0,
         }
     }
 }
@@ -854,6 +890,17 @@ pub fn standard_server(sessions: &Arc<FakeSessions>) -> ScriptedServer {
         // The real tool holds the call for up to 20 s; a short real pause keeps the host's loop from spinning.
         std::thread::sleep(Duration::from_millis(5));
         Outcome::text("approval applied")
+    });
+    // `history_log`: the committed transactions, as `omuzaki-mcp` renders its log.
+    let log = Arc::clone(sessions);
+    server.add_structured(tool("history_log", "history.log", "builtin", true), move |_, _| {
+        let events: Vec<Value> = log
+            .committed()
+            .iter()
+            .enumerate()
+            .map(|(n, tx)| json!({"n": n + 1, "event": {"event": "tx_committed", "tx": tx, "label": "l"}}))
+            .collect();
+        json!({"latest": events.len(), "events": events, "note": "the log"})
     });
     // The transaction tools change the fake session only when they succeed, so a test that replaces one with a refusal
     // leaves the transaction open, like the executor does.
@@ -893,6 +940,7 @@ impl Rig {
         let server = make_server(&sessions);
         let sink = Arc::new(RecordingSink::default());
         sink.fail_blobs.store(options.fail_blobs, std::sync::atomic::Ordering::SeqCst);
+        sink.hold_blobs_after.store(options.hold_blobs_after, std::sync::atomic::Ordering::SeqCst);
         sink.hold_blobs.store(options.hold_blobs, std::sync::atomic::Ordering::SeqCst);
         let (server_io, client_io) = tokio::io::duplex(64 * 1024);
         let serving = server.clone();

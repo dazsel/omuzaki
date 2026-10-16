@@ -54,11 +54,21 @@ impl Worker {
             let committed = match step {
                 Some(StopStep::Committed(id)) => Some(id),
                 // The executor closed it by itself: only a transaction it committed made an undo step. One it reverted
-                // to nothing (every edit undone) did not.
-                Some(StopStep::Pending) => self.session_info().filter(|info| info.steps > steps_before).map(|_| tx.tx),
+                // to nothing (every edit undone) did not. The log names the transaction; the session's step count is
+                // the fallback when the log cannot be read.
+                Some(StopStep::Pending) => {
+                    let counted = self.session_info().is_some_and(|info| info.steps > steps_before);
+                    self.tx_in_history(tx.tx).unwrap_or(counted).then_some(tx.tx)
+                }
                 // The commit was already on its way when Stop cancelled the call, and the executor applied it first:
                 // the transaction is closed as a real undo step the host never saw confirmed.
-                _ => run.commit_base.zip(self.session_info()).filter(|(base, info)| info.steps > *base).map(|_| tx.tx),
+                _ => match run.commit_base {
+                    Some(base) => {
+                        let counted = self.session_info().is_some_and(|info| info.steps > base);
+                        self.tx_in_history(tx.tx).unwrap_or(counted).then_some(tx.tx)
+                    }
+                    None => None,
+                },
             };
             if committed.is_some() {
                 self.write_step(run, " (stopped)");

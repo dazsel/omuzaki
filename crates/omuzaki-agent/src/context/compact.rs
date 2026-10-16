@@ -370,18 +370,22 @@ impl Worker {
             None => None,
         };
         // Stop may have been pressed while the summary was written and stored. Nothing is published then: the history
-        // stays as it was, and Stop's cut applies to it.
-        let Some(compacted_text) = self.shared.answer_text_bytes() else {
+        // stays as it was and Stop's cut applies to it. The check and the publication are one step under Stop's lock,
+        // so a Stop either comes first and the summary is discarded, or finds the compaction done.
+        let shared = std::sync::Arc::clone(&self.shared);
+        let published = shared.publish_unless_stopped(|answer_text| {
+            self.messages = vec![Message::new(Role::User, rebuilt)];
+            // The answer now starts after the rebuilt message; `msg_from` pointed into the history that is gone, and so
+            // did the text of the answer's earlier turns, which Stop's byte count still includes.
+            run.msg_from = 1;
+            run.compacted_text = answer_text;
+            self.ledger = Ledger::new();
+            self.measured = 0;
+            run.compacted = true;
+        });
+        if published.is_none() {
             return Err(Flow::Stopped);
-        };
-        self.messages = vec![Message::new(Role::User, rebuilt)];
-        // The answer now starts after the rebuilt message; `msg_from` pointed into the history that is gone, and so did
-        // the text of the answer's earlier turns, which Stop's byte count still includes.
-        run.msg_from = 1;
-        run.compacted_text = compacted_text;
-        self.ledger = Ledger::new();
-        self.measured = 0;
-        run.compacted = true;
+        }
         self.shared.record(match render {
             Some(block) => Entry::compacted_with_render(message, block),
             None => Entry::compacted(message),

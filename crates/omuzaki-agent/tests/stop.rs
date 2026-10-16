@@ -592,7 +592,14 @@ fn stop_pressed_while_the_compaction_stores_its_render_publishes_nothing() {
     ]);
     let rig = Rig::with(
         script(vec![heavy, say_turn("SUMMARY"), say_turn("ok")]),
-        RigOptions { window: Some(20_000), prices: free_prices(), hold_blobs: true, ..RigOptions::default() },
+        RigOptions {
+            window: Some(20_000),
+            prices: free_prices(),
+            // The tool result's render is stored first and passes; the compaction's own store is the one held.
+            hold_blobs: true,
+            hold_blobs_after: 1,
+            ..RigOptions::default()
+        },
         |s| {
             let server = standard_server(s);
             server
@@ -602,6 +609,8 @@ fn stop_pressed_while_the_compaction_stores_its_render_publishes_nothing() {
     );
     rig.host.send(UserMessage::new("go")).unwrap();
     Rig::wait_for("the render being stored", || rig.sink.blob_waiting.load(std::sync::atomic::Ordering::SeqCst));
+    assert_eq!(rig.sink.blob_calls.load(std::sync::atomic::Ordering::SeqCst), 2, "the held store is the compaction's");
+    assert_eq!(rig.llm.requests().len(), 2, "the summary turn has run");
     rig.host.stop();
     rig.sink.hold_blobs.store(false, std::sync::atomic::Ordering::SeqCst);
     rig.until_done(0.0);
@@ -676,4 +685,29 @@ fn a_commit_that_lands_while_stop_cancels_the_call_still_records_its_step() {
     rig.until_done(0.0);
     let steps = rig.sink.entries().iter().filter(|e| matches!(e, Entry::Step { .. })).count();
     assert_eq!(steps, 1, "the undo step the executor made is recorded");
+}
+
+#[test]
+fn a_pending_stop_is_a_step_only_if_the_log_names_its_transaction() {
+    let rig = Rig::with(
+        script(vec![call_turn("", &[("c1", "face_set_profile", "{}")]), long_text(20)]),
+        RigOptions { hold_after: Some(FIRST_TURN_EVENTS + 2), ..RigOptions::default() },
+        standard_server,
+    );
+    // The stop reverts every edit, so its transaction never commits; meanwhile a person grants an approval the session
+    // had retained, which makes a step of its own and raises the session's count.
+    rig.sessions.set_stop(StopBehaviour::Pending { close_after: 1.0 }, 0.0);
+    rig.sessions.set_pending_stop_reverts();
+    rig.host.send(UserMessage::new("go")).unwrap();
+    Rig::wait_for("the transaction", || {
+        rig.server.called("tx_begin") == 1 && rig.server.called("face_set_profile") == 1
+    });
+    rig.host.stop();
+    rig.sessions.bump_steps();
+    let events = rig.until_done(0.1);
+    assert!(matches!(events.last(), Some(AssistantEvent::Done)));
+    assert!(
+        rig.sink.entries().iter().all(|e| !matches!(e, Entry::Step { .. })),
+        "a higher step count is not this transaction's commit"
+    );
 }
