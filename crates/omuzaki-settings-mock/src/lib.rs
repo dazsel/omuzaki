@@ -81,6 +81,21 @@ struct State {
     findings: Vec<SettingFinding>,
 }
 
+impl Touch {
+    /// Whether this write replaced or removed the stored value `finding` is about.
+    fn explains(&self, finding: &SettingFinding) -> bool {
+        match self {
+            Self::Key(Target::Base, key) => finding.from == BASE_FILE && finding.error.key == *key,
+            Self::Key(Target::Profile(id), key) => finding.from == id.as_str() && finding.error.key == *key,
+            Self::Profile(id) => finding.from == id.as_str(),
+            Self::Name(_) | Self::Active => false,
+        }
+    }
+}
+
+/// The `from` of a finding about the base file.
+const BASE_FILE: &str = "base";
+
 /// Where a write goes.
 #[derive(Clone, Debug)]
 enum Target {
@@ -237,7 +252,7 @@ impl Layers {
             kept
         };
         let mut usable = self.clone();
-        usable.base = keep("base", false, &self.base);
+        usable.base = keep(BASE_FILE, false, &self.base);
         for (id, profile) in &mut usable.profiles {
             profile.values = keep(id.as_str(), true, &profile.values);
         }
@@ -356,6 +371,8 @@ impl MemorySettings {
         let done = self.finish(st, plan, mode, cause, always_event, by);
         if mode == Mode::Apply {
             after.merge_touched_into(&touched, &mut st.disk);
+            // A finding describes a stored value: once the operation replaced or removed that value, it is obsolete.
+            st.findings.retain(|f| !touched.iter().any(|t| t.explains(f)));
         }
         done
     }
@@ -439,13 +456,6 @@ impl Settings for MemorySettings {
         let after = plan.snapshot.value(key).cloned().unwrap_or(Value::Null);
         if removed {
             self.write(&mut st, plan, mode, ChangeCause::Reset, false, by);
-            if mode == Mode::Apply {
-                let from = match &target {
-                    Target::Base => "base".to_owned(),
-                    Target::Profile(id) => id.to_string(),
-                };
-                st.findings.retain(|f| !(f.error.key == key && f.from == from));
-            }
         }
         Ok(removed.then(|| Change::new(key, before, after, reg.meta.apply)))
     }

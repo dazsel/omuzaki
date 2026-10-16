@@ -656,3 +656,63 @@ fn a_profile_switch_keeps_the_files_hand_edits_and_the_active_profile_across_a_r
     assert_eq!(s.active_profile(), Some(p.id));
     assert_eq!((s.get::<UiScale>().unwrap(), s.get::<QualityTier>().unwrap()), (150, Tier::High));
 }
+
+/// A store whose base file holds a rejected `ui.scale = 900`, found by a reload.
+fn with_rejected_scale() -> MemorySettings {
+    let s = MemorySettings::default();
+    s.hand_edit_base("ui.scale", Some(json!(900)));
+    s.reload(Mode::Apply, &person()).unwrap();
+    assert_eq!(s.findings().len(), 1);
+    s
+}
+
+#[test]
+fn a_set_clears_the_finding_for_the_value_it_replaced_and_a_dry_run_or_refusal_does_not() {
+    let s = with_rejected_scale();
+    s.hand_edit_base("quality.tier", Some(json!("ultra")));
+    s.reload(Mode::Apply, &person()).unwrap();
+    assert_eq!(s.findings().len(), 2);
+    s.set::<UiScale>(&125, Layer::Base, Mode::DryRun, &person()).unwrap();
+    assert_eq!(s.findings().len(), 2, "a dry run leaves findings alone");
+    assert!(s.set_raw("ui.scale", json!(900), Layer::Base, Mode::Apply, &person()).is_err());
+    assert_eq!(s.findings().len(), 2, "a refused apply leaves findings alone");
+    s.set::<UiScale>(&125, Layer::Base, Mode::Apply, &person()).unwrap();
+    let left = s.findings();
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0].error.key, "quality.tier", "only the replaced key's finding is gone");
+}
+
+#[test]
+fn a_reset_clears_its_finding_and_a_refused_reset_leaves_it() {
+    let s = with_rejected_scale();
+    assert!(s.reset("no.such.key", Layer::Base, Mode::Apply, &person()).is_err());
+    assert_eq!(s.findings().len(), 1);
+    s.reset("ui.scale", Layer::Base, Mode::DryRun, &person()).unwrap();
+    assert_eq!(s.findings().len(), 1);
+    s.reset("ui.scale", Layer::Base, Mode::Apply, &person()).unwrap();
+    assert!(s.findings().is_empty());
+}
+
+#[test]
+fn overwriting_or_deleting_a_profile_clears_its_findings_and_renaming_keeps_them() {
+    let s = MemorySettings::default();
+    let p = s.save_profile("P", ProfileSource::Current, false, Mode::Apply, &person()).unwrap();
+    s.hand_edit_profile(&p.id, "ui.scale", Some(json!(900))).unwrap();
+    s.hand_edit_profile(&p.id, "update.channel", Some(json!("beta"))).unwrap();
+    s.reload(Mode::Apply, &person()).unwrap();
+    assert_eq!(s.findings().len(), 2);
+    s.rename_profile(&p.id, "Q", Mode::Apply, &person()).unwrap();
+    assert_eq!(s.findings().len(), 2, "a rename leaves the stored values, so their findings");
+    s.save_profile("Q", ProfileSource::Current, true, Mode::DryRun, &person()).unwrap();
+    assert_eq!(s.findings().len(), 2, "a dry run leaves findings alone");
+    s.save_profile("Q", ProfileSource::Current, true, Mode::Apply, &person()).unwrap();
+    assert!(s.findings().is_empty(), "the overwrite replaced the file");
+
+    s.hand_edit_profile(&p.id, "ui.scale", Some(json!(900))).unwrap();
+    s.reload(Mode::Apply, &person()).unwrap();
+    assert_eq!(s.findings().len(), 1);
+    s.delete_profile(&p.id, Mode::DryRun, &person()).unwrap();
+    assert_eq!(s.findings().len(), 1);
+    s.delete_profile(&p.id, Mode::Apply, &person()).unwrap();
+    assert!(s.findings().is_empty(), "the deleted file has no findings");
+}
