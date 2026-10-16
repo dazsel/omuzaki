@@ -31,13 +31,13 @@ use omuzaki_stage::UploadOptions;
 use omuzaki_stage::frame::{Stage, StageClock};
 use omuzaki_stage::perform::Tracking;
 use omuzaki_stage::perform::host::{CalibrationState, PerformHost};
-use omuzaki_track_api::error::TrackError;
+use omuzaki_stage::perform::input::{InputError, InputHost as _, NoSource, PreviewState, SourceKind};
 use omuzaki_track_api::tracker::{Tracker, TrackerConfig};
 use omuzaki_track_mock::{FakeCamera, FakeTracker};
 use omuzaki_ui::aux_window::Transparency;
 use omuzaki_ui::live::wiring::{
-    FrameReader, LiveApp, LiveError, LiveFrame, LiveRig, LiveScene, LoopReport, NoCamera, NoTracker, PerformClock,
-    PerformThread, RealClock, THREAD_NAME, live_performer,
+    FrameReader, LiveApp, LiveFrame, LiveRig, LiveScene, LoopReport, NoTracker, PerformClock, PerformThread, RealClock,
+    THREAD_NAME, live_performer,
 };
 
 struct Counting;
@@ -179,7 +179,8 @@ fn fake_camera_to_scenes_at_60_hz_for_10_s_without_a_drop_storm_or_an_allocation
             assert!(last_index.is_none_or(|last| frame.tick.index > last), "frames arrive in order");
             last_index = Some(frame.tick.index);
             tracked += u64::from(frame.tracking == Tracking::Tracking);
-            assert_eq!(scene.scene().frame.index, out.tick.index, "the scene names the frame it rendered");
+            // A live stage numbers the frames it submits (so grain and jitter never repeat): one more per render.
+            assert_eq!(scene.scene().frame.index, scenes, "the scene names the frame it rendered: {:?}", out.tick);
         } else {
             std::thread::sleep(Duration::from_millis(1));
         }
@@ -380,27 +381,31 @@ fn an_unplugged_camera_hands_the_face_to_life_and_the_loop_keeps_publishing() {
 }
 
 #[test]
-fn the_rig_starts_on_no_camera_switches_cameras_and_shuts_down_in_order() {
+fn the_rig_starts_on_no_camera_switches_cameras_through_the_input_and_shuts_down_in_order() {
     omuzaki_ui::link();
-    let performer = live_performer(Box::new(NoCamera), ChannelBuf::NEUTRAL, HumanoidPose::REST);
-    let (mut rig, mut reader) =
+    let performer = live_performer(Box::new(NoSource), ChannelBuf::NEUTRAL, HumanoidPose::REST);
+    let (rig, mut reader) =
         LiveRig::start(Box::new(tracker(30.0)), TrackerConfig::default(), performer, Box::new(RealClock::new()))
             .expect("the rig starts");
+    let input = rig.input();
     // Before any camera, the life layer runs: frames arrive, with no face.
     assert!(eventually(Duration::from_secs(2), || reader.take_new().is_some_and(|f| f.tracking == Tracking::NoFrames)));
-    assert_eq!(rig.cameras().len(), 1);
+    assert_eq!(input.state().cameras.len(), 1);
 
     // A camera the tracker doesn't have is refused and the loop stays on life.
     let missing = omuzaki_track_api::camera::CameraId("missing".into());
-    assert!(rig.use_camera(&missing).is_err());
-    assert_eq!(rig.camera(), None);
+    assert!(matches!(input.bind_camera(Some(missing), Mode::Apply), Err(InputError::NoCamera { .. })));
+    assert_eq!(input.state().camera, None);
 
-    rig.use_camera(&FakeCamera::id()).expect("the fake camera starts");
-    assert_eq!(rig.camera(), Some(&FakeCamera::id()));
+    // The input posts the camera's source into the perform thread's slot; the loop swaps it in at its next pass.
+    input.select(SourceKind::Webcam, Mode::Apply).expect("the webcam source");
+    input.bind_camera(Some(FakeCamera::id()), Mode::Apply).expect("the fake camera binds");
+    input.preview(true, Mode::Apply).expect("the fake camera starts");
+    assert_eq!(input.state().preview, PreviewState::On { camera: FakeCamera::id() });
     assert!(eventually(Duration::from_secs(2), || reader.take_new().is_some_and(|f| f.tracking != Tracking::NoFrames)));
 
-    rig.stop_camera().expect("stopped");
-    assert_eq!(rig.camera(), None);
+    input.preview(false, Mode::Apply).expect("stopping never fails");
+    assert_eq!(input.state().preview, PreviewState::Off);
     let host = rig.host().expect("a host while running");
     let report = rig.shutdown().expect("a clean shutdown");
     assert!(report.published > 0);
@@ -411,7 +416,7 @@ fn the_rig_starts_on_no_camera_switches_cameras_and_shuts_down_in_order() {
 #[test]
 fn the_perform_thread_is_named_and_stops_when_dropped() {
     omuzaki_ui::link();
-    let performer = live_performer(Box::new(NoCamera), ChannelBuf::NEUTRAL, HumanoidPose::REST);
+    let performer = live_performer(Box::new(NoSource), ChannelBuf::NEUTRAL, HumanoidPose::REST);
     let (perform, reader) = PerformThread::spawn(performer, Box::new(RealClock::new())).expect("it starts");
     assert!(perform.is_running());
     assert!(eventually(Duration::from_secs(1), || reader.published() > 0));
@@ -438,7 +443,7 @@ fn request(op: &str, args: Value) -> Request {
 }
 
 /// What `main.rs` starts: every linked op over the app's runner, the starter expressions on the triggers, a camera
-/// picked on the rig reaching the ops' status, and the quit order.
+/// picked through the `input.*` ops reaching the performer's status, and the quit order.
 #[test]
 fn the_app_starts_the_live_slice_with_its_ops_and_stops_it_in_order() {
     omuzaki_ui::link();
@@ -455,6 +460,11 @@ fn the_app_starts_the_live_slice_with_its_ops_and_stops_it_in_order() {
         "output.window.open",
         "output.window.close",
         "output.window.status",
+        "input.state",
+        "input.select",
+        "input.bind_camera",
+        "input.preview",
+        "input.request_camera",
     ] {
         assert!(ops.iter().any(|name| name == op), "{op} is linked into the app's runner");
     }
@@ -479,8 +489,11 @@ fn the_app_starts_the_live_slice_with_its_ops_and_stops_it_in_order() {
     let bind = args(&[("key", Value::from("F1")), ("expression", Value::from("happy"))]);
     runner.run(request("trigger.bind", bind)).expect("the starter expressions are loaded");
 
-    let rig = app.rig_mut().expect("running");
-    rig.use_camera(&FakeCamera::id()).expect("the fake camera starts");
+    // The camera through its ops, as the Live panel and an agent's MCP client pick it.
+    let camera = Value::from(FakeCamera::id().0);
+    runner.run(request("input.select", args(&[("source", Value::from("webcam"))]))).expect("the webcam source");
+    runner.run(request("input.bind_camera", args(&[("camera", camera)]))).expect("the fake camera binds");
+    runner.run(request("input.preview", args(&[("on", Value::from(true))]))).expect("the fake camera starts");
     let status = || runner.run(request("perform.status", args(&[]))).expect("status").plan.output.expect("an answer");
     assert!(eventually(Duration::from_secs(3), || status()["tracking"] == "tracking"), "the camera reaches the ops");
     assert!(app.reader_mut().expect("running").take_new().is_some(), "the render side gets frames");
@@ -496,11 +509,13 @@ fn the_app_starts_the_live_slice_with_its_ops_and_stops_it_in_order() {
 
 #[test]
 fn without_a_webcam_tracker_the_app_lists_no_cameras_and_says_so_on_a_pick() {
-    let mut app =
+    omuzaki_ui::link();
+    let app =
         LiveApp::start(Box::new(NoTracker), Box::new(RealClock::new()), Transparency::Fallback).expect("it starts");
-    let rig = app.rig_mut().expect("running");
-    assert_eq!(rig.cameras(), Vec::new());
-    let picked = rig.use_camera(&FakeCamera::id());
-    assert!(matches!(picked, Err(LiveError::Track(TrackError::NoDevice(_)))), "{picked:?}");
-    assert_eq!(rig.camera(), None);
+    let runner = app.runner();
+    let state = runner.run(request("input.state", args(&[]))).expect("state").plan.output.expect("an answer");
+    assert_eq!(state["cameras"], serde_json::json!([]), "no tracker, no cameras");
+    let picked = runner.run(request("input.bind_camera", args(&[("camera", Value::from(FakeCamera::id().0))])));
+    let error = picked.expect_err("there is no such camera");
+    assert_eq!(error.code, omuzaki_ops_api::ErrorCode::NotFound, "{error:?}");
 }

@@ -22,14 +22,18 @@ use omuzaki_doc_mock::MemDoc;
 use omuzaki_face_api::ExpressionSet;
 use omuzaki_ops::Executor;
 use omuzaki_ops_api::{
-    Actor, Event, Grants, OpError, OpInfo, OpRecord, Outcome, Request, Runner, ServicesBuilder, TxId, find,
+    Actor, Event, Grants, Mode, OpError, OpInfo, OpRecord, Outcome, Request, Runner, ServicesBuilder, TxId, find,
 };
 use omuzaki_stage::perform::Tracking;
 use omuzaki_stage::perform::host::{
     CalibrationState, PerformError, PerformHost, PerformStatus, RetargetChange, RetargetReceipt,
 };
+use omuzaki_stage::perform::input::{
+    CameraEntry, InputError, InputHost, InputState, Permission, PreviewState, SourceKind,
+};
 use omuzaki_stage::perform::triggers::{BindOutcome, TriggerBinding, TriggerInfo};
 use omuzaki_stream_api::window::WindowHost;
+use omuzaki_track_api::camera::CameraId;
 use omuzaki_ui::aux_window::{PhysicalSize, Transparency};
 use omuzaki_ui::ds::audit::plain_english;
 use omuzaki_ui::ds::strings::{English, Pseudo};
@@ -37,8 +41,10 @@ use omuzaki_ui::ds::testing::{
     all_strings, harness_state, press_for, reading_order_violations, tab_through, unlabelled_interactive,
 };
 use omuzaki_ui::ds::{Settings, set_strings};
-use omuzaki_ui::live::input::{self, Camera, InputView, Permission, Preview, Source};
-use omuzaki_ui::live::model::{CALIBRATE_FRAMES, HOTKEY_ROWS, LiveModel, OP_IMPORT, Ops};
+use omuzaki_ui::live::model::{
+    CALIBRATE_FRAMES, HOTKEY_ROWS, LiveModel, OP_IMPORT, OP_INPUT_BIND_CAMERA, OP_INPUT_PREVIEW,
+    OP_INPUT_REQUEST_CAMERA, OP_INPUT_SELECT, OP_INPUT_STATE, Ops,
+};
 use omuzaki_ui::live::panel::LivePanel;
 use omuzaki_ui::live::story::{LiveState, StoryRunner};
 use omuzaki_ui::output_window::{OutputHost, OutputPlan, OutputWindow};
@@ -98,6 +104,13 @@ impl PerformHost for FakeHost {
         Ok(BindOutcome { slot, replaced: replaced.is_some() })
     }
 
+    fn bind_trigger_checked(&self, binding: TriggerBinding) -> Result<BindOutcome, PerformError> {
+        if !self.expressions().0.contains_key(&binding.expression) {
+            return Err(PerformError::UnknownExpression);
+        }
+        self.bind_trigger(binding)
+    }
+
     fn unbind_trigger(&self, key: &str) -> Result<bool, PerformError> {
         let mut book = self.triggers.lock().unwrap();
         let before = book.len();
@@ -111,57 +124,80 @@ impl PerformHost for FakeHost {
     }
 }
 
-/// The `input.*` surface as PR #2210 declares it, kept in memory: the stand-in for the stage's input ops until they
-/// merge. It changes what the real ops would, and refuses what they refuse (a preview with no camera bound).
-struct FakeInput(Mutex<InputView>);
+/// The tracking input as the stage's `input.*` ops see it, kept in memory: two cameras, and the same refusals as the
+/// stage's `LiveInput` (a camera it doesn't list, a mirror with nothing to capture). A dry run changes nothing.
+struct FakeInput(Mutex<InputState>);
 
 impl FakeInput {
     /// Two cameras, none bound, the life layer driving the face, the permission as given.
     fn new(permission: Permission) -> Arc<Self> {
-        let camera = |id: &str, name: &str| Camera { id: id.to_owned(), name: name.to_owned(), bound: false };
-        Arc::new(Self(Mutex::new(InputView {
-            source: Source::LifeLayer,
+        let camera =
+            |id: &str, name: &str| CameraEntry { id: CameraId(id.to_owned()), name: name.to_owned(), bound: false };
+        Arc::new(Self(Mutex::new(InputState {
+            source: SourceKind::LifeLayer,
             camera: None,
             camera_present: false,
-            preview: Preview::Off,
+            preview: PreviewState::Off,
             permission,
             cameras: vec![camera("usb:0", "Logitech C920"), camera("usb:1", "Integrated Camera")],
             tracking: Tracking::NoFrames,
         })))
     }
 
-    fn view(&self) -> InputView {
+    fn view(&self) -> InputState {
         self.0.lock().unwrap().clone()
     }
+}
 
-    /// What the stage's op would answer or refuse.
-    fn run(&self, req: &Request) -> Result<Value, OpError> {
+impl InputHost for FakeInput {
+    fn select(&self, source: SourceKind, mode: Mode) -> Result<SourceKind, InputError> {
         let mut view = self.0.lock().unwrap();
-        match req.op.as_str() {
-            input::OP_STATE => {}
-            input::OP_SELECT => view.source = serde_json::from_value(req.args["source"].clone()).unwrap(),
-            input::OP_BIND_CAMERA => {
-                let id = req.args["camera"].as_str().map(str::to_owned);
-                if id.as_ref().is_some_and(|id| !view.cameras.iter().any(|c| &c.id == id)) {
-                    return Err(OpError::not_found("no such camera"));
-                }
-                for camera in &mut view.cameras {
-                    camera.bound = id.as_deref() == Some(camera.id.as_str());
-                }
-                view.camera_present = id.is_some();
-                view.camera = id;
-            }
-            input::OP_PREVIEW => {
-                view.preview = match (req.args["on"].as_bool().unwrap(), view.camera.clone()) {
-                    (false, _) => Preview::Off,
-                    (true, Some(camera)) if view.source == Source::Webcam => Preview::On { camera },
-                    (true, _) => return Err(OpError::conflict("bind a camera and select the webcam first")),
-                };
-            }
-            input::OP_REQUEST_CAMERA => view.permission = Permission::Granted,
-            other => return Err(OpError::not_found(format!("no op {other}"))),
+        let before = view.source;
+        if mode == Mode::Apply {
+            view.source = source;
         }
-        Ok(serde_json::to_value(&*view).unwrap())
+        Ok(before)
+    }
+
+    fn bind_camera(&self, camera: Option<CameraId>, mode: Mode) -> Result<Option<CameraId>, InputError> {
+        let mut view = self.0.lock().unwrap();
+        if let Some(id) = camera.as_ref().filter(|id| !view.cameras.iter().any(|c| &c.id == *id)) {
+            return Err(InputError::no_camera(id.clone()));
+        }
+        let before = view.camera.clone();
+        if mode == Mode::Apply {
+            for entry in &mut view.cameras {
+                entry.bound = camera.as_ref() == Some(&entry.id);
+            }
+            view.camera_present = camera.is_some();
+            view.camera = camera;
+        }
+        Ok(before)
+    }
+
+    fn preview(&self, on: bool, mode: Mode) -> Result<bool, InputError> {
+        let mut view = self.0.lock().unwrap();
+        let before = view.preview.is_on();
+        let next = match (on, view.camera.clone()) {
+            (false, _) => PreviewState::Off,
+            (true, Some(camera)) if view.source == SourceKind::Webcam => PreviewState::On { camera },
+            (true, None) => return Err(InputError::NoCameraBound),
+            (true, Some(_)) => return Err(InputError::NothingToCapture),
+        };
+        if mode == Mode::Apply {
+            view.preview = next;
+        }
+        Ok(before)
+    }
+
+    fn request_camera(&self) -> Permission {
+        let mut view = self.0.lock().unwrap();
+        view.permission = Permission::Granted;
+        view.permission
+    }
+
+    fn state(&self) -> InputState {
+        self.view()
     }
 }
 
@@ -171,13 +207,22 @@ struct Recording {
     inner: Executor,
     requests: Mutex<Vec<(String, Value)>>,
     window: OutputHost,
-    input: Option<Arc<FakeInput>>,
 }
 
 impl Recording {
+    /// The perform, trigger and output window ops, without the `input.*` ops: a build that lacks them.
     fn new(host: Arc<FakeHost>) -> Self {
+        Self::build(host, None)
+    }
+
+    /// The same, with the stage's `input.*` ops over `input`.
+    fn with_input(host: Arc<FakeHost>, input: &Arc<FakeInput>) -> Self {
+        Self::build(host, Some(input))
+    }
+
+    fn build(host: Arc<FakeHost>, input: Option<&Arc<FakeInput>>) -> Self {
         omuzaki_ui::link();
-        let ops = [
+        let mut names = vec![
             "perform.calibrate",
             "perform.set_retarget",
             "perform.status",
@@ -187,21 +232,27 @@ impl Recording {
             "output.window.open",
             "output.window.close",
             "output.window.status",
-        ]
-        .map(|op| find(op).expect("linked"));
+        ];
+        if input.is_some() {
+            names.extend([
+                OP_INPUT_STATE,
+                OP_INPUT_SELECT,
+                OP_INPUT_BIND_CAMERA,
+                OP_INPUT_PREVIEW,
+                OP_INPUT_REQUEST_CAMERA,
+            ]);
+        }
+        let ops: Vec<_> = names.into_iter().map(|op| find(op).expect("linked")).collect();
         let window = OutputHost::new(Transparency::Fallback, PhysicalSize::FULL_HD);
-        let services = ServicesBuilder::new()
-            .insert::<dyn PerformHost>(host)
-            .insert::<dyn WindowHost>(Arc::new(window.clone()))
-            .build();
+        let mut services =
+            ServicesBuilder::new().insert::<dyn PerformHost>(host).insert::<dyn WindowHost>(Arc::new(window.clone()));
+        if let Some(input) = input {
+            services = services.insert::<dyn InputHost>(Arc::clone(input) as Arc<dyn InputHost>);
+        }
         let inner = Executor::with_registrations(Box::new(MemDoc::new()), Arc::new(FakeClock::new(Seconds(0.0))), ops)
             .expect("an executor")
-            .with_services(services);
-        Self { inner, requests: Mutex::new(Vec::new()), window, input: None }
-    }
-
-    fn with_input(host: Arc<FakeHost>, input: Arc<FakeInput>) -> Self {
-        Self { input: Some(input), ..Self::new(host) }
+            .with_services(services.build());
+        Self { inner, requests: Mutex::new(Vec::new()), window }
     }
 
     /// One frame of the app's UI thread: the window the ops asked for opens or closes, and says what it is.
@@ -221,17 +272,11 @@ impl Recording {
 
 impl Runner for Recording {
     fn ops(&self) -> Vec<OpInfo> {
-        let input = self.input.as_ref().map(|_| input::op_infos()).unwrap_or_default();
-        self.inner.ops().into_iter().chain(input).collect()
+        self.inner.ops()
     }
     fn run(&self, req: Request) -> Result<Outcome, OpError> {
         self.requests.lock().unwrap().push((req.op.clone(), req.args.clone()));
-        match &self.input {
-            Some(input) if req.op.starts_with("input.") => {
-                Ok(Outcome::new(omuzaki_ops_api::Plan::answer(input.run(&req)?)))
-            }
-            _ => self.inner.run(req),
-        }
+        self.inner.run(req)
     }
     fn begin(&self, label: &str, actor: &Actor) -> TxId {
         self.inner.begin(label, actor)
@@ -362,16 +407,16 @@ fn the_smoothing_slider_commits_through_perform_set_retarget() {
 }
 
 #[test]
-fn controls_whose_ops_are_not_on_main_are_disabled_with_not_available_yet() {
+fn controls_whose_ops_this_build_lacks_are_disabled_and_say_which_op() {
     let host = Arc::new(FakeHost::default());
     let mut h = live(&host);
     for (role, name) in [(Role::ComboBox, "Camera"), (Role::Switch, "Track my face")] {
         assert!(is_disabled(&h, role, name), "{name} is disabled");
     }
-    // The reason shows on keyboard focus: the tooltip says "Not available yet".
+    // The reason shows on keyboard focus: the tooltip names the missing op.
     named(&h, Role::Switch, "Track my face").focus();
     h.run_steps(4);
-    assert!(all_strings(&h).iter().any(|s| s.starts_with("Not available yet: choosing a camera")));
+    assert!(all_strings(&h).iter().any(|s| s == "Not available: this build has no input.state op"));
     // Nothing but the reads ran: no op was called under a name this build doesn't have.
     let reads = ["perform.status", "trigger.list", "output.window.status"];
     assert!(
@@ -530,13 +575,13 @@ fn a_minimised_window_says_it_cannot_be_captured() {
 fn the_camera_section_binds_a_camera_and_tracks_through_the_input_ops() {
     let host = Arc::new(FakeHost::default());
     let input = FakeInput::new(Permission::Granted);
-    let mut h = live_on(Recording::with_input(Arc::clone(&host), Arc::clone(&input)));
-    assert_eq!(h.state().runner.last(input::OP_STATE), Some(object(&[])), "it reads the input");
+    let mut h = live_on(Recording::with_input(Arc::clone(&host), &input));
+    assert_eq!(h.state().runner.last(OP_INPUT_STATE), Some(object(&[])), "it reads the input");
     assert!(is_disabled(&h, Role::Switch, "Track my face"), "nothing to track from until a camera is chosen");
 
     choose(&mut h, "Camera", "Logitech C920");
-    assert_eq!(h.state().runner.last(input::OP_BIND_CAMERA), Some(object(&[("camera", Value::from("usb:0"))])));
-    assert_eq!(input.view().camera.as_deref(), Some("usb:0"));
+    assert_eq!(h.state().runner.last(OP_INPUT_BIND_CAMERA), Some(object(&[("camera", Value::from("usb:0"))])));
+    assert_eq!(input.view().camera, Some(CameraId("usb:0".to_owned())));
 
     named(&h, Role::Switch, "Track my face").click();
     h.run_steps(2);
@@ -544,14 +589,14 @@ fn the_camera_section_binds_a_camera_and_tracks_through_the_input_ops() {
     let reads = ["input.state", "perform.status", "trigger.list", "output.window.status"];
     let actions: Vec<&str> = ops.iter().map(String::as_str).filter(|op| !reads.contains(op)).collect();
     assert_eq!(actions, ["input.bind_camera", "input.select", "input.preview"], "the webcam source, then the capture");
-    assert_eq!(h.state().runner.last(input::OP_SELECT), Some(object(&[("source", Value::from("webcam"))])));
-    assert_eq!(h.state().runner.last(input::OP_PREVIEW), Some(object(&[("on", Value::from(true))])));
+    assert_eq!(h.state().runner.last(OP_INPUT_SELECT), Some(object(&[("source", Value::from("webcam"))])));
+    assert_eq!(h.state().runner.last(OP_INPUT_PREVIEW), Some(object(&[("on", Value::from(true))])));
     assert!(all_strings(&h).iter().any(|s| s == "Tracking from Logitech C920"), "{:?}", all_strings(&h));
 
     named(&h, Role::Switch, "Track my face").click();
     h.run_steps(2);
-    assert_eq!(h.state().runner.last(input::OP_PREVIEW), Some(object(&[("on", Value::from(false))])));
-    assert_eq!(input.view().preview, Preview::Off);
+    assert_eq!(h.state().runner.last(OP_INPUT_PREVIEW), Some(object(&[("on", Value::from(false))])));
+    assert_eq!(input.view().preview, PreviewState::Off);
 }
 
 #[test]
@@ -560,30 +605,30 @@ fn an_unplugged_camera_says_so_and_retry_starts_it_again() {
     let input = FakeInput::new(Permission::Granted);
     {
         let mut view = input.0.lock().unwrap();
-        view.source = Source::Webcam;
-        view.camera = Some("usb:0".to_owned());
+        view.source = SourceKind::Webcam;
+        view.camera = Some(CameraId("usb:0".to_owned()));
         view.camera_present = false;
-        view.preview = Preview::On { camera: "usb:0".to_owned() };
+        view.preview = PreviewState::On { camera: CameraId("usb:0".to_owned()) };
     }
-    let mut h = live_on(Recording::with_input(host, Arc::clone(&input)));
+    let mut h = live_on(Recording::with_input(host, &input));
     assert!(all_strings(&h).iter().any(|s| s.starts_with("Camera unplugged")));
     named(&h, Role::Button, "Retry").click();
     h.run_steps(2);
-    assert_eq!(h.state().runner.last(input::OP_PREVIEW), Some(object(&[("on", Value::from(true))])));
+    assert_eq!(h.state().runner.last(OP_INPUT_PREVIEW), Some(object(&[("on", Value::from(true))])));
 }
 
 #[test]
 fn the_camera_permission_is_asked_through_its_op_and_a_refusal_says_where_to_allow_it() {
     let host = Arc::new(FakeHost::default());
     let input = FakeInput::new(Permission::Unknown);
-    let mut h = live_on(Recording::with_input(Arc::clone(&host), Arc::clone(&input)));
+    let mut h = live_on(Recording::with_input(Arc::clone(&host), &input));
     named(&h, Role::Button, "Allow the camera").click();
     h.run_steps(2);
-    assert_eq!(h.state().runner.last(input::OP_REQUEST_CAMERA), Some(object(&[])));
+    assert_eq!(h.state().runner.last(OP_INPUT_REQUEST_CAMERA), Some(object(&[])));
     assert_eq!(input.view().permission, Permission::Granted);
 
     let denied = FakeInput::new(Permission::Denied);
-    let h = live_on(Recording::with_input(host, denied));
+    let h = live_on(Recording::with_input(host, &denied));
     assert!(all_strings(&h).iter().any(|s| s.starts_with("Camera access is off")));
 }
 

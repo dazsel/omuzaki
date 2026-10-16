@@ -39,8 +39,6 @@ macro_rules! words {
 
 words! {
     Title = "live-title" => "Live",
-    NotYet = "live-not-yet" => "Not available yet",
-    NotYetCamera = "live-not-yet-camera" => "Not available yet: choosing a camera arrives with the input ops",
     NotYetLatency = "live-not-yet-latency" => "Not available yet: the performer does not report latency",
     NoOp = "live-no-op" => "Not available: this build has no {op} op",
     NoPerformer = "live-no-performer" => "The performer is not running",

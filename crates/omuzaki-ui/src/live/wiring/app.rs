@@ -8,6 +8,7 @@ use omuzaki_anim_api::{ChannelBuf, HumanoidPose};
 use omuzaki_face_api::ExpressionSet;
 use omuzaki_ops_api::{Runner, ServicesBuilder};
 use omuzaki_stage::perform::host::{PerformError, PerformHost};
+use omuzaki_stage::perform::input::{InputHost, NoSource};
 use omuzaki_stream_api::window::WindowHost;
 use omuzaki_track_api::camera::{CameraId, CameraInfo};
 use omuzaki_track_api::error::TrackError;
@@ -15,7 +16,7 @@ use omuzaki_track_api::tracker::{LatencyStats, Tracker, TrackerConfig};
 
 use super::clock::PerformClock;
 use super::mailbox::FrameReader;
-use super::rig::{LiveRig, NoCamera, live_performer};
+use super::rig::{LiveRig, live_performer};
 use super::thread::{LoopReport, WiringError};
 use crate::aux_window::{PhysicalSize, Transparency};
 use crate::output_window::{OutputHost, OutputPlan, OutputWindow, Program};
@@ -63,9 +64,10 @@ pub struct LiveApp {
 }
 
 impl LiveApp {
-    /// Starts the perform thread on `tracker` (idle until a camera is picked) and the life layer, timed by `clock`;
-    /// gives the triggers the starter expressions until a character brings its own; and builds the runner: every op
-    /// linked into the app, over an empty document, with the performer and the output window's host in its services.
+    /// Starts the perform thread and the life layer, timed by `clock`, and the tracking input over `tracker` (idle until
+    /// the `input.*` ops bind a camera and start the mirror); gives the triggers the starter expressions until a
+    /// character brings its own; and builds the runner: every op linked into the app, over an empty document, with the
+    /// performer, the input and the output window's host in its services.
     /// The output window starts closed, on a platform where a transparent surface is `transparency`.
     ///
     /// # Errors
@@ -75,14 +77,16 @@ impl LiveApp {
         clock: Box<dyn PerformClock>,
         transparency: Transparency,
     ) -> Result<Self, StartError> {
-        let performer = live_performer(Box::new(NoCamera), ChannelBuf::NEUTRAL, HumanoidPose::REST);
+        let performer = live_performer(Box::new(NoSource), ChannelBuf::NEUTRAL, HumanoidPose::REST);
         let (rig, reader) =
             LiveRig::start(tracker, TrackerConfig::default(), performer, clock).map_err(StartError::Wiring)?;
-        let host = rig.host().map_err(|_| StartError::Wiring(WiringError::Stopped))?;
+        let host = rig.host().map_err(StartError::Wiring)?;
         host.set_expressions(ExpressionSet::starter(), ChannelBuf::NEUTRAL).map_err(StartError::Perform)?;
         let window = OutputHost::new(transparency, PhysicalSize::FULL_HD);
+        let input: Arc<dyn InputHost> = rig.input();
         let services = ServicesBuilder::new()
             .insert::<dyn PerformHost>(host)
+            .insert::<dyn InputHost>(input)
             .insert::<dyn WindowHost>(Arc::new(window.clone()))
             .build();
         let runner = wiring::runner(services).map_err(StartError::Ops)?;
@@ -100,7 +104,7 @@ impl LiveApp {
         Arc::clone(&self.runner)
     }
 
-    /// The rig: cameras, latency and the loop's counts. `None` after [`shutdown`](Self::shutdown).
+    /// The rig: the input and the loop's counts. `None` after [`shutdown`](Self::shutdown).
     pub fn rig_mut(&mut self) -> Option<&mut LiveRig> {
         self.rig.as_mut()
     }

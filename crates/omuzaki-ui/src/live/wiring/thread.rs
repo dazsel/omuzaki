@@ -1,29 +1,24 @@
 //! [`PerformThread`]: the perform loop on its own thread, at the performer's fixed step.
 //!
-//! The thread owns the [`Performer`] and its [`PerformControl`]; nothing else touches them. Each pass it takes at most
-//! [`MAX_LOOP_COMMANDS`] requests of its own (a new frame source), lets the control take the ops' requests (settings,
-//! calibration, triggers) and run the due steps, publishes the newest step's [`LiveFrame`] into the mailbox, and sleeps
-//! until the next step is due. In steady state a pass neither locks nor allocates (`tests/live_wiring.rs` counts it);
-//! the exceptions are the requests themselves, which arrive between frames: a new source frees the old one, and a
-//! settings change runs the retarget's `set_config`.
+//! The thread owns the [`Performer`] and its [`PerformControl`]; nothing else touches them. Each pass it swaps in the
+//! newest frame source the input posted ([`SourceSlot::swap_into`]: a new camera, or no capture), lets the control take
+//! the ops' requests (settings, calibration, triggers) and run the due steps, publishes the newest step's [`LiveFrame`]
+//! into the mailbox, and sleeps until the next step is due. In steady state a pass neither locks nor allocates
+//! (`tests/live_wiring.rs` counts it); the exceptions are the ops' requests, which arrive between frames (a settings
+//! change runs the retarget's `set_config`). A swapped-out source goes back to the slot and is dropped on the ops side.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::thread::JoinHandle;
 
-use omuzaki_anim_api::FrameSource;
 use omuzaki_core::time::Seconds;
 use omuzaki_stage::perform::host::{PerformControl, PerformHandle, PerformHost, perform_channel};
+use omuzaki_stage::perform::input::SourceSlot;
 use omuzaki_stage::perform::{Performer, STEP_HZ};
 
 use super::clock::PerformClock;
 use super::mailbox::{FrameReader, FrameWriter, LiveFrame, frame_mailbox};
 
-/// Requests the loop's own queue holds before [`WiringError::Busy`].
-pub const LOOP_QUEUE_LEN: usize = 8;
-/// Requests one pass takes from the loop's own queue; the rest wait for the next pass.
-pub const MAX_LOOP_COMMANDS: usize = 2;
 /// The perform thread's name, as debuggers and profilers show it.
 pub const THREAD_NAME: &str = "omuzaki-perform";
 
@@ -35,8 +30,6 @@ pub enum WiringError {
     Spawn(std::io::Error),
     /// The perform thread has stopped.
     Stopped,
-    /// The loop has not caught up with the requests already queued (it holds [`LOOP_QUEUE_LEN`]).
-    Busy,
     /// The perform thread panicked; the performer is gone.
     Panicked,
 }
@@ -46,7 +39,6 @@ impl std::fmt::Display for WiringError {
         match self {
             Self::Spawn(error) => write!(f, "the perform thread could not start: {error}"),
             Self::Stopped => f.write_str("the performer is not running"),
-            Self::Busy => f.write_str("the performer has too many requests waiting; try again in a moment"),
             Self::Panicked => f.write_str("the perform thread stopped with a panic"),
         }
     }
@@ -59,11 +51,6 @@ impl std::error::Error for WiringError {
             _ => None,
         }
     }
-}
-
-/// A request to the loop itself (the ops' requests, triggers included, go through the [`PerformHandle`]).
-enum LoopCommand {
-    Source(Box<dyn FrameSource>),
 }
 
 /// What the loop has done so far, read without waiting.
@@ -90,7 +77,7 @@ impl Stats {
 /// The perform thread and the ways to reach it. Dropping it stops the thread and waits for it.
 pub struct PerformThread {
     handle: PerformHandle,
-    commands: SyncSender<LoopCommand>,
+    sources: Arc<SourceSlot>,
     stop: Arc<AtomicBool>,
     stats: Arc<Stats>,
     thread: Option<JoinHandle<()>>,
@@ -98,22 +85,30 @@ pub struct PerformThread {
 
 impl PerformThread {
     /// Starts `performer` on its own thread, timed by `clock`, and returns the thread with a reader of the frames it
-    /// publishes. Cold: allocates the channels and the thread.
+    /// publishes. The performer keeps the source it was built with until the input posts another into
+    /// [`sources`](Self::sources). Cold: allocates the slot, the mailbox and the thread.
     ///
     /// # Errors
     /// [`WiringError::Spawn`] if the OS refuses the thread.
     pub fn spawn(performer: Performer, clock: Box<dyn PerformClock>) -> Result<(Self, FrameReader), WiringError> {
         let (handle, control) = perform_channel(&performer);
         let (writer, reader) = frame_mailbox();
-        let (commands, inbox) = sync_channel(LOOP_QUEUE_LEN);
+        let sources = Arc::new(SourceSlot::new());
         let (stop, stats) = (Arc::new(AtomicBool::new(false)), Arc::new(Stats::default()));
-        let mut run = PerformLoop { performer, control, writer, inbox, stats: Arc::clone(&stats) };
+        let mut run =
+            PerformLoop { performer, control, writer, sources: Arc::clone(&sources), stats: Arc::clone(&stats) };
         let flag = Arc::clone(&stop);
         let thread = std::thread::Builder::new()
             .name(THREAD_NAME.to_owned())
             .spawn(move || run.run(clock, &flag))
             .map_err(WiringError::Spawn)?;
-        Ok((Self { handle, commands, stop, stats, thread: Some(thread) }, reader))
+        Ok((Self { handle, sources, stop, stats, thread: Some(thread) }, reader))
+    }
+
+    /// The slot the input posts frame sources into (`LiveInput`, the app's `InputHost`); the loop takes the newest
+    /// at its next pass.
+    pub fn sources(&self) -> Arc<SourceSlot> {
+        Arc::clone(&self.sources)
     }
 
     /// The performer as the ops see it: inject it into the runner's services as `Arc<dyn PerformHost>`.
@@ -124,15 +119,6 @@ impl PerformThread {
     /// The handle itself, for a caller that waits on a settings change ([`PerformHandle::await_retarget`]).
     pub fn handle(&self) -> &PerformHandle {
         &self.handle
-    }
-
-    /// Switches the performer to `source` (a new camera, or the old one back after an unplug). The old source is
-    /// dropped on the perform thread.
-    ///
-    /// # Errors
-    /// [`WiringError::Busy`] or [`WiringError::Stopped`]; the source is dropped then.
-    pub fn set_source(&self, source: Box<dyn FrameSource>) -> Result<(), WiringError> {
-        self.send(LoopCommand::Source(source))
     }
 
     /// What the loop has done so far.
@@ -162,13 +148,6 @@ impl PerformThread {
             None => Ok(()),
         }
     }
-
-    fn send(&self, command: LoopCommand) -> Result<(), WiringError> {
-        self.commands.try_send(command).map_err(|e| match e {
-            TrySendError::Full(_) => WiringError::Busy,
-            TrySendError::Disconnected(_) => WiringError::Stopped,
-        })
-    }
 }
 
 impl Drop for PerformThread {
@@ -190,7 +169,7 @@ struct PerformLoop {
     performer: Performer,
     control: PerformControl,
     writer: FrameWriter,
-    inbox: Receiver<LoopCommand>,
+    sources: Arc<SourceSlot>,
     stats: Arc<Stats>,
 }
 
@@ -210,20 +189,12 @@ impl PerformLoop {
 
     /// One pass at `now`.
     fn pass(&mut self, now: Seconds) {
-        for _ in 0..MAX_LOOP_COMMANDS {
-            let Ok(command) = self.inbox.try_recv() else { break };
-            self.run_command(command);
-        }
+        // Lock-free and allocation-free: the source it replaces goes back into the slot for the ops side to drop.
+        self.sources.swap_into(&mut self.performer);
         if let Some(out) = self.control.advance(&mut self.performer, now) {
             self.writer.publish(&LiveFrame::from_output(&out));
             self.stats.published.fetch_add(1, Ordering::Release);
         }
         self.stats.skipped.store(self.control.skipped_steps(), Ordering::Release);
-    }
-
-    fn run_command(&mut self, command: LoopCommand) {
-        match command {
-            LoopCommand::Source(source) => self.performer.set_source(source),
-        }
     }
 }

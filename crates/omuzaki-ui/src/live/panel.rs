@@ -10,7 +10,6 @@ use omuzaki_stage::perform::Tracking;
 use omuzaki_stage::perform::host::CalibrationState;
 use omuzaki_stream_api::window::{Backdrop as Shown, DEFAULT_TITLE, WindowState};
 
-use super::input::Permission;
 use super::model::{
     Backdrop, Control, HOTKEY_ROWS, LiveModel, OP_CALIBRATE, OP_SET_RETARGET, SMOOTHING_RANGE, WindowChoice,
 };
@@ -24,6 +23,7 @@ use crate::ds::widgets::{
     Button, Choice, Dropdown, EmptyState, OpCall, ParamEvent, ParamSlider, Section, Segment, Segmented, StatusChip,
     Tip, TipExt as _, Toggle,
 };
+use omuzaki_stage::perform::input::{InputState, Permission};
 
 /// Seconds between `perform.status` reads while the workspace is shown.
 pub const REFRESH_S: f64 = 0.25;
@@ -147,7 +147,7 @@ impl LivePanel {
     fn camera(&mut self, ui: &mut Ui, runner: &dyn Runner, actor: &Actor) {
         let ctx = ui.ctx().clone();
         let title = text(&ctx, Word::CameraSection);
-        let reason = not_yet(&ctx, self.model.ops().camera(), Word::NotYetCamera);
+        let reason = missing_reason(&ctx, self.model.ops().camera());
         Section::new(&title).default_open(true).id_salt("live.camera").show(ui, |ui| {
             let view = self.model.input().cloned();
             let cameras = view.as_ref().map_or(&[][..], |view| &view.cameras[..]);
@@ -155,8 +155,8 @@ impl LivePanel {
             // says which camera the input waits for.
             let gone = view
                 .as_ref()
-                .and_then(|view| view.camera.as_deref())
-                .filter(|id| !cameras.iter().any(|camera| camera.id == *id))
+                .and_then(|view| view.camera.as_ref().map(|id| id.0.as_str()))
+                .filter(|id| !cameras.iter().any(|camera| camera.id.0 == *id))
                 .map(|id| say(&ctx, Word::CameraGone, &[("camera", id)]));
             let none = text(&ctx, Word::CameraNone);
             let mut choices = vec![Choice::new(None, &none)];
@@ -172,7 +172,7 @@ impl LivePanel {
                 None => self.model.bind_camera(runner, actor, None),
                 Some(i) => {
                     if let Some(camera) = cameras.get(i) {
-                        self.model.bind_camera(runner, actor, Some(&camera.id));
+                        self.model.bind_camera(runner, actor, Some(&camera.id.0));
                     }
                 }
             }
@@ -181,7 +181,7 @@ impl LivePanel {
                 EmptyState::new(icons::EYE_SLASH, &text(&ctx, Word::NoCameraHeadline), &text(&ctx, Word::NoCameraLine))
                     .show(ui);
             }
-            let capturing = view.as_ref().is_some_and(super::input::InputView::capturing);
+            let capturing = view.as_ref().is_some_and(|view| view.preview.is_on());
             let mut on = capturing;
             let track = text(&ctx, Word::CameraTrack);
             let unbound = text(&ctx, Word::CameraChooseFirst);
@@ -201,7 +201,7 @@ impl LivePanel {
     }
 
     /// The input's state under the switch: what is tracked, an unplugged camera with Retry, or the permission.
-    fn camera_state(&mut self, ui: &mut Ui, runner: &dyn Runner, actor: &Actor, view: &super::input::InputView) {
+    fn camera_state(&mut self, ui: &mut Ui, runner: &dyn Runner, actor: &Actor, view: &InputState) {
         let ctx = ui.ctx().clone();
         match view.permission {
             Permission::Denied => {
@@ -224,7 +224,7 @@ impl LivePanel {
                     self.model.set_tracking(runner, actor, true);
                 }
             });
-        } else if let (true, Some(camera)) = (view.capturing(), view.bound()) {
+        } else if let (true, Some(camera)) = (view.preview.is_on(), view.cameras.iter().find(|camera| camera.bound)) {
             ui.add(StatusChip::new(Status::Ok, &say(&ctx, Word::CameraTracking, &[("name", &camera.name)])));
         }
     }
@@ -621,15 +621,6 @@ fn missing_reason(ctx: &egui::Context, control: Control) -> Option<String> {
     match control {
         Control::Ready => None,
         Control::Missing(op) => Some(say(ctx, Word::NoOp, &[("op", op)])),
-        Control::NotYet => Some(text(ctx, Word::NotYet).into_owned()),
-    }
-}
-
-/// The "not available yet" reason for a control waiting on ops that aren't on main.
-fn not_yet(ctx: &egui::Context, control: Control, why: Word) -> Option<String> {
-    match control {
-        Control::NotYet => Some(text(ctx, why).into_owned()),
-        other => missing_reason(ctx, other),
     }
 }
 

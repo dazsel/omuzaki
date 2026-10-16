@@ -8,11 +8,10 @@ use omuzaki_doc_api::Value;
 use omuzaki_ops_api::{Actor, Grants, Mode, OpError, Request, Runner};
 use omuzaki_stage::perform::Tracking;
 use omuzaki_stage::perform::host::{CalibrationState, PerformStatus};
+use omuzaki_stage::perform::input::{InputState, SourceKind};
 use omuzaki_stage::perform::triggers::TriggerInfo;
 use omuzaki_stream_api::window::WindowState;
 use serde::Deserialize as _;
-
-use super::input::{self, InputView, Source};
 
 /// `perform.calibrate`: start a neutral capture.
 pub const OP_CALIBRATE: &str = "perform.calibrate";
@@ -34,6 +33,16 @@ pub const OP_WINDOW_OPEN: &str = "output.window.open";
 pub const OP_WINDOW_CLOSE: &str = "output.window.close";
 /// `output.window.status`: whether the output window is open, its size, backdrop and whether it is minimised.
 pub const OP_WINDOW_STATUS: &str = "output.window.status";
+/// `input.state`: the source, the bound camera, the mirror, the permission, the cameras and tracking.
+pub const OP_INPUT_STATE: &str = "input.state";
+/// `input.select`: choose what drives the face.
+pub const OP_INPUT_SELECT: &str = "input.select";
+/// `input.bind_camera`: bind the camera the webcam source reads (the person only).
+pub const OP_INPUT_BIND_CAMERA: &str = "input.bind_camera";
+/// `input.preview`: start or stop the mirror, the capture that drives the face.
+pub const OP_INPUT_PREVIEW: &str = "input.preview";
+/// `input.request_camera`: show the OS camera permission prompt (the person only).
+pub const OP_INPUT_REQUEST_CAMERA: &str = "input.request_camera";
 
 /// Frames the Calibrate button asks for: 10 s at a webcam's 30 fps (the prompt says 10 seconds).
 pub const CALIBRATE_FRAMES: u64 = 300;
@@ -49,8 +58,6 @@ pub enum Control {
     Ready,
     /// Its op is registered in the design but not in this build's runner.
     Missing(&'static str),
-    /// Its op is not on main yet; the control is drawn disabled with a "not available yet" tooltip.
-    NotYet,
 }
 
 /// The ops this build's runner has, read once from its registry.
@@ -106,11 +113,11 @@ impl Ops {
             window_open: has(OP_WINDOW_OPEN),
             window_close: has(OP_WINDOW_CLOSE),
             window_status: has(OP_WINDOW_STATUS),
-            input_state: has(input::OP_STATE),
-            input_select: has(input::OP_SELECT),
-            input_bind_camera: has(input::OP_BIND_CAMERA),
-            input_preview: has(input::OP_PREVIEW),
-            input_request_camera: has(input::OP_REQUEST_CAMERA),
+            input_state: has(OP_INPUT_STATE),
+            input_select: has(OP_INPUT_SELECT),
+            input_bind_camera: has(OP_INPUT_BIND_CAMERA),
+            input_preview: has(OP_INPUT_PREVIEW),
+            input_request_camera: has(OP_INPUT_REQUEST_CAMERA),
         }
     }
 
@@ -139,24 +146,19 @@ impl Ops {
     }
 
     /// The camera picker and the tracking switch: they read `input.state` and run `input.bind_camera`,
-    /// `input.select` and `input.preview`. Those ops are not on main yet (PR #2210), so a runner without them leaves
-    /// the section "not available yet" rather than missing.
+    /// `input.select` and `input.preview`.
     pub fn camera(self) -> Control {
-        let needed = [
-            (self.input_state, input::OP_STATE),
-            (self.input_select, input::OP_SELECT),
-            (self.input_bind_camera, input::OP_BIND_CAMERA),
-            (self.input_preview, input::OP_PREVIEW),
-        ];
-        match Self::all(&needed) {
-            Control::Ready => Control::Ready,
-            _ => Control::NotYet,
-        }
+        Self::all(&[
+            (self.input_state, OP_INPUT_STATE),
+            (self.input_select, OP_INPUT_SELECT),
+            (self.input_bind_camera, OP_INPUT_BIND_CAMERA),
+            (self.input_preview, OP_INPUT_PREVIEW),
+        ])
     }
 
     /// The Allow camera button: `input.request_camera`.
     pub fn request_camera(self) -> Control {
-        if self.input_request_camera { Control::Ready } else { Control::NotYet }
+        Self::control(self.input_request_camera, OP_INPUT_REQUEST_CAMERA)
     }
 
     /// The output window's switch and settings: they open, close and read the window through its ops.
@@ -225,7 +227,7 @@ pub struct LiveModel {
     smoothing: f64,
     failure: Option<Failure>,
     imported: Option<String>,
-    input: Option<InputView>,
+    input: Option<InputState>,
     window: Option<WindowState>,
     window_choice: WindowChoice,
     /// The last open asked for a transparent surface and got the key (`output.window.open`'s `fallback`).
@@ -315,7 +317,7 @@ impl LiveModel {
     }
 
     /// The tracking input as `input.state` last read it.
-    pub fn input(&self) -> Option<&InputView> {
+    pub fn input(&self) -> Option<&InputState> {
         self.input.as_ref()
     }
 
@@ -364,14 +366,14 @@ impl LiveModel {
         if !self.ops.input_state {
             return;
         }
-        let read = run(runner, actor, input::OP_STATE, object(&[])).and_then(|output| {
-            InputView::deserialize(output).map_err(|e| OpError::internal(format!("{} answered {e}", input::OP_STATE)))
+        let read = run(runner, actor, OP_INPUT_STATE, object(&[])).and_then(|output| {
+            InputState::deserialize(output).map_err(|e| OpError::internal(format!("{OP_INPUT_STATE} answered {e}")))
         });
         match read {
             Ok(view) => self.input = Some(view),
             Err(error) => {
                 self.input = None;
-                self.fail(input::OP_STATE, &error);
+                self.fail(OP_INPUT_STATE, &error);
             }
         }
     }
@@ -509,7 +511,7 @@ impl LiveModel {
     /// again.
     pub fn bind_camera(&mut self, runner: &dyn Runner, actor: &Actor, camera: Option<&str>) {
         let args = object(&[("camera", Value::from(camera))]);
-        if self.act(runner, actor, self.ops.input_bind_camera, input::OP_BIND_CAMERA, args) {
+        if self.act(runner, actor, self.ops.input_bind_camera, OP_INPUT_BIND_CAMERA, args) {
             self.refresh_input(runner, actor);
         }
     }
@@ -518,22 +520,22 @@ impl LiveModel {
     /// then `input.preview` on), or stops it (`input.preview` off); then reads the input again. Also the Retry after an
     /// unplug: starting again opens the camera afresh.
     pub fn set_tracking(&mut self, runner: &dyn Runner, actor: &Actor, on: bool) {
-        let webcam = self.input.as_ref().is_some_and(|view| view.source == Source::Webcam);
+        let webcam = self.input.as_ref().is_some_and(|view| view.source == SourceKind::Webcam);
         if on && !webcam {
             let args = object(&[("source", Value::from("webcam"))]);
-            if !self.act(runner, actor, self.ops.input_select, input::OP_SELECT, args) {
+            if !self.act(runner, actor, self.ops.input_select, OP_INPUT_SELECT, args) {
                 return;
             }
         }
         let args = object(&[("on", Value::from(on))]);
-        if self.act(runner, actor, self.ops.input_preview, input::OP_PREVIEW, args) {
+        if self.act(runner, actor, self.ops.input_preview, OP_INPUT_PREVIEW, args) {
             self.refresh_input(runner, actor);
         }
     }
 
     /// Shows the OS camera prompt through `input.request_camera`, then reads the input again.
     pub fn request_camera(&mut self, runner: &dyn Runner, actor: &Actor) {
-        if self.act(runner, actor, self.ops.input_request_camera, input::OP_REQUEST_CAMERA, object(&[])) {
+        if self.act(runner, actor, self.ops.input_request_camera, OP_INPUT_REQUEST_CAMERA, object(&[])) {
             self.refresh_input(runner, actor);
         }
     }
@@ -623,7 +625,7 @@ mod tests {
         assert_eq!(ops.calibrate(), Control::Ready);
         assert_eq!(ops.smoothing(), Control::Missing(OP_SET_RETARGET));
         assert_eq!(ops.import(), Control::Missing(OP_IMPORT));
-        assert_eq!(ops.camera(), Control::NotYet, "the input ops aren't on main yet");
+        assert_eq!(ops.camera(), Control::Missing(OP_INPUT_STATE));
         assert_eq!(ops.output(), Control::Missing(OP_WINDOW_OPEN));
         assert_eq!(ops.hotkeys(), Control::Missing(OP_TRIGGER_BIND));
         let input = Ops {
@@ -634,7 +636,7 @@ mod tests {
             ..Ops::default()
         };
         assert_eq!(input.camera(), Control::Ready);
-        assert_eq!(input.request_camera(), Control::NotYet, "the prompt has its own op");
+        assert_eq!(input.request_camera(), Control::Missing(OP_INPUT_REQUEST_CAMERA), "the prompt has its own op");
         let triggers = Ops { trigger_bind: true, trigger_unbind: true, ..Ops::default() };
         assert_eq!(triggers.hotkeys(), Control::Missing(OP_TRIGGER_LIST), "the table needs all three");
     }

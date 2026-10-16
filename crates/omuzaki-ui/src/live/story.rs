@@ -13,12 +13,14 @@ use omuzaki_ops_api::checks::op_info;
 use omuzaki_ops_api::{Actor, Event, Grants, OpError, OpInfo, OpRecord, Outcome, Plan, Request, Runner, TxId, find};
 use omuzaki_stage::perform::Tracking;
 use omuzaki_stage::perform::host::{CalibrationState, PerformStatus};
+use omuzaki_stage::perform::input::{CameraEntry, InputState, Permission, PreviewState, SourceKind};
 use omuzaki_stage::perform::triggers::{TriggerBinding, TriggerInfo};
 use omuzaki_stream_api::window::{Backdrop, DEFAULT_KEY, WindowState};
+use omuzaki_track_api::camera::CameraId;
 
-use super::input::{self, Camera, InputView, Permission, Preview, Source};
 use super::model::{
-    LiveModel, OP_CALIBRATE, OP_SET_RETARGET, OP_TRIGGER_BIND, OP_TRIGGER_LIST, OP_TRIGGER_UNBIND, OP_WINDOW_CLOSE,
+    LiveModel, OP_CALIBRATE, OP_INPUT_BIND_CAMERA, OP_INPUT_PREVIEW, OP_INPUT_REQUEST_CAMERA, OP_INPUT_SELECT,
+    OP_INPUT_STATE, OP_SET_RETARGET, OP_TRIGGER_BIND, OP_TRIGGER_LIST, OP_TRIGGER_UNBIND, OP_WINDOW_CLOSE,
     OP_WINDOW_OPEN, OP_WINDOW_STATUS,
 };
 use super::panel::LivePanel;
@@ -77,21 +79,22 @@ impl LiveState {
 
     /// What `input.state` answers in this state: two cameras; none bound when idle, the first tracking while
     /// calibrating, and the first unplugged once the face is lost.
-    pub fn input(self) -> InputView {
-        let camera = |id: &str, name: &str, bound: bool| Camera { id: id.to_owned(), name: name.to_owned(), bound };
+    pub fn input(self) -> InputState {
+        let id = |id: &str| CameraId(id.to_owned());
+        let camera = |cam: &str, name: &str, bound: bool| CameraEntry { id: id(cam), name: name.to_owned(), bound };
         let bound = self != Self::Idle;
         // Device names are the OS's, shown verbatim; capitals keep them out of the pseudo-locale's plain-English check.
         let cameras = vec![camera("usb:0", "C920 PRO HD", bound), camera("usb:1", "HD WEBCAM", false)];
         let (source, preview, present) = match self {
-            Self::Idle => (Source::LifeLayer, Preview::Off, false),
-            Self::Calibrating => (Source::Webcam, Preview::On { camera: "usb:0".to_owned() }, true),
-            Self::TrackingLost => (Source::Webcam, Preview::On { camera: "usb:0".to_owned() }, false),
+            Self::Idle => (SourceKind::LifeLayer, PreviewState::Off, false),
+            Self::Calibrating => (SourceKind::Webcam, PreviewState::On { camera: id("usb:0") }, true),
+            Self::TrackingLost => (SourceKind::Webcam, PreviewState::On { camera: id("usb:0") }, false),
         };
         // An unplugged camera is no longer listed.
         let cameras = if present || !bound { cameras } else { cameras.into_iter().skip(1).collect() };
-        InputView {
+        InputState {
             source,
-            camera: bound.then(|| "usb:0".to_owned()),
+            camera: bound.then(|| id("usb:0")),
             camera_present: present,
             preview,
             permission: Permission::Granted,
@@ -121,7 +124,7 @@ impl LiveState {
 }
 
 /// A runner with no document that offers `perform.calibrate`, `perform.set_retarget`, the trigger ops, the output
-/// window's ops and the `input.*` surface, and accepts the actions without doing anything; `trigger.list`,
+/// window's ops and the `input.*` ops, and accepts the actions without doing anything; `trigger.list`,
 /// `input.state` and `output.window.status` answer with its state's ([`LiveState`]). It has no `perform.status`, so
 /// the workspace shows whatever status its model is given ([`LiveModel::set_status`]): the gallery and the evidence
 /// pictures pick a [`LiveState`] that way.
@@ -145,14 +148,19 @@ impl Runner for StoryRunner {
             OP_WINDOW_OPEN,
             OP_WINDOW_CLOSE,
             OP_WINDOW_STATUS,
+            OP_INPUT_STATE,
+            OP_INPUT_SELECT,
+            OP_INPUT_BIND_CAMERA,
+            OP_INPUT_PREVIEW,
+            OP_INPUT_REQUEST_CAMERA,
         ];
-        registered.into_iter().filter_map(find).map(op_info).chain(input::op_infos()).collect()
+        registered.into_iter().filter_map(find).map(op_info).collect()
     }
 
     fn run(&self, req: Request) -> Result<Outcome, OpError> {
         let answer = match req.op.as_str() {
             OP_TRIGGER_LIST => serde_json::json!({ "triggers": to_value(self.0.triggers())? }),
-            input::OP_STATE => to_value(self.0.input())?,
+            OP_INPUT_STATE => to_value(self.0.input())?,
             OP_WINDOW_STATUS => to_value(self.0.window())?,
             _ => return Ok(Outcome::new(Plan::default())),
         };
