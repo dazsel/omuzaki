@@ -291,6 +291,16 @@ fn save_refuses_bad_input_naming_the_field() {
 }
 
 #[test]
+fn list_reports_a_damaged_scripts_node_instead_of_an_empty_list() {
+    let runner = MockRunner::new(MemDoc::from_value(json!({ "scripts": "oops" })));
+    let error = run_as_person(&runner, "script.list", json!({})).unwrap_err();
+    assert_eq!((error.code, error.field.as_deref()), (ErrorCode::Invalid, Some("scripts")), "{error}");
+    let empty = MockRunner::new(MemDoc::new());
+    let listing = run_as_person(&empty, "script.list", json!({})).unwrap().plan.output.unwrap();
+    assert_eq!(listing, json!({ "scripts": [] }), "a missing node is just an empty list");
+}
+
+#[test]
 fn a_damaged_scripts_node_is_reported_not_overwritten() {
     let runner = MockRunner::new(MemDoc::from_value(json!({ "scripts": "oops" })));
     let error =

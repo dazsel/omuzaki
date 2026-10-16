@@ -29,7 +29,7 @@ impl Op for ScriptList {
 
     fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
         let mut entries: Vec<(Place, String, Value)> = Vec::new();
-        for (id, node) in project_nodes(ctx.doc) {
+        for (id, node) in project_nodes(ctx.doc)? {
             entries.push((Place::Project, id.clone(), entry(&id, Place::Project, Item::from_node(&id, &node))));
         }
         match store(ctx) {

@@ -198,10 +198,15 @@ pub(crate) fn item_path(id: &str) -> DocPath {
 }
 
 /// The project's saved items by id, as written.
-pub(crate) fn project_nodes(doc: &dyn DocRead) -> Vec<(String, Value)> {
+///
+/// # Errors
+/// `Invalid` when `scripts` exists but is not a map: a damaged node is reported, not listed as empty.
+pub(crate) fn project_nodes(doc: &dyn DocRead) -> Result<Vec<(String, Value)>, OpError> {
     match doc.get(&scripts_path()) {
-        Some(Value::Object(items)) => items.iter().map(|(id, node)| (id.clone(), node.clone())).collect(),
-        _ => Vec::new(),
+        None => Ok(Vec::new()),
+        Some(Value::Object(items)) => Ok(items.iter().map(|(id, node)| (id.clone(), node.clone())).collect()),
+        Some(_) => Err(OpError::invalid("scripts", "the document's `scripts` node is not a map")
+            .hint("remove or repair `scripts`, then list again")),
     }
 }
 
