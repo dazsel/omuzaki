@@ -1,0 +1,4 @@
+# Clippy reads clippy.toml from the package directory only; point it at the shared one so tests may unwrap, as in the
+# main workspace.
+[env]
+CLIPPY_CONF_DIR = { value = ".", relative = true }

@@ -1,7 +1,7 @@
 section = "rust"
 item = "pollster"
 kind = "crate"
-used_for = "blocking on wgpu futures"
+used_for = "blocking on wgpu futures; also in `spikes/mascot-window`"
 status = "yes"
 audit = "(crates.io: MIT OR Apache-2.0)"
 crates = ["pollster"]

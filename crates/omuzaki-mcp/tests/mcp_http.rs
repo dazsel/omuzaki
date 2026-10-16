@@ -231,6 +231,7 @@ async fn the_port_also_works_on_the_ipv6_loopback() {
     };
     let token = server.issue("v6", Grants::agent_default()).unwrap();
     assert!(server.url().starts_with("http://[::1]:"), "{}", server.url());
+    common::http::install_crypto_provider();
     let raw = Raw { http: reqwest::Client::new(), url: server.url() };
     let response = raw.post(&[("authorization", &token.bearer_header())], &Raw::initialize_body()).await;
     assert_eq!(response.status(), StatusCode::OK, "the bracketed Host header is recognised as loopback");

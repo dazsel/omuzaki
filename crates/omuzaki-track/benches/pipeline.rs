@@ -4,7 +4,10 @@
 //! models.
 //!
 //! `image` runs the detector on every frame, as a frame where the face is new does; `video` is the steady state, where
-//! the previous frame's landmarks seed the crop.
+//! the previous frame's landmarks seed the crop; `video_reuse` adds ROI reuse and frame skipping on a still face, so it
+//! shows the scheme's own cost (the ROI signature and the repeat of the last sample) against `video`. What skipping
+//! saves is the networks' time, which the scripted sessions do not have: the real-model numbers are in the pull request
+//! that added it (`docs/design/track-roi-reuse.md`).
 
 // A bench that cannot run its scripted frames should stop loudly.
 #![allow(clippy::expect_used)]
@@ -13,21 +16,26 @@
 mod common;
 
 use common::{
-    FACE_ROI, Pose, SIDE, blendshapes_script, canonical_face, detector_script, frame, geometry, graphs, grey_pixels,
-    landmarks_script, project,
+    FACE_ROI, blendshapes_script, detector_script, frame, geometry, graphs, landmarks_script, steady_face,
+    textured_pixels,
 };
 use criterion::{Criterion, criterion_group, criterion_main};
 use omuzaki_core::time::Seconds;
+use omuzaki_track::pipeline::ReuseConfig;
 use omuzaki_track::{FaceTracker, FaceTrackerConfig, Mode};
 
 fn bench_track(c: &mut Criterion) {
-    let face = project(&canonical_face(), &Pose::facing(0.2, -0.1, 0.05), SIDE, SIDE);
-    let pixels = grey_pixels();
+    let face = steady_face();
+    let pixels = textured_pixels(0, 2, 1);
     let mut group = c.benchmark_group("track");
-    for (name, mode) in [("image", Mode::Image), ("video", Mode::Video)] {
+    for (name, mode, reuse) in [
+        ("image", Mode::Image, ReuseConfig::OFF),
+        ("video", Mode::Video, ReuseConfig::OFF),
+        ("video_reuse", Mode::Video, ReuseConfig::default()),
+    ] {
         let sessions = graphs(detector_script(true), landmarks_script(&face, FACE_ROI, 10.0), blendshapes_script());
         let mut tracker =
-            FaceTracker::new(sessions, &geometry(), FaceTrackerConfig { mode, ..FaceTrackerConfig::default() })
+            FaceTracker::new(sessions, &geometry(), FaceTrackerConfig { mode, reuse, ..FaceTrackerConfig::default() })
                 .expect("scripted sessions fit the signatures");
         let mut frame_index = 0_u32;
         group.bench_function(name, |b| {

@@ -6,7 +6,7 @@ area: design
 
 # The automation graph: shows, graphs, nodes, the event envelope and variables
 
-**Status:** proposed. **Features:** BR-11, BR-26; the event
+**Status:** proposed; revised 2026-10-15 for ADR 0054 and the code on `main` (D21; §9 has two open questions). **Features:** BR-11, BR-26; the event
 envelope is agreed with BR-10; AP-10 and AP-11 build on it.
 **Decision record:** `docs/decisions/0027-automation-graph.md`.
 **Spec:** v3 §3, §6 (ops, scopes), §7 (project layout), §8 (runtime, determinism),
@@ -38,13 +38,14 @@ blocks are binding for the contract tasks; doc comments are the implementer's.
 | Variables: types, scopes, where each persists, write debouncing, what the values monitor reads | D10 |
 | Risky nodes (HTTP and UDP, files, processes, run a program, secrets) and their scopes; imported shows | D11 |
 | Testing: a `NodeHarness` with scripted inputs and a fake `Runner` | D16 |
+| The contract conventions of ADR 0054 (paths, module lists, non-exhaustive types, registered keys, test crates) | D21 |
 | The BR-26 re-cut, BR-11's tasks, the library `show` target, AP-10 and AP-11 re-checked | §6, §7 |
 
 **Not covered here, on purpose:**
 - **BR-10's adapter contract** (sign-in, reconnects, sending limits, the platform clients) and the fields of the
   non-chat payloads beyond what D9 fixes. BR-10's design adds fields; it doesn't rename these.
 - **PF-25's triggers and hotkeys table** and the OS input source. They emit `hotkey` events (D9).
-- **The chat reader** (queue, voices, bus) and **the voice-command listener** (AP-10 tasks). §7 says what they
+- **The chat reader** (queue, voices, bus) and **the voice-command listener** (AP-10: #1322, #753, #754, #1323). §7 says what they
   take from this page.
 - **The effects themselves:** OBS control (BR-19), throws (BR-12), the soundboard (BR-21), overlays (BR-13, BR-20),
   scene switching (ST-04) and AI lines (AP-04) are ops of those features; the graph reaches them through `op.run` (D7).
@@ -95,7 +96,11 @@ The graph stays where spec §9 puts it (decision 1). Within that family:
   the op are one folder, one PR and one reviewer, and agents and scripts get the op as an MCP tool and CLI command.
 - **Nodes self-register from any crate** against `omuzaki-live-api`: `omuzaki-speech` registers its `voice.command`
   event kind, a feature crate may register a friendly node over its own op. Nothing lists them.
-- **Native only.** The web player runs no shows, so none of these crates needs to build for wasm.
+- **Native only.** The web player runs no shows, so none of these crates needs to build for wasm: each manifest sets
+  `wasm = false` under `[package.metadata.omuzaki]`, with that reason.
+- **Wiring** (ADR 0015, ADR 0054 §6): `omuzaki-live-api` (it registers the normalised event kinds), `omuzaki-live` and
+  `omuzaki-live-nodes` each define `link()` with `omuzaki_core::define_link!` and set `registers = true`, so every App
+  that depends on them gets the call generated; any other crate that registers a node or an event kind does the same.
 - Spec §9's `omuzaki-live` row names the four crates (this PR).
 
 ### D2. A show is a folder, a graph is a folder, a node is a file
@@ -140,7 +145,9 @@ project.toml: default_show = "<show>"
 - **Typed views:** `ShowDef` (`NODE_KEYS = ["show", "automations"]`, `SIBLING_KEYS = ["applied"]`) and `GraphDef`
   (`NODE_KEYS = ["graph", "nodes"]`) are read and written like `SceneDef`: `from_node` refuses an unknown key with the
   nearest valid one, `to_node` leaves sibling keys alone. Other broadcast features (outputs, overlays) add their own
-  keys to `ShowDef` as additive API changes.
+  keys as **registered sibling keys** (`register_show_key!`, ADR 0054 §5), never as new fields of `ShowDef`. Every
+  binary keeps such a key whether or not it links its owner (D21), so `from_node` refuses only a misspelt built-in
+  key.
 - **Empty collections are removed,** not saved as empty files (as for scenes). A graph with no nodes is only its
   `graph.toml`.
 - **The default show** is `project.default_show`; unset or dangling, the first show by id. With no show at all, the
@@ -182,7 +189,8 @@ Port types: `event`, `bool`, `number`, `text`, `list`, `json`.
 ### D4. The node contract
 
 `omuzaki-live-api`, modules `ids`, `show` (with `paths` and `check`), `graph`, `value`, `node`, `event`, `need`,
-`services`, `limits` and `l10n`, all `pub mod` from the start so the contract tasks fill them in parallel.
+`services`, `limits` and `l10n`, all `pub mod` from the start so the contract tasks fill them in parallel. The
+blocks below show names and fields; the attributes and constructors of D21 bind as much as they do.
 
 ```rust
 // ── ids ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -303,7 +311,7 @@ pub struct EvalCx<'a> { host: &'a mut dyn EvalHost }           // input*, now, u
 pub struct WakeId(pub u64);
 pub struct CallId(pub u64);
 pub struct NodeError { pub code: NodeErrorCode, pub text: Text }   // a misuse or a fault, not an expected failure
-pub enum NodeErrorCode { UnknownPort, Type, Limit, NotLive, Internal }
+pub enum NodeErrorCode { UnknownPort, Type, Limit, NotLive, Unhandled, Internal }   // Unhandled: an Input the node doesn't know (D21)
 pub struct ParamErrors(pub Vec<ParamError>);                      // ParamError { path: String, text: Text }
 
 // ── registration (ADR 0015) ─────────────────────────────────────────────────────────────────────────
@@ -343,12 +351,7 @@ pub struct Wait { pending: Vec<WakeId> }
 impl NodeKind for Wait {
     type Params = WaitParams;
     fn meta() -> NodeMeta {
-        NodeMeta {
-            id: "flow.wait",
-            summary: "Wait, then pass the event on.",
-            class: NodeClass::Active,
-            category: Category::Flow,
-        }
+        NodeMeta::new("flow.wait", "Wait, then pass the event on.", NodeClass::Active, Category::Flow)
     }
     fn ports(_: &WaitParams) -> Ports {
         Ports::new()
@@ -363,18 +366,23 @@ impl NodeKind for Wait {
 impl Node for Wait {
     fn handle(&mut self, input: Input<'_>, cx: &mut NodeCx<'_>) -> Result<(), NodeError> {
         match input {
-            Input::Event { port: "in" } => {
+            Input::Event { port: "in", .. } => {
                 let seconds = cx.input_number("seconds")?.max(0.0);
                 self.pending.push(cx.wake_after(Seconds(seconds))?);
+                Ok(())
             }
-            Input::Event { port: "cancel" } => self.pending.drain(..).for_each(|id| cx.cancel_wake(id)),
-            Input::Wake { id } => {
+            Input::Event { port: "cancel", .. } => {
+                self.pending.drain(..).for_each(|id| cx.cancel_wake(id));
+                Ok(())
+            }
+            Input::Event { port, .. } => Err(NodeError::unknown_port(port)),
+            Input::Wake { id, .. } => {
                 self.pending.retain(|p| *p != id);
-                cx.fire("out")?;
+                cx.fire("out")
             }
-            _ => {}
+            Input::Start | Input::Stop | Input::Trigger { .. } | Input::Reply { .. } => Ok(()),   // not used here
+            other => Err(NodeError::unhandled(&other)),   // an input added after this node (D21)
         }
-        Ok(())
     }
 }
 register_node!(Wait);
@@ -1012,9 +1020,22 @@ impl NodeHarness {
 - **`ShowHarness`** (`omuzaki-live`) runs a whole `ShowDef` on the real engine with a `FakeRunner`, `FakeApprovals` and
   scripted events: `publish(event)`, `advance(..)`, `requests()` (the op requests as golden JSON), `values()`. The
   engine tests use it with test node kinds. Template runs need the real nodes too, and an implementation crate can't
-  depend on another (not even for tests), so they live in `omuzaki-test`, the app crate that links `omuzaki-live` and
-  `omuzaki-live-nodes` together. Running the same script twice and comparing `log_json` is the D6 test, required in the
-  engine and template tasks.
+  depend on another (not even for tests). Template tests come in two kinds, in two places:
+  - **Graph runs (mocked)** live in the area test crate `omuzaki-test-live` (an App that `lint-deps` holds to API
+    crates, mocks, the harness and the `omuzaki-live*` crates; ADR 0054 §6). Each template's manifest is expanded
+    with `omuzaki_library_api`'s pure recipe expansion (an API crate, so allowed) into its `automation.add_graph`
+    arguments, the graph is loaded into a `ShowHarness` with the real nodes, and a scripted synthetic event stream
+    gives the golden op requests. An op from another area (BR-12's throw) isn't linked there:
+    `ShowHarness::with_op(name, schema)` gives `op.run`'s compile check its schema, and the `FakeRunner` answers it.
+    No executor, no library implementation.
+  - **Apply and undo (integration)** need the real executor (`omuzaki-ops`), the library implementation
+    (`omuzaki-library`) and the `automation.*` ops together, which no area test crate may link. They live in the App
+    `omuzaki-cli` (`crates/omuzaki-cli/tests/automation_templates.rs`), which links the executor already and gains
+    `omuzaki-library`, `omuzaki-live` and `omuzaki-live-nodes` (the binary that runs headless shows needs them
+    anyway): each template applied through `library.apply` on a fresh project writes the expected show files and
+    one record, `library.detach` and undo each restore the project byte for byte, and the applied nodes hold
+    `"$in.…"` exactly (D14).
+  Running the same script twice and comparing `log_json` is the D6 test, required in the engine and graph-run tests.
 - **Fixtures** are synthetic (invented names and messages). Recorded chat from a real stream is never a fixture.
 
 ### D17. Editing: the graph editor, the Rules table, accessibility
@@ -1051,6 +1072,8 @@ impl NodeHarness {
 | params failing the kind's schema or check; limits (D8) | a variable a node names isn't declared, or a global's type conflicts: inert |
 | a graph in a group that doesn't exist | a trigger on an event kind nobody registered: inert |
 | | an event input nothing is wired to (the node never runs) |
+| | a trigger whose `listens` is empty for its params (it never fires) |
+| | a show key whose owner this build doesn't include (D21): kept as is, not checked |
 
 The engine compiles with the same checks, so a show edited by hand on disk loads with findings instead of failing.
 
@@ -1078,6 +1101,78 @@ The first measurement may tune a number once, with the maintainers' sign-off.
 - Op arguments used by templates follow ADR 0019 D16 (aliases, defaults, step migrations).
 - Event payloads are additive: new optional fields only. A renamed field is a new kind.
 - Spec §7's `shows/<id>.toml` never existed on disk, so the folder layout needs no conversion.
+
+### D21. Contract conventions (ADR 0054)
+
+This design predates ADR 0054; these rules bring it in line, and the contract tasks follow them.
+
+- **Paths, not re-exports (§2).** `omuzaki-live-api`'s `lib.rs` declares the D4 modules and re-exports nothing one by
+  one; callers write `omuzaki_live_api::node::NodeKind`. Its `prelude` holds the ids, `Val` and `PortType` only.
+  `Need` is `omuzaki_live_api::need::Need`, a different type from the approval need `omuzaki_ops_api::Need`; code
+  that uses both names them by path.
+- **Generated module lists (§1).** `omuzaki-live-nodes` has one folder per family (`src/<family>/`) and one file per
+  node (`src/flow/wait.rs`); the folder lists come from `omuzaki_embed::modules` in its build script, and
+  `omuzaki-live`'s `src/ops/` does the same. A node task adds files and edits none, so no stub files are needed
+  and two node tasks never share a file. The crate task (#1274) sets up the build script.
+- **Non-exhaustive contracts, built through constructors (§4; the Director's standing rule).** Other crates never
+  write a struct literal of these or match them exhaustively:
+
+  | Type | Attribute | Built with |
+  |---|---|---|
+  | `LiveEvent` | `#[non_exhaustive]` struct | `LiveEvent::new(kind, source, at, payload)`, `with_origin_id`, `with_utc`; `with_hops` and `with_acting` exist for the engine, and `EventSink::publish` refuses an event that sets `acting` (D9) |
+  | `ChatMessage`, `ChatUser`, `EmoteSpan`, `ChannelRef` and every normalised payload (`Follow`, `Sub`, `Redeem`, ...) | `#[non_exhaustive]` structs (BR-10 adds fields) | `new(<the fields D9 fixes>)` plus `with_<field>` for each optional one |
+  | `PortDecl`, `NodeMeta`, `EventKindRegistration`, `NodeRegistration` | `#[non_exhaustive]` structs | the `Ports` builders; `NodeMeta::new(id, summary, class, category)`; `const fn EventKindRegistration::new(kind, summary, schema)` with `.droppable()`; `const fn NodeRegistration::of::<K>()` |
+  | `Invocation`, `ShowKey`, `ShowApprovals`, `ParamError`, `NodeError` | `#[non_exhaustive]` structs | `Invocation::new(program)` with `with_script`, `with_args`, `with_cwd`; `ShowKey::new(project, show)`; `ShowApprovals::default()` with `with_*`; `ParamError::new(path, text)`; `NodeError::{unknown_port, type_mismatch, limit, not_live, unhandled, internal}` |
+  | `Source`, `Need`, `Input`, `NodeErrorCode`, `PublishError`, `ValError`, `Role`, `Category`, `NetScheme`, `ArgTemplate` | `#[non_exhaustive]` enums | unit variants as they are |
+  | the struct-like variants: `Source::{Platform, Graph, Manual, Plugin}`, `Need::{Op, Host, File, Secret, Process, Variable, Group}`, `Input::{Event, Trigger, Wake, Reply}` | `#[non_exhaustive]` on each variant | `Source::platform(platform, channel)`, `Source::graph(graph, node)`, `Source::manual(actor)`, `Source::plugin(id)`; `Need::op(op)`, `Need::host(scheme, host, port)`, `Need::file(path, write)`, `Need::secret(name, host)`, `Need::process(name)`, `Need::variable(name, ty)`, `Need::group(group)`; `Input::event(port)`, `Input::trigger(event)`, `Input::wake(id)`, `Input::reply(call, outcome)` |
+
+  A node matches the variants it handles with `..` and returns `Ok(())` **by name** for each current input it
+  ignores on purpose. The wildcard arm, which only a variant added after the node was written can reach, is an error,
+  never a silent success:
+
+  ```rust
+  match input {
+      Input::Event { port, .. } => self.on_pulse(port, cx),
+      Input::Wake { .. } => self.on_wake(cx),
+      Input::Start | Input::Stop | Input::Trigger { .. } | Input::Reply { .. } => Ok(()),   // not used by this node
+      other => Err(NodeError::unhandled(&other)),   // Unhandled, naming the variant
+  }
+  ```
+
+  The engine treats `Unhandled` as a fault of that activation (D5: the branch is dropped, counted, and shown in
+  `automation.status` as "`<node>` doesn't handle `<input>`; update the node"), so a new input reaches a person
+  instead of vanishing. `NodeHarness` turns `Unhandled` for any input it sends (it sends `Start` and `Stop` in
+  every test) into a test failure, so a node task can't ship a wildcard in place of a named arm.
+  **Closed on purpose:** `PortType`, `Val` and `NodeClass`. The wire checks, the D3 coercion table and the engine's
+  dispatch match them exhaustively, so a new port type or class changes every one of them and is a contract change
+  by decision record, not a variant someone adds.
+- **Document keys register themselves (§5), and no rule depends on what a binary linked.** The show's own keys
+  (`show`, `automations`, `applied`) and the graph's (`graph`, `nodes`) are the contract's built-in table. A key
+  another feature adds under `shows/<id>/` (overlay layouts, outputs) registers with `register_show_key!` next to its
+  owner, which gives its owner's checks. Three rules keep the outcome the same in every binary:
+  1. **Naming decides ownership, not registration.** A feature key is a slug named after its owner crate:
+     `omuzaki-overlay` may register `overlay` or `overlay-<name>`, nothing else, checked when the macro expands
+     (against `CARGO_PKG_NAME`). Crate names are unique in the workspace, so two crates can never claim one key and
+     no collision depends on which of them is linked. A plugin's keys are `plugin-<plugin>-<name>`, and the plugin
+     host gives each plugin only its own prefix.
+  2. **Every binary keeps every feature key.** `ShowDef::from_node` holds any key that isn't built-in, is a slug and
+     isn't a misspelt built-in (within edit distance 2 of one: refused with the built-in it resembles) as an opaque
+     subtree; `to_node`, the show ops, copies and library applies write it back unchanged, and `show.delete` deletes
+     it with the show. Nothing drops or rewrites a key because its owner isn't linked.
+  3. **Content is checked only by its owner.** A binary that links the owner validates the subtree with the owner's
+     check and its ops edit it. A binary that doesn't (a headless CLI without overlays, an older build) shows it in
+     `show.describe` as "kept, not checked: `overlay` belongs to a feature this build doesn't include", never as an
+     error, and offers no edit of it.
+
+  The skeleton task (#730) adds the macro, the naming check and the opaque round-trip. Its required test runs in
+  `omuzaki-live-api`'s own tests, where no feature crate is linked: a show holding `overlay` and `plugin-x-layout`
+  subtrees goes through `from_node` and `to_node` byte-identical, is reported "kept, not checked", and a misspelt
+  `automatons` is refused naming `automations`; the `show.*` op task (#1177) repeats it through rename, copy and
+  delete in `omuzaki-live`, which links no feature that owns a show key.
+- **Tests across crates (§6):** mocked graph runs in `omuzaki-test-live`, apply and undo in `omuzaki-cli`'s tests (D16);
+  the first template task (#957) creates both.
+- **Contracts land first and alone (§7).** #730, #773, #952 and #774 (the API crate), #953 (the mock), #950 and #951
+  (ops-api) merge before any engine or node task starts; each adds everything its dependants need, with defaults.
 
 ## 4. Worked example: a show with a bonk redeem and a Streamer.bot bridge
 
@@ -1249,11 +1344,13 @@ inert `post` until they approve it themselves.
 
 | Crate | Change |
 |---|---|
-| `omuzaki-live-api` (new, API) | D4, D9, D10, D11 types; the normalised payloads; the service traits; `paths`; limits. Needs maintainer review |
+| `omuzaki-live-api` (new, API) | D4, D9, D10, D11 types with D21's attributes and constructors; the normalised payloads; the service traits; `paths`; `register_show_key!`; limits. Needs maintainer review |
 | `omuzaki-live-mock` (new, mock) | D16 |
+| `omuzaki-test-live` (new, App: area test crate) | whole-show and template graph runs with the real nodes, mocked ops (D16) |
+| `omuzaki-cli` | tests only: template apply and undo through the real executor and library (D16); gains `omuzaki-library`, `omuzaki-live`, `omuzaki-live-nodes` |
 | `omuzaki-live` (new, implementation) | the engine, stores, ops, `ShowHarness`, templates |
 | `omuzaki-live-nodes` (new, implementation) | the catalogue (§6) and the effect ops |
-| `omuzaki-ops-api` | `Actor::Automation { id }` (`System` stays Omuzaki's own); the `edit:show` scope, in `Grants::agent_default()` like the other edit scopes. Both additive |
+| `omuzaki-ops-api` | `Actor::Automation { id }` (`System` stays Omuzaki's own; its doc stops saying "automation rules"), a `#[non_exhaustive]` variant built with `Actor::automation(id)`; `Actor` is an exhaustive enum, so that task also updates the two matches outside ops-api (`omuzaki-ops` `error.rs`, `omuzaki-mcp` `changes.rs`; §9 question 1). The `edit:show` scope, in `Grants::agent_default()` like the other edit scopes. `Transport::Automation` and the `input` and `process` scopes are already on `main` |
 | `omuzaki-ops` | live actions (edit, empty patch, `Undo::None`) are logged and announced but never enter an undo history or bump the version; automation sessions use `Actor::Automation` and their steps are left out of per-principal undo |
 | `omuzaki-l10n-api` | the crate check walks node kinds and event kinds (`node-`, `event-`) |
 | `omuzaki-library-api` | the `show` target is lifted from reserved; `$show`; `edit:show` joins safety rule 1 |
@@ -1276,24 +1373,24 @@ Every BR-26 family in the spec row, with its node ids and the task that builds i
 
 | Folder | Node ids | Spec words | Task |
 |---|---|---|---|
-| `flow` | `flow.wait`, `flow.random`, `flow.sequence` (the next output on each event), `flow.switch` | waits; random, sequence and switch |       |
-| `flow` | `flow.branch` (on a bool), `flow.then` (outputs in order), `flow.cooldown`, `flow.gate` | (building blocks the templates need) |       |
-| `logic` | `logic.and`, `logic.or`, `logic.not` | conditions |       |
-| `math` | `math.op`, `math.map_range`, `math.ease`, `math.compare` (pure: a domain error such as a zero divisor gives `value = 0`, `ok = false` and an `error` text, never NaN); `math.random_range` (on an event, so pure nodes stay pure) | math and easing |       |
-| `text` | `text.format`, `text.to_number`, `text.contains` | (templates) |       |
-| `vars` | `var.get` (pure), `var.set`, `var.add`, `var.toggle`, `var.changed` (trigger); each names `variable` and its `type`, so ports are typed without reading the show | variables with persistence |, engine |
-| `time` | `timer.every`, `timer.once`, `timer.stopwatch`, `schedule.at`, `cond.time_between`, `cond.date` | timers and schedules; date and time |       |
-| `audio` | `cond.audio_level` (polls `audio.meters`) | audio level |       |
-| `watch` | `cond.file_exists`, `cond.file_changed`, `cond.process_running` (and the op `system.process_running`) | file, process |       |
-| `file` | `file.read`, `file.write`, `file.append` (and `file.*_text`, `file.stat`) | file |       |
-| `net` | `net.http`, `net.udp_send` (and their ops); secret headers | HTTP, UDP |              |
-| `exec` | `exec.run` (and its op) | run a program |       |
-| `chat` | `chat.command` (`fired`, `denied`, `cooling`; `user`, `user_id`, `login`, `roles`, `platform`, `args`, `rest`, `left`) | chat commands with permissions and cooldowns |       |
-| `groups` | `group.enable`, `group.disable`, `group.toggle`, `group.is_enabled` | group enable and disable |       |
-| `op` | `op.run` | (every op as an action: BR-11) |       |
-| `event` | `on.event` (any kind, `where` and `min` filters), `event.emit` | (BR-11 event → condition → action) |       |
-| `text/filters`, `tts` | the chat reader's nodes | AP-11 | (decides) |
-| | the values monitor | a values monitor showing live variables |, engine |
+| `flow` | `flow.wait`, `flow.random`, `flow.sequence` (the next output on each event), `flow.switch` | waits; random, sequence and switch | #1274 |
+| `flow` | `flow.branch` (on a bool), `flow.then` (outputs in order), `flow.cooldown`, `flow.gate` | (building blocks the templates need) | #778 |
+| `logic` | `logic.and`, `logic.or`, `logic.not` | conditions | #778 |
+| `math` | `math.op`, `math.map_range`, `math.ease`, `math.compare` (pure: a domain error such as a zero divisor gives `value = 0`, `ok = false` and an `error` text, never NaN); `math.random_range` (on an event, so pure nodes stay pure) | math and easing | #731 |
+| `text` | `text.format`, `text.to_number`, `text.contains` | (templates) | #779 |
+| `vars` | `var.get` (pure), `var.set`, `var.add`, `var.toggle`, `var.changed` (trigger); each names `variable` and its `type`, so ports are typed without reading the show | variables with persistence | #732, engine #954 |
+| `time` | `timer.every`, `timer.once`, `timer.stopwatch`, `schedule.at`, `cond.time_between`, `cond.date` | timers and schedules; date and time | #733 |
+| `audio` | `cond.audio_level` (polls `audio.meters`) | audio level | #1275 |
+| `watch` | `cond.file_exists`, `cond.file_changed`, `cond.process_running` (and the op `system.process_running`) | file, process | #734 |
+| `file` | `file.read`, `file.write`, `file.append` (and `file.*_text`, `file.stat`) | file | #735 |
+| `net` | `net.http`, `net.udp_send` (and their ops); secret headers | HTTP, UDP | #736; secret headers #956 |
+| `exec` | `exec.run` (and its op) | run a program | #737 |
+| `chat` | `chat.command` (`fired`, `denied`, `cooling`; `user`, `user_id`, `login`, `roles`, `platform`, `args`, `rest`, `left`) | chat commands with permissions and cooldowns | #738 |
+| `groups` | `group.enable`, `group.disable`, `group.toggle`, `group.is_enabled` | group enable and disable | #938 |
+| `op` | `op.run` | (every op as an action: BR-11) | #780 |
+| `event` | `on.event` (any kind, `where` and `min` filters), `event.emit` | (BR-11 event → condition → action) | #781 |
+| `text/filters`, `tts` | the chat reader's nodes | AP-11 | #740 (decides) |
+| | the values monitor | a values monitor showing live variables | #739, engine #1278 |
 
 **`on.event`'s ports** come from the kind's payload schema, deterministically: each top-level property that is a
 string, number, boolean or array becomes a port of that type; an object property contributes its own scalar and array
@@ -1311,71 +1408,71 @@ and BR-26, except where the parent's milestone differs.
 
 **The contract**
 
-| Task |
-|---|
-| `omuzaki-live-api` skeleton (every module declared), ids, `ShowDef`, `GraphDef`, `NodeDef`, wires, `VariableDef`, `GroupDef`, `paths`, keys, structural `check`, limits |
-| `omuzaki-live-api` events: `LiveEvent`, `Source`, `EventPayload`, `register_event_kind!`, `EventSink`, the normalised payloads and `ChatMessage` |
-| `omuzaki-live-api` nodes: `Val`, ports, `NodeKind`, `Node`, `Input`, `NodeCx` and `NodeHost`, `register_node!`, `DynNodeKind`, `Need`, `Invocation`, errors |
-| `omuzaki-live-api` services: `AutomationControl` with its status and values types, `Approvals` and `ShowApprovals`, `VariableStore`, `WallClock` |
-| `omuzaki-live-mock`: `NodeHarness`, `FakeRunner`, `FakeWall`, `MemoryVariables`, `FakeApprovals`, fixtures |
-| ops-api: `Actor::Automation` |
-| ops-api: the `edit:show` scope |
-| omuzaki-ops: live actions (edit, empty patch, `Undo::None`) are logged but never enter an undo history |
-| l10n: `node-` and `event-` registries in the crate check |
-| CN-05's secret store, **pulled into Phase 2** (§8 answer 5): `omuzaki-secrets-api`, the OS keychain implementation, an in-memory mock |
+| Task | Issue |
+|---|---|
+| `omuzaki-live-api` skeleton (every module declared), ids, `ShowDef`, `GraphDef`, `NodeDef`, wires, `VariableDef`, `GroupDef`, `paths`, keys, structural `check`, limits | #730 |
+| `omuzaki-live-api` events: `LiveEvent`, `Source`, `EventPayload`, `register_event_kind!`, `EventSink`, the normalised payloads and `ChatMessage` | #773 |
+| `omuzaki-live-api` nodes: `Val`, ports, `NodeKind`, `Node`, `Input`, `NodeCx` and `NodeHost`, `register_node!`, `DynNodeKind`, `Need`, `Invocation`, errors | #952 |
+| `omuzaki-live-api` services: `AutomationControl` with its status and values types, `Approvals` and `ShowApprovals`, `VariableStore`, `WallClock` | #774 |
+| `omuzaki-live-mock`: `NodeHarness`, `FakeRunner`, `FakeWall`, `MemoryVariables`, `FakeApprovals`, fixtures | #953 |
+| ops-api: `Actor::Automation` | #950 |
+| ops-api: the `edit:show` scope | #951 |
+| omuzaki-ops: live actions (edit, empty patch, `Undo::None`) are logged but never enter an undo history | #139 |
+| l10n: `node-` and `event-` registries in the crate check | #1174 |
+| CN-05's secret store, **pulled into Phase 2** (§8 answer 5): `omuzaki-secrets-api`, the OS keychain implementation, an in-memory mock | #784 |
 
 **The engine and the ops** (`omuzaki-live`)
 
-| Task |
-|---|
-| the crate skeleton; compile a show (catalogue, params, ports, wires and types, value cycles, needs against approvals, findings); hot-reload diff |
-| the step loop: items in time order, tokens, depth-first run to completion, value resolution, wakes, rng streams, faults, hot-reload swap; `ShowHarness`; the §4 example and the determinism test |
-| the loop guard and the engine's limits (D8), groups and enabling at run time (D12), the D19 benches |
-| dispatch: the automation session, request building (actor, cause), the ordered and job lanes, in-flight limits, replies, manual events as their actor, pause with the session |
-| the inbox behind `EventSink`: bounds, droppable kinds, dedup, the recent-events ring, refusing `Source::Manual` |
-| variables: values per scope, the disk stores (show, global), debounced atomic writes, flush, load, type checks, global conflicts, `var.changed` coalescing |
-| approvals: the machine-local store, `program_trusted`, the session ceiling from approvals, autostart, revoke, the UI-only allow |
-| runtime ops and `AutomationControl`; the values snapshot mailbox |
-| `show.create`, `show.list`, `show.describe`, `show.rename`, `show.set_default`, `show.delete`; `default_show` |
-| `automation.add_graph`, `set_graph`, `remove_graph`; groups; variable declarations |
-| `automation.add_node`, `set_node`, `remove_node`, `connect`, `disconnect` |
-| `automation.describe`, `automation.node_kinds`, `automation.event_kinds` |
+| Task | Issue |
+|---|---|
+| the crate skeleton; compile a show (catalogue, params, ports, wires and types, value cycles, needs against approvals, findings); hot-reload diff | #1175 |
+| the step loop: items in time order, tokens, depth-first run to completion, value resolution, wakes, rng streams, faults, hot-reload swap; `ShowHarness`; the §4 example and the determinism test | #775 |
+| the loop guard and the engine's limits (D8), groups and enabling at run time (D12), the D19 benches | #776 |
+| dispatch: the automation session, request building (actor, cause), the ordered and job lanes, in-flight limits, replies, manual events as their actor, pause with the session | #1176 |
+| the inbox behind `EventSink`: bounds, droppable kinds, dedup, the recent-events ring, refusing `Source::Manual` | #777 |
+| variables: values per scope, the disk stores (show, global), debounced atomic writes, flush, load, type checks, global conflicts, `var.changed` coalescing | #954 |
+| approvals: the machine-local store, `program_trusted`, the session ceiling from approvals, autostart, revoke, the UI-only allow | #955 |
+| runtime ops and `AutomationControl`; the values snapshot mailbox | #1278 |
+| `show.create`, `show.list`, `show.describe`, `show.rename`, `show.set_default`, `show.delete`; `default_show` | #1177 |
+| `automation.add_graph`, `set_graph`, `remove_graph`; groups; variable declarations | #1178 |
+| `automation.add_node`, `set_node`, `remove_node`, `connect`, `disconnect` | #1179 |
+| `automation.describe`, `automation.node_kinds`, `automation.event_kinds` | #1180 |
 
 **The nodes** (`omuzaki-live-nodes`), as §6, each unless noted:
 
-| Task |
-|---|
-| the crate, a stub file per node family (so node tasks never share a file), `common::fold`, the l10n test; `flow.wait`, `flow.random`, `flow.sequence`, `flow.switch` |
-| `flow.branch`, `flow.then`, `flow.cooldown`, `flow.gate`; `logic.and`, `logic.or`, `logic.not` |
-| math and easing |
-| `text.format`, `text.to_number`, `text.contains` |
-| the variable nodes (persistence is) |
-| timers, schedules, date and time (jiff) |
-| `cond.audio_level` over the `audio.meters` query |
-| file and process conditions; the `system.process_running` op |
-| the `file.*` ops and nodes |
-| the `net.http` and `net.udp_send` ops and nodes |
-| secret headers |
-| the `exec.run` op and node |
-| `chat.command` |
-| the group nodes |
-| `op.run` |
-| `on.event`, `event.emit` |
+| Task | Issue |
+|---|---|
+| the crate with generated module lists (D21: a node task adds files and edits none), `common::fold`, the l10n test; `flow.wait`, `flow.random`, `flow.sequence`, `flow.switch` | #1274 |
+| `flow.branch`, `flow.then`, `flow.cooldown`, `flow.gate`; `logic.and`, `logic.or`, `logic.not` | #778 |
+| math and easing | #731 |
+| `text.format`, `text.to_number`, `text.contains` | #779 |
+| the variable nodes (persistence is #954) | #732 |
+| timers, schedules, date and time (jiff) | #733 |
+| `cond.audio_level` over the `audio.meters` query | #1275 |
+| file and process conditions; the `system.process_running` op | #734 |
+| the `file.*` ops and nodes | #735 |
+| the `net.http` and `net.udp_send` ops and nodes | #736 |
+| secret headers | #956 |
+| the `exec.run` op and node | #737 |
+| `chat.command` | #738 |
+| the group nodes | #938 |
+| `op.run` | #780 |
+| `on.event`, `event.emit` | #781 |
 
 **The editor, the panels and the library**
 
-| Task |
-|---|
-| the graph editor tab on egui-snarl |
-| the node inspector: params form from the schema, `set` constants, findings |
-| the Rules panel: the graph table, inline simple rules, the approval card, Start, Pause, Stop |
-| the values monitor (re-pointed at `automation.values`) |
-| the library's `show` target, and `omuzaki-live`'s library source for the seed templates |
-| seed templates: bonk, hat redeem, raid welcome, death counter, with golden runs in `omuzaki-test`; needs the ops they call (BR-10, BR-12, BR-21, ST-03's props) |
+| Task | Issue |
+|---|---|
+| the graph editor tab on egui-snarl | #1279 |
+| the node inspector: params form from the schema, `set` constants, findings | #782 |
+| the Rules panel: the graph table, inline simple rules, the approval card, Start, Pause, Stop | #1324 |
+| the values monitor (re-pointed at `automation.values`) | #739 |
+| the library's `show` target, and `omuzaki-live`'s library source for the seed templates | #1280 |
+| seed templates: bonk, hat redeem, raid welcome, death counter, with graph runs in `omuzaki-test-live` and apply and undo in `omuzaki-cli`'s tests (D16); needs the ops they call (BR-10, BR-12, BR-21, ST-03's props) | #957 |
 
-**Re-checked elsewhere:** AP-10's listener publishes `voice.command` through `EventSink` without the
-transcript, and its phrase list is a `User` setting in the person's profile, not the show (§8 answer 3); its template
-needs the secret store (§8 answer 5). AP-11's nodes move to `omuzaki-live-nodes`; the reader's speech is the `tts.say`
+**Re-checked elsewhere:** AP-10's listener (#1322) publishes `voice.command` through `EventSink` without the
+transcript, and its phrase list is a `User` setting in the person's profile, not the show (§8 answer 3); its template (#1323)
+needs the secret store (§8 answer 5). AP-11's nodes move to `omuzaki-live-nodes` (design #740, node #1321, template #1384); the reader's speech is the `tts.say`
 op, not a node with audio inside (§8 answer 4), whose arguments and queue the TTS host designs. The Rules panel also
 takes a missing secret (§8 answer 5).
 
@@ -1403,7 +1500,18 @@ The five questions this design asked, answered and folded into the decisions abo
    (`{secret:streamerbot}`), stored under the label `automation/<name>`; a person enters a missing one in the Rules
    panel's approval card, never through an op, because an op's arguments are logged.
 
-## 9. Sources
+## 9. Open questions (2026-10-15)
+
+1. **Should `Actor` itself become `#[non_exhaustive]` in #950?** It is an exhaustive enum today, and `Automation` is
+   its second new variant after `Plugin`, so #950 must edit the two matches outside ops-api (§5). *Recommendation:
+   yes, in the same pull request:* those matches get a `_` arm once, and the next actor edits only ops-api. It is a
+   cross-area contract, so it is the Director's call.
+2. **Is a design of this size accepted as one page?** The page is about 1,500 lines, against the operating rule that a
+   design pull request stays near 400 lines of doc (an ADR plus parts beyond that). It predates the rule, and its 44
+   tasks cite its decision numbers. *Recommendation: accept it as one page;* splitting it now re-reviews unchanged
+   decisions at the cost of review rounds, and later amendments come as small parts that link to it.
+
+## 10. Sources
 
 Read on 2026-10-12: spec v3 §3, §4, §6, §7, §8, §9, §10, §22, §23, §25, §30, §31, §39;
 `docs/design/{scenes,ops-api,agent-sessions,library,l10n-ops,audio-api}.md`, `docs/design/ux/{shell,principles}.md`;
@@ -1413,3 +1521,6 @@ ctx,registry,lib}.rs`, `crates/omuzaki-core/src/{time,rng,id}.rs`, `crates/omuza
 `omuzaki-stage-api`'s layout; crates.io metadata for egui-snarl, jiff, ureq, rustls, ring, aws-lc-rs,
 rustls-platform-verifier, webpki-roots, sysinfo; the VNyan, Warudo and Node-RED execution models
 (their public docs).
+Read on 2026-10-15 for D21: ADR 0054, ADR 0015, `crates/README.md`, `crates/omuzaki-ops-api/src/{actor,session,scope}.rs`,
+`crates/omuzaki-char-api/src/doc_key.rs`, `crates/omuzaki-embed/src/lib.rs`, `xtask/src/lint_deps/test_crates.rs`; the
+filed tasks cited in §6 and §7.
