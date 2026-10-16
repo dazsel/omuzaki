@@ -35,8 +35,6 @@ omuzaki-io-api = { path = "../omuzaki-io-api" }
 omuzaki-io-gltf = { path = "../omuzaki-io-gltf" }
 omuzaki-io-mock = { path = "../omuzaki-io-mock" }
 omuzaki-io-ops = { path = "../omuzaki-io-ops" }
-# The real VRM round trip of bone drivers as node constraints (tests/drivers_real_vrm.rs, #801).
-omuzaki-io-vrm = { path = "../omuzaki-io-vrm" }
 # The real-model tests and bench of the face tracker (tests/track_models.rs, benches/track.rs): an implementation crate
 # can't dev-depend on the `onnx` runtime, so the tracker meets it here. Gated on OMUZAKI_TRACK_MODELS + OMUZAKI_ORT_CACHE.
 criterion.workspace = true
