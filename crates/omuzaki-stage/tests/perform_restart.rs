@@ -226,10 +226,11 @@ fn a_calibration_for_another_character_is_not_applied() {
     let path = dir.path().to_path_buf();
     let saved = first_run(&path);
     let mut app = App::start(&path, &["a", "b"]);
+    let default = app.handle.calibration();
     let restored = app.restore("mira");
     assert!(!restored.calibration);
     assert_ne!(app.handle.calibration(), saved.calibration);
-    assert_eq!(app.handle.calibration(), Calibration::identity(DeviceProfile::Webcam), "the default is still in use");
+    assert_eq!(app.handle.calibration(), default, "the device's default is still in use");
     // And a character saved beside it keeps its own.
     save_calibration(&app.handle, &*app.store, "mira", &App::person()).unwrap();
     let store = app.store.get::<PerformCalibrations>().unwrap();
