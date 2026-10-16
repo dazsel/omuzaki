@@ -50,12 +50,14 @@ const SHRUG: f32 = 0.05;
 /// How far an iris moves sideways, and up or down, as a fraction of its eye's width and height.
 const LOOK: (f32, f32) = (0.25, 0.2);
 
-/// The symmetric expression each pair of channels splits, as `(left, right, preset)`.
-const SPLITS: [(&str, &str, PresetExpression); 4] = [
-    ("eyeBlinkLeft", "eyeBlinkRight", PresetExpression::Blink),
-    ("mouthSmileLeft", "mouthSmileRight", PresetExpression::Happy),
-    ("mouthStretchLeft", "mouthStretchRight", PresetExpression::Ee),
-    ("browDownLeft", "browDownRight", PresetExpression::Angry),
+/// The symmetric source each pair of channels splits, as `(left, right, preset, morph)`: the `VRoid` morph target of
+/// that name on the face when the model has one (what synthesis binds at half weight for both sides), otherwise the
+/// preset expression.
+const SPLITS: [(&str, &str, PresetExpression, &str); 4] = [
+    ("eyeBlinkLeft", "eyeBlinkRight", PresetExpression::Blink, "Fcl_EYE_Close"),
+    ("mouthSmileLeft", "mouthSmileRight", PresetExpression::Happy, "Fcl_MTH_Joy"),
+    ("mouthStretchLeft", "mouthStretchRight", PresetExpression::Ee, "Fcl_MTH_E"),
+    ("browDownLeft", "browDownRight", PresetExpression::Angry, "Fcl_BRW_Angry"),
 ];
 
 /// The deltas of one mesh's primitives: positions and normals, one per vertex (normals empty when none move).
@@ -260,14 +262,15 @@ struct Shape {
     source: String,
 }
 
-/// Whether generation should try `outcome`'s channel: one synthesis could not build, or built from a symmetric preset
-/// at half weight on each side (a blink for one eye), which a split of the preset does better.
+/// Whether generation should try `outcome`'s channel: one synthesis could not build, or built from a symmetric source
+/// at half weight on each side (a blink, or `Fcl_MTH_Joy`, for one eye or one corner), which a split of the source does
+/// better.
 pub fn worth_generating(outcome: &ChannelOutcome) -> bool {
-    match &outcome.how {
-        Synthesis::Missing => true,
-        Synthesis::FromPreset { preset, .. } => {
-            SPLITS.iter().any(|(l, r, p)| p == preset && (*l == outcome.channel || *r == outcome.channel))
-        }
+    let split = SPLITS.iter().find(|(l, r, ..)| *l == outcome.channel || *r == outcome.channel);
+    match (&outcome.how, split) {
+        (Synthesis::Missing, _) => true,
+        (Synthesis::FromPreset { preset, .. }, Some((_, _, p, _))) => preset == p,
+        (Synthesis::FromMorph { target }, Some((_, _, _, morph))) => target.eq_ignore_ascii_case(morph),
         _ => false,
     }
 }
@@ -311,11 +314,14 @@ fn make(scene: &IoScene, m: &Landmarks, channel: &str) -> Option<Shape> {
             None
         }
     };
-    if let Some(&(left, _, preset)) = SPLITS.iter().find(|(l, r, _)| *l == channel || *r == channel) {
-        let source = preset_deltas(scene, preset, m.mesh)?;
+    if let Some(&(left, _, preset, morph)) = SPLITS.iter().find(|(l, r, ..)| *l == channel || *r == channel) {
+        let (source, named) = match target_deltas(scene, m.mesh, morph) {
+            Some(deltas) => (deltas, format!("the {morph} shape")),
+            None => (preset_deltas(scene, preset, m.mesh)?, format!("the {} expression", preset.as_str())),
+        };
         let (l, r) = split(&source, &points, m.middle);
         let (half, which) = if channel == left { (l, "left") } else { (r, "right") };
-        return Some(Shape { deltas: half, source: format!("the {which} half of the {} expression", preset.as_str()) });
+        return Some(Shape { deltas: half, source: format!("the {which} half of {named}") });
     }
     let lid = |left: bool| -> Option<Deltas> {
         let blink = preset_deltas(scene, PresetExpression::Blink, m.mesh)?;
@@ -338,6 +344,23 @@ fn make(scene: &IoScene, m: &Landmarks, channel: &str) -> Option<Shape> {
         _ if channel.starts_with("eyeLook") => look(scene, m, &points, channel),
         _ => None,
     }
+}
+
+/// The deltas of the morph target of mesh `mesh` called `name` (ignoring case), if it has one.
+fn target_deltas(scene: &IoScene, mesh: usize, name: &str) -> Option<Deltas> {
+    let source = scene.meshes.get(mesh)?;
+    let index = source.morph_target_names.iter().position(|n| n.eq_ignore_ascii_case(name))?;
+    let mut deltas = Deltas::zero(scene, mesh);
+    for (p, primitive) in source.primitives.iter().enumerate() {
+        let Some(target) = primitive.morph_targets.get(index) else { continue };
+        for (slot, d) in deltas.positions[p].iter_mut().zip(&target.positions) {
+            *slot = *d;
+        }
+        for (slot, d) in deltas.normals[p].iter_mut().zip(&target.normals) {
+            *slot = *d;
+        }
+    }
+    Some(deltas)
 }
 
 /// The deltas the `preset` expression moves mesh `mesh` by, if the model has the preset and it moves that mesh.
