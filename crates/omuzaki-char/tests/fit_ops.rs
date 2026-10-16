@@ -189,6 +189,7 @@ fn bad_input_is_refused_with_the_field_at_fault() {
 
 /// Writes the front and side heatmaps of a synthetic character, for the evidence sheet (`evidence.toml`, case
 /// `fit-heatmap`): the fit starts from the default body, so the maps show the offset the fit then closes.
+#[allow(clippy::disallowed_methods)] // a test writing its evidence images, not an op reaching a file
 #[test]
 fn write_the_heatmaps_when_asked() {
     let Ok(dir) = std::env::var("OMUZAKI_FIT_HEATMAP_DIR") else { return };
