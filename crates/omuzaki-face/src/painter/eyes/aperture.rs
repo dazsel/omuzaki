@@ -77,6 +77,8 @@ const HANDOVER_BAND: f32 = 0.2;
 const SHUT_BELOW: f32 = 0.08;
 /// A lid with `arc` at or above this is a happy ^ arc (`smileEye > 0.5`).
 const ARC_FROM: f32 = 0.5;
+/// An arc starts to show, over the open eye, from this value.
+const ARC_BAND_FROM: f32 = 0.35;
 /// Largest openness (the mapping's own bound).
 const MAX_OPEN: f32 = 1.9;
 
@@ -220,11 +222,28 @@ impl Eye {
     /// last [`HANDOVER_BAND`] of openness before [`SHUT_BELOW`], where the closed curve takes over, so no piece
     /// vanishes in one step. Everything else is `1`.
     pub(super) fn open_fade(&self, squeeze: f32) -> f32 {
-        if self.squeeze_shut(squeeze) && self.open < SHUT_BELOW + HANDOVER_BAND {
+        let by_squeeze = if self.squeeze_shut(squeeze) && self.open < SHUT_BELOW + HANDOVER_BAND {
             ((self.open - SHUT_BELOW) / HANDOVER_BAND).clamp(0.0, 1.0)
         } else {
             1.0
-        }
+        };
+        by_squeeze * (1.0 - self.arc_growth_while_open())
+    }
+
+    /// How far an arc has grown, `0..=1`: `0` up to [`ARC_BAND_FROM`], then rising to `1` where the eye becomes the
+    /// happy `^` ([`ARC_FROM`]). In between the open pieces fade out as the arc fades in.
+    pub(super) fn arc_growth(&self) -> f32 {
+        ((self.arc - ARC_BAND_FROM) / (ARC_FROM - ARC_BAND_FROM)).clamp(0.0, 1.0)
+    }
+
+    /// [`Eye::arc_growth`] while the open eye is still the one drawn, `0` otherwise.
+    fn arc_growth_while_open(&self) -> f32 {
+        if self.lid() == Lid::Open { self.arc_growth() } else { 0.0 }
+    }
+
+    /// Whether the closed curve is the happy arc: the eye is an arc, or an arc is growing over the open eye.
+    pub(super) fn arc_like(&self) -> bool {
+        self.lid() == Lid::Arc || self.arc_growth_while_open() > 0.0
     }
 
     /// How much of the closed curve shows when a squeeze (`squeeze`, `0..=1`) is what shut the eye: it comes in as the
@@ -233,10 +252,11 @@ impl Eye {
     /// squeeze.
     pub(super) fn closed_strength(&self, squeeze: f32) -> f32 {
         // Only an eye the squeeze itself is shutting crossfades; an arc, a blink or no squeeze keeps the plain fade.
+        let arc_in = if self.lid() == Lid::Open { self.arc_growth() } else { 1.0 };
         if self.squeeze_shut(squeeze) {
             self.takeover(squeeze) * (1.0 - self.open_fade(squeeze))
         } else {
-            1.0 - squeeze.clamp(0.0, 1.0)
+            (1.0 - squeeze.clamp(0.0, 1.0)) * arc_in
         }
     }
 

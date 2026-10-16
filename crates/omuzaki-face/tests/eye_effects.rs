@@ -652,31 +652,44 @@ fn the_chevron_grows_from_the_lids_and_stays_inside_the_open_eye() {
 }
 
 #[test]
-fn an_eye_closing_into_an_arc_is_drawn_and_continuous_at_every_step() {
+fn an_eye_closing_into_an_arc_fades_into_it_and_is_drawn_at_every_step() {
     let profile = profile();
     let mut last: Option<f32> = None;
-    for step in 0..=100_u8 {
-        let arc = f32::from(step) / 100.0;
+    let (mut both, mut moved) = (false, Vec::new());
+    let mut previous: Option<DrawList> = None;
+    for step in 0..=200_u16 {
+        let arc = f32::from(step) / 200.0;
         let mut p = params(|_, _| {});
         p.left_eye = omuzaki_face_api::EyeParams { open: 1.0, close: 0.0, arc, lower_lid: 0.0 };
         p.right_eye = p.left_eye;
         let drawn = paint(&profile, &p).into_base();
-        let open = drawn.cmds().iter().any(|c| matches!(c, Cmd::PushClip(_)));
         let closed = closed_opacity(&drawn);
-        // Either the open eye or the arc is drawn, at full strength: never neither (arcs of 0.5 to 0.92 used to be).
-        assert!(open || closed > 0.99, "arc {arc}: neither the open eye nor the arc is drawn (closed at {closed})");
-        let shown = if open { 1.0 } else { closed };
+        // An open eye is drawn with a clip round its iris, its first fill is the eye white.
+        let open = if drawn.cmds().iter().any(|c| matches!(c, Cmd::PushClip(_))) {
+            drawn.cmds().iter().find_map(|c| if let Cmd::Fill { opacity, .. } = c { Some(*opacity) } else { None })
+        } else {
+            None
+        };
+        let shown = open.unwrap_or(0.0) + closed;
+        assert!((0.99..=1.01).contains(&shown), "arc {arc}: the eye shows {shown} (open {open:?}, arc {closed})");
+        both |= open.is_some() && closed > 0.0;
         if let Some(before) = last {
-            assert!((before - shown).abs() < 0.01, "arc {arc}: the eye went from {before} to {shown}");
+            assert!((before - shown).abs() < 0.02, "arc {arc}: the eye went from {before} to {shown}");
         }
         last = Some(shown);
+        // The rendered ink: no step moves more than three times the median step.
+        if let Some(before) = &previous {
+            moved.push((step, ink_moved(FaceLayerId::Base, before, &drawn)));
+        }
+        previous = Some(drawn);
     }
-    for arc in [0.5_f32, 0.7, 0.9] {
-        let mut p = params(|_, _| {});
-        p.left_eye = omuzaki_face_api::EyeParams { open: 1.0, close: 0.0, arc, lower_lid: 0.0 };
-        p.right_eye = p.left_eye;
-        assert!(closed_opacity(&paint(&profile, &p).into_base()) > 0.99, "arc {arc}");
-    }
+    assert!(both, "the sweep never showed the open eye fading into the arc");
+    // Past 0.5 the eye is the arc and nothing moves, so the median is taken over the steps that do move.
+    let mut sorted: Vec<u64> = moved.iter().map(|(_, m)| *m).filter(|m| *m > 0).collect();
+    sorted.sort_unstable();
+    let median = sorted[sorted.len() / 2];
+    let (at, worst) = moved.iter().copied().max_by_key(|(_, m)| *m).unwrap();
+    assert!(worst <= 3 * median, "the step to arc {} moved {worst}, the median step {median}", f32::from(at) / 200.0);
 }
 
 #[test]

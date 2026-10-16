@@ -39,7 +39,9 @@ pub(super) fn paint(ctx: &mut PaintCtx<'_>, side: Side) {
     if !eye.shows_closed(squeeze) {
         return;
     }
-    let arc = eye.lid() == Lid::Arc;
+    let arc = eye.arc_like();
+    // The arc grows from the lowered lid line: over the open eye's upper lid until the eye is the `^` itself.
+    let growth = if eye.lid() == Lid::Open { eye.arc_growth() } else { 1.0 };
     let shape: fn(f32) -> f32 = if arc {
         |u| ARC_BASE + ARC_HEIGHT * (1.0 - u * u)
     } else {
@@ -49,7 +51,13 @@ pub(super) fn paint(ctx: &mut PaintCtx<'_>, side: Side) {
     // as the squeeze goes on, so the geometry is continuous where the open pieces give way. A blink or an arc has no
     // such open eye to follow (`drift` is 1).
     let drift = if arc { 1.0 } else { eye.handover_drift(squeeze) };
-    let height = |u: f32| drift * shape(u) + (1.0 - drift) * eye.midline(u);
+    let height = |u: f32| {
+        if arc {
+            growth * shape(u) + (1.0 - growth) * eye.top(u)
+        } else {
+            drift * shape(u) + (1.0 - drift) * eye.midline(u)
+        }
+    };
     // A squeeze turns the eye into the chevron of `effects`: the closed curve and its lashes fade out as the chevron
     // fades in, and take over from the open eye at full strength where it shuts, so there is no jump at any squeeze.
     let opacity = eye.closed_strength(squeeze);

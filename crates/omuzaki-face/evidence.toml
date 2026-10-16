@@ -51,12 +51,12 @@ images = ["eyes-open.png", "eyes-angry.png", "eyes-sad.png", "eyes-wide.png", "e
 
 [[case]]
 name = "eyes-closed"
-description = "Closed and smiling eyes: a wink and the happy ^^ (the arc), a plain blink (the relaxed lash curve with its three lashes), and the smiling lids as the cheek raises the lower lid (0, 0.2, 0.35, 0.6)."
+description = "Closed and smiling eyes: a wink and the happy ^^ (the arc), the arc growing over the open eye from 0 to 1 in nine steps, a plain blink (the relaxed lash curve with its three lashes), and the smiling lids as the cheek raises the lower lid (0, 0.2, 0.35, 0.6)."
 env = { OMUZAKI_FACE_EVIDENCE_DIR = "{out}" }
 steps = [
     { run = ["cargo", "test", "--locked", "-p", "omuzaki-face", "--test", "evidence", "--", "--exact", "render_the_closed_and_smiling_eyes_when_asked"] },
 ]
-images = ["eyes-wink.png", "eyes-happy.png", "eyes-blink-closed.png", "eyes-smiling-lids.png"]
+images = ["eyes-wink.png", "eyes-happy.png", "eyes-arc-sweep.png", "eyes-blink-closed.png", "eyes-smiling-lids.png"]
 
 [[case]]
 name = "eye-effects"
