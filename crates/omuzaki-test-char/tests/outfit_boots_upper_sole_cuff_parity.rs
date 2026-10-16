@@ -7,6 +7,8 @@
 //! triangles, vertex colours and skin weights of the left boot agree vertex for vertex (the right boot is checked as the
 //! left's mirror image).
 
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test: a bad oracle should stop it with its reason
+
 #[path = "support/boots_parity.rs"]
 mod parity;
 

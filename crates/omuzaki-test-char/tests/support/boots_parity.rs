@@ -8,7 +8,7 @@
 // Test helpers: a panic is a clear failure.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 #![allow(dead_code)] // each test binary uses the part of the helpers it needs
-#![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+#![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::chunks_exact_to_as_chunks)] // triangles as slices of 3
 
 use std::collections::BTreeMap;
 

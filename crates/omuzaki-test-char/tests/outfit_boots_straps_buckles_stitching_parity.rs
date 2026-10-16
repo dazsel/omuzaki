@@ -8,6 +8,8 @@
 //! Skin weights of the flat dashes and discs are looser than the rest: the prototype weights each corner of a dash where
 //! it stands, and the kit's polygon takes one blend for the whole dash, at its middle.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test: a bad oracle should stop it with its reason
+
 #[path = "support/boots_parity.rs"]
 mod parity;
 
