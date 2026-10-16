@@ -241,3 +241,75 @@ fn a_correct_script_still_loads() {
         r#"{"model":"m","turns":[{"expect":{"user_contains":"x"},"events":[{"Start":{"model":"m"}}],"chunk":4}]}"#;
     assert!(FakeLlm::from_json(json).is_ok());
 }
+
+// ---- the request checks of a real client (#1697) ----
+
+fn one_turn() -> FakeLlm {
+    let json = r#"{"model": "m", "turns": [{"events": [{"Start": {"model": "m"}}, {"TextDelta": "ok"},
+        {"Usage": {"input": 1, "output": 1, "cache_read": 0, "cache_write": 0}}, {"Stop": "EndTurn"}]}]}"#;
+    FakeLlm::from_json(json).unwrap()
+}
+
+fn plays_the_turn(llm: &FakeLlm) {
+    let turn = llm.stream(request(vec![text(Role::User, "x")]), &Cancel::new()).unwrap().collect(IDLE).unwrap();
+    assert_eq!(turn.message, text(Role::Assistant, "ok"), "the scripted turn was still there");
+}
+
+#[test]
+fn a_max_output_above_the_advertised_limit_fails_without_consuming_the_turn() {
+    let llm = one_turn();
+    let over = u32::try_from(llm.info().max_output + 1).unwrap();
+    let req = TurnRequest::new(vec![text(Role::User, "x")], over);
+    let refused = llm.stream(req, &Cancel::new()).err();
+    assert!(matches!(&refused, Some(LlmError::Unsupported(m)) if m.contains("max_output")), "{refused:?}");
+    assert!(llm.requests().is_empty(), "a refused request is not recorded as a turn");
+    plays_the_turn(&llm);
+}
+
+#[test]
+fn an_oversized_image_fails_without_consuming_the_turn() {
+    let llm = one_turn();
+    let wide = {
+        let mut png = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, b'I', b'H', b'D', b'R'];
+        png.extend_from_slice(&769u32.to_be_bytes());
+        png.extend_from_slice(&10u32.to_be_bytes());
+        ContentBlock::image(ImageMime::Png, png, ImageOrigin::File)
+    };
+    let heavy = ContentBlock::image(ImageMime::Png, vec![0; 5 * 1024 * 1024 + 1], ImageOrigin::File);
+    for image in [wide, heavy] {
+        let req = TurnRequest::new(vec![Message::new(Role::User, vec![image])], 8);
+        let refused = llm.stream(req, &Cancel::new()).err();
+        assert!(matches!(refused, Some(LlmError::Unsupported(_))), "{refused:?}");
+    }
+    plays_the_turn(&llm);
+}
+
+#[test]
+fn contract_forbidden_requests_are_malformed_and_cost_no_turn() {
+    let llm = one_turn();
+    let empty = llm.stream(TurnRequest::new(Vec::new(), 8), &Cancel::new()).err();
+    assert!(matches!(empty, Some(LlmError::Malformed(_))), "{empty:?}");
+    let forced = TurnRequest::new(vec![text(Role::User, "x")], 8)
+        .with_tool_choice(omuzaki_llm_api::message::ToolChoice::Tool("nope".into()));
+    assert!(matches!(llm.stream(forced, &Cancel::new()).err(), Some(LlmError::Malformed(_))));
+    plays_the_turn(&llm);
+}
+
+#[test]
+fn the_edge_values_still_pass() {
+    let llm = one_turn();
+    let at_limit = u32::try_from(llm.info().max_output).unwrap();
+    assert!(llm.stream(TurnRequest::new(vec![text(Role::User, "x")], at_limit), &Cancel::new()).is_ok());
+}
+
+#[test]
+fn a_retry_after_in_a_script_is_the_wait_of_each_retrying_event() {
+    let json = r#"{"model": "m", "turns": [{"retries": 2, "retry_after_ms": 1500, "events": [{"Start": {"model": "m"}},
+        {"Usage": {"input": 1, "output": 1, "cache_read": 0, "cache_write": 0}}, {"Stop": "EndTurn"}]}]}"#;
+    let llm = FakeLlm::from_json(json).unwrap();
+    let mut stream = llm.stream(request(vec![text(Role::User, "x")]), &Cancel::new()).unwrap();
+    let Next::Event(LlmEvent::Retrying { wait, attempt: 1, .. }) = stream.next_timeout(IDLE).unwrap() else {
+        panic!("no retry")
+    };
+    assert_eq!(wait, Duration::from_millis(1500));
+}

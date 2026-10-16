@@ -1238,6 +1238,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "directories"
+version = "6.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "16f5094c54661b38d03bd7e50df373292118db60b585c08a411c6d840017fe7d"
+dependencies = [
+ "dirs-sys",
+]
+
+[[package]]
+name = "dirs-sys"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e01a3366d27ee9890022452ee61b2b63a67e6f13f58900b651ff5665f0bb1fab"
+dependencies = [
+ "libc",
+ "option-ext",
+ "redox_users",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "dispatch"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2129,6 +2150,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "h2"
+version = "0.4.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d29020232d6aa3fb1daca64c1127cf662cf97f254ae16c18c05b8ab635fc118"
+dependencies = [
+ "atomic-waker",
+ "bytes",
+ "fnv",
+ "futures-core",
+ "futures-sink",
+ "http",
+ "indexmap",
+ "slab",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "half"
 version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2261,7 +2301,9 @@ checksum = "2c3e324da4c95177d6291d4c8730197c0d1822f8a9766814a4a44fa5ab797c9c"
 dependencies = [
  "atomic-waker",
  "bytes",
+ "futures-channel",
  "futures-core",
+ "h2",
  "http",
  "http-body",
  "httparse",
@@ -2460,6 +2502,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -4076,6 +4120,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-llm"
+version = "0.0.0"
+dependencies = [
+ "base64",
+ "bytes",
+ "futures-util",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "omuzaki-core",
+ "omuzaki-llm-api",
+ "omuzaki-llm-mock",
+ "reqwest",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sse-stream",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "toml",
+]
+
+[[package]]
 name = "omuzaki-llm-api"
 version = "0.0.0"
 dependencies = [
@@ -4130,6 +4198,28 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "omuzaki-measure"
+version = "0.0.0"
+dependencies = [
+ "image",
+ "inventory",
+ "libm",
+ "moxcms",
+ "omuzaki-core",
+ "omuzaki-doc-mock",
+ "omuzaki-l10n-api",
+ "omuzaki-ops-api",
+ "omuzaki-store-api",
+ "omuzaki-store-mock",
+ "png",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -4270,6 +4360,21 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "omuzaki-settings"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+ "directories",
+ "omuzaki-core",
+ "omuzaki-ops-api",
+ "omuzaki-settings-api",
+ "proptest",
+ "serde_json",
+ "tempfile",
+ "toml_edit",
 ]
 
 [[package]]
@@ -4458,28 +4563,36 @@ dependencies = [
  "blake3",
  "clap",
  "criterion",
+ "getrandom 0.4.3",
  "image",
  "omuzaki-ai-api",
  "omuzaki-ai-ort",
  "omuzaki-char-api",
  "omuzaki-char-mock",
+ "omuzaki-cli",
  "omuzaki-core",
+ "omuzaki-doc",
  "omuzaki-doc-api",
  "omuzaki-doc-mock",
  "omuzaki-io-api",
  "omuzaki-io-gltf",
  "omuzaki-io-mock",
  "omuzaki-io-ops",
+ "omuzaki-link-build",
+ "omuzaki-mcp",
  "omuzaki-ops-api",
  "omuzaki-ops-mock",
  "omuzaki-store-api",
+ "omuzaki-store-mock",
  "omuzaki-track",
+ "rmcp",
  "schemars",
  "serde",
  "serde_json",
  "sha2",
  "tempfile",
  "thiserror 2.0.21",
+ "tokio",
  "toml",
 ]
 
@@ -4676,6 +4789,12 @@ name = "openssl-probe"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
+
+[[package]]
+name = "option-ext"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
 name = "orbclient"
@@ -5241,6 +5360,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "redox_users"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60dc65c0ff1a7ae1294b0c67b9f14baf70b644404010370171787bfac1038fc0"
+dependencies = [
+ "libredox",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "ref-cast"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5306,6 +5435,7 @@ dependencies = [
  "futures-channel",
  "futures-core",
  "futures-util",
+ "h2",
  "http",
  "http-body",
  "http-body-util",
@@ -6290,6 +6420,7 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2",
  "tokio-macros",
  "windows-sys 0.61.2",

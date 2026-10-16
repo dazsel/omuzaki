@@ -68,7 +68,6 @@ A crate whose folder uses `omuzaki_embed::modules` (ADR 0054) lists that folder 
 
 **Planned crates** (not in the workspace yet):
 
-- `omuzaki-llm` (Implementation): not in the workspace yet (design): the Anthropic Messages and OpenAI-compatible chat providers (HTTP over the workspace `reqwest` and rustls stack shared with `omuzaki-http`, SSE, retries before the first event, cancellation within 50 ms), the price data, model listing and probing, and the MCP tool and result mapping; tested against a loopback fake server, no network in CI
 - `omuzaki-performer-api` (API): not in the workspace yet (designs): the AI performer's contract (`ai-performer.md`, ADR 0031) and its voice and face types: `VoiceAssignment`, `VoiceProvider`, `VoiceCatalog`, `VoiceLead`, `TalkState`, `MoveContext`, `StyleKnobs` and the per-frame `BigMovePlanner` (`ai-performer-voice-face.md`, ADR 0041)
 
 The other API crates (§39.1) arrive in later phases, each with its mock.

@@ -1,0 +1,12 @@
+{"request":{"body":{"max_tokens":256,"messages":[{"content":[{"text":"hello","type":"text"}],"role":"user"}],"model":"claude-haiku-5-5","stream":true,"tool_choice":{"type":"auto"},"tools":[{"description":"Render","input_schema":{"type":"object"},"name":"render_preview"}]},"method":"POST","path":"/v1/messages"}}
+{"Start":{"model":"claude-haiku-5-5"}}
+{"Usage":{"input":100,"output":1,"cache_read":4800,"cache_write":0}}
+{"ToolUseStart":{"id":"toolu_a","name":"render_preview"}}
+{"ToolUseInput":"{\"camera\":\"front\"}"}
+{"ToolUseEnd":{"id":"toolu_a"}}
+{"ToolUseStart":{"id":"toolu_b","name":"render_preview"}}
+{"ToolUseInput":"{\"camera\":"}
+{"ToolUseInput":"\"side\"}"}
+{"ToolUseEnd":{"id":"toolu_b"}}
+{"Usage":{"input":100,"output":61,"cache_read":4800,"cache_write":0}}
+{"Stop":"ToolUse"}
