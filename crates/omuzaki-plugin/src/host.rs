@@ -123,6 +123,7 @@ impl WasmPlugins {
     /// [`PluginError::Manifest`] when the manifest's check has errors, the id is taken or names an op family; the
     /// errors of [`load::compile`](crate::load::compile) and [`load::check`](crate::load::check).
     pub fn add(&self, manifest: Manifest, component: &[u8], hash: [u8; 32]) -> Result<PluginId, PluginError> {
+        let _claim = Claim::take(&self.installing, &manifest.id)?;
         let compiled = crate::load::compile(&self.engine, component)?;
         self.admissible(&manifest, &compiled)?;
         let approval = Approval::all_of(&manifest.requests);
@@ -160,7 +161,16 @@ impl WasmPlugins {
             return Err(error);
         }
         let installed = storage.install.install(&package)?;
-        let id = self.register(package.manifest, component, installed.hash.0, Approval::default())?;
+        let id = match self.register(package.manifest, component, installed.hash.0, Approval::default()) {
+            Ok(id) => id,
+            Err(error) => {
+                // Nothing of a failed install stays: the version it copied in leaves the disk and the list.
+                if installed.new_version {
+                    let _removed = storage.install.remove_version(&installed.id, installed.hash);
+                }
+                return Err(error);
+            }
+        };
         self.info(&id)
     }
 

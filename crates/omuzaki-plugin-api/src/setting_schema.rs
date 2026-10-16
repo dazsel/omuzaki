@@ -7,7 +7,9 @@
 //! `description`, `default`, `examples` and `$comment`. Any other keyword is refused rather than ignored, so a schema
 //! never promises a check that does not happen.
 
-use serde_json::{Map, Value};
+use std::cmp::Ordering;
+
+use serde_json::{Map, Number, Value};
 
 /// How deep a schema may nest.
 pub const MAX_SCHEMA_DEPTH: usize = 16;
@@ -97,7 +99,7 @@ fn type_of(value: &Value) -> &'static str {
     match value {
         Value::Null => "null",
         Value::Bool(_) => "boolean",
-        Value::Number(n) if n.is_i64() || n.is_u64() => "integer",
+        Value::Number(n) if is_whole(n) => "integer",
         Value::Number(_) => "number",
         Value::String(_) => "string",
         Value::Array(_) => "array",
@@ -130,7 +132,7 @@ fn check(schema: &Map<String, Value>, value: &Value, at: &str) -> Result<(), Str
     {
         return Err(format!("{here} is not {expected}"));
     }
-    if let Some(number) = value.as_f64() {
+    if let Value::Number(number) = value {
         bounds(schema, number, &here)?;
     }
     if let Some(text) = value.as_str() {
@@ -151,15 +153,71 @@ fn check(schema: &Map<String, Value>, value: &Value, at: &str) -> Result<(), Str
     Ok(())
 }
 
-fn bounds(schema: &Map<String, Value>, number: f64, here: &str) -> Result<(), String> {
-    let get = |key: &str| schema.get(key).and_then(Value::as_f64);
-    if get("minimum").is_some_and(|m| number < m) || get("exclusiveMinimum").is_some_and(|m| number <= m) {
+fn bounds(schema: &Map<String, Value>, number: &Number, here: &str) -> Result<(), String> {
+    let compared = |key: &str| schema.get(key).and_then(Value::as_number).and_then(|bound| compare(number, bound));
+    let is = |key: &str, order: &[Ordering]| compared(key).is_some_and(|o| order.contains(&o));
+    if is("minimum", &[Ordering::Less]) || is("exclusiveMinimum", &[Ordering::Less, Ordering::Equal]) {
         return Err(format!("{here} is below the minimum"));
     }
-    if get("maximum").is_some_and(|m| number > m) || get("exclusiveMaximum").is_some_and(|m| number >= m) {
+    if is("maximum", &[Ordering::Greater]) || is("exclusiveMaximum", &[Ordering::Greater, Ordering::Equal]) {
         return Err(format!("{here} is above the maximum"));
     }
     Ok(())
+}
+
+/// Whether `n` is a whole number, as JSON Schema counts one: an integer, or a float with no fraction (TOML's `3.0`).
+pub fn is_whole(n: &Number) -> bool {
+    n.is_i64() || n.is_u64() || n.as_f64().is_some_and(|f| f.is_finite() && f.fract() == 0.0)
+}
+
+/// A JSON number exactly: an integer as it was written (past 2⁵³ too), else its float.
+enum Exact {
+    Int(i128),
+    Float(f64),
+}
+
+fn exact(n: &Number) -> Option<Exact> {
+    if let Some(i) = n.as_i64() {
+        Some(Exact::Int(i128::from(i)))
+    } else if let Some(u) = n.as_u64() {
+        Some(Exact::Int(i128::from(u)))
+    } else {
+        n.as_f64().map(Exact::Float)
+    }
+}
+
+/// `a` against `b` without rounding an integer through a float.
+fn compare(a: &Number, b: &Number) -> Option<Ordering> {
+    match (exact(a)?, exact(b)?) {
+        (Exact::Int(x), Exact::Int(y)) => Some(x.cmp(&y)),
+        (Exact::Float(x), Exact::Float(y)) => x.partial_cmp(&y),
+        (Exact::Int(x), Exact::Float(y)) => int_against_float(x, y),
+        (Exact::Float(x), Exact::Int(y)) => int_against_float(y, x).map(Ordering::reverse),
+    }
+}
+
+/// 2¹²⁶: a float this far from zero is beyond every i64 and u64, so an integer is on the near side of it.
+const FLOAT_PAST_INTEGERS: f64 = 8.507_059_173_023_462e37;
+
+/// An integer against a float, exactly: against the float's whole part, and below it when the float has a fraction.
+fn int_against_float(int: i128, float: f64) -> Option<Ordering> {
+    if float.is_nan() {
+        return None;
+    }
+    if float >= FLOAT_PAST_INTEGERS {
+        return Some(Ordering::Less);
+    }
+    if float <= -FLOAT_PAST_INTEGERS {
+        return Some(Ordering::Greater);
+    }
+    let floor = float.floor();
+    // In range, so the cast is exact.
+    #[allow(clippy::cast_possible_truncation)]
+    let whole = floor as i128;
+    Some(match int.cmp(&whole) {
+        Ordering::Equal if floor < float => Ordering::Less,
+        order => order,
+    })
 }
 
 fn limit(schema: &Map<String, Value>, min: &str, max: &str, count: u64, here: &str, unit: &str) -> Result<(), String> {
@@ -231,6 +289,19 @@ mod tests {
             assert!(value_problem(&schema, &value).is_some(), "{value}");
         }
         assert_eq!(value_problem(&json!({"type": "number"}), &json!(3)), None, "an integer is a number");
+        assert_eq!(value_problem(&json!({"type": "integer"}), &json!(3.0)), None, "TOML's 3.0 is a whole number");
+        assert!(value_problem(&json!({"type": "integer"}), &json!(3.5)).is_some());
+    }
+
+    #[test]
+    fn integer_bounds_past_two_to_the_53_compare_exactly() {
+        let big = 9_007_199_254_740_993_u64; // 2^53 + 1: as an f64 it would round to 2^53
+        let schema = json!({"type": "integer", "maximum": 9_007_199_254_740_992_u64});
+        assert!(value_problem(&schema, &json!(big)).is_some(), "one above the maximum is above it");
+        assert_eq!(value_problem(&schema, &json!(big - 1)), None);
+        let fractional = json!({"exclusiveMaximum": 2.5, "minimum": 1.5});
+        assert_eq!(value_problem(&fractional, &json!(2)), None);
+        assert!(value_problem(&fractional, &json!(3)).is_some() && value_problem(&fractional, &json!(1)).is_some());
     }
 
     #[test]

@@ -25,6 +25,8 @@ pub struct Installed {
     pub hash: ContentHash,
     /// Its folder, `plugins/<id>/<hash>/`.
     pub dir: PathBuf,
+    /// Whether this install put the version there (it was not installed before).
+    pub new_version: bool,
 }
 
 /// The plugins folder under the machine's local data folder.
@@ -60,36 +62,56 @@ impl InstallRoot {
 
     /// Stages `package`, checks the staged files hash to what was verified, moves them to `plugins/<id>/<hash>/` and
     /// keeps only the last [`KEPT_VERSIONS`]. Installing a hash already there changes nothing but its place in the
-    /// list. Whatever fails, nothing is left in staging. Pruning is best effort: an old version that can't be removed
-    /// stays in the list, oldest first, and is tried again on the next install.
+    /// list. Whatever fails, nothing is left in staging.
+    ///
+    /// An old version is retired by renaming it to `.retired-<hash>` and then deleting that: one that can't be renamed
+    /// is still whole and stays in the list, oldest first, to be tried again; one that was renamed is never listed
+    /// again, even if deleting it fails, and what is left of it is swept on the next install.
     ///
     /// # Errors
     /// [`PackageError::Io`] when a file can't be written; [`PackageError::Signature`] when the staged files hash
     /// differently from the package read (the disk changed them).
     pub fn install(&self, package: &PluginPackage) -> Result<Installed, PackageError> {
         let id = package.manifest.id.clone();
+        let plugin_dir = self.plugin_dir(&id);
+        sweep_retired(&plugin_dir);
         let (staged, hash) = package.stage(&self.staging())?;
+        let new_version = !plugin_dir.join(hash.to_string()).exists();
         let placed = self.place(&id, &staged, hash, package.hash);
         if staged.exists() {
             // Leave no staging folder behind; the step's own error is the one to report.
             let _cleaned = fs::remove_dir_all(&staged);
         }
         let dir = placed?;
-        let plugin_dir = self.plugin_dir(&id);
         let mut versions: Vec<ContentHash> = self.versions(&id).into_iter().filter(|h| *h != hash).collect();
         versions.push(hash);
         let mut kept = Vec::new();
         while versions.len() > KEPT_VERSIONS {
             let old = versions.remove(0);
-            let old_dir = plugin_dir.join(old.to_string());
-            if old_dir.exists() && fs::remove_dir_all(&old_dir).is_err() {
+            if retire(&plugin_dir, old) {
                 kept.push(old);
             }
         }
         kept.extend(versions);
-        let listing = kept.iter().map(|h| format!("{h}\n")).collect::<Vec<_>>().concat();
-        write_atomic(&plugin_dir.join(VERSIONS_FILE), listing.as_bytes())?;
-        Ok(Installed { id, hash, dir })
+        self.write_versions(&id, &kept)?;
+        Ok(Installed { id, hash, dir, new_version })
+    }
+
+    /// Takes back a version an install just put there (`Installed::new_version`), for an install that failed after
+    /// it: its folder is retired and it leaves the list.
+    ///
+    /// # Errors
+    /// [`PackageError::Io`] when the list can't be written.
+    pub fn remove_version(&self, id: &PluginId, hash: ContentHash) -> Result<(), PackageError> {
+        let plugin_dir = self.plugin_dir(id);
+        let still_there = retire(&plugin_dir, hash);
+        let versions: Vec<ContentHash> = self.versions(id).into_iter().filter(|h| *h != hash || still_there).collect();
+        self.write_versions(id, &versions)
+    }
+
+    fn write_versions(&self, id: &PluginId, versions: &[ContentHash]) -> Result<(), PackageError> {
+        let listing = versions.iter().map(|h| format!("{h}\n")).collect::<Vec<_>>().concat();
+        write_atomic(&self.plugin_dir(id).join(VERSIONS_FILE), listing.as_bytes())
     }
 
     /// Moves the staged folder to `plugins/<id>/<hash>/`, unless that version is already there. `hash` is what the
@@ -111,6 +133,35 @@ impl InstallRoot {
             fs::rename(staged, &dir).map_err(|e| io(&e))?;
         }
         Ok(dir)
+    }
+}
+
+/// The prefix of a version folder being deleted.
+const RETIRED_PREFIX: &str = ".retired-";
+
+/// Retires the version `hash` under `plugin_dir`: renames it out of the way, then deletes it. True when it is still
+/// there, whole (the rename failed), so it stays in the list.
+fn retire(plugin_dir: &Path, hash: ContentHash) -> bool {
+    let dir = plugin_dir.join(hash.to_string());
+    if !dir.exists() {
+        return false;
+    }
+    let retired = plugin_dir.join(format!("{RETIRED_PREFIX}{hash}"));
+    if fs::rename(&dir, &retired).is_err() {
+        return true;
+    }
+    // Best effort: a part left behind is never listed, and the next install sweeps it.
+    let _removed = fs::remove_dir_all(&retired);
+    false
+}
+
+/// Deletes what is left of versions retired before; best effort, as a leftover is never read.
+fn sweep_retired(plugin_dir: &Path) {
+    let Ok(entries) = fs::read_dir(plugin_dir) else { return };
+    for entry in entries.flatten() {
+        if entry.file_name().to_string_lossy().starts_with(RETIRED_PREFIX) {
+            let _removed = fs::remove_dir_all(entry.path());
+        }
     }
 }
 

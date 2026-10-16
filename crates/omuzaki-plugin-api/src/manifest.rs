@@ -18,8 +18,8 @@ use crate::PluginId;
 /// The base world every plugin targets (`omuzaki:plugin`'s `plugin`).
 pub const BASE_WORLD: &str = "plugin";
 
-/// A world a plugin may name in `worlds`, registered where the world is defined (ADR 0054: added, not edited in):
-/// `inventory::submit! { WorldRegistration { name: "node" } }` in the crate that serves it.
+/// A world a plugin may name in `worlds`, registered with [`register_world!`](crate::register_world) where the
+/// world is defined (ADR 0054: added, not edited in).
 #[derive(Debug)]
 pub struct WorldRegistration {
     /// The world's name in `omuzaki:plugin`.
@@ -28,7 +28,18 @@ pub struct WorldRegistration {
 
 inventory::collect!(WorldRegistration);
 
-inventory::submit! { WorldRegistration { name: BASE_WORLD } }
+/// Registers a world a plugin may name in `worlds`: `omuzaki_plugin_api::register_world!("node");` in the crate that
+/// serves it. The registration is recorded for the link gate (ADR 0015 §3), and the crate needs no `inventory` of its
+/// own.
+#[macro_export]
+macro_rules! register_world {
+    ($name:literal) => {
+        $crate::__inventory::submit! { $crate::manifest::WorldRegistration { name: $name } }
+        $crate::__record_registration!("world", $name);
+    };
+}
+
+crate::register_world!("plugin");
 
 /// Every registered world, in link order.
 pub fn known_worlds() -> impl Iterator<Item = &'static str> {
@@ -172,7 +183,7 @@ impl SettingType {
         match self {
             Self::String => value.is_string(),
             Self::Bool => value.is_boolean(),
-            Self::Integer => value.is_i64() || value.is_u64(),
+            Self::Integer => value.as_number().is_some_and(crate::setting_schema::is_whole),
             Self::Number => value.is_number(),
         }
     }

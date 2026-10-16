@@ -177,12 +177,15 @@ fn no_publisher_is_a_warning_not_an_error() {
 }
 
 // A world registered by the crate that serves it, as an extension world's crate does.
-inventory::submit! { omuzaki_plugin_api::manifest::WorldRegistration { name: "test_world" } }
+omuzaki_plugin_api::register_world!("test_world");
 
 #[test]
 fn a_registered_world_is_known_without_editing_a_list() {
     let worlds: Vec<&str> = omuzaki_plugin_api::manifest::known_worlds().collect();
-    assert!(worlds.contains(&"plugin") && worlds.contains(&"test_world"), "{worlds:?}");
+    let base = omuzaki_plugin_api::manifest::BASE_WORLD;
+    assert!(worlds.contains(&base) && worlds.contains(&"test_world"), "{worlds:?}");
+    let recorded = omuzaki_core::link::registered();
+    assert!(recorded.iter().any(|r| r.kind == "world" && r.name == "\"test_world\""), "the link gate sees it");
     let text = edited(r#"worlds = ["plugin"]"#, r#"worlds = ["plugin", "test_world"]"#);
     assert!(Manifest::parse(&text).unwrap().check().is_clean());
 }

@@ -437,3 +437,51 @@ fn a_folder_with_a_hardlink_or_a_non_utf8_name_is_refused() {
     let refused = PluginPackage::open_folder(odd.path(), &limits);
     assert!(matches!(refused, Err(PackageError::UnsafePath { why: "is not UTF-8", .. })), "{refused:?}");
 }
+
+#[test]
+fn a_version_taken_back_leaves_the_list_and_retired_leftovers_are_swept() {
+    let root = tempfile::tempdir().unwrap();
+    let installs = InstallRoot::new(root.path());
+    let version = |note: u8| {
+        let mut entries = files(false, &common::ok_component());
+        entries.push(("note.txt".into(), vec![note]));
+        installs.install(&open(&zip_of(&entries)).unwrap()).unwrap()
+    };
+    let first = version(1);
+    let second = version(2);
+    assert!(first.new_version && second.new_version);
+    installs.remove_version(&second.id, second.hash).unwrap();
+    assert_eq!(installs.versions(&first.id), [first.hash], "only the version that stays is a rollback target");
+    assert!(!second.dir.exists());
+
+    // What a failed delete left of a retired version is never listed, and the next install removes it.
+    let leftover = installs.plugin_dir(&first.id).join(".retired-0000");
+    std::fs::create_dir_all(leftover.join("part")).unwrap();
+    let third = version(3);
+    assert!(!leftover.exists(), "swept");
+    assert_eq!(installs.versions(&first.id), [first.hash, third.hash]);
+    assert!(!version(3).new_version, "installing a version already there is not a new one");
+}
+
+#[test]
+fn two_adds_of_one_id_at_once_register_one() {
+    let world = World::new();
+    let engine = Arc::new(
+        omuzaki_plugin::PluginEngine::new(omuzaki_plugin::HostConfig::default(), world.clock.clone()).unwrap(),
+    );
+    let plugins = Arc::new(WasmPlugins::new(engine, world.sessions.clone(), Grants::person(), None));
+    let gate = Arc::new(std::sync::Barrier::new(2));
+    let threads: Vec<_> = (0..2u8)
+        .map(|i| {
+            let (plugins, gate) = (plugins.clone(), gate.clone());
+            std::thread::spawn(move || {
+                let manifest = omuzaki_plugin_mock::conformance::manifest("example", &[]);
+                gate.wait();
+                plugins.add(manifest, &common::ok_component(), [i; 32])
+            })
+        })
+        .collect();
+    let results: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+    assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1, "{results:?}");
+    assert!(results.iter().any(|r| matches!(r, Err(PluginError::Manifest(_)))));
+}

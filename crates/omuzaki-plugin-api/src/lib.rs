@@ -28,6 +28,11 @@ pub mod setting_schema;
 pub mod state;
 pub mod summary;
 
+#[doc(hidden)]
+pub use inventory as __inventory;
+#[doc(hidden)]
+pub use omuzaki_core::__record_registration;
+
 pub use error::PluginError;
 pub use service::Plugins;
 pub use state::PluginId;
