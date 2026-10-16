@@ -4,7 +4,8 @@
 //!
 //! The fake follows the contract other crates test against, not a simplification of it: points include what the
 //! document's `merges` entity records, forks and restores wait for an open transaction, a lane with sessions stays
-//! open when the folder leaves it, and every method that takes an actor enforces the table of design 8.2.
+//! open when the folder leaves it, a state has to belong to the branch it is forked or restored on, and every method
+//! that takes an actor enforces the table of design 8.2.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -231,6 +232,10 @@ struct FakeState {
     open: BTreeSet<BranchId>,
     busy: BTreeSet<BranchId>,
     lanes: BTreeMap<BranchId, LaneParts>,
+    /// The documents of committed transactions, per branch: what `StateRef::Tx` resolves.
+    txs: BTreeMap<(BranchId, u64), Value>,
+    /// The documents of snapshots, with the branch whose lane took each: what `StateRef::Snapshot` resolves.
+    snapshots: BTreeMap<SnapshotId, (BranchId, Value)>,
     next_id: u64,
     subscribers: Vec<Sender<BranchEvent>>,
 }
@@ -246,7 +251,9 @@ impl FakeState {
 /// come from the injected clock. Lanes are not real: [`lane`](Branches::lane) hands out the runner and sessions a
 /// test scripted with [`script_lane`](Self::script_lane), and those sessions are what the fake reads for how many
 /// sessions work on a lane and which agent session an actor is (so who may rename, delete or ask for review).
-/// Create makes no check of edit scopes; restore checks the ones it is given.
+/// Transactions and snapshots are scripted with [`record_tx`](Self::record_tx) and
+/// [`record_snapshot`](Self::record_snapshot), per branch, and a state has to be its branch's own to fork or restore
+/// at. Create makes no check of edit scopes; restore checks the ones it is given.
 pub struct FakeBranches {
     store: Arc<MemoryBranchStore>,
     clock: Arc<dyn WallClock>,
@@ -274,6 +281,8 @@ impl FakeBranches {
             open: BTreeSet::from([main]),
             busy: BTreeSet::new(),
             lanes: BTreeMap::new(),
+            txs: BTreeMap::new(),
+            snapshots: BTreeMap::new(),
             next_id: 1,
             subscribers: Vec::new(),
         };
@@ -299,6 +308,23 @@ impl FakeBranches {
         } else {
             state.busy.remove(branch);
         }
+    }
+
+    /// Records the document of `branch` just after its committed transaction `tx`, so `StateRef::Tx { tx }` resolves
+    /// on `branch` (transactions are those of the lane the call runs on).
+    pub fn record_tx(&self, branch: &BranchId, tx: TxId, tree: Value) {
+        lock(&self.state).txs.insert((branch.clone(), tx.0), tree);
+    }
+
+    /// Records a snapshot of `tree` taken by `branch`'s lane and returns its id, so `StateRef::Snapshot` resolves on
+    /// `branch`.
+    ///
+    /// # Errors
+    /// [`BranchError::Io`] if the tree cannot be encoded.
+    pub fn record_snapshot(&self, branch: &BranchId, tree: Value) -> Result<SnapshotId, BranchError> {
+        let id = snapshot_of(&tree)?;
+        lock(&self.state).snapshots.insert(id, (branch.clone(), tree));
+        Ok(id)
     }
 
     /// Sets what [`lane`](Branches::lane) hands out for `branch`.
@@ -445,15 +471,47 @@ impl FakeBranches {
         }
     }
 
+    /// Whether `point` is part of `source`'s history: one of its own, or one its state includes (what it inherited
+    /// at its fork and what its head records as merged in).
+    fn in_history(&self, source: &BranchInfo, point: &Point) -> Result<bool, BranchError> {
+        if point.branch == source.id {
+            return Ok(true);
+        }
+        let included = self.store.point(&source.head)?.contains.join(&source.inherits);
+        Ok(included.includes(&point.branch, &Version::new(point.seq, point.id()?)))
+    }
+
+    /// The document at `at` on `source`. A state has to be the source's own: its live document, one of its
+    /// transactions or snapshots, or a point in its history. Another branch's state is refused; the caller forks that
+    /// branch instead.
     fn resolve(&self, state: &FakeState, source: &BranchInfo, at: &StateRef) -> Result<Value, BranchError> {
+        let elsewhere = |what: String| {
+            BranchError::Invalid(format!(
+                "{what} is not a state of branch {}: fork or restore that branch's own states",
+                source.name
+            ))
+        };
         match at {
             StateRef::Now => Ok(state.docs.get(&source.id).cloned().unwrap_or_default()),
-            StateRef::Point { id, .. } => Ok(self.store.tree(id)?.as_ref().clone()),
-            StateRef::Branch { name, .. } => Ok(self.store.tree(&self.store.branch(name)?.head)?.as_ref().clone()),
-            StateRef::Tx { .. } | StateRef::Snapshot { .. } => Err(BranchError::Invalid(
-                "the fake resolves `now`, points and branches; record transactions and snapshots in a MemoryHistoryView"
-                    .to_owned(),
-            )),
+            StateRef::Point { id, .. } => {
+                let point = self.store.point(id)?;
+                if !self.in_history(source, &point)? {
+                    return Err(elsewhere(format!("point {id}")));
+                }
+                Ok(self.store.tree(id)?.as_ref().clone())
+            }
+            StateRef::Tx { tx, .. } => state.txs.get(&(source.id.clone(), tx.0)).cloned().ok_or_else(|| {
+                BranchError::Invalid(format!("no transaction {} recorded on branch {}", tx.0, source.name))
+            }),
+            StateRef::Snapshot { id, .. } => match state.snapshots.get(id) {
+                Some((branch, tree)) if *branch == source.id => Ok(tree.clone()),
+                Some(_) => Err(elsewhere(format!("snapshot {id}"))),
+                None => {
+                    Err(BranchError::Invalid(format!("no snapshot {id} recorded: use FakeBranches::record_snapshot")))
+                }
+            },
+            // A reference to the source itself was turned into `now` before it got here.
+            StateRef::Branch { name, .. } => Err(elsewhere(format!("branch {name}"))),
             _ => Err(BranchError::Invalid("the fake does not know this kind of state reference".to_owned())),
         }
     }
@@ -527,10 +585,8 @@ impl Branches for FakeBranches {
             return Err(BranchError::NameTaken(new.name));
         }
         let at = self.normalized(&source, &new.at);
-        if at == StateRef::Now {
-            // Forking from now records the source's state now, which a checkpoint would refuse to do.
-            Self::guard(&state, &source)?;
-        }
+        // A fork records a point of the source, which a checkpoint would refuse to do over an open transaction.
+        Self::guard(&state, &source)?;
         let tree = self.resolve(&state, &source, &at)?;
         let id = BranchId::new(format!("{:016x}", state.next_id + 1)).map_err(|e| BranchError::Io(e.to_string()))?;
         // The fork point is a point of the source: a head that another branch made (a branch forked without edits has
@@ -1462,10 +1518,15 @@ mod tests {
         let by_now = own("by-now", StateRef::Now)?;
         assert_eq!(*fake.store().tree(&by_now.head)?, json!({"v": "live 2"}));
 
-        // Another branch's reference is still its head, not its live document.
+        // Another branch's reference is not a state of this one: fork that branch instead.
         fake.set_document(&by_name.id, json!({"v": "not checkpointed"}));
-        let other = own("from-other", StateRef::branch(name("by-name")?))?;
-        assert_eq!(*fake.store().tree(&other.head)?, json!({"v": "live 1"}));
+        let elsewhere = fake.create(
+            NewBranch::new(name("from-other")?, BranchId::main()).at(StateRef::branch(name("by-name")?)),
+            &person(),
+        );
+        assert!(matches!(elsewhere, Err(BranchError::Invalid(_))), "{elsewhere:?}");
+        let instead = fake.create(NewBranch::new(name("from-by-name")?, by_name.id.clone()), &person())?;
+        assert_eq!(*fake.store().tree(&instead.head)?, json!({"v": "not checkpointed"}));
 
         let restore =
             fake.restore(&BranchId::main(), StateRef::branch(BranchName::main()), &person(), &Grants::person());
@@ -1474,7 +1535,7 @@ mod tests {
     }
 
     #[test]
-    fn a_fork_from_now_and_a_restore_wait_for_an_open_transaction_and_change_nothing() -> Test {
+    fn forks_and_restores_wait_for_an_open_transaction_and_change_nothing() -> Test {
         let (fake, _) = fake()?;
         let start = fake.store().this()?.head;
         fake.set_document(&BranchId::main(), json!({"v": "half done"}));
@@ -1490,12 +1551,13 @@ mod tests {
         assert_eq!(seen(&fake), before, "no point, branch or head was written");
         assert!(events.try_recv().is_err(), "and nothing was announced");
 
-        // A fork from a recorded state captures no live state, so the open transaction does not hold it up.
+        // Whatever state it forks at, the fork is a point of the source, so it waits too.
         let from_point = NewBranch::new(name("old")?, BranchId::main()).at(StateRef::point(start));
-        assert!(fake.create(from_point, &person()).is_ok());
+        assert!(matches!(fake.create(from_point, &person()), Err(BranchError::Busy(_))));
+        assert_eq!(seen(&fake), before);
         fake.script_open_transaction(&BranchId::main(), false);
         let x = fork(&fake, "x", &person())?;
-        assert_eq!(x.id.as_str(), "0000000000000003", "the refused fork used up no id");
+        assert_eq!(x.id.as_str(), "0000000000000002", "the refused forks used up no id");
         assert_eq!(*fake.store().tree(&x.head)?, json!({"v": "half done"}));
         Ok(())
     }
@@ -1615,6 +1677,65 @@ mod tests {
             *fake.store().tree(&restored.backup.head)?,
             json!({"face": {"jaw": 0.9}, "characters": {"aria": {"v": 2}}})
         );
+        assert_versions_are_real(&fake)
+    }
+
+    #[test]
+    fn transactions_and_snapshots_resolve_on_the_branch_they_belong_to() -> Test {
+        let (fake, _) = fake()?;
+        let aria = fork(&fake, "aria", &person())?;
+        fake.record_tx(&BranchId::main(), TxId(3), json!({"v": "tx 3"}));
+        let snapshot = fake.record_snapshot(&BranchId::main(), json!({"v": "snap"}))?;
+        let at = |text: &str, from: &BranchId, at: StateRef| {
+            fake.create(NewBranch::new(BranchName::new(text)?, from.clone()).at(at), &person())
+        };
+
+        let by_tx = at("by-tx", &BranchId::main(), StateRef::tx(TxId(3)))?;
+        assert_eq!(*fake.store().tree(&by_tx.head)?, json!({"v": "tx 3"}));
+        let by_snapshot = at("by-snapshot", &BranchId::main(), StateRef::snapshot(snapshot))?;
+        assert_eq!(*fake.store().tree(&by_snapshot.head)?, json!({"v": "snap"}));
+
+        // An unknown transaction, and ones that belong to another branch, are refused.
+        for refused in [
+            at("no-tx", &BranchId::main(), StateRef::tx(TxId(4))),
+            at("other-tx", &aria.id, StateRef::tx(TxId(3))),
+            at("other-snapshot", &aria.id, StateRef::snapshot(snapshot)),
+            at("no-snapshot", &BranchId::main(), StateRef::snapshot(SnapshotId(ContentHash::of(b"nope")))),
+        ] {
+            assert!(matches!(refused, Err(BranchError::Invalid(_))), "{refused:?}");
+        }
+
+        // A restore reads the same states.
+        fake.set_document(&BranchId::main(), json!({"v": "later"}));
+        let restored = fake.restore(&BranchId::main(), StateRef::tx(TxId(3)), &person(), &Grants::person())?;
+        assert_eq!(*fake.store().tree(&restored.backup.head)?, json!({"v": "later"}));
+        let next = fake.checkpoint(&BranchId::main(), "after", None, &person())?;
+        assert_eq!(*fake.store().tree(&next)?, json!({"v": "tx 3"}));
+        assert_versions_are_real(&fake)
+    }
+
+    #[test]
+    fn a_point_has_to_be_in_the_history_of_the_branch_it_is_forked_from() -> Test {
+        let (fake, _) = fake()?;
+        let start = fake.store().this()?.head;
+        let aria = fork(&fake, "aria", &person())?;
+        fake.set_document(&aria.id, json!({"v": "oval"}));
+        let oval = fake.checkpoint(&aria.id, "oval", None, &person())?;
+        let from = |text: &str, branch: &BranchId, point: PointId| {
+            fake.create(NewBranch::new(BranchName::new(text)?, branch.clone()).at(StateRef::point(point)), &person())
+        };
+
+        // Aria's own point is not main's history; main's point is aria's (it inherited it).
+        let refused = from("elsewhere", &BranchId::main(), oval);
+        assert!(matches!(refused, Err(BranchError::Invalid(_))), "{refused:?}");
+        assert_eq!(*fake.store().tree(&from("inherited", &aria.id, start)?.head)?, json!({"face": {"jaw": 0.5}}));
+        assert_eq!(*fake.store().tree(&from("own", &aria.id, oval)?.head)?, json!({"v": "oval"}));
+
+        // Once main merges aria's point, it is part of main's history too.
+        let seq = fake.store().point(&oval)?.seq;
+        fake.set_document(&BranchId::main(), merged_doc(2, &[(&aria.id, seq, oval)]));
+        fake.checkpoint(&BranchId::main(), "merge aria", None, &person())?;
+        assert_eq!(*fake.store().tree(&from("merged", &BranchId::main(), oval)?.head)?, json!({"v": "oval"}));
         assert_versions_are_real(&fake)
     }
 

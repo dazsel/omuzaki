@@ -139,8 +139,9 @@ impl BranchName {
         if name.is_empty() {
             return Err(BranchNameError::Empty);
         }
-        if name.len() > MAX_BRANCH_NAME_LEN {
-            return Err(BranchNameError::TooLong(name.len()));
+        let length = name.chars().count();
+        if length > MAX_BRANCH_NAME_LEN {
+            return Err(BranchNameError::TooLong(length));
         }
         for segment in name.split('/') {
             if segment.is_empty() {
@@ -896,12 +897,14 @@ pub trait Branches: Send + Sync {
     fn folder(&self) -> BranchId;
 
     /// Makes a branch (design 5.4). The fork point is a point of the source branch, so versions of it that others
-    /// record carry the source's own numbers. An agent makes branches for its own session only (design 8.2).
+    /// record carry the source's own numbers. `new.at` must be a state of the source branch (its live document, one
+    /// of its transactions, snapshots or points in its history); a state of another branch is refused, and the
+    /// caller forks that branch instead. An agent makes branches for its own session only (design 8.2).
     ///
     /// # Errors
-    /// [`BranchError::NameTaken`], [`BranchError::NotFound`] for the source branch, [`BranchError::Busy`] when forking
-    /// from `now` and an open transaction blocks the checkpoint, [`BranchError::Denied`] for an agent that makes a
-    /// branch for another session, or [`BranchError::Io`].
+    /// [`BranchError::NameTaken`], [`BranchError::NotFound`] for the source branch, [`BranchError::Busy`] when an open
+    /// transaction on the source blocks the fork, [`BranchError::Invalid`] for a state that is not the source's,
+    /// [`BranchError::Denied`] for an agent that makes a branch for another session, or [`BranchError::Io`].
     fn create(&self, new: NewBranch, by: &Actor) -> Result<BranchInfo, BranchError>;
 
     /// Makes a point of `branch`'s committed state now (design 5.3). `ready` asks for review with that note; an agent
@@ -927,10 +930,11 @@ pub trait Branches: Send + Sync {
     fn switch(&self, to: &BranchId, by: &Actor) -> Result<Switched, BranchError>;
 
     /// Renames a branch and sets its title. A person may rename any branch; an agent only one made for its session
-    /// (design 5.6, 8.2).
+    /// (design 5.6, 8.2). `main` keeps its name.
     ///
     /// # Errors
-    /// [`BranchError::NotFound`], [`BranchError::NameTaken`] or [`BranchError::Denied`].
+    /// [`BranchError::NotFound`], [`BranchError::NameTaken`], [`BranchError::Denied`], or [`BranchError::Refused`]
+    /// for `main`.
     fn rename(
         &self,
         branch: &BranchId,
@@ -963,7 +967,8 @@ pub trait Branches: Send + Sync {
     /// Restores `branch` to `to`, first keeping the current state on an automatic branch (design 9). `grants` are
     /// the caller's, for the restore op: it needs the scopes of what it changes, as a merge does (`edit:character`,
     /// plus `edit:scene` for anything outside `characters/`, design 7.7). Everything that can refuse does so before
-    /// anything changes. A reference to `branch` itself is `now`, which changes nothing.
+    /// anything changes. `to` must be a state of `branch`, as for [`create`](Self::create); a reference to `branch`
+    /// itself is `now`, which changes nothing.
     ///
     /// # Errors
     /// [`BranchError::NotFound`], [`BranchError::Busy`] when an open transaction blocks recording the current state,
@@ -1105,6 +1110,18 @@ mod tests {
         assert!(long.contains(&MAX_BRANCH_NAME_LEN.to_string()), "{long}");
         let segment = BranchName::new("a//b").err().map(|e| e.to_string()).unwrap_or_default();
         assert!(segment.contains("segment"), "{segment}");
+    }
+
+    #[test]
+    fn a_name_is_measured_in_characters_not_bytes() {
+        // 40 characters are 80 bytes: inside the limit, so what fails is the alphabet, not the length.
+        let narrow = "é".repeat(40);
+        assert_eq!(BranchName::new(narrow.clone()), Err(BranchNameError::BadSegment(narrow)));
+        // 65 characters are too long, and the error counts 65, not 130.
+        assert_eq!(BranchName::new("é".repeat(65)), Err(BranchNameError::TooLong(65)));
+        // 64 characters of which one is two bytes: the limit is met, the alphabet is not.
+        let edge = format!("{}é", "a".repeat(MAX_BRANCH_NAME_LEN - 1));
+        assert!(matches!(BranchName::new(edge), Err(BranchNameError::BadSegment(_))));
     }
 
     #[test]
