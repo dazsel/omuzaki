@@ -6,7 +6,7 @@ use std::time::{Duration, SystemTime};
 
 use super::{Rating, WEEK_SECS, WEEKLY_ITEMS};
 use crate::eval::clock::run_started;
-use crate::eval::history::{AttemptOutcome, AttemptRecord};
+use crate::eval::history::{AttemptOutcome, AttemptRecord, RunRecord};
 use crate::eval::provenance::{PrivateList, fixture_refusals};
 use crate::eval::{Discovery, TaskFile};
 
@@ -49,8 +49,10 @@ pub fn budget_left(ratings: &[Rating], now: SystemTime) -> usize {
 /// Up to `count` unrated results, one task after another in turn (tasks in id order, each task's newest attempt first), so
 /// that no task fills the sample while another is never asked about.
 ///
-/// Considered are scored (`pass`/`fail`) attempts of the reference driver whose task has `rubric_for_people` and
-/// whose item has no rating in `ratings`. `count` is held to the weekly budget by the caller ([`budget_left`]).
+/// Considered are scored (`pass`/`fail`) attempts of the reference driver, in a run that finished and was valid (it has a
+/// record in `runs` with `valid` set), whose task has `rubric_for_people` and whose item has no rating in `ratings`. A
+/// task's candidates are taken newest first by the time their run began (then by run id and attempt number), not in the
+/// order they were appended. `count` is held to the weekly budget by the caller ([`budget_left`]).
 ///
 /// Left out are attempts whose task has changed since (its hash is not the one the attempt was made with: the page would
 /// show today's prompt and questions for a result of another), and tasks whose fixture is unresolved, refused, or built
@@ -60,13 +62,21 @@ pub fn sample(
     discovery: &Discovery,
     private: &PrivateList,
     history: &[AttemptRecord],
+    runs: &[RunRecord],
     ratings: &[Rating],
     count: usize,
 ) -> Vec<Item> {
     let rated: BTreeSet<&str> = ratings.iter().map(|r| r.item.as_str()).collect();
+    let trusted: BTreeSet<&str> = runs.iter().filter(|r| r.valid).map(|r| r.run.as_str()).collect();
+    let mut newest_first: Vec<&AttemptRecord> = history.iter().collect();
+    newest_first
+        .sort_by(|a, b| (run_started(&b.run), &b.run, b.attempt).cmp(&(run_started(&a.run), &a.run, a.attempt)));
     let mut per_task: BTreeMap<&str, Vec<Item>> = BTreeMap::new();
-    for record in history.iter().rev() {
-        if record.driver != "reference" || !matches!(record.outcome, AttemptOutcome::Pass | AttemptOutcome::Fail) {
+    for record in newest_first {
+        if record.driver != "reference"
+            || !matches!(record.outcome, AttemptOutcome::Pass | AttemptOutcome::Fail)
+            || !trusted.contains(record.run.as_str())
+        {
             continue;
         }
         let Some(file) = discovery.tasks.iter().find(|t| t.task.id == record.task) else { continue };

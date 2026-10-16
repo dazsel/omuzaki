@@ -785,7 +785,8 @@ fn eval_rate(root: &Path, set: &str, sample: usize, rater: &str, port: u16) -> V
         println!("Nothing to rate: this week's limit of {} results is reached (or --sample is 0).", rate::WEEKLY_ITEMS);
         return Ok(true);
     }
-    let items = rate::sample::sample(&discovery, &eval::load_private(root)?, &history, &ratings, count);
+    let runs = history::read_runs(&status.join(history::RUNS_FILE))?;
+    let items = rate::sample::sample(&discovery, &eval::load_private(root)?, &history, &runs, &ratings, count);
     if items.is_empty() {
         println!("Nothing to rate: no unrated reference result of a task with questions for people.");
         return Ok(true);

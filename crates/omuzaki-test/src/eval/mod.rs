@@ -301,7 +301,18 @@ pub fn load_defaults(root: &Path) -> Result<Caps, EvalError> {
 pub fn load_private(root: &Path) -> Result<PrivateList, EvalError> {
     let path = root.join(provenance::PRIVATE_LIST_FILE);
     let bytes = fs::read(&path).map_err(io_err(&path))?;
-    parse(&bytes).map_err(|reason| EvalError::Config { path, reason })
+    let list: PrivateList = parse(&bytes).map_err(|reason| EvalError::Config { path: path.clone(), reason })?;
+    // A category that is missing or misspelt would match nothing and let private material through: refuse it. (`hashes`
+    // may be empty until the owner supplies them.)
+    for (key, empty) in [("names", list.names.is_empty()), ("prefixes", list.prefixes.is_empty())] {
+        if empty {
+            return Err(EvalError::Config {
+                path,
+                reason: format!("`{key}` is missing or empty: the private list would match nothing"),
+            });
+        }
+    }
+    Ok(list)
 }
 
 impl Discovery {

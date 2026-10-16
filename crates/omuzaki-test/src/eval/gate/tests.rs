@@ -397,3 +397,24 @@ fn an_invalid_last_night_does_not_hide_the_last_valid_one() {
     assert_eq!(report.suites[0].run, run_id(11, 0), "{:?}", report.suites[0]);
     assert!(report.suites[0].rate.is_some());
 }
+
+#[test]
+fn the_latest_night_is_the_latest_by_time_not_the_last_appended() {
+    // Twelve quiet nights, then the night of day 5 (a slow run) appended last with a rate of 0.
+    let mut all = Vec::new();
+    let mut runs = Vec::new();
+    for day in 1..=12 {
+        all.extend(night(day, "t", 9, 10));
+        runs.push(run_record(day, "m"));
+    }
+    let slow = night(5, "t", 0, 10);
+    all.retain(|a| a.run != run_id(5, 0));
+    all.extend(slow);
+    let mut ordered = runs.clone();
+    let five = ordered.remove(4);
+    ordered.push(five);
+    let report = gate_of(&all, &ordered);
+    assert_eq!(report.suites.len(), 1);
+    assert_eq!(report.suites[0].run, run_id(12, 0), "{:?}", report.suites[0]);
+    assert!(!report.suites[0].regression);
+}

@@ -5,7 +5,7 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use super::*;
 use crate::eval::clock::utc_minute;
-use crate::eval::history::{SCHEMA, Usage};
+use crate::eval::history::{Counts, Oracles, RunRecord, SCHEMA, Spend, Usage};
 use crate::eval::provenance::{EvalSet, PrivateList};
 use crate::eval::rate::Answer;
 use crate::eval::{Discovery, FixtureFile, TaskFile};
@@ -93,6 +93,30 @@ fn record(task: &str, attempt: u32, outcome: AttemptOutcome, driver: &str) -> At
     }
 }
 
+/// A finished, valid run record for every run the history names.
+fn runs_of(history: &[AttemptRecord]) -> Vec<RunRecord> {
+    let ids: std::collections::BTreeSet<&str> = history.iter().map(|a| a.run.as_str()).collect();
+    ids.into_iter().map(|id| run_record(id, true)).collect()
+}
+
+fn run_record(id: &str, valid: bool) -> RunRecord {
+    RunRecord {
+        v: SCHEMA,
+        run: id.to_owned(),
+        kind: "nightly".to_owned(),
+        driver: "reference".to_owned(),
+        model: Some("m".to_owned()),
+        commit: "c".to_owned(),
+        tasks_run: Vec::new(),
+        tasks_skipped: Vec::new(),
+        attempts: Counts::default(),
+        oracles: Oracles::default(),
+        spend: Spend::default(),
+        wall_ms: 0,
+        valid,
+    }
+}
+
 fn rated(item: &str, at: &str) -> Rating {
     Rating {
         item: item.to_owned(),
@@ -119,13 +143,13 @@ fn the_sample_takes_one_task_after_another_so_none_fills_it() {
     for attempt in 1..=2 {
         history.push(record("b.two", attempt, AttemptOutcome::Fail, "reference"));
     }
-    let sample = sample(&discovery(), &PrivateList::default(), &history, &[], 4);
+    let sample = sample(&discovery(), &PrivateList::default(), &history, &runs_of(&history), &[], 4);
     assert_eq!(ids(&sample), ["a.one#4", "b.two#2", "a.one#3", "b.two#1"]);
     assert_eq!(sample[1].questions, ["Is it blue?", "Is it tall?"]);
     assert_eq!(sample[0].prompt, "Prompt of a.one.");
     assert_eq!(sample[0].id, "2026-10-13T1000Z-nightly/a.one/4");
     // Asked for more than there are, it returns what there is.
-    assert_eq!(super::sample(&discovery(), &PrivateList::default(), &history, &[], 50).len(), 6);
+    assert_eq!(super::sample(&discovery(), &PrivateList::default(), &history, &runs_of(&history), &[], 50).len(), 6);
 }
 
 #[test]
@@ -141,12 +165,22 @@ fn rated_items_and_unfit_attempts_are_skipped() {
     ];
     let already = rated("2026-10-13T1000Z-nightly/a.one/2", "2026-10-13T10:00Z");
     assert_eq!(
-        ids(&sample(&discovery(), &PrivateList::default(), &history, std::slice::from_ref(&already), 10)),
+        ids(&sample(
+            &discovery(),
+            &PrivateList::default(),
+            &history,
+            &runs_of(&history),
+            std::slice::from_ref(&already),
+            10
+        )),
         ["a.one#1"]
     );
     history.truncate(2);
-    assert_eq!(ids(&sample(&discovery(), &PrivateList::default(), &history, &[already], 10)), ["a.one#1"]);
-    assert_eq!(sample(&discovery(), &PrivateList::default(), &history, &[], 0).len(), 0);
+    assert_eq!(
+        ids(&sample(&discovery(), &PrivateList::default(), &history, &runs_of(&history), &[already], 10)),
+        ["a.one#1"]
+    );
+    assert_eq!(sample(&discovery(), &PrivateList::default(), &history, &runs_of(&history), &[], 0).len(), 0);
 }
 
 #[test]
@@ -169,7 +203,8 @@ fn a_result_of_a_task_that_has_changed_since_is_not_asked_about() {
     let mut old = record("a.one", 1, AttemptOutcome::Pass, "reference");
     old.task_hash = "b3:of-an-earlier-task".to_owned();
     let now = record("a.one", 2, AttemptOutcome::Pass, "reference");
-    let found = sample(&discovery(), &PrivateList::default(), &[old, now], &[], 10);
+    let found =
+        sample(&discovery(), &PrivateList::default(), &[old.clone(), now.clone()], &runs_of(&[old, now]), &[], 10);
     assert_eq!(ids(&found), ["a.one#2"]);
 }
 
@@ -185,15 +220,44 @@ fn results_of_tasks_built_from_test_only_or_unresolved_material_are_not_asked_ab
         r.task_hash = hash(d);
         [r]
     };
-    assert_eq!(sample(&fine, &none, &history_for(&fine), &[], 5).len(), 1);
+    assert_eq!(sample(&fine, &none, &history_for(&fine), &runs_of(&history_for(&fine)), &[], 5).len(), 1);
     for (kind, split) in [("real", "dev"), ("synthetic", "holdout")] {
         let d = discovery_with_set(kind, split);
-        assert_eq!(sample(&d, &none, &history_for(&d), &[], 5).len(), 0, "{kind} {split}");
+        assert_eq!(sample(&d, &none, &history_for(&d), &runs_of(&history_for(&d)), &[], 5).len(), 0, "{kind} {split}");
     }
     let mut unknown = discovery_with_set("synthetic", "dev");
     unknown.sets.clear();
-    assert_eq!(sample(&unknown, &none, &history_for(&unknown), &[], 5).len(), 0);
+    assert_eq!(sample(&unknown, &none, &history_for(&unknown), &runs_of(&history_for(&unknown)), &[], 5).len(), 0);
     let mut no_fixture = discovery();
     no_fixture.fixtures.clear();
-    assert_eq!(sample(&no_fixture, &none, &history_for(&no_fixture), &[], 5).len(), 0);
+    assert_eq!(
+        sample(&no_fixture, &none, &history_for(&no_fixture), &runs_of(&history_for(&no_fixture)), &[], 5).len(),
+        0
+    );
+}
+
+#[test]
+fn only_attempts_of_finished_valid_runs_are_asked_about() {
+    let mut other = record("a.one", 1, AttemptOutcome::Pass, "reference");
+    other.run = "2026-10-12T1000Z-nightly".to_owned();
+    let mut cut_short = record("a.one", 1, AttemptOutcome::Pass, "reference");
+    cut_short.run = "2026-10-11T1000Z-nightly".to_owned();
+    let valid = record("a.one", 2, AttemptOutcome::Pass, "reference");
+    let history = [other.clone(), cut_short, valid.clone()];
+    // The first run is invalid, the second never wrote a record, the third is fine.
+    let runs = [run_record(&other.run, false), run_record(&valid.run, true)];
+    let found = sample(&discovery(), &PrivateList::default(), &history, &runs, &[], 10);
+    assert_eq!(found.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(), [format!("{}/a.one/2", valid.run)]);
+}
+
+#[test]
+fn a_tasks_results_come_newest_run_first_whatever_order_they_were_appended_in() {
+    let mut old = record("a.one", 1, AttemptOutcome::Pass, "reference");
+    old.run = "2026-10-01T1000Z-nightly".to_owned();
+    let mut new = record("a.one", 1, AttemptOutcome::Pass, "reference");
+    new.run = "2026-10-13T1000Z-nightly".to_owned();
+    // The slow old run was appended last.
+    let history = [new.clone(), old.clone()];
+    let found = sample(&discovery(), &PrivateList::default(), &history, &runs_of(&history), &[], 1);
+    assert_eq!(found[0].run, new.run);
 }

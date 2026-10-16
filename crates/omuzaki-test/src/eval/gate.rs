@@ -399,7 +399,9 @@ fn suite_gates(reference: &[&AttemptRecord], runs: &[RunRecord], non_provisional
         .collect();
     let mut out = Vec::new();
     for model in models {
-        let nights = nightly(model);
+        let mut nights = nightly(model);
+        // Runs are appended as they finish, not as they began: the latest night is the latest by its start.
+        nights.sort_by(|a, b| (run_started(&a.run), &a.run).cmp(&(run_started(&b.run), &b.run)));
         let rates: Vec<Option<f64>> =
             nights.iter().map(|run| night_rate(reference, &run.run, model, non_provisional)).collect();
         let Some((latest, earlier)) = nights.split_last() else { continue };

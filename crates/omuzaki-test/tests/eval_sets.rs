@@ -27,7 +27,7 @@ impl World {
         let ws = tempfile::tempdir().unwrap();
         write(
             &ws.path().join("docs/licensing/private-material.toml"),
-            "prefixes = ['characters/example-private/']\nhashes = []\n",
+            "names = ['example-private']\nprefixes = ['characters/example-private/']\nhashes = []\n",
         );
         fs::create_dir_all(ws.path().join("crates/c")).unwrap();
         Self { ws, store: tempfile::tempdir().unwrap() }
@@ -151,7 +151,7 @@ fn add_refuses_an_item_on_the_private_list_by_path_or_by_hash_and_never_stores_i
     let hash = ContentHash::of(b"renamed copy");
     write(
         &world.ws.path().join("docs/licensing/private-material.toml"),
-        &format!("prefixes = []\nhashes = ['b3:{hash}']\n"),
+        &format!("names = ['example-private']\nprefixes = ['characters/none/']\nhashes = ['b3:{hash}']\n"),
     );
     let copy = world.file("elsewhere", "b.png", b"renamed copy");
     let refused = add_synthetic(&world, "sheets-1", &copy, NEW);
