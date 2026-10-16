@@ -649,3 +649,31 @@ fn a_pending_stop_that_reverts_every_edit_records_no_undo_step() {
         "nothing was kept, so there is no step to undo"
     );
 }
+
+#[test]
+fn a_commit_that_lands_while_stop_cancels_the_call_still_records_its_step() {
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let rig = Rig::with(
+        script(vec![call_turn("", &[("c1", "face_set_profile", "{}")]), say_turn("done")]),
+        RigOptions::default(),
+        |sessions| {
+            let server = standard_server(sessions);
+            let sessions = Arc::clone(sessions);
+            // The executor applies the commit, and the answer to the host is still on its way when Stop arrives.
+            server.add(tool("tx_commit", "tx.commit", "builtin", false), {
+                let gate = Arc::clone(&gate);
+                move |_, _| {
+                    sessions.commit_open_tx();
+                    Outcome::text("committed").held(&gate)
+                }
+            });
+            server
+        },
+    );
+    rig.host.send(UserMessage::new("make it round")).unwrap();
+    Rig::wait_for("the commit", || rig.server.called("tx_commit") == 1);
+    rig.host.stop();
+    rig.until_done(0.0);
+    let steps = rig.sink.entries().iter().filter(|e| matches!(e, Entry::Step { .. })).count();
+    assert_eq!(steps, 1, "the undo step the executor made is recorded");
+}

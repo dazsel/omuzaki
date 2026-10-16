@@ -50,6 +50,8 @@ pub(crate) struct AnswerRun {
     pub compacted: bool,
     /// Bytes of the answer's text that compaction folded into the summary, so are no longer in the history.
     pub compacted_text: usize,
+    /// The session's step count just before the answer's commit was sent, if it was.
+    pub commit_base: Option<u32>,
 }
 
 impl Worker {
@@ -66,15 +68,8 @@ impl Worker {
             msg_from: self.messages.len(),
             compacted: false,
             compacted_text: 0,
+            commit_base: None,
         };
-        // A transaction the last answer could not close is still open in the executor: this answer carries it, and
-        // commits it with whatever it adds. If the executor no longer has one there is nothing to carry.
-        if std::mem::take(&mut self.tx_unconfirmed)
-            && let Some(open) = self.session_info().and_then(|info| info.open_tx)
-        {
-            run.tx = Some(open);
-            run.tx_open = true;
-        }
         let result = match self.drive(&mut run, msg) {
             // Stop pressed as the answer was finishing still stops it: the queue was already cut.
             Ok(()) | Err(Flow::Fail(_)) if self.shared.stopping() => Err(Flow::Stopped),
@@ -85,6 +80,7 @@ impl Worker {
     }
 
     fn drive(&mut self, run: &mut AnswerRun, msg: &UserMessage) -> Result<(), Flow> {
+        self.close_prior_tx(run)?;
         self.plan.clear();
         self.ensure_tools()?;
         self.admit(msg);
@@ -197,6 +193,37 @@ impl Worker {
                     }
                 },
             }
+        }
+    }
+
+    /// One message, one undo step: a transaction the last answer could not close (a refused commit, a Stop the executor
+    /// did not take) is closed here, before this message is admitted, so this answer never joins it. It is committed as
+    /// its own step; if the executor refuses again it is discarded, and the person is told.
+    fn close_prior_tx(&mut self, run: &mut AnswerRun) -> Result<(), Flow> {
+        if !std::mem::take(&mut self.tx_unconfirmed) {
+            return Ok(());
+        }
+        // The executor may have closed it since (a session that ended rolls it back): then there is nothing to close.
+        let Some(open) = self.session_info().and_then(|info| info.open_tx) else {
+            return Ok(());
+        };
+        run.tx = Some(open);
+        run.tx_open = true;
+        if self.commit_tx(run)? {
+            self.write_step(run, "");
+            run.tx = None;
+            return Ok(());
+        }
+        match self.rollback_tx(run)? {
+            Some(reply) if !reply.is_error => {
+                self.shared.emit(AssistantEvent::Error(HostError::Mcp(
+                    "the changes of the previous answer could not be kept as an undo step and were discarded".into(),
+                )));
+                Ok(())
+            }
+            _ => Err(Flow::Fail(HostError::Mcp(
+                "the changes of the previous answer could neither be committed nor discarded; try again".into(),
+            ))),
         }
     }
 

@@ -94,6 +94,8 @@ impl Worker {
         if !run.tx_open {
             return Ok(true);
         }
+        // Stop can cancel this call after the executor has applied it; the step count tells then.
+        run.commit_base = self.session_info().map(|info| info.steps);
         let reply = self.call_plain("tx_commit", None)?;
         if reply.is_error {
             self.shared.emit(AssistantEvent::Error(HostError::Mcp(crate::content::plain_text(&reply.blocks))));

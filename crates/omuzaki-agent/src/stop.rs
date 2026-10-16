@@ -56,7 +56,9 @@ impl Worker {
                 // The executor closed it by itself: only a transaction it committed made an undo step. One it reverted
                 // to nothing (every edit undone) did not.
                 Some(StopStep::Pending) => self.session_info().filter(|info| info.steps > steps_before).map(|_| tx.tx),
-                _ => None,
+                // The commit was already on its way when Stop cancelled the call, and the executor applied it first:
+                // the transaction is closed as a real undo step the host never saw confirmed.
+                _ => run.commit_base.zip(self.session_info()).filter(|(base, info)| info.steps > *base).map(|_| tx.tx),
             };
             if committed.is_some() {
                 self.write_step(run, " (stopped)");

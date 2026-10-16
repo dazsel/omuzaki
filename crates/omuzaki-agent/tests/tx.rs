@@ -10,6 +10,7 @@ use std::sync::Arc;
 use common::*;
 use omuzaki_agent_api::Assistant;
 use omuzaki_agent_api::entry::Entry;
+use omuzaki_agent_api::error::HostError;
 use omuzaki_agent_api::event::AssistantEvent;
 use omuzaki_agent_api::message::UserMessage;
 use omuzaki_llm_api::message::ContentBlock;
@@ -168,4 +169,61 @@ fn a_transaction_the_executor_would_not_commit_is_kept_and_committed_by_the_next
     assert_eq!(rig.server.called("tx_commit"), 2, "the next answer tried again");
     assert!(rig.sessions.open_tx().is_none());
     assert_eq!(rig.sink.entries().iter().filter(|e| matches!(e, Entry::Step { .. })).count(), 1);
+}
+
+#[test]
+fn the_next_message_never_joins_a_transaction_the_last_one_left_open() {
+    let rig = Rig::with(
+        script(vec![
+            call_turn("", &[("c1", "face_set_profile", "{}")]),
+            say_turn("done"),
+            call_turn("", &[("c2", "face_set_profile", "{}")]),
+            say_turn("done again"),
+        ]),
+        RigOptions::default(),
+        |sessions| {
+            let server = standard_server(sessions);
+            let sessions = Arc::clone(sessions);
+            server.add(tool("tx_commit", "tx.commit", "builtin", false), move |_, call| {
+                if call == 0 {
+                    return Outcome::failure("the project changed; cannot commit");
+                }
+                sessions.commit_open_tx();
+                Outcome::text("tx committed")
+            });
+            server
+        },
+    );
+    rig.say("make it round", 0.0);
+    rig.say("and wider", 0.0);
+    let steps: Vec<String> = rig
+        .sink
+        .entries()
+        .into_iter()
+        .filter_map(|e| if let Entry::Step { label, .. } = e { Some(label) } else { None })
+        .collect();
+    assert_eq!(steps.len(), 2, "one step per message: {steps:?}");
+    assert_eq!(rig.server.called("tx_begin"), 2, "the second message opened its own transaction");
+    assert!(rig.sessions.open_tx().is_none());
+}
+
+#[test]
+fn a_transaction_that_cannot_be_committed_twice_is_discarded_and_the_person_is_told() {
+    let rig = Rig::with(
+        script(vec![call_turn("", &[("c1", "face_set_profile", "{}")]), say_turn("done"), say_turn("fine")]),
+        RigOptions::default(),
+        |sessions| {
+            let server = standard_server(sessions);
+            server.add_fixed(tool("tx_commit", "tx.commit", "builtin", false), Outcome::failure("cannot commit"));
+            server
+        },
+    );
+    rig.say("make it round", 0.0);
+    let events = rig.say("thanks", 0.0);
+    assert!(
+        events.iter().any(|e| matches!(e, AssistantEvent::Error(HostError::Mcp(t)) if t.contains("discarded"))),
+        "{events:?}"
+    );
+    assert_eq!(rig.server.called("tx_rollback"), 1);
+    assert!(rig.sessions.open_tx().is_none());
 }
