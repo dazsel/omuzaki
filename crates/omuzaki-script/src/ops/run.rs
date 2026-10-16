@@ -219,7 +219,8 @@ fn replay(
     let mode = if dry_run { Mode::DryRun } else { Mode::Apply };
     let started = clock.now().0;
     let mut plans = Vec::new();
-    let mut plan_bytes = 0_usize;
+    // The size of the JSON array of plans, starting at its two brackets.
+    let mut plan_bytes = 2_usize;
     for (index, step) in steps.iter().enumerate() {
         job.checkpoint("macro", index as f32 / steps.len() as f32)?;
         let outcome = job.call(&step.op, step.args.clone(), mode).map_err(|error| step_failed(index, step, error))?;
@@ -232,7 +233,10 @@ fn replay(
             let planned = json!({ "op": step.op, "args": step.args, "plan": outcome.plan });
             // The plans are held to the result limit together, as a script's are: a dry run of thousands of steps
             // would otherwise answer with all of them.
-            plan_bytes = plan_bytes.saturating_add(serde_json::to_vec(&planned).map_or(usize::MAX, |json| json.len()));
+            let comma = usize::from(!plans.is_empty());
+            plan_bytes = plan_bytes
+                .saturating_add(serde_json::to_vec(&planned).map_or(usize::MAX, |json| json.len()))
+                .saturating_add(comma);
             if plan_bytes > limits.result_bytes {
                 return Err(limit_error(
                     LimitKind::Result,

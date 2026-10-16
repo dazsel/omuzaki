@@ -272,6 +272,24 @@ fn dry_run_plans_are_bounded_like_the_result() {
 }
 
 #[test]
+#[allow(clippy::result_large_err)] // the closure returns the run's own error
+fn the_plans_count_their_own_brackets_and_commas_against_the_result_limit() {
+    let three = format!("{EDIT} {EDIT} {EDIT}");
+    let plans_json = |limits: Limits| {
+        let mut dry = request(&three);
+        dry.dry_run = true;
+        let (_, result) = run_with(dry, &Flag::default(), limits, FakeRunner::default());
+        result.map(|outcome| serde_json::to_vec(&outcome.plans).expect("serialises").len())
+    };
+    let exact = plans_json(Limits::console()).expect("fits the console's limit");
+    // Exactly the size of the serialized array is allowed; one byte less is not.
+    let at = Limits { result_bytes: exact, ..Limits::console() };
+    assert_eq!(plans_json(at).expect("exactly the limit"), exact);
+    let under = Limits { result_bytes: exact - 1, ..Limits::console() };
+    assert_eq!(plans_json(under).expect_err("one byte over").kind, limit(LimitKind::Result));
+}
+
+#[test]
 fn a_cancel_during_the_last_call_stops_the_commit() {
     let runner = FakeRunner::default();
     let flag = Arc::new(Flag::default());

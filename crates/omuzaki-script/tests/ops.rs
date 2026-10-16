@@ -677,6 +677,31 @@ fn replay_holds_a_macro_to_the_call_limit() {
 }
 
 #[test]
+fn a_saved_macros_plans_count_their_brackets_and_commas_against_the_result_limit() {
+    // Find the longest macro whose dry run fits the 64 KiB result limit, then check that the plans it answers with,
+    // serialized as the array they are, are within the limit too: the framing is counted.
+    let doc = |count: usize| {
+        let steps: Vec<Value> =
+            (0..count).map(|_| json!({ "op": "fake.set", "args": { "path": "a", "value": "x".repeat(40) } })).collect();
+        json!({ "scripts": { "m": { "name": "M", "kind": "macro", "steps": steps } } })
+    };
+    let run =
+        |count: usize| work(json!({ "id": "m", "dry_run": true }), doc(count), &Calls::default(), &Signal::default());
+    let mut largest = 0;
+    for count in 1..2_000 {
+        if run(count).is_err() {
+            break;
+        }
+        largest = count;
+    }
+    assert!(largest > 100, "the loop found a boundary: {largest}");
+    let plans = &run(largest).expect("fits")["plans"];
+    let length = serde_json::to_vec(plans).expect("serialises").len();
+    assert!(length <= 65_536, "{largest} steps answer with {length} bytes of plans");
+    assert!(run(largest + 1).is_err());
+}
+
+#[test]
 fn replay_stops_at_the_seconds_it_was_given() {
     // The clock is fake: each call moves it 0.6 s, and 1 s is allowed, so it stops after the second.
     let clock = Arc::new(FakeClock::new(Seconds(0.0)));

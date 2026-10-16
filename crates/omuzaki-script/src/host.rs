@@ -177,14 +177,18 @@ impl Run {
                 let value = outcome.plan.output.clone().unwrap_or(Value::Null);
                 if dry {
                     let planned = PlannedCall { op: op.to_owned(), args, plan: outcome.plan };
-                    // The plans are bounded like the result: together they may be no larger than `result_bytes` of
-                    // JSON, or the run stops (a dry run of 10,000 calls would otherwise hold 10,000 plans).
+                    let mut plans = self.plans.lock().unwrap_or_else(PoisonError::into_inner);
+                    // The plans are bounded like the result: the JSON array of them, brackets and commas included,
+                    // may be no larger than `result_bytes`, or the run stops (a dry run of 10,000 calls would
+                    // otherwise hold 10,000 plans). `plan_bytes` starts at the two brackets.
+                    let comma = usize::from(!plans.is_empty());
                     let size = serde_json::to_vec(&planned).map_or(usize::MAX, |json| json.len());
+                    let size = size.saturating_add(comma);
                     let total = self.plan_bytes.fetch_add(size, Ordering::SeqCst).saturating_add(size);
                     if total > self.limits.result_bytes {
                         return Err(terminate_at(Stop::Limit(LimitKind::Result), at));
                     }
-                    self.plans.lock().unwrap_or_else(PoisonError::into_inner).push(planned);
+                    plans.push(planned);
                 }
                 Ok(value)
             }
@@ -458,7 +462,7 @@ impl ScriptHost {
             request,
             sent: AtomicU32::new(0),
             reads: AtomicU32::new(0),
-            plan_bytes: AtomicUsize::new(0),
+            plan_bytes: AtomicUsize::new(2),
             output: Mutex::new(Output::default()),
             plans: Mutex::new(Vec::new()),
         });
@@ -696,7 +700,7 @@ mod tests {
             },
             sent: AtomicU32::new(0),
             reads: AtomicU32::new(0),
-            plan_bytes: AtomicUsize::new(0),
+            plan_bytes: AtomicUsize::new(2),
             output: Mutex::new(Output::default()),
             plans: Mutex::new(Vec::new()),
         })
