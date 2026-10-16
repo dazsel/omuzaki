@@ -1,17 +1,18 @@
 //! `VRMC_vrm` 1.0, `VRMC_springBone` and `VRMC_node_constraint` into the scene's avatar layer.
 
-use omuzaki_core::glam::Vec3;
+use omuzaki_core::glam::{Quat, Vec3};
 use omuzaki_io_api::{
     AimAxis, Avatar, Collider, ColliderGroup, ColliderShape, ColorBind, ColorBindKind, ConstraintKind, Expression,
-    ExpressionName, Finding, FirstPerson, FirstPersonFlag, HumanBoneName, IoError, IoScene, LookAt, LookAtKind,
-    MaterialIx, MeshAnnotation, MorphBind, NodeConstraint, NodeIx, Override, PresetExpression, RangeMap, Report,
-    RollAxis, SpringChain, SpringJoint, UvBind,
+    ExpressionName, Finding, FirstPerson, FirstPersonFlag, HumanBoneName, IoError, IoScene, JointLimit, LookAt,
+    LookAtKind, MaterialIx, MeshAnnotation, MorphBind, NodeConstraint, NodeIx, Override, PresetExpression, RangeMap,
+    Report, RollAxis, SpringChain, SpringJoint, UvBind,
 };
 use serde::Deserialize;
 
 use super::wire::{
-    WireAimAxis, WireColorType, WireExpression, WireExpressions, WireFirstPersonType, WireLookAt, WireLookAtType,
-    WireNodeConstraint, WireOverride, WireRangeMap, WireRollAxis, WireShape, WireSpringBone, WireVrm,
+    EXTENDED_COLLIDER, LIMIT, WireAimAxis, WireCollider, WireColorType, WireExpression, WireExpressions, WireExtShape,
+    WireFirstPersonType, WireLimit, WireLookAt, WireLookAtType, WireNodeConstraint, WireOverride, WireRangeMap,
+    WireRollAxis, WireShape, WireSpringBone, WireSpringLimit, WireVrm,
 };
 use super::{CONSTRAINT, EXTENSION, SPRING_BONE};
 use crate::avatar;
@@ -183,42 +184,8 @@ fn spring_bones(gltf: &Document, av: &mut Avatar, report: &mut Report) -> Result
     let at = format!("/extensions/{SPRING_BONE}");
     let wire = WireSpringBone::deserialize(body).map_err(|e| invalid("VRMC_springBone is invalid", &at, &e))?;
     let sb = &mut av.spring_bones;
-    let note = |what: &str, report: &mut Report| {
-        report.push(
-            Finding::info(
-                "gltf.extension_dropped",
-                format!("{what} is not modelled; the base shape or the plain joint is used"),
-            )
-            .at(&at),
-        );
-    };
-    if wire.colliders.iter().any(|c| c.extensions.contains_key("VRMC_springBone_extended_collider")) {
-        note("VRMC_springBone_extended_collider (inside-out and plane colliders)", report);
-    }
-    if wire.springs.iter().flat_map(|s| &s.joints).any(|j| j.extensions.contains_key("VRMC_springBone_limit")) {
-        note("VRMC_springBone_limit", report);
-    }
     for (i, c) in wire.colliders.iter().enumerate() {
-        let shape = match &c.shape {
-            Some(WireShape { sphere: Some(s), .. }) => {
-                ColliderShape::Sphere { offset: Vec3::from_array(s.offset), radius: s.radius }
-            }
-            Some(WireShape { capsule: Some(k), .. }) => ColliderShape::Capsule {
-                offset: Vec3::from_array(k.offset),
-                radius: k.radius,
-                tail: Vec3::from_array(k.tail),
-            },
-            _ => {
-                report.push(
-                    Finding::warning(
-                        "vrm.collider_shapeless",
-                        "a collider has no sphere or capsule shape; an empty sphere stands in",
-                    )
-                    .at(format!("{at}/colliders/{i}")),
-                );
-                ColliderShape::Sphere { offset: Vec3::ZERO, radius: 0.0 }
-            }
-        };
+        let shape = collider_shape(c, &format!("{at}/colliders/{i}"), report);
         sb.colliders.push(Collider { node: NodeIx(crate::ix32(c.node)), shape });
     }
     for g in &wire.collider_groups {
@@ -227,17 +194,29 @@ fn spring_bones(gltf: &Document, av: &mut Avatar, report: &mut Report) -> Result
             colliders: g.colliders.iter().map(|&c| crate::ix32(c)).collect(),
         });
     }
-    for s in &wire.springs {
+    for (si, s) in wire.springs.iter().enumerate() {
+        let last = s.joints.len().saturating_sub(1);
         let joints = s
             .joints
             .iter()
-            .map(|j| {
+            .enumerate()
+            .map(|(ji, j)| {
                 let mut out = SpringJoint::new(NodeIx(crate::ix32(j.node)));
                 out.hit_radius = j.hit_radius.unwrap_or(out.hit_radius);
                 out.stiffness = j.stiffness.unwrap_or(out.stiffness);
                 out.gravity_power = j.gravity_power.unwrap_or(out.gravity_power);
                 out.gravity_dir = j.gravity_dir.map_or(out.gravity_dir, Vec3::from_array);
                 out.drag_force = j.drag_force.unwrap_or(out.drag_force);
+                if let Some(body) = j.extensions.get(LIMIT) {
+                    let here = format!("{at}/springs/{si}/joints/{ji}");
+                    if ji == last {
+                        // `VRMC_springBone_limit-1.0`, "Last joint": the last joint is only a tail, so readers ignore it.
+                        let msg = "a limit on the last joint of a chain is ignored: that joint is only a tail";
+                        report.push(Finding::info("vrm.limit_on_tail_ignored", msg).at(here));
+                    } else {
+                        out.limit = joint_limit(body, &here, report);
+                    }
+                }
                 out
             })
             .collect();
@@ -249,6 +228,165 @@ fn spring_bones(gltf: &Document, av: &mut Avatar, report: &mut Report) -> Result
         });
     }
     Ok(())
+}
+
+/// The scene shape of a collider. `VRMC_springBone_extended_collider-1.0` wins when the collider carries it, because
+/// the base `shape` is then only the fallback the spec asks exporters to write for readers without the extension. An
+/// extension that cannot be used is reported and the base shape stands.
+fn collider_shape(c: &WireCollider, at: &str, report: &mut Report) -> ColliderShape {
+    if let Some(body) = c.extensions.get(EXTENDED_COLLIDER) {
+        match extended_shape(body, at, report) {
+            Ok(Some(shape)) => return shape,
+            Ok(None) => {}
+            Err(why) => report.push(
+                Finding::warning(
+                    "vrm.collider_dropped",
+                    format!("{EXTENDED_COLLIDER} is unusable ({why}); the collider's base shape is used"),
+                )
+                .at(at),
+            ),
+        }
+    }
+    match &c.shape {
+        Some(WireShape { sphere: Some(s), .. }) => {
+            ColliderShape::Sphere { offset: Vec3::from_array(s.offset), radius: s.radius }
+        }
+        Some(WireShape { capsule: Some(k), .. }) => ColliderShape::Capsule {
+            offset: Vec3::from_array(k.offset),
+            radius: k.radius,
+            tail: Vec3::from_array(k.tail),
+        },
+        _ => {
+            report.push(
+                Finding::warning(
+                    "vrm.collider_shapeless",
+                    "a collider has no sphere or capsule shape; an empty sphere stands in",
+                )
+                .at(at),
+            );
+            ColliderShape::Sphere { offset: Vec3::ZERO, radius: 0.0 }
+        }
+    }
+}
+
+/// How far a plane normal's length may be from 1 before the reader reports that it normalised it.
+const UNIT_TOLERANCE: f32 = 1e-3;
+
+fn all_finite(values: &[f32]) -> bool {
+    values.iter().all(|v| v.is_finite())
+}
+
+/// The shape an extended collider describes, `None` when the extension has no `shape` (the spec makes it optional),
+/// or why the extension cannot be used. Follows `VRMC_springBone_extended_collider-1.0`: "Shape" (exactly one of
+/// sphere, capsule, plane; `inside` picks the inside variants) and "`ShapePlane`" (the normal is unit length).
+fn extended_shape(body: &serde_json::Value, at: &str, report: &mut Report) -> Result<Option<ColliderShape>, String> {
+    let wire = super::wire::WireExtendedCollider::deserialize(body).map_err(|e| e.to_string())?;
+    let Some(shape) = wire.shape else { return Ok(None) };
+    let WireExtShape { sphere, capsule, plane } = shape;
+    match (sphere, capsule, plane) {
+        (Some(s), None, None) if all_finite(&s.offset) && s.radius.is_finite() && s.radius >= 0.0 => {
+            let (offset, radius) = (Vec3::from_array(s.offset), s.radius);
+            Ok(Some(if s.inside {
+                ColliderShape::SphereInside { offset, radius }
+            } else {
+                ColliderShape::Sphere { offset, radius }
+            }))
+        }
+        (None, Some(k), None)
+            if all_finite(&k.offset) && all_finite(&k.tail) && k.radius.is_finite() && k.radius >= 0.0 =>
+        {
+            let (offset, radius, tail) = (Vec3::from_array(k.offset), k.radius, Vec3::from_array(k.tail));
+            Ok(Some(if k.inside {
+                ColliderShape::CapsuleInside { offset, radius, tail }
+            } else {
+                ColliderShape::Capsule { offset, radius, tail }
+            }))
+        }
+        (None, None, Some(p)) if all_finite(&p.offset) && all_finite(&p.normal) => {
+            let normal = Vec3::from_array(p.normal);
+            let length = normal.length();
+            if length == 0.0 {
+                return Err("the plane's normal has no length".to_owned());
+            }
+            if (length - 1.0).abs() > UNIT_TOLERANCE {
+                let msg = format!("a plane collider's normal has length {length}; it was normalised");
+                report.push(Finding::warning("vrm.collider_normal_normalised", msg).at(at));
+            }
+            Ok(Some(ColliderShape::Plane { offset: Vec3::from_array(p.offset), normal: normal / length }))
+        }
+        (None, None, None) => Err("the shape has none of sphere, capsule and plane".to_owned()),
+        (Some(_), None, None) | (None, Some(_), None) | (None, None, Some(_)) => {
+            Err("the shape has a non-finite or negative number".to_owned())
+        }
+        _ => Err("the shape must be exactly one of sphere, capsule and plane".to_owned()),
+    }
+}
+
+/// A joint's limit, or `None` (with a warning) when the extension cannot be used. Follows `VRMC_springBone_limit-1.0`:
+/// "Limit" (exactly one of cone, hinge, spherical), "Ranges" (angles are at least 0; cone and hinge `angle` and
+/// spherical `pitch` stop at pi, spherical `yaw` at pi/2) and `rotation` (a unit quaternion).
+fn joint_limit(body: &serde_json::Value, at: &str, report: &mut Report) -> Option<JointLimit> {
+    let invalid = |why: &str, report: &mut Report| {
+        let msg = format!("{LIMIT} is unusable ({why}); the joint has no limit");
+        report.push(Finding::warning("vrm.limit_invalid", msg).at(at));
+    };
+    let wire = match WireSpringLimit::deserialize(body) {
+        Ok(w) => w,
+        Err(e) => {
+            invalid(&e.to_string(), report);
+            return None;
+        }
+    };
+    let WireLimit { cone, hinge, spherical } = wire.limit;
+    let mut clamped = false;
+    let mut clamp = |value: f32, cap: f32| {
+        clamped |= value > cap;
+        value.min(cap)
+    };
+    let pi = std::f32::consts::PI;
+    let limit = match (cone, hinge, spherical) {
+        (Some(c), None, None) if valid_angle(c.angle) => {
+            unit_rotation(c.rotation).map(|rotation| JointLimit::Cone { angle: clamp(c.angle, pi), rotation })
+        }
+        (None, Some(h), None) if valid_angle(h.angle) => {
+            unit_rotation(h.rotation).map(|rotation| JointLimit::Hinge { angle: clamp(h.angle, pi), rotation })
+        }
+        (None, None, Some(s)) if valid_angle(s.pitch) && valid_angle(s.yaw) => unit_rotation(s.rotation)
+            .map(|rotation| JointLimit::Spherical { pitch: clamp(s.pitch, pi), yaw: clamp(s.yaw, pi / 2.0), rotation }),
+        (None, None, None) => {
+            invalid("the limit has none of cone, hinge and spherical", report);
+            return None;
+        }
+        (Some(_), None, None) | (None, Some(_), None) | (None, None, Some(_)) => {
+            invalid("an angle is negative or not a number", report);
+            return None;
+        }
+        _ => {
+            invalid("the limit must be exactly one of cone, hinge and spherical", report);
+            return None;
+        }
+    };
+    if limit.is_none() {
+        invalid("the rotation is not a unit quaternion", report);
+        return None;
+    }
+    if clamped {
+        report.push(
+            Finding::info("vrm.limit_clamped", "a limit angle is past the spec's largest value and was clamped").at(at),
+        );
+    }
+    limit
+}
+
+/// The quaternion `[x, y, z, w]` normalised, if it is a unit quaternion within the tolerance.
+fn unit_rotation(r: [f32; 4]) -> Option<Quat> {
+    let q = Quat::from_array(r);
+    let length = q.length();
+    (all_finite(&r) && (length - 1.0).abs() <= UNIT_TOLERANCE).then(|| q / length)
+}
+
+fn valid_angle(a: f32) -> bool {
+    a.is_finite() && a >= 0.0
 }
 
 fn constraints(gltf: &Document, av: &mut Avatar, report: &mut Report) -> Result<(), IoError> {

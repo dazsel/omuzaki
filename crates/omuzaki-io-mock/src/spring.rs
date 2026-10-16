@@ -1,8 +1,9 @@
 //! The `VRMC_springBone` 1.0 extension, mock subset: colliders with sphere and capsule shapes, collider groups, and spring
 //! chains with their joints and centre node. Every joint parameter is written; one that a file leaves out reads back as
 //! the spec default, which is what [`SpringJoint::new`] gives. `VRMC_springBone_extended_collider` and
-//! `VRMC_springBone_limit` are not modelled: they are reported as dropped, as `omuzaki-io-vrm` reports them, and the base
-//! shape or the plain joint is kept.
+//! `VRMC_springBone_limit` are not modelled: the mock is the independent oracle and models only the base collider shapes
+//! (sphere and capsule), so it keeps reporting both extensions as dropped, though `omuzaki-io-vrm` reads and writes them;
+//! the base shape or the plain joint is kept.
 //!
 //! Chains and colliders refer to each other by index, which is the scene's own form. The mock does not check those
 //! indices itself: every import runs the scene's structural checks, and they name any index that points nowhere.
