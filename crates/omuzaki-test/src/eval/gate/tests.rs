@@ -379,3 +379,21 @@ fn the_window_is_the_latest_attempts_by_time_not_by_where_they_sit_in_the_file()
     let report = gate_of(&all, &[]);
     assert_eq!(only(&report).status, Status::Ok, "{:?}", only(&report));
 }
+
+#[test]
+fn an_invalid_last_night_does_not_hide_the_last_valid_one() {
+    // Eleven quiet nights at 90%, then a night at 0% whose run was invalid (too many errors): the suite verdict is for
+    // the last valid night, not "no verdict".
+    let mut all = Vec::new();
+    let mut runs = Vec::new();
+    for day in 1..=11 {
+        all.extend(night(day, "t", 9, 10));
+        runs.push(run_record(day, "m"));
+    }
+    all.extend(night(12, "t", 0, 10));
+    runs.push(RunRecord { valid: false, ..run_record(12, "m") });
+    let report = gate_of(&all, &runs);
+    assert_eq!(report.suites.len(), 1);
+    assert_eq!(report.suites[0].run, run_id(11, 0), "{:?}", report.suites[0]);
+    assert!(report.suites[0].rate.is_some());
+}

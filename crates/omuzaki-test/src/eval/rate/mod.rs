@@ -146,13 +146,48 @@ pub fn append_all(path: &Path, ratings: &[Rating]) -> Result<(), RateError> {
         lines.push_str(&serde_json::to_string(rating).map_err(|e| io_err(io::Error::other(e)))?);
         lines.push('\n');
     }
-    let mut file = OpenOptions::new().create(true).append(true).open(path).map_err(io_err)?;
+    let mut file = OpenOptions::new().read(true).append(true).create(true).open(path).map_err(io_err)?;
+    // A write that stopped half way left a last line with no newline. Cut it before writing on, or the retry would be
+    // glued to it and make a line that does not parse. (A complete rating that only lacks its newline is kept.)
+    let mut existing = Vec::new();
+    io::Read::read_to_end(&mut file, &mut existing).map_err(io_err)?;
+    if !existing.is_empty() && existing.last() != Some(&b'\n') {
+        let start = existing.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
+        if serde_json::from_slice::<Rating>(&existing[start..]).is_ok() {
+            lines.insert(0, '\n');
+        } else {
+            file.set_len(start as u64).map_err(io_err)?;
+        }
+    }
     file.write_all(lines.as_bytes()).map_err(io_err)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_torn_last_line_is_cut_before_the_next_write_and_a_whole_one_is_kept() {
+        let dir = std::env::temp_dir().join(format!("ratings-torn-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("r.jsonl");
+        let one = rating("i/1", "Q?", Answer::Yes);
+        let line = serde_json::to_string(&one).unwrap();
+        // A good line, then half of another.
+        fs::write(&path, format!("{line}\n{}", &line[..line.len() / 2])).unwrap();
+        append_all(&path, &[rating("i/2", "Q?", Answer::No)]).unwrap();
+        let read_back = read(&path).unwrap();
+        assert_eq!(read_back.iter().map(|r| r.item.as_str()).collect::<Vec<_>>(), ["i/1", "i/2"]);
+        // A whole rating that only lost its newline is not thrown away.
+        fs::write(&path, &line).unwrap();
+        append_all(&path, &[rating("i/3", "Q?", Answer::No)]).unwrap();
+        assert_eq!(read(&path).unwrap().len(), 2);
+        // Torn from the very first byte on.
+        fs::write(&path, &line[..10]).unwrap();
+        append_all(&path, &[rating("i/4", "Q?", Answer::No)]).unwrap();
+        assert_eq!(read(&path).unwrap().len(), 1);
+        fs::remove_dir_all(&dir).unwrap();
+    }
 
     fn rating(item: &str, question: &str, answer: Answer) -> Rating {
         Rating {

@@ -368,7 +368,7 @@ still gets attempts every few nights; the gate (section 8) reads a window of rec
 put `budget-history.jsonl` there too). Appended only; one JSON object per attempt:
 
 ```json
-{"v": 1, "run": "2026-10-13T10:00Z-nightly", "commit": "51b2322", "family": "task", "driver": "reference",
+{"v": 1, "run": "2026-10-13T1000Z-nightly", "commit": "51b2322", "family": "task", "driver": "reference",
  "model": "claude-haiku-5-5", "effort": "medium", "task": "face.more-oval", "task_version": 1,
  "task_hash": "b3:…", "feature": "CB-10", "attempt": 2,
  "outcome": "pass", "reason": null,
@@ -377,7 +377,7 @@ put `budget-history.jsonl` there too). Appended only; one JSON object per attemp
  "turns": 11, "tool_calls": 17, "tool_errors": 1, "retries": 0,
  "usage": {"input": 4210, "output": 9875, "cache_read": 512330, "cache_write": 61204}, "usd_micros": 31840,
  "wall_ms": 84120, "tools_hash": "b3:…", "prompt_hash": "b3:…", "harness": "0.1.0",
- "transcript": "evals/runs/2026-10-13T10:00Z-nightly/face.more-oval/2/"}
+ "transcript": "evals/runs/2026-10-13T1000Z-nightly/face.more-oval/2/"}
 ```
 
 `outcome` is one of:

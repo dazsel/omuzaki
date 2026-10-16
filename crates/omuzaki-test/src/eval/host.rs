@@ -155,6 +155,19 @@ impl Host {
     /// [`HostError::GrantsNotSupported`] unless `grants` are the agent default; [`HostError::Spawn`] when the binary does
     /// not start; otherwise as [`Host::with_runner`].
     pub fn binary(omuzaki: &Path, project: &Path, grants: &Grants) -> Result<Self, HostError> {
+        Self::binary_within(omuzaki, project, grants, STARTUP)
+    }
+
+    /// As [`Host::binary`], giving up on a child that has not connected and listed its tools within `startup`.
+    ///
+    /// # Errors
+    /// As [`Host::binary`]; [`HostError::Connection`] when the child does not answer in time.
+    pub fn binary_within(
+        omuzaki: &Path,
+        project: &Path,
+        grants: &Grants,
+        startup: Duration,
+    ) -> Result<Self, HostError> {
         if *grants != Grants::agent_default() {
             return Err(HostError::GrantsNotSupported);
         }
@@ -179,8 +192,8 @@ impl Host {
             return Err(spawn_error("the child's pipes are not open".to_owned()));
         };
         // A binary that never answers must not hang the run: past the limit the early return drops the child, which kills it.
-        let client = bounded(&runtime, STARTUP, "the connection", ().serve((stdout, stdin)))?;
-        let tools = bounded(&runtime, STARTUP, "the tool list", client.list_all_tools())?;
+        let client = bounded(&runtime, startup, "the connection", ().serve((stdout, stdin)))?;
+        let tools = bounded(&runtime, startup, "the tool list", client.list_all_tools())?;
         let reader = Reader::Project(project.to_owned());
         let start_doc = read_document(&reader)?;
         Ok(Self {
@@ -427,6 +440,20 @@ mod tests {
         ]));
         let names: Vec<String> = kept.iter().map(|(k, _)| k.to_string_lossy().into_owned()).collect();
         assert_eq!(names, ["PATH", "HOME", "LC_ALL", "OMUZAKI_ASSETS"]);
+    }
+
+    #[test]
+    fn a_wait_that_does_not_end_is_given_up_on_with_a_reason() {
+        let runtime = runtime().unwrap();
+        let never = std::future::pending::<Result<(), String>>();
+        let started = Instant::now();
+        let error = bounded(&runtime, Duration::from_millis(50), "the thing", never).unwrap_err().to_string();
+        assert!(error.contains("the thing did not complete within"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        let ok = bounded(&runtime, Duration::from_secs(5), "x", async { Ok::<_, String>(7) }).unwrap();
+        assert_eq!(ok, 7);
+        let failed = bounded(&runtime, Duration::from_secs(5), "x", async { Err::<(), _>("broke".to_owned()) });
+        assert!(failed.unwrap_err().to_string().contains("broke"));
     }
 
     #[test]

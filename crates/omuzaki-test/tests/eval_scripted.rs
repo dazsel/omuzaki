@@ -345,3 +345,20 @@ fn promote_writes_a_script_beside_its_task_and_never_replaces_one() {
     assert_eq!(common::code(&promote("run-2", "no.such.task")), 2);
     assert_eq!(common::code(&promote("Bad Name", "demo.counter")), 2);
 }
+
+/// A child that starts and never says a word: the host gives up, says why, and the child does not outlive it.
+#[cfg(unix)]
+#[test]
+fn a_binary_that_never_answers_ends_the_host_with_an_error_and_not_a_hang() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let silent = dir.path().join("silent");
+    std::fs::write(&silent, "#!/bin/sh\nexec sleep 60\n").unwrap();
+    std::fs::set_permissions(&silent, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let started = std::time::Instant::now();
+    let result =
+        Host::binary_within(&silent, dir.path(), &Grants::agent_default(), std::time::Duration::from_millis(300));
+    let Err(error) = result else { panic!("a silent child must not connect") };
+    assert!(error.to_string().contains("did not complete within"), "{error}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(20), "{:?}", started.elapsed());
+}

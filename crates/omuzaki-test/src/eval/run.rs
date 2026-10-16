@@ -32,7 +32,7 @@ use super::history::{
 use super::host::{Host, open_project_runner};
 use super::provenance::{PrivateList, fixture_refusals};
 use super::script::Script;
-use super::task::Caps;
+use super::task::{Caps, CheckKind};
 use super::{Discovery, TaskFile};
 
 /// The harness version recorded with every attempt.
@@ -224,6 +224,27 @@ pub fn run_scripted(
         return Err(RunError::Options(format!("run kind `{}` is not one of {}", options.kind, KINDS.join(", "))));
     }
     claim_run_id(options)?;
+    let result = run_claimed(discovery, defaults, private, options);
+    if result.is_err() {
+        release_run_id(options);
+    }
+    result
+}
+
+/// Lets go of a run id whose run failed: the evidence folder goes if it is still empty (a run that wrote something keeps
+/// its evidence and its id), and so does the scratch.
+fn release_run_id(options: &Options<'_>) {
+    // `remove_dir` only removes an empty folder.
+    drop(fs::remove_dir(options.out.join("runs").join(&options.run_id)));
+    drop(fs::remove_dir_all(options.scratch.join(&options.run_id)));
+}
+
+fn run_claimed(
+    discovery: &Discovery,
+    defaults: Caps,
+    private: &PrivateList,
+    options: &Options<'_>,
+) -> Result<RunReport, RunError> {
     let started = Instant::now();
     let mut selected: Vec<&TaskFile> = discovery.tasks.iter().filter(|f| options.select.picks(f)).collect();
     selected.sort_by(|a, b| a.task.id.cmp(&b.task.id));
@@ -381,6 +402,19 @@ fn refusal(discovery: &Discovery, private: &PrivateList, file: &TaskFile, option
             "check id `{}` cannot name a file (letters, digits, dots, dashes, underscores)",
             check.id
         )));
+    }
+    if options.store.is_none()
+        && file
+            .task
+            .checks
+            .iter()
+            .any(|c| matches!(c.kind, CheckKind::RenderDiff { .. } | CheckKind::RenderSame { .. }))
+    {
+        return Some(Refusal::Refused(
+            "it has a `render.*` check, and `eval run` has no asset store to fetch renders from until the stage render \
+             ops exist (#336)"
+                .to_owned(),
+        ));
     }
     let Some(fixture) = discovery.fixture(&file.task.fixture) else {
         return Some(Refusal::Refused(format!("unknown fixture `{}`", file.task.fixture)));

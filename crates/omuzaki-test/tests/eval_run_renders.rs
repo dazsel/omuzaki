@@ -10,7 +10,7 @@ use std::sync::Arc;
 use image::{ImageFormat, Rgba, RgbaImage};
 use omuzaki_doc_api::{DocPath, Patch};
 use omuzaki_ops_api::{Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo};
-use omuzaki_store_api::{Commercial, Provenance, Source, Store};
+use omuzaki_store_api::{Commercial, ContentHash, Provenance, Source, Store, StoreError};
 use omuzaki_store_mock::MemStore;
 use omuzaki_test::eval;
 use omuzaki_test::eval::provenance::PrivateList;
@@ -206,4 +206,106 @@ fn a_check_id_that_could_leave_the_evidence_folder_is_refused_by_the_run_and_by_
         ops: None,
     });
     assert!(found.iter().any(|f| f.message.contains("check id `../x`")), "{found:?}");
+}
+
+/// A store whose reads start failing after `ok_gets` of them: the checker's reads work, the runner's later ones do not.
+struct Flaky {
+    inner: MemStore,
+    gets: std::sync::atomic::AtomicUsize,
+    ok_gets: usize,
+}
+
+impl Store for Flaky {
+    fn put(&self, bytes: &[u8], provenance: Provenance) -> Result<ContentHash, StoreError> {
+        self.inner.put(bytes, provenance)
+    }
+    fn get(&self, hash: &ContentHash) -> Result<Vec<u8>, StoreError> {
+        if self.gets.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= self.ok_gets {
+            return Err(StoreError::Io("the disk went away".to_owned()));
+        }
+        self.inner.get(hash)
+    }
+    fn provenance(&self, hash: &ContentHash) -> Result<Provenance, StoreError> {
+        self.inner.provenance(hash)
+    }
+    fn contains(&self, hash: &ContentHash) -> bool {
+        self.inner.contains(hash)
+    }
+}
+
+fn look_workspace(before: &str, after: &str) -> tempfile::TempDir {
+    let ws = tempfile::tempdir().unwrap();
+    let dir = ws.path().join("crates/c/evals");
+    write(
+        &dir.join("fixtures/fx.toml"),
+        &format!(
+            "id = 'fx'\nsummary = 's'\nsteps = [{{ op = 'evaltest.set_shot', args = {{ address = '{before}' }} }}]\n"
+        ),
+    );
+    write(
+        &dir.join("look.toml"),
+        "id = 'demo.look'\nfeature = 'QG-03'\ntitle = 't'\nprompt = 'Make it brighter.'\nfixture = 'fx'\n\
+         scopes = ['read', 'edit:scene', 'render']\n\
+         [[check]]\nid = 'brighter'\nkind = 'render.diff'\nrender = { op = 'evaltest.shot' }\n\
+         region = [0.0, 0.0, 8.0, 8.0]\nexpect = { changed_fraction_at_least = 0.5 }\n",
+    );
+    write(
+        &dir.join("look.good.pass.jsonl"),
+        &format!("{{\"call\": \"evaltest_set_shot\", \"args\": {{\"address\": \"{after}\"}}}}\n"),
+    );
+    ws
+}
+
+fn options<'a>(
+    tmp: &Path,
+    store: Option<Arc<dyn Store>>,
+    no_items: &'a (dyn Fn(&eval::fixture::SetItemRef) -> Result<String, String> + Sync),
+) -> Options<'a> {
+    Options {
+        select: Selection::default(),
+        attempts: 1,
+        jobs: 1,
+        binary: None,
+        kind: "manual".to_owned(),
+        run_id: "2026-10-13T1000Z-manual".to_owned(),
+        commit: "c".to_owned(),
+        out: tmp.join("out"),
+        status: None,
+        scratch: tmp.join("scratch"),
+        item_path: no_items,
+        store,
+    }
+}
+
+#[test]
+fn a_render_check_is_refused_with_a_clear_reason_while_eval_run_has_no_store() {
+    let ws = look_workspace("omuzaki://render/a.png", "omuzaki://render/b.png");
+    let tmp = tempfile::tempdir().unwrap();
+    let discovery = eval::discover(ws.path()).unwrap();
+    let no_items = |_: &eval::fixture::SetItemRef| Err(String::new());
+    let caps = Caps { turns: 10, tool_calls: 20, wall_s: 60, tokens: 1000 };
+    let report =
+        run_scripted(&discovery, caps, &PrivateList::default(), &options(tmp.path(), None, &no_items)).unwrap();
+    assert_eq!(report.attempts.len(), 0);
+    assert!(report.refused.iter().any(|r| r.why.contains("no asset store")), "{:?}", report.refused);
+}
+
+#[test]
+fn a_run_that_fails_before_writing_anything_lets_go_of_its_id() {
+    let store = MemStore::new();
+    let (before, _) = store_png(&store, 40);
+    let (after, _) = store_png(&store, 200);
+    let ws = look_workspace(&before, &after);
+    let tmp = tempfile::tempdir().unwrap();
+    let discovery = eval::discover(ws.path()).unwrap();
+    let no_items = |_: &eval::fixture::SetItemRef| Err(String::new());
+    let caps = Caps { turns: 10, tool_calls: 20, wall_s: 60, tokens: 1000 };
+    // The checker reads the two renders; the runner's own read of them for the evidence then fails.
+    let flaky: Arc<dyn Store> =
+        Arc::new(Flaky { inner: store, gets: std::sync::atomic::AtomicUsize::new(0), ok_gets: 2 });
+    let error = run_scripted(&discovery, caps, &PrivateList::default(), &options(tmp.path(), Some(flaky), &no_items))
+        .unwrap_err();
+    assert!(error.to_string().contains("evidence of"), "{error}");
+    assert!(!tmp.path().join("out/runs/2026-10-13T1000Z-manual").exists(), "the empty evidence folder is gone");
+    assert!(!tmp.path().join("scratch/2026-10-13T1000Z-manual").exists());
 }

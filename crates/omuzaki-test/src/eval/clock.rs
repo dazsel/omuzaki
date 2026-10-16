@@ -1,5 +1,6 @@
-//! Run ids carry the minute they began (`2026-10-13T10:00Z-nightly`): written when a run starts, and read back by `eval gc`
-//! to know how old a run folder is. UTC only, no leap seconds, no dependency: it is a civil-calendar conversion.
+//! Run ids carry the minute they began (`2026-10-13T1000Z-nightly`, no colon: it becomes a folder name, and Windows does
+//! not allow a colon in one): written when a run starts, and read back by `eval gc` to know how old a run folder is. UTC
+//! only, no leap seconds, no dependency: it is a civil-calendar conversion.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 

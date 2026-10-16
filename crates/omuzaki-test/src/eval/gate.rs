@@ -389,12 +389,12 @@ pub fn suite_verdict(previous: &[f64], rate: f64) -> Option<(f64, f64, bool)> {
 fn suite_gates(reference: &[&AttemptRecord], runs: &[RunRecord], non_provisional: &[&SeriesKey]) -> Vec<SuiteGate> {
     let nightly = |model: &str| -> Vec<&RunRecord> {
         runs.iter()
-            .filter(|r| r.kind == "nightly" && r.driver == REFERENCE && r.model.as_deref() == Some(model))
+            .filter(|r| r.valid && r.kind == "nightly" && r.driver == REFERENCE && r.model.as_deref() == Some(model))
             .collect()
     };
     let models: std::collections::BTreeSet<&str> = runs
         .iter()
-        .filter(|r| r.kind == "nightly" && r.driver == REFERENCE)
+        .filter(|r| r.valid && r.kind == "nightly" && r.driver == REFERENCE)
         .filter_map(|r| r.model.as_deref())
         .collect();
     let mut out = Vec::new();
