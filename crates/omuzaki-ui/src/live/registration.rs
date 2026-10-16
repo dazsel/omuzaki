@@ -9,6 +9,7 @@ use omuzaki_ui_api::panel::{Panel, PanelCtx};
 use omuzaki_ui_api::registry::{Group, Region, StoryGroup};
 
 use super::panel::LivePanel;
+use super::viewport::StagePanel;
 use super::story::{self, StoryState};
 use crate::ds::icons;
 
@@ -16,8 +17,8 @@ use crate::ds::icons;
 pub const LIVE_PANEL: &str = "live";
 /// The Perform workspace's id.
 pub const PERFORM_WORKSPACE: &str = "perform";
-/// The shell's viewport panel, the Perform workspace's centre.
-const VIEWPORT: &str = "viewport";
+/// The stage panel's id: the Perform workspace's centre, which draws the program frame the live viewport renders.
+pub const STAGE_PANEL: &str = "live-stage";
 
 /// [`LivePanel`] as a registered panel.
 pub struct LiveUiPanel(LivePanel);
@@ -28,14 +29,29 @@ impl Panel for LiveUiPanel {
     }
 }
 
+/// [`StagePanel`] as a registered panel.
+pub struct StageUiPanel(StagePanel);
+
+impl Panel for StageUiPanel {
+    fn ui(&mut self, ui: &mut egui::Ui, _ctx: &PanelCtx<'_>) {
+        self.0.ui(ui);
+    }
+}
+
+omuzaki_ui_api::register_panel! {
+    id: "live-stage", title: "Stage", icon: icons::CUBE, region: Region::Center, min_size: [480.0, 320.0], order: 10,
+    kind: omuzaki_ui_api::registry::PanelKind::Primary,
+    build: |_| Box::new(StageUiPanel(StagePanel)),
+}
+
 omuzaki_ui_api::register_panel! {
     id: "live", title: "Live", icon: icons::PLAY, region: Region::Right, min_size: [288.0, 160.0], order: 10,
     build: |ctx| Box::new(LiveUiPanel(LivePanel::new(ctx.runner()))),
 }
 
-/// The Perform workspace's default layout: the viewport, and the Live panel in the right dock.
+/// The Perform workspace's default layout: the stage, and the Live panel in the right dock.
 fn perform_layout() -> Node {
-    Node::split(Dir::Horizontal, vec![Node::pane(VIEWPORT), Node::pane(LIVE_PANEL)], &[1060.0, 306.0])
+    Node::split(Dir::Horizontal, vec![Node::pane(STAGE_PANEL), Node::pane(LIVE_PANEL)], &[1060.0, 306.0])
 }
 
 omuzaki_ui_api::register_workspace! {

@@ -39,9 +39,13 @@ macro_rules! words {
 
 words! {
     Title = "live-title" => "Live",
-    NotYetLatency = "live-not-yet-latency" => "Not available yet: the performer does not report latency",
+    LatencyUnknown = "live-latency-unknown" => "Shown once the first camera frame reaches the picture",
+    LatencyDetail = "live-latency-detail" => "Camera to picture: the tracker's median plus the wait for the frame. The camera's own transport delay is not included.",
     NoOp = "live-no-op" => "Not available: this build has no {op} op",
     NoPerformer = "live-no-performer" => "The performer is not running",
+
+    StageLabel = "live-stage-label" => "Stage preview: the program frame",
+    StageStarting = "live-stage-starting" => "Starting the stage",
 
     CharacterSection = "live-character-section" => "Character",
     CharacterLabel = "live-character-label" => "Character",
@@ -111,6 +115,7 @@ words! {
     HealthSection = "live-health-section" => "Health",
     HealthFps = "live-health-fps" => "{fps} fps",
     HealthLatency = "live-health-latency" => "Latency",
+    HealthLatencyValue = "live-health-latency-value" => "Latency: {ms} ms",
     HealthNoFrames = "live-health-no-frames" => "No frames yet",
     HealthTracking = "live-health-tracking" => "Face found",
     HealthLost = "live-health-lost" => "Face lost",

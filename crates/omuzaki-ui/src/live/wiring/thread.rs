@@ -96,7 +96,7 @@ impl PerformThread {
         let sources = Arc::new(SourceSlot::new());
         let (stop, stats) = (Arc::new(AtomicBool::new(false)), Arc::new(Stats::default()));
         let mut run =
-            PerformLoop { performer, control, writer, sources: Arc::clone(&sources), stats: Arc::clone(&stats) };
+            PerformLoop { performer, control, writer, sources: Arc::clone(&sources), stats: Arc::clone(&stats), arrival: None };
         let flag = Arc::clone(&stop);
         let thread = std::thread::Builder::new()
             .name(THREAD_NAME.to_owned())
@@ -171,6 +171,8 @@ struct PerformLoop {
     writer: FrameWriter,
     sources: Arc<SourceSlot>,
     stats: Arc<Stats>,
+    /// When the newest tracker frame arrived, on the loop's clock.
+    arrival: Option<Seconds>,
 }
 
 impl PerformLoop {
@@ -192,7 +194,10 @@ impl PerformLoop {
         // Lock-free and allocation-free: the source it replaces goes back into the slot for the ops side to drop.
         self.sources.swap_into(&mut self.performer);
         if let Some(out) = self.control.advance(&mut self.performer, now) {
-            self.writer.publish(&LiveFrame::from_output(&out));
+            if out.frame.is_some() {
+                self.arrival = Some(now);
+            }
+            self.writer.publish(&LiveFrame::from_output(&out, self.arrival));
             self.stats.published.fetch_add(1, Ordering::Release);
         }
         self.stats.skipped.store(self.control.skipped_steps(), Ordering::Release);

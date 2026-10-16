@@ -25,12 +25,16 @@ pub struct LiveFrame {
     pub pose: HumanoidPose,
     /// The final channels: what the face painter reads.
     pub channels: ChannelBuf,
+    /// When the newest tracker frame reached the perform thread, on the perform clock; `None` before the first. It
+    /// carries across steps that bring no new frame, so the render side can say how long ago the picture's data
+    /// arrived (the latency the health strip shows).
+    pub arrived: Option<Seconds>,
 }
 
 impl LiveFrame {
-    /// The frame a step produced.
-    pub fn from_output(out: &PerformOutput<'_>) -> Self {
-        Self { tick: out.tick, tracking: out.tracking, pose: *out.pose, channels: out.bus.values }
+    /// The frame a step produced, with `arrived` as the arrival of the newest tracker frame so far.
+    pub fn from_output(out: &PerformOutput<'_>, arrived: Option<Seconds>) -> Self {
+        Self { tick: out.tick, tracking: out.tracking, pose: *out.pose, channels: out.bus.values, arrived }
     }
 }
 
@@ -38,10 +42,11 @@ impl LiveFrame {
 // then every channel slot.
 const TICK_WORDS: usize = 5;
 const TRACKING_WORDS: usize = 1;
+const ARRIVED_WORDS: usize = 2;
 const HIPS_WORDS: usize = 3;
 const ROTATION_WORDS: usize = 4 * HUMANOID_COUNT;
 /// Words in one encoded [`LiveFrame`].
-const WORDS: usize = TICK_WORDS + TRACKING_WORDS + HIPS_WORDS + ROTATION_WORDS + CHANNEL_CAPACITY;
+const WORDS: usize = TICK_WORDS + TRACKING_WORDS + ARRIVED_WORDS + HIPS_WORDS + ROTATION_WORDS + CHANNEL_CAPACITY;
 
 /// The record both ends share.
 struct Shared {
@@ -181,7 +186,11 @@ fn encode(frame: &LiveFrame) -> [u32; WORDS] {
     };
     let [index_lo, index_hi] = halves(frame.tick.index);
     let [time_lo, time_hi] = halves(frame.tick.time.0.to_bits());
-    for word in [index_lo, index_hi, time_lo, time_hi, frame.tick.dt.to_bits(), tracking_word(frame.tracking)] {
+    // No arrival is a NaN, which no clock reads.
+    let [arrived_lo, arrived_hi] = halves(frame.arrived.map_or(f64::NAN, |at| at.0).to_bits());
+    for word in
+        [index_lo, index_hi, time_lo, time_hi, frame.tick.dt.to_bits(), tracking_word(frame.tracking), arrived_lo, arrived_hi]
+    {
         put(word);
     }
     for value in frame.pose.hips_offset.to_array() {
@@ -205,6 +214,7 @@ fn decode(words: &[u32; WORDS]) -> LiveFrame {
     let time = f64::from_bits(join(take(), take()));
     let dt = f32::from_bits(take());
     let tracking = tracking_of(take());
+    let arrived = Some(f64::from_bits(join(take(), take()))).filter(|at| !at.is_nan()).map(Seconds);
     let mut float = || f32::from_bits(take());
     let hips_offset = Vec3::new(float(), float(), float());
     let rotations = std::array::from_fn(|_| Quat::from_xyzw(float(), float(), float(), float()));
@@ -221,6 +231,7 @@ fn decode(words: &[u32; WORDS]) -> LiveFrame {
         tracking,
         pose: HumanoidPose { hips_offset, rotations },
         channels,
+        arrived,
     }
 }
 
@@ -239,7 +250,9 @@ mod tests {
         let mut channels = ChannelBuf::NEUTRAL;
         channels.set(Channel::JAW_OPEN, 0.25);
         channels.set(Channel::HEAD_YAW, -0.125 * t);
-        LiveFrame { tick: Tick::at_rate(index, 60.0), tracking: Tracking::Lost, pose, channels }
+        // Odd indices have an arrival and even ones none, so the round trip covers both.
+        let arrived = (index % 2 == 1).then(|| Seconds(0.5 * t));
+        LiveFrame { tick: Tick::at_rate(index, 60.0), tracking: Tracking::Lost, pose, channels, arrived }
     }
 
     #[test]

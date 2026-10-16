@@ -3,9 +3,13 @@
 //! The app runs on [`RealClock`]; a test passes its own clock, which also runs on the perform thread, so it can see
 //! exactly what the thread does between steps.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use omuzaki_core::time::Seconds;
+
+/// A read-only view of a [`PerformClock`], for the render thread: the same time the perform thread stamps frames with.
+pub type ClockObserver = Arc<dyn Fn() -> Seconds + Send + Sync>;
 
 /// The time source of the perform loop. It is moved onto the perform thread and only used there.
 pub trait PerformClock: Send {
@@ -14,6 +18,12 @@ pub trait PerformClock: Send {
 
     /// Returns at `at` or soon after; at once when `at` has passed. Must not allocate or lock.
     fn wait_until(&mut self, at: Seconds);
+
+    /// A view of this clock another thread can read, or `None` if the clock has no time but its own thread's. Without
+    /// one the render side can't measure how old a frame's data is, so the health strip's latency stays unknown.
+    fn observer(&self) -> Option<ClockObserver> {
+        None
+    }
 }
 
 /// The wall clock: [`Instant`] from when it was made.
@@ -43,6 +53,11 @@ impl Default for RealClock {
 impl PerformClock for RealClock {
     fn now(&mut self) -> Seconds {
         Seconds(self.origin.elapsed().as_secs_f64())
+    }
+
+    fn observer(&self) -> Option<ClockObserver> {
+        let origin = self.origin;
+        Some(Arc::new(move || Seconds(origin.elapsed().as_secs_f64())))
     }
 
     fn wait_until(&mut self, at: Seconds) {

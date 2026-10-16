@@ -5,20 +5,24 @@ use std::sync::Arc;
 
 use egui::Context;
 use omuzaki_anim_api::{ChannelBuf, HumanoidPose};
+use omuzaki_core::glam::UVec2;
 use omuzaki_face_api::ExpressionSet;
 use omuzaki_ops_api::{Runner, ServicesBuilder};
 use omuzaki_stage::perform::host::{PerformError, PerformHost};
+use omuzaki_render::WgpuRenderer;
+use omuzaki_stage::frame::Stage;
 use omuzaki_stage::perform::input::{InputHost, NoSource};
 use omuzaki_stream_api::window::WindowHost;
 use omuzaki_track_api::camera::{CameraId, CameraInfo};
 use omuzaki_track_api::error::TrackError;
 use omuzaki_track_api::tracker::{LatencyStats, Tracker, TrackerConfig};
 
-use super::clock::PerformClock;
+use super::clock::{ClockObserver, PerformClock};
 use super::mailbox::FrameReader;
 use super::rig::{LiveRig, live_performer};
 use super::thread::{LoopReport, WiringError};
 use crate::aux_window::{PhysicalSize, Transparency};
+use crate::live::viewport::{LiveViewport, Presenter, SharedTracker, ViewportError};
 use crate::output_window::{OutputHost, OutputPlan, OutputWindow, Program};
 use crate::wiring::{self, ExecutorError};
 
@@ -61,6 +65,9 @@ pub struct LiveApp {
     runner: Arc<dyn Runner>,
     output: OutputWindow,
     host: OutputHost,
+    clock: Option<ClockObserver>,
+    tracker: SharedTracker,
+    viewport: Option<LiveViewport>,
 }
 
 impl LiveApp {
@@ -68,7 +75,9 @@ impl LiveApp {
     /// the `input.*` ops bind a camera and start the mirror); gives the triggers the starter expressions until a
     /// character brings its own; and builds the runner: every op linked into the app, over an empty document, with the
     /// performer, the input and the output window's host in its services.
-    /// The output window starts closed, on a platform where a transparent surface is `transparency`.
+    /// The output window starts closed, on a platform where a transparent surface is `transparency`. `base` is the pose
+    /// the performer is built on: the character's bind pose ([`LiveScene::base_pose`](super::LiveScene::base_pose)),
+    /// or [`HumanoidPose::REST`] with no stage.
     ///
     /// # Errors
     /// [`StartError`]; nothing is left running then.
@@ -76,10 +85,14 @@ impl LiveApp {
         tracker: Box<dyn Tracker>,
         clock: Box<dyn PerformClock>,
         transparency: Transparency,
+        base: HumanoidPose,
     ) -> Result<Self, StartError> {
-        let performer = live_performer(Box::new(NoSource), ChannelBuf::NEUTRAL, HumanoidPose::REST);
-        let (rig, reader) =
-            LiveRig::start(tracker, TrackerConfig::default(), performer, clock).map_err(StartError::Wiring)?;
+        let performer = live_performer(Box::new(NoSource), ChannelBuf::NEUTRAL, base);
+        // The viewport reads the tracker's latency while the input owns the tracker: two handles to one.
+        let tracker = SharedTracker::new(tracker);
+        let observer = clock.observer();
+        let (rig, reader) = LiveRig::start(Box::new(tracker.clone()), TrackerConfig::default(), performer, clock)
+            .map_err(StartError::Wiring)?;
         let host = rig.host().map_err(StartError::Wiring)?;
         host.set_expressions(ExpressionSet::starter(), ChannelBuf::NEUTRAL).map_err(StartError::Perform)?;
         let window = OutputHost::new(transparency, PhysicalSize::FULL_HD);
@@ -96,7 +109,38 @@ impl LiveApp {
             runner,
             output: OutputWindow::new(OutputPlan::default(), transparency),
             host: window,
+            clock: observer,
+            tracker,
+            viewport: None,
         })
+    }
+
+    /// Starts drawing the stage: `stage` (the kit's, from [`kit_stage`](crate::live::viewport::kit_stage), made on
+    /// `renderer` at `size`) takes the perform thread's frames from now on, and `presenter` shows each picture to egui.
+    ///
+    /// # Errors
+    /// [`ViewportError::Stopped`] after [`shutdown`](Self::shutdown).
+    pub fn attach_viewport(
+        &mut self,
+        mut renderer: WgpuRenderer,
+        stage: Stage,
+        size: UVec2,
+        presenter: Box<dyn Presenter>,
+    ) -> Result<(), ViewportError> {
+        let Some(reader) = self.reader.take() else {
+            if let Err(error) = stage.release(&mut renderer) {
+                tracing::warn!(%error, "releasing a stage nothing could draw failed");
+            }
+            return Err(ViewportError::Stopped);
+        };
+        let view = LiveViewport::new(renderer, stage, size, reader, presenter, self.clock.clone(), Some(self.tracker.clone()));
+        self.viewport = Some(view);
+        Ok(())
+    }
+
+    /// The stage view, once [`attach_viewport`](Self::attach_viewport) has run.
+    pub fn viewport_mut(&mut self) -> Option<&mut LiveViewport> {
+        self.viewport.as_mut()
     }
 
     /// The runner the shell and the panels call.
@@ -119,10 +163,28 @@ impl LiveApp {
         &mut self.output
     }
 
-    /// Draws this frame's output window (when it is open): `program`, the viewport's rendered frame, or the backdrop
-    /// alone until the viewport renders one. Requests the ops queued on the host are carried out first, and what the
-    /// window is is published after, for `output.window.status`. Call once per frame from the main viewport.
-    pub fn show(&mut self, ctx: &Context, program: Option<Program>) {
+    /// Draws this frame: the stage first, if one is attached (its picture is published for the stage panel, so call this
+    /// before the shell draws), then the output window when it is open, showing that same picture or its backdrop alone
+    /// until there is one. Requests the ops queued on the host are carried out first, and what the window is is
+    /// published after, for `output.window.status`. Call once per frame from the main viewport.
+    pub fn show(&mut self, ctx: &Context) {
+        let program = self.viewport.as_mut().and_then(|view| match view.frame(ctx, ctx.input(|i| i.unstable_dt)) {
+            Ok(program) => program,
+            Err(error) => {
+                tracing::warn!(%error, "the stage did not draw this frame");
+                None
+            }
+        });
+        if self.viewport.is_some() {
+            // The perform thread steps at 60 Hz whether or not anything is moving on screen.
+            ctx.request_repaint_after(std::time::Duration::from_millis(8));
+        }
+        self.show_program(ctx, program);
+    }
+
+    /// [`show`](Self::show) with the program frame given: for a caller that renders elsewhere (the output window's
+    /// tests).
+    pub fn show_program(&mut self, ctx: &Context, program: Option<Program>) {
         self.host.take_requests(&mut self.output);
         self.output.show(ctx, program);
         self.host.publish(&self.output, f64::from(ctx.pixels_per_point()));
@@ -137,6 +199,11 @@ impl LiveApp {
     pub fn shutdown(&mut self) -> Result<LoopReport, WiringError> {
         self.output.set_open(false);
         self.host.publish(&self.output, WindowHost::surface(&self.host).scale_factor);
+        if let Some(view) = self.viewport.take()
+            && let Err(error) = view.release()
+        {
+            tracing::warn!(%error, "the stage did not release cleanly");
+        }
         self.reader = None;
         match self.rig.take() {
             Some(rig) => rig.shutdown(),

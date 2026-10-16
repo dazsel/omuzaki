@@ -448,7 +448,7 @@ fn request(op: &str, args: Value) -> Request {
 fn the_app_starts_the_live_slice_with_its_ops_and_stops_it_in_order() {
     omuzaki_ui::link();
     let mut app =
-        LiveApp::start(Box::new(tracker(30.0)), Box::new(RealClock::new()), Transparency::Fallback).expect("it starts");
+        LiveApp::start(Box::new(tracker(30.0)), Box::new(RealClock::new()), Transparency::Fallback, HumanoidPose::REST).expect("it starts");
     let runner = app.runner();
     let ops: Vec<String> = runner.ops().into_iter().map(|op| op.name.to_owned()).collect();
     for op in [
@@ -511,7 +511,7 @@ fn the_app_starts_the_live_slice_with_its_ops_and_stops_it_in_order() {
 fn without_a_webcam_tracker_the_app_lists_no_cameras_and_says_so_on_a_pick() {
     omuzaki_ui::link();
     let app =
-        LiveApp::start(Box::new(NoTracker), Box::new(RealClock::new()), Transparency::Fallback).expect("it starts");
+        LiveApp::start(Box::new(NoTracker), Box::new(RealClock::new()), Transparency::Fallback, HumanoidPose::REST).expect("it starts");
     let runner = app.runner();
     let state = runner.run(request("input.state", args(&[]))).expect("state").plan.output.expect("an answer");
     assert_eq!(state["cameras"], serde_json::json!([]), "no tracker, no cameras");

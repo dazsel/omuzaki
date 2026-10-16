@@ -632,52 +632,6 @@ fn the_camera_permission_is_asked_through_its_op_and_a_refusal_says_where_to_all
     assert!(all_strings(&h).iter().any(|s| s.starts_with("Camera access is off")));
 }
 
-#[test]
-fn evidence_pictures_of_idle_calibrating_and_tracking_lost() {
-    let dir = std::env::var_os("OMUZAKI_LIVE_EVIDENCE_DIR");
-    let dock = live_dock_share();
-    for state in LiveState::ALL {
-        for (w, h) in [(1366.0, 768.0), (1920.0, 1080.0)] {
-            let panel = state.panel(&StoryRunner(state));
-            let mut harness = Harness::builder().with_size(vec2(w, h)).wgpu().build_ui_state(
-                move |ui, world: &mut World<StoryRunner>| {
-                    omuzaki_ui::ds::apply_settings(ui.ctx(), Settings::default());
-                    let theme = omuzaki_ui::ds::Theme::of(omuzaki_ui::ds::ThemeKind::Dark);
-                    // The Perform workspace's default layout: the Live panel docked right at its registered share,
-                    // beside the viewport's place (the viewport itself is the edit panels' change).
-                    let panel = egui::Frame::new().fill(theme.bg1).inner_margin(12.0);
-                    egui::Panel::right("live.dock")
-                        .exact_size((w * dock).round())
-                        .frame(panel)
-                        .show(ui, |ui| world.panel.ui(ui, &world.runner, &world.actor));
-                    egui::CentralPanel::default().frame(egui::Frame::new().fill(theme.bg0)).show(ui, |_| {});
-                },
-                World { runner: StoryRunner(state), panel, actor: person() },
-            );
-            harness.run_steps(4);
-            let image = harness.render().expect("a software or hardware adapter renders");
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // whole sizes
-            let want = (w as u32, h as u32);
-            assert_eq!(image.dimensions(), want);
-            if let Some(dir) = &dir {
-                let name = format!("live-{}-{}x{}.png", state.slug(), want.0, want.1);
-                image.save(std::path::Path::new(dir).join(name)).expect("the picture saves");
-            }
-        }
-    }
-}
-
-/// The Live panel's share of the width in the Perform workspace's registered default layout.
-fn live_dock_share() -> f32 {
-    use omuzaki_ui_api::layout::Node;
-    omuzaki_ui::link();
-    let host = omuzaki_ui_mock::MockHost::new();
-    let perform = host.registry().workspace("perform").expect("registered");
-    let Node::Split { children, shares, .. } = (perform.default_layout)() else { panic!("a split") };
-    let live = children.iter().position(|child| *child == Node::pane("live")).expect("the Live panel is in it");
-    shares[live] / shares.iter().sum::<f32>()
-}
-
 /// A runner with no ops at all: a build that links none of the perform ops.
 struct NoOps;
 

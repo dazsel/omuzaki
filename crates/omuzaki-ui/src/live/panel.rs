@@ -4,12 +4,15 @@
 //! Every control is a design-system widget with an accessible name. A control whose op is not on main is drawn
 //! disabled and says why on hover and on keyboard focus.
 
+use std::sync::Arc;
+
 use egui::{Event, Key, Modifiers, RichText, ScrollArea, Sense, Ui, WidgetInfo, WidgetType, vec2};
 use omuzaki_ops_api::{Actor, Runner};
 use omuzaki_stage::perform::Tracking;
 use omuzaki_stage::perform::host::CalibrationState;
 use omuzaki_stream_api::window::{Backdrop as Shown, DEFAULT_TITLE, WindowState};
 
+use super::latency::LatencyMeter;
 use super::model::{
     Backdrop, Control, HOTKEY_ROWS, LiveModel, OP_CALIBRATE, OP_SET_RETARGET, SMOOTHING_RANGE, WindowChoice,
 };
@@ -66,6 +69,8 @@ pub struct LivePanel {
     capturing: Option<String>,
     /// Mood rows shown: [`HOTKEY_ROWS`], and more after Add hotkey.
     moods: usize,
+    /// The camera-to-output latency the render side measures.
+    latency: Arc<LatencyMeter>,
 }
 
 impl LivePanel {
@@ -74,9 +79,16 @@ impl LivePanel {
         Self::with_model(LiveModel::new(runner))
     }
 
+    /// The workspace reading its latency from `meter` instead of the app's shared one (tests).
+    #[must_use]
+    pub fn with_latency(mut self, meter: Arc<LatencyMeter>) -> Self {
+        self.latency = meter;
+        self
+    }
+
     /// The workspace showing `model` (the gallery story and tests).
     pub fn with_model(model: LiveModel) -> Self {
-        Self { model, refreshed: None, capturing: None, moods: HOTKEY_ROWS }
+        Self { model, refreshed: None, capturing: None, moods: HOTKEY_ROWS, latency: LatencyMeter::shared() }
     }
 
     /// The model.
@@ -356,9 +368,16 @@ impl LivePanel {
                 reading(ui, say(&ctx, Word::HealthFps, &[("fps", &fps)]));
             }
             let latency = text(&ctx, Word::HealthLatency);
-            let reason = text(&ctx, Word::NotYetLatency);
+            // A dash until the first frame has been through to the picture; then the measured number.
+            let (line, detail) = match self.latency.reading() {
+                Some(measured) => {
+                    let ms = format!("{:.0}", measured.as_secs_f64() * 1000.0);
+                    (say(&ctx, Word::HealthLatencyValue, &[("ms", &ms)]), text(&ctx, Word::LatencyDetail))
+                }
+                None => (format!("{latency}: —"), text(&ctx, Word::LatencyUnknown)),
+            };
             // The tip only adds detail to a plain label; nothing reads its response.
-            let _ = reading(ui, format!("{latency}: —")).tip(Tip::new(&latency).detail(&reason));
+            let _ = reading(ui, line).tip(Tip::new(&latency).detail(&detail));
         });
         if self.model.tracking() == Some(Tracking::Lost) {
             ui.label(RichText::new(text(&ctx, Word::HealthLostLine)).font(ds(&ctx).text.small.clone()));

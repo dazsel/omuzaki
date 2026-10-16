@@ -5,7 +5,7 @@
 #![allow(clippy::expect_used)]
 
 use omuzaki_ops_api::Actor;
-use omuzaki_ui::live::registration::{LIVE_PANEL, PERFORM_WORKSPACE};
+use omuzaki_ui::live::registration::{LIVE_PANEL, PERFORM_WORKSPACE, STAGE_PANEL};
 use omuzaki_ui::live::story::StoryRunner;
 use omuzaki_ui::shell::stub::NullRunner;
 use omuzaki_ui_api::panel::PanelCtx;
@@ -42,13 +42,13 @@ fn the_panel_draws_its_controls_from_the_runner_alone() {
 }
 
 #[test]
-fn the_perform_workspace_shows_the_viewport_and_the_live_panel_and_the_story_is_registered() {
+fn the_perform_workspace_shows_the_stage_and_the_live_panel_and_the_story_is_registered() {
     omuzaki_ui::link();
     let host = MockHost::new();
     let registry = host.registry();
     let perform = registry.workspace(PERFORM_WORKSPACE).expect("registered");
     assert_eq!((perform.title, perform.group), ("Perform", Group::Run));
-    assert_eq!((perform.default_layout)().panels(), ["viewport", LIVE_PANEL]);
+    assert_eq!((perform.default_layout)().panels(), [STAGE_PANEL, LIVE_PANEL]);
     assert!(registry.stories().iter().any(|story| story.id == "live-workspace"));
     assert!(registry.duplicates().is_empty(), "{:?}", registry.duplicates());
 }
