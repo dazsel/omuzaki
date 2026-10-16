@@ -55,21 +55,32 @@ pub enum Event {
     ChooseCharacter(CharacterChoice),
     /// An Input card.
     ChooseInput(InputChoice),
-    /// The host holds a stored calibration result for this sitting; never sent by a caller's choice.
-    CalibrationDone,
+    /// The host holds a stored calibration result from the run with this `request`; never sent by a caller's
+    /// choice. A result for any other run (an earlier, abandoned one) is ignored.
+    CalibrationDone {
+        /// The `request` of the [`Effect::StartCalibration`] that ran.
+        request: u32,
+    },
+    /// That calibration run was cancelled or failed. The step stays with a [`Note::CalibrationNotDone`]; Continue
+    /// starts a new run and "Use defaults" is the other way on.
+    CalibrationFailed {
+        /// The `request` of the [`Effect::StartCalibration`] that ended.
+        request: u32,
+    },
     /// The output card.
     ChooseOutput(OutputKind),
     /// Finish from Go-live.
     Finish,
-    /// The host applied the source of the [`Effect::SelectInput`] with this `request` (the `input.select` op ran).
-    /// Only this lets Input move on, so a queued or refused op leaves the step as it is.
-    InputApplied {
+    /// The host carried out the operation of the effect with this `request` (an input selection, a character
+    /// choice or an output with its test pattern). Only this lets the step move on or commit the choice, so a
+    /// queued Confirm leaves the step as it is.
+    Applied {
         /// The `request` of the effect that is answered.
         request: u32,
     },
-    /// The host could not apply that request's source (the person declined it, or the op failed). The step stays
-    /// and a [`Note::InputNotApplied`] says so; Continue asks again.
-    InputRejected {
+    /// The host could not carry out that request (the person declined it, or the op failed). The step stays with
+    /// a note and the choice can be made again; the same `request` is never answered twice.
+    Refused {
         /// The `request` of the effect that is answered.
         request: u32,
     },
@@ -93,10 +104,29 @@ pub enum Effect {
         /// The source to apply.
         source: InputChoice,
     },
-    /// Start the calibration overlay.
-    StartCalibration,
-    /// Show the test pattern on this output.
-    ShowTestPattern(OutputKind),
+    /// Start the calibration overlay for this run; the host answers with [`Event::CalibrationDone`] or
+    /// [`Event::CalibrationFailed`] carrying `request`.
+    StartCalibration {
+        /// Numbers this run.
+        request: u32,
+    },
+    /// Add this output and show the test pattern on it. The host answers with [`Event::Applied`] or
+    /// [`Event::Refused`]; the output counts as chosen only after the former.
+    ShowTestPattern {
+        /// Numbers this request.
+        request: u32,
+        /// The output to add.
+        output: OutputKind,
+    },
+    /// Carry out this Character choice (create the sample project, start the sheet flow, import the file). The host
+    /// answers with [`Event::Applied`] or [`Event::Refused`]; Character moves on only after the former. `Keep`
+    /// writes nothing and sends no request.
+    ApplyCharacter {
+        /// Numbers this request.
+        request: u32,
+        /// The card chosen.
+        choice: CharacterChoice,
+    },
     /// Create the sample project and `main` scene if none is open.
     EnsureProject,
     /// Write this progress through to the session file.
@@ -125,6 +155,12 @@ pub enum Note {
     IphoneNotPaired,
     /// The host did not apply the chosen source; Continue tries again.
     InputNotApplied,
+    /// The host did not add the chosen output; choosing it again tries again.
+    OutputNotApplied,
+    /// The host did not carry out the Character choice; choose again.
+    CharacterNotApplied,
+    /// The calibration was cancelled or failed; Continue starts it again, "Use defaults" moves on.
+    CalibrationNotDone,
     /// The OS no longer offers an output, so the step stays only to say so; "Later" moves on.
     OutputUnavailable,
     /// No assistant is configured.
@@ -156,6 +192,15 @@ pub struct View {
     pub elapsed_ms: [u64; 6],
 }
 
+/// A host operation that failed or was refused, kept until the person tries again.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Failed {
+    Input,
+    Output,
+    Character,
+    Calibration,
+}
+
 /// What the person asked for on Input that waits for the host to apply the source.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum Then {
@@ -169,7 +214,8 @@ enum Then {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum Calibration {
     Idle,
-    Running,
+    /// Running, with the `request` of its [`Effect::StartCalibration`].
+    Running(u32),
     Done,
 }
 
@@ -187,10 +233,18 @@ pub struct SetupFlow {
     /// The `input.select` request waiting for its answer.
     in_flight: Option<(u32, InputChoice)>,
     next_request: u32,
-    /// The host refused the last request for the selected source.
-    rejected: bool,
+    /// What the host refused or failed, shown as a note until tried again.
+    failed: BTreeSet<Failed>,
     /// Move on when the host has applied the selected source.
     then: Option<Then>,
+    /// The output the host has added.
+    host_output: Option<OutputKind>,
+    /// The `ShowTestPattern` request waiting for its answer.
+    output_flight: Option<(u32, OutputKind)>,
+    /// Continue was pressed on Output before the host answered.
+    output_then: bool,
+    /// The `ApplyCharacter` request waiting for its answer.
+    character_flight: Option<(u32, CharacterChoice)>,
     output: Option<OutputKind>,
     calibration: Calibration,
     permission_requested: bool,
@@ -225,8 +279,12 @@ impl SetupFlow {
             host_input: current.input.or(skipped_input.then_some(InputChoice::LifeLayerOnly)),
             in_flight: None,
             next_request: 0,
-            rejected: false,
+            failed: BTreeSet::new(),
             then: None,
+            host_output: current.output,
+            output_flight: None,
+            output_then: false,
+            character_flight: None,
             output: current.output,
             calibration: Calibration::Idle,
             permission_requested: false,
@@ -259,8 +317,8 @@ impl SetupFlow {
                 }
             }
             Event::Next => self.next(&mut fx),
-            Event::InputApplied { request } => self.answered(request, true, &mut fx),
-            Event::InputRejected { request } => self.answered(request, false, &mut fx),
+            Event::Applied { request } => self.answered(request, true, &mut fx),
+            Event::Refused { request } => self.answered(request, false, &mut fx),
             Event::Back => {
                 self.then = None;
                 if let Some(prev) = self.prev_shown() {
@@ -273,29 +331,25 @@ impl SetupFlow {
                 self.end(true, &mut fx);
                 return fx;
             }
-            Event::ChooseCharacter(c) => {
-                if self.step == Step::Character && (c != CharacterChoice::Keep || self.probes.project_open) {
-                    self.advance(&mut fx);
-                }
-            }
+            Event::ChooseCharacter(c) => self.choose_character(c, &mut fx),
             Event::ChooseInput(c) => self.choose_input(c, &mut fx),
-            Event::CalibrationDone => {
-                if self.step == Step::Calibrate && self.calibration == Calibration::Running && self.calibrate_possible()
+            Event::CalibrationDone { request } => {
+                if self.step == Step::Calibrate
+                    && self.calibration == Calibration::Running(request)
+                    && self.calibrate_possible()
                 {
                     self.calibration = Calibration::Done;
                     self.skipped.remove(&Step::Calibrate);
                     self.advance(&mut fx);
                 }
             }
-            Event::ChooseOutput(k) => {
-                if self.step == Step::Output && self.probes.recommended_output == Some(k) {
-                    self.skipped.remove(&Step::Output);
-                    if self.output != Some(k) {
-                        self.output = Some(k);
-                        fx.push(Effect::ShowTestPattern(k));
-                    }
+            Event::CalibrationFailed { request } => {
+                if self.calibration == Calibration::Running(request) {
+                    self.calibration = Calibration::Idle;
+                    self.failed.insert(Failed::Calibration);
                 }
             }
+            Event::ChooseOutput(k) => self.choose_output(k, &mut fx),
             Event::Finish => {
                 if self.step == Step::GoLive {
                     self.end(false, &mut fx);
@@ -372,8 +426,15 @@ impl SetupFlow {
                 if self.input == Some(InputChoice::Iphone) && p.iphone != IPhone::Paired {
                     notes.push(Note::IphoneNotPaired);
                 }
-                if self.rejected && !self.settled() {
+                if self.failed.contains(&Failed::Input) && !self.settled() {
                     notes.push(Note::InputNotApplied);
+                }
+            }
+            Step::Character if self.failed.contains(&Failed::Character) => notes.push(Note::CharacterNotApplied),
+            Step::Output if self.failed.contains(&Failed::Output) && !self.output_settled() => {
+                notes.push(Note::OutputNotApplied);
+                if p.recommended_output.is_none() {
+                    notes.push(Note::OutputUnavailable);
                 }
             }
             // Likewise for Output when the recommendation went away while it is showing.
@@ -387,6 +448,9 @@ impl SetupFlow {
                 _ => {}
             },
             _ => {}
+        }
+        if self.step == Step::Calibrate && self.failed.contains(&Failed::Calibration) {
+            notes.push(Note::CalibrationNotDone);
         }
         notes
     }
@@ -469,11 +533,12 @@ impl SetupFlow {
 
     /// Moves to `step`: persist first, then show, so a crash right after showing resumes at the shown step.
     fn go(&mut self, step: Step, fx: &mut Vec<Effect>) {
-        if self.step == Step::Calibrate && self.calibration == Calibration::Running {
+        if self.step == Step::Calibrate && matches!(self.calibration, Calibration::Running(_)) {
             // The overlay's cancel sends no event, so leaving the step is what ends a run.
             self.calibration = Calibration::Idle;
         }
         self.step = step;
+        self.failed.remove(&Failed::Calibration);
         self.sync(fx);
         fx.push(Effect::Show(step));
     }
@@ -491,10 +556,12 @@ impl SetupFlow {
             // Back to an already calibrated step: Continue keeps the stored result.
             Step::Calibrate if self.calibration == Calibration::Done => self.advance(fx),
             Step::Calibrate if self.calibrate_possible() && self.calibration == Calibration::Idle => {
-                self.calibration = Calibration::Running;
-                fx.push(Effect::StartCalibration);
+                let request = self.new_request();
+                self.calibration = Calibration::Running(request);
+                self.failed.remove(&Failed::Calibration);
+                fx.push(Effect::StartCalibration { request });
             }
-            Step::Output if self.output.is_some() => self.advance(fx),
+            Step::Output => self.continue_output(fx),
             _ => {}
         }
     }
@@ -539,15 +606,31 @@ impl SetupFlow {
         if self.in_flight.is_some() || self.settled() {
             return;
         }
+        let request = self.new_request();
+        self.in_flight = Some((request, source));
+        self.failed.remove(&Failed::Input);
+        fx.push(Effect::SelectInput { request, source });
+    }
+
+    /// Numbers a host request; ids are never reused within a sitting, so an answer finds only its own request.
+    fn new_request(&mut self) -> u32 {
         let request = self.next_request;
         self.next_request = self.next_request.wrapping_add(1);
-        self.in_flight = Some((request, source));
-        self.rejected = false;
-        fx.push(Effect::SelectInput { request, source });
+        request
     }
 
     /// The host answered a request. Stale or unknown answers change nothing.
     fn answered(&mut self, request: u32, applied: bool, fx: &mut Vec<Effect>) {
+        if self.output_flight.is_some_and(|(id, _)| id == request) {
+            self.answered_output(applied, fx);
+        } else if self.character_flight.is_some_and(|(id, _)| id == request) {
+            self.answered_character(applied, fx);
+        } else {
+            self.answered_input(request, applied, fx);
+        }
+    }
+
+    fn answered_input(&mut self, request: u32, applied: bool, fx: &mut Vec<Effect>) {
         let Some((id, source)) = self.in_flight else { return };
         if id != request {
             return;
@@ -556,7 +639,7 @@ impl SetupFlow {
         if applied {
             self.host_input = Some(source);
         } else if self.input == Some(source) {
-            self.rejected = true;
+            self.failed.insert(Failed::Input);
             self.then = None;
             return;
         }
@@ -565,6 +648,83 @@ impl SetupFlow {
             self.finish_then(fx);
         } else {
             self.pump(fx);
+        }
+    }
+
+    fn choose_character(&mut self, choice: CharacterChoice, fx: &mut Vec<Effect>) {
+        if self.step != Step::Character || self.character_flight.is_some() {
+            return;
+        }
+        match choice {
+            CharacterChoice::Keep if !self.probes.project_open => {}
+            // Keeping the open project writes nothing, so there is nothing to wait for.
+            CharacterChoice::Keep => self.advance(fx),
+            _ => {
+                let request = self.new_request();
+                self.character_flight = Some((request, choice));
+                self.failed.remove(&Failed::Character);
+                fx.push(Effect::ApplyCharacter { request, choice });
+            }
+        }
+    }
+
+    fn answered_character(&mut self, applied: bool, fx: &mut Vec<Effect>) {
+        self.character_flight = None;
+        if !applied {
+            self.failed.insert(Failed::Character);
+        } else if self.step == Step::Character {
+            self.advance(fx);
+        }
+    }
+
+    /// True when the host has added the selected output and no request is outstanding.
+    fn output_settled(&self) -> bool {
+        self.output.is_some() && self.output_flight.is_none() && self.host_output == self.output
+    }
+
+    fn choose_output(&mut self, kind: OutputKind, fx: &mut Vec<Effect>) {
+        if self.step != Step::Output || self.probes.recommended_output != Some(kind) {
+            return;
+        }
+        self.output = Some(kind);
+        self.pump_output(fx);
+    }
+
+    fn pump_output(&mut self, fx: &mut Vec<Effect>) {
+        let Some(output) = self.output else { return };
+        if self.output_flight.is_some() || self.output_settled() {
+            return;
+        }
+        let request = self.new_request();
+        self.output_flight = Some((request, output));
+        self.failed.remove(&Failed::Output);
+        fx.push(Effect::ShowTestPattern { request, output });
+    }
+
+    /// Continue on Output: only an output the host has added moves on; otherwise ask and wait.
+    fn continue_output(&mut self, fx: &mut Vec<Effect>) {
+        if self.output.is_none() {
+            return;
+        }
+        if self.output_settled() {
+            self.advance(fx);
+        } else {
+            self.output_then = true;
+            self.pump_output(fx);
+        }
+    }
+
+    fn answered_output(&mut self, applied: bool, fx: &mut Vec<Effect>) {
+        let Some((_, output)) = self.output_flight.take() else { return };
+        if !applied {
+            self.failed.insert(Failed::Output);
+            self.output_then = false;
+            return;
+        }
+        self.host_output = Some(output);
+        self.skipped.remove(&Step::Output);
+        if self.output_settled() && std::mem::take(&mut self.output_then) && self.step == Step::Output {
+            self.advance(fx);
         }
     }
 
@@ -615,6 +775,7 @@ impl SetupFlow {
                 self.skipped.insert(Step::Calibrate);
             }
             Step::Output => {
+                self.output_then = false;
                 self.skipped.insert(Step::Output);
             }
             _ => return,
@@ -644,7 +805,7 @@ impl SetupFlow {
         if self.input != Some(choice) {
             self.calibration = Calibration::Idle;
             self.then = None;
-            self.rejected = false;
+            self.failed.remove(&Failed::Input);
             if choice != InputChoice::Webcam {
                 // A pending camera dialog belongs to the webcam source.
                 self.permission_requested = false;
