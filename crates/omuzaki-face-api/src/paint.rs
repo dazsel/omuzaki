@@ -804,7 +804,7 @@ mod tests {
         l.scale_opacity_from(mark, 4.0);
         l.scale_opacity_from(99, 0.0);
         assert!(matches!(l.cmds()[2], Cmd::Fill { opacity, .. } if (opacity - 0.25).abs() < 1e-6));
-        assert!(matches!(l.cmds()[0], Cmd::Fill { opacity, .. } if opacity == 1.0));
+        assert!(matches!(l.cmds()[0], Cmd::Fill { opacity, .. } if (opacity - 1.0).abs() < 1e-6));
     }
 
     fn sample(rx: f32) -> DrawList {
