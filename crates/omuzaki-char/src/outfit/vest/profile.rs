@@ -95,13 +95,7 @@ impl Profile {
         } else {
             self.rim - BACK_DIP * (1.0 - s / DIP_KNEE).max(0.0).powi(2)
         };
-        neck - self.armhole * self.cut(phi)
-    }
-
-    /// How much of the armhole is cut at `phi`: 1 on its floor, easing to 0 at its edges.
-    fn cut(&self, phi: f64) -> f64 {
-        let from_side = (phi.abs() - FRAC_PI_2).abs();
-        1.0 - sstep(ARMHOLE_FLAT, ARMHOLE_FLAT + ARMHOLE_RAMP, from_side)
+        neck - self.armhole * armhole_cut(phi)
     }
 
     /// The hem's height at angle `phi`. The two halves meet at the sides.
@@ -125,6 +119,12 @@ impl Profile {
         let hems = self.hem_front.max(self.hem_side).max(self.hem_back);
         (self.tip() - hems).min(self.rim - BACK_DIP - hems).min(self.rim - self.armhole - hems)
     }
+}
+
+/// How much of the armhole is cut at `phi`: 1 on its floor, easing to 0 at its edges.
+fn armhole_cut(phi: f64) -> f64 {
+    let from_side = (phi.abs() - FRAC_PI_2).abs();
+    1.0 - sstep(ARMHOLE_FLAT, ARMHOLE_FLAT + ARMHOLE_RAMP, from_side)
 }
 
 /// `n + 1` angles from `-pi` to `pi`, bunched toward the front where the V tip needs the rows (the prototype's

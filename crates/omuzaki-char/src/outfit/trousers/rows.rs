@@ -26,6 +26,9 @@ pub const CHORD_INTERVALS: usize = 4;
 pub const GUSSET_ROWS: usize = 4;
 /// How far down the leg the gusset reaches, as a fraction of the leg region.
 pub const GUSSET: f64 = 0.04;
+/// The least the legs part below where they leave the torso, as a fraction of the leg region (about 3 cm on soft-sd): the
+/// rows from the torso to the crotch need room to turn from the torso's section into the thighs'.
+pub const MIN_FALL: f64 = 0.08;
 /// Rows from the bottom of the torso region to the crotch.
 pub const LOWER_ROWS: usize = 8;
 /// The exponent of the rounded rectangle round both thighs.
@@ -300,6 +303,7 @@ pub fn pelvis_rows(
                 let p = pair.point(pelvis_phi(j)) - pair.centre;
                 centre + c + (p - c) * blend
             })
+            .map(|q| pair.enclose(q))
             .collect();
         let thighs_share = if r == LOWER_ROWS { 1.0 } else { share(centre) };
         let skins = points.iter().map(|p| pelvis_skin(&weights, thighs, p.x, separation, thighs_share)).collect();
