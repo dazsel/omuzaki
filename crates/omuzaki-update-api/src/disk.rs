@@ -56,7 +56,8 @@ pub trait Disk: Send + Sync {
     /// # Errors
     /// A part of the path is a file, or the folder cannot be made.
     fn create_dir_all(&self, path: &Path) -> io::Result<()>;
-    /// Removes a directory and everything in it.
+    /// Removes a directory and everything in it. A symbolic link at `path` is removed itself, never followed, and what
+    /// it points at is kept.
     ///
     /// # Errors
     /// The directory is missing or cannot be removed.
