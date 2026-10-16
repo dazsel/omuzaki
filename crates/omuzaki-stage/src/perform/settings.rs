@@ -245,7 +245,7 @@ pub fn restore(
         note("the input source", &error);
     }
     let mut missing_camera = None;
-    if let Some(camera) = settings.get::<InputCamera>().unwrap_or_default() {
+    if let Some(camera) = settings.get::<InputCamera>().unwrap_or_default().id {
         match input.bind_camera(Some(camera.clone()), Mode::Apply) {
             Ok(_) => {}
             Err(InputError::NoCamera { .. }) => missing_camera = Some(camera),

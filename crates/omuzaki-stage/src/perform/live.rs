@@ -4,13 +4,15 @@
 //! One thread runs it, once per display frame, through [`LiveStage::frame`]:
 //!
 //! 1. a frame source the input posted ([`SourceSlot`]) is swapped in, so a new camera or a stopped preview takes
-//!    effect between steps, a scene posted to the [`Mailbox`] is taken in ([`Stage::set_scene`]), and a face variant
-//!    switch is serviced ([`Stage::service_variants`]);
+//!    effect between steps, and a scene posted to the [`Mailbox`] is taken in ([`Stage::set_scene`]);
 //! 2. the performer advances to `now` and, when a step ran, the stage ticks with its pose and channels and renders
 //!    ([`PerformFrame`]); while [paused](LiveStage::set_paused) the stage redraws its last frame instead, so the output
 //!    keeps flowing;
 //! 3. the renderer's report goes to the [`Scheduler`], and the quality it decides on ([`Stage::set_quality`]) applies
 //!    from the next frame.
+//!
+//! The loop then calls [`LiveStage::service`] once, outside the frame's deadline: it moves a face variant switch along
+//! and installs the swapped character's expressions for the triggers (the work that builds, allocates or waits).
 //!
 //! The performer's handle ([`PerformHandle`]) and the input ([`LiveInput`](super::input::LiveInput)) are the ops'
 //! side; the frame thread never waits on them. Nothing in `frame` allocates in steady state beyond what the renderer
@@ -131,8 +133,6 @@ impl LiveStage {
         }
         self.sources.swap_into(&mut self.performer);
         self.take_scene();
-        // Variant switches are staged outside the tick (`frame::face`), against the input the last frame showed.
-        self.stage.service_variants(renderer, self.frames.input())?;
         let output = if self.paused {
             self.stage.redraw(renderer, self.frames.input())?
         } else {
@@ -148,6 +148,22 @@ impl LiveStage {
         Ok(Some(LiveFrame { output, change }))
     }
 
+    /// The cold half of a display frame, which the loop runs once per iteration, after [`frame`](Self::frame) and
+    /// outside its deadline (after presenting, or when idle): it moves a face variant switch along
+    /// ([`Stage::service_variants`]: building, allocating and waiting happen here, never in `frame`) and, when a swap
+    /// has replaced the character, installs its expressions for the triggers ([`refresh_expressions`](Self::refresh_expressions)),
+    /// so a reload that changes the face profile reaches the triggers with nobody repairing the table by hand.
+    /// Returns whether the triggers' expressions were installed. A busy performer queue keeps the old expressions and
+    /// the next call tries again.
+    ///
+    /// # Errors
+    /// What [`Stage::service_variants`] reports. The performer carries on.
+    pub fn service(&mut self, renderer: &mut dyn Renderer) -> Result<bool, StageError> {
+        // Variant switches are staged outside the tick (`frame::face`), against the input the last frame showed.
+        self.stage.service_variants(renderer, self.frames.input())?;
+        Ok(self.refresh_expressions().unwrap_or(false))
+    }
+
     /// Whether a variant swap replaced the character since the triggers' expressions were installed, so
     /// [`refresh_expressions`](Self::refresh_expressions) has something to do. Two integers compared: cheap anywhere.
     pub fn expressions_stale(&self) -> bool {
@@ -159,8 +175,8 @@ impl LiveStage {
     /// installed anything.
     ///
     /// This clones the expressions and takes the trigger table's lock, so it is not part of [`frame`](Self::frame):
-    /// the app calls it where waiting and allocating are allowed (after presenting, or when its loop is idle), whenever
-    /// [`expressions_stale`](Self::expressions_stale) says so. `frame` itself allocates and locks nothing for it.
+    /// [`service`](Self::service) calls it where waiting and allocating are allowed, and `frame` itself allocates and
+    /// locks nothing for it.
     ///
     /// # Errors
     /// [`PerformError::QueueFull`] when the performer has too many requests waiting, and

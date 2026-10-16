@@ -712,25 +712,35 @@ fn a_posted_scene_shows_in_the_next_frame_and_edits_follow() {
 }
 
 #[test]
-fn applying_a_scene_allocates_nothing_in_the_frames_after_it() {
+fn applying_a_scene_allocates_nothing_the_first_submission_included() {
     let mut live =
         Live::new(Quiet(Recorder::new(false)), vec![("cam", turning(30.0, sweep))], Quality::live(), Painter::None);
     live.go_live("cam");
+    live.frames(120); // warm-up: no scene has been posted yet
     let mailbox = live.live().scenes();
     let mut def = scene_def();
-    mailbox.post(resolved(&def));
-    live.frames(120);
-    // A value-only edit, posted off the loop; taking it swaps, and nothing on the frame thread allocates or frees.
-    def.lighting.lights.get_mut(&LightId::new("rim").unwrap()).unwrap().intensity = 2.0;
+    // Built off the loop, as the scene service does; the first take is inside the counted frames.
     mailbox.post(resolved(&def));
     let (result, allocations) = allocations_in(|| {
-        for _ in 0..600 {
+        for _ in 0..300 {
             live.try_frame()?;
         }
         Ok::<(), StageError>(())
     });
     result.unwrap();
-    assert_eq!(allocations, 0, "600 live frames after a scene allocated {allocations} times");
+    assert_eq!(allocations, 0, "the first scene submission and 299 frames after it allocated {allocations} times");
+    assert!(live.live().stage().scene().lights.len() > 1, "the first scene was taken");
+    // A value-only edit, posted off the loop; taking it swaps, and nothing on the frame thread allocates or frees.
+    def.lighting.lights.get_mut(&LightId::new("rim").unwrap()).unwrap().intensity = 2.0;
+    mailbox.post(resolved(&def));
+    let (result, allocations) = allocations_in(|| {
+        for _ in 0..300 {
+            live.try_frame()?;
+        }
+        Ok::<(), StageError>(())
+    });
+    result.unwrap();
+    assert_eq!(allocations, 0, "a value-only edit and the frames after it allocated {allocations} times");
     assert!(
         live.live()
             .stage()

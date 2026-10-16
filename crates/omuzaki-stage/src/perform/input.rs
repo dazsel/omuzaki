@@ -85,8 +85,17 @@ register_setting!(InputSource);
 /// it (`AgentWrite::Never`, like `audio.bindings`), and the id may name the machine, so it never roams.
 pub struct InputCamera;
 
+/// The value of [`InputCamera`]: the bound camera, or none. A table with an optional `id`, because the settings files
+/// are TOML and TOML has no null: an unbound camera is an empty table.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct BoundCamera {
+    /// The camera's id, as `input.state` lists it; absent when no camera is bound.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<CameraId>,
+}
+
 impl Setting for InputCamera {
-    type Value = Option<CameraId>;
+    type Value = BoundCamera;
     const META: SettingMeta = SettingMeta::new(
         "input.camera",
         "The camera the webcam source reads",
@@ -97,8 +106,8 @@ impl Setting for InputCamera {
         1,
     );
 
-    fn default() -> Option<CameraId> {
-        None
+    fn default() -> BoundCamera {
+        BoundCamera::default()
     }
 }
 

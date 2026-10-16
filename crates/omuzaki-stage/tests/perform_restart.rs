@@ -248,7 +248,7 @@ fn an_unplugged_camera_is_reported_and_its_binding_is_kept() {
     let mut app = App::start(&path, &["a"]); // `b` is not connected today
     let restored = app.restore(CHARACTER);
     assert_eq!(restored.missing_camera, Some(CameraId("b".into())));
-    assert_eq!(app.store.get::<InputCamera>().unwrap(), Some(CameraId("b".into())), "the binding is still saved");
+    assert_eq!(app.store.get::<InputCamera>().unwrap().id, Some(CameraId("b".into())), "the binding is still saved");
     assert_eq!(restored.triggers, 2, "the rest came back");
 }
 
