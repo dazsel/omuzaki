@@ -185,7 +185,9 @@ pub const TOP_BEAD: (f64, (usize, usize), f64) = (0.0034, (10, 8), 0.0045);
 /// How far below the hanging point the cross's top is, how far below that its top arm's tip, and how far out the cross
 /// hangs (metres).
 pub const CROSS_HANG: (f64, f64, f64) = (0.0055, 0.004, 0.004);
-/// How far each arm is pushed back to centre its thickness, metres.
+/// How far each arm and the centre box are pushed back, metres. It centres an arm's thickness (extruded from 0 to
+/// [`ARM_DEPTH`]) on the cross's plane; the box, centred already, sits this far behind it, its front flush with the
+/// plane, as the prototype places both with the same shift.
 const ARM_BACK: f64 = 0.0011;
 /// How far an arm's root reaches past the centre, inside the centre box, metres. The prototype's arms all start at the
 /// centre, so opposite arms share their root edge; reaching a little further keeps each arm its own closed shell
@@ -232,7 +234,7 @@ pub fn pendant_cross(
         extrude(builder, &arm, &outline, &[&[0, 1, 2, 5], &[5, 2, 3, 4]], ARM_DEPTH * k, bevel, skin)?;
     }
     let (side, depth) = CROSS_BOX;
-    cuboid(builder, &centre, DVec3::new(side, side, depth) * k, skin)?;
+    cuboid(builder, &centre.at(DVec3::new(0.0, 0.0, -ARM_BACK * k)), DVec3::new(side, side, depth) * k, skin)?;
     let (pearl_r, (ws, hs), past) = PEARL;
     for (x, y) in [(0.0, lv + past), (0.0, -(down_share * lv + past)), (lh + past, 0.0), (-(lh + past), 0.0)] {
         let pearl = centre.at(DVec3::new(x * k, y * k, 0.0));
