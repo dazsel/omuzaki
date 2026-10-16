@@ -77,7 +77,7 @@ mod imp {
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn posix_memalign(out: *mut *mut c_void, align: usize, size: usize) -> i32 {
         // POSIX: the alignment is a power of two and a multiple of the pointer size; anything else is EINVAL (22).
-        if !align.is_power_of_two() || align % size_of::<*mut c_void>() != 0 {
+        if !align.is_power_of_two() || !align.is_multiple_of(size_of::<*mut c_void>()) {
             return 22;
         }
         note();
