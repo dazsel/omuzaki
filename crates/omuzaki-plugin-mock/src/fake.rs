@@ -5,7 +5,7 @@
 //! draining a running call (§6.3), written again from the design rather than shared with the host. Time is the
 //! runner's clock (a `FakeClock` in tests); nothing here sleeps or spawns.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
 use omuzaki_core::time::{Clock, Seconds};
@@ -64,9 +64,10 @@ struct Entry {
     log_dropped: u64,
     /// An entry call is running outside the lock.
     busy: bool,
-    /// Starts begun so far, and how the last one settled: a caller that waited out a start returns its outcome.
+    /// Starts begun so far, and how the last few settled, by attempt: a caller returns the outcome of the start it
+    /// waited for.
     attempt: u64,
-    settled: Result<(), PluginError>,
+    outcomes: VecDeque<(u64, Result<(), PluginError>)>,
 }
 
 struct Pending {
@@ -148,7 +149,7 @@ impl MockPlugins {
                 log_dropped: 0,
                 busy: false,
                 attempt: 0,
-                settled: Ok(()),
+                outcomes: VecDeque::new(),
             },
         );
         Ok(id)
@@ -239,22 +240,24 @@ impl MockPlugins {
     /// Starts `id`: opens its session and runs `init`. Called with the plugin idle.
     fn start(&self, id: &PluginId, by: &Actor, why: Start) -> Result<PluginInfo, PluginError> {
         let mut inner = self.lock();
-        // A start under way when this one arrives, or begun while it waits, is the one it waits for: the outcome of
-        // the last start to settle is the answer, and no further attempt is made.
-        let arrived = inner.plugins.get(id).map(|e| (e.attempt, e.state == PluginState::Loading));
-        while inner.plugins.get(id).is_some_and(|e| e.busy) {
+        // The start this call waits for: the one under way when it arrives, else the first one begun while it waits.
+        // Its own outcome is the answer, however many starts settle after it, and no further attempt is made.
+        let waited_for =
+            inner.plugins.get(id).map(|e| if e.state == PluginState::Loading { e.attempt } else { e.attempt + 1 });
+        loop {
+            let entry = inner.plugins.get(id).ok_or(PluginError::NotFound)?;
+            if let Some(outcome) = waited_for.and_then(|attempt| outcome_of(&entry.outcomes, attempt)) {
+                return outcome.clone().map(|()| info_of(id, entry));
+            }
+            if !entry.busy {
+                break;
+            }
             inner = self.idle.wait(inner).unwrap_or_else(PoisonError::into_inner);
         }
         let entry = inner.plugins.get_mut(id).ok_or(PluginError::NotFound)?;
-        if let Some((attempt, under_way)) = arrived
-            && (under_way || entry.attempt > attempt)
-        {
-            return entry.settled.clone().map(|()| info_of(id, entry));
-        }
         if let Some(answer) = may_start(id, entry, why) {
             return answer;
         }
-        entry.attempt += 1;
         let grants = ceiling(&entry.manifest.requests, &entry.approval, &self.person);
         let spec = SessionSpec {
             transport: Transport::Plugin,
@@ -272,6 +275,7 @@ impl MockPlugins {
         entry.session = Some(session.id);
         entry.enabled_by = Some(by.clone());
         entry.restart_at = None;
+        entry.attempt += 1;
         entry.state = PluginState::Loading;
         // Busy from this lock hold on, so no other start, stop or call of this plugin runs until `init` settles.
         entry.busy = true;
@@ -320,7 +324,7 @@ impl MockPlugins {
             }
         };
         if kind == CallKind::Init {
-            entry.settled.clone_from(&settled);
+            record_outcome(&mut entry.outcomes, entry.attempt, settled.clone());
         }
         settled
     }
@@ -379,6 +383,27 @@ fn may_start(id: &PluginId, entry: &mut Entry, why: Start) -> Option<Result<Plug
         (Start::Reload, PluginState::Unloading) => None,
         (Start::Reload, _) => Some(Err(PluginError::Instantiate(format!("`{id}` is not running")))),
     }
+}
+
+/// How many start outcomes an entry keeps, so a caller that waited for one start finds its outcome even after later
+/// starts settled.
+const OUTCOMES_KEPT: usize = 8;
+
+/// Records how start `attempt` settled.
+fn record_outcome(
+    outcomes: &mut VecDeque<(u64, Result<(), PluginError>)>,
+    attempt: u64,
+    outcome: Result<(), PluginError>,
+) {
+    outcomes.push_back((attempt, outcome));
+    while outcomes.len() > OUTCOMES_KEPT {
+        outcomes.pop_front();
+    }
+}
+
+/// How start `attempt` settled, if it has.
+fn outcome_of(outcomes: &VecDeque<(u64, Result<(), PluginError>)>, attempt: u64) -> Option<&Result<(), PluginError>> {
+    outcomes.iter().find(|(a, _)| *a == attempt).map(|(_, outcome)| outcome)
 }
 
 fn fault_name(fault: FaultKind) -> &'static str {

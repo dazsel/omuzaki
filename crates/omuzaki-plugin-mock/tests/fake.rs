@@ -1,7 +1,7 @@
 //! `MockPlugins` passes the conformance suite, and its own promises: injected faults, deterministic scripts.
 
 use omuzaki_ops_api::{Grants, Scope};
-use omuzaki_plugin_api::Plugins;
+use omuzaki_plugin_api::{PluginError, Plugins};
 use omuzaki_plugin_api::limits::LOG_BURST;
 use omuzaki_plugin_api::state::{FaultKind, LogLevel, PluginState};
 use omuzaki_plugin_mock::conformance::{self, Behaviour, Subject, World, manifest, person};
@@ -63,4 +63,51 @@ fn a_log_flood_keeps_the_burst_and_reports_the_rest_as_the_host_does() {
     let texts: Vec<String> = plugins.log(&id, 0, usize::MAX).unwrap().into_iter().map(|l| l.text).collect();
     assert_eq!(texts[LOG_BURST as usize], "900 lines dropped");
     assert_eq!(texts[LOG_BURST as usize + 1], "line 0", "the second init's first line follows the notice");
+}
+
+#[test]
+fn a_waiter_gets_the_outcome_of_the_start_it_waited_for_even_after_a_newer_one_began() {
+    use std::sync::mpsc::{Receiver, channel};
+    use std::sync::{Arc, Mutex};
+
+    let world = World::new();
+    let plugins = Arc::new(MockPlugins::new(world.clock.clone(), world.sessions.clone(), Grants::person()));
+    let (release, gate) = channel::<Result<(), String>>();
+    let gate: Arc<Mutex<Receiver<Result<(), String>>>> = Arc::new(Mutex::new(gate));
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let guest = {
+        let (gate, calls) = (gate.clone(), calls.clone());
+        MockGuest::new(move |_, _| {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(gate.lock().unwrap().recv().unwrap())
+        })
+    };
+    let id = plugins.add(manifest("gated", &[]), guest).unwrap();
+    let enable = |plugins: &Arc<MockPlugins>| {
+        let (plugins, id) = (plugins.clone(), id.clone());
+        std::thread::spawn(move || plugins.enable(&id, &person()))
+    };
+    let loading = |plugins: &MockPlugins| {
+        let started = std::time::Instant::now();
+        while plugins.info(&id).unwrap().state != PluginState::Loading {
+            assert!(started.elapsed() < std::time::Duration::from_secs(5), "never started");
+            std::thread::yield_now();
+        }
+    };
+    let first = enable(&plugins);
+    loading(&plugins);
+    let waiter = enable(&plugins);
+    std::thread::sleep(std::time::Duration::from_millis(50)); // the waiter is waiting for attempt 1
+    release.send(Err("first fails".into())).unwrap();
+    assert_eq!(first.join().unwrap().map(|i| i.state), Err(PluginError::Fault(FaultKind::InitError)));
+    let second = enable(&plugins); // a fresh enable: attempt 2
+    assert_eq!(
+        waiter.join().unwrap().map(|i| i.state),
+        Err(PluginError::Fault(FaultKind::InitError)),
+        "attempt 1's outcome"
+    );
+    loading(&plugins);
+    release.send(Ok(())).unwrap();
+    assert_eq!(second.join().unwrap().map(|i| i.state), Ok(PluginState::Running));
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2, "no third attempt");
 }

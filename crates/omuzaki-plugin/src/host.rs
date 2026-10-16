@@ -5,7 +5,7 @@
 //! 10 s; the third fault in ten minutes disables the plugin until the person turns it on again. Disabling and
 //! reloading wait for the running call, end the session `Closed` and run `shutdown`.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
@@ -48,9 +48,10 @@ struct Entry {
     log: Arc<PluginLog>,
     worker: Option<Worker>,
     busy: bool,
-    /// Starts begun so far, and how the last one settled: a caller that waited out a start returns its outcome.
+    /// Starts begun so far, and how the last few settled, by attempt: a caller returns the outcome of the start it
+    /// waited for.
     attempt: u64,
-    settled: Result<(), PluginError>,
+    outcomes: VecDeque<(u64, Result<(), PluginError>)>,
 }
 
 /// The wasmtime host's [`Plugins`] service.
@@ -217,7 +218,7 @@ impl WasmPlugins {
                 worker: None,
                 busy: false,
                 attempt: 0,
-                settled: Ok(()),
+                outcomes: VecDeque::new(),
             },
         );
         Ok(id)
@@ -295,22 +296,24 @@ impl WasmPlugins {
     /// Starts `id` for `by`: opens its session, starts its worker and runs `init` there, off the lock.
     fn start(&self, id: &PluginId, by: &Actor, why: Start) -> Result<PluginInfo, PluginError> {
         let mut plugins = self.lock();
-        // A start under way when this one arrives, or begun while it waits, is the one it waits for: the outcome of
-        // the last start to settle is the answer, and no further attempt is made.
-        let arrived = plugins.get(id).map(|e| (e.attempt, e.state == PluginState::Loading));
-        while plugins.get(id).is_some_and(|e| e.busy) {
+        // The start this call waits for: the one under way when it arrives, else the first one begun while it waits.
+        // Its own outcome is the answer, however many starts settle after it, and no further attempt is made.
+        let waited_for =
+            plugins.get(id).map(|e| if e.state == PluginState::Loading { e.attempt } else { e.attempt + 1 });
+        loop {
+            let entry = plugins.get(id).ok_or(PluginError::NotFound)?;
+            if let Some(outcome) = waited_for.and_then(|attempt| outcome_of(&entry.outcomes, attempt)) {
+                return outcome.clone().map(|()| info_of(id, entry));
+            }
+            if !entry.busy {
+                break;
+            }
             plugins = self.idle.wait(plugins).unwrap_or_else(PoisonError::into_inner);
         }
         let entry = plugins.get_mut(id).ok_or(PluginError::NotFound)?;
-        if let Some((attempt, under_way)) = arrived
-            && (under_way || entry.attempt > attempt)
-        {
-            return entry.settled.clone().map(|()| info_of(id, entry));
-        }
         if let Some(answer) = may_start(id, entry, why) {
             return answer;
         }
-        entry.attempt += 1;
         let spec = SessionSpec {
             transport: Transport::Plugin,
             client: format!("plugin:{}@{}", entry.manifest.id, entry.manifest.version),
@@ -327,6 +330,7 @@ impl WasmPlugins {
         entry.session = Some(session.id);
         entry.enabled_by = Some(by.clone());
         entry.restart_at = None;
+        entry.attempt += 1;
         entry.state = PluginState::Loading;
         entry.busy = true;
         let setup = InstanceSetup {
@@ -345,7 +349,7 @@ impl WasmPlugins {
         let entry = plugins.get_mut(id).ok_or(PluginError::NotFound)?;
         entry.busy = false;
         self.idle.notify_all();
-        entry.settled = match started {
+        let outcome = match started {
             Ok(worker) => {
                 entry.worker = Some(worker);
                 entry.state = PluginState::Running;
@@ -363,7 +367,8 @@ impl WasmPlugins {
                 Err(error)
             }
         };
-        entry.settled.clone().map(|()| info_of(id, entry))
+        record_outcome(&mut entry.outcomes, entry.attempt, outcome.clone());
+        outcome.map(|()| info_of(id, entry))
     }
 }
 
@@ -457,6 +462,27 @@ impl Drop for Claim<'_> {
     fn drop(&mut self) {
         self.claims.lock().unwrap_or_else(PoisonError::into_inner).remove(&self.id);
     }
+}
+
+/// How many start outcomes an entry keeps, so a caller that waited for one start finds its outcome even after later
+/// starts settled.
+const OUTCOMES_KEPT: usize = 8;
+
+/// Records how start `attempt` settled.
+fn record_outcome(
+    outcomes: &mut VecDeque<(u64, Result<(), PluginError>)>,
+    attempt: u64,
+    outcome: Result<(), PluginError>,
+) {
+    outcomes.push_back((attempt, outcome));
+    while outcomes.len() > OUTCOMES_KEPT {
+        outcomes.pop_front();
+    }
+}
+
+/// How start `attempt` settled, if it has.
+fn outcome_of(outcomes: &VecDeque<(u64, Result<(), PluginError>)>, attempt: u64) -> Option<&Result<(), PluginError>> {
+    outcomes.iter().find(|(a, _)| *a == attempt).map(|(_, outcome)| outcome)
 }
 
 fn not_taken(plugins: &BTreeMap<PluginId, Entry>, id: &PluginId) -> Result<(), PluginError> {
