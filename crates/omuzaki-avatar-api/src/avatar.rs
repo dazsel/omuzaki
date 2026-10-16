@@ -215,6 +215,8 @@ impl ImportedAvatar {
     /// - every material passes the renderer's rules, draws only textures the avatar has and composites no face layers
     ///   (an imported avatar has no painted face), and every texture's pixels match its description;
     /// - the retained source meshes, when kept, list every runtime mesh exactly once, and their target names fit;
+    /// - every index the retained scene graph holds (children, roots, meshes, skins, joints, materials, bones) points
+    ///   into its list, and every retained skin has one inverse bind matrix per joint, or none;
     /// - every anchor follows a bone the skeleton has;
     /// - every morph bind names a mesh and a target that exist, and every colour and UV bind a material that exists;
     /// - every driver names an expression that exists, and gaze channels drive expressions only on the native `ARKit`
@@ -234,6 +236,7 @@ impl ImportedAvatar {
         }
         self.validate_materials()?;
         self.validate_retained_meshes()?;
+        self.validate_retained_graph()?;
         for (id, anchor) in &self.anchors {
             self.resolve(&anchor.bone, || format!("anchor {id}"))?;
         }
@@ -297,8 +300,8 @@ impl ImportedAvatar {
         for (source, retained) in sources.iter().enumerate() {
             let names = retained.morph_target_names.len();
             let mut fits_a_primitive = names == 0;
-            for &primitive in &retained.primitives {
-                let index = usize::from(primitive);
+            for primitive in &retained.primitives {
+                let index = usize::from(primitive.mesh);
                 let (Some(mesh), Some(count)) = (self.meshes.get(index), groups.get_mut(index)) else {
                     return Err(AvatarError::unknown_primitive(source, index));
                 };
@@ -318,6 +321,47 @@ impl ImportedAvatar {
             Some(mesh) => Err(AvatarError::mesh_grouping(mesh, groups[mesh])),
             None => Ok(()),
         }
+    }
+
+    /// The retained scene graph: every index it holds points into the list it names, so export can rebuild the file's
+    /// nodes, meshes and skins without a bounds check.
+    fn validate_retained_graph(&self) -> Result<(), AvatarError> {
+        let r = &self.retained;
+        let check = |at: &dyn Fn() -> String, index: u32, len: usize| {
+            let index = usize::try_from(index).unwrap_or(usize::MAX);
+            if index < len { Ok(()) } else { Err(AvatarError::retained_index(at(), index, len)) }
+        };
+        for (n, node) in r.nodes.iter().enumerate() {
+            for &child in &node.children {
+                check(&|| format!("node {n}'s child"), child, r.nodes.len())?;
+            }
+            if let Some(mesh) = node.mesh {
+                check(&|| format!("node {n}'s mesh"), mesh, r.meshes.len())?;
+            }
+            if let Some(skin) = node.skin {
+                check(&|| format!("node {n}'s skin"), skin, r.skins.len())?;
+            }
+            if let Some(bone) = node.bone {
+                check(&|| format!("node {n}'s bone"), u32::from(bone.0), self.skeleton.len())?;
+            }
+        }
+        for &root in &r.roots {
+            check(&|| "a root".to_owned(), root, r.nodes.len())?;
+        }
+        for (s, skin) in r.skins.iter().enumerate() {
+            for &joint in skin.joints.iter().chain(&skin.skeleton) {
+                check(&|| format!("skin {s}'s joint"), joint, r.nodes.len())?;
+            }
+            if !skin.inverse_bind.is_empty() && skin.inverse_bind.len() != skin.joints.len() {
+                return Err(AvatarError::skin_inverse_bind(s, skin.inverse_bind.len(), skin.joints.len()));
+            }
+        }
+        for (m, mesh) in r.meshes.iter().enumerate() {
+            for material in mesh.primitives.iter().filter_map(|p| p.material) {
+                check(&|| format!("mesh {m}'s material"), material, r.materials.len())?;
+            }
+        }
+        Ok(())
     }
 
     fn validate_expression(&self, index: usize, expression: &AvatarExpression) -> Result<(), AvatarError> {

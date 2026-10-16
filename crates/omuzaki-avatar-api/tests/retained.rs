@@ -3,9 +3,12 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // fixture helpers outside #[test] functions
 
 use omuzaki_anim_api::BoneId;
-use omuzaki_avatar_api::retained::{Retained, RetainedImage, RetainedMaterial, RetainedMesh, RetainedNode};
+use omuzaki_avatar_api::retained::{
+    Retained, RetainedImage, RetainedMaterial, RetainedMesh, RetainedNode, RetainedPrimitive, RetainedSkin,
+    RetainedTransform,
+};
 use omuzaki_char_api::MaterialName;
-use omuzaki_core::glam::{Vec3, Vec4};
+use omuzaki_core::glam::{Mat4, Quat, Vec3, Vec4};
 use omuzaki_io_api::{
     ImageIx, ImageMime, Material, Passthrough, Sampler, Shading, TexRef, Texture, TextureIx, Toon, VrmMeta,
 };
@@ -46,11 +49,25 @@ fn retained() -> Retained {
         RetainedImage::new("body", ImageMime::Png, ContentHash([1; 32])),
         RetainedImage::new("thumbnail", ImageMime::Jpeg, ContentHash([2; 32])),
     ];
-    r.nodes = vec![RetainedNode::new("Root"), RetainedNode::new("J_Bip_C_Hips").with_bone(BoneId(0))];
+    let turned = RetainedTransform {
+        translation: Vec3::new(0.0, 0.123, 0.0),
+        rotation: Quat::from_rotation_y(0.5),
+        scale: Vec3::splat(0.9999),
+    };
+    r.nodes = vec![
+        RetainedNode::new("Root").with_children(vec![1, 2]),
+        RetainedNode::new("J_Bip_C_Hips").with_bone(BoneId(0)).with_transform(turned),
+        RetainedNode::new("Face").with_mesh(0, Some(0)),
+    ];
+    r.roots = vec![0];
+    r.skins = vec![
+        RetainedSkin::new("skin", vec![1], vec![Mat4::from_translation(Vec3::new(0.0, -0.123, 0.0))]).with_skeleton(0),
+    ];
+    let primitive = |m: u16| RetainedPrimitive::new(m).with_material(0);
     r.meshes = vec![
-        RetainedMesh::new("Face", vec![0, 1])
+        RetainedMesh::new("Face", vec![primitive(0), RetainedPrimitive::new(1)])
             .with_morph_target_names(vec!["Fcl_ALL_A".into(), "Fcl_EYE_Close_L".into()]),
-        RetainedMesh::new("Body", vec![2]),
+        RetainedMesh::new("Body", vec![primitive(2)]),
     ];
     r.meta = Some(meta);
     r.passthrough = passthrough;
@@ -94,7 +111,11 @@ fn passthrough_and_a_present_null_extras_survive() {
     let back: Retained = serde_json::from_str(&serde_json::to_string(&retained()).unwrap()).unwrap();
     assert_eq!(back.materials[0].source.passthrough.extras, Some(json!(null)));
     assert_eq!(back.meshes[0].morph_target_names, ["Fcl_ALL_A", "Fcl_EYE_Close_L"], "the file's names, not slugs");
-    assert_eq!(back.meshes[0].primitives, [0, 1], "which runtime meshes one source mesh became");
+    assert_eq!(back.meshes[0].primitives, [RetainedPrimitive::new(0).with_material(0), RetainedPrimitive::new(1)]);
+    assert_eq!((back.nodes[0].children.as_slice(), back.roots.as_slice()), (&[1, 2][..], &[0][..]), "the scene graph");
+    assert_eq!(back.nodes[1].transform, r_transform(&retained()), "a transform, bit for bit");
+    assert_eq!((back.nodes[2].mesh, back.nodes[2].skin), (Some(0), Some(0)));
+    assert_eq!(back.skins, retained().skins, "joints, inverse binds and the skeleton root");
     assert!(back.passthrough.extensions.contains_key("EXT_studio"));
 }
 
@@ -107,4 +128,9 @@ fn an_empty_retained_writes_an_empty_table_and_unknown_keys_are_refused() {
     assert_eq!(serde_json::from_value::<Retained>(json!({})).unwrap(), Retained::new());
     assert!(serde_json::from_value::<Retained>(json!({ "materails": [] })).is_err());
     assert!(serde_json::from_value::<Retained>(json!({ "meta": { "vrm1": {}, "vrm2": {} } })).is_err());
+}
+
+/// The transform of the hips node in [`retained`].
+fn r_transform(r: &Retained) -> RetainedTransform {
+    r.nodes[1].transform
 }

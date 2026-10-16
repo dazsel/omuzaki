@@ -10,6 +10,7 @@
 
 use omuzaki_anim_api::BoneId;
 use omuzaki_char_api::MaterialName;
+use omuzaki_core::glam::{Mat4, Quat, Vec3};
 use omuzaki_io_api::{ImageMime, Material, Passthrough, Texture, VrmMeta};
 use omuzaki_store_api::ContentHash;
 use serde::{Deserialize, Serialize};
@@ -63,6 +64,18 @@ pub struct RetainedNode {
     /// The skeleton bone made from it, if any: the node-to-bone table export writes back through.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bone: Option<BoneId>,
+    /// Its transform relative to its parent, as the file has it.
+    #[serde(default, skip_serializing_if = "RetainedTransform::is_identity")]
+    pub transform: RetainedTransform,
+    /// Its children, as indices into [`Retained::nodes`], in file order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<u32>,
+    /// The mesh drawn at it, an index into [`Retained::meshes`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mesh: Option<u32>,
+    /// The skin that deforms that mesh, an index into [`Retained::skins`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skin: Option<u32>,
     /// Unknown extensions and extras on the node, verbatim.
     #[serde(default, skip_serializing_if = "Passthrough::is_empty")]
     pub passthrough: Passthrough,
@@ -80,6 +93,114 @@ impl RetainedNode {
         self.bone = Some(bone);
         self
     }
+
+    /// Sets its transform (builder style).
+    #[must_use]
+    pub fn with_transform(mut self, transform: RetainedTransform) -> Self {
+        self.transform = transform;
+        self
+    }
+
+    /// Sets its children (builder style).
+    #[must_use]
+    pub fn with_children(mut self, children: Vec<u32>) -> Self {
+        self.children = children;
+        self
+    }
+
+    /// Draws the source mesh `mesh` at it, deformed by the skin `skin` if any (builder style).
+    #[must_use]
+    pub fn with_mesh(mut self, mesh: u32, skin: Option<u32>) -> Self {
+        self.mesh = Some(mesh);
+        self.skin = skin;
+        self
+    }
+}
+
+/// A node's transform as the file has it: translation, rotation, scale (glTF's TRS; a matrix is decomposed on import).
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RetainedTransform {
+    /// Metres, relative to the parent.
+    pub translation: Vec3,
+    /// A unit quaternion.
+    pub rotation: Quat,
+    /// Per-axis scale.
+    pub scale: Vec3,
+}
+
+impl RetainedTransform {
+    /// No translation, no rotation, unit scale.
+    pub const IDENTITY: Self = Self { translation: Vec3::ZERO, rotation: Quat::IDENTITY, scale: Vec3::ONE };
+
+    /// True for the identity, which serialisation leaves out.
+    pub fn is_identity(&self) -> bool {
+        *self == Self::IDENTITY
+    }
+}
+
+impl Default for RetainedTransform {
+    fn default() -> Self {
+        Self::IDENTITY
+    }
+}
+
+/// One primitive of a source mesh: the runtime mesh it became and the source material it drew.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct RetainedPrimitive {
+    /// The runtime mesh made from it, an index into `ImportedAvatar::meshes`.
+    pub mesh: u16,
+    /// Its material, an index into [`Retained::materials`]; `None` when the file gave it none (glTF's default
+    /// material), so export writes none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub material: Option<u32>,
+}
+
+impl RetainedPrimitive {
+    /// The primitive that became runtime mesh `mesh`, with no material in the file.
+    pub const fn new(mesh: u16) -> Self {
+        Self { mesh, material: None }
+    }
+
+    /// Records its material (builder style).
+    #[must_use]
+    pub const fn with_material(mut self, material: u32) -> Self {
+        self.material = Some(material);
+        self
+    }
+}
+
+/// One skin of the file: its joints, their inverse bind matrices and its skeleton root, by node.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct RetainedSkin {
+    /// The skin's name in the file.
+    pub name: String,
+    /// Its joints, as indices into [`Retained::nodes`], in the file's order.
+    pub joints: Vec<u32>,
+    /// One inverse bind matrix per joint, exactly as the file has them; empty when the file gives none (identity).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inverse_bind: Vec<Mat4>,
+    /// The skeleton root, an index into [`Retained::nodes`], when the file names one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skeleton: Option<u32>,
+}
+
+impl RetainedSkin {
+    /// The skin `name` over the nodes `joints`, with `inverse_bind` (one per joint, or none).
+    pub fn new(name: impl Into<String>, joints: Vec<u32>, inverse_bind: Vec<Mat4>) -> Self {
+        Self { name: name.into(), joints, inverse_bind, skeleton: None }
+    }
+
+    /// Records its skeleton root (builder style).
+    #[must_use]
+    pub fn with_skeleton(mut self, skeleton: u32) -> Self {
+        self.skeleton = Some(skeleton);
+        self
+    }
 }
 
 /// One mesh of the file. Its primitives became separate runtime meshes (one material each), and they share its
@@ -90,8 +211,8 @@ impl RetainedNode {
 pub struct RetainedMesh {
     /// The mesh's name in the file.
     pub name: String,
-    /// The runtime meshes made from its primitives (indices into `ImportedAvatar::meshes`), in primitive order.
-    pub primitives: Vec<u16>,
+    /// Its primitives, in file order: the runtime mesh each became and its material.
+    pub primitives: Vec<RetainedPrimitive>,
     /// Its morph-target names as the file has them (`extras.targetNames`, `Fcl_ALL_A`), one per target; empty when
     /// the file names none. The runtime names are slugs (`SparseMorph::name`), so these are what export writes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -99,8 +220,8 @@ pub struct RetainedMesh {
 }
 
 impl RetainedMesh {
-    /// The mesh `name`, whose primitives became the runtime meshes `primitives`, with no target names.
-    pub fn new(name: impl Into<String>, primitives: Vec<u16>) -> Self {
+    /// The mesh `name` with `primitives`, with no target names.
+    pub fn new(name: impl Into<String>, primitives: Vec<RetainedPrimitive>) -> Self {
         Self { name: name.into(), primitives, morph_target_names: Vec::new() }
     }
 
@@ -126,14 +247,21 @@ pub struct Retained {
     /// The file's images, in file order: what the textures and the meta's thumbnail index.
     #[serde(default)]
     pub images: Vec<RetainedImage>,
-    /// Every node of the file, in file order.
+    /// Every node of the file, in file order, with its transform, children, mesh and skin: the scene graph export
+    /// rebuilds.
     #[serde(default)]
     pub nodes: Vec<RetainedNode>,
+    /// The nodes with no parent that make up the default scene, as indices into `nodes`, in file order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub roots: Vec<u32>,
     /// The file's meshes, in file order: which runtime meshes each one's primitives became, and its morph-target
     /// names, so export rebuilds each mesh with its primitives and its one `extras.targetNames` table. Empty for an
     /// avatar that has none to keep.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub meshes: Vec<RetainedMesh>,
+    /// The file's skins, in file order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skins: Vec<RetainedSkin>,
     /// The VRM meta (licence, authors, the thumbnail as an index into `images`), or `None` for a plain glTF. Its
     /// 0.x extras, which io-api's own serialisation leaves out, are kept too ([`meta_serde`]).
     #[serde(default, skip_serializing_if = "Option::is_none", with = "meta_serde")]

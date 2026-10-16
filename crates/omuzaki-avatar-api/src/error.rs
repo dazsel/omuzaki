@@ -164,6 +164,28 @@ pub enum AvatarError {
         /// How many source meshes list it.
         groups: usize,
     },
+    /// A retained record indexes past the list it points into.
+    #[error("{at} is {index}, but there are only {len}")]
+    #[non_exhaustive]
+    RetainedIndex {
+        /// What holds the index: `node 3's child`, `skin 0's joint`.
+        at: String,
+        /// The index it holds.
+        index: usize,
+        /// How long the list is.
+        len: usize,
+    },
+    /// A retained skin's inverse bind matrices don't line up with its joints.
+    #[error("skin {skin} has {inverse_bind} inverse bind matrices for {joints} joints")]
+    #[non_exhaustive]
+    SkinInverseBind {
+        /// The skin, an index into `Retained::skins`.
+        skin: usize,
+        /// How many matrices it has.
+        inverse_bind: usize,
+        /// How many joints it has.
+        joints: usize,
+    },
     /// The spring set does not fit the skeleton.
     #[error("springs: {0}")]
     Springs(SpringError),
@@ -258,6 +280,16 @@ impl AvatarError {
     /// [`AvatarError::MeshGrouping`].
     pub const fn mesh_grouping(mesh: usize, groups: usize) -> Self {
         Self::MeshGrouping { mesh, groups }
+    }
+
+    /// [`AvatarError::RetainedIndex`].
+    pub fn retained_index(at: impl Into<String>, index: usize, len: usize) -> Self {
+        Self::RetainedIndex { at: at.into(), index, len }
+    }
+
+    /// [`AvatarError::SkinInverseBind`].
+    pub const fn skin_inverse_bind(skin: usize, inverse_bind: usize, joints: usize) -> Self {
+        Self::SkinInverseBind { skin, inverse_bind, joints }
     }
 
     /// [`AvatarError::UnknownSchema`].

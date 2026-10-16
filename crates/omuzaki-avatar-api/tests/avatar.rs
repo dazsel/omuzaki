@@ -2,19 +2,21 @@
 
 mod common;
 
-use common::{avatar, ix};
+use common::{avatar, ix, skin};
 use omuzaki_anim_api::{BoneId, Channel, ChannelMask, SpringChain, SpringParams, SpringSet};
 use omuzaki_avatar_api::avatar::texture_bytes;
 use omuzaki_avatar_api::error::AvatarError;
 use omuzaki_avatar_api::expression::{ColourBind, ExprIx, MorphBind, UvBind};
 use omuzaki_avatar_api::gaze::{AvatarGaze, AvatarLookAt};
-use omuzaki_avatar_api::retained::RetainedMesh;
+use omuzaki_avatar_api::retained::{Retained, RetainedMaterial};
+use omuzaki_avatar_api::retained::{RetainedMesh, RetainedNode, RetainedPrimitive, RetainedSkin};
 use omuzaki_char_api::{BoneName, FaceOverlay, JointRef, MaterialName, TextureData, TextureName};
 use omuzaki_core::glam::Vec3;
-use omuzaki_core::glam::{UVec2, Vec2, Vec4};
+use omuzaki_core::glam::{Mat4, UVec2, Vec2, Vec4};
 use omuzaki_core::id::Slug;
 use omuzaki_face_api::{FaceLayerId, PlanarWindow};
 use omuzaki_io_api::{ColorBindKind, LookAtKind, RangeMap};
+use omuzaki_io_api::{Material, Shading};
 use omuzaki_render_api::{AlphaMode, MorphSet, SparseMorph, TextureDesc};
 
 #[test]
@@ -95,33 +97,78 @@ fn materials_and_textures_are_checked_as_upload_will_check_them() {
     assert_eq!(a.validate(), Err(AvatarError::face_overlay(skin)), "an imported avatar has no painted face");
 }
 
+/// A change that breaks one index of a retained graph.
+type Breaks = fn(&mut Retained);
+
+/// Primitives that became the runtime meshes `meshes`, with no material in the file.
+fn prims(meshes: &[u16]) -> Vec<RetainedPrimitive> {
+    meshes.iter().map(|m| RetainedPrimitive::new(*m)).collect()
+}
+
+#[test]
+fn every_index_of_the_retained_scene_graph_is_checked() {
+    let mut a = avatar(false, 0, &[]);
+    let r = &mut a.retained;
+    r.nodes = vec![RetainedNode::new("Root").with_children(vec![1]), RetainedNode::new("Face").with_mesh(0, Some(0))];
+    r.roots = vec![0];
+    r.meshes = vec![RetainedMesh::new("Face", vec![RetainedPrimitive::new(0).with_material(0)])];
+    r.skins = vec![RetainedSkin::new("skin", vec![0, 1], vec![Mat4::IDENTITY; 2]).with_skeleton(0)];
+    r.materials = vec![RetainedMaterial::new(skin(), Material::new("Skin", Shading::Unlit))];
+    assert_eq!(a.validate(), Ok(()), "a consistent graph");
+
+    let broken: [(&str, Breaks); 8] = [
+        ("node 0's child", |r| r.nodes[0].children = vec![2]),
+        ("node 1's mesh", |r| r.nodes[1].mesh = Some(1)),
+        ("node 1's skin", |r| r.nodes[1].skin = Some(1)),
+        ("node 0's bone", |r| r.nodes[0].bone = Some(BoneId(999))),
+        ("a root", |r| r.roots = vec![5]),
+        ("skin 0's joint", |r| r.skins[0].joints = vec![0, 7]),
+        ("skin 0's joint", |r| r.skins[0].skeleton = Some(9)),
+        ("mesh 0's material", |r| r.meshes[0].primitives[0].material = Some(3)),
+    ];
+    for (at, break_it) in broken {
+        let mut b = a.clone();
+        break_it(&mut b.retained);
+        let e = b.validate().unwrap_err();
+        assert!(matches!(&e, AvatarError::RetainedIndex { at: got, .. } if got == at), "{at}: {e:?}");
+    }
+    let mut b = a.clone();
+    b.retained.skins[0].inverse_bind.pop();
+    assert_eq!(b.validate(), Err(AvatarError::skin_inverse_bind(0, 1, 2)));
+    b.retained.skins[0].inverse_bind.clear();
+    assert_eq!(b.validate(), Ok(()), "no inverse binds in the file means identity");
+}
+
 #[test]
 fn retained_source_meshes_group_every_mesh_once_and_name_its_targets() {
     let names = || vec!["Fcl_ALL_A".to_owned(), "Fcl_EYE_Close".to_owned()];
     let mut a = avatar(false, 2, &[]);
     // A second runtime mesh, from the same source mesh's second primitive: the two share one name table.
     a.meshes.push(a.meshes[0].clone());
-    a.retained.meshes = vec![RetainedMesh::new("Face", vec![0, 1]).with_morph_target_names(names())];
+    a.retained.meshes = vec![RetainedMesh::new("Face", prims(&[0, 1])).with_morph_target_names(names())];
     assert_eq!(a.validate(), Ok(()), "two primitives of one mesh share its names");
 
-    a.retained.meshes = vec![RetainedMesh::new("Face", vec![0]).with_morph_target_names(names())];
+    a.retained.meshes = vec![RetainedMesh::new("Face", prims(&[0])).with_morph_target_names(names())];
     assert_eq!(a.validate(), Err(AvatarError::mesh_grouping(1, 0)), "a mesh from no source mesh");
-    a.retained.meshes = vec![RetainedMesh::new("Face", vec![0, 1]), RetainedMesh::new("Body", vec![1])];
+    a.retained.meshes = vec![RetainedMesh::new("Face", prims(&[0, 1])), RetainedMesh::new("Body", prims(&[1]))];
     assert_eq!(a.validate(), Err(AvatarError::mesh_grouping(1, 2)), "a mesh from two");
-    a.retained.meshes = vec![RetainedMesh::new("Face", vec![0, 1, 2])];
+    a.retained.meshes = vec![RetainedMesh::new("Face", prims(&[0, 1, 2]))];
     assert_eq!(a.validate(), Err(AvatarError::unknown_primitive(0, 2)), "a mesh that isn't there");
 
-    a.retained.meshes = vec![RetainedMesh::new("Face", vec![0, 1]).with_morph_target_names(vec!["Fcl_ALL_A".into()])];
+    a.retained.meshes =
+        vec![RetainedMesh::new("Face", prims(&[0, 1])).with_morph_target_names(vec!["Fcl_ALL_A".into()])];
     assert_eq!(a.validate(), Err(AvatarError::morph_names(0, 1, 2)), "a name missing");
-    a.retained.meshes = vec![RetainedMesh::new("Face", vec![0]), RetainedMesh::new("Hair", vec![1])];
+    a.retained.meshes = vec![RetainedMesh::new("Face", prims(&[0])), RetainedMesh::new("Hair", prims(&[1]))];
     assert_eq!(a.validate(), Ok(()), "a file that names no targets");
 
     // A primitive without targets beside one with them, under one name table (glTF allows it).
     a.meshes[1].morphs = None;
-    a.retained.meshes = vec![RetainedMesh::new("Face", vec![0, 1]).with_morph_target_names(names())];
+    a.retained.meshes = vec![RetainedMesh::new("Face", prims(&[0, 1])).with_morph_target_names(names())];
     assert_eq!(a.validate(), Ok(()));
-    a.retained.meshes =
-        vec![RetainedMesh::new("Face", vec![0]), RetainedMesh::new("Hair", vec![1]).with_morph_target_names(names())];
+    a.retained.meshes = vec![
+        RetainedMesh::new("Face", prims(&[0])),
+        RetainedMesh::new("Hair", prims(&[1])).with_morph_target_names(names()),
+    ];
     assert_eq!(a.validate(), Err(AvatarError::morph_names(1, 2, 0)), "names for a mesh with no targets");
 
     a.retained.meshes = Vec::new();
