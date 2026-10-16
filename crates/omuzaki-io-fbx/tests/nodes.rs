@@ -334,3 +334,22 @@ fn animation_is_reported_without_being_loaded() {
     assert!(dropped.message.ends_with("animation"), "{}", dropped.message);
     assert_eq!(out.scene.nodes.len(), 1);
 }
+
+#[test]
+fn animation_is_found_by_the_files_structure_in_either_encoding_and_not_by_a_name() {
+    let mut with = maya();
+    with.model("Body", SCENE_ROOT, [0.0; 3], [0.0; 3]);
+    with.animation();
+    for (encoding, bytes) in [("ASCII", with.bytes()), ("binary", with.binary())] {
+        let out = import(&bytes).expect("a valid file");
+        let dropped = out.report.findings.iter().find(|f| f.rule == "fbx.content_dropped");
+        assert!(dropped.is_some_and(|f| f.message.ends_with("animation")), "{encoding}: {dropped:?}");
+    }
+    // A model that happens to be called `AnimationStack` is a node, not animation.
+    let mut named = maya();
+    named.model("AnimationStack", SCENE_ROOT, [0.0; 3], [0.0; 3]);
+    for (encoding, bytes) in [("ASCII", named.bytes()), ("binary", named.binary())] {
+        let out = import(&bytes).expect("a valid file");
+        assert!(!rules(&out).contains(&"fbx.content_dropped"), "{encoding}: {:?}", rules(&out));
+    }
+}

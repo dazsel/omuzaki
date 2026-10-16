@@ -92,21 +92,72 @@ pub(crate) fn fraction(done: u64, total: u64) -> f32 {
     if total == 0 { 0.0 } else { (done as f64 / total as f64).clamp(0.0, 1.0) as f32 }
 }
 
-/// The object name of FBX animation, in both encodings: ASCII writes it as `AnimationStack:` and in the definitions, binary
-/// as a record name.
-const ANIMATION_MARKER: &[u8] = b"AnimationStack";
+/// The object that FBX animation is made of, as an `Objects` child: ASCII writes `AnimationStack: id, ...` and binary a
+/// record of that name.
+const ANIMATION_OBJECT: &[u8] = b"AnimationStack";
+/// The first bytes of a binary FBX: the text `Kaydara FBX Binary  ` and a NUL.
+const BINARY_MAGIC: &[u8] = b"Kaydara FBX Binary  \0";
+/// Where a binary file's first record starts: the magic, the two bytes `0x1A 0x00`, and the version.
+const BINARY_FIRST_RECORD: usize = 27;
+/// From this version on, a binary record's offsets and counts are 64 bits wide, not 32.
+const WIDE_RECORDS_FROM: u32 = 7500;
 
-/// Whether the file has animation, from its bytes: curves are not loaded (they can be large and are not imported), so the
-/// object name is looked for instead. One pass over the input, which is already capped by `Limits::max_input_bytes`.
+/// Whether the file has animation. Curves are not loaded (they can be large and are not imported), so the file's own
+/// structure is read for an `AnimationStack` object instead: in ASCII, a line that begins with it; in binary, a child of
+/// the top-level `Objects` record. A string that merely contains the name (a model called that) is not animation. One
+/// bounded pass over input that `Limits::max_input_bytes` already caps.
 pub(crate) fn mentions_animation(bytes: &[u8]) -> bool {
-    let first = ANIMATION_MARKER[0];
-    let mut at = 0;
-    while let Some(found) = bytes[at..].iter().position(|&b| b == first) {
-        let start = at + found;
-        if bytes[start..].starts_with(ANIMATION_MARKER) {
-            return true;
+    if bytes.starts_with(BINARY_MAGIC) { binary_has_animation(bytes) } else { ascii_has_animation(bytes) }
+}
+
+fn ascii_has_animation(bytes: &[u8]) -> bool {
+    let mut object = ANIMATION_OBJECT.to_vec();
+    object.push(b':');
+    bytes.split(|&b| b == b'\n').any(|line| line.trim_ascii_start().starts_with(&object))
+}
+
+/// One binary record's header: where it ends, how long its properties are, its name, and where its body starts.
+struct Record<'a> {
+    end: usize,
+    props_len: usize,
+    name: &'a [u8],
+    body: usize,
+}
+
+fn record(bytes: &[u8], at: usize, wide: bool) -> Option<Record<'_>> {
+    let word = |offset: usize, width: usize| -> Option<usize> {
+        let raw = bytes.get(at.checked_add(offset)?..at.checked_add(offset)?.checked_add(width)?)?;
+        let mut padded = [0_u8; 8];
+        padded[..width].copy_from_slice(raw);
+        usize::try_from(u64::from_le_bytes(padded)).ok()
+    };
+    let width = if wide { 8 } else { 4 };
+    let (end, props_len) = (word(0, width)?, word(2 * width, width)?);
+    let fixed = 3 * width;
+    let name_len = usize::from(*bytes.get(at.checked_add(fixed)?)?);
+    let start = at.checked_add(fixed)?.checked_add(1)?;
+    let name = bytes.get(start..start.checked_add(name_len)?)?;
+    Some(Record { end, props_len, name, body: start + name_len })
+}
+
+fn binary_has_animation(bytes: &[u8]) -> bool {
+    let Some(version) = bytes.get(23..27).and_then(|v| v.try_into().ok()).map(u32::from_le_bytes) else {
+        return false;
+    };
+    let wide = version >= WIDE_RECORDS_FROM;
+    let mut at = BINARY_FIRST_RECORD;
+    // Each step moves forward to a record end inside the file, so the walk is as long as the file and no longer.
+    while let Some(top) = record(bytes, at, wide).filter(|r| r.end > at && r.end <= bytes.len()) {
+        if top.name == b"Objects" {
+            let mut child = top.body.saturating_add(top.props_len);
+            while let Some(object) = record(bytes, child, wide).filter(|r| r.end > child && r.end <= top.end) {
+                if object.name == ANIMATION_OBJECT {
+                    return true;
+                }
+                child = object.end;
+            }
         }
-        at = start + 1;
+        at = top.end;
     }
     false
 }
@@ -146,15 +197,6 @@ fn map_error(error: &ufbx::Error, memory_limit: usize, allocation_limit: usize) 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn animation_is_found_by_its_object_name_in_either_encoding() {
-        assert!(mentions_animation(b"Objects:  {\n\tAnimationStack: 1, \"AnimStack::Take\", \"\" {\n"));
-        assert!(mentions_animation(b"\x00\x00\x0eAnimationStack\x00"));
-        assert!(!mentions_animation(b"Objects:  {\n\tModel: 1, \"Model::A\", \"Null\" {\n"));
-        assert!(!mentions_animation(b"AnimationStac"));
-        assert!(!mentions_animation(b""));
-    }
 
     #[test]
     fn a_tight_node_cap_gets_a_tight_allocator_and_a_loose_one_the_fixed_ceilings() {

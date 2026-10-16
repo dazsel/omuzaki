@@ -54,7 +54,8 @@ enum Extra {
 /// model faces toward the viewer, so a Maya-style file (Y up) has `front` +Z and a 3ds Max-style file (Z up) has
 /// `front` -Y: the tests assert that convention, and that the importer puts the declared front at +Z.
 ///
-/// The binary form carries the same models and settings as the ASCII one; meshes and materials are ASCII only.
+/// The binary form carries the same models, settings and animation stacks as the ASCII one; meshes and materials are
+/// ASCII only.
 pub struct FbxBuilder {
     up: Axis,
     front: Axis,
@@ -219,6 +220,13 @@ impl FbxBuilder {
             });
         });
         record(&mut out, "Objects", &[], &|out| {
+            for extra in &self.extras {
+                if let Extra::Animation { id } = extra {
+                    let props =
+                        [Prop::Long(*id), Prop::Str("Take 001\0\u{1}AnimStack".into()), Prop::Str(String::new())];
+                    record(out, "AnimationStack", &props, &|_| {});
+                }
+            }
             for m in &self.models {
                 let props = [Prop::Long(m.id), Prop::Str(format!("{}\0\u{1}Model", m.name)), Prop::Str("Null".into())];
                 record(out, "Model", &props, &|out| {
