@@ -6,7 +6,8 @@ use std::time::Duration;
 
 use omuzaki_history_api::JournalStatus;
 use omuzaki_ops_api::{
-    Actor, Budget, Cause, CauseKind, Limits, Mode, OpError, OpKind, Request, Runner, Scope, SessionSpec, Transport,
+    Actor, Budget, Cause, CauseKind, Grants, Limits, Mode, OpError, OpKind, Request, Runner, Scope, SessionSpec,
+    SessionState, Transport,
 };
 use rmcp::ErrorData as McpError;
 use rmcp::handler::server::ServerHandler;
@@ -147,26 +148,28 @@ impl Session {
             .as_ref()
     }
 
-    /// With a session registry, a connection reads nothing until its session is admitted: resources are authorised by
-    /// `view.grants` alone, so a refused `Sessions::open` (a principal narrowed below the view) must close them as
-    /// it closes the tools.
-    fn require_session(&self, context: &RequestContext<RoleServer>) -> Result<(), McpError> {
-        if self.shared.sessions.is_none() {
-            return Ok(());
+    /// What this connection may read right now. Without a session registry that is the server's grants. With one, a
+    /// connection reads nothing until its session is admitted (a refused `Sessions::open` closes resources as it
+    /// closes the tools), and every request asks the registry again: a session that has been paused or ended, or whose
+    /// grants were narrowed since, reads accordingly, never more than the server's grants.
+    fn session_grants(&self, context: &RequestContext<RoleServer>) -> Result<Grants, McpError> {
+        let Some(host) = &self.shared.sessions else { return Ok(self.view.grants.clone()) };
+        let denied = |why: String| McpError::invalid_request(why, Some(json!({"code": "denied"})));
+        let actor =
+            self.actor(context).map_err(|e| denied(format!("this connection has no session: {}", e.message)))?;
+        let info =
+            host.sessions.session_of(actor).ok_or_else(|| denied("this connection's session is gone".to_owned()))?;
+        if info.state != SessionState::Active {
+            return Err(denied(format!("this connection's session is not active ({:?})", info.state)));
         }
-        self.actor(context).map(|_| ()).map_err(|e| {
-            McpError::invalid_request(
-                format!("this connection has no session: {}", e.message),
-                Some(json!({"code": "denied"})),
-            )
-        })
+        Ok(self.view.grants.intersect(&info.grants))
     }
 
     /// The op log and its notifications carry document values (patches, arguments), so reading or being notified of
     /// them needs `read`, exactly like running a query. Anything else that exposes document state to the client
     /// (`Runner::get`, resource providers) must call this first.
-    fn require_read(&self, what: &str) -> Result<(), McpError> {
-        if self.has_read() {
+    fn require_read(grants: &Grants, what: &str) -> Result<(), McpError> {
+        if grants.allows(Scope::Read) {
             return Ok(());
         }
         Err(McpError::invalid_request(read_needed(what), Some(json!({"code": "denied", "scope": "read"}))))
@@ -186,8 +189,8 @@ impl Session {
     }
 
     /// `omuzaki://log`: the newest events, catching this session up with them.
-    fn read_log(&self) -> Result<ReadResourceResponse, McpError> {
-        self.require_read("reading the op log")?;
+    fn read_log(&self, grants: &Grants) -> Result<ReadResourceResponse, McpError> {
+        Self::require_read(grants, "reading the op log")?;
         let body = self
             .log_json(None)
             .map_err(|e| McpError::internal_error(format!("couldn't encode the op log: {e}"), None))?;
@@ -639,12 +642,12 @@ impl ServerHandler for Session {
         context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, McpError> {
         self.name_client(&context);
-        self.require_session(&context)?;
+        let grants = self.session_grants(&context)?;
         let mut resources = vec![log_resource()];
         // Listing reads the document, so it needs `read` like reading does; without it only the log (which names
         // nothing from the document) is listed, as before.
-        if self.view.grants.allows(Scope::Read) {
-            let (providers, grants) = (self.shared.providers.clone(), self.view.grants.clone());
+        if grants.allows(Scope::Read) {
+            let providers = self.shared.providers.clone();
             let listed = self
                 .blocking(move |runner| {
                     providers.all().iter().map(|p| p.list(runner, &grants)).collect::<Result<Vec<_>, _>>()
@@ -672,15 +675,15 @@ impl ServerHandler for Session {
         context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, McpError> {
         self.name_client(&context);
-        self.require_session(&context)?;
+        let grants = self.session_grants(&context)?;
         if request.uri == LOG_URI {
-            return self.read_log();
+            return self.read_log(&grants);
         }
         let Some(provider) = self.shared.providers.serving(&request.uri) else {
             return Err(unknown_resource(&request.uri, &self.shared.providers.templates()));
         };
-        self.require_read(&format!("reading {}", request.uri))?;
-        let (grants, uri) = (self.view.grants.clone(), request.uri);
+        Self::require_read(&grants, &format!("reading {}", request.uri))?;
+        let uri = request.uri;
         let contents = self
             .blocking(move |runner| provider.read(runner, &grants, &uri))
             .await
@@ -699,11 +702,11 @@ impl ServerHandler for Session {
         context: RequestContext<RoleServer>,
     ) -> Result<(), McpError> {
         self.name_client(&context);
-        self.require_session(&context)?;
+        let grants = self.session_grants(&context)?;
         let uri = request.uri;
         let what =
             if uri == LOG_URI { "subscribing to the op log".to_owned() } else { format!("subscribing to {uri}") };
-        self.require_read(&what)?;
+        Self::require_read(&grants, &what)?;
         if !self.subscribable(&uri) {
             return Err(unknown_resource(&uri, &self.shared.providers.templates()));
         }
@@ -733,7 +736,7 @@ impl ServerHandler for Session {
         context: RequestContext<RoleServer>,
     ) -> Result<(), McpError> {
         self.name_client(&context);
-        self.require_read(&format!("unsubscribing from {}", request.uri))?;
+        Self::require_read(&self.view.grants, &format!("unsubscribing from {}", request.uri))?;
         if !self.subscribable(&request.uri) {
             return Err(unknown_resource(&request.uri, &self.shared.providers.templates()));
         }
@@ -777,11 +780,9 @@ impl ServerHandler for Session {
         self.name_client(context.request_context());
         let wanted: BTreeSet<String> = context.accepted().resource_subscriptions.iter().flatten().cloned().collect();
         // `accepted_subscription_filter` already refuses everything without `read`; checking again keeps this loop safe
-        // on its own. A connection without a session is told nothing either.
-        if !self.view.grants.allows(Scope::Read)
-            || wanted.is_empty()
-            || self.require_session(context.request_context()).is_err()
-        {
+        // on its own. A connection without an active session, or whose session cannot read, is told nothing either.
+        let may_read = self.session_grants(context.request_context()).is_ok_and(|g| g.allows(Scope::Read));
+        if !may_read || wanted.is_empty() {
             context.cancelled().await;
             return Ok(());
         }
