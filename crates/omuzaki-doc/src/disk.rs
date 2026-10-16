@@ -3,7 +3,7 @@
 //! # What each change needs, and what happens without it
 //!
 //! A change to a project file is made atomically or refused before the file is touched; there is no non-atomic
-//! fallback. A refusal is [`StoreError::NoSafeChange`] naming what is missing, and the save reports it. Three
+//! fallback. A refusal is [`StoreError::NoSafeChange`] naming what is missing, and the save reports it. Four
 //! capabilities decide which; each depends on the system and on the file system:
 //!
 //! - **Exchange**: swap two names atomically (Linux `renameat2` with `RENAME_EXCHANGE`, macOS `renameatx_np` with
@@ -11,6 +11,9 @@
 //! - **No-replace rename**: rename only if the new name is free, atomically (Linux `renameat2` with
 //!   `RENAME_NOREPLACE`, macOS `renameatx_np` with `RENAME_EXCL`).
 //! - **Hard links**: `link` fails if the new name exists, so it is also a placement that never replaces.
+//! - **POSIX-semantics rename** (Windows only): rename over an existing file atomically, so the path names the old file
+//!   or the new one at every instant (`FileRenameInfoEx`, below). It stands in for the exchange, which Windows lacks;
+//!   the table's first three columns don't include it, and its row says where it applies.
 //!
 //! | Exchange | No-replace rename | Hard links | Replace a file ([`replace_checked`]) | Write a new file | Delete ([`remove_checked`]) |
 //! |---|---|---|---|---|---|
@@ -18,8 +21,8 @@
 //! | yes | no | yes | as above | no-replace link | refused |
 //! | yes | yes | no | copied backup, swap, check, undo on a race; the original then replaces the copy | no-replace rename | copied backup; move aside by no-replace rename; original over the copy, or put back by no-replace rename |
 //! | yes | no | no | as above | refused | refused |
-//! | no | yes | yes | refused | no-replace link | as in the first row |
-//! | no | no | yes | refused (Windows: the non-atomic cell below) | no-replace link | refused (Windows: the non-atomic cell below) |
+//! | no | yes | yes | refused, except Windows: linked backup, then a POSIX-semantics rename over the target (below) | no-replace link | as in the first row |
+//! | no | no | yes | refused | no-replace link | refused |
 //! | no | yes | no | refused | no-replace rename | as in the third row |
 //! | no | no | no | refused | refused | refused |
 //!
@@ -33,18 +36,18 @@
 //! |---|---|---|---|
 //! | Linux | yes where the file system supports the flag (ext4, XFS, Btrfs, tmpfs); otherwise the kernel says `EINVAL` and the change is refused | the same | yes, except FAT and exFAT |
 //! | macOS | yes on APFS and HFS+ (macOS 10.12 or later); a file system without it says `ENOTSUP` and the change is refused | the same | yes on APFS and HFS+ |
-//! | Windows | no (Windows has no atomic exchange); see below | no (`MoveFileExW` without `MOVEFILE_REPLACE_EXISTING` is not reached yet) | yes on NTFS, no on FAT and exFAT |
+//! | Windows | no (Windows has no atomic exchange); see below | yes on every volume (`SetFileInformationByHandle` with `FileRenameInfo`, `ReplaceIfExists` false) | yes on NTFS, no on FAT and exFAT |
 //!
-//! **The one non-atomic cell: replacing a file on Windows with hard links (NTFS).** Refusing it would stop every
-//! ordinary save on Windows, so the target, already kept by hard link, is replaced by `std::fs::rename`. That is not
-//! atomic against a racing save: std (1.99, `library/std/src/sys/fs/windows.rs`, `rename`) calls `MoveFileExW` with
-//! `MOVEFILE_REPLACE_EXISTING`, and uses `SetFileInformationByHandle` with `FileRenameInfoEx` and
-//! `FILE_RENAME_FLAG_POSIX_SEMANTICS` only when that fails with access denied. An editor's atomic save in the
-//! microseconds between the hash check and the rename is overwritten; the checked file survives in the kept entry. The
-//! first use in a process says so on standard error. Without hard links (FAT, exFAT) Windows refuses as the table says.
-//! The same cell covers Windows's moves into our own slots (a deletion's quarantine name, a `.displaced` entry): with
-//! no rename that won't replace, the slot is checked to be free and then renamed into, so a file created in that slot
-//! in between would be replaced. Only Omuzaki writes those names.
+//! **Replacing a file on Windows.** With no exchange, Windows replaces a file that has a hard-linked backup with one
+//! atomic rename over it: `SetFileInformationByHandle` with `FileRenameInfoEx` and `FILE_RENAME_FLAG_REPLACE_IF_EXISTS
+//! | FILE_RENAME_FLAG_POSIX_SEMANTICS` (Windows 10 1607 or later, NTFS), so the path names the old file or the new one
+//! at every instant, and a reader that holds the old one open keeps it. `std::fs::rename` is not used: in Rust 1.99
+//! (`library/std/src/sys/fs/windows.rs`, `rename`) it calls `MoveFileExW` and reaches POSIX semantics only after access
+//! is denied. A volume or system without the POSIX-semantics rename (FAT, exFAT, older Windows) is refused with
+//! [`StoreError::NoSafeChange`] before anything moves; FAT and exFAT have no hard links either, so they are refused
+//! before that. Unlike the swap, a rename over the target can't hand back the file it displaced, so there is no check
+//! after it: an editor's save that lands between the hash check and the rename is replaced, and the checked file
+//! survives in the kept entry. That window is the hash check's own, not a missing capability.
 //!
 //! Each cell of the first table is tested with the capabilities forced off through the test seam (`Hooks`).
 
@@ -287,10 +290,15 @@ pub(crate) enum Replace {
 ///    copy). An editor that still holds the old file open and writes after the check writes into that entry, which
 ///    pruning then never deletes (its bytes no longer match the hash).
 ///
-/// Where the swap isn't available (see the module's table) there is no safe way to replace a file that exists, so
-/// step 4 fails with [`StoreError::NoSafeChange`] before the target is touched: the target is as it was, and the
-/// backup and the temporary file (both only ours) are removed. A new file (no target) is placed with a no-replace
-/// `hard_link`, or where links fail with a rename that won't replace, so a file that appeared is never replaced;
+/// Where the swap isn't available (see the module's table) a file that exists is replaced only on Windows, and only
+/// with a hard-linked backup: step 4 is then a POSIX-semantics rename of the temporary file over the target (see the
+/// module's note on Windows). It can't hand the displaced file back, so there is no swap to undo and no check after it;
+/// the file hashed in step 2 stays in the kept entry (the backup link), and an editor's save that lands between that
+/// hash check and the rename is replaced. Everywhere else, and on Windows without links or without that rename (FAT,
+/// exFAT, older Windows), there is no safe way to replace it, so step 4 fails with [`StoreError::NoSafeChange`] before
+/// the target is touched: the target is as it was, and the backup and the temporary file (both only ours) are removed.
+///
+/// A new file (no target) is placed with a no-replace `hard_link`, or where links fail with a rename that won't replace, so a file that appeared is never replaced;
 /// without either it is refused the same way.
 ///
 /// The target exists at every instant of a replacement, so a crash leaves the old file or the new one, plus at worst
@@ -340,8 +348,14 @@ struct Hooks<'a> {
     exchange_off: Cell<bool>,
     /// Pretend the system has no rename that refuses to replace (tests only).
     no_replace_off: Cell<bool>,
+    /// Pretend the volume has no POSIX-semantics rename over a file (Windows; tests only).
+    posix_rename_off: Cell<bool>,
     /// Make flushing a folder fail, where a step goes through [`Hooks::sync_folder`] (tests only).
     sync_off: Cell<bool>,
+    /// Make flushing a displaced file fail after it was opened (tests only).
+    flush_file_off: Cell<bool>,
+    /// Make looking at the target fail with an error other than "not found" after a deletion moved it aside (tests only).
+    look_off: Cell<bool>,
     /// Take Windows's replacement without a swap on any system (tests only).
     windows_shaped: Cell<bool>,
     /// Pretend the system has no file identities, as on Windows: a linked backup records none (tests only).
@@ -460,9 +474,8 @@ fn open_no_follow(path: &Path) -> io::Result<File> {
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt;
-        /// `FILE_FLAG_OPEN_REPARSE_POINT` (`WinBase.h`): open a link itself, never what it points to.
-        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
-        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+        // Open a link itself, never what it points to.
+        options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
     }
     options.open(path)
 }
@@ -491,7 +504,10 @@ impl Default for Hooks<'_> {
             links_off: Cell::new(faults::links_off()),
             exchange_off: Cell::new(false),
             no_replace_off: Cell::new(false),
+            posix_rename_off: Cell::new(false),
             sync_off: Cell::new(faults::sync_off()),
+            flush_file_off: Cell::new(false),
+            look_off: Cell::new(false),
             windows_shaped: Cell::new(false),
             ids_off: Cell::new(false),
             copy_fails: Cell::new(false),
@@ -511,6 +527,18 @@ impl Hooks<'_> {
         if self.exchange_off.get() { Err(io::ErrorKind::Unsupported.into()) } else { exchange(a, b) }
     }
 
+    /// A POSIX-semantics rename of `from` over `to` (`rename_by_handle`), unless a test turned it off. Off Windows it
+    /// is reached only through [`Hooks::windows_shaped`], and a plain rename stands in for it.
+    fn rename_over_posix(&self, from: &Path, to: &Path) -> io::Result<()> {
+        if self.posix_rename_off.get() {
+            return Err(io::ErrorKind::Unsupported.into());
+        }
+        #[cfg(windows)]
+        return rename_by_handle(from, to, OnExisting::ReplacePosix).map(|_| ());
+        #[cfg(not(windows))]
+        fs::rename(from, to)
+    }
+
     /// [`sync_folder`], unless a test made it fail.
     fn sync_folder(&self, folder: Option<&Path>) -> Result<(), StoreError> {
         match folder {
@@ -521,6 +549,25 @@ impl Hooks<'_> {
         }
     }
 
+    /// `fs::symlink_metadata`, unless a test made it fail.
+    fn look(&self, path: &Path) -> io::Result<fs::Metadata> {
+        if self.look_off.get() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "looking at the file failed (forced by a test)",
+            ));
+        }
+        fs::symlink_metadata(path)
+    }
+
+    /// [`flush_file`], unless a test made it fail.
+    fn flush_file(&self, path: &Path) -> Option<io::Error> {
+        if self.flush_file_off.get() {
+            return Some(io::Error::other("flushing the file failed (forced by a test)"));
+        }
+        flush_file(path)
+    }
+
     /// [`rename_no_replace`], unless a test turned it off.
     fn rename_no_replace(&self, from: &Path, to: &Path) -> io::Result<bool> {
         if self.no_replace_off.get() { Err(io::ErrorKind::Unsupported.into()) } else { rename_no_replace(from, to) }
@@ -529,6 +576,10 @@ impl Hooks<'_> {
 
 /// What a refusal names as missing when there is no atomic swap.
 const NO_EXCHANGE: &str = "atomic exchange of two file names (RENAME_EXCHANGE, RENAME_SWAP)";
+
+/// What a refusal names as missing on a Windows volume that can't rename over a file atomically.
+const NO_POSIX_RENAME: &str =
+    "rename over a file with POSIX semantics (FileRenameInfoEx: Windows 10 1607 or later, NTFS)";
 
 /// What a refusal names as missing when a file can't be placed without risking replacing another.
 const NO_NO_REPLACE: &str = "hard links and no rename that refuses to replace a file (RENAME_NOREPLACE, RENAME_EXCL)";
@@ -612,14 +663,14 @@ fn replace_held(
     (hooks.backed_up)();
     match hooks.exchange(tmp, path) {
         Ok(()) => {}
-        // Windows has no swap; its one documented non-atomic cell (see the module's table). Tests can take this path
-        // on any system.
+        // Windows has no swap: with a linked backup, one atomic rename over the target (see the module's table).
+        // Nothing has moved if it fails. Tests can take this path on any system.
         Err(e)
             if e.kind() == io::ErrorKind::Unsupported
                 && held.by_link
                 && (cfg!(windows) || hooks.windows_shaped.get()) =>
         {
-            replace_over_linked(path, tmp)?;
+            hooks.rename_over_posix(tmp, path).map_err(|e| capability_error(path, NO_POSIX_RENAME, e))?;
             // Our file is at the target: the linked backup is the kept entry.
             *committed = true;
             return Ok(Replace::Placed);
@@ -658,23 +709,6 @@ fn replace_held(
     // it later, through a handle no hash check can see. It is therefore always kept, even if it still reads as ours.
     preserve(dir, tmp, hooks)?;
     Ok(Replace::Refused)
-}
-
-/// Windows's replacement: the target, already kept by hard link, is replaced with `std::fs::rename` (`MoveFileExW`
-/// with `MOVEFILE_REPLACE_EXISTING`). This is the one non-atomic cell of the module's table: Windows has no atomic
-/// swap, so an editor's atomic save in the microseconds between the hash check and the rename is overwritten. The
-/// file the save checked survives in the kept entry, but the editor's newer one does not. The first use in a process
-/// says so on standard error. A writer holding the file open without delete sharing (most editors) makes the rename
-/// fail with a sharing violation, which the save reports. Nothing has moved when it fails.
-fn replace_over_linked(path: &Path, tmp: &Path) -> Result<(), StoreError> {
-    static WARNED: std::sync::Once = std::sync::Once::new();
-    WARNED.call_once(|| {
-        eprintln!(
-            "omuzaki-doc: Windows has no atomic swap of two files, so saves replace a file by renaming over it; an \
-             editor's save made in the same instant can be overwritten (the replaced file is kept in .omuzaki/replaced)"
-        );
-    });
-    fs::rename(tmp, path).map_err(|e| StoreError::io(path, e))
 }
 
 /// A backup of the file at the target.
@@ -746,8 +780,8 @@ fn rename_error(e: rustix::io::Errno) -> io::Error {
     }
 }
 
-/// Atomic exchange is unavailable on Windows; the caller supplies the documented fallback for a hard-linked backup (see
-/// the module's table).
+/// Windows has no atomic swap of two names; with a hard-linked backup it replaces a file by a POSIX-semantics rename
+/// instead (see the module's table).
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn exchange(_: &Path, _: &Path) -> io::Result<()> {
     Err(io::ErrorKind::Unsupported.into())
@@ -842,35 +876,57 @@ fn replaced_name(dir: &Path, path: &Path, suffix: &str) -> Result<PathBuf, Store
 
 /// Moves `from` (a displaced or leftover file) into the replaced folder as `<name>.displaced` and flushes it and the
 /// folder. Never deletes.
+///
+/// The move never depends on the flush. Where the file can't be flushed (on Windows another handle may deny write
+/// sharing so it can't be opened for it, or the file may be read-only; or the flush itself fails), it is still moved, and the error then says that it is kept but not
+/// flushed ([`flush_file`]), so the limitation is reported and the file is not left under its hidden name.
 fn preserve(dir: &Path, from: &Path, hooks: &Hooks<'_>) -> Result<PathBuf, StoreError> {
     if let Some(parent) = replaced_name(dir, from, "")?.parent() {
         fs::create_dir_all(parent).map_err(|e| StoreError::io(parent, e))?;
     }
-    if fs::symlink_metadata(from).is_ok_and(|m| m.is_file()) {
-        File::open(from).and_then(|f| f.sync_all()).map_err(|e| StoreError::io(from, e))?;
-    }
-    let to = move_to_free_slot(from, &|| replaced_name(dir, from, ".displaced"), true, hooks)?
+    // A flush that fails, however it fails, is kept and reported after the move: nothing between displacing a file and
+    // moving it may skip the move.
+    let unflushed = if fs::symlink_metadata(from).is_ok_and(|m| m.is_file()) { hooks.flush_file(from) } else { None };
+    let to = move_to_free_slot(from, &|| replaced_name(dir, from, ".displaced"), hooks)?
         .ok_or_else(|| StoreError::io(from, io::ErrorKind::NotFound.into()))?;
     sync_folder(to.parent())?;
-    Ok(to)
+    match unflushed {
+        None => Ok(to),
+        Some(e) => Err(StoreError::io(
+            &to,
+            io::Error::new(e.kind(), format!("it is kept here, but its contents could not be flushed: {e}")),
+        )),
+    }
+}
+
+/// Flushes the file at `path` to disk; the error if it couldn't be. Windows flushes only through a handle with write
+/// access (`FlushFileBuffers` fails with "Access is denied" on a read-only one), so there the file is opened for
+/// writing, without truncating or writing anything; elsewhere a read-only handle can be flushed. Only the new handle's
+/// share modes are ours (std opens with all three): a handle that is already open can deny write sharing, or the file
+/// can be read-only, and then the open fails. Either way, and when the flush fails after the open, the caller learns
+/// that the file couldn't be flushed and goes on with what it must do.
+fn flush_file(path: &Path) -> Option<io::Error> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    options.write(true);
+    options.open(path).and_then(|file| file.sync_all()).err()
 }
 
 /// How many occupied names [`move_to_free_slot`] skips before it gives up.
 const SLOT_TRIES: usize = 1024;
 
 /// Moves `from` to the first name `slot` gives that is free, never replacing one that is occupied (a crashed
-/// process's leftover can hold the same name once its pid is reused): each name is tried with [`move_no_replace`],
-/// and an occupied one is skipped for the next. `None` if `from` is gone. `windows_cell` allows Windows's
-/// check-then-rename (see [`move_no_replace`]).
+/// process's leftover can hold the same name once its pid is reused): each name is tried with [`rename_no_replace`],
+/// and an occupied one is skipped for the next. `None` if `from` is gone.
 fn move_to_free_slot(
     from: &Path,
     slot: &dyn Fn() -> Result<PathBuf, StoreError>,
-    windows_cell: bool,
     hooks: &Hooks<'_>,
 ) -> Result<Option<PathBuf>, StoreError> {
     for _ in 0..SLOT_TRIES {
         let to = slot()?;
-        match move_no_replace(from, &to, windows_cell, hooks) {
+        match hooks.rename_no_replace(from, &to) {
             Ok(true) => return Ok(Some(to)),
             Ok(false) => {}
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -878,22 +934,6 @@ fn move_to_free_slot(
         }
     }
     Err(StoreError::io(from, io::Error::new(io::ErrorKind::AlreadyExists, "found no free name to move it to")))
-}
-
-/// Renames `from` to `to` unless `to` exists; false if it does. Atomic where the system has a rename that won't
-/// replace ([`rename_no_replace`]). Windows has none in reach, and there, the one documented non-atomic cell of the
-/// module's table, `to` is checked first and then renamed over when `windows_cell` allows it, so a file created at
-/// `to` in between would be replaced; otherwise a missing no-replace rename is [`io::ErrorKind::Unsupported`].
-fn move_no_replace(from: &Path, to: &Path, windows_cell: bool, hooks: &Hooks<'_>) -> io::Result<bool> {
-    match hooks.rename_no_replace(from, to) {
-        Err(e) if cfg!(windows) && windows_cell && e.kind() == io::ErrorKind::Unsupported => {
-            if fs::symlink_metadata(to).is_ok() {
-                return Ok(false);
-            }
-            fs::rename(from, to).map(|()| true)
-        }
-        moved => moved,
-    }
 }
 
 /// How many entries a pruning pass deletes beyond those created since the last pass, to work off a backlog.
@@ -1215,10 +1255,120 @@ fn rename_no_replace(from: &Path, to: &Path) -> io::Result<bool> {
     }
 }
 
-/// No rename that refuses to replace is reachable on Windows yet (`std::fs::rename` overwrites, and `MoveFileExW` is
-/// not in this crate's dependencies), so this is always unsupported; it is reached only on a file system without hard
-/// links (FAT, exFAT).
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+/// On Windows: `SetFileInformationByHandle` with `FileRenameInfo` and `ReplaceIfExists` false, atomic on every volume.
+#[cfg(windows)]
+fn rename_no_replace(from: &Path, to: &Path) -> io::Result<bool> {
+    rename_by_handle(from, to, OnExisting::Keep)
+}
+
+/// `FILE_RENAME_FLAG_REPLACE_IF_EXISTS` (`WinBase.h`). `windows-sys` has it only behind a feature the workspace doesn't
+/// enable (`Win32_System_WindowsProgramming`), so the value is written here.
+#[cfg(windows)]
+const FILE_RENAME_FLAG_REPLACE_IF_EXISTS: u32 = 0x1;
+
+/// `FILE_RENAME_FLAG_POSIX_SEMANTICS` (`WinBase.h`), likewise.
+#[cfg(windows)]
+const FILE_RENAME_FLAG_POSIX_SEMANTICS: u32 = 0x2;
+
+/// What [`rename_by_handle`] does with a file already at the new name.
+#[cfg(windows)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OnExisting {
+    /// Fail: a no-replace rename (`FileRenameInfo` with `ReplaceIfExists` false), atomic on every volume.
+    Keep,
+    /// Replace it atomically with POSIX semantics (`FileRenameInfoEx` with `FILE_RENAME_FLAG_REPLACE_IF_EXISTS |
+    /// FILE_RENAME_FLAG_POSIX_SEMANTICS`): Windows 10 1607 or later, on NTFS.
+    ReplacePosix,
+}
+
+/// Renames `from` to `to` with `SetFileInformationByHandle`, the one call in this crate that needs `unsafe` (the
+/// Director's exception on #1757). True if renamed; false if `to` exists and `on_existing` is [`OnExisting::Keep`]. A
+/// volume or system that doesn't support the requested rename (`ERROR_INVALID_FUNCTION`, `ERROR_NOT_SUPPORTED`,
+/// `ERROR_INVALID_PARAMETER`) is [`io::ErrorKind::Unsupported`], and then nothing was moved.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn rename_by_handle(from: &Path, to: &Path, on_existing: OnExisting) -> io::Result<bool> {
+    use std::mem::offset_of;
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+
+    use windows_sys::Win32::Foundation::{ERROR_INVALID_FUNCTION, ERROR_INVALID_PARAMETER, ERROR_NOT_SUPPORTED};
+    use windows_sys::Win32::Storage::FileSystem::{
+        DELETE, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_RENAME_INFO, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE, FileRenameInfo, FileRenameInfoEx, SetFileInformationByHandle,
+    };
+
+    // The buffer below is made of `u64`s, so its alignment must cover the struct's (8, for the handle field).
+    const _: () = assert!(align_of::<FILE_RENAME_INFO>() <= align_of::<u64>());
+
+    // A full path, so `RootDirectory` can be null. Kept without a NUL: `FileNameLength` counts bytes and excludes it,
+    // and an embedded NUL would cut the name short, so it is refused.
+    let name: Vec<u16> = std::path::absolute(to)?.as_os_str().encode_wide().collect();
+    if name.contains(&0) {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
+    let name_bytes = name.len().checked_mul(2).ok_or(io::ErrorKind::InvalidInput)?;
+    // The header up to `FileName`, the name, and a trailing NUL; never less than the struct itself, whose `FileName`
+    // field is declared as one element.
+    let size = (offset_of!(FILE_RENAME_INFO, FileName) + name_bytes + 2).max(size_of::<FILE_RENAME_INFO>());
+    let size_u32 = u32::try_from(size).map_err(|_| io::ErrorKind::InvalidInput)?;
+    let name_bytes = u32::try_from(name_bytes).map_err(|_| io::ErrorKind::InvalidInput)?;
+    let mut buffer = vec![0u64; size.div_ceil(size_of::<u64>())];
+
+    // The handle needs only DELETE access to rename. The share modes leave other readers and writers alone; a reparse
+    // point is renamed itself, never followed; backup semantics lets a folder open too.
+    let file = OpenOptions::new()
+        .access_mode(DELETE)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+        .open(from)?;
+
+    let info = buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+    // SAFETY: buffer size and alignment. `info` points at the start of `buffer`, which is zeroed, aligned for
+    // `FILE_RENAME_INFO` (the assertion above) and at least `size` bytes long, which covers the whole struct, so every
+    // field written here lies inside it. Fields are written through raw pointers (`&raw mut`), never references, so no
+    // reference to a partly written struct exists.
+    // SAFETY: the trailing UTF-16 name. It is copied as `name.len()` units starting at `FileName`, so it ends at byte
+    // `offset_of!(FileName) + name_bytes`, inside `size`. `name` and `buffer` are separate allocations, so they don't
+    // overlap.
+    // SAFETY: the NUL. `size` reserves two bytes past the name that nothing writes; they stay zero (the buffer was
+    // zeroed) and are the NUL the name ends with, which `FileNameLength` excludes as the API requires. `name` has no
+    // NUL of its own (checked above), so the system reads exactly this name.
+    unsafe {
+        if on_existing == OnExisting::ReplacePosix {
+            (&raw mut (*info).Anonymous.Flags)
+                .write(FILE_RENAME_FLAG_REPLACE_IF_EXISTS | FILE_RENAME_FLAG_POSIX_SEMANTICS);
+        }
+        // `OnExisting::Keep` leaves `ReplaceIfExists` false and `RootDirectory` null (both zeroed).
+        (&raw mut (*info).FileNameLength).write(name_bytes);
+        name.as_ptr().copy_to_nonoverlapping((&raw mut (*info).FileName).cast::<u16>(), name.len());
+    }
+    let class = match on_existing {
+        OnExisting::Keep => FileRenameInfo,
+        OnExisting::ReplacePosix => FileRenameInfoEx,
+    };
+    // SAFETY: handle validity and lifetime. `file` was opened above with DELETE access and is dropped only at the end
+    // of this function, after the call returns, so the handle is valid for the whole call.
+    // SAFETY: the buffer. Its pointer is valid for reads of `size_u32` bytes (`buffer` holds at least `size`, and
+    // `size_u32 == size`), aligned for `FILE_RENAME_INFO`, fully initialised, and outlives the call; the system only
+    // reads it.
+    let renamed = unsafe { SetFileInformationByHandle(file.as_raw_handle(), class, buffer.as_ptr().cast(), size_u32) };
+    if renamed != 0 {
+        return Ok(true);
+    }
+    let error = io::Error::last_os_error();
+    match error.raw_os_error().and_then(|code| u32::try_from(code).ok()) {
+        Some(ERROR_INVALID_FUNCTION | ERROR_NOT_SUPPORTED | ERROR_INVALID_PARAMETER) => {
+            Err(io::ErrorKind::Unsupported.into())
+        }
+        _ if error.kind() == io::ErrorKind::AlreadyExists && on_existing == OnExisting::Keep => Ok(false),
+        _ => Err(error),
+    }
+}
+
+/// No rename that refuses to replace is reachable on other systems.
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn rename_no_replace(_: &Path, _: &Path) -> io::Result<bool> {
     Err(io::ErrorKind::Unsupported.into())
 }
@@ -1240,8 +1390,7 @@ fn rename_no_replace(_: &Path, _: &Path) -> io::Result<bool> {
 /// the hidden name the error gives.
 ///
 /// The move aside is a rename that won't replace (an occupied quarantine name is skipped for the next), so a system
-/// without one refuses with [`StoreError::NoSafeChange`] before the target is touched, outside the Windows cell of the
-/// module's table. Putting a file back is a no-replace hard link, or that rename where links fail.
+/// without one refuses with [`StoreError::NoSafeChange`] before the target is touched. Putting a file back is a no-replace hard link, or that rename where links fail.
 pub(crate) fn remove_checked(
     dir: &Path,
     segs: &[String],
@@ -1300,8 +1449,8 @@ fn quarantine_name(path: &Path) -> PathBuf {
 /// Removes the file at `path` if it is the backed-up one; false if another file was there, which is kept.
 fn unlink_held(dir: &Path, path: &Path, held: &Held, hooks: &Hooks<'_>) -> Result<bool, StoreError> {
     // The move aside never replaces an occupied quarantine name, and where there is no rename that won't replace,
-    // nothing moves, except in the Windows cell (hard links, no swap): see `move_to_free_slot`.
-    let quarantine = match move_to_free_slot(path, &|| Ok(quarantine_name(path)), held.by_link, hooks) {
+    // nothing moves: see `move_to_free_slot`.
+    let quarantine = match move_to_free_slot(path, &|| Ok(quarantine_name(path)), hooks) {
         Ok(Some(quarantine)) => quarantine,
         Ok(None) => return Ok(true),
         Err(e) => {
@@ -1314,13 +1463,18 @@ fn unlink_held(dir: &Path, path: &Path, held: &Held, hooks: &Hooks<'_>) -> Resul
     if held.is_file_at(&quarantine) {
         // An editor may have created the file again since it was moved aside. Then that file is theirs and the
         // deletion is a conflict: the file moved aside is kept in the replaced folder, never deleted.
-        match fs::symlink_metadata(path) {
+        match hooks.look(path) {
             Ok(_) => {
                 preserve(dir, &quarantine, hooks)?;
                 return Ok(false);
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => return Err(StoreError::io(path, e)),
+            Err(e) => {
+                // Whether the name is taken is unknown, but the file moved aside must not stay under its hidden name:
+                // it is kept, and the error that is returned is still the one for the target.
+                drop(preserve(dir, &quarantine, hooks));
+                return Err(StoreError::io(path, e));
+            }
         }
         // The target is gone from its name: the deletion has happened, and what follows only tidies up.
         // A linked backup is the kept entry (keyed on the link, not on a file identity, which Windows doesn't give):
@@ -1527,7 +1681,8 @@ mod tests {
         assert_eq!(names, ["b.toml"]);
         let items = kept(tmp.path());
         assert_eq!(texts(&items), ["x = 1\n"]);
-        let name = items[0].0.rsplit('/').next().unwrap();
+        // The path below the replaced folder uses the platform's separator.
+        let name = items[0].0.rsplit(['/', '\\']).next().unwrap();
         assert!(name.starts_with("b.toml.") && name.ends_with(&format!(".{first}.kept")), "{name}");
         assert!(kept_stamp(name).is_some_and(|(_, hash)| hash == first));
     }
@@ -1538,6 +1693,25 @@ mod tests {
         let path = dir.join("f.toml");
         fs::write(&path, MINE).unwrap();
         (path, Some(ContentHash::of(MINE.as_bytes())))
+    }
+
+    /// A handle opened on a file before a call that must leave it alone, for telling afterwards that the path still
+    /// names that very file (an equal-content copy would not): a write through the handle must show at the path. Works
+    /// where [`file_id`] has no identity (Windows); std opens with all share modes, so the call can still rename.
+    struct SameFile(File);
+
+    impl SameFile {
+        fn open(path: &Path) -> Self {
+            Self(OpenOptions::new().append(true).open(path).unwrap())
+        }
+
+        fn assert_still_the_file_at(mut self, path: &Path) {
+            use std::io::Write as _;
+
+            let before = fs::read_to_string(path).unwrap();
+            self.0.write_all(b"# probe\n").and_then(|()| self.0.sync_all()).unwrap();
+            assert_eq!(fs::read_to_string(path).unwrap(), format!("{before}# probe\n"), "not the same file");
+        }
     }
 
     fn no_temporary_file(dir: &Path) -> bool {
@@ -1646,6 +1820,51 @@ mod tests {
         let replaced: Vec<_> = items.iter().filter(|(n, _)| n.ends_with(KEPT)).map(|(_, t)| t).collect();
         assert_eq!(replaced, [MINE]);
         assert!(no_temporary_file(dir));
+    }
+
+    /// A displaced file whose flush fails after it was opened is still moved into the replaced folder; the error says
+    /// it was kept unflushed.
+    #[test]
+    fn a_failed_flush_of_a_displaced_file_still_moves_it() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let leftover = dir.join(".f.toml.tmp");
+        fs::write(&leftover, "left by a crash = 5\n").unwrap();
+        let hooks = Hooks { flush_file_off: true.into(), ..Hooks::default() };
+        let err = preserve(dir, &leftover, &hooks).unwrap_err();
+        assert!(err.to_string().contains("could not be flushed"), "{err}");
+        assert!(!leftover.exists(), "the leftover stayed under its hidden name");
+        let items = kept(dir);
+        assert_eq!(texts(&items), ["left by a crash = 5\n"]);
+        assert!(items[0].0.ends_with(".displaced"), "{items:?}");
+    }
+
+    /// A leftover that can't be opened for flushing is still moved into the replaced folder, and the error says it
+    /// could not be flushed, never that nothing moved. On Windows a handle that denies write sharing makes the open
+    /// fail; elsewhere the flush works and the move is plain.
+    #[test]
+    fn a_leftover_that_cannot_be_flushed_is_still_moved() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let leftover = dir.join(".f.toml.tmp");
+        fs::write(&leftover, "left by a crash = 5\n").unwrap();
+        #[cfg(windows)]
+        let _editor = {
+            use std::os::windows::fs::OpenOptionsExt;
+            // Holds it open for writing and lets others read and delete it, but not write: a flush handle can't open.
+            OpenOptions::new().write(true).share_mode(1 | 4).open(&leftover).unwrap()
+        };
+        let out = preserve(dir, &leftover, &Hooks::default());
+        if cfg!(windows) {
+            let err = out.unwrap_err();
+            assert!(err.to_string().contains("could not be flushed"), "{err}");
+        } else {
+            out.unwrap();
+        }
+        assert!(!leftover.exists(), "the leftover stayed under its hidden name");
+        let items = kept(dir);
+        assert_eq!(texts(&items), ["left by a crash = 5\n"]);
+        assert!(items[0].0.ends_with(".displaced"), "{items:?}");
     }
 
     #[test]
@@ -1850,41 +2069,73 @@ mod tests {
     /// Matrix, no exchange (every combination of the others): replacing is refused before anything moves.
     #[test]
     fn without_exchange_a_replacement_is_refused_and_the_file_is_untouched() {
-        // On Windows the cell with links is the documented non-atomic one, pinned by its own test.
-        let all: &[(bool, bool)] = &[(false, false), (false, true), (true, false), (true, true)];
-        let cases = if cfg!(windows) { &all[2..] } else { all };
-        for &(links_off, no_replace_off) in cases {
+        // Windows's rename over the target is turned off too (its own tests are below).
+        for (links_off, no_replace_off) in [(false, false), (false, true), (true, false), (true, true)] {
             let tmp = TempDir::new().unwrap();
             let (dir, (path, expected)) = (tmp.path(), with_file(tmp.path()));
-            let inode_before = file_id(&fs::metadata(&path));
+            let probe = SameFile::open(&path);
             let hooks = Hooks {
                 links_off: links_off.into(),
                 exchange_off: true.into(),
                 no_replace_off: no_replace_off.into(),
+                posix_rename_off: true.into(),
                 ..Hooks::default()
             };
             let err = replace_with(dir, expected, &hooks).unwrap_err();
-            assert!(matches!(err, StoreError::NoSafeChange { missing: NO_EXCHANGE, .. }), "{err}");
-            assert!(err.to_string().contains("exchange"), "{err}");
+            // On Windows with links the refusal names the missing POSIX-semantics rename; elsewhere the exchange.
+            let missing = if cfg!(windows) && !links_off { NO_POSIX_RENAME } else { NO_EXCHANGE };
+            assert!(matches!(err, StoreError::NoSafeChange { missing: m, .. } if m == missing), "{err}");
             assert_eq!(fs::read_to_string(&path).unwrap(), MINE);
-            assert_eq!(file_id(&fs::metadata(&path)), inode_before);
+            probe.assert_still_the_file_at(&path);
             assert_eq!(kept(dir), [], "links off: {links_off}, no-replace off: {no_replace_off}");
             assert!(no_temporary_file(dir));
         }
     }
 
-    /// Matrix, Windows with links and no exchange: the one non-atomic cell. The target is replaced by a rename over it
-    /// and the original stays in the replaced folder as the kept entry, the same file (a hard link).
+    /// Matrix, Windows with links and no exchange: the original is kept by hard link and stays reachable through it up
+    /// to the commit (checked just before the rename, with our file still staged); the POSIX-semantics rename then puts
+    /// our file at the target, and the backup is the kept entry.
     #[cfg(windows)]
     #[test]
-    fn on_windows_with_links_a_replacement_renames_over_the_target_and_keeps_the_original() {
+    fn on_windows_a_replacement_is_a_posix_rename_over_the_target_after_a_linked_backup() {
         let tmp = TempDir::new().unwrap();
         let (dir, (path, expected)) = (tmp.path(), with_file(tmp.path()));
-        assert_eq!(replace_with(dir, expected, &Hooks::default()).unwrap(), Replace::Placed);
+        let checked = Cell::new(false);
+        let before_commit = || {
+            assert_eq!(fs::read_to_string(dir.join("f.toml")).unwrap(), MINE);
+            assert_eq!(texts(&kept(dir)), [MINE]);
+            assert!(!no_temporary_file(dir));
+            checked.set(true);
+        };
+        let hooks = Hooks { backed_up: &before_commit, ..Hooks::default() };
+        assert_eq!(replace_with(dir, expected, &hooks).unwrap(), Replace::Placed);
+        assert!(checked.get());
         assert_eq!(fs::read_to_string(&path).unwrap(), "ours = 3\n");
         let items = kept(dir);
         assert_eq!(texts(&items), [MINE]);
         assert!(items[0].0.ends_with(KEPT), "{items:?}");
+        assert!(no_temporary_file(dir));
+    }
+
+    /// Matrix, a volume without a POSIX-semantics rename (forced through `Hooks`, driven Windows-shaped on any system):
+    /// refused before anything moves, naming the missing capability.
+    #[test]
+    fn without_a_posix_rename_a_windows_replacement_is_refused_before_anything_moves() {
+        let tmp = TempDir::new().unwrap();
+        let (dir, (path, expected)) = (tmp.path(), with_file(tmp.path()));
+        let probe = SameFile::open(&path);
+        let hooks = Hooks {
+            exchange_off: true.into(),
+            windows_shaped: true.into(),
+            posix_rename_off: true.into(),
+            ..Hooks::default()
+        };
+        let err = replace_with(dir, expected, &hooks).unwrap_err();
+        assert!(matches!(err, StoreError::NoSafeChange { missing: NO_POSIX_RENAME, .. }), "{err}");
+        assert!(err.to_string().contains("POSIX"), "{err}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), MINE);
+        probe.assert_still_the_file_at(&path);
+        assert_eq!(kept(dir), []);
         assert!(no_temporary_file(dir));
     }
 
@@ -1906,37 +2157,26 @@ mod tests {
         };
         let (out, text) = new_file(false, true);
         assert_eq!((out.unwrap(), text.as_deref()), (Replace::Placed, Some("ours = 3\n")));
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        {
-            let (out, text) = new_file(true, false);
-            assert_eq!((out.unwrap(), text.as_deref()), (Replace::Placed, Some("ours = 3\n")));
-        }
+        let (out, text) = new_file(true, false);
+        assert_eq!((out.unwrap(), text.as_deref()), (Replace::Placed, Some("ours = 3\n")));
         let (out, text) = new_file(true, true);
         let err = out.unwrap_err();
         assert!(matches!(err, StoreError::NoSafeChange { missing: NO_NO_REPLACE, .. }), "{err}");
         assert_eq!(text, None);
     }
 
-    /// Matrix, a deletion with links but no no-replace rename: refused before the file moves, except in the Windows
-    /// cell, where it moves aside after a check that the name is free.
+    /// Matrix, a deletion with links but no no-replace rename: refused before the file moves.
     #[test]
-    fn with_links_but_no_no_replace_rename_a_deletion_is_refused_outside_windows() {
+    fn with_links_but_no_no_replace_rename_a_deletion_is_refused() {
         let tmp = TempDir::new().unwrap();
         let d = tmp.path();
         write(d, "a.toml", "x = 1\n");
         let hooks = Hooks { exchange_off: true.into(), no_replace_off: true.into(), ..Hooks::default() };
-        let out = remove_checked_with(d, &["a".to_owned()], Some(ContentHash::of(b"x = 1\n")), &hooks);
-        if cfg!(windows) {
-            assert!(out.unwrap());
-            assert!(!d.join("a.toml").exists());
-            assert_eq!(texts(&kept(d)), ["x = 1\n"]);
-        } else {
-            let err = out.unwrap_err();
-            assert!(matches!(err, StoreError::NoSafeChange { missing: NO_NO_REPLACE, .. }), "{err}");
-            assert_eq!(fs::read_to_string(d.join("a.toml")).unwrap(), "x = 1\n");
-            assert_eq!(kept(d), []);
-            assert_eq!(all_names(d), [".omuzaki", "a.toml"]);
-        }
+        let err = remove_checked_with(d, &["a".to_owned()], Some(ContentHash::of(b"x = 1\n")), &hooks).unwrap_err();
+        assert!(matches!(err, StoreError::NoSafeChange { missing: NO_NO_REPLACE, .. }), "{err}");
+        assert_eq!(fs::read_to_string(d.join("a.toml")).unwrap(), "x = 1\n");
+        assert_eq!(kept(d), []);
+        assert_eq!(all_names(d), [".omuzaki", "a.toml"]);
     }
 
     /// An occupied slot (here a leftover with the same pid and counter) is never replaced: the move takes the next
@@ -1953,13 +2193,13 @@ mod tests {
             n.set(n.get() + 1);
             Ok(name)
         };
-        let moved = move_to_free_slot(&d.join("a.toml"), &slot, true, &Hooks::default()).unwrap();
+        let moved = move_to_free_slot(&d.join("a.toml"), &slot, &Hooks::default()).unwrap();
         assert_eq!(moved, Some(d.join(".a.toml.7-1.del")));
         assert_eq!(fs::read_to_string(d.join(".a.toml.7-0.del")).unwrap(), "leftover = 1\n");
         assert_eq!(fs::read_to_string(d.join(".a.toml.7-1.del")).unwrap(), "x = 1\n");
         assert!(!d.join("a.toml").exists());
         // A source that is gone is reported as gone, not as an error.
-        assert_eq!(move_to_free_slot(&d.join("a.toml"), &slot, true, &Hooks::default()).unwrap(), None);
+        assert_eq!(move_to_free_slot(&d.join("a.toml"), &slot, &Hooks::default()).unwrap(), None);
     }
 
     /// The same through a deletion: leftovers holding this process's next quarantine names stay intact.
@@ -1989,7 +2229,7 @@ mod tests {
             let tmp = TempDir::new().unwrap();
             let d = tmp.path();
             write(d, "a.toml", "x = 1\n");
-            let inode_before = file_id(&fs::metadata(d.join("a.toml")));
+            let probe = SameFile::open(&d.join("a.toml"));
             let hooks = Hooks {
                 links_off: true.into(),
                 exchange_off: exchange_off.into(),
@@ -1999,7 +2239,7 @@ mod tests {
             let err = remove_checked_with(d, &["a".to_owned()], Some(ContentHash::of(b"x = 1\n")), &hooks).unwrap_err();
             assert!(matches!(err, StoreError::NoSafeChange { missing: NO_NO_REPLACE, .. }), "{err}");
             assert_eq!(fs::read_to_string(d.join("a.toml")).unwrap(), "x = 1\n");
-            assert_eq!(file_id(&fs::metadata(d.join("a.toml"))), inode_before);
+            probe.assert_still_the_file_at(&d.join("a.toml"));
             assert_eq!(kept(d), []);
             assert_eq!(all_names(d), [".omuzaki", "a.toml"]);
         }
@@ -2260,7 +2500,6 @@ mod tests {
         }
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn the_no_replace_rename_refuses_an_existing_target_and_leaves_both_files() {
         let tmp = TempDir::new().unwrap();
@@ -2268,7 +2507,7 @@ mod tests {
         let from = dir.join(".f.toml.tmp");
         fs::write(&from, "ours = 3\n").unwrap();
         fs::write(&path, "theirs = 1\n").unwrap();
-        // The kernel makes the check and the rename one step, so there is no window for a file to be lost in.
+        // The system makes the check and the rename one step, so there is no window for a file to be lost in.
         assert!(!rename_no_replace(&from, &path).unwrap());
         assert_eq!(fs::read_to_string(&path).unwrap(), "theirs = 1\n");
         assert_eq!(fs::read_to_string(&from).unwrap(), "ours = 3\n");
@@ -2409,5 +2648,22 @@ mod tests {
         assert_eq!(fs::read_to_string(&path).unwrap(), "newer = 3\n");
         let items = kept(d);
         assert!(items.iter().any(|(n, t)| n.ends_with(".displaced") && t == "theirs = 2\n"), "{items:?}");
+    }
+
+    /// A target that cannot be looked at after the move aside (an error other than "not found") returns that error, but
+    /// the file moved aside is kept in the replaced folder with its bytes, never left under its hidden `.del` name.
+    #[test]
+    fn a_failed_look_at_the_target_after_the_move_aside_keeps_the_original_and_returns_the_error() {
+        let tmp = TempDir::new().unwrap();
+        let d = tmp.path();
+        write(d, "a.toml", "x = 1\n");
+        let hooks = Hooks::default();
+        hooks.look_off.set(true); // the one place that looks at the target is right after the move aside
+        let err = remove_checked_with(d, &["a".to_owned()], Some(ContentHash::of(b"x = 1\n")), &hooks).unwrap_err();
+        assert!(err.to_string().contains("forced by a test"), "the target's error is the one returned: {err}");
+        let items = kept(d);
+        assert!(items.iter().any(|(n, t)| n.ends_with(".displaced") && t == "x = 1\n"), "{items:?}");
+        let names: Vec<_> = fs::read_dir(d).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert!(names.iter().all(|n| !n.to_string_lossy().ends_with(".del")), "{names:?}");
     }
 }

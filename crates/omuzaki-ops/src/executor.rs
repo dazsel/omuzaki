@@ -7,9 +7,10 @@ use std::time::Duration;
 use omuzaki_core::time::Clock;
 use omuzaki_doc_api::{DocPath, DocWrite, Value};
 use omuzaki_ops_api::{
-    Actor, Cause, DynOp, Event, Grants, JobId, JobInfo, JobShape, Jobs, Mode, OpCtx, OpError, OpInfo, OpKind, OpRecord,
-    OpRegistration, Outcome, Plan, ProjectDir, Request, Runner, Scope, Services, SessionId, TxId, checks,
-    registrations,
+    Actor, ApprovalId, Budget, Cause, Decision, DynOp, EndReason, Ended, Event, Grants, JobId, JobInfo, JobShape, Jobs,
+    Mode, OpCtx, OpError, OpInfo, OpKind, OpRecord, OpRegistration, Outcome, PendingApproval, Plan, Principals,
+    ProjectDir, Request, Resolution, Runner, Scope, Services, SessionChange, SessionId, SessionInfo, SessionSpec,
+    SessionUndo, Sessions, Spend, TxId, checks, registrations,
 };
 
 use crate::ExecutorError;
@@ -189,6 +190,20 @@ impl Executor {
         self.rewired(|_, budget| *budget = usd_micros)
     }
 
+    /// The same executor, with `principals` as the source of what each person may do. Sessions never hold more than
+    /// their person, and persons never more than this. Without it every person holds [`Grants::person`] and nothing
+    /// else holds anything. It is asked under the executor's lock, so it must not call back into the executor.
+    #[must_use]
+    pub fn with_principals(self, principals: Arc<dyn Principals>) -> Self {
+        self.rewired(|env, _| lock(&env.state).sessions.set_principals(principals))
+    }
+
+    /// The same executor, allocating session ids from `first` (default 1). Ignored once a session has opened.
+    #[must_use]
+    pub fn with_first_session_id(self, first: u64) -> Self {
+        self.rewired(|env, _| lock(&env.state).sessions.set_first_id(first))
+    }
+
     /// Enforces the jobs' time caps and cancel deadlines against the executor's clock. A supervisor thread calls it
     /// about every 50 ms of wall time, so a host with the system clock never calls it; a host or test with a
     /// [`FakeClock`](omuzaki_core::time::FakeClock) calls it after moving the clock.
@@ -229,23 +244,56 @@ impl Executor {
     }
 
     /// Plans a job under the lock and starts it on the manager. `awaited` keeps its outcome for [`Runner::run`].
-    fn start_job(&self, op: Arc<dyn DynOp>, req: Request, awaited: bool) -> Result<JobInfo, OpError> {
-        let plan = self.plan(&lock(&self.env.state), &*op, &req)?;
+    fn start_job(&self, op: Arc<dyn DynOp>, mut req: Request, awaited: bool) -> Result<JobInfo, OpError> {
+        let mut state = lock(&self.env.state);
+        // Admitted again under the lock the plan is made in: the session may have changed since `run` looked.
+        req.grants = state.sessions.admit(&req.actor, &req.grants, self.env.clock.now())?;
+        let plan = self.plan(&state, &*op, &req)?;
+        drop(state);
         self.jobs.start(op, req, plan, awaited)
     }
 
     /// The part of [`Runner::run`] that holds the lock.
-    fn run_locked(&self, state: &mut State, op: &dyn DynOp, req: &Request) -> Result<Outcome, OpError> {
+    fn run_locked(&self, state: &mut State, op: &dyn DynOp, mut req: Request) -> Result<Outcome, OpError> {
+        // Admitted again under the lock that plans and applies: a pause or a narrowing that landed since `run` looked
+        // must win, and the grants the op plans with are the ones that hold now.
+        req.grants = state.sessions.admit(&req.actor, &req.grants, self.env.clock.now())?;
         if let Some(tx) = req.tx {
             state.check_tx(tx, &req.actor)?;
         }
         // `read` was checked before the lookup; the op's own scope is checked before it plans.
-        let plan = self.plan(state, op, req)?;
+        let plan = self.plan(state, op, &req)?;
         if checks::answers_only(op.meta(), req.mode) {
             return Ok(Outcome::new(plan));
         }
         let record = self.env.apply(state, op, (&req.actor, &req.cause, req.tx), &plan)?;
         Ok(Outcome::new(plan).with_applied(record))
+    }
+
+    /// Lets `req`'s actor through (see [`Registry::admit`](crate::sessions::Registry::admit)) and returns the request
+    /// with the grants it may use: its own, narrowed by the session's and the principal's.
+    fn admitted(&self, mut req: Request) -> Result<Request, OpError> {
+        req.grants = self.admit(&req.actor, &req.grants)?;
+        Ok(req)
+    }
+
+    /// What `actor` may do with `grants` right now, or why it may do nothing.
+    fn admit(&self, actor: &Actor, grants: &Grants) -> Result<Grants, OpError> {
+        lock(&self.env.state).sessions.admit(actor, grants, self.env.clock.now())
+    }
+
+    /// Admits `actor` and runs `change` with the grants it may use, in one hold of the lock: a pause or a narrowing
+    /// cannot land between the check and the change.
+    fn with_admitted<T>(
+        &self,
+        actor: &Actor,
+        grants: &Grants,
+        change: impl FnOnce(&mut State, &Grants) -> Result<T, OpError>,
+    ) -> Result<T, OpError> {
+        self.with_state(|state| {
+            let granted = state.sessions.admit(actor, grants, self.env.clock.now())?;
+            change(state, &granted)
+        })
     }
 
     /// Runs `change` under the lock, then publishes whatever events it queued.
@@ -273,6 +321,7 @@ impl Runner for Executor {
     }
 
     fn run(&self, req: Request) -> Result<Outcome, OpError> {
+        let req = self.admitted(req)?;
         // Plans and conflict messages carry document values, so nothing runs without `read`, not even a dry-run.
         require(&req.grants, &req.actor, Scope::Read, &req.op)?;
         let registration = self.ops.find(&req.op)?;
@@ -286,27 +335,32 @@ impl Runner for Executor {
                 return self.jobs.outcome(info.id);
             }
         }
-        self.with_state(|state| self.run_locked(state, &*op, &req))
+        self.with_state(|state| self.run_locked(state, &*op, req))
     }
 
     fn begin(&self, label: &str, actor: &Actor) -> TxId {
-        self.with_state(|state| state.begin(label, actor))
+        let at = self.env.clock.now();
+        self.with_state(|state| match state.sessions.admit(actor, &Grants::default(), at) {
+            Ok(_) => state.begin(label, actor),
+            // `begin` cannot say no: the id it hands back is never open, so every use of it is refused.
+            Err(_) => state.reserve_tx(),
+        })
     }
 
     fn commit(&self, tx: TxId, actor: &Actor) -> Result<(), OpError> {
-        self.with_state(|state| state.commit(tx, actor))
+        self.with_admitted(actor, &Grants::default(), |state, _| state.commit(tx, actor))
     }
 
     fn rollback(&self, tx: TxId, actor: &Actor) -> Result<(), OpError> {
-        self.with_state(|state| state.rollback(tx, actor))
+        self.with_admitted(actor, &Grants::default(), |state, _| state.rollback(tx, actor))
     }
 
     fn undo(&self, actor: &Actor, grants: &Grants) -> Result<Option<String>, OpError> {
-        self.with_state(|state| state.undo(actor, grants))
+        self.with_admitted(actor, grants, |state, granted| state.undo(actor, granted))
     }
 
     fn redo(&self, actor: &Actor, grants: &Grants) -> Result<Option<String>, OpError> {
-        self.with_state(|state| state.redo(actor, grants))
+        self.with_admitted(actor, grants, |state, granted| state.redo(actor, granted))
     }
 
     fn subscribe(&self, grants: &Grants) -> Result<Receiver<Event>, OpError> {
@@ -330,6 +384,7 @@ impl Runner for Executor {
 
 impl Jobs for Executor {
     fn start(&self, req: Request) -> Result<JobInfo, OpError> {
+        let req = self.admitted(req)?;
         if req.mode != Mode::Apply {
             return Err(OpError::invalid("mode", "a job starts only in apply mode").hint("a dry-run is the plan alone"));
         }
@@ -364,5 +419,85 @@ impl Jobs for Executor {
 
     fn wait(&self, id: JobId, timeout: Option<Duration>) -> Result<JobInfo, OpError> {
         self.jobs.wait(id, timeout)
+    }
+}
+
+impl Sessions for Executor {
+    fn open(&self, spec: SessionSpec) -> Result<SessionInfo, OpError> {
+        let at = self.env.clock.now();
+        self.with_state(|state| {
+            let info = state.sessions.open(spec, at)?;
+            let snapshot = state.session_info(&info);
+            state.queue_event(Event::session_opened(snapshot.clone()));
+            Ok(snapshot)
+        })
+    }
+
+    fn sessions(&self) -> Vec<SessionInfo> {
+        let state = lock(&self.env.state);
+        state.sessions.all().iter().map(|s| state.session_info(s)).collect()
+    }
+
+    fn session(&self, id: SessionId) -> Option<SessionInfo> {
+        lock(&self.env.state).session(id)
+    }
+
+    fn session_of(&self, actor: &Actor) -> Option<SessionInfo> {
+        let state = lock(&self.env.state);
+        state.sessions.of_actor(actor).map(|s| state.session_info(s))
+    }
+
+    fn pause(&self, id: SessionId, by: &Actor) -> Result<SessionInfo, OpError> {
+        self.change_sessions(id, |state| state.sessions.pause(id, by))
+    }
+
+    fn resume(&self, id: SessionId, by: &Actor) -> Result<SessionInfo, OpError> {
+        self.change_sessions(id, |state| state.sessions.resume(id, by))
+    }
+
+    fn set_grants(&self, id: SessionId, grants: Grants, by: &Actor) -> Result<SessionInfo, OpError> {
+        self.change_sessions(id, |state| state.sessions.set_grants(id, grants, by))
+    }
+
+    fn set_budget(&self, id: SessionId, budget: Budget, by: &Actor) -> Result<SessionInfo, OpError> {
+        self.change_sessions(id, |state| Ok(vec![(id, state.sessions.set_budget(id, budget, by)?)]))
+    }
+
+    fn charge(&self, _id: SessionId, _spend: Spend) -> Result<SessionInfo, OpError> {
+        Err(OpError::unsupported("session budgets are not enforced by this executor yet"))
+    }
+
+    fn end(&self, _id: SessionId, _reason: EndReason) -> Result<Ended, OpError> {
+        Err(OpError::unsupported("ending a session is not supported by this executor yet"))
+    }
+
+    fn undo_session(&self, _id: SessionId, _by: &Actor) -> Result<SessionUndo, OpError> {
+        Err(OpError::unsupported("undoing a session is not supported by this executor yet"))
+    }
+
+    fn approvals(&self) -> Vec<PendingApproval> {
+        Vec::new()
+    }
+
+    fn resolve(&self, id: ApprovalId, _decision: Decision, _by: &Actor) -> Result<Resolution, OpError> {
+        Err(OpError::not_found(format!("approval {} is gone", id.0)))
+    }
+}
+
+impl Executor {
+    /// Runs a session control under the lock and emits one `SessionChanged` per session it changed. Returns session
+    /// `id` as it stands afterwards.
+    fn change_sessions(
+        &self,
+        id: SessionId,
+        change: impl FnOnce(&mut State) -> Result<Vec<(SessionId, SessionChange)>, OpError>,
+    ) -> Result<SessionInfo, OpError> {
+        self.with_state(|state| {
+            for (changed, what) in change(state)? {
+                let snapshot = state.session(changed).ok_or_else(|| OpError::internal("a changed session vanished"))?;
+                state.queue_event(Event::session_changed(snapshot, what));
+            }
+            state.session(id).ok_or_else(|| OpError::internal("a controlled session vanished"))
+        })
     }
 }

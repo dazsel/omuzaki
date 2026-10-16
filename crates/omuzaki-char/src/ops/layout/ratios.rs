@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct LayoutRatios {
-    /// The eyes' size: eye width over the eye distance.
+    /// The eyes' size: half an eye's width over the eye distance (`FaceLayout::eye_width` is a half-width, so a drawn
+    /// eye's full width is twice this ratio's numerator).
     pub eye_width_to_iod: f64,
     /// The eye line to the chin, over the eye distance: how long the lower face is.
     pub drop_to_iod: f64,
