@@ -364,8 +364,8 @@ impl Scanner<'_> {
             self.next = header.first;
             self.done = false;
             let bytes = Self::read(segment)?;
-            let stop = self.read_frames(&bytes)?;
             let next = segments.get(idx + 1);
+            let stop = self.read_frames(&bytes, next)?;
             match (self.boundary(next, &stop)?, next) {
                 (Boundary::Continue(next_header), _) => header = next_header,
                 (Boundary::End, _) => {
@@ -440,6 +440,13 @@ impl Scanner<'_> {
         })
     }
 
+    /// Whether `next` is the recovery session segment that continues the log at the last good record (8.5).
+    fn recovers_into(&self, next: Option<&Segment>) -> bool {
+        next.is_some_and(|segment| {
+            matches!(segment.class(), Ok(Class::Real(header)) if self.starts_recovery_session(segment, &header))
+        })
+    }
+
     /// Whether the damage or gap the snapshot covers (rule 4) is followed by `header`'s segment: it starts after the
     /// last good record and no later than the base.
     fn skips_old_damage(&self, header: &SegmentHeader) -> bool {
@@ -455,7 +462,13 @@ impl Scanner<'_> {
         let wanted = self.from.0.checked_add(1)?;
         let mut at = offset;
         while at < bytes.len() {
-            match probe(tail(bytes, at), &mut self.budget) {
+            let rest = tail(bytes, at);
+            // A frame-sized run of zeros is a zero tail, which ends the log: what lies past it is not looked at. No
+            // record has one inside it, and the writer only ever leaves one at the end.
+            if rest.iter().take(FRAME_HEADER_LEN).all(|&b| b == 0) {
+                return None;
+            }
+            match probe(rest, &mut self.budget) {
                 Probe::Exhausted => {
                     self.exhausted = true;
                     return None;
@@ -469,7 +482,7 @@ impl Scanner<'_> {
     }
 
     /// Reads the frames of one segment, keeping the records after `from`.
-    fn read_frames(&mut self, bytes: &[u8]) -> Result<Stop, JournalError> {
+    fn read_frames(&mut self, bytes: &[u8], next: Option<&Segment>) -> Result<Stop, JournalError> {
         let mut offset = HEADER_LEN;
         loop {
             let rest = tail(bytes, offset);
@@ -493,8 +506,10 @@ impl Scanner<'_> {
                 Err(FrameEnd::Short) if rest.iter().all(|&b| b == 0) => return Ok(Stop::ZeroTail),
                 Ok(_) | Err(_) => Stop::Bad(offset),
             };
-            // Damage before the base is old (8.2): skip to the record after it, if there is one.
+            // Damage before the base is old (8.2): skip to the record after it, if there is one. Not when a recovery
+            // session follows the last good record: the rest of this segment was discarded.
             if self.next <= self.from
+                && !self.recovers_into(next)
                 && let Some(found) = self.find_base(bytes, offset)
             {
                 self.next = Lsn(self.from.0 + 1);

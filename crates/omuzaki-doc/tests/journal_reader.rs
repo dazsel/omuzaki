@@ -620,21 +620,24 @@ fn a_session_record_that_does_not_decode_is_not_the_recovery_exception() {
 }
 
 /// How a generated segment ends.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Tail {
     Eof,
     Zeros,
 }
 
 /// What a generated segment is.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Shape {
-    /// A real header at `first`, then `n` records (the first a `session` when `session` is set).
+    /// A real header at `first`, then `n` records (the first a `session` when `session` is set). `damage` is the index
+    /// of a record whose payload is flipped, and `ghost` the number of valid frames written after a zero tail.
     Real {
         first: u64,
         n: u64,
         session: bool,
         tail: Tail,
+        damage: Option<u64>,
+        ghost: u64,
     },
     Prepared,
     BadHeader,
@@ -643,15 +646,19 @@ enum Shape {
 
 fn build(shape: Shape) -> Vec<u8> {
     match shape {
-        Shape::Real { first, n, session: sess, tail } => {
+        Shape::Real { first, n, session: sess, tail, damage, ghost } => {
             let mut records = commits(first, first + n);
             records.truncate(usize::try_from(n).unwrap());
             if sess && n > 0 {
                 records[0] = session(first);
             }
             let mut bytes = segment(first, &records);
+            if let Some(index) = damage {
+                bytes[offset_of(&records, usize::try_from(index).unwrap()) + 25] ^= 0x04;
+            }
             if tail == Tail::Zeros {
                 bytes.extend([0u8; 40]);
+                encode(&commits(first + n + 3, first + n + 2 + ghost), &mut bytes).unwrap();
             }
             bytes
         }
@@ -664,41 +671,73 @@ fn build(shape: Shape) -> Vec<u8> {
 /// What the naive model says a scan returns: the LSNs, and how it ended as `(kind, segment index)`.
 type Model = Result<(Vec<u64>, char, usize), ()>;
 
+/// The valid frames a segment holds anywhere, which is what a look past a bad frame finds.
+fn valid_frames(shape: &Shape) -> u64 {
+    match shape {
+        Shape::Real { n, damage, ghost, .. } => n - u64::from(damage.is_some()) + ghost,
+        _ => 0,
+    }
+}
+
+/// The valid frames of the segments from `layout[0]` on, up to one whose header ends the log.
+fn counted(layout: &[Shape]) -> u64 {
+    layout.iter().take_while(|s| matches!(s, Shape::Real { .. })).map(valid_frames).sum()
+}
+
 /// A plain walk from the first segment, written from journal.md 8.2 and nothing else.
 fn model(layout: &[Shape], from: u64) -> Model {
     let mut out = Vec::new();
     let mut i = 0;
-    let mut expected;
     loop {
         let Some(&shape) = layout.get(i) else { return Ok((out, 'C', i)) };
-        let Shape::Real { first, n, tail, .. } = shape else {
+        let Shape::Real { first, n, tail, damage, .. } = shape else {
             return match shape {
                 Shape::Prepared => Ok((out, 'C', i)),
                 Shape::BadHeader => Ok((out, 'T', i)),
                 _ => Err(()),
             };
         };
-        out.extend(first..first + n);
-        expected = first + n;
         let next = layout.get(i + 1).copied();
+        let recovery = |expected: u64| {
+            matches!(next, Some(Shape::Real { first, n, session: true, damage, .. })
+                if n > 0 && first == expected && damage != Some(0))
+        };
+        let good = damage.unwrap_or(n);
+        out.extend(first..first + good);
+        let mut expected = first + good;
+        let mut bad = damage.is_some();
+        // Old damage: the frame after the snapshot may follow the bad one, unless a recovery session took over.
+        if bad && expected <= from && !recovery(expected) && from + 1 > first + good && from + 1 < first + n {
+            out.extend(from + 1..first + n);
+            expected = first + n;
+            bad = false;
+        }
+        let covered = |first: u64| expected <= from && expected < first && first <= from + 1;
+        if bad {
+            let continues = match next {
+                Some(Shape::Real { first, .. }) => recovery(expected) || covered(first),
+                _ => false,
+            };
+            if !continues {
+                let after_bad = n - good - 1 + if let Shape::Real { ghost, .. } = shape { ghost } else { 0 };
+                let later = after_bad + counted(&layout[i + 1..]);
+                return Ok((out, if later > 0 { 'D' } else { 'T' }, i));
+            }
+            i += 1;
+            continue;
+        }
         let continues = match (tail, next) {
             (_, None) | (Tail::Eof, Some(Shape::Prepared)) => return Ok((out, 'C', i + 1)),
             (Tail::Eof, Some(Shape::BadHeader)) => return Ok((out, 'T', i + 1)),
             (Tail::Eof, Some(Shape::Newer)) => return Err(()),
             (Tail::Eof, Some(Shape::Real { first, .. })) => {
-                let covered = expected <= from && expected < first && first <= from + 1;
-                if first != expected && !covered {
-                    let later: u64 = layout[i + 1..]
-                        .iter()
-                        .take_while(|s| matches!(s, Shape::Real { .. }))
-                        .map(|s| if let Shape::Real { n, .. } = s { *n } else { 0 })
-                        .sum();
+                if first != expected && !covered(first) {
+                    let later = counted(&layout[i + 1..]);
                     return Ok((out, if later > 0 { 'D' } else { 'T' }, i + 1));
                 }
                 true
             }
-            (Tail::Zeros, Some(Shape::Real { first, n, session: true, .. })) => n > 0 && first == expected,
-            (Tail::Zeros, Some(_)) => false,
+            (Tail::Zeros, Some(_)) => recovery(expected),
         };
         if !continues {
             return Ok((out, 'C', i + 1));
@@ -720,27 +759,64 @@ fn random_layouts_match_the_naive_walk() {
         let count = 1 + rand(5);
         let mut layout = Vec::new();
         let mut expected = 1;
+        let mut recover_at = None;
         for idx in 0..count {
-            let shape = match if idx == 0 { 0 } else { rand(10) } {
+            let pick = if idx == 0 { 0 } else { rand(12) };
+            let mut shape = match pick {
                 0..=3 => Shape::Real {
                     first: expected,
                     n: rand(4),
                     session: false,
                     tail: if rand(2) == 0 { Tail::Eof } else { Tail::Zeros },
+                    damage: None,
+                    ghost: 0,
                 },
-                4 | 5 => Shape::Real { first: expected, n: 1 + rand(3), session: true, tail: Tail::Eof },
-                6 => Shape::Real {
+                4 | 5 => Shape::Real {
+                    first: expected,
+                    n: 1 + rand(3),
+                    session: true,
+                    tail: Tail::Eof,
+                    damage: None,
+                    ghost: 0,
+                },
+                // A stale or gapped segment: it starts anywhere, up to a little past the log.
+                6 | 7 => Shape::Real {
                     first: 1 + rand(expected + 3),
                     n: 1 + rand(3),
                     session: rand(2) == 0,
                     tail: Tail::Eof,
+                    damage: None,
+                    ghost: 0,
                 },
-                7 => Shape::Prepared,
-                8 => Shape::BadHeader,
-                _ => Shape::Newer,
+                8 => Shape::Prepared,
+                9 => Shape::BadHeader,
+                10 => Shape::Newer,
+                _ => Shape::Real {
+                    first: expected,
+                    n: 2 + rand(4),
+                    session: false,
+                    tail: if rand(2) == 0 { Tail::Eof } else { Tail::Zeros },
+                    damage: None,
+                    ghost: 0,
+                },
             };
-            if let Shape::Real { first, n, .. } = shape {
+            // A recovery session that takes over where a damaged record was.
+            if let Some(first) = recover_at.take()
+                && rand(2) == 0
+            {
+                shape = Shape::Real { first, n: 1 + rand(3), session: true, tail: Tail::Eof, damage: None, ghost: 0 };
+            }
+            if let Shape::Real { n, tail, damage, ghost, .. } = &mut shape {
+                if *n > 0 && rand(3) == 0 {
+                    *damage = Some(rand(*n));
+                }
+                if *tail == Tail::Zeros && rand(2) == 0 {
+                    *ghost = 1 + rand(3);
+                }
+            }
+            if let Shape::Real { first, n, damage, .. } = shape {
                 expected = first + n;
+                recover_at = damage.map(|index| first + index);
             }
             layout.push(shape);
         }
@@ -760,16 +836,16 @@ fn random_layouts_match_the_naive_walk() {
                 (Err(()), Err(JournalError::TooNew { .. })) => {}
                 (Ok((lsns_want, kind, seg)), Ok(scan)) => {
                     let filtered: Vec<u64> = lsns_want.iter().copied().filter(|&l| l > from).collect();
-                    assert_eq!(lsns(&scan), filtered, "round {round} from {from}");
+                    assert_eq!(lsns(&scan), filtered, "round {round} from {from}: {layout:?}");
                     let (got_kind, got_seg) = match scan.end {
                         End::Clean => ('C', None),
                         End::TornTail { at } => ('T', Some(at.segment)),
                         End::Damaged { at, .. } => ('D', Some(at.segment)),
                         _ => unreachable!(),
                     };
-                    assert_eq!(got_kind, *kind, "round {round} from {from}");
+                    assert_eq!(got_kind, *kind, "round {round} from {from}: {layout:?}");
                     if let Some(got_seg) = got_seg {
-                        assert_eq!(got_seg, u64::try_from(*seg).unwrap() + 1, "round {round} from {from}");
+                        assert_eq!(got_seg, u64::try_from(*seg).unwrap() + 1, "round {round} from {from}: {layout:?}");
                     }
                 }
                 (want, got) => panic!("round {round} from {from}: model {:?}, scan {got:?}", want.is_ok()),
@@ -829,4 +905,34 @@ fn damage_counting_stops_at_a_newer_format_segment() {
     let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
     assert_eq!(lsns(&scan), [1, 2]);
     assert_eq!(scan.end, End::TornTail { at: at(1, offset_of(&records, 2), 2) });
+}
+
+#[test]
+fn old_damage_is_not_resynchronized_past_a_recovery_session() {
+    // Segment 1: valid 1, damaged 2, intact 3-8. A recovery segment starts with session 2: 3-8 were discarded.
+    let records = commits(1, 8);
+    let mut bytes = segment(1, &records);
+    bytes[offset_of(&records, 1) + 25] ^= 0x04;
+    let dir = tempfile::tempdir().unwrap();
+    put(dir.path(), 1, &bytes);
+    let mut recovered = SegmentHeader::new(Lsn(2)).encode().to_vec();
+    encode(&[session(2), commit(3)], &mut recovered).unwrap();
+    put(dir.path(), 2, &recovered);
+    let scan = Reader::scan(dir.path(), Lsn(2)).unwrap();
+    assert_eq!((lsns(&scan), scan.end), (vec![3], End::Clean));
+}
+
+#[test]
+fn old_damage_resynchronization_stops_at_a_zero_tail() {
+    // Valid 1, damaged 2, valid 3, a zero tail, then stale 6-10 in the same file.
+    let records = commits(1, 3);
+    let mut bytes = segment(1, &records);
+    bytes[offset_of(&records, 1) + 25] ^= 0x04;
+    bytes.extend([0u8; 40]);
+    encode(&commits(6, 10), &mut bytes).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    put(dir.path(), 1, &bytes);
+    let scan = Reader::scan(dir.path(), Lsn(5)).unwrap();
+    assert_eq!(lsns(&scan), Vec::<u64>::new());
+    assert!(matches!(scan.end, End::Damaged { .. }), "{:?}", scan.end);
 }
