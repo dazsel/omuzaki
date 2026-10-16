@@ -21,7 +21,7 @@ pub enum ExecutorError {
 }
 
 /// A human-readable name for an actor, for messages.
-fn who(actor: &Actor) -> String {
+pub(crate) fn who(actor: &Actor) -> String {
     match actor {
         Actor::Person { name } => format!("person {name}"),
         Actor::Agent { id, .. } => format!("agent {id}"),

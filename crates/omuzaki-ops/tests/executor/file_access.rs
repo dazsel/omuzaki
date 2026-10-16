@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tempfile::TempDir;
 
-use super::{agent, person, request};
+use super::{agent, open_agents, person, request};
 
 /// Asks for read access to `path` and answers with where it really is.
 #[derive(Serialize, Deserialize, JsonSchema)]
@@ -89,6 +89,7 @@ fn site() -> Site {
 fn executor(project: Option<&Path>) -> Executor {
     let clock = Arc::new(FakeClock::new(Seconds(0.0)));
     let exec = Executor::new(Box::new(MemDoc::from_value(json!({}))), clock).unwrap();
+    open_agents(&exec);
     match project {
         Some(dir) => exec.with_project_dir(ProjectDir::open(dir).unwrap()),
         None => exec,

@@ -13,14 +13,15 @@ use omuzaki_doc_api::Patch;
 use omuzaki_doc_mock::MemDoc;
 use omuzaki_ops::Executor;
 use omuzaki_ops_api::{
-    CancelFlag, CancelReason, CostHint, ErrorCode, ErrorDetail, Event, Grants, JobCtx, JobId, JobInfo, JobShape,
-    JobState, Jobs, Lane, Mode, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Request, Runner, Scope, Undo, register_op,
+    CancelFlag, CancelReason, CostHint, ErrorCode, ErrorDetail, Event, FsMode, Grants, JobCtx, JobId, JobInfo,
+    JobShape, JobState, Jobs, Lane, Mode, Op, OpCtx, OpError, OpKind, OpMeta, Plan, ProjectDir, Request, Runner, Scope,
+    SessionId, Sessions, Undo, register_op,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::{Rig, agent, agent_request, drain, path, person, request, rig};
+use super::{Rig, agent, agent_request, drain, open_agents, path, person, request, rig};
 
 /// What a test job's `work` does once it is running.
 #[derive(Serialize, Deserialize, JsonSchema, Default)]
@@ -55,6 +56,8 @@ enum How {
     Nice,
     /// Reports progress and money from inside `JobCtx::read`, where the document lock is held.
     ReadSignals,
+    /// Opens `path` for reading through the job's file access and returns the path it was allowed.
+    Open { path: String },
     /// Returns at once; its `finish` signals, then holds the document lock until the job is cancelled.
     SlowFinish,
 }
@@ -211,6 +214,7 @@ impl Op for TestJob {
                 job.progress("last", 1.0);
                 Ok(json!("done"))
             }
+            How::Open { path } => Ok(json!(job.fs_access(path, FsMode::Read)?.to_string())),
             How::Fail => Err(OpError::invalid("key", "boom")),
             How::Panic => panic!("the job's work panicked"),
             How::Nice => Ok(json!(thread_nice())),
@@ -307,6 +311,7 @@ fn budgeted(usd_micros: u64) -> Rig {
     let clock = Arc::new(FakeClock::new(Seconds(0.0)));
     let exec =
         Executor::new(Box::new(MemDoc::from_value(json!({}))), clock.clone()).unwrap().with_job_budget(usd_micros);
+    open_agents(&exec);
     Rig { exec, clock }
 }
 
@@ -925,6 +930,7 @@ fn a_shutdown_during_a_slow_finish_leaves_the_document_unchanged() {
 fn journalled(log: Arc<Mutex<Vec<String>>>) -> Executor {
     let clock = Arc::new(FakeClock::new(Seconds(0.0)));
     let exec = Executor::new(Box::new(MemDoc::from_value(json!({}))), clock).unwrap().with_job_budget(1_000_000);
+    open_agents(&exec);
     exec.with_job_journal(move |_, args| {
         let key = args["key"].as_str().unwrap_or_default().to_owned();
         assert_ne!(key, "panics", "the journal panicked");
@@ -959,4 +965,107 @@ fn a_panicking_journal_fails_the_start_and_gives_back_its_place_and_money() {
     let next = exec.start(job_with("jp-next", &json!("echo"), whole)).unwrap();
     assert_eq!(next.state, JobState::Running);
     assert!(matches!(exec.wait(next.id, None).unwrap().state, JobState::Done { .. }));
+}
+
+// ---- sessions and jobs ---------------------------------------------------------------------------------------------
+
+fn agent_job(key: &str, how: &Value) -> Request {
+    Request { actor: agent(), ..agent_request("test.job", json!({"key": key, "how": how})) }
+}
+
+#[test]
+fn a_job_carries_its_session_and_principal() {
+    let rig = rig(json!({}));
+    let by_agent = rig.exec.start(agent_job("j1", &json!("echo"))).unwrap();
+    assert_eq!((by_agent.session, by_agent.on_behalf_of), (Some(SessionId(1)), Some(person())));
+    let by_person = rig.exec.start(job("j2", &json!("echo"))).unwrap();
+    assert_eq!((by_person.session, by_person.on_behalf_of), (None, None));
+    rig.exec.wait(by_agent.id, None).unwrap();
+    rig.exec.wait(by_person.id, None).unwrap();
+}
+
+#[test]
+fn a_job_whose_session_is_paused_while_it_works_changes_nothing() {
+    let rig = rig(json!({}));
+    let gate = Gate::new("p1");
+    let info = rig.exec.start(agent_job("p1", &json!("block"))).unwrap();
+    gate.wait_entered();
+    rig.exec.pause(SessionId(1), &person()).unwrap();
+    gate.release.send(()).unwrap();
+
+    let ended = rig.exec.wait(info.id, None).unwrap();
+    assert!(
+        matches!(&ended.state, JobState::Failed { error } if error.code == ErrorCode::Waiting),
+        "{:?}",
+        ended.state
+    );
+    assert_eq!(rig.at("p1"), None, "the finish was refused");
+    assert_eq!(rig.log().len(), 0);
+}
+
+#[test]
+fn a_queued_job_whose_session_is_paused_never_starts() {
+    let rig = rig(json!({}));
+    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    let width = (cores / 2).clamp(1, 4);
+    let gates: Vec<Gate> = (0..width).map(|n| Gate::new(&format!("q{n}"))).collect();
+    for n in 0..width {
+        rig.exec.start(job(&format!("q{n}"), &json!("block"))).unwrap();
+    }
+    for gate in &gates {
+        gate.wait_entered();
+    }
+    let waiting = rig.exec.start(agent_job("qa", &json!("echo"))).unwrap();
+    assert_eq!(live(&rig, waiting.id).state, JobState::Queued);
+
+    rig.exec.pause(SessionId(1), &person()).unwrap();
+    for gate in &gates {
+        gate.release.send(()).unwrap();
+    }
+    let ended = rig.exec.wait(waiting.id, None).unwrap();
+    assert!(
+        matches!(&ended.state, JobState::Failed { error } if error.code == ErrorCode::Waiting),
+        "{:?}",
+        ended.state
+    );
+    assert_eq!(rig.at("qa"), None, "its work never ran");
+}
+
+#[test]
+fn a_queued_job_works_with_the_grants_its_session_holds_when_it_starts() {
+    // A file root outside the project folder, which agents may always open.
+    let (project, dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    std::fs::write(root.join("a.txt"), "a").unwrap();
+    let clock = Arc::new(FakeClock::new(Seconds(0.0)));
+    let exec = Executor::new(Box::new(MemDoc::from_value(json!({}))), clock.clone())
+        .unwrap()
+        .with_project_dir(ProjectDir::open(project.path()).unwrap());
+    open_agents(&exec);
+    let rig = Rig { exec, clock };
+    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    let width = (cores / 2).clamp(1, 4);
+    let gates: Vec<Gate> = (0..width).map(|n| Gate::new(&format!("g{n}"))).collect();
+    for n in 0..width {
+        rig.exec.start(job(&format!("g{n}"), &json!("block"))).unwrap();
+    }
+    for gate in &gates {
+        gate.wait_entered();
+    }
+    let wide = Grants::agent_default().with_fs_root(root.to_str().unwrap());
+    let open = json!({"open": {"path": root.join("a.txt").to_str().unwrap()}});
+    let waiting = rig.exec.start(Request { grants: wide, ..agent_job("ga", &open) }).unwrap();
+    assert_eq!(live(&rig, waiting.id).state, JobState::Queued);
+
+    // The person narrows the session to the default agent ceiling (no file roots) while the job waits.
+    rig.exec.set_grants(SessionId(1), Grants::agent_default(), &person()).unwrap();
+    for gate in &gates {
+        gate.release.send(()).unwrap();
+    }
+    let ended = rig.exec.wait(waiting.id, None).unwrap();
+    assert!(
+        matches!(&ended.state, JobState::Failed { error } if error.code == ErrorCode::Denied),
+        "its work read a file the session no longer holds: {:?}",
+        ended.state
+    );
 }
