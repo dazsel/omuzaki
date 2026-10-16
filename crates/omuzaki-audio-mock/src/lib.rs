@@ -5,21 +5,24 @@
 //! | [`OfflineEngine`] | the single-threaded reference [`OfflineRender`](omuzaki_audio_api::OfflineRender), written to be obviously correct rather than fast |
 //! | [`MockEngine`] | an [`AudioEngine`](omuzaki_audio_api::AudioEngine) for op tests: it stores the graph, records the live setters, and runs it block by block from [`MockEngine::advance`] |
 //! | [`NullKind`] | the `mock.null` node kind: a configurable-latency pass-through with one gain parameter |
+//! | [`backend::FakeBackend`] | an [`AudioBackend`](omuzaki_audio_api::backend::AudioBackend) whose devices a [`backend::Script`] makes vanish, return, reorder, change id, drift and lag; the test steps it, with no threads |
+//! | [`signals`] | seeded test signals: a synthetic voice, claps, plosives, sweeps, noise, clicks and the clap test's changer |
+//! | [`conformance`] | the node conformance suite of design section 9.2, and the [`CountingAlloc`](conformance::CountingAlloc) its allocation check needs |
 //!
 //! Both engines evaluate the graph with the same reference mixer. It uses the shared recurrences of
 //! `omuzaki_audio_api::semantics` (fader ramps, the duck envelope) and implements routing, ordering, sends, channel
 //! conversion and taps on its own, so the real engine in `omuzaki-audio` is compared with an independent oracle
 //! (design section 3.6).
-//!
-//! Not here yet: the fake backend, the test signals and the node conformance suite (`src/backend/`, `src/signals/`
-//! and `src/conformance/`).
 #![deny(missing_docs)]
 
+pub mod backend;
+pub mod conformance;
 mod engine;
 mod latency;
 mod mixer;
 mod null;
 mod offline;
+pub mod signals;
 mod taps;
 
 pub use engine::{MockEngine, mock_devices};

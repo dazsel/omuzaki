@@ -15,7 +15,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::{request, rig};
+use super::{open_agents, request, rig};
 
 /// The shape of an API-crate service (the real renderer trait will live in `omuzaki-render-api`).
 trait RenderService: Send + Sync {
@@ -78,7 +78,9 @@ register_op!(Render);
 
 fn executor(services: Services) -> Executor {
     let clock = Arc::new(FakeClock::new(Seconds(0.0)));
-    Executor::new(Box::new(MemDoc::from_value(json!({}))), clock).unwrap().with_services(services)
+    let exec = Executor::new(Box::new(MemDoc::from_value(json!({}))), clock).unwrap().with_services(services);
+    open_agents(&exec);
+    exec
 }
 
 fn renderer_services(renderer: &Arc<MockRenderer>) -> Services {

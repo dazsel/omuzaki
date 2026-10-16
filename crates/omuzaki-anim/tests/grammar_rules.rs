@@ -33,8 +33,8 @@ use omuzaki_anim_api::{Bus, CHANNELS, Channel, ChannelBuf, ChannelMask, Cues, Li
 use omuzaki_core::rng::Rng;
 use omuzaki_core::time::Seconds;
 use omuzaki_face_api::{
-    FaceDrawing, FaceInput, FaceLayerId, FaceMapping, FacePainter, FaceProfile, FaceRasterizer, FaceView, GrammarRules,
-    RESERVED_RULES, Raster, RuleConfig, RuleId,
+    FaceDrawing, FaceInput, FaceLayerId, FaceMapping, FacePainter, FaceProfile, FaceRasterizer, FaceView, FangKind,
+    GrammarRules, RESERVED_RULES, Raster, RuleConfig, RuleId,
 };
 use omuzaki_face_mock::{MockPainter, MockRasterizer, mock_profile};
 use serde_json::Value;
@@ -482,6 +482,27 @@ fn a_pout_is_let_out_more_slowly_than_it_is_made() {
     let fall = (1..=60).find(|_| run.step(&lips(0.0, 0.0, 0.0, 0.0)).values[PUFF] < 0.01).unwrap();
     assert!(rise <= 16, "a pout is believed after 0.1 s and made in 0.12 s more ({rise} frames)");
     assert!(fall > rise + 6, "and let out over a hold and 0.25 s, which is slower still ({fall} frames)");
+}
+
+/// A profile that says "no fangs" switches `grin-fangs` off by itself (#637): no per-character `show` is needed, and a
+/// `grammar` entry that asks for the rule does not bring it back.
+#[test]
+fn a_profile_without_fangs_never_shows_them() {
+    let grinning = lips(0.8, 0.0, 0.4, 0.0);
+    let mut profile = FaceProfile::default();
+    let fanged = Run::new(solo(GrinFangs::default(), &GrammarConfig::from_profile(&profile))).hold(&grinning, 60);
+    assert!(close(fanged.values[FANGS], 1.0), "a profile with fangs shows them: {}", fanged.values[FANGS]);
+
+    profile.mouth.fang.kind = FangKind::None;
+    profile.grammar =
+        GrammarRules([(rule_id("grin-fangs"), rule_config(true, 2.0, &[("show", 1.0)]))].into_iter().collect());
+    let config = GrammarConfig::from_profile(&profile);
+    let bare = Run::new(solo(GrinFangs::default(), &config)).hold(&grinning, 60);
+    assert_eq!(bare.values[FANGS], 0.0, "no fangs, whatever the grammar section asks");
+    assert!(!profile.has_fangs());
+    // The other rules are untouched.
+    let laughing = Run::new(trio(&config)).hold(&lips(0.9, 0.0, 0.6, 0.0), 60);
+    assert!(laughing.values[SQUINT[0]] > 0.0, "laugh-squint still runs");
 }
 
 #[test]

@@ -105,3 +105,37 @@ jobs:
           name: face-gpu-timing-windows
           path: target/x86_64-pc-windows-gnu/release/examples/gpu_face_timing.exe
           if-no-files-found: error
+
+  # The track_roi timing probe for the reference machine (#1515): cross-built for Windows, handed over as an artifact.
+  # The owner runs it there (it needs the pinned ONNX Runtime archive and the model folder, which RUN.txt names), so the
+  # job builds and uploads and runs nothing. ONNX Runtime is loaded at run time (the workspace's `load-dynamic`), so the
+  # gnu target links no ORT and needs no Windows runner.
+  track-roi-probe:
+    name: track_roi timing probe (windows)
+    runs-on: ubuntu-latest
+    if: github.repository == 'dazsel/omuzaki'
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-linux
+        with:
+          windows-cross: true
+      - name: Build the probe
+        run: cargo build --locked --release --target x86_64-pc-windows-gnu -p omuzaki-test --example track_roi_timing
+      - name: Collect
+        run: |
+          mkdir track-roi-timing-windows
+          cp target/x86_64-pc-windows-gnu/release/examples/track_roi_timing.exe track-roi-timing-windows/
+          cat > track-roi-timing-windows/RUN.txt <<'TXT'
+          track_roi_timing.exe prints a Markdown table of the track_roi timing (640x480, 1 thread, 1,000 calls).
+          Set two folders, then run it:
+            OMUZAKI_TRACK_MODELS  the model folder: tools/models/mediapipe-face.sh --out <dir> (checks its own SHA-256)
+            OMUZAKI_ORT_CACHE     a folder holding the pinned ONNX Runtime archive under its release file name
+          track_roi_timing.exe --pins prints that archive's URL, SHA-256 and size; the probe checks them again on load.
+          TXT
+          (cd track-roi-timing-windows && sha256sum track_roi_timing.exe > track_roi_timing.exe.sha256)
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: track-roi-timing-windows
+          path: track-roi-timing-windows
+          if-no-files-found: error

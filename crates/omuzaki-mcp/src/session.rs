@@ -5,7 +5,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use omuzaki_history_api::JournalStatus;
-use omuzaki_ops_api::{Actor, Cause, CauseKind, Mode, OpError, OpKind, Request, Runner, Scope};
+use omuzaki_ops_api::{
+    Actor, Budget, Cause, CauseKind, ErrorCode, ErrorDetail, Grants, Limits, Mode, OpError, OpKind, PauseReason,
+    Request, Runner, Scope, SessionSpec, SessionState, Sessions, Transport,
+};
 use rmcp::ErrorData as McpError;
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
@@ -44,8 +47,9 @@ pub struct Session {
     serial: u64,
     /// Served over HTTP, where a request that stands alone gets a fresh handler (see [`Session::for_http`]).
     http: bool,
-    /// Fixed at the first call, so a transaction always belongs to one actor identity.
-    actor: OnceLock<Actor>,
+    /// Fixed at the first call, so a transaction always belongs to one actor identity. If the host's registry would not
+    /// open a session, the refusal is kept instead and answers every call: a connection without a session runs nothing.
+    actor: OnceLock<Result<Actor, OpError>>,
     state: Mutex<State>,
 }
 
@@ -108,32 +112,90 @@ impl Session {
     /// (`subscriptions/listen` included), skipping both `initialize` and `discover`, so every request handler calls this
     /// first. Over HTTP a session starts with `initialize`, which names it.
     fn name_client(&self, context: &RequestContext<RoleServer>) {
-        if !self.http
-            && let Some(info) = context.meta.client_info()
-        {
+        if self.http {
+            return;
+        }
+        if let Some(info) = context.meta.client_info() {
             self.shared.connections.name(self.serial, &info.name);
         }
+        self.open_session(context);
     }
 
-    fn actor(&self, context: &RequestContext<RoleServer>) -> &Actor {
-        self.actor.get_or_init(|| {
-            let client = context.client_info().map_or_else(|| "mcp-client".to_owned(), |info| info.name);
-            Actor::Agent { id: format!("{client}#{}", self.serial), model: None }
-        })
+    /// Opens this connection's session in the registry now, so a client that has only connected is already in the
+    /// agent panel. A refusal stays in the cached result, and the first call that needs the actor reports it.
+    fn open_session(&self, context: &RequestContext<RoleServer>) {
+        let _ = self.actor(context);
+    }
+
+    fn actor(&self, context: &RequestContext<RoleServer>) -> Result<&Actor, &OpError> {
+        self.actor
+            .get_or_init(|| {
+                let client = context.client_info().map_or_else(|| "mcp-client".to_owned(), |info| info.name);
+                let Some(host) = &self.shared.sessions else {
+                    return Ok(Actor::Agent { id: format!("{client}#{}", self.serial), model: None });
+                };
+                // The registry names the agent. No other name will do: one made here could equal a registered
+                // session's actor and borrow its grants.
+                let spec = SessionSpec {
+                    transport: if self.http { Transport::Http { token: "mcp".to_owned() } } else { Transport::Stdio },
+                    client,
+                    model: None,
+                    on_behalf_of: host.person.clone(),
+                    grants: self.view.grants.clone(),
+                    budget: Budget::default(),
+                    limits: Limits::default(),
+                    parent: None,
+                    role: None,
+                    fence: Vec::new(),
+                };
+                host.sessions
+                    .open(spec)
+                    .map(|info| info.actor)
+                    .inspect_err(|e| tracing::warn!(error = %e, "couldn't open a session for a connection"))
+            })
+            .as_ref()
+    }
+
+    /// What this connection's session stands for right now (see [`standing`]), asked of the registry again on every
+    /// request.
+    fn standing(&self, context: &RequestContext<RoleServer>) -> Result<Standing, McpError> {
+        let denied = |why: String| McpError::invalid_request(why, Some(json!({"code": "denied"})));
+        let actor = if self.shared.sessions.is_none() {
+            None
+        } else {
+            Some(
+                self.actor(context)
+                    .map_err(|e| denied(format!("this connection has no session: {}", e.message)))?
+                    .clone(),
+            )
+        };
+        standing(self.shared.sessions.as_ref().map(|h| &h.sessions), actor.as_ref(), &self.view.grants).map_err(denied)
+    }
+
+    /// What this connection may read right now: the server's grants narrowed by its session's. A paused session still
+    /// reads (design §4.3: the document, the log and its own record stay readable); one that has ended, or that the
+    /// registry no longer has, reads nothing.
+    fn session_grants(&self, context: &RequestContext<RoleServer>) -> Result<Grants, McpError> {
+        self.standing(context).map(|s| s.grants)
+    }
+
+    /// What a notification feed needs to ask the registry again later, without the request that started it.
+    fn watch(&self, context: &RequestContext<RoleServer>) -> Watch {
+        Watch {
+            sessions: self.shared.sessions.as_ref().map(|h| Arc::clone(&h.sessions)),
+            actor: self.actor(context).ok().cloned(),
+            ceiling: self.view.grants.clone(),
+        }
     }
 
     /// The op log and its notifications carry document values (patches, arguments), so reading or being notified of
     /// them needs `read`, exactly like running a query. Anything else that exposes document state to the client
     /// (`Runner::get`, resource providers) must call this first.
-    fn require_read(&self, what: &str) -> Result<(), McpError> {
-        if self.has_read() {
+    fn require_read(grants: &Grants, what: &str) -> Result<(), McpError> {
+        if grants.allows(Scope::Read) {
             return Ok(());
         }
         Err(McpError::invalid_request(read_needed(what), Some(json!({"code": "denied", "scope": "read"}))))
-    }
-
-    fn has_read(&self) -> bool {
-        self.view.grants.allows(Scope::Read)
     }
 
     /// The op log as JSON (events numbered above `after`, or all of them), catching this session up with it: having
@@ -146,8 +208,8 @@ impl Session {
     }
 
     /// `omuzaki://log`: the newest events, catching this session up with them.
-    fn read_log(&self) -> Result<ReadResourceResponse, McpError> {
-        self.require_read("reading the op log")?;
+    fn read_log(&self, grants: &Grants) -> Result<ReadResourceResponse, McpError> {
+        Self::require_read(grants, "reading the op log")?;
         let body = self
             .log_json(None)
             .map_err(|e| McpError::internal_error(format!("couldn't encode the op log: {e}"), None))?;
@@ -157,8 +219,8 @@ impl Session {
 
     /// `history_log`: the log resource's body, for clients that can't read resources. `after_n` keeps only the events
     /// numbered above it.
-    fn history_log(&self, args: &JsonObject) -> Result<CallToolResult, OpError> {
-        if !self.has_read() {
+    fn history_log(&self, args: &JsonObject, grants: &Grants) -> Result<CallToolResult, OpError> {
+        if !grants.allows(Scope::Read) {
             return Err(OpError::denied(read_needed("reading the op log")));
         }
         let after = args.get("after_n").map(|n| {
@@ -172,8 +234,8 @@ impl Session {
 
     /// What other actors changed since this session was last told, if anything, moving its position forward so each
     /// change is reported once. Needs `read` for the same reason the log does: it names paths and ops.
-    fn others_changed(&self, me: &Actor) -> Option<Report> {
-        if !self.view.grants.allows(Scope::Read) {
+    fn others_changed(&self, me: &Actor, grants: &Grants) -> Option<Report> {
+        if !grants.allows(Scope::Read) {
             return None;
         }
         let mut state = lock(&self.state);
@@ -201,8 +263,18 @@ impl Session {
         let Some(entry) = self.view.catalog.get(name) else {
             return render::unknown_tool(name, &self.view.catalog.similar(name)).into();
         };
-        let actor = self.actor(context).clone();
+        let actor = match self.actor(context) {
+            Ok(actor) => actor.clone(),
+            Err(refusal) => {
+                let tool = entry.tool.name.as_ref();
+                return render::failure(tool, &in_tool_names(refusal.clone(), &entry.op, tool), Some(&entry.signature))
+                    .into();
+            }
+        };
         let mut args = request.arguments.unwrap_or_default();
+        // The registry's word now, not the one at connection setup: grants may have been narrowed and the session
+        // paused or ended since.
+        let standing = self.standing(context).map_err(|e| OpError::denied(e.message.to_string()));
         let outcome = match entry.route {
             Route::Op { kind, unit_args } => match take_dry_run(&mut args)
                 .and_then(|dry_run| check_args(&args, &entry.tool.input_schema).map(|()| dry_run))
@@ -213,7 +285,7 @@ impl Session {
             Route::Builtin(builtin) => match check_args(&args, &entry.tool.input_schema) {
                 // Reading the log keeps nothing between calls, so a request that stands alone can still do it.
                 Ok(()) if builtin != Builtin::Log && self.http && stands_alone(context) => Err(needs_a_session()),
-                Ok(()) => self.run_builtin(builtin, args, actor).await,
+                Ok(()) => self.run_builtin(builtin, args, actor, &standing).await,
                 Err(e) => Err(e),
             },
         };
@@ -279,7 +351,13 @@ impl Session {
         Reply { result, unsaved }
     }
 
-    async fn run_builtin(&self, builtin: Builtin, args: JsonObject, actor: Actor) -> Result<Reply, OpError> {
+    async fn run_builtin(
+        &self,
+        builtin: Builtin,
+        args: JsonObject,
+        actor: Actor,
+        standing: &Result<Standing, OpError>,
+    ) -> Result<Reply, OpError> {
         match builtin {
             Builtin::Undo | Builtin::Redo => {
                 let grants = self.view.grants.clone();
@@ -293,8 +371,16 @@ impl Session {
                 let result = render::history(builtin, label.as_deref());
                 Ok(if changed { self.confirm_saved(result).await } else { result.into() })
             }
-            Builtin::Log => self.history_log(&args).map(Reply::from),
-            Builtin::TxBegin => self.begin_tx(args, actor).await.map(Reply::from),
+            Builtin::Log => self.history_log(&args, &standing.clone()?.grants).map(Reply::from),
+            Builtin::TxBegin => {
+                // `Executor::begin` cannot refuse, and for a paused session it hands back a transaction that was never
+                // opened; so the refusal is made here, before it runs, and `begin_tx` checks again afterwards, because
+                // a pause can land in between.
+                if let Some((by, reason)) = standing.clone()?.paused {
+                    return Err(paused(by, reason));
+                }
+                self.begin_tx(args, actor).await.map(Reply::from)
+            }
             Builtin::TxCommit | Builtin::TxRollback => self.finish_tx(builtin == Builtin::TxCommit, actor).await,
         }
     }
@@ -321,10 +407,12 @@ impl Session {
             state.beginning = true;
         }
         let name = label.clone();
+        let who = actor.clone();
         let started = self.blocking(move |runner| runner.begin(&name, &actor)).await;
+        let opened = started.and_then(|id| self.confirm_opened(id, &who).map(|()| id));
         let mut state = lock(&self.state);
         state.beginning = false;
-        let id = started?;
+        let id = opened?;
         state.tx = Some(OpenTx { id, label: label.clone(), cause });
         state.own.remember(id);
         drop(state);
@@ -334,6 +422,25 @@ impl Session {
             id.0
         );
         Ok(render::confirmation(text, json!({"ok": true, "tx": id.0, "label": label})))
+    }
+
+    /// Whether the runner really opened transaction `id` for `actor`. `Runner::begin` cannot refuse: when a pause won
+    /// the race against it, it hands back an id that was never opened, and the registry (which sees the transactions
+    /// it opened under the same lock) is where that shows. A pause that lands after `begin` leaves the transaction
+    /// open, so it still counts as opened.
+    fn confirm_opened(&self, id: omuzaki_ops_api::TxId, actor: &Actor) -> Result<(), OpError> {
+        let Some(host) = &self.shared.sessions else { return Ok(()) };
+        let info =
+            host.sessions.session_of(actor).ok_or_else(|| OpError::denied("this connection's session is gone"))?;
+        if info.open_tx.as_ref().is_some_and(|open| open.tx == id) {
+            return Ok(());
+        }
+        Err(match info.state {
+            SessionState::Paused { by, reason } => paused(by, reason),
+            SessionState::Ended { .. } => OpError::denied("this connection's session has ended"),
+            SessionState::Active => OpError::conflict("the transaction did not open")
+                .hint("the session changed while it started: call tx_begin again"),
+        })
     }
 
     async fn finish_tx(&self, commit: bool, actor: Actor) -> Result<Reply, OpError> {
@@ -366,7 +473,7 @@ impl Drop for Session {
         self.shared.connections.close(self.serial);
         let open = lock(&self.state).tx.take();
         // A transaction can only exist once the actor is fixed, by the same call that opened it.
-        if let (Some(open), Some(actor)) = (open, self.actor.get())
+        if let (Some(open), Some(Ok(actor))) = (open, self.actor.get())
             && let Err(e) = self.shared.runner.rollback(open.id, actor)
         {
             tracing::warn!(tx = open.id.0, label = %open.label, error = %e, "couldn't roll back an abandoned tx");
@@ -429,6 +536,53 @@ fn needs_a_session() -> OpError {
          agent with nothing to undo or commit",
     )
     .hint("connect with the `initialize` handshake (protocol 2025-11-25 or earlier); other tools work without one")
+}
+
+/// What a session stands for at the moment the registry is asked.
+#[derive(Clone)]
+struct Standing {
+    /// What it may do: the server's grants narrowed by the session's effective ones.
+    grants: Grants,
+    /// Who paused it and why, when it is paused.
+    paused: Option<(Actor, PauseReason)>,
+}
+
+/// The standing of `actor`'s session in `sessions`, or why it has none: the registry no longer has it, or it ended.
+/// Without a registry the server's grants stand. A paused session stands (design §4.3: it may still read).
+fn standing(sessions: Option<&Arc<dyn Sessions>>, actor: Option<&Actor>, ceiling: &Grants) -> Result<Standing, String> {
+    let (Some(sessions), Some(actor)) = (sessions, actor) else {
+        return Ok(Standing { grants: ceiling.clone(), paused: None });
+    };
+    let info = sessions.session_of(actor).ok_or_else(|| "this connection's session is gone".to_owned())?;
+    let paused = match &info.state {
+        SessionState::Active => None,
+        SessionState::Paused { by, reason } => Some((by.clone(), *reason)),
+        SessionState::Ended { .. } => return Err("this connection's session has ended".to_owned()),
+    };
+    Ok(Standing { grants: ceiling.intersect(&info.grants), paused })
+}
+
+/// A notification feed's way back to the registry.
+struct Watch {
+    sessions: Option<Arc<dyn Sessions>>,
+    actor: Option<Actor>,
+    ceiling: Grants,
+}
+
+impl Watch {
+    /// `Some(true)` while the session may read, `Some(false)` while it may not (yet), `None` once it is over.
+    fn may_read(&self) -> Option<bool> {
+        standing(self.sessions.as_ref(), self.actor.as_ref(), &self.ceiling).ok().map(|s| s.grants.allows(Scope::Read))
+    }
+}
+
+/// The session is paused: nothing ran, and a person must resume it.
+fn paused(by: Actor, reason: PauseReason) -> OpError {
+    let mut error = OpError::conflict(format!("this session is paused ({reason:?})"))
+        .hint("wait for a person to resume it; do not retry")
+        .with_detail(ErrorDetail::Paused { by, reason });
+    error.code = ErrorCode::Waiting;
+    error
 }
 
 /// `tx_begin`'s optional `cause`. The argument check already made it a string; this enforces its length, which the
@@ -495,6 +649,7 @@ impl ServerHandler for Session {
     ) -> Result<InitializeResult, McpError> {
         self.shared.connections.name(self.serial, &request.client_info.name);
         context.peer.set_peer_info(request.clone());
+        self.open_session(&context);
         self.negotiate_initialize(&request)
     }
 
@@ -553,7 +708,12 @@ impl ServerHandler for Session {
         let log_text = reads_log && result.is_error != Some(true);
         // After the call, so a change another actor made while it ran is included, and so this call's own events
         // (which carry this session's actor) are passed over.
-        let report = if log_text { None } else { self.others_changed(self.actor(&context)) };
+        let report = if log_text {
+            None
+        } else {
+            let grants = self.session_grants(&context).ok();
+            self.actor(&context).ok().zip(grants).and_then(|(actor, grants)| self.others_changed(actor, &grants))
+        };
         let result = match report {
             Some(report) => render::with_heads_up(result, &report),
             None => result,
@@ -591,11 +751,12 @@ impl ServerHandler for Session {
         context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, McpError> {
         self.name_client(&context);
+        let grants = self.session_grants(&context)?;
         let mut resources = vec![log_resource()];
         // Listing reads the document, so it needs `read` like reading does; without it only the log (which names
         // nothing from the document) is listed, as before.
-        if self.view.grants.allows(Scope::Read) {
-            let (providers, grants) = (self.shared.providers.clone(), self.view.grants.clone());
+        if grants.allows(Scope::Read) {
+            let providers = self.shared.providers.clone();
             let listed = self
                 .blocking(move |runner| {
                     providers.all().iter().map(|p| p.list(runner, &grants)).collect::<Result<Vec<_>, _>>()
@@ -623,14 +784,15 @@ impl ServerHandler for Session {
         context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, McpError> {
         self.name_client(&context);
+        let grants = self.session_grants(&context)?;
         if request.uri == LOG_URI {
-            return self.read_log();
+            return self.read_log(&grants);
         }
         let Some(provider) = self.shared.providers.serving(&request.uri) else {
             return Err(unknown_resource(&request.uri, &self.shared.providers.templates()));
         };
-        self.require_read(&format!("reading {}", request.uri))?;
-        let (grants, uri) = (self.view.grants.clone(), request.uri);
+        Self::require_read(&grants, &format!("reading {}", request.uri))?;
+        let uri = request.uri;
         let contents = self
             .blocking(move |runner| provider.read(runner, &grants, &uri))
             .await
@@ -649,21 +811,29 @@ impl ServerHandler for Session {
         context: RequestContext<RoleServer>,
     ) -> Result<(), McpError> {
         self.name_client(&context);
+        let grants = self.session_grants(&context)?;
         let uri = request.uri;
         let what =
             if uri == LOG_URI { "subscribing to the op log".to_owned() } else { format!("subscribing to {uri}") };
-        self.require_read(&what)?;
+        Self::require_read(&grants, &what)?;
         if !self.subscribable(&uri) {
             return Err(unknown_resource(&uri, &self.shared.providers.templates()));
         }
         let mut state = lock(&self.state);
         lock(&state.subscribed).insert(uri);
         if state.feed.is_none() {
+            let watch = self.watch(&context);
             let (mut updates, peer) = (Updates::new(&self.shared.hub, &self.shared.providers), context.peer);
             let subscribed = Arc::clone(&state.subscribed);
             state.feed = Some(AbortOnDrop(tokio::spawn(async move {
                 while updates.arrived().await {
                     let wanted = lock(&subscribed).clone();
+                    // Asked again for every batch: a session that lost `read` is told nothing, one that ended no more.
+                    match watch.may_read() {
+                        Some(true) => {}
+                        Some(false) => continue,
+                        None => return,
+                    }
                     for uri in updates.changed(&wanted) {
                         if peer.notify_resource_updated(ResourceUpdatedNotificationParam::new(uri)).await.is_err() {
                             return;
@@ -682,7 +852,7 @@ impl ServerHandler for Session {
         context: RequestContext<RoleServer>,
     ) -> Result<(), McpError> {
         self.name_client(&context);
-        self.require_read(&format!("unsubscribing from {}", request.uri))?;
+        Self::require_read(&self.view.grants, &format!("unsubscribing from {}", request.uri))?;
         if !self.subscribable(&request.uri) {
             return Err(unknown_resource(&request.uri, &self.shared.providers.templates()));
         }
@@ -726,18 +896,26 @@ impl ServerHandler for Session {
         self.name_client(context.request_context());
         let wanted: BTreeSet<String> = context.accepted().resource_subscriptions.iter().flatten().cloned().collect();
         // `accepted_subscription_filter` already refuses everything without `read`; checking again keeps this loop safe
-        // on its own.
-        if !self.view.grants.allows(Scope::Read) || wanted.is_empty() {
+        // on its own. A connection without an active session, or whose session cannot read, is told nothing either.
+        let may_read = self.session_grants(context.request_context()).is_ok_and(|g| g.allows(Scope::Read));
+        if !may_read || wanted.is_empty() {
             context.cancelled().await;
             return Ok(());
         }
         let mut updates = Updates::new(&self.shared.hub, &self.shared.providers);
+        let watch = self.watch(context.request_context());
         loop {
             tokio::select! {
                 () = context.cancelled() => return Ok(()),
                 arrived = updates.arrived() => {
                     if !arrived {
                         return Ok(());
+                    }
+                    // As in `subscribe`: asked again for every batch.
+                    match watch.may_read() {
+                        Some(true) => {}
+                        Some(false) => continue,
+                        None => return Ok(()),
                     }
                     for uri in updates.changed(&wanted) {
                         if context.sink().notify_resource_updated(&uri).await.is_err() {
