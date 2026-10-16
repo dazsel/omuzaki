@@ -225,3 +225,45 @@ fn a_target_bound_twice_keeps_both_binds_and_their_sum() {
     assert_eq!(binds(&again), vec![(0, 0.3), (0, 0.45), (1, 1.0)], "both binds of target 0, at their own weights");
     assert_eq!(binds(&again), binds(&original));
 }
+
+/// A mesh no node draws, with `targets` morph targets (each with normal deltas), on material 0.
+fn spare(name: &str, targets: usize) -> omuzaki_io_api::Mesh {
+    use omuzaki_core::glam::{Vec2, Vec3};
+    use omuzaki_io_api::{MaterialIx, Mesh, MeshData, MorphTarget, Primitive};
+    let data = MeshData {
+        positions: vec![Vec3::new(0.1, 1.2, 0.0), Vec3::new(0.123, 1.2, 0.0), Vec3::new(0.1, 1.2345, 0.01)],
+        normals: vec![Vec3::Z; 3],
+        uvs: vec![Vec2::ZERO, Vec2::X, Vec2::Y],
+        indices: vec![0, 1, 2],
+        ..MeshData::default()
+    };
+    let mut primitive = Primitive::new(data);
+    primitive.material = Some(MaterialIx(0));
+    primitive.morph_targets = (0..targets)
+        .map(|t| {
+            let step = f32::from(u8::try_from(t).unwrap()) + 1.0;
+            let mut target = MorphTarget::new(vec![Vec3::Y * (0.001 * step), Vec3::ZERO, Vec3::X * 0.0007]);
+            target.normals = vec![Vec3::ZERO, Vec3::new(0.0, 0.1, -0.1), Vec3::ZERO];
+            target
+        })
+        .collect();
+    let mut mesh = Mesh::new(name);
+    mesh.primitives = vec![primitive];
+    mesh.morph_target_names = (0..targets).map(|t| format!("Spare_{t}")).collect();
+    mesh
+}
+
+#[test]
+fn meshes_no_node_draws_export_back_with_their_morphs() {
+    let mut scene = perfect_sync();
+    scene.add_mesh(spare("SpareWithMorphs", 2));
+    scene.add_mesh(spare("SpareWithout", 0));
+    let original = through_vrm(&scene);
+    assert_eq!(original.meshes.len(), scene.meshes.len(), "the writer keeps meshes no node draws");
+    let (avatar, again) = round_trip(&original, &def());
+    let kept = avatar.retained.meshes.iter().filter(|m| m.instances.is_empty()).count();
+    assert_eq!(kept, 2, "both are retained with their geometry");
+    let mut expected = original.clone();
+    expected.source_generator.clone_from(&again.source_generator);
+    assert_eq!(again, expected, "every field, bit for bit, the undrawn meshes in their places");
+}

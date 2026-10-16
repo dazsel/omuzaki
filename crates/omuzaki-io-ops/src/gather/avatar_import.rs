@@ -11,8 +11,9 @@
 //!
 //! "Every field" is the scene as the preparation left it: an avatar whose file needed no cleanup re-exports as the file
 //! was, while welded vertices, merged primitives and dropped unused materials, textures and images (reported at import)
-//! export as cleaned, and a mesh no node draws or a node constraint the solver refused is not written. A scale the
-//! import baked out of the skeleton is baked into what hangs from it instead, so everything sits where the file had it.
+//! export as cleaned, and a node constraint the solver refused is not written. A mesh no node draws is written from the
+//! geometry it kept. A scale the import baked out of the skeleton is baked into what hangs from it instead, so
+//! everything sits where the file had it: a rigid mesh two nodes draw at different scales becomes one mesh per scale.
 
 use std::collections::BTreeMap;
 
@@ -220,6 +221,10 @@ fn meshes(body: &BodyView<'_>, r: &Retained) -> Result<Meshes, IoError> {
     let mut out = Meshes { list: Vec::with_capacity(r.meshes.len()), of_node: BTreeMap::new() };
     let mut copies: Vec<(io::Mesh, Vec<u32>)> = Vec::new();
     for source in &r.meshes {
+        if source.instances.is_empty() {
+            out.list.push(undrawn(source)?);
+            continue;
+        }
         // The instances grouped by the matrix their geometry needs (identity for a skinned node), skinned groups first,
         // each group with whether it keeps the skin's joints.
         let mut groups: Vec<(Mat4, bool, Vec<&RetainedInstance>)> = Vec::new();
@@ -250,6 +255,26 @@ fn meshes(body: &BodyView<'_>, r: &Retained) -> Result<Meshes, IoError> {
         out.of_node.extend(nodes.into_iter().map(|n| (n, index)));
     }
     Ok(out)
+}
+
+/// A mesh no node draws, from the geometry its primitives kept.
+///
+/// # Errors
+/// [`IoError::Internal`] for a primitive without geometry or with an attribute the scene cannot name (a validated
+/// avatar has neither).
+fn undrawn(source: &RetainedMesh) -> Result<io::Mesh, IoError> {
+    let mut mesh = io::Mesh::new(source.name.clone());
+    mesh.morph_target_names.clone_from(&source.morph_target_names);
+    for (p, primitive) in source.primitives.iter().enumerate() {
+        let geometry = primitive.geometry.as_ref().ok_or_else(|| {
+            IoError::Internal(format!("primitive {p} of mesh {:?}, which no node draws, kept no geometry", source.name))
+        })?;
+        let built = geometry
+            .to_primitive(primitive.material.map(MaterialIx))
+            .map_err(|e| IoError::Internal(format!("mesh {:?}, primitive {p}: {e}", source.name)))?;
+        mesh.primitives.push(built);
+    }
+    Ok(mesh)
 }
 
 /// The matrix a rigid instance's made-up skin carried: the scale its node had in the file (identity for none).

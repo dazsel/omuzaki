@@ -3,7 +3,7 @@
 //! **One runtime mesh per primitive per drawing node.** A primitive draws with one material, so each becomes its own
 //! [`AvatarMesh`]; a mesh that several nodes draw becomes one set per node, so each copy deforms and is morphed on its
 //! own. [`RetainedMesh`] records which runtime meshes each source mesh's primitives became at each node, so export
-//! writes every source mesh once.
+//! writes every source mesh once; a mesh no node draws keeps its primitives' geometry there instead.
 //!
 //! **Skins stay with their meshes.** A skinned primitive keeps its skin's joints as its `joint_bones` and the skin's
 //! inverse bind matrices as its own (ADR 0014 §2: per mesh, because glTF skins may give one joint different matrices in
@@ -17,7 +17,7 @@
 use std::collections::BTreeSet;
 
 use omuzaki_avatar_api::avatar::{AvatarMesh, ImportedAvatar, MAX_INDEXED};
-use omuzaki_avatar_api::retained::{RetainedMesh, RetainedPrimitive};
+use omuzaki_avatar_api::retained::{RetainedGeometry, RetainedMesh, RetainedPrimitive};
 use omuzaki_char_api::{BoneName, JointRef, PartMesh};
 use omuzaki_core::glam::{Mat4, Vec3};
 use omuzaki_core::id::Slug;
@@ -68,6 +68,14 @@ pub fn convert(scene: &IoScene, rig: &Rig, names: &MaterialNames, avatar: &mut I
             && made.len() == source.primitives.len()
         {
             *source = std::mem::take(source).with_instance(node_ix, made);
+        }
+    }
+    // A mesh no node draws has no runtime mesh, so its primitives keep their own geometry, which export writes (D8).
+    for (source, mesh) in sources.iter_mut().zip(&scene.meshes) {
+        if source.instances.is_empty() {
+            for (kept, primitive) in source.primitives.iter_mut().zip(&mesh.primitives) {
+                *kept = std::mem::take(kept).with_geometry(RetainedGeometry::from_primitive(primitive));
+            }
         }
     }
     avatar.retained.meshes = sources;
