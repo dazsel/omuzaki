@@ -53,12 +53,21 @@ fn part(kind: &str, params: Value) -> PartDef {
 
 /// The real body, head and a hair part holding only a bangs group with `bangs`, on `template`.
 fn character(template: &str, bangs: omuzaki_char_api::BangsGen, brows_through: bool) -> CharacterDef {
+    character_with(template, bangs, brows_through, false)
+}
+
+/// [`character`], with the default cap group over the scalp when `cap` (the pictures want it: the fringe's roots stand
+/// off the scalp and the cap hides them, as in the prototype).
+fn character_with(template: &str, bangs: omuzaki_char_api::BangsGen, brows_through: bool, cap: bool) -> CharacterDef {
     let mut def = mock_character().unwrap();
     def.template = BodyTemplateId::new(template).unwrap();
     def.parts.clear();
     def.parts.insert(PartId::new("body").unwrap(), part("body", json!({})));
     def.parts.insert(PartId::new("head").unwrap(), part("head", json!({})));
-    let mut hair = HairParams { groups: std::collections::BTreeMap::default(), ..HairParams::default() };
+    let mut hair = HairParams::default();
+    if !cap {
+        hair.groups.clear();
+    }
     hair.shading.brows_through = brows_through;
     hair.groups.insert(
         GroupId::new("b-bangs").unwrap(),
@@ -381,7 +390,7 @@ fn render_the_bangs_when_asked() {
     std::fs::create_dir_all(&directory).unwrap();
     for template in ["soft-sd", "standard"] {
         for preset in PRESETS {
-            let built = build(&character(template, (preset.make)(), true));
+            let built = build(&character_with(template, (preset.make)(), true, true));
             for (view, azimuth) in [("front", 0.0), ("side", 90.0), ("back", 180.0)] {
                 std::fs::write(
                     directory.join(format!("{template}-{}-{view}.ppm", preset.id)),
@@ -390,5 +399,50 @@ fn render_the_bangs_when_asked() {
                 .unwrap();
             }
         }
+    }
+}
+
+/// The hair of the `none` preset is one lock whose tip ends at the crown, so its top stands off the head by the root
+/// offset's rise plus the tip offset. That rise must be the same on every template: the fringe follows the head surface
+/// the head part publishes, which must match the head mesh the renderer draws. (The roots themselves stand 46 mm off the
+/// scalp by design, as in the prototype, where the cap shell hides them; see `LOCK_RISE`.)
+#[test]
+fn the_fringe_follows_the_head_mesh_on_every_template() {
+    /// How far the `none` lock's top stands above the head mesh's crown at soft-sd, metres (measured; the root
+    /// offset 0.046 m dominates).
+    const LOCK_RISE: f32 = 0.0508;
+    for template in TEMPLATES {
+        let built = build(&character(template, (PRESETS[4].make)(), true));
+        let crown = built
+            .meshes
+            .iter()
+            .filter(|m| m.mesh.name == "head-head")
+            .flat_map(|m| m.mesh.geometry.positions.iter())
+            .filter(|p| p.x.abs() < 0.01)
+            .map(|p| p.y)
+            .fold(f32::MIN, f32::max);
+        let top = built
+            .meshes
+            .iter()
+            .filter(|m| m.part.as_str() == "hair")
+            .flat_map(|m| m.mesh.geometry.positions.iter())
+            .map(|p| p.y)
+            .fold(f32::MIN, f32::max);
+        println!("{template}: crown {crown:.4}, hair top {top:.4}, rise {:.4}", top - crown);
+        assert!((top - crown - LOCK_RISE).abs() < 0.001, "{template}: the lock stands {} off the crown, not {LOCK_RISE}", top - crown);
+    }
+}
+
+/// Triangles of a bangs group at Live quality: every lock is a tube of 22 rings of 8 plus two end caps.
+#[test]
+fn the_triangle_counts_per_preset_are_the_locks_times_the_tube() {
+    const PER_LOCK: usize = 21 * 8 * 2 + 2 * 8;
+    for preset in PRESETS {
+        let bangs = (preset.make)();
+        let built = build(&character("soft-sd", bangs.clone(), true));
+        let tris: usize =
+            built.meshes.iter().filter(|m| m.part.as_str() == "hair").map(|m| m.mesh.geometry.indices.len() / 3).sum();
+        println!("{}: {} locks, {tris} triangles", preset.id, omuzaki_char::hair::r#gen::bangs::clump_count(&bangs));
+        assert_eq!(tris, omuzaki_char::hair::r#gen::bangs::clump_count(&bangs) * PER_LOCK, "{}", preset.id);
     }
 }
