@@ -241,6 +241,14 @@ pub enum Verdict {
     Unpaired,
 }
 
+/// The row whose scaled number is judged against the provisional `Dev` gate of spec §10 ("Provisional gate until `R` is
+/// measured: ≤ 1.0 s on `Dev`, half the budget") until a calibration run records the real ratio. The harness has no
+/// calibration run yet (`reference.toml` is a later task), so every scaled start-up is provisional.
+const PROVISIONAL_STARTUP: &str = "startup.live";
+
+/// The provisional gate as a share of the budget: half of it.
+const PROVISIONAL_FACTOR: f64 = 0.5;
+
 /// Whether spec §10 never converts a row to another machine: "Latency and installer size: never converted."
 fn never_converted(key: &str) -> bool {
     key.starts_with("latency.") || key == "installer.size"
@@ -322,6 +330,12 @@ impl Report {
         // A pessimistic GPU estimate counts as a warning only beside a central estimate of the same row.
         let centrals: Vec<String> =
             metrics.iter().filter(|m| m.estimate == Estimate::Central).map(|m| m.key.clone()).collect();
+        if class == Class::Scaled && metrics.iter().any(|m| m.key == PROVISIONAL_STARTUP) {
+            notes.push(
+                "scaled `startup.live` is judged against the provisional `Dev` gate, half its budget (spec §10)"
+                    .to_owned(),
+            );
+        }
         if class == Class::Scaled && metrics.iter().any(|m| never_converted(&m.key)) {
             notes.push("latency and installer size are never converted (spec §10): shown, not judged".to_owned());
         }
@@ -494,13 +508,16 @@ fn row(metric: Metric, budgets: &[Budget], previous: Option<&Report>, class: Cla
     let may_warn = class == Class::Scaled && metric.key.starts_with("gpu.") && metric.estimate == Estimate::Pessimistic;
     let budget = budgets.iter().find(|b| b.key == metric.key);
     let value = budget.and_then(|b| metric.statistic(b.statistic));
+    let provisional = class == Class::Scaled && metric.key == PROVISIONAL_STARTUP;
     let unpaired = may_warn && !centrals.contains(&metric.key);
     let verdict = match (budget, budget.and_then(|b| b.limit), value) {
         (None, ..) => Verdict::NoBudget,
         (Some(_), ..) if class == Class::Scaled && never_converted(&metric.key) => Verdict::NotConverted,
         (Some(_), ..) if unpaired => Verdict::Unpaired,
         (Some(_), Some(l), _) if l.unit != metric.unit => Verdict::UnitMismatch,
-        (Some(_), Some(l), Some(v)) if v <= l.value => Verdict::Within,
+        (Some(_), Some(l), Some(v)) if v <= l.value * if provisional { PROVISIONAL_FACTOR } else { 1.0 } => {
+            Verdict::Within
+        }
         (Some(_), Some(_), Some(_)) if may_warn => Verdict::Warn,
         (Some(_), Some(_), Some(_)) => Verdict::Over,
         _ => Verdict::NotComparable,
@@ -548,7 +565,7 @@ mod tests {
 
     const SPEC: &str = "## 10. P\n| Key | Item | Budget | Tier | Statistic | Gate |\n|-|-|-|-|-|-|\n\
 | `physics.step` | p | ≤ 0.5 ms | `R` | p95 | g |\n| `ram.runtime` | r | ≤ 400 MB | `R` | max over 5 min | g |\n| `gpu.frame` | f | ≤ 1.5 ms | `R`, `U` | p95 | g |\n\
-| `asr.live` | a | CPU ≤ 1.5 %, GPU ≤ 1 ms | `R` | mean | g |\n| `latency.desktop` | l | ≤ 50 ms | `D` | p95 | g |\n";
+| `asr.live` | a | CPU ≤ 1.5 %, GPU ≤ 1 ms | `R` | mean | g |\n| `latency.desktop` | l | ≤ 50 ms | `D` | p95 | g |\n| `startup.live` | s | ≤ 2 s | `R`, `D` | worst of 5 launches | g |\n| `installer.size` | i | ≤ 150 MB | any | exact | g |\n";
 
     fn machine(vcpus: usize) -> Machine {
         Machine { vcpus, os: "linux".into(), arch: "x86_64".into() }
@@ -703,6 +720,33 @@ mod tests {
         assert!(scaled.notes.iter().any(|n| n.contains("never converted")));
         // Measured on the machine itself, the same number is judged.
         assert_eq!(build(vec![latency], Class::Measured).rows[0].verdict, Verdict::Over);
+    }
+
+    #[test]
+    fn a_scaled_startup_is_judged_against_the_provisional_dev_gate_of_half_the_budget() {
+        let build = |ms: f64, class| {
+            let startup = Metric::single("startup.live", Unit::Ms, ms).unwrap();
+            Report::build(machine(4), vec![startup], &parse_spec(SPEC).unwrap(), None, class, vec![])
+        };
+        // 1.5 s is under the 2 s budget but over the provisional 1.0 s gate.
+        let scaled = build(1500.0, Class::Scaled);
+        assert_eq!(scaled.rows[0].verdict, Verdict::Over);
+        assert_eq!(scaled.failures(), ["startup.live: over budget"]);
+        assert_eq!(build(1000.0, Class::Scaled).rows[0].verdict, Verdict::Within);
+        assert!(scaled.notes.iter().any(|n| n.contains("provisional")));
+        // Measured on the reference machine itself, the full budget applies.
+        assert_eq!(build(1500.0, Class::Measured).rows[0].verdict, Verdict::Within);
+    }
+
+    #[test]
+    fn an_installer_size_row_is_never_converted_but_is_judged_when_measured() {
+        let build = |class| {
+            let size = Metric::single("installer.size", Unit::Bytes, 200.0 * 1024.0 * 1024.0).unwrap();
+            Report::build(machine(4), vec![size], &parse_spec(SPEC).unwrap(), None, class, vec![])
+        };
+        let scaled = build(Class::Scaled);
+        assert_eq!((scaled.rows[0].verdict, scaled.judged()), (Verdict::NotConverted, 0));
+        assert_eq!(build(Class::Measured).rows[0].verdict, Verdict::Over);
     }
 
     #[test]
