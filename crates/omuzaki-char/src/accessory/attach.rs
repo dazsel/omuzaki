@@ -260,6 +260,12 @@ pub fn attach_points(built: &BuiltCharacter) -> Vec<AttachPoint> {
 /// in a part's `attach`, with an optional `offset` (metres, degrees about x then y then z, uniform scale).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit"}
+    ],
+    "x-omuzaki-fixture" = "character"
+))]
 pub struct ListAnchors {
     /// The character to list.
     pub character: CharId,

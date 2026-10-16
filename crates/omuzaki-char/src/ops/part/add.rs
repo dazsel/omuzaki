@@ -26,6 +26,13 @@ use crate::ops::character::tree::{self, Problem};
 /// removed, so the new part never inherits another part's rights.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "kind": "hairpin", "id": "pin"},
+        {"character": "kit", "kind": "choker", "id": "choker"}
+    ],
+    "x-omuzaki-fixture" = "character"
+))]
 pub struct PartAdd {
     /// The character to add the part to.
     pub character: CharId,

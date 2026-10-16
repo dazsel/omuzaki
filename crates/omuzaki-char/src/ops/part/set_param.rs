@@ -29,6 +29,12 @@ use crate::ops::character::access;
 /// list is replaced whole. `null` removes an optional parameter (the chin of a head), and is refused for any other.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "part": "hair", "path": "shading/mid", "value": "#6b4a3a"}
+    ],
+    "x-omuzaki-fixture" = "character"
+))]
 pub struct PartSetParam {
     /// The character the part belongs to.
     pub character: CharId,
