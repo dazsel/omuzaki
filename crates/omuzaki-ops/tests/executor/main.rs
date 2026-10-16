@@ -14,6 +14,7 @@ mod ops;
 mod props;
 mod run;
 mod services;
+mod sessions;
 mod transactions;
 mod undo;
 
@@ -24,7 +25,10 @@ use omuzaki_core::time::{FakeClock, Seconds};
 use omuzaki_doc_api::DocPath;
 use omuzaki_doc_mock::MemDoc;
 use omuzaki_ops::Executor;
-use omuzaki_ops_api::{Actor, Event, Grants, Mode, OpError, OpRecord, Outcome, Request, Runner};
+use omuzaki_ops_api::{
+    Actor, Budget, Event, Grants, Limits, Mode, OpError, OpRecord, Outcome, Request, Runner, SessionSpec, Sessions,
+    Transport,
+};
 use serde_json::{Value, json};
 
 /// An executor over a `MemDoc`, with the fake clock that stamps its log.
@@ -36,6 +40,7 @@ pub(crate) struct Rig {
 pub(crate) fn rig(doc: Value) -> Rig {
     let clock = Arc::new(FakeClock::new(Seconds(0.0)));
     let exec = Executor::new(Box::new(MemDoc::from_value(doc)), clock.clone()).unwrap();
+    open_agents(&exec);
     Rig { exec, clock }
 }
 
@@ -47,12 +52,39 @@ pub(crate) fn person() -> Actor {
     Actor::Person { name: "alice".into() }
 }
 
+/// The agent of the first session [`open_agents`] opens.
 pub(crate) fn agent() -> Actor {
-    Actor::Agent { id: "claude-1".into(), model: None }
+    Actor::Agent { id: "claude#1".into(), model: None }
 }
 
-pub(crate) fn plugin() -> Actor {
-    Actor::Plugin { id: "stamper".into() }
+/// The agent of the second session [`open_agents`] opens.
+pub(crate) fn second_agent() -> Actor {
+    Actor::Agent { id: "claude#2".into(), model: None }
+}
+
+/// What a transport asks for: an agent of `client` working for alice, with a ceiling as wide as hers. Requests narrow
+/// it with their own grants.
+pub(crate) fn session_spec(client: &str) -> SessionSpec {
+    SessionSpec {
+        transport: Transport::Stdio,
+        client: client.into(),
+        model: None,
+        on_behalf_of: person(),
+        grants: Grants::person(),
+        budget: Budget::default(),
+        limits: Limits::default(),
+        parent: None,
+        role: None,
+        fence: Vec::new(),
+    }
+}
+
+/// Opens the two sessions behind [`agent`] and [`second_agent`]. Agents without a session are refused, so every
+/// executor that runs one calls this before it does.
+pub(crate) fn open_agents(exec: &Executor) {
+    for expected in [agent(), second_agent()] {
+        assert_eq!(exec.open(session_spec("claude")).unwrap().actor, expected);
+    }
 }
 
 /// A request to apply `op` as a person who may do anything, outside any transaction.
