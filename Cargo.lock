@@ -4093,6 +4093,7 @@ dependencies = [
  "image",
  "inventory",
  "libm",
+ "moxcms",
  "omuzaki-core",
  "omuzaki-doc-mock",
  "omuzaki-l10n-api",

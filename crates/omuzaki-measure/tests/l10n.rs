@@ -70,8 +70,8 @@ fn messages_render_their_english_with_their_arguments() {
         ),
         (messages::image_unreadable("unexpected end of file"), "The image could not be read: unexpected end of file."),
         (
-            messages::image_colour_unsupported(String::from("a gamma of 1.00")),
-            "The image is not sRGB (a gamma of 1.00). Convert it to sRGB and try again.",
+            messages::image_colour_unsupported(String::from("an embedded colour profile that cannot be read")),
+            "The image's colour could not be converted to sRGB (an embedded colour profile that cannot be read). Export it as sRGB and try again.",
         ),
     ];
     for (text, english) in cases {

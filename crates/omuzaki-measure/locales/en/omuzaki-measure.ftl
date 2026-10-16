@@ -9,4 +9,4 @@ measure-stale-target = The likeness target { $target } was measured by another v
 measure-target-not-found = The character has no likeness target named { $target }. Set it first.
 measure-image-too-large = The image is { $width } × { $height } px. A measure reads at most { $side_limit } px a side and { $mebibyte_limit } MiB decoded.
 measure-image-unreadable = The image could not be read: { $reason }.
-measure-image-colour-unsupported = The image is not sRGB ({ $found }). Convert it to sRGB and try again.
+measure-image-colour-unsupported = The image's colour could not be converted to sRGB ({ $found }). Export it as sRGB and try again.

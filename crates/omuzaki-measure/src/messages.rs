@@ -67,8 +67,8 @@ omuzaki_l10n_api::messages! {
     pub image_unreadable = "measure-image-unreadable" (reason: Verbatim)
         => "The image could not be read: { $reason }.";
 
-    /// The image is not sRGB, so its numbers would be wrong: a measure reads only sRGB, and refuses the rest rather than
-    /// guess at them. The argument names what was found, such as a gamma or an embedded profile.
+    /// The image has a colour space the colour engine cannot read or convert to sRGB, so its numbers would be wrong and it
+    /// is refused rather than guessed at. The argument names what was found, such as an unreadable embedded profile.
     pub image_colour_unsupported = "measure-image-colour-unsupported" (found: Verbatim)
-        => "The image is not sRGB ({ $found }). Convert it to sRGB and try again.";
+        => "The image's colour could not be converted to sRGB ({ $found }). Export it as sRGB and try again.";
 }

@@ -12,8 +12,9 @@ repository.workspace = true
 # The `jpeg` feature is enabled here only: the other crates that use `image` keep PNG alone. It decodes through
 # `zune-jpeg`, which the workspace already has for the webcam's MJPG frames (`omuzaki-pixfmt`).
 image = { workspace = true, features = ["jpeg"] }
-# The PNG decoder is used directly: `image` always parses PNG text chunks, whose records the allocation limit does not count.
+# `png` reads a PNG's validated cICP chunk, which `image` does not expose; `moxcms` is the colour engine `image` already uses.
 png = "0.18"
+moxcms = "0.8"
 libm.workspace = true
 omuzaki-l10n-api = { path = "../omuzaki-l10n-api" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
