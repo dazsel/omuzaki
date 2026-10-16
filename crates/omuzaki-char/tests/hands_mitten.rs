@@ -615,6 +615,7 @@ fn arm_and_hand(template: &str, p: &BodyParams) -> (Vec3, PartMesh, PartMesh) {
         "name": "Hands",
         "template": template,
         "seed": 3,
+        "palette": { "skin": "#f9d3c5", "skin_shade": "#f2b4ab", "skin_line": "#c98a80" },
         "parts": { "body": { "kind": "body", "params": serde_json::to_value(p).unwrap() } }
     });
     let def = CharacterDef::from_node(&node).unwrap();
