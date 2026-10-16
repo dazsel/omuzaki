@@ -2,7 +2,7 @@
 """The attested self-gate: a pull request's tests run on the session's own machine, and CI checks the claim.
 
     self-gate.py heads HEAD MAIN_REF [BEFORE]     print `owned=` and `skip=` lines (append them to $GITHUB_OUTPUT)
-    self-gate.py check --repo R --pr N --heads "SHA SHA" [--allowed LOGINS] [--comments FILE]
+    self-gate.py check --repo R --pr N --heads "SHA SHA" [--allowed LOGINS] [--comments FILE] [--hosted FILE]
 
 Why. A pull request no longer runs the test matrix; the merge queue does, on the exact commit that will land. In its
 place the session that wrote the change runs `cargo xtask check --affected` on its own VM and says so in the ready
@@ -20,6 +20,13 @@ commit whose second parent is on `main` and whose result takes every file it cha
 request's own content is untouched. Such a merge keeps the attestation valid, and a push of just that merge needs no CI
 (`skip=true`): the merge queue tests against `main` anyway. A merge that resolves a conflict, or changes a file the
 pull request also changed, whichever parent's version it keeps, is not skipped and needs a new line.
+
+Hosted run. When no author can build, a maintainer dispatches ci.yml on the PR branch with `hosted_tests=true` and then
+re-runs this job. `check` then also accepts a successful hosted run, found through the API, that is ALL of: event
+`workflow_dispatch`; workflow path `.github/workflows/ci.yml`; `head_sha` equal to the pull request head; conclusion
+success with every `test (...)` job success (skipped or cancelled does not count); and the pull request changes nothing
+under `.github/workflows/`, because a dispatched run executes the branch's own workflow file, so a PR that edits it
+could vouch for itself. Such a PR needs a human `Self-gate:` line. Needs `actions: read` besides `pull-requests: read`.
 """
 
 import argparse
@@ -93,17 +100,41 @@ def attested_sha(comments, allowed):
     return latest
 
 
-def verdict(comments, heads, allowed):
+CI_WORKFLOW = ".github/workflows/ci.yml"
+WORKFLOW_DIR = ".github/workflows/"
+
+
+def hosted_proof(runs, head, files):
+    """The id of a hosted run that proves `head` (rules in the module doc), or None.
+
+    `runs` are workflow runs, each with its `jobs`; `files` are the (current and previous) paths the pull request changes.
+    """
+    if any(path.startswith(WORKFLOW_DIR) for path in files):
+        return None
+    for run in sorted(runs, key=lambda r: r["id"], reverse=True):
+        tests = [job for job in run.get("jobs", []) if job["name"].startswith("test (")]
+        if (run.get("event") == "workflow_dispatch" and run.get("path") == CI_WORKFLOW
+                and run.get("head_sha") == head and run.get("conclusion") == "success"
+                and all(job["conclusion"] == "success" for job in tests)):
+            return run["id"]
+    return None
+
+
+def verdict(comments, heads, allowed, runs=(), files=()):
     """(ok, message) for a pull request whose owned heads are `heads`."""
     sha = attested_sha(comments, allowed)
     if sha is not None and any(head.startswith(sha) for head in heads):
         return True, f"self-gate: pass attested at {sha}"
+    hosted = hosted_proof(runs, heads[0], files)
+    if hosted is not None:
+        return True, f"self-gate: hosted run {hosted} on {heads[0][:MIN_SHA]}"
     seen = f"the latest trusted line names {sha}" if sha else "no trusted comment has one"
     short = heads[0][:MIN_SHA]
     return False, (
         f"self-gate: no trusted `Self-gate: pass at <sha7>` line names the head {short} ({seen}). Run "
         f"`cargo xtask check --affected` on this head, post `Self-gate: pass at {short} (cargo xtask check --affected, "
-        f"<n> tests)` on its own line in a comment, then re-run this job."
+        f"<n> tests)` on its own line in a comment, then re-run this job. Or, if the PR changes nothing under "
+        f".github/workflows/, dispatch ci.yml with hosted_tests=true on the branch and re-run this job."
     )
 
 
@@ -126,6 +157,33 @@ def fetch_comments(repo, number):
     return comments
 
 
+def api_get(url):
+    """JSON from one REST call with the job's own token."""
+    request = urllib.request.Request(url, headers={
+        "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
+        "Accept": "application/vnd.github+json",
+    })
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return json.load(response)
+
+
+def fetch_hosted(repo, number, head):
+    """(dispatch runs of ci.yml for `head`, each with its jobs; the paths the pull request changes)."""
+    api = os.environ.get("GITHUB_API_URL", "https://api.github.com")
+    base = f"{api}/repos/{repo}"
+    runs = api_get(f"{base}/actions/runs?event=workflow_dispatch&head_sha={head}&per_page=100")["workflow_runs"]
+    runs = [dict(run, jobs=api_get(f"{base}/actions/runs/{run['id']}/jobs?per_page=100&filter=latest")["jobs"])
+            for run in runs if run.get("path") == CI_WORKFLOW and run.get("conclusion") == "success"]
+    files, page = set(), 1
+    while True:
+        batch = api_get(f"{base}/pulls/{number}/files?per_page=100&page={page}")
+        for entry in batch:
+            files |= {entry["filename"], entry.get("previous_filename", "")}
+        if len(batch) < 100:
+            return runs, files - {""}
+        page += 1
+
+
 def command_heads(args):
     heads = owned_heads(args.head, args.main_ref)
     # A push of only a main merge: the pushed-over head is one of the earlier owned heads.
@@ -142,7 +200,17 @@ def command_check(args):
     else:
         comments = fetch_comments(args.repo, args.pr)
     allowed = {login for login in args.allowed.split(",") if login}
-    ok, message = verdict(comments, args.heads.split(), allowed)
+    heads = args.heads.split()
+    runs, files = (), ()
+    if args.hosted:
+        with open(args.hosted, encoding="utf-8") as handle:
+            hosted = json.load(handle)
+        runs, files = hosted["runs"], hosted["files"]
+    elif not args.comments:
+        # Only needed when no attestation names the head; the cheap comment check goes first.
+        if not verdict(comments, heads, allowed)[0]:
+            runs, files = fetch_hosted(args.repo, args.pr, heads[0])
+    ok, message = verdict(comments, heads, allowed, runs, files)
     print(message, file=sys.stdout if ok else sys.stderr)
     return 0 if ok else 1
 
@@ -161,6 +229,7 @@ def main(argv):
     check.add_argument("--heads", required=True)
     check.add_argument("--allowed", default="")
     check.add_argument("--comments")
+    check.add_argument("--hosted", help="JSON {runs: [...with jobs], files: [...]} instead of the API (tests)")
     check.set_defaults(run=command_check)
     args = parser.parse_args(argv[1:])
     return args.run(args)

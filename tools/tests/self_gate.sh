@@ -15,6 +15,9 @@ pass() { echo "ok: $*"; }
 check() { python3 -I "$GATE" check --heads "$1" --allowed "${2:-}" --comments "$work/comments.json" >/dev/null 2>&1; }
 expect_ok() { if check "${@:2}"; then pass "$1"; else fail "$1: wanted pass"; fi; }
 expect_red() { if check "${@:2}"; then fail "$1: wanted fail"; else pass "$1"; fi; }
+# hosted RUNS_JSON FILES_JSON HEAD: the exit code of a check with no comments and a hosted-run fixture.
+hosted() { printf '{"runs":%s,"files":%s}' "$1" "$2" >"$work/hosted.json"; printf '[]' >"$work/comments.json"
+    python3 -I "$GATE" check --heads "$3" --comments "$work/comments.json" --hosted "$work/hosted.json" >/dev/null 2>&1; }
 # value KEY: the value of KEY in the last `heads` output.
 value() { sed -n "s/^$1=//p" <<<"$out"; }
 expect() { if [[ $(value "$1") == "$2" ]]; then pass "$3"; else fail "$3: $1 was '$(value "$1")', wanted '$2'"; fi; }
@@ -117,6 +120,28 @@ g checkout -q -b side "$own"; echo side >"$repo/side.txt"; g add -A; g commit -q
 g checkout -q pr; g merge -q --no-ff -m "merge side" side; sidemerge=$(g rev-parse HEAD)
 heads "$sidemerge" main "$resolved"
 expect skip false "merging a branch that is not main is not skipped"
+
+# Hosted runs: one good run, then each rule broken in turn.
+run() { # EVENT PATH SHA CONCLUSION TESTJOB_CONCLUSION
+    printf '[{"id":7,"event":"%s","path":"%s","head_sha":"%s","conclusion":"%s","jobs":[{"name":"plan","conclusion":"success"},{"name":"test (1)","conclusion":"success"},{"name":"test (2)","conclusion":"%s"}]}]' "$@"
+}
+DOCS='["docs/a.md"]'
+GOOD=$(run workflow_dispatch .github/workflows/ci.yml "$HEAD" success success)
+hosted "$GOOD" "$DOCS" "$HEAD" && pass "a successful hosted run on the head passes" || fail "hosted pass case"
+hosted "$(run pull_request .github/workflows/ci.yml "$HEAD" success success)" "$DOCS" "$HEAD" \
+    && fail "(a) wrong event" || pass "(a) a run of another event does not count"
+hosted "$(run workflow_dispatch .github/workflows/nightly.yml "$HEAD" success success)" "$DOCS" "$HEAD" \
+    && fail "(b) wrong workflow" || pass "(b) another workflow does not count"
+hosted "$GOOD" "$DOCS" "$OTHER" && fail "(c) wrong head" || pass "(c) a run on another head does not count"
+hosted "$(run workflow_dispatch .github/workflows/ci.yml "$HEAD" failure success)" "$DOCS" "$HEAD" \
+    && fail "(d) failed run" || pass "(d) a failed run does not count"
+hosted "$(run workflow_dispatch .github/workflows/ci.yml "$HEAD" success skipped)" "$DOCS" "$HEAD" \
+    && fail "(d) skipped test" || pass "(d) a skipped test job does not count"
+hosted "$(run workflow_dispatch .github/workflows/ci.yml "$HEAD" success cancelled)" "$DOCS" "$HEAD" \
+    && fail "(d) cancelled test" || pass "(d) a cancelled test job does not count"
+hosted "$GOOD" '["docs/a.md",".github/workflows/ci.yml"]' "$HEAD" \
+    && fail "(e) workflow edit" || pass "(e) a PR that edits a workflow needs a human line"
+hosted "$GOOD" '[".github/workflows/new.yml"]' "$HEAD" && fail "(e) other workflow" || pass "(e) any file under workflows counts"
 
 python3 -I "$GATE" >/dev/null 2>&1 && fail "missing arguments should be an error" || pass "missing arguments are an error"
 exit $((failures > 0))
