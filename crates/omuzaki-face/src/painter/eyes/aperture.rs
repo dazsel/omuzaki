@@ -473,7 +473,7 @@ mod tests {
             for (i, u) in JS_US.into_iter().enumerate() {
                 // The one place this port departs from the prototype: a sad lid still meets the lower lid at the inner
                 // corner (see `sad_eyes_end_in_a_point_at_the_inner_corner`), where the prototype's closes with an edge.
-                if tilt < 0.0 && u == -1.0 {
+                if tilt < 0.0 && (u + 1.0).abs() < 1e-6 {
                     continue;
                 }
                 assert!(
