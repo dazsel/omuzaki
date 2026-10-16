@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::{host, op_error};
-use crate::perform::host::PerformHost;
+use crate::perform::host::{PerformError, PerformHost};
 use crate::perform::triggers::{TriggerBinding, TriggerInfo, check_key, same_key};
 
 fn default_mode() -> TriggerMode {
@@ -40,9 +40,15 @@ fn mode_name(mode: TriggerMode) -> &'static str {
     }
 }
 
-/// The call that binds `binding`: the redo of a bind and the undo of an unbind.
+/// The call that binds `binding`: the redo of a bind and the undo of an unbind. It restores, so it works while the
+/// expression is missing from the character.
 fn bind_call(binding: &TriggerBinding) -> Result<OpCall, OpError> {
-    let args = Bind { key: binding.key.clone(), expression: binding.expression.as_str().to_owned(), mode: binding.mode };
+    let args = Bind {
+        key: binding.key.clone(),
+        expression: binding.expression.as_str().to_owned(),
+        mode: binding.mode,
+        restore: true,
+    };
     call("trigger.bind", &args)
 }
 
@@ -80,6 +86,28 @@ pub struct Bind {
     /// `toggle` (each press shows or hides it) or `hold` (shows while the key is down). Default `toggle`.
     #[serde(default = "default_mode")]
     pub mode: TriggerMode,
+    /// Put back a binding whose expression is gone from the character: kept, and listed as missing, instead of refused.
+    /// The stored undo of an edit sets it, so undoing works while the expression is missing. Default `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub restore: bool,
+}
+
+impl Bind {
+    /// The refusal for an expression the character's face lacks, with the closest name when there is one.
+    fn not_found(&self, host: &dyn PerformHost) -> OpError {
+        let expressions = host.expressions();
+        let names = expressions.0.keys().map(ExpressionId::as_str);
+        let hint = match nearest(&self.expression, names) {
+            Some(near) => format!("did you mean '{near}'? use an expression from the character's face"),
+            None => "use an expression from the character's face".to_owned(),
+        };
+        OpError::not_found(format!("no expression '{}' on this character", self.expression)).hint(hint)
+    }
+
+    /// Fails with [`not_found`](Self::not_found) unless the host's set has `expression`.
+    fn expression_exists(&self, host: &dyn PerformHost, expression: &ExpressionId) -> Result<(), OpError> {
+        if host.expressions().0.contains_key(expression) { Ok(()) } else { Err(self.not_found(host)) }
+    }
 }
 
 impl Op for Bind {
@@ -98,22 +126,24 @@ impl Op for Bind {
         let expression =
             ExpressionId::new(&self.expression).map_err(|e| OpError::invalid("expression", e.to_string()))?;
         let host = host(ctx)?;
+        // A read of the host, so a dry run predicts the refusal the real call gives.
+        if !self.restore {
+            self.expression_exists(host, &expression)?;
+        }
         if ctx.dry_run {
             return Ok(Plan::answer(json!({ "dry_run": true, "key": self.key, "expression": self.expression })));
         }
-        let expressions = host.expressions();
-        if !expressions.0.contains_key(&expression) {
-            let names = expressions.0.keys().map(ExpressionId::as_str);
-            let hint = match nearest(&self.expression, names) {
-                Some(near) => format!("did you mean '{near}'? use an expression from the character's face"),
-                None => "use an expression from the character's face".to_owned(),
-            };
-            return Err(OpError::not_found(format!("no expression '{}' on this character", self.expression))
-                .hint(hint));
-        }
         let before = binding_of(host, &self.key);
         let binding = TriggerBinding { key: self.key.clone(), expression, mode: self.mode };
-        let outcome = host.bind_trigger(binding.clone()).map_err(op_error)?;
+        // The host checks again under its own lock: a reload between the read above and this call refuses here.
+        let outcome = if self.restore {
+            host.bind_trigger(binding.clone()).map_err(op_error)?
+        } else {
+            host.bind_trigger_checked(binding.clone()).map_err(|e| match e {
+                PerformError::UnknownExpression => self.not_found(host),
+                other => op_error(other),
+            })?
+        };
         // The binding table is outside the document: the step records the calls that put it back. A new key is undone
         // by unbinding it, a replaced one by binding what it was.
         let undo = match &before {

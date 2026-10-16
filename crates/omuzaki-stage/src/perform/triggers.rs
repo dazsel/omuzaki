@@ -54,22 +54,38 @@ pub(super) struct TriggerLayer {
     /// The slot a press wants, as `Triggers` holds it: set by a press, cleared by a toggle off, a hold's release or
     /// replacing the slot.
     wanted: Option<usize>,
+    /// The slot on the layer, fading in, held or fading out: `Triggers` keeps it private, so it is mirrored here by its
+    /// own rule (see [`step`](Self::step)). A key switch leaves the outgoing slot here while `wanted` names the next.
+    shown: Option<usize>,
 }
 
 impl TriggerLayer {
     /// No slots, nothing pressed.
     pub(super) fn new(fades: TriggerFades) -> Self {
-        Self { triggers: Triggers::new(fades), fades, slots: [None; MAX_TRIGGERS], wanted: None }
+        Self { triggers: Triggers::new(fades), fades, slots: [None; MAX_TRIGGERS], wanted: None, shown: None }
     }
 
     /// Advances the fade by `dt` and writes the trigger layer.
+    ///
+    /// The shown slot follows `Triggers`: when nothing shows, the wanted slot is put on the layer at the start of the
+    /// step; when the layer ends the step empty, nothing shows.
     pub(super) fn step(&mut self, dt: f32, out: &mut Layer) {
+        if self.shown.is_none()
+            && let Some(index) = self.wanted
+            && matches!(self.slots.get(index), Some(Some(_)))
+        {
+            self.shown = Some(index);
+        }
         self.triggers.step(dt, out);
+        if out.weight <= 0.0 {
+            self.shown = None;
+        }
     }
 
-    /// The slot being faded toward, else the one fading out.
-    pub(super) fn active(&self) -> Option<usize> {
-        self.triggers.active()
+    /// Bit `i` is set for slot `i` when it is wanted (faded toward) or shown (fading in, held or fading out). During a
+    /// switch from A to B, A stays set until it has faded out, and B is set at once.
+    pub(super) fn active_mask(&self) -> u32 {
+        self.wanted.into_iter().chain(self.shown).fold(0, |mask, index| mask | 1 << index)
     }
 
     /// Key down on `index`: a toggle flips it, a hold shows it. An empty slot is ignored.
@@ -129,6 +145,7 @@ impl TriggerLayer {
     pub(super) fn reset(&mut self) {
         self.triggers = Triggers::new(self.fades);
         self.wanted = None;
+        self.shown = None;
         for (index, slot) in self.slots.iter().enumerate() {
             let result = self.triggers.set_slot(index, *slot);
             debug_assert_eq!(result, Ok(()), "a slot the table accepted is refused on reset");
@@ -211,9 +228,18 @@ pub fn check_key(key: &str) -> Result<(), PerformError> {
     }
 }
 
-/// Whether two keys name the same key: compared character by character, ignoring case, so `F1` and `f1` are one key.
+/// A character folded for key comparison: upper case first, then lower case of each result. Folding through upper case
+/// joins what lower-casing alone keeps apart (`Σ`, `σ` and the final `ς` all reach `σ`; `ß` reaches `ss`), and the
+/// second step joins what upper-casing leaves apart (`İ` reaches `i` and a combining dot, as `i` does not: the dotted
+/// capital is a different key from `I`). ASCII folds as before. Allocation-free.
+fn fold(c: char) -> impl Iterator<Item = char> {
+    c.to_uppercase().flat_map(char::to_lowercase)
+}
+
+/// Whether two keys name the same key: compared by their case folding (see `fold`), so `F1` and `f1` are one key, and
+/// so are `Σ`, `σ` and `ς`, or `ß` and `SS`.
 pub fn same_key(a: &str, b: &str) -> bool {
-    a.chars().flat_map(char::to_lowercase).eq(b.chars().flat_map(char::to_lowercase))
+    a.chars().flat_map(fold).eq(b.chars().flat_map(fold))
 }
 
 /// A bound key and what the table knows about it.
@@ -244,6 +270,11 @@ impl TriggerBook {
     /// The expression library the table bakes against.
     pub(super) fn expressions(&self) -> ExpressionSet {
         self.expressions.clone()
+    }
+
+    /// Whether the set has `expression`.
+    pub(super) fn has_expression(&self, expression: &ExpressionId) -> bool {
+        self.expressions.0.contains_key(expression)
     }
 
     /// Every bound key, with its slot index.
@@ -338,5 +369,18 @@ mod tests {
     fn keys_compare_ignoring_case() {
         assert!(same_key("F1", "f1"));
         assert!(!same_key("F1", "F10"));
+    }
+
+    #[test]
+    fn keys_compare_by_unicode_case_folding() {
+        // Σ, σ and the final-position ς are one letter in three cases.
+        assert!(same_key("\u{3A3}", "\u{3C3}") && same_key("\u{3C3}", "\u{3C2}") && same_key("\u{3A3}", "\u{3C2}"));
+        // ß folds to ss.
+        assert!(same_key("\u{DF}", "SS") && same_key("Stra\u{DF}e", "STRASSE"));
+        // The Turkish dotted capital İ is not an I, and folds the same way whatever its case.
+        assert!(!same_key("\u{130}", "I") && !same_key("\u{130}", "i"));
+        assert!(same_key("\u{130}", "i\u{307}"));
+        assert!(same_key("\u{131}", "I"));
+        assert!(!same_key("a", "b"));
     }
 }

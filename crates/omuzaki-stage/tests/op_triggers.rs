@@ -430,7 +430,7 @@ fn binding_a_new_key_is_undone_by_unbinding_it() {
     assert_eq!(undo.op, "trigger.unbind");
     assert_eq!(undo.args, json!({ "key": "f5" }));
     assert_eq!(redo.op, "trigger.bind");
-    assert_eq!(redo.args, json!({ "key": "f5", "expression": "happy", "mode": "toggle" }));
+    assert_eq!(redo.args, json!({ "key": "f5", "expression": "happy", "mode": "toggle", "restore": true }));
     assert_eq!(rig.handle.triggers().len(), 5);
     replay(&rig, &undo);
     assert_eq!(table(&rig), before, "undo removes the new key");
@@ -451,7 +451,7 @@ fn rebinding_a_key_is_undone_by_binding_what_it_was() {
     assert_eq!(effect.undo.op, "trigger.bind");
     assert_eq!(
         effect.undo.args,
-        json!({ "key": "F1", "expression": "happy", "mode": "toggle" }),
+        json!({ "key": "F1", "expression": "happy", "mode": "toggle", "restore": true }),
         "the key as it was bound"
     );
     assert_ne!(table(&rig), before);
@@ -467,7 +467,7 @@ fn unbinding_is_undone_by_binding_the_key_again_and_an_unbound_key_records_nothi
     let plan = run_plan(&rig.handle, "trigger.unbind", json!({ "key": "f2" }), false).unwrap();
     let effect = plan.effect.expect("removing a binding records its effect");
     assert_eq!(effect.undo.op, "trigger.bind");
-    assert_eq!(effect.undo.args, json!({ "key": "F2", "expression": "angry", "mode": "toggle" }));
+    assert_eq!(effect.undo.args, json!({ "key": "F2", "expression": "angry", "mode": "toggle", "restore": true }));
     assert_eq!(effect.redo.op, "trigger.unbind");
     assert_eq!(rig.handle.triggers().len(), 3);
     replay(&rig, &effect.undo);
@@ -527,4 +527,65 @@ fn advance_allocates_nothing_with_four_bindings_and_presses_in_between() {
         assert_eq!(ALLOCATIONS.load(Ordering::Relaxed), before, "step {step} allocated");
     }
     assert_eq!(measured, 3600);
+}
+
+#[test]
+fn a_dry_run_of_an_unknown_expression_predicts_the_same_refusal_as_the_real_call() {
+    let rig = starter_rig();
+    let args = json!({ "key": "F5", "expression": "hapy" });
+    let dry = run(&rig.handle, "trigger.bind", args.clone(), true).unwrap_err();
+    let real = run(&rig.handle, "trigger.bind", args, false).unwrap_err();
+    assert_eq!(dry.code, ErrorCode::NotFound);
+    assert_eq!((dry.code, dry.message, dry.hint), (real.code, real.message, real.hint));
+}
+
+#[test]
+fn the_host_checks_the_expression_under_the_same_lock_that_binds() {
+    let mut rig = starter_rig();
+    let mut without = ExpressionSet::starter();
+    without.0.remove(&id("happy"));
+    // The reload lands after an op read the set and before it binds: the bind itself refuses.
+    rig.handle.set_expressions(without, ChannelBuf::NEUTRAL).unwrap();
+    rig.settle();
+    let binding = TriggerBinding { key: "F5".to_owned(), expression: id("happy"), mode: TriggerMode::Toggle };
+    assert_eq!(rig.handle.bind_trigger_checked(binding.clone()), Err(PerformError::UnknownExpression));
+    assert_eq!(rig.handle.triggers().len(), 4, "nothing was bound");
+    assert!(rig.handle.bind_trigger(binding).is_ok(), "the unchecked bind keeps it, listed missing");
+}
+
+#[test]
+fn undoing_an_unbind_restores_a_binding_whose_expression_is_missing() {
+    let mut rig = starter_rig();
+    let mut without = ExpressionSet::starter();
+    without.0.remove(&id("sad"));
+    rig.handle.set_expressions(without, ChannelBuf::NEUTRAL).unwrap();
+    rig.settle();
+    let before = table(&rig);
+    let effect = run_plan(&rig.handle, "trigger.unbind", json!({ "key": "F4" }), false).unwrap().effect.unwrap();
+    assert_eq!(rig.handle.triggers().len(), 3);
+    replay(&rig, &effect.undo);
+    assert_eq!(table(&rig), before);
+    assert!(rig.handle.triggers().iter().find(|t| t.binding.key == "F4").unwrap().missing);
+}
+
+#[test]
+fn a_switch_lists_the_outgoing_and_the_incoming_expression_as_active_until_the_outgoing_one_is_gone() {
+    let mut rig = starter_rig();
+    let active = |rig: &Rig| -> Vec<String> {
+        rig.handle.triggers().into_iter().filter(|t| t.active).map(|t| t.binding.key).collect()
+    };
+    assert!(active(&rig).is_empty());
+    rig.handle.press("F1", true).unwrap();
+    rig.steps(12);
+    assert_eq!(active(&rig), ["F1"]);
+    rig.handle.press("F2", true).unwrap(); // switch while happy shows
+    rig.steps(2);
+    assert_eq!(active(&rig), ["F1", "F2"], "F1 is still fading out and F2 is wanted");
+    rig.steps(30);
+    assert_eq!(active(&rig), ["F2"], "F1 has faded out");
+    rig.handle.press("F2", true).unwrap(); // toggled off
+    rig.steps(2);
+    assert_eq!(active(&rig), ["F2"], "fading out");
+    rig.steps(30);
+    assert!(active(&rig).is_empty());
 }

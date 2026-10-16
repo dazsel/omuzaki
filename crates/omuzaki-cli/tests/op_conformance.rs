@@ -24,7 +24,12 @@ use omuzaki_ops::Executor;
 use omuzaki_ops_api::{
     Actor, Grants, Mode, OpKind, OpRegistration, ProjectDir, Request, Runner, ServicesBuilder, Undo, registrations,
 };
+use omuzaki_face_api::ExpressionSet;
 use omuzaki_stage::perform::Tracking;
+use omuzaki_stage::perform::input::{
+    CameraEntry, InputError, InputHost, InputState, Permission, PreviewState, SourceKind,
+};
+use omuzaki_track_api::camera::CameraId;
 use omuzaki_stage::perform::host::{
     CalibrationState, PerformError, PerformHost, PerformStatus, RetargetChange, RetargetReceipt,
 };
@@ -43,8 +48,54 @@ struct State {
 }
 
 /// The performer an op's example runs against: none. It lists no triggers and refuses every request, which is all a
-/// dry-run of the `trigger.*` examples reaches (`trigger.list` is the one that reads it).
+/// dry-run of the `trigger.*` examples reaches (`trigger.list` is the one that reads it). Its character has the starter
+/// expressions, so a `trigger.bind` dry run finds the ones its examples name.
 struct IdleHost;
+
+/// The tracking input an op's example runs against: one camera, `fake:0`, a webcam source, the mirror off. It starts
+/// nothing: every change answers as the dry run of a real input would and keeps no state.
+struct IdleInput;
+
+impl IdleInput {
+    const CAMERA: &'static str = "fake:0";
+
+    fn camera() -> CameraId {
+        CameraId(Self::CAMERA.to_owned())
+    }
+}
+
+impl InputHost for IdleInput {
+    fn select(&self, _source: SourceKind, _mode: Mode) -> Result<SourceKind, InputError> {
+        Ok(SourceKind::Webcam)
+    }
+
+    fn bind_camera(&self, camera: Option<CameraId>, _mode: Mode) -> Result<Option<CameraId>, InputError> {
+        match camera {
+            Some(camera) if camera != Self::camera() => Err(InputError::no_camera(camera)),
+            _ => Ok(None),
+        }
+    }
+
+    fn preview(&self, _on: bool, _mode: Mode) -> Result<bool, InputError> {
+        Ok(false)
+    }
+
+    fn request_camera(&self) -> Permission {
+        Permission::Unknown
+    }
+
+    fn state(&self) -> InputState {
+        InputState {
+            source: SourceKind::Webcam,
+            camera: None,
+            camera_present: false,
+            preview: PreviewState::Off,
+            permission: Permission::Unknown,
+            cameras: vec![CameraEntry { id: Self::camera(), name: "Fake camera".to_owned(), bound: false }],
+            tracking: Tracking::NoFrames,
+        }
+    }
+}
 
 impl PerformHost for IdleHost {
     fn calibrate(&self, _frames: usize) -> Result<(), PerformError> {
@@ -61,6 +112,10 @@ impl PerformHost for IdleHost {
 
     fn calibration(&self) -> Calibration {
         Calibration::identity(DeviceProfile::Arkit)
+    }
+
+    fn expressions(&self) -> ExpressionSet {
+        ExpressionSet::starter()
     }
 
     fn status(&self) -> PerformStatus {
@@ -96,7 +151,12 @@ impl Rig {
         let project = ProjectDir::open(dir.path()).map_err(|e| format!("opening the fixture folder failed: {e}"))?;
         let runner = Executor::with_registrations(Box::new(doc), Arc::new(SystemClock::new()), [reg])
             .map_err(|e| e.to_string())?
-            .with_services(ServicesBuilder::new().insert::<dyn PerformHost>(Arc::new(IdleHost)).build())
+            .with_services(
+                ServicesBuilder::new()
+                    .insert::<dyn PerformHost>(Arc::new(IdleHost))
+                    .insert::<dyn InputHost>(Arc::new(IdleInput))
+                    .build(),
+            )
             .with_project_dir(project);
         let actor = Actor::Person { name: "conformance".to_owned() };
         Ok(Self { runner, dir, actor, grants: Grants::person() })

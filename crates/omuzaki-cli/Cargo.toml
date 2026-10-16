@@ -52,6 +52,9 @@ omuzaki-store-api = { path = "../omuzaki-store-api" }
 tempfile.workspace = true
 # The performer the conformance rig stands in for the `trigger.*` examples (`tests/op_conformance.rs`).
 omuzaki-anim-api = { path = "../omuzaki-anim-api" }
+# The expressions and the camera ids the idle hosts list.
+omuzaki-face-api = { path = "../omuzaki-face-api" }
+omuzaki-track-api = { path = "../omuzaki-track-api" }
 # The registration scan behind the link gate (`tests/registrations.rs`, ADR 0015).
 xtask = { path = "../../xtask" }
 

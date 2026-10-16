@@ -22,7 +22,7 @@
 //! performer ([`perform_channel`]), so both views start from the settings really in use.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering, fence};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering, fence};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
@@ -61,8 +61,6 @@ const BOUNDARY_EPS: f64 = 1e-9;
 const FPS_SMOOTHING: f32 = 0.1;
 /// One step, in seconds: the time the trigger fades advance by each step.
 const STEP_SECS: f32 = 1.0 / STEP_HZ;
-/// The published active slot when no trigger is showing.
-const NO_TRIGGER: usize = usize::MAX;
 
 /// What the ops (and the UI) can ask of the live performer. Requests are queued for the perform thread. For
 /// [`calibrate`](Self::calibrate) and [`set_calibration`](Self::set_calibration) a reply means "accepted", not
@@ -120,6 +118,16 @@ pub trait PerformHost: Send + Sync {
     /// [`PerformError::InvalidKey`] for a key that is not 1 to 32 characters, [`PerformError::TooManyTriggers`] when
     /// every slot holds another key, or [`PerformError::QueueFull`] or [`PerformError::Disconnected`].
     fn bind_trigger(&self, _binding: TriggerBinding) -> Result<BindOutcome, PerformError> {
+        Err(PerformError::Unsupported)
+    }
+
+    /// Binds like [`bind_trigger`](Self::bind_trigger), but refuses an expression that is not in the set, checking and
+    /// binding under one lock so a reload cannot remove it in between.
+    ///
+    /// # Errors
+    /// [`PerformError::UnknownExpression`] for an expression the set does not have, and the errors of
+    /// [`bind_trigger`](Self::bind_trigger).
+    fn bind_trigger_checked(&self, _binding: TriggerBinding) -> Result<BindOutcome, PerformError> {
         Err(PerformError::Unsupported)
     }
 
@@ -255,6 +263,9 @@ pub enum PerformError {
     /// The key is not 1 to 32 printable characters.
     #[error("a trigger key is 1 to {MAX_KEY_CHARS} printable characters")]
     InvalidKey,
+    /// The expression is not in the character's expression set.
+    #[error("no such expression on this character")]
+    UnknownExpression,
     /// A neutral capture is already running.
     #[error("a calibration is already running")]
     CalibrationRunning,
@@ -328,8 +339,9 @@ struct Shared {
     acknowledged: AtomicU64,
     /// The calibration the performer is using.
     calibration: CalibrationMailbox,
-    /// The slot whose trigger is showing, or [`NO_TRIGGER`], published by the control each step.
-    active_trigger: AtomicUsize,
+    /// The slots whose triggers are shown or wanted, one bit each (`TriggerLayer::active_mask`), published by the
+    /// control each step.
+    active_triggers: AtomicU32,
     /// Handle side only; the control never touches it.
     book: Mutex<RetargetBook>,
     /// The trigger table. Handle side only, like `book`: the control receives baked slots.
@@ -527,7 +539,7 @@ pub fn perform_channel(performer: &Performer) -> (PerformHandle, PerformControl)
         running: AtomicBool::new(true),
         acknowledged: AtomicU64::new(0),
         calibration: CalibrationMailbox::new(performer.retarget().calibration()),
-        active_trigger: AtomicUsize::new(NO_TRIGGER),
+        active_triggers: AtomicU32::new(0),
         book: Mutex::new(RetargetBook {
             requested: config.clone(),
             applied: config,
@@ -604,6 +616,21 @@ impl PerformHandle {
     }
 }
 
+impl PerformHandle {
+    /// Binds under the book lock; with `checked`, an expression the set lacks is refused.
+    fn bind_locked(&self, binding: TriggerBinding, checked: bool) -> Result<BindOutcome, PerformError> {
+        let mut book = lock(&self.shared.triggers);
+        if checked && !book.has_expression(&binding.expression) {
+            return Err(PerformError::UnknownExpression);
+        }
+        let (slot, replaced) = book.place(&binding.key)?;
+        let (shown, missing) = book.bake(&binding);
+        self.send(Command::Trigger { index: slot, slot: shown })?;
+        book.put(slot, Some(Bound { binding, missing, slot: shown }));
+        Ok(BindOutcome { slot, replaced })
+    }
+}
+
 impl PerformHost for PerformHandle {
     fn calibrate(&self, frames: usize) -> Result<(), PerformError> {
         if self.shared.capturing.swap(true, Ordering::AcqRel) {
@@ -662,14 +689,13 @@ impl PerformHost for PerformHandle {
 
     fn bind_trigger(&self, binding: TriggerBinding) -> Result<BindOutcome, PerformError> {
         check_key(&binding.key)?;
-        let mut book = lock(&self.shared.triggers);
-        let (slot, replaced) = book.place(&binding.key)?;
-        let (shown, missing) = book.bake(&binding);
-        self.send(Command::Trigger { index: slot, slot: shown })?;
-        book.put(slot, Some(Bound { binding, missing, slot: shown }));
-        Ok(BindOutcome { slot, replaced })
+        self.bind_locked(binding, false)
     }
 
+    fn bind_trigger_checked(&self, binding: TriggerBinding) -> Result<BindOutcome, PerformError> {
+        check_key(&binding.key)?;
+        self.bind_locked(binding, true)
+    }
     fn unbind_trigger(&self, key: &str) -> Result<bool, PerformError> {
         check_key(key)?;
         let mut book = lock(&self.shared.triggers);
@@ -693,11 +719,11 @@ impl PerformHost for PerformHandle {
 
     fn triggers(&self) -> Vec<TriggerInfo> {
         let book = lock(&self.shared.triggers);
-        let active = self.shared.active_trigger.load(Ordering::Acquire);
+        let active = self.shared.active_triggers.load(Ordering::Acquire);
         book.bound()
             .map(|(slot, bound)| TriggerInfo {
                 binding: bound.binding.clone(),
-                active: slot == active,
+                active: active >> slot & 1 == 1,
                 missing: bound.missing,
             })
             .collect()
@@ -965,7 +991,7 @@ impl PerformControl {
 
     fn publish(&self) {
         self.shared.live.store(self.live.pack(), Ordering::Release);
-        self.shared.active_trigger.store(self.triggers.active().unwrap_or(NO_TRIGGER), Ordering::Release);
+        self.shared.active_triggers.store(self.triggers.active_mask(), Ordering::Release);
     }
 }
 
