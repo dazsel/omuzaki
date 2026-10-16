@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 use omuzaki_history_api::Lsn;
 
 use super::{
-    FRAME_HEADER_LEN, FrameEnd, HEADER_LEN, HeaderFault, JournalError, MAX_PAYLOAD, Record, SegmentHeader, decode,
-    kind, read_frame, segment_seq,
+    FRAME_HEADER_LEN, Frame, FrameEnd, HEADER_LEN, HeaderFault, JournalError, MAX_PAYLOAD, Record, SegmentHeader,
+    decode, kind, read_frame, segment_seq,
 };
 
 /// Where a scan stopped: a segment (its sequence number), a byte offset in it, and the last good LSN before it.
@@ -60,14 +60,32 @@ pub struct Scan {
 pub struct Reader;
 
 impl Reader {
-    /// Reads the segments of `dir`, in sequence order, starting with the one holding `from + 1`. It returns every
-    /// record after `from`, up to where the log ends. When no segment starts at or before `from + 1` (the earlier ones
-    /// were deleted), it starts at the first segment, and the LSN of the first record shows the gap.
+    /// Reads the segments of `dir`, in sequence order, from the one holding `from + 1`, and returns every record after
+    /// `from` up to where the log ends.
+    ///
+    /// # Scan rules
+    /// Journal.md 8.2, as this reader applies it. Every rule is tested in `tests/journal_reader.rs`.
+    /// 1. **Logical ends.** A prepared segment, a segment with a bad header, a zero-filled tail, and the end of the last
+    ///    segment end the log. Nothing after one is read, chosen as a start, or allowed to fail the scan.
+    /// 2. **Start.** Among the segments before the first logical end whose first LSNs strictly increase in sequence
+    ///    order, the last one with first LSN at most `from + 1`. A segment that restarts at an earlier LSN is never a
+    ///    start: it is reached from the one before and reported as damage. With `from` 0, or when no segment
+    ///    qualifies (earlier ones deleted), the first segment; the first record's LSN shows the gap.
+    /// 3. **Old damage.** Before the scan has reached `from + 1`, a bad frame, a gap or a zero run in the start segment
+    ///    is skipped by looking for the frame `from + 1` after it: the snapshot covers that prefix. If there is no
+    ///    such frame, that is the end of the log.
+    /// 4. **Reachability.** A file is opened only when the scan reaches it. Unreadable or unlistable files after a
+    ///    logical end are ignored, as is a newer-format header there; reaching a newer header or an unknown required
+    ///    kind is [`JournalError::TooNew`].
+    /// 5. **Rotation.** The log continues into the next segment only from an exact end of file, when it starts one past
+    ///    the last record; after a bad frame or a zero tail only into a recovery `session` (8.5).
+    /// 6. **Classification.** After a bad frame or a discontinuous segment, the valid frames after it are counted. None
+    ///    is a [`End::TornTail`]; some is [`End::Damaged`], also when the work budget runs out (then a lower bound).
+    ///    Files that can't be read are counted as holding none.
     ///
     /// # Errors
-    /// [`JournalError::Io`] for a folder or file that can't be read. [`JournalError::TooNew`] for a newer header of a segment the scan reaches
-    /// (one after the log's end, such as past a zero tail or a prepared segment, is not read) or an unknown required
-    /// kind: nothing is returned, because the project opens read-only (4.5).
+    /// [`JournalError::Io`] for a folder, or a file the scan reaches, that can't be read. [`JournalError::TooNew`] as
+    /// in rule 4: nothing is returned, because the project opens read-only (4.5).
     /// [`JournalError::BadPayload`] from [`decode`].
     ///
     /// Looking past a bad frame for valid ones has a fixed work budget. If it runs out, the result is
@@ -103,7 +121,20 @@ impl Reader {
 struct Segment {
     seq: u64,
     path: PathBuf,
-    header: Result<SegmentHeader, HeaderFault>,
+}
+
+type Head = Result<SegmentHeader, HeaderFault>;
+
+impl Segment {
+    /// What the header says. Opened when asked for, so an unreadable file only matters once the scan reaches it.
+    fn head(&self) -> Result<Head, JournalError> {
+        let mut head = Vec::with_capacity(HEADER_LEN);
+        let limit = offset_u64(HEADER_LEN);
+        fs::File::open(&self.path)
+            .and_then(|file| file.take(limit).read_to_end(&mut head))
+            .map_err(io_error(&self.path))?;
+        Ok(SegmentHeader::decode(&head))
+    }
 }
 
 fn io_error(path: &Path) -> impl FnOnce(std::io::Error) -> JournalError + '_ {
@@ -120,7 +151,7 @@ fn tail(bytes: &[u8], offset: usize) -> &[u8] {
     bytes.get(offset..).unwrap_or(&[])
 }
 
-/// The segments of `dir` in sequence order, with their headers read.
+/// The segments of `dir` in sequence order.
 fn list_segments(dir: &Path) -> Result<Vec<Segment>, JournalError> {
     let mut segments = Vec::new();
     for entry in fs::read_dir(dir).map_err(io_error(dir))? {
@@ -128,20 +159,14 @@ fn list_segments(dir: &Path) -> Result<Vec<Segment>, JournalError> {
         let Some(seq) = entry.file_name().to_str().and_then(segment_seq) else {
             continue;
         };
-        let path = entry.path();
-        let mut head = Vec::with_capacity(HEADER_LEN);
-        let limit = offset_u64(HEADER_LEN);
-        fs::File::open(&path).and_then(|file| file.take(limit).read_to_end(&mut head)).map_err(io_error(&path))?;
-        segments.push(Segment { seq, path, header: SegmentHeader::decode(&head) });
+        segments.push(Segment { seq, path: entry.path() });
     }
     segments.sort_by_key(|s| s.seq);
     Ok(segments)
 }
 
-/// The segment a scan from `from` starts in: the last one with a real header whose first LSN is at most `from + 1`,
-/// among the segments whose first LSNs strictly increase in sequence order. A segment that restarts at an earlier LSN
-/// is never a start: the scan reaches it from the segment before it and reports the discontinuity. The first segment
-/// when none qualifies, and always when `from` is 0 (a scan of the whole log must not skip anything).
+/// The segment a scan from `from` starts in (rule 2 of [`Reader::scan`]). Headers are read only up to the first segment
+/// that starts past `from + 1`, a logical end, or one that can't be read.
 fn start_index(segments: &[Segment], from: Lsn) -> usize {
     if from == Lsn(0) {
         return 0;
@@ -149,17 +174,12 @@ fn start_index(segments: &[Segment], from: Lsn) -> usize {
     let wanted = from.0.saturating_add(1);
     let (mut start, mut previous) = (0, 0);
     for (idx, segment) in segments.iter().enumerate() {
-        let Ok(header) = segment.header else { continue };
-        if header.is_prepared() {
-            continue;
-        }
-        if header.first.0 <= previous {
+        let Ok(Ok(header)) = segment.head() else { break };
+        if header.is_prepared() || header.first.0 <= previous || header.first.0 > wanted {
             break;
         }
         previous = header.first.0;
-        if header.first.0 <= wanted {
-            start = idx;
-        }
+        start = idx;
     }
     start
 }
@@ -168,37 +188,50 @@ fn start_index(segments: &[Segment], from: Lsn) -> usize {
 /// fraction of a second of work however much damaged data the folder holds.
 const RESYNC_BUDGET: usize = 256 * 1024 * 1024;
 
-/// How many valid frames `bytes` holds, trying every byte offset and chaining from each frame found.
+/// What looking for a frame at one offset found.
+enum Probe<'a> {
+    /// No valid frame starts here.
+    No,
+    /// The budget ran out before this offset could be judged.
+    Exhausted,
+    Frame(Frame<'a>),
+}
+
+/// Whether a valid frame starts at the start of `rest`.
 ///
 /// A candidate is hashed only if its length fits the data and its payload looks like what a record holds (a JSON
 /// object, 4.5, possibly padded with JSON whitespace), so noise costs a few byte reads per offset, not a CRC over a long
-/// payload. The payload bytes hashed, and the padding skipped, are charged to `budget`; when it runs out the count stops (`exhausted` is then true) and is a lower bound.
+/// payload. The payload bytes hashed, and the padding skipped, are charged to `budget`.
+fn probe<'a>(rest: &'a [u8], budget: &mut usize) -> Probe<'a> {
+    let Some(len) = frame_len(rest) else {
+        return Probe::No;
+    };
+    let Some((looks_like_object, padding)) = skim_payload(rest, len, *budget) else {
+        return Probe::Exhausted;
+    };
+    *budget -= padding;
+    if !looks_like_object {
+        return Probe::No;
+    }
+    if len > *budget {
+        return Probe::Exhausted;
+    }
+    *budget -= len;
+    read_frame(rest).map_or(Probe::No, Probe::Frame)
+}
+
+/// How many valid frames `bytes` holds, trying every byte offset and chaining from each frame found. When the budget
+/// runs out the count stops (`exhausted` is then true) and is a lower bound.
 fn count_frames(bytes: &[u8], budget: &mut usize) -> (usize, bool) {
     let (mut count, mut offset) = (0, 0);
     while offset < bytes.len() {
-        let rest = tail(bytes, offset);
-        let Some(len) = frame_len(rest) else {
-            offset += 1;
-            continue;
-        };
-        let Some((looks_like_object, padding)) = skim_payload(rest, len, *budget) else {
-            return (count, true);
-        };
-        *budget -= padding;
-        if !looks_like_object {
-            offset += 1;
-            continue;
-        }
-        if len > *budget {
-            return (count, true);
-        }
-        *budget -= len;
-        match read_frame(rest) {
-            Ok(frame) => {
+        match probe(tail(bytes, offset), budget) {
+            Probe::Exhausted => return (count, true),
+            Probe::Frame(frame) => {
                 count += 1;
                 offset += frame.len();
             }
-            Err(_) => offset += 1,
+            Probe::No => offset += 1,
         }
     }
     (count, false)
@@ -272,13 +305,15 @@ impl Scanner<'_> {
         count
     }
 
-    /// Valid frames in the segments from index `first` on, past their headers.
-    fn count_from(&mut self, first: usize) -> Result<usize, JournalError> {
+    /// Valid frames in the segments from index `first` on, past their headers; a file that can't be read holds none.
+    fn count_from(&mut self, first: usize) -> usize {
         let mut count = 0;
         for segment in self.segments.iter().skip(first) {
-            count += self.count_in(&Self::read(segment)?, HEADER_LEN);
+            if let Ok(bytes) = Self::read(segment) {
+                count += self.count_in(&bytes, HEADER_LEN);
+            }
         }
-        Ok(count)
+        count
     }
 
     /// The end for a bad frame at `at` with `later_valid` valid frames found after it. When the resync budget ran out
@@ -294,7 +329,7 @@ impl Scanner<'_> {
             let Some(segment) = self.segments.get(idx) else {
                 return Ok(End::Clean);
             };
-            let header = match segment.header {
+            let header = match segment.head()? {
                 Err(HeaderFault::TooNew { version }) => return Err(JournalError::TooNew { version, kind: None }),
                 Err(_) => return Ok(End::TornTail { at: self.position(segment, 0) }),
                 Ok(header) if header.is_prepared() => return Ok(End::Clean),
@@ -314,11 +349,11 @@ impl Scanner<'_> {
                 }
                 Stop::Eof => match next_segment {
                     None => return Ok(End::Clean),
-                    Some(next) => match next.header {
+                    Some(next) => match next.head()? {
                         Ok(h) if h.is_prepared() => return Ok(End::Clean),
                         Ok(h) if self.done || h.first != self.next => {
-                            let later_valid = self.count_from(idx + 1)?;
-                            return Ok(End::Damaged { at: self.position(next, 0), later_valid });
+                            let later_valid = self.count_from(idx + 1);
+                            return Ok(self.bad_end(self.position(next, 0), later_valid));
                         }
                         _ => idx += 1,
                     },
@@ -329,7 +364,7 @@ impl Scanner<'_> {
                         continue;
                     }
                     let at = self.position(segment, offset);
-                    let later_valid = self.count_in(&bytes, offset + 1) + self.count_from(idx + 1)?;
+                    let later_valid = self.count_in(&bytes, offset + 1) + self.count_from(idx + 1);
                     return Ok(self.bad_end(at, later_valid));
                 }
             }
@@ -339,7 +374,7 @@ impl Scanner<'_> {
     /// Whether `segment` is the one an earlier recovery started (8.5): it begins one past the last good record, with a
     /// `session` record. A segment that can't be read is not one.
     fn starts_recovery_session(&self, segment: &Segment) -> bool {
-        let Ok(header) = segment.header else {
+        let Ok(Ok(header)) = segment.head() else {
             return false;
         };
         if header.is_prepared() || self.done || header.first != self.next {
@@ -351,32 +386,59 @@ impl Scanner<'_> {
         read_frame(tail(&bytes, HEADER_LEN)).is_ok_and(|f| f.kind == kind::SESSION && f.lsn == header.first)
     }
 
+    /// Looks for the frame `from + 1` after `offset`: the next record the snapshot doesn't cover. Rule 3 of
+    /// [`Reader::scan`]. Spends the resync budget.
+    fn find_base(&mut self, bytes: &[u8], offset: usize) -> Option<usize> {
+        let wanted = self.from.0.checked_add(1)?;
+        let mut at = offset + 1;
+        while at < bytes.len() {
+            match probe(tail(bytes, at), &mut self.budget) {
+                Probe::Exhausted => {
+                    self.exhausted = true;
+                    return None;
+                }
+                Probe::Frame(frame) if frame.lsn.0 == wanted => return Some(at),
+                Probe::Frame(frame) => at += frame.len(),
+                Probe::No => at += 1,
+            }
+        }
+        None
+    }
+
     /// Reads the frames of one segment, keeping the records after `from`.
     fn read_frames(&mut self, bytes: &[u8]) -> Result<Stop, JournalError> {
         let mut offset = HEADER_LEN;
         loop {
             let rest = tail(bytes, offset);
-            let frame = match read_frame(rest) {
-                Ok(frame) => frame,
+            let stop = match read_frame(rest) {
+                Ok(frame) if !self.done && frame.lsn == self.next => {
+                    if frame.lsn > self.from
+                        && let Some(record) = decode(&frame)?
+                    {
+                        self.records.push((frame.lsn, record));
+                    }
+                    self.after = frame.lsn;
+                    match frame.lsn.0.checked_add(1) {
+                        Some(next) => self.next = Lsn(next),
+                        None => self.done = true,
+                    }
+                    offset += frame.len();
+                    continue;
+                }
                 Err(FrameEnd::Short) if rest.is_empty() => return Ok(Stop::Eof),
-                Err(FrameEnd::Zero) => return Ok(Stop::ZeroTail),
-                Err(FrameEnd::Short) if rest.iter().all(|&b| b == 0) => return Ok(Stop::ZeroTail),
-                Err(_) => return Ok(Stop::Bad(offset)),
+                Err(FrameEnd::Zero) => Stop::ZeroTail,
+                Err(FrameEnd::Short) if rest.iter().all(|&b| b == 0) => Stop::ZeroTail,
+                Ok(_) | Err(_) => Stop::Bad(offset),
             };
-            if self.done || frame.lsn != self.next {
-                return Ok(Stop::Bad(offset));
-            }
-            if frame.lsn > self.from
-                && let Some(record) = decode(&frame)?
+            // Damage before the base is old (8.2): skip to the record after it, if there is one.
+            if self.next <= self.from
+                && let Some(found) = self.find_base(bytes, offset)
             {
-                self.records.push((frame.lsn, record));
+                self.next = Lsn(self.from.0 + 1);
+                offset = found;
+                continue;
             }
-            self.after = frame.lsn;
-            match frame.lsn.0.checked_add(1) {
-                Some(next) => self.next = Lsn(next),
-                None => self.done = true,
-            }
-            offset += frame.len();
+            return Ok(stop);
         }
     }
 }

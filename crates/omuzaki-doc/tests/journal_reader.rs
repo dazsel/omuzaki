@@ -509,3 +509,67 @@ fn a_segment_that_restarts_at_an_earlier_lsn_is_never_a_start() {
         assert_eq!(scan.end, End::Damaged { at: at(2, 0, 3), later_valid: 2 }, "from {from}");
     }
 }
+
+#[test]
+fn start_selection_stops_at_a_prepared_segment() {
+    // Records 1-3, a prepared segment, then a stale segment at 4: the prepared segment is the end of the log.
+    let dir = tempfile::tempdir().unwrap();
+    put(dir.path(), 1, &segment(1, &commits(1, 3)));
+    put(dir.path(), 2, &SegmentHeader::prepared().encode());
+    put(dir.path(), 3, &segment(4, &commits(4, 5)));
+    for from in [0, 1, 2, 3] {
+        let scan = Reader::scan(dir.path(), Lsn(from)).unwrap();
+        assert_eq!(lsns(&scan), (from + 1..=3).collect::<Vec<_>>(), "from {from}");
+        assert_eq!(scan.end, End::Clean, "from {from}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn files_after_the_end_of_the_log_are_never_opened() {
+    // A zero tail ends the log; a broken symlink after it, or an unreadable header, must not fail the scan.
+    let dir = tempfile::tempdir().unwrap();
+    let mut first = segment(1, &commits(1, 3));
+    first.extend([0u8; 40]);
+    put(dir.path(), 1, &first);
+    std::os::unix::fs::symlink(dir.path().join("missing"), dir.path().join(segment_name(2).unwrap())).unwrap();
+    for from in [0, 2] {
+        let scan = Reader::scan(dir.path(), Lsn(from)).unwrap();
+        assert_eq!((lsns(&scan), scan.end), ((from + 1..=3).collect::<Vec<_>>(), End::Clean), "from {from}");
+    }
+    // A file the scan does reach is an error.
+    let dir = tempfile::tempdir().unwrap();
+    put(dir.path(), 1, &segment(1, &commits(1, 3)));
+    std::os::unix::fs::symlink(dir.path().join("missing"), dir.path().join(segment_name(2).unwrap())).unwrap();
+    assert!(matches!(Reader::scan(dir.path(), Lsn(0)).unwrap_err(), JournalError::Io { .. }));
+}
+
+#[test]
+fn damage_before_the_base_does_not_block_the_scan() {
+    // Frame 2 of 1-10 is bad; the snapshot covers 1-5.
+    let dir = tempfile::tempdir().unwrap();
+    let records = commits(1, 10);
+    let mut bytes = segment(1, &records);
+    bytes[offset_of(&records, 1) + 8] ^= 0xff;
+    put(dir.path(), 1, &bytes);
+    let scan = Reader::scan(dir.path(), Lsn(5)).unwrap();
+    assert_eq!((lsns(&scan), scan.end), ((6..=10).collect::<Vec<_>>(), End::Clean));
+    // Past the base the same damage is the end of the log.
+    let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
+    assert_eq!(lsns(&scan), [1]);
+    assert!(matches!(scan.end, End::Damaged { .. }));
+    // With nothing after the damage that reaches the base, it is the end of the log as before.
+    let scan = Reader::scan(dir.path(), Lsn(20)).unwrap();
+    assert_eq!(lsns(&scan), Vec::<u64>::new());
+    assert!(matches!(scan.end, End::Damaged { .. } | End::TornTail { .. }));
+}
+
+#[test]
+fn a_discontinuous_segment_without_a_valid_frame_is_a_torn_tail() {
+    let dir = tempfile::tempdir().unwrap();
+    put(dir.path(), 1, &segment(1, &commits(1, 3)));
+    put(dir.path(), 2, &segment(9, &[]));
+    let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
+    assert_eq!(lsns(&scan), [1, 2, 3]);
+    assert_eq!(scan.end, End::TornTail { at: at(2, 0, 3) });
+}
