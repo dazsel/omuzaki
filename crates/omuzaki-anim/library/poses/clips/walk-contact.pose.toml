@@ -1,0 +1,15 @@
+# Key pose "walk-contact" for the clips beside it (RG-06). Degrees, Euler XYZ, VRM normalised space; see src/poses/mod.rs.
+id = "walk-contact"
+summary = "Walk, heel strike: the left foot forward, the right arm forward, the hips at their lowest."
+tags = ["clip-key"]
+mirrorable = true
+hips_offset = [0.0, -0.02, 0.0]
+
+[bones]
+leftUpperLeg = [-25.0, 0.0, 0.0]
+leftLowerLeg = [5.0, 0.0, 0.0]
+rightUpperLeg = [15.0, 0.0, 0.0]
+rightLowerLeg = [10.0, 0.0, 0.0]
+leftUpperArm = [15.0, 0.0, -65.0]
+rightUpperArm = [-15.0, 0.0, 65.0]
+spine = [0.0, 6.0, 0.0]
