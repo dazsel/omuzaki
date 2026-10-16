@@ -5,3 +5,4 @@ used_for = "builds and runs the fuzz targets in `fuzz/` (#1653) and `crates/omuz
 status = "yes"
 condition = "MIT OR Apache-2.0; a build tool, nothing of it ships"
 audit = "(crates.io: cargo-fuzz 0.13.2 `MIT OR Apache-2.0`)"
+tools = ["cargo-fuzz"]
