@@ -19,7 +19,7 @@ It writes every tensor's raw little-endian bytes and an index, `reference.txt`, 
 
 with `role` one of `in`, `wheel`, `onnx`, `dtype` `f32`, and `shape` like `1x256x256x3`. The Rust test reads the
 same input bytes, so both runtimes see identical inputs. Run it with `python -I` in a throwaway venv that holds the
-hash-pinned `tools/litert/requirements-check.txt` and `onnxruntime`; the model files are checked against the folder's
+hash-pinned `tools/litert/requirements-check.txt` and `requirements-reference.txt` (onnxruntime); the model files are checked against the folder's
 `manifest.json` first. Nothing it writes goes in the repository.
 """
 
