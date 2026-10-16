@@ -245,6 +245,11 @@ pub(crate) async fn held_until_resumed(
             Some(SessionState::Paused { .. }) => {}
             _ => return false,
         }
+        // Checked here, not left to the timeout: `timeout_at` polls the wait first, so events that keep arriving would
+        // keep it ready and the deadline would never be seen.
+        if Instant::now() >= deadline {
+            return false;
+        }
         if tokio::time::timeout_at(deadline, arrivals.changed()).await.is_err() {
             return false;
         }

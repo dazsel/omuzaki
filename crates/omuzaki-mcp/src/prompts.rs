@@ -264,7 +264,24 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), built_in().len());
-        assert_eq!(names.len(), 4, "the recipes found are the files under src/recipes");
         assert!(names.iter().all(|n| n.chars().all(|c| c.is_ascii_lowercase() || c == '_')));
+    }
+
+    /// Adding a recipe adds a file and nothing else: every file under `src/recipes/` registers exactly one recipe, each
+    /// registered recipe is well-formed, and the server lists it. No count here changes when a recipe is added.
+    #[test]
+    fn every_recipe_file_registers_a_well_formed_recipe_the_server_lists() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/recipes");
+        let files = std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|f| f.file_name() != "mod.rs" && f.path().extension().is_some_and(|e| e == "rs"))
+            .count();
+        assert_eq!(built_in().len(), files, "each file under src/recipes registers exactly one recipe");
+        let listed = Prompts::new(&[]);
+        for def in built_in() {
+            assert!(!def.title.is_empty() && !def.description.is_empty() && !def.template.is_empty(), "{}", def.name);
+            assert!(listed.0.iter().any(|d| d.name == def.name), "{} is not listed", def.name);
+        }
     }
 }

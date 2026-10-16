@@ -33,16 +33,21 @@ use serde_json::{Value, json};
 struct Starter {
     studio: Arc<Studio>,
     jobs: Mutex<Vec<JobInfo>>,
+    /// A refusal the next `start` returns instead of running.
+    refuse_next: Mutex<Option<OpError>>,
 }
 
 impl Starter {
     fn new(studio: &Arc<Studio>) -> Arc<Self> {
-        Arc::new(Self { studio: studio.clone(), jobs: Mutex::default() })
+        Arc::new(Self { studio: studio.clone(), jobs: Mutex::default(), refuse_next: Mutex::default() })
     }
 }
 
 impl Jobs for Starter {
     fn start(&self, req: Request) -> Result<JobInfo, OpError> {
+        if let Some(error) = self.refuse_next.lock().unwrap().take() {
+            return Err(error);
+        }
         let (actor, op) = (req.actor.clone(), req.op.clone());
         let outcome = self.studio.run(req)?;
         let mut jobs = self.jobs.lock().unwrap();
@@ -202,4 +207,51 @@ async fn a_finished_task_warns_when_the_journal_cannot_save_its_change() {
     let first = result["content"][0]["text"].as_str().unwrap();
     assert!(first.starts_with("Warning: applied, not yet saved"), "{first}");
     assert!(result["structuredContent"]["warning"].is_string());
+}
+
+#[tokio::test]
+async fn a_task_result_carries_the_document_heads_up_a_blocking_result_carries() {
+    let studio = Studio::new();
+    studio.person_holds(Grants::person());
+    let mcp = studio_server(&studio, true);
+    let agent = Agent::connect(&mcp).await;
+    let CallToolResponse::Task(created) = agent.export().await else { panic!("a task") };
+    // Another actor edits after the agent's last call and before it reads the task result.
+    studio.person_sets_blend(0.9);
+    let task = agent.client.get_task(GetTaskParams::new(&created.task.task_id)).await.expect("tasks/get").task;
+    let TaskPayload::Completed { result } = task.payload else { panic!("completed") };
+    assert!(result["structuredContent"]["since_your_last_call"].is_object(), "{result:?}");
+}
+
+#[tokio::test]
+async fn a_task_result_carries_the_decision_on_an_approval_the_agent_was_waiting_for() {
+    use omuzaki_ops_api::{ErrorCode, ErrorDetail, Need, Resolution, Resolved};
+    let studio = Studio::new();
+    studio.person_holds(Grants::person());
+    let starter = Starter::new(&studio);
+    // The first start is queued for approval #77, as the executor would.
+    let mut queued = OpError::conflict("queued for a person")
+        .with_detail(ErrorDetail::Queued { approval: ApprovalId(77), need: Need::Scope { scope: Scope::Publish } });
+    queued.code = ErrorCode::Waiting;
+    *starter.refuse_next.lock().unwrap() = Some(queued);
+    let grants = Grants::agent_default().with(Scope::Publish);
+    let options = McpOptions::with_grants(grants).with_sessions(studio.clone(), Studio::person());
+    let mcp = McpServer::new(studio.clone(), options).unwrap().with_jobs(starter);
+    let agent = Agent::connect(&mcp).await;
+    let CallToolResponse::Complete(refused) = agent.export().await else { panic!("a refusal is a tool result") };
+    assert_eq!(data(&refused)["detail"]["kind"], "queued", "{}", text(&refused));
+
+    // The person decides while the agent does something else; then a task finishes.
+    studio.emit(&omuzaki_ops_api::Event::approval_resolved(Resolution {
+        id: ApprovalId(77),
+        by: Some(Studio::person()),
+        result: Resolved::Rejected { comment: Some("not now".to_owned()) },
+        at: Seconds(1.0),
+    }));
+    let CallToolResponse::Task(created) = agent.export().await else { panic!("a task") };
+    let task = agent.client.get_task(GetTaskParams::new(&created.task.task_id)).await.expect("tasks/get").task;
+    let TaskPayload::Completed { result } = task.payload else { panic!("completed") };
+    let first = result["content"].to_string();
+    assert!(first.contains("approvals you were waiting for"), "{result:?}");
+    assert_eq!(result["structuredContent"]["approvals"][0]["decision"], "rejected", "{result:?}");
 }

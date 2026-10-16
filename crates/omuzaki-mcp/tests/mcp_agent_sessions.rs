@@ -219,6 +219,27 @@ async fn a_call_still_paused_after_the_hold_says_nothing_ran() {
 }
 
 #[tokio::test]
+async fn events_that_keep_arriving_do_not_extend_the_pause_hold() {
+    let studio = Studio::new();
+    let mcp = McpServer::new(studio.clone(), options(&studio).with_pause_hold(Duration::from_millis(200))).unwrap();
+    let agent = Agent::connect(&mcp, "claude-code").await;
+    studio.pause(Sessions::sessions(studio.as_ref())[0].id, &Studio::person()).unwrap();
+    // A feed that never goes quiet: every wait is ready at once.
+    let noise = {
+        let studio = studio.clone();
+        tokio::spawn(async move {
+            loop {
+                studio.person_sets_blend(0.5);
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+    };
+    let result = tokio::time::timeout(Duration::from_secs(5), agent.blend(0.4)).await.expect("the hold ends");
+    noise.abort();
+    assert_eq!(data(&result)["code"], "waiting");
+}
+
+#[tokio::test]
 async fn a_short_rate_limit_slows_the_call_and_a_long_one_is_reported() {
     let studio = Studio::new();
     let agent = Agent::connect(&server(&studio), "claude-code").await;
@@ -346,6 +367,23 @@ async fn approval_wait_returns_the_op_result_once_and_the_heads_up_does_not_repe
     // Told once: the next result does not list it again.
     let next = agent.call("project_ping", json!({})).await;
     assert!(!text(&next).contains("approvals you were waiting for"), "{}", text(&next));
+    agent.disconnect().await;
+}
+
+#[tokio::test]
+async fn a_rejection_is_not_called_unsaved_when_the_journal_is_failing() {
+    use omuzaki_history_api::{JournalStatus, SyncError};
+    let studio = Studio::new();
+    let journal = Arc::new(omuzaki_history_mock::RecordingSink::new());
+    journal.script_sync(Some(SyncError::Failing { reason: "disk full".into() }));
+    journal.script_status(JournalStatus::Failing { reason: "disk full".into() });
+    let mcp = McpServer::new(studio.clone(), options(&studio).with_journal(journal)).unwrap();
+    let agent = Agent::connect(&mcp, "claude-code").await;
+    export(&agent).await;
+    studio.resolve(ApprovalId(1), Decision::Reject { comment: None }, &Studio::person()).unwrap();
+    let waited = agent.call("approval_wait", json!({"id": 1})).await;
+    assert!(text(&waited).contains("The person rejected this"), "{}", text(&waited));
+    assert!(!text(&waited).contains("not yet saved"), "nothing was applied: {}", text(&waited));
     agent.disconnect().await;
 }
 

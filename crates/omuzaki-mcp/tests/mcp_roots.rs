@@ -65,6 +65,22 @@ fn assert_reach(grants: &Grants, folders: &Folders) {
     assert!(refused.contains("no granted file root covers it"), "a picked, unshared folder is refused: {refused}");
 }
 
+/// `shown` with `path` replaced by `name`, whichever way the path was written into it: as is, or JSON-escaped (a Windows
+/// path has its backslashes doubled once it is inside a serialised transcript).
+fn placeholder(shown: &str, path: &str, name: &str) -> String {
+    let escaped = serde_json::to_string(path).expect("a path is a string");
+    let escaped = escaped.trim_matches('"');
+    shown.replace(escaped, name).replace(path, name)
+}
+
+#[test]
+fn a_windows_path_is_replaced_in_a_serialised_transcript() {
+    let path = r"C:\Users\a\Temp\project";
+    let shown = serde_json::to_string(&json!({"roots": [path]})).unwrap();
+    assert!(!shown.contains(path), "serialising doubles the backslashes: {shown}");
+    assert_eq!(placeholder(&shown, path, "<project>"), r#"{"roots":["<project>"]}"#);
+}
+
 #[tokio::test]
 async fn an_mcp_session_reaches_the_project_and_shared_roots_only() {
     let (studio, folders) = (Studio::new(), folders());
@@ -81,7 +97,8 @@ async fn an_mcp_session_reaches_the_project_and_shared_roots_only() {
         "`session_info` lists the file roots of the session: the project folder (its real path) and the shared folder, \
          and no other.",
     );
-    let shown = shown.replace(&text(&folders.project), "<project>").replace(&text(&folders.shared), "<shared>");
+    let shown =
+        placeholder(&placeholder(&shown, &text(&folders.project), "<project>"), &text(&folders.shared), "<shared>");
     check_transcript("roots", &shown);
 }
 

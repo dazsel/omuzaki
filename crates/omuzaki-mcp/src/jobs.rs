@@ -12,8 +12,8 @@ use omuzaki_history_api::JournalSink;
 use omuzaki_ops_api::{Event, Grants, JobId, JobInfo, JobState, Jobs, OpError};
 use rmcp::ErrorData as McpError;
 use rmcp::model::{
-    DetailedTask, JsonObject, Notification, ProgressNotificationParam, ProgressToken, ServerNotification, Task,
-    TaskPayload, TaskStatus, TaskStatusNotificationParams,
+    CallToolResult, DetailedTask, JsonObject, Notification, ProgressNotificationParam, ProgressToken,
+    ServerNotification, Task, TaskPayload, TaskStatus, TaskStatusNotificationParams,
 };
 use rmcp::service::{Peer, RoleServer};
 use serde_json::Value;
@@ -21,6 +21,7 @@ use serde_json::Value;
 use crate::events::EventHub;
 use crate::floats;
 use crate::render;
+use crate::session::Reporter;
 
 /// How long a client should wait between `tasks/get` polls, in milliseconds.
 const POLL_INTERVAL_MS: u64 = 1000;
@@ -88,6 +89,7 @@ fn task_of(info: &JobInfo, tool: &str, verify: Option<&str>, created: &str, unsa
 /// place a task is reported (`tasks/get`, the handle, status pushes) goes through here.
 pub(crate) async fn task_saved(
     journal: Option<Arc<dyn JournalSink>>,
+    reporter: Option<&Reporter>,
     info: &JobInfo,
     tool: &str,
     verify: Option<&str>,
@@ -95,7 +97,17 @@ pub(crate) async fn task_saved(
 ) -> DetailedTask {
     let applied = matches!(info.state, JobState::Done { seq: Some(_), .. });
     let unsaved = if applied { crate::session::unsaved_warning(journal).await } else { None };
-    task_of(info, tool, verify, created, unsaved.as_deref())
+    let Some(reporter) = reporter else { return task_of(info, tool, verify, created, unsaved.as_deref()) };
+    let mut task = task_of(info, tool, verify, created, None);
+    // A finished task's result gets what a blocking result gets: the heads-up about others' changes, the decisions on
+    // this session's approvals, and the save warning in front.
+    if let TaskPayload::Completed { result } = &task.payload
+        && let Ok(call) = serde_json::from_value::<CallToolResult>(Value::Object(result.clone()))
+    {
+        let call = reporter.finish(call, unsaved, false).await;
+        task.payload = TaskPayload::Completed { result: object(&call) };
+    }
+    task
 }
 
 /// What a job that was running at a crash reports: jobs are never re-run.
@@ -156,6 +168,8 @@ pub(crate) struct JobWatch {
     pub hub: Arc<EventHub>,
     /// The host's journal, which a finished job's result waits for.
     pub journal: Option<Arc<dyn JournalSink>>,
+    /// The session's result processing, for the results the pushes carry.
+    pub reporter: Option<Reporter>,
     /// The hub's position from before the job started, so no event of the job can fall in the gap.
     pub after: u64,
     pub peer: Peer<RoleServer>,
@@ -173,7 +187,7 @@ impl JobWatch {
     /// fast job sends the newest progress and status, not every step. If events fell out of the hub's window unseen
     /// the last known state stands until the next one arrives; `tasks/get` always reads the executor.
     pub(crate) async fn run(self) {
-        let Self { hub, journal, mut after, peer, token, mut job, tool, verify, created } = self;
+        let Self { hub, journal, reporter, mut after, peer, token, mut job, tool, verify, created } = self;
         let mut arrivals = hub.watch();
         let mut sent = job.fraction;
         // Events are read before each wait, not after it: a job that finished before this watcher subscribed (inside
@@ -206,7 +220,8 @@ impl JobWatch {
                 }
             }
             if changed {
-                let task = task_saved(journal.clone(), &job, &tool, verify.as_deref(), &created).await;
+                let task =
+                    task_saved(journal.clone(), reporter.as_ref(), &job, &tool, verify.as_deref(), &created).await;
                 let status = Notification::new(TaskStatusNotificationParams::new(task));
                 if peer.send_notification(ServerNotification::TaskStatusNotification(status)).await.is_err() {
                     return;

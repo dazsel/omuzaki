@@ -77,7 +77,7 @@ pub struct Session {
     http_id: Arc<OnceLock<String>>,
     /// When the client last asked for anything: what tells an idle drop from a disconnect.
     last_active: Mutex<Instant>,
-    state: Mutex<State>,
+    state: Arc<Mutex<State>>,
 }
 
 #[derive(Default)]
@@ -127,7 +127,7 @@ impl Session {
             in_app: false,
             http_id: Arc::new(OnceLock::new()),
             last_active: Mutex::new(Instant::now()),
-            state: Mutex::new(state),
+            state: Arc::new(Mutex::new(state)),
         }
     }
 
@@ -329,6 +329,18 @@ impl Session {
         self.standing(context).map(|s| s.grants)
     }
 
+    /// The result processing for this session, which tasks carry to wherever their results are reported. `None` when
+    /// the connection has no session (nothing to report to).
+    fn reporter(&self, context: &RequestContext<RoleServer>) -> Option<Reporter> {
+        let me = self.actor(context).ok()?.clone();
+        Some(Reporter {
+            shared: Arc::clone(&self.shared),
+            state: Arc::clone(&self.state),
+            me,
+            watch: self.watch(context),
+        })
+    }
+
     /// What a notification feed needs to ask the registry again later, without the request that started it.
     fn watch(&self, context: &RequestContext<RoleServer>) -> Watch {
         Watch {
@@ -380,48 +392,6 @@ impl Session {
             .log_json(after.transpose()?)
             .map_err(|e| OpError::internal(format!("couldn't encode the op log: {e}")))?;
         Ok(CallToolResult::success(vec![ContentBlock::text(body)]))
-    }
-
-    /// Waits until the event feed has delivered every op the runner's log holds, up to [`FEED_LAG`]. The feed fills from a
-    /// worker thread, so without this a change that committed before a call could be missing from that call's
-    /// heads-up. The log is the authority on what committed: it holds a record before any event for it exists, so a
-    /// record past the feed's position means events are still on their way.
-    async fn catch_up_with_log(&self, grants: &Grants) {
-        if !grants.allows(Scope::Read) || !self.shared.hub.is_fed() {
-            return;
-        }
-        let deadline = Instant::now() + FEED_LAG;
-        let mut arrivals = self.shared.hub.watch();
-        // Is the feed behind the log at all? Usually not, and that is the one cheap question every result asks.
-        let grants_now = grants.clone();
-        let delivered = self.shared.hub.log_seq();
-        let behind = self.blocking(move |runner| runner.log(delivered, 1, &grants_now)).await;
-        if !matches!(behind, Ok(Ok(records)) if !records.is_empty()) {
-            return;
-        }
-        // The log's end now: the feed owes us exactly that much, however much more is committed while we wait.
-        let grants = grants.clone();
-        let Ok(target) = self.blocking(move |runner| crate::events::latest_log_seq(runner, &grants)).await else {
-            return;
-        };
-        // The deadline is checked on every pass: a feed that keeps delivering must not keep the result waiting.
-        while self.shared.hub.log_seq() < target && Instant::now() < deadline {
-            if tokio::time::timeout_at(deadline, arrivals.changed()).await.is_err() {
-                return;
-            }
-        }
-    }
-
-    /// What other actors changed since this session was last told, if anything, moving its position forward so each
-    /// change is reported once. Needs `read` for the same reason the log does: it names paths and ops.
-    fn others_changed(&self, me: &Actor, grants: &Grants) -> Option<Report> {
-        if !grants.allows(Scope::Read) {
-            return None;
-        }
-        let mut state = lock(&self.state);
-        let (report, latest) = self.shared.hub.changes_since(state.seen, me, &state.own);
-        state.seen = latest;
-        report
     }
 
     /// Runs blocking runner work off the async threads, turning a panic in an op into an `internal` error instead of
@@ -650,10 +620,22 @@ impl Session {
         let verify = self.shared.guidance.verify().map(str::to_owned);
         let created = self.shared.task_times.of(job.id);
         let journal = self.shared.journal.clone();
-        let task = jobs::task_saved(journal.clone(), &job, &tool, verify.as_deref(), &created).await;
+        let task = jobs::task_saved(journal.clone(), None, &job, &tool, verify.as_deref(), &created).await;
         let token = context.meta.get_progress_token();
         tokio::spawn(
-            JobWatch { hub, journal, after, peer: context.peer.clone(), token, job, tool, verify, created }.run(),
+            JobWatch {
+                hub,
+                journal,
+                reporter: self.reporter(context),
+                after,
+                peer: context.peer.clone(),
+                token,
+                job,
+                tool,
+                verify,
+                created,
+            }
+            .run(),
         );
         Ok(Reply { task: Some(CreateTaskResult::new(task.task)), ..Reply::from(CallToolResult::success(Vec::new())) })
     }
@@ -799,9 +781,10 @@ impl Session {
                     state.approvals.get(id).cloned()
                 };
                 let own = own.ok_or_else(not_yours)?;
-                return Ok(self
-                    .confirm_saved(approvals::outcome(&own, &resolution, self.shared.guidance.verify()))
-                    .await);
+                let result = approvals::outcome(&own, &resolution, self.shared.guidance.verify());
+                // Only a change that applied waits for the journal: a rejection or a withdrawal saved nothing.
+                let applied = matches!(&resolution.result, omuzaki_ops_api::Resolved::Applied { outcome } if outcome.applied.is_some());
+                return Ok(if applied { self.confirm_saved(result).await } else { result.into() });
             }
             if tokio::time::timeout_at(deadline, arrivals.changed()).await.is_err() {
                 return Ok(Self::still_pending(id, registry.as_ref()));
@@ -1060,7 +1043,119 @@ fn standing(sessions: Option<&Arc<dyn Sessions>>, actor: Option<&Actor>, ceiling
     Ok(Standing { grants: ceiling.intersect(&info.grants), paused })
 }
 
+/// Everything a result gets after the call itself: the wait for the event feed, the heads-up about what others changed,
+/// the decisions on this session's approvals, and the save warning. One place for blocking calls, `tasks/get` and the
+/// task-status pushes, so a task client is told exactly what a blocking caller is.
+#[derive(Clone)]
+pub(crate) struct Reporter {
+    shared: Arc<Shared>,
+    state: Arc<Mutex<State>>,
+    me: Actor,
+    watch: Watch,
+}
+
+impl Reporter {
+    /// What this session may do now, or `None` once it is over.
+    fn grants(&self) -> Option<Grants> {
+        standing(self.watch.sessions.as_ref(), self.watch.actor.as_ref(), &self.watch.ceiling).ok().map(|s| s.grants)
+    }
+
+    async fn blocking<T: Send + 'static>(
+        &self,
+        work: impl FnOnce(&dyn Runner) -> T + Send + 'static,
+    ) -> Result<T, OpError> {
+        let runner = Arc::clone(&self.shared.runner);
+        jobs::off_thread(move || work(runner.as_ref())).await
+    }
+    /// Waits until the event feed has delivered every op the runner's log holds, up to [`FEED_LAG`]. The feed fills from a
+    /// worker thread, so without this a change that committed before a call could be missing from that call's
+    /// heads-up. The log is the authority on what committed: it holds a record before any event for it exists, so a
+    /// record past the feed's position means events are still on their way.
+    async fn catch_up_with_log(&self, grants: &Grants) {
+        if !grants.allows(Scope::Read) || !self.shared.hub.is_fed() {
+            return;
+        }
+        let deadline = Instant::now() + FEED_LAG;
+        let mut arrivals = self.shared.hub.watch();
+        // Is the feed behind the log at all? Usually not, and that is the one cheap question every result asks.
+        let grants_now = grants.clone();
+        let delivered = self.shared.hub.log_seq();
+        let behind = self.blocking(move |runner| runner.log(delivered, 1, &grants_now)).await;
+        if !matches!(behind, Ok(Ok(records)) if !records.is_empty()) {
+            return;
+        }
+        // The log's end now: the feed owes us exactly that much, however much more is committed while we wait.
+        let grants = grants.clone();
+        let Ok(target) = self.blocking(move |runner| crate::events::latest_log_seq(runner, &grants)).await else {
+            return;
+        };
+        // The deadline is checked on every pass: a feed that keeps delivering must not keep the result waiting.
+        while self.shared.hub.log_seq() < target && Instant::now() < deadline {
+            if tokio::time::timeout_at(deadline, arrivals.changed()).await.is_err() {
+                return;
+            }
+        }
+    }
+
+    /// What other actors changed since this session was last told, if anything, moving its position forward so each
+    /// change is reported once. Needs `read` for the same reason the log does: it names paths and ops.
+    fn others_changed(&self, grants: &Grants) -> Option<Report> {
+        if !grants.allows(Scope::Read) {
+            return None;
+        }
+        let mut state = lock(&self.state);
+        let (report, latest) = self.shared.hub.changes_since(state.seen, &self.me, &state.own);
+        state.seen = latest;
+        report
+    }
+
+    /// `result` with the heads-up and approval news a result carries, then the save warning in front of both.
+    ///
+    /// `log_text` is a result that is the log itself, which nothing may precede.
+    pub(crate) async fn finish(
+        &self,
+        result: CallToolResult,
+        unsaved: Option<String>,
+        log_text: bool,
+    ) -> CallToolResult {
+        // After the call, so a change another actor made while it ran is included, and so this call's own events
+        // (which carry this session's actor) are passed over.
+        let report = if log_text {
+            None
+        } else {
+            let grants = self.grants();
+            if let Some(grants) = &grants {
+                self.catch_up_with_log(grants).await;
+            }
+            grants.and_then(|grants| self.others_changed(&grants))
+        };
+        let result = match report {
+            Some(report) => render::with_heads_up(result, &report),
+            None => result,
+        };
+        // The agent's own approvals that were decided since it last heard, once each. `approval_wait` reports its own.
+        let result = if log_text || self.shared.sessions.is_none() {
+            result
+        } else {
+            let news = lock(&self.state).approvals.news(&self.shared.hub);
+            if news.is_empty() {
+                result
+            } else {
+                let (text, data) = approvals::heads_up(&news);
+                render::with_approvals(result, &text, data)
+            }
+        };
+        // Last, so the save warning leads the text, ahead of the heads-up: a client that shows only the first line
+        // still sees that the change isn't saved.
+        match unsaved {
+            Some(warning) => render::with_warning(result, &warning),
+            None => result,
+        }
+    }
+}
+
 /// A notification feed's way back to the registry.
+#[derive(Clone)]
 struct Watch {
     sessions: Option<Arc<dyn Sessions>>,
     actor: Option<Actor>,
@@ -1218,38 +1313,12 @@ impl ServerHandler for Session {
         // A successful `history_log` is the log itself as its whole text, so nothing may be put in front of it. Its
         // snapshot already caught this session up, so later events are reported by the next call, not lost.
         let log_text = reads_log && result.is_error != Some(true);
-        // After the call, so a change another actor made while it ran is included, and so this call's own events
-        // (which carry this session's actor) are passed over.
-        let report = if log_text {
-            None
-        } else {
-            let grants = self.session_grants(&context).ok();
-            if let Some(grants) = &grants {
-                self.catch_up_with_log(grants).await;
-            }
-            self.actor(&context).ok().zip(grants).and_then(|(actor, grants)| self.others_changed(actor, &grants))
-        };
-        let result = match report {
-            Some(report) => render::with_heads_up(result, &report),
-            None => result,
-        };
-        // The agent's own approvals that were decided since it last heard, once each. `approval_wait` reports its own.
-        let result = if log_text || self.shared.sessions.is_none() {
-            result
-        } else {
-            let news = lock(&self.state).approvals.news(&self.shared.hub);
-            if news.is_empty() {
-                result
-            } else {
-                let (text, data) = approvals::heads_up(&news);
-                render::with_approvals(result, &text, data)
-            }
-        };
-        // Last, so the save warning leads the text, ahead of the heads-up: a client that shows only the first line
-        // still sees that the change isn't saved.
-        let result = match unsaved {
-            Some(warning) => render::with_warning(result, &warning),
-            None => result,
+        let result = match self.reporter(&context) {
+            Some(reporter) => reporter.finish(result, unsaved, log_text).await,
+            None => match unsaved {
+                Some(warning) => render::with_warning(result, &warning),
+                None => result,
+            },
         };
         Ok(result.into())
     }
@@ -1273,7 +1342,17 @@ impl ServerHandler for Session {
         let tool = names::tool_name(&info.op);
         let verify = self.shared.guidance.verify();
         let created = self.shared.task_times.of(info.id);
-        Ok(GetTaskResult::new(jobs::task_saved(self.shared.journal.clone(), &info, &tool, verify, &created).await))
+        Ok(GetTaskResult::new(
+            jobs::task_saved(
+                self.shared.journal.clone(),
+                self.reporter(&context).as_ref(),
+                &info,
+                &tool,
+                verify,
+                &created,
+            )
+            .await,
+        ))
     }
 
     /// `tasks/cancel`: cancels the job. The executor decides who may, so a session can cancel only its own jobs; its
