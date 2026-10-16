@@ -72,7 +72,6 @@ A crate whose folder uses `omuzaki_embed::modules` (ADR 0054) lists that folder 
 - `omuzaki-agent-api` (API): not in the workspace yet: the in-app assistant's panel contract (`Assistant`, `UserMessage`, `ContextChip`, `AssistantEvent`, `HostError`) and `RationaleSource` for "Explain this"; design in `docs/design/agent-runtime.md`, ADR 0040
 - `omuzaki-agent-mock` (Mock): not in the workspace yet: `ScriptedAssistant`, which plays an event script on `FakeClock` for panel tests and the gallery
 - `omuzaki-agent` (Implementation): not in the workspace yet: `AssistantHost`, the assistant's turn loop over an in-process MCP client and `dyn LlmClient`, the context builder and compaction, the host-local tools and the conversation store; links API crates and rmcp's client only, never `omuzaki-mcp` or `omuzaki-ops`
-- `omuzaki-performer-api` (API): not in the workspace yet (designs): the AI performer's contract (`ai-performer.md`, ADR 0031) and its voice and face types: `VoiceAssignment`, `VoiceProvider`, `VoiceCatalog`, `VoiceLead`, `TalkState`, `MoveContext`, `StyleKnobs` and the per-frame `BigMovePlanner` (`ai-performer-voice-face.md`, ADR 0041)
 
 The other API crates (§39.1) arrive in later phases, each with its mock.
 
