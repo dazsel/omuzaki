@@ -39,7 +39,7 @@ const WIDE: f32 = 0.25;
 const SQUINT: f32 = 0.35;
 
 /// How far the cheeks puff out, as a fraction of the eye spacing.
-const PUFF: f32 = 0.08;
+const PUFF: f32 = 0.15;
 
 /// How much of a lip's height a roll pulls in toward the mouth line (the rest of the roll goes back, by [`ROLL_BACK`]).
 const ROLL: f32 = 0.7;
