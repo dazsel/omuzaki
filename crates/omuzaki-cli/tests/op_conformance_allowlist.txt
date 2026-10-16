@@ -85,6 +85,9 @@ variant.preview
 variant.set_override
 
 [edits with Undo::None]
+# Transitional: live actions until live-action undo lands (#139, change #2106).
+output.window.close
+output.window.open
 perform.calibrate
 perform.set_retarget
 trigger.bind

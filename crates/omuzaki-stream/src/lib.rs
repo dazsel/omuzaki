@@ -49,3 +49,5 @@ pub mod ffmpeg;
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
+
+omuzaki_core::define_link!();
