@@ -223,7 +223,14 @@ impl TurnStream {
         let Some(source) = self.source.as_mut() else {
             return Ok(Next::End);
         };
-        match source.poll(wait) {
+        let polled = source.poll(wait);
+        // A cancel that lands while the poll blocks makes the provider's task finish the channel, and the poll then
+        // reports `End`; the flag, read again, is what tells that from a turn that really ended.
+        if self.cancel.is_cancelled() && matches!(polled, Ok(Next::End | Next::Wait)) {
+            self.finish();
+            return Err(LlmError::Cancelled);
+        }
+        match polled {
             Ok(Next::Event(event)) => {
                 match &event {
                     // Reports are cumulative, so a smaller one is a glitch; keep the largest of each counter so what is
@@ -267,8 +274,13 @@ impl TurnStream {
     /// [`try_next`](Self::try_next) or [`next_timeout`](Self::next_timeout) has returned an event, or an earlier
     /// `collect` has read some, it refuses and changes nothing.
     ///
+    /// `idle` is the longest gap between two events. A provider's keep-alive frames (SSE comments) are not events, so
+    /// they keep the connection open but do not extend `idle`; a turn that stays quiet that long fails here even
+    /// while the connection is healthy.
+    ///
     /// # Errors
-    /// `Unsupported` if an event was already taken from the stream; the turn's error; `Network` if nothing arrives within `idle`; `Malformed` if the events break the order of
+    /// `Unsupported` if an event was already taken from the stream; the turn's error; `Network` if no event arrives
+    /// within `idle`; `Malformed` if the events break the order of
     /// llm-api D3 (no `Stop`, no `Usage`, an unclosed or nested call, invalid JSON arguments).
     pub fn collect(&mut self, idle: Duration) -> Result<Turn, LlmError> {
         if self.taken {
@@ -465,6 +477,46 @@ mod tests {
 
     fn dropped(flag: &Flag) -> bool {
         flag.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// A source whose poll blocks until the cancel flag is set from another thread, as a provider's channel does when
+    /// its task sees the cancel and finishes.
+    struct EndsOnCancel(Cancel);
+
+    impl EventSource for EndsOnCancel {
+        fn poll(&mut self, _wait: Duration) -> Result<Next, LlmError> {
+            while !self.0.is_cancelled() {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            Ok(Next::End)
+        }
+    }
+
+    #[test]
+    fn a_cancel_during_a_blocked_poll_is_cancelled_and_not_end() {
+        let cancel = Cancel::new();
+        let mut s = TurnStream::new(Box::new(EndsOnCancel(cancel.clone())), &cancel);
+        let from_elsewhere = {
+            let cancel = cancel.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(30));
+                cancel.cancel();
+            })
+        };
+        assert!(matches!(s.next_timeout(Duration::from_secs(5)), Err(LlmError::Cancelled)));
+        from_elsewhere.join().unwrap_or_else(|_| panic!("the canceller panicked"));
+        assert!(matches!(s.try_next(), Ok(Next::End)));
+        let cancel = Cancel::new();
+        let mut s = TurnStream::new(Box::new(EndsOnCancel(cancel.clone())), &cancel);
+        let canceller = {
+            let cancel = cancel.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(30));
+                cancel.cancel();
+            })
+        };
+        assert!(matches!(s.collect(Duration::from_secs(5)), Err(LlmError::Cancelled)));
+        canceller.join().unwrap_or_else(|_| panic!("the canceller panicked"));
     }
 
     #[test]

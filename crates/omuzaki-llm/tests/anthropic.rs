@@ -60,6 +60,11 @@ fn fixture_reply(name: &str) -> Reply {
     Reply::sse(vec![common::fixture(&format!("anthropic/{name}.sse"))])
 }
 
+/// `text` with every character as a JSON `\\u` escape: the same string once decoded.
+fn json_escaped(text: &str) -> String {
+    text.chars().map(|c| format!("\\u{:04x}", u32::from(c))).collect()
+}
+
 fn ok_reply() -> Reply {
     fixture_reply("text")
 }
@@ -573,12 +578,17 @@ fn listing_models_follows_pages_and_marks_unpriced_ones_unusable() {
 
 #[test]
 fn a_model_list_error_never_carries_the_key() {
-    let echoed = format!(r#"{{"type":"error","error":{{"type":"api_error","message":"bad key {}"}}}}"#, common::KEY);
-    let rig = Rig::new(vec![Reply::status(500, &echoed)]);
-    omuzaki_llm::link();
-    let provider = omuzaki_llm_api::provider::provider("anthropic").unwrap().unwrap();
-    let error = (provider.list_models)(&config("anthropic", &rig.server, MODEL), &rig.env()).unwrap_err();
-    assert!(!format!("{error:?} {error}").contains(common::KEY), "{error:?}");
+    for key_text in [common::KEY.to_owned(), json_escaped(common::KEY)] {
+        let echoed =
+            format!(r#"{{"type":"error","error":{{"type":"invalid_request_error","message":"bad key {key_text}"}}}}"#);
+        let rig = Rig::new(vec![Reply::status(400, &echoed)]);
+        omuzaki_llm::link();
+        let provider = omuzaki_llm_api::provider::provider("anthropic").unwrap().unwrap();
+        let error = (provider.list_models)(&config("anthropic", &rig.server, MODEL), &rig.env()).unwrap_err();
+        let shown = format!("{error:?} {error}");
+        assert!(shown.contains("bad key"), "the message must reach the error for this test to mean anything: {shown}");
+        assert!(!shown.contains("sk-test"), "{shown}");
+    }
 }
 
 #[test]
@@ -625,4 +635,64 @@ fn the_registered_manifest_is_hosted_whatever_the_endpoint() {
         let manifest = provider.manifest_for(&ProviderConfig::new("t", "anthropic", endpoint));
         assert_eq!(manifest.privacy, omuzaki_llm_api::provider::Privacy::Hosted, "{endpoint}");
     }
+}
+
+#[test]
+fn a_turn_error_message_is_redacted_whatever_its_json_spelling() {
+    for key_text in [common::KEY.to_owned(), json_escaped(common::KEY)] {
+        let echoed =
+            format!(r#"{{"type":"error","error":{{"type":"invalid_request_error","message":"bad key {key_text}"}}}}"#);
+        let rig = Rig::new(vec![Reply::status(400, &echoed)]);
+        let (events, error) = play(&rig);
+        let shown = format!("{events:?} {error:?}");
+        assert!(shown.contains("bad key"), "{shown}");
+        assert!(!shown.contains("sk-test"), "{shown}");
+    }
+}
+
+#[test]
+fn a_retry_after_on_a_5xx_or_overload_sets_the_wait() {
+    for status in [500, 529] {
+        let rig = Rig::new(vec![Reply::status_with(status, &[("retry-after", "1")], "{}"), ok_reply()]);
+        let (events, error) = play(&rig);
+        assert_eq!(error, None, "{status}");
+        assert!(
+            matches!(&events[0], LlmEvent::Retrying { attempt: 1, wait, .. } if *wait == Duration::from_secs(1)),
+            "{status}: {events:?}"
+        );
+    }
+}
+
+#[test]
+fn keep_alive_comments_after_the_start_outlast_the_idle_timeout() {
+    let wire = common::fixture("anthropic/text.sse");
+    let cut = wire.windows(2).position(|w| w == b"\n\n").unwrap() + 2;
+    let mut chunks = vec![wire[..cut].to_vec()];
+    chunks.extend((0..5).map(|_| b": ka\n\n".to_vec()));
+    chunks.push(wire[cut..].to_vec());
+    let rig = Rig::new(vec![Reply::sse(chunks).pausing(Duration::from_millis(120))]);
+    let timeouts = Timeouts { idle: Duration::from_millis(300), ..quick() };
+    let client =
+        AnthropicClient::new(&config("anthropic", &rig.server, MODEL), &rig.env()).unwrap().with_timeouts(timeouts);
+    let (events, error) = drain(&mut client.stream(Rig::request(), &Cancel::new()).unwrap());
+    assert_eq!(error, None, "{events:?}");
+    assert!(matches!(events.first(), Some(LlmEvent::Start { .. })), "{events:?}");
+}
+
+#[test]
+fn encoding_a_large_history_happens_off_the_calling_thread() {
+    // An 8 x 8 PNG header followed by padding up to 4 MiB: small on the long side, large in bytes.
+    let mut png = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13, b'I', b'H', b'D', b'R'];
+    png.extend([0, 0, 0, 8, 0, 0, 0, 8, 8, 6, 0, 0, 0]);
+    png.resize(4 * 1024 * 1024, 7);
+    let image = || ContentBlock::image(ImageMime::Png, png.clone(), ImageOrigin::File);
+    let history = vec![Message::new(Role::User, vec![ContentBlock::text("look"), image(), image(), image()])];
+    let rig = Rig::new(vec![ok_reply()]);
+    let client = rig.client();
+    let started = Instant::now();
+    let mut stream = client.stream(TurnRequest::new(history, 256), &Cancel::new()).unwrap();
+    let call = started.elapsed();
+    let (_, error) = drain(&mut stream);
+    assert_eq!(error, None);
+    assert!(call < Duration::from_millis(15), "stream() took {call:?} on the calling thread");
 }

@@ -7,6 +7,8 @@ use omuzaki_llm_api::stream::{LlmEvent, StopReason};
 use omuzaki_llm_api::usage::Usage;
 use serde_json::Value;
 
+use omuzaki_llm_api::provider::SecretValue;
+
 use crate::engine::{Decoder, Fail, MAX_BUFFERED, short, status_fail};
 use crate::sse::SseEvent;
 
@@ -30,10 +32,12 @@ pub(crate) struct OpenAiDecoder {
     refused: bool,
     finish: Option<String>,
     usage: Option<Usage>,
+    /// Redacted from the messages of an error chunk.
+    secret: Option<SecretValue>,
 }
 
 impl OpenAiDecoder {
-    pub(crate) fn new(model: String, context_window: u64) -> Self {
+    pub(crate) fn new(model: String, context_window: u64, secret: Option<SecretValue>) -> Self {
         Self {
             model,
             context_window,
@@ -43,6 +47,7 @@ impl OpenAiDecoder {
             refused: false,
             finish: None,
             usage: None,
+            secret,
         }
     }
 
@@ -143,9 +148,12 @@ impl OpenAiDecoder {
                 other => return Err(Fail::Fatal(LlmError::Malformed(format!("unknown finish reason {other:?}")))),
             }
         };
-        // A server that ignores `include_usage` reports nothing; the turn then counts as free of tokens.
+        // A server that ignores `include_usage` reports nothing, and a turn with no usage would bypass the token and
+        // spending accounting, so it is an error and never a free turn.
         if self.usage.is_none() {
-            events.push(LlmEvent::Usage(Usage::default()));
+            return Err(Fail::Fatal(LlmError::Malformed(
+                "the server reported no token usage; it must honour stream_options.include_usage".into(),
+            )));
         }
         events.push(LlmEvent::Stop(stop));
         Ok(events)
@@ -153,7 +161,13 @@ impl OpenAiDecoder {
 }
 
 /// An `error` object streamed as data, or returned as a body: `{"error": {"message", "type", "code"}}`.
-fn error_fail(v: &Value, status: u16, retry_after: Option<Duration>, context_window: u64) -> Fail {
+fn error_fail(
+    v: &Value,
+    status: u16,
+    retry_after: Option<Duration>,
+    context_window: u64,
+    secret: Option<&SecretValue>,
+) -> Fail {
     let error = v.get("error").unwrap_or(v);
     let message = error.get("message").and_then(Value::as_str).unwrap_or_default();
     let code = error.get("code");
@@ -161,13 +175,15 @@ fn error_fail(v: &Value, status: u16, retry_after: Option<Duration>, context_win
     let named = code.and_then(Value::as_str).unwrap_or_default();
     let context = format!("{named} {kind} {message}");
     // `context_length_exceeded` arrives as a `code` string, in a body or in a chunk of a stream that answered 200.
-    if let overflow @ Fail::Fatal(LlmError::ContextTooLong { .. }) = status_fail(400, None, &context, context_window) {
+    if let overflow @ Fail::Fatal(LlmError::ContextTooLong { .. }) =
+        status_fail(400, None, &context, context_window, secret)
+    {
         return overflow;
     }
     let numeric = code.and_then(Value::as_u64).and_then(|c| u16::try_from(c).ok());
     // A chunk carries no status of its own: an error the server cannot name is a server failure.
     let status = numeric.unwrap_or(if status == 200 { 500 } else { status });
-    status_fail(status, retry_after, message, context_window)
+    status_fail(status, retry_after, message, context_window, secret)
 }
 
 impl Decoder for OpenAiDecoder {
@@ -185,7 +201,7 @@ impl Decoder for OpenAiDecoder {
         let v: Value = serde_json::from_str(data)
             .map_err(|e| Fail::Fatal(LlmError::Malformed(format!("a chunk that is not JSON: {e}"))))?;
         if v.get("error").is_some_and(|e| !e.is_null()) {
-            return Err(error_fail(&v, 200, None, self.context_window));
+            return Err(error_fail(&v, 200, None, self.context_window, self.secret.as_ref()));
         }
         self.chunk(&v)
     }
@@ -200,10 +216,16 @@ impl Decoder for OpenAiDecoder {
 }
 
 /// Maps a non-2xx answer: `{"error": {"message", "type", "code"}}`, or plain text.
-pub(crate) fn classify(status: u16, retry_after: Option<Duration>, body: &[u8], context_window: u64) -> Fail {
+pub(crate) fn classify(
+    status: u16,
+    retry_after: Option<Duration>,
+    body: &[u8],
+    context_window: u64,
+    secret: Option<&SecretValue>,
+) -> Fail {
     match serde_json::from_slice::<Value>(body) {
-        Ok(v) if v.is_object() => error_fail(&v, status, retry_after, context_window),
-        _ => status_fail(status, retry_after, &short(&String::from_utf8_lossy(body)), context_window),
+        Ok(v) if v.is_object() => error_fail(&v, status, retry_after, context_window, secret),
+        _ => status_fail(status, retry_after, &short(&String::from_utf8_lossy(body), secret), context_window, secret),
     }
 }
 
@@ -211,8 +233,11 @@ pub(crate) fn classify(status: u16, retry_after: Option<Duration>, body: &[u8], 
 mod tests {
     use super::*;
 
+    /// The usage report every turn must carry.
+    const USAGE: &str = r#"{"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2}}"#;
+
     fn decoder() -> OpenAiDecoder {
-        OpenAiDecoder::new("fallback".into(), 8192)
+        OpenAiDecoder::new("fallback".into(), 8192, None)
     }
 
     fn feed(d: &mut OpenAiDecoder, data: &str) -> Vec<LlmEvent> {
@@ -285,6 +310,7 @@ mod tests {
                 r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":":1}"}}]}}]}"#,
                 r#"{"choices":[{"delta":{"tool_calls":[{"index":1,"function":{"arguments":":2}"}}]}}]}"#,
                 r#"{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#,
+                USAGE,
                 "[DONE]",
             ],
         );
@@ -308,12 +334,13 @@ mod tests {
             &mut d,
             &[
                 r#"{"choices":[{"delta":{"tool_calls":[{"function":{"name":"t","arguments":"{\"a\":1}"}}]},"finish_reason":"stop"}]}"#,
+                USAGE,
                 "[DONE]",
             ],
         );
         assert_eq!(got[1], LlmEvent::tool_use_start("call_0", "t"));
         assert_eq!(got.last(), Some(&LlmEvent::Stop(StopReason::ToolUse)));
-        assert!(got.contains(&LlmEvent::Usage(Usage::default())), "no usage reported means none counted");
+        assert!(got.contains(&LlmEvent::Usage(Usage::new(3, 2))));
     }
 
     #[test]
@@ -324,6 +351,7 @@ mod tests {
             &[
                 r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"x","function":{"name":"a","arguments":"{}"}}]}}]}"#,
                 r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"y","function":{"name":"b","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}"#,
+                USAGE,
                 "[DONE]",
             ],
         );
@@ -338,12 +366,14 @@ mod tests {
         {
             let mut d = decoder();
             let step = format!(r#"{{"choices":[{{"delta":{{"content":"x"}},"finish_reason":"{reason}"}}]}}"#);
-            let got = all(&mut d, &[&step, "[DONE]"]);
+            let got = all(&mut d, &[&step, USAGE, "[DONE]"]);
             assert_eq!(got.last(), Some(&LlmEvent::Stop(want)), "{reason}");
         }
         let mut d = decoder();
-        let got =
-            all(&mut d, &[r#"{"choices":[{"delta":{"refusal":"I can't help."},"finish_reason":"stop"}]}"#, "[DONE]"]);
+        let got = all(
+            &mut d,
+            &[r#"{"choices":[{"delta":{"refusal":"I can't help."},"finish_reason":"stop"}]}"#, USAGE, "[DONE]"],
+        );
         assert_eq!(got[1], LlmEvent::TextDelta("I can't help.".into()));
         assert_eq!(got.last(), Some(&LlmEvent::Stop(StopReason::Refused)));
     }
@@ -355,6 +385,7 @@ mod tests {
             &mut d,
             &[
                 r#"{"choices":[{"delta":{"reasoning_content":"thinking...","content":"ok"},"finish_reason":"stop"}]}"#,
+                USAGE,
                 "[DONE]",
             ],
         );
@@ -365,11 +396,20 @@ mod tests {
     fn the_stream_closing_after_the_finish_chunk_still_completes_the_turn() {
         let mut d = decoder();
         feed(&mut d, r#"{"choices":[{"delta":{"content":"x"},"finish_reason":"stop"}]}"#);
+        feed(&mut d, USAGE);
         let end = d.end().unwrap_or_else(|e| panic!("{e:?}"));
         assert_eq!(end.last(), Some(&LlmEvent::Stop(StopReason::EndTurn)));
         let mut cut = decoder();
         feed(&mut cut, r#"{"choices":[{"delta":{"content":"x"}}]}"#);
         assert!(matches!(cut.end(), Err(Fail::Retry { error: LlmError::Network(_), .. })));
+    }
+
+    #[test]
+    fn a_finished_turn_without_a_usage_report_is_an_error() {
+        let mut d = decoder();
+        feed(&mut d, r#"{"choices":[{"delta":{"content":"x"},"finish_reason":"stop"}]}"#);
+        let end = d.event(SseEvent { event: None, data: "[DONE]".into() });
+        assert!(matches!(end, Err(Fail::Fatal(LlmError::Malformed(m))) if m.contains("usage")));
     }
 
     #[test]
@@ -382,11 +422,14 @@ mod tests {
         });
         assert!(matches!(ctx, Err(Fail::Fatal(LlmError::ContextTooLong { max: 8192, .. }))));
         let body = br#"{"error":{"message":"bad key","type":"auth","code":401}}"#;
-        assert!(matches!(classify(401, None, body, 1), Fail::Fatal(LlmError::Auth)));
-        assert!(matches!(classify(429, Some(Duration::from_secs(1)), b"{}", 1), Fail::Retry { .. }));
-        assert!(matches!(classify(503, None, b"loading model", 1), Fail::Retry { error: LlmError::Overloaded, .. }));
+        assert!(matches!(classify(401, None, body, 1, None), Fail::Fatal(LlmError::Auth)));
+        assert!(matches!(classify(429, Some(Duration::from_secs(1)), b"{}", 1, None), Fail::Retry { .. }));
+        assert!(matches!(
+            classify(503, None, b"loading model", 1, None),
+            Fail::Retry { error: LlmError::Overloaded, .. }
+        ));
         assert!(
-            matches!(classify(404, None, b"model not found", 1), Fail::Fatal(LlmError::Malformed(m)) if m.contains("not found"))
+            matches!(classify(404, None, b"model not found", 1, None), Fail::Fatal(LlmError::Malformed(m)) if m.contains("not found"))
         );
     }
 

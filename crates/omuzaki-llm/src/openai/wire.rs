@@ -58,6 +58,9 @@ fn messages(req: &TurnRequest) -> Vec<Value> {
 
 fn user_message(message: &Message, out: &mut Vec<Value>) {
     let mut parts = Vec::new();
+    // Every `tool` reply must directly follow the assistant message that made the calls, so the image messages wait
+    // until the last of them is out.
+    let mut images_after = Vec::new();
     for block in &message.content {
         if let ContentBlock::ToolResult { id, blocks, is_error, .. } = block {
             // Tool results come first in their message, in the order the model made the calls.
@@ -72,12 +75,13 @@ fn user_message(message: &Message, out: &mut Vec<Value>) {
             let mut with_images = vec![json!({"type": "text", "text": format!("Images from the result of {id}:")})];
             with_images.extend(images);
             if with_images.len() > 1 {
-                out.push(json!({"role": "user", "content": with_images}));
+                images_after.push(json!({"role": "user", "content": with_images}));
             }
         } else {
             parts.extend(user_parts(std::slice::from_ref(block)));
         }
     }
+    out.extend(images_after);
     if !parts.is_empty() {
         out.push(json!({"role": "user", "content": parts}));
     }
@@ -256,6 +260,31 @@ mod tests {
         assert_eq!(m[2], json!({"role": "tool", "tool_call_id": "call_1", "content": "Rendered."}));
         assert_eq!(m[3]["content"][1]["image_url"]["url"], "data:image/png;base64,AQID");
         assert_eq!(m.as_array().map(Vec::len), Some(4));
+    }
+
+    #[test]
+    fn parallel_tool_results_with_images_put_every_tool_reply_before_the_image_messages() {
+        let calls =
+            vec![ContentBlock::tool_use("a", "render", json!({})), ContentBlock::tool_use("b", "render", json!({}))];
+        let results = vec![
+            ContentBlock::tool_result(
+                "a",
+                vec![ContentBlock::text("A"), ContentBlock::image(ImageMime::Png, vec![1], ImageOrigin::Render)],
+            ),
+            ContentBlock::tool_result(
+                "b",
+                vec![ContentBlock::text("B"), ContentBlock::image(ImageMime::Png, vec![2], ImageOrigin::Render)],
+            ),
+        ];
+        let history = vec![Message::new(Role::Assistant, calls), Message::new(Role::User, results)];
+        let v = parsed(&TurnRequest::new(history, 8));
+        let messages = v["messages"].as_array().cloned().unwrap_or_default();
+        let roles: Vec<&str> = messages.iter().filter_map(|m| m["role"].as_str()).collect();
+        assert_eq!(roles, ["assistant", "tool", "tool", "user", "user"]);
+        assert_eq!(v["messages"][1]["tool_call_id"], "a");
+        assert_eq!(v["messages"][2]["tool_call_id"], "b");
+        assert!(v["messages"][3]["content"][0]["text"].as_str().is_some_and(|t| t.contains('a')));
+        assert!(v["messages"][4]["content"][0]["text"].as_str().is_some_and(|t| t.contains('b')));
     }
 
     #[test]

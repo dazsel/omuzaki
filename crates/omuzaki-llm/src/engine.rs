@@ -69,13 +69,18 @@ pub(crate) enum Fail {
 impl Fail {
     /// A retryable network failure.
     pub(crate) fn network(cause: impl Into<String>) -> Self {
-        let cause = cause.into();
-        Self::Retry { error: LlmError::Network(cause.clone()), retry_after: None, cause }
+        Self::network_after(cause, None)
     }
 
-    /// A retryable overload.
-    pub(crate) fn overloaded() -> Self {
-        Self::Retry { error: LlmError::Overloaded, retry_after: None, cause: "the provider is overloaded".into() }
+    /// A retryable network failure, with the `retry-after` the server sent.
+    pub(crate) fn network_after(cause: impl Into<String>, retry_after: Option<Duration>) -> Self {
+        let cause = cause.into();
+        Self::Retry { error: LlmError::Network(cause.clone()), retry_after, cause }
+    }
+
+    /// A retryable overload, with the `retry-after` the server sent.
+    pub(crate) fn overloaded(retry_after: Option<Duration>) -> Self {
+        Self::Retry { error: LlmError::Overloaded, retry_after, cause: "the provider is overloaded".into() }
     }
 }
 
@@ -87,10 +92,11 @@ pub(crate) trait Protocol: Send + Sync + 'static {
     fn headers(&self, key: Option<&SecretValue>) -> Result<Vec<(&'static str, HeaderValue)>, LlmError>;
     /// Whether a missing key is an `Auth` failure (Anthropic) or just no header (a local server).
     fn key_required(&self) -> bool;
-    /// Maps a non-2xx answer: `status`, the `retry-after`, and the (possibly empty) body.
-    fn classify(&self, status: u16, retry_after: Option<Duration>, body: &[u8]) -> Fail;
-    /// A fresh decoder for one attempt's body.
-    fn decoder(&self) -> Box<dyn Decoder>;
+    /// Maps a non-2xx answer: `status`, the `retry-after`, and the (possibly empty) body. `secret` is redacted from
+    /// every message that is read out of the body.
+    fn classify(&self, status: u16, retry_after: Option<Duration>, body: &[u8], secret: Option<&SecretValue>) -> Fail;
+    /// A fresh decoder for one attempt's body; it redacts `secret` from the messages it reads.
+    fn decoder(&self, secret: Option<SecretValue>) -> Box<dyn Decoder>;
 }
 
 /// Turns the SSE events of one attempt into [`LlmEvent`]s.
@@ -113,11 +119,12 @@ pub(crate) struct Job {
     pub seed: u64,
 }
 
-/// Starts `job` on `runtime` and returns the stream that reads it. Does no I/O on the calling thread.
-pub(crate) fn spawn(runtime: &Handle, job: Job, cancel: &Cancel) -> TurnStream {
+/// Starts the turn on `runtime` and returns the stream that reads it. `make` builds the job, so the encoding of the
+/// history and the images runs on the task and never on the calling thread (llm-api D1).
+pub(crate) fn spawn(runtime: &Handle, make: impl FnOnce() -> Job + Send + 'static, cancel: &Cancel) -> TurnStream {
     let (tx, rx) = chan::channel();
     let token = CancellationToken::new();
-    runtime.spawn(run(job, cancel.clone(), token.clone(), tx));
+    runtime.spawn(run(make, cancel.clone(), token.clone(), tx));
     TurnStream::new(Box::new(Guarded { rx, token }), cancel)
 }
 
@@ -150,7 +157,8 @@ async fn stopped(cancel: &Cancel, token: &CancellationToken) {
     }
 }
 
-async fn run(job: Job, cancel: Cancel, token: CancellationToken, mut tx: Sender) {
+async fn run(make: impl FnOnce() -> Job, cancel: Cancel, token: CancellationToken, mut tx: Sender) {
+    let job = make();
     // `biased`: a stop request wins over a ready body chunk, so cancellation never waits behind the network.
     let result = tokio::select! {
         biased;
@@ -253,11 +261,11 @@ async fn attempt_with(job: &Job, tx: &Sender, started: &mut bool, secret: Option
             // The status alone decides how to treat the failure; a body that cannot be read adds nothing.
             Ok(Err(_)) | Err(_) => Vec::new(),
         };
-        return Err(job.protocol.classify(status, retry_after, &redact_bytes(body, secret)));
+        return Err(job.protocol.classify(status, retry_after, &redact_bytes(body, secret), secret));
     }
     let (events, activity) = sse::events(response.stream());
     let mut events = Box::pin(events);
-    let mut decoder = job.protocol.decoder();
+    let mut decoder = job.protocol.decoder(secret.cloned());
     let mut wait = job.timeouts.first_byte;
     loop {
         // The deadline runs from the latest bytes, so a keep-alive comment (bytes, no event) restarts it at once and an
@@ -311,10 +319,11 @@ fn http_fail(fail: HttpFail, secret: Option<&SecretValue>) -> Fail {
     }
 }
 
-/// The error text a server sent, cut to a line a log can hold.
-pub(crate) fn short(message: &str) -> String {
+/// The error text a server sent, redacted and then cut to a line a log can hold.
+pub(crate) fn short(message: &str, secret: Option<&SecretValue>) -> String {
     const MAX: usize = 300;
-    let line = message.trim();
+    let redacted = redact(message.to_owned(), secret);
+    let line = redacted.trim();
     match line.char_indices().nth(MAX) {
         Some((at, _)) => format!("{}...", &line[..at]),
         None => line.to_owned(),
@@ -322,7 +331,13 @@ pub(crate) fn short(message: &str) -> String {
 }
 
 /// The common mapping of an HTTP status (llm-api D5), once a provider has read the message out of the body.
-pub(crate) fn status_fail(status: u16, retry_after: Option<Duration>, message: &str, context_window: u64) -> Fail {
+pub(crate) fn status_fail(
+    status: u16,
+    retry_after: Option<Duration>,
+    message: &str,
+    context_window: u64,
+    secret: Option<&SecretValue>,
+) -> Fail {
     let context = {
         let m = message.to_ascii_lowercase();
         ["prompt is too long", "context_length_exceeded", "context length", "context window", "too many tokens"]
@@ -342,9 +357,9 @@ pub(crate) fn status_fail(status: u16, retry_after: Option<Duration>, message: &
             // No `retry-after`: Anthropic sends that for a spend cap, which keeps failing until access resumes.
             None => Fail::Fatal(LlmError::rate_limited(None)),
         },
-        503 | 529 => Fail::overloaded(),
-        500 | 502 | 504 => Fail::network(format!("the server answered {status}")),
-        _ => Fail::Fatal(LlmError::Malformed(format!("the server answered {status}: {}", short(message)))),
+        503 | 529 => Fail::overloaded(retry_after),
+        500 | 502 | 504 => Fail::network_after(format!("the server answered {status}"), retry_after),
+        _ => Fail::Fatal(LlmError::Malformed(format!("the server answered {status}: {}", short(message, secret)))),
     }
 }
 
@@ -361,7 +376,7 @@ mod tests {
 
     #[test]
     fn statuses_map_as_the_d5_table_says() {
-        let at = |status, after| kind(&status_fail(status, after, "", 1000));
+        let at = |status, after| kind(&status_fail(status, after, "", 1000, None));
         assert!(at(401, None).starts_with("fatal the provider refused the key"));
         assert!(at(403, None).starts_with("fatal the provider refused the key"));
         assert!(at(413, None).contains("1000-token"));
@@ -384,15 +399,37 @@ mod tests {
         for message in
             ["prompt is too long: 250000 tokens > 200000", "context_length_exceeded", "maximum context length is 8192"]
         {
-            assert!(kind(&status_fail(400, None, message, 8192)).contains("8192-token"), "{message}");
+            assert!(kind(&status_fail(400, None, message, 8192, None)).contains("8192-token"), "{message}");
         }
     }
 
     #[test]
     fn a_server_message_is_cut_and_a_secret_is_redacted() {
-        assert!(short(&"x".repeat(1000)).len() < 310);
+        assert!(short(&"x".repeat(1000), None).len() < 310);
         let key = SecretValue::new("sk-abc");
         assert_eq!(redact("bad key sk-abc!".into(), Some(&key)), "bad key <redacted>!");
         assert_eq!(redact("same".into(), None), "same");
+    }
+
+    #[test]
+    fn a_server_message_is_redacted_before_it_is_shortened() {
+        let key = SecretValue::new("sk-0123456789-secret");
+        for pad in [0, 280, 290, 299, 300, 305] {
+            let message = format!("{}{}tail", "x".repeat(pad), key.expose());
+            let shown = short(&message, Some(&key));
+            assert!(!shown.contains("sk-0"), "{pad}: {shown}");
+            assert!(!shown.contains("secret"), "{pad}: {shown}");
+        }
+    }
+
+    #[test]
+    fn a_retry_after_survives_on_server_failures_and_overloads() {
+        let after = Some(Duration::from_secs(7));
+        for status in [500, 502, 503, 504, 529] {
+            let Fail::Retry { retry_after, .. } = status_fail(status, after, "", 1000, None) else {
+                panic!("{status} must retry");
+            };
+            assert_eq!(retry_after, after, "{status}");
+        }
     }
 }

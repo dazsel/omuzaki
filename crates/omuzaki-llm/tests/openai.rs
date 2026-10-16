@@ -455,11 +455,11 @@ fn length_and_content_filter_finish_reasons_map_to_stop_reasons() {
 
 #[test]
 fn a_server_that_closes_after_the_finish_chunk_without_done_still_completes() {
-    let wire = "data: {\"model\":\"m\",\"choices\":[{\"delta\":{\"content\":\"x\"},\"finish_reason\":\"stop\"}]}\n\n";
+    let wire = "data: {\"model\":\"m\",\"choices\":[{\"delta\":{\"content\":\"x\"},\"finish_reason\":\"stop\"}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}\n\n";
     let rig = Rig::probed(vec![Reply::sse_text(wire)]);
     let turn = rig.client().stream(Rig::request(), &Cancel::new()).unwrap().collect(common::PATIENCE).unwrap();
     assert_eq!(turn.stop, StopReason::EndTurn);
-    assert_eq!(turn.usage, Usage::default());
+    assert_eq!(turn.usage.tokens(), 5);
 }
 
 #[test]
@@ -507,11 +507,13 @@ const CHUNK: &str = "data: {\"id\":\"c\",\"object\":\"chat.completion.chunk\",\"
 #[test]
 fn a_model_list_error_never_echoes_the_key() {
     let echo = format!(r#"{{"error":{{"message":"bad key {}","type":"invalid_request_error"}}}}"#, common::KEY);
-    let rig = Rig::routed(vec![("GET /v1/models", vec![Reply::status(500, &echo)])]);
+    let rig = Rig::routed(vec![("GET /v1/models", vec![Reply::status(400, &echo)])]);
     omuzaki_llm::link();
     let provider = omuzaki_llm_api::provider::provider(KIND).unwrap().unwrap();
     let error = (provider.list_models)(&rig.config("a"), &rig.env()).unwrap_err();
-    assert!(!format!("{error:?} {error}").contains("sk-test"), "{error:?}");
+    let shown = format!("{error:?} {error}");
+    assert!(shown.contains("bad key"), "the message must reach the error for this test to mean anything: {shown}");
+    assert!(!shown.contains("sk-test"), "{shown}");
 }
 
 #[test]
@@ -556,8 +558,11 @@ fn a_probe_that_never_answers_ends_at_the_probe_deadline() {
 
 #[test]
 fn keep_alive_comments_outlast_the_idle_timeout() {
-    let mut chunks: Vec<Vec<u8>> = (0..5).map(|_| b": ka\n\n".to_vec()).collect();
-    chunks.push(common::fixture("openai/ollama.sse"));
+    let wire = common::fixture("openai/ollama.sse");
+    let cut = wire.windows(2).position(|w| w == b"\n\n").unwrap() + 2;
+    let mut chunks = vec![wire[..cut].to_vec()];
+    chunks.extend((0..5).map(|_| b": ka\n\n".to_vec()));
+    chunks.push(wire[cut..].to_vec());
     let reply = Reply::sse(chunks).pausing(Duration::from_millis(120));
     let rig = Rig::probed(vec![reply]);
     let timeouts = Timeouts { idle: Duration::from_millis(300), ..quick() };
@@ -577,4 +582,87 @@ fn silence_after_an_event_times_out_at_one_idle_interval() {
     let (_, error) = drain(&mut client.stream(Rig::request(), &Cancel::new()).unwrap());
     assert!(matches!(error, Some(LlmError::Network(_))), "{error:?}");
     assert!(started.elapsed() < Duration::from_millis(550), "{:?}", started.elapsed());
+}
+
+#[test]
+fn a_turn_error_message_is_redacted_whatever_its_json_spelling() {
+    let escaped: String = common::KEY.chars().map(|c| format!("\\u{:04x}", u32::from(c))).collect();
+    for key_text in [common::KEY.to_owned(), escaped] {
+        let echo = format!(r#"{{"error":{{"message":"unauthorised {key_text}","type":"invalid_request_error"}}}}"#);
+        let rig = Rig::probed(vec![Reply::status(400, &echo)]);
+        let client = OpenAiClient::new(&rig.config("llama3.2"), &rig.env()).unwrap().with_timeouts(quick());
+        let (events, error) = drain(&mut client.stream(Rig::request(), &Cancel::new()).unwrap());
+        let shown = format!("{events:?} {error:?}");
+        assert!(shown.contains("unauthorised"), "{shown}");
+        assert!(!shown.contains("sk-test"), "{shown}");
+    }
+}
+
+#[test]
+fn a_retry_after_on_a_5xx_or_overload_sets_the_wait() {
+    for status in [500, 503] {
+        let rig = Rig::probed(vec![Reply::status_with(status, &[("retry-after", "1")], "{}"), fixture_reply("ollama")]);
+        let client = OpenAiClient::new(&rig.config("llama3.2"), &rig.env()).unwrap().with_timeouts(quick());
+        let (events, error) = drain(&mut client.stream(Rig::request(), &Cancel::new()).unwrap());
+        assert_eq!(error, None, "{status}");
+        assert!(
+            matches!(&events[0], LlmEvent::Retrying { attempt: 1, wait, .. } if *wait == Duration::from_secs(1)),
+            "{status}: {events:?}"
+        );
+    }
+}
+
+#[test]
+fn a_turn_with_no_usage_report_is_an_error_not_a_free_turn() {
+    let finish = "data: {\"id\":\"c\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
+    let wire = format!("{CHUNK}{finish}data: [DONE]\n\n");
+    let rig = Rig::probed(vec![Reply::sse_text(&wire)]);
+    let client = OpenAiClient::new(&rig.config("llama3.2"), &rig.env()).unwrap().with_timeouts(quick());
+    let (events, error) = drain(&mut client.stream(Rig::request(), &Cancel::new()).unwrap());
+    assert!(matches!(error, Some(LlmError::Malformed(ref m)) if m.contains("usage")), "{error:?}");
+    assert!(!events.iter().any(|e| matches!(e, LlmEvent::Stop(_))), "{events:?}");
+}
+
+#[test]
+fn parallel_tool_results_with_images_reach_the_server_with_every_tool_reply_first() {
+    let calls = vec![
+        ContentBlock::tool_use("a", "look", serde_json::json!({})),
+        ContentBlock::tool_use("b", "look", serde_json::json!({})),
+    ];
+    let shot = |id: &str, byte: u8| {
+        ContentBlock::tool_result(
+            id,
+            vec![ContentBlock::text(id), ContentBlock::image(ImageMime::Png, vec![byte], ImageOrigin::Render)],
+        )
+    };
+    let history = vec![
+        Message::new(Role::User, vec![ContentBlock::text("go")]),
+        Message::new(Role::Assistant, calls),
+        Message::new(Role::User, vec![shot("a", 1), shot("b", 2)]),
+    ];
+    let rig = Rig::probed(vec![fixture_reply("ollama")]);
+    let client = OpenAiClient::new(&rig.config("llama3.2"), &rig.env()).unwrap().with_timeouts(quick());
+    let (_, error) = drain(&mut client.stream(TurnRequest::new(history, 64), &Cancel::new()).unwrap());
+    assert_eq!(error, None);
+    let sent = rig.server.requests().pop().unwrap().json();
+    let roles: Vec<&str> = sent["messages"].as_array().unwrap().iter().filter_map(|m| m["role"].as_str()).collect();
+    assert_eq!(roles, ["user", "assistant", "tool", "tool", "user", "user"]);
+}
+
+#[test]
+fn encoding_a_large_history_happens_off_the_calling_thread() {
+    // An 8 x 8 PNG header followed by padding up to 4 MiB: small on the long side, large in bytes.
+    let mut png = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13, b'I', b'H', b'D', b'R'];
+    png.extend([0, 0, 0, 8, 0, 0, 0, 8, 8, 6, 0, 0, 0]);
+    png.resize(4 * 1024 * 1024, 7);
+    let image = || ContentBlock::image(ImageMime::Png, png.clone(), ImageOrigin::File);
+    let history = vec![Message::new(Role::User, vec![ContentBlock::text("look"), image(), image(), image()])];
+    let rig = Rig::probed(vec![fixture_reply("ollama")]);
+    let client = OpenAiClient::new(&rig.config("llama3.2"), &rig.env()).unwrap().with_timeouts(quick());
+    let started = std::time::Instant::now();
+    let mut stream = client.stream(TurnRequest::new(history, 64), &Cancel::new()).unwrap();
+    let call = started.elapsed();
+    let (_, error) = drain(&mut stream);
+    assert_eq!(error, None);
+    assert!(call < Duration::from_millis(15), "stream() took {call:?} on the calling thread");
 }

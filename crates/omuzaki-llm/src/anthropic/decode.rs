@@ -9,6 +9,8 @@ use omuzaki_llm_api::usage::Usage;
 use serde_json::{Value, json};
 
 use super::wire::PROVIDER;
+use omuzaki_llm_api::provider::SecretValue;
+
 use crate::engine::{Decoder, Fail, MAX_BUFFERED, short, status_fail};
 use crate::sse::SseEvent;
 
@@ -22,8 +24,8 @@ enum Open {
         thinking: String,
         signature: String,
     },
-    /// `redacted_thinking`, or a block type this client does not know: returned whole at its end.
-    Whole(Value),
+    /// `redacted_thinking`, or a block type this client does not know: returned whole at its end, with its size.
+    Whole(Value, usize),
 }
 
 /// Decodes one attempt's body.
@@ -33,14 +35,8 @@ pub(crate) struct AnthropicDecoder {
     stopped: bool,
     open: HashMap<u64, Open>,
     usage: Usage,
-}
-
-/// A thinking block is held whole until it closes; one past [`MAX_BUFFERED`] is refused.
-fn too_big(held: usize) -> Result<(), Fail> {
-    if held > MAX_BUFFERED {
-        return Err(malformed(format!("a thinking block over {MAX_BUFFERED} bytes")));
-    }
-    Ok(())
+    /// Redacted from the messages of an error event.
+    secret: Option<SecretValue>,
 }
 
 fn field<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
@@ -72,6 +68,28 @@ fn stop_reason(reason: &str) -> Result<StopReason, Fail> {
 }
 
 impl AnthropicDecoder {
+    pub(crate) fn new(secret: Option<SecretValue>) -> Self {
+        Self { secret, ..Self::default() }
+    }
+
+    /// Thinking and unknown blocks are held whole until they close. Everything the open blocks hold, their first
+    /// payloads included, counts against one cap, so many blocks cannot add up past it.
+    fn check_held(&self) -> Result<(), Fail> {
+        let held: usize = self
+            .open
+            .values()
+            .map(|open| match open {
+                Open::Thinking { thinking, signature } => thinking.len() + signature.len(),
+                Open::Whole(_, size) => *size,
+                Open::Text | Open::Tool { .. } => 0,
+            })
+            .sum();
+        if held > MAX_BUFFERED {
+            return Err(malformed(format!("more than {MAX_BUFFERED} bytes of blocks held open")));
+        }
+        Ok(())
+    }
+
     /// Folds the counters present in `usage` into the running (cumulative) totals.
     fn merge(&mut self, usage: &Value) -> LlmEvent {
         let take = |slot: &mut u64, found: Option<u64>| *slot = found.unwrap_or(*slot);
@@ -99,9 +117,10 @@ impl AnthropicDecoder {
                 },
                 Vec::new(),
             ),
-            _ => (Open::Whole(block.clone()), Vec::new()),
+            _ => (Open::Whole(block.clone(), block.to_string().len()), Vec::new()),
         };
         self.open.insert(index, open);
+        self.check_held()?;
         Ok(events)
     }
 
@@ -110,22 +129,22 @@ impl AnthropicDecoder {
         let delta = v.get("delta").ok_or_else(|| malformed("content_block_delta without a delta"))?;
         let open =
             self.open.get_mut(&index).ok_or_else(|| malformed(format!("a delta for the unopened block {index}")))?;
-        Ok(match (field(delta, "type"), open) {
+        let events = match (field(delta, "type"), open) {
             (Some("text_delta"), _) => text_event(delta, "text", LlmEvent::TextDelta),
             (Some("input_json_delta"), _) => text_event(delta, "partial_json", LlmEvent::ToolUseInput),
-            (Some("thinking_delta"), Open::Thinking { thinking, signature }) => {
+            (Some("thinking_delta"), Open::Thinking { thinking, .. }) => {
                 thinking.push_str(field(delta, "thinking").unwrap_or_default());
-                too_big(thinking.len() + signature.len())?;
                 Vec::new()
             }
-            (Some("signature_delta"), Open::Thinking { thinking, signature }) => {
+            (Some("signature_delta"), Open::Thinking { signature, .. }) => {
                 signature.push_str(field(delta, "signature").unwrap_or_default());
-                too_big(thinking.len() + signature.len())?;
                 Vec::new()
             }
             // Citations and the deltas of blocks this client does not read.
             _ => Vec::new(),
-        })
+        };
+        self.check_held()?;
+        Ok(events)
     }
 
     fn block_stop(&mut self, v: &Value) -> Result<Vec<LlmEvent>, Fail> {
@@ -139,7 +158,7 @@ impl AnthropicDecoder {
                 let block = json!({"type": "thinking", "thinking": thinking, "signature": signature});
                 vec![LlmEvent::opaque(PROVIDER, block)]
             }
-            Open::Whole(block) => vec![LlmEvent::opaque(PROVIDER, block)],
+            Open::Whole(block, _) => vec![LlmEvent::opaque(PROVIDER, block)],
         })
     }
 
@@ -168,14 +187,14 @@ fn error_parts(v: &Value) -> (&str, &str) {
 }
 
 /// Maps an `error` event: the table of llm-api D5 retries `overloaded_error` and nothing else.
-fn event_fail(kind: &str, message: &str) -> Fail {
+fn event_fail(kind: &str, message: &str, secret: Option<&SecretValue>) -> Fail {
     match kind {
-        "overloaded_error" => Fail::overloaded(),
+        "overloaded_error" => Fail::overloaded(None),
         "rate_limit_error" => Fail::Fatal(LlmError::rate_limited(None)),
         "authentication_error" | "permission_error" => Fail::Fatal(LlmError::Auth),
-        "invalid_request_error" => Fail::Fatal(LlmError::Malformed(short(message))),
+        "invalid_request_error" => Fail::Fatal(LlmError::Malformed(short(message, secret))),
         // Only `overloaded_error` is retried (D5): any other kind surfaces at once.
-        _ => Fail::Fatal(LlmError::Network(format!("the provider reported {kind}: {}", short(message)))),
+        _ => Fail::Fatal(LlmError::Network(format!("the provider reported {kind}: {}", short(message, secret)))),
     }
 }
 
@@ -211,7 +230,7 @@ impl Decoder for AnthropicDecoder {
             "message_stop" if !self.stopped => Err(malformed("message_stop before a stop reason")),
             "error" => {
                 let (kind, message) = error_parts(&v);
-                Err(event_fail(kind, message))
+                Err(event_fail(kind, message, self.secret.as_ref()))
             }
             // `ping`, `message_stop` after a stop, and event types added later.
             _ => Ok(Vec::new()),
@@ -224,13 +243,19 @@ impl Decoder for AnthropicDecoder {
 }
 
 /// Maps a non-2xx answer: the JSON error body names the type and message.
-pub(crate) fn classify(status: u16, retry_after: Option<Duration>, body: &[u8], context_window: u64) -> Fail {
+pub(crate) fn classify(
+    status: u16,
+    retry_after: Option<Duration>,
+    body: &[u8],
+    context_window: u64,
+    secret: Option<&SecretValue>,
+) -> Fail {
     let parsed: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
     let (kind, message) = error_parts(&parsed);
     if kind == "overloaded_error" {
-        return Fail::overloaded();
+        return Fail::overloaded(retry_after);
     }
-    status_fail(status, retry_after, message, context_window)
+    status_fail(status, retry_after, message, context_window, secret)
 }
 
 #[cfg(test)]
@@ -360,18 +385,64 @@ mod tests {
         assert!(matches!(error("api_error"), Err(Fail::Fatal(LlmError::Network(_)))));
     }
 
+    fn thinking_start(index: u64, thinking: &str) -> String {
+        json!({"type": "content_block_start", "index": index,
+               "content_block": {"type": "thinking", "thinking": thinking, "signature": ""}})
+        .to_string()
+    }
+
+    #[test]
+    fn the_held_blocks_share_one_cap_that_counts_their_first_payloads() {
+        let third = "x".repeat(MAX_BUFFERED / 3 + 1);
+        // One block whose first payload is over the cap.
+        let mut d = started();
+        assert!(feed(&mut d, &thinking_start(0, &"x".repeat(MAX_BUFFERED + 1))).is_err());
+        // Several open blocks, each under the cap, that add up past it.
+        let mut d = started();
+        assert!(feed(&mut d, &thinking_start(0, &third)).is_ok());
+        assert!(feed(&mut d, &thinking_start(1, &third)).is_ok());
+        assert!(feed(&mut d, &thinking_start(2, &third)).is_err());
+        // The same through deltas.
+        let mut d = started();
+        assert!(feed(&mut d, &thinking_start(0, "")).is_ok());
+        assert!(feed(&mut d, &thinking_start(1, "")).is_ok());
+        let delta = |index: u64| {
+            json!({"type": "content_block_delta", "index": index,
+                   "delta": {"type": "thinking_delta", "thinking": third}})
+            .to_string()
+        };
+        assert!(feed(&mut d, &delta(0)).is_ok());
+        assert!(feed(&mut d, &delta(1)).is_ok());
+        assert!(feed(&mut d, &delta(0)).is_err());
+        // A block of a type this client does not know counts too.
+        let mut d = started();
+        let unknown = json!({"type": "content_block_start", "index": 0,
+                             "content_block": {"type": "redacted_thinking", "data": "x".repeat(MAX_BUFFERED + 1)}});
+        assert!(feed(&mut d, &unknown.to_string()).is_err());
+    }
+
+    #[test]
+    fn a_closed_block_releases_what_it_held() {
+        let mut d = started();
+        let big = "x".repeat(MAX_BUFFERED / 2 + 1);
+        for index in 0..4 {
+            assert!(feed(&mut d, &thinking_start(index, &big)).is_ok(), "block {index}");
+            assert!(feed(&mut d, &json!({"type": "content_block_stop", "index": index}).to_string()).is_ok());
+        }
+    }
+
     #[test]
     fn error_bodies_map_by_status_and_message() {
         let long = br#"{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 300000 tokens > 200000 maximum"}}"#;
         assert!(matches!(
-            classify(400, None, long, 200_000),
+            classify(400, None, long, 200_000, None),
             Fail::Fatal(LlmError::ContextTooLong { max: 200_000, .. })
         ));
         let over = br#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#;
-        assert!(matches!(classify(529, None, over, 1), Fail::Retry { error: LlmError::Overloaded, .. }));
-        assert!(matches!(classify(401, None, b"", 1), Fail::Fatal(LlmError::Auth)));
-        assert!(matches!(classify(429, Some(Duration::from_secs(3)), b"{}", 1), Fail::Retry { .. }));
-        let bad = classify(400, None, br#"{"error":{"message":"bad field"}}"#, 1);
+        assert!(matches!(classify(529, None, over, 1, None), Fail::Retry { error: LlmError::Overloaded, .. }));
+        assert!(matches!(classify(401, None, b"", 1, None), Fail::Fatal(LlmError::Auth)));
+        assert!(matches!(classify(429, Some(Duration::from_secs(3)), b"{}", 1, None), Fail::Retry { .. }));
+        let bad = classify(400, None, br#"{"error":{"message":"bad field"}}"#, 1, None);
         assert!(matches!(bad, Fail::Fatal(LlmError::Malformed(m)) if m.contains("bad field")));
     }
 }

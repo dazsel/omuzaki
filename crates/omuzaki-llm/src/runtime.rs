@@ -50,25 +50,19 @@ pub(crate) fn handle_of(runtime: &RuntimeHandle) -> Result<Handle, LlmError> {
 /// runtime. For the blocking calls (model listing, probing) that are never on a hot path.
 ///
 /// Inside a multi-thread runtime the wait is `block_in_place`, which hands the worker's queue to another thread, so
-/// even a one-worker runtime makes progress. Waiting on the runtime that is running the caller's own thread, when it
-/// is a current-thread one, cannot work (the future would need the thread that waits), so that is refused.
+/// even a one-worker runtime makes progress. A current-thread runtime makes progress only while some thread drives it,
+/// and this call cannot know that one does (and if the caller is that thread, it never will), so a current-thread
+/// target is refused before anything is spawned.
 pub(crate) fn block_on<T: Send + 'static>(
     handle: &Handle,
     future: impl std::future::Future<Output = T> + Send + 'static,
 ) -> Result<T, LlmError> {
-    let inside = Handle::try_current().ok();
-    let wait_in_place = match &inside {
-        Some(current) if current.runtime_flavor() == tokio::runtime::RuntimeFlavor::CurrentThread => {
-            if current.id() == handle.id() {
-                return Err(LlmError::Unsupported(
-                    "this call blocks, and the LLM runtime is the current-thread runtime of the calling task; call it from a thread outside that runtime, or use a multi-thread runtime or runtime::dedicated".into(),
-                ));
-            }
-            false
-        }
-        Some(_) => true,
-        None => false,
-    };
+    if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::CurrentThread {
+        return Err(LlmError::Unsupported(
+            "this call blocks until the LLM runtime has run it, and a current-thread runtime may have no thread driving it; use a multi-thread runtime or runtime::dedicated".into(),
+        ));
+    }
+    let wait_in_place = matches!(Handle::try_current(), Ok(current) if current.runtime_flavor() != tokio::runtime::RuntimeFlavor::CurrentThread);
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     handle.spawn(async move {
         // The caller may have gone; nothing to tell it then.
@@ -101,6 +95,14 @@ mod tests {
         let handle = rt.handle().clone();
         let got = rt.block_on(async move { tokio::spawn(async move { block_on(&handle, async { 5 }) }).await });
         assert_eq!(got.unwrap_or_else(|e| panic!("{e}")), Ok(5));
+    }
+
+    #[test]
+    fn a_blocking_call_on_an_undriven_current_thread_runtime_is_refused_not_hung() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap_or_else(|e| panic!("{e}"));
+        // Called from a plain thread: nothing drives `rt`, so waiting for it would never end.
+        let got = block_on(rt.handle(), async { 5 });
+        assert!(matches!(got, Err(LlmError::Unsupported(_))), "{got:?}");
     }
 
     #[test]

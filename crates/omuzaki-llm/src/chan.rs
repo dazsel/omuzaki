@@ -2,7 +2,7 @@
 //! on a condition variable, and a full queue stops the task from reading the socket.
 
 use std::collections::VecDeque;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, TryLockError};
 use std::time::{Duration, Instant};
 
 use omuzaki_llm_api::error::LlmError;
@@ -127,7 +127,17 @@ impl Drop for Receiver {
 impl EventSource for Receiver {
     fn poll(&mut self, wait: Duration) -> Result<Next, LlmError> {
         let deadline = Instant::now() + wait;
-        let mut state = self.shared.lock();
+        // `wait` of zero is the nonblocking poll: a lock the task holds at that instant reads as "nothing ready yet"
+        // rather than a wait on the task (the caller polls again).
+        let mut state = if wait.is_zero() {
+            match self.shared.state.try_lock() {
+                Ok(state) => state,
+                Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+                Err(TryLockError::WouldBlock) => return Ok(Next::Wait),
+            }
+        } else {
+            self.shared.lock()
+        };
         loop {
             if let Some(message) = state.queue.pop_front() {
                 drop(state);
@@ -169,6 +179,24 @@ mod tests {
         assert_eq!(rx.poll(Duration::ZERO), Ok(Next::Event(text("a"))));
         assert_eq!(rx.poll(Duration::ZERO), Ok(Next::Event(text("b"))));
         assert_eq!(rx.poll(Duration::ZERO), Ok(Next::End));
+    }
+
+    #[test]
+    fn a_zero_wait_poll_does_not_block_on_a_held_lock() {
+        let (tx, mut rx) = channel();
+        let held = std::thread::spawn({
+            let shared = Arc::clone(&tx.shared);
+            move || {
+                let _guard = shared.lock();
+                std::thread::sleep(Duration::from_millis(400));
+            }
+        });
+        std::thread::sleep(Duration::from_millis(50));
+        let started = Instant::now();
+        assert_eq!(rx.poll(Duration::ZERO), Ok(Next::Wait));
+        assert!(started.elapsed() < Duration::from_millis(200), "{:?}", started.elapsed());
+        held.join().unwrap_or_else(|_| panic!("the holder panicked"));
+        drop(tx);
     }
 
     #[test]

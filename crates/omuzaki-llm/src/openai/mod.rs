@@ -62,12 +62,12 @@ impl Protocol for Wire {
         self.key_required
     }
 
-    fn classify(&self, status: u16, retry_after: Option<Duration>, body: &[u8]) -> Fail {
-        decode::classify(status, retry_after, body, self.context_window)
+    fn classify(&self, status: u16, retry_after: Option<Duration>, body: &[u8], secret: Option<&SecretValue>) -> Fail {
+        decode::classify(status, retry_after, body, self.context_window, secret)
     }
 
-    fn decoder(&self) -> Box<dyn Decoder> {
-        Box::new(decode::OpenAiDecoder::new(self.model.clone(), self.context_window))
+    fn decoder(&self, secret: Option<SecretValue>) -> Box<dyn Decoder> {
+        Box::new(decode::OpenAiDecoder::new(self.model.clone(), self.context_window, secret))
     }
 }
 
@@ -207,16 +207,20 @@ impl LlmClient for OpenAiClient {
         }
         validate::request(&req, &self.info)?;
         refuse_camera(&req, self.wire.endpoint.loopback)?;
-        let job = Job {
-            http: self.http.clone(),
-            protocol: Arc::clone(&self.wire) as Arc<dyn Protocol>,
-            body: wire::body(&req, &self.info.id, self.info.effort),
-            key: self.key.clone(),
-            max_retries: self.max_retries,
-            timeouts: self.timeouts,
-            seed: self.seed,
+        // The history and the images are encoded on the task, not here (llm-api D1).
+        let (model, effort) = (self.info.id.clone(), self.info.effort);
+        let (http, wire) = (self.http.clone(), Arc::clone(&self.wire));
+        let (key, max_retries, timeouts, seed) = (self.key.clone(), self.max_retries, self.timeouts, self.seed);
+        let make = move || Job {
+            http,
+            protocol: wire as Arc<dyn Protocol>,
+            body: wire::body(&req, &model, effort),
+            key,
+            max_retries,
+            timeouts,
+            seed,
         };
-        Ok(engine::spawn(&self.handle, job, cancel))
+        Ok(engine::spawn(&self.handle, make, cancel))
     }
 }
 
@@ -264,6 +268,7 @@ pub fn list_models_within(
                 None,
                 &redact_bytes(body, key.as_ref()),
                 window.unwrap_or(FALLBACK_CONTEXT),
+                key.as_ref(),
             ) {
                 Fail::Fatal(e) | Fail::Retry { error: e, .. } => e,
             };

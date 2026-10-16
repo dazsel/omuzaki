@@ -1,6 +1,8 @@
 //! Server-Sent Events over a body stream (llm-api D11), framed by `sse-stream`.
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use tokio::time::Instant;
 
@@ -41,21 +43,28 @@ fn convert(item: Result<Sse, SseError>) -> Result<Option<SseEvent>, SseFail> {
 ///
 /// Caveat: a server that sends only comments keeps a turn alive for as long as it likes; the idle limit bounds silence,
 /// not total time, and the caller's cancel is what ends such a turn.
+///
+/// The clock is one atomic (nanoseconds since the stream opened): the body stream and the engine's wait both touch it
+/// on the async path, where no lock may block a worker.
 #[derive(Clone, Debug)]
-pub(crate) struct Activity(Arc<Mutex<Instant>>);
+pub(crate) struct Activity {
+    opened: Instant,
+    nanos: Arc<AtomicU64>,
+}
 
 impl Activity {
     fn new() -> Self {
-        Self(Arc::new(Mutex::new(Instant::now())))
+        Self { opened: Instant::now(), nanos: Arc::new(AtomicU64::new(0)) }
     }
 
     fn touch(&self) {
-        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = Instant::now();
+        let since = u64::try_from(self.opened.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        self.nanos.fetch_max(since, Ordering::Relaxed);
     }
 
     /// When the latest bytes arrived (or the stream was opened).
     pub(crate) fn last(&self) -> Instant {
-        *self.0.lock().unwrap_or_else(PoisonError::into_inner)
+        self.opened + Duration::from_nanos(self.nanos.load(Ordering::Relaxed))
     }
 }
 
