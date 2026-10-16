@@ -49,7 +49,7 @@ pub mod system;
 pub mod underlay;
 
 pub use layer::{FaceLayerPainter, GpuRasterizer};
-pub use painter::{MouthPiece, OpenMouth, PaintCtx, RealPainter, Section};
+pub use painter::{LayerSections, MouthPiece, OpenMouth, PaintCtx, RealPainter, Section, SectionRanges};
 pub use system::{FaceSystem, FaceTimings, FaceUpdate};
 
 omuzaki_core::define_link! {
