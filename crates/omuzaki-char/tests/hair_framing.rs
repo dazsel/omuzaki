@@ -310,11 +310,15 @@ fn each_out_of_range_lock_value_fails_naming_its_field() {
 }
 
 #[test]
-fn values_accepted_before_the_locks_still_validate() {
+fn the_spread_and_the_outline_are_checked_since_the_class_sweep() {
+    // These were accepted until #1775 swept every generator's numbers: a NaN outline point never reaches the generator now.
     let mut g = FramingGen { spread: 0.21, ..FramingGen::default() };
     g.edge[2] = [f64::NAN, 5.0];
     g.edge.push([9.0, -9.0]);
-    assert_eq!(failures(&g), "", "only the new `locks` field is bounded");
+    let message = failures(&g);
+    for path in ["generator/spread", "generator/edge/2/y", "generator/edge/2/x", "generator/edge/5/y"] {
+        assert!(message.contains(path), "{path}: {message}");
+    }
 }
 
 // ------------------------------------------------------------------------------------------ independent coordinates

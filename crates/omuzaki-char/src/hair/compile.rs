@@ -22,6 +22,7 @@ use omuzaki_core::rng::Rng;
 use omuzaki_face_api::{Palette, narrow};
 
 use super::r#gen;
+use super::tie::Tie;
 
 /// A stream of uniform numbers in `0..1`.
 pub trait UnitStream {
@@ -136,6 +137,12 @@ impl<'a> HairGenCtx<'a> {
 pub enum GroupGeometry {
     /// A lens tube per clump ([`tube`](super::tube)).
     Tube,
+    /// Tubes and the hair ties that gather them (a tail): drawn as [`Tube`](Self::Tube), plus a band per tie in the
+    /// part's tie mesh ([`tie`](super::tie)).
+    Tied {
+        /// The bands, one per gather.
+        ties: Vec<Tie>,
+    },
     /// The curtain: each clump owns `columns` columns of one wide strip, ordered across the head by `u` (one per clump).
     /// The strips are meshed by [`curtain::group_mesh`](super::r#gen::curtain::group_mesh); the runtime (#322) refills them.
     Strip {
@@ -151,7 +158,7 @@ pub enum GroupGeometry {
 impl GroupGeometry {
     /// Whether the group's clumps are drawn as tubes.
     pub fn is_tube(&self) -> bool {
-        matches!(self, Self::Tube)
+        matches!(self, Self::Tube | Self::Tied { .. })
     }
 }
 
@@ -175,7 +182,7 @@ impl CompiledGroup {
         Self { clumps: Vec::new(), geometry }
     }
 
-    /// The group followed by its mirror image across the plane `x = mid_x`: clumps (and a strip's `u`, and a shell's
+    /// The group followed by its mirror image across the plane `x = mid_x`: clumps (and a strip's `u`, a tail's ties and a shell's
     /// vertices) are reflected, and the winding of a shell is reversed so it still faces outward. No random numbers are
     /// drawn: the mirror is exact.
     #[must_use]
@@ -189,6 +196,10 @@ impl CompiledGroup {
         self.clumps.extend(mirrored);
         match &mut self.geometry {
             GroupGeometry::Tube => {}
+            GroupGeometry::Tied { ties } => {
+                let reflected: Vec<Tie> = ties.iter().map(|t| t.mirrored(mid_x)).collect();
+                ties.extend(reflected);
+            }
             GroupGeometry::Strip { u, .. } => {
                 let reflected: Vec<f32> = u.iter().map(|u| -u).collect();
                 u.extend(reflected);
