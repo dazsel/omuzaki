@@ -48,6 +48,7 @@ pub enum SizePolicy {
 
 /// What to open: the title, the backdrop, the size policy and the cursor.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct WindowSettings {
     /// The window title; see `check_title` (in `omuzaki-stream`).
     pub title: String,
@@ -73,6 +74,7 @@ impl Default for WindowSettings {
 
 /// The exact size to give the window, computed by `plan` (in `omuzaki-stream`).
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct WindowPlan {
     /// The client area in physical pixels: what a capture tool grabs.
     pub physical: UVec2,
@@ -106,6 +108,7 @@ pub enum WindowError {
 
 /// What a window host can do.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct WindowCaps {
     /// It can make a transparent surface ([`Backdrop::Transparent`]).
     pub transparent: bool,
@@ -115,6 +118,7 @@ pub struct WindowCaps {
 
 /// The output the window shows and the display it opens on: what `plan` (in `omuzaki-stream`) needs and the ops cannot know.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct OutputSurface {
     /// The output size in pixels.
     pub size: UVec2,
@@ -136,6 +140,30 @@ pub enum WindowState {
         /// What it shows behind the character.
         backdrop: Backdrop,
     },
+}
+
+impl WindowPlan {
+    /// A plan of `physical` pixels (`logical` in logical units) for a display with `scale_factor`.
+    #[must_use]
+    pub const fn new(physical: UVec2, logical: (f64, f64), scale_factor: f64) -> Self {
+        Self { physical, logical, scale_factor }
+    }
+}
+
+impl WindowCaps {
+    /// A host that can make a transparent surface if `transparent`, and keep the window on top if `always_on_top`.
+    #[must_use]
+    pub const fn new(transparent: bool, always_on_top: bool) -> Self {
+        Self { transparent, always_on_top }
+    }
+}
+
+impl OutputSurface {
+    /// An output of `size` pixels shown on a display with `scale_factor`.
+    #[must_use]
+    pub const fn new(size: UVec2, scale_factor: f64) -> Self {
+        Self { size, scale_factor }
+    }
 }
 
 impl WindowState {

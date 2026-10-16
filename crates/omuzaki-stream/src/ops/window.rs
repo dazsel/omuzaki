@@ -72,6 +72,9 @@ pub struct SuggestKey {
 fn window_error(field: &str, error: &WindowError) -> OpError {
     match error {
         WindowError::Host(_) => OpError::conflict(error.to_string()).hint("check the output window, then ask again"),
+        // The host's own surface is unusable: nothing in the request can repair it.
+        WindowError::ScaleFactor(_) | WindowError::EmptyOutput(..) => OpError::conflict(error.to_string())
+            .hint("the display or the output reports an unusable size; check them, then ask again"),
         _ => OpError::invalid(field, error.to_string()),
     }
 }

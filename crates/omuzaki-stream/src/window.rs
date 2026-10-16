@@ -49,11 +49,11 @@ pub fn plan(output: UVec2, policy: SizePolicy, scale_factor: f64) -> Result<Wind
         SizePolicy::Scale(s) if (MIN_SCALE..=MAX_SCALE).contains(&s) => scaled_size(output, s),
         SizePolicy::Scale(s) => return Err(WindowError::Scale(s)),
     };
-    Ok(WindowPlan {
+    Ok(WindowPlan::new(
         physical,
-        logical: (f64::from(physical.x) / scale_factor, f64::from(physical.y) / scale_factor),
+        (f64::from(physical.x) / scale_factor, f64::from(physical.y) / scale_factor),
         scale_factor,
-    })
+    ))
 }
 
 /// The [`SizePolicy::Scale`] window: `output * scale`, with one common scale that keeps the longer side within

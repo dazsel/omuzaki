@@ -88,6 +88,9 @@ src/window.rs: pub enum WindowError {
 src/window.rs: pub struct WindowCaps {
 src/window.rs: pub struct OutputSurface {
 src/window.rs: pub enum WindowState {
+src/window.rs: pub const fn new(physical: UVec2, logical: (f64, f64), scale_factor: f64) -> Self {
+src/window.rs: pub const fn new(transparent: bool, always_on_top: bool) -> Self {
+src/window.rs: pub const fn new(size: UVec2, scale_factor: f64) -> Self {
 src/window.rs: pub const fn open(physical: UVec2, backdrop: Backdrop) -> Self {
 src/window.rs: pub trait WindowHost: Service {
 src/window.rs: pub trait PaletteSource: Service {

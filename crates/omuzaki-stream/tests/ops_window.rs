@@ -32,8 +32,8 @@ struct FakeHost {
 impl FakeHost {
     fn new(transparent: bool) -> Arc<Self> {
         Arc::new(Self {
-            caps: WindowCaps { transparent, always_on_top: true },
-            surface: OutputSurface { size: UVec2::new(1920, 1080), scale_factor: 1.5 },
+            caps: WindowCaps::new(transparent, true),
+            surface: OutputSurface::new(UVec2::new(1920, 1080), 1.5),
             refuse: false,
             state: Mutex::new(WindowState::Closed),
             opens: Mutex::default(),
@@ -228,6 +228,20 @@ fn a_host_that_cannot_open_is_a_conflict_with_a_hint() {
     let error = call(NAMES[0], json!({}), Some(&services(&host, &green_palette())), false).unwrap_err();
     assert_eq!(error.code, ErrorCode::Conflict);
     assert!(error.hint.is_some());
+}
+
+#[test]
+fn an_unusable_host_surface_is_a_conflict_not_a_bad_argument() {
+    for surface in [OutputSurface::new(UVec2::new(0, 1080), 1.0), OutputSurface::new(UVec2::new(1920, 1080), 9.0)] {
+        let host = Arc::new(FakeHost { surface, ..Arc::try_unwrap(FakeHost::new(true)).ok().unwrap() });
+        let services = services(&host, &green_palette());
+        for args in [json!({}), json!({ "scale": 0.5 })] {
+            let error = call(NAMES[0], args, Some(&services), false).unwrap_err();
+            assert_eq!(error.code, ErrorCode::Conflict, "{surface:?}: {error:?}");
+            assert!(error.hint.is_some());
+        }
+        assert_eq!(host.opens.lock().unwrap().len(), 0);
+    }
 }
 
 #[test]
