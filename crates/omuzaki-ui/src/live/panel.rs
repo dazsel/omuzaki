@@ -311,29 +311,26 @@ impl LivePanel {
     fn output_state(&self, ui: &mut Ui, choice: WindowChoice) {
         let ctx = ui.ctx().clone();
         let small = ds(&ctx).text.small.clone();
-        match self.model.window() {
-            Some(WindowState::Open { physical, backdrop, minimised, .. }) => {
-                let (width, height) = (physical.x.to_string(), physical.y.to_string());
-                let size = say(&ctx, Word::OutputSize, &[("width", &width), ("height", &height)]);
-                let line = match backdrop {
-                    Shown::Key(key) => say(&ctx, Word::OutputOverKey, &[("size", &size), ("key", &key.to_string())]),
-                    Shown::Transparent => say(&ctx, Word::OutputOverNothing, &[("size", &size)]),
-                    // A backdrop newer than this panel: the size alone.
-                    _ => size,
-                };
-                ui.label(RichText::new(line).font(small));
-                if self.model.window_fallback() && choice.backdrop == Backdrop::Transparent {
-                    ui.add(StatusChip::new(Status::Warn, &text(&ctx, Word::OutputFallback)));
-                }
-                if minimised {
-                    ui.add(StatusChip::new(Status::Warn, &text(&ctx, Word::OutputMinimised)));
-                }
-            }
-            // Closed, not read yet, or a state this build doesn't know: where to find the window once it opens.
-            _ => {
-                let hint = say(&ctx, Word::OutputHint, &[("title", DEFAULT_TITLE)]);
-                ui.label(RichText::new(hint).font(small));
-            }
+        // Closed, not read yet, or a state this build doesn't know: where to find the window once it opens.
+        let Some(WindowState::Open { physical, backdrop, minimised, .. }) = self.model.window() else {
+            let hint = say(&ctx, Word::OutputHint, &[("title", DEFAULT_TITLE)]);
+            ui.label(RichText::new(hint).font(small));
+            return;
+        };
+        let (width, height) = (physical.x.to_string(), physical.y.to_string());
+        let size = say(&ctx, Word::OutputSize, &[("width", &width), ("height", &height)]);
+        let line = match backdrop {
+            Shown::Key(key) => say(&ctx, Word::OutputOverKey, &[("size", &size), ("key", &key.to_string())]),
+            Shown::Transparent => say(&ctx, Word::OutputOverNothing, &[("size", &size)]),
+            // A backdrop newer than this panel: the size alone.
+            _ => size,
+        };
+        ui.label(RichText::new(line).font(small));
+        if self.model.window_fallback() && choice.backdrop == Backdrop::Transparent {
+            ui.add(StatusChip::new(Status::Warn, &text(&ctx, Word::OutputFallback)));
+        }
+        if minimised {
+            ui.add(StatusChip::new(Status::Warn, &text(&ctx, Word::OutputMinimised)));
         }
     }
 
