@@ -59,19 +59,18 @@ const BONES: [(&str, Option<&str>, [f32; 3]); 17] = [
     ("rightFoot", Some("rightLowerLeg"), [0.0, -0.4, 0.0]),
 ];
 
-/// A new `demo` project with the avatar imported as character [`CHARACTER`], and the services its ops need (the
-/// project's store).
+/// A new `demo` project with the avatar imported as character [`CHARACTER`], and its store, which the avatar ops
+/// read the model from.
 ///
 /// # Errors
 /// What failed, as text for the suite's report: building, writing or importing the model.
-pub fn project() -> Result<(tempfile::TempDir, Services), String> {
+pub fn project() -> Result<(tempfile::TempDir, Arc<dyn Store>), String> {
     let dir = crate::common::new_project();
     let store: Arc<dyn Store> =
         Arc::new(DiskStore::open(dir.path().join("store")).map_err(|e| format!("opening the store failed: {e}"))?);
-    let services = ServicesBuilder::new().insert::<dyn Store>(store).build();
     std::fs::write(dir.path().join(FILE), vrm_bytes()?).map_err(|e| format!("writing the model failed: {e}"))?;
-    import(dir.path(), services.clone())?;
-    Ok((dir, services))
+    import(dir.path(), ServicesBuilder::new().insert::<dyn Store>(store.clone()).build())?;
+    Ok((dir, store))
 }
 
 /// Inspects [`FILE`] as an avatar and imports it with the token the inspection gave, as a person.

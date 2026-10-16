@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Turn `cargo xtask check --format json` into the step outputs the CI plan job publishes.
 
-    plan-outputs.py REPORT.json EVENT        EVENT is `pull_request` or `merge_group`
+    plan-outputs.py REPORT.json EVENT        EVENT is `pull_request`, `merge_group` or `workflow_dispatch` (hosted tests, planned like the queue)
 
 Prints `key=value` lines (append them to $GITHUB_OUTPUT). Why a script and not jq in the workflow: it can be run and
 tested by hand (tools/tests/plan_outputs.sh), and the policy lives in one readable place.

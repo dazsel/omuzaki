@@ -105,3 +105,166 @@ jobs:
           name: face-gpu-timing-windows
           path: target/x86_64-pc-windows-gnu/release/examples/gpu_face_timing.exe
           if-no-files-found: error
+
+  # The track_roi timing probe for the reference machine (#1515): cross-built for Windows, handed over as an artifact.
+  # The owner runs it there (it needs the pinned ONNX Runtime archive and the model folder, which RUN.txt names), so the
+  # job builds and uploads and runs nothing. ONNX Runtime is loaded at run time (the workspace's `load-dynamic`), so the
+  # gnu target links no ORT and needs no Windows runner.
+  track-roi-probe:
+    name: track_roi timing probe (windows)
+    runs-on: ubuntu-latest
+    if: github.repository == 'dazsel/omuzaki'
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-linux
+        with:
+          windows-cross: true
+      - name: Build the probe
+        run: cargo build --locked --release --target x86_64-pc-windows-gnu -p omuzaki-test --example track_roi_timing
+      - name: Collect
+        run: |
+          mkdir track-roi-timing-windows
+          cp target/x86_64-pc-windows-gnu/release/examples/track_roi_timing.exe track-roi-timing-windows/
+          cat > track-roi-timing-windows/RUN.txt <<'TXT'
+          track_roi_timing.exe prints a Markdown table of the track_roi timing (640x480, 1 thread, 1,000 calls).
+          Set two folders, then run it:
+            OMUZAKI_TRACK_MODELS  the model folder: tools/models/mediapipe-face.sh --out <dir> (checks its own SHA-256)
+            OMUZAKI_ORT_CACHE     a folder holding the pinned ONNX Runtime archive under its release file name
+          track_roi_timing.exe --pins prints that archive's URL, SHA-256 and size; the probe checks them again on load.
+          TXT
+          (cd track-roi-timing-windows && sha256sum track_roi_timing.exe > track_roi_timing.exe.sha256)
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: track-roi-timing-windows
+          path: track-roi-timing-windows
+          if-no-files-found: error
+
+  # The fuzz targets (#1653): each runs 10 minutes on the nightly toolchain from seed corpora the tests' synthetic
+  # inputs make; a crash fails the job and its input is uploaded. cargo-deny checks fuzz/'s own lockfile, where the one
+  # libfuzzer-sys exception in deny.toml applies.
+  fuzz:
+    name: fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    if: github.repository == 'dazsel/omuzaki'
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [litert_scan, ort_scan, file_access_path]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-linux
+        with:
+          tools: cargo-fuzz,cargo-deny
+      - name: Nightly toolchain
+        run: rustup toolchain install nightly --profile minimal
+      - name: Licences of fuzz/
+        working-directory: fuzz
+        run: cargo deny --manifest-path Cargo.toml --config ../deny.toml check licenses bans sources
+      - name: Fuzz ${{ matrix.target }} for 10 minutes
+        working-directory: fuzz
+        run: |
+          cargo run --release --locked --bin seed -- corpus
+          cargo +nightly fuzz run --locked "${{ matrix.target }}" "corpus/${{ matrix.target }}" -- -max_total_time=600 -print_final_stats=1
+      - name: Upload the crash
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-crash-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}
+          retention-days: 14
+          if-no-files-found: ignore
+
+  # The LiteRT build, called in this run (restore-only cache); parity takes its archive from here (#1751).
+  litert:
+    if: github.repository == 'dazsel/omuzaki'
+    uses: ./.github/workflows/runtime-litert.yml
+    permissions:
+      contents: read
+
+  # The face graphs with their ONNX conversions, for the parity job's two references.
+  face-models:
+    name: face models
+    runs-on: ubuntu-24.04
+    if: github.repository == 'dazsel/omuzaki'
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Face graphs
+        run: tools/models/mediapipe-face.sh --out "$RUNNER_TEMP/face" --venv "$RUNNER_TEMP/face-venv"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nightly-face-models
+          path: |
+            ${{ runner.temp }}/face/*.tflite
+            ${{ runner.temp }}/face/*.onnx
+            ${{ runner.temp }}/face/manifest.json
+          retention-days: 1
+          if-no-files-found: error
+
+  # Parity and determinism (#1751) and the session on the real library (#1750), on Linux and Windows.
+  parity:
+    name: litert parity (${{ matrix.platform }})
+    needs: [litert, face-models]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x64
+            runner: ubuntu-24.04
+          - platform: win-x64
+            runner: windows-2022
+    defaults:
+      run:
+        shell: bash
+    env:
+      OMUZAKI_LITERT_SHA256: ${{ fromJSON(needs.litert.outputs.sha256)[matrix.platform] }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The runner context isn't available in a job's env, so the folders are set here.
+      - name: The build's digest, and the test folders
+        run: |
+          test "${#OMUZAKI_LITERT_SHA256}" = 64 || { echo "::error::no SHA-256 from the LiteRT build"; exit 1; }
+          {
+            echo "OMUZAKI_LITERT_CACHE=$RUNNER_TEMP/litert"
+            echo "OMUZAKI_TRACK_MODELS=$RUNNER_TEMP/models"
+            echo "OMUZAKI_LITERT_REFERENCE=$RUNNER_TEMP/reference"
+          } >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: litert-[0-9]*-${{ matrix.platform }}
+          path: ${{ runner.temp }}/litert
+          merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: nightly-face-models
+          path: ${{ runner.temp }}/models
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Reference outputs (the wheel and onnxruntime, throwaway venv)
+        run: |
+          python -m venv "$RUNNER_TEMP/venv"
+          py="$RUNNER_TEMP/venv/bin/python"; [ -x "$py" ] || py="$RUNNER_TEMP/venv/Scripts/python.exe"
+          "$py" -m pip install --require-hashes --no-deps --only-binary ':all:' -r tools/litert/requirements-check.txt
+          "$py" -m pip install --require-hashes --no-deps --only-binary ':all:' -r tools/litert/requirements-reference.txt
+          "$py" -I tools/models/litert_reference.py --models "$OMUZAKI_TRACK_MODELS" --out "$OMUZAKI_LITERT_REFERENCE"
+      - name: Gated tests
+        run: >-
+          cargo test --locked -p omuzaki-ai-litert --test session --test allocations --test idle_cpu --test parity
+          --test library -- --nocapture

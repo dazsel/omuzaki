@@ -8,8 +8,19 @@
 //! - `control_advance_capture_done_150` and `_600`: the `advance` that finishes a neutral capture (the median over
 //!   every channel and the head, then the calibration swap), the most work the control does in one call. Feeding the
 //!   frames is outside the clock.
+//! - `live_frame_mock_character`: one `LiveStage::frame` (#2072): the source swap check, an `advance` with one step,
+//!   the stage's tick of the mock character without a face, and the scheduler's `observe`. The renderer is the frame
+//!   bench's double, which answers a canned report without drawing. Budget: the 60 fps frame, of which the stage's
+//!   share is 0.3 ms (spec v3 §10).
+
+// Bench helpers may panic: a panic is a clear failure.
+#![allow(clippy::expect_used)]
+
+#[path = "../tests/frame/double.rs"]
+mod double;
 
 use std::hint::black_box;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use criterion::{Criterion, criterion_group, criterion_main};
@@ -18,11 +29,18 @@ use omuzaki_anim::retarget::ArkitRetarget;
 use omuzaki_anim_api::{ChannelBuf, DeviceProfile, HumanoidPose, LifeConfig, Tick};
 use omuzaki_anim_mock::animator::MockAnimator;
 use omuzaki_anim_mock::track::{SyntheticSpec, TrackReplay, synthetic_track};
+use omuzaki_core::glam::UVec2;
 use omuzaki_core::time::Seconds;
+use omuzaki_render_api::{AlphaEncoding, Camera, Quality, Renderer, Scene, TargetDesc, budget};
+use omuzaki_stage::UploadOptions;
+use omuzaki_stage::frame::pose::seed_base_pose;
+use omuzaki_stage::frame::{Stage, StageClock};
 use omuzaki_stage::perform::host::{
     CalibrationState, MAX_COMMANDS_PER_ADVANCE, PerformControl, PerformHandle, PerformHost, RetargetChange,
     perform_channel,
 };
+use omuzaki_stage::perform::input::SourceSlot;
+use omuzaki_stage::perform::live::LiveStage;
 use omuzaki_stage::perform::{Performer, PerformerParts, STEP_HZ};
 
 fn performer() -> Performer {
@@ -144,5 +162,33 @@ fn perform_step(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, perform_step, control_advance, control_capture_done);
+fn live_frame(c: &mut Criterion) {
+    let mut renderer = double::Recorder::new(false);
+    let target = renderer
+        .create_target(&TargetDesc { size: UVec2::new(8, 8), alpha: AlphaEncoding::Straight })
+        .expect("a target");
+    let built = double::built();
+    let mut base = HumanoidPose::REST;
+    seed_base_pose(&built.rig, &mut base);
+    let options = UploadOptions { face_px_per_m: 1200.0 };
+    let quality = Quality::live();
+    let stage =
+        Stage::new(&mut renderer, built, options, Scene::new(Camera::default()), target, quality, StageClock::live())
+            .expect("the stage starts");
+    let mut performer = performer();
+    performer.set_rest(ChannelBuf::NEUTRAL, base);
+    let sources = Arc::new(SourceSlot::new());
+    let mut live = LiveStage::new(performer, stage, sources, quality, budget::LIVE_GPU).expect("the loop starts");
+    let mut index = 0_u64;
+    c.bench_function("live_frame_mock_character", |b| {
+        b.iter(|| {
+            index += 1;
+            renderer.updates.clear();
+            black_box(live.frame(&mut renderer, mid_step(index)).expect("frame").map(|f| f.output.tick.index))
+        });
+    });
+    live.into_stage().release(&mut renderer).expect("released");
+}
+
+criterion_group!(benches, perform_step, control_advance, control_capture_done, live_frame);
 criterion_main!(benches);

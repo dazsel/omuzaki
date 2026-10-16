@@ -19,7 +19,7 @@ use omuzaki_anim_mock::animator::MockAnimator;
 use omuzaki_core::time::{FakeClock, Seconds};
 use omuzaki_doc_mock::MemDoc;
 use omuzaki_face_api::{ExpressionId, ExpressionSet};
-use omuzaki_ops_api::{Actor, ErrorCode, OpCtx, OpError, ServicesBuilder, find};
+use omuzaki_ops_api::{Actor, Effect, ErrorCode, OpCtx, OpError, Plan, ServicesBuilder, Undo, find};
 use omuzaki_stage::perform::host::{PerformControl, PerformError, PerformHandle, PerformHost, perform_channel};
 use omuzaki_stage::perform::triggers::{BindOutcome, TriggerBinding};
 use omuzaki_stage::perform::{Performer, PerformerParts, STEP_HZ};
@@ -231,6 +231,104 @@ fn a_rebake_keeps_a_toggled_expression_shown() {
     assert_eq!(rig.step().smile, Source::Trigger, "a reload with the same set leaves the toggle on");
 }
 
+/// The starter set with `name` showing what `like` shows, so a rebake changes that slot's values.
+fn with_values_of(name: &str, like: &str) -> ExpressionSet {
+    let mut set = ExpressionSet::starter();
+    let copy = set.0.get(&id(like)).expect("the starter set has the expression").clone();
+    set.0.insert(id(name), copy);
+    set
+}
+
+#[test]
+fn a_rebake_that_changes_a_held_expression_keeps_it_held() {
+    let mut rig = starter_rig();
+    rig.handle.press("F3", true).unwrap(); // `surprised`, held down for the rest of the test
+    rig.steps(40);
+    assert_eq!(rig.step().wide, Source::Trigger);
+    rig.handle.set_expressions(with_values_of("surprised", "angry"), ChannelBuf::NEUTRAL).unwrap();
+    rig.steps(60);
+    let owners = rig.step();
+    assert_eq!(owners.brow, Source::Trigger, "the held key shows the new values");
+    assert_ne!(owners.wide, Source::Trigger, "and no longer the old ones");
+    rig.handle.press("F3", false).unwrap();
+    rig.steps(40);
+    assert_ne!(rig.step().brow, Source::Trigger, "the release still hides it");
+}
+
+#[test]
+fn a_rebake_that_changes_a_toggled_expression_keeps_it_on() {
+    let mut rig = starter_rig();
+    rig.handle.press("F1", true).unwrap(); // `happy`, toggled on
+    rig.steps(20);
+    assert_eq!(rig.step().smile, Source::Trigger);
+    rig.handle.set_expressions(with_values_of("happy", "angry"), ChannelBuf::NEUTRAL).unwrap();
+    rig.steps(60);
+    let owners = rig.step();
+    assert_eq!(owners.brow, Source::Trigger, "the toggle stays on with the new values");
+    assert_ne!(owners.smile, Source::Trigger);
+    rig.tap("F1");
+    rig.steps(40);
+    assert_ne!(rig.step().brow, Source::Trigger, "the next press still toggles it off");
+}
+
+#[test]
+fn an_expression_that_goes_missing_ends_its_press_and_the_key_must_be_pressed_again() {
+    let mut rig = starter_rig();
+    rig.handle.press("F3", true).unwrap(); // `surprised`, held
+    rig.steps(40);
+    assert_eq!(rig.step().wide, Source::Trigger);
+    let mut without = ExpressionSet::starter();
+    assert!(without.0.remove(&id("surprised")).is_some());
+    rig.handle.set_expressions(without, ChannelBuf::NEUTRAL).unwrap();
+    // While the expression is missing a press or release of F3 does not reach the performer, so nothing can say
+    // whether the key is still down when the expression returns; showing it again could stick.
+    assert_eq!(rig.handle.press("F3", false), Ok(false));
+    rig.handle.set_expressions(ExpressionSet::starter(), ChannelBuf::NEUTRAL).unwrap();
+    rig.steps(60);
+    assert_ne!(rig.step().wide, Source::Trigger, "the returned expression stays hidden until its key is pressed");
+    rig.handle.press("F3", true).unwrap();
+    rig.steps(40);
+    assert_eq!(rig.step().wide, Source::Trigger, "pressed again, it shows");
+}
+
+#[test]
+fn a_reset_drops_the_shown_expression_at_once_and_keeps_the_bindings() {
+    let mut rig = starter_rig();
+    rig.handle.press("F1", true).unwrap();
+    rig.steps(20);
+    assert_eq!(rig.step().smile, Source::Trigger);
+    rig.control.reset(&mut rig.performer);
+    assert_ne!(rig.step().smile, Source::Trigger, "tick zero after a reset carries no trigger");
+    assert_eq!(rig.handle.triggers().len(), 4, "the bindings stay");
+    rig.handle.press("F1", true).unwrap();
+    rig.steps(20);
+    assert_eq!(rig.step().smile, Source::Trigger, "a bound key works again after the reset");
+}
+
+#[test]
+fn a_press_queued_before_a_reset_does_not_survive_it() {
+    let mut rig = starter_rig();
+    rig.handle.press("F1", true).unwrap(); // queued; the performer has not taken it yet
+    rig.control.reset(&mut rig.performer);
+    rig.steps(30);
+    assert_ne!(rig.step().smile, Source::Trigger, "the key must be pressed again after a reset");
+    assert_eq!(rig.handle.triggers().len(), 4, "the bindings stay");
+    rig.handle.press("F1", true).unwrap();
+    rig.steps(30);
+    assert_eq!(rig.step().smile, Source::Trigger, "a press after the reset shows it");
+}
+
+#[test]
+fn a_binding_queued_before_a_reset_is_still_applied() {
+    let mut rig = starter_rig();
+    let binding = TriggerBinding { key: "F6".to_owned(), expression: id("happy"), mode: TriggerMode::Hold };
+    rig.handle.bind_trigger(binding).unwrap();
+    rig.control.reset(&mut rig.performer); // the bind is still queued
+    rig.handle.press("F6", true).unwrap();
+    rig.steps(30);
+    assert_eq!(rig.step().smile, Source::Trigger, "the bind reached the performer, so its key shows `happy`");
+}
+
 #[test]
 fn the_seventeenth_binding_is_refused_and_a_repeated_key_replaces_its_binding() {
     let mut rig = starter_rig();
@@ -271,15 +369,20 @@ fn a_binding_whose_expression_left_the_set_is_listed_missing_and_does_nothing() 
     assert!(!rig.handle.triggers().iter().any(|t| t.missing), "sad is back");
 }
 
-/// Runs `op` with `handle` as the performer.
-fn run(handle: &PerformHandle, op: &str, args: Value, dry_run: bool) -> Result<Value, OpError> {
+/// Plans `op` with `handle` as the performer.
+fn run_plan(handle: &PerformHandle, op: &str, args: Value, dry_run: bool) -> Result<Plan, OpError> {
     let host: Arc<dyn PerformHost> = Arc::new(handle.clone());
     let services = ServicesBuilder::new().insert::<dyn PerformHost>(host).build();
     let (doc, clock) = (MemDoc::new(), FakeClock::new(Seconds(0.0)));
     let actor = Actor::Person { name: "performer".into() };
     let ctx = OpCtx::new(&doc, &actor, &clock).with_dry_run(dry_run).with_services(&services);
     let op = (find(op).expect("the op registers itself").decode)(args)?;
-    Ok(op.plan(&ctx)?.output.unwrap_or(Value::Null))
+    op.plan(&ctx)
+}
+
+/// Runs `op` with `handle` as the performer and returns its answer.
+fn run(handle: &PerformHandle, op: &str, args: Value, dry_run: bool) -> Result<Value, OpError> {
+    Ok(run_plan(handle, op, args, dry_run)?.output.unwrap_or(Value::Null))
 }
 
 #[test]
@@ -302,6 +405,89 @@ fn an_unknown_expression_is_not_found_with_a_did_you_mean_hint() {
     assert_eq!(error.code, ErrorCode::NotFound);
     assert!(error.hint.as_deref().unwrap_or_default().contains("happy"), "{:?}", error.hint);
     assert_eq!(rig.handle.triggers().len(), 4, "nothing was bound");
+}
+
+/// Every binding as `(key, expression, mode)`, in slot order, so two states compare.
+fn table(rig: &Rig) -> Vec<(String, String, TriggerMode)> {
+    rig.handle
+        .triggers()
+        .into_iter()
+        .map(|t| (t.binding.key, t.binding.expression.as_str().to_owned(), t.binding.mode))
+        .collect()
+}
+
+/// Runs one of an effect's stored calls.
+fn replay(rig: &Rig, call: &omuzaki_ops_api::OpCall) {
+    run(&rig.handle, &call.op, call.args.clone(), false).expect("a stored call runs");
+}
+
+#[test]
+fn binding_a_new_key_is_undone_by_unbinding_it() {
+    let rig = starter_rig();
+    let before = table(&rig);
+    let plan = run_plan(&rig.handle, "trigger.bind", json!({ "key": "f5", "expression": "happy" }), false).unwrap();
+    let Effect { undo, redo, .. } = plan.effect.expect("a bind outside the document records its effect");
+    assert_eq!(undo.op, "trigger.unbind");
+    assert_eq!(undo.args, json!({ "key": "f5" }));
+    assert_eq!(redo.op, "trigger.bind");
+    assert_eq!(redo.args, json!({ "key": "f5", "expression": "happy", "mode": "toggle", "restore": true }));
+    assert_eq!(rig.handle.triggers().len(), 5);
+    replay(&rig, &undo);
+    assert_eq!(table(&rig), before, "undo removes the new key");
+    replay(&rig, &undo); // idempotent: unbinding an unbound key changes nothing
+    assert_eq!(table(&rig), before);
+    replay(&rig, &redo);
+    assert_eq!(rig.handle.triggers().len(), 5, "redo binds it again");
+}
+
+#[test]
+fn rebinding_a_key_is_undone_by_binding_what_it_was() {
+    let rig = starter_rig();
+    let before = table(&rig);
+    let plan =
+        run_plan(&rig.handle, "trigger.bind", json!({ "key": "f1", "expression": "sad", "mode": "hold" }), false)
+            .unwrap();
+    let effect = plan.effect.expect("a bind records its effect");
+    assert_eq!(effect.undo.op, "trigger.bind");
+    assert_eq!(
+        effect.undo.args,
+        json!({ "key": "F1", "expression": "happy", "mode": "toggle", "restore": true }),
+        "the key as it was bound"
+    );
+    assert_ne!(table(&rig), before);
+    replay(&rig, &effect.undo);
+    assert_eq!(table(&rig), before, "undo puts the old binding back, in its slot");
+    replay(&rig, &effect.redo);
+    assert_eq!(table(&rig)[0], ("f1".to_owned(), "sad".to_owned(), TriggerMode::Hold));
+}
+
+#[test]
+fn unbinding_is_undone_by_binding_the_key_again_and_an_unbound_key_records_nothing() {
+    let rig = starter_rig();
+    let plan = run_plan(&rig.handle, "trigger.unbind", json!({ "key": "f2" }), false).unwrap();
+    let effect = plan.effect.expect("removing a binding records its effect");
+    assert_eq!(effect.undo.op, "trigger.bind");
+    assert_eq!(effect.undo.args, json!({ "key": "F2", "expression": "angry", "mode": "toggle", "restore": true }));
+    assert_eq!(effect.redo.op, "trigger.unbind");
+    assert_eq!(rig.handle.triggers().len(), 3);
+    replay(&rig, &effect.undo);
+    assert!(table(&rig).contains(&("F2".to_owned(), "angry".to_owned(), TriggerMode::Toggle)));
+    replay(&rig, &effect.redo);
+    assert_eq!(rig.handle.triggers().len(), 3, "redo removes it again");
+
+    let none = run_plan(&rig.handle, "trigger.unbind", json!({ "key": "F9" }), false).unwrap();
+    assert!(none.effect.is_none(), "nothing was bound, so there is nothing to undo");
+}
+
+#[test]
+fn a_dry_run_records_no_effect_and_the_edits_declare_explicit_undo() {
+    let rig = starter_rig();
+    for (op, args) in
+        [("trigger.bind", json!({ "key": "F5", "expression": "happy" })), ("trigger.unbind", json!({ "key": "F1" }))]
+    {
+        assert!(run_plan(&rig.handle, op, args, true).unwrap().effect.is_none(), "{op}: a dry run changes nothing");
+        assert_eq!(((find(op).unwrap().meta)()).undo, Undo::Explicit, "{op} has effects outside the document");
+    }
 }
 
 #[test]
@@ -341,4 +527,105 @@ fn advance_allocates_nothing_with_four_bindings_and_presses_in_between() {
         assert_eq!(ALLOCATIONS.load(Ordering::Relaxed), before, "step {step} allocated");
     }
     assert_eq!(measured, 3600);
+}
+
+#[test]
+fn a_dry_run_of_an_unknown_expression_predicts_the_same_refusal_as_the_real_call() {
+    let rig = starter_rig();
+    let args = json!({ "key": "F5", "expression": "hapy" });
+    let dry = run(&rig.handle, "trigger.bind", args.clone(), true).unwrap_err();
+    let real = run(&rig.handle, "trigger.bind", args, false).unwrap_err();
+    assert_eq!(dry.code, ErrorCode::NotFound);
+    assert_eq!((dry.code, dry.message, dry.hint), (real.code, real.message, real.hint));
+}
+
+#[test]
+fn the_host_checks_the_expression_under_the_same_lock_that_binds() {
+    let mut rig = starter_rig();
+    let mut without = ExpressionSet::starter();
+    without.0.remove(&id("happy"));
+    // The reload lands after an op read the set and before it binds: the bind itself refuses.
+    rig.handle.set_expressions(without, ChannelBuf::NEUTRAL).unwrap();
+    rig.settle();
+    let binding = TriggerBinding { key: "F5".to_owned(), expression: id("happy"), mode: TriggerMode::Toggle };
+    assert_eq!(rig.handle.bind_trigger_checked(binding.clone()), Err(PerformError::UnknownExpression));
+    assert_eq!(rig.handle.triggers().len(), 4, "nothing was bound");
+    assert!(rig.handle.bind_trigger(binding).is_ok(), "the unchecked bind keeps it, listed missing");
+}
+
+#[test]
+fn undoing_an_unbind_restores_a_binding_whose_expression_is_missing() {
+    let mut rig = starter_rig();
+    let mut without = ExpressionSet::starter();
+    without.0.remove(&id("sad"));
+    rig.handle.set_expressions(without, ChannelBuf::NEUTRAL).unwrap();
+    rig.settle();
+    let before = table(&rig);
+    let effect = run_plan(&rig.handle, "trigger.unbind", json!({ "key": "F4" }), false).unwrap().effect.unwrap();
+    assert_eq!(rig.handle.triggers().len(), 3);
+    replay(&rig, &effect.undo);
+    assert_eq!(table(&rig), before);
+    assert!(rig.handle.triggers().iter().find(|t| t.binding.key == "F4").unwrap().missing);
+}
+
+#[test]
+fn a_switch_lists_the_outgoing_and_the_incoming_expression_as_active_until_the_outgoing_one_is_gone() {
+    let mut rig = starter_rig();
+    let active = |rig: &Rig| -> Vec<String> {
+        rig.handle.triggers().into_iter().filter(|t| t.active).map(|t| t.binding.key).collect()
+    };
+    assert_eq!(active(&rig), Vec::<String>::new());
+    rig.handle.press("F1", true).unwrap();
+    rig.steps(12);
+    assert_eq!(active(&rig), ["F1"]);
+    rig.handle.press("F2", true).unwrap(); // switch while happy shows
+    rig.steps(2);
+    assert_eq!(active(&rig), ["F1", "F2"], "F1 is still fading out and F2 is wanted");
+    rig.steps(30);
+    assert_eq!(active(&rig), ["F2"], "F1 has faded out");
+    rig.handle.press("F2", true).unwrap(); // toggled off
+    rig.steps(2);
+    assert_eq!(active(&rig), ["F2"], "fading out");
+    rig.steps(30);
+    assert_eq!(active(&rig), Vec::<String>::new());
+}
+
+#[test]
+fn a_binding_that_takes_a_fading_slot_is_not_active_until_it_is_pressed() {
+    let mut rig = starter_rig();
+    rig.handle.press("F1", true).unwrap();
+    rig.steps(12); // happy, shown
+    rig.handle.press("F1", true).unwrap(); // toggled off: fading out
+    rig.settle();
+    // F1 is unbound and F5 takes its slot while happy still fades.
+    assert_eq!(rig.handle.unbind_trigger("F1"), Ok(true));
+    let active = |rig: &Rig| -> Vec<String> {
+        rig.handle.triggers().into_iter().filter(|t| t.active).map(|t| t.binding.key).collect()
+    };
+    let binding = TriggerBinding { key: "F5".to_owned(), expression: id("sad"), mode: TriggerMode::Hold };
+    let outcome = rig.handle.bind_trigger(binding).unwrap();
+    assert_eq!(outcome.slot, 0, "the new key reuses the slot that is fading");
+    // Listed at once, before the performer has taken the bind (or while it is paused): not the old binding's activity.
+    assert_eq!(active(&rig), Vec::<String>::new(), "right after the bind");
+    rig.settle();
+    rig.steps(2);
+    assert_eq!(active(&rig), Vec::<String>::new(), "F5 has not been pressed, whatever still fades in its slot");
+    rig.steps(30);
+    assert_eq!(active(&rig), Vec::<String>::new());
+    rig.handle.press("F5", true).unwrap();
+    rig.steps(2);
+    assert_eq!(active(&rig), ["F5"], "pressed, it is active");
+}
+
+#[test]
+fn a_rebake_keeps_the_fading_key_active() {
+    let mut rig = starter_rig();
+    rig.handle.press("F1", true).unwrap();
+    rig.steps(12);
+    rig.handle.press("F1", true).unwrap(); // toggled off: fading out
+    rig.settle();
+    rig.handle.set_expressions(with_values_of("happy", "angry"), ChannelBuf::NEUTRAL).unwrap();
+    rig.settle();
+    let active: Vec<String> = rig.handle.triggers().into_iter().filter(|t| t.active).map(|t| t.binding.key).collect();
+    assert_eq!(active, ["F1"], "the same key, with new values, still fades out");
 }

@@ -37,10 +37,11 @@ pub const SCANS: [Scan; 4] = [
 
 /// Test targets that reach for the workspace root but do not scan it, each with the reason. `lint_seed` is a library
 /// module run in process by `check`, so it is not a test target at all.
-const NOT_SCANS: [(&str, &str, &str); 3] = [
+const NOT_SCANS: [(&str, &str, &str); 4] = [
     ("omuzaki-link-build", "command_line_feature", "copies one file (Cargo.lock) into a throwaway project"),
     ("omuzaki-settings-api", "link_wiring", "copies one file (Cargo.lock) into a throwaway workspace it builds itself"),
     ("omuzaki-stage", "sheet_layout", "reads its own font licence files, not the workspace"),
+    ("omuzaki-test", "eval_run", "copies its own evals and one licence list into a throwaway workspace"),
 ];
 
 /// What marks a test source as walking the workspace: a helper that lists the crates, or a path built from the crate's
