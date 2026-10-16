@@ -15,10 +15,8 @@
 //! grid, and within a few hundredths of a millimetre between). `bangs.tip_radius` is the prototype's fixed fringe radius.
 //!
 //! The generator draws no random numbers and keeps the prototype's order, so the rest points should match to 1e-4 m;
-//! the head read back from the mesh limits that (see `REST_FLOOR`). The
-//! tubes are compared vertex by vertex too, but only printed: the prototype's smooth width outline is not yet a `Taper`
-//! (#842), so they differ by the width fit until it lands. The numbers measured are printed so the first run with the
-//! dumps can propose the final tolerances (the noise floor).
+//! the head read back from the mesh limits that (see `REST_FLOOR`). The width outline is the prototype's (`TaperShape::Smooth`)
+//! and is held to 1e-6 m; the tubes are held to the numbers measured on the first run with the dumps (the noise floor).
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // helpers load local files; a bad one should stop the test with its reason
 #![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)] // grid indices
@@ -40,6 +38,12 @@ const REST: f32 = 1e-4;
 /// cheeks, where the lock tips of the outer clumps end (first local run: worst 3.7e-4 m, at a tip point; most points
 /// are under 1e-4 m).
 const REST_FLOOR: f32 = 5e-4;
+/// Width outline tolerance, metres (the dump rounds to `f32`).
+const WIDTH: f32 = 1e-6;
+/// Tube vertex tolerance, metres, and normal angle, degrees: T-GEOM's normal bound; the vertex bound is `REST_FLOOR`'s,
+/// since the tubes inherit the rest points' head read-back error (first run: 3.8e-4 m, 0.76 degrees).
+const TUBE: f32 = REST_FLOOR;
+const TUBE_NORMAL_DEG: f32 = 1.0;
 /// Shade and thickness tolerance (the dump rounds to `f32`).
 const SAMPLE: f32 = 1e-6;
 
@@ -176,7 +180,7 @@ fn sampled(clump: &HairClump, n: usize) -> (Vec<f32>, Vec<f32>) {
 }
 
 #[test]
-fn the_width_fit_and_the_tubes_are_close_to_the_prototypes_and_printed() {
+fn the_width_and_the_tubes_match_the_prototypes() {
     let Some(case) = private() else { return };
     let dump = case.js.hair(&case.local.variant).unwrap();
     let geometry = case.js.geometry(&case.local.variant).unwrap();
@@ -202,7 +206,8 @@ fn the_width_fit_and_the_tubes_are_close_to_the_prototypes_and_printed() {
     println!(
         "width fit: largest difference {width:.2e} m; tubes: worst vertex {position:.2e} m, worst normal {normal:.2} degrees"
     );
-    assert!(width.is_finite() && position.is_finite() && normal.is_finite());
+    assert!(width <= WIDTH, "the width outline differs by {width:.2e} m");
+    assert!(position <= TUBE && normal <= TUBE_NORMAL_DEG, "tubes: {position:.2e} m, {normal:.2} degrees");
 }
 
 #[test]

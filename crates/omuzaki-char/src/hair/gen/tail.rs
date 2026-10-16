@@ -99,7 +99,7 @@ pub fn ponytail() -> TailGen {
         droop: 1.0,
         lean: 0.3,
         wave: Wave { amplitude: 0.012, frequency: 1.0, ..Wave::default() },
-        width: Taper { start: 0.030, mid: 0.036, tip: 0.005, tip_at: 0.55 },
+        width: Taper { start: 0.030, mid: 0.036, tip: 0.005, tip_at: 0.55, ..Taper::default() },
         ..TailGen::default()
     }
 }
@@ -115,7 +115,7 @@ pub fn twintails() -> TailGen {
         droop: 1.0,
         lean: -0.12,
         wave: Wave { amplitude: 0.010, frequency: 1.0, ..Wave::default() },
-        width: Taper { start: 0.030, mid: 0.036, tip: 0.005, tip_at: 0.55 },
+        width: Taper { start: 0.030, mid: 0.036, tip: 0.005, tip_at: 0.55, ..Taper::default() },
         ..TailGen::default()
     }
 }
@@ -196,7 +196,7 @@ pub fn compile(g: &TailGen, ctx: &mut HairGenCtx<'_>) -> CompiledGroup {
         start: g.width.start * shape.scale,
         mid: g.width.mid * shape.scale,
         tip: g.width.tip * shape.scale,
-        tip_at: g.width.tip_at,
+        ..g.width
     };
     let count = usize::from(g.count);
     let clumps = (0..count)

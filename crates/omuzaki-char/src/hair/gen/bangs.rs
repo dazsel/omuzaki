@@ -24,12 +24,11 @@
 //! or sweep turns the lock sharply. The grid spacing comes from the head ([`sample_spacing`]), not from an assumed
 //! curvature, and a head too sharp to check is refused rather than checked loosely.
 //!
-//! **Width.** The prototype's outline `lerp(0.040, w, ss(t, 0, 0.45)) (1 - ss(t, 0.5, 1))^0.7 + 0.0015` is not a
-//! [`Taper`]. This uses the closest current `Taper`: [`ROOT_WIDTH`] at the root, `MID_GAIN w + FLOOR` at `TIP_AT`,
-//! [`FLOOR`] at the tip. The exact outline waits for #842; [`outline`] is the prototype's formula, and the tests print the
-//! largest difference between the two.
+//! **Width.** The prototype's outline `lerp(0.040, w, ss(t, 0, 0.45)) (1 - ss(t, 0.5, 1))^0.7 + 0.0015` is the
+//! [`TaperShape::Smooth`] width: [`ROOT_WIDTH`] filling out to the layer's width `w` by [`FILL_TO`], held until
+//! [`TAPER_FROM`], then narrowing to a point whose width is exactly [`FLOOR`].
 
-use omuzaki_char_api::{BangLayer, BangsGen, Bulge, HairClump, HeadSurface, Taper, Wisp};
+use omuzaki_char_api::{BangLayer, BangsGen, Bulge, HairClump, HeadSurface, Taper, TaperShape, Wisp};
 use omuzaki_core::glam::{DVec3, Vec3};
 
 use super::cap::smoothstep;
@@ -122,14 +121,14 @@ pub const MIN_CURVATURE_RADIUS: f64 = 0.003;
 const MAX_STEPS: usize = 64;
 /// Thickness of every lock (the prototype's `0.005 + 0.005 sin(pi t)`).
 pub const THICKNESS: Bulge = Bulge { base: 0.005, swell: 0.005 };
-/// Width fit: the outline's width at the root, metres, including [`FLOOR`].
-pub const ROOT_WIDTH: f64 = 0.040 + FLOOR;
-/// Width fit: the thinnest the outline gets (the prototype's `+ 0.0015`), also the tip width.
+/// The outline's width at the root, metres.
+pub const ROOT_WIDTH: f64 = 0.040;
+/// The thinnest the outline gets (the prototype's `+ 0.0015`): the width of the tip.
 pub const FLOOR: f64 = 0.0015;
-/// Width fit: the widest part is `MID_GAIN` times the layer's width (plus [`FLOOR`]).
-pub const MID_GAIN: f64 = 1.05;
-/// Width fit: where along the lock the widest part sits.
-pub const TIP_AT: f64 = 0.57;
+/// Where along the lock the root has filled out to the layer's width.
+pub const FILL_TO: f64 = 0.45;
+/// Where along the lock the narrowing to the tip starts.
+pub const TAPER_FROM: f64 = 0.5;
 
 /// `x` limited to `lo..=hi`, or `fallback` if it is not finite. The contract's validation covers the counts, spread and
 /// shade only; the rest reaches the generator as it was typed, so it is checked where it is read.
@@ -144,15 +143,9 @@ fn hj(k: usize) -> f64 {
     0.5 * (12.9898 * k + 1.7).sin()
 }
 
-/// The [`Taper`] that stands in for the prototype's outline of a lock of width `w`.
+/// The prototype's outline of a lock of width `w`, as a [`Taper`].
 pub fn taper(w: f64) -> Taper {
-    Taper { start: ROOT_WIDTH, mid: (MID_GAIN * w + FLOOR).clamp(MIN_WIDTH, MAX_WIDTH), tip: FLOOR, tip_at: TIP_AT }
-}
-
-/// The prototype's outline of a lock of width `w` at `t`: `lerp(0.040, w, ss(t, 0, 0.45)) (1 - ss(t, 0.5, 1))^0.7 + 0.0015`.
-pub fn outline(w: f64, t: f64) -> f64 {
-    let base = 0.040 + (w - 0.040) * smoothstep(t, 0.0, 0.45);
-    base * (1.0 - smoothstep(t, 0.5, 1.0)).powf(0.7) + FLOOR
+    Taper::new(ROOT_WIDTH, w.clamp(MIN_WIDTH, MAX_WIDTH), FLOOR).with_shape(TaperShape::smooth(FILL_TO, TAPER_FROM))
 }
 
 /// One lock to build.

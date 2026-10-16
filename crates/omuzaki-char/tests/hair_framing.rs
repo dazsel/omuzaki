@@ -285,7 +285,7 @@ fn the_defaults_validate() {
 #[test]
 fn each_out_of_range_lock_value_fails_naming_its_field() {
     type Edit = fn(&mut FramingLocks);
-    let cases: [(&str, Edit); 14] = [
+    let cases: [(&str, Edit); 18] = [
         ("generator/locks/top", |l| l.top = 9.0),
         ("generator/locks/cheek", |l| l.cheek = f64::NAN),
         ("generator/locks/tuck_a", |l| l.tuck_a = -9.0),
@@ -300,6 +300,10 @@ fn each_out_of_range_lock_value_fails_naming_its_field() {
         ("generator/locks/ear_back/z", |l| l.ear_back[2] = 9.0),
         ("generator/locks/drop", |l| l.drop.clear()),
         ("generator/locks/drop/2/x", |l| l.drop[2][0] = f64::NAN),
+        ("generator/locks/jaw_z/1", |l| l.jaw_z[1] = f64::NAN),
+        ("generator/locks/chest_z/0", |l| l.chest_z[0] = 9.0),
+        ("generator/locks/front_radius", |l| l.front_radius = Some(0.0)),
+        ("generator/locks/front_radius", |l| l.front_radius = Some(f64::NAN)),
     ];
     for (field, edit) in cases {
         let mut locks = FramingLocks::new();
@@ -386,4 +390,42 @@ fn the_tip_curl_moves_the_tail() {
             }
         }
     }
+}
+
+#[test]
+fn the_jaw_and_chest_depths_place_the_lock_ends() {
+    let (u0, u1) = (0.2, 0.9);
+    // The cheek lock (left, index 0) ends at the second jaw point; a hanging lock's depth runs from the cheek's to the
+    // chest's. Both are head-local, so moving them moves the end by the same amount.
+    let base = FramingGen { side: HairSide::Left, count: 1, locks: Some(FramingLocks::new()), ..FramingGen::default() };
+    let mut moved = FramingLocks::new();
+    moved.jaw_z = [0.06, 0.09];
+    let shifted = FramingGen { locks: Some(moved), ..base.clone() };
+    let end = |g: &FramingGen| compile_with(g, &mut Script::new(&[u0, u1])).clumps[0].rest[HANGING_POINTS - 1];
+    assert!((end(&shifted).z - end(&base).z - 0.02).abs() < 1e-5, "{} vs {}", end(&shifted).z, end(&base).z);
+    assert!((end(&base).z - 0.07).abs() < 1e-5, "the default jaw depth is the old literal");
+
+    let hang = FramingGen { side: HairSide::Right, ..base.clone() };
+    let mut deeper = FramingLocks::new();
+    deeper.chest_z = [0.055, 0.105];
+    let deeper = FramingGen { locks: Some(deeper), ..hang.clone() };
+    let flat = |g: &FramingGen| FramingGen { wave: Wave { amplitude: 0.0, ..g.wave }, ..g.clone() };
+    assert!((end(&flat(&deeper)).z - end(&flat(&hang)).z - 0.02).abs() < 1e-5);
+}
+
+#[test]
+fn a_front_radius_makes_the_projection_the_prototypes() {
+    // A point far out to the side and low is outside the front disc: the prototype gives it no depth, so it lies on
+    // the side of the head at the centre's depth; without a front radius it slides in along x and keeps its height.
+    let mut locks = FramingLocks::new();
+    locks.lower = vec![-0.2];
+    locks.front_radius = Some(0.2);
+    let exact = FramingGen { side: HairSide::Left, count: 1, locks: Some(locks.clone()), ..FramingGen::default() };
+    let mut plain = locks;
+    plain.front_radius = None;
+    let sliding = FramingGen { locks: Some(plain), ..exact.clone() };
+    let (a, b) = (compile_forked(&exact, 1), compile_forked(&sliding, 1));
+    assert_ne!(a.clumps[0].rest, b.clumps[0].rest, "the front radius changes the lock");
+    // With no front radius the lock is what it was before the field existed.
+    assert_eq!(b.clumps[0].rest, compile_forked(&sliding, 1).clumps[0].rest);
 }

@@ -38,36 +38,154 @@ pub const HAIR_INFO: &str = "hair-info";
 
 // ------------------------------------------------------------------------------------------------ profiles and points
 
-/// Width of a clump along its length `t` in `0..=1`: `start` at the root, `mid` at `tip_at`, then narrowing to `tip`.
+/// How a [`Taper`]'s three widths are laid along the clump.
+///
+/// Every shape reads `start` as the width at the root, `mid` as the full width and `tip` as the width at the tip; they
+/// differ in how the clump gets from one to the next. The default, [`Linear`](Self::Linear), is the shape every file
+/// written before shapes existed has.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum TaperShape {
+    /// Straight from `start` to `mid` at `tip_at`, then eased (`pow(., 0.8)`) down to `tip`.
+    #[default]
+    Linear,
+    /// The close-up fringe's outline: `lerp(start, mid, ss(t, 0, fill_to)) * (1 - ss(t, taper_from, 1))^0.7 + tip`,
+    /// `ss` the smoothstep. The root `start` fills out to the full `mid` by `fill_to`, the lock holds that width until
+    /// `taper_from`, then narrows to a point; the floor `tip` is added after the product, so the tip is exactly `tip`
+    /// wide. `tip_at` is unused.
+    #[non_exhaustive]
+    Smooth {
+        /// Where the root has filled out to `mid`, `0..=1`.
+        fill_to: f64,
+        /// Where the narrowing starts, `fill_to..=1`.
+        taper_from: f64,
+    },
+    /// A strand of even width with short linear ends: `start` at the root rising to `mid` over the first `ramp_in`,
+    /// `mid` until `1 - ramp_out`, then falling to `tip` at the end (the braid strand). `tip_at` is unused.
+    #[non_exhaustive]
+    Plateau {
+        /// Length of the root ramp as a fraction of the clump, `0..=0.5`.
+        ramp_in: f64,
+        /// Length of the end ramp as a fraction of the clump, `0..=0.5`.
+        ramp_out: f64,
+    },
+}
+
+impl TaperShape {
+    /// Whether this is the default [`Linear`](Self::Linear) shape.
+    const fn is_linear(&self) -> bool {
+        matches!(self, Self::Linear)
+    }
+
+    /// [`Smooth`](Self::Smooth) with the given `fill_to` and `taper_from`.
+    #[must_use]
+    pub const fn smooth(fill_to: f64, taper_from: f64) -> Self {
+        Self::Smooth { fill_to, taper_from }
+    }
+
+    /// [`Plateau`](Self::Plateau) with the given ramp lengths.
+    #[must_use]
+    pub const fn plateau(ramp_in: f64, ramp_out: f64) -> Self {
+        Self::Plateau { ramp_in, ramp_out }
+    }
+}
+
+impl Validate for TaperShape {
+    fn check(&self, c: &mut Check) {
+        match *self {
+            Self::Linear => {}
+            Self::Smooth { fill_to, taper_from } => {
+                c.range("fill_to", fill_to, 0.0, 1.0);
+                c.range("taper_from", taper_from, 0.0, 1.0);
+                if taper_from < fill_to {
+                    c.fail("taper_from", "must not be less than `fill_to`");
+                }
+            }
+            Self::Plateau { ramp_in, ramp_out } => {
+                c.range("ramp_in", ramp_in, 0.0, 0.5);
+                c.range("ramp_out", ramp_out, 0.0, 0.5);
+            }
+        }
+    }
+}
+
+/// Width of a clump along its length `t` in `0..=1`: `start` at the root, `mid` at its fullest, `tip` at the end,
+/// laid out as the [`shape`](Self::shape) says (by default `mid` sits at `tip_at`).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Taper {
     /// Width at the root.
     pub start: f64,
-    /// Width at `tip_at`.
+    /// Width at `tip_at` (the full width for the other shapes).
     pub mid: f64,
     /// Width at the very tip.
     pub tip: f64,
-    /// Where along the clump the widest part sits, `0.1..=0.95`.
+    /// Where along the clump the widest part sits, `0.1..=0.95` (only the `linear` shape reads it).
     pub tip_at: f64,
+    /// How the widths are laid along the clump. Left out of a saved file while it is the default, so files that never
+    /// chose a shape stay as they were.
+    #[serde(skip_serializing_if = "TaperShape::is_linear")]
+    pub shape: TaperShape,
 }
 
 impl Default for Taper {
     fn default() -> Self {
-        Self { start: 0.04, mid: 0.05, tip: 0.01, tip_at: 0.8 }
+        Self { start: 0.04, mid: 0.05, tip: 0.01, tip_at: 0.8, shape: TaperShape::Linear }
     }
 }
 
+/// `smoothstep(x, from, to)` in `f32`: 0 below `from`, 1 above `to`; a step when the edges meet.
+fn smoothstep(x: f32, from: f32, to: f32) -> f32 {
+    if to <= from {
+        return if x < from { 0.0 } else { 1.0 };
+    }
+    let u = ((x - from) / (to - from)).clamp(0.0, 1.0);
+    u * u * (3.0 - 2.0 * u)
+}
+
 impl Taper {
+    /// A taper of the given widths with the linear shape and `tip_at` of 0.8.
+    #[must_use]
+    pub fn new(start: f64, mid: f64, tip: f64) -> Self {
+        Self { start, mid, tip, ..Self::default() }
+    }
+
+    /// The same widths with another shape.
+    #[must_use]
+    pub fn with_shape(self, shape: TaperShape) -> Self {
+        Self { shape, ..self }
+    }
+
     /// The width at `t` (clamped to `0..=1`). Evaluated in `f32`: this runs per vertex when hair geometry is built.
     pub fn at(&self, t: f32) -> f32 {
-        let (start, mid, tip, tip_at) = (narrow(self.start), narrow(self.mid), narrow(self.tip), narrow(self.tip_at));
+        let (start, mid, tip) = (narrow(self.start), narrow(self.mid), narrow(self.tip));
         let t = t.clamp(0.0, 1.0);
-        if t < tip_at {
-            start + (mid - start) * (t / tip_at)
-        } else {
-            let u = ((t - tip_at) / (1.0 - tip_at).max(f32::EPSILON)).powf(0.8);
-            mid + (tip - mid) * u
+        match self.shape {
+            TaperShape::Linear => {
+                let tip_at = narrow(self.tip_at);
+                if t < tip_at {
+                    start + (mid - start) * (t / tip_at)
+                } else {
+                    let u = ((t - tip_at) / (1.0 - tip_at).max(f32::EPSILON)).powf(0.8);
+                    mid + (tip - mid) * u
+                }
+            }
+            TaperShape::Smooth { fill_to, taper_from } => {
+                let filled = start + (mid - start) * smoothstep(t, 0.0, narrow(fill_to));
+                // The base reaches exactly 0 at the tip and `0^0.7` is 0, so the tip is the floor alone.
+                filled * (1.0 - smoothstep(t, narrow(taper_from), 1.0)).powf(0.7) + tip
+            }
+            TaperShape::Plateau { ramp_in, ramp_out } => {
+                let (ramp_in, ramp_out) = (narrow(ramp_in), narrow(ramp_out));
+                if t < ramp_in {
+                    start + (mid - start) * (t / ramp_in)
+                } else if t > 1.0 - ramp_out {
+                    mid + (tip - mid) * ((t - (1.0 - ramp_out)) / ramp_out)
+                } else {
+                    mid
+                }
+            }
         }
     }
 }
@@ -78,6 +196,7 @@ impl Validate for Taper {
         c.range("mid", self.mid, 0.001, 0.3);
         c.range("tip", self.tip, 0.0005, 0.3);
         c.range("tip_at", self.tip_at, 0.1, 0.95);
+        c.nested("shape", &self.shape);
     }
 }
 
@@ -364,7 +483,7 @@ impl Default for PartSweepGen {
             end_to_deg: 178.0,
             end_height_front: 0.04,
             end_height_back: -0.04,
-            width: Taper { start: 0.05, mid: 0.06, tip: 0.03, tip_at: 0.8 },
+            width: Taper::new(0.05, 0.06, 0.03),
             thickness: Bulge { base: 0.01, swell: 0.004 },
             part_start: 0.02,
             part_spread: 0.02,
@@ -415,7 +534,7 @@ impl Default for FramingGen {
             edge: vec![[0.12, 0.012], [0.0, 0.08], [-0.058, 0.136], [-0.12, 0.17], [-0.2, 0.192]],
             tail: vec![GuidePoint::Head([0.2, -0.18, 0.04]), GuidePoint::Head([0.22, -0.3, 0.02])],
             wave: Wave::default(),
-            width: Taper { start: 0.03, mid: 0.05, tip: 0.006, tip_at: 0.8 },
+            width: Taper::new(0.03, 0.05, 0.006),
             thickness: Bulge { base: 0.006, swell: 0.004 },
             locks: None,
         }
@@ -425,7 +544,8 @@ impl Default for FramingGen {
 /// The heights and points a framing lock passes through, which `edge` and `tail` cannot say: the prototype's
 /// hand-placed `Y_TOP`, `Y_UPPER`, `Y_LOWER`, `Y_CHEEK`, `Y_TUCK_A`, `Y_TUCK_B`, `X_TUCK_MAX`, `EAR_TOP`, `EAR_BACK`,
 /// `DROP` and `Y_END`. Every height and point is head-local (metres from the head centre); `x` is for the character's
-/// left (+x) and is mirrored for the right. The prototype's `RH` is not stored: it is the head's own half-width.
+/// left (+x) and is mirrored for the right. The prototype's `RH` is [`front_radius`](Self::front_radius); without it the
+/// head's own half-width stands in.
 ///
 /// The left side tucks locks `1..` behind the ear and lets lock `0` frame the cheek; the right side hangs every lock
 /// to its `end` height.
@@ -455,6 +575,17 @@ pub struct FramingLocks {
     pub drop: Vec<[f64; 3]>,
     /// Where each hanging lock ends, by lock index (the last entry serves any further lock), `1..=12`.
     pub end: Vec<f64>,
+    /// `[z, z]` depths (head-local) of the two points that end the cheek-framing lock at the jaw.
+    pub jaw_z: [f64; 2],
+    /// `[z, z]` depths (head-local) of a hanging lock at the cheek and at the chest; the chest depth falls by `0.006`
+    /// per lock index.
+    pub chest_z: [f64; 2],
+    /// The prototype's `RH`, the radius of the front projection `surfAt` lays points on, metres. When set, the
+    /// projection is the prototype's exactly: a point outside the disc gets no depth and lands on the side of the head
+    /// at the height its direction gives. When `None` the head's half-width is the radius, and such a point slides in
+    /// along `x` so it keeps the height it was authored at.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub front_radius: Option<f64>,
 }
 
 impl FramingLocks {
@@ -472,6 +603,9 @@ impl FramingLocks {
             ear_back: [0.2, -0.05, -0.08],
             drop: vec![[0.19, -0.1, -0.1], [0.18, -0.16, -0.12], [0.17, -0.22, -0.12], [0.16, -0.3, -0.12]],
             end: vec![-0.4, -0.45, -0.5, -0.55, -0.6],
+            jaw_z: [0.05, 0.07],
+            chest_z: [0.055, 0.085],
+            front_radius: None,
         }
     }
 }
@@ -511,6 +645,14 @@ impl Validate for FramingLocks {
         };
         point(c, "ear_top", &self.ear_top);
         point(c, "ear_back", &self.ear_back);
+        for (name, z) in [("jaw_z", &self.jaw_z), ("chest_z", &self.chest_z)] {
+            for (i, v) in z.iter().enumerate() {
+                c.range(&format!("{name}/{i}"), *v, -1.5, 1.5);
+            }
+        }
+        if let Some(r) = self.front_radius {
+            c.range("front_radius", r, 0.01, 1.0);
+        }
         if !(1..=8).contains(&self.drop.len()) {
             c.fail("drop", format!("{} points is out of range: use 1 to 8", self.drop.len()));
         }
@@ -544,6 +686,10 @@ pub struct BraidGen {
     pub strand_width: f64,
     /// Thickness of one strand.
     pub strand_thickness: f64,
+    /// The radius the path's height is turned into an angle with (the prototype's constant `0.205`, metres). `None`
+    /// uses the head's own crown radius.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height_radius: Option<f64>,
 }
 
 impl Default for BraidGen {
@@ -559,6 +705,7 @@ impl Default for BraidGen {
             out: 0.0055,
             strand_width: 0.024,
             strand_thickness: 0.014,
+            height_radius: None,
         }
     }
 }
@@ -605,7 +752,7 @@ impl Default for CurtainGen {
             envelope: vec![[0.7, 0.2], [0.5, 0.31], [0.3, 0.34], [0.2, 0.32]],
             wave: Wave { amplitude: 0.036, frequency: 2.1, phase: 0.0, curl: 0.045, growth: [0.15, 0.65] },
             columns: 5,
-            width: Taper { start: 0.066, mid: 0.095, tip: 0.014, tip_at: 0.8 },
+            width: Taper::new(0.066, 0.095, 0.014),
             thickness: Bulge { base: 0.006, swell: 0.004 },
         }
     }
@@ -839,7 +986,7 @@ impl Default for BunGen {
             radius: 0.05,
             strands: 6,
             wraps: 1.5,
-            width: Taper { start: 0.02, mid: 0.034, tip: 0.012, tip_at: 0.5 },
+            width: Taper { start: 0.02, mid: 0.034, tip: 0.012, tip_at: 0.5, ..Taper::default() },
             thickness: Bulge { base: 0.012, swell: 0.006 },
         }
     }
@@ -874,6 +1021,9 @@ impl Default for GuideClump {
 }
 
 /// What a group makes.
+// One per group, parsed once and read while a style compiles: boxing the generators would only change the contract's
+// shape (the framing generator is the large one, with its taper, outline and lock heights).
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Generator {
@@ -1403,9 +1553,19 @@ impl Validate for HairGroup {
                 if !(2..=5).contains(&g.strands) {
                     c.fail("generator/strands", format!("{} is out of range: use 2 to 5", g.strands));
                 }
+                c.range("generator/path_from_deg", g.path_from_deg, 0.0, 180.0);
+                c.range("generator/path_to_deg", g.path_to_deg, 0.0, 360.0);
+                c.range("generator/height_front", g.height_front, -1.0, 1.0);
+                c.range("generator/height_back", g.height_back, -1.0, 1.0);
                 c.range("generator/lobes", g.lobes, 1.0, 30.0);
-                c.positive("generator/strand_width", g.strand_width);
-                c.positive("generator/strand_thickness", g.strand_thickness);
+                c.range("generator/across", g.across, 0.0, 0.1);
+                c.range("generator/out", g.out, 0.0, 0.1);
+                // The narrowest part of a strand is 0.4 of its width, which a width must be allowed to reach.
+                c.range("generator/strand_width", g.strand_width, 0.0025, 0.3);
+                c.range("generator/strand_thickness", g.strand_thickness, 0.0005, 0.05);
+                if let Some(r) = g.height_radius {
+                    c.range("generator/height_radius", r, 0.01, 1.0);
+                }
             }
             Generator::Curtain(g) => {
                 count("generator/count", c, u32::from(g.count), 1, 120);
@@ -1611,7 +1771,7 @@ mod tests {
 
     #[test]
     fn profiles_hit_their_control_values() {
-        let t = Taper { start: 0.04, mid: 0.06, tip: 0.01, tip_at: 0.75 };
+        let t = Taper { tip_at: 0.75, ..Taper::new(0.04, 0.06, 0.01) };
         assert!((t.at(0.0) - 0.04).abs() < 1e-6 && (t.at(0.75) - 0.06).abs() < 1e-6 && (t.at(1.0) - 0.01).abs() < 1e-6);
         assert_eq!(t.at(-1.0), t.at(0.0), "clamped");
         let b = Bulge { base: 0.006, swell: 0.004 };
