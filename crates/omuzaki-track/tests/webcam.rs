@@ -1143,3 +1143,46 @@ fn the_default_preference_tries_the_cheapest_format_to_convert_first() {
         [Some(PixelFormat::Rgb8), Some(PixelFormat::Bgra8), Some(PixelFormat::Nv12), Some(PixelFormat::Yuy2)]
     );
 }
+
+/// A camera whose `next_frame` takes 60 ms whatever the timeout says, as a driver that is slow to hand a frame back
+/// does: the camera thread notices `stop` late.
+struct Sluggish(FakeCamera);
+struct SluggishStream(Box<dyn CameraStream>);
+impl Camera for Sluggish {
+    fn enumerate(&self) -> Vec<CameraInfo> {
+        self.0.enumerate()
+    }
+
+    fn open(&mut self, id: &CameraId, request: &CameraFormatRequest) -> Result<Box<dyn CameraStream>, TrackError> {
+        Ok(Box::new(SluggishStream(self.0.open(id, request)?)))
+    }
+}
+impl CameraStream for SluggishStream {
+    fn format(&self) -> CameraFormat {
+        self.0.format()
+    }
+
+    fn next_frame(&mut self, timeout: Duration) -> Result<Option<CameraFrame<'_>>, TrackError> {
+        std::thread::sleep(Duration::from_millis(60));
+        self.0.next_frame(timeout)
+    }
+}
+
+#[test]
+fn a_camera_thread_that_is_slow_to_notice_stop_still_gives_the_tracker_back() {
+    let camera = Sluggish(FakeCamera::synthetic(nv12(64, 48), 10_000_000));
+    // The default join grace, not the patient one: this is the real deadline.
+    let mut tracker = WebcamTracker::new(
+        Box::new(camera),
+        Box::new(Scripted::new(vec![true])),
+        WebcamConfig::default().with_mode(64, 48, 30),
+        standing_clock(),
+    );
+    for _ in 0..3 {
+        let mut source = start(&mut tracker);
+        assert_eq!(next(&mut *source).status, TrackStatus::Tracking);
+        // The camera thread is inside a 60 ms `next_frame`: two polls and more go by before it looks at the flag.
+        tracker.stop();
+        assert_eq!(tracker.error(), None, "the tracker came back; nothing was let go");
+    }
+}

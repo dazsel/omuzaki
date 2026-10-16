@@ -44,7 +44,7 @@ use crate::frame::RgbFrame;
 use crate::pipeline::FaceTracker;
 use crate::sample::{FaceSample, StageTimings};
 use preview::PreviewTap;
-use thread::{JOIN_GRACE, Outcome, POLL, Run, STOP_SLACK, Stats, Worker};
+use thread::{JOIN_FLOOR, JOIN_GRACE, Outcome, Run, STOP_SLACK, Stats, StopSignal, Worker};
 
 /// What turns an RGB frame into a face sample. [`FaceTracker`] implements it; tests script it.
 pub trait FrameTracker: Send {
@@ -196,7 +196,7 @@ pub const fn tier_stride(tier: QualityTier) -> u32 {
 /// One running session: its thread and the flags that end it.
 struct Session {
     camera: JoinHandle<Option<Outcome>>,
-    stop: Arc<AtomicBool>,
+    stop: Arc<StopSignal>,
     live: Arc<AtomicBool>,
 }
 
@@ -376,7 +376,7 @@ impl Tracker for WebcamTracker {
         };
         tracker.reset();
         let (writer, reader) = mailbox();
-        let (stop, live) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(true)));
+        let (stop, live) = (Arc::new(StopSignal::default()), Arc::new(AtomicBool::new(true)));
         // The new session's numbers are installed only once both threads are running, so a start that fails leaves the
         // last session's counters and error where they were.
         let (stats, error) = (Arc::new(Stats::new()), Arc::<Mutex<Option<TrackError>>>::default());
@@ -427,11 +427,12 @@ impl Tracker for WebcamTracker {
 
     fn stop(&mut self) {
         let Some(Session { camera, stop, live }) = self.session.take() else { return };
-        stop.store(true, Ordering::Relaxed);
+        stop.request(self.join_grace);
         live.store(false, Ordering::Relaxed);
-        // The camera thread notices `stop` within a poll and then gives the tracker's thread `join_grace`: with the
-        // slack, that is the whole of the stop budget when `join_grace` is the default.
-        let give_up = Instant::now() + self.join_grace + POLL + STOP_SLACK;
+        // One deadline for both threads, `join_grace` from now: the camera thread counts the tracker's grace from the
+        // same moment, whatever it spends noticing the request, and gets a short floor when it is late. The slack is
+        // for the scheduler, so a responsive camera thread is never let go.
+        let give_up = Instant::now() + self.join_grace + JOIN_FLOOR + STOP_SLACK;
         while !camera.is_finished() && Instant::now() < give_up {
             std::thread::sleep(Duration::from_millis(1));
         }

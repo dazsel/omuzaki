@@ -3,7 +3,7 @@
 use std::io;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -31,12 +31,46 @@ pub(super) const STOP_SLACK: Duration = Duration::from_millis(5);
 /// The longest the thread waits inside the camera, or for the tracker's thread, so `stop` is noticed within this.
 pub(super) const POLL: Duration = Duration::from_millis(20);
 
-/// How long the camera thread waits at its end for the tracker's thread: what is left of [`STOP_BUDGET`] after the
-/// poll that notices `stop` and the slack. A tracker that is not back by then is let go.
-pub(super) const JOIN_GRACE: Duration = Duration::from_millis(75);
+/// How long after `stop` is asked for the tracker's thread has to come back: the deadline is set when `stop` is asked,
+/// so time the camera thread spends noticing it (a poll in the camera, conversion, a poll for the answer) comes out of
+/// this and not on top of it. A tracker that is not back by then is let go.
+pub(super) const JOIN_GRACE: Duration = Duration::from_millis(85);
 
-// One shared deadline: noticing `stop` (a poll), the grace for the tracker and the outer wait's slack fit the budget.
-const _: () = assert!(JOIN_GRACE.as_millis() + POLL.as_millis() + STOP_SLACK.as_millis() <= STOP_BUDGET.as_millis());
+/// The least the camera thread gives an idle tracker thread to leave its loop, past the deadline: a thread that is
+/// merely waiting for its next job must not be taken for a stuck one because the camera thread was late.
+pub(super) const JOIN_FLOOR: Duration = Duration::from_millis(5);
+
+// One shared deadline: the grace, the floor and the outer wait's slack fit the budget.
+const _: () =
+    assert!(JOIN_GRACE.as_millis() + JOIN_FLOOR.as_millis() + STOP_SLACK.as_millis() <= STOP_BUDGET.as_millis());
+
+/// The camera thread's stop request: a flag and the deadline `stop` set with it, so the camera thread and `stop`
+/// count from the same moment.
+#[derive(Default)]
+pub(super) struct StopSignal {
+    requested: AtomicBool,
+    deadline: OnceLock<Instant>,
+}
+
+impl StopSignal {
+    /// Asks the thread to end, and sets the moment by which the tracker's thread has to be back: `within` from now.
+    pub(super) fn request(&self, within: Duration) {
+        self.deadline.get_or_init(|| Instant::now() + within);
+        self.requested.store(true, Ordering::Release);
+    }
+
+    /// Whether `stop` was asked for.
+    pub(super) fn is_requested(&self) -> bool {
+        self.requested.load(Ordering::Acquire)
+    }
+
+    /// When to stop waiting for the tracker's thread: the deadline `stop` set, but at least [`JOIN_FLOOR`] from now; or,
+    /// when the thread ended by itself, `grace` from now.
+    pub(super) fn give_up_at(&self, grace: Duration) -> Instant {
+        let now = Instant::now();
+        self.deadline.get().map_or(now + grace, |&deadline| deadline.max(now + JOIN_FLOOR))
+    }
+}
 
 /// How long a thread blocks on an empty channel to warm up its blocking path (see the tracker thread's loop). std checks
 /// the deadline before it first blocks, so the wait must outlast a thread being descheduled or page-faulting there
@@ -186,7 +220,7 @@ pub(super) struct Run {
     pub(super) stride: u32,
     /// How long to wait for the tracker's thread at the end before letting it go.
     pub(super) grace: Duration,
-    pub(super) stop: Arc<AtomicBool>,
+    pub(super) stop: Arc<StopSignal>,
     pub(super) preview: Arc<PreviewTap>,
     pub(super) stats: Arc<Stats>,
     pub(super) error: Arc<Mutex<Option<TrackError>>>,
@@ -260,12 +294,11 @@ impl Worker {
         handle.join().ok().flatten()
     }
 
-    /// Ends the thread and takes the tracker back, if it comes within `grace`; otherwise lets the thread go.
-    pub(super) fn finish(self, grace: Duration) -> Option<Box<dyn FrameTracker>> {
+    /// Ends the thread and takes the tracker back, if it comes by `give_up`; otherwise lets the thread go.
+    pub(super) fn finish(self, give_up: Instant) -> Option<Box<dyn FrameTracker>> {
         let Self { handle, jobs, done } = self;
         // With the sending end gone the thread leaves its loop as soon as it is idle.
         drop((jobs, done));
-        let give_up = Instant::now() + grace;
         while !handle.is_finished() && Instant::now() < give_up {
             std::thread::sleep(Duration::from_millis(1));
         }
@@ -399,7 +432,7 @@ impl Run {
         // The same warm-up as the tracker's thread: nothing is waiting yet, so this times out after [`WARM_UP`].
         worker.done.recv_timeout(WARM_UP).ok();
         let fail = |why: TrackError| *error.lock().unwrap_or_else(PoisonError::into_inner) = Some(why);
-        'frames: while !stop.load(Ordering::Relaxed) {
+        'frames: while !stop.is_requested() {
             let frame = match stream.next_frame(POLL) {
                 Ok(Some(frame)) => frame,
                 // A silent camera: say so once `lost_after` has gone by.
@@ -448,7 +481,7 @@ impl Run {
             let answer = loop {
                 match worker.done.recv_timeout(POLL) {
                     Ok(done) => break Ok(done),
-                    Err(RecvTimeoutError::Timeout) if stop.load(Ordering::Relaxed) => break Err(Ended::Stopped),
+                    Err(RecvTimeoutError::Timeout) if stop.is_requested() => break Err(Ended::Stopped),
                     Err(RecvTimeoutError::Timeout) => out.notify(true),
                     Err(RecvTimeoutError::Disconnected) => break Err(Ended::Died),
                 }
@@ -475,7 +508,7 @@ impl Run {
                 RgbFrame { data: &rgb, width: frame.width, height: frame.height, stride: 3 * frame.width as usize };
             preview.offer(&mut scratch, &frame, seq, sample.as_ref().map(|s| &s.landmarks));
         }
-        let tracker = worker.finish(grace);
+        let tracker = worker.finish(stop.give_up_at(grace));
         Outcome { tracker, next_seq: out.seq }
     }
 }
@@ -540,6 +573,28 @@ mod tests {
                 "{us} us is far from the top of bucket {i}"
             );
         }
+    }
+
+    #[test]
+    fn the_stop_deadline_is_set_once_when_stop_is_asked_and_never_less_than_the_floor() {
+        let before = Instant::now();
+        let signal = StopSignal::default();
+        assert!(!signal.is_requested());
+        // Not asked for: the thread ended by itself, and the grace counts from now.
+        assert!(signal.give_up_at(Duration::from_millis(40)) >= before + Duration::from_millis(40));
+        signal.request(Duration::from_millis(50));
+        assert!(signal.is_requested());
+        // The deadline counts from the request, not from when the camera thread gets round to asking.
+        assert!(signal.give_up_at(Duration::from_secs(60)) >= before + Duration::from_millis(50));
+        assert!(signal.give_up_at(Duration::from_secs(60)) < before + Duration::from_secs(60));
+        // A second request cannot extend it.
+        signal.request(Duration::from_secs(3600));
+        assert!(signal.give_up_at(Duration::from_secs(60)) < before + Duration::from_secs(3600));
+        // A camera thread that is late, past the deadline, still gives an idle tracker thread the floor.
+        let late = StopSignal::default();
+        late.request(Duration::ZERO);
+        let asked = Instant::now();
+        assert!(late.give_up_at(Duration::ZERO) >= asked + JOIN_FLOOR);
     }
 
     #[test]
