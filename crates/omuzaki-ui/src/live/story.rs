@@ -147,13 +147,13 @@ impl Runner for StoryRunner {
 }
 
 /// The story's state: the panel and the runner it runs on.
-struct State {
+pub struct StoryState {
     runner: StoryRunner,
     panel: LivePanel,
     actor: Actor,
 }
 
-impl Default for State {
+impl Default for StoryState {
     fn default() -> Self {
         let runner = StoryRunner::default();
         let panel = runner.0.panel(&runner);
@@ -162,11 +162,12 @@ impl Default for State {
 }
 
 register_story! {
-    id: "live-workspace", title: "Live workspace", group: Group::Composites, order: 90, state: State,
+    id: "live-workspace", title: "Live workspace", group: Group::Composites, order: 90, state: StoryState,
     show: show,
 }
 
-fn show(ui: &mut Ui, state: &mut State) {
+/// Draws the story: the workspace at its natural height.
+pub fn show(ui: &mut Ui, state: &mut StoryState) {
     // The gallery scrolls; a scroll area of the story's own would hide its controls from the gallery's Tab walk.
     state.panel.body(ui, &state.runner, &state.actor);
 }

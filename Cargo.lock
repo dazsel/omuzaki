@@ -4509,6 +4509,8 @@ dependencies = [
  "omuzaki-stage",
  "omuzaki-track-api",
  "omuzaki-track-mock",
+ "omuzaki-ui-api",
+ "omuzaki-ui-mock",
  "rustix 1.1.5",
  "schemars",
  "serde",

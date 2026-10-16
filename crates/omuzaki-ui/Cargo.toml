@@ -37,6 +37,7 @@ omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-render-api = { path = "../omuzaki-render-api" }
 omuzaki-stage = { path = "../omuzaki-stage" }
 omuzaki-track-api = { path = "../omuzaki-track-api" }
+omuzaki-ui-api = { path = "../omuzaki-ui-api" }
 tracing.workspace = true
 
 # Unix only: signal a probe's whole process group when it ends
@@ -53,6 +54,7 @@ omuzaki-char-mock = { path = "../omuzaki-char-mock" }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 omuzaki-render-mock = { path = "../omuzaki-render-mock" }
 omuzaki-track-mock = { path = "../omuzaki-track-mock" }
+omuzaki-ui-mock = { path = "../omuzaki-ui-mock" }
 
 [lints]
 workspace = true

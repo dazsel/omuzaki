@@ -74,6 +74,11 @@ impl LivePanel {
         Self { model, output, refreshed: None, capturing: None, moods: HOTKEY_ROWS }
     }
 
+    /// Replaces the output window the toggle drives (`None`: this build or shell has none).
+    pub fn set_output(&mut self, output: Option<SharedOutput>) {
+        self.output = output;
+    }
+
     /// The model.
     pub fn model(&self) -> &LiveModel {
         &self.model
