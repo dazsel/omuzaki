@@ -29,7 +29,7 @@ fn inline_layout() -> impl Strategy<Value = String> {
         separators,
         pick(&["", ",", ", # t\n", ",\n", "\n"]),
         pick(&["{ ", "{", "{\n  ", "{ # o\n  "]),
-        pick(&[" }", "}", "\n}", " # z\n}"]),
+        pick(&[" }", "}", "\n}", "\n# z\n}"]),
         pick(&["", " # end"]),
     )
         .prop_map(|(entries, separators, trailing, open, close, end)| {
@@ -126,6 +126,18 @@ proptest! {
             let reopened = parse(&done.text).unwrap();
             prop_assert_eq!(lookup(&reopened, key), None, "reset {} in {:?} gave {:?}", key, text, done.text);
             prop_assert_eq!(others(&text, key), others(&done.text, key), "reset {} moved another key\n{:?}\n{:?}", key, text, done.text);
+            if text.contains("ui = {") {
+                // Inside an inline table the edit only deletes: the result is the original less the entry's own bytes
+                // and its one separator, so no neighbour's comment, nor the braces', can have gone.
+                let mut rest = text.chars();
+                prop_assert!(done.text.chars().all(|c| rest.any(|o| o == c)), "reset {} added text\n{:?}\n{:?}", key, text, done.text);
+                let comments = |t: &str, tag: &str| t.matches(tag).count();
+                for tag in ["# o", "# z", "# end"] {
+                    prop_assert_eq!(comments(&text, tag), comments(&done.text, tag), "reset {} lost {}\n{:?}\n{:?}", key, tag, text, done.text);
+                }
+                let lost_c = comments(&text, "# c") - comments(&done.text, "# c");
+                prop_assert!(lost_c <= 1, "reset {} lost {} neighbours' comments\n{:?}\n{:?}", key, lost_c, text, done.text);
+            }
             prop_assert!(subsequence(&keep, &done.text), "reset {} lost outside lines\n{:?}\n{:?}", key, text, done.text);
 
             // A group with a member the file refuses changes nothing at all, and neither member is reported as made.

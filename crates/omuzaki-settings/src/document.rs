@@ -609,31 +609,66 @@ fn splice_inline(
     })
 }
 
-/// Deletes one entry of an inline table with the comma that joins it to its neighbour, wherever the comma, newlines
-/// and comments sit around it.
+/// Deletes one entry of an inline table: its key, value and own trailing comment, and the one comma that separated it
+/// from its neighbour. The neighbours' comments and the layout's newlines stay, and a line left empty goes.
 fn remove_entry(text: &str, owner: &InlineTable, key: &Key, item: &Item) -> Result<String, String> {
     let (Some(key_span), Some(value_span)) = (key.span(), item.as_value().and_then(toml_edit::Value::span)) else {
         return Err("an inline entry without a position".to_owned());
     };
     // A dotted entry `a.b.c = 1` has the span of its last name only: its entry starts at the first.
-    let entry_start = dotted_key_start(text, key_span.start);
-    let (from, to) = match next_separator(text, value_span.end) {
-        Some((true, comma)) => {
-            // `entry ,` : the entry goes with its own comma and the blanks after it.
-            let tail = &text[comma + 1..];
-            (entry_start, comma + 1 + (tail.len() - tail.trim_start_matches([' ', '\t']).len()))
-        }
+    let start = dotted_key_start(text, key_span.start);
+    // The entry's own span, then the one comma that goes with it (when it is not inside that span).
+    let (entry, comma_cut) = match next_separator(text, value_span.end) {
+        // `entry ... ,`: the entry goes with its comma and a comment that shares the comma's line.
+        Some((true, comma)) => (start..same_line_comment_end(text, comma + 1), None),
+        // The last entry, with no comma after it: the comma before it goes, and the entry with its comment.
         Some((false, _)) => {
-            // The last entry, without a comma after it: the comma before it goes instead.
+            let end = trailing_comment_end(text, value_span.end);
             let mut ends = Vec::new();
             value_ends(owner, &mut ends);
-            let before = ends.into_iter().filter(|end| *end <= entry_start).max();
-            let comma = before.and_then(|end| comma_between(text, end, entry_start));
-            (comma.unwrap_or(entry_start), value_span.end)
+            let before = ends.into_iter().filter(|end| *end <= start).max();
+            match before.and_then(|end| comma_between(text, end, start)) {
+                // Only blanks between the comma and the entry: they go as one piece.
+                Some(comma) if text[comma + 1..start].trim_matches([' ', '\t']).is_empty() => (comma..end, None),
+                other => (start..end, other),
+            }
         }
         None => return Err("an inline entry followed by something unexpected".to_owned()),
     };
-    Ok(format!("{}{}", &text[..from], &text[to..]))
+    let mut out = text.to_owned();
+    let at = entry.start;
+    out.replace_range(entry, "");
+    // The entry's own line, if nothing but blanks is left on it, goes too.
+    let (line_from, line_to) = (line_start(&out, at), line_end(&out, at));
+    if line_to > line_from && out[line_from..line_to].trim().is_empty() {
+        out.replace_range(line_from..line_to, "");
+    }
+    if let Some(comma) = comma_cut {
+        out.replace_range(comma..=comma, "");
+    }
+    Ok(out)
+}
+
+/// The end of a `# comment` that follows `from` on the same line after blanks, or `from` when there is none.
+fn trailing_comment_end(text: &str, from: usize) -> usize {
+    let rest = &text[from..];
+    let blanks = rest.len() - rest.trim_start_matches([' ', '\t']).len();
+    if rest[blanks..].starts_with('#') {
+        from + blanks + rest[blanks..].find(['\r', '\n']).unwrap_or(rest.len() - blanks)
+    } else {
+        from
+    }
+}
+
+/// The end of `from` plus the blanks and, when one follows on the same line, the `# comment` after it.
+fn same_line_comment_end(text: &str, from: usize) -> usize {
+    let rest = &text[from..];
+    let blanks = rest.len() - rest.trim_start_matches([' ', '\t']).len();
+    if rest[blanks..].starts_with('#') {
+        from + blanks + rest[blanks..].find(['\r', '\n']).unwrap_or(rest.len() - blanks)
+    } else {
+        from + blanks
+    }
 }
 
 /// The end of every value in an inline table, looking through dotted entries (whose own span is only a name).
@@ -1104,6 +1139,41 @@ mod tests {
         assert_eq!(done.refused.len(), 2);
         let ok = apply_each(Some("[legacy]\nvalue = 7\n"), &edits, &needs).unwrap();
         assert!(ok.refused.is_empty() && ok.text.contains("new = 7") && !ok.text.contains("value"), "{}", ok.text);
+    }
+
+    #[test]
+    fn removing_an_inline_entry_keeps_its_neighbours_comments_and_layout_byte_for_byte() {
+        let run = |text: &str, key: &str| apply(Some(text), &[drop_edit(key)]).unwrap();
+        let block = "ui = {\n  a = 1, # about a\n  b = 2, # about b\n  c = 3 # about c\n}\n";
+        assert_eq!(run(block, "ui.a"), "ui = {\n  b = 2, # about b\n  c = 3 # about c\n}\n", "first");
+        assert_eq!(run(block, "ui.b"), "ui = {\n  a = 1, # about a\n  c = 3 # about c\n}\n", "middle");
+        assert_eq!(run(block, "ui.c"), "ui = {\n  a = 1, # about a\n  b = 2 # about b\n}\n", "last");
+
+        let director = "ui = {\n  theme = \"dark\", # keep theme\n  scale = 125\n}\n";
+        assert_eq!(run(director, "ui.scale"), "ui = {\n  theme = \"dark\" # keep theme\n}\n");
+
+        let own_lines = "ui = {\n  # about a\n  a = 1,\n  # about b\n  b = 2\n  # about end\n}\n";
+        assert_eq!(run(own_lines, "ui.b"), "ui = {\n  # about a\n  a = 1\n  # about b\n  # about end\n}\n");
+        assert_eq!(run(own_lines, "ui.a"), "ui = {\n  # about a\n  # about b\n  b = 2\n  # about end\n}\n");
+
+        let trailing = "ui = { a = 1, b = 2, }\n";
+        assert_eq!(run(trailing, "ui.b"), "ui = { a = 1, }\n");
+        assert_eq!(run(trailing, "ui.a"), "ui = { b = 2, }\n");
+
+        let comma_first = "ui = {\n  a = 1 # x\n  , b = 2\n}\n";
+        assert_eq!(run(comma_first, "ui.a"), "ui = {\n  b = 2\n}\n");
+        assert_eq!(run(comma_first, "ui.b"), "ui = {\n  a = 1 # x\n}\n");
+
+        assert_eq!(run("ui = { a = 1, b = 2, c = 3 } # end\n", "ui.b"), "ui = { a = 1, c = 3 } # end\n");
+        assert_eq!(run("ui = { a = 1 }\n", "ui.a"), "ui = {  }\n");
+
+        let crlf = director.replace('\n', "\r\n");
+        assert_eq!(run(&crlf, "ui.scale"), "ui = {\r\n  theme = \"dark\", # keep theme\r\n}\r\n".replace(", #", " #"));
+        let block_crlf = block.replace('\n', "\r\n");
+        assert_eq!(
+            run(&block_crlf, "ui.b"),
+            "ui = {\n  a = 1, # about a\n  c = 3 # about c\n}\n".replace('\n', "\r\n")
+        );
     }
 
     #[test]

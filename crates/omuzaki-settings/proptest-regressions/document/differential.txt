@@ -1,8 +1,0 @@
-# Seeds for failure cases proptest has generated in the past. It is
-# automatically read and these particular cases re-run before any
-# novel cases are generated.
-#
-# It is recommended to check this file in to source control so that
-# everyone who runs the test benefits from these saved cases.
-cc 3c30dfe6ae59649256dae0b9d52ef4fc5a0569f3563e0539332fa097651fd4c6 # shrinks to (text, crlf) = ("ui.theme = \"dark\"\n[ui.mig]\npercent = 125\n[uother]\nuk = 1\n", false)
-cc 8542d2661dbc4f8038234d249e51c965f7febc388f6b9ad6adbba051ac02d476 # shrinks to which = 0, crlf = false, comments = false, blocked = false
