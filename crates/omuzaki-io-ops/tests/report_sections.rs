@@ -3,6 +3,9 @@
 //! The rule ids come from the sources themselves, read at test time, so a new rule that nobody wrote text for fails
 //! here. The English Fluent file and the pseudo-locale check wait for the bless tooling and `check_crate!`.
 
+// The scan reads the repository's own sources, not user files: the op file-access rule does not apply to a test.
+#![allow(clippy::disallowed_methods)]
+
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
