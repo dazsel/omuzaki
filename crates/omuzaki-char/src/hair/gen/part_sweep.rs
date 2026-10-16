@@ -2,17 +2,17 @@
 //! behind the ear (port of `parts/hair.js`, lines 174 to 197).
 //!
 //! **The path of one lock.** It starts on the part line, a line in the sagittal plane from [`PartSweepGen::part_front_deg`]
-//! (forward of vertical) to [`PartSweepGen::part_back_deg`], at the fraction `PART_START + (1 - PART_START) s` of the
-//! way along, nudged [`PART_SPREAD`] to its own side so the two sides do not share a root. It ends on the braid line,
+//! (forward of vertical) to [`PartSweepGen::part_back_deg`], at the fraction `part_start + (1 - part_start) s` of the
+//! way along, nudged [`PartSweepGen::part_spread`] to its own side so the two sides do not share a root. It ends on the braid line,
 //! a ring round the head whose height follows [`PartSweepGen::end_height_front`] at the front and
-//! [`PartSweepGen::end_height_back`] at the back (smoothstep of the azimuth over [`HEIGHT_BLEND`]), at azimuth
-//! `lerp(end_from_deg, end_to_deg, s^END_SPREAD)`. In between it follows the great circle from start to end direction
-//! (slerp at `t^SWEEP_EASE`), riding [`LIFT`] metres above the head plus a [`BELLY`] bulge in the middle and
-//! [`ALTERNATE_STEP`] on every other lock, so neighbours stack instead of z-fighting. Nine control points are resampled
+//! [`PartSweepGen::end_height_back`] at the back (smoothstep of the azimuth over [`PartSweepGen::height_blend_deg`]), at azimuth
+//! `lerp(end_from_deg, end_to_deg, s^end_spread)`. In between it follows the great circle from start to end direction
+//! (slerp at `t^sweep_ease`), riding [`PartSweepGen::lift`] metres above the head plus a [`PartSweepGen::belly`] bulge in the middle and
+//! [`PartSweepGen::alternate_step`] on every other lock, so neighbours stack instead of z-fighting. Nine control points are resampled
 //! to [`REST_POINTS`] by the geometry kit's Catmull-Rom.
 //!
 //! `s = i / (count - 1)` indexes the lock; the `+x` side comes first, then the `-x` side, each `count` locks. Shade
-//! alternates 0.97 and 1.00. Widths and thickness are the group's [`Taper`](omuzaki_char_api::Taper) and
+//! alternates [`PartSweepGen::shades`]. Widths and thickness are the group's [`Taper`](omuzaki_char_api::Taper) and
 //! [`Bulge`](omuzaki_char_api::Bulge).
 //!
 //! **Units.** The braid line's heights are metres above the head centre, which are the character's own data
@@ -35,22 +35,9 @@ use crate::kit::catmull::spaced_points_into;
 pub const CONTROL_POINTS: usize = 9;
 /// Points per lock after the resample.
 pub const REST_POINTS: usize = 14;
-/// Where on the part line the first lock starts, as a fraction of its length (not at the very front edge).
-pub const PART_START: f64 = 0.02;
-/// How far each side's roots are nudged apart across the part, metres.
-pub const PART_SPREAD: f64 = 0.02;
-/// Exponent spreading the end azimuths: below 1 packs more locks toward the temple.
-pub const END_SPREAD: f64 = 0.9;
-/// Exponent easing a lock along its path: below 1 leaves the part line quickly.
-pub const SWEEP_EASE: f64 = 0.9;
-/// Azimuth range (degrees, from the front) over which the braid line drops from its front height to its back height.
+/// Azimuth range (degrees, from the front) over which the braid line drops from its front height to its back height:
+/// the default of [`PartSweepGen::height_blend_deg`], and the braid crown's own (it has no field for it).
 pub const HEIGHT_BLEND: (f64, f64) = (70.0, 180.0);
-/// Height of a lock above the head surface at its ends, metres.
-pub const LIFT: f64 = 0.030;
-/// Extra height at the middle of the path, metres.
-pub const BELLY: f64 = 0.016;
-/// Extra height of every other lock, metres.
-pub const ALTERNATE_STEP: f64 = 0.005;
 /// How far along the path the belly peaks and falls again (`sin(pi min(1, t x BELLY_REACH))`).
 const BELLY_REACH: f64 = 1.2;
 
@@ -62,7 +49,7 @@ pub fn compile(g: &PartSweepGen, ctx: &mut HairGenCtx<'_>) -> CompiledGroup {
     let mut locks = Vec::new();
     rebuild(g, ctx.head, &mut locks);
     let per_side = usize::from(g.count.max(1));
-    let shade = |n: usize| if (n % per_side).is_multiple_of(2) { 0.97 } else { 1.0 };
+    let shade = |n: usize| g.shades[usize::from(!(n % per_side).is_multiple_of(2))];
     let clumps = locks.iter().enumerate().map(|(n, lock)| ctx.clump(lock.to_vec(), g.width, g.thickness, shade(n)));
     CompiledGroup::tubes(clumps.collect())
 }
@@ -105,14 +92,15 @@ pub fn control_points(
 ) {
     let s = if g.count > 1 { i as f64 / f64::from(g.count - 1) } else { 0.0 };
     let start =
-        (part_direction(g, PART_START + (1.0 - PART_START) * s) + DVec3::new(side * PART_SPREAD, 0.0, 0.0)).normalize();
-    let azimuth = side * (g.end_from_deg + (g.end_to_deg - g.end_from_deg) * s.powf(END_SPREAD)).to_radians();
-    let end = braid_direction(g.end_height_front, g.end_height_back, head, azimuth);
-    let alternate = if i.is_multiple_of(2) { 0.0 } else { ALTERNATE_STEP };
+        (part_direction(g, g.part_start + (1.0 - g.part_start) * s) + DVec3::new(side * g.part_spread, 0.0, 0.0)).normalize();
+    let azimuth = side * (g.end_from_deg + (g.end_to_deg - g.end_from_deg) * s.powf(g.end_spread)).to_radians();
+    let blend = (g.height_blend_deg[0], g.height_blend_deg[1]);
+    let end = height_direction(g.end_height_front, g.end_height_back, blend, head, azimuth);
+    let alternate = if i.is_multiple_of(2) { 0.0 } else { g.alternate_step };
     for (k, point) in out.iter_mut().enumerate() {
         let t = k as f64 / (CONTROL_POINTS - 1) as f64;
-        let lift = LIFT + BELLY * (std::f64::consts::PI * (t * BELLY_REACH).min(1.0)).sin() + alternate;
-        *point = on_head(head, slerp(start, end, t.powf(SWEEP_EASE)), lift);
+        let lift = g.lift + g.belly * (std::f64::consts::PI * (t * BELLY_REACH).min(1.0)).sin() + alternate;
+        *point = on_head(head, slerp(start, end, t.powf(g.sweep_ease)), lift);
     }
 }
 
@@ -122,11 +110,17 @@ fn part_direction(g: &PartSweepGen, s: f64) -> DVec3 {
     DVec3::new(0.0, a.cos(), -a.sin())
 }
 
-/// The unit direction of the braid line at azimuth `phi` (radians from the front): at that azimuth's height, blended
-/// from `front` to `back` over [`HEIGHT_BLEND`], round the head. Shared with the braid-crown generator.
+/// The unit direction of the braid line at azimuth `phi` (radians from the front) with the default blend
+/// ([`HEIGHT_BLEND`]). Shared with the braid-crown generator.
 pub fn braid_direction(front: f64, back: f64, head: &dyn HeadSurface, phi: f64) -> DVec3 {
+    height_direction(front, back, HEIGHT_BLEND, head, phi)
+}
+
+/// The unit direction of a ring round the head at azimuth `phi` (radians from the front): at that azimuth's height,
+/// blended from `front` to `back` over the azimuth range `blend` (degrees), round the head.
+pub fn height_direction(front: f64, back: f64, blend: (f64, f64), head: &dyn HeadSurface, phi: f64) -> DVec3 {
     let a = phi.sin().atan2(phi.cos()).abs().to_degrees();
-    let blend = smoothstep(a, HEIGHT_BLEND.0, HEIGHT_BLEND.1);
+    let blend = smoothstep(a, blend.0, blend.1);
     let height = front + (back - front) * blend;
     let crown = f64::from(head.radius(Vec3::Y)).max(1e-6);
     let theta = (height / crown).clamp(-1.0, 1.0).acos();

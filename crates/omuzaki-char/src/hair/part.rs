@@ -15,13 +15,18 @@
 //! **Why tubes.** A lock is a closed lens, wound to face out of the tube, so the renderer's inverted-hull outline finds
 //! a back face from every side (a flat ribbon wound outward gets no outline from outside).
 //!
+//! **Tails and buns.** An enabled tail or bun group also publishes its anchors (`<group>_tail_root`, `<group>_bun_centre`,
+//! `<group>_bun_tie`) for accessories to attach to, and a tail adds a spring chain per side to the rig
+//! (`publish_ties`). The tail's tubes still skin to the head until the hair runtime (#322) moves them; the chain's
+//! bones are in the rig for it.
+//!
 //! **Not drawn yet.** The curtain's strip geometry is the curtain generator's and the runtime's: a group
 //! that compiles to a strip reports a warning instead of a mesh.
 
 use std::ops::Range;
 
 use omuzaki_char_api::{
-    BodyRegion, BuildCtx, BuildError, FaceOverlay, Generator, GroupId, HAIR_UV, HairParams, JointRef, KindProvenance,
+    AnchorsFact, BodyRegion, BuildCtx, BuildError, FaceOverlay, Generator, GroupId, HAIR_UV, HairParams, HeadSurface, JointRef, KindProvenance,
     MaterialName, MaterialSpec, PartCategory, PartId, PartKind, PartMesh, PartMeta, PartOutput, RecolourCtx,
     Recoloured,
 };
@@ -32,6 +37,7 @@ use omuzaki_face_api::{FaceLayerId, Palette, narrow};
 use omuzaki_render_api::{AlphaMode, Outline};
 
 use super::compile::{self, CompiledEntry, Dispatch, GroupGenerator, GroupGeometry, draws_tubes, enabled};
+use super::r#gen::{bun, tail};
 use super::tube::{CAP_VERTICES, OutwardFrame, RING, TubeError, TubeLook, TubeMesh, polar_angles, vertex_colour};
 
 /// Where along the torso the body's vertical axis is read, from hips (0) to neck base (1): the upper back, where long
@@ -125,7 +131,44 @@ pub fn build_with(
     if let Some(geometry) = dynamic {
         out.meshes.push(part_mesh(true, geometry));
     }
+    publish_ties(params, ctx, head.as_ref(), &mut out)?;
     Ok(out)
+}
+
+/// Publishes the anchors of every enabled tail and bun group, and adds each tail's spring chain to the rig.
+///
+/// **Anchor names.** Keys are `(part, anchor)`, and a part can hold several tail or bun groups, so each anchor is named
+/// `<group id>_<anchor>` (`twintails_tail_root_l`; a mirrored tail group adds `_l` for the authored side and `_r` for
+/// the reflected one, a single tail none). **Bone and chain names** start `hair_<part>_<group id>` for the same reason,
+/// and a mirrored group's sides carry `_l` and `_r` segments. The chains collide with every collider group published
+/// before the hair (the head and shoulders).
+fn publish_ties(
+    params: &HairParams,
+    ctx: &BuildCtx<'_>,
+    head: &dyn HeadSurface,
+    out: &mut PartOutput,
+) -> Result<(), BuildError> {
+    let colliders: Vec<String> = ctx.colliders().iter().map(|group| group.name.clone()).collect();
+    for (id, group) in enabled(params) {
+        let anchors = match &group.generator {
+            Generator::Tail(g) => {
+                let prefix = format!("hair_{}_{id}", ctx.part);
+                tail::rig(g, head, &prefix, group.mirror, &colliders, &mut out.rig)
+                    .map_err(|e| ctx.fail(format!("group '{id}': a tail bone name: {e}")))?;
+                tail::anchors(g, head, group.mirror)
+            }
+            Generator::Bun(g) => {
+                bun::anchors(g, head).into_iter().map(|(name, anchor)| (name.to_owned(), anchor)).collect()
+            }
+            _ => continue,
+        };
+        for (name, anchor) in anchors {
+            let key = format!("{id}_{name}");
+            let anchor_id = key.parse().map_err(|e| ctx.fail(format!("group '{id}': anchor name '{key}': {e}")))?;
+            out.publishes.put::<AnchorsFact>((anchor_id, anchor));
+        }
+    }
+    Ok(())
 }
 
 /// The hair's streak and shade pass over every clump of every group, in compile order.

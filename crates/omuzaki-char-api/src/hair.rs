@@ -277,13 +277,38 @@ pub struct CapGen {
     pub hairline_back_deg: f64,
     /// How far the shell is raised above the ear, in degrees.
     pub ear_notch_deg: f64,
-    /// Shell offset from the skull at the crown.
+    /// Shell offset from the skull at the hairline. The shell rises by `crown_rise` of it toward the crown, so the
+    /// crown stands `(1 + crown_rise) * thickness` off the skull.
     pub thickness: f64,
+    /// The range of `cos(phi)` (`phi` the azimuth from the front) over which the hairline eases from the back
+    /// height to the front one: what counts as the forehead.
+    pub front_blend: [f64; 2],
+    /// Width of the ear notch along the side of the head, in `cos^2(phi)`.
+    pub notch_width: f64,
+    /// The range of `cos(phi)` over which the ear notch fades in from the back to the front half of the head.
+    pub notch_edges: [f64; 2],
+    /// How much higher the shell stands at the crown than at the hairline, as a fraction of `thickness`.
+    pub crown_rise: f64,
+    /// `hair-info.x`: the shell's strand seed, `0..=1`.
+    pub strand_seed: f64,
+    /// `hair-info.y`: the shell's shade, the underlayer sitting in the shadow of the locks, `0.5..=1`.
+    pub shade: f64,
 }
 
 impl Default for CapGen {
     fn default() -> Self {
-        Self { hairline_front_deg: 58.0, hairline_back_deg: 118.0, ear_notch_deg: 16.0, thickness: 0.016 }
+        Self {
+            hairline_front_deg: 58.0,
+            hairline_back_deg: 118.0,
+            ear_notch_deg: 16.0,
+            thickness: 0.016,
+            front_blend: [-0.2, 0.75],
+            notch_width: 0.10,
+            notch_edges: [-0.6, 0.2],
+            crown_rise: 0.625,
+            strand_seed: 0.37,
+            shade: 0.93,
+        }
     }
 }
 
@@ -309,6 +334,24 @@ pub struct PartSweepGen {
     pub width: Taper,
     /// Clump thickness.
     pub thickness: Bulge,
+    /// Where on the part line the first lock starts, as a fraction of its length.
+    pub part_start: f64,
+    /// How far each side's roots are nudged apart across the part, metres.
+    pub part_spread: f64,
+    /// Exponent spreading the end azimuths: below 1 packs more locks toward the temple.
+    pub end_spread: f64,
+    /// Exponent easing a lock along its path: below 1 leaves the part line quickly.
+    pub sweep_ease: f64,
+    /// Azimuth range, degrees from the front, over which the end height drops from its front value to its back one.
+    pub height_blend_deg: [f64; 2],
+    /// Height of a lock above the head at its ends, metres.
+    pub lift: f64,
+    /// Extra height at the middle of a lock, metres.
+    pub belly: f64,
+    /// Extra height of every other lock, so neighbours stack instead of fighting, metres.
+    pub alternate_step: f64,
+    /// Shade of the even and the odd locks, `0.5..=1`.
+    pub shades: [f64; 2],
 }
 
 impl Default for PartSweepGen {
@@ -323,6 +366,15 @@ impl Default for PartSweepGen {
             end_height_back: -0.04,
             width: Taper { start: 0.05, mid: 0.06, tip: 0.03, tip_at: 0.8 },
             thickness: Bulge { base: 0.01, swell: 0.004 },
+            part_start: 0.02,
+            part_spread: 0.02,
+            end_spread: 0.9,
+            sweep_ease: 0.9,
+            height_blend_deg: [70.0, 180.0],
+            lift: 0.030,
+            belly: 0.016,
+            alternate_step: 0.005,
+            shades: [0.97, 1.0],
         }
     }
 }
@@ -634,7 +686,7 @@ impl Default for BangsGen {
     }
 }
 
-/// A ponytail or twintail (reserved: not in the prototype).
+/// A ponytail or twintail (a new design: the prototype has none). Twintails are a tail group with `mirror` set.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct TailGen {
@@ -654,6 +706,10 @@ pub struct TailGen {
     pub width: Taper,
     /// Clump thickness.
     pub thickness: Bulge,
+    /// Radius of the bunch at the tie, where the clumps are gathered, in metres.
+    pub tie_radius: f64,
+    /// Bones in the tail's spring chain (`4..=6`), root to tip.
+    pub chain_bones: u8,
 }
 
 impl Default for TailGen {
@@ -667,11 +723,13 @@ impl Default for TailGen {
             wave: Wave::default(),
             width: Taper::default(),
             thickness: Bulge::default(),
+            tie_radius: 0.012,
+            chain_bones: 5,
         }
     }
 }
 
-/// A bun (reserved: not in the prototype).
+/// A bun (a new design: the prototype has none): strands wound round a ball that sits on the head.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct BunGen {
@@ -683,11 +741,22 @@ pub struct BunGen {
     pub strands: u8,
     /// Turns of each strand.
     pub wraps: f64,
+    /// Strand width.
+    pub width: Taper,
+    /// Strand thickness.
+    pub thickness: Bulge,
 }
 
 impl Default for BunGen {
     fn default() -> Self {
-        Self { centre: [30.0, 180.0, 0.02], radius: 0.05, strands: 6, wraps: 1.5 }
+        Self {
+            centre: [30.0, 180.0, 0.02],
+            radius: 0.05,
+            strands: 6,
+            wraps: 1.5,
+            width: Taper { start: 0.02, mid: 0.034, tip: 0.012, tip_at: 0.5 },
+            thickness: Bulge { base: 0.012, swell: 0.006 },
+        }
     }
 }
 
@@ -735,9 +804,9 @@ pub enum Generator {
     Curtain(CurtainGen),
     /// The fringe.
     Bangs(BangsGen),
-    /// A ponytail or twintail (reserved).
+    /// A ponytail or twintail.
     Tail(TailGen),
-    /// A bun (reserved).
+    /// A bun.
     Bun(BunGen),
     /// Explicit guide curves.
     Guides(GuidesGen),
@@ -768,7 +837,9 @@ pub struct HairGroup {
     /// Skip the group without deleting it (CB-91: hair variants side by side).
     #[serde(default = "yes")]
     pub enabled: bool,
-    /// Also build the mirror image across the midline (one braid side defines both).
+    /// Also build the mirror image across the midline: the group's clumps, then their reflections, so one side defines
+    /// both. A generator that already makes both sides of the head (`is_bilateral` in the builder: the cap, part
+    /// sweep, braid crown, curtain and bangs, and framing at `Both`) ignores it.
     #[serde(default)]
     pub mirror: bool,
     /// Motion.
@@ -1297,8 +1368,120 @@ impl Validate for HairGroup {
                 }
             }
         }
+        check_generator_values(&self.generator, c);
     }
 }
+
+/// The range checks that the per-variant arms above do not make: every `f64` of a generator, and every point of its
+/// lists, is finite and within a range where the field has one, so a value typed into a slider or a file can never
+/// reach a generator as `NaN`, infinite or absurd (a class sweep: #1775). Angles are degrees within +-360, heights
+/// and lengths metres within the head's scale (+-1.5), offsets as [`GuidePoint`]'s. Each generator's own counts and
+/// shapes are the arms' business.
+fn check_generator_values(generator: &Generator, c: &mut Check) {
+    let g = |name: &str| format!("generator/{name}");
+    match generator {
+        Generator::Cap(x) => {
+            for (i, v) in x.front_blend.iter().enumerate() {
+                c.range(&format!("generator/front_blend/{i}"), *v, -1.0, 1.0);
+            }
+            for (i, v) in x.notch_edges.iter().enumerate() {
+                c.range(&format!("generator/notch_edges/{i}"), *v, -1.0, 1.0);
+            }
+            c.range(&g("notch_width"), x.notch_width, 0.01, 1.0);
+            c.range(&g("crown_rise"), x.crown_rise, 0.0, 3.0);
+            c.range(&g("strand_seed"), x.strand_seed, 0.0, 1.0);
+            c.range(&g("shade"), x.shade, 0.5, 1.0);
+        }
+        Generator::PartSweep(x) => {
+            c.range(&g("part_front_deg"), x.part_front_deg, -180.0, 180.0);
+            c.range(&g("part_back_deg"), x.part_back_deg, -180.0, 180.0);
+            c.range(&g("end_from_deg"), x.end_from_deg, -360.0, 360.0);
+            c.range(&g("end_to_deg"), x.end_to_deg, -360.0, 360.0);
+            c.range(&g("end_height_front"), x.end_height_front, -HEAD_SCALE, HEAD_SCALE);
+            c.range(&g("end_height_back"), x.end_height_back, -HEAD_SCALE, HEAD_SCALE);
+            c.range(&g("part_start"), x.part_start, 0.0, 0.5);
+            c.range(&g("part_spread"), x.part_spread, 0.0, 0.2);
+            c.range(&g("end_spread"), x.end_spread, 0.1, 4.0);
+            c.range(&g("sweep_ease"), x.sweep_ease, 0.1, 4.0);
+            for (i, v) in x.height_blend_deg.iter().enumerate() {
+                c.range(&format!("generator/height_blend_deg/{i}"), *v, 0.0, 180.0);
+            }
+            c.range(&g("lift"), x.lift, 0.0, 0.3);
+            c.range(&g("belly"), x.belly, 0.0, 0.2);
+            c.range(&g("alternate_step"), x.alternate_step, 0.0, 0.05);
+            for (i, v) in x.shades.iter().enumerate() {
+                c.range(&format!("generator/shades/{i}"), *v, 0.5, 1.0);
+            }
+        }
+        Generator::Framing(x) => {
+            c.range(&g("spread"), x.spread, 0.0, 0.2);
+            for (i, p) in x.edge.iter().enumerate() {
+                for (axis, v) in ["y", "x"].iter().zip(p) {
+                    c.range(&format!("generator/edge/{i}/{axis}"), *v, -HEAD_SCALE, HEAD_SCALE);
+                }
+            }
+        }
+        Generator::Braid(x) => {
+            c.range(&g("path_from_deg"), x.path_from_deg, -360.0, 360.0);
+            c.range(&g("path_to_deg"), x.path_to_deg, -360.0, 360.0);
+            c.range(&g("height_front"), x.height_front, -HEAD_SCALE, HEAD_SCALE);
+            c.range(&g("height_back"), x.height_back, -HEAD_SCALE, HEAD_SCALE);
+            c.range(&g("across"), x.across, -0.2, 0.2);
+            c.range(&g("out"), x.out, -0.2, 0.2);
+            c.range(&g("strand_width"), x.strand_width, 0.001, 0.3);
+            c.range(&g("strand_thickness"), x.strand_thickness, 0.0005, 0.05);
+        }
+        Generator::Curtain(x) => {
+            c.range(&g("root_height_front"), x.root_height_front, -HEAD_SCALE, HEAD_SCALE);
+            c.range(&g("root_height_back"), x.root_height_back, -HEAD_SCALE, HEAD_SCALE);
+            for (i, p) in x.envelope.iter().enumerate() {
+                c.range(&format!("generator/envelope/{i}/y"), p[0], -3.0, 3.0);
+                c.range(&format!("generator/envelope/{i}/distance"), p[1], 0.0, 2.0);
+            }
+        }
+        Generator::Bangs(x) => {
+            c.range(&g("sweep_deg"), x.sweep_deg, -90.0, 90.0);
+            for (i, l) in x.layers.iter().enumerate() {
+                for (k, v) in l.tip_heights.iter().enumerate() {
+                    c.range(&format!("generator/layers/{i}/tip_heights/{k}"), *v, -HEAD_SCALE, HEAD_SCALE);
+                }
+                c.range(&format!("generator/layers/{i}/width"), l.width, 0.001, 0.3);
+                c.range(&format!("generator/layers/{i}/hook_deg"), l.hook_deg, -90.0, 90.0);
+                c.range(&format!("generator/layers/{i}/root_offset"), l.root_offset, -0.05, 0.3);
+                c.range(&format!("generator/layers/{i}/tip_offset"), l.tip_offset, -0.05, 0.3);
+            }
+            for (i, w) in x.wisps.iter().enumerate() {
+                c.range(&format!("generator/wisps/{i}/phi_deg"), w.phi_deg, -360.0, 360.0);
+                c.range(&format!("generator/wisps/{i}/tip_height"), w.tip_height, -HEAD_SCALE, HEAD_SCALE);
+                c.range(&format!("generator/wisps/{i}/width"), w.width, 0.001, 0.3);
+            }
+        }
+        Generator::Tail(x) => {
+            c.nested(&g("root"), &GuidePoint::Surface(x.root));
+            c.range(&g("root/phi_deg"), x.root[1], -360.0, 360.0);
+            c.range(&g("spread_deg"), x.spread_deg, 0.0, 120.0);
+            c.range(&g("tie_radius"), x.tie_radius, 0.002, 0.05);
+            count(&g("chain_bones"), c, u32::from(x.chain_bones), 4, 6);
+            c.nested(&g("width"), &x.width);
+            c.nested(&g("thickness"), &x.thickness);
+        }
+        Generator::Bun(x) => {
+            c.nested(&g("centre"), &GuidePoint::Surface(x.centre));
+            c.range(&g("centre/phi_deg"), x.centre[1], -360.0, 360.0);
+            c.range(&g("wraps"), x.wraps, 0.0, 6.0);
+            c.nested(&g("width"), &x.width);
+            c.nested(&g("thickness"), &x.thickness);
+        }
+        Generator::Guides(x) => {
+            for (i, clump) in x.clumps.iter().enumerate() {
+                c.range(&format!("generator/clumps/{i}/shade"), clump.shade, 0.5, 1.0);
+            }
+        }
+    }
+}
+
+/// The scale of a head in metres: heights and offsets of a generator are within this of the head's centre.
+const HEAD_SCALE: f64 = 1.5;
 
 fn count(name: &str, c: &mut Check, value: u32, lo: u32, hi: u32) {
     if !(lo..=hi).contains(&value) {
