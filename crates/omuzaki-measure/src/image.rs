@@ -157,8 +157,9 @@ pub fn decode(bytes: &[u8], hash: ContentHash, field: &str) -> Result<Rgba8, OpE
     }
     // A JPEG decoder keeps the profile it finds while it is built, so the declared length is judged before that, and
     // before `icc_profile` copies it. A PNG profile was bounded while `plan` read its header, and a profile past the bound refused there.
-    if let Some(declared) = header::jpeg_icc_declared_len(bytes)
-        && !profile_fits(&plan, bytes.len() as u64, declared)
+    let declared = if format == ImageFormat::Jpeg { header::jpeg_icc_declared_len(bytes) } else { None };
+    if let Some(declared) = declared
+        && !profile_fits(&plan, declared)
     {
         return Err(too_large(field, plan.width, plan.height));
     }
@@ -166,7 +167,15 @@ pub fn decode(bytes: &[u8], hash: ContentHash, field: &str) -> Result<Rgba8, OpE
     input.limits(limits());
     let mut decoder = input.into_decoder().map_err(|error| unreadable(field, &error))?;
     let icc = decoder.icc_profile().map_err(|error| unreadable(field, &error))?;
-    if !profile_fits(&plan, bytes.len() as u64, icc.as_ref().map_or(0, |p| p.len() as u64)) {
+    // The decoder yields no profile for APP2 chunks it cannot put together (a sequence number out of range, a count that
+    // disagrees). That is a file that declared a profile and gave none: refused, not read as untagged sRGB.
+    if declared.is_some() && icc.is_none() {
+        return Err(refuse_unreadable(
+            field,
+            "its embedded colour profile is incomplete or its chunks disagree".to_owned(),
+        ));
+    }
+    if !profile_fits(&plan, icc.as_ref().map_or(0, |p| p.len() as u64)) {
         return Err(too_large(field, plan.width, plan.height));
     }
     if let Some(found) = header::non_srgb(bytes, format, icc.as_deref()) {
@@ -187,8 +196,8 @@ pub fn decode(bytes: &[u8], hash: ContentHash, field: &str) -> Result<Rgba8, OpE
 /// other, with the encoded input and the decoder's state live and no pixel buffer yet. Then the returned copy is
 /// dropped and the pixels are decoded with the decoder's copy still held: the plan's peak plus one profile. Each phase
 /// is checked on its own, and the profile counts twice only in the first.
-fn profile_fits(plan: &Plan, input_len: u64, profile: u64) -> bool {
-    let copy_phase = input_len + DECODER_STATE_BYTES + 2 * profile;
+fn profile_fits(plan: &Plan, profile: u64) -> bool {
+    let copy_phase = plan.input + DECODER_STATE_BYTES + 2 * profile;
     let decode_phase = plan.peak + profile;
     fits(plan.width, plan.height, copy_phase.max(decode_phase))
 }
@@ -222,6 +231,9 @@ fn guess(bytes: &[u8]) -> Result<ImageFormat, String> {
 struct Plan {
     width: u32,
     height: u32,
+    /// The bytes the encoded input takes while the decoder is built and runs: the caller's buffer, and for a JPEG the
+    /// copy the decoder keeps of all of it.
+    input: u64,
     peak: u64,
 }
 
@@ -256,9 +268,12 @@ fn plan(bytes: &[u8], format: ImageFormat) -> Result<Plan, String> {
         (width, height, output, scratch)
     };
     let pixels = u64::from(width) * u64::from(height);
-    // The encoded input is held through the decode too, so it is part of the peak.
-    let peak = DECODER_STATE_BYTES + scratch + pixels * (output + RGBA_BYTES) + bytes.len() as u64;
-    Ok(Plan { width, height, peak })
+    // The encoded input is held through the decode too, so it is part of the peak. The JPEG decoder reads all of its
+    // input into a buffer of its own, so a JPEG holds it twice.
+    let copies = if format == ImageFormat::Jpeg { 2 } else { 1 };
+    let input = copies * bytes.len() as u64;
+    let peak = DECODER_STATE_BYTES + scratch + pixels * (output + RGBA_BYTES) + input;
+    Ok(Plan { width, height, input, peak })
 }
 
 /// The coefficient buffers a JPEG decoder keeps for its frame: one block of [`COEFFICIENT_BLOCK_BYTES`] for each 8×8
@@ -327,7 +342,7 @@ mod tests {
     const MIB: u64 = 1 << 20;
 
     fn plan(peak: u64) -> Plan {
-        Plan { width: 1, height: 1, peak }
+        Plan { width: 1, height: 1, input: 1_000, peak }
     }
 
     #[test]
@@ -338,8 +353,8 @@ mod tests {
         let input = 1_000;
         let state = super::DECODER_STATE_BYTES;
         let exact = (cap - input - state) / 2;
-        assert!(profile_fits(&plan(input + state + 5 * MIB), input, exact));
-        assert!(!profile_fits(&plan(input + state + 5 * MIB), input, exact + 1));
+        assert!(profile_fits(&plan(input + state + 5 * MIB), exact));
+        assert!(!profile_fits(&plan(input + state + 5 * MIB), exact + 1));
     }
 
     #[test]
@@ -347,16 +362,16 @@ mod tests {
         // A plan of 44 MiB with a 12 MiB profile: the old single sum was 44 + 24 = 68 MiB and refused it, but the copy
         // phase holds only the input and the decoder state beside the two profiles (about 24 MiB) and the decode phase
         // 44 + 12 = 56 MiB. Both fit.
-        assert!(profile_fits(&plan(44 * MIB), 1_000, 12 * MIB));
+        assert!(profile_fits(&plan(44 * MIB), 12 * MIB));
     }
 
     #[test]
     fn the_decode_phase_is_refused_one_byte_over_the_cap() {
         let cap = max_decoded_bytes();
         let profile = 3 * MIB;
-        assert!(profile_fits(&plan(cap - profile), 1_000, profile));
-        assert!(!profile_fits(&plan(cap - profile + 1), 1_000, profile));
+        assert!(profile_fits(&plan(cap - profile), profile));
+        assert!(!profile_fits(&plan(cap - profile + 1), profile));
         // The side limit is unaffected by the profile.
-        assert!(!profile_fits(&Plan { width: MAX_SIDE + 1, height: 1, peak: 0 }, 0, 0));
+        assert!(!profile_fits(&Plan { width: MAX_SIDE + 1, height: 1, input: 0, peak: 0 }, 0));
     }
 }

@@ -125,6 +125,14 @@ fn progressive_4096_header() -> Vec<u8> {
     out
 }
 
+/// A baseline JPEG with zeros after its end marker, `len` bytes in all. The decoder reads the whole input into a buffer
+/// of its own, so these bytes are held twice.
+fn padded_jpeg(len: usize) -> Vec<u8> {
+    let mut jpeg = include_bytes!("fixtures/baseline_444.jpg").to_vec();
+    jpeg.resize(len, 0);
+    jpeg
+}
+
 #[test]
 fn decoded_peaks_stay_within_the_header_prediction() {
     let cases = [
@@ -133,15 +141,18 @@ fn decoded_peaks_stay_within_the_header_prediction() {
         ("progressive 4:4:4 JPEG", include_bytes!("fixtures/progressive_444.jpg").to_vec()),
         ("16-bit RGBA PNG", png16_rgba(96, 64)),
         ("grey PNG", png_grey(96, 64)),
+        ("baseline JPEG padded to 20 MiB", padded_jpeg(20 << 20)),
     ];
     for (name, bytes) in cases {
         let predicted = predicted_peak(&bytes).unwrap_or_else(|| panic!("{name}: the header predicts no peak"));
         let (decoded, measured) = peak_of(|| decode(&bytes, ContentHash::of(&bytes), FIELD));
         decoded.unwrap_or_else(|error| panic!("{name}: {}", error.message));
         assert!(measured > 0, "{name}: nothing was counted");
+        // The caller's buffer was allocated before the measure began, and it is part of what the prediction counts.
+        let held = (measured + bytes.len()) as u64;
         assert!(
-            measured as u64 <= predicted,
-            "{name}: the decode held {measured} bytes, the header predicted {predicted}"
+            held <= predicted,
+            "{name}: the decode and its input held {held} bytes, the header predicted {predicted}"
         );
     }
 }
@@ -263,4 +274,15 @@ fn a_profile_and_a_pixel_area_that_each_fit_are_accepted_together() {
     assert!(plan + 2 * (3 * mib) > cap && plan + 3 * mib <= cap, "the plan is {plan} bytes: adjust the side");
     let error = decode(&png, ContentHash::of(&png), FIELD).unwrap_err();
     assert!(error.message.contains("colour profile"), "{}", error.message);
+}
+
+#[test]
+fn a_jpeg_whose_input_held_twice_is_over_the_cap_is_refused_before_a_decoder_is_built() {
+    // 40 MiB of input is under the 64 MiB cap once, and over it twice: the JPEG decoder keeps a copy of all of it.
+    let jpeg = padded_jpeg(40 << 20);
+    let (result, peak) = peak_of(|| decode(&jpeg, ContentHash::of(&jpeg), FIELD));
+    let error = result.unwrap_err();
+    assert_eq!(error.code, ErrorCode::Invalid);
+    assert!(error.message.starts_with("The image is 96 × 64"), "{}", error.message);
+    assert!(peak < 1 << 20, "a refused input allocated {peak} bytes");
 }

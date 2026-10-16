@@ -199,3 +199,16 @@ fn a_jpeg_whose_declared_profile_would_exceed_the_budget_is_refused_before_it_is
     let message = refusal(&jpeg);
     assert!(message.starts_with("The image is 96 × 64"), "{message}");
 }
+
+#[test]
+fn a_jpeg_whose_profile_chunks_disagree_is_refused_not_read_as_untagged() {
+    // A Display P3 profile in one APP2 chunk that says it is chunk 2 of 1. The decoder cannot put the profile together
+    // and yields none; the file did declare one, so it is refused, where reading it as untagged would accept P3 samples
+    // as sRGB.
+    let p3 = icc_profile([0.5151, 0.2412, -0.0011], [0.2919, 0.6922, 0.0419], [0.1572, 0.0666, 0.7841]);
+    let mut jpeg = with_icc_jpeg(include_bytes!("fixtures/baseline_444.jpg"), &p3);
+    let tag = jpeg.windows(14).position(|w| w == b"ICC_PROFILE\0\x01\x01").unwrap();
+    jpeg[tag + 12] = 2;
+    let message = refusal(&jpeg);
+    assert!(message.contains("embedded colour profile is incomplete"), "{message}");
+}
