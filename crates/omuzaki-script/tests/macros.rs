@@ -8,7 +8,7 @@ mod common;
 use common::{Entry, FakeRunner};
 use std::sync::Arc;
 
-use omuzaki_core::time::{Clock, FakeClock, Seconds, SystemClock};
+use omuzaki_core::time::{FakeClock, Seconds, SystemClock};
 use omuzaki_doc_api::{DocPath, DocVersion, Patch, Value};
 use omuzaki_ops_api::{Actor, Cause, CauseKind, ErrorCode, Event, Grants, Mode, OpRecord, TxId};
 use omuzaki_script::{FileError, Limits, Macro, MacroRecorder, RecordedCall, from_jsonl, play, play_within, to_jsonl};
