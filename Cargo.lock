@@ -3693,6 +3693,8 @@ dependencies = [
  "omuzaki-stage",
  "omuzaki-store",
  "omuzaki-store-api",
+ "omuzaki-stream",
+ "omuzaki-stream-api",
  "omuzaki-track-api",
  "schemars",
  "serde",
@@ -4052,6 +4054,25 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "toml",
+]
+
+[[package]]
+name = "omuzaki-library-mock"
+version = "0.0.0"
+dependencies = [
+ "ed25519-dalek",
+ "omuzaki-char-api",
+ "omuzaki-char-mock",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-doc-mock",
+ "omuzaki-library-api",
+ "omuzaki-ops-api",
+ "omuzaki-store-api",
+ "schemars",
+ "serde",
+ "serde_json",
+ "unicode-normalization",
 ]
 
 [[package]]
@@ -4474,14 +4495,19 @@ dependencies = [
  "image",
  "omuzaki-audio-api",
  "omuzaki-core",
+ "omuzaki-doc-mock",
  "omuzaki-ops-api",
  "omuzaki-render-api",
+ "omuzaki-settings-api",
+ "omuzaki-settings-mock",
  "omuzaki-stream-api",
  "proptest",
+ "schemars",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "toml",
 ]
 
 [[package]]
@@ -4491,6 +4517,7 @@ dependencies = [
  "bytes",
  "omuzaki-core",
  "omuzaki-history-api",
+ "omuzaki-ops-api",
  "omuzaki-render-api",
  "schemars",
  "serde",

@@ -126,6 +126,7 @@ impl Muxer for MemoryMuxer {
 pub struct MemoryMuxerFactory;
 
 impl MuxerFactory for MemoryMuxerFactory {
+    #[allow(clippy::disallowed_methods, reason = "the testing kit writes the file its test names; it is not an op")]
     fn create(&self, path: &Path, _container: Container) -> Result<Box<dyn Muxer>, StreamError> {
         let mut file = BufWriter::new(File::create(path).map_err(|e| io_error(&e))?);
         file.write_all(MAGIC).map_err(|e| io_error(&e))?;
@@ -183,6 +184,7 @@ impl Muxer for FileMuxer {
 /// # Errors
 /// [`StreamError::Io`] if the file cannot be read; [`StreamError::Mux`] if it is not a test container, a record is cut
 /// short, the end marker is missing or its count disagrees, or bytes follow the end marker.
+#[allow(clippy::disallowed_methods, reason = "the testing kit reads the file its test names; it is not an op")]
 pub fn read_test_container(path: &Path) -> Result<Vec<Packet>, StreamError> {
     let bytes = std::fs::read(path).map_err(|e| io_error(&e))?;
     let body = bytes.strip_prefix(MAGIC.as_slice()).ok_or_else(|| StreamError::Mux("not a test container".into()))?;
@@ -314,6 +316,7 @@ fn io_error(e: &std::io::Error) -> StreamError {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods, reason = "tests set up and cut their fixture files on disk; the fence is for ops")]
 mod tests {
     use super::*;
     use omuzaki_core::glam::UVec2;
