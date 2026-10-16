@@ -803,6 +803,9 @@ impl PerformControl {
     ///
     /// A running neutral capture keeps the frames it holds and its stall clock starts over at the next `advance`;
     /// the tracking state reads `NoFrames` and the frame rate starts over, as after a new source.
+    ///
+    /// The triggers start over too: whatever expression is shown is gone at once, and no key counts as pressed, so a
+    /// held or toggled key must be pressed again to show its expression. The bindings stay.
     pub fn reset(&mut self, performer: &mut Performer) {
         performer.reset();
         self.triggers.reset();
