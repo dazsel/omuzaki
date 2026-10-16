@@ -96,7 +96,9 @@ impl Op for UnderlaySet {
             other => OpError::internal(other.to_string()),
         })?;
         job.checkpoint("decoding the sheet", 0.3)?;
-        let pixels = decode::rgba(&bytes, &self.asset.to_string())?;
+        let Some(pixels) = decode::rgba(&bytes, &self.asset.to_string(), &|| job.is_cancelled())? else {
+            return Err(OpError::cancelled(job.id()));
+        };
         job.checkpoint("building the underlay", 0.6)?;
         let (width, height) = pixels.dimensions();
         let sheet = Sheet::new(UVec2::new(width, height), pixels.as_raw()).map_err(OpError::from)?;
