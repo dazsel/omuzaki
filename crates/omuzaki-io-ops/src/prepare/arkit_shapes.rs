@@ -51,7 +51,7 @@ const ROLL_BACK: f32 = 0.03;
 const SHRUG: f32 = 0.08;
 
 /// How far an iris moves sideways, and up or down, as a fraction of its eye's width and height.
-const LOOK: (f32, f32) = (0.2, 0.15);
+const LOOK: (f32, f32) = (0.2, 0.12);
 
 /// The symmetric source each pair of channels splits, as `(left, right, preset, morph)`: the `VRoid` morph target of
 /// that name on the face when the model has one (what synthesis binds at half weight for both sides), otherwise the
@@ -484,26 +484,28 @@ fn look(scene: &IoScene, m: &Landmarks, points: &[Vec<Vec3>], channel: &str) -> 
         "Out" => Vec3::X * (-toward_nose * LOOK.0 * width),
         _ => return None,
     };
-    // The iris slides over the surface it sits on (the eye white), keeping its height above it, so it neither sinks
-    // into a curved eye nor floats off it.
+    // The iris moves as one piece over the surface it sits on (the eye white): sideways by the shift, and up by the
+    // most any of its points needs to stay above that surface where it lands, so it neither sinks into a curved eye nor
+    // breaks apart.
     let surface: Vec<Vec3> = points
         .iter()
         .enumerate()
         .filter(|(p, _)| *p != iris)
         .flat_map(|(p, prim)| prim.iter().zip(&fixed[p]).filter(|(v, still)| !**still && inside(v)).map(|(v, _)| *v))
         .collect();
+    let disk: Vec<Vec3> = points[iris].iter().copied().filter(|p| inside(p)).collect();
+    let rise = disk
+        .iter()
+        .filter_map(|p| {
+            Some(surface_height(&surface, p.x + shift.x, p.y + shift.y)? - surface_height(&surface, p.x, p.y)?)
+        })
+        .fold(0.0, f32::max);
+    let moved = Vec3::new(shift.x, shift.y, rise);
     let mut deltas = Deltas::zero(scene, m.mesh);
     for (point, slot) in points[iris].iter().zip(deltas.positions[iris].iter_mut()) {
-        if !inside(point) {
-            continue;
+        if inside(point) {
+            *slot = moved;
         }
-        let (x, y) = (point.x + shift.x, point.y + shift.y);
-        let rise = surface_height(&surface, x, y)
-            .zip(surface_height(&surface, point.x, point.y))
-            .map_or(0.0, |(to, from)| to - from);
-        // A little clearance, half the iris's own height above the surface, so it never sinks into a coarse eye white.
-        let clearance = surface_height(&surface, point.x, point.y).map_or(0.0, |h| 0.5 * (point.z - h).max(0.0));
-        *slot = Vec3::new(shift.x, shift.y, rise + clearance);
     }
     Some(Shape { deltas, source: format!("the {} iris", if left { "left" } else { "right" }) })
 }
