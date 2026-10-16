@@ -939,3 +939,64 @@ fn a_setting_written_as_dotted_keys_under_a_header_changes_resets_and_reopens_wi
     drop(store);
     assert_eq!(get::<Migrated>(&rig.open()), 100);
 }
+
+#[test]
+fn a_refused_rename_group_stays_whole_and_lands_after_the_file_is_repaired() {
+    let rig = Rig::new();
+    rig.write_user("area = 0\n[legacy]\nvalue = 7\n");
+    let store = rig.open();
+    assert!(store.flush().is_err(), "the new place is refused");
+    assert_eq!(rig.user_text(), "area = 0\n[legacy]\nvalue = 7\n", "nothing of the group was applied");
+    let refused: Vec<_> = store.findings().into_iter().filter(|f| f.from == "write").map(|f| f.error.key).collect();
+    assert!(refused.contains(&"area.new".to_owned()) && refused.contains(&"legacy.value".to_owned()), "{refused:?}");
+    // The file is repaired in place, and the same store's retry moves the value as one group.
+    rig.write_user("[legacy]\nvalue = 7\n");
+    store.flush().unwrap();
+    let text = rig.user_text();
+    assert!(text.contains("new = 7") && !text.contains("value"), "{text}");
+    assert_eq!(store.findings().into_iter().filter(|f| f.from == "write").count(), 0);
+}
+
+#[test]
+fn resetting_a_renamed_setting_removes_both_names_whatever_the_inline_layout() {
+    let layouts = [
+        "ui = {\nnew_name = 3,\nold_name = 7 # old\n, theme = \"dark\"\n}\n",
+        "ui = { new_name = 3, old_name = 7, }\n",
+        "ui = { old_name = 7 # first\n, new_name = 3 # second\n}\n",
+        "ui = {\r\n  old_name = 7,\r\n  new_name = 3,\r\n  theme = \"dark\"\r\n}\r\n",
+    ];
+    for text in layouts {
+        let rig = Rig::new();
+        rig.write_user(text);
+        let store = rig.open();
+        assert_eq!(get::<Renamed>(&store), 3, "{text:?}");
+        store.reset("ui.new_name", Layer::Auto, Mode::Apply, &person()).unwrap();
+        store.flush().unwrap();
+        drop(store);
+        let after = rig.user_text();
+        assert!(!after.contains("name"), "both names are gone: {after:?}");
+        assert_eq!(get::<Renamed>(&rig.open()), 0, "reopening does not bring the old value back: {text:?}");
+    }
+}
+
+#[test]
+fn a_table_section_under_a_dotted_parent_sets_resets_and_reopens() {
+    let rig = Rig::new();
+    let old = "ui.theme = \"dark\"\n[ui.mig]\npercent = 125\n\n# other\n[other]\nk = 1\n";
+    rig.write_user(old);
+    let store = rig.open();
+    assert_eq!(get::<Migrated>(&store), 125);
+    set::<Migrated>(&store, &150);
+    store.flush().unwrap();
+    let text = rig.user_text();
+    assert!(text.contains("mig = 150") && !text.contains("percent") && text.contains("theme = \"dark\""), "{text}");
+    assert!(text.contains("# other\n[other]\nk = 1\n"), "{text}");
+    drop(store);
+    let store = rig.open();
+    assert_eq!(get::<Migrated>(&store), 150);
+    store.reset("ui.mig", Layer::Auto, Mode::Apply, &person()).unwrap();
+    store.flush().unwrap();
+    drop(store);
+    assert_eq!(get::<Migrated>(&rig.open()), 100);
+    assert!(rig.user_text().contains("theme = \"dark\"") && !rig.user_text().contains("mig"));
+}

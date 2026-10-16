@@ -131,67 +131,66 @@ pub(crate) fn apply_each(
     edits: &[Edit],
     needs: &BTreeMap<String, String>,
 ) -> Result<Applied, ApplyError> {
-    // An edit that needs another's key is made after the others, and only if that one was made.
-    let ordered: Vec<&Edit> = edits
+    // An edit that needs another's key is part of that key's group: a rename (the new name and the removal of the old
+    // one) or a reset (the key and its retired names) is made whole or not at all.
+    let groups: Vec<Vec<&Edit>> = edits
         .iter()
-        .filter(|e| !needs.contains_key(&e.key))
-        .chain(edits.iter().filter(|e| needs.contains_key(&e.key)))
+        .filter(|e| needs.get(&e.key).is_none_or(|n| !edits.iter().any(|m| &m.key == n)))
+        .map(|main| {
+            let dependents = edits.iter().filter(|e| needs.get(&e.key) == Some(&main.key));
+            std::iter::once(main).chain(dependents).collect()
+        })
         .collect();
-    let mut made: Vec<&str> = Vec::new();
-    let mut refused = Vec::new();
-    let mut note = |edit: &Edit, error: ApplyError| match error {
-        ApplyError::Conflict(reason) => {
-            refused.push((edit.key.clone(), reason));
-            Ok(())
-        }
-        unparsable @ ApplyError::Unparsable(_) => Err(unparsable),
-    };
-    let text = match text {
+    let (text, refused) = match text {
         Some(t) if !t.trim().is_empty() => {
             parse(t).map_err(ApplyError::Unparsable)?;
-            let mut current = t.to_owned();
-            for edit in ordered {
-                if let Some(wait) = unmet(needs, &made, edit) {
-                    note(edit, ApplyError::Conflict(wait))?;
-                    continue;
-                }
-                match apply_one(&current, edit) {
-                    Ok(done) => {
-                        current = done;
-                        made.push(&edit.key);
-                    }
-                    Err(error) => note(edit, error)?,
-                }
-            }
-            current
+            run_groups(&groups, t.to_owned(), |current, edit| apply_one(current, edit))?
         }
         _ => {
-            let mut doc = DocumentMut::new();
-            for edit in ordered {
-                if let Some(wait) = unmet(needs, &made, edit) {
-                    note(edit, ApplyError::Conflict(wait))?;
-                    continue;
-                }
+            let (doc, refused) = run_groups(&groups, DocumentMut::new(), |doc, edit| {
                 let mut next = doc.clone();
-                match edit_document(&mut next, edit) {
-                    Ok(()) => {
-                        doc = next;
-                        made.push(&edit.key);
-                    }
-                    Err(error) => note(edit, error)?,
-                }
-            }
+                edit_document(&mut next, edit).map(|()| next)
+            })?;
+            let mut doc = doc;
             doc.insert("format", toml_edit::value(FORMAT));
-            doc.to_string()
+            (doc.to_string(), refused)
         }
     };
     Ok(Applied { text, refused })
 }
 
-/// Why `edit` must wait: the key it needs was not written.
-fn unmet(needs: &BTreeMap<String, String>, made: &[&str], edit: &Edit) -> Option<String> {
-    let wanted = needs.get(&edit.key)?;
-    (!made.contains(&wanted.as_str())).then(|| format!("kept until `{wanted}` can be written"))
+/// Applies each group of edits to a copy of the state and keeps the copy only if every edit in the group was made. A
+/// refused group leaves the state as it was and lists all its keys. Only text that is not TOML fails the whole call.
+fn run_groups<S: Clone>(
+    groups: &[Vec<&Edit>],
+    start: S,
+    step: impl Fn(&S, &Edit) -> Result<S, ApplyError>,
+) -> Result<(S, Vec<(String, String)>), ApplyError> {
+    let (mut state, mut refused) = (start, Vec::new());
+    for group in groups {
+        let mut trial = state.clone();
+        let mut failure = None;
+        for edit in group {
+            match step(&trial, edit) {
+                Ok(next) => trial = next,
+                Err(ApplyError::Conflict(reason)) => {
+                    failure = Some((edit.key.clone(), reason));
+                    break;
+                }
+                Err(unparsable) => return Err(unparsable),
+            }
+        }
+        match failure {
+            None => state = trial,
+            Some((key, reason)) => {
+                for edit in group {
+                    let why = if edit.key == key { reason.clone() } else { format!("kept with `{key}`: {reason}") };
+                    refused.push((edit.key.clone(), why));
+                }
+            }
+        }
+    }
+    Ok((state, refused))
 }
 
 /// [`apply_each`] for callers that want every edit or an error.
@@ -496,8 +495,9 @@ fn collect_headers(item: &Item, path: &mut Vec<String>, out: &mut Vec<(Vec<Strin
         }
     };
     match item {
-        Item::Table(table) if !table.is_dotted() => {
-            if let (false, Some(span)) = (path.is_empty(), table.span()) {
+        // A dotted table (`ui.theme = 1`) has no header of its own, but a `[ui.mig]` section can hang under it.
+        Item::Table(table) => {
+            if let (false, false, Some(span)) = (path.is_empty(), table.is_dotted(), table.span()) {
                 out.push((path.clone(), span.start));
             }
             children(table, path, out);
@@ -545,7 +545,7 @@ fn splice_inline(
             (true, _) | (false, None) => Ok(text.to_owned()),
             (false, Some((key, item))) => match item.as_value().and_then(toml_edit::Value::as_inline_table) {
                 Some(t) if t.is_dotted() => peel_dotted(text, segments, &first_leaf_of_inline(t), None),
-                _ => remove_entry(text, key, item),
+                _ => remove_entry(text, table, key, item),
             },
         };
     };
@@ -572,24 +572,65 @@ fn splice_inline(
     })
 }
 
-/// Deletes one entry of an inline table with the comma that joins it to its neighbour.
-fn remove_entry(text: &str, key: &Key, item: &Item) -> Result<String, String> {
+/// Deletes one entry of an inline table with the comma that joins it to its neighbour, wherever the comma, newlines
+/// and comments sit around it.
+fn remove_entry(text: &str, owner: &InlineTable, key: &Key, item: &Item) -> Result<String, String> {
     let (Some(key_span), Some(value_span)) = (key.span(), item.as_value().and_then(toml_edit::Value::span)) else {
         return Err("an inline entry without a position".to_owned());
     };
     // A dotted entry `a.b.c = 1` has the span of its last name only: its entry starts at the first.
     let entry_start = dotted_key_start(text, key_span.start);
-    let after = &text[value_span.end..];
-    let gap = after.len() - after.trim_start().len();
-    let (from, to) = if after[gap..].starts_with(',') {
-        let tail = &after[gap + 1..];
-        let blanks = tail.len() - tail.trim_start_matches([' ', '\t']).len();
-        (entry_start, value_span.end + gap + 1 + blanks)
-    } else {
-        let before = text[..entry_start].trim_end();
-        (if before.ends_with(',') { before.len() - 1 } else { entry_start }, value_span.end)
+    let (from, to) = match next_separator(text, value_span.end) {
+        Some((true, comma)) => {
+            // `entry ,` : the entry goes with its own comma and the blanks after it.
+            let tail = &text[comma + 1..];
+            (entry_start, comma + 1 + (tail.len() - tail.trim_start_matches([' ', '\t']).len()))
+        }
+        Some((false, _)) => {
+            // The last entry, without a comma after it: the comma before it goes instead.
+            let mut ends = Vec::new();
+            value_ends(owner, &mut ends);
+            let before = ends.into_iter().filter(|end| *end <= entry_start).max();
+            let comma = before.and_then(|end| comma_between(text, end, entry_start));
+            (comma.unwrap_or(entry_start), value_span.end)
+        }
+        None => return Err("an inline entry followed by something unexpected".to_owned()),
     };
     Ok(format!("{}{}", &text[..from], &text[to..]))
+}
+
+/// The end of every value in an inline table, looking through dotted entries (whose own span is only a name).
+fn value_ends(table: &InlineTable, out: &mut Vec<usize>) {
+    for (_, value) in table {
+        match value.as_inline_table() {
+            Some(inner) if inner.is_dotted() => value_ends(inner, out),
+            _ => out.extend(value.span().map(|span| span.end)),
+        }
+    }
+}
+
+/// What follows `from` after blanks, newlines and comments: `Some((true, at))` for a comma, `Some((false, at))` for the
+/// closing brace, `None` for anything else.
+fn next_separator(text: &str, from: usize) -> Option<(bool, usize)> {
+    let mut at = from;
+    while let Some(c) = text[at..].chars().next() {
+        match c {
+            ',' => return Some((true, at)),
+            '}' => return Some((false, at)),
+            '#' => at += text[at..].find('\n').unwrap_or(text.len() - at),
+            c if c.is_whitespace() => at += c.len_utf8(),
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// The comma between the end of one entry and the start of the next, past blanks, newlines and comments.
+fn comma_between(text: &str, from: usize, to: usize) -> Option<usize> {
+    match next_separator(text, from) {
+        Some((true, at)) if at < to => Some(at),
+        _ => None,
+    }
 }
 
 /// Where the dotted key whose last name starts at `pos` begins: the names before it, `a.b.` of `a.b.c`, are walked back.
@@ -681,6 +722,9 @@ fn eol_of(text: &str) -> &'static str {
         _ => "\n",
     }
 }
+
+#[cfg(test)]
+mod differential;
 
 #[cfg(test)]
 mod tests {
