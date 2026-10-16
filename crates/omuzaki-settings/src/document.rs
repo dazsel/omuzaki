@@ -144,13 +144,23 @@ pub(crate) fn apply_each(
     let (text, refused) = match text {
         Some(t) if !t.trim().is_empty() => {
             parse(t).map_err(ApplyError::Unparsable)?;
-            run_groups(&groups, t.to_owned(), |current, edit| apply_one(current, edit))?
+            run_groups(
+                &groups,
+                t.to_owned(),
+                |current, edit| apply_one(current, edit),
+                |done, group| parse(done).is_ok_and(|doc| group_reads_back(&doc, group)),
+            )?
         }
         _ => {
-            let (doc, refused) = run_groups(&groups, DocumentMut::new(), |doc, edit| {
-                let mut next = doc.clone();
-                edit_document(&mut next, edit).map(|()| next)
-            })?;
+            let (doc, refused) = run_groups(
+                &groups,
+                DocumentMut::new(),
+                |doc, edit| {
+                    let mut next = doc.clone();
+                    edit_document(&mut next, edit).map(|()| next)
+                },
+                |doc, group| group_reads_back(doc, group),
+            )?;
             let mut doc = doc;
             doc.insert("format", toml_edit::value(FORMAT));
             (doc.to_string(), refused)
@@ -162,11 +172,15 @@ pub(crate) fn apply_each(
 /// Applies each group of edits to a copy of the state and keeps the copy only if every edit in the group was made, in
 /// some order: a rename whose old name is an ancestor of the new one needs the old name removed first, and one whose
 /// old name is a descendant needs the new name written first. A group no order can make leaves the state as it was and
-/// lists all its keys. Only text that is not TOML fails the whole call.
+/// lists all its keys. Each edit is checked as it is made, and the whole group again once it is made (`whole`): a later
+/// edit of the group (the removal of an ancestor) can undo an earlier one (the write of a descendant) while both
+/// succeed, so an order only counts if the group's FINAL state has every key as its edit says. Only text that is not
+/// TOML fails the whole call.
 fn run_groups<S: Clone>(
     groups: &[Vec<&Edit>],
     start: S,
     step: impl Fn(&S, &Edit) -> Result<S, ApplyError>,
+    whole: impl Fn(&S, &[&Edit]) -> bool,
 ) -> Result<(S, Vec<(String, String)>), ApplyError> {
     let (mut state, mut refused) = (start, Vec::new());
     for group in groups {
@@ -184,6 +198,10 @@ fn run_groups<S: Clone>(
                     }
                     Err(unparsable) => return Err(unparsable),
                 }
+            }
+            if failure.is_none() && !whole(&trial, group) {
+                let key = group.iter().map(|e| e.key.as_str()).collect::<Vec<_>>().join("`, `");
+                failure = Some((group[0].key.clone(), format!("an edit of the group (`{key}`) undid another")));
             }
             match failure {
                 None => {
@@ -205,6 +223,21 @@ fn run_groups<S: Clone>(
         }
     }
     Ok((state, refused))
+}
+
+/// Whether every edit of `group` reads back from `doc` as it says: a written key has its value, a removed key is gone.
+fn group_reads_back(doc: &DocumentMut, group: &[&Edit]) -> bool {
+    group.iter().all(|edit| {
+        let found = lookup(doc, &edit.key);
+        match &edit.value {
+            Some((value, _)) => found.as_ref() == Some(value),
+            // A removed name may have been replaced by a written one beneath it (`deep.old` became `deep.old.new`).
+            None => {
+                let below = format!("{}.", edit.key);
+                found.is_none() || group.iter().any(|other| other.value.is_some() && other.key.starts_with(&below))
+            }
+        }
+    })
 }
 
 /// The orders in which a group of `n` edits may be tried: as given first, then every other (groups are a handful of
@@ -582,7 +615,7 @@ fn splice_inline(
             (true, _) | (false, None) => Ok(text.to_owned()),
             (false, Some((key, item))) => match item.as_value().and_then(toml_edit::Value::as_inline_table) {
                 Some(t) if t.is_dotted() => peel_dotted(text, segments, &first_leaf_of_inline(t), None),
-                _ => remove_entry(text, table, key, item),
+                _ => remove_entry(text, inline, key, item),
             },
         };
     };
@@ -611,12 +644,13 @@ fn splice_inline(
 
 /// Deletes one entry of an inline table: its key, value and own trailing comment, and the one comma that separated it
 /// from its neighbour. The neighbours' comments and the layout's newlines stay, and a line left empty goes.
-fn remove_entry(text: &str, owner: &InlineTable, key: &Key, item: &Item) -> Result<String, String> {
+fn remove_entry(text: &str, root: &InlineTable, key: &Key, item: &Item) -> Result<String, String> {
     let (Some(key_span), Some(value_span)) = (key.span(), item.as_value().and_then(toml_edit::Value::span)) else {
         return Err("an inline entry without a position".to_owned());
     };
-    // A dotted entry `a.b.c = 1` has the span of its last name only: its entry starts at the first.
-    let start = dotted_key_start(text, key_span.start);
+    // The entry starts where the whitespace and comments before it (the key's leading decor, which toml_edit records on
+    // the last name of a dotted chain, `c` of `a.b.c`) end. Nothing is read back from the text to find the key's start.
+    let start = key.leaf_decor().prefix().and_then(toml_edit::RawString::span).map_or(key_span.start, |lead| lead.end);
     // The entry's own span, then the one comma that goes with it (when it is not inside that span).
     let (entry, comma_cut) = match next_separator(text, value_span.end) {
         // `entry ... ,`: the entry goes with its comma and a comment that shares the comma's line.
@@ -625,7 +659,7 @@ fn remove_entry(text: &str, owner: &InlineTable, key: &Key, item: &Item) -> Resu
         Some((false, _)) => {
             let end = trailing_comment_end(text, value_span.end);
             let mut ends = Vec::new();
-            value_ends(owner, &mut ends);
+            value_ends(root, &mut ends);
             let before = ends.into_iter().filter(|end| *end <= start).max();
             match before.and_then(|end| comma_between(text, end, start)) {
                 // Only blanks between the comma and the entry: they go as one piece.
@@ -702,22 +736,6 @@ fn comma_between(text: &str, from: usize, to: usize) -> Option<usize> {
     match next_separator(text, from) {
         Some((true, at)) if at < to => Some(at),
         _ => None,
-    }
-}
-
-/// Where the dotted key whose last name starts at `pos` begins: the names before it, `a.b.` of `a.b.c`, are walked back.
-fn dotted_key_start(text: &str, mut pos: usize) -> usize {
-    loop {
-        let Some(dotless) = text[..pos].trim_end().strip_suffix('.') else { return pos };
-        let name = dotless.trim_end();
-        let start = match name.chars().next_back() {
-            Some(quote @ ('"' | '\'')) => name[..name.len() - 1].rfind(quote),
-            _ => Some(name.trim_end_matches(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-').len()),
-        };
-        match start {
-            Some(at) if at < name.len() => pos = at,
-            _ => return pos,
-        }
     }
 }
 
@@ -1151,6 +1169,14 @@ mod tests {
 
         let director = "ui = {\n  theme = \"dark\", # keep theme\n  scale = 125\n}\n";
         assert_eq!(run(director, "ui.scale"), "ui = {\n  theme = \"dark\" # keep theme\n}\n");
+
+        // A period at the end of a neighbour's comment is not a dotted-key separator.
+        let period = "ui = {\n  theme = \"dark\", # keep theme.\n  scale = 125\n}\n";
+        assert_eq!(run(period, "ui.scale"), "ui = {\n  theme = \"dark\" # keep theme.\n}\n");
+        let period_crlf = period.replace('\n', "\r\n");
+        assert_eq!(run(&period_crlf, "ui.scale"), "ui = {\r\n  theme = \"dark\" # keep theme.\r\n}\r\n");
+        let dotted_after_comment = "ui = {\n  a = 1, # x.\n  b.c = 2\n}\n";
+        assert_eq!(run(dotted_after_comment, "ui.b.c"), "ui = {\n  a = 1 # x.\n}\n");
 
         let own_lines = "ui = {\n  # about a\n  a = 1,\n  # about b\n  b = 2\n  # about end\n}\n";
         assert_eq!(run(own_lines, "ui.b"), "ui = {\n  # about a\n  a = 1\n  # about b\n  # about end\n}\n");
