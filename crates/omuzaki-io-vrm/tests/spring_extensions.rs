@@ -249,3 +249,21 @@ fn malformed_limit_extensions_leave_the_joint_without_a_limit() {
         assert!(has(&out.report, "vrm.limit_invalid"), "{body}: {:#?}", out.report);
     }
 }
+
+#[test]
+fn a_strict_vrm1_export_keeps_extended_colliders_and_limits_and_a_strict_0x_export_refuses_them() {
+    let (scene, _) = extended_springs();
+    let strict = common::options().strict();
+    // VRM 1.0 writes both extensions, so nothing is lost and strict mode lets the export through.
+    let (bytes, report) = common::export_with(&Vrm1Exporter, &scene, &strict).expect("a strict 1.0 export");
+    assert!(!report.has_rule("vrm.collider_dropped") && !report.has_rule("vrm.limit_dropped"), "{report:#?}");
+    let back = import(&Vrm1Importer, &bytes);
+    assert_eq!(springs(&back.scene), springs(&scene), "every shape and limit came back");
+    // 0.x cannot carry them, and strict mode refuses the loss before writing.
+    match common::export_with(&omuzaki_io_vrm::Vrm0Exporter, &scene, &strict) {
+        Err(omuzaki_io_api::IoError::Rejected(r)) => {
+            assert!(r.has_rule("vrm0.collider_unsupported") && r.has_rule("vrm0.limit_unsupported"), "{r:#?}");
+        }
+        other => panic!("a strict 0.x export refuses the loss, got {:?}", other.map(|(_, r)| r)),
+    }
+}

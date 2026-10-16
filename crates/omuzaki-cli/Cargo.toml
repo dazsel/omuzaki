@@ -51,8 +51,6 @@ omuzaki-store-api = { path = "../omuzaki-store-api" }
 
 [dev-dependencies]
 tempfile.workspace = true
-# The model `tests/op_conformance.rs`'s `avatar` fixture generates and imports.
-omuzaki-io-api = { path = "../omuzaki-io-api" }
 # The performer the conformance rig stands in for the `trigger.*` examples (`tests/op_conformance.rs`).
 omuzaki-anim-api = { path = "../omuzaki-anim-api" }
 # The expressions and the camera ids the idle hosts list.

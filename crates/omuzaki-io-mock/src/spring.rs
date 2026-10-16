@@ -10,7 +10,7 @@
 
 use omuzaki_core::glam::Vec3;
 use omuzaki_io_api::{
-    Avatar, Collider, ColliderGroup, ColliderShape, Finding, IoError, Report, SpringChain, SpringJoint,
+    Avatar, Collider, ColliderGroup, ColliderShape, Finding, IoError, IoScene, Report, SpringChain, SpringJoint,
 };
 use serde_json::{Value, json};
 
@@ -40,6 +40,27 @@ pub(crate) fn body(av: &Avatar) -> Option<Value> {
     Some(out)
 }
 
+/// What the mock's VRM 1.0 writer leaves out of `scene`, for its exporter's check, so strict mode refuses the loss
+/// before anything is written: inside-out and plane colliders, written as the inert fallback (`vrm.collider_dropped`),
+/// and joint limits, not written (`vrm.limit_dropped`). The real writer carries both, so the VRM profile reports
+/// neither for 1.0.
+pub(crate) fn losses(scene: &IoScene) -> Report {
+    let mut r = Report::new();
+    let Some(avatar) = &scene.avatar else { return r };
+    let sb = &avatar.spring_bones;
+    let colliders = sb.colliders.iter().filter(|c| base_shape(c.shape).is_none()).count();
+    let limits = sb.chains.iter().flat_map(|c| &c.joints).filter(|j| j.limit.is_some()).count();
+    if colliders > 0 {
+        let msg = format!("the mock writes {colliders} inside-out or plane collider(s) as the inert fallback sphere");
+        r.push(Finding::warning("vrm.collider_dropped", msg).at("avatar/springBone/colliders"));
+    }
+    if limits > 0 {
+        let msg = format!("the mock doesn't write joint limits; {limits} limit(s) are dropped");
+        r.push(Finding::warning("vrm.limit_dropped", msg).at("avatar/springBone/springs"));
+    }
+    r
+}
+
 /// The base shape of a collider, or `None` for an extended shape, which the mock does not write.
 fn base_shape(shape: ColliderShape) -> Option<Value> {
     match shape {
@@ -54,7 +75,7 @@ fn base_shape(shape: ColliderShape) -> Option<Value> {
 }
 
 /// An extended shape is written as the spec's fallback for a reader without the extension, an inert sphere of radius 0
-/// far below the model, which keeps the collider indices in the groups valid. `vrm_profile` reports the loss.
+/// far below the model, which keeps the collider indices in the groups valid. [`losses`] reports the loss.
 fn collider_json(c: &Collider) -> Value {
     let shape =
         base_shape(c.shape).unwrap_or_else(|| json!({ "sphere": { "offset": [0.0, -10_000.0, 0.0], "radius": 0.0 } }));

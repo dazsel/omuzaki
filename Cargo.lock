@@ -3716,7 +3716,6 @@ dependencies = [
  "omuzaki-doc",
  "omuzaki-doc-api",
  "omuzaki-face-api",
- "omuzaki-io-api",
  "omuzaki-io-gltf",
  "omuzaki-io-ops",
  "omuzaki-io-vrm",

@@ -509,3 +509,42 @@ fn the_first_character_of_a_new_project_is_an_imported_avatar() {
     let id = project.imported(&model(), &json!({}));
     assert!(project.value(&format!("characters/{id}/avatar")).is_some(), "the character table is made with it");
 }
+
+/// `io.check_export` of the imported character `id` for `purpose`: whether it would export, and its error rules.
+fn export_check(project: &Project, id: &CharId, purpose: &str) -> (bool, Vec<String>) {
+    // Referenced so the linker keeps the mock formats `io.check_export` looks up by id.
+    let _ = omuzaki_io_mock::MockVrm1Exporter;
+    let args = json!({ "character": id, "format": "vrm1", "purpose": purpose });
+    let out = project.plan("io.check_export", args).expect("the check runs").output.unwrap();
+    let errors = out["report"]["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["severity"] == "error")
+        .map(|f| f["rule"].as_str().unwrap().to_owned())
+        .collect();
+    (out["ok"].as_bool().unwrap(), errors)
+}
+
+#[test]
+fn publishing_an_imported_model_whose_terms_forbid_sharing_is_refused_and_a_private_export_is_not() {
+    let mut project = Project::new();
+    // The model's terms forbid redistribution and modification (VRM's defaults).
+    let id = project.imported(&model(), &json!({}));
+    let (ok, errors) = export_check(&project, &id, "publish");
+    assert!(!ok, "{errors:?}");
+    assert!(errors.iter().any(|r| r == "rights.licence_forbids_redistribution"), "{errors:?}");
+    let (_, errors) = export_check(&project, &id, "private");
+    assert!(!errors.iter().any(|r| r.starts_with("rights.")), "a private export is the person's own: {errors:?}");
+}
+
+#[test]
+fn an_imported_model_whose_terms_allow_sharing_passes_the_rights_gate() {
+    let mut scene = model();
+    scene.meta.terms.allow_redistribution = true;
+    scene.meta.terms.modification = Modification::AllowModificationRedistribution;
+    let mut project = Project::new();
+    let id = project.imported(&scene, &json!({}));
+    let (_, errors) = export_check(&project, &id, "publish");
+    assert!(!errors.iter().any(|r| r.starts_with("rights.")), "{errors:?}");
+}

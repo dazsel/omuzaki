@@ -13,7 +13,8 @@
 //! was, while welded vertices, merged primitives and dropped unused materials, textures and images (reported at import)
 //! export as cleaned, and a node constraint the solver refused is not written. A mesh no node draws is written from the
 //! geometry it kept. A scale the import baked out of the skeleton is baked into what hangs from it instead, so
-//! everything sits where the file had it: a rigid mesh two nodes draw at different scales becomes one mesh per scale.
+//! everything sits where the file had it: a rigid mesh two nodes draw at different scales becomes one mesh per scale,
+//! and a collider on a bone that lost its scale is carried into the bone's unscaled frame.
 
 use std::collections::BTreeMap;
 
@@ -23,7 +24,7 @@ use omuzaki_avatar_api::avatar::AvatarFace;
 use omuzaki_avatar_api::body::BodyView;
 use omuzaki_avatar_api::def::AvatarDef;
 use omuzaki_avatar_api::expression::AvatarExpression;
-use omuzaki_avatar_api::retained::{Retained, RetainedInstance, RetainedMesh, RetainedSprings};
+use omuzaki_avatar_api::retained::{Retained, RetainedInstance, RetainedMesh};
 use omuzaki_core::glam::{Mat4, Vec3};
 use omuzaki_io_api::{
     self as io, Avatar, Blob, EncodedImage, FirstPerson, IoError, IoScene, MaterialIx, MeshAnnotation, MeshIx, Node,
@@ -35,6 +36,7 @@ use omuzaki_store_api::ContentHash;
 use super::springs::shape as io_shape;
 use crate::convert::bones::to_file;
 use crate::prepare::avatar::apply_material_edit;
+use crate::prepare::avatar::physics::in_bone_frame;
 
 /// The scene the imported avatar `body` exports as, with the person's material edits of `def`; `image` gives the
 /// stored bytes of an image by its content hash.
@@ -105,7 +107,7 @@ pub fn gather_imported(
     avatar.first_person = r.first_person.as_ref().map(|annotations| FirstPerson {
         annotations: annotations.iter().map(|a| MeshAnnotation { node: NodeIx(a.node), flag: a.flag.into() }).collect(),
     });
-    avatar.spring_bones = springs(&r.springs);
+    avatar.spring_bones = springs(r);
     avatar.constraints = body
         .constraints
         .constraints
@@ -243,10 +245,11 @@ fn meshes(body: &BodyView<'_>, r: &Retained) -> Result<Meshes, IoError> {
         let mut groups = groups.into_iter();
         let Some((fold, joints, members)) = groups.next() else { continue };
         let index = u32::try_from(out.list.len()).unwrap_or(u32::MAX);
-        out.list.push(drawn(body, source, members[0], fold, joints)?);
+        out.list.push(drawn(body, source, representative(joints, &members, &skinned), fold, joints)?);
         out.of_node.extend(members.iter().map(|i| (i.node, index)));
         for (fold, joints, members) in groups {
-            copies.push((drawn(body, source, members[0], fold, joints)?, members.iter().map(|i| i.node).collect()));
+            let mesh = drawn(body, source, representative(joints, &members, &skinned), fold, joints)?;
+            copies.push((mesh, members.iter().map(|i| i.node).collect()));
         }
     }
     for (mesh, nodes) in copies {
@@ -275,6 +278,16 @@ fn undrawn(source: &RetainedMesh) -> Result<io::Mesh, IoError> {
         mesh.primitives.push(built);
     }
     Ok(mesh)
+}
+
+/// The instance a group's mesh is read from: a skinned member when the group keeps the joints, since a rigid member's
+/// skin was made up at import, whichever node comes first; otherwise the first.
+fn representative<'a>(
+    joints: bool,
+    members: &[&'a RetainedInstance],
+    skinned: &dyn Fn(u32) -> bool,
+) -> &'a RetainedInstance {
+    members.iter().copied().find(|i| !joints || skinned(i.node)).unwrap_or(members[0])
 }
 
 /// The matrix a rigid instance's made-up skin carried: the scale its node had in the file (identity for none).
@@ -325,15 +338,28 @@ fn drawn(
     Ok(mesh)
 }
 
-/// Moves a rigid mesh's vertices, normals and morph deltas by `fold`, the matrix its one-joint skin carried.
+/// Moves a rigid mesh's vertices, normals and morph deltas by `fold`, the matrix its one-joint skin carried. A normal
+/// turns by the inverse transpose and is normalised again; its morph deltas turn by the same matrix and are divided by
+/// the same length, so a morphed normal (the normal plus its delta, which the renderer normalises) keeps the direction
+/// the file gave it.
 fn bake(fold: Mat4, geometry: &mut omuzaki_io_api::MeshData, targets: &mut [io::MorphTarget]) {
     let normal = fold.inverse().transpose();
-    let turn = |n: &mut Vec3| *n = normal.transform_vector3(*n).try_normalize().unwrap_or(*n);
     geometry.positions.iter_mut().for_each(|p| *p = fold.transform_point3(*p));
-    geometry.normals.iter_mut().for_each(turn);
+    // Each vertex's normalisation factor, shared by its normal and its normal deltas.
+    let lengths: Vec<f32> = geometry
+        .normals
+        .iter()
+        .map(|n| normal.transform_vector3(*n).length())
+        .map(|l| if l > f32::EPSILON { l } else { 1.0 })
+        .collect();
+    for (n, length) in geometry.normals.iter_mut().zip(&lengths) {
+        *n = normal.transform_vector3(*n) / *length;
+    }
     for target in targets {
         target.positions.iter_mut().for_each(|d| *d = fold.transform_vector3(*d));
-        target.normals.iter_mut().for_each(|d| *d = normal.transform_vector3(*d));
+        for (v, d) in target.normals.iter_mut().enumerate() {
+            *d = normal.transform_vector3(*d) / lengths.get(v).copied().unwrap_or(1.0);
+        }
     }
 }
 
@@ -448,8 +474,17 @@ fn drawing_node(r: &Retained, mesh: u16) -> Option<u32> {
     r.meshes.iter().flat_map(|m| &m.instances).find(|i| i.meshes.contains(&mesh)).map(|i| i.node)
 }
 
-/// The file's spring records, back in the file's form.
-fn springs(r: &RetainedSprings) -> io::SpringBones {
+/// The file's spring records, back in the file's form. A collider on a bone whose scale the import baked out is
+/// carried into the bone's unscaled frame, which is the frame the exported node has (bones export without scale), so
+/// it keeps its place and size in the world.
+fn springs(retained: &Retained) -> io::SpringBones {
+    let r = &retained.springs;
+    let folds = scale_folds(retained);
+    let fold_of = |node: u32| {
+        let i = usize::try_from(node).ok()?;
+        retained.nodes.get(i).filter(|n| n.bone.is_some())?;
+        folds.get(i).copied().flatten()
+    };
     io::SpringBones {
         // Groups name colliders by index, so every collider is written; one whose shape the file cannot carry yet
         // becomes an empty sphere, which touches nothing.
@@ -458,7 +493,8 @@ fn springs(r: &RetainedSprings) -> io::SpringBones {
             .iter()
             .map(|c| io::Collider {
                 node: NodeIx(c.node),
-                shape: io_shape(c.shape, 1.0).unwrap_or(io::ColliderShape::Sphere { offset: Vec3::ZERO, radius: 0.0 }),
+                shape: io_shape(fold_of(c.node).map_or(c.shape, |fold| in_bone_frame(c.shape, fold)), 1.0)
+                    .unwrap_or(io::ColliderShape::Sphere { offset: Vec3::ZERO, radius: 0.0 }),
             })
             .collect(),
         collider_groups: r

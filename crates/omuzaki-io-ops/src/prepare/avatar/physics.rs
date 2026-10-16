@@ -172,7 +172,7 @@ fn collider_shape(shape: io::ColliderShape) -> ColliderShape {
 /// on the node or above it moves the offsets and tails by `fix` (the node's scale fix), grows the radii by the scale
 /// (the mean of the three axes', exact for the uniform scale a sphere can follow), and turns a plane's normal as a
 /// normal turns.
-fn in_bone_frame(shape: ColliderShape, fix: Mat4) -> ColliderShape {
+pub(crate) fn in_bone_frame(shape: ColliderShape, fix: Mat4) -> ColliderShape {
     let at = |p: Vec3| fix.transform_point3(p);
     let grow = (fix.x_axis.truncate().length() + fix.y_axis.truncate().length() + fix.z_axis.truncate().length()) / 3.0;
     match shape {

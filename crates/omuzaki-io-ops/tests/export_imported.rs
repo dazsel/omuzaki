@@ -267,3 +267,118 @@ fn meshes_no_node_draws_export_back_with_their_morphs() {
     expected.source_generator.clone_from(&again.source_generator);
     assert_eq!(again, expected, "every field, bit for bit, the undrawn meshes in their places");
 }
+
+/// A mesh drawn by a skinned node and by a rigid one, the rigid node first in the file when `rigid_first`.
+fn shared_skinned_and_rigid(rigid_first: bool) -> IoScene {
+    use omuzaki_core::glam::Vec3;
+    use omuzaki_io_api::{MeshIx, Node};
+    let mut f = humanoid(0.0);
+    f.scene.add_material(off_grid());
+    // `add_skinned_mesh` adds the mesh at the end of the list, so a node made first can name it.
+    let next = MeshIx(u32::try_from(f.scene.meshes.len()).unwrap());
+    let rigid = |f: &mut common::Fixture| {
+        let mut node = Node::new("Copy").at(Vec3::X * 0.5);
+        node.mesh = Some(next);
+        let node = f.scene.add_node(node);
+        f.scene.attach(f.node("hips"), node);
+    };
+    if rigid_first {
+        rigid(&mut f);
+    }
+    add_skinned_mesh(&mut f, "Body", &["hips", "spine", "head"], 0, Some(0));
+    if !rigid_first {
+        rigid(&mut f);
+    }
+    f.scene
+}
+
+#[test]
+fn a_mesh_drawn_skinned_and_rigidly_keeps_its_skin_whichever_node_comes_first() {
+    for rigid_first in [true, false] {
+        let original = through_vrm(&shared_skinned_and_rigid(rigid_first));
+        let (_, again) = round_trip(&original, &def());
+        let body = |scene: &IoScene| {
+            let mesh = scene.nodes.iter().find(|n| n.name == "Body").and_then(|n| n.mesh).unwrap();
+            scene.meshes[mesh.index()].primitives[0].mesh.clone()
+        };
+        let (was, now) = (body(&original), body(&again));
+        assert_eq!((&now.joints, &now.weights), (&was.joints, &was.weights), "rigid first: {rigid_first}");
+        let error = common::max_error(&common::file_skinning(&again), &common::file_skinning(&original));
+        assert!(error < 1e-5, "rigid first: {rigid_first}: {error}");
+    }
+}
+
+#[test]
+fn a_collider_on_a_scaled_bone_exports_where_and_as_large_as_the_file_had_it() {
+    use omuzaki_core::glam::Vec3;
+    use omuzaki_io_api::{Collider, ColliderGroup, ColliderShape};
+    let mut f = humanoid(0.0);
+    f.scene.add_material(off_grid());
+    add_skinned_mesh(&mut f, "Body", &["hips", "spine", "head"], 0, Some(0));
+    let head = f.node("head");
+    f.scene.nodes[head.index()].transform.scale = Vec3::splat(2.0);
+    let springs = &mut f.scene.avatar.as_mut().unwrap().spring_bones;
+    springs.colliders = vec![
+        Collider { node: head, shape: ColliderShape::Sphere { offset: Vec3::Y * 0.05, radius: 0.03 } },
+        Collider {
+            node: head,
+            shape: ColliderShape::Capsule { offset: Vec3::X * 0.01, radius: 0.02, tail: Vec3::Y * 0.04 },
+        },
+    ];
+    springs.collider_groups = vec![ColliderGroup { name: "Head".into(), colliders: vec![0, 1] }];
+    let original = through_vrm(&f.scene);
+    let (first, again) = round_trip(&original, &def());
+    // The head exports without its scale, so its colliders carry it: twice the offsets and radii.
+    let exported = &again.avatar.as_ref().unwrap().spring_bones.colliders;
+    let ColliderShape::Sphere { offset, radius } = exported[0].shape else { panic!("a sphere: {exported:?}") };
+    assert!(offset.distance(Vec3::Y * 0.1) < 1e-6 && (radius - 0.06).abs() < 1e-6, "{offset} {radius}");
+    // And importing the export again gives the same colliders, in the same place, as the first import.
+    let (second, _) = to_avatar(&again, &def(), MtoonSupport::NONE).expect("imports again");
+    let shapes = |a: &ImportedAvatar| a.springs.groups[0].colliders.iter().map(|c| c.shape).collect::<Vec<_>>();
+    for (again, first) in shapes(&second).iter().zip(shapes(&first)) {
+        let close = |x: Vec3, y: Vec3| x.distance(y) < 1e-6;
+        let near = match (again, first) {
+            (
+                omuzaki_anim_api::ColliderShape::Sphere { offset, radius },
+                omuzaki_anim_api::ColliderShape::Sphere { offset: was, radius: was_radius },
+            ) => close(*offset, was) && (radius - was_radius).abs() < 1e-6,
+            (
+                omuzaki_anim_api::ColliderShape::Capsule { offset, radius, tail },
+                omuzaki_anim_api::ColliderShape::Capsule { offset: was, radius: was_radius, tail: was_tail },
+            ) => close(*offset, was) && (radius - was_radius).abs() < 1e-6 && close(*tail, was_tail),
+            _ => false,
+        };
+        assert!(near, "{again:?} against {first:?}");
+    }
+}
+
+#[test]
+fn a_rigid_morphed_mesh_on_a_scaled_node_keeps_its_morphed_normals() {
+    use omuzaki_core::glam::Vec3;
+    use omuzaki_io_api::{MorphTarget, Node};
+    let mut f = humanoid(0.0);
+    f.scene.add_material(off_grid());
+    add_skinned_mesh(&mut f, "Body", &["hips", "spine", "head"], 0, Some(0));
+    let mesh = ribbon(&mut f.scene);
+    let mut target = MorphTarget::new(vec![Vec3::Y * 0.001; 3]);
+    target.normals = vec![Vec3::new(0.0, 0.3, -0.2); 3];
+    f.scene.meshes[mesh.index()].primitives[0].morph_targets = vec![target];
+    f.scene.meshes[mesh.index()].morph_target_names = vec!["Bend".into()];
+    let mut node = Node::new("Ribbon").at(Vec3::X * 0.1);
+    node.mesh = Some(mesh);
+    node.transform.scale = Vec3::splat(2.0);
+    let node = f.scene.add_node(node);
+    f.scene.attach(f.node("head"), node);
+    let original = through_vrm(&f.scene);
+    let (_, again) = round_trip(&original, &def());
+    let ribbon = |scene: &IoScene| {
+        let mesh = scene.nodes.iter().find(|n| n.name == "Ribbon").and_then(|n| n.mesh).unwrap();
+        scene.meshes[mesh.index()].primitives[0].clone()
+    };
+    let (was, now) = (ribbon(&original), ribbon(&again));
+    for v in 0..3 {
+        let morphed = |p: &omuzaki_io_api::Primitive| (p.mesh.normals[v] + p.morph_targets[0].normals[v]).normalize();
+        assert!(morphed(&now).distance(morphed(&was)) < 1e-6, "the morphed normal keeps its direction at 2×");
+        assert!((now.mesh.normals[v].length() - 1.0).abs() < 1e-6, "the base normal stays a unit normal");
+    }
+}

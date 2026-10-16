@@ -26,7 +26,7 @@ mod expressions;
 mod gaze;
 mod materials;
 mod meshes;
-mod physics;
+pub(crate) mod physics;
 pub(crate) mod skeleton;
 
 pub(crate) use materials::apply_edit as apply_material_edit;

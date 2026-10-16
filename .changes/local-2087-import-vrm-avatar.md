@@ -15,4 +15,7 @@
   field (#1294).
 - One imported model can serve several characters, and models that share a texture under different licences each keep
   their own (#1792, #1773).
-- VRM files now carry inside and plane colliders and spring joint limits both ways (#983).
+- VRM files now carry inside and plane colliders and spring joint limits both ways (#983), so a strict VRM 1.0 export
+  no longer refuses them; 0.x, which cannot carry them, still says what it leaves out.
+- Checking an imported avatar's export (`io.check_export`) reads the model's own terms: publishing a model whose
+  terms forbid sharing it is refused, and a private export of it is not (part of #1367).
