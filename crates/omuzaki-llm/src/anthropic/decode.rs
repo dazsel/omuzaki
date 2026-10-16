@@ -9,7 +9,7 @@ use omuzaki_llm_api::usage::Usage;
 use serde_json::{Value, json};
 
 use super::wire::PROVIDER;
-use crate::engine::{Decoder, Fail, short, status_fail};
+use crate::engine::{Decoder, Fail, MAX_BUFFERED, short, status_fail};
 use crate::sse::SseEvent;
 
 /// What an open content block needs remembered until it closes.
@@ -33,6 +33,14 @@ pub(crate) struct AnthropicDecoder {
     stopped: bool,
     open: HashMap<u64, Open>,
     usage: Usage,
+}
+
+/// A thinking block is held whole until it closes; one past [`MAX_BUFFERED`] is refused.
+fn too_big(held: usize) -> Result<(), Fail> {
+    if held > MAX_BUFFERED {
+        return Err(malformed(format!("a thinking block over {MAX_BUFFERED} bytes")));
+    }
+    Ok(())
 }
 
 fn field<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
@@ -105,12 +113,14 @@ impl AnthropicDecoder {
         Ok(match (field(delta, "type"), open) {
             (Some("text_delta"), _) => text_event(delta, "text", LlmEvent::TextDelta),
             (Some("input_json_delta"), _) => text_event(delta, "partial_json", LlmEvent::ToolUseInput),
-            (Some("thinking_delta"), Open::Thinking { thinking, .. }) => {
+            (Some("thinking_delta"), Open::Thinking { thinking, signature }) => {
                 thinking.push_str(field(delta, "thinking").unwrap_or_default());
+                too_big(thinking.len() + signature.len())?;
                 Vec::new()
             }
-            (Some("signature_delta"), Open::Thinking { signature, .. }) => {
+            (Some("signature_delta"), Open::Thinking { thinking, signature }) => {
                 signature.push_str(field(delta, "signature").unwrap_or_default());
+                too_big(thinking.len() + signature.len())?;
                 Vec::new()
             }
             // Citations and the deltas of blocks this client does not read.

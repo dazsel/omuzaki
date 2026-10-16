@@ -21,8 +21,6 @@ pub(crate) const USER_AGENT: &str = concat!("Omuzaki/", env!("CARGO_PKG_VERSION"
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// The most of an error body that is read; the provider's message is short.
 pub(crate) const MAX_ERROR_BODY: usize = 64 * 1024;
-/// How long one metadata request (model list, capability probe) may take, headers and body together.
-pub(crate) const METADATA_TIMEOUT: Duration = Duration::from_secs(30);
 /// The most of a model list or other metadata answer that is read.
 pub(crate) const MAX_METADATA_BODY: usize = 4 * 1024 * 1024;
 
@@ -185,18 +183,32 @@ fn install_crypto_provider() -> Result<(), LlmError> {
         .ok_or_else(|| LlmError::Unsupported("cannot start the HTTP client: no TLS crypto provider".into()))
 }
 
-/// Sends `request` and reads the whole (bounded) answer within [`METADATA_TIMEOUT`]: the status and the body.
+/// `text` as one query-string value: everything but unreserved characters is percent-encoded.
+pub(crate) fn query_value(text: &str) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            out.push(char::from(byte));
+        } else {
+            let _ = write!(out, "%{byte:02X}");
+        }
+    }
+    out
+}
+
+/// Sends `request` and reads the whole (bounded) answer within `limit`: the status and the body.
 ///
 /// # Errors
 /// `Network` if the server does not answer in time, or the transport error.
-pub(crate) async fn fetch_metadata(http: &Http, request: Request) -> Result<(u16, Vec<u8>), LlmError> {
+pub(crate) async fn fetch_metadata(http: &Http, request: Request, limit: Duration) -> Result<(u16, Vec<u8>), LlmError> {
     let work = async {
         let response = http.send(request).await.map_err(LlmError::from)?;
         let status = response.status;
         let body = response.read_limited(MAX_METADATA_BODY).await.map_err(LlmError::from)?;
         Ok((status, body))
     };
-    tokio::time::timeout(METADATA_TIMEOUT, work)
+    tokio::time::timeout(limit, work)
         .await
         .unwrap_or_else(|_| Err(LlmError::Network("the server did not answer within the metadata timeout".into())))
 }
@@ -269,6 +281,12 @@ impl Http {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_query_value_is_percent_encoded() {
+        assert_eq!(super::query_value("claude-opus_5.5~x"), "claude-opus_5.5~x");
+        assert_eq!(super::query_value("a&b=c d/é#"), "a%26b%3Dc%20d%2F%C3%A9%23");
+    }
+
     use super::*;
 
     fn parse(endpoint: &str) -> Result<Endpoint, LlmError> {

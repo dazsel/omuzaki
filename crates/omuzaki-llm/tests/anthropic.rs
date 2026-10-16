@@ -26,6 +26,7 @@ fn quick() -> Timeouts {
         first_byte: Duration::from_secs(5),
         idle: Duration::from_secs(5),
         backoff_unit: Duration::from_millis(1),
+        ..Timeouts::default()
     }
 }
 

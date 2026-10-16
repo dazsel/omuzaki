@@ -19,8 +19,8 @@ use serde_json::Value;
 use tokio::runtime::Handle;
 
 use crate::common::{KeyRef, check_hosted_prices, key_ref, refuse_camera};
-use crate::engine::{self, Decoder, Fail, Job, Protocol, Timeouts, redact_error};
-use crate::http::{Endpoint, HeaderValue, Http, Request, fetch_metadata};
+use crate::engine::{self, Decoder, Fail, Job, Protocol, Timeouts, redact_bytes, redact_error};
+use crate::http::{Endpoint, HeaderValue, Http, Request, fetch_metadata, query_value};
 use crate::prices::{ANTHROPIC_IMAGE_TILE, anthropic_model};
 use crate::retry::random_seed;
 use crate::runtime::{block_on, handle_of};
@@ -200,6 +200,21 @@ fn listed(entry: &Value) -> Option<ModelInfo> {
 }
 
 fn list_models(config: &ProviderConfig, env: &ProviderEnv) -> Result<Vec<ModelInfo>, LlmError> {
+    list_models_within(config, env, &Timeouts::default())
+}
+
+/// Lists the models the account can use, each request bounded by `timeouts.metadata`.
+///
+/// # Errors
+/// `Unsupported` for a bad endpoint or no runtime, `Auth` without a key, `Network` if the server does not answer in
+/// time, the provider's own error otherwise (the key redacted), and `Malformed` for a list that does not end within
+/// the page cap.
+pub fn list_models_within(
+    config: &ProviderConfig,
+    env: &ProviderEnv,
+    timeouts: &Timeouts,
+) -> Result<Vec<ModelInfo>, LlmError> {
+    let limit = timeouts.metadata;
     let endpoint = endpoint_of(config)?;
     let http = Http::new(&endpoint)?;
     let handle = handle_of(&env.runtime)?;
@@ -208,15 +223,15 @@ fn list_models(config: &ProviderConfig, env: &ProviderEnv) -> Result<Vec<ModelIn
         let mut models = Vec::new();
         let mut after: Option<String> = None;
         for _ in 0..MAX_PAGES {
-            let query = after.as_ref().map_or(String::new(), |id| format!("&after_id={id}"));
+            let query = after.as_ref().map_or(String::new(), |id| format!("&after_id={}", query_value(id)));
             let url = endpoint.url(&format!("/v1/models?limit=100{query}"));
             let headers = vec![
                 ("anthropic-version", HeaderValue::Plain(VERSION.into())),
                 ("x-api-key", HeaderValue::Secret(key.clone())),
             ];
-            let (status, body) = fetch_metadata(&http, Request::get(url, headers)).await?;
+            let (status, body) = fetch_metadata(&http, Request::get(url, headers), limit).await?;
             if status != 200 {
-                let error = match decode::classify(status, None, &body, 0) {
+                let error = match decode::classify(status, None, &redact_bytes(body, Some(&key)), 0) {
                     Fail::Fatal(e) | Fail::Retry { error: e, .. } => e,
                 };
                 // A server may echo the key into its message.

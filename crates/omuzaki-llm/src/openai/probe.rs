@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock, PoisonError};
+use std::time::Duration;
 
 use omuzaki_llm_api::error::LlmError;
 use omuzaki_llm_api::provider::SecretValue;
@@ -55,6 +56,8 @@ struct Ask<'a> {
     http: &'a Http,
     endpoint: &'a Endpoint,
     key: Option<&'a SecretValue>,
+    /// How long one request may take.
+    limit: Duration,
 }
 
 impl Ask<'_> {
@@ -68,7 +71,7 @@ impl Ask<'_> {
 
     /// The status and body of `request`.
     async fn run(&self, request: Request) -> Result<(u16, Vec<u8>), LlmError> {
-        let (status, body) = fetch_metadata(self.http, request).await?;
+        let (status, body) = fetch_metadata(self.http, request, self.limit).await?;
         if matches!(status, 401 | 403) {
             return Err(LlmError::Auth);
         }
@@ -111,6 +114,7 @@ pub(crate) async fn probe(
     endpoint: &Endpoint,
     key: Option<&SecretValue>,
     model: &str,
+    limit: Duration,
 ) -> Result<Capabilities, LlmError> {
     let mut found = Capabilities { context_window: None, tools: true, vision: true };
     if !endpoint.loopback {
@@ -118,7 +122,7 @@ pub(crate) async fn probe(
         remember(endpoint, model, found);
         return Ok(found);
     }
-    let ask = Ask { http, endpoint, key };
+    let ask = Ask { http, endpoint, key, limit };
     found.tools = false;
     found.vision = false;
     let mut tools_known = false;

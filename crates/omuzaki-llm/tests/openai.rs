@@ -25,6 +25,7 @@ fn quick() -> Timeouts {
         first_byte: Duration::from_secs(5),
         idle: Duration::from_secs(5),
         backoff_unit: Duration::from_millis(1),
+        ..Timeouts::default()
     }
 }
 
@@ -497,4 +498,83 @@ fn the_key_appears_in_no_debug_error_or_echoed_message() {
     let (events, error) = drain(&mut client.stream(Rig::request(), &Cancel::new()).unwrap());
     let shown = format!("{client:?} {config:?} {events:?} {error:?}");
     assert!(!shown.contains("sk-test"), "{shown}");
+}
+
+// ---- metadata, keep-alives, hosted prices ----
+
+const CHUNK: &str = "data: {\"id\":\"c\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"h\"}}]}\n\n";
+
+#[test]
+fn a_model_list_error_never_echoes_the_key() {
+    let echo = format!(r#"{{"error":{{"message":"bad key {}","type":"invalid_request_error"}}}}"#, common::KEY);
+    let rig = Rig::routed(vec![("GET /v1/models", vec![Reply::status(500, &echo)])]);
+    omuzaki_llm::link();
+    let provider = omuzaki_llm_api::provider::provider(KIND).unwrap().unwrap();
+    let error = (provider.list_models)(&rig.config("a"), &rig.env()).unwrap_err();
+    assert!(!format!("{error:?} {error}").contains("sk-test"), "{error:?}");
+}
+
+#[test]
+fn a_hosted_model_with_empty_or_all_zero_prices_is_refused() {
+    let runtime = runtime_handle();
+    let provider_env = env(&runtime);
+    let hosted = |prices| {
+        ProviderConfig::new("t", KIND, "https://api.example.com")
+            .with_key(common::key_ref())
+            .with_model("gpt-x")
+            .with_allow_remote(true)
+            .with_prices(prices)
+    };
+    let empty = PriceTable::new("2026-10-15", "test", vec![]);
+    let zero = PriceTable::new("2026-10-15", "test", vec![PriceTier::new(None, Rates::default())]);
+    for prices in [empty, zero] {
+        assert!(matches!(OpenAiClient::new(&hosted(prices), &provider_env), Err(LlmError::Unsupported(_))));
+    }
+}
+
+#[test]
+fn a_metadata_request_that_never_answers_ends_at_the_metadata_timeout() {
+    let hang = Reply::sse(vec![]).after(Duration::from_secs(5));
+    let rig = Rig::routed(vec![("GET /v1/models", vec![hang])]);
+    let timeouts = Timeouts { metadata: Duration::from_millis(150), ..quick() };
+    let started = std::time::Instant::now();
+    let error = omuzaki_llm::openai::list_models_within(&rig.config("a"), &rig.env(), &timeouts).unwrap_err();
+    assert!(matches!(error, LlmError::Network(_)), "{error:?}");
+    assert!(started.elapsed() < Duration::from_secs(3));
+}
+
+#[test]
+fn a_probe_that_never_answers_ends_at_the_probe_deadline() {
+    let hang = Reply::sse(vec![]).after(Duration::from_secs(5));
+    let rig = Rig::plain(vec![hang]);
+    let timeouts = Timeouts { probe: Duration::from_millis(200), ..quick() };
+    let started = std::time::Instant::now();
+    let error = OpenAiClient::new_within(&rig.config("m"), &rig.env(), &timeouts).map(|_| ()).unwrap_err();
+    assert!(matches!(error, LlmError::Network(_)), "{error:?}");
+    assert!(started.elapsed() < Duration::from_secs(3));
+}
+
+#[test]
+fn keep_alive_comments_outlast_the_idle_timeout() {
+    let mut chunks: Vec<Vec<u8>> = (0..5).map(|_| b": ka\n\n".to_vec()).collect();
+    chunks.push(common::fixture("openai/ollama.sse"));
+    let reply = Reply::sse(chunks).pausing(Duration::from_millis(120));
+    let rig = Rig::probed(vec![reply]);
+    let timeouts = Timeouts { idle: Duration::from_millis(300), ..quick() };
+    let client = OpenAiClient::new(&rig.config("llama3.2"), &rig.env()).unwrap().with_timeouts(timeouts);
+    let (events, error) = drain(&mut client.stream(Rig::request(), &Cancel::new()).unwrap());
+    assert_eq!(error, None, "{events:?}");
+}
+
+#[test]
+fn silence_after_an_event_times_out_at_one_idle_interval() {
+    let reply = Reply::sse(vec![CHUNK.as_bytes().to_vec()]).ending(End::Hold);
+    let rig = Rig::probed(vec![reply]);
+    let timeouts = Timeouts { idle: Duration::from_millis(300), ..quick() };
+    let config = rig.config("llama3.2").with_retry(RetryPolicy::new(0));
+    let client = OpenAiClient::new(&config, &rig.env()).unwrap().with_timeouts(timeouts);
+    let started = std::time::Instant::now();
+    let (_, error) = drain(&mut client.stream(Rig::request(), &Cancel::new()).unwrap());
+    assert!(matches!(error, Some(LlmError::Network(_))), "{error:?}");
+    assert!(started.elapsed() < Duration::from_millis(550), "{:?}", started.elapsed());
 }

@@ -61,7 +61,7 @@ pub(crate) fn block_on<T: Send + 'static>(
         Some(current) if current.runtime_flavor() == tokio::runtime::RuntimeFlavor::CurrentThread => {
             if current.id() == handle.id() {
                 return Err(LlmError::Unsupported(
-                    "this call blocks, and the LLM runtime is the current-thread runtime of the calling task; call it from a blocking thread or use runtime::dedicated".into(),
+                    "this call blocks, and the LLM runtime is the current-thread runtime of the calling task; call it from a thread outside that runtime, or use a multi-thread runtime or runtime::dedicated".into(),
                 ));
             }
             false

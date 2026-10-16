@@ -1,7 +1,8 @@
 //! Server-Sent Events over a body stream (llm-api D11), framed by `sse-stream`.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
+
+use tokio::time::Instant;
 
 use futures_util::Stream;
 use sse_stream::{Error as SseError, Sse, SseStream};
@@ -34,17 +35,37 @@ fn convert(item: Result<Sse, SseError>) -> Result<Option<SseEvent>, SseFail> {
     }
 }
 
-/// Set whenever bytes arrive, whether or not they complete an event: a server that keeps a long generation alive with
-/// comment frames sends no event, but the connection is alive, so the engine's idle timer must not fire on it.
-pub(crate) type Activity = Arc<AtomicBool>;
+/// When bytes last arrived, whether or not they completed an event. A server that keeps a long generation alive with
+/// comment frames sends no event, but the connection is alive, so the engine's idle deadline runs from the last bytes,
+/// not from the last event.
+///
+/// Caveat: a server that sends only comments keeps a turn alive for as long as it likes; the idle limit bounds silence,
+/// not total time, and the caller's cancel is what ends such a turn.
+#[derive(Clone, Debug)]
+pub(crate) struct Activity(Arc<Mutex<Instant>>);
+
+impl Activity {
+    fn new() -> Self {
+        Self(Arc::new(Mutex::new(Instant::now())))
+    }
+
+    fn touch(&self) {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = Instant::now();
+    }
+
+    /// When the latest bytes arrived (or the stream was opened).
+    pub(crate) fn last(&self) -> Instant {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
 
 /// The events in `body`, with comment-only frames (keep-alives) left out, and the flag that bytes have arrived.
 pub(crate) fn events(body: ByteStream) -> (impl Stream<Item = Result<SseEvent, SseFail>> + Send, Activity) {
     use futures_util::StreamExt;
-    let activity = Activity::default();
-    let seen = Arc::clone(&activity);
+    let activity = Activity::new();
+    let seen = activity.clone();
     let counted = body.map(move |chunk| {
-        seen.store(true, Ordering::Relaxed);
+        seen.touch();
         chunk.map_err(|e: HttpFail| Boxed(e.to_string()))
     });
     let stream = SseStream::from_bytes_stream(counted).filter_map(|item| std::future::ready(convert(item).transpose()));
@@ -84,10 +105,11 @@ mod tests {
         let body: ByteStream = Box::pin(futures_util::stream::iter(vec![Ok(Bytes::from_static(b": keep-alive\n\n"))]));
         let rt = tokio::runtime::Builder::new_current_thread().build().unwrap_or_else(|e| panic!("{e}"));
         let (stream, activity) = events(body);
-        assert!(!activity.load(Ordering::Relaxed));
+        let opened = activity.last();
+        std::thread::sleep(std::time::Duration::from_millis(5));
         let got: Vec<_> = rt.block_on(stream.collect());
         assert_eq!(got, Vec::new());
-        assert!(activity.swap(false, Ordering::Relaxed));
+        assert!(activity.last() > opened, "the comment bytes moved the clock");
     }
 
     #[allow(clippy::unnecessary_wraps)] // the events are compared with `Result`s

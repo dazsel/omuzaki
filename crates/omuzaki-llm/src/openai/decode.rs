@@ -7,7 +7,7 @@ use omuzaki_llm_api::stream::{LlmEvent, StopReason};
 use omuzaki_llm_api::usage::Usage;
 use serde_json::Value;
 
-use crate::engine::{Decoder, Fail, short, status_fail};
+use crate::engine::{Decoder, Fail, MAX_BUFFERED, short, status_fail};
 use crate::sse::SseEvent;
 
 /// A call being streamed: its position in the `tool_calls` array, its id, name and the arguments so far. Servers may
@@ -75,6 +75,11 @@ impl OpenAiDecoder {
             self.calls.len() - 1
         };
         self.calls[at].arguments.push_str(arguments);
+        // Calls are held whole until they close, so what a server sends is bounded here.
+        let held: usize = self.calls.iter().map(|c| c.arguments.len()).sum();
+        if held > MAX_BUFFERED {
+            return Err(Fail::Fatal(LlmError::Malformed(format!("tool arguments over {MAX_BUFFERED} bytes"))));
+        }
         Ok(())
     }
 

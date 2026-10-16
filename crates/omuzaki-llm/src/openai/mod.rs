@@ -24,7 +24,7 @@ use serde_json::Value;
 use tokio::runtime::Handle;
 
 use crate::common::{KeyRef, check_hosted_prices, key_ref, refuse_camera};
-use crate::engine::{self, Decoder, Fail, Job, Protocol, Timeouts, redact_error};
+use crate::engine::{self, Decoder, Fail, Job, Protocol, Timeouts, redact_bytes, redact_error};
 use crate::http::{Endpoint, HeaderValue, Http, Request, bearer, fetch_metadata};
 use crate::prices::local_prices;
 use crate::retry::random_seed;
@@ -114,6 +114,15 @@ impl OpenAiClient {
     /// loopback, a remote model has no prices in the configuration, or there is no tokio runtime; `Auth` or
     /// `Network` if the probe cannot be made.
     pub fn new(config: &ProviderConfig, env: &ProviderEnv) -> Result<Self, LlmError> {
+        Self::new_within(config, env, &Timeouts::default())
+    }
+
+    /// As [`new`](Self::new), with the probe bounded by `timeouts`: each request by `metadata`, all of them together by
+    /// `probe`. The client keeps the default turn timeouts (see [`with_timeouts`](Self::with_timeouts)).
+    ///
+    /// # Errors
+    /// As `new`, and `Network` if the probe does not finish in time.
+    pub fn new_within(config: &ProviderConfig, env: &ProviderEnv, timeouts: &Timeouts) -> Result<Self, LlmError> {
         let model = config.model.clone().ok_or_else(|| LlmError::Unsupported("no model is chosen".into()))?;
         let endpoint = endpoint_of(config)?;
         // A hosted model with no table cannot be built: an unpriced model would make every cap meaningless.
@@ -140,7 +149,12 @@ impl OpenAiClient {
                 return Err(LlmError::Auth);
             }
             let (http, endpoint, model) = (http.clone(), endpoint.clone(), model.clone());
-            block_on(&handle, async move { probe(&http, &endpoint, secret.as_ref(), &model).await })??
+            let (limit, whole) = (timeouts.metadata, timeouts.probe);
+            block_on(&handle, async move {
+                tokio::time::timeout(whole, probe(&http, &endpoint, secret.as_ref(), &model, limit))
+                    .await
+                    .unwrap_or_else(|_| Err(LlmError::Network("the capability probe took too long".into())))
+            })??
         };
         let window = config.context_window.or(found.context_window).unwrap_or(FALLBACK_CONTEXT);
         let info = ModelInfo::new(model.clone(), window, window, ImageCost::Flat(IMAGE_TOKENS))
@@ -221,6 +235,20 @@ fn build(config: &ProviderConfig, env: &ProviderEnv) -> Result<Box<dyn LlmClient
 }
 
 fn list_models(config: &ProviderConfig, env: &ProviderEnv) -> Result<Vec<ModelInfo>, LlmError> {
+    list_models_within(config, env, &Timeouts::default())
+}
+
+/// Lists the models the server serves, the request bounded by `timeouts.metadata`.
+///
+/// # Errors
+/// `Unsupported` for a bad or remote-without-`allow_remote` endpoint or no runtime, `Network` if the server does not
+/// answer in time, the server's own error otherwise (the key redacted).
+pub fn list_models_within(
+    config: &ProviderConfig,
+    env: &ProviderEnv,
+    timeouts: &Timeouts,
+) -> Result<Vec<ModelInfo>, LlmError> {
+    let limit = timeouts.metadata;
     let endpoint = endpoint_of(config)?;
     let http = Http::new(&endpoint)?;
     let handle = handle_of(&env.runtime)?;
@@ -229,9 +257,14 @@ fn list_models(config: &ProviderConfig, env: &ProviderEnv) -> Result<Vec<ModelIn
     block_on(&handle, async move {
         let mut headers = vec![("accept", HeaderValue::Plain("application/json".into()))];
         headers.extend(key.as_ref().map(bearer));
-        let (status, body) = fetch_metadata(&http, Request::get(endpoint.url("/v1/models"), headers)).await?;
+        let (status, body) = fetch_metadata(&http, Request::get(endpoint.url("/v1/models"), headers), limit).await?;
         if status != 200 {
-            let error = match decode::classify(status, None, &body, window.unwrap_or(FALLBACK_CONTEXT)) {
+            let error = match decode::classify(
+                status,
+                None,
+                &redact_bytes(body, key.as_ref()),
+                window.unwrap_or(FALLBACK_CONTEXT),
+            ) {
                 Fail::Fatal(e) | Fail::Retry { error: e, .. } => e,
             };
             // A server may echo the key into its message.

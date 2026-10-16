@@ -5,7 +5,7 @@ use std::sync::Arc;
 use omuzaki_llm_api::error::LlmError;
 use omuzaki_llm_api::message::{ContentBlock, ImageOrigin, TurnRequest};
 use omuzaki_llm_api::provider::{ProviderConfig, ProviderEnv, SecretLabel, SecretStore};
-use omuzaki_llm_api::usage::PriceTable;
+use omuzaki_llm_api::usage::{PriceTable, Rates};
 
 /// The key's label and the store to resolve it in. The value is read per request and never kept (llm-api D6).
 pub(crate) type KeyRef = Option<(SecretLabel, Arc<dyn SecretStore>)>;
@@ -23,6 +23,11 @@ pub(crate) fn key_ref(config: &ProviderConfig, env: &ProviderEnv) -> KeyRef {
 pub(crate) fn check_hosted_prices(prices: &PriceTable) -> Result<(), LlmError> {
     if prices.tiers.is_empty() {
         return Err(LlmError::Unsupported("the price table has no tiers; a hosted model must be priced".into()));
+    }
+    if prices.tiers.iter().any(|t| t.rates == Rates::default()) {
+        return Err(LlmError::Unsupported(
+            "a price tier with all rates at zero would let a hosted model past every cap".into(),
+        ));
     }
     Ok(())
 }
@@ -61,6 +66,8 @@ mod tests {
     fn an_empty_hosted_price_table_is_refused() {
         assert!(check_hosted_prices(&PriceTable::new("2026-10-15", "test", Vec::new())).is_err());
         let tier = omuzaki_llm_api::usage::PriceTier::new(None, omuzaki_llm_api::usage::Rates::default());
+        assert!(check_hosted_prices(&PriceTable::new("2026-10-15", "test", vec![tier])).is_err(), "all-zero rates");
+        let tier = omuzaki_llm_api::usage::PriceTier::new(None, omuzaki_llm_api::usage::Rates::new(3, 15));
         assert!(check_hosted_prices(&PriceTable::new("2026-10-15", "test", vec![tier])).is_ok());
     }
 
