@@ -851,29 +851,47 @@ fn replaced_name(dir: &Path, path: &Path, suffix: &str) -> Result<PathBuf, Store
 
 /// Moves `from` (a displaced or leftover file) into the replaced folder as `<name>.displaced` and flushes it and the
 /// folder. Never deletes.
+///
+/// The move never depends on the flush. Where the file can't be opened to flush it (on Windows another handle may deny
+/// write sharing, or the file may be read-only), it is still moved, and the error then says that it is kept but not
+/// flushed ([`flush_file`]), so the limitation is reported and the file is not left under its hidden name.
 fn preserve(dir: &Path, from: &Path, hooks: &Hooks<'_>) -> Result<PathBuf, StoreError> {
     if let Some(parent) = replaced_name(dir, from, "")?.parent() {
         fs::create_dir_all(parent).map_err(|e| StoreError::io(parent, e))?;
     }
-    if fs::symlink_metadata(from).is_ok_and(|m| m.is_file()) {
-        sync_file(from).map_err(|e| StoreError::io(from, e))?;
-    }
+    let unflushed = if fs::symlink_metadata(from).is_ok_and(|m| m.is_file()) {
+        flush_file(from).map_err(|e| StoreError::io(from, e))?
+    } else {
+        None
+    };
     let to = move_to_free_slot(from, &|| replaced_name(dir, from, ".displaced"), hooks)?
         .ok_or_else(|| StoreError::io(from, io::ErrorKind::NotFound.into()))?;
     sync_folder(to.parent())?;
-    Ok(to)
+    match unflushed {
+        None => Ok(to),
+        Some(e) => Err(StoreError::io(
+            &to,
+            io::Error::new(e.kind(), format!("it is kept here, but its contents could not be flushed: {e}")),
+        )),
+    }
 }
 
 /// Flushes the file at `path` to disk. Windows flushes only through a handle with write access (`FlushFileBuffers`
 /// fails with "Access is denied" on a read-only one), so there the file is opened for writing, without truncating or
-/// writing anything; elsewhere a read-only handle can be flushed. Std opens with all three share modes, so a rename
-/// that follows is never refused for this handle.
-fn sync_file(path: &Path) -> io::Result<()> {
+/// writing anything; elsewhere a read-only handle can be flushed. Only the new handle's share modes are ours (std
+/// opens with all three); a handle that is already open can deny write sharing, or the file can be read-only, and then
+/// the open fails: that is `Ok(Some(error))` ("couldn't be flushed"), not a failure, so the caller can go on with what
+/// it must do. A flush that fails after the file was opened is `Err`.
+fn flush_file(path: &Path) -> io::Result<Option<io::Error>> {
     let mut options = OpenOptions::new();
     options.read(true);
     #[cfg(windows)]
     options.write(true);
-    options.open(path)?.sync_all()
+    match options.open(path) {
+        Ok(file) => file.sync_all().map(|()| None),
+        Err(e) if cfg!(windows) && e.kind() != io::ErrorKind::NotFound => Ok(Some(e)),
+        Err(e) => Err(e),
+    }
 }
 
 /// How many occupied names [`move_to_free_slot`] skips before it gives up.
@@ -1778,6 +1796,34 @@ mod tests {
         let replaced: Vec<_> = items.iter().filter(|(n, _)| n.ends_with(KEPT)).map(|(_, t)| t).collect();
         assert_eq!(replaced, [MINE]);
         assert!(no_temporary_file(dir));
+    }
+
+    /// A leftover that can't be opened for flushing is still moved into the replaced folder, and the error says it
+    /// could not be flushed, never that nothing moved. On Windows a handle that denies write sharing makes the open
+    /// fail; elsewhere the flush works and the move is plain.
+    #[test]
+    fn a_leftover_that_cannot_be_flushed_is_still_moved() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let leftover = dir.join(".f.toml.tmp");
+        fs::write(&leftover, "left by a crash = 5\n").unwrap();
+        #[cfg(windows)]
+        let _editor = {
+            use std::os::windows::fs::OpenOptionsExt;
+            // Holds it open for writing and lets others read and delete it, but not write: a flush handle can't open.
+            OpenOptions::new().write(true).share_mode(1 | 4).open(&leftover).unwrap()
+        };
+        let out = preserve(dir, &leftover, &Hooks::default());
+        if cfg!(windows) {
+            let err = out.unwrap_err();
+            assert!(err.to_string().contains("could not be flushed"), "{err}");
+        } else {
+            out.unwrap();
+        }
+        assert!(!leftover.exists(), "the leftover stayed under its hidden name");
+        let items = kept(dir);
+        assert_eq!(texts(&items), ["left by a crash = 5\n"]);
+        assert!(items[0].0.ends_with(".displaced"), "{items:?}");
     }
 
     #[test]
