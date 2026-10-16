@@ -3,7 +3,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // fixture helpers outside #[test] functions
 
 use omuzaki_anim_api::BoneId;
-use omuzaki_avatar_api::retained::{Retained, RetainedImage, RetainedMaterial, RetainedNode};
+use omuzaki_avatar_api::retained::{Retained, RetainedImage, RetainedMaterial, RetainedMesh, RetainedNode};
 use omuzaki_char_api::MaterialName;
 use omuzaki_core::glam::{Vec3, Vec4};
 use omuzaki_io_api::{
@@ -47,7 +47,11 @@ fn retained() -> Retained {
         RetainedImage::new("thumbnail", ImageMime::Jpeg, ContentHash([2; 32])),
     ];
     r.nodes = vec![RetainedNode::new("Root"), RetainedNode::new("J_Bip_C_Hips").with_bone(BoneId(0))];
-    r.morph_names = vec![vec!["Fcl_ALL_A".into(), "Fcl_EYE_Close_L".into()], Vec::new()];
+    r.meshes = vec![
+        RetainedMesh::new("Face", vec![0, 1])
+            .with_morph_target_names(vec!["Fcl_ALL_A".into(), "Fcl_EYE_Close_L".into()]),
+        RetainedMesh::new("Body", vec![2]),
+    ];
     r.meta = Some(meta);
     r.passthrough = passthrough;
     r
@@ -89,7 +93,8 @@ fn the_meta_keeps_its_vrm0_extras_and_the_thumbnail_resolves() {
 fn passthrough_and_a_present_null_extras_survive() {
     let back: Retained = serde_json::from_str(&serde_json::to_string(&retained()).unwrap()).unwrap();
     assert_eq!(back.materials[0].source.passthrough.extras, Some(json!(null)));
-    assert_eq!(back.morph_names[0], ["Fcl_ALL_A", "Fcl_EYE_Close_L"], "the file's names, not the runtime slugs");
+    assert_eq!(back.meshes[0].morph_target_names, ["Fcl_ALL_A", "Fcl_EYE_Close_L"], "the file's names, not slugs");
+    assert_eq!(back.meshes[0].primitives, [0, 1], "which runtime meshes one source mesh became");
     assert!(back.passthrough.extensions.contains_key("EXT_studio"));
 }
 

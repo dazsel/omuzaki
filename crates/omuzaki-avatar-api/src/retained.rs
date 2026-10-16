@@ -82,6 +82,36 @@ impl RetainedNode {
     }
 }
 
+/// One mesh of the file. Its primitives became separate runtime meshes (one material each), and they share its
+/// morph-target names: glTF names targets per mesh, not per primitive.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct RetainedMesh {
+    /// The mesh's name in the file.
+    pub name: String,
+    /// The runtime meshes made from its primitives (indices into `ImportedAvatar::meshes`), in primitive order.
+    pub primitives: Vec<u16>,
+    /// Its morph-target names as the file has them (`extras.targetNames`, `Fcl_ALL_A`), one per target; empty when
+    /// the file names none. The runtime names are slugs (`SparseMorph::name`), so these are what export writes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub morph_target_names: Vec<String>,
+}
+
+impl RetainedMesh {
+    /// The mesh `name`, whose primitives became the runtime meshes `primitives`, with no target names.
+    pub fn new(name: impl Into<String>, primitives: Vec<u16>) -> Self {
+        Self { name: name.into(), primitives, morph_target_names: Vec::new() }
+    }
+
+    /// Sets its morph-target names (builder style).
+    #[must_use]
+    pub fn with_morph_target_names(mut self, names: Vec<String>) -> Self {
+        self.morph_target_names = names;
+        self
+    }
+}
+
 /// What an imported avatar carries for export only.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -99,12 +129,11 @@ pub struct Retained {
     /// Every node of the file, in file order.
     #[serde(default)]
     pub nodes: Vec<RetainedNode>,
-    /// The file's morph-target names, by mesh in `ImportedAvatar::meshes` order, each in its morph set's target order:
-    /// `morph_names[m][t]` names target `t` of mesh `m`. The runtime names are slugs (`SparseMorph::name`), so the
-    /// file's own (`Fcl_ALL_A`) are kept here for export. A mesh's list is empty when the file named none of its targets
-    /// (glTF names are optional per mesh); the table is empty for an avatar that has none to keep.
+    /// The file's meshes, in file order: which runtime meshes each one's primitives became, and its morph-target
+    /// names, so export rebuilds each mesh with its primitives and its one `extras.targetNames` table. Empty for an
+    /// avatar that has none to keep.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub morph_names: Vec<Vec<String>>,
+    pub meshes: Vec<RetainedMesh>,
     /// The VRM meta (licence, authors, the thumbnail as an index into `images`), or `None` for a plain glTF. Its
     /// 0.x extras, which io-api's own serialisation leaves out, are kept too ([`meta_serde`]).
     #[serde(default, skip_serializing_if = "Option::is_none", with = "meta_serde")]

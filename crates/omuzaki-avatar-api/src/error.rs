@@ -135,18 +135,34 @@ pub enum AvatarError {
         /// What is wrong.
         why: String,
     },
-    /// The retained morph-target names don't line up with the meshes' targets.
-    #[error(
-        "the retained morph-target names don't fit mesh {mesh}: {names} names for {targets} targets (one list per          mesh, one name per target)"
-    )]
+    /// A retained source mesh's morph-target names don't match the targets of a runtime mesh made from it.
+    #[error("source mesh {source_mesh} names {names} morph targets, but a mesh made from it has {targets}")]
     #[non_exhaustive]
     MorphNames {
-        /// The mesh index.
-        mesh: usize,
-        /// How many names are retained for it.
+        /// The source mesh, an index into `Retained::meshes`.
+        source_mesh: usize,
+        /// How many names it keeps.
         names: usize,
-        /// How many targets it has.
+        /// How many targets the runtime mesh has.
         targets: usize,
+    },
+    /// A retained source mesh lists a runtime mesh the avatar does not have.
+    #[error("source mesh {source_mesh} lists mesh {mesh}, which the avatar does not have")]
+    #[non_exhaustive]
+    UnknownPrimitive {
+        /// The source mesh, an index into `Retained::meshes`.
+        source_mesh: usize,
+        /// The runtime mesh it lists.
+        mesh: usize,
+    },
+    /// A runtime mesh is listed by no retained source mesh, or by more than one.
+    #[error("mesh {mesh} belongs to {groups} source meshes; every mesh comes from exactly one")]
+    #[non_exhaustive]
+    MeshGrouping {
+        /// The runtime mesh.
+        mesh: usize,
+        /// How many source meshes list it.
+        groups: usize,
     },
     /// The spring set does not fit the skeleton.
     #[error("springs: {0}")]
@@ -230,8 +246,18 @@ impl AvatarError {
     }
 
     /// [`AvatarError::MorphNames`].
-    pub const fn morph_names(mesh: usize, names: usize, targets: usize) -> Self {
-        Self::MorphNames { mesh, names, targets }
+    pub const fn morph_names(source_mesh: usize, names: usize, targets: usize) -> Self {
+        Self::MorphNames { source_mesh, names, targets }
+    }
+
+    /// [`AvatarError::UnknownPrimitive`].
+    pub const fn unknown_primitive(source_mesh: usize, mesh: usize) -> Self {
+        Self::UnknownPrimitive { source_mesh, mesh }
+    }
+
+    /// [`AvatarError::MeshGrouping`].
+    pub const fn mesh_grouping(mesh: usize, groups: usize) -> Self {
+        Self::MeshGrouping { mesh, groups }
     }
 
     /// [`AvatarError::UnknownSchema`].

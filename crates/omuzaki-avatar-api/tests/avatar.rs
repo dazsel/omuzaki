@@ -8,6 +8,7 @@ use omuzaki_avatar_api::avatar::texture_bytes;
 use omuzaki_avatar_api::error::AvatarError;
 use omuzaki_avatar_api::expression::{ColourBind, ExprIx, MorphBind, UvBind};
 use omuzaki_avatar_api::gaze::{AvatarGaze, AvatarLookAt};
+use omuzaki_avatar_api::retained::RetainedMesh;
 use omuzaki_char_api::{BoneName, FaceOverlay, JointRef, MaterialName, TextureData, TextureName};
 use omuzaki_core::glam::Vec3;
 use omuzaki_core::glam::{UVec2, Vec2, Vec4};
@@ -95,25 +96,35 @@ fn materials_and_textures_are_checked_as_upload_will_check_them() {
 }
 
 #[test]
-fn retained_morph_names_line_up_with_every_meshs_targets() {
+fn retained_source_meshes_group_every_mesh_once_and_name_its_targets() {
+    let names = || vec!["Fcl_ALL_A".to_owned(), "Fcl_EYE_Close".to_owned()];
     let mut a = avatar(false, 2, &[]);
-    a.retained.morph_names = vec![vec!["Fcl_ALL_A".into(), "Fcl_EYE_Close".into()]];
-    assert_eq!(a.validate(), Ok(()));
-    a.retained.morph_names = vec![vec!["Fcl_ALL_A".into()]];
-    assert_eq!(a.validate(), Err(AvatarError::morph_names(0, 1, 2)), "a name missing");
-    a.retained.morph_names = vec![vec!["Fcl_ALL_A".into(), "Fcl_EYE_Close".into()], Vec::new()];
-    assert_eq!(a.validate(), Err(AvatarError::morph_names(1, 0, 0)), "a list for a mesh that isn't there");
-
-    // A second mesh whose targets the file left unnamed: its list is empty, beside a named one.
+    // A second runtime mesh, from the same source mesh's second primitive: the two share one name table.
     a.meshes.push(a.meshes[0].clone());
-    assert_eq!(a.validate(), Ok(()), "named and unnamed meshes mix");
-    a.retained.morph_names = vec![Vec::new(), vec!["Fcl_ALL_A".into(), "Fcl_EYE_Close".into()]];
+    a.retained.meshes = vec![RetainedMesh::new("Face", vec![0, 1]).with_morph_target_names(names())];
+    assert_eq!(a.validate(), Ok(()), "two primitives of one mesh share its names");
+
+    a.retained.meshes = vec![RetainedMesh::new("Face", vec![0]).with_morph_target_names(names())];
+    assert_eq!(a.validate(), Err(AvatarError::mesh_grouping(1, 0)), "a mesh from no source mesh");
+    a.retained.meshes = vec![RetainedMesh::new("Face", vec![0, 1]), RetainedMesh::new("Body", vec![1])];
+    assert_eq!(a.validate(), Err(AvatarError::mesh_grouping(1, 2)), "a mesh from two");
+    a.retained.meshes = vec![RetainedMesh::new("Face", vec![0, 1, 2])];
+    assert_eq!(a.validate(), Err(AvatarError::unknown_primitive(0, 2)), "a mesh that isn't there");
+
+    a.retained.meshes = vec![RetainedMesh::new("Face", vec![0, 1]).with_morph_target_names(vec!["Fcl_ALL_A".into()])];
+    assert_eq!(a.validate(), Err(AvatarError::morph_names(0, 1, 2)), "a name missing");
+    a.retained.meshes = vec![RetainedMesh::new("Face", vec![0]), RetainedMesh::new("Hair", vec![1])];
+    assert_eq!(a.validate(), Ok(()), "a file that names no targets");
+
+    // A primitive without targets beside one with them, under one name table (glTF allows it).
+    a.meshes[1].morphs = None;
+    a.retained.meshes = vec![RetainedMesh::new("Face", vec![0, 1]).with_morph_target_names(names())];
     assert_eq!(a.validate(), Ok(()));
-    a.retained.morph_names = vec![vec!["Fcl_ALL_A".into(), "Fcl_EYE_Close".into()]];
-    assert_eq!(a.validate(), Err(AvatarError::morph_names(1, 0, 2)), "a mesh without its list");
-    a.retained.morph_names = vec![Vec::new(), Vec::new()];
-    assert_eq!(a.validate(), Ok(()), "a file that named nothing");
-    a.retained.morph_names = Vec::new();
+    a.retained.meshes =
+        vec![RetainedMesh::new("Face", vec![0]), RetainedMesh::new("Hair", vec![1]).with_morph_target_names(names())];
+    assert_eq!(a.validate(), Err(AvatarError::morph_names(1, 2, 0)), "names for a mesh with no targets");
+
+    a.retained.meshes = Vec::new();
     assert_eq!(a.validate(), Ok(()), "nothing kept is fine for a hand-built avatar");
 }
 

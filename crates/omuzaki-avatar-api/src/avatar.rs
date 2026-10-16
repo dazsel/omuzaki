@@ -214,8 +214,7 @@ impl ImportedAvatar {
     ///   targets that fit its vertices, and draws a material the avatar has;
     /// - every material passes the renderer's rules, draws only textures the avatar has and composites no face layers
     ///   (an imported avatar has no painted face), and every texture's pixels match its description;
-    /// - the retained morph-target names, when kept, have one list per mesh, each empty (the file named none) or naming
-    ///   every target;
+    /// - the retained source meshes, when kept, list every runtime mesh exactly once, and their target names fit;
     /// - every anchor follows a bone the skeleton has;
     /// - every morph bind names a mesh and a target that exist, and every colour and UV bind a material that exists;
     /// - every driver names an expression that exists, and gaze channels drive expressions only on the native `ARKit`
@@ -234,7 +233,7 @@ impl ImportedAvatar {
             self.validate_mesh(index, mesh)?;
         }
         self.validate_materials()?;
-        self.validate_morph_names()?;
+        self.validate_retained_meshes()?;
         for (id, anchor) in &self.anchors {
             self.resolve(&anchor.bone, || format!("anchor {id}"))?;
         }
@@ -286,27 +285,39 @@ impl ImportedAvatar {
         Ok(())
     }
 
-    /// The retained morph-target names, when there are any: one list per mesh, one name per target.
-    fn validate_morph_names(&self) -> Result<(), AvatarError> {
-        let names = &self.retained.morph_names;
-        if names.is_empty() {
+    /// The retained source meshes, when there are any: every runtime mesh comes from exactly one, and a source mesh's
+    /// target names, when it has any, count the targets of each of its primitives that has targets (glTF requires them
+    /// all to have the same number).
+    fn validate_retained_meshes(&self) -> Result<(), AvatarError> {
+        let sources = &self.retained.meshes;
+        if sources.is_empty() {
             return Ok(());
         }
-        // Every index either side has: a list for a mesh that doesn't exist is as wrong as a mesh without its list. An
-        // empty list means the file named none of that mesh's targets (glTF names are optional per mesh), so it fits
-        // any mesh; a list with names names every target.
-        for index in 0..names.len().max(self.meshes.len()) {
-            let kept = names.get(index).map(Vec::len);
-            let targets = self.meshes.get(index).map(AvatarMesh::morph_count);
-            let fits = match (kept, targets) {
-                (Some(kept), Some(targets)) => kept == 0 || kept == targets,
-                _ => false,
-            };
-            if !fits {
-                return Err(AvatarError::morph_names(index, kept.unwrap_or(0), targets.unwrap_or(0)));
+        let mut groups = vec![0usize; self.meshes.len()];
+        for (source, retained) in sources.iter().enumerate() {
+            let names = retained.morph_target_names.len();
+            let mut fits_a_primitive = names == 0;
+            for &primitive in &retained.primitives {
+                let index = usize::from(primitive);
+                let (Some(mesh), Some(count)) = (self.meshes.get(index), groups.get_mut(index)) else {
+                    return Err(AvatarError::unknown_primitive(source, index));
+                };
+                *count += 1;
+                match mesh.morph_count() {
+                    0 => {}
+                    targets if names == 0 || targets == names => fits_a_primitive = true,
+                    targets => return Err(AvatarError::morph_names(source, names, targets)),
+                }
+            }
+            if !fits_a_primitive {
+                // Names for a mesh none of whose primitives has a target.
+                return Err(AvatarError::morph_names(source, names, 0));
             }
         }
-        Ok(())
+        match groups.iter().position(|g| *g != 1) {
+            Some(mesh) => Err(AvatarError::mesh_grouping(mesh, groups[mesh])),
+            None => Ok(()),
+        }
     }
 
     fn validate_expression(&self, index: usize, expression: &AvatarExpression) -> Result<(), AvatarError> {
