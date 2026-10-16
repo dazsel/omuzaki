@@ -14,7 +14,7 @@
 //!   it; a failure names the vertex, the region, where along it and how deep;
 //! - **body**: no point of any triangle is inside any region of the body fit: each triangle is probed at its corners
 //!   and on a barycentric grid no coarser than [`CROSSING_SPACING`], so a triangle that passes through the body
-//!   between its corners is caught too;
+//!   between its corners is caught too (and a triangle too large to probe that finely is refused);
 //! - **closure**: after welding coincident positions every edge is shared by at most two triangles wound opposite ways,
 //!   and the boundary edges form exactly [`Garment::open_borders`] loops;
 //! - **skin**: every mesh passes `PartMesh::validate` (weights normalised, joints listed) and every joint is in the rig;
@@ -452,7 +452,9 @@ fn check_clearance(
         }
         for (n, tri) in g.indices.chunks_exact(3).enumerate() {
             let [a, b, c] = [p(tri[0]), p(tri[1]), p(tri[2])];
-            for probe in triangle_probes(a, b, c) {
+            let probes = triangle_probes(a, b, c)
+                .map_err(|longest| format!("triangle {n} of `{}`: {}", mesh.name, too_large(longest)))?;
+            for probe in probes {
                 if let Some(l) = inside_body(body, probe) {
                     return Err(format!(
                         "triangle {n} of `{}` crosses the body: region {:?} at t = {:.3}, depth {:.2} mm at {probe}",
@@ -471,19 +473,28 @@ fn check_clearance(
     Ok(least)
 }
 
-/// The most a crossing probe is from the next along a triangle, metres. A flat triangle through a convex region of
-/// radius `R` crosses it along a chord of `2 sqrt(2 R d)` at depth `d`; at 2 mm, a crossing deeper than about 10 µm on
-/// a 5 cm limb reaches a probe.
+/// The most a crossing probe is from the next along a triangle, metres. Every point of a triangle lies within this of
+/// a probe, so a crossing whose deepest point is `d` deep reaches a probe whenever the region stays at least `d - h`
+/// deep within `h` of that point. On a convex region of radius `R` the depth falls off as `r^2 / 2R`, so at 2 mm any
+/// crossing deeper than `h^2 / 2R` is caught: 40 µm on a 5 cm limb, 0.2 mm on a 1 cm finger.
 pub const CROSSING_SPACING: f64 = 0.002;
-/// The most probes per side of a triangle, so a huge triangle can't stall the suite (a garment's are far smaller).
-const MAX_PROBES_PER_SIDE: usize = 64;
+/// The most steps a side the probe grid takes. A triangle longer than this many [`CROSSING_SPACING`]s (128 mm) can't
+/// be probed that finely in reasonable time, so the suite refuses it rather than check it coarsely: a garment's
+/// triangles are far smaller.
+pub const MAX_PROBES_PER_SIDE: usize = 64;
 
 /// The points of triangle `abc` checked for crossings, besides its corners (which are checked as vertices): its
 /// centroid and a barycentric grid of `n` steps a side, `n` set by its longest edge and [`CROSSING_SPACING`].
-fn triangle_probes(a: DVec3, b: DVec3, c: DVec3) -> Vec<DVec3> {
+///
+/// # Errors
+/// The triangle's longest edge, metres, when it needs more than [`MAX_PROBES_PER_SIDE`] steps a side.
+fn triangle_probes(a: DVec3, b: DVec3, c: DVec3) -> Result<Vec<DVec3>, f64> {
     let longest = a.distance(b).max(b.distance(c)).max(c.distance(a));
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a small positive ratio, clamped
-    let n = ((longest / CROSSING_SPACING).ceil() as usize).clamp(1, MAX_PROBES_PER_SIDE);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a positive ratio, checked below
+    let n = ((longest / CROSSING_SPACING).ceil() as usize).max(1);
+    if n > MAX_PROBES_PER_SIDE || !longest.is_finite() {
+        return Err(longest);
+    }
     let mut probes = vec![(a + b + c) / 3.0];
     for i in 0..=n {
         for j in 0..=n - i {
@@ -496,7 +507,16 @@ fn triangle_probes(a: DVec3, b: DVec3, c: DVec3) -> Vec<DVec3> {
             probes.push(a * u + b * v + c * w);
         }
     }
-    probes
+    Ok(probes)
+}
+
+/// The message for a triangle too large to probe.
+fn too_large(longest: f64) -> String {
+    format!(
+        "it is {:.0} mm across: the suite checks crossings on triangles up to {:.0} mm, so subdivide it",
+        longest * 1e3,
+        CROSSING_SPACING * MAX_PROBES_PER_SIDE as f64 * 1e3
+    )
 }
 
 /// Whether `p` is inside any region of `fit`.
@@ -505,9 +525,13 @@ pub fn inside(fit: &dyn BodyFit, p: DVec3) -> bool {
 }
 
 /// The first point of triangle `abc` the suite finds inside a region of `fit`, corners included.
-pub fn crossing(fit: &dyn BodyFit, [a, b, c]: [DVec3; 3]) -> Option<DVec3> {
+///
+/// # Errors
+/// As the suite reports a triangle too large to probe.
+pub fn crossing(fit: &dyn BodyFit, [a, b, c]: [DVec3; 3]) -> Result<Option<DVec3>, String> {
     let body = Tables::of(fit);
-    [a, b, c].into_iter().chain(triangle_probes(a, b, c)).find(|p| inside_body(&body, *p).is_some())
+    let probes = triangle_probes(a, b, c).map_err(too_large)?;
+    Ok([a, b, c].into_iter().chain(probes).find(|p| inside_body(&body, *p).is_some()))
 }
 
 /// The region of the body `p` is inside, if any.

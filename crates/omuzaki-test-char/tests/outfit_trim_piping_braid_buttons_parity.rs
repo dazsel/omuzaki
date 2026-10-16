@@ -45,6 +45,8 @@ const BUTTON: f64 = 1.5e-4;
 const STRIP: f64 = 2.5e-4;
 /// How far a prototype piping vertex may lie from the port's tube, metres.
 const CORD: f64 = 5e-5;
+/// How close two positions must be to be one seam vertex, metres.
+const WELD: f64 = 1e-7;
 /// The geometry set the dumps hold the uniform and robe in.
 const SET: &str = "game";
 
@@ -170,6 +172,32 @@ fn flattest(points: &[DVec3]) -> DVec3 {
 
 // ------------------------------------------------------------------------------------------------------------ buttons
 
+/// `points` with each position kept once: three.js repeats seam vertices (and a sphere's pole once per segment), which
+/// would pull an average off the axis.
+fn welded(points: &[DVec3]) -> Vec<DVec3> {
+    let mut unique: Vec<DVec3> = Vec::with_capacity(points.len());
+    for p in points {
+        if !unique.iter().any(|q| q.distance(*p) < WELD) {
+            unique.push(*p);
+        }
+    }
+    unique
+}
+
+/// A button's foot and axis (out of the cloth, toward +z) from its vertices. Welded, every part of a button is a set of
+/// rings evenly round one axis, so the centroid lies on the axis and the axis is the direction of least spread; the
+/// foot is the centroid moved down the axis to the lowest vertex.
+fn button_frame(points: &[DVec3]) -> (DVec3, DVec3) {
+    let unique = welded(points);
+    let mut n = flattest(&unique);
+    if n.z < 0.0 {
+        n = -n;
+    }
+    let low = unique.iter().map(|p| p.dot(n)).fold(f64::INFINITY, f64::min);
+    let centroid = unique.iter().copied().sum::<DVec3>() / unique.len() as f64;
+    (centroid - n * (centroid.dot(n) - low), n)
+}
+
 #[test]
 fn the_gold_buttons_match_the_prototypes() {
     let Some(dump) = dump() else { return };
@@ -189,14 +217,7 @@ fn the_gold_buttons_match_the_prototypes() {
         ButtonStyle { radius: buttons::GOLD_RADIUS, shank: 0.0, shape: ButtonShape::Dome, finish: Finish::default() };
     let mut centres = Vec::new();
     for (k, cluster) in clusters.iter().enumerate() {
-        let mut n = flattest(cluster);
-        if n.z < 0.0 {
-            n = -n;
-        }
-        let along: Vec<f64> = cluster.iter().map(|p| p.dot(n)).collect();
-        let low = along.iter().copied().fold(f64::INFINITY, f64::min);
-        let centroid = cluster.iter().copied().sum::<DVec3>() / cluster.len() as f64;
-        let foot = centroid - n * (centroid.dot(n) - low);
+        let (foot, n) = button_frame(cluster);
         let mut port = MeshBuilder::new();
         buttons::button(&mut port, foot, n, &style, &[(JointRef::HIPS, 1.0)]).unwrap();
         let off = farthest(cluster, port.mesh());
@@ -324,5 +345,23 @@ fn the_vest_piping_matches_the_prototypes_ring_tubes() {
         let off = farthest(&theirs, port.mesh());
         println!("vest piping {k}: the farthest prototype vertex is {:.4} mm from the port's tube", off * 1e3);
         assert!(off <= CORD, "vest piping {k}: {off} m off");
+    }
+}
+
+#[test]
+fn a_button_frame_is_recovered_from_a_placed_button() {
+    let style =
+        ButtonStyle { radius: buttons::GOLD_RADIUS, shank: 0.0, shape: ButtonShape::Dome, finish: Finish::default() };
+    for (foot, normal) in [
+        (DVec3::new(0.0, 0.4, 0.1), DVec3::Z),
+        (DVec3::new(0.03, 0.38, 0.11), DVec3::new(0.2, -0.1, 1.0).normalize()),
+        (DVec3::new(-0.02, 0.36, 0.12), DVec3::new(-0.4, 0.3, 0.9).normalize()),
+    ] {
+        let mut built = MeshBuilder::new();
+        buttons::button(&mut built, foot, normal, &style, &[(JointRef::HIPS, 1.0)]).unwrap();
+        let (found, axis) = button_frame(&positions(built.mesh()));
+        println!("foot off by {:.2e} m, axis off by {:.2e}", found.distance(foot), 1.0 - axis.dot(normal));
+        assert!(found.distance(foot) < 1e-4, "the foot is {} m off", found.distance(foot));
+        assert!(axis.dot(normal) > 1.0 - 1e-6, "the axis {axis} isn't {normal}");
     }
 }

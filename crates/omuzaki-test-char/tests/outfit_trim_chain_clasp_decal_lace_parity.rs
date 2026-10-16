@@ -5,10 +5,11 @@
 //! (always, in CI and in the cloud) every test here skips with a message. The prototype built these on its robe, which
 //! this crate doesn't have yet, so the tests recover what they need from the `robe-gold` mesh itself, piece by piece (a
 //! merged geometry keeps each primitive a separate connected piece):
-//! - **clasps:** each ring (a torus of 33 x 9 vertices) gives the clasp's frame: its centre, its normal (out of the
-//!   cloth) and the world's up; the anchor is the ring's hang above it. The port's clasp in that frame must lie on the
+//! - **clasps:** each ring (a torus of 33 x 9 vertices, or 32 x 8 welded) gives the clasp's frame: its centre and
+//!   the normal of its plane from the welded vertices (three.js repeats the seams, which would bias an average; a
+//!   synthetic test recovers known tori exactly), and the world's up; the anchor is the ring's hang above it. The port's clasp in that frame must lie on the
 //!   prototype's surfaces, every vertex within [`CLASP`];
-//! - **the chain:** the links (tori of 11 x 5 vertices) give their centres; the port's links, hung from the attach
+//! - **the chain:** the links (tori of 11 x 5 vertices, or 10 x 4 welded) give their centres, welded as the rings are; the port's links, hung from the attach
 //!   points on the two rings with the prototype's sag, bow and pitch, must be as many and within [`LINK`] of them;
 //! - **the pendant cross:** built at the chain's middle in the world's frame, the port's cross must lie on the
 //!   prototype's surfaces within [`CROSS`] (outside the centre box, which hides how the arms meet).
@@ -42,6 +43,11 @@ const SET: &str = "game";
 /// Vertices of the clasp's ring (three.js torus, 8 x 32 segments) and of a link (4 x 10).
 const RING_VERTICES: usize = 33 * 9;
 const LINK_VERTICES: usize = 11 * 5;
+/// The same, if the dump welded the seams.
+const RING_WELDED: usize = 32 * 8;
+const LINK_WELDED: usize = 10 * 4;
+/// How close two positions must be to be one seam vertex, metres.
+const WELD: f64 = 1e-7;
 
 /// The robe's gold mesh, or `None` (after saying why) so the caller skips.
 fn gold() -> Option<MeshData> {
@@ -135,18 +141,60 @@ fn centroid(points: &[DVec3]) -> DVec3 {
     points.iter().copied().sum::<DVec3>() / points.len() as f64
 }
 
+/// `points` with each position kept once: three.js repeats a torus's seam vertices (the first column and row again at
+/// the end), which would pull an average toward the seam.
+fn welded(points: &[DVec3]) -> Vec<DVec3> {
+    let mut unique: Vec<DVec3> = Vec::with_capacity(points.len());
+    for p in points {
+        if !unique.iter().any(|q| q.distance(*p) < WELD) {
+            unique.push(*p);
+        }
+    }
+    unique
+}
+
+/// The unit eigenvector of the symmetric 3×3 matrix `m` with the smallest eigenvalue: power iteration on
+/// `trace·I - m`, whose largest eigenvector it is (all eigenvalues of a covariance are non-negative).
+fn smallest_axis(m: [[f64; 3]; 3]) -> DVec3 {
+    let trace = m[0][0] + m[1][1] + m[2][2];
+    let apply = |v: DVec3| {
+        let row = |i: usize| DVec3::from_array(m[i]).dot(v);
+        v * trace - DVec3::new(row(0), row(1), row(2))
+    };
+    let mut v = DVec3::new(0.3, 0.5, 0.8).normalize();
+    for _ in 0..500 {
+        v = apply(v).normalize();
+    }
+    v
+}
+
+/// A torus's centre and the normal of its plane, from its vertices: the centroid and the axis of least spread of the
+/// welded vertex set. three.js lays a torus's vertices evenly round both circles, so once the seam is welded the set is
+/// symmetric about the centre and the plane, and both are exact (a link stretched along one in-plane axis too).
+fn torus_frame(points: &[DVec3]) -> (DVec3, DVec3) {
+    let unique = welded(points);
+    let centre = centroid(&unique);
+    let mut cov = [[0.0_f64; 3]; 3];
+    for p in &unique {
+        let d = (*p - centre).to_array();
+        for (i, row) in cov.iter_mut().enumerate() {
+            for (j, c) in row.iter_mut().enumerate() {
+                *c += d[i] * d[j];
+            }
+        }
+    }
+    (centre, smallest_axis(cov))
+}
+
 /// The two clasps' rings: each one's centre and its normal out of the cloth (toward +z), side 0 (at +x) first.
 fn rings(mesh: &MeshData) -> Vec<(DVec3, DVec3)> {
     let all = positions(mesh);
     let mut found: Vec<(DVec3, DVec3)> = pieces(mesh)
         .into_iter()
-        .filter(|p| p.len() == RING_VERTICES)
+        .filter(|p| p.len() == RING_VERTICES || p.len() == RING_WELDED)
         .map(|p| {
             let points: Vec<DVec3> = p.iter().map(|&i| all[i]).collect();
-            let centre = centroid(&points);
-            // A ring's plane holds every point's offset from its centre: the normal is square to two of them.
-            let (a, b) = (points[0] - centre, points[points.len() / 4] - centre);
-            let mut normal = a.cross(b).normalize();
+            let (centre, mut normal) = torus_frame(&points);
             if normal.z < 0.0 {
                 normal = -normal;
             }
@@ -206,8 +254,8 @@ fn the_chain_links_sit_where_the_prototypes_do() {
     let all = positions(&mesh);
     let theirs: Vec<DVec3> = pieces(&mesh)
         .into_iter()
-        .filter(|p| p.len() == LINK_VERTICES)
-        .map(|p| centroid(&p.iter().map(|&i| all[i]).collect::<Vec<_>>()))
+        .filter(|p| p.len() == LINK_VERTICES || p.len() == LINK_WELDED)
+        .map(|p| torus_frame(&p.iter().map(|&i| all[i]).collect::<Vec<_>>()).0)
         .collect();
     let hang = hang(&rings(&mesh));
     let ours = chain::links(&hang, PITCH, None, 0.002).unwrap();
@@ -243,4 +291,54 @@ fn the_pendant_cross_matches_the_prototypes() {
     let off = farthest(&ours, &mesh);
     println!("the pendant cross: {} port vertices, the farthest {:.4} mm from the prototype's", ours.len(), off * 1e3);
     assert!(off <= CROSS, "a port cross vertex is {off} m from the prototype's surfaces");
+}
+
+/// A three.js `TorusGeometry(ring, tube, radial, tubular)`: `(radial + 1) × (tubular + 1)` vertices, seams repeated,
+/// in the xy plane round z.
+fn three_torus(ring: f64, tube: f64, radial: usize, tubular: usize) -> Vec<DVec3> {
+    let mut points = Vec::new();
+    for j in 0..=radial {
+        for i in 0..=tubular {
+            let u = std::f64::consts::TAU * i as f64 / tubular as f64;
+            let v = std::f64::consts::TAU * j as f64 / radial as f64;
+            points.push(DVec3::new(
+                (ring + tube * v.cos()) * u.cos(),
+                (ring + tube * v.cos()) * u.sin(),
+                tube * v.sin(),
+            ));
+        }
+    }
+    points
+}
+
+#[test]
+fn torus_frames_are_recovered_exactly_from_three_js_tori() {
+    use omuzaki_core::glam::DQuat;
+    let turns = [
+        DQuat::IDENTITY,
+        DQuat::from_euler(omuzaki_core::glam::EulerRot::XYZ, 0.3, -0.7, 1.1),
+        DQuat::from_euler(omuzaki_core::glam::EulerRot::XYZ, -1.2, 0.4, 2.5),
+    ];
+    let places = [DVec3::ZERO, DVec3::new(0.06, 1.31, 0.12), DVec3::new(-0.04, 1.27, 0.09)];
+    // The clasp's ring, and a chain link stretched along x as the port stretches it.
+    let shapes = [
+        (three_torus(RING.0, RING.1, 8, 32), DVec3::ONE),
+        (three_torus(chain::LINK.0, chain::LINK.1, 4, 10), DVec3::new(chain::LINK_STRETCH, 1.0, 1.0)),
+    ];
+    for (points, stretch) in &shapes {
+        for turn in turns {
+            for place in places {
+                let moved: Vec<DVec3> = points.iter().map(|p| place + turn * (*p * *stretch)).collect();
+                let (centre, normal) = torus_frame(&moved);
+                let axis = turn * DVec3::Z;
+                println!(
+                    "centre off by {:.2e} m, normal off by {:.2e} rad",
+                    centre.distance(place),
+                    normal.dot(axis).abs().min(1.0).acos()
+                );
+                assert!(centre.distance(place) < 1e-4, "the centre is {} m off", centre.distance(place));
+                assert!(normal.dot(axis).abs() > 1.0 - 1e-9, "the normal {normal} isn't the axis {axis}");
+            }
+        }
+    }
 }
