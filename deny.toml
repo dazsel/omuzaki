@@ -21,6 +21,10 @@ ignore = [
     # ttf-parser is unmaintained (not a vulnerability); it comes in through ab_glyph, the character-sheet text
     # rasteriser in omuzaki-stage. Moving to the maintained skrifa/read-fonts stack is tracked in #1506.
     { id = "RUSTSEC-2026-0192", reason = "unmaintained, not vulnerable; replacement tracked in #1506" },
+    # smartstring is unmaintained (not a vulnerability; archived upstream 2026-05-03). It comes in only through rhai,
+    # the omuzaki-script runtime, which uses it unconditionally (no feature turns it off) and is pinned at =1.26.1.
+    # Revisit when rhai moves to compact_str or smol_str, at the next rhai bump.
+    { id = "RUSTSEC-2026-0249", reason = "unmaintained, not vulnerable; only through rhai, which has no way to drop it" },
 ]
 
 [licenses]
