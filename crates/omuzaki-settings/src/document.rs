@@ -159,7 +159,7 @@ pub(crate) fn apply_each(
                     let mut next = doc.clone();
                     edit_document(&mut next, edit).map(|()| next)
                 },
-                |doc, group| group_reads_back(doc, group),
+                group_reads_back,
             )?;
             let mut doc = doc;
             doc.insert("format", toml_edit::value(FORMAT));
@@ -229,14 +229,12 @@ fn run_groups<S: Clone>(
 fn group_reads_back(doc: &DocumentMut, group: &[&Edit]) -> bool {
     group.iter().all(|edit| {
         let found = lookup(doc, &edit.key);
-        match &edit.value {
-            Some((value, _)) => found.as_ref() == Some(value),
-            // A removed name may have been replaced by a written one beneath it (`deep.old` became `deep.old.new`).
-            None => {
-                let below = format!("{}.", edit.key);
-                found.is_none() || group.iter().any(|other| other.value.is_some() && other.key.starts_with(&below))
-            }
+        if let Some((value, _)) = &edit.value {
+            return found.as_ref() == Some(value);
         }
+        // A removed name may have been replaced by a written one beneath it (`deep.old` became `deep.old.new`).
+        let below = format!("{}.", edit.key);
+        found.is_none() || group.iter().any(|other| other.value.is_some() && other.key.starts_with(&below))
     })
 }
 
