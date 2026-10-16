@@ -327,7 +327,9 @@ pub fn strip_mesh(
     let count = column_count(columns);
     let mut positions = vec![Vec3::ZERO; vertex_count(guides.len(), points, columns)];
     strip_positions(guides, columns, spacing, &outward, &mut positions)?;
-    positions.iter_mut().for_each(|p| *p = keep(*p));
+    for p in &mut positions {
+        *p = keep(*p);
+    }
     let flip = winding_flips(&positions, guides.len(), points, columns, &outward);
     let indices = strip_indices(guides.len(), points, columns, flip)?;
     let normals = strip_normals(&positions, &indices);

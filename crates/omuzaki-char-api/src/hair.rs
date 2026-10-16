@@ -754,6 +754,9 @@ pub struct CurtainGen {
     pub root_tuck_deg: f64,
     /// How far off the skull that first point stands, a little under the cap's own thickness, metres.
     pub root_tuck_offset: f64,
+    /// Let the hair fall in front of the shoulders. Off (the default), where the build has a body the curtain hangs
+    /// behind the arms, however wide the shoulders are; with no body it is the prototype's either way.
+    pub in_front: bool,
     /// Columns per strip (the width of the curtain's clump separation), `1..=9`.
     pub columns: u8,
     /// Clump width.
@@ -775,6 +778,7 @@ impl Default for CurtainGen {
             wave: Wave { amplitude: 0.036, frequency: 2.1, phase: 0.0, curl: 0.045, growth: [0.15, 0.65] },
             root_tuck_deg: 20.0,
             root_tuck_offset: 0.015,
+            in_front: false,
             columns: 5,
             width: Taper::new(0.066, 0.095, 0.014),
             thickness: Bulge { base: 0.006, swell: 0.004 },

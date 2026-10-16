@@ -312,7 +312,7 @@ fn guide(
             point.z += tz * curl * curling - cos * pull;
             point.y += CURL_LIFT * curl_scale * curling * curling;
         }
-        clear_of_body(keep_out, point)
+        point
     };
     // The tuck: a first point carried up the head, just under the cap's shell, so the curtain starts hidden under the
     // cap's edge instead of standing off the head as a band. It is zero in the prototype's own parameters.
@@ -320,12 +320,46 @@ fn guide(
         let theta = (root_theta - params.root_tuck_deg).max(0.0);
         GuidePoint::Surface([theta, phi.to_degrees(), params.root_tuck_offset]).resolve(ctx.head).as_dvec3()
     });
-    let path: Vec<DVec3> =
-        tuck.into_iter().chain(std::iter::once(root)).chain((1..=SEGMENTS).map(|k| at(along(k, SEGMENTS)))).collect();
+    let hang = (!params.in_front).then_some(keep_out).flatten().map(|k| {
+        let head = ctx.head;
+        (k, head.centre().y - head.radius(Vec3::NEG_Y), HANG_OVER * head.radius(Vec3::X))
+    });
+    let fall = drape((1..=SEGMENTS).map(|k| at(along(k, SEGMENTS))), keep_out, hang);
+    let path: Vec<DVec3> = tuck.into_iter().chain(std::iter::once(root)).chain(fall).collect();
     spaced_points(&path, GUIDE_POINTS).map_or_else(
         |_| straight_fall(root, length),
         |pts| pts.into_iter().map(|p| clear_of_body(keep_out, p).as_vec3()).collect(),
     )
+}
+
+/// How far below the head's lowest point (in head half-widths) the hair has finished moving behind the arms.
+const HANG_OVER: f32 = 0.6;
+/// The most a strand's push out of the body is carried down it, metres.
+const CARRY_MAX: f32 = 0.08;
+
+/// The fall's points kept off the body without folding: each is drawn behind the arms (`hang`: the keep-out, the head's
+/// lowest point and the distance over which the hair settles behind them), then pushed out of the body, and the push is
+/// carried on to the points below it, so a strand that is pushed out over the bust drapes over it instead of folding back
+/// under it where the body curves away.
+fn drape(
+    points: impl Iterator<Item = DVec3>,
+    keep_out: Option<&BodyKeepOut>,
+    hang: Option<(&BodyKeepOut, f32, f32)>,
+) -> Vec<DVec3> {
+    let mut carry = Vec3::ZERO;
+    points
+        .map(|raw| {
+            let drawn = hang.map_or(raw, |(k, from_y, over)| k.hang_behind(raw.as_vec3(), from_y, over).as_dvec3());
+            let Some(k) = keep_out else { return drawn };
+            let wanted = drawn.as_vec3() + carry;
+            let pushed = k.push_out(wanted, GUIDE_BODY_MARGIN);
+            carry = (pushed - drawn.as_vec3()).clamp_length_max(CARRY_MAX);
+            if !carry.is_finite() {
+                carry = Vec3::ZERO;
+            }
+            pushed.as_dvec3()
+        })
+        .collect()
 }
 
 /// How far a guide's points keep from the body, metres. The strips take a smaller margin ([`STRIP_BODY_MARGIN`]):
