@@ -26,9 +26,11 @@ pub const MIN_SCALE: f32 = 0.1;
 /// The largest [`SizePolicy::Scale`] factor.
 pub const MAX_SCALE: f32 = 2.0;
 
-/// What the window shows behind the character.
+/// What the window shows behind the character. Non-exhaustive, so a later backdrop is additive (ADR 0054): a match
+/// outside this crate keeps a wildcard arm.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum Backdrop {
     /// A transparent surface. Only some capture tools and some hosts support it ([`WindowCaps::transparent`]).
     Transparent,
@@ -36,9 +38,11 @@ pub enum Backdrop {
     Key(Colour),
 }
 
-/// How big the window's client area is.
+/// How big the window's client area is. Non-exhaustive, so a later policy is additive (ADR 0054): a match outside this
+/// crate keeps a wildcard arm.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum SizePolicy {
     /// Exactly the output size in physical pixels, at any DPI scale factor.
     Output,
@@ -111,6 +115,10 @@ pub enum WindowError {
     /// implementers.
     #[error("the window could not be opened: {0}")]
     Host(String),
+    /// A [`SizePolicy`] or [`Backdrop`] newer than the code that was asked to use it (both are non-exhaustive); the
+    /// text names it.
+    #[error("this build does not support the {0}")]
+    Unsupported(String),
 }
 
 /// What a window host can do.
