@@ -152,5 +152,20 @@ for path in tools/ci/gate-aggregate.py tools/ci/plan-outputs.py xtask/src/affect
 done
 hosted "$GOOD" '["tools/tests/self_gate.sh","crates/a/src/lib.rs"]' "$HEAD" && pass "(e) tests and crate code do not exclude" || fail "(e) over-broad"
 
+# The changed-file list: complete below the API cap, refused at it (a protected path could lie beyond).
+cap() { python3 -I - "$GATE" "$1" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sg", sys.argv[1]); sg = importlib.util.module_from_spec(spec); spec.loader.exec_module(sg)
+pages = int(sys.argv[2])
+def fetch(n):
+    return [{"filename": f"f{n}_{i}"} for i in range(100)] if n <= pages else []
+files = sg.changed_files(fetch)
+print("none" if files is None else len(files))
+PY
+}
+[[ $(cap 2) == 200 ]] && pass "a short file list is returned whole" || fail "short file list"
+[[ $(cap 29) == 2900 ]] && pass "a list just under the cap is returned whole" || fail "list under cap"
+[[ $(cap 30) == none ]] && pass "a list at the API cap is refused (fail closed)" || fail "list at cap"
+
 python3 -I "$GATE" >/dev/null 2>&1 && fail "missing arguments should be an error" || pass "missing arguments are an error"
 exit $((failures > 0))

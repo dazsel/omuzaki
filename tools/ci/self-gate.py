@@ -194,13 +194,28 @@ def fetch_hosted(repo, number, head):
     runs = api_get(f"{base}/actions/runs?event=workflow_dispatch&head_sha={head}&per_page=100")["workflow_runs"]
     runs = [dict(run, jobs=api_get(f"{base}/actions/runs/{run['id']}/jobs?per_page=100&filter=latest")["jobs"])
             for run in runs if workflow_file(run) == CI_WORKFLOW and run.get("conclusion") == "success"]
+    files = changed_files(lambda page: api_get(f"{base}/pulls/{number}/files?per_page=100&page={page}"))
+    return (runs, files) if files is not None else ([], set())
+
+
+FILES_API_CAP = 3000  # GitHub's list-PR-files endpoint returns at most this many entries
+
+
+def changed_files(fetch_page):
+    """The paths a pull request changes (both sides of a rename), or None when the API's cap may have cut the list.
+
+    `fetch_page(n)` returns page n (100 entries). At the cap the list may be incomplete, so the caller must not trust
+    it: a protected path could sit beyond it.
+    """
     files, page = set(), 1
     while True:
-        batch = api_get(f"{base}/pulls/{number}/files?per_page=100&page={page}")
+        batch = fetch_page(page)
         for entry in batch:
             files |= {entry["filename"], entry.get("previous_filename", "")}
         if len(batch) < 100:
-            return runs, files - {""}
+            return files - {""}
+        if page * 100 >= FILES_API_CAP:
+            return None
         page += 1
 
 
