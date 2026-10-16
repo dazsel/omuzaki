@@ -43,7 +43,8 @@ pub enum SizePolicy {
     /// Exactly the output size in physical pixels, at any DPI scale factor.
     Output,
     /// The output size times a factor ([`MIN_SCALE`] to [`MAX_SCALE`]), each side rounded: below `1` a smaller window
-    /// (a preview), above `1` a larger one, at most `MAX_SIDE` (in `omuzaki-stream`) per side with the aspect ratio kept.
+    /// (a preview), above `1` a request for a larger one. `plan` (in `omuzaki-stream`) caps each side at its `MAX_SIDE`
+    /// with the aspect ratio kept, so an output already at or past the cap comes out at the cap.
     Scale(f32),
 }
 
