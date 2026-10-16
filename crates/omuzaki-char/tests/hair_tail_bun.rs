@@ -932,7 +932,10 @@ fn gather_locks_are_counted_finite_and_can_be_turned_off() {
 fn the_gather_locks_are_broad_and_start_on_the_back_hairline() {
     let g = tail::ponytail();
     let locks = &compile_tail(&g).0[usize::from(g.count)..];
-    assert!(locks.iter().all(|c| c.width.mid >= 0.045 && c.width.start < c.width.mid), "broad over the head, pointed at the nape");
+    assert!(
+        locks.iter().all(|c| c.width.mid >= 0.045 && c.width.start < c.width.mid),
+        "broad over the head, pointed at the nape"
+    );
     // They start low and spread across the back, and all end at one point, the tie.
     let starts: Vec<Vec3> = locks.iter().map(|c| c.rest[0]).collect();
     let (lo, hi) = starts.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| (lo.min(p.x), hi.max(p.x)));

@@ -82,14 +82,13 @@ pub const GATHER_RISE_FROM: f64 = 0.7;
 pub const GATHER_SHADE: f64 = 0.95;
 /// The gather's width profile for a head of the reference size: pointed at the nape, broad and flat over the head,
 /// narrowing into the tie.
-pub const GATHER_WIDTH: omuzaki_char_api::Taper =
-    omuzaki_char_api::Taper {
-        start: 0.016,
-        mid: 0.050,
-        tip: 0.012,
-        tip_at: 0.5,
-        shape: omuzaki_char_api::TaperShape::Linear,
-    };
+pub const GATHER_WIDTH: omuzaki_char_api::Taper = omuzaki_char_api::Taper {
+    start: 0.016,
+    mid: 0.050,
+    tip: 0.012,
+    tip_at: 0.5,
+    shape: omuzaki_char_api::TaperShape::Linear,
+};
 /// The gather's thickness profile.
 pub const GATHER_THICKNESS: omuzaki_char_api::Bulge = omuzaki_char_api::Bulge { base: 0.005, swell: 0.002 };
 

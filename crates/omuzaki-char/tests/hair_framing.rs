@@ -319,8 +319,9 @@ fn the_spread_and_the_outline_are_checked_since_the_class_sweep() {
     let mut g = FramingGen { spread: 0.21, ..FramingGen::default() };
     g.edge[2] = [f64::NAN, 5.0];
     g.edge.push([9.0, -9.0]);
+    let pushed = format!("generator/edge/{}/y", g.edge.len() - 1);
     let message = failures(&g);
-    for path in ["generator/spread", "generator/edge/2/y", "generator/edge/2/x", "generator/edge/5/y"] {
+    for path in ["generator/spread", "generator/edge/2/y", "generator/edge/2/x", pushed.as_str()] {
         assert!(message.contains(path), "{path}: {message}");
     }
 }

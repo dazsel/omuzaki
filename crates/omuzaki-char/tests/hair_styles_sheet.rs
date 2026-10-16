@@ -4,7 +4,8 @@
 //!
 //! The styles are the default style, the default with each bangs preset, and the default with its curtain swapped for a
 //! ponytail, twintails, a low and a high bun, or framing locks with a braid crown. Each is built on `soft-sd` and
-//! `standard`, and the test also checks that every one of them builds there, so the sheet can't silently drop one.
+//! `standard`, and the test also checks that every one of them builds there within the hair budget, so the sheet can't
+//! silently drop one.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // helpers build fixtures; a bad one should stop the test with its reason
 #![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)] // pixel indices
@@ -228,16 +229,34 @@ fn sheet_row(built: &BuiltCharacter) -> Vec<[u8; 3]> {
     row
 }
 
+/// The most triangles a whole hairstyle may have at the default (Live) quality. The spec names no hair budget, so this
+/// is the parity target's own: the prototype's hair in its game variant is 39 968 triangles (cap shell 9 216, static
+/// locks 18 400, simulated locks 3 552, curtain 8 800), and no kit style may cost more than the hair it ports.
+const HAIR_TRIANGLES: usize = 39_968;
+
+/// The hair part's triangles in `built`.
+fn hair_triangles(built: &BuiltCharacter) -> usize {
+    built.meshes.iter().filter(|m| m.part.as_str() == "hair").map(|m| m.mesh.geometry.indices.len() / 3).sum()
+}
+
 #[test]
-fn every_style_on_the_sheet_builds_on_its_templates() {
-    let failed: Vec<String> = TEMPLATES
-        .iter()
-        .flat_map(|template| styles().into_iter().map(move |(name, hair)| (template, name, hair)))
-        .filter_map(|(template, name, hair)| {
-            build(&character(template, &hair)).err().map(|e| format!("{template} {name}: {e}"))
-        })
-        .collect();
-    assert!(failed.is_empty(), "styles that don't build: {failed:#?}");
+fn every_style_on_the_sheet_builds_on_its_templates_within_the_hair_budget() {
+    let mut failed = Vec::new();
+    for template in TEMPLATES {
+        for (name, hair) in styles() {
+            match build(&character(template, &hair)) {
+                Err(e) => failed.push(format!("{template} {name}: {e}")),
+                Ok(built) => {
+                    let triangles = hair_triangles(&built);
+                    eprintln!("{template} {name}: {triangles} hair triangles");
+                    if triangles > HAIR_TRIANGLES {
+                        failed.push(format!("{template} {name}: {triangles} triangles, over {HAIR_TRIANGLES}"));
+                    }
+                }
+            }
+        }
+    }
+    assert!(failed.is_empty(), "styles that don't build or cost too much: {failed:#?}");
 }
 
 /// Writes `<template>-<style>.ppm` (front, side and back side by side) into `OMUZAKI_HAIR_STYLES_PPM` when it is set.
