@@ -21,7 +21,7 @@ use omuzaki_face_api::{
 };
 
 pub use mouth::{MouthPiece, OpenMouth};
-pub use real::RealPainter;
+pub use real::{LayerSections, RealPainter, SectionRanges};
 
 /// One part of the face, in the order [`RealPainter`] paints them.
 ///
