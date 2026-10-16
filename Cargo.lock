@@ -4407,6 +4407,7 @@ dependencies = [
  "keyring",
  "omuzaki-secrets-api",
  "omuzaki-secrets-mock",
+ "tempfile",
 ]
 
 [[package]]
