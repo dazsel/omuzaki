@@ -224,3 +224,8 @@ fn an_attachment_moves_turns_and_scales_the_whole_tail_exactly_once() {
     assert_eq!(on_chest.rig.skeleton.bones()[chain.joints[0].bone.index()].parent, on_chest.rig.bone(&JointRef::CHEST));
     assert_skins_to_the_built_mesh_at_bind(&on_chest, "a tail on the chest");
 }
+
+#[test]
+fn every_documented_preset_is_among_the_styles_the_sweeps_use() {
+    accessory_common::assert_styles_found("tail", &["fox", "cat", "dragon", "bunny"]);
+}

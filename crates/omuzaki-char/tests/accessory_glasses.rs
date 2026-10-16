@@ -228,3 +228,8 @@ fn the_glasses_build_in_5_ms_or_less() {
         assert!(ms <= build_budget_ms(), "glasses {name} took {ms:.2} ms");
     }
 }
+
+#[test]
+fn every_documented_preset_is_among_the_styles_the_sweeps_use() {
+    accessory_common::assert_styles_found("glasses", &["round", "square", "cat_eye", "sunglasses"]);
+}

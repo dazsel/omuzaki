@@ -351,6 +351,29 @@ pub fn assert_recolours_in_place(mut def: CharacterDef, names: &[&str]) {
 
 // ------------------------------------------------------------------------------------------------ the styles of each kind
 
+/// The values of an enum parameter in its schema: `enum`, or, for a documented enum, a `oneOf` (or `anyOf`) of `const`s.
+fn enum_values(property: &Value) -> Vec<String> {
+    let listed = property["enum"].as_array().into_iter().flatten().filter_map(Value::as_str);
+    let documented = ["oneOf", "anyOf"]
+        .into_iter()
+        .filter_map(|key| property[key].as_array())
+        .flatten()
+        .filter_map(|entry| entry["const"].as_str().or_else(|| entry["enum"][0].as_str()));
+    listed.chain(documented).map(str::to_owned).collect()
+}
+
+/// Every documented preset of `kind` is among its styles: a discovery that missed some would sweep fewer cases than the
+/// kind has.
+pub fn assert_styles_found(kind: &str, presets: &[&str]) {
+    let found: Vec<String> = styles(kind).into_iter().map(|(name, _)| name).collect();
+    for preset in presets {
+        assert!(
+            found.iter().any(|f| f == preset),
+            "{kind}: the preset '{preset}' is not among the styles found: {found:?}"
+        );
+    }
+}
+
 /// The styles of `kind`, found from the kind's own parameter schema, so nothing here lists the kinds: one per value of its
 /// first enum parameter (`style`, `shape` or `kind`), and one per flag that is off by default turned on; `("default", {})` for
 /// a kind with neither. Each is `(name, parameters)`.
@@ -361,8 +384,8 @@ pub fn styles(kind: &str) -> Vec<(String, Value)> {
     let mut out = Vec::new();
     let properties = schema["properties"].as_object().cloned().unwrap_or_default();
     for key in ["style", "shape", "kind"] {
-        if let Some(values) = properties.get(key).and_then(|p| p["enum"].as_array()) {
-            out.extend(values.iter().filter_map(Value::as_str).map(|v| (v.to_owned(), json!({ key: v }))));
+        if let Some(values) = properties.get(key).map(enum_values).filter(|v| !v.is_empty()) {
+            out.extend(values.into_iter().map(|v| (v.clone(), json!({ key: v }))));
             break;
         }
     }

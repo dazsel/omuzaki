@@ -170,3 +170,8 @@ fn the_headphones_build_in_5_ms_or_less() {
     println!("headphones: {ms:.3} ms");
     assert!(ms <= build_budget_ms(), "headphones took {ms:.2} ms");
 }
+
+#[test]
+fn every_documented_preset_is_among_the_styles_the_sweeps_use() {
+    accessory_common::assert_styles_found("headphones", &["cat_ears", "mic"]);
+}

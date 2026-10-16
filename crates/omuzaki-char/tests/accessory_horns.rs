@@ -216,3 +216,8 @@ fn only_the_scalp_shell_meets_the_horns_which_is_the_hole_the_hair_cap_will_get(
         }
     }
 }
+
+#[test]
+fn every_documented_preset_is_among_the_styles_the_sweeps_use() {
+    accessory_common::assert_styles_found("horns", &["swept_back", "ram", "oni", "antler"]);
+}

@@ -277,3 +277,8 @@ fn a_turned_attachment_folds_the_wings_about_their_own_plane_and_a_scale_counts_
     let ratio = width(&vertices(&doubled.built)) / width(&vertices(&base.built));
     assert!((ratio - 2.0).abs() < 0.05, "scale 2 made the wings {ratio} times as wide");
 }
+
+#[test]
+fn every_documented_preset_is_among_the_styles_the_sweeps_use() {
+    accessory_common::assert_styles_found("wings", &["feathered", "bat", "fairy", "mechanical"]);
+}
