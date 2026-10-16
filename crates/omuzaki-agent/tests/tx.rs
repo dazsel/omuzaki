@@ -36,6 +36,7 @@ fn an_edit_opens_the_transaction_with_the_label_and_cause_and_the_answer_commits
     assert_eq!(rig.server.called("tx_commit"), 1);
     let order = names(&rig);
     assert_eq!(order, ["tx_begin", "face_set_profile", "face_set_profile", "tx_commit"]);
+    assert_eq!(rig.server.host_log_reads(), 1, "the host reads the log's head once per answer, and no more");
 }
 
 #[test]
@@ -229,4 +230,13 @@ fn a_transaction_that_cannot_be_committed_twice_is_discarded_and_the_person_is_t
     );
     assert_eq!(rig.server.called("tx_rollback"), 1);
     assert!(rig.sessions.open_tx().is_none());
+}
+
+#[test]
+fn the_host_reads_the_op_log_once_per_answer_and_the_model_calls_are_untouched() {
+    let rig = Rig::new(script(vec![say_turn("one"), say_turn("two")]));
+    rig.say("first", 0.0);
+    rig.say("second", 0.0);
+    assert_eq!(rig.server.host_log_reads(), 2, "one read of the log's head for each answer");
+    assert!(rig.server.calls().iter().all(|(name, _)| name != "history_log"), "the model never called it");
 }

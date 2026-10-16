@@ -120,6 +120,8 @@ pub fn kindless(name: &str, read_only: bool) -> Tool {
 pub struct ServerLog {
     /// Every call, in arrival order: the tool and its arguments.
     pub calls: Vec<(String, Value)>,
+    /// The host's own reads of the op log: one per answer to learn the log's head, and Stop's.
+    pub host_log_reads: usize,
     pub in_flight: usize,
     pub max_in_flight: usize,
     pub cancelled: usize,
@@ -170,10 +172,13 @@ impl ScriptedServer {
         self.add(tool, move |_, _| outcome.clone());
     }
 
-    /// The calls the model's work made. The host's own reads of the op log (`history_log`, for Stop's bookkeeping) are
-    /// not counted; `called("history_log")` still counts them.
     pub fn calls(&self) -> Vec<(String, Value)> {
-        lock(&self.log).calls.iter().filter(|(n, _)| n != "history_log").cloned().collect()
+        lock(&self.log).calls.clone()
+    }
+
+    /// How many times the host itself read the op log.
+    pub fn host_log_reads(&self) -> usize {
+        lock(&self.log).host_log_reads
     }
 
     pub fn called(&self, name: &str) -> usize {
@@ -216,7 +221,13 @@ impl ServerHandler for ScriptedServer {
         };
         {
             let mut log = lock(&self.log);
-            log.calls.push((name.clone(), Value::Object(args.clone())));
+            // The host's own bookkeeping read of the op log (it always names `after_n`, the model's tool results never
+            // do here) is counted on its own, so `calls` stays what the model's work called.
+            if name == "history_log" && args.contains_key("after_n") {
+                log.host_log_reads += 1;
+            } else {
+                log.calls.push((name.clone(), Value::Object(args.clone())));
+            }
             log.in_flight += 1;
             log.max_in_flight = log.max_in_flight.max(log.in_flight);
         }
