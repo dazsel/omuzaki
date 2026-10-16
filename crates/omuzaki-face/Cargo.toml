@@ -16,6 +16,7 @@ libm.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde_path_to_error = "0.1.20"
 thiserror.workspace = true
 toml.workspace = true
 omuzaki-anim-api = { path = "../omuzaki-anim-api" }
@@ -44,6 +45,7 @@ pollster.workspace = true
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 omuzaki-face-mock = { path = "../omuzaki-face-mock" }
 omuzaki-render-mock = { path = "../omuzaki-render-mock" }
+omuzaki-store-mock = { path = "../omuzaki-store-mock" }
 
 # One bench target per hot path. A target needs its file to exist, so the skeleton declares them up front; the task named
 # in each file's `//!` line fills it.

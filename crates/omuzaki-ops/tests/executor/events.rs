@@ -10,7 +10,7 @@ use omuzaki_ops::Executor;
 use omuzaki_ops_api::{Event, Grants, Request, Runner};
 use serde_json::json;
 
-use super::{drain, person, request, rig};
+use super::{drain, open_agents, person, request, rig};
 
 #[test]
 fn applying_an_op_emits_op_applied_then_tx_committed() {
@@ -100,7 +100,9 @@ fn concurrent_ops_keep_the_log_gapless_and_events_in_log_order() {
     const THREADS: usize = 4;
     const PER_THREAD: usize = 50;
     let clock = Arc::new(FakeClock::new(Seconds(0.0)));
-    let exec = Arc::new(Executor::new(Box::new(MemDoc::new()), clock).unwrap());
+    let exec = Executor::new(Box::new(MemDoc::new()), clock).unwrap();
+    open_agents(&exec);
+    let exec = Arc::new(exec);
     let rx = exec.subscribe(&Grants::person()).unwrap();
 
     let workers: Vec<_> = (0..THREADS)
