@@ -234,8 +234,14 @@ impl Registry {
     }
 
     /// Replaces the ceiling of session `id`, up to what its principal holds and, for a sub-agent, what its parent holds
-    /// now.
-    pub(crate) fn set_grants(&mut self, id: SessionId, grants: Grants, by: &Actor) -> Result<SessionChange, OpError> {
+    /// now. Returns one change for `id` and one for each descendant whose effective grants moved with it (a sub-agent
+    /// holds at most what its parent holds), `id` first.
+    pub(crate) fn set_grants(
+        &mut self,
+        id: SessionId,
+        grants: Grants,
+        by: &Actor,
+    ) -> Result<Vec<(SessionId, SessionChange)>, OpError> {
         let index = self.control(id, by)?;
         if !within(&grants, &self.principals.grants(&self.sessions[index].on_behalf_of)) {
             return Err(OpError::denied("the grants exceed those of the person the session works for"));
@@ -246,8 +252,16 @@ impl Registry {
             return Err(OpError::denied("the grants exceed those of the session's parent")
                 .hint("a sub-agent holds at most what its parent holds"));
         }
+        let descendants: Vec<SessionId> = self.family(index).into_iter().skip(1).collect();
+        let before: Vec<Grants> = descendants.iter().filter_map(|d| self.find(*d)).map(|s| self.effective(s)).collect();
         self.sessions[index].grants = grants;
-        Ok(SessionChange::Grants { by: by.clone() })
+        let mut changes = vec![(id, SessionChange::Grants { by: by.clone() })];
+        for (descendant, was) in descendants.into_iter().zip(before) {
+            if self.find(descendant).is_some_and(|s| self.effective(s) != was) {
+                changes.push((descendant, SessionChange::Grants { by: by.clone() }));
+            }
+        }
+        Ok(changes)
     }
 
     /// Replaces the budget of session `id`.
@@ -262,6 +276,18 @@ impl Registry {
         Ok(SessionChange::Budget { by: by.clone() })
     }
 
+    /// The id of session `root` (by index) followed by the ids of its descendants.
+    fn family(&self, root: usize) -> Vec<SessionId> {
+        let mut family = vec![self.sessions[root].id];
+        // A child is always opened after its parent, so one pass in order finds every descendant.
+        for session in &self.sessions {
+            if session.parent.is_some_and(|p| family.contains(&p)) && !family.contains(&session.id) {
+                family.push(session.id);
+            }
+        }
+        family
+    }
+
     /// Moves session `root` and its descendants to the state `next` picks for each (`None` leaves it), returning one
     /// change per session that moved, the root first.
     fn set_family(
@@ -270,13 +296,7 @@ impl Registry {
         next: impl Fn(&SessionInfo) -> Option<SessionState>,
         change: impl Fn(&SessionInfo) -> SessionChange,
     ) -> Vec<(SessionId, SessionChange)> {
-        let mut family = vec![self.sessions[root].id];
-        // A child is always opened after its parent, so one pass in order finds every descendant.
-        for session in &self.sessions {
-            if session.parent.is_some_and(|p| family.contains(&p)) && !family.contains(&session.id) {
-                family.push(session.id);
-            }
-        }
+        let family = self.family(root);
         let mut changes = Vec::new();
         for session in self.sessions.iter_mut().filter(|s| family.contains(&s.id)) {
             if let Some(state) = next(session) {
@@ -359,7 +379,9 @@ mod tests {
         assert_eq!(refused.code, ErrorCode::Denied);
         // Narrowing the parent narrows the child, and a grandchild below it.
         let grandchild = registry.open(SessionSpec { parent: Some(child.id), ..spec() }, Seconds(0.0)).unwrap();
-        registry.set_grants(parent.id, Grants::of([Scope::Read]), &alice).unwrap();
+        let changed = registry.set_grants(parent.id, Grants::of([Scope::Read]), &alice).unwrap();
+        let ids: Vec<_> = changed.iter().map(|(id, _)| *id).collect();
+        assert_eq!(ids, [parent.id, child.id, grandchild.id], "every session whose effective grants moved is reported");
         for index in [1, 2] {
             let held = registry.effective(&registry.sessions[index]);
             assert_eq!(held, Grants::of([Scope::Read]), "session {}", registry.sessions[index].id.0);
@@ -367,6 +389,9 @@ mod tests {
         assert_eq!(grandchild.parent, Some(child.id));
         // And the child cannot be raised back above the narrowed parent.
         assert_eq!(registry.set_grants(child.id, spec().grants, &alice).unwrap_err().code, ErrorCode::Denied);
+        // A change that leaves a descendant's effective grants alone reports the session itself only.
+        let same = registry.set_grants(parent.id, Grants::of([Scope::Read]), &alice).unwrap();
+        assert_eq!(same.len(), 1);
     }
 
     /// Nothing sets these pauses yet (budgets and pairing are other tasks), so the state is put there by hand.

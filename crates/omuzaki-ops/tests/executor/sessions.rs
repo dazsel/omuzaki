@@ -449,3 +449,33 @@ fn a_pause_never_lands_between_the_check_and_the_change_of_a_transaction_control
         pause_during(|exec, actor, _| exec.undo(actor, &Grants::agent_default()).map(drop), "undo");
     }
 }
+
+#[test]
+fn narrowing_a_parent_emits_a_change_for_each_sub_agent_whose_grants_moved() {
+    let rig = rig(json!({}));
+    let mut parent = session_spec("lead");
+    parent.grants = Grants::agent_default();
+    let parent = rig.exec.open(parent).unwrap();
+    let mut child = session_spec("helper");
+    child.parent = Some(parent.id);
+    child.grants = Grants::agent_default();
+    let child = rig.exec.open(child).unwrap();
+    let mut bystander = session_spec("other");
+    bystander.grants = Grants::agent_default();
+    rig.exec.open(bystander).unwrap();
+
+    let rx = rig.subscribe();
+    rig.exec.set_grants(parent.id, Grants::of([Scope::Read]), &person()).unwrap();
+    let changed: Vec<_> = drain(&rx)
+        .iter()
+        .filter_map(|e| match e {
+            Event::SessionChanged { change, session, .. } => Some((session.id, change.clone(), session.grants.clone())),
+            _ => None,
+        })
+        .collect();
+    let by = SessionChange::Grants { by: person() };
+    assert_eq!(changed.len(), 2, "the parent and its sub-agent, not the unrelated session: {changed:?}");
+    assert_eq!((changed[0].0, &changed[0].1), (parent.id, &by));
+    assert_eq!((changed[1].0, &changed[1].1), (child.id, &by));
+    assert_eq!(changed[1].2, Grants::of([Scope::Read]), "the snapshot carries the narrowed effective grants");
+}

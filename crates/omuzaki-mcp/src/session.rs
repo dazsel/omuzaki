@@ -112,11 +112,19 @@ impl Session {
     /// (`subscriptions/listen` included), skipping both `initialize` and `discover`, so every request handler calls this
     /// first. Over HTTP a session starts with `initialize`, which names it.
     fn name_client(&self, context: &RequestContext<RoleServer>) {
-        if !self.http
-            && let Some(info) = context.meta.client_info()
-        {
+        if self.http {
+            return;
+        }
+        if let Some(info) = context.meta.client_info() {
             self.shared.connections.name(self.serial, &info.name);
         }
+        self.open_session(context);
+    }
+
+    /// Opens this connection's session in the registry now, so a client that has only connected is already in the
+    /// agent panel. A refusal stays in the cached result, and the first call that needs the actor reports it.
+    fn open_session(&self, context: &RequestContext<RoleServer>) {
+        let _ = self.actor(context);
     }
 
     fn actor(&self, context: &RequestContext<RoleServer>) -> Result<&Actor, &OpError> {
@@ -366,7 +374,8 @@ impl Session {
             Builtin::Log => self.history_log(&args, &standing.clone()?.grants).map(Reply::from),
             Builtin::TxBegin => {
                 // `Executor::begin` cannot refuse, and for a paused session it hands back a transaction that was never
-                // opened; so the refusal is made here, before it runs.
+                // opened; so the refusal is made here, before it runs, and `begin_tx` checks again afterwards, because
+                // a pause can land in between.
                 if let Some((by, reason)) = standing.clone()?.paused {
                     return Err(paused(by, reason));
                 }
@@ -398,10 +407,12 @@ impl Session {
             state.beginning = true;
         }
         let name = label.clone();
+        let who = actor.clone();
         let started = self.blocking(move |runner| runner.begin(&name, &actor)).await;
+        let opened = started.and_then(|id| self.confirm_opened(id, &who).map(|()| id));
         let mut state = lock(&self.state);
         state.beginning = false;
-        let id = started?;
+        let id = opened?;
         state.tx = Some(OpenTx { id, label: label.clone(), cause });
         state.own.remember(id);
         drop(state);
@@ -411,6 +422,25 @@ impl Session {
             id.0
         );
         Ok(render::confirmation(text, json!({"ok": true, "tx": id.0, "label": label})))
+    }
+
+    /// Whether the runner really opened transaction `id` for `actor`. `Runner::begin` cannot refuse: when a pause won
+    /// the race against it, it hands back an id that was never opened, and the registry (which sees the transactions
+    /// it opened under the same lock) is where that shows. A pause that lands after `begin` leaves the transaction
+    /// open, so it still counts as opened.
+    fn confirm_opened(&self, id: omuzaki_ops_api::TxId, actor: &Actor) -> Result<(), OpError> {
+        let Some(host) = &self.shared.sessions else { return Ok(()) };
+        let info =
+            host.sessions.session_of(actor).ok_or_else(|| OpError::denied("this connection's session is gone"))?;
+        if info.open_tx.as_ref().is_some_and(|open| open.tx == id) {
+            return Ok(());
+        }
+        Err(match info.state {
+            SessionState::Paused { by, reason } => paused(by, reason),
+            SessionState::Ended { .. } => OpError::denied("this connection's session has ended"),
+            SessionState::Active => OpError::conflict("the transaction did not open")
+                .hint("the session changed while it started: call tx_begin again"),
+        })
     }
 
     async fn finish_tx(&self, commit: bool, actor: Actor) -> Result<Reply, OpError> {
@@ -619,6 +649,7 @@ impl ServerHandler for Session {
     ) -> Result<InitializeResult, McpError> {
         self.shared.connections.name(self.serial, &request.client_info.name);
         context.peer.set_peer_info(request.clone());
+        self.open_session(&context);
         self.negotiate_initialize(&request)
     }
 

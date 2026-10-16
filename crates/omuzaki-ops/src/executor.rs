@@ -456,7 +456,7 @@ impl Sessions for Executor {
     }
 
     fn set_grants(&self, id: SessionId, grants: Grants, by: &Actor) -> Result<SessionInfo, OpError> {
-        self.change_sessions(id, |state| Ok(vec![(id, state.sessions.set_grants(id, grants, by)?)]))
+        self.change_sessions(id, |state| state.sessions.set_grants(id, grants, by))
     }
 
     fn set_budget(&self, id: SessionId, budget: Budget, by: &Actor) -> Result<SessionInfo, OpError> {

@@ -614,6 +614,10 @@ async fn a_transaction_left_open_is_rolled_back_when_the_agent_disconnects() {
 struct OneSession {
     asked: std::sync::Mutex<Vec<SessionSpec>>,
     live: std::sync::Mutex<Option<SessionInfo>>,
+    /// Questions about the live session so far, and after how many of them it reads as paused (see
+    /// `a_pause_between_the_check_and_the_begin_leaves_no_transaction_behind`).
+    asked_about: std::sync::atomic::AtomicUsize,
+    pause_after: std::sync::Mutex<Option<(usize, Actor)>>,
 }
 
 impl Sessions for OneSession {
@@ -628,7 +632,14 @@ impl Sessions for OneSession {
         None
     }
     fn session_of(&self, _: &Actor) -> Option<SessionInfo> {
-        self.live.lock().unwrap().clone()
+        let n = self.asked_about.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut info = self.live.lock().unwrap().clone();
+        if let (Some(info), Some((after, by))) = (info.as_mut(), self.pause_after.lock().unwrap().as_ref())
+            && n >= *after
+        {
+            info.state = SessionState::Paused { by: by.clone(), reason: PauseReason::Person };
+        }
+        info
     }
     fn pause(&self, _: SessionId, _: &Actor) -> Result<SessionInfo, OpError> {
         Err(OpError::unsupported("no"))
@@ -769,9 +780,47 @@ async fn tx_begin_is_refused_while_the_session_is_paused() {
     assert_eq!(begin.is_error, Some(true));
     assert!(text(&begin).contains("paused"), "{}", text(&begin));
     assert!(!h.runner.has_open_tx(), "nothing was reserved with the runner");
-    // Resumed, it opens as usual.
-    registry.live.lock().unwrap().as_mut().unwrap().state = SessionState::Active;
+    // Resumed, it opens as usual (the registry reports the transaction the runner opened, `TxId(1)`).
+    {
+        let mut live = registry.live.lock().unwrap();
+        let live = live.as_mut().unwrap();
+        live.state = SessionState::Active;
+        live.open_tx = Some(omuzaki_ops_api::SessionTx { tx: omuzaki_ops_api::TxId(1), label: "oval face".into() });
+    }
     assert_ne!(h.call("tx_begin", json!({"label": "oval face"})).await.is_error, Some(true));
+    h.disconnect().await;
+}
+
+/// `Runner::begin` cannot refuse: a pause that lands after the standing check but before the runner opens the
+/// transaction leaves an id that was never opened. The registry (no open transaction for the session) says so, and
+/// `tx_begin` reports the pause instead of storing an id every later edit would fail on.
+#[tokio::test]
+async fn a_pause_between_the_check_and_the_begin_leaves_no_transaction_behind() {
+    let (h, registry, alice) = admitted_harness().await;
+    // The connect asked once (the session opened at initialization); the next question is the standing check, which
+    // still sees it active; every question after that sees the pause.
+    let seen = registry.asked_about.load(std::sync::atomic::Ordering::SeqCst);
+    *registry.pause_after.lock().unwrap() = Some((seen + 1, alice));
+    let begin = h.call("tx_begin", json!({"label": "oval face"})).await;
+    assert_eq!(begin.is_error, Some(true));
+    assert!(text(&begin).contains("paused"), "{}", text(&begin));
+    // Nothing was kept: once resumed, a transaction opens (a second begin is not refused as "already open").
+    *registry.pause_after.lock().unwrap() = None;
+    registry.live.lock().unwrap().as_mut().unwrap().open_tx =
+        Some(omuzaki_ops_api::SessionTx { tx: omuzaki_ops_api::TxId(2), label: "oval face".into() });
+    let again = h.call("tx_begin", json!({"label": "oval face"})).await;
+    assert_ne!(again.is_error, Some(true), "{}", text(&again));
+    h.disconnect().await;
+}
+
+#[tokio::test]
+async fn a_connection_that_only_initialized_is_already_in_the_registry() {
+    let registry = Arc::new(OneSession::default());
+    let alice = Actor::Person { name: "alice".into() };
+    *registry.live.lock().unwrap() = Some(admitted_session(&alice));
+    let options = McpOptions::default().with_sessions(registry.clone(), alice);
+    let h = Harness::connect_with(options, Lifecycle::Initialize).await;
+    assert_eq!(registry.asked.lock().unwrap().len(), 1, "opened at initialization, before any tool or resource call");
     h.disconnect().await;
 }
 
