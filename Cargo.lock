@@ -3951,6 +3951,7 @@ dependencies = [
  "image",
  "inventory",
  "omuzaki-anim-api",
+ "omuzaki-avatar-api",
  "omuzaki-char-api",
  "omuzaki-char-mock",
  "omuzaki-core",
