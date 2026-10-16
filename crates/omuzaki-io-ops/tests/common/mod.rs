@@ -2,6 +2,8 @@
 //! the T-pose or with its arms down, and skinned meshes with morph targets. Nothing third-party or private.
 #![allow(dead_code, clippy::expect_used, clippy::unwrap_used, clippy::cast_precision_loss)] // fixture setup
 
+pub mod head;
+
 use std::collections::BTreeMap;
 
 use omuzaki_anim_api::{Pose, Skeleton};
