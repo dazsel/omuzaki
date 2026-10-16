@@ -1,0 +1,28 @@
+[package]
+name = "omuzaki-settings-mock"
+description = "In-memory Settings service for tests: layers, profiles, snapshot and events, no files (spec v3 §39 rule 6)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-doc-api = { path = "../omuzaki-doc-api" }
+omuzaki-ops-api = { path = "../omuzaki-ops-api" }
+omuzaki-settings-api = { path = "../omuzaki-settings-api" }
+unicode-normalization.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+schemars.workspace = true
+serde.workspace = true
+
+[lints]
+workspace = true
+
+[package.metadata.omuzaki]
+kind = "Mock"
+summary = "in-memory `Settings` for tests: layers, profiles, atomic switch, events"
