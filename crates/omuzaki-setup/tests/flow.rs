@@ -18,7 +18,11 @@ fn probes() -> Probes {
 }
 
 fn flow(p: Probes) -> SetupFlow {
-    SetupFlow::new(p, Progress::default())
+    SetupFlow::new(p, Progress::default(), Current::default())
+}
+
+fn webcam() -> Current {
+    Current { input: Some(InputChoice::Webcam), output: None }
 }
 
 fn send(f: &mut SetupFlow, events: &[Event]) -> Vec<Effect> {
@@ -185,7 +189,7 @@ fn back_lands_on_the_previous_shown_step() {
 #[test]
 fn skip_setup_from_every_step_finishes_skipped_and_persists() {
     for step in Step::ALL {
-        let mut f = SetupFlow::new(probes(), Progress { step, ..Progress::default() });
+        let mut f = SetupFlow::new(probes(), Progress { step, ..Progress::default() }, webcam());
         let fx = f.handle(Event::SkipSetup, 7);
         let finished = Progress { step, skipped: Vec::new(), finished: true };
         assert_eq!(
@@ -199,25 +203,26 @@ fn skip_setup_from_every_step_finishes_skipped_and_persists() {
 
 #[test]
 fn resume_from_calibrate() {
-    let f = SetupFlow::new(probes(), Progress { step: Step::Calibrate, ..Progress::default() });
+    let f = SetupFlow::new(probes(), Progress { step: Step::Calibrate, ..Progress::default() }, webcam());
     assert_eq!(f.view().step, Step::Calibrate);
     assert_eq!(f.view().position, Some((3, 5)));
     let g = SetupFlow::new(
         Probes { cameras: Cameras::None, ..probes() },
         Progress { step: Step::Calibrate, ..Progress::default() },
+        webcam(),
     );
     assert_eq!(g.view().step, Step::Output, "a step the probes leave out resumes at the next shown one");
 }
 
 #[test]
 fn calibration_needs_a_start_and_skip_records_it() {
-    let mut f = SetupFlow::new(probes(), Progress { step: Step::Calibrate, ..Progress::default() });
+    let mut f = SetupFlow::new(probes(), Progress { step: Step::Calibrate, ..Progress::default() }, webcam());
     assert_eq!(send(&mut f, &[Event::CalibrationDone]), no_effects(), "never started");
     assert_eq!(send(&mut f, &[Event::Next]), [Effect::StartCalibration]);
     assert_eq!(send(&mut f, &[Event::Next]), no_effects());
     let fx = send(&mut f, &[Event::CalibrationDone]);
-    assert_eq!(fx[0], Effect::Show(Step::Output));
-    let mut g = SetupFlow::new(probes(), Progress { step: Step::Calibrate, ..Progress::default() });
+    assert_eq!(fx[1], Effect::Show(Step::Output));
+    let mut g = SetupFlow::new(probes(), Progress { step: Step::Calibrate, ..Progress::default() }, webcam());
     send(&mut g, &[Event::Skip]);
     assert_eq!(g.progress().skipped, [Step::Calibrate]);
 }
@@ -260,7 +265,7 @@ fn no_recommended_output_leaves_the_step_out_and_probe_changes_never_jump() {
     assert_eq!(f.progress().skipped, [Step::Output]);
     f.handle(Event::Probed(probes()), 0);
     assert_eq!(f.view().step, Step::Welcome);
-    let mut g = SetupFlow::new(probes(), Progress { step: Step::Output, ..Progress::default() });
+    let mut g = SetupFlow::new(probes(), Progress { step: Step::Output, ..Progress::default() }, Current::default());
     g.handle(Event::Probed(Probes { recommended_output: None, ..probes() }), 0);
     assert_eq!(g.view().step, Step::Output);
     assert!(g.view().shown.contains(&Step::Output), "the current step stays listed");
@@ -312,7 +317,7 @@ fn exhaustive_short_sequences() {
         let mut f = flow(probes());
         walk(&mut f, &seq, &mut Vec::new());
         // What was persisted can always be resumed.
-        check_valid(&SetupFlow::new(probes(), f.progress()));
+        check_valid(&SetupFlow::new(probes(), f.progress(), Current::default()));
     }
 }
 
@@ -396,4 +401,172 @@ fn memory_store_keeps_what_was_saved() {
     let p = Progress { step: Step::Output, skipped: vec![Step::Calibrate], finished: false };
     assert_eq!(store.save(&p), Ok(()));
     assert_eq!(store.load(), p);
+}
+
+fn persist_index(fx: &[Effect]) -> Option<usize> {
+    fx.iter().position(|e| matches!(e, Effect::Persist(_)))
+}
+
+#[test]
+fn a_fresh_run_preselects_the_webcam_and_continue_accepts_it() {
+    let mut f = flow(probes());
+    to_input(&mut f);
+    assert_eq!(f.view().input, Some(InputChoice::Webcam));
+    send(&mut f, &[Event::Next]);
+    assert_eq!(f.view().step, Step::Calibrate);
+    let g = flow(Probes { cameras: Cameras::None, ..probes() });
+    assert_eq!(g.view().input, None, "nothing to preselect without a camera");
+    let d = flow(Probes { cameras: Cameras::One(Permission::Denied), ..probes() });
+    assert_eq!(d.view().input, None);
+}
+
+#[test]
+fn a_preselected_webcam_asks_the_os_on_continue() {
+    let mut f = flow(Probes { cameras: Cameras::One(Permission::Undecided), ..probes() });
+    to_input(&mut f);
+    assert_eq!(send(&mut f, &[Event::Next]), [Effect::RequestCameraPermission]);
+    assert_eq!(send(&mut f, &[Event::Next]), no_effects());
+    assert_eq!(f.timers().waited_ms(Step::Welcome), 0);
+}
+
+#[test]
+fn a_rerun_keeps_the_current_input_and_output() {
+    let p = Probes { iphone: IPhone::Paired, project_open: true, ..probes() };
+    let current = Current { input: Some(InputChoice::Iphone), output: Some(OutputKind::Spout) };
+    let mut f = SetupFlow::new(p, Progress::default(), current);
+    assert_eq!(f.view().input, Some(InputChoice::Iphone), "the hardware does not override the setting");
+    send(&mut f, &[Event::Next, Event::ChooseCharacter(CharacterChoice::Keep), Event::Next, Event::Skip]);
+    assert_eq!(f.view().step, Step::Output);
+    assert_eq!(f.view().output, Some(OutputKind::Spout));
+    send(&mut f, &[Event::Next]);
+    assert_eq!(f.view().step, Step::GoLive, "Continue accepts the current output with no write");
+}
+
+#[test]
+fn a_resume_after_input_keeps_the_supplied_source() {
+    let p = Probes { iphone: IPhone::Paired, ..probes() };
+    let resume = Progress { step: Step::Calibrate, ..Progress::default() };
+    let current = Current { input: Some(InputChoice::Iphone), output: Some(OutputKind::Ndi) };
+    let f = SetupFlow::new(p, resume.clone(), current);
+    assert_eq!((f.view().input, f.view().output), (Some(InputChoice::Iphone), Some(OutputKind::Ndi)));
+    let g = SetupFlow::new(probes(), Progress { skipped: vec![Step::Input], ..resume }, Current::default());
+    assert_eq!(g.view().input, Some(InputChoice::LifeLayerOnly));
+}
+
+#[test]
+fn a_resume_moved_by_the_probes_is_persisted_by_the_first_event() {
+    for step in [Step::Calibrate, Step::Output] {
+        let p = Probes { cameras: Cameras::None, recommended_output: None, ..probes() };
+        let mut f = SetupFlow::new(p, Progress { step, ..Progress::default() }, Current::default());
+        let moved = f.view().step;
+        assert_ne!(moved, step);
+        let fx = f.handle(Event::Probed(p), 0);
+        assert_eq!(fx, [Effect::Persist(f.progress())], "{step:?}");
+        assert_eq!(f.progress().step, moved);
+    }
+}
+
+#[test]
+fn a_step_is_persisted_before_it_is_shown() {
+    let mut f = flow(probes());
+    let fx = send(&mut f, &[Event::Next]);
+    assert_eq!(fx.last(), Some(&Effect::Show(Step::Character)));
+    assert_eq!(persist_index(&fx), Some(fx.len() - 2));
+    let fx = send(&mut f, &[Event::ChooseCharacter(CharacterChoice::Sample)]);
+    assert!(matches!(fx.as_slice(), [Effect::Persist(p), Effect::Show(Step::Input)] if p.step == Step::Input));
+    let fx = send(&mut f, &[Event::Back]);
+    assert!(matches!(fx.as_slice(), [Effect::Persist(_), Effect::Show(Step::Character)]));
+}
+
+#[test]
+fn an_unpaired_iphone_blocks_continue_with_a_note() {
+    let mut f = flow(probes());
+    to_input(&mut f);
+    send(&mut f, &[Event::ChooseInput(InputChoice::Iphone)]);
+    assert!(f.view().notes.contains(&Note::IphoneNotPaired));
+    assert_eq!(send(&mut f, &[Event::Next]), no_effects());
+    assert_eq!(f.view().step, Step::Input);
+    f.handle(Event::Probed(Probes { iphone: IPhone::Paired, ..probes() }), 0);
+    assert!(!f.view().notes.contains(&Note::IphoneNotPaired));
+    send(&mut f, &[Event::Next]);
+    assert_eq!(f.view().step, Step::Calibrate);
+}
+
+#[test]
+fn back_to_a_finished_calibration_can_continue() {
+    let mut f = SetupFlow::new(probes(), Progress { step: Step::Calibrate, ..Progress::default() }, webcam());
+    send(&mut f, &[Event::Next, Event::CalibrationDone]);
+    assert_eq!(f.view().step, Step::Output);
+    send(&mut f, &[Event::Back]);
+    assert_eq!(f.view().step, Step::Calibrate);
+    assert_eq!(f.progress().skipped, Vec::<Step>::new(), "the stored result still counts");
+    send(&mut f, &[Event::Next]);
+    assert_eq!(f.view().step, Step::Output);
+}
+
+#[test]
+fn leaving_a_running_calibration_or_changing_source_resets_it() {
+    let mut f = SetupFlow::new(probes(), Progress { step: Step::Calibrate, ..Progress::default() }, webcam());
+    send(&mut f, &[Event::Next, Event::Back]);
+    assert_eq!(f.view().step, Step::Input);
+    send(&mut f, &[Event::Next]);
+    assert_eq!(send(&mut f, &[Event::Next]), [Effect::StartCalibration], "a new run can start");
+    send(&mut f, &[Event::CalibrationDone, Event::Back, Event::Back]);
+    send(&mut f, &[Event::ChooseInput(InputChoice::LifeLayerOnly)]);
+    assert_eq!(f.progress().skipped, [Step::Calibrate], "a result for another source is not kept");
+}
+
+#[test]
+fn losing_the_source_on_calibrate_explains_why_without_moving() {
+    let at_calibrate = |p: Probes, current: Current| {
+        SetupFlow::new(probes(), Progress { step: Step::Calibrate, ..Progress::default() }, current).tap(p)
+    };
+    let f = at_calibrate(Probes { cameras: Cameras::None, ..probes() }, webcam());
+    assert_eq!((f.view().step, f.view().notes), (Step::Calibrate, vec![Note::NoCamera]));
+    let f = at_calibrate(Probes { cameras: Cameras::One(Permission::Denied), ..probes() }, webcam());
+    assert_eq!(f.view().notes, [Note::PermissionDenied]);
+    let f = at_calibrate(Probes { tracker: TrackerModel::Unavailable, ..probes() }, webcam());
+    assert_eq!(f.view().notes, [Note::TrackerUnavailable]);
+    let f = at_calibrate(Probes { tracker: TrackerModel::Downloading { percent: 9 }, ..probes() }, webcam());
+    assert_eq!(f.view().notes, [Note::TrackerDownloading(9)]);
+    let phone = Current { input: Some(InputChoice::Iphone), output: None };
+    let paired = Probes { iphone: IPhone::Paired, ..probes() };
+    let mut f = SetupFlow::new(paired, Progress { step: Step::Calibrate, ..Progress::default() }, phone);
+    f.handle(Event::Probed(probes()), 0);
+    assert_eq!((f.view().step, f.view().notes), (Step::Calibrate, vec![Note::IphoneNotPaired]));
+}
+
+trait Tap {
+    fn tap(self, p: Probes) -> Self;
+}
+
+impl Tap for SetupFlow {
+    fn tap(mut self, p: Probes) -> Self {
+        self.handle(Event::Probed(p), 0);
+        self
+    }
+}
+
+#[test]
+fn calibrate_is_skipped_when_no_source_can_be_chosen() {
+    let none = Probes { cameras: Cameras::None, ..probes() };
+    assert_eq!(flow(none).progress().skipped, [Step::Calibrate]);
+    let mut f = flow(none);
+    let fx = f.handle(Event::SkipSetup, 0);
+    assert!(fx.contains(&Effect::Persist(Progress {
+        step: Step::Welcome,
+        skipped: vec![Step::Calibrate],
+        finished: true
+    })));
+    // While a source can still be chosen, the person has not given Calibrate up.
+    let mut g = SetupFlow::new(probes(), Progress { step: Step::Output, ..Progress::default() }, Current::default());
+    assert_eq!(g.handle(Event::SkipSetup, 0).iter().filter(|e| matches!(e, Effect::Persist(_))).count(), 1);
+    assert_eq!(g.progress().skipped, Vec::<Step>::new());
+}
+
+#[test]
+fn store_error_carries_a_reason() {
+    let e = StoreError::new("disk full");
+    assert_eq!(e.reason(), "disk full");
+    assert_eq!(e.to_string(), "setup progress store: disk full");
 }

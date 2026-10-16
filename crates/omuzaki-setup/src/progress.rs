@@ -80,9 +80,23 @@ impl Default for Progress {
     }
 }
 
-/// A store could not read or write the progress.
+/// A store could not read or write the progress. It carries a short, human-readable reason from the backend, in
+/// English and without secrets or machine paths; [`Display`](fmt::Display) adds the context, so the reason is shown as
+/// it is and not wrapped again.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct StoreError(pub String);
+pub struct StoreError(String);
+
+impl StoreError {
+    /// An error with the backend's `reason`.
+    pub fn new(reason: impl Into<String>) -> Self {
+        StoreError(reason.into())
+    }
+
+    /// The backend's reason, without the context [`Display`](fmt::Display) adds.
+    pub fn reason(&self) -> &str {
+        &self.0
+    }
+}
 
 impl fmt::Display for StoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

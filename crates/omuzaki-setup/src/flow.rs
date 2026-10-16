@@ -28,6 +28,16 @@ pub enum InputChoice {
     LifeLayerOnly,
 }
 
+/// The host's settings as they are now, read before the flow starts. Setup never guesses them from the hardware: a
+/// rerun keeps what is set, and a resume keeps what the person had chosen.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct Current {
+    /// The tracking source in use; `None` when none was ever chosen (a first run).
+    pub input: Option<InputChoice>,
+    /// The output in use; `None` when there is none.
+    pub output: Option<OutputKind>,
+}
+
 /// What reaches the machine.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Event {
@@ -88,6 +98,8 @@ pub enum Note {
     TrackerDownloading(u8),
     /// The tracker model is not available.
     TrackerUnavailable,
+    /// The iPhone source is chosen but no iPhone is paired.
+    IphoneNotPaired,
     /// No assistant is configured.
     NoAssistant,
     /// Offer Simplified Chinese.
@@ -107,6 +119,10 @@ pub struct View {
     pub can_back: bool,
     /// Input shows a camera picker.
     pub camera_picker: bool,
+    /// The tracking source that is selected (preselected on Input), `None` before one is.
+    pub input: Option<InputChoice>,
+    /// The output that is selected, `None` before one is.
+    pub output: Option<OutputKind>,
     /// Notes for this step.
     pub notes: Vec<Note>,
     /// Active time per step in this sitting, in [`Step::ALL`] order.
@@ -140,42 +156,37 @@ pub struct SetupFlow {
 }
 
 impl SetupFlow {
-    /// Starts the flow, resuming at `resume`. A resumed step the probes leave out moves forward to the next shown one.
-    pub fn new(probes: Probes, resume: Progress) -> Self {
+    /// Starts the flow, resuming at `resume` with the host's `current` settings. A resumed step the probes leave out
+    /// moves forward to the next shown one; that move is not yet saved, so the first event persists it.
+    pub fn new(probes: Probes, resume: Progress, current: Current) -> Self {
+        let persisted = resume.clone();
         let Progress { step, skipped, finished } = resume;
+        let skipped: BTreeSet<Step> =
+            skipped.into_iter().filter(|s| matches!(s, Step::Input | Step::Calibrate | Step::Output)).collect();
+        // The settings win; only a first visit to Input preselects the webcam when there is a camera to use.
+        let input = match current.input {
+            Some(c) => Some(c),
+            None if skipped.contains(&Step::Input) => Some(InputChoice::LifeLayerOnly),
+            None if step <= Step::Input && probes.cameras.webcam_possible() => Some(InputChoice::Webcam),
+            None => None,
+        };
         let mut flow = SetupFlow {
             probes,
             step,
-            skipped: skipped
-                .into_iter()
-                .filter(|s| matches!(s, Step::Input | Step::Calibrate | Step::Output))
-                .collect(),
+            skipped,
             finished,
-            input: None,
-            output: None,
+            input,
+            output: current.output,
             calibration: Calibration::Idle,
             permission_requested: false,
             timers: Timers::default(),
             last_ms: None,
             started_ms: None,
-            persisted: Progress::default(),
+            persisted,
         };
-        // Input is not persisted, so infer it: past Input means a source was settled.
-        if step > Step::Input {
-            flow.input = Some(if flow.skipped.contains(&Step::Input) {
-                InputChoice::LifeLayerOnly
-            } else if probes.cameras.webcam_possible() && probes.tracker == TrackerModel::Ready {
-                InputChoice::Webcam
-            } else if probes.iphone == IPhone::Paired {
-                InputChoice::Iphone
-            } else {
-                InputChoice::LifeLayerOnly
-            });
-        }
         if !flow.is_shown(flow.step) {
             flow.step = flow.next_shown().unwrap_or(Step::GoLive);
         }
-        flow.persisted = flow.progress();
         flow
     }
 
@@ -257,6 +268,8 @@ impl SetupFlow {
             shown,
             can_back: self.prev_shown().is_some(),
             camera_picker: self.step == Step::Input && self.probes.cameras.needs_picker(),
+            input: self.input,
+            output: self.output,
             notes: self.notes(),
             elapsed_ms: self.timers.active_by_step(),
         }
@@ -275,7 +288,7 @@ impl SetupFlow {
                 self.skipped.contains(s)
                     || (*s == Step::Output && !self.is_shown(Step::Output))
                     || (*s == Step::Calibrate
-                        && self.input.is_some()
+                        && !(self.input.is_none() && self.source_choosable())
                         && !self.calibrate_possible()
                         && self.calibration != Calibration::Done)
             })
@@ -296,24 +309,45 @@ impl SetupFlow {
                 }
             }
             Step::Input => {
-                match p.cameras.permission() {
-                    None => notes.push(Note::NoCamera),
-                    Some(Permission::Denied) => notes.push(Note::PermissionDenied),
-                    Some(_) => {}
-                }
+                notes.extend(self.permission_note());
                 let webcam_in_play = p.cameras != Cameras::None
                     && !matches!(self.input, Some(InputChoice::Iphone | InputChoice::LifeLayerOnly));
-                match p.tracker {
-                    TrackerModel::Downloading { percent } if webcam_in_play => {
-                        notes.push(Note::TrackerDownloading(percent.min(100)));
-                    }
-                    TrackerModel::Unavailable if webcam_in_play => notes.push(Note::TrackerUnavailable),
-                    _ => {}
+                if webcam_in_play {
+                    notes.extend(self.tracker_note());
+                }
+                if self.input == Some(InputChoice::Iphone) && p.iphone != IPhone::Paired {
+                    notes.push(Note::IphoneNotPaired);
                 }
             }
+            // The step stays when the probes just made it pointless (no jump under the person); say why.
+            Step::Calibrate if !self.calibrate_possible() => match self.input {
+                Some(InputChoice::Webcam) => {
+                    notes.extend(self.permission_note().or_else(|| self.tracker_note()));
+                }
+                Some(InputChoice::Iphone) => notes.push(Note::IphoneNotPaired),
+                _ => {}
+            },
             _ => {}
         }
         notes
+    }
+
+    /// The camera note: none there, or refused by the OS.
+    fn permission_note(&self) -> Option<Note> {
+        match self.probes.cameras.permission() {
+            None => Some(Note::NoCamera),
+            Some(Permission::Denied) => Some(Note::PermissionDenied),
+            Some(_) => None,
+        }
+    }
+
+    /// The webcam model note: downloading or unavailable.
+    fn tracker_note(&self) -> Option<Note> {
+        match self.probes.tracker {
+            TrackerModel::Downloading { percent } => Some(Note::TrackerDownloading(percent.min(100))),
+            TrackerModel::Unavailable => Some(Note::TrackerUnavailable),
+            TrackerModel::Ready => None,
+        }
     }
 
     fn tick(&mut self, now_ms: u64) {
@@ -328,8 +362,10 @@ impl SetupFlow {
     /// Waiting on the OS camera dialog or the webcam model, as opposed to the person.
     fn waiting(&self) -> bool {
         let dialog = self.permission_requested && self.probes.cameras.permission() == Some(Permission::Undecided);
-        let download =
-            self.input == Some(InputChoice::Webcam) && matches!(self.probes.tracker, TrackerModel::Downloading { .. });
+        // A preselected webcam on an earlier step is not a wait: the person is not held up by the model yet.
+        let download = self.step >= Step::Input
+            && self.input == Some(InputChoice::Webcam)
+            && matches!(self.probes.tracker, TrackerModel::Downloading { .. });
         dialog || download
     }
 
@@ -353,6 +389,11 @@ impl SetupFlow {
         }
     }
 
+    /// Some source could still be picked: a camera that works or may be allowed, or a paired iPhone.
+    fn source_choosable(&self) -> bool {
+        self.probes.cameras.webcam_possible() || self.probes.iphone == IPhone::Paired
+    }
+
     /// The listed steps; the current one stays even when the probes just made it pointless (no jump under the person).
     fn shown(&self) -> Vec<Step> {
         Step::ALL.into_iter().filter(|s| *s == self.step || self.is_shown(*s)).collect()
@@ -366,8 +407,14 @@ impl SetupFlow {
         Step::ALL.into_iter().rev().find(|s| *s < self.step && self.is_shown(*s))
     }
 
+    /// Moves to `step`: persist first, then show, so a crash right after showing resumes at the shown step.
     fn go(&mut self, step: Step, fx: &mut Vec<Effect>) {
+        if self.step == Step::Calibrate && self.calibration == Calibration::Running {
+            // The overlay's cancel sends no event, so leaving the step is what ends a run.
+            self.calibration = Calibration::Idle;
+        }
         self.step = step;
+        self.sync(fx);
         fx.push(Effect::Show(step));
     }
 
@@ -381,6 +428,10 @@ impl SetupFlow {
         match self.step {
             Step::Welcome => self.advance(fx),
             Step::Input if self.input_ready() => self.advance(fx),
+            // A preselected webcam asks the OS on Continue, as choosing it would.
+            Step::Input if self.input == Some(InputChoice::Webcam) => self.request_camera(fx),
+            // Back to an already calibrated step: Continue keeps the stored result.
+            Step::Calibrate if self.calibration == Calibration::Done => self.advance(fx),
             Step::Calibrate if self.calibrate_possible() && self.calibration == Calibration::Idle => {
                 self.calibration = Calibration::Running;
                 fx.push(Effect::StartCalibration);
@@ -390,12 +441,13 @@ impl SetupFlow {
         }
     }
 
-    /// A webcam choice waits for the OS to grant the camera; the other sources need nothing.
+    /// A webcam choice waits for the OS to grant the camera, an iPhone for its pairing; the life layer needs nothing.
     fn input_ready(&self) -> bool {
         match self.input {
             None => false,
             Some(InputChoice::Webcam) => self.probes.cameras.permission() == Some(Permission::Granted),
-            Some(_) => true,
+            Some(InputChoice::Iphone) => self.probes.iphone == IPhone::Paired,
+            Some(InputChoice::LifeLayerOnly) => true,
         }
     }
 
@@ -423,15 +475,23 @@ impl SetupFlow {
         if choice == InputChoice::Webcam {
             match self.probes.cameras.permission() {
                 None | Some(Permission::Denied) => return,
-                Some(Permission::Undecided) if !self.permission_requested => {
-                    self.permission_requested = true;
-                    fx.push(Effect::RequestCameraPermission);
-                }
-                Some(_) => {}
+                Some(_) => self.request_camera(fx),
             }
         }
         self.skipped.remove(&Step::Input);
+        if self.input != Some(choice) {
+            // A calibration belongs to the source it ran on.
+            self.calibration = Calibration::Idle;
+        }
         self.input = Some(choice);
+    }
+
+    /// Asks the OS for the camera once, when it has not been asked.
+    fn request_camera(&mut self, fx: &mut Vec<Effect>) {
+        if self.probes.cameras.permission() == Some(Permission::Undecided) && !self.permission_requested {
+            self.permission_requested = true;
+            fx.push(Effect::RequestCameraPermission);
+        }
     }
 
     /// Ends setup: persist first so a crash right after still counts as finished.

@@ -13,6 +13,6 @@ pub mod flow;
 pub mod probe;
 pub mod progress;
 
-pub use flow::{CharacterChoice, Effect, Event, InputChoice, Note, SetupFlow, View};
+pub use flow::{CharacterChoice, Current, Effect, Event, InputChoice, Note, SetupFlow, View};
 pub use probe::{Cameras, IPhone, LanguageOffer, OutputKind, Permission, Probes, TrackerModel};
 pub use progress::{MemoryStore, Progress, SetupStore, Step, StoreError, TOTAL_BUDGET_S, Timers};
