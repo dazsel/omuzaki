@@ -139,15 +139,15 @@ impl MockVts {
         // Wakes the blocked `accept`. The lock is held until the wake-up connection's address is known, so the
         // acceptor can tell it from a real client that connected just before the stop and still serves that one.
         // A refused connect means the acceptor already ended, which is what we want.
-        let mut panicked = false;
         let woke = {
             let mut wake = run.wake.lock().unwrap_or_else(PoisonError::into_inner);
             run.stopping.store(true, Ordering::SeqCst);
             TcpStream::connect(run.addr).ok().inspect(|s| *wake = s.local_addr().ok())
         };
-        if woke.is_some() {
-            panicked |= join(run.acceptor);
-        }
+        // Joined whether or not the wake-up connected: an acceptor that panicked has dropped its listener, so the
+        // connect is refused, and skipping the join would lose the panic.
+        let mut panicked = join(run.acceptor);
+        drop(woke);
         let conns = std::mem::take(&mut *run.conns.lock().unwrap_or_else(PoisonError::into_inner));
         let mut result = Ok(());
         for conn in conns {
@@ -196,7 +196,9 @@ impl MockVts {
 
     /// The value a parameter has now, composed from every plugin's live feeds (`set` blended by weight, plus `add`s).
     pub fn param_value(&self, name: &str) -> Option<f64> {
-        self.shared.lock().value_of(name)
+        let mut state = self.shared.lock();
+        state.settle(self.shared.clock.now());
+        state.value_of(name)
     }
 
     /// The user revokes API access: every token is void and every client's next request fails as not authenticated.

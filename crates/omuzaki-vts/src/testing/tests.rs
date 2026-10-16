@@ -4,11 +4,13 @@
 // A bad fixture or a dead socket must fail the test loudly.
 #![allow(clippy::expect_used, clippy::needless_pass_by_value)]
 
-use std::net::TcpStream;
-use std::sync::Arc;
+use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
+use std::thread::{self, Builder};
 use std::time::Duration;
 
-use super::{Event, FakeClock, MockConfig, MockHotkey, MockModel, MockVts};
+use super::{Event, FakeClock, MockConfig, MockHotkey, MockModel, MockVts, Running, Stop, accept_loop};
 use serde_json::{Value, json};
 use tungstenite::{Message, WebSocket};
 
@@ -406,4 +408,73 @@ fn a_failed_handshake_is_recorded_and_a_healthy_run_has_no_failures() {
     let failures = mock.setup_failures();
     assert_eq!(failures.len(), 1, "{failures:?}");
     assert!(failures[0].contains("handshake"), "{failures:?}");
+}
+
+#[test]
+fn an_empty_expression_file_lists_every_expression() {
+    let (mock, _) = mock(1);
+    let mut client = Client::connect(&mock);
+    client.login();
+    mock.set_model(Some(MockModel { expressions: vec!["smile".into(), "frown".into()], ..model(1) }));
+    let reply = client.call("ExpressionStateRequest", json!({"details": false, "expressionFile": ""}));
+    assert_eq!(reply["data"]["expressions"].as_array().map(Vec::len), Some(2), "{reply}");
+}
+
+#[test]
+fn the_value_observer_lets_an_expired_feed_lapse_before_it_reads() {
+    let (mock, clock) = mock(1);
+    let mut client = Client::connect(&mock);
+    client.login();
+    client.inject("set", "MouthOpen", 0.5);
+    assert_eq!(mock.param_value("MouthOpen"), Some(0.5));
+    // No request and no `events` call in between: the observer alone has to notice the lapse.
+    clock.advance(Duration::from_secs(1));
+    assert_ne!(mock.param_value("MouthOpen"), Some(0.5), "the feed lapsed a second ago");
+}
+
+#[test]
+fn stop_reports_an_acceptor_that_panicked_even_when_the_wake_up_is_refused() {
+    let (mut mock, _) = mock(1);
+    mock.stop().expect("stops the real acceptor");
+    // A port nothing listens on, so the wake-up connect is refused, as it is once a panicking acceptor drops its
+    // listener.
+    let addr = TcpListener::bind(("127.0.0.1", 0)).and_then(|l| l.local_addr()).expect("binds");
+    #[allow(clippy::panic)]
+    let acceptor = Builder::new().spawn(|| panic!("the acceptor panics on purpose")).expect("spawns");
+    mock.running = Some(Running {
+        addr,
+        stopping: Arc::new(AtomicBool::new(false)),
+        wake: Arc::new(Mutex::new(None)),
+        acceptor,
+        conns: Arc::new(Mutex::new(Vec::new())),
+    });
+    assert!(mock.stop().is_err(), "the panic must not be lost");
+}
+
+#[test]
+fn a_client_connected_just_before_stop_is_still_served_and_recorded() {
+    let (mock, _) = mock(1);
+    // Drives the accept loop by hand so the order is exact: the client is already queued when `stop` sets its flag,
+    // and the wake-up connection comes after it.
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("binds");
+    let addr = listener.local_addr().expect("address");
+    let pending = TcpStream::connect(addr).expect("the client connects");
+    pending.set_read_timeout(Some(Duration::from_secs(5))).expect("sets a read timeout");
+    let stopping = AtomicBool::new(true);
+    let wake_up = TcpStream::connect(addr).expect("the wake-up connects");
+    let from = Mutex::new(wake_up.local_addr().ok());
+    let conns = Mutex::new(Vec::new());
+    thread::scope(|scope| {
+        let url = format!("ws://{addr}");
+        let client = scope.spawn(move || tungstenite::client(url, pending).is_ok());
+        accept_loop(&listener, &mock.shared, &Stop { flag: &stopping, wake: &from }, &conns);
+        assert!(client.join().expect("client thread"), "the queued client is served, not dropped");
+    });
+    let conns = std::mem::take(&mut *conns.lock().expect("lock"));
+    assert_eq!(conns.len(), 1, "the client's connection was recorded");
+    for conn in conns {
+        conn.stream.shutdown(std::net::Shutdown::Both).ok();
+        conn.thread.join().expect("the connection thread ends");
+    }
+    assert_eq!(mock.setup_failures(), Vec::<String>::new());
 }

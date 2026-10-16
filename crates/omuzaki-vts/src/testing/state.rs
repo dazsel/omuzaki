@@ -482,8 +482,10 @@ impl State {
 
     fn expression_state(&self, request: &ExpressionStateRequest) -> Reply {
         let model = self.loaded_model(EXPRESSION_NO_MODEL)?;
-        let wanted =
-            |name: &String| request.expression_file.as_ref().is_none_or(|file| *file == format!("{name}.exp3.json"));
+        // An absent or empty `expressionFile` lists every expression (`protocol.rs`, `ExpressionStateRequest`).
+        let wanted = |name: &String| {
+            request.expression_file.as_deref().is_none_or(|file| file.is_empty() || file == format!("{name}.exp3.json"))
+        };
         let expressions = model
             .expressions
             .iter()
