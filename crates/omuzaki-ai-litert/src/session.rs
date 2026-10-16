@@ -293,9 +293,10 @@ impl LiteRtSession {
         for (port, specs) in [(Port::Input, &model.inputs), (Port::Output, &model.outputs)] {
             for (index, spec) in specs.iter().enumerate() {
                 let tensor = self.tensor(port, index).map_err(|e| LoadError::Format(e.to_string()))?;
-                // SAFETY: a live tensor of the live interpreter; the name is read within `MAX_NAME_BYTES`.
-                let (name, ty) =
-                    unsafe { (c_text((api.TfLiteTensorName)(tensor), MAX_NAME_BYTES), (api.TfLiteTensorType)(tensor)) };
+                // SAFETY: a live tensor of the live interpreter; the name is read within `MAX_NAME_BYTES` and its NUL.
+                let (name, ty) = unsafe {
+                    (c_text((api.TfLiteTensorName)(tensor), MAX_NAME_BYTES + 1), (api.TfLiteTensorType)(tensor))
+                };
                 if name.as_deref() != Some(spec.name.as_bytes()) {
                     return Err(LoadError::Format(format!("LiteRT names {port} {index} differently from the scan")));
                 }
@@ -754,6 +755,17 @@ mod tests {
         assert!(
             matches!(refused(load("", &sig, &slot)), LoadError::Format(why) if why.contains("does not fit the slot"))
         );
+    }
+
+    #[test]
+    fn a_port_name_of_max_name_bytes_loads() {
+        let long = fake::LONG_NAME.to_str().unwrap();
+        assert_eq!(long.len(), MAX_NAME_BYTES);
+        let sig = add([long, "b", "out"], &four());
+        let mut session = load("long-name", &sig, &sig).unwrap();
+        let mut out = TensorBuf::for_outputs(session.signature());
+        run(&mut session, &[1.0; 4], &[1.0; 4], &[1, 4], &mut out).unwrap();
+        assert_eq!(out[0].as_f32().unwrap(), [2.0; 4]);
     }
 
     #[test]

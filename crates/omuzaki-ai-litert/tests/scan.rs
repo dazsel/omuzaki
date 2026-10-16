@@ -137,6 +137,12 @@ fn operator_extras_are_refused() {
 fn port_names_must_be_unique_and_non_empty() {
     refused(scan_with(|m| _ = tensor_of(m, 1).set(3, Value::Str("a"))), "two graph inputs are named `a`");
     refused(scan_with(|m| _ = tensor_of(m, 0).set(3, Value::Str(""))), "a graph port named ``");
+    // A NUL would cut the name short where LiteRT hands it back as a C string; the longest name is fine.
+    refused(scan_with(|m| _ = tensor_of(m, 0).set(3, Value::Str("a\0b"))), "with no NUL");
+    let longest: &'static str = "n".repeat(omuzaki_ai_litert::scan::MAX_NAME_BYTES).leak();
+    assert!(scan_with(|m| _ = tensor_of(m, 0).set(3, Value::Str(longest))).is_ok());
+    let over: &'static str = "n".repeat(omuzaki_ai_litert::scan::MAX_NAME_BYTES + 1).leak();
+    refused(scan_with(|m| _ = tensor_of(m, 0).set(3, Value::Str(over))), "MAX_NAME_BYTES");
     // An input and an output may share a name: they are different lists.
     assert!(scan_with(|m| _ = tensor_of(m, 2).set(3, Value::Str("a"))).is_ok());
 }

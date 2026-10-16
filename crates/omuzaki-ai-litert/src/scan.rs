@@ -367,9 +367,11 @@ fn ports(
 /// A graph port's spec: a `DType`, a known rank and a name.
 fn port_spec(tensor: Fields<'_>) -> Result<TensorSpec, LoadError> {
     let name = tensor.get::<ForwardsUOffset<&str>>(3).unwrap_or("");
-    if name.is_empty() || name.len() > MAX_NAME_BYTES {
+    // LiteRT hands names back as C strings, so a NUL inside one would cut it short there.
+    if name.is_empty() || name.len() > MAX_NAME_BYTES || name.contains('\0') {
         return Err(refused(format!(
-            "a graph port named `{name}`: a name is 1 to MAX_NAME_BYTES ({MAX_NAME_BYTES}) bytes"
+            "a graph port named `{}`: a name is 1 to MAX_NAME_BYTES ({MAX_NAME_BYTES}) bytes, with no NUL",
+            name.escape_debug()
         )));
     }
     let dtype = match tensor.get::<i8>(1).unwrap_or(0) {

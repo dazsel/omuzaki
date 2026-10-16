@@ -2,7 +2,8 @@
 //! table ([`api`]) over an interpreter of one `ADD` graph (`out = a + b`, `FLOAT32`, `a` and `b` the same shape).
 //!
 //! The model's bytes choose its faults, as words in them: `any` (the inputs start as `[1, 1]`, the model's `-1`
-//! default, instead of `[1, 4]`), `rename` (LiteRT names input 0 `x`), `no-interpreter`, `fail-invoke`, and
+//! default, instead of `[1, 4]`), `rename` (LiteRT names input 0 `x`), `long-name` (input 0's name is
+//! [`LONG_NAME`], `MAX_NAME_BYTES` long), `no-interpreter`, `fail-invoke`, and
 //! `out-rank`, `out-bytes`, `out-type`, which bend the output only on a run whose `a[0]` is [`POISON`], so a test can
 //! run the same session well first. The buffer `omz_litert_capture_errors` hands over gets each failure's text, as the
 //! shim's reporter does.
@@ -15,6 +16,10 @@ use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, c_char, c_int, c_void};
 
 use crate::library::{Api, Opaque, Status};
+
+/// Input 0's name under the `long-name` fault: the longest name the scan accepts.
+pub static LONG_NAME: std::sync::LazyLock<std::ffi::CString> =
+    std::sync::LazyLock::new(|| std::ffi::CString::new("a".repeat(crate::scan::MAX_NAME_BYTES)).unwrap_or_default());
 
 /// The `a[0]` that makes an `out-*` fault bend the output.
 pub const POISON: f32 = 99.0;
@@ -166,7 +171,13 @@ unsafe extern "C" fn add_delegate(_: *mut Opaque, _: *mut Opaque) {}
 unsafe extern "C" fn interpreter_create(model: *const Opaque, options: *const Opaque) -> *mut Opaque {
     let (model, options) = unsafe { (&*model.cast::<Model>(), &*options.cast::<Options>()) };
     let dims: &[i32] = if model.has("any") { &[1, 1] } else { &[1, 4] };
-    let a = if model.has("rename") { c"x" } else { c"a" };
+    let a = if model.has("rename") {
+        c"x"
+    } else if model.has("long-name") {
+        LONG_NAME.as_c_str()
+    } else {
+        c"a"
+    };
     let interpreter = Interpreter {
         model,
         errors: options.errors,
