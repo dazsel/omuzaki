@@ -118,29 +118,29 @@ fn rail_length(rail: &Rail) -> f64 {
     rail.points().last().map_or(0.0, |p| p.distance)
 }
 
-/// The least distance between two strands of a braid wound on a circle of radius `radius` with lobes `lobe` long, `d`
-/// of `n` steps apart round it (`0 < d < n`): `min over u of sqrt(c²u² + 4R² sin²((u - Δ) / 2))` with `c = lobe / 2π`,
-/// `Δ = 2πd/n` (see the module docs). Beyond a turn either side, `cu` alone exceeds a lobe; inside, the minimum is
+/// The least distance between two strands of a braid of `strands` wound on a circle of radius `radius` with lobes
+/// `lobe` long, `apart` steps apart round it (`0 < apart < strands`): `min over u of sqrt(c²u² + 4R² sin²((u - Δ) / 2))`
+/// with `c = lobe / 2π`, `Δ = 2π apart / strands` (see the module docs). Beyond a turn either side, `cu` alone exceeds a lobe; inside, the minimum is
 /// found by sampling and a golden-section search round the best sample.
-pub fn pair_distance(radius: f64, lobe: f64, d: u32, n: u32) -> f64 {
-    let c = lobe / TAU;
-    let delta = TAU * f64::from(d) / f64::from(n);
-    let f = |u: f64| (c * u).powi(2) + (2.0 * radius * ((u - delta) / 2.0).sin()).powi(2);
+pub fn pair_distance(radius: f64, lobe: f64, apart: u32, strands: u32) -> f64 {
+    let per_turn = lobe / TAU;
+    let offset = TAU * f64::from(apart) / f64::from(strands);
+    let squared = |u: f64| (per_turn * u).powi(2) + (2.0 * radius * ((u - offset) / 2.0).sin()).powi(2);
     let span = 2.0 * TAU;
-    let h = span * fraction(1, PAIR_SAMPLES);
-    let at = |k: usize| -TAU + span * fraction(k, PAIR_SAMPLES);
-    let best = (0..=PAIR_SAMPLES).map(at).min_by(|a, b| f(*a).total_cmp(&f(*b))).unwrap_or(0.0);
-    let (mut lo, mut hi) = (best - h, best + h);
-    let g = 0.5 * (5.0_f64.sqrt() - 1.0);
+    let step = span * fraction(1, PAIR_SAMPLES);
+    let sample = |k: usize| -TAU + span * fraction(k, PAIR_SAMPLES);
+    let best = (0..=PAIR_SAMPLES).map(sample).min_by(|a, b| squared(*a).total_cmp(&squared(*b))).unwrap_or(0.0);
+    let (mut lo, mut hi) = (best - step, best + step);
+    let golden = 0.5 * (5.0_f64.sqrt() - 1.0);
     for _ in 0..60 {
-        let (x, y) = (hi - g * (hi - lo), lo + g * (hi - lo));
-        if f(x) < f(y) {
-            hi = y;
+        let (left, right) = (hi - golden * (hi - lo), lo + golden * (hi - lo));
+        if squared(left) < squared(right) {
+            hi = right;
         } else {
-            lo = x;
+            lo = left;
         }
     }
-    f(f64::midpoint(lo, hi)).min(f(best)).sqrt()
+    squared(f64::midpoint(lo, hi)).min(squared(best)).sqrt()
 }
 
 /// The radius of the circle `strands` strands wind round, lobes `lobe` long, for every two of them to stay at least

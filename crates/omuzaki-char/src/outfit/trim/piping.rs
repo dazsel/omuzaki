@@ -245,22 +245,22 @@ fn cap(builder: &mut MeshBuilder, surface: &Surface, rung: &[RungVertex], outwar
     let (Some(first), Some(last)) = (rung.first(), rung.last()) else {
         return Err(TrimError::invalid("piping", "a rung has no vertices"));
     };
-    let mut ring = rung.to_vec();
-    ring.push(RungVertex {
+    let mut polygon = rung.to_vec();
+    polygon.push(RungVertex {
         point: last.point.midpoint(first.point),
         v: f64::midpoint(last.v, first.v),
         at: across(last.at, first.at, 0.5),
     });
-    if ring.len() % 2 == 1 || ring.len() < 2 + FRACS.len() {
+    if polygon.len() % 2 == 1 || polygon.len() < 2 + FRACS.len() {
         return Err(TrimError::invalid("piping", format!("a rung of {} vertices has no zigzag cap", rung.len())));
     }
-    let half = ring.len() / 2;
+    let half = polygon.len() / 2;
     // One row from the face's first vertex up to its second last (it ends `half` vertices after the start), the other
     // from the vertex before the face back round to the inner border.
-    ring.rotate_left(rung.len() - 1 - half);
-    let rows: Vec<RungVertex> = ring[..half].iter().chain(ring[half..].iter().rev()).copied().collect();
+    polygon.rotate_left(rung.len() - 1 - half);
+    let rows: Vec<RungVertex> = polygon[..half].iter().chain(polygon[half..].iter().rev()).copied().collect();
     let grid = Grid::from_fn(2, half, |i, j| rows[i * half + j].point)?;
-    let centre = ring.iter().map(|r| r.point).sum::<DVec3>() * fraction(1, ring.len());
+    let centre = polygon.iter().map(|r| r.point).sum::<DVec3>() * fraction(1, polygon.len());
     let behind = centre - outward * CAP_BEHIND;
     let inside = |_: usize, _: usize| behind;
     let skin = |_: DVec3, i: usize, j: usize| skin_at(surface, rows[i * half + j].at);
