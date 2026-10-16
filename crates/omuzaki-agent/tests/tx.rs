@@ -5,8 +5,11 @@
 
 mod common;
 
+use std::sync::Arc;
+
 use common::*;
 use omuzaki_agent_api::Assistant;
+use omuzaki_agent_api::entry::Entry;
 use omuzaki_agent_api::event::AssistantEvent;
 use omuzaki_agent_api::message::UserMessage;
 use omuzaki_llm_api::message::ContentBlock;
@@ -135,4 +138,34 @@ fn the_step_is_recorded_with_the_transaction_and_what_the_model_wrote() {
     assert_eq!(tx.0, 31);
     assert_eq!(label, "Assistant: make her face more oval");
     assert!(rationale.contains("narrow the jaw") && rationale.contains("Done."), "{rationale}");
+}
+
+#[test]
+fn a_transaction_the_executor_would_not_commit_is_kept_and_committed_by_the_next_answer() {
+    let rig = Rig::with(
+        script(vec![call_turn("", &[("c1", "face_set_profile", "{}")]), say_turn("done"), say_turn("fine")]),
+        RigOptions::default(),
+        |sessions| {
+            let server = standard_server(sessions);
+            let sessions = Arc::clone(sessions);
+            // The first commit is refused; the executor keeps the transaction open, as it would.
+            server.add(tool("tx_commit", "tx.commit", "builtin", false), move |_, call| {
+                if call == 0 {
+                    return Outcome::failure("the project changed; cannot commit");
+                }
+                sessions.commit_open_tx();
+                Outcome::text("tx committed")
+            });
+            server
+        },
+    );
+    let first = rig.say("make it round", 0.0);
+    assert!(matches!(first.last(), Some(AssistantEvent::Done)));
+    assert!(rig.sink.entries().iter().all(|e| !matches!(e, Entry::Step { .. })), "no step yet");
+    assert!(rig.sessions.open_tx().is_some(), "the transaction is still open");
+
+    rig.say("thanks", 0.0);
+    assert_eq!(rig.server.called("tx_commit"), 2, "the next answer tried again");
+    assert!(rig.sessions.open_tx().is_none());
+    assert_eq!(rig.sink.entries().iter().filter(|e| matches!(e, Entry::Step { .. })).count(), 1);
 }

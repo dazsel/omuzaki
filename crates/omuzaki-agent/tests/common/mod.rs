@@ -342,6 +342,8 @@ struct SessionsState {
     stop_behaviour: StopBehaviour,
     stop_hold: f64,
     close_open_tx_at: Option<f64>,
+    /// A pending stop reverts every edit, so closing it makes no step.
+    pending_reverts: bool,
     session_polls: usize,
 }
 
@@ -392,6 +394,7 @@ impl FakeSessions {
             stop_behaviour: StopBehaviour::Committed,
             stop_hold: 0.0,
             close_open_tx_at: None,
+            pending_reverts: false,
             session_polls: 0,
         };
         Arc::new(Self { state: Mutex::new(state), clock })
@@ -414,6 +417,24 @@ impl FakeSessions {
         let mut st = self.st();
         st.stop_behaviour = behaviour;
         st.stop_hold = hold;
+    }
+
+    /// A pending stop will revert all of the transaction's edits, so no undo step results.
+    pub fn set_pending_stop_reverts(&self) {
+        self.st().pending_reverts = true;
+    }
+
+    /// The open transaction, if any.
+    pub fn open_tx(&self) -> Option<SessionTx> {
+        self.st().info.open_tx.clone()
+    }
+
+    /// An open transaction closed by a commit: one more step.
+    pub fn commit_open_tx(&self) {
+        let mut st = self.st();
+        if st.info.open_tx.take().is_some() {
+            st.info.steps += 1;
+        }
     }
 
     pub fn set_open_tx(&self, tx: Option<SessionTx>) {
@@ -516,6 +537,9 @@ impl Sessions for FakeSessions {
         {
             st.info.open_tx = None;
             st.close_open_tx_at = None;
+            if !st.pending_reverts {
+                st.info.steps += 1;
+            }
         }
         Some(st.info.clone())
     }
@@ -638,6 +662,9 @@ impl Sessions for FakeSessions {
         let had_tx = st.info.open_tx.take();
         match behaviour {
             StopBehaviour::Committed => {
+                if had_tx.is_some() {
+                    st.info.steps += 1;
+                }
                 let step = had_tx.map_or(StopStep::None, |t| StopStep::Committed(t.tx));
                 Ok(Stopped { step, jobs: vec![] })
             }
@@ -657,6 +684,12 @@ pub struct RecordingSink {
     entries: Mutex<Vec<Entry>>,
     /// Makes `put_blob` fail, as a full disk would.
     pub fail_blobs: std::sync::atomic::AtomicBool,
+    /// Makes `put_blob` wait (and say so in `blob_waiting`) until this is cleared, so a test can act mid-store.
+    pub hold_blobs: std::sync::atomic::AtomicBool,
+    pub blob_waiting: std::sync::atomic::AtomicBool,
+    /// Makes the append of a `Step` wait (and say so in `step_waiting`) until this is cleared.
+    pub hold_steps: std::sync::atomic::AtomicBool,
+    pub step_waiting: std::sync::atomic::AtomicBool,
 }
 
 impl RecordingSink {
@@ -667,11 +700,21 @@ impl RecordingSink {
 
 impl EntrySink for RecordingSink {
     fn append(&self, entry: &Entry) -> Result<(), HostError> {
+        if matches!(entry, Entry::Step { .. }) {
+            while self.hold_steps.load(std::sync::atomic::Ordering::SeqCst) {
+                self.step_waiting.store(true, std::sync::atomic::Ordering::SeqCst);
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
         lock(&self.entries).push(entry.clone());
         Ok(())
     }
 
     fn put_blob(&self, bytes: &[u8], mime: ImageMime) -> Result<StoredBlock, HostError> {
+        while self.hold_blobs.load(std::sync::atomic::Ordering::SeqCst) {
+            self.blob_waiting.store(true, std::sync::atomic::Ordering::SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
         if self.fail_blobs.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(HostError::Store("the disk is full".into()));
         }
@@ -775,6 +818,8 @@ pub struct RigOptions {
     pub late_server: bool,
     /// The sink refuses to keep images.
     pub fail_blobs: bool,
+    /// The sink holds `put_blob` until `rig.sink.hold_blobs` is cleared.
+    pub hold_blobs: bool,
 }
 
 impl Default for RigOptions {
@@ -790,6 +835,7 @@ impl Default for RigOptions {
             language: None,
             late_server: false,
             fail_blobs: false,
+            hold_blobs: false,
         }
     }
 }
@@ -804,23 +850,29 @@ pub fn standard_server(sessions: &Arc<FakeSessions>) -> ScriptedServer {
     server.add_fixed(tool("script_run", "Run script", "driver_job", false), Outcome::text("script done"));
     server.add_fixed(tool("history_undo", "history.undo", "builtin", false), Outcome::text("Undid it."));
     server.add_fixed(tool("history_redo", "history.redo", "builtin", false), Outcome::text("Redid it."));
-    server.add_fixed(tool("tx_begin", "tx.begin", "builtin", false), Outcome::text("tx started"));
-    server.add_fixed(tool("tx_commit", "tx.commit", "builtin", false), Outcome::text("tx committed"));
-    server.add_fixed(tool("tx_rollback", "tx.rollback", "builtin", false), Outcome::text("tx rolled back"));
     server.add(tool("approval_wait", "approval.wait", "builtin", false), |_, _| {
         // The real tool holds the call for up to 20 s; a short real pause keeps the host's loop from spinning.
         std::thread::sleep(Duration::from_millis(5));
         Outcome::text("approval applied")
     });
-    let sessions = Arc::clone(sessions);
-    *lock(&server.on_call) = Some(Arc::new(move |name, args| match name {
-        "tx_begin" => {
-            let label = args.get("label").and_then(Value::as_str).unwrap_or("").to_owned();
-            sessions.set_open_tx(Some(SessionTx { tx: TxId(31), label }));
-        }
-        "tx_commit" | "tx_rollback" => sessions.set_open_tx(None),
-        _ => {}
-    }));
+    // The transaction tools change the fake session only when they succeed, so a test that replaces one with a refusal
+    // leaves the transaction open, like the executor does.
+    let begin = Arc::clone(sessions);
+    server.add(tool("tx_begin", "tx.begin", "builtin", false), move |args, _| {
+        let label = args.get("label").and_then(Value::as_str).unwrap_or("").to_owned();
+        begin.set_open_tx(Some(SessionTx { tx: TxId(31), label }));
+        Outcome::text("tx started")
+    });
+    let commit = Arc::clone(sessions);
+    server.add(tool("tx_commit", "tx.commit", "builtin", false), move |_, _| {
+        commit.commit_open_tx();
+        Outcome::text("tx committed")
+    });
+    let rollback = Arc::clone(sessions);
+    server.add(tool("tx_rollback", "tx.rollback", "builtin", false), move |_, _| {
+        rollback.set_open_tx(None);
+        Outcome::text("tx rolled back")
+    });
     server
 }
 
@@ -841,6 +893,7 @@ impl Rig {
         let server = make_server(&sessions);
         let sink = Arc::new(RecordingSink::default());
         sink.fail_blobs.store(options.fail_blobs, std::sync::atomic::Ordering::SeqCst);
+        sink.hold_blobs.store(options.hold_blobs, std::sync::atomic::Ordering::SeqCst);
         let (server_io, client_io) = tokio::io::duplex(64 * 1024);
         let serving = server.clone();
         // `serve` returns only once the client has shaken hands, so it runs on the runtime while the client connects.

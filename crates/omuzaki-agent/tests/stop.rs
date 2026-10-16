@@ -579,3 +579,73 @@ fn compacting_does_not_count_unread_text_as_displayed() {
     let shown = assistant_text(&rig.host.transcript());
     assert!(!shown.contains("AAAAAAAAAA"), "text nobody read is cut: {shown:?}");
 }
+
+#[test]
+fn stop_pressed_while_the_compaction_stores_its_render_publishes_nothing() {
+    let heavy = ScriptTurn::new(vec![
+        LlmEvent::start("m"),
+        LlmEvent::TextDelta("AAAAAAAAAA".into()),
+        LlmEvent::tool_use_start("c1", "render_preview"),
+        LlmEvent::tool_use_end("c1"),
+        LlmEvent::Usage(omuzaki_llm_api::usage::Usage::new(15_001, 10)),
+        LlmEvent::Stop(StopReason::ToolUse),
+    ]);
+    let rig = Rig::with(
+        script(vec![heavy, say_turn("SUMMARY"), say_turn("ok")]),
+        RigOptions { window: Some(20_000), prices: free_prices(), hold_blobs: true, ..RigOptions::default() },
+        |s| {
+            let server = standard_server(s);
+            server
+                .add_fixed(tool("render_preview", "Render preview", "query", true), Outcome::image(&[137, 80, 78, 71]));
+            server
+        },
+    );
+    rig.host.send(UserMessage::new("go")).unwrap();
+    Rig::wait_for("the render being stored", || rig.sink.blob_waiting.load(std::sync::atomic::Ordering::SeqCst));
+    rig.host.stop();
+    rig.sink.hold_blobs.store(false, std::sync::atomic::Ordering::SeqCst);
+    rig.until_done(0.0);
+    assert!(
+        !rig.sink.entries().iter().any(|e| matches!(e, Entry::Compacted { .. })),
+        "a compaction Stop interrupted is not published"
+    );
+    assert_eq!(rig.sessions.stop_calls(), 1);
+}
+
+#[test]
+fn stop_pressed_while_the_step_is_written_still_stops_the_executor_and_records_the_cutoff() {
+    let rig = Rig::new(script(vec![call_turn("", &[("c1", "face_set_profile", "{}")]), say_turn("done")]));
+    rig.sink.hold_steps.store(true, std::sync::atomic::Ordering::SeqCst);
+    rig.host.send(UserMessage::new("make it round")).unwrap();
+    Rig::wait_for("the step being written", || rig.sink.step_waiting.load(std::sync::atomic::Ordering::SeqCst));
+    rig.host.stop();
+    rig.sink.hold_steps.store(false, std::sync::atomic::Ordering::SeqCst);
+    let events = rig.until_done(0.0);
+    assert!(events.iter().any(|e| matches!(e, AssistantEvent::Paused)), "{events:?}");
+    assert_eq!(rig.sessions.stop_calls(), 1, "the executor was asked to stop");
+    assert!(rig.sink.entries().iter().any(|e| matches!(e, Entry::Stopped { .. })), "and the cutoff was recorded");
+    let steps = rig.sink.entries().iter().filter(|e| matches!(e, Entry::Step { .. })).count();
+    assert_eq!(steps, 1, "the step is written once");
+}
+
+#[test]
+fn a_pending_stop_that_reverts_every_edit_records_no_undo_step() {
+    let rig = Rig::with(
+        script(vec![call_turn("", &[("c1", "face_set_profile", "{}")]), long_text(20)]),
+        RigOptions { hold_after: Some(FIRST_TURN_EVENTS + 2), ..RigOptions::default() },
+        standard_server,
+    );
+    rig.sessions.set_stop(StopBehaviour::Pending { close_after: 1.0 }, 0.0);
+    rig.sessions.set_pending_stop_reverts();
+    rig.host.send(UserMessage::new("go")).unwrap();
+    Rig::wait_for("the transaction", || {
+        rig.server.called("tx_begin") == 1 && rig.server.called("face_set_profile") == 1
+    });
+    rig.host.stop();
+    let events = rig.until_done(0.1);
+    assert!(matches!(events.last(), Some(AssistantEvent::Done)));
+    assert!(
+        rig.sink.entries().iter().all(|e| !matches!(e, Entry::Step { .. })),
+        "nothing was kept, so there is no step to undo"
+    );
+}

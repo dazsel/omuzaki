@@ -369,11 +369,16 @@ impl Worker {
             Some((bytes, mime)) => Some(self.cfg.sink.put_blob(bytes, mime).map_err(Flow::Fail)?),
             None => None,
         };
+        // Stop may have been pressed while the summary was written and stored. Nothing is published then: the history
+        // stays as it was, and Stop's cut applies to it.
+        let Some(compacted_text) = self.shared.answer_text_bytes() else {
+            return Err(Flow::Stopped);
+        };
         self.messages = vec![Message::new(Role::User, rebuilt)];
         // The answer now starts after the rebuilt message; `msg_from` pointed into the history that is gone, and so did
         // the text of the answer's earlier turns, which Stop's byte count still includes.
         run.msg_from = 1;
-        run.compacted_text = self.shared.answer_text_bytes();
+        run.compacted_text = compacted_text;
         self.ledger = Ledger::new();
         self.measured = 0;
         run.compacted = true;

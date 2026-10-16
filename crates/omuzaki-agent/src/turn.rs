@@ -131,8 +131,8 @@ impl Worker {
         match failure {
             Some(LlmError::Cancelled) => {
                 self.keep_partial_text(run);
-                // The answer is already ending; a refused charge changes nothing about how.
-                let _ = self.charge(run, usage);
+                // The answer is already ending; only a session that is gone changes how.
+                self.charge_on_error(run, usage)?;
                 Err(Flow::Stopped)
             }
             Some(error) => {
@@ -140,7 +140,7 @@ impl Worker {
                     self.flush(&mut buf, now);
                 }
                 self.keep_partial_text(run);
-                let _ = self.charge(run, usage);
+                self.charge_on_error(run, usage)?;
                 Err(llm_flow(error))
             }
             None => {
@@ -165,7 +165,7 @@ impl Worker {
             Ok(done) => done,
             Err(error) => {
                 self.keep_partial_text(run);
-                let _ = self.charge(run, usage);
+                self.charge_on_error(run, usage)?;
                 return Err(llm_flow(error));
             }
         };
@@ -203,6 +203,15 @@ impl Worker {
                 Ok(())
             }
             Err(error) => Err(self.ended().map_or_else(|| Flow::Fail(HostError::Mcp(error.message)), Flow::Revoked)),
+        }
+    }
+
+    /// Charges what a failed or cancelled turn used. The turn is already ending in an error, so a refused charge is
+    /// shown by that error; but a session that has ended is not an LLM problem: it ends the answer as `SessionEnded`.
+    fn charge_on_error(&mut self, run: &mut AnswerRun, usage: Option<Usage>) -> Result<(), Flow> {
+        match self.charge(run, usage) {
+            Err(revoked @ Flow::Revoked(_)) => Err(revoked),
+            _ => Ok(()),
         }
     }
 

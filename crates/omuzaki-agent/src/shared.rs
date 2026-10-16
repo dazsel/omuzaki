@@ -206,7 +206,10 @@ impl Shared {
 
     /// The transcript for a panel opened late, with the turn in flight as it has been shown.
     pub(crate) fn transcript(&self) -> Vec<Entry> {
-        let entries = self.snapshot();
+        // Text is sent to the panel under this same lock, so nothing can slip between the snapshot and the watermark:
+        // what is marked displayed is exactly what the snapshot holds. (Lock order: control, then the queue's.)
+        let ctl = self.lock();
+        let entries = Self::entries_of(&ctl);
         // What this hands out is what the person sees, so Stop must not cut it even if the queue never delivered it.
         self.hub.mark_sent_as_displayed();
         entries
@@ -215,7 +218,10 @@ impl Shared {
     /// The same entries as [`Self::transcript`], for the host's own use: nobody is shown them, so the display
     /// watermark Stop cuts by does not move.
     pub(crate) fn snapshot(&self) -> Vec<Entry> {
-        let ctl = self.lock();
+        Self::entries_of(&self.lock())
+    }
+
+    fn entries_of(ctl: &Control) -> Vec<Entry> {
         let mut entries = ctl.transcript.clone();
         if !ctl.live_text.is_empty() {
             entries.push(Entry::assistant(vec![ContentBlock::text(ctl.live_text.clone())]));
@@ -225,8 +231,18 @@ impl Shared {
 
     /// Bytes of the text the answer in progress has written so far, in the turns already recorded. Stop counts the
     /// answer's text from its first byte, so this is the offset to subtract once the history it came from is gone.
-    pub(crate) fn answer_text_bytes(&self) -> usize {
+    ///
+    /// `None` if Stop has been pressed: Stop cut that text to what was read, so the count no longer says what the
+    /// history held, and the caller must not publish anything built on it. Checked under the lock Stop takes.
+    pub(crate) fn answer_text_bytes(&self) -> Option<usize> {
         let ctl = self.lock();
+        if ctl.stopping {
+            return None;
+        }
+        Some(Self::text_bytes(&ctl))
+    }
+
+    fn text_bytes(ctl: &Control) -> usize {
         ctl.transcript[ctl.answer_from..]
             .iter()
             .filter_map(|e| if let Entry::Assistant { blocks, .. } = e { Some(blocks) } else { None })

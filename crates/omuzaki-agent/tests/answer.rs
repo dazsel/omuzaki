@@ -189,3 +189,22 @@ fn an_auth_failure_is_needs_key_and_a_too_long_prompt_ends_the_answer() {
     let rig = Rig::new(script(vec![failing(LlmError::Auth)]));
     assert_eq!(error_of(&rig.say("go", 0.0)), Some(HostError::NeedsKey));
 }
+
+#[test]
+fn a_stream_error_with_a_session_that_has_ended_ends_the_answer_as_session_ended() {
+    let rig = Rig::with(
+        script(vec![failing(LlmError::Network("reset".into()))]),
+        RigOptions { hold_after: Some(2), ..RigOptions::default() },
+        standard_server,
+    );
+    rig.host.send(UserMessage::new("go")).unwrap();
+    Rig::wait_for("the held stream", || rig.gate.delivered.load(std::sync::atomic::Ordering::Acquire) >= 2);
+    rig.sessions.revoke();
+    rig.gate.open();
+    let events = rig.until_done(0.0);
+    assert_eq!(error_of(&events), Some(HostError::SessionEnded), "{events:?}");
+    assert!(
+        rig.sink.entries().iter().any(|e| matches!(e, Entry::Session { .. })),
+        "the end of the session is recorded"
+    );
+}

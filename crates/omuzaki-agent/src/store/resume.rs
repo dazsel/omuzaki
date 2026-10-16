@@ -22,9 +22,14 @@ impl ConversationStore {
 
 /// D7 has no "end of answer" entry, so the rule is: an answer is closed when the last entry is a `Charge`, `Step` or
 /// `Compacted` and the last `Assistant` entry has no tool use, or when it is `Stopped` (a stop closes the answer
-/// even with a call in flight). Anything else, including a log that ends on the person's message, is interrupted.
+/// even with a call in flight, and whatever the host wrote after it). Anything else, including a log that ends on the person's message, is interrupted.
 /// Session notes after the last answer are not part of it. A conversation with no entries has no answer to interrupt.
 fn is_interrupted(entries: &[Entry]) -> bool {
+    // A Stop closes its answer, whatever bookkeeping follows it: the stopped step, a late result, session notes.
+    let start = entries.iter().rposition(|e| matches!(e, Entry::User { .. })).map_or(0, |at| at + 1);
+    if entries[start..].iter().any(|e| matches!(e, Entry::Stopped { .. })) {
+        return false;
+    }
     let Some(last) = entries.iter().rev().find(|e| !matches!(e, Entry::Session { .. })) else {
         return false;
     };
@@ -81,6 +86,22 @@ mod tests {
             omuzaki_agent_api::entry::SessionNote::Ended(omuzaki_ops_api::EndReason::Closed),
         );
         assert!(!is_interrupted(&[Entry::user("hi", Vec::new()), text(), charge(), ended]));
+    }
+
+    #[test]
+    fn a_stopped_answer_stays_closed_after_its_step_and_a_late_result() {
+        let log = [
+            Entry::user("hi", Vec::new()),
+            calls(),
+            Entry::stopped(Some(0)),
+            Entry::step(omuzaki_ops_api::TxId(1), "l (stopped)", "r"),
+            Entry::tool_result("c:late", true, vec![]),
+        ];
+        assert!(!is_interrupted(&log));
+        // The next message starts a new answer, which is judged on its own.
+        let mut next = log.to_vec();
+        next.push(Entry::user("again", Vec::new()));
+        assert!(is_interrupted(&next));
     }
 
     #[test]

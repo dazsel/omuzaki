@@ -5,8 +5,8 @@
 
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::mpsc::channel;
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use omuzaki_agent_api::error::HostError;
@@ -106,20 +106,116 @@ fn link_error(error: &ServiceError) -> LinkError {
     }
 }
 
+/// Where a request's result is handed over. The task fills it, the host thread takes it; whichever side finds the other
+/// gone deals with the result, under this lock, so one that is sent and not yet taken is never dropped unseen.
+struct Slot<T> {
+    value: Option<T>,
+    /// The `Pending` was dropped: nobody will take the result.
+    abandoned: bool,
+    /// The task ended, with or without a result.
+    finished: bool,
+}
+
+struct Cell<T> {
+    slot: Mutex<Slot<T>>,
+    ready: Condvar,
+    /// What to do with a result nobody took.
+    handoff: Mutex<Option<Handoff<T>>>,
+}
+
+impl<T> Cell<T> {
+    fn lock(&self) -> MutexGuard<'_, Slot<T>> {
+        self.slot.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn hand_off(&self, value: T) {
+        let handoff = self.handoff.lock().unwrap_or_else(PoisonError::into_inner).take();
+        if let Some(handoff) = handoff {
+            handoff(value);
+        }
+    }
+}
+
+/// What to do with a result that came after its `Pending` was dropped.
+type Handoff<T> = Box<dyn FnOnce(T) + Send>;
+
+/// The task's end of a [`Pending`].
+struct Resolver<T> {
+    cell: Arc<Cell<T>>,
+}
+
+impl<T> Resolver<T> {
+    /// Hands the result to the host thread, or, if that thread already gave up, to the handoff.
+    fn resolve(self, value: T) {
+        let mut slot = self.cell.lock();
+        slot.finished = true;
+        if slot.abandoned {
+            drop(slot);
+            self.cell.hand_off(value);
+        } else {
+            slot.value = Some(value);
+            drop(slot);
+            self.cell.ready.notify_all();
+        }
+    }
+}
+
+impl<T> Drop for Resolver<T> {
+    fn drop(&mut self) {
+        // The task ended without a result (the runtime shut down): the waiting side must not wait for ever.
+        self.cell.lock().finished = true;
+        self.cell.ready.notify_all();
+    }
+}
+
 /// A request in flight on the runtime.
 pub(crate) struct Pending<T> {
-    rx: Receiver<T>,
+    cell: Arc<Cell<T>>,
 }
 
 impl<T> Pending<T> {
+    fn new(handoff: Option<Handoff<T>>) -> (Self, Resolver<T>) {
+        let cell = Arc::new(Cell {
+            slot: Mutex::new(Slot { value: None, abandoned: false, finished: false }),
+            ready: Condvar::new(),
+            handoff: Mutex::new(handoff),
+        });
+        (Self { cell: Arc::clone(&cell) }, Resolver { cell })
+    }
+
     /// The result if it has arrived, waiting at most `wait` (real time).
     pub(crate) fn poll(&self, wait: Duration) -> Option<Result<T, LinkError>> {
-        match self.rx.recv_timeout(wait) {
-            Ok(value) => Some(Ok(value)),
-            Err(RecvTimeoutError::Timeout) => None,
-            Err(RecvTimeoutError::Disconnected) => Some(Err(LinkError::Closed)),
+        let slot = self.cell.lock();
+        let (mut slot, _) = self
+            .cell
+            .ready
+            .wait_timeout_while(slot, wait, |slot| slot.value.is_none() && !slot.finished)
+            .unwrap_or_else(PoisonError::into_inner);
+        match slot.value.take() {
+            Some(value) => Some(Ok(value)),
+            None if slot.finished => Some(Err(LinkError::Closed)),
+            None => None,
         }
     }
+}
+
+impl<T> Drop for Pending<T> {
+    fn drop(&mut self) {
+        // A result already sent and never taken goes where an unwanted result goes, instead of vanishing with us.
+        let undelivered = {
+            let mut slot = self.cell.lock();
+            slot.abandoned = true;
+            slot.value.take()
+        };
+        if let Some(value) = undelivered {
+            self.cell.hand_off(value);
+        }
+    }
+}
+
+/// Takes the late callback, once.
+fn take_late(late: &Mutex<Option<LateFn>>) -> Option<LateFn> {
+    late.lock().unwrap_or_else(PoisonError::into_inner).take()
 }
 
 /// Called with a result that arrived after its call was cancelled (Stop, D4).
@@ -198,12 +294,11 @@ impl McpClientLink {
     }
 
     fn spawn<T: Send + 'static>(&self, work: impl Future<Output = T> + Send + 'static) -> Pending<T> {
-        let (tx, rx) = channel();
+        let (pending, resolver) = Pending::new(None);
         self.inner.rt.spawn(async move {
-            // A dropped `Pending` means nobody wants the result.
-            let _ = tx.send(work.await);
+            resolver.resolve(work.await);
         });
-        Pending { rx }
+        pending
     }
 
     /// `tools/list`.
@@ -227,26 +322,30 @@ impl McpClientLink {
         let peer = self.inner.peer.clone();
         let mut params = CallToolRequestParams::new(name.to_owned());
         params.arguments = arguments;
-        let (tx, rx) = channel();
+        // `late` is shared by the two places that can end up holding a result nobody is waiting for: the task, when the
+        // call was cancelled, and the `Pending`, when it is dropped with a result already sent.
+        let late = Arc::new(Mutex::new(late));
+        let unclaimed: Handoff<Result<ToolReply, LinkError>> = {
+            let late = Arc::clone(&late);
+            Box::new(move |result| {
+                if let (Ok(reply), Some(late)) = (result, take_late(&late)) {
+                    late(Ok(reply));
+                }
+            })
+        };
+        let (pending, resolver) = Pending::new(Some(unclaimed));
         self.inner.rt.spawn(async move {
-            let mut late = late;
-            let result = Self::call_and_wait(&peer, params, &cancel, &mut late).await;
-            // Nobody is waiting any more (Stop, or the host moved on): a result that did come is not lost, it goes to
-            // `late` so the next message can tell the model what became of its call.
-            if let Err(std::sync::mpsc::SendError(undelivered)) = tx.send(result)
-                && let (Some(late), Ok(reply)) = (late.take(), undelivered)
-            {
-                late(Ok(reply));
-            }
+            let result = Self::call_and_wait(&peer, params, &cancel, &late).await;
+            resolver.resolve(result);
         });
-        Pending { rx }
+        pending
     }
 
     async fn call_and_wait(
         peer: &rmcp::service::Peer<RoleClient>,
         params: CallToolRequestParams,
         cancel: &Cancel,
-        late: &mut Option<LateFn>,
+        late: &Mutex<Option<LateFn>>,
     ) -> Result<ToolReply, LinkError> {
         let request = ClientRequest::CallToolRequest(CallToolRequest::new(params));
         let mut handle = peer
@@ -267,7 +366,7 @@ impl McpClientLink {
                         );
                         // The server may already have finished; a failed notification changes nothing for us.
                         let _ = peer.send_notification(note.into()).await;
-                        if let Some(late) = late.take() {
+                        if let Some(late) = take_late(late) {
                             let waited = tokio::time::timeout(LATE_WAIT, &mut handle.rx).await;
                             if let Ok(answer) = waited {
                                 late(reply_of(answer));
@@ -423,5 +522,59 @@ fn content_text(block: &ContentBlock) -> String {
     match block_of(block) {
         ReplyBlock::Text(t) | ReplyBlock::Note(t) => t,
         ReplyBlock::Image { .. } => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+
+    use super::*;
+
+    fn counting() -> (Handoff<u32>, mpsc::Receiver<u32>) {
+        let (tx, rx) = mpsc::channel();
+        (
+            Box::new(move |v| {
+                let _ = tx.send(v);
+            }),
+            rx,
+        )
+    }
+
+    #[test]
+    fn a_result_sent_and_never_taken_goes_to_the_handoff_when_the_pending_is_dropped() {
+        let (handoff, got) = counting();
+        let (pending, resolver) = Pending::new(Some(handoff));
+        resolver.resolve(7);
+        assert!(got.try_recv().is_err(), "still waiting to be taken");
+        drop(pending);
+        assert_eq!(got.try_recv(), Ok(7));
+    }
+
+    #[test]
+    fn a_result_that_comes_after_the_pending_was_dropped_goes_to_the_handoff() {
+        let (handoff, got) = counting();
+        let (pending, resolver) = Pending::new(Some(handoff));
+        drop(pending);
+        resolver.resolve(8);
+        assert_eq!(got.try_recv(), Ok(8));
+    }
+
+    #[test]
+    fn a_result_that_was_taken_is_not_handed_off() {
+        let (handoff, got) = counting();
+        let (pending, resolver) = Pending::new(Some(handoff));
+        resolver.resolve(9);
+        assert!(matches!(pending.poll(Duration::from_millis(1)), Some(Ok(9))));
+        drop(pending);
+        assert!(got.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_task_that_ends_without_a_result_reads_as_closed_and_a_slow_one_as_not_yet() {
+        let (pending, resolver) = Pending::<u32>::new(None);
+        assert!(pending.poll(Duration::from_millis(1)).is_none());
+        drop(resolver);
+        assert!(matches!(pending.poll(Duration::from_millis(1)), Some(Err(LinkError::Closed))));
     }
 }

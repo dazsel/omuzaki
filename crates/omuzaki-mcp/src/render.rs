@@ -192,6 +192,11 @@ pub(crate) fn failure(op: &str, error: &OpError, signature: Option<&str>) -> Cal
     if let Some(field) = &error.field {
         data["field"] = json!(field);
     }
+    // The op layer's own detail (a queued approval, a pause, a retry time, why a session ended): clients branch on it,
+    // not on the text. It is the `ErrorDetail` JSON, unchanged.
+    if let Some(detail) = &error.detail {
+        data["detail"] = json!(detail);
+    }
     if let Some(signature) = signature {
         data["signature"] = json!(signature);
     }
@@ -496,6 +501,21 @@ mod tests {
             (data["code"].clone(), data["field"].clone(), data["hint"].clone()),
             (json!("invalid"), json!("blend"), json!("use 0..1"))
         );
+    }
+
+    #[test]
+    fn a_refusal_carries_the_op_layers_detail_as_json_and_a_plain_error_carries_none() {
+        use omuzaki_ops_api::ErrorDetail;
+
+        let err = OpError::needs_person("a person must confirm");
+        let detail = err.detail.as_deref().cloned().unwrap();
+        let data = failure("export.video", &err, None).structured_content.unwrap();
+        assert_eq!(data["code"], "denied");
+        let read: ErrorDetail = serde_json::from_value(data["detail"].clone()).unwrap();
+        assert_eq!(read, detail, "the host reads exactly what the op layer put there");
+
+        let plain = failure("x.y", &OpError::denied("needs publish"), None).structured_content.unwrap();
+        assert!(plain.get("detail").is_none(), "{plain}");
     }
 
     #[test]

@@ -67,12 +67,21 @@ impl Worker {
             compacted: false,
             compacted_text: 0,
         };
+        // A transaction the last answer could not close is still open in the executor: this answer carries it, and
+        // commits it with whatever it adds. If the executor no longer has one there is nothing to carry.
+        if std::mem::take(&mut self.tx_unconfirmed)
+            && let Some(open) = self.session_info().and_then(|info| info.open_tx)
+        {
+            run.tx = Some(open);
+            run.tx_open = true;
+        }
         let result = match self.drive(&mut run, msg) {
             // Stop pressed as the answer was finishing still stops it: the queue was already cut.
             Ok(()) | Err(Flow::Fail(_)) if self.shared.stopping() => Err(Flow::Stopped),
             other => other,
         };
         self.conclude(&mut run, result);
+        self.tx_unconfirmed = run.tx_open;
     }
 
     fn drive(&mut self, run: &mut AnswerRun, msg: &UserMessage) -> Result<(), Flow> {
@@ -212,15 +221,18 @@ impl Worker {
         match self.commit_tx(run) {
             Ok(true) => {
                 self.write_step(run, "");
-                self.done();
+                // The step is written; Stop's ending must not write it again.
+                run.tx = None;
+                self.end(run);
             }
-            // The executor refused to close it: the error is shown, and no step is claimed.
-            Ok(false) => self.done(),
+            // The executor refused to close it: the error is shown, no step is claimed, and the transaction stays
+            // the host's (see `tx_unconfirmed`).
+            Ok(false) => self.end(run),
             Err(Flow::Stopped) => self.finish_stopped(run),
             Err(Flow::Revoked(reason)) => self.finish_revoked(run, reason),
             Err(Flow::Fail(error)) => {
                 self.shared.emit(AssistantEvent::Error(error));
-                self.done();
+                self.end(run);
             }
         }
     }
@@ -239,6 +251,22 @@ impl Worker {
         let Some(tx) = &run.tx else { return };
         let label = format!("{}{suffix}", tx.label);
         self.shared.record(Entry::step(tx.tx, label, cut_rationale(run.text.trim())));
+    }
+
+    /// The answer is over: `Done`, unless Stop was pressed since the answer last looked, in which case Stop's ending
+    /// runs (the executor is asked to stop, the cutoff is recorded) before `Done`. Deciding and ending the answer
+    /// happen under one lock, so a Stop either lands before this and is honoured, or finds the answer over.
+    fn end(&mut self, run: &mut AnswerRun) {
+        {
+            let mut ctl = self.shared.lock();
+            if !ctl.stopping {
+                ctl.running = false;
+                drop(ctl);
+                self.shared.emit(AssistantEvent::Done);
+                return;
+            }
+        }
+        self.finish_stopped(run);
     }
 
     /// The answer is over: new messages are accepted again, then `Done`.

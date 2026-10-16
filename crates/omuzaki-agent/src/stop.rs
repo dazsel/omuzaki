@@ -36,19 +36,26 @@ impl Worker {
         let read = self.shared.lock().stop_text_read.unwrap_or(0);
         self.cut_history(run, read);
         self.shared.record(Entry::stopped(Some(read)));
+        let steps_before = self.session_info().map_or(0, |info| info.steps);
         let step = match self.sessions.stop(self.session, &self.cfg.principal) {
             Ok(stopped) => Some(stopped.step),
             Err(_) => None,
         };
         self.shared.emit(AssistantEvent::Paused);
-        run.tx_open = false;
+        // The executor owns the transaction once it has accepted the Stop. If it did not, the transaction is still
+        // ours and stays tracked for the next answer.
+        if step.is_some() {
+            run.tx_open = false;
+        }
         if step == Some(StopStep::Pending) {
             self.wait_step_closed();
         }
         if let Some(tx) = &run.tx {
             let committed = match step {
                 Some(StopStep::Committed(id)) => Some(id),
-                Some(StopStep::Pending) => Some(tx.tx),
+                // The executor closed it by itself: only a transaction it committed made an undo step. One it reverted
+                // to nothing (every edit undone) did not.
+                Some(StopStep::Pending) => self.session_info().filter(|info| info.steps > steps_before).map(|_| tx.tx),
                 _ => None,
             };
             if committed.is_some() {

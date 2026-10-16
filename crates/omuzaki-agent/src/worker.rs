@@ -49,6 +49,9 @@ pub(crate) struct Worker {
     pub prompt_fetch: crate::prompts::PromptFetch,
     /// An answer just ended: the prompt list is refetched (§7).
     pub refetch_after_answer: bool,
+    /// An answer ended without the executor confirming its transaction closed (a refused commit, a failed Stop). The
+    /// transaction is still the host's to close, so the next answer picks it up and commits it.
+    pub tx_unconfirmed: bool,
 }
 
 impl Worker {
