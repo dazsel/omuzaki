@@ -46,6 +46,8 @@ use omuzaki_ai_api::{
 
 pub use graph::Skipped;
 pub use library::{Loaded, loaded, prefer_providers};
+#[cfg(feature = "fuzzing")] // the model scan, for the fuzz target in `fuzz/` (#1653); never on in a build
+pub use scan::{Scan, ScanError, scan_model};
 pub use session::OrtModelSession;
 
 /// The runtime id manifests name in `runtime`.
