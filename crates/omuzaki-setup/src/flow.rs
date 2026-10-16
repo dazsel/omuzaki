@@ -70,6 +70,9 @@ pub enum Effect {
     Show(Step),
     /// Ask the OS for the camera, with the reason on screen.
     RequestCameraPermission,
+    /// Apply this tracking source (`input.select`). Sent when a source is committed: a choice, a skip, or a
+    /// preselected source accepted by Continue; never for a source that came from the host's settings.
+    SelectInput(InputChoice),
     /// Start the calibration overlay.
     StartCalibration,
     /// Show the test pattern on this output.
@@ -146,6 +149,8 @@ pub struct SetupFlow {
     skipped: BTreeSet<Step>,
     finished: bool,
     input: Option<InputChoice>,
+    /// The source is the host's setting or the person's choice, as opposed to a default only drawn as selected.
+    input_committed: bool,
     output: Option<OutputKind>,
     calibration: Calibration,
     permission_requested: bool,
@@ -164,6 +169,7 @@ impl SetupFlow {
         let skipped: BTreeSet<Step> =
             skipped.into_iter().filter(|s| matches!(s, Step::Input | Step::Calibrate | Step::Output)).collect();
         // The settings win; only a first visit to Input preselects the webcam when there is a camera to use.
+        let skipped_input = skipped.contains(&Step::Input);
         let input = match current.input {
             Some(c) => Some(c),
             None if skipped.contains(&Step::Input) => Some(InputChoice::LifeLayerOnly),
@@ -176,6 +182,7 @@ impl SetupFlow {
             skipped,
             finished,
             input,
+            input_committed: input.is_some() && (current.input.is_some() || skipped_input),
             output: current.output,
             calibration: Calibration::Idle,
             permission_requested: false,
@@ -427,9 +434,17 @@ impl SetupFlow {
     fn next(&mut self, fx: &mut Vec<Effect>) {
         match self.step {
             Step::Welcome => self.advance(fx),
+            // Continue on a source only drawn as selected commits it first, exactly as choosing it would
+            // (including asking the OS for the camera), then moves on in the same transition if it is ready.
+            Step::Input if !self.input_committed && self.input.is_some() => {
+                if let Some(choice) = self.input {
+                    self.choose_input(choice, fx);
+                }
+                if self.input_ready() {
+                    self.advance(fx);
+                }
+            }
             Step::Input if self.input_ready() => self.advance(fx),
-            // A preselected webcam asks the OS on Continue, as choosing it would.
-            Step::Input if self.input == Some(InputChoice::Webcam) => self.request_camera(fx),
             // Back to an already calibrated step: Continue keeps the stored result.
             Step::Calibrate if self.calibration == Calibration::Done => self.advance(fx),
             Step::Calibrate if self.calibrate_possible() && self.calibration == Calibration::Idle => {
@@ -454,7 +469,7 @@ impl SetupFlow {
     fn skip(&mut self, fx: &mut Vec<Effect>) {
         match self.step {
             Step::Input => {
-                self.set_input(InputChoice::LifeLayerOnly);
+                self.commit_input(InputChoice::LifeLayerOnly, fx);
                 self.skipped.insert(Step::Input);
             }
             Step::Calibrate => {
@@ -481,7 +496,16 @@ impl SetupFlow {
             }
         }
         self.skipped.remove(&Step::Input);
+        self.commit_input(choice, fx);
+    }
+
+    /// Makes `choice` the person's source and tells the host to apply it, unless it already is the committed one.
+    fn commit_input(&mut self, choice: InputChoice, fx: &mut Vec<Effect>) {
+        if !self.input_committed || self.input != Some(choice) {
+            fx.push(Effect::SelectInput(choice));
+        }
         self.set_input(choice);
+        self.input_committed = true;
     }
 
     /// Every change of source goes through here: a calibration belongs to the source it ran on.

@@ -133,7 +133,10 @@ fn undecided_permission_is_asked_once_on_input_and_blocks_until_granted() {
     let mut f = flow(Probes { cameras: Cameras::One(Permission::Undecided), ..probes() });
     let fx = send(&mut f, &[Event::Next, Event::ChooseCharacter(CharacterChoice::Sample)]);
     assert!(!fx.contains(&Effect::RequestCameraPermission), "nothing is asked before Input");
-    assert_eq!(send(&mut f, &[Event::ChooseInput(InputChoice::Webcam)]), [Effect::RequestCameraPermission]);
+    assert_eq!(
+        send(&mut f, &[Event::ChooseInput(InputChoice::Webcam)]),
+        [Effect::RequestCameraPermission, Effect::SelectInput(InputChoice::Webcam)]
+    );
     assert_eq!(send(&mut f, &[Event::ChooseInput(InputChoice::Webcam), Event::Next]), no_effects());
     f.handle(Event::Probed(probes()), 0);
     send(&mut f, &[Event::Next]);
@@ -424,7 +427,10 @@ fn a_fresh_run_preselects_the_webcam_and_continue_accepts_it() {
 fn a_preselected_webcam_asks_the_os_on_continue() {
     let mut f = flow(Probes { cameras: Cameras::One(Permission::Undecided), ..probes() });
     to_input(&mut f);
-    assert_eq!(send(&mut f, &[Event::Next]), [Effect::RequestCameraPermission]);
+    assert_eq!(
+        send(&mut f, &[Event::Next]),
+        [Effect::RequestCameraPermission, Effect::SelectInput(InputChoice::Webcam)]
+    );
     assert_eq!(send(&mut f, &[Event::Next]), no_effects());
     assert_eq!(f.timers().waited_ms(Step::Welcome), 0);
 }
@@ -593,4 +599,51 @@ fn skipping_calibrate_after_a_result_records_the_skip() {
     send(&mut f, &[Event::Next, Event::CalibrationDone, Event::Back, Event::Skip]);
     assert_eq!(f.progress().skipped, [Step::Calibrate]);
     assert_eq!(f.progress().step, Step::Output);
+}
+
+fn selects(fx: &[Effect]) -> usize {
+    fx.iter().filter(|e| matches!(e, Effect::SelectInput(_))).count()
+}
+
+#[test]
+fn continue_on_a_preselected_source_applies_it_once_before_moving_on() {
+    let mut f = flow(probes());
+    to_input(&mut f);
+    let fx = send(&mut f, &[Event::Next]);
+    assert!(
+        matches!(fx.as_slice(), [Effect::SelectInput(InputChoice::Webcam), Effect::Persist(p), Effect::Show(Step::Calibrate)]
+            if p.step == Step::Calibrate),
+        "{fx:?}"
+    );
+    send(&mut f, &[Event::Back]);
+    assert_eq!(selects(&send(&mut f, &[Event::Next])), 0, "already committed");
+    let mut g = flow(probes());
+    to_input(&mut g);
+    assert_eq!(send(&mut g, &[Event::ChooseInput(InputChoice::Webcam)]), [Effect::SelectInput(InputChoice::Webcam)]);
+    assert_eq!(send(&mut g, &[Event::ChooseInput(InputChoice::Webcam)]), no_effects());
+    assert_eq!(selects(&send(&mut g, &[Event::Next])), 0);
+}
+
+#[test]
+fn a_source_from_the_settings_is_not_applied_again() {
+    let mut f = SetupFlow::new(probes(), Progress::default(), webcam());
+    to_input(&mut f);
+    assert_eq!(selects(&send(&mut f, &[Event::Next])), 0);
+    assert_eq!(f.view().step, Step::Calibrate);
+}
+
+#[test]
+fn skip_on_input_applies_the_life_layer() {
+    let mut f = flow(probes());
+    to_input(&mut f);
+    let fx = send(&mut f, &[Event::Skip]);
+    assert_eq!(fx.first(), Some(&Effect::SelectInput(InputChoice::LifeLayerOnly)));
+}
+
+#[test]
+fn without_a_camera_continue_stays_on_input() {
+    let mut f = flow(Probes { cameras: Cameras::None, ..probes() });
+    to_input(&mut f);
+    assert_eq!(send(&mut f, &[Event::Next]), no_effects());
+    assert_eq!(f.view().step, Step::Input);
 }
