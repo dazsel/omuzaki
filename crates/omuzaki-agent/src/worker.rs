@@ -53,6 +53,12 @@ pub(crate) struct Worker {
     /// transaction is still the host's to close before the next message is admitted; this is what that answer's model
     /// wrote, the rationale of the step it will become.
     pub tx_unconfirmed: Option<String>,
+    /// Commits the log did not show when Stop ended an answer; asked about again before the next message.
+    pub unresolved: Vec<crate::history::Unresolved>,
+    /// Changes of others that the host's reads of the log used up, for the next message's context.
+    pub missed: Vec<String>,
+    /// The newest log event number already looked at, so a read repeated in one Stop does not list a change twice.
+    pub log_seen: u64,
 }
 
 impl Worker {

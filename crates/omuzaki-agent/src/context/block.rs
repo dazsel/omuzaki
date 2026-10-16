@@ -46,6 +46,7 @@ impl Worker {
             sections.push(wrap_data(SESSION_INFO_TOOL, &heads_up));
         }
         sections.extend(self.late_notes());
+        sections.extend(self.missed_note());
         for chip in &msg.chips {
             self.chip_section(chip, &mut sections, &mut images);
         }

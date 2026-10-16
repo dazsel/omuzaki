@@ -313,7 +313,7 @@ impl Worker {
     pub(crate) fn compact(&mut self, run: &mut AnswerRun) -> Result<(), Flow> {
         let info = self.llm.info().clone();
         let window = info.context_window;
-        let entries = self.shared.snapshot();
+        let entries = self.shared.snapshot_read();
         let plan = plan_text(&self.plan);
         let pending = self.pending_text(&entries);
         let digest = digest(&entries, plan.as_deref(), pending.as_deref(), window);

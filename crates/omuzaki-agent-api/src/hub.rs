@@ -101,6 +101,12 @@ impl EventHub {
         shared.text_sent = 0;
     }
 
+    /// Bytes of this answer's text the person has been shown so far. It only grows within an answer, so text up to
+    /// this count is text Stop can never withdraw.
+    pub fn text_read(&self) -> usize {
+        self.lock().text_read
+    }
+
     /// A transcript was handed out: everything sent so far is on the person's screen, whether or not it was read from
     /// the queue. A panel opened late shows the transcript and never sees the earlier deltas, so without this Stop
     /// would report zero bytes read and cut text the person was shown.

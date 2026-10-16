@@ -80,6 +80,7 @@ impl Worker {
     }
 
     fn drive(&mut self, run: &mut AnswerRun, msg: &UserMessage) -> Result<(), Flow> {
+        self.reconcile_unresolved();
         self.close_prior_tx(run)?;
         self.plan.clear();
         self.ensure_tools()?;
@@ -207,18 +208,20 @@ impl Worker {
         let Some(open) = self.session_info().and_then(|info| info.open_tx) else {
             return Ok(());
         };
+        // The rationale travels with the transaction through every way this can end (a Stop during the commit, a failed
+        // link), so the step is always written with what the answer that made it wrote.
         run.tx = Some(open);
         run.tx_open = true;
+        run.text = rationale;
         if self.commit_tx(run)? {
-            // The step keeps what the answer that made it wrote, not this message's (still empty) text.
-            let own = std::mem::replace(&mut run.text, rationale);
             self.write_step(run, "");
-            run.text = own;
+            run.text.clear();
             run.tx = None;
             return Ok(());
         }
         match self.rollback_tx(run)? {
             Some(reply) if !reply.is_error => {
+                run.text.clear();
                 self.shared.emit(AssistantEvent::Error(HostError::Mcp(
                     "the changes of the previous answer could not be kept as an undo step and were discarded".into(),
                 )));
@@ -278,9 +281,14 @@ impl Worker {
 
     /// Records the answer's step with the model's text as its rationale (D7).
     pub(crate) fn write_step(&mut self, run: &AnswerRun, suffix: &str) {
-        let Some(tx) = &run.tx else { return };
+        let Some(tx) = run.tx.clone() else { return };
+        self.record_step(&tx, &run.text, suffix);
+    }
+
+    /// Records the step of transaction `tx`, with `rationale` as the text of "Explain this".
+    pub(crate) fn record_step(&mut self, tx: &SessionTx, rationale: &str, suffix: &str) {
         let label = format!("{}{suffix}", tx.label);
-        self.shared.record(Entry::step(tx.tx, label, cut_rationale(run.text.trim())));
+        self.shared.record(Entry::step(tx.tx, label, cut_rationale(rationale.trim())));
     }
 
     /// The answer is over: `Done`, unless Stop was pressed since the answer last looked, in which case Stop's ending

@@ -18,10 +18,11 @@ use omuzaki_llm_api::usage::Ledger;
 use omuzaki_ops_api::{EndReason, SessionId, SessionState, Sessions};
 
 use crate::config::HostConfig;
+use crate::cut::{assistant_blocks_mut, cut_text_blocks};
 use crate::link::{LinkError, McpClientLink};
 use crate::prompts::{PROMPT_TIMEOUT_S, PromptFetch, check_prompt_text, prompt_arguments};
 use crate::resume::messages_from_entries_with;
-use crate::shared::{Shared, cut_text_blocks};
+use crate::shared::Shared;
 use crate::worker::Worker;
 
 /// How long the host thread waits for a command before it looks at the prompt cache again (real time).
@@ -74,6 +75,9 @@ impl AssistantHost {
             plan: Vec::new(),
             measured: 0,
             tx_unconfirmed: None,
+            unresolved: Vec::new(),
+            missed: Vec::new(),
+            log_seen: 0,
             last_describe: None,
             model_checked: false,
             prompt_fetch: PromptFetch::default(),
@@ -164,11 +168,7 @@ impl Assistant for AssistantHost {
         // Cut the answer's text to what was read: earlier turns of the answer first, then the turn in flight.
         let from = ctl.answer_from;
         let ctl = &mut *ctl;
-        let turns = ctl.transcript[from..].iter_mut().filter_map(|e| match e {
-            Entry::Assistant { blocks, .. } => Some(blocks),
-            _ => None,
-        });
-        let left = cut_text_blocks(turns, report.text_read);
+        let left = cut_text_blocks(assistant_blocks_mut(&mut ctl.transcript[from..]), report.text_read);
         let mut live = vec![omuzaki_llm_api::message::ContentBlock::text(std::mem::take(&mut ctl.live_text))];
         cut_text_blocks([&mut live], left);
         ctl.live_text = live

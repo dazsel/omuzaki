@@ -6,7 +6,7 @@ use omuzaki_agent_api::entry::{Entry, StoredBlock};
 use omuzaki_llm_api::message::{ContentBlock, ImageOrigin, Message, Role};
 
 use crate::context::person_text;
-use crate::shared::cut_text_blocks;
+use crate::cut::{assistant_blocks_mut, assistant_text_bytes, cut_history, cut_text_blocks};
 use crate::sink::EntrySink;
 
 /// The result a trailing tool use gets when the studio closed before the call finished.
@@ -74,9 +74,7 @@ impl<'a> Rebuild<'a> {
                 Entry::Stopped { text_read, .. } => {
                     self.close_open(true);
                     if let Some(read) = text_read {
-                        let turns =
-                            self.messages.iter_mut().skip(self.answer_from).filter(|m| m.role == Role::Assistant);
-                        cut_text_blocks(turns.map(|m| &mut m.content), read.saturating_sub(self.answer_skip));
+                        cut_history(&mut self.messages, self.answer_from, *read, self.answer_skip);
                     }
                 }
                 Entry::Assistant { blocks, .. } => {
@@ -149,16 +147,6 @@ fn stopped_before(tail: &[Entry], at: usize) -> bool {
         .any(|e| matches!(e, Entry::Stopped { .. }))
 }
 
-/// Bytes of assistant text in `entries`.
-fn assistant_text_bytes(entries: &[Entry]) -> usize {
-    entries
-        .iter()
-        .filter_map(|e| if let Entry::Assistant { blocks, .. } = e { Some(blocks) } else { None })
-        .flatten()
-        .map(|b| if let ContentBlock::Text(t) = b { t.len() } else { 0 })
-        .sum()
-}
-
 /// The entries as the person saw them: where a Stop recorded how much of its answer was read, the text of that answer's
 /// earlier turns (stored whole, before the Stop) is cut to it.
 pub(crate) fn apply_stop_cuts(mut entries: Vec<Entry>) -> Vec<Entry> {
@@ -168,11 +156,7 @@ pub(crate) fn apply_stop_cuts(mut entries: Vec<Entry>) -> Vec<Entry> {
             Entry::User { .. } => answer_from = at + 1,
             Entry::Stopped { text_read: Some(read), .. } => {
                 let read = *read;
-                let turns = entries[answer_from..at].iter_mut().filter_map(|e| match e {
-                    Entry::Assistant { blocks, .. } => Some(blocks),
-                    _ => None,
-                });
-                cut_text_blocks(turns, read);
+                cut_text_blocks(assistant_blocks_mut(&mut entries[answer_from..at]), read);
             }
             _ => {}
         }

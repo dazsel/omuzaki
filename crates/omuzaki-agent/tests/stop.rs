@@ -713,9 +713,9 @@ fn a_pending_stop_is_a_step_only_if_the_log_names_its_transaction() {
 }
 
 #[test]
-fn a_stop_the_executor_refuses_is_shown_and_the_transaction_is_closed_before_the_next_message() {
+fn a_stop_the_executor_refuses_is_shown_and_the_host_closes_the_transaction_before_done() {
     let rig = Rig::with(
-        script(vec![call_turn("", &[("c1", "face_set_profile", "{}")]), long_text(20), say_turn("fine")]),
+        script(vec![call_turn("", &[("c1", "face_set_profile", "{}")]), long_text(20)]),
         RigOptions { hold_after: Some(FIRST_TURN_EVENTS + 2), ..RigOptions::default() },
         standard_server,
     );
@@ -725,13 +725,53 @@ fn a_stop_the_executor_refuses_is_shown_and_the_transaction_is_closed_before_the
         rig.server.called("tx_begin") == 1 && rig.server.called("face_set_profile") == 1
     });
     rig.host.stop();
+    rig.gate.open();
+    let events = rig.until_done(0.0);
+    let refused = events
+        .iter()
+        .position(|e| matches!(e, AssistantEvent::Error(HostError::Mcp(t)) if t.contains("Stop was refused")))
+        .expect("the refusal is shown");
+    assert!(refused < events.len() - 1 && matches!(events.last(), Some(AssistantEvent::Done)), "{events:?}");
+    assert!(rig.sessions.open_tx().is_none(), "the transaction is closed by the time Done is reported");
+    assert_eq!(rig.sink.entries().iter().filter(|e| matches!(e, Entry::Step { .. })).count(), 1);
+}
+
+#[test]
+fn a_refused_stop_whose_transaction_cannot_be_closed_says_so_and_the_next_message_closes_it() {
+    let refuse = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let flag = Arc::clone(&refuse);
+    let rig = Rig::with(
+        script(vec![call_turn("", &[("c1", "face_set_profile", "{}")]), long_text(20), say_turn("fine")]),
+        RigOptions { hold_after: Some(FIRST_TURN_EVENTS + 2), ..RigOptions::default() },
+        move |sessions| {
+            let server = standard_server(sessions);
+            let commit = Arc::clone(sessions);
+            let f = Arc::clone(&flag);
+            server.add(tool("tx_commit", "tx.commit", "builtin", false), move |_, _| {
+                if f.load(std::sync::atomic::Ordering::SeqCst) {
+                    return Outcome::failure("cannot commit now");
+                }
+                commit.commit_open_tx();
+                Outcome::text("tx committed")
+            });
+            server.add_fixed(tool("tx_rollback", "tx.rollback", "builtin", false), Outcome::failure("no"));
+            server
+        },
+    );
+    rig.sessions.set_stop(StopBehaviour::Refused, 0.0);
+    rig.host.send(UserMessage::new("go")).unwrap();
+    Rig::wait_for("the transaction", || {
+        rig.server.called("tx_begin") == 1 && rig.server.called("face_set_profile") == 1
+    });
+    rig.host.stop();
+    rig.gate.open();
     let events = rig.until_done(0.0);
     assert!(
-        events.iter().any(|e| matches!(e, AssistantEvent::Error(HostError::Mcp(t)) if t.contains("Stop was refused"))),
+        events.iter().any(|e| matches!(e, AssistantEvent::Error(HostError::Mcp(t)) if t.contains("still open"))),
         "{events:?}"
     );
-    assert!(rig.sessions.open_tx().is_some(), "the executor kept the transaction open");
-    rig.gate.open();
+    assert!(rig.sessions.open_tx().is_some());
+    refuse.store(false, std::sync::atomic::Ordering::SeqCst);
     rig.sessions.set_stop(StopBehaviour::Committed, 0.0);
     rig.say("again", 0.0);
     assert!(rig.sessions.open_tx().is_none(), "the next message closed it first");
@@ -802,4 +842,141 @@ fn a_pending_stop_that_commits_is_recorded_as_a_step_by_its_transaction() {
         .collect();
     assert_eq!(labels.len(), 1, "{labels:?}");
     assert!(labels[0].contains("(stopped)"), "{labels:?}");
+}
+
+fn request_text(request: &omuzaki_llm_api::message::TurnRequest) -> String {
+    request
+        .messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .filter_map(|b| if let ContentBlock::Text(t) = b { Some(t.as_str()) } else { None })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn the_summary_is_built_only_from_text_the_person_has_read() {
+    let heavy = ScriptTurn::new(vec![
+        LlmEvent::start("m"),
+        LlmEvent::TextDelta("AAAAAAAAAA".into()),
+        LlmEvent::tool_use_start("c1", "render_preview"),
+        LlmEvent::tool_use_end("c1"),
+        LlmEvent::Usage(omuzaki_llm_api::usage::Usage::new(15_001, 10)),
+        LlmEvent::Stop(StopReason::ToolUse),
+    ]);
+    let held = 6 + SUMMARY_TURN_EVENTS + 2;
+    let rig = Rig::with(
+        script(vec![heavy, say_turn("SUMMARY-TEXT"), long_text(20)]),
+        RigOptions { window: Some(20_000), prices: free_prices(), hold_after: Some(held), ..RigOptions::default() },
+        standard_server,
+    );
+    rig.host.send(UserMessage::new("go")).unwrap();
+    // The stream is held after the summary turn, and nobody has read the queue: none of "AAAAAAAAAA" was shown.
+    Rig::wait_for("the held stream", || rig.gate.delivered.load(std::sync::atomic::Ordering::Acquire) >= held);
+    let summary_request = request_text(&rig.llm.requests()[1]);
+    assert!(!summary_request.contains("AAAAAAAAAA"), "unread text is not folded into the summary: {summary_request}");
+    rig.gate.open();
+    rig.until_done(0.0);
+    let logged: String = rig
+        .sink
+        .entries()
+        .iter()
+        .filter_map(|e| if let Entry::Compacted { message, .. } = e { Some(message.clone()) } else { None })
+        .collect();
+    assert!(!logged.contains("AAAAAAAAAA"), "nor does the log carry it: {logged}");
+}
+
+/// A `history_log` that shows the committed transactions only once `visible` is set (the server's worker moves events
+/// into the log a moment after the commit), plus a change somebody else made.
+fn lagging_log(sessions: &Arc<FakeSessions>, visible: &Arc<std::sync::atomic::AtomicBool>) -> ScriptedServer {
+    let server = standard_server(sessions);
+    let log = Arc::clone(sessions);
+    let visible = Arc::clone(visible);
+    server.add(tool("history_log", "history.log", "builtin", true), move |_, _| {
+        let mut events = vec![serde_json::json!({"n": 1, "event": {"event": "op_applied",
+            "record": {"op": "hair.set_colour", "actor": {"kind": "person", "name": "Sam"}}}})];
+        if visible.load(std::sync::atomic::Ordering::SeqCst) {
+            for (n, tx) in log.committed().iter().enumerate() {
+                events.push(serde_json::json!({"n": n + 2, "event": {"event": "tx_committed", "tx": tx, "label": "l",
+                    "actor": {"kind": "agent", "id": "a"}}}));
+            }
+        }
+        Outcome::text(&serde_json::json!({"latest": events.len(), "events": events}).to_string())
+    });
+    server
+}
+
+#[test]
+fn a_commit_the_log_shows_late_still_becomes_a_step_with_its_rationale_and_others_changes_are_not_lost() {
+    let visible = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = Arc::clone(&visible);
+    let rig = Rig::with(
+        script(vec![call_turn("WHY-ONE", &[("c1", "face_set_profile", "{}")]), long_text(20), say_turn("fine")]),
+        RigOptions { hold_after: Some(FIRST_TURN_EVENTS + 2), ..RigOptions::default() },
+        move |sessions| lagging_log(sessions, &flag),
+    );
+    rig.sessions.set_stop(StopBehaviour::Pending { close_after: 0.0 }, 0.0);
+    rig.host.send(UserMessage::new("go")).unwrap();
+    Rig::wait_for("the edit", || rig.server.called("face_set_profile") == 1);
+    rig.host.stop();
+    rig.until_done(0.1);
+    assert!(rig.sink.entries().iter().all(|e| !matches!(e, Entry::Step { .. })), "the log has not shown it yet");
+    visible.store(true, std::sync::atomic::Ordering::SeqCst);
+    rig.gate.open();
+    rig.say("again", 0.0);
+    let steps: Vec<(String, String)> = rig
+        .sink
+        .entries()
+        .into_iter()
+        .filter_map(|e| if let Entry::Step { label, rationale, .. } = e { Some((label, rationale)) } else { None })
+        .collect();
+    assert_eq!(steps.len(), 1, "{steps:?}");
+    assert!(steps[0].0.contains("(stopped)") && steps[0].1.contains("WHY-ONE"), "{steps:?}");
+    let context = request_text(rig.llm.requests().last().unwrap());
+    assert!(context.contains("hair.set_colour by Sam"), "the person's change reaches the model: {context}");
+}
+
+#[test]
+fn a_stop_during_the_recovery_commit_keeps_the_rationale_of_the_answer_that_made_the_changes() {
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let release = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (n, r) = (Arc::clone(&calls), Arc::clone(&release));
+    let rig = Rig::with(
+        script(vec![call_turn("RATIONALE-ONE", &[("c1", "face_set_profile", "{}")]), say_turn("done")]),
+        RigOptions::default(),
+        move |sessions| {
+            let server = standard_server(sessions);
+            let commit = Arc::clone(sessions);
+            let (n, r) = (Arc::clone(&n), Arc::clone(&r));
+            server.add(tool("tx_commit", "tx.commit", "builtin", false), move |_, _| {
+                if n.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    return Outcome::failure("cannot commit now");
+                }
+                for _ in 0..500 {
+                    if r.load(std::sync::atomic::Ordering::SeqCst) {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                commit.commit_open_tx();
+                Outcome::text("tx committed")
+            });
+            server
+        },
+    );
+    rig.say("one", 0.0);
+    assert!(rig.sessions.open_tx().is_some(), "the first answer's commit was refused");
+    rig.host.send(UserMessage::new("two")).unwrap();
+    Rig::wait_for("the recovery commit", || calls.load(std::sync::atomic::Ordering::SeqCst) == 2);
+    rig.host.stop();
+    rig.until_done(0.0);
+    release.store(true, std::sync::atomic::Ordering::SeqCst);
+    let steps: Vec<String> = rig
+        .sink
+        .entries()
+        .into_iter()
+        .filter_map(|e| if let Entry::Step { rationale, .. } = e { Some(rationale) } else { None })
+        .collect();
+    assert_eq!(steps.len(), 1, "{steps:?}");
+    assert!(steps[0].contains("RATIONALE-ONE"), "{steps:?}");
 }

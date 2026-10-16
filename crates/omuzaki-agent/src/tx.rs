@@ -39,8 +39,8 @@ pub(crate) fn kind_of(info: Option<&ToolInfo>) -> ToolKind {
     }
 }
 
-/// How long Stop's ending waits for the server's history.
-const HISTORY_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+/// How long Stop's ending waits for one call.
+const CALL_AFTER_STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// How a call of this kind relates to the answer's transaction.
 pub(crate) fn tx_use(kind: ToolKind) -> TxUse {
@@ -108,31 +108,19 @@ impl Worker {
         Ok(true)
     }
 
-    /// Whether the server's log shows transaction `tx` committed, read by its id: a session-wide step count cannot say,
-    /// because an approval a person grants later makes a step of its own. An unreadable log confirms nothing.
-    ///
-    /// `history_log` answers with the log as JSON text. Used while Stop is ending the answer, when the usual cancel
-    /// flag would end a call at once, so this call has none and is bounded in real time instead.
-    pub(crate) fn tx_in_history(&self, tx: omuzaki_ops_api::TxId) -> bool {
-        let pending = self.link.call_tool("history_log", None, omuzaki_llm_api::stream::Cancel::new(), None);
+    /// Calls a tool that Stop's own ending needs, when the usual cancel flag would end a call at once: no cancel, bounded
+    /// in real time instead. `None` if the call failed or took too long.
+    pub(crate) fn call_after_stop(&self, name: &str) -> Option<ToolReply> {
+        let pending = self.link.call_tool(name, None, omuzaki_llm_api::stream::Cancel::new(), None);
         let started = std::time::Instant::now();
-        let reply = loop {
+        loop {
             match pending.poll(std::time::Duration::from_millis(1)) {
-                Some(Ok(Ok(reply))) if !reply.is_error => break reply,
-                Some(_) => return false,
-                None if started.elapsed() > HISTORY_WAIT => return false,
+                Some(Ok(Ok(reply))) => return Some(reply),
+                Some(_) => return None,
+                None if started.elapsed() > CALL_AFTER_STOP_WAIT => return None,
                 None => {}
             }
-        };
-        let text = crate::content::plain_text(&reply.blocks);
-        let Ok(log) = serde_json::from_str::<serde_json::Value>(&text) else { return false };
-        log.get("events").and_then(serde_json::Value::as_array).is_some_and(|events| {
-            events.iter().any(|entry| {
-                let event = entry.get("event");
-                event.and_then(|e| e.get("event")).and_then(serde_json::Value::as_str) == Some("tx_committed")
-                    && event.and_then(|e| e.get("tx")).and_then(serde_json::Value::as_u64) == Some(tx.0)
-            })
-        })
+        }
     }
 
     /// `discard_changes`: rolls the answer's transaction back. `None` means none was open; a refusal comes back for the

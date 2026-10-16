@@ -17,6 +17,7 @@ use omuzaki_llm_api::message::ContentBlock;
 use omuzaki_llm_api::stream::Cancel;
 use omuzaki_ops_api::{SessionId, SessionState, Sessions};
 
+use crate::cut::{assistant_blocks_mut, assistant_text_bytes, cut_text_blocks};
 use crate::sink::EntrySink;
 
 /// An `ask_person` question waiting for the person.
@@ -185,12 +186,7 @@ impl Shared {
         let entry = {
             let mut ctl = self.lock();
             if let Some(read) = ctl.stop_text_read {
-                let shown_before: usize = ctl.transcript[ctl.answer_from..]
-                    .iter()
-                    .filter_map(|e| if let Entry::Assistant { blocks, .. } = e { Some(blocks) } else { None })
-                    .flatten()
-                    .map(|b| if let ContentBlock::Text(t) = b { t.len() } else { 0 })
-                    .sum();
+                let shown_before = assistant_text_bytes(&ctl.transcript[ctl.answer_from..]);
                 cut_text_blocks([&mut blocks], read.saturating_sub(shown_before));
             }
             ctl.live_text.clear();
@@ -215,10 +211,16 @@ impl Shared {
         entries
     }
 
-    /// The same entries as [`Self::transcript`], for the host's own use: nobody is shown them, so the display
-    /// watermark Stop cuts by does not move.
-    pub(crate) fn snapshot(&self) -> Vec<Entry> {
-        Self::entries_of(&self.lock())
+    /// The transcript for the host's own summary of the conversation: the answer in progress counts only the text the
+    /// person has been shown. What they have not read is still Stop's to withdraw, and a summary built from it would
+    /// keep it in the model's history, in the log and after a restart. Read text can no longer be withdrawn, and the
+    /// display watermark does not move.
+    pub(crate) fn snapshot_read(&self) -> Vec<Entry> {
+        let ctl = self.lock();
+        let mut entries = Self::entries_of(&ctl);
+        let from = ctl.answer_from.min(entries.len());
+        cut_text_blocks(assistant_blocks_mut(&mut entries[from..]), self.hub.text_read());
+        entries
     }
 
     fn entries_of(ctl: &Control) -> Vec<Entry> {
@@ -244,12 +246,7 @@ impl Shared {
     }
 
     fn text_bytes(ctl: &Control) -> usize {
-        ctl.transcript[ctl.answer_from..]
-            .iter()
-            .filter_map(|e| if let Entry::Assistant { blocks, .. } = e { Some(blocks) } else { None })
-            .flatten()
-            .map(|b| if let ContentBlock::Text(t) = b { t.len() } else { 0 })
-            .sum()
+        assistant_text_bytes(&ctl.transcript[ctl.answer_from..])
     }
 
     /// Marks the session over so later `send`s are refused.
@@ -284,54 +281,5 @@ impl Shared {
     /// The error a refused `send` returns once the session has ended.
     pub(crate) fn ended_error() -> HostError {
         HostError::SessionEnded
-    }
-}
-
-/// Cuts the text of `blocks` (the text blocks of consecutive assistant turns, in order) so that at most `budget` bytes
-/// remain in total. Returns what is left of the budget. Blocks that become empty are dropped.
-pub(crate) fn cut_text_blocks<'a>(
-    turns: impl IntoIterator<Item = &'a mut Vec<ContentBlock>>,
-    mut budget: usize,
-) -> usize {
-    for blocks in turns {
-        blocks.retain_mut(|block| {
-            let ContentBlock::Text(text) = block else { return true };
-            if text.len() <= budget {
-                budget -= text.len();
-                return !text.is_empty();
-            }
-            let mut end = budget;
-            while !text.is_char_boundary(end) {
-                end -= 1;
-            }
-            text.truncate(end);
-            budget = 0;
-            end > 0
-        });
-    }
-    budget
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_cut_keeps_text_in_order_until_the_budget_is_spent() {
-        let mut first = vec![ContentBlock::text("abc"), ContentBlock::tool_use("c", "t", serde_json::json!({}))];
-        let mut second = vec![ContentBlock::text("defg")];
-        let left = cut_text_blocks([&mut first, &mut second], 5);
-        assert_eq!(left, 0);
-        assert_eq!(first[0], ContentBlock::text("abc"));
-        assert_eq!(second, vec![ContentBlock::text("de")]);
-    }
-
-    #[test]
-    fn a_cut_to_nothing_drops_the_block_and_never_splits_a_character() {
-        let mut blocks = vec![ContentBlock::text("€€")];
-        cut_text_blocks([&mut blocks], 4);
-        assert_eq!(blocks, vec![ContentBlock::text("€")]);
-        cut_text_blocks([&mut blocks], 0);
-        assert_eq!(blocks, Vec::<ContentBlock>::new());
     }
 }
