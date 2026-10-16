@@ -38,6 +38,8 @@ enum Call {
 #[derive(Default)]
 struct Recording {
     calls: Mutex<Vec<Call>>,
+    /// The last ticket handed out by `admit`: the app owns the counter, so it never restarts while the app lives.
+    admitted: Mutex<u64>,
     /// The largest ticket applied: a change with a smaller one is refused.
     newest: Mutex<u64>,
     shown: Mutex<Option<(String, f32)>>,
@@ -68,6 +70,12 @@ struct App {
 }
 
 impl UnderlayTarget for App {
+    fn admit(&self, _character: &str) -> u64 {
+        let mut admitted = self.log.admitted.lock().unwrap();
+        *admitted += 1;
+        *admitted
+    }
+
     fn head(&self, character: &str) -> Result<UnderlayHead, UnderlayTargetError> {
         let hook = self.log.on_head.lock().unwrap().take();
         if let Some(hook) = hook {
@@ -187,24 +195,43 @@ fn decode(args: Value) -> Result<Box<dyn omuzaki_ops_api::DynOp>, OpError> {
 
 /// Only the plan: what the executor does under the lock, and all a dry run does.
 fn plan(rig: &Rig, args: Value, dry_run: bool) -> Result<Plan, OpError> {
+    plan_with(&rig.services, args, dry_run)
+}
+
+fn plan_with(services: &omuzaki_ops_api::Services, args: Value, dry_run: bool) -> Result<Plan, OpError> {
     let op = decode(args)?;
     let doc = MemDoc::from_value(json!({}));
     let (actor, clock) = (Actor::Person { name: "tester".into() }, FakeClock::default());
-    op.plan(&OpCtx::new(&doc, &actor, &clock).with_services(&rig.services).with_dry_run(dry_run))
+    op.plan(&OpCtx::new(&doc, &actor, &clock).with_services(services).with_dry_run(dry_run))
+}
+
+/// Admission: the plan of a real request, whose output carries the ticket the job will use.
+fn admit(services: &omuzaki_ops_api::Services, args: Value) -> Value {
+    plan_with(services, args, false).expect("plans").output.expect("answers")
+}
+
+/// The job's work for a request admitted with `planned`, with `signal` as the executor's cancel flag.
+fn work(
+    services: &omuzaki_ops_api::Services,
+    id: JobId,
+    args: Value,
+    planned: &Value,
+    signal: &Signal,
+) -> Result<Value, OpError> {
+    let op = decode(args)?;
+    let (actor, doc) = (Actor::Person { name: "tester".into() }, Doc(MemDoc::from_value(json!({}))));
+    op.work(&JobCtx::new(id, &actor, &doc, signal).with_services(services).with_plan_output(planned))
+}
+
+/// Admission and then the job, as the executor runs them for one request.
+fn run_job(services: &omuzaki_ops_api::Services, id: u64, args: Value) -> Result<Value, OpError> {
+    let planned = plan_with(services, args.clone(), false)?.output.expect("answers");
+    work(services, JobId(id), args, &planned, &Signal::default())
 }
 
 /// The plan, then the job's work, as the executor runs them. Returns what `work` answers.
 fn run(rig: &Rig, args: Value) -> Result<Value, OpError> {
-    plan(rig, args.clone(), false)?;
-    let id = rig.next_job.fetch_add(1, Ordering::SeqCst);
-    work(&rig.services, JobId(id), args, &Signal::default())
-}
-
-/// Only the job's work, with `signal` as the executor's cancel flag and progress sink.
-fn work(services: &omuzaki_ops_api::Services, id: JobId, args: Value, signal: &Signal) -> Result<Value, OpError> {
-    let op = decode(args)?;
-    let (actor, doc) = (Actor::Person { name: "tester".into() }, Doc(MemDoc::from_value(json!({}))));
-    op.work(&JobCtx::new(id, &actor, &doc, signal).with_services(services))
+    run_job(&rig.services, rig.next_job.fetch_add(1, Ordering::SeqCst), args)
 }
 
 fn args(rig: &Rig, extra: &Value) -> Value {
@@ -355,14 +382,16 @@ fn the_op_needs_the_app_to_provide_its_services() {
     assert_eq!(err.code, ErrorCode::Unavailable);
 }
 
-/// Runs job `newer` to the end at the moment job `older` first asks the app for the head, so the newer request
-/// finishes before the older one reaches the app. Returns what the older job answers.
+/// Admits `older`, then runs `newer` (admitted after it) to the end at the moment the older job first asks the app for
+/// the head, so the newer request finishes before the older one reaches the app. Returns what the older job answers.
 fn newer_job_finishes_while_older_waits(rig: &Rig, older: (u64, Value), newer: (u64, Value)) -> Value {
+    let planned = admit(&rig.services, older.1.clone());
     let (services, (newer_id, newer_args)) = (rig.services.clone(), newer);
     *rig.log.on_head.lock().unwrap() = Some(Box::new(move || {
-        work(&services, JobId(newer_id), newer_args, &Signal::default()).expect("the newer job runs");
+        run_job(&services, newer_id, newer_args).expect("the newer job runs");
     }));
-    work(&rig.services, JobId(older.0), older.1, &Signal::default()).expect("the older job ends without failing")
+    work(&rig.services, JobId(older.0), older.1, &planned, &Signal::default())
+        .expect("the older job ends without failing")
 }
 
 #[test]
@@ -416,7 +445,8 @@ fn a_cancelled_job_changes_nothing_on_either_path() {
     let cancelled = Signal::default();
     cancelled.0.cancel();
     // The build path.
-    let err = work(&rig.services, JobId(1), args(&rig, &json!({})), &cancelled).unwrap_err();
+    let first = args(&rig, &json!({}));
+    let err = work(&rig.services, JobId(1), first.clone(), &admit(&rig.services, first), &cancelled).unwrap_err();
     assert_eq!(err.code, ErrorCode::Cancelled, "{err:?}");
     assert!(rig.log.is_empty());
     assert_eq!(*rig.log.newest.lock().unwrap(), 0, "a cancelled job applies nothing, so no ticket");
@@ -424,7 +454,9 @@ fn a_cancelled_job_changes_nothing_on_either_path() {
     // The cached opacity path, with something already shown.
     run(&rig, args(&rig, &json!({}))).expect("shown");
     let calls_before = rig.log.calls.lock().unwrap().len();
-    let err = work(&rig.services, JobId(9), args(&rig, &json!({ "opacity": 0.1 })), &cancelled).unwrap_err();
+    let dimmer = args(&rig, &json!({ "opacity": 0.1 }));
+    let planned = admit(&rig.services, dimmer.clone());
+    let err = work(&rig.services, JobId(9), dimmer, &planned, &cancelled).unwrap_err();
     assert_eq!(err.code, ErrorCode::Cancelled, "{err:?}");
     assert_eq!(rig.log.calls.lock().unwrap().len(), calls_before, "no opacity update from a cancelled job");
     assert_eq!(rig.log.current().unwrap().1, 0.5);
@@ -448,4 +480,30 @@ fn a_dry_run_with_no_app_attached_still_refuses_a_bad_request() {
     assert_eq!(plain(bad, true).unwrap_err().field.as_deref(), Some("opacity"));
     // Applying needs the app.
     assert_eq!(plain(good, false).unwrap_err().code, ErrorCode::Unavailable);
+}
+
+#[test]
+fn a_fresh_job_counter_against_the_same_app_still_applies() {
+    // The app outlives the job manager (a project reopened against the same stage): job ids restart at 1 while the app
+    // has already applied requests admitted under larger ids. Tickets come from the app, so the new requests apply.
+    let rig = rig(None);
+    run_job(&rig.services, 500, args(&rig, &json!({}))).expect("a job with a large id shows the sheet");
+    let out = run_job(&rig.services, 1, args(&rig, &json!({ "opacity": 0.25 }))).expect("a restarted counter");
+    assert_eq!(out["rebuilt"], json!(false), "{out}");
+    assert!(out.get("superseded").is_none(), "{out}");
+    assert!((rig.log.current().unwrap().1 - 0.25).abs() < 1e-6, "the new opacity applied");
+    let moved = json!({ "align": { "offset": [1.0, 0.0], "scale": 1.0, "rotation": 0.0 } });
+    assert_eq!(run_job(&rig.services, 2, args(&rig, &moved)).unwrap()["rebuilt"], json!(true));
+    assert_eq!(rig.log.shows().len(), 2);
+}
+
+#[test]
+fn a_job_started_without_a_ticket_is_refused() {
+    let rig = rig(None);
+    let op = decode(args(&rig, &json!({}))).unwrap();
+    let (actor, doc, signal) =
+        (Actor::Person { name: "tester".into() }, Doc(MemDoc::from_value(json!({}))), Signal::default());
+    let err = op.work(&JobCtx::new(JobId(1), &actor, &doc, &signal).with_services(&rig.services)).unwrap_err();
+    assert_eq!(err.code, ErrorCode::Internal, "{err:?}");
+    assert!(rig.log.is_empty());
 }

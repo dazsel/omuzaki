@@ -58,11 +58,17 @@ pub enum UnderlayTargetError {
 /// material and the textures.
 ///
 /// Jobs for one character can overlap, and the CPU lane runs several at once, so every change names a `ticket` that
-/// orders the requests: a larger ticket is a newer request. The op passes its job id, which the job manager gives in the
-/// order requests were admitted, not the order workers reach the app. The app keeps the largest ticket it has applied
-/// for each character and refuses a change with a smaller one, deciding that in the same step as the change, so a slower,
-/// older request can never replace what a newer one showed, nor set an opacity on pixels it did not build.
+/// orders the requests: a larger ticket is a newer request. The target hands the tickets out itself
+/// ([`admit`](Self::admit)), when the request is admitted and before its job is queued, so the order is the order of
+/// admission and does not depend on which worker reaches the app first, nor on any counter that restarts when the job
+/// manager does (reopening a project against the same app). The app keeps the largest ticket it has applied for each
+/// character and refuses a change with a smaller one, deciding that in the same step as the change, so a slower, older
+/// request can never replace what a newer one showed, nor set an opacity on pixels it did not build.
 pub trait UnderlayTarget: Send + Sync {
+    /// Admits a request for `character` and returns its ticket. Every ticket this target returns is larger than the
+    /// ones it returned before, for as long as the target lives.
+    fn admit(&self, character: &str) -> u64;
+
     /// The head of `character` as it is on screen now.
     ///
     /// # Errors

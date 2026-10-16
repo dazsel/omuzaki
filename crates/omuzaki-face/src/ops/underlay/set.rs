@@ -4,9 +4,10 @@
 //! resample on a job worker without the document lock. A call that changes only the opacity of what is already shown
 //! sets that opacity and builds nothing.
 //!
-//! Jobs for one character can overlap, so every change names a ticket, the job id, which orders requests by admission
-//! (a larger id was admitted later); the app refuses a change from a ticket older than one it has applied (see
-//! `UnderlayTarget`). A job that was cancelled, or replaced by a newer request, changes nothing.
+//! Jobs for one character can overlap, so every change names a ticket. `plan` runs once per request, in admission order
+//! under the executor's lock, and takes the ticket from the app (`UnderlayTarget::admit`); the job reads it back from the
+//! plan's output. The app refuses a change from a ticket older than one it has applied. A job that was cancelled, or
+//! replaced by a newer request, changes nothing.
 
 use omuzaki_core::glam::UVec2;
 use omuzaki_face_api::underlay::{UnderlayHead, UnderlayTarget, UnderlayTargetError};
@@ -49,12 +50,17 @@ impl Op for UnderlaySet {
         };
         let request = Request::resolve(self, target)?;
         let rebuild = request.target.shown(&request.character).as_deref() != Some(request.key.as_str());
-        Ok(Plan::answer(json!({
+        let mut answer = json!({
             "character": request.character,
             "view": UnderlayView::new(request.geometry.window(), narrow(self.opacity)),
             "rebuild": rebuild,
             "dry_run": ctx.dry_run,
-        })))
+        });
+        // A dry run starts no job, so it takes no ticket.
+        if !ctx.dry_run {
+            answer["ticket"] = json!(request.target.admit(&request.character));
+        }
+        Ok(Plan::answer(answer))
     }
 
     fn work(&self, job: &JobCtx<'_>) -> Result<Value, OpError> {
@@ -66,9 +72,12 @@ impl Op for UnderlaySet {
         let answer = |rebuilt: bool| json!({ "character": request.character, "view": view, "rebuilt": rebuilt });
         let superseded = || json!({ "character": request.character, "view": view, "superseded": true });
 
-        // The job id orders requests by admission, not by when a worker got here, so a newer request wins whatever the
-        // finish order.
-        let ticket = job.id().0;
+        // The ticket was taken in `plan`, in admission order, so a newer request wins whatever the finish order.
+        let ticket = job
+            .plan_output()
+            .and_then(|output| output.get("ticket"))
+            .and_then(Value::as_u64)
+            .ok_or_else(|| OpError::internal("face.underlay.set was started without an admission ticket"))?;
 
         // Unchanged sheet and alignment: only the opacity moves, a material update with nothing read or built. The app
         // compares the key and sets the opacity in one step, so it cannot land on pixels this job did not mean.
