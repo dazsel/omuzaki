@@ -315,6 +315,11 @@ jobs:
         with:
           sparse-checkout: tools/ci
           persist-credentials: false
+      # self-gate.py reads the root manifests with tomllib (Python 3.11+); without it every root-manifest edit would
+      # count as protected, so the version is pinned here instead of left to the runner image.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
       - name: Latest trusted Self-gate line names the head
         env:
           GITHUB_TOKEN: ${{ github.token }}
