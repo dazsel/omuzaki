@@ -137,7 +137,7 @@ pub enum GroupGeometry {
     /// A lens tube per clump ([`tube`](super::tube)).
     Tube,
     /// The curtain: each clump owns `columns` columns of one wide strip, ordered across the head by `u` (one per clump).
-    /// The strip mesh is the curtain generator's and the runtime's.
+    /// The strips are meshed by [`curtain::group_mesh`](super::r#gen::curtain::group_mesh); the runtime (#322) refills them.
     Strip {
         /// Columns across one guide.
         columns: u8,
@@ -258,11 +258,6 @@ impl GroupGenerator for Dispatch {
             Generator::Guides(g) => r#gen::guides::clump_count(g),
         }
     }
-}
-
-/// Whether a generator's clumps are drawn as tubes: every kind but the cap (a shell) and the curtain (a strip).
-pub fn draws_tubes(generator: &Generator) -> bool {
-    !matches!(generator, Generator::Cap(_) | Generator::Curtain(_))
 }
 
 /// One enabled group, compiled.

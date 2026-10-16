@@ -14,8 +14,8 @@
 //! wave, which the prototype keeps private (its `ENVELOPE`). The guides draw from the prototype's legacy stream, which
 //! has to stand where the prototype's does when the curtain starts: each framing lock draws two numbers before it, so the
 //! stream is advanced past `2 * framing_locks` draws first. Rest points are held to 1e-4 m and `u` to 1e-6. The numbers
-//! measured are printed so the first run with the dumps can propose the final tolerances. The strip mesh is not compared
-//! here yet: that waits for #1679's treatment.
+//! measured are printed so the first run with the dumps can propose the final tolerances. The strip mesh is compared in
+//! `hair_curtain_parity.rs`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // helpers load local files; a bad one should stop the test with its reason
 

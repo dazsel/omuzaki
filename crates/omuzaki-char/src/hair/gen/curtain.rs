@@ -1,6 +1,6 @@
-//! Curtain generator guides: the long hair, `count` guides round the back with an S-wave and a tip curl (port of
-//! `parts/hair.js` 291 to 326). The strip mesh the guides are drawn as is a later task; this file makes the clumps and
-//! their position `u` across the back.
+//! Curtain generator: the long hair, `count` guides round the back with an S-wave and a tip curl (port of
+//! `parts/hair.js` 291 to 326), drawn as a strip of columns per guide ([`strip`], `shellFill`, 421 to 494). This file
+//! makes the clumps and their position `u` across the back, and meshes them ([`group_mesh`]).
 //!
 //! **A guide.** Guide `i` of `count` stands at `u = i / (count - 1)` across the back, at azimuth
 //! `lerp(-spread_deg, spread_deg, u)` from the back centre. Its root sits just under the braid line, which runs from
@@ -19,13 +19,28 @@
 //! `z = `[`BODY_AXIS_Z`], but its fall starts from the root's distance from the axis in `x` and from the origin in `z`,
 //! so the first step runs a little outward. That is the prototype's look, kept for parity.
 //!
+//! **Folds (#841).** The prototype gives every guide its own wave, so neighbours can cross lower down and the strip
+//! between them folds over itself. Normal builds keep that ([`Folds::Prototype`], the parity target). Two alternatives
+//! are built for the art director to choose between and are removed after the pick: [`Folds::Coherent`] smooths the
+//! wave's amplitude, frequency and phase jitter across `u` so neighbours stay in step (the draws are still all made, in
+//! the prototype's order), and [`Folds::Clamped`] stops a column being pulled past its own guide.
+//!
 //! The group's stiffness and follow are its [`Dynamics`](omuzaki_char_api::Dynamics), applied by the context.
 
-use omuzaki_char_api::{CurtainGen, GuidePoint, HeadSurface};
+mod strip;
+
+pub use strip::{
+    MIN_GAP, Spacing, StripError, StripLook, column_count, curtain_order, strip_indices, strip_mesh, strip_normals,
+    strip_positions, vertex_count, winding_flips,
+};
+
+use omuzaki_char_api::{CurtainGen, GuidePoint, HairClump, HeadSurface};
 use omuzaki_core::glam::{DVec3, Vec3};
+use omuzaki_core::mesh::MeshData;
 
 use super::cap::smoothstep;
 use crate::hair::compile::{CompiledGroup, GroupGeometry, HairGenCtx};
+use crate::hair::tube::{OutwardFrame, vertex_colour};
 use crate::kit::catmull::spaced_points;
 
 /// Points of a guide (the prototype's `catmull(pts, 26)`).
@@ -58,25 +73,109 @@ const CURL_PULL: f64 = 0.015;
 const CURL_LIFT: f64 = 0.045;
 /// Jitter on the length, as a fraction.
 const LENGTH_JITTER: f64 = 0.03;
-/// Jitter on the wave amplitude, metres.
-const AMPLITUDE_JITTER: f64 = 0.006;
+/// Jitter on the wave amplitude, as a fraction of it: the prototype's `+- 0.006` on its `0.036`. Relative, so a curtain
+/// whose wave is off (amplitude 0) is straight, and the default is the prototype's.
+const AMPLITUDE_JITTER: f64 = 0.006 / 0.036;
 /// Where the braid line blends from the sides to the back, degrees from the front.
 const BRAID_BLEND_DEG: (f64, f64) = (70.0, 180.0);
 
+/// How the curtain treats guides that cross (#841). Everything but [`Folds::Prototype`] is for the art director's pick
+/// and goes once it is made.
+#[doc(hidden)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum Folds {
+    /// The prototype's: independent waves per guide, columns follow their neighbours wherever they go.
+    #[default]
+    Prototype,
+    /// The waves' amplitude, frequency and phase jitter are smoothed across `u`, so neighbours stay in step.
+    Coherent,
+    /// A column is never pulled past its own guide.
+    Clamped,
+}
+
+impl Folds {
+    /// The column spacing rule of the strip builder.
+    fn spacing(self) -> Spacing {
+        if self == Self::Clamped { Spacing::Clamped } else { Spacing::Prototype }
+    }
+}
+
+/// [`Folds::Coherent`]'s smoothing width across the curtain, as a fraction of `u` (one standard deviation).
+const COHERENCE_SPAN: f64 = 0.12;
+
 /// Compiles the group: one clump per guide, with `u` across the back.
 pub fn compile(g: &CurtainGen, ctx: &mut HairGenCtx<'_>) -> CompiledGroup {
+    compile_folds(g, ctx, Folds::Prototype)
+}
+
+/// [`compile`] with a fold treatment. Only the tests and the evidence dump choose one.
+#[doc(hidden)]
+pub fn compile_folds(g: &CurtainGen, ctx: &mut HairGenCtx<'_>, folds: Folds) -> CompiledGroup {
     let count = usize::from(g.count);
     let centre = ctx.head.centre();
+    // Every guide's draws are taken up front, in order: the stream is the prototype's whatever the treatment.
+    let mut draws: Vec<Draws> = (0..count).map(|_| Draws::take(ctx)).collect();
+    if folds == Folds::Coherent {
+        smooth_jitter(&mut draws);
+    }
     let mut clumps = Vec::with_capacity(count);
     let mut across = Vec::with_capacity(count);
-    for i in 0..count {
+    for (i, draws) in draws.iter().enumerate() {
         let u = across_back(i, count);
-        let draws = Draws::take(ctx);
-        let rest = guide(g, ctx, centre, u, &draws);
+        let rest = guide(g, ctx, centre, u, draws);
         clumps.push(ctx.clump(rest, g.width, g.thickness, 1.0));
         across.push(narrow_f32(u));
     }
     CompiledGroup { clumps, geometry: GroupGeometry::Strip { columns: g.columns, u: across } }
+}
+
+/// Replaces each guide's amplitude, frequency and phase jitter by a Gaussian-weighted average over its neighbours
+/// ([`COHERENCE_SPAN`] wide), so the jitter varies smoothly across the back. Length and curl are left alone.
+#[allow(clippy::cast_precision_loss)] // up to a few hundred guides
+fn smooth_jitter(draws: &mut [Draws]) {
+    let n = draws.len();
+    if n < 2 {
+        return;
+    }
+    let sigma = COHERENCE_SPAN * (n - 1) as f64;
+    let weight = |i: usize, j: usize| (-0.5 * ((i as f64 - j as f64) / sigma).powi(2)).exp();
+    let smooth = |pick: fn(&Draws) -> f64| -> Vec<f64> {
+        (0..n)
+            .map(|i| {
+                let total: f64 = (0..n).map(|j| weight(i, j)).sum();
+                (0..n).map(|j| weight(i, j) * pick(&draws[j])).sum::<f64>() / total
+            })
+            .collect()
+    };
+    let (amplitude, frequency, phase) = (smooth(|d| d.amplitude), smooth(|d| d.frequency), smooth(|d| d.phase));
+    for (i, d) in draws.iter_mut().enumerate() {
+        (d.amplitude, d.frequency, d.phase) = (amplitude[i], frequency[i], phase[i]);
+    }
+}
+
+/// The curtain as one mesh at rest, from the compiled `clumps` and their `u` (a strip's position across the back): each
+/// guide's strip of `columns` columns, in order of `u`, every strip with vertices of its own. Each strip takes its
+/// clump's shade and streak tint.
+///
+/// # Errors
+/// [`StripError`] if `u` and `clumps` differ in length or the guides cannot make a strip (fewer than two points, or not
+/// all the same number).
+#[doc(hidden)]
+pub fn group_mesh(
+    clumps: &[HairClump],
+    u: &[f32],
+    columns: u8,
+    frame: &OutwardFrame,
+    folds: Folds,
+) -> Result<MeshData, StripError> {
+    if u.len() != clumps.len() {
+        return Err(StripError::GuideCount { clumps: clumps.len(), u: u.len() });
+    }
+    let order = curtain_order(u);
+    let guides: Vec<&[Vec3]> = order.iter().map(|&i| clumps[i].rest.as_slice()).collect();
+    let looks: Vec<StripLook> =
+        order.iter().map(|&i| StripLook { shade: clumps[i].shade, colour: vertex_colour(clumps[i].tint) }).collect();
+    strip_mesh(&guides, &looks, columns, folds.spacing(), frame.head, |p| frame.rest(p))
 }
 
 /// How many clumps [`compile`] makes, from the parameters alone: one per guide.
@@ -99,7 +198,7 @@ fn narrow_f32(x: f64) -> f32 {
 struct Draws {
     /// Length jitter, a fraction.
     length: f64,
-    /// Wave amplitude jitter, metres.
+    /// Wave amplitude jitter, as a fraction of the amplitude in `-AMPLITUDE_JITTER..AMPLITUDE_JITTER`.
     amplitude: f64,
     /// Wave frequency jitter, radians along the guide.
     frequency: f64,
@@ -114,7 +213,7 @@ struct Draws {
 impl Draws {
     fn take(ctx: &mut HairGenCtx<'_>) -> Self {
         let length = ctx.rr(-LENGTH_JITTER, LENGTH_JITTER);
-        let amplitude = ctx.rr(-AMPLITUDE_JITTER, AMPLITUDE_JITTER);
+        let amplitude = AMPLITUDE_JITTER * ctx.rr(-1.0, 1.0);
         let frequency = ctx.rr(-1.0, 1.0);
         let phase = ctx.rr(-0.6, 0.6);
         let curl = ctx.rr(0.5, 1.0);
@@ -165,7 +264,7 @@ fn guide(params: &CurtainGen, ctx: &HairGenCtx<'_>, centre: Vec3, u: f64, draws:
     let axis = DVec3::new(f64::from(centre.x), 0.0, BODY_AXIS_Z);
     let (sin, cos) = phi.sin_cos();
     let root_reach = (root.x - axis.x).hypot(root.z);
-    let amplitude = params.wave.amplitude + draws.amplitude;
+    let amplitude = params.wave.amplitude * (1.0 + draws.amplitude);
     let frequency = std::f64::consts::TAU * params.wave.frequency + draws.frequency;
     let phase = params.wave.phase + u * 10.0 + draws.phase;
     let curl = draws.curl * draws.curl_sign * params.wave.curl;

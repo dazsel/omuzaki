@@ -15,8 +15,10 @@
 //! **Why tubes.** A lock is a closed lens, wound to face out of the tube, so the renderer's inverted-hull outline finds
 //! a back face from every side (a flat ribbon wound outward gets no outline from outside).
 //!
-//! **Not drawn yet.** The curtain's strip geometry is the curtain generator's and the runtime's: a group
-//! that compiles to a strip reports a warning instead of a mesh.
+//! **The curtain.** A group that compiles to a strip (the curtain) is meshed by
+//! [`curtain::group_mesh`](super::r#gen::curtain::group_mesh): each guide's strip of columns, vertices of its own, in
+//! order of `u`. A mesh holds its tubes first, then the strips, then the shells; the strips carry their clump's streak
+//! tint like a tube, so [`recolour`](Hair::recolour) finds every clump.
 
 use std::ops::Range;
 
@@ -31,7 +33,8 @@ use omuzaki_core::mesh::MeshData;
 use omuzaki_face_api::{FaceLayerId, Palette, narrow};
 use omuzaki_render_api::{AlphaMode, Outline};
 
-use super::compile::{self, CompiledEntry, Dispatch, GroupGenerator, GroupGeometry, draws_tubes, enabled};
+use super::compile::{self, CompiledEntry, Dispatch, GroupGenerator, GroupGeometry, enabled};
+use super::r#gen::curtain::{self, Folds, StripError};
 use super::tube::{CAP_VERTICES, OutwardFrame, RING, TubeError, TubeLook, TubeMesh, polar_angles, vertex_colour};
 
 /// Where along the torso the body's vertical axis is read, from hips (0) to neck base (1): the upper back, where long
@@ -152,13 +155,24 @@ fn body_axis(ctx: &BuildCtx<'_>, head: Vec3) -> Vec2 {
         .map_or(Vec2::new(head.x, head.z), |s| Vec2::new(s.centre.x, s.centre.z))
 }
 
+/// Why the hair's meshes could not be written.
+#[derive(Debug, thiserror::Error)]
+enum MeshError {
+    /// A lock's tube.
+    #[error(transparent)]
+    Tube(#[from] TubeError),
+    /// The curtain's strips.
+    #[error(transparent)]
+    Strip(#[from] StripError),
+}
+
 /// The static and the dynamic mesh of the entries (`None` for a mesh with nothing in it): tubes first, in group order,
-/// then shells. Pushes a warning for each group that made nothing, or that is a strip (not drawn yet).
+/// then strips, then shells. Pushes a warning for each group that made nothing.
 fn mesh_groups(
     entries: &[CompiledEntry],
     frame: &OutwardFrame,
     warnings: &mut Vec<String>,
-) -> Result<(Option<MeshData>, Option<MeshData>), TubeError> {
+) -> Result<(Option<MeshData>, Option<MeshData>), MeshError> {
     let (mut stat, mut dynamic) = (TubeMesh::new(), TubeMesh::new());
     let (mut stat_clumps, mut dynamic_clumps) = (0usize, 0usize);
     for entry in entries {
@@ -182,10 +196,26 @@ fn mesh_groups(
                     warnings.push(format!("the '{}' group made no clumps", entry.id));
                 }
             }
-            GroupGeometry::Strip { .. } if !entry.group.clumps.is_empty() => {
-                warnings.push(format!("the '{}' group is a strip, which is not drawn yet", entry.id));
-            }
             GroupGeometry::Strip { .. } | GroupGeometry::Shell(_) => {}
+        }
+    }
+    for entry in entries {
+        if let GroupGeometry::Strip { columns, u } = &entry.group.geometry {
+            if entry.group.clumps.is_empty() {
+                warnings.push(format!("the '{}' group made no clumps", entry.id));
+                continue;
+            }
+            let strips = curtain::group_mesh(&entry.group.clumps, u, *columns, frame, Folds::Prototype)?;
+            if strips.indices.is_empty() {
+                warnings.push(format!(
+                    "the '{}' group has {columns} columns, so there is nothing to draw between them",
+                    entry.id
+                ));
+            }
+            let target = if entry.simulate { &mut dynamic } else { &mut stat };
+            if !target.append(&strips) {
+                warnings.push(format!("the '{}' strips lack valid hair-uv and hair-info and were left out", entry.id));
+            }
         }
     }
     for entry in entries {
@@ -248,19 +278,34 @@ fn hair_material(
     })
 }
 
+/// How a clump is drawn, as a recolour sees it.
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum Drawn {
+    /// A tube.
+    Tube,
+    /// A strip of this many columns, one clump's worth of a curtain.
+    Strip(u8),
+    /// No vertices of its own to tint (the cap's shell).
+    Shell,
+}
+
 /// One clump of the hair as a recolour sees it: from the parameters alone.
 struct Slot<'a> {
     group: &'a GroupId,
     simulate: bool,
-    /// Whether the clump is a tube in a mesh (a shell or strip clump has no vertices of its own to tint).
-    tube: bool,
+    drawn: Drawn,
 }
 
 /// Every clump, in compile order.
 fn layout<'a>(params: &'a HairParams, generators: &dyn GroupGenerator) -> Vec<Slot<'a>> {
     enabled(params)
         .flat_map(|(id, group)| {
-            let slot = Slot { group: id, simulate: group.dynamics.simulate, tube: draws_tubes(&group.generator) };
+            let drawn = match &group.generator {
+                Generator::Cap(_) => Drawn::Shell,
+                Generator::Curtain(g) => Drawn::Strip(g.columns),
+                _ => Drawn::Tube,
+            };
+            let slot = Slot { group: id, simulate: group.dynamics.simulate, drawn };
             std::iter::repeat_with(move || Slot { ..slot }).take(compile::clumps_in(group, generators))
         })
         .collect()
@@ -282,7 +327,7 @@ pub fn recolour_with(
     // A mesh the layout says holds tubes, or a cap's shell (which has no clumps, so the layout cannot see it), must
     // exist: without it there is nothing to tint or keep, and `Done` would be a lie.
     for simulated in [false, true] {
-        let expects_tubes = layout.iter().any(|s| s.tube && s.simulate == simulated);
+        let expects_tubes = layout.iter().any(|s| s.drawn != Drawn::Shell && s.simulate == simulated);
         let expects_shell =
             enabled(params).any(|(_, g)| matches!(g.generator, Generator::Cap(_)) && g.dynamics.simulate == simulated);
         let name = mesh_name(ctx.part, simulated);
@@ -293,8 +338,13 @@ pub fn recolour_with(
     for mesh in &mut output.meshes {
         // Found by name: a mesh's `dynamic` flag is not the simulated groups' mark while no runtime moves them.
         let simulated = mesh.name == mesh_name(ctx.part, true);
-        let mine = layout.iter().zip(&tints).filter(|(s, _)| s.tube && s.simulate == simulated).map(|(_, t)| *t);
-        if !paint_tubes(&mut mesh.geometry, &mine.collect::<Vec<_>>()) {
+        let mine: Vec<(Drawn, Option<Colour>)> = layout
+            .iter()
+            .zip(&tints)
+            .filter(|(s, _)| s.drawn != Drawn::Shell && s.simulate == simulated)
+            .map(|(s, t)| (s.drawn, *t))
+            .collect();
+        if !paint_clumps(&mut mesh.geometry, &mine) {
             return Ok(Recoloured::NeedsRebuild); // not the hair `build` makes: don't guess
         }
     }
@@ -303,40 +353,58 @@ pub fn recolour_with(
     Ok(Recoloured::Done)
 }
 
-/// Gives the vertices of each tube at the front of `mesh` the colour of its tint, in order. Returns `false`, changing
-/// nothing, if the mesh isn't `tints.len()` tubes followed by (at most) shells.
-fn paint_tubes(mesh: &mut MeshData, tints: &[Option<Colour>]) -> bool {
+/// Gives the vertices of each clump of `mesh` the colour of its tint. The mesh holds the tubes first and then the
+/// strips, each in the order of `clumps` (which mixes them in group order). Returns `false`, changing nothing, if the
+/// mesh isn't those clumps followed by (at most) shells.
+fn paint_clumps(mesh: &mut MeshData, clumps: &[(Drawn, Option<Colour>)]) -> bool {
     if mesh.colours.len() != mesh.positions.len() {
         return false;
     }
-    let Some(ranges) = tube_ranges(mesh, tints.len()) else { return false };
-    for (range, tint) in ranges.into_iter().zip(tints) {
-        mesh.colours[range].fill(vertex_colour(*tint));
+    let Some(ranges) = clump_ranges(mesh, clumps.iter().map(|c| c.0)) else { return false };
+    for (range, (_, tint)) in ranges.into_iter().zip(clumps_in_mesh_order(clumps)) {
+        mesh.colours[range].fill(vertex_colour(tint));
     }
     true
 }
 
-/// The vertex ranges of the first `count` tubes of `mesh`: a tube starts at a ring whose `hair-uv.y` is 0 and ends after
-/// the ring where it reaches 1 (the last ring of every tube) and its two caps, which take the tube's tint too. `None` if
-/// the mesh doesn't hold that many.
-fn tube_ranges(mesh: &MeshData, count: usize) -> Option<Vec<Range<usize>>> {
+/// The clumps in the order the mesh holds them: every tube, then every strip.
+fn clumps_in_mesh_order(clumps: &[(Drawn, Option<Colour>)]) -> impl Iterator<Item = (Drawn, Option<Colour>)> + '_ {
+    let tubes = clumps.iter().filter(|c| c.0 == Drawn::Tube);
+    let strips = clumps.iter().filter(|c| matches!(c.0, Drawn::Strip(_)));
+    tubes.chain(strips).copied()
+}
+
+/// The vertex ranges of `clumps` in `mesh`, in mesh order (see [`clumps_in_mesh_order`]). A tube starts at a ring whose
+/// `hair-uv.y` is 0 and ends after the ring where it reaches 1 (the last ring of every tube) and its two caps, which
+/// take the tube's tint too. A strip is `columns` runs of vertices, each from `hair-uv.y` 0 to 1. `None` if the mesh
+/// doesn't hold that many.
+fn clump_ranges(mesh: &MeshData, clumps: impl Iterator<Item = Drawn> + Clone) -> Option<Vec<Range<usize>>> {
     let uv = &mesh.extra_attribute(HAIR_UV)?.data;
     let along = |vertex: usize| uv.get(2 * vertex + 1).copied();
-    let mut ranges = Vec::with_capacity(count);
+    let tubes = clumps.clone().filter(|d| *d == Drawn::Tube);
+    let strips = clumps.filter(|d| matches!(d, Drawn::Strip(_)));
+    let mut ranges = Vec::new();
     let mut at = 0;
-    for _ in 0..count {
+    for drawn in tubes.chain(strips) {
         let start = at;
         if along(at)? != 0.0 {
             return None;
         }
-        loop {
-            let t = along(at)?;
-            at += RING;
-            if t >= 1.0 {
-                break;
+        // A tube's run of rings, or one of a strip's columns, ends at `hair-uv.y` 1.
+        let runs = if let Drawn::Strip(columns) = drawn { usize::from(columns) } else { 1 };
+        let step = if drawn == Drawn::Tube { RING } else { 1 };
+        for _ in 0..runs {
+            loop {
+                let t = along(at)?;
+                at += step;
+                if t >= 1.0 {
+                    break;
+                }
             }
         }
-        at += CAP_VERTICES;
+        if drawn == Drawn::Tube {
+            at += CAP_VERTICES;
+        }
         ranges.push(start..at);
     }
     (at <= mesh.positions.len()).then_some(ranges)

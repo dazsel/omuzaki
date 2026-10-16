@@ -1254,8 +1254,14 @@ impl Validate for HairGroup {
                 c.range("generator/spread_deg", g.spread_deg, 20.0, 180.0);
                 c.range("generator/length_front", g.length_front, 0.05, 1.5);
                 c.range("generator/length_back", g.length_back, 0.05, 1.5);
+                c.range("generator/root_height_front", g.root_height_front, -2.0, 2.0);
+                c.range("generator/root_height_back", g.root_height_back, -2.0, 2.0);
                 if g.envelope.len() < 2 {
                     c.fail("generator/envelope", "needs at least two [y, distance] points");
+                }
+                for (i, [y, distance]) in g.envelope.iter().enumerate() {
+                    c.range(&format!("generator/envelope/{i}/y"), *y, -4.0, 4.0);
+                    c.range(&format!("generator/envelope/{i}/distance"), *distance, 0.0, 4.0);
                 }
                 c.nested("generator/wave", &g.wave);
                 c.nested("generator/width", &g.width);
@@ -1449,6 +1455,28 @@ mod tests {
             paths,
             ["physics/iterations", "groups/c-curtain/generator/count", "groups/c-curtain/generator/envelope"]
         );
+    }
+
+    #[test]
+    fn the_curtains_heights_and_envelope_are_finite_and_in_range() {
+        let check = |edit: &dyn Fn(&mut CurtainGen)| {
+            let mut p = HairParams::default();
+            let g = p.groups.values_mut().find(|g| matches!(g.generator, Generator::Curtain(_))).unwrap();
+            if let Generator::Curtain(c) = &mut g.generator {
+                edit(c);
+            }
+            p.validate().err().map(|e| e.0.iter().map(|x| x.path.clone()).collect::<Vec<_>>())
+        };
+        assert_eq!(check(&|_| {}), None, "the default curtain is valid");
+        let front = Some(vec!["groups/c-curtain/generator/root_height_front".to_owned()]);
+        assert_eq!(check(&|c| c.root_height_front = f64::NAN), front);
+        assert_eq!(check(&|c| c.root_height_front = 9.0), front);
+        let back = Some(vec!["groups/c-curtain/generator/root_height_back".to_owned()]);
+        assert_eq!(check(&|c| c.root_height_back = f64::INFINITY), back);
+        let row = |i, what| Some(vec![format!("groups/c-curtain/generator/envelope/{i}/{what}")]);
+        assert_eq!(check(&|c| c.envelope[1][0] = f64::NAN), row(1, "y"));
+        assert_eq!(check(&|c| c.envelope[2][1] = -0.5), row(2, "distance"));
+        assert_eq!(check(&|c| c.envelope[0][1] = f64::NAN), row(0, "distance"));
     }
 
     #[test]
