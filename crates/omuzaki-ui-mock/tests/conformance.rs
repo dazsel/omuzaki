@@ -131,6 +131,10 @@ omuzaki_ui_api::register_panel! {
     build: |_| Box::new(Discards),
 }
 omuzaki_ui_api::register_panel! {
+    id: "bad-build", title: "Bad build", icon: "", region: Region::Left, min_size: [240.0, 160.0], order: 10,
+    build: |_| panic!("cannot build"),
+}
+omuzaki_ui_api::register_panel! {
     id: "late-init", title: "Late init", icon: "", region: Region::Left, min_size: [240.0, 160.0], order: 9,
     build: |_| Box::new(LateInit::default()),
 }
@@ -229,4 +233,13 @@ fn every_size_is_tried_on_a_freshly_built_panel() {
         host.check("late-init", &ctx),
         ["late-init: panics at 120 by 80 points", "late-init: panics at 1 by 1 points"]
     );
+}
+
+#[test]
+fn a_build_that_panics_is_a_named_problem_and_never_a_panic() {
+    let runner = MockRunner::new(MemDoc::new());
+    let actor = Actor::System;
+    let ctx = PanelCtx::new(&runner, &actor);
+    let host = MockHost::new();
+    assert_eq!(host.check("bad-build", &ctx), ["bad-build: its build panics"]);
 }

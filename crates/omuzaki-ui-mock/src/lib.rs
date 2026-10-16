@@ -143,8 +143,13 @@ impl MockHost {
                 .filter(|d| d.kind == DefKind::Panel && d.id == id)
                 .map(ToString::to_string),
         );
-        let Some((def, panel)) = self.open(id, ctx) else {
+        let Some(def) = self.registry.panel(id) else {
             problems.push(format!("no panel is registered as {id:?}"));
+            return problems;
+        };
+        // Every build is guarded, this one too: a panel whose build panics is a problem to name, not a crash.
+        let Ok(panel) = panic::catch_unwind(AssertUnwindSafe(|| (def.build)(ctx))) else {
+            problems.push(format!("{id}: its build panics"));
             return problems;
         };
         // The title the tab shows, and (when the panel overrides it) the label a screen reader gets, each on its own.
