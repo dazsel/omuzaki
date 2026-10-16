@@ -99,7 +99,7 @@ fn pending() -> PendingApproval {
 fn record() -> OpRecord {
     OpRecord::new(1, "test.set", json!({}), agent(), TxId(1), Seconds(0.5), Patch::new(), DocVersion(3))
         .with_on_behalf_of(person())
-        .with_approval(ApprovalRef { id: ApprovalId(2), by: person() })
+        .with_approval(ApprovalRef::new(ApprovalId(2), person()))
 }
 
 /// `value` encodes to JSON that decodes to an equal value, and its type has a JSON Schema.
@@ -206,7 +206,8 @@ fn approval_types_round_trip_and_have_schemas() {
     ] {
         round_trips(&Resolution { id: ApprovalId(2), by: Some(person()), result, at: Seconds(5.0) });
     }
-    round_trips(&ApprovalRef { id: ApprovalId(2), by: person() });
+    round_trips(&ApprovalRef::new(ApprovalId(2), person()));
+    round_trips(&ApprovalRef::new(ApprovalId(3), person()).with_also(vec![agent()]));
 }
 
 #[test]

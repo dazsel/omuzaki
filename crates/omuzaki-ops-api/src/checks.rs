@@ -21,7 +21,8 @@
 use omuzaki_doc_api::{DocVersion, DocWrite, Patch, PatchError, Value};
 
 use crate::{
-    Actor, DynOp, Grants, Mode, OpCtx, OpError, OpInfo, OpKind, OpMeta, OpRegistration, Plan, Request, Scope, Undo,
+    Actor, DynOp, ErrorDetail, Grants, Mode, OpCtx, OpError, OpInfo, OpKind, OpMeta, OpRegistration, Plan, Request,
+    Scope, Undo,
 };
 
 /// A human-readable name for an actor, for refusals.
@@ -34,10 +35,12 @@ fn who(actor: &Actor) -> String {
     }
 }
 
-/// `Denied`: `actor` lacks `scope` for `doing` (for example `run face.set_profile`). The hint names the scope to grant.
+/// `Denied`: `actor` lacks `scope` for `doing` (for example `run face.set_profile`). The hint names the scope to grant,
+/// and the detail is [`ErrorDetail::MissingScope`], so agents can branch on it.
 pub fn denied(actor: &Actor, doing: &str, scope: Scope) -> OpError {
     OpError::denied(format!("{} may not {doing}: it needs the `{scope}` scope", who(actor)))
         .hint(format!("grant the `{scope}` scope for this session, then retry"))
+        .with_detail(ErrorDetail::MissingScope { scope })
 }
 
 /// `actor` needs `scope` to run the op called `op`. The refusal's text is built only when it refuses.

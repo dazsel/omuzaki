@@ -11,7 +11,7 @@ use omuzaki_doc_mock::MemDoc;
 use omuzaki_ops::Executor;
 use omuzaki_ops_api::{
     Actor, Budget, ErrorCode, ErrorDetail, Event, Grants, PauseReason, Principals, Request, Runner, Scope,
-    SessionChange, SessionId, SessionState, Sessions, Spend,
+    SessionChange, SessionId, SessionState, Sessions,
 };
 use serde_json::json;
 
@@ -56,8 +56,8 @@ fn a_session_is_named_by_the_executor_and_stamps_its_principal_on_every_record()
 fn a_client_cannot_spell_another_sessions_actor() {
     let rig = rig(json!({}));
     let info = rig.exec.open(session_spec("claude#1 ")).unwrap();
-    assert_eq!(info.client, "claude-1-");
-    assert_eq!(info.actor, Actor::Agent { id: "claude-1-#3".into(), model: None });
+    assert_eq!(info.client, "claude-1");
+    assert_eq!(info.actor, Actor::Agent { id: "claude-1#3".into(), model: None });
 }
 
 #[test]
@@ -156,14 +156,11 @@ fn a_sub_agent_holds_at_most_what_its_parent_holds_and_works_for_the_same_person
 }
 
 #[test]
-fn a_session_works_for_a_person_and_claims_no_fence() {
+fn a_session_works_for_a_person() {
     let rig = rig(json!({}));
     let mut spec = session_spec("claude");
     spec.on_behalf_of = agent();
     assert_eq!(rig.exec.open(spec).unwrap_err().code, ErrorCode::Invalid);
-    let mut spec = session_spec("claude");
-    spec.fence = vec![super::path("a")];
-    assert_eq!(rig.exec.open(spec).unwrap_err().code, ErrorCode::Unsupported, "fences are not enforced yet");
 }
 
 #[test]
@@ -315,16 +312,6 @@ fn pausing_a_parent_pauses_its_children_and_resuming_resumes_them() {
 
     rig.exec.resume(SessionId(1), &person()).unwrap();
     assert_eq!(rig.exec.session(child.id).unwrap().state, SessionState::Active);
-}
-
-#[test]
-fn what_the_executor_does_not_do_yet_is_unsupported() {
-    let rig = rig(json!({}));
-    let ended = rig.exec.end(SessionId(1), omuzaki_ops_api::EndReason::Closed).unwrap_err();
-    assert_eq!(ended.code, ErrorCode::Unsupported);
-    assert_eq!(rig.exec.undo_session(SessionId(1), &person()).unwrap_err().code, ErrorCode::Unsupported);
-    assert_eq!(rig.exec.charge(SessionId(1), Spend::default()).unwrap_err().code, ErrorCode::Unsupported);
-    assert_eq!(rig.exec.approvals().len(), 0);
 }
 
 // ---- the check and the change are one hold of the lock ------------------------------------------------------------

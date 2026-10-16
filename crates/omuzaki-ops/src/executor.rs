@@ -7,16 +7,18 @@ use std::time::Duration;
 use omuzaki_core::time::Clock;
 use omuzaki_doc_api::{DocPath, DocWrite, Value};
 use omuzaki_ops_api::{
-    Actor, ApprovalId, Budget, Cause, Decision, DynOp, EndReason, Ended, Event, Grants, JobId, JobInfo, JobShape, Jobs,
-    Mode, OpCtx, OpError, OpInfo, OpKind, OpRecord, OpRegistration, Outcome, PendingApproval, Plan, Principals,
-    ProjectDir, Request, Resolution, Runner, Scope, Services, SessionChange, SessionId, SessionInfo, SessionSpec,
-    SessionUndo, Sessions, Spend, TxId, checks, registrations,
+    Actor, ApprovalRef, Cause, DynOp, Event, Grants, JobId, JobInfo, JobShape, Jobs, Mode, OpCtx, OpError, OpInfo,
+    OpKind, OpRecord, OpRegistration, Outcome, Plan, Principals, ProjectDir, Request, ReviewPolicies, Runner, Scope,
+    Services, SessionId, TxId, checks, registrations,
 };
 
 use crate::ExecutorError;
 use crate::bus::Bus;
+use crate::gate::Allowance;
 use crate::index::OpIndex;
 use crate::jobs::Manager;
+use crate::limits::Bucket;
+use crate::sessions::Entry;
 use crate::state::{Edit, State};
 use crate::sync::lock;
 
@@ -33,6 +35,11 @@ pub(crate) struct Env {
     pub(crate) services: Arc<Services>,
     pub(crate) project_dir: Option<Arc<ProjectDir>>,
     pub(crate) job_started: Option<JobStartedHook>,
+    /// Whether a person can be asked: without one, a request that would queue for approval is refused instead
+    /// (design §7.6, headless `omuzaki mcp`).
+    pub(crate) approver: bool,
+    /// The team's review rules, if the app installed any (VC-11).
+    pub(crate) review: Option<Arc<dyn ReviewPolicies>>,
 }
 
 impl Env {
@@ -63,6 +70,18 @@ impl Env {
         by: (&Actor, &Option<Cause>, Option<TxId>),
         plan: &Plan,
     ) -> Result<OpRecord, OpError> {
+        self.apply_approved(state, op, by, plan, None)
+    }
+
+    /// [`apply`](Self::apply), stamping the record with the approval that allowed the run.
+    pub(crate) fn apply_approved(
+        &self,
+        state: &mut State,
+        op: &dyn DynOp,
+        by: (&Actor, &Option<Cause>, Option<TxId>),
+        plan: &Plan,
+        approval: Option<ApprovalRef>,
+    ) -> Result<OpRecord, OpError> {
         let meta = op.meta();
         let (actor, cause, tx) = by;
         state.apply_edit(Edit {
@@ -75,6 +94,7 @@ impl Env {
             cause: cause.clone(),
             tx,
             at: self.clock.now(),
+            approval,
         })
     }
 
@@ -91,11 +111,11 @@ impl Env {
 /// the executor unchanged: its jobs stay listed, cancellable and waitable, and the configuration they run under stays
 /// the one every op sees.
 pub struct Executor {
-    ops: OpIndex,
+    pub(crate) ops: OpIndex,
     /// The document and everything that must change with it (one lock: this is the authoring plane, where
     /// correctness beats concurrency, and a single lock makes "plan, apply, log" atomic by construction), the clock,
     /// and what ops may reach beyond the document. Fixed before the executor starts: the fields have no setters.
-    env: Env,
+    pub(crate) env: Env,
     /// The job manager, built over `env` and `job_budget` when the executor is configured.
     jobs: Arc<Manager>,
     job_budget: u64,
@@ -128,6 +148,8 @@ impl Executor {
             services: Arc::new(Services::none()),
             project_dir: None,
             job_started: None,
+            approver: true,
+            review: None,
         };
         let jobs = Manager::new(env.clone(), u64::MAX);
         Ok(Self { ops: OpIndex::build(registrations)?, env, jobs, job_budget: u64::MAX })
@@ -204,6 +226,23 @@ impl Executor {
         self.rewired(|env, _| lock(&env.state).sessions.set_first_id(first))
     }
 
+    /// The same executor, told whether a person can be asked (default `true`: the studio's window is there). Without
+    /// an approver (headless `omuzaki mcp`, design §7.6) a request that would wait for approval is refused at once:
+    /// `Denied`, with what it needs as the detail and a hint that says how to grant it in advance.
+    #[must_use]
+    pub fn with_approver(self, approver: bool) -> Self {
+        self.rewired(|env, _| env.approver = approver)
+    }
+
+    /// The same executor, with the team's review rules (VC-11): a request whose op scope, or a scope grant it asks
+    /// for, has a requirement waits for that many distinct reviewers ([`Need::Review`](omuzaki_ops_api::Need)).
+    /// Without it nothing asks for a review. `policies` is asked under the executor's lock, so it must not call back
+    /// into the executor.
+    #[must_use]
+    pub fn with_review_policies(self, policies: Arc<dyn ReviewPolicies>) -> Self {
+        self.rewired(|env, _| env.review = Some(policies))
+    }
+
     /// Enforces the jobs' time caps and cancel deadlines against the executor's clock. A supervisor thread calls it
     /// about every 50 ms of wall time, so a host with the system clock never calls it; a host or test with a
     /// [`FakeClock`](omuzaki_core::time::FakeClock) calls it after moving the clock.
@@ -225,9 +264,20 @@ impl Executor {
     }
 
     /// Authorizes, plans and checks `op` against the current document, with the checks every runner shares
-    /// ([`checks::plan`]).
-    fn plan(&self, state: &State, op: &dyn DynOp, req: &Request) -> Result<Plan, OpError> {
-        checks::plan(op, req, self.env.op_ctx(state, &req.actor, &req.grants, req.mode == Mode::DryRun))
+    /// ([`checks::plan`]). `confirmed_by` is the person who confirmed the run, after an approval.
+    pub(crate) fn plan(
+        &self,
+        state: &State,
+        op: &dyn DynOp,
+        req: &Request,
+        confirmed_by: Option<&Actor>,
+    ) -> Result<Plan, OpError> {
+        let ctx = self.env.op_ctx(state, &req.actor, &req.grants, req.mode == Mode::DryRun);
+        let ctx = match confirmed_by {
+            Some(person) => ctx.with_confirmation(person),
+            None => ctx,
+        };
+        checks::plan(op, req, ctx)
     }
 
     /// The refusals that depend only on the request and the op: a job is not part of a transaction, and a driver job
@@ -248,26 +298,9 @@ impl Executor {
         let mut state = lock(&self.env.state);
         // Admitted again under the lock the plan is made in: the session may have changed since `run` looked.
         req.grants = state.sessions.admit(&req.actor, &req.grants, self.env.clock.now())?;
-        let plan = self.plan(&state, &*op, &req)?;
+        let plan = self.plan(&state, &*op, &req, None)?;
         drop(state);
         self.jobs.start(op, req, plan, awaited)
-    }
-
-    /// The part of [`Runner::run`] that holds the lock.
-    fn run_locked(&self, state: &mut State, op: &dyn DynOp, mut req: Request) -> Result<Outcome, OpError> {
-        // Admitted again under the lock that plans and applies: a pause or a narrowing that landed since `run` looked
-        // must win, and the grants the op plans with are the ones that hold now.
-        req.grants = state.sessions.admit(&req.actor, &req.grants, self.env.clock.now())?;
-        if let Some(tx) = req.tx {
-            state.check_tx(tx, &req.actor)?;
-        }
-        // `read` was checked before the lookup; the op's own scope is checked before it plans.
-        let plan = self.plan(state, op, &req)?;
-        if checks::answers_only(op.meta(), req.mode) {
-            return Ok(Outcome::new(plan));
-        }
-        let record = self.env.apply(state, op, (&req.actor, &req.cause, req.tx), &plan)?;
-        Ok(Outcome::new(plan).with_applied(record))
     }
 
     /// Lets `req`'s actor through (see [`Registry::admit`](crate::sessions::Registry::admit)) and returns the request
@@ -282,8 +315,8 @@ impl Executor {
         lock(&self.env.state).sessions.admit(actor, grants, self.env.clock.now())
     }
 
-    /// Admits `actor` and runs `change` with the grants it may use, in one hold of the lock: a pause or a narrowing
-    /// cannot land between the check and the change.
+    /// Admits `actor` for a call that counts as an edit against its session's rate limit, and runs `change` with the
+    /// grants it may use, in one hold of the lock: a pause or a narrowing cannot land between the check and the change.
     fn with_admitted<T>(
         &self,
         actor: &Actor,
@@ -291,13 +324,14 @@ impl Executor {
         change: impl FnOnce(&mut State, &Grants) -> Result<T, OpError>,
     ) -> Result<T, OpError> {
         self.with_state(|state| {
-            let granted = state.sessions.admit(actor, grants, self.env.clock.now())?;
+            let entry = Entry::Call(Some(Bucket::Edits));
+            let granted = state.sessions.admit_run(actor, grants, self.env.clock.now(), entry)?.grants;
             change(state, &granted)
         })
     }
 
     /// Runs `change` under the lock, then publishes whatever events it queued.
-    fn with_state<T>(&self, change: impl FnOnce(&mut State) -> T) -> T {
+    pub(crate) fn with_state<T>(&self, change: impl FnOnce(&mut State) -> T) -> T {
         let result = change(&mut lock(&self.env.state));
         self.env.publish();
         result
@@ -335,12 +369,13 @@ impl Runner for Executor {
                 return self.jobs.outcome(info.id);
             }
         }
-        self.with_state(|state| self.run_locked(state, &*op, req))
+        self.with_state(|state| self.run_locked(state, &*op, req, &Allowance::default()))
     }
 
     fn begin(&self, label: &str, actor: &Actor) -> TxId {
         let at = self.env.clock.now();
-        self.with_state(|state| match state.sessions.admit(actor, &Grants::default(), at) {
+        let entry = Entry::Call(Some(Bucket::Edits));
+        self.with_state(|state| match state.sessions.admit_run(actor, &Grants::default(), at, entry) {
             Ok(_) => state.begin(label, actor),
             // `begin` cannot say no: the id it hands back is never open, so every use of it is refused.
             Err(_) => state.reserve_tx(),
@@ -419,85 +454,5 @@ impl Jobs for Executor {
 
     fn wait(&self, id: JobId, timeout: Option<Duration>) -> Result<JobInfo, OpError> {
         self.jobs.wait(id, timeout)
-    }
-}
-
-impl Sessions for Executor {
-    fn open(&self, spec: SessionSpec) -> Result<SessionInfo, OpError> {
-        let at = self.env.clock.now();
-        self.with_state(|state| {
-            let info = state.sessions.open(spec, at)?;
-            let snapshot = state.session_info(&info);
-            state.queue_event(Event::session_opened(snapshot.clone()));
-            Ok(snapshot)
-        })
-    }
-
-    fn sessions(&self) -> Vec<SessionInfo> {
-        let state = lock(&self.env.state);
-        state.sessions.all().iter().map(|s| state.session_info(s)).collect()
-    }
-
-    fn session(&self, id: SessionId) -> Option<SessionInfo> {
-        lock(&self.env.state).session(id)
-    }
-
-    fn session_of(&self, actor: &Actor) -> Option<SessionInfo> {
-        let state = lock(&self.env.state);
-        state.sessions.of_actor(actor).map(|s| state.session_info(s))
-    }
-
-    fn pause(&self, id: SessionId, by: &Actor) -> Result<SessionInfo, OpError> {
-        self.change_sessions(id, |state| state.sessions.pause(id, by))
-    }
-
-    fn resume(&self, id: SessionId, by: &Actor) -> Result<SessionInfo, OpError> {
-        self.change_sessions(id, |state| state.sessions.resume(id, by))
-    }
-
-    fn set_grants(&self, id: SessionId, grants: Grants, by: &Actor) -> Result<SessionInfo, OpError> {
-        self.change_sessions(id, |state| state.sessions.set_grants(id, grants, by))
-    }
-
-    fn set_budget(&self, id: SessionId, budget: Budget, by: &Actor) -> Result<SessionInfo, OpError> {
-        self.change_sessions(id, |state| Ok(vec![(id, state.sessions.set_budget(id, budget, by)?)]))
-    }
-
-    fn charge(&self, _id: SessionId, _spend: Spend) -> Result<SessionInfo, OpError> {
-        Err(OpError::unsupported("session budgets are not enforced by this executor yet"))
-    }
-
-    fn end(&self, _id: SessionId, _reason: EndReason) -> Result<Ended, OpError> {
-        Err(OpError::unsupported("ending a session is not supported by this executor yet"))
-    }
-
-    fn undo_session(&self, _id: SessionId, _by: &Actor) -> Result<SessionUndo, OpError> {
-        Err(OpError::unsupported("undoing a session is not supported by this executor yet"))
-    }
-
-    fn approvals(&self) -> Vec<PendingApproval> {
-        Vec::new()
-    }
-
-    fn resolve(&self, id: ApprovalId, _decision: Decision, _by: &Actor) -> Result<Resolution, OpError> {
-        Err(OpError::not_found(format!("approval {} is gone", id.0)))
-    }
-}
-
-impl Executor {
-    /// Runs a session control under the lock and emits one `SessionChanged` per session it changed. Returns session
-    /// `id` as it stands afterwards.
-    fn change_sessions(
-        &self,
-        id: SessionId,
-        change: impl FnOnce(&mut State) -> Result<Vec<(SessionId, SessionChange)>, OpError>,
-    ) -> Result<SessionInfo, OpError> {
-        self.with_state(|state| {
-            for (changed, what) in change(state)? {
-                let snapshot = state.session(changed).ok_or_else(|| OpError::internal("a changed session vanished"))?;
-                state.queue_event(Event::session_changed(snapshot, what));
-            }
-            state.session(id).ok_or_else(|| OpError::internal("a controlled session vanished"))
-        })
     }
 }

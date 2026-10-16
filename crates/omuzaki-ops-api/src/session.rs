@@ -374,10 +374,12 @@ pub trait Sessions: Send + Sync {
     fn set_budget(&self, id: SessionId, budget: Budget, by: &Actor) -> Result<SessionInfo, OpError>;
 
     /// Adds `spend` to the session's counters. Whoever pays for the model calls this (the in-app host); a charge that
-    /// crosses a cap pauses the session and queues a budget approval.
+    /// crosses a cap pauses the session and queues a budget approval. Active time is the executor's own count, so
+    /// `spend.seconds` must be 0.
     ///
     /// # Errors
-    /// `NotFound` for an unknown session; `Conflict` if it has ended.
+    /// `NotFound` for an unknown session; `Conflict` if it has ended; `Invalid` (field `seconds`) for a charge of
+    /// time.
     fn charge(&self, id: SessionId, spend: Spend) -> Result<SessionInfo, OpError>;
 
     /// Replaces the session's fence. Person only, like [`set_grants`](Self::set_grants). The fence is normalised
@@ -394,10 +396,12 @@ pub trait Sessions: Send + Sync {
         Err(OpError::unsupported("fences are not enabled by this runner"))
     }
 
-    /// Ends a session: abandons its open transactions, withdraws its approvals, drops its per-session grants.
+    /// Ends a session and its sub-agents: abandons its open transactions, withdraws its approvals, drops its
+    /// per-session grants. Ending a session that has already ended changes nothing and returns an empty [`Ended`].
     ///
     /// # Errors
-    /// `NotFound` for an unknown session; `Conflict` if it has already ended.
+    /// `NotFound` for an unknown session; `Denied` for a [`EndReason::Revoked`] whose `by` is not the session's
+    /// principal.
     fn end(&self, id: SessionId, reason: EndReason) -> Result<Ended, OpError>;
 
     /// Reverts the session's committed steps, newest first, as one step in the person's history (design §6).
@@ -412,9 +416,15 @@ pub trait Sessions: Send + Sync {
     /// Decides one approval, exactly once. On approval the request is re-planned and run against the current
     /// document as the agent with the need satisfied for that run.
     ///
+    /// Two decisions are recorded without resolving the approval: an approval of a [`Need::Review`](crate::Need) that
+    /// asks for more reviewers than have approved so far, and [`Decision::RaiseBudget`] on a budget approval that
+    /// carries a request (the budget is set and the session resumed, and the request still waits for `Approve` or
+    /// `Reject`). Both answer `Waiting` with [`ErrorDetail::Queued`](crate::ErrorDetail::Queued).
+    ///
     /// # Errors
     /// `NotFound` if the approval is gone (resolved or withdrawn); `Denied` if `by` is not a person, not the
-    /// session's principal, or lacks the needed scope; `Invalid` if `decision` does not fit the need.
+    /// session's principal (for a review, not a reviewer the policy allows), or lacks the needed scope; `Invalid` if
+    /// `decision` does not fit the need; `Waiting` as above.
     fn resolve(&self, id: ApprovalId, decision: Decision, by: &Actor) -> Result<Resolution, OpError>;
 
     /// Asks before running out: a session that knows it will need more money or time asks first. When `needed` fits

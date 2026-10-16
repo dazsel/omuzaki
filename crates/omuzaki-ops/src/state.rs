@@ -8,9 +8,11 @@ use std::collections::{BTreeSet, HashMap};
 use omuzaki_core::time::Seconds;
 use omuzaki_doc_api::{DocPath, DocRead, DocWrite, Patch, Value};
 use omuzaki_ops_api::{
-    Actor, Cause, Event, Grants, OpError, OpRecord, Scope, SessionId, SessionInfo, SessionTx, TxId, Undo, checks,
+    Actor, ApprovalRef, Cause, Event, Grants, KeptTx, OpError, OpRecord, Scope, SessionId, SessionInfo, SessionTx,
+    SessionUndo, TxId, Undo, checks,
 };
 
+use crate::approvals::Queue;
 use crate::error;
 use crate::sessions::Registry;
 
@@ -109,6 +111,8 @@ pub(crate) struct Edit<'a> {
     /// The open transaction to join, or `None` for a one-op transaction of its own.
     pub(crate) tx: Option<TxId>,
     pub(crate) at: Seconds,
+    /// The approval that allowed the run, stamped on its record.
+    pub(crate) approval: Option<ApprovalRef>,
 }
 
 pub(crate) struct State {
@@ -123,6 +127,8 @@ pub(crate) struct State {
     /// The agent sessions and their principals. Under the same lock as the rest, so a pause and the check that honours
     /// it cannot interleave.
     pub(crate) sessions: Registry,
+    /// The approvals waiting for a person. Under the same lock, so each is resolved or withdrawn exactly once.
+    pub(crate) approvals: Queue,
 }
 
 impl State {
@@ -135,6 +141,7 @@ impl State {
             histories: Vec::new(),
             outbox: Vec::new(),
             sessions: Registry::new(),
+            approvals: Queue::new(),
         }
     }
 
@@ -156,8 +163,8 @@ impl State {
         self.outbox.push(event);
     }
 
-    /// One session as the panel shows it: the registry's record with the effective grants and the open transaction
-    /// filled in. With several open transactions, the oldest is the one shown.
+    /// One session as the panel shows it: the registry's record with the effective grants, the open transaction and
+    /// the pending approvals filled in. With several open transactions, the oldest is the one shown.
     pub(crate) fn session_info(&self, session: &SessionInfo) -> SessionInfo {
         let open_tx = self
             .open
@@ -165,7 +172,8 @@ impl State {
             .filter(|(_, open)| open.owner == session.actor)
             .min_by_key(|(tx, _)| **tx)
             .map(|(tx, open)| SessionTx { tx: *tx, label: open.step.label.clone() });
-        SessionInfo { grants: self.sessions.effective(session), open_tx, ..session.clone() }
+        let pending = self.approvals.of_session(session.id);
+        SessionInfo { grants: self.sessions.effective(session), open_tx, pending, ..session.clone() }
     }
 
     /// The snapshot of session `id`, if there is one.
@@ -197,7 +205,7 @@ impl State {
     /// The transaction isn't open or isn't `actor`'s; or the patch no longer applies (`Conflict`). On error nothing
     /// has changed.
     pub(crate) fn apply_edit(&mut self, edit: Edit<'_>) -> Result<OpRecord, OpError> {
-        let Edit { op, scope, undo, args, patch, actor, cause, tx, at } = edit;
+        let Edit { op, scope, undo, args, patch, actor, cause, tx, at, approval } = edit;
         // Borrowing the open transaction first checks it *before* the document changes, and lets us add to it after
         // without a lookup that could fail.
         let joined = tx.map(|id| Self::open_tx(&mut self.open, id, &actor)).transpose()?;
@@ -209,6 +217,9 @@ impl State {
             OpRecord::new(self.log.len() as u64 + 1, op, args, actor, tx, at, patch.clone(), version).with_cause(cause);
         if let Some(person) = principal {
             record = record.with_on_behalf_of(person);
+        }
+        if let Some(approval) = approval {
+            record = record.with_approval(approval);
         }
         self.log.push(record.clone());
         self.outbox.push(Event::op_applied(record.clone()));
@@ -236,18 +247,116 @@ impl State {
     pub(crate) fn rollback(&mut self, tx: TxId, actor: &Actor) -> Result<(), OpError> {
         let open = Self::open_tx(&mut self.open, tx, actor)?;
         let revert = open.step.patch.inverse();
-        let reverted = if revert.changes.is_empty() { Ok(()) } else { self.doc.apply(&revert).map(|_| ()) };
-        if let Err(e) = reverted {
-            let what = format!("roll back transaction {}", tx.0);
-            let hint =
-                "the transaction is still open: commit it to keep its changes, or retry once the clash is resolved";
-            let changed_by = last_changer(&self.log, error::patch_error_path(&e));
-            return Err(error::revert_failed(&what, &e, changed_by, hint));
-        }
+        let hint = "the transaction is still open: commit it to keep its changes, or retry once the clash is resolved";
+        self.revert(tx, &revert, hint)?;
         self.open.remove(&tx);
         let version = self.doc.version();
         self.outbox.push(Event::tx_rolled_back(tx, actor.clone(), version));
         Ok(())
+    }
+
+    /// Applies `revert`, the inverse of transaction `tx`'s changes, or says why it can't: someone changed the same
+    /// paths since. The refusal names the path and who changed it, never a value.
+    fn revert(&mut self, tx: TxId, revert: &Patch, hint: &str) -> Result<(), OpError> {
+        if revert.changes.is_empty() {
+            return Ok(());
+        }
+        self.doc.apply(revert).map(|_| ()).map_err(|e| {
+            let changed_by = last_changer(&self.log, error::patch_error_path(&e));
+            error::revert_failed(&format!("roll back transaction {}", tx.0), &e, changed_by, hint)
+        })
+    }
+
+    /// Abandons every open transaction `actor` owns, newest first (design §4.2): each is rolled back, or, when the
+    /// revert conflicts, committed as it is with " (unfinished)" added to its label, so that nobody is left with a
+    /// transaction no one can close. A conflict never stops the rest, and other actors' transactions are untouched.
+    /// Queues `TxRolledBack` or `TxCommitted` for each. Returns the rolled-back ids and the kept transactions.
+    pub(crate) fn abandon(&mut self, actor: &Actor) -> (Vec<TxId>, Vec<KeptTx>) {
+        let mut owned: Vec<(TxId, OpenTx)> = self.open.extract_if(|_, open| open.owner == *actor).collect();
+        owned.sort_unstable_by(|(a, _), (b, _)| b.cmp(a));
+        let (mut abandoned, mut kept) = (Vec::new(), Vec::new());
+        for (tx, mut open) in owned {
+            let hint = "it is kept as an unfinished step in the agent's history; undoing the session tries again";
+            match self.revert(tx, &open.step.patch.inverse(), hint) {
+                Ok(()) => {
+                    let version = self.doc.version();
+                    self.outbox.push(Event::tx_rolled_back(tx, actor.clone(), version));
+                    abandoned.push(tx);
+                }
+                Err(error) => {
+                    open.step.label.push_str(" (unfinished)");
+                    kept.push(KeptTx { tx, label: open.step.label.clone(), error });
+                    self.finish(actor, open.step);
+                }
+            }
+        }
+        (abandoned, kept)
+    }
+
+    /// Reverts `agent`'s committed steps newest first, as one step in `by`'s history (design §6, undo session).
+    ///
+    /// A step whose inverse conflicts is skipped and reported, naming who changed the path, like `Runner::undo`; an
+    /// older step that depends on it then conflicts too. A step holding an [`Undo::Explicit`] op is not reverted: its
+    /// effect outside the document has no inverse here, so it is listed in `outside`. The agent's undo and redo
+    /// stacks are cleared. The reverts become one step labelled "Undo <client>'s session (N steps)", so `by`'s undo
+    /// brings the agent's work back; `SessionUndone` is queued, then the step's `TxCommitted`. `grants` are `by`'s:
+    /// a step whose scopes they lack is skipped. `abandoned` (the open transactions already abandoned) goes into the
+    /// result as it is.
+    pub(crate) fn undo_session(
+        &mut self,
+        session: SessionId,
+        agent: &Actor,
+        by: &Actor,
+        grants: &Grants,
+        client: &str,
+        abandoned: Vec<TxId>,
+    ) -> SessionUndo {
+        let undo = match self.histories.iter_mut().find(|h| h.actor == *agent) {
+            Some(history) => {
+                history.redo.clear();
+                std::mem::take(&mut history.undo)
+            }
+            None => Vec::new(),
+        };
+        let (mut reverted, mut skipped, mut outside) = (Vec::new(), Vec::new(), Vec::new());
+        let mut combined = Patch::new();
+        let mut scopes = BTreeSet::new();
+        for step in undo.into_iter().rev() {
+            if step.explicit.is_some() {
+                outside.push(step.tx);
+                continue;
+            }
+            if let Err(error) = step.require(by, grants, "undo") {
+                skipped.push(KeptTx { tx: step.tx, label: step.label, error });
+                continue;
+            }
+            let inverse = step.patch.inverse();
+            match self.doc.apply(&inverse) {
+                Ok(_) => {
+                    reverted.push(step.tx);
+                    combined.extend(inverse);
+                    scopes.extend(step.scopes);
+                }
+                Err(e) => {
+                    let changed_by = last_changer(&self.log, error::patch_error_path(&e));
+                    let hint = "that step stays applied; the steps before it may depend on it";
+                    let error = error::revert_failed(&format!("undo {:?}", step.label), &e, changed_by, hint);
+                    skipped.push(KeptTx { tx: step.tx, label: step.label, error });
+                }
+            }
+        }
+        let step = (!reverted.is_empty()).then(|| {
+            let tx = next_tx(&mut self.last_tx);
+            let noun = if reverted.len() == 1 { "step" } else { "steps" };
+            let label = format!("Undo {client}'s session ({} {noun})", reverted.len());
+            Step { tx, label, patch: combined, scopes, explicit: None }
+        });
+        let result = SessionUndo { step: step.as_ref().map(|s| s.tx), reverted, skipped, abandoned, outside };
+        self.outbox.push(Event::session_undone(session, by.clone(), result.clone()));
+        if let Some(step) = step {
+            self.finish(by, step);
+        }
+        result
     }
 
     pub(crate) fn undo(&mut self, actor: &Actor, grants: &Grants) -> Result<Option<String>, OpError> {

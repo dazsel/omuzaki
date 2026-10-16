@@ -35,11 +35,17 @@
 //! (ADR 0036 decision 9). Rollback doesn't check for such ops yet: its effects arrive with the effects task.
 #![deny(missing_docs)]
 
+mod approvals;
+mod budget;
 mod bus;
+mod controls;
 mod error;
 mod executor;
+mod fence;
+mod gate;
 mod index;
 mod jobs;
+mod limits;
 mod sessions;
 mod state;
 mod sync;
