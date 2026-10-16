@@ -8,6 +8,7 @@
 
 pub mod host;
 mod performer;
+pub mod triggers;
 
 pub use performer::{
     MAX_STEPS_PER_ADVANCE, PerformOutput, Performer, PerformerParts, STALE_SOURCE_S, STEP_HZ, Tracking,

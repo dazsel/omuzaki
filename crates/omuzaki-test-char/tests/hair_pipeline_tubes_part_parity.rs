@@ -9,7 +9,8 @@
 //!
 //! **Tolerance (T-GEOM).** The prototype computes in `f64` and stores `f32`; this port computes in `f32`. Positions agree
 //! within 2e-4 m (measured far inside that, see the assertion messages), normals within 1 degree, `hair-uv` and
-//! `hair-info` within 1e-5, the index list exactly.
+//! `hair-info` within 1e-5, the tube's index list exactly. The caps (#146) come after the ring vertices and the tube
+//! faces, so these tests compare that ring prefix and nothing else.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // helpers load fixtures; a bad one should stop the test with its reason
 #![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::chunks_exact_to_as_chunks)] // f64 fixture values to the mesh's f32
@@ -107,7 +108,9 @@ fn tube_vertices_match_tube_into() {
     let f = fixture();
     for (name, case) in &f.cases {
         let mesh = build(&f, case);
-        assert_eq!(mesh.positions.len() * 3, case.positions.len(), "{name}: vertex count");
+        // The caps come after the ring vertices, so only the ring prefix is the prototype's: the zip below stops there.
+        let rings = case.positions.len() / 3;
+        assert!(mesh.positions.len() >= rings, "{name}: fewer vertices than the rings");
         let worst = mesh
             .positions
             .iter()
@@ -141,8 +144,10 @@ fn hair_uv_and_hair_info_match() {
     for (name, case) in &f.cases {
         let mesh = build(&f, case);
         for (attribute, expected, label) in [(HAIR_UV, &case.uv, "hair-uv"), (HAIR_INFO, &case.info, "hair-info")] {
-            let got = &mesh.extra_attribute(attribute).unwrap().data;
-            assert_eq!(got.len(), expected.len(), "{name}: {label} length");
+            let data = &mesh.extra_attribute(attribute).unwrap().data;
+            assert!(data.len() >= expected.len(), "{name}: {label} shorter than the rings");
+            // The caps' values follow the rings', so compare the ring prefix only.
+            let got = &data[..expected.len()];
             let worst = got.iter().zip(expected).map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
             assert!(worst <= ATTRIBUTE, "{name}: {label} differs by {worst}");
         }
@@ -153,7 +158,10 @@ fn hair_uv_and_hair_info_match() {
 fn the_index_list_is_tube_index_exactly() {
     let f = fixture();
     for (name, case) in &f.cases {
-        assert_eq!(build(&f, case).indices, case.indices, "{name}");
+        // The tube faces come first; the caps' triangles follow them and are not the prototype's.
+        let indices = build(&f, case).indices;
+        assert!(indices.len() >= case.indices.len(), "{name}: fewer indices than the tube");
+        assert_eq!(&indices[..case.indices.len()], &case.indices[..], "{name}");
     }
 }
 
