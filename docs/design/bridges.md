@@ -30,7 +30,7 @@ are PF-04 and PF-05's; this design states only the rules they share with the shi
 | What reaches Omuzaki | Only ops through the `Runner`, as the tool's session: live actions for hotkeys and expressions, `vts_server.catalog` for lists, `vts_server.feed` to claim parameters, `vts_server.param_create` and `param_delete` | 3, 5 |
 | Contract change | One additive change to `omuzaki-ops-api` (S0, Director's approval): `Sessions::request_pairing` and `Sessions::gate`, both with default bodies that return `Unsupported` | 4, 5.1 |
 | Injected parameters | The existing `Source::Tracker` layer, merged on the frame thread from a wait-free table; set, add, weight, `faceFound` and the 1 s keep-alive honoured; under 10 µs a frame, no allocation | 5 |
-| Safety | Off by default; person-only start; loopback only, `Origin` and `Host` checked; no UDP discovery; 64 KiB messages, 4 clients, rate caps; no `read` | 6 |
+| Safety | Off by default; person-only start; loopback only, `Origin` and `Host` checked; no UDP discovery; 64 KiB messages, 4 clients, rate caps; `read` only as the executor's baseline, no project grants | 6 |
 | Naming | "VTube Studio-compatible API"; Omuzaki's own name in every product field; the non-affiliation line; default port 8011, not 8001 | 7 |
 | VMC and OSC | PL-05 adds no tasks; PF-04 and PF-05 build them under the same bridge rules; QG-10's targets in §9 | 9 |
 
@@ -357,8 +357,8 @@ nothing. `S` = session, `G` = effective grants.
 | 1 | upgrade, no `Origin`, `Host: 127.0.0.1:8011` | checks, accepts (1 of 4) | 101 | none / none |
 | 2 | `APIStateRequest` | | `active: true`, `vTubeStudioVersion: "Omuzaki 0.4.0"`, `currentSessionAuthenticated: false` | none / none |
 | 3 | `HotkeysInCurrentModelRequest` | not authenticated | `APIError` 8 | none / none |
-| 4 | `AuthenticationTokenRequest {pluginName: "BonkTool", pluginDeveloper: "Example Dev"}` | `Sessions::open {client: "vts-bonktool", on_behalf_of: the studio's person}` → `S7`, actor `vts-bonktool#7`; `request_pairing(S7)` → `Paused { Pairing }`, `Need::Pairing { client: "vts-bonktool" }`; the card shows | (waits, at most 120 s) | S7 paused / `{perform}` |
-| 5 | (the person clicks Pair in Omuzaki) | `ApprovalResolved {by: person}` forwarded; token drawn; record stored with `principal` = person; S7 resumed by the executor | `authenticationToken: "<43 chars>"` | S7 active / `{perform}` |
+| 4 | `AuthenticationTokenRequest {pluginName: "BonkTool", pluginDeveloper: "Example Dev"}` | `Sessions::open {client: "vts-bonktool", on_behalf_of: the studio's person}` → `S7`, actor `vts-bonktool#7`; `request_pairing(S7)` → `Paused { Pairing }`, `Need::Pairing { client: "vts-bonktool" }`; the card shows | (waits, at most 120 s) | S7 paused / `{read, perform}` |
+| 5 | (the person clicks Pair in Omuzaki) | `ApprovalResolved {by: person}` forwarded; token drawn; record stored with `principal` = person; S7 resumed by the executor | `authenticationToken: "<43 chars>"` | S7 active / `{read, perform}` |
 | 6 | `AuthenticationRequest {…, authenticationToken}` | hash matches | `authenticated: true` | S7 / `{read, perform}` |
 | 7 | `HotkeysInCurrentModelRequest` | `Runner::run(vts_server.catalog)` as `vts-bonktool#7` | `modelID: "9f3a…"`, hotkeys `[{name: "Smug", type: "ToggleExpression", hotkeyID: "c41e…"}, …]` | S7 / `{read, perform}` |
 | 8 | `HotkeyTriggerRequest {hotkeyID: "c41e…"}` | `Runner::run(<PF-25 press>, {trigger: smug})` as S7; journal: live action, actor `vts-bonktool#7`, `on_behalf_of` the person | `HotkeyTriggerResponse {hotkeyID}`; `HotkeyTriggeredEvent` to subscribers | S7 / `{read, perform}` |
