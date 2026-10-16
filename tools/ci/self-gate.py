@@ -119,6 +119,9 @@ PROTECTED = (".github/", "tools/ci/", "xtask/", ".config/", ".cargo/", "rust-too
 ROOT_MANIFEST = "Cargo.toml"
 
 
+# A dotted or inline key that reaches those tables from outside their header: `patch.crates-io.x = ...`,
+# `patch = { ... }`, `replace."x:1" = ...`, `workspace.members = [...]`, `workspace = { ... }`.
+DOTTED_TABLE = re.compile(r"""^\s*["']?(patch|replace|workspace)["']?\s*[.=]""")
 SECTION = re.compile(r"^\s*\[+\s*([^\]]+?)\s*\]+\s*(#.*)?$")
 
 
@@ -145,8 +148,8 @@ def decides_what_runs(section):
 def manifest_protected(base_text, head_text):
     """Whether the root manifest edit from `base_text` to `head_text` could change what the dispatched run executes.
 
-    Protected: any change in `[workspace]`, a `[patch.*]` or `[replace]` section, or to a line mentioning xtask (the
-    planner CI runs from the branch). Unreadable text (None) is protected. Anything else, such as a
+    Protected: any change in `[workspace]`, a `[patch.*]` or `[replace]` section, to a dotted or inline `patch`,
+    `replace` or `workspace` key, or to a line mentioning xtask (the planner CI runs from the branch). Unreadable text (None) is protected. Anything else, such as a
     `[workspace.dependencies]` addition or bump, is not.
     """
     if base_text is None or head_text is None:
@@ -156,10 +159,12 @@ def manifest_protected(base_text, head_text):
         if decides_what_runs(section) and base.get(section) != head.get(section):
             return True
 
-    def mentions(sections):
-        return sorted(line for lines in sections.values() for line in lines if "xtask" in line)
+    def risky(sections):
+        """Lines mentioning xtask, and dotted or inline keys reaching patch, replace or workspace from any section."""
+        return sorted(line for lines in sections.values() for line in lines
+                      if "xtask" in line or DOTTED_TABLE.match(line))
 
-    return mentions(base) != mentions(head)
+    return risky(base) != risky(head)
 
 
 def is_protected(path):

@@ -188,6 +188,10 @@ edits = [
     base + '\n[patch.crates-io]\nserde = { path = "x" }\n',
     base + '\n[replace]\n"serde:1.0.0" = { path = "x" }\n',
     base.replace('serde = "1"', 'serde = "1"\nxtask-helper = "1"'),
+    'patch.crates-io.serde = { path = "x" }\n' + base,
+    'patch = { crates-io = { serde = { path = "x" } } }\n' + base,
+    'replace."serde:1.0.0" = { path = "x" }\n' + base,
+    'workspace.exclude = ["crates/a"]\n' + base,
 ]
 sys.exit(0 if all(sg.manifest_protected(base, edit) for edit in edits) else 1)
 PY
