@@ -123,12 +123,13 @@ fn every_single_bit_flip_is_caught() {
                     assert!(ends_the_segment, "byte {byte} bit {bit}: a torn tail with valid frames after it");
                     assert_eq!(at.after, written[19 + frames_before].0);
                 }
-                End::Damaged { at, later_valid } => {
+                End::Damaged { at, later_valid, .. } => {
                     assert!(hit.is_some(), "byte {byte} bit {bit}: a header fault is never damage");
                     let after = records[2].len() - frames_before - 1;
                     assert_eq!(later_valid, after, "byte {byte} bit {bit}");
                     assert_eq!(at.after, written[19 + frames_before].0);
                 }
+                other => panic!("byte {byte} bit {bit}: {other:?}"),
             }
         }
     }

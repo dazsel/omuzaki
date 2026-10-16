@@ -164,7 +164,7 @@ fn a_bad_frame_with_valid_frames_after_is_damage() {
     put(dir.path(), 1, &bytes);
     let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
     assert_eq!(lsns(&scan), [1]);
-    assert_eq!(scan.end, End::Damaged { at: at(1, second, 1), later_valid: 3 });
+    assert_eq!(scan.end, End::Damaged { at: at(1, second, 1), later_valid: 3, search_complete: true });
 }
 
 #[test]
@@ -177,7 +177,7 @@ fn damage_counts_the_frames_of_later_segments() {
     put(dir.path(), 2, &segment(4, &commits(4, 5)));
     let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
     assert_eq!(lsns(&scan), [1, 2]);
-    assert_eq!(scan.end, End::Damaged { at: at(1, offset_of(&records, 2), 2), later_valid: 2 });
+    assert_eq!(scan.end, End::Damaged { at: at(1, offset_of(&records, 2), 2), later_valid: 2, search_complete: true });
 }
 
 #[test]
@@ -188,7 +188,7 @@ fn an_lsn_gap_ends_the_log() {
     put(dir.path(), 1, &segment(1, &records));
     let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
     assert_eq!(lsns(&scan), [1, 2], "nothing after the gap is returned");
-    assert_eq!(scan.end, End::Damaged { at: at(1, third, 2), later_valid: 1 });
+    assert_eq!(scan.end, End::Damaged { at: at(1, third, 2), later_valid: 1, search_complete: true });
 
     // With nothing after the out-of-sequence frame, it is the torn end of a batch.
     put(dir.path(), 1, &segment(1, &records[..3]));
@@ -229,7 +229,7 @@ fn a_next_segment_that_does_not_follow_is_damage() {
     put(dir.path(), 2, &segment(9, &commits(9, 11)));
     let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
     assert_eq!(lsns(&scan), [1, 2, 3]);
-    assert_eq!(scan.end, End::Damaged { at: at(2, 0, 3), later_valid: 3 });
+    assert_eq!(scan.end, End::Damaged { at: at(2, 0, 3), later_valid: 3, search_complete: true });
 }
 
 #[test]
@@ -258,7 +258,7 @@ fn a_next_segment_without_a_session_is_not_the_exception() {
     put(dir.path(), 2, &segment(4, &commits(4, 5)));
     let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
     assert_eq!(lsns(&scan), [1, 2, 3]);
-    assert_eq!(scan.end, End::Damaged { at: at(1, offset_of(&records, 3), 3), later_valid: 2 });
+    assert_eq!(scan.end, End::Damaged { at: at(1, offset_of(&records, 3), 3), later_valid: 2, search_complete: true });
 }
 
 #[test]
@@ -332,7 +332,7 @@ fn a_scan_from_zero_starts_at_the_first_segment_and_reports_a_restart() {
     put(dir.path(), 2, &segment(1, &commits(1, 2)));
     let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
     assert_eq!(lsns(&scan), [1, 2, 3]);
-    assert_eq!(scan.end, End::Damaged { at: at(2, 0, 3), later_valid: 2 });
+    assert_eq!(scan.end, End::Damaged { at: at(2, 0, 3), later_valid: 2, search_complete: true });
 }
 
 #[test]
@@ -372,7 +372,7 @@ fn lsn_u64_max_is_the_end_of_the_sequence() {
     put(dir.path(), 2, &segment(top, &[commit(top)]));
     let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
     assert_eq!(lsns(&scan), [top]);
-    assert_eq!(scan.end, End::Damaged { at: at(2, 0, top), later_valid: 1 });
+    assert_eq!(scan.end, End::Damaged { at: at(2, 0, top), later_valid: 1, search_complete: true });
 }
 
 #[test]
@@ -397,7 +397,7 @@ fn a_large_noisy_tail_is_scanned_in_bounded_work() {
     assert_eq!(lsns(&scan), [1]);
     // Frame 3 is intact after the bad frame 2, so this is damage with one later valid frame... unless the noise
     // overwrote it: the noise is appended, so frame 3 is still there.
-    assert_eq!(scan.end, End::Damaged { at: at(1, second, 1), later_valid: 1 });
+    assert_eq!(scan.end, End::Damaged { at: at(1, second, 1), later_valid: 1, search_complete: true });
 }
 
 /// Frame 2 of `commits(1, 3)` with a payload byte flipped, so its CRC fails.
@@ -427,7 +427,7 @@ fn a_whitespace_padded_frame_after_a_bad_one_is_counted() {
     put(dir.path(), 1, &bytes);
     let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
     assert_eq!(lsns(&scan), [1]);
-    assert_eq!(scan.end, End::Damaged { at: at(1, second, 1), later_valid: 1 });
+    assert_eq!(scan.end, End::Damaged { at: at(1, second, 1), later_valid: 1, search_complete: true });
 }
 
 #[test]
@@ -455,10 +455,10 @@ fn an_exhausted_resync_budget_reports_damage_with_at_least_one_frame() {
     put(dir.path(), 1, &bytes);
     let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
     assert_eq!(scan.end, End::TornTail { at: at(1, second, 1) });
-    // With no budget the scan can't look, so it assumes the worst: damaged, "at least 1" later frame.
+    // With no budget the scan can't look: it reports damage, with nothing verified and the search incomplete.
     let scan = Reader::scan_with_budget(dir.path(), Lsn(0), 0).unwrap();
     assert_eq!(lsns(&scan), [1]);
-    assert_eq!(scan.end, End::Damaged { at: at(1, second, 1), later_valid: 1 });
+    assert_eq!(scan.end, End::Damaged { at: at(1, second, 1), later_valid: 0, search_complete: false });
 }
 
 /// `bytes` with its header rewritten to format version 2.
@@ -506,7 +506,7 @@ fn a_segment_that_restarts_at_an_earlier_lsn_is_never_a_start() {
     for (from, want) in [(0, vec![1, 2, 3]), (1, vec![2, 3]), (2, vec![3]), (3, vec![])] {
         let scan = Reader::scan(dir.path(), Lsn(from)).unwrap();
         assert_eq!(lsns(&scan), want, "from {from}");
-        assert_eq!(scan.end, End::Damaged { at: at(2, 0, 3), later_valid: 2 }, "from {from}");
+        assert_eq!(scan.end, End::Damaged { at: at(2, 0, 3), later_valid: 2, search_complete: true }, "from {from}");
     }
 }
 
@@ -760,6 +760,7 @@ fn random_layouts_match_the_naive_walk() {
                         End::Clean => ('C', None),
                         End::TornTail { at } => ('T', Some(at.segment)),
                         End::Damaged { at, .. } => ('D', Some(at.segment)),
+                        _ => unreachable!(),
                     };
                     assert_eq!(got_kind, *kind, "round {round} from {from}");
                     if let Some(got_seg) = got_seg {
@@ -770,4 +771,28 @@ fn random_layouts_match_the_naive_walk() {
             }
         }
     }
+}
+
+#[test]
+fn a_segment_that_restarts_inside_the_log_is_a_discontinuity() {
+    // Segment 2 restarts at 2, overlapping segment 1 (LSNs 1-3): the increasing first LSNs hide nothing.
+    let dir = tempfile::tempdir().unwrap();
+    put(dir.path(), 1, &segment(1, &commits(1, 3)));
+    put(dir.path(), 2, &segment(2, &commits(2, 4)));
+    for from in 0..=3 {
+        let scan = Reader::scan(dir.path(), Lsn(from)).unwrap();
+        assert_eq!(lsns(&scan), (from + 1..=3).collect::<Vec<_>>(), "from {from}");
+        assert_eq!(scan.end, End::Damaged { at: at(2, 0, 3), later_valid: 3, search_complete: true }, "from {from}");
+    }
+}
+
+#[test]
+fn the_frame_that_exposes_a_gap_before_the_base_is_the_base() {
+    // Records 1, then 6 to 10: frame 6 fails the sequence check but is the record after the snapshot at 5.
+    let dir = tempfile::tempdir().unwrap();
+    let mut records = vec![commit(1)];
+    records.extend(commits(6, 10));
+    put(dir.path(), 1, &segment(1, &records));
+    let scan = Reader::scan(dir.path(), Lsn(5)).unwrap();
+    assert_eq!((lsns(&scan), scan.end), ((6..=10).collect::<Vec<_>>(), End::Clean));
 }

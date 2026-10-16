@@ -27,6 +27,7 @@ pub struct Position {
 
 /// How the log ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum End {
     /// At the end of the last segment, a zero-filled tail, or a prepared segment.
     Clean,
@@ -35,14 +36,18 @@ pub enum End {
         /// Where the log ends.
         at: Position,
     },
-    /// At a bad frame with `later_valid` valid frames after it: damage. Recovery keeps the raw segment.
+    /// At a bad frame, with valid frames after it or a search for them that didn't finish: damage, not a torn tail.
+    /// Recovery keeps the raw segment.
     Damaged {
         /// Where the log ends.
         at: Position,
-        /// How many valid frames lie after `at`, in this and later segments. A lower bound: the scan that looks past
-        /// the bad frame has a work budget, and when it runs out the log is still reported as damaged, with at least 1
-        /// here although none of the frame-looking data after `at` may be intact.
+        /// How many valid frames were verified after `at`, in this and later segments. Always a count of frames that
+        /// were read and checked, possibly 0.
         later_valid: usize,
+        /// Whether the search for valid frames after `at` covered everything. The search has a work budget; when it
+        /// runs out this is false, `later_valid` counts only what was verified before, and the log is treated as
+        /// damaged and never as a torn tail, because it may hold more.
+        search_complete: bool,
     },
 }
 
@@ -86,7 +91,7 @@ impl Reader {
     ///    beyond a logical end is ignored.
     /// 6. **Classification.** After a bad frame or a discontinuity the valid frames after it are counted, in the rest of
     ///    its segment and in the later segments up to a prepared or bad-header one. None is a [`End::TornTail`], some
-    ///    is [`End::Damaged`], also when the work budget runs out (then a lower bound). A file that can't be read
+    ///    is [`End::Damaged`], also when the work budget runs out (then `search_complete` is false). A file that can't be read
     ///    holds none.
     ///
     /// # Errors
@@ -95,7 +100,7 @@ impl Reader {
     /// [`decode`], for a record after `from`.
     ///
     /// Looking past a bad frame for valid ones has a fixed work budget. If it runs out, the result is
-    /// [`End::Damaged`] and its `later_valid` is a lower bound, at least 1.
+    /// [`End::Damaged`] with `search_complete` false.
     pub fn scan(dir: &Path, from: Lsn) -> Result<Scan, JournalError> {
         Self::scan_with_budget(dir, from, RESYNC_BUDGET)
     }
@@ -333,10 +338,13 @@ impl Scanner<'_> {
     }
 
     /// The end for a bad frame at `at` with `later_valid` valid frames found after it. When the resync budget ran out
-    /// the count is a lower bound, and a log that is that full of frame-looking data is damaged, not torn.
+    /// the search is incomplete and the log is damaged, not torn, whatever the count.
     fn bad_end(&self, at: Position, later_valid: usize) -> End {
-        let later_valid = if self.exhausted { later_valid.max(1) } else { later_valid };
-        if later_valid > 0 { End::Damaged { at, later_valid } } else { End::TornTail { at } }
+        if later_valid > 0 || self.exhausted {
+            End::Damaged { at, later_valid, search_complete: !self.exhausted }
+        } else {
+            End::TornTail { at }
+        }
     }
 
     /// Walks the segments in order until the log ends (rules 1 to 3 of [`Reader::scan`]).
@@ -440,11 +448,11 @@ impl Scanner<'_> {
             && header.first.0 <= self.from.0.saturating_add(1)
     }
 
-    /// Looks for the frame `from + 1` after `offset`: the next record the snapshot doesn't cover. Rule 4 of
+    /// Looks for the frame `from + 1` at or after `offset`: the next record the snapshot doesn't cover. Rule 4 of
     /// [`Reader::scan`]. Spends the resync budget.
     fn find_base(&mut self, bytes: &[u8], offset: usize) -> Option<usize> {
         let wanted = self.from.0.checked_add(1)?;
-        let mut at = offset + 1;
+        let mut at = offset;
         while at < bytes.len() {
             match probe(tail(bytes, at), &mut self.budget) {
                 Probe::Exhausted => {
