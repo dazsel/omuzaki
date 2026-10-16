@@ -289,3 +289,48 @@ fn without_an_input_host_the_ops_say_it_is_unavailable() {
         assert_eq!(op.plan(&ctx).unwrap_err().code, ErrorCode::Unavailable);
     }
 }
+
+#[test]
+fn undoing_an_unbind_or_a_change_of_source_brings_the_running_preview_back() {
+    let rig = Rig::new(false);
+    rig.run("input.select", json!({ "source": "webcam" })).unwrap();
+    rig.run("input.bind_camera", json!({ "camera": "a" })).unwrap();
+    rig.run("input.preview", json!({ "on": true })).unwrap();
+
+    let unbind = rig.run("input.bind_camera", json!({ "camera": null })).unwrap().effect.unwrap();
+    assert_eq!(rig.state()["preview"], json!({ "state": "off" }), "unbinding stopped the preview");
+    assert_eq!(unbind.undo.args, json!({ "camera": "a", "resume_preview": true }));
+    rig.run(&unbind.undo.op, unbind.undo.args).unwrap();
+    assert_eq!(rig.state()["camera"], "a");
+    assert_eq!(rig.state()["preview"], json!({ "state": "on", "camera": "a" }), "undo restarted it");
+
+    let change = rig.run("input.select", json!({ "source": "life_layer" })).unwrap().effect.unwrap();
+    assert_eq!(rig.state()["preview"], json!({ "state": "off" }));
+    assert_eq!(change.undo.args, json!({ "source": "webcam", "resume_preview": true }));
+    rig.run(&change.undo.op, change.undo.args).unwrap();
+    assert_eq!(rig.state()["preview"], json!({ "state": "on", "camera": "a" }));
+
+    // With no preview running, undo starts none.
+    rig.run("input.preview", json!({ "on": false })).unwrap();
+    let plain = rig.run("input.bind_camera", json!({ "camera": null })).unwrap().effect.unwrap();
+    assert_eq!(plain.undo.args, json!({ "camera": "a" }));
+}
+
+#[test]
+fn a_camera_that_will_not_open_changes_nothing() {
+    let rig = Rig::new(true);
+    rig.run("input.select", json!({ "source": "webcam" })).unwrap();
+    rig.run("input.bind_camera", json!({ "camera": "a" })).unwrap();
+    rig.run("input.preview", json!({ "on": true })).unwrap();
+    rig.log.refuse("b");
+    let error = rig.run("input.bind_camera", json!({ "camera": "b" })).unwrap_err();
+    assert_eq!(error.code, ErrorCode::Denied, "{error:?}");
+    let state = rig.state();
+    assert_eq!(state["camera"], "a", "the old binding stays");
+    assert_eq!(state["preview"], json!({ "state": "on", "camera": "a" }), "and the old camera runs again");
+    assert_eq!(
+        rig.settings.as_ref().unwrap().value("input.camera"),
+        Some(json!("a")),
+        "nothing was saved for the refused camera"
+    );
+}

@@ -52,6 +52,7 @@ pub enum Call {
 pub struct CameraLog {
     calls: Arc<Mutex<Vec<Call>>>,
     unplugged: Arc<Mutex<Vec<String>>>,
+    refused: Arc<Mutex<Vec<String>>>,
 }
 
 impl CameraLog {
@@ -63,6 +64,11 @@ impl CameraLog {
     /// Whether a capture was ever started.
     pub fn started(&self) -> bool {
         self.calls().iter().any(|call| matches!(call, Call::Start(_)))
+    }
+
+    /// Makes opening `camera` fail while it stays in the device list (the OS refuses it).
+    pub fn refuse(&self, camera: &str) {
+        self.refused.lock().unwrap().push(camera.to_owned());
     }
 
     /// Takes `camera` out of the device list (its running session keeps going until its frames stop).
@@ -99,6 +105,9 @@ impl Tracker for Cameras {
 
     fn start(&mut self, device: &CameraId, config: &TrackerConfig) -> Result<Box<dyn FrameSource>, TrackError> {
         self.log.calls.lock().unwrap().push(Call::Start(device.0.clone()));
+        if self.log.refused.lock().unwrap().contains(&device.0) {
+            return Err(TrackError::PermissionDenied);
+        }
         for (_, camera) in &mut self.cameras {
             camera.stop();
         }

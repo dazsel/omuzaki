@@ -60,9 +60,10 @@ pub struct LiveStage {
     subject_root: Mat4,
     /// Set when the subject root changed and the stage has not seen it yet.
     subject_dirty: bool,
-    /// The work the last scene owes the renderer (a ground disc, the skin floor), until the app does it and calls
-    /// [`Stage::commit_scene`].
-    owed: Owed,
+    /// Set on resume: the next frame rebases the performer's clock on its `now`.
+    resumed: bool,
+    /// The stage's [`revision`](Stage::revision) the triggers' expressions were installed for.
+    expressions_for: u64,
 }
 
 impl LiveStage {
@@ -83,6 +84,10 @@ impl LiveStage {
         budget: Seconds,
     ) -> Result<Self, PerformError> {
         let (handle, control) = perform_channel(&performer);
+        let mut stage = stage;
+        // The scheduler starts at `quality`, so the stage renders at it from the first frame.
+        let scheduler = Scheduler::new(quality, budget);
+        stage.set_quality(scheduler.quality());
         let live = Self {
             performer,
             control,
@@ -90,13 +95,14 @@ impl LiveStage {
             stage,
             frames: PerformFrame::new(FrameInput::default()),
             sources,
-            scheduler: Scheduler::new(quality, budget),
+            scheduler,
             paused: false,
             scenes: Arc::new(Mailbox::new()),
             scene: ResolvedScene::new(),
             subject_root: Mat4::IDENTITY,
             subject_dirty: false,
-            owed: Owed::default(),
+            resumed: false,
+            expressions_for: 0,
         };
         live.install_expressions()?;
         Ok(live)
@@ -119,6 +125,10 @@ impl LiveStage {
     /// # Errors
     /// What [`Stage::service_variants`], [`Stage::tick`] or [`Stage::redraw`] reports. The performer has stepped; the next call carries on.
     pub fn frame(&mut self, renderer: &mut dyn Renderer, now: Seconds) -> Result<Option<LiveFrame>, StageError> {
+        if std::mem::take(&mut self.resumed) {
+            // The performer carries on from its last step: the paused time is not caught up.
+            self.control.rebase(now);
+        }
         self.sources.swap_into(&mut self.performer);
         self.take_scene();
         // Variant switches are staged outside the tick (`frame::face`), against the input the last frame showed.
@@ -131,6 +141,7 @@ impl LiveStage {
                 None => return Ok(None),
             }
         };
+        self.refresh_expressions();
         let change = self.scheduler.observe(&output.report);
         if change.is_some() {
             self.stage.set_quality(self.scheduler.quality());
@@ -138,15 +149,25 @@ impl LiveStage {
         Ok(Some(LiveFrame { output, change }))
     }
 
+    /// Installs the character's expressions again when a variant swap replaced the character, so the triggers are baked
+    /// against the face now showing. A full request queue keeps the old revision, so the next frame tries again.
+    fn refresh_expressions(&mut self) {
+        let revision = self.stage.revision();
+        if revision != self.expressions_for && self.install_expressions().is_ok() {
+            self.expressions_for = revision;
+        }
+    }
+
     /// Takes a posted scene, or a moved subject root, into the stage. Never waits: a poster holding the mailbox means
     /// the next frame tries again. Allocation-free.
     fn take_scene(&mut self) {
-        let fresh = self.scenes.take_into(&mut self.scene);
-        if fresh || self.subject_dirty {
+        if self.scenes.take_into(&mut self.scene) {
             self.subject_dirty = false;
-            let owed = self.stage.set_scene(&self.scene, self.subject_root);
-            // The stage compares against what the app committed, so the newest answer is the whole of what is owed.
-            self.owed = owed;
+            self.stage.set_scene(&self.scene, self.subject_root);
+        } else if self.subject_dirty {
+            // Only the subject moved: the scene stays as the stage has it, even before one was ever posted.
+            self.subject_dirty = false;
+            self.stage.set_subject_root(self.subject_root);
         }
     }
 
@@ -166,15 +187,16 @@ impl LiveStage {
     }
 
     /// The work the last scene owes the renderer, beyond the copy the stage made: a ground disc, the skin floor. Empty
-    /// for a value-only change. The app does the work, then calls [`Stage::commit_scene`] through
-    /// [`stage_mut`](Self::stage_mut); until then the same work stays owed.
+    /// for a value-only change, and again once the app has done the work and committed it with
+    /// [`Stage::commit_scene`] (through [`stage_mut`](Self::stage_mut)); until then the same work stays owed.
     pub fn owed(&self) -> Owed {
-        self.owed
+        self.stage.owed()
     }
 
     /// Holds the performance (`paused`): every frame redraws the last one, with no step, so the output keeps
     /// rendering a still. Resuming carries on from the clock's `now`, skipping the paused time.
     pub fn set_paused(&mut self, paused: bool) {
+        self.resumed |= self.paused && !paused;
         self.paused = paused;
     }
 

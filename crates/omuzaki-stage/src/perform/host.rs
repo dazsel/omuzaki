@@ -826,6 +826,18 @@ impl PerformControl {
         performer.step(tick)
     }
 
+    /// Makes the next step due at `now`, as the step after the last one run: the time that passed since is dropped, not
+    /// caught up. Call it when a loop that stopped calling [`advance`](Self::advance) (a pause) starts again, so the
+    /// performer and everything driven by its steps resume where they stopped instead of running the missed steps or
+    /// skipping over them. Before the first `advance` it does nothing.
+    pub fn rebase(&mut self, now: Seconds) {
+        if self.origin.is_some() {
+            #[allow(clippy::cast_precision_loss)] // a step count far below 2^52
+            let steps = self.next_step as f64;
+            self.origin = Some(now.0 - steps / f64::from(STEP_HZ));
+        }
+    }
+
     /// Resets the performer and restarts the control's timeline with it: the next [`advance`](Self::advance) runs
     /// tick 0 again. This is the reset to use (after a seek in a recorded track, say). A bare [`Performer::reset`]
     /// clears the stages but leaves the control's tick count running, which is harmless but does not restart the
