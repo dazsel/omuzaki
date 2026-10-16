@@ -174,10 +174,10 @@ impl AnthropicDecoder {
         }
         if let Some(reason) = v.get("delta").and_then(|d| field(d, "stop_reason")) {
             let stop = stop_reason(reason)?;
-            // A stopping turn carries its final output count, and it is at least one token: `message_start` only
-            // reports the first. A missing, mistyped or zero final count (or no prompt count at all) is an error,
-            // not a cheaper turn.
-            let final_output = v.get("usage").and_then(|u| counter(u, "output_tokens")).filter(|n| *n > 0);
+            // A stopping turn carries its own final output count, an integer that may be zero (a stop sequence hit
+            // first): `message_start` only reports the first. A missing, null, mistyped or negative count (or no
+            // prompt count at all) is an error, not a cheaper turn.
+            let final_output = v.get("usage").and_then(|u| counter(u, "output_tokens"));
             if final_output.is_none() || !self.input_reported {
                 return Err(malformed("the turn stopped without a valid final token count"));
             }
@@ -304,7 +304,6 @@ mod tests {
             r#","usage":{}"#.into(),
             r#","usage":{"output_tokens":"9"}"#.into(),
             r#","usage":{"output_tokens":-2}"#.into(),
-            r#","usage":{"output_tokens":0}"#.into(),
             r#","usage":null"#.into(),
         ] {
             let mut d = AnthropicDecoder::default();
@@ -315,6 +314,11 @@ mod tests {
                 "{usage}"
             );
         }
+        // Zero is a valid final count and is charged as zero.
+        let mut d = AnthropicDecoder::default();
+        ok(feed(&mut d, r#"{"type":"message_start","message":{"id":"m","model":"x","usage":{"input_tokens":3}}}"#));
+        let got = ok(feed(&mut d, &stop(r#","usage":{"output_tokens":0}"#)));
+        assert!(got.contains(&LlmEvent::Usage(Usage::new(3, 0))));
         // No prompt count at all is no report either.
         let mut d = AnthropicDecoder::default();
         ok(feed(&mut d, r#"{"type":"message_start","message":{"id":"m","model":"x"}}"#));
