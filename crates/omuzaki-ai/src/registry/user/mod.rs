@@ -11,6 +11,7 @@ mod manifest;
 #[cfg(test)]
 mod tests;
 
+use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use omuzaki_ai_api::{
@@ -70,19 +71,45 @@ impl Registry {
         let mut files = Vec::with_capacity(request.files.len());
         progress.stage("import", 0.0);
         for path in &request.files {
-            files.push(import(&cache, path, progress)?);
+            match import(&cache, path, progress) {
+                Ok(file) => files.push(file),
+                Err(e) => {
+                    self.discard(&files);
+                    return Err(e);
+                }
+            }
         }
         progress.stage("import", 1.0);
+        let added = self.add_imported(request, &info, &files, &cache, progress);
+        if added.is_err() {
+            self.discard(&files);
+        }
+        added
+    }
+
+    /// The rest of [`add_user_model`](Self::add_user_model), once `files` are in the cache: the manifest, the checks
+    /// and the record. Cancellation is honoured before the checks and before the record.
+    fn add_imported(
+        &self,
+        request: AddModel,
+        info: &SlotInfo,
+        files: &[Imported],
+        cache: &Path,
+        progress: &dyn Progress,
+    ) -> Result<ModelEntry, RegistryError> {
+        if progress.is_cancelled() {
+            return Err(RegistryError::Cancelled);
+        }
         let given = request.manifest.is_some();
         let manifest = match request.manifest {
             Some(manifest) => manifest,
-            None => self.written_manifest(&request.slot, &files, &cache)?,
+            None => self.written_manifest(&request.slot, files, cache)?,
         };
-        let mut problems = if given { manifest::pin_problems(&manifest, &files) } else { Vec::new() };
+        let mut problems = if given { manifest::pin_problems(&manifest, files) } else { Vec::new() };
         if manifest.slot != request.slot {
             problems.push(format!("its manifest is for {}, not {}", manifest.slot, request.slot));
         }
-        let manifest = manifest::adopt(manifest, &files);
+        let manifest = manifest::adopt(manifest, files);
         let model = model_ref(&manifest);
         // A manifest that copies a shipped model's id, version and files would make it the same model, and its record
         // would hide the real one.
@@ -93,14 +120,17 @@ impl Registry {
         let locals: Vec<LocalFile> = manifest
             .files
             .iter()
-            .map(|f| LocalFile { name: f.name.clone(), path: blob_path(&cache, f.sha256) })
+            .map(|f| LocalFile { name: f.name.clone(), path: blob_path(cache, f.sha256) })
             .collect();
         let outcome =
-            if problems.is_empty() { self.check_user_model(&model, &manifest, &info, &locals) } else { Err(problems) };
+            if problems.is_empty() { self.check_user_model(&model, &manifest, info, &locals) } else { Err(problems) };
         let (problem, eval) = match outcome {
             Ok(report) => (None, Some(report)),
             Err(reasons) => (Some(format!("it can't be used: {}", reasons.join("; "))), None),
         };
+        if progress.is_cancelled() {
+            return Err(RegistryError::Cancelled);
+        }
         let mut state = self.lock();
         let mut next = state.clone();
         next.user.retain(|u| u.model != model);
@@ -111,6 +141,12 @@ impl Registry {
         self.commit(&mut state, next)?;
         let registered = Registered { manifest, model, problem, origin: Origin::User };
         Ok(self.entry(&state, &registered, None))
+    }
+
+    /// Deletes the cache's copies of `files` that no model uses: what an add that failed or was cancelled imported.
+    fn discard(&self, files: &[Imported]) {
+        let state = self.lock();
+        self.forget_unused(files.iter().map(|f| f.sha256), &state);
     }
 
     /// See [`ModelRegistry::acknowledge`](omuzaki_ai_api::ModelRegistry::acknowledge). Only models the person added
@@ -142,8 +178,8 @@ impl Registry {
         };
         let mut next = state.clone();
         next.user.retain(|u| &u.model != model);
-        let hash = manifest_hash(&removed.manifest);
-        next.acknowledgements.retain(|a| a.digest != model.digest || a.manifest != hash);
+        // Every record for these bytes, under any manifest they were added with: adding them again asks again.
+        next.acknowledgements.retain(|a| a.digest != model.digest);
         for record in &mut next.slots {
             if record.selected.as_ref() == Some(model) {
                 record.selected = None;

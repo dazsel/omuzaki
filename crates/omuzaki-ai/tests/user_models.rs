@@ -341,3 +341,89 @@ fn a_manifest_that_copies_a_shipped_model_is_refused() {
     assert!(matches!(refused, RegistryError::NotUsable { ref model, .. } if *model == shipped.model), "{refused:?}");
     assert_eq!(registry.models(Some(&echo())), vec![shipped], "the shipped model is listed once, as it was");
 }
+
+/// Progress that asks to stop once the stage `after` has finished.
+struct CancelAfter {
+    after: &'static str,
+    cancelled: std::sync::atomic::AtomicBool,
+}
+
+impl CancelAfter {
+    fn new(after: &'static str) -> Self {
+        Self { after, cancelled: std::sync::atomic::AtomicBool::new(false) }
+    }
+}
+
+impl omuzaki_ai_api::Progress for CancelAfter {
+    fn stage(&self, name: &str, fraction: f32) {
+        if name == self.after && fraction >= 1.0 {
+            self.cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+#[test]
+fn a_cancel_after_the_import_stops_before_the_checks_and_leaves_nothing() {
+    let rig = Rig::new();
+    let registry = rig.registry();
+    let file = rig.fake("m.fake.toml", "1.0", PORTS_X_Y);
+    let request = AddModel {
+        slot: echo(),
+        files: vec![file.clone()],
+        manifest: Some(manifest(&echo(), &[&file], "")),
+        acknowledged_by: None,
+    };
+    assert_eq!(registry.add(request, &CancelAfter::new("import")), Err(RegistryError::Cancelled));
+    assert!(registry.models(None).is_empty(), "nothing is listed");
+    assert!(rig.blobs().is_empty(), "the imported copy is deleted: {:?}", rig.blobs());
+}
+
+#[test]
+fn an_add_that_fails_on_a_later_file_deletes_the_files_it_imported() {
+    let rig = Rig::new();
+    let registry = rig.registry();
+    let file = rig.fake("m.fake.toml", "1.0", PORTS_X_Y);
+    let missing = rig.data.path().join("not-there.bin");
+    let request = AddModel { slot: echo(), files: vec![file, missing], manifest: None, acknowledged_by: None };
+    assert!(matches!(registry.add(request, &NoProgress), Err(RegistryError::Io(_))));
+    assert!(registry.models(None).is_empty(), "nothing is listed");
+    assert!(rig.blobs().is_empty(), "the first file's copy is deleted: {:?}", rig.blobs());
+}
+
+#[test]
+fn a_refused_add_keeps_the_files_another_model_uses() {
+    let rig = Rig::new();
+    let registry = rig.registry();
+    let file = rig.fake("m.fake.toml", "1.0", PORTS_X_Y);
+    add(&registry, &echo(), vec![file.clone()], Some(manifest(&echo(), &[&file], "")), None);
+    let request = AddModel {
+        slot: echo(),
+        files: vec![file.clone()],
+        manifest: Some(manifest(&echo(), &[&file], "")),
+        acknowledged_by: None,
+    };
+    assert_eq!(registry.add(request, &CancelAfter::new("import")), Err(RegistryError::Cancelled));
+    assert_eq!(rig.blobs().len(), 2, "the listed model's blob and record stay: {:?}", rig.blobs());
+}
+
+#[test]
+fn removing_a_model_forgets_its_acknowledgements_under_every_manifest() {
+    let rig = Rig::new();
+    let registry = rig.registry();
+    let file = rig.fake("mine.fake.toml", "1.0", PORTS_X_Y);
+    let first = manifest(&echo(), &[&file], "");
+    let accepted = add(&registry, &echo(), vec![file.clone()], Some(first.clone()), Some("Pat"));
+    // The same model under another card, then removed: the first card's record must go too.
+    let mut other = manifest(&echo(), &[&file], "");
+    other.card.authors = Some("someone else".into());
+    let replaced = add(&registry, &echo(), vec![file.clone()], Some(other), None);
+    assert_eq!(replaced.model, accepted.model);
+    registry.remove(&replaced.model).unwrap();
+    assert!(!rig.state().contains("Pat"), "no acknowledgement is left:\n{}", rig.state());
+    let again = add(&registry, &echo(), vec![file], Some(first), None);
+    assert_eq!(again.status, ModelStatus::NeedsAcknowledgement, "adding it again asks again");
+}

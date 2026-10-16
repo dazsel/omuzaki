@@ -111,6 +111,24 @@ fn a_model_over_the_memory_cap_is_killed_and_one_under_it_loads() {
     assert!(error.to_string().contains("crashed loading"), "{error}");
 }
 
+/// A worker that announces a 512 MiB answer: refused from its header, before the app allocates anything for it.
+#[cfg(unix)]
+#[test]
+fn a_worker_that_announces_a_huge_answer_is_refused_before_it_is_read() {
+    let mut settings = worker_settings(DEFAULT_MEMORY_MIB);
+    settings.program = "/bin/sh".into();
+    // MAGIC, then a control frame header claiming 0x2000_0000 bytes, then nothing.
+    settings.args = ["-c", r"printf 'OMZWRK01\001\000\000\000\040'; sleep 30"].map(Into::into).into();
+    let (model, runtime) = (fake_model(), RuntimeId::new("fake").unwrap());
+    let start = Instant::now();
+    let probe = sandbox::probe(&settings, &Model { model: &model, runtime: &runtime, files: vec![], stages: &[] }, &{
+        VerifiedCache::new(tempfile::tempdir().unwrap().keep(), MemFetcher::new())
+    });
+    let Err(error) = probe else { panic!("a probe answered by a broken worker") };
+    assert!(error.to_string().contains("over the limit"), "{error}");
+    assert!(start.elapsed() < Duration::from_secs(10), "refused at once, not after the worker's sleep");
+}
+
 #[test]
 fn a_worker_that_cannot_start_is_a_load_error_that_says_so() {
     let mut settings = worker_settings(DEFAULT_MEMORY_MIB);

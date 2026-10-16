@@ -2,7 +2,8 @@
 
 use omuzaki_ai_api::{
     Check, EvalEnv, EvalError, EvalLevel, EvalReport, FetchError, FileSource, LoadError, LocalFile, ModelManifest,
-    ModelRef, ModelSource, Progress, RegistryError, Session, SlotInfo, SlotRef, Version, find_runtime, find_slot,
+    ModelRef, ModelSource, Progress, RegistryError, Session, Sha256, SlotInfo, SlotRef, Version, find_runtime,
+    find_slot,
 };
 
 use super::Candidate;
@@ -257,15 +258,20 @@ impl Registry {
     /// Forgets the cached files of a removed model that no installed or added model in `state` still uses. Best
     /// effort: a file that can't be deleted only costs disk, and the cache checks files again before it hands them out.
     pub(super) fn delete_blobs(&self, manifest: &ModelManifest, state: &State) {
-        for file in &manifest.files {
-            let uses = |m: &ModelManifest| m.files.iter().any(|f| f.sha256 == file.sha256);
+        self.forget_unused(manifest.files.iter().map(|f| f.sha256), state);
+    }
+
+    /// Deletes the cached files with these hashes that no installed or added model in `state` uses.
+    pub(super) fn forget_unused(&self, hashes: impl IntoIterator<Item = Sha256>, state: &State) {
+        for sha256 in hashes {
+            let uses = |m: &ModelManifest| m.files.iter().any(|f| f.sha256 == sha256);
             let shared =
                 state.installed.iter().any(|i| uses(&i.manifest)) || state.user.iter().any(|u| uses(&u.manifest));
             if shared {
                 continue;
             }
-            if let Err(e) = self.files.forget(file.sha256) {
-                tracing::warn!(sha256 = %file.sha256, "couldn't delete a removed model's file: {e}");
+            if let Err(e) = self.files.forget(sha256) {
+                tracing::warn!(%sha256, "couldn't delete a model file no model uses: {e}");
             }
         }
     }

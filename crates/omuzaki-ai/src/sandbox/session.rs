@@ -13,11 +13,15 @@ use omuzaki_ai_api::{
 };
 
 use super::limits::{self, Contained, MEMORY_ENV};
-use super::wire::{self, Control, Kind, MAGIC, broken, read_frame, read_frame_within, write_control, write_frame};
+use super::wire::{self, Control, Kind, MAGIC, broken, read_frame_within, write_control, write_frame};
 use super::{LOAD_LIMIT, LoadSpec, Model, START_LIMIT, SandboxSettings};
 
 /// The most a worker's answer to a run may hold besides its tensors: a run error's words.
 const MAX_RUN_CONTROL: usize = 64 * 1024;
+
+/// The most a worker's answer to a probe or a load may hold, or a request for a library: a signature, a few URLs, an
+/// error's words. Far below the tensor limit, so a worker can't make the app allocate what its own cap forbids.
+const MAX_COLD_CONTROL: usize = 1 << 20;
 
 /// How many native libraries a worker may ask for while it probes or loads one model.
 const MAX_FETCHES: usize = 8;
@@ -202,7 +206,7 @@ impl Worker {
         self.stdin.flush()?;
         let mut fetches = 0;
         loop {
-            match read_frame(&mut self.stdout, &mut self.buf)? {
+            match read_frame_within(&mut self.stdout, &mut self.buf, MAX_COLD_CONTROL)? {
                 Some(Kind::Control) => {}
                 Some(other) => return Err(broken(format!("a {other:?} frame where an answer was expected"))),
                 None => return Err(io::ErrorKind::UnexpectedEof.into()),

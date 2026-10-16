@@ -58,6 +58,8 @@ fn serve_on<R: Read + Send, W: Write + Send>(input: R, output: W) -> io::Result<
     }
     let mut session: Option<Box<dyn Session>> = None;
     let (mut inputs, mut outputs, mut scratch): (Vec<TensorBuf>, Vec<TensorBuf>, Vec<u8>) = Default::default();
+    // The references a run takes, kept between runs (empty) so a steady stream of runs allocates nothing here.
+    let mut spare: Vec<TensorRef<'static>> = Vec::new();
     loop {
         let kind = {
             let mut p = lock(&pipe);
@@ -78,8 +80,11 @@ fn serve_on<R: Read + Send, W: Write + Send>(input: R, output: W) -> io::Result<
                 let mut p = lock(&pipe);
                 read_inputs(&mut *p, n, &mut inputs)?;
                 let Some(running) = session.as_mut() else { return Err(broken("a run before a load")) };
-                let refs: Vec<TensorRef<'_>> = inputs.iter().map(TensorBuf::as_ref).collect();
-                match running.run(&refs, &mut outputs) {
+                let mut refs = recycle(std::mem::take(&mut spare));
+                refs.extend(inputs.iter().map(TensorBuf::as_ref));
+                let ran = running.run(&refs, &mut outputs);
+                spare = recycle(refs);
+                match ran {
                     Ok(()) => {
                         write_frame(&mut p.output, Kind::Ran, &wire::count(outputs.len()))?;
                         for out in &outputs {
@@ -105,6 +110,14 @@ fn serve_on<R: Read + Send, W: Write + Send>(input: R, output: W) -> io::Result<
             Kind::Tensor | Kind::Ran => return Err(broken(format!("a {kind:?} frame out of place"))),
         }
     }
+}
+
+/// Empties `refs` and hands its storage back for references of another lifetime. An empty `Vec` collected into an
+/// element type of the same size and alignment keeps its allocation (`Vec`'s in-place collect), so nothing is freed or
+/// allocated.
+fn recycle<'b>(mut refs: Vec<TensorRef<'_>>) -> Vec<TensorRef<'b>> {
+    refs.clear();
+    refs.into_iter().map(|_| unreachable!("the vector is empty")).collect()
 }
 
 /// Reads `n` tensor frames into `inputs`, reusing their storage.
@@ -190,4 +203,22 @@ impl<R: Read + Send, W: Write + Send> FileSource for Parent<'_, R, W> {
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+#[cfg(test)]
+mod recycle_tests {
+    use omuzaki_ai_api::TensorRef;
+
+    use super::recycle;
+
+    #[test]
+    fn recycled_references_keep_their_storage() {
+        let data = [1.0f32, 2.0, 3.0];
+        let mut refs: Vec<TensorRef<'_>> = Vec::with_capacity(4);
+        refs.push(TensorRef::f32(&data, &[3]));
+        let (ptr, capacity) = (refs.as_ptr().cast::<u8>(), refs.capacity());
+        let spare: Vec<TensorRef<'static>> = recycle(refs);
+        assert_eq!(spare.len(), 0);
+        assert_eq!((spare.as_ptr().cast::<u8>(), spare.capacity()), (ptr, capacity), "the same allocation");
+    }
 }
