@@ -12,7 +12,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub use file::{FileError, from_jsonl, to_jsonl};
-pub use play::{PlayError, PlayReport, play};
+pub use play::{PlayError, PlayReport, play, play_within};
 pub use record::MacroRecorder;
 
 /// One op call of a macro, as the person made it.

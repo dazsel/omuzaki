@@ -39,12 +39,14 @@ mod store;
 pub use budget::MemoryBudget;
 pub use calls::{Calls, Cancel, PlannedCall, RunnerCalls};
 pub use check::{CheckReport, Diagnostic, FieldError, FieldErrorKind, OpUse, Refused, effective_grants};
-pub use commands::{RunOptions, check_script, run_script};
+pub use commands::{CheckOutput, RunOptions, check_script, run_script};
 pub use error::{LimitKind, OutputKind, OutputLine, ScriptError, ScriptErrorKind};
 pub use host::{RunRequest, ScriptHost, ScriptOutcome};
 pub use job::JobScript;
 pub use limits::Limits;
-pub use macros::{FileError, Macro, MacroRecorder, PlayError, PlayReport, RecordedCall, from_jsonl, play, to_jsonl};
+pub use macros::{
+    FileError, Macro, MacroRecorder, PlayError, PlayReport, RecordedCall, from_jsonl, play, play_within, to_jsonl,
+};
 pub use registered::{registered_host, registered_ops};
 pub use saved::{MAX_MACRO_BYTES, MAX_NAME_CHARS, Place, content_hash};
 pub use store::{MemScriptStore, ScriptKind, ScriptStore, StoredScript};

@@ -54,24 +54,40 @@ pub fn run_script(
     if options.json { pretty(&outcome) } else { Ok(outcome_text(&outcome)) }
 }
 
-/// Checks the script `source` without running it and returns what to print: the ops it names with line and column, then
-/// every problem as `line:column: message`, then the scopes it needs. With `json`, the [`CheckReport`] as pretty JSON.
-///
-/// # Errors
-/// `invalid` (3) when the report has a problem, so a script that doesn't check exits non-zero; the message is the first
-/// problem and its position. The full report is what `--json` prints.
-pub fn check_script(runner: &dyn Runner, source: &str, json: bool) -> Result<String, OpError> {
+/// What `omuzaki script check` prints and how it exits.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CheckOutput {
+    /// What to print: the ops the script names with line and column, then every problem as `line:column: message`, then
+    /// the scopes it needs; with `json`, the [`CheckReport`] as pretty JSON. It is the report whether the script is
+    /// clean or not, so a failing check still shows everything it found.
+    pub text: String,
+    /// The error that decides the exit code: `invalid` (3) when the report has a problem, so a script that doesn't check
+    /// exits non-zero (the message is the first problem and its position), or `internal` if the JSON could not be
+    /// written. `None` for a clean script.
+    pub failure: Option<OpError>,
+}
+
+/// Checks the script `source` without running it. The result carries both the report to print and, when the script has
+/// a problem, the failing status: the CLI prints [`CheckOutput::text`] either way, then exits with the code of
+/// [`CheckOutput::failure`] if there is one.
+pub fn check_script(runner: &dyn Runner, source: &str, json: bool) -> CheckOutput {
     let report = ScriptHost::new(&runner.ops(), Limits::console()).check(source);
-    let text = if json { pretty(&report)? } else { report_text(&report) };
-    match report.first_problem() {
-        None => Ok(text),
-        Some(problem) => Err(OpError::invalid(
-            "source",
-            format!("{} (line {}, column {})", problem.message, problem.line, problem.column),
-        )
-        .with_detail(ErrorDetail::Position { line: problem.line, column: problem.column })
-        .hint(format!("{} problem(s) in all; run with --json for the report", report.problems().len()))),
+    let (text, mut failure) = match json.then(|| pretty(&report)) {
+        Some(Ok(text)) => (text, None),
+        Some(Err(error)) => (error.message.clone() + "\n", Some(error)),
+        None => (report_text(&report), None),
+    };
+    if failure.is_none() {
+        failure = report.first_problem().map(|problem| {
+            OpError::invalid(
+                "source",
+                format!("{} (line {}, column {})", problem.message, problem.line, problem.column),
+            )
+            .with_detail(ErrorDetail::Position { line: problem.line, column: problem.column })
+            .hint(format!("{} problem(s) in all; run with --json for the report", report.problems().len()))
+        });
     }
+    CheckOutput { text, failure }
 }
 
 /// A command line never cancels a run: Ctrl+C ends the process.

@@ -27,6 +27,9 @@ fn a_closure_passed_straight_to_try_op_or_an_array_function_is_allowed() {
         "let s = 1; try_op(|| try_op(|| s))",
         "let s = 1; [1, 2].some(|x| x == s)",
         "let s = 1; [1, 2].all(|x| x >= s)",
+        "[1, 2].reduce(|acc, x| if acc == () { x } else { acc + x })",
+        "reduce([1, 2], |acc, x| acc + x, 0)",
+        "map([1, 2], |x| x + 1)",
     ] {
         let report = host().check(source);
         assert!(report.is_clean(), "{source}: {report:?}");
@@ -49,6 +52,15 @@ fn a_closure_anywhere_else_is_refused_by_the_check_and_by_the_run_before_anythin
         ("let s = 1;\ntry_op(|| {\n    let g = || s;\n    g\n})", 3, 13),
         ("[|| 1].map(|f| f)", 1, 2),
         ("return || 1;", 1, 8),
+        // The right function in the wrong place: a position or an arity the function does not take a callback in.
+        ("[1].map(|x| x, |y| y)", 1, 9),
+        ("[1].map(|x| x, 2)", 1, 9),
+        ("map(|x| x, [1])", 1, 5),
+        ("try_op(1, || 1)", 1, 11),
+        ("try_op(|| 1, || 2)", 1, 8),
+        ("[1].reduce(1, |a, b| a)", 1, 15),
+        ("[1].reduce(|a, b| a, 0, 0)", 1, 12),
+        ("[1].sort(|a, b| a, |c, d| c)", 1, 10),
     ];
     for (source, line, column) in cases {
         let report = host().check(source);

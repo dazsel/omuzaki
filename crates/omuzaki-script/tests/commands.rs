@@ -106,17 +106,21 @@ fn a_limit_is_invalid_and_keeps_what_was_printed_as_the_hint() {
 #[test]
 fn check_prints_the_ops_the_problems_and_the_scopes() {
     let runner = FakeRunner::default();
-    let text =
-        check_script(&runner, "ops::face::set_profile(#{ character: \"a\" });\nops::measure::likeness(#{});", false)
-            .unwrap();
-    assert_eq!(text, "1:12: calls face.set_profile\n2:15: calls measure.likeness\nneeds: read, edit:character\n");
+    let output =
+        check_script(&runner, "ops::face::set_profile(#{ character: \"a\" });\nops::measure::likeness(#{});", false);
+    assert_eq!(output.failure, None);
+    assert_eq!(
+        output.text,
+        "1:12: calls face.set_profile\n2:15: calls measure.likeness\nneeds: read, edit:character\n"
+    );
 }
 
 #[test]
 fn check_prints_the_report_as_json() {
     let runner = FakeRunner::default();
-    let text = check_script(&runner, "ops::face::set_profile(#{ character: \"a\" });", true).unwrap();
-    let report: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let output = check_script(&runner, "ops::face::set_profile(#{ character: \"a\" });", true);
+    assert_eq!(output.failure, None);
+    let report: serde_json::Value = serde_json::from_str(&output.text).unwrap();
     assert_eq!(report["ops"][0]["name"], "face.set_profile");
     assert_eq!(report["scopes"], json!(["edit:character"]));
 }
@@ -125,17 +129,31 @@ fn check_prints_the_report_as_json() {
 fn check_fails_with_the_first_problem_when_the_script_has_one() {
     let runner = FakeRunner::default();
     let source = "let a = 1;\nops::face::set_profil(#{});\nops::face::set_profile(#{ nope: 1 });";
-    let error = check_script(&runner, source, false).unwrap_err();
+    let output = check_script(&runner, source, false);
+    let error = output.failure.expect("a problem fails the check");
     assert_eq!(error.code, ErrorCode::Invalid);
     assert_eq!(error.detail.as_deref(), Some(&ErrorDetail::Position { line: 2, column: 12 }));
     assert!(error.message.contains("face.set_profil"), "{}", error.message);
     assert!(error.hint.as_deref().unwrap().starts_with("3 problem(s)"), "{:?}", error.hint);
+    // The report is still there to print: every problem, not only the first.
+    assert!(output.text.contains("2:12: unknown op `face.set_profil`"), "{}", output.text);
+    assert!(output.text.contains("3:27: `face.set_profile` has no field `nope`"), "{}", output.text);
+}
+
+#[test]
+fn a_failing_check_still_returns_its_report_as_json() {
+    let runner = FakeRunner::default();
+    let output = check_script(&runner, "let a = 1;\nops::face::set_profil(#{});", true);
+    let error = output.failure.expect("fails");
+    assert_eq!(error.code, ErrorCode::Invalid);
+    let report: serde_json::Value = serde_json::from_str(&output.text).expect("the text is the JSON report");
+    assert_eq!(report["unknown_ops"][0]["name"], "face.set_profil");
 }
 
 #[test]
 fn check_shows_the_ceiling() {
     let runner = FakeRunner::default();
-    let text = check_script(&runner, "// omuzaki: grants = [\"edit:character\"]\n1", false).unwrap();
+    let text = check_script(&runner, "// omuzaki: grants = [\"edit:character\"]\n1", false).text;
     assert!(text.ends_with("needs: read\nceiling: edit:character\n"), "{text}");
 }
 

@@ -11,24 +11,33 @@
 
 use rhai::{AST, ASTNode, Dynamic, Expr, FnPtr, Position, Stmt};
 
-/// The functions a closure may be passed to: `try_op`, and the array helpers of Rhai's `BasicArrayPackage` that call
-/// the function and drop it.
-const HOLDERS: [&str; 14] = [
-    "try_op",
-    "for_each",
-    "map",
-    "filter",
-    "find",
-    "find_map",
-    "some",
-    "all",
-    "dedup",
-    "reduce",
-    "reduce_rev",
-    "sort",
-    "drain",
-    "retain",
+/// The functions a closure may be passed to, each with the argument position the closure may take and the numbers of
+/// arguments the call may have: `try_op(closure)`, and the array helpers of Rhai's `BasicArrayPackage`, which take the
+/// array first (`array.map(closure)`) and call the function and drop it. Naming the position and the arity, not only the
+/// function, keeps a closure out of any argument the callee might keep: `array.map(closure)` takes it as the function,
+/// and no other form of the call does.
+const HOLDERS: [(&str, usize, &[usize]); 14] = [
+    ("try_op", 0, &[1]),
+    ("for_each", 1, &[2]),
+    ("map", 1, &[2]),
+    ("filter", 1, &[2]),
+    ("find", 1, &[2]),
+    ("find_map", 1, &[2]),
+    ("some", 1, &[2]),
+    ("all", 1, &[2]),
+    ("dedup", 1, &[2]),
+    // `reduce(function)` and `reduce(function, initial)`.
+    ("reduce", 1, &[2, 3]),
+    ("reduce_rev", 1, &[2, 3]),
+    ("sort", 1, &[2]),
+    ("drain", 1, &[2]),
+    ("retain", 1, &[2]),
 ];
+
+/// The accepted callers' names.
+fn holder_names() -> impl Iterator<Item = &'static str> {
+    HOLDERS.iter().map(|(name, ..)| *name)
+}
 
 /// The name Rhai gives the call that binds a closure's captured variables.
 const CURRY: &str = "curry";
@@ -46,8 +55,8 @@ pub(crate) struct Stray {
 pub(crate) fn stray(ast: &AST) -> Option<Stray> {
     let mut found = None;
     ast.walk(&mut |nodes: &[ASTNode<'_>]| {
-        let Some(ASTNode::Expr(Expr::DynamicConstant(value, at))) = nodes.last() else { return true };
-        if !is_closure(value) || held_by_a_call(&nodes[..nodes.len() - 1]) {
+        let Some(ASTNode::Expr(closure @ Expr::DynamicConstant(value, at))) = nodes.last() else { return true };
+        if !is_closure(value) || held_by_a_call(&nodes[..nodes.len() - 1], closure) {
             return true;
         }
         found = Some(Stray {
@@ -55,7 +64,7 @@ pub(crate) fn stray(ast: &AST) -> Option<Stray> {
             message: format!(
                 "a closure can only be passed straight to `try_op` or to an array function ({}); it can't be kept in \
                  a variable, an array or a map, or returned",
-                HOLDERS[1..].join(", ")
+                holder_names().skip(1).collect::<Vec<_>>().join(", ")
             ),
         });
         false
@@ -63,7 +72,7 @@ pub(crate) fn stray(ast: &AST) -> Option<Stray> {
     if found.is_some() {
         return found;
     }
-    let shadowing = ast.iter_functions().find(|function| HOLDERS.contains(&function.name));
+    let shadowing = ast.iter_functions().find(|function| holder_names().any(|name| name == function.name));
     let closures = ast.iter_functions().any(|function| function.name.starts_with("anon$"));
     shadowing.filter(|_| closures).map(|function| Stray {
         at: Position::NONE,
@@ -80,24 +89,25 @@ fn is_closure(value: &Dynamic) -> bool {
     value.read_lock::<FnPtr>().is_some_and(|pointer| pointer.fn_name().starts_with("anon$"))
 }
 
-/// Whether the closure whose ancestors are `path` (outermost first) is an argument of a [`HOLDERS`] call. A closure
-/// that captures a variable is wrapped by Rhai: `curry(closure, captured..)` inside a block that shares the captured
-/// variables, and that block is the argument. Statements that only hold an expression are not counted as ancestors.
-fn held_by_a_call(path: &[ASTNode<'_>]) -> bool {
+/// Whether `closure`, whose ancestors are `path` (outermost first), is the argument a [`HOLDERS`] call takes a function
+/// in, in a call of an arity it takes. A closure that captures a variable is wrapped by Rhai: `curry(closure,
+/// captured..)` inside a block that shares the captured variables, and that block is the argument. Statements that only
+/// hold an expression are not counted as ancestors.
+fn held_by_a_call(path: &[ASTNode<'_>], closure: &Expr) -> bool {
     let path: Vec<&ASTNode<'_>> = path.iter().filter(|node| !matches!(node, ASTNode::Stmt(Stmt::Expr(_)))).collect();
     let is_curry = |node: &ASTNode<'_>| matches!(node, ASTNode::Expr(Expr::FnCall(call, _)) | ASTNode::Stmt(Stmt::FnCall(call, _)) if call.name == CURRY);
-    let owner = match path.last() {
-        Some(last) if is_curry(last) => match path.len().checked_sub(3).and_then(|index| path.get(index..index + 2)) {
-            Some([owner, ASTNode::Expr(Expr::Stmt(_))]) => owner,
-            _ => return false,
-        },
-        Some(owner) => owner,
-        None => return false,
+    let (owner, argument) = match path.as_slice() {
+        [.., owner, ASTNode::Expr(wrapper @ Expr::Stmt(_)), curry] if is_curry(curry) => (*owner, *wrapper),
+        [.., owner] => (*owner, closure),
+        [] => return false,
     };
-    match owner {
-        ASTNode::Expr(Expr::FnCall(call, _) | Expr::MethodCall(call, _)) | ASTNode::Stmt(Stmt::FnCall(call, _)) => {
-            HOLDERS.contains(&call.name.as_str())
-        }
-        _ => false,
-    }
+    let (call, receiver) = match owner {
+        ASTNode::Expr(Expr::FnCall(call, _)) | ASTNode::Stmt(Stmt::FnCall(call, _)) => (call, 0),
+        // In `array.map(f)` the syntax tree keeps the array apart from the arguments; it is the call's first argument.
+        ASTNode::Expr(Expr::MethodCall(call, _)) => (call, 1),
+        _ => return false,
+    };
+    let Some(index) = call.args.iter().position(|arg| std::ptr::eq(arg, argument)) else { return false };
+    let (position, arity) = (index + receiver, call.args.len() + receiver);
+    HOLDERS.iter().any(|(name, at, arities)| *name == call.name.as_str() && *at == position && arities.contains(&arity))
 }

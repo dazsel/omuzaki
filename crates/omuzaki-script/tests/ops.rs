@@ -684,6 +684,19 @@ fn replay_stops_at_the_seconds_it_was_given() {
 }
 
 #[test]
+fn replay_fails_when_the_deadline_passes_during_its_last_call() {
+    // One step, so no later step is left to notice: the check after the call must.
+    let calls = Calls { delay: std::time::Duration::from_millis(1_200), ..Calls::default() };
+    let doc = json!({ "scripts": { "one": { "name": "One", "kind": "macro", "steps": [
+        { "op": "fake.set", "args": { "path": "a", "value": 1 } }
+    ] } } });
+    let error = work(json!({ "id": "one", "seconds": 1 }), doc, &calls, &Signal::default()).unwrap_err();
+    assert_eq!(error.code, ErrorCode::Invalid, "{error}");
+    assert!(error.message.contains("1-second limit"), "{error}");
+    assert_eq!(calls.sent.lock().unwrap().len(), 1, "the call was made; its result is not committed");
+}
+
+#[test]
 fn the_ceiling_is_enforced_for_a_job_by_the_adapter() {
     let calls = Calls::default();
     let source = "// omuzaki: grants = [\"render\"]\nops::fake::set(#{ path: \"a\", value: 1 })";

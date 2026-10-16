@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, json};
 
 use crate::bindings::refusal_registered;
+use crate::error::limit_error;
 use crate::job::JobScript;
 use crate::saved::{Body, Item, Place, item_path, not_saved, store};
 use crate::{
@@ -215,10 +216,12 @@ fn replay(job: &JobCtx<'_>, steps: &[RecordedCall], dry_run: bool, seconds: u32)
     let mut plans = Vec::new();
     for (index, step) in steps.iter().enumerate() {
         job.checkpoint("macro", index as f32 / steps.len() as f32)?;
+        let outcome = job.call(&step.op, step.args.clone(), mode).map_err(|error| step_failed(index, step, error))?;
+        // After the call, not before it: a call that crosses the deadline (the last one included) must not end in a
+        // success that commits after the time the caller was promised.
         if clock.now().0 - started > f64::from(seconds) {
             return Err(limit_error(LimitKind::Time, format!("the macro ran over its {seconds}-second limit")));
         }
-        let outcome = job.call(&step.op, step.args.clone(), mode).map_err(|error| step_failed(index, step, error))?;
         if dry_run {
             plans.push(json!({ "op": step.op, "args": step.args, "plan": outcome.plan }));
         }
@@ -230,19 +233,6 @@ fn replay(job: &JobCtx<'_>, steps: &[RecordedCall], dry_run: bool, seconds: u32)
 fn step_failed(index: usize, step: &RecordedCall, mut error: OpError) -> OpError {
     error.message = format!("step {} (`{}`) failed: {}", index + 1, step.op, error.message);
     error
-}
-
-/// A limit a macro replay hit, as the error a script run that hit the same limit gives.
-fn limit_error(kind: LimitKind, message: String) -> OpError {
-    ScriptError {
-        kind: ScriptErrorKind::Limit(kind),
-        line: 1,
-        column: 1,
-        op_error: None,
-        message,
-        output: Vec::new(),
-    }
-    .to_op_error()
 }
 
 /// How a failed run reaches the caller: a cancel as the job's cancellation, anything else as

@@ -115,3 +115,9 @@ impl ScriptError {
         }
     }
 }
+
+/// A limit a macro hit while it played, as the `OpError` a script run that hit the same limit gives.
+pub(crate) fn limit_error(kind: LimitKind, message: String) -> OpError {
+    ScriptError { kind: ScriptErrorKind::Limit(kind), line: 1, column: 1, op_error: None, message, output: Vec::new() }
+        .to_op_error()
+}
