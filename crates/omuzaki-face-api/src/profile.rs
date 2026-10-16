@@ -63,7 +63,8 @@ impl Default for FaceLayout {
 /// The layout as ratios, independent of absolute head size (CB-12's overlay and the report card).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct FaceRatios {
-    /// Eye width over the distance between the eye centres.
+    /// Half an eye's width ([`FaceLayout::eye_width`]) over the distance between the eye centres. A full drawn eye width
+    /// is twice the numerator.
     pub eye_width_to_iod: f64,
     /// Where the nose sits between the eye line (0) and the chin (1).
     pub nose: f64,
@@ -114,9 +115,7 @@ impl Validate for FaceLayout {
         c.range("mouth_y", self.mouth_y, -0.4, 0.3);
         c.range("blush_y", self.blush_y, -0.4, 0.3);
         c.range("blush_spacing", self.blush_spacing, 0.0, 0.25);
-        if self.mouth_y >= self.eye_y {
-            c.fail("mouth_y", "the mouth must be below the eye line");
-        }
+        c.rule(&["mouth_y", "eye_y"], self.mouth_y < self.eye_y, "the mouth must be below the eye line");
     }
 }
 
@@ -515,9 +514,11 @@ impl Validate for BrowStyle {
         c.range("outer_x", self.outer_x, 0.02, 0.25);
         c.range("thickness", self.thickness, 0.0003, 0.01);
         c.range("arch", self.arch, 0.0, 0.02);
-        if self.outer_x <= self.inner_x {
-            c.fail("outer_x", "the outer end must be farther from the midline than the inner end");
-        }
+        c.rule(
+            &["outer_x", "inner_x"],
+            self.outer_x > self.inner_x,
+            "the outer end must be farther from the midline than the inner end",
+        );
     }
 }
 
@@ -577,10 +578,23 @@ impl Validate for MouthInterior {
     fn check(&self, _: &mut Check) {}
 }
 
-/// Fangs at the upper mouth corners (yaeba); drawn when the `fang` channel is above 0.
+/// Whether the character has fangs at all (CB-22).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FangKind {
+    /// No fangs: none are painted whatever the `fangs` channel says, and the `grin-fangs` rule writes nothing.
+    None,
+    /// Small pointed fangs at the upper mouth corners (the default).
+    Pointed,
+}
+
+/// Fangs at the upper mouth corners (yaeba); drawn when the `fangs` channel is above 0 and the kind is not
+/// [`FangKind::None`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct FangStyle {
+    /// Whether this character has fangs.
+    pub kind: FangKind,
     /// Width of each fang's base, in metres.
     pub width: f64,
     /// Length, in metres.
@@ -591,7 +605,7 @@ pub struct FangStyle {
 
 impl Default for FangStyle {
     fn default() -> Self {
-        Self { width: 0.006, height: 0.0058, position: 0.72 }
+        Self { kind: FangKind::Pointed, width: 0.006, height: 0.0058, position: 0.72 }
     }
 }
 
@@ -827,6 +841,11 @@ pub struct FaceProfile {
 }
 
 impl FaceProfile {
+    /// Whether this character has fangs: its fang style is not [`FangKind::None`].
+    pub fn has_fangs(&self) -> bool {
+        self.mouth.fang.kind != FangKind::None
+    }
+
     /// The `rest` layer of the bus: neutral with this character's `rest` values written.
     pub fn rest_buf(&self) -> ChannelBuf {
         let mut buf = ChannelBuf::NEUTRAL;
@@ -917,5 +936,24 @@ mod tests {
         assert_eq!(a.lerp(&b, 0.0), a);
         assert_eq!(a.lerp(&b, 1.0), b);
         assert!((a.lerp(&b, 0.5).mouth_y - -0.175).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_profile_can_say_it_has_no_fangs() {
+        assert!(FaceProfile::default().has_fangs(), "fangs stay the default, so existing profiles don't change");
+        let p: FaceProfile = serde_json::from_str(r#"{"mouth":{"fang":{"kind":"none"}}}"#).unwrap();
+        assert!(!p.has_fangs());
+        assert_eq!(p.mouth.fang.width, FangStyle::default().width, "the rest of the style keeps its defaults");
+        p.validate().unwrap();
+        let back: FaceProfile = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+        assert_eq!(back, p);
+    }
+
+    #[test]
+    fn eye_width_to_iod_is_half_an_eye_width_over_the_eye_distance() {
+        // A half-width of 0.05 m on eyes 0.2 m apart: 0.25, not the 0.5 a full width would give.
+        let l = FaceLayout { eye_width: 0.05, eye_spacing: 0.1, ..FaceLayout::default() };
+        let r = l.ratios(-0.25).unwrap();
+        assert!((r.eye_width_to_iod - 0.25).abs() < 1e-12, "{r:?}");
     }
 }

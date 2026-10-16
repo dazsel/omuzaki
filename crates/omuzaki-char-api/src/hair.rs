@@ -348,6 +348,10 @@ pub struct FramingGen {
     pub width: Taper,
     /// Clump thickness.
     pub thickness: Bulge,
+    /// Hand-placed lock heights (the prototype's tuck, ear and drop positions). `None` builds each lock from `edge`
+    /// and `tail` alone, so a file without them keeps its meaning.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub locks: Option<FramingLocks>,
 }
 
 impl Default for FramingGen {
@@ -361,6 +365,105 @@ impl Default for FramingGen {
             wave: Wave::default(),
             width: Taper { start: 0.03, mid: 0.05, tip: 0.006, tip_at: 0.8 },
             thickness: Bulge { base: 0.006, swell: 0.004 },
+            locks: None,
+        }
+    }
+}
+
+/// The heights and points a framing lock passes through, which `edge` and `tail` cannot say: the prototype's
+/// hand-placed `Y_TOP`, `Y_UPPER`, `Y_LOWER`, `Y_CHEEK`, `Y_TUCK_A`, `Y_TUCK_B`, `X_TUCK_MAX`, `EAR_TOP`, `EAR_BACK`,
+/// `DROP` and `Y_END`. Every height and point is head-local (metres from the head centre); `x` is for the character's
+/// left (+x) and is mirrored for the right. The prototype's `RH` is not stored: it is the head's own half-width.
+///
+/// The left side tucks locks `1..` behind the ear and lets lock `0` frame the cheek; the right side hangs every lock
+/// to its `end` height.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+#[non_exhaustive]
+pub struct FramingLocks {
+    /// Height where the forehead part of the lock starts to move outward with its index.
+    pub top: f64,
+    /// Heights down the forehead, descending, `2..=8`.
+    pub upper: Vec<f64>,
+    /// Heights of the points beside the face of a lock that does not tuck, descending, at most 6.
+    pub lower: Vec<f64>,
+    /// Height where the cheek-framing and hanging locks start.
+    pub cheek: f64,
+    /// Height whose outline `x` the first tuck point is read at.
+    pub tuck_a: f64,
+    /// Height of the first tuck point.
+    pub tuck_b: f64,
+    /// Largest `x` of the first tuck point.
+    pub tuck_max_x: f64,
+    /// `[x, y, z]` over the top of the ear.
+    pub ear_top: [f64; 3],
+    /// `[x, y, z]` behind the ear.
+    pub ear_back: [f64; 3],
+    /// `[x, y, z]` points down the back of the ear, `1..=8`; the last `y` rises by `0.02` per lock index.
+    pub drop: Vec<[f64; 3]>,
+    /// Where each hanging lock ends, by lock index (the last entry serves any further lock), `1..=12`.
+    pub end: Vec<f64>,
+}
+
+impl FramingLocks {
+    /// The prototype's arrangement scaled to the default head (`FramingGen::default`).
+    pub fn new() -> Self {
+        Self {
+            top: 0.12,
+            upper: vec![0.12, 0.08, 0.04, 0.0, -0.058],
+            lower: vec![-0.12, -0.16, -0.2],
+            cheek: -0.2,
+            tuck_a: -0.12,
+            tuck_b: -0.14,
+            tuck_max_x: 0.19,
+            ear_top: [0.2, -0.02, -0.02],
+            ear_back: [0.2, -0.05, -0.08],
+            drop: vec![[0.19, -0.1, -0.1], [0.18, -0.16, -0.12], [0.17, -0.22, -0.12], [0.16, -0.3, -0.12]],
+            end: vec![-0.4, -0.45, -0.5, -0.55, -0.6],
+        }
+    }
+}
+
+impl Default for FramingLocks {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Validate for FramingLocks {
+    fn check(&self, c: &mut Check) {
+        let h = |c: &mut Check, name: &str, v: f64| c.range(name, v, -1.5, 1.0);
+        h(c, "top", self.top);
+        h(c, "cheek", self.cheek);
+        h(c, "tuck_a", self.tuck_a);
+        h(c, "tuck_b", self.tuck_b);
+        c.range("tuck_max_x", self.tuck_max_x, 0.0, 1.0);
+        let list = |c: &mut Check, name: &str, values: &[f64], lo: usize, hi: usize, descending: bool| {
+            if !(lo..=hi).contains(&values.len()) {
+                c.fail(name, format!("{} entries is out of range: use {lo} to {hi}", values.len()));
+            }
+            for (i, v) in values.iter().enumerate() {
+                c.range(&format!("{name}/{i}"), *v, -1.5, 1.0);
+            }
+            if descending && values.windows(2).any(|w| w[1] > w[0]) {
+                c.fail(name, "heights must descend");
+            }
+        };
+        list(c, "upper", &self.upper, 2, 8, true);
+        list(c, "lower", &self.lower, 0, 6, true);
+        list(c, "end", &self.end, 1, 12, false);
+        let point = |c: &mut Check, name: &str, p: &[f64; 3]| {
+            for (axis, v) in ["x", "y", "z"].iter().zip(p) {
+                c.range(&format!("{name}/{axis}"), *v, -1.5, 1.5);
+            }
+        };
+        point(c, "ear_top", &self.ear_top);
+        point(c, "ear_back", &self.ear_back);
+        if !(1..=8).contains(&self.drop.len()) {
+            c.fail("drop", format!("{} points is out of range: use 1 to 8", self.drop.len()));
+        }
+        for (i, p) in self.drop.iter().enumerate() {
+            point(c, &format!("drop/{i}"), p);
         }
     }
 }
@@ -1126,6 +1229,9 @@ impl Validate for HairGroup {
                 count("generator/count", c, u32::from(g.count), 1, 12);
                 if g.edge.len() < 2 {
                     c.fail("generator/edge", "needs at least two [y, x] points");
+                }
+                if let Some(locks) = &g.locks {
+                    c.nested("generator/locks", locks);
                 }
                 for (i, p) in g.tail.iter().enumerate() {
                     c.nested(&format!("generator/tail/{i}"), p);

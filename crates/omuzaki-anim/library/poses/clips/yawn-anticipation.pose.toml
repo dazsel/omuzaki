@@ -1,0 +1,13 @@
+# Key pose "yawn-anticipation" for the clips beside it (RG-06). Degrees, Euler XYZ, VRM normalised space; see src/poses/mod.rs.
+id = "yawn-anticipation"
+summary = "A breath in: the chest lifts and the head tips back a little before a yawn."
+tags = ["clip-key"]
+mirrorable = true
+hips_offset = [0.0, 0.005, 0.0]
+
+[bones]
+leftUpperArm = [0.0, 0.0, -65.0]
+rightUpperArm = [0.0, 0.0, 65.0]
+spine = [-4.0, 0.0, 0.0]
+chest = [-4.0, 0.0, 0.0]
+head = [-8.0, 0.0, 0.0]

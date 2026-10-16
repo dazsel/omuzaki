@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::affected::{Analysis, Scope};
+use crate::scans::{self, Scan};
 use crate::workspace::Workspace;
 
 /// What `check --json` prints: one JSON object on one line.
@@ -33,6 +34,9 @@ pub struct Report {
     pub shards_changed: Vec<Vec<String>>,
     /// `full`, split for a test matrix.
     pub shards_full: Vec<Vec<String>>,
+    /// The workspace-scan test targets (`scans.rs`). They are the same whatever changed, even when `empty`: a change
+    /// in one crate can break a test that reads every crate, so the plan runs them on every pull request and merge group.
+    pub scans: Vec<Scan>,
 }
 
 impl Report {
@@ -64,6 +68,7 @@ impl Report {
             changed,
             full,
             link_only,
+            scans: scans::SCANS.to_vec(),
         }
     }
 }
@@ -90,6 +95,11 @@ pub struct Weights {
     /// crate has a few very slow tests; a partition not listed weighs an equal share of the crate's weight.
     #[serde(default, rename = "part_weights")]
     by_partition: BTreeMap<String, u64>,
+    /// Test binaries that run as a shard item of their own, per crate, with their measured seconds (compile plus run).
+    /// A binary with a test that outlasts a whole shard's fair share is the shard's floor wherever hashing drops it; as
+    /// its own item it sits in one job, and the crate's partitions run everything else.
+    #[serde(default)]
+    isolated: BTreeMap<String, BTreeMap<String, u64>>,
 }
 
 impl Weights {
@@ -101,7 +111,13 @@ impl Weights {
 
     /// Every crate weighs the same, which makes [`shard`] an even split by count.
     pub fn uniform() -> Self {
-        Self { default: 1, crates: BTreeMap::new(), parts: BTreeMap::new(), by_partition: BTreeMap::new() }
+        Self {
+            default: 1,
+            crates: BTreeMap::new(),
+            parts: BTreeMap::new(),
+            by_partition: BTreeMap::new(),
+            isolated: BTreeMap::new(),
+        }
     }
 
     /// Build weights from explicit pairs (tests).
@@ -112,7 +128,15 @@ impl Weights {
             crates: pairs.iter().map(|(name, weight)| ((*name).to_owned(), *weight)).collect(),
             parts: BTreeMap::new(),
             by_partition: BTreeMap::new(),
+            isolated: BTreeMap::new(),
         }
+    }
+
+    /// Run `binary` of `name` as a shard item of its own, weighing `seconds` (tests).
+    #[cfg(test)]
+    fn with_isolated(mut self, name: &str, binary: &str, seconds: u64) -> Self {
+        self.isolated.entry(name.to_owned()).or_default().insert(binary.to_owned(), seconds);
+        self
     }
 
     /// Set the weight of one partition label (tests).
@@ -138,51 +162,91 @@ impl Weights {
 /// A crate heavier than this is worth splitting; below it the extra compile of each part costs more than it saves.
 const MIN_SPLIT_SECONDS: u64 = 120;
 
-/// One unit of work for a shard: a whole crate or `part` of `parts` of it.
+/// What a shard item runs of its crate.
+enum Run {
+    /// Every test of the crate.
+    All,
+    /// Partition `index` of `parts` (nextest's `--partition hash:index/parts`) of the tests outside `skip`, the
+    /// crate's isolated binaries. Partitioning applies after the filter, so a test's partition does not depend on which
+    /// binaries are skipped, and the partitions together hold exactly the tests outside `skip`.
+    Part { index: usize, parts: usize, skip: Vec<String> },
+    /// Only the tests of one isolated binary.
+    Only(String),
+}
+
+/// One unit of work for a shard: a crate, or the share of it that `run` names.
 struct Item {
     name: String,
     weight: u64,
-    part: Option<(usize, usize)>,
+    run: Run,
 }
 
 impl Item {
-    /// `name` for a whole crate, `name@k/n` (1-based, nextest's `--partition hash:k/n`) for a part.
+    /// `name` for a whole crate; `name@k/n` (1-based) for a partition, with `!bin,bin` after it when binaries are
+    /// skipped; `name@=bin` for an isolated binary. `tools/ci/nextest-args.py` turns the label into nextest arguments.
     fn label(&self) -> String {
-        match self.part {
-            Some((index, parts)) => format!("{}@{index}/{parts}", self.name),
-            None => self.name.clone(),
+        match &self.run {
+            Run::All => self.name.clone(),
+            Run::Part { index, parts, skip } if skip.is_empty() => format!("{}@{index}/{parts}", self.name),
+            Run::Part { index, parts, skip } => format!("{}@{index}/{parts}!{}", self.name, skip.join(",")),
+            Run::Only(binary) => format!("{}@={binary}", self.name),
         }
+    }
+
+    /// Whether this is one of several partitions of its crate, which must not share a shard.
+    fn is_part(&self) -> bool {
+        matches!(self.run, Run::Part { .. })
     }
 }
 
 /// Packs `names` into at most `max_shards` non-empty groups balanced by measured weight (none for an empty list).
 ///
 /// A crate heavier than one shard's fair share is split into parts, written `name@k/n`, that land in different shards;
-/// the test job runs them with `cargo nextest run --partition hash:k/n`. Parts are then packed longest-first into the
-/// lightest shard (ties go to the lowest index), so the result depends only on the input. Each shard lists its items
-/// sorted.
+/// the test job runs them with `cargo nextest run --partition hash:k/n`. A crate with isolated binaries
+/// (`Weights::isolated`) gets one item per binary, `name@=bin`, and its parts run the other tests, `name@k/n!bin`: those
+/// parts weigh the crate's weight less the isolated seconds, even when the crate is not split (`name@1/1!bin`). Items
+/// are then packed longest-first into the lightest shard (ties go to the lowest index), so the result depends only on
+/// the input. Each shard lists its items sorted.
 pub fn shard(names: &[String], max_shards: usize, weights: &Weights) -> Vec<Vec<String>> {
+    pack(names, max_shards, weights)
+        .into_iter()
+        .map(|(_, held)| {
+            let mut labels: Vec<String> = held.iter().map(Item::label).collect();
+            labels.sort();
+            labels
+        })
+        .collect()
+}
+
+/// [`shard`]'s packing: each non-empty shard with its total weight and its items.
+fn pack(names: &[String], max_shards: usize, weights: &Weights) -> Vec<(u64, Vec<Item>)> {
     let max_shards = max_shards.max(1);
     let total: u64 = names.iter().map(|name| weights.of(name)).sum();
     let share = (total / u64::try_from(max_shards).unwrap_or(1)).max(MIN_SPLIT_SECONDS);
     let mut items = Vec::new();
     for name in names {
-        let weight = weights.of(name);
+        let isolated = weights.isolated.get(name).filter(|binaries| !binaries.is_empty());
+        let skip: Vec<String> = isolated.map(|binaries| binaries.keys().cloned().collect()).unwrap_or_default();
+        let isolated_seconds: u64 = isolated.map_or(0, |binaries| binaries.values().sum());
+        for (binary, seconds) in isolated.into_iter().flatten() {
+            items.push(Item { name: name.clone(), weight: (*seconds).max(1), run: Run::Only(binary.clone()) });
+        }
+        let weight = weights.of(name).saturating_sub(isolated_seconds).max(1);
         let wanted = match weights.parts.get(name) {
             Some(&fixed) => fixed,
             None if weight > share => usize::try_from(weight.div_ceil(share)).unwrap_or(max_shards),
             None => 1,
         };
         let parts = wanted.min(max_shards);
-        if parts > 1 {
+        if parts > 1 || !skip.is_empty() {
             for index in 1..=parts {
-                let label = format!("{name}@{index}/{parts}");
                 let even = weight.div_ceil(u64::try_from(parts).unwrap_or(1));
-                let part_weight = weights.by_partition.get(&label).copied().unwrap_or(even).max(1);
-                items.push(Item { name: name.clone(), weight: part_weight, part: Some((index, parts)) });
+                let measured = weights.by_partition.get(&format!("{name}@{index}/{parts}")).copied();
+                let run = Run::Part { index, parts, skip: skip.clone() };
+                items.push(Item { name: name.clone(), weight: measured.unwrap_or(even).max(1), run });
             }
         } else {
-            items.push(Item { name: name.clone(), weight, part: None });
+            items.push(Item { name: name.clone(), weight, run: Run::All });
         }
     }
     items.sort_by(|a, b| b.weight.cmp(&a.weight).then_with(|| a.label().cmp(&b.label())));
@@ -194,21 +258,15 @@ pub fn shard(names: &[String], max_shards: usize, weights: &Weights) -> Vec<Vec<
         let target = shards
             .iter()
             .enumerate()
-            .filter(|(_, (_, held))| item.part.is_none() || !held.iter().any(|other| other.name == item.name))
+            .filter(|(_, (_, held))| {
+                !item.is_part() || !held.iter().any(|other| other.is_part() && other.name == item.name)
+            })
             .min_by_key(|(index, (load, _))| (*load, *index))
             .map_or(0, |(index, _)| index);
         shards[target].0 += item.weight;
         shards[target].1.push(item);
     }
-    shards
-        .into_iter()
-        .filter(|(_, held)| !held.is_empty())
-        .map(|(_, held)| {
-            let mut labels: Vec<String> = held.iter().map(Item::label).collect();
-            labels.sort();
-            labels
-        })
-        .collect()
+    shards.into_iter().filter(|(_, held)| !held.is_empty()).collect()
 }
 
 #[cfg(test)]
@@ -328,6 +386,84 @@ mod tests {
     }
 
     #[test]
+    fn an_isolated_binary_is_an_item_of_its_own_and_the_partitions_run_everything_else() {
+        let all = names(&["big", "x", "y"]);
+        let weights = Weights::from_pairs(30, &[("big", 900)])
+            .with_parts("big", 2)
+            .with_isolated("big", "slow_binary", 500)
+            .with_part_weight("big@1/2", 250)
+            .with_part_weight("big@2/2", 150);
+        let shards = shard(&all, 4, &weights);
+        let items = flat(&shards);
+        assert_eq!(items, names(&["big@1/2!slow_binary", "big@2/2!slow_binary", "big@=slow_binary", "x", "y"]));
+        assert!(!items.iter().any(|item| item == "big"), "the crate is only run through its items: {items:?}");
+        let loads: Vec<u64> = pack(&all, 4, &weights).iter().map(|(load, _)| *load).collect();
+        assert_eq!(loads.iter().max(), Some(&500), "the isolated binary is the longest shard: {loads:?}");
+    }
+
+    #[test]
+    fn an_unsplit_crate_with_an_isolated_binary_still_runs_the_rest_as_partition_one_of_one() {
+        let weights = Weights::from_pairs(30, &[("big", 200)]).with_isolated("big", "slow_binary", 120);
+        let items = flat(&shard(&names(&["big"]), 6, &weights));
+        assert_eq!(items, names(&["big@1/1!slow_binary", "big@=slow_binary"]));
+    }
+
+    #[test]
+    fn the_isolated_item_may_share_a_shard_with_a_partition_of_its_crate_when_the_shards_run_out() {
+        let weights = Weights::from_pairs(10, &[("big", 600)]).with_parts("big", 2).with_isolated("big", "slow", 100);
+        let items = flat(&shard(&names(&["big"]), 2, &weights));
+        assert_eq!(items, names(&["big@1/2!slow", "big@2/2!slow", "big@=slow"]), "nothing is dropped: {items:?}");
+    }
+
+    /// The crates of merge-queue run 38810711080 (PR #1945), the shape `tools/ci/weights.README.md` was measured on.
+    const RECORDED_RUN: [&str; 24] = [
+        "omuzaki-anim",
+        "omuzaki-audio-api",
+        "omuzaki-char",
+        "omuzaki-cli",
+        "omuzaki-face",
+        "omuzaki-history-api",
+        "omuzaki-history-mock",
+        "omuzaki-identity-mock",
+        "omuzaki-io-ops",
+        "omuzaki-library-api",
+        "omuzaki-link-probe",
+        "omuzaki-mcp",
+        "omuzaki-ops",
+        "omuzaki-ops-api",
+        "omuzaki-ops-mock",
+        "omuzaki-script",
+        "omuzaki-settings-api",
+        "omuzaki-stage",
+        "omuzaki-take-api",
+        "omuzaki-test",
+        "omuzaki-test-char",
+        "omuzaki-test-face",
+        "omuzaki-ui",
+        "xtask",
+    ];
+
+    #[test]
+    fn the_recorded_run_packs_into_six_shards_with_the_slowest_within_20_percent_of_the_mean() {
+        let weights = Weights::embedded();
+        let all = names(&RECORDED_RUN);
+        let shards = pack(&all, 6, &weights);
+        let loads: Vec<u64> = shards.iter().map(|(load, _)| *load).collect();
+        let total: u64 = loads.iter().sum();
+        let slowest = loads.iter().copied().max().unwrap_or(0);
+        assert_eq!(loads.len(), 6, "{loads:?}");
+        // slowest <= 1.2 * (total / 6), in integers.
+        assert!(slowest * 5 <= total, "predicted shard seconds {loads:?}: slowest {slowest} of {total} in all");
+        // The 7.8-minute palette_independence binary is an item of its own, and omuzaki-ui, whose tests take 20 s but
+        // whose build takes minutes, is compiled once.
+        let labels = flat(&shard(&all, 6, &weights));
+        assert!(labels.contains(&"omuzaki-char@=palette_independence".to_owned()), "{labels:?}");
+        assert!(labels.contains(&"omuzaki-ui".to_owned()), "ui is one item, built once: {labels:?}");
+        let char_items = labels.iter().filter(|item| item.starts_with("omuzaki-char@")).count();
+        assert_eq!(char_items, 5, "four partitions and the isolated binary: {labels:?}");
+    }
+
+    #[test]
     fn a_light_workload_is_never_split() {
         let weights = Weights::from_pairs(20, &[("a", 100)]);
         let shards = shard(&names(&["a"]), 6, &weights);
@@ -339,6 +475,7 @@ mod tests {
         let weights = Weights::embedded();
         assert!(weights.of("omuzaki-char") > MIN_SPLIT_SECONDS, "weights.json failed to parse or lost omuzaki-char");
         assert!(weights.parts.get("omuzaki-char").is_some_and(|&parts| parts > 1), "omuzaki-char is pinned to a split");
+        assert_eq!(weights.parts.get("omuzaki-ui"), Some(&1), "omuzaki-ui is built once: its tests take seconds");
         assert!(weights.of("not-a-crate") >= 1);
     }
 
