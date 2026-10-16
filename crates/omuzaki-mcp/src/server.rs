@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use omuzaki_history_api::JournalSink;
-use omuzaki_ops_api::{Actor, Grants, OpInfo, Runner, Sessions};
+use omuzaki_ops_api::{Actor, Grants, Jobs, OpInfo, Runner, Sessions};
 use rmcp::ServiceExt;
 use rmcp::model::Tool;
 use rmcp::service::RoleServer;
@@ -176,6 +176,8 @@ fn offered(runner: &dyn Runner, connection_wired: bool) -> Vec<OpInfo> {
 pub struct McpServer {
     shared: Arc<Shared>,
     view: Arc<View>,
+    /// The executor's job manager, if the host wired one (see [`McpServer::with_jobs`]).
+    jobs: Option<Arc<dyn Jobs>>,
 }
 
 impl McpServer {
@@ -202,7 +204,17 @@ impl McpServer {
             sessions: options.sessions,
             next_session: AtomicU64::new(1),
         };
-        Ok(Self { shared: Arc::new(shared), view: Arc::new(view) })
+        Ok(Self { shared: Arc::new(shared), view: Arc::new(view), jobs: None })
+    }
+
+    /// Serves job ops as MCP tasks to clients that declare the tasks extension: the call returns a task handle once
+    /// `jobs` has started the job, `tasks/get` reads it, `tasks/cancel` cancels it, and its progress and status changes
+    /// are pushed. `jobs` must be the manager of the runner this server was built from. Clients that did not declare
+    /// the extension, and servers without this, keep the blocking call: `Runner::run` returns when the job ends.
+    #[must_use]
+    pub fn with_jobs(mut self, jobs: Arc<dyn Jobs>) -> Self {
+        self.jobs = Some(jobs);
+        self
     }
 
     /// Resolves once the event log holds event `n` (or a later one), at once if it already does. Await it before
@@ -225,7 +237,7 @@ impl McpServer {
             grants,
             &self.shared.guidance,
         )?;
-        Ok(Self { shared: Arc::clone(&self.shared), view: Arc::new(view) })
+        Ok(Self { shared: Arc::clone(&self.shared), view: Arc::new(view), jobs: self.jobs.clone() })
     }
 
     /// The tools this server lists, sorted by name: one per op, plus the built-ins.
@@ -248,7 +260,7 @@ impl McpServer {
     /// A handler for one client connection. Pass it to rmcp's `serve` with any transport.
     pub fn session(&self) -> Session {
         let serial = self.shared.next_session.fetch_add(1, Ordering::Relaxed);
-        Session::new(Arc::clone(&self.shared), Arc::clone(&self.view), serial)
+        Session::new(Arc::clone(&self.shared), Arc::clone(&self.view), serial).with_jobs(self.jobs.clone())
     }
 
     /// A handler for one HTTP session: as [`McpServer::session`], steering clients to the `initialize` lifecycle (see

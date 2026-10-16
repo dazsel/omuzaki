@@ -6,18 +6,19 @@ use std::time::Duration;
 
 use omuzaki_history_api::JournalStatus;
 use omuzaki_ops_api::{
-    Actor, Budget, Cause, CauseKind, ErrorCode, ErrorDetail, Grants, Limits, Mode, OpError, OpKind, PauseReason,
+    Actor, Budget, Cause, CauseKind, ErrorCode, ErrorDetail, Grants, Jobs, Limits, Mode, OpError, OpKind, PauseReason,
     Request, Runner, Scope, SessionSpec, SessionState, Sessions, Transport,
 };
 use rmcp::ErrorData as McpError;
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, DiscoverRequestMethod, DiscoverResult,
-    GetPromptRequestParams, GetPromptResponse, Implementation, InitializeRequestParams, InitializeResult, JsonObject,
-    ListPromptsResult, ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
-    ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource, ResourceContents,
-    ResourceTemplate, ResourceUpdatedNotificationParam, ServerCapabilities, ServerConfig, SubscribeRequestParams,
-    SubscriptionFilter, Tool, UnsubscribeRequestParams,
+    CallToolRequestParams, CallToolResponse, CallToolResult, CancelTaskParams, ContentBlock, CreateTaskResult,
+    DiscoverRequestMethod, DiscoverResult, GetPromptRequestParams, GetPromptResponse, GetTaskParams, GetTaskResult,
+    Implementation, InitializeRequestParams, InitializeResult, JsonObject, ListPromptsResult,
+    ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams, ProtocolVersion,
+    ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource, ResourceContents, ResourceTemplate,
+    ResourceUpdatedNotificationParam, ServerCapabilities, ServerConfig, SubscribeRequestParams, SubscriptionFilter,
+    Tool, UnsubscribeRequestParams,
 };
 use rmcp::service::{RequestContext, RoleServer, SubscriptionContext};
 use serde_json::{Value, json};
@@ -27,6 +28,8 @@ use crate::builtin::{Builtin, CAUSE_MAX_CHARS};
 use crate::catalog::{Entry, Route};
 use crate::changes::{OwnTxs, Report};
 use crate::events::{LOG_URI, Updates, lock};
+use crate::jobs::{self, JobWatch};
+use crate::names;
 use crate::render::{self, Call, OpenTx};
 use crate::resources::protocol_error;
 use crate::schema::{DRY_RUN, check_args};
@@ -47,6 +50,8 @@ pub struct Session {
     serial: u64,
     /// Served over HTTP, where a request that stands alone gets a fresh handler (see [`Session::for_http`]).
     http: bool,
+    /// The job manager, if the host wired one: job ops then answer a client that declared tasks with a task handle.
+    jobs: Option<Arc<dyn Jobs>>,
     /// Fixed at the first call, so a transaction always belongs to one actor identity. If the host's registry would not
     /// open a session, the refusal is kept instead and answers every call: a connection without a session runs nothing.
     actor: OnceLock<Result<Actor, OpError>>,
@@ -85,7 +90,19 @@ impl Session {
     pub(crate) fn new(shared: Arc<Shared>, view: Arc<View>, serial: u64) -> Self {
         shared.connections.open(serial);
         let state = State { seen: shared.hub.latest(), ..State::default() };
-        Self { shared, view, serial, http: false, actor: OnceLock::new(), state: Mutex::new(state) }
+        Self { shared, view, serial, http: false, jobs: None, actor: OnceLock::new(), state: Mutex::new(state) }
+    }
+
+    /// Gives this handler the host's job manager (see [`McpServer::with_jobs`](crate::McpServer::with_jobs)).
+    #[must_use]
+    pub(crate) fn with_jobs(mut self, jobs: Option<Arc<dyn Jobs>>) -> Self {
+        self.jobs = jobs;
+        self
+    }
+
+    /// The job manager, when this call may become a task: the host wired one and the client declared the extension.
+    fn task_jobs(&self, context: &RequestContext<RoleServer>) -> Option<Arc<dyn Jobs>> {
+        self.jobs.clone().filter(|_| context.client_capabilities().is_some_and(|caps| caps.supports_tasks()))
     }
 
     /// Marks this handler as serving HTTP.
@@ -251,10 +268,7 @@ impl Session {
         work: impl FnOnce(&dyn Runner) -> T + Send + 'static,
     ) -> Result<T, OpError> {
         let runner = Arc::clone(&self.shared.runner);
-        tokio::task::spawn_blocking(move || work(runner.as_ref())).await.map_err(|e| {
-            OpError::internal(format!("the operation panicked or was cancelled: {e}"))
-                .hint("this is a bug in Omuzaki: tell the user, and don't retry unchanged")
-        })
+        jobs::off_thread(move || work(runner.as_ref())).await
     }
 
     /// Every call lands here and always yields a tool result: failures become tool errors, never protocol errors.
@@ -279,6 +293,9 @@ impl Session {
             Route::Op { kind, unit_args } => match take_dry_run(&mut args)
                 .and_then(|dry_run| check_args(&args, &entry.tool.input_schema).map(|()| dry_run))
             {
+                Ok(false) if kind == OpKind::Job && self.task_jobs(context).is_some() => {
+                    self.start_task(entry, unit_args, args, actor, context).await
+                }
                 Ok(dry_run) => self.run_op(entry, kind, unit_args, args, dry_run, actor).await,
                 Err(e) => Err(e),
             },
@@ -314,16 +331,7 @@ impl Session {
         let tx = if mode == Mode::Apply && kind == OpKind::Edit { lock(&self.state).tx.clone() } else { None };
         // Each edit that joins a transaction carries the cause its `tx_begin` gave; anything outside one has none.
         let cause = tx.as_ref().and_then(|t| t.cause.clone());
-        let request = Request {
-            op: entry.op.clone(),
-            args: if unit_args { Value::Null } else { Value::Object(args) },
-            mode,
-            actor,
-            grants: self.view.grants.clone(),
-            cause: Some(Cause { kind: CauseKind::Prompt, text: cause }),
-            tx: tx.as_ref().map(|t| t.id),
-            base: None,
-        };
+        let request = self.request(entry, unit_args, args, mode, actor, cause, tx.as_ref());
         let outcome = self.blocking(move |runner| runner.run(request)).await??;
         if let Some(record) = &outcome.applied {
             lock(&self.state).own.remember(record.tx);
@@ -331,6 +339,56 @@ impl Session {
         let call = Call { op: &entry.tool.name, kind, mode, tx: tx.as_ref(), verify: self.shared.guidance.verify() };
         let result = render::success(&call, &outcome);
         Ok(if outcome.applied.is_some() { self.confirm_saved(result).await } else { result.into() })
+    }
+
+    /// The runner request for a call of `entry`, as `actor` with this session's grants.
+    // The call's parts, which `run_op` and `start_task` each have to hand over; a struct would only rename them.
+    #[allow(clippy::too_many_arguments)]
+    fn request(
+        &self,
+        entry: &Entry,
+        unit_args: bool,
+        args: JsonObject,
+        mode: Mode,
+        actor: Actor,
+        cause: Option<String>,
+        tx: Option<&OpenTx>,
+    ) -> Request {
+        Request {
+            op: entry.op.clone(),
+            args: if unit_args { Value::Null } else { Value::Object(args) },
+            mode,
+            actor,
+            grants: self.view.grants.clone(),
+            cause: Some(Cause { kind: CauseKind::Prompt, text: cause }),
+            tx: tx.map(|t| t.id),
+            base: None,
+        }
+    }
+
+    /// Starts a job op without waiting for it and answers with its task handle; a watcher then pushes the job's
+    /// progress and status to the client. The job belongs to this session's actor, so only this session can cancel it.
+    async fn start_task(
+        &self,
+        entry: &Entry,
+        unit_args: bool,
+        args: JsonObject,
+        actor: Actor,
+        context: &RequestContext<RoleServer>,
+    ) -> Result<Reply, OpError> {
+        let jobs = self.task_jobs(context).ok_or_else(|| OpError::unsupported("this client did not declare tasks"))?;
+        // A plain job joins no transaction (ADR 0036 decision 1), so there is no cause to carry either.
+        let request = self.request(entry, unit_args, args, Mode::Apply, actor, None, None);
+        let hub = Arc::clone(&self.shared.hub);
+        // Before the start, so the job's first events can't be missed.
+        let after = hub.latest();
+        let job = jobs::off_thread(move || jobs.start(request)).await??;
+        let tool = entry.tool.name.to_string();
+        let verify = self.shared.guidance.verify().map(str::to_owned);
+        let task = jobs::task_of(&job, &tool, verify.as_deref());
+        let token = context.meta.get_progress_token();
+        tokio::spawn(JobWatch { hub, after, peer: context.peer.clone(), token, job, tool, verify }.run());
+        Ok(Reply { task: Some(CreateTaskResult::new(task.task)), ..Reply::from(CallToolResult::success(Vec::new())) })
     }
 
     /// Waits until the journal has saved the change `result` reports, then returns it. A change that applied but isn't
@@ -348,7 +406,7 @@ impl Session {
             Ok(Some(status)) => Some(format!("applied, not yet saved: {}", describe(&status))),
             Err(_) => Some("applied, not yet saved: the journal's status couldn't be read".to_owned()),
         };
-        Reply { result, unsaved }
+        Reply { result, unsaved, task: None }
     }
 
     async fn run_builtin(
@@ -486,11 +544,13 @@ impl Drop for Session {
 struct Reply {
     result: CallToolResult,
     unsaved: Option<String>,
+    /// Set when the call started a job: the client gets this handle instead of the result.
+    task: Option<CreateTaskResult>,
 }
 
 impl From<CallToolResult> for Reply {
     fn from(result: CallToolResult) -> Self {
-        Self { result, unsaved: None }
+        Self { result, unsaved: None, task: None }
     }
 }
 
@@ -670,8 +730,8 @@ impl ServerHandler for Session {
             .enable_tools()
             .enable_prompts()
             .enable_resources()
-            .enable_resources_subscribe()
-            .build();
+            .enable_resources_subscribe();
+        let capabilities = if self.jobs.is_some() { capabilities.enable_tasks() } else { capabilities }.build();
         ServerConfig::new(capabilities)
             .with_server_info(Implementation::new("omuzaki", env!("CARGO_PKG_VERSION")).with_title("Omuzaki Studio"))
             .with_instructions(self.view.instructions.clone())
@@ -702,7 +762,10 @@ impl ServerHandler for Session {
             .catalog
             .get(request.name.as_ref())
             .is_some_and(|entry| matches!(entry.route, Route::Builtin(Builtin::Log)));
-        let Reply { result, unsaved } = self.dispatch(request, &context).await;
+        let Reply { result, unsaved, task } = self.dispatch(request, &context).await;
+        if let Some(task) = task {
+            return Ok(CallToolResponse::Task(task));
+        }
         // A successful `history_log` is the log itself as its whole text, so nothing may be put in front of it. Its
         // snapshot already caught this session up, so later events are reported by the next call, not lost.
         let log_text = reads_log && result.is_error != Some(true);
@@ -725,6 +788,36 @@ impl ServerHandler for Session {
             None => result,
         };
         Ok(result.into())
+    }
+
+    /// `tasks/get`: the job behind a task, as the executor reports it. Needs `read`, like `Jobs::job`.
+    async fn get_task(
+        &self,
+        request: GetTaskParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<GetTaskResult, McpError> {
+        self.name_client(&context);
+        let (jobs, id) = (self.jobs.clone(), jobs::job_of(&request.task_id)?);
+        let jobs = jobs.ok_or_else(McpError::method_not_found::<rmcp::model::GetTaskMethod>)?;
+        let info = jobs::read_job(jobs, id, self.session_grants(&context)?).await.map_err(protocol_error)?;
+        let tool = names::tool_name(&info.op);
+        let verify = self.shared.guidance.verify();
+        Ok(GetTaskResult::new(jobs::task_of(&info, &tool, verify)))
+    }
+
+    /// `tasks/cancel`: cancels the job. The executor decides who may, so a session can cancel only its own jobs; its
+    /// refusal is passed on as it is. The task ends `cancelled` once the job has stopped (see `tasks/get`).
+    async fn cancel_task(
+        &self,
+        request: CancelTaskParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<(), McpError> {
+        self.name_client(&context);
+        let id = jobs::job_of(&request.task_id)?;
+        let jobs = self.jobs.clone().ok_or_else(McpError::method_not_found::<rmcp::model::CancelTaskMethod>)?;
+        let actor = self.actor(&context).map_err(|e| McpError::invalid_request(e.message.clone(), None))?.clone();
+        jobs::off_thread(move || jobs.cancel(id, &actor)).await.and_then(|r| r).map_err(protocol_error)?;
+        Ok(())
     }
 
     async fn list_prompts(
