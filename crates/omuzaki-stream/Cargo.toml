@@ -22,12 +22,18 @@ omuzaki-audio-api = { path = "../omuzaki-audio-api" }
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-render-api = { path = "../omuzaki-render-api" }
+# The `output.window` setting the open op keeps (`src/ops/window.rs`).
+omuzaki-settings-api = { path = "../omuzaki-settings-api" }
 omuzaki-stream-api = { path = "../omuzaki-stream-api" }
 
 [dev-dependencies]
 criterion.workspace = true
 proptest.workspace = true
+# A settings service for the `output.window` setting's tests (`tests/ops_window.rs`).
+omuzaki-settings-mock = { path = "../omuzaki-settings-mock" }
 tempfile.workspace = true
+# Writes the `output.window` setting as TOML the way the settings store does (`tests/settings.rs`).
+toml.workspace = true
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 
 [features]

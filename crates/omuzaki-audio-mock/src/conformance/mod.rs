@@ -12,7 +12,7 @@
 //! | [`Check::Allocation`] | `process`, `set_param`, `reset` and `report` neither allocate nor free |
 //! | [`Check::Finite`] | a minute of white noise gives no NaN or infinity |
 //! | [`Check::SilenceDecay`] | after the noise, silence decays below -120 dBFS |
-//! | [`Check::Reset`] | after `reset` the output equals a fresh node's |
+//! | [`Check::Reset`] | after `reset` the output does not depend on what the node processed before (a node that ran only silence, then reset, is the reference, so an oscillator's phase is compared like for like) |
 //! | [`Check::Sweep`] | moving a parameter across its range mid-signal makes no click bigger than its smoothing allows |
 //!
 //! Latency, block sizes, allocation, finiteness, decay and reset run at three **parameter settings**: every parameter

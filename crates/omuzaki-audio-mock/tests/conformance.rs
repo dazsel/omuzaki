@@ -11,7 +11,9 @@ use omuzaki_audio_api::node::{
     ParamIndex, ParamSpec, Unit,
 };
 use omuzaki_audio_mock::NullKind;
-use omuzaki_audio_mock::conformance::{Check, Config, CountingAlloc, Outcome, Report, check, check_all, check_with};
+use omuzaki_audio_mock::conformance::{
+    Check, Config, CountingAlloc, Outcome, Report, Setting, check, check_all, check_with,
+};
 
 #[global_allocator]
 static ALLOC: CountingAlloc = CountingAlloc;
@@ -43,15 +45,19 @@ enum Flaw {
     Frees,
     /// Leaks into the right channel only, so silence decays on a mono bus and not on a stereo one.
     RightLeaks,
+    /// Allocates in `process`, but only while the gain is at its minimum.
+    AllocatesAtMinimum,
 }
 
 const SMOOTHED: &[ParamSpec] =
     &[ParamSpec { name: "gain_db", unit: Unit::Db, min: -24.0, max: 12.0, default: 0.0, smooth_ms: 5.0 }];
 
-const DELAY: u32 = 20;
+const DELAY: usize = 20;
 
 struct Fixture {
     flaw: Flaw,
+    /// The delay in samples (the declared latency, before a lie is added).
+    delay: usize,
     /// Hard-clip at 0.3: a kind that is not linear.
     clip: bool,
 }
@@ -63,16 +69,17 @@ impl NodeKind for Fixture {
             summary: "a test fixture",
             channels: ChannelSupport::Any,
             params: SMOOTHED,
-            latency: LatencyRange { min: 0, max: 1000 },
+            latency: LatencyRange { min: 0, max: 100_000 },
             sidechain: false,
         }
     }
 
     fn create(&self, _config: &NodeConfig, channels: Channels) -> Result<Box<dyn Node>, NodeError> {
         Ok(Box::new(FixtureNode {
+            delay: self.delay,
             flaw: self.flaw,
             clip: self.clip,
-            history: vec![vec![0.0; DELAY as usize]; channels.count()],
+            history: vec![vec![0.0; self.delay]; channels.count()],
             position: 0,
             gain: 1.0,
             target: 1.0,
@@ -84,6 +91,7 @@ impl NodeKind for Fixture {
 
 struct FixtureNode {
     flaw: Flaw,
+    delay: usize,
     clip: bool,
     history: Vec<Vec<f32>>,
     position: usize,
@@ -95,7 +103,8 @@ struct FixtureNode {
 
 impl Node for FixtureNode {
     fn latency(&self) -> u32 {
-        if self.flaw == Flaw::LyingLatency { DELAY + 7 } else { DELAY }
+        let delay = u32::try_from(self.delay).unwrap_or(u32::MAX);
+        if self.flaw == Flaw::LyingLatency { delay + 7 } else { delay }
     }
 
     fn set_param(&mut self, _param: ParamIndex, value: f32) {
@@ -109,7 +118,7 @@ impl Node for FixtureNode {
     }
 
     fn process(&mut self, block: &mut BlockMut<'_>) {
-        if self.flaw == Flaw::Allocates {
+        if self.flaw == Flaw::Allocates || (self.flaw == Flaw::AllocatesAtMinimum && self.target < 0.07) {
             black_box(Box::new([0u8; 16]));
         }
         assert!(self.flaw != Flaw::Panics || self.processed <= 20_000, "the fixture gave up");
@@ -126,15 +135,19 @@ impl Node for FixtureNode {
         let (position, gain0) = (self.position, self.gain);
         let mut channel = 0;
         let (flaw, clip, processed) = (self.flaw, self.clip, self.processed);
-        let (target, history) = (self.target, &mut self.history);
+        let (target, history, delay) = (self.target, &mut self.history, self.delay);
         let mut end_gain = gain0;
         block.for_each_channel(|samples| {
             let mut at = position;
             let mut gain = gain0;
             for (n, sample) in samples.iter_mut().enumerate() {
                 std::mem::swap(sample, &mut history[channel][at]);
-                at = (at + 1) % DELAY as usize;
-                if matches!(flaw, Flaw::None | Flaw::LyingLatency | Flaw::NoDecay | Flaw::RightLeaks) || clip {
+                at = (at + 1) % delay;
+                if matches!(
+                    flaw,
+                    Flaw::None | Flaw::LyingLatency | Flaw::NoDecay | Flaw::RightLeaks | Flaw::AllocatesAtMinimum
+                ) || clip
+                {
                     gain += (target - gain) * step;
                 }
                 *sample *= gain;
@@ -151,10 +164,14 @@ impl Node for FixtureNode {
             end_gain = gain;
             channel += 1;
         });
-        if matches!(self.flaw, Flaw::None | Flaw::LyingLatency | Flaw::NoDecay | Flaw::RightLeaks) || self.clip {
+        if matches!(
+            self.flaw,
+            Flaw::None | Flaw::LyingLatency | Flaw::NoDecay | Flaw::RightLeaks | Flaw::AllocatesAtMinimum
+        ) || self.clip
+        {
             self.gain = end_gain;
         }
-        self.position = (position + frames) % DELAY as usize;
+        self.position = (position + frames) % self.delay;
         self.processed += frames as u64;
     }
 
@@ -178,7 +195,7 @@ fn failed_checks(report: &Report) -> Vec<Check> {
 }
 
 fn assert_only_fails(flaw: Flaw, expected: Check, message: &str) {
-    let report = check_with(&Fixture { flaw, clip: false }, &quick());
+    let report = check_with(&Fixture { flaw, clip: false, delay: DELAY }, &quick());
     assert_eq!(failed_checks(&report), [expected], "{report}");
     let text = report.to_string();
     assert!(text.contains(message), "`{message}` is not in:\n{text}");
@@ -207,18 +224,19 @@ fn the_null_kind_passes_with_a_configured_latency() {
 
 #[test]
 fn a_well_behaved_smoothed_kind_passes_with_an_impulse_and_with_a_click_train() {
-    let report = check_with(&Fixture { flaw: Flaw::None, clip: false }, &quick());
+    let report = check_with(&Fixture { flaw: Flaw::None, clip: false, delay: DELAY }, &quick());
     assert!(report.is_ok(), "{report}");
     assert_eq!(report.skipped().count(), 0);
     // A clipper is not linear: its latency is measured with a click train and onset alignment.
-    let report = check_with(&Fixture { flaw: Flaw::None, clip: true }, &Config { linear: false, ..quick() });
+    let report =
+        check_with(&Fixture { flaw: Flaw::None, clip: true, delay: DELAY }, &Config { linear: false, ..quick() });
     assert!(report.is_ok(), "{report}");
 }
 
 #[test]
 fn a_lying_latency_fails_the_latency_check_with_both_numbers() {
     assert_only_fails(Flaw::LyingLatency, Check::Latency, "declares 27 samples of latency but the impulse at sample");
-    let report = check_with(&Fixture { flaw: Flaw::LyingLatency, clip: false }, &quick());
+    let report = check_with(&Fixture { flaw: Flaw::LyingLatency, clip: false, delay: DELAY }, &quick());
     let first = report.failures().next().unwrap();
     assert!(first.to_string().contains("came out 20 samples late"), "{first}");
     assert!(first.to_string().contains("at default settings on Mono"), "{first}");
@@ -226,14 +244,17 @@ fn a_lying_latency_fails_the_latency_check_with_both_numbers() {
 
 #[test]
 fn a_lying_latency_fails_with_a_click_train_too() {
-    let report = check_with(&Fixture { flaw: Flaw::LyingLatency, clip: true }, &Config { linear: false, ..quick() });
+    let report = check_with(
+        &Fixture { flaw: Flaw::LyingLatency, clip: true, delay: DELAY },
+        &Config { linear: false, ..quick() },
+    );
     assert_eq!(failed_checks(&report), [Check::Latency], "{report}");
     assert!(report.to_string().contains("a click at sample"), "{report}");
 }
 
 #[test]
 fn the_latency_tolerance_is_the_kinds_to_declare() {
-    let lying = Fixture { flaw: Flaw::LyingLatency, clip: false };
+    let lying = Fixture { flaw: Flaw::LyingLatency, clip: false, delay: DELAY };
     assert!(!check_with(&lying, &quick()).is_ok());
     // 7 samples off: a tolerance of 7 accepts it, 6 does not.
     assert!(check_with(&lying, &Config { latency_tolerance: 7, ..quick() }).is_ok());
@@ -242,7 +263,10 @@ fn the_latency_tolerance_is_the_kinds_to_declare() {
 
 #[test]
 fn a_block_size_dependent_node_fails_the_block_size_check() {
-    assert_only_fails(Flaw::BlockDependent, Check::BlockSizes, "blocks of 1 differ from blocks of 1024 at frame");
+    // Its gain never settles (a step per block), so the reset check, which settles it, also sees the difference.
+    let report = check_with(&Fixture { flaw: Flaw::BlockDependent, clip: false, delay: DELAY }, &quick());
+    assert!(failed_checks(&report).contains(&Check::BlockSizes), "{report}");
+    assert!(report.to_string().contains("blocks of 1 differ from blocks of 1024 at frame"), "{report}");
 }
 
 #[test]
@@ -258,7 +282,7 @@ fn freeing_memory_on_the_audio_thread_fails_the_allocation_check_too() {
 
 #[test]
 fn a_leak_on_one_channel_only_fails_the_decay_check_on_stereo_and_names_the_channel() {
-    let report = check_with(&Fixture { flaw: Flaw::RightLeaks, clip: false }, &quick());
+    let report = check_with(&Fixture { flaw: Flaw::RightLeaks, clip: false, delay: DELAY }, &quick());
     assert_eq!(failed_checks(&report), [Check::SilenceDecay], "{report}");
     assert!(report.failures().all(|r| r.channels == Some(Channels::Stereo)), "{report}");
     assert!(report.to_string().contains("channel 1 still has a peak of"), "{report}");
@@ -266,7 +290,7 @@ fn a_leak_on_one_channel_only_fails_the_decay_check_on_stereo_and_names_the_chan
 
 #[test]
 fn a_nan_node_fails_the_finite_check_and_the_decay_check_does_not_run() {
-    let report = check_with(&Fixture { flaw: Flaw::Nan, clip: false }, &quick());
+    let report = check_with(&Fixture { flaw: Flaw::Nan, clip: false, delay: DELAY }, &quick());
     assert_eq!(failed_checks(&report), [Check::Finite], "{report}");
     assert!(report.to_string().contains("NaN at frame"), "{report}");
     assert!(report.skipped().all(|r| r.check == Check::SilenceDecay), "{report:?}");
@@ -280,13 +304,17 @@ fn a_node_whose_silence_never_decays_fails_the_decay_check() {
 
 #[test]
 fn a_node_that_ignores_reset_fails_the_reset_check() {
-    assert_only_fails(Flaw::IgnoresReset, Check::Reset, "after reset the output differs from a fresh node's");
+    assert_only_fails(
+        Flaw::IgnoresReset,
+        Check::Reset,
+        "after reset the output differs from that of a node that ran differently before its reset",
+    );
 }
 
 #[test]
 fn a_click_when_a_parameter_moves_fails_the_sweep_naming_the_parameter() {
     assert_only_fails(Flaw::Clicks, Check::Sweep, "made a click");
-    let report = check_with(&Fixture { flaw: Flaw::Clicks, clip: false }, &quick());
+    let report = check_with(&Fixture { flaw: Flaw::Clicks, clip: false, delay: DELAY }, &quick());
     let first = report.failures().next().unwrap();
     assert_eq!(first.param.as_deref(), Some("gain_db"));
     assert!(first.to_string().contains("for parameter `gain_db`"), "{first}");
@@ -294,14 +322,15 @@ fn a_click_when_a_parameter_moves_fails_the_sweep_naming_the_parameter() {
 
 #[test]
 fn a_panic_in_a_node_is_a_failure_not_a_crash() {
-    let report = check_with(&Fixture { flaw: Flaw::Panics, clip: false }, &quick());
+    let report = check_with(&Fixture { flaw: Flaw::Panics, clip: false, delay: DELAY }, &quick());
     assert!(!report.is_ok());
     assert!(report.to_string().contains("the node panicked: the fixture gave up"), "{report}");
 }
 
 #[test]
 fn skipping_the_allocation_check_says_so() {
-    let report = check_with(&Fixture { flaw: Flaw::Allocates, clip: false }, &quick().without_allocation_check());
+    let report =
+        check_with(&Fixture { flaw: Flaw::Allocates, clip: false, delay: DELAY }, &quick().without_allocation_check());
     assert!(report.is_ok(), "{report}");
     assert!(report.skipped().all(|r| r.check == Check::Allocation && matches!(r.outcome, Outcome::Skipped(_))));
     assert!(report.skipped().count() > 0);
@@ -328,7 +357,7 @@ impl NodeKind for BadDescription {
         if self.0 == "refuses" {
             return Err(NodeError::BadConfig("needs a model".into()));
         }
-        Fixture { flaw: Flaw::None, clip: false }.create(&NodeConfig::default(), channels)
+        Fixture { flaw: Flaw::None, clip: false, delay: DELAY }.create(&NodeConfig::default(), channels)
     }
 }
 
@@ -355,4 +384,133 @@ fn every_registered_kind_in_this_binary_passes() {
     for report in &reports {
         assert!(report.is_ok(), "{report}");
     }
+}
+
+/// The delay of the fixtures that hide a flaw behind a second of latency.
+const LONG_DELAY: usize = 48_000;
+
+#[test]
+fn an_allocation_that_happens_only_at_the_minimum_setting_is_caught() {
+    let report = check_with(&Fixture { flaw: Flaw::AllocatesAtMinimum, clip: false, delay: DELAY }, &quick());
+    assert_eq!(failed_checks(&report), [Check::Allocation], "{report}");
+    assert!(report.failures().all(|r| r.setting == Some(Setting::Min)), "{report}");
+    assert!(report.to_string().contains("`process or report` called the allocator"), "{report}");
+}
+
+#[test]
+fn a_block_size_dependent_node_with_a_second_of_latency_fails_instead_of_hiding_in_the_delay() {
+    let report = check_with(&Fixture { flaw: Flaw::BlockDependent, clip: false, delay: LONG_DELAY }, &quick());
+    assert!(failed_checks(&report).contains(&Check::BlockSizes), "{report}");
+}
+
+#[test]
+fn a_node_with_a_second_of_latency_that_ignores_reset_fails() {
+    let report = check_with(&Fixture { flaw: Flaw::IgnoresReset, clip: false, delay: LONG_DELAY }, &quick());
+    assert_eq!(failed_checks(&report), [Check::Reset], "{report}");
+}
+
+#[test]
+fn a_node_with_a_second_of_latency_that_clicks_fails_the_sweep() {
+    let report = check_with(&Fixture { flaw: Flaw::Clicks, clip: false, delay: LONG_DELAY }, &quick());
+    assert_eq!(failed_checks(&report), [Check::Sweep], "{report}");
+}
+
+#[test]
+fn a_well_behaved_node_with_a_second_of_latency_passes() {
+    let report = check_with(&Fixture { flaw: Flaw::None, clip: false, delay: LONG_DELAY }, &quick());
+    assert!(report.is_ok(), "{report}");
+}
+
+/// A tremolo whose depth follows the input level: `1 + 0.1 sin(phase) (1 + level)`. It has two pieces of state, a phase
+/// that advances every sample and a level that remembers the input.
+struct Oscillator {
+    /// Whether `reset` also forgets the level.
+    forgets_level: bool,
+    /// Whether `reset` puts the phase back to zero.
+    restores_phase: bool,
+}
+
+impl NodeKind for Oscillator {
+    fn info(&self) -> NodeKindInfo {
+        NodeKindInfo {
+            id: "test.oscillator",
+            summary: "a tremolo fixture",
+            channels: ChannelSupport::Any,
+            params: &[],
+            latency: LatencyRange { min: 0, max: 0 },
+            sidechain: false,
+        }
+    }
+
+    fn create(&self, _config: &NodeConfig, channels: Channels) -> Result<Box<dyn Node>, NodeError> {
+        Ok(Box::new(OscillatorNode {
+            forgets_level: self.forgets_level,
+            restores_phase: self.restores_phase,
+            phase: 0.0,
+            level: vec![0.0; channels.count()],
+        }))
+    }
+}
+
+struct OscillatorNode {
+    forgets_level: bool,
+    restores_phase: bool,
+    phase: f64,
+    level: Vec<f32>,
+}
+
+#[allow(clippy::cast_precision_loss)] // sample counts in a test stay far below 2^52
+impl Node for OscillatorNode {
+    fn latency(&self) -> u32 {
+        0
+    }
+
+    fn set_param(&mut self, _param: ParamIndex, _value: f32) {}
+
+    fn process(&mut self, block: &mut BlockMut<'_>) {
+        let start = self.phase;
+        let frames = block.frames();
+        let step = std::f64::consts::TAU * 3.0 / 48_000.0;
+        let mut channel = 0;
+        let levels = &mut self.level;
+        block.for_each_channel(|samples| {
+            for (n, sample) in samples.iter_mut().enumerate() {
+                #[allow(clippy::cast_possible_truncation)] // a gain near one
+                let wobble = (start + step * n as f64).sin() as f32;
+                let input = *sample;
+                *sample = input * (1.0 + 0.1 * wobble * (1.0 + levels[channel]));
+                levels[channel] = 0.999 * levels[channel] + 0.001 * input.abs();
+            }
+            channel += 1;
+        });
+        self.phase = (start + step * frames as f64) % std::f64::consts::TAU;
+    }
+
+    fn reset(&mut self) {
+        // The phase goes back to where a new node starts, which is not where a node that has run is.
+        if self.restores_phase {
+            self.phase = 0.0;
+        }
+        if self.forgets_level {
+            self.level.fill(0.0);
+        }
+    }
+}
+
+#[test]
+fn an_oscillator_that_restores_its_phase_on_reset_passes() {
+    let report = check_with(&Oscillator { forgets_level: true, restores_phase: true }, &quick());
+    assert!(report.is_ok(), "{report}");
+}
+
+#[test]
+fn an_oscillator_that_resets_its_phase_but_not_its_level_fails_the_reset_check() {
+    let report = check_with(&Oscillator { forgets_level: false, restores_phase: true }, &quick());
+    assert_eq!(failed_checks(&report), [Check::Reset], "{report}");
+}
+
+#[test]
+fn an_oscillator_whose_reset_keeps_its_phase_fails_the_reset_check() {
+    let report = check_with(&Oscillator { forgets_level: true, restores_phase: false }, &quick());
+    assert_eq!(failed_checks(&report), [Check::Reset], "{report}");
 }
