@@ -1365,14 +1365,14 @@ impl CameraStream for HeldStream {
     }
 }
 
-/// A capture that returns after `stop` was asked for is dropped, not tracked: the tracker never sees it and comes back
+/// A capture that returns after `stop` was asked for is dropped, not submitted: the tracker never sees it and comes back
 /// at once. Synchronised, not timed: the helper thread lets the capture go once `stop` is under way, and the
 /// tracker's own call count says whether the frame was submitted.
 #[test]
 fn a_capture_that_returns_after_stop_is_not_tracked() {
     let (entered, entries) = channel();
     let (release, gate) = channel();
-    let (waiting, tracked) = channel();
+    let (waiting, submitted) = channel();
     let camera =
         Held { inner: FakeCamera::synthetic(nv12(64, 48), 10_000_000), entered, release: Arc::new(Mutex::new(gate)) };
     let scripted = Scripted { waiting: Some(waiting), ..Scripted::new(vec![true]) };
@@ -1388,14 +1388,14 @@ fn a_capture_that_returns_after_stop_is_not_tracked() {
     assert_eq!(next(&mut *source).status, TrackStatus::Tracking);
     entries.recv_timeout(BACKSTOP).expect("the camera thread entered its first call");
     entries.recv_timeout(BACKSTOP).expect("and is held inside the next one");
-    while tracked.try_recv().is_ok() {}
+    while submitted.try_recv().is_ok() {}
     let letting_go = std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(30));
         release.send(()).ok();
     });
     tracker.stop();
     letting_go.join().unwrap();
-    assert!(tracked.try_recv().is_err(), "the late capture was handed to the tracker");
+    assert!(submitted.try_recv().is_err(), "the late capture was handed to the tracker");
     assert_eq!(tracker.error(), None, "the tracker came back; nothing was let go");
 }
 
