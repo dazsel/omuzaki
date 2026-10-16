@@ -6,6 +6,8 @@
 
 #[path = "../../omuzaki-test-char/tests/support/outfit_conformance.rs"]
 mod conformance;
+#[path = "support/outfit_render.rs"]
+mod render;
 
 use omuzaki_anim_api::HumanoidBone;
 use omuzaki_char::outfit::common::{FabricStyle, Garment};
@@ -324,86 +326,20 @@ fn the_kind_is_registered() {
     assert_eq!(<Skirt as Garment>::open_borders(&SkirtParams::default()), 4);
 }
 
-/// Renders the skirt over tights on a body, front, side and back, through the mock toon renderer, when
+/// Renders the skirt over tights on every template from four sides through the mock toon renderer, when
 /// `OMUZAKI_SKIRT_PPM=<directory>` is set, as binary PPM files. Taste is judged on the pictures, not on numbers.
 #[test]
-#[allow(clippy::disallowed_methods, reason = "test evidence, written to a folder the developer names; not an op")]
 fn render_the_skirt_over_tights_when_asked() {
     use omuzaki_char::outfit::legwear::{LAYER_LEGWEAR, LegwearParams};
-    use omuzaki_core::glam::{Mat4, UVec2, Vec3};
-    use omuzaki_render_api::{
-        AlphaEncoding, Background, Camera, Instance, Light, Post, Quality, Renderer, RendererExt, Scene, Tonemap,
-    };
-    use omuzaki_render_mock::MockRenderer;
-    use std::collections::HashMap;
 
     let Some(directory) = std::env::var_os("OMUZAKI_SKIRT_PPM") else { return };
-    let directory = std::path::PathBuf::from(directory);
-    std::fs::create_dir_all(&directory).unwrap();
-    for template in ["soft-sd", "standard"] {
+    for template in conformance::TEMPLATES {
         let garments = [
             ("legwear", "legwear", LAYER_LEGWEAR, serde_json::to_value(LegwearParams::default()).unwrap()),
             ("skirt", "skirt", LAYER_SKIRT, serde_json::to_value(SkirtParams::default()).unwrap()),
         ];
         let def = conformance::character(template, &omuzaki_char_api::BodyShape::default(), &garments);
         let stack = conformance::build(def, &services()).unwrap();
-        let (mut lo, mut hi) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
-        for (_, output) in &stack.outputs {
-            for mesh in &output.meshes {
-                for p in &mesh.geometry.positions {
-                    lo = lo.min(*p);
-                    hi = hi.max(*p);
-                }
-            }
-        }
-        // The camera looks at the hips and the legs: the skirt and what is under it.
-        let centre = Vec3::new(0.0, lo.y + 0.45 * (hi.y - lo.y), 0.0);
-        let distance = 1.15 * (hi.y - lo.y);
-        for (view, azimuth_deg) in [("front", 0.0_f32), ("three-quarter", 35.0), ("side", 90.0), ("back", 180.0)] {
-            let mut renderer = MockRenderer::new();
-            let mut scene = Scene::new(Camera::look_at(
-                centre
-                    + Mat4::from_rotation_y(azimuth_deg.to_radians()).transform_vector3(Vec3::new(0.0, 0.05, distance)),
-                centre,
-                Vec3::Y,
-                Camera::default().projection,
-            ));
-            scene.background = Background::Solid { colour: Colour::hex(0x001e_1c24) };
-            scene.lights = vec![
-                Light::Hemisphere { sky: Colour::hex(0x00f1_eef8), ground: Colour::hex(0x004a_3e36), intensity: 0.75 },
-                Light::Directional {
-                    to_light: Vec3::new(1.6, 3.0, 2.4),
-                    colour: Colour::hex(0x00ff_f6ec),
-                    intensity: 1.7,
-                    casts_shadow: false,
-                },
-            ];
-            scene.post = Post { exposure: 1.0, tonemap: Tonemap::None, ..Post::default() };
-            for (_, output) in &stack.outputs {
-                let mut textures = HashMap::new();
-                for (name, data) in &output.textures {
-                    textures.insert(name.clone(), renderer.create_texture(&data.desc, Some(&data.rgba8)).unwrap());
-                }
-                for built in &output.meshes {
-                    let mesh = renderer.create_mesh(&built.geometry).unwrap();
-                    let (_, spec) = output.materials.iter().find(|(name, _)| *name == built.material).unwrap();
-                    let mut spec = spec.clone();
-                    spec.overlays.clear();
-                    let material = spec.to_material(&|name| textures.get(name).copied(), &|_| None).unwrap();
-                    let material = renderer.create_material(&material).unwrap();
-                    scene.instances.push(Instance::new(mesh, material, Mat4::IDENTITY));
-                }
-            }
-            let quality = Quality { samples: 4, ..Quality::offline() };
-            let image = renderer.render_image(UVec2::splat(640), AlphaEncoding::Straight, &scene, &quality).unwrap();
-            let mut ppm = format!("P6\n{} {}\n255\n", image.size.x, image.size.y).into_bytes();
-            for y in 0..image.size.y {
-                for x in 0..image.size.x {
-                    let [r, g, b, _] = image.pixel(x, y).unwrap();
-                    ppm.extend([r, g, b]);
-                }
-            }
-            std::fs::write(directory.join(format!("{template}-{view}.ppm")), ppm).unwrap();
-        }
+        render::render(&stack, render::Framing::parts(&stack, &["skirt", "legwear"]), template, directory.as_ref());
     }
 }

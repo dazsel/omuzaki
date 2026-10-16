@@ -1,0 +1,65 @@
+# Render cases for `tools/ci/evidence.py` from the everyday garments: the shirt and its collar and tie, the skirt over
+# tights, the vest, the trousers and the boots. The format is documented at the top of tools/ci/evidence.py.
+#
+# Each picture is one garment on one template, through the mock toon renderer, framed on the garment: front and
+# three-quarter on the top row, side and back below.
+
+[[case]]
+name = "shirt"
+description = "The shirt (#190) on the body, on every template."
+env = { OMUZAKI_SHIRT_PPM = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-char", "--test", "outfit_shirt", "render_the_shirt_when_asked", "--", "--exact"] },
+]
+images = ["soft-sd.ppm", "mini.ppm", "standard.ppm", "tall.ppm"]
+
+[[case]]
+name = "neckwear"
+description = "The collar and the striped tie (#191) on the shirt, on every template."
+env = { OMUZAKI_NECKWEAR_PPM = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-char", "--test", "outfit_neckwear", "render_the_neckwear_when_asked", "--", "--exact"] },
+]
+images = ["soft-sd.ppm", "mini.ppm", "standard.ppm", "tall.ppm"]
+
+[[case]]
+name = "skirt"
+description = "The pleated plaid skirt (#192) over tights (#193), on every template."
+env = { OMUZAKI_SKIRT_PPM = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-char", "--test", "outfit_skirt", "render_the_skirt_over_tights_when_asked", "--", "--exact"] },
+]
+images = ["soft-sd.ppm", "mini.ppm", "standard.ppm", "tall.ppm"]
+
+[[case]]
+name = "vest"
+description = "The vest (#323) on the body and over the shirt, on every template."
+env = { OMUZAKI_VEST_PPM = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-char", "--test", "outfit_vest", "render_the_vest_when_asked", "--", "--exact"] },
+]
+images = [
+    "soft-sd-body.ppm", "soft-sd-shirt.ppm", "mini-body.ppm", "mini-shirt.ppm",
+    "standard-body.ppm", "standard-shirt.ppm", "tall-body.ppm", "tall-shirt.ppm",
+]
+
+[[case]]
+name = "trousers"
+description = "Straight trousers (#195) on every template; tapered, flared, baggy cuffed and short pairs on standard."
+env = { OMUZAKI_TROUSERS_PPM = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-char", "--test", "outfit_trousers", "render_the_trousers_when_asked", "--", "--exact"] },
+]
+images = [
+    "soft-sd-straight.ppm", "mini-straight.ppm", "standard-straight.ppm", "tall-straight.ppm",
+    "standard-tapered.ppm", "standard-flared.ppm", "standard-baggy-cuffed.ppm", "standard-shorts.ppm",
+]
+
+[[case]]
+name = "boots"
+description = "The boots (#326, #327) on every template."
+env = { OMUZAKI_BOOTS_PPM = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-char", "--test", "outfit_boots", "render_the_boots_when_asked", "--", "--exact"] },
+]
+images = ["soft-sd.ppm", "mini.ppm", "standard.ppm", "tall.ppm"]

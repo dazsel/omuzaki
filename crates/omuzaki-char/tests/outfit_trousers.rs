@@ -8,6 +8,8 @@
 
 #[path = "../../omuzaki-test-char/tests/support/outfit_conformance.rs"]
 mod conformance;
+#[path = "support/outfit_render.rs"]
+mod render;
 
 use omuzaki_char::outfit::common::{FabricStyle, LAYER_SHIRT, PlaidBand};
 use omuzaki_char::outfit::trousers::shape::{LegProfile, Rise};
@@ -241,97 +243,26 @@ fn the_build_is_deterministic() {
 
 // ----------------------------------------------------------------------------------------------------- the pictures
 
-/// Writes pictures of the trousers, front, side and back, on soft-sd and standard, for a straight, a flared, a baggy
-/// cuffed and a short pair, to the folder `OMUZAKI_TROUSERS_PPM` names (nothing without it). Taste is judged on the
-/// pictures, not on numbers.
+/// Writes pictures of the trousers from four sides to the folder `OMUZAKI_TROUSERS_PPM` names (nothing without it): a
+/// straight pair on every template, and a tapered, a flared, a baggy cuffed and a short pair on the standard body. Taste
+/// is judged on the pictures, not on numbers.
 #[test]
-#[allow(clippy::disallowed_methods, reason = "test evidence, written to a folder the developer names; not an op")]
 fn render_the_trousers_when_asked() {
-    use omuzaki_char_api::{BuildOptions, CharId, CharacterBuilder, CharacterDef, RegistryBuilder};
-    use omuzaki_core::colour::Colour;
-    use omuzaki_core::glam::{Mat4, UVec2, Vec3};
-    use omuzaki_render_api::{
-        AlphaEncoding, Background, Camera, Instance, Light, Post, Quality, Renderer, RendererExt, Scene, Tonemap,
-    };
-    use omuzaki_render_mock::MockRenderer;
-
     let Some(directory) = std::env::var_os("OMUZAKI_TROUSERS_PPM") else { return };
-    let directory = std::path::PathBuf::from(directory);
-    std::fs::create_dir_all(&directory).unwrap();
     let mut cuffed = TrousersParams { leg: LegProfile::baggy(), crease: true, ..TrousersParams::default() };
     cuffed.cuff.roll = 0.004;
-    let variants = [
-        ("straight", TrousersParams { crease: true, pockets: true, ..TrousersParams::default() }),
-        ("tapered", with_leg(LegProfile::tapered())),
-        ("flared", with_leg(LegProfile::flared())),
-        ("baggy-cuffed", cuffed),
-        ("shorts", TrousersParams { length: 0.60, ..TrousersParams::default() }),
-    ];
-    for template in ["soft-sd", "standard"] {
-        for (variant, params) in &variants {
-            let node = json!({
-                "name": "Trousers", "template": template,
-                "palette": { "skin": "#f9d3c5", "skin_shade": "#f2b4ab", "skin_line": "#c98a80" },
-                "parts": {
-                    "body": { "kind": "body", "params": serde_json::to_value(omuzaki_char_api::BodyParams::default()).unwrap() },
-                    "trousers": { "kind": "trousers", "layer": LAYER_TROUSERS, "params": serde_json::to_value(params).unwrap() },
-                },
-            });
-            let def = CharacterDef::from_node(&node).unwrap();
-            let built = RegistryBuilder
-                .build(&CharId::new("trousers").unwrap(), &def, &BuildOptions::default(), &services())
-                .unwrap();
-            let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
-            for m in built.meshes.iter().filter(|m| m.part.as_str() == "trousers") {
-                for p in &m.mesh.geometry.positions {
-                    lo = lo.min(*p);
-                    hi = hi.max(*p);
-                }
-            }
-            let (centre, size) = ((lo + hi) / 2.0, (hi - lo).max_element());
-            for (view, azimuth_deg) in [("front", 0.0_f32), ("side", 90.0), ("back", 180.0)] {
-                let mut renderer = MockRenderer::new();
-                let eye = centre
-                    + Mat4::from_rotation_y(azimuth_deg.to_radians()).transform_vector3(Vec3::new(
-                        0.0,
-                        0.1,
-                        3.0 * size,
-                    ));
-                let mut scene = Scene::new(Camera::look_at(eye, centre, Vec3::Y, Camera::default().projection));
-                scene.background = Background::Solid { colour: Colour::hex(0x001e_1c24) };
-                scene.lights = vec![
-                    Light::Hemisphere {
-                        sky: Colour::hex(0x00f1_eef8),
-                        ground: Colour::hex(0x004a_3e36),
-                        intensity: 0.75,
-                    },
-                    Light::Directional {
-                        to_light: Vec3::new(1.6, 3.0, 2.4),
-                        colour: Colour::hex(0x00ff_f6ec),
-                        intensity: 1.7,
-                        casts_shadow: false,
-                    },
-                ];
-                scene.post = Post { exposure: 1.0, tonemap: Tonemap::None, ..Post::default() };
-                for built_mesh in &built.meshes {
-                    let mesh = renderer.create_mesh(&built_mesh.mesh.geometry).unwrap();
-                    let mut spec = built.materials[&built_mesh.mesh.material].clone();
-                    spec.overlays.clear();
-                    let material = renderer.create_material(&spec.to_material(&|_| None, &|_| None).unwrap()).unwrap();
-                    scene.instances.push(Instance::new(mesh, material, Mat4::IDENTITY));
-                }
-                let quality = Quality { samples: 4, ..Quality::offline() };
-                let image =
-                    renderer.render_image(UVec2::splat(768), AlphaEncoding::Straight, &scene, &quality).unwrap();
-                let mut ppm = format!("P6\n{} {}\n255\n", image.size.x, image.size.y).into_bytes();
-                for y in 0..image.size.y {
-                    for x in 0..image.size.x {
-                        let [r, g, b, _] = image.pixel(x, y).unwrap();
-                        ppm.extend([r, g, b]);
-                    }
-                }
-                std::fs::write(directory.join(format!("{template}-{variant}-{view}.ppm")), ppm).unwrap();
-            }
-        }
+    let straight = TrousersParams { crease: true, pockets: true, ..TrousersParams::default() };
+    let cases = conformance::TEMPLATES.map(|template| (template, "straight", straight.clone())).into_iter().chain([
+        ("standard", "tapered", with_leg(LegProfile::tapered())),
+        ("standard", "flared", with_leg(LegProfile::flared())),
+        ("standard", "baggy-cuffed", cuffed),
+        ("standard", "shorts", TrousersParams { length: 0.60, ..TrousersParams::default() }),
+    ]);
+    for (template, variant, params) in cases {
+        let garments = [("trousers", "trousers", LAYER_TROUSERS, serde_json::to_value(&params).unwrap())];
+        let def = conformance::character(template, &BodyShape::default(), &garments);
+        let stack = conformance::build(def, &services()).unwrap();
+        let framing = render::Framing::parts(&stack, &["trousers"]);
+        render::render(&stack, framing, &format!("{template}-{variant}"), directory.as_ref());
     }
 }

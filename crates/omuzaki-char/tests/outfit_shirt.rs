@@ -1,8 +1,8 @@
 //! The `shirt` garment (#190) through the garment conformance suite on every template and shape, its parameters, the
 //! meshes and materials it makes, the anchor it publishes and how it follows the fit it is given.
 //!
-//! Set `OMUZAKI_SHIRT_PPM=<directory>` to also render the shirt on the soft-sd and standard bodies (front, side and
-//! back) through the mock toon renderer as binary PPM files; taste is judged on the pictures.
+//! Set `OMUZAKI_SHIRT_PPM=<directory>` to also render the shirt on every template from four sides through the mock toon
+//! renderer as binary PPM files; taste is judged on the pictures.
 
 #![allow(clippy::expect_used, clippy::unwrap_used)] // test helpers: a panic is a clear failure
 #![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)] // test arithmetic
@@ -350,15 +350,12 @@ fn a_cuff_without_a_button_has_no_holes_and_a_taller_cuff_reaches_further_past_t
 
 // ------------------------------------------------------------------------------------------------- pictures
 
-/// Renders the shirt on the soft-sd and standard bodies (front, side, back) when `OMUZAKI_SHIRT_PPM` names a folder.
+/// Renders the shirt on every template from four sides when `OMUZAKI_SHIRT_PPM` names a folder.
 #[test]
-#[allow(clippy::disallowed_methods, reason = "test evidence, written to a folder the developer names; not an op")]
 fn render_the_shirt_when_asked() {
     let Some(directory) = std::env::var_os("OMUZAKI_SHIRT_PPM") else { return };
-    let directory = std::path::PathBuf::from(directory);
-    std::fs::create_dir_all(&directory).unwrap();
-    for template in ["soft-sd", "standard"] {
+    for template in conformance::TEMPLATES {
         let stack = stack(template, &ShirtParams::default());
-        render::render(&stack, template, &directory);
+        render::render(&stack, render::Framing::parts(&stack, &["garment"]), template, directory.as_ref());
     }
 }

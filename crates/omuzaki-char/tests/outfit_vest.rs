@@ -7,6 +7,8 @@
 
 #[path = "../../omuzaki-test-char/tests/support/outfit_conformance.rs"]
 mod conformance;
+#[path = "support/outfit_render.rs"]
+mod render;
 
 use std::f64::consts::{FRAC_PI_2, PI};
 
@@ -402,91 +404,21 @@ fn the_build_is_deterministic() {
 
 // ----------------------------------------------------------------------------------------------------- the pictures
 
-/// Writes pictures of the vest, front, side and back, on soft-sd and standard, over the body alone and over a shirt, to
-/// the folder `OMUZAKI_VEST_PPM` names (nothing without it). Taste is judged on the pictures, not on numbers.
+/// Writes pictures of the vest from four sides on every template, over the body alone and over the shirt, to the folder
+/// `OMUZAKI_VEST_PPM` names (nothing without it). Taste is judged on the pictures, not on numbers.
 #[test]
-#[allow(clippy::disallowed_methods, reason = "test evidence, written to a folder the developer names; not an op")]
 fn render_the_vest_when_asked() {
-    use omuzaki_char_api::{BuildOptions, CharId, CharacterBuilder, CharacterDef, RegistryBuilder};
-    use omuzaki_core::glam::{Mat4, UVec2, Vec3};
-    use omuzaki_render_api::{
-        AlphaEncoding, Background, Camera, Instance, Light, Post, Quality, Renderer, RendererExt, Scene, Tonemap,
-    };
-    use omuzaki_render_mock::MockRenderer;
+    use omuzaki_char::outfit::shirt::ShirtParams;
 
     let Some(directory) = std::env::var_os("OMUZAKI_VEST_PPM") else { return };
-    let directory = std::path::PathBuf::from(directory);
-    std::fs::create_dir_all(&directory).unwrap();
-    let vest = serde_json::to_value(VestParams::default()).unwrap();
-    for template in ["soft-sd", "standard"] {
-        for (variant, shirt) in [("body", false), ("shirt", true)] {
-            let mut parts = json!({
-                "body": { "kind": "body", "params": serde_json::to_value(omuzaki_char_api::BodyParams::default()).unwrap() },
-                "vest": { "kind": "vest", "layer": LAYER_VEST, "params": vest },
-            });
-            if shirt {
-                parts["shirt"] = json!({ "kind": "mock-garment", "layer": LAYER_SHIRT, "params": { "ease": 0.004 } });
-            }
-            let node = json!({
-                "name": "Vest", "template": template,
-                "palette": { "skin": "#f9d3c5", "skin_shade": "#f2b4ab", "skin_line": "#c98a80", "outfit": "#c8c8d0" },
-                "parts": parts,
-            });
-            let def = CharacterDef::from_node(&node).unwrap();
-            let built = RegistryBuilder
-                .build(&CharId::new("vest").unwrap(), &def, &BuildOptions::default(), &services())
-                .unwrap();
-            let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
-            for m in built.meshes.iter().filter(|m| m.mesh.name.contains("vest")) {
-                for p in &m.mesh.geometry.positions {
-                    lo = lo.min(*p);
-                    hi = hi.max(*p);
-                }
-            }
-            let (centre, size) = ((lo + hi) / 2.0, (hi - lo).max_element());
-            for (view, azimuth_deg) in [("front", 0.0_f32), ("side", 90.0), ("back", 180.0)] {
-                let mut renderer = MockRenderer::new();
-                let eye = centre
-                    + Mat4::from_rotation_y(azimuth_deg.to_radians()).transform_vector3(Vec3::new(
-                        0.0,
-                        0.1,
-                        3.4 * size,
-                    ));
-                let mut scene = Scene::new(Camera::look_at(eye, centre, Vec3::Y, Camera::default().projection));
-                scene.background = Background::Solid { colour: Colour::hex(0x001e_1c24) };
-                scene.lights = vec![
-                    Light::Hemisphere {
-                        sky: Colour::hex(0x00f1_eef8),
-                        ground: Colour::hex(0x004a_3e36),
-                        intensity: 0.75,
-                    },
-                    Light::Directional {
-                        to_light: Vec3::new(1.6, 3.0, 2.4),
-                        colour: Colour::hex(0x00ff_f6ec),
-                        intensity: 1.7,
-                        casts_shadow: false,
-                    },
-                ];
-                scene.post = Post { exposure: 1.0, tonemap: Tonemap::None, ..Post::default() };
-                for built_mesh in &built.meshes {
-                    let mesh = renderer.create_mesh(&built_mesh.mesh.geometry).unwrap();
-                    let mut spec = built.materials[&built_mesh.mesh.material].clone();
-                    spec.overlays.clear();
-                    let material = renderer.create_material(&spec.to_material(&|_| None, &|_| None).unwrap()).unwrap();
-                    scene.instances.push(Instance::new(mesh, material, Mat4::IDENTITY));
-                }
-                let quality = Quality { samples: 4, ..Quality::offline() };
-                let image =
-                    renderer.render_image(UVec2::splat(768), AlphaEncoding::Straight, &scene, &quality).unwrap();
-                let mut ppm = format!("P6\n{} {}\n255\n", image.size.x, image.size.y).into_bytes();
-                for y in 0..image.size.y {
-                    for x in 0..image.size.x {
-                        let [r, g, b, _] = image.pixel(x, y).unwrap();
-                        ppm.extend([r, g, b]);
-                    }
-                }
-                std::fs::write(directory.join(format!("{template}-{variant}-{view}.ppm")), ppm).unwrap();
-            }
+    let vest = ("vest", "vest", LAYER_VEST, serde_json::to_value(VestParams::default()).unwrap());
+    let shirt = ("shirt", "shirt", LAYER_SHIRT, serde_json::to_value(ShirtParams::default()).unwrap());
+    for template in conformance::TEMPLATES {
+        for (variant, garments) in [("body", vec![vest.clone()]), ("shirt", vec![shirt.clone(), vest.clone()])] {
+            let def = conformance::character(template, &BodyShape::default(), &garments);
+            let stack = conformance::build(def, &services()).unwrap();
+            let framing = render::Framing::parts(&stack, &["vest"]);
+            render::render(&stack, framing, &format!("{template}-{variant}"), directory.as_ref());
         }
     }
 }

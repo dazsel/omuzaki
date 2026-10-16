@@ -455,16 +455,15 @@ fn the_collar_clears_the_chin_for_the_default_head_and_a_dropped_one() {
     }
 }
 
-/// Renders body, shirt, collar and tie on the soft-sd and standard bodies (front, side, back) when `OMUZAKI_NECKWEAR_PPM`
-/// names a folder.
+/// Renders body, shirt, collar and tie on every template from four sides when `OMUZAKI_NECKWEAR_PPM` names a folder.
 #[test]
-#[allow(clippy::disallowed_methods, reason = "test evidence, written to a folder the developer names; not an op")]
 fn render_the_neckwear_when_asked() {
     let Some(directory) = std::env::var_os("OMUZAKI_NECKWEAR_PPM") else { return };
-    let directory = std::path::PathBuf::from(directory);
-    std::fs::create_dir_all(&directory).unwrap();
-    for template in ["soft-sd", "standard"] {
+    for template in conformance::TEMPLATES {
         let stack = stack(template, &conformance::shapes()[0].1, &CollarParams::default(), &TieParams::default());
-        render::render(&stack, template, &directory);
+        // The collar and the tie, with the shirt's shoulders around them.
+        let framing = render::Framing::parts(&stack, &["collar", "tie"]);
+        let framing = render::Framing { distance: framing.distance * 1.4, ..framing };
+        render::render(&stack, framing, template, directory.as_ref());
     }
 }

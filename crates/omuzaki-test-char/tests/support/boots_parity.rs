@@ -1,9 +1,9 @@
-//! What the two boots parity tests share: the oracle (the sample character's boot dump and her private profile file),
-//! the boots built from that profile, and the comparison of a range of one mesh against the prototype's.
+//! What the two boots parity tests share: the oracle (the prototype's boot dump and its private profile file), the boots
+//! built from that profile, and the comparison of a range of one mesh against the prototype's.
 //!
-//! The oracle is private test material kept in the local assets folder (`goldens/js`, `characters/<private-test>/
-//! boots-profile.json`); without it every test skips with a message. The profile file holds the prototype's `BOOT`
-//! knots, which are hand-fitted to her body and so stay out of the repository.
+//! The oracle is private test material kept in the local assets folder (`goldens/js` and, next to the dumps,
+//! `derived/boots-profile.json`); without it every test skips with a message. The profile file holds the prototype's
+//! `BOOT` knots, which are hand-fitted to its body and so stay out of the repository.
 
 // Test helpers: a panic is a clear failure.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
@@ -43,8 +43,7 @@ pub struct Oracle {
 
 pub fn open() -> Option<Oracle> {
     let js = JsRef::open()?;
-    let assets = js.root().parent().and_then(std::path::Path::parent).expect("the dump root is <assets>/goldens/js");
-    let file = assets.join("characters/<private-test>/boots-profile.json");
+    let file = js.root().join("derived/boots-profile.json");
     let Ok(text) = std::fs::read_to_string(&file) else {
         eprintln!("skipped: no boot profile at {} (it holds the prototype's hand-fitted knots)", file.display());
         return None;
@@ -135,19 +134,19 @@ pub fn weight_error(ours: &PartMesh, theirs: &JsMesh, dump: &GeometryDump, lo: u
     };
     let mine = |j: u16| ours.joint_bones[usize::from(j)].clone();
     let theirs_joint = |j: u16| js_names::joint(&dotted(&dump.bones[usize::from(j)])).expect("a bone name");
-    let (g, t) = (&ours.geometry, &theirs.mesh);
+    let (built, dumped) = (&ours.geometry, &theirs.mesh);
     let mut worst = (0.0_f32, lo);
     for v in lo..hi {
-        let (a, b) =
-            (weights_of(&g.joints[v], &g.weights[v], &mine), weights_of(&t.joints[v], &t.weights[v], &theirs_joint));
-        let e = a
+        let ours_at = weights_of(&built.joints[v], &built.weights[v], &mine);
+        let theirs_at = weights_of(&dumped.joints[v], &dumped.weights[v], &theirs_joint);
+        let error = ours_at
             .keys()
-            .chain(b.keys())
-            .map(|k| (a.get(k).copied().unwrap_or(0.0) - b.get(k).copied().unwrap_or(0.0)).abs())
+            .chain(theirs_at.keys())
+            .map(|k| (ours_at.get(k).copied().unwrap_or(0.0) - theirs_at.get(k).copied().unwrap_or(0.0)).abs())
             .fold(0.0, f32::max);
-        if e > worst.0 {
-            worst = (e, v);
-            eprintln!("  weights at {v} ({:?}): ours {a:?} theirs {b:?}", g.positions[v]);
+        if error > worst.0 {
+            worst = (error, v);
+            eprintln!("  weights at {v} ({:?}): ours {ours_at:?} theirs {theirs_at:?}", built.positions[v]);
         }
     }
     worst.0

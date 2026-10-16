@@ -1,7 +1,7 @@
 //! The `boots` garment (#326, #327): the garment conformance suite on 4 templates x 3 body shapes for several
 //! parameter sets, the boot over a synthetic legwear layer, the explicit-profile boot, the parameters' checks, the stitch
-//! rails and the triangle budget. With `OMUZAKI_BOOTS_PPM=<directory>` set, the boots are rendered on a body (front, side
-//! and back) as binary PPM files for a look.
+//! rails and the triangle budget. With `OMUZAKI_BOOTS_PPM=<directory>` set, the boots are rendered on every template from
+//! four sides as binary PPM files for a look.
 
 #![allow(clippy::expect_used, clippy::unwrap_used)] // test helpers: a panic is a clear failure
 #![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)] // test arithmetic on small counts
@@ -9,6 +9,8 @@
 
 #[path = "../../omuzaki-test-char/tests/support/outfit_conformance.rs"]
 mod conformance;
+#[path = "support/outfit_render.rs"]
+mod render;
 
 use omuzaki_char::outfit::boots::{BootHeight, Boots, BootsParams, LAYER_FOOTWEAR, LIVE_DETAIL_TRIANGLES, MAX_STRAPS};
 use omuzaki_char::outfit::common::{Garment, GarmentCommon, LAYER_SHIRT, publish_envelope};
@@ -287,10 +289,13 @@ fn stitches_lie_on_the_leather_within_the_rail_tolerance() {
 
 // ------------------------------------------------------------------------------------------------------ params
 
+/// One change to the parameters that makes them invalid.
+type Breaks = Box<dyn Fn(&mut BootsParams)>;
+
 #[test]
 fn parameters_are_checked_and_every_range_is_enforced() {
     assert!(BootsParams::default().validate().is_ok());
-    let cases: [(&str, Box<dyn Fn(&mut BootsParams)>); 12] = [
+    let cases: [(&str, Breaks); 12] = [
         ("toe/width", Box::new(|p| p.toe.width = f64::NAN)),
         ("toe/roundness", Box::new(|p| p.toe.roundness = 1.5)),
         ("heel/length", Box::new(|p| p.heel.length = 0.0)),
@@ -414,84 +419,18 @@ fn the_skin_hands_over_from_the_foot_to_the_shaft_and_the_toes() {
 
 // ------------------------------------------------------------------------------------------------------ render
 
+/// Renders the boots on every template from four sides through the mock toon renderer, when
+/// `OMUZAKI_BOOTS_PPM=<directory>` is set, as binary PPM files.
 #[test]
-#[allow(clippy::disallowed_methods, reason = "test evidence, written to a folder the developer names; not an op")]
 fn render_the_boots_when_asked() {
-    use omuzaki_core::colour::Colour;
-    use omuzaki_core::glam::{Mat4, UVec2, Vec3};
-    use omuzaki_render_api::{
-        AlphaEncoding, Background, Camera, Instance, Light, Post, Renderer, RendererExt, Scene, Tonemap,
-    };
-    use omuzaki_render_mock::MockRenderer;
-
     let Some(directory) = std::env::var_os("OMUZAKI_BOOTS_PPM") else { return };
-    let directory = std::path::PathBuf::from(directory);
-    std::fs::create_dir_all(&directory).unwrap();
-    let render_quality =
-        if std::env::var_os("OMUZAKI_BOOTS_LIVE").is_some() { Quality::Live } else { Quality::Offline };
-    for template in ["soft-sd", "standard"] {
-        let p = BootsParams::default();
+    for template in conformance::TEMPLATES {
         let def = conformance::character(
             template,
             &BodyShape::default(),
-            &[("boots", "boots", LAYER_FOOTWEAR, serde_json::to_value(&p).unwrap())],
+            &[("boots", "boots", LAYER_FOOTWEAR, serde_json::to_value(BootsParams::default()).unwrap())],
         );
-        let options = BuildOptions { quality: render_quality, ..BuildOptions::default() };
-        let mut published = omuzaki_char_api::Published::default();
-        let mut meshes = Vec::new();
-        for id in omuzaki_char_api::plan(&def).unwrap() {
-            let out = omuzaki_char_api::build_part(&def, &id, &options, &services(), &published).unwrap();
-            published.absorb(&id, out.publishes.clone()).unwrap();
-            for m in &out.meshes {
-                let spec = out.materials.iter().find(|(n, _)| *n == m.material).unwrap().1.clone();
-                meshes.push((m.geometry.clone(), spec));
-            }
-        }
-        let top: f32 = meshes
-            .iter()
-            .filter(|(_, s)| s.vertex_colours)
-            .flat_map(|(g, _)| g.positions.iter().map(|p| p.y))
-            .fold(0.0, f32::max);
-        let centre = Vec3::new(0.0, top * 0.5, 0.02);
-        let distance = 0.35 + top * 2.2;
-        for (view, azimuth_deg) in [("front", 0.0_f32), ("side", 90.0), ("back", 180.0), ("three-quarter", 35.0)] {
-            let mut renderer = MockRenderer::new();
-            let eye = centre
-                + Mat4::from_rotation_y(azimuth_deg.to_radians()).transform_vector3(Vec3::new(
-                    0.0,
-                    0.3 * distance,
-                    distance,
-                ));
-            let mut scene = Scene::new(Camera::look_at(eye, centre, Vec3::Y, Camera::default().projection));
-            scene.background = Background::Solid { colour: Colour::hex(0x001e_1c24) };
-            scene.lights = vec![
-                Light::Hemisphere { sky: Colour::hex(0x00f1_eef8), ground: Colour::hex(0x004a_3e36), intensity: 0.75 },
-                Light::Directional {
-                    to_light: Vec3::new(1.6, 3.0, 2.4),
-                    colour: Colour::hex(0x00ff_f6ec),
-                    intensity: 1.7,
-                    casts_shadow: false,
-                },
-            ];
-            scene.post = Post { exposure: 1.0, tonemap: Tonemap::None, ..Post::default() };
-            for (geometry, spec) in &meshes {
-                let mesh = renderer.create_mesh(geometry).unwrap();
-                let mut spec = spec.clone();
-                spec.overlays.clear();
-                spec.base_texture = None;
-                let material = renderer.create_material(&spec.to_material(&|_| None, &|_| None).unwrap()).unwrap();
-                scene.instances.push(Instance::new(mesh, material, Mat4::IDENTITY));
-            }
-            let quality = omuzaki_render_api::Quality { samples: 4, ..omuzaki_render_api::Quality::offline() };
-            let image = renderer.render_image(UVec2::splat(768), AlphaEncoding::Straight, &scene, &quality).unwrap();
-            let mut ppm = format!("P6\n{} {}\n255\n", image.size.x, image.size.y).into_bytes();
-            for y in 0..image.size.y {
-                for x in 0..image.size.x {
-                    let [r, g, b, _] = image.pixel(x, y).unwrap();
-                    ppm.extend([r, g, b]);
-                }
-            }
-            std::fs::write(directory.join(format!("{template}-{view}.ppm")), ppm).unwrap();
-        }
+        let stack = conformance::build(def, &services()).unwrap();
+        render::render(&stack, render::Framing::parts(&stack, &["boots"]), template, directory.as_ref());
     }
 }
