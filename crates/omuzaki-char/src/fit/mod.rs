@@ -10,13 +10,14 @@
 #![allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
 #![allow(clippy::many_single_char_names, clippy::similar_names)] // geometry: u, v, x, y, w, h and their neighbours
 
-use omuzaki_char_api::{BodyParams, BodyShape, HandParams, MaterialName, Proportions};
+use omuzaki_char_api::{BodyParams, BodyShape, MaterialName, Proportions};
 use omuzaki_core::mesh::MeshData;
 
 use crate::body::{hands, junction, mesh};
 use crate::kit::KitError;
 use crate::template::{Template, registry};
 
+pub mod base64;
 pub mod heatmap;
 pub mod ops;
 pub mod png;
@@ -52,6 +53,9 @@ pub enum FitError {
     /// The body could not be built for some parameters.
     #[error("cannot build the body: {0}")]
     Build(String),
+    /// The caller's watch stopped the fit before it ended (`solver::fit_from`).
+    #[error("the fit was stopped before it ended")]
+    Stopped,
 }
 
 impl From<KitError> for FitError {
@@ -373,6 +377,8 @@ pub fn view_masks(
 pub(crate) struct Objective {
     template: &'static dyn Template,
     views: Vec<ViewObjective>,
+    /// The body every candidate is built from, with the candidate's proportions and shape: its hands stay as they are.
+    base: BodyParams,
 }
 
 impl Objective {
@@ -399,7 +405,13 @@ impl Objective {
             }
             views.push(ViewObjective { view: t.view, extent: mask.extent(), mask, boundary, field, fixed: tris });
         }
-        Ok(Self { template, views })
+        Ok(Self { template, views, base: BodyParams::default() })
+    }
+
+    /// The same objective building every candidate with `body`'s hands (its proportions and shape are the candidate's).
+    pub(crate) fn with_body(mut self, body: &BodyParams) -> Self {
+        self.base = body.clone();
+        self
     }
 
     /// The targets' views, in order.
@@ -410,7 +422,7 @@ impl Objective {
     /// For each view, the body of `params` and the (denoised) target the fit compares it with, aligned and rasterised
     /// exactly as the score does: what the difference heatmap draws.
     pub(crate) fn masks(&self, params: &FitParams) -> Result<Vec<ViewMasks>, FitError> {
-        let meshes = body_geometry(self.template, params)?;
+        let meshes = body_geometry(self.template, &self.base, params)?;
         self.views
             .iter()
             .map(|v| {
@@ -424,7 +436,7 @@ impl Objective {
 
     /// Scores a body of `params`.
     pub(crate) fn evaluate(&self, params: &FitParams) -> Result<Score, FitError> {
-        let meshes = body_geometry(self.template, params)?;
+        let meshes = body_geometry(self.template, &self.base, params)?;
         let mut per_view = Vec::with_capacity(self.views.len());
         let mut cost = 0.0;
         for v in &self.views {
@@ -438,10 +450,11 @@ impl Objective {
     }
 }
 
-/// The geometry of the body part for `params`: what `Body::build` makes, without the skin that a silhouette never reads.
-fn body_geometry(template: &dyn Template, params: &FitParams) -> Result<Vec<MeshData>, FitError> {
-    let hand = HandParams::default();
-    let layout = template.try_layout(&params.proportions, &params.shape, &hand)?;
+/// The geometry of the body part `base` with the proportions and shape of `params`: what `Body::build` makes, without
+/// the skin that a silhouette never reads.
+fn body_geometry(template: &dyn Template, base: &BodyParams, params: &FitParams) -> Result<Vec<MeshData>, FitError> {
+    let body = BodyParams { proportions: params.proportions.clone(), shape: params.shape.clone(), ..base.clone() };
+    let layout = template.try_layout(&body.proportions, &body.shape, &body.hand)?;
     let detail = mesh::Detail::LIVE;
     let mut rings = mesh::REGIONS
         .iter()
@@ -458,12 +471,6 @@ fn body_geometry(template: &dyn Template, params: &FitParams) -> Result<Vec<Mesh
     // fixed are in metres: the candidate body goes to metres too, or the two would not fit together.
     let scale = template.stature(&layout).map_or(1.0, |s| s.scale);
     let material = MaterialName::new("body-skin").map_err(|e| FitError::Build(e.to_string()))?;
-    let body = BodyParams {
-        proportions: params.proportions.clone(),
-        shape: params.shape.clone(),
-        hand,
-        ..BodyParams::default()
-    };
     out.extend(hands::build(&body, &layout, &material)?.into_iter().map(|m| m.geometry));
     for m in &mut out {
         m.positions.iter_mut().for_each(|p| *p *= scale);
@@ -492,7 +499,7 @@ pub fn render_target(
     }
     let template = registry::find(template).ok_or_else(|| FitError::UnknownTemplate(template.to_owned()))?;
     let mut tris = Vec::new();
-    for m in body_geometry(template, params)?.iter().chain(fixed) {
+    for m in body_geometry(template, &BodyParams::default(), params)?.iter().chain(fixed) {
         tris.extend(project(view, m)?);
     }
     let b = bounds(&tris).ok_or_else(|| FitError::BadMesh("nothing to draw".to_owned()))?;

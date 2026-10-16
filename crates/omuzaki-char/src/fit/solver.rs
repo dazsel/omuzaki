@@ -3,9 +3,11 @@
 //! Each parameter in turn is searched over a bracket for the value that lowers the cost. A sweep goes through every
 //! parameter once; its brackets are a window round the current value, [`WINDOW`] of the parameter's range wide in the
 //! first sweep and [`SHRINK`] times the last one's after each sweep that gained. A sweep that gains nothing is run once
-//! more at the wide window. A last move along the sweep's net displacement follows each sweep. The result depends only on the
-//! inputs and [`PARAM_ORDER`]: no threads, no randomness, and a tie keeps the lower parameter value within a line search and the earlier line's value across them, so a parameter the views
-//! cannot see stays at its default.
+//! more at the wide window. A last move along the sweep's net displacement follows each sweep. The result depends only
+//! on the inputs and [`PARAM_ORDER`]: no threads, no randomness, and a tie keeps the lower parameter value within a line
+//! search and the earlier line's value across them, so a parameter the views cannot see stays where the fit started.
+//! [`fit`] starts from the default body; [`fit_from`] starts from a given one (an op's stored body), and since only a
+//! strictly cheaper candidate replaces the start, its result never costs more than the body it started from.
 //!
 //! **What a silhouette identifies.** Widths, arm length, foot size and the shape axes show in the outline. Sole and
 //! crown are aligned, so `leg_length`, `torso_length` and the `height` axis trade off: the share of the leg against
@@ -15,6 +17,7 @@
 
 use std::cmp::Ordering;
 
+use omuzaki_char_api::BodyParams;
 use omuzaki_core::mesh::MeshData;
 
 use super::{FitError, FitParams, FitView, Objective, Score, Target};
@@ -160,7 +163,7 @@ pub struct FitInput<'a> {
 pub struct ViewFit {
     /// The view.
     pub view: FitView,
-    /// `IoU` with the target at the default parameters.
+    /// `IoU` with the target at the parameters the fit started from (the default ones for [`fit`]).
     pub iou_before: f64,
     /// `IoU` with the target at the fitted parameters.
     pub iou_after: f64,
@@ -171,7 +174,7 @@ pub struct ViewFit {
 pub struct FitResult {
     /// The fitted parameters.
     pub params: FitParams,
-    /// Mean `IoU` over the views at the default parameters.
+    /// Mean `IoU` over the views at the parameters the fit started from (the default ones for [`fit`]).
     pub iou_before: f64,
     /// Mean `IoU` over the views at the fitted parameters.
     pub iou_after: f64,
@@ -207,15 +210,47 @@ pub fn fit_ordered(input: &FitInput<'_>, order: &[Param]) -> Result<FitResult, F
         return Err(FitError::BadOrder);
     }
     let objective = Objective::new(input.template, input.targets, input.fixed)?;
-    let start = FitParams::default();
+    descend(&objective, FitParams::default(), order, &mut |_| true)
+}
+
+/// Fits the body to `input` in [`PARAM_ORDER`], starting from `body`'s proportions and shape (each value clamped into
+/// its parameter's range) and building every candidate with `body`'s hands, which the fit does not move. The baseline
+/// `IoU`s are those of `body` itself, and the result never costs more than it: what an op fitting a stored character
+/// needs, so a fit cannot make the body it claims to fit worse.
+///
+/// `watch` is called before every evaluation with the number made so far (at most [`MAX_EVALUATIONS`]); returning
+/// `false` stops the fit with [`FitError::Stopped`]. A job reports its progress and checks for a cancel there.
+///
+/// # Errors
+/// [`FitError::Stopped`] when `watch` stops it; otherwise as [`fit`].
+pub fn fit_from(
+    input: &FitInput<'_>,
+    body: &BodyParams,
+    watch: &mut dyn FnMut(usize) -> bool,
+) -> Result<FitResult, FitError> {
+    let objective = Objective::new(input.template, input.targets, input.fixed)?.with_body(body);
+    let mut start = FitParams { proportions: body.proportions.clone(), shape: body.shape.clone() };
+    for p in PARAM_ORDER {
+        let (lo, hi) = p.range();
+        let value = p.get(&start).clamp(lo, hi);
+        p.set(&mut start, value);
+    }
+    descend(&objective, start, &PARAM_ORDER, watch)
+}
+
+/// The descent itself: from `start`, in `order`, with `watch` asked before each evaluation (see [`fit_from`]).
+fn descend(
+    objective: &Objective,
+    start: FitParams,
+    order: &[Param],
+    watch: &mut dyn FnMut(usize) -> bool,
+) -> Result<FitResult, FitError> {
+    if !watch(0) {
+        return Err(FitError::Stopped);
+    }
     let first = objective.evaluate(&start)?;
-    let mut search = Search {
-        objective: &objective,
-        params: start,
-        best: first.clone(),
-        keep: Keep::new(first.cost),
-        evaluations: 1,
-    };
+    let mut search =
+        Search { objective, params: start, best: first.clone(), keep: Keep::new(first.cost), evaluations: 1, watch };
     let mut width = WINDOW;
     let mut stalled = false;
     loop {
@@ -259,12 +294,14 @@ pub fn fit_ordered(input: &FitInput<'_>, order: &[Param]) -> Result<FitResult, F
 }
 
 /// The state of a descent: the best parameters so far and the cost they reach.
-struct Search<'a> {
+struct Search<'a, 'w> {
     objective: &'a Objective,
     params: FitParams,
     best: Score,
     keep: Keep,
     evaluations: usize,
+    /// Asked before each evaluation whether the fit goes on (see [`fit_from`]).
+    watch: &'w mut dyn FnMut(usize) -> bool,
 }
 
 /// Which candidate a search stores: the first strictly cheaper one, and among equal costs found by one line search
@@ -301,11 +338,17 @@ impl Keep {
     }
 }
 
-impl Search<'_> {
+impl Search<'_, '_> {
     /// Scores `candidate` found at `t` along the line search, keeping it per [`Keep`]. `None` once the budget is spent.
+    ///
+    /// # Errors
+    /// [`FitError::Stopped`] when the watch says stop; otherwise as [`Objective::evaluate`].
     fn probe(&mut self, t: f64, candidate: FitParams) -> Result<Option<f64>, FitError> {
         if self.evaluations >= MAX_EVALUATIONS {
             return Ok(None);
+        }
+        if !(self.watch)(self.evaluations) {
+            return Err(FitError::Stopped);
         }
         self.evaluations += 1;
         let score = self.objective.evaluate(&candidate)?;

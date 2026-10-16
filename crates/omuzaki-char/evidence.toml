@@ -57,12 +57,3 @@ images = [
     "heart-front.ppm", "heart-three-quarter.ppm", "heart-side.ppm",
     "long-front.ppm", "long-three-quarter.ppm", "long-side.ppm",
 ]
-
-[[case]]
-name = "fit-heatmap"
-description = "The difference heatmap of the fitted body against a synthetic reference, front and side (red: the fitted body is outside the reference; blue: the reference is outside it). The legend strip prints the IoU."
-env = { OMUZAKI_FIT_HEATMAP_DIR = "{out}" }
-steps = [
-    { run = ["cargo", "test", "--locked", "-p", "omuzaki-char", "--test", "fit_ops", "write_the_heatmaps_when_asked", "--", "--exact"] },
-]
-images = ["heatmap-front.png", "heatmap-side.png"]

@@ -1,6 +1,10 @@
-//! `fit.reference` and `fit.apply` against the in-memory document and a store: the dry run reports a proposal and stores
-//! heatmaps without changing the document, the apply is one undoable edit that touches only the body's `proportions`
-//! and `shape`, both are repeatable and refuse bad input with typed errors.
+//! `fit.reference` and `fit.apply` against the in-memory document, run the way the executor runs a job: `plan` under
+//! the lock, `work` off it, `finish` under it again. The tests check that both are jobs (no fit in `plan`), that a
+//! dry run fits nothing and nothing writes the asset store, that the fit starts from the stored body (so a second fit
+//! starts where the first ended and an apply never makes the outline cost more), that the apply is one undoable step
+//! touching only `proportions` and `shape` and is refused if the body changed meanwhile, that a cancel stops the
+//! fit, that bad input is refused with typed errors, and that the ops recover the solver's seeded test characters
+//! within the solver's own tolerances.
 
 // Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
 #![allow(clippy::expect_used, clippy::unwrap_used)]
@@ -8,17 +12,25 @@
 mod common;
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
-use common::{assert_error, at, mock_node, refused, round_trip};
-use omuzaki_char::fit::{FitParams, FitView, render_target};
+use common::{assert_error, at, mock_node};
+use omuzaki_char::fit::solver::{FitInput, PARAM_ORDER, Param, iou_of};
+use omuzaki_char::fit::{FitParams, FitView, Target, render_target};
+use omuzaki_core::rng::Rng;
 use omuzaki_core::time::FakeClock;
+use omuzaki_doc_api::{Change, DocPath, DocRead, DocWrite, Patch};
 use omuzaki_doc_mock::MemDoc;
-use omuzaki_ops_api::{Actor, ErrorCode, OpCtx, OpKind, Scope, ServicesBuilder, Undo, find};
+use omuzaki_ops_api::{
+    Actor, Cancel, CancelFlag, ErrorCode, JobCtx, JobDoc, JobId, JobSignal, OpCtx, OpError, OpKind, Plan, Scope,
+    Services, ServicesBuilder, Undo, find,
+};
 use omuzaki_store_api::{ContentHash, Provenance, Store, StoreError};
 use serde_json::{Value, json};
 
-/// The smallest store: bytes by hash.
+/// A store that counts what is put in it: neither op may put anything.
 #[derive(Default)]
 struct MemStore(Mutex<HashMap<ContentHash, (Vec<u8>, Provenance)>>);
 
@@ -44,12 +56,28 @@ const PARAMS: &str = "characters/mock/parts/body/params";
 const ROWS: usize = 48;
 /// Rows of the evidence heatmaps.
 const SHEET_ROWS: usize = 96;
+/// The base64 of the PNG signature's first eight bytes: every heatmap starts with it.
+const PNG_BASE64: &str = "iVBORw0KGgo";
+
+/// The solver's recovery test (`tests/fit.rs`, #1958): its seeded draw, view height, views and tolerances.
+const SEED: u64 = 2;
+const SPREAD: f64 = 0.25;
+const HEIGHT: usize = 256;
+const VIEWS: [FitView; 3] = [FitView::Front, FitView::Side, FitView::Back];
+const TEMPLATES: [&str; 4] = ["soft-sd", "mini", "standard", "tall"];
+
+fn project_on(template: &str, params: Option<&FitParams>) -> MemDoc {
+    let mut node = mock_node();
+    node["template"] = json!(template);
+    node["parts"]["body"]["kind"] = json!("body");
+    if let Some(p) = params {
+        node["parts"]["body"]["params"] = json!({ "proportions": p.proportions, "shape": p.shape });
+    }
+    MemDoc::from_value(json!({ "characters": { "mock": node } }))
+}
 
 fn project() -> MemDoc {
-    let mut node = mock_node();
-    node["template"] = json!("soft-sd");
-    node["parts"]["body"]["kind"] = json!("body");
-    MemDoc::from_value(json!({ "characters": { "mock": node } }))
+    project_on("soft-sd", None)
 }
 
 /// A known body: longer legs, broader shoulders, a broader build.
@@ -61,81 +89,195 @@ fn truth() -> FitParams {
     p
 }
 
-fn mask_rows(view: FitView, rows: usize) -> Vec<String> {
-    let m = render_target("soft-sd", &truth(), &[], view, rows).unwrap();
+fn rows_of(template: &str, truth: &FitParams, view: FitView, rows: usize) -> Vec<String> {
+    let m = render_target(template, truth, &[], view, rows).unwrap();
     m.pixels().chunks(m.width()).map(|r| r.iter().map(|&on| if on { '#' } else { '.' }).collect()).collect()
 }
 
+fn view_name(view: FitView) -> &'static str {
+    match view {
+        FitView::Front => "front",
+        FitView::Side => "side",
+        FitView::Back => "back",
+    }
+}
+
+fn views_of(template: &str, truth: &FitParams, views: &[FitView], rows: usize) -> Value {
+    views.iter().map(|&v| json!({ "view": view_name(v), "rows": rows_of(template, truth, v, rows) })).collect()
+}
+
 fn views() -> Value {
-    views_of(ROWS)
+    views_of("soft-sd", &truth(), &[FitView::Front, FitView::Side], ROWS)
 }
 
-fn views_of(rows: usize) -> Value {
-    json!([{ "view": "front", "rows": mask_rows(FitView::Front, rows) }, { "view": "side", "rows": mask_rows(FitView::Side, rows) }])
+/// The targets the ops see for `views_of(template, truth, views, rows)`, for scoring a body directly.
+fn targets(template: &str, truth: &FitParams, views: &[FitView], rows: usize) -> Vec<Target> {
+    views.iter().map(|&view| Target { view, mask: render_target(template, truth, &[], view, rows).unwrap() }).collect()
 }
 
-/// Plans `op` with `store` as the asset store, as a dry run.
-fn plan_with_store(
-    doc: &MemDoc,
-    store: &Arc<MemStore>,
-    op: &str,
-    args: Value,
-) -> Result<Value, omuzaki_ops_api::OpError> {
+/// The job's view of the test document: read in place (the test holds no lock).
+struct DocJob<'a>(&'a MemDoc);
+
+impl JobDoc for DocJob<'_> {
+    fn read(&self, f: &mut dyn FnMut(&dyn DocRead)) {
+        f(self.0);
+    }
+}
+
+/// A job's signal that keeps the last progress and cancels itself after `cancel_after` progress reports.
+#[derive(Default)]
+struct Signal {
+    cancel: CancelFlag,
+    reports: AtomicUsize,
+    cancel_after: Option<usize>,
+    last: Mutex<Option<(String, f32)>>,
+}
+
+impl JobSignal for Signal {
+    fn progress(&self, stage: &str, fraction: f32) {
+        *self.last.lock().unwrap() = Some((stage.to_owned(), fraction));
+        let n = self.reports.fetch_add(1, Ordering::SeqCst) + 1;
+        if self.cancel_after.is_some_and(|after| n >= after) {
+            self.cancel.cancel();
+        }
+    }
+    fn is_cancelled(&self) -> bool {
+        self.cancel.is_cancelled()
+    }
+    fn cancel_flag(&self) -> CancelFlag {
+        self.cancel.clone()
+    }
+    fn spend(&self, _usd_micros: u64) -> Result<(), OpError> {
+        Ok(())
+    }
+}
+
+fn person() -> Actor {
+    Actor::Person { name: "tester".into() }
+}
+
+fn services(store: &Arc<MemStore>) -> Services {
+    ServicesBuilder::new().insert::<dyn Store>(store.clone()).build()
+}
+
+/// Plans `op` as a dry run with `store` as the asset store: what a dry run of a job is, the plan alone.
+fn dry_run(doc: &MemDoc, store: &Arc<MemStore>, op: &str, args: Value) -> Result<Plan, OpError> {
     omuzaki_char::link();
-    let services = ServicesBuilder::new().insert::<dyn Store>(store.clone()).build();
     let op = (find(op).unwrap().decode)(args)?;
-    let (actor, clock) = (Actor::Person { name: "tester".into() }, FakeClock::default());
-    op.plan(&OpCtx::new(doc, &actor, &clock).with_services(&services).with_dry_run(true)).map(|p| p.output.unwrap())
+    let (actor, clock, services) = (person(), FakeClock::default(), services(store));
+    op.plan(&OpCtx::new(doc, &actor, &clock).with_services(&services).with_dry_run(true))
+}
+
+/// The work of a job planned against `doc`: its result, for the finish.
+fn work(doc: &MemDoc, store: &Arc<MemStore>, op: &str, args: &Value, signal: &Signal) -> Result<Value, OpError> {
+    omuzaki_char::link();
+    let op = (find(op).unwrap().decode)(args.clone())?;
+    let (actor, clock, services) = (person(), FakeClock::default(), services(store));
+    let plan = op.plan(&OpCtx::new(doc, &actor, &clock).with_services(&services))?;
+    assert!(plan.patch.is_empty(), "a job's plan changes nothing");
+    let output = plan.output.expect("the plan hands its choice to the work");
+    let reader = DocJob(doc);
+    let job = JobCtx::new(JobId(1), &actor, &reader, signal).with_services(&services).with_plan_output(&output);
+    op.work(&job)
+}
+
+/// The finish of `op` on `result` against `doc` as it is now.
+fn finish(doc: &MemDoc, store: &Arc<MemStore>, op: &str, args: &Value, result: Value) -> Result<Plan, OpError> {
+    let op = (find(op).unwrap().decode)(args.clone())?;
+    let (actor, clock, services) = (person(), FakeClock::default(), services(store));
+    op.finish(&OpCtx::new(doc, &actor, &clock).with_services(&services), result)
+}
+
+/// Runs `op` as the executor runs a job (plan, work, finish) and returns the finish's plan, unapplied.
+fn run_job(doc: &MemDoc, store: &Arc<MemStore>, op: &str, args: &Value) -> Result<Plan, OpError> {
+    let result = work(doc, store, op, args, &Signal::default())?;
+    finish(doc, store, op, args, result)
+}
+
+fn answer(plan: &Plan) -> &Value {
+    plan.output.as_ref().expect("the finish answers")
 }
 
 #[test]
-fn both_ops_are_registered_with_the_right_kinds() {
+fn both_ops_are_jobs_with_the_right_scopes() {
     omuzaki_char::link();
     let reference = (find("fit.reference").unwrap().meta)();
-    assert_eq!((reference.kind, reference.scope, reference.undo), (OpKind::Query, Scope::Read, Undo::None));
+    assert_eq!((reference.kind, reference.scope, reference.undo), (OpKind::Job, Scope::Read, Undo::Auto));
     let apply = (find("fit.apply").unwrap().meta)();
-    assert_eq!((apply.kind, apply.scope, apply.undo), (OpKind::Edit, Scope::EditCharacter, Undo::Auto));
+    assert_eq!((apply.kind, apply.scope, apply.undo), (OpKind::Job, Scope::EditCharacter, Undo::Auto));
+}
+
+/// The plan runs under the executor's lock, so it must not fit: it names what it would fit and what that costs.
+#[test]
+fn a_dry_run_checks_the_arguments_and_fits_nothing() {
+    let (doc, store) = (project(), Arc::new(MemStore::default()));
+    let before = doc.root().clone();
+    for op in ["fit.reference", "fit.apply"] {
+        let start = Instant::now();
+        let plan = dry_run(&doc, &store, op, json!({ "character": "mock", "views": views() })).unwrap();
+        let took = start.elapsed();
+        assert!(plan.patch.is_empty(), "{op}");
+        let out = plan.output.unwrap();
+        assert_eq!((out["character"].as_str(), out["part"].as_str()), (Some("mock"), Some("body")), "{op}: {out}");
+        assert_eq!(out["views"], json!(["front", "side"]), "{op}");
+        assert!(out.get("iou_after").is_none() && out.get("patch").is_none(), "{op} fitted in its plan: {out}");
+        assert!(plan.cost.and_then(|c| c.seconds).is_some_and(|s| s > 0.0), "{op} gives no time estimate");
+        eprintln!("{op}: plan {took:?}");
+    }
+    assert_eq!(doc.root(), &before);
+    assert!(store.0.lock().unwrap().is_empty(), "a dry run put something in the store");
 }
 
 #[test]
-fn the_dry_run_recovers_the_body_stores_heatmaps_and_changes_nothing() {
+fn fit_reference_proposes_returns_heatmaps_and_changes_nothing_anywhere() {
     let (doc, store) = (project(), Arc::new(MemStore::default()));
     let before = doc.root().clone();
-    let out = plan_with_store(&doc, &store, "fit.reference", json!({ "character": "mock", "views": views() })).unwrap();
+    let plan = run_job(&doc, &store, "fit.reference", &json!({ "character": "mock", "views": views() })).unwrap();
+    assert!(plan.patch.is_empty(), "the query's finish changes nothing");
     assert_eq!(doc.root(), &before);
+    assert!(store.0.lock().unwrap().is_empty(), "fit.reference put something in the store");
+    let out = answer(&plan);
     let (b, a) = (out["iou_before"].as_f64().unwrap(), out["iou_after"].as_f64().unwrap());
     eprintln!("fit.reference: iou {b:.4} -> {a:.4}, patch {}", out["patch"]);
     assert!(a > b && a > 0.9, "{b} -> {a}");
     let per_view = out["per_view"].as_array().unwrap();
     assert_eq!(per_view.len(), 2);
     for v in per_view {
-        let hash: ContentHash = v["heatmap"].as_str().unwrap().parse().unwrap();
-        let png = store.get(&hash).unwrap();
-        assert_eq!(&png[1..4], b"PNG");
+        let png = v["heatmap_png"].as_str().unwrap();
+        assert!(png.starts_with(PNG_BASE64), "{}", &png[..16]);
+        eprintln!("{} heatmap: {} base64 characters", v["view"], png.len());
     }
-    // Repeatable: the same arguments, the same answer and the same stored bytes.
-    let again =
-        plan_with_store(&doc, &store, "fit.reference", json!({ "character": "mock", "views": views() })).unwrap();
-    assert_eq!(out, again);
-    assert_eq!(store.0.lock().unwrap().len(), 2);
+    // Repeatable: the same arguments, the same answer.
+    let again = run_job(&doc, &store, "fit.reference", &json!({ "character": "mock", "views": views() })).unwrap();
+    assert_eq!(out, answer(&again));
 }
 
 #[test]
-fn the_dry_run_needs_the_store() {
-    let doc = project();
-    let e = common::plan(&doc, "fit.reference", json!({ "character": "mock", "views": views() })).unwrap_err();
-    assert_eq!(e.code, ErrorCode::Unavailable);
+fn heatmaps_can_be_left_out() {
+    let (doc, store) = (project(), Arc::new(MemStore::default()));
+    let args = json!({ "character": "mock", "views": views(), "heatmaps": false });
+    let plan = run_job(&doc, &store, "fit.reference", &args).unwrap();
+    assert!(answer(&plan)["per_view"].as_array().unwrap().iter().all(|v| v.get("heatmap_png").is_none()));
 }
 
 #[test]
-fn apply_is_one_undoable_edit_of_only_the_proportions_and_shape() {
+fn apply_is_one_undoable_step_of_only_the_proportions_and_shape() {
+    let store = Arc::new(MemStore::default());
     // The mock body has no params yet, so they are created whole.
     let mut doc = project();
-    let planned = round_trip(&mut doc, "fit.apply", json!({ "character": "mock", "views": views() }));
+    let original = doc.root().clone();
+    let planned = run_job(&doc, &store, "fit.apply", &json!({ "character": "mock", "views": views() })).unwrap();
     assert_eq!(planned.patch.changes.len(), 1);
     assert_eq!(planned.patch.changes[0].path.to_string(), PARAMS);
+    doc.apply(&planned.patch).unwrap();
+    let applied = doc.root().clone();
     let leg = at(&doc, &format!("{PARAMS}/proportions/leg_length")).and_then(|v| v.as_f64()).unwrap();
     assert!(leg > 1.0, "the legs came out {leg}");
+    doc.apply(&planned.patch.inverse()).unwrap();
+    assert_eq!(doc.root(), &original, "undo restores the document exactly");
+    doc.apply(&planned.patch).unwrap();
+    assert_eq!(doc.root(), &applied, "redo gives the same document");
+    assert!(store.0.lock().unwrap().is_empty(), "fit.apply put something in the store");
 
     // With params stored, only `proportions` and `shape` are written, and the rest stays.
     let mut node = mock_node();
@@ -143,30 +285,121 @@ fn apply_is_one_undoable_edit_of_only_the_proportions_and_shape() {
     node["parts"]["body"]["kind"] = json!("body");
     node["parts"]["body"]["params"] = json!({ "hand": { "palm_width": 1.1 } });
     let mut stored = MemDoc::from_value(json!({ "characters": { "mock": node } }));
-    let planned = round_trip(&mut stored, "fit.apply", json!({ "character": "mock", "views": views() }));
+    let planned = run_job(&stored, &store, "fit.apply", &json!({ "character": "mock", "views": views() })).unwrap();
     let paths: Vec<String> = planned.patch.changes.iter().map(|c| c.path.to_string()).collect();
     assert!(paths.iter().all(|p| p.ends_with("params/proportions") || p.ends_with("params/shape")), "{paths:?}");
+    stored.apply(&planned.patch).unwrap();
     assert_eq!(at(&stored, &format!("{PARAMS}/hand/palm_width")), Some(json!(1.1)), "the hands are not touched");
 }
 
 #[test]
-fn apply_writes_what_the_dry_run_proposed() {
-    let (doc, store) = (project(), Arc::new(MemStore::default()));
-    let proposed =
-        plan_with_store(&doc, &store, "fit.reference", json!({ "character": "mock", "views": views() })).unwrap();
+fn apply_writes_what_the_reference_proposed() {
+    let store = Arc::new(MemStore::default());
+    let proposed = run_job(&project(), &store, "fit.reference", &json!({ "character": "mock", "views": views() }))
+        .unwrap()
+        .output
+        .unwrap();
     let mut applied = project();
-    common::apply(&mut applied, "fit.apply", json!({ "character": "mock", "views": views() }));
+    let plan = run_job(&applied, &store, "fit.apply", &json!({ "character": "mock", "views": views() })).unwrap();
+    applied.apply(&plan.patch).unwrap();
     for (group, fields) in proposed["patch"].as_object().unwrap() {
         for (name, value) in fields.as_object().unwrap() {
             assert_eq!(at(&applied, &format!("{PARAMS}/{group}/{name}")).as_ref(), Some(value), "{group}/{name}");
         }
     }
+    assert_eq!(answer(&plan)["iou_after"], proposed["iou_after"]);
+}
+
+/// The fit starts from the stored body: the `IoU` before is the stored body's own, and a second fit after an apply
+/// starts exactly where the first ended and never reports a body worse than that.
+#[test]
+fn a_second_fit_starts_where_the_first_ended() {
+    let store = Arc::new(MemStore::default());
+    let args = json!({ "character": "mock", "views": views() });
+    let mut doc = project();
+    let first = run_job(&doc, &store, "fit.apply", &args).unwrap();
+    doc.apply(&first.patch).unwrap();
+    let second = run_job(&doc, &store, "fit.reference", &args).unwrap();
+    let (first, second) = (answer(&first), answer(&second));
+    eprintln!(
+        "first {} -> {}, second {} -> {}",
+        first["iou_before"], first["iou_after"], second["iou_before"], second["iou_after"]
+    );
+    assert_eq!(second["iou_before"], first["iou_after"], "the second fit's baseline is the applied body");
+    assert!(second["iou_after"].as_f64().unwrap() >= second["iou_before"].as_f64().unwrap());
+    for (v1, v2) in first["per_view"].as_array().unwrap().iter().zip(second["per_view"].as_array().unwrap()) {
+        assert_eq!(v2["iou_before"], v1["iou_after"], "{}", v1["view"]);
+    }
+}
+
+/// A body stored at the very character the reference shows: the baseline is that body's own `IoU`, the fit can only
+/// keep or lower its cost, and the applied body scores at least as well as the stored one did, view by view.
+#[test]
+fn applying_never_makes_a_matching_body_worse() {
+    const SHARP: usize = 112; // enough rows that the true body is close to the best the masks allow
+    let store = Arc::new(MemStore::default());
+    let mut doc = project_on("soft-sd", Some(&truth()));
+    let shown = [FitView::Front, FitView::Side];
+    let tg = targets("soft-sd", &truth(), &shown, SHARP);
+    let own = iou_of(&FitInput { template: "soft-sd", targets: &tg, fixed: &[] }, &truth()).unwrap();
+    let args = json!({ "character": "mock", "views": views_of("soft-sd", &truth(), &shown, SHARP) });
+    let plan = run_job(&doc, &store, "fit.apply", &args).unwrap();
+    let out = answer(&plan);
+    assert!((out["iou_before"].as_f64().unwrap() - own).abs() < 1e-12, "{} against {own}", out["iou_before"]);
+    doc.apply(&plan.patch).unwrap();
+    let params = at(&doc, PARAMS).unwrap();
+    let stored = FitParams {
+        proportions: serde_json::from_value(params["proportions"].clone()).unwrap(),
+        shape: serde_json::from_value(params["shape"].clone()).unwrap(),
+    };
+    let after = iou_of(&FitInput { template: "soft-sd", targets: &tg, fixed: &[] }, &stored).unwrap();
+    eprintln!("a matching body: IoU {own:.4} -> {after:.4}, patch {}", out["patch"]);
+    assert!((after - out["iou_after"].as_f64().unwrap()).abs() < 1e-12, "the applied body is the one reported");
+    assert!(after >= own, "{own} -> {after}");
+    for v in out["per_view"].as_array().unwrap() {
+        assert!(v["iou_after"].as_f64() >= v["iou_before"].as_f64(), "{v}");
+    }
+}
+
+#[test]
+fn a_body_changed_while_the_fit_ran_is_refused() {
+    let store = Arc::new(MemStore::default());
+    let args = json!({ "character": "mock", "views": views() });
+    let mut doc = project();
+    let result = work(&doc, &store, "fit.apply", &args, &Signal::default()).unwrap();
+    // Someone edits the body between the work and the finish.
+    let edit = Patch {
+        changes: vec![Change {
+            path: DocPath::parse(PARAMS).unwrap(),
+            before: None,
+            after: Some(json!({ "proportions": { "leg_length": 0.9 } })),
+        }],
+    };
+    doc.apply(&edit).unwrap();
+    let e = finish(&doc, &store, "fit.apply", &args, result).unwrap_err();
+    assert_eq!(e.code, ErrorCode::Conflict, "{e:?}");
+    assert!(e.message.contains("changed while the fit ran"), "{}", e.message);
+}
+
+#[test]
+fn a_cancel_stops_the_fit_and_progress_is_reported() {
+    let (doc, store) = (project(), Arc::new(MemStore::default()));
+    let args = json!({ "character": "mock", "views": views() });
+    let signal = Signal { cancel_after: Some(5), ..Signal::default() };
+    let e = work(&doc, &store, "fit.reference", &args, &signal).unwrap_err();
+    assert_eq!(e.code, ErrorCode::Cancelled, "{e:?}");
+    assert!(signal.reports.load(Ordering::SeqCst) <= 6, "the fit went on after the cancel");
+
+    let signal = Signal::default();
+    work(&doc, &store, "fit.reference", &args, &signal).unwrap();
+    assert_eq!(*signal.last.lock().unwrap(), Some(("done".to_owned(), 1.0)));
+    assert!(signal.reports.load(Ordering::SeqCst) > 10, "the fit reports its progress");
 }
 
 #[test]
 fn bad_input_is_refused_with_the_field_at_fault() {
-    let doc = project();
-    let ok = mask_rows(FitView::Front, ROWS);
+    let (doc, store) = (project(), Arc::new(MemStore::default()));
+    let ok = rows_of("soft-sd", &truth(), FitView::Front, ROWS);
     let cases = [
         (json!({ "character": "mock", "views": [] }), "views", "0 views"),
         (json!({ "character": "mock", "views": [{ "view": "top", "rows": ok }] }), "views/0/view", "`top`"),
@@ -179,27 +412,125 @@ fn bad_input_is_refused_with_the_field_at_fault() {
             "twice",
         ),
     ];
-    for (args, field, text) in cases {
-        let e = refused(&doc, "fit.apply", args);
-        assert_error(&e, ErrorCode::Invalid, field, &[text], &[]);
+    for op in ["fit.reference", "fit.apply"] {
+        for (args, field, text) in &cases {
+            let e = dry_run(&doc, &store, op, args.clone()).expect_err("refused");
+            assert_error(&e, ErrorCode::Invalid, field, &[text], &[]);
+        }
+        let e = dry_run(&doc, &store, op, json!({ "character": "nobody", "views": views() })).unwrap_err();
+        assert_eq!((e.code, e.field.as_deref()), (ErrorCode::NotFound, Some("character")));
     }
-    let e = refused(&doc, "fit.apply", json!({ "character": "nobody", "views": views() }));
-    assert_eq!((e.code, e.field.as_deref()), (ErrorCode::NotFound, Some("character")));
+    // The fit starts from the stored body, so a stored body the body kind refuses is refused, by its field.
+    let mut bad = project();
+    let set = Patch {
+        changes: vec![Change {
+            path: DocPath::parse(PARAMS).unwrap(),
+            before: None,
+            after: Some(json!({ "proportions": { "leg_length": 5.0 } })),
+        }],
+    };
+    bad.apply(&set).unwrap();
+    let e = dry_run(&bad, &store, "fit.apply", json!({ "character": "mock", "views": views() })).unwrap_err();
+    assert_error(
+        &e,
+        ErrorCode::Invalid,
+        "parts/body/params/proportions/leg_length",
+        &["out of range"],
+        &["part.set_param"],
+    );
 }
 
-/// Writes the front and side heatmaps of a synthetic character, for the evidence sheet (`evidence.toml`, case
-/// `fit-heatmap`): the fit starts from the default body, so the maps show the offset the fit then closes.
+/// The solver's seeded random character (`tests/fit.rs`): every parameter drawn within `SPREAD` of its default.
+fn random_params(seed: u64) -> FitParams {
+    let mut rng = Rng::new(seed);
+    let mut p = FitParams::default();
+    for param in PARAM_ORDER {
+        let (lo, hi) = param.range();
+        let half = (hi - lo) / 2.0 * SPREAD;
+        let v = param.get(&p) + f64::from(rng.range_f32(-1.0, 1.0)) * half;
+        param.set(&mut p, v.clamp(lo, hi));
+    }
+    p
+}
+
+/// `fit.reference`'s proposal applied to the default body.
+fn proposed(out: &Value) -> FitParams {
+    let mut p = FitParams::default();
+    let patch = &out["patch"];
+    for param in PARAM_ORDER {
+        let group = if param.range() == (-1.0, 1.0) { "shape" } else { "proportions" };
+        if let Some(v) = patch[group][param.name()].as_f64() {
+            param.set(&mut p, v);
+        }
+    }
+    p
+}
+
+/// #2158's acceptance: through the op, on the solver's own synthetic silhouettes (#1958's seed, three 256-row views),
+/// the proposal recovers what a silhouette identifies within the solver test's tolerances. All four templates in a
+/// release build; one in a debug build, as the solver's test does (a fit takes minutes there).
+#[test]
+fn fit_reference_recovers_the_solvers_test_character_within_its_tolerances() {
+    let truth = random_params(SEED);
+    let ratio = |p: &FitParams| (p.proportions.leg_length / p.proportions.torso_length).ln();
+    let templates: &[&str] = if cfg!(debug_assertions) { &TEMPLATES[1..2] } else { &TEMPLATES };
+    let store = Arc::new(MemStore::default());
+    for template in templates {
+        let doc = project_on(template, None);
+        let args =
+            json!({ "character": "mock", "views": views_of(template, &truth, &VIEWS, HEIGHT), "heatmaps": false });
+        let start = Instant::now();
+        let plan = run_job(&doc, &store, "fit.reference", &args).unwrap();
+        let took = start.elapsed();
+        let out = answer(&plan);
+        let fitted = proposed(out);
+        let iou = out["iou_after"].as_f64().unwrap();
+        let mut errors = Vec::new();
+        for p in [Param::ShoulderWidth, Param::HipWidth, Param::ArmLength, Param::FootSize, Param::Curves] {
+            let (lo, hi) = p.range();
+            errors.push((p, (p.get(&fitted) - p.get(&truth)).abs() / (hi - lo)));
+        }
+        let share = (ratio(&fitted) - ratio(&truth)).abs();
+        eprintln!(
+            "{template}: {took:?}, IoU {} -> {iou:.4}, errors {errors:?}, leg/torso {share:.4}",
+            out["iou_before"]
+        );
+        assert!(iou >= 0.985, "{template}: IoU {iou}");
+        for (p, err) in errors {
+            assert!(err < 0.03, "{template}: {p:?} off by {err}");
+        }
+        assert!(share < 0.08, "{template}: leg to torso ratio off by {share}");
+    }
+}
+
+/// Decodes base64 (the standard alphabet, padded), for writing the evidence images.
+fn from_base64(text: &str) -> Vec<u8> {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let sextets: Vec<u32> = text
+        .bytes()
+        .filter(|&c| c != b'=')
+        .map(|c| u32::try_from(ALPHABET.iter().position(|&a| a == c).unwrap()).unwrap())
+        .collect();
+    let mut out = Vec::new();
+    for group in sextets.chunks(4) {
+        let n = group.iter().enumerate().fold(0, |n, (i, &s)| n | (s << (18 - 6 * i)));
+        let [_, a, b, c] = n.to_be_bytes();
+        out.extend_from_slice(&[a, b, c][..group.len() - 1]);
+    }
+    out
+}
+
+/// Writes the front and side heatmaps of a synthetic character, for the evidence sheet
+/// (`evidence/fit-reference.toml`): the fit starts from the default body and the maps show what it could not close.
 #[allow(clippy::disallowed_methods)] // a test writing its evidence images, not an op reaching a file
 #[test]
 fn write_the_heatmaps_when_asked() {
     let Ok(dir) = std::env::var("OMUZAKI_FIT_HEATMAP_DIR") else { return };
     let (doc, store) = (project(), Arc::new(MemStore::default()));
-    let out =
-        plan_with_store(&doc, &store, "fit.reference", json!({ "character": "mock", "views": views_of(SHEET_ROWS) }))
-            .unwrap();
-    for v in out["per_view"].as_array().unwrap() {
-        let hash: ContentHash = v["heatmap"].as_str().unwrap().parse().unwrap();
-        std::fs::write(format!("{dir}/heatmap-{}.png", v["view"].as_str().unwrap()), store.get(&hash).unwrap())
-            .unwrap();
+    let views = views_of("soft-sd", &truth(), &[FitView::Front, FitView::Side], SHEET_ROWS);
+    let plan = run_job(&doc, &store, "fit.reference", &json!({ "character": "mock", "views": views })).unwrap();
+    for v in answer(&plan)["per_view"].as_array().unwrap() {
+        let png = from_base64(v["heatmap_png"].as_str().unwrap());
+        std::fs::write(format!("{dir}/heatmap-{}.png", v["view"].as_str().unwrap()), png).unwrap();
     }
 }
