@@ -31,11 +31,13 @@ use omuzaki_stage::UploadOptions;
 use omuzaki_stage::frame::{Stage, StageClock};
 use omuzaki_stage::perform::Tracking;
 use omuzaki_stage::perform::host::{CalibrationState, PerformHost};
+use omuzaki_track_api::error::TrackError;
 use omuzaki_track_api::tracker::{Tracker, TrackerConfig};
 use omuzaki_track_mock::{FakeCamera, FakeTracker};
+use omuzaki_ui::aux_window::Transparency;
 use omuzaki_ui::live::wiring::{
-    FrameReader, LiveFrame, LiveRig, LiveScene, NoCamera, PerformClock, PerformThread, RealClock, THREAD_NAME,
-    live_performer,
+    FrameReader, LiveApp, LiveError, LiveFrame, LiveRig, LiveScene, LoopReport, NoCamera, NoTracker, PerformClock,
+    PerformThread, RealClock, THREAD_NAME, live_performer,
 };
 
 struct Counting;
@@ -413,4 +415,58 @@ fn the_perform_thread_is_named_and_stops_when_dropped() {
     assert_eq!(reader.published(), published, "nothing publishes after the drop joined the thread");
     assert!(host.calibrate(30).is_err(), "the handle sees the performer gone");
     assert_eq!(THREAD_NAME, "omuzaki-perform");
+}
+
+fn request(op: &str, args: Value) -> Request {
+    Request {
+        op: op.to_owned(),
+        args,
+        mode: Mode::Apply,
+        actor: Actor::Person { name: "performer".into() },
+        grants: Grants::person(),
+        cause: None,
+        tx: None,
+        base: None,
+    }
+}
+
+/// What `main.rs` starts: every linked op over the app's runner, the starter expressions on the triggers, a camera
+/// picked on the rig reaching the ops' status, and the quit order.
+#[test]
+fn the_app_starts_the_live_slice_with_its_ops_and_stops_it_in_order() {
+    omuzaki_ui::link();
+    let mut app =
+        LiveApp::start(Box::new(tracker(30.0)), Box::new(RealClock::new()), Transparency::Fallback).expect("it starts");
+    let runner = app.runner();
+    let ops: Vec<String> = runner.ops().into_iter().map(|op| op.name.to_owned()).collect();
+    for op in ["perform.calibrate", "perform.set_retarget", "perform.status", "trigger.bind", "trigger.press"] {
+        assert!(ops.iter().any(|name| name == op), "{op} is linked into the app's runner");
+    }
+    let bind = args(&[("key", Value::from("F1")), ("expression", Value::from("happy"))]);
+    runner.run(request("trigger.bind", bind)).expect("the starter expressions are loaded");
+
+    let rig = app.rig_mut().expect("running");
+    rig.use_camera(&FakeCamera::id()).expect("the fake camera starts");
+    let status = || runner.run(request("perform.status", args(&[]))).expect("status").plan.output.expect("an answer");
+    assert!(eventually(Duration::from_secs(3), || status()["tracking"] == "tracking"), "the camera reaches the ops");
+    assert!(app.reader_mut().expect("running").take_new().is_some(), "the render side gets frames");
+    assert!(!app.output_mut().status().open, "the output window starts closed");
+
+    let report = app.shutdown().expect("a clean shutdown");
+    assert!(report.published > 0);
+    assert!(app.rig_mut().is_none() && app.reader_mut().is_none(), "the threads are gone");
+    assert_eq!(app.shutdown().expect("again"), LoopReport::default(), "a second shutdown does nothing");
+    let refused = runner.run(request("trigger.press", args(&[("key", Value::from("F1"))])));
+    assert!(refused.is_err(), "the stopped performer refuses requests instead of hanging");
+}
+
+#[test]
+fn without_a_webcam_tracker_the_app_lists_no_cameras_and_says_so_on_a_pick() {
+    let mut app =
+        LiveApp::start(Box::new(NoTracker), Box::new(RealClock::new()), Transparency::Fallback).expect("it starts");
+    let rig = app.rig_mut().expect("running");
+    assert_eq!(rig.cameras(), Vec::new());
+    let picked = rig.use_camera(&FakeCamera::id());
+    assert!(matches!(picked, Err(LiveError::Track(TrackError::NoDevice(_)))), "{picked:?}");
+    assert_eq!(rig.camera(), None);
 }

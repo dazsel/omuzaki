@@ -32,6 +32,7 @@ omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-doc-api = { path = "../omuzaki-doc-api" }
 omuzaki-face-api = { path = "../omuzaki-face-api" }
 omuzaki-l10n-api = { path = "../omuzaki-l10n-api" }
+omuzaki-ops = { path = "../omuzaki-ops" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-render-api = { path = "../omuzaki-render-api" }
 omuzaki-stage = { path = "../omuzaki-stage" }
@@ -50,7 +51,6 @@ omuzaki-anim-mock = { path = "../omuzaki-anim-mock" }
 omuzaki-char-api = { path = "../omuzaki-char-api" }
 omuzaki-char-mock = { path = "../omuzaki-char-mock" }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
-omuzaki-ops = { path = "../omuzaki-ops" }
 omuzaki-render-mock = { path = "../omuzaki-render-mock" }
 omuzaki-track-mock = { path = "../omuzaki-track-mock" }
 

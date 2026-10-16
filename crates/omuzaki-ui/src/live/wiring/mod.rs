@@ -36,12 +36,14 @@
 //! performer's `STALE_SOURCE_S` it reports the face lost and the life layer takes the face over, with no jump. Retry
 //! is `use_camera` again.
 
+pub mod app;
 pub mod clock;
 pub mod mailbox;
 pub mod rig;
 pub mod scene;
 pub mod thread;
 
+pub use app::{LiveApp, NoTracker, StartError};
 pub use clock::{PerformClock, RealClock};
 pub use mailbox::{FrameReader, FrameWriter, LiveFrame, frame_mailbox};
 pub use rig::{LIFE_SEED, LiveError, LiveRig, NoCamera, live_performer};
