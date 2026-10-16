@@ -8,7 +8,7 @@
 mod common;
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, ThreadId};
 use std::time::{Duration, Instant};
 
@@ -81,6 +81,24 @@ struct Extras {
     /// Resetting a session panics when a slot session's loader thread does it.
     #[serde(default)]
     panic_reset_in_loader: bool,
+    /// A slot session's loader thread waits in this model's load until `release_loader` is called, so a test controls
+    /// when it finishes instead of relying on a delay.
+    #[serde(default)]
+    hold_in_loader: bool,
+}
+
+/// Whether `release_loader` has been called; only the test that uses `hold_in_loader` calls it.
+static LOADER_RELEASED: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
+
+fn release_loader() {
+    *LOADER_RELEASED.0.lock().unwrap() = true;
+    LOADER_RELEASED.1.notify_all();
+}
+
+/// Blocks the loader thread until `release_loader`, or for `PATIENCE` so a failed test cannot hang the run.
+fn hold_loader() {
+    let released = LOADER_RELEASED.0.lock().unwrap();
+    let _ = LOADER_RELEASED.1.wait_timeout_while(released, PATIENCE, |released| !*released).unwrap();
 }
 
 fn in_loader() -> bool {
@@ -145,6 +163,9 @@ impl Runtime for ProbeRuntime {
         log_of(source.model).lock().unwrap().push(Event::Loading);
         assert!(!(extras.panic_in_loader && in_loader()), "this model's load was set to panic");
         std::thread::sleep(Duration::from_millis(extras.load_ms));
+        if extras.hold_in_loader && in_loader() {
+            hold_loader();
+        }
         if extras.fail_load_after.is_some_and(|n| count(source.model, &Event::Loaded) >= n) {
             return Err(LoadError::Format("this model's load was set to fail".into()));
         }
@@ -510,8 +531,11 @@ fn removing_the_only_model_retires_the_session_and_answers_unavailable() {
 
 #[test]
 fn a_fallback_that_is_still_loading_is_not_reported_as_active() {
-    // Selected v2 crashes; the shipped default v1 takes 300 ms to load.
-    let rig = Rig::new(&[("1.0.0", model_file("slots-1", 300, None)), ("2.0.0", model_file("slots-2", 0, Some(3)))]);
+    // Selected v2 crashes; the shipped default v1 stays in its load, on the loader thread, until the test releases it.
+    let rig = Rig::new(&[
+        ("1.0.0", model_file_with("slots-1", 0, "hold_in_loader = true\n")),
+        ("2.0.0", model_file("slots-2", 0, Some(3))),
+    ]);
     let registry = rig.open();
     let models = install(&registry, &["2.0.0", "1.0.0"]);
     let (v2, v1) = (models[0].clone(), models[1].clone());
@@ -532,6 +556,7 @@ fn a_fallback_that_is_still_loading_is_not_reported_as_active() {
     let meanwhile = status(&registry);
     assert_eq!(meanwhile.active, None, "v1 is still loading: {meanwhile:?}");
     assert!(meanwhile.fallback.unwrap().contains("crashed"));
+    release_loader();
     settle(&mut *session, &mut out);
     wait_for("slots to show v1", || status(&registry).active == Some(v1.clone()));
 }
