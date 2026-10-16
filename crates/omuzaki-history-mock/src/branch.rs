@@ -1399,18 +1399,18 @@ mod tests {
         sessions
     }
 
-    fn denied<T>(result: Result<T, BranchError>) -> bool {
+    fn denied<T>(result: &Result<T, BranchError>) -> bool {
         matches!(result, Err(BranchError::Denied(_)))
     }
 
     /// A document whose `merges` entity names these points of other branches (design 7.3).
-    fn merged_doc(v: u64, merged: &[(&BranchId, u64, PointId)]) -> Value {
-        let mut merges = serde_json::Map::new();
-        merges.insert("format".to_owned(), json!(1));
-        for (branch, seq, point) in merged {
-            merges.insert(branch.to_string(), json!({"name": "merged", "seq": seq, "point": point.to_string()}));
+    fn merged_doc(v: u64, records: &[(&BranchId, u64, PointId)]) -> Value {
+        let mut entity = serde_json::Map::new();
+        entity.insert("format".to_owned(), json!(1));
+        for (branch, seq, point) in records {
+            entity.insert(branch.to_string(), json!({"name": "merged", "seq": seq, "point": point.to_string()}));
         }
-        json!({"v": v, "merges": merges})
+        json!({"v": v, "merges": entity})
     }
 
     /// Every version a branch or a point names is a real point of that branch, numbered as the version says.
@@ -1621,32 +1621,32 @@ mod tests {
 
         // What it may not do.
         assert!(
-            denied(fake.checkpoint(&theirs.id, "ready", Some(String::new()), &agent())),
+            denied(&fake.checkpoint(&theirs.id, "ready", Some(String::new()), &agent())),
             "review on another branch"
         );
-        assert!(denied(fake.switch(&mine.id, &agent())));
+        assert!(denied(&fake.switch(&mine.id, &agent())));
         assert_eq!(fake.folder(), BranchId::main());
-        assert!(denied(fake.review(&mine.id, ReviewDecision::MarkMerged, &agent())));
-        assert!(denied(fake.review(&mine.id, ReviewDecision::send_back("no"), &agent())));
+        assert!(denied(&fake.review(&mine.id, ReviewDecision::MarkMerged, &agent())));
+        assert!(denied(&fake.review(&mine.id, ReviewDecision::send_back("no"), &agent())));
         let waiting = fake.store().get(&mine.id).and_then(|b| b.review).map(|r| r.state);
         assert_eq!(waiting, Some(ReviewState::Ready), "the person still decides");
         for branch in [&theirs.id, &other.id] {
-            assert!(denied(fake.rename(branch, name("taken-over")?, None, &agent())));
-            assert!(denied(fake.delete(branch, &agent())));
+            assert!(denied(&fake.rename(branch, name("taken-over")?, None, &agent())));
+            assert!(denied(&fake.delete(branch, &agent())));
         }
         fake.delete(&theirs.id, &person())?;
-        assert!(denied(fake.undelete(&theirs.id, &agent())));
+        assert!(denied(&fake.undelete(&theirs.id, &agent())));
         let for_another = NewBranch::new(name("z")?, BranchId::main()).for_session(SessionId(99));
-        assert!(denied(fake.create(for_another, &agent())));
+        assert!(denied(&fake.create(for_another, &agent())));
         let plugin = Actor::Plugin { id: "grain".to_owned() };
-        assert!(denied(fake.switch(&mine.id, &plugin)));
-        assert!(denied(fake.review(&mine.id, ReviewDecision::MarkMerged, &plugin)));
+        assert!(denied(&fake.switch(&mine.id, &plugin)));
+        assert!(denied(&fake.review(&mine.id, ReviewDecision::MarkMerged, &plugin)));
 
         // A person does all of it; an agent whose session ended owns nothing.
         fake.rename(&other.id, name("other2")?, None, &person())?;
         fake.review(&mine.id, ReviewDecision::MarkMerged, &person())?;
         sessions.end(12);
-        assert!(denied(fake.rename(&mine.id, name("mine3")?, None, &agent())));
+        assert!(denied(&fake.rename(&mine.id, name("mine3")?, None, &agent())));
         Ok(())
     }
 
