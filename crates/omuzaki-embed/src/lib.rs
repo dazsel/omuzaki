@@ -282,10 +282,27 @@ mod tests {
     fn dotfiles_are_skipped_and_odd_characters_are_escaped() {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), ".gitkeep", "");
-        write(dir.path(), "q\"uote.toml", "x");
+        // Valid file names on every OS, so this runs on Windows too: a quote-like apostrophe, braces and a non-ASCII
+        // letter must come out as a valid Rust string literal.
+        write(dir.path(), "it's {x} é.toml", "x");
         let t = table(dir.path()).unwrap();
         assert!(!t.source.contains("gitkeep"));
+        assert!(t.source.contains(r#"("it's {x} é.toml", include_str!("#), "{}", t.source);
+    }
+
+    /// Windows forbids `"`, `\` and control characters in a file name, so those can only be tested where they can
+    /// exist. (A name Windows forbids cannot be on disk, so the escaping never meets one there.)
+    #[cfg(unix)]
+    #[test]
+    fn quotes_backslashes_and_newlines_in_a_unix_file_name_are_escaped() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "q\"uote.toml", "x");
+        write(dir.path(), "back\\slash.toml", "x");
+        write(dir.path(), "new\nline.toml", "x");
+        let t = table(dir.path()).unwrap();
         assert!(t.source.contains(r#"("q\"uote.toml", include_str!("#), "{}", t.source);
+        assert!(t.source.contains(r#"("back\\slash.toml", include_str!("#), "{}", t.source);
+        assert!(t.source.contains(r#"("new\nline.toml", include_str!("#), "{}", t.source);
     }
 
     #[test]

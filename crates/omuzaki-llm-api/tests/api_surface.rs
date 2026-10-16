@@ -32,7 +32,8 @@ fn surface() -> String {
     sources(&root.join("src"), &mut files);
     let mut text = String::new();
     for file in files {
-        let rel = file.strip_prefix(root).unwrap().display().to_string();
+        // `/` on every platform, so the snapshot is the same on Windows (`display()` would give a backslash there).
+        let rel = file.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/");
         let source = std::fs::read_to_string(&file).unwrap();
         // Items inside `#[cfg(test)] mod tests` are not public API.
         let body = source.split("#[cfg(test)]").next().unwrap_or("");
@@ -56,6 +57,7 @@ fn the_public_surface_matches_the_snapshot() {
         std::fs::write(&snapshot, &now).unwrap();
         return;
     }
-    let before = std::fs::read_to_string(&snapshot).unwrap_or_default();
+    // Git is told to check text out with LF (`.gitattributes`); the replace keeps a CRLF checkout from failing here.
+    let before = std::fs::read_to_string(&snapshot).unwrap_or_default().replace("\r\n", "\n");
     assert!(before == now, "the public API changed: review the diff, then regenerate with UPDATE_API_SURFACE=1");
 }

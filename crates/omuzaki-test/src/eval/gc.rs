@@ -199,10 +199,10 @@ pub fn open_issue_bodies(root: &Path) -> Result<Vec<String>, GcError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::eval::clock::utc_minute;
+    use crate::eval::clock::run_stamp;
 
     fn days_ago(now: SystemTime, days: u64) -> String {
-        format!("{}-nightly", utc_minute(now - Duration::from_secs(days * SECS_PER_DAY)))
+        format!("{}-nightly", run_stamp(now - Duration::from_secs(days * SECS_PER_DAY)))
     }
 
     fn make_run(out: &Path, run: &str) {
