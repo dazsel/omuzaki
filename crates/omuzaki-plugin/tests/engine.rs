@@ -486,3 +486,43 @@ fn a_returning_import_takes_one_host_call_token() {
     let mut plugin = start(&engine, &bytes, log("lister", clock)).unwrap_or_else(|e| panic!("{e:?}"));
     assert_eq!(plugin.init("{}"), Ok(()), "{calls} calls inside the burst of {HOST_CALL_BURST}");
 }
+
+/// A bridge whose op list takes longer than `init`'s deadline.
+struct SlowList;
+
+impl omuzaki_plugin::bridge::OpBridge for SlowList {
+    fn call(&self, op: &str, _: &str) -> Result<String, omuzaki_ops_api::OpError> {
+        Err(omuzaki_ops_api::OpError::not_found(format!("no op `{op}`")))
+    }
+
+    fn plan(&self, op: &str, args: &str) -> Result<String, omuzaki_ops_api::OpError> {
+        self.call(op, args)
+    }
+
+    fn describe(&self, _: &str) -> Option<String> {
+        None
+    }
+
+    fn list(&self) -> Vec<String> {
+        std::thread::sleep(Duration::from_millis(CallKind::Init.budget().deadline_ms + 200));
+        Vec::new()
+    }
+}
+
+#[test]
+fn an_import_whose_work_passes_the_deadline_faults_before_its_result_reaches_the_guest() {
+    let (engine, clock) = engine();
+    let list = Lowered {
+        alias: r#"(alias export $ops "list" (func $list'))"#.into(),
+        name: "list".into(),
+        core_import: r#"(import "env" "list" (func $list (param i32)))"#.into(),
+    };
+    let imports = format!("{HOST_IMPORT}{WORLD_IMPORTS}");
+    let bytes = component(&imports, &[list], &init_doing("(call $list (i32.const 32))"), 1);
+    let compiled = load::compile(&engine, &bytes).unwrap();
+    let mut setup = setup(log("slow", clock), 1);
+    setup.bridge = Arc::new(SlowList);
+    let mut plugin = omuzaki_plugin::LoadedPlugin::start(&engine, &compiled, setup).unwrap_or_else(|e| panic!("{e:?}"));
+    let fault = plugin.init("{}").unwrap_err();
+    assert_eq!((fault.kind, fault.detail.as_str()), (FaultKind::Timeout, "deadline in init"));
+}
