@@ -336,9 +336,11 @@ fn a_hanging_lock_ends_where_the_formulas_put_it() {
     let (wv, wa) = wave_args(u0, u1);
     let g = swaying(HairSide::Right, 1, true);
     let tip = compile_with(&g, &mut Script::new(&[u0, u1])).clumps[0].rest[HANGING_POINTS - 1];
-    // t = 1: x = x0 + 0.03 + sin(tau 2 + wv) wa, z = 0.085 + 0.008 cos(tau 2 + wv), y = end[0]; x0 = 0.192 + 0.008.
+    // t = 1: x = x0 + 0.03 + sin(tau 2 + wv) wa, z = 0.085 + 0.008 cos(tau 2 + wv), y = end[0]; x0 = (the outline's last x) + 0.008.
     let arg = std::f64::consts::TAU * 2.0 + wv;
-    let want = Vec3::new(-(0.2 + 0.03 + arg.sin() * wa) as f32, 1.6 - 0.4, (0.085 + 0.008 * arg.cos()) as f32);
+    let edge_end = g.edge.last().unwrap()[1];
+    let want =
+        Vec3::new(-(edge_end + 0.008 + 0.03 + arg.sin() * wa) as f32, 1.6 - 0.4, (0.085 + 0.008 * arg.cos()) as f32);
     assert!(tip.distance(want) < 1e-4, "{tip} vs {want}");
     // The depth swing is the fixed 8 mm: another amplitude moves x but not z.
     let flat = FramingGen { wave: Wave { amplitude: 0.0, ..g.wave }, ..g.clone() };

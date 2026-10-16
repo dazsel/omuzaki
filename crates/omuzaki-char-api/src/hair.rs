@@ -461,6 +461,12 @@ pub struct FramingGen {
     pub edge: Vec<[f64; 2]>,
     /// Free points continuing after the outline: behind the ear, or hanging in front of the shoulder.
     pub tail: Vec<GuidePoint>,
+    /// The head half-width (across, metres) that `edge` and `spread` were drawn for. When set, and the lock heights are
+    /// not given, both scale with the head the hair is built on (by its half-width over this), so the outline frames
+    /// a small head and a large one alike. `None` takes them as metres. The default is set; a file without the field
+    /// keeps `None`, so its meaning does not change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outline_radius: Option<f64>,
     /// Sway added along the tail.
     pub wave: Wave,
     /// Clump width.
@@ -473,14 +479,24 @@ pub struct FramingGen {
     pub locks: Option<FramingLocks>,
 }
 
+/// The head half-width the default framing outline was drawn for, metres.
+pub const DEFAULT_OUTLINE_RADIUS: f64 = 0.19;
+
 impl Default for FramingGen {
     fn default() -> Self {
         Self {
             side: HairSide::Both,
             count: 3,
             spread: 0.024,
-            edge: vec![[0.12, 0.012], [0.0, 0.08], [-0.058, 0.136], [-0.12, 0.17], [-0.2, 0.192]],
-            tail: vec![GuidePoint::Head([0.2, -0.18, 0.04]), GuidePoint::Head([0.22, -0.3, 0.02])],
+            // Down the temple and cheek in front of the ear, then (the tail) round the jaw to under the chin: every point is
+            // on the head or anchored to its surface, so the locks frame the face on any head.
+            edge: vec![[0.12, 0.012], [0.0, 0.08], [-0.058, 0.12], [-0.10, 0.14]],
+            tail: vec![
+                GuidePoint::Surface([136.0, 56.0, 0.034]),
+                GuidePoint::Surface([150.0, 44.0, 0.04]),
+                GuidePoint::Surface([160.0, 36.0, 0.05]),
+            ],
+            outline_radius: Some(DEFAULT_OUTLINE_RADIUS),
             wave: Wave::default(),
             width: Taper::new(0.03, 0.05, 0.006),
             thickness: Bulge { base: 0.006, swell: 0.004 },
@@ -1379,6 +1395,9 @@ impl Validate for HairGroup {
                 count("generator/count", c, u32::from(g.count), 1, 12);
                 if g.edge.len() < 2 {
                     c.fail("generator/edge", "needs at least two [y, x] points");
+                }
+                if let Some(r) = g.outline_radius {
+                    c.range("generator/outline_radius", r, 0.01, 1.0);
                 }
                 if let Some(locks) = &g.locks {
                     c.nested("generator/locks", locks);
