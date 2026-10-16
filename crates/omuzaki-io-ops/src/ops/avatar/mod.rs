@@ -207,6 +207,7 @@ pub(crate) fn prepare_imported(
         strict: options.strict,
         importer: &format,
         report: &report,
+        suggestion: summary.id_suggestion.as_str(),
     })?;
     Ok(Prepared { avatar, def, scene: outcome.scene, report, summary, confirm, provenance, format })
 }

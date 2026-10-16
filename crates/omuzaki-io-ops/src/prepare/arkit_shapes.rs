@@ -280,29 +280,24 @@ pub fn worth_generating(outcome: &ChannelOutcome) -> bool {
 
 /// Makes the named `ARKit` channels from geometry (see the module docs) and returns one outcome per channel, in the
 /// order given: [`Synthesis::Generated`] for each one made, [`Synthesis::Missing`] for one the model has nothing to make
-/// it from. An expression of a generated channel's name is replaced: callers pass the channels synthesis built from a
-/// symmetric preset or could not build, never one the file has. A scene without a blink that moves two eyes is left
-/// alone.
+/// it from. A name that is not one of [`ARKIT_52`](omuzaki_io_api::ARKIT_52) gets no outcome. An expression of a
+/// generated channel's name is replaced: callers pass the channels synthesis built from a symmetric source or could not
+/// build, never one the file has. A scene without a blink that moves two eyes is left alone.
 pub fn generate(scene: &mut IoScene, channels: &[&str]) -> Vec<ChannelOutcome> {
     let marks = landmarks(scene);
     let mut outcomes = Vec::with_capacity(channels.len());
-    for &channel in channels {
+    // A name outside the `ARKit` table is no channel: it gets no outcome (the outcome holds the table's own name).
+    for channel in channels.iter().filter_map(|c| omuzaki_io_api::ARKIT_52.iter().copied().find(|a| a == c)) {
         let shape = marks.as_ref().and_then(|m| make(scene, m, channel));
         let how = match (shape, &marks) {
-            (Some(shape), Some(m)) if !shape.deltas.is_zero() => {
-                add_shape(scene, m.mesh, channel, &shape.deltas);
+            (Some(shape), Some(m)) if !shape.deltas.is_zero() && add_shape(scene, m.mesh, channel, &shape.deltas) => {
                 Synthesis::Generated { source: shape.source }
             }
             _ => Synthesis::Missing,
         };
-        outcomes.push(ChannelOutcome { channel: arkit_name(channel), how });
+        outcomes.push(ChannelOutcome { channel, how });
     }
     outcomes
-}
-
-/// The `ARKit` table's own `&'static str` for `channel` (the outcome type holds one).
-fn arkit_name(channel: &str) -> &'static str {
-    omuzaki_io_api::ARKIT_52.iter().copied().find(|c| *c == channel).unwrap_or("")
 }
 
 /// The shape of one channel, or `None` when the model has nothing to make it from.
@@ -532,9 +527,11 @@ fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
 
 /// Adds `deltas` to mesh `mesh` as a new morph target named `channel` (on every primitive that has targets or that
 /// it moves, padding the others' lists so all have the same count), and the expression `channel` binding it at weight
-/// 1 on every node that draws the mesh.
-fn add_shape(scene: &mut IoScene, mesh: usize, channel: &str, deltas: &Deltas) {
+/// 1 on every node that draws the mesh. Returns false, adding nothing, when the mesh already has as many targets as a
+/// bind can index.
+fn add_shape(scene: &mut IoScene, mesh: usize, channel: &str, deltas: &Deltas) -> bool {
     let index = scene.meshes[mesh].morph_target_count();
+    let (Ok(bind_index), Ok(name)) = (u32::try_from(index), ExpressionName::parse(channel)) else { return false };
     let named = !scene.meshes[mesh].morph_target_names.is_empty() || index == 0;
     let source = &mut scene.meshes[mesh];
     for (p, primitive) in source.primitives.iter_mut().enumerate() {
@@ -555,7 +552,6 @@ fn add_shape(scene: &mut IoScene, mesh: usize, channel: &str, deltas: &Deltas) {
     if named {
         source.morph_target_names.push(channel.to_owned());
     }
-    let Ok(index) = u32::try_from(index) else { return };
     let nodes: Vec<NodeIx> = scene
         .nodes
         .iter()
@@ -564,10 +560,10 @@ fn add_shape(scene: &mut IoScene, mesh: usize, channel: &str, deltas: &Deltas) {
         .filter_map(|(i, _)| u32::try_from(i).ok().map(NodeIx))
         .collect();
     let mut expression = Expression::new();
-    expression.morph_binds = nodes.into_iter().map(|node| MorphBind { node, index, weight: 1.0 }).collect();
-    if let (Some(avatar), Ok(name)) = (scene.avatar.as_mut(), ExpressionName::parse(channel)) {
-        avatar.expressions.insert(name, expression);
-    }
+    expression.morph_binds = nodes.into_iter().map(|node| MorphBind { node, index: bind_index, weight: 1.0 }).collect();
+    // `landmarks` found the face through the avatar's own blink, so the scene has an avatar.
+    scene.avatar.get_or_insert_with(omuzaki_io_api::Avatar::new).expressions.insert(name, expression);
+    true
 }
 
 #[cfg(test)]

@@ -124,6 +124,10 @@ pub struct Import {
     /// (or people it licenses separately). Only a person can give it.
     #[serde(default)]
     pub acknowledge: bool,
+    /// Treat warnings as errors, as `io.inspect` with `strict` does; an avatar import must use the setting it was
+    /// inspected with, since the confirm token covers it.
+    #[serde(default)]
+    pub strict: bool,
 }
 
 /// What the document keeps about one imported original.
@@ -288,6 +292,11 @@ impl Import {
         })?;
         find_importer(best.format)
             .ok_or_else(|| OpError::internal(format!("importer {} vanished after sniffing", best.format)))
+    }
+
+    /// The import options this request asks for.
+    pub(crate) fn options(&self) -> ImportOptions {
+        if self.strict { ImportOptions::default().strict() } else { ImportOptions::default() }
     }
 
     /// The argument the bytes came from, which errors about the file blame.
@@ -707,7 +716,7 @@ impl Op for Import {
             return avatar::work(self, job).map_err(|e| if job.is_cancelled() { OpError::cancelled(job.id()) } else { e });
         }
         let store = job.service::<dyn Store>()?;
-        let options = ImportOptions::default();
+        let options = self.options();
         let outcome = job.checkpoint("reading", 0.0).and_then(|()| {
             let max_bytes = options.limits.max_input_bytes;
             let (bytes, main) = self.read_source(job, max_bytes)?;

@@ -119,3 +119,42 @@ fn a_body_built_from_parts_is_not_gathered_here() {
     let error = gather_imported(&body.view(), &def(), &|_| None).unwrap_err();
     assert!(matches!(error, omuzaki_io_api::IoError::Unsupported { .. }));
 }
+
+#[test]
+fn a_scaled_rigid_mesh_and_a_mesh_drawn_with_and_without_a_skin_export_where_the_file_had_them() {
+    use omuzaki_core::glam::{Quat, Vec2, Vec3};
+    use omuzaki_io_api::{MaterialIx, Mesh, MeshData, Node, Primitive};
+    let mut f = humanoid(0.0);
+    f.scene.add_material(off_grid());
+    // A rigid ribbon on a scaled, turned node under the head.
+    let data = MeshData {
+        positions: vec![Vec3::ZERO, Vec3::X * 0.02, Vec3::Y * 0.02],
+        normals: vec![Vec3::Z; 3],
+        uvs: vec![Vec2::ZERO; 3],
+        indices: vec![0, 1, 2],
+        ..MeshData::default()
+    };
+    let mut primitive = Primitive::new(data);
+    primitive.material = Some(MaterialIx(0));
+    let mut mesh = Mesh::new("Ribbon");
+    mesh.primitives = vec![primitive];
+    let mesh = f.scene.add_mesh(mesh);
+    let mut ribbon = Node::new("Ribbon").at(Vec3::Y * 0.1);
+    ribbon.mesh = Some(mesh);
+    ribbon.transform.scale = Vec3::splat(2.0);
+    ribbon.transform.rotation = Quat::from_rotation_y(0.3);
+    let ribbon = f.scene.add_node(ribbon);
+    f.scene.attach(f.node("head"), ribbon);
+    // A skinned body mesh, also drawn rigidly by a second node under the hips.
+    let body = add_skinned_mesh(&mut f, "Body", &["hips", "spine", "head"], 0, Some(0));
+    let mut copy = Node::new("BodyCopy").at(Vec3::X * 0.5);
+    copy.mesh = f.scene.nodes[body.index()].mesh;
+    let copy = f.scene.add_node(copy);
+    f.scene.attach(f.node("hips"), copy);
+    let original = through_vrm(&f.scene);
+    let (_, again) = round_trip(&original, &def());
+    let error = common::max_error(&common::file_skinning(&again), &common::file_skinning(&original));
+    assert!(error < 1e-5, "everything sits where the file had it: {error}");
+    let skinned = again.nodes.iter().find(|n| n.name == "Body").and_then(|n| n.mesh).unwrap();
+    assert!(!again.meshes[skinned.index()].primitives[0].mesh.joints.is_empty(), "the skinned use keeps its skin");
+}

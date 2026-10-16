@@ -15,8 +15,8 @@ use omuzaki_avatar_api::gaze::AvatarGaze;
 use omuzaki_core::glam::{Quat, Vec2, Vec3, Vec4};
 use omuzaki_io_api::{
     AimAxis, Collider, ColliderGroup, ColliderShape, ColorBind, ColorBindKind, ConstraintKind, Expression,
-    ExpressionName, JointLimit, LookAt, LookAtKind, MaterialIx, Node, NodeConstraint, RangeMap, Report, RollAxis,
-    SpringChain, SpringJoint, UvBind,
+    ExpressionName, JointLimit, LookAt, LookAtKind, Material, MaterialIx, Node, NodeConstraint, Pbr, RangeMap, Report,
+    RollAxis, Shading, SpringChain, SpringJoint, UvBind,
 };
 use omuzaki_io_ops::prepare::avatar::to_avatar;
 use omuzaki_render_api::MtoonSupport;
@@ -77,16 +77,23 @@ fn every_bind_of_a_generated_vrm_reaches_its_expression() {
 }
 
 #[test]
-fn a_bind_naming_nothing_is_reported_and_left_out() {
+fn a_bind_naming_a_colour_the_material_lacks_is_reported_and_left_out() {
     let mut f = face(true, 1, &[]);
     let face = f.node("Face");
-    let mut e = Expression::morph(face, 9);
-    e.color_binds = vec![ColorBind { material: MaterialIx(0), kind: ColorBindKind::Color, target: Vec4::ONE }];
+    // A valid file can still bind a colour its material does not have: a shade colour on a PBR material.
+    let pbr =
+        Material::new("Plain", Shading::Pbr(Pbr { metallic: 0.0, roughness: 1.0, metallic_roughness_texture: None }));
+    let pbr = f.scene.add_material(pbr);
+    let mut e = Expression::morph(face, 0);
+    e.color_binds = vec![
+        ColorBind { material: MaterialIx(0), kind: ColorBindKind::Color, target: Vec4::ONE },
+        ColorBind { material: pbr, kind: ColorBindKind::ShadeColor, target: Vec4::ONE },
+    ];
     f.scene.avatar.as_mut().unwrap().expressions.insert(name("Broken"), e);
     let (a, report) = import(&f);
     assert!(report.has_rule("avatar.bind_dropped"), "{report:?}");
     let broken = &a.expressions[a.expression(&name("Broken")).unwrap().index()];
-    assert!(broken.morph.is_empty() && broken.colour.len() == 1);
+    assert_eq!((broken.morph.len(), broken.colour.len()), (1, 1), "only the shade colour is left out");
 }
 
 #[test]

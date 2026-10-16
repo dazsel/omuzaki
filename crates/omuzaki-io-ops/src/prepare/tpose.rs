@@ -92,7 +92,7 @@ pub fn normalise_rest(scene: &mut IoScene) -> RestReport {
         check_thumb(scene, side, &humanoid, &mut report);
     }
     let bind = match (original, skeleton::build(scene)) {
-        (Some(before), Ok(after)) if !corrections.is_empty() => authored_pose(&before, &after),
+        (Some(before), Ok(after)) if !corrections.is_empty() => authored_pose(&before, &after, &mut report),
         _ => HumanoidPose::REST,
     };
     RestReport { bind, report }
@@ -151,13 +151,14 @@ fn check_thumb(scene: &IoScene, side: &str, humanoid: &omuzaki_io_api::Humanoid,
 
 /// The authored rest as a pose of the corrected skeleton: `before` is the skeleton as the file rested, `after` the
 /// same bones in T. Both are built from the same nodes, so their bone ids match.
-fn authored_pose(before: &skeleton::Rig, after: &skeleton::Rig) -> HumanoidPose {
+fn authored_pose(before: &skeleton::Rig, after: &skeleton::Rig, report: &mut Report) -> HumanoidPose {
     let rest: Vec<Transform> = after.skeleton.bones().iter().map(|b| b.rest).collect();
     let mut bind = HumanoidPose::REST;
     let frames = HumanoidFrames::new(&after.skeleton);
-    if frames.to_humanoid(&rest, &before.skeleton.rest_pose(), &mut bind).is_err() {
-        debug_assert!(false, "both skeletons are built from the same nodes, so their lengths match");
-        return HumanoidPose::REST;
+    if let Err(e) = frames.to_humanoid(&rest, &before.skeleton.rest_pose(), &mut bind) {
+        // Both skeletons come from the same nodes, so their lengths match; if they ever did not, the import must stop.
+        let msg = format!("the authored rest could not be read back as a pose: {e}");
+        report.push(Finding::error("avatar.rest_unread", msg).at("avatar/rest"));
     }
     bind
 }

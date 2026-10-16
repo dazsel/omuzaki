@@ -228,6 +228,7 @@ fn the_token_is_stable_and_changes_with_any_option_dependency_or_byte() {
             strict: false,
             importer: "glb",
             report: &report,
+            suggestion: "avatar",
         })
         .unwrap()
     };
@@ -461,4 +462,42 @@ fn evidence_report() {
         println!("{wanted:?}: {} findings\n{}", rows.len(), rows.join("\n"));
     }
     println!("summary: {}", serde_json::to_string_pretty(&out["avatar"]["summary"]).unwrap());
+}
+
+#[test]
+fn a_strict_inspection_confirms_a_strict_import() {
+    let mut project = Project::new();
+    let path = project.file("Avatar.vrm", &vrm_bytes(&model()));
+    let path = path.to_str().unwrap().to_owned();
+    let confirm = project.inspect(&path, &json!({ "strict": true })).unwrap()["avatar"]["confirm"].clone();
+    let lax = project.import(json!({ "path": path, "as": "avatar", "confirm": confirm }), None).unwrap_err();
+    assert!(lax.message.starts_with(CONFIRM_STALE), "the options differ: {}", lax.message);
+    project.import(json!({ "path": path, "as": "avatar", "confirm": confirm, "strict": true }), None).unwrap();
+}
+
+#[test]
+fn the_token_covers_the_character_id_the_person_saw() {
+    let mut project = Project::new();
+    let path = project.file("Avatar.vrm", &vrm_bytes(&model()));
+    let path = path.to_str().unwrap().to_owned();
+    let confirm = project.inspect(&path, &json!({})).unwrap()["avatar"]["confirm"].clone();
+    // Someone makes a character called `avatar` before the import runs: the id the person saw is gone.
+    let taken = DocPath::parse("characters/avatar").unwrap();
+    project.doc.apply(&Patch::new().with(taken, None, Some(json!({ "name": "Other" })))).unwrap();
+    let error = project.import(json!({ "path": path, "as": "avatar", "confirm": confirm }), None).unwrap_err();
+    assert!(error.message.starts_with(CONFIRM_STALE), "{}", error.message);
+}
+
+#[test]
+fn an_acknowledgement_needs_a_named_person() {
+    let mut scene = model();
+    scene.meta.terms.avatar_permission = AvatarPermission::OnlyAuthor;
+    let mut project = Project::new();
+    project.actor = Actor::Person { name: "  ".into() };
+    let path = project.file("Avatar.vrm", &vrm_bytes(&scene));
+    let path = path.to_str().unwrap().to_owned();
+    let confirm = project.inspect(&path, &json!({})).unwrap()["avatar"]["confirm"].clone();
+    let args = json!({ "path": path, "as": "avatar", "confirm": confirm, "acknowledge": true });
+    let error = project.import(args, None).unwrap_err();
+    assert_eq!((error.code, error.field.as_deref()), (ErrorCode::Invalid, Some("acknowledge")));
 }

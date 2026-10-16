@@ -10,7 +10,11 @@
 //! 4. the canonical [`AvatarDef`] (its JSON, whose maps are ordered) and the preparation options (the `MToon` groups
 //!    the renderer draws, and strict mode);
 //! 5. the importer's format id and this crate's version;
-//! 6. the canonical report (its JSON).
+//! 6. the canonical report (its JSON);
+//! 7. the character id the import suggests, so an import without `id` makes the character the person saw named.
+//!
+//! The avatar node names the file (`AvatarSource::file`), so the token covers the name too: import under the name the
+//! file was inspected with (a `path`'s file name, or the same `name`).
 //!
 //! A file replaced between inspect and import, a changed dependency byte, or a changed option gives another token, so
 //! the import is refused even when the findings would read the same.
@@ -56,6 +60,8 @@ pub struct Inputs<'a> {
     pub importer: &'a str,
     /// The whole report the person saw.
     pub report: &'a Report,
+    /// The character id the import suggests.
+    pub suggestion: &'a str,
 }
 
 /// The token of `inputs`, as 64 lowercase hex characters.
@@ -87,5 +93,6 @@ pub fn token(inputs: &Inputs<'_>) -> Result<String, OpError> {
     field(inputs.importer.as_bytes());
     field(env!("CARGO_PKG_VERSION").as_bytes());
     field(&json("report", serde_json::to_vec(inputs.report))?);
+    field(inputs.suggestion.as_bytes());
     Ok(ContentHash::of(&buf).to_string())
 }

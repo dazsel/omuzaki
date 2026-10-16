@@ -9,8 +9,10 @@
 //! first-person annotations; the spring records by index; the file's own look-at. So an unedited avatar re-exports with
 //! every field of the original, and an edit changes only the field it names.
 //!
-//! What a file had that the avatar left out is not written: a mesh no node draws, a node constraint the solver
-//! refused (both reported at import).
+//! "Every field" is the scene as the preparation left it: an avatar whose file needed no cleanup re-exports as the file
+//! was, while welded vertices, merged primitives and dropped unused materials, textures and images (reported at import)
+//! export as cleaned, and a mesh no node draws or a node constraint the solver refused is not written. A scale the
+//! import baked out of the skeleton is baked into what hangs from it instead, so everything sits where the file had it.
 
 use std::collections::BTreeMap;
 
@@ -21,6 +23,7 @@ use omuzaki_avatar_api::body::BodyView;
 use omuzaki_avatar_api::def::AvatarDef;
 use omuzaki_avatar_api::expression::AvatarExpression;
 use omuzaki_avatar_api::retained::{Retained, RetainedSprings};
+use omuzaki_core::glam::{Mat4, Vec3};
 use omuzaki_io_api::{
     self as io, Avatar, Blob, EncodedImage, FirstPerson, IoError, IoScene, MaterialIx, MeshAnnotation, MeshIx, Node,
     NodeIx, SkinIx,
@@ -55,7 +58,7 @@ pub fn gather_imported(
     let mesh_index = kept_meshes(r);
     scene.nodes = nodes(body, r, &mesh_index);
     scene.roots = r.roots.iter().map(|&n| NodeIx(n)).collect();
-    scene.meshes = meshes(body, r);
+    scene.meshes = meshes(body, r)?;
     scene.skins = skins(body, r);
     scene.materials = r
         .materials
@@ -129,6 +132,30 @@ fn node_of_bone(r: &Retained, bones: usize) -> Vec<Option<NodeIx>> {
     out
 }
 
+/// For each node whose world placement in the file had a scale, the matrix that carries its scaled frame onto its
+/// unscaled one (`W'⁻¹ · W`, as the import's `scale_fix`); `None` for a node with no scale on it or above it.
+fn scale_folds(r: &Retained) -> Vec<Option<Mat4>> {
+    let mut folds = vec![None; r.nodes.len()];
+    let mut stack: Vec<(usize, Mat4, bool)> =
+        r.roots.iter().filter_map(|&n| Some((usize::try_from(n).ok()?, Mat4::IDENTITY, true))).collect();
+    let mut seen = vec![false; r.nodes.len()];
+    while let Some((i, up, unit_above)) = stack.pop() {
+        let Some(node) = r.nodes.get(i).filter(|_| !seen[i]) else { continue };
+        seen[i] = true;
+        let t = node.transform;
+        let world = up * Mat4::from_scale_rotation_translation(t.scale, t.rotation, t.translation);
+        let unit = unit_above && t.scale == Vec3::ONE;
+        if !unit {
+            let (_, rotation, translation) = world.to_scale_rotation_translation();
+            folds[i] = Some(Mat4::from_rotation_translation(rotation, translation).inverse() * world);
+        }
+        for &c in node.children.iter().rev() {
+            stack.extend(usize::try_from(c).ok().map(|c| (c, world, unit)));
+        }
+    }
+    folds
+}
+
 /// The new index of each retained mesh: meshes no node draws are left out, and the rest close up.
 fn kept_meshes(r: &Retained) -> Vec<Option<u32>> {
     let mut next = 0u32;
@@ -143,23 +170,37 @@ fn kept_meshes(r: &Retained) -> Vec<Option<u32>> {
         .collect()
 }
 
-/// The file's nodes: bones at their rest (the T-pose, no scale), every other node as the file had it.
+/// The file's nodes: bones at their rest (the T-pose, no scale), every other node as the file had it, except that a node
+/// under a bone whose scale the import baked keeps its place in the world: its transform takes the scale its parent no
+/// longer carries.
 fn nodes(body: &BodyView<'_>, r: &Retained, mesh_index: &[Option<u32>]) -> Vec<Node> {
+    let folds = scale_folds(r);
+    let mut parent = vec![None; r.nodes.len()];
+    for (i, n) in r.nodes.iter().enumerate() {
+        for &c in &n.children {
+            if let Some(slot) = parent.get_mut(usize::try_from(c).unwrap_or(usize::MAX)) {
+                *slot = Some(i);
+            }
+        }
+    }
     r.nodes
         .iter()
-        .map(|n| {
+        .enumerate()
+        .map(|(i, n)| {
             let mut node = Node::new(n.name.clone());
-            node.transform = match n.bone.and_then(|b| body.skeleton.get(b)) {
-                Some(bone) => io::Transform {
-                    translation: bone.rest.translation,
-                    rotation: bone.rest.rotation,
-                    scale: omuzaki_core::glam::Vec3::ONE,
-                },
-                None => io::Transform {
-                    translation: n.transform.translation,
-                    rotation: n.transform.rotation,
-                    scale: n.transform.scale,
-                },
+            node.transform = if let Some(bone) = n.bone.and_then(|b| body.skeleton.get(b)) {
+                io::Transform { translation: bone.rest.translation, rotation: bone.rest.rotation, scale: Vec3::ONE }
+            } else {
+                let t = n.transform;
+                let fold =
+                    parent[i].filter(|&p| r.nodes[p].bone.is_some()).and_then(|p| folds.get(p).copied().flatten());
+                if let Some(fold) = fold {
+                    let local = fold * Mat4::from_scale_rotation_translation(t.scale, t.rotation, t.translation);
+                    let (scale, rotation, translation) = local.to_scale_rotation_translation();
+                    io::Transform { translation, rotation, scale }
+                } else {
+                    io::Transform { translation: t.translation, rotation: t.rotation, scale: t.scale }
+                }
             };
             node.children = n.children.iter().map(|&c| NodeIx(c)).collect();
             node.mesh = n.mesh.and_then(|m| mesh_index.get(usize::try_from(m).ok()?).copied().flatten()).map(MeshIx);
@@ -170,37 +211,63 @@ fn nodes(body: &BodyView<'_>, r: &Retained, mesh_index: &[Option<u32>]) -> Vec<N
         .collect()
 }
 
-/// Each source mesh a node draws, once: its primitives from the runtime meshes of its first instance (every instance
-/// holds the same geometry), with the one-joint skin of a rigid mesh taken off again, its morphs made dense, and its
-/// target names.
-fn meshes(body: &BodyView<'_>, r: &Retained) -> Vec<io::Mesh> {
+/// Each source mesh a node draws, once: its primitives from the runtime meshes of one instance (every instance holds the
+/// same geometry; a skinned one is preferred, since a rigid instance's joints were made up at import), its morphs made
+/// dense, and its target names. A mesh drawn without a skin has that made-up skin taken off again, and the scale the
+/// import folded into its matrix baked back into its vertices, so it sits where the file had it.
+///
+/// # Errors
+/// [`IoError::Internal`] when an instance names a runtime mesh the body does not have (a validated avatar never does).
+fn meshes(body: &BodyView<'_>, r: &Retained) -> Result<Vec<io::Mesh>, IoError> {
     let skinned =
         |node: u32| r.nodes.get(usize::try_from(node).unwrap_or(usize::MAX)).is_some_and(|n| n.skin.is_some());
-    r.meshes
-        .iter()
-        .filter_map(|source| {
-            let instance = source.instances.first()?;
-            let mut mesh = io::Mesh::new(source.name.clone());
-            mesh.morph_target_names.clone_from(&source.morph_target_names);
-            for (primitive, &runtime) in source.primitives.iter().zip(&instance.meshes) {
-                let Some(view) = body.meshes.get(usize::from(runtime)) else {
-                    debug_assert!(false, "a validated avatar's instances name meshes it has");
-                    continue;
-                };
-                let mut geometry = view.mesh.geometry.clone();
-                if !skinned(instance.node) {
-                    geometry.joints.clear();
-                    geometry.weights.clear();
+    let mut out = Vec::with_capacity(r.meshes.len());
+    for source in &r.meshes {
+        let Some(instance) = source.instances.iter().find(|i| skinned(i.node)).or_else(|| source.instances.first())
+        else {
+            continue;
+        };
+        let rigid = !skinned(instance.node);
+        let mut mesh = io::Mesh::new(source.name.clone());
+        mesh.morph_target_names.clone_from(&source.morph_target_names);
+        for (primitive, &runtime) in source.primitives.iter().zip(&instance.meshes) {
+            let view = body.meshes.get(usize::from(runtime)).ok_or_else(|| {
+                IoError::Internal(format!(
+                    "source mesh {:?} names runtime mesh {runtime}, which the body lacks",
+                    source.name
+                ))
+            })?;
+            let mut geometry = view.mesh.geometry.clone();
+            let count = geometry.positions.len();
+            let mut targets = view.morphs.map(|m| dense(m, count)).unwrap_or_default();
+            if rigid {
+                geometry.joints.clear();
+                geometry.weights.clear();
+                let fold = view.inverse_bind.and_then(|m| m.first()).copied().unwrap_or(Mat4::IDENTITY);
+                if fold != Mat4::IDENTITY {
+                    bake(fold, &mut geometry, &mut targets);
                 }
-                let count = geometry.positions.len();
-                let mut out = io::Primitive::new(geometry);
-                out.material = primitive.material.map(MaterialIx);
-                out.morph_targets = view.morphs.map(|m| dense(m, count)).unwrap_or_default();
-                mesh.primitives.push(out);
             }
-            Some(mesh)
-        })
-        .collect()
+            let mut out = io::Primitive::new(geometry);
+            out.material = primitive.material.map(MaterialIx);
+            out.morph_targets = targets;
+            mesh.primitives.push(out);
+        }
+        out.push(mesh);
+    }
+    Ok(out)
+}
+
+/// Moves a rigid mesh's vertices, normals and morph deltas by `fold`, the matrix its one-joint skin carried.
+fn bake(fold: Mat4, geometry: &mut omuzaki_io_api::MeshData, targets: &mut [io::MorphTarget]) {
+    let normal = fold.inverse().transpose();
+    let turn = |n: &mut Vec3| *n = normal.transform_vector3(*n).try_normalize().unwrap_or(*n);
+    geometry.positions.iter_mut().for_each(|p| *p = fold.transform_point3(*p));
+    geometry.normals.iter_mut().for_each(turn);
+    for target in targets {
+        target.positions.iter_mut().for_each(|d| *d = fold.transform_vector3(*d));
+        target.normals.iter_mut().for_each(|d| *d = normal.transform_vector3(*d));
+    }
 }
 
 /// The dense targets of a sparse set over `count` vertices: a zero delta where a target does not move a vertex.
@@ -298,10 +365,15 @@ fn drawing_node(r: &Retained, mesh: u16) -> Option<u32> {
 /// The file's spring records, back in the file's form.
 fn springs(r: &RetainedSprings) -> io::SpringBones {
     io::SpringBones {
+        // Groups name colliders by index, so every collider is written; one whose shape the file cannot carry yet
+        // becomes an empty sphere, which touches nothing.
         colliders: r
             .colliders
             .iter()
-            .filter_map(|c| Some(io::Collider { node: NodeIx(c.node), shape: io_shape(c.shape, 1.0)? }))
+            .map(|c| io::Collider {
+                node: NodeIx(c.node),
+                shape: io_shape(c.shape, 1.0).unwrap_or(io::ColliderShape::Sphere { offset: Vec3::ZERO, radius: 0.0 }),
+            })
             .collect(),
         collider_groups: r
             .groups

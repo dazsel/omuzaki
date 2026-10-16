@@ -20,7 +20,7 @@ use omuzaki_avatar_api::summary::{AvatarSummary, Stage};
 use omuzaki_char_api::{CharId, PartId, paths};
 use omuzaki_core::time::{Clock, Seconds};
 use omuzaki_history_api::WallClock;
-use omuzaki_io_api::{ImportOptions, Report, SceneSummary};
+use omuzaki_io_api::{Report, SceneSummary};
 use omuzaki_ops_api::{Actor, JobCtx, OpCtx, OpError, Plan};
 use omuzaki_render_api::Capabilities;
 use omuzaki_store_api::{Provenance, Store};
@@ -97,10 +97,15 @@ pub(crate) fn plan(import: &Import, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
     if import.acknowledge {
         ctx.require_person("only a person can acknowledge that they may perform as this model")?;
         let person = [Some(ctx.actor), ctx.confirmed_by()].into_iter().flatten().find_map(|a| match a {
-            Actor::Person { name } => Some(name.clone()),
+            Actor::Person { name } if !name.trim().is_empty() => Some(name.clone()),
             _ => None,
         });
-        output = json!({ ACKNOWLEDGED_BY: person.unwrap_or_default() });
+        // An acknowledgement nobody can be named for is not one.
+        let Some(person) = person else {
+            return Err(OpError::invalid("acknowledge", "the person acknowledging the terms has no name")
+                .hint("sign in with your name, then acknowledge again"));
+        };
+        output = json!({ ACKNOWLEDGED_BY: person });
     }
     Ok(Plan { output: Some(output), ..Plan::default() })
 }
@@ -125,7 +130,7 @@ pub(crate) fn work(import: &Import, job: &JobCtx<'_>) -> Result<Value, OpError> 
     let store = job.service::<dyn Store>()?;
     let clock: &dyn Clock = job.service::<dyn Clock>().map_or(&Unclocked, |c| c);
     let mtoon = mtoon(job.service::<Capabilities>().ok());
-    let options = ImportOptions::default();
+    let options = import.options();
     job.checkpoint("reading", 0.0)?;
     let max_bytes = options.limits.max_input_bytes;
     let (bytes, main) = import.read_source(job, max_bytes)?;
@@ -157,7 +162,10 @@ pub(crate) fn work(import: &Import, job: &JobCtx<'_>) -> Result<Value, OpError> 
             error.field = Some("acknowledge".to_owned());
             return Err(error);
         }
-        let by = job.plan_output().and_then(|o| o.get(ACKNOWLEDGED_BY)).and_then(Value::as_str).unwrap_or_default();
+        let by = job.plan_output().and_then(|o| o.get(ACKNOWLEDGED_BY)).and_then(Value::as_str);
+        let Some(by) = by.filter(|b| !b.trim().is_empty()) else {
+            return Err(OpError::internal("the plan accepted an acknowledgement without the person's name"));
+        };
         def.acknowledged = Some(Acknowledgement::new(today(job.service::<dyn WallClock>().ok()), by));
     }
     let served = folder.as_ref().map(FolderFiles::served).transpose()?.unwrap_or_default();

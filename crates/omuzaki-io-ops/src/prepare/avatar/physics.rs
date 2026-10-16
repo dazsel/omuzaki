@@ -224,7 +224,7 @@ fn constraints(file: &[io::NodeConstraint], rig: &Rig, avatar: &ImportedAvatar, 
             }
             None => "its node or source is not a bone".to_owned(),
         };
-        let msg = format!("constraint {index} can't run: {why}; it is kept for export");
+        let msg = format!("constraint {index} can't run: {why}; it is left out, and is not exported");
         let hint = "fix the constraint in the source file";
         report.push(
             Finding::warning("avatar.constraint_unused", msg).at(format!("avatar/constraints/{index}")).hint(hint),

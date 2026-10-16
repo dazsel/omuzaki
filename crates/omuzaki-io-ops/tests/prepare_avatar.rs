@@ -272,3 +272,32 @@ fn a_scene_from_a_later_layout_is_refused() {
     let Err(IoError::Rejected(report)) = to_avatar(&scene, &def, MtoonSupport::NONE) else { panic!("refused") };
     assert!(report.has_rule("avatar.schema_unknown"));
 }
+
+#[test]
+fn the_retained_thumbnail_follows_the_images_cleanup_kept() {
+    use omuzaki_io_api::{Blob, EncodedImage, ImageIx, ImageMime};
+    let mut f = humanoid(0.0);
+    f.scene.add_material(plain("Skin"));
+    add_skinned_mesh(&mut f, "Body", &BODY, 0, Some(0));
+    // An image nothing uses, then the thumbnail: cleanup drops the first, and the thumbnail must follow.
+    f.scene.add_image(EncodedImage::new("unused", ImageMime::Png, Blob::new(vec![1, 2, 3])));
+    f.scene.add_image(EncodedImage::new("thumbnail", ImageMime::Png, Blob::new(vec![4, 5, 6])));
+    f.scene.meta.thumbnail_image = Some(ImageIx(1));
+    let (avatar, _) = to_avatar(&f.scene, &def(), MtoonSupport::NONE).expect("imports");
+    assert_eq!(avatar.retained.images.len(), 1, "the unused image is dropped");
+    assert_eq!(avatar.retained.thumbnail().map(|i| i.name.as_str()), Some("thumbnail"));
+}
+
+#[test]
+fn a_scene_that_breaks_its_invariants_is_refused_with_their_reason() {
+    let mut f = humanoid(0.0);
+    f.scene.add_material(plain("Skin"));
+    // The primitive names material 3, which the file does not have: no reader makes such a scene, but the function
+    // takes any.
+    add_skinned_mesh(&mut f, "Body", &BODY, 0, Some(3));
+    let Err(IoError::Rejected(report)) = to_avatar(&f.scene, &def(), MtoonSupport::NONE) else {
+        panic!("refused");
+    };
+    assert!(report.has_rule("scene.index_out_of_range"), "{report:?}");
+    assert!(!report.has_rule("avatar.invalid"), "the reason, not a generic failure: {report:?}");
+}

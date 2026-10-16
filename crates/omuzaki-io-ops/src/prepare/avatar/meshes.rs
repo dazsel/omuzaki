@@ -50,8 +50,9 @@ pub fn convert(scene: &IoScene, rig: &Rig, names: &MaterialNames, avatar: &mut I
         for (p, primitive) in mesh.primitives.iter().enumerate() {
             // `MAX_INDEXED` is what a `u16` can name.
             let Ok(index) = u16::try_from(avatar.meshes.len()) else {
-                let msg = format!("the model draws more than {MAX_INDEXED} meshes; the rest were left out");
-                report.push(Finding::error("avatar.too_many_meshes", msg).at(at(p)));
+                let msg = format!("the model draws more than {MAX_INDEXED} meshes, more than an avatar can have");
+                let hint = "join meshes that share a material in the source file, then import it again";
+                report.push(Finding::error("avatar.too_many_meshes", msg).at(at(p)).hint(hint));
                 return;
             };
             let Some(runtime) =
@@ -120,7 +121,9 @@ fn runtime_mesh(
         (bones, matrices)
     } else {
         let Some(name) = rig.bone_name(node).and_then(|n| BoneName::new(n).ok()) else {
-            debug_assert!(false, "a node that draws a mesh without a skin is always a bone");
+            // The skeleton makes every node that draws a mesh without a skin a bone, so this is a bug if it happens.
+            let msg = format!("node {} draws a mesh without a skin but is not a bone", node.0);
+            report.push(Finding::error("avatar.skin_invalid", msg).at(at));
             return None;
         };
         let count = geometry.positions.len();
@@ -128,7 +131,12 @@ fn runtime_mesh(
         geometry.weights = vec![[1.0, 0.0, 0.0, 0.0]; count];
         (vec![JointRef::Named(name)], vec![rig.scale_fix(node).unwrap_or(Mat4::IDENTITY)])
     };
-    let material = names.of(primitive.material.map(|m| m.0))?;
+    let Some(material) = names.of(primitive.material.map(|m| m.0)) else {
+        let msg =
+            format!("the primitive draws material {:?}, which the model doesn't have", primitive.material.map(|m| m.0));
+        report.push(Finding::error("avatar.material_missing", msg).at(at));
+        return None;
+    };
     let name = scene.nodes.get(node.index()).map_or_else(String::new, |n| n.name.clone());
     let mesh = PartMesh { name, geometry, joint_bones, material, casts_shadow: true, render_order: 0, dynamic: false };
     let mut runtime = AvatarMesh::new(mesh).with_inverse_bind(inverse_bind);

@@ -3,7 +3,8 @@
 //!
 //! The avatar is rebuilt from the stored original plus its [`AvatarDef`] on every load (D5), so this function is the
 //! whole preparation: `io.inspect` and `io.import` only call it. It works on a private copy of the scene, in this
-//! order, and every step's findings join one [`Report`]:
+//! order, and every step's findings join one [`Report`]. A scene that breaks its own invariants ([`IoScene::check`])
+//! is refused first; readers never produce one.
 //! 1. **Humanoid** ([`humanoid::auto_map`], [`humanoid::apply`]): the file's own map and the person's overrides in
 //!    `def.humanoid` are checked like any assignment; an override whose node index went stale (the file changed) is
 //!    found again by its stored name. A missing required bone rejects the import (`humanoid.required_missing`); an
@@ -53,7 +54,8 @@ pub const CLEANUP: cleanup::CleanupOptions =
 /// `look.mtoon_not_drawn` finding.
 ///
 /// # Errors
-/// [`IoError::Rejected`] with the whole report when the model cannot become an avatar: a required humanoid bone has no
+/// [`IoError::Rejected`] with the whole report when the model cannot become an avatar: the scene breaks its invariants
+/// (`scene.*`, from [`IoScene::check`]), a required humanoid bone has no
 /// node (`humanoid.required_missing`), an override is unusable (`humanoid.override_invalid`), the skeleton breaks a
 /// rule (`avatar.skeleton_invalid`, `avatar.too_many_bones`), the node layout is from a later build
 /// (`avatar.schema_unknown`), or the result does not validate (`avatar.invalid`).
@@ -104,6 +106,14 @@ fn prepare(
         report.push(Finding::error("avatar.schema_unknown", e.to_string()).at("avatar/schema").hint(hint));
         return Err(IoError::Rejected(report));
     }
+    // Every step below relies on the scene's invariants (indices in range, arrays the same length). A reader's scene
+    // already passed them (`run_import` enforces it), so only the errors are added: its warnings are in the read's
+    // report already.
+    let invariants = scene.check();
+    if invariants.has_errors() {
+        report.extend(invariants);
+        return Err(IoError::Rejected(report));
+    }
     let nodes = retained_nodes(scene);
     let mut work = scene.clone();
 
@@ -148,6 +158,10 @@ fn prepare(
     expressions::convert(&work, def, &arkit, &names, &mut avatar, &mut report);
     physics::convert(&work, &rig, &mut avatar, &mut report);
     retain(scene, &work, &rig, nodes, &mut avatar.retained);
+    // A step that could not convert part of the model said why in an error finding; that is the reason to give.
+    if report.has_errors() {
+        return Err(IoError::Rejected(report));
+    }
 
     if let Err(e) = avatar.validate() {
         let hint = "this is a bug in Omuzaki's importer, or a file it does not understand yet; report it with the file";
@@ -249,6 +263,7 @@ fn retain(
         .as_ref()
         .and_then(|a| a.first_person.as_ref())
         .map(|fp| fp.annotations.iter().map(|a| RetainedAnnotation::new(a.node.0, a.flag.into())).collect());
-    retained.meta = source.avatar.is_some().then(|| source.meta.clone());
+    // The meta as cleanup left it: its thumbnail index follows the compacted image list that `retained.images` holds.
+    retained.meta = source.avatar.is_some().then(|| work.meta.clone());
     retained.passthrough = source.passthrough.clone();
 }

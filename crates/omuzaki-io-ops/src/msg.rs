@@ -95,13 +95,13 @@ omuzaki_l10n_api::messages! {
         => "Vertices that sat on top of each other were joined.";
     /// The fix for the `cleanup.welded` rule, shown under its report line.
     pub cleanup_welded_hint = "io-ops-cleanup-welded-hint" ()
-        => "Nothing to do; turn the clean-up off in the import options if you want them kept apart.";
+        => "Nothing to do; the mesh looks the same, with less to draw.";
     /// The report line for the `cleanup.merged` rule: what the import found.
     pub cleanup_merged = "io-ops-cleanup-merged" ()
         => "Meshes that share a material were merged into one.";
     /// The fix for the `cleanup.merged` rule, shown under its report line.
     pub cleanup_merged_hint = "io-ops-cleanup-merged-hint" ()
-        => "Nothing to do; turn the clean-up off in the import options if you want them kept apart.";
+        => "Nothing to do; the model looks the same, drawn in fewer steps.";
     /// The report line for the `cleanup.dropped_unused` rule: what the import found.
     pub cleanup_dropped_unused = "io-ops-cleanup-dropped-unused" ()
         => "Parts that nothing used, such as spare materials or textures, were left out.";
@@ -324,6 +324,18 @@ omuzaki_l10n_api::messages! {
     /// The fix for the `avatar.skin_invalid` rule, shown under its report line.
     pub avatar_skin_invalid_hint = "io-ops-avatar-skin-invalid-hint" ()
         => "Re-bind the mesh to its skeleton in your modelling tool.";
+    /// The report line for the `avatar.material_missing` rule: what the import found.
+    pub avatar_material_missing = "io-ops-avatar-material-missing" ()
+        => "A part of the model is drawn with a material the file doesn't have, so it cannot be shown.";
+    /// The fix for the `avatar.material_missing` rule, shown under its report line.
+    pub avatar_material_missing_hint = "io-ops-avatar-material-missing-hint" ()
+        => "Give that part a material in your modelling tool and export the model again.";
+    /// The report line for the `avatar.rest_unread` rule: what the import found.
+    pub avatar_rest_unread = "io-ops-avatar-rest-unread" ()
+        => "The pose the model was sculpted in could not be read back, so it cannot be shown as authored.";
+    /// The fix for the `avatar.rest_unread` rule, shown under its report line.
+    pub avatar_rest_unread_hint = "io-ops-avatar-rest-unread-hint" ()
+        => "This is a bug in Omuzaki; report it with the model file.";
     /// The report line for the `avatar.invalid` rule: what the import found.
     pub avatar_invalid = "io-ops-avatar-invalid" ()
         => "The avatar settings are not valid, so the import cannot go on.";
