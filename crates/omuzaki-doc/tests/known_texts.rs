@@ -70,8 +70,11 @@ fn a_new_file_renders_as_changed_and_a_deleted_one_is_gone() {
     project.apply(&change("characters/mia/rig", Some(rig), None)).unwrap();
     project.apply(&change("characters/mia/look", None, Some(json!({"outline": 1})))).unwrap();
     let rendered = project.rendered_files().unwrap();
-    let paths: Vec<_> = rendered.iter().map(|f| f.path.to_string_lossy().into_owned()).collect();
-    assert_eq!(paths, ["characters/mia/face.toml", "characters/mia/look.toml", "project.toml"]);
+    // Compared as paths, not text: on Windows the rendered paths use `\`, and `Path` equality is per component.
+    let paths: Vec<_> = rendered.iter().map(|f| f.path.clone()).collect();
+    let want: Vec<_> =
+        ["characters/mia/face.toml", "characters/mia/look.toml", "project.toml"].map(PathBuf::from).into();
+    assert_eq!(paths, want);
     assert!(rendered.iter().find(|f| f.path.ends_with("look.toml")).unwrap().changed);
     project.save().unwrap();
     assert_eq!(project.file_hashes().len(), 3);

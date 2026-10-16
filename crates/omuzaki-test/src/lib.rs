@@ -37,3 +37,10 @@ pub mod objects;
 pub mod regioncmp;
 pub mod summary;
 pub mod verify;
+
+// The eval harness serves the product's ops (`omuzaki-cli`) and its MCP server; crates that link this one (the area test
+// crates) reach their registrations through here (ADR 0015). `build.rs` writes the calls from the dependencies that set
+// `registers = true` (ADR 0054 section 6).
+omuzaki_core::define_link! {
+    include!(concat!(env!("OUT_DIR"), "/link_calls.rs"));
+}
