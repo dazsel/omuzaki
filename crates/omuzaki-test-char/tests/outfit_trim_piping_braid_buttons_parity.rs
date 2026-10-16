@@ -7,11 +7,13 @@
 //! dump itself and builds the port's piece in that frame:
 //! - **buttons:** the `buttons` mesh in three clusters by height; each one's axis is its flattest direction and its
 //!   foot the lowest point along it. The port's gold button there must cover the prototype's (every prototype vertex
-//!   within [`BUTTON`] of the port's surface) and the buttons must be [`buttons::GOLD_RADIUS`]-sized, 0.026 m apart;
+//!   within [`BUTTON`] of the port's surface) and the buttons must be [`buttons::GOLD_RADIUS`]-sized, 0.026 m apart in
+//!   height;
 //! - **the strip:** a middle rung of the `robe-trim` mesh, its 11 vertices put in the rung's own frame (the surface
-//!   normal at its free edge, the direction into the band); the port's strip, built on a large cylinder with the robe's
-//!   numbers, must give the same cross-section near the edge (the lip, the rolled edge and the face's first two
-//!   rungs) within [`STRIP`];
+//!   normal at its free edge, the direction into the band); the port's strip, built with the robe's numbers on a
+//!   cylinder curving across the band as the robe's cloth does there (read from the rung's face), must give the same
+//!   cross-section: every vertex at the same height off the cloth within [`STRIP_UP`], and at the same place across
+//!   the band within [`STRIP_ACROSS`];
 //! - **the vest's piping:** each closed tube of 85 rings of 7 in the `vest` mesh; the port's `ring_tube` through the
 //!   same ring centres must cover it within [`CORD`].
 //!
@@ -40,9 +42,13 @@ use omuzaki_test::jsref::JsRef;
 /// How far a prototype button vertex may lie from the port's button, metres: the two tessellate the same primitives,
 /// so this is their chord error and rounding.
 const BUTTON: f64 = 1.5e-4;
-/// How far the strip's cross-section may differ near its edge, metres: the robe's cloth curves, the test's cylinder
-/// barely does.
-const STRIP: f64 = 2.5e-4;
+/// How far a rung vertex's height off the cloth may differ, metres: the port lays its strip on a cylinder of the robe's
+/// curvature across the band, which the robe's cloth only approximately is.
+const STRIP_UP: f64 = 2e-5;
+/// How far a rung vertex's place across the band may differ, metres. The prototype lays the face's fractions evenly in
+/// its robe's own surface parameter, which across the front band isn't even in length (its fraction 0.22 lands about
+/// 0.235 of the way across); the port lays them evenly in length. The two ends of the band agree.
+const STRIP_ACROSS: f64 = 3e-4;
 /// How far a prototype piping vertex may lie from the port's tube, metres.
 const CORD: f64 = 5e-5;
 /// How close two positions must be to be one seam vertex, metres.
@@ -225,31 +231,44 @@ fn the_gold_buttons_match_the_prototypes() {
         assert!(off <= BUTTON, "button {k}: a prototype vertex is {off} m from the port's button");
         centres.push(foot);
     }
+    // The prototype sets them 0.026 apart in height down the centre front (the slope of the vest makes them a little
+    // further apart along it).
     for pair in centres.windows(2) {
-        let gap = pair[0].distance(pair[1]);
-        println!("buttons {gap:.4} m apart");
-        assert!((gap - 0.026).abs() < 5e-4, "the buttons are {gap} m apart, not 0.026");
+        let gap = pair[0].y - pair[1].y;
+        println!("buttons {gap:.4} m apart in height, {:.4} m along the vest", pair[0].distance(pair[1]));
+        assert!((gap - 0.026).abs() < 5e-4, "the buttons are {gap} m apart in height, not 0.026");
     }
 }
 
 // --------------------------------------------------------------------------------------------------------- the strip
 
-/// A tall cylinder of radius 1 m round the y axis, as the torso: cloth that is nearly flat across a strip.
+/// A tall cylinder of `radius` round the y axis, as the torso: cloth curving across a strip as the robe's does where
+/// the prototype laid it.
 #[derive(Debug)]
-struct Cylinder;
+struct Cylinder {
+    radius: f32,
+}
 
 impl BodyFit for Cylinder {
     fn section(&self, region: BodyRegion, t: f32) -> Option<Section> {
         (region == BodyRegion::Torso).then(|| Section {
             centre: Vec3::new(0.0, t, 0.0),
             axis: Vec3::Y,
-            radii: Vec2::splat(1.0),
+            radii: Vec2::splat(self.radius),
         })
     }
 
     fn joint(&self, joint: &JointRef) -> Option<Vec3> {
         (*joint == JointRef::Humanoid(HumanoidBone::Hips)).then_some(Vec3::ZERO)
     }
+}
+
+/// The radius of the circle through three points of a plane.
+fn circumradius(p: (f64, f64), q: (f64, f64), r: (f64, f64)) -> f64 {
+    let side = |u: (f64, f64), v: (f64, f64)| (u.0 - v.0).hypot(u.1 - v.1);
+    let (a, b, c) = (side(q, r), side(p, r), side(p, q));
+    let area2 = ((q.0 - p.0) * (r.1 - p.1) - (q.1 - p.1) * (r.0 - p.0)).abs();
+    a * b * c / (2.0 * area2)
 }
 
 /// The 11 vertices of a rung in its own frame: across the band (positive into it) and up off the cloth, measured from
@@ -275,8 +294,15 @@ fn the_robes_rolled_edge_matches_the_prototypes_cross_section() {
     let span = theirs.iter().map(|p| p.distance(theirs[5])).fold(0.0, f64::max);
     assert!(span < ROBE.3 + 0.01, "the dump's rungs are not 11 vertices one after another (a rung spans {span} m)");
     let their_normal = js.normals[rung * 11 + 5].as_dvec3().normalize();
+    // The robe's cloth curves across the band: the face's unbevelled vertices (fractions 0, 0.22 and 0.78) sit the lift
+    // and margin off it, so they lie on a circle that much wider than the cloth's. The port's strip is laid on a
+    // cylinder of that curvature, so the comparison sees the construction, not the cloth.
+    let a = local(&theirs, their_normal);
+    let face = circumradius(a[5], a[6], a[8]);
+    let cloth = face - (LIFT + piping::FACE_MARGIN);
+    println!("the robe's cloth under the rung curves with radius {:.1} mm across the band", cloth * 1e3);
 
-    let surface = Surface::new(Arc::new(Cylinder), BodyRegion::Torso, 2.0, 0.0).unwrap();
+    let surface = Surface::new(Arc::new(Cylinder { radius: cloth as f32 }), BodyRegion::Torso, 2.0, 0.0).unwrap();
     let (thick, lip_height, lip_width, wide) = ROBE;
     let spec = Piping {
         rail: RailSpec::new(&[[0.8, 0.0], [0.2, 0.0]], false),
@@ -297,15 +323,24 @@ fn the_robes_rolled_edge_matches_the_prototypes_cross_section() {
     let ours: Vec<DVec3> = (0..11).map(|j| port.mesh().positions[middle * 11 + j].as_dvec3()).collect();
     let our_normal = rail.points()[middle].normal;
 
-    let (a, b) = (local(&theirs, their_normal), local(&ours, our_normal));
-    let mut worst = 0.0_f64;
-    // The lip, the rolled edge and the face's first two vertices: within a centimetre of the free edge.
-    for j in 0..7 {
-        let d = ((a[j].0 - b[j].0).powi(2) + (a[j].1 - b[j].1).powi(2)).sqrt();
-        println!("vertex {j}: prototype {:?}, port {:?}, {:.4} mm apart", a[j], b[j], d * 1e3);
-        worst = worst.max(d);
+    let b = local(&ours, our_normal);
+    let (mut across, mut up) = (0.0_f64, 0.0_f64);
+    // Every vertex of the rung: the lip, the rolled edge and the face to its bevelled inner border.
+    for j in 0..11 {
+        let (d_across, d_up) = ((a[j].0 - b[j].0).abs(), (a[j].1 - b[j].1).abs());
+        println!(
+            "vertex {j}: prototype ({:.4}, {:.4}) mm, port ({:.4}, {:.4}) mm: {:.4} mm across, {:.4} mm up",
+            a[j].0 * 1e3,
+            a[j].1 * 1e3,
+            b[j].0 * 1e3,
+            b[j].1 * 1e3,
+            d_across * 1e3,
+            d_up * 1e3
+        );
+        (across, up) = (across.max(d_across), up.max(d_up));
     }
-    assert!(worst <= STRIP, "the cross-section differs by {worst} m near the edge");
+    assert!(up <= STRIP_UP, "a rung vertex's height off the cloth differs by {up} m");
+    assert!(across <= STRIP_ACROSS, "a rung vertex's place across the band differs by {across} m");
 }
 
 // ---------------------------------------------------------------------------------------------------- vest piping
