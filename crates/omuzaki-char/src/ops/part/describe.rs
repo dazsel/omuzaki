@@ -15,8 +15,8 @@
 //! that is off) has no value to probe from, so it reports none.
 //!
 //! **The cost is linear.** A probe checks a copy of the part that leaves out what the number does not depend on: the
-//! other entries of the maps on the way to it, and the list items more than one away from it (so a "at least two
-//! points" rule still holds). A lone value that names an entry by key is kept with it, and lists of such names (a
+//! other entries of the maps on the way to it, the list items more than one away from it (so a "at least two
+//! points" rule still holds), and all but the first few items or entries of any list or map off the path. A lone value that names an entry by key is kept with it, and lists of such names (a
 //! streak's `groups`) are stripped of the keys of the entries left out, so the references do not grow the probe. The
 //! check then costs one entry rather than the whole part, one scratch copy per number is written into by every probe
 //! instead of being cloned per probe, and entries are found by key, not by walking the map. That assumes the entries of
@@ -123,6 +123,9 @@ pub(crate) fn kind_of(id: &PartId, part: &PartDef) -> Result<&'static PartKindRe
             ))
     })
 }
+
+/// How many items of a list, or entries of a map, a probe keeps beside the one it is about (see [`Params::shrink`]).
+const CONTEXT: usize = 3;
 
 /// What a parameter holds.
 #[derive(Clone, Debug, PartialEq)]
@@ -341,12 +344,17 @@ impl Params {
         match node {
             Value::Object(fields) if holder.is_some_and(|p| p.ty == Ty::Map) => {
                 let named = self.named.get(prefix).map_or(&[][..], Vec::as_slice);
-                let keys = std::iter::once(*step).chain(named.iter().map(String::as_str));
+                // The key of the path, once, then the entries named by lone values (which may include the same key).
+                let keys = std::iter::once(*step).chain(named.iter().map(String::as_str).filter(|key| key != step));
                 mapped.push((*step).to_owned());
                 Value::Object(
                     keys.filter_map(|key| {
                         let item = fields.get(key)?;
-                        let item = if key == *step { self.spine(item, &child(key), rest, mapped) } else { item.clone() };
+                        let item = if key == *step {
+                            self.spine(item, &child(key), rest, mapped)
+                        } else {
+                            self.shrink(item, &child(key))
+                        };
                         Some((key.to_owned(), item))
                     })
                     .collect(),
@@ -358,7 +366,11 @@ impl Params {
                     fields
                         .iter()
                         .map(|(key, item)| {
-                            let item = if key == step { self.spine(item, &child(key), rest, mapped) } else { item.clone() };
+                            let item = if key == step {
+                                self.spine(item, &child(key), rest, mapped)
+                            } else {
+                                self.shrink(item, &child(key))
+                            };
                             (key.clone(), item)
                         })
                         .collect(),
@@ -379,10 +391,40 @@ impl Params {
                         .skip(lo)
                         .take(hi + 1 - lo)
                         .map(|(i, item)| {
-                            if at == Some(i) { self.spine(item, &child(&i.to_string()), rest, mapped) } else { item.clone() }
+                            let place = child(&i.to_string());
+                            if at == Some(i) { self.spine(item, &place, rest, mapped) } else { self.shrink(item, &place) }
                         })
                         .collect(),
                 )
+            }
+            other => other.clone(),
+        }
+    }
+
+    /// A copy of `value`, at `path`, that a probe carries as context only: a list is cut to its first `CONTEXT` items and
+    /// a map to its first `CONTEXT` entries (and the ones lone values name), all the way down, so what the probe copies
+    /// and the kind then checks does not grow with the part. A kind that needs more (a minimum length of more than
+    /// `CONTEXT`) refuses the copy, and the probe then uses the whole part.
+    fn shrink(&self, value: &Value, path: &str) -> Value {
+        let child = |name: &str| format!("{path}/{name}");
+        match value {
+            Value::Array(items) => Value::Array(
+                items.iter().take(CONTEXT).enumerate().map(|(i, item)| self.shrink(item, &child(&i.to_string()))).collect(),
+            ),
+            Value::Object(fields) if self.entry(path).is_some_and(|p| p.ty == Ty::Map) => {
+                let named = self.named.get(path).map_or(&[][..], Vec::as_slice);
+                let first = fields.keys().take(CONTEXT).map(String::as_str);
+                let mut keys: Vec<&str> = first.chain(named.iter().map(String::as_str)).collect();
+                keys.sort_unstable();
+                keys.dedup();
+                Value::Object(
+                    keys.into_iter()
+                        .filter_map(|key| Some((key.to_owned(), self.shrink(fields.get(key)?, &child(key)))))
+                        .collect(),
+                )
+            }
+            Value::Object(fields) => {
+                Value::Object(fields.iter().map(|(key, item)| (key.clone(), self.shrink(item, &child(key)))).collect())
             }
             other => other.clone(),
         }

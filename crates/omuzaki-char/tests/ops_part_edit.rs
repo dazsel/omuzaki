@@ -109,29 +109,39 @@ mod wide {
         }
     }
 
-    /// A line of points, at least two.
+    /// One clump: a line of points, at least two.
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
     #[serde(default, deny_unknown_fields)]
-    pub struct LineParams {
+    pub struct Clump {
         /// The points.
         pub points: Vec<Point>,
     }
 
-    impl Default for LineParams {
+    impl Default for Clump {
         fn default() -> Self {
             Self { points: vec![Point::default(), Point::default()] }
         }
     }
 
+    /// Clumps of points.
+    #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+    #[serde(default, deny_unknown_fields)]
+    pub struct LineParams {
+        /// The clumps.
+        pub clumps: Vec<Clump>,
+    }
+
     impl Validate for LineParams {
         fn check(&self, c: &mut Check) {
-            super::POINTS_CHECKED.fetch_add(self.points.len(), Ordering::Relaxed);
-            if self.points.len() < 2 {
-                c.fail("points", "a line needs at least two points");
-            }
-            for (i, p) in self.points.iter().enumerate() {
-                c.range(&format!("points/{i}/x"), p.x, 0.0, 1.0);
-                c.range(&format!("points/{i}/y"), p.y, 0.0, 2.0);
+            for (k, clump) in self.clumps.iter().enumerate() {
+                super::POINTS_CHECKED.fetch_add(clump.points.len(), Ordering::Relaxed);
+                if clump.points.len() < 2 {
+                    c.fail(&format!("clumps/{k}/points"), "a clump needs at least two points");
+                }
+                for (i, p) in clump.points.iter().enumerate() {
+                    c.range(&format!("clumps/{k}/points/{i}/x"), p.x, 0.0, 1.0);
+                    c.range(&format!("clumps/{k}/points/{i}/y"), p.y, 0.0, 2.0);
+                }
             }
         }
     }
@@ -362,31 +372,35 @@ fn describe_does_work_in_proportion_to_the_part_not_its_square() {
     assert!(large * 10 <= small * 25, "10 groups checked {small}, 20 checked {large}: not linear");
 }
 
-/// The points the `line` validator looks at over one `describe` of a line of `n` points.
+/// The points the `line` validator looks at over one `describe` of two clumps of `n` points each.
 fn points_checked_describing(n: usize) -> usize {
     let points: Vec<Value> = (0..n).map(|_| json!({})).collect();
-    let doc = with_probe("line", &json!({ "points": points }));
+    let doc = with_probe("line", &json!({ "clumps": [{ "points": points }, { "points": points }] }));
     let _only = WIDE.lock().unwrap();
     let before = POINTS_CHECKED.load(Ordering::Relaxed);
+    let start = std::time::Instant::now();
     let d = describe(&doc, "probe");
+    eprintln!("two clumps of {n} points: {:?}", start.elapsed());
+    let checked = POINTS_CHECKED.load(Ordering::Relaxed) - before;
     assert_eq!(d["valid"], true);
     let probed = d["parameters"].as_array().unwrap().iter().filter(|p| p.get("maximum").is_some()).count();
-    assert_eq!(probed, 2 * n, "every number still gets its range");
-    POINTS_CHECKED.load(Ordering::Relaxed) - before
+    assert_eq!(probed, 4 * n, "every number still gets its range");
+    checked
 }
 
 #[test]
-fn describe_does_work_in_proportion_to_a_list_not_its_square() {
+fn describe_does_work_in_proportion_to_growing_lists_not_their_square() {
     let (small, large) = (points_checked_describing(20), points_checked_describing(40));
-    assert!(large * 10 <= small * 25, "20 points checked {small}, 40 checked {large}: not linear");
+    assert!(large * 10 <= small * 25, "20 points a clump checked {small}, 40 checked {large}: not linear");
 }
 
 #[test]
 fn the_ends_of_a_list_keep_the_neighbour_a_minimum_length_needs() {
     // The first and last point are probed with one neighbour, so "at least two points" still holds.
-    let d = describe(&with_probe("line", &json!({"points": [{"x": 0.1}, {"x": 0.2}, {"x": 0.3}]})), "probe");
+    let d =
+        describe(&with_probe("line", &json!({"clumps": [{"points": [{"x": 0.1}, {"x": 0.2}, {"x": 0.3}]}]})), "probe");
     let find = |path: &str| d["parameters"].as_array().unwrap().iter().find(|p| p["path"] == path).cloned().unwrap();
-    for path in ["points/0/x", "points/1/x", "points/2/x"] {
+    for path in ["clumps/0/points/0/x", "clumps/0/points/1/x", "clumps/0/points/2/x"] {
         assert_eq!((find(path)["minimum"].clone(), find(path)["maximum"].clone()), (json!(0.0), json!(1.0)), "{path}");
     }
 }
@@ -424,4 +438,13 @@ fn a_stored_tag_that_names_no_variant_is_listed_and_repaired_by_setting_it() {
 
     round_trip(&mut doc, "part.set_param", set("probe", "groups/z/generator/type", &json!("cap")));
     assert_eq!(describe(&doc, "probe")["valid"], true);
+}
+
+#[test]
+fn a_group_named_like_a_tag_is_probed_once() {
+    // `cap` is a group's key and also a generator tag, so a value names it; its path must not be walked twice.
+    let d = describe(&with_probe("mock-hair", &json!({"groups": {"cap": {"generator": {"type": "cap"}}}})), "probe");
+    let thickness = d["parameters"].as_array().unwrap().iter().find(|p| p["path"] == "groups/cap/generator/thickness");
+    let thickness = thickness.expect("listed");
+    assert_eq!((&thickness["minimum"], &thickness["maximum"]), (&json!(0.002), &json!(0.06)), "{thickness}");
 }
