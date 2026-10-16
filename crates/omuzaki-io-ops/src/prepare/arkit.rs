@@ -18,10 +18,11 @@
 
 use std::collections::BTreeMap;
 
+use omuzaki_anim_api::Channel;
 use omuzaki_core::glam::{Vec2, Vec4};
 use omuzaki_io_api::{
-    ARKIT_52, ColorBind, ColorBindKind, Expression, ExpressionName, IoScene, Material, MorphBind, NodeIx,
-    PresetExpression, Shading, UvBind,
+    ARKIT_52, ColorBind, ColorBindKind, Expression, ExpressionName, Finding, IoScene, Material, MorphBind, NodeIx,
+    PresetExpression, Report, Shading, UvBind,
 };
 
 /// Morph targets of a `VRoid`-made model and the channels they feed, with the weight each binds at. `E`, `Joy` and
@@ -43,7 +44,7 @@ const VROID_MORPHS: [(&str, &str, f32); 12] = [
 
 /// `(channel, source preset, gain)`: which VRM preset composes a channel. A channel's rules are tried in table order,
 /// so a specific preset listed first wins over a symmetric fallback. A preset that feeds both sides of a pair binds at
-/// 0.5 each (smile, stretch, brow down, the combined blink, the gaze presets), so both channels at 1 reproduce the
+/// 0.5 each (smile, stretch, brow down, the combined blink, the four look presets), so both channels at 1 reproduce the
 /// preset at 1 and not at 2 (`docs/design/byom.md` D3). For gaze, looking left is the left eye out and the right eye in.
 const PRESET_RULES: [(&str, PresetExpression, f32); 22] = [
     ("jawOpen", PresetExpression::Aa, 1.0),
@@ -102,21 +103,6 @@ pub struct ChannelOutcome {
     pub how: Synthesis,
 }
 
-impl ChannelOutcome {
-    /// A note for the user when the channel shares its source with its mirror image, as one symmetric shape drives
-    /// both sides (smile, stretch, brow down, the combined blink, gaze). `None` otherwise.
-    pub fn note(&self) -> Option<&'static str> {
-        let shared = match &self.how {
-            Synthesis::FromPreset { preset, .. } => PRESET_RULES.iter().filter(|r| r.1 == *preset).count() > 1,
-            Synthesis::FromMorph { target } => {
-                VROID_MORPHS.iter().filter(|r| name_key(r.0) == name_key(target)).count() > 1
-            }
-            Synthesis::Present | Synthesis::Missing => false,
-        };
-        shared.then_some("symmetric: one source shape drives both the left and the right channel")
-    }
-}
-
 /// What [`synthesise`] did.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
@@ -124,6 +110,93 @@ pub struct Arkit52Report {
     /// All 52 channels, in [`ARKIT_52`] order.
     pub channels: Vec<ChannelOutcome>,
 }
+
+impl Arkit52Report {
+    /// A note for the user when `channel` shares its source with another channel, as one symmetric shape drives both
+    /// sides (smile, stretch, brow down, the combined blink, gaze: the result is symmetric, each side takes 0.5).
+    ///
+    /// Decided from what synthesis actually did: two channels share a source only when both were built from the same
+    /// preset or the same morph target. A pair whose sides came from different sources (`blinkLeft` for one eye, the
+    /// combined `blink` for the other) is not flagged, whatever the rule table allows. `None` for an unknown,
+    /// [`Synthesis::Present`] or [`Synthesis::Missing`] channel.
+    pub fn note(&self, channel: &str) -> Option<&'static str> {
+        let own = &self.channels.iter().find(|c| c.channel == channel)?.how;
+        let same_source = |other: &Synthesis| match (own, other) {
+            (Synthesis::FromPreset { preset: a, .. }, Synthesis::FromPreset { preset: b, .. }) => a == b,
+            (Synthesis::FromMorph { target: a }, Synthesis::FromMorph { target: b }) => a == b,
+            _ => false,
+        };
+        let shared = self.channels.iter().any(|c| c.channel != channel && same_source(&c.how));
+        shared.then_some(SYMMETRIC_NOTE)
+    }
+
+    /// The import report's rows: one `arkit.synthesised` (info) per channel built from a morph or a preset, and one
+    /// `arkit.missing` (info, located `arkit/<region>/<channel>`) per channel with nothing to build it from. A
+    /// [`Synthesis::Present`] channel yields none. Rows follow [`ARKIT_52`] order, so the report is deterministic.
+    pub fn report(&self) -> Report {
+        let mut report = Report::new();
+        for outcome in &self.channels {
+            let channel = outcome.channel;
+            let source = match &outcome.how {
+                Synthesis::Present => continue,
+                Synthesis::FromMorph { target } => format!("the model's {target} shape"),
+                Synthesis::FromPreset { preset, gain } => {
+                    format!("the {} expression at {gain}", preset.as_str())
+                }
+                Synthesis::Missing => {
+                    report.push(missing_finding(channel));
+                    continue;
+                }
+            };
+            let mut message = format!("{channel} was built from {source}.");
+            if let Some(note) = self.note(channel) {
+                message.push(' ');
+                message.push_str(note);
+                message.push('.');
+            }
+            report.push(Finding::info("arkit.synthesised", message).at(location(channel)));
+        }
+        report
+    }
+}
+
+/// What a person sees when one source shape feeds a pair of channels.
+const SYMMETRIC_NOTE: &str = "symmetric: one source shape drives both the left and the right channel";
+
+/// `arkit/<region>/<channel>`, with the region in lower case. A name outside the channel table (which cannot come out
+/// of [`ARKIT_52`]) is located without a region.
+fn location(channel: &str) -> String {
+    if let Some(known) = Channel::from_name(channel) {
+        let region = format!("{:?}", known.region()).to_lowercase();
+        format!("arkit/{region}/{channel}")
+    } else {
+        debug_assert!(false, "{channel} is not an animation channel");
+        format!("arkit/{channel}")
+    }
+}
+
+/// The `arkit.missing` row for `channel`.
+fn missing_finding(channel: &str) -> Finding {
+    let what = match channel {
+        "cheekPuff" => "puffing the cheeks",
+        "tongueOut" => "sticking the tongue out",
+        "jawLeft" | "jawRight" => "moving the jaw sideways",
+        _ => return generic_missing(channel),
+    };
+    Finding::info("arkit.missing", format!("This model has no shape for {what}, so {channel} won't move it."))
+        .at(location(channel))
+        .hint(MISSING_HINT)
+}
+
+/// The `arkit.missing` row for a channel with no plain-language phrase.
+fn generic_missing(channel: &str) -> Finding {
+    Finding::info("arkit.missing", format!("This model has no shape for {channel}, so {channel} won't move it."))
+        .at(location(channel))
+        .hint(MISSING_HINT)
+}
+
+/// How to fix a missing channel.
+const MISSING_HINT: &str = "Generate the shape, or map another expression to it.";
 
 /// A morph target of the scene's meshes.
 struct Morph<'a> {
