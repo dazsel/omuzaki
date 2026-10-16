@@ -694,7 +694,7 @@ fn a_pending_stop_is_a_step_only_if_the_log_names_its_transaction() {
 }
 
 #[test]
-fn a_stop_the_executor_refuses_is_shown_and_the_host_closes_the_transaction_before_done() {
+fn a_stop_the_executor_refuses_is_shown_ends_unclosed_at_once_and_the_next_message_closes_it() {
     let rig = Rig::with(
         script(vec![call_turn("", &[("c1", "face_set_profile", "{}")]), long_text(20)]),
         RigOptions { hold_after: Some(FIRST_TURN_EVENTS + 2), ..RigOptions::default() },
@@ -712,8 +712,12 @@ fn a_stop_the_executor_refuses_is_shown_and_the_host_closes_the_transaction_befo
         .iter()
         .position(|e| matches!(e, AssistantEvent::Error(HostError::Mcp(t)) if t.contains("Stop was refused")))
         .expect("the refusal is shown");
-    assert!(refused < events.len() - 1 && matches!(events.last(), Some(AssistantEvent::Done)), "{events:?}");
-    assert!(rig.sessions.open_tx().is_none(), "the transaction is closed by the time Done is reported");
+    // Stop's ending makes no call that could wait on the server: the transaction is Unclosed at once, never Done.
+    assert!(refused < events.len() - 1 && events.last() == Some(&AssistantEvent::Unclosed), "{events:?}");
+    assert_eq!(rig.server.called("tx_commit") + rig.server.called("tx_rollback"), 0);
+    assert!(rig.sessions.open_tx().is_some(), "the executor still holds it");
+    assert_eq!(rig.say("again", 0.0).last(), Some(&AssistantEvent::Done));
+    assert!(rig.sessions.open_tx().is_none(), "the next message closed it first");
     assert_eq!(rig.sink.entries().iter().filter(|e| matches!(e, Entry::Step { .. })).count(), 1);
 }
 
@@ -753,10 +757,10 @@ fn a_refused_stop_whose_transaction_cannot_be_closed_ends_unclosed_and_the_next_
     rig.host.stop();
     rig.gate.open();
     let events = rig.until_done(0.0);
-    // Stop, the host's commit and its rollback all failed: the answer ends in the failed state, never `Done`.
+    // The executor refused the Stop: the answer ends in the failed state, never `Done`.
     assert_eq!(events.last(), Some(&AssistantEvent::Unclosed), "{events:?}");
     assert!(!events.contains(&AssistantEvent::Done), "{events:?}");
-    for said in ["Stop was refused", "cannot commit now", "cannot roll back now", "still open"] {
+    for said in ["Stop was refused", "still open"] {
         assert!(
             events.iter().any(|e| matches!(e, AssistantEvent::Error(HostError::Mcp(t)) if t.contains(said))),
             "the person is told {said:?}: {events:?}"
@@ -764,8 +768,17 @@ fn a_refused_stop_whose_transaction_cannot_be_closed_ends_unclosed_and_the_next_
     }
     assert!(rig.sessions.open_tx().is_some(), "the executor still holds it");
     assert!(rig.steps().is_empty());
-    assert_eq!(rig.server.called("tx_commit"), 1);
-    assert_eq!(rig.server.called("tx_rollback"), 1);
+
+    // The next message tries the commit, then the rollback; both refused, it does not run and ends Unclosed too.
+    let events = rig.say("still", 0.0);
+    assert_eq!(events.last(), Some(&AssistantEvent::Unclosed), "{events:?}");
+    for said in ["cannot commit now", "cannot roll back now"] {
+        assert!(
+            events.iter().any(|e| matches!(e, AssistantEvent::Error(HostError::Mcp(t)) if t.contains(said))),
+            "the person is told {said:?}: {events:?}"
+        );
+    }
+    assert_eq!((rig.server.called("tx_commit"), rig.server.called("tx_rollback")), (1, 1));
 
     refuse.store(false, std::sync::atomic::Ordering::SeqCst);
     let calls_before = rig.server.calls().len();

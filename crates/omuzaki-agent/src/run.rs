@@ -14,7 +14,7 @@ use crate::caps::{Counters, limit_note};
 use crate::context::person_text;
 use crate::store::cut_rationale;
 use crate::turn::TurnMode;
-use crate::tx::{self, Close, CloseCalls, Closed, TxState};
+use crate::tx::{self, Close, Closed, TxState};
 use crate::worker::Worker;
 
 /// Why an answer ends other than by finishing (the error side of the loop's `?`).
@@ -220,7 +220,7 @@ impl Worker {
             self.settle_ended_session();
             return Ok(());
         }
-        match self.close_in_order(&[Close::Commit, Close::Rollback], CloseCalls::Interruptible) {
+        match self.close_in_order(&[Close::Commit, Close::Rollback]) {
             Closed::Committed | Closed::Retained => Ok(()),
             Closed::Interrupted => Err(Flow::Stopped),
             Closed::RolledBack => {

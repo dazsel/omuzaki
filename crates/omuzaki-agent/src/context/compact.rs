@@ -15,7 +15,10 @@ use omuzaki_llm_api::message::{
 };
 use omuzaki_llm_api::usage::{Ledger, ModelInfo};
 
+use std::sync::Arc;
+
 use crate::context::person_text;
+use crate::history::{owed_sections, tool_of, unsent_contexts};
 use crate::run::{AnswerRun, Flow};
 use crate::turn::TurnMode;
 use crate::worker::Worker;
@@ -308,9 +311,15 @@ impl Worker {
 
     /// Compacts the conversation: digest, one summary turn, the rebuilt first message (D5).
     ///
+    /// What the model is owed is never dropped (`history.rs`): results it has not been sent become owed notices first;
+    /// the compaction's own `Context` carries everything owed; and the rebuilt message keeps the text of every context
+    /// no sent request has carried yet, before the person's latest message. That context and the `Compacted` entry are
+    /// recorded together, under the record lock, after which the history is replaced.
+    ///
     /// # Errors
     /// `ContextFull` if the mandatory part cannot fit; otherwise the summary turn's own failures.
     pub(crate) fn compact(&mut self, run: &mut AnswerRun) -> Result<(), Flow> {
+        self.unsent_results_to_notices();
         let info = self.llm.info().clone();
         let window = info.context_window;
         let entries = self.shared.snapshot_read();
@@ -341,53 +350,67 @@ impl Worker {
             .collect();
         let (latest, earlier) =
             users.split_last().map_or((String::new(), Vec::new()), |(l, e)| (l.clone(), e.to_vec()));
-        // The latest message keeps the context it was given: what it carried (others' changes, late results) is marked
-        // told, and the model may not have read it in a turn yet.
-        let latest = match latest_context(&entries) {
-            Some(context) => format!("{context}\n{latest}"),
-            None => latest,
-        };
-        let input = RebuildInput {
-            system: &system,
-            tools: &tools,
-            max_output: self.cfg.max_output,
-            summary,
-            pending,
-            plan,
-            latest,
-            earlier,
-            render: self.latest_render(),
-        };
-        let Some(rebuilt) = rebuild(&input, &info) else {
-            return Err(Flow::Fail(HostError::ContextFull));
-        };
-        let message: String = rebuilt
-            .iter()
-            .filter_map(|b| if let ContentBlock::Text(t) = b { Some(t.as_str()) } else { None })
-            .collect::<Vec<_>>()
-            .join("\n");
-        // A render the rebuilt message kept is stored as a blob first, so a resume puts it back. If it cannot be stored
-        // the compaction fails with nothing changed: a history that differs from the log is worse than no compaction.
-        let render = match rebuilt.iter().find_map(|b| match b {
-            ContentBlock::Image { bytes, mime, .. } => Some((bytes, *mime)),
-            _ => None,
-        }) {
-            Some((bytes, mime)) => Some(self.cfg.sink.put_blob(bytes, mime).map_err(Flow::Fail)?),
-            None => None,
-        };
-        // Stop may have been pressed while the summary was written and stored. Nothing is built on it then: the history
-        // stays as it was and Stop's cut applies to it. The count is read under Stop's lock, so a Stop either comes
-        // first and the summary is discarded, or comes after and is judged against this count.
-        let Some(answer_text) = self.shared.answer_text_unless_stopped() else {
-            return Err(Flow::Stopped);
-        };
-        // The log first, then the history: a Stop that lands during the append finds the compaction complete in both,
-        // and what the log says is what a resume rebuilds.
-        self.shared.record(match render {
-            Some(block) => Entry::compacted_with_render(message, block),
-            None => Entry::compacted(message),
+        let render = self.latest_render();
+        let (told, answer, sink, shared) =
+            (self.log.accounted(), run.answer, Arc::clone(&self.cfg.sink), Arc::clone(&self.shared));
+        let built = shared.record_built(|owed, transcript| {
+            let made = (|| {
+                let (sections, given) = owed_sections(owed, &told, &|id: &str| tool_of(transcript, id));
+                let carrier =
+                    (!sections.is_empty()).then(|| format!("Context for this message:\n{}", sections.join("\n")));
+                let mut kept = unsent_contexts(transcript);
+                kept.extend(carrier.clone());
+                kept.push(latest);
+                let input = RebuildInput {
+                    system: &system,
+                    tools: &tools,
+                    max_output: self.cfg.max_output,
+                    summary,
+                    pending,
+                    plan,
+                    latest: kept.join("\n"),
+                    earlier,
+                    render,
+                };
+                let rebuilt = rebuild(&input, &info).ok_or(Flow::Fail(HostError::ContextFull))?;
+                let message: String = rebuilt
+                    .iter()
+                    .filter_map(|b| if let ContentBlock::Text(t) = b { Some(t.as_str()) } else { None })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                // A render the rebuilt message kept is stored as a blob first, so a resume puts it back. If it cannot
+                // be stored the compaction fails with nothing changed: a history that differs from the log is worse
+                // than no compaction.
+                let blob = match rebuilt.iter().find_map(|b| match b {
+                    ContentBlock::Image { bytes, mime, .. } => Some((bytes, *mime)),
+                    _ => None,
+                }) {
+                    Some((bytes, mime)) => Some(sink.put_blob(bytes, mime).map_err(Flow::Fail)?),
+                    None => None,
+                };
+                // Stop may have been pressed while the summary was written and stored. Nothing is built on it then:
+                // the history stays as it was and Stop's cut applies to it. The count is read under Stop's lock, so a
+                // Stop either comes first and the summary is discarded, or comes after and is judged against it.
+                let answer_text = shared.answer_text_unless_stopped().ok_or(Flow::Stopped)?;
+                let mut record: Vec<Entry> =
+                    carrier.into_iter().map(|text| Entry::context(text).in_answer(answer)).collect();
+                // The log first, then the history: a Stop that lands during the append finds the compaction complete
+                // in both, and what the log says is what a resume rebuilds.
+                record.push(match blob {
+                    Some(block) => Entry::compacted_with_render(message, block),
+                    None => Entry::compacted(message),
+                });
+                Ok((record, rebuilt, given, answer_text))
+            })();
+            Some(match made {
+                Ok((record, rebuilt, given, answer_text)) => (record, Ok((rebuilt, given, answer_text))),
+                Err(flow) => (Vec::new(), Err(flow)),
+            })
         });
+        let (rebuilt, given, answer_text) = built.unwrap_or(Err(Flow::Stopped))?;
         self.messages = vec![Message::new(Role::User, rebuilt)];
+        // What the compaction's context carries is told once a request sends it, like any context.
+        self.queue_delivery(crate::history::Delivery::context(&given, Vec::new(), None));
         // The answer now starts after the rebuilt message; `msg_from` pointed into the history that is gone, and so did
         // the text of the answer's earlier turns, which Stop's byte count still includes.
         run.msg_from = 1;
@@ -395,20 +418,11 @@ impl Worker {
         self.ledger = Ledger::new();
         self.measured = 0;
         run.compacted = true;
-        // The rebuilt history no longer holds the project summary an earlier message gave: the next message gives it.
+        // The rebuilt history no longer holds a project summary an earlier, sent message gave: the next message gives
+        // it again (a kept, unsent context still sets it when it is sent).
         self.last_describe = None;
         Ok(())
     }
-}
-
-/// The text of the `Context` entry of the latest message in `entries`, if it had one.
-fn latest_context(entries: &[Entry]) -> Option<String> {
-    let user = entries.iter().rposition(|e| matches!(e, Entry::User { .. }))?;
-    let answer = entries[user].answer_id();
-    entries[user..].iter().find_map(|e| match e {
-        Entry::Context { text, .. } if !text.is_empty() && e.answer_id() == answer => Some(text.clone()),
-        _ => None,
-    })
 }
 
 #[cfg(test)]

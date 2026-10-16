@@ -1,7 +1,5 @@
 //! The host-local tools (D9): they run in the host, not the executor, and change nothing in the document.
 
-use std::time::Duration;
-
 use omuzaki_agent_api::entry::Entry;
 use omuzaki_agent_api::event::{AssistantEvent, PlanItem, PlanStatus, QuestionId};
 use omuzaki_llm_api::message::{ContentBlock, ImageOrigin, ToolDef};
@@ -152,24 +150,15 @@ impl Worker {
             return Ok(text_result("`uri` is required", true));
         };
         let pending = self.link.read_resource(uri);
-        loop {
-            match pending.poll(Duration::from_millis(1)) {
-                Some(Ok(Ok(blocks))) => {
-                    let origin =
-                        if uri.starts_with("omuzaki://render/") { ImageOrigin::Render } else { ImageOrigin::File };
-                    return Ok((reply_blocks(uri, &blocks, origin), false));
-                }
-                Some(Ok(Err(LinkError::Protocol(text)))) => {
-                    return Ok((vec![ContentBlock::text(wrap_data(uri, &text))], true));
-                }
-                Some(Ok(Err(LinkError::Cancelled))) => return Err(Flow::Stopped),
-                Some(Ok(Err(LinkError::Closed)) | Err(_)) => {
-                    return Err(self
-                        .ended()
-                        .map_or(Flow::Fail(omuzaki_agent_api::error::HostError::SessionEnded), Flow::Revoked));
-                }
-                None if self.shared.stopping() => return Err(Flow::Stopped),
-                None => {}
+        match self.await_mcp(&pending)? {
+            Ok(blocks) => {
+                let origin = if uri.starts_with("omuzaki://render/") { ImageOrigin::Render } else { ImageOrigin::File };
+                Ok((reply_blocks(uri, &blocks, origin), false))
+            }
+            Err(LinkError::Protocol(text)) => Ok((vec![ContentBlock::text(wrap_data(uri, &text))], true)),
+            // `await_mcp` gives up on the others itself.
+            Err(LinkError::Cancelled | LinkError::Closed) => {
+                Err(Flow::Fail(omuzaki_agent_api::error::HostError::SessionEnded))
             }
         }
     }

@@ -99,6 +99,8 @@ impl Worker {
         };
         if mode == TurnMode::Answer {
             run.counters.turn();
+            // The request carries the whole history: what was queued for the model is told now (`history.rs`).
+            self.request_sent();
         }
         let mut fold = TurnFold::default();
         let mut buf = TextBuf::new();

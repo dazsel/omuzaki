@@ -7,27 +7,45 @@
 //! reads it.** The later paths are the next request (the model's history), a compaction (it rebuilds the history from
 //! the transcript), Stop (it cuts the history and records its cutoff), and a reopened host (it reads the store). So the
 //! store, mirrored by the transcript, holds everything owed: what the model is owed ([`Entry::Notice`], late results),
-//! what it was given ([`Entry::Context`], tool results), and the undo steps still to be read from the log
-//! ([`Entry::Retained`]). Memory holds only caches of these, rebuilt from the store when a host opens. Every path that
-//! moves a mark, and what it stores first:
+//! what it was given ([`Entry::Context`], tool results), the undo steps still to be read from the log
+//! ([`Entry::Retained`]), and a log that may hold changes a lost heads-up reported ([`Entry::Unread`]). Memory holds
+//! only caches of these, rebuilt from the store when a host opens.
+//!
+//! Two rules make the invariant hold on every path, not path by path:
+//!
+//! 1. **One wait, which Stop cancels.** Every MCP request of the host thread (each tool call, the model's and the host's
+//!    own `tx_*`, `history_log`, `session_info`, `project_describe`, `approval_wait`; each resource read, the UI context
+//!    and chips included; the tool list) goes through `Worker::await_mcp`, and nothing else waits on the server: there is
+//!    no fixed wait anywhere. Stop abandons the request at once. An abandoned request of any kind (Stop, a closed link)
+//!    may have been answered, so it stores [`Entry::Unread`] and marks the log dirty; the next message reads the log
+//!    from `read_to` before its context, and what the lost reply reported becomes a `Notice`. A tool call's late reply
+//!    still reaches the host (`late_callback`), and its heads-up is stored too. (The panel's own `prompts/get` and the
+//!    idle fetch of `prompts/list` are not the host thread's requests: neither waits in an answer nor moves the
+//!    server's position in the log.)
+//! 2. **Delivered means sent.** A tool result, a context, and what they carry (heads-ups, notices, late results, the
+//!    project summary) count as told only once a request carrying them has been sent (`Worker::request_sent`, when the
+//!    provider accepts a turn's request). Storing them only queues them. Until then they stay in the model's history,
+//!    and a compaction keeps them: results it drops become owed notices, and the rebuilt message keeps every `Context`
+//!    after the last assistant turn (a turn answers a request that carried everything before it), with one more for
+//!    what is owed. A context it keeps that a request without a turn already carried is repeated, never lost. What is
+//!    queued counts as accounted for, so a read or a later context does not list it again.
+//!
+//! Every path that moves a mark, and what it stores first:
 //!
 //! | Mark | Moved when | Stored first |
 //! |---|---|---|
-//! | [`LogState::read_to`] | a host read returned events | a `Notice` for what in them is news to the model |
-//! | [`LogState::told`], by a tool result | the model's call returns | the `ToolResult` entry, whose text holds the heads-up (`Worker::execute`) |
-//! | `told`, by the context block (its heads-up, the notices and late results it carries) | the message is admitted | the `Context` entry, recorded under the record lock with the owed entries it carries (`Shared::record_context`) |
-//! | a heads-up leaving `pending` undelivered | at each step of the host thread (`settle_pending`) | a `Notice` |
+//! | [`LogState::read_to`] | a host read returned events | a `Notice` for what is news to the model |
+//! | [`LogState::told`], by a tool result | a request carrying the result is sent | the `ToolResult` entry, whose text holds the heads-up (`Worker::execute`) |
+//! | `told`, by a context (its heads-ups, the notices and late results it carries) | a request carrying it is sent | the `Context` entry, recorded under the record lock with the owed entries it carries (`Shared::record_built`) |
+//! | owed entries leaving the owed set | a `Context` carrying them is recorded | that `Context`, in the same lock section |
+//! | a heads-up leaving `pending` undelivered | at each gate, call, answer end, idle tick and close (`settle_pending`) | a `Notice` |
 //! | a late result's heads-up | the callback runs | the `:late` result and a `Notice`, together |
+//! | a request abandoned | Stop, or a closed link | `Unread`; the next message's read clears it in memory, and a reopened host reads it back |
 //! | a transaction leaving `Worker::tx` without a confirmed outcome | the executor confirmed it closed | `Retained` (`retain`) |
 //! | an outcome leaving `Worker::retained` | the log shows it | the `Step`, or `Settled` |
-//! | the project summary counted as given (`last_describe`) | the context is admitted | the `Context` entry; a compaction forgets the mark, as the rebuilt history drops the text |
-//! | Stop's cut of the model's history | Stop's ending | the `Stopped` cutoff (`stop.rs`) |
-//! | the history replaced by a compaction | the summary is written | the `Compacted` entry (`compact.rs`) |
-//!
-//! A call abandoned after the server may have answered it (Stop cancelled it, a bounded wait ran out) can have moved
-//! the server's *seen* cursor without the host seeing the heads-up: such a call marks the log [`LogState::dirty`], and
-//! the next message reads it from `read_to` before its context block, so what the lost heads-up reported becomes a
-//! `Notice`.
+//! | the project summary counted as given (`last_describe`) | a request carrying it is sent | the `Context` entry; a compaction forgets the mark |
+//! | Stop's cut of the model's history | Stop's ending, also while the host is dropped | the `Stopped` cutoff (`stop.rs`) |
+//! | the history replaced by a compaction | the summary is written | the compaction's `Context` and the `Compacted` entry, together |
 //!
 //! # Three cursors
 //!
@@ -38,7 +56,7 @@
 //! |---|---|---|---|
 //! | the server's *seen* | `omuzaki-mcp`, per session | the newest event the server counts as told to this session | the server, on **every** tool result (to the log's head, putting what others did since in that result's heads-up, `since_your_last_call`) and on every log read (to the log's head, whatever `after_n` asked). The host cannot hold it back; it learns where it went from each heads-up's `up_to_n` and each read's `latest`. |
 //! | [`LogState::read_to`] | the host's reads | the newest event the host's own reads of the log have returned | a host read only, to the read's `latest`, after storing what in it is news. The next read asks `after_n` = this cursor, so no event is examined twice and none is skipped. |
-//! | [`LogState::told`] | the model | the event ranges whose changes by others the model has been given | the rows above: a heads-up in a result the model received, the context block, the model's own `history_log` read. What the model is owed but not yet given is the `Notice` entries since the last `Context` entry. |
+//! | [`LogState::told`] | the model | the event ranges whose changes by others have reached the model in a sent request | the rows above: a heads-up in a result, a context, the model's own `history_log` read, each once a request carrying it is sent. What the model is owed but not yet given is the `Notice` entries and late results since the last `Context` entry. |
 //!
 //! Because the server moves *seen* on each read, a host read uses up the heads-up the next tool result would have
 //! carried. The host therefore lists what such a read returned that the model was neither told nor owed, as a `Notice`;
@@ -49,7 +67,7 @@
 //! **Where the numbering starts.** A session starts caught up: the server sets *seen* to the log's head when it opens
 //! the session, and never reports what came before. The host has no way to learn that number, so the host thread's first
 //! act is one read of the log's head (no events), which sets `read_to` and [`LogState::origin`]: nothing up to the origin
-//! is listed. What others changed between the session's opening and that read (the moment it takes the app to start the
+//! is listed, except above an `Unread` position a reopened host takes back from its store. What others changed between the session's opening and that read (the moment it takes the app to start the
 //! host) is therefore not listed; nothing of this session had been read by the model by then, and its first context block
 //! describes the project as it is. If that read fails there is no origin, and the first host read lists every change by
 //! others still in the window: an old change told twice is the lesser harm than a new one never told. A reopened host
@@ -147,15 +165,33 @@ pub(crate) fn heads_up_of(reply: &ToolReply) -> Option<HeadsUp> {
     Some(HeadsUp { after, upto, json: data.to_string() })
 }
 
-/// What a reply tells the model when the model receives it: its heads-up, and for the model's own read of the log,
-/// the range that read returned. Applied with [`Worker::deliver`] once the reply is stored.
+/// What something stored and placed in the model's history tells the model, which counts once a request carrying it
+/// has been sent ([`Worker::request_sent`]): the event ranges it reports, and the project summary a context gave. A
+/// result's heads-up is kept too, so a compaction that drops the result before it is sent stores it as owed.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Delivery {
     heads_up: Option<HeadsUp>,
-    log_range: Option<(u64, u64)>,
+    ranges: Vec<(u64, u64)>,
+    describe: Option<String>,
+    /// Part of a tool result (which a compaction drops), not of a context's text (which it keeps).
+    in_result: bool,
 }
 
-/// What `reply` to a call of `tool` with `args` tells the model that receives it.
+impl Delivery {
+    /// What a message's context tells the model: the ranges of the owed notices it carries (`given`), the heads-ups of
+    /// the results it quotes (`parts`), and the project summary.
+    pub(crate) fn context(given: &Ranges, parts: Vec<Delivery>, describe: Option<String>) -> Self {
+        let mut ranges: Vec<(u64, u64)> = given.spans().collect();
+        for part in parts {
+            ranges.extend(part.heads_up.map(|h| (h.after, h.upto)));
+            ranges.extend(part.ranges);
+        }
+        Self { heads_up: None, ranges, describe, in_result: false }
+    }
+}
+
+/// What `reply` to a call of `tool` with `args` tells the model that receives it: its heads-up, and for the model's own
+/// read of the log, the range that read returned.
 pub(crate) fn delivery_of(tool: &str, args: Option<&Value>, reply: &ToolReply) -> Delivery {
     let log_range = (tool == "history_log" && !reply.is_error)
         .then(|| {
@@ -164,7 +200,7 @@ pub(crate) fn delivery_of(tool: &str, args: Option<&Value>, reply: &ToolReply) -
             log.get("latest").and_then(Value::as_u64).map(|latest| (after, latest))
         })
         .flatten();
-    Delivery { heads_up: heads_up_of(reply), log_range }
+    Delivery { heads_up: heads_up_of(reply), ranges: log_range.into_iter().collect(), describe: None, in_result: true }
 }
 
 /// The host's positions in the op log (see the module docs).
@@ -178,7 +214,13 @@ pub(crate) struct LogState {
     pub told: Ranges,
     /// Heads-ups of replies the host received and has not yet given to the model or stored as owed.
     pending: Vec<HeadsUp>,
-    /// A call was abandoned after the server may have answered it: the next message reads the log first.
+    /// What is stored and in the model's history but not yet in a sent request.
+    unsent: Vec<Delivery>,
+    /// The newest event number the host knows the server has reported to this session (a heads-up's `up_to_n`, a
+    /// read's `latest`): a heads-up lost after this point reports nothing at or below it.
+    known: u64,
+    /// A request was abandoned after the server may have answered it (an `Unread` entry says so in the store): the next
+    /// message reads the log first.
     pub dirty: bool,
     /// When the log is next read for retained outcomes, on the host's clock; `None` when nothing is retained.
     next_poll: Option<f64>,
@@ -187,20 +229,34 @@ pub(crate) struct LogState {
 }
 
 impl LogState {
-    /// Whether event `n` is news to the model: after the origin, and neither told nor owed (`owed` are the ranges of the
-    /// owed notices).
-    fn is_news(&self, n: u64, owed: &Ranges) -> bool {
-        self.origin.is_none_or(|origin| n > origin) && !self.told.contains(n) && !owed.contains(n)
+    /// Whether event `n` is news to the model: after the origin, and neither accounted for (`accounted`) nor owed (`owed`
+    /// are the ranges of the owed notices).
+    fn is_news(&self, n: u64, accounted: &Ranges, owed: &Ranges) -> bool {
+        self.origin.is_none_or(|origin| n > origin) && !accounted.contains(n) && !owed.contains(n)
     }
 
-    /// The model was given what `delivery` stands for.
+    /// What the model has been sent or is about to be: `told`, and what is queued in its history unsent. A change in it
+    /// is never listed or given again.
+    pub(crate) fn accounted(&self) -> Ranges {
+        let mut ranges = self.told.clone();
+        for delivery in &self.unsent {
+            if let Some(h) = &delivery.heads_up {
+                ranges.insert(h.after, h.upto);
+            }
+            for &(after, upto) in &delivery.ranges {
+                ranges.insert(after, upto);
+            }
+        }
+        ranges
+    }
+
+    /// A request carrying what `delivery` stands for was sent: it is told.
     fn apply(&mut self, delivery: &Delivery) {
         if let Some(heads_up) = &delivery.heads_up {
             self.told.insert(heads_up.after, heads_up.upto);
-            self.pending.retain(|p| p != heads_up);
         }
-        if let Some((after, latest)) = delivery.log_range {
-            self.told.insert(after, latest);
+        for &(after, upto) in &delivery.ranges {
+            self.told.insert(after, upto);
         }
     }
 }
@@ -273,6 +329,27 @@ pub(crate) struct Retained {
     pub rationale: String,
 }
 
+/// The tool the call `id` named, from the `ToolCall` entries of `transcript`.
+pub(crate) fn tool_of(transcript: &[Entry], id: &str) -> Option<String> {
+    transcript.iter().find_map(|e| match e {
+        Entry::ToolCall { id: call, tool, .. } if call == id => Some(tool.clone()),
+        _ => None,
+    })
+}
+
+/// The text of every `Context` entry no sent request has carried yet: those after the last `Assistant` entry (an
+/// assistant turn answers a request that carried everything before it). A compaction keeps them.
+pub(crate) fn unsent_contexts(transcript: &[Entry]) -> Vec<String> {
+    let since = transcript.iter().rposition(|e| matches!(e, Entry::Assistant { .. })).map_or(0, |at| at + 1);
+    transcript[since..]
+        .iter()
+        .filter_map(|e| match e {
+            Entry::Context { text, .. } if !text.is_empty() => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 /// The sections a context block gives for what is owed: one listing every change by others not yet given (newest
 /// last, at most [`MISSED_MAX`]), and one per late result. Also the ranges they give. `tool_of` names the tool a call
 /// id belongs to.
@@ -329,25 +406,60 @@ pub(crate) fn owed_sections(
 }
 
 impl Worker {
-    /// The events numbered above `after`, and the log's newest number, read with a call Stop cannot cut short. A read
-    /// that fails after the server may have answered it leaves the log dirty: `read_to` has not moved, so the next read
+    /// The events numbered above `after`, and the log's newest number, through the one wait (`await_mcp`): Stop
+    /// abandons the read at once. A read that fails or is abandoned leaves `read_to` where it was, so the next read
     /// covers the same events.
     fn read_log_after(&mut self, after: u64) -> Option<(Vec<Value>, u64)> {
         let args = serde_json::json!({ "after_n": after }).as_object().cloned();
-        let reply = self.call_after_stop("history_log", args).filter(|reply| !reply.is_error)?;
+        let reply = self.call_plain("history_log", args).ok().filter(|reply| !reply.is_error)?;
         let log: Value = serde_json::from_str(&plain_text(&reply.blocks)).ok()?;
         let latest = log.get("latest").and_then(Value::as_u64).unwrap_or(0);
+        self.log.known = self.log.known.max(latest);
         Some((log.get("events")?.as_array()?.clone(), latest))
     }
 
     /// The host thread's first acts: where this session's numbering starts (see the module docs; reads no events), and
-    /// the outcomes its store says are still to be read, from `history`.
+    /// what its store says is still to be read from the log: outcomes retained, and changes a lost heads-up reported.
     pub(crate) fn start_log(&mut self, history: &[Entry]) {
         if let Some((_, latest)) = self.read_log_after(u64::MAX) {
             self.log.read_to = Some(latest);
             self.log.origin = Some(latest);
         }
         self.recover_retained(history);
+        self.recover_unread(history);
+    }
+
+    /// Takes the `Unread` entries after the last `Context` of `history`: the log is read from the lowest before the next
+    /// context, and what it lists there counts as news (it may never have reached the model).
+    fn recover_unread(&mut self, history: &[Entry]) {
+        let since = history.iter().rposition(|e| matches!(e, Entry::Context { .. })).map_or(0, |at| at + 1);
+        let lowest = history[since..]
+            .iter()
+            .filter_map(|e| if let Entry::Unread { after, .. } = e { Some(*after) } else { None })
+            .min();
+        if let Some(after) = lowest {
+            self.log.dirty = true;
+            self.log.read_to = Some(self.log.read_to.map_or(after, |r| r.min(after)));
+            self.log.origin = Some(self.log.origin.map_or(after, |o| o.min(after)));
+        }
+    }
+
+    /// A request was abandoned after the server may have answered it: stores `Unread` with the newest position the host
+    /// knows the server reported (nothing at or below it can be what the lost heads-up held), once per episode, then
+    /// marks the log dirty.
+    pub(crate) fn mark_unread(&mut self) {
+        if !self.log.dirty {
+            self.shared.record(Entry::unread(self.log.known));
+            self.log.dirty = true;
+        }
+    }
+
+    /// Still dirty when a context is stored (the read before it failed): `Unread` again after it, so the store keeps
+    /// saying so.
+    pub(crate) fn keep_unread_past_context(&mut self) {
+        if self.log.dirty {
+            self.shared.record(Entry::unread(self.log.known));
+        }
     }
 
     /// Takes the `Retained` entries of `history` that no `Step` or `Settled` followed, to read their outcome again.
@@ -379,17 +491,15 @@ impl Worker {
     /// model is stored as a `Notice` before `read_to` moves past it.
     fn read_log(&mut self) -> Option<Vec<Value>> {
         let after = self.log.read_to.unwrap_or(0);
-        let Some((events, latest)) = self.read_log_after(after) else {
-            self.log.dirty = true;
-            return None;
-        };
+        // A read Stop abandoned has marked the log unread itself; one the server refused leaves things as they were.
+        let (events, latest) = self.read_log_after(after)?;
         let me = self.session_info().and_then(|info| serde_json::to_value(info.actor).ok());
-        let owed = owed_ranges(&self.shared.owed());
+        let (owed, accounted) = (owed_ranges(&self.shared.owed()), self.log.accounted());
         let lines: Vec<String> = events
             .iter()
             .filter(|entry| {
                 let n = entry.get("n").and_then(Value::as_u64).unwrap_or(0);
-                n > after && self.log.is_news(n, &owed)
+                n > after && self.log.is_news(n, &accounted, &owed)
             })
             .filter_map(|entry| change_of_other(entry.get("event"), me.as_ref()))
             .collect();
@@ -449,18 +559,46 @@ impl Worker {
         }
     }
 
-    /// Accounts for a reply the host received from the server: a heads-up in it waits in `pending` until the model is
-    /// given the reply ([`deliver`](Self::deliver)) or it is stored as owed ([`settle_pending`](Self::settle_pending)).
-    /// Every reply passes here.
+    /// Accounts for a reply the host received from the server: a heads-up in it waits in `pending` until the reply is
+    /// stored for the model ([`queue_delivery`](Self::queue_delivery)) or it is stored as owed
+    /// ([`settle_pending`](Self::settle_pending)). Every reply passes here.
     pub(crate) fn took_reply(&mut self, reply: &ToolReply) {
         if let Some(heads_up) = heads_up_of(reply) {
+            self.log.known = self.log.known.max(heads_up.upto);
             self.log.pending.push(heads_up);
         }
     }
 
-    /// The model was given a reply, already stored: what it carried is told.
-    pub(crate) fn deliver(&mut self, delivery: &Delivery) {
-        self.log.apply(delivery);
+    /// What `delivery` stands for is stored and in the model's history: it counts as told once a request carrying it is
+    /// sent.
+    pub(crate) fn queue_delivery(&mut self, delivery: Delivery) {
+        for &(_, upto) in &delivery.ranges {
+            self.log.known = self.log.known.max(upto);
+        }
+        self.log.unsent.push(delivery);
+    }
+
+    /// A request carrying the model's whole history was sent: everything queued is told, the project summary included.
+    pub(crate) fn request_sent(&mut self) {
+        for delivery in std::mem::take(&mut self.log.unsent) {
+            self.log.apply(&delivery);
+            if delivery.describe.is_some() {
+                self.last_describe = delivery.describe;
+            }
+        }
+    }
+
+    /// A compaction is about to drop the results the model has not been sent: their heads-ups are stored as owed, so
+    /// the compaction's own context carries them. Contexts not yet sent stay queued: the compaction keeps their text.
+    pub(crate) fn unsent_results_to_notices(&mut self) {
+        let (results, contexts): (Vec<Delivery>, Vec<Delivery>) =
+            std::mem::take(&mut self.log.unsent).into_iter().partition(|d| d.in_result);
+        self.log.unsent = contexts;
+        let notices: Vec<Entry> =
+            results.into_iter().filter_map(|d| d.heads_up).map(|h| Entry::notice(h.after, h.upto, h.json)).collect();
+        if !notices.is_empty() {
+            self.shared.record_all(notices);
+        }
     }
 
     /// Stores every heads-up still pending as a `Notice` the next context gives, unless the model was told it already.
@@ -468,7 +606,7 @@ impl Worker {
         let pending = std::mem::take(&mut self.log.pending);
         let notices: Vec<Entry> = pending
             .into_iter()
-            .filter(|h| !self.log.told.covers(h.after, h.upto))
+            .filter(|h| !self.log.accounted().covers(h.after, h.upto))
             .map(|h| Entry::notice(h.after, h.upto, h.json))
             .collect();
         if !notices.is_empty() {
@@ -477,7 +615,7 @@ impl Worker {
     }
 
     /// Takes the heads-up of `delivery` out of `pending`, so it is not stored as owed while the reply that carries it is
-    /// about to be given to the model.
+    /// about to be stored for the model.
     pub(crate) fn hold_for_delivery(&mut self, delivery: &Delivery) {
         if let Some(heads_up) = &delivery.heads_up {
             self.log.pending.retain(|p| p != heads_up);
@@ -513,7 +651,7 @@ mod tests {
         log.told.insert(4, 5);
         let mut owed = Ranges::default();
         owed.insert(6, 7);
-        let news: Vec<u64> = (1..=8).filter(|n| log.is_news(*n, &owed)).collect();
+        let news: Vec<u64> = (1..=8).filter(|n| log.is_news(*n, &log.accounted(), &owed)).collect();
         // (4, 5] is told and (6, 7] owed: 5 and 7 are not news, 4 and 6 are.
         assert_eq!(news, [3, 4, 6, 8]);
     }
@@ -548,9 +686,7 @@ mod tests {
     fn a_delivery_tells_the_heads_up_and_the_models_own_read() {
         let mut log = LogState::default();
         let heads_up = HeadsUp { after: 3, upto: 6, json: "{}".into() };
-        log.pending.push(heads_up.clone());
-        log.apply(&Delivery { heads_up: Some(heads_up), log_range: Some((0, 2)) });
-        assert_eq!(log.pending, Vec::<HeadsUp>::new());
+        log.apply(&Delivery { heads_up: Some(heads_up), ranges: vec![(0, 2)], describe: None, in_result: true });
         assert!(log.told.covers(0, 2) && log.told.covers(3, 6));
     }
 

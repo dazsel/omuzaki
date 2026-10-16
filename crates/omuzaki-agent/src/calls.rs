@@ -13,7 +13,7 @@ use serde_json::Value;
 
 use crate::content::{plain_text, tool_result_blocks};
 use crate::history::{Delivery, delivery_of, heads_up_of};
-use crate::link::{LateFn, LinkError, ReplyBlock, ToolInfo, ToolReply};
+use crate::link::{LateFn, LinkError, Pending, ReplyBlock, ToolInfo, ToolReply};
 use crate::refusal::{self, Refusal};
 use crate::run::{AnswerRun, Flow};
 use crate::tx::{self, TxUse};
@@ -99,17 +99,38 @@ impl Worker {
     pub(crate) fn tool_list(&mut self) -> Result<&[ToolInfo], HostError> {
         if self.tools.is_none() {
             let pending = self.link.list_tools();
-            let tools = loop {
-                match pending.poll(Duration::from_millis(1)) {
-                    Some(Ok(result)) => break result.map_err(HostError::from)?,
-                    Some(Err(e)) => return Err(e.into()),
-                    None if self.shared.stopping() => return Err(HostError::Mcp("stopped".into())),
-                    None => {}
-                }
+            let tools = match self.await_mcp(&pending) {
+                Ok(answer) => answer.map_err(HostError::from)?,
+                Err(Flow::Stopped) => return Err(HostError::Mcp("stopped".into())),
+                Err(Flow::Revoked(_) | Flow::Unclosed) => return Err(HostError::SessionEnded),
+                Err(Flow::Fail(error)) => return Err(error),
             };
             self.tools = Some(tools);
         }
         Ok(self.tools.as_deref().unwrap_or_default())
+    }
+
+    /// The one wait for an MCP request on the host thread: every tool call (the model's and the host's own: `tx_*`,
+    /// `history_log`, `session_info`, `project_describe`, `approval_wait`), every resource read and the tool list go
+    /// through it, and nothing else waits on the server. Stop abandons it at once (D4): a tool call's cancel flag is
+    /// Stop's, and the wait gives up the moment Stop is pressed. A closed link abandons it too. A request abandoned for
+    /// any reason may have been answered by the server, which then moved its position in the op log past a heads-up the
+    /// host never got, so it marks the log unread (`history.rs`). `Ok` is the server's answer, protocol errors included.
+    pub(crate) fn await_mcp<T>(
+        &mut self,
+        pending: &Pending<Result<T, LinkError>>,
+    ) -> Result<Result<T, LinkError>, Flow> {
+        let flow = loop {
+            match pending.poll(Duration::from_millis(1)) {
+                Some(Ok(Err(LinkError::Cancelled))) => break Flow::Stopped,
+                Some(Ok(Err(LinkError::Closed)) | Err(_)) => break self.link_down(),
+                Some(Ok(answer)) => return Ok(answer),
+                None if self.shared.stopping() => break Flow::Stopped,
+                None => {}
+            }
+        };
+        self.mark_unread();
+        Err(flow)
     }
 
     fn tool_info(&self, name: &str) -> Option<ToolInfo> {
@@ -131,22 +152,15 @@ impl Worker {
     ) -> Result<ToolReply, Flow> {
         let cancel = self.shared.fresh_cancel();
         let pending = self.link.call_tool(name, args, cancel, late);
-        let flow = loop {
-            match pending.poll(Duration::from_millis(1)) {
-                Some(Ok(Ok(reply))) => {
-                    self.took_reply(&reply);
-                    return Ok(reply);
-                }
-                Some(Ok(Err(LinkError::Protocol(text)))) => return Ok(protocol_reply(&text)),
-                Some(Ok(Err(LinkError::Cancelled))) => break Flow::Stopped,
-                Some(Ok(Err(LinkError::Closed)) | Err(_)) => break self.link_down(),
-                None if self.shared.stopping() => break Flow::Stopped,
-                None => {}
+        match self.await_mcp(&pending)? {
+            Ok(reply) => {
+                self.took_reply(&reply);
+                Ok(reply)
             }
-        };
-        // Abandoned: the server may have answered, moving its seen cursor past a heads-up the host never got.
-        self.log.dirty = true;
-        Err(flow)
+            Err(LinkError::Protocol(text)) => Ok(protocol_reply(&text)),
+            // `await_mcp` gives up on the others itself.
+            Err(LinkError::Cancelled | LinkError::Closed) => Err(self.link_down()),
+        }
     }
 
     /// The flow for a link that closed: the session's own end if it has one.
@@ -208,10 +222,10 @@ impl Worker {
         self.shared.emit(AssistantEvent::tool_result(&call.id, !is_error));
         let stored = self.store_blocks(&blocks);
         self.shared.record(Entry::tool_result(&call.id, !is_error, stored));
-        // Stored, and the model gets it in this turn's results: what it carries is told. Any other heads-up of the call
-        // (a refusal the host acted on) is owed.
+        // Stored, and in this turn's results: what it carries is told once the request that sends it is (`history.rs`).
+        // Any other heads-up of the call (a refusal the host acted on) is owed.
         if let Some(delivery) = delivery {
-            self.deliver(&delivery);
+            self.queue_delivery(delivery);
         }
         self.settle_pending();
         Ok(if is_error {

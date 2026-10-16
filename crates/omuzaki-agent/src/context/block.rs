@@ -4,14 +4,12 @@
 //! (in full the first time, afterwards only when it changed), what others changed since the last answer, results that
 //! arrived after a Stop, and what the person attached. Everything the person did not type is wrapped as data.
 
-use std::time::Duration;
-
 use omuzaki_agent_api::entry::{AnswerId, Entry};
 use omuzaki_agent_api::message::{ContextChip, UserMessage};
 use omuzaki_llm_api::message::{ContentBlock, ImageMime, ImageOrigin};
 
 use crate::content::{plain_text, wrap_data};
-use crate::history::{Delivery, delivery_of, owed_sections};
+use crate::history::{Delivery, delivery_of, owed_sections, tool_of};
 use crate::link::{ReplyBlock, ToolReply};
 use crate::worker::Worker;
 
@@ -59,10 +57,10 @@ impl Worker {
         // Every other heads-up received so far is owed: stored now, so this context gives it.
         self.settle_pending();
 
-        let told = self.log.told.clone();
+        let told = self.log.accounted();
         let shared = std::sync::Arc::clone(&self.shared);
-        let recorded = shared.record_context(|owed, tool_of| {
-            let (owed_sections, given) = owed_sections(owed, &told, tool_of);
+        let recorded = shared.record_built(|owed, transcript| {
+            let (owed_sections, given) = owed_sections(owed, &told, &|id: &str| tool_of(transcript, id));
             sections.extend(owed_sections);
             sections.extend(chips);
             if sections.is_empty() && owed.is_empty() {
@@ -73,24 +71,18 @@ impl Worker {
             } else {
                 format!("Context for this message:\n{}", sections.join("\n"))
             };
-            Some((Entry::context(text.clone()).in_answer(answer), (text, given)))
+            Some((vec![Entry::context(text.clone()).in_answer(answer)], (text, given)))
         });
         let text = match recorded {
-            // Stored: what it carries is told.
+            // Stored: what it carries is told once the request that sends it is (`history.rs`).
             Some((text, given)) => {
-                for (after, upto) in given.spans() {
-                    self.log.told.insert(after, upto);
-                }
-                for delivery in &deliveries {
-                    self.deliver(delivery);
-                }
-                if describe.is_some() {
-                    self.last_describe = describe;
-                }
+                self.queue_delivery(Delivery::context(&given, deliveries, describe));
                 text
             }
             None => String::new(),
         };
+        // A read of the log that failed before this context leaves the store saying so after it too.
+        self.keep_unread_past_context();
         let mut blocks = Vec::with_capacity(images.len() + 1);
         if !text.is_empty() {
             blocks.push(ContentBlock::text(text));
@@ -99,17 +91,11 @@ impl Worker {
         blocks
     }
 
-    /// Reads a resource, or `None` if the server does not have it (the block is then simply shorter).
+    /// Reads a resource, or `None` if the server does not have it (the block is then simply shorter) or Stop abandoned
+    /// the read (`await_mcp` marks the log unread then).
     fn read_blocks(&mut self, uri: &str) -> Option<Vec<ReplyBlock>> {
         let pending = self.link.read_resource(uri);
-        loop {
-            match pending.poll(Duration::from_millis(1)) {
-                Some(Ok(Ok(blocks))) => return Some(blocks),
-                Some(_) => return None,
-                None if self.shared.stopping() => return None,
-                None => {}
-            }
-        }
+        self.await_mcp(&pending).ok()?.ok()
     }
 
     /// A tool of the server that may be missing; its result when present and not an error.
@@ -121,8 +107,8 @@ impl Worker {
         self.call_plain(tool, None).ok().filter(|reply| !reply.is_error)
     }
 
-    /// The project summary: in full the first time, afterwards only when it changed (`last_describe`, set once the
-    /// context that gives it is stored). A heads-up leads its text, so the model reads it there.
+    /// The project summary: in full the first time, afterwards only when it changed (`last_describe`, set once a
+    /// request carrying the context that gives it is sent). A heads-up leads its text, so the model reads it there.
     fn describe_if_new(&mut self, deliveries: &mut Vec<Delivery>) -> Option<String> {
         let reply = self.optional_call(DESCRIBE_TOOL)?;
         let text = plain_text(&reply.blocks);

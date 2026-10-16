@@ -680,10 +680,10 @@ fn a_heads_up_lost_with_an_abandoned_call_survives_closing_the_host() {
     rig.until_done(0.0);
     let sessions = Arc::clone(&rig.sessions);
     let sink = Arc::clone(&rig.sink);
-    // Closed before another message could read the log: closing reads it, and stores what the model is owed.
+    // Closed before another message could read the log: the store already says it is unread, and nothing waits.
     drop(rig);
     let entries = sink.entries();
-    assert!(entries.iter().any(|e| matches!(e, Entry::Notice { text, .. } if text.contains("lost.before.closing"))));
+    assert!(entries.iter().any(|e| matches!(e, Entry::Unread { .. })), "{entries:?}");
 
     sessions.set_state(omuzaki_ops_api::SessionState::Active);
     sessions.open_caught_up();
@@ -717,4 +717,251 @@ fn a_host_dropped_while_stopping_still_stores_the_cutoff() {
     let (resumed, markdown) = store_replay(&entries);
     assert_eq!(assistant_text(&resumed.entries), "", "nothing was read");
     assert!(!markdown.contains("FIRST-TURN-TEXT"), "{markdown}");
+}
+
+/// Every kind of MCP request the host thread makes, for the held-reply test.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Request {
+    UiContext,
+    ChipResource,
+    Describe,
+    SessionInfo,
+    LogReadAtStart,
+    TxBegin,
+    ModelEdit,
+    ModelLogResource,
+    ApprovalWait,
+    Rollback,
+    Commit,
+    RecoveryCommit,
+}
+
+const EVERY_REQUEST: [Request; 12] = [
+    Request::UiContext,
+    Request::ChipResource,
+    Request::Describe,
+    Request::SessionInfo,
+    Request::LogReadAtStart,
+    Request::TxBegin,
+    Request::ModelEdit,
+    Request::ModelLogResource,
+    Request::ApprovalWait,
+    Request::Rollback,
+    Request::Commit,
+    Request::RecoveryCommit,
+];
+
+/// The resource a held-request kind reads, if it is a resource read.
+fn held_resource(kind: Request) -> Option<&'static str> {
+    match kind {
+        Request::UiContext => Some("omuzaki://ui/context"),
+        Request::ChipResource => Some("omuzaki://note/1"),
+        Request::ModelLogResource => Some("omuzaki://log"),
+        _ => None,
+    }
+}
+
+/// The server for one held request: the context tools and resources, and `kind` replaced by a version that, once
+/// `armed`, lets somebody else edit, moves the session's position past the edit (the heads-up is written, or the log is
+/// read), sets `held`, and holds its reply for ever.
+fn held_request_server(
+    sessions: &Arc<FakeSessions>,
+    kind: Request,
+    armed: &Arc<AtomicBool>,
+    held: &Arc<AtomicBool>,
+    gate: &Arc<tokio::sync::Notify>,
+) -> ScriptedServer {
+    let server = with_session_info(sessions);
+    server.add_fixed(tool("project_describe", "Project", "query", true), Outcome::text("Project: one character."));
+    server.resources.lock().unwrap().insert(
+        "omuzaki://ui/context".into(),
+        rmcp::model::ResourceContents::text("selection: head", "omuzaki://ui/context"),
+    );
+    server
+        .resources
+        .lock()
+        .unwrap()
+        .insert("omuzaki://note/1".into(), rmcp::model::ResourceContents::text("a note", "omuzaki://note/1"));
+    if held_resource(kind).is_some() {
+        // The test holds the resource itself (`Rig::server.held_resource`), right before the message.
+        return server;
+    }
+    let (name, tool_kind, read_only) = match kind {
+        Request::Describe => ("project_describe", "query", true),
+        Request::SessionInfo => ("session_info", "builtin", true),
+        Request::LogReadAtStart => ("history_log", "builtin", true),
+        Request::TxBegin => ("tx_begin", "builtin", false),
+        Request::ModelEdit => ("face_set_profile", "edit", false),
+        Request::ApprovalWait => ("approval_wait", "builtin", false),
+        Request::Rollback => ("tx_rollback", "builtin", false),
+        _ => ("tx_commit", "builtin", false),
+    };
+    let (s, armed, held, gate) = (Arc::clone(sessions), Arc::clone(armed), Arc::clone(held), Arc::clone(gate));
+    server.add(tool(name, name, tool_kind, read_only), move |args, _| {
+        let after = args.get("after_n").and_then(serde_json::Value::as_u64);
+        // What the request does when it runs normally.
+        let normal = |s: &Arc<FakeSessions>| match kind {
+            Request::Describe => Outcome::text("Project: one character."),
+            Request::SessionInfo => Outcome::text("session 1"),
+            Request::LogReadAtStart => {
+                let (events, latest) = s.read_log(after.unwrap_or(0));
+                Outcome::text(&serde_json::json!({"latest": latest, "events": events}).to_string())
+            }
+            Request::TxBegin => {
+                s.begin_tx(args.get("label").and_then(serde_json::Value::as_str).unwrap_or("").to_owned());
+                Outcome::text("tx started")
+            }
+            Request::ModelEdit => Outcome::text("applied"),
+            Request::ApprovalWait => Outcome::text("approval applied"),
+            Request::Rollback => {
+                s.rollback_open_tx();
+                Outcome::text("tx rolled back")
+            }
+            _ => {
+                s.commit_open_tx();
+                Outcome::text("tx committed")
+            }
+        };
+        // The start read is never the one held, and nor is the first answer's commit of a recovery.
+        let start_read = after == Some(u64::MAX);
+        if start_read || !armed.load(Ordering::SeqCst) {
+            if kind == Request::RecoveryCommit {
+                return Outcome::failure("cannot commit now");
+            }
+            return normal(&s);
+        }
+        armed.store(false, Ordering::SeqCst);
+        s.other_change("held.change");
+        let out = normal(&s);
+        held.store(true, Ordering::SeqCst);
+        out.held_after_heads_up(&gate)
+    });
+    server
+}
+
+#[test]
+fn stop_abandons_every_kind_of_request_at_once_and_the_next_message_reads_what_it_lost() {
+    for kind in EVERY_REQUEST {
+        let context = format!("{kind:?}");
+        let (armed, held, gate) =
+            (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)), Arc::new(tokio::sync::Notify::new()));
+        let edit = ("c1", "face_set_profile", "{}");
+        let turns = match kind {
+            Request::TxBegin | Request::ModelEdit | Request::ApprovalWait => vec![call_turn("", &[edit])],
+            Request::ModelLogResource => {
+                vec![call_turn("", &[("c1", "read_resource", "{\"uri\":\"omuzaki://log\"}")])]
+            }
+            Request::Rollback => vec![call_turn("", &[edit, ("c2", "discard_changes", "{}")])],
+            Request::Commit => vec![call_turn("", &[edit]), say_turn("done")],
+            Request::RecoveryCommit => vec![call_turn("", &[edit]), say_turn("done")],
+            Request::LogReadAtStart => vec![call_turn("", &[edit]), long_text(20)],
+            _ => vec![],
+        };
+        let mut all = turns;
+        all.push(say_turn("ok"));
+        let stream_hold = (kind == Request::LogReadAtStart).then_some(6 + 2);
+        let (a, h, g) = (Arc::clone(&armed), Arc::clone(&held), Arc::clone(&gate));
+        let rig =
+            Rig::with(script(all), RigOptions { hold_after: stream_hold, ..RigOptions::default() }, move |sessions| {
+                held_request_server(sessions, kind, &a, &h, &g)
+            });
+        // What comes first: an Unclosed transaction for the recovery; a retained outcome for the read at the start.
+        match kind {
+            Request::RecoveryCommit => assert_eq!(rig.say("one", 0.0).last(), Some(&AssistantEvent::Unclosed)),
+            Request::LogReadAtStart => {
+                rig.sessions.set_stop(StopBehaviour::Pending { close_after: 0.0 }, 0.0);
+                rig.sessions.set_log_lag(true);
+                rig.host.send(UserMessage::new("one")).unwrap();
+                rig.wait_parked();
+                rig.host.stop();
+                rig.until_done(0.0);
+                rig.gate.open();
+                rig.sessions.set_stop(StopBehaviour::Committed, 0.0);
+            }
+            Request::ApprovalWait => rig.sessions.queue_approval(7),
+            _ => {}
+        }
+        if kind == Request::ApprovalWait {
+            let queued = omuzaki_ops_api::ErrorDetail::Queued {
+                approval: omuzaki_ops_api::ApprovalId(7),
+                need: omuzaki_ops_api::Need::Person { reason: "r".into() },
+            };
+            rig.server.add_fixed(
+                tool("face_set_profile", "Face profile", "edit", false),
+                Outcome::refusal("waiting", &queued),
+            );
+        }
+        armed.store(true, Ordering::SeqCst);
+        if let Some(uri) = held_resource(kind) {
+            *rig.server.held_resource.lock().unwrap() = Some(HeldResource {
+                uri: uri.to_owned(),
+                op: "held.change".into(),
+                held: Arc::clone(&held),
+                gate: Arc::clone(&gate),
+            });
+        }
+        let message = UserMessage::new("go");
+        let message = if kind == Request::ChipResource {
+            message.with_chips(vec![omuzaki_agent_api::message::ContextChip::Resource("omuzaki://note/1".into())])
+        } else {
+            message
+        };
+        rig.host.send(message).unwrap();
+        Rig::wait_for(&format!("the held {context}"), || held.load(Ordering::SeqCst));
+        let reads = rig.server.host_log_reads();
+        let (clicked, started) = (rig.clock.now().0, std::time::Instant::now());
+        rig.host.stop();
+        let events = rig.until_done(0.0);
+        // No wait of any length on the reply: on the host's clock, and no fixed wait in real time either (the removed
+        // one was five seconds).
+        assert!(rig.clock.now().0 - clicked <= 0.1, "{context}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(2), "{context}: {:?}", started.elapsed());
+        assert!(events.last().is_some_and(AssistantEvent::ends_answer), "{context}: {events:?}");
+        rig.sessions.release_log();
+
+        rig.say("again", 0.0);
+        assert!(rig.server.host_log_reads() > reads, "{context}: the next message read the log");
+        let request = request_text(rig.llm.requests().last().unwrap());
+        assert_eq!(request.matches("held.change").count(), 1, "{context}: told once:\n{request}");
+        drop(gate);
+    }
+}
+
+#[test]
+fn notices_a_stopped_compaction_never_sent_still_reach_the_model_through_the_next_compaction() {
+    // The second message's context carries a notice and is stored; Stop lands during its compaction's summary, before
+    // any request carried that context. The third message compacts again: the notice must still reach the model.
+    let rig = Rig::with(
+        script(vec![
+            call_turn("", &[("c1", "face_set_profile", "{}")]),
+            heavy_ending("DONE-ONE"),
+            say_turn("SUMMARY-A"),
+            say_turn("SUMMARY-B"),
+            say_turn("ok"),
+        ]),
+        RigOptions {
+            window: Some(20_000),
+            prices: free_prices(),
+            hold_after: Some(6 + 4 + 2),
+            ..RigOptions::default()
+        },
+        commit_after_an_edit_by_others,
+    );
+    rig.host.send(UserMessage::new("one")).unwrap();
+    assert_eq!(rig.until_done(0.0).last(), Some(&AssistantEvent::Done));
+    rig.host.send(UserMessage::new("two")).unwrap();
+    rig.wait_parked();
+    assert_eq!(rig.llm.requests().len(), 3, "parked in the second message's summary turn");
+    rig.host.stop();
+    rig.until_done(0.0);
+    let entries = rig.sink.entries();
+    assert!(entries.iter().any(|e| matches!(e, Entry::Context { text, .. } if text.contains("during.the.commit"))));
+    assert!(!entries.iter().any(|e| matches!(e, Entry::Compacted { .. })), "the stopped compaction stored nothing");
+    rig.gate.open();
+    rig.say("three", 0.0);
+    let requests = rig.llm.requests();
+    assert_eq!(requests.len(), 5, "the third message compacted first");
+    let request = request_text(requests.last().unwrap());
+    assert!(request.contains("SUMMARY-B"), "{request}");
+    assert_eq!(request.matches("during.the.commit").count(), 1, "{request}");
 }

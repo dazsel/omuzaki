@@ -156,6 +156,17 @@ pub struct ScriptedServer {
     counts: Arc<Mutex<BTreeMap<String, usize>>>,
     /// The fake executor whose op log the results' heads-ups come from, as `omuzaki-mcp` adds them.
     pub log_of: Arc<Mutex<Option<Arc<FakeSessions>>>>,
+    /// A resource read to hold (once), after somebody else's edit and, for the log, after the read caught the session up.
+    pub held_resource: Arc<Mutex<Option<HeldResource>>>,
+}
+
+/// A resource read the server holds: `op` is applied by somebody else first; reading `omuzaki://log` then moves the
+/// session's position past it, as `omuzaki-mcp` does; `held` is set, and the reply waits on `gate`.
+pub struct HeldResource {
+    pub uri: String,
+    pub op: String,
+    pub held: Arc<std::sync::atomic::AtomicBool>,
+    pub gate: Arc<tokio::sync::Notify>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -175,6 +186,7 @@ impl ScriptedServer {
             on_call: Arc::default(),
             counts: Arc::default(),
             log_of: Arc::default(),
+            held_resource: Arc::default(),
         }
     }
 
@@ -332,6 +344,28 @@ impl ServerHandler for ScriptedServer {
         request: ReadResourceRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, McpError> {
+        let sessions = lock(&self.log_of).clone();
+        let held = {
+            let mut slot = lock(&self.held_resource);
+            if slot.as_ref().is_some_and(|h| h.uri == request.uri) { slot.take() } else { None }
+        };
+        if let Some(held) = held {
+            if let Some(sessions) = &sessions {
+                sessions.other_change(&held.op);
+                if request.uri == "omuzaki://log" {
+                    let _ = sessions.read_log(0);
+                }
+            }
+            held.held.store(true, Ordering::SeqCst);
+            held.gate.notified().await;
+        }
+        if request.uri == "omuzaki://log"
+            && let Some(sessions) = sessions
+        {
+            let (events, latest) = sessions.read_log(0);
+            let body = json!({"latest": latest, "events": events}).to_string();
+            return Ok(ReadResourceResult::new(vec![ResourceContents::text(body, "omuzaki://log")]).into());
+        }
         let contents = lock(&self.resources)
             .get(&request.uri)
             .cloned()

@@ -3,8 +3,8 @@
 //!
 //! Stop's ending moves the tracked transaction through the transitions of `tx.rs` and nothing else: the executor's
 //! answer to `Sessions::stop` confirms a commit (`Committed(id)`), or the host waits until the executor no longer holds
-//! the transaction (`Pending`, D4's 50 ms poll) and retains it for the log; a Stop the executor refuses is followed by the
-//! host's own commit, then rollback. No log read happens before the answer ends, so `Done` follows the executor's
+//! the transaction (`Pending`, D4's 50 ms poll) and retains it for the log; a Stop the executor refuses leaves it
+//! Unclosed, for the next message to close. Stop's ending makes no MCP call at all, so `Done` follows the executor's
 //! answer, and the step a lagging log confirms is recorded later.
 
 use omuzaki_agent_api::entry::Entry;
@@ -14,7 +14,7 @@ use omuzaki_ops_api::StopStep;
 
 use crate::cut::cut_history;
 use crate::run::AnswerRun;
-use crate::tx::{Close, CloseCalls, Closed, STOPPED_SUFFIX, TxState};
+use crate::tx::{STOPPED_SUFFIX, TxState};
 use crate::wait;
 use crate::worker::Worker;
 
@@ -101,9 +101,10 @@ impl Worker {
         }
     }
 
-    /// The executor refused the Stop, so the transaction is still the host's. It is closed here, before the answer ends,
-    /// the way the executor's Stop would have: committed as a step, else discarded. If neither works it is Unclosed: the
-    /// person is told, the answer ends `Unclosed`, and the next message closes it first.
+    /// The executor refused the Stop (or says it closed nothing, yet still holds the transaction): the transaction is
+    /// still the host's, and Stop's ending makes no call that could wait on the server. It is Unclosed at once: the person
+    /// is told, the answer ends `Unclosed`, and the next message closes it before anything else. A session that has
+    /// ended rolled it back already.
     fn close_after_refused_stop(&mut self) {
         if self.tx.is_none() {
             return;
@@ -112,12 +113,12 @@ impl Worker {
             self.settle_ended_session();
             return;
         }
-        let told = match self.close_in_order(&[Close::Commit, Close::Rollback], CloseCalls::Bounded) {
-            Closed::Committed | Closed::Retained | Closed::Interrupted => return,
-            Closed::RolledBack => "the changes of this answer could not be kept as an undo step and were discarded",
-            Closed::Unclosed => "the changes of this answer are still open; your next message closes them first",
-        };
-        self.shared.emit(AssistantEvent::Error(HostError::Mcp(told.into())));
+        if let Some(t) = self.tx.as_mut() {
+            t.state = TxState::Unclosed;
+        }
+        self.shared.emit(AssistantEvent::Error(HostError::Mcp(
+            "the changes of this answer are still open; your next message closes them first".into(),
+        )));
     }
 
     /// Polls the session every 50 ms until it no longer holds the tracked transaction: a joined driver job is still

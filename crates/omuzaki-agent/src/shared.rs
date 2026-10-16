@@ -214,31 +214,20 @@ impl Shared {
         transcript[since..].iter().filter(|e| matches!(e, Entry::Notice { .. }) || is_late(e)).cloned().collect()
     }
 
-    /// Records a message's `Context` entry with what is owed in it. Under the record lock, `build` is given the owed
-    /// entries and a lookup of the tool each call id belongs to, and returns the entry to record (or `None` for an empty
-    /// context, recording nothing) with whatever the caller wants back. Nothing can be recorded between reading what is
-    /// owed and recording the context, so an owed entry is either in this context or recorded after it and owed to the
-    /// next one, in the store as in the transcript.
-    pub(crate) fn record_context<T>(
+    /// Records what `build` makes of what is owed: under the record lock, `build` is given the owed entries and the
+    /// transcript, and returns the entries to record (a message's `Context`; a compaction's `Context` and `Compacted`)
+    /// with whatever the caller wants back, or `None` to record nothing. Nothing can be recorded between reading what is
+    /// owed and recording what carries it, so an owed entry is either carried, or recorded after and owed to the next
+    /// carrier, in the store as in the transcript. `build` must not record.
+    pub(crate) fn record_built<T>(
         &self,
-        build: impl FnOnce(&[Entry], &dyn Fn(&str) -> Option<String>) -> Option<(Entry, T)>,
+        build: impl FnOnce(&[Entry], &[Entry]) -> Option<(Vec<Entry>, T)>,
     ) -> Option<T> {
         let _records = self.records();
-        let (owed, calls) = {
-            let ctl = self.lock();
-            let calls: Vec<(String, String)> = ctl
-                .transcript
-                .iter()
-                .filter_map(|e| match e {
-                    Entry::ToolCall { id, tool, .. } => Some((id.clone(), tool.clone())),
-                    _ => None,
-                })
-                .collect();
-            (Self::owed_in(&ctl.transcript), calls)
-        };
-        let tool_of = |id: &str| calls.iter().find(|(call, _)| call == id).map(|(_, tool)| tool.clone());
-        let (context, back) = build(&owed, &tool_of)?;
-        self.append_unlocked(vec![context]);
+        let transcript = self.lock().transcript.clone();
+        let owed = Self::owed_in(&transcript);
+        let (entries, back) = build(&owed, &transcript)?;
+        self.append_unlocked(entries);
         Some(back)
     }
 

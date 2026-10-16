@@ -211,6 +211,14 @@ pub enum Entry {
         /// The transaction.
         tx: TxId,
     },
+    /// A request was abandoned (Stop, a closed link) after the server may have answered it, moving its position in the
+    /// op log past a heads-up the host never got: the changes by others above `after` may not have reached the model.
+    /// The log is read from there before the next `Context`, by this host or one reopened on the conversation.
+    #[non_exhaustive]
+    Unread {
+        /// No heads-up above this event number can have reached the model.
+        after: u64,
+    },
 }
 
 impl Entry {
@@ -299,6 +307,11 @@ impl Entry {
         Self::Settled { tx }
     }
 
+    /// What others changed above event `after` may not have reached the model.
+    pub fn unread(after: u64) -> Self {
+        Self::Unread { after }
+    }
+
     /// The same entry, naming `id` as its answer. Only a `User`, a `Stopped` and a `Context` entry carry one; others are
     /// unchanged.
     #[must_use]
@@ -367,6 +380,7 @@ mod tests {
             Entry::notice(4, 9, "hair.set_colour by Sam"),
             Entry::retained(TxId(31), "Assistant: oval (stopped)", "the jaw reads round", 12),
             Entry::settled(TxId(32)),
+            Entry::unread(14),
         ]
     }
 
@@ -392,6 +406,7 @@ mod tests {
             "notice",
             "retained",
             "settled",
+            "unread",
         ];
         for (entry, kind) in every_entry().into_iter().zip(kinds) {
             let value = serde_json::to_value(&entry).unwrap();

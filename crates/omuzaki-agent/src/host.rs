@@ -122,12 +122,11 @@ impl Worker {
         self.close_session();
     }
 
-    /// Ends the session if it is still live, once, and closes the link. First, what memory still holds of the log is
-    /// stored: heads-ups no one was given, and one last read if a call was abandoned or an outcome is retained, so a
-    /// host reopened on this conversation finds it in the store (`history.rs`).
+    /// Ends the session if it is still live, once, and closes the link. First, heads-ups no one was given are stored as
+    /// owed. Nothing else waits on the server here: retained outcomes and a log left unread are already in the store
+    /// (`Retained`, `Unread`), and a host reopened on this conversation reads them back (`history.rs`).
     fn close_session(&mut self) {
         self.settle_pending();
-        self.reconcile_now();
         if let Some(info) = self.session_info()
             && !matches!(info.state, SessionState::Ended { .. })
         {
