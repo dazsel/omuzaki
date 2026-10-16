@@ -89,7 +89,7 @@ fn the_band_is_never_buried_in_the_crown() {
                 .collect();
             let (upper, lower) =
                 outside.iter().fold((f32::MAX, f32::MIN), |(u, l), p| (u.min(polar(*p)), l.max(polar(*p))));
-            let top_edge: Vec<&Vec3> = outside.iter().filter(|p| polar(**p) < 0.5 * (upper + lower)).collect();
+            let top_edge: Vec<&Vec3> = outside.iter().filter(|p| polar(**p) < upper.midpoint(lower)).collect();
             assert!(!top_edge.is_empty(), "hat {name} on {template}: no band vertex checked");
             for p in top_edge {
                 assert!(!inside_mesh(*p, crown), "hat {name} on {template}: the band at {p} is inside the crown");

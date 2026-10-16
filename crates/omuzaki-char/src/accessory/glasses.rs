@@ -264,7 +264,7 @@ impl Glasses {
         let centre_at = surface + DVec3::Z * (p.gap / front.z.max(MIN_FACING));
         // Wrap: the lens turns about its upright axis towards the temple by half the angle its half width spans on the
         // head, so its outer edge follows the head round instead of standing off where the face curves away (seen from
-        // three-quarters, the far lens stays at the head's outline instead of beyond it).
+        // three-quarters, the far lens shows past the head's outline only by about its distance off the face).
         let o = p.style.outline();
         let half_width = o.half_width * p.size * eyes.scale;
         let wrap = DQuat::from_axis_angle(up, WRAP_SHARE * half_width / (surface - centre).length().max(half_width));

@@ -110,7 +110,9 @@ fn render_tile(built: &BuiltCharacter, pose: Option<&Pose>, face: &[(FaceLayerId
         let geometry = pose.map_or_else(|| m.mesh.geometry.clone(), |pose| skinned_geometry(built, &m.mesh, pose));
         let mesh = renderer.create_mesh(&geometry).unwrap();
         let mut spec = built.materials[&m.mesh.material].clone();
-        if m.part != ACC.parse().unwrap() {
+        if m.part == ACC.parse().unwrap() {
+            spec.overlays.clear();
+        } else {
             // The body, head and hair are context: plain toon, because their textures and programs are not uploaded
             // here. The head keeps its face overlay, painted above.
             let colour =
@@ -119,8 +121,6 @@ fn render_tile(built: &BuiltCharacter, pose: Option<&Pose>, face: &[(FaceLayerId
                 overlays: spec.overlays,
                 ..omuzaki_char_api::MaterialSpec::toon(colour)
             };
-        } else {
-            spec.overlays.clear();
         }
         spec.base_texture = None;
         let layer = |id: FaceLayerId| layers.iter().find(|(l, _)| *l == id).map(|(_, t)| *t);
