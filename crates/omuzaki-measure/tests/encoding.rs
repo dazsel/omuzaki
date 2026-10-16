@@ -221,7 +221,7 @@ fn a_png_cicp_chunk_outranks_every_other_colour_chunk() {
     let srgb_chunk = chunk(*b"sRGB", &[0]);
     let linear = chunk(*b"gAMA", &100_000u32.to_be_bytes());
     // Display P3 and BT.2020 PQ are refused, naming the code points.
-    let p3 = with_chunks(&png_2x2(), &[display_p3.clone()]);
+    let p3 = with_chunks(&png_2x2(), std::slice::from_ref(&display_p3));
     assert_eq!(
         refusal(&p3),
         "The image is not sRGB (a cICP colour declaration (primaries 12, transfer 13, matrix 0)). Convert it to sRGB and try again."
