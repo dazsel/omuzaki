@@ -3,11 +3,12 @@
 
 // Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
 #![allow(clippy::expect_used, clippy::unwrap_used)]
+#![allow(clippy::disallowed_methods, reason = "the test edits the settings files by hand, as a person would")]
 
 #[path = "live/support.rs"]
 mod support;
 
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 
 use omuzaki_anim::MAX_TRIGGERS;
@@ -21,12 +22,12 @@ use omuzaki_settings_api::meta::{AgentWrite, Apply, InProfile, SettingScope};
 use omuzaki_settings_api::registry;
 use omuzaki_settings_api::service::{Settings, SettingsExt};
 use omuzaki_settings_api::setting::Setting;
+use omuzaki_stage::perform::Performer;
 use omuzaki_stage::perform::host::{CalibrationState, PerformControl, PerformHandle, PerformHost, perform_channel};
 use omuzaki_stage::perform::input::{InputCamera, InputHost, InputSource, LiveInput, NoPrompt, SourceKind, SourceSlot};
 use omuzaki_stage::perform::settings::{
-    PerformCalibrations, PerformRetarget, PerformTriggers, RetargetPrefs, Restored, restore, save, save_calibration,
+    PerformCalibrations, PerformRetarget, PerformTriggers, Restored, RetargetPrefs, restore, save, save_calibration,
 };
-use omuzaki_stage::perform::Performer;
 use omuzaki_track_api::camera::CameraId;
 use omuzaki_track_api::tracker::TrackerConfig;
 use serde_json::{Value, json};
@@ -47,7 +48,7 @@ struct App {
 
 impl App {
     /// Starts the app on `dir` with the cameras named `cameras` plugged in.
-    fn start(dir: &PathBuf, cameras: &[&str]) -> Self {
+    fn start(dir: &Path, cameras: &[&str]) -> Self {
         let paths = Paths::new(dir.join("config"), dir.join("data"));
         let store = Arc::new(Store::open(&paths));
         let mut performer = performer(&HumanoidPose::REST);
@@ -115,7 +116,12 @@ impl App {
         let state = self.input.state();
         View {
             retarget: self.handle.status().retarget,
-            triggers: self.handle.triggers().into_iter().map(|t| (t.binding.key, t.binding.expression.as_str().to_owned())).collect(),
+            triggers: self
+                .handle
+                .triggers()
+                .into_iter()
+                .map(|t| (t.binding.key, t.binding.expression.as_str().to_owned()))
+                .collect(),
             source: state.source,
             camera: state.camera,
             calibration: self.handle.calibration(),
@@ -138,7 +144,7 @@ struct View {
 }
 
 /// The first run: the person sets every V0 key through the ops and the app saves them.
-fn first_run(dir: &PathBuf) -> View {
+fn first_run(dir: &Path) -> View {
     let mut app = App::start(dir, &["a", "b"]);
     app.op("perform.set_retarget", json!({ "smoothing": 0.7, "mirror": false })).unwrap();
     app.op("trigger.bind", json!({ "key": "F1", "expression": "happy" })).unwrap();
@@ -262,22 +268,43 @@ fn each_v0_key_declares_who_may_write_it_and_where_it_lives() {
         (PerformCalibrations::META, SettingScope::Machine, AgentWrite::Confirm, InProfile::Excluded),
     ];
     for (meta, scope, agent, profile) in table {
-        assert_eq!((meta.scope, meta.agent, meta.profile, meta.apply), (scope, agent, profile, Apply::Live), "{}", meta.key);
+        assert_eq!(
+            (meta.scope, meta.agent, meta.profile, meta.apply),
+            (scope, agent, profile, Apply::Live),
+            "{}",
+            meta.key
+        );
         assert!(registry::find(meta.key).is_some(), "{} is registered", meta.key);
     }
 }
 
 #[test]
 fn the_hotkey_list_is_bounded_and_the_keys_distinct() {
-    let binding = |key: &str| {
-        omuzaki_stage::perform::triggers::TriggerBinding {
-            key: key.to_owned(),
-            expression: omuzaki_face_api::ExpressionId::new("happy").unwrap(),
-            mode: omuzaki_anim::TriggerMode::Toggle,
-        }
+    let binding = |key: &str| omuzaki_stage::perform::triggers::TriggerBinding {
+        key: key.to_owned(),
+        expression: omuzaki_face_api::ExpressionId::new("happy").unwrap(),
+        mode: omuzaki_anim::TriggerMode::Toggle,
     };
     let too_many: Vec<_> = (0..=MAX_TRIGGERS).map(|i| binding(&format!("F{i}"))).collect();
     assert!(PerformTriggers::check(&too_many).is_err());
     assert!(PerformTriggers::check(&vec![binding("F1"), binding("f1")]).is_err(), "one key, twice");
     assert!(PerformTriggers::check(&vec![binding("F1"), binding("F2")]).is_ok());
+}
+
+#[test]
+fn unbinding_the_camera_is_saved_and_comes_back_unbound() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().to_path_buf();
+    {
+        let app = App::start(&path, &["a"]);
+        app.op("input.select", json!({ "source": "webcam" })).unwrap();
+        app.op("input.bind_camera", json!({ "camera": "a" })).unwrap();
+        app.op("input.bind_camera", json!({ "camera": null })).unwrap();
+        app.quit();
+    }
+    let mut app = App::start(&path, &["a"]);
+    let restored = app.restore(CHARACTER);
+    assert_eq!(restored.findings, vec![], "an unbound camera is a value the files can hold");
+    assert_eq!((app.view().source, app.view().camera), (SourceKind::Webcam, None));
+    assert_eq!(restored.missing_camera, None);
 }

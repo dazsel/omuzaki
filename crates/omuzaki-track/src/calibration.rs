@@ -158,11 +158,7 @@ fn profile_key(profile: DeviceProfile) -> String {
 fn check_calibration(character: &str, filed: &str, calibration: &Calibration) -> Result<(), CalibrationError> {
     let made = profile_key(calibration.profile);
     if made != filed {
-        return Err(CalibrationError::WrongProfile {
-            character: character.to_owned(),
-            filed: filed.to_owned(),
-            made,
-        });
+        return Err(CalibrationError::WrongProfile { character: character.to_owned(), filed: filed.to_owned(), made });
     }
     let unusable = |what: String| CalibrationError::Unusable { character: character.to_owned(), what };
     for info in Channel::arkit() {
@@ -172,7 +168,7 @@ fn check_calibration(character: &str, filed: &str, calibration: &Calibration) ->
         }
     }
     let head = calibration.head_rest;
-    let position_ok = head.position.is_none_or(|p| p.is_finite());
+    let position_ok = head.position.is_none_or(omuzaki_core::glam::Vec3::is_finite);
     if !(head.yaw.is_finite() && head.pitch.is_finite() && head.roll.is_finite() && position_ok) {
         return Err(unusable("the head rest pose".to_owned()));
     }
