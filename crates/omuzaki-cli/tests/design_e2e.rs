@@ -24,7 +24,8 @@ use omuzaki_char_api::{
 };
 use omuzaki_cli::cli::try_parse_from;
 use omuzaki_cli::session::{Session, open_executor_with, open_runner};
-use omuzaki_core::glam::UVec2;
+use omuzaki_core::glam::{Mat4, UVec2, Vec2, Vec3};
+use omuzaki_core::mesh::MeshData;
 use omuzaki_doc_api::DocPath;
 use omuzaki_io_api::{
     ExportCtx, ExportOptions, ImportCtx, ImportInput, ImportOptions, IoScene, PerfectSync, run_export, run_import,
@@ -120,21 +121,48 @@ fn build(doc: &Value) -> BuiltCharacter {
         .unwrap_or_else(|e| panic!("the designed character doesn't build: {e}"))
 }
 
-/// Every mesh of `built` as bytes (name, positions, normals, indices, weights), so two builds compare exactly.
-fn mesh_bytes(built: &BuiltCharacter) -> Vec<(String, Vec<u8>)> {
-    built
-        .meshes
-        .iter()
-        .map(|m| {
-            let g = &m.mesh.geometry;
-            let mut bytes = Vec::new();
-            for p in g.positions.iter().chain(&g.normals) {
-                bytes.extend(p.to_array().iter().flat_map(|x| x.to_le_bytes()));
-            }
-            bytes.extend(g.indices.iter().flat_map(|i| i.to_le_bytes()));
-            (format!("{}/{}", m.part, m.mesh.name), bytes)
-        })
-        .collect()
+/// Every float and index of `geometry` as raw bits, attribute after attribute: positions, normals, UVs, colours, joint
+/// indices, weights, the extra attributes (name, width and data) and the triangle indices. Two meshes give the same
+/// bits only when they are bit for bit the same (`==` on floats would call `0.0` and `-0.0` equal). The pattern names
+/// every field, so a field added to `MeshData` stops this compiling until it is compared too.
+fn geometry_bits(geometry: &MeshData) -> Vec<u32> {
+    let MeshData { positions, normals, uvs, colours, joints, weights, extra, indices } = geometry;
+    let mut bits = Vec::new();
+    for v in positions.iter().chain(normals) {
+        bits.extend(v.to_array().map(f32::to_bits));
+    }
+    bits.extend(uvs.iter().flat_map(|uv| uv.to_array().map(f32::to_bits)));
+    bits.extend(colours.iter().chain(weights).flat_map(|c| c.map(f32::to_bits)));
+    bits.extend(joints.iter().flat_map(|j| j.map(u32::from)));
+    for attribute in extra {
+        bits.extend(attribute.name.as_str().bytes().map(u32::from));
+        bits.push(u32::from(attribute.components));
+        bits.extend(attribute.data.iter().map(|x| x.to_bits()));
+    }
+    bits.extend(indices);
+    bits
+}
+
+/// Asserts that `rebuilt` is the character `built` was: every mesh bit for bit (all of [`geometry_bits`]), with the
+/// same joint bindings, material and draw settings; the same materials, textures, skeleton and springs, and face
+/// binding.
+fn assert_same_build(built: &BuiltCharacter, rebuilt: &BuiltCharacter) {
+    assert_eq!(rebuilt.meshes.len(), built.meshes.len(), "the number of meshes");
+    for (a, b) in built.meshes.iter().zip(&rebuilt.meshes) {
+        let name = format!("{}/{}", a.part, a.mesh.name);
+        assert_eq!((&b.part, b.local, &b.mesh.name), (&a.part, a.local, &a.mesh.name), "mesh order");
+        assert!(geometry_bits(&b.mesh.geometry) == geometry_bits(&a.mesh.geometry), "{name}: the geometry differs");
+        assert_eq!(b.mesh.joint_bones, a.mesh.joint_bones, "{name}: the joint bindings");
+        assert_eq!(
+            (&b.mesh.material, b.mesh.casts_shadow, b.mesh.render_order, b.mesh.dynamic),
+            (&a.mesh.material, a.mesh.casts_shadow, a.mesh.render_order, a.mesh.dynamic),
+            "{name}: material and draw settings",
+        );
+    }
+    assert!(rebuilt.materials == built.materials, "the materials differ");
+    assert!(rebuilt.textures == built.textures, "the textures differ");
+    assert!(rebuilt.rig == built.rig, "the skeleton or the springs differ");
+    assert!(rebuilt.face == built.face, "the face binding differs");
 }
 
 /// One view of the turnaround: its size, and its pixels.
@@ -202,6 +230,128 @@ fn export_vrm(doc: &Value, built: &BuiltCharacter) -> (IoScene, Vec<u8>) {
     (gathered.scene, bytes)
 }
 
+/// How far a value read back from the VRM file may be from the value written, by kind. The file stores 32-bit floats,
+/// and neither the exporter nor the importer converts units or axes for VRM 1.0, so these allow float rounding only:
+/// a micrometre for lengths, a millionth for unit quantities and quaternion components.
+mod tolerance {
+    /// Positions, morph offsets and translations, metres.
+    pub const LENGTH_M: f32 = 1e-6;
+    /// Normals, UVs, vertex colours, skin weights, scales, rotation quaternion components, material factors.
+    pub const UNIT: f32 = 1e-6;
+    /// Inverse bind matrix entries (rotation, scale and metres mixed).
+    pub const MATRIX: f32 = 1e-5;
+}
+
+/// The largest difference seen per kind of value in a VRM round trip, against the [`tolerance`] for that kind.
+#[derive(Default)]
+struct Drift(std::collections::BTreeMap<&'static str, (f32, f32)>);
+
+impl Drift {
+    /// Records `a` against `b` (same length, or the comparison fails) under `kind` with `limit`.
+    fn floats(&mut self, kind: &'static str, limit: f32, what: &str, a: &[f32], b: &[f32]) {
+        assert_eq!(a.len(), b.len(), "{what}: {kind} count");
+        let worst = a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max);
+        let entry = self.0.entry(kind).or_insert((0.0, limit));
+        entry.0 = entry.0.max(worst);
+    }
+
+    /// Records every number in two JSON values of the same shape under `kind`; anything else in them must be equal.
+    fn json(&mut self, kind: &'static str, limit: f32, what: &str, a: &Value, b: &Value) {
+        match (a, b) {
+            (Value::Number(x), Value::Number(y)) => {
+                #[allow(clippy::cast_possible_truncation, reason = "the file's values are f32")]
+                let (x, y) = (x.as_f64().unwrap() as f32, y.as_f64().unwrap() as f32);
+                self.floats(kind, limit, what, &[x], &[y]);
+            }
+            (Value::Array(x), Value::Array(y)) => {
+                assert_eq!(x.len(), y.len(), "{what}: list length");
+                x.iter().zip(y).for_each(|(x, y)| self.json(kind, limit, what, x, y));
+            }
+            (Value::Object(x), Value::Object(y)) => {
+                assert_eq!(x.keys().collect::<Vec<_>>(), y.keys().collect::<Vec<_>>(), "{what}: fields");
+                x.iter().for_each(|(key, x)| self.json(kind, limit, &format!("{what}.{key}"), x, &y[key]));
+            }
+            _ => assert_eq!(a, b, "{what}"),
+        }
+    }
+
+    /// Fails naming every kind whose drift went past its tolerance; prints the table either way.
+    fn check(&self) {
+        for (kind, (worst, limit)) in &self.0 {
+            println!("VRM round trip: {kind:<22} worst {worst:.3e} (tolerance {limit:.0e})");
+        }
+        let over: Vec<_> = self.0.iter().filter(|(_, (worst, limit))| worst > limit).map(|(kind, _)| *kind).collect();
+        assert!(over.is_empty(), "the VRM round trip moved {over:?} past their tolerances");
+    }
+}
+
+/// Asserts that `back`, read from the VRM file, is the scene `sent` was written from: the node tree with every bone's
+/// transform, the skins and their inverse bind matrices, every primitive's geometry (positions, normals, UVs, colours,
+/// joints, weights, indices) and morph targets, the materials' values, the textures and images, the metadata and the
+/// avatar block, within [`tolerance`].
+fn assert_round_trip(sent: &IoScene, back: &IoScene) {
+    use tolerance::{LENGTH_M, MATRIX, UNIT};
+    let mut drift = Drift::default();
+    let flat3 = |v: &[Vec3]| v.iter().flat_map(Vec3::to_array).collect::<Vec<f32>>();
+
+    assert_eq!(back.nodes.len(), sent.nodes.len(), "the number of nodes");
+    assert_eq!(back.roots, sent.roots, "the root nodes");
+    for (a, b) in sent.nodes.iter().zip(&back.nodes) {
+        let what = format!("node {}", a.name);
+        assert_eq!((&b.name, &b.children, b.mesh, b.skin), (&a.name, &a.children, a.mesh, a.skin), "{what}");
+        let (ta, tb) = (&a.transform, &b.transform);
+        drift.floats("bone translation", LENGTH_M, &what, &ta.translation.to_array(), &tb.translation.to_array());
+        drift.floats("bone scale", UNIT, &what, &ta.scale.to_array(), &tb.scale.to_array());
+        // q and -q are the same rotation: compare against whichever sign of the read one is nearer.
+        let rb = if ta.rotation.dot(tb.rotation) < 0.0 { -tb.rotation } else { tb.rotation };
+        drift.floats("bone rotation", UNIT, &what, &ta.rotation.to_array(), &rb.to_array());
+    }
+
+    assert_eq!(back.skins.len(), sent.skins.len(), "the number of skins");
+    for (a, b) in sent.skins.iter().zip(&back.skins) {
+        let what = format!("skin {}", a.name);
+        assert_eq!((&b.name, &b.joints, b.skeleton), (&a.name, &a.joints, a.skeleton), "{what}");
+        let matrices =
+            |s: &omuzaki_io_api::Skin| s.inverse_bind.iter().flat_map(Mat4::to_cols_array).collect::<Vec<_>>();
+        drift.floats("inverse bind", MATRIX, &what, &matrices(a), &matrices(b));
+    }
+
+    assert_eq!(back.meshes.len(), sent.meshes.len(), "the number of meshes");
+    for (a, b) in sent.meshes.iter().zip(&back.meshes) {
+        assert_eq!((&b.name, &b.morph_target_names), (&a.name, &a.morph_target_names), "mesh {}", a.name);
+        assert_eq!(b.primitives.len(), a.primitives.len(), "mesh {}: primitives", a.name);
+        for (n, (pa, pb)) in a.primitives.iter().zip(&b.primitives).enumerate() {
+            let what = format!("mesh {} primitive {n}", a.name);
+            let (ga, gb) = (&pa.mesh, &pb.mesh);
+            assert_eq!(pb.material, pa.material, "{what}: material");
+            assert_eq!(gb.indices, ga.indices, "{what}: triangle indices");
+            assert_eq!(gb.joints, ga.joints, "{what}: joint indices");
+            drift.floats("position (m)", LENGTH_M, &what, &flat3(&ga.positions), &flat3(&gb.positions));
+            drift.floats("normal", UNIT, &what, &flat3(&ga.normals), &flat3(&gb.normals));
+            let uvs = |g: &MeshData| g.uvs.iter().flat_map(Vec2::to_array).collect::<Vec<_>>();
+            drift.floats("uv", UNIT, &what, &uvs(ga), &uvs(gb));
+            drift.floats("vertex colour", UNIT, &what, ga.colours.as_flattened(), gb.colours.as_flattened());
+            drift.floats("skin weight", UNIT, &what, ga.weights.as_flattened(), gb.weights.as_flattened());
+            assert_eq!(pb.morph_targets.len(), pa.morph_targets.len(), "{what}: morph targets");
+            for (ma, mb) in pa.morph_targets.iter().zip(&pb.morph_targets) {
+                drift.floats("morph offset (m)", LENGTH_M, &what, &flat3(&ma.positions), &flat3(&mb.positions));
+                drift.floats("morph normal", UNIT, &what, &flat3(&ma.normals), &flat3(&mb.normals));
+            }
+        }
+    }
+
+    assert_eq!(back.materials.len(), sent.materials.len(), "the number of materials");
+    for (a, b) in sent.materials.iter().zip(&back.materials) {
+        let json = |m: &omuzaki_io_api::Material| serde_json::to_value(m).expect("a material serialises");
+        drift.json("material value", UNIT, &format!("material {}", a.name), &json(a), &json(b));
+    }
+    assert!(back.textures == sent.textures, "the textures differ");
+    assert!(back.images == sent.images, "the images differ");
+    assert_eq!(back.meta, sent.meta, "the metadata (rights, authors, licence)");
+    assert_eq!(back.avatar, sent.avatar, "the avatar (humanoid, springs, constraints, expressions)");
+    drift.check();
+}
+
 #[test]
 fn a_character_designed_through_ops_saves_reopens_and_builds_the_same() {
     let project = common::new_project();
@@ -223,7 +373,7 @@ fn a_character_designed_through_ops_saves_reopens_and_builds_the_same() {
     let reopened = document(&*runner(project.path()));
     assert_eq!(reopened, designed, "the reopened document differs from the one designed");
     let rebuilt = build(&reopened);
-    assert_eq!(mesh_bytes(&rebuilt), mesh_bytes(&built), "the reopened character builds differently");
+    assert_same_build(&built, &rebuilt);
 
     // The export: the rights signed off, the preflight clean, then the file written and read back.
     let r = runner(project.path());
@@ -234,9 +384,7 @@ fn a_character_designed_through_ops_saves_reopens_and_builds_the_same() {
     let (sent, bytes) = export_vrm(&signed, &build(&signed));
     let back = run_import(&Vrm1Importer, &ImportInput::new(&bytes), &ImportCtx::new(&ImportOptions::default()))
         .expect("the VRM reads back");
-    assert_eq!(back.scene.avatar, sent.avatar, "the avatar (humanoid, springs, constraints, expressions) changed");
-    assert_eq!(back.scene.meshes.len(), sent.meshes.len(), "meshes");
-    assert_eq!(back.scene.materials.len(), sent.materials.len(), "materials");
+    assert_round_trip(&sent, &back.scene);
 
     // The turnaround of the finished character, and of the reopened one: the same pixels.
     let views = turnaround(built);

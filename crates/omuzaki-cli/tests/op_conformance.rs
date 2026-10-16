@@ -34,59 +34,82 @@ use omuzaki_stage::perform::input::{
     CameraEntry, InputError, InputHost, InputState, Permission, PreviewState, SourceKind,
 };
 use omuzaki_track_api::camera::CameraId;
-use serde_json::json;
 
 const ALLOWLIST: &str = include_str!("op_conformance_allowlist.txt");
 
 /// The default fixture project: an empty project named `demo`.
 const DEFAULT_FIXTURE: &str = "demo";
 
-/// The fixture for ops that edit or read a character: `demo` holding the kit character `kit`.
-const CHARACTER_FIXTURE: &str = "character";
+/// The fixture projects other than `demo`: one JSON file each, `<name>.json`, so a new fixture is a new file and this
+/// test doesn't change. A file holds `about` (what the fixture is for), an optional `base` (the fixture it builds on)
+/// and `steps`, each an `op` and its `args`. A fixture is made by running those real ops (never by writing the document
+/// by hand), so what an example sees is what a person's own steps would leave.
+const FIXTURE_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/op_fixtures");
 
-/// The id of the character in the `character*` fixtures.
-const KIT: &str = "kit";
+/// The deepest chain of `base` fixtures followed before the chain is taken for a loop.
+const MAX_FIXTURE_DEPTH: usize = 8;
 
-/// The `(op, args)` steps that build the fixture `name` on top of an empty `demo` project, or `None` for a name that
-/// is no fixture. A fixture is made by running real ops (never by writing the document by hand), so what an example
-/// sees is what a person's own steps would leave. `character` is the base: the standard template's kit character with
-/// its body, head and hair. The others add the one piece of state an op needs before it has anything to act on (a
-/// saved colourway, a variant with an override, a weight brush); the op under test has none of that otherwise.
-fn fixture_steps(name: &str) -> Option<Vec<(&'static str, Value)>> {
-    let create = ("character.create", json!({"id": KIT, "name": "Kit", "template": "standard"}));
-    let more: Vec<(&'static str, Value)> = match name {
-        CHARACTER_FIXTURE => vec![],
-        // A colourway saved, then the skin recoloured: applying `dusk` has a palette to restore.
-        "character-colourway" => vec![
-            ("colourway.save", json!({"character": KIT, "name": "dusk"})),
-            ("palette.set", json!({"character": KIT, "slot": "skin", "colour": "#d9a58f"})),
-        ],
-        // A spare palette slot nothing refers to, so it can be renamed or removed.
-        "character-slot" => {
-            vec![("palette.add_slot", json!({"character": KIT, "slot": "accent", "colour": "#e07a9a"}))]
-        }
-        "character-variant" => vec![
-            ("variant.create", json!({"character": KIT, "id": "close-up"})),
-            (
-                "variant.set_override",
-                json!({"character": KIT, "variant": "close-up", "path": "face/layout/eye_spacing", "value": 0.09}),
-            ),
-        ],
-        "character-brush" => vec![(
-            "rig.weights.brush",
-            json!({
-                "character": KIT, "part": "body", "centre": [0.2, 1.3, 0.0], "radius": 0.15,
-                "joint": {"humanoid": "leftLowerArm"}, "strength": 0.6,
-            }),
-        )],
-        _ => return None,
-    };
-    Some(std::iter::once(create).chain(more).collect())
+/// One fixture file.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FixtureFile {
+    /// What the fixture is for: the state it leaves and which ops need it.
+    about: String,
+    /// The fixture whose steps run first.
+    #[serde(default)]
+    base: Option<String>,
+    /// The ops that make it, in order.
+    steps: Vec<FixtureStep>,
 }
 
-/// The names of the fixtures, for the error that refuses an unknown one.
-const FIXTURES: &str =
-    "`demo`, `character`, `character-colourway`, `character-slot`, `character-variant`, `character-brush`";
+/// One op run while building a fixture.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FixtureStep {
+    op: String,
+    args: Value,
+}
+
+/// The names of the fixture files, sorted: what an op's `x-omuzaki-fixture` may name besides `demo`.
+fn fixture_names() -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(FIXTURE_DIR)
+        .map(|entries| {
+            entries
+                .filter_map(|entry| {
+                    entry.ok()?.file_name().into_string().ok()?.strip_suffix(".json").map(str::to_owned)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
+/// The `(op, args)` steps that build the fixture `name` on top of an empty `demo` project, its bases' steps first.
+fn fixture_steps(name: &str) -> Result<Vec<FixtureStep>, String> {
+    let mut chain = Vec::new();
+    let mut next = Some(name.to_owned());
+    while let Some(name) = next {
+        if chain.len() == MAX_FIXTURE_DEPTH {
+            return Err(format!(
+                "fixture `{name}`: its `base` chain is longer than {MAX_FIXTURE_DEPTH}; is it a loop?"
+            ));
+        }
+        let path = Path::new(FIXTURE_DIR).join(format!("{name}.json"));
+        let text = std::fs::read_to_string(&path).map_err(|_| {
+            let known = fixture_names().join("`, `");
+            format!("names fixture `{name}`, and the conformance test knows only `{DEFAULT_FIXTURE}`, `{known}`")
+        })?;
+        let file: FixtureFile =
+            serde_json::from_str(&text).map_err(|e| format!("fixture file `{name}.json` doesn't read: {e}"))?;
+        if file.about.trim().is_empty() {
+            return Err(format!("fixture file `{name}.json` says nothing in `about`"));
+        }
+        next = file.base;
+        chain.push(file.steps);
+    }
+    Ok(chain.into_iter().rev().flatten().collect())
+}
 
 /// Builds the fixture `name` in a fresh project folder: the steps run through an executor that has every op registered
 /// (the rig itself registers only the op under test), then the folder is closed so the rig reopens it from disk, as a
@@ -96,16 +119,15 @@ fn fixture_project(name: &str) -> Result<tempfile::TempDir, String> {
     if name == DEFAULT_FIXTURE {
         return Ok(dir);
     }
-    let steps = fixture_steps(name)
-        .ok_or_else(|| format!("names fixture `{name}`, and the conformance test knows only {FIXTURES}"))?;
+    let steps = fixture_steps(name)?;
     let doc = SavedProject::open(dir.path()).map_err(|e| format!("opening the project for fixture `{name}`: {e}"))?;
     let project = ProjectDir::open(dir.path()).map_err(|e| format!("opening the folder for fixture `{name}`: {e}"))?;
     let setup = Executor::new(Box::new(doc), Arc::new(SystemClock::new()))
         .map_err(|e| e.to_string())?
         .with_project_dir(project);
-    for (op, args) in steps {
+    for FixtureStep { op, args } in steps {
         let request = Request {
-            op: op.to_owned(),
+            op: op.clone(),
             args,
             mode: Mode::Apply,
             actor: Actor::Person { name: "conformance".to_owned() },
@@ -405,6 +427,17 @@ fn stale_undo_none(violating: &BTreeMap<&'static str, bool>, listed: &BTreeSet<&
         .filter(|name| !violating.get(*name).copied().unwrap_or(false))
         .map(|name| format!("{name}: no longer an edit with `Undo::None`; delete it from the allowlist"))
         .collect()
+}
+
+/// Every fixture file reads and builds, whether or not an op names it yet, so a broken fixture fails here by name
+/// rather than as some op's example.
+#[test]
+fn every_fixture_file_builds() {
+    omuzaki_cli::link();
+    let names = fixture_names();
+    assert!(!names.is_empty(), "no fixture files in {FIXTURE_DIR}");
+    let broken: Vec<String> = names.iter().filter_map(|name| fixture_project(name).err()).collect();
+    assert!(broken.is_empty(), "{}", broken.join("\n"));
 }
 
 #[test]
