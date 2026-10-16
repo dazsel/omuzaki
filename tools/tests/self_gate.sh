@@ -147,10 +147,10 @@ hosted "$EMPTY" '[".github/workflows/ci.yml"]' "$HEAD" && fail "empty plan, work
 hosted "$GOOD" '["docs/a.md",".github/workflows/ci.yml"]' "$HEAD" \
     && fail "(e) workflow edit" || pass "(e) a PR that edits a workflow needs a human line"
 hosted "$GOOD" '[".github/workflows/new.yml"]' "$HEAD" && fail "(e) other workflow" || pass "(e) any file under workflows counts"
-for path in tools/ci/gate-aggregate.py tools/ci/plan-outputs.py xtask/src/affected.rs .config/nextest.toml .cargo/config.toml rust-toolchain.toml .github/actions/setup-linux/action.yml; do
+for path in tools/ci/gate-aggregate.py tools/ci/plan-outputs.py xtask/src/affected.rs .config/nextest.toml .cargo/config.toml rust-toolchain.toml Cargo.toml Cargo.lock deny.toml clippy.toml rustfmt.toml .github/actions/setup-linux/action.yml; do
     hosted "$GOOD" "[\"$path\"]" "$HEAD" && fail "(e) $path" || pass "(e) a PR that edits $path needs a human line"
 done
-hosted "$GOOD" '["tools/tests/self_gate.sh","crates/a/src/lib.rs"]' "$HEAD" && pass "(e) tests and crate code do not exclude" || fail "(e) over-broad"
+hosted "$GOOD" '["tools/tests/self_gate.sh","crates/a/src/lib.rs","crates/a/Cargo.toml"]' "$HEAD" && pass "(e) tests and crate code do not exclude" || fail "(e) over-broad"
 
 # The changed-file list: complete below the API cap, refused at it (a protected path could lie beyond).
 cap() { python3 -I - "$GATE" "$1" <<'PY'

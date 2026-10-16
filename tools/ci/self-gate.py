@@ -25,7 +25,7 @@ Hosted run. When no author can build, a maintainer dispatches ci.yml on the PR b
 re-runs this job. `check` then also accepts a successful hosted run, found through the API, that is ALL of: event
 `workflow_dispatch`; workflow path `.github/workflows/ci.yml`; `head_sha` equal to the pull request head; conclusion
 success with every `test (...)` job success (skipped or cancelled does not count); and the pull request changes nothing
-under `.github/`, `tools/ci/`, `xtask/`, `.config/`, `.cargo/` or `rust-toolchain*`, because a dispatched run executes the branch's own workflow, CI
+under `.github/`, `tools/ci/`, `xtask/`, `.config/`, `.cargo/`, `rust-toolchain*`, the root `Cargo.toml`/`Cargo.lock` or the lint configs, because a dispatched run executes the branch's own workflow, CI
 scripts and planner, so a PR that edits them could vouch for itself. Such a PR needs a human `Self-gate:` line.
 Needs `actions: read` besides `pull-requests: read`.
 """
@@ -106,7 +106,10 @@ CI_WORKFLOW = ".github/workflows/ci.yml"
 # use, the scripts that plan, aggregate and attest, xtask (which computes the affected set), the nextest profile and
 # Cargo's own configuration (`.cargo/` can set a runner for `cargo run -p xtask`) and toolchain pin. A PR
 # touching any of them could make its own hosted run green, so it needs a human `Self-gate:` line.
-PROTECTED = (".github/", "tools/ci/", "xtask/", ".config/", ".cargo/", "rust-toolchain")
+PROTECTED = (".github/", "tools/ci/", "xtask/", ".config/", ".cargo/", "rust-toolchain",
+             # The root workspace manifest and lock decide which crates exist (so which xtask runs); the lint configs
+             # decide what clippy, rustfmt and cargo-deny accept. Member manifests are the code under test.
+             "Cargo.toml", "Cargo.lock", "clippy.toml", ".clippy.toml", "rustfmt.toml", ".rustfmt.toml", "deny.toml")
 
 
 def workflow_file(run):
