@@ -305,3 +305,44 @@ fn actor_matrix_a_person_may_do_all_and_an_agent_only_the_queries() {
     }
     assert!(agent.with(Scope::Perform).allows(Scope::Perform), "a session grant opens the actions to an agent");
 }
+
+fn with_settings(host: &Arc<FakeHost>, settings: &Arc<omuzaki_settings_mock::MemorySettings>) -> Services {
+    use omuzaki_settings_api::service::Settings;
+    ServicesBuilder::new()
+        .insert::<dyn WindowHost>(host.clone())
+        .insert::<dyn PaletteSource>(green_palette())
+        .insert::<dyn Settings>(settings.clone())
+        .build()
+}
+
+#[test]
+fn open_keeps_the_request_in_the_output_window_setting_and_a_dry_run_keeps_nothing() {
+    use omuzaki_settings_api::service::SettingsExt as _;
+    use omuzaki_stream::ops::window::OutputWindow;
+    omuzaki_stream::link();
+    let (host, settings) = (FakeHost::new(true), Arc::new(omuzaki_settings_mock::MemorySettings::default()));
+    let kept = with_settings(&host, &settings);
+    let request = json!({ "backdrop": "transparent", "key": "#ff00ff", "scale": 0.5, "always_on_top": true });
+
+    let planned = call(NAMES[0], request.clone(), Some(&kept), true).unwrap().output.unwrap();
+    assert_eq!(planned["saved"], false, "a dry run saves nothing");
+    assert_eq!(settings.get::<OutputWindow>().unwrap(), omuzaki_stream::ops::window::Open::default());
+
+    let opened = answer(NAMES[0], request.clone(), &kept);
+    assert_eq!(opened["saved"], true);
+    let asked: omuzaki_stream::ops::window::Open = serde_json::from_value(request).unwrap();
+    assert_eq!(settings.get::<OutputWindow>().unwrap(), asked, "the next start shows the same choices");
+    // Without a settings service the window still opens; the choice lasts until the app closes.
+    assert_eq!(answer(NAMES[0], json!({}), &services(&host, &green_palette()))["saved"], false);
+}
+
+#[test]
+fn the_output_window_setting_refuses_what_the_op_refuses() {
+    use omuzaki_settings_api::setting::Setting as _;
+    use omuzaki_stream::ops::window::{Open, OutputWindow};
+    let open = |args: Value| serde_json::from_value::<Open>(args).unwrap();
+    assert!(OutputWindow::check(&open(json!({ "title": "Cast", "scale": 2.0 }))).is_ok());
+    assert!(OutputWindow::check(&open(json!({ "title": "" }))).is_err());
+    assert!(OutputWindow::check(&open(json!({ "scale": 2.5 }))).is_err());
+    assert_eq!(OutputWindow::META.key, "output.window");
+}

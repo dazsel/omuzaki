@@ -4369,6 +4369,8 @@ dependencies = [
  "omuzaki-doc-mock",
  "omuzaki-ops-api",
  "omuzaki-render-api",
+ "omuzaki-settings-api",
+ "omuzaki-settings-mock",
  "omuzaki-stream-api",
  "proptest",
  "schemars",

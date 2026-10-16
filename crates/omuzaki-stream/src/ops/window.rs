@@ -6,18 +6,69 @@
 //! the document is never touched. The two queries need `read` only.
 //!
 //! A dry run plans the window and reports what would open without calling the host.
+//!
+//! **Settings:** the Machine setting `output.window` ([`OutputWindow`]) keeps the person's last open request (backdrop,
+//! key colour, size, title, stacking). `output.window.open` writes it when the app has a settings service, so the Live
+//! workspace shows the same choices after a restart; the window itself never reopens on its own
+//! (`docs/design/settings.md`: anything that starts output is never restored).
 
 use omuzaki_core::colour::Colour;
-use omuzaki_ops_api::{Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
+use omuzaki_ops_api::{Mode, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
+use omuzaki_settings_api::error::SettingError;
+use omuzaki_settings_api::meta::{AgentWrite, Apply, InProfile, SettingMeta, SettingScope};
+use omuzaki_settings_api::register_setting;
+use omuzaki_settings_api::service::{Layer, Settings, SettingsExt as _};
+use omuzaki_settings_api::setting::Setting;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use omuzaki_stream_api::window::{
-    Backdrop, DEFAULT_KEY, PaletteSource, SizePolicy, WindowError, WindowHost, WindowSettings, WindowState,
+    Backdrop, DEFAULT_KEY, MAX_SCALE, MIN_SCALE, PaletteSource, SizePolicy, WindowError, WindowHost, WindowSettings,
+    WindowState,
 };
 
 use crate::window::{check_title, pick_key, plan};
+
+/// The output window's last open request, as the Machine setting `output.window`: what the Live workspace shows as the
+/// window's backdrop, key colour, size, title and stacking after a restart. Machine scope (the next computer has other
+/// displays and capture tools), outside profiles, applied live (it is read when the window next opens). An agent's
+/// write waits for the person: these choices decide what a capture tool sees.
+pub struct OutputWindow;
+
+impl Setting for OutputWindow {
+    type Value = Open;
+    const META: SettingMeta = SettingMeta::new(
+        "output.window",
+        "The clean output window's backdrop, key colour, size, title and stacking, as last opened",
+        SettingScope::Machine,
+        AgentWrite::Confirm,
+        InProfile::Excluded,
+        Apply::Live,
+        1,
+    );
+
+    fn default() -> Open {
+        Open::default()
+    }
+
+    /// The same rules as the op's arguments: a title `check_title` accepts and a scale from [`MIN_SCALE`] to
+    /// [`MAX_SCALE`].
+    fn check(value: &Open) -> Result<(), SettingError> {
+        let key = Self::META.key;
+        if let Some(title) = &value.title {
+            check_title(title).map_err(|e| SettingError::invalid(key, e.to_string()))?;
+        }
+        match value.scale {
+            Some(scale) if !(MIN_SCALE..=MAX_SCALE).contains(&scale) => {
+                Err(SettingError::invalid(key, WindowError::Scale(scale).to_string()))
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+register_setting!(OutputWindow);
 
 /// What to put behind the character.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -138,12 +189,15 @@ impl Op for Open {
         }
         // Resolved like the backdrop: the host is never asked for what it said it cannot do.
         settings.always_on_top &= caps.always_on_top;
+        // A dry run checks the write and reports `saved: false`, as it reports `opened: false`.
+        let saved = save(ctx, self)? && !ctx.dry_run;
         let opened = !ctx.dry_run;
         if opened {
             host.open(&window, &settings).map_err(|e| window_error("backdrop", &e))?;
         }
         Ok(Plan::answer(json!({
             "opened": opened,
+            "saved": saved,
             "fallback": fallback,
             "title": settings.title,
             "backdrop": settings.backdrop,
@@ -153,6 +207,17 @@ impl Op for Open {
             "scale_factor": window.scale_factor,
         })))
     }
+}
+
+/// Writes `request` to the [`OutputWindow`] setting, in the run's mode, when the app has a settings service. Returns
+/// whether it was saved: `false` without a service, so the choice holds until the app closes.
+fn save(ctx: &OpCtx<'_>, request: &Open) -> Result<bool, OpError> {
+    let Ok(settings) = ctx.service::<dyn Settings>() else { return Ok(false) };
+    let mode = if ctx.dry_run { Mode::DryRun } else { Mode::Apply };
+    settings
+        .set::<OutputWindow>(request, Layer::Base, mode, ctx.actor)
+        .map(|_| true)
+        .map_err(|e| OpError::internal(format!("the setting `{}` could not be saved: {e}", OutputWindow::META.key)))
 }
 
 impl Op for Close {
