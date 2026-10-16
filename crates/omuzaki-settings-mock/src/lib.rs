@@ -152,10 +152,12 @@ fn effective(base: &BTreeMap<String, Value>, active: Option<(&ProfileId, &Profil
     Snapshot::new(entries)
 }
 
-/// A profile name as the store keeps it: trimmed and checked by the contract, then in NFC, so canonically equivalent
-/// spellings (`"é"` and `"e\u{301}"`) are one name for matching, overwrite and conflict checks.
+/// A profile name as the store keeps it: in NFC first, then trimmed and checked by the contract, so canonically
+/// equivalent spellings (`"é"` and `"e\u{301}"`) are one name for matching, overwrite and conflict checks, and the
+/// length limit counts the characters that are stored (48 × U+0344 normalise to 96 and are too long; 25 decomposed
+/// `é` normalise to 25 and fit).
 fn profile_name(raw: &str) -> Result<String, SettingError> {
-    Ok(validate_name(raw)?.nfc().collect())
+    validate_name(&raw.nfc().collect::<String>())
 }
 
 /// The keys whose value differs. Every snapshot holds every registered key, so a key absent from `before` is a broken

@@ -761,3 +761,21 @@ fn canonically_equivalent_profile_names_are_one_name() {
     assert_eq!((over.id, over.name.as_str()), (p.id, composed), "overwrite finds the stored profile");
     assert_eq!(s.profiles().len(), 2);
 }
+
+#[test]
+fn the_name_length_limit_counts_the_normalised_name_in_save_and_rename() {
+    let s = MemorySettings::default();
+    let keep = s.save_profile("Keep", ProfileSource::Current, false, Mode::Apply, &person()).unwrap();
+    // 48 x U+0344 is 48 characters as typed but 96 once normalised: too long, in both modes of both methods.
+    let too_long = "\u{344}".repeat(48);
+    let save = dry_run_then_apply(&s, |s, m| s.save_profile(&too_long, ProfileSource::Current, false, m, &person()));
+    assert!(matches!(&save, Err(e) if matches!(e.kind, SettingErrorKind::BadProfileName { .. })), "{save:?}");
+    let rename = dry_run_then_apply(&s, |s, m| s.rename_profile(&keep.id, &too_long, m, &person()));
+    assert!(matches!(&rename, Err(e) if matches!(e.kind, SettingErrorKind::BadProfileName { .. })), "{rename:?}");
+    // 25 decomposed e + acute pairs are 50 characters as typed but 25 once normalised: they fit.
+    let fits = "e\u{301}".repeat(25);
+    let saved = dry_run_then_apply(&s, |s, m| s.save_profile(&fits, ProfileSource::Current, false, m, &person()));
+    assert_eq!(saved.unwrap().name, "\u{e9}".repeat(25));
+    let renamed = dry_run_then_apply(&s, |s, m| s.rename_profile(&keep.id, &"e\u{301}".repeat(24), m, &person()));
+    assert_eq!(renamed.unwrap().name, "\u{e9}".repeat(24));
+}
