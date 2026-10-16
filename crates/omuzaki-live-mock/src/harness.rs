@@ -531,7 +531,8 @@ impl NodeHarness {
         assert_eq!(self.meta.class, NodeClass::Trigger, "{} isn't a trigger", self.meta.id);
         assert!(self.listens.contains(&event.kind), "{} doesn't listen to {}", self.meta.id, event.kind);
         self.ensure_started();
-        let at = event.at;
+        // The step runs at the later of its stamp and the clock; every wake due by then runs first.
+        let at = if event.at.0 > self.now().0 { event.at } else { self.now() };
         self.advance_to(at);
         let token = self.host.token(event.clone());
         self.step(at, token, &Item::Trigger(event));

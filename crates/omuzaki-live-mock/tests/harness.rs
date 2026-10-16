@@ -272,6 +272,43 @@ impl Node for Both {
     }
 }
 
+/// A trigger that asks for a wake due at once with each chat message.
+struct OnChatThenWake;
+
+impl NodeKind for OnChatThenWake {
+    type Params = EchoParams;
+
+    fn meta() -> NodeMeta {
+        NodeMeta::new("test.on_chat_then_wake", "On chat, then wake.", NodeClass::Trigger, Category::Triggers)
+    }
+
+    fn ports(_: &EchoParams) -> Ports {
+        Ports::new().event_out("fired", "A message came.").event_out("woke", "Its wake.")
+    }
+
+    fn listens(_: &EchoParams) -> Vec<EventKind> {
+        vec![EventKind::from_static("chat.message")]
+    }
+
+    fn new(_: EchoParams) -> Self {
+        Self
+    }
+}
+
+impl Node for OnChatThenWake {
+    fn handle(&mut self, input: Input<'_>, cx: &mut NodeCx<'_>) -> Result<(), NodeError> {
+        match input {
+            Input::Trigger { .. } => {
+                cx.fire("fired")?;
+                cx.wake_after(Seconds(0.0)).map(|_| ())
+            }
+            Input::Wake { .. } => cx.fire("woke"),
+            Input::Start | Input::Stop | Input::Event { .. } | Input::Reply { .. } => Ok(()),
+            other => Err(NodeError::unhandled(&other)),
+        }
+    }
+}
+
 /// Calls an op and asks for a wake due at once.
 struct ZeroWait;
 
@@ -507,6 +544,15 @@ fn an_older_event_after_an_idle_advance_runs_now() {
     h.trigger(fixtures::at(fixtures::chat("kiri", "late"), Seconds(5.0)));
     assert_eq!(h.fired().last().map(|f| f.at), Some(Seconds(10.0)));
     assert_eq!(h.now(), Seconds(10.0), "the clock never goes back");
+}
+
+#[test]
+fn a_wake_due_now_runs_before_an_older_event() {
+    let mut h = NodeHarness::of::<OnChatThenWake>(EchoParams::default());
+    h.trigger(fixtures::at(fixtures::chat("kiri", "first"), Seconds(10.0)));
+    h.trigger(fixtures::at(fixtures::chat("kiri", "late"), Seconds(5.0)));
+    assert_eq!(ports(&h), ["fired", "woke", "fired"], "the wake due at 10 runs before the event that runs at 10");
+    assert!(h.fired().iter().all(|f| f.at == Seconds(10.0)));
 }
 
 #[test]
