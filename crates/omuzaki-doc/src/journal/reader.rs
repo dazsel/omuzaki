@@ -74,8 +74,8 @@ impl Reader {
     /// in `tests/journal_reader.rs`, and a randomized test checks the walk against a naive model.
     /// 1. **One walk.** There is no separate start selection: the scan walks the segments from the first, and keeps
     ///    the records after `from`. Segments before the base are read, because that is what shows a later segment is
-    ///    reachable and not stale. (When earlier segments were deleted, the walk starts at the first one left and the
-    ///    first record's LSN shows the gap.)
+    ///    reachable and not stale. The first segment may start at or before `from + 1`; one that starts later leaves a
+    ///    gap after the base, so nothing is returned and the log is reported as damaged (rule 6) at that segment.
     /// 2. **Logical ends.** A prepared segment, a segment with a bad header, a zero-filled tail, a bad frame and the end
     ///    of the last segment end the log, and nothing after one is read, except under rules 3 and 4.
     /// 3. **One boundary decision.** After each segment, one function decides from the segment's stop reason and the
@@ -86,7 +86,9 @@ impl Reader {
     /// 4. **Old damage.** A bad frame or a gap before the base (the snapshot covers it) doesn't end the scan: after a bad
     ///    frame it looks for the frame `from + 1` in the same segment, and failing that, like after an exact end of
     ///    file, it continues into a next segment that starts after the last good record and no later than `from + 1`.
-    ///    A zero tail is never old damage.
+    ///    A zero tail is never old damage, and zeros
+    ///    are a tail only at a frame boundary the search has established (after a valid frame, or where the bad
+    ///    frame's own length says the next one starts), never at an arbitrary offset inside damage.
     /// 5. **Reachability.** A file is opened only when the walk reaches it. A newer-format header or an unknown
     ///    required kind there is [`JournalError::TooNew`], and an unreadable file is [`JournalError::Io`]; the same
     ///    beyond a logical end is ignored.
@@ -240,6 +242,11 @@ fn count_frames(bytes: &[u8], budget: &mut usize) -> (usize, bool) {
     (count, false)
 }
 
+/// Whether `rest` is a zero tail (journal.md 8.2): empty, or zeros for the length of a frame header.
+fn is_zero_tail(rest: &[u8]) -> bool {
+    rest.iter().take(FRAME_HEADER_LEN).all(|&b| b == 0)
+}
+
 /// The payload length a frame at the start of `rest` would have: in `1..=MAX_PAYLOAD` and fitting the data.
 fn frame_len(rest: &[u8]) -> Option<usize> {
     let header = rest.first_chunk::<FRAME_HEADER_LEN>()?;
@@ -360,6 +367,11 @@ impl Scanner<'_> {
             Class::Fault(HeaderFault::TooNew { version }) => return Err(JournalError::TooNew { version, kind: None }),
             Class::Fault(_) => return Ok(End::TornTail { at: self.position(first, 0) }),
         };
+        if header.first.0 > self.from.0.saturating_add(1) {
+            // The oldest segment starts after the base: records are missing, and nothing after them is trusted.
+            let later_valid = self.count_after(0);
+            return Ok(self.bad_end(self.position(first, 0), later_valid));
+        }
         for (idx, segment) in segments.iter().enumerate() {
             self.next = header.first;
             self.done = false;
@@ -463,19 +475,30 @@ impl Scanner<'_> {
         let mut at = offset;
         while at < bytes.len() {
             let rest = tail(bytes, at);
-            // A frame-sized run of zeros is a zero tail, which ends the log: what lies past it is not looked at. No
-            // record has one inside it, and the writer only ever leaves one at the end.
-            if rest.iter().take(FRAME_HEADER_LEN).all(|&b| b == 0) {
-                return None;
-            }
             match probe(rest, &mut self.budget) {
                 Probe::Exhausted => {
                     self.exhausted = true;
                     return None;
                 }
                 Probe::Frame(frame) if frame.lsn.0 == wanted => return Some(at),
-                Probe::Frame(frame) => at += frame.len(),
-                Probe::No => at += 1,
+                Probe::Frame(frame) => {
+                    at += frame.len();
+                    // A frame boundary the search has established: a zero tail here ends the log.
+                    if is_zero_tail(tail(bytes, at)) {
+                        return None;
+                    }
+                }
+                Probe::No => {
+                    // The bad frame's own length, if it fits, says where the next frame should start. Zeros at an
+                    // arbitrary offset inside damage are not a tail.
+                    if at == offset
+                        && let Some(len) = frame_len(rest)
+                        && is_zero_tail(tail(bytes, at + FRAME_HEADER_LEN + len))
+                    {
+                        return None;
+                    }
+                    at += 1;
+                }
             }
         }
         None

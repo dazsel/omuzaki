@@ -8,8 +8,8 @@ use std::fs;
 use std::path::Path;
 
 use omuzaki_doc::journal::{
-    End, HEADER_LEN, JournalError, Position, Reader, Record, SKIPPABLE, SegmentHeader, SessionInfo, encode, kind,
-    read_frame, segment_name, write_frame,
+    End, FRAME_HEADER_LEN, FrameEnd, HEADER_LEN, HeaderFault, JournalError, MAX_PAYLOAD, Position, Reader, Record,
+    SKIPPABLE, SegmentHeader, SessionInfo, decode, encode, kind, read_frame, segment_name, write_frame,
 };
 use omuzaki_history_api::{HistoryEntry, Lsn, WallTime};
 use omuzaki_ops_api::TxId;
@@ -202,8 +202,8 @@ fn a_first_frame_that_does_not_match_its_header_ends_the_log() {
     let mut bytes = SegmentHeader::new(Lsn(5)).encode().to_vec();
     encode(&commits(6, 6), &mut bytes).unwrap();
     put(dir.path(), 1, &bytes);
-    let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
-    assert_eq!((lsns(&scan), scan.end), (vec![], End::TornTail { at: at(1, HEADER_LEN, 0) }));
+    let scan = Reader::scan(dir.path(), Lsn(4)).unwrap();
+    assert_eq!((lsns(&scan), scan.end), (vec![], End::TornTail { at: at(1, HEADER_LEN, 4) }));
 }
 
 #[test]
@@ -362,7 +362,7 @@ fn lsn_u64_max_is_the_end_of_the_sequence() {
     let dir = tempfile::tempdir().unwrap();
     let records = [commit(top), commit(top)];
     put(dir.path(), 1, &segment(top, &records));
-    let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
+    let scan = Reader::scan(dir.path(), Lsn(top - 1)).unwrap();
     assert_eq!(lsns(&scan), [top]);
     assert_eq!(scan.end, End::TornTail { at: at(1, offset_of(&records, 1), top) });
 
@@ -370,7 +370,7 @@ fn lsn_u64_max_is_the_end_of_the_sequence() {
     let dir = tempfile::tempdir().unwrap();
     put(dir.path(), 1, &segment(top, &[commit(top)]));
     put(dir.path(), 2, &segment(top, &[commit(top)]));
-    let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
+    let scan = Reader::scan(dir.path(), Lsn(top - 1)).unwrap();
     assert_eq!(lsns(&scan), [top]);
     assert_eq!(scan.end, End::Damaged { at: at(2, 0, top), later_valid: 1, search_complete: true });
 }
@@ -630,13 +630,14 @@ enum Tail {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Shape {
     /// A real header at `first`, then `n` records (the first a `session` when `session` is set). `damage` is the index
-    /// of a record whose payload is flipped, and `ghost` the number of valid frames written after a zero tail.
+    /// of a record whose payload is flipped (or, with `zeroed`, wiped to zeros), and `ghost` the number of valid frames written after a zero tail.
     Real {
         first: u64,
         n: u64,
         session: bool,
         tail: Tail,
         damage: Option<u64>,
+        zeroed: bool,
         ghost: u64,
     },
     Prepared,
@@ -646,7 +647,7 @@ enum Shape {
 
 fn build(shape: Shape) -> Vec<u8> {
     match shape {
-        Shape::Real { first, n, session: sess, tail, damage, ghost } => {
+        Shape::Real { first, n, session: sess, tail, damage, zeroed, ghost } => {
             let mut records = commits(first, first + n);
             records.truncate(usize::try_from(n).unwrap());
             if sess && n > 0 {
@@ -654,7 +655,14 @@ fn build(shape: Shape) -> Vec<u8> {
             }
             let mut bytes = segment(first, &records);
             if let Some(index) = damage {
-                bytes[offset_of(&records, usize::try_from(index).unwrap()) + 25] ^= 0x04;
+                let index = usize::try_from(index).unwrap();
+                let start = offset_of(&records, index);
+                let end = start + frame(&records[index]).len();
+                if zeroed {
+                    bytes[start + FRAME_HEADER_LEN..end].fill(0);
+                } else {
+                    bytes[start + 25] ^= 0x04;
+                }
             }
             if tail == Tail::Zeros {
                 bytes.extend([0u8; 40]);
@@ -668,86 +676,178 @@ fn build(shape: Shape) -> Vec<u8> {
     }
 }
 
-/// What the naive model says a scan returns: the LSNs, and how it ended as `(kind, segment index)`.
+/// What the reference scanner says a scan returns: the LSNs, and how it ended as `(kind, segment index)`.
 type Model = Result<(Vec<u64>, char, usize), ()>;
 
-/// The valid frames a segment holds anywhere, which is what a look past a bad frame finds.
-fn valid_frames(shape: &Shape) -> u64 {
-    match shape {
-        Shape::Real { n, damage, ghost, .. } => n - u64::from(damage.is_some()) + ghost,
-        _ => 0,
+enum Head {
+    Real(u64),
+    Prepared,
+    TooNew,
+    Bad,
+}
+
+fn head(file: &[u8]) -> Head {
+    match SegmentHeader::decode(file) {
+        Ok(header) if header.first.0 == 0 => Head::Prepared,
+        Ok(header) => Head::Real(header.first.0),
+        Err(HeaderFault::TooNew { .. }) => Head::TooNew,
+        Err(_) => Head::Bad,
     }
 }
 
-/// The valid frames of the segments from `layout[0]` on, up to one whose header ends the log.
-fn counted(layout: &[Shape]) -> u64 {
-    layout.iter().take_while(|s| matches!(s, Shape::Real { .. })).map(valid_frames).sum()
+fn zero_tail(rest: &[u8]) -> bool {
+    rest.iter().take(FRAME_HEADER_LEN).all(|&b| b == 0)
 }
 
-/// A plain walk from the first segment, written from journal.md 8.2 and nothing else.
-fn model(layout: &[Shape], from: u64) -> Model {
-    let mut out = Vec::new();
-    let mut i = 0;
-    loop {
-        let Some(&shape) = layout.get(i) else { return Ok((out, 'C', i)) };
-        let Shape::Real { first, n, tail, damage, .. } = shape else {
-            return match shape {
-                Shape::Prepared => Ok((out, 'C', i)),
-                Shape::BadHeader => Ok((out, 'T', i)),
-                _ => Err(()),
-            };
-        };
-        let next = layout.get(i + 1).copied();
-        let recovery = |expected: u64| {
-            matches!(next, Some(Shape::Real { first, n, session: true, damage, .. })
-                if n > 0 && first == expected && damage != Some(0))
-        };
-        let good = damage.unwrap_or(n);
-        out.extend(first..first + good);
-        let mut expected = first + good;
-        let mut bad = damage.is_some();
-        // Old damage: the frame after the snapshot may follow the bad one, unless a recovery session took over.
-        if bad && expected <= from && !recovery(expected) && from + 1 > first + good && from + 1 < first + n {
-            out.extend(from + 1..first + n);
-            expected = first + n;
-            bad = false;
+/// A plain, slow scanner over the segment files as byte vectors: journal.md 8.2 read literally, with brute force
+/// wherever the reader is clever. It defines the rules the reader is checked against.
+struct Reference<'a> {
+    files: &'a [Vec<u8>],
+    from: u64,
+}
+
+impl Reference<'_> {
+    /// How many valid frames a look past a bad frame finds in `file` from `offset`, trying every offset.
+    fn count_valid(file: &[u8], offset: usize) -> usize {
+        let (mut count, mut at) = (0, offset);
+        while at < file.len() {
+            match read_frame(&file[at..]) {
+                Ok(frame) => {
+                    count += 1;
+                    at += frame.len();
+                }
+                Err(_) => at += 1,
+            }
         }
-        let covered = |first: u64| expected <= from && expected < first && first <= from + 1;
-        if bad {
-            let continues = match next {
-                Some(Shape::Real { first, .. }) => recovery(expected) || covered(first),
+        count
+    }
+
+    /// The valid frames of the files from `first` on, up to one whose header ends the log.
+    fn later(&self, first: usize) -> usize {
+        self.files
+            .iter()
+            .skip(first)
+            .take_while(|file| matches!(head(file), Head::Real(_)))
+            .map(|file| Self::count_valid(file, HEADER_LEN))
+            .sum()
+    }
+
+    /// Whether file `i + 1` is a recovery session segment that continues the log at `expected`.
+    fn recovery(&self, i: usize, expected: u64) -> bool {
+        let Some(file) = self.files.get(i + 1) else { return false };
+        let Head::Real(first) = head(file) else { return false };
+        first == expected
+            && read_frame(&file[HEADER_LEN..]).is_ok_and(|frame| {
+                frame.lsn.0 == first
+                    && frame.kind == kind::SESSION
+                    && matches!(decode(&frame), Ok(Some(Record::Session(_))))
+            })
+    }
+
+    /// The offset of the frame `from + 1` at or after `offset`, in damage the snapshot covers.
+    fn find_base(&self, file: &[u8], offset: usize) -> Option<usize> {
+        let mut at = offset;
+        while at < file.len() {
+            if let Ok(frame) = read_frame(&file[at..]) {
+                if frame.lsn.0 == self.from + 1 {
+                    return Some(at);
+                }
+                at += frame.len();
+                if zero_tail(&file[at..]) {
+                    return None;
+                }
+            } else {
+                // The bad frame's own length, when it fits, says where the next one starts.
+                let len = file.get(at..at + 4).map(|b| usize::try_from(u32::from_le_bytes([b[0], b[1], b[2], b[3]])));
+                if at == offset
+                    && let Some(Ok(len)) = len
+                    && len != 0
+                    && len <= MAX_PAYLOAD
+                    && at + FRAME_HEADER_LEN + len <= file.len()
+                    && zero_tail(&file[at + FRAME_HEADER_LEN + len..])
+                {
+                    return None;
+                }
+                at += 1;
+            }
+        }
+        None
+    }
+
+    fn scan(&self) -> Model {
+        let (files, from) = (self.files, self.from);
+        let mut out = Vec::new();
+        let damage = |count: usize| if count > 0 { 'D' } else { 'T' };
+        let Some(first_file) = files.first() else { return Ok((out, 'C', 0)) };
+        match head(first_file) {
+            Head::Prepared => return Ok((out, 'C', 0)),
+            Head::Bad => return Ok((out, 'T', 0)),
+            Head::TooNew => return Err(()),
+            // The oldest segment starts after the base: records are missing.
+            Head::Real(first) if first > from + 1 => return Ok((out, damage(self.later(0)), 0)),
+            Head::Real(_) => {}
+        }
+        let mut i = 0;
+        loop {
+            let file = &files[i];
+            let Head::Real(first) = head(file) else { unreachable!("only real segments are walked") };
+            let (mut expected, mut offset) = (first, HEADER_LEN);
+            let (stop, bad_at) = loop {
+                match read_frame(&file[offset..]) {
+                    Ok(frame) if frame.lsn.0 == expected => {
+                        if expected > from {
+                            out.push(expected);
+                        }
+                        expected += 1;
+                        offset += frame.len();
+                    }
+                    Err(FrameEnd::Short) if offset == file.len() => break ('E', offset),
+                    Err(FrameEnd::Zero) => break ('Z', offset),
+                    Err(FrameEnd::Short) if file[offset..].iter().all(|&b| b == 0) => break ('Z', offset),
+                    _ => {
+                        // Old damage: the snapshot covers it, so look for the record after the base, unless a recovery
+                        // session took over at the last good record.
+                        if expected <= from
+                            && !self.recovery(i, expected)
+                            && let Some(found) = self.find_base(file, offset)
+                        {
+                            expected = from + 1;
+                            offset = found;
+                            continue;
+                        }
+                        break ('B', offset);
+                    }
+                }
+            };
+            let next = files.get(i + 1).map(|f| head(f));
+            let covered = |f: u64| expected <= from && expected < f && f <= from + 1;
+            let continues = match (stop, next) {
+                ('E', None | Some(Head::Prepared)) => return Ok((out, 'C', i + 1)),
+                ('E', Some(Head::Bad)) => return Ok((out, 'T', i + 1)),
+                ('E', Some(Head::TooNew)) => return Err(()),
+                ('E', Some(Head::Real(f))) => {
+                    if f != expected && !covered(f) {
+                        return Ok((out, damage(self.later(i + 1)), i + 1));
+                    }
+                    true
+                }
+                (_, Some(Head::Real(f))) => self.recovery(i, expected) || (stop == 'B' && covered(f)),
                 _ => false,
             };
             if !continues {
-                let after_bad = n - good - 1 + if let Shape::Real { ghost, .. } = shape { ghost } else { 0 };
-                let later = after_bad + counted(&layout[i + 1..]);
-                return Ok((out, if later > 0 { 'D' } else { 'T' }, i));
+                if stop == 'Z' {
+                    return Ok((out, 'C', i + 1));
+                }
+                let count = Self::count_valid(file, bad_at + 1) + self.later(i + 1);
+                return Ok((out, damage(count), i));
             }
             i += 1;
-            continue;
         }
-        let continues = match (tail, next) {
-            (_, None) | (Tail::Eof, Some(Shape::Prepared)) => return Ok((out, 'C', i + 1)),
-            (Tail::Eof, Some(Shape::BadHeader)) => return Ok((out, 'T', i + 1)),
-            (Tail::Eof, Some(Shape::Newer)) => return Err(()),
-            (Tail::Eof, Some(Shape::Real { first, .. })) => {
-                if first != expected && !covered(first) {
-                    let later = counted(&layout[i + 1..]);
-                    return Ok((out, if later > 0 { 'D' } else { 'T' }, i + 1));
-                }
-                true
-            }
-            (Tail::Zeros, Some(_)) => recovery(expected),
-        };
-        if !continues {
-            return Ok((out, 'C', i + 1));
-        }
-        i += 1;
     }
 }
 
 #[test]
-fn random_layouts_match_the_naive_walk() {
+fn random_layouts_match_the_reference_scanner() {
     let mut state = 0x2545_f491_4f6c_dd1d_u64;
     let mut rand = move |bound: u64| {
         state ^= state << 13;
@@ -755,10 +855,11 @@ fn random_layouts_match_the_naive_walk() {
         state ^= state << 17;
         state % bound
     };
-    for round in 0..1500_u32 {
+    for round in 0..4000_u32 {
         let count = 1 + rand(5);
         let mut layout = Vec::new();
-        let mut expected = 1;
+        // The oldest segment starts at, before or after the base, depending on `from`.
+        let mut expected = if rand(4) == 0 { 1 + rand(4) } else { 1 };
         let mut recover_at = None;
         for idx in 0..count {
             let pick = if idx == 0 { 0 } else { rand(12) };
@@ -769,6 +870,7 @@ fn random_layouts_match_the_naive_walk() {
                     session: false,
                     tail: if rand(2) == 0 { Tail::Eof } else { Tail::Zeros },
                     damage: None,
+                    zeroed: false,
                     ghost: 0,
                 },
                 4 | 5 => Shape::Real {
@@ -777,6 +879,7 @@ fn random_layouts_match_the_naive_walk() {
                     session: true,
                     tail: Tail::Eof,
                     damage: None,
+                    zeroed: false,
                     ghost: 0,
                 },
                 // A stale or gapped segment: it starts anywhere, up to a little past the log.
@@ -786,6 +889,7 @@ fn random_layouts_match_the_naive_walk() {
                     session: rand(2) == 0,
                     tail: Tail::Eof,
                     damage: None,
+                    zeroed: false,
                     ghost: 0,
                 },
                 8 => Shape::Prepared,
@@ -797,6 +901,7 @@ fn random_layouts_match_the_naive_walk() {
                     session: false,
                     tail: if rand(2) == 0 { Tail::Eof } else { Tail::Zeros },
                     damage: None,
+                    zeroed: false,
                     ghost: 0,
                 },
             };
@@ -804,11 +909,20 @@ fn random_layouts_match_the_naive_walk() {
             if let Some(first) = recover_at.take()
                 && rand(2) == 0
             {
-                shape = Shape::Real { first, n: 1 + rand(3), session: true, tail: Tail::Eof, damage: None, ghost: 0 };
+                shape = Shape::Real {
+                    first,
+                    n: 1 + rand(3),
+                    session: true,
+                    tail: Tail::Eof,
+                    damage: None,
+                    zeroed: false,
+                    ghost: 0,
+                };
             }
-            if let Shape::Real { n, tail, damage, ghost, .. } = &mut shape {
+            if let Shape::Real { n, tail, damage, zeroed, ghost, .. } = &mut shape {
                 if *n > 0 && rand(3) == 0 {
                     *damage = Some(rand(*n));
+                    *zeroed = rand(2) == 0;
                 }
                 if *tail == Tail::Zeros && rand(2) == 0 {
                     *ghost = 1 + rand(3);
@@ -821,28 +935,28 @@ fn random_layouts_match_the_naive_walk() {
             layout.push(shape);
         }
         let dir = tempfile::tempdir().unwrap();
-        for (idx, shape) in layout.iter().enumerate() {
-            put(dir.path(), u64::try_from(idx).unwrap() + 1, &build(*shape));
+        let files: Vec<Vec<u8>> = layout.iter().map(|shape| build(*shape)).collect();
+        for (idx, file) in files.iter().enumerate() {
+            put(dir.path(), u64::try_from(idx).unwrap() + 1, file);
         }
-        compare(dir.path(), &layout, round);
+        compare(dir.path(), &files, &layout, round);
     }
 }
 
-/// Scans `dir` from every LSN and checks it against the model.
-fn compare(dir: &Path, layout: &[Shape], round: u32) {
+/// Scans `dir` from every LSN and checks it against the reference scanner.
+fn compare(dir: &Path, files: &[Vec<u8>], layout: &[Shape], round: u32) {
     let last = layout
         .iter()
         .map(|shape| if let Shape::Real { first, n, .. } = shape { first + n } else { 0 })
         .max()
         .unwrap_or(0);
-    for from in 0..=last {
-        let want = model(layout, from);
+    for from in 0..=last + 1 {
+        let want = Reference { files, from }.scan();
         let got = Reader::scan(dir, Lsn(from));
         match (&want, got) {
             (Err(()), Err(JournalError::TooNew { .. })) => {}
             (Ok((lsns_want, kind, seg)), Ok(scan)) => {
-                let filtered: Vec<u64> = lsns_want.iter().copied().filter(|&l| l > from).collect();
-                assert_eq!(lsns(&scan), filtered, "round {round} from {from}: {layout:?}");
+                assert_eq!(lsns(&scan), *lsns_want, "round {round} from {from}: {layout:?}");
                 let (got_kind, got_seg) = match scan.end {
                     End::Clean => ('C', None),
                     End::TornTail { at } => ('T', Some(at.segment)),
@@ -854,7 +968,7 @@ fn compare(dir: &Path, layout: &[Shape], round: u32) {
                     assert_eq!(got_seg, u64::try_from(*seg).unwrap() + 1, "round {round} from {from}: {layout:?}");
                 }
             }
-            (want, got) => panic!("round {round} from {from}: model {:?}, scan {got:?}", want.is_ok()),
+            (want, got) => panic!("round {round} from {from}: reference {:?}, scan {got:?}: {layout:?}", want.is_ok()),
         }
     }
 }
@@ -940,4 +1054,34 @@ fn old_damage_resynchronization_stops_at_a_zero_tail() {
     let scan = Reader::scan(dir.path(), Lsn(5)).unwrap();
     assert_eq!(lsns(&scan), Vec::<u64>::new());
     assert!(matches!(scan.end, End::Damaged { .. }), "{:?}", scan.end);
+}
+
+#[test]
+fn zeros_inside_old_damage_are_not_a_tail() {
+    // Frame 2 of 1-8 has its payload wiped to zeros (a zeroed sector); the intact frames after it hold the base.
+    let records = commits(1, 8);
+    let mut bytes = segment(1, &records);
+    let start = offset_of(&records, 1);
+    let end = offset_of(&records, 2);
+    bytes[start + FRAME_HEADER_LEN..end].fill(0);
+    assert!(end - start - FRAME_HEADER_LEN >= 20, "the wiped run must be a frame header long");
+    let dir = tempfile::tempdir().unwrap();
+    put(dir.path(), 1, &bytes);
+    let scan = Reader::scan(dir.path(), Lsn(4)).unwrap();
+    assert_eq!((lsns(&scan), scan.end), ((5..=8).collect::<Vec<_>>(), End::Clean));
+}
+
+#[test]
+fn an_oldest_segment_that_starts_after_the_base_is_a_gap() {
+    let dir = tempfile::tempdir().unwrap();
+    put(dir.path(), 1, &segment(10, &commits(10, 12)));
+    // 6 to 9 are missing: nothing is trusted, and the frames that are there are counted as damage.
+    let scan = Reader::scan(dir.path(), Lsn(5)).unwrap();
+    assert_eq!(lsns(&scan), Vec::<u64>::new());
+    assert_eq!(scan.end, End::Damaged { at: at(1, 0, 5), later_valid: 3, search_complete: true });
+    // Starting exactly at the base + 1, or before it, is read.
+    for (from, want) in [(9, vec![10, 11, 12]), (10, vec![11, 12]), (12, vec![])] {
+        let scan = Reader::scan(dir.path(), Lsn(from)).unwrap();
+        assert_eq!((lsns(&scan), scan.end), (want, End::Clean), "from {from}");
+    }
 }
