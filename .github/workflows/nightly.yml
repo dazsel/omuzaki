@@ -262,7 +262,7 @@ jobs:
           python -m venv "$RUNNER_TEMP/venv"
           py="$RUNNER_TEMP/venv/bin/python"; [ -x "$py" ] || py="$RUNNER_TEMP/venv/Scripts/python.exe"
           "$py" -m pip install --require-hashes --no-deps --only-binary ':all:' -r tools/litert/requirements-check.txt
-          "$py" -m pip install --only-binary ':all:' "onnxruntime==1.26.0"
+          "$py" -m pip install --require-hashes --no-deps --only-binary ':all:' -r tools/litert/requirements-reference.txt
           "$py" -I tools/models/litert_reference.py --models "$OMUZAKI_TRACK_MODELS" --out "$OMUZAKI_LITERT_REFERENCE"
       - name: Gated tests
         run: >-
