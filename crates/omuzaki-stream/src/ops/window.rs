@@ -91,24 +91,24 @@ pub enum BackdropKind {
 ]))]
 pub struct Open {
     /// `key` (default) or `transparent`.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backdrop: Option<BackdropKind>,
     /// The key colour, `#rrggbb`. Default `#00b140`; call `output.window.suggest_key` for one that cannot be
     /// confused with the cast. With `transparent`, it is the colour used if the host cannot do transparency.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<Colour>,
     /// Size the window at this factor (`0.1` to `2.0`) of the output: below `1` a smaller preview, above `1` a request
     /// for a larger window. Each side is capped at the window size limit with the aspect ratio kept, so an output
     /// already at the limit opens at the limit. Default: exactly the output size.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scale: Option<f32>,
     /// The window title, 1 to 64 characters, no control characters. Default `Omuzaki Output`; capture tools find the
     /// window by it, so change it only when a tool needs another.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     /// Keep the window above other windows. Default `false`. A host that cannot is answered with
     /// `always_on_top: false`.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub always_on_top: Option<bool>,
 }
 
@@ -130,7 +130,7 @@ pub struct Status {}
 #[schemars(extend("examples" = [{}, { "scene": "main" }]))]
 pub struct SuggestKey {
     /// The scene whose cast to check. Default: the scene on air.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scene: Option<String>,
 }
 
@@ -213,6 +213,9 @@ impl Op for Open {
 /// whether it was saved: `false` without a service, so the choice holds until the app closes.
 fn save(ctx: &OpCtx<'_>, request: &Open) -> Result<bool, OpError> {
     let Ok(settings) = ctx.service::<dyn Settings>() else { return Ok(false) };
+    // The `Settings` service leaves permission checks to its callers, and the setting is `AgentWrite::Confirm`: an
+    // agent's choice of what a capture tool sees waits for the person, in a dry run too (so the plan is the same).
+    ctx.require_person(format!("save the clean output window's choices as the `{}` setting", OutputWindow::META.key))?;
     let mode = if ctx.dry_run { Mode::DryRun } else { Mode::Apply };
     settings
         .set::<OutputWindow>(request, Layer::Base, mode, ctx.actor)

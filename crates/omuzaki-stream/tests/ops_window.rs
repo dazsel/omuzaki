@@ -346,3 +346,44 @@ fn the_output_window_setting_refuses_what_the_op_refuses() {
     assert!(OutputWindow::check(&open(json!({ "scale": 2.5 }))).is_err());
     assert_eq!(OutputWindow::META.key, "output.window");
 }
+
+/// Runs `output.window.open` with `actor` (and `confirmed_by`, when given) against a settings service.
+fn open_as(
+    actor: &Actor,
+    confirmed_by: Option<&Actor>,
+    dry_run: bool,
+    settings: &Arc<omuzaki_settings_mock::MemorySettings>,
+) -> Result<Plan, OpError> {
+    let host = FakeHost::new(true);
+    let services = with_settings(&host, settings);
+    let op = (registered(NAMES[0]).unwrap().decode)(json!({ "scale": 0.5 }))?;
+    let (doc, clock) = (MemDoc::new(), FakeClock::new(Seconds(0.0)));
+    let mut ctx = OpCtx::new(&doc, actor, &clock).with_dry_run(dry_run).with_services(&services);
+    if let Some(person) = confirmed_by {
+        ctx = ctx.with_confirmation(person);
+    }
+    op.plan(&ctx)
+}
+
+#[test]
+fn an_agent_cannot_save_the_output_window_setting_without_a_person() {
+    use omuzaki_settings_api::service::SettingsExt as _;
+    use omuzaki_stream::ops::window::{Open, OutputWindow};
+    let settings = Arc::new(omuzaki_settings_mock::MemorySettings::default());
+    let agent = Actor::Agent { id: "assistant".into(), model: None };
+    for dry_run in [false, true] {
+        let err = open_as(&agent, None, dry_run, &settings).unwrap_err();
+        assert!(
+            matches!(err.detail.as_deref(), Some(omuzaki_ops_api::ErrorDetail::NeedsPerson { .. })),
+            "dry_run {dry_run}: {err:?}"
+        );
+    }
+    assert_eq!(settings.get::<OutputWindow>().unwrap(), Open::default(), "nothing was saved");
+
+    // A person's confirmation lets the same request through, and a dry run still saves nothing.
+    let dry = open_as(&agent, Some(&person()), true, &settings).unwrap().output.unwrap();
+    assert_eq!(dry["saved"], false);
+    let done = open_as(&agent, Some(&person()), false, &settings).unwrap().output.unwrap();
+    assert_eq!(done["saved"], true);
+    assert_eq!(settings.get::<OutputWindow>().unwrap().scale, Some(0.5));
+}

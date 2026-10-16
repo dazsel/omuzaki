@@ -32,6 +32,8 @@ proptest.workspace = true
 # A settings service for the `output.window` setting's tests (`tests/ops_window.rs`).
 omuzaki-settings-mock = { path = "../omuzaki-settings-mock" }
 tempfile.workspace = true
+# Writes the `output.window` setting as TOML the way the settings store does (`tests/settings.rs`).
+toml.workspace = true
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 
 [features]
