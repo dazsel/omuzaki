@@ -144,17 +144,15 @@ struct Eyes {
     y: f64,
     /// Half the distance between the eyes.
     spacing: f64,
-    /// The brow's height over the eye line: the frames never reach it.
+    /// The brow's height over the eye line the glasses use: the frames never reach it.
     brow_gap: f64,
 }
 
 impl Eyes {
     fn of(p: &GlassesParams, layout: &FaceLayout) -> Self {
-        Self {
-            y: p.eye_y.unwrap_or(layout.eye_y),
-            spacing: p.eye_spacing.unwrap_or(layout.eye_spacing),
-            brow_gap: layout.brow_gap,
-        }
+        let y = p.eye_y.unwrap_or(layout.eye_y);
+        // The brow stays where the layout puts it, whatever eye line the glasses are given.
+        Self { y, spacing: p.eye_spacing.unwrap_or(layout.eye_spacing), brow_gap: layout.eye_y + layout.brow_gap - y }
     }
 
     /// Whether the frames fit this layout: below the brow, and with the two rims apart.

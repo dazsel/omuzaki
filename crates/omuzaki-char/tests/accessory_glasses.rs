@@ -233,3 +233,18 @@ fn the_glasses_build_in_5_ms_or_less() {
 fn every_documented_preset_is_among_the_styles_the_sweeps_use() {
     accessory_common::assert_styles_found("glasses", &["round", "square", "cat_eye", "sunglasses"]);
 }
+
+#[test]
+fn an_eye_line_override_keeps_the_brow_where_the_layout_puts_it() {
+    // The default layout's brow is at -0.09 + 0.08 = -0.01. Moving the glasses' eye line up to -0.05 leaves 0.04 m
+    // under the brow, not the layout's 0.08: frames that would reach past it are refused.
+    let err = scene(&character("soft-sd", "glasses", json!({ "eye_y": -0.05 }), None))
+        .err()
+        .expect("full-size frames reach the brow")
+        .to_string();
+    assert!(err.contains("brow"), "{err}");
+    let s = built_scene("soft-sd", "glasses", json!({ "eye_y": -0.05, "size": 0.6 }), None);
+    let c = s.head.centre();
+    let top = front(&s).iter().map(|p| p.y - c.y).fold(f32::MIN, f32::max);
+    assert!(top < -0.01, "the frames reach {top}, the brow is at -0.01");
+}
