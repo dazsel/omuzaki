@@ -50,6 +50,8 @@ omuzaki-store-api = { path = "../omuzaki-store-api" }
 
 [dev-dependencies]
 tempfile.workspace = true
+# The performer the conformance rig stands in for the `trigger.*` examples (`tests/op_conformance.rs`).
+omuzaki-anim-api = { path = "../omuzaki-anim-api" }
 # The registration scan behind the link gate (`tests/registrations.rs`, ADR 0015).
 xtask = { path = "../../xtask" }
 

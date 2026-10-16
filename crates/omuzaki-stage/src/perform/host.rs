@@ -31,7 +31,6 @@ use std::time::Instant;
 
 use omuzaki_anim::{
     MAX_NEUTRAL_FRAMES, MAX_TRIGGERS, MIN_NEUTRAL_FRAMES, NeutralCapture, NeutralError, TriggerFades, TriggerSlot,
-    Triggers,
 };
 use omuzaki_anim_api::{ARKIT_COUNT, Calibration, Channel, ChannelBuf, DeviceProfile, HeadPose, RetargetConfig, Tick};
 use omuzaki_core::glam::Vec3;
@@ -41,7 +40,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::triggers::{
-    BindOutcome, Bound, MAX_KEY_CHARS, Rebaked, TriggerBinding, TriggerBook, TriggerInfo, check_key,
+    BindOutcome, Bound, MAX_KEY_CHARS, Rebaked, TriggerBinding, TriggerBook, TriggerInfo, TriggerLayer, check_key,
 };
 use super::{MAX_STEPS_PER_ADVANCE, PerformOutput, Performer, STEP_HZ, Tracking};
 
@@ -103,6 +102,10 @@ pub trait PerformHost: Send + Sync {
 
     /// Replaces the expression library the triggers bake against, and the rest face they blend onto. Every bound key is
     /// re-baked; a key whose expression is no longer in the set stays bound and is listed as missing.
+    ///
+    /// A key held or toggled on keeps showing its expression across a reload that leaves the expression in the set,
+    /// even with new values. A key whose expression goes missing stops showing it, and must be pressed again once the
+    /// expression is back: presses of a missing key are not sent, so nothing says whether the key is still down.
     ///
     /// # Errors
     /// [`PerformError::QueueFull`] or [`PerformError::Disconnected`]; nothing changes then.
@@ -546,7 +549,7 @@ pub fn perform_channel(performer: &Performer) -> (PerformHandle, PerformControl)
         skipped: 0,
         live: Live::START,
         fps: FpsMeter::default(),
-        triggers: Triggers::new(TriggerFades::default()),
+        triggers: TriggerLayer::new(TriggerFades::default()),
     };
     (PerformHandle { commands: commands_tx, shared }, control)
 }
@@ -759,7 +762,7 @@ pub struct PerformControl {
     live: Live,
     fps: FpsMeter,
     /// The trigger fades, written into the performer's trigger layer before each of its steps.
-    triggers: Triggers,
+    triggers: TriggerLayer,
 }
 
 impl PerformControl {
@@ -804,9 +807,21 @@ impl PerformControl {
     ///
     /// A running neutral capture keeps the frames it holds and its stall clock starts over at the next `advance`;
     /// the tracking state reads `NoFrames` and the frame rate starts over, as after a new source.
+    ///
+    /// The triggers start over too: whatever expression is shown is gone at once, and no key counts as pressed, so a
+    /// held or toggled key must be pressed again to show its expression. The bindings stay. Key presses and releases
+    /// still queued from before the reset are dropped with the rest of that timeline; every other queued request
+    /// (settings, bindings, calibration) is applied.
     pub fn reset(&mut self, performer: &mut Performer) {
+        // At most the queue's length: a producer that keeps refilling it cannot hold the reset.
+        for _ in 0..COMMAND_QUEUE_LEN {
+            let Ok(command) = self.commands.try_recv() else { break };
+            if !matches!(command, Command::Press { .. }) {
+                self.run(command, performer);
+            }
+        }
         performer.reset();
-        self.triggers.clear();
+        self.triggers.reset();
         self.origin = None;
         self.next_step = 0;
         self.skipped = 0;
@@ -856,9 +871,7 @@ impl PerformControl {
             Command::Calibration(calibration) => self.set_calibration(performer, &calibration),
             Command::Trigger { index, slot } => self.set_trigger(index, slot.as_ref()),
             Command::Triggers(slots) => {
-                for (index, slot) in slots.changes() {
-                    self.set_trigger(index, slot);
-                }
+                self.triggers.rebake(&slots);
             }
             Command::Press { index, down } => {
                 if down {
@@ -873,7 +886,7 @@ impl PerformControl {
     /// Sets one trigger slot from its baked form. The control side bakes only non-empty masks and in-range indices, so
     /// the table refuses nothing it is sent.
     fn set_trigger(&mut self, index: usize, slot: Option<&TriggerSlot>) {
-        let result = self.triggers.set_slot(index, slot.copied());
+        let result = self.triggers.set(index, slot);
         debug_assert_eq!(result, Ok(()), "the control side sent a slot the table refuses");
     }
 

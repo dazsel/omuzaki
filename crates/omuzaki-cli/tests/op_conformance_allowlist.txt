@@ -82,3 +82,5 @@ variant.set_override
 [edits with Undo::None]
 perform.calibrate
 perform.set_retarget
+# trigger.press is a live action, so it stays until #2106 gives live actions their rule (#2195).
+trigger.press
