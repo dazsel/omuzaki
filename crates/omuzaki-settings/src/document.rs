@@ -105,28 +105,69 @@ pub(crate) fn json_to_toml(value: &Value) -> Result<toml_edit::Value, String> {
     })
 }
 
-/// Applies `edits` to `text` (a missing file is empty) and returns the new text.
+/// The result of [`apply_each`]: the new text, and the edits it could not make.
+#[derive(Debug)]
+pub(crate) struct Applied {
+    /// The text with every edit that could be made.
+    pub text: String,
+    /// The key and reason of each edit the file's shape refused; the text is as if the edit was never asked.
+    pub refused: Vec<(String, String)>,
+}
+
+/// Applies `edits` to `text` (a missing file is empty) one at a time, so an edit the file cannot take is reported
+/// beside the others instead of failing them. Only text that is not TOML fails the whole call.
 ///
 /// An existing file is edited as text: a changed value replaces only its own bytes, a removed key takes its own line,
 /// and a new key is inserted at the end of its table (or in a new table at the end of the file), using the file's own
 /// line ending. Every other byte stays as it was, so interleaved dotted keys are not reordered and `\r\n` stays
-/// `\r\n`; keys among dotted keys and inside inline tables are edited in place too. A shape that cannot be edited in
-/// place (a key under an array of tables, a new key in a dotted inline table) is a [`ApplyError::Conflict`], never a
-/// rewrite of the file. A new file is built whole, with the `format` marker.
-pub(crate) fn apply(text: Option<&str>, edits: &[Edit]) -> Result<String, ApplyError> {
-    match text {
+/// `\r\n`; keys among dotted keys and inside inline tables are edited in place too, and a setting stored as
+/// `[tables]` is replaced or removed whole. A shape that cannot be edited in place (a key under an array of tables, a
+/// new key in a dotted inline table) is refused, never a rewrite of the file. A new file is built whole, with the
+/// `format` marker.
+pub(crate) fn apply_each(text: Option<&str>, edits: &[Edit]) -> Result<Applied, ApplyError> {
+    let mut refused = Vec::new();
+    let mut note = |edit: &Edit, error: ApplyError| match error {
+        ApplyError::Conflict(reason) => {
+            refused.push((edit.key.clone(), reason));
+            Ok(())
+        }
+        unparsable @ ApplyError::Unparsable(_) => Err(unparsable),
+    };
+    let text = match text {
         Some(t) if !t.trim().is_empty() => {
             parse(t).map_err(ApplyError::Unparsable)?;
-            edits.iter().try_fold(t.to_owned(), |current, edit| apply_one(&current, edit))
+            let mut current = t.to_owned();
+            for edit in edits {
+                match apply_one(&current, edit) {
+                    Ok(done) => current = done,
+                    Err(error) => note(edit, error)?,
+                }
+            }
+            current
         }
         _ => {
             let mut doc = DocumentMut::new();
             for edit in edits {
-                edit_document(&mut doc, edit)?;
+                let mut next = doc.clone();
+                match edit_document(&mut next, edit) {
+                    Ok(()) => doc = next,
+                    Err(error) => note(edit, error)?,
+                }
             }
             doc.insert("format", toml_edit::value(FORMAT));
-            Ok(doc.to_string())
+            doc.to_string()
         }
+    };
+    Ok(Applied { text, refused })
+}
+
+/// [`apply_each`] for callers that want every edit or an error.
+#[cfg(test)]
+pub(crate) fn apply(text: Option<&str>, edits: &[Edit]) -> Result<String, ApplyError> {
+    let applied = apply_each(text, edits)?;
+    match applied.refused.into_iter().next() {
+        Some((key, reason)) => Err(ApplyError::Conflict(format!("`{key}`: {reason}"))),
+        None => Ok(applied.text),
     }
 }
 
@@ -144,21 +185,40 @@ fn apply_one(text: &str, edit: &Edit) -> Result<String, ApplyError> {
     let segments: Vec<&str> = edit.key.split('.').collect();
     let done = splice(text, &segments, new.as_ref()).map_err(ApplyError::Conflict)?;
     let done = splice(&done, &[VERSIONS, &edit.key], stamp.as_ref()).map_err(ApplyError::Conflict)?;
-    if reads_back(&done, edit) {
+    if reads_back(text, &done, edit) {
         Ok(done)
     } else {
         Err(ApplyError::Conflict(format!("`{}` cannot be edited in place in this file", edit.key)))
     }
 }
 
-/// Whether `text` holds the edit's outcome: the value and version, or neither.
-fn reads_back(text: &str, edit: &Edit) -> bool {
-    let Ok(doc) = parse(text) else { return false };
-    let found = lookup(&doc, &edit.key);
-    match &edit.value {
-        Some((value, version)) => found.as_ref() == Some(value) && stored_version(&doc, &edit.key) == *version,
-        None => found.is_none() && stored_version(&doc, &edit.key) == 1,
+/// Whether `new` is `old` with exactly the edit made: the key and its version read back as asked, and every other key
+/// has the value it had (a removed entry must not take a neighbour with it, nor re-attach its prefix to one).
+fn reads_back(old: &str, new: &str, edit: &Edit) -> bool {
+    let (Ok(before), Ok(after)) = (parse(old), parse(new)) else { return false };
+    let found = lookup(&after, &edit.key);
+    let target = match &edit.value {
+        Some((value, version)) => found.as_ref() == Some(value) && stored_version(&after, &edit.key) == *version,
+        None => found.is_none() && stored_version(&after, &edit.key) == 1,
+    };
+    let segments: Vec<&str> = edit.key.split('.').collect();
+    let others = |doc: &DocumentMut| {
+        let mut json = item_to_json(doc.as_item());
+        remove_path(&mut json, &segments);
+        remove_path(&mut json, &[VERSIONS, &edit.key]);
+        json
+    };
+    target && others(&before) == others(&after)
+}
+
+/// Removes the value at `path` from a JSON object tree, and the objects the removal leaves empty above it. Says
+/// whether `json` itself is now an empty object.
+fn remove_path(json: &mut Value, path: &[&str]) -> bool {
+    let (Some((first, rest)), Some(object)) = (path.split_first(), json.as_object_mut()) else { return false };
+    if rest.is_empty() || object.get_mut(*first).is_some_and(|child| remove_path(child, rest)) {
+        object.remove(*first);
     }
+    object.is_empty()
 }
 
 /// The edit applied to a parsed document: `toml_edit` re-serialises the whole file afterwards.
@@ -331,7 +391,11 @@ fn remove_sections(text: &str, doc: &Document<&str>, path: &[&str]) -> String {
             continue;
         }
         let from = line_start(text, *start);
-        let next = headers.get(i + 1).map_or(text.len(), |(_, next)| comments_above(text, line_start(text, *next)));
+        // The next header on a later line (an implicit parent reports a position inside its first child's header).
+        let next = headers[i + 1..]
+            .iter()
+            .find(|(_, later)| line_start(text, *later) > line_start(text, *start))
+            .map_or(text.len(), |(_, later)| comments_above(text, line_start(text, *later)));
         out.push_str(&text[cursor.min(from)..from]);
         cursor = next.max(line_end(text, *start));
     }
@@ -435,17 +499,35 @@ fn remove_entry(text: &str, key: &Key, item: &Item) -> Result<String, String> {
     let (Some(key_span), Some(value_span)) = (key.span(), item.as_value().and_then(toml_edit::Value::span)) else {
         return Err("an inline entry without a position".to_owned());
     };
+    // A dotted entry `a.b.c = 1` has the span of its last name only: its entry starts at the first.
+    let entry_start = dotted_key_start(text, key_span.start);
     let after = &text[value_span.end..];
     let gap = after.len() - after.trim_start().len();
     let (from, to) = if after[gap..].starts_with(',') {
         let tail = &after[gap + 1..];
         let blanks = tail.len() - tail.trim_start_matches([' ', '\t']).len();
-        (key_span.start, value_span.end + gap + 1 + blanks)
+        (entry_start, value_span.end + gap + 1 + blanks)
     } else {
-        let before = text[..key_span.start].trim_end();
-        (if before.ends_with(',') { before.len() - 1 } else { key_span.start }, value_span.end)
+        let before = text[..entry_start].trim_end();
+        (if before.ends_with(',') { before.len() - 1 } else { entry_start }, value_span.end)
     };
     Ok(format!("{}{}", &text[..from], &text[to..]))
+}
+
+/// Where the dotted key whose last name starts at `pos` begins: the names before it, `a.b.` of `a.b.c`, are walked back.
+fn dotted_key_start(text: &str, mut pos: usize) -> usize {
+    loop {
+        let Some(dotless) = text[..pos].trim_end().strip_suffix('.') else { return pos };
+        let name = dotless.trim_end();
+        let start = match name.chars().next_back() {
+            Some(quote @ ('"' | '\'')) => name[..name.len() - 1].rfind(quote),
+            _ => Some(name.trim_end_matches(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-').len()),
+        };
+        match start {
+            Some(at) if at < name.len() => pos = at,
+            _ => return pos,
+        }
+    }
 }
 
 /// Puts `line` on a new line after the line of the last value `last` (or after the line holding `header_end` when
@@ -750,6 +832,19 @@ mod tests {
     }
 
     #[test]
+    fn removing_a_dotted_inline_entry_takes_its_whole_key_and_leaves_its_neighbours_alone() {
+        let run = |text: &str, key: &str| apply(Some(text), &[drop_edit(key)]).unwrap();
+        let text = "audio = { bindings.voice = \"x\", gain = 3 }\n";
+        assert_eq!(run(text, "audio.bindings.voice"), "audio = { gain = 3 }\n");
+        assert_eq!(run(text, "audio.gain"), "audio = { bindings.voice = \"x\" }\n");
+        let nested = "a = { x.y.z = 1, x.y.w = 2, \"q r\".s = 3, e = 4 }\r\n";
+        assert_eq!(run(nested, "a.x.y.z"), "a = { x.y.w = 2, \"q r\".s = 3, e = 4 }\r\n");
+        assert_eq!(run(nested, "a.x.y.w"), "a = { x.y.z = 1, \"q r\".s = 3, e = 4 }\r\n");
+        assert_eq!(run(nested, "a.q r.s"), "a = { x.y.z = 1, x.y.w = 2, e = 4 }\r\n");
+        assert_eq!(run(nested, "a.e"), "a = { x.y.z = 1, x.y.w = 2, \"q r\".s = 3 }\r\n");
+    }
+
+    #[test]
     fn a_shape_that_cannot_be_edited_in_place_is_refused_not_rewritten() {
         let text = "a = { b.c = 1 }\n";
         let result = apply(Some(text), &[set_edit("a.d", json!(1))]);
@@ -771,7 +866,7 @@ mod tests {
 
     /// Chunks of a file's top level, in any order: dotted keys of one table apart from each other, inline tables,
     /// a multi-line array, comments and blank lines.
-    const CHUNKS: [&str; 9] = [
+    const CHUNKS: [&str; 10] = [
         "ui.scale = 5 # c\n",
         "other.k = 1\n",
         "ui.theme = \"x\"\n",
@@ -781,6 +876,7 @@ mod tests {
         "name = 'v'\n",
         "arr = [1,\n  2]\n",
         "  # indented note\n",
+        "dn = { bindings.voice = \"v\", gain = 3, bindings.q.r = 1 }\n",
     ];
 
     fn layouts() -> impl Strategy<Value = String> {
@@ -805,26 +901,37 @@ mod tests {
 
     proptest! {
         #[test]
-        fn every_byte_outside_the_edit_survives_in_any_layout(text in layouts(), pick in 0usize..6) {
+        fn every_byte_outside_the_edit_survives_in_any_layout(text in layouts(), pick in 0usize..9) {
             let (grow, edit) = match pick {
                 0 => (true, set_edit("ui.tier", json!("hi"))),
                 1 => (true, set_edit("audio.d", json!(4))),
                 2 => (true, set_edit("audio.b.e", json!(true))),
                 3 => (true, set_edit("fresh.k", json!(1))),
                 4 => (false, drop_edit("ui.scale")),
-                _ => (false, drop_edit("audio.a")),
+                5 => (false, drop_edit("audio.a")),
+                6 => (false, drop_edit("dn.bindings.voice")),
+                7 => (false, drop_edit("dn.gain")),
+                _ => (false, drop_edit("dn.bindings.q.r")),
             };
             // A file of nothing but blank lines counts as a new file, which is built whole.
-            prop_assume!(!text.trim().is_empty());
             let had = lookup(&parse(&text).unwrap(), &edit.key).is_some();
-            prop_assume!(had != grow);
+            if text.trim().is_empty() || had == grow {
+                return Ok(());
+            }
             // `ui.tier` needs a `ui` table to land in as a dotted key, or makes a new one: both are fine.
             let new = apply(Some(&text), std::slice::from_ref(&edit)).unwrap();
             prop_assert!(is_one_run(&text, &new, grow), "more than the edit changed\n--- old\n{:?}\n--- new\n{:?}", text, new);
             if text.contains("\r\n") {
                 prop_assert_eq!(new.matches('\n').count(), new.matches("\r\n").count());
             }
-            prop_assert!(reads_back(&new, &edit));
+            prop_assert!(reads_back(&text, &new, &edit));
+            // Independently of `reads_back`: no other key changed its meaning.
+            let strip = |t: &str| {
+                let mut json = item_to_json(parse(t).unwrap().as_item());
+                remove_path(&mut json, &edit.key.split('.').collect::<Vec<_>>());
+                json
+            };
+            prop_assert_eq!(strip(&text), strip(&new));
         }
 
         #[test]

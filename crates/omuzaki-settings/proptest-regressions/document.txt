@@ -7,3 +7,4 @@
 cc d0e2315197e86e2235121764107f7e57d6cff9ddab8a364d08f6f4261a5376a0 # shrinks to text = "format = 1\n\n[ui]\n# \nscale = 0\n", edits = [Edit { key: "ui.scale", value: None }]
 cc 69587c55de75ccd45682fe3d2e9b6d299ccb6289703af6c1e1212a3b49d9c3b4 # shrinks to text = "format = 1\n", edits = [Edit { key: "brand.deep.er", value: None }, Edit { key: "brand.deep.er", value: Some((Number(0), 2)) }, Edit { key: "ui.scale", value: Some((Number(0), 2)) }]
 cc 7c94127e9af8389b686402077f1b8382f79c16f5ca7aca837b3b67ed371cdeef # shrinks to text = "\r\n", pick = 0
+cc 3e789baea364179a4dbbec113f24ac523792fdd730628a730ea26cdb9501e49e # shrinks to text = "# note\n\naudio = { a = 1, b = { c = 2 } }\nui.scale = 5 # c\ndn = { bindings.voice = \"x\", gain = 3, bindings.q.r = 1 }\n", flip = true

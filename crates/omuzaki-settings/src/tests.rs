@@ -797,3 +797,56 @@ fn a_file_replaced_by_another_broken_text_is_moved_and_one_that_vanished_is_not_
     let store = Store::with_backend(Box::new(backend), registrations());
     assert_eq!((get::<Scale>(&store), store.findings()), (100, Vec::new()));
 }
+
+#[test]
+fn a_setting_stored_as_a_table_migrates_is_set_reset_and_reopens() {
+    let rig = Rig::new();
+    let old = "[ui.mig]\npercent = 125\n\n# other\n[other]\nk = 1\n";
+    rig.write_user(old);
+    let store = rig.open();
+    assert_eq!(get::<Migrated>(&store), 125, "the table form migrates like the inline one");
+    set::<Migrated>(&store, &150);
+    store.flush().unwrap();
+    let text = rig.user_text();
+    assert!(text.contains("mig = 150") && !text.contains("percent") && text.contains("\"ui.mig\" = 3"), "{text}");
+    assert!(text.contains("# other\n[other]\nk = 1\n"), "unrelated text is untouched: {text}");
+    drop(store);
+    let store = rig.open();
+    assert_eq!(get::<Migrated>(&store), 150, "reopened");
+    store.reset("ui.mig", Layer::Auto, Mode::Apply, &person()).unwrap();
+    store.flush().unwrap();
+    let text = rig.user_text();
+    assert!(!text.contains("mig") && text.contains("[other]\nk = 1\n"), "{text}");
+    drop(store);
+    assert_eq!(get::<Migrated>(&rig.open()), 100, "reset and reopened");
+
+    // The same, written as a table whose reset removes the table and its sub-tables.
+    let rig = Rig::new();
+    rig.write_user("[ui.mig]\npercent = 125\n[ui.mig.deep]\nx = 1\n[keep]\nk = 1\n");
+    let store = rig.open();
+    store.reset("ui.mig", Layer::Auto, Mode::Apply, &person()).unwrap();
+    store.flush().unwrap();
+    assert_eq!(rig.user_text(), "[keep]\nk = 1\n");
+}
+
+#[test]
+fn a_change_the_file_cannot_take_is_reported_for_its_key_and_the_others_still_land() {
+    let rig = Rig::new();
+    rig.write_user("versions = 7\n");
+    let store = rig.open();
+    set::<Migrated>(&store, &150);
+    set::<Scale>(&store, &120);
+    let error = store.flush().unwrap_err();
+    assert_eq!(error.key, "ui.mig");
+    let text = rig.user_text();
+    assert!(text.contains("scale = 120") && !text.contains("mig"), "the other change landed: {text}");
+    let findings = store.findings();
+    let refused: Vec<_> = findings.iter().filter(|f| f.from == "write").collect();
+    assert_eq!(refused.len(), 1, "{findings:?}");
+    assert_eq!((refused[0].error.key.as_str(), &refused[0].stored), ("ui.mig", &json!(150)));
+    assert_eq!(get::<Migrated>(&store), 150, "the running value is unaffected");
+    // The settled key is not written again; the refused one stays pending.
+    set::<Theme>(&store, &"light".to_owned());
+    assert!(store.flush().is_err());
+    assert!(rig.user_text().contains("theme = \"light\""));
+}

@@ -57,6 +57,8 @@ struct State {
     dirty: BTreeMap<String, Dirty>,
     findings: Vec<SettingFinding>,
     write_error: Option<SettingError>,
+    /// Pending changes the file's shape refuses, one finding per key; the rest of the file's changes still land.
+    refused: Vec<SettingFinding>,
     log: VecDeque<SettingChange>,
     /// Scopes whose file holds a value that was migrated in memory: the next write copies the file first.
     needs_backup: Vec<SettingScope>,
@@ -146,6 +148,7 @@ impl Store {
                 dirty: BTreeMap::new(),
                 findings: Vec::new(),
                 write_error: None,
+                refused: Vec::new(),
                 log: VecDeque::new(),
                 needs_backup: Vec::new(),
                 first_dirty: None,
@@ -344,6 +347,7 @@ impl Inner {
         };
         let mut failure = None;
         let mut recovered = Vec::new();
+        let mut refusals = Vec::new();
         for scope in SCOPES {
             let edits: Vec<Edit> = pending
                 .iter()
@@ -354,23 +358,34 @@ impl Inner {
                 continue;
             }
             let backup = backups.contains(&scope).then_some(self.app_version);
-            let Updated { moved_aside, outcome } = self.write_scope(scope, backup, &edits);
+            let (Updated { moved_aside, outcome }, refused) = self.write_scope(scope, backup, &edits);
             if let Some(name) = moved_aside {
                 recovered.push(self.moved_while_writing(scope, &name, outcome.is_ok()));
             }
+            let landed: BTreeMap<String, Dirty> = pending
+                .iter()
+                .filter(|(key, _)| !refused.iter().any(|(r, _)| r == *key))
+                .map(|(k, d)| (k.clone(), d.clone()))
+                .collect();
+            for (key, reason) in &refused {
+                let stored = pending.get(key).and_then(|d| d.value.clone()).unwrap_or(Value::Null);
+                refusals.push(SettingFinding::new(SettingError::invalid(key, reason.clone()), stored, "write"));
+            }
             match outcome {
-                Ok(()) => self.settle(scope, &pending),
+                Ok(()) => self.settle(scope, &landed),
                 Err(e) => failure = failure.or(Some(e)),
             }
         }
+        let refusal = refusals.first().map(|f| f.error.clone());
         let mut st = locked(&self.state);
+        st.refused = refusals;
         st.findings.extend(recovered);
         st.first_dirty = (!st.dirty.is_empty()).then(Instant::now);
         st.write_error.clone_from(&failure);
-        if failure.is_some() {
+        if failure.is_some() || refusal.is_some() {
             st.not_before = Instant::now() + MAX_DELAY;
         }
-        failure.map_or(Ok(()), Err)
+        failure.or(refusal).map_or(Ok(()), Err)
     }
 
     /// The finding for a file that stopped parsing between the last read and a write, and was moved aside by it.
@@ -385,13 +400,23 @@ impl Inner {
         SettingFinding::new(SettingError::new("", SettingErrorKind::Storage { reason }), Value::Null, file)
     }
 
-    fn write_scope(&self, scope: SettingScope, backup: Option<&str>, edits: &[Edit]) -> Updated {
-        self.backend.update(scope, backup, &mut |text| match document::apply(text, edits) {
-            Ok(new) if Some(new.as_str()) == text => Ok(Edited::Unchanged),
-            Ok(new) => Ok(Edited::Write(new)),
+    /// Writes the edits of one file; also returns the key and reason of each edit the file's shape refused.
+    fn write_scope(
+        &self,
+        scope: SettingScope,
+        backup: Option<&str>,
+        edits: &[Edit],
+    ) -> (Updated, Vec<(String, String)>) {
+        let mut refused = Vec::new();
+        let updated = self.backend.update(scope, backup, &mut |text| match document::apply_each(text, edits) {
+            Ok(applied) => {
+                refused = applied.refused;
+                Ok(if Some(applied.text.as_str()) == text { Edited::Unchanged } else { Edited::Write(applied.text) })
+            }
             Err(ApplyError::Unparsable(_)) => Ok(Edited::Unparsable),
             Err(ApplyError::Conflict(reason)) => Err(reason),
-        })
+        });
+        (updated, refused)
     }
 
     /// Forgets the changes a write took, except those changed again while it ran.
@@ -636,7 +661,7 @@ impl Settings for Store {
             let error = SettingError::new("", SettingErrorKind::Storage { reason: reason.to_owned() });
             SettingFinding::new(error, Value::Null, "write")
         });
-        st.findings.iter().cloned().chain(write).chain(stopped).collect()
+        st.findings.iter().cloned().chain(st.refused.iter().cloned()).chain(write).chain(stopped).collect()
     }
 
     fn subscribe(&self) -> Subscription<SettingsEvent> {
@@ -660,6 +685,7 @@ mod tests {
             dirty: BTreeMap::new(),
             findings: Vec::new(),
             write_error: None,
+            refused: Vec::new(),
             log: VecDeque::new(),
             needs_backup: Vec::new(),
             first_dirty: Some(now),
