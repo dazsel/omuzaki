@@ -29,13 +29,15 @@ pub const LAYER_TROUSERS: i32 = 25;
 pub const EXPONENT: f64 = 2.0;
 /// The default ease, metres.
 pub const TROUSERS_EASE: f64 = 0.004;
-/// The default hem, as a fraction of the leg region: just above the ankle.
-pub const LENGTH: f64 = 0.97;
+/// The default hem, as a fraction of the leg region: above the ankle, where the foot's heel begins.
+pub const LENGTH: f64 = 0.92;
+/// The longest hem: under it the cloth is clear of the foot region on every template.
+pub const MAX_LENGTH: f64 = 0.95;
 /// The shortest hem, as a fraction of the leg region: the leg parts a little over half way down the thigh on every body,
 /// and a hem needs some leg under it ([`MIN_LEG`]).
 pub const MIN_LENGTH: f64 = 0.55;
 /// The least leg under the gusset, as a fraction of the leg region.
-pub const MIN_LEG: f64 = 0.04;
+pub const MIN_LEG: f64 = 0.03;
 /// Rows down the leg between the gusset and the hem, besides the cuff's.
 pub const LEG_ROWS: usize = 12;
 /// Rows of the torso part of the pelvis between the band and the bottom of the torso region.
@@ -143,7 +145,7 @@ impl Validate for TrousersParams {
     fn check(&self, c: &mut Check) {
         c.nested("common", &self.common);
         c.nested("leg", &self.leg);
-        c.range("length", self.length, MIN_LENGTH, 1.0);
+        c.range("length", self.length, MIN_LENGTH, MAX_LENGTH);
         c.range("waistband/height", self.waistband.height, 0.01, MAX_BAND_HEIGHT);
         c.range("waistband/thickness", self.waistband.thickness, 0.0, MAX_BAND_THICKNESS);
         c.range("cuff/height", self.cuff.height, 0.01, MAX_CUFF_HEIGHT);

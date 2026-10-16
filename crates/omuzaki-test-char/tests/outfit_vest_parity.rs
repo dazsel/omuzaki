@@ -42,7 +42,8 @@ const BUTTON: f64 = 3e-4;
 fn dump() -> Option<(GeometryDump, PartOutput)> {
     let js = JsRef::open()?;
     let dump = js.geometry("game").expect("the geometry dump loads");
-    let params = serde_json::to_value(VestParams::default()).unwrap();
+    // The prototype has no armholes: the port's default cuts them, because the arm hangs against the torso.
+    let params = serde_json::to_value(VestParams { armhole: 0.0, ..VestParams::default() }).unwrap();
     let def = conformance::character("soft-sd", &BodyShape::default(), &[("garment", "vest", LAYER_VEST, params)]);
     let mut stack = conformance::build(def, &BuildServices::default()).expect("the vest builds");
     Some((dump, stack.outputs.pop().unwrap().1))
@@ -122,8 +123,8 @@ fn the_vest_mesh_is_buildvest_vertex_for_vertex() {
     let Some((dump, output)) = dump() else { return };
     let (theirs, ours) = (&js(&dump, "vest").mesh, &mesh(&output, "garment-vest").geometry);
     assert_eq!(theirs.positions.len(), PROTOTYPE_VERTICES);
-    // The port adds ten caps of five vertices after the prototype's vertices.
-    assert_eq!(ours.positions.len(), PROTOTYPE_VERTICES + 50);
+    // The port adds twelve caps (the six seams' tips) of five vertices after the prototype's vertices.
+    assert_eq!(ours.positions.len(), PROTOTYPE_VERTICES + 60);
     let parts = [
         ("outer shell", 0..35 * 85),
         ("lining", 35 * 85..2 * 35 * 85),
@@ -139,7 +140,7 @@ fn the_vest_mesh_is_buildvest_vertex_for_vertex() {
     // The triangles of the prototype's vertices are the same, index for index (the caps' come after).
     let prototype_indices = theirs.indices.len();
     assert_eq!(&ours.indices[..prototype_indices], &theirs.indices[..], "the same triangles over the same grid");
-    assert_eq!(ours.indices.len(), prototype_indices + 10 * 3 * 3, "ten five-sided caps of three triangles");
+    assert_eq!(ours.indices.len(), prototype_indices + 12 * 3 * 3, "twelve five-sided caps of three triangles");
     // Normals and vertex colours, over the prototype's vertices.
     let angle = |k: usize| f64::from(ours.normals[k].dot(theirs.normals[k]).clamp(-1.0, 1.0).acos()).to_degrees();
     let worst_angle = (0..PROTOTYPE_VERTICES).map(angle).fold(0.0, f64::max);
@@ -228,7 +229,8 @@ fn the_materials_are_the_prototypes() {
     assert_eq!(hex(ours("garment-shell").base), vest.material.color);
     let line = ours("garment-shell").outline.unwrap();
     let theirs = vest.outline.as_ref().unwrap();
-    assert_eq!((hex(line.colour), f64::from(line.width)), (theirs.color.clone(), theirs.width));
+    assert_eq!(hex(line.colour), theirs.color);
+    assert!((f64::from(line.width) - theirs.width).abs() < 1e-6);
     // The gold: the band-highlight program with the prototype's highlight colour, the base colour and the outline.
     let gold = js(&dump, "buttons");
     let ours_gold = ours("garment-gold");
@@ -242,5 +244,6 @@ fn the_materials_are_the_prototypes() {
     assert_eq!(hex(highlight), gold.material.other_uniforms["uHlG"].as_str().unwrap().to_lowercase());
     let line = ours_gold.outline.unwrap();
     let theirs = gold.outline.as_ref().unwrap();
-    assert_eq!((hex(line.colour), f64::from(line.width)), (theirs.color.clone(), theirs.width));
+    assert_eq!(hex(line.colour), theirs.color);
+    assert!((f64::from(line.width) - theirs.width).abs() < 1e-6);
 }
