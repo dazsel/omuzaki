@@ -306,6 +306,30 @@ fn a_reset_drops_the_shown_expression_at_once_and_keeps_the_bindings() {
 }
 
 #[test]
+fn a_press_queued_before_a_reset_does_not_survive_it() {
+    let mut rig = starter_rig();
+    rig.handle.press("F1", true).unwrap(); // queued; the performer has not taken it yet
+    rig.control.reset(&mut rig.performer);
+    rig.steps(30);
+    assert_ne!(rig.step().smile, Source::Trigger, "the key must be pressed again after a reset");
+    assert_eq!(rig.handle.triggers().len(), 4, "the bindings stay");
+    rig.handle.press("F1", true).unwrap();
+    rig.steps(30);
+    assert_eq!(rig.step().smile, Source::Trigger, "a press after the reset shows it");
+}
+
+#[test]
+fn a_binding_queued_before_a_reset_is_still_applied() {
+    let mut rig = starter_rig();
+    let binding = TriggerBinding { key: "F6".to_owned(), expression: id("happy"), mode: TriggerMode::Hold };
+    rig.handle.bind_trigger(binding).unwrap();
+    rig.control.reset(&mut rig.performer); // the bind is still queued
+    rig.handle.press("F6", true).unwrap();
+    rig.steps(30);
+    assert_eq!(rig.step().smile, Source::Trigger, "the bind reached the performer, so its key shows `happy`");
+}
+
+#[test]
 fn the_seventeenth_binding_is_refused_and_a_repeated_key_replaces_its_binding() {
     let mut rig = starter_rig();
     let first = rig.bind("f1", "sad", TriggerMode::Hold).unwrap();

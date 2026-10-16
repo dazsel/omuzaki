@@ -809,8 +809,17 @@ impl PerformControl {
     /// the tracking state reads `NoFrames` and the frame rate starts over, as after a new source.
     ///
     /// The triggers start over too: whatever expression is shown is gone at once, and no key counts as pressed, so a
-    /// held or toggled key must be pressed again to show its expression. The bindings stay.
+    /// held or toggled key must be pressed again to show its expression. The bindings stay. Key presses and releases
+    /// still queued from before the reset are dropped with the rest of that timeline; every other queued request
+    /// (settings, bindings, calibration) is applied.
     pub fn reset(&mut self, performer: &mut Performer) {
+        // At most the queue's length: a producer that keeps refilling it cannot hold the reset.
+        for _ in 0..COMMAND_QUEUE_LEN {
+            let Ok(command) = self.commands.try_recv() else { break };
+            if !matches!(command, Command::Press { .. }) {
+                self.run(command, performer);
+            }
+        }
         performer.reset();
         self.triggers.reset();
         self.origin = None;
