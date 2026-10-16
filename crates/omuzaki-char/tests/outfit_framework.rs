@@ -20,8 +20,8 @@ use omuzaki_char::outfit::common::{
 use omuzaki_char::outfit::loft::{RegionWeights, SOFT_SQUARE, Surface, ring_at};
 use omuzaki_char::outfit::trim::{TrimSpec, add_trim};
 use omuzaki_char_api::{
-    BodyFit, BodyRegion, BodyShape, BuildCtx, BuildError, BuildServices, FitFact, JointRef, PartCategory, PartKind, PartMeta,
-    PartOutput,
+    BodyFit, BodyRegion, BodyShape, BuildCtx, BuildError, BuildServices, FitFact, JointRef, PartCategory, PartKind,
+    PartMeta, PartOutput,
 };
 use omuzaki_char_mock::TorsoFit;
 use omuzaki_core::colour::Colour;
@@ -621,7 +621,8 @@ fn widest_bulge(fit: &dyn BodyFit) -> Bulge {
                 let t = t0 + (t1 - t0) * f64::from(i) / 16.0;
                 let real = section64(fit, region, t);
                 let (centre, axis, across, through, _) = real;
-                for (direction, side) in [(across, through), (-across, through), (through, across), (-through, across)] {
+                for (direction, side) in [(across, through), (-across, through), (through, across), (-through, across)]
+                {
                     let (surface, hull) =
                         (support(real, direction), support(e0, direction).max(support(e1, direction)));
                     let found = Bulge { region, t, direction, axis, side, centre, surface, hull, turning };
@@ -801,8 +802,9 @@ fn star() -> omuzaki_face_api::DrawList {
     star
 }
 
-/// Every trim of the library on a tube spanning `span` of the torso, placed by fractions of it.
-fn sheet_trims(span: [f64; 2]) -> Vec<TrimSpec> {
+/// Every trim of the library on a tube spanning `span` of the torso, placed by fractions of it; the braid repeats
+/// `lobes` times down the front (as many as its strands have room for on that template's torso).
+fn sheet_trims(span: [f64; 2], lobes: u32) -> Vec<TrimSpec> {
     use omuzaki_char::outfit::trim::braid::Braid;
     use omuzaki_char::outfit::trim::buttons::{ButtonRow, ButtonShape, ButtonStyle};
     use omuzaki_char::outfit::trim::chain::Chain;
@@ -844,7 +846,7 @@ fn sheet_trims(span: [f64; 2]) -> Vec<TrimSpec> {
         TrimSpec::Braid(Braid {
             rail: rail(&[[t(0.82), -0.3], [t(0.11), -0.35]], false),
             strands: 3,
-            lobes: 10,
+            lobes,
             strand_width: 0.002,
             finish: Finish::cloth(ColourRef::rgb(0xc8, 0x9a, 0x3c)),
         }),
@@ -986,10 +988,10 @@ fn render_the_garment_framework_when_asked() {
         ..TubeParams::default()
     };
     // Above the thigh caps, and on soft-sd above the hands, which stand out of the torso's fit below it.
-    for (template, span) in [("standard", [0.27, 0.55]), ("soft-sd", [0.38, 0.56])] {
+    for (template, span, lobes) in [("standard", [0.27, 0.55], 8), ("soft-sd", [0.38, 0.56], 3)] {
         let shirt = TubeParams { span, ..shirt.clone() };
         let vest = TubeParams { span: [span[0] + 0.03, span[1] - 0.04], ..vest.clone() };
-        let trimmed = TubeParams { trims: sheet_trims(span), span, ..TubeParams::default() };
+        let trimmed = TubeParams { trims: sheet_trims(span, lobes), span, ..TubeParams::default() };
         let shape = omuzaki_char_api::BodyShape::default();
         let pair = conformance::build(
             conformance::character(

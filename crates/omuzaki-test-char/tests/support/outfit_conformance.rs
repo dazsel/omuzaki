@@ -324,7 +324,8 @@ impl Tables {
         let tables = REGIONS
             .iter()
             .filter_map(|&region| {
-                let rows = (0..=TABLE).map(|k| slice(fit, region, k as f64 / TABLE as f64)).collect::<Option<Vec<_>>>()?;
+                let rows =
+                    (0..=TABLE).map(|k| slice(fit, region, k as f64 / TABLE as f64)).collect::<Option<Vec<_>>>()?;
                 let reach = |s: &Slice| DVec3::splat(s.radii.max_element());
                 let lo = rows.iter().map(|s| s.centre - reach(s)).reduce(DVec3::min)?;
                 let hi = rows.iter().map(|s| s.centre + reach(s)).reduce(DVec3::max)?;
