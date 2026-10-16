@@ -25,7 +25,7 @@ name: CI
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, ci/tmp-base]
     types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
     types: [checks_requested]
