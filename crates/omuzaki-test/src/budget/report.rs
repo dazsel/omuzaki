@@ -147,6 +147,18 @@ impl Provenance {
     }
 }
 
+/// The role of a number in a `scaled` report (spec §10: for GPU rows the central estimate is a hard gate and a
+/// pessimistic estimate over the budget only a warning). Every other number is a central one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Estimate {
+    /// The measurement, or a scaled central estimate: judged against the budget.
+    #[default]
+    Central,
+    /// A pessimistic scaled estimate: over the budget is a warning, never a failure.
+    Pessimistic,
+}
+
 /// What was measured under one key.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Metric {
@@ -160,9 +172,19 @@ pub struct Metric {
     pub dropped: u64,
     /// The statistics.
     pub stats: Summary,
+    /// The role of the number; a key may be reported once per role.
+    #[serde(default)]
+    pub estimate: Estimate,
 }
 
 impl Metric {
+    /// This metric as a pessimistic estimate of its key.
+    #[must_use]
+    pub fn pessimistic(mut self) -> Self {
+        self.estimate = Estimate::Pessimistic;
+        self
+    }
+
     /// A metric from timing samples in nanoseconds (reported in milliseconds); `None` without samples.
     #[allow(clippy::cast_precision_loss)] // nanosecond samples stay far below 2^52 (about 52 days)
     pub fn from_ns(key: &str, samples_ns: &[u64], dropped: u64) -> Option<Self> {
@@ -173,13 +195,14 @@ impl Metric {
             samples: samples_ns.len() as u64,
             dropped,
             stats: Summary::of(&mut ms)?,
+            estimate: Estimate::Central,
         })
     }
 
     /// A metric that is one number (peak memory, a start-up total).
     pub fn single(key: &str, unit: Unit, value: f64) -> Option<Self> {
         let stats = Summary::of(&mut [value])?;
-        Some(Self { key: key.to_owned(), unit, samples: 1, dropped: 0, stats })
+        Some(Self { key: key.to_owned(), unit, samples: 1, dropped: 0, stats, estimate: Estimate::Central })
     }
 
     fn statistic(&self, which: Statistic) -> Option<f64> {
@@ -206,6 +229,28 @@ pub enum Verdict {
     NotComparable,
     /// The key is not a budget row.
     NoBudget,
+    /// A pessimistic estimate over the limit: a warning, never a failure.
+    Warn,
+    /// The budget row applies to other tiers than the one the report claims, so it is not judged.
+    OtherTier,
+}
+
+/// Which findings a call wants.
+#[derive(Clone, Copy)]
+struct Scope {
+    /// Rows over their budget.
+    budget: bool,
+    /// Rows worse than the previous run.
+    regressions: bool,
+    /// Count a regression only on a row that has a budget.
+    budgeted_only: bool,
+    /// Rows over budget on a pessimistic estimate.
+    warnings: bool,
+}
+
+/// Whether a budget row's tier cell (`R`, `R`, `U`, `any`, `as R`) covers the `claimed` tier.
+fn applies_to_tier(cell: &str, claimed: &str) -> bool {
+    cell.split(|c: char| !c.is_ascii_alphanumeric()).any(|word| word == "any" || word == claimed)
 }
 
 /// One line of the report.
@@ -215,6 +260,8 @@ pub struct Row {
     pub metric: Metric,
     /// The budget text from the spec, when the key is a budget row.
     pub budget: Option<String>,
+    /// The tier cell from the spec, when the key is a budget row.
+    pub tier: Option<String>,
     /// The comparison with the budget.
     pub verdict: Verdict,
     /// The budget statistic's value for this run.
@@ -255,7 +302,7 @@ impl Report {
         class: Class,
         mut notes: Vec<String>,
     ) -> Self {
-        metrics.sort_by(|a, b| a.key.cmp(&b.key));
+        metrics.sort_by(|a, b| (&a.key, a.estimate).cmp(&(&b.key, b.estimate)));
         let previous = previous.filter(|p| {
             let comparable = p.machine == machine;
             if !comparable {
@@ -270,8 +317,25 @@ impl Report {
     /// This report with the provenance the caller stated.
     #[must_use]
     pub fn with_provenance(mut self, provenance: Option<Provenance>) -> Self {
+        // A gating class judges a budget row only on a tier the row applies to (`latency.desktop` is for `D`).
+        if let (Class::Measured | Class::Scaled, Some(claimed)) =
+            (self.class, provenance.as_ref().map(|p| p.tier.trim()))
+            && !claimed.is_empty()
+        {
+            for row in &mut self.rows {
+                let applies = row.tier.as_deref().is_none_or(|cell| applies_to_tier(cell, claimed));
+                if !applies && matches!(row.verdict, Verdict::Within | Verdict::Over | Verdict::Warn) {
+                    row.verdict = Verdict::OtherTier;
+                }
+            }
+        }
         self.provenance = provenance;
         self
+    }
+
+    /// How many rows were judged against a §10 budget (within it, over it, or over on a pessimistic estimate).
+    pub fn judged(&self) -> usize {
+        self.rows.iter().filter(|r| matches!(r.verdict, Verdict::Within | Verdict::Over | Verdict::Warn)).count()
     }
 
     /// How many rows with a §10 budget have a value from the previous report: what a `relative` run can fail on.
@@ -282,7 +346,7 @@ impl Report {
     /// Every finding: rows over budget, with a unit mismatch, truncated, or more than [`REGRESSION_LIMIT`] worse than the
     /// previous run. Whether a finding fails a run is [`Report::failures`].
     pub fn violations(&self) -> Vec<String> {
-        self.findings(true, true, false)
+        self.findings(Scope { budget: true, regressions: true, budgeted_only: false, warnings: true })
     }
 
     /// The findings that fail a gating run of this report's class. `reported` numbers never gate; `measured` and
@@ -292,17 +356,25 @@ impl Report {
     pub fn failures(&self) -> Vec<String> {
         match self.class {
             Class::Reported => Vec::new(),
-            Class::Measured | Class::Scaled => self.findings(true, false, false),
-            Class::Relative => self.findings(false, true, true),
+            Class::Measured | Class::Scaled => {
+                self.findings(Scope { budget: true, regressions: false, budgeted_only: false, warnings: false })
+            }
+            Class::Relative => {
+                self.findings(Scope { budget: false, regressions: true, budgeted_only: true, warnings: false })
+            }
         }
     }
 
-    fn findings(&self, budget: bool, regressions: bool, budgeted_only: bool) -> Vec<String> {
+    fn findings(&self, scope: Scope) -> Vec<String> {
+        let Scope { budget, regressions, budgeted_only, warnings } = scope;
         let mut out = Vec::new();
         for r in &self.rows {
             let key = &r.metric.key;
             match r.verdict {
                 Verdict::Over if budget => out.push(format!("{key}: over budget")),
+                Verdict::Warn if warnings => {
+                    out.push(format!("{key}: over budget on the pessimistic estimate (warning)"))
+                }
                 Verdict::UnitMismatch => out.push(format!("{key}: unit differs from the budget")),
                 _ => {}
             }
@@ -310,7 +382,10 @@ impl Report {
                 out.push(format!("{key}: {} samples dropped", r.metric.dropped));
             }
             if regressions && r.regression && (!budgeted_only || r.budget.is_some()) {
-                out.push(format!("{key}: regression of {:.1}%", r.change_pct.unwrap_or(f64::NAN)));
+                match r.change_pct {
+                    Some(change) => out.push(format!("{key}: regression of {change:.1}%")),
+                    None => out.push(format!("{key}: regression from zero")),
+                }
             }
         }
         out
@@ -376,10 +451,13 @@ impl Report {
             let (u, st) = (r.metric.unit, &r.metric.stats);
             let change = r
                 .change_pct
-                .map_or("-".to_owned(), |c| format!("{c:+.1}%{}", if r.regression { " **regression**" } else { "" }));
+                .map_or(if r.regression { "from zero **regression**".to_owned() } else { "-".to_owned() }, |c| {
+                    format!("{c:+.1}%{}", if r.regression { " **regression**" } else { "" })
+                });
             lines.push(format!(
-                "| `{}` | {} | {} | {} | {} | {} | {} | {:?} | {change} |",
+                "| `{}`{} | {} | {} | {} | {} | {} | {} | {:?} | {change} |",
                 r.metric.key,
+                if r.metric.estimate == Estimate::Pessimistic { " (pessimistic)" } else { "" },
                 r.metric.samples,
                 fmt(st.p50, u),
                 fmt(st.p95, u),
@@ -404,20 +482,28 @@ fn row(metric: Metric, budgets: &[Budget], previous: Option<&Report>) -> Row {
         (None, ..) => Verdict::NoBudget,
         (Some(_), Some(l), _) if l.unit != metric.unit => Verdict::UnitMismatch,
         (Some(_), Some(l), Some(v)) if v <= l.value => Verdict::Within,
+        (Some(_), Some(_), Some(_)) if metric.estimate == Estimate::Pessimistic => Verdict::Warn,
         (Some(_), Some(_), Some(_)) => Verdict::Over,
         _ => Verdict::NotComparable,
     };
     // Keys without a budget are still compared with the previous run, on the p95.
     let stat = value.unwrap_or(metric.stats.p95);
     let prev = previous
-        .and_then(|p| p.rows.iter().find(|r| r.metric.key == metric.key && r.metric.unit == metric.unit))
+        .and_then(|p| {
+            p.rows.iter().find(|r| {
+                r.metric.key == metric.key && r.metric.unit == metric.unit && r.metric.estimate == metric.estimate
+            })
+        })
         .and_then(|r| r.value.or(Some(r.metric.stats.p95)))
-        .filter(|&p| p > 0.0);
-    let change_pct = prev.map(|p| (stat - p) / p * 100.0);
+        .filter(|&p| p >= 0.0);
+    // A zero baseline (`floor.dropped_frames` is `≤ 0`) has no percentage; anything above it is an unbounded worsening.
+    let change_pct = prev.filter(|&p| p > 0.0).map(|p| (stat - p) / p * 100.0);
+    let from_zero = prev == Some(0.0) && stat > 0.0;
     let trusted = budget.is_some() || metric.samples >= MIN_REGRESSION_SAMPLES;
-    let regression = trusted && change_pct.is_some_and(|c| c > REGRESSION_LIMIT * 100.0);
+    let regression = trusted && (from_zero || change_pct.is_some_and(|c| c > REGRESSION_LIMIT * 100.0));
     Row {
         budget: budget.map(|b| b.budget_text.clone()),
+        tier: budget.map(|b| b.tier.clone()),
         verdict,
         value,
         previous: prev,
@@ -517,6 +603,60 @@ mod tests {
         assert_eq!(judged.failures(), Vec::<String>::new());
         assert_eq!(judged.violations(), ["other: regression of 900.0%"]);
         assert_eq!(judged.compared_budgeted(), 0, "so a strict relative run has nothing to judge");
+    }
+
+    #[test]
+    fn a_worsening_from_a_zero_baseline_is_a_regression() {
+        let before = report(vec![us("physics.step", 0)], None);
+        assert_eq!(before.rows[0].previous, Some(0.0));
+        let worse = report(vec![us("physics.step", 400)], Some(&before));
+        assert!(worse.rows[0].regression && worse.rows[0].change_pct.is_none());
+        assert_eq!(worse.failures(), ["physics.step: regression from zero"]);
+        assert_eq!(worse.compared_budgeted(), 1);
+        assert!(worse.to_markdown().contains("from zero **regression**"));
+        let still_zero = report(vec![us("physics.step", 0)], Some(&before));
+        assert!(!still_zero.rows[0].regression);
+        // And the JSON keeps it (no infinity in the file).
+        assert_eq!(Report::from_json(&worse.to_json().unwrap()).unwrap(), worse);
+    }
+
+    #[test]
+    fn a_budget_row_is_judged_only_on_a_tier_it_applies_to() {
+        let tiered = |tier: &str| {
+            let provenance = Provenance { tier: tier.into(), ..Provenance::default() };
+            Report::build(
+                machine(4),
+                vec![us("physics.step", 900)],
+                &parse_spec(SPEC).unwrap(),
+                None,
+                Class::Measured,
+                vec![],
+            )
+            .with_provenance(Some(provenance))
+        };
+        // `physics.step` is a tier `R` row.
+        assert_eq!(tiered("R").failures(), ["physics.step: over budget"]);
+        let other = tiered("U");
+        assert_eq!(other.rows[0].verdict, Verdict::OtherTier);
+        assert_eq!((other.failures(), other.judged()), (Vec::<String>::new(), 0));
+        assert!(applies_to_tier("`R`, `U`", "U") && applies_to_tier("any", "F") && applies_to_tier("as `R`", "R"));
+        assert!(!applies_to_tier("`R`, `D`", "U"));
+    }
+
+    #[test]
+    fn a_pessimistic_scaled_estimate_over_budget_is_a_warning_and_the_central_one_a_failure() {
+        let ram = |mb: f64| Metric::single("ram.runtime", Unit::Bytes, mb * 1024.0 * 1024.0).unwrap();
+        let scaled = |central: f64, pessimistic: f64| {
+            let metrics = vec![ram(pessimistic).pessimistic(), ram(central)];
+            Report::build(machine(4), metrics, &parse_spec(SPEC).unwrap(), None, Class::Scaled, vec![])
+        };
+        let warned = scaled(300.0, 500.0);
+        let roles: Vec<_> = warned.rows.iter().map(|r| (r.metric.estimate, r.verdict)).collect();
+        assert_eq!(roles, [(Estimate::Central, Verdict::Within), (Estimate::Pessimistic, Verdict::Warn)]);
+        assert_eq!(warned.failures(), Vec::<String>::new());
+        assert_eq!(warned.violations(), ["ram.runtime: over budget on the pessimistic estimate (warning)"]);
+        assert!(warned.to_markdown().contains("`ram.runtime` (pessimistic)"));
+        assert_eq!(scaled(500.0, 500.0).failures(), ["ram.runtime: over budget"]);
     }
 
     #[test]

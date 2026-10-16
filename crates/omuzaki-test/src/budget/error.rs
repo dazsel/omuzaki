@@ -47,6 +47,9 @@ pub enum BudgetError {
     /// compared metrics has a §10 budget.
     #[error("a strict `relative` run needs a previous report from the same machine with a budgeted metric to compare")]
     NoBaseline,
+    /// A strict `measured` or `scaled` run had no metric with a §10 budget that applies to its tier, so it judged nothing.
+    #[error("a strict `{0}` run needs a metric with a §10 budget for the tier it claims, and found none")]
+    NothingToJudge(String),
     /// A strict `relative` run could not show that both reports came from alternating runs of one session.
     #[error("a strict `relative` run needs the same OMUZAKI_BUDGET_SESSION in this run and in the previous report")]
     NoSession,

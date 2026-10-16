@@ -128,7 +128,8 @@ pub fn measure(config: &Config) -> Result<Report, BudgetError> {
 ///
 /// # Errors
 /// Any [`BudgetError`] from measuring or writing; [`BudgetError::Violations`] when `strict` and the report has any;
-/// [`BudgetError::NoBaseline`] when `strict` and `relative` compared no budgeted metric.
+/// [`BudgetError::NoBaseline`] when `strict` and `relative` compared no budgeted metric; [`BudgetError::NothingToJudge`]
+/// when `strict` and `measured` or `scaled` judged none.
 pub fn run(config: &Config) -> Result<Report, BudgetError> {
     let report = measure(config)?;
     let write = |name: &str, text: String| {
@@ -144,6 +145,10 @@ pub fn run(config: &Config) -> Result<Report, BudgetError> {
     // having judged nothing (the harness's own metrics have no §10 budget).
     if config.strict && config.class == Class::Relative && report.compared_budgeted() == 0 {
         return Err(BudgetError::NoBaseline);
+    }
+    // Likewise a `measured` or `scaled` run judges nothing when no metric has a budget for its tier.
+    if config.strict && matches!(config.class, Class::Measured | Class::Scaled) && report.judged() == 0 {
+        return Err(BudgetError::NothingToJudge(format!("{:?}", config.class).to_lowercase()));
     }
     let failures = report.failures();
     if config.strict && !failures.is_empty() {
@@ -226,6 +231,11 @@ mod tests {
         assert_eq!(missing(&c), "OMUZAKI_BUDGET_SCALING_RULE");
         c.provenance = Some(provenance());
         assert!(measure(&c).is_ok());
+        // Strict, with the harness's own metrics (none has a §10 budget), it would pass having judged nothing.
+        c.strict = true;
+        assert!(matches!(run(&c), Err(BudgetError::NothingToJudge(class)) if class == "scaled"));
+        c.class = Class::Measured;
+        assert!(matches!(run(&c), Err(BudgetError::NothingToJudge(class)) if class == "measured"));
     }
 
     #[test]
