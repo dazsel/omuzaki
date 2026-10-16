@@ -112,7 +112,7 @@ impl From<PackageError> for PluginError {
     }
 }
 
-fn io(error: &std::io::Error) -> PackageError {
+pub(crate) fn io(error: &std::io::Error) -> PackageError {
     PackageError::Io(error.to_string())
 }
 
@@ -140,7 +140,7 @@ pub enum PublisherCheck {
 
 /// The canonical path of an entry, or why it is refused: UTF-8, normalised (no root, drive, `.`, `..`, empty segment
 /// or backslash), in NFC. A trailing `/` (a folder entry) is removed first.
-fn canonical(raw: &[u8]) -> Result<String, PackageError> {
+pub(crate) fn canonical(raw: &[u8]) -> Result<String, PackageError> {
     let text = std::str::from_utf8(raw).map_err(|_| PackageError::UnsafePath {
         path: String::from_utf8_lossy(raw).into_owned(),
         why: "is not UTF-8",
@@ -178,12 +178,12 @@ pub fn content_hash<'a>(files: impl IntoIterator<Item = (&'a str, &'a [u8])>) ->
 /// [`PackageError`] for anything a package reader refuses.
 pub fn hash_folder(root: &Path, limits: &PackageLimits) -> Result<ContentHash, PackageError> {
     let mut collector = Collector::new(*limits);
-    walk(root, root, &mut collector)?;
+    crate::walk::walk(root, &mut collector)?;
     Ok(content_hash(collector.files.iter().map(|(p, b)| (p.as_str(), b.as_slice()))))
 }
 
 /// The files of a package as they are read, checked against the limits as they arrive.
-struct Collector {
+pub(crate) struct Collector {
     limits: PackageLimits,
     files: BTreeMap<String, Vec<u8>>,
     folded: BTreeMap<String, String>,
@@ -197,7 +197,7 @@ impl Collector {
     }
 
     /// Counts an entry (a file or a folder) and refuses a name that collides with an earlier one.
-    fn entry(&mut self, path: &str) -> Result<(), PackageError> {
+    pub(crate) fn entry(&mut self, path: &str) -> Result<(), PackageError> {
         self.entries += 1;
         if self.entries > self.limits.max_files {
             return Err(PackageError::TooLarge { what: "max_files", limit: u64::from(self.limits.max_files) });
@@ -210,7 +210,7 @@ impl Collector {
 
     /// Reads one file of declared size `declared`, refusing as soon as it would pass a limit, whatever the archive
     /// claimed.
-    fn file(&mut self, path: String, declared: u64, reader: &mut dyn Read) -> Result<(), PackageError> {
+    pub(crate) fn file(&mut self, path: String, declared: u64, reader: &mut dyn Read) -> Result<(), PackageError> {
         self.entry(&path)?;
         let room = self.limits.max_file_bytes.min(self.limits.max_expanded_bytes - self.expanded);
         if declared > room {
@@ -293,7 +293,7 @@ impl PluginPackage {
     /// [`PackageError`] for the first thing refused.
     pub fn open_folder(root: &Path, limits: &PackageLimits) -> Result<Self, PackageError> {
         let mut collector = Collector::new(*limits);
-        walk(root, root, &mut collector)?;
+        crate::walk::walk(root, &mut collector)?;
         Self::from_files(collector.files)
     }
 
@@ -416,94 +416,11 @@ fn fresh_dir(root: &Path) -> Result<PathBuf, PackageError> {
     Err(PackageError::Io("no fresh staging folder could be made".into()))
 }
 
-fn walk(root: &Path, dir: &Path, collector: &mut Collector) -> Result<(), PackageError> {
-    let mut entries: Vec<_> = fs::read_dir(dir).map_err(|e| io(&e))?.collect::<Result<_, _>>().map_err(|e| io(&e))?;
-    entries.sort_by_key(fs::DirEntry::file_name);
-    for entry in entries {
-        let path = entry.path();
-        let relative = path.strip_prefix(root).map_err(|_| PackageError::Io("a path left the folder".into()))?;
-        let raw: Option<Vec<&str>> = relative.components().map(|c| c.as_os_str().to_str()).collect();
-        let Some(raw) = raw else {
-            let path = relative.to_string_lossy().into_owned();
-            return Err(PackageError::UnsafePath { path, why: "is not UTF-8" });
-        };
-        let name = canonical(raw.join("/").as_bytes())?;
-        let seen = fs::symlink_metadata(&path).map_err(|e| io(&e))?;
-        let kind = seen.file_type();
-        if kind.is_dir() {
-            collector.entry(&name)?;
-            walk(root, &path, collector)?;
-            // A folder swapped for a link while it was read is refused: what was read may not be the package's.
-            let after = fs::symlink_metadata(&path).map_err(|e| io(&e))?;
-            if !after.is_dir() || !same_file(&seen, &after) {
-                return Err(PackageError::NotRegular(name));
-            }
-        } else if kind.is_file() {
-            let Some(mut file) = open_regular(&path, &seen).map_err(|e| io(&e))? else {
-                return Err(PackageError::NotRegular(name));
-            };
-            if hard_linked(&file).map_err(|e| io(&e))? {
-                return Err(PackageError::NotRegular(name));
-            }
-            let declared = file.metadata().map_err(|e| io(&e))?.len();
-            collector.file(name, declared, &mut file)?;
-        } else {
-            return Err(PackageError::NotRegular(name));
-        }
-    }
-    Ok(())
-}
-
-/// Opens `path` as the regular file `seen` described, or `None` when what opened is not that file: a path swapped
-/// for a link after it was looked at is never followed into.
-#[cfg(unix)]
-fn open_regular(path: &Path, seen: &fs::Metadata) -> std::io::Result<Option<fs::File>> {
-    let file = fs::File::open(path)?;
-    let opened = file.metadata()?;
-    Ok((opened.is_file() && same_file(seen, &opened)).then_some(file))
-}
-
-/// Windows: the open does not follow a link (`FILE_FLAG_OPEN_REPARSE_POINT`), so a link swapped in opens as the link
-/// itself and is refused.
-#[cfg(windows)]
-fn open_regular(path: &Path, _seen: &fs::Metadata) -> std::io::Result<Option<fs::File>> {
-    use std::os::windows::fs::OpenOptionsExt;
-    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
-    let file = fs::OpenOptions::new().read(true).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(path)?;
-    let opened = file.metadata()?;
-    Ok((opened.is_file() && !opened.file_type().is_symlink()).then_some(file))
-}
-
-/// Elsewhere a swapped path can't be told from the original, so nothing opens.
-#[cfg(not(any(unix, windows)))]
-fn open_regular(_: &Path, _: &fs::Metadata) -> std::io::Result<Option<fs::File>> {
-    Ok(None)
-}
-
-/// Whether two looks at a path saw the same file (device and inode on Unix).
-#[cfg(unix)]
-fn same_file(a: &fs::Metadata, b: &fs::Metadata) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    a.dev() == b.dev() && a.ino() == b.ino()
-}
-
-/// Windows: std gives no stable file identity, so a folder is held to being a folder, not a link, at both looks.
-#[cfg(not(unix))]
-fn same_file(_: &fs::Metadata, b: &fs::Metadata) -> bool {
-    !b.file_type().is_symlink()
-}
-
-/// Whether an open regular file has other names: a hardlink could make one staged file another file's bytes. Read
-/// from the open handle, so the file checked is the file read.
-#[cfg(unix)]
-fn hard_linked(file: &fs::File) -> std::io::Result<bool> {
-    Ok(std::os::unix::fs::MetadataExt::nlink(&file.metadata()?) > 1)
-}
-
-/// Windows: the link count from `FILE_STANDARD_INFO` (std's `number_of_links` is not stable).
+/// Windows: whether an open regular file has other names, from `FILE_STANDARD_INFO` (std's `number_of_links` is
+/// not stable). A hardlink could make one staged file another file's bytes.
 #[cfg(windows)]
 #[allow(unsafe_code)] // One OS call with no safe std equivalent; its SAFETY reasoning is below.
-fn hard_linked(file: &fs::File) -> std::io::Result<bool> {
+pub(crate) fn hard_linked(file: &fs::File) -> std::io::Result<bool> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{FILE_STANDARD_INFO, FileStandardInfo, GetFileInformationByHandleEx};
     // SAFETY: `info` is a zeroed `FILE_STANDARD_INFO` (plain data, so zero is a valid value) and the call is told its
@@ -517,32 +434,4 @@ fn hard_linked(file: &fs::File) -> std::io::Result<bool> {
         return Err(std::io::Error::last_os_error());
     }
     Ok(info.NumberOfLinks > 1)
-}
-
-/// Elsewhere the link count can't be read, so every file is refused rather than a hardlink accepted.
-#[cfg(not(any(unix, windows)))]
-fn hard_linked(_: &fs::File) -> std::io::Result<bool> {
-    Ok(true)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[cfg(unix)]
-    #[test]
-    fn a_file_swapped_for_a_link_after_it_was_looked_at_is_not_opened() {
-        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
-        let (path, outside) = (dir.path().join("plugin.wasm"), dir.path().join("outside"));
-        fs::write(&path, b"package").unwrap_or_else(|e| panic!("{e}"));
-        fs::write(&outside, b"secret").unwrap_or_else(|e| panic!("{e}"));
-        let seen = fs::symlink_metadata(&path).unwrap_or_else(|e| panic!("{e}"));
-        assert!(open_regular(&path, &seen).unwrap_or_else(|e| panic!("{e}")).is_some(), "the file it saw opens");
-        fs::remove_file(&path).unwrap_or_else(|e| panic!("{e}"));
-        std::os::unix::fs::symlink(&outside, &path).unwrap_or_else(|e| panic!("{e}"));
-        assert!(
-            open_regular(&path, &seen).unwrap_or_else(|e| panic!("{e}")).is_none(),
-            "the swapped-in link is refused"
-        );
-    }
 }

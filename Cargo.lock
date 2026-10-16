@@ -4443,6 +4443,7 @@ dependencies = [
  "omuzaki-plugin-api",
  "omuzaki-plugin-mock",
  "omuzaki-store-api",
+ "rustix 1.1.5",
  "semver",
  "serde",
  "serde_json",

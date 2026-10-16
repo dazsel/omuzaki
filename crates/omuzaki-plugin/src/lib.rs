@@ -27,6 +27,7 @@ pub mod limits;
 pub mod load;
 pub mod log;
 pub mod package;
+mod walk;
 mod wasi;
 mod worker;
 
