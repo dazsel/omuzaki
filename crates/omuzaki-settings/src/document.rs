@@ -6,7 +6,7 @@
 //! keys above version 1; that table name is therefore reserved and no setting may use `versions` as its area.
 
 use serde_json::Value;
-use toml_edit::{Document, DocumentMut, Item, Key, Table, TableLike};
+use toml_edit::{Document, DocumentMut, InlineTable, Item, Key, Table, TableLike};
 
 /// The table that lists the stored version of every key above version 1.
 const VERSIONS: &str = "versions";
@@ -110,8 +110,9 @@ pub(crate) fn json_to_toml(value: &Value) -> Result<toml_edit::Value, String> {
 /// An existing file is edited as text: a changed value replaces only its own bytes, a removed key takes its own line,
 /// and a new key is inserted at the end of its table (or in a new table at the end of the file), using the file's own
 /// line ending. Every other byte stays as it was, so interleaved dotted keys are not reordered and `\r\n` stays
-/// `\r\n`. A shape the text editor does not handle (a key inside an inline table or among dotted keys) falls back to
-/// `toml_edit`'s own re-serialisation for that one edit. A new file is built whole, with the `format` marker.
+/// `\r\n`; keys among dotted keys and inside inline tables are edited in place too. A shape that cannot be edited in
+/// place (a key under an array of tables, a new key in a dotted inline table) is a [`ApplyError::Conflict`], never a
+/// rewrite of the file. A new file is built whole, with the `format` marker.
 pub(crate) fn apply(text: Option<&str>, edits: &[Edit]) -> Result<String, ApplyError> {
     match text {
         Some(t) if !t.trim().is_empty() => {
@@ -129,8 +130,8 @@ pub(crate) fn apply(text: Option<&str>, edits: &[Edit]) -> Result<String, ApplyE
     }
 }
 
-/// One edit on existing text: by splicing bytes, or through `toml_edit` when the splice cannot place it or does not
-/// read back as the edit says.
+/// One edit on existing text, made by splicing bytes. An edit that cannot be placed in the text, or that does not read
+/// back as the edit says, is refused: the file is never re-serialised to make room for it.
 fn apply_one(text: &str, edit: &Edit) -> Result<String, ApplyError> {
     let new = edit
         .value
@@ -141,16 +142,13 @@ fn apply_one(text: &str, edit: &Edit) -> Result<String, ApplyError> {
     let version = edit.value.as_ref().map_or(1, |(_, version)| *version);
     let stamp = (version > 1).then(|| toml_edit::Value::from(i64::from(version)));
     let segments: Vec<&str> = edit.key.split('.').collect();
-    let spliced = match splice(text, &segments, new.as_ref()).map_err(ApplyError::Conflict)? {
-        Some(done) => splice(&done, &[VERSIONS, &edit.key], stamp.as_ref()).map_err(ApplyError::Conflict)?,
-        None => None,
-    };
-    if let Some(done) = spliced.filter(|done| reads_back(done, edit)) {
-        return Ok(done);
+    let done = splice(text, &segments, new.as_ref()).map_err(ApplyError::Conflict)?;
+    let done = splice(&done, &[VERSIONS, &edit.key], stamp.as_ref()).map_err(ApplyError::Conflict)?;
+    if reads_back(&done, edit) {
+        Ok(done)
+    } else {
+        Err(ApplyError::Conflict(format!("`{}` cannot be edited in place in this file", edit.key)))
     }
-    let mut doc = parse(text).map_err(ApplyError::Unparsable)?;
-    edit_document(&mut doc, edit)?;
-    Ok(doc.to_string())
 }
 
 /// Whether `text` holds the edit's outcome: the value and version, or neither.
@@ -234,66 +232,145 @@ fn set_version(doc: &mut DocumentMut, key: &str, version: u32) -> Result<(), App
     Ok(())
 }
 
-/// Edits the text of `segments` (the value `new`, or its removal) in place. `Ok(None)` means this shape is not handled
-/// here; `Err` is a path that runs through something that is not a table.
-fn splice(text: &str, segments: &[&str], new: Option<&toml_edit::Value>) -> Result<Option<String>, String> {
-    let Ok(doc) = Document::parse(text) else { return Ok(None) };
+/// Edits the text of `segments` (the value `new`, or its removal) in place. `Err` says why the file's shape cannot take
+/// the edit without rewriting more than the edit.
+fn splice(text: &str, segments: &[&str], new: Option<&toml_edit::Value>) -> Result<String, String> {
+    let doc = Document::parse(text).map_err(|e| e.to_string())?;
     let Some((leaf, prefix)) = segments.split_last() else { return Err("an empty key".to_owned()) };
     let mut table = doc.as_table();
-    let mut missing = false;
-    for segment in prefix {
+    // `base` is where the dotted keys under the last real table (root or `[header]`) begin in the path.
+    let (mut resolved, mut base) = (0, 0);
+    for (i, segment) in prefix.iter().enumerate() {
         match table.get(segment) {
-            None => {
-                missing = true;
-                break;
+            None => break,
+            Some(Item::Table(next)) => {
+                table = next;
+                if !next.is_dotted() {
+                    base = i + 1;
+                }
             }
-            Some(Item::Table(next)) => table = next,
-            Some(Item::Value(v)) if !v.is_inline_table() => {
-                return if new.is_some() {
-                    Err(format!("`{segment}` is a value, not a table"))
-                } else {
-                    Ok(Some(text.to_owned()))
+            Some(Item::Value(v)) => {
+                return match v.as_inline_table() {
+                    Some(inline) => splice_inline(text, inline, &prefix[i + 1..], leaf, new),
+                    None => not_a_table(text, segment, new),
                 };
             }
-            Some(_) => return Ok(None),
+            Some(_) => return Err(format!("`{segment}` is an array of tables")),
         }
+        resolved = i + 1;
     }
+    let missing = resolved < prefix.len();
     let Some(new) = new else {
-        return Ok(match (missing, table.get(leaf)) {
-            (true, _) | (false, None) => Some(text.to_owned()),
-            (false, Some(Item::Value(old))) => remove_line(text, table, leaf, old),
-            (false, Some(_)) => None,
-        });
+        return match (missing, table.get(leaf)) {
+            (true, _) | (false, None) => Ok(text.to_owned()),
+            (false, Some(Item::Value(old))) => remove_line(text, table, leaf, old)
+                .ok_or_else(|| format!("`{leaf}` shares its line with other text, so it cannot be removed in place")),
+            (false, Some(_)) => Err(format!("`{leaf}` is a table, not a value")),
+        };
     };
     let repr = new.to_string();
     let repr = repr.trim();
     if !missing {
         match table.get(leaf) {
-            Some(Item::Value(old)) => {
-                let Some(span) = old.span() else { return Ok(None) };
-                return Ok(Some(format!("{}{repr}{}", &text[..span.start], &text[span.end..])));
-            }
-            Some(_) => return Ok(None),
+            Some(Item::Value(old)) => return replace_span(text, old, repr),
+            Some(_) => return Err(format!("`{leaf}` is a table, not a value")),
             None => {}
         }
     }
-    if table.is_dotted() || prefix.is_empty() {
-        return Ok(None);
+    if table.is_dotted() {
+        let path: Vec<_> = segments[base..].iter().map(|s| Key::new(*s).display_repr().into_owned()).collect();
+        return insert_after(text, last_value(table), 0, &format!("{} = {repr}", path.join(".")))
+            .ok_or_else(|| "a dotted key without a value".to_owned());
+    }
+    if prefix.is_empty() {
+        return Err(format!("`{leaf}` has no area to put it under"));
     }
     let line = format!("{} = {repr}", Key::new(*leaf).display_repr());
     if !missing && !table.is_implicit() {
-        Ok(insert_in_table(text, table, &line))
+        let header = table.span().ok_or_else(|| "a table without a header".to_owned())?;
+        insert_after(text, last_value(table), header.end, &line).ok_or_else(|| "no place for the key".to_owned())
     } else {
         let header: Vec<_> = prefix.iter().map(|s| Key::new(*s).display_repr().into_owned()).collect();
-        Ok(Some(append_table(text, &header.join("."), &line)))
+        Ok(append_table(text, &header.join("."), &line))
     }
 }
 
-/// Puts `line` after the last key of the `[table]` section (or after its header when it has none).
-fn insert_in_table(text: &str, table: &Table, line: &str) -> Option<String> {
-    let header = table.span()?;
-    let last = last_value(table);
-    let after = line_end(text, last.as_ref().map_or(header.end, |v| v.end));
+fn not_a_table(text: &str, segment: &str, new: Option<&toml_edit::Value>) -> Result<String, String> {
+    if new.is_some() { Err(format!("`{segment}` is a value, not a table")) } else { Ok(text.to_owned()) }
+}
+
+fn replace_span(text: &str, old: &toml_edit::Value, repr: &str) -> Result<String, String> {
+    let span = old.span().ok_or_else(|| "a value without a position".to_owned())?;
+    Ok(format!("{}{repr}{}", &text[..span.start], &text[span.end..]))
+}
+
+/// [`splice`] inside an inline table `{ ... }`: the value, entry or text of the braces changes, nothing outside them.
+fn splice_inline(
+    text: &str,
+    inline: &InlineTable,
+    prefix: &[&str],
+    leaf: &str,
+    new: Option<&toml_edit::Value>,
+) -> Result<String, String> {
+    let (mut table, mut resolved) = (inline, 0);
+    for (i, segment) in prefix.iter().enumerate() {
+        let Some(value) = table.get(segment) else { break };
+        let Some(next) = value.as_inline_table() else { return not_a_table(text, segment, new) };
+        table = next;
+        resolved = i + 1;
+    }
+    let missing = resolved < prefix.len();
+    let Some(new) = new else {
+        return match (missing, table.get_key_value(leaf)) {
+            (true, _) | (false, None) => Ok(text.to_owned()),
+            (false, Some((key, item))) => remove_entry(text, key, item),
+        };
+    };
+    let repr = new.to_string();
+    let repr = repr.trim();
+    if !missing && let Some(old) = table.get(leaf) {
+        return replace_span(text, old, repr);
+    }
+    if table.is_dotted() {
+        return Err("a dotted inline table cannot take a new key in place".to_owned());
+    }
+    let mut entry = format!("{} = {repr}", Key::new(leaf).display_repr());
+    for segment in prefix[resolved..].iter().rev() {
+        entry = format!("{} = {{ {entry} }}", Key::new(*segment).display_repr());
+    }
+    let span = table.span().ok_or_else(|| "an inline table without a position".to_owned())?;
+    let last = table.iter().filter_map(|(_, v)| v.span()).map(|s| s.end).max();
+    Ok(match last {
+        Some(end) => format!("{}, {entry}{}", &text[..end], &text[end..]),
+        None => format!("{} {entry} {}", &text[..=span.start], &text[span.start + 1..]),
+    })
+}
+
+/// Deletes one entry of an inline table with the comma that joins it to its neighbour.
+fn remove_entry(text: &str, key: &Key, item: &Item) -> Result<String, String> {
+    let (Some(key_span), Some(value_span)) = (key.span(), item.as_value().and_then(toml_edit::Value::span)) else {
+        return Err("an inline entry without a position".to_owned());
+    };
+    let after = &text[value_span.end..];
+    let gap = after.len() - after.trim_start().len();
+    let (from, to) = if after[gap..].starts_with(',') {
+        let tail = &after[gap + 1..];
+        let blanks = tail.len() - tail.trim_start_matches([' ', '\t']).len();
+        (key_span.start, value_span.end + gap + 1 + blanks)
+    } else {
+        let before = text[..key_span.start].trim_end();
+        (if before.ends_with(',') { before.len() - 1 } else { key_span.start }, value_span.end)
+    };
+    Ok(format!("{}{}", &text[..from], &text[to..]))
+}
+
+/// Puts `line` on a new line after the line of the last value `last` (or after the line holding `header_end` when
+/// there is none), indented like that value's line.
+fn insert_after(text: &str, last: Option<std::ops::Range<usize>>, header_end: usize, line: &str) -> Option<String> {
+    if last.is_none() && header_end == 0 {
+        return None;
+    }
+    let after = line_end(text, last.as_ref().map_or(header_end, |v| v.end));
     let indent_from = last.map_or(after, |v| line_start(text, v.start));
     let indent: String = text[indent_from..].chars().take_while(|c| *c == ' ' || *c == '\t').collect();
     let eol = eol_of(text);
@@ -525,16 +602,129 @@ mod tests {
         assert_eq!(new_table, format!("{text}\r\n[b]\r\nc = true\r\n"));
     }
 
+    fn set_edit(key: &str, value: Value) -> Edit {
+        Edit { key: key.into(), value: Some((value, 1)) }
+    }
+
+    fn drop_edit(key: &str) -> Edit {
+        Edit { key: key.into(), value: None }
+    }
+
     #[test]
-    fn a_key_the_text_editor_cannot_place_still_lands_through_toml_edit() {
-        let inline = "audio = { bindings = { voice = \"x\" } }\n";
-        let edit = Edit { key: "audio.bindings.voice".into(), value: Some((json!("y"), 1)) };
-        let text = apply(Some(inline), &[edit]).unwrap();
-        assert_eq!(lookup(&parse(&text).unwrap(), "audio.bindings.voice"), Some(json!("y")));
-        let dotted = "ui.scale = 5\nother = 1\nui.theme = \"x\"\n";
-        let edit = Edit { key: "ui.tier".into(), value: Some((json!("hi"), 1)) };
-        let text = apply(Some(dotted), &[edit]).unwrap();
-        assert_eq!(lookup(&parse(&text).unwrap(), "ui.tier"), Some(json!("hi")));
+    fn a_key_added_to_a_dotted_table_goes_after_its_last_dotted_key_and_nothing_else_moves() {
+        for eol in ["\n", "\r\n"] {
+            let text = "ui.scale = 5\nother = 1\nui.theme = \"x\"\n\n[a]\nk = 1\n".replace('\n', eol);
+            let new = apply(Some(&text), &[set_edit("ui.tier", json!("hi"))]).unwrap();
+            let expected =
+                "ui.scale = 5\nother = 1\nui.theme = \"x\"\nui.tier = \"hi\"\n\n[a]\nk = 1\n".replace('\n', eol);
+            assert_eq!(new, expected);
+        }
+    }
+
+    #[test]
+    fn edits_inside_an_inline_table_change_only_the_braces() {
+        let text = "a = 1\r\naudio = { bindings = { voice = \"x\" }, gain = 3 } # keep\r\nz = 2\r\n";
+        let run = |edit| apply(Some(text), &[edit]).unwrap();
+        assert_eq!(run(set_edit("audio.bindings.voice", json!("y"))), text.replace("\"x\"", "\"y\""));
+        assert_eq!(run(set_edit("audio.bindings.other", json!(1))), text.replace("\"x\" }", "\"x\", other = 1 }"));
+        assert_eq!(
+            run(set_edit("audio.extra.k", json!(true))),
+            text.replace("gain = 3", "gain = 3, extra = { k = true }")
+        );
+        assert_eq!(run(drop_edit("audio.gain")), text.replace(", gain = 3", ""));
+        assert_eq!(run(drop_edit("audio.bindings")), text.replace("bindings = { voice = \"x\" }, ", ""));
+        let empty = apply(Some("audio = {}\n"), &[set_edit("audio.k", json!(1))]).unwrap();
+        assert_eq!(empty, "audio = { k = 1 }\n");
+    }
+
+    #[test]
+    fn a_shape_that_cannot_be_edited_in_place_is_refused_not_rewritten() {
+        let text = "a = { b.c = 1 }\n";
+        let result = apply(Some(text), &[set_edit("a.d", json!(1))]);
+        assert!(matches!(result, Err(ApplyError::Conflict(_))), "{result:?}");
+        let result = apply(Some("[[arr]]\nx = 1\n"), &[set_edit("arr.y", json!(1))]);
+        assert!(matches!(result, Err(ApplyError::Conflict(_))), "{result:?}");
+    }
+
+    #[test]
+    fn comments_and_blank_lines_between_entries_stay_where_they_are() {
+        let text = "# top\n\n[ui]\n  # a\n\n  scale   =   5   # t\n\n# z\n\n[o]\nx=1\n";
+        let replaced = apply(Some(text), &[set_edit("ui.scale", json!(6))]).unwrap();
+        assert_eq!(replaced, text.replace("5   # t", "6   # t"));
+        let added = apply(Some(text), &[set_edit("ui.theme", json!("d"))]).unwrap();
+        assert_eq!(added, text.replace("5   # t\n", "5   # t\n  theme = \"d\"\n"));
+        let removed = apply(Some(text), &[drop_edit("ui.scale")]).unwrap();
+        assert_eq!(removed, text.replace("  scale   =   5   # t\n", ""));
+    }
+
+    /// Chunks of a file's top level, in any order: dotted keys of one table apart from each other, inline tables,
+    /// a multi-line array, comments and blank lines.
+    const CHUNKS: [&str; 9] = [
+        "ui.scale = 5 # c\n",
+        "other.k = 1\n",
+        "ui.theme = \"x\"\n",
+        "audio = { a = 1, b = { c = 2 } }\n",
+        "# note\n",
+        "\n",
+        "name = 'v'\n",
+        "arr = [1,\n  2]\n",
+        "  # indented note\n",
+    ];
+
+    fn layouts() -> impl Strategy<Value = String> {
+        (Just(CHUNKS.to_vec()).prop_shuffle(), 0..=CHUNKS.len(), proptest::bool::ANY, proptest::bool::ANY).prop_map(
+            |(chunks, keep, section, crlf)| {
+                let mut text: String = chunks.into_iter().take(keep).collect();
+                if section {
+                    text.push_str("\n[quality]\ny = 1 # why\n");
+                }
+                if crlf { text.replace('\n', "\r\n") } else { text }
+            },
+        )
+    }
+
+    /// Whether `new` is `old` with one run of text inserted (`grew`) or deleted (not `grew`), and nothing else changed.
+    fn is_one_run(old: &str, new: &str, grew: bool) -> bool {
+        let (short, long) = if grew { (old, new) } else { (new, old) };
+        let prefix = short.bytes().zip(long.bytes()).take_while(|(a, b)| a == b).count();
+        let suffix = short.bytes().rev().zip(long.bytes().rev()).take_while(|(a, b)| a == b).count();
+        prefix + suffix >= short.len()
+    }
+
+    proptest! {
+        #[test]
+        fn every_byte_outside_the_edit_survives_in_any_layout(text in layouts(), pick in 0usize..6) {
+            let (grow, edit) = match pick {
+                0 => (true, set_edit("ui.tier", json!("hi"))),
+                1 => (true, set_edit("audio.d", json!(4))),
+                2 => (true, set_edit("audio.b.e", json!(true))),
+                3 => (true, set_edit("fresh.k", json!(1))),
+                4 => (false, drop_edit("ui.scale")),
+                _ => (false, drop_edit("audio.a")),
+            };
+            // A file of nothing but blank lines counts as a new file, which is built whole.
+            prop_assume!(!text.trim().is_empty());
+            let had = lookup(&parse(&text).unwrap(), &edit.key).is_some();
+            prop_assume!(had != grow);
+            // `ui.tier` needs a `ui` table to land in as a dotted key, or makes a new one: both are fine.
+            let new = apply(Some(&text), std::slice::from_ref(&edit)).unwrap();
+            prop_assert!(is_one_run(&text, &new, grow), "more than the edit changed\n--- old\n{:?}\n--- new\n{:?}", text, new);
+            if text.contains("\r\n") {
+                prop_assert_eq!(new.matches('\n').count(), new.matches("\r\n").count());
+            }
+            prop_assert!(reads_back(&new, &edit));
+        }
+
+        #[test]
+        fn a_replaced_value_changes_only_its_own_bytes(text in layouts(), flip in proptest::bool::ANY) {
+            let (key, old, new) = if flip { ("ui.theme", "\"x\"", "\"yy\"") } else { ("audio.b.c", "c = 2", "c = 99") };
+            if !text.contains(old) {
+                return Ok(());
+            }
+            let value = if flip { json!("yy") } else { json!(99) };
+            let done = apply(Some(&text), &[set_edit(key, value)]).unwrap();
+            prop_assert_eq!(done, text.replacen(old, new, 1));
+        }
     }
 
     #[test]

@@ -74,6 +74,9 @@ pub(crate) struct FileBackend {
     /// Runs under the lock after the re-read: the forced-interleaving test pauses a store here.
     #[cfg(test)]
     pub(crate) after_read: Option<Box<dyn Fn() + Send + Sync>>,
+    /// Runs under the lock right after a broken file was moved aside, before the replacement is written.
+    #[cfg(test)]
+    pub(crate) after_move: Option<Box<dyn Fn() + Send + Sync>>,
 }
 
 impl FileBackend {
@@ -83,6 +86,8 @@ impl FileBackend {
             lock_wait: LOCK_WAIT,
             #[cfg(test)]
             after_read: None,
+            #[cfg(test)]
+            after_move: None,
         }
     }
 
@@ -166,6 +171,10 @@ impl FileBackend {
         let mut edited = edit(current.as_deref()).map_err(reason)?;
         if matches!(edited, Edited::Unparsable) {
             *moved_aside = Some(self.move_aside(scope)?);
+            #[cfg(test)]
+            if let Some(hook) = &self.after_move {
+                hook();
+            }
             current = None;
             edited = edit(None).map_err(reason)?;
         }

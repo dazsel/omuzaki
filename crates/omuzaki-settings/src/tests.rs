@@ -730,3 +730,27 @@ fn a_panicked_writer_is_reported_and_the_drop_still_writes_the_pending_changes()
     drop(store);
     assert!(rig.user_text().contains("scale = 111"));
 }
+
+#[test]
+fn a_quarantine_followed_by_a_failed_write_is_reported_as_such() {
+    let rig = Rig::new();
+    let user_file = rig.user_file();
+    let mut backend = FileBackend::new(rig.paths.clone());
+    // The moment the broken file is out of the way, a folder takes its name, so the replacement cannot be written.
+    backend.after_move = Some(Box::new({
+        let user_file = user_file.clone();
+        move || fs::create_dir(&user_file).unwrap()
+    }));
+    let store = Store::with_backend(Box::new(backend), registrations());
+    rig.write_user("not = [toml");
+    set::<Scale>(&store, &120);
+    assert!(store.flush().is_err());
+    let findings = store.findings();
+    let moved = findings.iter().find(|f| f.from == "settings.toml").expect("the quarantine is reported");
+    let text = moved.error.to_string();
+    assert!(text.contains("moved to settings.toml.broken-") && text.contains("still pending"), "{text}");
+    assert!(!text.contains("a new file holds"), "{text}");
+    fs::remove_dir(&user_file).unwrap();
+    store.flush().unwrap();
+    assert!(rig.user_text().contains("scale = 120"), "the pending change landed once the folder was gone");
+}

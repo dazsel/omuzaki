@@ -340,7 +340,7 @@ impl Inner {
             let backup = backups.contains(&scope).then_some(self.app_version);
             let Updated { moved_aside, outcome } = self.write_scope(scope, backup, &edits);
             if let Some(name) = moved_aside {
-                recovered.push(self.moved_while_writing(scope, &name));
+                recovered.push(self.moved_while_writing(scope, &name, outcome.is_ok()));
             }
             match outcome {
                 Ok(()) => self.settle(scope, &pending),
@@ -358,9 +358,14 @@ impl Inner {
     }
 
     /// The finding for a file that stopped parsing between the last read and a write, and was moved aside by it.
-    fn moved_while_writing(&self, scope: SettingScope, name: &str) -> SettingFinding {
+    fn moved_while_writing(&self, scope: SettingScope, name: &str, written: bool) -> SettingFinding {
         let file = self.backend.file_name(scope);
-        let reason = format!("{file} did not parse when it was written; moved to {name}; a new file holds the changes");
+        let after = if written {
+            "a new file holds the changes"
+        } else {
+            "writing the new file failed, so the changes are still pending"
+        };
+        let reason = format!("{file} did not parse when it was written; moved to {name}; {after}");
         SettingFinding::new(SettingError::new("", SettingErrorKind::Storage { reason }), Value::Null, file)
     }
 
