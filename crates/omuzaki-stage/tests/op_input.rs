@@ -32,7 +32,7 @@ struct Rig {
 impl Rig {
     fn new(with_settings: bool) -> Self {
         let (tracker, log) = Cameras::new(vec![("a", face_for(5.0, 1)), ("b", face_for(5.0, 2))]);
-        let (handle, _control) = perform_channel(&performer(HumanoidPose::REST));
+        let (handle, _control) = perform_channel(&performer(&HumanoidPose::REST));
         let perform: Arc<dyn PerformHost> = Arc::new(handle);
         let slot = Arc::new(SourceSlot::new());
         let input =

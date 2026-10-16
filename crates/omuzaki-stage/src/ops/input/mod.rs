@@ -76,6 +76,7 @@ fn changed(
 }
 
 /// What each refusal means to a caller of an op.
+#[allow(clippy::needless_pass_by_value)] // `map_err` hands the error over by value
 fn op_error(error: InputError) -> OpError {
     use omuzaki_track_api::error::TrackError;
     let message = error.to_string();

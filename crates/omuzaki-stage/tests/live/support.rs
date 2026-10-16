@@ -3,7 +3,7 @@
 
 // Every test file that includes this module uses a different part of it.
 #![allow(dead_code, clippy::expect_used, clippy::unwrap_used)]
-#![allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#![allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -124,14 +124,14 @@ impl Tracker for Cameras {
 
 /// A performer with the real `ArkitRetarget`, `Life` (seed 7) and `BusAnimator`, reading nothing until a source is
 /// swapped in, on `base`.
-pub fn performer(base: HumanoidPose) -> Performer {
+pub fn performer(base: &HumanoidPose) -> Performer {
     let parts = PerformerParts {
         source: Box::new(omuzaki_stage::perform::input::NoSource),
         retarget: Box::new(ArkitRetarget::new(DeviceProfile::Webcam)),
         life: Box::new(Life::new(LifeConfig::new(7))),
         animator: Box::new(BusAnimator::new(BusAnimatorParams::default())),
     };
-    Performer::new(parts, ChannelBuf::NEUTRAL, base)
+    Performer::new(parts, ChannelBuf::NEUTRAL, *base)
 }
 
 /// The middle of step `i`, so each `advance` runs exactly one step.

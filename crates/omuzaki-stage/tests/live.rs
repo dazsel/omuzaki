@@ -211,11 +211,17 @@ struct Live<R: Renderer> {
 
 impl<R: Renderer> Live<R> {
     /// The mock character with its face on `renderer`, performing from `cameras` (none bound yet).
-    fn new(
+    fn new(renderer: R, cameras: Vec<(&str, Vec<(Duration, TrackFrame)>)>, quality: Quality, painter: Painter) -> Self {
+        Self::sized(renderer, cameras, quality, painter, 64)
+    }
+
+    /// [`new`](Self::new) with a `size` px square target.
+    fn sized(
         mut renderer: R,
         cameras: Vec<(&str, Vec<(Duration, TrackFrame)>)>,
         quality: Quality,
         painter: Painter,
+        size: u32,
     ) -> Self {
         let mut character: BuiltCharacter = built();
         if let Some(face) = character.face.as_mut() {
@@ -224,7 +230,7 @@ impl<R: Renderer> Live<R> {
         let mut base = HumanoidPose::REST;
         seed_base_pose(&character.rig, &mut base);
         let target =
-            renderer.create_target(&TargetDesc { size: UVec2::new(64, 64), alpha: AlphaEncoding::Straight }).unwrap();
+            renderer.create_target(&TargetDesc { size: UVec2::splat(size), alpha: AlphaEncoding::Straight }).unwrap();
         // The mock painter draws at this density; the real one at any.
         let options = UploadOptions { face_px_per_m: 2000.0 };
         let mut stage =
@@ -240,7 +246,7 @@ impl<R: Renderer> Live<R> {
             stage.set_face(&mut renderer, rig.with_executor(Box::new(InlineExecutor))).unwrap();
         }
         let sources = Arc::new(SourceSlot::new());
-        let live = LiveStage::new(performer(base), stage, Arc::clone(&sources), quality, budget::LIVE_GPU).unwrap();
+        let live = LiveStage::new(performer(&base), stage, Arc::clone(&sources), quality, budget::LIVE_GPU).unwrap();
         let perform: Arc<dyn PerformHost> = Arc::new(live.handle().clone());
         let (tracker, log) = Cameras::new(cameras);
         let input = LiveInput::new(Box::new(tracker), Box::new(NoPrompt), TrackerConfig::default(), sources, perform);
@@ -562,4 +568,25 @@ fn the_real_face_painter_runs_live_and_its_cost_is_reported() {
         times[times.len() / 2],
         times[times.len() * 99 / 100]
     );
+}
+
+#[cfg(feature = "wgpu")]
+#[test]
+fn the_fake_trace_renders_on_the_software_adapter() {
+    use omuzaki_render::{AdapterPreference, HeadlessOptions, WgpuRenderer};
+    let renderer = WgpuRenderer::headless(&HeadlessOptions { adapter: AdapterPreference::Software })
+        .expect("a software adapter (install mesa-vulkan-drivers)");
+    let mut live = Live::sized(renderer, vec![("cam", turning(4.0, sweep))], Quality::live(), Painter::Standard, 384);
+    live.go_live("cam");
+    // 1 s into the sweep the head is turned about 0.4 rad.
+    live.frames(60);
+    let target = live.live().stage().target();
+    let image = live.renderer.read_target(target).expect("the frame reads back");
+    let background = image.rgba8[..4].to_vec();
+    let drawn = image.rgba8.chunks(4).filter(|px| *px != background.as_slice()).count();
+    assert!(drawn > image.rgba8.len() / 4 / 20, "the character covers {drawn} pixels of the frame");
+    if let Some(dir) = std::env::var_os("OMUZAKI_STAGE_PNG") {
+        let png = image::RgbaImage::from_raw(image.size.x, image.size.y, image.rgba8.clone()).expect("sized");
+        png.save(std::path::Path::new(&dir).join("live-fake-trace.png")).expect("the PNG is written");
+    }
 }
