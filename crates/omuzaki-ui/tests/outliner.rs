@@ -482,3 +482,32 @@ fn the_outliner_is_registered_and_passes_the_shells_conformance_check() {
     let problems = host.check("outliner", &ctx);
     assert!(problems.is_empty(), "{problems:#?}");
 }
+
+// ---- task flows (the cloud half of the usability evidence; timing against other apps needs the local lane) ----
+
+#[test]
+fn task_flow_reorder_takes_two_inputs_from_the_menu_or_one_drag() {
+    let mut h = rig();
+    let start = std::time::Instant::now();
+    h.get_by_role_and_label(Role::TreeItem, "shirt").click_secondary();
+    settle(&mut h);
+    h.get_by_label("Move down").click();
+    settle(&mut h);
+    let menu = start.elapsed();
+    assert_eq!(h.state().runner.ops(), ["part.reorder"], "two inputs, one op");
+    assert_eq!(row_names(&h), ["body", "hair", "head", "vest", "shirt"]);
+
+    let vest = h.get_by_role_and_label(Role::TreeItem, "vest").rect().center();
+    let head = h.get_by_role_and_label(Role::TreeItem, "head").rect();
+    let above_head = egui::pos2(head.center().x, head.top() + 3.0);
+    let start = std::time::Instant::now();
+    omuzaki_ui::ds::testing::drag(&mut h, &[vest, vest + vec2(0.0, -10.0), above_head, above_head]);
+    settle(&mut h);
+    let dragged = start.elapsed();
+    assert_eq!(h.state().runner.ops(), ["part.reorder", "part.reorder"], "one drag, one op");
+    println!(
+        "FLOW reorder: menu 2 inputs {:.1} ms; drag 1 gesture {:.1} ms (headless, harness included)",
+        menu.as_secs_f64() * 1e3,
+        dragged.as_secs_f64() * 1e3
+    );
+}

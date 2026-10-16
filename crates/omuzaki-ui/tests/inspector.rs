@@ -485,3 +485,36 @@ fn the_inspector_is_registered_and_passes_the_shells_conformance_check() {
     let problems = host.check("inspector", &ctx);
     assert!(problems.is_empty(), "{problems:#?}");
 }
+
+// ---- task flows (the cloud half of the usability evidence; timing against other apps needs the local lane) ----
+
+#[test]
+fn task_flow_edit_a_parameter_then_undo_is_one_gesture_and_one_key() {
+    // The part is already selected: in the app that is one click on its outliner row.
+    let mut h = head_rig();
+    let before = param(&h.state().runner, "probe", "cranium/cheek_fullness");
+    let form_before = h.state().inspector.value();
+    let track = h.get_by_role_and_label(Role::Slider, SLIDER).rect();
+    let (from, to) = (track.center(), track.center() + vec2(40.0, 0.0));
+    let start = Instant::now();
+    drag(&mut h, &[from, from + vec2(20.0, 0.0), to]);
+    h.run_steps(3);
+    let edited = start.elapsed();
+    assert_ne!(param(&h.state().runner, "probe", "cranium/cheek_fullness"), before, "one drag edits");
+
+    // Undo is the shell's Ctrl+Z, one key; it reaches the runner, and the form follows the document.
+    let start = Instant::now();
+    {
+        let state = h.state();
+        state.runner.undo(&state.actor, &Grants::person()).unwrap_or_else(|e| panic!("{e}"));
+    }
+    h.run_steps(3);
+    let undone = start.elapsed();
+    assert_eq!(param(&h.state().runner, "probe", "cranium/cheek_fullness"), before, "one undo puts it back");
+    assert_eq!(h.state().inspector.value(), form_before, "the form shows the value again");
+    println!(
+        "FLOW edit a parameter: 1 drag {:.1} ms; undo: 1 key {:.1} ms (headless, harness included)",
+        edited.as_secs_f64() * 1e3,
+        undone.as_secs_f64() * 1e3
+    );
+}
