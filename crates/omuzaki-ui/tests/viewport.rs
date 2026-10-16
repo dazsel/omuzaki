@@ -80,6 +80,7 @@ fn rig() -> Option<Harness<'static, Rig>> {
     let mut h = Harness::builder()
         .with_size(SIZE)
         .with_pixels_per_point(1.0)
+        .with_step_dt(1.0 / 60.0)
         .renderer(WgpuTestRenderer::from_render_state(state))
         .build_ui_state(
             |ui, r: &mut Rig| {
@@ -172,7 +173,8 @@ fn the_keys_frame_and_turn_the_camera() {
         phase: egui::TouchPhase::Move,
         modifiers: Modifiers::NONE,
     });
-    h.run();
+    // egui eases a wheel scroll over several frames.
+    h.run_steps(30);
     assert!(h.state().viewport.camera().distance < far, "the wheel zooms in");
     omuzaki_ui::ds::testing::press(&mut h, Modifiers::NONE, egui::Key::Home);
     assert!((h.state().viewport.camera().distance - far).abs() < 1e-3, "Home frames the character again");
@@ -311,4 +313,44 @@ fn edit_panels_evidence() {
         let path = format!("{out}/build-{width}x{height}.png");
         image.save(&path).unwrap_or_else(|e| panic!("writing {path}: {e}"));
     }
+}
+
+#[test]
+fn a_document_changing_every_frame_restages_at_most_ten_times_a_second_and_the_last_change_lands() {
+    let Some(mut h) = rig() else { return };
+    h.try_run().unwrap_or_else(|e| panic!("{e}"));
+    let edit = |h: &mut Harness<'_, Rig>, value: f64| {
+        let state = h.state();
+        let args = json!({"character": "mock", "part": "vest", "path": "ease", "value": value});
+        let request = omuzaki_ops_api::Request {
+            op: "part.set_param".to_owned(),
+            args,
+            mode: omuzaki_ops_api::Mode::Apply,
+            actor: state.actor.clone(),
+            grants: Grants::person(),
+            cause: None,
+            tx: None,
+            base: None,
+        };
+        state.runner.run(request).is_ok()
+    };
+    let before = renders(&h);
+    // Six edits in six frames a sixtieth of a second apart: one restage at the start, the rest wait.
+    let mut edited = 0;
+    for i in 0..6 {
+        if edit(&mut h, 0.001f64.mul_add(f64::from(i), 0.007)) {
+            edited += 1;
+        }
+        h.step();
+        render(&mut h);
+    }
+    assert!(edited > 0, "the mock garment takes an ease");
+    assert!(renders(&h) <= before + 2, "restaged {} times in a tenth of a second", renders(&h) - before);
+    let waiting = renders(&h);
+    // Waiting out the interval (ten frames at 60 fps) brings the last change in without any input.
+    for _ in 0..10 {
+        h.step();
+        render(&mut h);
+    }
+    assert!(renders(&h) > waiting, "the last change landed");
 }
