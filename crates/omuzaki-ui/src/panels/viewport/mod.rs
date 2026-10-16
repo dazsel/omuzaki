@@ -34,8 +34,6 @@ use crate::ds::widgets::{Button, EmptyState};
 
 /// The viewport's id, as the shell registers it.
 pub const ID: &str = "viewport";
-/// The shortest time between two restages while the document keeps changing, seconds.
-const RESTAGE_EVERY: f64 = 0.1;
 /// Points of wheel scroll that zoom by a factor of e.
 const WHEEL_PER_E: f32 = 500.0;
 
@@ -63,8 +61,6 @@ pub struct Viewport {
     bounds: Option<Bounds>,
     parts: BTreeMap<PartId, Bounds>,
     job: SharedJob,
-    /// When the character was last restaged (egui's clock).
-    restaged_at: Option<f64>,
     /// Why the GPU side couldn't start, or the character couldn't build.
     problem: Option<String>,
 }
@@ -88,7 +84,6 @@ impl Viewport {
             bounds: None,
             parts: BTreeMap::new(),
             job: Arc::new(Mutex::new(Job::default())),
-            restaged_at: None,
             problem: None,
         }
     }
@@ -137,7 +132,7 @@ impl Viewport {
         {
             self.problem = Some(e);
         }
-        self.rebuild(ui, &character, io);
+        self.rebuild(&character, io);
         self.toolbar(ui, &ds);
         // What is left of the panel, and only what shows of it: the render is the size of what is seen.
         let rect = ui.available_rect_before_wrap().intersect(ui.clip_rect());
@@ -158,20 +153,14 @@ impl Viewport {
 
     /// Builds the character again when the document or the open character changed, and hands it to the GPU side.
     ///
-    /// A restage is a whole build and a settle, so while the document changes frame after frame (a slider dragged in
-    /// the inspector) it happens at most every [`RESTAGE_EVERY`] seconds; the last change always lands, on a frame
-    /// asked for when the interval is up.
-    fn rebuild(&mut self, ui: &Ui, character: &CharId, io: Io<'_>) {
+    /// A change shows on the next frame, as `shell.md` section 5 asks: there is no throttle, so a slider dragged in
+    /// the inspector restages once per frame (a build and a settle; see `a_preview_shows_on_the_next_frame` for its
+    /// cost) and never later than the frame after the edit.
+    fn rebuild(&mut self, character: &CharId, io: Io<'_>) {
         let other = self.character.as_ref() != Some(character);
         if !self.watch.stale(io.events) && !other {
             return;
         }
-        let now = ui.input(|i| i.time);
-        if let Some(wait) = self.restaged_at.map(|at| RESTAGE_EVERY - (now - at)).filter(|w| *w > 0.0 && !other) {
-            ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(wait));
-            return;
-        }
-        self.restaged_at = Some(now);
         self.watch.built();
         let built = io.character(character).map_err(|e| e.message).and_then(|def| {
             let def = def.ok_or_else(|| format!("there is no character '{character}'"))?;

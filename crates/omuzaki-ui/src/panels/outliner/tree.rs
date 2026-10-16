@@ -37,6 +37,8 @@ pub struct Node {
 pub struct Tree {
     nodes: Vec<Node>,
     roots: Vec<usize>,
+    /// Each part's index, so a lookup by id is not a walk of the tree.
+    index: BTreeMap<PartId, usize>,
 }
 
 impl Tree {
@@ -81,7 +83,8 @@ impl Tree {
             order(&nodes, &mut children);
             nodes[i].children = children;
         }
-        let mut tree = Self { nodes, roots };
+        let index = nodes.iter().enumerate().map(|(i, n)| (n.id.clone(), i)).collect();
+        let mut tree = Self { nodes, roots, index };
         // A cycle of parents (no root reaches it) is broken at its first part, so every part is listed. Each pass makes
         // one more root, so this ends.
         while let Some(i) = tree.set_depths().iter().position(|reached| !reached) {
@@ -125,7 +128,7 @@ impl Tree {
 
     /// The index of part `id`.
     pub fn find(&self, id: &PartId) -> Option<usize> {
-        self.nodes.iter().position(|n| &n.id == id)
+        self.index.get(id).copied()
     }
 
     /// The parts beside `index` (its parent's children, or the roots), in build order.

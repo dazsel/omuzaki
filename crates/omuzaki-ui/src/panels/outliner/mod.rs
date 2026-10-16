@@ -241,25 +241,22 @@ impl Outliner {
 
     /// Draws the visible rows and reads the pointer and the keyboard. Returns what the person asked for.
     fn draw_rows(&mut self, ui: &mut Ui, ds: &Ds) -> Option<Action> {
-        let rows = self.rows.get(&self.tree, self.built, &self.collapsed, &self.filter);
+        self.rows.get(&self.tree, self.built, &self.collapsed, &self.filter);
+        let rows = self.rows.as_slice();
         if rows.is_empty() {
             ui.label(say(ds, text::NO_MATCH, &[("filter", &self.filter)]).as_ref());
             return None;
         }
-        let cursor_row =
-            self.cursor.as_ref().and_then(|c| rows.iter().position(|r| &self.tree.nodes()[r.node].id == c));
-        let cursor_row = cursor_row.unwrap_or(0);
+        let row_of = |part: &PartId| self.tree.find(part).and_then(|node| self.rows.position_of(node));
+        let cursor_row = self.cursor.as_ref().and_then(row_of).unwrap_or(0);
         let mut action = if self.keyboard { keys(ui, &self.tree, rows, cursor_row, self.focus.count()) } else { None };
         if let Some(Action::Select(node, _)) = action {
             self.follow = true;
             self.cursor = Some(self.tree.nodes()[node].id.clone());
         }
         let follow = std::mem::take(&mut self.follow);
-        let target_row = self
-            .cursor
-            .as_ref()
-            .and_then(|c| rows.iter().position(|r| &self.tree.nodes()[r.node].id == c))
-            .unwrap_or(cursor_row);
+        let row_of = |part: &PartId| self.tree.find(part).and_then(|node| self.rows.position_of(node));
+        let target_row = self.cursor.as_ref().and_then(row_of).unwrap_or(cursor_row);
         let height = ds.metrics.tree_row;
         let mut area = ScrollArea::vertical().id_salt("panels.outliner.rows").auto_shrink([false, false]);
         if follow {
@@ -273,6 +270,10 @@ impl Outliner {
             }
         }
         let invalid = say(ds, text::PART_INVALID, &[]);
+        // The drop target is what the pointer is over this frame: a release outside every row has none, and cancels.
+        if let Some(d) = self.drag.as_mut() {
+            d.target = None;
+        }
         let (tree, focus, touched, drag) = (&self.tree, &self.focus, &self.touched, &mut self.drag);
         let (mut keyboard, mut refocus) = (false, false);
         let output = ui.scope(|ui| {
@@ -469,16 +470,31 @@ impl Outliner {
         target: usize,
         line: DropLine,
     ) -> Result<(), OpError> {
-        let Some(target_layer) = self.tree.node(target).map(|n| n.layer) else { return Ok(()) };
-        if source == target || !self.tree.siblings(source).contains(&target) {
+        if source == target || !same_parent(&self.tree, source, target) || line == DropLine::None {
             return Ok(());
         }
-        let layer = match line {
-            DropLine::Above => target_layer.saturating_sub(1),
-            DropLine::Below => target_layer.saturating_add(1),
-            DropLine::None => return Ok(()),
-        };
-        self.part_op(io, character, source, "part.reorder", json!({"layer": layer}))
+        // The siblings as they will be, then the fewest layer changes that make that the build order.
+        let mut order: Vec<usize> = self.tree.siblings(source).iter().copied().filter(|&s| s != source).collect();
+        let Some(at) = order.iter().position(|&s| s == target) else { return Ok(()) };
+        order.insert(if line == DropLine::Above { at } else { at + 1 }, source);
+        let changes = layers_for(&self.tree, &order)?;
+        let tx = (changes.len() > 1).then(|| io.runner.begin("Reorder part", io.actor));
+        for &(node, layer) in &changes {
+            let Some(id) = self.tree.node(node).map(|n| n.id.clone()) else { continue };
+            let args = json!({"character": character, "part": id, "layer": layer});
+            if let Err(e) = io.run("part.reorder", args, tx) {
+                if let Some(tx) = tx {
+                    io.runner.rollback(tx, io.actor)?;
+                }
+                return Err(e);
+            }
+        }
+        if let Some(tx) = tx {
+            io.runner.commit(tx, io.actor)?;
+        }
+        self.problem = None;
+        self.watch.force();
+        Ok(())
     }
 
     /// Copies part `node` under the first free id of the form `<id>-copy`, `<id>-copy-2`, …
@@ -606,11 +622,45 @@ fn track_drag(ui: &Ui, drawn: &TreeRowOutput, tree: &Tree, node: usize, drag: &m
     }
     let Some(d) = drag.as_mut() else { return };
     let pointer: Option<Pos2> = ui.input(|i| i.pointer.interact_pos());
-    let Some(pointer) = pointer.filter(|p| drawn.response.rect.contains(*p)) else { return };
-    d.target = (node != d.source && tree.siblings(d.source).contains(&node)).then(|| {
+    // Over the row, and over the part of it the list shows: a row cut by the list's edge is not a target outside it.
+    let Some(pointer) = pointer.filter(|p| drawn.response.rect.contains(*p) && ui.clip_rect().contains(*p)) else {
+        return;
+    };
+    d.target = (node != d.source && same_parent(tree, d.source, node)).then(|| {
         let line = if pointer.y < drawn.response.rect.center().y { DropLine::Above } else { DropLine::Below };
         (node, line)
     });
+}
+
+/// The layer changes that make `order` (sibling node indices) the build order, which sorts by layer and then by id. A
+/// part keeps its layer when it already sorts after the one before it; otherwise it takes the layer just past it, and
+/// that can push the parts after it along. Siblings that share a layer are told apart this way, so moving one of three
+/// equal-layer parts down one place moves it exactly one place.
+///
+/// # Errors
+/// A layer would pass `i32::MAX`.
+fn layers_for(tree: &Tree, order: &[usize]) -> Result<Vec<(usize, i32)>, OpError> {
+    let mut changes = Vec::new();
+    let mut before: Option<(i32, &PartId)> = None;
+    for &node in order {
+        let Some(part) = tree.node(node) else { continue };
+        let keeps = before.is_none_or(|(layer, id)| (part.layer, &part.id) > (layer, id));
+        let layer = if keeps {
+            part.layer
+        } else {
+            let next = before.map_or(part.layer, |(layer, _)| layer).checked_add(1);
+            let next = next.ok_or_else(|| OpError::invalid("layer", "no layer is left after the last one"))?;
+            changes.push((node, next));
+            next
+        };
+        before = Some((layer, &part.id));
+    }
+    Ok(changes)
+}
+
+/// Whether parts `a` and `b` are siblings.
+fn same_parent(tree: &Tree, a: usize, b: usize) -> bool {
+    matches!((tree.node(a), tree.node(b)), (Some(x), Some(y)) if x.parent == y.parent)
 }
 
 /// The row's context menu: the menu equivalent of every drag and key.

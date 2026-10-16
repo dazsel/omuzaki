@@ -54,8 +54,13 @@ struct Key {
 #[derive(Clone, Debug, Default)]
 pub struct Rows {
     key: Option<Key>,
-    rows: Vec<Row>,
+    list: Vec<Row>,
+    /// The row each node shows in ([`NO_ROW`] for a hidden one), so a node's row is not found by scanning the rows.
+    at: Vec<usize>,
 }
+
+/// A node that has no visible row.
+const NO_ROW: usize = usize::MAX;
 
 impl Rows {
     /// The rows of `tree` (its build counted by `generation`) with `collapsed` parts closed and only the parts that
@@ -66,11 +71,18 @@ impl Rows {
             .as_ref()
             .is_some_and(|k| k.tree == generation && k.collapsed == collapsed.generation && k.filter == filter);
         if !fresh {
-            self.rows.clear();
+            self.list.clear();
             if filter.is_empty() {
-                visible(tree, collapsed, &mut self.rows);
+                visible(tree, collapsed, &mut self.list);
             } else {
-                filtered(tree, filter, &mut self.rows);
+                filtered(tree, filter, &mut self.list);
+            }
+            self.at.clear();
+            self.at.resize(tree.len(), NO_ROW);
+            for (row, shown) in self.list.iter().enumerate() {
+                if let Some(slot) = self.at.get_mut(shown.node) {
+                    *slot = row;
+                }
             }
             let key = self.key.get_or_insert_with(Key::default);
             key.tree = generation;
@@ -78,7 +90,17 @@ impl Rows {
             key.filter.clear();
             key.filter.push_str(filter);
         }
-        &self.rows
+        &self.list
+    }
+
+    /// The rows as of the last [`Rows::get`], for a caller that also asks [`Rows::position_of`].
+    pub fn as_slice(&self) -> &[Row] {
+        &self.list
+    }
+
+    /// The row that shows `node`, as of the last [`Rows::get`]; `None` when it is hidden (collapsed or filtered out).
+    pub fn position_of(&self, node: usize) -> Option<usize> {
+        self.at.get(node).copied().filter(|&row| row != NO_ROW)
     }
 }
 

@@ -17,6 +17,9 @@ pub(super) const AT_LEAST: &str = "Enter a whole number of at least {min}";
 /// An integer field's text is a whole number above its upper bound.
 pub(super) const AT_MOST: &str = "Enter a whole number of at most {max}";
 
+/// A curve field's tangent can't be edited: the schema's array carries points only, so a tangent would be lost.
+pub(super) const NO_TANGENTS: &str = "Tangents are not saved in this field";
+
 /// `text` in the language the context speaks, with its `{name}` placeholders filled from `args`.
 pub(super) fn say<'a>(ds: &Ds, text: &'a str, args: &[(&str, &str)]) -> Cow<'a, str> {
     let text = if ds.strings.locale() == PSEUDO_LOCALE { Cow::Owned(pseudo(text)) } else { Cow::Borrowed(text) };

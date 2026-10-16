@@ -28,7 +28,7 @@ use super::text::{self, say};
 use crate::ds::icons;
 use crate::ds::schema_form::{EditPhase, FieldEdit, Form, FormValue, SchemaForm};
 use crate::ds::theme::{Ds, ds};
-use crate::ds::widgets::{EmptyState, TextField};
+use crate::ds::widgets::{Button, EmptyState, TextField};
 
 /// The inspector's id, as the shell registers it.
 pub const ID: &str = "inspector";
@@ -67,6 +67,8 @@ pub struct Inspector {
     query: String,
     /// The transaction of the gesture in progress.
     gesture: Option<TxId>,
+    /// The gesture's rollback was refused: the transaction stays open until the person retries or keeps it.
+    stuck: bool,
     problem: Option<String>,
 }
 
@@ -80,6 +82,7 @@ impl Inspector {
             shown: None,
             query: String::new(),
             gesture: None,
+            stuck: false,
             problem: None,
         }
     }
@@ -131,6 +134,10 @@ impl Inspector {
         if let Some(problem) = &self.problem {
             ui.label(RichText::new(problem.as_str()).color(ds.theme.danger));
         }
+        if self.stuck && self.gesture.is_some() {
+            self.recovery(ui, io, &ds);
+            return;
+        }
         if shown.fields == 0 && !shown.query.is_empty() {
             ui.label(say(&ds, text::NO_SETTING, &[("query", &shown.query)]).as_ref());
             return;
@@ -142,6 +149,8 @@ impl Inspector {
             .inner;
         if let Some(edit) = out.edit {
             self.edit(io, edit, &ds);
+            // The viewport shows the edit on the next frame, which has to happen even if no input follows.
+            ui.ctx().request_repaint();
         }
     }
 
@@ -209,7 +218,7 @@ impl Inspector {
                 set(io, shown, &path, &value, Some(tx))
             }
             EditPhase::Commit => self.commit(io, &path, &value, ds),
-            EditPhase::Cancel => self.gesture.take().map_or(Ok(()), |tx| io.runner.rollback(tx, io.actor)),
+            EditPhase::Cancel => self.rollback_gesture(io),
         };
         if edit.phase != EditPhase::Preview {
             self.watch.force();
@@ -217,15 +226,51 @@ impl Inspector {
         match result {
             Ok(()) => self.problem = None,
             Err(e) => {
-                if let Some(tx) = self.gesture.take() {
-                    // The gesture can't go on: put the document back as it was before it. The edit's own error is
-                    // the one worth reporting, so a failed rollback is not.
-                    let _ = io.runner.rollback(tx, io.actor);
+                // The gesture can't go on: put the document back as it was before it. The edit's own error is the one
+                // worth reporting; a rollback that fails too keeps its transaction for `recovery`.
+                if self.gesture.is_some() && (edit.phase == EditPhase::Cancel || self.rollback_gesture(io).is_err()) {
+                    self.stuck = true;
                 }
                 self.problem = Some(say(ds, text::REFUSED, &[("reason", &e.message)]).into_owned());
                 self.watch.force();
             }
         }
+    }
+
+    /// Rolls the open gesture back. Its id is dropped only once the runner has closed the transaction: a refused
+    /// rollback (the document changed under it) leaves it open and findable.
+    fn rollback_gesture(&mut self, io: Io<'_>) -> Result<(), OpError> {
+        let Some(tx) = self.gesture else { return Ok(()) };
+        io.runner.rollback(tx, io.actor)?;
+        self.gesture = None;
+        self.stuck = false;
+        Ok(())
+    }
+
+    /// What the person can do about an edit that could not be undone: try again, or keep it as one undo step.
+    fn recovery(&mut self, ui: &mut Ui, io: Io<'_>, ds: &Ds) {
+        ui.horizontal(|ui| {
+            if ui.add(Button::new(&say(ds, text::ROLLBACK_RETRY, &[]))).clicked() {
+                match self.rollback_gesture(io) {
+                    Ok(()) => self.problem = None,
+                    Err(e) => self.problem = Some(say(ds, text::REFUSED, &[("reason", &e.message)]).into_owned()),
+                }
+                self.watch.force();
+            }
+            if ui.add(Button::new(&say(ds, text::ROLLBACK_KEEP, &[])).ghost()).clicked()
+                && let Some(tx) = self.gesture
+            {
+                match io.runner.commit(tx, io.actor) {
+                    Ok(()) => {
+                        self.gesture = None;
+                        self.stuck = false;
+                        self.problem = None;
+                    }
+                    Err(e) => self.problem = Some(say(ds, text::REFUSED, &[("reason", &e.message)]).into_owned()),
+                }
+                self.watch.force();
+            }
+        });
     }
 
     /// Ends a gesture (or makes a one-step edit): the last value, then the commit. Several targets share one
@@ -242,7 +287,11 @@ impl Inspector {
         match (tx, sent) {
             (Some(tx), Ok(())) => io.runner.commit(tx, io.actor),
             (Some(tx), Err(e)) => {
-                let _ = io.runner.rollback(tx, io.actor);
+                if io.runner.rollback(tx, io.actor).is_err() {
+                    // Still open: keep its id so the person can retry or keep it.
+                    self.gesture = Some(tx);
+                    self.stuck = true;
+                }
                 Err(e)
             }
             (None, sent) => sent,

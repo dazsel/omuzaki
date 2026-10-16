@@ -207,6 +207,110 @@ fn esc_during_a_drag_rolls_it_back() {
     );
 }
 
+/// `MockRunner` whose rollbacks are refused (a `Conflict`, as when the document changed under the transaction) until
+/// `refuse` is switched off.
+struct Refusing {
+    inner: MockRunner<MemDoc>,
+    refuse: std::sync::atomic::AtomicBool,
+}
+
+impl Runner for Refusing {
+    fn ops(&self) -> Vec<OpInfo> {
+        self.inner.ops()
+    }
+    fn run(&self, req: Request) -> Result<Outcome, OpError> {
+        self.inner.run(req)
+    }
+    fn begin(&self, label: &str, actor: &Actor) -> TxId {
+        self.inner.begin(label, actor)
+    }
+    fn commit(&self, tx: TxId, actor: &Actor) -> Result<(), OpError> {
+        self.inner.commit(tx, actor)
+    }
+    fn rollback(&self, tx: TxId, actor: &Actor) -> Result<(), OpError> {
+        if self.refuse.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(OpError::conflict("the document changed under the edit"));
+        }
+        self.inner.rollback(tx, actor)
+    }
+    fn undo(&self, actor: &Actor, grants: &Grants) -> Result<Option<String>, OpError> {
+        self.inner.undo(actor, grants)
+    }
+    fn redo(&self, actor: &Actor, grants: &Grants) -> Result<Option<String>, OpError> {
+        self.inner.redo(actor, grants)
+    }
+    fn subscribe(&self, grants: &Grants) -> Result<Receiver<Event>, OpError> {
+        self.inner.subscribe(grants)
+    }
+    fn get(&self, path: &DocPath, grants: &Grants) -> Result<Option<Value>, OpError> {
+        self.inner.get(path, grants)
+    }
+    fn log(&self, after_seq: u64, limit: usize, grants: &Grants) -> Result<Vec<OpRecord>, OpError> {
+        self.inner.log(after_seq, limit, grants)
+    }
+}
+
+/// A drag of the slider cancelled with Esc while the runner refuses the rollback.
+fn refused_rollback() -> Harness<'static, Rig<Refusing>> {
+    let runner = Refusing {
+        inner: real(json!({"probe": at_defaults("head")})),
+        refuse: std::sync::atomic::AtomicBool::new(true),
+    };
+    let mut h = rig(runner, &["probe"], vec2(420.0, 3000.0));
+    h.get_by_role_and_label(Role::DisclosureTriangle, "Advanced").click();
+    h.run_steps(3);
+    let from = h.get_by_role_and_label(Role::Slider, SLIDER).rect().center();
+    h.hover_at(from);
+    h.event(UiEvent::PointerButton {
+        pos: from,
+        button: PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    });
+    h.run();
+    for dx in [5.0, 20.0, 40.0] {
+        h.event(UiEvent::PointerMoved(from + vec2(dx, 0.0)));
+        h.run();
+    }
+    press(&mut h, Modifiers::NONE, Key::Escape);
+    h.event(UiEvent::PointerButton {
+        pos: from + vec2(40.0, 0.0),
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    h.run_steps(3);
+    h
+}
+
+#[test]
+fn a_refused_rollback_keeps_the_transaction_and_offers_a_retry() {
+    let mut h = refused_rollback();
+    assert!(h.state().runner.inner.has_open_tx(), "the transaction is still open, not forgotten");
+    assert!(h.query_by_label("Try again").is_some() && h.query_by_label("Keep the change").is_some());
+    // The conflict clears; retrying rolls it back and closes it.
+    h.state().runner.refuse.store(false, std::sync::atomic::Ordering::SeqCst);
+    h.get_by_label("Try again").click();
+    h.run_steps(3);
+    assert!(!h.state().runner.inner.has_open_tx(), "the retry closed it");
+    assert!(h.query_by_label("Try again").is_none(), "and the way out is gone");
+    let before = param(&h.state().runner.inner, "probe", "cranium/cheek_fullness");
+    let default = param(&real(json!({"probe": at_defaults("head")})), "probe", "cranium/cheek_fullness");
+    assert_eq!(before, default, "the drag's previews are undone");
+}
+
+#[test]
+fn a_refused_rollback_can_be_kept_as_one_undo_step() {
+    let mut h = refused_rollback();
+    assert!(h.state().runner.inner.has_open_tx());
+    h.get_by_label("Keep the change").click();
+    h.run_steps(3);
+    assert!(!h.state().runner.inner.has_open_tx(), "committed");
+    let state = h.state();
+    let undone = state.runner.undo(&state.actor, &Grants::person()).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(undone.as_deref(), Some("Set cranium/cheek_fullness"), "the kept drag is one undo step");
+}
+
 #[test]
 fn a_key_press_is_one_step_and_the_form_follows_the_document() {
     let mut h = head_rig();

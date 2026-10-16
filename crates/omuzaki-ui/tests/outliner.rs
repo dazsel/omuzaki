@@ -323,6 +323,67 @@ fn a_drag_onto_a_sibling_reorders_and_esc_cancels() {
     assert_eq!(h.state().runner.ops(), ["part.reorder"]);
 }
 
+#[test]
+fn a_release_outside_every_row_cancels_the_drag() {
+    let mut h = rig();
+    let vest = h.get_by_role_and_label(Role::TreeItem, "vest").rect().center();
+    let shirt = h.get_by_role_and_label(Role::TreeItem, "shirt").rect();
+    let above_shirt = egui::pos2(shirt.center().x, shirt.top() + 3.0);
+    // Over a sibling (a target is set), then out into the empty space under the rows, and let go there.
+    let empty = egui::pos2(160.0, 440.0);
+    omuzaki_ui::ds::testing::drag(&mut h, &[vest, vest + vec2(0.0, -10.0), above_shirt, empty, empty]);
+    settle(&mut h);
+    assert!(h.state().runner.ops().is_empty(), "a release outside the rows reordered: {:?}", h.state().runner.ops());
+    assert_eq!(row_names(&h), ["body", "hair", "head", "shirt", "vest"]);
+}
+
+/// Three garments on one layer, in id order.
+fn three_on_one_layer() -> Harness<'static, Rig> {
+    rig_over(
+        runner(Some(json!({
+            "a": {"kind": "mock-garment", "layer": 20},
+            "b": {"kind": "mock-garment", "layer": 20},
+            "c": {"kind": "mock-garment", "layer": 20}
+        }))),
+        vec2(320.0, 480.0),
+    )
+}
+
+#[test]
+fn moving_one_of_three_equal_layer_siblings_moves_it_exactly_one_place_in_one_undo_step() {
+    let mut h = three_on_one_layer();
+    assert_eq!(row_names(&h), ["a", "b", "c"]);
+    h.get_by_role_and_label(Role::TreeItem, "a").click_secondary();
+    settle(&mut h);
+    h.get_by_label("Move down").click();
+    settle(&mut h);
+    assert_eq!(row_names(&h), ["b", "a", "c"], "down one place, not past c");
+    h.get_by_role_and_label(Role::TreeItem, "c").click_secondary();
+    settle(&mut h);
+    h.get_by_label("Move up").click();
+    settle(&mut h);
+    assert_eq!(row_names(&h), ["b", "c", "a"], "up one place");
+    // Each move is one undo step, however many layers it had to change.
+    let (runner, actor) = (Arc::clone(&h.state().runner), person());
+    runner.undo(&actor, &Grants::person()).unwrap_or_else(|e| panic!("{e}"));
+    settle(&mut h);
+    assert_eq!(row_names(&h), ["b", "a", "c"], "one undo undoes the whole second move");
+    runner.undo(&actor, &Grants::person()).unwrap_or_else(|e| panic!("{e}"));
+    settle(&mut h);
+    assert_eq!(row_names(&h), ["a", "b", "c"], "and one more undoes the first");
+}
+
+#[test]
+fn a_drag_among_equal_layer_siblings_lands_where_it_is_dropped() {
+    let mut h = three_on_one_layer();
+    let a = h.get_by_role_and_label(Role::TreeItem, "a").rect().center();
+    let c = h.get_by_role_and_label(Role::TreeItem, "c").rect();
+    let below_c = egui::pos2(c.center().x, c.bottom() - 3.0);
+    omuzaki_ui::ds::testing::drag(&mut h, &[a, a + vec2(0.0, 10.0), below_c, below_c]);
+    settle(&mut h);
+    assert_eq!(row_names(&h), ["b", "c", "a"]);
+}
+
 // ---- the keyboard ----
 
 #[test]
@@ -436,6 +497,12 @@ fn flat(count: usize) -> Value {
 /// Median frame time and allocations per frame of an outliner over `count` parts, scrolled half way, at 1920×1080's
 /// left dock (320 × 1000 points).
 fn s4(count: usize) -> (f64, f64) {
+    s4_at(count, false)
+}
+
+/// As [`s4`]; with `cursor_at_end` the person has also tabbed into the rows and pressed End, so the keyboard cursor is
+/// the last row and the view is scrolled to it (the cursor searches of every frame start from the top).
+fn s4_at(count: usize, cursor_at_end: bool) -> (f64, f64) {
     let runner = runner(Some(flat(count)));
     let focus = EditFocus::new(mock());
     let mut outliner = Outliner::new(focus.clone());
@@ -443,11 +510,12 @@ fn s4(count: usize) -> (f64, f64) {
     let actor = person();
     let ctx = Context::default();
     apply_settings(&ctx, Settings::default());
-    let mut frame = |time: f64, measure: bool| {
+    let mut frame_with = |time: f64, measure: bool, events: Vec<UiEvent>| {
         let input = RawInput {
             screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(320.0, 1000.0))),
             time: Some(time),
             predicted_dt: 1.0 / 60.0,
+            events,
             ..RawInput::default()
         };
         MEASURING.with(|m| m.set(measure));
@@ -459,10 +527,27 @@ fn s4(count: usize) -> (f64, f64) {
         took
     };
     for i in 0..40 {
-        frame(f64::from(i) / 60.0, false);
+        frame_with(f64::from(i) / 60.0, false, Vec::new());
+    }
+    if cursor_at_end {
+        let key = |key: Key| UiEvent::Key {
+            key,
+            physical_key: Some(key),
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        // Tab goes to the filter, then to the rows' one tab stop; End moves the cursor to the last row.
+        for (i, k) in [Key::Tab, Key::Tab, Key::End].into_iter().enumerate() {
+            frame_with(0.7 + i as f64 / 60.0, false, vec![key(k)]);
+            frame_with(0.7 + (i as f64 + 0.5) / 60.0, false, Vec::new());
+        }
+        for i in 0..10 {
+            frame_with(0.8 + f64::from(i) / 60.0, false, Vec::new());
+        }
     }
     COUNT.with(|c| c.set(0));
-    let mut times: Vec<f64> = (0..120).map(|i| frame(1.0 + f64::from(i) / 60.0, true)).collect();
+    let mut times: Vec<f64> = (0..120).map(|i| frame_with(1.0 + f64::from(i) / 60.0, true, Vec::new())).collect();
     let allocations = COUNT.with(Cell::get) as f64 / 120.0;
     times.sort_by(f64::total_cmp);
     (times[times.len() / 2], allocations)
@@ -490,6 +575,28 @@ fn bench_s4_ten_thousand_rows_cost_what_forty_do() {
     // The spec's bar is ±10%; a shared test machine's timer noise is larger, so the gate here catches a cost that grows
     // with the tree (10,000 rows walked per frame is 250 times the work), and the PR quotes the release numbers.
     assert!(big_ms <= small_ms * 1.5 + 0.000_2, "a frame costs more with 10,000 rows: {small_ms} s vs {big_ms} s");
+}
+
+#[test]
+fn bench_s4_a_scrolled_tree_with_the_cursor_on_its_last_row_costs_what_a_small_one_does() {
+    let best = |rows: usize| {
+        let runs: Vec<(f64, f64)> = (0..3).map(|_| s4_at(rows, true)).collect();
+        (runs.iter().map(|r| r.0).fold(f64::INFINITY, f64::min), runs[0].1)
+    };
+    let (small_ms, small_alloc) = best(40);
+    let (big_ms, big_alloc) = best(10_000);
+    eprintln!(
+        "S4 cursor on the last row: 40 rows {:.3} ms/frame, {small_alloc:.1} allocations; 10,000 rows {:.3} ms/frame, \
+         {big_alloc:.1} allocations",
+        small_ms * 1000.0,
+        big_ms * 1000.0
+    );
+    assert!(
+        big_alloc <= small_alloc + 1.0,
+        "allocations grow with the tree: {small_alloc} at 40, {big_alloc} at 10,000"
+    );
+    // The slack is 20 us, not the 200 us above: the cursor's two searches cost 0.2 ms at 10,000 rows, and that must show.
+    assert!(big_ms <= small_ms * 1.5 + 0.000_02, "a frame costs more with 10,000 rows: {small_ms} s vs {big_ms} s");
 }
 
 #[test]

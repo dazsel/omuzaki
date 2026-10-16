@@ -63,6 +63,10 @@ pub const MANY_HOW: &str = "Select one part to edit its settings.";
 pub const NO_SETTING: &str = "No setting matches \u{201c}{query}\u{201d}";
 /// The header's kind line.
 pub const KIND: &str = "Kind: {kind}";
+/// Retries rolling back an edit that could not be undone because the character changed meanwhile.
+pub const ROLLBACK_RETRY: &str = "Try again";
+/// Keeps an edit that could not be rolled back, as one undo step.
+pub const ROLLBACK_KEEP: &str = "Keep the change";
 /// The undo step of an edit in the inspector.
 pub const SET: &str = "Set {name}";
 /// `part.describe` failed: the runner's message follows.

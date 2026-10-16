@@ -16,7 +16,7 @@ use std::sync::Arc;
 use egui::accesskit::Role;
 use egui::{Context, Event, Key, Modifiers, Pos2, RawInput, Rect, vec2};
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable as _;
+use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use omuzaki_core::colour::Colour;
 use omuzaki_doc_api::Value;
 use omuzaki_ui::ds::schema_form::{EditPhase, Form, FormValue, MAX_ESSENTIALS, SchemaForm};
@@ -332,6 +332,77 @@ fn a_typed_integer_beyond_two_to_the_53_is_parsed_exactly_or_refused() {
     retype(&mut big, "Id", "-1");
     assert!(big.query_by_label_contains("at least 0").is_some());
     assert_eq!(json_of(&big), json!({"field": u64::MAX}));
+}
+
+// ---- the end of a gesture ----
+
+/// The phases the form reported for `/field`, in order.
+fn phases(h: &Harness<'_, Rig>) -> Vec<EditPhase> {
+    h.state().edits.iter().filter(|(p, _)| p == "/field").map(|(_, phase)| *phase).collect()
+}
+
+#[test]
+fn leaving_an_integer_field_on_text_that_is_not_a_number_still_ends_the_gesture() {
+    let mut h = rig(&one_field(json!({"title": "Seed", "type": "integer", "format": "int64"})));
+    focus(&mut h, Role::TextInput, "Seed");
+    press(&mut h, Modifiers::COMMAND, Key::A);
+    h.event(Event::Text("5".to_owned()));
+    h.run_steps(3);
+    assert_eq!(phases(&h).last(), Some(&EditPhase::Preview), "a valid number previews");
+    // More text that makes it invalid, then Tab out: the gesture the preview opened must end.
+    h.event(Event::Text("x".to_owned()));
+    h.run_steps(3);
+    press(&mut h, Modifiers::NONE, Key::Tab);
+    h.run_steps(3);
+    assert_eq!(phases(&h).last(), Some(&EditPhase::Commit), "blur ends the gesture: {:?}", phases(&h));
+    assert_eq!(json_of(&h), json!({"field": 5}), "with the last valid value");
+}
+
+#[test]
+fn escape_in_a_text_or_integer_field_puts_the_value_back_and_cancels() {
+    // A text field: Escape used to clear it and preview the deletion.
+    let text = one_field(json!({"title": "Name", "type": "string"}));
+    let mut h = rig(&text);
+    let value = h.state().form.value_from_json(&json!({"field": "abc"}));
+    h.state_mut().value = value;
+    h.run();
+    focus(&mut h, Role::TextInput, "Name");
+    press(&mut h, Modifiers::COMMAND, Key::A);
+    h.event(Event::Text("xyz".to_owned()));
+    h.run_steps(3);
+    assert_eq!(json_of(&h), json!({"field": "xyz"}));
+    press(&mut h, Modifiers::NONE, Key::Escape);
+    h.run_steps(3);
+    assert_eq!(json_of(&h), json!({"field": "abc"}), "the original text, not an empty one");
+    assert_eq!(phases(&h).last(), Some(&EditPhase::Cancel));
+
+    // An exact integer field.
+    let int = one_field(json!({"title": "Seed", "type": "integer", "format": "int64"}));
+    let mut h = rig(&int);
+    let value = h.state().form.value_from_json(&json!({"field": 7}));
+    h.state_mut().value = value;
+    h.run();
+    focus(&mut h, Role::TextInput, "Seed");
+    press(&mut h, Modifiers::COMMAND, Key::A);
+    h.event(Event::Text("42".to_owned()));
+    h.run_steps(3);
+    assert_eq!(json_of(&h), json!({"field": 42}));
+    press(&mut h, Modifiers::NONE, Key::Escape);
+    h.run_steps(3);
+    assert_eq!(json_of(&h), json!({"field": 7}), "Escape puts the value back");
+    assert_eq!(phases(&h).last(), Some(&EditPhase::Cancel));
+}
+
+#[test]
+fn a_curve_field_does_not_offer_a_tangent_it_cannot_save() {
+    let mut h = rig(&one_field(json!({
+        "title": "Response", "type": "array", "items": {"type": "number"}, "x-ui": {"widget": "curve"}
+    })));
+    focus(&mut h, Role::Slider, "Response, point 1 of 2");
+    h.run_steps(2);
+    let tangent = h.get_by_role_and_label(Role::SpinButton, "Tangent");
+    assert!(tangent.accesskit_node().is_disabled(), "the array carries points only, so there is no tangent to edit");
+    assert_eq!(json_of(&h), json!({"field": [0, 0, 1, 1]}), "what is shown is what is saved");
 }
 
 #[test]

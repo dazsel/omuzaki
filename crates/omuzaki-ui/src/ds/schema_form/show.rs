@@ -81,6 +81,10 @@ struct IntText {
     value: i128,
     /// The field had keyboard focus last frame: the person is typing, so the text is theirs.
     focused: bool,
+    /// The value when the field took focus: what Escape puts back.
+    start: i128,
+    /// Escape cancelled the gesture; the blur it causes has nothing left to end.
+    cancelled: bool,
 }
 
 /// What one frame of a form carries down to its fields.
@@ -278,7 +282,8 @@ fn field(ui: &mut Ui, cx: &mut Cx<'_>, node: &Node, value: &mut FormValue) {
         }
         (Kind::Curve, FormValue::Curve(curve)) => {
             row(ui, ds, &mut cx.scratch.words, node, modified, &mut out, |ui, name, _, out| {
-                let shown = CurveEditor::new(name, curve).id_salt(&node.path).show(ui);
+                let reason = text::say(ds, text::NO_TANGENTS, &[]);
+                let shown = CurveEditor::new(name, curve).id_salt(&node.path).without_tangents(&reason).show(ui);
                 out.phase = match shown.event {
                     Some(CurveEvent::Preview) => Some(EditPhase::Preview),
                     Some(CurveEvent::Commit { .. }) => Some(EditPhase::Commit),
@@ -298,7 +303,8 @@ fn field(ui: &mut Ui, cx: &mut Cx<'_>, node: &Node, value: &mut FormValue) {
                 } else if let (false, Some(pattern)) = (pattern_ok, &rule.pattern) {
                     field = field.error(say(words, ds, Msg::FormPatternError, "pattern", pattern.source()));
                 }
-                out.phase = typed(&ui.add(field));
+                let response = ui.add(field);
+                out.phase = text_phase(ui.ctx(), checked.with("original"), &response, text);
             });
         }
         (Kind::Section(children), FormValue::Object(values)) => {
@@ -317,6 +323,33 @@ fn field(ui: &mut Ui, cx: &mut Cx<'_>, node: &Node, value: &mut FormValue) {
     if let Some(phase) = out.phase {
         cx.report(node, phase);
     }
+}
+
+/// A text field's phase: Escape puts back the text the field had when it took focus and cancels the gesture; anything
+/// else is [`typed`].
+fn text_phase(ctx: &egui::Context, id: Id, response: &egui::Response, text: &mut String) -> Option<EditPhase> {
+    let cancelled = id.with("cancelled");
+    if response.gained_focus() {
+        ctx.data_mut(|d| {
+            d.insert_temp(id, text.clone());
+            d.remove_temp::<bool>(cancelled);
+        });
+    }
+    // The blur that follows an Escape ends nothing more: the gesture was cancelled.
+    if response.lost_focus() && ctx.data_mut(|d| d.remove_temp::<bool>(cancelled)).is_some() {
+        return None;
+    }
+    let escaped = ctx.input(|i| i.key_pressed(egui::Key::Escape)) && (response.has_focus() || response.lost_focus());
+    if escaped {
+        ctx.data_mut(|d| d.insert_temp(cancelled, true));
+        // The text field clears on Escape; the person asked to leave, not to delete.
+        if let Some(original) = ctx.data(|d| d.get_temp::<String>(id)) {
+            *text = original;
+        }
+        response.surrender_focus();
+        return Some(EditPhase::Cancel);
+    }
+    typed(response)
 }
 
 /// A typed field's phase: every change is a preview, and leaving the field ends the gesture.
@@ -396,7 +429,7 @@ fn int_field(
         let at = if let Some(at) = ints.iter().position(|t| t.id == id) {
             at
         } else {
-            ints.push(IntText { id, text: n.to_string(), value: *n, focused: false });
+            ints.push(IntText { id, text: n.to_string(), value: *n, focused: false, start: *n, cancelled: false });
             ints.len() - 1
         };
         if let Some(entry) = ints.get_mut(at) {
@@ -480,7 +513,26 @@ fn exact_int(
         field = field.error(words);
     }
     let response = ui.add(field);
-    entry.focused = response.has_focus();
+    if response.gained_focus() {
+        entry.start = *n;
+        entry.cancelled = false;
+    }
+    if response.lost_focus() && std::mem::take(&mut entry.cancelled) {
+        return;
+    }
+    let escaped =
+        ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) && (response.has_focus() || response.lost_focus());
+    entry.focused = response.has_focus() && !escaped;
+    if escaped {
+        entry.cancelled = true;
+        // The text field clears on Escape; the person asked to leave, not to delete.
+        *n = entry.start;
+        entry.value = entry.start;
+        write_int(&mut entry.text, entry.start);
+        response.surrender_focus();
+        out.phase = Some(EditPhase::Cancel);
+        return;
+    }
     if !response.changed() && !response.lost_focus() {
         return;
     }
@@ -496,9 +548,11 @@ fn exact_int(
             }
         }
         // Text that is not an allowed number leaves the value alone; leaving the field puts the value's text back.
+        // The value is the last valid preview, so that is what the gesture ends with.
         _ if response.lost_focus() => {
             write_int(&mut entry.text, *n);
             entry.value = *n;
+            out.phase = Some(EditPhase::Commit);
         }
         _ => {}
     }

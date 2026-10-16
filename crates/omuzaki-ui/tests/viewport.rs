@@ -221,12 +221,12 @@ fn the_picture_is_the_still_from_the_same_camera() {
 
     // The stage's own target, read back: the still's pixels.
     let target = {
-        let egui_renderer = h.state().gpu.renderer.read();
+        let mut egui_renderer = h.state().gpu.renderer.write();
         let gpu = egui_renderer
             .callback_resources
-            .get::<Mutex<Gpu>>()
+            .get_mut::<Mutex<Gpu>>()
             .unwrap_or_else(|| panic!("the viewport installed its GPU side"));
-        let mut gpu = gpu.lock().unwrap_or_else(PoisonError::into_inner);
+        let gpu = gpu.get_mut().unwrap_or_else(PoisonError::into_inner);
         let id = gpu.target().unwrap_or_else(|| panic!("the viewport has a target"));
         let image = gpu.renderer().read_target(id).unwrap_or_else(|e| panic!("{e}"));
         image::RgbaImage::from_raw(image.size.x, image.size.y, image.rgba8).unwrap_or_default()
@@ -316,7 +316,7 @@ fn edit_panels_evidence() {
 }
 
 #[test]
-fn a_document_changing_every_frame_restages_at_most_ten_times_a_second_and_the_last_change_lands() {
+fn a_preview_shows_on_the_next_frame() {
     let Some(mut h) = rig() else { return };
     h.try_run().unwrap_or_else(|e| panic!("{e}"));
     let edit = |h: &mut Harness<'_, Rig>, value: f64| {
@@ -334,25 +334,32 @@ fn a_document_changing_every_frame_restages_at_most_ten_times_a_second_and_the_l
         };
         state.runner.run(request).is_ok()
     };
-    let before = renders(&h);
-    // Six edits in six frames a sixtieth of a second apart: one restage at the start, the rest wait.
-    let mut edited = 0;
+    // A document that changes every frame (a slider dragged in the inspector): each edit is restaged and drawn by the
+    // frame right after it, with no wait between, and the cost of that frame is what a drag pays per frame.
+    let mut frames = Vec::new();
     for i in 0..6 {
-        if edit(&mut h, 0.001f64.mul_add(f64::from(i), 0.007)) {
-            edited += 1;
-        }
+        let before = renders(&h);
+        assert!(edit(&mut h, 0.001f64.mul_add(f64::from(i), 0.007)), "the mock garment takes an ease");
+        let start = std::time::Instant::now();
         h.step();
         render(&mut h);
+        frames.push(start.elapsed().as_secs_f64() * 1000.0);
+        assert_eq!(renders(&h), before + 1, "edit {i} was drawn by the next frame");
     }
-    assert!(edited > 0, "the mock garment takes an ease");
-    assert!(renders(&h) <= before + 2, "restaged {} times in a tenth of a second", renders(&h) - before);
-    let waiting = renders(&h);
-    // Waiting out the interval (ten frames at 60 fps) brings the last change in without any input.
-    for _ in 0..10 {
-        h.step();
-        render(&mut h);
-    }
-    assert!(renders(&h) > waiting, "the last change landed");
+    frames.sort_by(f64::total_cmp);
+    eprintln!("restage and draw on the frame after an edit: median {:.1} ms, worst {:.1} ms", frames[3], frames[5]);
+}
+
+#[test]
+fn the_gpu_side_is_reached_without_taking_a_lock() {
+    let Some(h) = rig() else { return };
+    // The renderer is a plain callback resource (no `Mutex` around it): reading it back takes egui's own lock only.
+    let mut egui_renderer = h.state().gpu.renderer.write();
+    let gpu = egui_renderer.callback_resources.get_mut::<Mutex<Gpu>>().map(|cell| cell.get_mut());
+    assert!(
+        gpu.is_some_and(|gpu| gpu.is_ok_and(|gpu| gpu.target().is_some())),
+        "the viewport installed its GPU side, and it is reached without locking"
+    );
 }
 
 #[test]

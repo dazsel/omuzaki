@@ -60,8 +60,17 @@ pub struct Gpu {
     /// The character as sculpted: what a still shows when nothing animates it (decision 0014 section 4).
     base: HumanoidPose,
     target: Option<(TargetId, UVec2)>,
-    blit: Blit,
+    blit: Arc<Blit>,
     /// The target's texture bound for the blit; remade when the target is.
+    bound: Option<wgpu::BindGroup>,
+    /// `bound` is new since the painter last took it.
+    rebound: bool,
+}
+
+/// What `paint` needs, in a resource of its own: `paint` only has shared access to egui's resources, and the [`Gpu`]
+/// (which is not `Sync`) would have to sit behind a lock that `prepare` holds while rendering.
+pub struct Painter {
+    blit: Arc<Blit>,
     bound: Option<wgpu::BindGroup>,
 }
 
@@ -73,8 +82,18 @@ impl Gpu {
     pub fn new(state: &egui_wgpu::RenderState, light: StillLight, quality: Quality) -> Result<Self, String> {
         let renderer = WgpuRenderer::from_device(&state.adapter, state.device.clone(), state.queue.clone())
             .map_err(|e| e.to_string())?;
-        let blit = Blit::new(&state.device, state.target_format);
-        Ok(Self { renderer, light, quality, stage: None, base: HumanoidPose::REST, target: None, blit, bound: None })
+        let blit = Arc::new(Blit::new(&state.device, state.target_format));
+        Ok(Self {
+            renderer,
+            light,
+            quality,
+            stage: None,
+            base: HumanoidPose::REST,
+            target: None,
+            blit,
+            bound: None,
+            rebound: false,
+        })
     }
 
     /// Installs a `Gpu` for `state` in its callback resources, once; later calls do nothing.
@@ -91,7 +110,10 @@ impl Gpu {
             return Ok(());
         }
         let gpu = Self::new(state, light(), quality)?;
+        let painter = Painter { blit: Arc::clone(&gpu.blit), bound: None };
+        // The lock is never taken on the render path: `prepare` reaches the `Gpu` with `Mutex::get_mut`.
         renderer.callback_resources.insert(Mutex::new(gpu));
+        renderer.callback_resources.insert(painter);
         Ok(())
     }
 
@@ -156,10 +178,18 @@ impl Gpu {
         if self.bound.is_none() {
             let texture = self.renderer.target_texture(target).map_err(render_error)?;
             self.bound = Some(self.blit.bind(device, &texture));
+            self.rebound = true;
         }
         Ok(())
     }
 
+    /// The binding made since the last call, for the [`Painter`].
+    fn take_binding(&mut self) -> Option<wgpu::BindGroup> {
+        std::mem::take(&mut self.rebound).then(|| self.bound.clone()).flatten()
+    }
+}
+
+impl Painter {
     /// Copies the target into the pass, if there is a picture yet.
     fn paint(&self, info: &egui::PaintCallbackInfo, pass: &mut wgpu::RenderPass<'static>) {
         let Some(bound) = &self.bound else { return };
@@ -338,10 +368,38 @@ impl CallbackTrait for Callback {
         _encoder: &mut wgpu::CommandEncoder,
         resources: &mut CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
-        let Some(gpu) = resources.get::<Mutex<Gpu>>() else { return Vec::new() };
-        let mut gpu = gpu.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(cell) = resources.get_mut::<Mutex<Gpu>>() else { return Vec::new() };
+        // `get_mut` takes no lock: the render path holds none.
+        let gpu = cell.get_mut().unwrap_or_else(PoisonError::into_inner);
+        // The job is locked to take what is asked and again to say what happened, never while rendering: the panel
+        // (or anything else holding the job) is not kept waiting for a render.
+        let mut work = {
+            let mut job = self.job.lock().unwrap_or_else(PoisonError::into_inner);
+            Job {
+                built: job.built.take(),
+                camera: job.camera,
+                size: job.size,
+                render: job.render,
+                renders: 0,
+                error: job.error.take(),
+            }
+        };
+        gpu.prepare(device, &mut work);
+        let binding = gpu.take_binding();
         let mut job = self.job.lock().unwrap_or_else(PoisonError::into_inner);
-        gpu.prepare(device, &mut job);
+        job.render = work.render;
+        job.renders += work.renders;
+        job.error = work.error;
+        if work.built.is_some() {
+            // Not staged (the target failed first): ask again next frame.
+            job.built = work.built;
+        }
+        drop(job);
+        if let Some(bound) = binding
+            && let Some(painter) = resources.get_mut::<Painter>()
+        {
+            painter.bound = Some(bound);
+        }
         // The renderer submits its own work on the shared queue before egui's, so the picture is ready to sample.
         Vec::new()
     }
@@ -352,8 +410,8 @@ impl CallbackTrait for Callback {
         pass: &mut wgpu::RenderPass<'static>,
         resources: &CallbackResources,
     ) {
-        if let Some(gpu) = resources.get::<Mutex<Gpu>>() {
-            gpu.lock().unwrap_or_else(PoisonError::into_inner).paint(&info, pass);
+        if let Some(painter) = resources.get::<Painter>() {
+            painter.paint(&info, pass);
         }
     }
 }
