@@ -23,6 +23,7 @@ bytemuck = { version = "1.25", features = ["derive"] }
 bytes = "1"
 clap = { version = "4.6", features = ["derive"] }
 constant_time_eq = "0.4"
+directories = "6.0"   # the OS config and local data folders (MIT OR Apache-2.0; pulls dirs-sys and option-ext MPL-2.0, unmodified), omuzaki-settings
 criterion = "0.8"
 ed25519-dalek = { version = "2.2", default-features = false, features = ["std"] }   # verifies library item signatures (BSD-3-Clause), omuzaki-library-api; signing only in tests
 eframe = { version = "0.36", default-features = false, features = ["wgpu", "wayland", "x11", "accesskit", "default_fonts"] }

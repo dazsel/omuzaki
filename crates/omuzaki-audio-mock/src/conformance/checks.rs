@@ -156,8 +156,12 @@ fn first_difference(a: &[Vec<f32>], b: &[Vec<f32>]) -> Option<(usize, usize, f32
 /// Every cut of the input into blocks gives the same output, bit for bit.
 pub(crate) fn block_sizes(cx: &Context<'_>, setting: Setting) -> Outcome {
     outcome(|| {
-        // Not a multiple of any block size, so every plan ends on a short block.
-        let total = 4429;
+        // The declared latency is added so the delayed output is observed (and flushed) rather than only the silence in
+        // front of it; the total stays a multiple of no block size, so every plan ends on a short block.
+        let mut total = 4429 + cx.node(setting)?.latency() as usize;
+        while [2, 7, 64, 256, MAX_BLOCK].iter().any(|b| total.is_multiple_of(*b)) {
+            total += 1;
+        }
         let input: Vec<Vec<f32>> =
             (0..cx.channels.count()).map(|c| white_noise(total, cx.config.seed.wrapping_add(c as u64), 0.5)).collect();
         let run = |plan: Plan| -> Result<Vec<Vec<f32>>, String> {
@@ -190,11 +194,17 @@ pub(crate) fn allocation(cx: &Context<'_>, setting: Setting) -> Outcome {
                         in the test binary"
                 .into());
         }
-        let mut node = cx.node(setting)?;
+        // One instance per probe, each at `setting` and untouched by the others: `set_param` leaves every parameter at its
+        // extreme, which would hide an allocation that only happens at the default or the minimum.
+        let mut for_set_param = cx.node(setting)?;
+        let mut for_process = cx.node(setting)?;
+        let mut for_reset = cx.node(setting)?;
         let sizes = [1usize, 7, 64, 256, MAX_BLOCK, 100];
         // Everything the probed code touches is made before it starts.
         let mut left: Vec<Vec<f32>> = sizes.iter().map(|&n| white_noise(n, cx.config.seed, 0.5)).collect();
         let mut right = left.clone();
+        let mut warm_left = white_noise(MAX_BLOCK, cx.config.seed, 0.5);
+        let mut warm_right = warm_left.clone();
         let params: Vec<(ParamIndex, [f32; 2])> = cx
             .info
             .params
@@ -207,7 +217,7 @@ pub(crate) fn allocation(cx: &Context<'_>, setting: Setting) -> Outcome {
         let set_param = allocations_during(&mut || {
             for round in 0..8 {
                 for (index, values) in &params {
-                    node.set_param(*index, values[round % 2]);
+                    for_set_param.set_param(*index, values[round % 2]);
                 }
             }
         });
@@ -218,17 +228,23 @@ pub(crate) fn allocation(cx: &Context<'_>, setting: Setting) -> Outcome {
                 let first = (round * MAX_BLOCK) as u64;
                 let (l, r) = (&mut left[which][..n], &mut right[which][..n]);
                 if stereo {
-                    node.process(&mut BlockMut::stereo(l, r, first));
+                    for_process.process(&mut BlockMut::stereo(l, r, first));
                 } else {
-                    node.process(&mut BlockMut::mono(l, first));
+                    for_process.process(&mut BlockMut::mono(l, first));
                 }
-                black_box(node.report());
+                black_box(for_process.report());
             }
         });
+        // `reset` is probed after the node has run, as it is in use, but the run is not part of the measurement.
+        if stereo {
+            for_reset.process(&mut BlockMut::stereo(&mut warm_left, &mut warm_right, 0));
+        } else {
+            for_reset.process(&mut BlockMut::mono(&mut warm_left, 0));
+        }
         let reset = allocations_during(&mut || {
-            node.reset();
-            black_box(node.report());
-            black_box(node.latency());
+            for_reset.reset();
+            black_box(for_reset.report());
+            black_box(for_reset.latency());
         });
         for (name, count) in [("set_param", set_param), ("process or report", process_calls), ("reset", reset)] {
             if count > 0 {
@@ -247,6 +263,7 @@ pub(crate) fn finite_and_decay(cx: &Context<'_>, setting: Setting) -> (Outcome, 
         Ok(node) => node,
         Err(why) => return (Outcome::Fail(why.clone()), Outcome::Fail(why)),
     };
+    let flush = node.latency() as usize;
     let mut rng = Rng::new(cx.config.seed ^ 0xF1_1173);
     let channels = cx.channels.count();
     let mut first_sample = 0u64;
@@ -301,7 +318,9 @@ pub(crate) fn finite_and_decay(cx: &Context<'_>, setting: Setting) -> (Outcome, 
             return (Outcome::Fail(why), Outcome::Skipped("not run: the output was not finite".into()));
         }
     };
-    let decay = match run(samples_in(cx.config.decay_seconds), false) {
+    // The silence also covers the declared latency, so the noise still queued inside the node comes out before the last
+    // second that is measured.
+    let decay = match run(samples_in(cx.config.decay_seconds) + flush, false) {
         Ok((_, tail)) => {
             // The loudest channel decides. -120 dBFS is 1e-6.
             let (channel, last) = tail
@@ -336,31 +355,52 @@ fn guarded_block(body: impl FnOnce()) -> Result<(), String> {
     }
 }
 
-/// After `reset` the output equals a fresh node's.
+/// After `reset` the output does not depend on what the node processed before.
+///
+/// Two nodes settle on silence for the same time; the tested one then also processes a loud dirty signal and runs a
+/// further odd number of samples of silence, so a free-running phase is somewhere else in it than in the reference.
+/// Both are reset and run the test signal from the same graph index; the outputs must match bit for bit. The reference
+/// is reset too, because a node that ran at all has advanced an oscillator's phase, and a correct `reset` puts it back:
+/// comparing against a node that never reset would fail a conforming modulator, while two nodes with different run
+/// lengths still expose a `reset` that leaves the phase alone. The settle time is long (about 30 smoothing constants) so
+/// a parameter ramp has finished in both and the different run lengths cannot show in it.
 pub(crate) fn reset(cx: &Context<'_>, setting: Setting) -> Outcome {
     outcome(|| {
         let channels = cx.channels;
-        let (settle, dirty_frames, test_frames) = (settle_samples(cx.info), 3000, 5000);
+        // The declared latency is added to the dirty signal (so it reaches the end of the node's delay line) and to the
+        // test signal (so the delayed output is observed, not only the silence in front of it).
+        let latency = cx.node(setting)?.latency() as usize;
+        let (settle, dirty_frames, test_frames) = (6 * settle_samples(cx.info), 3000 + latency, 5000 + latency);
+        // Odd, and not a multiple of any oscillator period a test would use.
+        let extra = 1001;
         let dirty: Vec<Vec<f32>> =
             (0..channels.count()).map(|c| white_noise(dirty_frames, cx.config.seed ^ 0xD1 ^ c as u64, 0.8)).collect();
         let test: Vec<Vec<f32>> =
             (0..channels.count()).map(|c| white_noise(test_frames, cx.config.seed ^ 0xC1 ^ c as u64, 0.5)).collect();
-        let quiet = on_channels(&vec![0.0; settle + dirty_frames], channels);
+        let silence = |frames: usize| on_channels(&vec![0.0; frames], channels);
         // Both nodes see the test signal from the same graph index, so a node that reads the clock treats them alike.
         let at = 1 << 20;
-        let mut used = cx.node(setting)?;
-        process(&mut *used, &on_channels(&vec![0.0; settle], channels), &Plan::Fixed(256).lengths(settle), 0);
-        process(&mut *used, &dirty, &Plan::Fixed(256).lengths(dirty_frames), settle as u64);
-        used.reset();
-        let after_reset = process(&mut *used, &test, &Plan::Fixed(256).lengths(test_frames), at);
-        // The fresh node has run as long in silence, so a parameter that is still smoothing is in the same place: a
-        // `reset` must forget the signal's history, not restart the parameters' ramps.
-        let mut fresh = cx.node(setting)?;
-        process(&mut *fresh, &quiet, &Plan::Fixed(256).lengths(settle + dirty_frames), 0);
-        let from_new = process(&mut *fresh, &test, &Plan::Fixed(256).lengths(test_frames), at);
-        if let Some((channel, frame, a, b)) = first_difference(&after_reset, &from_new) {
+        let run_after_reset = |dirty: Option<&[Vec<f32>]>| -> Result<Vec<Vec<f32>>, String> {
+            let mut node = cx.node(setting)?;
+            process(&mut *node, &silence(settle), &Plan::Fixed(256).lengths(settle), 0);
+            match dirty {
+                Some(dirty) => {
+                    // The odd stretch comes first, so the dirty signal is still inside the node when it is reset.
+                    process(&mut *node, &silence(extra), &Plan::Fixed(256).lengths(extra), settle as u64);
+                    process(&mut *node, dirty, &Plan::Fixed(256).lengths(dirty_frames), (settle + extra) as u64);
+                }
+                None => {
+                    process(&mut *node, &silence(dirty_frames), &Plan::Fixed(256).lengths(dirty_frames), settle as u64);
+                }
+            }
+            node.reset();
+            Ok(process(&mut *node, &test, &Plan::Fixed(256).lengths(test_frames), at))
+        };
+        let after_dirty = run_after_reset(Some(&dirty))?;
+        let after_quiet = run_after_reset(None)?;
+        if let Some((channel, frame, a, b)) = first_difference(&after_dirty, &after_quiet) {
             return Err(format!(
-                "after reset the output differs from a fresh node's at frame {frame} of channel {channel}: {a:e} against {b:e}"
+                "after reset the output differs from that of a node that ran differently before its reset, at frame {frame} of channel {channel}: {a:e} against {b:e}"
             ));
         }
         Ok(Outcome::Pass)
@@ -383,9 +423,12 @@ pub(crate) fn sweep(cx: &Context<'_>, index: usize) -> Outcome {
         let param = ParamIndex(u16::try_from(index).map_err(|_| "more than 65535 parameters".to_string())?);
         let mut node = cx.node(Setting::Default)?;
         node.set_param(param, spec.min);
-        let (segment, steady, block) = (1600usize, 400usize, 97usize);
-        let tone = sine(settle_samples(cx.info) + 8 * segment, 220.0, 0.25);
-        let settle = settle_samples(cx.info);
+        // A parameter change may reach the output anywhere from the change itself to one latency later, so each segment
+        // and the settle time are a latency longer: the move is fully inside its window and so is the steady state.
+        let latency = node.latency() as usize;
+        let (segment, steady, block) = (1600usize + latency, 400usize, 97usize);
+        let settle = settle_samples(cx.info) + latency;
+        let tone = sine(settle + 8 * segment, 220.0, 0.25);
         let channels = cx.channels.count();
         // Settle at the minimum first, then move to the maximum and back, eight times.
         let mut output = vec![Vec::new(); channels];
