@@ -110,3 +110,27 @@ fn a_function_named_like_a_holder_is_refused_when_the_script_uses_closures() {
     let report = host().check("fn map(a, f) { a }\nmap(1, 2)");
     assert!(report.is_clean(), "{report:?}");
 }
+
+/// A call of a closure with an empty body has no operation tick after its first, the one at which the run may hold a
+/// stop back; a loop of them could end with a stop still held. Any statement in the body is enough.
+#[test]
+fn a_closure_with_an_empty_body_is_refused_by_the_check_and_by_the_run() {
+    for (source, line, column) in [
+        ("[1, 2].for_each(|x| {})", 1, 17),
+        ("let s = 1;\n[1].map(|x| { [2].for_each(|y| {}); x })", 2, 28),
+        ("try_op(|| {})", 1, 8),
+    ] {
+        let report = host().check(source);
+        assert_eq!(report.parse_errors.len(), 1, "{source}: {report:?}");
+        let found = &report.parse_errors[0];
+        assert_eq!((found.line, found.column), (line, column), "{source}: {found:?}");
+        assert!(found.message.contains("empty body"), "{source}: {found:?}");
+        let (runner, result) = run(source);
+        assert_eq!(result.expect_err(source).kind, ScriptErrorKind::Parse, "{source}");
+        assert_eq!(runner.requests(), vec![], "{source}: nothing was sent");
+    }
+    for source in ["[1, 2].for_each(|x| ())", "[1, 2].for_each(|x| { x; })"] {
+        assert!(host().check(source).is_clean(), "{source}");
+        assert!(run(source).1.is_ok(), "{source}");
+    }
+}

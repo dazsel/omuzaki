@@ -32,6 +32,7 @@ mod guards;
 mod host;
 mod job;
 mod limits;
+mod loops;
 mod macros;
 pub mod ops;
 pub(crate) mod registered;

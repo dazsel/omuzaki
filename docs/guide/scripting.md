@@ -61,7 +61,7 @@ sizes
 - A map's keys are kept in sorted order, so a script does the same thing every time it runs.
 - A `fn` is defined at the top level of the script. A closure (`|x| ...`) is how you pass a call to `try_op`
   or to an array's `map` and `filter`. A closure can only be passed straight to those, not kept in a variable,
-  an array or a map, or returned.
+  an array or a map, or returned, and it needs a body: write `|x| ()` rather than `|x| {}` for one that does nothing.
 - `print(x)` adds a line to the output. `log(x)` adds a note, which the console shows muted. Both are capped (see the
   limits).
 - `params` is the map the caller passed in. Check a key with `"key" in params` before using it.

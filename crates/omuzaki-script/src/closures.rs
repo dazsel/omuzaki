@@ -50,13 +50,29 @@ pub(crate) struct Stray {
     pub message: String,
 }
 
-/// The first closure in `ast` that is not a direct argument of one of the [`HOLDERS`], or a script function that
-/// shadows one of them while the script uses closures.
+/// The first closure in `ast` that is not a direct argument of one of the [`HOLDERS`] or has an empty body, or a
+/// script function that shadows one of the holders while the script uses closures.
+///
+/// An empty body is refused because a call of it has no operation tick after its first, the one tick at which the
+/// run holds a stop back (`Run::progress`): a loop of such calls could end with a stop still held, and the next first
+/// tick could be Rhai's own `to_string` call, where a delivered stop makes Rhai format a value in full. A body with
+/// any statement ticks again (`|x| ()` is a closure that does nothing).
 pub(crate) fn stray(ast: &AST) -> Option<Stray> {
+    let empty = empty_closures(ast);
     let mut found = None;
     ast.walk(&mut |nodes: &[ASTNode<'_>]| {
         let Some(ASTNode::Expr(closure @ Expr::DynamicConstant(value, at))) = nodes.last() else { return true };
-        if !is_closure(value) || held_by_a_call(&nodes[..nodes.len() - 1], closure) {
+        if !is_closure(value) {
+            return true;
+        }
+        if value.read_lock::<FnPtr>().is_some_and(|pointer| empty.iter().any(|name| name == pointer.fn_name())) {
+            found = Some(Stray {
+                at: *at,
+                message: "a closure can't have an empty body: write `|x| ()` for one that does nothing".to_owned(),
+            });
+            return false;
+        }
+        if held_by_a_call(&nodes[..nodes.len() - 1], closure) {
             return true;
         }
         found = Some(Stray {
@@ -82,6 +98,31 @@ pub(crate) fn stray(ast: &AST) -> Option<Stray> {
             function.name
         ),
     })
+}
+
+/// The names of the closures in `ast` whose body has no statement. Each closure is a function of the script's
+/// library; an AST holding only that function walks only its body (a closure inside it is a function of its own).
+/// The functions are kept with `retain_functions`: `clone_functions_only_filtered` copies every function into a new
+/// AST whatever its filter says (rhai 1.26.1, `Module::merge_filtered` into an empty module).
+fn empty_closures(ast: &AST) -> Vec<String> {
+    let names: Vec<String> = ast
+        .iter_functions()
+        .filter(|function| function.name.starts_with("anon$"))
+        .map(|function| function.name.to_owned())
+        .collect();
+    names
+        .into_iter()
+        .filter(|name| {
+            let mut alone = ast.clone_functions_only();
+            alone.retain_functions(|_, _, candidate, _| candidate == name);
+            let mut statements = 0_usize;
+            alone.walk(&mut |nodes: &[ASTNode<'_>]| {
+                statements += usize::from(matches!(nodes.last(), Some(ASTNode::Stmt(_))));
+                true
+            });
+            statements == 0
+        })
+        .collect()
 }
 
 /// Whether a constant is the function pointer of a closure.

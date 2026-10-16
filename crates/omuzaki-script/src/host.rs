@@ -141,6 +141,9 @@ pub(crate) struct Run {
     /// Set when Rhai clones its call state for a call made from native code ([`Tag`]); the next tick is that call's
     /// first.
     fresh: AtomicBool,
+    /// Set while a stop is held at the first tick of a call, until a formatting function confirms the call was its own
+    /// ([`Run::confirm_format`]); see [`Run::progress`].
+    held: AtomicBool,
     output: Mutex<Output>,
     plans: Mutex<Vec<PlannedCall>>,
 }
@@ -305,11 +308,16 @@ impl Run {
     /// builds `${...}` by calling `to_string` through `NativeCallContext::call_native_fn_raw`, whose first step is a
     /// tick of its own; an error from that tick is swallowed (`print_with_func`) and the whole value is formatted by
     /// Rhai instead, unbounded. That tick is always the first one after Rhai clones its call state for the call, which
-    /// clones the [`Tag`]. So the first tick after a clone may find a reason to stop but never delivers it; the run
-    /// stops at the next tick (outside the call, or inside a callback's body), and meanwhile every formatting function
-    /// answers an empty text ([`Run::stopping`]). A callback's body ticks again after its first tick, so such first
-    /// ticks come in a row only while one native call makes native calls of its own (`contains` or `==` comparing
-    /// elements), and the hold is bounded by that call's own work.
+    /// clones the [`Tag`]. Every call a native function makes back into the engine starts the same way (`contains`
+    /// comparing elements with `==`, a closure called by `map`), and at that tick nothing tells them apart.
+    ///
+    /// So a stop that is due at such a first tick is held, once: the formatting function confirms the call was its own
+    /// when it runs ([`Run::confirm_format`]) and answers an empty text, and the run stops at the next tick. A hold
+    /// nobody confirmed means the call was not formatting, and the stop is delivered at the next tick, whatever it is:
+    /// a native loop stops at its next element. Delivering there would be harmful only if the next tick were another
+    /// `to_string` call, which a loop that ended on an unconfirmed hold could be followed by (`${[m, a.contains(x)]}`);
+    /// so every package function whose calls back into the engine have no tick of their own after the first checks the
+    /// run before it returns (`loops`), and a closure must have a body that ticks (`closures`).
     ///
     /// Operations are counted here, and Rhai's own operation limit is off: it fires inside that same first tick, and
     /// Rhai's count loses what a call made from native code did (a callback of `map` ticks on a clone that is dropped).
@@ -321,10 +329,31 @@ impl Run {
         {
             self.note_stop(stop);
         }
-        if first_of_call {
+        let stop = self.due()?;
+        if first_of_call && !self.held.swap(true, Ordering::Relaxed) {
             return None;
         }
-        self.due().map(Dynamic::from)
+        Some(Dynamic::from(stop))
+    }
+
+    /// Called by a formatting function as it starts: the stop held at the tick just before, if any, was held for this
+    /// call, which answers an empty text, and the next tick may hold one again.
+    pub(crate) fn confirm_format(&self) {
+        self.held.store(false, Ordering::Relaxed);
+    }
+
+    /// Ends a native loop that calls back into the engine when the run must stop: before each element and before it
+    /// returns (see [`Run::progress`]).
+    ///
+    /// # Errors
+    /// The stop, raised as Rhai's termination, which a script can't catch.
+    pub(crate) fn check(&self) -> Result<(), Box<EvalAltResult>> {
+        self.due().map_or(Ok(()), |stop| Err(terminate(stop)))
+    }
+
+    /// Whether the run must stop, for a loop that can't return an error from where it asks (a sort's comparison).
+    pub(crate) fn halted(&self) -> bool {
+        self.due.get().is_some()
     }
 
     /// Why the run must stop at a tick with `ops` operations counted, if it must.
@@ -441,6 +470,7 @@ impl ScriptHost {
         }
         self.bindings.install(&mut engine);
         crate::guards::install(&mut engine, &self.limits);
+        crate::loops::install(&mut engine);
         let limits = &self.limits;
         engine
             // Off: the run counts operations itself (`Run::progress`), since Rhai's own limit fires inside formatting.
@@ -578,6 +608,7 @@ impl ScriptHost {
             due: OnceLock::new(),
             ops: AtomicU64::new(0),
             fresh: AtomicBool::new(false),
+            held: AtomicBool::new(false),
             output: Mutex::new(Output::default()),
             plans: Mutex::new(Vec::new()),
         });
@@ -853,6 +884,7 @@ mod tests {
             due: OnceLock::new(),
             ops: AtomicU64::new(0),
             fresh: AtomicBool::new(false),
+            held: AtomicBool::new(false),
             output: Mutex::new(Output::default()),
             plans: Mutex::new(Vec::new()),
         })
@@ -1289,21 +1321,35 @@ mod peak {
         }
     }
 
+    /// How a value of a type takes part in the paths that turn it into text.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Joins {
+        /// Formatted on every path.
+        Formatted,
+        /// A string: copied as it is into a template, and joined to a string by a version of its own.
+        AsText,
+        /// A character, `()` or a blob: joined to a string by a version of its own (rhai's `string_more.rs`), which
+        /// formats nothing.
+        ByItsOwnVersion,
+    }
+
     /// A value of every type a run can hold, and a function pointer (which the closure check keeps out of a variable;
     /// the engine is driven directly here). rhai 1.26.1's `print_debug_functions` has versions of its own for the
-    /// first eight, which are found before any version for any value; integers and ranges reach the any-value one.
-    const TYPES: [&str; 11] = [
-        "()",
-        "true",
-        "'c'",
-        "\"text\"",
-        "2.5",
-        "|x| x",
-        "[1, 'c', \"s\", ()]",
-        "#{ a: [2.0], b: \"t\" }",
-        "42",
-        "1..5",
-        "1..=5",
+    /// first eight, which are found before any version for any value; integers, ranges and blobs reach the any-value
+    /// one.
+    const TYPES: [(&str, Joins); 12] = [
+        ("()", Joins::ByItsOwnVersion),
+        ("true", Joins::Formatted),
+        ("'c'", Joins::ByItsOwnVersion),
+        ("\"text\"", Joins::AsText),
+        ("2.5", Joins::Formatted),
+        ("|x| x", Joins::Formatted),
+        ("[1, 'c', \"s\", ()]", Joins::Formatted),
+        ("#{ a: [2.0], b: \"t\" }", Joins::Formatted),
+        ("42", Joins::Formatted),
+        ("1..5", Joins::Formatted),
+        ("1..=5", Joins::Formatted),
+        ("\"ab\".to_blob()", Joins::ByItsOwnVersion),
     ];
 
     /// Every way a script turns a value `v` into text.
@@ -1321,14 +1367,13 @@ mod peak {
         "log(v)",
     ];
 
-    /// The text a script answers or prints, and how many times one of the bounded functions formatted a value.
-    fn formatted(source: &str) -> (String, Vec<String>, usize) {
-        let host = ScriptHost::new(&[], Limits::console());
-        let run = Arc::new(Run {
+    /// A run's state for driving its engine directly, as `run_here` would make it.
+    fn new_run(limits: Limits, source: &str) -> Arc<Run> {
+        Arc::new(Run {
             lent: RwLock::new(None),
-            limits: Limits::console(),
+            limits,
             request: RunRequest {
-                name: "coverage".into(),
+                name: "direct".into(),
                 source: source.into(),
                 actor: Actor::Person { name: "tester".into() },
                 grants: Grants::person(),
@@ -1342,9 +1387,16 @@ mod peak {
             due: OnceLock::new(),
             ops: AtomicU64::new(0),
             fresh: AtomicBool::new(false),
+            held: AtomicBool::new(false),
             output: Mutex::new(Output::default()),
             plans: Mutex::new(Vec::new()),
-        });
+        })
+    }
+
+    /// The text a script answers or prints, and how many times one of the bounded functions formatted a value.
+    fn formatted(source: &str) -> (String, Vec<String>, usize) {
+        let host = ScriptHost::new(&[], Limits::console());
+        let run = new_run(Limits::console(), source);
         let engine = host.engine(&run, host.clock.now().0);
         let before = crate::guards::FORMATS.with(std::cell::Cell::get);
         let value = run.lend(&NoCalls, &Never, || engine.eval::<Dynamic>(source)).expect(source);
@@ -1353,10 +1405,13 @@ mod peak {
         (value.to_string(), lines, count)
     }
 
-    /// The same, from Rhai's own functions.
+    /// The same, from Rhai's own functions, with the packages a run loads.
     fn rhais(source: &str) -> (String, Vec<String>) {
         let lines = Arc::new(Mutex::new(Vec::<String>::new()));
-        let mut plain = Engine::new();
+        let mut plain = Engine::new_raw();
+        for package in &ScriptHost::new(&[], Limits::console()).packages {
+            plain.register_global_module(package.clone());
+        }
         let capture = lines.clone();
         plain.on_print(move |text| capture.lock().unwrap().push(text.to_owned()));
         let capture = lines.clone();
@@ -1368,19 +1423,18 @@ mod peak {
 
     /// Every formatting path, for every type a script can hold, goes through the bounded functions and answers what
     /// Rhai's own would. The exceptions are where Rhai formats nothing: a string in a template is copied as it is, and
-    /// joining a string with a string, a character or `()` has a version of its own that copies text the run holds.
+    /// joining a string with a string, a character, `()` or a blob has a version of its own that only joins text.
     #[test]
     fn every_formatting_path_uses_the_bounded_functions_for_every_type() {
-        for value in TYPES {
+        for (value, joins) in TYPES {
             for path in PATHS {
                 let source = format!("let v = {value}; {path}");
                 let (ours, our_lines, count) = formatted(&source);
-                let copies_text = match value.as_bytes()[0] {
-                    b'"' => {
-                        !path.contains("to_") && !path.contains("print") && !path.contains("debug") && path != "log(v)"
-                    }
-                    b'\'' | b'(' => path.contains('+') || path.contains("append"),
-                    _ => false,
+                let joined = path.contains('+') || path.contains("append");
+                let copies_text = match joins {
+                    Joins::Formatted => false,
+                    Joins::AsText => joined || path.contains("${"),
+                    Joins::ByItsOwnVersion => joined,
                 };
                 assert!(count > 0 || copies_text, "{source}: formatted by Rhai's own function");
                 if path != "log(v)" {
@@ -1389,9 +1443,148 @@ mod peak {
             }
         }
         // `to_json` is a map's alone.
-        let source = r#"let v = #{ a: [2.0, 'c', ()], b: "t\u0001", c: #{ d: true } }; v.to_json()"#;
+        let source = r#"let v = #{ a: [2.0, 'c', ()], b: "t\u0001", c: #{ d: true }, e: "ab".to_blob() }; v.to_json()"#;
         let (ours, _, count) = formatted(source);
         assert!(count > 0, "to_json: formatted by Rhai's own function");
         assert_eq!(ours, rhais(source).0, "to_json");
+    }
+
+    /// Padding with a value whose heap the old count missed (a blob, counted as one small node) is refused before it
+    /// copies: a thousand copies of a 64 KiB blob would hold 64 MiB first.
+    #[test]
+    fn padding_with_a_large_blob_is_refused_before_it_copies() {
+        let build = r#"let k = "x"; while k.len < 65536 { k += k; } let b = k.to_blob(); let a = [];"#;
+        let (_, base) = peak_of(build);
+        let (result, peak) = peak_of(&format!("{build} a.pad(1000, b); a.len()"));
+        let kind = result.expect_err("refused").kind;
+        assert!(matches!(kind, ScriptErrorKind::Limit(LimitKind::ArraySize | LimitKind::Memory)), "{kind:?}");
+        assert!(peak <= base + (1 << 20), "peak {} KiB from {} KiB", peak >> 10, base >> 10);
+        // Under the limits, a blob pads as before.
+        let (result, _) = peak_of(r#"let b = "ab".to_blob(); let a = []; a.pad(3, b); a.len()"#);
+        assert_eq!(result.expect("pads").value, 3);
+    }
+
+    /// Says "cancelled" from its `at`-th poll on; the run polls once a tick while it has no reason to stop.
+    struct CancelAt {
+        polls: AtomicUsize,
+        at: usize,
+    }
+
+    impl Cancel for CancelAt {
+        fn is_cancelled(&self) -> bool {
+            self.polls.fetch_add(1, Ordering::SeqCst) + 1 >= self.at
+        }
+    }
+
+    /// A clock that moves a millisecond each time it is read; the run reads it once a tick while it has no reason to
+    /// stop.
+    struct Millis(AtomicU64);
+
+    impl Clock for Millis {
+        fn now(&self) -> omuzaki_core::time::Seconds {
+            #[allow(clippy::cast_precision_loss)] // test counts stay far below 2^52
+            omuzaki_core::time::Seconds(self.0.fetch_add(1, Ordering::SeqCst) as f64 / 1000.0)
+        }
+    }
+
+    /// Runs `source` under `limits`, `clock` and `cancel`, and answers how it stopped (`None` if it finished) and the
+    /// operations it counted.
+    fn counted(
+        limits: &Limits,
+        clock: &Arc<dyn Clock>,
+        cancel: &dyn Cancel,
+        source: &str,
+    ) -> (Option<ScriptErrorKind>, u64) {
+        let host = ScriptHost::new(&[], limits.clone()).with_clock(clock.clone());
+        let run = new_run(limits.clone(), source);
+        let engine = host.engine(&run, clock.now().0);
+        let _counting = budget::Counting::start();
+        let result = run.lend(&NoCalls, cancel, || engine.eval::<Dynamic>(source));
+        let kind = result.err().map(|error| classify(&error, limits.string_bytes).kind);
+        (kind, run.ops.load(Ordering::SeqCst))
+    }
+
+    /// A 64 KiB map and 100,000 zeros to look for it in: each comparison copies the map, as the package's loops do.
+    const SEARCH: &str = r#"let k = "x"; while k.len < 4096 { k += k; } let m = #{}; for i in 0..16 { m[k + i] = 1; }
+        let a = []; a.pad(100000, 0);"#;
+
+    fn never() -> Arc<dyn Clock> {
+        Arc::new(SystemClock::new())
+    }
+
+    /// A search over 100,000 elements stops at its next element once the run is cancelled, out of time or out of
+    /// operations, instead of copying the map for every element left. The stop falls due 1,000 elements in.
+    #[test]
+    fn contains_and_index_of_stop_at_their_next_element() {
+        let (_, base) = counted(&Limits::console(), &never(), &Never, SEARCH);
+        let due = base + 1000;
+        for search in ["a.contains(m)", "a.index_of(m)", "m in a", "a.index_of(m, 5)"] {
+            let source = format!("{SEARCH} {search}");
+            let at = usize::try_from(due).unwrap();
+            let (kind, ops) =
+                counted(&Limits::console(), &never(), &CancelAt { polls: AtomicUsize::new(0), at }, &source);
+            assert_eq!(kind, Some(ScriptErrorKind::Cancelled), "{search}");
+            assert!(ops <= due + 3, "{search}: cancelled at operation {due}, ran to {ops}");
+            let seconds = u32::try_from(due / 1000).unwrap();
+            let millis: Arc<dyn Clock> = Arc::new(Millis(AtomicU64::new(0)));
+            let (kind, ops) = counted(&Limits { seconds, ..Limits::console() }, &millis, &Never, &source);
+            assert_eq!(kind, Some(ScriptErrorKind::Limit(LimitKind::Time)), "{search}");
+            let deadline = u64::from(seconds) * 1000;
+            assert!(ops <= deadline + 3, "{search}: out of time at operation {deadline}, ran to {ops}");
+            let (kind, ops) = counted(&Limits { operations: due, ..Limits::console() }, &never(), &Never, &source);
+            assert_eq!(kind, Some(ScriptErrorKind::Limit(LimitKind::Operations)), "{search}");
+            assert!(ops <= due + 3, "{search}: out of operations at {due}, ran to {ops}");
+        }
+    }
+
+    /// The other loops that call back into the engine for each element stop the same way: `==` and `!=` on arrays
+    /// and maps, and the sorts and dedups, which ignore their comparer's errors and would otherwise carry on.
+    #[test]
+    fn comparing_sorting_and_deduplicating_stop_at_their_next_element() {
+        let build = "let a = []; a.pad(100000, 0); let b = a; let m = #{}; for i in 0..10000 { m[`k${i}`] = 1; } \
+                     let n = m;";
+        let (_, base) = counted(&Limits::console(), &never(), &Never, build);
+        let due = base + 1000;
+        for step in [
+            "a == b",
+            "a != b",
+            "m == n",
+            "m != n",
+            "a.dedup()",
+            "a.dedup(|x, y| x == y)",
+            "a.sort(|x, y| x - y)",
+            "a.sort_by(|x, y| x - y)",
+        ] {
+            let source = format!("{build} {step}");
+            let (kind, ops) = counted(&Limits { operations: due, ..Limits::console() }, &never(), &Never, &source);
+            assert_eq!(kind, Some(ScriptErrorKind::Limit(LimitKind::Operations)), "{step}");
+            assert!(ops <= due + 4, "{step}: out of operations at {due}, ran to {ops}");
+        }
+    }
+
+    /// A loop that ends with its last element's stop held must not hand that stop to the `to_string` call of the
+    /// template part that follows it, where Rhai would swallow it and format the part in full: the loops check the
+    /// run before they return. The budget is swept over the end of the search.
+    #[test]
+    fn a_stop_due_at_the_end_of_a_loop_is_not_delivered_inside_the_next_format() {
+        let build = format!("{} let a = []; a.pad(20, 0);", large_map());
+        let (_, base) = peak_of(&build);
+        let (_, before) = counted(&Limits::console(), &never(), &Never, &build);
+        let script = format!("{build} let s = `${{[m, a.contains(1)]}}`;");
+        for operations in before..before + 60 {
+            let (result, peak) = peak_with(Limits { operations, ..Limits::console() }, &script);
+            let kind = result.expect_err("stops").kind;
+            assert!(
+                matches!(kind, ScriptErrorKind::Limit(LimitKind::Operations | LimitKind::StringSize)),
+                "{operations}: {kind:?}"
+            );
+            // The template copies the map once; a bounded format adds at most the string limit.
+            assert!(
+                peak <= 2 * base + Limits::console().string_bytes + (1 << 20),
+                "{operations} operations: peak {} KiB from {} KiB",
+                peak >> 10,
+                base >> 10
+            );
+        }
     }
 }
