@@ -138,7 +138,7 @@ impl Jobs for Fake {
         if let Some(state) = self.finish_in_start.lock().unwrap().clone() {
             self.set_state(job.id.0, state);
             for n in 0..*self.flood_in_start.lock().unwrap() {
-                self.progress(99, "unrelated", (n % 100) as f32 / 100.0);
+                self.progress(99, "unrelated", f32::from(u8::try_from(n % 100).unwrap_or(0)) / 100.0);
             }
             // Let the event feed take the announcement in, so it is buffered before the caller can watch for it.
             std::thread::sleep(Duration::from_millis(600));

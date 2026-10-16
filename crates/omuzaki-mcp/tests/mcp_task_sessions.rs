@@ -43,9 +43,10 @@ struct Starter {
 impl Starter {
     /// Finishes held job `id` and announces it, as the executor does.
     fn finish(&self, id: u64) {
+        let at = usize::try_from(id).unwrap() - 1;
         let mut jobs = self.jobs.lock().unwrap();
-        let outcome = self.outcomes.lock().unwrap()[id as usize - 1].clone();
-        let job = &mut jobs[id as usize - 1];
+        let outcome = self.outcomes.lock().unwrap()[at].clone();
+        let job = &mut jobs[at];
         job.state = JobState::done(TxId(1), Some(1)).with_outcome(Arc::new(outcome));
         self.studio.emit(&omuzaki_ops_api::Event::job_changed(job.clone()));
     }

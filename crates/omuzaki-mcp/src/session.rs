@@ -1166,7 +1166,7 @@ impl Reporter {
             result
         } else {
             let mut state = lock(&self.state);
-            let news = match push.as_deref_mut() {
+            let news = match push {
                 Some(push) => state.approvals.news_for(&self.shared.hub, &mut push.approvals),
                 None => state.approvals.news(&self.shared.hub),
             };
