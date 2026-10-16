@@ -727,7 +727,7 @@ impl PerformHost for PerformHandle {
             let (slot, replaced) = next.place(&binding.key)?;
             let (shown, missing) = next.bake(&binding);
             let generation = next.next_generation();
-            batch.set(slot, shown, generation);
+            batch.set(slot, shown.as_ref(), generation);
             next.put(slot, Some(Bound { binding, missing, slot: shown, generation }));
             outcomes.push(BindOutcome { slot, replaced });
         }

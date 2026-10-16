@@ -60,9 +60,9 @@ impl BindBatch {
     }
 
     /// Adds the bind of slot `index` to `slot` (`None`: it shows nothing) as binding `generation`.
-    pub(super) fn set(&mut self, index: usize, slot: Option<TriggerSlot>, generation: u64) {
+    pub(super) fn set(&mut self, index: usize, slot: Option<&TriggerSlot>, generation: u64) {
         if let (Some(entry), Some(held)) = (self.slots.get_mut(index), self.generations.get_mut(index)) {
-            *entry = slot;
+            *entry = slot.copied();
             *held = generation;
             self.bound |= 1 << index;
         } else {

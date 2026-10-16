@@ -2,7 +2,7 @@
 //! store in a folder, the whole app is dropped, and a new one on the same folder restores them exactly.
 
 // Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
-#![allow(clippy::expect_used, clippy::unwrap_used)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::cast_precision_loss)]
 #![allow(clippy::disallowed_methods, reason = "the test edits the settings files by hand, as a person would")]
 
 #[path = "live/support.rs"]
