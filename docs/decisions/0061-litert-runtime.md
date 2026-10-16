@@ -111,8 +111,11 @@ the model.
        Bazel workspace pins every dependency archive by SHA-256.
      - Toolchains are pinned: the Linux container by digest, the MSVC toolset version, the Xcode version with macOS 13
        as the deployment target. A job fails when a version drifts from `tools/litert/pins.toml`.
-     - A check job loads each library, runs a face graph fully delegated to XNNPACK, and compares it with the wheel
-       (decision 4).
+     - A check job loads each library, runs the three face graphs, and compares them with the wheel (decision 4). Each
+       graph's XNNPACK delegation must equal its pin in `tools/litert/pins.toml`, in either direction: the detector
+       and the landmarks graph fully delegated, the blendshapes graph with 181 of its 182 nodes in one partition and
+       one node on a builtin kernel, the same on every platform (Runtime lead ruling on #1862, 2026-10-15; design
+       §8.2). Parity within 1e-4 on every output covers the builtin-kernel node too.
    - **Hosting now: a checksummed artifact of the same run.** Each platform's archive is uploaded with
      `actions/upload-artifact`, and its digest in a small artifact of its own. No new permission is needed.
      - A matrix job's output is a single value, so a non-matrix `collect` job merges the three digests into named
