@@ -40,11 +40,14 @@ const DECODER_STATE_BYTES: u64 = 128 << 10;
 /// (two copies of the profile), and the inflate buffer of the decoder grows by doubling, so it can briefly hold twice the
 /// bound while it fills. A profile past the bound is dropped by the decoder, never retained.
 ///
+/// `kept` is what the decoder holds of the file's other chunks while it reads the header.
+///
 /// `None` when the input leaves less than [`PROFILE_BOUND_FLOOR`], the least the decoder needs for its metadata (text
 /// chunks): the image is refused as too large. A floor applied after the subtraction would hand back room the input has
 /// already used.
-fn profile_bound(input_len: u64) -> Option<u64> {
-    let room = max_decoded_bytes().saturating_sub(input_len.saturating_add(DECODER_STATE_BYTES)) / 4;
+fn profile_bound(input_len: u64, kept: u64) -> Option<u64> {
+    let room =
+        max_decoded_bytes().saturating_sub(input_len.saturating_add(DECODER_STATE_BYTES).saturating_add(kept)) / 4;
     let bound = max_profile_bytes().min(room);
     (bound >= PROFILE_BOUND_FLOOR).then_some(bound)
 }
@@ -196,25 +199,30 @@ struct PngHeader {
 }
 
 /// Reads a PNG's header with the decoder, profile included, and plans the decode from it.
+///
+/// A scan of the chunk headers first finds out what is there, and decides no colour. The locked `png` keeps an `eXIf`
+/// chunk twice (the chunk buffer and the clone it stores) and has no setting to skip it, so twice its length is counted
+/// in the peak, as the budget counts everything the decoder holds, rather than refusing the EXIF. It also buffers a whole
+/// `iCCP` chunk before it inflates it, which is counted while the header is read.
 fn png_header(bytes: &[u8]) -> Result<PngHeader, String> {
     let input = bytes.len() as u64;
-    let Some(bound) = profile_bound(input) else {
-        // The input alone leaves the decoder no room: the peak is over the cap whatever the pixels are, so the caller
-        // refuses it as too large. The size is read from the IHDR chunk, not through a decoder, which would inflate the
-        // profile it was refused room for.
+    let scan = header::png_scan(bytes);
+    let exif = 2 * scan.exif_bytes;
+    let Some(bound) = profile_bound(input, exif + scan.iccp_bytes) else {
+        // The input and what the decoder keeps of it leave no room: the peak is over the cap whatever the pixels are, so
+        // the caller refuses it as too large. The size is read from the IHDR chunk, not through a decoder, which would
+        // inflate the profile it was refused room for.
         let (width, height) = header::png_size(bytes).ok_or("its header is cut short")?;
         return Ok(PngHeader { plan: Plan { width, height, input, peak: max_decoded_bytes() + 1 }, non_srgb: None });
     };
     let reader = open_png(bytes, bound, true).map_err(|error| error.to_string())?;
     let info = reader.info();
-    // The decoder drops a profile past its bound, or one that will not inflate, without an error. A file that had one
-    // before its data and yields none is refused, not read as untagged, unless a `cICP` chunk decides the colour anyway.
-    if header::png_iccp_before_data(bytes)
-        && info.icc_profile.is_none()
-        && info.coding_independent_code_points.is_none()
-    {
+    // The decoder drops a profile past its bound, or one that is out of order or will not inflate, without an error. A
+    // file that has an `iCCP` chunk and yields no profile has colour this check cannot read: refused, never read as
+    // untagged. Only a `cICP` chunk the decoder itself accepted decides the colour anyway (PNG colour chunk precedence).
+    if scan.iccp && info.icc_profile.is_none() && info.coding_independent_code_points.is_none() {
         return Err(format!(
-            "its embedded colour profile is corrupt or inflates to more than {} MiB",
+            "its embedded colour profile is present but unreadable: it is corrupt, out of order or inflates to more than {} MiB",
             (bound + (1 << 19)) >> 20
         ));
     }
@@ -225,9 +233,9 @@ fn png_header(bytes: &[u8]) -> Result<PngHeader, String> {
     // which grow with the width.
     let scratch = u64::from(width) * u64::from(height) * output + 4 * u64::from(width) * output;
     let pixels = u64::from(width) * u64::from(height);
-    // The encoded input is held through the decode too, so it is part of the peak. The profile is not: the pixel pass
-    // skips it, and the reader that held it is dropped before that pass opens.
-    let peak = DECODER_STATE_BYTES + scratch + pixels * (output + RGBA_BYTES) + input;
+    // The encoded input is held through the decode too, so it is part of the peak, and so is the EXIF the decoder keeps.
+    // The profile is not: the pixel pass skips it, and the reader that held it is dropped before that pass opens.
+    let peak = DECODER_STATE_BYTES + scratch + pixels * (output + RGBA_BYTES) + input + exif;
     Ok(PngHeader { plan: Plan { width, height, input, peak }, non_srgb: header::png_non_srgb(info) })
 }
 

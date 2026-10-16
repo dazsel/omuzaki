@@ -373,3 +373,43 @@ fn a_million_and_a_half_empty_text_chunks_stay_inside_the_budget() {
     assert!(held <= 64 << 20, "the decode and its input held {held} bytes");
     assert!(peak < 4 << 20, "skipping text should leave the decode almost nothing beyond the input, held {peak}");
 }
+
+/// `png` with an `eXIf` chunk of `len` zero bytes before its image data.
+fn with_exif(png: &[u8], len: usize) -> Vec<u8> {
+    let idat = png.windows(4).position(|window| window == b"IDAT").unwrap() - 4;
+    let data = vec![0_u8; len];
+    let mut out = png[..idat].to_vec();
+    out.extend(u32::try_from(len).unwrap().to_be_bytes());
+    out.extend(b"eXIf");
+    out.extend(&data);
+    out.extend(crc32(&[b"eXIf".as_slice(), data.as_slice()].concat()).to_be_bytes());
+    out.extend(&png[idat..]);
+    out
+}
+
+#[test]
+fn an_exif_chunk_the_decoder_keeps_twice_is_inside_the_budget_or_refused() {
+    // The locked `png` keeps an `eXIf` chunk twice (its chunk buffer and the clone it stores) and cannot skip it. A
+    // 3072 x 3072 grey image is 9.4 MP: 47 MB of pixels and scratch, and 8 MiB of EXIF twice is 16 MiB more, over the
+    // 64 MiB cap with the input. The prediction counts the EXIF, so the image is refused as too large, and what was held
+    // while the header was read (the caller's buffer included) stayed inside the cap.
+    let png = with_exif(&png_grey(3072, 3072), 8 << 20);
+    let predicted = predicted_peak(&png).unwrap();
+    assert!(predicted > 64 << 20, "the prediction left out the EXIF: {predicted}");
+    let (result, peak) = peak_of(|| decode(&png, ContentHash::of(&png), FIELD));
+    let error = result.unwrap_err();
+    assert_eq!(error.code, ErrorCode::Invalid);
+    assert!(error.message.starts_with("The image is 3,072 × 3,072"), "{}", error.message);
+    let held = peak + png.len();
+    assert!(held <= 64 << 20, "the refusal held {held} bytes with its input");
+}
+
+#[test]
+fn a_small_exif_chunk_is_counted_and_the_image_still_decodes() {
+    let png = with_exif(&png_grey(96, 64), 100_000);
+    let predicted = predicted_peak(&png).unwrap();
+    let (result, peak) = peak_of(|| decode(&png, ContentHash::of(&png), FIELD));
+    result.unwrap();
+    let held = (peak + png.len()) as u64;
+    assert!(held <= predicted, "the decode and its input held {held} bytes, the header predicted {predicted}");
+}

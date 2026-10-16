@@ -360,3 +360,34 @@ fn a_cicp_after_the_palette_is_dropped_by_the_decoder_so_it_decides_nothing() {
     let before = with_chunks(&display_p3_png(), &[chunk(*b"cICP", &[1, 13, 0, 1]), chunk(*b"PLTE", &[1, 2, 3])]);
     assert!(decode(&before, ContentHash::of(&before), FIELD).is_ok());
 }
+
+/// A PNG with `PLTE`, then an `iCCP` whose profile inflates to 40 MiB (past the 16 MiB bound), then its data.
+fn palette_then_large_profile() -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut encoder = PngEncoder::new(&mut out);
+    encoder.set_icc_profile(vec![0_u8; 40 << 20]).unwrap();
+    encoder.write_image(&[9_u8, 8, 7, 1, 2, 3, 4, 5, 6, 7, 8, 9], 2, 2, ExtendedColorType::Rgb8).unwrap();
+    let iccp = out.windows(4).position(|window| window == b"iCCP").unwrap() - 4;
+    let mut late = out[..iccp].to_vec();
+    late.extend(chunk(*b"PLTE", &[1, 2, 3]));
+    late.extend(&out[iccp..]);
+    late
+}
+
+#[test]
+fn a_profile_the_decoder_drops_for_any_reason_is_refused_never_read_as_untagged() {
+    // `PLTE, iCCP(large non-sRGB), IDAT`: the profile is past the decoder's bound, so it is dropped without an error and
+    // the file would read as untagged. The scan saw the chunk, so the file is refused as present but unreadable.
+    assert!(refusal(&palette_then_large_profile()).contains("present but unreadable"));
+    // Only a `cICP` the decoder itself accepted decides the colour instead: here it follows the palette, which the
+    // decoder discards, so the profile still makes the file unreadable.
+    let late_cicp = {
+        let png = palette_then_large_profile();
+        let idat = png.windows(4).position(|window| window == b"IDAT").unwrap() - 4;
+        let mut out = png[..idat].to_vec();
+        out.extend(chunk(*b"cICP", &[1, 13, 0, 1]));
+        out.extend(&png[idat..]);
+        out
+    };
+    assert!(refusal(&late_cicp).contains("present but unreadable"));
+}

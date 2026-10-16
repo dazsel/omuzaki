@@ -89,22 +89,41 @@ pub(crate) fn jpeg_icc_declared_len(bytes: &[u8]) -> Option<u64> {
     }
 }
 
-/// Whether an `iCCP` chunk comes before the palette and the image data, where the PNG specification (and the decoder)
-/// accept one. This decides nothing about colour: the profile and every other colour chunk are read only from the
-/// decoder's own validated metadata. It is the one thing the decoder cannot say, since it drops a profile past its
-/// allocation bound or one that will not inflate without an error, and an image that had one must be refused, not read as
-/// untagged. Walks chunk lengths and kinds only: no CRC, no data.
-pub(crate) fn png_iccp_before_data(bytes: &[u8]) -> bool {
+/// What a PNG's chunk headers say is there, found without reading any chunk's data. It decides nothing about colour: the
+/// profile and every other colour chunk are read only from the decoder's own validated metadata. It exists because the
+/// decoder cannot report what it dropped (a profile past its bound, out of order or corrupt) and because it keeps some
+/// chunks whole, which the allocation budget must count.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct PngScan {
+    /// Whether any `iCCP` chunk is present, wherever it sits.
+    pub(crate) iccp: bool,
+    /// The summed lengths of every `iCCP` chunk: the decoder buffers each whole before it inflates the profile.
+    pub(crate) iccp_bytes: u64,
+    /// The summed lengths of every `eXIf` chunk. The locked `png` (0.18) buffers the chunk and keeps a clone of it as the
+    /// image's EXIF metadata, so it holds each twice, and has no setting to skip it. Every other chunk it keeps is a fixed
+    /// small size (`PLTE`, `tRNS`, `sBIT`, `bKGD`, `pHYs`, `gAMA`, `cHRM`, `sRGB`, `cICP`, `mDCV`, `cLLI`, the animation
+    /// chunks) or is skipped (`tEXt`, `zTXt`, `iTXt` by setting, and every unknown ancillary chunk).
+    pub(crate) exif_bytes: u64,
+}
+
+/// Walks every chunk header of a PNG up to `IEND`, reading only lengths and kinds: no CRC, no data. A length past the end
+/// of the bytes ends the walk.
+pub(crate) fn png_scan(bytes: &[u8]) -> PngScan {
+    let mut scan = PngScan::default();
     let mut at = 8; // past the signature
     while let (Some(length), Some(kind)) = (be_u32(bytes, at), bytes.get(at + 4..at + 8)) {
         match kind {
-            b"iCCP" => return true,
-            b"PLTE" | b"IDAT" | b"IEND" => return false,
+            b"iCCP" => {
+                scan.iccp = true;
+                scan.iccp_bytes += u64::from(length);
+            }
+            b"eXIf" => scan.exif_bytes += u64::from(length),
+            b"IEND" => break,
             _ => {}
         }
         at = at.saturating_add(12).saturating_add(length as usize);
     }
-    false
+    scan
 }
 
 /// The width and height a PNG's IHDR chunk declares (the first chunk, at byte 16), or `None` when the bytes end first.
@@ -175,10 +194,10 @@ fn be_u32(bytes: &[u8], at: usize) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{jpeg_frame, png_iccp_before_data};
+    use super::{PngScan, jpeg_frame, png_scan};
 
     #[test]
-    fn the_iccp_walk_reads_only_lengths_and_kinds_and_stops_at_the_palette_or_the_data() {
+    fn the_scan_finds_profiles_and_exif_anywhere_up_to_iend_from_lengths_and_kinds_only() {
         let chunk = |kind: &[u8; 4], length: u32| {
             let mut out = length.to_be_bytes().to_vec();
             out.extend(kind);
@@ -186,11 +205,21 @@ mod tests {
             out
         };
         let png = |chunks: &[Vec<u8>]| [vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A], chunks.concat()].concat();
-        assert!(png_iccp_before_data(&png(&[chunk(b"IHDR", 13), chunk(b"iCCP", 5), chunk(b"IDAT", 3)])));
-        assert!(!png_iccp_before_data(&png(&[chunk(b"IHDR", 13), chunk(b"PLTE", 3), chunk(b"iCCP", 5)])));
-        assert!(!png_iccp_before_data(&png(&[chunk(b"IHDR", 13), chunk(b"IDAT", 3), chunk(b"iCCP", 5)])));
+        let scan = png_scan(&png(&[
+            chunk(b"IHDR", 13),
+            chunk(b"PLTE", 3),
+            chunk(b"iCCP", 5),
+            chunk(b"IDAT", 3),
+            chunk(b"eXIf", 7),
+            chunk(b"eXIf", 2),
+            chunk(b"iCCP", 4),
+            chunk(b"IEND", 0),
+            chunk(b"eXIf", 100),
+        ]));
+        assert_eq!(scan, PngScan { iccp: true, iccp_bytes: 9, exif_bytes: 9 });
+        assert_eq!(png_scan(&png(&[chunk(b"IHDR", 13), chunk(b"IDAT", 3)])), PngScan::default());
         // A forged length stops the walk without a panic.
-        assert!(!png_iccp_before_data(&png(&[u32::MAX.to_be_bytes().iter().chain(b"gAMA").copied().collect()])));
+        assert_eq!(png_scan(&png(&[u32::MAX.to_be_bytes().iter().chain(b"iCCP").copied().collect()])).exif_bytes, 0);
     }
 
     #[test]
