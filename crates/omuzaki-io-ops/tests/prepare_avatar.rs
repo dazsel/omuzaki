@@ -6,7 +6,9 @@ mod common;
 
 use std::collections::BTreeMap;
 
-use common::{add_skinned_mesh, def, file_skinning, humanoid, humanoid_without, max_error, runtime_skinning, through_vrm};
+use common::{
+    add_skinned_mesh, def, file_skinning, humanoid, humanoid_without, max_error, runtime_skinning, through_vrm,
+};
 use omuzaki_anim_api::HumanoidBone;
 use omuzaki_avatar_api::def::NodeChoice;
 use omuzaki_core::glam::{Mat4, Quat, Vec2, Vec3, Vec4};
@@ -19,7 +21,8 @@ use omuzaki_render_api::MtoonSupport;
 
 /// A plain material the mock writer keeps.
 fn plain(name: &str) -> Material {
-    let mut m = Material::new(name, Shading::Pbr(Pbr { metallic: 0.0, roughness: 1.0, metallic_roughness_texture: None }));
+    let mut m =
+        Material::new(name, Shading::Pbr(Pbr { metallic: 0.0, roughness: 1.0, metallic_roughness_texture: None }));
     m.base_color = Vec4::new(0.8, 0.7, 0.6, 1.0);
     m
 }
@@ -112,7 +115,14 @@ fn every_steps_findings_reach_the_one_report() {
     let aa = Expression::morph(body, 0);
     f.scene.avatar.as_mut().expect("an avatar").expressions.insert(ExpressionName::parse("aa").expect("a name"), aa);
     let (_, report) = to_avatar(&f.scene, &def(), MtoonSupport::NONE).expect("imports");
-    for rule in ["humanoid.inferred", "avatar.rest_normalised", "cleanup.merged", "cleanup.dropped_unused", "arkit.synthesised", "arkit.missing"] {
+    for rule in [
+        "humanoid.inferred",
+        "avatar.rest_normalised",
+        "cleanup.merged",
+        "cleanup.dropped_unused",
+        "arkit.synthesised",
+        "arkit.missing",
+    ] {
         assert!(report.has_rule(rule), "{rule} reaches the report: {report:?}");
     }
 }
@@ -150,7 +160,13 @@ fn a_stale_override_is_found_again_by_name() {
 }
 
 /// A rigid mesh called `name` (one triangle, no skin) drawn by a new node under `parent` at `at`.
-fn rigid(f: &mut common::Fixture, name: &str, parent: &str, at: Vec3, mesh: Option<omuzaki_io_api::MeshIx>) -> omuzaki_io_api::NodeIx {
+fn rigid(
+    f: &mut common::Fixture,
+    name: &str,
+    parent: &str,
+    at: Vec3,
+    mesh: Option<omuzaki_io_api::MeshIx>,
+) -> omuzaki_io_api::NodeIx {
     let mesh = mesh.unwrap_or_else(|| {
         let data = MeshData {
             positions: vec![Vec3::ZERO, Vec3::X * 0.02, Vec3::Y * 0.02],
@@ -182,11 +198,14 @@ fn one_mesh_drawn_by_two_nodes_is_one_runtime_mesh_per_node() {
     let mesh = f.scene.nodes[left.index()].mesh;
     let right = rigid(&mut f, "Glove.R", "rightHand", Vec3::X * -0.05, mesh);
     let mut squeeze = Expression::new();
-    squeeze.morph_binds = vec![
-        MorphBind { node: left, index: 0, weight: 0.25 },
-        MorphBind { node: right, index: 0, weight: 0.75 },
-    ];
-    f.scene.avatar.as_mut().expect("an avatar").expressions.insert(ExpressionName::parse("Squeeze").expect("a name"), squeeze);
+    squeeze.morph_binds =
+        vec![MorphBind { node: left, index: 0, weight: 0.25 }, MorphBind { node: right, index: 0, weight: 0.75 }];
+    f.scene
+        .avatar
+        .as_mut()
+        .expect("an avatar")
+        .expressions
+        .insert(ExpressionName::parse("Squeeze").expect("a name"), squeeze);
     let (avatar, _) = to_avatar(&f.scene, &def(), MtoonSupport::NONE).expect("imports");
     assert_eq!(avatar.meshes.len(), 2, "one per drawing node");
     let source = &avatar.retained.meshes[mesh.expect("a mesh").index()];

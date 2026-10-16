@@ -607,7 +607,9 @@ fn legs_set_wider_of_the_hips_than_below_them_are_still_found() {
         scene.nodes[nodes[slot].unwrap().index()].transform.translation = Vec3::new(x, -0.05, 0.0);
     }
     let p = auto_map(&scene, &BTreeMap::new()).unwrap();
-    for (slot, name) in [(9, "leftUpperLeg"), (10, "leftLowerLeg"), (11, "leftFoot"), (13, "rightUpperLeg"), (15, "rightFoot")] {
+    for (slot, name) in
+        [(9, "leftUpperLeg"), (10, "leftLowerLeg"), (11, "leftFoot"), (13, "rightUpperLeg"), (15, "rightFoot")]
+    {
         assert_eq!(p.humanoid.node(name), nodes[slot], "{name}");
     }
 }

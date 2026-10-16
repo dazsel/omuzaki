@@ -133,7 +133,9 @@ pub fn through_vrm(scene: &IoScene) -> IoScene {
     let mut out = run_export(&omuzaki_io_mock::MockVrm1Exporter, scene, &ExportCtx::new(&options)).expect("export");
     let bytes = out.files.remove(0).bytes;
     let input = ImportInput::new(&bytes).named("generated.vrm");
-    run_import(&omuzaki_io_mock::MockVrm1Importer, &input, &ImportCtx::new(&ImportOptions::default())).expect("import").scene
+    run_import(&omuzaki_io_mock::MockVrm1Importer, &input, &ImportCtx::new(&ImportOptions::default()))
+        .expect("import")
+        .scene
 }
 
 /// The bytes the mock VRM 1.0 exporter writes for `scene`.
