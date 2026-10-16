@@ -152,7 +152,7 @@ impl LimitTable {
     ///
     /// Fails, naming `file` and the key, if the text is not a valid table (see the module docs).
     pub fn parse_named(file: &str, text: &str) -> Result<Self, LimitsError> {
-        let raw: RawFile = toml::from_str(text).map_err(|e| LimitsError::new(file, None, e.message()))?;
+        let raw: RawFile = toml::from_str(text).map_err(|e| LimitsError::from_toml(file, e))?;
         let raw = raw.limits;
         let fail = |key: &str, reason: String| LimitsError::new(file, Some(key), reason);
         for (key, value) in [

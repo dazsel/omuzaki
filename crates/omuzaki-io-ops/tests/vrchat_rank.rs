@@ -20,7 +20,8 @@ use omuzaki_core::glam::{Mat4, Vec3};
 use omuzaki_io_api::{Blob, EncodedImage, ImageMime, IoScene, Mesh, MeshData, Node, Primitive, Skin};
 use omuzaki_io_ops::gather::avatar::add_avatar;
 use omuzaki_io_ops::gather::{GatherOptions, GatherPurpose, gather};
-use omuzaki_io_ops::vrchat_rank::{AvatarStats, Platform, Rank, rank, stats_from_ioscene, texture_mib};
+use omuzaki_io_ops::limits::LimitTable;
+use omuzaki_io_ops::vrchat_rank::{AvatarStats, LimitsError, Platform, Rank, rank, stats_from_ioscene, texture_mib};
 use toml::Value;
 
 const PC_LIMITS: &str = include_str!("../data/platforms/vrchat-pc.toml");
@@ -398,4 +399,24 @@ fn a_bind_pose_different_from_the_rest_pose_places_the_vertices_by_the_bind_pose
     // bind pose) is shown at half size in the rest pose: 3 m becomes 1.5 m.
     let scene = skinned_scene(1.0, vec![Mat4::from_scale(Vec3::splat(0.5))]);
     assert_eq!(stats_from_ioscene(&scene).unwrap().bounds, [1.5, 0.0, 0.0]);
+}
+
+#[test]
+fn the_error_type_keeps_its_variants_and_its_conversion_from_toml() {
+    // `Parse` wraps the parser's error and converts from it, `Shape` names a stat: as this module has always had them.
+    let parse: LimitsError = toml::from_str::<Value>("x =").unwrap_err().into();
+    assert!(matches!(parse, LimitsError::Parse(_)), "{parse}");
+    assert!(parse.to_string().starts_with("the VRChat limits data does not parse: "));
+    let shape = LimitsError::Shape("triangles");
+    assert_eq!(shape.to_string(), "stat 'triangles' has limits of the wrong shape");
+    // The engine's errors arrive as one or the other: text the parser rejects is `Parse`, a table that parsed and then
+    // failed a check is `Shape`.
+    let rejected = LimitTable::parse("not toml =").unwrap_err();
+    assert!(matches!(LimitsError::from(rejected), LimitsError::Parse(_)));
+    let checked = LimitTable::parse(
+        "[limits]\nplatform = \"t\"\nversion = \"v\"\nsource = \"s\"\nretrieved = \"2026-10-12\"\ntiers = [\"a\"]\n\
+         beyond = \"b\"\n[limits.texture]\nopaque_bits = 1.0\nalpha_bits = 1.0\nmips = false\n[limits.stats]\ncats = [1]\n",
+    )
+    .unwrap_err();
+    assert!(matches!(LimitsError::from(checked), LimitsError::Shape(_)));
 }

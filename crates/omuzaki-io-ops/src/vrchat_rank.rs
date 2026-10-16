@@ -10,7 +10,9 @@
 //! [`stats_from_ioscene`] counts what an export carries; some stats are things an export never writes, so they are 0.
 //! Texture memory is an estimate, see [`texture_mib`].
 
-pub use crate::limits::{AvatarStats, LimitsError, StatsError, stats_from_ioscene};
+pub use crate::limits::{AvatarStats, StatsError, stats_from_ioscene};
+use thiserror::Error;
+
 use crate::limits::{StatTier, builtin_checked, evaluate, stat_def};
 
 crate::register_limit_table!("vrchat-pc", "../data/platforms/vrchat-pc.toml");
@@ -88,13 +90,35 @@ impl Platform {
     }
 }
 
+/// Errors from [`rank`]. The type and its variants are the ones this module has always had, whatever engine runs behind it.
+#[derive(Debug, Error)]
+pub enum LimitsError {
+    /// The bundled limits file does not parse. A build-time bug, reported rather than panicked.
+    #[error("the VRChat limits data does not parse: {0}")]
+    Parse(#[from] toml::de::Error),
+    /// A stat's value and its limits have different shapes, or the table that holds them is malformed. Only a bug in
+    /// the stat table or the bundled file can cause this.
+    #[error("stat '{0}' has limits of the wrong shape")]
+    Shape(&'static str),
+}
+
+impl From<crate::limits::LimitsError> for LimitsError {
+    /// A file the TOML parser rejected is [`LimitsError::Parse`] with the parser's error; a table that parsed and then
+    /// failed a check is [`LimitsError::Shape`].
+    fn from(error: crate::limits::LimitsError) -> Self {
+        match error.toml_cause() {
+            Some(cause) => Self::Parse(cause.clone()),
+            None => Self::Shape("limit table"),
+        }
+    }
+}
+
 /// The rank for a tier index, or `None` for a tier the `VRChat` page does not have.
 fn rank_of_tier(tier: Option<usize>) -> Result<Rank, LimitsError> {
     match tier {
         None => Ok(Rank::VeryPoor),
-        Some(i) => TIER_RANKS.get(i).copied().ok_or_else(|| {
-            LimitsError::new("data/platforms", None, format!("has a tier {i} the VRChat page does not"))
-        }),
+        // A tier the VRChat page does not have: the bundled table has more tiers than there are ranks.
+        Some(i) => TIER_RANKS.get(i).copied().ok_or(LimitsError::Shape("tiers")),
     }
 }
 
@@ -109,7 +133,7 @@ pub fn rank(stats: &AvatarStats, platform: Platform) -> Result<Ranking, LimitsEr
     let mut per_stat: Vec<StatRank> = Vec::with_capacity(eval.stats.len());
     for verdict in &eval.stats {
         let Some(def) = stat_def(&verdict.key) else {
-            return Err(LimitsError::new(platform.table_id(), Some(&verdict.key), "is not a stat"));
+            return Err(LimitsError::Shape("stat registry"));
         };
         let rank = match verdict.tier {
             StatTier::Within(i) => Some(rank_of_tier(Some(i))?),

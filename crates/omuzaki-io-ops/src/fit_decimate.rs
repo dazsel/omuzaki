@@ -77,8 +77,8 @@ pub struct DecimateReport {
 /// influences when a collapse merges different sets), morph target deltas, UVs, colours and extra attributes follow
 /// the surviving vertices; normals are recomputed. A primitive at or under the target is left as it is.
 ///
-/// A collapse never turns a neighbouring triangle's normal by 90 degrees or more and never makes an edge shared by
-/// three triangles. If the budget cannot be met without breaking those rules or `max_error`, the result is as far as
+/// A collapse never turns a neighbouring triangle's normal by 90 degrees or more, never makes an edge shared by
+/// three triangles, and never removes the last triangle: a target of 0 leaves one. If the budget cannot be met without breaking those rules or `max_error`, the result is as far as
 /// it got and `reached_target` is false. An error leaves the primitive untouched.
 ///
 /// # Errors
@@ -491,6 +491,11 @@ impl Work {
             }
             let t = CANDIDATES[candidate];
             let p = self.pos[ai].lerp(self.pos[bi], t);
+            // A mesh is never collapsed to nothing: an empty primitive is not a valid one, so the last triangle stays and
+            // the report says the target was not reached.
+            if self.alive_tris <= self.shared_triangles(a, b) {
+                continue;
+            }
             if !self.link_ok(a, b) || self.flips(a, b, p) {
                 continue;
             }

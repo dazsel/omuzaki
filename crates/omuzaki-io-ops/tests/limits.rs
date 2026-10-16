@@ -120,21 +120,42 @@ fn every_number_of_the_old_file_is_in_the_new_tables() {
 }
 
 #[test]
-fn the_built_in_tables_parse_and_cover_every_stat_in_registry_order() {
-    assert_eq!(builtin_ids().collect::<Vec<_>>(), ["vrchat-pc", "vrchat-quest"]);
-    for id in builtin_ids() {
+fn every_registered_table_parses_and_names_only_registry_stats_in_registry_order() {
+    // Invariants of any platform's table, so a platform that registers its own needs no edit here.
+    let ids: Vec<&str> = builtin_ids().collect();
+    assert!(ids.windows(2).all(|pair| pair[0] < pair[1]), "ids are sorted and unique: {ids:?}");
+    for id in &ids {
         let table = builtin(id);
-        assert_eq!(table.platform, id, "the platform id is the file stem");
+        assert_eq!(table.platform, *id, "the platform id is the file stem");
+        let registry: Vec<&str> = STATS.iter().map(|d| d.key).collect();
         let keys: Vec<&str> = table.stats.iter().map(|s| s.key.as_str()).collect();
-        let registry: Vec<&str> =
-            STATS.iter().map(|d| d.key).filter(|key| !NOT_PUBLISHED_BY_VRCHAT.contains(key)).collect();
-        assert_eq!(keys, registry, "{id}: every stat VRChat publishes, in registry order");
-        assert_eq!(table.beyond, "Very Poor");
-        assert_eq!(table.advisory, Vec::<String>::new());
-        assert_eq!(table.tiers, ["Excellent", "Good", "Medium", "Poor"]);
+        let mut at = 0;
+        for key in &keys {
+            let found =
+                registry[at..].iter().position(|r| r == key).unwrap_or_else(|| panic!("{id}: {key} is out of order"));
+            at += found + 1;
+        }
+        assert!(!table.tiers.contains(&table.beyond), "{id}: the beyond label is not a tier");
+        assert!(table.advisory.iter().all(|a| table.tiers.contains(a)), "{id}: advisory names tiers");
     }
     assert!(LimitTable::builtin("nope").is_none());
     assert!(builtin_checked("nope").is_err());
+}
+
+#[test]
+fn the_two_vrchat_tables_are_registered_with_their_published_tiers_and_stats() {
+    // Assertions about VRChat's own tables, by id: another platform's table is not held to them.
+    for id in ["vrchat-pc", "vrchat-quest"] {
+        assert!(builtin_ids().any(|known| known == id), "{id} is registered");
+        let table = builtin(id);
+        let registry: Vec<&str> =
+            STATS.iter().map(|d| d.key).filter(|key| !NOT_PUBLISHED_BY_VRCHAT.contains(key)).collect();
+        let keys: Vec<&str> = table.stats.iter().map(|s| s.key.as_str()).collect();
+        assert_eq!(keys, registry, "{id}: every stat VRChat publishes, in registry order");
+        assert_eq!(table.tiers, ["Excellent", "Good", "Medium", "Poor"]);
+        assert_eq!(table.beyond, "Very Poor");
+        assert_eq!(table.advisory, Vec::<String>::new());
+    }
 }
 
 #[test]

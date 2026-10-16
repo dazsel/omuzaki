@@ -28,11 +28,24 @@ pub struct LimitsError {
     file: String,
     key: Option<String>,
     reason: String,
+    /// The TOML parser's own error, when the text was not valid TOML for a table at all.
+    cause: Option<Box<toml::de::Error>>,
 }
 
 impl LimitsError {
     pub(crate) fn new(file: &str, key: Option<&str>, reason: impl Into<String>) -> Self {
-        Self { file: file.to_string(), key: key.map(str::to_string), reason: reason.into() }
+        Self { file: file.to_string(), key: key.map(str::to_string), reason: reason.into(), cause: None }
+    }
+
+    /// The error for text the TOML parser rejected, keeping its error.
+    pub(crate) fn from_toml(file: &str, error: toml::de::Error) -> Self {
+        Self { file: file.to_string(), key: None, reason: error.message().to_owned(), cause: Some(Box::new(error)) }
+    }
+
+    /// The TOML parser's error, if the text was not valid TOML for a table; `None` for a table that parsed and then
+    /// failed a check (a wrong row, an unknown stat).
+    pub fn toml_cause(&self) -> Option<&toml::de::Error> {
+        self.cause.as_deref()
     }
 
     /// The file the table was read from.

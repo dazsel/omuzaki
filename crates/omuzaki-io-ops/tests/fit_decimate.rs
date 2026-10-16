@@ -385,6 +385,30 @@ fn a_mesh_drawn_by_two_nodes_is_budgeted_for_both_instances() {
 }
 
 #[test]
+fn a_target_of_zero_never_collapses_a_mesh_to_nothing() {
+    // One triangle, nothing locked, an error allowance that accepts any collapse: every edge could be collapsed, and the
+    // last collapse would leave an empty primitive that fails `MeshData::validate`.
+    let mesh = MeshData {
+        positions: vec![Vec3::ZERO, Vec3::X, Vec3::Y],
+        normals: vec![Vec3::Z; 3],
+        indices: vec![0, 1, 2],
+        ..MeshData::default()
+    };
+    let mut p = Primitive::new(mesh);
+    let options =
+        DecimateOptions { lock_boundary: false, lock_uv_seams: false, max_error: 1.0, ..DecimateOptions::new(0) };
+    let report = decimate(&mut p, &options).expect("a valid triangle");
+    assert_eq!(report.triangles, (1, 1));
+    assert!(!report.reached_target, "the target of 0 cannot be reached without emptying the mesh");
+    p.mesh.validate().expect("the primitive stays valid");
+    // A fan of triangles reduced as far as the rules allow keeps at least one, too.
+    let mut fan = grid(3, 1, Vec2::splat(1.0));
+    let report = decimate(&mut fan, &options).expect("a valid grid");
+    assert!(report.triangles.1 >= 1);
+    fan.mesh.validate().expect("the primitive stays valid");
+}
+
+#[test]
 fn an_infinite_max_error_is_refused() {
     let mut p = sphere(1.0, 12, 16);
     let before = p.clone();
