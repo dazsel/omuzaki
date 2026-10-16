@@ -570,7 +570,7 @@ fn the_spiral_keeps_the_alpha_of_the_iris_ring_colour() {
 fn squeezing_an_open_eye_hands_over_to_the_closed_curve_without_a_jump() {
     let profile = profile();
     let mut open_seen = false;
-    let mut last_shown = 1.0_f32;
+    let mut last_shown: Option<f32> = None;
     for step in 0..=200_u16 {
         let squeeze = f32::from(step) / 200.0;
         let mut p = params(|e, _| e.squeeze = squeeze);
@@ -586,15 +586,16 @@ fn squeezing_an_open_eye_hands_over_to_the_closed_curve_without_a_jump() {
         } else {
             // The closed curve is there from the first frame the open eye is gone, and strong where it takes over.
             assert!(closed > 0.0 || squeeze >= 1.0, "squeeze {squeeze}: neither eye is drawn");
-            if last_shown == 1.0 && closed > 0.0 {
-                assert!(closed >= 0.95, "squeeze {squeeze}: the closed curve takes over at only {closed}");
-            }
             if closed > 0.0 {
-                assert!(
-                    last_shown - closed < 0.05,
-                    "squeeze {squeeze}: the closed curve jumped from {last_shown} to {closed}"
-                );
-                last_shown = closed;
+                match last_shown {
+                    None => assert!(closed >= 0.95, "squeeze {squeeze}: the closed curve takes over at only {closed}"),
+                    // The curve fades about 1 / 0.08 per unit of squeeze, so a step of 0.005 may lose 0.0625 of it.
+                    Some(last) => assert!(
+                        last - closed < 0.07,
+                        "squeeze {squeeze}: the closed curve jumped from {last} to {closed}"
+                    ),
+                }
+                last_shown = Some(closed);
             }
         }
     }
