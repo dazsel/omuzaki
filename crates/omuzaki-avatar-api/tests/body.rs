@@ -92,4 +92,13 @@ fn an_imported_view_exposes_morphs_binds_constraints_and_anchors() {
         (view.face, view.palette, view.runtimes.len(), view.drivers.len(), view.stature),
         (None, None, 0, 0, None)
     );
+
+    assert_eq!(view.expressions, Some(a.face()), "the evaluator and the look-at stage read the face from the view");
+    let face = view.expressions.unwrap();
+    assert!(same(face.expressions, a.expressions.as_slice()) && same(face.drivers, &a.drivers));
+    assert_eq!(face.look_at, a.look_at(), "the face reads the resolved look-at");
+    let export = view.export.unwrap();
+    assert!(same(export.source, &a.source) && same(export.retained, &a.retained));
+    assert!(same(export.first_person, a.first_person.as_slice()));
+    assert_eq!(export.look_at, None, "the file had no lookAt: export keeps it absent");
 }

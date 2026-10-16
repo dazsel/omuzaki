@@ -217,6 +217,17 @@ fn texture(side: u32, mips: bool) -> TextureData {
 }
 
 #[test]
+fn export_keeps_whether_the_file_had_a_look_at() {
+    let mut a = avatar(true, 0, &[]);
+    a.gaze = AvatarGaze::Bone;
+    assert_eq!(a.export().look_at, None, "absent in the file: absent for export");
+    assert_eq!(a.face().look_at, AvatarLookAt::default_for(LookAtKind::Bone), "the face reads the defaults");
+    let authored = AvatarLookAt::default_for(LookAtKind::Bone);
+    a.look_at = Some(authored);
+    assert_eq!(a.export().look_at, Some(&authored), "authored defaults stay authored");
+}
+
+#[test]
 fn texture_bytes_count_rgba8_and_the_mip_chain() {
     assert_eq!(texture_bytes(&texture(2048, true)), 22_369_620);
     assert_eq!(texture_bytes(&texture(2048, false)), 16_777_216);

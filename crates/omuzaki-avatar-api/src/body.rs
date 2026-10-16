@@ -78,8 +78,8 @@ pub struct BodyView<'a> {
     /// What drives an imported face: expressions, drivers, gaze route and look-at, which the expression evaluator
     /// and the look-at stage read; `None` for a built character, whose face is painted ([`face`](Self::face)).
     pub expressions: Option<AvatarFace<'a>>,
-    /// What export reads beyond the body (the original, first-person flags, the retained source data); `None` for a
-    /// built character, which exports from its parts.
+    /// What export reads beyond the body (the original, first-person flags, the retained source data, the file's own
+    /// look-at); `None` for a built character, which exports from its parts.
     pub export: Option<AvatarExport<'a>>,
 }
 

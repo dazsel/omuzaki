@@ -142,9 +142,15 @@ impl ImportedAvatar {
         AvatarFace { expressions: &self.expressions, drivers: &self.drivers, gaze: self.gaze, look_at: self.look_at() }
     }
 
-    /// What export reads beyond the body: the original, the first-person flags and the retained source data.
+    /// What export reads beyond the body: the original, the first-person flags, the retained source data and the
+    /// file's own look-at.
     pub fn export(&self) -> AvatarExport<'_> {
-        AvatarExport { source: &self.source, first_person: &self.first_person, retained: &self.retained }
+        AvatarExport {
+            source: &self.source,
+            first_person: &self.first_person,
+            retained: &self.retained,
+            look_at: self.look_at.as_ref(),
+        }
     }
 
     /// The look-at the gaze routes read: the file's, or the defaults of its route (bone type on the bone route,
@@ -333,6 +339,9 @@ pub struct AvatarExport<'a> {
     pub first_person: &'a [FirstPersonFlag],
     /// The source data export writes back exactly.
     pub retained: &'a Retained,
+    /// The file's own look-at, `None` when the file has none. The face carries the resolved one
+    /// ([`AvatarFace::look_at`]); export writes this, so a file without `lookAt` re-exports without one (D8).
+    pub look_at: Option<&'a AvatarLookAt>,
 }
 
 /// GPU bytes of one texture: four bytes a texel, over the full mip chain down to 1×1 when it has mips.
