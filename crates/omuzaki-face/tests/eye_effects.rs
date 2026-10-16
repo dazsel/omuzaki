@@ -448,6 +448,47 @@ fn the_gloom_band_is_cut_to_a_rect_that_does_not_straddle_the_midline() {
     }
 }
 
+/// The x of every hatch line (a two-point stroke) on the overlay, left to right.
+fn hatch_xs(list: &DrawList) -> Vec<f32> {
+    let mut xs: Vec<f32> = list
+        .cmds()
+        .iter()
+        .filter_map(|c| match c {
+            Cmd::Stroke { path, .. } => points(&one(list, *path)).first().map(|p| p.x),
+            _ => None,
+        })
+        .collect();
+    xs.sort_by(f32::total_cmp);
+    xs
+}
+
+#[test]
+fn a_clipped_rect_keeps_the_hatch_at_its_full_width_spacing() {
+    let profile = profile();
+    let p = params(|e, _| e.gloom = 1.0);
+    let hatch = |x0: f32, x1: f32| {
+        let proj = FaceProjection { rect: FaceRect { x0, x1, y0: -0.5, y1: 0.5 }, front_fade: [0.0, 0.07] };
+        let input = FaceInput { profile: &profile, params: &p, time: Seconds(0.0), view: FaceView::default() };
+        let mut out = FaceDrawing::new();
+        RealPainter::new(proj, DEFAULT_PX_PER_M).paint_section(Section::Overlay, &input, &mut out).unwrap();
+        hatch_xs(&out[FaceLayerId::Overlay])
+    };
+    let full = hatch(-0.3, 0.3);
+    assert_eq!(full.len(), 9);
+    let spacing = full[1] - full[0];
+    // A rect from 0.05 to 0.2 keeps the lines that fall in it, at the same places and the same spacing.
+    let clipped = hatch(0.05, 0.2);
+    assert_eq!(clipped.len(), 3, "{clipped:?}");
+    for x in &clipped {
+        assert!(full.iter().any(|f| (f - x).abs() < 1e-6), "a line at {x} is not one of the full hatch's {full:?}");
+    }
+    assert!(clipped.windows(2).all(|w| (w[1] - w[0] - spacing).abs() < 1e-6), "{clipped:?}");
+    // 0.10..0.20 keeps just the outermost line, still where it was.
+    let edge = hatch(0.10, 0.20);
+    assert_eq!(edge.len(), 1);
+    assert!((edge[0] - full[8]).abs() < 1e-6);
+}
+
 #[test]
 fn the_star_is_as_wide_as_it_is_tall_in_iris_half_widths() {
     // Radii are measured from the iris half-width `rx`: the star's physical extent is the same either way round

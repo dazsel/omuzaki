@@ -142,7 +142,12 @@ fn gloom_band(ctx: &mut PaintCtx<'_>, strength: f32) {
     });
     let lines = f32::from(HATCH_LINES);
     for i in 0..HATCH_LINES {
-        let x = left + (right - left) * (f32::from(i) + 0.5) / lines;
+        // The lines keep their places over the band's full width; those outside the rect are left out, not
+        // re-spread over what is left.
+        let x = -BAND_HALF_WIDTH + 2.0 * BAND_HALF_WIDTH * (f32::from(i) + 0.5) / lines;
+        if x < left || x > right {
+            continue;
+        }
         // Every other line is short, from the top down, so the hatch reads as hand-drawn rather than as a fence.
         let low = if i % 2 == 0 { bottom } else { top - (top - bottom) * HATCH_SHORT };
         let line = list.path().move_to(Vec2::new(x, low)).line_to(Vec2::new(x, top)).finish();
