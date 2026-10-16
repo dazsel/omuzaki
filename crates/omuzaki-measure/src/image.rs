@@ -24,6 +24,17 @@ pub const MAX_DECODED_MIB: u32 = 64;
 /// pixels, so twice the decoded cap covers every image the decoded cap admits.
 const MAX_FILE_BYTES: u64 = 2 * ((MAX_DECODED_MIB as u64) << 20);
 
+/// The most `eXIf` data a PNG may carry, in bytes. A measure never reads EXIF, but the locked `png` decoder buffers the
+/// chunk (the buffer doubles as it fills and keeps its capacity) and keeps a clone, and has no setting to skip it. How much
+/// that holds is the decoder's business and changes with its releases, so the measure bounds the input instead of
+/// modelling the decoder: past this cap the image is refused, and [`EXIF_ALLOWANCE`] covers whatever the decoder holds
+/// for a block at the cap.
+pub const MAX_EXIF_BYTES: u64 = 16 << 10;
+
+/// What the decoder may hold for EXIF at the cap: four times the cap, which is more than the buffer at its doubled
+/// capacity plus the clone. It sits inside [`DECODER_STATE_BYTES`] and is not added to the prediction a second time.
+const EXIF_ALLOWANCE: u64 = 4 * MAX_EXIF_BYTES;
+
 /// Bytes a decoded pixel takes in the RGBA8 the measure keeps.
 const RGBA_BYTES: u64 = 4;
 
@@ -32,8 +43,8 @@ const COEFFICIENT_BLOCK_BYTES: u64 = 64 * 2;
 
 /// Bytes of a decoder's own state that does not grow with the image: its inflate window and tables for a PNG, its
 /// Huffman tables for a JPEG. Measured at about 45 KiB for the old PNG path and just over 64 KiB for the `png` decoder
-/// used directly (its row buffers and window), and allowed for at 128 KiB.
-const DECODER_STATE_BYTES: u64 = 128 << 10;
+/// used directly (its row buffers and window), so 64 KiB, plus [`EXIF_ALLOWANCE`] for an EXIF block at the cap.
+const DECODER_STATE_BYTES: u64 = (64 << 10) + EXIF_ALLOWANCE;
 
 /// The most a PNG's profile may inflate to when the encoded input is `input_len` bytes: the bound every PNG gets, and no
 /// more than a quarter of what the cap leaves beside the input and the decoder's state. Half of that is for the copy phase
@@ -200,15 +211,17 @@ struct PngHeader {
 
 /// Reads a PNG's header with the decoder, profile included, and plans the decode from it.
 ///
-/// A scan of the chunk headers first finds out what is there, and decides no colour. The locked `png` keeps an `eXIf`
-/// chunk twice (the chunk buffer and the clone it stores) and has no setting to skip it, so twice its length is counted
-/// in the peak, as the budget counts everything the decoder holds, rather than refusing the EXIF. It also buffers a whole
-/// `iCCP` chunk before it inflates it, which is counted while the header is read.
+/// A scan of the chunk headers first finds out what is there, and decides no colour. An image whose `eXIf` chunks sum to
+/// more than [`MAX_EXIF_BYTES`] is refused: the locked `png` keeps that chunk in buffers whose size is its own business
+/// and cannot skip it, so the measure bounds the input and allows a fixed amount ([`EXIF_ALLOWANCE`]) instead of modelling
+/// them. It also buffers a whole `iCCP` chunk before it inflates it, which is counted while the header is read.
 fn png_header(bytes: &[u8]) -> Result<PngHeader, String> {
     let input = bytes.len() as u64;
     let scan = header::png_scan(bytes);
-    let exif = 2 * scan.exif_bytes;
-    let Some(bound) = profile_bound(input, exif + scan.iccp_bytes) else {
+    if scan.exif_bytes > MAX_EXIF_BYTES {
+        return Err(format!("EXIF block too large: {} bytes, limit {} KiB", scan.exif_bytes, MAX_EXIF_BYTES >> 10));
+    }
+    let Some(bound) = profile_bound(input, scan.iccp_bytes) else {
         // The input and what the decoder keeps of it leave no room: the peak is over the cap whatever the pixels are, so
         // the caller refuses it as too large. The size is read from the IHDR chunk, not through a decoder, which would
         // inflate the profile it was refused room for.
@@ -233,9 +246,9 @@ fn png_header(bytes: &[u8]) -> Result<PngHeader, String> {
     // which grow with the width.
     let scratch = u64::from(width) * u64::from(height) * output + 4 * u64::from(width) * output;
     let pixels = u64::from(width) * u64::from(height);
-    // The encoded input is held through the decode too, so it is part of the peak, and so is the EXIF the decoder keeps.
+    // The encoded input is held through the decode too, so it is part of the peak.
     // The profile is not: the pixel pass skips it, and the reader that held it is dropped before that pass opens.
-    let peak = DECODER_STATE_BYTES + scratch + pixels * (output + RGBA_BYTES) + input + exif;
+    let peak = DECODER_STATE_BYTES + scratch + pixels * (output + RGBA_BYTES) + input;
     Ok(PngHeader { plan: Plan { width, height, input, peak }, non_srgb: header::png_non_srgb(info) })
 }
 

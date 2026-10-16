@@ -99,9 +99,10 @@ pub(crate) struct PngScan {
     pub(crate) iccp: bool,
     /// The summed lengths of every `iCCP` chunk: the decoder buffers each whole before it inflates the profile.
     pub(crate) iccp_bytes: u64,
-    /// The summed lengths of every `eXIf` chunk. The locked `png` (0.18) buffers the chunk and keeps a clone of it as the
-    /// image's EXIF metadata, so it holds each twice, and has no setting to skip it. Every other chunk it keeps is a fixed
-    /// small size (`PLTE`, `tRNS`, `sBIT`, `bKGD`, `pHYs`, `gAMA`, `cHRM`, `sRGB`, `cICP`, `mDCV`, `cLLI`, the animation
+    /// The summed lengths of every `eXIf` chunk. The locked `png` (0.18) buffers the chunk, grows that buffer by doubling
+    /// and keeps its capacity, and stores a clone as the image's EXIF metadata; it has no setting to skip it. How much that
+    /// holds depends on the `png` release, so a measure does not model it: an image whose EXIF is over [`crate::image::MAX_EXIF_BYTES`]
+    /// is refused, and a fixed allowance covers the rest. Every other chunk it keeps is a fixed small size (`PLTE`, `tRNS`, `sBIT`, `bKGD`, `pHYs`, `gAMA`, `cHRM`, `sRGB`, `cICP`, `mDCV`, `cLLI`, the animation
     /// chunks) or is skipped (`tEXt`, `zTXt`, `iTXt` by setting, and every unknown ancillary chunk).
     pub(crate) exif_bytes: u64,
 }

@@ -388,28 +388,131 @@ fn with_exif(png: &[u8], len: usize) -> Vec<u8> {
 }
 
 #[test]
-fn an_exif_chunk_the_decoder_keeps_twice_is_inside_the_budget_or_refused() {
-    // The locked `png` keeps an `eXIf` chunk twice (its chunk buffer and the clone it stores) and cannot skip it. A
-    // 3072 x 3072 grey image is 9.4 MP: 47 MB of pixels and scratch, and 8 MiB of EXIF twice is 16 MiB more, over the
-    // 64 MiB cap with the input. The prediction counts the EXIF, so the image is refused as too large, and what was held
-    // while the header was read (the caller's buffer included) stayed inside the cap.
-    let png = with_exif(&png_grey(3072, 3072), 8 << 20);
-    let predicted = predicted_peak(&png).unwrap();
-    assert!(predicted > 64 << 20, "the prediction left out the EXIF: {predicted}");
-    let (result, peak) = peak_of(|| decode(&png, ContentHash::of(&png), FIELD));
-    let error = result.unwrap_err();
-    assert_eq!(error.code, ErrorCode::Invalid);
-    assert!(error.message.starts_with("The image is 3,072 × 3,072"), "{}", error.message);
-    let held = peak + png.len();
-    assert!(held <= 64 << 20, "the refusal held {held} bytes with its input");
+fn exif_at_the_cap_is_accepted_inside_the_budget_and_over_it_is_refused() {
+    // The decoder's own buffers for EXIF are its business, so the measure caps the input at 16 KiB and allows a fixed
+    // amount for a block at the cap, inside the decoder's state allowance.
+    let base = png_grey(96, 64);
+    let at_cap = with_exif(&base, 16 << 10);
+    let predicted = predicted_peak(&at_cap).unwrap();
+    let (result, peak) = peak_of(|| decode(&at_cap, ContentHash::of(&at_cap), FIELD));
+    result.unwrap();
+    let held = (peak + at_cap.len()) as u64;
+    assert!(held <= predicted, "the decode and its input held {held} bytes, the header predicted {predicted}");
+    for len in [(16 << 10) + 1, 8 << 20, (4 << 20) + 1] {
+        let png = with_exif(&base, len);
+        let (result, peak) = peak_of(|| decode(&png, ContentHash::of(&png), FIELD));
+        let error = result.unwrap_err();
+        assert_eq!(error.code, ErrorCode::Invalid);
+        assert!(
+            error.message.contains(&format!("EXIF block too large: {len} bytes, limit 16 KiB")),
+            "{}",
+            error.message
+        );
+        assert!(peak < 1 << 20, "a refused EXIF block allocated {peak} bytes");
+    }
+    // The cap is on the sum of the blocks, not on each.
+    let two = with_exif(&with_exif(&base, 10 << 10), 10 << 10);
+    assert!(decode(&two, ContentHash::of(&two), FIELD).unwrap_err().message.contains("20480 bytes"));
+}
+
+/// Deflate (fixed Huffman) of `length` zero bytes: one literal, then matches of up to 258 bytes at distance 1.
+fn deflate_zeros(length: usize) -> Vec<u8> {
+    const BASE: [usize; 29] = [
+        3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227,
+        258,
+    ];
+    const EXTRA: [u32; 29] = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0];
+    let (mut out, mut acc, mut used) = (Vec::new(), 0_u64, 0_u32);
+    let mut bits = |value: u32, count: u32, msb_first: bool, out: &mut Vec<u8>| {
+        for i in 0..count {
+            let bit = if msb_first { (value >> (count - 1 - i)) & 1 } else { (value >> i) & 1 };
+            acc |= u64::from(bit) << used;
+            used += 1;
+            if used == 8 {
+                out.push(u8::try_from(acc).unwrap());
+                acc = 0;
+                used = 0;
+            }
+        }
+    };
+    bits(1, 1, false, &mut out); // final block
+    bits(1, 2, false, &mut out); // fixed Huffman
+    bits(0b0011_0000, 8, true, &mut out); // the literal 0
+    let mut left = length - 1;
+    while left > 0 {
+        let run = if left >= 3 { left.min(258) } else { 0 };
+        if run == 0 {
+            for _ in 0..left {
+                bits(0b0011_0000, 8, true, &mut out);
+            }
+            break;
+        }
+        let index = BASE.iter().rposition(|&base| base <= run).unwrap();
+        let code = 257 + u32::try_from(index).unwrap();
+        if code < 280 {
+            bits(code - 256, 7, true, &mut out);
+        } else {
+            bits(0xC0 + code - 280, 8, true, &mut out);
+        }
+        bits(u32::try_from(run - BASE[index]).unwrap(), EXTRA[index], false, &mut out);
+        bits(0, 5, true, &mut out); // distance 1
+        left -= run;
+    }
+    bits(0, 7, true, &mut out); // end of block
+    if used > 0 {
+        out.push(u8::try_from(acc).unwrap());
+    }
+    out
+}
+
+/// An Adam7 interlaced 8-bit grey PNG of zeros, `width` by `height`.
+fn interlaced_grey_zeros(width: u32, height: u32) -> Vec<u8> {
+    let passes = [(0, 0, 8, 8), (4, 0, 8, 8), (0, 4, 4, 8), (2, 0, 4, 4), (0, 2, 2, 4), (1, 0, 2, 2), (0, 1, 1, 2)];
+    let raw: usize = passes
+        .iter()
+        .map(|&(x0, y0, dx, dy)| {
+            let (w, h) =
+                (width.saturating_sub(x0).div_ceil(dx) as usize, height.saturating_sub(y0).div_ceil(dy) as usize);
+            if w == 0 || h == 0 { 0 } else { h * (1 + w) }
+        })
+        .sum();
+    // zlib: header, the deflate stream, and the Adler-32 of the raw bytes (all zero but one filter byte per row, also 0).
+    let (mut a, mut b) = (1_u32, 0_u32);
+    for _ in 0..raw {
+        b = (b + a) % 65_521; // a stays 1: every byte is 0
+    }
+    a %= 65_521;
+    let mut zlib = vec![0x78, 0x01];
+    zlib.extend(deflate_zeros(raw));
+    zlib.extend(((b << 16) | a).to_be_bytes());
+    let chunk = |kind: &[u8; 4], data: &[u8]| {
+        let mut out = u32::try_from(data.len()).unwrap().to_be_bytes().to_vec();
+        out.extend(kind);
+        out.extend(data);
+        out.extend(crc32(&[kind.as_slice(), data].concat()).to_be_bytes());
+        out
+    };
+    let mut ihdr = width.to_be_bytes().to_vec();
+    ihdr.extend(height.to_be_bytes());
+    ihdr.extend([8, 0, 0, 0, 1]);
+    let mut png = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    png.extend(chunk(b"IHDR", &ihdr));
+    png.extend(chunk(b"IDAT", &zlib));
+    png.extend(chunk(b"IEND", &[]));
+    png
 }
 
 #[test]
-fn a_small_exif_chunk_is_counted_and_the_image_still_decodes() {
-    let png = with_exif(&png_grey(96, 64), 100_000);
+fn an_interlaced_png_near_the_size_limit_stays_inside_the_budget() {
+    // Adam7 decodes pass by pass into the frame buffer, with the rows of each pass besides. 3200 x 3200 grey is 10.2 MP:
+    // 61 MB planned, the largest this budget admits near the limit. The measured peak, with the caller's buffer, must be
+    // inside both the cap and the header's prediction.
+    let png = interlaced_grey_zeros(3200, 3200);
     let predicted = predicted_peak(&png).unwrap();
+    assert!(predicted <= 64 << 20, "the fixture should be within the cap, predicted {predicted}");
     let (result, peak) = peak_of(|| decode(&png, ContentHash::of(&png), FIELD));
-    result.unwrap();
+    let image = result.unwrap();
+    assert_eq!((image.width, image.height), (3200, 3200));
     let held = (peak + png.len()) as u64;
-    assert!(held <= predicted, "the decode and its input held {held} bytes, the header predicted {predicted}");
+    assert!(held <= predicted && held <= 64 << 20, "held {held} bytes, predicted {predicted}");
 }
