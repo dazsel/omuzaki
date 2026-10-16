@@ -1,6 +1,9 @@
 //! The settings this crate registers (`output.window`) are well formed, and what they keep survives the TOML files the
 //! settings store writes (`docs/design/settings.md`).
 
+// Integration-test helpers may panic: a panic is a clear test failure.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use omuzaki_settings_api::setting::Setting as _;
 use omuzaki_stream::ops::window::{Open, OutputWindow};
 use serde_json::{Value, json};
