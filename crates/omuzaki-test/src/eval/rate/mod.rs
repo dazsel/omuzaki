@@ -154,7 +154,7 @@ fn key_of(rating: &Rating) -> (String, String, String) {
     (rating.item.clone(), rating.question.clone(), rating.rater.clone())
 }
 
-/// Appends a rating as one line, with one `write` of the whole line to a file in append mode.
+/// Appends a rating as one line, with one `write` of the whole line at the end of the locked file.
 ///
 /// # Errors
 /// [`RateError::Io`] when the file cannot be written.
@@ -162,8 +162,8 @@ pub fn append(path: &Path, rating: &Rating) -> Result<(), RateError> {
     append_all(path, std::slice::from_ref(rating))
 }
 
-/// Appends `ratings` in one write: the lines are put together first and written with a single call to a file opened for
-/// appending, so a result's answers reach the file together or, when the write fails, not at all as far as a reader can
+/// Appends `ratings` in one write: the lines are put together first and written with a single call at the end of a file
+/// opened for reading and writing (not in append mode, so a torn last line can be cut), so a result's answers reach the file together or, when the write fails, not at all as far as a reader can
 /// tell: a partial write leaves a last line that is not a whole rating, which [`read`] drops and the next call to this
 /// function cuts before it writes. An answer that is already in the file (the same rater, item and question) is not written
 /// again, so a batch that failed part-way can be sent again whole. The file is locked for the whole call (read, cut and
