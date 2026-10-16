@@ -6,7 +6,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::{changed, host, op_error, person_only, persist, put_back_camera, retained};
+use super::{Held, held, host, op_error, person_only, persist, put_back_camera, settled};
 use crate::perform::input::{InputCamera, InputError, SourceKind};
 
 /// Bind the camera the webcam source reads, by an id from `input.state`; `null` unbinds it. A running preview moves to
@@ -42,8 +42,7 @@ impl Op for BindCamera {
         let host = host(ctx)?;
         // A resume needs a webcam source and a camera to start: refused before anything changes.
         if self.resume_preview {
-            let state = host.state();
-            if state.source != SourceKind::Webcam {
+            if host.state().source != SourceKind::Webcam {
                 return Err(op_error(InputError::NothingToCapture));
             }
             if self.camera.is_none() {
@@ -51,48 +50,63 @@ impl Op for BindCamera {
             }
         }
         // Checked first, so a camera that is not there is refused before anything changes.
-        let before = host.bind_camera(self.camera.clone(), Mode::DryRun).map_err(op_error)?;
-        let was_on = host.state().preview.is_on();
+        host.bind_camera(self.camera.clone(), Mode::DryRun).map_err(op_error)?;
+        let first = held(host);
         let mut problems = Vec::new();
         if !ctx.dry_run {
-            host.bind_camera(self.camera.clone(), Mode::Apply).map_err(op_error)?;
-            if self.resume_preview
+            if let Err(error) = host.bind_camera(self.camera.clone(), Mode::Apply) {
+                // The host may have stopped the preview on the way (the old camera did not restart either).
+                if held(host) == first {
+                    return Err(op_error(error));
+                }
+                problems.push(format!("{error}; the old camera did not start again, so the preview is stopped"));
+            } else if self.resume_preview
                 && let Err(error) = host.preview(true, Mode::Apply)
             {
-                match put_back_camera(host, before.as_ref(), was_on) {
+                match put_back_camera(host, first.camera.as_ref(), first.preview) {
                     Ok(()) => return Err(op_error(error)),
                     Err(left) => problems.push(format!("the preview did not start ({error}) and the change could not be taken back: {left}")),
                 }
             }
         }
-        let saved = match persist::<InputCamera>(ctx, &self.camera) {
-            Ok(saved) => saved,
-            Err(error) => {
-                // The store refused: put the host back, so what runs is what is saved.
-                match (ctx.dry_run, put_back_camera(host, before.as_ref(), was_on)) {
+        // Save only a change that stands: what is saved is what runs.
+        let mut saved = false;
+        if problems.is_empty() {
+            match persist::<InputCamera>(ctx, &self.camera) {
+                Ok(done) => saved = done,
+                Err(error) => match (ctx.dry_run, put_back_camera(host, first.camera.as_ref(), first.preview)) {
                     (true, _) | (false, Ok(())) => return Err(error),
                     (false, Err(left)) => {
                         problems.push(format!("{} and the change could not be taken back: {left}", error.message));
-                        false
                     }
-                }
+                },
             }
+        }
+        // What the host holds now is what the answer and the undo describe, whatever was asked for.
+        let after = if ctx.dry_run {
+            Held { camera: self.camera.clone(), preview: first.preview && self.camera.is_some(), ..first.clone() }
+        } else {
+            held(host)
         };
-        let mut answer = json!({ "camera": self.camera, "before": before, "saved": saved, "dry_run": ctx.dry_run });
-        if !problems.is_empty() {
-            answer["retained"] = retained(&problems);
-        }
         let name = |camera: &Option<CameraId>| camera.as_ref().map_or_else(|| "none".to_owned(), |c| c.0.clone());
-        let summary = format!("camera {} to {}", name(&before), name(&self.camera));
-        let mut plan = changed(Self::meta().name, "camera", before, &self.camera, summary, answer)?;
-        // Unbinding the camera a running preview reads stops the preview: undoing it brings the preview back too.
-        if was_on
-            && self.camera.is_none()
-            && let Some(effect) = plan.effect.as_mut()
-        {
-            effect.undo.args["resume_preview"] = json!(true);
+        let mut answer = json!({
+            "camera": after.camera, "before": first.camera, "saved": saved, "dry_run": ctx.dry_run,
+        });
+        if after.camera != self.camera {
+            answer["requested"] = json!(self.camera);
         }
-        Ok(plan)
+        if !problems.is_empty() {
+            answer["retained"] = json!(problems);
+        }
+        let summary = format!("camera {} to {}", name(&first.camera), name(&after.camera));
+        settled(
+            Self::meta().name,
+            "camera",
+            (json!(first.camera), json!(after.camera)),
+            (&first, &after),
+            summary,
+            answer,
+        )
     }
 }
 

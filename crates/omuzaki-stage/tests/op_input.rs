@@ -390,3 +390,47 @@ fn a_dry_run_of_a_resume_is_refused_as_the_real_run_would() {
     assert_eq!(error.unwrap_err().code, ErrorCode::Conflict);
     assert_eq!(rig.state()["camera"], "a");
 }
+
+#[test]
+fn a_partial_rollback_describes_the_state_it_left_not_the_one_asked_for() {
+    let rig = Rig::new(true);
+    rig.run("input.select", json!({ "source": "webcam" })).unwrap();
+    rig.run("input.bind_camera", json!({ "camera": "a" })).unwrap();
+    rig.run("input.preview", json!({ "on": true })).unwrap();
+    rig.settings.as_ref().unwrap().refuse_writes(true);
+    rig.log.refuse("a"); // the camera will not open again once it is stopped
+
+    // Choosing the life layer stops the preview; the save is refused; the source goes back, but the preview cannot.
+    let plan =
+        rig.run("input.select", json!({ "source": "life_layer" })).expect("what is left is reported, not hidden");
+    let answer = plan.output.unwrap();
+    assert_eq!(answer["source"], "webcam", "the source the host holds");
+    assert_eq!(answer["requested"], "life_layer");
+    assert_eq!(answer["saved"], false);
+    assert!(answer["retained"][0].as_str().unwrap().contains("could not be taken back"), "{answer}");
+    let state = rig.state();
+    assert_eq!((&state["source"], &state["preview"]), (&json!("webcam"), &json!({ "state": "off" })));
+    let effect = plan.effect.expect("the stopped preview is recorded");
+    assert_eq!(effect.undo.op, "input.preview");
+    assert_eq!(effect.undo.args, json!({ "on": true }));
+    assert_eq!(effect.redo.args, json!({ "on": false }));
+}
+
+#[test]
+fn a_camera_that_will_not_open_and_an_old_one_that_will_not_restart_stop_the_preview_visibly() {
+    let rig = Rig::new(false);
+    rig.run("input.select", json!({ "source": "webcam" })).unwrap();
+    rig.run("input.bind_camera", json!({ "camera": "a" })).unwrap();
+    rig.run("input.preview", json!({ "on": true })).unwrap();
+    rig.log.refuse("a");
+    rig.log.refuse("b");
+
+    let plan = rig.run("input.bind_camera", json!({ "camera": "b" })).expect("the stopped preview is reported");
+    let answer = plan.output.unwrap();
+    assert_eq!(answer["camera"], "a", "the binding did not move");
+    assert_eq!(answer["requested"], "b");
+    assert!(answer["retained"][0].as_str().unwrap().contains("preview is stopped"), "{answer}");
+    assert_eq!(rig.state()["preview"], json!({ "state": "off" }), "capture stopped");
+    let effect = plan.effect.expect("the preview change is recorded");
+    assert_eq!((effect.undo.op.as_str(), &effect.undo.args), ("input.preview", &json!({ "on": true })));
+}

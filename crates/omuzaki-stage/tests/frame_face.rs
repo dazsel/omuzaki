@@ -1176,9 +1176,16 @@ fn a_live_stage_installs_the_expressions_of_the_character_a_variant_swap_brings(
         let now = omuzaki_core::time::Seconds((frame as f64 + 0.5) / f64::from(omuzaki_stage::perform::STEP_HZ));
         live.frame(&mut renderer, now).expect("frame");
         if live.stage().revision() != revision {
+            assert_eq!(
+                live.handle().expressions(),
+                omuzaki_face_api::ExpressionSet::starter(),
+                "frame() installs nothing"
+            );
             swapped_at = Some(frame);
-            // The next frame refreshes the triggers' expressions (and the performer takes the request).
-            live.frame(&mut renderer, omuzaki_core::time::Seconds((frame as f64 + 1.5) / 60.0)).expect("frame");
+            // The app notices at its leisure and installs the face's expressions again, outside the frame.
+            assert!(live.expressions_stale());
+            assert!(live.refresh_expressions().expect("the request is taken"));
+            assert!(!live.expressions_stale());
             break;
         }
     }

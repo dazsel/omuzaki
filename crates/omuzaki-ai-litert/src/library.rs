@@ -16,29 +16,26 @@ use crate::builds::{Archive, Build, OMZ_LITERT_ABI, SCHEMA_VERSION, TFLITE_VERSI
 pub const MAX_VERSION_BYTES: usize = 64;
 
 /// `TfLiteModel`, `TfLiteInterpreterOptions`, `TfLiteInterpreter`, `TfLiteTensor` and the delegate: opaque here.
-type Opaque = c_void;
+pub(crate) type Opaque = c_void;
 /// `TfLiteStatus` and `TfLiteType` are C enums, passed as `int`.
-type Status = c_int;
+pub(crate) type Status = c_int;
 
 /// Declares the table: one field per C function, resolved by its own name.
 macro_rules! api {
     ($($name:ident: fn($($arg:ty),*) $(-> $ret:ty)?;)*) => {
-        /// The library's functions (design §3.2), each resolved and non-null. The library stays loaded while this
-        /// lives; a process keeps its one for good.
+        /// The library's functions (design §3.2), each resolved and non-null. They point into a library that stays
+        /// loaded for the life of the process ([`open`] never unloads one it hands out).
         #[derive(Debug)]
         #[allow(non_snake_case)] // the C names, so a field is found by grepping LiteRT's headers
-        #[expect(dead_code, reason = "the session (#1750) calls the rest; resolving all of them now refuses a library \
-                                      that lacks one at load")]
         pub(crate) struct Api {
-            $($name: unsafe extern "C" fn($($arg),*) $(-> $ret)?,)*
-            library: Library,
+            $(pub(crate) $name: unsafe extern "C" fn($($arg),*) $(-> $ret)?,)*
         }
 
         impl Api {
             #[allow(non_snake_case)]
-            fn resolve(library: Library) -> Result<Self, LoadError> {
-                $(let $name = symbol(&library, stringify!($name))?;)*
-                Ok(Self { $($name,)* library })
+            fn resolve(library: &Library) -> Result<Self, LoadError> {
+                $(let $name = symbol(library, stringify!($name))?;)*
+                Ok(Self { $($name,)* })
             }
         }
     };
@@ -91,7 +88,7 @@ static PROCESS: LoadOnce<&'static Api, LoadError> = LoadOnce::new();
 pub struct Loaded {
     /// The build whose library was loaded.
     pub build: &'static Build,
-    /// Its function table, kept by the session (#1750).
+    /// Its function table, which every session keeps.
     pub(crate) api: &'static Api,
 }
 
@@ -170,26 +167,29 @@ fn open(path: &Path) -> Result<&'static Api, LoadError> {
     // LiteRT's own static initialisers.
     let library =
         unsafe { Library::new(path) }.map_err(|e| LoadError::Runtime(format!("loading {}: {e}", path.display())))?;
-    let api = Api::resolve(library)?;
+    let api = Api::resolve(&library)?;
     // SAFETY: the three functions take nothing; `TfLiteVersion` returns a static string or null, read by `c_text`
     // only up to its NUL and within `MAX_VERSION_BYTES`.
-    let (version, schema, abi) =
-        unsafe { (c_text((api.TfLiteVersion)()), (api.TfLiteSchemaVersion)(), (api.omz_litert_abi)()) };
+    let (version, schema, abi) = unsafe {
+        (c_text((api.TfLiteVersion)(), MAX_VERSION_BYTES), (api.TfLiteSchemaVersion)(), (api.omz_litert_abi)())
+    };
     check_library(version.as_deref(), schema, abi)?;
+    // The table points into the library, and sessions keep the table for good, so the library is never unloaded.
+    Box::leak(Box::new(library));
     Ok(Box::leak(Box::new(api)))
 }
 
-/// The bytes of a C string before its NUL, or `None` for null or no NUL within [`MAX_VERSION_BYTES`].
+/// The bytes of a C string before its NUL, or `None` for null or no NUL within `cap` bytes.
 ///
 /// # Safety
-/// `text` is null or points to a NUL-terminated string.
-unsafe fn c_text(text: *const c_char) -> Option<Vec<u8>> {
+/// `text` is null, or readable up to its NUL or for `cap` bytes, whichever comes first.
+pub(crate) unsafe fn c_text(text: *const c_char, cap: usize) -> Option<Vec<u8>> {
     if text.is_null() {
         return None;
     }
     let mut bytes = Vec::new();
-    for i in 0..MAX_VERSION_BYTES {
-        // SAFETY: the string reaches at least to its NUL, and the loop stops there.
+    for i in 0..cap {
+        // SAFETY: the caller's contract: readable to the NUL or the cap, and the loop stops at either.
         match unsafe { text.add(i).cast::<u8>().read() } {
             0 => return Some(bytes),
             byte => bytes.push(byte),
@@ -245,12 +245,12 @@ mod tests {
 
     #[test]
     fn a_version_string_is_read_to_its_nul_and_only_within_the_cap() {
-        let read = |text: &[u8]| unsafe { c_text(text.as_ptr().cast()) };
+        let read = |text: &[u8]| unsafe { c_text(text.as_ptr().cast(), MAX_VERSION_BYTES) };
         assert_eq!(read(b"2.22.0\0junk"), Some(b"2.22.0".to_vec()));
         assert_eq!(read(b"\0"), Some(Vec::new()));
         let long = [b'x'; MAX_VERSION_BYTES + 1];
         assert_eq!(read(&long), None, "no NUL within the cap");
-        assert_eq!(unsafe { c_text(std::ptr::null()) }, None);
+        assert_eq!(unsafe { c_text(std::ptr::null(), MAX_VERSION_BYTES) }, None);
     }
 
     const SHA_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";

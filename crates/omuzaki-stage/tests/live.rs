@@ -841,13 +841,45 @@ fn a_late_commit_of_a_replaced_scenes_work_is_ignored() {
     live.live().scenes().post(resolved(&def));
     live.frame();
     assert!(live.live().owed().is_empty());
-    // A's work finishes late and is committed: the renderer's ground is A's, which B does not want.
+    // A's work finishes late: the renderer now has A's ground, which B does not want, so the removal is owed, with no
+    // other scene posted.
     live.inner.as_mut().unwrap().stage_mut().commit_scene(&late);
-    // Scene C wants the ground again: the renderer is still owed it, because A's commit was not recorded.
+    let removal = live.live().owed();
+    assert_eq!(removal.ground.map(|ground| ground.kind), Some(omuzaki_stage_api::GroundKind::None), "{removal:?}");
+    live.inner.as_mut().unwrap().stage_mut().commit_scene(&removal);
+    assert!(live.live().owed().is_empty(), "the ground is gone again");
+    // Scene C wants the ground back: owed again.
     def.scene.ground.kind = omuzaki_stage_api::GroundKind::Shadow;
     live.live().scenes().post(resolved(&def));
     live.frame();
-    assert!(live.live().owed().ground.is_some(), "a stale commit must not hide the debt");
+    assert!(live.live().owed().ground.is_some());
+}
+
+#[test]
+fn an_expression_change_in_the_trace_costs_the_frame_nothing() {
+    let mut live =
+        Live::new(Quiet(Recorder::new(false)), vec![("cam", turning(30.0, sweep))], Quality::live(), Painter::None);
+    live.go_live("cam");
+    live.frames(120);
+    let handle = live.live().handle().clone();
+    // The app changes the expressions and a binding from its own thread, off the frame; the frame thread applies them.
+    handle.set_expressions(ExpressionSet::starter(), omuzaki_anim_api::ChannelBuf::NEUTRAL).unwrap();
+    let binding = TriggerBinding {
+        key: "F1".to_owned(),
+        expression: omuzaki_face_api::ExpressionId::new("happy").unwrap(),
+        mode: omuzaki_anim::TriggerMode::Toggle,
+    };
+    handle.bind_trigger(binding).unwrap();
+    handle.press("F1", true).unwrap();
+    let (result, allocations) = allocations_in(|| {
+        for _ in 0..600 {
+            live.try_frame()?;
+        }
+        Ok::<(), StageError>(())
+    });
+    result.unwrap();
+    assert_eq!(allocations, 0, "600 frames across an expression change and a press allocated {allocations} times");
+    assert!(handle.triggers()[0].active, "and the press took effect");
 }
 
 #[cfg(feature = "wgpu")]
