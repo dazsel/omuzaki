@@ -9,7 +9,7 @@ use std::sync::Arc;
 use egui::{Align, CentralPanel, Frame, Layout, Margin, Panel, RichText, ScrollArea, Stroke, Ui};
 
 use super::layout::raised;
-use super::story::{self, Story};
+use super::story::{self, Group, Story};
 use super::text::{tr, translate};
 use crate::ds::icons;
 use crate::ds::strings::{English, Msg, PSEUDO_LOCALE, Pseudo};
@@ -58,6 +58,22 @@ impl Gallery {
     #[must_use]
     pub const fn with_pseudo(mut self, pseudo: bool) -> Self {
         self.pseudo = pseudo;
+        self
+    }
+
+    /// Only the stories of one group (`None`: every group), for a screenshot of one section; and of that group only
+    /// part `index` of `parts` (counted from 0, `None`: the whole group). The group's stories, in order, are cut into
+    /// `parts` runs of as near an equal count as possible, so a section too tall for one texture can be captured in
+    /// pieces.
+    #[must_use]
+    pub fn with_group(mut self, group: Option<Group>, part: Option<(usize, usize)>) -> Self {
+        if let Some(group) = group {
+            self.stories.retain(|story| story.group == group);
+            if let Some((index, parts)) = part {
+                let count = self.stories.len();
+                self.stories = self.stories[count * index / parts..count * (index + 1) / parts].to_vec();
+            }
+        }
         self
     }
 
