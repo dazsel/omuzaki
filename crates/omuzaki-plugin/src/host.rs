@@ -295,13 +295,16 @@ impl WasmPlugins {
     /// Starts `id` for `by`: opens its session, starts its worker and runs `init` there, off the lock.
     fn start(&self, id: &PluginId, by: &Actor, why: Start) -> Result<PluginInfo, PluginError> {
         let mut plugins = self.lock();
-        // A start already under way when this one arrives is the one it waits for, and its outcome is the answer.
-        let joined = plugins.get(id).filter(|e| e.state == PluginState::Loading).map(|e| e.attempt);
+        // A start under way when this one arrives, or begun while it waits, is the one it waits for: the outcome of
+        // the last start to settle is the answer, and no further attempt is made.
+        let arrived = plugins.get(id).map(|e| (e.attempt, e.state == PluginState::Loading));
         while plugins.get(id).is_some_and(|e| e.busy) {
             plugins = self.idle.wait(plugins).unwrap_or_else(PoisonError::into_inner);
         }
         let entry = plugins.get_mut(id).ok_or(PluginError::NotFound)?;
-        if joined == Some(entry.attempt) {
+        if let Some((attempt, under_way)) = arrived
+            && (under_way || entry.attempt > attempt)
+        {
             return entry.settled.clone().map(|()| info_of(id, entry));
         }
         if let Some(answer) = may_start(id, entry, why) {
