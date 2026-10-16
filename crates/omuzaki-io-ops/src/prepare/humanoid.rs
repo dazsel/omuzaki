@@ -3,6 +3,9 @@
 //! FBX carries no humanoid data, and glTFs and VRMs often have none or a wrong one, so every importer needs this. The
 //! pipeline is pure and deterministic (candidates are visited in node order):
 //!
+//! Joints are first grouped by connected skeleton (see [`auto_map`]; a non-joint node between joints does not split one),
+//! and each skeleton goes through the steps below on its own.
+//!
 //! 1. **Names.** A node's name is split into lower-case words (camel case, digits and `_ . : -` separate them), the
 //!    known prefixes are stripped and the side is read from `Left`/`Right`/`L`/`R` at either end. The remaining key
 //!    is looked up in the table of the skeleton's [`Convention`], or else among the VRM bone names themselves and a few
@@ -35,7 +38,8 @@ pub struct HumanoidProposal {
     pub humanoid: Humanoid,
     /// How each bone was found, in bone table order.
     pub matches: Vec<BoneMatch>,
-    /// Warnings about the proposal (`humanoid.inferred`, `humanoid.ambiguous`, `humanoid.sides_overlap`).
+    /// Warnings about the proposal (`humanoid.inferred`, `humanoid.ambiguous`, `humanoid.sides_overlap`) and the info
+    /// `humanoid.other_skeleton` for each skeleton that was not chosen.
     pub report: Report,
 }
 
@@ -331,12 +335,96 @@ fn want(found: &Found, bone: HumanBoneName) -> Want {
 
 type Found = BTreeMap<HumanBoneName, (usize, MatchHow)>;
 
+/// Every node once, parents before children and siblings in order, each with the parent it was reached through. Nodes
+/// that no root reaches (a cycle, which a valid scene never has) are left out.
+fn hierarchy_order(scene: &IoScene, parent: &[Option<usize>]) -> Vec<(usize, Option<usize>)> {
+    let mut order = Vec::with_capacity(scene.nodes.len());
+    let mut seen = vec![false; scene.nodes.len()];
+    let mut stack: Vec<(usize, Option<usize>)> =
+        parent.iter().enumerate().rev().filter(|(_, p)| p.is_none()).map(|(i, _)| (i, None)).collect();
+    while let Some((n, via)) = stack.pop() {
+        if !seen.get(n).copied().unwrap_or(true) {
+            seen[n] = true;
+            order.push((n, via));
+            let kids = scene.nodes.get(n).map(|nd| nd.children.iter().map(|c| c.index()));
+            stack.extend(kids.into_iter().flatten().rev().map(|c| (c, Some(n))));
+        }
+    }
+    order
+}
+
+/// The rest position of every node, from one pass over `order`: each node's world matrix is its parent's times its
+/// own local one, so the work is linear in the node count. Also returns the number of matrix multiplications done.
+fn world_positions(scene: &IoScene, order: &[(usize, Option<usize>)]) -> (Vec<Vec3>, usize) {
+    let mut world = vec![Mat4::IDENTITY; scene.nodes.len()];
+    let mut multiplies = 0;
+    for &(n, via) in order {
+        let Some(nd) = scene.nodes.get(n) else { continue };
+        let t = &nd.transform;
+        let local = Mat4::from_scale_rotation_translation(t.scale, t.rotation, t.translation);
+        let m = match via.and_then(|p| world.get(p)) {
+            Some(&up) => {
+                multiplies += 1;
+                up * local
+            }
+            None => local,
+        };
+        world[n] = m;
+    }
+    (world.iter().map(|m| m.transform_point3(Vec3::ZERO)).collect(), multiplies)
+}
+
+/// The candidate hierarchy: each candidate's nearest candidate ancestor (so non-joint nodes between joints are
+/// transparent), its candidate children in scene order, and the skeletons, which are the trees of that hierarchy, each
+/// as its sorted candidates and ordered by lowest node.
+struct CandidateTree {
+    parent: Vec<Option<usize>>,
+    kids: Vec<Vec<usize>>,
+    skeletons: Vec<Vec<usize>>,
+}
+
+fn candidate_tree(order: &[(usize, Option<usize>)], is_cand: &[bool]) -> CandidateTree {
+    let n = is_cand.len();
+    let mut tree = CandidateTree { parent: vec![None; n], kids: vec![Vec::new(); n], skeletons: Vec::new() };
+    // Per node: the nearest candidate at or above it, and the skeleton that candidate belongs to.
+    let (mut nearest, mut skeleton_of) = (vec![None::<usize>; n], vec![0usize; n]);
+    for &(v, via) in order {
+        let above = via.and_then(|p| nearest.get(p).copied().flatten());
+        if !is_cand.get(v).copied().unwrap_or(false) {
+            nearest[v] = above;
+            continue;
+        }
+        nearest[v] = Some(v);
+        tree.parent[v] = above;
+        skeleton_of[v] = if let Some(a) = above {
+            tree.kids[a].push(v);
+            skeleton_of[a]
+        } else {
+            tree.skeletons.push(Vec::new());
+            tree.skeletons.len() - 1
+        };
+        tree.skeletons[skeleton_of[v]].push(v);
+    }
+    for sk in &mut tree.skeletons {
+        sk.sort_unstable();
+    }
+    tree.skeletons.sort_unstable();
+    tree
+}
+
 /// The skinned skeleton with its parent table and rest positions.
 struct Cx<'a> {
     scene: &'a IoScene,
     parent: Vec<Option<usize>>,
     world: Vec<Vec3>,
+    /// The candidates being mapped, sorted: one skeleton at a time (see [`auto_map`]).
     cand: Vec<usize>,
+    /// Each candidate's nearest candidate ancestor.
+    cand_parent: Vec<Option<usize>>,
+    /// Each candidate's candidate children.
+    cand_kids: Vec<Vec<usize>>,
+    /// The disconnected skeletons of the candidates, each sorted, ordered by lowest node.
+    skeletons: Vec<Vec<usize>>,
 }
 
 impl<'a> Cx<'a> {
@@ -350,27 +438,17 @@ impl<'a> Cx<'a> {
                 }
             }
         }
-        let local = |i: usize| {
-            scene.nodes.get(i).map_or(Mat4::IDENTITY, |nd| {
-                let t = &nd.transform;
-                Mat4::from_scale_rotation_translation(t.scale, t.rotation, t.translation)
-            })
-        };
-        let world = (0..n)
-            .map(|i| {
-                let (mut m, mut cur) = (local(i), parent.get(i).copied().flatten());
-                for _ in 0..n {
-                    let Some(p) = cur else { break };
-                    m = local(p) * m;
-                    cur = parent.get(p).copied().flatten();
-                }
-                m.transform_point3(Vec3::ZERO)
-            })
-            .collect();
+        let order = hierarchy_order(scene, &parent);
+        let (world, _) = world_positions(scene, &order);
         let joints: BTreeSet<usize> =
             scene.skins.iter().flat_map(|s| s.joints.iter().map(|j| j.index())).filter(|&j| j < n).collect();
-        let cand = if scene.skins.is_empty() { (0..n).collect() } else { joints.into_iter().collect() };
-        Self { scene, parent, world, cand }
+        let cand: Vec<usize> = if scene.skins.is_empty() { (0..n).collect() } else { joints.into_iter().collect() };
+        let mut is_cand = vec![false; n];
+        for &c in &cand {
+            is_cand[c] = true;
+        }
+        let CandidateTree { parent: cand_parent, kids: cand_kids, skeletons } = candidate_tree(&order, &is_cand);
+        Self { scene, parent, world, cand, cand_parent, cand_kids, skeletons }
     }
 
     /// Whether `node` may play `bone` given `found`: its nearest humanoid ancestor must be the bone's parent.
@@ -422,8 +500,7 @@ impl<'a> Cx<'a> {
     }
 
     fn kids(&self, n: usize) -> Vec<usize> {
-        let kids = self.scene.nodes.get(n).map(|nd| nd.children.iter().map(|c| c.index()));
-        kids.into_iter().flatten().filter(|c| self.cand.binary_search(c).is_ok()).collect()
+        self.cand_kids.get(n).cloned().unwrap_or_default()
     }
 
     fn delta(&self, a: usize, b: usize) -> Vec3 {
@@ -467,13 +544,8 @@ impl<'a> Cx<'a> {
     }
 
     fn find_hips(&self) -> Option<usize> {
-        let mut stack: Vec<usize> = self
-            .cand
-            .iter()
-            .rev()
-            .copied()
-            .filter(|&c| self.parent.get(c).copied().flatten().is_none_or(|p| self.cand.binary_search(&p).is_err()))
-            .collect();
+        let mut stack: Vec<usize> =
+            self.cand.iter().rev().copied().filter(|&c| self.cand_parent.get(c).copied().flatten().is_none()).collect();
         let mut seen = BTreeSet::new();
         while let Some(n) = stack.pop() {
             if !seen.insert(n) {
@@ -501,10 +573,13 @@ impl<'a> Cx<'a> {
         put("hips".into(), hips);
         let kids = self.kids(hips);
         let downs: Vec<usize> = kids.iter().copied().filter(|&k| self.is_down(hips, k)).collect();
-        let ground = self.cand.iter().filter_map(|&c| self.world.get(c)).map(|p| p.y).fold(f32::INFINITY, f32::min);
         if let Some((l, r)) = self.extremes(&downs) {
             for (side, start) in [("left", l), ("right", r)] {
-                for (name, n) in self.leg(&self.chain(start), ground, self.y(hips)) {
+                let chain = self.chain(start);
+                // The floor is this leg's own lowest joint: a skirt, tail or hair bone hanging below the feet is no
+                // part of the chain and must not pull the ground down.
+                let ground = chain.iter().map(|&n| self.y(n)).fold(f32::INFINITY, f32::min);
+                for (name, n) in self.leg(&chain, ground, self.y(hips)) {
                     put(format!("{side}{name}"), n);
                 }
             }
@@ -558,7 +633,7 @@ impl<'a> Cx<'a> {
     }
 
     /// The leg bones down `chain`, told apart by rest positions rather than by place in the chain. The hip and knee
-    /// stand clear of the ground (`ground` is the lowest joint); the knee is the joint nearest halfway down to the foot,
+    /// stand clear of the ground (`ground` is the lowest joint of the chain); the knee is the joint nearest halfway down to the foot,
     /// and must lie between a quarter and three quarters of the way. The foot is the first joint near the ground and
     /// stands under the knee, and the toes point forward from it. Nothing is guessed past a joint the evidence does not
     /// find, so a missing lower leg or foot stays missing.
@@ -621,13 +696,65 @@ fn node_ix(n: usize) -> NodeIx {
 /// Proposes a humanoid for the skinned skeleton of `scene` (all nodes if it has no skin). `overrides` win and are
 /// checked like any other assignment.
 ///
+/// Joints are grouped by the connected skeleton they belong to (a non-joint node between two joints does not split
+/// one) and each skeleton is mapped on its own, so a second character or an unrelated skinned object cannot take
+/// bones from the first. The scene's humanoid is the skeleton with the overrides in it if there are any, else the one
+/// that maps the most required bones, ties going to the lowest hips node and then the lowest joint. Every other
+/// skeleton gets an info finding `humanoid.other_skeleton`; name a node of it in an override to map it instead.
+///
 /// # Errors
 /// [`MapError`] if a required bone has no node (`humanoid.required_missing`, whose hint names the override table) or
 /// an override is not usable (`humanoid.override_invalid`: the node is not in the scene, is already used, or breaks the
 /// parent rule), or an assigned node has a zero or negative scale (`humanoid.scale_invalid`).
 pub fn auto_map(scene: &IoScene, overrides: &BTreeMap<HumanBoneName, NodeIx>) -> Result<HumanoidProposal, MapError> {
-    let cx = Cx::new(scene);
-    let mut report = Report::new();
+    let mut cx = Cx::new(scene);
+    let mut skeletons = std::mem::take(&mut cx.skeletons);
+    if skeletons.is_empty() {
+        // Nothing to map: the required bones are all reported missing.
+        skeletons.push(Vec::new());
+    }
+    let pinned = |sk: &Vec<usize>| overrides.values().filter(|n| sk.binary_search(&n.index()).is_ok()).count();
+    let chosen_by_override = (0..skeletons.len())
+        .filter(|&i| skeletons.get(i).is_some_and(|sk| pinned(sk) > 0))
+        .max_by_key(|&i| (skeletons.get(i).map_or(0, pinned), std::cmp::Reverse(i)));
+    let mut best: Option<(usize, Outcome)> = None;
+    for (i, sk) in skeletons.iter().enumerate().filter(|(i, _)| chosen_by_override.is_none_or(|c| c == *i)) {
+        cx.cand.clone_from(sk);
+        let outcome = map_skeleton(&cx, overrides);
+        // Most required bones first, then the lowest hips node, then the lowest joint (skeletons are in that order).
+        let rank = |o: &Outcome| (std::cmp::Reverse(o.required_mapped), o.hips.unwrap_or(usize::MAX));
+        if best.as_ref().is_none_or(|(_, b)| rank(&outcome) < rank(b)) {
+            best = Some((i, outcome));
+        }
+    }
+    let Some((chosen, mut outcome)) = best else {
+        debug_assert!(false, "at least one skeleton is always mapped");
+        return Err(MapError { missing_required: Vec::new(), report: Report::new() });
+    };
+    let report = match &mut outcome.result {
+        Ok(p) => &mut p.report,
+        Err(e) => &mut e.report,
+    };
+    for (_, sk) in skeletons.iter().enumerate().filter(|(i, _)| *i != chosen) {
+        let Some(&root) = sk.first() else { continue };
+        let name = scene.nodes.get(root).map_or("", |nd| nd.name.as_str());
+        let msg = format!("another skeleton, rooted at node {root} ({name}) with {} joints, was not mapped", sk.len());
+        let hint = "name one of its nodes in the override table to map it instead";
+        report.push(Finding::info("humanoid.other_skeleton", msg).at("avatar/humanoid").hint(hint));
+    }
+    outcome.result
+}
+
+/// The result of mapping one skeleton, with what ranks it against the others.
+struct Outcome {
+    result: Result<HumanoidProposal, MapError>,
+    required_mapped: usize,
+    hips: Option<usize>,
+}
+
+/// Maps the skeleton in `cx.cand`.
+fn map_skeleton(cx: &Cx<'_>, overrides: &BTreeMap<HumanBoneName, NodeIx>) -> Outcome {
+    let (scene, mut report) = (cx.scene, Report::new());
     let reserved: BTreeSet<usize> = overrides.values().map(|n| n.index()).collect();
     let named = cx.named();
     let mut found = Found::new();
@@ -704,7 +831,7 @@ pub fn auto_map(scene: &IoScene, overrides: &BTreeMap<HumanBoneName, NodeIx>) ->
             report.push(invalid(bone, "the node is not under the bone's parent bone"));
         }
     }
-    check_found(scene, &cx, &found, &mut report);
+    check_found(scene, cx, &found, &mut report);
     let missing_required: Vec<HumanBoneName> =
         bones().filter(|b| b.spec().required && !found.contains_key(b)).collect();
     for bone in &missing_required {
@@ -712,13 +839,15 @@ pub fn auto_map(scene: &IoScene, overrides: &BTreeMap<HumanBoneName, NodeIx>) ->
         let hint = format!("add {bone} to the override table, mapping it to the node that plays it");
         report.push(Finding::error("humanoid.required_missing", msg).at(format!("avatar/humanoid/{bone}")).hint(hint));
     }
+    let required_mapped = bones().filter(|b| b.spec().required).count() - missing_required.len();
+    let hips = HumanBoneName::new("hips").ok().and_then(|h| found.get(&h)).map(|(n, _)| *n);
     if report.has_errors() {
-        return Err(MapError { missing_required, report });
+        return Outcome { result: Err(MapError { missing_required, report }), required_mapped, hips };
     }
     let matches: Vec<BoneMatch> =
         found.iter().map(|(&bone, &(n, how))| BoneMatch { bone, node: node_ix(n), how }).collect();
     let humanoid = Humanoid { bones: matches.iter().map(|m| (m.bone, m.node)).collect() };
-    Ok(HumanoidProposal { humanoid, matches, report })
+    Outcome { result: Ok(HumanoidProposal { humanoid, matches, report }), required_mapped, hips }
 }
 
 /// The findings about a finished assignment: nodes with a zero or negative scale, and sides that overlap.
@@ -753,4 +882,53 @@ fn check_found(scene: &IoScene, cx: &Cx<'_>, found: &Found, report: &mut Report)
 /// Sets `scene.avatar.humanoid` (creating the avatar if there is none).
 pub fn apply(scene: &mut IoScene, proposal: &HumanoidProposal) {
     scene.avatar.get_or_insert_with(Avatar::new).humanoid = proposal.humanoid.clone();
+}
+
+#[cfg(test)]
+mod tests {
+    use omuzaki_core::glam::{Quat, Vec3};
+    use omuzaki_io_api::{IoScene, Node};
+
+    use super::{hierarchy_order, world_positions};
+
+    fn parents(scene: &IoScene) -> Vec<Option<usize>> {
+        let mut parent = vec![None; scene.nodes.len()];
+        for (i, nd) in scene.nodes.iter().enumerate() {
+            for c in &nd.children {
+                parent[c.index()] = Some(i);
+            }
+        }
+        parent
+    }
+
+    #[test]
+    fn world_transforms_take_one_multiplication_per_node() {
+        // Listed leaf first so that index order is not hierarchy order.
+        let mut scene = IoScene::new();
+        let n = 10_000;
+        let ids: Vec<_> = (0..n).map(|_| scene.add_node(Node::new("j").at(Vec3::Y))).collect();
+        for w in ids.windows(2) {
+            scene.attach(w[1], w[0]);
+        }
+        scene.roots.push(ids[n - 1]);
+        let order = hierarchy_order(&scene, &parents(&scene));
+        let (world, multiplies) = world_positions(&scene, &order);
+        assert_eq!(multiplies, n - 1, "one per node that has a parent");
+        assert_eq!(world[0], Vec3::new(0.0, 10_000.0, 0.0), "the deepest node sits n steps up");
+    }
+
+    #[test]
+    fn world_positions_compose_scale_rotation_and_translation() {
+        let mut scene = IoScene::new();
+        let root = scene.add_node(Node::new("root").at(Vec3::new(1.0, 0.0, 0.0)));
+        scene.nodes[root.index()].transform.rotation = Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
+        scene.nodes[root.index()].transform.scale = Vec3::splat(2.0);
+        let child = scene.add_node(Node::new("child").at(Vec3::new(1.0, 0.0, 0.0)));
+        scene.attach(root, child);
+        let order = hierarchy_order(&scene, &parents(&scene));
+        let (world, multiplies) = world_positions(&scene, &order);
+        assert_eq!(multiplies, 1);
+        // Scaled by 2, turned a quarter about Z (+X becomes +Y), then moved by the root's translation.
+        assert!((world[child.index()] - Vec3::new(1.0, 2.0, 0.0)).length() < 1e-5);
+    }
 }
