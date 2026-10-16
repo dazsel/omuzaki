@@ -755,7 +755,7 @@ fn random_layouts_match_the_naive_walk() {
         state ^= state << 17;
         state % bound
     };
-    for round in 0..1500 {
+    for round in 0..1500_u32 {
         let count = 1 + rand(5);
         let mut layout = Vec::new();
         let mut expected = 1;
@@ -824,32 +824,37 @@ fn random_layouts_match_the_naive_walk() {
         for (idx, shape) in layout.iter().enumerate() {
             put(dir.path(), u64::try_from(idx).unwrap() + 1, &build(*shape));
         }
-        let last = layout
-            .iter()
-            .map(|shape| if let Shape::Real { first, n, .. } = shape { first + n } else { 0 })
-            .max()
-            .unwrap_or(0);
-        for from in 0..=last {
-            let want = model(&layout, from);
-            let got = Reader::scan(dir.path(), Lsn(from));
-            match (&want, got) {
-                (Err(()), Err(JournalError::TooNew { .. })) => {}
-                (Ok((lsns_want, kind, seg)), Ok(scan)) => {
-                    let filtered: Vec<u64> = lsns_want.iter().copied().filter(|&l| l > from).collect();
-                    assert_eq!(lsns(&scan), filtered, "round {round} from {from}: {layout:?}");
-                    let (got_kind, got_seg) = match scan.end {
-                        End::Clean => ('C', None),
-                        End::TornTail { at } => ('T', Some(at.segment)),
-                        End::Damaged { at, .. } => ('D', Some(at.segment)),
-                        _ => unreachable!(),
-                    };
-                    assert_eq!(got_kind, *kind, "round {round} from {from}: {layout:?}");
-                    if let Some(got_seg) = got_seg {
-                        assert_eq!(got_seg, u64::try_from(*seg).unwrap() + 1, "round {round} from {from}: {layout:?}");
-                    }
+        compare(dir.path(), &layout, round);
+    }
+}
+
+/// Scans `dir` from every LSN and checks it against the model.
+fn compare(dir: &Path, layout: &[Shape], round: u32) {
+    let last = layout
+        .iter()
+        .map(|shape| if let Shape::Real { first, n, .. } = shape { first + n } else { 0 })
+        .max()
+        .unwrap_or(0);
+    for from in 0..=last {
+        let want = model(layout, from);
+        let got = Reader::scan(dir, Lsn(from));
+        match (&want, got) {
+            (Err(()), Err(JournalError::TooNew { .. })) => {}
+            (Ok((lsns_want, kind, seg)), Ok(scan)) => {
+                let filtered: Vec<u64> = lsns_want.iter().copied().filter(|&l| l > from).collect();
+                assert_eq!(lsns(&scan), filtered, "round {round} from {from}: {layout:?}");
+                let (got_kind, got_seg) = match scan.end {
+                    End::Clean => ('C', None),
+                    End::TornTail { at } => ('T', Some(at.segment)),
+                    End::Damaged { at, .. } => ('D', Some(at.segment)),
+                    _ => unreachable!(),
+                };
+                assert_eq!(got_kind, *kind, "round {round} from {from}: {layout:?}");
+                if let Some(got_seg) = got_seg {
+                    assert_eq!(got_seg, u64::try_from(*seg).unwrap() + 1, "round {round} from {from}: {layout:?}");
                 }
-                (want, got) => panic!("round {round} from {from}: model {:?}, scan {got:?}", want.is_ok()),
             }
+            (want, got) => panic!("round {round} from {from}: model {:?}, scan {got:?}", want.is_ok()),
         }
     }
 }
