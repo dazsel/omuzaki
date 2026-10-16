@@ -50,6 +50,20 @@ impl Usage {
     pub fn tokens(&self) -> u64 {
         self.prompt().saturating_add(self.output)
     }
+
+    /// What this usage costs under `prices` (llm-api D4): the first tier that holds [`prompt`](Self::prompt) sets the
+    /// four rates; `tokens × rate` is summed over the counters in `u128`, divided by 1,000,000 and rounded up, once.
+    /// Exact and deterministic; it never under-charges and over-charges by under 1 µ$ a turn.
+    pub fn cost(&self, prices: &PriceTable) -> MicroUsd {
+        let rates = prices.rates_for(self.prompt());
+        let sum = |tokens: u64, rate: u64| u128::from(tokens) * u128::from(rate);
+        round_up(
+            sum(self.input, rates.input)
+                + sum(self.output, rates.output)
+                + sum(self.cache_read, rates.cache_read)
+                + sum(self.cache_write, rates.cache_write),
+        )
+    }
 }
 
 /// Millionths of a US dollar.
@@ -277,21 +291,12 @@ impl ModelInfo {
     }
 }
 
-/// The largest image the contract allows on its long side, used when a format's size cannot be read.
-const MAX_IMAGE_SIDE: u32 = 768;
 /// Tokens added per block for framing.
 const BLOCK_OVERHEAD: u64 = 8;
 
-/// The pixel size of an image, from its header; the contract's maximum when the format is not read here.
+/// The pixel size of an image, from its header; the contract's maximum when the header is not readable.
 fn image_size(mime: ImageMime, bytes: &[u8]) -> (u32, u32) {
-    let be = |at: usize| bytes.get(at..at + 4).and_then(|b| <[u8; 4]>::try_from(b).ok()).map(u32::from_be_bytes);
-    let le = |at: usize| bytes.get(at..at + 2).and_then(|b| <[u8; 2]>::try_from(b).ok()).map(u16::from_le_bytes);
-    let read = match mime {
-        ImageMime::Png => be(16).zip(be(20)),
-        ImageMime::Gif => le(6).zip(le(8)).map(|(w, h)| (u32::from(w), u32::from(h))),
-        _ => None,
-    };
-    read.unwrap_or((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE))
+    crate::image::size(mime, bytes).unwrap_or((crate::image::MAX_IMAGE_SIDE, crate::image::MAX_IMAGE_SIDE))
 }
 
 fn block_tokens(block: &ContentBlock, info: &ModelInfo) -> u64 {
@@ -327,6 +332,24 @@ fn fingerprint(request: &TurnRequest, reply: Option<&Message>, messages: usize) 
 }
 
 /// Bounds a turn's cost before it is sent, with no network (llm-api D4). One ledger per conversation.
+///
+/// # Worked example
+///
+/// Turn 1 of llm-api §4 measured a prompt of 4,837 tokens and an answer of 58, so the history is 4,895 tokens. Turn 2
+/// appends one message that answers the call `tu_1`. Each block costs 8 tokens of framing, a tool result also counts
+/// the bytes of the id it answers, and an image costs its tiles:
+///
+/// | Appended | Tokens |
+/// |---|---|
+/// | the id `tu_1` | 4 |
+/// | the text "Rendered main, front, 512 px." | 29 + 8 |
+/// | a 512 × 512 PNG, ⌈512/28⌉² tiles | 361 + 8 |
+/// | the tool result block itself | 8 |
+///
+/// The prompt is bounded at 4,895 + 418 = **5,313** tokens (the design's 5,309 predates counting the id and the result
+/// block's own framing). At Haiku 5.5's dearest prompt rate (cache write, 125,000 µ$ per million) and `max_output`
+/// 1,024 at 500,000: 5,313 × 125,000 + 1,024 × 500,000 = 1,176,125,000, which rounds up to **1,177 µ$**. The
+/// test `the_worked_example_bounds_turn_two_at_1177_micro_dollars` runs these numbers.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Ledger {
     measured: Option<Measured>,
@@ -468,6 +491,65 @@ mod tests {
         let short = Ledger::new().prompt_estimate(&result("t"), &model());
         let long = Ledger::new().prompt_estimate(&result(&"t".repeat(500)), &model());
         assert_eq!(long - short, 499);
+    }
+
+    #[test]
+    fn the_worked_example_bounds_turn_two_at_1177_micro_dollars() {
+        let haiku = ModelInfo {
+            id: "claude-haiku-5-5".into(),
+            context_window: 1_000_000,
+            max_output: 128_000,
+            vision: true,
+            tools: true,
+            effort: true,
+            caching: true,
+            image_cost: ImageCost::tiles(28),
+        };
+        let rates = Rates::new(100_000, 500_000).with_cache_write(125_000).with_cache_read(10_000);
+        let prices = PriceTable::new("2026-10-13", "test", vec![PriceTier::new(None, rates)]);
+        let first = request("You help.", &["show me the front"]);
+        let mut ledger = Ledger::new();
+        let call = ContentBlock::tool_use("tu_1", "render_preview", serde_json::json!({}));
+        let answer = Turn {
+            model: "claude-haiku-5-5".into(),
+            message: Message { role: Role::Assistant, content: vec![call] },
+            usage: Usage::new(37, 58).with_cache_write(4800),
+            stop: StopReason::ToolUse,
+            retries: 0,
+        };
+        ledger.observe(&first, &answer);
+        let mut png = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, b'I', b'H', b'D', b'R'];
+        png.extend_from_slice(&512u32.to_be_bytes());
+        png.extend_from_slice(&512u32.to_be_bytes());
+        let result = ContentBlock::tool_result(
+            "tu_1",
+            vec![
+                ContentBlock::text("Rendered main, front, 512 px."),
+                ContentBlock::image(ImageMime::Png, png, crate::message::ImageOrigin::Render),
+            ],
+        );
+        let mut second = request("You help.", &["show me the front"]);
+        second.messages.push(answer.message.clone());
+        second.messages.push(Message { role: Role::User, content: vec![result] });
+        second.max_output = 1024;
+        assert_eq!(ledger.prompt_estimate(&second, &haiku), 4_895 + 418);
+        assert_eq!(ledger.bound(&second, &haiku, &prices), MicroUsd(1_177));
+    }
+
+    #[test]
+    fn cost_rounds_the_sum_up_once_and_picks_the_tier_by_prompt() {
+        let rates = Rates::new(100_000, 500_000).with_cache_write(125_000).with_cache_read(10_000);
+        let dear = Rates::new(500_000, 2_500_000).with_cache_write(625_000).with_cache_read(50_000);
+        let table = PriceTable::new("x", "y", vec![PriceTier::new(Some(100_000), rates), PriceTier::new(None, dear)]);
+        // llm-api §4: 632.7 and 100.8 round up to 633 and 101, and the conversation is 734.
+        assert_eq!(Usage::new(37, 58).with_cache_write(4800).cost(&table), MicroUsd(633));
+        assert_eq!(Usage::new(413, 23).with_cache_read(4800).cost(&table), MicroUsd(101));
+        // One tier up the instant the prompt passes 100,000: 100,001 tokens at 0.5 $/MTok is 50,000.5 µ$.
+        assert_eq!(Usage::new(100_000, 0).cost(&table), MicroUsd(10_000));
+        assert_eq!(Usage::new(100_001, 0).cost(&table), MicroUsd(50_001));
+        assert_eq!(Usage::new(0, 0).cost(&table), MicroUsd(0));
+        assert_eq!(Usage::new(1, 0).cost(&table), MicroUsd(1), "a single token still rounds up to 1 µ$");
+        assert_eq!(Usage::new(u64::MAX, u64::MAX).cost(&table), MicroUsd(u64::MAX));
     }
 
     #[test]

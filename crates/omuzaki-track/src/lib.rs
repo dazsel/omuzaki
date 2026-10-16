@@ -18,9 +18,9 @@
 //! | [`pipeline`] | [`FaceTracker`]: the three graphs, tracking between frames, [`Mode`] |
 //! | [`sample`] | [`FaceSample`], [`StageTimings`] and [`to_track_frame`] |
 //! | [`error`] | [`FaceTrackError`] |
+//! | [`webcam`] | [`webcam::WebcamTracker`]: the camera thread, pixel conversion and the preview tap |
 //!
-//! The camera thread, the `Tracker` seam, parity with MediaPipe and the pixel
-//! conversion are separate pieces; this crate is the part that needs none of them.
+//! Parity with MediaPipe is a separate piece.
 #![deny(missing_docs)]
 // Product names (MediaPipe, BlazeFace, ARKit) are prose here, not code.
 #![allow(clippy::doc_markdown)]
@@ -38,6 +38,7 @@ pub mod pipeline;
 pub mod roi;
 pub mod sample;
 pub mod smoothing;
+pub mod webcam;
 
 pub use blendshapes::blendshapes_signature;
 pub use detector::detector_signature;

@@ -1022,6 +1022,23 @@ fn a_table_section_under_a_dotted_parent_sets_resets_and_reopens() {
 }
 
 #[test]
+fn two_stores_migrating_the_same_ancestor_rename_keep_the_value() {
+    for crlf in [false, true] {
+        let eol = if crlf { "\r\n" } else { "\n" };
+        let rig = Rig::new();
+        rig.write_user(&format!("[deep]{eol}old = 7{eol}"));
+        let (first, second) = (rig.open(), rig.open());
+        assert_eq!((get::<Deeper>(&first), get::<Deeper>(&second)), (7, 7));
+        first.flush().unwrap();
+        // The second store's rename finds the file already migrated: its destination exists inside the ancestor it is
+        // asked to remove, so the group must remove the ancestor first and write the destination after.
+        second.flush().unwrap();
+        drop((first, second));
+        assert_eq!(get::<Deeper>(&rig.open()), 7, "the value survived the second migration: {:?}", rig.user_text());
+    }
+}
+
+#[test]
 fn a_rename_whose_old_name_is_an_ancestor_of_the_new_one_moves_set_resets_and_reopens() {
     for crlf in [false, true] {
         let eol = if crlf { "\r\n" } else { "\n" };

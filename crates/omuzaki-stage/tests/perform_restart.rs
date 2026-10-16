@@ -16,11 +16,11 @@ use omuzaki_anim_api::{Calibration, ChannelBuf, DeviceProfile, HumanoidPose, Ret
 use omuzaki_core::time::{FakeClock, Seconds};
 use omuzaki_doc_mock::MemDoc;
 use omuzaki_face_api::ExpressionSet;
-use omuzaki_ops_api::{Actor, OpCtx, OpError, Plan, Services, ServicesBuilder, find};
+use omuzaki_ops_api::{Actor, Mode, OpCtx, OpError, Plan, Services, ServicesBuilder, find};
 use omuzaki_settings::{Paths, Store};
 use omuzaki_settings_api::meta::{AgentWrite, Apply, InProfile, SettingScope};
 use omuzaki_settings_api::registry;
-use omuzaki_settings_api::service::{Settings, SettingsExt};
+use omuzaki_settings_api::service::{Layer, Settings, SettingsExt};
 use omuzaki_settings_api::setting::Setting;
 use omuzaki_stage::perform::Performer;
 use omuzaki_stage::perform::host::{CalibrationState, PerformControl, PerformHandle, PerformHost, perform_channel};
@@ -50,6 +50,7 @@ impl App {
     /// Starts the app on `dir` with the cameras named `cameras` plugged in.
     fn start(dir: &Path, cameras: &[&str]) -> Self {
         let paths = Paths::new(dir.join("config"), dir.join("data"));
+        omuzaki_stream::link(); // registers `output.window`
         let store = Arc::new(Store::open(&paths));
         let mut performer = performer(&HumanoidPose::REST);
         let (handle, mut control) = perform_channel(&performer);
@@ -307,4 +308,35 @@ fn unbinding_the_camera_is_saved_and_comes_back_unbound() {
     assert_eq!(restored.findings, vec![], "an unbound camera is a value the files can hold");
     assert_eq!((app.view().source, app.view().camera), (SourceKind::Webcam, None));
     assert_eq!(restored.missing_camera, None);
+}
+
+#[test]
+fn the_output_window_settings_come_back_exactly_and_a_bad_one_names_its_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().to_path_buf();
+    let saved =
+        json!({ "backdrop": "key", "key": "#ff00ff", "scale": 0.5, "title": "My Output", "always_on_top": true });
+    {
+        // What `output.window.open` saves when a settings service exists.
+        let app = App::start(&path, &["a"]);
+        app.store.set_raw("output.window", saved.clone(), Layer::Base, Mode::Apply, &App::person()).unwrap();
+        app.quit();
+    }
+    let mut app = App::start(&path, &["a"]);
+    let restored = app.restore(CHARACTER);
+    assert_eq!(restored.findings, vec![]);
+    assert_eq!(restored.output_window, Some(saved), "the open window's choices are exactly as saved");
+    drop(app);
+
+    // A scale outside the allowed range: the key reads as its default, a finding names it, the start goes on.
+    let file = path.join("data").join("machine.toml");
+    let text = std::fs::read_to_string(&file).unwrap();
+    let at = text.find("scale = ").unwrap_or_else(|| panic!("the saved file is:\n{text}")) + "scale = ".len();
+    let end = at + text[at..].find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap();
+    std::fs::write(&file, format!("{}9.0{}", &text[..at], &text[end..])).unwrap();
+    let mut app = App::start(&path, &["a"]);
+    let restored = app.restore(CHARACTER);
+    let named: Vec<&str> = restored.findings.iter().map(|f| f.error.key.as_str()).collect();
+    assert_eq!(named, ["output.window"], "{restored:?}");
+    assert_eq!(restored.output_window, None, "nothing usable to open the window with");
 }

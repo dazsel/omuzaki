@@ -252,6 +252,32 @@ The comment itself carries what is needed to decide: which images, the bad-pixel
 each image the golden's hash before and after (shortened to 12 characters; the manifest diff in the PR has them in full).
 The goldens are `<hash>.png` in the object store folder the comment names.
 
+## Agent evals (`omuzaki-test eval`)
+
+The harness for QG-03 (design `docs/design/evals.md`, ADR 0022): tasks a person might type, played through the same
+runner and MCP server `omuzaki mcp` builds, graded by a separate read-only checker. Tasks, fixtures and eval sets live
+next to the code they test (`crates/<crate>/evals/`, `crates/<crate>/evalsets/`); the commands below read them.
+
+| Command | What it does |
+|---|---|
+| `eval lint` | Every rule at once: ids, fixtures, spec features, scripts, provenance and the private list, prompt leakage (against the **linked registry's** tool texts, or `--tools <dump>`), and the op-scope rule (a check or binding may call only registered read-only queries). |
+| `eval list --json` | Every task, for the progress page. |
+| `eval run [--tasks G] [--tags T] [--crates C] [--attempts N] [--jobs 4] [--record] [--binary]` | Builds each fixture once, plays a copy per attempt, grades on separate runners, keeps `transcript.jsonl` and `checks.json` under `<evals>/runs/<run>/<task>/<attempt>/` and deletes the scratch. The scripted driver records `N` attempts of each pass script and also plays the other scripts and the empty script once: they must end as their names say, or the run fails. `--record` appends `eval-history.jsonl` and `eval-runs.jsonl`. Selectors add up. |
+| `eval promote <transcript> --task ID --as NAME --expect pass\|fail` | Writes a script from a recorded attempt, beside its task. Never replaces one. |
+| `eval gate [--json]` | Reads the history: per-task regressions (binomial tail against the 28-day baseline), per-suite regressions (trailing median and MAD), weak tasks, cost and cache warnings; Wilson intervals. Exit 1 on a regression. Scores the reference driver only. |
+| `eval gc [--apply]` | Removes run folders older than 90 days unless an open issue or a promoted script names them. Dry run by default; fails closed when `gh` fails (`--issues <file>` reads the issue text instead). |
+| `eval sets verify \| add \| holdout-check` | Eval sets: items in a content store (`$OMUZAKI_EVAL_SETS`, else `$OMUZAKI_ASSETS/evals/sets`) verified on every read; `add` refuses private or unprovenanced material before it is stored and writes no machine path into the manifest; `holdout-check` fails when a training manifest names an item of a `real` set or a `holdout` split. `StoreFiles` is an `omuzaki_ai_api::FileSource` over the store. |
+| `eval rate --set review-1` | A local page on `127.0.0.1` (nothing uploaded) for rating up to 20 results a week yes/no/unsure; answers go to `<evals>/ratings/<set>.jsonl`. |
+| `eval agreement --judge ID --set review-1` | A judge's agreement with the clear-cut ratings, appended to the history as a `family = "judge"` record. |
+
+Where things go: `OMUZAKI_EVAL_OUT` (default `$OMUZAKI_ASSETS/evals`) for run folders and ratings,
+`OMUZAKI_EVAL_STATUS` (default `$OMUZAKI_ASSETS/status`) for the history. Scripts are JSON lines of calls by MCP tool name
+(`face_set_profile`) with `expect`/`save` and `assert` lines (design 6.3); `{main}` names a fixture export. The check
+library (`omuzaki_test::eval::check`) has every kind of design 5.3 except `judge`; render checks fetch the pictures a
+render op names at `/image` (`omuzaki://render/<hash>.png`) from an asset store given to `Checker::with_store`.
+
+The private-material list is `docs/licensing/private-material.toml`, shared with `cargo xtask lint-seed`.
+
 ## Not here yet
 
 Headless wgpu rendering of the fixed scenes (the other half of the spec's golden-render harness) needs the renderer

@@ -18,8 +18,10 @@
 //! finding naming the key ([`Settings::findings`]); [`restore`] returns those findings for the V0 keys, and carries on
 //! with the defaults. A calibration made for another character or another device class is never applied.
 //!
-//! Output (the borderless window's size, backdrop and key colour) is the output window's own settings and is
-//! restored by the app beside these; nothing in this module reads it.
+//! The output window's own key, `output.window` (Machine scope, written by `output.window.open`), is read here too:
+//! [`restore`] hands back what was saved as [`Restored::output_window`], and the app opens the window with it. This
+//! module does not write it, and does not depend on the crate that owns its type: the store validates the value, so a
+//! bad one is a finding and `None`.
 
 use omuzaki_anim::MAX_TRIGGERS;
 use omuzaki_anim_api::{Calibration, DeviceProfile};
@@ -27,7 +29,7 @@ use omuzaki_ops_api::{Actor, Mode};
 use omuzaki_settings_api::error::{SettingError, SettingFinding};
 use omuzaki_settings_api::meta::{AgentWrite, Apply, InProfile, SettingMeta, SettingScope};
 use omuzaki_settings_api::register_setting;
-use omuzaki_settings_api::service::{Layer, Settings, SettingsExt};
+use omuzaki_settings_api::service::{Layer, Settings, SettingsExt, Source};
 use omuzaki_settings_api::setting::Setting;
 use omuzaki_track::calibration::CalibrationStore;
 use omuzaki_track_api::camera::CameraId;
@@ -40,8 +42,17 @@ use super::triggers::{TriggerBinding, check_key, same_key};
 use crate::ops::perform::set_retarget::{EXAGGERATION, HEAD_GAIN, SMOOTHING};
 
 /// The keys V0 restores, so [`restore`] reports only findings about them.
-const KEYS: [&str; 5] =
-    ["input.source", "input.camera", "perform.retarget", "perform.triggers", "perform.calibrations"];
+const KEYS: [&str; 6] = [
+    "input.source",
+    "input.camera",
+    "perform.retarget",
+    "perform.triggers",
+    "perform.calibrations",
+    "output.window",
+];
+
+/// The key the output window saves its last open request under (`output.window.open`, `omuzaki-stream`).
+const OUTPUT_WINDOW: &str = "output.window";
 
 /// The retarget's user-facing dials as saved. The library default keeps `mirror` off; a person on a webcam expects
 /// the preview mirrored, so the saved default turns it on (lead ruling).
@@ -198,6 +209,9 @@ pub struct Restored {
     pub calibration: bool,
     /// How many hotkeys were bound again.
     pub triggers: usize,
+    /// The output window's last open request as saved (`output.window`), for the app to open the window with; `None`
+    /// when nothing was saved or the stored value was not usable (then a finding names the key).
+    pub output_window: Option<omuzaki_doc_api::Value>,
     /// What could not be applied, in words: a performer that is gone, a queue that is full.
     pub problems: Vec<String>,
 }
@@ -253,7 +267,12 @@ pub fn restore(
         }
     }
 
-    Restored { findings, missing_camera, calibration: calibrated, triggers: bound, problems }
+    let snapshot = settings.snapshot();
+    let output_window = match snapshot.source(OUTPUT_WINDOW) {
+        Some(Source::Default) | None => None,
+        Some(_) => snapshot.value(OUTPUT_WINDOW).cloned(),
+    };
+    Restored { findings, missing_camera, calibration: calibrated, triggers: bound, output_window, problems }
 }
 
 /// Writes the live retarget dials and hotkeys to the settings: what [`restore`] reads. Call it after a `perform.*` or
