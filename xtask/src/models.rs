@@ -1241,7 +1241,7 @@ url = "https://data.example/tiny-corpus"
             "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example.com",
         ];
         for url in bad {
-            let text = manifest("tiny", HTTPS).replace("https://data.example/tiny-corpus", url);
+            let text = manifest("tiny", HTTPS).replace("https://data.example/tiny-corpus", &toml_escaped(url));
             let found = problems(FILE, &text, &register(), &good_source("tiny"));
             assert_eq!(found.len(), 1, "{url}: {found:?}");
             assert!(found[0].contains("not an `https://` URL"), "{found:?}");
