@@ -23,6 +23,7 @@
 //! | [`prepare::humanoid`] | `auto_map`, `apply`: propose the humanoid bones of a skinned skeleton, with an override table |
 //! | [`fit_bones`] | `reduce_bones`: cut a skin's joints to a budget, the `fit.bones` stage |
 //! | [`fit_texture`] | `resize`, `downscale_to`: the texture resampler for a platform fit, in linear light with premultiplied alpha |
+//! | [`msg`], [`report_sections`] | the crate's `messages!` table (the import report's lines and fixes first) and the report's four sections by rule id |
 //! | [`ops::progress::JobProgress`] | the adapter from a job's context to the io progress trait |
 //!
 //! Ops register themselves with `omuzaki_ops_api::register_op!` next to their definition, so nothing here lists them.
@@ -35,8 +36,10 @@ mod error;
 pub mod fit_bones;
 pub mod fit_texture;
 pub mod gather;
+pub mod msg;
 pub mod ops;
 pub mod prepare;
+pub mod report_sections;
 pub mod vrchat_rank;
 
 omuzaki_core::define_link! {
