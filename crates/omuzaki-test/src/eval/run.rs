@@ -234,9 +234,17 @@ pub fn run_scripted(
 /// Lets go of a run id whose run failed: the evidence folder goes if it is still empty (a run that wrote something keeps
 /// its evidence and its id), and so does the scratch.
 fn release_run_id(options: &Options<'_>) {
-    // `remove_dir` only removes an empty folder.
-    drop(fs::remove_dir(options.out.join("runs").join(&options.run_id)));
+    release_run_id_with(options, || ());
+}
+
+/// [`release_run_id`], running `between` after the first of its two steps: the moment a concurrent retry could find out
+/// whether the id is free.
+fn release_run_id_with(options: &Options<'_>, between: impl FnOnce()) {
+    // The scratch goes first and the evidence folder, which is the claim on the id, last: a retry that claims the id the
+    // moment the claim is gone must find its own new scratch untouched. (`remove_dir` only removes an empty folder.)
     drop(fs::remove_dir_all(options.scratch.join(&options.run_id)));
+    between();
+    drop(fs::remove_dir(options.out.join("runs").join(&options.run_id)));
 }
 
 fn run_claimed(
@@ -804,6 +812,45 @@ mod tests {
         for bad in ["", "..", ".hidden", "a/b", "a..b", "A", "a b", "/etc"] {
             assert!(!task_id_is_a_folder_name(bad), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn a_retry_that_claims_a_released_id_never_loses_its_scratch() {
+        let tmp = std::env::temp_dir().join(format!("release-order-{}", std::process::id()));
+        let no_items = |_: &SetItemRef| Err(String::new());
+        let options = Options {
+            select: Selection::default(),
+            attempts: 1,
+            jobs: 1,
+            binary: None,
+            kind: "manual".to_owned(),
+            run_id: "2026-10-13T1000Z-manual".to_owned(),
+            commit: "c".to_owned(),
+            out: tmp.join("out"),
+            status: None,
+            scratch: tmp.join("scratch"),
+            item_path: &no_items,
+            store: None,
+        };
+        claim_run_id(&options).unwrap();
+        let scratch = options.scratch.join(&options.run_id);
+        // The failed run has already cleaned up its scratch, as `run_claimed` does before it returns.
+        fs::remove_dir_all(&scratch).unwrap();
+        // A retry tries to claim the id between the two steps of the release.
+        let mut retry = None;
+        release_run_id_with(&options, || retry = Some(claim_run_id(&options)));
+        match retry.unwrap() {
+            // Still held: the retry waits, as it must.
+            Err(RunError::Taken(_)) => {}
+            // Claimed: then what the claim made must have survived the rest of the release.
+            Ok(()) => assert!(scratch.is_dir(), "the retry's scratch was removed by the run that let go of the id"),
+            Err(other) => panic!("{other}"),
+        }
+        // And once the release is done the id can be claimed again.
+        release_run_id(&options);
+        claim_run_id(&options).unwrap();
+        release_run_id(&options);
+        drop(fs::remove_dir_all(&tmp));
     }
 
     #[test]

@@ -192,8 +192,10 @@ impl Host {
             return Err(spawn_error("the child's pipes are not open".to_owned()));
         };
         // A binary that never answers must not hang the run: past the limit the early return drops the child, which kills it.
+        let began = Instant::now();
         let client = bounded(&runtime, startup, "the connection", ().serve((stdout, stdin)))?;
-        let tools = bounded(&runtime, startup, "the tool list", client.list_all_tools())?;
+        // One deadline for both: the tool list gets what the handshake left.
+        let tools = bounded(&runtime, within(began, startup), "the tool list", client.list_all_tools())?;
         let reader = Reader::Project(project.to_owned());
         let start_doc = read_document(&reader)?;
         Ok(Self {
@@ -454,6 +456,17 @@ mod tests {
         assert_eq!(ok, 7);
         let failed = bounded(&runtime, Duration::from_secs(5), "x", async { Err::<(), _>("broke".to_owned()) });
         assert!(failed.unwrap_err().to_string().contains("broke"));
+    }
+
+    #[test]
+    fn the_second_wait_of_the_startup_gets_only_the_time_the_first_left() {
+        let began = Instant::now();
+        std::thread::sleep(Duration::from_millis(120));
+        let left = within(began, Duration::from_millis(500));
+        assert!(left <= Duration::from_millis(380), "{left:?}");
+        assert!(left > Duration::from_millis(100), "{left:?}");
+        // A handshake that used the whole limit leaves a sliver, not a second full wait.
+        assert!(within(began, Duration::from_millis(100)) <= Duration::from_millis(1));
     }
 
     #[test]

@@ -109,7 +109,8 @@ pub fn read(path: &Path) -> Result<Vec<Rating>, RateError> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(source) => return Err(RateError::Io { path: path.to_owned(), source }),
     };
-    text.lines()
+    let all: Vec<Rating> = text
+        .lines()
         .enumerate()
         .filter(|(_, l)| !l.trim().is_empty())
         .map(|(index, line)| {
@@ -119,7 +120,11 @@ pub fn read(path: &Path) -> Result<Vec<Rating>, RateError> {
                 reason: e.to_string(),
             })
         })
-        .collect()
+        .collect::<Result<_, _>>()?;
+    // An answer counts once: the first line for an item and a question stands (a failed batch that was written again
+    // leaves the same answers twice in an older file).
+    let mut seen = std::collections::BTreeSet::new();
+    Ok(all.into_iter().filter(|r| seen.insert((r.item.clone(), r.question.clone()))).collect())
 }
 
 /// Appends a rating as one line, with one `write` of the whole line to a file in append mode.
@@ -141,23 +146,31 @@ pub fn append_all(path: &Path, ratings: &[Rating]) -> Result<(), RateError> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(io_err)?;
     }
-    let mut lines = String::new();
-    for rating in ratings {
-        lines.push_str(&serde_json::to_string(rating).map_err(|e| io_err(io::Error::other(e)))?);
-        lines.push('\n');
-    }
     let mut file = OpenOptions::new().read(true).append(true).create(true).open(path).map_err(io_err)?;
-    // A write that stopped half way left a last line with no newline. Cut it before writing on, or the retry would be
-    // glued to it and make a line that does not parse. (A complete rating that only lacks its newline is kept.)
     let mut existing = Vec::new();
     io::Read::read_to_end(&mut file, &mut existing).map_err(io_err)?;
+    // A write that stopped half way left a last line with no newline. Cut it before writing on, or the retry would be
+    // glued to it and make a line that does not parse. (A complete rating that only lacks its newline is kept.)
+    let mut lines = String::new();
+    let mut kept = existing.len();
     if !existing.is_empty() && existing.last() != Some(&b'\n') {
         let start = existing.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
         if serde_json::from_slice::<Rating>(&existing[start..]).is_ok() {
-            lines.insert(0, '\n');
+            lines.push('\n');
         } else {
             file.set_len(start as u64).map_err(io_err)?;
+            kept = start;
         }
+    }
+    // Each answer is written once: a batch that failed part-way and is sent again finds its first rows already there.
+    let present: std::collections::BTreeSet<(String, String)> = String::from_utf8_lossy(&existing[..kept])
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Rating>(l).ok())
+        .map(|r| (r.item, r.question))
+        .collect();
+    for rating in ratings.iter().filter(|r| !present.contains(&(r.item.clone(), r.question.clone()))) {
+        lines.push_str(&serde_json::to_string(rating).map_err(|e| io_err(io::Error::other(e)))?);
+        lines.push('\n');
     }
     file.write_all(lines.as_bytes()).map_err(io_err)
 }
@@ -185,6 +198,35 @@ mod tests {
         // Torn from the very first byte on.
         fs::write(&path, &line[..10]).unwrap();
         append_all(&path, &[rating("i/4", "Q?", Answer::No)]).unwrap();
+        assert_eq!(read(&path).unwrap().len(), 1);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_batch_that_failed_part_way_is_not_written_twice_when_it_is_sent_again() {
+        let dir = std::env::temp_dir().join(format!("ratings-batch-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("r.jsonl");
+        let batch =
+            [rating("i/1", "A?", Answer::Yes), rating("i/1", "B?", Answer::No), rating("i/1", "C?", Answer::Yes)];
+        let line = |r: &Rating| serde_json::to_string(r).unwrap();
+        let questions = |path: &Path| read(path).unwrap().iter().map(|r| r.question.clone()).collect::<Vec<_>>();
+        // The write failed after one complete row.
+        fs::write(&path, format!("{}\n", line(&batch[0]))).unwrap();
+        append_all(&path, &batch).unwrap();
+        assert_eq!(questions(&path), ["A?", "B?", "C?"]);
+        assert_eq!(fs::read_to_string(&path).unwrap().lines().count(), 3, "no row twice in the file");
+        // The write failed in the middle of the next row.
+        let second = line(&batch[1]);
+        fs::write(&path, format!("{}\n{}", line(&batch[0]), &second[..second.len() / 2])).unwrap();
+        append_all(&path, &batch).unwrap();
+        assert_eq!(questions(&path), ["A?", "B?", "C?"]);
+        assert_eq!(fs::read_to_string(&path).unwrap().lines().count(), 3);
+        // Sent a third time, nothing is added.
+        append_all(&path, &batch).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap().lines().count(), 3);
+        // An older file with a row twice reads it once.
+        fs::write(&path, format!("{}\n{}\n", line(&batch[0]), line(&batch[0]))).unwrap();
         assert_eq!(read(&path).unwrap().len(), 1);
         fs::remove_dir_all(&dir).unwrap();
     }
