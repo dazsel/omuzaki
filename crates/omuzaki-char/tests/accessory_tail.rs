@@ -14,7 +14,7 @@ use accessory_common::{
 };
 use omuzaki_anim_api::HumanoidBone;
 use omuzaki_char_api::{JointRef, find_kind};
-use omuzaki_core::glam::Quat;
+use omuzaki_core::glam::{Quat, Vec3};
 use serde_json::json;
 
 /// Triangles one accessory kind may use at live quality.
@@ -170,6 +170,38 @@ fn the_length_follows_the_body() {
     };
     let (chibi, tall) = (reach("soft-sd"), reach("tall"));
     assert!(chibi < 0.6 * tall, "a chibi's tail ({chibi}) is shorter than a tall body's ({tall})");
+}
+
+#[test]
+fn a_bunnys_puff_is_a_fifth_as_wide_as_the_hips_on_every_template() {
+    for template in TEMPLATES {
+        let s = built_scene(template, "tail", json!({ "kind": "bunny" }), None);
+        let hips = accessory_common::rest_joint(&s.built, HumanoidBone::Hips);
+        // The torso's width at the hips' height: the section nearest it.
+        let width = (0..=40)
+            .filter_map(|k| s.fit.section(omuzaki_char_api::BodyRegion::Torso, k as f32 / 40.0))
+            .min_by(|a, b| (a.centre.y - hips.y).abs().total_cmp(&(b.centre.y - hips.y).abs()))
+            .map(|section| 2.0 * section.radii.x)
+            .unwrap();
+        let points = vertices(&s.built);
+        let (lo, hi) =
+            points.iter().fold((Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |(l, h), p| (l.min(*p), h.max(*p)));
+        let size = hi - lo;
+        let share = size.x / width;
+        assert!(
+            (0.17..=0.23).contains(&share),
+            "bunny on {template}: {} m across, {share} of the hips' {width} m",
+            size.x
+        );
+        // A puff, not a stub: about as long and as tall as it is wide.
+        for (axis, along) in [("tall", size.y), ("long", size.z)] {
+            assert!(
+                (0.8..=1.25).contains(&(along / size.x)),
+                "bunny on {template}: {along} m {axis}, {} m across",
+                size.x
+            );
+        }
+    }
 }
 
 #[test]

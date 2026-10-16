@@ -245,21 +245,39 @@ pub(super) fn body_scale(ctx: &BuildCtx<'_>) -> Result<f64, BuildError> {
     Ok(f64::from(neck.y) / STANDARD_NECK_HEIGHT)
 }
 
+/// How many heights [`torso_back`] and [`torso_widths`] sample the torso at, hips to neck.
+const TORSO_SAMPLES: usize = 21;
+
 /// The back of the torso at each height, bind space: `(y, z)` of the most backward point of the torso's cross-section,
 /// from the hips up to the base of the neck.
 ///
 /// # Errors
 /// [`BuildError`] if the body publishes no torso.
 pub(super) fn torso_back(ctx: &BuildCtx<'_>) -> Result<Vec<(f64, f64)>, BuildError> {
-    const SAMPLES: usize = 21;
     let fit = ctx.fit()?;
-    (0..SAMPLES)
+    (0..TORSO_SAMPLES)
         .map(|k| {
-            #[allow(clippy::cast_possible_truncation)] // a fraction
             let section = fit
-                .section(BodyRegion::Torso, fraction_f32(k, SAMPLES - 1))
+                .section(BodyRegion::Torso, fraction_f32(k, TORSO_SAMPLES - 1))
                 .ok_or_else(|| ctx.fail("the body has no torso section to fit the accessory to"))?;
             Ok((f64::from(section.centre.y), f64::from(section.centre.z) - f64::from(section.radii.y)))
+        })
+        .collect()
+}
+
+/// The width of the torso at each height, bind space: `(y, half width)` of the torso's cross-section across the body,
+/// from the hips up to the base of the neck, at the heights [`torso_back`] samples.
+///
+/// # Errors
+/// [`BuildError`] if the body publishes no torso.
+pub(super) fn torso_widths(ctx: &BuildCtx<'_>) -> Result<Vec<(f64, f64)>, BuildError> {
+    let fit = ctx.fit()?;
+    (0..TORSO_SAMPLES)
+        .map(|k| {
+            let section = fit
+                .section(BodyRegion::Torso, fraction_f32(k, TORSO_SAMPLES - 1))
+                .ok_or_else(|| ctx.fail("the body has no torso section to fit the accessory to"))?;
+            Ok((f64::from(section.centre.y), f64::from(section.radii.x)))
         })
         .collect()
 }

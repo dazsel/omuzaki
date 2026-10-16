@@ -4,8 +4,9 @@
 //! places that frame (its offset moves, turns and scales the whole tail, once),
 //! leaves backwards and up, and curls up through `curl_deg`. Each preset is a closed tube along it: a fox's fluffy and
 //! fullest in the middle with a `tuft` colour at the tip, a cat's slim and even, a dragon's thick at the root and
-//! tapering to a point with a spade, a bunny's a ball. Lengths are for a standard-height body and scale with the body
-//! (and the attach scale).
+//! tapering to a point with a spade, a bunny's a small puff, a fifth as wide as the hips. Lengths are for a
+//! standard-height body and scale with the body (and the attach scale); a bunny's puff scales with the hips' width
+//! instead, because it sits on them.
 //!
 //! **Rig.** `bones` bones lie along the curve, the first at the tailbone and the last at the tip, each the child of the one
 //! before; the first hangs from the attach joint. A spring chain over them ([`SpringChain::tapered`]) runs from
@@ -29,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use super::rigid::{Detail, kit_error};
 use super::shells::{
     Chain, Shells, Slot, body_scale, chain_weights, closed_tube, ellipsoid, frames_on, recolour, spring_chain,
-    torso_back,
+    torso_back, torso_widths,
 };
 use crate::kit::KitError;
 use crate::kit::curve::{clamp, fraction, lerp};
@@ -47,7 +48,7 @@ pub enum TailKind {
     Cat,
     /// Thick at the root, tapering to a spade.
     Dragon,
-    /// A short ball.
+    /// A small round puff.
     Bunny,
 }
 
@@ -66,7 +67,14 @@ impl TailKind {
             Self::Fox => Preset { length: 0.4, thickness: 0.05, curl_deg: 55.0, tuft: 0.3, bones: 5 },
             Self::Cat => Preset { length: 0.45, thickness: 0.015, curl_deg: 80.0, tuft: 0.0, bones: 6 },
             Self::Dragon => Preset { length: 0.5, thickness: 0.035, curl_deg: 25.0, tuft: 0.0, bones: 6 },
-            Self::Bunny => Preset { length: 0.08, thickness: 0.04, curl_deg: 0.0, tuft: 0.0, bones: 3 },
+            // A fifth of the standard body's hips across.
+            Self::Bunny => Preset {
+                length: BUNNY_SHARE * STANDARD_HIP_WIDTH,
+                thickness: 0.5 * BUNNY_SHARE * STANDARD_HIP_WIDTH,
+                curl_deg: 0.0,
+                tuft: 0.0,
+                bones: 3,
+            },
         }
     }
 }
@@ -182,6 +190,10 @@ impl TailParams {
     }
 }
 
+/// The share of the hips' width a bunny's puff is across.
+const BUNNY_SHARE: f64 = 0.2;
+/// How wide the standard body's hips are at the tailbone, metres: the width a bunny's puff is sized against.
+const STANDARD_HIP_WIDTH: f64 = 0.28;
 /// How deep the tail's root starts inside the back, metres at a standard body.
 const ROOT_DEPTH: f64 = 0.012;
 /// The share of the length over which the root closes (inside the body).
@@ -264,6 +276,17 @@ impl Tail {
         Ok(bind)
     }
 
+    /// How wide the hips are at the tailbone: the torso's width at the height of the hips joint, metres.
+    fn hip_width(ctx: &BuildCtx<'_>) -> Result<f64, BuildError> {
+        let hips =
+            ctx.joint(&JointRef::HIPS).ok_or_else(|| ctx.fail("the body has no hips joint to root the tail on"))?;
+        torso_widths(ctx)?
+            .into_iter()
+            .min_by(|a, b| (a.0 - f64::from(hips.y)).abs().total_cmp(&(b.0 - f64::from(hips.y)).abs()))
+            .map(|(_, half)| 2.0 * half)
+            .ok_or_else(|| ctx.fail("the body has no torso to size the tail by"))
+    }
+
     fn sleeve(sh: &Shape<'_>, path: &[DVec3], seg: usize) -> Result<Option<Sweep>, KitError> {
         let rows = path.len() - 1;
         let from = ((1.0 - sh.r.tuft) * usize_f(rows)).floor();
@@ -300,8 +323,10 @@ impl PartKind for Tail {
 
     fn build(p: &TailParams, ctx: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
         let (attach, default) = frames_on(ctx, &JointRef::HIPS)?;
-        // The body's size only: the attachment's own scale is applied once, by the matrix that places the tail.
-        let scale = body_scale(ctx)?;
+        // The body's size only: the attachment's own scale is applied once, by the matrix that places the tail. A
+        // bunny's puff sits on the hips, so it is sized by their width; every other tail by the body's height.
+        let scale =
+            if p.kind == TailKind::Bunny { Self::hip_width(ctx)? / STANDARD_HIP_WIDTH } else { body_scale(ctx)? };
         let r = p.resolved(scale);
         let detail = Detail::of(ctx.quality);
         let err = kit_error(ctx);
