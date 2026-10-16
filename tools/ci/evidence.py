@@ -239,7 +239,7 @@ def comment(records, title, note):
     if note:
         lines += [note, ""]
     if not records:
-        lines += ["No declared cases for the crates this change reaches (see `crates/*/evidence.toml`).", ""]
+        lines += ["No declared cases for the crates this change reaches (see `crates/*/evidence.toml` and `crates/*/evidence/*.toml`).", ""]
     else:
         lines += ["{{LINKS}}", "", "| case | image | size | changed pixels | max difference (0-255) |", "|---|---|---|---|---|"]
         for r in records:

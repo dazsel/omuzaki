@@ -1,7 +1,7 @@
 # Before/after renders for pull requests labelled `visual`, so a visual change is reviewed from pictures CI made and
 # nobody has to build anything locally.
 #
-#   render   builds each affected crate's declared cases (crates/*/evidence.toml) at the PR's merge base and at the PR's
+#   render   builds each affected crate's declared cases (crates/*/evidence.toml, crates/*/evidence/*.toml) at the PR's merge base and at the PR's
 #            head, also those whose sheet tool or example changed, compares the pictures and uploads them. Read-only token.
 #   comment  posts the statistics table and the artifact links as ONE comment, found by its hidden marker and updated on
 #            later pushes. The only job with `pull-requests: write`; it checks out and runs no PR code.
