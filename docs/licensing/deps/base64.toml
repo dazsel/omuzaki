@@ -1,7 +1,7 @@
 section = "rust"
 item = "base64 0.23"
 kind = "crate"
-used_for = "standard base64 for the blob of MCP image resources (`omuzaki-mcp` `RenderProvider`) and the obs-websocket authentication answer (`omuzaki-obs`)"
+used_for = "standard base64 for the blob of MCP image resources (`omuzaki-mcp` `RenderProvider`), the obs-websocket authentication answer (`omuzaki-obs`) and the cassette `body_base64` and chunk decoder (`omuzaki-http-mock`)"
 status = "yes"
 condition = "MIT OR Apache-2.0 (the `license` field of base64 0.23.1, checked 2026-10-15): keep the notices; already in the lock through rmcp, so no new crate"
 audit = "#881"

@@ -1,0 +1,7 @@
+section = "rust"
+item = "webrtc-audio-processing 2.1.0 (with -sys and -config), bundled C++ build"
+kind = "crate"
+used_for = "echo cancellation fallback candidate: the PulseAudio repackaging of Google's WebRTC audio processing, built from the bundled source (research 2026-10-echo-cancellation.md, #920)"
+status = "conditions"
+condition = "manifests carry no SPDX field (`license-file = \"COPYING\"`, BSD-3-Clause, Google; read 2026-10-15), so `cargo deny` needs a `clarify` entry (a deny.toml change: maintainer review). The bundle adds Google's PATENTS grant and third-party notices to ship: ooura, FFTPACK (UCAR), Mark Olesen's fft, pffft, rnnoise (BSD-3-Clause), spl_sqrt_floor (public domain), abseil-cpp (Apache-2.0). Needs meson, ninja and abseil at build time. Not selected as first choice"
+audit = "research 2026-10-echo-cancellation.md section 2"

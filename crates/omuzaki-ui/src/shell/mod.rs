@@ -6,12 +6,28 @@
 //! - [`registry`]: workspaces and panels register themselves (`register_workspace!`, `register_panel!`), so the tab bar
 //!   and the View menu show whatever is compiled in and nothing edits a central list (spec §39 rule 2);
 //! - [`layout`]: a layout is a small serialisable tree of panel ids; it converts to and from the docking widget's tree;
-//! - [`persist`]: layouts belong to the person, not the project, and are saved per workspace.
+//! - [`persist`]: layouts belong to the person, not the project, and are saved per workspace;
+//! - [`text`], [`keys`], [`panels`], [`stub`]: the shell's words, its global keyboard map, the panels it ships with and
+//!   the runner it starts with;
+//! - [`dock`], [`saver`]: how panels are docked and constrained, and the background thread that writes layouts;
+//! - [`app`]: the [`Shell`] that draws a frame from all of them.
 
 // Layout arithmetic converts between small integers and `f32` (window sizes, counts); every value is bounded by a screen.
 #![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 
+pub mod app;
 pub mod class;
+pub mod dock;
+pub mod keys;
 pub mod layout;
+pub mod panels;
 pub mod persist;
 pub mod registry;
+pub mod saver;
+pub mod stub;
+pub mod text;
+
+pub use app::Shell;
+
+#[cfg(test)]
+mod tests;
