@@ -8,7 +8,7 @@
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 mod common;
 
@@ -20,18 +20,19 @@ use omuzaki_ai_mock::MemFetcher;
 
 struct Counting;
 
-static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
-
 thread_local! {
     // `const` init with no destructor: reading it never allocates, so it is safe inside the allocator.
     static MEASURING: Cell<bool> = const { Cell::new(false) };
+    // Per thread, like `MEASURING`: the two tests in this file run side by side, and a shared counter would charge
+    // one test's measured allocations to the other's window.
+    static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
 }
 
 // SAFETY: every method forwards to `System` unchanged; the counter is the only addition.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         if MEASURING.try_with(Cell::get).unwrap_or(false) {
-            ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+            let _ = ALLOCATIONS.try_with(|n| n.set(n.get() + 1));
         }
         unsafe { System.alloc(layout) }
     }
@@ -45,11 +46,11 @@ unsafe impl GlobalAlloc for Counting {
 static GLOBAL: Counting = Counting;
 
 fn measure(f: impl FnOnce()) -> usize {
-    let before = ALLOCATIONS.load(Ordering::Relaxed);
+    let before = ALLOCATIONS.with(Cell::get);
     MEASURING.with(|m| m.set(true));
     f();
     MEASURING.with(|m| m.set(false));
-    ALLOCATIONS.load(Ordering::Relaxed) - before
+    ALLOCATIONS.with(Cell::get) - before
 }
 
 const MODELS: &str = "echo-fake";
