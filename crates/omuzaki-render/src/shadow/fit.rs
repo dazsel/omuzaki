@@ -55,6 +55,26 @@ impl Aabb {
         self.min.x > self.max.x || self.min.y > self.max.y || self.min.z > self.max.z
     }
 
+    /// The box of `points`. Four boxes grow side by side and join at the end: one box is a chain of dependent min and max
+    /// operations a vertex long, and a mesh's refit runs it over every vertex.
+    pub(crate) fn of_points(points: &[Vec3]) -> Self {
+        let mut lanes = [Self::EMPTY; 4];
+        let (chunks, rest) = points.as_chunks::<4>();
+        for chunk in chunks {
+            for (lane, point) in lanes.iter_mut().zip(chunk) {
+                lane.include(*point);
+            }
+        }
+        for point in rest {
+            lanes[0].include(*point);
+        }
+        let [mut all, b, c, d] = lanes;
+        for other in [&b, &c, &d] {
+            all.union(other);
+        }
+        all
+    }
+
     /// Grows the box to hold `point`.
     pub(crate) fn include(&mut self, point: Vec3) {
         self.min = self.min.min(point);

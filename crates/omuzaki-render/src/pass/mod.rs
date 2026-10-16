@@ -27,7 +27,7 @@ mod opaque;
 mod outlines;
 mod paint_textures;
 mod resolve;
-mod shadows;
+pub(crate) mod shadows;
 mod transparent;
 
 use std::time::Duration;

@@ -65,14 +65,28 @@ impl MeshBounds {
     /// Recomputes the boxes from a mesh's `shapes` (after its vertices moved, or an instance's morphed copy) and its
     /// `skin` data (empty for a rigid mesh), for `joints_needed` joints. Allocates only if the joint count grew.
     pub(crate) fn refit(&mut self, joints_needed: u32, shapes: &[Shape], skin: &[Surface]) {
+        self.refit_with(joints_needed, shapes.iter().map(|shape| Vec3::from(shape.position)), skin);
+    }
+
+    /// [`refit`](Self::refit) from the vertex positions alone, for a mesh that keeps no copy of its shapes.
+    pub(crate) fn refit_points(&mut self, joints_needed: u32, positions: &[Vec3], skin: &[Surface]) {
+        self.whole = Aabb::of_points(positions);
+        self.refit_joints(joints_needed, positions.iter().copied(), skin);
+    }
+
+    fn refit_with(&mut self, joints_needed: u32, points: impl Iterator<Item = Vec3> + Clone, skin: &[Surface]) {
         self.whole = Aabb::EMPTY;
-        for shape in shapes {
-            self.whole.include(Vec3::from(shape.position));
+        for p in points.clone() {
+            self.whole.include(p);
         }
+        self.refit_joints(joints_needed, points, skin);
+    }
+
+    /// Refits the per-joint boxes of `skin` from `points`.
+    fn refit_joints(&mut self, joints_needed: u32, points: impl Iterator<Item = Vec3>, skin: &[Surface]) {
         self.joints.clear();
         self.joints.resize(joints_needed as usize, Aabb::EMPTY);
-        for (shape, skin) in shapes.iter().zip(skin) {
-            let p = Vec3::from(shape.position);
+        for (p, skin) in points.zip(skin) {
             for (&id, &weight) in skin.joints.iter().zip(&skin.weights) {
                 if weight != 0.0
                     && let Some(bounds) = self.joints.get_mut(usize::from(id))

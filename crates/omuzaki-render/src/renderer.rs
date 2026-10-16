@@ -206,6 +206,16 @@ fn internal_size(target: UVec2, render_scale: f32) -> UVec2 {
     UVec2::new(scale(target.x), scale(target.y))
 }
 
+/// Whether every component of `vectors` is finite. Reads the exponent bits and accumulates, with no early exit, so the
+/// loop vectorises: this runs over every vertex of a dynamic mesh on every update.
+fn all_finite(vectors: &[Vec3]) -> bool {
+    const EXPONENT: u32 = 0x7f80_0000;
+    let non_finite = bytemuck::cast_slice::<Vec3, u32>(vectors)
+        .iter()
+        .fold(0_u32, |any, bits| any | u32::from(bits & EXPONENT == EXPONENT));
+    non_finite == 0
+}
+
 impl Renderer for WgpuRenderer {
     fn capabilities(&self) -> &Capabilities {
         &self.capabilities
@@ -228,9 +238,9 @@ impl Renderer for WgpuRenderer {
             }
         }
         let gpu = &self.shared.gpu;
-        // The GPU morph path reads the mesh's own vertices from a compute shader, so only then do they need `STORAGE`.
-        let blend_on_gpu = self.resources.morphs.path() == morph::MorphPath::Gpu;
-        let uploaded = gpu.scoped("a mesh", || GpuMesh::upload(gpu, mesh, options, blend_on_gpu))?;
+        // The GPU path reads and writes a mesh's streams from compute shaders, so only then do they need `STORAGE`.
+        let compute = self.resources.morphs.path() == morph::MorphPath::Gpu;
+        let uploaded = gpu.scoped("a mesh", || GpuMesh::upload(gpu, mesh, options, compute))?;
         let (index, generation) = self.resources.meshes.insert(uploaded);
         // The GPU morph path uploads the mesh's targets once, here; a mesh it cannot hold is refused outright.
         let attached = self.resources.meshes.get(index, generation).map_or(Ok(()), |m| {
@@ -260,7 +270,7 @@ impl Renderer for WgpuRenderer {
                 format!("{} positions and {} normals for a mesh of {count} vertices", positions.len(), normals.len());
             return Err(RenderError::invalid("vertex update", reason));
         }
-        if positions.iter().chain(normals).any(|v| !v.is_finite()) {
+        if !all_finite(positions) || !all_finite(normals) {
             return Err(RenderError::invalid("vertex update", "positions and normals must be finite"));
         }
         // A dynamic mesh's seams are found once, at creation (`resource/mesh.rs`). Tearing one apart is cheap to spot, so
@@ -274,10 +284,7 @@ impl Renderer for WgpuRenderer {
             );
             return Err(RenderError::invalid("vertex update", reason));
         }
-        gpu.scoped("a vertex update", || {
-            entry.update_vertices(&gpu.queue, positions, normals);
-            Ok(())
-        })
+        gpu.scoped("a vertex update", || entry.update_vertices(&gpu.queue, positions, normals))
     }
 
     fn create_texture(&mut self, desc: &TextureDesc, rgba: Option<&[u8]>) -> Result<TextureId, RenderError> {
@@ -416,7 +423,7 @@ impl Renderer for WgpuRenderer {
         // The refresh writes GPU buffers (staging memory can run out), so it sits in an error scope like every other
         // GPU call: a failure is a `RenderError`, not wgpu's uncaptured-error panic.
         shared.gpu.scoped("a mesh refresh", || {
-            resources.refresh_dynamic(&shared.gpu.queue, scene);
+            resources.refresh_dynamic(&shared.gpu.queue, scene, crate::pass::shadows::fits_shadows(scene, quality));
             Ok(())
         })?;
         let gpu = &shared.gpu;
