@@ -178,7 +178,7 @@ pub(crate) fn work(import: &Import, job: &JobCtx<'_>) -> Result<Value, OpError> 
             sidecars: stored.sidecars,
             file: name.clone(),
             format: prepared.format,
-            character: Some(id.to_string()),
+            characters: std::iter::once(id.to_string()).collect(),
         },
         id,
         name: character_name,

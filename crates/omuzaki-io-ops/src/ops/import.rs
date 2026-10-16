@@ -11,9 +11,10 @@
 //! rights (io-api D5: the conservative mapping, `Unknown` wherever the file does not settle it), and each image of the
 //! scene under that same record, so an image never carries more rights than the model it came from. The store is
 //! content addressed, so importing the same bytes again stores nothing new.
-//! An asset already recorded is never overwritten: a re-import of the same files without a character, or with the same
-//! one, changes nothing; one with a different character is a `Conflict` (several characters per asset is #1792), and so
-//! is one whose images or sidecars differ from the recorded ones (a file the model refers to changed).
+//! An asset already recorded is never overwritten: a re-import of the same files without a character, or for a character
+//! it already serves, changes nothing; one for another character adds that character to the record, so one asset serves
+//! several characters (`docs/design/io-api.md`, "The asset record"). A re-import whose images or sidecars differ from
+//! the recorded ones (a file the model refers to changed) is a `Conflict`.
 //! An object is shared with another import only under an identical record; the check runs before the first write and again
 //! after each `put`, and any difference is a `Conflict` that names both records (joining records is #1773).
 //!
@@ -39,6 +40,7 @@
 //! **Not here.** Importing as an editable part is CB-44 and answers `Unsupported`.
 
 use std::borrow::Cow;
+use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -131,9 +133,21 @@ pub(crate) struct AssetRecord {
     pub(crate) file: String,
     /// The format it was read as.
     pub(crate) format: String,
-    /// The character it is a reference for, if one was named. Absent otherwise: the document cannot hold a `null`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) character: Option<String>,
+    /// The characters it serves (a reference for, or, for an avatar, the character it became), each once, in name
+    /// order. Absent when none: the document cannot hold a `null`.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub(crate) characters: BTreeSet<String>,
+}
+
+/// The `character` key of a record written before one asset could serve several characters: read as a set of one, and
+/// replaced by `characters` when the record next changes.
+const LEGACY_CHARACTER: &str = "character";
+
+/// The characters a recorded asset serves, from its `characters` list and an older record's single `character`.
+fn recorded_characters(fields: &serde_json::Map<String, Value>) -> BTreeSet<String> {
+    let listed = fields.get("characters").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str);
+    let legacy = fields.get(LEGACY_CHARACTER).and_then(Value::as_str);
+    listed.chain(legacy).map(str::to_owned).collect()
 }
 
 /// One file a model refers to, as the document records it.
@@ -239,7 +253,7 @@ impl Import {
                 sidecars: stored.sidecars,
                 file: name.to_owned(),
                 format: importer.info().id.to_owned(),
-                character: self.character.clone(),
+                characters: self.character.iter().cloned().collect(),
             },
             summary: outcome.scene.summary(),
             report: outcome.report,
@@ -547,8 +561,9 @@ fn require_character(doc: &dyn DocRead, id: &str) -> Result<(), OpError> {
 /// needs its parent to exist).
 ///
 /// An entry that already exists is never overwritten, so a re-import cannot drop what it recorded. Different `images` or
-/// `sidecars` than the recorded ones are a `Conflict`. Otherwise, with no `character`, or the same one, the patch is empty; a `character` on an entry that has none is added; a different `character` is a
-/// `Conflict` naming the existing one (several characters per asset is #1792).
+/// `sidecars` than the recorded ones are a `Conflict`. Otherwise the patch adds the characters the import names that the
+/// entry does not serve yet (an older entry's single `character` becomes the `characters` list then), and is empty
+/// when there are none.
 pub(crate) fn record_patch(doc: &dyn DocRead, asset: &AssetRecord) -> Result<Patch, OpError> {
     let value = serde_json::to_value(asset).map_err(|e| OpError::internal(format!("serialising the asset: {e}")))?;
     let table = DocPath::root().join(ASSETS);
@@ -585,20 +600,15 @@ fn keep_existing(existing: &Value, asset: &AssetRecord, entry: DocPath) -> Resul
             .hint("an asset keeps one version of the files behind it for now; restore the files as they were, or remove the recorded asset first"));
         }
     }
-    let recorded = fields.get("character").and_then(Value::as_str);
-    match (recorded, asset.character.as_deref()) {
-        (_, None) => Ok(Patch::new()),
-        (Some(have), Some(want)) if have == want => Ok(Patch::new()),
-        (Some(have), Some(want)) => Err(OpError::conflict(format!(
-            "this asset is already recorded as a reference for character {have}, so it cannot also be one for {want}"
-        ))
-        .hint("an asset belongs to one character for now (#1792); import it without a character to keep the record")),
-        (None, Some(want)) => {
-            let mut updated = fields.clone();
-            updated.insert("character".to_owned(), Value::String(want.to_owned()));
-            Ok(Patch::new().with(entry, Some(existing.clone()), Some(Value::Object(updated))))
-        }
+    let recorded = recorded_characters(fields);
+    if asset.characters.is_subset(&recorded) {
+        return Ok(Patch::new());
     }
+    let mut updated = fields.clone();
+    updated.remove(LEGACY_CHARACTER);
+    let characters: Vec<Value> = recorded.union(&asset.characters).cloned().map(Value::String).collect();
+    updated.insert("characters".to_owned(), Value::Array(characters));
+    Ok(Patch::new().with(entry, Some(existing.clone()), Some(Value::Object(updated))))
 }
 
 impl Op for Import {
@@ -698,7 +708,7 @@ impl Op for Import {
             .map_err(|e| OpError::internal(format!("the import's result is malformed: {e}")))?
             .ok_or_else(|| OpError::internal("the import's result has no asset"))?;
         // The character may have been removed while the job ran.
-        if let Some(id) = &asset.character {
+        for id in &asset.characters {
             require_character(ctx.doc, id)?;
         }
         let patch = record_patch(ctx.doc, &asset)?;
@@ -810,7 +820,7 @@ mod tests {
             sidecars: Vec::new(),
             file: "a.glb".into(),
             format: "glb".into(),
-            character: None,
+            characters: BTreeSet::new(),
         };
         let doc = omuzaki_doc_mock::MemDoc::new();
         let first = record_patch(&doc, &asset).unwrap();
