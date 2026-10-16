@@ -32,7 +32,7 @@ use omuzaki_face_api::{FaceLayerId, Palette, narrow};
 use omuzaki_render_api::{AlphaMode, Outline};
 
 use super::compile::{self, CompiledEntry, Dispatch, GroupGenerator, GroupGeometry, draws_tubes, enabled};
-use super::tube::{OutwardFrame, RING, TubeError, TubeLook, TubeMesh, polar_angles, vertex_colour};
+use super::tube::{CAP_VERTICES, OutwardFrame, RING, TubeError, TubeLook, TubeMesh, polar_angles, vertex_colour};
 
 /// Where along the torso the body's vertical axis is read, from hips (0) to neck base (1): the upper back, where long
 /// hair hangs.
@@ -318,7 +318,8 @@ fn paint_tubes(mesh: &mut MeshData, tints: &[Option<Colour>]) -> bool {
 }
 
 /// The vertex ranges of the first `count` tubes of `mesh`: a tube starts at a ring whose `hair-uv.y` is 0 and ends after
-/// the ring where it reaches 1 (the last ring of every tube). `None` if the mesh doesn't hold that many.
+/// the ring where it reaches 1 (the last ring of every tube) and its two caps, which take the tube's tint too. `None` if
+/// the mesh doesn't hold that many.
 fn tube_ranges(mesh: &MeshData, count: usize) -> Option<Vec<Range<usize>>> {
     let uv = &mesh.extra_attribute(HAIR_UV)?.data;
     let along = |vertex: usize| uv.get(2 * vertex + 1).copied();
@@ -336,6 +337,7 @@ fn tube_ranges(mesh: &MeshData, count: usize) -> Option<Vec<Range<usize>>> {
                 break;
             }
         }
+        at += CAP_VERTICES;
         ranges.push(start..at);
     }
     (at <= mesh.positions.len()).then_some(ranges)
