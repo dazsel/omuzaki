@@ -1,0 +1,18 @@
+data: {"id":"chatcmpl-8a1f","object":"chat.completion.chunk","created":1760500003,"model":"Qwen/Qwen2.5-7B-Instruct","choices":[{"index":0,"delta":{"role":"assistant","content":""},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-8a1f","object":"chat.completion.chunk","created":1760500003,"model":"Qwen/Qwen2.5-7B-Instruct","choices":[{"index":0,"delta":{"content":"Rendering both views."},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-8a1f","object":"chat.completion.chunk","created":1760500003,"model":"Qwen/Qwen2.5-7B-Instruct","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"chatcmpl-tool-a1","type":"function","function":{"name":"render_preview","arguments":""}}]},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-8a1f","object":"chat.completion.chunk","created":1760500003,"model":"Qwen/Qwen2.5-7B-Instruct","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"camera\": \"front\"}"}}]},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-8a1f","object":"chat.completion.chunk","created":1760500003,"model":"Qwen/Qwen2.5-7B-Instruct","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"chatcmpl-tool-b2","type":"function","function":{"name":"render_preview","arguments":""}}]},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-8a1f","object":"chat.completion.chunk","created":1760500003,"model":"Qwen/Qwen2.5-7B-Instruct","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"{\"camera\": \"back\"}"}}]},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-8a1f","object":"chat.completion.chunk","created":1760500003,"model":"Qwen/Qwen2.5-7B-Instruct","choices":[{"index":0,"delta":{"content":""},"logprobs":null,"finish_reason":"tool_calls","stop_reason":null}]}
+
+data: {"id":"chatcmpl-8a1f","object":"chat.completion.chunk","created":1760500003,"model":"Qwen/Qwen2.5-7B-Instruct","choices":[],"usage":{"prompt_tokens":210,"total_tokens":262,"completion_tokens":52,"prompt_tokens_details":{"cached_tokens":192}}}
+
+data: [DONE]
+
