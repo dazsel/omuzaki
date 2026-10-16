@@ -74,14 +74,30 @@ How work is cut into large changes, one agent and one PR each, is in [`large-cha
   judgement to a mid-size one; leads and architecture to the largest.
 - **Code review is the automated Codex review,** on every pull request (the review loop the Director runs). No other
   model reviews pull requests, and leads don't re-review code line by line.
-  - **Less, deeper review (2026-10-15).** The session self-reviews its whole change first. Then **one deep review**
-    when the pull request opens (Codex, with every finding in one pass, plus the local deep review on large changes),
-    and **one verification review** after the session's single fix round (`fixed (head <sha>)`). That's all: the
-    loop requests no third review. After the verification, only a blocking correctness or security bug that the lead
-    confirms gets another push; everything else becomes a follow-up issue, and P2 and P3 findings never start a push
-    on their own. The lead resolves the threads it moved to follow-ups and approves. Merges of `main` and rebases
-    don't trigger a review. Why: small pull requests took 4 rounds at the median and 12 times more review per line
-    than large ones, and rework was 61% of all pull request time (measured on 193 merged PRs).
+  - **Findings are fixed in the PR (owner, 2026-10-15).** The session that wrote the pull request fixes every finding
+    in it, as many rounds as the findings need, and stays open (not archived) until the PR merges. It already has the
+    context, so a fix costs a fraction of a fresh session rebuilding it. Review findings are never filed as follow-up
+    issues: on 10-15 that added about 57 scope items in a day, and most sat unworked. P2 and P3 findings are fixed too.
+  - **Rounds.** Codex reviews when the PR opens, with every finding in one pass (large PRs also get the local deep
+    review). Each fix round is one session comment starting `fixed (head <sha7>)`; Codex then checks the fixes and what
+    they touched. Large PRs also get a deep re-check of each fix round's head, and merging waits for it (60 minutes at
+    most). The merge loop allows 6 fix rounds per PR. At 6 rounds the area lead finds out why the findings keep coming;
+    the findings still get fixed in the PR. Merges of `main` and rebases don't trigger a review.
+  - **A finding leaves the PR for two reasons only,** each answered on its thread: it is wrong (reply with why), or it
+    is in another area's code (reply with that area's owning issue). A reply clears the thread. "Filed as follow-up
+    #N" is not an answer.
+  - **Sign-offs.** `lead-approved` is the area lead's sign-off once every finding is fixed or answered; it never merges
+    over open findings. The one exception is a Codex outage: while the Director has declared one, the lead's own review
+    plus `lead-approved` at the PR head merges. `director-approved` is the hub and ADR sign-off only, never the
+    review call.
+  - **Existing follow-ups.** A follow-up from a PR that is still open is folded back into that PR and closed as "folded
+    into #PR". Follow-ups from merged PRs go into the Covers list of the area's next Change in that crate. There are no
+    single-fix PRs. Big PRs also absorb the open bugs and follow-ups in the crates they touch, wherever the fence
+    allows: one PR that closes everything in its crates beats ten small ones.
+  - **One valid exception:** work that can only happen after the merge (for example "measure merge-group CI over 20
+    runs after #2141 merges") is a separate issue.
+  - **Why:** small pull requests took 4 rounds at the median and 12 times more review per line than large ones, and
+    rework was 61% of all pull request time (measured on 193 merged PRs).
   - **What Codex is asked:** the first request asks for every finding in one pass, and fix rounds ask only whether the
     earlier findings are fixed and what the changes broke (`pub-review-dispatch.sh`).
   - **The Director's process-doc pull requests** (label `director-docs`) merge on a green gate without a review.
@@ -90,8 +106,9 @@ How work is cut into large changes, one agent and one PR each, is in [`large-cha
   change reads the pull request's summary, the API-surface change and Codex's verdict, and decides whether it is the
   right design; it opens the code only where the decision needs it. Rulings on Codex's findings work the same way.
   Sessions check their own diff before marking it ready; that self-check is not the review either.
-- **Short sessions:** one task, one pull request; archive the session as soon as its pull request is ready or its fix
-  round is pushed. A review round gets a fresh, short session.
+- **Short sessions:** one change, one pull request, one session. The session stays open until its PR merges and does
+  every fix round itself, then it is archived (only with a clean `git status` and the remote head matching what it
+  reported).
 - **Nothing idles:** implementer sessions run no hooks, check-ins, watchers or polling loops; only a lead watches, and
   only for actionable events.
 - **Standing rulings** (`CLAUDE.md`) answer recurring questions once, so they never cost a round trip.
@@ -110,13 +127,24 @@ How work is cut into large changes, one agent and one PR each, is in [`large-cha
   Check every fence before starting: `python3 tools/dispatch-check.py --crate-cap 5 --total-cap 150 <issue>`.
 - **File overlap is absolute:** two pull requests that change one file never run at once. **The one exception is a
   pure addition of lines to a `Cargo.toml`** (any table), together with the `Cargo.lock` lines cargo generates. The
-  merge queue catches the rare clash. Editing or removing an existing line still counts as overlap.
+  merge queue catches the rare clash. **A pure append of new `[[case]]` tables to a crate's `evidence.toml`** isn't
+  overlap either, until its folder form lands (next point); the second of two such PRs rebases. Editing or removing
+  an existing line or case still counts as overlap.
+- **Shared append-only files become folders.** Two branches that both append at the end of a file always conflict in
+  git. So any per-crate manifest that every change appends to becomes a folder with one file per entry, like the
+  catalogues (`evidence.py` is getting `crates/*/evidence/*.toml`).
 - **Claim before starting:** the `claimed` label on the issue, put on before the session starts. The earliest claim
   wins, and `dispatch-check.py` treats a claimed issue as taken.
 - **Start sessions about one a minute.** The platform refuses a burst (`Sandbox allocation failed`, `rate_limited`);
   a session left `PENDING` and disconnected was refused, so message it to retry.
 - **A split or follow-up issue gets its parent's milestone** when it's filed. GitHub doesn't copy it, and phase
   progress is read from milestones.
+- **A task split from a feature or task is filed as a GitHub sub-issue of it,** so progress tracking doesn't count the
+  split as new scope.
+- **Merge-queue jumps are rare.** A jump rebuilds every merge group behind it, at about 20 minutes of CI each, so jump
+  only to clear a jam or for a security fix.
+- **The `run-nightly` label** runs the full nightly (Windows and Linux) on a PR head. A lead adds it to a same-repo PR;
+  the merge loop dispatches `nightly.yml`, removes the label and comments the run link. One label is one run.
 - **Merge `main` into a pull request only on a conflict.** When a failure in `main` itself is fixed, the Director
   updates every pull request that was red on it, in the same check-in.
 - **Freeze triggers** (ADR 0053 §1.3): the open total passes its cap, CI waits over 30 minutes, or opens exceed
@@ -130,13 +158,13 @@ How work is cut into large changes, one agent and one PR each, is in [`large-cha
 
 - **Plan against limits.** A lead keeps a rough estimate of its own usage (an estimate is enough; don't spend effort
   measuring it). At about 70% of its limit it starts nothing new and drains:
-  rounds in flight finish, pull requests merge, sessions are archived as they finish.
+  rounds in flight finish, pull requests merge, sessions are archived once their PR has merged.
 - **Hand over at a quiet point.** The outgoing lead makes every session save unsaved work to `<branch>-wip` and stop,
   fills its state issue completely, posts "handover due" on #2 and stops. The owner then archives its sessions.
 - **The new lead** reads `CLAUDE.md`, this file, its area's manual and the state issue, absorbs each `-wip` branch into
   its pull request as a fix round, and posts "taken over".
 - **Ownership changes apply to new work.** When an area changes lead, or a task moves between areas, work already in
-  flight finishes with whoever has it (its session runs to a ready pull request, then is archived); only work not yet
+  flight finishes with whoever has it (its session runs until its pull request merges, then is archived); only work not yet
   started moves. Never stop a session mid-task to hand its work over.
 - A handover in the middle of a lot of work wastes tokens; when one is asked for mid-work, say what it costs and
   propose a better moment, then do what is decided.

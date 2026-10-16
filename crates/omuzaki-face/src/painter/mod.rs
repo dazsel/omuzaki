@@ -23,7 +23,7 @@ use omuzaki_face_api::{
 };
 
 pub use mouth::{MouthPiece, OpenMouth};
-pub use real::RealPainter;
+pub use real::{LayerSections, RealPainter, SectionRanges};
 
 /// A profile colour as a colour. A palette slot never reaches a painter (the stage resolves them); if one does, the
 /// section paints its own `fallback` rather than failing a frame.

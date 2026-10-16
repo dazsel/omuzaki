@@ -19,6 +19,7 @@ mkdir -p "$work/bin"
 cat >"$work/bin/gh" <<'S'
 #!/usr/bin/env bash
 refused() { [[ -e "$DISPATCH_FIXTURES/graphql-refused" ]] && { echo "HTTP 403: GraphQL refused" >&2; return 0; }; return 1; }
+echo "$*" >>"$DISPATCH_FIXTURES/gh-calls"
 case "$1 $2" in
   "issue view") refused && exit 1; cat "$DISPATCH_FIXTURES/issue-$3.json" ;;
   "pr list") refused && exit 1; cat "$DISPATCH_FIXTURES/prs.json" ;;
@@ -53,9 +54,14 @@ scenario() { FX="$work/$1"; mkdir -p "$FX"; }
 issue() {
   python3 -I -c 'import json,sys; print(json.dumps({"number": int(sys.argv[1]), "title": "t", "body": sys.stdin.read()}))' "$1" >"$FX/issue-$1.json"
 }
-# run ARGS...: the check against the current scenario, with the stub first on PATH. Sets $out and $code.
+# snapshot AGE: the scenario's open-prs.json from stdin ({"prs": [...], "claimed": [...]}), stamped AGE seconds ago.
+snapshot() {
+  python3 -I -c 'import datetime,json,sys; t = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=int(sys.argv[1])); body = json.load(sys.stdin); body.update(repo="dazsel/omuzaki", generated_at=t.strftime("%Y-%m-%dT%H:%M:%SZ")); print(json.dumps(body))' "$1" >"$FX/open-prs.json"
+}
+# run ARGS...: the check against the current scenario, with the stub first on PATH. Sets $out and $code. The snapshot
+# is the scenario's open-prs.json, a file:// URL, so a case without one falls back and no case reads the network.
 run() {
-  out=$(PATH="$work/bin:$PATH" DISPATCH_FIXTURES="$FX" timeout 120 python3 -I "$CHECK" "$@" 2>"$work/err")
+  out=$(PATH="$work/bin:$PATH" DISPATCH_FIXTURES="$FX" DISPATCH_CHECK_SNAPSHOT="file://$FX/open-prs.json" timeout 120 python3 -I "$CHECK" "$@" 2>"$work/err")
   code=$?
 }
 # expect_line TEXT DESCRIPTION: the output has a line exactly TEXT.
@@ -64,6 +70,10 @@ expect_line() {
 }
 expect_code() {
   if [[ $code == "$1" ]]; then pass "$2"; else fail "$2: exit $code, wanted $1 ($(cat "$work/err"))"; fi
+}
+# expect_err TEXT DESCRIPTION: stderr names TEXT (the source line, or why the snapshot was not used).
+expect_err() {
+  if grep -qF -- "$1" "$work/err"; then pass "$2"; else fail "$2: no '$1' in stderr: $(cat "$work/err")"; fi
 }
 
 # go: a fence nothing open touches; a draft that touches it doesn't count.
@@ -706,7 +716,8 @@ rm "$FX/graphql-refused"
 echo '[]' >"$FX/prs.json"
 DISPATCH_CHECK_REST=1 run 9101
 expect_line "wait #9101: overlap with #611 (crates/omuzaki-io-ops/src/b.rs)" "rest only: verdict from REST"
-[[ ! -s "$work/err" ]] && pass "rest only: GraphQL not tried, no notice" || fail "rest only: stderr: $(cat "$work/err")"
+{ ! grep -q "GraphQL" "$work/err" && grep -q "open PRs from REST" "$work/err"; } && pass "rest only: GraphQL not tried, no notice" \
+  || fail "rest only: stderr: $(cat "$work/err")"
 
 # one fetch per PR: a REST run reads each open PR's file list once, drafts included.
 scenario rest-once
@@ -997,5 +1008,104 @@ run 9212 9213 9214
 expect_line "wait #9212: module cap: omuzaki-char/hair has 3 open PRs (#701, #702, #703) (cap 3)" "broad: a glob over the crate root may reach the full module"
 expect_line "wait #9213: module cap: omuzaki-char/hair has 3 open PRs (#701, #702, #703) (cap 3)" "broad: a glob folder may reach the full module"
 expect_line "go #9214" "broad: a literal folder with a free module is go"
+
+# snapshot, fresh: the overlap comes from the snapshot, and no PR list is read from GitHub. prs.json is absent, so
+# reading it would fail the run.
+scenario snap-fresh
+issue 9301 <<'B'
+**Fence:** `crates/omuzaki-ops/src/a.rs`
+B
+snapshot 60 <<'J'
+{"prs": [{"number":801,"headRefName":"local/801-ops","isDraft":false,"createdAt":"2026-10-01T10:00:00Z",
+  "files":[{"path":"crates/omuzaki-ops/src/a.rs"}],"closingIssuesReferences":[]}], "claimed": []}
+J
+run 9301
+expect_line "wait #9301: overlap with #801 (crates/omuzaki-ops/src/a.rs)" "snapshot: a fresh snapshot gives the overlap"
+expect_err "open PRs from the snapshot" "snapshot: the source is printed"
+if grep -q "pr list\|pulls" "$FX/gh-calls" 2>/dev/null; then fail "snapshot: a fresh snapshot reads no PR list from GitHub"; else pass "snapshot: a fresh snapshot reads no PR list from GitHub"; fi
+
+# snapshot, stale: older than 600 seconds, so GraphQL is read instead. The snapshot's overlap is not used.
+scenario snap-stale
+issue 9302 <<'B'
+**Fence:** `crates/omuzaki-ops/src/a.rs`
+B
+snapshot 3600 <<'J'
+{"prs": [{"number":802,"headRefName":"local/802-ops","isDraft":false,"createdAt":"2026-10-01T10:00:00Z",
+  "files":[{"path":"crates/omuzaki-ops/src/a.rs"}],"closingIssuesReferences":[]}], "claimed": []}
+J
+echo '[]' >"$FX/prs.json"
+run 9302
+expect_line "go #9302" "snapshot: a stale snapshot is not used, so its overlap is ignored"
+expect_err "not within 600" "snapshot: the stale snapshot is named"
+expect_err "open PRs from GraphQL" "snapshot: the fallback source is printed"
+
+# claims: the snapshot's list waits a task unless --mine; an unclaimed task beside it is still go.
+scenario claims
+issue 9303 <<'B'
+**Fence:** `crates/omuzaki-ops/src/b.rs`
+B
+issue 9304 <<'B'
+**Fence:** `crates/omuzaki-ops/src/c.rs`
+B
+snapshot 60 <<'J'
+{"prs": [], "claimed": [9303]}
+J
+run 9303 9304
+expect_line "wait #9303: claimed" "claimed: a task on the snapshot's claimed list waits"
+expect_line "go #9304" "claimed: an unclaimed task is go"
+expect_code 1 "claimed: exit 1 while a task waits"
+run --mine 9303
+expect_line "go #9303" "claimed: --mine lets the holder start its own claimed task"
+
+# claims without a snapshot: the issue's own `claimed` label is the only sign of a claim.
+scenario label-claim
+echo '{"number":9305,"title":"t","body":"**Fence:** `tools/x.py`","labels":[{"name":"claimed"}]}' >"$FX/issue-9305.json"
+echo '[]' >"$FX/prs.json"
+run 9305
+expect_line "wait #9305: claimed" "claimed: the claimed label makes a task wait without a snapshot"
+expect_err "snapshot not used" "claimed: the missing snapshot is named"
+
+# snapshot, renames: a publisher's `previous_filename` keeps a rename's old path, so a task on that path waits.
+scenario snap-rename
+issue 9306 <<'B'
+**Fence:** `crates/omuzaki-ops/src/old.rs`
+B
+snapshot 60 <<'J'
+{"prs": [{"number":806,"headRefName":"local/806-ops","isDraft":false,"createdAt":"2026-10-01T10:00:00Z",
+  "files":[{"path":"crates/omuzaki-ops/src/new.rs","previous_filename":"crates/omuzaki-ops/src/old.rs"}],
+  "closingIssuesReferences":[]}], "claimed": []}
+J
+run 9306
+expect_line "wait #9306: overlap with #806 (crates/omuzaki-ops/src/old.rs)" "snapshot: a renamed file's old path is checked"
+
+# snapshot, at the list limit: the list may be cut, so the check stops rather than trust it.
+scenario snap-limit
+issue 9307 <<'B'
+**Fence:** `crates/omuzaki-ops/src/d.rs`
+B
+python3 -I -c 'import json; print(json.dumps({"prs": [{"number": n, "headRefName": "b", "isDraft": False, "createdAt": "",
+  "files": [], "closingIssuesReferences": []} for n in range(1, 1001)], "claimed": []}))' | snapshot 60
+run 9307
+expect_code 2 "snapshot: a snapshot at the list limit stops the check"
+expect_err "list limit" "snapshot: the list limit is named"
+
+# snapshot, interrupted: a truncated read falls back instead of crashing. The read is mocked, so no network is used.
+scenario snap-torn
+python3 -I - "$CHECK" <<'PYTEST' >"$work/torn.out" 2>"$work/torn.err"
+import http.client, importlib.util, io, sys, urllib.request
+spec = importlib.util.spec_from_file_location("dispatch_check", sys.argv[1])
+dc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(dc)
+class Torn(io.BytesIO):
+    def read(self, *args):
+        raise http.client.IncompleteRead(b'{"prs": [')
+urllib.request.urlopen = lambda *args, **kwargs: Torn()
+print("fallback" if dc.load_snapshot() is None else "used")
+PYTEST
+if grep -qx fallback "$work/torn.out" && grep -q "snapshot not used" "$work/torn.err"; then
+  pass "snapshot: a truncated read falls back"
+else
+  fail "snapshot: a truncated read falls back: $(cat "$work/torn.out" "$work/torn.err")"
+fi
 
 ((failures == 0)) || exit 1

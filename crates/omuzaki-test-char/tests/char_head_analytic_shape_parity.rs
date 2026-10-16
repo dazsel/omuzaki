@@ -114,6 +114,7 @@ fn params_for(c: &Constants) -> HeadParams {
             top: c.top - CENTRE[1],
             height: c.height,
             exponent: c.exponent,
+            exponent_lower: None,
             chin,
             cheek_puff: c.puff,
         },
