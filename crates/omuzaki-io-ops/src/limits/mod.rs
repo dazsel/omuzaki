@@ -66,10 +66,12 @@ pub struct BuiltinTable {
 inventory::collect!(BuiltinTable);
 
 /// Registers a built-in limit table: `register_limit_table!("vrchat-pc", "../data/platforms/vrchat-pc.toml")`. The path
-/// is relative to the file the macro is written in, as `include_str!`'s is.
+/// is relative to the file the macro is written in, as `include_str!`'s is. Like every `register_*!` macro it also
+/// records the registration, so the link gate (ADR 0015) can prove the binary holds it.
 #[macro_export]
 macro_rules! register_limit_table {
     ($id:literal, $path:literal) => {
+        ::omuzaki_core::__record_registration!("limit_table", $id);
         inventory::submit! {
             $crate::limits::BuiltinTable { id: $id, text: include_str!($path) }
         }
