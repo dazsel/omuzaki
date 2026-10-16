@@ -128,7 +128,8 @@ impl MockHost {
     /// - the id is registered once and is stable: non-empty, lower-case ASCII letters, digits, `.`, `_` or `-`;
     /// - it draws with no document: its body, or (when unavailable) a registered empty state;
     /// - it has a non-empty title (the panel's override, else the registered one) and, when it overrides the
-    ///   screen-reader label, a non-empty label; its frame gives AccessKit something to announce;
+    ///   screen-reader label, a non-empty label, and asking for either doesn't panic; its frame gives AccessKit
+    ///   something to announce;
     /// - nothing panics at its minimum size, at half of it, or at 1 by 1 points. Each size is drawn on a freshly built
     ///   panel, and only one instance is alive at a time (as in the shell), so a panel that holds an exclusive resource
     ///   for its lifetime passes.
@@ -154,13 +155,19 @@ impl MockHost {
             problems.push(format!("{id}: its build panics"));
             return problems;
         };
-        // The title the tab shows, and (when the panel overrides it) the label a screen reader gets, each on its own.
-        let title = panel.title().unwrap_or(Cow::Borrowed(def.title));
-        if title.trim().is_empty() {
-            problems.push(format!("{id}: the title is empty"));
+        // The title the tab shows, and (when the panel overrides it) the label a screen reader gets, each on its own and
+        // each guarded: the shell asks for both every frame, so a panic there is a problem to name, not a crash.
+        match panic::catch_unwind(AssertUnwindSafe(|| panel.title().unwrap_or(Cow::Borrowed(def.title)))) {
+            Ok(title) if title.trim().is_empty() => problems.push(format!("{id}: the title is empty")),
+            Ok(_) => {}
+            Err(_) => problems.push(format!("{id}: its title panics")),
         }
-        if panel.accessibility_label().is_some_and(|label| label.trim().is_empty()) {
-            problems.push(format!("{id}: the screen-reader label is empty"));
+        match panic::catch_unwind(AssertUnwindSafe(|| panel.accessibility_label())) {
+            Ok(Some(label)) if label.trim().is_empty() => {
+                problems.push(format!("{id}: the screen-reader label is empty"));
+            }
+            Ok(_) => {}
+            Err(_) => problems.push(format!("{id}: its screen-reader label panics")),
         }
         // The shell holds one instance at a time, so this one goes before the sizes build theirs: a panel that holds
         // an exclusive resource (a device, a port, a file lock) for its lifetime must not fail its own check.
