@@ -11,6 +11,7 @@ repository.workspace = true
 [package.metadata.omuzaki]
 kind = "API"
 summary = "imported avatars (EX-12, ADR 0033): `ImportedAvatar` with its meshes, expressions, `ChannelDrivers`, gaze route and look-at, `driven()` and `validate()`; `Retained` for exact re-export; the `AvatarDef` document node; `AvatarSummary`; and `Body`/`BodyView`, the one performer surface the stage, export and the doctor read for built and imported characters; design in `docs/design/byom.md`"
+registers = true
 
 [dependencies]
 schemars.workspace = true

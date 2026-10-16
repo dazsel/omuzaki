@@ -11,6 +11,7 @@ repository.workspace = true
 [package.metadata.omuzaki]
 kind = "Implementation"
 summary = "imported avatars at run time (EX-12): `ExpressionEvaluator` turns the channel buffer into morph weights and colour and UV bind deltas per frame, with VRM 1.0's override and `isBinary` rules and the presets gaze route, allocation-free on the frame thread; design in `docs/design/byom.md` D3"
+registers = true
 
 [dependencies]
 omuzaki-anim-api = { path = "../omuzaki-anim-api" }

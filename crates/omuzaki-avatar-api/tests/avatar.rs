@@ -8,12 +8,13 @@ use omuzaki_avatar_api::avatar::texture_bytes;
 use omuzaki_avatar_api::error::AvatarError;
 use omuzaki_avatar_api::expression::{ColourBind, ExprIx, MorphBind, UvBind};
 use omuzaki_avatar_api::gaze::{AvatarGaze, AvatarLookAt};
-use omuzaki_char_api::{BoneName, JointRef, MaterialName, TextureData, TextureName};
+use omuzaki_char_api::{BoneName, FaceOverlay, JointRef, MaterialName, TextureData, TextureName};
 use omuzaki_core::glam::Vec3;
 use omuzaki_core::glam::{UVec2, Vec2, Vec4};
 use omuzaki_core::id::Slug;
+use omuzaki_face_api::{FaceLayerId, PlanarWindow};
 use omuzaki_io_api::{ColorBindKind, LookAtKind, RangeMap};
-use omuzaki_render_api::{MorphSet, SparseMorph, TextureDesc};
+use omuzaki_render_api::{AlphaMode, MorphSet, SparseMorph, TextureDesc};
 
 #[test]
 fn a_well_formed_avatar_validates() {
@@ -68,6 +69,42 @@ fn morph_targets_must_fit_their_own_mesh() {
     assert!(matches!(a.validate(), Err(AvatarError::Morphs { mesh: 0, .. })), "{:?}", a.validate());
     a.meshes[0].morphs = Some(MorphSet::from_targets(10, vec![target(2)]).unwrap());
     assert_eq!(a.validate(), Ok(()), "the same targets with an index inside the mesh fit");
+}
+
+#[test]
+fn materials_and_textures_are_checked_as_upload_will_check_them() {
+    let skin = MaterialName::new("skin").unwrap();
+    let mut a = avatar(false, 0, &[]);
+    a.materials.get_mut(&skin).unwrap().alpha = AlphaMode::Mask { cutoff: 2.0 };
+    assert!(matches!(a.validate(), Err(AvatarError::Material { .. })), "a renderer rule: {:?}", a.validate());
+
+    let atlas = TextureName::new("atlas").unwrap();
+    let mut a = avatar(false, 0, &[]);
+    a.materials.get_mut(&skin).unwrap().base_texture = Some(atlas.clone());
+    assert_eq!(a.validate(), Err(AvatarError::unknown_texture(skin.clone(), atlas.clone())));
+    a.textures.insert(atlas.clone(), texture(4, false));
+    assert!(matches!(a.validate(), Err(AvatarError::Texture { .. })), "no pixels for a 4x4: {:?}", a.validate());
+    a.textures.get_mut(&atlas).unwrap().rgba8 = vec![0; 4 * 4 * 4];
+    assert_eq!(a.validate(), Ok(()), "with its pixels the texture uploads");
+
+    let mut a = avatar(false, 0, &[]);
+    let window = PlanarWindow { min: Vec2::ZERO, max: Vec2::ONE, fade_from: 0.0, fade_to: 0.1 };
+    let overlay = FaceOverlay { layer: FaceLayerId::Base, window, strength: 1.0 };
+    a.materials.get_mut(&skin).unwrap().overlays.push(overlay);
+    assert_eq!(a.validate(), Err(AvatarError::face_overlay(skin)), "an imported avatar has no painted face");
+}
+
+#[test]
+fn retained_morph_names_line_up_with_every_meshs_targets() {
+    let mut a = avatar(false, 2, &[]);
+    a.retained.morph_names = vec![vec!["Fcl_ALL_A".into(), "Fcl_EYE_Close".into()]];
+    assert_eq!(a.validate(), Ok(()));
+    a.retained.morph_names = vec![vec!["Fcl_ALL_A".into()]];
+    assert_eq!(a.validate(), Err(AvatarError::morph_names(0, 1, 2)), "a name missing");
+    a.retained.morph_names = vec![vec!["Fcl_ALL_A".into(), "Fcl_EYE_Close".into()], Vec::new()];
+    assert_eq!(a.validate(), Err(AvatarError::morph_names(1, 0, 0)), "a list for a mesh that isn't there");
+    a.retained.morph_names = Vec::new();
+    assert_eq!(a.validate(), Ok(()), "nothing kept is fine for a hand-built avatar");
 }
 
 #[test]

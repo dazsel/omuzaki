@@ -99,6 +99,11 @@ pub struct Retained {
     /// Every node of the file, in file order.
     #[serde(default)]
     pub nodes: Vec<RetainedNode>,
+    /// The file's morph-target names, by mesh in `ImportedAvatar::meshes` order, each in its morph set's target order:
+    /// `morph_names[m][t]` names target `t` of mesh `m`. The runtime names are slugs (`SparseMorph::name`), so the
+    /// file's own (`Fcl_ALL_A`) are kept here for export. Empty for an avatar that has none to keep.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub morph_names: Vec<Vec<String>>,
     /// The VRM meta (licence, authors, the thumbnail as an index into `images`), or `None` for a plain glTF. Its
     /// 0.x extras, which io-api's own serialisation leaves out, are kept too ([`meta_serde`]).
     #[serde(default, skip_serializing_if = "Option::is_none", with = "meta_serde")]

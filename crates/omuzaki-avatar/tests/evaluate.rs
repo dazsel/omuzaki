@@ -449,3 +449,23 @@ fn an_evaluator_from_the_body_view_matches_one_from_the_avatar() {
     from_view.eval(&inputs);
     assert_eq!((&from_view.weights, &from_view.binds), (&from_avatar.weights, &from_avatar.binds));
 }
+
+#[test]
+fn a_bad_gaze_channel_cannot_cancel_or_swamp_a_good_one() {
+    let mut a = avatar(false, &["lookUp", "lookDown", "lookLeft", "lookRight"]);
+    a.gaze = AvatarGaze::Presets;
+    a.look_at = Some(full_at_one(LookAtKind::Expression));
+    let mut run = Run::new(&a);
+    let (look_up, look_down) = (ix(&a, "lookUp"), ix(&a, "lookDown"));
+
+    let nan_up = [(Channel::EYE_LOOK_UP_LEFT, f32::NAN), (Channel::EYE_LOOK_UP_RIGHT, f32::NAN)];
+    run.eval(&[nan_up.as_slice(), &down()].concat());
+    assert_eq!(run.weights.expression(look_down), 1.0, "a NaN upward pair reads as 0 and leaves the downward gaze");
+    assert_eq!(run.weights.expression(look_up), 0.0);
+
+    run.eval(&[(Channel::EYE_LOOK_UP_LEFT, 3.0), (Channel::EYE_LOOK_DOWN_LEFT, 0.5)]);
+    assert!((run.weights.expression(look_up) - 0.5).abs() < 1e-5, "3.0 clamps to 1, so up 1 against down 0.5 nets 0.5");
+    run.eval(&[(Channel::EYE_LOOK_DOWN_LEFT, -2.0), (Channel::EYE_LOOK_UP_LEFT, 0.25)]);
+    assert!((run.weights.expression(look_up) - 0.25).abs() < 1e-5, "a negative channel reads as 0");
+    assert_eq!(run.weights.expression(look_down), 0.0);
+}

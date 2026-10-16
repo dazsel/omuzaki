@@ -297,7 +297,9 @@ fn saturate(value: f32) -> f32 {
 /// type): yaw and pitch from the `eyeLook*` channels, each through its direction's range map. A symmetric pair never
 /// adds: each side of a direction reads the larger of its two channels, so both `eyeLookUp*` at 1 is one full look up.
 fn preset_weights(channels: &ChannelBuf, maps: &[RangeMap; 4]) -> [f32; 4] {
-    let pair = |[a, b]: [Channel; 2]| channels.get(a).max(channels.get(b));
+    // Each channel is sanitised before it meets its opposite, so a NaN or out-of-range channel can't cancel or swamp a
+    // valid one in the subtraction below.
+    let pair = |[a, b]: [Channel; 2]| saturate(channels.get(a)).max(saturate(channels.get(b)));
     let [up, down, left, right] = LookDirection::ALL.map(|d| pair(d.channels()));
     let (yaw, pitch) = (left - right, up - down);
     let [up_map, down_map, left_map, right_map] = *maps;

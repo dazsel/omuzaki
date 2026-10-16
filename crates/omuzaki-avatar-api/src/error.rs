@@ -4,7 +4,7 @@
 //! can be added without breaking a crate that builds or matches one.
 
 use omuzaki_anim_api::{Channel, ConstraintError, SpringError};
-use omuzaki_char_api::{JointRef, MaterialName};
+use omuzaki_char_api::{JointRef, MaterialName, TextureName};
 use omuzaki_core::mesh::MeshError;
 use omuzaki_render_api::RenderError;
 
@@ -101,6 +101,53 @@ pub enum AvatarError {
         /// The renderer's own morph rule that is broken.
         why: RenderError,
     },
+    /// A material breaks a renderer rule (a range, a non-finite number), so upload would refuse it.
+    #[error("material '{material}': {why}")]
+    #[non_exhaustive]
+    Material {
+        /// The material.
+        material: MaterialName,
+        /// The renderer rule it breaks.
+        why: RenderError,
+    },
+    /// A material draws a texture the avatar does not have.
+    #[error("material '{material}' draws texture '{texture}', which the avatar does not have")]
+    #[non_exhaustive]
+    UnknownTexture {
+        /// The material.
+        material: MaterialName,
+        /// The texture it names.
+        texture: TextureName,
+    },
+    /// A material composites face layers, which only a built character's painted face provides.
+    #[error("material '{material}' composites face layers, but an imported avatar has no painted face")]
+    #[non_exhaustive]
+    FaceOverlay {
+        /// The material.
+        material: MaterialName,
+    },
+    /// A texture's pixels don't match its description.
+    #[error("texture '{texture}': {why}")]
+    #[non_exhaustive]
+    Texture {
+        /// The texture.
+        texture: TextureName,
+        /// What is wrong.
+        why: String,
+    },
+    /// The retained morph-target names don't line up with the meshes' targets.
+    #[error(
+        "the retained morph-target names don't fit mesh {mesh}: {names} names for {targets} targets (one list per          mesh, one name per target)"
+    )]
+    #[non_exhaustive]
+    MorphNames {
+        /// The mesh index.
+        mesh: usize,
+        /// How many names are retained for it.
+        names: usize,
+        /// How many targets it has.
+        targets: usize,
+    },
     /// The spring set does not fit the skeleton.
     #[error("springs: {0}")]
     Springs(SpringError),
@@ -160,6 +207,31 @@ impl AvatarError {
     /// [`AvatarError::Morphs`].
     pub fn morphs(mesh: usize, why: RenderError) -> Self {
         Self::Morphs { mesh, why }
+    }
+
+    /// [`AvatarError::Material`].
+    pub fn material(material: MaterialName, why: RenderError) -> Self {
+        Self::Material { material, why }
+    }
+
+    /// [`AvatarError::UnknownTexture`].
+    pub fn unknown_texture(material: MaterialName, texture: TextureName) -> Self {
+        Self::UnknownTexture { material, texture }
+    }
+
+    /// [`AvatarError::FaceOverlay`].
+    pub fn face_overlay(material: MaterialName) -> Self {
+        Self::FaceOverlay { material }
+    }
+
+    /// [`AvatarError::Texture`].
+    pub fn texture(texture: TextureName, why: impl Into<String>) -> Self {
+        Self::Texture { texture, why: why.into() }
+    }
+
+    /// [`AvatarError::MorphNames`].
+    pub const fn morph_names(mesh: usize, names: usize, targets: usize) -> Self {
+        Self::MorphNames { mesh, names, targets }
     }
 
     /// [`AvatarError::UnknownSchema`].

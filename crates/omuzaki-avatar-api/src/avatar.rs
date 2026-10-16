@@ -212,6 +212,9 @@ impl ImportedAvatar {
     /// - at most [`MAX_INDEXED`] meshes and expressions;
     /// - every mesh validates, follows bones the skeleton has, has as many inverse bind matrices as joints, has morph
     ///   targets that fit its vertices, and draws a material the avatar has;
+    /// - every material passes the renderer's rules, draws only textures the avatar has and composites no face layers
+    ///   (an imported avatar has no painted face), and every texture's pixels match its description;
+    /// - the retained morph-target names, when kept, line up with every mesh's targets;
     /// - every anchor follows a bone the skeleton has;
     /// - every morph bind names a mesh and a target that exist, and every colour and UV bind a material that exists;
     /// - every driver names an expression that exists, and gaze channels drive expressions only on the native `ARKit`
@@ -229,6 +232,8 @@ impl ImportedAvatar {
         for (index, mesh) in self.meshes.iter().enumerate() {
             self.validate_mesh(index, mesh)?;
         }
+        self.validate_materials()?;
+        self.validate_morph_names()?;
         for (id, anchor) in &self.anchors {
             self.resolve(&anchor.bone, || format!("anchor {id}"))?;
         }
@@ -261,6 +266,40 @@ impl ImportedAvatar {
             morphs.validate(mesh.mesh.geometry.positions.len()).map_err(|why| AvatarError::morphs(index, why))?;
         }
         self.material(&mesh.mesh.material, || format!("mesh {index}"))
+    }
+
+    /// The materials and textures, as upload will check them (`MaterialSpec::to_material`, `Material::validate`).
+    fn validate_materials(&self) -> Result<(), AvatarError> {
+        for (name, material) in &self.materials {
+            material.validate().map_err(|why| AvatarError::material(name.clone(), why))?;
+            if let Some(texture) = material.base_texture.as_ref().filter(|t| !self.textures.contains_key(*t)) {
+                return Err(AvatarError::unknown_texture(name.clone(), texture.clone()));
+            }
+            if !material.overlays.is_empty() {
+                return Err(AvatarError::face_overlay(name.clone()));
+            }
+        }
+        for (name, texture) in &self.textures {
+            texture.validate().map_err(|why| AvatarError::texture(name.clone(), why))?;
+        }
+        Ok(())
+    }
+
+    /// The retained morph-target names, when there are any: one list per mesh, one name per target.
+    fn validate_morph_names(&self) -> Result<(), AvatarError> {
+        let names = &self.retained.morph_names;
+        if names.is_empty() {
+            return Ok(());
+        }
+        // Every index either side has: a list for a mesh that doesn't exist is as wrong as a mesh without its list.
+        for index in 0..names.len().max(self.meshes.len()) {
+            let kept = names.get(index).map(Vec::len);
+            let targets = self.meshes.get(index).map(AvatarMesh::morph_count);
+            if kept != targets {
+                return Err(AvatarError::morph_names(index, kept.unwrap_or(0), targets.unwrap_or(0)));
+            }
+        }
+        Ok(())
     }
 
     fn validate_expression(&self, index: usize, expression: &AvatarExpression) -> Result<(), AvatarError> {
