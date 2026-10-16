@@ -3,7 +3,8 @@
 
 // Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
 #![allow(clippy::expect_used, clippy::unwrap_used)]
-#![allow(clippy::cast_possible_truncation)] // grid parameters are small
+#![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::float_cmp)] // grid parameters are small; exact floats are the point
+#![allow(clippy::unreadable_literal)] // the reference values are copied as the Director gave them
 
 use omuzaki_char_api::{Taper, TaperShape};
 use omuzaki_face_api::{Check, Validate};
@@ -137,8 +138,8 @@ fn every_shape_round_trips() {
 #[test]
 fn bad_shape_values_are_named() {
     let smooth = |a, b| Taper::default().with_shape(TaperShape::smooth(a, b));
-    assert!(errors(&smooth(0.45, 0.5)).is_empty());
-    assert!(errors(&smooth(0.5, 0.5)).is_empty());
+    assert_eq!(errors(&smooth(0.45, 0.5)), Vec::<String>::new());
+    assert_eq!(errors(&smooth(0.5, 0.5)), Vec::<String>::new());
     assert_eq!(errors(&smooth(0.6, 0.5)), ["shape/taper_from"]);
     assert_eq!(errors(&smooth(-0.1, 0.5)), ["shape/fill_to"]);
     assert_eq!(errors(&smooth(0.2, 1.5)), ["shape/taper_from"]);

@@ -19,6 +19,7 @@
 //! tolerances (the noise floor).
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // helpers load local files; a bad one should stop the test with its reason
+#![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)] // table indices are small and non-negative
 
 use std::fs;
 use std::path::Path;
@@ -70,8 +71,7 @@ impl TableHead {
         let bytes = fs::read(path).expect("the local head radius table");
         let word = |k: usize| u32::from_le_bytes(bytes[4 * k..4 * k + 4].try_into().expect("four bytes"));
         let (nt, np) = (word(0) as usize, word(1) as usize);
-        let radii: Vec<f32> =
-            bytes[8..].chunks_exact(4).map(|b| f32::from_le_bytes(b.try_into().expect("four bytes"))).collect();
+        let radii: Vec<f32> = bytes[8..].as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect();
         assert_eq!(radii.len(), (nt + 1) * (np + 1), "the table is nt+1 by np+1");
         Self { centre, radii, nt, np }
     }

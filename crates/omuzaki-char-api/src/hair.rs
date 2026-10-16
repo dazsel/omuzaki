@@ -867,6 +867,9 @@ impl Default for GuideClump {
 }
 
 /// What a group makes.
+// One per group, parsed once and read while a style compiles: boxing the generators would only change the contract's
+// shape (the framing generator is the large one, with its taper, outline and lock heights).
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Generator {

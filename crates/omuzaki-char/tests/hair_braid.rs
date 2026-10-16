@@ -2,7 +2,7 @@
 //! the `-x` side mirrors the `+x` side, and compiling draws no random numbers. Everything is synthetic.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // helpers build fixtures; a bad one should stop the test with its reason
-#![allow(clippy::float_cmp, clippy::cast_precision_loss)] // exact values that were copied, not computed; indices are small
+#![allow(clippy::float_cmp, clippy::cast_precision_loss, clippy::cast_possible_truncation)] // exact values that were copied, not computed; indices are small
 
 use omuzaki_char::hair::compile::{Dispatch, HairGenCtx, UnitStream, compile_groups, is_bilateral, stream};
 use omuzaki_char::hair::r#gen::braid;

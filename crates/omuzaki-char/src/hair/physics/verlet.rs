@@ -462,61 +462,61 @@ impl ChainSet {
         q.is_finite() && self.spheres.iter().all(|&(c, r)| r - q.distance(c) <= SURFACE_TOLERANCE)
     }
 
-    /// The candidate nearest to `p` that is inside no sphere: with `triples` false the projections onto single
+    /// The candidate nearest to `point` that is inside no sphere: with `triples` false the projections onto single
     /// surfaces and onto the circles of pairs, true the points common to three surfaces.
-    fn nearest_clear(&self, p: Vec3, triples: bool) -> Option<Vec3> {
+    fn nearest_clear(&self, point: Vec3, triples: bool) -> Option<Vec3> {
         let mut best: Option<(f32, Vec3)> = None;
-        let mut consider = |q: Vec3| {
-            let d = p.distance_squared(q);
-            if self.is_clear(q) && best.is_none_or(|(g, _)| d < g) {
-                best = Some((d, q));
+        let mut consider = |candidate: Vec3| {
+            let distance_sq = point.distance_squared(candidate);
+            if self.is_clear(candidate) && best.is_none_or(|(least, _)| distance_sq < least) {
+                best = Some((distance_sq, candidate));
             }
         };
-        for (a, &(ca, ra)) in self.spheres.iter().enumerate() {
+        for (first, &(ca, ra)) in self.spheres.iter().enumerate() {
             if !triples {
                 // A particle at the centre has no nearest surface point of this sphere; the circles below serve it.
-                if let Some(dir) = (p - ca).try_normalize() {
+                if let Some(dir) = (point - ca).try_normalize() {
                     consider(ca + dir * ra);
                 }
             }
-            for (b, &(cb, rb)) in self.spheres.iter().enumerate().skip(a + 1) {
-                let d = ca.distance(cb);
+            for (second, &(cb, rb)) in self.spheres.iter().enumerate().skip(first + 1) {
+                let span = ca.distance(cb);
                 // Only spheres whose surfaces cross: neither inside the other.
-                if d <= (ra - rb).abs() || d >= ra + rb {
+                if span <= (ra - rb).abs() || span >= ra + rb {
                     continue;
                 }
-                let axis = (cb - ca) / d;
-                let along = (d * d + ra * ra - rb * rb) / (2.0 * d);
+                let axis = (cb - ca) / span;
+                let along = (span * span + ra * ra - rb * rb) / (2.0 * span);
                 let ring = (ra * ra - along * along).max(0.0).sqrt();
                 let centre = ca + axis * along;
                 if !triples {
-                    let off = p - centre;
+                    let off = point - centre;
                     let side =
                         (off - axis * off.dot(axis)).try_normalize().unwrap_or_else(|| axis.any_orthonormal_vector());
                     consider(centre + side * ring);
                     continue;
                 }
-                // Where the circle meets a third surface: the plane of that sphere and `a` cuts it at two points.
-                for &(cc, rc) in self.spheres.iter().skip(b + 1) {
-                    let n = cc - ca;
-                    let k = (n.length_squared() + ra * ra - rc * rc) * 0.5;
-                    let along_n = n.dot(axis);
-                    let across = n - axis * along_n;
-                    let Some(u) = across.try_normalize() else { continue };
-                    // Points `centre + u t + w s` with `n . x = k`: solve for `t` along `u`, then `s` along `axis x u`.
-                    let t = (k - along_n * along) / across.length();
-                    let rest = ring * ring - t * t;
+                // Where the circle meets a third surface: the plane of that sphere and the first cuts it at two points.
+                for &(cc, rc) in self.spheres.iter().skip(second + 1) {
+                    let to_c = cc - ca;
+                    let plane = (to_c.length_squared() + ra * ra - rc * rc) * 0.5;
+                    let along_n = to_c.dot(axis);
+                    let across = to_c - axis * along_n;
+                    let Some(unit_u) = across.try_normalize() else { continue };
+                    // Points `centre + unit_u a + unit_w b` on the plane: `a` from the plane's offset, `b` from the circle's radius.
+                    let along_u = (plane - along_n * along) / across.length();
+                    let rest = ring * ring - along_u * along_u;
                     if rest < 0.0 {
                         continue;
                     }
-                    let w = axis.cross(u);
-                    let s = rest.sqrt();
-                    consider(ca + axis * along + u * t + w * s);
-                    consider(ca + axis * along + u * t - w * s);
+                    let unit_w = axis.cross(unit_u);
+                    let half_chord = rest.sqrt();
+                    consider(ca + axis * along + unit_u * along_u + unit_w * half_chord);
+                    consider(ca + axis * along + unit_u * along_u - unit_w * half_chord);
                 }
             }
         }
-        best.map(|(_, q)| q)
+        best.map(|(_, candidate)| candidate)
     }
 
     /// One pass of every non-root particle against every collider in order; whether it pushed any particle.
