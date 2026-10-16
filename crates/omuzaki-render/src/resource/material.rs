@@ -72,6 +72,8 @@ pub(crate) struct MaterialUniform {
     overlays: [OverlayUniform; 4],
     /// Shading program parameters, packed in the program's declared order (`program/mod.rs`).
     program: [[f32; 4]; PACKED_FLOATS / 4],
+    /// The UV transform: scale in xy, offset in zw (`uv * scale + offset`, as `UvTransform::apply`).
+    uv_transform: [f32; 4],
 }
 
 /// Bytes of one material uniform, for the memory estimate.
@@ -159,6 +161,12 @@ impl MaterialUniform {
             textures: [texture_bits, 0, 0, 0],
             overlays,
             program,
+            uv_transform: [
+                material.uv_transform.scale.x,
+                material.uv_transform.scale.y,
+                material.uv_transform.offset.x,
+                material.uv_transform.offset.y,
+            ],
         }
     }
 }
@@ -246,8 +254,8 @@ mod tests {
 
     #[test]
     fn the_uniform_is_a_multiple_of_sixteen_bytes() {
-        // std140: uniform struct sizes round up to 16. 9 vec4 + 4 overlays of 2 vec4 + 8 vec4 = 25 vec4.
-        assert_eq!(size_of::<MaterialUniform>(), 25 * 16);
+        // std140: uniform struct sizes round up to 16. 9 vec4 + 4 overlays of 2 vec4 + 8 vec4 + the UV transform = 26 vec4.
+        assert_eq!(size_of::<MaterialUniform>(), 26 * 16);
         assert_eq!(size_of::<OverlayUniform>(), 32);
     }
 

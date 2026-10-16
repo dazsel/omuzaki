@@ -22,6 +22,9 @@ omuzaki-test = { path = "../omuzaki-test" }
 
 [dev-dependencies]
 tempfile.workspace = true
+# The score templates' sheets read the library's score files (`score_template_sheets`).
+omuzaki-anim-api = { path = "../omuzaki-anim-api" }
+toml.workspace = true
 # The GPU face rasteriser's tests create a device and wait on it; the mocks stand in for the face and render contracts.
 wgpu.workspace = true
 pollster.workspace = true
