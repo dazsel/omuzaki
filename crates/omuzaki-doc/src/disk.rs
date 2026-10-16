@@ -890,21 +890,36 @@ fn replaced_name(dir: &Path, path: &Path, suffix: &str) -> Result<PathBuf, Store
 /// sharing so it can't be opened for it, or the file may be read-only; or the flush itself fails), it is still moved, and the error then says that it is kept but not
 /// flushed ([`flush_file`]), so the limitation is reported and the file is not left under its hidden name.
 fn preserve(dir: &Path, from: &Path, hooks: &Hooks<'_>) -> Result<PathBuf, StoreError> {
-    if let Some(parent) = replaced_name(dir, from, "")?.parent() {
-        fs::create_dir_all(parent).map_err(|e| StoreError::io(parent, e))?;
+    preserve_located(dir, from, hooks).map_err(|r| r.error)
+}
+
+/// A failed [`preserve_located`]: why, and where the file is now.
+struct Rescue {
+    error: StoreError,
+    /// The file's place: `from` if it wasn't moved, the folder of replaced files' name if it was.
+    kept_at: PathBuf,
+}
+
+/// [`preserve`], with the file's place in the error, so a caller can tell the user where it is.
+fn preserve_located(dir: &Path, from: &Path, hooks: &Hooks<'_>) -> Result<PathBuf, Rescue> {
+    let unmoved = |error| Rescue { error, kept_at: from.to_path_buf() };
+    if let Some(parent) = replaced_name(dir, from, "").map_err(unmoved)?.parent() {
+        fs::create_dir_all(parent).map_err(|e| unmoved(StoreError::io(parent, e)))?;
     }
     // A flush that fails, however it fails, is kept and reported after the move: nothing between displacing a file and
     // moving it may skip the move.
     let unflushed = if fs::symlink_metadata(from).is_ok_and(|m| m.is_file()) { hooks.flush_file(from) } else { None };
-    let to = move_to_free_slot(from, &|| replaced_name(dir, from, ".displaced"), hooks)?
-        .ok_or_else(|| StoreError::io(from, io::ErrorKind::NotFound.into()))?;
-    sync_folder(to.parent())?;
+    let to = move_to_free_slot(from, &|| replaced_name(dir, from, ".displaced"), hooks)
+        .map_err(unmoved)?
+        .ok_or_else(|| unmoved(StoreError::io(from, io::ErrorKind::NotFound.into())))?;
+    let moved = |error| Rescue { error, kept_at: to.clone() };
+    hooks.sync_folder(to.parent()).map_err(moved)?;
     match unflushed {
-        None => Ok(to),
-        Some(e) => Err(StoreError::io(
+        None => Ok(to.clone()),
+        Some(e) => Err(moved(StoreError::io(
             &to,
             io::Error::new(e.kind(), format!("it is kept here, but its contents could not be flushed: {e}")),
-        )),
+        ))),
     }
 }
 
@@ -1456,19 +1471,9 @@ fn quarantine_name(path: &Path) -> PathBuf {
 }
 
 /// The error for a target that couldn't be looked at when the rescue of the file moved aside from it failed as well:
-/// both failures, and where the file is. A rescue that failed before the move leaves it at `quarantine`; one that
-/// failed after the move (flushing) names the file's new place.
-fn stranded(path: &Path, source: io::Error, quarantine: &Path, rescue: StoreError) -> StoreError {
-    let moved_to = match &rescue {
-        StoreError::Io { path: to, .. } if fs::symlink_metadata(quarantine).is_err() => Some(to.clone()),
-        _ => None,
-    };
-    StoreError::Stranded {
-        path: path.to_path_buf(),
-        source,
-        kept_at: moved_to.unwrap_or_else(|| quarantine.to_path_buf()),
-        rescue: Box::new(rescue),
-    }
+/// both failures, and where the file is, as the rescue reported it.
+fn stranded(path: &Path, source: io::Error, rescue: Rescue) -> StoreError {
+    StoreError::Stranded { path: path.to_path_buf(), source, kept_at: rescue.kept_at, rescue: Box::new(rescue.error) }
 }
 
 /// Removes the file at `path` if it is the backed-up one; false if another file was there, which is kept.
@@ -1497,9 +1502,9 @@ fn unlink_held(dir: &Path, path: &Path, held: &Held, hooks: &Hooks<'_>) -> Resul
             Err(e) => {
                 // Whether the name is taken is unknown, but the file moved aside must not stay under its hidden name:
                 // it is kept. If keeping it fails too, the error also says where the file is.
-                return Err(match preserve(dir, &quarantine, hooks) {
+                return Err(match preserve_located(dir, &quarantine, hooks) {
                     Ok(_) => StoreError::io(path, e),
-                    Err(rescue) => stranded(path, e, &quarantine, rescue),
+                    Err(rescue) => stranded(path, e, rescue),
                 });
             }
         }
@@ -2711,5 +2716,23 @@ mod tests {
         assert!(rescue.to_string().contains("forced by a test"), "{rescue}");
         let text = err.to_string();
         assert!(text.contains(&kept_at.display().to_string()) && text.contains("looking at the file failed"), "{text}");
+    }
+
+    /// When the file was moved into the replaced folder and only the folder flush then failed, the error names the new
+    /// place, not the hidden name that no longer exists.
+    #[test]
+    fn a_rescue_that_fails_after_the_move_reports_the_new_place() {
+        let tmp = TempDir::new().unwrap();
+        let d = tmp.path();
+        write(d, "a.toml", "x = 1\n");
+        let hooks = Hooks::default();
+        hooks.look_off.set(true);
+        hooks.sync_off.set(true); // the folder flush fails; the move itself succeeds
+        let err = remove_checked_with(d, &["a".to_owned()], Some(ContentHash::of(b"x = 1\n")), &hooks).unwrap_err();
+        let StoreError::Stranded { kept_at, .. } = &err else { panic!("{err}") };
+        assert!(kept_at.to_string_lossy().ends_with(".displaced"), "{kept_at:?}");
+        assert_eq!(fs::read_to_string(kept_at).unwrap(), "x = 1\n");
+        let names: Vec<_> = fs::read_dir(d).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert!(names.iter().all(|n| !n.to_string_lossy().ends_with(".del")), "{names:?}");
     }
 }
