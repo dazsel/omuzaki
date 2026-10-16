@@ -235,6 +235,20 @@ fn every_action_is_an_op_and_the_tree_follows_the_document() {
 }
 
 #[test]
+fn rename_is_listed_but_disabled_until_an_op_renames_a_part() {
+    let mut h = rig();
+    h.get_by_role_and_label(Role::TreeItem, "shirt").click_secondary();
+    settle(&mut h);
+    let rename = h.get_by_role_and_label(Role::Button, "Rename");
+    assert!(rename.accesskit_node().is_disabled(), "no part.rename op on main: never a guessed name");
+    let reason = rename.accesskit_node().description();
+    assert!(reason.as_deref().is_some_and(|r| r.contains("part.rename")), "the reason names the op: {reason:?}");
+    rename.click();
+    settle(&mut h);
+    assert!(h.state().runner.ops().is_empty(), "nothing ran: {:?}", h.state().runner.ops());
+}
+
+#[test]
 fn deleting_several_parts_is_one_undo_step() {
     let mut h = rig();
     h.get_by_role_and_label(Role::TreeItem, "shirt").click();

@@ -624,6 +624,8 @@ fn context_menu(response: &egui::Response, ds: &Ds, node: usize, enabled: bool) 
             }
         };
         item(ui, text::FRAME, Action::Frame(node));
+        // `shell.md` section 6 lists Rename (F2); no op renames a part yet, so it is shown, disabled, with the reason.
+        ui.add(Button::new(&say(ds, text::RENAME, &[])).ghost().disabled(&say(ds, text::RENAME_NOT_YET, &[])));
         item(ui, if enabled { text::DISABLE } else { text::ENABLE }, Action::SetEnabled(node, !enabled));
         item(ui, text::MOVE_UP, Action::Move(node, Step::Up));
         item(ui, text::MOVE_DOWN, Action::Move(node, Step::Down));

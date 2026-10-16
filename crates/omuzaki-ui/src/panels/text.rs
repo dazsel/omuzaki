@@ -38,6 +38,10 @@ pub const ENABLE: &str = "Enable";
 pub const DISABLE: &str = "Disable";
 /// Frames the part in the viewport.
 pub const FRAME: &str = "Frame";
+/// Renames a part (F2).
+pub const RENAME: &str = "Rename";
+/// Why Rename is disabled: no op renames a part yet, and the panel never calls one by a guessed name.
+pub const RENAME_NOT_YET: &str = "Not available yet: renaming a part needs a part.rename op";
 /// An op the panel ran was refused: the runner's message follows.
 pub const REFUSED: &str = "That didn't work: {reason}";
 /// A part whose stored parameters fail its kind's check.
