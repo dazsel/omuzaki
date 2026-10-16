@@ -533,6 +533,11 @@ fn a_suggestion_is_made_only_when_a_name_is_close() {
     let layout = run(&doc, "face.set_style", set_args("face/layout/eye_y", json!(0.0))).unwrap_err();
     assert!(layout.message.contains("not a style section"), "{layout:?}");
     assert!(!layout.hint.as_deref().unwrap_or_default().contains("did you mean"), "{layout:?}");
+    // Every other part of the face says the same, known from the profile itself rather than from a list of names.
+    for part in ["mapping", "rest", "expressions", "grammar"] {
+        let err = run(&doc, "face.set_style", set_args(&format!("face/{part}/x"), json!(0.0))).unwrap_err();
+        assert!(err.message.contains("not a style section"), "{part}: {err:?}");
+    }
 }
 
 /// #637: "no fangs" is a value an agent can write and read back.

@@ -50,10 +50,6 @@ fn section_list() -> String {
     Section::ALL.map(Section::name).join(", ")
 }
 
-/// Parts of a face the style ops don't edit. They are in the face, so a path into one gets an answer that says so
-/// instead of "no such section".
-const OTHER_PARTS: [&str; 5] = ["layout", "mapping", "rest", "expressions", "grammar"];
-
 /// The candidate closest to `wanted`, when one is close: a name that contains it or is contained in it (from three
 /// characters), or one within `max(len / 3, 2)` edits. Nothing otherwise, so a guess is never a wild one.
 fn nearest<'a>(wanted: &str, candidates: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
@@ -100,7 +96,9 @@ pub(crate) fn section(name: &str) -> Result<Section, OpError> {
         return Ok(found);
     }
     let sections = section_list();
-    if OTHER_PARTS.contains(&name) {
+    // A part of the face the style ops don't edit is a key of the serialised profile that is not a section, so a path
+    // into one gets an answer that says so instead of "no such section". No list of keys is kept here.
+    if template()?.profile.get(name).is_some() {
         return Err(OpError::invalid(
             format!("face/{name}"),
             format!("'{name}' is part of the face, but not a style section"),

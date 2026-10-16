@@ -6,10 +6,10 @@ use omuzaki_char_api::{CharId, paths};
 use omuzaki_doc_api::Patch;
 use omuzaki_face_api::{FaceProfile, PaintParams};
 use omuzaki_ops_api::{OpCtx, OpError, Plan};
-use serde_json::{Number, Value, json};
+use serde_json::{Map, Number, Value, json};
 
 use crate::ops_shared::check::check_edit;
-use crate::ops_shared::edit::{changed, diff, effective, first_null, put, stored_face, working_copy};
+use crate::ops_shared::edit::{changed, diff, effective, first_null, put, stored_face};
 use crate::ops_shared::path::{canonical, chain, template};
 
 /// The keys below the face that a mapping path names, with `mapping` first: `face/mapping/eyes/wide` gives
@@ -46,7 +46,7 @@ pub(crate) fn plan_edit(ctx: &OpCtx<'_>, character: &CharId, keys: &[String], va
             .hint("give the field a number; a null can't be written"));
     }
 
-    let mut working = working_copy(stored.as_ref());
+    let mut working = stored.clone().unwrap_or_else(|| Value::Object(Map::new()));
     put(&mut working, "face", keys, &chain, value)?;
     check_edit(stored.as_ref(), &working, &defaults)?;
 

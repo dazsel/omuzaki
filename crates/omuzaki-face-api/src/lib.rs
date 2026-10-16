@@ -22,6 +22,7 @@ pub mod paint;
 pub mod palette;
 pub mod profile;
 mod resolve;
+mod underlay;
 
 pub use baker::{BakerInput, FaceBakerConflict, FaceBakerFactory, FaceBakerRegistration, face_baker};
 pub use check::{Check, FieldRange, ParamError, ParamErrors, Validate};
@@ -47,6 +48,7 @@ pub use profile::{
     NoseKind, NoseStyle, Pupil, PupilShape, Sclera,
 };
 pub use resolve::ResolveError;
+pub use underlay::{UnderlayHead, UnderlayImage, UnderlayTarget, UnderlayTargetError};
 
 #[doc(hidden)]
 pub use inventory as __inventory;
