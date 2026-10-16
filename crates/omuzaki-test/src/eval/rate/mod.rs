@@ -176,7 +176,8 @@ pub fn append_all(path: &Path, ratings: &[Rating]) -> Result<(), RateError> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(io_err)?;
     }
-    let mut file = OpenOptions::new().read(true).append(true).create(true).open(path).map_err(io_err)?;
+    // Not in append mode: on Windows an append handle cannot shorten the file, and the lock below already orders all writers.
+    let mut file = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path).map_err(io_err)?;
     file.lock().map_err(io_err)?;
     let mut existing = Vec::new();
     io::Read::read_to_end(&mut file, &mut existing).map_err(io_err)?;
@@ -199,6 +200,7 @@ pub fn append_all(path: &Path, ratings: &[Rating]) -> Result<(), RateError> {
         lines.push_str(&serde_json::to_string(rating).map_err(|e| io_err(io::Error::other(e)))?);
         lines.push('\n');
     }
+    io::Seek::seek(&mut file, io::SeekFrom::End(0)).map_err(io_err)?;
     file.write_all(lines.as_bytes()).map_err(io_err)
 }
 

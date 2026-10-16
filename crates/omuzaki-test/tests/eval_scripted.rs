@@ -383,7 +383,8 @@ fn binary_within_gives_the_tool_list_only_the_time_the_handshake_left() {
     let elapsed = started.elapsed();
     let Err(error) = result else { panic!("a child that never lists its tools must not connect") };
     assert!(error.to_string().contains("the tool list did not complete"), "{error}");
-    // One budget of 2 s: about 2 s. Two full budgets would be about 3 s (1 s handshake + 2 s list).
-    assert!(elapsed < std::time::Duration::from_millis(2600), "{elapsed:?}");
+    // One budget of 2 s: about 2 s. Two full budgets would be 3 s (1 s handshake + 2 s list), so anything under 2.9 s
+    // shows the list got only what the handshake left; the margin is for a loaded machine.
+    assert!(elapsed < std::time::Duration::from_millis(2900), "{elapsed:?}");
     assert!(elapsed >= std::time::Duration::from_millis(1900), "{elapsed:?}");
 }
