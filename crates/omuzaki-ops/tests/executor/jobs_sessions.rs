@@ -49,6 +49,9 @@ struct SessionJob {
     spend: u64,
     #[serde(default)]
     net: bool,
+    /// Never checks for a cancel: returns its result however it was asked to stop.
+    #[serde(default)]
+    stubborn: bool,
 }
 
 impl Op for SessionJob {
@@ -78,7 +81,9 @@ impl Op for SessionJob {
             entered.send(()).unwrap();
             let _ = release.lock().unwrap().recv();
         }
-        job.checkpoint("done", 1.0)?;
+        if !self.stubborn {
+            job.checkpoint("done", 1.0)?;
+        }
         Ok(json!(true))
     }
 
@@ -122,6 +127,20 @@ fn ending_a_session_cancels_its_jobs_and_keeps_the_money_they_spent() {
     assert_eq!(rig.at("paid"), None, "its change is discarded");
     assert_eq!(job.spent_usd_micros, 300_000, "a paid loss stays visible");
     assert_eq!(rig.exec.session(session.id).unwrap().spent.usd_micros, 300_000, "and the session's spend keeps it");
+}
+
+#[test]
+fn an_ended_sessions_job_that_ignores_the_cancel_still_ends_cancelled_and_changes_nothing() {
+    let rig = rig(json!({}));
+    let session = spender(&rig, 0);
+    let held = Held::new("stubborn");
+    let info = rig.exec.start(job_of(&session.actor, "stubborn", json!({"stubborn": true}))).unwrap();
+    held.entered.recv().unwrap();
+    rig.exec.end(session.id, omuzaki_ops_api::EndReason::Revoked { by: person(), credential: false }).unwrap();
+    held.release.send(()).unwrap();
+    let job = rig.exec.wait(info.id, None).unwrap();
+    assert!(matches!(job.state, JobState::Cancelled { reason: CancelReason::SessionEnded, .. }), "{:?}", job.state);
+    assert_eq!(rig.at("stubborn"), None);
 }
 
 #[test]

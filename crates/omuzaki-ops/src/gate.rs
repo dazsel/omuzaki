@@ -326,10 +326,11 @@ impl Env {
         if !self.approver {
             return refusal(req, &asked.need, Refused::NoApprover);
         }
-        if allow.effect_call || allow.driver.is_some() {
+        if allow.effect_call {
             return refusal(req, &asked.need, Refused::Inner);
         }
-        if req.cause.as_ref().is_some_and(|cause| cause.kind == CauseKind::Script) {
+        // A driver job's inner call is a script's (or a macro's) step: queued, it would run after the run ended.
+        if allow.driver.is_some() || req.cause.as_ref().is_some_and(|cause| cause.kind == CauseKind::Script) {
             return refusal(req, &asked.need, Refused::Script);
         }
         let preview = match self.preview(state, index, op, req, &asked) {
@@ -445,7 +446,7 @@ enum Refused {
     NoOneCanGrant,
     /// The executor has no approver (headless).
     NoApprover,
-    /// The request comes from a script, whose run would be over before anyone decided.
+    /// The request comes from a script (or a driver job's inner call), whose run would be over before anyone decided.
     Script,
     /// The request is an effect call inside an undo, a redo or a rollback, which would be over before anyone decided.
     Inner,

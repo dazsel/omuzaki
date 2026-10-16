@@ -462,6 +462,7 @@ pub struct OpInfo {
     pub job_shape: JobShape,
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)] // the signature `skip_serializing_if` requires
 fn is_plain(shape: &JobShape) -> bool {
     *shape == JobShape::Plain
 }

@@ -80,8 +80,13 @@ pub(super) fn run(mgr: &Arc<Manager>, id: JobId) {
 /// document and the grants of that moment; a stop or an end discards it.
 fn finish(mgr: &Manager, id: JobId, task: &Task, value: Value) -> Result<Outcome, OpError> {
     let env: &Env = &mgr.env;
-    let mut state = lock(&env.state);
     loop {
+        // A stop or a session end discards the finish (`ops-api.md` §8.3). Asked with no lock held: the manager's lock
+        // is never taken under the document's.
+        if let Some(reason) = mgr.cancelled_for(id).filter(|r| discards(*r)) {
+            return Err(cancelled(id, reason));
+        }
+        let mut state = lock(&env.state);
         // A shutdown that began while `work` ran must not see the document change after it: the result is discarded.
         // This first look only saves running `finish` for nothing; the check that counts is the one before the apply.
         if *lock(&mgr.shut) {
@@ -91,14 +96,7 @@ fn finish(mgr: &Manager, id: JobId, task: &Task, value: Value) -> Result<Outcome
             Err(error) if error.code == ErrorCode::Waiting => {
                 drop(state);
                 mgr.hold(id);
-                if let Some(reason) = mgr
-                    .cancelled_for(id)
-                    .filter(|r| matches!(r, CancelReason::Stop | CancelReason::SessionEnded | CancelReason::Shutdown))
-                {
-                    return Err(cancelled(id, reason));
-                }
                 mgr.wait_tick();
-                state = lock(&env.state);
             }
             // The session may have been narrowed while `work` ran: what it holds now decides, under the lock that
             // applies the result.
@@ -108,6 +106,11 @@ fn finish(mgr: &Manager, id: JobId, task: &Task, value: Value) -> Result<Outcome
             }
         }
     }
+}
+
+/// Whether a cancel for `reason` discards a job's result rather than letting it apply what it finished.
+pub(super) fn discards(reason: CancelReason) -> bool {
+    matches!(reason, CancelReason::Stop | CancelReason::SessionEnded | CancelReason::Shutdown)
 }
 
 fn apply_finish(

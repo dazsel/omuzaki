@@ -619,9 +619,10 @@ impl Manager {
             // The edit is in. Under shutdown too: `finish` holds the shutdown flag through its apply, so the apply
             // came before the shutdown began, and the job's state must not deny an edit the log holds.
             (Some(state), result, _) => (state, result),
-            // Shutdown promises every job ends cancelled with its result discarded: whatever `work` or `finish`
-            // returned instead, an error or a panic, gives way to it.
-            (None, _, Some(c)) if c.reason == CancelReason::Shutdown => {
+            // Shutdown, a stop and a session end promise the job ends cancelled with its result discarded: whatever
+            // `work` or `finish` returned instead (an error, a panic, a finish refused for the ended session) gives
+            // way to it.
+            (None, _, Some(c)) if worker::discards(c.reason) => {
                 (JobState::Cancelled { by: c.by, reason: c.reason }, Err(cancelled(id, c.reason)))
             }
             (None, Ok(_), _) => {
