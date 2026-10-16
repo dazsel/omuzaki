@@ -61,12 +61,18 @@ pub enum Event {
     ChooseOutput(OutputKind),
     /// Finish from Go-live.
     Finish,
-    /// The host applied the source [`Effect::SelectInput`] asked for (the `input.select` op ran). Only this lets
-    /// Input move on, so a queued or refused op leaves the step as it is.
-    InputApplied(InputChoice),
-    /// The host could not apply that source (the person declined it, or the op failed). The step stays and a
-    /// [`Note::InputNotApplied`] says so; Continue asks again.
-    InputRejected(InputChoice),
+    /// The host applied the source of the [`Effect::SelectInput`] with this `request` (the `input.select` op ran).
+    /// Only this lets Input move on, so a queued or refused op leaves the step as it is.
+    InputApplied {
+        /// The `request` of the effect that is answered.
+        request: u32,
+    },
+    /// The host could not apply that request's source (the person declined it, or the op failed). The step stays
+    /// and a [`Note::InputNotApplied`] says so; Continue asks again.
+    InputRejected {
+        /// The `request` of the effect that is answered.
+        request: u32,
+    },
 }
 
 /// What the host must do.
@@ -76,10 +82,17 @@ pub enum Effect {
     Show(Step),
     /// Ask the OS for the camera, with the reason on screen.
     RequestCameraPermission,
-    /// Apply this tracking source (`input.select`, which may wait for the person's approval). Sent for a choice, or
-    /// for a source only preselected when Continue is pressed; never for a source already in the host's settings.
-    /// The host answers with [`Event::InputApplied`] or [`Event::InputRejected`].
-    SelectInput(InputChoice),
+    /// Apply this tracking source (`input.select`, which may wait for the person's approval). Sent for a choice, a
+    /// skip that must drop the applied source, or a source only preselected when Continue is pressed; never for a
+    /// source already in the host's settings. At most one request is outstanding: a later choice waits for the
+    /// answer to this one, then the latest choice is requested. The host answers each `request` exactly once with
+    /// [`Event::InputApplied`] or [`Event::InputRejected`].
+    SelectInput {
+        /// Numbers this request; the answer carries it back.
+        request: u32,
+        /// The source to apply.
+        source: InputChoice,
+    },
     /// Start the calibration overlay.
     StartCalibration,
     /// Show the test pattern on this output.
@@ -143,17 +156,13 @@ pub struct View {
     pub elapsed_ms: [u64; 6],
 }
 
-/// Where the selected source stands with the host's settings.
+/// What the person asked for on Input that waits for the host to apply the source.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum Applied {
-    /// It is the host's setting (or needs none, like the life layer).
-    Yes,
-    /// It is only drawn as selected; nothing was sent.
-    NotSent,
-    /// `SelectInput` was sent and no answer came yet.
-    Pending,
-    /// The host answered that it did not apply it.
-    Rejected,
+enum Then {
+    /// Continue.
+    Continue,
+    /// "Skip for now" (the life layer).
+    Skip,
 }
 
 /// How far the calibration got in this sitting (not persisted).
@@ -173,9 +182,15 @@ pub struct SetupFlow {
     skipped: BTreeSet<Step>,
     finished: bool,
     input: Option<InputChoice>,
-    applied: Applied,
-    /// Continue was pressed while the source was being applied: move on when the host says it was.
-    continue_when_applied: bool,
+    /// The source the host has applied; `None` before one ever was (the life layer is then in effect).
+    host_input: Option<InputChoice>,
+    /// The `input.select` request waiting for its answer.
+    in_flight: Option<(u32, InputChoice)>,
+    next_request: u32,
+    /// The host refused the last request for the selected source.
+    rejected: bool,
+    /// Move on when the host has applied the selected source.
+    then: Option<Then>,
     output: Option<OutputKind>,
     calibration: Calibration,
     permission_requested: bool,
@@ -207,12 +222,11 @@ impl SetupFlow {
             skipped,
             finished,
             input,
-            applied: if input.is_some() && (current.input.is_some() || skipped_input) {
-                Applied::Yes
-            } else {
-                Applied::NotSent
-            },
-            continue_when_applied: false,
+            host_input: current.input.or(skipped_input.then_some(InputChoice::LifeLayerOnly)),
+            in_flight: None,
+            next_request: 0,
+            rejected: false,
+            then: None,
             output: current.output,
             calibration: Calibration::Idle,
             permission_requested: false,
@@ -245,23 +259,10 @@ impl SetupFlow {
                 }
             }
             Event::Next => self.next(&mut fx),
-            Event::InputApplied(c) => {
-                if self.input == Some(c) && self.applied == Applied::Pending {
-                    self.applied = Applied::Yes;
-                    let proceed = std::mem::take(&mut self.continue_when_applied);
-                    if proceed && self.step == Step::Input && self.input_ready() {
-                        self.advance(&mut fx);
-                    }
-                }
-            }
-            Event::InputRejected(c) => {
-                if self.input == Some(c) && self.applied == Applied::Pending {
-                    self.applied = Applied::Rejected;
-                    self.continue_when_applied = false;
-                }
-            }
+            Event::InputApplied { request } => self.answered(request, true, &mut fx),
+            Event::InputRejected { request } => self.answered(request, false, &mut fx),
             Event::Back => {
-                self.continue_when_applied = false;
+                self.then = None;
                 if let Some(prev) = self.prev_shown() {
                     self.go(prev, &mut fx);
                 }
@@ -371,7 +372,7 @@ impl SetupFlow {
                 if self.input == Some(InputChoice::Iphone) && p.iphone != IPhone::Paired {
                     notes.push(Note::IphoneNotPaired);
                 }
-                if self.applied == Applied::Rejected {
+                if self.rejected && !self.settled() {
                     notes.push(Note::InputNotApplied);
                 }
             }
@@ -502,19 +503,84 @@ impl SetupFlow {
     /// choosing it would, and the step stays until the host reports it applied.
     fn continue_input(&mut self, fx: &mut Vec<Effect>) {
         let Some(choice) = self.input else { return };
-        match self.applied {
-            Applied::NotSent | Applied::Rejected => {
-                self.send_input(choice, fx);
-                self.continue_when_applied = self.applied == Applied::Pending;
+        if choice == InputChoice::Webcam && matches!(self.probes.cameras.permission(), None | Some(Permission::Denied))
+        {
+            return;
+        }
+        if choice == InputChoice::Webcam {
+            self.request_camera(fx);
+        }
+        if self.settled() {
+            if self.input_ready() {
+                self.advance(fx);
             }
-            Applied::Pending => self.continue_when_applied = true,
-            Applied::Yes => {
-                if self.input_ready() {
-                    self.advance(fx);
-                } else if choice == InputChoice::Webcam {
-                    self.request_camera(fx);
-                }
+        } else {
+            self.then = Some(Then::Continue);
+            self.pump(fx);
+        }
+    }
+
+    /// True when the host has applied the selected source and no request is outstanding. The life layer is the
+    /// default, so it needs no request while nothing else was ever applied.
+    fn settled(&self) -> bool {
+        match self.input {
+            None => false,
+            Some(choice) => {
+                self.in_flight.is_none()
+                    && (self.host_input == Some(choice)
+                        || (choice == InputChoice::LifeLayerOnly && self.host_input.is_none()))
             }
+        }
+    }
+
+    /// Asks the host for the selected source when it is not applied and no request is outstanding.
+    fn pump(&mut self, fx: &mut Vec<Effect>) {
+        let Some(source) = self.input else { return };
+        if self.in_flight.is_some() || self.settled() {
+            return;
+        }
+        let request = self.next_request;
+        self.next_request = self.next_request.wrapping_add(1);
+        self.in_flight = Some((request, source));
+        self.rejected = false;
+        fx.push(Effect::SelectInput { request, source });
+    }
+
+    /// The host answered a request. Stale or unknown answers change nothing.
+    fn answered(&mut self, request: u32, applied: bool, fx: &mut Vec<Effect>) {
+        let Some((id, source)) = self.in_flight else { return };
+        if id != request {
+            return;
+        }
+        self.in_flight = None;
+        if applied {
+            self.host_input = Some(source);
+        } else if self.input == Some(source) {
+            self.rejected = true;
+            self.then = None;
+            return;
+        }
+        // The person may have chosen again while this was out; then the latest choice is asked for next.
+        if self.settled() {
+            self.finish_then(fx);
+        } else {
+            self.pump(fx);
+        }
+    }
+
+    /// Carries out what was waiting for the source to be applied, if the person is still on Input.
+    fn finish_then(&mut self, fx: &mut Vec<Effect>) {
+        let then = self.then.take();
+        if self.step != Step::Input {
+            return;
+        }
+        match then {
+            Some(Then::Continue) if self.input_ready() => self.advance(fx),
+            Some(Then::Skip) => {
+                self.skipped.insert(Step::Input);
+                self.advance(fx);
+            }
+            _ => {}
         }
     }
 
@@ -526,16 +592,22 @@ impl SetupFlow {
             Some(InputChoice::Iphone) => self.probes.iphone == IPhone::Paired,
             Some(InputChoice::LifeLayerOnly) => true,
         };
-        source_ready && self.applied == Applied::Yes
+        source_ready && self.settled()
     }
 
     fn skip(&mut self, fx: &mut Vec<Effect>) {
         match self.step {
             Step::Input => {
-                // The life layer is the default and writes nothing, so there is nothing to wait for.
+                // The life layer needs no request while nothing else was applied; otherwise the applied source is
+                // dropped through the host first, and the step waits for that.
                 self.set_input(InputChoice::LifeLayerOnly);
-                self.applied = Applied::Yes;
-                self.skipped.insert(Step::Input);
+                self.then = Some(Then::Skip);
+                if self.settled() {
+                    self.finish_then(fx);
+                } else {
+                    self.pump(fx);
+                }
+                return;
             }
             Step::Calibrate => {
                 // "Use defaults" gives up any stored result of this sitting too.
@@ -558,30 +630,21 @@ impl SetupFlow {
         {
             return;
         }
+        if choice == InputChoice::Webcam {
+            // Clicking the webcam starts the OS dialog whether or not it is already the selected source.
+            self.request_camera(fx);
+        }
         self.skipped.remove(&Step::Input);
-        if self.input == Some(choice) && matches!(self.applied, Applied::Yes | Applied::Pending) {
-            return;
-        }
-        self.send_input(choice, fx);
-    }
-
-    /// Makes `choice` the selected source and asks the host to apply it.
-    fn send_input(&mut self, choice: InputChoice, fx: &mut Vec<Effect>) {
-        match (choice, self.probes.cameras.permission()) {
-            (InputChoice::Webcam, None | Some(Permission::Denied)) => return,
-            (InputChoice::Webcam, _) => self.request_camera(fx),
-            _ => {}
-        }
         self.set_input(choice);
-        self.applied = Applied::Pending;
-        fx.push(Effect::SelectInput(choice));
+        self.pump(fx);
     }
 
     /// Every change of source goes through here: a calibration belongs to the source it ran on.
     fn set_input(&mut self, choice: InputChoice) {
         if self.input != Some(choice) {
             self.calibration = Calibration::Idle;
-            self.continue_when_applied = false;
+            self.then = None;
+            self.rejected = false;
             if choice != InputChoice::Webcam {
                 // A pending camera dialog belongs to the webcam source.
                 self.permission_requested = false;
