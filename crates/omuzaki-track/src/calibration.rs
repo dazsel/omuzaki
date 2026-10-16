@@ -27,7 +27,7 @@ pub const MAX_ID_CHARS: usize = 128;
 #[derive(Clone, Debug, PartialEq)]
 enum Entry {
     /// A calibration that read back and passed its checks.
-    Good(Calibration),
+    Good(Box<Calibration>),
     /// What the file held: a value that did not parse, failed a check or was filed under the wrong device class. It is
     /// never used and never rewritten, so one bad entry cannot cost the person the good ones, and a hand fix of the
     /// file is still there to make.
@@ -64,7 +64,7 @@ impl Serialize for CalibrationStore {
             for (profile, entry) in by_profile {
                 let value = match entry {
                     Entry::Good(calibration) => {
-                        let mut value = serde_json::to_value(calibration).map_err(serde::ser::Error::custom)?;
+                        let mut value = serde_json::to_value(**calibration).map_err(serde::ser::Error::custom)?;
                         strip_nulls(&mut value);
                         value
                     }
@@ -90,7 +90,7 @@ impl<'de> Deserialize<'de> for CalibrationStore {
                     .map(|(filed, raw)| {
                         let entry = match serde_json::from_value::<Calibration>(raw.clone()) {
                             Ok(calibration) if check_calibration(&character, &filed, &calibration).is_ok() => {
-                                Entry::Good(calibration)
+                                Entry::Good(Box::new(calibration))
                             }
                             _ => Entry::Unreadable(raw),
                         };
@@ -159,7 +159,7 @@ impl CalibrationStore {
     /// class's, is never returned.
     pub fn for_character(&self, character: &str, profile: DeviceProfile) -> Option<Calibration> {
         match self.entries.get(character).and_then(|by_profile| by_profile.get(&profile_key(profile))) {
-            Some(Entry::Good(calibration)) => Some(*calibration),
+            Some(Entry::Good(calibration)) => Some(**calibration),
             Some(Entry::Unreadable(_)) | None => None,
         }
     }
@@ -193,7 +193,7 @@ impl CalibrationStore {
         self.entries
             .entry(character.to_owned())
             .or_default()
-            .insert(profile_key(calibration.profile), Entry::Good(calibration));
+            .insert(profile_key(calibration.profile), Entry::Good(Box::new(calibration)));
         Ok(())
     }
 
