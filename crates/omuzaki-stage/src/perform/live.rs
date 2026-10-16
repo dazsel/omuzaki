@@ -132,6 +132,7 @@ impl LiveStage {
         self.sources.swap_into(&mut self.performer);
         self.take_scene();
         // Variant switches are staged outside the tick (`frame::face`), against the input the last frame showed.
+        self.refresh_expressions();
         self.stage.service_variants(renderer, self.frames.input())?;
         let output = if self.paused {
             self.stage.redraw(renderer, self.frames.input())?
@@ -141,7 +142,6 @@ impl LiveStage {
                 None => return Ok(None),
             }
         };
-        self.refresh_expressions();
         let change = self.scheduler.observe(&output.report);
         if change.is_some() {
             self.stage.set_quality(self.scheduler.quality());
@@ -150,10 +150,17 @@ impl LiveStage {
     }
 
     /// Installs the character's expressions again when a variant swap replaced the character, so the triggers are baked
-    /// against the face now showing. A full request queue keeps the old revision, so the next frame tries again.
+    /// against the face now showing. It runs with the variant service, the part of the frame that is allowed to
+    /// allocate (outside `tick`), and never waits for the ops side: a busy trigger table or a full queue keeps the old
+    /// revision, so the next frame tries again.
     fn refresh_expressions(&mut self) {
         let revision = self.stage.revision();
-        if revision != self.expressions_for && self.install_expressions().is_ok() {
+        if revision == self.expressions_for {
+            return;
+        }
+        let expressions =
+            self.stage.built().face.as_ref().map(|face| face.profile.expressions.clone()).unwrap_or_default();
+        if self.handle.try_set_expressions(expressions, *self.performer.rest()).is_ok() {
             self.expressions_for = revision;
         }
     }

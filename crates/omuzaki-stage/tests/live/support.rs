@@ -153,9 +153,16 @@ pub fn mid_step(i: u64) -> Seconds {
 #[derive(Default)]
 pub struct MemSettings {
     values: Mutex<BTreeMap<String, Value>>,
+    /// While set, every write is refused as a full disk would.
+    refusing: std::sync::atomic::AtomicBool,
 }
 
 impl MemSettings {
+    /// Makes every write fail (`true`) or work again (`false`).
+    pub fn refuse_writes(&self, refuse: bool) {
+        self.refusing.store(refuse, std::sync::atomic::Ordering::SeqCst);
+    }
+
     /// The stored value of `key`.
     pub fn value(&self, key: &str) -> Option<Value> {
         self.values.lock().unwrap().get(key).cloned()
@@ -179,6 +186,9 @@ impl Settings for MemSettings {
     fn set_raw(&self, key: &str, value: Value, _layer: Layer, mode: Mode, _by: &Actor) -> Result<Change, SettingError> {
         let registration = registry::find(key).ok_or_else(|| SettingError::unknown_key(key))?;
         registration.validate(&value)?;
+        if mode == Mode::Apply && self.refusing.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(SettingError::invalid(key, "the disk is full"));
+        }
         let mut values = self.values.lock().unwrap();
         let before = values.get(key).cloned().unwrap_or_else(|| registration.default_json());
         if mode == Mode::Apply {

@@ -21,7 +21,9 @@ use omuzaki_settings_api::setting::Setting;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::perform::input::{InputError, InputHost};
+use omuzaki_track_api::camera::CameraId;
+
+use crate::perform::input::{InputError, InputHost, SourceKind};
 
 pub mod bind_camera;
 pub mod preview;
@@ -52,6 +54,31 @@ fn persist<S: Setting>(ctx: &OpCtx<'_>, value: &S::Value) -> Result<bool, OpErro
         .set::<S>(value, Layer::Base, mode(ctx), ctx.actor)
         .map(|_| true)
         .map_err(|e| OpError::internal(format!("the setting `{}` could not be saved: {e}", S::META.key)))
+}
+
+/// Puts the camera binding back to `before` and, when a preview ran, starts it again: what an op does to undo its own
+/// change when a later step of it fails. Says what could not be put back.
+fn put_back_camera(host: &dyn InputHost, before: Option<&CameraId>, was_on: bool) -> Result<(), String> {
+    host.bind_camera(before.cloned(), Mode::Apply).map_err(|e| e.to_string())?;
+    if was_on {
+        host.preview(true, Mode::Apply).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Puts the source back to `before` and, when a preview ran, starts it again (see [`put_back_camera`]).
+fn put_back_source(host: &dyn InputHost, before: SourceKind, was_on: bool) -> Result<(), String> {
+    host.select(before, Mode::Apply).map_err(|e| e.to_string())?;
+    if was_on {
+        host.preview(true, Mode::Apply).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// What an op reports when a step failed and its own change could not be taken back: the change stays (and has its
+/// undo record), and these say what is true now.
+fn retained(problems: &[String]) -> Value {
+    serde_json::json!(problems)
 }
 
 /// The answer `value` serialises to.

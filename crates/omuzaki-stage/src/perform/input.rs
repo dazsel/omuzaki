@@ -273,6 +273,9 @@ impl FrameSource for NoSource {
 /// perform thread never allocates or frees one.
 struct SourceCell {
     source: Box<dyn FrameSource>,
+    /// The next cell of the retired list; null at its end. Only the perform thread writes it, before the cell is
+    /// published.
+    next: *mut SourceCell,
 }
 
 /// The hand-off of frame sources from the ops side to the perform thread: newest wins, and the source a swap replaces
@@ -281,11 +284,13 @@ struct SourceCell {
 ///
 /// The ops side posts a cell with a source in it; the perform thread takes it, puts the source into the performer and
 /// the performer's old source into the same cell (exchanging them through a source that is zero-sized, so nothing is
-/// allocated), and hands the cell back as retired for the ops side to drop.
+/// allocated), and pushes the cell on a list of retired cells for the ops side to drop. The list has no bound and the
+/// push never waits, so a swap never depends on the ops side collecting first: the newest posted source is always
+/// taken at the next swap.
 pub struct SourceSlot {
     /// A posted cell not taken yet, or null.
     posted: AtomicPtr<SourceCell>,
-    /// The cell the last swap retired, or null.
+    /// The head of the retired cells (a stack the perform thread pushes onto and the ops side empties whole), or null.
     retired: AtomicPtr<SourceCell>,
 }
 
@@ -306,7 +311,7 @@ impl SourceSlot {
     #[allow(unsafe_code, reason = "the lock-free hand-off passes cells as raw pointers; each use states why it is sound")]
     pub fn post(&self, source: Box<dyn FrameSource>) {
         self.collect();
-        let cell = Box::into_raw(Box::new(SourceCell { source }));
+        let cell = Box::into_raw(Box::new(SourceCell { source, next: std::ptr::null_mut() }));
         let replaced = self.posted.swap(cell, Ordering::AcqRel);
         // SAFETY: a non-null pointer in `posted` came from `Box::into_raw` in this function, and the swap made this
         // call its only holder: the perform thread takes cells by the same atomic swap.
@@ -316,10 +321,18 @@ impl SourceSlot {
     /// Drops the sources the perform thread retired. Ops side.
     #[allow(unsafe_code, reason = "the lock-free hand-off passes cells as raw pointers; each use states why it is sound")]
     pub fn collect(&self) {
-        let retired = self.retired.swap(std::ptr::null_mut(), Ordering::AcqRel);
-        // SAFETY: as in `post`: `retired` only ever holds cells from `Box::into_raw`, and the swap made this call the
-        // only holder.
-        drop(unsafe { Self::reclaim(retired) });
+        let mut cell = self.retired.swap(std::ptr::null_mut(), Ordering::AcqRel);
+        while !cell.is_null() {
+            // SAFETY: the swap took the whole list, so this call is the only holder of every cell on it, and each came
+            // from `Box::into_raw`; `next` was written before the cell was pushed.
+            let Some(boxed) = (unsafe { Self::reclaim(cell) }) else { break };
+            cell = boxed.next;
+        }
+    }
+
+    /// Whether a source is posted and not taken yet.
+    pub fn has_posted(&self) -> bool {
+        !self.posted.load(Ordering::Acquire).is_null()
     }
 
     /// The box behind `cell`, or `None` for null.
@@ -332,12 +345,11 @@ impl SourceSlot {
         (!cell.is_null()).then(|| unsafe { Box::from_raw(cell) })
     }
 
-    /// Puts a posted source into `performer` and returns true; false when nothing is posted, or the source the last swap
-    /// retired is still waiting to be dropped (the next frame tries again). Perform thread: never blocks, locks,
-    /// allocates or frees.
+    /// Puts a posted source into `performer` and returns true; false when nothing is posted. Perform thread: never
+    /// blocks, locks, allocates or frees.
     #[allow(unsafe_code, reason = "the lock-free hand-off passes cells as raw pointers; each use states why it is sound")]
     pub fn swap_into(&self, performer: &mut Performer) -> bool {
-        if self.posted.load(Ordering::Acquire).is_null() || !self.retired.load(Ordering::Acquire).is_null() {
+        if !self.has_posted() {
             return false;
         }
         let cell = self.posted.swap(std::ptr::null_mut(), Ordering::AcqRel);
@@ -349,8 +361,16 @@ impl SourceSlot {
         // `NoSource` is zero-sized: boxing it allocates nothing, so the exchange below allocates and frees nothing.
         let incoming = std::mem::replace(&mut cell_ref.source, Box::new(NoSource));
         cell_ref.source = performer.set_source(incoming);
-        // Only this thread fills `retired`, and it was empty above; the ops side only empties it.
-        self.retired.store(cell, Ordering::Release);
+        // Push the cell: only this thread pushes, and the ops side only takes the whole list, so the head can change
+        // under this loop only to null, and a failed exchange retries with the new head.
+        let mut head = self.retired.load(Ordering::Acquire);
+        loop {
+            cell_ref.next = head;
+            match self.retired.compare_exchange_weak(head, cell, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => break,
+                Err(current) => head = current,
+            }
+        }
         true
     }
 }
@@ -358,10 +378,10 @@ impl SourceSlot {
 impl Drop for SourceSlot {
     #[allow(unsafe_code, reason = "the lock-free hand-off passes cells as raw pointers; each use states why it is sound")]
     fn drop(&mut self) {
-        for cell in [*self.posted.get_mut(), *self.retired.get_mut()] {
-            // SAFETY: `&mut self`: no other holder, and the pointers are leaked boxes from `post` or `swap_into`.
-            drop(unsafe { Self::reclaim(cell) });
-        }
+        let posted = *self.posted.get_mut();
+        // SAFETY: `&mut self`: no other holder, and the pointer is a leaked box from `post`.
+        drop(unsafe { Self::reclaim(posted) });
+        self.collect();
     }
 }
 

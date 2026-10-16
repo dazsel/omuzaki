@@ -599,11 +599,15 @@ fn a_binding_that_takes_a_fading_slot_is_not_active_until_it_is_pressed() {
     rig.settle();
     // F1 is unbound and F5 takes its slot while happy still fades.
     assert_eq!(rig.handle.unbind_trigger("F1"), Ok(true));
-    let outcome = rig.bind("F5", "sad", TriggerMode::Hold).unwrap();
-    assert_eq!(outcome.slot, 0, "the new key reuses the slot that is fading");
     let active = |rig: &Rig| -> Vec<String> {
         rig.handle.triggers().into_iter().filter(|t| t.active).map(|t| t.binding.key).collect()
     };
+    let binding = TriggerBinding { key: "F5".to_owned(), expression: id("sad"), mode: TriggerMode::Hold };
+    let outcome = rig.handle.bind_trigger(binding).unwrap();
+    assert_eq!(outcome.slot, 0, "the new key reuses the slot that is fading");
+    // Listed at once, before the performer has taken the bind (or while it is paused): not the old binding's activity.
+    assert_eq!(active(&rig), Vec::<String>::new(), "right after the bind");
+    rig.settle();
     rig.steps(2);
     assert_eq!(active(&rig), Vec::<String>::new(), "F5 has not been pressed, whatever still fades in its slot");
     rig.steps(30);

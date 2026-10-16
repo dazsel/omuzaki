@@ -334,3 +334,59 @@ fn a_camera_that_will_not_open_changes_nothing() {
         "nothing was saved for the refused camera"
     );
 }
+
+#[test]
+fn a_refused_save_puts_the_host_back() {
+    let rig = Rig::new(true);
+    rig.run("input.select", json!({ "source": "webcam" })).unwrap();
+    rig.run("input.bind_camera", json!({ "camera": "a" })).unwrap();
+    rig.run("input.preview", json!({ "on": true })).unwrap();
+    rig.settings.as_ref().unwrap().refuse_writes(true);
+
+    let error = rig.run("input.bind_camera", json!({ "camera": "b" })).unwrap_err();
+    assert!(error.message.contains("could not be saved"), "{}", error.message);
+    let state = rig.state();
+    assert_eq!(state["camera"], "a", "what runs is what is saved");
+    assert_eq!(state["preview"], json!({ "state": "on", "camera": "a" }), "and the preview runs on it");
+
+    let error = rig.run("input.select", json!({ "source": "life_layer" })).unwrap_err();
+    assert!(error.message.contains("could not be saved"), "{}", error.message);
+    let state = rig.state();
+    assert_eq!(state["source"], "webcam");
+    assert_eq!(state["preview"], json!({ "state": "on", "camera": "a" }));
+}
+
+#[test]
+fn a_change_that_cannot_be_taken_back_is_kept_recorded_and_reported() {
+    let rig = Rig::new(true);
+    rig.run("input.select", json!({ "source": "webcam" })).unwrap();
+    rig.run("input.bind_camera", json!({ "camera": "a" })).unwrap();
+    rig.settings.as_ref().unwrap().refuse_writes(true);
+    rig.log.unplug("a"); // the old camera is gone, so binding it back fails too
+
+    let plan = rig.run("input.bind_camera", json!({ "camera": "b" })).expect("the change stays, so the op reports it");
+    let answer = plan.output.unwrap();
+    assert_eq!(answer["saved"], false);
+    let retained = answer["retained"].as_array().expect("what could not be undone is listed");
+    assert!(retained[0].as_str().unwrap().contains("could not be taken back"), "{retained:?}");
+    assert_eq!(rig.state()["camera"], "b", "the new binding is what runs");
+    let effect = plan.effect.expect("a retained change has its undo record");
+    assert_eq!(effect.undo.args, json!({ "camera": "a" }));
+}
+
+#[test]
+fn a_dry_run_of_a_resume_is_refused_as_the_real_run_would() {
+    let rig = Rig::new(false);
+    rig.run("input.select", json!({ "source": "webcam" })).unwrap();
+    rig.run("input.bind_camera", json!({ "camera": "a" })).unwrap();
+    for dry_run in [true, false] {
+        let error = rig
+            .plan("input.select", json!({ "source": "life_layer", "resume_preview": true }), &person(), dry_run)
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Conflict, "dry_run {dry_run}: {error:?}");
+    }
+    assert_eq!(rig.state()["source"], "webcam", "nothing changed");
+    let error = rig.plan("input.bind_camera", json!({ "camera": null, "resume_preview": true }), &person(), true);
+    assert_eq!(error.unwrap_err().code, ErrorCode::Conflict);
+    assert_eq!(rig.state()["camera"], "a");
+}
