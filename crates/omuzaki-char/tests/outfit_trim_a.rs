@@ -22,8 +22,8 @@ use omuzaki_char::outfit::trim::{
     Finish, LIFT, METAL_PROGRAM, MetalStyle, RAIL_STEP, Rail, RailSpec, TrimError, TrimSpec, add_trim,
 };
 use omuzaki_char_api::{
-    BodyFit, BodyRegion, BuildCtx, BuildError, BuildServices, JointRef, MaterialClass, PartCategory, PartKind, PartMeta,
-    PartOutput,
+    BodyFit, BodyRegion, BuildCtx, BuildError, BuildServices, JointRef, MaterialClass, PartCategory, PartKind,
+    PartMeta, PartOutput,
 };
 use omuzaki_char_mock::TorsoFit;
 use omuzaki_core::colour::Colour;
@@ -540,7 +540,10 @@ fn a_band_across_a_hand_over_is_skinned_like_the_cloth_under_each_vertex() {
             spread = spread.max(skin_difference(&per_vertex[i * RUNG + 3], &per_vertex[i * RUNG + RUNG - 1]));
         }
         println!("{:?}: the inner border's weights differ from the free edge's by up to {spread:.3}", spec.rail.points);
-        assert!(spread > 0.2, "the band crosses a hand-over (the free edge's weights would be wrong at its inner border)");
+        assert!(
+            spread > 0.2,
+            "the band crosses a hand-over (the free edge's weights would be wrong at its inner border)"
+        );
 
         // The end caps are skinned vertex by vertex too: each cap vertex on a rung vertex carries that vertex's skin,
         // so a bent band doesn't open at its ends. And every cap triangle faces out of the strip's end.
@@ -562,7 +565,8 @@ fn a_band_across_a_hand_over_is_skinned_like_the_cloth_under_each_vertex() {
                 }
             }
             assert_eq!(matched, RUNG, "every rung vertex is on the cap");
-            let tris = &m.indices[(strip_triangles + c * cap_triangles) * 3..(strip_triangles + (c + 1) * cap_triangles) * 3];
+            let tris =
+                &m.indices[(strip_triangles + c * cap_triangles) * 3..(strip_triangles + (c + 1) * cap_triangles) * 3];
             let facing: Vec<f64> = tris
                 .chunks_exact(3)
                 .map(|tri| {
