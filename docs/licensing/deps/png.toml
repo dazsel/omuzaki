@@ -1,0 +1,7 @@
+section = "rust"
+item = "png"
+kind = "crate"
+used_for = "the PNG decoder behind image, used directly by omuzaki-measure (VF-01) so that colour is read from its validated metadata and text chunks are skipped"
+status = "yes"
+audit = "(crates.io: MIT OR Apache-2.0)"
+crates = ["png"]

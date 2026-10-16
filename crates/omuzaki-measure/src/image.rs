@@ -31,8 +31,9 @@ const RGBA_BYTES: u64 = 4;
 const COEFFICIENT_BLOCK_BYTES: u64 = 64 * 2;
 
 /// Bytes of a decoder's own state that does not grow with the image: its inflate window and tables for a PNG, its
-/// Huffman tables for a JPEG. Measured at about 45 KiB for a PNG, and allowed for at 64 KiB.
-const DECODER_STATE_BYTES: u64 = 64 << 10;
+/// Huffman tables for a JPEG. Measured at about 45 KiB for the old PNG path and just over 64 KiB for the `png` decoder
+/// used directly (its row buffers and window), and allowed for at 128 KiB.
+const DECODER_STATE_BYTES: u64 = 128 << 10;
 
 /// The most a PNG's profile may inflate to when the encoded input is `input_len` bytes: the bound every PNG gets, and no
 /// more than a quarter of what the cap leaves beside the input and the decoder's state. Half of that is for the copy phase
@@ -162,37 +163,146 @@ fn read_file(ctx: &OpCtx<'_>, path: &str, field: &str) -> Result<Vec<u8>, OpErro
 /// Decodes `bytes` to straight sRGB RGBA8. The header is read first: the format must be PNG or JPEG, the size and the
 /// peak the decoder will hold must be within the caps, and the colour must be sRGB. Only then does the decoder run.
 ///
+/// A PNG is read with the `png` decoder itself, and its colour is taken only from that decoder's validated metadata, so a
+/// chunk the decoder ignores is ignored here too. Its text chunks are not parsed at all: they carry no colour, and each
+/// parsed record costs memory the allocation limit does not count.
+///
 /// This is the decode [`load`] runs, public so the allocation budget can be measured on its own (`tests/budget.rs`).
 ///
 /// # Errors
 /// The `Invalid` refusals of [`load`]; `hash` is recorded as the image's name in the result.
 pub fn decode(bytes: &[u8], hash: ContentHash, field: &str) -> Result<Rgba8, OpError> {
     let format = guess(bytes).map_err(|reason| refuse_unreadable(field, reason))?;
-    let plan = plan(bytes, format).map_err(|reason| refuse_unreadable(field, reason))?;
+    if format == ImageFormat::Png { decode_png(bytes, hash, field) } else { decode_jpeg(bytes, hash, field) }
+}
+
+/// The `png` decoder over `bytes`, its header read. Text chunks are skipped. Palette and transparency are expanded; a
+/// 16-bit sample is kept as it is. `bound` caps what the decoder allocates for its own data (the inflated profile).
+/// `with_profile` false skips the `iCCP` chunk altogether, for the pixel pass, which has already judged the colour.
+fn open_png(bytes: &[u8], bound: u64, with_profile: bool) -> Result<png::Reader<Cursor<&[u8]>>, png::DecodingError> {
+    let limits = png::Limits { bytes: usize::try_from(bound).unwrap_or(usize::MAX) };
+    let mut decoder = png::Decoder::new_with_limits(Cursor::new(bytes), limits);
+    decoder.set_ignore_text_chunk(true);
+    decoder.set_ignore_iccp_chunk(!with_profile);
+    decoder.set_transformations(png::Transformations::EXPAND);
+    decoder.read_info()
+}
+
+/// A PNG's header as the decoder reads it: what the decode will hold, and what its colour is.
+struct PngHeader {
+    plan: Plan,
+    /// What the file declares when it is not sRGB.
+    non_srgb: Option<String>,
+}
+
+/// Reads a PNG's header with the decoder, profile included, and plans the decode from it.
+fn png_header(bytes: &[u8]) -> Result<PngHeader, String> {
+    let input = bytes.len() as u64;
+    let Some(bound) = profile_bound(input) else {
+        // The input alone leaves the decoder no room: the peak is over the cap whatever the pixels are, so the caller
+        // refuses it as too large. The size is read from the IHDR chunk, not through a decoder, which would inflate the
+        // profile it was refused room for.
+        let (width, height) = header::png_size(bytes).ok_or("its header is cut short")?;
+        return Ok(PngHeader { plan: Plan { width, height, input, peak: max_decoded_bytes() + 1 }, non_srgb: None });
+    };
+    let reader = open_png(bytes, bound, true).map_err(|error| error.to_string())?;
+    let info = reader.info();
+    // The decoder drops a profile past its bound, or one that will not inflate, without an error. A file that had one
+    // before its data and yields none is refused, not read as untagged, unless a `cICP` chunk decides the colour anyway.
+    if header::png_iccp_before_data(bytes)
+        && info.icc_profile.is_none()
+        && info.coding_independent_code_points.is_none()
+    {
+        return Err(format!(
+            "its embedded colour profile is corrupt or inflates to more than {} MiB",
+            (bound + (1 << 19)) >> 20
+        ));
+    }
+    let (width, height) = (info.width, info.height);
+    let (color, depth) = reader.output_color_type();
+    let output = (color.samples() * (depth as usize / 8)) as u64;
+    // The PNG decoder fills a frame-sized scratch buffer alongside its output, and keeps the rows it filters against,
+    // which grow with the width.
+    let scratch = u64::from(width) * u64::from(height) * output + 4 * u64::from(width) * output;
+    let pixels = u64::from(width) * u64::from(height);
+    // The encoded input is held through the decode too, so it is part of the peak. The profile is not: the pixel pass
+    // skips it, and the reader that held it is dropped before that pass opens.
+    let peak = DECODER_STATE_BYTES + scratch + pixels * (output + RGBA_BYTES) + input;
+    Ok(PngHeader { plan: Plan { width, height, input, peak }, non_srgb: header::png_non_srgb(info) })
+}
+
+fn decode_png(bytes: &[u8], hash: ContentHash, field: &str) -> Result<Rgba8, OpError> {
+    let PngHeader { plan, non_srgb } = png_header(bytes).map_err(|reason| refuse_unreadable(field, reason))?;
+    if !fits(plan.width, plan.height, plan.peak) {
+        return Err(too_large(field, plan.width, plan.height));
+    }
+    if let Some(found) = non_srgb {
+        return Err(colour_unsupported(field, &found));
+    }
+    let png_error = |error: png::DecodingError| match error {
+        png::DecodingError::LimitsExceeded => too_large(field, plan.width, plan.height),
+        other => refuse_unreadable(field, other.to_string()),
+    };
+    let mut reader = open_png(bytes, max_decoded_bytes(), false).map_err(png_error)?;
+    let size = reader.output_buffer_size().ok_or_else(|| too_large(field, plan.width, plan.height))?;
+    let mut frame = vec![0_u8; size];
+    let output = reader.next_frame(&mut frame).map_err(png_error)?;
+    let pixels = rgba8(&frame[..output.buffer_size()], output.color_type, output.bit_depth)
+        .ok_or_else(|| refuse_unreadable(field, "its pixel layout is not one a measure reads".to_owned()))?;
+    Ok(Rgba8 { width: output.width, height: output.height, pixels, hash })
+}
+
+/// The straight RGBA8 of a decoded PNG frame: grey and grey with alpha are widened, an opaque pixel gets alpha 255, and a
+/// 16-bit sample is rounded to 8 bits (`(v + 128) / 257`, which maps 0 and 65 535 to 0 and 255).
+fn rgba8(frame: &[u8], color: png::ColorType, depth: png::BitDepth) -> Option<Vec<u8>> {
+    use png::ColorType::{Grayscale, GrayscaleAlpha, Rgb, Rgba};
+    let wide = match depth {
+        png::BitDepth::Eight => false,
+        png::BitDepth::Sixteen => true,
+        _ => return None,
+    };
+    let sample = |chunk: &[u8]| -> u8 {
+        if wide {
+            u8::try_from((u32::from(u16::from_be_bytes([chunk[0], chunk[1]])) + 128) / 257).unwrap_or(u8::MAX)
+        } else {
+            chunk[0]
+        }
+    };
+    let step = if wide { 2 } else { 1 };
+    let mut out = Vec::with_capacity(frame.len() / (color.samples() * step) * 4);
+    for pixel in frame.chunks_exact(color.samples() * step) {
+        let mut channels = pixel.chunks_exact(step).map(sample);
+        match color {
+            Grayscale | GrayscaleAlpha => {
+                let grey = channels.next()?;
+                out.extend([grey, grey, grey, channels.next().unwrap_or(u8::MAX)]);
+            }
+            Rgb | Rgba => {
+                out.extend([channels.next()?, channels.next()?, channels.next()?, channels.next().unwrap_or(u8::MAX)]);
+            }
+            png::ColorType::Indexed => return None,
+        }
+    }
+    Some(out)
+}
+
+fn decode_jpeg(bytes: &[u8], hash: ContentHash, field: &str) -> Result<Rgba8, OpError> {
+    let plan = plan_jpeg(bytes).map_err(|reason| refuse_unreadable(field, reason))?;
     if !fits(plan.width, plan.height, plan.peak) {
         return Err(too_large(field, plan.width, plan.height));
     }
     // A JPEG decoder keeps the profile it finds while it is built, so the declared length is judged before that, and
-    // before `icc_profile` copies it. A PNG profile was bounded while `plan` read its header, and a profile past the bound refused there.
-    let declared = if format == ImageFormat::Jpeg { header::jpeg_icc_declared_len(bytes) } else { None };
+    // before `icc_profile` copies it.
+    let declared = header::jpeg_icc_declared_len(bytes);
     if let Some(declared) = declared
         && !profile_fits(&plan, declared)
     {
         return Err(too_large(field, plan.width, plan.height));
     }
-    // A PNG whose `cICP` chunk decides the colour never has its profile read. The decoder is built so that it keeps at most
-    // what the plan leaves room for beside the pixels (it holds one copy while it decodes), so a profile that is too large
-    // is dropped by the decoder instead of being retained under the budget.
-    let cicp_decides = format == ImageFormat::Png && header::png_colour(bytes).cicp.is_some();
-    // Half of what the plan leaves, since the inflate buffer can briefly hold twice what it ends with.
-    let retained = max_profile_bytes().min(max_decoded_bytes().saturating_sub(plan.peak) / 2);
-    if cicp_decides && retained < PROFILE_BOUND_FLOOR {
-        return Err(too_large(field, plan.width, plan.height));
-    }
     let mut input = reader(bytes).map_err(|error| unreadable(field, &error))?;
-    input.limits(if cicp_decides { limits_with_alloc(retained) } else { limits() });
+    input.limits(limits());
     let mut decoder = input.into_decoder().map_err(|error| unreadable(field, &error))?;
-    let icc = if cicp_decides { None } else { decoder.icc_profile().map_err(|error| unreadable(field, &error))? };
+    let icc = decoder.icc_profile().map_err(|error| unreadable(field, &error))?;
     // The decoder yields no profile for APP2 chunks it cannot put together (a sequence number out of range, a count that
     // disagrees). That is a file that declared a profile and gave none: refused, not read as untagged sRGB.
     if declared.is_some() && icc.is_none() {
@@ -204,7 +314,7 @@ pub fn decode(bytes: &[u8], hash: ContentHash, field: &str) -> Result<Rgba8, OpE
     if !profile_fits(&plan, icc.as_ref().map_or(0, |p| p.len() as u64)) {
         return Err(too_large(field, plan.width, plan.height));
     }
-    if let Some(found) = header::non_srgb(bytes, format, icc.as_deref()) {
+    if let Some(found) = header::jpeg_non_srgb(bytes, icc.as_deref()) {
         return Err(colour_unsupported(field, &found));
     }
     drop(icc);
@@ -217,7 +327,7 @@ pub fn decode(bytes: &[u8], hash: ContentHash, field: &str) -> Result<Rgba8, OpE
     Ok(Rgba8 { width, height, pixels: rgba.into_raw(), hash })
 }
 
-/// Whether an embedded profile of `profile` bytes keeps both phases of the decode within the cap. The phases are
+/// Whether an embedded JPEG profile of `profile` bytes keeps both phases of the decode within the cap. The phases are
 /// separate in time. First the profile is copied out: the decoder holds its own copy and `icc_profile` returns the
 /// other, with the encoded input and the decoder's state live and no pixel buffer yet. Then the returned copy is
 /// dropped and the pixels are decoded with the decoder's copy still held: the plan's peak plus one profile. Each phase
@@ -232,8 +342,10 @@ fn profile_fits(plan: &Plan, profile: u64) -> bool {
 /// measure keeps. `None` when the header cannot be read or the format is not PNG or JPEG. [`decode`] refuses an image
 /// whose prediction is over [`MAX_DECODED_MIB`], and the budget test checks that the measured peak never exceeds it.
 pub fn predicted_peak(bytes: &[u8]) -> Option<u64> {
-    let format = guess(bytes).ok()?;
-    plan(bytes, format).ok().map(|plan| plan.peak)
+    match guess(bytes).ok()? {
+        ImageFormat::Png => png_header(bytes).ok().map(|header| header.plan.peak),
+        _ => plan_jpeg(bytes).ok().map(|plan| plan.peak),
+    }
 }
 
 /// The image's format, which must be PNG or JPEG: a format another crate enables on the shared `image` dependency is
@@ -263,53 +375,18 @@ struct Plan {
     peak: u64,
 }
 
-/// The plan for an image of a known format, from its header only.
-fn plan(bytes: &[u8], format: ImageFormat) -> Result<Plan, String> {
-    let (width, height, output, scratch) = if format == ImageFormat::Jpeg {
-        let frame = header::jpeg_frame(bytes).ok_or("its frame header is missing or cut short")?;
-        // The JPEG decoder outputs one byte a pixel for a grey image and three for any colour image.
-        let output = if frame.sampling.len() == 1 { 1 } else { 3 };
-        (frame.width, frame.height, output, coefficient_bytes(&frame))
-    } else {
-        // The PNG decoder inflates the `iCCP` profile while it reads the header, so the decoder is built under a limit
-        // on what it may allocate for it. The `png` crate does not report a profile past that limit, or a corrupt one:
-        // it drops it, and the image would read as untagged sRGB. So a file that has the chunk and yields no profile is
-        // refused here, not guessed at.
-        let Some(bound) = profile_bound(bytes.len() as u64) else {
-            // The input alone leaves the decoder no room: the peak is over the cap whatever the pixels are, so the
-            // caller refuses it as too large. The size is read from the IHDR chunk, not through a decoder, which would
-            // inflate the profile it was refused room for.
-            let (width, height) = header::png_size(bytes).ok_or("its header is cut short")?;
-            return Ok(Plan { width, height, input: bytes.len() as u64, peak: max_decoded_bytes() + 1 });
-        };
-        let mut input = reader(bytes).map_err(|error| error.to_string())?;
-        let mut limits = Limits::default();
-        limits.max_alloc = Some(bound);
-        input.limits(limits);
-        let mut decoder = input.into_decoder().map_err(|error| error.to_string())?;
-        // A `cICP` chunk decides the colour on its own (PNG colour chunk precedence), so a profile beside it is not looked at:
-        // one the limit dropped does not make the file unreadable.
-        let colour = header::png_colour(bytes);
-        if colour.iccp && colour.cicp.is_none() && decoder.icc_profile().map_err(|error| error.to_string())?.is_none() {
-            return Err(format!(
-                "its embedded colour profile is corrupt or inflates to more than {} MiB",
-                (bound + (1 << 19)) >> 20
-            ));
-        }
-        let (width, height) = decoder.dimensions();
-        let output = u64::from(decoder.color_type().bytes_per_pixel());
-        // The PNG decoder fills a frame-sized scratch buffer alongside its output, and keeps the rows it filters
-        // against, which grow with the width.
-        let scratch = u64::from(width) * u64::from(height) * output + 4 * u64::from(width) * output;
-        (width, height, output, scratch)
-    };
-    let pixels = u64::from(width) * u64::from(height);
-    // The encoded input is held through the decode too, so it is part of the peak. The JPEG decoder reads all of its
-    // input into a buffer of its own, so a JPEG holds it twice.
-    let copies = if format == ImageFormat::Jpeg { 2 } else { 1 };
-    let input = copies * bytes.len() as u64;
+/// The plan for a JPEG, from its header only.
+fn plan_jpeg(bytes: &[u8]) -> Result<Plan, String> {
+    let frame = header::jpeg_frame(bytes).ok_or("its frame header is missing or cut short")?;
+    // The JPEG decoder outputs one byte a pixel for a grey image and three for any colour image.
+    let output = if frame.sampling.len() == 1 { 1 } else { 3 };
+    let scratch = coefficient_bytes(&frame);
+    let pixels = u64::from(frame.width) * u64::from(frame.height);
+    // The encoded input is held through the decode too. The JPEG decoder reads all of its input into a buffer of its own,
+    // so a JPEG holds it twice.
+    let input = 2 * bytes.len() as u64;
     let peak = DECODER_STATE_BYTES + scratch + pixels * (output + RGBA_BYTES) + input;
-    Ok(Plan { width, height, input, peak })
+    Ok(Plan { width: frame.width, height: frame.height, input, peak })
 }
 
 /// The coefficient buffers a JPEG decoder keeps for its frame: one block of [`COEFFICIENT_BLOCK_BYTES`] for each 8×8

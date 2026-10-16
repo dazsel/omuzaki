@@ -351,3 +351,25 @@ fn an_input_that_leaves_the_decoder_no_room_is_refused_not_given_a_floor() {
         assert!(peak + padded.len() <= 64 << 20, "the refusal held {} bytes with its input", peak + padded.len());
     }
 }
+
+#[test]
+fn a_million_and_a_half_empty_text_chunks_stay_inside_the_budget() {
+    // 1.5 million empty `tEXt` chunks are 18 MB encoded. A decoder that parses text keeps a record for each, over 68 MiB
+    // that no allocation limit counts. The text chunks are skipped, so the decode holds the input and little else.
+    let mut png = Vec::new();
+    PngEncoder::new(&mut png).write_image(&pattern(8, 8, 3), 8, 8, ExtendedColorType::Rgb8).unwrap();
+    let idat = png.windows(4).position(|window| window == b"IDAT").unwrap() - 4;
+    let mut empty = 0_u32.to_be_bytes().to_vec();
+    empty.extend(b"tEXt");
+    empty.extend(crc32(b"tEXt").to_be_bytes());
+    let mut padded = png[..idat].to_vec();
+    for _ in 0..1_500_000 {
+        padded.extend(&empty);
+    }
+    padded.extend(&png[idat..]);
+    let (result, peak) = peak_of(|| decode(&padded, ContentHash::of(&padded), FIELD));
+    assert!(result.is_ok(), "{:?}", result.err());
+    let held = peak + padded.len();
+    assert!(held <= 64 << 20, "the decode and its input held {held} bytes");
+    assert!(peak < 4 << 20, "skipping text should leave the decode almost nothing beyond the input, held {peak}");
+}

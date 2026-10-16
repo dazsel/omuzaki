@@ -2,8 +2,6 @@
 //! coefficient buffers a decoder keeps) and a PNG's or an ICC profile's colour metadata (which says whether the pixels are
 //! sRGB). Every read is bounded by the slice it came from, so a truncated or crafted header yields `None`, not a panic.
 
-use ::image::ImageFormat;
-
 use crate::icc;
 
 /// A JPEG frame header: the size, and each component's horizontal and vertical sampling factors.
@@ -91,73 +89,27 @@ pub(crate) fn jpeg_icc_declared_len(bytes: &[u8]) -> Option<u64> {
     }
 }
 
-/// The colour a PNG declares before its pixels: the `sRGB` chunk, the gamma and the primaries, when the file has them.
-#[derive(Default)]
-pub(crate) struct PngColour {
-    /// Whether the file has an `sRGB` chunk.
-    pub(crate) srgb: bool,
-    /// Whether the file has an `iCCP` chunk, an embedded profile.
-    pub(crate) iccp: bool,
-    /// The `cICP` chunk's four code points (colour primaries, transfer function, matrix coefficients, full-range flag,
-    /// ITU-T H.273), when present. The PNG specification gives it precedence over every other colour chunk.
-    pub(crate) cicp: Option<[u8; 4]>,
-    /// The `gAMA` chunk's gamma times 100 000 (sRGB is 45 455), when present.
-    pub(crate) gamma: Option<u32>,
-    /// The `cHRM` chunk's eight values (white x and y, red, green, blue), times 100 000, when present.
-    pub(crate) chromaticities: Option<[u32; 8]>,
-}
-
-/// Reads the colour chunks of a PNG, stopping at the first image data chunk. A colour chunk counts only if its CRC is
-/// right, and only the first of each kind does: the decoder drops an ancillary chunk with a bad CRC and keeps the first
-/// of a repeated one, and what is measured must be what the decoder decodes with.
-pub(crate) fn png_colour(bytes: &[u8]) -> PngColour {
-    let mut colour = PngColour::default();
+/// Whether an `iCCP` chunk comes before the palette and the image data, where the PNG specification (and the decoder)
+/// accept one. This decides nothing about colour: the profile and every other colour chunk are read only from the
+/// decoder's own validated metadata. It is the one thing the decoder cannot say, since it drops a profile past its
+/// allocation bound or one that will not inflate without an error, and an image that had one must be refused, not read as
+/// untagged. Walks chunk lengths and kinds only: no CRC, no data.
+pub(crate) fn png_iccp_before_data(bytes: &[u8]) -> bool {
     let mut at = 8; // past the signature
     while let (Some(length), Some(kind)) = (be_u32(bytes, at), bytes.get(at + 4..at + 8)) {
-        let data = bytes.get(at + 8..).and_then(|rest| rest.get(..length as usize)).unwrap_or_default();
-        // The image data ends the walk before any CRC is computed: a CRC over a near-limit IDAT would cost billions of steps.
-        if matches!(kind, b"IDAT" | b"IEND") {
-            break;
-        }
-        // The chunk's own CRC follows its data. A chunk that is cut short, or whose CRC is wrong, is not one. It is
-        // computed only for the small colour chunks read below.
-        let valid = || {
-            data.len() == length as usize
-                && matches!(be_u32(bytes, at.saturating_add(8).saturating_add(length as usize)), Some(stored) if stored == crc32(kind, data))
-        };
         match kind {
-            // The specification gives `sRGB` exactly one byte, a rendering intent from 0 to 3; the decoder discards any
-            // other payload, so it declares nothing.
-            b"sRGB" if data.len() == 1 && data[0] <= 3 && valid() => colour.srgb = true,
-            // An embedded profile is noted whatever its CRC: a bad one is refused later, never read as no profile.
-            b"iCCP" => colour.iccp = true,
-            b"cICP" if data.len() == 4 && colour.cicp.is_none() && valid() => colour.cicp = data.try_into().ok(),
-            b"gAMA" if data.len() == 4 && colour.gamma.is_none() && valid() => colour.gamma = be_u32(data, 0),
-            b"cHRM" if data.len() == 32 && colour.chromaticities.is_none() && valid() => {
-                colour.chromaticities = Some(std::array::from_fn(|i| be_u32(data, 4 * i).unwrap_or(0)));
-            }
+            b"iCCP" => return true,
+            b"PLTE" | b"IDAT" | b"IEND" => return false,
             _ => {}
         }
         at = at.saturating_add(12).saturating_add(length as usize);
     }
-    colour
+    false
 }
 
 /// The width and height a PNG's IHDR chunk declares (the first chunk, at byte 16), or `None` when the bytes end first.
 pub(crate) fn png_size(bytes: &[u8]) -> Option<(u32, u32)> {
     Some((be_u32(bytes, 16)?, be_u32(bytes, 20)?))
-}
-
-/// The CRC-32 of a chunk's type and data (ISO 3309, as the PNG specification has it).
-fn crc32(kind: &[u8], data: &[u8]) -> u32 {
-    let mut crc = 0xFFFF_FFFF_u32;
-    for &byte in kind.iter().chain(data) {
-        crc ^= u32::from(byte);
-        for _ in 0..8 {
-            crc = if crc & 1 == 1 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
-        }
-    }
-    !crc
 }
 
 /// The `cICP` code points that mean sRGB: BT.709 primaries, the sRGB transfer function, RGB (identity matrix), full range.
@@ -171,36 +123,48 @@ const GAMMA_TOLERANCE: u32 = 500;
 const SRGB_CHROMATICITIES: [u32; 8] = [31_270, 32_900, 64_000, 33_000, 30_000, 60_000, 15_000, 6_000];
 const CHROMATICITY_TOLERANCE: u32 = 100;
 
-/// What a file declares about its colour, when it is not sRGB: `Some` names what was found. A file with no colour tags is
-/// untagged, and is read as sRGB, as the web and most image tools read it. An embedded profile decides on its own; a PNG
-/// with an `sRGB` chunk is sRGB whatever its gamma says, as the PNG specification has it; a JPEG in CMYK is not read.
-pub(crate) fn non_srgb(bytes: &[u8], format: ImageFormat, icc: Option<&[u8]>) -> Option<String> {
-    // A PNG's `cICP` chunk outranks `iCCP`, `sRGB`, `gAMA` and `cHRM` (PNG colour chunk precedence), so it decides first.
-    if format == ImageFormat::Png
-        && let Some([primaries, transfer, matrix, full_range]) = png_colour(bytes).cicp
-    {
-        return (![primaries, transfer, matrix, full_range].eq(&CICP_SRGB)).then(|| {
-            format!("a cICP colour declaration (primaries {primaries}, transfer {transfer}, matrix {matrix})")
+/// What a PNG declares about its colour when it is not sRGB, read from the decoder's own validated metadata and nowhere
+/// else, so that wherever the decoder ignores a chunk (out of order, repeated, a bad CRC, malformed) this does too. The
+/// order is the PNG specification's: `cICP`, then an embedded profile (which must be proven sRGB), then the `sRGB` chunk,
+/// then `gAMA` and `cHRM`. A file with none is untagged, and is read as sRGB, as the web and most image tools read it.
+pub(crate) fn png_non_srgb(info: &png::Info<'_>) -> Option<String> {
+    if let Some(cicp) = info.coding_independent_code_points {
+        let code = [
+            cicp.color_primaries,
+            cicp.transfer_function,
+            cicp.matrix_coefficients,
+            u8::from(cicp.is_video_full_range_image),
+        ];
+        return (code != CICP_SRGB).then(|| {
+            format!("a cICP colour declaration (primaries {}, transfer {}, matrix {})", code[0], code[1], code[2])
         });
     }
+    if let Some(profile) = info.icc_profile.as_deref() {
+        return (!icc::is_srgb(profile)).then(|| "an embedded colour profile that is not sRGB".to_owned());
+    }
+    if info.srgb.is_some() {
+        return None;
+    }
+    if let Some(gamma) =
+        info.gama_chunk.map(png::ScaledFloat::into_scaled).filter(|gamma| gamma.abs_diff(SRGB_GAMMA) > GAMMA_TOLERANCE)
+    {
+        return Some(format!("a gamma of {:.2}", f64::from(gamma) / 100_000.0));
+    }
+    let primaries_match = info.chrm_chunk.is_none_or(|chrm| {
+        let got = [chrm.white, chrm.red, chrm.green, chrm.blue].into_iter().flat_map(|(x, y)| [x, y]);
+        got.zip(SRGB_CHROMATICITIES).all(|(got, want)| got.into_scaled().abs_diff(want) <= CHROMATICITY_TOLERANCE)
+    });
+    (!primaries_match).then(|| "primaries other than sRGB's".to_owned())
+}
+
+/// What a JPEG declares about its colour when it is not sRGB: an embedded profile that is not proven sRGB, or CMYK. A JPEG
+/// with neither is read as sRGB.
+pub(crate) fn jpeg_non_srgb(bytes: &[u8], icc: Option<&[u8]>) -> Option<String> {
     if let Some(profile) = icc {
         return (!icc::is_srgb(profile)).then(|| "an embedded colour profile that is not sRGB".to_owned());
     }
-    if format == ImageFormat::Jpeg {
-        let frame = jpeg_frame(bytes)?;
-        return (frame.sampling.len() == 4).then(|| "CMYK colour".to_owned());
-    }
-    let colour = png_colour(bytes);
-    if colour.srgb {
-        return None;
-    }
-    if let Some(gamma) = colour.gamma.filter(|gamma| gamma.abs_diff(SRGB_GAMMA) > GAMMA_TOLERANCE) {
-        return Some(format!("a gamma of {:.2}", f64::from(gamma) / 100_000.0));
-    }
-    let primaries_match = colour.chromaticities.is_none_or(|chromaticities| {
-        chromaticities.iter().zip(SRGB_CHROMATICITIES).all(|(got, want)| got.abs_diff(want) <= CHROMATICITY_TOLERANCE)
-    });
-    (!primaries_match).then(|| "primaries other than sRGB's".to_owned())
+    let frame = jpeg_frame(bytes)?;
+    (frame.sampling.len() == 4).then(|| "CMYK colour".to_owned())
 }
 
 /// Reads a big-endian `u32` at `at`, or `None` when it is past the end.
@@ -211,32 +175,22 @@ fn be_u32(bytes: &[u8], at: usize) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{jpeg_frame, png_colour};
+    use super::{jpeg_frame, png_iccp_before_data};
 
     #[test]
-    fn the_image_data_ends_the_walk_before_any_crc_is_computed() {
-        // A 48 MiB IDAT. The CRC is a bit at a time, eight steps a byte, so computing it over the data would take
-        // seconds; the walk must stop at the chunk's kind. Time-bounded with a wide margin over the near-zero cost.
-        let mut png = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
-        png.extend((48_u32 << 20).to_be_bytes());
-        png.extend(b"IDAT");
-        png.resize(png.len() + (48 << 20), 0);
-        let start = std::time::Instant::now();
-        let colour = png_colour(&png);
-        assert!(!colour.srgb && colour.gamma.is_none());
-        assert!(start.elapsed() < std::time::Duration::from_millis(250), "the walk took {:?}", start.elapsed());
-    }
-
-    #[test]
-    fn a_forged_png_chunk_length_stops_the_walk_without_a_panic() {
-        // A `gAMA` whose length is four billion: its data is past the end, so it is ignored, and the walk ends.
-        let mut png = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
-        png.extend(u32::MAX.to_be_bytes());
-        png.extend(b"gAMA");
-        png.extend([0; 4]);
-        let colour = png_colour(&png);
-        assert!(colour.gamma.is_none());
-        assert!(!colour.srgb);
+    fn the_iccp_walk_reads_only_lengths_and_kinds_and_stops_at_the_palette_or_the_data() {
+        let chunk = |kind: &[u8; 4], length: u32| {
+            let mut out = length.to_be_bytes().to_vec();
+            out.extend(kind);
+            out.extend(vec![0; length as usize + 4]);
+            out
+        };
+        let png = |chunks: &[Vec<u8>]| [vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A], chunks.concat()].concat();
+        assert!(png_iccp_before_data(&png(&[chunk(b"IHDR", 13), chunk(b"iCCP", 5), chunk(b"IDAT", 3)])));
+        assert!(!png_iccp_before_data(&png(&[chunk(b"IHDR", 13), chunk(b"PLTE", 3), chunk(b"iCCP", 5)])));
+        assert!(!png_iccp_before_data(&png(&[chunk(b"IHDR", 13), chunk(b"IDAT", 3), chunk(b"iCCP", 5)])));
+        // A forged length stops the walk without a panic.
+        assert!(!png_iccp_before_data(&png(&[u32::MAX.to_be_bytes().iter().chain(b"gAMA").copied().collect()])));
     }
 
     #[test]

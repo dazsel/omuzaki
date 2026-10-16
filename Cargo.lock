@@ -4096,6 +4096,7 @@ dependencies = [
  "omuzaki-ops-api",
  "omuzaki-store-api",
  "omuzaki-store-mock",
+ "png",
  "schemars",
  "serde",
  "serde_json",

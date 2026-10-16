@@ -349,3 +349,14 @@ fn a_malformed_srgb_chunk_declares_nothing_so_a_linear_gamma_beside_it_is_refuse
         assert!(decode(&png, ContentHash::of(&png), FIELD).is_ok(), "intent {intent}");
     }
 }
+
+#[test]
+fn a_cicp_after_the_palette_is_dropped_by_the_decoder_so_it_decides_nothing() {
+    // `iCCP(Display P3), PLTE, cICP(sRGB), IDAT`: the decoder discards a `cICP` that follows `PLTE`, so the profile is the
+    // colour and the image is refused. Colour is read from the decoder's own metadata, never from a separate chunk walk.
+    let png = with_chunks(&display_p3_png(), &[chunk(*b"PLTE", &[1, 2, 3]), chunk(*b"cICP", &[1, 13, 0, 1])]);
+    assert!(refusal(&png).contains("embedded colour profile"));
+    // Before the palette the same chunk decides, and the file is accepted.
+    let before = with_chunks(&display_p3_png(), &[chunk(*b"cICP", &[1, 13, 0, 1]), chunk(*b"PLTE", &[1, 2, 3])]);
+    assert!(decode(&before, ContentHash::of(&before), FIELD).is_ok());
+}
