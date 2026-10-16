@@ -162,7 +162,13 @@ pub fn decimate_scene(
         .zip(&instances)
         .map(|(&(m, p), &n)| scene.meshes[m].primitives[p].mesh.triangle_count().saturating_mul(n))
         .collect();
-    let shares = split_budget(&areas, &counts, total);
+    // The floor is per instance: a 160-triangle mesh drawn twice keeps 100 on each, 200 in the rendered scene.
+    let floors: Vec<usize> = slots
+        .iter()
+        .zip(&instances)
+        .map(|(&(m, p), &n)| MIN_SHARE.min(scene.meshes[m].primitives[p].mesh.triangle_count()).saturating_mul(n))
+        .collect();
+    let shares = split_budget(&areas, &counts, &floors, total);
     let mut results = Vec::with_capacity(slots.len());
     for ((&(m, p), &share), &n) in slots.iter().zip(&shares).zip(&instances) {
         let mut copy = scene.meshes[m].primitives[p].clone();
@@ -186,14 +192,14 @@ pub fn decimate_scene(
     Ok(reports)
 }
 
-/// The triangle count each primitive gets out of `total`: proportional to area, but never under [`MIN_SHARE`] (or the
-/// primitive's own count, when that is smaller) and never over the primitive's own count, which it cannot be given more
-/// than it has. A share that binds at either end is paid for, or taken up, by the rest, which are shared out again until
+/// The triangle count each primitive gets out of `total`: proportional to area, but never under its floor and never over
+/// its count, which it cannot be given more than it has. A floor is [`MIN_SHARE`] for each instance (or the primitive's
+/// own count, when that is smaller); `floors` and `counts` are for the rendered scene, every instance included. A share that binds at either end is paid for, or taken up, by the rest, which are shared out again until
 /// none is out of bounds. Remainders go to the largest fractions, ties to the lowest index, so the shares add up to
 /// `total` exactly, unless the floors exceed it or the counts together fall short of it.
 #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)] // counts are far below 2^52; ideals are >= 0
-fn split_budget(areas: &[f64], counts: &[usize], total: usize) -> Vec<usize> {
-    let floor_of = |i: usize| MIN_SHARE.min(counts[i]);
+fn split_budget(areas: &[f64], counts: &[usize], floors: &[usize], total: usize) -> Vec<usize> {
+    let floor_of = |i: usize| floors[i].min(counts[i]);
     // `fixed[i]` is the share a primitive is held at once it binds, if it does.
     let mut fixed: Vec<Option<usize>> = vec![None; areas.len()];
     loop {

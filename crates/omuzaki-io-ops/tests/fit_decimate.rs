@@ -385,6 +385,30 @@ fn a_mesh_drawn_by_two_nodes_is_budgeted_for_both_instances() {
 }
 
 #[test]
+fn the_minimum_share_is_kept_on_every_instance() {
+    // A 160-triangle mesh of small area, drawn by two nodes, next to a large mesh: by area it would get far less than the
+    // minimum of 100 triangles, and the minimum is for each instance, so it keeps 100 on each (200 rendered), not the 50
+    // that dividing one 100-triangle floor between the two instances would leave.
+    let mut scene = IoScene::new();
+    let mut meshes = Vec::new();
+    for (w, h, scale) in [(8, 10, Vec2::splat(0.001)), (100, 100, Vec2::splat(1.0))] {
+        let mut mesh = Mesh::new("m");
+        mesh.primitives.push(grid(w, h, scale));
+        meshes.push(scene.add_mesh(mesh));
+    }
+    for (mesh, name) in [(meshes[0], "left"), (meshes[0], "right"), (meshes[1], "big")] {
+        let mut node = Node::new(name);
+        node.mesh = Some(mesh);
+        let ix = scene.add_node(node);
+        scene.roots.push(ix);
+    }
+    assert_eq!(scene.meshes[0].primitives[0].mesh.triangle_count(), 160);
+    let options = DecimateOptions { lock_boundary: false, ..DecimateOptions::new(0) };
+    let reports = decimate_scene(&mut scene, 2_000, &options).unwrap();
+    assert!(reports[0].triangles.1 >= 90, "the small mesh kept {} triangles per instance", reports[0].triangles.1);
+}
+
+#[test]
 fn a_target_of_zero_never_collapses_a_mesh_to_nothing() {
     // One triangle, nothing locked, an error allowance that accepts any collapse: every edge could be collapsed, and the
     // last collapse would leave an empty primitive that fails `MeshData::validate`.
