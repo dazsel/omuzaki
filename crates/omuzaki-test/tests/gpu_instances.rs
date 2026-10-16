@@ -89,7 +89,8 @@ fn no_source_in_the_workspace_opens_a_default_wgpu_instance() {
 
 #[test]
 fn a_default_instance_fails_with_file_line_and_the_reason() {
-    let source = "fn f() {\n    let i = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());\n}\n";
+    let source =
+        "fn f() {\n    let i = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());\n}\n";
     let found = violations("crates/x/tests/t.rs", source);
     assert_eq!(found.len(), 1, "{found:?}");
     assert!(found[0].starts_with("crates/x/tests/t.rs:2:"), "{found:?}");
@@ -100,6 +101,6 @@ fn a_default_instance_fails_with_file_line_and_the_reason() {
 
 #[test]
 fn comments_and_the_allowed_helpers_pass() {
-    assert!(violations("crates/x/tests/t.rs", "// not Backends::all()\n").is_empty());
-    assert!(violations(ALLOWED[2], "InstanceDescriptor::new_without_display_handle()").is_empty());
+    assert_eq!(violations("crates/x/tests/t.rs", "// not Backends::all()\n").len(), 0);
+    assert_eq!(violations(ALLOWED[2], "InstanceDescriptor::new_without_display_handle()").len(), 0);
 }
