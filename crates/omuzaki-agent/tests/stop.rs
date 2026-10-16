@@ -85,7 +85,9 @@ fn after_stop_returns_nothing_new_is_readable_across_a_thousand_seeded_interleav
         let after: Vec<AssistantEvent> = std::iter::from_fn(|| rig.rx.try_recv()).collect();
         assert!(after.iter().all(|e| !is_output(e)), "seed {seed}: output after stop: {after:?}");
         assert_eq!(assistant_text(&rig.host.transcript()), read, "seed {seed}: the transcript is what was read");
-        let rest = rig.until_done(0.0);
+        // Under load the host can finish before the drain above ran, so Done may already be in `after`.
+        let rest =
+            if after.iter().any(|e| matches!(e, AssistantEvent::Done)) { Vec::new() } else { rig.until_done(0.0) };
         let all: Vec<_> = after.into_iter().chain(rest).collect();
         assert!(all.iter().any(|e| matches!(e, AssistantEvent::Paused)), "seed {seed}");
         assert!(matches!(all.last(), Some(AssistantEvent::Done)), "seed {seed}");
