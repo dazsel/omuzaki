@@ -29,9 +29,7 @@ pub struct PrivateList {
 /// The parts of the shared file this lint reads; the eval harness reads the rest.
 #[derive(Deserialize)]
 struct File {
-    #[serde(default)]
     names: Vec<String>,
-    #[serde(default)]
     face_profile_ids: Vec<String>,
 }
 
@@ -45,8 +43,11 @@ impl PrivateList {
         let fail = |why: String| Error::Failed { command: format!("read {FILE}"), stderr: why };
         let text = fs::read_to_string(&path).map_err(|e| fail(format!("{}: {e}", path.display())))?;
         let file: File = toml::from_str(&text).map_err(|e| fail(e.to_string()))?;
-        if file.names.is_empty() {
-            return Err(fail("`names` is empty: the lint would match nothing".to_owned()));
+        // A key that is missing or empty makes the lint match nothing and pass for the wrong reason.
+        for (key, list) in [("names", &file.names), ("face_profile_ids", &file.face_profile_ids)] {
+            if list.is_empty() {
+                return Err(fail(format!("`{key}` is empty: the lint would match nothing")));
+            }
         }
         let (names, ids): (Vec<&str>, Vec<&str>) = (
             file.names.iter().map(String::as_str).collect(),
@@ -114,5 +115,28 @@ mod tests {
         assert!(list.named_in("characters/example-private/a.png").is_some());
         assert_eq!(list.face_profile_named("face-profiles", &["x", "sheet"]), Some("sheet"));
         assert!(PrivateList::load(&root.join("no-such-folder")).is_err());
+    }
+
+    #[test]
+    fn a_missing_or_empty_list_is_an_error_but_other_keys_are_allowed() {
+        let dir = std::env::temp_dir().join(format!("private-list-{}", std::process::id()));
+        let file = dir.join(FILE);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let load = |text: &str| {
+            std::fs::write(&file, text).unwrap();
+            PrivateList::load(&dir)
+        };
+        let ok = load("names = [\"a\"]\nface_profile_ids = [\"b\"]\nprefixes = [\"x/\"]\nhashes = []\n");
+        assert!(ok.is_ok(), "the eval harness's keys are allowed");
+        for (text, key) in [
+            ("names = [\"a\"]\n", "face_profile_ids"),
+            ("names = [\"a\"]\nface_profile_ids = []\n", "face_profile_ids"),
+            ("face_profile_ids = [\"b\"]\n", "names"),
+            ("names = []\nface_profile_ids = [\"b\"]\n", "names"),
+        ] {
+            let error = load(text).unwrap_err().to_string();
+            assert!(error.contains(key), "{text:?}: {error}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
