@@ -207,7 +207,7 @@ impl JobCalls for Calls<'_> {
                 .hint("call edits and queries only: a job inside a job could wait on its own lane"));
         }
         let inner_op = (registration.decode)(args.clone())?;
-        let cause = script_cause(self.task);
+        let cause = Some(script_cause(self.task));
         loop {
             if omuzaki_ops_api::Cancel::is_cancelled(&self.task.cancel) {
                 let reason = self.mgr.cancelled_for(id).unwrap_or(CancelReason::Requested);
@@ -241,10 +241,10 @@ impl JobCalls for Calls<'_> {
 /// record says a script made it and a call that would wait for an approval is refused like any script's. The job's own
 /// cause stays on the job and its journal record. A job started by a script keeps that script's cause; any other is
 /// named by the job's label.
-fn script_cause(task: &Task) -> Option<Cause> {
+fn script_cause(task: &Task) -> Cause {
     match &task.cause {
-        Some(cause) if cause.kind == CauseKind::Script => Some(cause.clone()),
-        _ => Some(Cause { kind: CauseKind::Script, text: Some(task.info.label.clone()) }),
+        Some(cause) if cause.kind == CauseKind::Script => cause.clone(),
+        _ => Cause { kind: CauseKind::Script, text: Some(task.info.label.clone()) },
     }
 }
 
