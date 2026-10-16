@@ -1,6 +1,6 @@
 ---
 title: "Do the face models' remaining licence questions (GHUM, Google download terms) block shipping? (2026-10-15)"
-summary: "Asked whether GHUM's licence or Google's download terms limit the MediaPipe face networks we ship; answer: clear with conditions on what the sources show, but GHUM's own licence text is not public and the terms question needs counsel before launch."
+summary: "Asked whether GHUM's licence or Google's download terms limit the MediaPipe face networks we ship; answer (Director ruling): cleared, ship under Apache-2.0 with the cards, hashes and notices archived; GHUM's own licence text is not public but binds its signatories, not recipients of the weights."
 area: research
 ---
 
@@ -10,12 +10,13 @@ Research for #1887. Source marks: **verified** (I read the primary source), **se
 
 ## 1. The answer
 
-- **Verdict: clear with conditions. Do not ship until counsel has answered all seven questions in section 7.** Q1 to Q3 decide the licence verdict (GHUM, chain of title, Google terms); Q4 to Q7 cover notices, privacy, terms of use and change risk, and are also needed before a public release. The primary sources settle the licence label of every file we ship (Apache-2.0, stated by Google on each model card). They do not settle two things: what GHUM's own licence says, and whether Google's terms reach a user who only downloads a public file.
+- **Verdict: cleared. Ship the face models under Apache-2.0, as the note's "clear with conditions" reading, and keep the record listed below.** The Director settled the seven questions of section 7 with the owner; none needs legal review. Google states Apache-2.0 on each of the three model cards, and the unchanged `geometry_pipeline_metadata_landmarks.binarypb` ships under the licence of the same bundle (see the next bullets and Q2).
 - **GHUM is a training-data question for one network only.** Only the Blendshape V2 card mentions GHUM. The other two cards do not. Nothing from GHUM itself (mesh, weights, code) is in the files we ship. **Verified.**
-- **GHUM's licence text is not public.** The release is gated behind a request form that asks for an academic institution, an academic email address and a legal representative "for the license signature". The GHUM page says "The models are available for research." That reads as a research-only licence for GHUM itself. The text of it is **unverified**.
-- **The likely reading is that GHUM terms do not flow to us.** A licence signed by an institution binds that institution. We never signed it. Google owns GHUM and trained and released the network itself, and Google licensed the network to everyone under Apache-2.0 on a card that names the Blendshape V2 network and its authors, two of whom are GHUM authors. This is **my reading, not a source**. No document says it outright, so a lawyer must confirm it.
-- **Google's download terms: no source says a bare download binds us to the Google APIs Terms.** Those terms bind a person who is "accessing or using our APIs". The model files are plain public objects in a storage bucket, and the files themselves carry no terms. Using MediaPipe's *software API* is a different matter and is not what we do (we run our own ONNX runtime). Self-hosting is the cleanest path, and it is the plan.
-- **Decision this supports:** keep the face models in the V0 zip as ONNX conversions, with the three cards and their hashes archived and the Apache-2.0 text and a notice shipped. Change the register row's `condition` to the narrower wording in section 8 (done in this PR). Keep a fallback ready (section 6) so a "not clear" answer from counsel costs a retrain of one small network, not the tracking feature.
+- **GHUM's licence text is not public, and it does not need to be.** The release is gated behind a request form that asks for an academic institution, an academic email address and a legal representative "for the license signature". The GHUM page says "The models are available for research." That reads as a research-oriented licence for GHUM itself. The text of it is **unverified**. Google owns both GHUM and the network and published the weights under Apache-2.0. That grant stands on its own, and GHUM's research terms bind GHUM's signatories, not recipients of the weights (Director ruling, Q1). `MODELS.md` says the network was trained by Google using the GHUM mesh.
+- **Google's download terms do not reach a bare download.** Those terms bind a person who is "accessing or using our APIs". The model files are plain public objects in a storage bucket, and the files themselves carry no terms. A public, unauthenticated object fetch does not make us a party to Google's API terms (Director ruling, Q3), and we redistribute our own copies under Apache-2.0 anyway. Using MediaPipe's *software API* is a different matter and is not what we do (we run our own ONNX runtime).
+- **The metadata file.** `geometry_pipeline_metadata_landmarks.binarypb` is copied unchanged from the bundle and no card describes it. It ships under the same bundle's licence (Director ruling, Q2). Supporting evidence: the MediaPipe repository, itself Apache-2.0 (https://github.com/google-ai-edge/mediapipe/blob/master/LICENSE), holds the text-format version of the same data at https://github.com/google-ai-edge/mediapipe/blob/master/mediapipe/modules/face_geometry/data/geometry_pipeline_metadata_landmarks.pbtxt (existence checked 2026-10-16).
+- **Decision this supports:** keep the face models in the V0 zip as ONNX conversions, with the three cards and their hashes archived and the Apache-2.0 text and a notice shipped. The register row's `condition` carries the narrower wording in section 8. The fallback in section 6 stays as a contingency if Google ever changes its licence statement, not as a gate.
+
 
 ## 2. What exactly we ship and download
 
@@ -27,7 +28,7 @@ From `spikes/webcam-track/models/PROVENANCE.md`, `tools/models/mediapipe-face.sh
 | `face_detector.onnx` | Converted from the `.task`'s BlazeFace short-range network | Yes (V0 zip) | BlazeFace card: Apache-2.0 |
 | `face_landmarks_detector.onnx` | Converted from the Face Mesh V2 network | Yes (V0 zip) | Face Mesh V2 card: Apache-2.0 |
 | `face_blendshapes.onnx` | Converted from the Blendshape V2 network | Yes (V0 zip) | Blendshape V2 card: Apache-2.0; **mentions GHUM** |
-| `geometry_pipeline_metadata_landmarks.binarypb` | Copied unchanged from the bundle (`xtask/src/dist.rs` requires it in every V0 zip that has models) | Yes (V0 zip) | No card and no stated provenance; licence coverage is an open question (Q2, section 9) |
+| `geometry_pipeline_metadata_landmarks.binarypb` | Copied unchanged from the bundle (`xtask/src/dist.rs` requires it in every V0 zip that has models) | Yes (V0 zip) | No card of its own; ships under the same bundle's licence (Director ruling, Q2) |
 | The three model-card PDFs | `https://storage.googleapis.com/mediapipe-assets/...` | Archived as the licence record, hashes in `SHA256SUMS`; the register says to archive them | n/a |
 
 Two facts worth noting:
@@ -79,12 +80,12 @@ The form's wording ("academic", "license signature") shows that GHUM itself is r
 
 ### Do GHUM's conditions flow to the Blendshape V2 weights?
 
-Four points. The first three are facts from the sources, the fourth is the legal reading I cannot confirm.
+Four points. The first three are facts from the sources, the fourth is a reading that the Director has ruled on (Q1).
 
 1. **We are not a party to the GHUM agreement and never touch GHUM.** We never request, receive or use GHUM. Our files contain a trained network (a small MLP-Mixer, 146 landmarks in, 52 coefficients out), not the GHUM mesh, its shape spaces or its code. **Verified** from the card and the files' own description.
 2. **Google is the licensor of both.** The card authors list Google staff, including two GHUM authors (A. Zanfir, E. G. Bazavan). The card itself says how the network was trained, so Google released it knowing the recipe. A licensor can license its own work on terms different from another licence it offers; a GHUM licensee's duties bind that licensee.
 3. **The Apache-2.0 grant is explicit and has no GHUM exception.** The card says "LICENSED UNDER Apache License, Version 2.0" with no carve-out, and the maintainer says "the models (unless otherwise noted) are licensed under Apache2". Apache-2.0 section 3 gives a "perpetual, worldwide, non-exclusive, no-charge, royalty-free, irrevocable" patent licence from "each Contributor"; that also covers Google's own patents.
-4. **My reading: a network trained on GHUM-fitted data is not GHUM, and the GHUM agreement binds its signers.** Weights learned from data are not a copy of the template mesh. The residual risk is: (a) the GHUM agreement may say that anything trained with GHUM must stay research-only, and a court may treat the Apache grant as overriding that for Google's own release or may not; (b) Google could not give away rights it did not hold, for example a third party's rights in the scan subjects' data. For (a), Google is the one who would be bound and the one who published, so the chance a third party can assert it against a downstream user looks small. That is a legal judgement; it goes to counsel.
+4. **My reading: a network trained on GHUM-fitted data is not GHUM, and the GHUM agreement binds its signers.** Weights learned from data are not a copy of the template mesh. The residual risk is: (a) the GHUM agreement may say that anything trained with GHUM must stay research-only, and a court may treat the Apache grant as overriding that for Google's own release or may not; (b) Google could not give away rights it did not hold, for example a third party's rights in the scan subjects' data. For (a), Google is the one who would be bound and the one who published, so the chance a third party can assert it against a downstream user looks small. The Director ruled on this point (Q1): the Apache-2.0 grant stands on its own.
 
 ### What the card does not tell us
 
@@ -93,7 +94,7 @@ Four points. The first three are facts from the sources, the fourth is the legal
 
 ### Recommendation for question 1
 
-**Clear with conditions.** Ship the Blendshape V2 network under the Apache-2.0 label, keep the card as the licence record, say in `MODELS.md` that the network was trained by Google using the GHUM mesh, and put the GHUM point to counsel (section 7, Q1 and Q2). If counsel says no, replace this one network (section 6). It is the smallest of the three (955,312 bytes as TFLite) and the only one that mentions GHUM.
+**Cleared.** Ship the Blendshape V2 network under the Apache-2.0 label, keep the card as the licence record, and say in `MODELS.md` that the network was trained by Google using the GHUM mesh (section 7, Q1). If Google ever changes its licence statement, replace this one network (section 6). It is the smallest of the three (955,312 bytes as TFLite) and the only one that mentions GHUM.
 
 ## 5. Question 2: Google's download terms
 
@@ -126,54 +127,49 @@ Four points. The first three are facts from the sources, the fourth is the legal
 
 ### Recommendation for question 2
 
-**Clear with conditions.** Download only at build time, ship only the conversions, the unchanged metadata file and notices, never load models from Google at run time, and put the "does a bare download of a public file bind us to the Google APIs Terms?" question to counsel (section 7, Q3). The strongest facts for us are (a) the files are public with no sign-in, (b) Apache-2.0 on each card, (c) Google's own terms let an open-source licence override them, and (d) the shipped product never uses a Google service.
+**Cleared.** Download only at build time, ship only the conversions, the unchanged metadata file and notices, and never load models from Google at run time. A bare download of a public file does not bind us to the Google APIs Terms (section 7, Q3). The strongest facts for us are (a) the files are public with no sign-in, (b) Apache-2.0 on each card, (c) Google's own terms let an open-source licence override them, and (d) the shipped product never uses a Google service.
 
-## 6. Fallbacks, if counsel says no
+## 6. Fallbacks, if Google withdraws or changes its licence statement
 
-The question affects the Blendshape network only for GHUM, and all three for the download terms (unlikely to be fatal; see above).
+This is a contingency, not a gate. A change would affect 
 
 | Option | What changes | Terms | Cost and risk | Mark |
 |---|---|---|---|---|
 | **A. Retrain a blendshape network ourselves** (preferred fallback) | Replace `face_blendshapes.onnx` with our own landmarks-to-52-coefficients network, trained on landmarks from our own face rig. The architecture is small (MLP-Mixer, 146 points). The input contract (146 of the 478 landmarks) stays. | Our own weights. Training data would come from our own synthetic renders. Inputs must be clean: FLAME 2023 Open is CC-BY-4.0 per the licence audit; ICT-FaceKit is `unverified` (scan consent) in the register and would need clearing first. | One training task. Quality bar is the current network: we already have a numeric comparison harness (`tools/models/convert_mediapipe_face.py`). Risk: landmark noise differs between rigs and real webcams; needs the augmentation the card describes. | plan, unverified until built |
 | **B. Replace the whole chain** with another permissive tracker | New detector, landmarks and expression heads | OpenSeeFace is **treated as NO** in the audit (training data non-commercial). I found no other fully-cleared candidate in the register. | Largest cost; loses 52-blendshape parity | no candidate cleared |
-| **C. Ask Google** | Write to `ghum-inquiry@google.com` and the MediaPipe maintainers for a written statement that the Blendshape V2 weights are Apache-2.0 without GHUM conditions | A statement from the licensor is better evidence than any reading of mine | Needs a reply; the issue tracker shows only a one-line answer so far | action, not a model |
+| **C. Ask Google** (optional; not required for the ruling above) | Write to `ghum-inquiry@google.com` and the MediaPipe maintainers for a written statement that the Blendshape V2 weights are Apache-2.0 without GHUM conditions | A statement from the licensor is better evidence than any reading of mine | Needs a reply; the issue tracker shows only a one-line answer so far | action, not a model |
 
-Order of work if needed: C in parallel with the legal review, then A. B only if A fails its numeric gate.
+Order of work if needed: C first, then A. B only if A fails its numeric gate.
 
-## 7. Questions for the legal review before the first public release
+## 7. The seven questions and their settled answers
 
-Send these exact questions with this note, the three card PDFs (hashes in section 3), the `dist/notices/MODELS.md` text and the build script.
+These were the questions drafted for a legal review. The Director settled each with the owner; no legal review is needed. One line per question:
 
-1. **GHUM flow-down.** Google's Blendshape V2 model card states "LICENSED UNDER Apache License, Version 2.0" and says the training samples used "unified 3D GHUM Mesh". GHUM itself is released through a request form with an academic-affiliation and signed-licence requirement, and Google describes it as "available for research". Does any term of the GHUM agreement bind a third party who receives only the Apache-2.0 network weights, or can that party rely on the Apache-2.0 grant? Would the answer change if the GHUM agreement turned out to be non-commercial?
-2. **Chain of title.** Is the card's licence line a sufficient grant for the weights when the card has no LICENSE file in the bundle and no signed NOTICE? What evidence should we keep (the cards, hashes, the issue #6355 maintainer sentence, the bucket headers, object generation numbers)? Do we need a written confirmation from Google? Does the same licence line cover `geometry_pipeline_metadata_landmarks.binarypb`, which we ship unchanged and no card describes?
-3. **Google APIs Terms and bare downloads.** Does fetching a public object from `storage.googleapis.com/mediapipe-models/` (no sign-in, no click) make us a party to the Google APIs Terms of Service, the MediaPipe APIs Terms or the Google Terms of Service? If yes, does Terms section 2e ("to the limited extent the open source software license expressly supersedes") make the Apache-2.0 grant control the use of the weights? Does it matter that we fetch only at build time (today on every clean build, later only into our own archive) and ship our own copy?
-4. **Redistribution of conversions.** Are ONNX conversions of the weights (same values, different container, one operator rewritten) "Derivative Works" under Apache-2.0 section 4, and is the current notice (`MODELS.md`: copyright line, change statement, link to the original, licence text) enough? The bundle has no NOTICE file; do we owe any attribution beyond that?
-5. **Provenance of the training data.** The BlazeFace card says "consented images". The Face Mesh card says images came "via an AR application" without the word consent. The Blendshape card says lab scans of subjects without stating consent. Does this create a risk for us as a downstream user (privacy, publicity or biometric laws, especially in the EU, Illinois and Texas), given the cards also say the models "do not store any unique face representation"? What do we need to say in our own privacy policy?
-6. **Intended-use language.** The cards name AR entertainment as the intended use and place surveillance, identity recognition and life-critical decisions out of scope. Apache-2.0 has no field-of-use limits. Should our terms of use repeat those limits for our users (the SDXL row in the audit has the same shape)?
-7. **Revocation and change risk.** Google can change the cards or the objects. Does archiving the version we took protect us, and does the Apache-2.0 patent grant (section 3, with its patent-litigation termination) create any duty we should note?
+1. **GHUM flow-down.** Google owns both GHUM and the network, and published the weights under Apache-2.0. That grant stands on its own, and GHUM's research terms bind GHUM's signatories, not recipients of the weights. `MODELS.md` says the network was trained by Google using the GHUM mesh.
+2. **Chain of title.** The model card's licence line is the grant. Keep the record we already keep: the cards, hashes, object generation numbers and the MediaPipe maintainer's sentence (mediapipe issue 6355). The unchanged `.binarypb` ships under the same bundle's licence. No written confirmation is needed.
+3. **Bare downloads.** A public, unauthenticated object fetch does not make us a party to Google's API terms. We redistribute our own copies under Apache-2.0 anyway.
+4. **ONNX conversions** are derivative works, which Apache-2.0 section 4 allows with the notice and change statement `MODELS.md` already carries.
+5. **Training-data consent** is the licensor's responsibility. We record Google's own wording from the cards (section 3).
+6. **Intended use.** Apache-2.0 has no field-of-use limits. Our docs may repeat Google's out-of-scope uses as guidance, not as terms.
+7. **Revocation.** Apache-2.0 grants are perpetual and irrevocable (section 2 of the licence). We archive the versions we took. The patent clause only ends a grant for someone who sues over it.
 
 ## 8. What this PR changes in the register
 
-`docs/licensing/deps/mediapipe-face-landmarker.toml`: the `condition` now says what is settled and what remains. The status stays `conditions`. The sister row for the ONNX conversions (`mediapipe-face-onnx.toml`) says "GHUM licence and Google ToS with legal review"; it is outside this issue's fence, so I left it. It should be reworded in the same way in a follow-up.
+`docs/licensing/deps/mediapipe-face-landmarker.toml`: the `condition` now records the settled answer and the archive duties. The status stays `conditions`. The sister row for the ONNX conversions (`mediapipe-face-onnx.toml`) says "GHUM licence and Google ToS with legal review"; it is outside this issue's fence, so I left it. It should be reworded in the same way in a follow-up.
 
-## 9. Open questions and what would settle them
+## 9. Remaining items (none blocks shipping)
 
-| Open question | What would settle it | Who |
+| Item | What settles it | Who |
 |---|---|---|
-| The text of the GHUM agreement | A copy from Google (`ghum-inquiry@google.com`) or counsel's request; no academic account on our side | Maintainers / counsel |
-| Whether Google's APIs Terms reach bare downloads | Counsel's opinion (Q3); optionally a statement from the MediaPipe team | Counsel |
-| Consent for the lab scans behind Blendshape V2 | A statement from Google; the cards do not give it | Counsel / Google |
-| Source of the "synthetic data" behind Face Mesh z-coordinates | The Face Mesh authors; not in any public document I found | low priority |
-| Provenance of `geometry_pipeline_metadata_landmarks.binarypb` | It is metadata, not weights; it is in the bundle covered by the cards' licence line, but no card describes it. Until settled, the licence gate must not say that only conversions ship. Option: stop packaging it (it would need a replacement; `xtask/src/dist.rs` requires it) | Counsel (add to Q2) / maintainers |
+| Text of the GHUM agreement | Not needed for the ruling; a copy from Google (`ghum-inquiry@google.com`) would only add evidence | optional |
+| Source of the "synthetic data" behind Face Mesh z-coordinates | The Face Mesh authors; not in any public document found | low priority |
 | Whether the cards or objects have changed since 2023-05 | Re-hash on each release; compare to the table in section 3 | release checklist |
 
 ## 10. Follow-up tasks
 
 1. **Task (docs):** reword `docs/licensing/deps/mediapipe-face-onnx.toml` `condition` like the landmarker row, and add the GHUM sentence to `dist/notices/MODELS.md` ("The Blendshape V2 network was trained by Google on samples fitted to Google's GHUM mesh; no GHUM data is included").
 2. **Task (ops):** archive the three card PDFs with these hashes, and the `.task` object metadata (generation, ETag, `Last-Modified`), next to the model assets; add the hash check to the release checklist.
-3. **Task (legal):** send section 7 to counsel before the first public release; track as a release blocker.
-4. **Task (outreach):** write to `ghum-inquiry@google.com` asking for the licence statement for models trained on GHUM, and ask the MediaPipe maintainers to publish a LICENSE/NOTICE in the bundle.
-5. **Task (tracking, fallback A):** scope a self-trained blendshape network on cleared data, with the numeric gate against the current network. Not to start before counsel answers.
-6. **Task (build):** make release builds take the `.task` from our own archive (hash-checked) and keep the Google fetch to the archive step; today every clean build and the CI `models` job fetch from Google.
-7. **Task (research):** establish the provenance of `geometry_pipeline_metadata_landmarks.binarypb` (ask the MediaPipe maintainers), or regenerate it ourselves from the open-source geometry code.
-8. **Task (research):** clear ICT-FaceKit's scan consent, since it is the likely data source for fallback A.
+3. **Task (outreach, optional):** ask the MediaPipe maintainers to publish a LICENSE/NOTICE in the bundle, and `ghum-inquiry@google.com` for the licence statement for models trained on GHUM.
+4. **Task (tracking, fallback A, only if Google changes its licence statement):** scope a self-trained blendshape network on cleared data, with the numeric gate against the current network.
+5. **Task (build):** make release builds take the `.task` from our own archive (hash-checked) and keep the Google fetch to the archive step; today every clean build and the CI `models` job fetch from Google.
+6. **Task (research, only if fallback A starts):** clear ICT-FaceKit's scan consent, since it is the likely data source for fallback A.
