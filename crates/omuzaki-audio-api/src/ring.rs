@@ -87,8 +87,9 @@ struct Shared {
     read: AtomicU64,
     /// Total samples refused because the ring was full.
     dropped: AtomicU64,
-    /// `Overwrite` loss, counted by the producer when it laps the reader (see [`Producer::overwritten`]).
-    overwritten: AtomicU64,
+    /// `Overwrite` only: total samples the consumer skipped, published by it before `read`, so a producer that loads
+    /// `read` and then this never sees fewer skips than that position accounts for.
+    skipped: AtomicU64,
     policy: DropPolicy,
     /// The stream position of the first sample.
     origin: u64,
@@ -104,8 +105,6 @@ pub struct Producer {
     /// Lost positions so far (30-bit wrapping): stamped on every sample written.
     lost: u32,
     flags: TapFlags,
-    /// Every position below this is accounted for: read by the consumer, or already counted in `Shared::overwritten`.
-    accounted: u64,
 }
 
 /// The read end. Owned by the consumer's thread.
@@ -133,14 +132,14 @@ pub fn ring(capacity: usize, policy: DropPolicy, origin: u64) -> (Producer, Cons
         claimed: AtomicU64::new(0),
         read: AtomicU64::new(0),
         dropped: AtomicU64::new(0),
-        overwritten: AtomicU64::new(0),
+        skipped: AtomicU64::new(0),
         policy,
         origin,
         reader_gone: AtomicBool::new(false),
         writer_gone: AtomicBool::new(false),
     });
     (
-        Producer { shared: Arc::clone(&shared), lost: 0, flags: TapFlags::default(), accounted: 0 },
+        Producer { shared: Arc::clone(&shared), lost: 0, flags: TapFlags::default() },
         Consumer { shared, pos: 0, stream: origin, lost_total: 0, overwritten: 0 },
     )
 }
@@ -197,13 +196,12 @@ impl Producer {
     }
 
     fn push_overwrite(&mut self, samples: &[f32]) -> usize {
-        let written = self.shared.written.load(Ordering::Relaxed);
-        let end = written + samples.len() as u64;
-        // Count the loss before the claim: a reader that skips ahead can only do so past a claim, and its published
-        // position would hide the skipped positions from a count made afterwards.
-        self.count_overwritten(end);
         let shared = &*self.shared;
+        let written = shared.written.load(Ordering::Relaxed);
+        let end = written + samples.len() as u64;
         // Announce the batch before touching slots, so a reader that sees any new slot value also sees this claim.
+        // Loss is not counted here: it is derived from `written` and the reader's published state (see
+        // `Producer::overwritten`), so no interleaving of a read with this push can count a sample twice.
         shared.claimed.store(end, Ordering::Relaxed);
         fence(Ordering::Release);
         // A batch longer than the ring only keeps its tail; the rest would be overwritten at once.
@@ -217,22 +215,6 @@ impl Producer {
         }
         shared.written.store(end, Ordering::Release);
         samples.len()
-    }
-
-    /// Counts the positions below `end - capacity` that the reader had not yet read: they are gone for good now.
-    fn count_overwritten(&mut self, end: u64) {
-        let shared = &*self.shared;
-        let gone_below = end.saturating_sub(shared.capacity());
-        if gone_below > self.accounted {
-            // The reader publishes its position after every run, so what it has read is not counted as lost. A run in
-            // flight is not published yet: its lapped part is counted here, and the reader skips it on its retry.
-            // Nothing below `gone_below` is claimed yet, so no reader position can have passed it by skipping.
-            let unread_from = self.accounted.max(shared.read.load(Ordering::Acquire));
-            if gone_below > unread_from {
-                shared.overwritten.fetch_add(gone_below - unread_from, Ordering::Relaxed);
-            }
-            self.accounted = gone_below;
-        }
     }
 
     /// Records `count` stream positions that were never captured (a lost device): the next sample is stamped as coming
@@ -271,11 +253,24 @@ impl Producer {
 
     /// Total samples the reader lost to `Overwrite`: positions the writer lapped before the reader read them (`Overwrite`
     /// only; zero for `DropNewest`). It is the producer-side view of [`Consumer::overwritten`], so the engine can report
-    /// every lost sample in its health meter, but it is updated when the writer laps rather than when the reader skips
-    /// ahead, so it can run ahead of the consumer's count until the next read.
+    /// every lost sample in its health meter.
+    ///
+    /// It is derived, not counted: the samples the reader has skipped, plus the positions below the oldest intact one
+    /// that it has not yet reached (lost, but not yet skipped over). The reader publishes its skips before its position,
+    /// so each lost sample is counted once: it is first in the second term, then moves to the first. The two loads are
+    /// not one atomic snapshot, so a read in progress can make the value run ahead by the skips of that read; once the
+    /// reader has caught up the value equals [`Consumer::overwritten`] exactly. No lock, no allocation, no loop.
     #[must_use]
     pub fn overwritten(&self) -> u64 {
-        self.shared.overwritten.load(Ordering::Relaxed)
+        let shared = &*self.shared;
+        if shared.policy != DropPolicy::Overwrite {
+            return 0;
+        }
+        // The position first: the skips are published before it, so the skips loaded next cover every position it has
+        // passed (the reverse order could miss them and briefly under-report).
+        let read = shared.read.load(Ordering::Acquire);
+        let lapped = shared.written.load(Ordering::Acquire).saturating_sub(shared.capacity());
+        shared.skipped.load(Ordering::Acquire) + lapped.saturating_sub(read)
     }
 
     /// Total samples refused so far because the ring was full (`DropNewest` only).
@@ -378,6 +373,10 @@ impl Consumer {
         self.pos = start + len as u64;
         self.stream = start_sample + len as u64;
         self.lost_total = first_meta & GAP_MASK;
+        if skipped > 0 {
+            // Before `read`, so a producer that sees the new position also sees these skips.
+            self.shared.skipped.store(self.overwritten, Ordering::Release);
+        }
         // Published for both policies: `DropNewest` frees space by it, `Overwrite` counts loss against it.
         self.shared.read.store(self.pos, Ordering::Release);
         TapRead { len, start_sample, gap_before, muted: flags.muted, private: flags.private }
@@ -727,5 +726,51 @@ mod tests {
         assert_eq!(skipped, rx.overwritten(), "every skipped position is an overwritten sample here");
         // The writer can count a run the reader finished copying just before it lapped it, so it never counts fewer.
         assert!(tx.overwritten() >= rx.overwritten(), "{} < {}", tx.overwritten(), rx.overwritten());
+    }
+
+    /// A skip is counted once on each side, and the producer sees it as soon as the writer laps, before the reader reads.
+    #[test]
+    fn a_skip_is_counted_once_on_both_sides() {
+        let (mut tx, mut rx) = ring(4, DropPolicy::Overwrite, 0);
+        tx.push(&ramp(0, 4));
+        tx.push(&ramp(4, 7));
+        assert_eq!((tx.overwritten(), rx.overwritten()), (3, 0), "lapped, not yet skipped");
+        let mut out = [0.0; 8];
+        let run = rx.read(&mut out);
+        assert_eq!((run.len, run.gap_before), (4, 3), "{run:?}");
+        assert_eq!((tx.overwritten(), rx.overwritten()), (3, 3));
+    }
+
+    /// A reader and a writer on two threads, a tiny ring, many pushes: once the reader has drained the ring, the
+    /// writer's count equals the reader's and every sample is either delivered or counted.
+    #[test]
+    fn concurrent_reads_leave_the_loss_counts_equal() {
+        use std::sync::atomic::AtomicBool;
+        for round in 0..20u64 {
+            let (mut tx, mut rx) = ring(8, DropPolicy::Overwrite, 0);
+            let done = Arc::new(AtomicBool::new(false));
+            let flag = Arc::clone(&done);
+            let writer = std::thread::spawn(move || {
+                let block = [0.5f32; 5];
+                for _ in 0..20_000 + round * 7 {
+                    tx.push(&block);
+                }
+                flag.store(true, Ordering::Release);
+                tx
+            });
+            let mut out = [0.0; 8];
+            let mut delivered = 0u64;
+            loop {
+                let finished = done.load(Ordering::Acquire);
+                let run = rx.read(&mut out);
+                delivered += run.len as u64;
+                if finished && run.len == 0 {
+                    break;
+                }
+            }
+            let tx = writer.join().unwrap_or_else(|_| unreachable!("the writer does not panic"));
+            assert_eq!(tx.overwritten(), rx.overwritten(), "round {round}");
+            assert_eq!(delivered + rx.overwritten(), tx.written(), "round {round}");
+        }
     }
 }
