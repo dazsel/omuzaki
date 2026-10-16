@@ -55,6 +55,7 @@ reqwest = { version = "0.13", default-features = false }
 rhai = { version = "=1.26.1", default-features = false, features = ["std", "serde", "sync", "internals"] }   # the script runtime (MIT OR Apache-2.0); exact pin because `internals` is unstable API, omuzaki-script
 rmcp = { version = "3.5", features = ["server", "transport-io", "transport-streamable-http-server"] }
 rustix = { version = "1.1", default-features = false, features = ["std", "fs"] } # opens beneath a folder handle, never through a link (openat2, O_NOFOLLOW), omuzaki-ops-api; safe renameat2(RENAME_EXCHANGE), omuzaki-doc (Linux)
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] } # TLS with `ring` as its one crypto provider (rustls MIT OR Apache-2.0 OR ISC; ring Apache-2.0 AND ISC), omuzaki-http; omuzaki-mcp tests (llm-api D11)
 schemars = "1.2"
 semver = { version = "1", features = ["serde"] } # versions in the updater contract (MIT OR Apache-2.0), omuzaki-update-api
 serde = { version = "1", features = ["derive"] }
