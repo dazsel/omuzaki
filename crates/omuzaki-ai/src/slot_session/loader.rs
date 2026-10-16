@@ -272,6 +272,8 @@ fn settle(
             Answer::Confirm(_) | Answer::Nothing => None,
         });
     }
+    #[cfg(feature = "test-support")]
+    let published = matches!(answer, Answer::Publish(..));
     let displaced = match answer {
         Answer::Nothing => None,
         Answer::Confirm(model) if view.pending_model() == Some(&model) => {
@@ -298,6 +300,10 @@ fn settle(
         }
     };
     drop(mailbox);
+    #[cfg(feature = "test-support")]
+    if published {
+        registry.count_publication();
+    }
     Ok(displaced.and_then(|r| r.replacement).map(|a| a.session))
 }
 

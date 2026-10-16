@@ -16,7 +16,13 @@ toml.workspace = true
 tracing.workspace = true
 omuzaki-ai-api = { path = "../omuzaki-ai-api" }
 
+[features]
+# Test-only signals (for example `Registry::publications`); never enabled in a release build. The crate's own tests
+# turn it on through the dev-dependency on itself below.
+test-support = []
+
 [dev-dependencies]
+omuzaki-ai = { path = ".", features = ["test-support"] }
 omuzaki-ai-mock = { path = "../omuzaki-ai-mock" }
 
 [lints]

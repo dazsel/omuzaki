@@ -859,9 +859,9 @@ fn a_reset_after_the_replacement_was_published_resets_it_again_before_it_answers
     settle(&mut *session, &mut out);
 
     // No run takes it in: the loader loads v2, resets it to count 0 and publishes it.
+    let published = registry.publications();
     registry.select(&echo_slot(), Some(&v2), Requester::Person).unwrap();
-    wait_for("the loader to reset v2", || resets(&v2).len() == 1);
-    std::thread::sleep(Duration::from_millis(50));
+    wait_for("the loader to publish v2", || registry.publications() > published);
     session.reset(); // count 1: what waits is stale
 
     run_until(&mut *session, &mut out, |s| s.info().model == v2);

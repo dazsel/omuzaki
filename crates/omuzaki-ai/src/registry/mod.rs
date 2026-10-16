@@ -68,6 +68,9 @@ pub struct Shared {
     /// Counts every committed state change. Changed only with the state locked, so a chain read with the state
     /// locked knows which change it reflects; the loader publishes nothing chosen from an older one.
     generation: AtomicU64,
+    /// Test support: how many replacements (or "nothing runs") the loader has published to a slot session's mailbox.
+    #[cfg(feature = "test-support")]
+    publications: AtomicU64,
     /// Models switched off for this app session only, with the reason: a model that crashed. The state file never
     /// records them, so they run again after a restart or a reinstall.
     session_disabled: Mutex<Vec<(ModelRef, String)>>,
@@ -159,6 +162,8 @@ impl Registry {
                 changing: Mutex::new(()),
                 notes,
                 generation: AtomicU64::new(0),
+                #[cfg(feature = "test-support")]
+                publications: AtomicU64::new(0),
                 session_disabled: Mutex::new(Vec::new()),
                 sessions: Mutex::new(Vec::new()),
                 next_session: AtomicU64::new(0),
@@ -308,6 +313,19 @@ impl Registry {
     /// Another handle to this registry, for a slot session it opens.
     pub(crate) fn handle(&self) -> Self {
         Self { shared: Arc::clone(&self.shared) }
+    }
+
+    /// Test support (feature `test-support`, off in releases): how many answers the loader has published to a slot
+    /// session's mailbox so far. A test waits on it to know a replacement is waiting there, without a sleep.
+    #[cfg(feature = "test-support")]
+    pub fn publications(&self) -> u64 {
+        self.publications.load(Ordering::Acquire)
+    }
+
+    /// Counts one publication; called by the loader after the answer is in the mailbox.
+    #[cfg(feature = "test-support")]
+    pub(crate) fn count_publication(&self) {
+        self.publications.fetch_add(1, Ordering::Release);
     }
 
     /// How many state changes were committed so far (see [`Shared`]'s `generation`).
