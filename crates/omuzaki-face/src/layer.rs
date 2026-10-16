@@ -41,6 +41,12 @@ pub trait GpuRasterizer: Send {
         let _ = sections;
         self.rasterize_native(spec, list, native)
     }
+
+    /// The renderer's device was lost or rebuilt: drop everything made on the old one (renderers, pipelines, textures,
+    /// caches) and decide afresh on the next paint. The stage calls this when it rebuilds the renderer, because a
+    /// rasteriser can't always tell the new device from the old one by comparing them (wgpu numbers its resources per
+    /// instance, and a rebuilt renderer is a new instance). The default has nothing to drop.
+    fn device_lost(&mut self) {}
 }
 
 /// The renderer's [`Painter`] for one face layer, from [`FaceSystem::layer_painter`](crate::FaceSystem::layer_painter).

@@ -150,6 +150,14 @@ impl FaceSystem {
         self.gpu = gpu;
     }
 
+    /// Tells the registered GPU rasteriser (if any) that the renderer's device was lost or rebuilt, so it drops what it
+    /// made on the old one ([`GpuRasterizer::device_lost`]). The stage calls it when it rebuilds the renderer.
+    pub fn gpu_device_lost(&mut self) {
+        if let Some(gpu) = self.gpu.as_mut() {
+            gpu.device_lost();
+        }
+    }
+
     /// The layers the painter fills and where they sit; the stage creates one texture per layer a material uses.
     pub fn layers(&self) -> &[FaceLayerSpec] {
         self.painter.layers()

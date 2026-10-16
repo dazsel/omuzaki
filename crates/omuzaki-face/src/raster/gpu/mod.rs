@@ -253,7 +253,8 @@ struct Gpu {
 /// usages; only level 0 is written, and the renderer rebuilds the mips. The rasteriser submits on that queue.
 ///
 /// Use one for all of a system's layers. The Vello renderer belongs to the device of the paint that made it; a paint with
-/// another device (the renderer was rebuilt after a device loss) drops that state and starts over with whole repaints.
+/// another device drops that state and starts over with whole repaints. A rebuilt renderer may not look like another device
+/// (see [`reset`](Self::reset)), so the stage calls [`GpuRasterizer::device_lost`] when it rebuilds one.
 ///
 /// It returns `Ok(false)`, so the CPU raster draws, when `native` is not the renderer's `(Device, Queue, Texture)` (the
 /// mock renderer's targets, another backend) and when Vello can't run on the device: that is logged once and never
@@ -386,6 +387,17 @@ fn pixel_rect(damage: Rect, width: u32, height: u32) -> Option<[u32; 4]> {
 }
 
 impl VelloRasterizer {
+    /// Drops everything made on the old device: the Vello renderer, the resolve pipeline, the private textures, the
+    /// section caches and a remembered rejection. The next paint starts over with a whole repaint. Comparing devices is
+    /// not enough to notice a rebuilt renderer: wgpu numbers resources per instance, and the first device of a new
+    /// instance can compare equal to the first device of the old one.
+    pub fn reset(&mut self) {
+        self.gpu = None;
+        self.layers = Default::default();
+        self.unavailable = None;
+        self.encoded = 0;
+    }
+
     /// Draws `list` into `native`, redoing only what the sections' ranges say changed.
     fn paint(
         &mut self,
@@ -496,6 +508,10 @@ impl GpuRasterizer for VelloRasterizer {
         let len = list.cmds().len();
         let whole: LayerSections = std::array::from_fn(|at| if at == 0 { 0..len } else { len..len });
         self.paint(spec, list, &whole, native)
+    }
+
+    fn device_lost(&mut self) {
+        self.reset();
     }
 
     fn rasterize_native_sections(

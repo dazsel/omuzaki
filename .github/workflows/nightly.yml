@@ -89,10 +89,8 @@ jobs:
     runs-on: ubuntu-latest
     if: github.repository == 'dazsel/omuzaki'
     timeout-minutes: 60
-    # issues: write is for the failure report only.
     permissions:
       contents: read
-      issues: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-linux
@@ -107,17 +105,3 @@ jobs:
           name: face-gpu-timing-windows
           path: target/x86_64-pc-windows-gnu/release/examples/gpu_face_timing.exe
           if-no-files-found: error
-
-      - name: Report failure
-        if: failure()
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TITLE: "CI: nightly failing"
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          number=$(gh issue list --state open --search "$TITLE in:title" --json number --jq '.[0].number')
-          if [ -n "$number" ]; then
-            gh issue comment "$number" --body "Failed again: $RUN_URL"
-          else
-            gh issue create --title "$TITLE" --body "The nightly run failed: $RUN_URL"
-          fi

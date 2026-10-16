@@ -62,6 +62,10 @@ impl GpuRasterizer for Shared {
     ) -> Result<bool, FaceError> {
         self.0.lock().unwrap().rasterize_native_sections(spec, list, sections, native)
     }
+
+    fn device_lost(&mut self) {
+        self.0.lock().unwrap().device_lost();
+    }
 }
 
 /// A paint target like the renderer's: its `native()` is the wgpu tuple.
@@ -301,4 +305,46 @@ fn a_sheared_stroke_leaves_no_stale_ink_when_it_goes_away() {
     assert!(rasterizer.rasterize_native(&spec, &gone, &mut native).unwrap());
     let left: usize = read_back(&gpu, &native.2).chunks(4).filter(|p| p[3] != 0).count();
     assert_eq!(left, 0, "{left} pixels of the old dash are left after the repaint");
+}
+
+#[test]
+fn a_device_of_another_instance_gets_its_own_state_after_device_lost() {
+    // Two independent instances: wgpu numbers resources per instance, so the first device of each is the same number
+    // and the rasteriser can't tell them apart by comparing them. A rebuilt renderer is exactly this.
+    let (Some(first), Some(second)) = (device(), device()) else { return };
+    let (spec, list) = small_layer(false);
+    let mut rasterizer = VelloRasterizer::new();
+    let on_first = gpu_pixels(&first, &mut rasterizer, &spec, &list);
+
+    rasterizer.device_lost();
+    let on_second = gpu_pixels(&second, &mut rasterizer, &spec, &list);
+    assert_eq!(on_second, on_first, "the second instance's device draws the same picture, without a validation error");
+    assert_eq!(
+        on_second,
+        gpu_pixels(&second, &mut VelloRasterizer::new(), &spec, &list),
+        "as a fresh rasteriser would"
+    );
+}
+
+#[test]
+fn device_lost_also_forgets_a_device_vello_was_rejected_on() {
+    let Some(adapter) = common::adapter() else { return };
+    let weak = wgpu::DeviceDescriptor {
+        required_limits: wgpu::Limits::downlevel_defaults(),
+        ..wgpu::DeviceDescriptor::default()
+    };
+    let Ok(weak) = pollster::block_on(adapter.request_device(&weak)) else {
+        eprintln!("skipped: the adapter has no downlevel device");
+        return;
+    };
+    let Some(strong) = device() else { return };
+    let (spec, list) = small_layer(false);
+    let mut rasterizer = VelloRasterizer::new();
+    let mut on_weak = (weak.0.clone(), weak.1.clone(), face_texture(&weak.0, spec.size_px()));
+    assert!(!rasterizer.rasterize_native(&spec, &list, &mut on_weak).unwrap(), "the weak device was declined");
+
+    // The capable device is the first of another instance, so it may compare equal to the weak one.
+    rasterizer.device_lost();
+    let drawn = gpu_pixels(&strong, &mut rasterizer, &spec, &list);
+    assert!(drawn.chunks(4).any(|p| p[3] != 0), "the capable device draws");
 }
