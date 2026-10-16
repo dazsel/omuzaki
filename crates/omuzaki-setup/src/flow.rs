@@ -61,6 +61,12 @@ pub enum Event {
     ChooseOutput(OutputKind),
     /// Finish from Go-live.
     Finish,
+    /// The host applied the source [`Effect::SelectInput`] asked for (the `input.select` op ran). Only this lets
+    /// Input move on, so a queued or refused op leaves the step as it is.
+    InputApplied(InputChoice),
+    /// The host could not apply that source (the person declined it, or the op failed). The step stays and a
+    /// [`Note::InputNotApplied`] says so; Continue asks again.
+    InputRejected(InputChoice),
 }
 
 /// What the host must do.
@@ -70,8 +76,9 @@ pub enum Effect {
     Show(Step),
     /// Ask the OS for the camera, with the reason on screen.
     RequestCameraPermission,
-    /// Apply this tracking source (`input.select`). Sent when a source is committed: a choice, a skip, or a
-    /// preselected source accepted by Continue; never for a source that came from the host's settings.
+    /// Apply this tracking source (`input.select`, which may wait for the person's approval). Sent for a choice, or
+    /// for a source only preselected when Continue is pressed; never for a source already in the host's settings.
+    /// The host answers with [`Event::InputApplied`] or [`Event::InputRejected`].
     SelectInput(InputChoice),
     /// Start the calibration overlay.
     StartCalibration,
@@ -103,6 +110,8 @@ pub enum Note {
     TrackerUnavailable,
     /// The iPhone source is chosen but no iPhone is paired.
     IphoneNotPaired,
+    /// The host did not apply the chosen source; Continue tries again.
+    InputNotApplied,
     /// No assistant is configured.
     NoAssistant,
     /// Offer Simplified Chinese.
@@ -132,6 +141,19 @@ pub struct View {
     pub elapsed_ms: [u64; 6],
 }
 
+/// Where the selected source stands with the host's settings.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Applied {
+    /// It is the host's setting (or needs none, like the life layer).
+    Yes,
+    /// It is only drawn as selected; nothing was sent.
+    NotSent,
+    /// `SelectInput` was sent and no answer came yet.
+    Pending,
+    /// The host answered that it did not apply it.
+    Rejected,
+}
+
 /// How far the calibration got in this sitting (not persisted).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum Calibration {
@@ -149,8 +171,9 @@ pub struct SetupFlow {
     skipped: BTreeSet<Step>,
     finished: bool,
     input: Option<InputChoice>,
-    /// The source is the host's setting or the person's choice, as opposed to a default only drawn as selected.
-    input_committed: bool,
+    applied: Applied,
+    /// Continue was pressed while the source was being applied: move on when the host says it was.
+    continue_when_applied: bool,
     output: Option<OutputKind>,
     calibration: Calibration,
     permission_requested: bool,
@@ -182,7 +205,12 @@ impl SetupFlow {
             skipped,
             finished,
             input,
-            input_committed: input.is_some() && (current.input.is_some() || skipped_input),
+            applied: if input.is_some() && (current.input.is_some() || skipped_input) {
+                Applied::Yes
+            } else {
+                Applied::NotSent
+            },
+            continue_when_applied: false,
             output: current.output,
             calibration: Calibration::Idle,
             permission_requested: false,
@@ -215,7 +243,23 @@ impl SetupFlow {
                 }
             }
             Event::Next => self.next(&mut fx),
+            Event::InputApplied(c) => {
+                if self.input == Some(c) && self.applied == Applied::Pending {
+                    self.applied = Applied::Yes;
+                    let proceed = std::mem::take(&mut self.continue_when_applied);
+                    if proceed && self.step == Step::Input && self.input_ready() {
+                        self.advance(&mut fx);
+                    }
+                }
+            }
+            Event::InputRejected(c) => {
+                if self.input == Some(c) && self.applied == Applied::Pending {
+                    self.applied = Applied::Rejected;
+                    self.continue_when_applied = false;
+                }
+            }
             Event::Back => {
+                self.continue_when_applied = false;
                 if let Some(prev) = self.prev_shown() {
                     self.go(prev, &mut fx);
                 }
@@ -325,6 +369,9 @@ impl SetupFlow {
                 if self.input == Some(InputChoice::Iphone) && p.iphone != IPhone::Paired {
                     notes.push(Note::IphoneNotPaired);
                 }
+                if self.applied == Applied::Rejected {
+                    notes.push(Note::InputNotApplied);
+                }
             }
             // The step stays when the probes just made it pointless (no jump under the person); say why.
             Step::Calibrate if !self.calibrate_possible() => match self.input {
@@ -368,11 +415,12 @@ impl SetupFlow {
 
     /// Waiting on the OS camera dialog or the webcam model, as opposed to the person.
     fn waiting(&self) -> bool {
-        let dialog = self.permission_requested && self.probes.cameras.permission() == Some(Permission::Undecided);
-        // A preselected webcam on an earlier step is not a wait: the person is not held up by the model yet.
-        let download = self.step >= Step::Input
-            && self.input == Some(InputChoice::Webcam)
-            && matches!(self.probes.tracker, TrackerModel::Downloading { .. });
+        // Only while the webcam is the source and its step is showing: a source switched away from, or a later
+        // step, is the person's time.
+        let on_webcam = self.input == Some(InputChoice::Webcam) && matches!(self.step, Step::Input | Step::Calibrate);
+        let dialog =
+            on_webcam && self.permission_requested && self.probes.cameras.permission() == Some(Permission::Undecided);
+        let download = on_webcam && matches!(self.probes.tracker, TrackerModel::Downloading { .. });
         dialog || download
     }
 
@@ -434,17 +482,7 @@ impl SetupFlow {
     fn next(&mut self, fx: &mut Vec<Effect>) {
         match self.step {
             Step::Welcome => self.advance(fx),
-            // Continue on a source only drawn as selected commits it first, exactly as choosing it would
-            // (including asking the OS for the camera), then moves on in the same transition if it is ready.
-            Step::Input if !self.input_committed && self.input.is_some() => {
-                if let Some(choice) = self.input {
-                    self.choose_input(choice, fx);
-                }
-                if self.input_ready() {
-                    self.advance(fx);
-                }
-            }
-            Step::Input if self.input_ready() => self.advance(fx),
+            Step::Input => self.continue_input(fx),
             // Back to an already calibrated step: Continue keeps the stored result.
             Step::Calibrate if self.calibration == Calibration::Done => self.advance(fx),
             Step::Calibrate if self.calibrate_possible() && self.calibration == Calibration::Idle => {
@@ -456,20 +494,43 @@ impl SetupFlow {
         }
     }
 
-    /// A webcam choice waits for the OS to grant the camera, an iPhone for its pairing; the life layer needs nothing.
+    /// Continue on Input. A source that is only drawn as selected (or was refused) is sent to the host first, as
+    /// choosing it would, and the step stays until the host reports it applied.
+    fn continue_input(&mut self, fx: &mut Vec<Effect>) {
+        let Some(choice) = self.input else { return };
+        match self.applied {
+            Applied::NotSent | Applied::Rejected => {
+                self.send_input(choice, fx);
+                self.continue_when_applied = self.applied == Applied::Pending;
+            }
+            Applied::Pending => self.continue_when_applied = true,
+            Applied::Yes => {
+                if self.input_ready() {
+                    self.advance(fx);
+                } else if choice == InputChoice::Webcam {
+                    self.request_camera(fx);
+                }
+            }
+        }
+    }
+
+    /// A webcam choice waits for the OS to grant the camera, an iPhone for its pairing, and any source for the host to have applied it.
     fn input_ready(&self) -> bool {
-        match self.input {
+        let source_ready = match self.input {
             None => false,
             Some(InputChoice::Webcam) => self.probes.cameras.permission() == Some(Permission::Granted),
             Some(InputChoice::Iphone) => self.probes.iphone == IPhone::Paired,
             Some(InputChoice::LifeLayerOnly) => true,
-        }
+        };
+        source_ready && self.applied == Applied::Yes
     }
 
     fn skip(&mut self, fx: &mut Vec<Effect>) {
         match self.step {
             Step::Input => {
-                self.commit_input(InputChoice::LifeLayerOnly, fx);
+                // The life layer is the default and writes nothing, so there is nothing to wait for.
+                self.set_input(InputChoice::LifeLayerOnly);
+                self.applied = Applied::Yes;
                 self.skipped.insert(Step::Input);
             }
             Step::Calibrate => {
@@ -489,29 +550,38 @@ impl SetupFlow {
         if self.step != Step::Input {
             return;
         }
-        if choice == InputChoice::Webcam {
-            match self.probes.cameras.permission() {
-                None | Some(Permission::Denied) => return,
-                Some(_) => self.request_camera(fx),
-            }
+        if choice == InputChoice::Webcam && matches!(self.probes.cameras.permission(), None | Some(Permission::Denied))
+        {
+            return;
         }
         self.skipped.remove(&Step::Input);
-        self.commit_input(choice, fx);
+        if self.input == Some(choice) && matches!(self.applied, Applied::Yes | Applied::Pending) {
+            return;
+        }
+        self.send_input(choice, fx);
     }
 
-    /// Makes `choice` the person's source and tells the host to apply it, unless it already is the committed one.
-    fn commit_input(&mut self, choice: InputChoice, fx: &mut Vec<Effect>) {
-        if !self.input_committed || self.input != Some(choice) {
-            fx.push(Effect::SelectInput(choice));
+    /// Makes `choice` the selected source and asks the host to apply it.
+    fn send_input(&mut self, choice: InputChoice, fx: &mut Vec<Effect>) {
+        match (choice, self.probes.cameras.permission()) {
+            (InputChoice::Webcam, None | Some(Permission::Denied)) => return,
+            (InputChoice::Webcam, _) => self.request_camera(fx),
+            _ => {}
         }
         self.set_input(choice);
-        self.input_committed = true;
+        self.applied = Applied::Pending;
+        fx.push(Effect::SelectInput(choice));
     }
 
     /// Every change of source goes through here: a calibration belongs to the source it ran on.
     fn set_input(&mut self, choice: InputChoice) {
         if self.input != Some(choice) {
             self.calibration = Calibration::Idle;
+            self.continue_when_applied = false;
+            if choice != InputChoice::Webcam {
+                // A pending camera dialog belongs to the webcam source.
+                self.permission_requested = false;
+            }
         }
         self.input = Some(choice);
     }

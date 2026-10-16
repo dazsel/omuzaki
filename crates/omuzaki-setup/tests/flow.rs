@@ -108,7 +108,10 @@ fn no_camera_reaches_the_end_through_the_life_layer_and_lists_calibrate_as_skipp
     assert!(f.view().notes.contains(&Note::NoCamera));
     assert_eq!(send(&mut f, &[Event::ChooseInput(InputChoice::Webcam)]), no_effects(), "webcam is not on offer");
     assert_eq!(send(&mut f, &[Event::Next]), no_effects(), "no choice, no Next");
-    send(&mut f, &[Event::ChooseInput(InputChoice::LifeLayerOnly), Event::Next]);
+    send(
+        &mut f,
+        &[Event::ChooseInput(InputChoice::LifeLayerOnly), Event::InputApplied(InputChoice::LifeLayerOnly), Event::Next],
+    );
     assert_eq!(f.view().step, Step::Output);
     assert!(!f.view().shown.contains(&Step::Calibrate));
     assert_eq!(f.progress().skipped, [Step::Calibrate]);
@@ -119,12 +122,18 @@ fn permission_denied_offers_the_other_paths() {
     let mut f = flow(Probes { cameras: Cameras::One(Permission::Denied), iphone: IPhone::Paired, ..probes() });
     to_input(&mut f);
     assert!(f.view().notes.contains(&Note::PermissionDenied));
-    assert_eq!(send(&mut f, &[Event::ChooseInput(InputChoice::Webcam), Event::Next]), no_effects());
-    send(&mut f, &[Event::ChooseInput(InputChoice::Iphone), Event::Next]);
+    assert_eq!(
+        send(&mut f, &[Event::ChooseInput(InputChoice::Webcam), Event::InputApplied(InputChoice::Webcam), Event::Next]),
+        no_effects()
+    );
+    send(&mut f, &[Event::ChooseInput(InputChoice::Iphone), Event::InputApplied(InputChoice::Iphone), Event::Next]);
     assert_eq!(f.view().step, Step::Calibrate, "a paired iPhone calibrates without the webcam");
     let mut g = flow(Probes { cameras: Cameras::One(Permission::Denied), ..probes() });
     to_input(&mut g);
-    send(&mut g, &[Event::ChooseInput(InputChoice::LifeLayerOnly), Event::Next]);
+    send(
+        &mut g,
+        &[Event::ChooseInput(InputChoice::LifeLayerOnly), Event::InputApplied(InputChoice::LifeLayerOnly), Event::Next],
+    );
     assert_eq!(g.view().step, Step::Output);
 }
 
@@ -137,7 +146,10 @@ fn undecided_permission_is_asked_once_on_input_and_blocks_until_granted() {
         send(&mut f, &[Event::ChooseInput(InputChoice::Webcam)]),
         [Effect::RequestCameraPermission, Effect::SelectInput(InputChoice::Webcam)]
     );
-    assert_eq!(send(&mut f, &[Event::ChooseInput(InputChoice::Webcam), Event::Next]), no_effects());
+    assert_eq!(
+        send(&mut f, &[Event::ChooseInput(InputChoice::Webcam), Event::InputApplied(InputChoice::Webcam), Event::Next]),
+        no_effects()
+    );
     f.handle(Event::Probed(probes()), 0);
     send(&mut f, &[Event::Next]);
     assert_eq!(f.view().step, Step::Calibrate);
@@ -149,7 +161,7 @@ fn tracker_downloading_continues_with_life_layer() {
     let mut f = flow(p);
     to_input(&mut f);
     assert!(f.view().notes.contains(&Note::TrackerDownloading(40)));
-    send(&mut f, &[Event::ChooseInput(InputChoice::Webcam), Event::Next]);
+    send(&mut f, &[Event::ChooseInput(InputChoice::Webcam), Event::InputApplied(InputChoice::Webcam), Event::Next]);
     assert_eq!(f.view().step, Step::Output);
     assert_eq!(f.progress().skipped, [Step::Calibrate]);
     // The model arriving while the person is on Output lists Calibrate again, without moving them.
@@ -164,7 +176,7 @@ fn iphone_calibrates_while_webcam_model_unavailable() {
     let mut f = flow(Probes { tracker: TrackerModel::Unavailable, iphone: IPhone::Paired, ..probes() });
     to_input(&mut f);
     assert!(f.view().notes.contains(&Note::TrackerUnavailable));
-    send(&mut f, &[Event::ChooseInput(InputChoice::Iphone), Event::Next]);
+    send(&mut f, &[Event::ChooseInput(InputChoice::Iphone), Event::InputApplied(InputChoice::Iphone), Event::Next]);
     assert_eq!(f.view().step, Step::Calibrate);
 }
 
@@ -179,7 +191,10 @@ fn language_offer_note_only_on_a_traditional_system() {
 fn back_lands_on_the_previous_shown_step() {
     let mut f = flow(Probes { cameras: Cameras::None, ..probes() });
     to_input(&mut f);
-    send(&mut f, &[Event::ChooseInput(InputChoice::LifeLayerOnly), Event::Next]);
+    send(
+        &mut f,
+        &[Event::ChooseInput(InputChoice::LifeLayerOnly), Event::InputApplied(InputChoice::LifeLayerOnly), Event::Next],
+    );
     assert_eq!(f.view().step, Step::Output);
     send(&mut f, &[Event::Back]);
     assert_eq!(f.view().step, Step::Input, "Calibrate is not shown, so Back skips it");
@@ -274,7 +289,7 @@ fn no_recommended_output_leaves_the_step_out_and_probe_changes_never_jump() {
     assert!(g.view().shown.contains(&Step::Output), "the current step stays listed");
 }
 
-fn alphabet() -> [Event; 12] {
+fn alphabet() -> [Event; 14] {
     [
         Event::Next,
         Event::Back,
@@ -287,6 +302,8 @@ fn alphabet() -> [Event; 12] {
         Event::CalibrationDone,
         Event::ChooseOutput(OutputKind::Spout),
         Event::Finish,
+        Event::InputApplied(InputChoice::Webcam),
+        Event::InputRejected(InputChoice::Webcam),
         Event::Probed(Probes { cameras: Cameras::None, recommended_output: None, ..probes() }),
     ]
 }
@@ -354,7 +371,11 @@ fn happy_path_on_the_clock() {
         step(&mut f, 0, &[Event::Probed(probes())]);
         step(&mut f, 5_000, &[Event::Next]);
         step(&mut f, 10_000, &[Event::ChooseCharacter(CharacterChoice::Sample)]);
-        step(&mut f, 20_000, &[Event::ChooseInput(InputChoice::Webcam), Event::Next]);
+        step(
+            &mut f,
+            20_000,
+            &[Event::ChooseInput(InputChoice::Webcam), Event::InputApplied(InputChoice::Webcam), Event::Next],
+        );
         step(&mut f, 1_000, &[Event::Next]);
         step(&mut f, calibrate_ms - 1_000, &[Event::CalibrationDone]);
         step(&mut f, 20_000, &[Event::ChooseOutput(OutputKind::Spout), Event::Next]);
@@ -415,7 +436,7 @@ fn a_fresh_run_preselects_the_webcam_and_continue_accepts_it() {
     let mut f = flow(probes());
     to_input(&mut f);
     assert_eq!(f.view().input, Some(InputChoice::Webcam));
-    send(&mut f, &[Event::Next]);
+    send(&mut f, &[Event::Next, Event::InputApplied(InputChoice::Webcam)]);
     assert_eq!(f.view().step, Step::Calibrate);
     let g = flow(Probes { cameras: Cameras::None, ..probes() });
     assert_eq!(g.view().input, None, "nothing to preselect without a camera");
@@ -494,7 +515,7 @@ fn an_unpaired_iphone_blocks_continue_with_a_note() {
     assert_eq!(f.view().step, Step::Input);
     f.handle(Event::Probed(Probes { iphone: IPhone::Paired, ..probes() }), 0);
     assert!(!f.view().notes.contains(&Note::IphoneNotPaired));
-    send(&mut f, &[Event::Next]);
+    send(&mut f, &[Event::InputApplied(InputChoice::Iphone), Event::Next]);
     assert_eq!(f.view().step, Step::Calibrate);
 }
 
@@ -588,7 +609,10 @@ fn skipping_input_after_calibrating_discards_the_calibration() {
     assert_eq!(f.progress().skipped, [Step::Input, Step::Calibrate]);
     assert!(fx.contains(&Effect::Persist(f.progress())));
     // Back to the same webcam keeps nothing either: the run belonged to the discarded source.
-    send(&mut f, &[Event::Back, Event::ChooseInput(InputChoice::Webcam), Event::Next]);
+    send(
+        &mut f,
+        &[Event::Back, Event::ChooseInput(InputChoice::Webcam), Event::InputApplied(InputChoice::Webcam), Event::Next],
+    );
     assert_eq!(f.view().step, Step::Calibrate);
     assert_eq!(send(&mut f, &[Event::Next]), [Effect::StartCalibration]);
 }
@@ -606,22 +630,55 @@ fn selects(fx: &[Effect]) -> usize {
 }
 
 #[test]
-fn continue_on_a_preselected_source_applies_it_once_before_moving_on() {
+fn continue_on_a_preselected_source_applies_it_and_waits_for_the_host() {
     let mut f = flow(probes());
     to_input(&mut f);
-    let fx = send(&mut f, &[Event::Next]);
+    // Pending: the op may be queued for the person's approval, so the step does not move.
+    assert_eq!(send(&mut f, &[Event::Next]), [Effect::SelectInput(InputChoice::Webcam)]);
+    assert_eq!(f.view().step, Step::Input);
+    assert_eq!(f.progress().step, Step::Input);
+    assert_eq!(send(&mut f, &[Event::Next]), no_effects(), "asked once, not again");
+    let fx = send(&mut f, &[Event::InputApplied(InputChoice::Webcam)]);
     assert!(
-        matches!(fx.as_slice(), [Effect::SelectInput(InputChoice::Webcam), Effect::Persist(p), Effect::Show(Step::Calibrate)]
-            if p.step == Step::Calibrate),
+        matches!(fx.as_slice(), [Effect::Persist(p), Effect::Show(Step::Calibrate)] if p.step == Step::Calibrate),
         "{fx:?}"
     );
     send(&mut f, &[Event::Back]);
-    assert_eq!(selects(&send(&mut f, &[Event::Next])), 0, "already committed");
+    assert_eq!(selects(&send(&mut f, &[Event::Next])), 0, "already applied");
+    assert_eq!(f.view().step, Step::Calibrate);
+}
+
+#[test]
+fn a_choice_waits_for_the_host_too_and_applied_alone_does_not_move_the_person() {
+    let mut f = flow(probes());
+    to_input(&mut f);
+    assert_eq!(send(&mut f, &[Event::ChooseInput(InputChoice::Webcam)]), [Effect::SelectInput(InputChoice::Webcam)]);
+    assert_eq!(send(&mut f, &[Event::ChooseInput(InputChoice::Webcam)]), no_effects());
+    assert_eq!(send(&mut f, &[Event::Next]), no_effects(), "not applied yet");
+    assert_eq!(f.view().step, Step::Input);
+    send(&mut f, &[Event::InputApplied(InputChoice::Webcam)]);
+    assert_eq!(f.view().step, Step::Calibrate, "Continue was pressed, so it moves on");
     let mut g = flow(probes());
     to_input(&mut g);
-    assert_eq!(send(&mut g, &[Event::ChooseInput(InputChoice::Webcam)]), [Effect::SelectInput(InputChoice::Webcam)]);
-    assert_eq!(send(&mut g, &[Event::ChooseInput(InputChoice::Webcam)]), no_effects());
-    assert_eq!(selects(&send(&mut g, &[Event::Next])), 0);
+    send(&mut g, &[Event::ChooseInput(InputChoice::Webcam), Event::InputApplied(InputChoice::Webcam)]);
+    assert_eq!(g.view().step, Step::Input, "an answer alone is not a Continue");
+    // An answer for a source the person has since left changes nothing.
+    send(&mut g, &[Event::ChooseInput(InputChoice::LifeLayerOnly), Event::InputApplied(InputChoice::Webcam)]);
+    send(&mut g, &[Event::Next]);
+    assert_eq!(g.view().step, Step::Input);
+}
+
+#[test]
+fn a_refused_source_keeps_the_step_with_a_note_and_continue_asks_again() {
+    let mut f = flow(probes());
+    to_input(&mut f);
+    send(&mut f, &[Event::Next, Event::InputRejected(InputChoice::Webcam)]);
+    assert_eq!(f.view().step, Step::Input);
+    assert!(f.view().notes.contains(&Note::InputNotApplied));
+    assert_eq!(send(&mut f, &[Event::Next]), [Effect::SelectInput(InputChoice::Webcam)]);
+    assert!(!f.view().notes.contains(&Note::InputNotApplied));
+    send(&mut f, &[Event::InputApplied(InputChoice::Webcam)]);
+    assert_eq!(f.view().step, Step::Calibrate);
 }
 
 #[test]
@@ -633,11 +690,41 @@ fn a_source_from_the_settings_is_not_applied_again() {
 }
 
 #[test]
-fn skip_on_input_applies_the_life_layer() {
+fn skip_on_input_moves_on_at_once_without_an_op() {
     let mut f = flow(probes());
     to_input(&mut f);
     let fx = send(&mut f, &[Event::Skip]);
-    assert_eq!(fx.first(), Some(&Effect::SelectInput(InputChoice::LifeLayerOnly)));
+    assert_eq!(selects(&fx), 0, "the life layer is the default and writes nothing");
+    assert_eq!(f.view().step, Step::Output);
+}
+
+#[test]
+fn the_camera_wait_stops_when_the_source_changes_or_the_step_moves_on() {
+    let mut f = flow(Probes { cameras: Cameras::One(Permission::Undecided), iphone: IPhone::Paired, ..probes() });
+    f.handle(Event::Next, 0);
+    f.handle(Event::ChooseCharacter(CharacterChoice::Sample), 0);
+    f.handle(Event::ChooseInput(InputChoice::Webcam), 0);
+    f.handle(Event::InputApplied(InputChoice::Webcam), 0);
+    f.handle(Event::ChooseInput(InputChoice::Iphone), 1_000);
+    assert_eq!(f.timers().waited_ms(Step::Input), 1_000);
+    f.handle(Event::InputApplied(InputChoice::Iphone), 2_000);
+    f.handle(Event::Next, 2_000);
+    assert_eq!(f.view().step, Step::Calibrate);
+    f.handle(Event::Skip, 12_000);
+    f.handle(Event::Next, 22_000);
+    for s in [Step::Calibrate, Step::Output, Step::GoLive] {
+        assert_eq!(f.timers().waited_ms(s), 0, "{s:?}");
+    }
+    // The dialog answer arriving later for a webcam nobody chose is no wait either.
+    let mut g = flow(Probes { cameras: Cameras::One(Permission::Undecided), ..probes() });
+    g.handle(Event::Next, 0);
+    g.handle(Event::ChooseCharacter(CharacterChoice::Sample), 0);
+    g.handle(Event::Next, 0);
+    g.handle(Event::Back, 5_000);
+    assert_eq!(g.timers().waited_ms(Step::Input), 5_000, "the dialog is open while Input shows");
+    g.handle(Event::Back, 6_000);
+    g.handle(Event::Next, 9_000);
+    assert_eq!(g.timers().waited_ms(Step::Character), 0);
 }
 
 #[test]
