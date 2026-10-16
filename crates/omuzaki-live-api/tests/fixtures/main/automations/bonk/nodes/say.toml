@@ -1,0 +1,12 @@
+kind = "op.run"
+pos = [880.0, 80.0]
+
+[in]
+in = "count.done"
+text = "line.text"
+
+[params]
+op = "chat.send"
+
+[params.args]
+text = "$in.text"
