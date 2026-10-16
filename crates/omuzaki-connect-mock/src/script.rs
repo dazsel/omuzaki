@@ -22,7 +22,8 @@ impl Script {
         Self { usd_micros_per_output: usd_micros, ..Self::default() }
     }
 
-    /// Free, instant and never failing, billing what the manifest estimates for the request: output `i` of `n` costs
+    /// Instant and never failing, priced by its manifest: it bills what the manifest estimates for the request (nothing
+    /// for a free manifest). Output `i` of `n` costs
     /// `estimate * (i + 1) / n - estimate * i / n`, so the outputs sum to the estimate exactly.
     pub fn by_manifest() -> Self {
         Self { bill_by_manifest: true, ..Self::default() }

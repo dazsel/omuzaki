@@ -660,17 +660,24 @@ impl HttpTransport for Fixed {
     }
 }
 
-/// Whether `media_type` can be an asset of `kind`, by its top-level type: `image/*`, `audio/*`, `model/*`,
-/// `video/*`, `text/*`, `application/json`; motion files are `text/*` (BVH), `model/*` or `application/*` (FBX).
+/// Whether `media_type` is a well-formed `type/subtype` (parameters after `;` allowed) that can be an asset of
+/// `kind`, by its top-level type: `image/*`, `audio/*`, `model/*`, `video/*`, `text/*`, `application/json`; motion
+/// files are `text/*` (BVH), `model/*` or `application/*` (FBX). `image`, `image/` and `image/png/x` fit nothing.
 pub fn media_type_fits(kind: MediaKind, media_type: &str) -> bool {
-    let top = media_type.split('/').next().unwrap_or_default().to_ascii_lowercase();
+    let essence = media_type.split(';').next().unwrap_or_default().trim();
+    let token = |t: &str| !t.is_empty() && t.bytes().all(|b| b.is_ascii_alphanumeric() || b"!#$&-^_.+".contains(&b));
+    let Some((top, sub)) = essence.split_once('/') else { return false };
+    if !token(top) || !token(sub) {
+        return false;
+    }
+    let top = top.to_ascii_lowercase();
     match kind {
         MediaKind::Image => top == "image",
         MediaKind::Audio => top == "audio",
         MediaKind::Mesh => top == "model",
         MediaKind::Video => top == "video",
         MediaKind::Text => top == "text",
-        MediaKind::Json => media_type.eq_ignore_ascii_case("application/json"),
+        MediaKind::Json => essence.eq_ignore_ascii_case("application/json"),
         MediaKind::Motion => matches!(top.as_str(), "text" | "model" | "application"),
     }
 }

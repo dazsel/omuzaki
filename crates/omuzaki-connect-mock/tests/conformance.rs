@@ -253,6 +253,10 @@ fn empty_or_mislabelled_outputs_are_found() {
         !conformance::media_type_fits(MediaKind::Image, "audio/wav")
             && !conformance::media_type_fits(MediaKind::Json, "text/plain")
     );
+    for malformed in ["image", "image/", "/png", "image/png/extra", "image/ png"] {
+        assert!(!conformance::media_type_fits(MediaKind::Image, malformed), "{malformed}");
+    }
+    assert!(conformance::media_type_fits(MediaKind::Json, "application/json; charset=utf-8"));
 }
 
 #[test]
