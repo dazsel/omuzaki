@@ -852,8 +852,7 @@ fn stop_abandons_every_kind_of_request_at_once_and_the_next_message_reads_what_i
                 vec![call_turn("", &[("c1", "read_resource", "{\"uri\":\"omuzaki://log\"}")])]
             }
             Request::Rollback => vec![call_turn("", &[edit, ("c2", "discard_changes", "{}")])],
-            Request::Commit => vec![call_turn("", &[edit]), say_turn("done")],
-            Request::RecoveryCommit => vec![call_turn("", &[edit]), say_turn("done")],
+            Request::Commit | Request::RecoveryCommit => vec![call_turn("", &[edit]), say_turn("done")],
             Request::LogReadAtStart => vec![call_turn("", &[edit]), long_text(20)],
             _ => vec![],
         };
