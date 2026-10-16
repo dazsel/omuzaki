@@ -190,14 +190,14 @@ pub fn decode(bytes: &[u8], hash: ContentHash, field: &str) -> Result<Rgba8, OpE
     // A file that declares an embedded profile the decoder could not give (a PNG `iCCP` that is corrupt or past the limit;
     // JPEG APP2 chunks that do not number consistently) has colour this cannot read: refused, never read as untagged. Only
     // a PNG `cICP` the decoder accepted decides the colour anyway (PNG colour chunk precedence).
-    let declares = if format == ImageFormat::Jpeg {
+    let has_profile_tag = if format == ImageFormat::Jpeg {
         jpeg_declares_profile(bytes).ok_or_else(|| {
             refuse_unreadable(field, "its segments do not follow the JPEG layout (bytes between markers)".to_owned())
         })?
     } else {
         png_declares_profile(bytes)
     };
-    if profile_missing && declares && !matches!(declared, Declared::Cicp(_)) {
+    if profile_missing && has_profile_tag && !matches!(declared, Declared::Cicp(_)) {
         return Err(refuse_unreadable(
             field,
             "its embedded colour profile is present but cannot be read (corrupt, incomplete or too large)".to_owned(),
