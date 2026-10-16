@@ -109,6 +109,14 @@ impl Lanes {
         queue.len() != before
     }
 
+    /// Puts a job that [`next_ready`](Self::next_ready) handed out back at the head of its lane's queue and frees the
+    /// slot: its session is paused, or already runs as many jobs as it may, so it waits.
+    pub(crate) fn hold_back(&mut self, lane: Lane, id: JobId) {
+        let slot = self.slot(lane);
+        slot.running = slot.running.saturating_sub(1);
+        slot.queue.push_front(id);
+    }
+
     /// A running job ended and its thread is free: the slot is free again.
     pub(crate) fn finished(&mut self, lane: Lane) {
         let slot = self.slot(lane);

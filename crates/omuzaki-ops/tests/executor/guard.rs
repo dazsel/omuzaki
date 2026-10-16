@@ -31,7 +31,10 @@ fn an_edit_planned_before_someone_elses_change_is_refused_naming_them() {
 
     let e = rig.exec.run(based(&agent(), "face/blend", 1, read)).unwrap_err();
     assert_eq!(e.code, ErrorCode::Conflict);
-    assert_eq!(e.detail.as_deref(), Some(&ErrorDetail::Changed { path: path("face/blend"), by: person(), version: changed }));
+    assert_eq!(
+        e.detail.as_deref(),
+        Some(&ErrorDetail::Changed { path: path("face/blend"), by: person(), version: changed })
+    );
     assert!(e.hint.as_deref().is_some_and(|h| h.contains("re-read face/blend")), "{e:?}");
     assert_eq!(rig.at("face/blend"), Some(json!(5)));
     let clashes = drain(&rx).into_iter().filter(|e| matches!(e, Event::Clash { kind: ClashKind::Stale, .. })).count();
@@ -54,7 +57,10 @@ fn own_changes_pass_and_parents_and_undos_by_others_count() {
     let read = version(&rig);
     rig.set("face", json!({"blend": 9, "eyes": 9})); // a parent, by the person
     let e = rig.exec.run(based(&agent(), "face/blend", 3, read)).unwrap_err();
-    assert!(matches!(e.detail.as_deref(), Some(ErrorDetail::Changed { path, .. }) if *path == super::path("face")), "{e:?}");
+    assert!(
+        matches!(e.detail.as_deref(), Some(ErrorDetail::Changed { path, .. }) if *path == super::path("face")),
+        "{e:?}"
+    );
 
     let read = version(&rig);
     rig.undo().unwrap(); // the person's undo puts `face` back: a change too

@@ -7,11 +7,15 @@
 
 use omuzaki_core::time::Seconds;
 use omuzaki_doc_api::DocPath;
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
 use omuzaki_ops_api::{
-    Actor, ApprovalId, ApprovalRef, Budget, Decision, EndReason, Ended, Event, Grants, Need, OpError, Outcome,
-    PauseReason, PendingApproval, Plan, Resolution, Resolved, SessionChange, SessionId, SessionInfo, SessionSpec,
-    SessionUndo, Sessions, Spend,
+    Actor, ApprovalId, ApprovalRef, Budget, CancelReason, Decision, DynOp, EndReason, Ended, Event, Grants, JobId,
+    Mode, Need, OpError, OpKind, Outcome, PauseReason, PendingApproval, Plan, Request, Resolution, Resolved,
+    SessionChange, SessionId, SessionInfo, SessionSpec, SessionUndo, Sessions, Spend, StopStep, Stopped, TxId,
 };
+use serde_json::json;
 
 use crate::approvals::{self, Entry};
 use crate::executor::Executor;
@@ -81,6 +85,7 @@ impl Sessions for Executor {
             // Only the charge that pauses asks: one budget approval per pause.
             if crossed && state.sessions.pause_one(index, actor, PauseReason::Budget, at) {
                 changed(state, id, SessionChange::Paused)?;
+                // With no approver the session stays paused for a person to raise its budget in the panel.
                 self.env.ask_budget(state, index, spend, at);
             }
             snapshot(state, id)
@@ -93,7 +98,78 @@ impl Sessions for Executor {
 
     fn end(&self, id: SessionId, reason: EndReason) -> Result<Ended, OpError> {
         let at = self.env.clock.now();
-        self.with_state(|state| self.end_family(state, id, &reason, at))
+        // The jobs first, under the manager's lock, which comes before the document's: a job a session end cancels
+        // never applies its finish, since its session has ended by the time the finish is checked (#1218).
+        let family = {
+            let state = lock(&self.env.state);
+            let index = state.sessions.index(id)?;
+            if let EndReason::Revoked { by, .. } = &reason {
+                state.sessions.check_principal(index, by)?;
+            }
+            if state.sessions.has_ended(index) { Vec::new() } else { state.sessions.family(index) }
+        };
+        let cancelled: BTreeMap<SessionId, Vec<JobId>> = family
+            .into_iter()
+            .map(|member| (member, self.jobs.cancel_session(member, None, CancelReason::SessionEnded)))
+            .collect();
+        self.with_state(|state| self.end_family(state, id, &reason, at, &cancelled))
+    }
+
+    fn request_budget(&self, id: SessionId, needed: Spend) -> Result<(), OpError> {
+        let at = self.env.clock.now();
+        self.with_state(|state| {
+            let index = state.sessions.index(id)?;
+            if state.sessions.has_ended(index) {
+                return Err(OpError::conflict(format!("session {} has ended", id.0)));
+            }
+            let Some(left) = state.sessions.short_of(index, needed, at) else { return Ok(()) };
+            let actor = state.sessions.info(index).actor.clone();
+            if state.sessions.pause_one(index, actor, PauseReason::Budget, at) {
+                changed(state, id, SessionChange::Paused)?;
+            }
+            Err(match self.env.ask_budget(state, index, needed, at) {
+                Some(approval) => queued(approval, Need::Budget { needed, left }),
+                None => {
+                    OpError::denied("the session's budget does not allow what it asks for, and no one can be asked")
+                        .hint("raise the session's budget in advance")
+                }
+            })
+        })
+    }
+
+    fn stop(&self, id: SessionId, by: &Actor) -> Result<Stopped, OpError> {
+        let at = self.env.clock.now();
+        // a. Pause and cancel, atomically: under the manager's lock, then the document's.
+        let (actor, jobs) = self.jobs.stop(id, by, |state| {
+            let index = state.sessions.index(id)?;
+            state.sessions.check_principal(index, by)?;
+            if state.sessions.has_ended(index) {
+                return Err(OpError::conflict(format!("session {} has ended", id.0)));
+            }
+            // A pause already there (a budget pause, say) is kept.
+            if state.sessions.pause_one(index, by.clone(), PauseReason::Person, at) {
+                changed(state, id, SessionChange::Paused)?;
+            }
+            state.sessions.set_stopping(index, true);
+            Ok(state.sessions.info(index).actor.clone())
+        })?;
+        // b. Cancelled jobs end by their next checkpoint; a driver joined to an open transaction reverts its own
+        // edits from it first, and the job manager commits that transaction once it has (step c, `Pending`).
+        let open = lock(&self.env.state).owned_open(&actor);
+        let joined: Vec<TxId> = open.iter().copied().filter(|tx| self.jobs.joins(id, *tx)).collect();
+        // c. Commit the rest as they stand, in any session state: this is the person-authorised close.
+        let steps = self.with_state(|state| {
+            open.iter()
+                .rev()
+                .map(|tx| {
+                    if joined.contains(tx) {
+                        return Ok(StopStep::Pending);
+                    }
+                    state.stop_tx(*tx, &actor)
+                })
+                .collect::<Result<Vec<StopStep>, OpError>>()
+        })?;
+        Ok(Stopped { step: steps.first().copied().unwrap_or(StopStep::None), jobs })
     }
 
     fn undo_session(&self, id: SessionId, by: &Actor) -> Result<SessionUndo, OpError> {
@@ -115,7 +191,20 @@ impl Sessions for Executor {
 
     fn resolve(&self, id: ApprovalId, decision: Decision, by: &Actor) -> Result<Resolution, OpError> {
         let at = self.env.clock.now();
-        self.with_state(|state| self.resolve_locked(state, id, decision, by, at))
+        match self.with_state(|state| self.resolve_locked(state, id, decision, by, at))? {
+            Decided::Done(resolution) => Ok(resolution),
+            // An approved job request starts the job now, after the lock: the job manager's lock comes before the
+            // document's. The approval was taken out under the lock, so it still resolves exactly once.
+            Decided::StartJob { op, request, allow } => {
+                let result = match self.start_job(op, request, false, &allow) {
+                    Ok(job) => Resolved::Applied { outcome: Outcome::new(Plan::answer(json!({ "job": job.id.0 }))) },
+                    Err(error) => Resolved::Failed { error },
+                };
+                let resolution = Resolution { id, by: Some(by.clone()), result, at };
+                self.with_state(|state| state.queue_event(Event::approval_resolved(resolution.clone())));
+                Ok(resolution)
+            }
+        }
     }
 }
 
@@ -144,7 +233,7 @@ impl Executor {
         decision: Decision,
         by: &Actor,
         at: Seconds,
-    ) -> Result<Resolution, OpError> {
+    ) -> Result<Decided, OpError> {
         let entry = state.approvals.get(id).ok_or_else(|| gone(id))?;
         let (session, need) = (entry.pending.session, entry.pending.need.clone());
         let index = state.sessions.index(session)?;
@@ -203,16 +292,21 @@ impl Executor {
                     }
                     Resolved::Applied { outcome: Outcome::new(Plan::default()) }
                 } else {
-                    self.run_approved(state, entry, by)
+                    match self.run_approved(state, entry, by) {
+                        Approved::Ran(result) => result,
+                        Approved::Job { op, request, allow } => return Ok(Decided::StartJob { op, request, allow }),
+                    }
                 }
             }
         };
         let resolution = Resolution { id, by: Some(by.clone()), result, at };
         state.queue_event(Event::approval_resolved(resolution.clone()));
         if revoke {
-            self.end_family(state, session, &EndReason::Revoked { by: by.clone(), credential: true }, at)?;
+            // A session waiting to be paired has run nothing, so it has no jobs to cancel.
+            let none = BTreeMap::new();
+            self.end_family(state, session, &EndReason::Revoked { by: by.clone(), credential: true }, at, &none)?;
         }
-        Ok(resolution)
+        Ok(Decided::Done(resolution))
     }
 
     /// Checks that `by` may decide `entry` (design §7.2): a person; the session's principal, or for a review a
@@ -254,9 +348,11 @@ impl Executor {
     /// Runs an approved request against the current document as the agent, as a transaction of its own, with the
     /// need met for this run only (design §4.4, §7.1). A second need it hits is queued as a new approval, named in
     /// the failure.
-    fn run_approved(&self, state: &mut State, entry: Entry, by: &Actor) -> Resolved {
+    fn run_approved(&self, state: &mut State, entry: Entry, by: &Actor) -> Approved {
         let Entry { pending, request, grant, reviewers, carried, .. } = entry;
-        let Some(request) = request else { return Resolved::Applied { outcome: Outcome::new(Plan::default()) } };
+        let Some(request) = request else {
+            return Approved::Ran(Resolved::Applied { outcome: Outcome::new(Plan::default()) });
+        };
         let also: Vec<Actor> = reviewers.into_iter().filter(|reviewer| reviewer != by).collect();
         let need = &pending.need;
         // This approval's need, on top of what earlier approvals of the same request met.
@@ -272,24 +368,34 @@ impl Executor {
             reviewed: carried.reviewed || matches!(need, Need::Review { .. }),
             approval: Some(ApprovalRef::new(pending.id, by.clone()).with_also(also)),
             effect_call: false,
+            driver: None,
         };
-        let run = self
-            .env
-            .ops
-            .find(&request.op)
-            .and_then(|registration| (registration.decode)(request.args.clone()))
-            .and_then(|op| self.env.run_locked(state, &*op, request, &allow));
-        match run {
+        let op =
+            match self.env.ops.find(&request.op).and_then(|registration| (registration.decode)(request.args.clone())) {
+                Ok(op) => op,
+                Err(error) => return Approved::Ran(Resolved::Failed { error }),
+            };
+        if op.meta().kind == OpKind::Job && request.mode == Mode::Apply {
+            return Approved::Job { op: Arc::from(op), request, allow };
+        }
+        Approved::Ran(match self.env.run_locked(state, &*op, request, &allow) {
             Ok(outcome) => Resolved::Applied { outcome },
             Err(error) => Resolved::Failed { error },
-        }
+        })
     }
 }
 
 impl Executor {
     /// Ends session `id` and its sub-agents, the most recently opened first, each with `reason` (design §3.4, §4.2).
     /// Ending an ended session changes nothing. Returns what ending `id` itself did.
-    fn end_family(&self, state: &mut State, id: SessionId, reason: &EndReason, at: Seconds) -> Result<Ended, OpError> {
+    fn end_family(
+        &self,
+        state: &mut State,
+        id: SessionId,
+        reason: &EndReason,
+        at: Seconds,
+        cancelled: &BTreeMap<SessionId, Vec<JobId>>,
+    ) -> Result<Ended, OpError> {
         let index = state.sessions.index(id)?;
         if let EndReason::Revoked { by, .. } = reason {
             state.sessions.check_principal(index, by)?;
@@ -300,7 +406,8 @@ impl Executor {
             if state.sessions.has_ended(member_index) {
                 continue;
             }
-            let ended = self.end_one(state, member_index, reason.clone(), at)?;
+            let jobs = cancelled.get(&member).cloned().unwrap_or_default();
+            let ended = self.end_one(state, member_index, reason.clone(), at, jobs)?;
             if member == id {
                 own = ended;
             }
@@ -310,7 +417,14 @@ impl Executor {
 
     /// Ends one session, atomically: abandons its open transactions, withdraws its approvals, marks it ended (a revoke
     /// also drops its ceiling) and queues `SessionEnded` after the transaction and approval events.
-    fn end_one(&self, state: &mut State, index: usize, reason: EndReason, at: Seconds) -> Result<Ended, OpError> {
+    fn end_one(
+        &self,
+        state: &mut State,
+        index: usize,
+        reason: EndReason,
+        at: Seconds,
+        cancelled: Vec<JobId>,
+    ) -> Result<Ended, OpError> {
         let (id, actor) = {
             let info = state.sessions.info(index);
             (info.id, info.actor.clone())
@@ -324,11 +438,25 @@ impl Executor {
             withdrawn.push(approval);
         }
         state.sessions.end(index, reason, at);
-        let ended = Ended { abandoned, kept, withdrawn, cancelled: Vec::new() };
+        let ended = Ended { abandoned, kept, withdrawn, cancelled };
         let info = snapshot(state, id)?;
         state.queue_event(Event::session_ended(info, ended.clone()));
         Ok(ended)
     }
+}
+
+/// What deciding an approval came to under the lock.
+enum Decided {
+    /// Resolved: the resolution is final and announced.
+    Done(Resolution),
+    /// An approved job request: the job starts once the lock is released, and then the resolution is announced.
+    StartJob { op: Arc<dyn DynOp>, request: Request, allow: Allowance },
+}
+
+/// What running an approved request came to.
+enum Approved {
+    Ran(Resolved),
+    Job { op: Arc<dyn DynOp>, request: Request, allow: Allowance },
 }
 
 /// Session `id` as it stands, for a result.

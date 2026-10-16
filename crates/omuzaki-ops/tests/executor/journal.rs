@@ -161,7 +161,11 @@ fn a_requested_mark_is_appended_once_with_the_history() {
     assert_eq!(marks.len(), 1);
     assert_eq!(marks[0].actors[0].undo.len(), 2, "the mark came right after the change that followed the request");
     exec.flush_history();
-    assert_eq!(sink.entries().iter().filter(|e| matches!(e, HistoryEntry::Mark { .. })).count(), 2, "flush appends one");
+    assert_eq!(
+        sink.entries().iter().filter(|e| matches!(e, HistoryEntry::Mark { .. })).count(),
+        2,
+        "flush appends one"
+    );
 }
 
 #[test]

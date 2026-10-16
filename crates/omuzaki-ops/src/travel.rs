@@ -6,9 +6,7 @@
 //! undo or redo has changed nothing anywhere.
 
 use omuzaki_core::time::Seconds;
-use omuzaki_ops_api::{
-    Actor, Grants, KeptTx, OpError, PauseReason, SessionChange, SessionId, SessionUndo, TxId,
-};
+use omuzaki_ops_api::{Actor, Grants, KeptTx, OpError, PauseReason, SessionChange, SessionId, SessionUndo, TxId};
 
 use crate::effects::{EffectFailure, inverted};
 use crate::executor::Env;
@@ -100,7 +98,8 @@ impl Env {
         let (effects, revert) = state.open_undo(tx, actor)?;
         if !effects.is_empty() {
             if let Err(e) = Trial::of(state.doc(), [&revert]).apply(&revert) {
-                let hint = "the transaction is still open: commit it to keep its changes, or retry once the clash is resolved";
+                let hint =
+                    "the transaction is still open: commit it to keep its changes, or retry once the clash is resolved";
                 return Err(state.conflict(&format!("roll back transaction {}", tx.0), &e, hint));
             }
             match self.run_effects(state, &effects, Direction::Undo, actor, grants) {
@@ -109,6 +108,45 @@ impl Env {
             }
         }
         state.rollback(tx, actor)
+    }
+
+    /// Reverts only driver job `job`'s own inner edits from the caller's open transaction `tx`, all or nothing (ADR 0036
+    /// decision 10): its effects' undo calls, then one revert patch, tried first like an undo. If another actor (or
+    /// the caller) changed a path since, nothing is reverted and the job's edits stay in the transaction.
+    ///
+    /// # Errors
+    /// `Conflict` with [`ErrorDetail::Unreverted`](omuzaki_ops_api::ErrorDetail::Unreverted), listing every conflict
+    /// and every retained path; a failed effect call.
+    pub(crate) fn revert_driver(
+        &self,
+        state: &mut State,
+        tx: TxId,
+        job: omuzaki_ops_api::JobId,
+        actor: &Actor,
+        grants: &Grants,
+    ) -> Result<(), OpError> {
+        let Some((edits, effects)) = state.driven_by(tx, job) else { return Ok(()) };
+        if edits.is_empty() && effects.is_empty() {
+            return Ok(());
+        }
+        let revert = edits.inverse();
+        if Trial::of(state.doc(), [&revert]).apply(&revert).is_err() {
+            let (conflicts, retained) = state.unreverted(&edits);
+            let paths: Vec<String> = conflicts.iter().map(|c| c.path.to_string()).collect();
+            return Err(OpError::conflict(format!(
+                "job {} was stopped, but its edits were changed since at {}: nothing was reverted",
+                job.0,
+                paths.join(", ")
+            ))
+            .hint("the job's edits stay in your transaction: commit it as it is, fix it up, or roll it back")
+            .with_detail(omuzaki_ops_api::ErrorDetail::Unreverted { conflicts, retained }));
+        }
+        if let Err(EffectFailure::Reversed(error) | EffectFailure::Mixed(error)) =
+            self.run_effects(state, &effects, Direction::Undo, actor, grants)
+        {
+            return Err(error);
+        }
+        state.revert_driven(tx, job, &revert, actor)
     }
 
     /// What `actor` may do when the executor itself acts for it (an end, a rollback without grants): its session's
@@ -127,7 +165,10 @@ impl Env {
             match self.rollback_tx(state, tx, actor, &grants) {
                 Ok(()) => abandoned.push(tx),
                 Err(mut error) => {
-                    error.hint = Some("it is kept as an unfinished step in the agent's history; undoing the session tries again".into());
+                    error.hint = Some(
+                        "it is kept as an unfinished step in the agent's history; undoing the session tries again"
+                            .into(),
+                    );
                     let label = state.commit_as_is(tx, actor, " (unfinished)")?;
                     kept.push(KeptTx { tx, label, error });
                 }
@@ -175,7 +216,9 @@ impl Env {
                     self.run_effects(state, &step.effects, Direction::Undo, by, &grants)
                 {
                     // Put the scratch back as it was before this step's revert: the step stays applied.
-                    trial.apply(&step.patch).map_err(|e| OpError::internal(format!("a tried revert did not reverse: {e}")))?;
+                    trial
+                        .apply(&step.patch)
+                        .map_err(|e| OpError::internal(format!("a tried revert did not reverse: {e}")))?;
                     outside.push(step.tx);
                     skipped.push(KeptTx { tx: step.tx, label: step.label, error });
                     continue;

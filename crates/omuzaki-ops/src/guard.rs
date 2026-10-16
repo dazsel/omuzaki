@@ -57,7 +57,8 @@ impl Index {
     /// The newest change at `path`, at one of its ancestors or below it, made by anyone but `except`.
     pub(crate) fn newest(&self, path: &DocPath, except: Option<&Actor>) -> Option<LastChange<'_>> {
         let except = except.and_then(|actor| self.actors.iter().position(|a| a == actor));
-        let keep = |(_, change): &(&DocPath, &Change)| except.is_none_or(|e| usize::try_from(change.actor).ok() != Some(e));
+        let keep =
+            |(_, change): &(&DocPath, &Change)| except.is_none_or(|e| usize::try_from(change.actor).ok() != Some(e));
         let segments = path.segments();
         let ancestors = (0..segments.len()).filter_map(|n| {
             let prefix = DocPath::root();
@@ -65,14 +66,10 @@ impl Index {
             self.paths.get_key_value(&prefix)
         });
         let below = self.paths.range(path.clone()..).take_while(|(p, _)| p.starts_with(path));
-        ancestors
-            .chain(below)
-            .filter(keep)
-            .max_by_key(|(_, change)| change.version)
-            .and_then(|(path, change)| {
-                let by = self.actors.get(usize::try_from(change.actor).ok()?)?;
-                Some(LastChange { path, by, version: change.version })
-            })
+        ancestors.chain(below).filter(keep).max_by_key(|(_, change)| change.version).and_then(|(path, change)| {
+            let by = self.actors.get(usize::try_from(change.actor).ok()?)?;
+            Some(LastChange { path, by, version: change.version })
+        })
     }
 
     /// How many paths it knows.

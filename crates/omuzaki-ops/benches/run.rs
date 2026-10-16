@@ -18,6 +18,12 @@
 //! with review policies installed that ask for no review (the cost of asking them). Every bench session has rate limits
 //! too high to refuse anything, so their bookkeeping is measured without ever limiting.
 //!
+//! The stale-write guard (#356): `apply/in_place_doc/guard_10k_paths` runs the plain edit with a `base`, for an agent,
+//! on an executor whose index of last changes holds 10,000 paths, so the difference from `apply/in_place_doc` is the
+//! guard's cost for one changed path. The journal hand-off (#251): `apply/in_place_doc/1kib/no_journal` and
+//! `.../noop_journal` run an edit with a 1 KiB patch without a journal and with a sink that does nothing, so their
+//! difference is what handing an entry over costs.
+//!
 //! `job_start/idle_cpu_lane` is the time from `Jobs::start` to the first line of a job's `work` on an idle lane
 //! (thread spawn included). The job is waited for between iterations, untimed, so the lane is idle at every start.
 //!
@@ -34,6 +40,7 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use omuzaki_core::time::{FakeClock, Seconds};
 use omuzaki_doc_api::{DocPath, DocRead, DocVersion, DocWrite, Patch, PatchError, Value, lookup};
 use omuzaki_doc_mock::MemDoc;
+use omuzaki_history_api::{HistoryEntry, JournalSink, JournalStatus, Lsn, SyncError};
 use omuzaki_ops::Executor;
 use omuzaki_ops_api::{
     Actor, Budget, FsMode, Grants, JobCtx, Jobs, Limits, Mode, Op, OpCtx, OpError, OpKind, OpMeta, Plan, ProjectDir,
@@ -129,6 +136,84 @@ impl Op for Spread {
     }
 }
 register_op!(Spread);
+
+/// Records a change at 10,000 distinct paths (which the in-place document leaves alone): fills the guard's index.
+#[derive(Serialize, Deserialize, JsonSchema)]
+struct Fill {}
+
+impl Op for Fill {
+    fn meta() -> OpMeta {
+        OpMeta {
+            name: "bench.fill",
+            summary: "Touch 10,000 paths.",
+            kind: OpKind::Edit,
+            scope: Scope::EditScene,
+            undo: Undo::Auto,
+        }
+    }
+
+    fn plan(&self, _ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+        let mut patch = Patch::new();
+        for n in 0..10_000 {
+            let path = DocPath::parse(&format!("filled/p{n}")).map_err(|e| OpError::invalid("path", e.to_string()))?;
+            patch = patch.with(path, None, Some(json!(n)));
+        }
+        Ok(Plan::edit(patch))
+    }
+}
+register_op!(Fill);
+
+/// Sets a node's name to a 1 KiB string: an edit whose patch is about 1 KiB.
+#[derive(Serialize, Deserialize, JsonSchema)]
+struct Rename {
+    node: u32,
+}
+
+impl Op for Rename {
+    fn meta() -> OpMeta {
+        OpMeta {
+            name: "bench.rename",
+            summary: "Rename a node.",
+            kind: OpKind::Edit,
+            scope: Scope::EditScene,
+            undo: Undo::Auto,
+        }
+    }
+
+    fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+        let path = DocPath::parse(&format!("nodes/n{}/name", self.node))
+            .map_err(|e| OpError::invalid("node", e.to_string()))?;
+        let before = ctx.doc.get(&path).cloned();
+        Ok(Plan::edit(Patch::new().with(path, before, Some(json!("x".repeat(1_000))))))
+    }
+}
+register_op!(Rename);
+
+/// A journal that takes every entry and does nothing with it.
+struct NoopJournal;
+
+impl JournalSink for NoopJournal {
+    fn append(&self, entry: HistoryEntry) -> Lsn {
+        black_box(entry);
+        Lsn(1)
+    }
+
+    fn admit(&self) -> Result<(), OpError> {
+        Ok(())
+    }
+
+    fn wants_mark(&self) -> bool {
+        false
+    }
+
+    fn sync(&self, _timeout: Duration) -> Result<Lsn, SyncError> {
+        Ok(Lsn(1))
+    }
+
+    fn status(&self) -> JournalStatus {
+        JournalStatus::Healthy
+    }
+}
 
 /// Four stand-in API-crate services, so the lookup is not a one-entry special case.
 macro_rules! probes {
@@ -360,6 +445,27 @@ fn time_runs(iters: u64, op: &str, mode: Mode, make_exec: &dyn Fn() -> Executor,
     total
 }
 
+/// Like [`time_runs`] for `bench.nudge`, each request carrying the document's current version as its `base`, so the
+/// stale-write guard checks it.
+fn time_based_runs(iters: u64, make_exec: &dyn Fn() -> Executor, grants: &Grants) -> Duration {
+    let mut total = Duration::ZERO;
+    let mut done = 0;
+    while done < iters {
+        let n = CHUNK.min(iters - done);
+        let exec = make_exec();
+        let base = exec.log(0, usize::MAX, grants).unwrap().last().map(|r| r.version);
+        let requests: Vec<Request> =
+            (done..done + n).map(|i| Request { base, ..request("bench.nudge", Mode::Apply, i, grants) }).collect();
+        let start = Instant::now();
+        for req in requests {
+            black_box(exec.run(req).unwrap());
+        }
+        total += start.elapsed();
+        done += n;
+    }
+    total
+}
+
 /// Times `iters` job starts, each from `Jobs::start` to `work` entry, on a lane that is idle at every start.
 fn time_job_starts(iters: u64, make_exec: &dyn Fn() -> Executor, grants: &Grants) -> Duration {
     let (tx, rx) = channel();
@@ -399,6 +505,16 @@ fn bench_run(c: &mut Criterion) {
     let with_services = || executor(in_place(), services());
     let with_project = || executor(in_place(), Services::none()).with_project_dir(project_dir.clone());
     let with_fences = || fenced(in_place());
+    let with_journal = || executor(in_place(), Services::none()).with_journal(Arc::new(NoopJournal));
+    let with_index = || {
+        let exec = executor(in_place(), Services::none());
+        let fill = Request {
+            actor: Actor::Person { name: "bench".into() },
+            ..request("bench.fill", Mode::Apply, 0, &Grants::person())
+        };
+        exec.run(Request { args: json!({}), ..fill }).unwrap();
+        exec
+    };
     let with_review = || executor(in_place(), Services::none()).with_review_policies(Arc::new(NoReview));
 
     let mut group = c.benchmark_group("run/1000_nodes");
@@ -416,6 +532,15 @@ fn bench_run(c: &mut Criterion) {
     });
     group.bench_function("apply/in_place_doc/review_policies", |b| {
         b.iter_custom(|n| time_runs(n, "bench.nudge", Mode::Apply, &with_review, &agent));
+    });
+    group.bench_function("apply/in_place_doc/guard_10k_paths", |b| {
+        b.iter_custom(|n| time_based_runs(n, &with_index, &agent));
+    });
+    group.bench_function("apply/in_place_doc/1kib/no_journal", |b| {
+        b.iter_custom(|n| time_runs(n, "bench.rename", Mode::Apply, &plain, &agent));
+    });
+    group.bench_function("apply/in_place_doc/1kib/noop_journal", |b| {
+        b.iter_custom(|n| time_runs(n, "bench.rename", Mode::Apply, &with_journal, &agent));
     });
     group.bench_function("dry_run/in_place_doc", |b| {
         b.iter_custom(|n| time_runs(n, "bench.nudge", Mode::DryRun, &plain, &agent));

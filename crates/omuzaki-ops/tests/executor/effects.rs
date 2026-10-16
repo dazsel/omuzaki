@@ -76,7 +76,8 @@ impl Op for Touch {
         if !ctx.dry_run {
             write(&self.dir, &self.name)?;
         }
-        let path = DocPath::parse(&format!("files/{}", self.name)).map_err(|e| OpError::invalid("name", e.to_string()))?;
+        let path =
+            DocPath::parse(&format!("files/{}", self.name)).map_err(|e| OpError::invalid("name", e.to_string()))?;
         let before = if self.stale { Some(json!("stale")) } else { ctx.doc.get(&path).cloned() };
         let call = |op: &str| OpCall { op: op.to_owned(), args: json!({"dir": self.dir, "name": self.name}) };
         let effect = Effect {
@@ -98,7 +99,13 @@ pub struct Untouch {
 
 impl Op for Untouch {
     fn meta() -> OpMeta {
-        OpMeta { name: "test.untouch", summary: "Remove a marker file.", kind: OpKind::Edit, scope: Scope::EditCharacter, undo: Undo::None }
+        OpMeta {
+            name: "test.untouch",
+            summary: "Remove a marker file.",
+            kind: OpKind::Edit,
+            scope: Scope::EditCharacter,
+            undo: Undo::None,
+        }
     }
 
     fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
@@ -123,7 +130,13 @@ pub struct Retouch {
 
 impl Op for Retouch {
     fn meta() -> OpMeta {
-        OpMeta { name: "test.retouch", summary: "Write a marker file again.", kind: OpKind::Edit, scope: Scope::EditCharacter, undo: Undo::None }
+        OpMeta {
+            name: "test.retouch",
+            summary: "Write a marker file again.",
+            kind: OpKind::Edit,
+            scope: Scope::EditCharacter,
+            undo: Undo::None,
+        }
     }
 
     fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
@@ -145,7 +158,13 @@ pub struct GuardedUntouch {
 
 impl Op for GuardedUntouch {
     fn meta() -> OpMeta {
-        OpMeta { name: "test.guarded_untouch", summary: "Remove a published marker.", kind: OpKind::Edit, scope: Scope::Publish, undo: Undo::None }
+        OpMeta {
+            name: "test.guarded_untouch",
+            summary: "Remove a published marker.",
+            kind: OpKind::Edit,
+            scope: Scope::Publish,
+            undo: Undo::None,
+        }
     }
 
     fn plan(&self, _ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
@@ -244,7 +263,8 @@ fn a_failed_call_is_compensated_and_the_step_stays() {
 fn when_compensation_fails_too_the_step_is_dropped_and_the_hint_says_what_is_where() {
     let sink = Arc::new(RecordingSink::new());
     let clock = Arc::new(FakeClock::new(Seconds(0.0)));
-    let exec = Executor::new(Box::new(MemDoc::from_value(json!({"files": {}}))), clock).unwrap().with_journal(sink.clone());
+    let exec =
+        Executor::new(Box::new(MemDoc::from_value(json!({"files": {}}))), clock).unwrap().with_journal(sink.clone());
     open_agents(&exec);
     let rig = super::Rig { exec, clock: Arc::new(FakeClock::new(Seconds(0.0))) };
     let folder = Folder::new();
@@ -254,7 +274,11 @@ fn when_compensation_fails_too_the_step_is_dropped_and_the_hint_says_what_is_whe
     let e = rig.undo().unwrap_err();
     let hint = e.hint.clone().unwrap_or_default();
     assert!(hint.contains("mixed") && hint.contains("still undone") && hint.contains("wrote b"), "{hint}");
-    assert_eq!((rig.at("files/a"), rig.at("files/b")), (Some(json!(true)), Some(json!(true))), "the document is untouched");
+    assert_eq!(
+        (rig.at("files/a"), rig.at("files/b")),
+        (Some(json!(true)), Some(json!(true))),
+        "the document is untouched"
+    );
     assert!(!folder.has("b") && folder.has("a"), "B stayed undone, A was never undone");
     assert_eq!(rig.undo().unwrap(), None, "the step was dropped");
     let dropped = sink.entries().into_iter().any(|e| matches!(e, HistoryEntry::Dropped { stack: Stack::Undo, .. }));
@@ -284,7 +308,11 @@ fn an_inverse_call_that_changes_the_document_is_a_bug_and_a_missing_scope_keeps_
 
     let guarded = json!({"op": "test.guarded_untouch", "args": {"dir": folder.dir(), "name": "b"}});
     let agent = super::agent();
-    let req = Request { actor: agent.clone(), grants: Grants::agent_default(), ..request("test.touch", json!({"dir": folder.dir(), "name": "b", "undo": guarded})) };
+    let req = Request {
+        actor: agent.clone(),
+        grants: Grants::agent_default(),
+        ..request("test.touch", json!({"dir": folder.dir(), "name": "b", "undo": guarded}))
+    };
     rig.exec.run(req).unwrap();
     let e = rig.exec.undo(&agent, &Grants::agent_default()).unwrap_err();
     assert_eq!(e.code, ErrorCode::Denied, "{e:?}");
@@ -317,14 +345,17 @@ fn effects_survive_a_history_export_and_restore_and_a_journal_replay() {
     let clock = Arc::new(FakeClock::new(Seconds(0.0)));
     let wall = Arc::new(FakeWallClock::new(omuzaki_history_api::WallTime(1_000)));
     let start = json!({"files": {}});
-    let exec = Executor::new(Box::new(MemDoc::from_value(start.clone())), clock.clone()).unwrap().with_journal(sink.clone());
+    let exec =
+        Executor::new(Box::new(MemDoc::from_value(start.clone())), clock.clone()).unwrap().with_journal(sink.clone());
     exec.run(folder.touch("a")).unwrap();
     let tx = exec.begin("open", &person());
     exec.run(Request { tx: Some(tx), ..folder.touch("b") }).unwrap();
     let document = exec.get(&DocPath::root(), &Grants::person()).unwrap().unwrap();
 
     // From a snapshot: the document and the history export.
-    let restored = Executor::restore(Box::new(MemDoc::from_value(document)), clock.clone(), wall.clone(), &exec.history_export()).unwrap();
+    let restored =
+        Executor::restore(Box::new(MemDoc::from_value(document)), clock.clone(), wall.clone(), &exec.history_export())
+            .unwrap();
     restored.rollback(tx, &person()).unwrap();
     assert!(!folder.has("b"), "the open transaction's effect is rolled back after a restore");
     assert!(restored.undo(&person(), &Grants::person()).unwrap().is_some());
@@ -333,7 +364,13 @@ fn effects_survive_a_history_export_and_restore_and_a_journal_replay() {
     assert!(folder.has("a"));
 
     // From the start and the journal: replay rebuilds the step with its effect.
-    let replayed = Executor::restore(Box::new(MemDoc::from_value(start)), clock, wall, &omuzaki_history_api::HistoryExport::empty()).unwrap();
+    let replayed = Executor::restore(
+        Box::new(MemDoc::from_value(start)),
+        clock,
+        wall,
+        &omuzaki_history_api::HistoryExport::empty(),
+    )
+    .unwrap();
     replayed.replay(&sink.numbered()).unwrap();
     replayed.rollback(tx, &person()).unwrap();
     assert!(replayed.undo(&person(), &Grants::person()).unwrap().is_some());

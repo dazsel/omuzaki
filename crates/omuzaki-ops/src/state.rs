@@ -14,18 +14,18 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use omuzaki_core::time::Seconds;
-use omuzaki_doc_api::{DocRead, DocVersion, DocWrite, Patch, PatchError, Value};
+use omuzaki_doc_api::{DocPath, DocRead, DocVersion, DocWrite, Patch, PatchError, Value};
 use omuzaki_history_api::{HISTORY_EXPORT_FORMAT, HistoryEntry, HistoryExport, Stack, WallClock, WallTime};
 use omuzaki_ops_api::{
-    Actor, ApprovalRef, Cause, Effect, Event, OpError, OpRecord, Scope, SessionId, SessionInfo, SessionTx, TxId, Undo,
-    checks,
+    Actor, ApprovalRef, Cause, Effect, Event, JobId, OpError, OpRecord, RevertConflict, Scope, SessionId, SessionInfo,
+    SessionTx, StopStep, TxId, Undo, checks,
 };
 use serde_json::json;
 
 use crate::approvals::Queue;
 use crate::error;
 use crate::guard::Index;
-use crate::history::{Direction, Draft, Histories, HistoryLimits, OpenTx, Step};
+use crate::history::{Direction, Draft, Driven, Histories, HistoryLimits, OpenTx, Step};
 use crate::journal::Journal;
 use crate::sessions::Registry;
 
@@ -54,6 +54,8 @@ pub(crate) struct Edit<'a> {
     pub(crate) approval: Option<ApprovalRef>,
     /// What an `Undo::Explicit` op did outside the document.
     pub(crate) effect: Option<Effect>,
+    /// The driver job making this edit as an inner call: its event waits for the transaction's commit.
+    pub(crate) driver: Option<JobId>,
 }
 
 pub(crate) struct State {
@@ -171,7 +173,7 @@ impl State {
     /// Opens a transaction owned by `actor`.
     pub(crate) fn begin(&mut self, label: &str, actor: &Actor, at: Seconds) -> TxId {
         let tx = next_tx(&mut self.last_tx);
-        self.open.insert(tx, OpenTx { owner: actor.clone(), label: label.to_owned(), draft: Draft::default() });
+        self.open.insert(tx, OpenTx::new(actor.clone(), label.to_owned(), Draft::default()));
         self.journal.append(|| HistoryEntry::Begin { tx, actor: actor.clone(), label: label.to_owned(), at });
         tx
     }
@@ -187,14 +189,15 @@ impl State {
     /// The transaction isn't open or isn't `actor`'s; or the patch no longer applies (`Conflict`). On error nothing
     /// has changed.
     pub(crate) fn apply_edit(&mut self, edit: Edit<'_>) -> Result<OpRecord, OpError> {
-        let Edit { op, summary, scope, undo, args, patch, actor, cause, tx, at, approval, effect } = edit;
+        let Edit { op, summary, scope, undo, args, patch, actor, cause, tx, at, approval, effect, driver } = edit;
         // Borrowing the open transaction first checks it *before* the document changes.
         if let Some(id) = tx {
             Self::open_tx(&mut self.open, id, &actor)?;
         }
         let version = checks::apply_patch(&mut *self.doc, patch).map_err(|e| error::apply_failed(op, e))?;
         let tx_id = tx.unwrap_or_else(|| next_tx(&mut self.last_tx));
-        let mut record = OpRecord::new(self.next_seq, op, args, actor, tx_id, at, patch.clone(), version).with_cause(cause);
+        let mut record =
+            OpRecord::new(self.next_seq, op, args, actor, tx_id, at, patch.clone(), version).with_cause(cause);
         self.next_seq += 1;
         if let Some(person) = self.sessions.principal_of(&record.actor) {
             record = record.with_on_behalf_of(person.clone());
@@ -206,10 +209,19 @@ impl State {
             record = record.with_effect(effect.clone());
         }
         self.changes.record(patch, &record.actor, version);
-        let record = self.log_record(record, tx.is_none());
+        let record = self.log_record(record, tx.is_none(), driver.is_some());
 
         match tx.and_then(|id| self.open.get_mut(&id)) {
-            Some(open) => open.draft.absorb(scope, undo, patch, effect.as_ref()),
+            Some(open) => {
+                let (changes, effects) = (open.draft.patch.changes.len(), open.draft.effects.len());
+                open.draft.absorb(scope, undo, patch, effect.as_ref());
+                if let Some(job) = driver {
+                    let changes = changes..open.draft.patch.changes.len();
+                    let effects = effects..open.draft.effects.len();
+                    open.driven.push(Driven { job, seq: record.seq, changes, effects });
+                    open.held.push(Event::op_applied(record.clone()));
+                }
+            }
             None => {
                 let mut draft = Draft::default();
                 draft.absorb(scope, undo, patch, effect.as_ref());
@@ -219,15 +231,17 @@ impl State {
         Ok(record)
     }
 
-    /// Appends `record` to the log (dropping the oldest past the cap), queues its event and journals it (`commits`:
-    /// it is a one-op transaction). Returns it.
-    fn log_record(&mut self, record: OpRecord, commits: bool) -> OpRecord {
+    /// Appends `record` to the log (dropping the oldest past the cap), queues its event (unless a driver's
+    /// transaction `holds` it until its commit) and journals it (`commits`: it is a one-op transaction). Returns it.
+    fn log_record(&mut self, record: OpRecord, commits: bool, holds: bool) -> OpRecord {
         let shared = Arc::new(record);
         self.log.push_back(shared.clone());
         while self.log.len() > self.log_cap {
             self.log.pop_front();
         }
-        self.outbox.push(Event::op_applied(OpRecord::clone(&shared)));
+        if !holds {
+            self.outbox.push(Event::op_applied(OpRecord::clone(&shared)));
+        }
         self.journal.append(|| HistoryEntry::Op { record: shared.clone(), commits });
         OpRecord::clone(&shared)
     }
@@ -237,6 +251,8 @@ impl State {
         self.check_tx(tx, actor)?;
         let open = self.open.remove(&tx).ok_or_else(|| error::tx_not_open(tx))?;
         self.journal.append(|| HistoryEntry::Commit { tx });
+        // Driver jobs' inner edits reach subscribers now, in order, before the commit.
+        self.outbox.extend(open.held);
         self.finish(actor, tx, open.label, open.draft);
         Ok(())
     }
@@ -283,9 +299,87 @@ impl State {
         error::revert_failed(what, e, self.changes.newest(path, None).map(|c| c.by), hint)
     }
 
+    /// The changes and effects driver job `job` added to open transaction `tx`, in apply order.
+    pub(crate) fn driven_by(&self, tx: TxId, job: JobId) -> Option<(Patch, Vec<Effect>)> {
+        let open = self.open.get(&tx)?;
+        let mut patch = Patch::new();
+        let mut effects = Vec::new();
+        for edit in open.driven.iter().filter(|d| d.job == job) {
+            patch.changes.extend(open.draft.patch.changes[edit.changes.clone()].iter().cloned());
+            effects.extend(open.draft.effects[edit.effects.clone()].iter().cloned());
+        }
+        Some((patch, effects))
+    }
+
+    /// Why a driver's `edits` cannot be reverted: every path whose value is no longer what the job left there (with
+    /// who changed it since), and every other path the job edited, which a revert would have kept too.
+    pub(crate) fn unreverted(&self, edits: &Patch) -> (Vec<RevertConflict>, Vec<DocPath>) {
+        // The job's last change to each path is what it left there.
+        let mut left: Vec<(&DocPath, Option<&Value>)> = Vec::new();
+        for change in &edits.changes {
+            match left.iter_mut().find(|(path, _)| **path == change.path) {
+                Some(slot) => slot.1 = change.after.as_ref(),
+                None => left.push((&change.path, change.after.as_ref())),
+            }
+        }
+        let (mut conflicts, mut retained) = (Vec::new(), Vec::new());
+        for (path, job_value) in left {
+            let current = self.doc.get(path);
+            if current == job_value {
+                retained.push(path.clone());
+            } else {
+                let actor = self.changes.newest(path, None).map_or(Actor::System, |last| last.by.clone());
+                let job_value = job_value.cloned().unwrap_or(Value::Null);
+                conflicts.push(RevertConflict { path: path.clone(), job_value, current: current.cloned(), actor });
+            }
+        }
+        (conflicts, retained)
+    }
+
+    /// Applies `revert`, already tried, which undoes driver job `job`'s own edits in open transaction `tx`, as `by`;
+    /// takes those edits (and their held events) out of the transaction; and journals one `TxRevert` with the
+    /// transaction as it now stands (ADR 0036 decision 10). The scopes the job's ops added stay on the transaction:
+    /// undoing it then asks for a scope it may no longer need, never one too few.
+    ///
+    /// # Errors
+    /// `NotFound` if `tx` isn't open; `Conflict` if the revert does not apply after all (nothing changed).
+    pub(crate) fn revert_driven(&mut self, tx: TxId, job: JobId, revert: &Patch, by: &Actor) -> Result<(), OpError> {
+        if !self.open.contains_key(&tx) {
+            return Err(error::tx_not_open(tx));
+        }
+        let hint = "the job's edits stay in the transaction";
+        let version = match checks::apply_patch(&mut *self.doc, revert) {
+            Ok(version) => version,
+            Err(e) => return Err(self.conflict(&format!("revert job {}'s edits", job.0), &e, hint)),
+        };
+        self.changes.record(revert, by, version);
+        let open = self.open.get_mut(&tx).ok_or_else(|| error::tx_not_open(tx))?;
+        let mine: Vec<Driven> = open.driven.extract_if(.., |d| d.job == job).collect();
+        // Take the job's ranges out from the back, so the earlier ones stay where they are, and move every remaining
+        // driver edit down past what was taken before it.
+        for edit in mine.iter().rev() {
+            open.draft.patch.changes.drain(edit.changes.clone());
+            open.draft.effects.drain(edit.effects.clone());
+        }
+        for other in &mut open.driven {
+            let changes_before: usize =
+                mine.iter().filter(|m| m.changes.end <= other.changes.start).map(|m| m.changes.len()).sum();
+            let effects_before: usize =
+                mine.iter().filter(|m| m.effects.end <= other.effects.start).map(|m| m.effects.len()).sum();
+            other.changes = other.changes.start - changes_before..other.changes.end - changes_before;
+            other.effects = other.effects.start - effects_before..other.effects.end - effects_before;
+        }
+        let seqs: Vec<u64> = mine.iter().map(|m| m.seq).collect();
+        open.held.retain(|event| !matches!(event, Event::OpApplied { record, .. } if seqs.contains(&record.seq)));
+        let remaining = open.export(tx);
+        self.journal.append(|| HistoryEntry::TxRevert { tx, seqs, patch: revert.clone(), remaining });
+        Ok(())
+    }
+
     /// The open transactions `actor` owns, newest first: ending its session abandons them in this order.
     pub(crate) fn owned_open(&self, actor: &Actor) -> Vec<TxId> {
-        let mut owned: Vec<TxId> = self.open.iter().filter(|(_, open)| open.owner == *actor).map(|(tx, _)| *tx).collect();
+        let mut owned: Vec<TxId> =
+            self.open.iter().filter(|(_, open)| open.owner == *actor).map(|(tx, _)| *tx).collect();
         owned.sort_unstable_by(|a, b| b.cmp(a));
         owned
     }
@@ -300,6 +394,18 @@ impl State {
         Ok(label)
     }
 
+    /// Closes `actor`'s open transaction `tx` for a person's Stop (agent-runtime D4): committed as it stands with
+    /// " (stopped)" added to its label, or, left empty, closed with no step.
+    pub(crate) fn stop_tx(&mut self, tx: TxId, actor: &Actor) -> Result<StopStep, OpError> {
+        let open = Self::open_tx(&mut self.open, tx, actor)?;
+        if !open.draft.changes_anything() {
+            self.commit(tx, actor)?;
+            return Ok(StopStep::None);
+        }
+        self.commit_as_is(tx, actor, " (stopped)")?;
+        Ok(StopStep::Committed(tx))
+    }
+
     /// The history to undo from (or redo from) for `actor`: its own, or for a person the newest step among their own
     /// history and those of their agents' sessions (design §5.4; automation sessions are standing rules, not
     /// assistants, so they stay out, `automation.md` D7).
@@ -307,7 +413,12 @@ impl State {
         match actor {
             Actor::Person { .. } => {
                 let mut group = vec![actor.clone()];
-                group.extend(self.sessions.all().filter(|s| self.principal_key(&s.actor) == Some(actor)).map(|s| s.actor.clone()));
+                group.extend(
+                    self.sessions
+                        .all()
+                        .filter(|s| self.principal_key(&s.actor) == Some(actor))
+                        .map(|s| s.actor.clone()),
+                );
                 self.histories.pick(direction, &group)
             }
             _ => self.histories.pick(direction, std::slice::from_ref(actor)),
@@ -361,7 +472,11 @@ impl State {
             Ok(version) => version,
             Err(e) => {
                 self.drop_step(index, direction, &step);
-                return Err(self.conflict(&format!("{} {:?}", direction.verb(), step.label), &e, direction.dropped_hint()));
+                return Err(self.conflict(
+                    &format!("{} {:?}", direction.verb(), step.label),
+                    &e,
+                    direction.dropped_hint(),
+                ));
             }
         };
         self.changes.record(&patch, doer, version);
@@ -413,9 +528,10 @@ impl State {
         self.changes.record(&draft.patch, by, version);
         self.journal.append(|| HistoryEntry::Begin { tx, actor: by.clone(), label: label.clone(), at });
         let args = json!({ "session": session.0 });
-        let record = OpRecord::new(self.next_seq, SESSION_UNDO_OP, args, by.clone(), tx, at, draft.patch.clone(), version);
+        let record =
+            OpRecord::new(self.next_seq, SESSION_UNDO_OP, args, by.clone(), tx, at, draft.patch.clone(), version);
         self.next_seq += 1;
-        self.log_record(record, false);
+        self.log_record(record, false, false);
         self.journal.append(|| HistoryEntry::Commit { tx });
         self.finish(by, tx, label, draft);
         Ok(())

@@ -294,7 +294,8 @@ pub struct SessionUndo {
     pub skipped: Vec<KeptTx>,
     /// Open transactions that were abandoned.
     pub abandoned: Vec<TxId>,
-    /// Steps with effects outside the document ([`Undo::Explicit`](crate::Undo::Explicit)) that cannot be undone yet.
+    /// Steps with effects outside the document ([`Undo::Explicit`](crate::Undo::Explicit)) whose effects could not
+    /// be undone: they stay applied, and are in `skipped` too, with the error.
     pub outside: Vec<TxId>,
 }
 

@@ -45,6 +45,8 @@ struct Session {
     paused_since: Option<f64>,
     /// Seconds paused before the current pause: active time excludes them.
     paused_for: f64,
+    /// A person stopped it and it has not resumed since: a joined driver job that ends commits its transaction.
+    stopping: bool,
 }
 
 impl Session {
@@ -239,7 +241,13 @@ impl Registry {
         };
         self.fenced += usize::from(!info.fence.is_empty());
         let buckets = Buckets::new(&info.limits, at.0);
-        self.sessions.push(Session { info: info.clone(), buckets, paused_since: None, paused_for: 0.0 });
+        self.sessions.push(Session {
+            info: info.clone(),
+            buckets,
+            paused_since: None,
+            paused_for: 0.0,
+            stopping: false,
+        });
         Ok(info)
     }
 
@@ -394,12 +402,16 @@ impl Registry {
             _ => false,
         };
         let by = by.clone();
-        Ok(self.set_family(
+        let changes = self.set_family(
             root,
             at,
             |s| resumable(s).then_some(SessionState::Active),
             |_| SessionChange::Resumed { by: by.clone() },
-        ))
+        );
+        for session in self.sessions.iter_mut().filter(|s| changes.iter().any(|(id, _)| *id == s.info.id)) {
+            session.stopping = false;
+        }
+        Ok(changes)
     }
 
     /// Lifts session `index`'s pause when it is paused for `reason`: a pairing a person approved, a budget a person
@@ -499,6 +511,30 @@ impl Registry {
         let session = &mut self.sessions[index];
         session.tick(at.0);
         budget::exceeded(&session.info.budget, &session.info.spent, cost)
+    }
+
+    /// Whether `needed` more fits session `index`'s budget now (`Sessions::request_budget`): `None` when it does;
+    /// otherwise what is left.
+    pub(crate) fn short_of(&mut self, index: usize, needed: Spend, at: Seconds) -> Option<Spend> {
+        let session = &mut self.sessions[index];
+        session.tick(at.0);
+        let (budget, spent) = (&session.info.budget, &session.info.spent);
+        let after = Spend {
+            usd_micros: spent.usd_micros.saturating_add(needed.usd_micros),
+            tokens: spent.tokens.saturating_add(needed.tokens),
+            seconds: spent.seconds.saturating_add(needed.seconds),
+        };
+        budget::crossed(budget, &after).then(|| budget::left(budget, spent))
+    }
+
+    /// Marks session `index` stopped (or no longer, on a resume).
+    pub(crate) fn set_stopping(&mut self, index: usize, stopping: bool) {
+        self.sessions[index].stopping = stopping;
+    }
+
+    /// Whether session `index` was stopped and has not resumed.
+    pub(crate) fn is_stopping(&self, index: usize) -> bool {
+        self.sessions[index].stopping
     }
 
     /// Adds `usd_micros` and `tokens` to session `index`'s spend. Returns whether it is now past a cap.

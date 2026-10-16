@@ -533,19 +533,25 @@ pub trait Runner: Send + Sync {
     /// ways the revert can't apply.
     fn rollback(&self, tx: TxId, actor: &Actor) -> Result<(), OpError>;
 
-    /// Undoes `actor`'s own most recent committed transaction (undo is per actor, as in collaborative editors: an
-    /// agent never undoes a person's edit by accident). Returns its label, or `None` if there's nothing to undo.
+    /// Undoes `actor`'s most recent committed transaction (undo is per actor, as in collaborative editors: an agent
+    /// never undoes a person's edit by accident). Returns its label, or `None` if there's nothing to undo.
     ///
-    /// If later changes by others make that step impossible to undo, the step is dropped from the actor's history
-    /// and a `Conflict` says so (naming the path and who changed it), so history never wedges. Reverting another
-    /// actor's transaction is a separate, explicit op.
+    /// **Per principal for a person** (design `agent-sessions.md` §5.4): a person's undo takes the newest step among
+    /// their own history and the histories of the agent sessions that work for them (automation sessions excepted),
+    /// and pauses a running session whose step it takes, so the agent cannot keep committing on top. An agent's undo
+    /// reaches only its own steps.
+    ///
+    /// If later changes by others make that step impossible to undo, the step is dropped from its history and a
+    /// `Conflict` says so (naming the path and who changed it), so history never wedges. Reverting another person's
+    /// transaction is a separate, explicit op.
     ///
     /// # Errors
     /// `Conflict` as above; `Denied` if `grants` can't edit what the step touched.
     fn undo(&self, actor: &Actor, grants: &Grants) -> Result<Option<String>, OpError>;
 
-    /// Redoes `actor`'s most recently undone transaction; returns its label, or `None`. A new commit by the same
-    /// actor clears its redo history.
+    /// Redoes `actor`'s most recently undone transaction (for a person, the most recently undone among their own and
+    /// their agents' steps, as [`undo`](Self::undo) takes them); returns its label, or `None`. A new commit by the
+    /// same actor, or for a person by them or any of their agents, clears that redo history.
     ///
     /// # Errors
     /// As [`Runner::undo`].

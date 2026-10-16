@@ -47,6 +47,18 @@ pub(crate) struct Allowance {
     /// The run is an effect's inverse call during an undo, a redo or a rollback (#1091): it may not change the
     /// document and never queues for approval.
     pub(crate) effect_call: bool,
+    /// The run is an inner call of this driver job (#1092): its event waits for the transaction's commit, and it never
+    /// queues for approval (it would run later, outside the job's transaction).
+    pub(crate) driver: Option<omuzaki_ops_api::JobId>,
+}
+
+/// A request admitted and planned: the grants it may use replaced the ones it was `sent` with.
+struct Prepared {
+    req: Request,
+    sent: Grants,
+    session: Option<usize>,
+    plan: Plan,
+    at: Seconds,
 }
 
 /// Where a request runs: its session, the grants it was sent with, what approvals met, and when.
@@ -77,19 +89,66 @@ impl Env {
         &self,
         state: &mut State,
         op: &dyn DynOp,
-        mut req: Request,
+        req: Request,
         allow: &Allowance,
     ) -> Result<Outcome, OpError> {
+        let applies = !checks::answers_only(op.meta(), req.mode);
+        let bucket = if applies { Bucket::Edits } else { Bucket::Runs };
+        let Prepared { req, sent, session, plan, at } = self.prepare(state, op, req, allow, bucket)?;
+        let run = Run { session, sent: &sent, allow, at };
+        // An Explicit op performed its effect while it planned (ADR 0036 decision 8): if anything now refuses the
+        // apply, that effect is undone at once.
+        let effect = (req.mode == Mode::Apply).then(|| plan.effect.clone()).flatten();
+        let result = match self.checked(state, op, &req, &run, &plan, true) {
+            Err(error) => Err(error),
+            Ok(_) if !applies => Ok(Outcome::new(plan)),
+            Ok(cost) => {
+                let stamps = (allow.approval.clone(), allow.driver);
+                self.apply_approved(state, op, (&req.actor, &req.cause, req.tx), &plan, stamps).map(|record| {
+                    self.charge_cost(state, session, cost, at);
+                    Outcome::new(plan).with_applied(record)
+                })
+            }
+        };
+        match (result, effect) {
+            (Err(error), Some(effect)) => Err(self.undo_now(state, &req, &effect, error)),
+            (result, _) => result,
+        }
+    }
+
+    /// The checks of a job start (#1218), under the lock: admission (a start counts as one edit against the
+    /// session's rate limit), a driver's transaction, the op's scope, the plan, the cost's `spend` and the review
+    /// policies, with the same queueing as any request. The money is the job manager's to reserve against the
+    /// session's budget. Returns the request with the grants it may use, and the plan.
+    pub(crate) fn check_job(
+        &self,
+        state: &mut State,
+        op: &dyn DynOp,
+        req: Request,
+        allow: &Allowance,
+    ) -> Result<(Request, Plan), OpError> {
+        let Prepared { req, sent, session, plan, at } = self.prepare(state, op, req, allow, Bucket::Edits)?;
+        let run = Run { session, sent: &sent, allow, at };
+        self.checked(state, op, &req, &run, &plan, false)?;
+        Ok((req, plan))
+    }
+
+    /// Steps 1 to 3 of the [module](self) docs: admission, the transaction, the op's scope, the journal's `admit`
+    /// for an apply, and the plan, queueing the needs a person could meet.
+    fn prepare(
+        &self,
+        state: &mut State,
+        op: &dyn DynOp,
+        mut req: Request,
+        allow: &Allowance,
+        bucket: Bucket,
+    ) -> Result<Prepared, OpError> {
         let at = self.clock.now();
         let meta = op.meta();
-        let applies = !checks::answers_only(meta, req.mode);
         // Admitted again under the lock that plans and applies: a pause or a narrowing that landed since `run` looked
         // must win, and the grants the op plans with are the ones that hold now.
-        let entry = if allow.approval.is_some() || allow.effect_call {
-            Entry::Inner
-        } else {
-            Entry::Call(Some(if applies { Bucket::Edits } else { Bucket::Runs }))
-        };
+        let entry =
+            if allow.approval.is_some() || allow.effect_call { Entry::Inner } else { Entry::Call(Some(bucket)) };
         let admitted = state.sessions.admit_run(&req.actor, &req.grants, at, entry)?;
         if let Some(tx) = req.tx {
             state.check_tx(tx, &req.actor)?;
@@ -97,46 +156,41 @@ impl Env {
         let granted = allow.scopes.iter().fold(admitted.grants, |grants, scope| grants.with(*scope));
         // What the request was sent with: a queued request keeps it, since it only narrows.
         let sent = std::mem::replace(&mut req.grants, granted);
-        let run = Run { session: admitted.session, sent: &sent, allow, at };
+        let session = admitted.session;
+        let run = Run { session, sent: &sent, allow, at };
 
         // `read` was checked before the lookup; the op's own scope is checked before it plans.
         if checks::authorize(&req.grants, &req.actor, meta, req.mode).is_err() {
             return Err(self.need(state, op, &req, &run, Asked::of(Need::Scope { scope: meta.scope })));
         }
-        if applies {
+        if !checks::answers_only(meta, req.mode) {
             state.journal.admit()?;
         }
         let plan = match self.plan(state, op, &req, allow.confirmed_by.as_ref()) {
             Ok(plan) => plan,
             Err(error) => {
                 return Err(match needs_person(&error) {
-                    Some(reason) if run.session.is_some() => {
+                    Some(reason) if session.is_some() => {
                         self.need(state, op, &req, &run, Asked::of(Need::Person { reason }))
                     }
                     _ => error,
                 });
             }
         };
-        // An Explicit op performed its effect while it planned (ADR 0036 decision 8): if anything now refuses the
-        // apply, that effect is undone at once.
-        let effect = (req.mode == Mode::Apply).then(|| plan.effect.clone()).flatten();
-        let result = self.apply_planned(state, op, &req, &run, plan);
-        match (result, effect) {
-            (Err(error), Some(effect)) => Err(self.undo_now(state, &req, &effect, error)),
-            (result, _) => result,
-        }
+        Ok(Prepared { req, sent, session, plan, at })
     }
 
-    /// The part of [`run_locked`](Self::run_locked) after the plan: fences, the stale-write guard, the cost, review and
-    /// budget, then the apply and the charge.
-    fn apply_planned(
+    /// Steps 4 and 5 of the [module](self) docs, on the plan: fences, the stale-write guard, the cost, review and (for
+    /// an edit, `budget`) the session's budget. Returns the cost to charge once applied, in micro-dollars.
+    fn checked(
         &self,
         state: &mut State,
         op: &dyn DynOp,
         req: &Request,
         run: &Run<'_>,
-        plan: Plan,
-    ) -> Result<Outcome, OpError> {
+        plan: &Plan,
+        budget: bool,
+    ) -> Result<u64, OpError> {
         let meta = op.meta();
         let applies = !checks::answers_only(meta, req.mode);
         if run.allow.effect_call && !plan.patch.is_empty() {
@@ -147,7 +201,7 @@ impl Env {
             .hint("this is a bug in the op: inverse calls change only what is outside the document"));
         }
         if let Some(index) = run.session {
-            self.check_claims(state, index, req, &plan, applies, run.at)?;
+            self.check_claims(state, index, req, plan, applies, run.at)?;
         }
         let cost = if applies { budget::usd_micros(meta.name, plan.cost.as_ref())? } else { 0 };
         if cost > 0 && !req.grants.allows(Scope::Spend) {
@@ -165,32 +219,24 @@ impl Env {
                 };
                 return Err(self.need(state, op, req, run, asked));
             }
-            if !run.allow.over_budget
+            if budget
+                && !run.allow.over_budget
                 && let Some((needed, left)) = state.sessions.over_budget(index, cost, run.at)
             {
                 return Err(self.need(state, op, req, run, Asked::of(Need::Budget { needed, left })));
             }
         }
-        if !applies {
-            return Ok(Outcome::new(plan));
+        Ok(cost)
+    }
+
+    /// Charges an applied run's `cost` to its session, with a `Spent` event.
+    fn charge_cost(&self, state: &mut State, session: Option<usize>, cost: u64, at: Seconds) {
+        let Some(index) = session.filter(|_| cost > 0) else { return };
+        state.sessions.add_spend(index, cost, 0, at);
+        let id = state.sessions.info(index).id;
+        if let Some(snapshot) = state.session(id) {
+            state.queue_event(Event::session_changed(snapshot, SessionChange::Spent));
         }
-        let record = self.apply_approved(
-            state,
-            op,
-            (&req.actor, &req.cause, req.tx),
-            &plan,
-            run.allow.approval.clone(),
-        )?;
-        if let Some(index) = run.session
-            && cost > 0
-        {
-            state.sessions.add_spend(index, cost, 0, run.at);
-            let id = state.sessions.info(index).id;
-            if let Some(snapshot) = state.session(id) {
-                state.queue_event(Event::session_changed(snapshot, SessionChange::Spent));
-            }
-        }
-        Ok(Outcome::new(plan).with_applied(record))
     }
 
     /// The fences (design §5.3) and the stale-write guard (§5.1) on session `index`'s planned patch, dry-run and apply
@@ -280,7 +326,7 @@ impl Env {
         if !self.approver {
             return refusal(req, &asked.need, Refused::NoApprover);
         }
-        if allow.effect_call {
+        if allow.effect_call || allow.driver.is_some() {
             return refusal(req, &asked.need, Refused::Inner);
         }
         if req.cause.as_ref().is_some_and(|cause| cause.kind == CauseKind::Script) {
@@ -344,11 +390,32 @@ impl Env {
         Ok(plan)
     }
 
+    /// Whether session `index` may start a job that reserves `money.0` micro-dollars while its other live jobs hold
+    /// `money.1`: `None` when its budget allows (two concurrent jobs never both pass a check only one fits); otherwise
+    /// the refusal, after pausing the session and queueing a `Budget` approval with the request, as for an edit.
+    pub(crate) fn job_budget(
+        &self,
+        state: &mut State,
+        index: usize,
+        op: &dyn DynOp,
+        req: &Request,
+        money: (u64, u64),
+    ) -> Option<OpError> {
+        let (cost, held) = money;
+        let at = self.clock.now();
+        let (_, mut left) = state.sessions.over_budget(index, cost.saturating_add(held), at)?;
+        left.usd_micros = left.usd_micros.saturating_sub(held);
+        let needed = Spend { usd_micros: cost, ..Spend::default() };
+        let allow = Allowance::default();
+        let run = Run { session: Some(index), sent: &req.grants, allow: &allow, at };
+        Some(self.need(state, op, req, &run, Asked::of(Need::Budget { needed, left })))
+    }
+
     /// Queues a budget approval with no request for session `index` (a charge from outside crossed a cap), when a
     /// person can be asked. One per budget pause, so it is not bounded by `max_pending`.
-    pub(crate) fn ask_budget(&self, state: &mut State, index: usize, needed: Spend, at: Seconds) {
+    pub(crate) fn ask_budget(&self, state: &mut State, index: usize, needed: Spend, at: Seconds) -> Option<ApprovalId> {
         if !self.approver {
-            return;
+            return None;
         }
         let info = state.sessions.info(index);
         let left = budget::left(&info.budget, &info.spent);
@@ -363,7 +430,9 @@ impl Env {
             at,
         };
         let pending = state.approvals.push(ask);
+        let id = pending.id;
         state.queue_event(Event::approval_requested(pending));
+        Some(id)
     }
 }
 
@@ -445,7 +514,12 @@ fn needs_person(error: &OpError) -> Option<String> {
 
 /// The stale-write guard (design §5.1): the newest change, by an actor other than `actor`, after version `base` at,
 /// above or below a path `patch` changes. Returns the refusal, the path and who changed it.
-fn stale(state: &State, patch: &omuzaki_doc_api::Patch, actor: &Actor, base: omuzaki_doc_api::DocVersion) -> Option<(OpError, omuzaki_doc_api::DocPath, Actor)> {
+fn stale(
+    state: &State,
+    patch: &omuzaki_doc_api::Patch,
+    actor: &Actor,
+    base: omuzaki_doc_api::DocVersion,
+) -> Option<(OpError, omuzaki_doc_api::DocPath, Actor)> {
     let newest = patch
         .changes
         .iter()

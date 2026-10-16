@@ -107,7 +107,6 @@ pub fn check_plan(meta: OpMeta, plan: &Plan) -> Result<(), OpError> {
     }
 }
 
-
 /// Authorizes `req` for `op`, plans it and checks the plan: steps 3 and 4 of the [module](self) order. `ctx` is the
 /// runner's context over the document; this sets the request's grants (a composite op's
 /// [`plan_step`](OpCtx::plan_step) checks them) and its mode on it. The caller has checked `read` and the

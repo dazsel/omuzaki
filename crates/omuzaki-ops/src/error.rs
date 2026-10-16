@@ -20,7 +20,9 @@ pub enum ExecutorError {
         second: &'static str,
     },
     /// The history to restore was written by a newer Omuzaki, in a layout this one cannot read.
-    #[error("the history is in format {found}, newer than the {supported} this build reads; open it with a newer Omuzaki")]
+    #[error(
+        "the history is in format {found}, newer than the {supported} this build reads; open it with a newer Omuzaki"
+    )]
     HistoryFormat {
         /// The export's format.
         found: u32,

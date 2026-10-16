@@ -87,7 +87,11 @@ fn undo_is_not_wedged_by_a_transaction_that_commits_after_a_later_edit_to_the_sa
         let rig = rig(json!({"x": 0}));
         let other = rig.bobs_agent();
         let tx = rig.exec.begin("long agent job", &other);
-        let req = Request { tx: Some(tx), actor: other.clone(), ..agent_request("test.set", json!({"path": "x", "value": 1})) };
+        let req = Request {
+            tx: Some(tx),
+            actor: other.clone(),
+            ..agent_request("test.set", json!({"path": "x", "value": 1}))
+        };
         rig.exec.run(req).unwrap();
         rig.set("x", json!(2)); // the person edits the same field meanwhile
         rig.exec.commit(tx, &other).unwrap();

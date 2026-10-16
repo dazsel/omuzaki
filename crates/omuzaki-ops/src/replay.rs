@@ -96,7 +96,7 @@ impl Executor {
                 if state.open_mut(*tx).is_some() {
                     return Err(format!("transaction {} is already open", tx.0));
                 }
-                state.reopen(*tx, OpenTx { owner: actor.clone(), label: label.clone(), draft: Draft::default() });
+                state.reopen(*tx, OpenTx::new(actor.clone(), label.clone(), Draft::default()));
                 Ok(())
             }
             HistoryEntry::Op { record, commits } => self.replay_op(state, record, *commits),
@@ -169,7 +169,10 @@ fn replay_move(
     patch: &omuzaki_doc_api::Patch,
 ) -> Result<(), String> {
     let index = state.histories.find(actor).ok_or_else(|| format!("{actor:?} has no history"))?;
-    let next = state.histories.take(index, direction).ok_or_else(|| format!("{actor:?} has nothing to {}", direction.verb()))?;
+    let next = state
+        .histories
+        .take(index, direction)
+        .ok_or_else(|| format!("{actor:?} has nothing to {}", direction.verb()))?;
     if next.tx != tx {
         let found = next.tx;
         state.histories.put_back(index, direction, next);

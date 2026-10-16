@@ -118,17 +118,43 @@ pub(crate) struct OpenTx {
     pub(crate) owner: Actor,
     pub(crate) label: String,
     pub(crate) draft: Draft,
+    /// The `OpApplied` events of driver jobs' inner edits, held until this transaction commits (ADR 0036 decision 10),
+    /// so a run that is rolled back is never seen.
+    pub(crate) held: Vec<omuzaki_ops_api::Event>,
+    /// Which of the draft's changes and effects each driver job's inner edit added, so a joined driver that fails can
+    /// revert only its own.
+    pub(crate) driven: Vec<Driven>,
+}
+
+/// One inner edit of a driver job inside a transaction: its record and where its changes and effects sit in the
+/// transaction's draft.
+#[derive(Clone, Debug)]
+pub(crate) struct Driven {
+    pub(crate) job: omuzaki_ops_api::JobId,
+    pub(crate) seq: u64,
+    pub(crate) changes: std::ops::Range<usize>,
+    pub(crate) effects: std::ops::Range<usize>,
 }
 
 impl OpenTx {
     pub(crate) fn export(&self, tx: TxId) -> OpenTxExport {
-        OpenTxExport::new(self.owner.clone(), tx, self.label.clone(), self.draft.patch.clone(), self.draft.scopes.clone())
-            .with_effects(self.draft.effects.clone())
+        OpenTxExport::new(
+            self.owner.clone(),
+            tx,
+            self.label.clone(),
+            self.draft.patch.clone(),
+            self.draft.scopes.clone(),
+        )
+        .with_effects(self.draft.effects.clone())
     }
 
     pub(crate) fn import(open: &OpenTxExport) -> Self {
         let draft = Draft { patch: open.patch.clone(), scopes: open.scopes.clone(), effects: open.effects.clone() };
-        Self { owner: open.owner.clone(), label: open.label.clone(), draft }
+        Self::new(open.owner.clone(), open.label.clone(), draft)
+    }
+
+    pub(crate) fn new(owner: Actor, label: String, draft: Draft) -> Self {
+        Self { owner, label, draft, held: Vec::new(), driven: Vec::new() }
     }
 }
 
