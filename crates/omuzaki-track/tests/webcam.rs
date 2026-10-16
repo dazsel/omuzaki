@@ -1192,9 +1192,11 @@ fn a_camera_thread_that_is_slow_to_notice_stop_still_gives_the_tracker_back() {
     }
 }
 
-/// The 100 ms of `track-api.md` T2, and what the tests allow on top of it for the scheduler of a loaded machine.
+/// The 100 ms of `track-api.md` T2, enforced as it stands: no allowance on top. A loaded machine can delay any one
+/// `stop`, so the tests take the fastest of `ATTEMPTS`; a regression that makes `stop` slow every time still fails,
+/// because then no attempt meets the budget.
 const STOP_BUDGET: Duration = Duration::from_millis(100);
-const SCHEDULING: Duration = Duration::from_millis(50);
+const ATTEMPTS: usize = 8;
 
 /// A tracker over a camera whose `next_frame` takes `call`, and the channel that says the camera thread has just
 /// entered it, with the first frame consumed.
@@ -1218,31 +1220,38 @@ fn at_the_start_of_a_camera_call(entries: &Receiver<()>) {
     entries.recv_timeout(BACKSTOP).expect("the camera thread keeps calling the camera");
 }
 
-/// A camera call that ends inside the budget (70 ms of the 85 ms deadline): the tracker comes back, `stop` meets the
-/// 100 ms of T2 and the next `start` works.
+/// A camera call that ends inside the budget (70 ms of the 85 ms deadline): on every attempt the tracker comes back and
+/// the next `start` works, and the fastest `stop` meets the 100 ms of T2.
 #[test]
 fn a_camera_call_that_ends_before_the_deadline_gives_the_tracker_back_inside_the_budget() {
-    let (mut tracker, _source, entries) = stopping_over(Duration::from_millis(70));
-    at_the_start_of_a_camera_call(&entries);
-    let stopping = Instant::now();
-    tracker.stop();
-    assert!(stopping.elapsed() < STOP_BUDGET + SCHEDULING, "stop took {:?}", stopping.elapsed());
-    assert_eq!(tracker.error(), None, "the tracker came back; nothing was let go");
-    let _again = start(&mut tracker);
-    tracker.stop();
+    let mut fastest = Duration::MAX;
+    for _ in 0..ATTEMPTS {
+        let (mut tracker, _source, entries) = stopping_over(Duration::from_millis(70));
+        at_the_start_of_a_camera_call(&entries);
+        let stopping = Instant::now();
+        tracker.stop();
+        fastest = fastest.min(stopping.elapsed());
+        assert_eq!(tracker.error(), None, "the tracker came back; nothing was let go");
+        let _again = start(&mut tracker);
+        tracker.stop();
+    }
+    assert!(fastest < STOP_BUDGET, "the fastest of {ATTEMPTS} stops took {fastest:?}");
 }
 
 /// A camera whose `next_frame` outlasts the whole budget: `stop` still returns inside it (the camera thread never waits
-/// past the hard limit and `stop` waits only a slack beyond that), says the camera was let go, and a later `start`
-/// reports the loss instead of hanging.
+/// past the hard limit and `stop` waits only a slack beyond that), and says the camera was let go.
 #[test]
 fn a_camera_that_outlasts_the_stop_deadline_is_let_go_inside_the_budget() {
-    let (mut tracker, _source, entries) = stopping_over(Duration::from_millis(400));
-    at_the_start_of_a_camera_call(&entries);
-    let stopping = Instant::now();
-    tracker.stop();
-    assert!(stopping.elapsed() < STOP_BUDGET + SCHEDULING, "stop took {:?}", stopping.elapsed());
-    assert!(tracker.error().is_some(), "the camera thread was let go and that is reported");
+    let mut fastest = Duration::MAX;
+    for _ in 0..ATTEMPTS {
+        let (mut tracker, _source, entries) = stopping_over(Duration::from_millis(400));
+        at_the_start_of_a_camera_call(&entries);
+        let stopping = Instant::now();
+        tracker.stop();
+        fastest = fastest.min(stopping.elapsed());
+        assert!(tracker.error().is_some(), "the camera thread was let go and that is reported");
+    }
+    assert!(fastest < STOP_BUDGET, "the fastest of {ATTEMPTS} stops took {fastest:?}");
 }
 
 /// A camera that only ever hands over frames too short for their size, and tells the test at call 300 (calls 20 to 299
