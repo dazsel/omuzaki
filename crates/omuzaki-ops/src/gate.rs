@@ -105,7 +105,7 @@ impl Env {
             Ok(cost) => {
                 let stamps = (allow.approval.clone(), allow.driver);
                 self.apply_approved(state, op, (&req.actor, &req.cause, req.tx), &plan, stamps).map(|record| {
-                    self.charge_cost(state, session, cost, at);
+                    Self::charge_cost(state, session, cost, at);
                     Outcome::new(plan).with_applied(record)
                 })
             }
@@ -201,7 +201,7 @@ impl Env {
             .hint("this is a bug in the op: inverse calls change only what is outside the document"));
         }
         if let Some(index) = run.session {
-            self.check_claims(state, index, req, plan, applies, run.at)?;
+            Self::check_claims(state, index, req, plan, applies, run.at)?;
         }
         let cost = if applies { budget::usd_micros(meta.name, plan.cost.as_ref())? } else { 0 };
         if cost > 0 && !req.grants.allows(Scope::Spend) {
@@ -230,7 +230,7 @@ impl Env {
     }
 
     /// Charges an applied run's `cost` to its session, with a `Spent` event.
-    fn charge_cost(&self, state: &mut State, session: Option<usize>, cost: u64, at: Seconds) {
+    fn charge_cost(state: &mut State, session: Option<usize>, cost: u64, at: Seconds) {
         let Some(index) = session.filter(|_| cost > 0) else { return };
         state.sessions.add_spend(index, cost, 0, at);
         let id = state.sessions.info(index).id;
@@ -242,7 +242,6 @@ impl Env {
     /// The fences (design §5.3) and the stale-write guard (§5.1) on session `index`'s planned patch, dry-run and apply
     /// alike. A refused apply is a `Clash` for the Theatre's review items; a refused dry run is how the agent finds out.
     fn check_claims(
-        &self,
         state: &mut State,
         index: usize,
         req: &Request,
@@ -514,14 +513,14 @@ fn needs_person(error: &OpError) -> Option<String> {
 }
 
 /// The stale-write guard (design §5.1): the newest change, by an actor other than `actor`, after version `base` at,
-/// above or below a path `patch` changes. Returns the refusal, the path and who changed it.
+/// above or below a path `planned` changes. Returns the refusal, the path and who changed it.
 fn stale(
     state: &State,
-    patch: &omuzaki_doc_api::Patch,
+    planned: &omuzaki_doc_api::Patch,
     actor: &Actor,
     base: omuzaki_doc_api::DocVersion,
 ) -> Option<(OpError, omuzaki_doc_api::DocPath, Actor)> {
-    let newest = patch
+    let newest = planned
         .changes
         .iter()
         .filter_map(|change| state.changes.newest(&change.path, Some(actor)))

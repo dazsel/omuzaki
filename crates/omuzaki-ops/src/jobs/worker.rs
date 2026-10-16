@@ -228,7 +228,7 @@ impl JobCalls for Calls<'_> {
             match result {
                 // A paused session's inner call waits, with the transaction open (decisions 3 to 7).
                 Err(error) if matches!(error.detail.as_deref(), Some(ErrorDetail::Paused { .. })) => {
-                    self.mgr.wait_tick()
+                    self.mgr.wait_tick();
                 }
                 other => return other,
             }

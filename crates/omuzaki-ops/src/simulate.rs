@@ -37,7 +37,7 @@ impl Trial {
         if minimal.first().is_some_and(|first| first.segments().is_empty()) {
             return Self { root: doc.get(&DocPath::root()).cloned().unwrap_or(Value::Null) };
         }
-        let mut root = Value::Object(Default::default());
+        let mut root = Value::Object(serde_json::Map::new());
         for parent in minimal {
             if let Some(value) = doc.get(&parent) {
                 place(&mut root, parent.segments(), value.clone());
@@ -65,13 +65,13 @@ fn place(root: &mut Value, segments: &[String], value: Value) {
     let mut at = root;
     for segment in above {
         if !at.is_object() {
-            *at = Value::Object(Default::default());
+            *at = Value::Object(serde_json::Map::new());
         }
         let Value::Object(map) = at else { return };
-        at = map.entry(segment.clone()).or_insert_with(|| Value::Object(Default::default()));
+        at = map.entry(segment.clone()).or_insert_with(|| Value::Object(serde_json::Map::new()));
     }
     if !at.is_object() {
-        *at = Value::Object(Default::default());
+        *at = Value::Object(serde_json::Map::new());
     }
     if let Value::Object(map) = at {
         map.insert(last.clone(), value);

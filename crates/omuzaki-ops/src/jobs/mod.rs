@@ -203,7 +203,7 @@ impl Manager {
             let owner = state.sessions.session_ref(&req.actor);
             let (session, on_behalf_of) = owner.map_or((None, None), |(id, person)| (Some(id), Some(person)));
             if let Some(session) = session {
-                self.session_caps(&inner, session)?;
+                Self::session_caps(&inner, session)?;
                 let held = inner
                     .jobs
                     .values()
@@ -221,30 +221,7 @@ impl Manager {
                 }
             }
             let id = JobId(inner.next_id + 1);
-            match inner.lanes.admit(lane, id) {
-                Ok(()) => {}
-                Err(Refusal::QueueFull) => {
-                    return Err(limited(
-                        "256 jobs are already queued",
-                        "wait for a job to start, then retry",
-                        "queued_jobs=256",
-                    ));
-                }
-                Err(Refusal::LaneExhausted) => {
-                    return Err(unavailable(
-                        "the job lane has no thread to spare: cancelled jobs are still running",
-                        "retry once a cancelled job has returned",
-                    ));
-                }
-            }
-            if !inner.ledger.reserve(reserved) {
-                inner.lanes.unqueue(lane, id);
-                return Err(limited(
-                    "the job's estimated cost does not fit the money left",
-                    "wait for running jobs to settle, or run a cheaper job",
-                    "job_budget",
-                ));
-            }
+            Self::admit(&mut inner, lane, id, reserved)?;
             inner.next_id += 1;
             let now = self.now();
             let label = if driving { meta.summary.to_owned() } else { meta.name.to_owned() };
@@ -314,8 +291,38 @@ impl Manager {
         started.ok_or_else(|| OpError::internal("a started job vanished"))
     }
 
+    /// Takes a place for job `id` in `lane` and reserves its estimated money (`reserved` micro-dollars) from the
+    /// executor's job ledger, or refuses it with nothing taken.
+    fn admit(inner: &mut Inner, lane: Lane, id: JobId, reserved: u64) -> Result<(), OpError> {
+        match inner.lanes.admit(lane, id) {
+            Ok(()) => {}
+            Err(Refusal::QueueFull) => {
+                return Err(limited(
+                    "256 jobs are already queued",
+                    "wait for a job to start, then retry",
+                    "queued_jobs=256",
+                ));
+            }
+            Err(Refusal::LaneExhausted) => {
+                return Err(unavailable(
+                    "the job lane has no thread to spare: cancelled jobs are still running",
+                    "retry once a cancelled job has returned",
+                ));
+            }
+        }
+        if !inner.ledger.reserve(reserved) {
+            inner.lanes.unqueue(lane, id);
+            return Err(limited(
+                "the job's estimated cost does not fit the money left",
+                "wait for running jobs to settle, or run a cheaper job",
+                "job_budget",
+            ));
+        }
+        Ok(())
+    }
+
     /// Refuses a job of `session` past the session's caps: 4 running at once, 16 waiting (ADR 0036 decision 6).
-    fn session_caps(&self, inner: &Inner, session: SessionId) -> Result<(), OpError> {
+    fn session_caps(inner: &Inner, session: SessionId) -> Result<(), OpError> {
         let mine = || inner.jobs.values().filter(|j| j.info.session == Some(session));
         let running = mine().filter(|j| matches!(j.phase, Phase::Working | Phase::Finishing)).count();
         let queued = mine().filter(|j| j.phase == Phase::Queued).count();

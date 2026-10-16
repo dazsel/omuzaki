@@ -446,6 +446,7 @@ impl Executor {
 }
 
 /// What deciding an approval came to under the lock.
+#[allow(clippy::large_enum_variant)] // one per decision, matched at once: boxing would only add an allocation
 enum Decided {
     /// Resolved: the resolution is final and announced.
     Done(Resolution),
@@ -454,6 +455,7 @@ enum Decided {
 }
 
 /// What running an approved request came to.
+#[allow(clippy::large_enum_variant)] // as `Decided`
 enum Approved {
     Ran(Resolved),
     Job { op: Arc<dyn DynOp>, request: Request, allow: Allowance },

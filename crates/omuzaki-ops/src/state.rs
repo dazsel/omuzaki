@@ -211,22 +211,19 @@ impl State {
         self.changes.record(patch, &record.actor, version);
         let record = self.log_record(record, tx.is_none(), driver.is_some());
 
-        match tx.and_then(|id| self.open.get_mut(&id)) {
-            Some(open) => {
-                let (changes, effects) = (open.draft.patch.changes.len(), open.draft.effects.len());
-                open.draft.absorb(scope, undo, patch, effect.as_ref());
-                if let Some(job) = driver {
-                    let changes = changes..open.draft.patch.changes.len();
-                    let effects = effects..open.draft.effects.len();
-                    open.driven.push(Driven { job, seq: record.seq, changes, effects });
-                    open.held.push(Event::op_applied(record.clone()));
-                }
+        if let Some(open) = tx.and_then(|id| self.open.get_mut(&id)) {
+            let (changes, effects) = (open.draft.patch.changes.len(), open.draft.effects.len());
+            open.draft.absorb(scope, undo, patch, effect.as_ref());
+            if let Some(job) = driver {
+                let changes = changes..open.draft.patch.changes.len();
+                let effects = effects..open.draft.effects.len();
+                open.driven.push(Driven { job, seq: record.seq, changes, effects });
+                open.held.push(Event::op_applied(record.clone()));
             }
-            None => {
-                let mut draft = Draft::default();
-                draft.absorb(scope, undo, patch, effect.as_ref());
-                self.finish(&record.actor, tx_id, summary.to_owned(), draft);
-            }
+        } else {
+            let mut draft = Draft::default();
+            draft.absorb(scope, undo, patch, effect.as_ref());
+            self.finish(&record.actor, tx_id, summary.to_owned(), draft);
         }
         Ok(record)
     }

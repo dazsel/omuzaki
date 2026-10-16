@@ -79,12 +79,11 @@ impl Index {
     }
 
     fn intern(&mut self, actor: &Actor) -> u32 {
-        let index = match self.actors.iter().position(|a| a == actor) {
-            Some(index) => index,
-            None => {
-                self.actors.push(actor.clone());
-                self.actors.len() - 1
-            }
+        let index = if let Some(index) = self.actors.iter().position(|a| a == actor) {
+            index
+        } else {
+            self.actors.push(actor.clone());
+            self.actors.len() - 1
         };
         // A u32 holds more actors than one executor will ever see; past it, the last one is reused.
         u32::try_from(index).unwrap_or(u32::MAX)
