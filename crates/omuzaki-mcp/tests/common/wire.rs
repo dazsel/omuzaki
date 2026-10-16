@@ -69,9 +69,7 @@ impl Wire {
         let mut line = String::new();
         let read = tokio::time::timeout(WAIT, self.reader.read_line(&mut line)).await.expect("a message in time");
         assert!(read.expect("readable") > 0, "the server closed the connection");
-        let message: Value = serde_json::from_str(&line).expect("JSON-RPC");
-        self.seen.push((Direction::ToClient, message.clone()));
-        message
+        serde_json::from_str(&line).expect("JSON-RPC")
     }
 
     /// Sends a request and returns its reply (`result` or `error` member's object, whole message). Notifications that
@@ -85,6 +83,9 @@ impl Wire {
             if message.get("id") == Some(&json!(id))
                 && (message.get("result").is_some() || message.get("error").is_some())
             {
+                // A push that raced the reply is shown when the test asks for it (`next_push`), never before the reply,
+                // so a transcript does not depend on which of the two the scheduler delivered first.
+                self.seen.push((Direction::ToClient, message.clone()));
                 return message;
             }
             self.pushed.push(message);
@@ -115,10 +116,9 @@ impl Wire {
 
     /// The next notification the server pushes (one already received first).
     pub async fn next_push(&mut self) -> Value {
-        if !self.pushed.is_empty() {
-            return self.pushed.remove(0);
-        }
-        self.receive().await
+        let message = if self.pushed.is_empty() { self.receive().await } else { self.pushed.remove(0) };
+        self.seen.push((Direction::ToClient, message.clone()));
+        message
     }
 
     /// The transcript as Markdown: one fenced JSON block per message, `-->` to the server and `<--` from it.
@@ -172,6 +172,10 @@ pub fn check_transcript(name: &str, text: &str) {
         return;
     }
     let committed = std::fs::read_to_string(&path).unwrap_or_default();
+    if committed.replace("\r\n", "\n") != text {
+        // Kept for a diff against the committed one.
+        let _ = std::fs::write(std::env::temp_dir().join(format!("{name}.actual.md")), text);
+    }
     assert!(
         committed.replace("\r\n", "\n") == text,
         "the transcript {name} changed; rerun with UPDATE_TRANSCRIPTS=1 and review the diff ({})",

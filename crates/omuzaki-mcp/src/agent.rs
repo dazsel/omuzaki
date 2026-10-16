@@ -208,7 +208,8 @@ pub(crate) fn limit_wait(error: &OpError, budget: Duration) -> Option<Duration> 
     }
     let Some(ErrorDetail::RetryAfter { seconds, .. }) = error.detail.as_deref() else { return None };
     let wait = Duration::try_from_secs_f32(seconds.max(0.0)).ok()?;
-    (wait <= budget).then_some(wait)
+    // Never zero: a limit that says "now" must not make the retry loop spin.
+    (wait <= budget).then_some(wait.max(Duration::from_millis(10)))
 }
 
 /// Waits up to `hold` for the person to resume the session of `link`, answering whether it was resumed. A session that ended

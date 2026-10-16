@@ -81,6 +81,21 @@ pub struct HttpOptions {
     /// the connection is closed and the closure is logged. Only a blocked write counts, so a quiet event stream is
     /// never cut off. Defaults to 30 seconds. Must not be zero, and at most [`HttpOptions::MAX_TIMEOUT`].
     pub write_timeout: Duration,
+    /// Told when the registry revokes the credential of one of a token's sessions (a person revoked the agent in
+    /// Omuzaki's window): the token has already been removed, and this is its tombstone for the host to store, so the
+    /// stored record can't re-admit the token at the next start (design `agent-sessions.md` §6). Without it the
+    /// revocation lasts only until the port restarts.
+    pub on_revoked: Option<RevokedHook>,
+}
+
+/// The host's callback for a token the registry revoked (see [`HttpOptions::on_revoked`]).
+#[derive(Clone)]
+pub struct RevokedHook(Arc<dyn Fn(TokenRecord) + Send + Sync>);
+
+impl std::fmt::Debug for RevokedHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RevokedHook")
+    }
 }
 
 impl Default for HttpOptions {
@@ -96,6 +111,7 @@ impl Default for HttpOptions {
             max_body_bytes: 4 * 1024 * 1024,
             body_timeout: Duration::from_secs(30),
             write_timeout: Duration::from_secs(30),
+            on_revoked: None,
         }
     }
 }
@@ -174,6 +190,13 @@ impl HttpOptions {
     #[must_use]
     pub fn with_write_timeout(mut self, write_timeout: Duration) -> Self {
         self.write_timeout = write_timeout;
+        self
+    }
+
+    /// Calls `hook` with the tombstone of each token the registry revokes with its credential, so the host can store it.
+    #[must_use]
+    pub fn on_revoked(mut self, hook: impl Fn(TokenRecord) + Send + Sync + 'static) -> Self {
+        self.on_revoked = Some(RevokedHook(Arc::new(hook)));
         self
     }
 
@@ -257,7 +280,7 @@ impl McpServer {
             Arc::new(Registry::new(self.clone(), options.allowed_origins, limits, cancel.clone(), revocations));
         // A session whose credential the registry revoked asks for the token to be revoked: the token stops working and
         // its other sessions end. Weak, so the port can still be dropped; the task ends with the port.
-        tokio::spawn(revoke_on_request(Arc::downgrade(&registry), revoked, cancel.clone()));
+        tokio::spawn(revoke_on_request(Arc::downgrade(&registry), revoked, cancel.clone(), options.on_revoked.clone()));
         let gate = Arc::new(Gate::new(Arc::clone(&registry), options.path.clone()));
         let connections = Arc::new(Semaphore::new(options.max_connections.clamp(1, Semaphore::MAX_PERMITS)));
         let acceptor = Acceptor {
@@ -388,6 +411,7 @@ async fn revoke_on_request(
     registry: Weak<Registry>,
     mut requests: mpsc::UnboundedReceiver<TokenId>,
     cancel: CancellationToken,
+    hook: Option<RevokedHook>,
 ) {
     loop {
         let id = tokio::select! {
@@ -398,8 +422,13 @@ async fn revoke_on_request(
             },
         };
         let Some(registry) = registry.upgrade() else { return };
-        if registry.revoke(id).await {
+        if let Some(tombstone) = registry.revoke_record(id).await {
             tracing::info!(token = %id, "access token revoked because its session's credential was revoked");
+            if let Some(RevokedHook(hook)) = &hook {
+                hook(tombstone);
+            } else {
+                tracing::warn!(token = %id, "no host hook: the revocation lasts only until the port restarts");
+            }
         }
     }
 }

@@ -167,3 +167,30 @@ async fn changing_a_tokens_grants_ends_its_sessions_without_revoking_the_credent
     assert_eq!(rig.studio.ends()[0].1, EndReason::Revoked { by: Studio::person(), credential: false });
     assert_eq!(rig.raw.initialize(&token).await.status(), StatusCode::OK);
 }
+
+#[tokio::test]
+async fn a_credential_the_registry_revokes_reaches_the_hosts_store_and_stays_revoked_after_a_restart() {
+    use std::sync::Mutex;
+    let stored: Arc<Mutex<Vec<omuzaki_mcp::TokenRecord>>> = Arc::default();
+    let sink = Arc::clone(&stored);
+    let rig = rig(move |o| o.on_revoked(move |record| sink.lock().unwrap().push(record))).await;
+    let token = rig.server.issue_for("Codex", Grants::agent_default(), sam()).unwrap();
+    let live = token.record();
+    rig.open(&token).await;
+    let session = Sessions::sessions(rig.studio.as_ref())[0].id;
+    rig.studio.registry_ends(session, &EndReason::Revoked { by: Studio::person(), credential: true });
+    for _ in 0..300 {
+        if !stored.lock().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let tombstone = stored.lock().unwrap().first().cloned().expect("the host was told");
+    assert!(tombstone.revoked && tombstone.label == "Codex", "{tombstone:?}");
+
+    // The host stores the tombstone in place of the live record. After a restart, neither admits the token again.
+    let restarted = self::rig(|o| o).await;
+    assert!(matches!(restarted.server.admit(tombstone), Err(omuzaki_mcp::ServerError::TokenRevoked(_))));
+    assert_eq!(restarted.raw.initialize(&token).await.status(), StatusCode::UNAUTHORIZED);
+    let _ = live;
+}

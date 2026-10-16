@@ -42,9 +42,13 @@ rustls.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
+tempfile.workspace = true
 omuzaki-history-mock = { path = "../omuzaki-history-mock" }
 omuzaki-ops-mock = { path = "../omuzaki-ops-mock" }
 omuzaki-store-mock = { path = "../omuzaki-store-mock" }
+
+[build-dependencies]
+omuzaki-embed = { path = "../omuzaki-embed" }
 
 [lints]
 workspace = true

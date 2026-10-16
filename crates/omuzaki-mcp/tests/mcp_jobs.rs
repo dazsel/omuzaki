@@ -176,6 +176,20 @@ async fn another_sessions_cancel_gets_the_executors_refusal_unchanged() {
 }
 
 #[tokio::test]
+async fn another_sessions_tasks_get_is_not_found_and_leaks_nothing() {
+    let fake = Fake::new();
+    let mcp = server(&fake);
+    let owner = Client::connect(&mcp, true).await;
+    let other = Client::connect(&mcp, true).await;
+    let id = task_id(owner.export().await);
+    fake.set_state(1, done());
+    let refused = other.service.get_task(GetTaskParams::new(&id)).await.expect_err("another session's task is hidden");
+    assert!(refused.to_string().contains("no task"), "{refused}");
+    // The owner still reads it.
+    assert_eq!(owner.task(&id).await.status(), TaskStatus::Completed);
+}
+
+#[tokio::test]
 async fn job_events_are_not_reported_as_document_changes() {
     let fake = Fake::new();
     let mcp = server(&fake);

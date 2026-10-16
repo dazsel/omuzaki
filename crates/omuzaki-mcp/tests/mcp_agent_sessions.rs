@@ -532,3 +532,53 @@ async fn a_change_committed_before_the_call_is_in_its_heads_up_however_slow_the_
     assert!(!text(&again).contains("Heads-up"), "{}", text(&again));
     agent.disconnect().await;
 }
+
+#[tokio::test]
+async fn a_session_connected_before_any_edit_is_still_guarded_against_a_persons_later_edit() {
+    let studio = Studio::new();
+    let agent = Agent::connect(&server(&studio), "claude-code").await;
+    // Nothing has been edited or read since the agent connected; a person then edits the value the agent writes.
+    studio.person_sets_blend(0.9);
+    let refused = agent.blend(0.4).await;
+    assert_eq!(refused.is_error, Some(true), "{}", text(&refused));
+    assert_eq!(data(&refused)["code"], "conflict");
+    assert_eq!(data(&refused)["detail"]["kind"], "changed");
+    // Told of the change, the retry is an informed overwrite.
+    assert_eq!(agent.blend(0.4).await.is_error, Some(false));
+    agent.disconnect().await;
+}
+
+#[tokio::test]
+async fn a_stalled_feed_does_not_hold_a_result_longer_than_the_bound() {
+    let studio = Studio::new();
+    studio.delay_events(Duration::from_secs(8));
+    let agent = Agent::connect(&server(&studio), "claude-code").await;
+    studio.person_sets_blend(0.5);
+    let began = std::time::Instant::now();
+    let result = agent.call("project_ping", json!({})).await;
+    assert_eq!(result.is_error, Some(false));
+    assert!(began.elapsed() < Duration::from_secs(4), "waited {:?}", began.elapsed());
+    assert!(!text(&result).contains("Heads-up"), "the stalled feed's change is reported by a later result");
+}
+
+#[tokio::test]
+async fn a_ping_before_initialize_opens_no_session_and_the_handshake_names_the_client() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let studio = Studio::new();
+    let mcp = server(&studio);
+    let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+    let serving = mcp.clone();
+    tokio::spawn(async move { serving.serve(server_io).await });
+    let (read, mut write) = tokio::io::split(client_io);
+    let mut lines = BufReader::new(read).lines();
+    write.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n").await.unwrap();
+    assert!(lines.next_line().await.unwrap().unwrap().contains("result"));
+    assert!(studio.specs().is_empty(), "no identity yet, so no session: {:?}", studio.specs());
+    let init = json!({"jsonrpc": "2.0", "id": 2, "method": "initialize", "params": {
+        "protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "claude-code", "version": "1"}}});
+    write.write_all(format!("{init}\n").as_bytes()).await.unwrap();
+    assert!(lines.next_line().await.unwrap().unwrap().contains("result"));
+    let specs = studio.specs();
+    assert_eq!(specs.len(), 1);
+    assert_eq!(specs[0].client, "claude-code");
+}

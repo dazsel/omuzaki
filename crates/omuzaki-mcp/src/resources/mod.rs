@@ -93,6 +93,17 @@ impl Providers {
     }
 }
 
+/// The contents a resource returns for a JSON body: pretty text with the MIME type, after the one place that removes
+/// the digits an `f32` widened to `f64` brings (see `floats`). Every provider answers through this.
+///
+/// # Errors
+/// `internal` if the body can't be encoded.
+pub(crate) fn json_contents(uri: &str, body: serde_json::Value) -> Result<Vec<ResourceContents>, OpError> {
+    let text = serde_json::to_string_pretty(&crate::floats::tidied(body))
+        .map_err(|e| OpError::internal(format!("couldn't encode {uri}: {e}")))?;
+    Ok(vec![ResourceContents::text(text, uri).with_mime_type("application/json")])
+}
+
 /// A provider's refusal as the protocol error a client sees: a missing resource is the protocol's own
 /// `resource_not_found`, a missing scope keeps the `denied` code the tools use, anything else is internal.
 pub(crate) fn protocol_error(error: OpError) -> McpError {

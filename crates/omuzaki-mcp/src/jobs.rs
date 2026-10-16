@@ -18,6 +18,7 @@ use rmcp::service::{Peer, RoleServer};
 use serde_json::Value;
 
 use crate::events::EventHub;
+use crate::floats;
 use crate::render;
 
 /// How long a client should wait between `tasks/get` polls, in milliseconds.
@@ -45,10 +46,13 @@ pub(crate) fn job_of(id: &str) -> Result<JobId, McpError> {
 ///
 /// A job that failed is a *completed* task whose result is a tool error, as for any tool call (`failed` is for
 /// protocol errors); a job that was cancelled is a cancelled task.
-pub(crate) fn task_of(info: &JobInfo, tool: &str, verify: Option<&str>) -> DetailedTask {
+///
+/// `created` is when the task was created (SEP-2663), which this server noted when it handed the handle out; the last
+/// update is the time of this reply.
+pub(crate) fn task_of(info: &JobInfo, tool: &str, verify: Option<&str>, created: &str) -> DetailedTask {
     let now = iso8601(SystemTime::now());
-    let base =
-        Task::new(task_id(info.id), TaskStatus::Working, now.clone(), now).with_poll_interval_ms(POLL_INTERVAL_MS);
+    let base = Task::new(task_id(info.id), TaskStatus::Working, created.to_owned(), now)
+        .with_poll_interval_ms(POLL_INTERVAL_MS);
     let (message, payload) = match &info.state {
         JobState::Queued => (Some("waiting for a worker".to_owned()), TaskPayload::Working),
         JobState::Running => (info.stage.clone(), TaskPayload::Working),
@@ -105,6 +109,26 @@ fn iso8601(time: SystemTime) -> String {
     format!("{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z", rest / 3600, rest % 3600 / 60, rest % 60)
 }
 
+/// When each task was created, noted at the moment its handle is handed out. A task this server didn't create (the
+/// process restarted since) reads as created now: the executor's own times are on a monotonic clock, not wall time.
+#[derive(Default)]
+pub(crate) struct TaskTimes(std::sync::Mutex<std::collections::BTreeMap<u64, String>>);
+
+/// How many creation times are kept; the oldest go first.
+const KEPT_TIMES: usize = 1024;
+
+impl TaskTimes {
+    /// The creation time of `job`, noting now as it if this is the first time it is asked for.
+    pub(crate) fn of(&self, job: JobId) -> String {
+        let mut times = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let created = times.entry(job.0).or_insert_with(|| iso8601(SystemTime::now())).clone();
+        while times.len() > KEPT_TIMES {
+            times.pop_first();
+        }
+        created
+    }
+}
+
 /// What a watcher needs to follow one job and talk to its client.
 pub(crate) struct JobWatch {
     pub hub: Arc<EventHub>,
@@ -116,6 +140,8 @@ pub(crate) struct JobWatch {
     pub tool: String,
     /// The "check afterwards" advice the blocking result carries.
     pub verify: Option<String>,
+    /// When the task was created, for every status push.
+    pub created: String,
 }
 
 impl JobWatch {
@@ -123,7 +149,7 @@ impl JobWatch {
     /// fast job sends the newest progress and status, not every step. If events fell out of the hub's window unseen
     /// the last known state stands until the next one arrives; `tasks/get` always reads the executor.
     pub(crate) async fn run(self) {
-        let Self { hub, mut after, peer, token, mut job, tool, verify } = self;
+        let Self { hub, mut after, peer, token, mut job, tool, verify, created } = self;
         let mut arrivals = hub.watch();
         let mut sent = job.fraction;
         while arrivals.changed().await.is_ok() && !peer.is_transport_closed() {
@@ -143,7 +169,7 @@ impl JobWatch {
                 && fraction > sent
             {
                 sent = fraction;
-                let param = ProgressNotificationParam::new(token.clone(), f64::from(fraction))
+                let param = ProgressNotificationParam::new(token.clone(), floats::widened(fraction))
                     .with_total(1.0)
                     .with_message(stage);
                 if peer.notify_progress(param).await.is_err() {
@@ -151,8 +177,12 @@ impl JobWatch {
                 }
             }
             if changed {
-                let status =
-                    Notification::new(TaskStatusNotificationParams::new(task_of(&job, &tool, verify.as_deref())));
+                let status = Notification::new(TaskStatusNotificationParams::new(task_of(
+                    &job,
+                    &tool,
+                    verify.as_deref(),
+                    &created,
+                )));
                 if peer.send_notification(ServerNotification::TaskStatusNotification(status)).await.is_err() {
                     return;
                 }

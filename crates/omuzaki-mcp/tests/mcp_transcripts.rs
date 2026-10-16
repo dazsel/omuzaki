@@ -151,6 +151,8 @@ async fn long_jobs_as_tasks() {
     // A second job is cancelled.
     wire.call("export_vrm", json!({"character": "mira"})).await;
     wire.result("tasks/cancel", json!({"taskId": "job-2"})).await;
+    let cancelled = wire.next_push().await;
+    assert_eq!(cancelled["params"]["status"], "cancelled");
     wire.result("tasks/get", json!({"taskId": "job-2"})).await;
     check_transcript(
         "tasks",

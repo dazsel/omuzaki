@@ -176,7 +176,7 @@ pub enum CancelReason { Requested, Stop, SessionEnded, Timeout, Budget, Shutdown
 pub enum JobState {
     Queued, Running,
     Held,                                      // work done; the session is paused, finish waits
-    Done { tx: TxId, seq: Option<u64> },       // seq: the finish's record, None if it changed nothing
+    Done { tx: TxId, seq: Option<u64>, /* outcome: in memory only, #1983 */ },   // seq: the finish's record, None if it changed nothing
     Failed { error: OpError },
     Cancelled { by: Option<Actor>, reason: CancelReason },
     Interrupted,                               // running at a crash; set by recovery

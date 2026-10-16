@@ -71,8 +71,10 @@ struct LogView<'a> {
 struct Ring {
     /// Sequence number of the last event pushed (0 = none yet).
     last: u64,
-    /// The newest document version any event so far reported.
+    /// The newest document version any event so far reported (or the feed's starting version).
     version: Option<DocVersion>,
+    /// The document's version when the feed started.
+    start_version: Option<DocVersion>,
     /// The newest op-log record any `OpApplied` event so far carried, or the log's end when the feed started.
     log_seq: u64,
     entries: VecDeque<Entry>,
@@ -116,7 +118,21 @@ impl EventHub {
         let Ok(events) = runner.subscribe(grants) else { return Ok(hub) };
         // After the subscription, so a record appended in between is also on its way as an event: the feed starts at
         // the log's end, and only records past it are ones the feed owes us (see `Session::catch_up`).
-        lock(&hub.ring).log_seq = latest_log_seq(runner, grants);
+        let end = latest_log_seq(runner, grants);
+        // The document's version as the feed starts, so a session's first write is guarded against whatever changes after
+        // it connected, before any event has told it a version. An empty log is the document as it was opened.
+        let version = runner
+            .log(end.saturating_sub(1), 1, grants)
+            .ok()
+            .and_then(|records| records.first().map(|r| r.version))
+            .filter(|_| end > 0)
+            .unwrap_or(DocVersion(0));
+        {
+            let mut ring = lock(&hub.ring);
+            ring.log_seq = end;
+            ring.start_version = Some(version);
+            ring.version = Some(version);
+        }
         hub.fed.store(true, Ordering::Release);
         let weak = Arc::downgrade(&hub);
         std::thread::Builder::new()
@@ -168,18 +184,15 @@ impl EventHub {
     }
 
     /// The document version a reader that has been told of every event up to `seen` knows, to send as a write's `base`.
-    /// `None` while no event has reported one (nothing has changed yet, so nothing is stale). A position older than the
+    /// The feed starts at the document's version when it began, so this is `None` only when the runner delivers no events. A position older than the
     /// window can't be mapped; it reads as version 0, which makes the executor refuse a write over anything another
     /// actor has changed, so the agent re-reads (and its position catches up) rather than overwrite what it never saw.
     pub(crate) fn version_at(&self, seen: u64) -> Option<DocVersion> {
         let ring = lock(&self.ring);
-        if seen == 0 && ring.last == 0 {
-            return None;
-        }
         match ring.entries.iter().rev().find(|e| e.n <= seen) {
             Some(entry) => entry.version,
             None if ring.entries.front().is_some_and(|e| e.n > seen + 1) => Some(DocVersion(0)),
-            None => None,
+            None => ring.start_version,
         }
     }
 
@@ -282,7 +295,7 @@ impl Updates {
 ///
 /// Records are numbered from 1 without gaps, so this finds the end by doubling and then halving, asking for one record at
 /// a time: a log of a million records costs forty calls, not a copy.
-fn latest_log_seq(runner: &dyn Runner, grants: &Grants) -> u64 {
+pub(crate) fn latest_log_seq(runner: &dyn Runner, grants: &Grants) -> u64 {
     let exists = |n: u64| runner.log(n - 1, 1, grants).is_ok_and(|records| !records.is_empty());
     if !exists(1) {
         return 0;

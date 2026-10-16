@@ -11,8 +11,8 @@ use omuzaki_ops_api::{Grants, OpError, Runner};
 use rmcp::model::{Resource, ResourceContents, ResourceTemplate};
 use serde_json::{Value, json};
 
-use super::ResourceProvider;
 use super::renders::render_uri;
+use super::{ResourceProvider, json_contents};
 
 /// Everything this provider serves starts with this.
 pub(crate) const LIBRARY_PREFIX: &str = "omuzaki://library/";
@@ -77,9 +77,7 @@ impl ResourceProvider for LibraryProvider {
         let id = ItemId::new(item).map_err(|e| OpError::not_found(e.to_string()))?;
         let version = version.map(Version::parse).transpose().map_err(|e| OpError::not_found(e.to_string()))?;
         let detail = self.library.describe(&id, version.as_ref()).map_err(|e| library_error(&e))?;
-        let text = serde_json::to_string_pretty(&item_json(&detail)?)
-            .map_err(|e| OpError::internal(format!("couldn't encode {uri}: {e}")))?;
-        Ok(vec![ResourceContents::text(text, uri).with_mime_type(JSON)])
+        json_contents(uri, item_json(&detail)?)
     }
 }
 

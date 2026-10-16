@@ -112,6 +112,15 @@ pub fn open_executor_with(cli: &Cli, connections: &Connections) -> Result<Arc<Ex
     }))
 }
 
+/// The project folder as agents are granted it: its real path, relative names and symlinks resolved (ADR 0013), because
+/// a file root that is relative or reaches the folder through a link covers nothing.
+///
+/// # Errors
+/// As [`open_runner`] for a folder that can't be opened.
+pub fn project_root(dir: &Path) -> Result<String, OpError> {
+    Ok(open_project_dir(dir)?.as_path().display().to_string())
+}
+
 fn open_project_dir(dir: &Path) -> Result<ProjectDir, OpError> {
     ProjectDir::open(dir).map_err(|e| match e {
         // A missing project stays `not_found` (exit 4), as it was before the folder was vetted here.
@@ -132,6 +141,27 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    /// The roots `omuzaki mcp` grants are real paths: a relative `--project`, or one reached through a link, would
+    /// otherwise cover nothing (ADR 0013 rule 5).
+    #[test]
+    #[allow(clippy::disallowed_methods, reason = "a test sets up folders on disk; the fence is for ops")]
+    fn the_granted_project_root_is_the_real_path_of_a_relative_or_linked_folder() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let real = std::fs::canonicalize(dir.path()).expect("real path");
+        let project = real.join("project");
+        std::fs::create_dir(&project).expect("create");
+        assert_eq!(project_root(&project).unwrap(), project.display().to_string());
+        assert_eq!(project_root(&real.join("project/../project")).unwrap(), project.display().to_string());
+        #[cfg(unix)]
+        {
+            let link = real.join("link");
+            std::os::unix::fs::symlink(&project, &link).expect("symlink");
+            assert_eq!(project_root(&link).unwrap(), project.display().to_string());
+        }
+        let relative = project_root(Path::new(".")).unwrap();
+        assert!(Path::new(&relative).is_absolute(), "{relative}");
+    }
 
     /// The real executor answers `agent.connection` from the handle `open_runner_with` wires, which is the one the MCP
     /// server counts sessions in. (`ops` needs no project.)

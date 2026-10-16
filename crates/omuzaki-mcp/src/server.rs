@@ -119,8 +119,10 @@ impl McpOptions {
     }
 
     /// Opens a session in `sessions` for each connection's agent, working for `person`, and uses the actor the registry
-    /// builds. An executor refuses agents without a session, so the host that runs one wires this; the app passes the
-    /// executor itself, which is both the runner and the registry. Without it the server names the agent itself, which
+    /// builds. An executor refuses agents without a session, so the host that runs one wires this (the app passes the
+    /// executor, which is both the runner and the registry; until #2106 it implements only part of `Sessions`: a
+    /// disconnected session stays active with its jobs running, and approvals and the stale-write guard are absent).
+    /// Without it the server names the agent itself, which
     /// only a runner that does not check sessions accepts.
     ///
     /// What it gives the connection:
@@ -184,6 +186,8 @@ pub(crate) struct Shared {
     pub sessions: Option<SessionHost>,
     /// The file roots agents get besides their scopes (see [`McpOptions::with_roots`]).
     pub roots: Vec<String>,
+    /// When each task was created.
+    pub task_times: crate::jobs::TaskTimes,
     next_session: AtomicU64,
 }
 
@@ -205,7 +209,7 @@ impl View {
         shared: &Shared,
         credential: Option<Arc<Credential>>,
     ) -> Result<Self, ServerError> {
-        let grants = shared.roots.iter().fold(grants, |grants, root| grants.with_fs_root(root.clone()));
+        let grants = with_roots(grants, &shared.roots);
         let catalog = Catalog::build(ops, &grants, &shared.guidance, shared.sessions.is_some())?;
         let instructions = instructions(&grants, &shared.guidance, shared.sessions.is_some());
         Ok(Self { grants, catalog, instructions, credential })
@@ -256,6 +260,7 @@ impl McpServer {
             journal: options.journal.map(|journal| journal.0),
             sessions: options.sessions,
             roots: options.roots,
+            task_times: crate::jobs::TaskTimes::default(),
             next_session: AtomicU64::new(1),
         };
         let view = View::build(&ops, options.grants, &shared, None)?;
@@ -401,4 +406,15 @@ where
         }
     };
     quit.map(drop).map_err(|e| ServerError::Session(e.to_string()))
+}
+
+/// `grants` plus file access under each of `roots` (the project folder and the folders shared with agents), skipping
+/// any it already has. Used for every session's ceiling, the in-app ones included.
+pub(crate) fn with_roots(grants: Grants, roots: &[String]) -> Grants {
+    roots.iter().fold(
+        grants,
+        |grants, root| {
+            if grants.fs_roots().contains(root) { grants } else { grants.with_fs_root(root.clone()) }
+        },
+    )
 }

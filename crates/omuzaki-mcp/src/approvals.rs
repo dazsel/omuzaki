@@ -170,7 +170,7 @@ fn prefixed(mut result: CallToolResult, line: &str) -> CallToolResult {
     result
 }
 
-fn withdrawn_text(reason: &omuzaki_ops_api::EndReason) -> &'static str {
+pub(crate) fn withdrawn_text(reason: &omuzaki_ops_api::EndReason) -> &'static str {
     use omuzaki_ops_api::EndReason;
     match reason {
         EndReason::Disconnected => "the connection ended",

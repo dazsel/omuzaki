@@ -46,7 +46,7 @@
 //!   seconds still succeeds, and its text opens with `Warning: applied, not yet saved: <status>`, before any heads-up.
 //!   `structuredContent.warning` carries the same text. See [`McpOptions::with_journal`].
 //!
-//! **Sessions.** With a registry ([`McpOptions::with_sessions`], the executor itself in the app) every connection is a
+//! **Sessions.** With a registry ([`McpOptions::with_sessions`]) every connection is a
 //! registered session (design `agent-sessions.md`): it is opened at the handshake with the client's name, the
 //! transport (stdio, or the HTTP token's label), the person it works for (the host's, or the one who issued the token)
 //! and the server's grants as its ceiling, and the actor is `Actor::Agent { id: "<client>#<n>", .. }` **as the registry
@@ -56,6 +56,11 @@
 //! abandoned with it. When the registry ends a session first (a person revoked it, the project closed) the connection
 //! closes, and when it revoked the credential too, the token stops working and its other sessions end. Without a
 //! registry the server names the agent itself and rolls the transaction back on drop.
+//!
+//! **Until #2106.** The executor in the app does not yet implement `Sessions::end`, approvals or the stale-write guard.
+//! Against it, a disconnected session stays active in the registry with its jobs running (this crate rolls the open
+//! transaction back itself), `approval_wait` finds no approval, and `base` is sent but nothing checks it. The behaviour
+//! above is what this crate does and what its tests pin against a stand-in registry; it reaches the app when #2106 lands.
 //!
 //! Grants come from [`McpOptions`] (default `Grants::agent_default()`), or from the access token on the HTTP port, plus
 //! the file roots the host lists with [`McpOptions::with_roots`] (the project folder and the folders the person shared
@@ -217,6 +222,7 @@ mod jobs;
 mod limits;
 mod names;
 mod prompts;
+mod recipes;
 mod remote;
 mod render;
 mod resources;
@@ -229,7 +235,7 @@ mod suggest;
 pub use access::{AccessToken, RECORD_VERSION, TokenId, TokenInfo, TokenRecord};
 pub use connection::Connections;
 pub use error::ServerError;
-pub use http::{HttpOptions, HttpServer};
+pub use http::{HttpOptions, HttpServer, RevokedHook};
 pub use in_app::{InAppEnd, InAppLink, InAppSpec};
 pub use prompts::{PromptArg, PromptDef};
 pub use resources::{

@@ -9,7 +9,7 @@ use omuzaki_ops_api::OpError;
 use crate::cli::{Cli, Command};
 use crate::commands::execute;
 use crate::output::{Reply, finish_reply};
-use crate::session::{Session, open_executor_with};
+use crate::session::{Session, open_executor_with, project_root};
 use crate::store;
 
 /// Parses the command line, runs the command against the project and exits with the code for its result.
@@ -34,6 +34,6 @@ fn run_with_runner(cli: &Cli) -> Result<Reply, OpError> {
     let executor = open_executor_with(cli, &session.connections)?;
     session.sessions = Some(executor.clone());
     session.jobs = Some(executor.clone());
-    session.project = cli.project.as_deref().map(|dir| dir.display().to_string());
+    session.project = cli.project.as_deref().map(project_root).transpose()?;
     execute(cli, executor, &session, &mut io::stdin()).map(Reply::ok)
 }

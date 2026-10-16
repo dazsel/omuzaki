@@ -316,18 +316,6 @@ Each block is one JSON-RPC message as it crossed an in-memory stream.
 }
 ```
 
-`-->`
-```json
-{
-  "id": 7,
-  "jsonrpc": "2.0",
-  "method": "tasks/get",
-  "params": {
-    "taskId": "job-2"
-  }
-}
-```
-
 `<--`
 ```json
 {
@@ -340,6 +328,18 @@ Each block is one JSON-RPC message as it crossed an in-memory stream.
     "status": "cancelled",
     "taskId": "job-2",
     "ttlMs": null
+  }
+}
+```
+
+`-->`
+```json
+{
+  "id": 7,
+  "jsonrpc": "2.0",
+  "method": "tasks/get",
+  "params": {
+    "taskId": "job-2"
   }
 }
 ```

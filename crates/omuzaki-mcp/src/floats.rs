@@ -18,6 +18,12 @@ pub(crate) fn tidied(mut value: Value) -> Value {
     value
 }
 
+/// `x` widened to `f64` the way an agent should read it: the digits the `f32` itself needs, not its binary expansion
+/// (0.6, not 0.6000000238418579). For the `f32` values this crate puts in a message of its own (progress, retry seconds).
+pub(crate) fn widened(x: f32) -> f64 {
+    format!("{x}").parse().unwrap_or_else(|_| f64::from(x))
+}
+
 /// As [`tidied`], in place.
 pub(crate) fn tidy(value: &mut Value) {
     match value {
@@ -65,6 +71,13 @@ mod tests {
         assert_eq!(tidied(widened).to_string(), "0.6");
         assert_eq!(tidied(json!(0.1_f32)).to_string(), "0.1");
         assert_eq!(tidied(json!(-12.345_f32)).to_string(), "-12.345");
+    }
+
+    #[test]
+    fn an_f32_in_a_message_of_ours_is_widened_to_its_short_decimal() {
+        assert_eq!(widened(0.6).to_string(), "0.6");
+        assert_eq!(widened(0.25).to_string(), "0.25");
+        assert_eq!(widened(f32::NAN).to_string(), "NaN");
     }
 
     #[test]

@@ -200,8 +200,13 @@ impl Session {
 
     /// Opens this connection's session in the registry now, so a client that has only connected is already in the
     /// agent panel. A refusal stays in the cached result, and the first call that needs the actor reports it.
+    ///
+    /// Only once the client has said who it is: a `ping` may come first (the spec allows it) and would otherwise open
+    /// the session as `mcp-client` and pin that name for good. A call that needs the actor before then still opens it.
     fn open_session(&self, context: &RequestContext<RoleServer>) {
-        let _ = self.link(context);
+        if context.client_info().is_some() {
+            let _ = self.link(context);
+        }
     }
 
     fn actor(&self, context: &RequestContext<RoleServer>) -> Result<&Actor, &OpError> {
@@ -387,14 +392,20 @@ impl Session {
         }
         let deadline = Instant::now() + FEED_LAG;
         let mut arrivals = self.shared.hub.watch();
-        loop {
-            let delivered = self.shared.hub.log_seq();
-            let grants = grants.clone();
-            // A log that can't be read, or is not behind the feed, has nothing to wait for.
-            let behind = self.blocking(move |runner| runner.log(delivered, 1, &grants)).await;
-            if !matches!(behind, Ok(Ok(records)) if !records.is_empty()) {
-                return;
-            }
+        // Is the feed behind the log at all? Usually not, and that is the one cheap question every result asks.
+        let grants_now = grants.clone();
+        let delivered = self.shared.hub.log_seq();
+        let behind = self.blocking(move |runner| runner.log(delivered, 1, &grants_now)).await;
+        if !matches!(behind, Ok(Ok(records)) if !records.is_empty()) {
+            return;
+        }
+        // The log's end now: the feed owes us exactly that much, however much more is committed while we wait.
+        let grants = grants.clone();
+        let Ok(target) = self.blocking(move |runner| crate::events::latest_log_seq(runner, &grants)).await else {
+            return;
+        };
+        // The deadline is checked on every pass: a feed that keeps delivering must not keep the result waiting.
+        while self.shared.hub.log_seq() < target && Instant::now() < deadline {
             if tokio::time::timeout_at(deadline, arrivals.changed()).await.is_err() {
                 return;
             }
@@ -619,9 +630,10 @@ impl Session {
         let job = jobs::off_thread(move || jobs.start(request)).await??;
         let tool = entry.tool.name.to_string();
         let verify = self.shared.guidance.verify().map(str::to_owned);
-        let task = jobs::task_of(&job, &tool, verify.as_deref());
+        let created = self.shared.task_times.of(job.id);
+        let task = jobs::task_of(&job, &tool, verify.as_deref(), &created);
         let token = context.meta.get_progress_token();
-        tokio::spawn(JobWatch { hub, after, peer: context.peer.clone(), token, job, tool, verify }.run());
+        tokio::spawn(JobWatch { hub, after, peer: context.peer.clone(), token, job, tool, verify, created }.run());
         Ok(Reply { task: Some(CreateTaskResult::new(task.task)), ..Reply::from(CallToolResult::success(Vec::new())) })
     }
 
@@ -766,6 +778,9 @@ impl Session {
         let mut arrivals = hub.watch();
         let deadline = Instant::now() + Duration::from_secs(seconds);
         loop {
+            if Instant::now() >= deadline {
+                return Ok(Self::still_pending(id, registry.as_ref()));
+            }
             if let Some(resolution) = approvals::resolution_of(hub, id) {
                 let own = {
                     let mut state = lock(&self.state);
@@ -1221,9 +1236,16 @@ impl ServerHandler for Session {
         let (jobs, id) = (self.jobs.clone(), jobs::job_of(&request.task_id)?);
         let jobs = jobs.ok_or_else(McpError::method_not_found::<rmcp::model::GetTaskMethod>)?;
         let info = jobs::read_job(jobs, id, self.session_grants(&context)?).await.map_err(protocol_error)?;
+        // A task belongs to the session that started it, as `tasks/cancel` already requires: another session (another
+        // token's included) is told there is no such task, not what that job is or returned.
+        let mine = self.actor(&context).is_ok_and(|actor| *actor == info.actor);
+        if !mine {
+            return Err(protocol_error(OpError::not_found(format!("no task `{}`", jobs::task_id(id)))));
+        }
         let tool = names::tool_name(&info.op);
         let verify = self.shared.guidance.verify();
-        Ok(GetTaskResult::new(jobs::task_of(&info, &tool, verify)))
+        let created = self.shared.task_times.of(info.id);
+        Ok(GetTaskResult::new(jobs::task_of(&info, &tool, verify, &created)))
     }
 
     /// `tasks/cancel`: cancels the job. The executor decides who may, so a session can cancel only its own jobs; its

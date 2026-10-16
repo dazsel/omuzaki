@@ -10,7 +10,7 @@ use omuzaki_ops_api::{Grants, OpError, Runner};
 use rmcp::model::{Resource, ResourceContents, ResourceTemplate};
 use serde_json::{Map, Value, json};
 
-use super::ResourceProvider;
+use super::{ResourceProvider, json_contents};
 
 /// The one URI this provider serves.
 pub(crate) const METRICS_URI: &str = "omuzaki://metrics/live";
@@ -75,8 +75,6 @@ impl ResourceProvider for MetricsProvider {
             "note": "A snapshot taken when you read it. The names and units are the studio's; nothing is pushed for \
                      this resource.",
         });
-        let text = serde_json::to_string_pretty(&body)
-            .map_err(|e| OpError::internal(format!("couldn't encode {uri}: {e}")))?;
-        Ok(vec![ResourceContents::text(text, uri).with_mime_type(JSON)])
+        json_contents(uri, body)
     }
 }

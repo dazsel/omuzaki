@@ -14,7 +14,7 @@ use tokio::sync::watch;
 
 use crate::agent::Link;
 use crate::error::ServerError;
-use crate::server::{McpServer, serve_session};
+use crate::server::{McpServer, serve_session, with_roots};
 use crate::session::Session;
 
 /// How much the two ends of the stream may buffer before a writer waits.
@@ -160,7 +160,10 @@ impl McpServer {
         let host = self.shared().sessions.clone().ok_or(ServerError::NoRegistry)?;
         // Before the open, so an end that follows at once is not missed.
         let after = self.shared().hub.latest();
-        let info = host.sessions.open(spec.session_spec()).map_err(ServerError::SessionRefused)?;
+        // The roots are part of the ceiling the registry narrows, or its effective grants would drop them.
+        let mut session_spec = spec.session_spec();
+        session_spec.grants = with_roots(session_spec.grants, &self.shared().roots);
+        let info = host.sessions.open(session_spec).map_err(ServerError::SessionRefused)?;
         // What this session may do, not what the host asked: the tools and the guide are written for it.
         let server = self.with_credential(info.grants.clone(), None)?;
         let link = Link { id: Some(info.id), actor: info.actor.clone() };

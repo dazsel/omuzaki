@@ -4,7 +4,7 @@
 //! Names that other clients chose (their client name, model, role, fence paths) pass through the same one-line
 //! sanitiser as the heads-up, so a hostile name can't smuggle instructions or hide behind invisible characters.
 
-use omuzaki_ops_api::{Actor, PauseReason, PendingApproval, SessionInfo, SessionState, Transport};
+use omuzaki_ops_api::{Actor, Need, PauseReason, PendingApproval, SessionInfo, SessionState, Transport};
 use rmcp::model::CallToolResult;
 use serde_json::{Value, json};
 
@@ -58,8 +58,30 @@ fn pause_text(reason: PauseReason) -> &'static str {
     }
 }
 
+/// The state with the name of whoever paused it passed through the same one-line sanitiser as every other name.
 fn state_json(state: &SessionState) -> Value {
-    serde_json::to_value(state).unwrap_or(Value::Null)
+    match state {
+        SessionState::Active => json!({"state": "active"}),
+        SessionState::Paused { by, reason } => {
+            json!({"state": "paused", "by": actor_label(by), "reason": render::value_of(reason)})
+        }
+        SessionState::Ended { reason, at } => {
+            json!({"state": "ended", "reason": render::value_of(&crate::approvals::withdrawn_text(reason)), "at": render::value_of(at)})
+        }
+    }
+}
+
+/// What a person is asked, with the text a client chose (a pairing client's name, a reason) sanitised.
+pub(crate) fn need_json(need: &Need) -> Value {
+    match need {
+        Need::Scope { scope } => json!({"need": "scope", "scope": render::value_of(scope)}),
+        Need::Person { reason } => json!({"need": "person", "reason": plain(reason, 200)}),
+        Need::Budget { needed, left } => {
+            json!({"need": "budget", "needed": render::value_of(needed), "left": render::value_of(left)})
+        }
+        Need::Pairing { client } => json!({"need": "pairing", "client": plain(client, NAME_CHARS)}),
+        Need::Review { policy } => json!({"need": "review", "policy": plain(policy, NAME_CHARS)}),
+    }
 }
 
 fn fence_paths(info: &SessionInfo) -> Vec<String> {
@@ -81,7 +103,7 @@ fn pending_json(pending: &[&PendingApproval]) -> Vec<Value> {
         .map(|approval| {
             json!({
                 "id": approval.id.0,
-                "need": serde_json::to_value(&approval.need).unwrap_or(Value::Null),
+                "need": need_json(&approval.need),
                 "asks": need_text(&approval.need),
                 "op": approval.request.as_ref().map(|r| r.op.clone()),
             })
@@ -110,9 +132,9 @@ pub(crate) fn session_info(
             "credential": credential_json,
             "grants": {"scopes": scopes, "file_roots": info.grants.fs_roots()},
             "fence": fence_paths(info),
-            "budget": serde_json::to_value(info.budget).unwrap_or(Value::Null),
-            "spent": serde_json::to_value(info.spent).unwrap_or(Value::Null),
-            "limits": serde_json::to_value(info.limits).unwrap_or(Value::Null),
+            "budget": render::value_of(&info.budget),
+            "spent": render::value_of(&info.spent),
+            "limits": render::value_of(&info.limits),
             "state": state_json(&info.state),
             "open_transaction": info.open_tx.as_ref().map(|tx| json!({"id": tx.tx.0, "label": plain(&tx.label, NAME_CHARS)})),
             "pending_approvals": pending_json(pending),

@@ -178,9 +178,8 @@ pub(crate) fn instructions(grants: &Grants, guidance: &Guidance, registry: bool)
     );
     lines.push(
         "Everything this server says is in English, whatever language the person uses. If you run the `omuzaki` command \
-         line from a shell, its human-readable output follows the person's locale (--lang, OMUZAKI_LANG, then the \
-         operating system): pass --json for output that never changes with the locale, or --lang en. Ids (tool names, \
-         op ids, scope ids, paths) are never translated."
+         line from a shell, its human-readable output follows the person's locale: pass --json for output that never \
+         changes with the locale. Ids (tool names, op ids, scope ids, paths) are never translated."
             .to_owned(),
     );
     lines.join("\n")
@@ -329,7 +328,7 @@ mod tests {
             for registry in [false, true] {
                 let text = instructions(&grants, &guidance(), registry);
                 assert!(text.contains("Everything this server says is in English"), "{text}");
-                assert!(text.contains("--json") && text.contains("OMUZAKI_LANG"), "{text}");
+                assert!(text.contains("--json") && !text.contains("--lang"), "{text}");
             }
         }
     }

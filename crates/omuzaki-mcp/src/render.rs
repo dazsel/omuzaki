@@ -279,7 +279,7 @@ fn explain(error: &OpError) -> Option<Explained> {
         }),
         (ErrorCode::Limited, ErrorDetail::RetryAfter { seconds, limit }) => Some(Explained {
             message: format!("this session hit its {} limit; nothing ran", plain(limit, 60)),
-            hint: format!("wait {seconds:.1} seconds, then retry"),
+            hint: format!("wait {:.1} seconds, then retry", floats::widened(*seconds)),
         }),
         _ => None,
     }
@@ -300,10 +300,10 @@ fn detail_json(detail: &ErrorDetail) -> Option<Value> {
             json!({"kind": "paused", "by": actor_label(by), "reason": value_of(reason)})
         }
         ErrorDetail::Queued { approval, need } => {
-            json!({"kind": "queued", "approval": approval.0, "need": value_of(need), "asks": need_text(need)})
+            json!({"kind": "queued", "approval": approval.0, "need": crate::info::need_json(need), "asks": need_text(need)})
         }
         ErrorDetail::RetryAfter { seconds, limit } => {
-            json!({"kind": "retry_after", "seconds": seconds, "limit": plain(limit, 60)})
+            json!({"kind": "retry_after", "seconds": floats::widened(*seconds), "limit": plain(limit, 60)})
         }
         ErrorDetail::Changed { path, by, version } => {
             json!({"kind": "changed", "path": plain(&path.to_string(), 100), "by": actor_label(by), "version": version.0})
@@ -412,13 +412,14 @@ pub(crate) fn unknown_tool(name: &str, similar: &[&str]) -> CallToolResult {
 fn result(blocks: Vec<String>, data: Value, is_error: bool) -> CallToolResult {
     let content: Vec<ContentBlock> = blocks.into_iter().map(ContentBlock::text).collect();
     let mut result = if is_error { CallToolResult::error(content) } else { CallToolResult::success(content) };
-    result.structured_content = Some(data);
+    // Every structured result an agent reads passes here, so the `f32` noise is removed once (see `floats`).
+    result.structured_content = Some(floats::tidied(data));
     result
 }
 
 /// Plain data as JSON. These types can't fail to serialise; if one ever does, say so in the output rather than
 /// panicking or dropping the field silently.
-fn value_of<T: Serialize + ?Sized>(value: &T) -> Value {
+pub(crate) fn value_of<T: Serialize + ?Sized>(value: &T) -> Value {
     serde_json::to_value(value).map_or_else(|e| json!({"serialisation_error": e.to_string()}), floats::tidied)
 }
 
