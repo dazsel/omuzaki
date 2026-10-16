@@ -478,6 +478,7 @@ mod tests {
             dependencies: vec![],
             layer: None,
             link_only: vec![],
+            wasm: true,
         });
         let scope = scope_for_files(&ws, &files(&["crates/omuzaki-render/inner/src/lib.rs"]));
         assert_eq!(crates(&scope), ["omuzaki-render-inner"]);

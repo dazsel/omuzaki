@@ -26,6 +26,7 @@ pub enum CrateKind {
     /// `omuzaki-cli`, `omuzaki-ui`, `omuzaki-test`, `omuzaki-stage`, `xtask`: they wire implementations together. The
     /// area test crates (`omuzaki-test-<area>`) are apps too, held to their area (`test_crates.rs`).
     /// `omuzaki-link-probe` is a test-only App that `cargo xtask wasm-link-proof` builds for wasm (ADR 0015).
+    /// `omuzaki-model-worker` is the out-of-process model runner's binary (#2126).
     App,
 }
 
@@ -37,9 +38,13 @@ impl CrateKind {
     pub fn of(name: &str) -> Self {
         match name {
             "omuzaki-core" => Self::Api,
-            "omuzaki-cli" | "omuzaki-ui" | "omuzaki-test" | "omuzaki-stage" | "omuzaki-link-probe" | "xtask" => {
-                Self::App
-            }
+            "omuzaki-cli"
+            | "omuzaki-ui"
+            | "omuzaki-test"
+            | "omuzaki-stage"
+            | "omuzaki-link-probe"
+            | "omuzaki-model-worker"
+            | "xtask" => Self::App,
             _ if name.ends_with("-api") => Self::Api,
             _ if name.ends_with("-mock") => Self::Mock,
             _ if test_crates::area_of(name).is_some() => Self::App,
@@ -125,10 +130,74 @@ impl fmt::Display for Violation {
     }
 }
 
-/// Every forbidden dependency between workspace crates, in crate-name order. External crates are never checked here
-/// (that is `cargo deny`'s job).
+/// Every forbidden dependency between workspace crates, in crate-name order, then every native-only crate in a wasm
+/// crate's tree ([`wasm_violations`]). Licences of external crates are never checked here (that is `cargo deny`'s job).
 pub fn violations(workspace: &Workspace) -> Vec<Violation> {
-    workspace.packages.iter().flat_map(|package| package_violations(workspace, package)).collect()
+    let mut found: Vec<Violation> =
+        workspace.packages.iter().flat_map(|package| package_violations(workspace, package)).collect();
+    found.extend(wasm_violations(workspace));
+    found
+}
+
+/// The crate that hosts plugins: native only (a JIT host has no place in a browser, ADR 0058), named here as well as by
+/// its `wasm = false` so the rule holds even if its manifest were edited.
+const PLUGIN_HOST: &str = "omuzaki-plugin";
+
+/// The prefix of the wasmtime family of external crates.
+const WASMTIME_PREFIX: &str = "wasmtime";
+
+/// Why `name` can never be in a wasm build, or `None` if it may: a workspace crate that opts out with `wasm = false`,
+/// any `wasmtime*` crate, or the plugin host.
+fn native_only(workspace: &Workspace, name: &str) -> Option<&'static str> {
+    if name == PLUGIN_HOST {
+        Some("the plugin host is native only")
+    } else if name.starts_with(WASMTIME_PREFIX) {
+        Some("wasmtime is native only")
+    } else if workspace.package(name).is_some_and(|package| !package.wasm) {
+        Some("it opts out with `wasm = false`")
+    } else {
+        None
+    }
+}
+
+/// Every native-only crate in the normal-dependency tree of a crate that builds for wasm (the rule of
+/// `tools/ci/crates.py`), with the path that reaches it. The WebAssembly stage only leaves `wasm = false` crates out of
+/// its list; without this, a wasm crate that depends on one fails there with a far less clear error. The walk follows
+/// workspace crates only (external crates are leaves) and stops at each native-only crate it reports.
+pub fn wasm_violations(workspace: &Workspace) -> Vec<Violation> {
+    workspace.packages.iter().filter(|package| package.wasm).flat_map(|root| wasm_tree(workspace, root)).collect()
+}
+
+/// The native-only crates under `root`, each once, by the shortest path (breadth first, dependencies in manifest order).
+fn wasm_tree(workspace: &Workspace, root: &Package) -> Vec<Violation> {
+    let mut found = Vec::new();
+    let mut seen = std::collections::BTreeSet::from([root.name.as_str()]);
+    let mut queue = std::collections::VecDeque::from([vec![root.name.as_str()]]);
+    while let Some(path) = queue.pop_front() {
+        let Some(package) = path.last().and_then(|name| workspace.package(name)) else { continue };
+        for dependency in package.dependencies.iter().filter(|dependency| dependency.kind == DepKind::Normal) {
+            let name = dependency.name.as_str();
+            if !seen.insert(name) {
+                continue;
+            }
+            let mut next = path.clone();
+            next.push(name);
+            if let Some(why) = native_only(workspace, name) {
+                found.push(Violation {
+                    from: root.name.clone(),
+                    to: name.to_owned(),
+                    rule: format!(
+                        "builds for wasm but depends on a native-only crate ({why}), through {}; opt out with \
+                         `wasm = false` under [package.metadata.omuzaki] or drop the dependency",
+                        next.join(" → ")
+                    ),
+                });
+            } else {
+                queue.push_back(next);
+            }
+        }
+    }
+    found
 }
 
 /// What is wrong with `package`: a manifest layer that doesn't hold up, or a dependency the table forbids.
@@ -183,7 +252,7 @@ pub fn run(workspace: &Workspace) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspace::testing::{with_layer, workspace};
+    use crate::workspace::testing::{with_layer, without_wasm, workspace};
     use DepKind::{Build, Dev, Normal};
 
     fn found(crates: &[(&str, &[(&str, DepKind)])]) -> Vec<String> {
@@ -200,7 +269,15 @@ mod tests {
         assert_eq!(CrateKind::of("omuzaki-doc-api"), CrateKind::Api);
         assert_eq!(CrateKind::of("omuzaki-doc-mock"), CrateKind::Mock);
         assert_eq!(CrateKind::of("omuzaki-render"), CrateKind::Implementation);
-        for app in ["omuzaki-cli", "omuzaki-ui", "omuzaki-test", "omuzaki-stage", "omuzaki-link-probe", "xtask"] {
+        for app in [
+            "omuzaki-cli",
+            "omuzaki-ui",
+            "omuzaki-test",
+            "omuzaki-stage",
+            "omuzaki-link-probe",
+            "omuzaki-model-worker",
+            "xtask",
+        ] {
             assert_eq!(CrateKind::of(app), CrateKind::App);
         }
     }
@@ -409,5 +486,66 @@ mod tests {
     fn the_message_names_the_section() {
         let got = found(&[("omuzaki-audio", &[("omuzaki-render", Build)]), ("omuzaki-render", &[])]);
         assert!(got[0].contains("[build-dependencies]"), "{}", got[0]);
+    }
+
+    fn wasm_found(ws: &Workspace) -> Vec<String> {
+        wasm_violations(ws).iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn a_wasm_crate_may_not_reach_a_native_only_crate_directly_or_through_another() {
+        let ws = without_wasm(
+            workspace(&[
+                ("omuzaki-web", &[("omuzaki-view", Normal)]),
+                ("omuzaki-view", &[("omuzaki-audio", Normal)]),
+                ("omuzaki-audio", &[]),
+            ]),
+            "omuzaki-audio",
+        );
+        assert_eq!(
+            wasm_found(&ws),
+            [
+                "omuzaki-view → omuzaki-audio: builds for wasm but depends on a native-only crate (it opts out with \
+                 `wasm = false`), through omuzaki-view → omuzaki-audio; opt out with `wasm = false` under \
+                 [package.metadata.omuzaki] or drop the dependency",
+                "omuzaki-web → omuzaki-audio: builds for wasm but depends on a native-only crate (it opts out with \
+                 `wasm = false`), through omuzaki-web → omuzaki-view → omuzaki-audio; opt out with `wasm = false` \
+                 under [package.metadata.omuzaki] or drop the dependency",
+            ]
+        );
+    }
+
+    #[test]
+    fn wasmtime_and_the_plugin_host_are_native_only_whatever_their_manifest() {
+        let ws = workspace(&[
+            ("omuzaki-web", &[("wasmtime", Normal), ("omuzaki-plugin", Normal)]),
+            ("omuzaki-plugin", &[("wasmtime", Normal)]),
+        ]);
+        let got = wasm_found(&ws);
+        assert_eq!(got.len(), 3, "{got:?}");
+        assert!(got[0].starts_with("omuzaki-plugin → wasmtime: builds for wasm"), "{}", got[0]);
+        assert!(got[1].starts_with("omuzaki-web → wasmtime: builds for wasm"), "{}", got[1]);
+        assert!(got[1].contains("(wasmtime is native only)"), "{}", got[1]);
+        assert!(got[2].contains("(the plugin host is native only)"), "{}", got[2]);
+        // Opted out, the host may depend on wasmtime and nothing is reported for it.
+        let host_ok = without_wasm(workspace(&[("omuzaki-plugin", &[("wasmtime-wasi", Normal)])]), "omuzaki-plugin");
+        assert_eq!(wasm_found(&host_ok), Vec::<String>::new());
+    }
+
+    #[test]
+    fn dev_and_build_dependencies_and_native_crates_are_not_walked() {
+        let ws = without_wasm(
+            without_wasm(
+                workspace(&[
+                    ("omuzaki-web", &[("omuzaki-audio", Dev), ("wasmtime", Build)]),
+                    ("omuzaki-cli", &[("omuzaki-audio", Normal)]),
+                    ("omuzaki-audio", &[]),
+                ]),
+                "omuzaki-audio",
+            ),
+            "omuzaki-cli",
+        );
+        assert_eq!(wasm_found(&ws), Vec::<String>::new());
+        assert_eq!(found(&[("xtask", &[("wasmtime", Normal)])]), Vec::<String>::new(), "xtask is host-only");
     }
 }

@@ -82,9 +82,11 @@ pub enum PauseReason {
     Pairing,
 }
 
-/// Why a session ended.
+/// Why a session ended. `#[non_exhaustive]` (ADR 0054 §4): a `match` outside this crate needs a wildcard arm, so a
+/// new reason never breaks it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "reason", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum EndReason {
     /// The connection went away (stdio EOF, HTTP `DELETE`).
     Disconnected,
@@ -102,6 +104,22 @@ pub enum EndReason {
     },
     /// The project closed.
     ProjectClosed,
+    /// The session's owner failed: a plugin's instance trapped, passed a limit or stalled in a host call (ADR 0058).
+    /// Serialised `{"reason":"faulted","detail":"out of fuel in init"}`: the field is `detail` because the enum is
+    /// tagged by `reason`. `detail` is one plain sentence for the audit log and the person, naming the trap kind and the
+    /// entry; nobody matches on its text. Build it with [`EndReason::faulted`].
+    #[non_exhaustive]
+    Faulted {
+        /// What failed, for example "out of fuel in init".
+        detail: String,
+    },
+}
+
+impl EndReason {
+    /// A session whose owner failed, with `detail` naming what failed and where.
+    pub fn faulted(detail: impl Into<String>) -> Self {
+        Self::Faulted { detail: detail.into() }
+    }
 }
 
 /// Where a session stands. "Working", "idle" and "waiting for you" are derived from this plus

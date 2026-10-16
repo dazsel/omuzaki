@@ -154,6 +154,7 @@ fn session_types_round_trip_and_have_schemas() {
         EndReason::Closed,
         EndReason::Revoked { by: person(), credential: false },
         EndReason::ProjectClosed,
+        EndReason::faulted("out of fuel in init"),
     ] {
         round_trips(&reason);
     }
@@ -528,5 +529,32 @@ fn stopped_round_trips_and_its_goldens_are_byte_stable() {
         let mut back = serde_json::to_string_pretty(&value).unwrap();
         back.push('\n');
         assert_eq!(back, text, "{name}.json no longer serialises byte for byte");
+    }
+}
+
+/// `EndReason::Faulted` (ADR 0058): its exact JSON, the types that carry an end reason, the schema, and every other
+/// variant's JSON unchanged.
+#[test]
+fn faulted_end_reason_has_exact_json_and_rides_every_carrier() {
+    let faulted = EndReason::faulted("ran out of time in bonk (10 s)");
+    assert_eq!(
+        serde_json::to_string(&faulted).unwrap(),
+        r#"{"reason":"faulted","detail":"ran out of time in bonk (10 s)"}"#
+    );
+    round_trips(&SessionState::Ended { reason: faulted.clone(), at: Seconds(3.0) });
+    round_trips(&ErrorDetail::Ended { reason: faulted.clone() });
+    round_trips(&Resolved::Withdrawn { reason: faulted });
+    let schema = serde_json::to_string(&schemars::schema_for!(EndReason)).unwrap();
+    for name in ["disconnected", "idle_timeout", "closed", "revoked", "project_closed", "faulted", "detail"] {
+        assert!(schema.contains(&format!("\"{name}\"")), "the EndReason schema lacks {name}");
+    }
+    let unchanged = [
+        (EndReason::Disconnected, r#"{"reason":"disconnected"}"#),
+        (EndReason::IdleTimeout, r#"{"reason":"idle_timeout"}"#),
+        (EndReason::Closed, r#"{"reason":"closed"}"#),
+        (EndReason::ProjectClosed, r#"{"reason":"project_closed"}"#),
+    ];
+    for (reason, json) in unchanged {
+        assert_eq!(serde_json::to_string(&reason).unwrap(), json);
     }
 }
