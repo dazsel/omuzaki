@@ -694,25 +694,50 @@ fn a_reset_clears_its_finding_and_a_refused_reset_leaves_it() {
 }
 
 #[test]
-fn overwriting_or_deleting_a_profile_clears_its_findings_and_renaming_keeps_them() {
+fn overwriting_a_profile_merges_per_key_and_deleting_it_clears_its_findings() {
     let s = MemorySettings::default();
     let p = s.save_profile("P", ProfileSource::Current, false, Mode::Apply, &person()).unwrap();
     s.hand_edit_profile(&p.id, "ui.scale", Some(json!(900))).unwrap();
-    s.hand_edit_profile(&p.id, "update.channel", Some(json!("beta"))).unwrap();
+    s.hand_edit_profile(&p.id, "removed.key", Some(json!(1))).unwrap();
     s.reload(Mode::Apply, &person()).unwrap();
     assert_eq!(s.findings().len(), 2);
     s.rename_profile(&p.id, "Q", Mode::Apply, &person()).unwrap();
     assert_eq!(s.findings().len(), 2, "a rename leaves the stored values, so their findings");
-    s.save_profile("Q", ProfileSource::Current, true, Mode::DryRun, &person()).unwrap();
+    // Overwrite with a copy that carries a good ui.scale and quality.tier: the keys it writes replace the rejected
+    // value; the unknown key it never touched stays in the file and in the findings.
+    let src = s.save_profile("Src", ProfileSource::Current, false, Mode::Apply, &person()).unwrap();
+    s.switch_profile(Some(&src.id), Mode::Apply, &person()).unwrap();
+    s.set::<UiScale>(&110, Layer::Auto, Mode::Apply, &person()).unwrap();
+    s.set::<QualityTier>(&Tier::High, Layer::Auto, Mode::Apply, &person()).unwrap();
+    s.switch_profile(None, Mode::Apply, &person()).unwrap();
+    let from = || ProfileSource::Profile(src.id.clone());
+    s.save_profile("Q", from(), true, Mode::DryRun, &person()).unwrap();
     assert_eq!(s.findings().len(), 2, "a dry run leaves findings alone");
-    s.save_profile("Q", ProfileSource::Current, true, Mode::Apply, &person()).unwrap();
-    assert!(s.findings().is_empty(), "the overwrite replaced the file");
-
-    s.hand_edit_profile(&p.id, "ui.scale", Some(json!(900))).unwrap();
+    let info = s.save_profile("Q", from(), true, Mode::Apply, &person()).unwrap();
+    assert_eq!(info.keys, 2, "the profile reads the new values");
+    let left = s.findings();
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0].error.key, "removed.key");
     s.reload(Mode::Apply, &person()).unwrap();
-    assert_eq!(s.findings().len(), 1);
+    let keys: Vec<_> = s.findings().iter().map(|f| f.error.key.clone()).collect();
+    assert_eq!(keys, ["removed.key"], "the unknown key survived the overwrite");
+    s.switch_profile(Some(&p.id), Mode::Apply, &person()).unwrap();
+    assert_eq!((s.get::<UiScale>().unwrap(), s.get::<QualityTier>().unwrap()), (110, Tier::High));
+
     s.delete_profile(&p.id, Mode::DryRun, &person()).unwrap();
     assert_eq!(s.findings().len(), 1);
     s.delete_profile(&p.id, Mode::Apply, &person()).unwrap();
     assert!(s.findings().is_empty(), "the deleted file has no findings");
+}
+
+#[test]
+fn overwriting_a_profile_keeps_a_rejected_value_it_did_not_write() {
+    let s = MemorySettings::default();
+    let p = s.save_profile("P", ProfileSource::Current, false, Mode::Apply, &person()).unwrap();
+    s.hand_edit_profile(&p.id, "ui.scale", Some(json!(900))).unwrap();
+    s.reload(Mode::Apply, &person()).unwrap();
+    s.save_profile("P", ProfileSource::Current, true, Mode::Apply, &person()).unwrap();
+    assert_eq!(s.findings().len(), 1);
+    s.reload(Mode::Apply, &person()).unwrap();
+    assert_eq!(s.findings().len(), 1, "the rejected raw entry is still in the profile's file");
 }

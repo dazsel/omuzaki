@@ -63,7 +63,7 @@ struct Layers {
 enum Touch {
     /// A key in a layer: set or removed on disk to match the live layer afterwards.
     Key(Target, String),
-    /// A whole profile saved, created or deleted: the stored file becomes the live profile, or goes.
+    /// A whole profile created or deleted: the stored file becomes the live profile, or goes.
     Profile(ProfileId),
     /// A profile renamed: only its name.
     Name(ProfileId),
@@ -494,8 +494,14 @@ impl Settings for MemorySettings {
                     }
                 },
             };
-            layers.profiles.insert(id.clone(), Profile { name: name.clone(), values });
-            layers.touched.push(Touch::Profile(id.clone()));
+            let keys: Vec<String> = values.keys().cloned().collect();
+            match layers.profiles.insert(id.clone(), Profile { name: name.clone(), values }) {
+                None => layers.touched.push(Touch::Profile(id.clone())),
+                // An overwrite merges per key (D5): the keys it wrote or replaced, and nothing else in the stored file.
+                Some(old) => layers
+                    .touched
+                    .extend(old.values.into_keys().chain(keys).map(|key| Touch::Key(Target::Profile(id.clone()), key))),
+            }
             layers.info(&id).ok_or_else(|| unknown_profile(&id))
         })?;
         let info = plan.out.clone();
