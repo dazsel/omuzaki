@@ -29,6 +29,8 @@ const UNKNOWN_PARAM: i32 = 453;
 const PARAM_OWNED: i32 = 454;
 const EXPRESSION_NO_MODEL: i32 = 652;
 const BAD_REQUEST: i32 = 1;
+const API_NAME_INVALID: i32 = 3;
+const API_VERSION_INVALID: i32 = 4;
 const UNKNOWN_MESSAGE: i32 = 2;
 const UNKNOWN_HOTKEY: i32 = 202;
 const UNKNOWN_EXPRESSION: i32 = 651;
@@ -45,6 +47,8 @@ pub struct MockHotkey {
     pub id: String,
     /// The hotkey's display name.
     pub name: String,
+    /// The on-screen button it is bound to, 1 to 8. `None`, or a number outside that range, is unbound (-1).
+    pub on_screen_button: Option<u8>,
 }
 
 /// The model VTS has loaded. An expression's file is `<name>.exp3.json`.
@@ -221,7 +225,9 @@ impl State {
                     message_type: env.message_type.clone(),
                     data: env.data.clone(),
                 });
-                (env.request_id, self.dispatch(session, &env.message_type, env.data, now))
+                let reply = Self::check_envelope(&env)
+                    .and_then(|()| self.dispatch(session, &env.message_type, env.data.clone(), now));
+                (env.request_id, reply)
             }
             Err(e) => {
                 let data = Value::String(text.to_owned());
@@ -428,23 +434,41 @@ impl State {
         ok(&InjectParameterDataResponse {})
     }
 
+    /// Real VTS refuses a frame for another API or another version before it looks at the request.
+    fn check_envelope(frame: &Envelope<Value>) -> Result<(), ApiError> {
+        if frame.api_name != API_NAME {
+            return Err(error(API_NAME_INVALID, &format!("apiName must be {API_NAME}")));
+        }
+        if frame.api_version != API_VERSION {
+            return Err(error(API_VERSION_INVALID, &format!("apiVersion must be {API_VERSION}")));
+        }
+        Ok(())
+    }
+
     fn loaded_model(&self, id: i32) -> Result<&MockModel, ApiError> {
         self.model.as_ref().ok_or_else(|| error(id, "no model is loaded"))
     }
 
     fn hotkeys(&self) -> Reply {
-        let model = self.loaded_model(NO_MODEL)?;
+        // With no model VTS answers with `modelLoaded: false` and no hotkeys, not an error.
+        let Some(model) = &self.model else {
+            return ok(&HotkeysInCurrentModelResponse {
+                model_loaded: false,
+                model_name: String::new(),
+                model_id: String::new(),
+                available_hotkeys: Vec::new(),
+            });
+        };
         let available_hotkeys = model
             .hotkeys
             .iter()
-            .enumerate()
-            .map(|(i, h)| Hotkey {
+            .map(|h| Hotkey {
                 name: h.name.clone(),
                 kind: "TriggerAnimation".into(),
                 description: String::new(),
                 file: String::new(),
                 hotkey_id: h.id.clone(),
-                on_screen_button_id: i32::try_from(i).unwrap_or(i32::MAX),
+                on_screen_button_id: h.on_screen_button.filter(|b| (1..=8).contains(b)).map_or(-1, i32::from),
             })
             .collect();
         ok(&HotkeysInCurrentModelResponse {
@@ -481,7 +505,15 @@ impl State {
     }
 
     fn expression_state(&self, request: &ExpressionStateRequest) -> Reply {
-        let model = self.loaded_model(EXPRESSION_NO_MODEL)?;
+        // With no model VTS answers with `modelLoaded: false` and no expressions, not an error.
+        let Some(model) = &self.model else {
+            return ok(&ExpressionStateResponse {
+                model_loaded: false,
+                model_name: String::new(),
+                model_id: String::new(),
+                expressions: Vec::new(),
+            });
+        };
         // An absent or empty `expressionFile` lists every expression (`protocol.rs`, `ExpressionStateRequest`).
         let wanted = |name: &String| {
             request.expression_file.as_deref().is_none_or(|file| file.is_empty() || file == format!("{name}.exp3.json"))

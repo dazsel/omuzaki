@@ -81,7 +81,9 @@ impl Client {
 fn model(hotkeys: usize) -> MockModel {
     MockModel {
         name: "Kit".into(),
-        hotkeys: (0..hotkeys).map(|i| MockHotkey { id: format!("hk{i}"), name: format!("Wave{i}") }).collect(),
+        hotkeys: (0..hotkeys)
+            .map(|i| MockHotkey { id: format!("hk{i}"), name: format!("Wave{i}"), ..MockHotkey::default() })
+            .collect(),
         expressions: vec!["smile".into()],
         parameters: vec!["MouthOpen".into()],
     }
@@ -234,8 +236,59 @@ fn hotkeys_and_expressions_need_a_model() {
     assert_eq!(state["data"]["expressions"][0]["active"], true);
 
     mock.set_model(None);
-    assert_eq!(error_id(&client.call("HotkeysInCurrentModelRequest", json!({}))), 201);
-    assert_eq!(error_id(&client.call("ExpressionStateRequest", json!({}))), 652);
+    // No model is a normal answer with `modelLoaded: false` and an empty list, not an error.
+    let list = client.call("HotkeysInCurrentModelRequest", json!({}));
+    assert_eq!(list["messageType"], "HotkeysInCurrentModelResponse");
+    assert_eq!(list["data"]["modelLoaded"], false);
+    assert_eq!(list["data"]["availableHotkeys"], json!([]));
+    let state = client.call("ExpressionStateRequest", json!({}));
+    assert_eq!(state["messageType"], "ExpressionStateResponse");
+    assert_eq!(state["data"]["modelLoaded"], false);
+    assert_eq!(state["data"]["expressions"], json!([]));
+    // Changing an expression still needs a model.
+    let on = client.call("ExpressionActivationRequest", json!({"expressionFile": "smile.exp3.json", "active": true}));
+    assert_eq!(error_id(&on), 652);
+}
+
+#[test]
+fn on_screen_buttons_are_minus_one_unless_the_config_assigns_one_to_eight() {
+    let (mock, _) = mock(0);
+    let hotkey = |id: &str, button| MockHotkey { id: id.into(), name: id.into(), on_screen_button: button };
+    mock.set_model(Some(MockModel {
+        hotkeys: vec![
+            hotkey("none", None),
+            hotkey("one", Some(1)),
+            hotkey("eight", Some(8)),
+            hotkey("zero", Some(0)),
+            hotkey("nine", Some(9)),
+        ],
+        ..model(0)
+    }));
+    let mut client = Client::connect(&mock);
+    client.login();
+    let list = client.call("HotkeysInCurrentModelRequest", json!({}));
+    let buttons: Vec<_> = list["data"]["availableHotkeys"]
+        .as_array()
+        .expect("a list")
+        .iter()
+        .map(|h| h["onScreenButtonID"].clone())
+        .collect();
+    assert_eq!(buttons, [json!(-1), json!(1), json!(8), json!(-1), json!(-1)]);
+}
+
+#[test]
+fn a_frame_for_another_api_or_version_is_refused_before_the_request_is_read() {
+    let (mock, _) = mock(1);
+    let mut client = Client::connect(&mock);
+    let mut send = |name: &str, version: &str| {
+        let frame = json!({"apiName": name, "apiVersion": version, "requestID": "x", "messageType": "APIStateRequest", "data": {}});
+        client.ws.send(Message::text(frame.to_string())).expect("sends");
+        let Message::Text(text) = client.ws.read().expect("a reply arrives") else { panic!("a text reply") };
+        serde_json::from_str::<Value>(&text).expect("the reply is JSON")
+    };
+    assert_eq!(error_id(&send("SomeOtherAPI", "1.0")), 3);
+    assert_eq!(error_id(&send("VTubeStudioPublicAPI", "2.0")), 4);
+    assert_eq!(send("VTubeStudioPublicAPI", "1.0")["messageType"], "APIStateResponse");
 }
 
 #[test]
