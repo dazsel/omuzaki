@@ -904,7 +904,8 @@ pub trait Branches: Send + Sync {
     /// # Errors
     /// [`BranchError::NameTaken`], [`BranchError::NotFound`] for the source branch, [`BranchError::Busy`] when an open
     /// transaction on the source blocks the fork, [`BranchError::Invalid`] for a state that is not the source's,
-    /// [`BranchError::Denied`] for an agent that makes a branch for another session, or [`BranchError::Io`].
+    /// [`BranchError::Denied`] for an agent that makes a branch for another session, [`BranchError::PointNotFound`]
+    /// when the source's head (or a point named by `new.at`) is not in the store, or [`BranchError::Io`].
     fn create(&self, new: NewBranch, by: &Actor) -> Result<BranchInfo, BranchError>;
 
     /// Makes a point of `branch`'s committed state now (design 5.3). `ready` asks for review with that note; an agent
@@ -912,7 +913,9 @@ pub trait Branches: Send + Sync {
     ///
     /// # Errors
     /// [`BranchError::NotFound`], [`BranchError::Busy`] when an open transaction blocks it,
-    /// [`BranchError::Denied`] for an agent asking for review on another branch, or [`BranchError::Io`].
+    /// [`BranchError::Denied`] for an agent asking for review on another branch, [`BranchError::PointNotFound`] when
+    /// the branch's head is not in the store (the previous point cannot be read, so none is written after it), or
+    /// [`BranchError::Io`].
     fn checkpoint(
         &self,
         branch: &BranchId,
@@ -926,7 +929,9 @@ pub trait Branches: Send + Sync {
     ///
     /// # Errors
     /// [`BranchError::NotFound`], [`BranchError::Busy`] for an open transaction or a changed file,
-    /// [`BranchError::LaneLimit`], or [`BranchError::Denied`] for an agent or a plugin.
+    /// [`BranchError::LaneLimit`], [`BranchError::Denied`] for an agent or a plugin, or
+    /// [`BranchError::PointNotFound`] when the folder branch's head is not in the store. Nothing changes when it
+    /// fails.
     fn switch(&self, to: &BranchId, by: &Actor) -> Result<Switched, BranchError>;
 
     /// Renames a branch and sets its title. A person may rename any branch; an agent only one made for its session
@@ -972,7 +977,8 @@ pub trait Branches: Send + Sync {
     ///
     /// # Errors
     /// [`BranchError::NotFound`], [`BranchError::Busy`] when an open transaction blocks recording the current state,
-    /// [`BranchError::Denied`] naming a scope the grants lack, [`BranchError::Invalid`] or [`BranchError::Io`].
+    /// [`BranchError::Denied`] naming a scope the grants lack, [`BranchError::PointNotFound`] when the branch's head
+    /// is not in the store, [`BranchError::Invalid`] or [`BranchError::Io`].
     fn restore(&self, branch: &BranchId, to: StateRef, by: &Actor, grants: &Grants) -> Result<Restored, BranchError>;
 
     /// The branch's lane, opening it if it is closed.

@@ -91,6 +91,12 @@ impl MemoryBranchStore {
     }
 
     /// Adds `branch`, or replaces the one with its id.
+    ///
+    /// The branch has to be whole for [`FakeBranches`] to work with it: its `head` is a point in this store (see
+    /// [`put_point`](Self::put_point)), and the fake has a document for it ([`FakeBranches::set_document`]). A head
+    /// that is absent makes `create`, `checkpoint`, `switch` and `restore` on the branch fail with
+    /// [`BranchError::PointNotFound`], and an absent document makes `checkpoint`, `switch`, `restore` and a
+    /// `create` from `now` fail with [`BranchError::Invalid`]; neither is read as an empty value, and nothing is written when they fail.
     pub fn put_branch(&self, branch: BranchInfo) {
         let mut state = lock(&self.state);
         match state.branches.iter_mut().find(|b| b.id == branch.id) {
@@ -254,7 +260,10 @@ impl FakeState {
 /// sessions work on a lane and which agent session an actor is (so who may rename, delete or ask for review).
 /// Transactions and snapshots are scripted with [`record_tx`](Self::record_tx) and
 /// [`record_snapshot`](Self::record_snapshot), per branch, and a state has to be its branch's own to fork or restore
-/// at. Create makes no check of edit scopes; restore checks the ones it is given.
+/// at. A branch the test puts in the store itself ([`MemoryBranchStore::put_branch`]) needs its head point and a
+/// document here too, or the calls that read them fail with [`PointNotFound`](BranchError::PointNotFound) and
+/// [`Invalid`](BranchError::Invalid) instead of making something up. Create makes no check of edit scopes; restore
+/// checks the ones it is given.
 pub struct FakeBranches {
     store: Arc<MemoryBranchStore>,
     clock: Arc<dyn WallClock>,
