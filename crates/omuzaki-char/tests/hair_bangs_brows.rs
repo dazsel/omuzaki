@@ -429,7 +429,11 @@ fn the_fringe_follows_the_head_mesh_on_every_template() {
             .map(|p| p.y)
             .fold(f32::MIN, f32::max);
         println!("{template}: crown {crown:.4}, hair top {top:.4}, rise {:.4}", top - crown);
-        assert!((top - crown - LOCK_RISE).abs() < 0.001, "{template}: the lock stands {} off the crown, not {LOCK_RISE}", top - crown);
+        assert!(
+            (top - crown - LOCK_RISE).abs() < 0.001,
+            "{template}: the lock stands {} off the crown, not {LOCK_RISE}",
+            top - crown
+        );
     }
 }
 

@@ -1,5 +1,5 @@
-//! The `bangs` hair generator on a synthetic head: counts, rest points, no random draws, and how close the width fit is
-//! to the prototype's outline. Everything is synthetic.
+//! The `bangs` hair generator on a synthetic head: counts, rest points, no random draws, and the prototype's width outline.
+//! Everything is synthetic.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 #![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -159,19 +159,27 @@ fn compile_is_deterministic_and_carries_the_group_settings() {
     assert!(a.geometry.is_tube());
 }
 
-/// The closest `Taper` against the prototype's outline: prints the largest difference per width and bounds it.
+/// The prototype's outline, `lerp(0.040, w, ss(t, 0, 0.45)) (1 - ss(t, 0.5, 1))^0.7 + 0.0015`, written out here.
+fn prototype_outline(w: f64, t: f64) -> f64 {
+    let ss = |x: f64, a: f64, b: f64| {
+        let u = ((x - a) / (b - a)).clamp(0.0, 1.0);
+        u * u * (3.0 - 2.0 * u)
+    };
+    (0.040 + (w - 0.040) * ss(t, 0.0, 0.45)) * (1.0 - ss(t, 0.5, 1.0)).powf(0.7) + 0.0015
+}
+
 #[test]
-fn the_width_fit_is_close_to_the_prototypes_outline() {
+fn the_width_is_the_prototypes_outline() {
     for w in [0.072, 0.064, 0.050, 0.022] {
         let taper = bangs::taper(w);
         let worst = (0..=100)
             .map(|i| {
                 let t = f64::from(i) / 100.0;
-                (f64::from(taper.at(t as f32)) - bangs::outline(w, t)).abs()
+                (f64::from(taper.at(t as f32)) - prototype_outline(w, t)).abs()
             })
             .fold(0.0, f64::max);
-        println!("width {w}: largest difference from the prototype's outline {worst:.5} m");
-        assert!(worst < 0.01, "width {w}: {worst}");
+        println!("width {w}: largest difference from the prototype's outline {worst:.2e} m");
+        assert!(worst < 1e-6, "width {w}: {worst}");
     }
 }
 
