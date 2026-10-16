@@ -67,9 +67,6 @@ fn every_fixture_checks_and_applies_on_the_mock_character_except_the_unavailable
             }
         }
         match m.id.as_str() {
-            "test/stages/lamp" => {
-                assert!(m.check().iter().any(|p| p.field == "target"), "the scene target is reserved");
-            }
             "test/colourways/ghost" => {
                 assert_eq!(check_ops(m, |n| find(n).map(|r| (r.meta)())).len(), 1, "unknown op");
             }

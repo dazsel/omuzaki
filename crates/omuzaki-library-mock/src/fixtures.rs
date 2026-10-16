@@ -93,7 +93,8 @@ pub fn bundle() -> ItemManifest {
     parse(&(header("test/outfits/casual", "1.0.0", "outfits", "bundle", FIRST_PARTY, "") + steps + &palette("#112233")))
 }
 
-/// A scene-target item, which `check` must refuse as reserved (#427).
+/// A scene-target item, which `check` refuses as reserved (#427), so [`MockLibrary::insert`](crate::MockLibrary::insert)
+/// refuses it too: it is not in [`all`].
 pub fn scene() -> ItemManifest {
     let toml = header("test/stages/lamp", "1.0.0", "stages", "setting", FIRST_PARTY, "")
         .replace("target = \"character\"", "target = \"scene\"");
@@ -121,6 +122,13 @@ pub fn unverified() -> ItemManifest {
 pub fn shared_bow(seed: u8) -> ItemManifest {
     let colour = if seed == SIGNER_SEED { "#112211" } else { "#221122" };
     let toml = header("shared/colourways/bow", "1.0.0", "colourways", "setting", PERMISSIVE, "") + &palette(colour);
+    signed(parse(&toml), seed, if seed == SIGNER_SEED { "Signer" } else { "Rival" })
+}
+
+/// One manifest signed by a publisher chosen by `seed` ([`SIGNER_SEED`] or [`RIVAL_SEED`]): the content, and so the
+/// hash, is the same whoever signs, because the hash excludes publisher and signature. Not in [`all`].
+pub fn cosigned(seed: u8) -> ItemManifest {
+    let toml = header("shared/colourways/twin", "1.0.0", "colourways", "setting", PERMISSIVE, "") + &palette("#334455");
     signed(parse(&toml), seed, if seed == SIGNER_SEED { "Signer" } else { "Rival" })
 }
 
@@ -262,7 +270,6 @@ pub fn all() -> Vec<Fixture> {
         held(setting(), ItemScope::FirstParty),
         held(member(), ItemScope::FirstParty),
         held(bundle(), ItemScope::FirstParty),
-        held(scene(), ItemScope::FirstParty),
         held(ghost(), ItemScope::FirstParty),
         held(signed_ember("1.0.0"), ItemScope::Mine),
         held(signed_ember("1.1.0"), ItemScope::Mine),

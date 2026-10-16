@@ -2,7 +2,7 @@
 //! for the store:
 //!
 //! - [`fixtures`]: items under `test/` (and two publishers' items), one of each kind on the character target, a
-//!   refused scene-target item, an item whose op is missing, and signed and unverified publishers
+//!   scene-target item (refused on insert), an item whose op is missing, and signed and unverified publishers
 //! - [`MockLibrary`]: an in-memory [`Library`](omuzaki_library_api::Library) with a naive linear search, which the
 //!   real index must agree with on the fixture set. `compatible_with` is answered from [`CharacterFacts`] the test
 //!   hands it ([`fixtures::characters`])

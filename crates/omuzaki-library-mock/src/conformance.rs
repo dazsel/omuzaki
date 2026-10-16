@@ -183,7 +183,6 @@ fn deterministic_search(library: &dyn Library) {
 
 fn unavailable_with_reasons(library: &dyn Library) {
     let reason = |item: &str| must(item, library.describe(&id(item), None)).info.unavailable;
-    assert!(reason("test/stages/lamp").is_some_and(|r| r.contains("scene")), "the scene target is reserved");
     assert!(reason("test/colourways/ghost").is_some_and(|r| r.contains("ghost.missing")), "names the missing op");
     assert!(
         reason("test/outfits/dangling").is_some_and(|r| r.contains("step/0") && r.contains("nonexistent")),

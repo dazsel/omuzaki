@@ -9,7 +9,7 @@ use omuzaki_library_api::{
     Section, Step, Usage, Version, VersionReq,
 };
 use omuzaki_ops_api::{OpError, find};
-use omuzaki_store_api::{ContentHash, licence_gate};
+use omuzaki_store_api::{ContentHash, Provenance, licence_gate};
 use serde_json::Value;
 
 use crate::apply::{MAX_DEPTH, OpVisitor, check_step, fresh_part_id, walk};
@@ -79,6 +79,8 @@ pub struct MockLibrary {
     entries: Vec<Entry>,
     known_ops: BTreeSet<String>,
     characters: BTreeMap<CharId, CharacterFacts>,
+    /// What the asset store would say about each asset hash; see [`MockLibrary::set_asset_provenance`].
+    assets: BTreeMap<ContentHash, Provenance>,
 }
 
 impl Default for MockLibrary {
@@ -94,6 +96,7 @@ impl MockLibrary {
             entries: Vec::new(),
             known_ops: DEFAULT_OPS.iter().map(|s| (*s).to_owned()).collect(),
             characters: BTreeMap::new(),
+            assets: BTreeMap::new(),
         }
     }
 
@@ -101,6 +104,13 @@ impl MockLibrary {
     /// [`fixtures::characters`](crate::fixtures::characters) is the set the fixture items are written against.
     pub fn set_characters<I: IntoIterator<Item = (CharId, CharacterFacts)>>(&mut self, characters: I) {
         self.characters = characters.into_iter().collect();
+    }
+
+    /// Tells the library what the asset store records about each asset hash, as the real one reads it from the
+    /// store. An asset an item references that is not listed here has unknown provenance, which fails closed: the
+    /// item is not publishable ([`Self::publishable`]).
+    pub fn set_asset_provenance<I: IntoIterator<Item = (ContentHash, Provenance)>>(&mut self, assets: I) {
+        self.assets = assets.into_iter().collect();
     }
 
     /// A library holding [`fixtures::all`](crate::fixtures::all).
@@ -126,11 +136,17 @@ impl MockLibrary {
     /// Adds an item to `scope`. Adding the same manifest to the same scope twice changes nothing.
     ///
     /// # Errors
-    /// [`LibraryError::Storage`] when the id, version or section is malformed, when the publisher check refuses it,
+    /// [`LibraryError::Storage`] when the manifest fails [`ItemManifest::check`] (every problem is named), when the
+    /// id, version or section is malformed, when the publisher check refuses it,
     /// or when the same publisher key already holds this id and version in *any* scope with a different hash: a
     /// published `id@version` is immutable (D11), so Mine and Team can't disagree about it.
     pub fn insert(&mut self, manifest: ItemManifest, scope: ItemScope) -> Result<(), LibraryError> {
         let bad = |what: &dyn std::fmt::Display| LibraryError::Storage(format!("{}: {what}", manifest.id));
+        let problems = manifest.check();
+        if !problems.is_empty() {
+            let all: Vec<String> = problems.iter().map(ToString::to_string).collect();
+            return Err(bad(&format!("fails check: {}", all.join("; "))));
+        }
         let id = manifest.item_id().map_err(|e| bad(&e))?;
         let version = manifest.item_version().map_err(|e| bad(&e))?;
         let section = manifest.item_section().map_err(|e| bad(&e))?;
@@ -255,19 +271,40 @@ impl MockLibrary {
         Ok(())
     }
 
-    /// Whether what `m` makes may be published: its own rights, and for a bundle every item it applies (the record
-    /// carries the strictest join of the rights, design D8), so one non-commercial item blocks the whole bundle.
+    /// Whether what `m` makes may be published: its own rights, the provenance of every asset it references, and for
+    /// a bundle every item it applies (the record carries the strictest join of the rights, design D8), so one
+    /// non-commercial item or asset blocks the whole bundle. An asset whose provenance this library was not told
+    /// ([`set_asset_provenance`](Self::set_asset_provenance)) fails closed.
     fn publishable(&self, e: &Entry, depth: usize) -> bool {
+        self.publish_blocker(e, depth).is_none()
+    }
+
+    /// The first reason `e` may not be published, or `None`.
+    fn publish_blocker(&self, e: &Entry, depth: usize) -> Option<String> {
         let m = &e.item.manifest;
-        let own = licence_gate(&m.rights.to_provenance(&e.id, &e.version), false).is_ok();
-        own && depth <= MAX_DEPTH
-            && m.steps.iter().all(|step| {
-                let Step::Item(nested) = step else { return true };
-                let (Ok(id), Ok(req)) = (ItemId::new(&nested.item), VersionReq::parse(&nested.version)) else {
-                    return true;
-                };
-                self.pick(&id, &req).map_or(true, |found| self.publishable(found, depth + 1))
-            })
+        if depth > MAX_DEPTH {
+            return Some("nested too deeply".to_owned());
+        }
+        if let Err(why) = licence_gate(&m.rights.to_provenance(&e.id, &e.version), false) {
+            return Some(why.to_string());
+        }
+        for (name, hash) in &m.assets {
+            match self.assets.get(hash) {
+                None => return Some(format!("asset `{name}` has unknown provenance")),
+                Some(p) => {
+                    if let Err(why) = licence_gate(p, false) {
+                        return Some(format!("asset `{name}`: {why}"));
+                    }
+                }
+            }
+        }
+        m.steps.iter().find_map(|step| {
+            let Step::Item(nested) = step else { return None };
+            let (Ok(id), Ok(req)) = (ItemId::new(&nested.item), VersionReq::parse(&nested.version)) else {
+                return None;
+            };
+            self.pick(&id, &req).ok().and_then(|found| self.publish_blocker(found, depth + 1))
+        })
     }
 
     fn info(&self, e: &Entry, facts: Option<&CharacterFacts>) -> ItemInfo {
@@ -516,8 +553,13 @@ impl Library for MockLibrary {
     }
 
     fn by_hash(&self, hash: &ContentHash) -> Result<ResolvedItem, LibraryError> {
+        // Two publishers can sign the same canonical manifest (the hash excludes publisher and signature), so scope
+        // alone leaves a tie that load order would break: the publisher key, unsigned first, makes it deterministic.
         let mut found: Vec<&Entry> = self.entries.iter().filter(|e| e.item.hash == *hash).collect();
-        found.sort_by(|a, b| a.scope.cmp(&b.scope));
+        found.sort_by(|a, b| {
+            let key = |e: &Entry| e.item.manifest.publisher.as_ref().map(|p| p.key.clone());
+            (&a.scope, key(a)).cmp(&(&b.scope, key(b)))
+        });
         found.first().map(|e| e.item.clone()).ok_or_else(|| LibraryError::NotFound(hash.to_string()))
     }
 
