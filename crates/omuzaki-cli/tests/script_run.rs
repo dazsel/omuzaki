@@ -427,7 +427,7 @@ fn an_inner_call_that_needs_an_approval_is_refused_and_nothing_is_queued() {
         "{:?}",
         error.detail
     );
-    assert!(rig.exec.approvals().is_empty());
+    assert!(rig.exec.approvals().is_empty(), "a missing scope is not queued either");
 }
 
 #[test]
