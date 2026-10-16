@@ -68,20 +68,31 @@ pub struct Rgba8 {
     pub hash: ContentHash,
 }
 
-/// Reads and decodes the image `image` names (PNG 8 or 16 bit, grey, RGB or RGBA; JPEG).
+/// Reads and decodes the image `image` names (PNG 8 or 16 bit, grey, RGB or RGBA; JPEG) to straight sRGB RGBA8.
 ///
 /// `field` names the argument in errors, such as `reference.image`.
+///
+/// **Size.** The decoded image (`width x height x 4`, the RGBA8 kept) may not exceed [`MAX_DECODED_MIB`] MiB, and no side
+/// may exceed [`MAX_SIDE`] px; both are checked once from the header, before any pixel is allocated. The worst-case peak
+/// while a tagged image is converted is [`PEAK_FACTOR`] times the decoded size.
+///
+/// **Colour.** An image tagged with a colour space is converted to sRGB by `moxcms`, at its source precision (16-bit
+/// stays 16-bit until the last step): an embedded ICC profile (RGB, or grayscale on a grayscale image), a PNG `cICP`
+/// chunk, or a PNG's `gAMA` and `cHRM` chunks (primaries from `cHRM` or sRGB's, a gamma curve from `gAMA` or sRGB's; the
+/// `sRGB` chunk or a gamma near 1/2.2 with sRGB primaries is sRGB as it is). An untagged image is sRGB.
 ///
 /// # Errors
 /// - `NotFound` (the field) when the store has no asset with that hash, or the file is not there.
 /// - `Unavailable` when the op's services carry no store, for an asset reference.
 /// - `Denied` (the field) when the grants do not let the file be read, or the path is a link that cannot be followed.
 /// - `Invalid` (the field) with [`measure-image-too-large`](messages::image_too_large) when the image is larger than
-///   [`MAX_SIDE`] a side or needs more than [`MAX_DECODED_MIB`] at once, and with
-///   [`measure-image-unreadable`](messages::image_unreadable) when the bytes are not a PNG or JPEG (naming the format
-///   when they are another one), or a file is over [`MAX_FILE_BYTES`].
-/// - `Invalid` (the field) with [`measure-image-colour-unsupported`](messages::image_colour_unsupported) when the image
-///   is not sRGB.
+///   [`MAX_SIDE`] a side or [`MAX_DECODED_MIB`] decoded.
+/// - `Invalid` (the field) with [`measure-image-unreadable`](messages::image_unreadable) when the bytes are not a PNG or
+///   JPEG (naming the format when they are another one), a file is over [`MAX_FILE_BYTES`], the image's colour
+///   information cannot be read (a profile the decoder dropped or could not assemble, colour chunks that fail to
+///   decode), or it is a CMYK JPEG, which is refused with or without a profile.
+/// - `Invalid` (the field) with [`measure-image-colour-unsupported`](messages::image_colour_unsupported) when the colour
+///   engine cannot parse or transform the declared colour space.
 /// - `Internal` for a store that fails (corrupt bytes, an I/O error) or a file that cannot be read after the check.
 ///
 /// An asset is fetched whole before its size is checked: the store has no size query or bounded read yet, so the asset
@@ -153,8 +164,16 @@ pub fn decode(bytes: &[u8], hash: ContentHash, field: &str) -> Result<Rgba8, OpE
         .check_dimensions(width, height)
         .and_then(|()| size_limit.reserve(u64::from(width) * u64::from(height) * RGBA_BYTES))
         .map_err(|error| decode_error(bytes, field, error))?;
-    let icc = decoder.icc_profile().map_err(|error| unreadable(field, &error))?;
-    if format == ImageFormat::Jpeg && is_cmyk(bytes) {
+    // The colour metadata is read by the same decoders that decode the pixels, and any failure to read it refuses the image:
+    // a fallback to "no profile" would let a file whose colour could not be read pass as untagged sRGB.
+    let unreadable_colour = || refuse_unreadable(field, "couldn't read the image's colour information".to_owned());
+    let (icc, cmyk) = if format == ImageFormat::Jpeg {
+        let (cmyk, icc) = jpeg_colour(bytes).ok_or_else(unreadable_colour)?;
+        (icc, cmyk)
+    } else {
+        (decoder.icc_profile().map_err(|_| unreadable_colour())?, false)
+    };
+    if cmyk {
         // The decoder hands back RGB it has already made from the inks, with no way to get the ink values a CMYK profile
         // needs, so no CMYK image can be converted faithfully: its colours cannot be known.
         return Err(refuse_unreadable(
@@ -163,11 +182,15 @@ pub fn decode(bytes: &[u8], hash: ContentHash, field: &str) -> Result<Rgba8, OpE
         ));
     }
     let profile_missing = icc.is_none();
-    let declared = if format == ImageFormat::Png { png_colour(bytes, icc) } else { Declared::from_icc(icc) };
-    // A file that has an embedded profile the decoder could not give (APP2 chunks that do not number consistently, a PNG
-    // profile that is corrupt or past the decoder's limit) has colour this cannot read: refused, never read as untagged.
-    // Only a PNG `cICP` the decoder accepted decides the colour anyway (PNG colour chunk precedence).
-    if profile_missing && has_profile_chunk(bytes, format) && !matches!(declared, Declared::Cicp(_)) {
+    let declared = if format == ImageFormat::Png {
+        png_colour(bytes, icc).ok_or_else(unreadable_colour)?
+    } else {
+        Declared::from_icc(icc)
+    };
+    // A file that declares an embedded profile the decoder could not give (a PNG `iCCP` that is corrupt or past the limit;
+    // JPEG APP2 chunks that do not number consistently) has colour this cannot read: refused, never read as untagged. Only
+    // a PNG `cICP` the decoder accepted decides the colour anyway (PNG colour chunk precedence).
+    if profile_missing && declares_profile(bytes, format) && !matches!(declared, Declared::Cicp(_)) {
         return Err(refuse_unreadable(
             field,
             "its embedded colour profile is present but cannot be read (corrupt, incomplete or too large)".to_owned(),
@@ -181,53 +204,38 @@ pub fn decode(bytes: &[u8], hash: ContentHash, field: &str) -> Result<Rgba8, OpE
 /// Bytes a decoded pixel takes in the RGBA8 the measure keeps.
 const RGBA_BYTES: u64 = 4;
 
-/// Whether the file declares an embedded ICC profile, found from its chunk or segment headers (kinds and lengths only, no
-/// data): a PNG `iCCP` before the image data, or a JPEG APP2 `ICC_PROFILE` segment before the scan. It decides no colour;
-/// it tells a profile the decoder dropped from a profile that was never there.
-fn has_profile_chunk(bytes: &[u8], format: ImageFormat) -> bool {
-    let be = |at: usize| bytes.get(at..at + 4).and_then(|b| <[u8; 4]>::try_from(b).ok()).map(u32::from_be_bytes);
-    if format == ImageFormat::Png {
-        let mut at = 8;
-        while let (Some(length), Some(kind)) = (be(at), bytes.get(at + 4..at + 8)) {
-            match kind {
-                b"iCCP" => return true,
-                b"IDAT" | b"IEND" => return false,
-                _ => {}
-            }
-            at = at.saturating_add(12).saturating_add(length as usize);
-        }
-        return false;
+/// Whether the file declares an embedded ICC profile, to tell a profile the decoder dropped from one that was never there.
+/// It decides no colour. A PNG's `iCCP` is found by its chunk framing (length and kind; a malformed file fails the decode
+/// instead). A JPEG's is found by the `ICC_PROFILE` tag of its APP2 segments anywhere in the bytes, not by walking markers:
+/// a walk of our own could disagree with the decoder's about where a segment starts, and the tag cannot appear by chance
+/// in a way that matters, since a false hit only refuses the image.
+fn declares_profile(bytes: &[u8], format: ImageFormat) -> bool {
+    if format == ImageFormat::Jpeg {
+        return bytes.windows(12).any(|window| window == b"ICC_PROFILE\0");
     }
-    let mut at = 2;
-    while let Some(&marker) = bytes.get(at + 1) {
-        if bytes.get(at) != Some(&0xFF) {
-            return false;
+    let be = |at: usize| bytes.get(at..at + 4).and_then(|b| <[u8; 4]>::try_from(b).ok()).map(u32::from_be_bytes);
+    let mut at = 8;
+    while let (Some(length), Some(kind)) = (be(at), bytes.get(at + 4..at + 8)) {
+        match kind {
+            b"iCCP" => return true,
+            b"IDAT" | b"IEND" => return false,
+            _ => {}
         }
-        match marker {
-            0xFF => at += 1,
-            0x00 | 0x01 | 0xD0..=0xD8 => at += 2,
-            0xD9 | 0xDA => return false,
-            _ => {
-                let Some(length) = bytes.get(at + 2..at + 4).map(|b| usize::from(u16::from_be_bytes([b[0], b[1]])))
-                else {
-                    return false;
-                };
-                if marker == 0xE2 && bytes.get(at + 4..at + 16) == Some(b"ICC_PROFILE\0".as_slice()) {
-                    return true;
-                }
-                at += 2 + length.max(2);
-            }
-        }
+        at = at.saturating_add(12).saturating_add(length as usize);
     }
     false
 }
 
-/// Whether a JPEG has four components (CMYK or YCCK), from its headers.
-fn is_cmyk(bytes: &[u8]) -> bool {
+/// A JPEG's colour as `zune-jpeg` reads it from its headers: whether it has four components (CMYK or YCCK), and the ICC
+/// profile as the decoder assembles it from the APP2 segments (`None` when there is none, or when the segments do not
+/// number consistently, which the caller tells apart by [`declares_profile`]). `None` when the headers cannot be read.
+fn jpeg_colour(bytes: &[u8]) -> Option<(bool, Option<Vec<u8>>)> {
     use zune_jpeg::zune_core::bytestream::ZCursor;
     use zune_jpeg::zune_core::colorspace::ColorSpace;
     let mut decoder = zune_jpeg::JpegDecoder::new(ZCursor::new(bytes));
-    decoder.decode_headers().is_ok() && matches!(decoder.input_colorspace(), Some(ColorSpace::CMYK | ColorSpace::YCCK))
+    decoder.decode_headers().ok()?;
+    let cmyk = matches!(decoder.input_colorspace(), Some(ColorSpace::CMYK | ColorSpace::YCCK));
+    Some((cmyk, decoder.icc_profile()))
 }
 
 /// The colour space a file declares for its pixels, in the order of the PNG specification: `cICP`, an embedded profile,
@@ -252,11 +260,15 @@ impl Declared {
 
 /// The colour declaration of a PNG as the `png` decoder validated it (it drops a chunk that is out of order, repeated or
 /// has a bad CRC); `image` exposes only the profile, which is passed in.
-fn png_colour(bytes: &[u8], icc: Option<Vec<u8>>) -> Declared {
-    let mut decoder = png::Decoder::new(Cursor::new(bytes));
+///
+/// `None` when the chunks cannot be read under the same limit the pixels are decoded under: the image is refused then, not
+/// read as untagged.
+fn png_colour(bytes: &[u8], icc: Option<Vec<u8>>) -> Option<Declared> {
+    let limit = png::Limits { bytes: usize::try_from(limits().max_alloc.unwrap_or(u64::MAX)).unwrap_or(usize::MAX) };
+    let mut decoder = png::Decoder::new_with_limits(Cursor::new(bytes), limit);
     decoder.set_ignore_text_chunk(true);
     decoder.set_ignore_iccp_chunk(true);
-    let Ok(reader) = decoder.read_info() else { return Declared::from_icc(icc) };
+    let reader = decoder.read_info().ok()?;
     let info = reader.info();
     if let Some(code) = info.coding_independent_code_points
         && let (Ok(color_primaries), Ok(transfer_characteristics), Ok(matrix_coefficients)) = (
@@ -265,33 +277,33 @@ fn png_colour(bytes: &[u8], icc: Option<Vec<u8>>) -> Declared {
             MatrixCoefficients::try_from(code.matrix_coefficients),
         )
     {
-        return Declared::Cicp(CicpProfile {
+        return Some(Declared::Cicp(CicpProfile {
             color_primaries,
             transfer_characteristics,
             matrix_coefficients,
             full_range: code.is_video_full_range_image,
-        });
+        }));
     }
     if info.coding_independent_code_points.is_some() {
         // A `cICP` whose code points `moxcms` does not know: the colour is declared and cannot be converted.
-        return Declared::Icc(Vec::new());
+        return Some(Declared::Icc(Vec::new()));
     }
     if let Some(icc) = icc {
-        return Declared::Icc(icc);
+        return Some(Declared::Icc(icc));
     }
     if info.srgb.is_some() {
-        return Declared::Srgb;
+        return Some(Declared::Srgb);
     }
     let gamma = info.gama_chunk.map(png::ScaledFloat::into_scaled);
     let chromaticities = info.chrm_chunk.map(|chrm| {
         [chrm.white, chrm.red, chrm.green, chrm.blue]
             .map(|(x, y)| (f64::from(x.into_value()), f64::from(y.into_value())))
     });
-    if gamma.is_none() && chromaticities.is_none() {
+    Some(if gamma.is_none() && chromaticities.is_none() {
         Declared::Srgb
     } else {
         Declared::Chunks { gamma, chromaticities }
-    }
+    })
 }
 
 /// The sRGB file gamma (1 / 2.2 nearly, `gAMA` 45 455) and how far a file's may stray and still be called sRGB: two units

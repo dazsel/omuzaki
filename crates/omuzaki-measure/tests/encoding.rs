@@ -338,3 +338,37 @@ fn a_profile_the_decoder_could_not_give_is_refused_never_read_as_untagged() {
     );
     assert_eq!(first_pixel(&with_cicp), [200, 120, 60, 255]);
 }
+
+#[test]
+fn colour_chunks_that_cannot_be_read_never_leave_the_image_read_as_srgb() {
+    // A linear-gamma PNG with 65 MiB of `eXIf`. Metadata and pixels are read under one limit, so this is either converted
+    // (128 linear is about 188 in sRGB) or refused; it is never left as 128, which is what a fallback to "no colour
+    // information" would give.
+    let png = with_chunks(
+        &flat_png([128, 128, 128], None),
+        &[chunk(*b"gAMA", &100_000u32.to_be_bytes()), chunk(*b"eXIf", &vec![0_u8; 65 << 20])],
+    );
+    match decode(&png, ContentHash::of(&png), FIELD) {
+        Ok(image) => assert!(image.pixels[0] >= 186, "left as {}", image.pixels[0]),
+        Err(error) => assert_eq!(error.code, ErrorCode::Invalid, "{}", error.message),
+    }
+}
+
+#[test]
+fn a_jpeg_with_junk_between_markers_and_a_broken_profile_sequence_is_refused() {
+    // Junk bytes before the APP2 segment, which carries sequence 2 of 1. The decoder's traversal alone decides where
+    // segments start; whatever it makes of the junk, the profile it cannot assemble must not read as untagged sRGB.
+    let jpeg = include_bytes!("fixtures/baseline_444.jpg");
+    let mut app2 = b"ICC_PROFILE\0\x02\x01".to_vec();
+    app2.extend(display_p3_profile());
+    for junk in [&[0x13_u8, 0x37, 0x00][..], &[0xFF, 0xFF, 0x00, 0x41], &[0x00; 7]] {
+        let mut bad = jpeg[..2].to_vec();
+        bad.extend(junk);
+        bad.extend([0xFF, 0xE2]);
+        bad.extend(u16::try_from(app2.len() + 2).unwrap().to_be_bytes());
+        bad.extend(&app2);
+        bad.extend(&jpeg[2..]);
+        let error = decode(&bad, ContentHash::of(&bad), FIELD).unwrap_err();
+        assert_eq!(error.code, ErrorCode::Invalid, "junk {junk:?}: {}", error.message);
+    }
+}
