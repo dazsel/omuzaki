@@ -1,9 +1,12 @@
 //! Helpers shared by the accessory tests of `omuzaki-test-char`: a character with one accessory, the prototype dump when it is
 //! there, and the spring solver run over a built rig.
 //!
-//! Each test file includes this with `mod char_accessory_support;`, so a helper one file does not use is dead there.
+//! Each test file includes this with `mod char_accessory_support;`, so a helper one file does not use is dead there. (The file
+//! is itself a test target with no tests.)
 
 #![allow(dead_code)]
+#![allow(clippy::missing_panics_doc, clippy::missing_errors_doc, clippy::must_use_candidate)]
+// test helpers; a panic is the failure
 // A counting allocator is the only way to *prove* "no allocation"; the workspace denies unsafe code by default.
 #![allow(unsafe_code)]
 #![allow(clippy::unwrap_used, clippy::expect_used)] // helpers build fixtures; a bad one should stop the test with its reason

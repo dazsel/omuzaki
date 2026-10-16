@@ -16,13 +16,21 @@ use omuzaki_char_api::find_kind;
 use omuzaki_core::glam::{Quat, Vec3};
 use serde_json::json;
 
+/// The headphones to try: plain, each flag the kind has, and all of them.
+fn variants() -> Vec<(String, serde_json::Value)> {
+    let mut all = vec![("plain".to_owned(), json!({}))];
+    all.extend(styles("headphones"));
+    all.push(("both".to_owned(), json!({ "cat_ears": true, "mic": true, "clearance": 0.075 })));
+    all
+}
+
 /// Triangles one accessory kind may use at live quality.
 const TRIANGLE_BUDGET: usize = 2000;
 
 #[test]
 fn every_style_builds_closed_shells_on_the_four_templates() {
     for template in TEMPLATES {
-        for (name, params) in styles("headphones") {
+        for (name, params) in variants() {
             let s = built_scene(template, "headphones", params.clone(), None);
             assert_closed(&s.built, &format!("headphones {name} on {template}"));
             assert_weights_valid(&s.built, &format!("headphones {name} on {template}"));
@@ -48,9 +56,7 @@ fn the_kind_is_an_accessory_that_needs_the_head() {
 fn the_band_clears_the_hair_of_every_hairstyle_by_2_mm() {
     for template in TEMPLATES {
         for (hair_name, hair) in hairstyles() {
-            for (name, params) in
-                styles("headphones").into_iter().filter(|(n, _)| ["plain", "cat-ears-and-mic"].contains(n))
-            {
+            for (name, params) in variants().into_iter().filter(|(n, _)| ["plain", "both"].contains(&n.as_str())) {
                 let def = character_with(template, Some(&hair), &[(ACC, "headphones", params.clone(), None)]);
                 let s = scene(&def).unwrap();
                 let band = mesh_named(&s.built, "-band");
@@ -143,7 +149,7 @@ fn a_palette_change_recolours_the_headphones_without_new_geometry() {
 
 #[test]
 fn the_bytes_are_deterministic_and_inside_the_budget() {
-    for (name, params) in styles("headphones") {
+    for (name, params) in variants() {
         let (a, b) = (
             built_scene("tall", "headphones", params.clone(), None),
             built_scene("tall", "headphones", params.clone(), None),

@@ -104,22 +104,6 @@ impl<'a> Shells<'a> {
         self.add(slot, place, grid, wraps, inside, skin)
     }
 
-    /// Adds a grid of points in the accessory's **local** frame (see [`ResolvedAttach`]) to slot `slot`, with the skin given.
-    /// `inside` gives the interior reference of vertex `(i, j)`, also in the local frame.
-    ///
-    /// # Errors
-    /// [`KitError`] from the grid.
-    pub fn local(
-        &mut self,
-        slot: usize,
-        grid: &Grid,
-        wraps: (bool, bool),
-        inside: &dyn Fn(usize, usize) -> DVec3,
-        skin: Skin<'_>,
-    ) -> Result<(), KitError> {
-        self.add(slot, self.attach.to_bind, grid, wraps, inside, skin)
-    }
-
     fn add(
         &mut self,
         slot: usize,

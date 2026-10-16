@@ -1,6 +1,7 @@
 //! Tails (CB-43): `tail`, four presets (fox, cat, dragon, bunny) on an N-bone spring chain, rooted at the tailbone.
 //!
-//! **Build.** The tail's rest curve starts inside the back at the tailbone (the hips bone's frame, `attach` moves it),
+//! **Build.** The tail's rest curve starts inside the back at the tailbone, built about the hips bone's frame; an `attach`
+//! places that frame (its offset moves, turns and scales the whole tail, once),
 //! leaves backwards and up, and curls up through `curl_deg`. Each preset is a closed tube along it: a fox's fluffy and
 //! fullest in the middle with a `tuft` colour at the tip, a cat's slim and even, a dragon's thick at the root and
 //! tapering to a point with a spade, a bunny's a ball. Lengths are for a standard-height body and scale with the body
@@ -25,10 +26,10 @@ use omuzaki_face_api::{Check, ColourRef, Validate};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::attach::{ResolvedAttach, attachment, on_bone};
 use super::rigid::{Detail, kit_error};
 use super::shells::{
-    Chain, Shells, Slot, body_scale, chain_weights, closed_tube, ellipsoid, recolour, spring_chain, torso_back,
+    Chain, Shells, Slot, body_scale, chain_weights, closed_tube, ellipsoid, frames_on, recolour, spring_chain,
+    torso_back,
 };
 use crate::kit::KitError;
 use crate::kit::curve::{clamp, fraction, lerp};
@@ -248,8 +249,9 @@ fn usize_f(n: usize) -> f64 {
 }
 
 impl Tail {
-    /// The tailbone: where the curve starts, local frame. It sits `ROOT_DEPTH` inside the back at the height of the hips.
-    fn root(ctx: &BuildCtx<'_>, attach: &ResolvedAttach, scale: f64) -> Result<DVec3, BuildError> {
+    /// The tailbone: where the curve starts, bind space, in the hips' own frame (the attachment places it afterwards). It
+    /// sits `ROOT_DEPTH` inside the back at the height of the hips.
+    fn root(ctx: &BuildCtx<'_>, scale: f64) -> Result<DVec3, BuildError> {
         let hips =
             ctx.joint(&JointRef::HIPS).ok_or_else(|| ctx.fail("the body has no hips joint to root the tail on"))?;
         let back = torso_back(ctx)?;
@@ -259,7 +261,7 @@ impl Tail {
             .min_by(|a, b| (a.0 - f64::from(hips.y)).abs().total_cmp(&(b.0 - f64::from(hips.y)).abs()))
             .ok_or_else(|| ctx.fail("the body has no torso to root the tail on"))?;
         let bind = DVec3::new(f64::from(hips.x), f64::from(hips.y) - 0.03 * scale, at.1 + ROOT_DEPTH * scale);
-        Ok(attach.to_bind.inverse().transform_point3(bind))
+        Ok(bind)
     }
 
     fn sleeve(sh: &Shape<'_>, path: &[DVec3], seg: usize) -> Result<Option<Sweep>, KitError> {
@@ -297,8 +299,9 @@ impl PartKind for Tail {
     }
 
     fn build(p: &TailParams, ctx: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
-        let attach = attachment(ctx, |c| on_bone(c, &JointRef::HIPS))?;
-        let scale = body_scale(ctx)? * attach.scale();
+        let (attach, default) = frames_on(ctx, &JointRef::HIPS)?;
+        // The body's size only: the attachment's own scale is applied once, by the matrix that places the tail.
+        let scale = body_scale(ctx)?;
         let r = p.resolved(scale);
         let detail = Detail::of(ctx.quality);
         let err = kit_error(ctx);
@@ -306,10 +309,11 @@ impl PartKind for Tail {
         // The rows come in whole segments between bones, so each bone sits on a ring.
         let per_segment = (detail.rows / (r.bones - 1)).max(2);
         let rows = per_segment * (r.bones - 1);
-        let root = Self::root(ctx, &attach, scale)?;
+        let root = Self::root(ctx, scale)?;
         let path = sh.curve(root, rows);
-        // The bones: one per segment boundary, bind space.
-        let points: Vec<DVec3> = (0..r.bones).map(|b| attach.point(path[b * per_segment])).collect();
+        // The bones: one per segment boundary, placed.
+        let place = attach.to_bind * default.to_bind.inverse();
+        let points: Vec<DVec3> = (0..r.bones).map(|b| place.transform_point3(path[b * per_segment])).collect();
         let hit = SpringParams {
             hit_radius: 0.0,
             stiffness: narrow(p.stiffness),
@@ -321,17 +325,17 @@ impl PartKind for Tail {
         let mut rig = RigContribution::default();
         let chain = Chain { tag: "", parent: attach.joint.clone(), points: &points, root: hit, tip, centre: None };
         let joints = spring_chain(ctx, "tail", &mut rig, &chain)?;
-        let mut shells = Shells::new(&attach, &attach, 3);
+        let mut shells = Shells::new(&attach, &default, 3);
         let seg = detail.lathe * 3 / 4;
         let body = closed_tube(&path, |t| (sh.radius(t), sh.radius(t)), seg, DVec3::Y).map_err(&err)?;
         let weights = |_: DVec3, i: usize, _: usize| chain_weights(&joints, fraction(i, rows));
         let centres = body.centres.clone();
-        shells.local(0, &body.grid, (false, true), &|i, _| centres[i], Skin::Per(&weights)).map_err(&err)?;
+        shells.bind_skinned(0, &body.grid, (false, true), &|i, _| centres[i], Skin::Per(&weights)).map_err(&err)?;
         if let Some(tuft) = Self::sleeve(&sh, &path, seg).map_err(&err)? {
             let from = rows - (tuft.centres.len() - 1);
             let weights = |_: DVec3, i: usize, _: usize| chain_weights(&joints, fraction(from + i, rows));
             let centres = tuft.centres.clone();
-            shells.local(1, &tuft.grid, (false, true), &|i, _| centres[i], Skin::Per(&weights)).map_err(&err)?;
+            shells.bind_skinned(1, &tuft.grid, (false, true), &|i, _| centres[i], Skin::Per(&weights)).map_err(&err)?;
         }
         if p.kind == TailKind::Dragon {
             // The spade: a flat leaf at the tip, skinned to the last two bones.
@@ -348,7 +352,7 @@ impl PartKind for Tail {
             )
             .map_err(&err)?;
             let weights = |_: DVec3, _: usize, _: usize| chain_weights(&joints, 1.0);
-            shells.local(2, &grid, (false, true), &|_, _| centre, Skin::Per(&weights)).map_err(&err)?;
+            shells.bind_skinned(2, &grid, (false, true), &|_, _| centre, Skin::Per(&weights)).map_err(&err)?;
         }
         shells.output(ctx, &p.slots(), rig)
     }

@@ -9,8 +9,9 @@
 //! (a head with no side ear has none: the arm then ends on the side of the head at the eye line). The bridge joins the
 //! two rims.
 //!
-//! **The eye layout** is the face profile's, which no part publishes yet, so the defaults are the default layout's
-//! and a character with another layout passes its own `eye_y` and `eye_spacing`.
+//! **The eye layout** is the character's face profile (`eye_y`, `eye_spacing`, `brow_gap`), read from the build context, so
+//! the glasses follow an edited layout. `eye_y` and `eye_spacing` override it. A frame that would reach the brow, or whose
+//! rims would touch, is a build error naming the layout.
 //!
 //! **Both sides.** Each side is generated with its own sign `s` (`+1` the character's left, `-1` the right): the pair is
 //! the exact mirror image of one another.
@@ -78,10 +79,12 @@ impl GlassesStyle {
 pub struct GlassesParams {
     /// The frame style.
     pub style: GlassesStyle,
-    /// The eye line, head-local metres (the face layout's `eye_y`; negative is below the head centre).
-    pub eye_y: f64,
-    /// Half the distance between the eye centres, metres (the face layout's `eye_spacing`).
-    pub eye_spacing: f64,
+    /// The eye line, head-local metres (negative is below the head centre). Left out: the character's face layout's `eye_y`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub eye_y: Option<f64>,
+    /// Half the distance between the eye centres, metres. Left out: the face layout's `eye_spacing`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub eye_spacing: Option<f64>,
     /// Scale of the lenses' outline, `1` for the style's own size.
     pub size: f64,
     /// How far the lens stands off the head's surface, metres.
@@ -101,11 +104,10 @@ pub struct GlassesParams {
 
 impl Default for GlassesParams {
     fn default() -> Self {
-        let layout = FaceLayout::default();
         Self {
             style: GlassesStyle::Round,
-            eye_y: layout.eye_y,
-            eye_spacing: layout.eye_spacing,
+            eye_y: None,
+            eye_spacing: None,
             size: 1.0,
             gap: 0.01,
             rim: 0.0035,
@@ -117,15 +119,14 @@ impl Default for GlassesParams {
     }
 }
 
-/// The face layout's brow height over the eye line, metres: the glasses never reach it.
-fn brow_gap() -> f64 {
-    FaceLayout::default().brow_gap
-}
-
 impl Validate for GlassesParams {
     fn check(&self, c: &mut Check) {
-        c.range("eye_y", self.eye_y, -0.3, 0.3);
-        c.range("eye_spacing", self.eye_spacing, 0.03, 0.2);
+        if let Some(eye_y) = self.eye_y {
+            c.range("eye_y", eye_y, -0.3, 0.3);
+        }
+        if let Some(spacing) = self.eye_spacing {
+            c.range("eye_spacing", spacing, 0.03, 0.2);
+        }
         c.range("size", self.size, 0.5, 1.6);
         c.range("gap", self.gap, 0.008, 0.05);
         c.range("rim", self.rim, 0.0015, 0.01);
@@ -133,18 +134,44 @@ impl Validate for GlassesParams {
         if let Some(coverage) = self.lens_coverage {
             c.range("lens_coverage", coverage, 0.0, 1.0);
         }
-        let o = self.style.outline();
-        let top = o.half_height * self.size * (1.0 + o.lift) + self.rim;
-        if top > brow_gap() - 0.008 {
-            c.fail(
-                "size",
-                format!("the frames reach {:.1} cm over the eye line, into the brow: lower the size", top * 100.0),
-            );
+    }
+}
+
+/// Where the eyes are: the parameters' own, else the character's face layout.
+#[derive(Copy, Clone)]
+struct Eyes {
+    /// The eye line, head-local.
+    y: f64,
+    /// Half the distance between the eyes.
+    spacing: f64,
+    /// The brow's height over the eye line: the frames never reach it.
+    brow_gap: f64,
+}
+
+impl Eyes {
+    fn of(p: &GlassesParams, layout: &FaceLayout) -> Self {
+        Self {
+            y: p.eye_y.unwrap_or(layout.eye_y),
+            spacing: p.eye_spacing.unwrap_or(layout.eye_spacing),
+            brow_gap: layout.brow_gap,
         }
-        let bridge = self.eye_spacing - o.half_width * self.size - self.rim;
-        if bridge < 0.004 {
-            c.fail("size", "the two rims would touch each other: lower the size or widen eye_spacing");
+    }
+
+    /// Whether the frames fit this layout: below the brow, and with the two rims apart.
+    fn check(&self, p: &GlassesParams) -> Result<(), String> {
+        let o = p.style.outline();
+        let top = o.half_height * p.size * (1.0 + o.lift) + p.rim;
+        if top > self.brow_gap - 0.008 {
+            return Err(format!(
+                "the frames reach {:.1} cm over the eye line, into the brow {:.1} cm up: lower the size",
+                top * 100.0,
+                self.brow_gap * 100.0
+            ));
         }
+        if self.spacing - o.half_width * p.size - p.rim < 0.004 {
+            return Err("the two rims would touch each other: lower the size or widen eye_spacing".to_owned());
+        }
+        Ok(())
     }
 }
 
@@ -187,11 +214,11 @@ const OUTLINE_POINTS: usize = 24;
 impl Glasses {
     /// The place and frame of the lens of the character's left eye, in bind space.
     #[allow(clippy::many_single_char_names)] // the geometry formulas use the textbook names
-    fn left_eye(head: &dyn HeadSurface, p: &GlassesParams) -> Eye {
+    fn left_eye(head: &dyn HeadSurface, p: &GlassesParams, eyes: Eyes) -> Eye {
         let s = 1.0;
         let centre = DVec3::from(head.centre());
         let radius = f64::from(head.radius(omuzaki_core::glam::Vec3::Z));
-        let (x, y) = (s * p.eye_spacing, p.eye_y);
+        let (x, y) = (s * eyes.spacing, eyes.y);
         // The direction from the head centre to the surface in front of the eye: its depth follows the radius there.
         let mut z = (radius * radius - x * x - y * y).max(0.0).sqrt();
         let mut dir = DVec3::new(x, y, z).normalize_or_zero();
@@ -291,14 +318,14 @@ impl Glasses {
     }
 
     /// The ear root of side `s`: the anchor the head published, else the side of the head at the eye line.
-    fn ear(ctx: &BuildCtx<'_>, p: &GlassesParams, head: &dyn HeadSurface, s: f64) -> DVec3 {
+    fn ear(ctx: &BuildCtx<'_>, eyes: Eyes, head: &dyn HeadSurface, s: f64) -> DVec3 {
         let name = if s > 0.0 { "ear_l" } else { "ear_r" };
         if let Some((_, anchor)) = ctx.published.get::<AnchorsFact>().iter().find(|((_, a), _)| a.as_str() == name) {
             return DVec3::from(anchor.position);
         }
         let centre = DVec3::from(head.centre());
         let side = on_head(head, DVec3::X * s, 0.0);
-        DVec3::new(side.x, centre.y + p.eye_y, centre.z)
+        DVec3::new(side.x, centre.y + eyes.y, centre.z)
     }
 
     /// The temple arm of `eye`: from the rim's outer edge back along the head to `ear`.
@@ -357,7 +384,9 @@ impl PartKind for Glasses {
         let err = kit_error(ctx);
         let mut shells = Shells::new(&attach, &default, 2);
         let seg = detail.cross.min(8);
-        let left = Self::left_eye(head.as_ref(), p);
+        let placing = Eyes::of(p, &ctx.face.layout);
+        placing.check(p).map_err(|m| ctx.fail(m))?;
+        let left = Self::left_eye(head.as_ref(), p, placing);
         let right = Self::mirrored(&left, f64::from(head.centre().x));
         let eyes = [left, right];
         for eye in &eyes {
@@ -369,7 +398,7 @@ impl PartKind for Glasses {
             shells.bind(0, &rim, (true, true), &curve).map_err(&err)?;
             let (lens, mids) = Self::lens(p, eye).map_err(&err)?;
             shells.bind(1, &lens, (false, true), &|i, j| mids[i * (OUTLINE_POINTS + 1) + j]).map_err(&err)?;
-            let ear = Self::ear(ctx, p, head.as_ref(), eye.s);
+            let ear = Self::ear(ctx, placing, head.as_ref(), eye.s);
             let arm = Self::arm(head.as_ref(), p, eye, ear, detail.rows / 2, seg).map_err(&err)?;
             let centres = arm.centres.clone();
             shells.bind(0, &arm.grid, (false, true), &|i, _| centres[i]).map_err(&err)?;

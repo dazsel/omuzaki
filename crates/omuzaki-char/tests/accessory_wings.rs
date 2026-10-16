@@ -35,9 +35,9 @@ fn wing_vertices(b: &BuiltCharacter, pose: &Pose) -> Vec<Vec3> {
 #[test]
 fn every_kind_builds_closed_shells_on_the_four_templates() {
     let mut all = styles("wings");
-    all.push(("few-feathers", json!({ "kind": "feathered", "feathers": 3, "feather_size": 0.5 })));
-    all.push(("many-feathers", json!({ "kind": "feathered", "feathers": 16, "feather_size": 1.5 })));
-    all.push(("many-blades", json!({ "kind": "mechanical", "feathers": 16 })));
+    all.push(("few-feathers".to_owned(), json!({ "kind": "feathered", "feathers": 3, "feather_size": 0.5 })));
+    all.push(("many-feathers".to_owned(), json!({ "kind": "feathered", "feathers": 16, "feather_size": 1.5 })));
+    all.push(("many-blades".to_owned(), json!({ "kind": "mechanical", "feathers": 16 })));
     for template in TEMPLATES {
         for (name, params) in &all {
             let s = built_scene(template, "wings", params.clone(), None);
@@ -237,4 +237,43 @@ fn the_wings_build_in_5_ms_or_less() {
         println!("wings {name}: {ms:.3} ms");
         assert!(ms <= build_budget_ms(), "wings {name} took {ms:.2} ms");
     }
+}
+
+fn offset(translation: [f64; 3], rotation_deg: [f64; 3], scale: f64) -> omuzaki_char_api::Attach {
+    omuzaki_char_api::Attach::Bone {
+        bone: omuzaki_char_api::JointRef::CHEST,
+        offset: omuzaki_char_api::AttachOffset { translation, rotation_deg, scale },
+    }
+}
+
+#[test]
+fn a_turned_attachment_folds_the_wings_about_their_own_plane_and_a_scale_counts_once() {
+    let channel = Channel::custom(0).unwrap();
+    let base = built_scene("standard", "wings", json!({ "kind": "bat" }), None);
+    let turned =
+        built_scene("standard", "wings", json!({ "kind": "bat" }), Some(offset([0.0; 3], [0.0, 30.0, 0.0], 1.0)));
+    assert_skins_to_the_built_mesh_at_bind(&turned.built, "wings on a turned attachment");
+    // Spread is the built shape, and folding never takes a vertex out of the wings' (turned) plane.
+    let normal = omuzaki_core::glam::Quat::from_rotation_y(30f32.to_radians()) * Vec3::Z;
+    let plane = |points: &[Vec3]| {
+        let ds: Vec<f32> = points.iter().map(|p| normal.dot(*p)).collect();
+        (ds.iter().copied().fold(f32::MAX, f32::min), ds.iter().copied().fold(f32::MIN, f32::max))
+    };
+    let spread = wing_vertices(&turned.built, &folded(&turned.built, channel, 1.0));
+    let built_shape = vertices(&turned.built);
+    let worst = built_shape.iter().zip(&spread).map(|(p, q)| p.distance(*q)).fold(0.0, f32::max);
+    assert!(worst < 1e-4, "spread is {worst} m from the built wing");
+    for value in [0.0, 0.5] {
+        let posed = plane(&wing_vertices(&turned.built, &folded(&turned.built, channel, value)));
+        let at_rest = plane(&spread);
+        assert!(
+            (posed.0 - at_rest.0).abs() < 1e-3 && (posed.1 - at_rest.1).abs() < 1e-3,
+            "fold {value}: {posed:?} against {at_rest:?}"
+        );
+    }
+    // Scale 2 doubles the wings.
+    let doubled = built_scene("standard", "wings", json!({ "kind": "bat" }), Some(offset([0.0; 3], [0.0; 3], 2.0)));
+    assert_skins_to_the_built_mesh_at_bind(&doubled.built, "wings on a scaled attachment");
+    let ratio = width(&vertices(&doubled.built)) / width(&vertices(&base.built));
+    assert!((ratio - 2.0).abs() < 0.05, "scale 2 made the wings {ratio} times as wide");
 }

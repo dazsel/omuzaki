@@ -180,3 +180,47 @@ fn the_tails_build_in_5_ms_or_less() {
         assert!(ms <= build_budget_ms(), "tail {name} took {ms:.2} ms");
     }
 }
+
+fn offset(translation: [f64; 3], rotation_deg: [f64; 3], scale: f64) -> omuzaki_char_api::Attach {
+    omuzaki_char_api::Attach::Bone {
+        bone: JointRef::HIPS,
+        offset: omuzaki_char_api::AttachOffset { translation, rotation_deg, scale },
+    }
+}
+
+#[test]
+fn an_attachment_moves_turns_and_scales_the_whole_tail_exactly_once() {
+    let base = built_scene("standard", "tail", json!({}), None);
+    let hips = base.built.rig.skeleton.humanoid_bone(HumanoidBone::Hips).unwrap();
+    let pivot = accessory_common::rest_joint(&base.built, HumanoidBone::Hips);
+    let _ = hips;
+    let (before, after_move) = (vertices(&base.built), {
+        let moved = built_scene("standard", "tail", json!({}), Some(offset([0.1, 0.02, -0.03], [0.0; 3], 1.0)));
+        assert_skins_to_the_built_mesh_at_bind(&moved.built, "a translated tail");
+        vertices(&moved.built)
+    });
+    for (a, b) in before.iter().zip(&after_move) {
+        assert!((*b - *a - omuzaki_core::glam::Vec3::new(0.1, 0.02, -0.03)).length() < 1e-4, "{a:?} to {b:?}");
+    }
+    // Scale 2 doubles the tail about the hips, not four times: the farthest vertex from the pivot is twice as far.
+    let reach = |points: &[omuzaki_core::glam::Vec3]| points.iter().map(|p| p.distance(pivot)).fold(0.0, f32::max);
+    let scaled = built_scene("standard", "tail", json!({}), Some(offset([0.0; 3], [0.0; 3], 2.0)));
+    assert_skins_to_the_built_mesh_at_bind(&scaled.built, "a scaled tail");
+    let ratio = reach(&vertices(&scaled.built)) / reach(&before);
+    assert!((ratio - 2.0).abs() < 0.02, "scale 2 made the tail {ratio} times as far");
+    // A turn about the hips keeps every vertex at its distance from them.
+    let turned = built_scene("standard", "tail", json!({}), Some(offset([0.0; 3], [0.0, 0.0, 40.0], 1.0)));
+    assert_skins_to_the_built_mesh_at_bind(&turned.built, "a turned tail");
+    for (a, b) in before.iter().zip(vertices(&turned.built)) {
+        assert!((a.distance(pivot) - b.distance(pivot)).abs() < 1e-4);
+    }
+    // The chain follows the attachment: it hangs from the joint it names.
+    let chest = Some(omuzaki_char_api::Attach::Bone {
+        bone: JointRef::CHEST,
+        offset: omuzaki_char_api::AttachOffset::default(),
+    });
+    let on_chest = built_scene("standard", "tail", json!({}), chest).built;
+    let chain = on_chest.rig.springs.chains.iter().find(|c| c.name == "tail_acc").unwrap();
+    assert_eq!(on_chest.rig.skeleton.bones()[chain.joints[0].bone.index()].parent, on_chest.rig.bone(&JointRef::CHEST));
+    assert_skins_to_the_built_mesh_at_bind(&on_chest, "a tail on the chest");
+}

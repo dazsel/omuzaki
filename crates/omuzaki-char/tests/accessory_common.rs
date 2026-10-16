@@ -1,9 +1,11 @@
 //! Helpers shared by the `accessory_*` tests: a real body and head (and optionally a real hairstyle) of each template
 //! with accessories on them, closed-shell checks, and posing through the rig.
 //!
-//! Each test file includes this with `mod accessory_common;`, so a helper one file does not use is dead there.
+//! Each test file includes this with `mod accessory_common;`, so a helper one file does not use is dead there. (The file is
+//! itself a test target with no tests, which keeps it beside the `accessory_*.rs` files that share it.)
 
 #![allow(dead_code)]
+#![allow(clippy::missing_panics_doc, clippy::missing_errors_doc, clippy::must_use_candidate)] // test helpers; a panic is the failure
 #![allow(clippy::many_single_char_names)] // the geometry formulas use the textbook names
 #![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::chunks_exact_to_as_chunks)] // test arithmetic
 #![allow(clippy::expect_used, clippy::unwrap_used)] // helpers build fixtures; a bad one should stop the test with its reason
@@ -235,6 +237,34 @@ pub fn skinned(b: &BuiltCharacter, mesh: &PartMesh, local: &Pose) -> Vec<Vec3> {
         .collect()
 }
 
+/// The geometry of `mesh` skinned with the local pose `local`: positions and normals (normals blended and renormalised).
+pub fn skinned_geometry(b: &BuiltCharacter, mesh: &PartMesh, local: &Pose) -> omuzaki_core::mesh::MeshData {
+    let skeleton = &b.rig.skeleton;
+    let inverse_bind = b.rig.inverse_bind();
+    let mut world = Pose::IDENTITY;
+    skeleton.world_pose(local, &mut world);
+    let matrices: Vec<Mat4> = mesh
+        .joint_bones
+        .iter()
+        .map(|joint| {
+            let id = b.rig.bone(joint).unwrap_or_else(|| panic!("{joint:?} is not in the rig")).index();
+            world.local[id].to_mat4() * inverse_bind[id]
+        })
+        .collect();
+    let mut out = mesh.geometry.clone();
+    for v in 0..out.positions.len() {
+        let (mut p, mut n) = (Vec3::ZERO, Vec3::ZERO);
+        for k in 0..4 {
+            let (m, w) = (&matrices[usize::from(out.joints[v][k])], out.weights[v][k]);
+            p += m.transform_point3(mesh.geometry.positions[v]) * w;
+            n += m.transform_vector3(mesh.geometry.normals[v]) * w;
+        }
+        out.positions[v] = p;
+        out.normals[v] = n.normalize_or_zero();
+    }
+    out
+}
+
 /// Where `bone` is in the skeleton's rest pose.
 pub fn rest_joint(b: &BuiltCharacter, bone: HumanoidBone) -> Vec3 {
     let skeleton = &b.rig.skeleton;
@@ -321,56 +351,30 @@ pub fn assert_recolours_in_place(mut def: CharacterDef, names: &[&str]) {
 
 // ------------------------------------------------------------------------------------------------ the styles of each kind
 
-/// The styles of each kind that the sheets show and the conformance tests sweep: `(name, parameters)`.
-pub fn styles(kind: &str) -> Vec<(&'static str, Value)> {
-    match kind {
-        "horns" => vec![
-            ("swept-back", json!({ "shape": "swept_back" })),
-            (
-                "ram",
-                json!({ "shape": "ram", "ridges": 5, "direction": [0.95, 0.45, 0.05], "length": 0.2, "base_radius": 0.026 }),
-            ),
-            ("oni", json!({ "shape": "oni", "tip_round": 0.2 })),
-            ("antler", json!({ "shape": "antler", "spread_deg": 15.0 })),
-            ("ember", json!({ "shape": "swept_back", "glow": 0.9, "ridges": 4 })),
-        ],
-        "headphones" => vec![
-            ("plain", json!({})),
-            ("cat-ears", json!({ "cat_ears": true })),
-            ("mic", json!({ "mic": true })),
-            ("cat-ears-and-mic", json!({ "cat_ears": true, "mic": true, "clearance": 0.075 })),
-        ],
-        "hat" => vec![
-            ("beret", json!({ "style": "beret", "tilt_deg": 8.0 })),
-            ("cap", json!({ "style": "cap" })),
-            ("witch", json!({ "style": "witch" })),
-            ("beanie", json!({ "style": "beanie" })),
-            ("crown", json!({ "style": "crown" })),
-            (
-                "witch-brim-down",
-                json!({ "style": "witch", "brim_down": true, "brim_tilt_deg": -20.0, "tilt_deg": 6.0 }),
-            ),
-        ],
-        "glasses" => vec![
-            ("round", json!({ "style": "round" })),
-            ("square", json!({ "style": "square" })),
-            ("cat-eye", json!({ "style": "cat_eye" })),
-            ("sunglasses", json!({ "style": "sunglasses" })),
-        ],
-        "tail" => vec![
-            ("fox", json!({ "kind": "fox" })),
-            ("cat", json!({ "kind": "cat" })),
-            ("dragon", json!({ "kind": "dragon" })),
-            ("bunny", json!({ "kind": "bunny" })),
-        ],
-        "wings" => vec![
-            ("feathered", json!({ "kind": "feathered" })),
-            ("bat", json!({ "kind": "bat" })),
-            ("fairy", json!({ "kind": "fairy" })),
-            ("mechanical", json!({ "kind": "mechanical" })),
-        ],
-        other => panic!("no styles listed for {other}"),
+/// The styles of `kind`, found from the kind's own parameter schema, so nothing here lists the kinds: one per value of its
+/// first enum parameter (`style`, `shape` or `kind`), and one per flag that is off by default turned on; `("default", {})` for
+/// a kind with neither. Each is `(name, parameters)`.
+pub fn styles(kind: &str) -> Vec<(String, Value)> {
+    let registration = omuzaki_char_api::find_kind(kind).unwrap_or_else(|| panic!("{kind} is not registered"));
+    let schema = serde_json::to_value((registration.schema)()).unwrap();
+    let defaults = (registration.defaults)();
+    let mut out = Vec::new();
+    let properties = schema["properties"].as_object().cloned().unwrap_or_default();
+    for key in ["style", "shape", "kind"] {
+        if let Some(values) = properties.get(key).and_then(|p| p["enum"].as_array()) {
+            out.extend(values.iter().filter_map(Value::as_str).map(|v| (v.to_owned(), json!({ key: v }))));
+            break;
+        }
     }
+    for (key, property) in &properties {
+        if property["type"] == "boolean" && defaults[key] == json!(false) {
+            out.push((key.clone(), json!({ key: true })));
+        }
+    }
+    if out.is_empty() {
+        out.push(("default".to_owned(), json!({})));
+    }
+    out
 }
 
 // ------------------------------------------------------------------------------------------------ distances

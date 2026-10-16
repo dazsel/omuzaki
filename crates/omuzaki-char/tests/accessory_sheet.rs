@@ -7,8 +7,9 @@
 
 mod accessory_common;
 
-use accessory_common::{ACC, character_with, hairstyles, scene, styles, vertices};
-use omuzaki_char_api::{BuiltCharacter, HeadSurface};
+use accessory_common::{ACC, bind_pose, character_with, scene, skinned_geometry, styles, vertices};
+use omuzaki_anim_api::{ChannelBuf, Pose};
+use omuzaki_char_api::{BuiltCharacter, CharacterDef, HeadSurface, PartCategory};
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::{Mat4, UVec2, Vec3};
 use omuzaki_render_api::{
@@ -20,32 +21,22 @@ use omuzaki_render_mock::MockRenderer;
 /// The side of one tile, pixels.
 const TILE: u32 = 256;
 
-/// The kinds on the sheets and the azimuths (degrees about the vertical) each is seen from.
-const KINDS: [(&str, &[f32]); 6] = [
-    ("horns", &[0.0, 35.0]),
-    ("headphones", &[0.0, 35.0]),
-    ("hat", &[0.0, 35.0]),
-    ("glasses", &[0.0, 35.0]),
-    ("tail", &[35.0, 90.0, 180.0]),
-    ("wings", &[35.0, 90.0, 180.0]),
-];
-
 /// What a tile is framed on: the head for what sits on it, the accessory itself for what hangs on the body.
-fn frame(kind: &str, built: &BuiltCharacter, head: &dyn HeadSurface) -> (Vec3, f32) {
+fn frame(on_head: bool, built: &BuiltCharacter, head: &dyn HeadSurface) -> (Vec3, f32) {
     let points = vertices(built);
     let (lo, hi) =
         points.iter().fold((Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |(l, h), p| (l.min(*p), h.max(*p)));
     let size = (hi - lo).max_element();
-    if matches!(kind, "wings" | "tail") {
-        ((lo + hi) / 2.0, 0.6 * size)
-    } else {
-        // The head and its hair, with the accessory in view.
+    if on_head {
         let r = head.radius(Vec3::Y);
         (head.centre() + Vec3::Y * (0.4 * r), (0.75 * size).max(1.75 * r))
+    } else {
+        ((lo + hi) / 2.0, 0.6 * size)
     }
 }
 
-fn render_tile(built: &BuiltCharacter, target: Vec3, half: f32, azimuth_deg: f32) -> Vec<u8> {
+/// One tile: `built` seen from `azimuth_deg`, posed by `pose` (`None` for the bind pose).
+fn render_tile(built: &BuiltCharacter, pose: Option<&Pose>, target: Vec3, half: f32, azimuth_deg: f32) -> Vec<u8> {
     let Projection::Perspective { fov_y_deg, .. } = Camera::default().projection else {
         panic!("a perspective camera")
     };
@@ -65,7 +56,8 @@ fn render_tile(built: &BuiltCharacter, target: Vec3, half: f32, azimuth_deg: f32
     ];
     scene.post = Post { exposure: 1.0, tonemap: Tonemap::None, ..Post::default() };
     for m in &built.meshes {
-        let mesh = renderer.create_mesh(&m.mesh.geometry).unwrap();
+        let geometry = pose.map_or_else(|| m.mesh.geometry.clone(), |pose| skinned_geometry(built, &m.mesh, pose));
+        let mesh = renderer.create_mesh(&geometry).unwrap();
         let mut spec = built.materials[&m.mesh.material].clone();
         if m.part != ACC.parse().unwrap() {
             // The body, head and hair are context: plain toon, because their textures and programs are not uploaded here.
@@ -90,39 +82,71 @@ fn render_tile(built: &BuiltCharacter, target: Vec3, half: f32, azimuth_deg: f32
     rgb
 }
 
+/// One sheet: a row per entry of `rows` (name, character, pose), a column per azimuth.
+fn sheet(rows: &[(String, CharacterDef, bool)], on_head: bool, azimuths: &[f32]) -> Vec<u8> {
+    let (w, h) = (TILE as usize * azimuths.len(), TILE as usize * rows.len());
+    let mut sheet = vec![0_u8; w * h * 3];
+    for (row, (name, def, driven)) in rows.iter().enumerate() {
+        let s = scene(def).unwrap_or_else(|e| panic!("{name}: {e}"));
+        // A driven pose: the drivers run with every channel at neutral, which folds what folds.
+        let pose = driven.then(|| {
+            let mut pose = bind_pose(&s.built);
+            s.built.rig.driver_plan().unwrap().apply(&ChannelBuf::NEUTRAL, &mut pose);
+            pose
+        });
+        let (target, half) = frame(on_head, &s.built, s.head.as_ref());
+        for (col, azimuth) in azimuths.iter().enumerate() {
+            let tile = render_tile(&s.built, pose.as_ref(), target, half, *azimuth);
+            for y in 0..TILE as usize {
+                let from = y * TILE as usize * 3;
+                let to = ((row * TILE as usize + y) * w + col * TILE as usize) * 3;
+                sheet[to..to + TILE as usize * 3].copy_from_slice(&tile[from..from + TILE as usize * 3]);
+            }
+        }
+    }
+    let mut ppm = format!("P6\n{w} {h}\n255\n").into_bytes();
+    ppm.extend(sheet);
+    ppm
+}
+
 #[test]
 #[allow(clippy::disallowed_methods, reason = "test evidence, written to a folder the developer names; not an op")]
 fn render_the_accessory_sheets_when_asked() {
     let Some(directory) = std::env::var_os("OMUZAKI_ACCESSORY_PPM") else { return };
     let directory = std::path::PathBuf::from(directory);
     std::fs::create_dir_all(&directory).unwrap();
-    let hair = hairstyles().into_iter().next().unwrap().1;
-    for (kind, azimuths) in KINDS {
+    // Every accessory kind that is registered, found from the registry: nothing here lists them.
+    let kinds: Vec<_> = omuzaki_char_api::kinds()
+        .filter(|k| (k.meta)().category == PartCategory::Accessory)
+        .map(|k| ((k.meta)().id, (k.meta)().requires.contains(&"head")))
+        .collect();
+    for (kind, on_head) in kinds {
+        let azimuths: &[f32] = if on_head { &[0.0, 35.0] } else { &[35.0, 90.0, 180.0] };
         for template in ["standard", "soft-sd"] {
-            let list = styles(kind);
-            let (w, h) = (TILE as usize * azimuths.len(), TILE as usize * list.len());
-            let mut sheet = vec![0_u8; w * h * 3];
-            for (row, (name, params)) in list.iter().enumerate() {
-                let mut params = params.clone();
-                if kind == "hat" {
-                    // The hat sits on the hair, which stands up to 5.4 cm off the head (the hair does not yield yet).
-                    params["lift"] = serde_json::json!(0.056);
-                }
-                let def = character_with(template, Some(&hair), &[(ACC, kind, params, None)]);
-                let s = scene(&def).unwrap_or_else(|e| panic!("{kind} {name} on {template}: {e}"));
-                let (target, half) = frame(kind, &s.built, s.head.as_ref());
-                for (col, azimuth) in azimuths.iter().enumerate() {
-                    let tile = render_tile(&s.built, target, half, *azimuth);
-                    for y in 0..TILE as usize {
-                        let from = y * TILE as usize * 3;
-                        let to = ((row * TILE as usize + y) * w + col * TILE as usize) * 3;
-                        sheet[to..to + TILE as usize * 3].copy_from_slice(&tile[from..from + TILE as usize * 3]);
-                    }
+            let mut rows: Vec<(String, CharacterDef, bool)> = Vec::new();
+            for (name, params) in styles(kind) {
+                let def = character_with(template, None, &[(ACC, kind, params, None)]);
+                let driven = !scene(&def).unwrap().built.rig.drivers.is_empty();
+                rows.push((format!("{kind} {name} on {template}"), def.clone(), false));
+                if driven {
+                    rows.push((format!("{kind} {name} on {template}, driven pose"), def, true));
                 }
             }
-            let mut ppm = format!("P6\n{w} {h}\n255\n").into_bytes();
-            ppm.extend(sheet);
-            std::fs::write(directory.join(format!("{kind}-{template}.ppm")), ppm).unwrap();
+            std::fs::write(directory.join(format!("{kind}-{template}.ppm")), sheet(&rows, on_head, azimuths)).unwrap();
         }
+    }
+    // The glasses follow the face layout: the default, the eyes lower and closer, and the eyes higher and wider.
+    for template in ["standard", "soft-sd"] {
+        let rows: Vec<_> = [(-0.09, 0.088), (-0.13, 0.07), (-0.05, 0.105)]
+            .into_iter()
+            .map(|(eye_y, eye_spacing)| {
+                let mut def = character_with(template, None, &[(ACC, "glasses", serde_json::json!({}), None)]);
+                def.face.layout.eye_y = eye_y;
+                def.face.layout.eye_spacing = eye_spacing;
+                (format!("glasses, eyes at {eye_y} and {eye_spacing}"), def, false)
+            })
+            .collect();
+        std::fs::write(directory.join(format!("glasses-layout-{template}.ppm")), sheet(&rows, true, &[0.0, 35.0]))
+            .unwrap();
     }
 }

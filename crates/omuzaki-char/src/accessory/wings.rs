@@ -11,9 +11,9 @@
 //! skinned by its place along the arm to the two bones either side of it, so the wing bends smoothly at the joints.
 //!
 //! **Fold.** `fold_channel` is one of the `customNN` channels of the animation bus. The three frame bones are driven by
-//! it ([`BoneDriver`]): at `1` the wing is spread as built, at `0` the shoulder, elbow and wrist turn about the axis out of
-//! the back (`Z`) into a Z-fold hanging down the back. Every bone turns about that one axis, so no vertex ever leaves its
-//! plane: the folded and the spread wings are equally clear of the back, and the shells keep their topology. A channel
+//! it ([`BoneDriver`]): at `1` the wing is spread as built, at `0` the shoulder, elbow and wrist turn about the wings' plane normal
+//! (out of the back, as the attachment turns it) into a V hanging down the back. Every bone turns about that one axis, so no
+//! vertex ever leaves its plane: the folded and the spread wings are equally clear of the back, and the shells keep their topology. A channel
 //! nobody drives is `0`, so a wing with nothing driving the channel is folded.
 //!
 //! **Flutter.** `flap_0` and `flap_1` form a spring chain ([`SpringChain`](omuzaki_anim_api::SpringChain)) in world space:
@@ -31,11 +31,12 @@ use omuzaki_char_api::{
     BoneDriver, BoneName, BuildCtx, BuildError, ExtraBone, JointRef, PartCategory, PartKind, PartMeta, PartOutput,
     RecolourCtx, Recoloured, RigContribution,
 };
-use omuzaki_core::glam::{DQuat, DVec3, Vec3};
+use omuzaki_core::glam::{DMat4, DQuat, DVec3, Vec3};
 use omuzaki_face_api::{Check, ColourRef, Validate};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::attach::joint_rotation;
 use super::rigid::{Detail, kit_error};
 use super::shells::{
     Chain, Shells, Slot, blend_along, body_scale, closed_tube, ellipsoid, frames_on, recolour, spring_chain, torso_back,
@@ -389,9 +390,9 @@ impl Wings {
         p: &WingsParams,
         attach_joint: &JointRef,
         rig: &mut RigContribution,
-        name: &str,
-        s: f64,
+        (name, s): (&str, f64),
         placed: &[DVec3; 5],
+        place: &DMat4,
     ) -> Result<Vec<JointRef>, BuildError> {
         let channel = Channel::custom(usize::from(p.fold_channel)).ok_or_else(|| {
             ctx.fail(format!("the fold channel is one of custom00..custom15, not {}", p.fold_channel))
@@ -407,6 +408,10 @@ impl Wings {
             .joint(attach_joint)
             .map(DVec3::from)
             .ok_or_else(|| ctx.fail("the wings' attach joint has no position"))?;
+        // The wing's plane is turned by the attachment, so the fold turns about the placed normal, and the first bone's
+        // rest and fold are given in its parent's frame (the bones' own rest rotation is the world's identity).
+        let parent_rotation = joint_rotation(ctx.published, attach_joint);
+        let axis = place.transform_vector3(DVec3::Z).normalize_or_zero();
         let mut parent = attach_joint.clone();
         let mut frame = Vec::with_capacity(5);
         for (i, role) in ["shoulder", "elbow", "wrist"].into_iter().enumerate() {
@@ -415,8 +420,16 @@ impl Wings {
             let rest = Transform::from_translation(placed[i].as_vec3());
             let id = rig.add_bone(ExtraBone { name: bone.clone(), parent: parent.clone(), rest });
             // The channel runs from the folded pose (0) to the spread one (1): the same bone, turned about the back axis.
-            let to = Transform::from_translation((placed[i] - before).as_vec3());
-            let from = Transform { rotation: DQuat::from_rotation_z((-s * FOLD_DEG[i]).to_radians()).as_quat(), ..to };
+            let fold = DQuat::from_axis_angle(axis, (-s * FOLD_DEG[i]).to_radians());
+            let (to, from) = if i == 0 {
+                let inverse = parent_rotation.inverse();
+                let to =
+                    Transform { translation: (inverse * (placed[i] - before)).as_vec3(), rotation: inverse.as_quat() };
+                (to, Transform { rotation: (inverse * fold).as_quat(), ..to })
+            } else {
+                let to = Transform::from_translation((placed[i] - before).as_vec3());
+                (to, Transform { rotation: fold.as_quat(), ..to })
+            };
             rig.drivers.push(BoneDriver::channel(id, channel, from, to));
             parent = JointRef::Named(bone);
             before = placed[i];
@@ -513,7 +526,8 @@ impl PartKind for Wings {
 
     fn build(p: &WingsParams, ctx: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
         let (attach, default) = frames_on(ctx, &JointRef::CHEST)?;
-        let k = body_scale(ctx)? * attach.scale();
+        // The body's size only: the attachment's own scale is applied once, by the matrix that places the wings.
+        let k = body_scale(ctx)?;
         let r = p.resolved(k);
         let chest = ctx
             .joint(&JointRef::CHEST)
@@ -529,7 +543,7 @@ impl PartKind for Wings {
             let root = DVec3::new(chest.x + s * SHOULDER_GAP * k, chest.y + SHOULDER_UP * k, z);
             let wing = Wing::new(s, root, r.span, k);
             let placed: [DVec3; 5] = wing.bones.map(|b| place.transform_point3(b));
-            let joints = Self::rig(ctx, p, &attach.joint, &mut rig, name, s, &placed)?;
+            let joints = Self::rig(ctx, p, &attach.joint, &mut rig, (name, s), &placed, &place)?;
             Self::shells(ctx, p, &r, &wing, &placed, &joints, &mut shells)?;
         }
         shells.output(ctx, &p.slots(), rig)

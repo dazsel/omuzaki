@@ -41,9 +41,7 @@ fn the_kind_is_an_accessory_that_needs_the_head_and_refuses_frames_that_reach_th
     let defaults = (registration.defaults)();
     assert_eq!((registration.check)(&defaults).unwrap(), defaults);
     assert!((registration.check)(&json!({ "no_such_field": 1 })).is_err());
-    for bad in
-        [json!({ "size": 1.6 }), json!({ "eye_spacing": 0.04 }), json!({ "gap": 0.0 }), json!({ "eye_y": f64::NAN })]
-    {
+    for bad in [json!({ "gap": 0.0 }), json!({ "eye_y": 5.0 })] {
         assert!((registration.check)(&bad).is_err(), "{bad} should be refused");
     }
 }
@@ -52,6 +50,49 @@ fn the_kind_is_an_accessory_that_needs_the_head_and_refuses_frames_that_reach_th
 fn front(s: &accessory_common::Scene) -> Vec<Vec3> {
     let c = s.head.centre();
     vertices(&s.built).into_iter().filter(|p| p.z > c.z + 0.3 * s.head.radius(Vec3::Z)).collect()
+}
+
+#[test]
+fn frames_that_would_reach_the_brow_or_touch_each_other_are_a_build_error() {
+    for (what, params) in
+        [("brow", json!({ "size": 1.6 })), ("each other", json!({ "eye_spacing": 0.05, "size": 1.0 }))]
+    {
+        let err = scene(&character("standard", "glasses", params.clone(), None))
+            .err()
+            .unwrap_or_else(|| panic!("{params} built"))
+            .to_string();
+        assert!(err.contains(what), "{err}");
+    }
+}
+
+#[test]
+fn the_glasses_follow_the_characters_face_layout() {
+    // Moving the eye line down the face moves the lenses with it, and a high brow lets bigger frames through.
+    let lens_height = |eye_y: f64, brow_gap: f64, size: f64| {
+        let mut def = character("soft-sd", "glasses", json!({ "size": size }), None);
+        def.face.layout.eye_y = eye_y;
+        def.face.layout.brow_gap = brow_gap;
+        let s = scene(&def).unwrap();
+        let lens = mesh_named(&s.built, "-lens");
+        let ys: Vec<f32> = lens.geometry.positions.iter().map(|p| p.y).collect();
+        (ys.iter().sum::<f32>() / ys.len() as f32) - s.head.centre().y
+    };
+    let (default, lower) = (lens_height(-0.09, 0.08, 1.0), lens_height(-0.12, 0.08, 1.0));
+    assert!(
+        (default - lower - 0.03).abs() < 0.006,
+        "the lenses moved {} m for a 0.03 m lower eye line",
+        default - lower
+    );
+    let err = scene(&{
+        let mut def = character("soft-sd", "glasses", json!({ "size": 1.3 }), None);
+        def.face.layout.brow_gap = 0.05;
+        def
+    })
+    .err()
+    .expect("frames that fit a high brow do not fit a low one")
+    .to_string();
+    assert!(err.contains("brow"), "{err}");
+    assert!(lens_height(-0.09, 0.11, 1.3).is_finite());
 }
 
 #[test]

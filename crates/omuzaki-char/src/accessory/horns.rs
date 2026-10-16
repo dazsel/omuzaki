@@ -277,13 +277,15 @@ fn build_horn(p: &HornsParams, detail: Detail, s: f64, path: &[DVec3]) -> Result
     let mut cracks = Vec::new();
     if p.glow > 0.0 {
         let fr = frames(path, DVec3::Z)?;
+        // A single centre horn (`s` is 0) turns its cracks the way the left horn does, or both would lie on one line.
+        let handed = if s == 0.0 { 1.0 } else { s };
         for c in 0..2 {
             let phase = if c == 0 { 0.7 } else { 0.7 + PI };
             let points: Vec<DVec3> = (2..=rows * 3 / 4)
                 .step_by(2)
                 .map(|k| {
                     let t = fraction(k, rows);
-                    let phi = s * (phase + 0.55 * (usize_f(k) * 1.9 + usize_f(c)).sin());
+                    let phi = handed * (phase + 0.55 * (usize_f(k) * 1.9 + usize_f(c)).sin());
                     let frame = fr[k];
                     frame.p + (frame.n * phi.cos() + frame.b * phi.sin()) * radius(p, t)
                 })

@@ -25,6 +25,8 @@ fn cases() -> Vec<Value> {
     let mut all: Vec<Value> = SHAPES.iter().map(|s| json!({ "shape": s })).collect();
     all.push(json!({ "shape": "swept_back", "mirror": false, "direction": [0.0, 0.95, 0.3] }));
     all.push(json!({ "shape": "ram", "ridges": 6, "glow": 0.8 }));
+    // A single centre horn with cracks: its two crack lines must not lie on one another.
+    all.push(json!({ "shape": "swept_back", "mirror": false, "direction": [0.0, 0.95, 0.3], "glow": 0.9 }));
     all.push(json!({ "shape": "oni", "tip_round": 1.0, "taper": 0.0, "curl": 2.0 }));
     all.push(json!({ "shape": "antler", "glow": 1.0, "spread_deg": 40.0, "tilt_deg": -30.0 }));
     all
