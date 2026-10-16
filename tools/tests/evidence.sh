@@ -68,6 +68,37 @@ echo "README.md" >"$work/changed.txt"
 python3 -I "$EVIDENCE" run --crates "" --changed "$work/changed.txt" --before "$work/tool" --after "$work/tool" --out "$work/none-out" >/dev/null
 if grep -q 'No declared cases' "$work/none-out/comment.md"; then pass "an unrelated change selects nothing"; else fail "unrelated: $(cat "$work/none-out/comment.md")"; fi
 
+# One case file per change: crates/<crate>/evidence/<change>.toml, alone and next to evidence.toml.
+case_toml() { # name
+  cat <<T
+[[case]]
+name = "$1"
+env = { OUT = "{out}" }
+steps = [{ run = ["python3", "-c", "import os; from PIL import Image; Image.new('RGB', (4, 4), (1, 2, 3)).save(os.environ['OUT'] + '/p.png')"] }]
+images = ["p.png"]
+T
+}
+mkdir -p "$work/dir/crates/x/evidence" "$work/dir/crates/y"
+case_toml folder-b >"$work/dir/crates/x/evidence/b-change.toml"
+case_toml folder-a >"$work/dir/crates/x/evidence/a-change.toml"
+case_toml flat >"$work/dir/crates/x/evidence.toml"
+python3 -I "$EVIDENCE" run --crates x --before "$work/dir" --after "$work/dir" --out "$work/dir-out" >/dev/null
+if grep -q 'x/folder-a' "$work/dir-out/comment.md" && grep -q 'x/folder-b' "$work/dir-out/comment.md" && grep -q 'x/flat' "$work/dir-out/comment.md"; then
+  pass "cases load from a folder file and from evidence.toml in one crate"; else fail "folder: $(cat "$work/dir-out/comment.md")"; fi
+
+# A duplicate name across a crate's files is refused and names both files; the same name in another crate is fine.
+case_toml flat >"$work/dir/crates/x/evidence/dup.toml"
+dup=$(python3 -I "$EVIDENCE" run --crates x --before "$work/dir" --after "$work/dir" --out "$work/dup-out" 2>&1)
+if [ $? -ne 0 ] && grep -q 'evidence.toml' <<<"$dup" && grep -q 'dup.toml' <<<"$dup"; then pass "a duplicate name across files is refused, naming both"; else fail "duplicate: $dup"; fi
+rm "$work/dir/crates/x/evidence/dup.toml"
+mkdir -p "$work/dir/crates/y/evidence"; case_toml flat >"$work/dir/crates/y/evidence/c.toml"
+if python3 -I "$EVIDENCE" run --crates x --before "$work/dir" --after "$work/dir" --out "$work/same-name-out" >/dev/null 2>&1; then pass "the same name in another crate is allowed"; else fail "same name in another crate refused"; fi
+
+# A change to one folder file selects only that file's case.
+echo "crates/x/evidence/b-change.toml" >"$work/changed.txt"
+python3 -I "$EVIDENCE" run --crates "" --changed "$work/changed.txt" --before "$work/dir" --after "$work/dir" --out "$work/sel-out" >/dev/null
+if grep -q 'x/folder-b' "$work/sel-out/comment.md" && ! grep -q 'x/folder-a\|x/flat' "$work/sel-out/comment.md"; then pass "a change to a folder file selects its case only"; else fail "selection: $(cat "$work/sel-out/comment.md")"; fi
+
 rm "$work/base/level"
 python3 -I "$EVIDENCE" run --crates x --before "$work/base" --after "$work/head" --out "$work/new" >/dev/null 2>&1
 if grep -q 'could not render it' "$work/new/comment.md"; then pass "a case the base cannot render is reported"; else fail "new case: $(cat "$work/new/comment.md")"; fi

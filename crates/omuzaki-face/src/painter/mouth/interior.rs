@@ -16,7 +16,8 @@
 //!   the `fangs` channel. In a mouth too narrow for the base, the outer corner stops at the mouth's corner, so the fang
 //!   narrows instead of being clipped.
 //! - **Closed-smile fang**: one small outlined triangle on the line of a closed mouth, at the corner that smiles, when
-//!   the `fangs` channel is on and the smile is wide enough.
+//!   the `fangs` channel is on and the smile is wide enough. As the mouth opens it fades out over the openings 0.06 to
+//!   0.2 ([`OpenMouth::fade`]) while the open fangs, clipped to a lens that has hardly any depth there, take over.
 //!
 //! [`FangStyle::position`]: omuzaki_face_api::FangStyle::position
 
@@ -85,8 +86,11 @@ const CLOSED_FANG_SMILE: f32 = 0.3;
 /// Paints the inside of an open mouth, or the fang of a closed smile.
 pub(super) fn paint(ctx: &mut PaintCtx<'_>) {
     match (ctx.open_mouth, Frame::of(ctx).kind()) {
-        (Some(open), _) => open_interior(ctx, &open),
-        (None, Kind::Closed) => closed_fang(ctx),
+        (Some(open), _) => {
+            open_interior(ctx, &open);
+            closed_fang(ctx, 1.0 - open.fade);
+        }
+        (None, Kind::Closed) => closed_fang(ctx, 1.0),
         (None, _) => {}
     }
 }
@@ -203,11 +207,12 @@ fn fangs(ctx: &mut PaintCtx<'_>, open: &OpenMouth) {
     }
 }
 
-/// The fang a closed smile shows on the corner that smiles (`u` > 0): a small outlined triangle standing on the line.
-fn closed_fang(ctx: &mut PaintCtx<'_>) {
+/// The fang a closed smile shows on the corner that smiles (`u` > 0): a small outlined triangle standing on the line,
+/// drawn at `opacity` (less than 1 while the mouth opens and the open fangs take over).
+fn closed_fang(ctx: &mut PaintCtx<'_>, opacity: f32) {
     let frame = Frame::of(ctx);
     let smile = frame.smile[0];
-    if ctx.params.mouth.fangs <= FANG_BAND_ABOVE || smile <= CLOSED_FANG_SMILE {
+    if ctx.params.mouth.fangs <= FANG_BAND_ABOVE || smile <= CLOSED_FANG_SMILE || opacity <= 0.0 {
         return;
     }
     let style = &ctx.profile.mouth;
@@ -230,6 +235,14 @@ fn closed_fang(ctx: &mut PaintCtx<'_>) {
         .line_to(Vec2::new(x, y - height))
         .close()
         .finish();
-    list.fill(fang, Paint::Solid(teeth));
-    list.stroke(fang, Paint::Solid(outline), CLOSED_FANG_OUTLINE);
+    let (fill, stroke) = (Paint::Solid(teeth), Paint::Solid(outline));
+    list.push(Cmd::Fill { path: fang, paint: fill, opacity });
+    list.push(Cmd::Stroke {
+        path: fang,
+        paint: stroke,
+        width: CLOSED_FANG_OUTLINE,
+        cap: Cap::Round,
+        join: Join::Round,
+        opacity,
+    });
 }
