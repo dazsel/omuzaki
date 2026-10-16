@@ -27,7 +27,7 @@ use omuzaki_anim_api::{ChannelBuf, HumanoidPose, IkGoals, Tick};
 use omuzaki_char_api::{BuiltCharacter, StepCtx};
 use omuzaki_core::glam::{Mat4, Vec3};
 use omuzaki_core::time::Seconds;
-use omuzaki_render_api::{FrameInfo, FrameReport, Quality, Renderer, Scene, TargetId};
+use omuzaki_render_api::{Camera, FrameInfo, FrameReport, Quality, Renderer, Scene, TargetId};
 
 use self::face::FaceRig;
 use self::rig::{RigFrame, SkinPose};
@@ -158,9 +158,13 @@ pub struct Stage {
     subject_root: Mat4,
     /// What the scene has committed for the renderer ([`commit_scene`](Stage::commit_scene)).
     applier: Applier,
-    /// What the last scene still owes the renderer: set by [`set_scene`](Stage::set_scene), cleared by what
-    /// [`commit_scene`](Stage::commit_scene) commits.
+    /// What the last scene still owes the renderer, against what the renderer is known to have done.
     owed: Owed,
+    /// The ground and skin floor the last scene wants, in a resolved scene kept for [`commit_scene`](Stage::commit_scene)
+    /// to work out the debt again (`None` until a scene was set).
+    wanted: Option<Box<ResolvedScene>>,
+    /// Where that debt is worked out: the copy of the scene is never rendered.
+    debt_scene: Scene,
     /// How many times a staged variant replaced the character, so a caller can tell the face profile may have changed.
     revision: u64,
     /// Renders submitted so far; numbers the frames of a live clock.
@@ -204,6 +208,8 @@ impl Stage {
                 subject_root: Mat4::IDENTITY,
                 applier: Applier::new(),
                 owed: Owed::default(),
+                wanted: None,
+                debt_scene: Scene::new(Camera::default()),
                 revision: 0,
                 submissions: 0,
                 built,
@@ -373,6 +379,10 @@ impl Stage {
     /// Allocation-free for a scene the lights of which fit ([`MAX_LIGHTS`](omuzaki_render_api::limits::MAX_LIGHTS)).
     pub fn set_scene(&mut self, resolved: &ResolvedScene, subject_root: Mat4) -> Owed {
         self.owed = self.applier.apply(resolved, &mut self.scene);
+        // Only the two things a debt is made of are kept, for `commit_scene` to compare again.
+        let wanted = self.wanted.get_or_insert_with(|| Box::new(ResolvedScene::new()));
+        wanted.ground = resolved.ground;
+        wanted.skin_floor = resolved.skin_floor;
         self.set_subject_root(subject_root);
         self.owed
     }
@@ -392,21 +402,15 @@ impl Stage {
         self.owed
     }
 
-    /// Records that the work in `owed` (from an earlier [`set_scene`](Self::set_scene)) reached the renderer, and stops
-    /// owing it. Only what the current scene still owes is recorded: work for a scene that has since been replaced is
-    /// ignored, so a late commit of a ground the current scene removed cannot make the renderer's ground look right.
-    /// A part of the debt that `owed` does not name stays owed.
+    /// Records that the renderer did the work in `owed` (from some earlier [`set_scene`](Self::set_scene)), and works
+    /// out again what the current scene still owes against what the renderer now has. Work for a scene that has since
+    /// been replaced is recorded as done all the same, because the renderer did it: if scene A added a ground, scene B
+    /// removed it and A's work finishes late, the debt becomes the removal.
     pub fn commit_scene(&mut self, owed: &Owed) {
-        let mut current = Owed::default();
-        if owed.ground.is_some() && owed.ground == self.owed.ground {
-            current.ground = owed.ground;
-            self.owed.ground = None;
+        self.applier.commit(owed);
+        if let Some(wanted) = self.wanted.as_deref() {
+            self.owed = self.applier.apply(wanted, &mut self.debt_scene);
         }
-        if owed.skin_floor.is_some() && owed.skin_floor == self.owed.skin_floor {
-            current.skin_floor = owed.skin_floor;
-            self.owed.skin_floor = None;
-        }
-        self.applier.commit(&current);
     }
 
     /// How many times a variant swap replaced the character: changes when its face profile (and so its expressions) may

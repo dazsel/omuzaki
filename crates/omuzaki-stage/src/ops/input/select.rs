@@ -5,7 +5,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::{changed, host, mode, op_error, persist, put_back_source, retained};
+use super::{Held, held, host, mode, op_error, persist, put_back_source, settled};
 use crate::perform::input::{InputError, InputSource, SourceKind};
 
 /// Choose what drives the face: `webcam`, `iphone` or `life_layer` (no capture; the life layer moves the face alone).
@@ -51,45 +51,53 @@ impl Op for Select {
                 }
             }
         }
-        let was_on = host.state().preview.is_on();
-        let before = host.select(self.source, mode(ctx)).map_err(op_error)?;
+        let first = held(host);
+        host.select(self.source, mode(ctx)).map_err(op_error)?;
         let mut problems = Vec::new();
         if self.resume_preview
             && !ctx.dry_run
             && let Err(error) = host.preview(true, mode(ctx))
         {
-            match put_back_source(host, before, was_on) {
+            match put_back_source(host, first.source, first.preview) {
                 Ok(()) => return Err(op_error(error)),
                 Err(left) => problems.push(format!("the preview did not start ({error}) and the change could not be taken back: {left}")),
             }
         }
-        let saved = match persist::<InputSource>(ctx, &self.source) {
-            Ok(saved) => saved,
-            Err(error) => {
-                // The store refused: put the host back, so what runs is what is saved.
-                match (ctx.dry_run, put_back_source(host, before, was_on)) {
+        // Save only a change that stands: what is saved is what runs.
+        let mut saved = false;
+        if problems.is_empty() {
+            match persist::<InputSource>(ctx, &self.source) {
+                Ok(done) => saved = done,
+                Err(error) => match (ctx.dry_run, put_back_source(host, first.source, first.preview)) {
                     (true, _) | (false, Ok(())) => return Err(error),
                     (false, Err(left)) => {
                         problems.push(format!("{} and the change could not be taken back: {left}", error.message));
-                        false
                     }
-                }
+                },
             }
+        }
+        // What the host holds now is what the answer and the undo describe, whatever was asked for.
+        let after = if ctx.dry_run {
+            Held { source: self.source, preview: first.preview && self.source == first.source, ..first.clone() }
+        } else {
+            held(host)
         };
-        let mut answer = json!({ "source": self.source, "before": before, "saved": saved, "dry_run": ctx.dry_run });
+        let mut answer = json!({ "source": after.source, "before": first.source, "saved": saved, "dry_run": ctx.dry_run });
+        if after.source != self.source {
+            answer["requested"] = json!(self.source);
+        }
         if !problems.is_empty() {
-            answer["retained"] = retained(&problems);
+            answer["retained"] = json!(problems);
         }
-        let summary = format!("tracking source {before:?} to {:?}", self.source);
-        let mut plan = changed(Self::meta().name, "source", before, self.source, summary, answer)?;
-        // A change of source stops a running preview: undoing it brings the preview back too.
-        if was_on
-            && before != self.source
-            && let Some(effect) = plan.effect.as_mut()
-        {
-            effect.undo.args["resume_preview"] = json!(true);
-        }
-        Ok(plan)
+        let summary = format!("tracking source {:?} to {:?}", first.source, after.source);
+        settled(
+            Self::meta().name,
+            "source",
+            (json!(first.source), json!(after.source)),
+            (&first, &after),
+            summary,
+            answer,
+        )
     }
 }
 

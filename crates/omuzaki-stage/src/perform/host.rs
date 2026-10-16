@@ -618,24 +618,6 @@ impl PerformHandle {
 }
 
 impl PerformHandle {
-    /// [`set_expressions`](PerformHost::set_expressions) that never waits for the ops side: when another thread holds
-    /// the trigger table it does nothing and says so, for a caller on a real-time thread to try again next frame.
-    ///
-    /// # Errors
-    /// [`PerformError::QueueFull`] when the table is busy or the performer has too many requests waiting, and
-    /// [`PerformError::Disconnected`]; nothing changes then.
-    pub fn try_set_expressions(&self, expressions: ExpressionSet, rest: ChannelBuf) -> Result<(), PerformError> {
-        let mut book = match self.shared.triggers.try_lock() {
-            Ok(guard) => guard,
-            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
-            Err(std::sync::TryLockError::WouldBlock) => return Err(PerformError::QueueFull),
-        };
-        let (next, changes) = book.with_expressions(expressions, &rest);
-        self.send(Command::Triggers(changes))?;
-        *book = next;
-        Ok(())
-    }
-
     /// Binds under the book lock; with `checked`, an expression the set lacks is refused.
     fn bind_locked(&self, binding: TriggerBinding, checked: bool) -> Result<BindOutcome, PerformError> {
         let mut book = lock(&self.shared.triggers);

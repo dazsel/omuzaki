@@ -75,10 +75,42 @@ fn put_back_source(host: &dyn InputHost, before: SourceKind, was_on: bool) -> Re
     Ok(())
 }
 
-/// What an op reports when a step failed and its own change could not be taken back: the change stays (and has its
-/// undo record), and these say what is true now.
-fn retained(problems: &[String]) -> Value {
-    serde_json::json!(problems)
+/// What the input holds, read back from the host: after a step failed partway this, not what was asked for, is what an
+/// op must describe.
+#[derive(Clone, Debug, PartialEq)]
+struct Held {
+    source: SourceKind,
+    camera: Option<CameraId>,
+    preview: bool,
+}
+
+/// What `host` holds now.
+fn held(host: &dyn InputHost) -> Held {
+    let state = host.state();
+    Held { source: state.source, camera: state.camera, preview: state.preview.is_on() }
+}
+
+/// The plan of an op that ran, from what the host held before and holds after: the answer, and the pair of inverse calls
+/// that undo and redo what actually changed. When `after` has the preview stopped where `before` had it running, the
+/// undo starts it again too (`resume_preview`), or, when nothing else changed, is a `input.preview` call of its own.
+fn settled(
+    op: &str,
+    field: &str,
+    (before_value, after_value): (Value, Value),
+    (before, after): (&Held, &Held),
+    summary: String,
+    answer: Value,
+) -> Result<Plan, OpError> {
+    let mut plan = changed(op, field, before_value, after_value, summary, answer)?;
+    if before.preview && !after.preview {
+        if let Some(effect) = plan.effect.as_mut() {
+            effect.undo.args["resume_preview"] = serde_json::json!(true);
+        } else {
+            let call = |on: bool| OpCall { op: "input.preview".to_owned(), args: serde_json::json!({ "on": on }) };
+            plan.effect = Some(Effect { summary: "camera preview stopped".to_owned(), undo: call(true), redo: call(false) });
+        }
+    }
+    Ok(plan)
 }
 
 /// The answer `value` serialises to.

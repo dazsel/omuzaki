@@ -132,7 +132,6 @@ impl LiveStage {
         self.sources.swap_into(&mut self.performer);
         self.take_scene();
         // Variant switches are staged outside the tick (`frame::face`), against the input the last frame showed.
-        self.refresh_expressions();
         self.stage.service_variants(renderer, self.frames.input())?;
         let output = if self.paused {
             self.stage.redraw(renderer, self.frames.input())?
@@ -149,20 +148,31 @@ impl LiveStage {
         Ok(Some(LiveFrame { output, change }))
     }
 
-    /// Installs the character's expressions again when a variant swap replaced the character, so the triggers are baked
-    /// against the face now showing. It runs with the variant service, the part of the frame that is allowed to
-    /// allocate (outside `tick`), and never waits for the ops side: a busy trigger table or a full queue keeps the old
-    /// revision, so the next frame tries again.
-    fn refresh_expressions(&mut self) {
+    /// Whether a variant swap replaced the character since the triggers' expressions were installed, so
+    /// [`refresh_expressions`](Self::refresh_expressions) has something to do. Two integers compared: cheap anywhere.
+    pub fn expressions_stale(&self) -> bool {
+        self.stage.revision() != self.expressions_for
+    }
+
+    /// Installs the character's expressions again after a variant swap replaced it, so the triggers are baked against
+    /// the face now showing (a swap whose face has the same expressions changes nothing visible). Returns whether it
+    /// installed anything.
+    ///
+    /// This clones the expressions and takes the trigger table's lock, so it is not part of [`frame`](Self::frame):
+    /// the app calls it where waiting and allocating are allowed (after presenting, or when its loop is idle), whenever
+    /// [`expressions_stale`](Self::expressions_stale) says so. `frame` itself allocates and locks nothing for it.
+    ///
+    /// # Errors
+    /// [`PerformError::QueueFull`] when the performer has too many requests waiting, and
+    /// [`PerformError::Disconnected`]; nothing changes then and the next call tries again.
+    pub fn refresh_expressions(&mut self) -> Result<bool, PerformError> {
         let revision = self.stage.revision();
         if revision == self.expressions_for {
-            return;
+            return Ok(false);
         }
-        let expressions =
-            self.stage.built().face.as_ref().map(|face| face.profile.expressions.clone()).unwrap_or_default();
-        if self.handle.try_set_expressions(expressions, *self.performer.rest()).is_ok() {
-            self.expressions_for = revision;
-        }
+        self.install_expressions()?;
+        self.expressions_for = revision;
+        Ok(true)
     }
 
     /// Takes a posted scene, or a moved subject root, into the stage. Never waits: a poster holding the mailbox means
