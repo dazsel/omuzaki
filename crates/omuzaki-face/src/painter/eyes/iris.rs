@@ -17,8 +17,10 @@
 //! | `eyes.lid_shadow` | the `0.55` opacity of the lid's shadow band |
 //!
 //! The prototype's camera-follow gaze and driven gaze are already one vector in [`PaintParams::gaze`] (the mapping adds
-//! them), so the iris moves by `gaze * gaze_travel * eye scale`. The crescent's colour is `low` lightened by
-//! [`CRESCENT_LIGHTEN`], so a character with another iris colour gets a crescent of its own hue.
+//! them), so the iris moves by `gaze * gaze_travel * eye scale`. Convergence, [`PaintParams::vergence`], moves each iris
+//! toward its own nose by `vergence * gaze_travel[0] * eye scale`: the same look units as gaze x, mirrored per side. The
+//! crescent's colour is `low` lightened by [`CRESCENT_LIGHTEN`], so a character with another iris colour gets a
+//! crescent of its own hue.
 
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::Vec2;
@@ -88,15 +90,18 @@ pub(super) struct Iris {
 }
 
 impl Iris {
-    /// The iris of `eye`: set toward the nose and below the eye's centre, then moved by the gaze.
+    /// The iris of `eye`: set toward the nose and below the eye's centre, then moved by the gaze and by the
+    /// convergence.
     #[allow(clippy::cast_possible_truncation)] // the profile is f64 for the file's sake; the painter works in f32
     pub(super) fn new(profile: &FaceProfile, params: &PaintParams, eye: &Eye) -> Self {
         let style = &profile.eyes;
         let iris = &style.iris;
         let rest = eye.point(-(iris.inset as f32), -(iris.drop as f32));
         let travel = Vec2::new(iris.gaze_travel[0] as f32, iris.gaze_travel[1] as f32) * style.scale as f32;
+        // Toward the nose on this side: the eye's own mirror, so the right eye converges by +x.
+        let nose = (eye.point(-1.0, 0.0) - eye.point(0.0, 0.0)).normalize_or_zero();
         Self {
-            centre: rest + params.gaze * travel,
+            centre: rest + params.gaze * travel + nose * params.vergence * travel.x,
             rx: iris.width as f32 * eye.width(),
             ry: iris.height as f32 * eye.width(),
         }

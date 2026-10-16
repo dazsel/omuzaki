@@ -2,9 +2,11 @@
 //! ([`tube`](super::tube)) with the hair shading program.
 //!
 //! **Meshes.** Static groups (not simulated) go into one mesh, `<part>-static`, skinned wholly to the head joint.
-//! Simulated groups go into `<part>-dynamic`, unskinned, at their rest shape: the simulation that moves them arrives
-//! with the physics tasks. Within a mesh the tubes come first, in group order, and any generator-made shells
-//! (the cap) after them, so a mesh can be walked clump by clump from the front ([`recolour`](Hair::recolour) does).
+//! Simulated groups go into `<part>-dynamic`, skinned wholly to the head joint too and not marked dynamic, so they
+//! follow the head at their rest shape. That is interim: until the hair runtime lands (#322) nothing moves them, and
+//! #322 reverts this to an unskinned, dynamic mesh. Within a mesh the tubes come first, in group order, and any
+//! generator-made shells (the cap) after them, so a mesh can be walked clump by clump from the front
+//! ([`recolour`](Hair::recolour) does).
 //!
 //! **Material.** One double-sided `hair` material per part: the `hair` shading program ([`HairShading::shading`]), vertex
 //! colours for streak tints, the outline in the hair's outline colour, and the brows overlay when `brows_through`. A palette
@@ -30,7 +32,7 @@ use omuzaki_face_api::{FaceLayerId, Palette, narrow};
 use omuzaki_render_api::{AlphaMode, Outline};
 
 use super::compile::{self, CompiledEntry, Dispatch, GroupGenerator, GroupGeometry, draws_tubes, enabled};
-use super::tube::{OutwardFrame, RING, TubeError, TubeLook, TubeMesh, polar_angles, vertex_colour};
+use super::tube::{CAP_VERTICES, OutwardFrame, RING, TubeError, TubeLook, TubeMesh, polar_angles, vertex_colour};
 
 /// Where along the torso the body's vertical axis is read, from hips (0) to neck base (1): the upper back, where long
 /// hair hangs.
@@ -104,24 +106,24 @@ pub fn build_with(
     };
     let material = hair_material(ctx.part, params, ctx.palette, overlays)?;
     let mut out = PartOutput::new().with_materials(vec![(material_name.clone(), material)]).with_warnings(warnings);
-    let part_mesh = |suffix: &str, geometry: MeshData, dynamic: bool| {
-        let joint_bones = if dynamic { Vec::new() } else { vec![JointRef::HEAD] };
+    // Both meshes are rigid to the head: the simulated one only until the runtime moves it (see the module doc).
+    let part_mesh = |simulated: bool, mut geometry: MeshData| {
+        skin_to_head(&mut geometry);
         PartMesh {
-            name: format!("{}-{suffix}", ctx.part),
+            name: mesh_name(ctx.part, simulated),
             geometry,
-            joint_bones,
+            joint_bones: vec![JointRef::HEAD],
             material: material_name.clone(),
             casts_shadow: true,
             render_order: 1,
-            dynamic,
+            dynamic: false,
         }
     };
-    if let Some(mut geometry) = stat {
-        skin_to_head(&mut geometry);
-        out.meshes.push(part_mesh("static", geometry, false));
+    if let Some(geometry) = stat {
+        out.meshes.push(part_mesh(false, geometry));
     }
     if let Some(geometry) = dynamic {
-        out.meshes.push(part_mesh("dynamic", geometry, true));
+        out.meshes.push(part_mesh(true, geometry));
     }
     Ok(out)
 }
@@ -208,6 +210,11 @@ fn strand_seed(index: usize, dynamic: bool) -> f32 {
     if dynamic { (i * 0.271 + 0.5).fract() } else { (i * 0.137).fract() }
 }
 
+/// The name of the static or the simulated mesh of `part`: `<part>-static` or `<part>-dynamic`.
+fn mesh_name(part: &PartId, simulated: bool) -> String {
+    format!("{part}-{}", if simulated { "dynamic" } else { "static" })
+}
+
 /// Skins every vertex wholly to the head joint, the one joint of `joint_bones`.
 fn skin_to_head(mesh: &mut MeshData) {
     let n = mesh.positions.len();
@@ -274,16 +281,19 @@ pub fn recolour_with(
     let tints = params.shading.streak_tints(ctx.palette, &groups).map_err(|e| ctx.fail(e.to_string()))?;
     // A mesh the layout says holds tubes, or a cap's shell (which has no clumps, so the layout cannot see it), must
     // exist: without it there is nothing to tint or keep, and `Done` would be a lie.
-    for dynamic in [false, true] {
-        let expects_tubes = layout.iter().any(|s| s.tube && s.simulate == dynamic);
+    for simulated in [false, true] {
+        let expects_tubes = layout.iter().any(|s| s.tube && s.simulate == simulated);
         let expects_shell =
-            enabled(params).any(|(_, g)| matches!(g.generator, Generator::Cap(_)) && g.dynamics.simulate == dynamic);
-        if (expects_tubes || expects_shell) && !output.meshes.iter().any(|m| m.dynamic == dynamic) {
+            enabled(params).any(|(_, g)| matches!(g.generator, Generator::Cap(_)) && g.dynamics.simulate == simulated);
+        let name = mesh_name(ctx.part, simulated);
+        if (expects_tubes || expects_shell) && !output.meshes.iter().any(|m| m.name == name) {
             return Ok(Recoloured::NeedsRebuild);
         }
     }
     for mesh in &mut output.meshes {
-        let mine = layout.iter().zip(&tints).filter(|(s, _)| s.tube && s.simulate == mesh.dynamic).map(|(_, t)| *t);
+        // Found by name: a mesh's `dynamic` flag is not the simulated groups' mark while no runtime moves them.
+        let simulated = mesh.name == mesh_name(ctx.part, true);
+        let mine = layout.iter().zip(&tints).filter(|(s, _)| s.tube && s.simulate == simulated).map(|(_, t)| *t);
         if !paint_tubes(&mut mesh.geometry, &mine.collect::<Vec<_>>()) {
             return Ok(Recoloured::NeedsRebuild); // not the hair `build` makes: don't guess
         }
@@ -307,7 +317,8 @@ fn paint_tubes(mesh: &mut MeshData, tints: &[Option<Colour>]) -> bool {
 }
 
 /// The vertex ranges of the first `count` tubes of `mesh`: a tube starts at a ring whose `hair-uv.y` is 0 and ends after
-/// the ring where it reaches 1 (the last ring of every tube). `None` if the mesh doesn't hold that many.
+/// the ring where it reaches 1 (the last ring of every tube) and its two caps, which take the tube's tint too. `None` if
+/// the mesh doesn't hold that many.
 fn tube_ranges(mesh: &MeshData, count: usize) -> Option<Vec<Range<usize>>> {
     let uv = &mesh.extra_attribute(HAIR_UV)?.data;
     let along = |vertex: usize| uv.get(2 * vertex + 1).copied();
@@ -325,6 +336,7 @@ fn tube_ranges(mesh: &MeshData, count: usize) -> Option<Vec<Range<usize>>> {
                 break;
             }
         }
+        at += CAP_VERTICES;
         ranges.push(start..at);
     }
     (at <= mesh.positions.len()).then_some(ranges)

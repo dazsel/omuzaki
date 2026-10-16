@@ -1,0 +1,31 @@
+# The symbols the `omuzaki_litert` library exports (design §3.2), one per line: the interpreter C API functions
+# `omuzaki-ai-litert` binds, then the shim's. The build makes the linker export lists from this file, and the smoke
+# program resolves every name in it.
+TfLiteVersion
+TfLiteSchemaVersion
+TfLiteModelCreate
+TfLiteModelDelete
+TfLiteInterpreterOptionsCreate
+TfLiteInterpreterOptionsDelete
+TfLiteInterpreterOptionsSetNumThreads
+TfLiteInterpreterOptionsAddDelegate
+TfLiteInterpreterCreate
+TfLiteInterpreterDelete
+TfLiteInterpreterAllocateTensors
+TfLiteInterpreterInvoke
+TfLiteInterpreterResizeInputTensor
+TfLiteInterpreterGetInputTensorCount
+TfLiteInterpreterGetInputTensor
+TfLiteInterpreterGetOutputTensorCount
+TfLiteInterpreterGetOutputTensor
+TfLiteTensorType
+TfLiteTensorNumDims
+TfLiteTensorDim
+TfLiteTensorName
+TfLiteTensorByteSize
+TfLiteTensorCopyFromBuffer
+TfLiteTensorCopyToBuffer
+omz_litert_abi
+omz_litert_xnnpack_create
+omz_litert_xnnpack_delete
+omz_litert_capture_errors

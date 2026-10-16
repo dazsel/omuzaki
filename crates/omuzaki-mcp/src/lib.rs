@@ -41,6 +41,9 @@
 //!   expected call `signature` (nested shapes spelt out, e.g. `eye?: {size: number}`), and the text ends with
 //!   `Expected: ...`.
 //!   Unknown tool names get suggestions.
+//! - Unsaved change (optional, only with a journal): an applied change that the journal hasn't saved within five
+//!   seconds still succeeds, and its text opens with `Warning: applied, not yet saved: <status>`, before any heads-up.
+//!   `structuredContent.warning` carries the same text. See [`McpOptions::with_journal`].
 //!
 //! **Sessions.** The actor is `Actor::Agent { id: "<client name>#<n>" }` from the client's handshake; grants come from
 //! [`McpOptions`] (default `Grants::agent_default()`), or from the access token on the HTTP port, and the tool
@@ -111,6 +114,7 @@
 //! let token = port.issue("Codex", Grants::agent_default())?;
 //! // The client sends `Authorization: Bearer <token.secret()>` to `port.url()`.
 //! port.revoke(token.id()).await; // ends its sessions too
+//! let connected = port.tokens().await; // the live tokens, for the "connected apps" panel: never their secrets
 //! ```
 //!
 //! What stands between a request and the runner, in order:
@@ -166,7 +170,7 @@ mod session;
 mod signature;
 mod suggest;
 
-pub use access::{AccessToken, RECORD_VERSION, TokenId, TokenRecord};
+pub use access::{AccessToken, RECORD_VERSION, TokenId, TokenInfo, TokenRecord};
 pub use connection::Connections;
 pub use error::ServerError;
 pub use http::{HttpOptions, HttpServer};

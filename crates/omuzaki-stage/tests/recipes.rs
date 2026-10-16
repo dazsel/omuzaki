@@ -4,6 +4,7 @@
 //! skip cleanly when it is absent. They check every one of the manifest's cases: the recipe's lights, camera, post,
 //! background and pose equal the manifest's, so the library's transcription is proven against the source.
 
+#![allow(clippy::disallowed_methods, reason = "a test reading and writing its own fixtures and evidence; not an op")]
 // Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 

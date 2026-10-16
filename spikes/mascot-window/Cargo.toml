@@ -1,0 +1,47 @@
+# Spike: transparent, always-on-top, click-through windows with wgpu (BR-25 desktop mascot). Its own workspace root on
+# purpose, like spikes/toon-viewport: nothing here touches the main workspace's lockfile or the shared build slots'
+# dependency set.
+[workspace]
+members = ["mascot-window"]
+resolver = "3"
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+bytemuck = { version = "1.25", features = ["derive"] }
+clap = { version = "4.6", features = ["derive"] }
+pollster = "1"
+raw-window-handle = "0.6"
+thiserror = "2"
+# The versions the main workspace's Cargo.lock holds today (eframe 0.36.2 pulls winit 0.30.13).
+wgpu = "30"
+winit = "0.30"
+
+# The same lint table as the main workspace (Cargo.toml at the repo root). `unsafe_code` is denied crate-wide and each
+# FFI module opts in with a narrow `#![allow(unsafe_code)]`, so every unsafe block is easy to find and carries a SAFETY
+# comment.
+[workspace.lints.rust]
+unsafe_code = "deny"
+unused_must_use = "deny"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+unwrap_used = "deny"
+expect_used = "deny"
+dbg_macro = "deny"
+todo = "deny"
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+codegen-units = 16

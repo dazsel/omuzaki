@@ -32,6 +32,21 @@ use serde_json::{Value, json};
 
 // ------------------------------------------------------------------------------------------------ the stub generator
 
+/// Vertices each tube's two caps add after its rings: a centre and a rim copy per end (`TubeMesh::push_cap`).
+const CAP_VERTICES: usize = 2 * (RING + 1);
+/// Indices each tube's two caps add after its tube faces: one fan triangle per rim segment at each end.
+const CAP_INDICES: usize = 2 * RING * 3;
+
+/// Vertices of `tubes` tubes of `rings` rings each, caps included.
+fn tube_mesh_vertices(tubes: usize, rings: usize) -> usize {
+    tubes * (rings * RING + CAP_VERTICES)
+}
+
+/// Indices of `tubes` tubes of `rings` rings each, caps included.
+fn tube_mesh_indices(tubes: usize, rings: usize) -> usize {
+    tubes * ((rings - 1) * RING * 6 + CAP_INDICES)
+}
+
 /// The shade a stub clump gets from draw `r`: so a test can read the random stream back out of the clumps.
 fn shade_of(draw: f64) -> f64 {
     0.5 + 0.5 * draw
@@ -201,7 +216,7 @@ fn exact(out: &PartOutput) -> String {
 }
 
 fn static_mesh(out: &PartOutput) -> &omuzaki_char_api::PartMesh {
-    out.meshes.iter().find(|m| !m.dynamic).expect("a static mesh")
+    out.meshes.iter().find(|m| m.name == "hair-static").expect("a static mesh")
 }
 
 // ------------------------------------------------------------------------------------------------ the kind
@@ -223,7 +238,7 @@ fn the_real_kind_builds_the_default_style_on_the_template_body_with_its_cap_shel
     let mut def = character(&HairParams::default());
     def.parts.insert(pid("hair"), part("hair", json!({})));
     let out = hair_output(&def).unwrap();
-    assert!(out.meshes.iter().any(|m| !m.dynamic && !m.geometry.positions.is_empty()));
+    assert!(out.meshes.iter().any(|m| m.name == "hair-static" && !m.geometry.positions.is_empty()));
     assert!(!out.warnings.iter().any(|w| w.contains("a-cap")), "{:?}", out.warnings);
     assert_eq!(out.materials.len(), 1);
 }
@@ -358,7 +373,7 @@ fn two_group_style() -> HairParams {
 }
 
 #[test]
-fn static_groups_make_one_head_skinned_mesh_and_simulated_groups_a_dynamic_one() {
+fn static_groups_make_one_head_skinned_mesh_and_simulated_groups_a_second_one() {
     let out = hair_output(&character(&two_group_style())).unwrap();
     let names: Vec<_> = out.meshes.iter().map(|m| m.name.as_str()).collect();
     assert_eq!(names, ["hair-static", "hair-dynamic"]);
@@ -368,12 +383,31 @@ fn static_groups_make_one_head_skinned_mesh_and_simulated_groups_a_dynamic_one()
         stat.geometry.joints.iter().all(|j| *j == [0; 4])
             && stat.geometry.weights.iter().all(|w| *w == [1.0, 0.0, 0.0, 0.0])
     );
-    assert!(dynamic.dynamic && dynamic.joint_bones.is_empty() && !dynamic.geometry.is_skinned());
-    // 4 static clumps (2 locks, mirrored), 1 dynamic, 4 rings of 8 each.
-    assert_eq!(stat.geometry.positions.len(), 4 * 4 * RING);
-    assert_eq!(dynamic.geometry.positions.len(), 4 * RING);
+    assert!(!dynamic.dynamic && dynamic.joint_bones == [omuzaki_char_api::JointRef::HEAD]);
+    assert!(
+        dynamic.geometry.joints.iter().all(|j| *j == [0; 4])
+            && dynamic.geometry.weights.iter().all(|w| *w == [1.0, 0.0, 0.0, 0.0])
+    );
+    // 4 static clumps (2 locks, mirrored), 1 dynamic, 4 rings of 8 each, and each clump's two caps.
+    assert_eq!(stat.geometry.positions.len(), tube_mesh_vertices(4, 4));
+    assert_eq!(dynamic.geometry.positions.len(), tube_mesh_vertices(1, 4));
     assert!(stat.casts_shadow && stat.render_order == 1);
     assert!(out.runtime.is_none(), "the simulation is not built yet");
+}
+
+#[test]
+fn a_simulated_group_is_skinned_to_the_head_while_the_part_has_no_runtime() {
+    // Until #322 lands, nothing moves the simulated groups, so they must follow the head: no mesh is unskinned or
+    // dynamic, and each one's weights and joints validate against the head as its only bone.
+    let out = hair_output(&character(&two_group_style())).unwrap();
+    assert!(out.runtime.is_none(), "no runtime yet");
+    assert!(out.meshes.iter().any(|m| m.name == "hair-dynamic"), "the simulated group has a mesh");
+    for mesh in &out.meshes {
+        assert!(!mesh.dynamic, "{} is not dynamic without a runtime", mesh.name);
+        assert!(mesh.geometry.is_skinned(), "{} is skinned", mesh.name);
+        assert_eq!(mesh.joint_bones, [omuzaki_char_api::JointRef::HEAD], "{} is rigid to the head", mesh.name);
+        mesh.validate().unwrap();
+    }
 }
 
 #[test]
@@ -396,7 +430,8 @@ fn mesh_attributes_validate_and_have_the_right_widths() {
 fn groups_are_meshed_in_id_order_and_a_mirrored_group_follows_its_originals() {
     let out = hair_output(&character(&two_group_style())).unwrap();
     let positions = &static_mesh(&out).geometry.positions;
-    let root = |clump: usize| positions[clump * 4 * RING..clump * 4 * RING + RING].iter().sum::<Vec3>() / RING as f32;
+    let stride = tube_mesh_vertices(1, 4);
+    let root = |clump: usize| positions[clump * stride..clump * stride + RING].iter().sum::<Vec3>() / RING as f32;
     // Clumps 0 and 1 are the locks at phi -30 and -70 (x < 0 on the character's right), 2 and 3 their mirrors.
     assert!(root(0).x < 0.0 && root(1).x < 0.0 && root(2).x > 0.0 && root(3).x > 0.0);
     assert!((root(0).x + root(2).x).abs() < 1e-5 && (root(1).x + root(3).x).abs() < 1e-5);
@@ -436,20 +471,23 @@ fn a_shell_follows_the_tubes_and_a_strip_is_reported_not_drawn() {
     let out = hair_output(&character(&style)).unwrap();
     let stat = static_mesh(&out);
     stat.validate().unwrap();
-    let tube_vertices = 4 * 4 * RING;
     assert_eq!(
         stat.geometry.positions.len(),
-        tube_vertices + 3,
+        tube_mesh_vertices(4, 4) + 3,
         "tubes first, the cap's triangle after, though the cap is group 0"
     );
     assert_eq!(
         stat.geometry.indices.len(),
-        4 * (4 - 1) * RING * 6 + 3,
+        tube_mesh_indices(4, 4) + 3,
         "the shell's triangle is renumbered after the tubes"
     );
     assert!(out.warnings.iter().any(|w| w.contains("z-curtain") && w.contains("strip")), "{:?}", out.warnings);
-    let dynamic = out.meshes.iter().find(|m| m.dynamic).unwrap();
-    assert_eq!(dynamic.geometry.positions.len(), 4 * RING, "the strip's clumps add nothing to the tube mesh");
+    let dynamic = out.meshes.iter().find(|m| m.name == "hair-dynamic").unwrap();
+    assert_eq!(
+        dynamic.geometry.positions.len(),
+        tube_mesh_vertices(1, 4),
+        "the strip's clumps add nothing to the tube mesh"
+    );
 }
 
 #[test]
@@ -539,12 +577,35 @@ fn recolouring_is_building_with_the_new_palette_byte_for_byte() {
 }
 
 #[test]
+fn a_recolour_repaints_every_tubes_caps_with_its_tube() {
+    omuzaki_char::link();
+    let mut before = character(&streaked());
+    colourway(&mut before, 5);
+    let mut after = before.clone();
+    colourway(&mut after, 120);
+    let services = BuildServices::default();
+    let old = hair_output(&before).unwrap();
+    let mut recoloured = hair_output(&before).unwrap();
+    assert_eq!(recolour_part(&after, &pid("hair"), &services, &mut recoloured), Ok(Recoloured::Done));
+    let rebuilt = hair_output(&after).unwrap();
+    let (new, rebuilt) = (&static_mesh(&recoloured).geometry.colours, &static_mesh(&rebuilt).geometry.colours);
+    let stride = tube_mesh_vertices(1, 4);
+    let mut cap_changed = false;
+    for tube in 0..6 {
+        let caps = tube * stride + 4 * RING..(tube + 1) * stride;
+        assert_eq!(new[caps.clone()], rebuilt[caps.clone()], "tube {tube}: its caps take the new tint");
+        cap_changed |= new[caps.clone()] != static_mesh(&old).geometry.colours[caps];
+    }
+    assert!(cap_changed, "the palette really changes some cap's colour");
+}
+
+#[test]
 fn streaks_land_on_the_tubes_only_and_leave_shell_vertices_white() {
     let mut def = character(&streaked());
     colourway(&mut def, 40);
     let out = hair_output(&def).unwrap();
     let stat = static_mesh(&out);
-    let tube_vertices = 6 * 4 * RING;
+    let tube_vertices = tube_mesh_vertices(6, 4);
     assert_eq!(stat.geometry.positions.len(), tube_vertices + 3);
     assert!(stat.geometry.colours[tube_vertices..].iter().all(|c| *c == [1.0; 4]), "the cap shell is untinted");
     assert!(stat.geometry.colours[..tube_vertices].iter().any(|c| *c != [1.0; 4]), "some tube is streaked");
@@ -576,11 +637,11 @@ fn a_missing_tube_mesh_asks_for_a_rebuild_instead_of_claiming_done() {
     let built = || hair_output(&def).unwrap();
 
     let mut no_dynamic = built();
-    no_dynamic.meshes.retain(|m| !m.dynamic);
+    no_dynamic.meshes.retain(|m| m.name != "hair-dynamic");
     assert_eq!(recolour_part(&def, &pid("hair"), &services, &mut no_dynamic), Ok(Recoloured::NeedsRebuild));
 
     let mut no_static = built();
-    no_static.meshes.retain(|m| m.dynamic);
+    no_static.meshes.retain(|m| m.name == "hair-dynamic");
     assert_eq!(recolour_part(&def, &pid("hair"), &services, &mut no_static), Ok(Recoloured::NeedsRebuild));
 
     let mut none = built();

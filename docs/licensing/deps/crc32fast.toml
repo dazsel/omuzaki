@@ -1,0 +1,7 @@
+section = "rust"
+item = "crc32fast"
+kind = "crate"
+used_for = "CRC-32 of journal segment headers and record frames (omuzaki-doc)"
+status = "yes"
+audit = "(crates.io: MIT OR Apache-2.0)"
+crates = ["crc32fast"]

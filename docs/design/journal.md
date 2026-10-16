@@ -129,6 +129,8 @@ my-show.omuzaki/.omuzaki/
   snapshots/refs/20261012T143205Z-1a2b3c4d5e6f.toml   one per snapshot (7.1)
   snapshots/quarantine/                  DiskStore::repair's
   recovery/20261012T143300Z/             the journal of a recovered session, kept 30 days
+  replaced/characters/mia/face.toml.<time>-<pid>-<n>.<hash>.kept   a file a save replaced, kept 10 minutes (6.1)
+  replaced/characters/mia/face.toml.<time>-<pid>-<n>.displaced     a file that raced a save; never deleted automatically
 ```
 
 `.omuzaki/` is never committed and travels with a copied folder (`docs/design/ux/shell.md` section 17).
@@ -351,6 +353,49 @@ The keeper applies durable entries to its shadow `Project` and writes the files:
   Nothing reads that mix as truth: recovery rebuilds from the snapshot and the journal and writes the files back
   exactly (8.5).
 
+### 6.1 What a save keeps of the files it replaces (`.omuzaki/replaced/`)
+
+A file is replaced only if its bytes are the last-known ones, and the check runs on the file the save actually
+displaces (`omuzaki-doc` `disk::replace_checked`). An editor can still hold that file open and write into it after the
+check; no check can see a write through a handle that is already open. So the displaced file is **kept**, not deleted:
+
+- **Kept as the same file.** Before the swap the target is hard-linked into `.omuzaki/replaced/<path>.<time>-<pid>-<n>.<hash>.kept`
+  (same file system, no bytes copied), where `<hash>` is the BLAKE3 hash of its bytes, which the save has just checked
+  are the last-known ones. After the swap that entry is the displaced file, so a late write lands in it. Where the
+  file system has no hard links the backup is a verified copy, and after the swap the displaced file itself is renamed
+  over it, keeping the name.
+- **Pruned by later saves.** Every save deletes `.kept` entries that are at least **10 minutes** old and whose bytes
+  still have the hash in their name: at most as many as were kept since the last save, plus **16**, so pruning keeps
+  pace with saves and works off a backlog. An entry's age is its wall-clock age, from the time in its name; a time in
+  the future counts as age 0 until the clock passes it. An entry this process made must also be 10 minutes old on the
+  monotonic clock, so a wall clock that jumps forward can't make it old early. An entry an earlier process left keeps
+  its real age (its name). A project's first save walks the folder once for those; after that a save's pruning costs
+  what it deletes plus a small fixed amount.
+- **Written-to entries are never pruned.** An entry whose bytes no longer match its hash holds edits someone made after
+  the save; only a person deletes it. `.displaced` entries (a file that raced a save, or a temporary file an
+  interrupted save left) carry no hash and are never deleted automatically either.
+- **The residual window.** An editor that holds the old file open for more than 10 minutes after a save and only then
+  writes into it can lose that write, once a later save prunes the entry. Editors that write in place do so within
+  seconds of a save; a longer grace time is a one-constant change (`RETAIN_UNCHANGED`).
+- **No atomic swap, no save over a file.** A file that exists is replaced only by an atomic swap (`RENAME_EXCHANGE`
+  on Linux, `RENAME_SWAP` on macOS); where the system or file system has none, the save refuses with
+  `StoreError::NoSafeChange` before the file is touched, never falling back to a plain rename. A new file needs a hard
+  link or a rename that won't replace, and a deletion the same, or it is refused the same way. The capability table is
+  in the `omuzaki-doc` `disk` module.
+- **Windows, the one non-atomic cell.** Windows has no atomic swap, so on NTFS a save keeps the original by hard link
+  and then replaces it with `std::fs::rename`; an editor's atomic save in the same instant can be overwritten (the
+  checked file survives in the `.kept` entry), and the first use in a process says so on standard error. A writer
+  holding the file open without delete sharing (most editors) makes the rename fail, and the save reports it. On FAT
+  and exFAT (no hard links) the save is refused.
+- **What is tested where.** CI (Linux) tests a write through a handle opened before the save: made before the check
+  it is refused and nothing is lost, made after the check its bytes are in the `.kept` entry and pruning keeps it. It
+  also tests the pruning rules: young entries, changed entries,
+  `.displaced` entries and other files stay, and one pass deletes at most the entries kept since the last pass plus
+  16 (`owed + PRUNE_CATCH_UP`), which keeps pace with a burst of saves. The Windows behaviour is not tested in CI.
+- **Crash safety.** The hard-linked entry's folder is not flushed (that would add a folder sync to every save): after a
+  power loss the handles that could write into it are gone too, and what it held when kept is the text the save
+  replaced. A copied backup's folder is flushed once, after the displaced file takes its name.
+
 ## 7. Snapshots
 
 ### 7.1 What a snapshot is
@@ -388,11 +433,12 @@ writes them declares next to its code with `register_derived_path!("<glob>")` in
   session = "5f0c…"            # the session it was taken in
   created = 2026-10-12T14:32:05Z
   trigger = "auto"             # session, auto, close, pre-migration, pre-restore, pre-recovery,
-                               # pre-agent-session, manual or named
+                               # pre-agent-session, manual, named or take
   label = "Hair › bangs 9 locks"   # the last transaction's label
   history = "…"                # the history export at lsn (local only; not mirrored by default)
   thumbnail = "…" # optional: the last transaction's thumbnail, for the restore preview
   name = "before the oval face"    # named versions only (VC-01)
+  stem = "…"                   # takes only (ADR 0052): the take's stem; never `name`, which pins a named version
   keep_until = 2027-01-10      # pins: pre-migration +90 days, pre-recovery +30 days; absent: retention decides
   [verified]
   at = 2026-10-12T14:32:06Z
@@ -442,6 +488,7 @@ manifest's `assets` list, the commit view's units and missing blobs, the push ad
 | recovery | raw, before writing anything | pinned 30 days |
 | bulk agent session | on request (`backup.snapshot`) | the session controls call it (VC-09) |
 | named version | on request | pinned until the name is removed (VC-01) |
+| take | the state a recording or replay save pins, at the take's start (recording) or its save (replay), ADR 0052 | pinned until the take is deleted; the take's stem is `stem`, not `name` |
 
 VC-09's "hourly" and "daily" are retention buckets over these: the 10-minute cadence guarantees at least one
 snapshot in every hour with changes.
@@ -676,6 +723,7 @@ Fixtures are synthetic projects (never the sample character or private material)
 | Apply to durable | p50 ≤ 2 ms, p99 ≤ 10 ms at 60 commits/s on a local SSD (ext4, NTFS); drvfs recorded, not gated | journal writer bench |
 | Writer throughput | ≥ 20,000 records/s of 1 KiB with flushing | journal writer bench |
 | Recovery | a 5,000-record tail over a 500-file project in ≤ 1 s | recovery bench |
+| Save | one edited file of the 200-file benchmark project saved and saved back (two saves) under 2 ms of CPU work (render, hash, write) on a CI-class 4-vCPU machine; the device's `fsync` is outside the budget, measured and reported separately, and never traded for speed. Saves run on the keeper (6), never on the UI or real-time threads | `omuzaki-doc` `store` bench, `save` group: on tmpfs (where `fsync` costs nothing) for the CPU work, on the local SSD for the total |
 | Open without recovery | within 5% of today's `open` bench; the base snapshot adds ≤ 20 ms on a local SSD when files changed while closed, nothing when they didn't | `omuzaki-doc` `open` bench |
 | Snapshot (off-thread) | ≤ 50 ms for a 500-file project with 10 changed files on a local SSD | snapshot bench |
 | Apple (estimate until measured on an M-series machine) | interactive apply to ordered p99 ≤ 10 ms with `F_BARRIERFSYNC`; an external acknowledgement waits one group-committed `F_FULLFSYNC` | journal writer bench on macOS |

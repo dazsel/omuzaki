@@ -98,6 +98,7 @@ struct Material {
     textures: vec4<u32>,         // x: four bits of TEXTURE_* flags per slot (base, overlay 0..3)
     overlays: array<Overlay, 4>,
     program: array<vec4<f32>, 8>, // shading program parameters (the programs task)
+    uv_transform: vec4<f32>,     // xy: UV scale, zw: UV offset (applied as uv * xy + zw)
 }
 
 @group(1) @binding(0) var<uniform> material: Material;
@@ -222,6 +223,13 @@ fn overlay_fade(start: f32, end: f32, z: f32) -> f32 {
     return smoothstep(start, end, z);
 }
 
+// The UV a UV-addressed texture reads: the mesh's UV scaled, then offset, as the mock's `UvTransform::apply` does. The
+// base texture and `Mapping::Uv` overlays go through it. A planar overlay is placed in the mesh's local space and never
+// reads the UV, so it does not.
+fn material_uv(uv: vec2<f32>) -> vec2<f32> {
+    return uv * material.uv_transform.xy + material.uv_transform.zw;
+}
+
 // The surface colour before lighting: base colour, vertex colours, base texture, then the overlays in order (the
 // painted face goes through these). Straight linear RGBA. Must run in uniform control flow (it samples textures).
 fn surface_albedo(uv: vec2<f32>, vertex_colour: vec4<f32>, local: vec3<f32>) -> vec4<f32> {
@@ -230,11 +238,11 @@ fn surface_albedo(uv: vec2<f32>, vertex_colour: vec4<f32>, local: vec3<f32>) -> 
         albedo = albedo * vertex_colour;
     }
     if ((material.flags.x & FLAG_BASE_TEXTURE) != 0u) {
-        albedo = albedo * texel(textureSample(base_texture, base_sampler, uv), texture_flags(0u));
+        albedo = albedo * texel(textureSample(base_texture, base_sampler, material_uv(uv)), texture_flags(0u));
     }
     for (var i = 0u; i < material.flags.w; i++) {
         let overlay = material.overlays[i];
-        var overlay_uv = uv;
+        var overlay_uv = material_uv(uv);
         var weight = 1.0;
         if (overlay.params.w > 0.5) {
             // The top row of the texture is at max.y.

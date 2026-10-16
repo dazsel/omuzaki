@@ -13,10 +13,16 @@ bytes = { workspace = true }
 schemars.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-history-api = { path = "../omuzaki-history-api" }
+omuzaki-render-api = { path = "../omuzaki-render-api" }
+
+[dev-dependencies]
+serde_json.workspace = true
 
 [lints]
 workspace = true
 
 [package.metadata.omuzaki]
 kind = "API"
-summary = "the recording and streaming base types (§25, §39.1; `docs/design/record.md`): `Ticks`, exact `Timebase::rescale`, `Packet` with side data, `ByteMeter`, `StreamError`; encoder, muxer and output traits follow"
+summary = "the recording and streaming base types (§25, §39.1; `docs/design/record.md`): `Ticks`, exact `Timebase::rescale`, `Packet` with side data, `ByteMeter`, `StreamError`, stream and encoder specs, and the `Encoder`, `Muxer` and `Output` traits"

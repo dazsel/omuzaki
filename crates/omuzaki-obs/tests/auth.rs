@@ -26,7 +26,7 @@ fn a_different_password_gives_a_different_answer() {
 fn debug_never_shows_the_authentication_string() {
     let identify = Identify::new().with_authentication(ANSWER.to_owned());
     let message = Message::Identify(identify.clone());
-    let frame = message.to_frame();
+    let frame = message.to_frame().expect("serialises");
     for text in [format!("{identify:?}"), format!("{message:?}"), format!("{frame:?}"), format!("{identify:#?}")] {
         assert!(!text.contains(ANSWER), "{text}");
         assert!(!text.contains(&ANSWER[..8]), "{text}");

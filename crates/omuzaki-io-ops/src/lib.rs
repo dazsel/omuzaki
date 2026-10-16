@@ -22,6 +22,8 @@
 //! | [`gather::springs`], [`gather::avatar`] | the VRM avatar block and spring bones |
 //! | [`prepare::humanoid`] | `auto_map`, `apply`: propose the humanoid bones of a skinned skeleton, with an override table |
 //! | [`fit_bones`] | `reduce_bones`: cut a skin's joints to a budget, the `fit.bones` stage |
+//! | [`fit_texture`] | `resize`, `downscale_to`: the texture resampler for a platform fit, in linear light with premultiplied alpha |
+//! | [`ops::progress::JobProgress`] | the adapter from a job's context to the io progress trait |
 //!
 //! Ops register themselves with `omuzaki_ops_api::register_op!` next to their definition, so nothing here lists them.
 //! A binary keeps them only if it links this crate, so an app that wants the ops calls [`link`] at startup (ADR 0015).
@@ -31,6 +33,7 @@
 pub mod convert;
 mod error;
 pub mod fit_bones;
+pub mod fit_texture;
 pub mod gather;
 pub mod ops;
 pub mod prepare;
@@ -38,4 +41,5 @@ pub mod vrchat_rank;
 
 omuzaki_core::define_link! {
     omuzaki_char_api::link();
+    omuzaki_library_api::link();
 }
