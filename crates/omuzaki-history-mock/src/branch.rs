@@ -234,8 +234,9 @@ struct FakeState {
     lanes: BTreeMap<BranchId, LaneParts>,
     /// The documents of committed transactions, per branch: what `StateRef::Tx` resolves.
     txs: BTreeMap<(BranchId, u64), Value>,
-    /// The documents of snapshots, with the branch whose lane took each: what `StateRef::Snapshot` resolves.
-    snapshots: BTreeMap<SnapshotId, (BranchId, Value)>,
+    /// The documents of snapshots, with every branch whose lane took each: what `StateRef::Snapshot` resolves. A
+    /// snapshot id is the hash of its content, so branches that recorded equal trees share one.
+    snapshots: BTreeMap<SnapshotId, (BTreeSet<BranchId>, Value)>,
     next_id: u64,
     subscribers: Vec<Sender<BranchEvent>>,
 }
@@ -323,7 +324,9 @@ impl FakeBranches {
     /// [`BranchError::Io`] if the tree cannot be encoded.
     pub fn record_snapshot(&self, branch: &BranchId, tree: Value) -> Result<SnapshotId, BranchError> {
         let id = snapshot_of(&tree)?;
-        lock(&self.state).snapshots.insert(id, (branch.clone(), tree));
+        let mut state = lock(&self.state);
+        let owners = &mut state.snapshots.entry(id).or_insert_with(|| (BTreeSet::new(), tree)).0;
+        owners.insert(branch.clone());
         Ok(id)
     }
 
@@ -410,6 +413,20 @@ impl FakeBranches {
         }
     }
 
+    /// What `tree` records as merged in, less the records this project cannot vouch for: a point it does not know (a
+    /// project copied from another machine), or one that is another branch's or has another number than the record
+    /// says. The design has such records skipped, so a point never names a version that is not there (7.3).
+    fn verified_merges(&self, tree: &Value, own: &BranchId) -> Contains {
+        merges_of(tree, own).iter().fold(Contains::new(), |verified, (branch, version)| {
+            match self.store.point(&version.point) {
+                Ok(point) if point.branch == *branch && point.seq == version.seq => {
+                    verified.with(branch.clone(), *version)
+                }
+                _ => verified,
+            }
+        })
+    }
+
     /// Records a point of `tree` on `branch`. With `advance` the branch's head moves there; without, the point is only
     /// stored (a fork from an older state must not move the source branch back). The point includes what `tree`
     /// records as merged in and what the branch started with (design 5.3), and lists as parents the branch's previous
@@ -423,8 +440,8 @@ impl FakeBranches {
     ) -> Result<Point, BranchError> {
         let seq = self.store.last_seq(&branch.id) + 1;
         let snapshot = snapshot_of(tree)?;
-        let merged = merges_of(tree, &branch.id);
-        let before = self.store.point(&branch.head).map(|p| p.contains).unwrap_or_default();
+        let merged = self.verified_merges(tree, &branch.id);
+        let before = self.store.point(&branch.head)?.contains;
         let mut parents = vec![branch.head];
         parents.extend(merged.iter().filter(|(b, v)| !before.includes(b, v)).map(|(_, v)| v.point));
         let point =
@@ -460,6 +477,16 @@ impl FakeBranches {
         }
     }
 
+    /// `branch`'s live document. A branch the test put in the store without one has none to record.
+    fn document(state: &FakeState, branch: &BranchInfo) -> Result<Value, BranchError> {
+        state.docs.get(&branch.id).cloned().ok_or_else(|| {
+            BranchError::Invalid(format!(
+                "no document is scripted for branch {}: use FakeBranches::set_document",
+                branch.name
+            ))
+        })
+    }
+
     /// Brings every branch's recorded lane up to date: which lanes are open, and how many sessions work on each.
     fn sync_lanes(&self, state: &FakeState) {
         for mut info in self.store.list().unwrap_or_default() {
@@ -492,7 +519,7 @@ impl FakeBranches {
             ))
         };
         match at {
-            StateRef::Now => Ok(state.docs.get(&source.id).cloned().unwrap_or_default()),
+            StateRef::Now => Self::document(state, source),
             StateRef::Point { id, .. } => {
                 let point = self.store.point(id)?;
                 if !self.in_history(source, &point)? {
@@ -504,7 +531,7 @@ impl FakeBranches {
                 BranchError::Invalid(format!("no transaction {} recorded on branch {}", tx.0, source.name))
             }),
             StateRef::Snapshot { id, .. } => match state.snapshots.get(id) {
-                Some((branch, tree)) if *branch == source.id => Ok(tree.clone()),
+                Some((owners, tree)) if owners.contains(&source.id) => Ok(tree.clone()),
                 Some(_) => Err(elsewhere(format!("snapshot {id}"))),
                 None => {
                     Err(BranchError::Invalid(format!("no snapshot {id} recorded: use FakeBranches::record_snapshot")))
@@ -630,7 +657,7 @@ impl Branches for FakeBranches {
             )));
         }
         Self::guard(&state, &info)?;
-        let tree = state.docs.get(branch).cloned().unwrap_or_default();
+        let tree = Self::document(&state, &info)?;
         if ready.is_none() && *self.store.tree(&info.head)? == tree {
             return Ok(info.head);
         }
@@ -660,11 +687,15 @@ impl Branches for FakeBranches {
         if state.busy.contains(&from) {
             return Err(BranchError::Busy("finish or cancel the open transaction first".to_owned()));
         }
-        self.open_lane(&mut state, to)?;
+        // Everything that can refuse comes before the first change: room for the lane, then the point to record.
+        if !state.open.contains(to) && state.open.len() >= MAX_OPEN_LANES {
+            return Err(BranchError::LaneLimit);
+        }
         let old = self.live(&from)?;
-        let tree = state.docs.get(&from).cloned().unwrap_or_default();
+        let tree = Self::document(&state, &old)?;
         let made = Made { kind: PointKind::Switch, label: "Switched away", by, advance: true };
         self.record(&state, &old, &tree, made)?;
+        self.open_lane(&mut state, to)?;
         state.folder = to.clone();
         self.store.set_this(to.clone());
         // The old folder lane stays open as a side lane while sessions work on it (design 5.5).
@@ -760,7 +791,7 @@ impl Branches for FakeBranches {
         // Everything that can refuse comes before the first change, so a refused restore leaves the lane as it was.
         Self::guard(&state, &info)?;
         let target = self.resolve(&state, &info, &to)?;
-        let current = state.docs.get(branch).cloned().unwrap_or_default();
+        let current = Self::document(&state, &info)?;
         if let Some(missing) = restore_scopes(&current, &target).into_iter().find(|scope| !grants.allows(*scope)) {
             return Err(BranchError::Denied(format!("this restore changes what the `{missing}` scope covers")));
         }
@@ -1737,6 +1768,97 @@ mod tests {
         fake.checkpoint(&BranchId::main(), "merge aria", None, &person())?;
         assert_eq!(*fake.store().tree(&from("merged", &BranchId::main(), oval)?.head)?, json!({"v": "oval"}));
         assert_versions_are_real(&fake)
+    }
+
+    #[test]
+    fn branches_that_recorded_equal_trees_share_a_snapshot_and_each_keeps_it() -> Test {
+        let (fake, _) = fake()?;
+        let aria = fork(&fake, "aria", &person())?;
+        let tree = json!({"v": "same"});
+        let first = fake.record_snapshot(&BranchId::main(), tree.clone())?;
+        let second = fake.record_snapshot(&aria.id, tree.clone())?;
+        assert_eq!(first, second, "equal trees have one content-addressed id");
+
+        for (index, branch) in [BranchId::main(), aria.id.clone()].iter().enumerate() {
+            let forked = fake.create(
+                NewBranch::new(name(&format!("from-{index}"))?, branch.clone()).at(StateRef::snapshot(first)),
+                &person(),
+            )?;
+            assert_eq!(*fake.store().tree(&forked.head)?, tree);
+            fake.set_document(branch, json!({"v": "other"}));
+            let restored = fake.restore(branch, StateRef::snapshot(first), &person(), &Grants::person())?;
+            assert_eq!(restored.to, StateRef::snapshot(first));
+        }
+        // A branch that never recorded it still cannot use it.
+        let stranger = fork(&fake, "stranger", &person())?;
+        let refused = fake.create(NewBranch::new(name("nope")?, stranger.id).at(StateRef::snapshot(first)), &person());
+        assert!(matches!(refused, Err(BranchError::Invalid(_))), "{refused:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn merge_records_the_project_cannot_vouch_for_are_skipped() -> Test {
+        let (fake, _) = fake()?;
+        let aria = fork(&fake, "aria", &person())?;
+        fake.set_document(&aria.id, json!({"v": "oval"}));
+        let oval = fake.checkpoint(&aria.id, "oval", None, &person())?;
+        let seq = fake.store().point(&oval)?.seq;
+        let unknown = PointId(ContentHash::of(b"from another machine"));
+        let other = fork(&fake, "other", &person())?;
+
+        let record = |branch: &BranchId, seq: u64, point: PointId| merged_doc(1, &[(branch, seq, point)]);
+        let skipped = [
+            ("an unknown point", record(&aria.id, seq, unknown)),
+            ("a point of another branch", record(&other.id, seq, oval)),
+            ("another number", record(&aria.id, seq + 5, oval)),
+        ];
+        for (what, doc) in skipped {
+            fake.set_document(&BranchId::main(), doc);
+            let before = fake.store().this()?.head;
+            let made = fake.checkpoint(&BranchId::main(), what, None, &person())?;
+            let point = fake.store().point(&made)?;
+            assert_eq!(point.contains.get(&aria.id), None, "{what} is not recorded");
+            assert_eq!(point.parents, vec![before], "{what} is not a parent");
+        }
+
+        fake.set_document(&BranchId::main(), record(&aria.id, seq, oval));
+        let made = fake.checkpoint(&BranchId::main(), "vouched for", None, &person())?;
+        assert_eq!(fake.store().point(&made)?.contains.get(&aria.id), Some(&Version::new(seq, oval)));
+        assert_versions_are_real(&fake)
+    }
+
+    #[test]
+    fn a_branch_whose_head_or_document_is_missing_is_reported_and_nothing_is_written() -> Test {
+        let (fake, _) = fake()?;
+        let store = fake.store();
+        let missing = PointId(ContentHash::of(b"no such point"));
+        let id = BranchId::new("00000000000000aa")?;
+        let corrupt = BranchInfo::new(id.clone(), name("corrupt")?, missing, 1, WallTime(0), person());
+        store.put_branch(corrupt);
+        let seen =
+            |fake: &FakeBranches| (fake.list(), fake.store().last_seq(&id), fake.store().last_seq(&BranchId::main()));
+
+        // No document is scripted for it: there is nothing to record.
+        let before = seen(&fake);
+        assert!(matches!(fake.checkpoint(&id, "x", None, &person()), Err(BranchError::Invalid(_))));
+        fake.set_document(&id, json!({"v": 1}));
+
+        // Its head is not in the store: the previous point cannot be read, so no point is made after it.
+        let ready = fake.checkpoint(&id, "x", Some(String::new()), &person());
+        assert_eq!(ready, Err(BranchError::PointNotFound(missing)));
+        let plain = fake.checkpoint(&id, "x", None, &person());
+        assert_eq!(plain, Err(BranchError::PointNotFound(missing)));
+        assert_eq!(seen(&fake), before, "nothing was written");
+
+        // Switching away from it fails the same way, and moves neither the folder nor a lane.
+        fake.set_document(&BranchId::main(), json!({"v": "main"}));
+        let events = fake.subscribe();
+        fake.switch(&id, &person())?;
+        let away = fake.switch(&BranchId::main(), &person());
+        assert_eq!(away, Err(BranchError::PointNotFound(missing)));
+        assert_eq!(fake.folder(), id, "still where it was");
+        assert_eq!(events.try_iter().filter(|e| matches!(e, BranchEvent::Switched { .. })).count(), 1);
+        Ok(())
     }
 
     #[test]
