@@ -274,3 +274,67 @@ fn a_cmyk_jpeg_with_a_profile_is_refused_the_same_way() {
         error.message
     );
 }
+
+#[test]
+fn a_sixteen_bit_linear_sample_is_converted_before_it_is_quantised() {
+    // 128 of 65 535 in linear light is 0.00195, which sRGB stores as about 6. Quantised to 8 bits first it would be 0.
+    let samples: Vec<u8> = [128_u16; 12].iter().flat_map(|v| v.to_ne_bytes()).collect();
+    let mut png = Vec::new();
+    PngEncoder::new(&mut png).write_image(&samples, 2, 2, ExtendedColorType::Rgb16).unwrap();
+    let png = with_chunks(&png, &[chunk(*b"gAMA", &100_000u32.to_be_bytes())]);
+    let got = first_pixel(&png);
+    let expected = srgb_encode(128.0 / 65_535.0);
+    for (channel, &value) in got.iter().take(3).enumerate() {
+        assert!((f64::from(value) - expected).abs() <= 1.0, "channel {channel}: {value} vs {expected:.2}");
+    }
+    assert!(got[0] >= 5, "got {}", got[0]);
+}
+
+#[test]
+fn a_tagged_grayscale_image_converts_through_the_gray_profile() {
+    // A gray profile with gamma 1.0 (linear): 128 is 0.502 linear, which sRGB stores as 188, on all three channels.
+    let profile = moxcms::ColorProfile::new_gray_with_gamma(1.0).encode().unwrap();
+    let mut png = Vec::new();
+    let mut encoder = PngEncoder::new(&mut png);
+    encoder.set_icc_profile(profile).unwrap();
+    encoder.write_image(&[128_u8; 4], 2, 2, ExtendedColorType::L8).unwrap();
+    let got = first_pixel(&png);
+    let expected = srgb_encode(128.0 / 255.0);
+    for (channel, &value) in got.iter().take(3).enumerate() {
+        assert!((f64::from(value) - expected).abs() <= TOLERANCE, "channel {channel}: {value} vs {expected:.2}");
+    }
+    assert_eq!(got[3], 255);
+}
+
+#[test]
+fn a_grayscale_profile_on_a_colour_image_is_refused() {
+    let profile = moxcms::ColorProfile::new_gray_with_gamma(1.0).encode().unwrap();
+    let png = flat_png([128, 64, 200], Some(profile));
+    let error = decode(&png, ContentHash::of(&png), FIELD).unwrap_err();
+    assert!(error.message.contains("grayscale colour profile on an image that is not grayscale"), "{}", error.message);
+}
+
+#[test]
+fn a_profile_the_decoder_could_not_give_is_refused_never_read_as_untagged() {
+    // A PNG whose `iCCP` will not inflate: the decoder drops it, and the file would read as untagged sRGB.
+    let broken = with_chunks(&flat_png([200, 120, 60], None), &[chunk(*b"iCCP", b"p\0\0this is not zlib data")]);
+    let error = decode(&broken, ContentHash::of(&broken), FIELD).unwrap_err();
+    assert!(error.message.contains("present but cannot be read"), "{}", error.message);
+    // A JPEG whose APP2 profile chunks disagree (sequence 2 of 1): the decoder yields none.
+    let jpeg = include_bytes!("fixtures/baseline_444.jpg");
+    let mut app2 = b"ICC_PROFILE\0\x02\x01".to_vec();
+    app2.extend(display_p3_profile());
+    let mut bad = jpeg[..2].to_vec();
+    bad.extend([0xFF, 0xE2]);
+    bad.extend(u16::try_from(app2.len() + 2).unwrap().to_be_bytes());
+    bad.extend(app2);
+    bad.extend(&jpeg[2..]);
+    let error = decode(&bad, ContentHash::of(&bad), FIELD).unwrap_err();
+    assert!(error.message.contains("present but cannot be read"), "{}", error.message);
+    // And a `cICP` the decoder accepted decides the colour anyway, so a broken profile beside it is no reason to refuse.
+    let with_cicp = with_chunks(
+        &flat_png([200, 120, 60], None),
+        &[chunk(*b"cICP", &[1, 13, 0, 1]), chunk(*b"iCCP", b"p\0\0this is not zlib data")],
+    );
+    assert_eq!(first_pixel(&with_cicp), [200, 120, 60, 255]);
+}

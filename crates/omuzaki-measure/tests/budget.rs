@@ -11,6 +11,8 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
+use ::image::codecs::png::PngEncoder;
+use ::image::{ExtendedColorType, ImageEncoder};
 use omuzaki_measure::image::decode;
 use omuzaki_ops_api::ErrorCode;
 use omuzaki_store_api::ContentHash;
@@ -112,10 +114,10 @@ fn png_header(width: u32, height: u32, depth: u8, colour: u8) -> Vec<u8> {
 
 #[test]
 fn a_crafted_oversized_header_is_refused_before_any_pixel_is_allocated() {
-    // 10,000 x 10,000 is over the 8192 side limit (400 MB as RGBA8); 8000 x 8000 is under it but over the 64 MiB
-    // allocation limit (256 MB as RGBA8); 4000 x 4000 at 16-bit RGBA is under the RGBA8 budget but its decoder buffer
-    // (128 MB) is over it. None has a pixel, and none may allocate for the size it claims.
-    for (width, height, depth, colour) in [(10_000, 10_000, 8, 2), (8_000, 8_000, 8, 6), (4_000, 4_000, 16, 6)] {
+    // 10,000 x 10,000 is over the 8192 side limit (400 MB as RGBA8); 8000 x 8000 and 5000 x 5000 are under it but over
+    // the 64 MiB decoded-size limit (256 MB and 100 MB as RGBA8). None has a pixel, and none may allocate for the size it
+    // claims.
+    for (width, height, depth, colour) in [(10_000, 10_000, 8, 2), (8_000, 8_000, 8, 6), (5_000, 5_000, 8, 6)] {
         let png = png_header(width, height, depth, colour);
         let (result, peak) = peak_of(|| decode(&png, ContentHash::of(&png), FIELD));
         let error = result.unwrap_err();
@@ -127,4 +129,48 @@ fn a_crafted_oversized_header_is_refused_before_any_pixel_is_allocated() {
         );
         assert!(peak < 1 << 20, "{width} x {height}: a refused header allocated {peak} bytes");
     }
+}
+
+fn solid_rgba_png(side: u32) -> Vec<u8> {
+    let mut out = Vec::new();
+    let pixels = [200_u8, 120, 60, 255].repeat((side * side) as usize);
+    PngEncoder::new(&mut out).write_image(&pixels, side, side, ExtendedColorType::Rgba8).unwrap();
+    out
+}
+
+#[test]
+fn a_solid_untagged_rgba_png_at_three_thousand_pixels_is_accepted_and_its_buffer_counted_once() {
+    // 3000 x 3000 RGBA8 is 34.3 MiB decoded, under the 64 MiB limit. The decoder's buffer is that RGBA8 already, and
+    // `into_rgba8` moves it, so the decode holds the image once (plus the caller's input), not twice.
+    let png = solid_rgba_png(3000);
+    let decoded = 3000_usize * 3000 * 4;
+    let (result, peak) = peak_of(|| decode(&png, ContentHash::of(&png), FIELD));
+    let image = result.unwrap();
+    assert_eq!((image.width, image.height), (3000, 3000));
+    assert_eq!(&image.pixels[..4], &[200, 120, 60, 255]);
+    assert!(peak < decoded + (1 << 20), "the decode held {peak} bytes for a {decoded}-byte image");
+}
+
+#[test]
+fn the_worst_case_colour_conversion_peak_is_within_the_documented_multiple() {
+    // A 16-bit RGBA image that needs a conversion is the worst case: the decoder's 8 bytes a pixel, the same data as the
+    // 16-bit input of the transform, and its 16-bit output are 16 bytes a pixel, `PEAK_FACTOR` (4) times the decoded RGBA8.
+    let side = 1500_u32;
+    let samples: Vec<u8> =
+        (0..side * side * 4).flat_map(|i| (u16::try_from(i % 60_000).unwrap() + 100).to_ne_bytes()).collect();
+    let mut png = Vec::new();
+    PngEncoder::new(&mut png).write_image(&samples, side, side, ExtendedColorType::Rgba16).unwrap();
+    let gamma = 100_000_u32.to_be_bytes();
+    let mut chunk = 4_u32.to_be_bytes().to_vec();
+    chunk.extend(b"gAMA");
+    chunk.extend(gamma);
+    chunk.extend(crc32(&[b"gAMA".as_slice(), gamma.as_slice()].concat()).to_be_bytes());
+    let idat = png.windows(4).position(|window| window == b"IDAT").unwrap() - 4;
+    let png = [&png[..idat], &chunk, &png[idat..]].concat();
+    let decoded = (side * side * 4) as usize;
+    let (result, peak) = peak_of(|| decode(&png, ContentHash::of(&png), FIELD));
+    result.unwrap();
+    let limit = usize::try_from(omuzaki_measure::image::PEAK_FACTOR).unwrap() * decoded + (1 << 20);
+    assert!(peak <= limit, "the conversion held {peak} bytes; {} x the decoded {decoded} is {limit}", 4);
+    assert!(peak > 3 * decoded, "the worst case should be near the multiple, not below 3x: {peak}");
 }

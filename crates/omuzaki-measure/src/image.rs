@@ -21,8 +21,18 @@ use crate::messages;
 /// The longest side a measure reads, in pixels (design 4.1).
 pub const MAX_SIDE: u32 = 8192;
 
-/// The most the decoder may allocate at once, in MiB, its output image included (design 4.1).
+/// The most a decoded image may take, in MiB, as the straight RGBA8 the measure keeps (design 4.1, #282): `width x
+/// height x 4` bytes, checked once from the header, before anything is allocated.
 pub const MAX_DECODED_MIB: u32 = 64;
+
+/// The worst-case peak while an image is decoded and converted, as a multiple of the decoded size (RGBA8, `width x
+/// height x 4`): **at most 4x**. The worst case is a 16-bit RGBA image that needs a colour conversion: the decoder's
+/// output (8 bytes a pixel), the same data as the 16-bit RGBA the transform reads (moved, not copied, for that layout) and
+/// the transform's 16-bit output (8 bytes a pixel) are 16 bytes a pixel, or 4x, at the transform. Every other layout is
+/// lower. Decoder scratch and metadata are not accounted: the contract is a limit on the decoded image, not an exact peak.
+/// The decoder's `max_alloc` is set to this multiple, so a decoder that does enforce it never refuses an image the
+/// decoded-size check admits.
+pub const PEAK_FACTOR: u64 = 4;
 
 /// The most bytes of a file a measure reads. A JPEG can be smaller than its pixels, and a PNG is about as large as its
 /// pixels, so twice the decoded cap covers every image the decoded cap admits.
@@ -134,15 +144,14 @@ pub fn decode(bytes: &[u8], hash: ContentHash, field: &str) -> Result<Rgba8, OpE
     let mut input = reader(bytes).map_err(|error| unreadable(field, &error))?;
     input.limits(limits());
     let mut decoder = input.into_decoder().map_err(|error| decode_error(bytes, field, error))?;
-    // Not every decoder enforces `max_alloc` before it allocates its output (the PNG decoder checks its own buffers, not
-    // the output image), so the limits' own accounting is applied to the buffers this decode will hold: the decoder's
-    // output, and the RGBA8 copy the measure keeps beside it. An oversized header is refused here, before either exists.
+    // The decoded-size limit, once, from the header: the RGBA8 the measure keeps may not exceed it. The decoder's own
+    // `max_alloc` (a multiple of it, see PEAK_FACTOR) is the decoder's business.
     let (width, height) = decoder.dimensions();
-    let mut budget = limits();
-    budget
+    let mut size_limit = limits();
+    size_limit.max_alloc = Some(u64::from(MAX_DECODED_MIB) << 20);
+    size_limit
         .check_dimensions(width, height)
-        .and_then(|()| budget.reserve(decoder.total_bytes()))
-        .and_then(|()| budget.reserve(u64::from(width) * u64::from(height) * 4))
+        .and_then(|()| size_limit.reserve(u64::from(width) * u64::from(height) * RGBA_BYTES))
         .map_err(|error| decode_error(bytes, field, error))?;
     let icc = decoder.icc_profile().map_err(|error| unreadable(field, &error))?;
     if format == ImageFormat::Jpeg && is_cmyk(bytes) {
@@ -153,12 +162,64 @@ pub fn decode(bytes: &[u8], hash: ContentHash, field: &str) -> Result<Rgba8, OpE
             "CMYK images aren't supported for measuring; save it as RGB (sRGB or Display P3) first".to_owned(),
         ));
     }
+    let profile_missing = icc.is_none();
     let declared = if format == ImageFormat::Png { png_colour(bytes, icc) } else { Declared::from_icc(icc) };
+    // A file that has an embedded profile the decoder could not give (APP2 chunks that do not number consistently, a PNG
+    // profile that is corrupt or past the decoder's limit) has colour this cannot read: refused, never read as untagged.
+    // Only a PNG `cICP` the decoder accepted decides the colour anyway (PNG colour chunk precedence).
+    if profile_missing && has_profile_chunk(bytes, format) && !matches!(declared, Declared::Cicp(_)) {
+        return Err(refuse_unreadable(
+            field,
+            "its embedded colour profile is present but cannot be read (corrupt, incomplete or too large)".to_owned(),
+        ));
+    }
     let dynamic = DynamicImage::from_decoder(decoder).map_err(|error| decode_error(bytes, field, error))?;
-    let rgba = dynamic.into_rgba8();
-    let (width, height) = rgba.dimensions();
-    let pixels = to_srgb(rgba.into_raw(), declared, field)?;
+    let pixels = to_srgb(dynamic, declared, field)?;
     Ok(Rgba8 { width, height, pixels, hash })
+}
+
+/// Bytes a decoded pixel takes in the RGBA8 the measure keeps.
+const RGBA_BYTES: u64 = 4;
+
+/// Whether the file declares an embedded ICC profile, found from its chunk or segment headers (kinds and lengths only, no
+/// data): a PNG `iCCP` before the image data, or a JPEG APP2 `ICC_PROFILE` segment before the scan. It decides no colour;
+/// it tells a profile the decoder dropped from a profile that was never there.
+fn has_profile_chunk(bytes: &[u8], format: ImageFormat) -> bool {
+    let be = |at: usize| bytes.get(at..at + 4).and_then(|b| <[u8; 4]>::try_from(b).ok()).map(u32::from_be_bytes);
+    if format == ImageFormat::Png {
+        let mut at = 8;
+        while let (Some(length), Some(kind)) = (be(at), bytes.get(at + 4..at + 8)) {
+            match kind {
+                b"iCCP" => return true,
+                b"IDAT" | b"IEND" => return false,
+                _ => {}
+            }
+            at = at.saturating_add(12).saturating_add(length as usize);
+        }
+        return false;
+    }
+    let mut at = 2;
+    while let Some(&marker) = bytes.get(at + 1) {
+        if bytes.get(at) != Some(&0xFF) {
+            return false;
+        }
+        match marker {
+            0xFF => at += 1,
+            0x00 | 0x01 | 0xD0..=0xD8 => at += 2,
+            0xD9 | 0xDA => return false,
+            _ => {
+                let Some(length) = bytes.get(at + 2..at + 4).map(|b| usize::from(u16::from_be_bytes([b[0], b[1]])))
+                else {
+                    return false;
+                };
+                if marker == 0xE2 && bytes.get(at + 4..at + 16) == Some(b"ICC_PROFILE\0".as_slice()) {
+                    return true;
+                }
+                at += 2 + length.max(2);
+            }
+        }
+    }
+    false
 }
 
 /// Whether a JPEG has four components (CMYK or YCCK), from its headers.
@@ -277,17 +338,20 @@ fn chunk_profile(gamma: Option<u32>, chromaticities: Option<[(f64, f64); 4]>) ->
     Some(profile)
 }
 
-/// Converts straight RGBA8 `pixels` from the colour space the file declares to sRGB. Only a declaration `moxcms` cannot
-/// parse or transform is refused.
-fn to_srgb(pixels: Vec<u8>, declared: Declared, field: &str) -> Result<Vec<u8>, OpError> {
+/// Converts `native` (the decoder's output, at its own precision) from the colour space the file declares to straight
+/// sRGB RGBA8. The transform runs at the source precision, 16-bit for a 16-bit image and 8-bit otherwise, and the result
+/// is quantised to a byte last, so a dark 16-bit sample is not rounded to zero before it is converted. A grayscale profile
+/// converts a grayscale image through the engine's gray layout. Only a declaration `moxcms` cannot parse or transform is
+/// refused.
+fn to_srgb(native: DynamicImage, declared: Declared, field: &str) -> Result<Vec<u8>, OpError> {
     let source = match declared {
-        Declared::Srgb => return Ok(pixels),
+        Declared::Srgb => return Ok(native.into_rgba8().into_raw()),
         Declared::Cicp(code) => {
             let is_srgb = code.color_primaries == CicpColorPrimaries::Bt709
                 && code.transfer_characteristics == TransferCharacteristics::Srgb
                 && code.full_range;
             if is_srgb {
-                return Ok(pixels);
+                return Ok(native.into_rgba8().into_raw());
             }
             let mut profile = ColorProfile::new_srgb();
             profile.update_rgb_colorimetry_from_cicp(code);
@@ -306,21 +370,65 @@ fn to_srgb(pixels: Vec<u8>, declared: Declared, field: &str) -> Result<Vec<u8>, 
         })?,
         Declared::Chunks { gamma, chromaticities } => match chunk_profile(gamma, chromaticities) {
             Some(profile) => profile,
-            None => return Ok(pixels),
+            None => return Ok(native.into_rgba8().into_raw()),
         },
     };
-    if source.color_space != DataColorSpace::Rgb {
-        return Err(colour_unsupported(field, "an embedded colour profile that is not RGB"));
-    }
+    let gray_image = matches!(
+        native,
+        DynamicImage::ImageLuma8(_)
+            | DynamicImage::ImageLumaA8(_)
+            | DynamicImage::ImageLuma16(_)
+            | DynamicImage::ImageLumaA16(_)
+    );
+    let gray = match source.color_space {
+        DataColorSpace::Rgb => false,
+        DataColorSpace::Gray if gray_image => true,
+        DataColorSpace::Gray => {
+            return Err(colour_unsupported(field, "a grayscale colour profile on an image that is not grayscale"));
+        }
+        _ => return Err(colour_unsupported(field, "an embedded colour profile that is neither RGB nor grayscale")),
+    };
     let cannot = |error: moxcms::CmsError| {
         colour_unsupported(field, &format!("a colour profile that cannot be converted ({error})"))
     };
-    let transform = source
-        .create_transform_8bit(Layout::Rgba, &ColorProfile::new_srgb(), Layout::Rgba, TransformOptions::default())
-        .map_err(cannot)?;
-    let mut out = vec![0_u8; pixels.len()];
-    transform.transform(&pixels, &mut out).map_err(cannot)?;
-    Ok(out)
+    let srgb = ColorProfile::new_srgb();
+    let options = TransformOptions::default();
+    let alpha = native.color().has_alpha();
+    let wide = matches!(
+        native,
+        DynamicImage::ImageLuma16(_)
+            | DynamicImage::ImageLumaA16(_)
+            | DynamicImage::ImageRgb16(_)
+            | DynamicImage::ImageRgba16(_)
+    );
+    let layout = match (gray, alpha) {
+        (true, false) => Layout::Gray,
+        (true, true) => Layout::GrayAlpha,
+        (false, _) => Layout::Rgba,
+    };
+    let channels = if gray { 1 + usize::from(alpha) } else { 4 };
+    if wide {
+        let samples = match (gray, alpha) {
+            (true, false) => native.into_luma16().into_raw(),
+            (true, true) => native.into_luma_alpha16().into_raw(),
+            (false, _) => native.into_rgba16().into_raw(),
+        };
+        let transform = source.create_transform_16bit(layout, &srgb, Layout::Rgba, options).map_err(cannot)?;
+        let mut out = vec![0_u16; samples.len() / channels * 4];
+        transform.transform(&samples, &mut out).map_err(cannot)?;
+        drop(samples);
+        Ok(out.into_iter().map(|v| u8::try_from((u32::from(v) + 128) / 257).unwrap_or(u8::MAX)).collect())
+    } else {
+        let samples = match (gray, alpha) {
+            (true, false) => native.into_luma8().into_raw(),
+            (true, true) => native.into_luma_alpha8().into_raw(),
+            (false, _) => native.into_rgba8().into_raw(),
+        };
+        let transform = source.create_transform_8bit(layout, &srgb, Layout::Rgba, options).map_err(cannot)?;
+        let mut out = vec![0_u8; samples.len() / channels * 4];
+        transform.transform(&samples, &mut out).map_err(cannot)?;
+        Ok(out)
+    }
 }
 
 /// An error from building or running the decoder: a limit is the image being too large (named by its size, read from the
@@ -357,12 +465,13 @@ fn reader(bytes: &[u8]) -> Result<ImageReader<Cursor<&[u8]>>, ImageError> {
     Ok(ImageReader::new(Cursor::new(bytes)).with_guessed_format()?)
 }
 
-/// The decoder's limits (design 4.1, #282): the sides and the most it may allocate at once, its output included.
+/// The decoder's limits (design 4.1, #282): the sides, and `max_alloc` at the worst-case peak ([`PEAK_FACTOR`] times the
+/// decoded-size limit).
 fn limits() -> Limits {
     let mut limits = Limits::default();
     limits.max_image_width = Some(MAX_SIDE);
     limits.max_image_height = Some(MAX_SIDE);
-    limits.max_alloc = Some(u64::from(MAX_DECODED_MIB) << 20);
+    limits.max_alloc = Some((u64::from(MAX_DECODED_MIB) << 20) * PEAK_FACTOR);
     limits
 }
 

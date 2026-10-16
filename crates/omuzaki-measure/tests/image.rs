@@ -280,13 +280,12 @@ fn a_header_larger_than_the_side_limit_is_refused_before_any_pixels() {
 }
 
 #[test]
-fn an_image_over_the_decoded_budget_is_refused_by_the_decoder() {
-    // 4000 by 4000 at 16 bits and four channels is under the sides and the RGBA8 budget (64 MiB), but the decoder's
-    // own buffer for 16-bit RGBA (8 bytes a pixel, 128 MB) is over it: the decoder refuses before it reads a pixel.
-    let (_, hash, services) = stored(&png_header(4_000, 4_000, 16, 6));
+fn an_image_over_the_decoded_size_limit_is_refused_from_its_header() {
+    // 5000 by 5000 is under the 8192 side limit, but as RGBA8 it is 100 MB, over the 64 MiB the measure keeps.
+    let (_, hash, services) = stored(&png_header(5_000, 5_000, 8, 6));
     let error = load_err(&services, &Grants::of([]), None, &ImageRef::Asset { asset: hash });
     assert_eq!(error.code, ErrorCode::Invalid);
-    assert!(error.message.contains("4,000 × 4,000"), "{}", error.message);
+    assert!(error.message.contains("5,000 × 5,000"), "{}", error.message);
 }
 
 #[test]
