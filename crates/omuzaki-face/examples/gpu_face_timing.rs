@@ -16,6 +16,9 @@
 //! name or any other hardware detail: the repository is public. On a software adapter (lavapipe) the numbers check that
 //! the probe runs; they are not a timing (decision 7.3).
 
+// The GPU rasteriser exists on native targets only (#2207).
+#![cfg(not(target_arch = "wasm32"))]
+
 use std::process::ExitCode;
 
 use omuzaki_core::time::Seconds;
