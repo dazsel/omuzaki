@@ -30,8 +30,8 @@ use omuzaki_doc_api::{DocPath, DocRead, DocVersion, DocWrite, Patch, PatchError,
 use omuzaki_doc_mock::MemDoc;
 use omuzaki_ops::Executor;
 use omuzaki_ops_api::{
-    Actor, FsMode, Grants, JobCtx, Jobs, Mode, Op, OpCtx, OpError, OpKind, OpMeta, Plan, ProjectDir, Request, Runner,
-    Scope, Services, ServicesBuilder, Undo, register_op,
+    Actor, Budget, FsMode, Grants, JobCtx, Jobs, Limits, Mode, Op, OpCtx, OpError, OpKind, OpMeta, Plan, ProjectDir,
+    Request, Runner, Scope, Services, ServicesBuilder, SessionSpec, Sessions, Transport, Undo, register_op,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -232,7 +232,22 @@ impl DocWrite for InPlaceDoc {
 }
 
 fn executor(doc: Box<dyn DocWrite>, services: Services) -> Executor {
-    Executor::new(doc, Arc::new(FakeClock::new(Seconds(0.0)))).unwrap().with_services(services)
+    let exec = Executor::new(doc, Arc::new(FakeClock::new(Seconds(0.0)))).unwrap().with_services(services);
+    // The agent the requests below name: agents without a session are refused.
+    let session = SessionSpec {
+        transport: Transport::Stdio,
+        client: "bench".into(),
+        model: None,
+        on_behalf_of: Actor::Person { name: "bench".into() },
+        grants: Grants::person(),
+        budget: Budget::default(),
+        limits: Limits::default(),
+        parent: None,
+        role: None,
+        fence: Vec::new(),
+    };
+    exec.open(session).expect("the bench session opens");
+    exec
 }
 
 fn request(op: &str, mode: Mode, i: u64, grants: &Grants) -> Request {
@@ -246,7 +261,7 @@ fn request(op: &str, mode: Mode, i: u64, grants: &Grants) -> Request {
         op: op.into(),
         args,
         mode,
-        actor: Actor::Agent { id: "bench".into(), model: None },
+        actor: Actor::Agent { id: "bench#1".into(), model: None },
         grants: grants.clone(),
         cause: None,
         tx: None,
