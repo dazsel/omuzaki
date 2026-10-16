@@ -4,7 +4,8 @@
 //! by the thickness and by `lift`, from the top of the head down to the rim, so the inside face rests on the head
 //! within `lift` of it. The rim is a latitude `rim_deg` from the top of the head, turned by `tilt_deg` (positive lowers
 //! the front). The style adds to that: a beanie's cuff and pom-pom, a beret's puff and stalk, a cap's bill, a witch
-//! hat's cone and brim, a crown's spikes and gems. A `band` ring in the accent colour follows the rim.
+//! hat's cone and brim, a crown's spikes and gems. A `band` ring in the accent colour follows the rim, wrapped round the
+//! crown's outer face and standing proud of it everywhere, so the shell's bulge never half-buries it.
 //!
 //! **The face.** The rim never reaches below the brow line at the front: `rim_deg` is limited to [`MAX_RIM_DEG`] and a
 //! brim may not point down. With `brim_down` a brim may hang over the eyes (down to [`MIN_BRIM_TILT_DEG`]).
@@ -37,6 +38,8 @@ pub const MAX_RIM_DEG: f64 = 80.0;
 const WITCH_CONE: f64 = 0.45;
 /// The narrowest the brim ring gets, metres: a bill has no brim at the back, and a ring of no width would fold flat.
 const MIN_LIP: f64 = 0.002;
+/// How far the band stands proud of the crown's outer face, as a share of the shell's thickness.
+const BAND_PROUD: f64 = 0.4;
 /// The steepest a brim may point down, degrees, with `brim_down`.
 pub const MIN_BRIM_TILT_DEG: f64 = -50.0;
 
@@ -259,12 +262,18 @@ impl Cut<'_> {
         Ok((grid, mids))
     }
 
+    /// How far the crown's outer face stands off the head at polar angle `theta` of azimuth `phi`, metres.
+    fn outer_face(&self, theta: f64, phi: f64) -> f64 {
+        let u = (theta / self.rim(phi)).clamp(0.0, 1.0);
+        self.p.lift + self.p.thickness + self.bulge(u, phi)
+    }
+
     /// A ring following the rim: the band round the crown (and a crown's own body). `edge(phi)` is its height in metres
-    /// at `phi`; `out` is how far the ring stands off the surface.
-    fn ring(&self, edge: impl Fn(f64) -> f64, out: f64) -> Result<(Grid, Vec<DVec3>), KitError> {
+    /// at `phi`; `outer(theta, phi)` is how far its outer face stands off the head at polar angle `theta`.
+    fn ring(&self, edge: impl Fn(f64) -> f64, outer: impl Fn(f64, f64) -> f64) -> Result<(Grid, Vec<DVec3>), KitError> {
         let cols = self.cols;
         let radius = f64::from(self.head.radius(omuzaki_core::glam::Vec3::Y));
-        let (lift, t) = (self.p.lift, 0.8 * self.p.thickness);
+        let lift = self.p.lift;
         let corner = |i: usize, phi: f64| {
             let rim = self.rim(phi);
             let up = edge(phi) / radius;
@@ -272,8 +281,8 @@ impl Cut<'_> {
             let on = |theta: f64, offset: f64| on_head(self.head, polar(theta, phi), offset);
             match i % 4 {
                 0 => on(theta_bottom, lift),
-                1 => on(theta_bottom, lift + out + t),
-                2 => on(theta_top, lift + out + t),
+                1 => on(theta_bottom, outer(theta_bottom, phi)),
+                2 => on(theta_top, outer(theta_top, phi)),
                 _ => on(theta_top, lift),
             }
         };
@@ -357,7 +366,7 @@ impl PartKind for Hat {
             let spikes = 5.0;
             let base = 0.5 * cut.r.height;
             let edge = |phi: f64| base + cut.r.height * (1.0 - (2.0 * (spikes * phi / TAU).fract() - 1.0).abs());
-            let (grid, mids) = cut.ring(edge, 0.0).map_err(&err)?;
+            let (grid, mids) = cut.ring(edge, |_, _| p.lift + 0.8 * p.thickness).map_err(&err)?;
             shells.bind(1, &grid, (true, true), &at(mids, cols)).map_err(&err)?;
             for k in 0..5 {
                 let phi = TAU * (f64::from(k) + 0.5) / spikes;
@@ -373,7 +382,10 @@ impl PartKind for Hat {
             let (grid, mids) = cut.shell().map_err(&err)?;
             shells.bind(0, &grid, (false, true), &at(mids, cols)).map_err(&err)?;
             if p.band_height > 0.0 {
-                let (ring, mids) = cut.ring(|_| p.band_height, 0.5 * p.thickness).map_err(&err)?;
+                // The band wraps the crown's own outer face, standing proud of it all the way up, so the crown's
+                // bulge never buries part of it.
+                let band = |theta: f64, phi: f64| cut.outer_face(theta, phi) + BAND_PROUD * p.thickness;
+                let (ring, mids) = cut.ring(|_| p.band_height, band).map_err(&err)?;
                 shells.bind(1, &ring, (true, true), &at(mids, cols)).map_err(&err)?;
             }
         }

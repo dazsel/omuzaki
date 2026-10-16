@@ -8,7 +8,7 @@ mod accessory_common;
 
 use accessory_common::{
     TEMPLATES, above_head, assert_closed, assert_recolours_in_place, assert_rides_the_bone, assert_weights_valid,
-    build_budget_ms, build_ms, built_scene, character, meshes, styles, vertices,
+    build_budget_ms, build_ms, built_scene, character, inside_mesh, mesh_named, meshes, styles, vertices,
 };
 use omuzaki_anim_api::HumanoidBone;
 use omuzaki_char_api::find_kind;
@@ -63,6 +63,37 @@ fn the_hat_rests_on_the_head_within_1_mm() {
                 (-0.0005..=0.001).contains(&lowest),
                 "hat {name} on {template}: its nearest vertex is {lowest} m off the head"
             );
+        }
+    }
+}
+
+#[test]
+fn the_band_is_never_buried_in_the_crown() {
+    // The band wraps the crown's outer face and stands proud of it all the way round: the top edge of its outside, where
+    // the crown's bulge grows, is never inside the crown (a half-buried band shows as flecks of its colour through the
+    // crown). Its bottom edge sits on the rim, where a bill or a brim starts.
+    let thickness = 0.006_f32;
+    for template in ["soft-sd", "standard"] {
+        for (name, params) in styles("hat").into_iter().filter(|(n, _)| n != "crown") {
+            let s = built_scene(template, "hat", params.clone(), None);
+            let (crown, band) = (mesh_named(&s.built, "-hat"), mesh_named(&s.built, "-band"));
+            let centre = s.head.centre();
+            let polar = |p: Vec3| (p - centre).angle_between(Vec3::Y);
+            // The band's outside, away from the top of the head (where a pom-pom or a stalk shares its colour).
+            let outside: Vec<Vec3> = band
+                .geometry
+                .positions
+                .iter()
+                .copied()
+                .filter(|p| above_head(s.head.as_ref(), *p) > 0.5 * thickness && polar(*p) > 0.6)
+                .collect();
+            let (upper, lower) =
+                outside.iter().fold((f32::MAX, f32::MIN), |(u, l), p| (u.min(polar(*p)), l.max(polar(*p))));
+            let top_edge: Vec<&Vec3> = outside.iter().filter(|p| polar(**p) < 0.5 * (upper + lower)).collect();
+            assert!(!top_edge.is_empty(), "hat {name} on {template}: no band vertex checked");
+            for p in top_edge {
+                assert!(!inside_mesh(*p, crown), "hat {name} on {template}: the band at {p} is inside the crown");
+            }
         }
     }
 }
