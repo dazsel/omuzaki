@@ -108,6 +108,25 @@ pub enum StoreError {
         #[source]
         source: io::Error,
     },
+    /// A deletion moved `path`'s file aside, then could not look at `path`, and keeping the moved file safe in the
+    /// replaced folder failed too. The file is not lost: `kept_at` is where it is now, and its bytes are whole. Until
+    /// it is moved or restored from there, a hidden name may be the only place later writes through a handle that an
+    /// editor still holds reach.
+    #[error(
+        "{}: {source}; the file that was moved aside from it is at {}, and keeping it safe failed too: {rescue}",
+        path.display(), kept_at.display()
+    )]
+    Stranded {
+        /// The file the deletion was about.
+        path: PathBuf,
+        /// What went wrong looking at it.
+        #[source]
+        source: io::Error,
+        /// Where the file that was moved aside is now.
+        kept_at: PathBuf,
+        /// Why moving it into the replaced folder failed.
+        rescue: Box<StoreError>,
+    },
     /// `project.toml` has no usable `schema = N`.
     #[error("project.toml: {0}")]
     BadSchema(String),

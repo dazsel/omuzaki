@@ -1,7 +1,7 @@
 section = "models"
 item = "zune-jpeg (and zune-core)"
 kind = "crate"
-used_for = "MJPG webcam frames to RGB8, omuzaki-pixfmt (PF-01)"
+used_for = "MJPG webcam frames to RGB8, omuzaki-pixfmt (PF-01); JPEG reference images, decoded by `image` (`jpeg` feature) in omuzaki-measure (VF-01)"
 status = "yes"
 audit = "(crates.io: MIT OR Apache-2.0 OR Zlib)"
 crates = ["zune-jpeg"]

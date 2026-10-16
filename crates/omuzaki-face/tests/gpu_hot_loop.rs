@@ -5,6 +5,8 @@
 //! software adapter, so the times are not a GPU timing (decision 7.3); the owner's run is #1658. Without an adapter the tests
 //! print why and pass.
 
+// The GPU rasteriser exists on native targets only (#2207).
+#![cfg(not(target_arch = "wasm32"))]
 // A counting allocator is the only way to *prove* an allocation budget; the workspace denies unsafe code by default.
 // Tests may unwrap: a panic is a clear failure.
 #![allow(unsafe_code, clippy::unwrap_used, clippy::expect_used)]

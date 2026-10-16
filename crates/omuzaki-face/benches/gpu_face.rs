@@ -4,6 +4,9 @@
 //! It creates its own device. Without an adapter it prints why and returns. On lavapipe (a CPU adapter) the numbers
 //! check that the bench runs and are not a timing; the budget needs real hardware (decision 7.3).
 
+// The GPU rasteriser exists on native targets only (#2207).
+#![cfg(not(target_arch = "wasm32"))]
+
 use std::any::Any;
 use std::time::Instant;
 
