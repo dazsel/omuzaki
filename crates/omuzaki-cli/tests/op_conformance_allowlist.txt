@@ -48,6 +48,11 @@ look.list_presets
 look.set_param
 look.set_preset
 measure.liveliness
+# Transitional: the rig has no test WindowHost or PaletteSource yet (#2198).
+output.window.close
+output.window.open
+output.window.status
+output.window.suggest_key
 palette.add_slot
 palette.check_contrast
 palette.remove_slot
@@ -80,5 +85,8 @@ variant.preview
 variant.set_override
 
 [edits with Undo::None]
+# Transitional: live actions until live-action undo lands (#139, change #2106).
+output.window.close
+output.window.open
 perform.calibrate
 perform.set_retarget
