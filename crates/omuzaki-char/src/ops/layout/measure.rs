@@ -17,6 +17,12 @@ use crate::ops::character::access;
 /// note for each. Ratios are read against the head's chin, so the character needs exactly one enabled head part.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit"}
+    ],
+    "x-omuzaki-fixture" = "character"
+))]
 pub struct MeasureLayout {
     /// The character whose layout is measured.
     pub character: CharId,

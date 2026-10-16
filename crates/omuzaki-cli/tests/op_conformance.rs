@@ -33,11 +33,90 @@ use omuzaki_stage::perform::input::{
     CameraEntry, InputError, InputHost, InputState, Permission, PreviewState, SourceKind,
 };
 use omuzaki_track_api::camera::CameraId;
+use serde_json::json;
 
 const ALLOWLIST: &str = include_str!("op_conformance_allowlist.txt");
 
-/// The one fixture project there is: an empty project named `demo`.
+/// The default fixture project: an empty project named `demo`.
 const DEFAULT_FIXTURE: &str = "demo";
+
+/// The fixture for ops that edit or read a character: `demo` holding the kit character `kit`.
+const CHARACTER_FIXTURE: &str = "character";
+
+/// The id of the character in the `character*` fixtures.
+const KIT: &str = "kit";
+
+/// The `(op, args)` steps that build the fixture `name` on top of an empty `demo` project, or `None` for a name that
+/// is no fixture. A fixture is made by running real ops (never by writing the document by hand), so what an example
+/// sees is what a person's own steps would leave. `character` is the base: the standard template's kit character with
+/// its body, head and hair. The others add the one piece of state an op needs before it has anything to act on (a
+/// saved colourway, a variant with an override, a weight brush); the op under test has none of that otherwise.
+fn fixture_steps(name: &str) -> Option<Vec<(&'static str, Value)>> {
+    let create = ("character.create", json!({"id": KIT, "name": "Kit", "template": "standard"}));
+    let more: Vec<(&'static str, Value)> = match name {
+        CHARACTER_FIXTURE => vec![],
+        // A colourway saved, then the skin recoloured: applying `dusk` has a palette to restore.
+        "character-colourway" => vec![
+            ("colourway.save", json!({"character": KIT, "name": "dusk"})),
+            ("palette.set", json!({"character": KIT, "slot": "skin", "colour": "#d9a58f"})),
+        ],
+        // A spare palette slot nothing refers to, so it can be renamed or removed.
+        "character-slot" => {
+            vec![("palette.add_slot", json!({"character": KIT, "slot": "accent", "colour": "#e07a9a"}))]
+        }
+        "character-variant" => vec![
+            ("variant.create", json!({"character": KIT, "id": "close-up"})),
+            (
+                "variant.set_override",
+                json!({"character": KIT, "variant": "close-up", "path": "face/layout/eye_spacing", "value": 0.09}),
+            ),
+        ],
+        "character-brush" => vec![(
+            "rig.weights.brush",
+            json!({
+                "character": KIT, "part": "body", "centre": [0.2, 1.3, 0.0], "radius": 0.15,
+                "joint": {"humanoid": "leftLowerArm"}, "strength": 0.6,
+            }),
+        )],
+        _ => return None,
+    };
+    Some(std::iter::once(create).chain(more).collect())
+}
+
+/// The names of the fixtures, for the error that refuses an unknown one.
+const FIXTURES: &str =
+    "`demo`, `character`, `character-colourway`, `character-slot`, `character-variant`, `character-brush`";
+
+/// Builds the fixture `name` in a fresh project folder: the steps run through an executor that has every op registered
+/// (the rig itself registers only the op under test), then the folder is closed so the rig reopens it from disk, as a
+/// person's next session would.
+fn fixture_project(name: &str) -> Result<tempfile::TempDir, String> {
+    let dir = common::new_project();
+    if name == DEFAULT_FIXTURE {
+        return Ok(dir);
+    }
+    let steps = fixture_steps(name)
+        .ok_or_else(|| format!("names fixture `{name}`, and the conformance test knows only {FIXTURES}"))?;
+    let doc = SavedProject::open(dir.path()).map_err(|e| format!("opening the project for fixture `{name}`: {e}"))?;
+    let project = ProjectDir::open(dir.path()).map_err(|e| format!("opening the folder for fixture `{name}`: {e}"))?;
+    let setup = Executor::new(Box::new(doc), Arc::new(SystemClock::new()))
+        .map_err(|e| e.to_string())?
+        .with_project_dir(project);
+    for (op, args) in steps {
+        let request = Request {
+            op: op.to_owned(),
+            args,
+            mode: Mode::Apply,
+            actor: Actor::Person { name: "conformance".to_owned() },
+            grants: Grants::person(),
+            cause: None,
+            tx: None,
+            base: None,
+        };
+        setup.run(request).map_err(|e| format!("fixture `{name}` step `{op}` failed: {}", e.message))?;
+    }
+    Ok(dir)
+}
 
 /// What a run can leave behind: the document tree, every file under the project folder, and the op log's length.
 #[derive(PartialEq, Debug)]
@@ -138,15 +217,7 @@ struct Rig {
 
 impl Rig {
     fn new(reg: &'static OpRegistration, fixture: Option<&str>) -> Result<Self, String> {
-        match fixture.unwrap_or(DEFAULT_FIXTURE) {
-            DEFAULT_FIXTURE => {}
-            other => {
-                return Err(format!(
-                    "names fixture `{other}`, and the conformance test knows only `{DEFAULT_FIXTURE}`"
-                ));
-            }
-        }
-        let dir = common::new_project();
+        let dir = fixture_project(fixture.unwrap_or(DEFAULT_FIXTURE))?;
         let doc = SavedProject::open(dir.path()).map_err(|e| format!("opening the fixture failed: {e}"))?;
         let project = ProjectDir::open(dir.path()).map_err(|e| format!("opening the fixture folder failed: {e}"))?;
         let runner = Executor::with_registrations(Box::new(doc), Arc::new(SystemClock::new()), [reg])
@@ -260,11 +331,32 @@ fn check_example(reg: &'static OpRegistration, kind: OpKind, undo: Undo, args: &
             .filter(|k| before.files.get(*k) != after.files.get(*k))
             .collect();
         return Err(format!(
-            "is not restored exactly by undo (tree changed: {}, files changed: {moved:?})",
-            after.tree != before.tree
+            "is not restored exactly by undo (tree changed: {}, files changed: {moved:?}{})",
+            after.tree != before.tree,
+            first_text_difference(&before.files, &after.files)
         ));
     }
     Ok(())
+}
+
+/// The first line that differs in the first text file that does, as `; line N was ... now ...`, or nothing when no text
+/// file differs line-wise. It makes a failure say what moved, not only where.
+fn first_text_difference(before: &BTreeMap<String, Vec<u8>>, after: &BTreeMap<String, Vec<u8>>) -> String {
+    for (name, old) in before {
+        let Some(new) = after.get(name).filter(|new| *new != old) else { continue };
+        let (Ok(old), Ok(new)) = (std::str::from_utf8(old), std::str::from_utf8(new)) else { continue };
+        let (mut old_lines, mut new_lines) = (old.lines(), new.lines());
+        for n in 1.. {
+            let (a, b) = (old_lines.next(), new_lines.next());
+            if a != b {
+                return format!("; {name} line {n} was {a:?}, now {b:?}");
+            }
+            if a.is_none() {
+                break;
+            }
+        }
+    }
+    String::new()
 }
 
 /// The section of the allowlist file for edits that still declare `Undo::None`; the lines above it are ops without
