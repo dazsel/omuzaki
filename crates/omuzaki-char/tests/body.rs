@@ -252,7 +252,7 @@ fn the_kind_is_registered_project_owned_and_builds_a_rigged_body_on_every_templa
             t.id()
         );
         // Two budgets: the body's own (§10, 6 000, the meshes that are not hands) and the whole character's, which adds
-        // the two hands' 1.2k each (#157).
+        // the two hands' 1.8k each (#157's 1.2k, amended to the prototype's hand, the parity target).
         let body_triangles: usize = built
             .meshes
             .iter()
@@ -260,7 +260,7 @@ fn the_kind_is_registered_project_owned_and_builds_a_rigged_body_on_every_templa
             .map(|m| m.mesh.geometry.triangle_count())
             .sum();
         assert!(body_triangles <= 6000, "{}: the body is {body_triangles} triangles", t.id());
-        assert!(built.report.triangles() <= 6000 + 2 * 1200, "{}: {}", t.id(), built.report.triangles());
+        assert!(built.report.triangles() <= 6000 + 2 * 1800, "{}: {}", t.id(), built.report.triangles());
     }
 }
 

@@ -12,13 +12,13 @@ use crate::kit::sweep::tube;
 pub(super) const STYLE: Style = Style { around: 28, splay_deg: 0.0, groove: |_, _| 1.0 };
 
 /// The lines' lateral offsets from the axis (symmetric about 0: they sit where the fingers part), where they end along
-/// the hand (they start at the knuckle row), how much they converge towards the tip (a fraction of the offset), their tube radius, and how
-/// far they lie off the surface.
+/// the hand (they start at the knuckle row), how much they converge towards the tip (a fraction of the offset), their
+/// tube radius, and how far they lie off the surface: the prototype's finger hints.
 const LINE_OFFSETS: [f64; 3] = [-0.0085, 0.0, 0.0085];
-const LINE_END: f64 = 0.046;
-const LINE_CONVERGE: f64 = 0.15;
-const LINE_RADIUS: f64 = 0.0006;
-const LINE_LIFT: f64 = 0.0004;
+const LINE_END: f64 = 0.0455;
+const LINE_CONVERGE: f64 = 0.12;
+const LINE_RADIUS: f64 = 0.00042;
+const LINE_LIFT: f64 = 0.00035;
 /// Points along a line, and segments round its tube.
 const LINE_POINTS: usize = 8;
 const LINE_SEGMENTS: usize = 5;
