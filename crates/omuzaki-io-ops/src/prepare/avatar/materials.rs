@@ -227,7 +227,7 @@ fn apply_edits(scene: &IoScene, def: &AvatarDef, names: &[MaterialName], report:
 }
 
 /// Applies one material's edits: each field set replaces the file's value, the rest stay (D8).
-fn apply_edit(material: &mut io::Material, edit: &MaterialEdit) {
+pub(crate) fn apply_edit(material: &mut io::Material, edit: &MaterialEdit) {
     let rgb = |c: [f32; 3]| omuzaki_core::glam::Vec3::from_array(c);
     if let Some(base) = edit.base {
         material.base_color = omuzaki_core::glam::Vec4::from_array(base);

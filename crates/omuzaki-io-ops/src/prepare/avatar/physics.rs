@@ -6,9 +6,10 @@
 //! runtime entry made from it, so export writes the file's own records back. Every collider shape (inside spheres and
 //! capsules, planes) and every limit (cone, hinge, spherical) reaches the runtime set as the file has it.
 //!
-//! A chain or constraint the solver cannot run (fewer than two joints, a joint not below the one before, a cycle) is
-//! reported (`avatar.spring_chain_unused`, `avatar.constraint_unused`) and left out of the runtime set; it stays in
-//! the retained records, so export still writes it.
+//! A chain the solver cannot run (fewer than two joints, a joint not below the one before) is reported
+//! (`avatar.spring_chain_unused`) and left out of the runtime set; it stays in the retained records, so export still
+//! writes it. A constraint the solver cannot run (a cycle, two on one bone) is reported (`avatar.constraint_unused`)
+//! and left out, of the runtime set and of an export.
 
 use std::collections::BTreeSet;
 
