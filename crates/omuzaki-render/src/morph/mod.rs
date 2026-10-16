@@ -26,6 +26,11 @@
 //! GPU path reads nothing back, so an instance's bounds are the mesh's grown by what the weights can move a vertex
 //! (conservative, never smaller than the CPU path's exact ones), and its outline directions are re-welded by a second
 //! dispatch, only when the instance re-blends.
+//!
+//! **Dynamic meshes** use the same weld dispatch for their own outline directions: a dynamic mesh on the GPU path has the
+//! weld table uploaded when it is created, and a frame that draws its own stream outlined queues a dispatch from the
+//! mesh's current vertices ([`MorphPool::queue_weld`]). A frame that never reaches the queue takes the promise back at the
+//! start of the next ([`MorphPool::take_welds`]).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 

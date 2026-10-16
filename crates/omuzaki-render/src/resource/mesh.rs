@@ -9,8 +9,13 @@
 //!
 //! A dynamic mesh finds those points once, when it is created: [`GpuMesh::update_vertices`] cannot change which
 //! vertices form a triangle, so the vertices welded at creation stay welded and the seams of the bind pose are the seams
-//! of every frame. A frame then only re-averages the normals (`resmooth`), which costs a pass over the vertices instead
-//! of a weld.
+//! of every frame. A frame then only re-averages the normals, which costs a pass over the vertices instead of a weld:
+//! on the CPU (`resmooth`), or, where the adapter runs compute, by a dispatch of `morph/gpu.rs` over the mesh's own shape
+//! stream, which is also why such a mesh keeps no CPU copy of its vertices unless it has morph targets.
+//!
+//! What an update leaves behind is brought up to date only when a frame reads it ([`GpuMesh::refresh`]): the outline
+//! directions when an outlined instance draws the mesh's own stream, the bounds when shadow fitting or the blended sort
+//! reads them. A lean mesh (no CPU copy) refits its bounds in the update instead, from the positions it is given.
 
 use bytemuck::{Pod, Zeroable};
 use omuzaki_core::glam::{Vec2, Vec3};
