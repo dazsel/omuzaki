@@ -96,6 +96,25 @@ impl Param {
         }
     }
 
+    /// The parameter's name in the body parameters (`leg_length`, `build`, ...).
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::NeckLength => "neck_length",
+            Self::TorsoLength => "torso_length",
+            Self::ShoulderWidth => "shoulder_width",
+            Self::HipWidth => "hip_width",
+            Self::ArmLength => "arm_length",
+            Self::LegLength => "leg_length",
+            Self::HandSize => "hand_size",
+            Self::FootSize => "foot_size",
+            Self::Height => "height",
+            Self::Build => "build",
+            Self::Curves => "curves",
+            Self::Musculature => "musculature",
+            Self::ShoulderHip => "shoulder_hip",
+        }
+    }
+
     fn slot(self, p: &mut FitParams) -> &mut f64 {
         match self {
             Self::NeckLength => &mut p.proportions.neck_length,

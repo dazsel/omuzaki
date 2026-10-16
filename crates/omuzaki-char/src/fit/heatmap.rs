@@ -52,6 +52,8 @@ pub const LEGEND_BACKGROUND: [u8; 4] = [245, 245, 245, 255];
 const INK: [u8; 4] = [20, 20, 20, 255];
 /// Rows of the legend strip.
 pub const LEGEND_HEIGHT: usize = 11;
+/// Columns the legend needs for its swatches and text; a narrower picture is padded (transparent) to this width.
+pub const LEGEND_WIDTH: usize = 50;
 /// The 3 by 5 font: one row per byte, the low three bits left to right.
 const GLYPH: [(char, [u8; 5]); 12] = [
     ('0', [0b111, 0b101, 0b101, 0b101, 0b111]),
@@ -100,7 +102,7 @@ fn glyph(c: char) -> [u8; 5] {
 
 /// The difference of `model` and `target`: red where the model is outside the target, blue where the target is outside
 /// the model, transparent where they agree, with a legend strip of [`LEGEND_HEIGHT`] rows under it holding the swatches
-/// and the `IoU` of the two masks.
+/// and the `IoU` of the two masks. A mask narrower than [`LEGEND_WIDTH`] is padded on the right.
 ///
 /// # Errors
 /// [`FitError::BadMask`] if the masks differ in size.
@@ -113,17 +115,17 @@ pub fn heatmap(model: &Silhouette, target: &Silhouette) -> Result<RgbaImage, Fit
             target.height()
         )));
     }
-    let mut pixels: Vec<[u8; 4]> = model
-        .pixels()
-        .iter()
-        .zip(target.pixels())
-        .map(|(&m, &t)| match (m, t) {
+    let out_w = w.max(LEGEND_WIDTH);
+    let mut pixels: Vec<[u8; 4]> = Vec::with_capacity(out_w * (h + LEGEND_HEIGHT));
+    for (m_row, t_row) in model.pixels().chunks(w).zip(target.pixels().chunks(w)) {
+        pixels.extend(m_row.iter().zip(t_row).map(|(&m, &t)| match (m, t) {
             (true, false) => MODEL_ONLY,
             (false, true) => TARGET_ONLY,
             _ => [0, 0, 0, 0],
-        })
-        .collect();
-    let mut legend = LegendCanvas { w, pixels: vec![LEGEND_BACKGROUND; w * LEGEND_HEIGHT] };
+        }));
+        pixels.extend(std::iter::repeat_n([0, 0, 0, 0], out_w - w));
+    }
+    let mut legend = LegendCanvas { w: out_w, pixels: vec![LEGEND_BACKGROUND; out_w * LEGEND_HEIGHT] };
     legend.fill(1, 3, 5, MODEL_ONLY);
     legend.fill(7, 3, 5, TARGET_ONLY);
     let mut x = 14;
@@ -132,7 +134,7 @@ pub fn heatmap(model: &Silhouette, target: &Silhouette) -> Result<RgbaImage, Fit
         x += 4;
     }
     pixels.extend(legend.pixels);
-    Ok(RgbaImage { width: w, height: h + LEGEND_HEIGHT, pixels })
+    Ok(RgbaImage { width: out_w, height: h + LEGEND_HEIGHT, pixels })
 }
 
 /// The legend strip being drawn; anything past its right edge is dropped.
@@ -181,27 +183,28 @@ mod tests {
     fn a_wider_model_is_a_red_band_on_both_sides_and_no_blue() {
         let (model, target) = (band(40, 20, 6, 34), band(40, 20, 8, 32));
         let map = heatmap(&model, &target).unwrap();
-        assert_eq!((map.width(), map.height()), (40, 20 + LEGEND_HEIGHT));
+        assert_eq!((map.width(), map.height()), (LEGEND_WIDTH, 20 + LEGEND_HEIGHT));
         let row: Vec<_> = (0..40).map(|x| map.get(x, 5).unwrap()).collect();
+        assert_eq!(map.get(45, 5), Some([0, 0, 0, 0]), "the padding is transparent");
         assert!(row[6..8].iter().chain(&row[32..34]).all(|p| *p == MODEL_ONLY));
         assert!(row[8..32].iter().all(|p| p[3] == 0), "agreement is transparent");
-        assert!(map.pixels()[..40 * 20].iter().all(|p| *p != TARGET_ONLY));
+        assert!(map.pixels()[..LEGEND_WIDTH * 20].iter().all(|p| *p != TARGET_ONLY));
     }
 
     #[test]
     fn a_narrower_model_is_blue() {
         let map = heatmap(&band(40, 20, 8, 32), &band(40, 20, 6, 34)).unwrap();
         assert_eq!(map.get(6, 0), Some(TARGET_ONLY));
-        assert!(map.pixels()[..40 * 20].iter().all(|p| *p != MODEL_ONLY));
+        assert!(map.pixels()[..LEGEND_WIDTH * 20].iter().all(|p| *p != MODEL_ONLY));
     }
 
     #[test]
     fn identical_masks_are_transparent_with_a_perfect_iou_in_the_legend() {
         let m = band(40, 20, 8, 32);
         let map = heatmap(&m, &m).unwrap();
-        assert!(map.pixels()[..40 * 20].iter().all(|p| p[3] == 0));
+        assert!(map.pixels()[..LEGEND_WIDTH * 20].iter().all(|p| p[3] == 0));
         assert_eq!(legend_text(iou(&m, &m)), "IOU 1.000");
-        assert!(map.pixels()[40 * 20..].contains(&INK), "the legend text is drawn");
+        assert!(map.pixels()[LEGEND_WIDTH * 20..].contains(&INK), "the legend text is drawn");
     }
 
     #[test]

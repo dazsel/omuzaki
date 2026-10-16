@@ -19,6 +19,7 @@ use crate::template::{Template, registry};
 
 pub mod heatmap;
 pub mod ops;
+pub mod png;
 pub mod solver;
 
 /// The longest side of a mask, in pixels: the caller downsizes a larger sheet view first, so a fit stays cheap.
