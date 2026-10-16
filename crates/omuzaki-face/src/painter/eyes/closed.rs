@@ -1,8 +1,12 @@
-//! Closed eyes (`closedEye` of `face.js`, lines 243-256): a happy `^` arc for `arc >= 0.5` (a smile, a wink) and the
-//! relaxed lash curve with three small lashes otherwise (a plain blink, or an eye nearly shut). Nothing else of the eye
-//! is drawn for a closed one: the lid line, crease, lash polygon and tick are for open eyes.
+//! Closed eyes (`closedEye` of `face.js`, lines 243-256): the relaxed lash curve with three small lashes (a plain
+//! blink, or an eye nearly shut) and the happy `^` arc (a smile, a wink). Nothing else of the eye is drawn for a closed
+//! one: the lid line, crease, lash polygon and tick are for open eyes.
 //!
-//! The two styles switch at `arc` 0.5, as the prototype's do; the face never invents an arc (the grammar stage does).
+//! There is no switch between open and closed, nor between the two curves. [`Eye::shut`] says how shut the eye is,
+//! whatever shuts it (a blink, an arc, a squeeze); the open pieces fade out by [`Eye::open_fade`] as this curve comes in
+//! at [`Eye::closed_weight`], rising from the open eye's upper lid. The curve itself runs from the relaxed one to the
+//! arc as [`Eye::arc_growth`] goes from 0 to 1 (arc 0.2 to 0.5), and the three small lashes fade out with it. The face
+//! never invents an arc (the grammar stage does).
 
 use omuzaki_core::glam::Vec2;
 use omuzaki_face_api::{Cap, Cmd, FaceLayerId, Join, Paint};

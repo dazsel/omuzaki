@@ -17,6 +17,15 @@
 //!
 //! The iris effects ([`paint_iris`]) draw inside the aperture clip, so they are cut by the lids; the chevron and the tear
 //! ([`paint`]) draw outside it, after the lash.
+//!
+//! # Which effects follow the eye, and which do not
+//!
+//! An eye can shut (a blink, an arc, a squeeze: see [`Eye::shut`]), and every effect drawn ON the open eye goes with it,
+//! so none outlives or pops against the open pieces: the iris effects, the catchlights and the sparkle are painted among
+//! the open pieces, which fade together by [`Eye::open_fade`]; the tear, which is painted after them, multiplies its own
+//! opacity by it. The squeeze chevron is the exception that takes the eye's place (it fades in by the squeeze itself). The
+//! effects that live OFF the eye keep their own timing: the sweat drop and the gloom band and hatch are on the Overlay
+//! layer, on the forehead and temple, and do not depend on the lids.
 
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::Vec2;
@@ -242,10 +251,12 @@ fn squeeze(ctx: &mut PaintCtx<'_>, side: Side, strength: f32) {
     });
 }
 
-/// The tear drop under an open eye: a pointed drop toward the nose, fading in with the effect (its size is fixed).
+/// The tear drop under an open eye: a pointed drop toward the nose, fading in with the effect (its size is fixed) and
+/// out with the open eye ([`Eye::open_fade`]), like every effect drawn on the eye.
 fn tear(ctx: &mut PaintCtx<'_>, side: Side, strength: f32) {
     let eye = Eye::new(ctx.profile, ctx.params, side);
-    if !eye.is_open() {
+    let strength = strength * eye.open_fade();
+    if strength <= 0.0 {
         return;
     }
     let colour = fixed_colour(&ctx.profile.eyes.tear, FALLBACK_COLOUR);

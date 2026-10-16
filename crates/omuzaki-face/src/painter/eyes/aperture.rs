@@ -1,6 +1,7 @@
 //! Eye aperture shape: the lid opening from openness, arc, tilt and lower lid (port of `aperture()` and the anchors of
 //! `eye()` in the prototype's `face.js`, lines 99-125). Closed eyes (the relaxed lash curve and the happy ^ arc) are
-//! drawn elsewhere; this module only says which eye is shut ([`Eye::lid`]).
+//! drawn elsewhere; this module only says how shut the eye is ([`Eye::shut`]), from its openness, arc and the squeeze,
+//! as one amount that every piece of the eye fades by (see [`Eye::new`]).
 //!
 //! [`Eye`] is the shared geometry of one eye. It is a pure function of the profile, the paint parameters and the
 //! side, so every piece of the eye (sclera, iris, lash, crease, ...) builds its own copy instead of passing one

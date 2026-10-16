@@ -783,24 +783,68 @@ fn squeezing_an_open_eye_hands_over_to_the_closed_curve_without_a_jump() {
 
 /// 201 frames of the eyes as one input runs from 0 to 1 while the others are held, from `set(params, value)`.
 fn sweep(set: impl Fn(&mut PaintParams, f32)) -> Vec<DrawList> {
+    sweep_in(200, set)
+}
+
+/// [`sweep`] in `steps` steps.
+fn sweep_in(steps: u16, set: impl Fn(&mut PaintParams, f32)) -> Vec<DrawList> {
     let profile = profile();
-    (0..=200_u16)
+    (0..=steps)
         .map(|step| {
             let mut p = params(|_, _| {});
             p.left_eye = omuzaki_face_api::EyeParams { open: 1.0, close: 0.0, arc: 0.0, lower_lid: 0.0 };
             p.right_eye = p.left_eye;
-            set(&mut p, f32::from(step) / 200.0);
+            set(&mut p, f32::from(step) / f32::from(steps));
             paint(&profile, &p).into_base()
         })
         .collect()
 }
 
-/// The worst step of a sweep and the median of the steps that move, in ink.
+/// The worst step of a sweep and the median of the steps that move, in ink (each frame rasterised once).
 fn worst_and_median(frames: &[DrawList]) -> (u64, u64) {
-    let moved: Vec<u64> = frames.windows(2).map(|w| ink_moved(FaceLayerId::Base, &w[0], &w[1])).collect();
+    let spec = FaceLayerSpec::for_layer(FaceLayerId::Base, &projection(), DEFAULT_PX_PER_M);
+    let rasters: Vec<Raster> = frames
+        .iter()
+        .map(|list| {
+            let mut r = Raster::new(1, 1);
+            SkiaRasterizer::new().rasterize(&spec, list, spec.px_per_m, &mut r).unwrap();
+            r
+        })
+        .collect();
+    let moved: Vec<u64> = rasters
+        .windows(2)
+        .map(|w| w[0].pixels.iter().zip(&w[1].pixels).map(|(x, y)| u64::from(x.abs_diff(*y))).sum())
+        .collect();
     let mut moving: Vec<u64> = moved.iter().copied().filter(|m| *m > 0).collect();
     moving.sort_unstable();
     (moved.iter().copied().max().unwrap(), moving[moving.len() / 2])
+}
+
+#[test]
+fn every_effect_on_the_eye_follows_it_shut_as_smoothly_as_the_eye() {
+    // Each effect drawn on the open eye, at full strength, through a squeeze, an arc and a blink: no step of the rendered
+    // sweep moves over three times the median step, so none outlives or pops against the open pieces.
+    type Set = fn(&mut PaintParams);
+    let effects: [(&str, Set); 7] = [
+        ("tears", |p| p.effects.tears = 1.0),
+        ("sparkle", |p| p.effects.sparkle = 1.0),
+        ("heart", |p| p.effects.heart = 1.0),
+        ("star", |p| p.effects.star = 1.0),
+        ("spiral", |p| p.effects.spiral = 1.0),
+        ("shock", |p| p.effects.shock = 1.0),
+        ("gloom", |p| p.effects.gloom = 1.0),
+    ];
+    for (name, on) in effects {
+        let sweeps: [(&str, Vec<DrawList>); 3] = [
+            ("squeeze", sweep_in(100, |p, v| (on(p), p.effects.squeeze = v).1)),
+            ("arc", sweep_in(100, |p, v| (on(p), (p.left_eye.arc, p.right_eye.arc) = (v, v)).1)),
+            ("blink", sweep_in(100, |p, v| (on(p), (p.left_eye.close, p.right_eye.close) = (v, v)).1)),
+        ];
+        for (input, frames) in &sweeps {
+            let (worst, median) = worst_and_median(frames);
+            assert!(worst <= 3 * median, "{name} through a {input}: the worst step moved {worst}, the median {median}");
+        }
+    }
 }
 
 #[test]
