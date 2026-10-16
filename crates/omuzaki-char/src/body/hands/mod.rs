@@ -342,16 +342,19 @@ fn thumb(hand: &Hand, block: &Block, splay_deg: f64) -> Result<(Grid, Vec<DVec3>
     // room left by its radius allows. (A ball round the centre holds the whole ring, whatever way it is turned.)
     let u = (root.x / hand.palm_length - hand.table.shift) / s;
     let (half_width, half_thick) = block.section(u.clamp(block.stations[0], LAST_STATION));
-    let room = DVec3::new(
+    let section_room = DVec3::new(
         0.0,
         ROOT_ROOM * half_width * s * hand.palm_width,
         ROOT_ROOM * half_thick * s * PALM_FLATTEN.min(BACK_PLUMP),
     );
     let reach = THUMB_RADIUS * s;
-    let root_fit = (room.y.min(room.z) / reach).min(1.0);
-    let spare = |room: f64| (room - root_fit * reach).max(0.0);
-    let seat =
-        DVec3::new(root.x, root.y.clamp(-spare(room.y), spare(room.y)), root.z.clamp(-spare(room.z), spare(room.z)));
+    let root_fit = (section_room.y.min(section_room.z) / reach).min(1.0);
+    let spare = |section_room: f64| (section_room - root_fit * reach).max(0.0);
+    let seat = DVec3::new(
+        root.x,
+        root.y.clamp(-spare(section_room.y), spare(section_room.y)),
+        root.z.clamp(-spare(section_room.z), spare(section_room.z)),
+    );
     centres[0] = hand.world(seat);
     let radii = |k: f64| {
         let base = THUMB_RADIUS * (1.0 - THUMB_TAPER * k) * s;
