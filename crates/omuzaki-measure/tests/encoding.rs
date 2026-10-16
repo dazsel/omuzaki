@@ -372,3 +372,30 @@ fn a_jpeg_with_junk_between_markers_and_a_broken_profile_sequence_is_refused() {
         assert_eq!(error.code, ErrorCode::Invalid, "junk {junk:?}: {}", error.message);
     }
 }
+
+/// `jpeg` with one segment (`marker`, then `payload`) right after its SOI.
+fn with_segment(jpeg: &[u8], marker: u8, payload: &[u8]) -> Vec<u8> {
+    let mut out = jpeg[..2].to_vec();
+    out.extend([0xFF, marker]);
+    out.extend(u16::try_from(payload.len() + 2).unwrap().to_be_bytes());
+    out.extend(payload);
+    out.extend(&jpeg[2..]);
+    out
+}
+
+#[test]
+fn profile_text_in_a_comment_or_an_exif_thumbnail_is_not_a_declaration() {
+    // The `ICC_PROFILE` tag is meaningful only in an APP2 segment of the main image. In a comment, or in an EXIF block whose
+    // thumbnail carries a profile of its own, it declares nothing, and the untagged JPEG decodes exactly as it did.
+    let jpeg = include_bytes!("fixtures/baseline_444.jpg");
+    let plain = decode(jpeg, ContentHash::of(jpeg), FIELD).unwrap();
+    let comment = with_segment(jpeg, 0xFE, b"made with ICC_PROFILE\0 in mind");
+    let mut exif = b"Exif\0\0".to_vec();
+    exif.extend(b"II*\0 thumbnail: ICC_PROFILE\0\x01\x01");
+    exif.extend(display_p3_profile());
+    let thumbnail = with_segment(jpeg, 0xE1, &exif);
+    for (name, bytes) in [("comment", comment), ("exif thumbnail", thumbnail)] {
+        let image = decode(&bytes, ContentHash::of(&bytes), FIELD).unwrap_or_else(|e| panic!("{name}: {}", e.message));
+        assert_eq!(image.pixels, plain.pixels, "{name}");
+    }
+}

@@ -190,7 +190,14 @@ pub fn decode(bytes: &[u8], hash: ContentHash, field: &str) -> Result<Rgba8, OpE
     // A file that declares an embedded profile the decoder could not give (a PNG `iCCP` that is corrupt or past the limit;
     // JPEG APP2 chunks that do not number consistently) has colour this cannot read: refused, never read as untagged. Only
     // a PNG `cICP` the decoder accepted decides the colour anyway (PNG colour chunk precedence).
-    if profile_missing && declares_profile(bytes, format) && !matches!(declared, Declared::Cicp(_)) {
+    let declares = if format == ImageFormat::Jpeg {
+        jpeg_declares_profile(bytes).ok_or_else(|| {
+            refuse_unreadable(field, "its segments do not follow the JPEG layout (bytes between markers)".to_owned())
+        })?
+    } else {
+        png_declares_profile(bytes)
+    };
+    if profile_missing && declares && !matches!(declared, Declared::Cicp(_)) {
         return Err(refuse_unreadable(
             field,
             "its embedded colour profile is present but cannot be read (corrupt, incomplete or too large)".to_owned(),
@@ -204,15 +211,9 @@ pub fn decode(bytes: &[u8], hash: ContentHash, field: &str) -> Result<Rgba8, OpE
 /// Bytes a decoded pixel takes in the RGBA8 the measure keeps.
 const RGBA_BYTES: u64 = 4;
 
-/// Whether the file declares an embedded ICC profile, to tell a profile the decoder dropped from one that was never there.
-/// It decides no colour. A PNG's `iCCP` is found by its chunk framing (length and kind; a malformed file fails the decode
-/// instead). A JPEG's is found by the `ICC_PROFILE` tag of its APP2 segments anywhere in the bytes, not by walking markers:
-/// a walk of our own could disagree with the decoder's about where a segment starts, and the tag cannot appear by chance
-/// in a way that matters, since a false hit only refuses the image.
-fn declares_profile(bytes: &[u8], format: ImageFormat) -> bool {
-    if format == ImageFormat::Jpeg {
-        return bytes.windows(12).any(|window| window == b"ICC_PROFILE\0");
-    }
+/// Whether a PNG declares an embedded ICC profile, to tell a profile the decoder dropped from one that was never there.
+/// It decides no colour. Found by the PNG chunk framing (length and kind); a malformed file fails the decode instead.
+fn png_declares_profile(bytes: &[u8]) -> bool {
     let be = |at: usize| bytes.get(at..at + 4).and_then(|b| <[u8; 4]>::try_from(b).ok()).map(u32::from_be_bytes);
     let mut at = 8;
     while let (Some(length), Some(kind)) = (be(at), bytes.get(at + 4..at + 8)) {
@@ -226,9 +227,44 @@ fn declares_profile(bytes: &[u8], format: ImageFormat) -> bool {
     false
 }
 
+/// Whether a JPEG declares an embedded ICC profile, the way the format defines it: the segments of the main image are
+/// walked from `SOI` by their length fields up to `SOS`, and only an APP2 segment whose payload starts with
+/// `ICC_PROFILE\0` counts. Nothing inside an APP1 (EXIF, where a thumbnail may carry a profile of its own) or a comment is
+/// looked at. `None` when the walk meets bytes that are not a marker, or a segment that runs past the end: the file is
+/// ambiguous (junk between segments), and the caller refuses it.
+fn jpeg_declares_profile(bytes: &[u8]) -> Option<bool> {
+    if bytes.get(..2)? != [0xFF, 0xD8] {
+        return None;
+    }
+    let mut at = 2;
+    loop {
+        if *bytes.get(at)? != 0xFF {
+            return None;
+        }
+        // Any number of 0xFF fill bytes may precede a marker.
+        while *bytes.get(at + 1)? == 0xFF {
+            at += 1;
+        }
+        let marker = *bytes.get(at + 1)?;
+        match marker {
+            0x00 => return None,
+            0x01 | 0xD0..=0xD8 => at += 2,
+            0xD9 | 0xDA => return Some(false),
+            _ => {
+                let length = usize::from(u16::from_be_bytes([*bytes.get(at + 2)?, *bytes.get(at + 3)?]));
+                let segment = bytes.get(at + 4..at + 2 + length.max(2))?;
+                if marker == 0xE2 && segment.starts_with(b"ICC_PROFILE\0") {
+                    return Some(true);
+                }
+                at += 2 + length.max(2);
+            }
+        }
+    }
+}
+
 /// A JPEG's colour as `zune-jpeg` reads it from its headers: whether it has four components (CMYK or YCCK), and the ICC
 /// profile as the decoder assembles it from the APP2 segments (`None` when there is none, or when the segments do not
-/// number consistently, which the caller tells apart by [`declares_profile`]). `None` when the headers cannot be read.
+/// number consistently, which the caller tells apart by [`jpeg_declares_profile`]). `None` when the headers cannot be read.
 fn jpeg_colour(bytes: &[u8]) -> Option<(bool, Option<Vec<u8>>)> {
     use zune_jpeg::zune_core::bytestream::ZCursor;
     use zune_jpeg::zune_core::colorspace::ColorSpace;
