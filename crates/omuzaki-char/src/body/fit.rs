@@ -1,37 +1,30 @@
-//! The body's published fit: the template layout's sections, widened wherever the body's own mesh stands outside them.
+//! The body's published fit: the template layout's sections, widened wherever the body's own mesh stands outside them
+//! within its own region.
 //!
-//! The mesher lofts each region from the layout's sections, but not only from them. [`junction`](super::junction)
-//! bridges the hip and the ankle (rings widened past the layout's) and grows each shoulder a root that leaves the arm
-//! before its start; every region closes past its ends with a cap (the thighs' domes rise into the pelvis, the pelvis's
-//! own floor sits between the thighs); corners are rounded. Those parts stand outside the layout's sections by up to
-//! seven centimetres, and a garment built over the layout alone shows the body through it: the hips through a hem, the
-//! shoulders through a yoke, the ankles through a boot.
+//! The mesher lofts each region from the layout's sections, but not only from them: [`junction`](super::junction)
+//! widens the rings either side of the hip and above the ankle to bridge them, and corners are rounded. Those rings
+//! stand outside the layout's sections by up to a few centimetres, and a garment built over the layout alone shows the
+//! body through it: the hips through a hem or a band.
 //!
-//! So the fit the body publishes is widened to its mesh. Each point of a region's mesh must lie in the section of the
-//! region that holds it:
-//! - within its own region's span, its own region;
-//! - past an end, the region that end closes into: a shoulder's top (an arm's root above its first ring) and a thigh's
-//!   dome the torso, a shin's ankle the foot, the pelvis's floor the thigh it lies least far outside of, the torso's
-//!   top the neck (the root's underside runs into the armpit, between the arm and the torso, where a garment needs an
-//!   armhole);
-//! - and every point of a leg the torso's sections reach, the torso as well: the hips' outline is the pelvis's and the
-//!   thighs' together, so a garment round the torso there clears the thighs.
+//! So the fit the body publishes is widened to its mesh, one region at a time. Each section holds the slab of its own
+//! region's mesh between its first and last ring, and nothing else: not a neighbour's piece, and not the caps and roots
+//! that close a region past its ends (the thighs' domes, the pelvis's floor, the shoulders' roots, the ankles' and
+//! wrists' caps). Those lie inside or against the neighbouring region's own mesh; an ellipse stretched round them would
+//! balloon round the gap between two limbs (a skirt into a disc round both thighs, a shirt's shoulder round the arm's
+//! root, a boot's shaft round the foot).
 //!
-//! Where a vertex lies outside a section that must hold it, that section grows on the vertex's side until it does, and
-//! so does every row any edge crosses outside it, at the point the edge crosses it (where the layout's profile curves
-//! in, at a waist, the mesh's straight edges between two rings stand out of it even though their ends don't). Each row of
-//! a region's table keeps how far its ellipse reaches past the layout's to either side and to the front and back; a
-//! section between two rows takes the reaches between theirs, and an ellipse that reaches further one way than the
-//! other moves its centre that way. A row keeps every point it was widened for, and the layout's own ellipse, inside
-//! its widened ellipse (moving the centre pulls the far side's flanks in, so they are held again until all are). It
-//! reaches no further across the body than it must, and takes what it must hold in front and behind: an ellipse round
-//! the hips (the pelvis and both thighs, square-ish) then stops at the body's sides, where the arms hang.
+//! Where a vertex of the slab lies outside the section there, that section grows on the vertex's side until it holds
+//! it, and so does every row any edge of the slab crosses outside it, at the point the edge crosses it (where the
+//! layout's profile curves in, at a waist, the mesh's straight edges between two rings stand out of it even though
+//! their ends don't). Each row of a region's table keeps how far its ellipse reaches past the layout's to either side
+//! and to the front and back; a section between two rows takes the reaches between theirs, and an ellipse that reaches
+//! further one way than the other moves its centre that way. A row keeps every point it was widened for, and the
+//! layout's own ellipse, inside its widened ellipse (moving the centre pulls the far side's flanks in, so they are held
+//! again until all are). It reaches no further across the body than it must, and takes what it must hold in front and
+//! behind.
 //!
-//! Then each reach is eased along its region, as a smoothstep no steeper than 45°, so the fit has no step for a
-//! garment's facets to cut through or stand out of.
-//!
-//! A wrist's cap (the hand covers it) and a foot's heel and toe close into no region, and are left as they are. The
-//! joints and the bind pose are the template's, unchanged.
+//! Then each reach is eased along its region with arcs of radius [`EASE_RADIUS`], so the fit has no corner for a
+//! garment's facets to cut through. The joints and the bind pose are the template's, unchanged.
 
 use std::collections::BTreeMap;
 
@@ -48,8 +41,9 @@ use crate::template::skeleton::TemplateFit;
 /// a standard torso).
 pub const ROWS: usize = 128;
 
-/// How far across its reach a point may lie and still be held by growing the front-to-back reach alone.
-const ACROSS_SHARE: f64 = 0.98;
+/// Where a point off a corner of a section (past its reach both ways) is first brought to, as a share of one radius,
+/// before the other side grows to hold it.
+const CORNER_SHARE: f64 = 0.7;
 
 /// Growth steps that push a section's reach out to a point before falling back to scaling the whole ellipse.
 const GROWTH_STEPS: usize = 48;
@@ -62,15 +56,13 @@ const HOLD_MARGIN: f64 = 5e-5;
 const LAYOUT_SAMPLES: usize = 48;
 /// How far out the layout ellipse's points are taken, as a share of its radii: room for the chords between them.
 const LAYOUT_SLACK: f64 = 0.003;
-/// The steepest a section's reach past the layout's leans along its region, metres a metre: 45°. Steeper, a garment's
-/// rings would need to be closer than a few millimetres to follow it; gentler, the widening at the hips would spread
-/// up a chibi's waist to where its arms hang (on soft-sd they come within a centimetre of the torso).
-const MAX_SLOPE: f64 = 1.0;
-/// The shortest run over which an eased reach falls to nothing, metres.
-const MIN_EASE: f64 = 0.01;
+/// The radius of the arc each reach is eased with along its region, metres: a garment's rings 6 mm apart sag less
+/// than half a millimetre into an arc this round, and the fit stands at most `m^2 r / 2` past a body whose widening
+/// falls at slope `m` (4 mm at 45°).
+const EASE_RADIUS: f64 = 0.008;
 
 /// Rounds of easing a region's widening and holding its points again.
-const EASE_ROUNDS: usize = 3;
+const EASE_ROUNDS: usize = 2;
 
 /// Passes over a row's points before its ellipse is scaled to hold them all.
 const SETTLE_PASSES: usize = 32;
@@ -135,12 +127,13 @@ fn level(q: DVec2, (offset, r): (DVec2, DVec2)) -> f64 {
     ((q - offset) / r.max(DVec2::splat(f64::MIN_POSITIVE))).length()
 }
 
-/// `extra` grown until the ellipse of `radii` and it holds `q`, keeping the reach across the body (`x`) as tight as it
-/// can: a point the ellipse already reaches across is held by growing the front-to-back reach (`y`) on its side alone,
-/// and only a point past the reach across grows that reach, just to it. An ellipse round a square-ish section (the hips,
-/// the pelvis and both thighs) then reaches no further to the sides than the body does, where the arms hang, and takes
-/// the corners in front and behind. If that hasn't closed in after [`GROWTH_STEPS`], every reach grows to scale the
-/// whole ellipse round its centre, which always holds it.
+/// `extra` grown until the ellipse of `radii` and it holds `q`, each step growing the one side that holds it for the
+/// least added area: a point beside the ellipse widens it across, a point in front of or behind it deepens it, and a
+/// point on a flank takes whichever is the smaller change. Growing the side the point lies off, rather than the one a
+/// rule picks, keeps the ellipse to the shape the points trace: a ring deepened at the hip is held by a deeper ellipse
+/// of the same width, not by one ballooned front to back to reach a flank point past its width. A point past both
+/// reaches (off a corner) is first brought within one of them. If that hasn't closed in after [`GROWTH_STEPS`], every
+/// reach grows to scale the whole ellipse round its centre, which always holds it.
 fn hold(radii: DVec2, mut extra: Reach, q: DVec2) -> Reach {
     for _ in 0..GROWTH_STEPS {
         let (offset, r) = ellipse(radii, extra);
@@ -148,17 +141,19 @@ fn hold(radii: DVec2, mut extra: Reach, q: DVec2) -> Reach {
             return extra;
         }
         let d = q - offset;
-        let (x_side, y_side) = (if d.x >= 0.0 { 0 } else { 1 }, if d.y >= 0.0 { 2 } else { 3 });
-        // Growing one side by `g` moves its edge out by `g` and the centre and radius by half of it each.
-        if d.x.abs() >= ACROSS_SHARE * r.x {
-            // Reach across to the point, with a little to spare for its front-to-back growth to close on.
-            extra[x_side] += 2.0 * (d.x.abs() - ACROSS_SHARE * r.x) / (1.0 + ACROSS_SHARE) + f64::EPSILON;
-            continue;
-        }
-        // Across, the point lies within `c = sqrt(1 - (dx / rx)^2)` of the axis's reach; grow front to back until
-        // `|dy| - g / 2 <= c (ry + g / 2)`.
-        let c = (1.0 - (d.x / r.x).powi(2)).sqrt();
-        extra[y_side] += 2.0 * (d.y.abs() - c * r.y).max(0.0) / (1.0 + c) * (1.0 + 1e-9) + f64::EPSILON;
+        let (x_side, y_side) = (usize::from(d.x < 0.0), 2 + usize::from(d.y < 0.0));
+        let (gx, gy) = (side_growth(d.x, r.x, d.y / r.y), side_growth(d.y, r.y, d.x / r.x));
+        // A side grown by `g` adds `pi g r_other / 2` to the ellipse's area.
+        let (side, g) = match (gx, gy) {
+            (Some(gx), Some(gy)) if gx * r.y <= gy * r.x => (x_side, gx),
+            (_, Some(gy)) => (y_side, gy),
+            (Some(gx), None) => (x_side, gx),
+            (None, None) if (d.x.abs() - r.x) * r.y <= (d.y.abs() - r.y) * r.x => {
+                (x_side, corner_growth(d.x, r.x))
+            }
+            (None, None) => (y_side, corner_growth(d.y, r.y)),
+        };
+        extra[side] += g * (1.0 + 1e-9) + f64::EPSILON;
     }
     let (offset, r) = ellipse(radii, extra);
     let l = level(q, (offset, r));
@@ -168,6 +163,24 @@ fn hold(radii: DVec2, mut extra: Reach, q: DVec2) -> Reach {
         extra = [extra[0] + more[0], extra[1] + more[0], extra[2] + more[1], extra[3] + more[1]];
     }
     extra
+}
+
+/// How far to grow one side of an ellipse of radius `r` that way to hold a point `d` from its centre that way and a
+/// share `other` of the other radius the other way: growing a side by `g` moves its edge out by `g` and the centre and
+/// radius by half of it each, so the point is on the ellipse once `|d| - g / 2 = c (r + g / 2)`, where
+/// `c = sqrt(1 - other^2)`. `None` when the other way already leaves it outside (`|other| >= 1`).
+fn side_growth(d: f64, r: f64, other: f64) -> Option<f64> {
+    let room = 1.0 - other * other;
+    (room > 0.0).then(|| {
+        let c = room.sqrt();
+        2.0 * (d.abs() - c * r).max(0.0) / (1.0 + c)
+    })
+}
+
+/// How far to grow one side of an ellipse of radius `r` to bring a point `d` from its centre that way to
+/// [`CORNER_SHARE`] of the grown radius, so the other side can then be grown to hold it.
+fn corner_growth(d: f64, r: f64) -> f64 {
+    2.0 * (d.abs() - CORNER_SHARE * r).max(0.0) / (1.0 + CORNER_SHARE)
 }
 
 /// One region's table: the layout's rows and how far the fit reaches past each.
@@ -235,7 +248,8 @@ impl Table {
             if ha.signum() == hb.signum() && ha != 0.0 {
                 continue;
             }
-            let share = if ha == hb { 0.0 } else { (ha / (ha - hb)).clamp(0.0, 1.0) };
+            // Both heights zero only where `p` lies on both rows' planes; it is on the first, then.
+            let share = if (ha - hb).abs() > 0.0 { (ha / (ha - hb)).clamp(0.0, 1.0) } else { 0.0 };
             let plane = pair[0].lerp(&pair[1], share);
             let d = p - plane.centre;
             let q = DVec2::new(d.dot(plane.across), d.dot(plane.through));
@@ -319,45 +333,29 @@ impl Table {
         for _ in 0..EASE_ROUNDS {
             self.ease();
             for k in 0..self.rows.len() {
-                if !self.kept[k].is_empty() || self.extra[k] != [0.0; 4] {
+                if !self.kept[k].is_empty() || self.extra[k].iter().any(|e| *e > 0.0) {
                     self.settle(k);
                 }
             }
         }
     }
 
-    /// Eases each reach along the region: every row's reach becomes the highest of its neighbours' bumps, each a
-    /// smoothstep falling from that row's reach to nothing over a run long enough that it never leans more than
-    /// [`MAX_SLOPE`] (and at least [`MIN_EASE`]). A row's own bump peaks at its own reach, so no reach falls; and the
-    /// bumps leave and meet the layout's section tangent to it, so a garment lofted over the fit in rings a few
-    /// millimetres apart follows it without its facets standing out of a corner or cutting into a step.
+    /// Eases each reach along the region: every row's reach becomes the highest of the arcs of radius
+    /// [`EASE_RADIUS`] that peak at each row's own reach, `max_j (e_j - (s - s_j)^2 / 2 r)` (a parabolic dilation, as
+    /// the mesh's own junctions are bridged). No reach falls; a peak is rounded to the arc, so a garment lofted over
+    /// the fit in rings a few millimetres apart follows it without its facets cutting into a corner; and where two arcs
+    /// meet, or an arc meets the layout's section, the fit turns outwards, which a garment's facets stand clear of.
     fn ease(&mut self) {
         let mut along = vec![0.0_f64; self.rows.len()];
         for k in 1..self.rows.len() {
             along[k] = along[k - 1] + self.rows[k - 1].centre.distance(self.rows[k].centre);
         }
         for side in 0..4 {
-            // Each widened row's bump: its place along the region, its reach, and its run.
-            let bumps: Vec<(f64, f64, f64)> = self
-                .extra
-                .iter()
-                .zip(&along)
-                .filter(|(e, _)| e[side] > 0.0)
-                .map(|(e, s)| (*s, e[side], (1.5 * e[side] / MAX_SLOPE).max(MIN_EASE)))
-                .collect();
-            if bumps.is_empty() {
-                continue;
-            }
-            for k in 0..self.rows.len() {
-                // A smoothstep's steepest slope is 1.5 over its run.
-                let eased = bumps
-                    .iter()
-                    .filter_map(|&(s, reach, run)| {
-                        let x = (along[k] - s).abs() / run;
-                        (x < 1.0).then(|| reach * (1.0 - x * x * (3.0 - 2.0 * x)))
-                    })
-                    .fold(0.0, f64::max);
-                self.extra[k][side] = self.extra[k][side].max(eased);
+            let peaks: Vec<(f64, f64)> =
+                self.extra.iter().zip(&along).filter(|(e, _)| e[side] > 0.0).map(|(e, s)| (*s, e[side])).collect();
+            for (extra, at) in self.extra.iter_mut().zip(&along) {
+                let eased = peaks.iter().map(|&(s, e)| e - (at - s).powi(2) / (2.0 * EASE_RADIUS)).fold(0.0, f64::max);
+                extra[side] = extra[side].max(eased);
             }
         }
     }
@@ -366,7 +364,7 @@ impl Table {
     /// moves the centre that way, which pulls the far side's flanks in, so a point held before can fall out: the
     /// points are held again until none does, and if that hasn't settled in [`SETTLE_PASSES`] the ellipse is scaled
     /// round its centre until it holds them all. A region on the body's midline (the torso, the neck) reaches alike to
-    /// either side: the body is symmetric, and its fit stays so whichever thigh or shoulder was held first.
+    /// either side: the body is symmetric, and its fit stays so whichever side's points were held first.
     fn settle(&mut self, k: usize) {
         let radii = self.rows[k].radii;
         let layout = (0..LAYOUT_SAMPLES).map(|j| {
@@ -374,6 +372,14 @@ impl Table {
             DVec2::new(radii.x * cos, radii.y * sin) * (1.0 + LAYOUT_SLACK)
         });
         let points: Vec<DVec2> = layout.chain(self.kept[k].iter().copied()).collect();
+        // First to the points' box: the ellipse a box holds is the ring itself where the mesh's ring is an ellipse,
+        // which a junction's widening keeps it.
+        let reach = |f: fn(DVec2) -> f64, r: f64| points.iter().map(|q| f(*q) - r).fold(0.0, f64::max);
+        let e = &mut self.extra[k];
+        let boxed = [reach(|q| q.x, radii.x), reach(|q| -q.x, radii.x), reach(|q| q.y, radii.y), reach(|q| -q.y, radii.y)];
+        for (e, b) in e.iter_mut().zip(boxed) {
+            *e = e.max(b);
+        }
         let midline = matches!(self.region, BodyRegion::Torso | BodyRegion::Neck);
         for _ in 0..SETTLE_PASSES {
             let before = self.extra[k];
@@ -385,6 +391,8 @@ impl Table {
                 let e = &mut self.extra[k];
                 (e[0], e[1]) = (e[0].max(e[1]), e[0].max(e[1]));
             }
+            // Exactly unchanged: a pass that grew nothing has settled the row.
+            #[allow(clippy::float_cmp)]
             if self.extra[k] == before {
                 return;
             }
@@ -457,121 +465,38 @@ impl BodyMeshFit {
 /// How far off an end row's plane a point may lie and still be on it, metres.
 const END_SLACK: f64 = 1e-6;
 
-/// One end of a region.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum Span {
-    /// Before its start.
-    Before,
-    /// Past its end.
-    After,
-}
-
-/// How near an end of its region, in rows, a point is held by the region that end closes into as well as its own.
-const END_BAND: f64 = 1.0;
-
-/// Which of `tables` must hold point `p` of the mesh of `region` (indices into `tables`):
-/// - a point within its region's span, that region;
-/// - a point past an end, the region that end closes into: a shoulder's top (an arm's root above its first ring) and a
-///   thigh's dome the torso, a shin's ankle the foot, the pelvis's floor the thigh it lies least far outside of, the
-///   torso's top the neck; the root's underside (the armpit), a wrist's cap (the hand covers it) and a foot's heel and
-///   toe none;
-/// - and a point of a leg that the torso's sections reach, the torso too: the hips' outline is the pelvis's and the
-///   thighs' together, so a garment round the torso there clears the thighs.
-fn holders(tables: &[Table], region: BodyRegion, p: DVec3) -> Vec<usize> {
-    use BodyRegion as R;
-    let index = |r: BodyRegion| tables.iter().position(|t| t.region == r);
-    let Some(own) = index(region) else { return Vec::new() };
-    let x = tables[own].row_coordinate(p);
-    let rows = fraction(ROWS, 1);
-    // The region each end closes into. The pelvis's floor closes into whichever thigh it lies least far outside of.
-    let closes_into = |end: Span| -> Option<usize> {
-        match (region, end) {
-            // The shoulder's top: the root's upper side, above the arm's first ring, makes the shoulder line. Its
-            // underside runs between the arm and the torso into the armpit, where a garment needs an armhole, not
-            // a torso wide enough to reach the arm.
-            (R::ArmL | R::ArmR, Span::Before) => index(R::Torso).filter(|_| p.y >= tables[own].rows[0].centre.y),
-            (R::LegL | R::LegR, Span::Before) => index(R::Torso),
-            (R::LegL, Span::After) => index(R::FootL),
-            (R::LegR, Span::After) => index(R::FootR),
-            (R::Torso, Span::After) => index(R::Neck),
-            (R::Torso, Span::Before) => {
-                let level = |r: BodyRegion| {
-                    index(r).and_then(|k| tables[k].locate(p).map(|at| (k, tables[k].layout_level(&at))))
-                };
-                [level(R::LegL), level(R::LegR)]
-                    .into_iter()
-                    .flatten()
-                    .min_by(|a, b| a.1.total_cmp(&b.1))
-                    .map(|(k, _)| k)
-            }
-            _ => None,
-        }
-    };
-    let mut out: Vec<usize> = Vec::new();
-    if (0.0..=rows).contains(&x) {
-        out.push(own);
-    }
-    // Within a row of an end, the region it closes into holds the point too: a point that close to the end's plane may
-    // fall on either side of it as another table samples the region.
-    if x < END_BAND {
-        out.extend(closes_into(Span::Before));
-    }
-    if x > rows - END_BAND {
-        out.extend(closes_into(Span::After));
-    }
-    if matches!(region, R::LegL | R::LegR)
-        && let Some(torso) = index(R::Torso)
-    {
-        out.push(torso);
-    }
-    out.sort_unstable();
-    out.dedup();
-    out
-}
-
-/// Finds the points of the mesh of `region` that lie outside the layout's sections of the regions [`holders`] names
-/// for them, and gives each to those regions' rows to keep: every vertex, and every point where an edge crosses a
-/// holder's rows. The edges matter even between two vertices the layout holds: where the layout's profile curves in
-/// (a waist), the mesh's straight edges between two rings stand out of it.
+/// Finds the points of the mesh of `region`, within the region's span, that lie outside the layout's sections, and
+/// gives each to the region's rows to keep: every vertex, and every point where an edge crosses a row. The edges
+/// matter even between two vertices the layout holds: where the layout's profile curves in (a waist), the mesh's
+/// straight edges between two rings stand out of it.
 fn keep_outside(tables: &mut [Table], region: BodyRegion, mesh: &MeshData) {
+    let Some(table) = tables.iter_mut().find(|t| t.region == region) else { return };
     let points: Vec<DVec3> = mesh.positions.iter().map(|v| v.as_dvec3()).collect();
-    let owners: Vec<Vec<usize>> = points.iter().map(|p| holders(tables, region, *p)).collect();
-    // Where each vertex lies along each table that holds it or one of its neighbours, worked out once.
-    let mut along: Vec<Vec<Option<f64>>> = vec![vec![None; points.len()]; tables.len()];
-    for (v, (p, owners)) in points.iter().zip(&owners).enumerate() {
-        for &k in owners {
-            let at = tables[k].locate(*p);
-            along[k][v] = Some(at.map_or_else(|| tables[k].off_the_ends(*p), |at| fraction(at.row, 1) + at.share));
-            if let Some(at) = at {
-                tables[k].keep_located(&at);
+    // Where each vertex lies along the region, and the vertices within its span kept.
+    let along: Vec<f64> = points
+        .iter()
+        .map(|p| {
+            let at = table.locate(*p);
+            if let Some(at) = &at {
+                table.keep_located(at);
             }
-        }
-    }
-    let own = tables.iter().position(|t| t.region == region);
-    let torso = tables.iter().position(|t| t.region == BodyRegion::Torso);
+            at.map_or_else(|| table.off_the_ends(*p), |at| fraction(at.row, 1) + at.share)
+        })
+        .collect();
     let mut edges: Vec<(usize, usize)> = mesh
         .indices
-        .chunks_exact(3)
-        .flat_map(|t| [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])])
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .flat_map(|&[a, b, c]| [(a, b), (b, c), (c, a)])
         .map(|(i, j)| (i.min(j) as usize, i.max(j) as usize))
         .filter(|&(_, j)| j < points.len())
         .collect();
     edges.sort_unstable();
     edges.dedup();
     for (i, j) in edges {
-        let mut candidates: Vec<usize> = owners[i].iter().chain(&owners[j]).copied().collect();
-        candidates.sort_unstable();
-        candidates.dedup();
-        for k in candidates {
-            let mut coordinate = |v: usize| *along[k][v].get_or_insert_with(|| tables[k].row_coordinate(points[v]));
-            let (xa, xb) = (coordinate(i), coordinate(j));
-            // A point on the region's own rows, or on the torso's rows from a leg, is that table's to hold.
-            let always = Some(k) == own || (Some(k) == torso && matches!(region, BodyRegion::LegL | BodyRegion::LegR));
-            for (row, p) in crossings(&tables[k], (points[i], xa), (points[j], xb)) {
-                if always || holders(tables, region, p).contains(&k) {
-                    tables[k].keep_on_row(row, p);
-                }
-            }
+        for (row, p) in crossings(table, (points[i], along[i]), (points[j], along[j])) {
+            table.keep_on_row(row, p);
         }
     }
 }

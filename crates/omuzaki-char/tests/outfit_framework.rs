@@ -9,9 +9,10 @@
 #[path = "../../omuzaki-test-char/tests/support/outfit_conformance.rs"]
 mod conformance;
 
+use std::fmt::Write as _;
 use std::sync::Arc;
 
-use omuzaki_anim_api::HumanoidBone;
+use omuzaki_anim_api::{HumanoidBone, HumanoidPose};
 use omuzaki_char::kit::grid::MeshBuilder;
 use omuzaki_char::outfit::common::{
     ClothSpec, DEFAULT_EASE, Envelope, FabricStyle, Garment, GarmentCommon, GarmentOutput, LAYER_SHIRT, LAYER_VEST,
@@ -21,11 +22,11 @@ use omuzaki_char::outfit::loft::{RegionWeights, SOFT_SQUARE, Surface, ring_at};
 use omuzaki_char::outfit::trim::{TrimSpec, add_trim};
 use omuzaki_char_api::{
     BodyFit, BodyRegion, BodyShape, BuildCtx, BuildError, BuildServices, FitFact, JointRef, PartCategory, PartKind,
-    PartMeta, PartOutput,
+    PartMeta, PartOutput, Section,
 };
 use omuzaki_char_mock::TorsoFit;
 use omuzaki_core::colour::Colour;
-use omuzaki_core::glam::{DVec2, DVec3, Vec2};
+use omuzaki_core::glam::{DVec2, DVec3, Vec2, Vec3};
 use omuzaki_face_api::{Check, ColourRef, Validate};
 use omuzaki_face_mock::MockRasterizer;
 use schemars::JsonSchema;
@@ -688,26 +689,25 @@ fn the_suite_finds_the_body_through_a_garment_built_over_the_template_alone() {
     // Before its fit held its mesh, the body published the template's own sections. The suite's tube over them passes
     // through the thighs' domes and the hips' bridge on soft-sd (what the evidence sheets showed), and the suite's check
     // against the body's own mesh says so; over the published fit the same tube clears the body.
-    for template in ["soft-sd"] {
-        let shape = BodyShape::default();
-        let tube = serde_json::to_value(TubeParams::default()).unwrap();
-        let def = conformance::character(template, &shape, &[(conformance::PART, "test-tube", LAYER_SHIRT, tube)]);
-        let stack = conformance::build(def.clone(), &services()).unwrap();
-        let body = stack.output(conformance::BODY);
-        conformance::check_body_mesh(stack.output(conformance::PART), body).expect("the tube clears the body");
+    let template = "soft-sd";
+    let shape = BodyShape::default();
+    let tube = serde_json::to_value(TubeParams::default()).unwrap();
+    let def = conformance::character(template, &shape, &[(conformance::PART, "test-tube", LAYER_SHIRT, tube)]);
+    let stack = conformance::build(def.clone(), &services()).unwrap();
+    let body = stack.output(conformance::BODY);
+    conformance::check_body_mesh(stack.output(conformance::PART), body).expect("the tube clears the body");
 
-        let params = BodyParams { shape: shape.clone(), ..BodyParams::default() };
-        let layout =
-            registry::find(template).unwrap().try_layout(&params.proportions, &params.shape, &params.hand).unwrap();
-        let mut bare = Published::default();
-        let fit: Arc<dyn BodyFit> = Arc::new(TemplateFit::new(layout));
-        bare.absorb(&PartId::new(conformance::BODY).unwrap(), Publishes::default().with::<FitFact>(fit)).unwrap();
-        let part = PartId::new(conformance::PART).unwrap();
-        let over_template = build_part(&def, &part, &BuildOptions::default(), &services(), &bare).unwrap();
-        let error = conformance::check_body_mesh(&over_template, body).expect_err("the body comes through");
-        println!("{template}: over the template's own sections, {error}");
-        assert!(error.contains("passes through the body's own mesh"), "{error}");
-    }
+    let params = BodyParams { shape: shape.clone(), ..BodyParams::default() };
+    let layout =
+        registry::find(template).unwrap().try_layout(&params.proportions, &params.shape, &params.hand).unwrap();
+    let mut bare = Published::default();
+    let fit: Arc<dyn BodyFit> = Arc::new(TemplateFit::new(layout));
+    bare.absorb(&PartId::new(conformance::BODY).unwrap(), Publishes::default().with::<FitFact>(fit)).unwrap();
+    let part = PartId::new(conformance::PART).unwrap();
+    let over_template = build_part(&def, &part, &BuildOptions::default(), &services(), &bare).unwrap();
+    let error = conformance::check_body_mesh(&over_template, body).expect_err("the body comes through");
+    println!("{template}: over the template's own sections, {error}");
+    assert!(error.contains("passes through the body's own mesh"), "{error}");
 }
 
 /// How far past a section a body vertex may lie and still count as held by it, metres: the f32 the fit and the mesh
@@ -716,30 +716,15 @@ const BODY_HELD: f64 = 2e-4;
 
 /// The region a body mesh is of, by its name.
 fn region_of(mesh: &str) -> Option<BodyRegion> {
-    Some(match mesh {
-        "torso" => BodyRegion::Torso,
-        "arm.L" => BodyRegion::ArmL,
-        "arm.R" => BodyRegion::ArmR,
-        "leg.L" => BodyRegion::LegL,
-        "leg.R" => BodyRegion::LegR,
-        "foot.L" => BodyRegion::FootL,
-        "foot.R" => BodyRegion::FootR,
-        _ => return None,
-    })
+    omuzaki_char::body::mesh::REGIONS.into_iter().find(|r| omuzaki_char::body::mesh::name_of(*r) == mesh)
 }
 
 #[test]
 fn the_published_body_fit_holds_the_body_mesh() {
-    use std::cmp::Ordering::{Equal, Greater, Less};
-    // The body's junctions and caps stand outside the template's sections (the hips' bridge, the thighs' domes, the
-    // shoulders' roots, the ankles), so the body publishes its fit widened to its mesh. On every template and shape:
-    // - every vertex of a region within that region's span lies in its section;
-    // - every vertex past an end lies in the section of the region that end closes into (a shoulder's top, the arm's
-    //   root above its first ring, and a thigh's dome in the torso, a shin's ankle in its foot, the pelvis's floor in a
-    //   thigh, the torso's top in the neck); a wrist's cap (the hand covers it), a foot's heel and toe and the root's
-    //   underside in the armpit close into none;
-    // - every leg vertex the torso's sections reach lies in the torso's section too, so a garment round the hips clears
-    //   the thighs.
+    use std::cmp::Ordering::Equal;
+    // The body's junctions stand outside the template's sections (the hips' and ankles' bridged rings), so the body
+    // publishes its fit widened to its mesh. On every template and shape, every vertex of a region within that region's
+    // span lies in its section. Past its ends (the caps and roots) a region's mesh is no section's to hold.
     let mut widest = 0.0_f64;
     for template in conformance::TEMPLATES {
         for (label, shape) in conformance::shapes() {
@@ -748,55 +733,24 @@ fn the_published_body_fit_holds_the_body_mesh() {
             let fit = stack.published.get::<FitFact>().fits.first().expect("a body fit").clone();
             let tables = conformance::Tables::of(fit.as_ref());
             let (mut worst, mut what) = (f64::NEG_INFINITY, String::new());
-            for mesh in &stack.output("body").meshes {
+            for mesh in &stack.output(conformance::BODY).meshes {
                 let Some(region) = region_of(&mesh.name) else { continue };
                 for v in &mesh.geometry.positions {
                     let p = v.as_dvec3();
-                    let all = conformance::located(&tables, p);
-                    let out_of = |r: BodyRegion| all.iter().find(|(at, ..)| *at == r).map(|(.., d)| *d);
-                    let mut must: Vec<(BodyRegion, f64)> = Vec::new();
-                    let mut need = |r: BodyRegion| {
-                        if let Some(d) = out_of(r) {
-                            must.push((r, d));
-                        }
-                    };
-                    use BodyRegion as R;
-                    match (region, conformance::along(&tables, region, p)) {
-                        (_, Some(Equal)) => need(region),
-                        (R::ArmL | R::ArmR, Some(Less)) => {
-                            let shoulder = fit.section(region, 0.0).map_or(f64::INFINITY, |s| f64::from(s.centre.y));
-                            if p.y >= shoulder {
-                                need(R::Torso);
-                            }
-                        }
-                        (R::LegL | R::LegR, Some(Less)) => need(R::Torso),
-                        (R::LegL, Some(Greater)) => need(R::FootL),
-                        (R::LegR, Some(Greater)) => need(R::FootR),
-                        (R::Torso, Some(Greater)) => need(R::Neck),
-                        (R::Torso, Some(Less)) => {
-                            let thigh =
-                                [out_of(R::LegL), out_of(R::LegR)].into_iter().flatten().fold(f64::INFINITY, f64::min);
-                            if thigh.is_finite() {
-                                must.push((R::LegL, thigh));
-                            }
-                        }
-                        _ => {}
+                    if conformance::along(&tables, region, p) != Some(Equal) {
+                        continue;
                     }
-                    if matches!(region, R::LegL | R::LegR)
-                        && let Some(d) = out_of(R::Torso)
+                    let outside = conformance::located(&tables, p).into_iter().find(|(at, ..)| *at == region);
+                    if let Some((.., d)) = outside
+                        && d > worst
                     {
-                        must.push((R::Torso, d));
-                    }
-                    for (r, d) in must {
-                        if d > worst {
-                            worst = d;
-                            what = format!("`{}` vertex at {p} is {:.2} mm outside {r:?}", mesh.name, d * 1e3);
-                        }
+                        worst = d;
+                        what = format!("`{}` vertex at {p} is {:.2} mm outside its section", mesh.name, d * 1e3);
                     }
                 }
             }
             println!(
-                "{template:9} {label:8} the farthest a body vertex lies outside a section that holds it: {:.3} mm ({what})",
+                "{template:9} {label:8} the farthest a body vertex lies outside its own section: {:.3} mm ({what})",
                 worst * 1e3
             );
             assert!(worst <= BODY_HELD, "{template}/{label}: {what}");
@@ -804,6 +758,83 @@ fn the_published_body_fit_holds_the_body_mesh() {
         }
     }
     println!("at most {:.3} mm on every template and shape", widest * 1e3);
+}
+
+#[test]
+fn the_published_body_fit_keeps_to_the_body_mesh() {
+    // The fit is the body's own shape: every section lies within the suite's gap of its own region's mesh, on every
+    // template and shape. A section stretched round a neighbouring limb or a region's cap stands centimetres off.
+    let mut rows = String::new();
+    let mut widest = 0.0_f64;
+    for template in conformance::TEMPLATES {
+        for (label, shape) in conformance::shapes() {
+            let def = conformance::character(template, &shape, &[]);
+            let stack = conformance::build(def, &services()).expect("the body builds");
+            let fit = stack.published.get::<FitFact>().fits.first().expect("a body fit").clone();
+            let body = stack.output(conformance::BODY);
+            let gaps: Vec<conformance::Gap> = omuzaki_char::body::mesh::REGIONS
+                .into_iter()
+                .filter_map(|region| conformance::fit_gap(fit.as_ref(), body, region))
+                .collect();
+            let cells: Vec<String> = gaps.iter().map(|g| format!("{:?} {:.1}", g.region, g.distance * 1e3)).collect();
+            writeln!(rows, "{template:9} {label:8} {}", cells.join("  ")).unwrap();
+            for gap in gaps {
+                widest = widest.max(gap.distance);
+                assert!(
+                    gap.distance <= conformance::FIT_GAP,
+                    "{template}/{label}: the {:?} section at t = {:.3} stands {:.1} mm off its mesh at {}",
+                    gap.region,
+                    gap.t,
+                    gap.distance * 1e3,
+                    gap.point
+                );
+            }
+        }
+    }
+    println!("the farthest each region's sections stand from its mesh, mm:\n{rows}at most {:.1} mm", widest * 1e3);
+}
+
+/// A body fit whose sections of one region are blown out front to back, as a fit stretched round a neighbouring limb
+/// is.
+#[derive(Debug)]
+struct Blown {
+    fit: Arc<dyn BodyFit>,
+    region: BodyRegion,
+    by: f32,
+}
+
+impl BodyFit for Blown {
+    fn section(&self, region: BodyRegion, t: f32) -> Option<Section> {
+        let mut section = self.fit.section(region, t)?;
+        if region == self.region {
+            section.radii.y += self.by;
+        }
+        Some(section)
+    }
+
+    fn joint(&self, joint: &JointRef) -> Option<Vec3> {
+        self.fit.joint(joint)
+    }
+
+    fn bind(&self) -> HumanoidPose {
+        self.fit.bind()
+    }
+}
+
+#[test]
+fn the_suite_finds_a_body_fit_blown_past_the_body() {
+    // A leg's sections a centimetre too deep front to back: the suite's fit check fails it, on every template.
+    for template in conformance::TEMPLATES {
+        let def = conformance::character(template, &conformance::shapes()[0].1, &[]);
+        let stack = conformance::build(def, &services()).expect("the body builds");
+        let fit = stack.published.get::<FitFact>().fits.first().expect("a body fit").clone();
+        let body = stack.output(conformance::BODY);
+        conformance::check_fit_tight(fit.as_ref(), body, &conformance::REGIONS).expect("the body's own fit keeps to it");
+        let blown = Blown { fit, region: BodyRegion::LegL, by: 0.01 };
+        let error = conformance::check_fit_tight(&blown, body, &conformance::REGIONS).expect_err("a blown fit fails");
+        println!("{template}: {error}");
+        assert!(error.contains("LegL"), "{error}");
+    }
 }
 
 #[test]

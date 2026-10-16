@@ -53,12 +53,13 @@ impl PartKind for Body {
         let segments = SegmentSet::from_fit(&fit, &mesh::all_bones()).map_err(to_build_error)?;
         let regions = mesh::build_regions(fit.layout(), &segments, mesh::Detail::of(ctx.quality), &material_id)
             .map_err(to_build_error)?;
-        // The published fit holds the mesh: its junctions and caps stand outside the layout's sections.
-        let published = Arc::new(BodyMeshFit::new(fit, regions.iter().map(|(region, m)| (*region, &m.geometry))));
+        // The published fit holds each region's own mesh: the bridged rings at the hip and ankle stand outside the
+        // layout's sections.
+        let body_fit = Arc::new(BodyMeshFit::new(fit, regions.iter().map(|(region, m)| (*region, &m.geometry))));
         let mut meshes: Vec<PartMesh> = regions.into_iter().map(|(_, m)| m).collect();
-        meshes.extend(hands::build(params, published.layout(), &material_id).map_err(to_build_error)?);
+        meshes.extend(hands::build(params, body_fit.layout(), &material_id).map_err(to_build_error)?);
         let material = skin_material(params, ctx)?;
-        let mut publishes = Publishes::default().with::<FitFact>(published);
+        let mut publishes = Publishes::default().with::<FitFact>(body_fit);
         if let Some(stature) = stature {
             publishes.put::<StatureFact>(stature);
         }

@@ -12,6 +12,8 @@
 //! On each of the 4 templates × 3 shapes it builds a body and the garment (layer [`LAYER_SHIRT`]) and checks:
 //! - **clearance**: each vertex lies at least half the ease outside the fit it was built over, and nothing lies inside
 //!   it; a failure names the vertex, the region, where along it and how deep;
+//! - **fit**: every section of the body fit over the garment's regions lies within [`FIT_GAP`] of its region's own
+//!   mesh, so a fit blown out round a neighbouring limb or a cap (and every garment over it) fails;
 //! - **body mesh**: no garment triangle meets a triangle of the body's own mesh (a separating-axis test against every
 //!   body triangle near it), so a body that stands outside its published fit is caught too, and so is a garment that
 //!   reaches a part of the body it doesn't cover (an arm beside the torso);
@@ -219,6 +221,7 @@ pub fn run<K: Garment>(params: &K::Params, services: &BuildServices) -> Result<V
             let inner_table = Tables::of(inner.as_ref());
             let min_clearance = check_clearance(output, &body_table, &body_pieces, &inner_table, &regions, ease)
                 .map_err(|e| format!("{case}: {e}"))?;
+            check_fit_tight(body.as_ref(), stack.output(BODY), &regions).map_err(|e| format!("{case}: {e}"))?;
             check_body_mesh(output, stack.output(BODY)).map_err(|e| format!("{case}: {e}"))?;
             check_closure(output, K::open_borders(params)).map_err(|e| format!("{case}: {e}"))?;
             check_skin(output, &stack.published).map_err(|e| format!("{case}: {e}"))?;
@@ -369,17 +372,22 @@ impl RegionTable {
             if ha.signum() == hb.signum() && ha != 0.0 {
                 continue;
             }
-            // Bisect within the interval, on the linearly interpolated section.
-            let (mut lo, mut hi) = (0.0, 1.0);
-            for _ in 0..40 {
-                let mid = f64::midpoint(lo, hi);
-                if a.lerp(&b, mid).height(p).signum() == ha.signum() {
-                    lo = mid;
-                } else {
-                    hi = mid;
+            // On the first plane (a height of zero, of either sign), the point's section is that one; else bisect
+            // within the interval, on the linearly interpolated section.
+            let s = if ha == 0.0 {
+                a
+            } else {
+                let (mut lo, mut hi) = (0.0, 1.0);
+                for _ in 0..40 {
+                    let mid = f64::midpoint(lo, hi);
+                    if a.lerp(&b, mid).height(p).signum() == ha.signum() {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
                 }
-            }
-            let s = a.lerp(&b, f64::midpoint(lo, hi));
+                a.lerp(&b, f64::midpoint(lo, hi))
+            };
             let d = p - s.centre;
             let found = Located {
                 region: self.region,
@@ -819,10 +827,10 @@ fn cell(p: DVec3) -> [i64; 3] {
 }
 
 impl<'a> BodyMesh<'a> {
-    fn of(body: &'a PartOutput) -> Self {
+    fn of(meshes: impl IntoIterator<Item = &'a PartMesh>) -> Self {
         let mut triangles = Vec::new();
         let mut cells: HashMap<[i64; 3], Vec<usize>> = HashMap::new();
-        for mesh in &body.meshes {
+        for mesh in meshes {
             let g = &mesh.geometry;
             for (n, tri) in g.indices.chunks_exact(3).enumerate() {
                 let t = [0, 1, 2].map(|k| g.positions[tri[k] as usize].as_dvec3());
@@ -854,6 +862,30 @@ impl<'a> BodyMesh<'a> {
         out.sort_unstable();
         out.dedup();
         out
+    }
+
+    /// How far `p` lies from the nearest triangle, searching cells out to `limit`; `None` past it.
+    fn distance(&self, p: DVec3, limit: f64) -> Option<f64> {
+        let mut reach = MESH_CELL;
+        loop {
+            let r = DVec3::splat(reach);
+            let nearest = self
+                .near(&[p - r, p + r, p])
+                .into_iter()
+                .map(|i| {
+                    let [a, b, c] = self.triangles[i].0;
+                    closest_on_triangle(p, a, b, c).distance(p)
+                })
+                .fold(f64::INFINITY, f64::min);
+            // A triangle beyond the searched box can lie no nearer than its half-width.
+            if nearest <= reach {
+                return Some(nearest);
+            }
+            if reach >= limit {
+                return None;
+            }
+            reach = (reach * 2.0).min(limit);
+        }
     }
 }
 
@@ -888,7 +920,7 @@ fn triangles_meet(a: &[DVec3; 3], b: &[DVec3; 3]) -> bool {
 /// # Errors
 /// A message naming the first garment triangle that meets the body's mesh, and the body triangle it meets.
 pub fn check_body_mesh(output: &PartOutput, body: &PartOutput) -> Result<(), String> {
-    let mesh = BodyMesh::of(body);
+    let mesh = BodyMesh::of(&body.meshes);
     for garment in &output.meshes {
         let g = &garment.geometry;
         for (n, tri) in g.indices.chunks_exact(3).enumerate() {
@@ -902,6 +934,82 @@ pub fn check_body_mesh(output: &PartOutput, body: &PartOutput) -> Result<(), Str
                     garment.name
                 ));
             }
+        }
+    }
+    Ok(())
+}
+
+// --------------------------------------------------------------------------------------------- the fit's tightness
+
+/// How far a section of the body's fit may stand from its own region's mesh, metres. The mesh is lofted from the
+/// layout's sections in rings a few centimetres apart, and the fit holds it and rounds its corners, so the two part by
+/// a few millimetres: the template's own sections stand up to 3.3 mm off the mesh between its rings, and the fit up to
+/// 6.2 mm where the hip's bridged rings end. A fit stretched round a neighbouring limb, or round a cap past a region's
+/// end, stands centimetres off its region and fails.
+pub const FIT_GAP: f64 = 0.008;
+
+/// Places along each region where its section is measured against its mesh.
+const GAP_RINGS: usize = 65;
+/// Points round each section measured.
+const GAP_POINTS: usize = 48;
+/// How far the search for a section point's nearest triangle goes, metres: past it, the gap is reported as at least
+/// this.
+const GAP_SEARCH: f64 = 0.25;
+
+/// Where a body fit stands farthest from its own region's mesh.
+#[derive(Clone, Copy, Debug)]
+pub struct Gap {
+    pub region: BodyRegion,
+    /// Where along the region, `0..=1`.
+    pub t: f64,
+    /// The point of the section, and how far it lies from the region's mesh, metres.
+    pub point: DVec3,
+    pub distance: f64,
+}
+
+/// Where the sections of `fit`'s `region` stand farthest from that region's own mesh in `body`: [`GAP_POINTS`] points
+/// round the section at each of [`GAP_RINGS`] places along the region, each measured to the nearest triangle of the
+/// region's mesh (no other region's: a section round two limbs stands off the one it belongs to). `None` when the body
+/// has no mesh of the region or the fit no section of it.
+pub fn fit_gap(fit: &dyn BodyFit, body: &PartOutput, region: BodyRegion) -> Option<Gap> {
+    let name = omuzaki_char::body::mesh::name_of(region);
+    let mesh = BodyMesh::of(body.meshes.iter().filter(|m| m.name == name));
+    if mesh.triangles.is_empty() {
+        return None;
+    }
+    let mut worst: Option<Gap> = None;
+    for i in 0..GAP_RINGS {
+        let t = i as f64 / (GAP_RINGS - 1) as f64;
+        let slice = slice(fit, region, t)?;
+        for j in 0..GAP_POINTS {
+            let (sin, cos) = (std::f64::consts::TAU * j as f64 / GAP_POINTS as f64).sin_cos();
+            let point = slice.centre + slice.across * (slice.radii.x * cos) + slice.through * (slice.radii.y * sin);
+            let distance = mesh.distance(point, GAP_SEARCH).unwrap_or(GAP_SEARCH);
+            if worst.is_none_or(|w| distance > w.distance) {
+                worst = Some(Gap { region, t, point, distance });
+            }
+        }
+    }
+    worst
+}
+
+/// Every section of the body fit over `regions` lies within [`FIT_GAP`] of its region's own mesh: the fit is the
+/// body's shape, not a hull round more than it.
+///
+/// # Errors
+/// A message naming the region, where along it and how far off its mesh the section stands.
+pub fn check_fit_tight(fit: &dyn BodyFit, body: &PartOutput, regions: &[BodyRegion]) -> Result<(), String> {
+    for &region in regions {
+        if let Some(gap) = fit_gap(fit, body, region)
+            && gap.distance > FIT_GAP
+        {
+            return Err(format!(
+                "the body fit's {region:?} section at t = {:.3} stands {:.1} mm off its own mesh at {} (at most {:.1} mm)",
+                gap.t,
+                gap.distance * 1e3,
+                gap.point,
+                FIT_GAP * 1e3
+            ));
         }
     }
     Ok(())
