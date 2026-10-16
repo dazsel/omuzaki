@@ -466,3 +466,23 @@ fn a_component_passing_utf16_or_latin1_strings_is_refused_before_it_compiles() {
     }
     assert!(load::compile(&engine, &ok_component()).is_ok(), "UTF-8, the default, is accepted");
 }
+
+#[test]
+fn a_returning_import_takes_one_host_call_token() {
+    let (engine, clock) = engine();
+    let list = Lowered {
+        alias: r#"(alias export $ops "list" (func $list'))"#.into(),
+        name: "list".into(),
+        core_import: r#"(import "env" "list" (func $list (param i32)))"#.into(),
+    };
+    let imports = format!("{HOST_IMPORT}{WORLD_IMPORTS}");
+    // More than half the burst: two tokens a call would flood before the loop ends.
+    let calls = HOST_CALL_BURST * 3 / 5;
+    let body = format!(
+        "(local $i i32) (block $done (loop $l (br_if $done (i32.ge_u (local.get $i) (i32.const {calls})))
+          (call $list (i32.const 32)) (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $l)))"
+    );
+    let bytes = component(&imports, &[list], &init_doing(&body), 1);
+    let mut plugin = start(&engine, &bytes, log("lister", clock)).unwrap_or_else(|e| panic!("{e:?}"));
+    assert_eq!(plugin.init("{}"), Ok(()), "{calls} calls inside the burst of {HOST_CALL_BURST}");
+}

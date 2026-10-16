@@ -127,6 +127,20 @@ pub(crate) fn enter(cx: &mut StoreContextMut<'_, StoreData>, bytes: usize) -> wa
     Ok(allowed)
 }
 
+/// Charges the bytes an import hands back to the guest: [`IMPORT_FUEL_PER_BYTE`] each, and nothing else. The call
+/// already took its host-call token and its fixed charge in [`enter`].
+pub(crate) fn charge_returned(cx: &mut StoreContextMut<'_, StoreData>, bytes: usize) -> wasmtime::Result<()> {
+    let charge = IMPORT_FUEL_PER_BYTE.saturating_mul(bytes as u64);
+    let fuel = cx.get_fuel()?;
+    if fuel < charge {
+        let entry = cx.data().entry();
+        cx.set_fuel(0)?;
+        return Err(trap(FaultKind::OutOfFuel, format!("out of fuel in {entry}")));
+    }
+    cx.set_fuel(fuel - charge)?;
+    Ok(())
+}
+
 /// [`enter`] for an import that traps on a flood.
 pub(crate) fn enter_or_trap(cx: &mut StoreContextMut<'_, StoreData>, bytes: usize) -> wasmtime::Result<()> {
     if enter(cx, bytes)? {

@@ -485,3 +485,28 @@ fn two_adds_of_one_id_at_once_register_one() {
     assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1, "{results:?}");
     assert!(results.iter().any(|r| matches!(r, Err(PluginError::Manifest(_)))));
 }
+
+#[test]
+fn an_install_whose_list_cant_be_written_takes_its_version_back_and_prunes_nothing() {
+    let root = tempfile::tempdir().unwrap();
+    let installs = InstallRoot::new(root.path());
+    let version = |note: u8| {
+        let mut entries = files(false, &common::ok_component());
+        entries.push(("note.txt".into(), vec![note]));
+        open(&zip_of(&entries)).unwrap()
+    };
+    let first = installs.install(&version(1)).unwrap();
+    let second = installs.install(&version(2)).unwrap();
+    // A folder where the list goes: writing the list fails after the third version is in place.
+    let list = installs.plugin_dir(&first.id).join("versions");
+    std::fs::remove_file(&list).unwrap();
+    std::fs::create_dir(&list).unwrap();
+    assert!(matches!(installs.install(&version(3)), Err(PackageError::Io(_))));
+    let dirs: Vec<String> = std::fs::read_dir(installs.plugin_dir(&first.id))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n != "versions")
+        .collect();
+    assert_eq!(dirs.len(), 2, "the third version was taken back: {dirs:?}");
+    assert!(first.dir.exists() && second.dir.exists(), "nothing was pruned before the list was written");
+}

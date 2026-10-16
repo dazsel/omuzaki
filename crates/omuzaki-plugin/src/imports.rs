@@ -10,7 +10,7 @@ use wasmtime::StoreContextMut;
 use wasmtime::component::{ComponentType, Lift, Linker, Lower, WasmList, WasmStr};
 
 use crate::bridge::{WitErrorCode, WitOpError};
-use crate::instance::{InstanceKind, StoreData, enter, enter_or_trap, trap};
+use crate::instance::{InstanceKind, StoreData, charge_returned, enter, enter_or_trap, trap};
 
 /// The WIT `level`. Only ever lifted from a guest, so the compiler sees no constructor.
 #[allow(dead_code)]
@@ -147,7 +147,7 @@ fn op(
     match run(bridge.as_ref(), op, args) {
         Ok(output) => {
             cap(output.len(), OP_BYTES_MAX, &format!("the {name} result"), entry)?;
-            enter_or_trap(&mut cx, output.len())?;
+            charge_returned(&mut cx, output.len())?;
             Ok((Ok(output),))
         }
         Err(error) => {
@@ -178,7 +178,7 @@ pub(crate) fn add(linker: &mut Linker<StoreData>, _kind: InstanceKind) -> wasmti
         if let Some(schema) = &schema {
             cap(schema.len(), EXPORT_LIST_BYTES_MAX, "a describe schema", cx.data().entry())?;
             // The bytes handed back cost fuel like the bytes handed in, as `ops.call`'s output does.
-            enter_or_trap(&mut cx, schema.len())?;
+            charge_returned(&mut cx, schema.len())?;
         }
         Ok((schema,))
     })?;
@@ -190,7 +190,7 @@ pub(crate) fn add(linker: &mut Linker<StoreData>, _kind: InstanceKind) -> wasmti
         let names = cx.data().bridge.list();
         let bytes: usize = names.iter().map(String::len).sum();
         cap(bytes, EXPORT_LIST_BYTES_MAX, "the op list", cx.data().entry())?;
-        enter_or_trap(&mut cx, bytes)?;
+        charge_returned(&mut cx, bytes)?;
         Ok((names,))
     })?;
 

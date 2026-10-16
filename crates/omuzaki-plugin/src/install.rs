@@ -64,9 +64,10 @@ impl InstallRoot {
     /// keeps only the last [`KEPT_VERSIONS`]. Installing a hash already there changes nothing but its place in the
     /// list. Whatever fails, nothing is left in staging.
     ///
-    /// An old version is retired by renaming it to `.retired-<hash>` and then deleting that: one that can't be renamed
-    /// is still whole and stays in the list, oldest first, to be tried again; one that was renamed is never listed
-    /// again, even if deleting it fails, and what is left of it is swept on the next install.
+    /// The new list is written before any old version is pruned, and if it can't be written the new version is taken
+    /// back. An old version is then retired by renaming it to `.retired-<hash>` and deleting that: one that can't be
+    /// renamed is still whole and goes back in the list, oldest first, to be tried again; one that was renamed is never
+    /// listed again, even if deleting it fails, and what is left of it is swept on the next install.
     ///
     /// # Errors
     /// [`PackageError::Io`] when a file can't be written; [`PackageError::Signature`] when the staged files hash
@@ -85,15 +86,20 @@ impl InstallRoot {
         let dir = placed?;
         let mut versions: Vec<ContentHash> = self.versions(&id).into_iter().filter(|h| *h != hash).collect();
         versions.push(hash);
-        let mut kept = Vec::new();
-        while versions.len() > KEPT_VERSIONS {
-            let old = versions.remove(0);
-            if retire(&plugin_dir, old) {
-                kept.push(old);
+        let pruned: Vec<ContentHash> = versions.drain(..versions.len().saturating_sub(KEPT_VERSIONS)).collect();
+        // The list is written before anything is pruned, so it never names a folder that is gone; when it can't be
+        // written, the version this install put there is taken back.
+        if let Err(error) = self.write_versions(&id, &versions) {
+            if new_version {
+                retire(&plugin_dir, hash);
             }
+            return Err(error);
         }
-        kept.extend(versions);
-        self.write_versions(&id, &kept)?;
+        let intact: Vec<ContentHash> = pruned.into_iter().filter(|old| retire(&plugin_dir, *old)).collect();
+        if !intact.is_empty() {
+            // Best effort: a version that could not be moved aside is whole, and stays a rollback target.
+            let _listed = self.write_versions(&id, &[intact, versions].concat());
+        }
         Ok(Installed { id, hash, dir, new_version })
     }
 
@@ -181,7 +187,11 @@ fn parse_hash(hex: &str) -> Option<ContentHash> {
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), PackageError> {
     let temp = path.with_extension("tmp");
     fs::write(&temp, bytes).map_err(|e| io(&e))?;
-    fs::rename(&temp, path).map_err(|e| io(&e))
+    fs::rename(&temp, path).map_err(|e| {
+        // No half-made write is left behind; the rename's error is the one to report.
+        let _cleaned = fs::remove_file(&temp);
+        io(&e)
+    })
 }
 
 /// This machine, as approvals made with a development key name it.
