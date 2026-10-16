@@ -901,8 +901,8 @@ struct Rescue {
 }
 
 /// [`preserve`], with the file's place in the error, so a caller can tell the user where it is.
-fn preserve_located(dir: &Path, from: &Path, hooks: &Hooks<'_>) -> Result<PathBuf, Rescue> {
-    let unmoved = |error| Rescue { error, kept_at: from.to_path_buf() };
+fn preserve_located(dir: &Path, from: &Path, hooks: &Hooks<'_>) -> Result<PathBuf, Box<Rescue>> {
+    let unmoved = |error| Box::new(Rescue { error, kept_at: from.to_path_buf() });
     if let Some(parent) = replaced_name(dir, from, "").map_err(unmoved)?.parent() {
         fs::create_dir_all(parent).map_err(|e| unmoved(StoreError::io(parent, e)))?;
     }
@@ -912,7 +912,7 @@ fn preserve_located(dir: &Path, from: &Path, hooks: &Hooks<'_>) -> Result<PathBu
     let to = move_to_free_slot(from, &|| replaced_name(dir, from, ".displaced"), hooks)
         .map_err(unmoved)?
         .ok_or_else(|| unmoved(StoreError::io(from, io::ErrorKind::NotFound.into())))?;
-    let moved = |error| Rescue { error, kept_at: to.clone() };
+    let moved = |error| Box::new(Rescue { error, kept_at: to.clone() });
     hooks.sync_folder(to.parent()).map_err(moved)?;
     match unflushed {
         None => Ok(to.clone()),
@@ -1504,7 +1504,7 @@ fn unlink_held(dir: &Path, path: &Path, held: &Held, hooks: &Hooks<'_>) -> Resul
                 // it is kept. If keeping it fails too, the error also says where the file is.
                 return Err(match preserve_located(dir, &quarantine, hooks) {
                     Ok(_) => StoreError::io(path, e),
-                    Err(rescue) => stranded(path, e, rescue),
+                    Err(rescue) => stranded(path, e, *rescue),
                 });
             }
         }
