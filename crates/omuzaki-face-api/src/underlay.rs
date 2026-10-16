@@ -46,7 +46,7 @@ pub enum UnderlayTargetError {
     /// The app shows no such character, or has nothing shown for it.
     #[error("{0}")]
     NotFound(String),
-    /// A newer request for the same character began after this one, so this one must not change what is shown.
+    /// A newer request for the same character has already changed what is shown, so this one must not.
     #[error("a newer underlay request for this character replaced this one")]
     Superseded,
     /// The app failed while showing the underlay.
@@ -57,10 +57,11 @@ pub enum UnderlayTargetError {
 /// What `face.underlay.set` needs from the app, injected as a service. The stage implements it: it owns the head
 /// material and the textures.
 ///
-/// Jobs for one character can overlap, and the CPU lane runs several at once, so a request takes a ticket with
-/// [`begin`](Self::begin) and every change it makes names that ticket. The app applies a change only while the ticket is
-/// the newest it has issued for the character, and checks that in the same step as the change, so a slower, older request
-/// can never replace what a newer one showed, nor set an opacity on pixels it did not build.
+/// Jobs for one character can overlap, and the CPU lane runs several at once, so every change names a `ticket` that
+/// orders the requests: a larger ticket is a newer request. The op passes its job id, which the job manager gives in the
+/// order requests were admitted, not the order workers reach the app. The app keeps the largest ticket it has applied
+/// for each character and refuses a change with a smaller one, deciding that in the same step as the change, so a slower,
+/// older request can never replace what a newer one showed, nor set an opacity on pixels it did not build.
 pub trait UnderlayTarget: Send + Sync {
     /// The head of `character` as it is on screen now.
     ///
@@ -69,26 +70,23 @@ pub trait UnderlayTarget: Send + Sync {
     fn head(&self, character: &str) -> Result<UnderlayHead, UnderlayTargetError>;
 
     /// The [`UnderlayImage::key`] of the underlay now shown for `character`, if any. Only a preview for planning: the
-    /// answer can be out of date by the time a job acts, which is why changes go through a ticket.
+    /// answer can be out of date by the time a job acts, which is why changes carry a ticket.
     fn shown(&self, character: &str) -> Option<String>;
 
-    /// Starts a request for `character` and returns its ticket. Every ticket is newer than the ones before it, and
-    /// issuing one makes the earlier tickets of this character stale.
-    fn begin(&self, character: &str) -> u64;
-
-    /// Sets the strength of the underlay shown for `character`, `0..=1`, and nothing else (no new pixels), when the
-    /// ticket is still the newest **and** the shown underlay has this `key`, both decided in one step. Returns `false`,
-    /// changing nothing, when nothing is shown or what is shown has another key: the caller then builds the pixels.
+    /// Sets the strength of the underlay shown for `character`, `0..=1`, and nothing else (no new pixels), when no
+    /// newer ticket has been applied **and** the shown underlay has this `key`, both decided in one step. A change
+    /// that is made records `ticket` as the newest applied. Returns `false`, changing nothing, when nothing is shown or
+    /// what is shown has another key: the caller then builds the pixels.
     ///
     /// # Errors
-    /// [`UnderlayTargetError::Superseded`] when `ticket` is no longer the newest for `character`.
+    /// [`UnderlayTargetError::Superseded`] when a newer ticket than `ticket` has been applied for `character`.
     fn set_opacity(&self, character: &str, ticket: u64, key: &str, opacity: f32) -> Result<bool, UnderlayTargetError>;
 
-    /// Shows `image` under the Base layer of `character`'s face, replacing the one shown before, when the ticket is
-    /// still the newest for `character`.
+    /// Shows `image` under the Base layer of `character`'s face, replacing the one shown before, when no newer ticket
+    /// has been applied, and records `ticket` as the newest applied.
     ///
     /// # Errors
-    /// [`UnderlayTargetError::Superseded`] when `ticket` is no longer the newest; [`UnderlayTargetError::Failed`] when
-    /// the app cannot show it.
+    /// [`UnderlayTargetError::Superseded`] when a newer ticket than `ticket` has been applied for `character`;
+    /// [`UnderlayTargetError::Failed`] when the app cannot show it.
     fn show(&self, character: &str, ticket: u64, image: UnderlayImage) -> Result<(), UnderlayTargetError>;
 }

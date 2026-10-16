@@ -507,7 +507,8 @@ pub struct UnderlaySet {
     /// Fine registration of the sheet over the face.
     pub align: UnderlayAlign,
     /// The sheet's face rectangle, in sheet pixels. Left out, the app's own rectangle for the character's locked sheet
-    /// is used ([`UnderlayHead::sheet_face`](omuzaki_face_api::UnderlayHead::sheet_face)); the op refuses when there is neither.
+    /// is used ([`UnderlayHead::sheet_face`](omuzaki_face_api::underlay::UnderlayHead::sheet_face)); the op refuses when
+    /// there is neither.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sheet_face: Option<PixelRect>,
 }

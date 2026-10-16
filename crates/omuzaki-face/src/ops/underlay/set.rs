@@ -4,9 +4,9 @@
 //! resample on a job worker without the document lock. A call that changes only the opacity of what is already shown
 //! sets that opacity and builds nothing.
 //!
-//! Jobs for one character can overlap, so each takes a ticket from the app first and every change it makes names the
-//! ticket; the app refuses a change from a stale ticket (see `UnderlayTarget`). A job that was cancelled, or replaced by
-//! a newer request, changes nothing.
+//! Jobs for one character can overlap, so every change names a ticket, the job id, which orders requests by admission
+//! (a larger id was admitted later); the app refuses a change from a ticket older than one it has applied (see
+//! `UnderlayTarget`). A job that was cancelled, or replaced by a newer request, changes nothing.
 
 use omuzaki_core::glam::UVec2;
 use omuzaki_face_api::underlay::{UnderlayHead, UnderlayTarget, UnderlayTargetError};
@@ -66,8 +66,9 @@ impl Op for UnderlaySet {
         let answer = |rebuilt: bool| json!({ "character": request.character, "view": view, "rebuilt": rebuilt });
         let superseded = || json!({ "character": request.character, "view": view, "superseded": true });
 
-        // From here on every change names this ticket, so a request that began later wins whatever the finish order.
-        let ticket = request.target.begin(&request.character);
+        // The job id orders requests by admission, not by when a worker got here, so a newer request wins whatever the
+        // finish order.
+        let ticket = job.id().0;
 
         // Unchanged sheet and alignment: only the opacity moves, a material update with nothing read or built. The app
         // compares the key and sets the opacity in one step, so it cannot land on pixels this job did not mean.

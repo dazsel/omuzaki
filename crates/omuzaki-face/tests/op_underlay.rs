@@ -4,6 +4,7 @@
 // Integration-test helpers may panic: a panic is a clear test failure.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use image::{ImageFormat, Rgba, RgbaImage};
@@ -37,10 +38,11 @@ enum Call {
 #[derive(Default)]
 struct Recording {
     calls: Mutex<Vec<Call>>,
-    issued: Mutex<u64>,
+    /// The largest ticket applied: a change with a smaller one is refused.
+    newest: Mutex<u64>,
     shown: Mutex<Option<(String, f32)>>,
-    /// Run once, right after a job takes its ticket: lets a test run another job in the middle of this one.
-    after_begin: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    /// Run once, when a job first asks for the head: lets a test run a newer job to the end while this one waits.
+    on_head: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl Recording {
@@ -67,6 +69,10 @@ struct App {
 
 impl UnderlayTarget for App {
     fn head(&self, character: &str) -> Result<UnderlayHead, UnderlayTargetError> {
+        let hook = self.log.on_head.lock().unwrap().take();
+        if let Some(hook) = hook {
+            hook();
+        }
         if character != "mira" {
             return Err(UnderlayTargetError::NotFound(format!("the app shows no character {character}")));
         }
@@ -82,26 +88,15 @@ impl UnderlayTarget for App {
         self.log.current().map(|(key, _)| key)
     }
 
-    fn begin(&self, _character: &str) -> u64 {
-        let ticket = {
-            let mut issued = self.log.issued.lock().unwrap();
-            *issued += 1;
-            *issued
-        };
-        let hook = self.log.after_begin.lock().unwrap().take();
-        if let Some(hook) = hook {
-            hook();
-        }
-        ticket
-    }
-
     fn set_opacity(&self, character: &str, ticket: u64, key: &str, opacity: f32) -> Result<bool, UnderlayTargetError> {
-        if ticket != *self.log.issued.lock().unwrap() {
+        let mut newest = self.log.newest.lock().unwrap();
+        if ticket < *newest {
             return Err(UnderlayTargetError::Superseded);
         }
         let mut shown = self.log.shown.lock().unwrap();
         match shown.as_mut() {
             Some((shown_key, shown_opacity)) if shown_key == key => {
+                *newest = ticket;
                 *shown_opacity = opacity;
                 self.log.calls.lock().unwrap().push(Call::Opacity(character.to_owned(), opacity));
                 Ok(true)
@@ -111,9 +106,11 @@ impl UnderlayTarget for App {
     }
 
     fn show(&self, character: &str, ticket: u64, image: UnderlayImage) -> Result<(), UnderlayTargetError> {
-        if ticket != *self.log.issued.lock().unwrap() {
+        let mut newest = self.log.newest.lock().unwrap();
+        if ticket < *newest {
             return Err(UnderlayTargetError::Superseded);
         }
+        *newest = ticket;
         *self.log.shown.lock().unwrap() = Some((image.key.clone(), image.opacity));
         self.log.calls.lock().unwrap().push(Call::Show(character.to_owned(), image));
         Ok(())
@@ -138,6 +135,8 @@ struct Rig {
     log: Arc<Recording>,
     services: omuzaki_ops_api::Services,
     asset: ContentHash,
+    /// The next job id `run` hands out: ids grow in admission order, like the job manager's.
+    next_job: AtomicU64,
 }
 
 fn rig(locked_face: Option<[u32; 4]>) -> Rig {
@@ -151,7 +150,7 @@ fn rig_at(locked_face: Option<[u32; 4]>, px_per_m: f32) -> Rig {
     let app: Arc<dyn UnderlayTarget> = Arc::new(App { log: log.clone(), sheet_face: locked_face, px_per_m });
     let dyn_store: Arc<dyn Store> = store.clone();
     let services = ServicesBuilder::new().insert::<dyn UnderlayTarget>(app).insert::<dyn Store>(dyn_store).build();
-    Rig { store, log, services, asset }
+    Rig { store, log, services, asset, next_job: AtomicU64::new(1) }
 }
 
 struct Doc(MemDoc);
@@ -197,14 +196,15 @@ fn plan(rig: &Rig, args: Value, dry_run: bool) -> Result<Plan, OpError> {
 /// The plan, then the job's work, as the executor runs them. Returns what `work` answers.
 fn run(rig: &Rig, args: Value) -> Result<Value, OpError> {
     plan(rig, args.clone(), false)?;
-    work(&rig.services, args, &Signal::default())
+    let id = rig.next_job.fetch_add(1, Ordering::SeqCst);
+    work(&rig.services, JobId(id), args, &Signal::default())
 }
 
 /// Only the job's work, with `signal` as the executor's cancel flag and progress sink.
-fn work(services: &omuzaki_ops_api::Services, args: Value, signal: &Signal) -> Result<Value, OpError> {
+fn work(services: &omuzaki_ops_api::Services, id: JobId, args: Value, signal: &Signal) -> Result<Value, OpError> {
     let op = decode(args)?;
     let (actor, doc) = (Actor::Person { name: "tester".into() }, Doc(MemDoc::from_value(json!({}))));
-    op.work(&JobCtx::new(JobId(1), &actor, &doc, signal).with_services(services))
+    op.work(&JobCtx::new(id, &actor, &doc, signal).with_services(services))
 }
 
 fn args(rig: &Rig, extra: &Value) -> Value {
@@ -353,17 +353,23 @@ fn the_op_needs_the_app_to_provide_its_services() {
     assert_eq!(err.code, ErrorCode::Unavailable);
 }
 
+/// Runs job `newer` to the end at the moment job `older` first asks the app for the head, so the newer request
+/// finishes before the older one reaches the app. Returns what the older job answers.
+fn newer_job_finishes_while_older_waits(rig: &Rig, older: (u64, Value), newer: (u64, Value)) -> Value {
+    let (services, (newer_id, newer_args)) = (rig.services.clone(), newer);
+    *rig.log.on_head.lock().unwrap() = Some(Box::new(move || {
+        work(&services, JobId(newer_id), newer_args, &Signal::default()).expect("the newer job runs");
+    }));
+    work(&rig.services, JobId(older.0), older.1, &Signal::default()).expect("the older job ends without failing")
+}
+
 #[test]
-fn an_older_job_finishing_last_cannot_replace_a_newer_sheet() {
-    // Job A takes its ticket, and while it is between ticket and publish the newer job B runs to the end.
+fn an_older_job_reaching_the_app_last_cannot_replace_a_newer_sheet() {
+    // Job 1 is admitted first but its worker is slow; job 2 is admitted later and completes before job 1 reaches the app.
     let rig = rig(None);
     let a = args(&rig, &json!({ "opacity": 0.3 }));
     let b = args(&rig, &json!({ "opacity": 0.9, "align": { "offset": [1.0, 0.0], "scale": 1.0, "rotation": 0.0 } }));
-    let (services, run_b) = (rig.services.clone(), b.clone());
-    *rig.log.after_begin.lock().unwrap() = Some(Box::new(move || {
-        work(&services, run_b, &Signal::default()).expect("the newer job runs");
-    }));
-    let out = work(&rig.services, a, &Signal::default()).expect("the older job ends without failing");
+    let out = newer_job_finishes_while_older_waits(&rig, (1, a), (2, b));
     assert_eq!(out["superseded"], json!(true), "{out}");
     let shows = rig.log.shows();
     assert_eq!(shows.len(), 1, "only the newer request published");
@@ -374,18 +380,14 @@ fn an_older_job_finishing_last_cannot_replace_a_newer_sheet() {
 #[test]
 fn an_opacity_update_cannot_land_on_pixels_it_did_not_mean() {
     let rig = rig(None);
-    run(&rig, args(&rig, &json!({}))).expect("the first sheet is shown");
-    // Job A wants the same pixels at a new opacity; while it holds its ticket a newer job shows another alignment.
+    run(&rig, args(&rig, &json!({}))).expect("the first sheet is shown (job 1)");
+    // Job 2 wants the same pixels at a new opacity; job 3, admitted after it, shows another alignment first.
     let a = args(&rig, &json!({ "opacity": 0.1 }));
     let b = args(&rig, &json!({ "opacity": 0.8, "align": { "offset": [1.0, 0.0], "scale": 1.0, "rotation": 0.0 } }));
-    let (services, run_b) = (rig.services.clone(), b);
-    *rig.log.after_begin.lock().unwrap() = Some(Box::new(move || {
-        work(&services, run_b, &Signal::default()).expect("the newer job runs");
-    }));
-    let out = work(&rig.services, a, &Signal::default()).expect("the older job ends without failing");
+    let out = newer_job_finishes_while_older_waits(&rig, (2, a), (3, b));
     assert_eq!(out["superseded"], json!(true), "{out}");
     let (_, opacity) = rig.log.current().unwrap();
-    assert_eq!(opacity, 0.8, "the newer request's pixels keep the newer request's opacity");
+    assert!((opacity - 0.8).abs() < 1e-6, "the newer request's pixels keep the newer request's opacity: {opacity}");
     assert!(
         !rig.log.calls.lock().unwrap().iter().any(|c| matches!(c, Call::Opacity(_, o) if (*o - 0.1).abs() < 1e-6)),
         "the stale opacity was never applied"
@@ -394,21 +396,16 @@ fn an_opacity_update_cannot_land_on_pixels_it_did_not_mean() {
 
 #[test]
 fn a_newer_opacity_only_job_wins_over_an_older_rebuild_of_other_pixels() {
-    // Shown: sheet 1. Job A rebuilds (another alignment) and is slow; job B asks for sheet 1 at a new opacity, which is
-    // exactly what is shown, so it is an opacity update. A must not overwrite it afterwards.
+    // Shown: sheet 1 (job 1). Job 2 rebuilds (another alignment) and is slow; job 3 asks for sheet 1 at a new opacity,
+    // which is what is shown, so it is an opacity update. Job 2 must not overwrite it afterwards.
     let rig = rig(None);
     run(&rig, args(&rig, &json!({}))).expect("sheet 1 is shown");
     let a = args(&rig, &json!({ "align": { "offset": [2.0, 0.0], "scale": 1.0, "rotation": 0.0 } }));
     let b = args(&rig, &json!({ "opacity": 0.2 }));
-    let (services, run_b) = (rig.services.clone(), b);
-    *rig.log.after_begin.lock().unwrap() = Some(Box::new(move || {
-        let out = work(&services, run_b, &Signal::default()).expect("the newer job runs");
-        assert_eq!(out["rebuilt"], json!(false));
-    }));
-    let out = work(&rig.services, a, &Signal::default()).expect("the older job ends without failing");
+    let out = newer_job_finishes_while_older_waits(&rig, (2, a), (3, b));
     assert_eq!(out["superseded"], json!(true), "{out}");
     assert_eq!(rig.log.shows().len(), 1, "the older rebuild never published");
-    assert_eq!(rig.log.current().unwrap().1, 0.2);
+    assert!((rig.log.current().unwrap().1 - 0.2).abs() < 1e-6);
 }
 
 #[test]
@@ -417,15 +414,15 @@ fn a_cancelled_job_changes_nothing_on_either_path() {
     let cancelled = Signal::default();
     cancelled.0.cancel();
     // The build path.
-    let err = work(&rig.services, args(&rig, &json!({})), &cancelled).unwrap_err();
+    let err = work(&rig.services, JobId(1), args(&rig, &json!({})), &cancelled).unwrap_err();
     assert_eq!(err.code, ErrorCode::Cancelled, "{err:?}");
     assert!(rig.log.is_empty());
-    assert_eq!(*rig.log.issued.lock().unwrap(), 0, "a cancelled job takes no ticket");
+    assert_eq!(*rig.log.newest.lock().unwrap(), 0, "a cancelled job applies nothing, so no ticket");
 
     // The cached opacity path, with something already shown.
     run(&rig, args(&rig, &json!({}))).expect("shown");
     let calls_before = rig.log.calls.lock().unwrap().len();
-    let err = work(&rig.services, args(&rig, &json!({ "opacity": 0.1 })), &cancelled).unwrap_err();
+    let err = work(&rig.services, JobId(9), args(&rig, &json!({ "opacity": 0.1 })), &cancelled).unwrap_err();
     assert_eq!(err.code, ErrorCode::Cancelled, "{err:?}");
     assert_eq!(rig.log.calls.lock().unwrap().len(), calls_before, "no opacity update from a cancelled job");
     assert_eq!(rig.log.current().unwrap().1, 0.5);
