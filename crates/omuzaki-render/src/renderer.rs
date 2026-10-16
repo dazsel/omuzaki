@@ -142,7 +142,7 @@ impl WgpuRenderer {
     /// adapter. Not part of the renderer's contract.
     ///
     /// # Errors
-    /// `Invalid` once a mesh with morph targets has been created.
+    /// `Invalid` once a mesh with morph targets or a dynamic mesh has been created.
     #[doc(hidden)]
     pub fn force_cpu_morph(&mut self) -> Result<(), RenderError> {
         self.resources.morphs.force_cpu()

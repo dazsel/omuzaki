@@ -612,7 +612,7 @@ mod tests {
         assert_eq!(table.len(), Detail::OFFLINE.cap as usize, "a table entry for every tap the deepest mode gathers");
         for (i, [cos, sin, ..]) in table.iter().copied().enumerate() {
             assert!((cos * cos + sin * sin - 1.0).abs() < 1e-6, "tap {i} is a unit direction");
-            let angle = i as f64 * GOLDEN_ANGLE;
+            let angle = f64::from(u32::try_from(i).unwrap()) * GOLDEN_ANGLE;
             assert!(
                 (f64::from(cos) - angle.cos()).abs() < 1e-6 && (f64::from(sin) - angle.sin()).abs() < 1e-6,
                 "tap {i}"

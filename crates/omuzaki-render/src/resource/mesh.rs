@@ -122,8 +122,22 @@ struct ExtraStream {
     buffer: wgpu::Buffer,
 }
 
+/// How a dynamic mesh's CPU state is kept, by what the adapter and the mesh allow.
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum Backing {
+    /// No compute on the adapter: the CPU keeps the vertices and the directions and welds them in a refresh.
+    Cpu,
+    /// The adapter runs compute and a dispatch welds the directions, but the mesh has morph targets, whose blend reads the
+    /// CPU's copy of the vertices, so the copy stays in step.
+    Welded,
+    /// A dispatch welds the directions and the mesh keeps no CPU copy of its vertices: an update interleaves them straight
+    /// into the upload's staging memory and refits the bounds from the new positions as it goes, which halves the memory
+    /// traffic of an update and leaves only the directions deferred.
+    Lean,
+}
+
 /// What a dynamic mesh keeps on the CPU. Where the GPU runs compute, the outline directions are welded by a dispatch
-/// ([`crate::morph`]) and a mesh without morph targets keeps no copy of its vertices ([`Shadow::lean`]); otherwise the
+/// ([`crate::morph`]) and a mesh without morph targets keeps no copy of its vertices ([`Backing::Lean`]); otherwise the
 /// copy and the directions are what [`GpuMesh::refresh`] works from.
 struct Shadow {
     /// The vertices, kept in step with the GPU's. Empty for a lean mesh.
@@ -144,12 +158,8 @@ struct Shadow {
     sums: Vec<Vec3>,
     /// How many vertices the mesh has: `shapes.len()`, which a lean mesh does not keep.
     vertices: usize,
-    /// The mesh keeps no CPU copy of its vertices: an update interleaves them straight into the upload's staging memory
-    /// and refits the bounds from the new positions as it goes, which halves the memory traffic of an update and leaves
-    /// only the outline directions deferred. Never set for a mesh with morph targets, whose blend reads the copy.
-    lean: bool,
-    /// A dispatch welds the outline directions from the GPU's stream ([`GpuMesh::refresh`] says when one is due).
-    gpu_weld: bool,
+    /// Which of the CPU's copies the mesh keeps and where its outline directions are welded.
+    backing: Backing,
     /// The outline directions lag the vertices; the outline pass is the only reader ([`GpuMesh::refresh`]).
     smooth_stale: bool,
     /// The mesh's shadow bounds lag the vertices; shadow fitting and the blended sort are the readers. Never set on a
@@ -245,7 +255,11 @@ impl GpuMesh {
         // The GPU morph blend reads the mesh's own shapes as the base its targets apply to, and a dynamic mesh's outline
         // directions are welded from them by a dispatch, into the direction stream.
         let welded_on_gpu = compute && dynamic;
-        let lean = welded_on_gpu && options.morphs.is_none();
+        let backing = match (welded_on_gpu, options.morphs.is_some()) {
+            (false, _) => Backing::Cpu,
+            (true, true) => Backing::Welded,
+            (true, false) => Backing::Lean,
+        };
         let storage = |wanted: bool| if wanted { wgpu::BufferUsages::STORAGE } else { wgpu::BufferUsages::empty() };
         let blendable = storage(compute && options.morphs.is_some() || welded_on_gpu);
         let weldable = storage(welded_on_gpu);
@@ -272,7 +286,7 @@ impl GpuMesh {
         });
         // A dynamic mesh rewrites its vertices, so it keeps them on the CPU; a static one keeps nothing.
         let shadow = dynamic.then(|| Shadow {
-            shapes: if lean { Vec::new() } else { shapes.clone() },
+            shapes: if backing == Backing::Lean { Vec::new() } else { shapes.clone() },
             skin: if skinned { surface.clone() } else { Vec::new() },
             smooth: if welded_on_gpu { Vec::new() } else { smooth.clone() },
             anchors: anchors_of(&welds, weld_count),
@@ -280,8 +294,7 @@ impl GpuMesh {
             weld_count,
             sums: Vec::with_capacity(if welded_on_gpu { 0 } else { shapes.len() }),
             vertices: shapes.len(),
-            lean,
-            gpu_weld: welded_on_gpu,
+            backing,
             smooth_stale: false,
             bounds_stale: false,
         });
@@ -364,7 +377,7 @@ impl GpuMesh {
     ) -> Result<(), RenderError> {
         let Some(shadow) = self.shadow.as_mut() else { return Ok(()) };
         // Floats in and out, a chunk a vertex, so the loop is plain moves the compiler vectorises.
-        if shadow.lean {
+        if shadow.backing == Backing::Lean {
             let size = wgpu::BufferSize::new((shadow.vertices * size_of::<Shape>()) as u64)
                 .ok_or_else(|| RenderError::Backend("a vertex update of an empty mesh".into()))?;
             let mut staging = queue
@@ -412,14 +425,14 @@ impl GpuMesh {
     /// the CPU otherwise.
     pub(crate) fn refresh(&mut self, queue: &wgpu::Queue, needs: Needs) -> bool {
         let Some(shadow) = self.shadow.as_mut() else { return false };
-        let Shadow { shapes, skin, smooth, welds, weld_count, sums, gpu_weld, smooth_stale, bounds_stale, .. } = shadow;
+        let Shadow { shapes, skin, smooth, welds, weld_count, sums, backing, smooth_stale, bounds_stale, .. } = shadow;
         let mut dispatch = false;
         if needs.hull && *smooth_stale {
-            if *gpu_weld {
-                dispatch = true;
-            } else {
+            if *backing == Backing::Cpu {
                 resmooth(welds, *weld_count, sums, shapes, smooth);
                 queue.write_buffer(&self.smooth_normals, 0, bytemuck::cast_slice(smooth));
+            } else {
+                dispatch = true;
             }
             *smooth_stale = false;
         }
@@ -447,7 +460,7 @@ impl GpuMesh {
     /// What the GPU weld of a dynamic mesh's outline directions needs, if the mesh is welded that way: the weld table
     /// (a vertex's point, per vertex) with its point count, and the two streams the dispatch reads and writes.
     pub(crate) fn weld_target(&self) -> Option<WeldTarget<'_>> {
-        let shadow = self.shadow.as_ref().filter(|s| s.gpu_weld)?;
+        let shadow = self.shadow.as_ref().filter(|s| s.backing != Backing::Cpu)?;
         Some(WeldTarget {
             welds: &shadow.welds,
             weld_count: shadow.weld_count,

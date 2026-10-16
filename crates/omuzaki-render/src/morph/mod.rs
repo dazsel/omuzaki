@@ -274,11 +274,14 @@ impl MorphPool {
     /// Switches to the CPU path on an adapter that has compute: a test hook.
     ///
     /// # Errors
-    /// `Invalid` once a mesh with morph targets exists, since its data is on the GPU: the path never changes under a
-    /// live mesh.
+    /// `Invalid` once a mesh with morph targets or a dynamic mesh exists, since its data is on the GPU: the path never
+    /// changes under a live mesh.
     pub(crate) fn force_cpu(&mut self) -> Result<(), RenderError> {
         if self.meshes_gpu.iter().any(Option::is_some) {
-            return Err(RenderError::invalid("morph path", "meshes with morph targets exist; choose the path first"));
+            return Err(RenderError::invalid(
+                "morph path",
+                "meshes with morph targets or dynamic meshes exist; choose the path first",
+            ));
         }
         self.gpu = None;
         Ok(())
