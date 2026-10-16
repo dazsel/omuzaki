@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::{Held, held, host, op_error, person_only, persist, put_back_camera, settled};
-use crate::perform::input::{InputCamera, InputError, SourceKind};
+use crate::perform::input::{BoundCamera, InputCamera, InputError, SourceKind};
 
 /// Bind the camera the webcam source reads, by an id from `input.state`; `null` unbinds it. A running preview moves to
 /// the new camera. Only the person can do this, in the Omuzaki window.
@@ -72,7 +72,7 @@ impl Op for BindCamera {
         // Save only a change that stands: what is saved is what runs.
         let mut saved = false;
         if problems.is_empty() {
-            match persist::<InputCamera>(ctx, &self.camera) {
+            match persist::<InputCamera>(ctx, &BoundCamera { id: self.camera.clone() }) {
                 Ok(done) => saved = done,
                 Err(error) => match (ctx.dry_run, put_back_camera(host, first.camera.as_ref(), first.preview)) {
                     (true, _) | (false, Ok(())) => return Err(error),

@@ -257,7 +257,7 @@ fn the_choices_are_saved_as_machine_settings_when_the_app_has_a_store() {
     rig.run("input.bind_camera", json!({ "camera": "b" })).unwrap();
     let settings = rig.settings.as_ref().unwrap();
     assert_eq!(settings.value("input.source"), Some(json!("webcam")));
-    assert_eq!(settings.value("input.camera"), Some(json!("b")));
+    assert_eq!(settings.value("input.camera"), Some(json!({ "id": "b" })));
 
     let without = Rig::new(false);
     assert_eq!(without.output("input.select", json!({ "source": "webcam" }))["saved"], false);
@@ -330,7 +330,7 @@ fn a_camera_that_will_not_open_changes_nothing() {
     assert_eq!(state["preview"], json!({ "state": "on", "camera": "a" }), "and the old camera runs again");
     assert_eq!(
         rig.settings.as_ref().unwrap().value("input.camera"),
-        Some(json!("a")),
+        Some(json!({ "id": "a" })),
         "nothing was saved for the refused camera"
     );
 }

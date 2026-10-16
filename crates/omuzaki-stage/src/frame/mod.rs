@@ -141,6 +141,16 @@ pub struct TimePin {
     goals: IkGoals,
 }
 
+/// The bookkeeping behind [`Stage::commit_scene`]: the ground and skin floor the last scene wants, in a resolved scene
+/// that is never rendered, and a scene to work the debt out in. Sized when the stage is made, so setting a scene
+/// allocates nothing, the first one included.
+struct Debt {
+    wanted: ResolvedScene,
+    scratch: Scene,
+    /// Whether a scene was ever set: until then nothing is wanted.
+    set: bool,
+}
+
 /// A character on a renderer with everything its frame loop needs.
 pub struct Stage {
     built: BuiltCharacter,
@@ -160,11 +170,9 @@ pub struct Stage {
     applier: Applier,
     /// What the last scene still owes the renderer, against what the renderer is known to have done.
     owed: Owed,
-    /// The ground and skin floor the last scene wants, in a resolved scene kept for [`commit_scene`](Stage::commit_scene)
-    /// to work out the debt again (`None` until a scene was set).
-    wanted: Option<Box<ResolvedScene>>,
-    /// Where that debt is worked out: the copy of the scene is never rendered.
-    debt_scene: Scene,
+    /// What [`commit_scene`](Stage::commit_scene) works the debt out from, made once at construction and behind a box
+    /// so the stage stays small.
+    debt: Box<Debt>,
     /// How many times a staged variant replaced the character, so a caller can tell the face profile may have changed.
     revision: u64,
     /// Renders submitted so far; numbers the frames of a live clock.
@@ -208,8 +216,7 @@ impl Stage {
                 subject_root: Mat4::IDENTITY,
                 applier: Applier::new(),
                 owed: Owed::default(),
-                wanted: None,
-                debt_scene: Scene::new(Camera::default()),
+                debt: Box::new(Debt { wanted: ResolvedScene::new(), scratch: Scene::new(Camera::default()), set: false }),
                 revision: 0,
                 submissions: 0,
                 built,
@@ -380,9 +387,9 @@ impl Stage {
     pub fn set_scene(&mut self, resolved: &ResolvedScene, subject_root: Mat4) -> Owed {
         self.owed = self.applier.apply(resolved, &mut self.scene);
         // Only the two things a debt is made of are kept, for `commit_scene` to compare again.
-        let wanted = self.wanted.get_or_insert_with(|| Box::new(ResolvedScene::new()));
-        wanted.ground = resolved.ground;
-        wanted.skin_floor = resolved.skin_floor;
+        self.debt.wanted.ground = resolved.ground;
+        self.debt.wanted.skin_floor = resolved.skin_floor;
+        self.debt.set = true;
         self.set_subject_root(subject_root);
         self.owed
     }
@@ -408,8 +415,8 @@ impl Stage {
     /// removed it and A's work finishes late, the debt becomes the removal.
     pub fn commit_scene(&mut self, owed: &Owed) {
         self.applier.commit(owed);
-        if let Some(wanted) = self.wanted.as_deref() {
-            self.owed = self.applier.apply(wanted, &mut self.debt_scene);
+        if self.debt.set {
+            self.owed = self.applier.apply(&self.debt.wanted, &mut self.debt.scratch);
         }
     }
 

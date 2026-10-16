@@ -1181,13 +1181,14 @@ fn a_live_stage_installs_the_expressions_of_the_character_a_variant_swap_brings(
                 omuzaki_face_api::ExpressionSet::starter(),
                 "frame() installs nothing"
             );
-            swapped_at = Some(frame);
-            // The app notices at its leisure and installs the face's expressions again, outside the frame.
             assert!(live.expressions_stale());
-            assert!(live.refresh_expressions().expect("the request is taken"));
+            swapped_at = Some(frame);
+            // The loop's cold step, which it runs after every frame, installs the face's expressions again.
+            assert!(live.service(&mut renderer).expect("the service step runs"), "the expressions were installed");
             assert!(!live.expressions_stale());
             break;
         }
+        live.service(&mut renderer).expect("the service step runs");
     }
     assert!(swapped_at.is_some(), "the zoom sweep switched variants");
     assert_eq!(live.handle().expressions(), wanted, "the swap installed the character's expressions again");
