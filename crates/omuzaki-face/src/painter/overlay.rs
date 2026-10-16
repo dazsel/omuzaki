@@ -121,23 +121,28 @@ fn gloom_band(ctx: &mut PaintCtx<'_>, strength: f32) {
     if top <= bottom {
         return;
     }
-    let half = BAND_HALF_WIDTH.min(bounds.x1).min(-bounds.x0);
+    // The band is centred on the face's midline and cut to the rect on each side separately, so a rect that does not
+    // straddle the midline still gets its part of the band (or none, if it misses it).
+    let (left, right) = ((-BAND_HALF_WIDTH).max(bounds.x0), BAND_HALF_WIDTH.min(bounds.x1));
+    if right <= left {
+        return;
+    }
     let (r, g, b) = BAND_COLOUR;
     let stops = Stops::new(&[(0.0, Colour::rgba(r, g, b, 0)), (1.0, Colour::rgb(r, g, b))]);
     let list = ctx.list(FaceLayerId::Overlay);
     let band = list
         .path()
-        .polyline(&[Vec2::new(-half, bottom), Vec2::new(half, bottom), Vec2::new(half, top), Vec2::new(-half, top)])
+        .polyline(&[Vec2::new(left, bottom), Vec2::new(right, bottom), Vec2::new(right, top), Vec2::new(left, top)])
         .close()
         .finish();
     list.push(Cmd::Fill {
         path: band,
-        paint: Paint::Linear { from: Vec2::new(0.0, bottom), to: Vec2::new(0.0, top), stops },
+        paint: Paint::Linear { from: Vec2::new(left, bottom), to: Vec2::new(left, top), stops },
         opacity: BAND_OPACITY * strength,
     });
     let lines = f32::from(HATCH_LINES);
     for i in 0..HATCH_LINES {
-        let x = -half + 2.0 * half * (f32::from(i) + 0.5) / lines;
+        let x = left + (right - left) * (f32::from(i) + 0.5) / lines;
         // Every other line is short, from the top down, so the hatch reads as hand-drawn rather than as a fence.
         let low = if i % 2 == 0 { bottom } else { top - (top - bottom) * HATCH_SHORT };
         let line = list.path().move_to(Vec2::new(x, low)).line_to(Vec2::new(x, top)).finish();

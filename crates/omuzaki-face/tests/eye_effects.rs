@@ -428,6 +428,27 @@ fn the_gloom_band_stays_inside_a_short_or_offset_rect() {
 }
 
 #[test]
+fn the_gloom_band_is_cut_to_a_rect_that_does_not_straddle_the_midline() {
+    let profile = profile();
+    let p = params(|e, _| e.gloom = 1.0);
+    // Left and right of the midline, and a rect the band misses on one side.
+    for (x0, x1) in [(0.02, 0.06), (0.1, 0.2), (0.15, 0.3), (-0.3, -0.15), (-0.06, -0.02)] {
+        let rect = FaceRect { x0, x1, y0: -0.5, y1: 0.5 };
+        let proj = FaceProjection { rect, front_fade: [0.0, 0.07] };
+        let input = FaceInput { profile: &profile, params: &p, time: Seconds(0.0), view: FaceView::default() };
+        let mut out = FaceDrawing::new();
+        RealPainter::new(proj, DEFAULT_PX_PER_M).paint_section(Section::Overlay, &input, &mut out).unwrap();
+        let pts = points(&out[FaceLayerId::Overlay]);
+        for pt in &pts {
+            assert!(pt.x >= x0 - 1e-6 && pt.x <= x1 + 1e-6, "rect {x0}..{x1}: a point at {pt:?} is outside");
+        }
+        // The band reaches 0.12 m each side of the midline: a rect inside that gets a band, one beyond it does not.
+        let reaches = x0 < 0.12 && x1 > -0.12;
+        assert_eq!(!pts.is_empty(), reaches, "rect {x0}..{x1}: {} points", pts.len());
+    }
+}
+
+#[test]
 fn the_star_is_as_wide_as_it_is_tall_in_iris_half_widths() {
     // Radii are measured from the iris half-width `rx`: the star's physical extent is the same either way round
     // (a stretched star would be `rx^2 / ry` wide against `rx` tall).
