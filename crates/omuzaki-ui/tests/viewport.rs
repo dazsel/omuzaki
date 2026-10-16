@@ -336,18 +336,24 @@ fn a_preview_shows_on_the_next_frame() {
     };
     // A document that changes every frame (a slider dragged in the inspector): each edit is restaged and drawn by the
     // frame right after it, with no wait between, and the cost of that frame is what a drag pays per frame.
-    let mut frames = Vec::new();
+    let (mut frames, mut builds) = (Vec::new(), Vec::new());
     for i in 0..6 {
         let before = renders(&h);
         assert!(edit(&mut h, 0.001f64.mul_add(f64::from(i), 0.007)), "the mock garment takes an ease");
         let start = std::time::Instant::now();
         h.step();
+        let built = start.elapsed().as_secs_f64() * 1000.0;
         render(&mut h);
         frames.push(start.elapsed().as_secs_f64() * 1000.0);
+        builds.push(built);
         assert_eq!(renders(&h), before + 1, "edit {i} was drawn by the next frame");
     }
     frames.sort_by(f64::total_cmp);
-    eprintln!("restage and draw on the frame after an edit: median {:.1} ms, worst {:.1} ms", frames[3], frames[5]);
+    builds.sort_by(f64::total_cmp);
+    eprintln!(
+        "restage and draw on the frame after an edit: median {:.1} ms, worst {:.1} ms (UI frame with the character build {:.1} ms; the rest is the stage's render and the software readback)",
+        frames[3], frames[5], builds[3]
+    );
 }
 
 #[test]
