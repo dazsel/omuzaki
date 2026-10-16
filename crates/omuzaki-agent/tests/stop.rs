@@ -551,3 +551,29 @@ fn stop_after_a_compaction_cuts_by_the_text_read_since_the_summary_not_the_whole
         .collect();
     assert!(kept.contains("BBBBB") && !kept.contains("CCCCC"), "{kept:?}");
 }
+
+#[test]
+fn compacting_does_not_count_unread_text_as_displayed() {
+    let heavy = ScriptTurn::new(vec![
+        LlmEvent::start("m"),
+        LlmEvent::TextDelta("AAAAAAAAAA".into()),
+        LlmEvent::tool_use_start("c1", "render_preview"),
+        LlmEvent::tool_use_end("c1"),
+        LlmEvent::Usage(omuzaki_llm_api::usage::Usage::new(15_001, 10)),
+        LlmEvent::Stop(StopReason::ToolUse),
+    ]);
+    let held = 6 + SUMMARY_TURN_EVENTS + 2;
+    let rig = Rig::with(
+        script(vec![heavy, say_turn("SUMMARY"), long_text(20)]),
+        RigOptions { window: Some(20_000), prices: free_prices(), hold_after: Some(held), ..RigOptions::default() },
+        standard_server,
+    );
+    rig.host.send(UserMessage::new("go")).unwrap();
+    Rig::wait_for("the held stream", || rig.gate.delivered.load(std::sync::atomic::Ordering::Acquire) >= held);
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    // The person read nothing: the compaction's own look at the transcript showed them nothing.
+    rig.host.stop();
+    rig.until_done(0.0);
+    let shown = assistant_text(&rig.host.transcript());
+    assert!(!shown.contains("AAAAAAAAAA"), "text nobody read is cut: {shown:?}");
+}

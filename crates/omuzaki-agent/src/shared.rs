@@ -206,13 +206,20 @@ impl Shared {
 
     /// The transcript for a panel opened late, with the turn in flight as it has been shown.
     pub(crate) fn transcript(&self) -> Vec<Entry> {
+        let entries = self.snapshot();
+        // What this hands out is what the person sees, so Stop must not cut it even if the queue never delivered it.
+        self.hub.mark_sent_as_displayed();
+        entries
+    }
+
+    /// The same entries as [`Self::transcript`], for the host's own use: nobody is shown them, so the display
+    /// watermark Stop cuts by does not move.
+    pub(crate) fn snapshot(&self) -> Vec<Entry> {
         let ctl = self.lock();
         let mut entries = ctl.transcript.clone();
         if !ctl.live_text.is_empty() {
             entries.push(Entry::assistant(vec![ContentBlock::text(ctl.live_text.clone())]));
         }
-        // What this hands out is what the person sees, so Stop must not cut it even if the queue never delivered it.
-        self.hub.mark_sent_as_displayed();
         entries
     }
 
