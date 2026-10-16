@@ -108,3 +108,47 @@ Spec §10: <= 0.5 ms at 1548 x 1107 (774 for brows) on the 4090, <= 3 ms on lava
 5. **Quality.** 34 to 37 dB on the synthetic faces is acceptable for now; re-check on the real sections. **Correction after the diff fix:** the first diff images wrapped differences of 32 or more to white, which hid them. The regenerated `sheet-synth-*-diffs.png` show Vello's differences are not only edge anti-aliasing: the radial-gradient irises differ across their whole area (the custom path's diffs are edges only). Gradient interpolation in Vello versus the CPU rasteriser needs a look in the implementation before the 34 dB bar is trusted for gradients.
 
 **Gradient measurement.** Vello against the reference on the radial-gradient irises: max difference 8 levels, p99 5 levels, in rings (gradient banding), which explains the whole-area diffs seen in the synthetic sheets. **Requirement:** the gradient comparison against the CPU rasteriser must be part of the implementation's acceptance (tolerance max 8 / p99 5 on rings, or tighter), not left to the 34 dB overall bar.
+
+## 8. After the implementation: where the time went (#2074)
+
+Measured on the development PC (`Dev`, provisional: the CPU's turbo capped at 99 % until its repair, other agents
+compiling, 1-minute load average 16 to 36), native Windows, Vulkan, the mock face at 1440 x 1044 px, GPU times from
+timestamp queries.
+
+**The old probe measured the CPU, not the GPU.** Its two timestamps sat in separate submissions around the whole
+repaint, so they measured the GPU waiting for the CPU to prepare and submit Vello's work (5.8 ms on #1658, 1 to 5 ms
+in this session, in an order unrelated to the size of the change). Keeping the GPU busy in front of the repaint (a
+12 ms compute pass, so the timestamps only see GPU work) gives what `vello::Renderer` costs:
+
+| whole-face repaint, `vello::Renderer` (before) | where | p50 ms |
+|---|---|---:|
+| scene encoding (`SceneEncoder`) | CPU | 0.105 |
+| Vello's prepare, upload and submit (`render_to_texture`) | CPU | 0.774 |
+| the resolve's record and submit | CPU | 0.125 |
+| Vello's 17 compute passes, uploads included | GPU | 0.199 |
+| the resolve | GPU | 0.021 |
+
+So section 4's "fixed 0.7 ms floor" was CPU: Vello rebuilds its recording, about 20 bind groups, a buffer-pool lookup
+per buffer and a gradient texture on every call, 816 allocations per repaint. The GPU work was 0.2 ms.
+
+**What changed.** `raster::gpu::engine` runs the same `vello_shaders` stages on buffers, textures and bind groups kept
+between repaints (grown only when a scene needs more), as one compute pass recorded into the renderer's encoder; the
+renderer submits it and times it (render-api, "GPU interop"). Same pixels: every probe and section case still passes
+its rule against the CPU raster, on lavapipe and on the 4090.
+
+| after, the same GPU kept busy | GPU raster | GPU resolve | GPU total | CPU (encode + record) |
+|---|---:|---:|---:|---:|
+| full face | 0.159 | 0.005 | 0.190 | 0.20 |
+| mouth only | 0.069 | 0.001 | 0.096 | 0.12 |
+| eyes + mouth + brows | 0.115 | 0.003 | 0.145 | 0.19 |
+| brows only | 0.063 | 0.001 | 0.091 | 0.11 |
+
+A warm repaint now makes 27 allocations, all wgpu's (the passes and three queue writes), against 816.
+
+**Clocks decide the rest.** The GPU times above hold while the GPU is busy. In the live stage unpaced, the face paint
+(the face's commands and the mip rebuild, the renderer's `PaintTextures`) is 0.24 ms p50 and 0.30 ms p95 with the face
+changing every frame. Paced at 30 fps with the mock character, the 4090 has so little to do that it stays at its idle
+clock, and everything on it takes about 14 times as long: the face paint 3.4 ms p50, the rest of the frame 0.98 ms
+(0.07 ms unpaced). Reading `gpu.face_paint` paced (spec v3 §10) therefore needs the budget scene's real load, or a fixed
+GPU clock, on `Dev`; with the mock character it measures the GPU's power policy. Trusted shader modules (no bounds
+checks) would take another 20 % off the raster; they need `unsafe`, so they are not used.

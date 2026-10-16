@@ -52,28 +52,33 @@ pub const DEPENDENCIES: &str = "other dependencies";
 pub const UNATTRIBUTED: &str = "unattributed";
 
 /// Who owns an allocation, from a backtrace. Lines look like `   3: name` followed by `             at path:line:col`.
+///
+/// The owner is the innermost frame that is the workspace's, a test's, wgpu's or Vello's. Other dependencies (a hash
+/// map, a lock, a GPU memory allocator) are plumbing like std: an allocation inside one belongs to whoever called it, so
+/// the workspace's own code can't hide an allocation behind a container, and wgpu's internals count as wgpu's. Only
+/// an allocation with no such caller at all is [`DEPENDENCIES`].
 fn owner(backtrace: &str) -> &'static str {
     let own = concat!("crates/", env!("CARGO_PKG_NAME"), "/src/");
+    let mut in_dependency = false;
     for path in backtrace.lines().filter_map(|l| l.trim_start().strip_prefix("at ")) {
         if path.starts_with("/rustc/") || path.contains("support/counting.rs") {
             continue; // alloc, core and std plumbing, and this hook: look further out for who asked
         }
         // The crate under test is compiled from its own directory, so its files have relative paths.
-        return if path.starts_with("./src/") || path.contains(own) {
-            OWN
+        if path.starts_with("./src/") || path.contains(own) {
+            return OWN;
         } else if path.starts_with("./tests/") || path.contains("-mock/") || path.contains("/tests/") {
-            TESTS
+            return TESTS;
         } else if path.contains("crates/omuzaki-") {
-            WORKSPACE
+            return WORKSPACE;
         } else if path.contains("/wgpu") || path.contains("/naga-") {
-            WGPU
+            return WGPU;
         } else if path.contains("/vello") || path.contains("/peniko-") || path.contains("/kurbo-") {
-            VELLO
-        } else {
-            DEPENDENCIES
-        };
+            return VELLO;
+        }
+        in_dependency = true;
     }
-    UNATTRIBUTED
+    if in_dependency { DEPENDENCIES } else { UNATTRIBUTED }
 }
 
 /// Where allocations made while a dependency captures its own backtrace are filed: they are that dependency's

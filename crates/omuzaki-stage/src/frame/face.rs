@@ -7,7 +7,9 @@
 //!    one step, with pointer swaps and nothing built, allocated or locked. The frame then solves, steps and draws the
 //!    new character with its own input, so the swapping frame shows no skeleton or simulation from an earlier frame;
 //! 2. **map and paint**, in step 5: [`FaceSystem::update`] maps the bus with the palette-resolved profile and says which
-//!    layers changed; exactly those are painted into their textures with [`FaceLayerPainter`].
+//!    layers changed; exactly those are painted into their textures with [`FaceLayerPainter`]. With the
+//!    [`standard`](FaceRig::standard) rig on the wgpu renderer and a hardware adapter, that paint is the GPU rasteriser
+//!    recording into the renderer's own encoder through `PaintTarget::native` (#2074): no pixels cross to the CPU.
 //!
 //! # Variant switches never run inside `tick`
 //!
@@ -284,8 +286,9 @@ impl FaceRig {
         rig
     }
 
-    /// Draws the face layers with `gpu` (installed on the first face system, then handed from each system to the one
-    /// that replaces it). A face system the factory makes with a rasteriser of its own keeps it until then.
+    /// Draws the face layers with `gpu`: it is installed on the first face system (replacing any rasteriser the factory
+    /// gave that system), then handed from each system to the one that replaces it. It replaces the rig's own, so
+    /// `FaceRig::standard().with_gpu_rasterizer(..)` swaps the production GPU rasteriser for another.
     #[must_use]
     pub fn with_gpu_rasterizer(mut self, gpu: Box<dyn GpuRasterizer>) -> Self {
         self.gpu = Some(gpu);

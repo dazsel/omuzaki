@@ -29,10 +29,12 @@ const SIZE: u32 = 128;
 const WARM_UP: u32 = 60;
 /// Frames counted.
 const FRAMES: u32 = 24;
-/// The most wgpu may allocate per frame for the face's GPU paints on top of a frame whose face is still, measured with
-/// wgpu 30: about 60 per repainted layer (an encoder, the compute and render passes, three queue writes, the submit).
-/// A bind group, buffer or texture made per frame by mistake would push it well past this.
-const FACE_WGPU_PER_FRAME: usize = 200;
+/// The most wgpu may allocate per frame for the face's GPU paints on top of a frame whose face is still. Measured with
+/// wgpu 30: 234 on lavapipe and 235 on a hardware GPU, for the layers this face repaints, each about 27 for
+/// the rasteriser's recording (the compute and render passes, three queue writes), about 20 for the renderer's encoder,
+/// timestamps and submit, and the rest for the mip rebuild's passes. A bind group, buffer or texture made per frame by
+/// mistake would push it past this.
+const FACE_WGPU_PER_FRAME: usize = 300;
 
 /// Each owner's allocations per frame over [`FRAMES`] steady-state frames of a stage with `rig`, whose face changes every
 /// frame if `talking`, and how many of the face's paints the GPU drew.

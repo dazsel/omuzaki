@@ -1,9 +1,10 @@
-//! Steady state of the GPU rasteriser (#1433 A5 and A6, #902): after warm-up a repaint through `VelloRasterizer` allocates
-//! nothing in `omuzaki-face`'s own code, only what Vello and wgpu allocate, and that count is pinned and the same on every
-//! repaint, for a mouth-only change and for a change of the whole face. Also: no wgpu validation error over 100 repaints, and
-//! the repaint time (CPU encode, GPU render and resolve, waited for) over 1,000 warmed repaints of each. Lavapipe is a
-//! software adapter, so the times are not a GPU timing (decision 7.3); the owner's run is #1658. Without an adapter the tests
-//! print why and pass.
+//! Steady state of the GPU rasteriser (#1433 A5 and A6, #902, #2074): after warm-up a repaint through `VelloRasterizer`
+//! allocates nothing in `omuzaki-face`'s own code, nor in Vello's scene encoding; what is left is wgpu's own share of the
+//! passes and queue writes it records (the submit is the renderer's), and that count is pinned and the same on every
+//! repaint, for a mouth-only change and for a change of the whole face. Also: no wgpu validation error over 100
+//! repaints, and the repaint time (CPU encode and record, the submit, GPU raster and resolve, waited for) over 1,000
+//! warmed repaints of each. Lavapipe is a software adapter, so the times are not a GPU timing (decision 7.3); the GPU
+//! timing is `examples/gpu_face_timing.rs`. Without an adapter the tests print why and pass.
 
 // The GPU rasteriser exists on native targets only (#2207).
 #![cfg(not(target_arch = "wasm32"))]
@@ -24,15 +25,18 @@ use omuzaki_face_api::{
 };
 use omuzaki_face_mock::{mock_profile, mock_projection};
 
-/// The most allocations one warmed repaint makes on the calling thread, measured on lavapipe over 32 repaints after 50
-/// warm-up ones (815 or 816 for either change: Vello's fixed cost dominates), and the spread allowed around it. The count is Vello's and wgpu's: encoding, the scenes, the views and the
-/// bookkeeping are `omuzaki-face`'s own and allocate nothing (`gpu_encode.rs`). Cutting it is #902's upstream report.
-const MOUTH_ONLY_ALLOCS: usize = 816;
-const WHOLE_FACE_ALLOCS: usize = 816;
+/// The most allocations one warmed repaint makes on the calling thread, measured on lavapipe and on a hardware Vulkan
+/// driver over 32 repaints after 50 warm-up ones (27 for either change), and the spread allowed around it. The count is
+/// wgpu's: the compute pass and its dispatches, the resolve's render pass and the three queue writes (scene, config,
+/// origin). Fingerprinting, encoding, packing the scene and the bookkeeping allocate nothing (`gpu_encode.rs` and the
+/// stage's `face_gpu_alloc.rs`, which attributes every allocation). It was 816 while Vello's own renderer ran the stages,
+/// building its bind groups, buffers and recording on every repaint.
+const MOUTH_ONLY_ALLOCS: usize = 27;
+const WHOLE_FACE_ALLOCS: usize = 27;
 const SPREAD: usize = 2;
-/// What the occasional repaint pays on top (one in about 30: wgpu's periodic cleanup of its resource tables, measured at +27).
+/// What the occasional repaint may pay on top: wgpu's periodic cleanup of its resource tables (none in the 32 measured).
 const SPIKE: usize = 50;
-/// Repaints before anything is counted or timed: Vello grows its buffers over the first few dozen.
+/// Repaints before anything is counted or timed: the engine grows its buffers to the largest scene it is given.
 const WARM_UP: usize = 50;
 
 struct Counting;
