@@ -329,3 +329,25 @@ fn a_profile_beside_an_srgb_cicp_is_not_retained_past_the_budget_with_the_caller
     assert!(held <= 64 << 20, "the decode and its input held {held} bytes");
     assert!(result.is_ok(), "an sRGB cICP decides the colour, so the profile beside it is no reason to refuse");
 }
+
+#[test]
+fn an_input_that_leaves_the_decoder_no_room_is_refused_not_given_a_floor() {
+    // A tiny PNG with a profile that inflates to 15 MiB, padded after its end to 63.5 MiB: the input leaves under the
+    // 1 MiB the decoder needs for its metadata, so the image is refused as too large. The profile floor once handed back
+    // room the input had used, and the decoder was built with it. Tried beside no colour chunk and beside an sRGB `cICP`.
+    let mut png = Vec::new();
+    let mut encoder = PngEncoder::new(&mut png);
+    encoder.set_icc_profile(vec![0_u8; 15 << 20]).unwrap();
+    encoder.write_image(&pattern(8, 8, 3), 8, 8, ExtendedColorType::Rgb8).unwrap();
+    let len = (63 << 20) + (1 << 19);
+    let mut plain = png.clone();
+    plain.resize(len, 0);
+    let with_cicp = with_srgb_cicp_padded_to(&png, len);
+    for padded in [plain, with_cicp] {
+        let (result, peak) = peak_of(|| decode(&padded, ContentHash::of(&padded), FIELD));
+        let error = result.unwrap_err();
+        assert_eq!(error.code, ErrorCode::Invalid);
+        assert!(error.message.starts_with("The image is 8 × 8"), "{}", error.message);
+        assert!(peak + padded.len() <= 64 << 20, "the refusal held {} bytes with its input", peak + padded.len());
+    }
+}

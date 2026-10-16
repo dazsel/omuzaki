@@ -115,17 +115,25 @@ pub(crate) fn png_colour(bytes: &[u8]) -> PngColour {
     let mut at = 8; // past the signature
     while let (Some(length), Some(kind)) = (be_u32(bytes, at), bytes.get(at + 4..at + 8)) {
         let data = bytes.get(at + 8..).and_then(|rest| rest.get(..length as usize)).unwrap_or_default();
-        // The chunk's own CRC follows its data. A chunk that is cut short, or whose CRC is wrong, is not one.
-        let valid = data.len() == length as usize
-            && matches!(be_u32(bytes, at.saturating_add(8).saturating_add(length as usize)), Some(stored) if stored == crc32(kind, data));
+        // The image data ends the walk before any CRC is computed: a CRC over a near-limit IDAT would cost billions of steps.
+        if matches!(kind, b"IDAT" | b"IEND") {
+            break;
+        }
+        // The chunk's own CRC follows its data. A chunk that is cut short, or whose CRC is wrong, is not one. It is
+        // computed only for the small colour chunks read below.
+        let valid = || {
+            data.len() == length as usize
+                && matches!(be_u32(bytes, at.saturating_add(8).saturating_add(length as usize)), Some(stored) if stored == crc32(kind, data))
+        };
         match kind {
-            b"IDAT" | b"IEND" => break,
-            b"sRGB" if valid => colour.srgb = true,
+            // The specification gives `sRGB` exactly one byte, a rendering intent from 0 to 3; the decoder discards any
+            // other payload, so it declares nothing.
+            b"sRGB" if data.len() == 1 && data[0] <= 3 && valid() => colour.srgb = true,
             // An embedded profile is noted whatever its CRC: a bad one is refused later, never read as no profile.
             b"iCCP" => colour.iccp = true,
-            b"cICP" if valid && data.len() == 4 && colour.cicp.is_none() => colour.cicp = data.try_into().ok(),
-            b"gAMA" if valid && data.len() == 4 && colour.gamma.is_none() => colour.gamma = be_u32(data, 0),
-            b"cHRM" if valid && data.len() == 32 && colour.chromaticities.is_none() => {
+            b"cICP" if data.len() == 4 && colour.cicp.is_none() && valid() => colour.cicp = data.try_into().ok(),
+            b"gAMA" if data.len() == 4 && colour.gamma.is_none() && valid() => colour.gamma = be_u32(data, 0),
+            b"cHRM" if data.len() == 32 && colour.chromaticities.is_none() && valid() => {
                 colour.chromaticities = Some(std::array::from_fn(|i| be_u32(data, 4 * i).unwrap_or(0)));
             }
             _ => {}
@@ -133,6 +141,11 @@ pub(crate) fn png_colour(bytes: &[u8]) -> PngColour {
         at = at.saturating_add(12).saturating_add(length as usize);
     }
     colour
+}
+
+/// The width and height a PNG's IHDR chunk declares (the first chunk, at byte 16), or `None` when the bytes end first.
+pub(crate) fn png_size(bytes: &[u8]) -> Option<(u32, u32)> {
+    Some((be_u32(bytes, 16)?, be_u32(bytes, 20)?))
 }
 
 /// The CRC-32 of a chunk's type and data (ISO 3309, as the PNG specification has it).
@@ -199,6 +212,20 @@ fn be_u32(bytes: &[u8], at: usize) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::{jpeg_frame, png_colour};
+
+    #[test]
+    fn the_image_data_ends_the_walk_before_any_crc_is_computed() {
+        // A 48 MiB IDAT. The CRC is a bit at a time, eight steps a byte, so computing it over the data would take
+        // seconds; the walk must stop at the chunk's kind. Time-bounded with a wide margin over the near-zero cost.
+        let mut png = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        png.extend((48_u32 << 20).to_be_bytes());
+        png.extend(b"IDAT");
+        png.resize(png.len() + (48 << 20), 0);
+        let start = std::time::Instant::now();
+        let colour = png_colour(&png);
+        assert!(!colour.srgb && colour.gamma.is_none());
+        assert!(start.elapsed() < std::time::Duration::from_millis(250), "the walk took {:?}", start.elapsed());
+    }
 
     #[test]
     fn a_forged_png_chunk_length_stops_the_walk_without_a_panic() {

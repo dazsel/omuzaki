@@ -333,3 +333,19 @@ fn the_first_gamma_and_the_first_primaries_are_the_ones_that_count() {
     let srgb_first = with_chunks(&png_2x2(), &[chunk(*b"cHRM", &srgb), chunk(*b"cHRM", &wide)]);
     assert!(decode(&srgb_first, ContentHash::of(&srgb_first), FIELD).is_ok());
 }
+
+#[test]
+fn a_malformed_srgb_chunk_declares_nothing_so_a_linear_gamma_beside_it_is_refused() {
+    // The PNG specification gives `sRGB` one byte, a rendering intent from 0 to 3, and the decoder discards any other
+    // payload. So a two-byte chunk, or an intent of 4, leaves the linear `gAMA` as the colour.
+    let linear = chunk(*b"gAMA", &100_000u32.to_be_bytes());
+    for payload in [&[0_u8, 0][..], &[4], &[]] {
+        let png = with_chunks(&png_2x2(), &[linear.clone(), chunk(*b"sRGB", payload)]);
+        assert!(refusal(&png).contains("a gamma of 1.00"), "an sRGB payload of {payload:?} must declare nothing");
+    }
+    // Each defined intent still counts.
+    for intent in 0..=3_u8 {
+        let png = with_chunks(&png_2x2(), &[linear.clone(), chunk(*b"sRGB", &[intent])]);
+        assert!(decode(&png, ContentHash::of(&png), FIELD).is_ok(), "intent {intent}");
+    }
+}

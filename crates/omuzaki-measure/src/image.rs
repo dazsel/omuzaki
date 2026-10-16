@@ -37,14 +37,18 @@ const DECODER_STATE_BYTES: u64 = 64 << 10;
 /// The most a PNG's profile may inflate to when the encoded input is `input_len` bytes: the bound every PNG gets, and no
 /// more than a quarter of what the cap leaves beside the input and the decoder's state. Half of that is for the copy phase
 /// (two copies of the profile), and the inflate buffer of the decoder grows by doubling, so it can briefly hold twice the
-/// bound while it fills. There is a floor so that the decoder's other allocations (text chunks) are never starved. A
-/// profile past the bound is dropped by the decoder, never retained.
-fn profile_bound(input_len: u64) -> u64 {
+/// bound while it fills. A profile past the bound is dropped by the decoder, never retained.
+///
+/// `None` when the input leaves less than [`PROFILE_BOUND_FLOOR`], the least the decoder needs for its metadata (text
+/// chunks): the image is refused as too large. A floor applied after the subtraction would hand back room the input has
+/// already used.
+fn profile_bound(input_len: u64) -> Option<u64> {
     let room = max_decoded_bytes().saturating_sub(input_len.saturating_add(DECODER_STATE_BYTES)) / 4;
-    max_profile_bytes().min(room).max(PROFILE_BOUND_FLOOR)
+    let bound = max_profile_bytes().min(room);
+    (bound >= PROFILE_BOUND_FLOOR).then_some(bound)
 }
 
-/// The smallest bound on a profile (and on the decoder's metadata) whatever the input.
+/// The least a decoder is given for its metadata: below this the image is refused, never decoded.
 const PROFILE_BOUND_FLOOR: u64 = 1 << 20;
 
 /// The decoded cap in bytes.
@@ -181,7 +185,10 @@ pub fn decode(bytes: &[u8], hash: ContentHash, field: &str) -> Result<Rgba8, OpE
     // is dropped by the decoder instead of being retained under the budget.
     let cicp_decides = format == ImageFormat::Png && header::png_colour(bytes).cicp.is_some();
     // Half of what the plan leaves, since the inflate buffer can briefly hold twice what it ends with.
-    let retained = max_profile_bytes().min(max_decoded_bytes().saturating_sub(plan.peak) / 2).max(PROFILE_BOUND_FLOOR);
+    let retained = max_profile_bytes().min(max_decoded_bytes().saturating_sub(plan.peak) / 2);
+    if cicp_decides && retained < PROFILE_BOUND_FLOOR {
+        return Err(too_large(field, plan.width, plan.height));
+    }
     let mut input = reader(bytes).map_err(|error| unreadable(field, &error))?;
     input.limits(if cicp_decides { limits_with_alloc(retained) } else { limits() });
     let mut decoder = input.into_decoder().map_err(|error| unreadable(field, &error))?;
@@ -268,9 +275,16 @@ fn plan(bytes: &[u8], format: ImageFormat) -> Result<Plan, String> {
         // on what it may allocate for it. The `png` crate does not report a profile past that limit, or a corrupt one:
         // it drops it, and the image would read as untagged sRGB. So a file that has the chunk and yields no profile is
         // refused here, not guessed at.
+        let Some(bound) = profile_bound(bytes.len() as u64) else {
+            // The input alone leaves the decoder no room: the peak is over the cap whatever the pixels are, so the
+            // caller refuses it as too large. The size is read from the IHDR chunk, not through a decoder, which would
+            // inflate the profile it was refused room for.
+            let (width, height) = header::png_size(bytes).ok_or("its header is cut short")?;
+            return Ok(Plan { width, height, input: bytes.len() as u64, peak: max_decoded_bytes() + 1 });
+        };
         let mut input = reader(bytes).map_err(|error| error.to_string())?;
         let mut limits = Limits::default();
-        limits.max_alloc = Some(profile_bound(bytes.len() as u64));
+        limits.max_alloc = Some(bound);
         input.limits(limits);
         let mut decoder = input.into_decoder().map_err(|error| error.to_string())?;
         // A `cICP` chunk decides the colour on its own (PNG colour chunk precedence), so a profile beside it is not looked at:
@@ -279,7 +293,7 @@ fn plan(bytes: &[u8], format: ImageFormat) -> Result<Plan, String> {
         if colour.iccp && colour.cicp.is_none() && decoder.icc_profile().map_err(|error| error.to_string())?.is_none() {
             return Err(format!(
                 "its embedded colour profile is corrupt or inflates to more than {} MiB",
-                (profile_bound(bytes.len() as u64) + (1 << 19)) >> 20
+                (bound + (1 << 19)) >> 20
             ));
         }
         let (width, height) = decoder.dimensions();

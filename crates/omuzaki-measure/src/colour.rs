@@ -81,6 +81,24 @@ mod tests {
         assert_lab([255, 0, 0], [53.24, 80.09, 67.20]);
     }
 
+    /// Published sRGB to CIELAB (D65, 2 degree observer) test vectors for the primaries and secondaries, as in the
+    /// scikit-image colour-conversion tests (`rgb2lab`, `test_colorconv.py`) and Bruce Lindbloom's calculator (sRGB,
+    /// D65, no adaptation), to the two decimals they print. The 0.01 tolerance is theirs.
+    #[test]
+    fn the_primaries_and_secondaries_match_the_published_vectors() {
+        let published: [([u8; 3], [f64; 3]); 6] = [
+            ([255, 0, 0], [53.24, 80.09, 67.20]),
+            ([0, 255, 0], [87.73, -86.18, 83.18]),
+            ([0, 0, 255], [32.30, 79.19, -107.86]),
+            ([255, 255, 0], [97.14, -21.55, 94.48]),
+            ([0, 255, 255], [91.11, -48.08, -14.13]),
+            ([255, 0, 255], [60.32, 98.23, -60.82]),
+        ];
+        for (rgb, expected) in published {
+            assert_lab(rgb, expected);
+        }
+    }
+
     #[test]
     fn greys_have_no_chroma() {
         for v in [1, 17, 128, 200, 254] {
