@@ -330,7 +330,8 @@ pub struct Point {
     /// The branch's previous point, plus any points newly merged in since it: for the graph view only.
     #[serde(default)]
     pub parents: Vec<PointId>,
-    /// For every other branch, the newest of its points this state includes.
+    /// For every other branch, the newest of its points this state includes: the document's `merges` record joined with
+    /// the branch's `inherits` (design 5.3).
     #[serde(default)]
     pub contains: Contains,
     /// Why the point was made.
@@ -589,7 +590,8 @@ pub struct NewBranch {
     pub focus: Vec<String>,
     /// The branch to fork from.
     pub from_branch: BranchId,
-    /// The state of that branch to fork at; `now` checkpoints it first.
+    /// The state of that branch to fork at; `now` checkpoints it first. A reference to the source branch itself, by
+    /// name, is `now`: its live document, not its head.
     pub at: StateRef,
     /// The agent session the branch is made for.
     #[serde(default)]
@@ -893,16 +895,21 @@ pub trait Branches: Send + Sync {
     /// The branch the project folder shows.
     fn folder(&self) -> BranchId;
 
-    /// Makes a branch (design 5.4).
+    /// Makes a branch (design 5.4). The fork point is a point of the source branch, so versions of it that others
+    /// record carry the source's own numbers. An agent makes branches for its own session only (design 8.2).
     ///
     /// # Errors
-    /// [`BranchError::NameTaken`], [`BranchError::NotFound`] for the source branch, or [`BranchError::Io`].
+    /// [`BranchError::NameTaken`], [`BranchError::NotFound`] for the source branch, [`BranchError::Busy`] when forking
+    /// from `now` and an open transaction blocks the checkpoint, [`BranchError::Denied`] for an agent that makes a
+    /// branch for another session, or [`BranchError::Io`].
     fn create(&self, new: NewBranch, by: &Actor) -> Result<BranchInfo, BranchError>;
 
-    /// Makes a point of `branch`'s committed state now (design 5.3). `ready` asks for review with that note.
+    /// Makes a point of `branch`'s committed state now (design 5.3). `ready` asks for review with that note; an agent
+    /// may ask only on a branch it works on (design 8.2).
     ///
     /// # Errors
-    /// [`BranchError::NotFound`], [`BranchError::Busy`] when an open transaction blocks it, or [`BranchError::Io`].
+    /// [`BranchError::NotFound`], [`BranchError::Busy`] when an open transaction blocks it,
+    /// [`BranchError::Denied`] for an agent asking for review on another branch, or [`BranchError::Io`].
     fn checkpoint(
         &self,
         branch: &BranchId,
@@ -911,14 +918,16 @@ pub trait Branches: Send + Sync {
         by: &Actor,
     ) -> Result<PointId, BranchError>;
 
-    /// Moves the folder to `to` (design 5.5).
+    /// Moves the folder to `to` (design 5.5), a person's action. The old folder lane stays open as a side lane while
+    /// sessions work on it, and closes otherwise; [`LaneState::Open`] says how many do.
     ///
     /// # Errors
-    /// [`BranchError::NotFound`], [`BranchError::Busy`] for an open transaction or a changed file, or
-    /// [`BranchError::LaneLimit`].
+    /// [`BranchError::NotFound`], [`BranchError::Busy`] for an open transaction or a changed file,
+    /// [`BranchError::LaneLimit`], or [`BranchError::Denied`] for an agent or a plugin.
     fn switch(&self, to: &BranchId, by: &Actor) -> Result<Switched, BranchError>;
 
-    /// Renames a branch and sets its title.
+    /// Renames a branch and sets its title. A person may rename any branch; an agent only one made for its session
+    /// (design 5.6, 8.2).
     ///
     /// # Errors
     /// [`BranchError::NotFound`], [`BranchError::NameTaken`] or [`BranchError::Denied`].
@@ -930,30 +939,35 @@ pub trait Branches: Send + Sync {
         by: &Actor,
     ) -> Result<BranchInfo, BranchError>;
 
-    /// Puts a branch in the bin.
+    /// Puts a branch in the bin. A person may delete any branch; an agent only one made for its session.
     ///
     /// # Errors
     /// [`BranchError::NotFound`], [`BranchError::Refused`] for `main`, the folder branch or an open lane, or
     /// [`BranchError::Denied`].
     fn delete(&self, branch: &BranchId, by: &Actor) -> Result<(), BranchError>;
 
-    /// Brings a branch back from the bin.
+    /// Brings a branch back from the bin, on the terms of [`delete`](Self::delete).
     ///
     /// # Errors
-    /// [`BranchError::NotFound`], or [`BranchError::NameTaken`] when its name was taken meanwhile.
+    /// [`BranchError::NotFound`], [`BranchError::NameTaken`] when its name was taken meanwhile, or
+    /// [`BranchError::Denied`] for an agent that the branch was not made for.
     fn undelete(&self, branch: &BranchId, by: &Actor) -> Result<BranchInfo, BranchError>;
 
-    /// Records the person's decision on the branch's latest review.
+    /// Records the person's decision on the branch's latest review. Only a person decides (design 8.2).
     ///
     /// # Errors
-    /// [`BranchError::NotFound`], or [`BranchError::Refused`] when there is no review waiting.
+    /// [`BranchError::NotFound`], [`BranchError::Refused`] when there is no review waiting, or
+    /// [`BranchError::Denied`] for an agent or a plugin.
     fn review(&self, branch: &BranchId, decision: ReviewDecision, by: &Actor) -> Result<BranchInfo, BranchError>;
 
     /// Restores `branch` to `to`, first keeping the current state on an automatic branch (design 9). `grants` are
-    /// the caller's, for the restore op.
+    /// the caller's, for the restore op: it needs the scopes of what it changes, as a merge does (`edit:character`,
+    /// plus `edit:scene` for anything outside `characters/`, design 7.7). Everything that can refuse does so before
+    /// anything changes. A reference to `branch` itself is `now`, which changes nothing.
     ///
     /// # Errors
-    /// [`BranchError::NotFound`], [`BranchError::Denied`] or [`BranchError::Io`].
+    /// [`BranchError::NotFound`], [`BranchError::Busy`] when an open transaction blocks recording the current state,
+    /// [`BranchError::Denied`] naming a scope the grants lack, [`BranchError::Invalid`] or [`BranchError::Io`].
     fn restore(&self, branch: &BranchId, to: StateRef, by: &Actor, grants: &Grants) -> Result<Restored, BranchError>;
 
     /// The branch's lane, opening it if it is closed.

@@ -15,6 +15,9 @@ omuzaki-history-api = { path = "../omuzaki-history-api" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
 
+[dev-dependencies]
+omuzaki-core = { path = "../omuzaki-core" }
+
 [lints]
 workspace = true
 

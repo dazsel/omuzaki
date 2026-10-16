@@ -3782,6 +3782,7 @@ dependencies = [
 name = "omuzaki-history-mock"
 version = "0.0.0"
 dependencies = [
+ "omuzaki-core",
  "omuzaki-doc-api",
  "omuzaki-history-api",
  "omuzaki-ops-api",
