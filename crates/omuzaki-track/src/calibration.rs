@@ -24,10 +24,32 @@ pub const MAX_CHARACTERS: usize = 64;
 pub const MAX_ID_CHARS: usize = 128;
 
 /// Calibrations by character and device class.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, JsonSchema)]
 #[serde(transparent)]
 pub struct CalibrationStore {
     entries: BTreeMap<String, BTreeMap<String, Calibration>>,
+}
+
+impl Serialize for CalibrationStore {
+    /// Writes the store without `null`s: a head pose with no position leaves the field out (reading it back defaults
+    /// it), because the settings files are TOML, which has no null.
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut value = serde_json::to_value(&self.entries).map_err(serde::ser::Error::custom)?;
+        strip_nulls(&mut value);
+        value.serialize(serializer)
+    }
+}
+
+/// Removes every object member that is `null`, at any depth.
+fn strip_nulls(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            map.retain(|_, member| !member.is_null());
+            map.values_mut().for_each(strip_nulls);
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(strip_nulls),
+        _ => {}
+    }
 }
 
 /// Why a store cannot be used.
@@ -186,6 +208,15 @@ mod tests {
         store.save("kiri", tuned(DeviceProfile::Arkit)).unwrap();
         store.save("mira", tuned(DeviceProfile::Webcam)).unwrap();
         let json = serde_json::to_value(&store).unwrap();
+        assert_eq!(serde_json::from_value::<CalibrationStore>(json).unwrap(), store);
+    }
+
+    #[test]
+    fn the_written_form_has_no_null_and_reads_back_equal() {
+        let mut store = CalibrationStore::new();
+        store.save("kiri", Calibration::identity(DeviceProfile::Webcam)).unwrap(); // head rest with no position
+        let json = serde_json::to_value(&store).unwrap();
+        assert!(!json.to_string().contains("null"), "{json}");
         assert_eq!(serde_json::from_value::<CalibrationStore>(json).unwrap(), store);
     }
 

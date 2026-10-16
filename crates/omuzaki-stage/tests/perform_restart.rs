@@ -193,8 +193,10 @@ fn a_bad_stored_value_names_its_key_and_the_default_is_used() {
     first_run(&path);
     let file = path.join("config").join("settings.toml");
     let text = std::fs::read_to_string(&file).unwrap();
-    assert!(text.contains("smoothing = 0.7"), "the saved file is:\n{text}");
-    std::fs::write(&file, text.replace("smoothing = 0.7", "smoothing = 4.0")).unwrap();
+    // The saved number is an f32 widened to f64 (0.699999988...): replace whatever it is.
+    let at = text.find("smoothing = ").unwrap_or_else(|| panic!("the saved file is:\n{text}")) + "smoothing = ".len();
+    let end = at + text[at..].find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap();
+    std::fs::write(&file, format!("{}4.0{}", &text[..at], &text[end..])).unwrap();
 
     let mut app = App::start(&path, &["a", "b"]);
     let restored = app.restore(CHARACTER);

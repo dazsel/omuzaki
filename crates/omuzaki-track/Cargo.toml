@@ -34,6 +34,7 @@ harness = false
 kind = "Implementation"
 summary = "the webcam face tracker (PF-01), ported from the `spikes/webcam-track` spike: MediaPipe's BlazeFace detector, Face Mesh V2 and Blendshape V2 graphs as `omuzaki-ai-api` sessions (`FaceGraphs`, three slot signatures), video-mode ROI tracking, One-Euro landmark smoothing and the Procrustes head-pose fit; `FaceTracker::track` allocates nothing after warm-up and returns a fixed-size `FaceSample`, which `to_track_frame` turns into an `anim-api` `TrackFrame`. Tested over `omuzaki-ai-mock` scripted sessions; the real models, camera thread and `Tracker` seam are separate work"
 wasm = false
+registers = true
 
 [lints]
 workspace = true
