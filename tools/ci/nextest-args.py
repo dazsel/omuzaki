@@ -42,7 +42,8 @@ def nextest_args(item, existing=None):
     if only:
         if existing is not None and only["binary"] not in existing:
             return []
-        return ["-p", only["name"], "-E", f"binary(={only['binary']})"]
+        # The binary exists but may select no tests (they moved, an empty file stayed): nextest exits 4 for that unless told.
+        return ["-p", only["name"], "-E", f"binary(={only['binary']})", "--no-tests=pass"]
     part = PART.match(item)
     if not part or int(part["index"]) > int(part["parts"]):
         return None

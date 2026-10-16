@@ -30,7 +30,7 @@ args 'omuzaki-char@1/4!palette_independence' \
 args 'c@3/5!a,b' '-p|c|--partition|hash:3/5|-E|not (binary(=a) | binary(=b))' "a partition skips several binaries"
 args 'c@1/1!a' '-p|c|--partition|hash:1/1|-E|not binary(=a)' "an unsplit crate with an isolated binary is partition 1 of 1"
 args 'omuzaki-char@=palette_independence' \
-  '-p|omuzaki-char|-E|binary(=palette_independence)' "an isolated binary runs alone"
+  '-p|omuzaki-char|-E|binary(=palette_independence)|--no-tests=pass' "an isolated binary runs alone and may select no tests"
 
 refuses 'omuzaki-char' "a whole crate is not a shard item (the job runs those in one call)"
 refuses 'c@5/4' "a partition beyond the count"
@@ -53,7 +53,7 @@ listed() {
 listed 'c@1/2!other' "$work/binaries.json" '-p|c|--partition|hash:1/2|-E|not binary(=other)' "a listed isolated binary is skipped"
 listed 'c@1/2!other' "$work/renamed.json" '-p|c|--partition|hash:1/2' "a renamed isolated binary is no longer skipped"
 listed 'c@1/2!other,fast' "$work/renamed.json" '-p|c|--partition|hash:1/2|-E|not binary(=fast)' "only the missing one drops out"
-listed 'c@=other' "$work/binaries.json" '-p|c|-E|binary(=other)' "a listed isolated binary runs alone"
+listed 'c@=other' "$work/binaries.json" '-p|c|-E|binary(=other)|--no-tests=pass' "a listed isolated binary runs alone"
 python3 -I "$ARGS" 'c@=other' --list "$work/renamed.json" >/dev/null 2>&1
 if [[ $? -eq 10 ]]; then pass "a renamed isolated binary has nothing to run (status 10)"; else fail "a renamed isolated binary has nothing to run: status $?"; fi
 
@@ -74,10 +74,17 @@ if command -v cargo-nextest >/dev/null 2>&1; then
     for item in "fixture@=$binary" "fixture@1/2!$binary" "fixture@2/2!$binary"; do
       rc=0; out=$(python3 -I "$ARGS" "$item" --list "$work/real.json" 2>>"$work/nextest.err") || rc=$?
       if ((rc == 10)); then continue; elif ((rc != 0)); then return 1; fi
-      mapfile -t selection <<<"$out"
+      mapfile -t selection < <(grep -v -x -e '--no-tests=pass' <<<"$out")   # a run flag; `list` does not take it
       nextest list --offline "${selection[@]}" --message-format oneline || return 1
     done
   }
+  # An isolated binary that exists but selects no tests (its tests moved, an empty file stayed) must not fail the shard:
+  # nextest exits 4 for a run of zero tests unless --no-tests=pass is given.
+  : >"$crate/tests/empty.rs"
+  nextest list --offline -p fixture --list-type binaries-only --message-format json >"$work/real.json"
+  mapfile -t selection < <(python3 -I "$ARGS" 'fixture@=empty' --list "$work/real.json" 2>>"$work/nextest.err")
+  if nextest run --offline "${selection[@]}" >/dev/null; then pass "real nextest: an isolated binary with no tests passes"; else fail "real nextest: an isolated binary with no tests failed: $(tail -n 8 "$work/nextest.err")"; fi
+  if nextest run --offline -p fixture -E 'binary(=empty)' >/dev/null; then fail "real nextest: a run of zero tests passed without --no-tests=pass, so the case proves nothing"; else pass "real nextest: zero tests fail without --no-tests=pass (the case can fail)"; fi
   for binary in slow gone; do
     got=$(run_items "$binary" | grep -o 'fixture::[a-z]* [a-z0-9_]*' | sort | paste -sd',' -)
     want='fixture::fast a,fixture::fast b,fixture::slow t1,fixture::slow t2,fixture::slow t3'
