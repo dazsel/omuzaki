@@ -1,0 +1,12 @@
+measure-too-small = The eyes are { $distance } px apart; a measure needs at least { $minimum } px. Give a larger image.
+measure-landmark-outside = The { $landmark } lies outside the image.
+measure-eyes-swapped = The mouth is above the eye line: the eyes may be swapped, or the face is upside down.
+measure-low-contrast = The line art is too faint to bound the face: its contrast is { $contrast }, and at least { $minimum } is needed.
+measure-leak = The fill escaped through a gap in the line art near { $sector }. Render larger, or close the gap.
+measure-no-chin = No outline sample reaches the chin: the chin is hidden or outside the image.
+measure-coverage = The outline is missing in { $sectors }: exclude less, or use a clearer view.
+measure-stale-target = The likeness target { $target } was measured by another version of the measures: import its reference image again.
+measure-target-not-found = The character has no likeness target named { $target }. Set it first.
+measure-image-too-large = The image is { $width } × { $height } px. A measure reads at most { $side_limit } px a side and { $mebibyte_limit } MiB decoded.
+measure-image-unreadable = The image could not be read: { $reason }.
+measure-image-colour-unsupported = The image's colour could not be converted to sRGB ({ $found }). Export it as sRGB and try again.
