@@ -81,24 +81,24 @@ struct Extras {
     /// Resetting a session panics when a slot session's loader thread does it.
     #[serde(default)]
     panic_reset_in_loader: bool,
-    /// A slot session's loader thread waits in this model's load until `release_loader` is called, so a test controls
+    /// A slot session's loader thread waits in this model's load until `release_loader` is called for it, so a test controls
     /// when it finishes instead of relying on a delay.
     #[serde(default)]
     hold_in_loader: bool,
 }
 
-/// Whether `release_loader` has been called; only the test that uses `hold_in_loader` calls it.
-static LOADER_RELEASED: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
+/// The models `release_loader` has been called for. A model with `hold_in_loader` waits in the loader until it is here.
+static LOADER_RELEASED: (Mutex<Vec<ModelRef>>, Condvar) = (Mutex::new(Vec::new()), Condvar::new());
 
-fn release_loader() {
-    *LOADER_RELEASED.0.lock().unwrap() = true;
+fn release_loader(model: &ModelRef) {
+    LOADER_RELEASED.0.lock().unwrap().push(model.clone());
     LOADER_RELEASED.1.notify_all();
 }
 
-/// Blocks the loader thread until `release_loader`, or for `PATIENCE` so a failed test cannot hang the run.
-fn hold_loader() {
+/// Blocks the loader thread until `release_loader(model)`, or for `PATIENCE` so a failed test cannot hang the run.
+fn hold_loader(model: &ModelRef) {
     let released = LOADER_RELEASED.0.lock().unwrap();
-    let _ = LOADER_RELEASED.1.wait_timeout_while(released, PATIENCE, |released| !*released).unwrap();
+    let _ = LOADER_RELEASED.1.wait_timeout_while(released, PATIENCE, |released| !released.contains(model)).unwrap();
 }
 
 fn in_loader() -> bool {
@@ -164,7 +164,7 @@ impl Runtime for ProbeRuntime {
         assert!(!(extras.panic_in_loader && in_loader()), "this model's load was set to panic");
         std::thread::sleep(Duration::from_millis(extras.load_ms));
         if extras.hold_in_loader && in_loader() {
-            hold_loader();
+            hold_loader(source.model);
         }
         if extras.fail_load_after.is_some_and(|n| count(source.model, &Event::Loaded) >= n) {
             return Err(LoadError::Format("this model's load was set to fail".into()));
@@ -556,7 +556,7 @@ fn a_fallback_that_is_still_loading_is_not_reported_as_active() {
     let meanwhile = status(&registry);
     assert_eq!(meanwhile.active, None, "v1 is still loading: {meanwhile:?}");
     assert!(meanwhile.fallback.unwrap().contains("crashed"));
-    release_loader();
+    release_loader(&v1);
     settle(&mut *session, &mut out);
     wait_for("slots to show v1", || status(&registry).active == Some(v1.clone()));
 }
@@ -778,8 +778,8 @@ fn a_replacement_whose_reset_panics_is_a_load_failure_and_the_chain_goes_on() {
 fn a_result_that_finishes_during_a_slower_one_is_never_reported_as_running() {
     let files = [
         ("1.0.0", model_file("stale-1", 0, None)),
-        ("2.0.0", model_file("stale-2", 100, None)),
-        ("3.0.0", model_file("stale-3", 600, None)),
+        ("2.0.0", model_file_with("stale-2", 0, "hold_in_loader = true\n")),
+        ("3.0.0", model_file_with("stale-3", 0, "hold_in_loader = true\n")),
     ];
     let rig = Rig::new(&files);
     let registry = rig.open();
@@ -792,20 +792,23 @@ fn a_result_that_finishes_during_a_slower_one_is_never_reported_as_running() {
     let loaded = count(&v2, &Event::Loaded);
     let v3_started = count(&v3, &Event::Loading);
 
+    // Both replacements wait in the loader until released, so the order is the test's, not the machine's: v3 is
+    // selected while v2 is still loading, v2 finishes, and v3 is still loading while v1 answers.
     registry.select(&echo_slot(), Some(&v2), Requester::Person).unwrap();
     assert_eq!(timed_run(&mut *session, &mut out).0, Ok(()));
     wait_for("v2 to start loading", || count(&v2, &Event::Loading) > started);
     registry.select(&echo_slot(), Some(&v3), Requester::Person).unwrap();
+    release_loader(&v2);
     wait_for("v2 to finish loading", || count(&v2, &Event::Loaded) > loaded);
     wait_for("v3 to start loading", || count(&v3, &Event::Loading) > v3_started);
 
-    // v3 still has most of its 600 ms to go. v1 answers, and nothing says v2 does.
+    // v3 is held in its load. v1 answers, and nothing says v2 does.
     for _ in 0..10 {
         assert_eq!(timed_run(&mut *session, &mut out).0, Ok(()));
         assert_eq!(session.info().model, v1);
         assert_eq!(status(&registry).active, Some(v1.clone()));
-        std::thread::sleep(Duration::from_millis(5));
     }
+    release_loader(&v3);
     run_until(&mut *session, &mut out, |s| s.info().model == v3);
     assert_eq!(status(&registry).active, Some(v3));
 }
