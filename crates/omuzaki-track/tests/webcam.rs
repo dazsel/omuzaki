@@ -1207,3 +1207,57 @@ fn a_camera_that_outlasts_the_stop_deadline_is_let_go_inside_the_budget() {
     assert!(stopping.elapsed() < Duration::from_millis(300), "stop took {:?}", stopping.elapsed());
     assert!(tracker.error().is_some(), "the camera thread was let go and that is reported");
 }
+
+/// A camera that only ever hands over frames too short for their size, and tells the test at call 300 (calls 20 to 299
+/// are measured on the camera thread).
+struct Broken {
+    done: Sender<()>,
+}
+struct BrokenStream {
+    calls: usize,
+    done: Sender<()>,
+    data: Vec<u8>,
+}
+impl Camera for Broken {
+    fn enumerate(&self) -> Vec<CameraInfo> {
+        vec![CameraInfo::new(FakeCamera::id(), "broken", vec![nv12(64, 48)])]
+    }
+
+    fn open(&mut self, _: &CameraId, _: &CameraFormatRequest) -> Result<Box<dyn CameraStream>, TrackError> {
+        Ok(Box::new(BrokenStream { calls: 0, done: self.done.clone(), data: vec![0; 10] }))
+    }
+}
+impl CameraStream for BrokenStream {
+    fn format(&self) -> CameraFormat {
+        nv12(64, 48)
+    }
+
+    fn next_frame(&mut self, _: Duration) -> Result<Option<CameraFrame<'_>>, TrackError> {
+        ON_CAMERA.with(|m| m.set((20..300).contains(&self.calls)));
+        self.calls += 1;
+        // Call 300 is the first unmeasured one, so the channel's own allocation is not counted.
+        if self.calls == 301 {
+            // Best effort: the test is waiting for this, and a closed channel only means it gave up.
+            let _ = self.done.send(());
+        }
+        let seq = self.calls as u64;
+        Ok(Some(CameraFrame::new(&self.data, 64, 48, 64, PixelFormat::Nv12, DeviceTime(seq * 33_000_000), seq)))
+    }
+}
+
+/// A stream of unreadable frames costs the camera thread no allocation: the error text is built only on the public
+/// `FrameConverter::convert` path.
+#[test]
+fn a_stream_of_unreadable_frames_allocates_nothing_on_the_camera_thread() {
+    let (done, finished) = channel();
+    let mut tracker = patient(
+        Box::new(Broken { done }),
+        Box::new(Scripted::new(vec![true])),
+        WebcamConfig::default().with_mode(64, 48, 30),
+        standing_clock(),
+    );
+    let _source = start(&mut tracker);
+    finished.recv_timeout(BACKSTOP).expect("the camera thread reached call 300");
+    tracker.stop();
+    assert_eq!(CAMERA_ALLOCATIONS.load(Ordering::Relaxed), 0);
+}

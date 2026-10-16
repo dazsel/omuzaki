@@ -54,11 +54,7 @@ pub(super) enum Failure {
 
 /// `frame` as packed RGB8 in `rgb`, resized to fit if it is not that size already (so, no allocation once it has
 /// been). The camera thread converts into a buffer it then hands to the tracker, which is why this takes the buffer.
-pub(super) fn convert_into(
-    mjpg: &mut MjpgDecoder,
-    frame: &CameraFrame<'_>,
-    rgb: &mut Vec<u8>,
-) -> Result<(), Failure> {
+pub(super) fn convert_into(mjpg: &mut MjpgDecoder, frame: &CameraFrame<'_>, rgb: &mut Vec<u8>) -> Result<(), Failure> {
     let (w, h) = (frame.width, frame.height);
     let len = rgb_len(w, h);
     if rgb.len() != len {
