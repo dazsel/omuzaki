@@ -1,0 +1,205 @@
+//! Tasks with sessions and a journal on: a job started as a task goes through the same holding, approval tracking and
+//! durability handling as the blocking call (design `agent-sessions.md` §4.3, §7.1; journal ADR 0021).
+
+// Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
+mod common;
+
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use common::jobs::Fake;
+use common::registry::Studio;
+use common::{data, text};
+use omuzaki_core::time::Seconds;
+use omuzaki_history_api::{JournalStatus, SyncError};
+use omuzaki_history_mock::RecordingSink;
+use omuzaki_mcp::{McpOptions, McpServer};
+use omuzaki_ops_api::{
+    Actor, ApprovalId, Decision, Grants, JobId, JobInfo, JobState, Jobs, Lane, OpError, Request, Runner, Scope,
+    SessionId, Sessions, TxId,
+};
+use rmcp::model::{
+    CallToolRequestParams, CallToolResponse, CallToolResult, ClientCapabilities, ClientConfig, GetTaskParams,
+    Implementation, TaskPayload, TaskStatus,
+};
+use rmcp::service::{RoleClient, RunningService};
+use rmcp::{ClientHandler, ClientLifecycleMode, ClientServiceExt};
+use serde_json::{Value, json};
+
+/// A job manager over the registry stand-in: `start` is refused exactly as the registry refuses a run (paused, rate
+/// limited, queued for approval), and otherwise the job is done at once with the op's outcome.
+struct Starter {
+    studio: Arc<Studio>,
+    jobs: Mutex<Vec<JobInfo>>,
+}
+
+impl Starter {
+    fn new(studio: &Arc<Studio>) -> Arc<Self> {
+        Arc::new(Self { studio: studio.clone(), jobs: Mutex::default() })
+    }
+}
+
+impl Jobs for Starter {
+    fn start(&self, req: Request) -> Result<JobInfo, OpError> {
+        let (actor, op) = (req.actor.clone(), req.op.clone());
+        let outcome = self.studio.run(req)?;
+        let mut jobs = self.jobs.lock().unwrap();
+        let job = JobInfo {
+            id: JobId(jobs.len() as u64 + 1),
+            op,
+            label: "export".to_owned(),
+            actor,
+            on_behalf_of: None,
+            session: None::<SessionId>,
+            cause: None,
+            lane: Lane::Gpu,
+            state: JobState::done(TxId(1), Some(1)).with_outcome(Arc::new(outcome)),
+            stage: None,
+            fraction: 1.0,
+            estimate: None,
+            spent_usd_micros: 0,
+            queued_at: Seconds(0.0),
+            started_at: None,
+            ended_at: None,
+        };
+        jobs.push(job.clone());
+        Ok(job)
+    }
+
+    fn job(&self, id: JobId, _grants: &Grants) -> Result<Option<JobInfo>, OpError> {
+        Ok(self.jobs.lock().unwrap().iter().find(|j| j.id == id).cloned())
+    }
+
+    fn jobs(&self, _grants: &Grants) -> Result<Vec<JobInfo>, OpError> {
+        Ok(self.jobs.lock().unwrap().clone())
+    }
+
+    fn cancel(&self, _id: JobId, _by: &Actor) -> Result<JobInfo, OpError> {
+        Err(OpError::unsupported("not in this test"))
+    }
+
+    fn cancel_session(&self, _session: SessionId, _by: &Actor) -> Result<Vec<JobId>, OpError> {
+        Ok(Vec::new())
+    }
+
+    fn wait(&self, id: JobId, _timeout: Option<Duration>) -> Result<JobInfo, OpError> {
+        self.job(id, &Grants::person())?.ok_or_else(|| OpError::not_found("no such job"))
+    }
+}
+
+struct Tasks;
+
+impl ClientHandler for Tasks {
+    fn get_info(&self) -> ClientConfig {
+        ClientConfig::new(
+            ClientCapabilities::builder().enable_tasks().build(),
+            Implementation::new("claude-code", "1.0"),
+        )
+    }
+}
+
+struct Agent {
+    client: RunningService<RoleClient, Tasks>,
+}
+
+impl Agent {
+    async fn connect(mcp: &McpServer) -> Self {
+        let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+        let serving = mcp.clone();
+        tokio::spawn(async move { serving.serve(server_io).await });
+        let client = Tasks.serve_with_lifecycle(client_io, ClientLifecycleMode::Initialize).await.expect("connects");
+        Self { client }
+    }
+
+    async fn export(&self) -> CallToolResponse {
+        let params = CallToolRequestParams::new("export_vrm")
+            .with_arguments(json!({"character": "mira"}).as_object().unwrap().clone());
+        self.client.call_tool_once(params).await.expect("call")
+    }
+
+    async fn call(&self, tool: &str, args: Value) -> CallToolResult {
+        let args = args.as_object().unwrap().clone();
+        self.client.call_tool(CallToolRequestParams::new(tool.to_owned()).with_arguments(args)).await.expect("call")
+    }
+}
+
+fn is_task(response: &CallToolResponse) -> bool {
+    matches!(response, CallToolResponse::Task(_))
+}
+
+fn studio_server(studio: &Arc<Studio>, publish: bool) -> McpServer {
+    let grants = if publish { Grants::agent_default().with(Scope::Publish) } else { Grants::agent_default() };
+    let options = McpOptions::with_grants(grants).with_sessions(studio.clone(), Studio::person());
+    McpServer::new(studio.clone(), options).unwrap().with_jobs(Starter::new(studio))
+}
+
+#[tokio::test]
+async fn a_task_start_is_held_through_a_pause_like_a_blocking_call() {
+    let studio = Studio::new();
+    studio.person_holds(Grants::person());
+    let agent = Agent::connect(&studio_server(&studio, true)).await;
+    let id = studio.session_of(&studio.only_actor()).unwrap().id;
+    studio.pause(id, &Studio::person()).unwrap();
+    let resumer = {
+        let studio = studio.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            studio.resume(id, &Studio::person()).unwrap();
+        })
+    };
+    let response = agent.export().await;
+    resumer.await.unwrap();
+    assert!(is_task(&response), "a paused session's task start waits for the resume: {response:?}");
+}
+
+#[tokio::test]
+async fn a_task_start_is_slowed_by_a_short_rate_limit_like_a_blocking_call() {
+    let studio = Studio::new();
+    studio.person_holds(Grants::person());
+    studio.limit_next(1, 0.05);
+    let agent = Agent::connect(&studio_server(&studio, true)).await;
+    let response = agent.export().await;
+    assert!(is_task(&response), "a short rate limit is waited out: {response:?}");
+}
+
+#[tokio::test]
+async fn an_approval_resolved_before_approval_wait_is_still_known_for_a_task_start() {
+    let studio = Studio::new();
+    // The agent lacks `publish`, which the person holds: the start is queued for approval.
+    let agent = Agent::connect(&studio_server(&studio, false)).await;
+    let CallToolResponse::Complete(queued) = agent.export().await else { panic!("a refusal is a tool result") };
+    assert_eq!(data(&queued)["detail"]["kind"], "queued", "{}", text(&queued));
+    studio.resolve(ApprovalId(1), Decision::Approve, &Studio::person()).expect("resolves");
+    let waited = agent.call("approval_wait", json!({"id": 1, "timeout_seconds": 5})).await;
+    assert_eq!(waited.is_error, Some(false), "{}", text(&waited));
+    assert!(text(&waited).contains("Approved by"), "{}", text(&waited));
+}
+
+#[tokio::test]
+async fn a_finished_task_warns_when_the_journal_cannot_save_its_change() {
+    let fake = Fake::new();
+    let journal = Arc::new(RecordingSink::new());
+    journal.script_sync(Some(SyncError::Failing { reason: "disk full".into() }));
+    journal.script_status(JournalStatus::Failing { reason: "disk full".into() });
+    let options = McpOptions::with_grants(Grants::agent_default().with(Scope::Publish)).with_journal(journal);
+    let mcp = McpServer::new(fake.clone(), options).unwrap().with_jobs(fake.clone());
+    let agent = Agent::connect(&mcp).await;
+    let CallToolResponse::Task(created) = agent.export().await else { panic!("a task") };
+    let id = created.task.task_id;
+    fake.set_state(1, JobState::done(TxId(4), Some(9)));
+    let mut warned = None;
+    for _ in 0..100 {
+        let task = agent.client.get_task(GetTaskParams::new(&id)).await.expect("tasks/get").task;
+        if task.status() == TaskStatus::Completed {
+            warned = Some(task.payload);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let TaskPayload::Completed { result } = warned.expect("the task completes") else { panic!("completed") };
+    let first = result["content"][0]["text"].as_str().unwrap();
+    assert!(first.starts_with("Warning: applied, not yet saved"), "{first}");
+    assert!(result["structuredContent"]["warning"].is_string());
+}

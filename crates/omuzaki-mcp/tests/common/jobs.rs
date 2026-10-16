@@ -23,6 +23,8 @@ pub struct Fake {
     pub sinks: Mutex<Vec<Sender<Event>>>,
     pub jobs: Mutex<Vec<JobInfo>>,
     pub started: Mutex<u32>,
+    /// When set, a job reaches this state inside `start`, before the call returns, as a very fast job does.
+    pub finish_in_start: Mutex<Option<JobState>>,
 }
 
 impl Fake {
@@ -32,6 +34,7 @@ impl Fake {
             sinks: Mutex::default(),
             jobs: Mutex::default(),
             started: Mutex::new(0),
+            finish_in_start: Mutex::new(None),
         })
     }
 
@@ -128,6 +131,12 @@ impl Jobs for Fake {
             ended_at: None,
         };
         jobs.push(job.clone());
+        drop(jobs);
+        if let Some(state) = self.finish_in_start.lock().unwrap().clone() {
+            self.set_state(job.id.0, state);
+            // Let the event feed take the announcement in, so it is buffered before the caller can watch for it.
+            std::thread::sleep(Duration::from_millis(300));
+        }
         Ok(job)
     }
 

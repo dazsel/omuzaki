@@ -4,10 +4,10 @@ use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use omuzaki_history_api::JournalStatus;
+use omuzaki_history_api::{JournalSink, JournalStatus};
 use omuzaki_ops_api::{
     Actor, Budget, Cause, CauseKind, EndReason, ErrorCode, ErrorDetail, Grants, Jobs, Limits, Mode, OpError, OpKind,
-    Outcome, PauseReason, Request, Runner, Scope, SessionSpec, SessionState, Sessions, Transport,
+    PauseReason, Request, Runner, Scope, SessionSpec, SessionState, Sessions, Transport,
 };
 use rmcp::ErrorData as McpError;
 use rmcp::handler::server::ServerHandler;
@@ -530,13 +530,7 @@ impl Session {
         // Each edit that joins a transaction carries the cause its `tx_begin` gave; anything outside one has none.
         let cause = tx.as_ref().and_then(|t| t.cause.clone());
         let request = self.request(entry, unit_args, args, mode, actor, cause, tx.as_ref());
-        let outcome = match self.run_held(request).await {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                lock(&self.state).approvals.remember_queued(&error, &entry.tool.name, kind);
-                return Err(error);
-            }
-        };
+        let outcome = self.run_held(request, &entry.tool.name, kind, |runner, request| runner.run(request)).await?;
         if let Some(record) = &outcome.applied {
             lock(&self.state).own.remember(record.tx);
         }
@@ -551,17 +545,41 @@ impl Session {
     ///   runs once more. If the session is still paused, the agent is told (`waiting`, nothing ran).
     /// - refused by a **rate limit** that frees up soon: waits that long and runs again, for up to
     ///   [`agent::LIMIT_HOLD`] in all. A burst over the edit limit is slowed, not failed.
-    async fn run_held(&self, request: Request) -> Result<Outcome, OpError> {
+    ///
+    /// `attempt` is the one try (a blocking run, or a job start), so a job started as a task gets the same holding and
+    /// the same memory of a queued approval as a blocking call. A refusal that queued an approval is remembered
+    /// under `tool`, so `approval_wait` knows it.
+    async fn run_held<T: Send + 'static>(
+        &self,
+        request: Request,
+        tool: &str,
+        kind: OpKind,
+        attempt: impl Fn(&dyn Runner, Request) -> Result<T, OpError> + Clone + Send + 'static,
+    ) -> Result<T, OpError> {
+        match self.hold_and_run(request, attempt).await {
+            Ok(done) => Ok(done),
+            Err(error) => {
+                lock(&self.state).approvals.remember_queued(&error, tool, kind);
+                Err(error)
+            }
+        }
+    }
+
+    async fn hold_and_run<T: Send + 'static>(
+        &self,
+        request: Request,
+        attempt: impl Fn(&dyn Runner, Request) -> Result<T, OpError> + Clone + Send + 'static,
+    ) -> Result<T, OpError> {
         let (Some(host), Some(Ok(link))) = (&self.shared.sessions, self.link.get()) else {
-            return self.blocking(move |runner| runner.run(request)).await?;
+            return self.blocking(move |runner| attempt(runner, request)).await?;
         };
         let (mut held_for_pause, mut slowed_for) = (false, Duration::ZERO);
         loop {
             // Before the attempt, so a resume that lands while it runs is not missed.
             let after = self.shared.hub.latest();
-            let attempt = request.clone();
-            let error = match self.blocking(move |runner| runner.run(attempt)).await? {
-                Ok(outcome) => return Ok(outcome),
+            let (try_it, this) = (request.clone(), attempt.clone());
+            let error = match self.blocking(move |runner| this(runner, try_it)).await? {
+                Ok(done) => return Ok(done),
                 Err(error) => error,
             };
             if agent::is_paused(&error) && !held_for_pause {
@@ -627,13 +645,16 @@ impl Session {
         let hub = Arc::clone(&self.shared.hub);
         // Before the start, so the job's first events can't be missed.
         let after = hub.latest();
-        let job = jobs::off_thread(move || jobs.start(request)).await??;
+        let job = self.run_held(request, &entry.tool.name, OpKind::Job, move |_, request| jobs.start(request)).await?;
         let tool = entry.tool.name.to_string();
         let verify = self.shared.guidance.verify().map(str::to_owned);
         let created = self.shared.task_times.of(job.id);
-        let task = jobs::task_of(&job, &tool, verify.as_deref(), &created);
+        let journal = self.shared.journal.clone();
+        let task = jobs::task_saved(journal.clone(), &job, &tool, verify.as_deref(), &created).await;
         let token = context.meta.get_progress_token();
-        tokio::spawn(JobWatch { hub, after, peer: context.peer.clone(), token, job, tool, verify, created }.run());
+        tokio::spawn(
+            JobWatch { hub, journal, after, peer: context.peer.clone(), token, job, tool, verify, created }.run(),
+        );
         Ok(Reply { task: Some(CreateTaskResult::new(task.task)), ..Reply::from(CallToolResult::success(Vec::new())) })
     }
 
@@ -641,17 +662,7 @@ impl Session {
     /// saved yet (the wait timed out, or saving fails) still succeeds: the reply carries the warning, which
     /// `call_tool` puts first.
     async fn confirm_saved(&self, result: CallToolResult) -> Reply {
-        let Some(journal) = self.shared.journal.clone() else { return result.into() };
-        let waited = tokio::task::spawn_blocking(move || match journal.sync(SAVE_WAIT) {
-            Ok(_) => None,
-            Err(_) => Some(journal.status()),
-        })
-        .await;
-        let unsaved = match waited {
-            Ok(None) => None,
-            Ok(Some(status)) => Some(format!("applied, not yet saved: {}", describe(&status))),
-            Err(_) => Some("applied, not yet saved: the journal's status couldn't be read".to_owned()),
-        };
+        let unsaved = unsaved_warning(self.shared.journal.clone()).await;
         Reply { result, unsaved, task: None }
     }
 
@@ -964,6 +975,23 @@ impl From<CallToolResult> for Reply {
     }
 }
 
+/// Waits until the journal has saved what was just applied. `None` means it is saved (or there is no journal); otherwise
+/// the "applied, not yet saved" warning. Shared by every reply that reports an applied change: blocking calls,
+/// `approval_wait`, and tasks (polled or pushed).
+pub(crate) async fn unsaved_warning(journal: Option<Arc<dyn JournalSink>>) -> Option<String> {
+    let journal = journal?;
+    let waited = tokio::task::spawn_blocking(move || match journal.sync(SAVE_WAIT) {
+        Ok(_) => None,
+        Err(_) => Some(journal.status()),
+    })
+    .await;
+    match waited {
+        Ok(None) => None,
+        Ok(Some(status)) => Some(format!("applied, not yet saved: {}", describe(&status))),
+        Err(_) => Some("applied, not yet saved: the journal's status couldn't be read".to_owned()),
+    }
+}
+
 /// What the journal's status says about a save, for the warning.
 fn describe(status: &JournalStatus) -> String {
     match status {
@@ -1245,7 +1273,7 @@ impl ServerHandler for Session {
         let tool = names::tool_name(&info.op);
         let verify = self.shared.guidance.verify();
         let created = self.shared.task_times.of(info.id);
-        Ok(GetTaskResult::new(jobs::task_of(&info, &tool, verify, &created)))
+        Ok(GetTaskResult::new(jobs::task_saved(self.shared.journal.clone(), &info, &tool, verify, &created).await))
     }
 
     /// `tasks/cancel`: cancels the job. The executor decides who may, so a session can cancel only its own jobs; its

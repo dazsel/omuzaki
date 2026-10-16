@@ -147,6 +147,19 @@ async fn revoking_from_the_registry_resolves_closed_and_the_stream_reaches_eof()
 }
 
 #[tokio::test]
+async fn an_end_before_the_client_initializes_closes_the_stream() {
+    use tokio::io::AsyncReadExt;
+    let studio = Studio::new();
+    let mcp = server(&studio);
+    let mut link = mcp.connect_in_app(InAppSpec::assistant(Studio::person(), None)).await.unwrap();
+    // The client connects but never sends `initialize`; the project closes.
+    studio.registry_ends(link.session(), &EndReason::Closed);
+    let mut rest = Vec::new();
+    let eof = tokio::time::timeout(Duration::from_secs(5), link.client_io.read_to_end(&mut rest)).await;
+    assert!(eof.expect("the stream reaches EOF without an initialize").is_ok());
+}
+
+#[tokio::test]
 async fn a_paused_in_app_session_is_held_then_refused_as_waiting() {
     let studio = Studio::new();
     let mcp = McpServer::new(

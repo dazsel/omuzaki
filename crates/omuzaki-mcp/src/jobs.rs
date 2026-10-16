@@ -8,6 +8,7 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use omuzaki_history_api::JournalSink;
 use omuzaki_ops_api::{Event, Grants, JobId, JobInfo, JobState, Jobs, OpError};
 use rmcp::ErrorData as McpError;
 use rmcp::model::{
@@ -49,7 +50,7 @@ pub(crate) fn job_of(id: &str) -> Result<JobId, McpError> {
 ///
 /// `created` is when the task was created (SEP-2663), which this server noted when it handed the handle out; the last
 /// update is the time of this reply.
-pub(crate) fn task_of(info: &JobInfo, tool: &str, verify: Option<&str>, created: &str) -> DetailedTask {
+fn task_of(info: &JobInfo, tool: &str, verify: Option<&str>, created: &str, unsaved: Option<&str>) -> DetailedTask {
     let now = iso8601(SystemTime::now());
     let base = Task::new(task_id(info.id), TaskStatus::Working, created.to_owned(), now)
         .with_poll_interval_ms(POLL_INTERVAL_MS);
@@ -62,7 +63,13 @@ pub(crate) fn task_of(info: &JobInfo, tool: &str, verify: Option<&str>, created:
         JobState::Cancelled { .. } => (None, TaskPayload::Cancelled),
         state => {
             let result = match state {
-                JobState::Done { .. } => render::job_done(tool, info, verify),
+                JobState::Done { .. } => {
+                    let done = render::job_done(tool, info, verify);
+                    match unsaved {
+                        Some(warning) => render::with_warning(done, warning),
+                        None => done,
+                    }
+                }
                 JobState::Failed { error } => render::failure(tool, error, None),
                 _ => render::failure(tool, &interrupted(), None),
             };
@@ -74,6 +81,21 @@ pub(crate) fn task_of(info: &JobInfo, tool: &str, verify: Option<&str>, created:
         None => base,
     };
     DetailedTask::new(task, payload)
+}
+
+/// [`task_of`] with the durability handling a blocking call gets: a job that applied a change is not reported done until
+/// the journal has saved it, and if saving fails or times out the result leads with "applied, not yet saved". Every
+/// place a task is reported (`tasks/get`, the handle, status pushes) goes through here.
+pub(crate) async fn task_saved(
+    journal: Option<Arc<dyn JournalSink>>,
+    info: &JobInfo,
+    tool: &str,
+    verify: Option<&str>,
+    created: &str,
+) -> DetailedTask {
+    let applied = matches!(info.state, JobState::Done { seq: Some(_), .. });
+    let unsaved = if applied { crate::session::unsaved_warning(journal).await } else { None };
+    task_of(info, tool, verify, created, unsaved.as_deref())
 }
 
 /// What a job that was running at a crash reports: jobs are never re-run.
@@ -132,6 +154,8 @@ impl TaskTimes {
 /// What a watcher needs to follow one job and talk to its client.
 pub(crate) struct JobWatch {
     pub hub: Arc<EventHub>,
+    /// The host's journal, which a finished job's result waits for.
+    pub journal: Option<Arc<dyn JournalSink>>,
     /// The hub's position from before the job started, so no event of the job can fall in the gap.
     pub after: u64,
     pub peer: Peer<RoleServer>,
@@ -149,10 +173,15 @@ impl JobWatch {
     /// fast job sends the newest progress and status, not every step. If events fell out of the hub's window unseen
     /// the last known state stands until the next one arrives; `tasks/get` always reads the executor.
     pub(crate) async fn run(self) {
-        let Self { hub, mut after, peer, token, mut job, tool, verify, created } = self;
+        let Self { hub, journal, mut after, peer, token, mut job, tool, verify, created } = self;
         let mut arrivals = hub.watch();
         let mut sent = job.fraction;
-        while arrivals.changed().await.is_ok() && !peer.is_transport_closed() {
+        // Events are read before each wait, not after it: a job that finished before this watcher subscribed (inside
+        // `Jobs::start`, say) has its events buffered already, and a watch only wakes for what arrives after it.
+        loop {
+            if peer.is_transport_closed() {
+                return;
+            }
             let mut progress = None;
             let mut changed = false;
             for (n, event) in hub.entries_after(after) {
@@ -177,17 +206,13 @@ impl JobWatch {
                 }
             }
             if changed {
-                let status = Notification::new(TaskStatusNotificationParams::new(task_of(
-                    &job,
-                    &tool,
-                    verify.as_deref(),
-                    &created,
-                )));
+                let task = task_saved(journal.clone(), &job, &tool, verify.as_deref(), &created).await;
+                let status = Notification::new(TaskStatusNotificationParams::new(task));
                 if peer.send_notification(ServerNotification::TaskStatusNotification(status)).await.is_err() {
                     return;
                 }
             }
-            if ended(&job) {
+            if ended(&job) || arrivals.changed().await.is_err() {
                 return;
             }
         }

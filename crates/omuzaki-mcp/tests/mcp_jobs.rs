@@ -236,3 +236,14 @@ async fn a_finished_task_renders_the_same_result_as_the_blocking_call() {
     assert_eq!(result["structuredContent"], waited["structuredContent"]);
     assert_eq!(result["content"], waited["content"]);
 }
+
+#[tokio::test]
+async fn a_job_that_finishes_inside_start_still_pushes_its_completion() {
+    let fake = Fake::new();
+    *fake.finish_in_start.lock().unwrap() = Some(done());
+    let mut client = Client::connect(&server(&fake), true).await;
+    let id = task_id(client.export().await);
+    // The announcement was in the feed before the watcher began; no later event will wake it.
+    assert_eq!(client.next_status().await.task.status(), TaskStatus::Completed);
+    assert_eq!(client.task(&id).await.status(), TaskStatus::Completed);
+}

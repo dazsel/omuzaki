@@ -391,7 +391,19 @@ where
     E: std::error::Error + Send + Sync + 'static,
 {
     let mut ended = session.ended();
-    let running = session.serve(transport).await.map_err(|e| ServerError::Handshake(e.to_string()))?;
+    // The registry may end the session before the client says anything (the project closed while the client was still
+    // connecting): the handshake is dropped then, which closes the transport, instead of waiting for an `initialize`
+    // that may never come.
+    let handshake = session.serve(transport);
+    let running = {
+        let mut early = ended.clone();
+        tokio::select! {
+            running = handshake => running.map_err(|e| ServerError::Handshake(e.to_string()))?,
+            Ok(_) = early.wait_for(Option::is_some) => {
+                return Err(ServerError::Handshake("the session ended before the client initialized".to_owned()));
+            }
+        }
+    };
     let cancel = running.cancellation_token();
     let waiting = running.waiting();
     tokio::pin!(waiting);

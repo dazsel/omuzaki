@@ -75,7 +75,7 @@ Each block is one JSON-RPC message as it crossed an in-memory stream.
   "result": {
     "content": [
       {
-        "text": "Session 1: you are agent claude-code#1 (client claude-code), working for user alice, connected over stdio.\nState: active.\nScopes: read, edit:character, edit:scene, edit:library, edit:settings, render, fs, review. File roots: <project>, <shared>.\nFence: none (the whole project, except parts another session holds).\nBudget: unlimited; spent 0 micro-dollars, 0 tokens, 0 seconds. Rate limits: 600 edits/min (burst 100), 3000 runs/min (burst 300), 16 pending approvals at most.\nPending approvals: none.",
+        "text": "Session 1: you are agent claude-code#1 (client claude-code), working for user alice, connected over stdio.\nState: active.\nScopes: read, edit:character, edit:scene, edit:library, edit:settings, render, fs, review. File roots: <project>, <shared>.\nFence: none (the whole project, except parts another session holds).\nBudget: no spending allowed, tokens unlimited, seconds unlimited; spent 0 micro-dollars, 0 tokens, 0 seconds. Rate limits: 600 edits/min (burst 100), 3000 runs/min (burst 300), 16 pending approvals at most.\nPending approvals: none.",
         "type": "text"
       }
     ],

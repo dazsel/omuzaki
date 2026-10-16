@@ -200,6 +200,9 @@ pub(crate) fn is_paused(error: &OpError) -> bool {
     error.code == ErrorCode::Waiting && matches!(error.detail.as_deref(), Some(ErrorDetail::Paused { .. }))
 }
 
+/// The shortest pause between retries of a rate-limited call.
+const MIN_LIMIT_WAIT: Duration = Duration::from_millis(10);
+
 /// How long a refused call should wait before it is retried because of a rate limit, or `None` when it is not one
 /// or the wait is longer than what is left of `budget`.
 pub(crate) fn limit_wait(error: &OpError, budget: Duration) -> Option<Duration> {
@@ -207,9 +210,10 @@ pub(crate) fn limit_wait(error: &OpError, budget: Duration) -> Option<Duration> 
         return None;
     }
     let Some(ErrorDetail::RetryAfter { seconds, .. }) = error.detail.as_deref() else { return None };
-    let wait = Duration::try_from_secs_f32(seconds.max(0.0)).ok()?;
-    // Never zero: a limit that says "now" must not make the retry loop spin.
-    (wait <= budget).then_some(wait.max(Duration::from_millis(10)))
+    // Never zero: a limit that says "now" must not make the retry loop spin. The floor applies before the comparison,
+    // so a budget smaller than the floor is exhausted instead of retried forever.
+    let wait = Duration::try_from_secs_f32(seconds.max(0.0)).ok()?.max(MIN_LIMIT_WAIT);
+    (wait <= budget).then_some(wait)
 }
 
 /// Waits up to `hold` for the person to resume the session of `link`, answering whether it was resumed. A session that ended
@@ -302,5 +306,11 @@ mod tests {
         assert_eq!(limit_wait(&limited, Duration::from_secs(2)), Some(Duration::from_millis(500)));
         assert_eq!(limit_wait(&limited, Duration::from_millis(100)), None, "longer than what is left of the budget");
         assert_eq!(limit_wait(&OpError::conflict("x"), Duration::from_secs(2)), None);
+
+        // `RetryAfter(0)` waits the floor, and once less than the floor is left the budget is spent.
+        limited.detail = Some(Box::new(ErrorDetail::RetryAfter { seconds: 0.0, limit: "edits".to_owned() }));
+        assert_eq!(limit_wait(&limited, Duration::from_secs(2)), Some(Duration::from_millis(10)));
+        assert_eq!(limit_wait(&limited, Duration::ZERO), None, "an exhausted budget stops the retries");
+        assert_eq!(limit_wait(&limited, Duration::from_millis(9)), None);
     }
 }

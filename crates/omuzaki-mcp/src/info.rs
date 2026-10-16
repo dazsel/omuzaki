@@ -168,7 +168,7 @@ pub(crate) fn session_info(
     lines.push(format!("Fence: {}.", fence_text(info)));
     lines.push(format!(
         "Budget: {}; spent {} micro-dollars, {} tokens, {} seconds. Rate limits: {} edits/min (burst {}), {} runs/min (burst {}), {} pending approvals at most.",
-        if info.budget == omuzaki_ops_api::Budget::default() { "unlimited".to_owned() } else { format!("{:?}", info.budget) },
+        budget_text(&info.budget),
         info.spent.usd_micros,
         info.spent.tokens,
         info.spent.seconds,
@@ -192,6 +192,20 @@ pub(crate) fn session_info(
         }
     }
     render::confirmation(lines.join("\n"), data)
+}
+
+/// Each cap of `budget` as it is. The default allows no spending at all, so "unlimited" would be wrong for it: money
+/// has a cap of zero, and only tokens and time are open.
+fn budget_text(budget: &omuzaki_ops_api::Budget) -> String {
+    let money = match budget.usd_micros {
+        0 => "no spending allowed".to_owned(),
+        micros => format!("spending up to {micros} micro-dollars"),
+    };
+    let cap = |limit: Option<u64>, unit: &str| match limit {
+        Some(n) => format!("up to {n} {unit}"),
+        None => format!("{unit} unlimited"),
+    };
+    format!("{money}, {}, {}", cap(budget.tokens, "tokens"), cap(budget.seconds, "seconds"))
 }
 
 /// `session_list`: every live session, with this one marked.
@@ -233,4 +247,22 @@ pub(crate) fn session_list(sessions: &[SessionInfo], me: &Actor) -> CallToolResu
 /// The pending approvals of session `id`.
 pub(crate) fn pending_of(all: &[PendingApproval], session: omuzaki_ops_api::SessionId) -> Vec<&PendingApproval> {
     all.iter().filter(|a| a.session == session).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use omuzaki_ops_api::Budget;
+
+    use super::budget_text;
+
+    #[test]
+    fn each_cap_is_rendered_as_it_is() {
+        assert_eq!(
+            budget_text(&Budget::default()),
+            "no spending allowed, tokens unlimited, seconds unlimited",
+            "the default allows no spending, so it is not 'unlimited'"
+        );
+        let capped = Budget { usd_micros: 2_500_000, tokens: Some(1000), seconds: Some(60) };
+        assert_eq!(budget_text(&capped), "spending up to 2500000 micro-dollars, up to 1000 tokens, up to 60 seconds");
+    }
 }
