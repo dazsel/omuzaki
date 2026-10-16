@@ -135,7 +135,7 @@ impl CalibrationPhase {
 pub(crate) const FRAME_WORDS: usize = 17;
 
 /// The frame loop's section: speed, frame time, late frames and the quality ladder. Written by the stage frame loop.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[non_exhaustive]
 pub struct FrameMetrics {
     /// When it was published (app clock).
@@ -178,7 +178,24 @@ pub struct FrameMetrics {
 impl FrameMetrics {
     /// An all-zero section published at `at`.
     pub fn new(at: Seconds) -> Self {
-        Self { at, ..Self::default() }
+        Self {
+            at,
+            fps: 0.0,
+            frame_ms: 0.0,
+            frame_ms_worst_1s: 0.0,
+            cpu_ms: 0.0,
+            gpu_ms: None,
+            face_paint_ms: None,
+            draw_calls: 0,
+            triangles: 0,
+            render_size: [0, 0],
+            late_frames: 0,
+            quality_rung: 0,
+            quality_changes: 0,
+            face_pressure: FacePressure::Unknown,
+            output_dropped: None,
+            track_to_submit_ms: None,
+        }
     }
 
     pub(crate) fn to_words(self) -> [u64; FRAME_WORDS] {
@@ -245,7 +262,7 @@ impl FrameMetrics {
 pub(crate) const PERFORM_WORDS: usize = 5;
 
 /// The perform loop's section. Written by the perform thread.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[non_exhaustive]
 pub struct PerformMetrics {
     /// When it was published (app clock).
@@ -263,7 +280,13 @@ pub struct PerformMetrics {
 impl PerformMetrics {
     /// An all-zero section published at `at`.
     pub fn new(at: Seconds) -> Self {
-        Self { at, ..Self::default() }
+        Self {
+            at,
+            source_fps: 0.0,
+            tracking: TrackingState::default(),
+            calibration: CalibrationPhase::default(),
+            skipped_steps: 0,
+        }
     }
 
     pub(crate) fn to_words(self) -> [u64; PERFORM_WORDS] {
@@ -293,7 +316,7 @@ impl PerformMetrics {
 pub(crate) const TRACKER_WORDS: usize = 6;
 
 /// The tracker's section: capture to publish, sampled at 10 Hz on the control thread that owns the tracker.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[non_exhaustive]
 pub struct TrackerMetrics {
     /// When it was published (app clock).
@@ -313,7 +336,14 @@ pub struct TrackerMetrics {
 impl TrackerMetrics {
     /// An all-zero section published at `at`.
     pub fn new(at: Seconds) -> Self {
-        Self { at, ..Self::default() }
+        Self {
+            at,
+            track_ms_p50: 0.0,
+            track_ms_p95: 0.0,
+            track_ms_max: 0.0,
+            tracker_frames: 0,
+            tracker_dropped: 0,
+        }
     }
 
     pub(crate) fn to_words(self) -> [u64; TRACKER_WORDS] {
@@ -346,7 +376,7 @@ pub(crate) const AUDIO_WORDS: usize = 9;
 
 /// The audio engine's section, condensed from its status at 4 Hz by the audio control thread. Sums only: no device or
 /// consumer names.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[non_exhaustive]
 pub struct AudioMetrics {
     /// When it was published (app clock).
@@ -370,7 +400,16 @@ pub struct AudioMetrics {
 impl AudioMetrics {
     /// An all-zero section published at `at`.
     pub fn new(at: Seconds) -> Self {
-        Self { at, ..Self::default() }
+        Self {
+            at,
+            heard_latency_declared_ms: 0.0,
+            heard_latency_measured_ms: None,
+            voice_fx_ms: 0.0,
+            underruns: 0,
+            overruns: 0,
+            tap_drops: 0,
+            model_blocks_missed: 0,
+        }
     }
 
     pub(crate) fn to_words(self) -> [u64; AUDIO_WORDS] {
