@@ -50,8 +50,8 @@ pub(crate) struct AnswerRun {
     pub compacted: bool,
     /// Bytes of the answer's text that compaction folded into the summary, so are no longer in the history.
     pub compacted_text: usize,
-    /// The session's step count just before the answer's commit was sent, if it was.
-    pub commit_base: Option<u32>,
+    /// The answer's commit was sent, so it may have been applied without the host seeing the reply.
+    pub commit_sent: bool,
 }
 
 impl Worker {
@@ -68,7 +68,7 @@ impl Worker {
             msg_from: self.messages.len(),
             compacted: false,
             compacted_text: 0,
-            commit_base: None,
+            commit_sent: false,
         };
         let result = match self.drive(&mut run, msg) {
             // Stop pressed as the answer was finishing still stops it: the queue was already cut.

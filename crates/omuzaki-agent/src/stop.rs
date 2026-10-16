@@ -37,7 +37,6 @@ impl Worker {
         let read = self.shared.lock().stop_text_read.unwrap_or(0);
         self.cut_history(run, read);
         self.shared.record(Entry::stopped(Some(read)));
-        let steps_before = self.session_info().map_or(0, |info| info.steps);
         let step = match self.sessions.stop(self.session, &self.cfg.principal) {
             Ok(stopped) => {
                 self.shared.emit(AssistantEvent::Paused);
@@ -65,21 +64,12 @@ impl Worker {
             let committed = match step {
                 Some(StopStep::Committed(id)) => Some(id),
                 // The executor closed it by itself: only a transaction it committed made an undo step. One it reverted
-                // to nothing (every edit undone) did not. The log names the transaction; the session's step count is
-                // the fallback when the log cannot be read.
-                Some(StopStep::Pending) => {
-                    let counted = self.session_info().is_some_and(|info| info.steps > steps_before);
-                    self.tx_in_history(tx.tx).unwrap_or(counted).then_some(tx.tx)
-                }
+                // to nothing (every edit undone) did not. The server's history says which, by the transaction's id.
+                Some(StopStep::Pending) => self.tx_in_history(tx.tx).then_some(tx.tx),
                 // The commit was already on its way when Stop cancelled the call, and the executor applied it first:
                 // the transaction is closed as a real undo step the host never saw confirmed.
-                _ => match run.commit_base {
-                    Some(base) => {
-                        let counted = self.session_info().is_some_and(|info| info.steps > base);
-                        self.tx_in_history(tx.tx).unwrap_or(counted).then_some(tx.tx)
-                    }
-                    None => None,
-                },
+                _ if run.commit_sent => self.tx_in_history(tx.tx).then_some(tx.tx),
+                _ => None,
             };
             if committed.is_some() {
                 self.write_step(run, " (stopped)");

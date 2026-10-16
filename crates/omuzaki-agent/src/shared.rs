@@ -229,19 +229,18 @@ impl Shared {
         entries
     }
 
-    /// Runs `publish` with the bytes of the text the answer in progress has written so far, in the turns already
-    /// recorded, under the lock Stop takes: either Stop has not been pressed and `publish` finishes before it can be,
-    /// or it has and `publish` does not run (`None`). Stop counts the answer's text from its first byte, so this is the
-    /// offset to subtract once the history it came from is gone; and after Stop cut that text to what was read, the
-    /// count no longer says what the history held.
+    /// Bytes of the text the answer in progress has written so far, in the turns already recorded. Stop counts the
+    /// answer's text from its first byte, so this is the offset to subtract once the history it came from is gone.
     ///
-    /// `publish` must be quick and must not call back into the host's shared state.
-    pub(crate) fn publish_unless_stopped<R>(&self, publish: impl FnOnce(usize) -> R) -> Option<R> {
+    /// `None` if Stop has been pressed: Stop cut that text to what was read, so the count no longer says what the
+    /// history held, and the caller must not build anything on it. Read under the lock Stop takes, so a Stop either
+    /// came first (`None`) or comes after and finds the count it is judged against.
+    pub(crate) fn answer_text_unless_stopped(&self) -> Option<usize> {
         let ctl = self.lock();
         if ctl.stopping {
             return None;
         }
-        Some(publish(Self::text_bytes(&ctl)))
+        Some(Self::text_bytes(&ctl))
     }
 
     fn text_bytes(ctl: &Control) -> usize {

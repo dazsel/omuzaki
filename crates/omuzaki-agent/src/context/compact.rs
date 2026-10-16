@@ -369,27 +369,26 @@ impl Worker {
             Some((bytes, mime)) => Some(self.cfg.sink.put_blob(bytes, mime).map_err(Flow::Fail)?),
             None => None,
         };
-        // Stop may have been pressed while the summary was written and stored. Nothing is published then: the history
-        // stays as it was and Stop's cut applies to it. The check and the publication are one step under Stop's lock,
-        // so a Stop either comes first and the summary is discarded, or finds the compaction done.
-        let shared = std::sync::Arc::clone(&self.shared);
-        let published = shared.publish_unless_stopped(|answer_text| {
-            self.messages = vec![Message::new(Role::User, rebuilt)];
-            // The answer now starts after the rebuilt message; `msg_from` pointed into the history that is gone, and so
-            // did the text of the answer's earlier turns, which Stop's byte count still includes.
-            run.msg_from = 1;
-            run.compacted_text = answer_text;
-            self.ledger = Ledger::new();
-            self.measured = 0;
-            run.compacted = true;
-        });
-        if published.is_none() {
+        // Stop may have been pressed while the summary was written and stored. Nothing is built on it then: the history
+        // stays as it was and Stop's cut applies to it. The count is read under Stop's lock, so a Stop either comes
+        // first and the summary is discarded, or comes after and is judged against this count.
+        let Some(answer_text) = self.shared.answer_text_unless_stopped() else {
             return Err(Flow::Stopped);
-        }
+        };
+        // The log first, then the history: a Stop that lands during the append finds the compaction complete in both,
+        // and what the log says is what a resume rebuilds.
         self.shared.record(match render {
             Some(block) => Entry::compacted_with_render(message, block),
             None => Entry::compacted(message),
         });
+        self.messages = vec![Message::new(Role::User, rebuilt)];
+        // The answer now starts after the rebuilt message; `msg_from` pointed into the history that is gone, and so did
+        // the text of the answer's earlier turns, which Stop's byte count still includes.
+        run.msg_from = 1;
+        run.compacted_text = answer_text;
+        self.ledger = Ledger::new();
+        self.measured = 0;
+        run.compacted = true;
         Ok(())
     }
 }

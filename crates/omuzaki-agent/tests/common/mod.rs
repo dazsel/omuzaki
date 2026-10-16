@@ -166,16 +166,6 @@ impl ScriptedServer {
         tools.push(ToolSpec { tool, behaviour: Arc::new(behaviour) });
     }
 
-    /// A tool whose result carries `structuredContent`, like the ones `omuzaki-mcp` renders.
-    pub fn add_structured(&self, tool: Tool, data: impl Fn(&JsonObject, usize) -> Value + Send + Sync + 'static) {
-        self.add(tool, move |args, call| {
-            let value = data(args, call);
-            let mut result = CallToolResult::success(vec![ContentBlock::text("ok")]);
-            result.structured_content = Some(value);
-            Outcome { result, gate: None }
-        });
-    }
-
     pub fn add_fixed(&self, tool: Tool, outcome: Outcome) {
         self.add(tool, move |_, _| outcome.clone());
     }
@@ -726,6 +716,9 @@ pub struct RecordingSink {
     pub hold_blobs_after: std::sync::atomic::AtomicUsize,
     /// Makes the append of a `Step` wait (and say so in `step_waiting`) until this is cleared.
     pub hold_steps: std::sync::atomic::AtomicBool,
+    /// The same for the `Compacted` entry.
+    pub hold_compacted: std::sync::atomic::AtomicBool,
+    pub compacted_waiting: std::sync::atomic::AtomicBool,
     pub step_waiting: std::sync::atomic::AtomicBool,
 }
 
@@ -737,6 +730,12 @@ impl RecordingSink {
 
 impl EntrySink for RecordingSink {
     fn append(&self, entry: &Entry) -> Result<(), HostError> {
+        if matches!(entry, Entry::Compacted { .. }) {
+            while self.hold_compacted.load(std::sync::atomic::Ordering::SeqCst) {
+                self.compacted_waiting.store(true, std::sync::atomic::Ordering::SeqCst);
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
         if matches!(entry, Entry::Step { .. }) {
             while self.hold_steps.load(std::sync::atomic::Ordering::SeqCst) {
                 self.step_waiting.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -897,16 +896,17 @@ pub fn standard_server(sessions: &Arc<FakeSessions>) -> ScriptedServer {
         std::thread::sleep(Duration::from_millis(5));
         Outcome::text("approval applied")
     });
-    // `history_log`: the committed transactions, as `omuzaki-mcp` renders its log.
+    // `history_log`: the committed transactions, as `omuzaki-mcp` answers it: the log as JSON in a text block, and no
+    // `structuredContent`.
     let log = Arc::clone(sessions);
-    server.add_structured(tool("history_log", "history.log", "builtin", true), move |_, _| {
+    server.add(tool("history_log", "history.log", "builtin", true), move |_, _| {
         let events: Vec<Value> = log
             .committed()
             .iter()
             .enumerate()
-            .map(|(n, tx)| json!({"n": n + 1, "event": {"event": "tx_committed", "tx": tx, "label": "l"}}))
+            .map(|(n, tx)| json!({"n": n + 1, "event": {"event": "tx_committed", "tx": tx, "label": "l", "actor": "system"}}))
             .collect();
-        json!({"latest": events.len(), "events": events, "note": "the log"})
+        Outcome::text(&json!({"latest": events.len(), "events": events, "note": "the log"}).to_string())
     });
     // The transaction tools change the fake session only when they succeed, so a test that replaces one with a refusal
     // leaves the transaction open, like the executor does.

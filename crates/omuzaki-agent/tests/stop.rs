@@ -737,3 +737,69 @@ fn a_stop_the_executor_refuses_is_shown_and_the_transaction_is_closed_before_the
     assert!(rig.sessions.open_tx().is_none(), "the next message closed it first");
     assert_eq!(rig.sink.entries().iter().filter(|e| matches!(e, Entry::Step { .. })).count(), 1);
 }
+
+#[test]
+fn stop_pressed_while_the_compacted_entry_is_appended_leaves_the_log_and_the_history_agreeing() {
+    let heavy = ScriptTurn::new(vec![
+        LlmEvent::start("m"),
+        LlmEvent::TextDelta("AAAAAAAAAA".into()),
+        LlmEvent::tool_use_start("c1", "render_preview"),
+        LlmEvent::tool_use_end("c1"),
+        LlmEvent::Usage(omuzaki_llm_api::usage::Usage::new(15_001, 10)),
+        LlmEvent::Stop(StopReason::ToolUse),
+    ]);
+    let rig = Rig::with(
+        script(vec![heavy, say_turn("SUMMARY-TEXT"), say_turn("ok")]),
+        RigOptions { window: Some(20_000), prices: free_prices(), ..RigOptions::default() },
+        standard_server,
+    );
+    rig.sink.hold_compacted.store(true, std::sync::atomic::Ordering::SeqCst);
+    rig.host.send(UserMessage::new("go")).unwrap();
+    Rig::wait_for("the entry being appended", || rig.sink.compacted_waiting.load(std::sync::atomic::Ordering::SeqCst));
+    rig.host.stop();
+    rig.sink.hold_compacted.store(false, std::sync::atomic::Ordering::SeqCst);
+    rig.until_done(0.0);
+    let kinds: Vec<&str> = rig
+        .sink
+        .entries()
+        .iter()
+        .filter_map(|e| match e {
+            Entry::Compacted { .. } => Some("compacted"),
+            Entry::Stopped { .. } => Some("stopped"),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(kinds, ["compacted", "stopped"], "both are in the log, in order");
+    rig.say("again", 0.0);
+    let first = &rig.llm.requests()[2].messages[0];
+    let text: String = first
+        .content
+        .iter()
+        .filter_map(|b| if let ContentBlock::Text(t) = b { Some(t.as_str()) } else { None })
+        .collect();
+    assert!(text.contains("SUMMARY-TEXT"), "the history is the compacted one the log names: {text:?}");
+}
+
+#[test]
+fn a_pending_stop_that_commits_is_recorded_as_a_step_by_its_transaction() {
+    let rig = Rig::with(
+        script(vec![call_turn("", &[("c1", "face_set_profile", "{}")]), long_text(20)]),
+        RigOptions { hold_after: Some(FIRST_TURN_EVENTS + 2), ..RigOptions::default() },
+        standard_server,
+    );
+    rig.sessions.set_stop(StopBehaviour::Pending { close_after: 1.0 }, 0.0);
+    rig.host.send(UserMessage::new("go")).unwrap();
+    Rig::wait_for("the transaction", || {
+        rig.server.called("tx_begin") == 1 && rig.server.called("face_set_profile") == 1
+    });
+    rig.host.stop();
+    rig.until_done(0.1);
+    let labels: Vec<String> = rig
+        .sink
+        .entries()
+        .into_iter()
+        .filter_map(|e| if let Entry::Step { label, .. } = e { Some(label) } else { None })
+        .collect();
+    assert_eq!(labels.len(), 1, "{labels:?}");
+    assert!(labels[0].contains("(stopped)"), "{labels:?}");
+}
