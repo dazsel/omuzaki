@@ -67,6 +67,10 @@ const SAD_INNER_UP: f32 = 0.16;
 const SAD_OUTER_DROP: f32 = 0.10;
 /// The lids never meet closer than this, so a nearly shut eye keeps a hairline of white.
 const MIN_GAP: f32 = 0.004;
+/// How far from the inner corner, in eye units, a sad lid takes to open to its full gap.
+const SAD_POINT_SPAN: f32 = 0.4;
+/// The point is full from a tilt of `1 / SAD_POINT_RAMP` toward sad, so a faint sadness does not leave a half-open corner.
+const SAD_POINT_RAMP: f32 = 4.0;
 /// How much openness a squeeze fades the open eye over, above [`SHUT_BELOW`].
 const HANDOVER_BAND: f32 = 0.2;
 /// An eye whose openness is below this is shut (`op < 0.08`).
@@ -335,6 +339,10 @@ impl Eye {
         let gap = (v - lower).max(MIN_GAP);
         // A pointed outer corner pulls the lids together over the last stretch.
         let gap = (gap * (1.0 - self.shape.taper * smooth01((u - 0.55) / 0.45))).max(MIN_GAP);
+        // Sad lifts the inner corner of the lid; the lids still meet there, in the tear duct's point, instead of the
+        // aperture closing with a vertical edge.
+        let sad = (-tilt * SAD_POINT_RAMP).clamp(0.0, 1.0);
+        let gap = (gap * (1.0 - sad * (1.0 - smooth01((u + 1.0) / SAD_POINT_SPAN)))).max(MIN_GAP);
         lower + gap + self.shape.shear * u
     }
 
@@ -463,6 +471,11 @@ mod tests {
         for (open, tilt, low_lid, top, bot) in JS_CASES {
             let e = eye(js_aperture(), open, tilt, low_lid);
             for (i, u) in JS_US.into_iter().enumerate() {
+                // The one place this port departs from the prototype: a sad lid still meets the lower lid at the inner
+                // corner (see `sad_eyes_end_in_a_point_at_the_inner_corner`), where the prototype's closes with an edge.
+                if tilt < 0.0 && u == -1.0 {
+                    continue;
+                }
                 assert!(
                     (e.top(u) - top[i]).abs() < 1e-5,
                     "top({u}) at open {open}, tilt {tilt}: {} vs {}",
@@ -477,6 +490,19 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn sad_eyes_end_in_a_point_at_the_inner_corner() {
+        // The aperture closes at `u = -1` with the lids at most 0.02 eye units apart for every tilt, so the corner is a
+        // tear-duct point and never a vertical edge; and the lid still opens to its full gap a little way in.
+        for tilt in [-1.1, -1.0, -0.5, -0.25, 0.0, 0.5, 1.0] {
+            let e = eye(js_aperture(), 1.0, tilt, 0.0);
+            let corner = e.top(-1.0) - e.bottom(-1.0);
+            assert!(corner < 0.02, "tilt {tilt}: the lids are {corner} apart at the inner corner");
+        }
+        let sad = eye(js_aperture(), 1.0, -1.0, 0.0);
+        assert!(sad.top(-0.4) - sad.bottom(-0.4) > 0.2, "the sad lid opens past the point");
     }
 
     // ---- properties

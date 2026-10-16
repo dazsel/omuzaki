@@ -588,6 +588,69 @@ fn rendered_squeeze_steps_move_no_more_ink_than_their_neighbours_at_the_handover
     );
 }
 
+/// The end points of a path, as a polygon.
+fn polygon(list: &DrawList, path: omuzaki_face_api::PathRef) -> Vec<Vec2> {
+    list.elements(path)
+        .iter()
+        .filter_map(|el| match *el {
+            PathEl::Move(p) | PathEl::Line(p) | PathEl::Quad(_, p) | PathEl::Cubic(_, _, p) => Some(p),
+            PathEl::Close => None,
+        })
+        .collect()
+}
+
+/// Even-odd point in polygon.
+fn inside(poly: &[Vec2], p: Vec2) -> bool {
+    let mut hit = false;
+    for (a, b) in poly.iter().zip(poly.iter().cycle().skip(1)) {
+        if (a.y > p.y) != (b.y > p.y) && p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x {
+            hit = !hit;
+        }
+    }
+    hit
+}
+
+#[test]
+fn the_chevron_grows_from_the_lids_and_stays_inside_the_open_eye() {
+    let profile = profile();
+    for squeeze in [0.1_f32, 0.3, 0.5, 0.7] {
+        let mut p = params(|e, _| e.squeeze = squeeze);
+        p.left_eye = omuzaki_face_api::EyeParams { open: 1.0, close: 0.0, arc: 0.0, lower_lid: 0.0 };
+        p.right_eye = p.left_eye;
+        let drawn = paint(&profile, &p).into_base();
+        // The eye's outline is the clip of each open eye; the chevron is the three-point stroke 4.8 mm wide.
+        let outlines: Vec<Vec<Vec2>> = drawn
+            .cmds()
+            .iter()
+            .filter_map(|c| if let Cmd::PushClip(path) = c { Some(polygon(&drawn, *path)) } else { None })
+            .filter(|poly| poly.len() > 20)
+            .collect();
+        let chevrons: Vec<Vec<Vec2>> = drawn
+            .cmds()
+            .iter()
+            .filter_map(|c| match c {
+                Cmd::Stroke { path, width, .. }
+                    if (width - 0.0048).abs() < 1e-7 && drawn.elements(*path).len() == 3 =>
+                {
+                    Some(polygon(&drawn, *path))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!((chevrons.len(), outlines.len()), (2, 2), "squeeze {squeeze}");
+        let open = drawn.cmds().iter().any(|c| matches!(c, Cmd::PushClip(_)));
+        assert!(open);
+        for (chevron, outline) in chevrons.iter().zip(&outlines) {
+            for point in chevron {
+                assert!(
+                    inside(outline, *point),
+                    "squeeze {squeeze}: the chevron reaches {point:?}, outside the open eye"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn eye_lines_keep_the_alpha_of_their_resolved_colours() {
     use omuzaki_face_api::{ColourRef, Paint};

@@ -210,13 +210,26 @@ fn star_iris(ctx: &mut PaintCtx<'_>, iris: &Iris, strength: f32) {
     });
 }
 
-/// The `>` or `<` of a squeezed eye: two arms from the outer corner region to a vertex toward the nose, in the lash
-/// colour. The lid closes with the effect (see [`Eye::new`]), so the chevron fades in over a closing eye.
+/// The `>` or `<` of a squeezed eye: two arms from the vertex toward the nose out to the outer corner region, in the
+/// lash colour. The lid closes with the effect (see [`Eye::new`]), so the chevron grows over a closing eye: the arms
+/// start at the vertex, where the lids meet, their length rises with the effect, and while the open eye shows they
+/// stop at its outline instead of reaching over the lid.
 fn squeeze(ctx: &mut PaintCtx<'_>, side: Side, strength: f32) {
     let eye = Eye::new(ctx.profile, ctx.params, side);
     let colour = fixed_colour(&ctx.profile.eyes.lash.colour, FALLBACK_COLOUR);
     let (arm, vertex) = (SQUEEZE_ARM, SQUEEZE_VERTEX);
-    let points = [eye.point(arm.x, arm.y), eye.point(vertex.x, vertex.y), eye.point(arm.x, -arm.y)];
+    // How far the open eye has given way: `0` while its pieces show, `1` once they are gone (see `Eye::open_fade`).
+    let gone = if eye.is_open() { 1.0 - eye.open_fade(ctx.params.effects.squeeze) } else { 1.0 };
+    let reach = strength.clamp(0.0, 1.0);
+    // The vertex sits where the lids meet at its place along the eye: the middle of the narrowing aperture while the open
+    // eye shows, and its own place once the eye is gone.
+    let meet = Vec2::new(vertex.x, vertex.y + (eye.midline(vertex.x) - vertex.y) * (1.0 - gone));
+    let end = |sign: f32| {
+        let end = meet + (Vec2::new(arm.x, sign * arm.y) - meet) * reach;
+        let inside = end.y.clamp(eye.bottom(end.x), eye.top(end.x));
+        eye.point(end.x, inside + (end.y - inside) * gone)
+    };
+    let points = [end(1.0), eye.point(meet.x, meet.y), end(-1.0)];
     let list = ctx.list(FaceLayerId::Base);
     let path = list.path().polyline(&points).finish();
     list.push(Cmd::Stroke {
