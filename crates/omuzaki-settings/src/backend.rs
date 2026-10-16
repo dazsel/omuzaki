@@ -50,8 +50,8 @@ pub(crate) enum Quarantined {
 pub(crate) struct Updated {
     /// The name the file was moved to because it did not parse, even if the write after it then failed.
     pub moved_aside: Option<String>,
-    /// Whether the new text is in place.
-    pub outcome: Result<(), SettingError>,
+    /// Whether the new text is in place; `Ok(true)` when the file was replaced, `Ok(false)` when it already said it.
+    pub outcome: Result<bool, SettingError>,
 }
 
 /// Storage for the two settings files.
@@ -170,7 +170,7 @@ impl FileBackend {
         backup: Option<&str>,
         edit: &mut dyn FnMut(Option<&str>) -> Result<Edited, String>,
         moved_aside: &mut Option<String>,
-    ) -> Result<(), SettingError> {
+    ) -> Result<bool, SettingError> {
         let path = self.path(scope);
         let _lock = self.lock(&path)?;
         if let Some(name) = path.file_name() {
@@ -193,12 +193,13 @@ impl FileBackend {
             edited = edit(None).map_err(reason)?;
         }
         let Edited::Write(text) = edited else {
-            return Ok(());
+            return Ok(false);
         };
         if let (Some(version), Some(_)) = (backup, &current) {
             self.back_up(&path, scope, version)?;
         }
-        write_atomic(&path, &text).map_err(|e| storage(&path, "write", &e))
+        write_atomic(&path, &text).map_err(|e| storage(&path, "write", &e))?;
+        Ok(true)
     }
 
     /// Copies the file to `<name>.bak-<version>` once per app version: an existing copy is the file as it was before

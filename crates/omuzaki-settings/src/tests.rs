@@ -838,6 +838,7 @@ fn a_change_the_file_cannot_take_is_reported_for_its_key_and_the_others_still_la
     set::<Scale>(&store, &120);
     let error = store.flush().unwrap_err();
     assert_eq!(error.key, "ui.mig");
+    assert!(matches!(error.kind, SettingErrorKind::Storage { .. }), "{error}");
     let text = rig.user_text();
     assert!(text.contains("scale = 120") && !text.contains("mig"), "the other change landed: {text}");
     let findings = store.findings();
@@ -849,4 +850,29 @@ fn a_change_the_file_cannot_take_is_reported_for_its_key_and_the_others_still_la
     set::<Theme>(&store, &"light".to_owned());
     assert!(store.flush().is_err());
     assert!(rig.user_text().contains("theme = \"light\""));
+}
+
+#[test]
+fn a_refused_migration_edit_keeps_the_backup_owed_until_a_write_makes_it() {
+    let rig = Rig::new();
+    rig.write_user("versions = 7\n[ui]\nmig = { percent = 125 }\n");
+    let store = rig.open();
+    assert_eq!(get::<Migrated>(&store), 125, "migrated in memory");
+    set::<Migrated>(&store, &150);
+    let error = store.flush().unwrap_err();
+    assert!(
+        matches!(error.kind, SettingErrorKind::Storage { .. }),
+        "a file-shape refusal is a storage failure: {error}"
+    );
+    let findings = store.findings();
+    let refused = findings.iter().find(|f| f.error.key == "ui.mig").expect("a finding for the key");
+    assert!(matches!(refused.error.kind, SettingErrorKind::Storage { .. }), "{refused:?}");
+    let backup = rig.paths.config().join(format!("settings.toml.bak-{}", env!("CARGO_PKG_VERSION")));
+    assert!(!backup.exists());
+    // Repair the file shape (the migration source stays as it was), then the pending edit must still back it up.
+    let repaired = "[ui]\nmig = { percent = 125 }\n";
+    rig.write_user(repaired);
+    store.flush().unwrap();
+    assert_eq!(fs::read_to_string(&backup).unwrap(), repaired, "the pre-migration file was copied first");
+    assert!(rig.user_text().contains("mig = 150") && rig.user_text().contains("\"ui.mig\" = 3"));
 }

@@ -369,10 +369,10 @@ impl Inner {
                 .collect();
             for (key, reason) in &refused {
                 let stored = pending.get(key).and_then(|d| d.value.clone()).unwrap_or(Value::Null);
-                refusals.push(SettingFinding::new(SettingError::invalid(key, reason.clone()), stored, "write"));
+                refusals.push(SettingFinding::new(refusal_error(key, reason), stored, "write"));
             }
             match outcome {
-                Ok(()) => self.settle(scope, &landed),
+                Ok(wrote) => self.settle(scope, &landed, wrote),
                 Err(e) => failure = failure.or(Some(e)),
             }
         }
@@ -420,14 +420,18 @@ impl Inner {
     }
 
     /// Forgets the changes a write took, except those changed again while it ran.
-    fn settle(&self, scope: SettingScope, written: &BTreeMap<String, Dirty>) {
+    /// `wrote`: the file was replaced, so a pre-migration backup asked for was made (or was already there). A write
+    /// that changed nothing leaves the backup still owed.
+    fn settle(&self, scope: SettingScope, written: &BTreeMap<String, Dirty>, wrote: bool) {
         let mut st = locked(&self.state);
         for (key, dirty) in written.iter().filter(|(_, d)| d.scope == scope) {
             if st.dirty.get(key) == Some(dirty) {
                 st.dirty.remove(key);
             }
         }
-        st.needs_backup.retain(|s| *s != scope);
+        if wrote {
+            st.needs_backup.retain(|s| *s != scope);
+        }
     }
 
     fn flush_quietly(&self) {
@@ -496,6 +500,11 @@ fn load_key(key: &Key, doc: &DocumentMut, file: &str, out: &mut Loaded) {
         out.moved.insert(old.to_owned(), Dirty { scope, value: None, version: 1 });
     }
     out.stored.insert(name.to_owned(), value);
+}
+
+/// A change the file's shape refuses is a storage failure, not an invalid value: the value itself was accepted.
+fn refusal_error(key: &str, reason: &str) -> SettingError {
+    SettingError::new(key, SettingErrorKind::Storage { reason: reason.to_owned() })
 }
 
 fn unknown_profile(id: &ProfileId) -> SettingError {
