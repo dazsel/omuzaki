@@ -1673,6 +1673,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aedcfb3409746eddb02b9e19ebda1c3394f759a152e48ee875a0844d1b955484"
 
 [[package]]
+name = "flatbuffers"
+version = "25.12.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "35f6839d7b3b98adde531effaf34f0c2badc6f4735d26fe74709d8e513a96ef3"
+dependencies = [
+ "bitflags 2.13.2",
+ "rustc_version",
+]
+
+[[package]]
 name = "flate2"
 version = "1.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3391,6 +3401,7 @@ dependencies = [
 name = "omuzaki-ai-litert"
 version = "0.0.0"
 dependencies = [
+ "flatbuffers",
  "flate2",
  "libloading 0.9.0",
  "omuzaki-ai-api",
@@ -3399,6 +3410,7 @@ dependencies = [
  "sha2",
  "tar",
  "tempfile",
+ "tracing",
 ]
 
 [[package]]
@@ -3622,9 +3634,11 @@ name = "omuzaki-cli"
 version = "0.0.0"
 dependencies = [
  "clap",
+ "omuzaki-anim-api",
  "omuzaki-core",
  "omuzaki-doc",
  "omuzaki-doc-api",
+ "omuzaki-face-api",
  "omuzaki-io-gltf",
  "omuzaki-io-ops",
  "omuzaki-io-vrm",
@@ -3635,6 +3649,7 @@ dependencies = [
  "omuzaki-stage",
  "omuzaki-store",
  "omuzaki-store-api",
+ "omuzaki-track-api",
  "schemars",
  "serde",
  "serde_json",
@@ -3677,6 +3692,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "toml_edit",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3727,11 +3743,13 @@ dependencies = [
  "omuzaki-render-api",
  "omuzaki-render-mock",
  "omuzaki-store-api",
+ "omuzaki-store-mock",
  "pollster",
  "proptest",
  "schemars",
  "serde",
  "serde_json",
+ "serde_path_to_error",
  "thiserror 2.0.21",
  "tiny-skia",
  "toml",
@@ -4224,6 +4242,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-settings-mock"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-ops-api",
+ "omuzaki-settings-api",
+ "schemars",
+ "serde",
+ "serde_json",
+ "unicode-normalization",
+]
+
+[[package]]
 name = "omuzaki-stage"
 version = "0.0.0"
 dependencies = [
@@ -4238,6 +4270,7 @@ dependencies = [
  "omuzaki-anim",
  "omuzaki-anim-api",
  "omuzaki-anim-mock",
+ "omuzaki-budget",
  "omuzaki-char",
  "omuzaki-char-api",
  "omuzaki-char-mock",
@@ -4255,6 +4288,7 @@ dependencies = [
  "omuzaki-render-api",
  "omuzaki-render-mock",
  "omuzaki-rig",
+ "omuzaki-settings-api",
  "omuzaki-stage-api",
  "omuzaki-store-api",
  "omuzaki-store-mock",
@@ -4503,6 +4537,29 @@ dependencies = [
  "tempfile",
  "toml",
  "tracing",
+]
+
+[[package]]
+name = "omuzaki-ui-api"
+version = "0.0.0"
+dependencies = [
+ "egui",
+ "inventory",
+ "omuzaki-core",
+ "omuzaki-ops-api",
+ "serde",
+]
+
+[[package]]
+name = "omuzaki-ui-mock"
+version = "0.0.0"
+dependencies = [
+ "egui",
+ "omuzaki-core",
+ "omuzaki-doc-mock",
+ "omuzaki-ops-api",
+ "omuzaki-ops-mock",
+ "omuzaki-ui-api",
 ]
 
 [[package]]

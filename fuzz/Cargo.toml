@@ -1,0 +1,54 @@
+# The fuzz targets for the parsers on trust boundaries (#1653), in cargo-fuzz's layout. Outside the shipped crates and
+# outside the main workspace (the `[workspace]` below), so libFuzzer never reaches a build that ships.
+#
+#   cargo run --release --bin seed -- corpus       # seed corpora from the tests' synthetic inputs
+#   cargo +nightly fuzz run <target> corpus/<target> -- -max_total_time=600
+[package]
+name = "omuzaki-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+# Builds the seed models with the tests' own builder (src/seed.rs).
+flatbuffers = "25.12.19"
+libfuzzer-sys = "0.4"
+omuzaki-ai-api = { path = "../crates/omuzaki-ai-api" }
+omuzaki-ai-litert = { path = "../crates/omuzaki-ai-litert" }
+omuzaki-ai-ort = { path = "../crates/omuzaki-ai-ort", features = ["fuzzing"] }
+omuzaki-ops-api = { path = "../crates/omuzaki-ops-api", features = ["fuzzing"] }
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "litert_scan"
+path = "fuzz_targets/litert_scan.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ort_scan"
+path = "fuzz_targets/ort_scan.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "file_access_path"
+path = "fuzz_targets/file_access_path.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "seed"
+path = "src/seed.rs"
+test = false
+doc = false
+bench = false

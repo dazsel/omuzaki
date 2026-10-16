@@ -15,6 +15,9 @@ pass() { echo "ok: $*"; }
 check() { python3 -I "$GATE" check --heads "$1" --allowed "${2:-}" --comments "$work/comments.json" >/dev/null 2>&1; }
 expect_ok() { if check "${@:2}"; then pass "$1"; else fail "$1: wanted pass"; fi; }
 expect_red() { if check "${@:2}"; then fail "$1: wanted fail"; else pass "$1"; fi; }
+# hosted RUNS_JSON FILES_JSON HEAD: the exit code of a check with no comments and a hosted-run fixture.
+hosted() { printf '{"runs":%s,"files":%s}' "$1" "$2" >"$work/hosted.json"; printf '[]' >"$work/comments.json"
+    python3 -I "$GATE" check --heads "$3" --comments "$work/comments.json" --hosted "$work/hosted.json" >/dev/null 2>&1; }
 # value KEY: the value of KEY in the last `heads` output.
 value() { sed -n "s/^$1=//p" <<<"$out"; }
 expect() { if [[ $(value "$1") == "$2" ]]; then pass "$3"; else fail "$3: $1 was '$(value "$1")', wanted '$2'"; fi; }
@@ -117,6 +120,133 @@ g checkout -q -b side "$own"; echo side >"$repo/side.txt"; g add -A; g commit -q
 g checkout -q pr; g merge -q --no-ff -m "merge side" side; sidemerge=$(g rev-parse HEAD)
 heads "$sidemerge" main "$resolved"
 expect skip false "merging a branch that is not main is not skipped"
+
+# Hosted runs: one good run, then each rule broken in turn.
+run() { # EVENT PATH SHA CONCLUSION TESTJOB_CONCLUSION
+    printf '[{"id":7,"event":"%s","path":"%s","head_sha":"%s","conclusion":"%s","jobs":[{"name":"plan","conclusion":"success"},{"name":"test (1)","conclusion":"success"},{"name":"test (2)","conclusion":"%s"}]}]' "$@"
+}
+DOCS='["docs/a.md"]'
+GOOD=$(run workflow_dispatch .github/workflows/ci.yml "$HEAD" success success)
+hosted "$GOOD" "$DOCS" "$HEAD" && pass "a successful hosted run on the head passes" || fail "hosted pass case"
+hosted "$(run pull_request .github/workflows/ci.yml "$HEAD" success success)" "$DOCS" "$HEAD" \
+    && fail "(a) wrong event" || pass "(a) a run of another event does not count"
+hosted "$(run workflow_dispatch .github/workflows/nightly.yml "$HEAD" success success)" "$DOCS" "$HEAD" \
+    && fail "(b) wrong workflow" || pass "(b) another workflow does not count"
+hosted "$GOOD" "$DOCS" "$OTHER" && fail "(c) wrong head" || pass "(c) a run on another head does not count"
+hosted "$(run workflow_dispatch .github/workflows/ci.yml "$HEAD" failure success)" "$DOCS" "$HEAD" \
+    && fail "(d) failed run" || pass "(d) a failed run does not count"
+hosted "$(run workflow_dispatch .github/workflows/ci.yml "$HEAD" success skipped)" "$DOCS" "$HEAD" \
+    && fail "(d) skipped test" || pass "(d) a skipped test job does not count"
+hosted "$(run workflow_dispatch .github/workflows/ci.yml "$HEAD" success cancelled)" "$DOCS" "$HEAD" \
+    && fail "(d) cancelled test" || pass "(d) a cancelled test job does not count"
+hosted "$(run workflow_dispatch .github/workflows/ci.yml@refs/heads/x "$HEAD" success success)" "$DOCS" "$HEAD" \
+    && pass "a ref-qualified workflow path counts" || fail "ref-qualified path"
+EMPTY='[{"id":8,"event":"workflow_dispatch","path":".github/workflows/ci.yml","head_sha":"'$HEAD'","conclusion":"success","jobs":[{"name":"plan","conclusion":"success"},{"name":"test (${{ matrix.name }})","conclusion":"skipped"}]}]'
+hosted "$EMPTY" "$DOCS" "$HEAD" && pass "an empty plan (matrix never expanded) passes" || fail "empty plan"
+hosted "$EMPTY" '[".github/workflows/ci.yml"]' "$HEAD" && fail "empty plan, workflow edit" || pass "an empty plan does not excuse a workflow edit"
+hosted "$GOOD" '["docs/a.md",".github/workflows/ci.yml"]' "$HEAD" \
+    && fail "(e) workflow edit" || pass "(e) a PR that edits a workflow needs a human line"
+hosted "$GOOD" '[".github/workflows/new.yml"]' "$HEAD" && fail "(e) other workflow" || pass "(e) any file under workflows counts"
+for path in tools/ci/gate-aggregate.py tools/ci/plan-outputs.py xtask/src/affected.rs .config/nextest.toml .cargo/config.toml rust-toolchain.toml Cargo.toml deny.toml clippy.toml rustfmt.toml .github/actions/setup-linux/action.yml; do
+    hosted "$GOOD" "[\"$path\"]" "$HEAD" && fail "(e) $path" || pass "(e) a PR that edits $path needs a human line"
+done
+hosted "$GOOD" '["Cargo.lock"]' "$HEAD" && pass "(e) a lockfile-only change is eligible" || fail "lockfile only"
+hosted "$GOOD" '["Cargo.lock","tools/tests/self_gate.sh","crates/a/src/lib.rs","crates/a/Cargo.toml"]' "$HEAD" && pass "(e) tests and crate code do not exclude" || fail "(e) over-broad"
+
+# The changed-file list: complete below the API cap, refused at it (a protected path could lie beyond).
+cap() { python3 -I - "$GATE" "$1" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sg", sys.argv[1]); sg = importlib.util.module_from_spec(spec); spec.loader.exec_module(sg)
+pages = int(sys.argv[2])
+def fetch(n):
+    return [{"filename": f"f{n}_{i}"} for i in range(100)] if n <= pages else []
+files = sg.changed_files(fetch)
+print("none" if files is None else len(files))
+PY
+}
+[[ $(cap 2) == 200 ]] && pass "a short file list is returned whole" || fail "short file list"
+[[ $(cap 29) == 2900 ]] && pass "a list just under the cap is returned whole" || fail "list under cap"
+[[ $(cap 30) == none ]] && pass "a list at the API cap is refused (fail closed)" || fail "list at cap"
+
+# The root manifest: protected only for an edit that chooses what runs (workspace members, [patch], [replace], xtask).
+python3 -I - "$GATE" <<'PY' && pass "a workspace dependency addition and a bump are eligible" || fail "workspace dependency edit"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sg", sys.argv[1]); sg = importlib.util.module_from_spec(spec); spec.loader.exec_module(sg)
+base = '[workspace]\nmembers = ["crates/*", "xtask"]\n\n[workspace.dependencies]\nserde = "1"\n\n[profile.dev]\nopt-level = 1\n'
+added = base.replace('serde = "1"', 'serde = "1"\nregex = "1"')
+bumped = base.replace('serde = "1"', 'serde = "1.0.200"')
+sys.exit(1 if sg.manifest_protected(base, added) or sg.manifest_protected(base, bumped) else 0)
+PY
+python3 -I - "$GATE" <<'PY' && pass "a members, exclude, [patch], [replace] or xtask edit is refused" || fail "protected manifest edits"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sg", sys.argv[1]); sg = importlib.util.module_from_spec(spec); spec.loader.exec_module(sg)
+base = '[workspace]\nmembers = ["crates/*", "xtask"]\n\n[workspace.dependencies]\nserde = "1"\n'
+edits = [
+    base.replace('"crates/*", ', '"crates/*", "spikes/*", '),
+    base.replace('members = ["crates/*", "xtask"]', 'members = ["crates/*", "xtask"]\nexclude = ["crates/a"]'),
+    base.replace('members = ["crates/*", "xtask"]', 'members = ["crates/*"]'),
+    base + '\n[patch.crates-io]\nserde = { path = "x" }\n',
+    base + '\n[replace]\n"serde:1.0.0" = { path = "x" }\n',
+    base.replace('serde = "1"', 'serde = "1"\nxtask-helper = "1"'),
+    'patch.crates-io.serde = { path = "x" }\n' + base,
+    'patch = { crates-io = { serde = { path = "x" } } }\n' + base,
+    'replace."serde:1.0.0" = { path = "x" }\n' + base,
+    'workspace.exclude = ["crates/a"]\n' + base,
+]
+sys.exit(0 if all(sg.manifest_protected(base, edit) for edit in edits) else 1)
+PY
+python3 -I - "$GATE" <<'PY' && pass "an edit to an existing [patch] section and unreadable text are refused" || fail "patch edit / missing text"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sg", sys.argv[1]); sg = importlib.util.module_from_spec(spec); spec.loader.exec_module(sg)
+base = '[workspace]\nmembers = ["crates/*"]\n[patch.crates-io]\na = { path = "a" }\n'
+sys.exit(0 if sg.manifest_protected(base, base + 'b = { path = "b" }\n') and sg.manifest_protected(None, base) and sg.manifest_protected(base, None) else 1)
+PY
+
+# The root manifest is compared as parsed TOML (not by lines), minus [workspace.dependencies].
+python3 -I - "$GATE" <<'PY' && pass "quoted and spaced headers, multi-line arrays, profiles and unparsable text are refused; a reorder is eligible" || fail "parsed manifest comparison"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sg", sys.argv[1]); sg = importlib.util.module_from_spec(spec); spec.loader.exec_module(sg)
+if sg.tomllib is None:
+    sys.exit(0)  # Python before 3.11 treats every edit as protected; CI's python has tomllib
+base = '[workspace]\nresolver = "2"\nmembers = ["crates/*"]\nexclude = [\n  "crates/a",\n  "crates/b",\n]\n\n[workspace.dependencies]\nserde = "1"\nregex = "1"\n\n[profile.dev]\nopt-level = 1\n'
+protected = [
+    base + '\n["patch".crates-io]\nserde = { path = "x" }\n',
+    base + '\n[ patch . crates-io ]\nserde = { path = "x" }\n',
+    'patch.crates-io.serde = { path = "x" }\n' + base,
+    'patch = { crates-io = { serde = { path = "x" } } }\n' + base,
+    base.replace('  "crates/b",\n', '  "crates/b",\n  "crates/c",\n'),
+    base.replace('opt-level = 1', 'opt-level = 3'),
+    base + "this is not toml",
+    base.replace('regex = "1"', 'regex = "1"\nxtask = { path = "xtask" }'),
+    base.replace('regex = "1"', 'regex = "1"\nrunner = { path = "xtask" }'),
+]
+eligible = [
+    base.replace('serde = "1"', 'serde = "1.0.200"'),
+    base.replace('regex = "1"', 'regex = "1"\nanyhow = "1"'),
+    base.replace('serde = "1"\nregex = "1"', 'regex = "1"\nserde = "1"'),
+    base.replace('[profile.dev]\nopt-level = 1\n', '') + '\n[profile.dev]\nopt-level = 1\n',
+]
+bad = [e for e in protected if not sg.manifest_protected(base, e)] + [e for e in eligible if sg.manifest_protected(base, e)]
+if sg.manifest_protected(base, base):
+    bad.append("unchanged")
+if not sg.manifest_protected(base + "this is not toml", base):
+    bad.append("unparsable base")
+for e in bad:
+    print("wrong verdict for:", e, file=sys.stderr)
+sys.exit(1 if bad else 0)
+PY
+
+# The failure message: a PR touching a protected path is told only a human line counts; others may use hosted tests.
+msg() { python3 -I - "$GATE" "$1" <<'PY'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("sg", sys.argv[1]); sg = importlib.util.module_from_spec(spec); spec.loader.exec_module(sg)
+print(sg.verdict([], ["a" * 40], set(), [], json.loads(sys.argv[2]))[1])
+PY
+}
+m=$(msg '["deny.toml","docs/a.md"]')
+[[ $m == *"only a human"* && $m == *'`Cargo.toml`'* && $m != *"Or dispatch"* ]] && pass "a protected-path PR is told only a human line counts" || fail "protected message: $m"
+m=$(msg '["docs/a.md"]')
+[[ $m == *"Or dispatch ci.yml with hosted_tests=true"* && $m == *'`deny.toml`'* ]] && pass "an ordinary PR is offered hosted tests and told the protected paths" || fail "ordinary message: $m"
 
 python3 -I "$GATE" >/dev/null 2>&1 && fail "missing arguments should be an error" || pass "missing arguments are an error"
 exit $((failures > 0))
