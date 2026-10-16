@@ -24,6 +24,7 @@ cat > "$W/bin/curl" <<'FAKE'
 #!/usr/bin/env bash
 method=GET url= body=
 printf '%s\n' "$@" >> "$FAKE_ARGS"
+[ "$1" = -q ] || echo "curl-without-q-first" >> "$FAKE_LOG"
 while [ $# -gt 0 ]; do
   case $1 in
     -X) method=$2; shift ;;
@@ -74,6 +75,7 @@ check "mint prints the token" '[ "$(cat "$W/out")" = FAKETOKEN ]'
 check "mint requests read-only permissions and the one repository" 'grep -q "\"repositories\":\[\"omuzaki\"\]" "$W/body" && ! grep -q write "$W/body"'
 check "cache is mode 600 in a 700 directory" '[ "$(stat -c %a "$CACHE")" = 600 ] && [ "$(stat -c %a "$DIR")" = 700 ]'
 check "no temp files left" '[ "$(ls "$DIR" | wc -l)" = 1 ] && [ "$(ls "$W/tmp" | wc -l)" = 1 ]'
+check "every curl call starts with -q (no ~/.curlrc)" '[ -s "$W/log" ] && ! grep -q curl-without-q-first "$W/log"'
 check "the JWT went to curl on stdin, never in its arguments" 'grep -q auth-stdin-jwt "$W/log" && ! grep -qi -e bearer -e "eyJ" "$W/args"'
 check "stderr is empty and holds no token" '[ ! -s "$W/err" ]'
 
@@ -123,6 +125,7 @@ check "XDG_RUNTIME_DIR is used when set" '[ $rc -eq 0 ] && [ "$(stat -c %a "$W/x
 # --check exit paths.
 fresh; run --check; rc=$?
 check "--check ok shows the budget" '[ $rc -eq 0 ] && grep -q "budget left: 4999/5000" "$W/out"'
+check "--check: every curl call starts with -q" '! grep -q curl-without-q-first "$W/log"'
 check "--check sent the token on stdin, never in arguments" '[ "$(grep -c auth-stdin-token "$W/log")" = 2 ] && ! grep -q -e FAKETOKEN -e Bearer "$W/args"'
 for m in ratefail ratebad; do FAKE_MODE=$m run --check; rc=$?
   check "--check fails when the rate-limit lookup fails ($m)" '[ $rc -ne 0 ] && grep -q "rate-limit lookup failed" "$W/err" && ! grep -q "^ok" "$W/out"'; done

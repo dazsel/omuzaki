@@ -24,7 +24,8 @@ DIR= CACHE=
 BODY='{"repositories":["omuzaki"],"permissions":{"actions":"read","checks":"read","contents":"read","issues":"read","metadata":"read","pull_requests":"read","statuses":"read"}}'
 KEYFILE= CTMP=
 cleanup() { [ -n "$KEYFILE" ] && rm -f "$KEYFILE"; [ -n "$CTMP" ] && rm -f "$CTMP"; return 0; }
-api() { curl -sf --max-time 30 -H "Accept: application/vnd.github+json" "$@"; }
+# -q first: a ~/.curlrc (trace, verbose) must not be able to log the Authorization header.
+api() { curl -q -sf --max-time 30 -H "Accept: application/vnd.github+json" "$@"; }
 # Calls with a credential: the Authorization header goes to curl on stdin (printf is a builtin), so neither the JWT
 # nor the token ever appears in a process's arguments.
 api_auth() { local cred=$1; shift; printf 'Authorization: Bearer %s\n' "$cred" | api -H @- "$@"; }
