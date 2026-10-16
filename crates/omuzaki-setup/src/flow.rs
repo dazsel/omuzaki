@@ -112,6 +112,8 @@ pub enum Note {
     IphoneNotPaired,
     /// The host did not apply the chosen source; Continue tries again.
     InputNotApplied,
+    /// The OS no longer offers an output, so the step stays only to say so; "Later" moves on.
+    OutputUnavailable,
     /// No assistant is configured.
     NoAssistant,
     /// Offer Simplified Chinese.
@@ -373,6 +375,8 @@ impl SetupFlow {
                     notes.push(Note::InputNotApplied);
                 }
             }
+            // Likewise for Output when the recommendation went away while it is showing.
+            Step::Output if p.recommended_output.is_none() => notes.push(Note::OutputUnavailable),
             // The step stays when the probes just made it pointless (no jump under the person); say why.
             Step::Calibrate if !self.calibrate_possible() => match self.input {
                 Some(InputChoice::Webcam) => {

@@ -287,6 +287,9 @@ fn no_recommended_output_leaves_the_step_out_and_probe_changes_never_jump() {
     g.handle(Event::Probed(Probes { recommended_output: None, ..probes() }), 0);
     assert_eq!(g.view().step, Step::Output);
     assert!(g.view().shown.contains(&Step::Output), "the current step stays listed");
+    assert_eq!(g.view().notes, [Note::OutputUnavailable], "the step stays and says why");
+    send(&mut g, &[Event::Skip]);
+    assert_eq!(g.view().step, Step::GoLive, "Later still moves on");
 }
 
 fn alphabet() -> [Event; 14] {
@@ -733,4 +736,16 @@ fn without_a_camera_continue_stays_on_input() {
     to_input(&mut f);
     assert_eq!(send(&mut f, &[Event::Next]), no_effects());
     assert_eq!(f.view().step, Step::Input);
+}
+
+#[test]
+fn a_saved_webcam_with_the_permission_undecided_asks_the_os_on_continue() {
+    let p = Probes { cameras: Cameras::One(Permission::Undecided), ..probes() };
+    let mut f = SetupFlow::new(p, Progress::default(), webcam());
+    to_input(&mut f);
+    assert_eq!(send(&mut f, &[Event::Next]), [Effect::RequestCameraPermission], "no SelectInput: it is saved");
+    assert_eq!(send(&mut f, &[Event::Next]), no_effects(), "asked once");
+    f.handle(Event::Probed(probes()), 0);
+    send(&mut f, &[Event::Next]);
+    assert_eq!(f.view().step, Step::Calibrate);
 }
