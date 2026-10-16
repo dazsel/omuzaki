@@ -21,7 +21,7 @@
 #![allow(clippy::cast_possible_truncation)] // weights and tones are in 0..=1; f32 is the mesh's precision
 
 use omuzaki_anim_api::HumanoidBone;
-use omuzaki_char_api::{BodyParams, HandStyle, JointRef, MaterialName, PartMesh};
+use omuzaki_char_api::{BodyParams, BodyRegion, HandStyle, JointRef, MaterialName, PartMesh};
 use omuzaki_core::glam::DVec3;
 
 use crate::kit::KitError;
@@ -42,6 +42,9 @@ const LAST_STATION: f64 = 0.048;
 /// How far the ring set starts back inside the forearm, past the wrist joint, so the arm's rounded end cap (which
 /// reaches only about half a ring's width past the wrist) covers the hand's opening at every hand size.
 const WRIST_OVERLAP: f64 = 0.004;
+/// How much of the forearm's narrowest radius the open wrist ring may fill, so the ring lies inside the arm's surface
+/// (the rest is margin for the arm's own offset from the hand's axis).
+const WRIST_ROOM: f64 = 0.85;
 /// Rings before the cap, evenly spaced from the start to [`CAP_START`] (4), and in the cap, spaced as a quarter sine (8):
 /// the prototype's 12 rows.
 pub(super) const BODY_RINGS: usize = 4;
@@ -58,7 +61,10 @@ const PALM_FLATTEN: f64 = 0.80;
 const BACK_PLUMP: f64 = 1.08;
 /// The wrist end of the block, which a cuff hides, fades up to half into the forearm bone between these stations.
 const WRIST_BLEND: (f64, f64) = (-0.004, -0.014);
-/// Skin tones, linear RGBA: the base, and the warmer tint towards the finger tips (the tip ramp, over `u`).
+/// Skin tones, linear RGBA, as the prototype has them: the base, and the warmer tint towards the finger tips (the tip
+/// ramp, over `u`). The renderer multiplies the material's albedo by the vertex colour, so the mesh carries them
+/// relative to the base ([`tone`]): white at the wrist, where the hand meets the bare arm, and `TIP_TONE / BASE_TONE`
+/// at the tips.
 const BASE_TONE: [f32; 4] = [1.0, 0.80, 0.70, 1.0];
 const TIP_TONE: [f32; 4] = [1.0, 0.68, 0.60, 1.0];
 const TIP_RAMP: (f64, f64) = (0.030, 0.050);
@@ -97,6 +103,9 @@ struct Hand {
     palm_width: f64,
     thumb_length: f64,
     spread_deg: f64,
+    /// How much the wrist end of the block is narrowed so its open ring lies inside the forearm, `0..=1`
+    /// ([`WRIST_ROOM`]).
+    taper: f64,
 }
 
 impl Hand {
@@ -118,16 +127,27 @@ impl Hand {
         let frame = HandFrame::of(wrist - elbow, table.palm_hint, table.thumb_hint);
         let slider = |v: f64| if v.is_finite() { clamp(v, 0.5, 2.0) } else { 1.0 };
         let spread = params.hand.thumb_spread_deg;
+        let (size, palm_length, palm_width) =
+            (slider(params.proportions.hand_size), slider(params.hand.palm_length), slider(params.hand.palm_width));
+        // The open wrist ring lies `WRIST_OVERLAP` behind the wrist, scaled as the hand is; it must fit inside the arm's
+        // section there, which the block's own wrist size (the curves' first knot) does not at any hand but a small one.
+        let arm = layout.region(BodyRegion::ArmL).ok_or(KitError::Degenerate { what: "the forearm the hand joins" })?;
+        let back = WRIST_OVERLAP * scale * palm_length * size;
+        let room = WRIST_ROOM * arm.section(1.0 - back / arm.length().max(f64::EPSILON)).radii.min_element();
+        let (across, through) =
+            (WIDTH[0].1 * scale * palm_width * size, THICKNESS[0].1 * PALM_FLATTEN.max(BACK_PLUMP) * scale * size);
+        let taper = clamp((room / across).min(room / through), 0.0, 1.0);
         Ok(Self {
             table,
             scale,
             wrist,
             frame,
-            size: slider(params.proportions.hand_size),
-            palm_length: slider(params.hand.palm_length),
-            palm_width: slider(params.hand.palm_width),
+            size,
+            palm_length,
+            palm_width,
             thumb_length: slider(params.hand.thumb_length),
             spread_deg: if spread.is_finite() { clamp(spread, -30.0, 30.0) } else { 0.0 },
+            taper,
         })
     }
 
@@ -221,8 +241,9 @@ fn thumb_skin(t: f64) -> Vec<(JointRef, f32)> {
     ]
 }
 
+/// The vertex colour `amount` of the way from the wrist to the tip tint: white at 0, the tip's tone over the base's at 1.
 fn tone(amount: f64) -> [f32; 4] {
-    std::array::from_fn(|k| lerp(f64::from(BASE_TONE[k]), f64::from(TIP_TONE[k]), amount) as f32)
+    std::array::from_fn(|k| lerp(1.0, f64::from(TIP_TONE[k] / BASE_TONE[k]), amount) as f32)
 }
 
 /// `n` as a float.
@@ -235,6 +256,8 @@ struct Block {
     stations: Vec<f64>,
     width: Pchip,
     thickness: Pchip,
+    /// The open wrist ring's size as a fraction of the curves', back to full size by the next ring.
+    taper: f64,
 }
 
 impl Block {
@@ -246,7 +269,9 @@ impl Block {
             (1.0 - ((u - CAP_START) / (HAND_LENGTH - CAP_START)).powi(2)).max(0.0).sqrt()
         };
         let u = u.min(LAST_STATION);
-        (self.width.eval(u) * cap, self.thickness.eval(u) * cap)
+        // The wrist end narrows to fit inside the forearm and widens to the block's own size by the second ring.
+        let fit = lerp(self.taper, 1.0, sstep(self.stations[0], self.stations[1], u));
+        (self.width.eval(u) * cap * fit, self.thickness.eval(u) * cap * fit)
     }
 
     fn new(hand: &Hand) -> Result<Self, KitError> {
@@ -262,7 +287,7 @@ impl Block {
             all.extend_from_slice(knots);
             Pchip::new(&all)
         };
-        Ok(Self { stations, width: curve(&WIDTH)?, thickness: curve(&THICKNESS)? })
+        Ok(Self { stations, width: curve(&WIDTH)?, thickness: curve(&THICKNESS)?, taper: hand.taper })
     }
 
     /// The block's grid, one ring per station, `style.around` segments round.

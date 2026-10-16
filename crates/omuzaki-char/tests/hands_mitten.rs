@@ -444,3 +444,55 @@ fn render_the_hands_when_asked() {
         }
     }
 }
+
+#[test]
+fn the_wrist_end_is_white_and_the_tips_are_the_warmer_tint_relative_to_it() {
+    // The renderer multiplies the material's albedo by the vertex colour, so the hand meets the bare arm in white.
+    let (ring, block) = block_vertices(HandStyle::Mitten);
+    let parts = build("soft-sd", &params(HandStyle::Mitten, HandParams::default(), 1.0));
+    let colours = &mesh(&parts, "hand-l").geometry.colours;
+    assert!(colours[..ring].iter().all(|c| c.iter().all(|v| (v - 1.0).abs() < 1e-6)), "the wrist ring is not white");
+    // The tip: the prototype's tip tone over its base tone, per channel (0.68 / 0.80 and 0.60 / 0.70), never darker
+    // than that and never brighter than white.
+    let tip = colours[block - 1];
+    assert!(
+        (tip[1] - 0.85).abs() < 1e-6 && (tip[2] - 0.60 / 0.70).abs() < 1e-6 && (tip[0] - 1.0).abs() < 1e-6,
+        "{tip:?}"
+    );
+    assert!(colours.iter().all(|c| c[..3].iter().all(|v| (0.84..=1.0).contains(v))));
+}
+
+#[test]
+fn the_open_wrist_ring_lies_inside_the_forearms_surface_on_every_template_size_and_extreme() {
+    use omuzaki_anim_api::HumanoidBone::LeftHand;
+    use omuzaki_char::template::layout::section_basis;
+    use omuzaki_char_api::BodyRegion;
+    let (ring, _) = block_vertices(HandStyle::Mitten);
+    for template in TEMPLATES {
+        for size in [0.5, 1.0, 2.0] {
+            for hand in extremes() {
+                for style in [HandStyle::Mitten, HandStyle::Simple] {
+                    let (layout, parts) = built(template, &params(style, hand.clone(), size));
+                    let arm = layout.region(BodyRegion::ArmL).unwrap();
+                    let wrist = layout.joint64(LeftHand).unwrap();
+                    let around = if style == HandStyle::Mitten { ring } else { block_vertices(style).0 };
+                    for p in &mesh(&parts, "hand-l").geometry.positions[..around] {
+                        let point = p.as_dvec3();
+                        let axis = arm.section(1.0).axis;
+                        let t = 1.0 - (wrist - point).dot(axis) / arm.length();
+                        let section = arm.section(t);
+                        let (across, through) = section_basis(BodyRegion::ArmL, section.axis.as_vec3());
+                        let d = point - section.centre;
+                        let x = d.dot(across.as_dvec3()) / section.radii.x;
+                        let y = d.dot(through.as_dvec3()) / section.radii.y;
+                        assert!(
+                            x * x + y * y <= 1.0,
+                            "{template} {style:?} size {size} {hand:?}: a wrist ring vertex is at {} of the forearm",
+                            (x * x + y * y).sqrt()
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
