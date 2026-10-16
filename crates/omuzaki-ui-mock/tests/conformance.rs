@@ -130,6 +130,32 @@ impl Panel for Exclusive {
     }
 }
 
+/// Panics when asked for its tab title.
+struct TitlePanics;
+
+impl Panel for TitlePanics {
+    fn ui(&mut self, ui: &mut egui::Ui, _ctx: &PanelCtx<'_>) {
+        ui.label("Title panics");
+    }
+
+    fn title(&self) -> Option<Cow<'static, str>> {
+        panic!("no title")
+    }
+}
+
+/// Panics when asked for its screen-reader label.
+struct LabelPanics;
+
+impl Panel for LabelPanics {
+    fn ui(&mut self, ui: &mut egui::Ui, _ctx: &PanelCtx<'_>) {
+        ui.label("Label panics");
+    }
+
+    fn accessibility_label(&self) -> Option<Cow<'static, str>> {
+        panic!("no label")
+    }
+}
+
 /// A fine panel whose id two workspaces also use.
 struct Shared;
 
@@ -162,6 +188,14 @@ omuzaki_ui_api::register_panel! {
 omuzaki_ui_api::register_panel! {
     id: "late-init", title: "Late init", icon: "", region: Region::Left, min_size: [240.0, 160.0], order: 9,
     build: |_| Box::new(LateInit::default()),
+}
+omuzaki_ui_api::register_panel! {
+    id: "title-panics", title: "Title panics", icon: "", region: Region::Left, min_size: [240.0, 160.0], order: 12,
+    build: |_| Box::new(TitlePanics),
+}
+omuzaki_ui_api::register_panel! {
+    id: "label-panics", title: "Label panics", icon: "", region: Region::Left, min_size: [240.0, 160.0], order: 13,
+    build: |_| Box::new(LabelPanics),
 }
 omuzaki_ui_api::register_panel! {
     id: "exclusive", title: "Exclusive", icon: "", region: Region::Left, min_size: [240.0, 160.0], order: 11,
@@ -281,4 +315,14 @@ fn a_panel_holding_an_exclusive_resource_passes_because_one_instance_lives_at_a_
     let host = MockHost::new();
     assert_eq!(host.check("exclusive", &ctx), Vec::<String>::new());
     assert!(!EXCLUSIVE_TAKEN.load(Ordering::SeqCst), "check leaves no instance alive");
+}
+
+#[test]
+fn a_title_or_label_that_panics_is_a_named_problem_and_never_a_panic() {
+    let runner = MockRunner::new(MemDoc::new());
+    let actor = Actor::System;
+    let ctx = PanelCtx::new(&runner, &actor);
+    let host = MockHost::new();
+    assert_eq!(host.check("title-panics", &ctx), ["title-panics: its title panics"]);
+    assert_eq!(host.check("label-panics", &ctx), ["label-panics: its screen-reader label panics"]);
 }
