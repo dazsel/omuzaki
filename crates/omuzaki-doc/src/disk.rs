@@ -352,6 +352,8 @@ struct Hooks<'a> {
     posix_rename_off: Cell<bool>,
     /// Make flushing a folder fail, where a step goes through [`Hooks::sync_folder`] (tests only).
     sync_off: Cell<bool>,
+    /// Make flushing a displaced file fail after it was opened (tests only).
+    flush_file_off: Cell<bool>,
     /// Take Windows's replacement without a swap on any system (tests only).
     windows_shaped: Cell<bool>,
     /// Pretend the system has no file identities, as on Windows: a linked backup records none (tests only).
@@ -502,6 +504,7 @@ impl Default for Hooks<'_> {
             no_replace_off: Cell::new(false),
             posix_rename_off: Cell::new(false),
             sync_off: Cell::new(faults::sync_off()),
+            flush_file_off: Cell::new(false),
             windows_shaped: Cell::new(false),
             ids_off: Cell::new(false),
             copy_fails: Cell::new(false),
@@ -541,6 +544,14 @@ impl Hooks<'_> {
             }
             _ => sync_folder(folder),
         }
+    }
+
+    /// [`flush_file`], unless a test made it fail.
+    fn flush_file(&self, path: &Path) -> Option<io::Error> {
+        if self.flush_file_off.get() {
+            return Some(io::Error::other("flushing the file failed (forced by a test)"));
+        }
+        flush_file(path)
     }
 
     /// [`rename_no_replace`], unless a test turned it off.
@@ -852,18 +863,16 @@ fn replaced_name(dir: &Path, path: &Path, suffix: &str) -> Result<PathBuf, Store
 /// Moves `from` (a displaced or leftover file) into the replaced folder as `<name>.displaced` and flushes it and the
 /// folder. Never deletes.
 ///
-/// The move never depends on the flush. Where the file can't be opened to flush it (on Windows another handle may deny
-/// write sharing, or the file may be read-only), it is still moved, and the error then says that it is kept but not
+/// The move never depends on the flush. Where the file can't be flushed (on Windows another handle may deny write
+/// sharing so it can't be opened for it, or the file may be read-only; or the flush itself fails), it is still moved, and the error then says that it is kept but not
 /// flushed ([`flush_file`]), so the limitation is reported and the file is not left under its hidden name.
 fn preserve(dir: &Path, from: &Path, hooks: &Hooks<'_>) -> Result<PathBuf, StoreError> {
     if let Some(parent) = replaced_name(dir, from, "")?.parent() {
         fs::create_dir_all(parent).map_err(|e| StoreError::io(parent, e))?;
     }
-    let unflushed = if fs::symlink_metadata(from).is_ok_and(|m| m.is_file()) {
-        flush_file(from).map_err(|e| StoreError::io(from, e))?
-    } else {
-        None
-    };
+    // A flush that fails, however it fails, is kept and reported after the move: nothing between displacing a file and
+    // moving it may skip the move.
+    let unflushed = if fs::symlink_metadata(from).is_ok_and(|m| m.is_file()) { hooks.flush_file(from) } else { None };
     let to = move_to_free_slot(from, &|| replaced_name(dir, from, ".displaced"), hooks)?
         .ok_or_else(|| StoreError::io(from, io::ErrorKind::NotFound.into()))?;
     sync_folder(to.parent())?;
@@ -876,22 +885,18 @@ fn preserve(dir: &Path, from: &Path, hooks: &Hooks<'_>) -> Result<PathBuf, Store
     }
 }
 
-/// Flushes the file at `path` to disk. Windows flushes only through a handle with write access (`FlushFileBuffers`
-/// fails with "Access is denied" on a read-only one), so there the file is opened for writing, without truncating or
-/// writing anything; elsewhere a read-only handle can be flushed. Only the new handle's share modes are ours (std
-/// opens with all three); a handle that is already open can deny write sharing, or the file can be read-only, and then
-/// the open fails: that is `Ok(Some(error))` ("couldn't be flushed"), not a failure, so the caller can go on with what
-/// it must do. A flush that fails after the file was opened is `Err`.
-fn flush_file(path: &Path) -> io::Result<Option<io::Error>> {
+/// Flushes the file at `path` to disk; the error if it couldn't be. Windows flushes only through a handle with write
+/// access (`FlushFileBuffers` fails with "Access is denied" on a read-only one), so there the file is opened for
+/// writing, without truncating or writing anything; elsewhere a read-only handle can be flushed. Only the new handle's
+/// share modes are ours (std opens with all three): a handle that is already open can deny write sharing, or the file
+/// can be read-only, and then the open fails. Either way, and when the flush fails after the open, the caller learns
+/// that the file couldn't be flushed and goes on with what it must do.
+fn flush_file(path: &Path) -> Option<io::Error> {
     let mut options = OpenOptions::new();
     options.read(true);
     #[cfg(windows)]
     options.write(true);
-    match options.open(path) {
-        Ok(file) => file.sync_all().map(|()| None),
-        Err(e) if cfg!(windows) && e.kind() != io::ErrorKind::NotFound => Ok(Some(e)),
-        Err(e) => Err(e),
-    }
+    options.open(path).and_then(|file| file.sync_all()).err()
 }
 
 /// How many occupied names [`move_to_free_slot`] skips before it gives up.
@@ -1450,7 +1455,12 @@ fn unlink_held(dir: &Path, path: &Path, held: &Held, hooks: &Hooks<'_>) -> Resul
                 return Ok(false);
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => return Err(StoreError::io(path, e)),
+            Err(e) => {
+                // Whether the name is taken is unknown, but the file moved aside must not stay under its hidden name:
+                // it is kept, and the error that is returned is still the one for the target.
+                drop(preserve(dir, &quarantine, hooks));
+                return Err(StoreError::io(path, e));
+            }
         }
         // The target is gone from its name: the deletion has happened, and what follows only tidies up.
         // A linked backup is the kept entry (keyed on the link, not on a file identity, which Windows doesn't give):
@@ -1796,6 +1806,23 @@ mod tests {
         let replaced: Vec<_> = items.iter().filter(|(n, _)| n.ends_with(KEPT)).map(|(_, t)| t).collect();
         assert_eq!(replaced, [MINE]);
         assert!(no_temporary_file(dir));
+    }
+
+    /// A displaced file whose flush fails after it was opened is still moved into the replaced folder; the error says
+    /// it was kept unflushed.
+    #[test]
+    fn a_failed_flush_of_a_displaced_file_still_moves_it() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let leftover = dir.join(".f.toml.tmp");
+        fs::write(&leftover, "left by a crash = 5\n").unwrap();
+        let hooks = Hooks { flush_file_off: true.into(), ..Hooks::default() };
+        let err = preserve(dir, &leftover, &hooks).unwrap_err();
+        assert!(err.to_string().contains("could not be flushed"), "{err}");
+        assert!(!leftover.exists(), "the leftover stayed under its hidden name");
+        let items = kept(dir);
+        assert_eq!(texts(&items), ["left by a crash = 5\n"]);
+        assert!(items[0].0.ends_with(".displaced"), "{items:?}");
     }
 
     /// A leftover that can't be opened for flushing is still moved into the replaced folder, and the error says it
