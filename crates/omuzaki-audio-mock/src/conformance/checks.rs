@@ -357,36 +357,40 @@ fn guarded_block(body: impl FnOnce()) -> Result<(), String> {
 
 /// After `reset` the output does not depend on what the node processed before.
 ///
-/// Two nodes run the same silence to settle their parameters; one then also processes a loud dirty signal; both are
-/// reset and run the test signal from the same graph index. The outputs must match bit for bit. The reference is reset
-/// too, because a node that ran at all (even in silence) has advanced an oscillator's phase, and a correct `reset`
-/// puts that phase back: comparing against a node that never reset would fail a conforming modulator.
+/// Two nodes settle on silence for the same time; the tested one then also processes a loud dirty signal and runs a
+/// further odd number of samples of silence, so a free-running phase is somewhere else in it than in the reference.
+/// Both are reset and run the test signal from the same graph index; the outputs must match bit for bit. The reference
+/// is reset too, because a node that ran at all has advanced an oscillator's phase, and a correct `reset` puts it back:
+/// comparing against a node that never reset would fail a conforming modulator, while two nodes with different run
+/// lengths still expose a `reset` that leaves the phase alone. The settle time is long (about 30 smoothing constants) so
+/// a parameter ramp has finished in both and the different run lengths cannot show in it.
 pub(crate) fn reset(cx: &Context<'_>, setting: Setting) -> Outcome {
     outcome(|| {
         let channels = cx.channels;
         // The declared latency is added to the dirty signal (so it reaches the end of the node's delay line) and to the
         // test signal (so the delayed output is observed, not only the silence in front of it).
         let latency = cx.node(setting)?.latency() as usize;
-        let (settle, dirty_frames, test_frames) = (settle_samples(cx.info), 3000 + latency, 5000 + latency);
+        let (settle, dirty_frames, test_frames) = (6 * settle_samples(cx.info), 3000 + latency, 5000 + latency);
+        // Odd, and not a multiple of any oscillator period a test would use.
+        let extra = 1001;
         let dirty: Vec<Vec<f32>> =
             (0..channels.count()).map(|c| white_noise(dirty_frames, cx.config.seed ^ 0xD1 ^ c as u64, 0.8)).collect();
         let test: Vec<Vec<f32>> =
             (0..channels.count()).map(|c| white_noise(test_frames, cx.config.seed ^ 0xC1 ^ c as u64, 0.5)).collect();
-        let settling = on_channels(&vec![0.0; settle], channels);
-        let quiet = on_channels(&vec![0.0; settle + dirty_frames], channels);
+        let silence = |frames: usize| on_channels(&vec![0.0; frames], channels);
         // Both nodes see the test signal from the same graph index, so a node that reads the clock treats them alike.
         let at = 1 << 20;
         let run_after_reset = |dirty: Option<&[Vec<f32>]>| -> Result<Vec<Vec<f32>>, String> {
             let mut node = cx.node(setting)?;
-            // Both nodes run as long, so a smoothed parameter is in the same place in both: a `reset` must forget the
-            // signal's history, not restart the parameters' ramps.
+            process(&mut *node, &silence(settle), &Plan::Fixed(256).lengths(settle), 0);
             match dirty {
                 Some(dirty) => {
-                    process(&mut *node, &settling, &Plan::Fixed(256).lengths(settle), 0);
-                    process(&mut *node, dirty, &Plan::Fixed(256).lengths(dirty_frames), settle as u64);
+                    // The odd stretch comes first, so the dirty signal is still inside the node when it is reset.
+                    process(&mut *node, &silence(extra), &Plan::Fixed(256).lengths(extra), settle as u64);
+                    process(&mut *node, dirty, &Plan::Fixed(256).lengths(dirty_frames), (settle + extra) as u64);
                 }
                 None => {
-                    process(&mut *node, &quiet, &Plan::Fixed(256).lengths(settle + dirty_frames), 0);
+                    process(&mut *node, &silence(dirty_frames), &Plan::Fixed(256).lengths(dirty_frames), settle as u64);
                 }
             }
             node.reset();
@@ -396,7 +400,7 @@ pub(crate) fn reset(cx: &Context<'_>, setting: Setting) -> Outcome {
         let after_quiet = run_after_reset(None)?;
         if let Some((channel, frame, a, b)) = first_difference(&after_dirty, &after_quiet) {
             return Err(format!(
-                "after reset the output differs from a fresh node's at frame {frame} of channel {channel}: {a:e} against {b:e}"
+                "after reset the output differs from that of a node that ran differently before its reset, at frame {frame} of channel {channel}: {a:e} against {b:e}"
             ));
         }
         Ok(Outcome::Pass)

@@ -263,7 +263,10 @@ fn the_latency_tolerance_is_the_kinds_to_declare() {
 
 #[test]
 fn a_block_size_dependent_node_fails_the_block_size_check() {
-    assert_only_fails(Flaw::BlockDependent, Check::BlockSizes, "blocks of 1 differ from blocks of 1024 at frame");
+    // Its gain never settles (a step per block), so the reset check, which settles it, also sees the difference.
+    let report = check_with(&Fixture { flaw: Flaw::BlockDependent, clip: false, delay: DELAY }, &quick());
+    assert!(failed_checks(&report).contains(&Check::BlockSizes), "{report}");
+    assert!(report.to_string().contains("blocks of 1 differ from blocks of 1024 at frame"), "{report}");
 }
 
 #[test]
@@ -301,7 +304,11 @@ fn a_node_whose_silence_never_decays_fails_the_decay_check() {
 
 #[test]
 fn a_node_that_ignores_reset_fails_the_reset_check() {
-    assert_only_fails(Flaw::IgnoresReset, Check::Reset, "after reset the output differs from a fresh node's");
+    assert_only_fails(
+        Flaw::IgnoresReset,
+        Check::Reset,
+        "after reset the output differs from that of a node that ran differently before its reset",
+    );
 }
 
 #[test]
@@ -417,8 +424,10 @@ fn a_well_behaved_node_with_a_second_of_latency_passes() {
 /// A tremolo whose depth follows the input level: `1 + 0.1 sin(phase) (1 + level)`. It has two pieces of state, a phase
 /// that advances every sample and a level that remembers the input.
 struct Oscillator {
-    /// Whether `reset` also forgets the level. The phase is always restored.
+    /// Whether `reset` also forgets the level.
     forgets_level: bool,
+    /// Whether `reset` puts the phase back to zero.
+    restores_phase: bool,
 }
 
 impl NodeKind for Oscillator {
@@ -436,6 +445,7 @@ impl NodeKind for Oscillator {
     fn create(&self, _config: &NodeConfig, channels: Channels) -> Result<Box<dyn Node>, NodeError> {
         Ok(Box::new(OscillatorNode {
             forgets_level: self.forgets_level,
+            restores_phase: self.restores_phase,
             phase: 0.0,
             level: vec![0.0; channels.count()],
         }))
@@ -444,6 +454,7 @@ impl NodeKind for Oscillator {
 
 struct OscillatorNode {
     forgets_level: bool,
+    restores_phase: bool,
     phase: f64,
     level: Vec<f32>,
 }
@@ -477,7 +488,9 @@ impl Node for OscillatorNode {
 
     fn reset(&mut self) {
         // The phase goes back to where a new node starts, which is not where a node that has run is.
-        self.phase = 0.0;
+        if self.restores_phase {
+            self.phase = 0.0;
+        }
         if self.forgets_level {
             self.level.fill(0.0);
         }
@@ -486,12 +499,18 @@ impl Node for OscillatorNode {
 
 #[test]
 fn an_oscillator_that_restores_its_phase_on_reset_passes() {
-    let report = check_with(&Oscillator { forgets_level: true }, &quick());
+    let report = check_with(&Oscillator { forgets_level: true, restores_phase: true }, &quick());
     assert!(report.is_ok(), "{report}");
 }
 
 #[test]
 fn an_oscillator_that_resets_its_phase_but_not_its_level_fails_the_reset_check() {
-    let report = check_with(&Oscillator { forgets_level: false }, &quick());
+    let report = check_with(&Oscillator { forgets_level: false, restores_phase: true }, &quick());
+    assert_eq!(failed_checks(&report), [Check::Reset], "{report}");
+}
+
+#[test]
+fn an_oscillator_whose_reset_keeps_its_phase_fails_the_reset_check() {
+    let report = check_with(&Oscillator { forgets_level: true, restores_phase: false }, &quick());
     assert_eq!(failed_checks(&report), [Check::Reset], "{report}");
 }

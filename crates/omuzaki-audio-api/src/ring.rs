@@ -259,7 +259,8 @@ impl Producer {
     /// that it has not yet reached (lost, but not yet skipped over). The reader publishes its skips before its position,
     /// so each lost sample is counted once: it is first in the second term, then moves to the first. The two loads are
     /// not one atomic snapshot, so a read in progress can make the value run ahead by the skips of that read; once the
-    /// reader has caught up the value equals [`Consumer::overwritten`] exactly. No lock, no allocation, no loop.
+    /// reader has caught up the value equals [`Consumer::overwritten`] exactly. It is not monotonic: it can briefly run ahead
+    /// while a read is in flight and step back when that read finishes, so read it as a gauge, not a counter to diff. No lock, no allocation, no loop.
     #[must_use]
     pub fn overwritten(&self) -> u64 {
         let shared = &*self.shared;
