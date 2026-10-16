@@ -28,10 +28,12 @@ mod physics;
 pub(crate) mod skeleton;
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use omuzaki_avatar_api::avatar::ImportedAvatar;
 use omuzaki_avatar_api::def::AvatarDef;
 use omuzaki_avatar_api::retained::{Retained, RetainedAnnotation, RetainedNode, RetainedSkin, RetainedTransform};
+use omuzaki_core::time::Clock;
 use omuzaki_io_api::{Finding, HumanBoneName, IoError, IoScene, NodeIx, Report};
 use omuzaki_render_api::MtoonSupport;
 
@@ -52,6 +54,46 @@ pub const CLEANUP: cleanup::CleanupOptions =
 /// rule (`avatar.skeleton_invalid`, `avatar.too_many_bones`), the node layout is from a later build
 /// (`avatar.schema_unknown`), or the result does not validate (`avatar.invalid`).
 pub fn to_avatar(scene: &IoScene, def: &AvatarDef, mtoon: MtoonSupport) -> Result<(ImportedAvatar, Report), IoError> {
+    prepare(scene, def, mtoon, None).map(|(avatar, report, _)| (avatar, report))
+}
+
+/// How long [`to_avatar_timed`]'s stages took on the caller's clock: D6's "prepare" and "decode" rows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct PrepareTimings {
+    /// Everything but the texture decode: the humanoid map, the T rest, cleanup, synthesis and the conversion.
+    pub prepare: Duration,
+    /// Decoding the textures.
+    pub decode: Duration,
+}
+
+/// [`to_avatar`], timing its stages on `clock` (the op's clock, so a test's fake clock gives fixed numbers). The
+/// avatar and the report do not depend on the clock.
+///
+/// # Errors
+/// As [`to_avatar`].
+pub fn to_avatar_timed(
+    scene: &IoScene,
+    def: &AvatarDef,
+    mtoon: MtoonSupport,
+    clock: &dyn Clock,
+) -> Result<(ImportedAvatar, Report, PrepareTimings), IoError> {
+    prepare(scene, def, mtoon, Some(clock))
+}
+
+/// The time between two readings of a clock (zero if it went backwards).
+pub(crate) fn between(start: omuzaki_core::time::Seconds, end: omuzaki_core::time::Seconds) -> Duration {
+    Duration::try_from_secs_f64(end.0 - start.0).unwrap_or(Duration::ZERO)
+}
+
+/// The preparation of the module docs, timed when `clock` is given.
+fn prepare(
+    scene: &IoScene,
+    def: &AvatarDef,
+    mtoon: MtoonSupport,
+    clock: Option<&dyn Clock>,
+) -> Result<(ImportedAvatar, Report, PrepareTimings), IoError> {
+    let start = clock.map(Clock::now);
     let mut report = Report::new();
     if let Err(e) = def.check_schema() {
         let hint = "update Omuzaki to open this project";
@@ -87,7 +129,8 @@ pub fn to_avatar(scene: &IoScene, def: &AvatarDef, mtoon: MtoonSupport) -> Resul
     };
     let mut avatar = ImportedAvatar::new(def.source.hash, rig.skeleton.clone());
     avatar.bind = rest.bind;
-    let names = materials::convert(&work, def, mtoon, &mut avatar, &mut report);
+    let mut decode = Duration::ZERO;
+    let names = materials::convert(&work, def, mtoon, clock, &mut decode, &mut avatar, &mut report);
     meshes::convert(&work, &rig, &names, &mut avatar, &mut report);
     expressions::convert(&work, def, &arkit, &names, &mut avatar, &mut report);
     physics::convert(&work, &rig, &mut avatar, &mut report);
@@ -98,7 +141,8 @@ pub fn to_avatar(scene: &IoScene, def: &AvatarDef, mtoon: MtoonSupport) -> Resul
         report.push(Finding::error("avatar.invalid", e.to_string()).at("avatar").hint(hint));
         return Err(IoError::Rejected(report));
     }
-    Ok((avatar, report))
+    let total = start.zip(clock).map_or(Duration::ZERO, |(start, clock)| between(start, clock.now()));
+    Ok((avatar, report, PrepareTimings { prepare: total.saturating_sub(decode), decode }))
 }
 
 /// The humanoid overrides `auto_map` checks: the file's own map, with the person's choices in `def.humanoid` on top.

@@ -1,6 +1,9 @@
 //! `prepare::tpose::normalise_rest`: an A-posed rest turns onto the VRM T-pose, the mesh keeps its sculpt, and the
 //! authored rest comes back as the bind pose. Every scene is generated here.
 
+// Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 mod common;
 
 use common::{add_skinned_mesh, def, file_skinning, humanoid, max_error, runtime_skinning, world};

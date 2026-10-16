@@ -12,12 +12,14 @@
 //! image exactly as read, so export writes the file's own values, never one converted back from the runtime.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Duration;
 
 use omuzaki_avatar_api::avatar::ImportedAvatar;
 use omuzaki_avatar_api::def::{AvatarDef, MaterialEdit};
 use omuzaki_avatar_api::retained::{RetainedImage, RetainedMaterial};
 use omuzaki_char_api::{MaterialName, MaterialSpec, TextureName};
 use omuzaki_core::colour::Colour;
+use omuzaki_core::time::Clock;
 use omuzaki_io_api::{self as io, Finding, IoScene, Report};
 use omuzaki_render_api::{MtoonSupport, UvTransform};
 use omuzaki_store_api::ContentHash;
@@ -124,10 +126,13 @@ fn differs(value: f32, default: f32) -> bool {
 
 /// Fills `avatar.materials`, `avatar.textures` and the retained materials, textures and images; returns the names
 /// the meshes and binds use.
+/// Decoding is timed on `clock`, when given, into `decode`.
 pub fn convert(
     scene: &IoScene,
     def: &AvatarDef,
     mtoon: MtoonSupport,
+    clock: Option<&dyn Clock>,
+    decode: &mut Duration,
     avatar: &mut ImportedAvatar,
     report: &mut Report,
 ) -> MaterialNames {
@@ -142,7 +147,11 @@ pub fn convert(
             MaterialName(unique_slug(&stem, &mut taken))
         })
         .collect();
+    let started = clock.map(Clock::now);
     let textures = decode_textures(scene, avatar, report);
+    if let Some((start, clock)) = started.zip(clock) {
+        *decode = super::between(start, clock.now());
+    }
     let edited = apply_edits(scene, def, &by_index, report);
     for (i, (name, material)) in by_index.iter().zip(&edited).enumerate() {
         let at = format!("materials/{i}");

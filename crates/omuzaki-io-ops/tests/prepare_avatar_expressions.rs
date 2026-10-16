@@ -2,6 +2,9 @@
 //! table and the person's overrides, one avatar per gaze route, and the file's springs, colliders, limits and
 //! constraints in the runtime sets. Every scene is generated here.
 
+// Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 mod common;
 
 use common::{add_skinned_mesh, def, humanoid, humanoid_without, through_vrm, toon_material};
@@ -285,7 +288,7 @@ fn a_chain_the_solver_cant_run_is_kept_for_export_and_reported() {
     }];
     let (a, report) = import(&f);
     assert!(report.has_rule("avatar.spring_chain_unused"), "{report:?}");
-    assert!(a.springs.chains.is_empty());
+    assert_eq!(a.springs.chains, Vec::new());
     assert_eq!((a.retained.springs.chains.len(), a.retained.springs.chains[0].runtime.clone()), (1, None));
 }
 

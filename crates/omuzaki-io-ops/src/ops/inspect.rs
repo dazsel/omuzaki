@@ -13,6 +13,12 @@
 //! **Sidecars.** The files a `.gltf` refers to are read through a [`DirResolver`], confined to the folder of the file
 //! the person named, so a `path` read resolves them. An `asset` has no folder, so its sidecars are refused with
 //! [`NoResolver`].
+//!
+//! **As an avatar** (`as: avatar`, `docs/design/byom.md` D6): the whole preparation runs in memory as well
+//! ([`prepare::avatar::to_avatar`](crate::prepare::avatar::to_avatar)), and the answer adds what the confirm screen
+//! shows: the [`AvatarSummary`] (the id it suggests, the channels the model shows, the time each stage took, its
+//! texture memory), the one report with every step's findings and the file's rights rows, and the `confirm` token
+//! `io.import {as: avatar}` must be given. Still nothing is stored and no document changes.
 
 use std::io::Read;
 use std::path::Path;
@@ -27,7 +33,11 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::error::from_io;
+use super::avatar::{self, Source};
 use super::sidecar::DirResolver;
+use omuzaki_avatar_api::summary::AvatarSummary;
+use omuzaki_io_api::NoProgress;
+use omuzaki_render_api::Capabilities;
 
 /// Reads a model file and reports what is in it, without importing it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -46,6 +56,30 @@ pub struct Inspect {
     /// Treat warnings as errors, as a strict import would.
     #[serde(default)]
     pub strict: bool,
+    /// What to read the file as: `scene` reports what is in it; `avatar` also prepares it as an avatar, in memory, and
+    /// returns the summary, the whole report and the `confirm` token that `io.import` with `as: avatar` needs.
+    #[serde(default, rename = "as")]
+    pub as_: InspectAs,
+}
+
+/// What `io.inspect` reads a file as.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum InspectAs {
+    /// A model file: what is in it.
+    #[default]
+    Scene,
+    /// An avatar to perform as: the scene, plus the prepared avatar's summary, report and confirm token.
+    Avatar,
+}
+
+/// What `io.inspect {as: avatar}` adds: what the confirm screen shows, and the token that confirms it.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct AvatarInspection {
+    /// The prepared avatar at a glance.
+    pub summary: AvatarSummary,
+    /// The token `io.import {as: avatar}` must be given, so the import is the one the person saw.
+    pub confirm: String,
 }
 
 /// What `io.inspect` returns.
@@ -63,8 +97,12 @@ pub struct Inspection {
     pub detected: Vec<Detection>,
     /// Counts of what the file holds.
     pub summary: SceneSummary,
-    /// What was noticed on the way: warnings, dropped extensions, the rights notes.
+    /// What was noticed on the way: warnings, dropped extensions, the rights notes; as an avatar, also every finding
+    /// of the preparation and the rights rows of performing as it.
     pub report: Report,
+    /// The prepared avatar, when inspected `as: avatar`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<AvatarInspection>,
 }
 
 impl Inspect {
@@ -109,6 +147,33 @@ impl Inspect {
             detected,
             summary: outcome.scene.summary(),
             report: outcome.report,
+            avatar: None,
+        })
+    }
+
+    /// Inspects `bytes`, read from the argument `field` as the file `name`, as an avatar (see the module docs).
+    fn inspect_avatar(
+        &self,
+        ctx: &OpCtx<'_>,
+        field: &'static str,
+        name: &str,
+        bytes: &[u8],
+        resolver: &dyn Resolver,
+    ) -> Result<Inspection, OpError> {
+        let options = if self.strict { ImportOptions::default().strict() } else { ImportOptions::default() };
+        let source =
+            Source { name, bytes, format: self.format.as_ref(), resolver, progress: &NoProgress, field };
+        let mtoon = avatar::mtoon(ctx.service::<Capabilities>().ok());
+        let prepared = avatar::prepare(&source, None, &options, mtoon, ctx.clock, ctx.doc)?;
+        Ok(Inspection {
+            source: field,
+            file: name.to_owned(),
+            bytes: bytes.len() as u64,
+            format: prepared.format,
+            detected: sniff(&ImportInput::new(bytes).named(name)),
+            summary: prepared.scene.summary(),
+            report: prepared.report,
+            avatar: Some(AvatarInspection { summary: prepared.summary, confirm: prepared.confirm }),
         })
     }
 
@@ -178,7 +243,8 @@ impl Op for Inspect {
     fn meta() -> OpMeta {
         OpMeta {
             name: "io.inspect",
-            summary: "Read a model file (glTF, VRM) or a stored asset and report what is in it, without importing it.",
+            summary: "Read a model file (glTF, VRM) or a stored asset and report what is in it, without importing it; \
+                      with `as: avatar`, also prepare it as an avatar and return the summary, report and confirm token.",
             kind: OpKind::Query,
             scope: Scope::Read,
             undo: Undo::None,
@@ -199,12 +265,20 @@ impl Op for Inspect {
                 }
                 let name = Path::new(path).file_name().and_then(|name| name.to_str()).unwrap_or(path);
                 let sidecars = DirResolver::new(ctx, &file, path, max_bytes);
-                self.inspect_bytes_with(name, &bytes, &sidecars)?
+                match self.as_ {
+                    InspectAs::Scene => self.inspect_bytes_with(name, &bytes, &sidecars)?,
+                    InspectAs::Avatar => self.inspect_avatar(ctx, "path", name, &bytes, &sidecars)?,
+                }
             }
             (None, Some(hash)) => {
                 let bytes = read_asset(ctx, hash, max_bytes)?;
                 let name = hash.to_string();
-                Inspection { source: "asset", ..self.inspect_source("asset", &name, &bytes, &NoResolver)? }
+                match self.as_ {
+                    InspectAs::Scene => {
+                        Inspection { source: "asset", ..self.inspect_source("asset", &name, &bytes, &NoResolver)? }
+                    }
+                    InspectAs::Avatar => self.inspect_avatar(ctx, "asset", &name, &bytes, &NoResolver)?,
+                }
             }
             _ => {
                 return Err(OpError::invalid("path", "pass exactly one of path or asset")

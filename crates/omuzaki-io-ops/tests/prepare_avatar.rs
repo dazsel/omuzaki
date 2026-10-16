@@ -2,6 +2,9 @@
 //! whose morphs are the file's deltas exactly, and whose report carries every step's findings. Every file is generated
 //! here (the mock VRM 1.0 writer); no third-party model.
 
+// Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 mod common;
 
 use std::collections::BTreeMap;

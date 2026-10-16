@@ -2,6 +2,9 @@
 //! file's materials are retained bit for bit, textures decode to the file's pixels at full size, and edits apply to the
 //! runtime only. Every material and image is generated here.
 
+// Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 mod common;
 
 use common::{add_skinned_mesh, def, humanoid, toon_material};

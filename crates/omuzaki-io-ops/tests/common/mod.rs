@@ -11,7 +11,7 @@ use omuzaki_char_api::JointRef;
 use omuzaki_core::glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 use omuzaki_io_api::{
     Avatar, ExportCtx, ImportCtx, ImportInput, ImportOptions, IoScene, Material, Mesh, MeshData, MorphTarget, Node,
-    NodeIx, Primitive, Shading, Skin, Toon, VRM_LICENSE_URLS, VrmMeta, run_export, run_import,
+    NodeIx, Primitive, Shading, Skin, VRM_LICENSE_URLS, VrmMeta, run_export, run_import,
 };
 use omuzaki_store_api::ContentHash;
 
@@ -148,18 +148,20 @@ pub fn vrm_bytes(scene: &IoScene) -> Vec<u8> {
 /// Every node's world matrix, from the scene's own transforms (scale included).
 pub fn world(scene: &IoScene) -> Vec<Mat4> {
     let mut out = vec![Mat4::IDENTITY; scene.nodes.len()];
-    fn walk(scene: &IoScene, node: NodeIx, parent: Mat4, out: &mut [Mat4]) {
-        let t = &scene.nodes[node.index()].transform;
-        let m = parent * Mat4::from_scale_rotation_translation(t.scale, t.rotation, t.translation);
-        out[node.index()] = m;
-        for &c in &scene.nodes[node.index()].children {
-            walk(scene, c, m, out);
-        }
-    }
     for &r in &scene.roots {
         walk(scene, r, Mat4::IDENTITY, &mut out);
     }
     out
+}
+
+/// Places `node` under `parent` and its subtree under it, into `out`.
+fn walk(scene: &IoScene, node: NodeIx, parent: Mat4, out: &mut [Mat4]) {
+    let t = &scene.nodes[node.index()].transform;
+    let m = parent * Mat4::from_scale_rotation_translation(t.scale, t.rotation, t.translation);
+    out[node.index()] = m;
+    for &c in &scene.nodes[node.index()].children {
+        walk(scene, c, m, out);
+    }
 }
 
 /// A skinned mesh called `name` over the joints `joints`: a small triangle at each joint's rest position, weighted
@@ -204,7 +206,7 @@ pub fn add_skinned_mesh(f: &mut Fixture, name: &str, joints: &[&str], targets: u
 
 /// A toon material called `name` with base colour `base`.
 pub fn toon_material(name: &str, base: Vec4) -> Material {
-    let mut m = Material::new(name, Shading::Toon(Box::new(Toon::default())));
+    let mut m = Material::new(name, Shading::Toon(Box::default()));
     m.base_color = base;
     m
 }
@@ -223,16 +225,15 @@ pub fn file_skinning(scene: &IoScene) -> Vec<Vec<Vec3>> {
         let Some(mesh) = node.mesh else { continue };
         let skin = node.skin.map(|s| &scene.skins[s.index()]);
         for p in &scene.meshes[mesh.index()].primitives {
-            let positions = p.mesh.positions.iter().enumerate().map(|(v, &pos)| match skin {
-                Some(skin) => {
+            let positions = p.mesh.positions.iter().enumerate().map(|(v, &pos)| {
+                if let Some(skin) = skin {
                     let (joints, weights) = (p.mesh.joints[v], p.mesh.weights[v]);
                     (0..4).fold(Vec3::ZERO, |acc, k| {
                         let j = usize::from(joints[k]);
                         let m = world[skin.joints[j].index()] * skin.inverse_bind[j];
                         acc + m.transform_point3(pos) * weights[k]
                     })
-                }
-                None => {
+                } else {
                     let at = scene.nodes.iter().position(|n| std::ptr::eq(n, node)).unwrap();
                     world[at].transform_point3(pos)
                 }
