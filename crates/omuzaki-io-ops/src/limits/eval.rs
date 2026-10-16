@@ -37,6 +37,14 @@ pub struct Evaluation {
     pub stats: Vec<StatVerdict>,
 }
 
+impl Evaluation {
+    /// What the platform calls this avatar: the name of its tier, or the table's `beyond` label past the last one
+    /// (`Very Poor`, `refused`).
+    pub fn label<'a>(&self, table: &'a LimitTable) -> &'a str {
+        self.tier.and_then(|tier| table.tiers.get(tier)).map_or(table.beyond.as_str(), String::as_str)
+    }
+}
+
 /// Evaluates `stats` against `table`: each listed stat gets the best tier it fits, and the worst supported stat sets
 /// the avatar's tier. A stat key the stat registry does not know (a hand-built table; a parsed one cannot have it)
 /// is [`StatTier::Beyond`], so an unchecked stat never passes.
@@ -72,8 +80,9 @@ fn verdict(stats: &AvatarStats, table: &LimitTable, limit: &StatLimit) -> StatVe
     StatVerdict { key: limit.key.clone(), value, tier }
 }
 
-/// The findings for an evaluation against `target_tier`: an error for each stat over that tier's limit, and an info
-/// for each stripped component the avatar has anyway. Rule ids are `limits.<platform>.<stat>`; a hint names the fit
+/// The findings for an evaluation against `target_tier`: an error for each stat over that tier's limit, a warning for
+/// each stat past an advisory tier but within the target, and an info for each stripped component the avatar has
+/// anyway. Rule ids are `limits.<platform>.<stat>`; a hint names the fit
 /// stage that would help (`fit.decimate`, `fit.atlas`, `fit.meshes`, `fit.bones`, `fit.textures`, `fit.strip`) or says
 /// what to change by hand. A target past the last tier is the last tier.
 pub fn findings(eval: &Evaluation, table: &LimitTable, target_tier: usize) -> Report {
@@ -92,10 +101,33 @@ pub fn findings(eval: &Evaluation, table: &LimitTable, target_tier: usize) -> Re
             }
             StatTier::Within(i) if i > target => report.push(over(verdict, table, target, &value, rule)),
             StatTier::Beyond => report.push(over(verdict, table, target, &value, rule)),
-            StatTier::Within(_) | StatTier::Unsupported => {}
+            StatTier::Within(i) => {
+                if let Some(advisory) = past_advisory(table, i) {
+                    report.push(past(verdict, table, advisory, &value, rule));
+                }
+            }
+            StatTier::Unsupported => {}
         }
     }
     report
+}
+
+/// The last advisory tier below tier `i`, which a stat in tier `i` is past, if the table has one.
+fn past_advisory(table: &LimitTable, i: usize) -> Option<usize> {
+    (0..i).rev().find(|&tier| table.tiers.get(tier).is_some_and(|name| table.advisory.contains(name)))
+}
+
+/// A warning for a stat past an advisory tier, which is a recommendation and not a limit.
+fn past(verdict: &StatVerdict, table: &LimitTable, advisory: usize, value: &str, rule: String) -> Finding {
+    let tier = table.tiers.get(advisory).map_or("the advisory tier", String::as_str);
+    let cap = table.stat(&verdict.key).and_then(|limit| limit.per_tier.get(advisory).copied().flatten());
+    let message = match (cap, table.stat(&verdict.key)) {
+        (Some(cap), Some(limit)) => {
+            format!("{} {value}, past the {tier} size ({}{})", verdict.key, format_number(cap), limit.unit.suffix())
+        }
+        _ => format!("{} {value}, past the {tier} size", verdict.key),
+    };
+    hinted(Finding::warning(rule, message).at(&verdict.key), &verdict.key)
 }
 
 fn over(verdict: &StatVerdict, table: &LimitTable, target: usize, value: &str, rule: String) -> Finding {
@@ -107,8 +139,12 @@ fn over(verdict: &StatVerdict, table: &LimitTable, target: usize, value: &str, r
         }
         _ => format!("{} {value}, over {tier}", verdict.key),
     };
-    let finding = Finding::error(rule, message).at(&verdict.key);
-    match stat_def(&verdict.key).map(|def| def.fix) {
+    hinted(Finding::error(rule, message).at(&verdict.key), &verdict.key)
+}
+
+/// The finding with the hint of the stat's fix, if the registry knows the stat.
+fn hinted(finding: Finding, key: &str) -> Finding {
+    match stat_def(key).map(|def| def.fix) {
         Some(Fix::Stage(hint) | Fix::Hand(hint)) => finding.hint(hint),
         None => finding,
     }

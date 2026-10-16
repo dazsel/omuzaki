@@ -84,16 +84,23 @@ const OLD_NUMBERS: Golden = &[
 const QUEST_UNSUPPORTED: [&str; 6] =
     ["lights", "cloths", "cloth_vertices", "physics_colliders", "physics_rigidbodies", "audio_sources"];
 
+/// The platform-general stats the registry has for other platforms; `VRChat`'s page does not cap them, so its tables
+/// have no row for them.
+const NOT_PUBLISHED_BY_VRCHAT: [&str; 6] =
+    ["vertices", "morph_targets", "textures", "max_texture_side", "meshes", "attachments"];
+
 fn builtin(id: &str) -> &'static LimitTable {
     builtin_checked(id).unwrap()
 }
 
 /// A table with the given header lines and stat rows, for the parser's error cases.
 fn table_text(header: &str, rows: &str) -> String {
-    format!("{header}\n[texture]\nopaque_bits = 4.0\nalpha_bits = 8.0\nmips = true\n[stats]\n{rows}\n")
+    format!(
+        "[limits]\n{header}\n[limits.texture]\nopaque_bits = 4.0\nalpha_bits = 8.0\nmips = true\n[limits.stats]\n{rows}\n"
+    )
 }
 
-const HEADER: &str = "platform = \"test\"\nversion = \"v1\"\nsource = \"https://example.invalid/limits\"\nretrieved = \"2026-10-12\"\ntiers = [\"Good\", \"Poor\"]";
+const HEADER: &str = "platform = \"test\"\nversion = \"v1\"\nsource = \"https://example.invalid/limits\"\nretrieved = \"2026-10-12\"\ntiers = [\"Good\", \"Poor\"]\nbeyond = \"Over\"";
 
 #[test]
 fn every_number_of_the_old_file_is_in_the_new_tables() {
@@ -119,8 +126,11 @@ fn the_built_in_tables_parse_and_cover_every_stat_in_registry_order() {
         let table = builtin(id);
         assert_eq!(table.platform, id, "the platform id is the file stem");
         let keys: Vec<&str> = table.stats.iter().map(|s| s.key.as_str()).collect();
-        let registry: Vec<&str> = STATS.iter().map(|d| d.key).collect();
-        assert_eq!(keys, registry, "{id}: every registry stat, in order");
+        let registry: Vec<&str> =
+            STATS.iter().map(|d| d.key).filter(|key| !NOT_PUBLISHED_BY_VRCHAT.contains(key)).collect();
+        assert_eq!(keys, registry, "{id}: every stat VRChat publishes, in registry order");
+        assert_eq!(table.beyond, "Very Poor");
+        assert_eq!(table.advisory, Vec::<String>::new());
         assert_eq!(table.tiers, ["Excellent", "Good", "Medium", "Poor"]);
     }
     assert!(LimitTable::builtin("nope").is_none());
@@ -141,11 +151,11 @@ fn a_table_round_trips_through_toml() {
 
 #[test]
 fn a_header_field_that_is_missing_is_refused_by_name() {
-    for field in ["source", "retrieved", "version", "platform", "tiers"] {
+    for field in ["source", "retrieved", "version", "platform", "tiers", "beyond"] {
         let header: String = HEADER.lines().filter(|l| !l.starts_with(field)).collect::<Vec<_>>().join("\n");
-        let error = LimitTable::parse_named("data/limits/test.toml", &table_text(&header, "")).unwrap_err();
+        let error = LimitTable::parse_named("data/platforms/test.toml", &table_text(&header, "")).unwrap_err();
         let text = error.to_string();
-        assert!(text.contains("data/limits/test.toml") && text.contains(field), "{field}: {text}");
+        assert!(text.contains("data/platforms/test.toml") && text.contains(field), "{field}: {text}");
     }
     let empty_source = HEADER.replace("https://example.invalid/limits", "");
     let error = LimitTable::parse(&table_text(&empty_source, "")).unwrap_err();
@@ -165,8 +175,8 @@ fn a_malformed_table_names_the_file_and_the_key() {
         ("stats.triangles", "triangles = [1, true]", "boolean"),
     ];
     for (key, row, reason) in cases {
-        let error = LimitTable::parse_named("data/limits/test.toml", &table_text(HEADER, row)).unwrap_err();
-        assert_eq!((error.file(), error.key()), ("data/limits/test.toml", Some(key)), "{row}");
+        let error = LimitTable::parse_named("data/platforms/test.toml", &table_text(HEADER, row)).unwrap_err();
+        assert_eq!((error.file(), error.key()), ("data/platforms/test.toml", Some(key)), "{row}");
         assert!(error.to_string().contains(reason), "{row}: {error}");
     }
     let bad_date = HEADER.replace("2026-10-12", "2026-13-01");
@@ -333,4 +343,83 @@ fn every_fix_names_a_known_stage_or_says_what_to_do() {
             Fix::Hand(text) => assert!(text.contains(' '), "{}: a hand fix is a sentence", def.key),
         }
     }
+}
+
+/// A two-tier table: `recommended` is advisory and `accept` is the hard limit, as Resonite's published sizes are.
+fn advisory_table() -> LimitTable {
+    let header =
+        HEADER.replace("[\"Good\", \"Poor\"]", "[\"recommended\", \"accept\"]") + "\nadvisory = [\"recommended\"]";
+    LimitTable::parse(&table_text(&header, "triangles = [100, 200]")).unwrap()
+}
+
+#[test]
+fn the_label_names_the_tier_or_what_is_past_the_last() {
+    let table = builtin("vrchat-quest");
+    let at = |triangles| {
+        let stats = AvatarStats { triangles, ..AvatarStats::default() };
+        evaluate(&stats, table).label(table).to_string()
+    };
+    assert_eq!(at(7_500), "Excellent");
+    assert_eq!(at(20_000), "Poor");
+    assert_eq!(at(20_001), "Very Poor", "past the last tier is the table's beyond label");
+    let one_tier =
+        LimitTable::parse(&table_text(&HEADER.replace("[\"Good\", \"Poor\"]", "[\"accept\"]"), "triangles = [10]"))
+            .unwrap();
+    let stats = AvatarStats { triangles: 11, ..AvatarStats::default() };
+    assert_eq!(evaluate(&stats, &one_tier).label(&one_tier), "Over");
+}
+
+#[test]
+fn the_beyond_label_must_not_be_a_tier_and_must_be_there() {
+    let same = HEADER.replace("beyond = \"Over\"", "beyond = \"Poor\"");
+    assert_eq!(LimitTable::parse(&table_text(&same, "")).unwrap_err().key(), Some("beyond"));
+    let blank = HEADER.replace("beyond = \"Over\"", "beyond = \"\"");
+    assert_eq!(LimitTable::parse(&table_text(&blank, "")).unwrap_err().key(), Some("beyond"));
+}
+
+#[test]
+fn a_stat_past_an_advisory_tier_but_within_the_target_is_a_warning() {
+    let table = advisory_table();
+    let target = 1; // accept
+    let level = |triangles| {
+        let stats = AvatarStats { triangles, ..AvatarStats::default() };
+        findings(&evaluate(&stats, &table), &table, target)
+    };
+    assert!(level(100).findings.is_empty(), "within the recommendation: nothing to say");
+    let report = level(150);
+    let finding = report.findings.first().expect("a warning");
+    assert_eq!((finding.severity, finding.rule.as_str()), (Severity::Warning, "limits.test.triangles"));
+    assert!(finding.message.contains("past the recommended size (100)"), "{}", finding.message);
+    assert_eq!(finding.hint.as_deref(), Some("fit.decimate"));
+    assert_eq!(report.errors().count(), 0, "a recommendation is never an error");
+    let over = level(201);
+    assert_eq!(over.errors().count(), 1, "past the hard limit is an error as before");
+}
+
+#[test]
+fn advisory_must_name_tiers_and_each_once() {
+    for (advisory, reason) in [("[\"nope\"]", "not a tier"), ("[\"Good\", \"Good\"]", "twice")] {
+        let header = format!("{HEADER}\nadvisory = {advisory}");
+        let error = LimitTable::parse(&table_text(&header, "")).unwrap_err();
+        assert_eq!(error.key(), Some("advisory"), "{advisory}");
+        assert!(error.to_string().contains(reason), "{error}");
+    }
+}
+
+#[test]
+fn the_profile_section_is_left_for_the_registry_and_the_table_still_round_trips() {
+    let text = format!("{}\n[profile]\nformat = \"vrm0\"\nanything = 3\n", table_text(HEADER, "triangles = [10, 20]"));
+    let table = LimitTable::parse(&text).unwrap();
+    assert_eq!(table.stat("triangles").unwrap().per_tier, [Some(10.0), Some(20.0)]);
+    assert!(table.to_toml().unwrap().contains("[limits]"), "the table is written as the [limits] section");
+    assert!(LimitTable::parse(&format!("{text}\n[typo]\nx = 1\n")).unwrap_err().to_string().contains("typo"));
+}
+
+#[test]
+fn a_platform_registers_its_own_table_and_the_data_file_names_are_the_ids() {
+    // The two VRChat tables register themselves (`vrchat_rank.rs`); nothing in `limits` names them. Each is read from
+    // `data/platforms/<id>.toml`, and a lookup of anything else says so.
+    let error = builtin_checked("nope").unwrap_err();
+    assert_eq!(error.file(), "data/platforms");
+    assert!(builtin_ids().all(|id| builtin(id).platform == id));
 }

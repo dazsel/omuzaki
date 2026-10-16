@@ -1,7 +1,7 @@
 //! `VRChat`'s avatar performance rank, worked out from an avatar's counts (VF-07).
 //!
 //! A thin wrapper over the limit-table engine in [`crate::limits`]: the limits are `VRChat`'s published Avatar
-//! Performance Ranking numbers, which live only in `data/limits/vrchat-pc.toml` and `vrchat-quest.toml` with the
+//! Performance Ranking numbers, which live only in `data/platforms/vrchat-pc.toml` and `vrchat-quest.toml` with the
 //! source URL and the date they were read. [`rank`] evaluates an avatar against the table for its [`Platform`] and
 //! reads the tier as a [`Rank`]: the tiers Excellent, Good, Medium and Poor, and Very Poor past the last. A stat the
 //! page lists as disabled on a platform is [`StatRank::rank`] `None` (Unsupported) and does not count toward the rank.
@@ -12,6 +12,9 @@
 
 pub use crate::limits::{AvatarStats, LimitsError, StatsError, stats_from_ioscene};
 use crate::limits::{StatTier, builtin_checked, evaluate, stat_def};
+
+crate::register_limit_table!("vrchat-pc", "../data/platforms/vrchat-pc.toml");
+crate::register_limit_table!("vrchat-quest", "../data/platforms/vrchat-quest.toml");
 
 /// The tiers of the `VRChat` tables, best first, as ranks. Very Poor is past the last tier.
 const TIER_RANKS: [Rank; 4] = [Rank::Excellent, Rank::Good, Rank::Medium, Rank::Poor];
@@ -89,10 +92,9 @@ impl Platform {
 fn rank_of_tier(tier: Option<usize>) -> Result<Rank, LimitsError> {
     match tier {
         None => Ok(Rank::VeryPoor),
-        Some(i) => TIER_RANKS
-            .get(i)
-            .copied()
-            .ok_or_else(|| LimitsError::new("data/limits", None, format!("has a tier {i} the VRChat page does not"))),
+        Some(i) => TIER_RANKS.get(i).copied().ok_or_else(|| {
+            LimitsError::new("data/platforms", None, format!("has a tier {i} the VRChat page does not"))
+        }),
     }
 }
 

@@ -25,7 +25,7 @@
 //! | [`fit_decimate`] | `decimate`, `decimate_scene`: cut triangles to a budget, morph targets and skin weights kept consistent |
 //! | [`fit_texture`] | `resize`, `downscale_to`: the texture resampler for a platform fit, in linear light with premultiplied alpha |
 //! | [`fit_meshes`] | `merge_meshes`: join mesh nodes that no expression binds, the `fit.meshes` stage |
-//! | [`limits`] | platform limit tables as data (`data/limits/*.toml`), their evaluation and the measured scene stats |
+//! | [`limits`] | platform limit tables as data (`data/platforms/*.toml`), their evaluation and the measured scene stats |
 //! | [`ops::progress::JobProgress`] | the adapter from a job's context to the io progress trait |
 //!
 //! Ops register themselves with `omuzaki_ops_api::register_op!` next to their definition, so nothing here lists them.

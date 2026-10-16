@@ -6,8 +6,8 @@
 //! stage that would help. [`stale`] says when a table has gone too long without being re-read from its page.
 //!
 //! A *tier* is one column of a platform's table (`Excellent`, `Good`, ...), best first. A platform with a single hard
-//! limit has one tier, `accept`. The tables built in are `VRChat`'s two (`vrchat-pc`, `vrchat-quest`), under
-//! `data/limits/`; `crate::vrchat_rank` is a thin wrapper over them.
+//! limit has one tier, `accept`. A platform's table is the `[limits]` section of its data file, `data/platforms/<id>.toml`; the tables built in are
+//! `VRChat`'s two (`vrchat-pc`, `vrchat-quest`), which `crate::vrchat_rank` registers and wraps.
 
 mod eval;
 mod stats;
@@ -53,28 +53,57 @@ impl LimitsError {
     }
 }
 
-/// The built-in tables: their ids and the data files they are read from.
-const BUILTIN: [(&str, &str); 2] = [
-    ("vrchat-pc", include_str!("../../data/limits/vrchat-pc.toml")),
-    ("vrchat-quest", include_str!("../../data/limits/vrchat-quest.toml")),
-];
+/// A built-in table: the platform id and the text of its data file, `data/platforms/<id>.toml`. A platform registers
+/// its own with [`register_limit_table!`](crate::register_limit_table) next to the code that uses it, so no list here
+/// names the platforms.
+pub struct BuiltinTable {
+    /// The platform id, which must equal the file stem and the table's `platform`.
+    pub id: &'static str,
+    /// The data file's text.
+    pub text: &'static str,
+}
 
-/// The built-in tables, parsed once. A broken file stays an error here, so a caller can report it.
+inventory::collect!(BuiltinTable);
+
+/// Registers a built-in limit table: `register_limit_table!("vrchat-pc", "../data/platforms/vrchat-pc.toml")`. The path
+/// is relative to the file the macro is written in, as `include_str!`'s is.
+#[macro_export]
+macro_rules! register_limit_table {
+    ($id:literal, $path:literal) => {
+        inventory::submit! {
+            $crate::limits::BuiltinTable { id: $id, text: include_str!($path) }
+        }
+    };
+}
+
+/// The data file a table is read from, for the errors that name it.
+fn data_file(id: &str) -> String {
+    format!("data/platforms/{id}.toml")
+}
+
+/// The built-in tables, parsed once and sorted by id. A broken file or a repeated id stays an error here, so a caller
+/// can report it.
 static TABLES: LazyLock<Vec<(&'static str, Result<LimitTable, LimitsError>)>> = LazyLock::new(|| {
-    BUILTIN
+    let mut registered: Vec<&BuiltinTable> = inventory::iter::<BuiltinTable>.into_iter().collect();
+    registered.sort_by_key(|entry| entry.id);
+    let repeated: Vec<&str> =
+        registered.windows(2).filter(|pair| pair[0].id == pair[1].id).map(|pair| pair[0].id).collect();
+    registered
         .iter()
-        .map(|&(id, text)| {
-            let table = LimitTable::parse_named(&format!("data/limits/{id}.toml"), text).and_then(|table| {
-                if table.platform == id {
-                    Ok(table)
-                } else {
-                    Err(LimitsError::new(
-                        &format!("data/limits/{id}.toml"),
-                        Some("platform"),
-                        "must equal the file stem",
-                    ))
-                }
-            });
+        .map(|entry| {
+            let id = entry.id;
+            let file = data_file(id);
+            let table = if repeated.contains(&id) {
+                Err(LimitsError::new(&file, Some("platform"), "is registered more than once"))
+            } else {
+                LimitTable::parse_named(&file, entry.text).and_then(|table| {
+                    if table.platform == id {
+                        Ok(table)
+                    } else {
+                        Err(LimitsError::new(&file, Some("platform"), "must equal the file stem"))
+                    }
+                })
+            };
             (id, table)
         })
         .collect()
@@ -89,11 +118,11 @@ pub fn builtin_checked(id: &str) -> Result<&'static LimitTable, LimitsError> {
     match TABLES.iter().find(|(known, _)| *known == id) {
         Some((_, Ok(table))) => Ok(table),
         Some((_, Err(error))) => Err(error.clone()),
-        None => Err(LimitsError::new("data/limits", Some(id), "is not a built-in limit table")),
+        None => Err(LimitsError::new("data/platforms", Some(id), "is not a built-in limit table")),
     }
 }
 
 /// The ids of the built-in tables, in a fixed order.
 pub fn builtin_ids() -> impl Iterator<Item = &'static str> {
-    BUILTIN.iter().map(|&(id, _)| id)
+    TABLES.iter().map(|&(id, _)| id)
 }

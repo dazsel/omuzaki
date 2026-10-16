@@ -210,16 +210,17 @@ impl Facts {
         self.flags.get(&node).copied().unwrap_or_default()
     }
 
-    /// Whether the mesh at `node` may take part at all: used by this node alone, bound by no expression, without
+    /// The mesh at `node` if it may take part at all: used by this node alone, bound by no expression, without
     /// morph targets (a joined mesh would need padded targets).
-    fn mesh_is_free(&self, scene: &IoScene, node: &Node) -> bool {
-        let Some(mesh) = node.mesh else { return false };
-        let Some(data) = scene.meshes.get(mesh.index()) else { return false };
-        self.mesh_users.get(mesh.index()) == Some(&1)
+    fn free_mesh(&self, scene: &IoScene, node: &Node) -> Option<MeshIx> {
+        let mesh = node.mesh?;
+        let data = scene.meshes.get(mesh.index())?;
+        let free = self.mesh_users.get(mesh.index()) == Some(&1)
             && !self.bound_meshes.contains(&mesh)
             && data.morph_target_count() == 0
             && data.primitives.iter().all(|p| p.morph_targets.is_empty())
-            && !data.primitives.is_empty()
+            && !data.primitives.is_empty();
+        free.then_some(mesh)
     }
 }
 
@@ -239,18 +240,37 @@ struct Union {
     skeleton: Option<NodeIx>,
 }
 
-/// One target skinned node and the nodes that move into it.
+/// One target skinned node and the nodes that move into it. The plan holds the mesh and skin of every node in it, read
+/// when the plan was made, so applying it has nothing left to look up.
 struct SkinnedPlan {
     target: NodeIx,
+    target_mesh: MeshIx,
+    target_skin: SkinIx,
     union: Union,
-    /// `(node, joint index in the target's joined skin for each joint of the node's own skin)`.
-    members: Vec<(NodeIx, Vec<u16>)>,
+    members: Vec<SkinnedMember>,
+}
+
+/// A node that moves into a skinned target.
+struct SkinnedMember {
+    node: NodeIx,
+    mesh: MeshIx,
+    skin: SkinIx,
+    /// The joint index in the target's joined skin for each joint of the node's own skin.
+    remap: Vec<u16>,
+}
+
+/// A skinned node that can join anything: its skin and mesh, and the skin's checked contents.
+struct Usable<'a> {
+    mesh: MeshIx,
+    skin_ix: SkinIx,
+    skin: &'a Skin,
 }
 
 /// The skin of `node` if it can join anything: one matrix per joint, each joint once, every vertex joint in range.
-fn usable_skin<'a>(scene: &'a IoScene, facts: &Facts, node: NodeIx) -> Option<&'a Skin> {
+fn usable_skin<'a>(scene: &'a IoScene, facts: &Facts, node: NodeIx) -> Option<Usable<'a>> {
     let n = scene.nodes.get(node.index())?;
-    let skin = scene.skins.get(n.skin?.index())?;
+    let skin_ix = n.skin?;
+    let skin = scene.skins.get(skin_ix.index())?;
     let distinct: BTreeSet<NodeIx> = skin.joints.iter().copied().collect();
     let sound = skin.inverse_bind.len() == skin.joints.len() && distinct.len() == skin.joints.len();
     let mesh = scene.meshes.get(n.mesh?.index())?;
@@ -260,7 +280,8 @@ fn usable_skin<'a>(scene: &'a IoScene, facts: &Facts, node: NodeIx) -> Option<&'
             && !m.joints.is_empty()
             && m.joints.iter().flatten().all(|&j| usize::from(j) < skin.joints.len())
     });
-    (sound && vertices_ok && facts.mesh_is_free(scene, n)).then_some(skin)
+    let free = facts.free_mesh(scene, n)?;
+    (sound && vertices_ok).then_some(Usable { mesh: free, skin_ix, skin })
 }
 
 fn plan_skinned(scene: &IoScene, facts: &Facts, apart: &mut Vec<ApartPair>) -> Vec<SkinnedPlan> {
@@ -270,14 +291,14 @@ fn plan_skinned(scene: &IoScene, facts: &Facts, apart: &mut Vec<ApartPair>) -> V
         if node.skin.is_none() {
             continue;
         }
-        let Some(skin) = usable_skin(scene, facts, ix) else { continue };
+        let Some(Usable { mesh, skin_ix, skin }) = usable_skin(scene, facts, ix) else { continue };
         let mut refused = Vec::new();
         let mut joined = false;
         for plan in &mut plans {
             match try_join(&plan.union, facts.flag(plan.target) == facts.flag(ix), skin) {
                 Ok(remap) => {
                     absorb(&mut plan.union, skin);
-                    plan.members.push((ix, remap));
+                    plan.members.push(SkinnedMember { node: ix, mesh, skin: skin_ix, remap });
                     joined = true;
                     break;
                 }
@@ -288,7 +309,7 @@ fn plan_skinned(scene: &IoScene, facts: &Facts, apart: &mut Vec<ApartPair>) -> V
             apart.extend(refused);
             let union =
                 Union { joints: skin.joints.clone(), inverse_bind: skin.inverse_bind.clone(), skeleton: skin.skeleton };
-            plans.push(SkinnedPlan { target: ix, union, members: Vec::new() });
+            plans.push(SkinnedPlan { target: ix, target_mesh: mesh, target_skin: skin_ix, union, members: Vec::new() });
         }
     }
     plans.retain(|p| !p.members.is_empty());
@@ -344,27 +365,25 @@ fn apply_skinned(
     orphaned_meshes: &mut BTreeSet<MeshIx>,
     orphaned_skins: &mut BTreeSet<SkinIx>,
 ) {
-    let Some(target_mesh) = scene.nodes[plan.target.index()].mesh else { return };
     let mut moved: Vec<Primitive> = Vec::new();
-    for (node, remap) in &plan.members {
-        let source = &mut scene.nodes[node.index()];
-        let (mesh, skin) = (source.mesh.take(), source.skin.take());
-        let Some(mesh) = mesh else { continue };
-        let mut prims = std::mem::take(&mut scene.meshes[mesh.index()].primitives);
+    for member in &plan.members {
+        let source = &mut scene.nodes[member.node.index()];
+        source.mesh = None;
+        source.skin = None;
+        let mut prims = std::mem::take(&mut scene.meshes[member.mesh.index()].primitives);
         for prim in &mut prims {
             for slot in prim.mesh.joints.iter_mut().flatten() {
-                *slot = remap[usize::from(*slot)];
+                *slot = member.remap[usize::from(*slot)];
             }
         }
         moved.append(&mut prims);
-        orphaned_meshes.insert(mesh);
-        orphaned_skins.extend(skin);
-        merged.push(*node);
+        orphaned_meshes.insert(member.mesh);
+        orphaned_skins.insert(member.skin);
+        merged.push(member.node);
     }
-    scene.meshes[target_mesh.index()].primitives.append(&mut moved);
+    scene.meshes[plan.target_mesh.index()].primitives.append(&mut moved);
 
-    let target = &mut scene.nodes[plan.target.index()];
-    let Some(old_skin) = target.skin else { return };
+    let old_skin = plan.target_skin;
     let mut joined = Skin::new(
         scene.skins[old_skin.index()].name.clone(),
         plan.union.joints.clone(),
@@ -390,22 +409,22 @@ fn skin_is_shared(scene: &IoScene, skin: SkinIx, plan: &SkinnedPlan) -> bool {
 /// One target basic node and the nodes baked into it.
 struct BasicPlan {
     target: NodeIx,
-    members: Vec<NodeIx>,
+    target_mesh: MeshIx,
+    /// Each member and the mesh it holds, read when the plan was made.
+    members: Vec<(NodeIx, MeshIx)>,
 }
 
 fn plan_basic(scene: &IoScene, facts: &Facts, apart: &mut Vec<ApartPair>) -> Vec<BasicPlan> {
     let mut plans: Vec<BasicPlan> = Vec::new();
     for (i, node) in scene.nodes.iter().enumerate() {
         let ix = node_ix(i);
-        if node.skin.is_some() || !facts.mesh_is_free(scene, node) {
-            continue;
-        }
+        let Some(mesh) = facts.free_mesh(scene, node).filter(|_| node.skin.is_none()) else { continue };
         let mut refused = Vec::new();
         let mut joined = false;
         for plan in &mut plans {
             match basic_pair(scene, facts, plan.target, ix) {
                 Ok(()) => {
-                    plan.members.push(ix);
+                    plan.members.push((ix, mesh));
                     joined = true;
                     break;
                 }
@@ -414,7 +433,7 @@ fn plan_basic(scene: &IoScene, facts: &Facts, apart: &mut Vec<ApartPair>) -> Vec
         }
         if !joined {
             apart.extend(refused);
-            plans.push(BasicPlan { target: ix, members: Vec::new() });
+            plans.push(BasicPlan { target: ix, target_mesh: mesh, members: Vec::new() });
         }
     }
     plans.retain(|p| !p.members.is_empty());
@@ -447,14 +466,13 @@ fn apply_basic(
     merged: &mut Vec<NodeIx>,
     orphaned_meshes: &mut BTreeSet<MeshIx>,
 ) {
-    let Some(target_mesh) = scene.nodes[plan.target.index()].mesh else { return };
     let target_transform = scene.nodes[plan.target.index()].transform;
     let into_target = local_matrix(&target_transform).inverse();
     let mut moved: Vec<Primitive> = Vec::new();
-    for &node in &plan.members {
+    for &(node, mesh) in &plan.members {
         let source = &mut scene.nodes[node.index()];
         let transform = source.transform;
-        let Some(mesh) = source.mesh.take() else { continue };
+        source.mesh = None;
         let mut prims = std::mem::take(&mut scene.meshes[mesh.index()].primitives);
         // The same placement needs no arithmetic, so the vertices stay bit-identical.
         if transform != target_transform {
@@ -467,7 +485,7 @@ fn apply_basic(
         orphaned_meshes.insert(mesh);
         merged.push(node);
     }
-    scene.meshes[target_mesh.index()].primitives.append(&mut moved);
+    scene.meshes[plan.target_mesh.index()].primitives.append(&mut moved);
 }
 
 /// Moves a primitive's vertices through `bake`: positions as points, normals by the inverse transpose. A mirroring

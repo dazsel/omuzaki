@@ -8,20 +8,22 @@
 # is in megabytes as the page prints them (compared in MiB, 1024 * 1024 bytes). The page's boolean rows (particle
 # trails, particle collision) are written as 0 (False) and 1 (True).
 
+[limits]
 platform = "vrchat-pc"
 version = "Avatar Performance Ranking, page dated 2026-04-21"
 source = "https://creators.vrchat.com/avatars/avatar-performance-ranking-system/"
 retrieved = "2026-10-12"
 tiers = ["Excellent", "Good", "Medium", "Poor"]
+beyond = "Very Poor"
 
 # How texture memory is estimated from pixel counts: bits per pixel for images without and with an alpha channel, and a
 # full mip chain adding a third.
-[texture]
+[limits.texture]
 opaque_bits = 4.0
 alpha_bits = 8.0
 mips = true
 
-[stats]
+[limits.stats]
 triangles = [32000, 70000, 70000, 70000]
 bounds_x = [2.5, 4, 5, 5]
 bounds_y = [2.5, 4, 6, 6]

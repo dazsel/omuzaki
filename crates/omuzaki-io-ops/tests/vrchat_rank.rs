@@ -23,8 +23,8 @@ use omuzaki_io_ops::gather::{GatherOptions, GatherPurpose, gather};
 use omuzaki_io_ops::vrchat_rank::{AvatarStats, Platform, Rank, rank, stats_from_ioscene, texture_mib};
 use toml::Value;
 
-const PC_LIMITS: &str = include_str!("../data/limits/vrchat-pc.toml");
-const ANDROID_LIMITS: &str = include_str!("../data/limits/vrchat-quest.toml");
+const PC_LIMITS: &str = include_str!("../data/platforms/vrchat-pc.toml");
+const ANDROID_LIMITS: &str = include_str!("../data/platforms/vrchat-quest.toml");
 const MIB: f64 = 1024.0 * 1024.0;
 
 /// The stats the page disables on Android. They are Unsupported there and never count.
@@ -36,7 +36,7 @@ const ANDROID_UNSUPPORTED: [&str; 6] =
 fn table(platform: &str) -> BTreeMap<String, Value> {
     let text = if platform == "pc" { PC_LIMITS } else { ANDROID_LIMITS };
     let file: Value = toml::from_str(text).unwrap();
-    let mut rows: BTreeMap<String, Value> = file["stats"]
+    let mut rows: BTreeMap<String, Value> = file["limits"]["stats"]
         .as_table()
         .unwrap()
         .iter()
@@ -255,6 +255,33 @@ fn an_export_scene_counts_its_textures_from_the_image_headers() {
     let stats = stats_from_ioscene(&scene).unwrap();
     assert_eq!((stats.texture_px_opaque, stats.texture_px_alpha), (200, 20));
     assert_eq!(stats.triangles, 0, "an empty scene has no triangles");
+}
+
+#[test]
+fn the_platform_general_counts_come_from_the_scene() {
+    // One mesh of 2 triangles and 3 vertices, with 3 morph targets, drawn by two nodes; one node that draws nothing and is
+    // called `HatAttachment`; one mesh node that merely ends in the same word, which is not an attachment; and two images.
+    let (mut scene, mesh) = mesh_scene(2, 1.0);
+    scene.meshes[mesh.index()].primitives[0].morph_targets =
+        (0..3).map(|_| omuzaki_io_api::MorphTarget::new(vec![Vec3::ZERO; 3])).collect();
+    for name in ["left", "right", "BodyAttachment"] {
+        let mut node = Node::new(name);
+        node.mesh = Some(mesh);
+        let ix = scene.add_node(node);
+        scene.roots.push(ix);
+    }
+    let hat = scene.add_node(Node::new("HatAttachment"));
+    scene.roots.push(hat);
+    let other = scene.add_node(Node::new("Hat"));
+    scene.roots.push(other);
+    scene.add_image(EncodedImage::new("wide", ImageMime::Png, Blob::new(png(100, 30, false))));
+    scene.add_image(EncodedImage::new("tall", ImageMime::Png, Blob::new(png(8, 64, true))));
+    let stats = stats_from_ioscene(&scene).unwrap();
+    assert_eq!(stats.vertices, 9, "3 vertices drawn by 3 nodes");
+    assert_eq!(stats.morph_targets, 3, "the mesh's targets count once, however many nodes draw it");
+    assert_eq!(stats.meshes, 3);
+    assert_eq!(stats.attachments, 1, "only a node that draws nothing and is named *Attachment");
+    assert_eq!((stats.textures, stats.max_texture_side), (2, 100));
 }
 
 #[test]

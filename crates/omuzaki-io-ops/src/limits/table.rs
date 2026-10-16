@@ -1,7 +1,9 @@
 //! A platform's limit table as data: the types, the parser that refuses a malformed table, and the staleness check.
 //!
-//! A table is one TOML file: a header (`platform`, `version`, `source`, `retrieved`, `tiers`, an optional
-//! `unsupported_note`), a `[texture]` estimate and a `[stats]` table with one row per capped stat. A row is a limit per
+//! A table is the `[limits]` section of a platform's data file, `data/platforms/<id>.toml` (the file's `[profile]`
+//! section belongs to the platform profile registry and is not read here). It holds a header (`platform`, `version`,
+//! `source`, `retrieved`, `tiers`, `beyond`, and optionally `advisory` and `unsupported_note`), a `[limits.texture]`
+//! estimate and a `[limits.stats]` table with one row per capped stat. A row is a limit per
 //! tier (a number, or `"-"` for unlimited) or the word `"unsupported"` for a stat the platform strips. A stat that has
 //! no row is not capped. Parsing never guesses: a missing header field, an unknown key, a row of the wrong length or
 //! a limit that falls from one tier to the next is an error that names the file and the key.
@@ -91,6 +93,12 @@ pub struct LimitTable {
     pub retrieved: String,
     /// The tier names, best first. A platform with hard limits has one tier, `accept`.
     pub tiers: Vec<String>,
+    /// What the platform calls an avatar past the last tier (`Very Poor`, `refused`). It is not a tier: it is
+    /// unbounded, so it can never be a target.
+    pub beyond: String,
+    /// The tiers that are recommendations, not limits (Resonite's recommended sizes). A stat past an advisory tier
+    /// but within the target is a warning, never an error. Empty for a platform whose tiers are all limits.
+    pub advisory: Vec<String>,
     /// The platform's wording for a stripped component, shown with an unsupported stat that has a value.
     pub unsupported_note: Option<String>,
     /// How this platform's texture memory is estimated.
@@ -99,7 +107,17 @@ pub struct LimitTable {
     pub stats: Vec<StatLimit>,
 }
 
-/// The file's shape, before the rows are checked.
+/// The data file's shape: the `[limits]` section this module reads, and a `[profile]` section it leaves alone (the
+/// platform profile registry parses it), kept as it was written.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawFile {
+    limits: RawTable,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    profile: Option<toml::Value>,
+}
+
+/// The `[limits]` section's shape, before the rows are checked.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawTable {
@@ -108,6 +126,9 @@ struct RawTable {
     source: String,
     retrieved: String,
     tiers: Vec<String>,
+    beyond: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    advisory: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     unsupported_note: Option<String>,
     texture: TextureEstimate,
@@ -115,8 +136,8 @@ struct RawTable {
 }
 
 impl LimitTable {
-    /// Parses a table from TOML text. Errors name `limit table` as the file; use [`LimitTable::parse_named`] to name
-    /// the real one.
+    /// Parses a table from the TOML text of a platform data file (its `[limits]` section). Errors name `limit table`
+    /// as the file; use [`LimitTable::parse_named`] to name the real one.
     ///
     /// # Errors
     ///
@@ -131,13 +152,15 @@ impl LimitTable {
     ///
     /// Fails, naming `file` and the key, if the text is not a valid table (see the module docs).
     pub fn parse_named(file: &str, text: &str) -> Result<Self, LimitsError> {
-        let raw: RawTable = toml::from_str(text).map_err(|e| LimitsError::new(file, None, e.message()))?;
+        let raw: RawFile = toml::from_str(text).map_err(|e| LimitsError::new(file, None, e.message()))?;
+        let raw = raw.limits;
         let fail = |key: &str, reason: String| LimitsError::new(file, Some(key), reason);
         for (key, value) in [
             ("platform", &raw.platform),
             ("version", &raw.version),
             ("source", &raw.source),
             ("retrieved", &raw.retrieved),
+            ("beyond", &raw.beyond),
         ] {
             if value.trim().is_empty() {
                 return Err(fail(key, "is empty".into()));
@@ -150,6 +173,10 @@ impl LimitTable {
             return Err(fail("retrieved", format!("'{}' is not a YYYY-MM-DD date", raw.retrieved)));
         }
         check_tiers(&raw.tiers).map_err(|reason| fail("tiers", reason))?;
+        if raw.tiers.contains(&raw.beyond) {
+            return Err(fail("beyond", format!("'{}' is also a tier; it names what is past the last one", raw.beyond)));
+        }
+        check_advisory(&raw.advisory, &raw.tiers).map_err(|reason| fail("advisory", reason))?;
         let texture = raw.texture;
         for (key, bits) in [("texture.opaque_bits", texture.opaque_bits), ("texture.alpha_bits", texture.alpha_bits)] {
             if !bits.is_finite() || bits < 0.0 {
@@ -174,6 +201,8 @@ impl LimitTable {
             source: raw.source,
             retrieved: raw.retrieved,
             tiers: raw.tiers,
+            beyond: raw.beyond,
+            advisory: raw.advisory,
             unsupported_note: raw.unsupported_note,
             texture,
             stats,
@@ -200,15 +229,20 @@ impl LimitTable {
             };
             stats.insert(stat.key.clone(), value);
         }
-        let raw = RawTable {
-            platform: self.platform.clone(),
-            version: self.version.clone(),
-            source: self.source.clone(),
-            retrieved: self.retrieved.clone(),
-            tiers: self.tiers.clone(),
-            unsupported_note: self.unsupported_note.clone(),
-            texture: self.texture,
-            stats,
+        let raw = RawFile {
+            limits: RawTable {
+                platform: self.platform.clone(),
+                version: self.version.clone(),
+                source: self.source.clone(),
+                retrieved: self.retrieved.clone(),
+                tiers: self.tiers.clone(),
+                beyond: self.beyond.clone(),
+                advisory: self.advisory.clone(),
+                unsupported_note: self.unsupported_note.clone(),
+                texture: self.texture,
+                stats,
+            },
+            profile: None,
         };
         toml::to_string(&raw).map_err(|e| LimitsError::new("limit table", None, e.to_string()))
     }
@@ -249,6 +283,20 @@ fn check_tiers(tiers: &[String]) -> Result<(), String> {
         }
         if !seen.insert(tier) {
             return Err(format!("names tier '{tier}' twice"));
+        }
+    }
+    Ok(())
+}
+
+/// The advisory tiers are tiers of the table, each named once.
+fn check_advisory(advisory: &[String], tiers: &[String]) -> Result<(), String> {
+    let mut seen = BTreeSet::new();
+    for name in advisory {
+        if !tiers.contains(name) {
+            return Err(format!("names '{name}', which is not a tier"));
+        }
+        if !seen.insert(name) {
+            return Err(format!("names tier '{name}' twice"));
         }
     }
     Ok(())

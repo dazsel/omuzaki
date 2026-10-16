@@ -343,6 +343,35 @@ fn a_scene_budget_follows_surface_area_with_a_floor() {
 }
 
 #[test]
+fn a_share_a_small_primitive_cannot_use_goes_to_the_others() {
+    // A 100-triangle primitive of large area and a 1,900-triangle one of small area, 1,000 triangles in all. By area the
+    // first would get 900, but it only has 100: the 800 it cannot use go to the second, so the result keeps the full
+    // budget (100 + 900) and not 200.
+    let mut scene = IoScene::new();
+    for (w, h, scale) in [(10, 5, Vec2::new(1.0, 1.0)), (50, 19, Vec2::new(0.01, 0.01))] {
+        let mut mesh = Mesh::new("m");
+        mesh.primitives.push(grid(w, h, scale));
+        scene.add_mesh(mesh);
+    }
+    let sizes: Vec<usize> = scene.meshes.iter().map(|m| m.primitives[0].mesh.triangle_count()).collect();
+    assert_eq!(sizes, [100, 1_900]);
+    let options = DecimateOptions { lock_boundary: false, ..DecimateOptions::new(0) };
+    let reports = decimate_scene(&mut scene, 1_000, &options).unwrap();
+    let after: Vec<usize> = reports.iter().map(|r| r.triangles.1).collect();
+    assert_eq!(after[0], 100, "the primitive that is under its share is left as it is");
+    assert!(after[1].abs_diff(900) <= 20, "{after:?}: the second gets what the first could not use");
+}
+
+#[test]
+fn an_infinite_max_error_is_refused() {
+    let mut p = sphere(1.0, 12, 16);
+    let before = p.clone();
+    let options = DecimateOptions { max_error: f32::INFINITY, ..DecimateOptions::new(100) };
+    assert!(decimate(&mut p, &options).is_err());
+    assert_eq!(p, before, "an error leaves the primitive untouched");
+}
+
+#[test]
 fn a_failed_scene_decimation_leaves_the_scene_alone() {
     let mut scene = IoScene::new();
     let mut mesh = Mesh::new("m");

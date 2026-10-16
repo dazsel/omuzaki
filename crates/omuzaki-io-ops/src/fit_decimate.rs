@@ -86,8 +86,12 @@ pub struct DecimateReport {
 /// mesh fails [`MeshData::validate`](omuzaki_core::mesh::MeshData::validate), or a morph target's arrays are not one
 /// entry per vertex).
 pub fn decimate(primitive: &mut Primitive, options: &DecimateOptions) -> Result<DecimateReport, IoError> {
-    if !(options.max_error >= 0.0 && options.morph_weight.is_finite() && options.morph_weight >= 0.0) {
-        return Err(IoError::malformed("decimate options: max_error and morph_weight must be non-negative"));
+    if !(options.max_error.is_finite()
+        && options.max_error >= 0.0
+        && options.morph_weight.is_finite()
+        && options.morph_weight >= 0.0)
+    {
+        return Err(IoError::malformed("decimate options: max_error and morph_weight must be finite and non-negative"));
     }
     primitive.mesh.validate().map_err(|e| IoError::malformed(e.to_string()))?;
     let n = primitive.mesh.positions.len();
@@ -119,7 +123,8 @@ pub fn decimate(primitive: &mut Primitive, options: &DecimateOptions) -> Result<
 }
 
 /// Splits `total` across the scene's primitives in proportion to their surface area (at least 100 each, or the
-/// primitive's own count when that is smaller), then decimates each with `options` (its `target_triangles` is
+/// primitive's own count when that is smaller, and at most its own count: what a small primitive cannot use goes to the
+/// others), then decimates each with `options` (its `target_triangles` is
 /// replaced by the share). Reports come in mesh order, then primitive order.
 ///
 /// The scene is changed only if every primitive succeeds and the result passes [`IoScene::check`].
@@ -135,7 +140,8 @@ pub fn decimate_scene(
     let slots: Vec<(usize, usize)> =
         scene.meshes.iter().enumerate().flat_map(|(m, mesh)| (0..mesh.primitives.len()).map(move |p| (m, p))).collect();
     let areas: Vec<f64> = slots.iter().map(|&(m, p)| surface_area(&scene.meshes[m].primitives[p])).collect();
-    let shares = split_budget(&areas, total);
+    let counts: Vec<usize> = slots.iter().map(|&(m, p)| scene.meshes[m].primitives[p].mesh.triangle_count()).collect();
+    let shares = split_budget(&areas, &counts, total);
     let mut results = Vec::with_capacity(slots.len());
     for (&(m, p), &share) in slots.iter().zip(&shares) {
         let mut copy = scene.meshes[m].primitives[p].clone();
@@ -158,40 +164,59 @@ pub fn decimate_scene(
     Ok(reports)
 }
 
-/// The triangle count each area gets out of `total`: proportional to area, none under [`MIN_SHARE`]. A floor that
-/// binds is paid for by the rest, which are shared out again until none is under it. Remainders go to the largest
-/// fractions, ties to the lowest index, so the shares add up to `total` exactly (or to the floors, if they exceed it).
+/// The triangle count each primitive gets out of `total`: proportional to area, but never under [`MIN_SHARE`] (or the
+/// primitive's own count, when that is smaller) and never over the primitive's own count, which it cannot be given more
+/// than it has. A share that binds at either end is paid for, or taken up, by the rest, which are shared out again until
+/// none is out of bounds. Remainders go to the largest fractions, ties to the lowest index, so the shares add up to
+/// `total` exactly, unless the floors exceed it or the counts together fall short of it.
 #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)] // counts are far below 2^52; ideals are >= 0
-fn split_budget(areas: &[f64], total: usize) -> Vec<usize> {
-    let mut floored = vec![false; areas.len()];
+fn split_budget(areas: &[f64], counts: &[usize], total: usize) -> Vec<usize> {
+    let floor_of = |i: usize| MIN_SHARE.min(counts[i]);
+    // `fixed[i]` is the share a primitive is held at once it binds, if it does.
+    let mut fixed: Vec<Option<usize>> = vec![None; areas.len()];
     loop {
-        let free_area: f64 = areas.iter().zip(&floored).filter(|(_, f)| !**f).map(|(a, _)| a).sum();
-        let free_total = total.saturating_sub(floored.iter().filter(|f| **f).count() * MIN_SHARE) as f64;
-        let free_count = floored.iter().filter(|f| !**f).count();
-        let ideal = |a: f64| if free_area > 0.0 { free_total * a / free_area } else { free_total / free_count as f64 };
-        let newly: Vec<usize> =
-            (0..areas.len()).filter(|&i| !floored[i] && ideal(areas[i]) < MIN_SHARE as f64).collect();
-        if newly.is_empty() {
-            let mut shares: Vec<usize> = (0..areas.len())
-                .map(|i| if floored[i] { MIN_SHARE } else { ideal(areas[i]).floor() as usize })
-                .collect();
+        let held: usize = fixed.iter().flatten().sum();
+        let free: Vec<usize> = (0..areas.len()).filter(|&i| fixed[i].is_none()).collect();
+        let free_area: f64 = free.iter().map(|&i| areas[i]).sum();
+        let free_total = total.saturating_sub(held) as f64;
+        let ideal = |i: usize| {
+            if free_area > 0.0 { free_total * areas[i] / free_area } else { free_total / free.len() as f64 }
+        };
+        let clamped = |i: usize| ideal(i).clamp(floor_of(i) as f64, counts[i] as f64);
+        let excess = free.iter().map(|&i| clamped(i)).sum::<f64>() - free_total;
+        // Over-allocated: the primitives raised to their floor are the ones to hold. Under-allocated: the ones cut to
+        // their count. Balanced: every one out of bounds is held, and the rest are as they are.
+        let is_low = |i: usize| ideal(i) < floor_of(i) as f64;
+        let is_high = |i: usize| ideal(i) > counts[i] as f64;
+        let (any_low, any_high) = (free.iter().any(|&i| is_low(i)), free.iter().any(|&i| is_high(i)));
+        let tolerance = f64::EPSILON * free_total.max(1.0);
+        let bound: Vec<(usize, usize)> = free
+            .iter()
+            .filter_map(|&i| {
+                let hold_low = is_low(i) && (excess >= -tolerance || !any_high);
+                let hold_high = is_high(i) && (excess <= tolerance || !any_low);
+                if hold_low { Some((i, floor_of(i))) } else { hold_high.then_some((i, counts[i])) }
+            })
+            .collect();
+        if bound.is_empty() {
+            let mut shares: Vec<usize> =
+                (0..areas.len()).map(|i| fixed[i].unwrap_or_else(|| ideal(i).floor() as usize)).collect();
             let mut left = total.saturating_sub(shares.iter().sum());
-            let mut order: Vec<usize> = (0..areas.len()).filter(|&i| !floored[i]).collect();
-            order.sort_by(|&x, &y| {
-                let frac = |i: usize| ideal(areas[i]).fract();
-                frac(y).total_cmp(&frac(x)).then(x.cmp(&y))
-            });
+            let mut order = free.clone();
+            order.sort_by(|&x, &y| ideal(y).fract().total_cmp(&ideal(x).fract()).then(x.cmp(&y)));
             for i in order {
                 if left == 0 {
                     break;
                 }
-                shares[i] += 1;
-                left -= 1;
+                if shares[i] < counts[i] {
+                    shares[i] += 1;
+                    left -= 1;
+                }
             }
             return shares;
         }
-        for i in newly {
-            floored[i] = true;
+        for (i, share) in bound {
+            fixed[i] = Some(share);
         }
     }
 }

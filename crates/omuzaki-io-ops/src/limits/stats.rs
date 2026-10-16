@@ -24,12 +24,25 @@ use super::table::{TextureEstimate, Unit};
 pub struct AvatarStats {
     /// Triangles across all mesh primitives.
     pub triangles: u64,
+    /// Vertices across all mesh primitives, counted once for each node that draws the mesh like the triangles.
+    pub vertices: u64,
+    /// Morph targets across all meshes, each mesh counted once (a mesh shared by two nodes has one set of targets).
+    pub morph_targets: u64,
     /// The size of the avatar's meshes along each axis, in metres.
     pub bounds: [f64; 3],
     /// Texture pixels in images without an alpha channel.
     pub texture_px_opaque: u64,
     /// Texture pixels in images with an alpha channel.
     pub texture_px_alpha: u64,
+    /// Images in the scene: the textures an upload carries.
+    pub textures: u64,
+    /// The longest side, in pixels, of any image.
+    pub max_texture_side: u64,
+    /// Mesh nodes, with or without a skin: `skinned_meshes` plus `basic_meshes`.
+    pub meshes: u64,
+    /// Attachment nodes: nodes that draw no mesh and whose name ends in `Attachment`, the name a Roblox attachment
+    /// carries.
+    pub attachments: u64,
     /// Mesh nodes with a skin (Unity: skinned mesh renderers).
     pub skinned_meshes: u64,
     /// Mesh nodes without a skin (Unity: mesh renderers).
@@ -148,16 +161,23 @@ macro_rules! axis {
     };
 }
 
+const BY_HAND_SHAPES: Fix = Fix::Hand("remove unused shape keys in the source model");
 const BY_HAND_SPRINGS: Fix = Fix::Hand("remove or merge spring chains and colliders in the source model");
 const BY_HAND_PARTICLES: Fix = Fix::Hand("remove the particle systems from the source model");
 
 /// Every stat a table may cap, in the platform pages' order. A row in a table that is not here is refused.
 pub const STATS: &[StatDef] = &[
     count!(triangles, Fix::Stage("fit.decimate")),
+    count!(vertices, Fix::Stage("fit.decimate")),
+    count!(morph_targets, BY_HAND_SHAPES),
     axis!("bounds_x", 0),
     axis!("bounds_y", 1),
     axis!("bounds_z", 2),
     StatDef { key: "texture_mib", unit: Unit::Mib, fix: Fix::Stage("fit.textures"), read: |s, t| s.texture_mib(t) },
+    count!(textures, Fix::Stage("fit.atlas")),
+    count!(max_texture_side, Fix::Stage("fit.textures")),
+    count!(meshes, Fix::Stage("fit.meshes")),
+    count!(attachments, Fix::Hand("remove the extra attachment nodes in the source model")),
     count!(skinned_meshes, Fix::Stage("fit.meshes")),
     count!(basic_meshes, Fix::Stage("fit.meshes")),
     count!(material_slots, Fix::Stage("fit.atlas")),
@@ -237,6 +257,8 @@ fn count_mesh_nodes(scene: &IoScene, stats: &mut AvatarStats) {
         // A node is one instance of its mesh, so a mesh shared by two nodes is drawn, and ranked, twice.
         let triangles: usize = mesh.primitives.iter().map(|p| p.mesh.triangle_count()).sum();
         stats.triangles += len(triangles);
+        stats.vertices += len(mesh.primitives.iter().map(|p| p.mesh.positions.len()).sum::<usize>());
+        stats.meshes += 1;
         stats.material_slots += len(mesh.primitives.len());
         if node.skin.is_some() {
             stats.skinned_meshes += 1;
@@ -244,6 +266,8 @@ fn count_mesh_nodes(scene: &IoScene, stats: &mut AvatarStats) {
             stats.basic_meshes += 1;
         }
     }
+    stats.morph_targets = len(scene.meshes.iter().map(omuzaki_io_api::Mesh::morph_target_count).sum());
+    stats.attachments = len(scene.nodes.iter().filter(|n| n.mesh.is_none() && n.name.ends_with("Attachment")).count());
     let joints: BTreeSet<_> = scene.skins.iter().flat_map(|skin| skin.joints.iter().copied()).collect();
     stats.bones = len(joints.len());
 }
@@ -343,8 +367,10 @@ fn skinned_point(joints: &[Mat4], data: &MeshData, vertex: usize, position: Vec3
 }
 
 fn count_textures(scene: &IoScene, stats: &mut AvatarStats) -> Result<(), StatsError> {
+    stats.textures = len(scene.images.len());
     for image in &scene.images {
-        let (pixels, alpha) = image_pixels(image)?;
+        let (pixels, alpha, side) = image_pixels(image)?;
+        stats.max_texture_side = stats.max_texture_side.max(side);
         if alpha {
             stats.texture_px_alpha += pixels;
         } else {
@@ -354,14 +380,14 @@ fn count_textures(scene: &IoScene, stats: &mut AvatarStats) -> Result<(), StatsE
     Ok(())
 }
 
-/// The pixel count and whether the image has an alpha channel, read from its header only.
-fn image_pixels(image: &EncodedImage) -> Result<(u64, bool), StatsError> {
+/// The pixel count, whether the image has an alpha channel, and its longest side, read from its header only.
+fn image_pixels(image: &EncodedImage) -> Result<(u64, bool, u64), StatsError> {
     let fail = |reason: String| StatsError::Image { name: image.name.clone(), reason };
     let reader =
         ImageReader::new(Cursor::new(image.bytes.as_slice())).with_guessed_format().map_err(|e| fail(e.to_string()))?;
     let decoder = reader.into_decoder().map_err(|e| fail(e.to_string()))?;
     let (width, height) = decoder.dimensions();
-    Ok((u64::from(width) * u64::from(height), decoder.color_type().has_alpha()))
+    Ok((u64::from(width) * u64::from(height), decoder.color_type().has_alpha(), u64::from(width.max(height))))
 }
 
 fn count_avatar(scene: &IoScene, stats: &mut AvatarStats) {
