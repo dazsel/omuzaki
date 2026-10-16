@@ -960,11 +960,8 @@ impl ClothRuntime {
             let v = vertex as usize;
             let skinned = self.grid_skin[v].skin(&self.d.matrices, self.grid_rest[v]);
             let pinned = u32::try_from(k).is_ok_and(|k| to_level.pins.binary_search(&k).is_ok());
-            let placed = if pinned {
-                skinned
-            } else {
-                from_level.binding.place(v, skinned, &self.skinned_particles, from_x)
-            };
+            let placed =
+                if pinned { skinned } else { from_level.binding.place(v, skinned, &self.skinned_particles, from_x) };
             self.resampled[k] = placed.into();
             self.velocities[k] = from_level.binding.sample(from_v, v);
         }
