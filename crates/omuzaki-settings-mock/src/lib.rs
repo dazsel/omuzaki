@@ -53,6 +53,22 @@ struct Layers {
     active: Option<ProfileId>,
     /// Profile ids handed out so far, so a dry run does not use one up.
     ids_made: u32,
+    /// What the edit in progress touched, so the "files" take exactly that. Empty outside a plan.
+    touched: Vec<Touch>,
+}
+
+/// One thing an operation wrote. The "files" are per-key last-writer-wins, so a write lands on disk even when the live
+/// value already equalled it (a hand edit not yet reloaded must not win over an explicit set).
+#[derive(Clone, Debug)]
+enum Touch {
+    /// A key in a layer: set or removed on disk to match the live layer afterwards.
+    Key(Target, String),
+    /// A whole profile saved, created or deleted: the stored file becomes the live profile, or goes.
+    Profile(ProfileId),
+    /// A profile renamed: only its name.
+    Name(ProfileId),
+    /// The active profile changed.
+    Active,
 }
 
 #[derive(Debug)]
@@ -66,6 +82,7 @@ struct State {
 }
 
 /// Where a write goes.
+#[derive(Clone, Debug)]
 enum Target {
     Base,
     Profile(ProfileId),
@@ -150,23 +167,40 @@ impl Layers {
         }
     }
 
-    /// Carries what changed between `before` and `self` over to `disk`, leaving every other stored entry (a hand edit,
-    /// a value reload rejected) as it was.
-    fn merge_changes_into(&self, before: &Self, disk: &mut Self) {
-        merge_map(&before.base, &self.base, &mut disk.base);
-        disk.profiles.retain(|id, _| self.profiles.contains_key(id));
-        for (id, now) in &self.profiles {
-            match (before.profiles.get(id), disk.profiles.get_mut(id)) {
-                (Some(was), Some(stored)) => {
-                    stored.name.clone_from(&now.name);
-                    merge_map(&was.values, &now.values, &mut stored.values);
+    /// Carries what `touched` names over to `disk`, from `self` (the layers after the edit), leaving every other stored
+    /// entry (a hand edit, a value reload rejected) as it was.
+    fn merge_touched_into(&self, touched: &[Touch], disk: &mut Self) {
+        for touch in touched {
+            match touch {
+                Touch::Key(target, key) => {
+                    let now = match target {
+                        Target::Base => self.base.get(key),
+                        Target::Profile(id) => self.profiles.get(id).and_then(|p| p.values.get(key)),
+                    };
+                    let stored = match target {
+                        Target::Base => Some(&mut disk.base),
+                        Target::Profile(id) => disk.profiles.get_mut(id).map(|p| &mut p.values),
+                    };
+                    if let Some(stored) = stored {
+                        edit_values(stored, key, now.cloned());
+                    }
                 }
-                _ => {
-                    disk.profiles.insert(id.clone(), now.clone());
+                Touch::Profile(id) => match self.profiles.get(id) {
+                    Some(now) => {
+                        disk.profiles.insert(id.clone(), now.clone());
+                    }
+                    None => {
+                        disk.profiles.remove(id);
+                    }
+                },
+                Touch::Name(id) => {
+                    if let (Some(now), Some(stored)) = (self.profiles.get(id), disk.profiles.get_mut(id)) {
+                        stored.name.clone_from(&now.name);
+                    }
                 }
+                Touch::Active => disk.active.clone_from(&self.active),
             }
         }
-        disk.active.clone_from(&self.active);
     }
 
     fn info(&self, id: &ProfileId) -> Option<ProfileInfo> {
@@ -311,32 +345,19 @@ impl MemorySettings {
     fn write<T>(
         &self,
         st: &mut State,
-        plan: Planned<T>,
+        mut plan: Planned<T>,
         mode: Mode,
         cause: ChangeCause,
         always_event: bool,
         by: &Actor,
     ) -> (T, Vec<Change>) {
-        let before = st.live.clone();
+        let touched = std::mem::take(&mut plan.layers.touched);
         let after = plan.layers.clone();
         let done = self.finish(st, plan, mode, cause, always_event, by);
         if mode == Mode::Apply {
-            after.merge_changes_into(&before, &mut st.disk);
+            after.merge_touched_into(&touched, &mut st.disk);
         }
         done
-    }
-}
-
-/// Applies to `stored` the keys that differ between `was` and `now`: set where `now` has a value, removed where it
-/// dropped one.
-fn merge_map(was: &BTreeMap<String, Value>, now: &BTreeMap<String, Value>, stored: &mut BTreeMap<String, Value>) {
-    for (key, value) in now {
-        if was.get(key) != Some(value) {
-            stored.insert(key.clone(), value.clone());
-        }
-    }
-    for key in was.keys().filter(|key| !now.contains_key(*key)) {
-        stored.remove(key);
     }
 }
 
@@ -393,6 +414,7 @@ impl Settings for MemorySettings {
         let plan = st.plan(|layers| {
             let target = layers.target(reg, layer);
             layers.layer_mut(&target)?.insert(key.to_owned(), value);
+            layers.touched.push(Touch::Key(target, key.to_owned()));
             Ok(())
         })?;
         let before = st.snapshot.value(key).cloned().unwrap_or(Value::Null);
@@ -407,14 +429,17 @@ impl Settings for MemorySettings {
         let target = st.live.target(reg, layer);
         // A value reload rejected is stored but not live: reset must still remove it, or the next reload reports it again.
         let stored = st.disk.layer_mut(&target)?.contains_key(key);
-        let plan = st.plan(|layers| Ok(layers.layer_mut(&target)?.remove(key).is_some()))?;
+        let plan = st.plan(|layers| {
+            let removed = layers.layer_mut(&target)?.remove(key).is_some();
+            layers.touched.push(Touch::Key(target.clone(), key.to_owned()));
+            Ok(removed)
+        })?;
         let removed = plan.out || stored;
         let before = st.snapshot.value(key).cloned().unwrap_or(Value::Null);
         let after = plan.snapshot.value(key).cloned().unwrap_or(Value::Null);
         if removed {
             self.write(&mut st, plan, mode, ChangeCause::Reset, false, by);
             if mode == Mode::Apply {
-                st.disk.layer_mut(&target)?.remove(key);
                 let from = match &target {
                     Target::Base => "base".to_owned(),
                     Target::Profile(id) => id.to_string(),
@@ -460,6 +485,7 @@ impl Settings for MemorySettings {
                 },
             };
             layers.profiles.insert(id.clone(), Profile { name: name.clone(), values });
+            layers.touched.push(Touch::Profile(id.clone()));
             layers.info(&id).ok_or_else(|| unknown_profile(&id))
         })?;
         let info = plan.out.clone();
@@ -476,6 +502,7 @@ impl Settings for MemorySettings {
                 return Err(SettingError::new("", SettingErrorKind::ProfileExists { name: name.clone() }));
             }
             layers.profiles.get_mut(id).ok_or_else(|| unknown_profile(id))?.name = name;
+            layers.touched.push(Touch::Name(id.clone()));
             layers.info(id).ok_or_else(|| unknown_profile(id))
         })?;
         let info = plan.out.clone();
@@ -494,6 +521,7 @@ impl Settings for MemorySettings {
                 layers.active = None;
             }
             layers.profiles.remove(id);
+            layers.touched.extend([Touch::Profile(id.clone()), Touch::Active]);
             Ok(was_active)
         })?;
         let was_active = plan.out;
@@ -508,6 +536,7 @@ impl Settings for MemorySettings {
             if let Some(id) = to.filter(|id| !layers.profiles.contains_key(*id)) {
                 return Err(unknown_profile(id));
             }
+            layers.touched.push(Touch::Active);
             Ok(std::mem::replace(&mut layers.active, to.cloned()))
         })?;
         let from = plan.out.clone();

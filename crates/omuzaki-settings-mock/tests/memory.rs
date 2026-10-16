@@ -610,3 +610,49 @@ fn reload_leaves_non_member_keys_out_of_a_profile_and_reports_them() {
     let copy = s.save_profile("Copy", ProfileSource::Profile(p.id), false, Mode::Apply, &person()).unwrap();
     assert_eq!(copy.keys, 1, "duplication does not propagate them");
 }
+
+#[test]
+fn an_explicit_set_back_to_the_live_value_beats_an_unreloaded_hand_edit() {
+    let s = MemorySettings::default();
+    s.set::<UiScale>(&125, Layer::Base, Mode::Apply, &person()).unwrap();
+    s.hand_edit_base("ui.scale", Some(json!(150)));
+    // The live value is still 125, so this set changes nothing live, but it is the last writer.
+    dry_run_then_apply(&s, |s, m| s.set::<UiScale>(&125, Layer::Base, m, &person()).map(|_| ())).unwrap();
+    s.reload(Mode::Apply, &person()).unwrap();
+    assert_eq!(s.get::<UiScale>().unwrap(), 125, "the explicit set persisted over the hand edit");
+}
+
+#[test]
+fn an_explicit_set_in_a_profile_beats_an_unreloaded_hand_edit_of_that_profile() {
+    let s = MemorySettings::default();
+    let p = s.save_profile("P", ProfileSource::Current, false, Mode::Apply, &person()).unwrap();
+    s.switch_profile(Some(&p.id), Mode::Apply, &person()).unwrap();
+    s.set::<UiScale>(&110, Layer::Auto, Mode::Apply, &person()).unwrap();
+    s.hand_edit_profile(&p.id, "ui.scale", Some(json!(90))).unwrap();
+    s.set::<UiScale>(&110, Layer::Auto, Mode::Apply, &person()).unwrap();
+    s.reload(Mode::Apply, &person()).unwrap();
+    assert_eq!(s.get::<UiScale>().unwrap(), 110);
+}
+
+#[test]
+fn reset_of_a_key_that_is_unchanged_live_still_clears_a_hand_edit() {
+    let s = MemorySettings::default();
+    s.hand_edit_base("ui.scale", Some(json!(150)));
+    // Live holds nothing for the key, but the file does: reset clears the file, so a reload keeps the default.
+    let change = dry_run_then_apply(&s, |s, m| s.reset("ui.scale", Layer::Base, m, &person())).unwrap();
+    assert!(change.is_some());
+    s.reload(Mode::Apply, &person()).unwrap();
+    assert_eq!(s.get::<UiScale>().unwrap(), 100);
+}
+
+#[test]
+fn a_profile_switch_keeps_the_files_hand_edits_and_the_active_profile_across_a_reload() {
+    let s = MemorySettings::default();
+    let p = s.save_profile("P", ProfileSource::Current, false, Mode::Apply, &person()).unwrap();
+    s.hand_edit_base("ui.scale", Some(json!(150)));
+    s.hand_edit_profile(&p.id, "quality.tier", Some(json!("high"))).unwrap();
+    dry_run_then_apply(&s, |s, m| s.switch_profile(Some(&p.id), m, &person())).unwrap();
+    s.reload(Mode::Apply, &person()).unwrap();
+    assert_eq!(s.active_profile(), Some(p.id));
+    assert_eq!((s.get::<UiScale>().unwrap(), s.get::<QualityTier>().unwrap()), (150, Tier::High));
+}
