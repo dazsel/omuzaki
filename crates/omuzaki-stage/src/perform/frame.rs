@@ -66,6 +66,9 @@ impl PerformFrame {
         self.input.pose = *out.pose;
         self.input.channels = out.bus.values;
         self.input.dt = step_dt(self.last, out.tick);
+        // The stage shows the performer's own time: a frame that caught up several steps, or the first one after a
+        // restart, is at that step's time, not at the sum of the frame times before it.
+        self.input.time = Some(out.tick.time);
         self.last = Some(out.tick);
         stage.tick(renderer, &self.input).map(Some)
     }

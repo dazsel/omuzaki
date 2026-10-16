@@ -589,3 +589,39 @@ fn a_switch_lists_the_outgoing_and_the_incoming_expression_as_active_until_the_o
     rig.steps(30);
     assert_eq!(active(&rig), Vec::<String>::new());
 }
+
+#[test]
+fn a_binding_that_takes_a_fading_slot_is_not_active_until_it_is_pressed() {
+    let mut rig = starter_rig();
+    rig.handle.press("F1", true).unwrap();
+    rig.steps(12); // happy, shown
+    rig.handle.press("F1", true).unwrap(); // toggled off: fading out
+    rig.settle();
+    // F1 is unbound and F5 takes its slot while happy still fades.
+    assert_eq!(rig.handle.unbind_trigger("F1"), Ok(true));
+    let outcome = rig.bind("F5", "sad", TriggerMode::Hold).unwrap();
+    assert_eq!(outcome.slot, 0, "the new key reuses the slot that is fading");
+    let active = |rig: &Rig| -> Vec<String> {
+        rig.handle.triggers().into_iter().filter(|t| t.active).map(|t| t.binding.key).collect()
+    };
+    rig.steps(2);
+    assert_eq!(active(&rig), Vec::<String>::new(), "F5 has not been pressed, whatever still fades in its slot");
+    rig.steps(30);
+    assert_eq!(active(&rig), Vec::<String>::new());
+    rig.handle.press("F5", true).unwrap();
+    rig.steps(2);
+    assert_eq!(active(&rig), ["F5"], "pressed, it is active");
+}
+
+#[test]
+fn a_rebake_keeps_the_fading_key_active() {
+    let mut rig = starter_rig();
+    rig.handle.press("F1", true).unwrap();
+    rig.steps(12);
+    rig.handle.press("F1", true).unwrap(); // toggled off: fading out
+    rig.settle();
+    rig.handle.set_expressions(with_values_of("happy", "angry"), ChannelBuf::NEUTRAL).unwrap();
+    rig.settle();
+    let active: Vec<String> = rig.handle.triggers().into_iter().filter(|t| t.active).map(|t| t.binding.key).collect();
+    assert_eq!(active, ["F1"], "the same key, with new values, still fades out");
+}

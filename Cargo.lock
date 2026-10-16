@@ -3701,6 +3701,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "toml_edit",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3751,11 +3752,13 @@ dependencies = [
  "omuzaki-render-api",
  "omuzaki-render-mock",
  "omuzaki-store-api",
+ "omuzaki-store-mock",
  "pollster",
  "proptest",
  "schemars",
  "serde",
  "serde_json",
+ "serde_path_to_error",
  "thiserror 2.0.21",
  "tiny-skia",
  "toml",

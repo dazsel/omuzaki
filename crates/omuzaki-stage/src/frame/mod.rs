@@ -66,14 +66,19 @@ impl StageClock {
         self.fps.is_none()
     }
 
-    /// The next frame's tick. A fixed clock ignores `measured_dt`.
-    fn next(&mut self, measured_dt: f32) -> Tick {
+    /// The next frame's tick. A fixed clock ignores `measured_dt` and `time`; a live one takes the frame's time from
+    /// `time` when the caller knows it (the performer's step time), else from the dts it has summed.
+    fn next(&mut self, measured_dt: f32, time: Option<Seconds>) -> Tick {
         let tick = match self.fps {
             Some(fps) => Tick::at_rate(self.index, fps),
-            None => Tick { index: self.index, time: omuzaki_core::time::Seconds(self.time), dt: measured_dt },
+            None => Tick {
+                index: self.index,
+                time: time.unwrap_or(omuzaki_core::time::Seconds(self.time)),
+                dt: measured_dt,
+            },
         };
         self.index += 1;
-        self.time += f64::from(tick.dt);
+        self.time = tick.time.0 + f64::from(tick.dt);
         tick
     }
 }
@@ -93,6 +98,10 @@ pub struct FrameInput {
     pub root: Mat4,
     /// Measured frame time in seconds. Only a [`StageClock::live`] clock reads it.
     pub dt: f32,
+    /// The frame's time on the loop's own timeline, when the caller keeps one (the performer's step time): a
+    /// [`StageClock::live`] clock then shows exactly that, however many steps the frame covers or whether the timeline
+    /// restarted, instead of the sum of the `dt`s. Only a live clock reads it.
+    pub time: Option<Seconds>,
 }
 
 impl Default for FrameInput {
@@ -104,6 +113,7 @@ impl Default for FrameInput {
             wind: Vec3::ZERO,
             root: Mat4::IDENTITY,
             dt: 0.0,
+            time: None,
         }
     }
 }
@@ -148,6 +158,11 @@ pub struct Stage {
     subject_root: Mat4,
     /// What the scene has committed for the renderer ([`commit_scene`](Stage::commit_scene)).
     applier: Applier,
+    /// What the last scene still owes the renderer: set by [`set_scene`](Stage::set_scene), cleared by what
+    /// [`commit_scene`](Stage::commit_scene) commits.
+    owed: Owed,
+    /// How many times a staged variant replaced the character, so a caller can tell the face profile may have changed.
+    revision: u64,
     /// Renders submitted so far; numbers the frames of a live clock.
     submissions: u64,
     /// The pose and goals of the last frame: what [`settle`](Stage::settle) solves the rig with.
@@ -188,6 +203,8 @@ impl Stage {
                 input_root: Mat4::IDENTITY,
                 subject_root: Mat4::IDENTITY,
                 applier: Applier::new(),
+                owed: Owed::default(),
+                revision: 0,
                 submissions: 0,
                 built,
                 character,
@@ -230,8 +247,14 @@ impl Stage {
     /// staged variant whose vertex refresh the renderer refuses fails the call before anything steps: the variant is
     /// abandoned and the live character stays.
     pub fn tick(&mut self, renderer: &mut dyn Renderer, input: &FrameInput) -> Result<FrameOutput, StageError> {
+        // A swap replaces the character's mesh table (the old one is retired, not freed, so the two differ for as long
+        // as this compares them).
+        let table = self.built.meshes.as_ptr();
         self.swap_variant(renderer)?;
-        let tick = self.pinned.unwrap_or_else(|| self.clock.next(input.dt));
+        if !std::ptr::eq(table, self.built.meshes.as_ptr()) {
+            self.revision += 1;
+        }
+        let tick = self.pinned.unwrap_or_else(|| self.clock.next(input.dt, input.time));
         self.input_root = input.root;
         self.root = self.subject_root * input.root;
         self.pose = input.pose;
@@ -349,18 +372,42 @@ impl Stage {
     ///
     /// Allocation-free for a scene the lights of which fit ([`MAX_LIGHTS`](omuzaki_render_api::limits::MAX_LIGHTS)).
     pub fn set_scene(&mut self, resolved: &ResolvedScene, subject_root: Mat4) -> Owed {
-        let owed = self.applier.apply(resolved, &mut self.scene);
+        self.owed = self.applier.apply(resolved, &mut self.scene);
+        self.set_subject_root(subject_root);
+        self.owed
+    }
+
+    /// Moves the subject member alone: the scene's camera, lights and look stay as they are. Takes effect from the next
+    /// frame, or the next [`redraw`](Self::redraw) of a paused stage.
+    pub fn set_subject_root(&mut self, subject_root: Mat4) {
         if subject_root != self.subject_root {
             self.subject_root = subject_root;
             // A paused stage redraws from `root`, so it moves with the subject at once.
             self.root = subject_root * self.input_root;
         }
-        owed
     }
 
-    /// Records that everything in `owed` (from [`set_scene`](Self::set_scene)) reached the renderer.
+    /// What the last [`set_scene`](Self::set_scene) still owes the renderer: nothing once everything was committed.
+    pub fn owed(&self) -> Owed {
+        self.owed
+    }
+
+    /// Records that everything in `owed` (from [`set_scene`](Self::set_scene)) reached the renderer, and stops owing it.
+    /// A part of the debt that `owed` does not name stays owed.
     pub fn commit_scene(&mut self, owed: &Owed) {
         self.applier.commit(owed);
+        if owed.ground.is_some() && owed.ground == self.owed.ground {
+            self.owed.ground = None;
+        }
+        if owed.skin_floor.is_some() && owed.skin_floor == self.owed.skin_floor {
+            self.owed.skin_floor = None;
+        }
+    }
+
+    /// How many times a variant swap replaced the character: changes when its face profile (and so its expressions) may
+    /// have.
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// The scene as the next frame will start from: set the camera, lights and post settings here.

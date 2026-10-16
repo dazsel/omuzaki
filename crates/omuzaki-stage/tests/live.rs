@@ -225,9 +225,21 @@ impl<R: Renderer> Live<R> {
 
     /// [`new`](Self::new) with a `size` px square target.
     fn sized(
+        renderer: R,
+        cameras: Vec<(&str, Vec<(Duration, TrackFrame)>)>,
+        quality: Quality,
+        painter: Painter,
+        size: u32,
+    ) -> Self {
+        Self::build(renderer, cameras, quality, quality, painter, size)
+    }
+
+    /// A loop whose scheduler asks for `quality` over a stage made with `stage_quality`.
+    fn build(
         mut renderer: R,
         cameras: Vec<(&str, Vec<(Duration, TrackFrame)>)>,
         quality: Quality,
+        stage_quality: Quality,
         painter: Painter,
         size: u32,
     ) -> Self {
@@ -242,7 +254,7 @@ impl<R: Renderer> Live<R> {
         // The mock painter draws at this density; the real one at any.
         let options = UploadOptions { face_px_per_m: 2000.0 };
         let mut stage =
-            Stage::new(&mut renderer, character, options, scene(), target, quality, StageClock::live()).unwrap();
+            Stage::new(&mut renderer, character, options, scene(), target, stage_quality, StageClock::live()).unwrap();
         let rig = match painter {
             Painter::Mock => Some(FaceRig::new(Box::new(|projection, _| {
                 FaceSystem::new(Box::new(MockPainter::new(*projection)), Box::new(MockRasterizer))
@@ -727,6 +739,93 @@ fn applying_a_scene_allocates_nothing_in_the_frames_after_it() {
             .iter()
             .any(|l| matches!(l, Light::Directional { intensity, .. } if (*intensity - 2.0).abs() < 1e-6))
     );
+}
+
+#[test]
+fn a_catch_up_frame_and_a_restart_show_the_performers_time() {
+    let mut live = Live::new(MockRenderer::new(), vec![], Quality::live(), Painter::None);
+    live.frames(3);
+    // The loop stalls for three steps: the next frame runs steps 3 to 6 and shows step 6.
+    live.step += 3;
+    let step = live.step;
+    let frame = live.frame();
+    let want = step as f64 / f64::from(STEP_HZ);
+    assert!((frame.output.tick.time.0 - want).abs() < 1e-9, "stage time {} for step {step}", frame.output.tick.time.0);
+    assert!((frame.output.tick.dt - 4.0 / STEP_HZ).abs() < 1e-6, "the frame covers four steps");
+    // A restart takes the performer to tick 0, and the stage follows it there.
+    live.inner.as_mut().unwrap().restart();
+    let frame = live.frame();
+    assert!(frame.output.tick.time.0.abs() < 1e-9, "the first frame after a restart is at time 0");
+    let next = live.frame();
+    assert!((next.output.tick.time.0 - 1.0 / f64::from(STEP_HZ)).abs() < 1e-9);
+    assert!(next.output.report.frame > frame.output.report.frame, "submissions keep their order");
+}
+
+#[test]
+fn resuming_from_a_pause_carries_on_from_the_last_step() {
+    let mut live = Live::new(MockRenderer::new(), vec![], Quality::live(), Painter::None);
+    live.frames(10);
+    live.inner.as_mut().unwrap().set_paused(true);
+    live.step += 600; // ten seconds go by
+    live.frames(3);
+    live.inner.as_mut().unwrap().set_paused(false);
+    let first = live.frame();
+    let want = 10.0 / f64::from(STEP_HZ);
+    assert!((first.output.tick.time.0 - want).abs() < 1e-9, "resumes at step 10, not {}", first.output.tick.time.0);
+    assert!(
+        (first.output.tick.dt - 1.0 / STEP_HZ).abs() < 1e-6,
+        "one step, not the paused time: {}",
+        first.output.tick.dt
+    );
+    let second = live.frame();
+    assert!((second.output.tick.dt - 1.0 / STEP_HZ).abs() < 1e-6, "and the frame after it too");
+}
+
+#[test]
+fn moving_the_subject_before_any_scene_is_posted_keeps_the_stages_own_scene() {
+    let mut live = Live::new(MockRenderer::new(), vec![], Quality::live(), Painter::None);
+    live.inner.as_mut().unwrap().stage_mut().scene_mut().lights.push(Light::Directional {
+        to_light: Vec3::Y,
+        colour: Colour::rgb(10, 200, 30),
+        intensity: 1.5,
+        casts_shadow: false,
+    });
+    live.frame();
+    let (lights, camera) = (live.live().stage().scene().lights.clone(), live.live().stage().scene().camera);
+    assert_eq!(lights.len(), 1);
+    let step = Mat4::from_translation(Vec3::new(0.0, 0.0, 1.0));
+    let before: Vec<Mat4> = live.live().stage().scene().instances.iter().map(|i| i.transform).collect();
+    live.inner.as_mut().unwrap().set_subject_root(step);
+    live.frame();
+    let stage = live.live().stage();
+    assert_eq!(stage.scene().lights, lights, "the lights are still the stage's own");
+    assert_eq!(stage.scene().camera, camera);
+    let after: Vec<Mat4> = stage.scene().instances.iter().map(|i| i.transform).collect();
+    assert!(
+        before.iter().zip(&after).all(|(b, a)| (*a - step * *b).abs_diff_eq(Mat4::ZERO, 1e-5)),
+        "the subject moved"
+    );
+}
+
+#[test]
+fn the_stage_renders_at_the_schedulers_quality_from_the_first_frame() {
+    let live = Live::build(MockRenderer::new(), vec![], Quality::live(), Quality::high(), Painter::None, 64);
+    assert_eq!(*live.live().stage().quality(), Quality::live());
+}
+
+#[test]
+fn committing_the_owed_work_ends_the_debt() {
+    let mut live = Live::new(MockRenderer::new(), vec![], Quality::live(), Painter::None);
+    live.live().scenes().post(resolved(&scene_def()));
+    live.frame();
+    let owed = live.live().owed();
+    assert!(!owed.is_empty(), "the ground is owed to the renderer");
+    live.frame();
+    assert_eq!(live.live().owed(), owed, "still owed until the app commits it");
+    live.inner.as_mut().unwrap().stage_mut().commit_scene(&owed);
+    assert!(live.live().owed().is_empty(), "committed: no longer owed");
+    live.frame();
+    assert!(live.live().owed().is_empty());
 }
 
 #[cfg(feature = "wgpu")]

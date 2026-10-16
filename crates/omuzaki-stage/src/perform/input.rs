@@ -18,7 +18,8 @@
 //! The perform thread only calls [`SourceSlot::swap_into`] once per frame, which never blocks, allocates or frees: the
 //! source it replaces goes back into the slot, and the ops side drops it on its next call.
 
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError};
+use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use omuzaki_anim_api::{FrameSource, TrackFrame};
 use omuzaki_core::time::Seconds;
@@ -237,7 +238,8 @@ pub trait InputHost: Send + Sync {
     ///
     /// # Errors
     /// [`InputError::NoCamera`] for a camera the tracker does not list, or [`InputError::Device`] if the running mirror
-    /// cannot restart on it (the mirror is then off, and the binding is kept).
+    /// cannot restart on it: the change is then refused whole, the old binding stays and the mirror runs on the old
+    /// camera again when that opens.
     fn bind_camera(&self, camera: Option<CameraId>, mode: Mode) -> Result<Option<CameraId>, InputError>;
 
     /// Starts (`on`) or stops the live mirror. Idempotent: starting a running mirror and stopping a stopped one change
@@ -267,55 +269,99 @@ impl FrameSource for NoSource {
     }
 }
 
-/// The hand-off of frame sources from the ops side to the perform thread: newest wins, and the source a swap replaces
-/// comes back here, so the perform thread never frees one.
-#[derive(Default)]
-pub struct SourceSlot {
-    slot: Mutex<Handoff>,
+/// A source in its hand-off cell: the cell is allocated by the ops side and only moves between the two sides, so the
+/// perform thread never allocates or frees one.
+struct SourceCell {
+    source: Box<dyn FrameSource>,
 }
 
-#[derive(Default)]
-struct Handoff {
-    /// Posted and not taken yet.
-    posted: Option<Box<dyn FrameSource>>,
-    /// Taken out of the performer by the last swap, for the ops side to drop.
-    retired: Option<Box<dyn FrameSource>>,
+/// The hand-off of frame sources from the ops side to the perform thread: newest wins, and the source a swap replaces
+/// comes back here, so the perform thread never frees one. Lock-free: two atomic pointers, so the live frame loop
+/// takes no lock even to find the slot empty.
+///
+/// The ops side posts a cell with a source in it; the perform thread takes it, puts the source into the performer and
+/// the performer's old source into the same cell (exchanging them through a source that is zero-sized, so nothing is
+/// allocated), and hands the cell back as retired for the ops side to drop.
+pub struct SourceSlot {
+    /// A posted cell not taken yet, or null.
+    posted: AtomicPtr<SourceCell>,
+    /// The cell the last swap retired, or null.
+    retired: AtomicPtr<SourceCell>,
+}
+
+impl Default for SourceSlot {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SourceSlot {
     /// An empty slot.
     pub fn new() -> Self {
-        Self::default()
+        Self { posted: AtomicPtr::new(std::ptr::null_mut()), retired: AtomicPtr::new(std::ptr::null_mut()) }
     }
 
-    /// Posts `source` for the next [`swap_into`](Self::swap_into), replacing one not taken yet. Ops side: it may wait
-    /// for the perform thread's short swap, and it drops the sources the perform thread retired.
+    /// Posts `source` for the next [`swap_into`](Self::swap_into), replacing one not taken yet. Ops side: allocates, and
+    /// drops the sources the perform thread retired and the one it replaces.
+    #[allow(unsafe_code, reason = "the lock-free hand-off passes cells as raw pointers; each use states why it is sound")]
     pub fn post(&self, source: Box<dyn FrameSource>) {
-        let mut handoff = self.slot.lock().unwrap_or_else(PoisonError::into_inner);
-        handoff.retired = None;
-        handoff.posted = Some(source);
+        self.collect();
+        let cell = Box::into_raw(Box::new(SourceCell { source }));
+        let replaced = self.posted.swap(cell, Ordering::AcqRel);
+        // SAFETY: a non-null pointer in `posted` came from `Box::into_raw` in this function, and the swap made this
+        // call its only holder: the perform thread takes cells by the same atomic swap.
+        drop(unsafe { Self::reclaim(replaced) });
     }
 
     /// Drops the sources the perform thread retired. Ops side.
+    #[allow(unsafe_code, reason = "the lock-free hand-off passes cells as raw pointers; each use states why it is sound")]
     pub fn collect(&self) {
-        self.slot.lock().unwrap_or_else(PoisonError::into_inner).retired = None;
+        let retired = self.retired.swap(std::ptr::null_mut(), Ordering::AcqRel);
+        // SAFETY: as in `post`: `retired` only ever holds cells from `Box::into_raw`, and the swap made this call the
+        // only holder.
+        drop(unsafe { Self::reclaim(retired) });
     }
 
-    /// Puts a posted source into `performer` and returns true; false when nothing is posted, the ops side holds the
-    /// slot right now, or the source the last swap retired is still waiting to be dropped (the next frame tries
-    /// again). Perform thread: never blocks, allocates or frees.
+    /// The box behind `cell`, or `None` for null.
+    ///
+    /// # Safety
+    /// `cell` is null or came from `Box::into_raw(Box<SourceCell>)` and is owned by the caller alone.
+    #[allow(unsafe_code, reason = "the lock-free hand-off passes cells as raw pointers; each use states why it is sound")]
+    unsafe fn reclaim(cell: *mut SourceCell) -> Option<Box<SourceCell>> {
+        // SAFETY: the caller's contract.
+        (!cell.is_null()).then(|| unsafe { Box::from_raw(cell) })
+    }
+
+    /// Puts a posted source into `performer` and returns true; false when nothing is posted, or the source the last swap
+    /// retired is still waiting to be dropped (the next frame tries again). Perform thread: never blocks, locks,
+    /// allocates or frees.
+    #[allow(unsafe_code, reason = "the lock-free hand-off passes cells as raw pointers; each use states why it is sound")]
     pub fn swap_into(&self, performer: &mut Performer) -> bool {
-        let mut handoff = match self.slot.try_lock() {
-            Ok(guard) => guard,
-            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
-            Err(TryLockError::WouldBlock) => return false,
-        };
-        if handoff.retired.is_some() {
+        if self.posted.load(Ordering::Acquire).is_null() || !self.retired.load(Ordering::Acquire).is_null() {
             return false;
         }
-        let Some(source) = handoff.posted.take() else { return false };
-        handoff.retired = Some(performer.set_source(source));
+        let cell = self.posted.swap(std::ptr::null_mut(), Ordering::AcqRel);
+        if cell.is_null() {
+            return false;
+        }
+        // SAFETY: a non-null `posted` pointer is a leaked box from `post`, and the swap made this call its only holder.
+        let cell_ref = unsafe { &mut *cell };
+        // `NoSource` is zero-sized: boxing it allocates nothing, so the exchange below allocates and frees nothing.
+        let incoming = std::mem::replace(&mut cell_ref.source, Box::new(NoSource));
+        cell_ref.source = performer.set_source(incoming);
+        // Only this thread fills `retired`, and it was empty above; the ops side only empties it.
+        self.retired.store(cell, Ordering::Release);
         true
+    }
+}
+
+impl Drop for SourceSlot {
+    #[allow(unsafe_code, reason = "the lock-free hand-off passes cells as raw pointers; each use states why it is sound")]
+    fn drop(&mut self) {
+        for cell in [*self.posted.get_mut(), *self.retired.get_mut()] {
+            // SAFETY: `&mut self`: no other holder, and the pointers are leaked boxes from `post` or `swap_into`.
+            drop(unsafe { Self::reclaim(cell) });
+        }
     }
 }
 
@@ -451,7 +497,17 @@ impl InputHost for LiveInput {
         inner.camera.clone_from(&camera);
         if inner.preview.is_on() {
             match camera {
-                Some(id) => inner.start(id, &self.slot)?,
+                Some(id) => {
+                    if let Err(error) = inner.start(id, &self.slot) {
+                        // The new camera would not open: keep the old binding, and the old camera running if it
+                        // still opens, so a refused change changes nothing.
+                        inner.camera.clone_from(&before);
+                        if let Some(old) = before {
+                            let _ = inner.start(old, &self.slot);
+                        }
+                        return Err(error);
+                    }
+                }
                 None => inner.stop(&self.slot),
             }
         }

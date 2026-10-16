@@ -443,12 +443,14 @@ fn a_zoom_sweep_switches_variants_at_the_two_crossings_and_uploads_only_what_cha
     for (frame, step) in steps.into_iter().enumerate() {
         stage.scene_mut().camera = camera_for(&stage, sweep(&mut rng, step));
         let (variant, before) = (stage.built().variant.clone(), renderer.mesh_creates);
-        let old = stage.built().meshes.clone();
+        let (old, revision) = (stage.built().meshes.clone(), stage.revision());
         run_frame(&mut stage, &mut renderer, &FrameInput::default()).expect("frame");
         if stage.built().variant == variant {
             assert_eq!(renderer.mesh_creates, before, "frame {frame}: no switch, no new mesh");
+            assert_eq!(stage.revision(), revision, "frame {frame}: no switch, same revision");
             continue;
         }
+        assert_eq!(stage.revision(), revision + 1, "frame {frame}: a switch replaces the character once");
         let new = &stage.built().meshes;
         let changed = new
             .iter()

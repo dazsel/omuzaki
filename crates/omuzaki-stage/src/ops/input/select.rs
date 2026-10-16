@@ -15,6 +15,10 @@ use crate::perform::input::{InputSource, SourceKind};
 pub struct Select {
     /// `webcam`, `iphone` or `life_layer`.
     pub source: SourceKind,
+    /// Used by undo; callers leave it unset. Starts the preview again after the change, as it ran before a change of
+    /// source stopped it. Default `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub resume_preview: bool,
 }
 
 impl Op for Select {
@@ -31,11 +35,40 @@ impl Op for Select {
     fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
         ctx.require_person("choosing the tracking source changes what the camera is used for")?;
         let host = host(ctx)?;
+        let was_on = host.state().preview.is_on();
         let before = host.select(self.source, mode(ctx)).map_err(op_error)?;
-        let saved = persist::<InputSource>(ctx, &self.source)?;
+        if self.resume_preview
+            && !ctx.dry_run
+            && let Err(error) = host.preview(true, mode(ctx))
+        {
+            // Nothing is left half done: the source goes back.
+            let _ = host.select(before, mode(ctx));
+            return Err(op_error(error));
+        }
+        let saved = match persist::<InputSource>(ctx, &self.source) {
+            Ok(saved) => saved,
+            Err(error) => {
+                if !ctx.dry_run {
+                    // The store refused: put the host back, so what runs is what is saved.
+                    let _ = host.select(before, mode(ctx));
+                    if was_on {
+                        let _ = host.preview(true, mode(ctx));
+                    }
+                }
+                return Err(error);
+            }
+        };
         let answer = json!({ "source": self.source, "before": before, "saved": saved, "dry_run": ctx.dry_run });
         let summary = format!("tracking source {before:?} to {:?}", self.source);
-        changed(Self::meta().name, "source", before, self.source, summary, answer)
+        let mut plan = changed(Self::meta().name, "source", before, self.source, summary, answer)?;
+        // A change of source stops a running preview: undoing it brings the preview back too.
+        if was_on
+            && before != self.source
+            && let Some(effect) = plan.effect.as_mut()
+        {
+            effect.undo.args["resume_preview"] = json!(true);
+        }
+        Ok(plan)
     }
 }
 
