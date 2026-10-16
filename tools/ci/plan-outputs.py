@@ -6,9 +6,10 @@
 Prints `key=value` lines (append them to $GITHUB_OUTPUT). Why a script and not jq in the workflow: it can be run and
 tested by hand (tools/tests/plan_outputs.sh), and the policy lives in one readable place.
 
-Policy. A pull request tests only the crates it changed and lints those plus their direct dependents; a PR that widens
-the scope to the whole workspace (a lock file or toolchain change) tests everything, sharded. The merge queue tests and
-lints everything affected, direct or not, and cross-builds it for Windows.
+Policy. A pull request runs no tests: the session that wrote it runs `cargo xtask check --affected` on its own machine
+and attests it (tools/ci/self-gate.py). It lints the crates it changed plus their direct dependents and runs the link
+gates. The merge queue tests and lints everything affected, direct or not, in shards, and cross-builds it for Windows;
+it builds the exact commit that will land, so it is the authoritative run.
 """
 
 import json
@@ -33,7 +34,7 @@ def shard_matrix(shards):
 def outputs(report, event):
     """The outputs for `report` (the xtask JSON) on `event`, as an ordered dict of strings."""
     queue = event != "pull_request"
-    shards = report["shards_full"] if queue else report["shards_changed"]
+    shards = report["shards_full"] if queue else []
     lint = sorted(set(report["full"] + report["link_only"])) if queue else report["direct"]
     return {
         "mode": report["mode"],

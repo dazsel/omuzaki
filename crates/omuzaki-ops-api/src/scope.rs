@@ -59,11 +59,17 @@ pub enum Scope {
     /// Start a script run or save a script. Inner requests of a run are still checked against their own scopes.
     #[serde(rename = "script")]
     Script,
+    /// Comment on a review and reply to a comment (ADR 0056). Writes only plain `comments/` nodes: it does not allow
+    /// resolving, reopening, deleting or importing comments, creating tasks, or approving anything (those are
+    /// person-only ops, and approving is never a scope), and it does not allow editing a character, a scene or the
+    /// library.
+    #[serde(rename = "review")]
+    Review,
 }
 
 impl Scope {
     /// Every scope, in a stable order (for docs and grant UIs).
-    pub const ALL: [Scope; 16] = [
+    pub const ALL: [Scope; 17] = [
         Scope::Read,
         Scope::EditCharacter,
         Scope::EditScene,
@@ -80,6 +86,7 @@ impl Scope {
         Scope::Input,
         Scope::Process,
         Scope::Script,
+        Scope::Review,
     ];
 
     /// Whether this scope reaches outside the project. A grant prompt and a scope badge show these as risky (warning
@@ -113,6 +120,7 @@ impl Scope {
             Scope::Input => "input",
             Scope::Process => "process",
             Scope::Script => "script",
+            Scope::Review => "review",
         }
     }
 }
@@ -172,5 +180,17 @@ mod tests {
         assert!([Scope::Input, Scope::Process].iter().all(|s| Scope::ALL.contains(s)));
         assert!("Input".parse::<Scope>().is_err());
         assert!("process ".parse::<Scope>().is_err());
+    }
+
+    #[test]
+    fn review_round_trips_and_is_not_risky() {
+        assert_eq!(Scope::Review.name(), "review");
+        assert_eq!(Scope::Review.to_string(), "review");
+        assert_eq!("review".parse::<Scope>().unwrap(), Scope::Review);
+        assert_eq!(serde_json::to_string(&Scope::Review).unwrap(), "\"review\"");
+        assert_eq!(serde_json::from_str::<Scope>("\"review\"").unwrap(), Scope::Review);
+        assert_eq!(Scope::ALL.iter().filter(|s| **s == Scope::Review).count(), 1);
+        assert!(!Scope::Review.is_risky(), "a comment is plain data that a person can delete");
+        assert!("Review".parse::<Scope>().is_err());
     }
 }

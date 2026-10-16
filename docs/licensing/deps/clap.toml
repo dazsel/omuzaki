@@ -1,7 +1,7 @@
 section = "rust"
 item = "clap"
 kind = "crate"
-used_for = "CLI"
+used_for = "CLI; the command lines of the `spikes/mascot-window` binaries"
 status = "yes"
 audit = "(crates.io: MIT OR Apache-2.0)"
 crates = ["clap"]

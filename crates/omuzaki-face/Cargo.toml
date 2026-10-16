@@ -28,11 +28,19 @@ omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-render-api = { path = "../omuzaki-render-api" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
 
+# The GPU rasteriser (`raster::gpu`) is native only: wgpu's WebGPU types on wasm32 are not `Send`, which `GpuRasterizer` needs
+# (#2207). On the web the face draws with the CPU raster, the same fallback as everywhere else.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tracing.workspace = true
+vello.workspace = true
+wgpu.workspace = true
+
 [dev-dependencies]
 criterion.workspace = true
 # The oracle the stroker's tests compare with (the port of Skia's stroker this one is a port of); tests only.
 tiny-skia.workspace = true
 proptest.workspace = true
+pollster.workspace = true
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 omuzaki-face-mock = { path = "../omuzaki-face-mock" }
 omuzaki-render-mock = { path = "../omuzaki-render-mock" }
@@ -57,6 +65,11 @@ harness = false
 
 [[bench]]
 name = "mouth_interior"
+harness = false
+
+# The CPU rasteriser on the Chrome-parity probe drawings and the overlap drawings.
+[[bench]]
+name = "raster_scan"
 harness = false
 
 [build-dependencies]

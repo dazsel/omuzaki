@@ -1,5 +1,5 @@
 //! The production CPU rasteriser: [`SkiaRasterizer`] draws a [`DrawList`] the way Skia's software pipeline does, so it
-//! draws what the 2D canvas the prototype painted the face with draws (`crates/omuzaki-test/tests/raster_probes.rs`
+//! draws what the 2D canvas the prototype painted the face with draws (`crates/omuzaki-test-face/tests/raster_probes.rs`
 //! measures it against Chrome).
 //!
 //! The GPU painter is the performance path; this one is for everything that needs exact, deterministic pixels: tests and
@@ -259,7 +259,7 @@ fn not_finite(index: usize, command: &str, field: &str) -> FaceError {
 /// Rejects a command with a number that is not finite (NaN or infinite), naming it. Nothing is skipped silently: a NaN
 /// opacity would otherwise erase what is under it, and a NaN coordinate would lose a shape without a trace. Values that
 /// are finite but draw nothing (a zero width, a gradient with no span) are not errors, as on the canvas.
-fn check(index: usize, cmd: &Cmd, list: &DrawList) -> Result<(), FaceError> {
+pub(crate) fn check(index: usize, cmd: &Cmd, list: &DrawList) -> Result<(), FaceError> {
     let check_path = |name: &str, path: PathRef| -> Result<(), FaceError> {
         let ok = list.elements(path).iter().all(|el| match *el {
             PathEl::Move(p) | PathEl::Line(p) => p.is_finite(),
