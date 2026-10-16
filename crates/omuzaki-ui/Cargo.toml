@@ -30,6 +30,7 @@ omuzaki-anim = { path = "../omuzaki-anim" }
 omuzaki-anim-api = { path = "../omuzaki-anim-api" }
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-doc-api = { path = "../omuzaki-doc-api" }
+omuzaki-face-api = { path = "../omuzaki-face-api" }
 omuzaki-l10n-api = { path = "../omuzaki-l10n-api" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-render-api = { path = "../omuzaki-render-api" }

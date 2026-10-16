@@ -4,7 +4,7 @@
 //!  camera ─► Tracker (its own thread) ─► FrameSource ─► perform thread ─► FrameMailbox ─► render thread
 //!                                                       Performer + PerformControl         LiveScene: Stage::tick
 //!                                                            ▲                              ├─► main viewport
-//!                     ops (perform.*) ─► Arc<dyn PerformHost> (the PerformHandle)          └─► output window (a copy)
+//!          ops (perform.*, trigger.*) ─► Arc<dyn PerformHost> (the PerformHandle)          └─► output window (a copy)
 //! ```
 //!
 //! # Thread ownership
@@ -46,4 +46,4 @@ pub use clock::{PerformClock, RealClock};
 pub use mailbox::{FrameReader, FrameWriter, LiveFrame, frame_mailbox};
 pub use rig::{LIFE_SEED, LiveError, LiveRig, NoCamera, live_performer};
 pub use scene::LiveScene;
-pub use thread::{LoopReport, PerformThread, THREAD_NAME, TriggerPress, WiringError};
+pub use thread::{LoopReport, PerformThread, THREAD_NAME, WiringError};

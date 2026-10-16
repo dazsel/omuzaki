@@ -1,18 +1,18 @@
 //! [`PerformThread`]: the perform loop on its own thread, at the performer's fixed step.
 //!
 //! The thread owns the [`Performer`] and its [`PerformControl`]; nothing else touches them. Each pass it takes at most
-//! [`MAX_LOOP_COMMANDS`] requests of its own (a new frame source, a trigger), lets the control take the ops' requests
-//! and run the due steps, publishes the newest step's [`LiveFrame`] into the mailbox, and sleeps until the next step
-//! is due. In steady state a pass neither locks nor allocates (`tests/live_wiring.rs` counts it); the exceptions are
-//! the requests themselves, which arrive between frames: a new source frees the old one, and a settings change runs
-//! the retarget's `set_config`.
+//! [`MAX_LOOP_COMMANDS`] requests of its own (a new frame source), lets the control take the ops' requests (settings,
+//! calibration, triggers) and run the due steps, publishes the newest step's [`LiveFrame`] into the mailbox, and sleeps
+//! until the next step is due. In steady state a pass neither locks nor allocates (`tests/live_wiring.rs` counts it);
+//! the exceptions are the requests themselves, which arrive between frames: a new source frees the old one, and a
+//! settings change runs the retarget's `set_config`.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::thread::JoinHandle;
 
-use omuzaki_anim_api::{BlendMode, ChannelBuf, ChannelMask, FrameSource, Layer};
+use omuzaki_anim_api::FrameSource;
 use omuzaki_core::time::Seconds;
 use omuzaki_stage::perform::host::{PerformControl, PerformHandle, PerformHost, perform_channel};
 use omuzaki_stage::perform::{Performer, STEP_HZ};
@@ -61,30 +61,9 @@ impl std::error::Error for WiringError {
     }
 }
 
-/// A held expression from a hotkey or another trigger: these channels, at these values, override the face while it
-/// is held.
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub struct TriggerPress {
-    /// The values; only the channels in `mask` are read.
-    pub values: ChannelBuf,
-    /// The channels the trigger drives.
-    pub mask: ChannelMask,
-}
-
-impl TriggerPress {
-    /// A trigger that drives the channels in `mask` to the values in `values`.
-    pub fn new(values: ChannelBuf, mask: ChannelMask) -> Self {
-        Self { values, mask }
-    }
-}
-
-/// A request to the loop itself (the ops' requests go through the [`PerformHandle`]).
-// A press is large, but the queue's slots are allocated once with the channel: boxing it would allocate per press.
-#[allow(clippy::large_enum_variant)]
+/// A request to the loop itself (the ops' requests, triggers included, go through the [`PerformHandle`]).
 enum LoopCommand {
     Source(Box<dyn FrameSource>),
-    Press(TriggerPress),
-    Release,
 }
 
 /// What the loop has done so far, read without waiting.
@@ -154,22 +133,6 @@ impl PerformThread {
     /// [`WiringError::Busy`] or [`WiringError::Stopped`]; the source is dropped then.
     pub fn set_source(&self, source: Box<dyn FrameSource>) -> Result<(), WiringError> {
         self.send(LoopCommand::Source(source))
-    }
-
-    /// Holds `press` over the face until [`release_trigger`](Self::release_trigger) or another press.
-    ///
-    /// # Errors
-    /// [`WiringError::Busy`] or [`WiringError::Stopped`].
-    pub fn press_trigger(&self, press: TriggerPress) -> Result<(), WiringError> {
-        self.send(LoopCommand::Press(press))
-    }
-
-    /// Lets go of the held trigger; the face goes back to the layers below.
-    ///
-    /// # Errors
-    /// [`WiringError::Busy`] or [`WiringError::Stopped`].
-    pub fn release_trigger(&self) -> Result<(), WiringError> {
-        self.send(LoopCommand::Release)
     }
 
     /// What the loop has done so far.
@@ -261,11 +224,6 @@ impl PerformLoop {
     fn apply(&mut self, command: LoopCommand) {
         match command {
             LoopCommand::Source(source) => self.performer.set_source(source),
-            LoopCommand::Press(press) => {
-                *self.performer.trigger_layer_mut() =
-                    Layer { values: press.values, mask: press.mask, weight: 1.0, mode: BlendMode::Override };
-            }
-            LoopCommand::Release => self.performer.trigger_layer_mut().clear(),
         }
     }
 }

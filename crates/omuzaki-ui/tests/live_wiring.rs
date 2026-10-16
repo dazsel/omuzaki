@@ -15,13 +15,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use omuzaki_anim_api::{Channel, ChannelBuf, ChannelMask, FrameSource, HumanoidPose};
+use omuzaki_anim_api::{Channel, ChannelBuf, FrameSource, HumanoidPose};
 use omuzaki_anim_mock::track::{SyntheticSpec, synthetic_track};
 use omuzaki_char_api::{BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder, RegistryBuilder};
 use omuzaki_core::glam::{UVec2, Vec3};
 use omuzaki_core::time::{FakeClock, Seconds};
 use omuzaki_doc_api::Value;
 use omuzaki_doc_mock::MemDoc;
+use omuzaki_face_api::ExpressionSet;
 use omuzaki_ops::Executor;
 use omuzaki_ops_api::{Actor, Grants, Mode, Request, Runner, ServicesBuilder, find};
 use omuzaki_render_api::{AlphaEncoding, Camera, Projection, Quality, Renderer, Scene, TargetDesc};
@@ -33,7 +34,7 @@ use omuzaki_stage::perform::host::{CalibrationState, PerformHost};
 use omuzaki_track_api::tracker::{Tracker, TrackerConfig};
 use omuzaki_track_mock::{FakeCamera, FakeTracker};
 use omuzaki_ui::live::wiring::{
-    FrameReader, LiveRig, LiveScene, NoCamera, PerformClock, PerformThread, RealClock, THREAD_NAME, TriggerPress,
+    FrameReader, LiveFrame, LiveRig, LiveScene, NoCamera, PerformClock, PerformThread, RealClock, THREAD_NAME,
     live_performer,
 };
 
@@ -236,7 +237,15 @@ impl Live {
         let performer = live_performer(source, ChannelBuf::NEUTRAL, HumanoidPose::REST);
         let (perform, reader) = PerformThread::spawn(performer, Box::new(RealClock::new())).expect("it starts");
         let services = ServicesBuilder::new().insert::<dyn PerformHost>(perform.host()).build();
-        let ops = ["perform.calibrate", "perform.set_retarget", "perform.status"].map(|op| find(op).expect("linked"));
+        let ops = [
+            "perform.calibrate",
+            "perform.set_retarget",
+            "perform.status",
+            "trigger.bind",
+            "trigger.press",
+            "trigger.list",
+        ]
+        .map(|op| find(op).expect("linked"));
         let runner = Executor::with_registrations(Box::new(MemDoc::new()), Arc::new(FakeClock::new(Seconds(0.0))), ops)
             .expect("an executor")
             .with_services(services);
@@ -293,26 +302,30 @@ fn smoothing_calibrate_and_a_trigger_each_change_the_running_loop() {
         live.status()
     );
 
-    // A trigger: held, it overrides the jaw on the next frames; released, the face goes back to the tracker.
-    let mut values = ChannelBuf::NEUTRAL;
-    values.set(Channel::JAW_OPEN, 1.0);
-    let mut mask = ChannelMask::EMPTY;
-    mask.insert(Channel::JAW_OPEN);
-    live.perform.press_trigger(TriggerPress::new(values, mask)).expect("queued");
+    // A trigger, through the trigger ops: `F1` held shows the starter set's `angry` (brows down 0.8, which the synthetic
+    // track never drives) on the published frames; released, it fades out.
+    live.perform.host().set_expressions(ExpressionSet::starter(), ChannelBuf::NEUTRAL).expect("queued");
+    let bind = [("key", Value::from("F1")), ("expression", Value::from("angry")), ("mode", Value::from("hold"))];
+    live.run("trigger.bind", args(&bind));
+    let brow = |frame: LiveFrame| frame.channels[Channel::BROW_DOWN_LEFT];
     let reader = &mut live.reader;
     assert!(
-        eventually(Duration::from_secs(2), || reader
-            .take_new()
-            .is_some_and(|f| (f.channels[Channel::JAW_OPEN] - 1.0).abs() < 1e-6)),
-        "the trigger reached the published frames"
+        eventually(Duration::from_secs(1), || reader.take_new().is_some_and(|f| brow(f) < 0.1)),
+        "the brows are not down before the press"
     );
-    live.perform.release_trigger().expect("queued");
-    std::thread::sleep(Duration::from_millis(100));
-    let after = (0..20).filter_map(|_| {
-        std::thread::sleep(Duration::from_millis(20));
-        reader.take_new()
-    });
-    assert!(after.map(|f| f.channels[Channel::JAW_OPEN]).all(|jaw| jaw < 1.0), "the trigger let go");
+    live.run("trigger.press", args(&[("key", Value::from("F1")), ("down", Value::from(true))]));
+    let reader = &mut live.reader;
+    assert!(
+        eventually(Duration::from_secs(2), || reader.take_new().is_some_and(|f| (brow(f) - 0.8).abs() < 0.05)),
+        "the held trigger reached the published frames"
+    );
+    assert_eq!(live.run("trigger.list", args(&[]))["triggers"][0]["active"], true, "the loop shows it as active");
+    live.run("trigger.press", args(&[("key", Value::from("F1")), ("down", Value::from(false))]));
+    let reader = &mut live.reader;
+    assert!(
+        eventually(Duration::from_secs(2), || reader.take_new().is_some_and(|f| brow(f) < 0.1)),
+        "the released trigger faded out"
+    );
 
     let report = live.perform.stop().expect("a clean stop");
     assert!(report.published > 0);

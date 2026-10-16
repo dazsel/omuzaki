@@ -14,7 +14,7 @@ use omuzaki_track_api::tracker::{LatencyStats, Tracker, TrackerConfig};
 
 use super::clock::PerformClock;
 use super::mailbox::FrameReader;
-use super::thread::{LoopReport, PerformThread, TriggerPress, WiringError};
+use super::thread::{LoopReport, PerformThread, WiringError};
 
 /// The life layer's seed: fixed, so a session's idle motion is the same on every run (spec §4, deterministic).
 pub const LIFE_SEED: u64 = 7;
@@ -106,22 +106,6 @@ impl LiveRig {
     /// [`LiveError::Wiring`] with [`WiringError::Stopped`] after shutdown.
     pub fn host(&self) -> Result<Arc<dyn PerformHost>, LiveError> {
         self.perform.as_ref().map(PerformThread::host).ok_or(LiveError::Wiring(WiringError::Stopped))
-    }
-
-    /// Holds a trigger's expression (the seam the input host's hotkeys call).
-    ///
-    /// # Errors
-    /// [`LiveError::Wiring`] if the perform thread is gone or busy.
-    pub fn press_trigger(&self, press: TriggerPress) -> Result<(), LiveError> {
-        self.thread()?.press_trigger(press).map_err(LiveError::Wiring)
-    }
-
-    /// Lets go of the held trigger.
-    ///
-    /// # Errors
-    /// [`LiveError::Wiring`] if the perform thread is gone or busy.
-    pub fn release_trigger(&self) -> Result<(), LiveError> {
-        self.thread()?.release_trigger().map_err(LiveError::Wiring)
     }
 
     /// Tracker latency (for the health meter).
