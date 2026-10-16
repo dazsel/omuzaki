@@ -201,9 +201,13 @@ fn choose(registry: &Registry, session: &Shared, mut in_hand: Option<Active>, gr
         // again, or publish a fallback the health meter can't explain yet. Nothing is lost by waiting: a report in the
         // mailbox has asked for another pass, and one still on the run side is handed over, with that ask, by the next
         // `run`, the only thing that applies an answer anyway.
-        if view.applied & SILENT != 0
-            && session.applied_model(&session.records()).is_some_and(|m| registry.is_usable(&m))
-        {
+        // The model is read first: the records' lock must not be held while the registry's is taken, the order a
+        // commit takes them in (`Registry::changed`, then `Shared::withdraw`).
+        let failed_unreported = view.applied & SILENT != 0 && {
+            let applied = session.applied_model(&session.records());
+            applied.is_some_and(|m| registry.is_usable(&m))
+        };
+        if failed_unreported {
             graveyard.extend(in_hand.take().map(|a| a.session));
             return;
         }
