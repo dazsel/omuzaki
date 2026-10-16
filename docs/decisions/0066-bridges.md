@@ -6,8 +6,8 @@ area: decisions
 
 # 0066: Compatibility bridges drive Omuzaki only through ops, in a paired session that holds `perform` (2026-10-15)
 
-**Status:** Proposed (#1085). It spans areas (Platform sessions and ops, the Runtime stage, UI wiring), so it needs
-the Director's acceptance. **Context:** PL-05 (#529), CN-13 (#717),
+**Status:** Accepted (2026-10-15, Director). It spans areas (Platform sessions and ops, the Runtime stage, UI wiring).
+**Context:** PL-05 (#529), CN-13 (#717),
 PF-04 (#468), PF-05 (#469), PF-23 (#476); `docs/design/bridges.md`; `docs/research/2026-10-vts-shim-terms.md`.
 
 ## Context
@@ -49,6 +49,8 @@ Its parameter injection arrives every frame, faster than the executor's per-sess
   `Sessions::gate`, both with default bodies, also usable by the MCP bridge's pairing (#405).
 - No new `Transport`, `Source` or scope, at the cost of `Transport::Plugin` covering two kinds of outside code (WASM
   plugins and paired tools), told apart by the `vts-` client prefix.
+- No permission decision may branch on the `vts-` client prefix: grants come only from the session's ceiling and the
+  pairing record. If code ever needs to tell plugins and paired tools apart for security, add a `Transport` variant.
 - The tracker layer can hold several producers; the stage owns the merge and its budget.
 - PF-25's live-action ops become a dependency of the shim's hotkeys; the shim's own tasks (#1086, #1212, #1213) are
   re-cut to this design.
