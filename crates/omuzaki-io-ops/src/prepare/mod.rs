@@ -3,6 +3,7 @@
 //! imported avatar (`docs/design/byom.md`).
 
 pub mod arkit;
+pub mod arkit_shapes;
 pub mod avatar;
 pub mod cleanup;
 pub mod humanoid;

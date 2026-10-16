@@ -10,7 +10,8 @@
 //!    override is how a person fixes it.
 //! 2. **T rest** ([`tpose::normalise_rest`]): its `bind` goes into the avatar.
 //! 3. **Cleanup** ([`cleanup::cleanup`]): weld at 1e-6, merge primitives by material, drop what nothing uses.
-//! 4. **`ARKit` synthesis** ([`arkit::synthesise`]): its outcomes choose the gaze route.
+//! 4. **`ARKit` synthesis** ([`arkit::synthesise`]), then the shapes it could not build, and halves of symmetric ones,
+//!    made from geometry ([`arkit_shapes::generate`]): the outcomes choose the gaze route.
 //! 5. **Conversion**, one private module each: the skeleton (`skeleton`), materials and textures (`materials`),
 //!    meshes with their own skins and sparse morphs (`meshes`), expressions and drivers (`expressions`), the gaze route
 //!    and look-at (`gaze`), and springs and constraints (`physics`).
@@ -39,7 +40,8 @@ use omuzaki_core::time::Clock;
 use omuzaki_io_api::{Finding, HumanBoneName, IoError, IoScene, NodeIx, Report};
 use omuzaki_render_api::MtoonSupport;
 
-use super::{arkit, cleanup, humanoid, tpose};
+use super::arkit::Synthesis;
+use super::{arkit, arkit_shapes, cleanup, humanoid, tpose};
 use crate::convert::bones::to_file;
 
 /// What the cleanup step is asked to do on an imported avatar (`docs/design/byom.md` §5, BY3).
@@ -119,7 +121,16 @@ fn prepare(
     let rest = tpose::normalise_rest(&mut work);
     report.extend(rest.report);
     report.extend(cleanup::cleanup(&mut work, &CLEANUP).report());
-    let arkit = arkit::synthesise(&mut work);
+    let mut arkit = arkit::synthesise(&mut work);
+    let wanted: Vec<&str> =
+        arkit.channels.iter().filter(|c| arkit_shapes::worth_generating(c)).map(|c| c.channel).collect();
+    for made in arkit_shapes::generate(&mut work, &wanted) {
+        if let (Synthesis::Generated { .. }, Some(slot)) =
+            (&made.how, arkit.channels.iter_mut().find(|c| c.channel == made.channel))
+        {
+            *slot = made;
+        }
+    }
     report.extend(arkit.report());
 
     let rig = match skeleton::build(&work) {

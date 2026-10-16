@@ -89,6 +89,12 @@ pub enum Synthesis {
         /// The factor the preset's morph weights were scaled by.
         gain: f32,
     },
+    /// Made from the model's geometry ([`arkit_shapes::generate`](super::arkit_shapes::generate)): a half of a
+    /// symmetric shape, or a shape built from the face's landmarks.
+    Generated {
+        /// What it was made from, for people: "the left half of the blink expression".
+        source: String,
+    },
     /// Nothing to build it from.
     Missing,
 }
@@ -130,9 +136,10 @@ impl Arkit52Report {
         shared.then_some(SYMMETRIC_NOTE)
     }
 
-    /// The import report's rows: one `arkit.synthesised` (info) per channel built from a morph or a preset, and one
-    /// `arkit.missing` (info, located `arkit/<region>/<channel>`) per channel with nothing to build it from. A
-    /// [`Synthesis::Present`] channel yields none. Rows follow [`ARKIT_52`] order, so the report is deterministic.
+    /// The import report's rows: one `arkit.synthesised` (info) per channel built from a morph or a preset, one
+    /// `arkit.generated` (info) per channel made from geometry, and one `arkit.missing` (info, located
+    /// `arkit/<region>/<channel>`) per channel with nothing to build it from. A [`Synthesis::Present`] channel yields
+    /// none. Rows follow [`ARKIT_52`] order, so the report is deterministic.
     pub fn report(&self) -> Report {
         let mut report = Report::new();
         for outcome in &self.channels {
@@ -142,6 +149,13 @@ impl Arkit52Report {
                 Synthesis::FromMorph { target } => format!("the model's {target} shape"),
                 Synthesis::FromPreset { preset, gain } => {
                     format!("the {} expression at {gain}", preset.as_str())
+                }
+                Synthesis::Generated { source } => {
+                    let message = format!("{channel} was made from the model's geometry: {source}.");
+                    let hint =
+                        "check it in the preview; map another expression to the channel if it doesn't suit the model";
+                    report.push(Finding::info("arkit.generated", message).at(location(channel)).hint(hint));
+                    continue;
                 }
                 Synthesis::Missing => {
                     report.push(missing_finding(channel));

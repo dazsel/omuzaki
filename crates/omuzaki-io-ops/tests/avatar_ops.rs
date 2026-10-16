@@ -133,7 +133,7 @@ impl Project {
     }
 
     /// `io.inspect {path, as: avatar}` plus `extra`.
-    fn inspect(&self, path: &str, extra: Value) -> Result<Value, OpError> {
+    fn inspect(&self, path: &str, extra: &Value) -> Result<Value, OpError> {
         let mut args = json!({ "path": path, "as": "avatar" });
         args.as_object_mut().unwrap().extend(extra.as_object().cloned().unwrap_or_default());
         Ok(self.plan("io.inspect", args)?.output.unwrap())
@@ -160,10 +160,10 @@ impl Project {
     }
 
     /// Writes `scene` as a VRM, inspects it and imports it as an avatar with the token; returns the character's id.
-    fn imported(&mut self, scene: &IoScene, extra: Value) -> CharId {
+    fn imported(&mut self, scene: &IoScene, extra: &Value) -> CharId {
         let path = self.file("Avatar.vrm", &vrm_bytes(scene));
         let path = path.to_str().unwrap();
-        let confirm = self.inspect(path, json!({})).unwrap()["avatar"]["confirm"].clone();
+        let confirm = self.inspect(path, &json!({})).unwrap()["avatar"]["confirm"].clone();
         let mut args = json!({ "path": path, "as": "avatar", "confirm": confirm });
         args.as_object_mut().unwrap().extend(extra.as_object().cloned().unwrap_or_default());
         let (result, _) = self.import(args, None).unwrap();
@@ -184,7 +184,7 @@ fn inspecting_as_an_avatar_prepares_in_memory_and_touches_nothing() {
     let project = Project::new();
     let path = project.file("Avatar.vrm", &vrm_bytes(&model()));
     let before = project.value("").unwrap();
-    let out = project.inspect(path.to_str().unwrap(), json!({})).unwrap();
+    let out = project.inspect(path.to_str().unwrap(), &json!({})).unwrap();
     assert_eq!(project.value("").unwrap(), before, "the document is unchanged");
     assert_eq!(project.store.len(), 0, "nothing is stored");
     let summary = &out["avatar"]["summary"];
@@ -202,14 +202,14 @@ fn the_token_is_stable_and_changes_with_any_option_dependency_or_byte() {
     let project = Project::new();
     let path = project.file("Avatar.vrm", &vrm_bytes(&model()));
     let path = path.to_str().unwrap();
-    let inspected = |extra| project.inspect(path, extra).unwrap()["avatar"]["confirm"].clone();
-    let first = inspected(json!({}));
-    assert_eq!(first, inspected(json!({})), "two runs give one token");
-    assert_ne!(first, inspected(json!({ "strict": true })), "an option changes it");
+    let inspected = |extra: &Value| project.inspect(path, extra).unwrap()["avatar"]["confirm"].clone();
+    let first = inspected(&json!({}));
+    assert_eq!(first, inspected(&json!({})), "two runs give one token");
+    assert_ne!(first, inspected(&json!({ "strict": true })), "an option changes it");
     let mut moved = model();
     moved.meshes[0].primitives[0].mesh.positions[0].x += 1e-3;
     let other = project.file("Avatar.vrm", &vrm_bytes(&moved));
-    assert_ne!(first, project.inspect(other.to_str().unwrap(), json!({})).unwrap()["avatar"]["confirm"]);
+    assert_ne!(first, project.inspect(other.to_str().unwrap(), &json!({})).unwrap()["avatar"]["confirm"]);
 
     // A file read beside the model (a `.gltf`'s buffer) changes it too.
     let def = AvatarDef::new(omuzaki_avatar_api::def::AvatarSource::new(
@@ -245,7 +245,7 @@ fn every_rights_row_reaches_the_report() {
     terms.allow_excessively_violent_usage = false;
     terms.modification = Modification::Prohibited;
     let path = project.file("Avatar.vrm", &vrm_bytes(&scene));
-    let report = report_of(&project.inspect(path.to_str().unwrap(), json!({})).unwrap());
+    let report = report_of(&project.inspect(path.to_str().unwrap(), &json!({})).unwrap());
     for rule in [
         "rights.avatar_permission",
         "rights.perform_non_profit",
@@ -262,11 +262,11 @@ fn a_stale_token_is_refused_even_when_the_findings_read_the_same() {
     let mut project = Project::new();
     let path = project.file("Avatar.vrm", &vrm_bytes(&model()));
     let path = path.to_str().unwrap().to_owned();
-    let inspected = project.inspect(&path, json!({})).unwrap();
+    let inspected = project.inspect(&path, &json!({})).unwrap();
     let mut moved = model();
     moved.meshes[0].primitives[0].mesh.positions[0].x += 1e-3;
     project.file("Avatar.vrm", &vrm_bytes(&moved));
-    let reinspected = project.inspect(&path, json!({})).unwrap();
+    let reinspected = project.inspect(&path, &json!({})).unwrap();
     assert_eq!(report_of(&inspected), report_of(&reinspected), "the findings read the same");
     let args = json!({ "path": path, "as": "avatar", "confirm": inspected["avatar"]["confirm"] });
     let error = project.import(args, None).unwrap_err();
@@ -281,8 +281,8 @@ fn an_import_writes_the_character_in_one_patch_that_one_undo_removes() {
     let before = project.value("").unwrap();
     let path = project.file("Avatar.vrm", &vrm_bytes(&model()));
     let path = path.to_str().unwrap().to_owned();
-    let confirm = project.inspect(&path, json!({})).unwrap()["avatar"]["confirm"].clone();
-    let (result, patch) = project.import(json!({ "path": path, "as": "avatar", "confirm": confirm }), None).unwrap();
+    let confirm = project.inspect(&path, &json!({})).unwrap()["avatar"]["confirm"].clone();
+    let (result, undo) = project.import(json!({ "path": path, "as": "avatar", "confirm": confirm }), None).unwrap();
     assert_eq!(result["id"], "avatar");
     assert_eq!(project.value("characters/avatar/name"), Some(json!("Generated Test Avatar")));
     let def: AvatarDef = serde_json::from_value(project.value("characters/avatar/avatar").unwrap()).unwrap();
@@ -294,7 +294,7 @@ fn an_import_writes_the_character_in_one_patch_that_one_undo_removes() {
     let objects = project.store.len();
     assert!(objects >= 1);
 
-    project.doc.apply(&patch.inverse()).unwrap();
+    project.doc.apply(&undo.inverse()).unwrap();
     assert_eq!(project.value("").unwrap(), before, "one undo removes the character, its node and its row");
 
     let (again, _) =
@@ -310,7 +310,7 @@ fn only_author_terms_need_a_persons_acknowledgement() {
     let mut project = Project::new();
     let path = project.file("Avatar.vrm", &vrm_bytes(&scene));
     let path = path.to_str().unwrap().to_owned();
-    let confirm = project.inspect(&path, json!({})).unwrap()["avatar"]["confirm"].clone();
+    let confirm = project.inspect(&path, &json!({})).unwrap()["avatar"]["confirm"].clone();
     let args = json!({ "path": path, "as": "avatar", "confirm": confirm });
     let error = project.import(args.clone(), None).unwrap_err();
     assert_eq!(error.field.as_deref(), Some("acknowledge"));
@@ -338,7 +338,7 @@ fn only_author_terms_need_a_persons_acknowledgement() {
     let mut scene = model();
     scene.meta.terms.commercial_usage = CommercialUsage::PersonalNonProfit;
     let mut project = Project::new();
-    project.imported(&scene, json!({}));
+    project.imported(&scene, &json!({}));
     assert!(project.value("characters/avatar").is_some(), "non-profit terms warn and need nothing");
 }
 
@@ -348,7 +348,7 @@ fn a_cancelled_import_stores_and_writes_nothing() {
     let before = project.value("").unwrap();
     let path = project.file("Avatar.vrm", &vrm_bytes(&model()));
     let path = path.to_str().unwrap().to_owned();
-    let confirm = project.inspect(&path, json!({})).unwrap()["avatar"]["confirm"].clone();
+    let confirm = project.inspect(&path, &json!({})).unwrap()["avatar"]["confirm"].clone();
     let error =
         project.import(json!({ "path": path, "as": "avatar", "confirm": confirm }), Some("storing")).unwrap_err();
     assert_eq!(error.code, ErrorCode::Cancelled);
@@ -360,7 +360,7 @@ fn a_cancelled_import_stores_and_writes_nothing() {
 fn a_remap_that_breaks_the_parent_rule_is_refused_and_a_valid_one_undoes_in_one_step() {
     let mut project = Project::new();
     let scene = model();
-    let id = project.imported(&scene, json!({}));
+    let id = project.imported(&scene, &json!({}));
     let node = |name: &str| scene.nodes.iter().position(|n| n.name == name).unwrap();
     let before = project.value("").unwrap();
 
@@ -384,7 +384,7 @@ fn a_remap_that_breaks_the_parent_rule_is_refused_and_a_valid_one_undoes_in_one_
 #[test]
 fn a_channel_map_undoes_in_one_step_and_an_unknown_expression_names_the_nearest() {
     let mut project = Project::new();
-    let id = project.imported(&model(), json!({}));
+    let id = project.imported(&model(), &json!({}));
     let before = project.value("").unwrap();
     let plan = project
         .plan("avatar.map_channel", json!({ "character": id, "channel": "cheekPuff", "expression": "happy" }))
@@ -408,7 +408,7 @@ fn describe_gives_the_imports_report_and_what_the_model_drives() {
     let mut project = Project::new();
     let path = project.file("Avatar.vrm", &vrm_bytes(&model()));
     let path = path.to_str().unwrap().to_owned();
-    let inspected = project.inspect(&path, json!({})).unwrap();
+    let inspected = project.inspect(&path, &json!({})).unwrap();
     project.import(json!({ "path": path, "as": "avatar", "confirm": inspected["avatar"]["confirm"] }), None).unwrap();
     let described = project.plan("avatar.describe", json!({ "character": "avatar" })).unwrap();
     let described = described.output.unwrap();

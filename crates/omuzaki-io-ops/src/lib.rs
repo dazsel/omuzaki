@@ -43,6 +43,7 @@ pub mod report_sections;
 pub mod vrchat_rank;
 
 omuzaki_core::define_link! {
+    omuzaki_avatar_api::link();
     omuzaki_char_api::link();
     omuzaki_library_api::link();
 }
