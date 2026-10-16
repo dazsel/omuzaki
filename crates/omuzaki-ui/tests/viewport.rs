@@ -354,3 +354,30 @@ fn a_document_changing_every_frame_restages_at_most_ten_times_a_second_and_the_l
     }
     assert!(renders(&h) > waiting, "the last change landed");
 }
+
+#[test]
+fn the_viewport_is_registered_and_passes_the_shells_conformance_check() {
+    omuzaki_ui::link();
+    let runner = MockRunner::new(MemDoc::new());
+    let actor = omuzaki_ops_api::Actor::System;
+    let ctx = omuzaki_ui_api::panel::PanelCtx::new(&runner, &actor);
+    let host = omuzaki_ui_mock::MockHost::new();
+    let problems = host.check("viewport", &ctx);
+    assert!(problems.is_empty(), "{problems:#?}");
+}
+
+#[test]
+fn the_viewport_is_the_primary_panel_and_says_it_needs_a_gpu_when_the_shell_shares_none() {
+    omuzaki_ui::link();
+    let runner = MockRunner::new(MemDoc::new());
+    let actor = omuzaki_ops_api::Actor::System;
+    let mut views = omuzaki_ui_api::panel::ViewModels::new();
+    views.insert(EditFocus::new(mock()));
+    let ctx = omuzaki_ui_api::panel::PanelCtx::new(&runner, &actor).with_views(&views);
+    let host = omuzaki_ui_mock::MockHost::new();
+    let (def, mut panel) = host.open("viewport", &ctx).expect("the viewport is registered");
+    assert_eq!(def.kind, omuzaki_ui_api::registry::PanelKind::Primary);
+    let frame = host.frame(panel.as_mut(), def, &ctx, [640.0, 480.0]);
+    assert!(frame.body, "a character is open, so the panel draws its body");
+    assert!(frame.labels.iter().any(|t| t.contains("needs a GPU")), "{:?}", frame.labels);
+}

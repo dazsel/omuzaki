@@ -304,3 +304,37 @@ fn fallback_light() -> omuzaki_stage::ops::render::still::StillLight {
     let scene = omuzaki_render_api::Scene::new(omuzaki_render_api::Camera::default());
     omuzaki_stage::ops::render::still::StillLight::new(scene.lights, scene.background, scene.post)
 }
+
+/// The viewport as the shell shows it, over the shell's [`EditFocus`] and [`ViewportServices`]. It makes its
+/// [`Viewport`] on the first frame the services are there, so a shell that shares them after the panel opened works.
+struct ViewportPanel {
+    focus: EditFocus,
+    viewport: Option<Viewport>,
+}
+
+impl omuzaki_ui_api::panel::Panel for ViewportPanel {
+    fn ui(&mut self, ui: &mut Ui, ctx: &omuzaki_ui_api::panel::PanelCtx<'_>) {
+        if self.viewport.is_none() {
+            self.viewport = ctx.view::<ViewportServices>().map(|s| Viewport::new(self.focus.clone(), s.clone()));
+        }
+        if let Some(viewport) = &mut self.viewport {
+            viewport.ui(ui, Io::from_ctx(ctx));
+        } else {
+            let ds = ds(ui.ctx());
+            EmptyState::new(icons::CUBE, &say(&ds, text::NO_GPU, &[]), &say(&ds, text::NO_GPU_HOW, &[])).show(ui);
+        }
+    }
+
+    /// Without a GPU the panel is still available, and says why it can't draw.
+    fn available(&self, _ctx: &omuzaki_ui_api::panel::PanelCtx<'_>) -> bool {
+        self.focus.character().is_some()
+    }
+}
+
+omuzaki_ui_api::register_panel! {
+    id: "viewport", title: "Viewport", icon: icons::CUBE,
+    region: omuzaki_ui_api::registry::Region::Center, min_size: [320.0, 240.0], order: 10,
+    kind: omuzaki_ui_api::registry::PanelKind::Primary,
+    empty: omuzaki_ui_api::panel::EmptyState::new(text::NO_CHARACTER, text::OPEN_CHARACTER),
+    build: |ctx| Box::new(ViewportPanel { focus: EditFocus::from_ctx(ctx), viewport: None }),
+}

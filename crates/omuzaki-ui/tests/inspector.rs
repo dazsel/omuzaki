@@ -474,3 +474,14 @@ fn bench_s2_scripted_slider_drags_hold_the_frame_budget() {
     let budget = if cfg!(debug_assertions) { 20.0 } else { 2.0 };
     assert!(at(0.95) <= budget, "UI p95 {} ms is over {budget} ms", at(0.95));
 }
+
+#[test]
+fn the_inspector_is_registered_and_passes_the_shells_conformance_check() {
+    omuzaki_ui::link();
+    let runner = MockRunner::new(MemDoc::new());
+    let actor = omuzaki_ops_api::Actor::System;
+    let ctx = omuzaki_ui_api::panel::PanelCtx::new(&runner, &actor);
+    let host = omuzaki_ui_mock::MockHost::new();
+    let problems = host.check("inspector", &ctx);
+    assert!(problems.is_empty(), "{problems:#?}");
+}

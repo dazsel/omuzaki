@@ -471,3 +471,14 @@ fn bench_s4_ten_thousand_rows_cost_what_forty_do() {
     // with the tree (10,000 rows walked per frame is 250 times the work), and the PR quotes the release numbers.
     assert!(big_ms <= small_ms * 1.5 + 0.000_2, "a frame costs more with 10,000 rows: {small_ms} s vs {big_ms} s");
 }
+
+#[test]
+fn the_outliner_is_registered_and_passes_the_shells_conformance_check() {
+    omuzaki_ui::link();
+    let runner = MockRunner::new(MemDoc::new());
+    let actor = omuzaki_ops_api::Actor::System;
+    let ctx = omuzaki_ui_api::panel::PanelCtx::new(&runner, &actor);
+    let host = omuzaki_ui_mock::MockHost::new();
+    let problems = host.check("outliner", &ctx);
+    assert!(problems.is_empty(), "{problems:#?}");
+}

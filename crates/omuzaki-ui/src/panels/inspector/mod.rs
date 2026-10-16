@@ -298,3 +298,23 @@ fn set(io: Io<'_>, shown: &Shown, path: &str, value: &Value, tx: Option<TxId>) -
     }
     Ok(())
 }
+
+/// The inspector as the shell shows it, over the shell's [`EditFocus`].
+struct InspectorPanel(Inspector);
+
+impl omuzaki_ui_api::panel::Panel for InspectorPanel {
+    fn ui(&mut self, ui: &mut Ui, ctx: &omuzaki_ui_api::panel::PanelCtx<'_>) {
+        self.0.ui(ui, Io::from_ctx(ctx));
+    }
+
+    fn available(&self, _ctx: &omuzaki_ui_api::panel::PanelCtx<'_>) -> bool {
+        self.0.available()
+    }
+}
+
+omuzaki_ui_api::register_panel! {
+    id: "inspector", title: "Inspector", icon: icons::SLIDERS_HORIZONTAL,
+    region: omuzaki_ui_api::registry::Region::Right, min_size: [280.0, 200.0], order: 10,
+    empty: omuzaki_ui_api::panel::EmptyState::new(text::NO_CHARACTER, text::OPEN_CHARACTER),
+    build: |ctx| Box::new(InspectorPanel(Inspector::new(EditFocus::from_ctx(ctx)))),
+}

@@ -684,3 +684,23 @@ fn keys(ui: &Ui, tree: &Tree, rows: &[Row], at: usize, selected: usize) -> Optio
     let typed = ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Text(t) if !t.trim().is_empty())));
     typed.then_some(Action::StartFilter)
 }
+
+/// The outliner as the shell shows it, over the shell's [`EditFocus`].
+struct OutlinerPanel(Outliner);
+
+impl omuzaki_ui_api::panel::Panel for OutlinerPanel {
+    fn ui(&mut self, ui: &mut Ui, ctx: &omuzaki_ui_api::panel::PanelCtx<'_>) {
+        self.0.ui(ui, Io::from_ctx(ctx));
+    }
+
+    fn available(&self, _ctx: &omuzaki_ui_api::panel::PanelCtx<'_>) -> bool {
+        self.0.available()
+    }
+}
+
+omuzaki_ui_api::register_panel! {
+    id: "outliner", title: "Outliner", icon: icons::TREE_STRUCTURE,
+    region: omuzaki_ui_api::registry::Region::Left, min_size: [240.0, 160.0], order: 10,
+    empty: omuzaki_ui_api::panel::EmptyState::new(text::NO_CHARACTER, text::OPEN_CHARACTER),
+    build: |ctx| Box::new(OutlinerPanel(Outliner::new(EditFocus::from_ctx(ctx)))),
+}

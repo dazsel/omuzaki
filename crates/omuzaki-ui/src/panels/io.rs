@@ -1,12 +1,13 @@
 //! What a panel reads and runs each frame, and the two things every edit panel does with it: notice that the document
 //! changed, and run an op as the person.
 //!
-//! [`Io`] carries what `omuzaki_ui_api::panel::PanelCtx` carries (the runner, the actor, this frame's events), so a
-//! panel's `ui` is written once and its `Panel` impl only builds an `Io` from the context.
+//! [`Io`] carries what [`PanelCtx`] carries (the runner, the actor, this frame's events), so a panel's `ui` is written
+//! once and its `Panel` impl only builds an `Io` from the context ([`Io::from_ctx`]).
 
 use omuzaki_char_api::{CharId, CharacterDef, paths};
 use omuzaki_doc_api::{DocVersion, Value};
 use omuzaki_ops_api::{Actor, Cause, CauseKind, Event, Grants, Mode, OpError, Outcome, Request, Runner, TxId};
+use omuzaki_ui_api::panel::PanelCtx;
 
 /// What a panel may read and run during one frame.
 #[derive(Clone, Copy)]
@@ -23,6 +24,11 @@ impl<'a> Io<'a> {
     /// A frame that runs ops through `runner` as `actor`, with `events`.
     pub const fn new(runner: &'a dyn Runner, actor: &'a Actor, events: &'a [Event]) -> Self {
         Self { runner, actor, events }
+    }
+
+    /// The frame the shell hands a panel.
+    pub fn from_ctx(ctx: &PanelCtx<'a>) -> Self {
+        Self::new(ctx.runner(), ctx.actor(), ctx.events())
     }
 
     /// Runs `op` with `args` as the person, in `tx` when one is open (else as its own one-step transaction).

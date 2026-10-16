@@ -2,12 +2,13 @@
 //!
 //! The selection is the shell's state, not the document's (no op changes it), and three panels read it: the outliner
 //! changes it, the inspector edits its part, the viewport frames it. The shell makes one `EditFocus` per window and
-//! hands every edit panel a clone (as a view model once `omuzaki-ui-api` is on main); the clones share one state.
+//! shares it as a view model, and every edit panel takes a clone ([`EditFocus::from_ctx`]); the clones share one state.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use omuzaki_char_api::{CharId, PartId};
+use omuzaki_ui_api::panel::PanelCtx;
 
 /// The open character and the selected parts, shared by every clone.
 #[derive(Clone, Debug, Default)]
@@ -32,6 +33,11 @@ impl EditFocus {
         let focus = Self::default();
         focus.open(Some(character));
         focus
+    }
+
+    /// The focus the shell shares as a view model, or a focus of the panel's own (nothing open) when it shares none.
+    pub fn from_ctx(ctx: &PanelCtx<'_>) -> Self {
+        ctx.view::<Self>().cloned().unwrap_or_default()
     }
 
     /// Opens `character` (or none) and clears the selection.

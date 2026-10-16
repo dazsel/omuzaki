@@ -4500,6 +4500,8 @@ dependencies = [
  "omuzaki-render",
  "omuzaki-render-api",
  "omuzaki-stage",
+ "omuzaki-ui-api",
+ "omuzaki-ui-mock",
  "rustix 1.1.5",
  "schemars",
  "serde",
