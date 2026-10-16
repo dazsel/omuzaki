@@ -4,16 +4,11 @@
 // Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
 #![allow(clippy::expect_used)]
 
-use std::sync::{Arc, Mutex};
-
 use omuzaki_ops_api::Actor;
-use omuzaki_ui::aux_window::Transparency;
-use omuzaki_ui::live::panel::SharedOutput;
 use omuzaki_ui::live::registration::{LIVE_PANEL, PERFORM_WORKSPACE};
 use omuzaki_ui::live::story::StoryRunner;
-use omuzaki_ui::output_window::{OutputPlan, OutputWindow};
 use omuzaki_ui::shell::stub::NullRunner;
-use omuzaki_ui_api::panel::{PanelCtx, ViewModels};
+use omuzaki_ui_api::panel::PanelCtx;
 use omuzaki_ui_api::registry::{Group, Region};
 use omuzaki_ui_mock::MockHost;
 
@@ -33,18 +28,15 @@ fn the_live_panel_passes_the_conformance_check_over_an_empty_document() {
 }
 
 #[test]
-fn the_panel_draws_its_controls_and_finds_the_output_window_in_the_view_models() {
+fn the_panel_draws_its_controls_from_the_runner_alone() {
     omuzaki_ui::link();
     let host = MockHost::new();
     let (runner, actor) = (StoryRunner::default(), person());
-    let mut views = ViewModels::new();
-    let output: SharedOutput = Arc::new(Mutex::new(OutputWindow::new(OutputPlan::default(), Transparency::Fallback)));
-    views.insert(output);
-    let ctx = PanelCtx::new(&runner, &actor).with_views(&views);
+    let ctx = PanelCtx::new(&runner, &actor);
     let (def, mut panel) = host.open(LIVE_PANEL, &ctx).expect("registered");
     let frame = host.frame(panel.as_mut(), def, &ctx, [420.0, 1400.0]);
     assert!(frame.body);
-    for label in ["Calibrate", "Smoothing", "Add hotkey", "Output window"] {
+    for label in ["Calibrate", "Smoothing", "Add hotkey", "Output window", "Keep on top", "Track my face"] {
         assert!(frame.labels.iter().any(|l| l == label), "{label} is drawn: {:?}", frame.labels);
     }
 }

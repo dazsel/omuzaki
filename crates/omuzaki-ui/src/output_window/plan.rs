@@ -1,18 +1,18 @@
 //! [`OutputPlan`]: what the output window should be, and the egui viewport that carries it out.
 //!
-//! The plan stands in for `WindowPlan` and `WindowSettings` (`omuzaki_stream_api::window`, #2146) until that contract
-//! merges; [`OutputHost`](super::OutputHost) then implements its `WindowHost` by translating them into a plan.
+//! [`OutputHost`](super::OutputHost) builds one from the `WindowPlan` and `WindowSettings` the `output.window.*` ops
+//! hand it (`omuzaki_stream_api::window`): the exact size, and the settings in the form egui takes them.
 
 use egui::{Color32, ViewportBuilder, WindowLevel};
+use omuzaki_stream_api::window as contract;
 
 use crate::aux_window::{PhysicalSize, Transparency, points_for};
 
-/// The window's title when the settings name none.
-pub const DEFAULT_TITLE: &str = "Omuzaki Output";
-/// The presenting rate when the settings name none: what OBS's window capture and the call apps read at.
+/// The presenting rate: what OBS's window capture and the call apps read at.
 pub const DEFAULT_FPS: u32 = 30;
-/// The key colour when the settings name none: broadcast green, `#00b140`.
-pub const DEFAULT_KEY: Color32 = Color32::from_rgb(0x00, 0xb1, 0x40);
+/// The contract's default key colour, broadcast green `#00b140`, as egui holds it.
+pub const DEFAULT_KEY: Color32 =
+    Color32::from_rgb(contract::DEFAULT_KEY.r, contract::DEFAULT_KEY.g, contract::DEFAULT_KEY.b);
 
 /// What is behind the character in the window.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -48,7 +48,7 @@ impl Default for OutputPlan {
         Self {
             size: PhysicalSize::FULL_HD,
             backdrop: OutputBackdrop::Key(DEFAULT_KEY),
-            title: DEFAULT_TITLE.to_owned(),
+            title: contract::DEFAULT_TITLE.to_owned(),
             hide_cursor: true,
             always_on_top: false,
             fps: DEFAULT_FPS,

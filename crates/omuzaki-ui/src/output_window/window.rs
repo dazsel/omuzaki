@@ -204,6 +204,20 @@ mod tests {
     }
 
     #[test]
+    fn a_minimised_window_is_published_as_minimised_for_the_ops() {
+        use omuzaki_stream_api::window::WindowHost as _;
+        let host = crate::output_window::OutputHost::new(Transparency::Fallback, PhysicalSize::FULL_HD);
+        let mut window = OutputWindow::new(OutputPlan::default(), Transparency::Fallback);
+        window.set_open(true);
+        window.status.minimised = true;
+        host.publish(&window, 1.0);
+        let omuzaki_stream_api::window::WindowState::Open { minimised, .. } = host.state() else {
+            panic!("the window is open")
+        };
+        assert!(minimised, "status says it can't be captured");
+    }
+
+    #[test]
     fn the_status_says_fallback_for_a_transparent_plan_that_is_not_verified() {
         let plan =
             OutputPlan { backdrop: OutputBackdrop::Transparent { fallback: DEFAULT_KEY }, ..OutputPlan::default() };

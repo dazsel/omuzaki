@@ -2,11 +2,11 @@
 //! workspace in each state without a performer.
 
 use std::sync::mpsc::Receiver;
-use std::sync::{Arc, Mutex};
 
 use egui::Ui;
 use omuzaki_anim::TriggerMode;
 use omuzaki_anim_api::RetargetConfig;
+use omuzaki_core::glam::UVec2;
 use omuzaki_doc_api::{DocPath, Value};
 use omuzaki_face_api::ExpressionId;
 use omuzaki_ops_api::checks::op_info;
@@ -14,12 +14,15 @@ use omuzaki_ops_api::{Actor, Event, Grants, OpError, OpInfo, OpRecord, Outcome, 
 use omuzaki_stage::perform::Tracking;
 use omuzaki_stage::perform::host::{CalibrationState, PerformStatus};
 use omuzaki_stage::perform::triggers::{TriggerBinding, TriggerInfo};
+use omuzaki_stream_api::window::{Backdrop, DEFAULT_KEY, WindowState};
 
-use super::model::{LiveModel, OP_CALIBRATE, OP_SET_RETARGET, OP_TRIGGER_BIND, OP_TRIGGER_LIST, OP_TRIGGER_UNBIND};
+use super::input::{self, Camera, InputView, Permission, Preview, Source};
+use super::model::{
+    LiveModel, OP_CALIBRATE, OP_SET_RETARGET, OP_TRIGGER_BIND, OP_TRIGGER_LIST, OP_TRIGGER_UNBIND, OP_WINDOW_CLOSE,
+    OP_WINDOW_OPEN, OP_WINDOW_STATUS,
+};
 use super::panel::LivePanel;
-use crate::aux_window::Transparency;
 use crate::ds::gallery::Group;
-use crate::output_window::{OutputPlan, OutputWindow};
 use crate::register_story;
 
 /// The states the story and the evidence show.
@@ -72,20 +75,55 @@ impl LiveState {
         vec![info("F1", "happy", self == Self::Calibrating), info("F2", "surprised", false)]
     }
 
-    /// The workspace on `runner`, showing this state, with a closed output window at the default plan.
+    /// What `input.state` answers in this state: two cameras; none bound when idle, the first tracking while
+    /// calibrating, and the first unplugged once the face is lost.
+    pub fn input(self) -> InputView {
+        let camera = |id: &str, name: &str, bound: bool| Camera { id: id.to_owned(), name: name.to_owned(), bound };
+        let bound = self != Self::Idle;
+        let cameras = vec![camera("usb:0", "Logitech C920", bound), camera("usb:1", "Integrated Camera", false)];
+        let (source, preview, present) = match self {
+            Self::Idle => (Source::LifeLayer, Preview::Off, false),
+            Self::Calibrating => (Source::Webcam, Preview::On { camera: "usb:0".to_owned() }, true),
+            Self::TrackingLost => (Source::Webcam, Preview::On { camera: "usb:0".to_owned() }, false),
+        };
+        // An unplugged camera is no longer listed.
+        let cameras = if present || !bound { cameras } else { cameras.into_iter().skip(1).collect() };
+        InputView {
+            source,
+            camera: bound.then(|| "usb:0".to_owned()),
+            camera_present: present,
+            preview,
+            permission: Permission::Granted,
+            cameras,
+            tracking: self.status().tracking,
+        }
+    }
+
+    /// What `output.window.status` answers in this state: closed when idle, open over the key otherwise, and
+    /// minimised once the face is lost (so its warning shows).
+    pub fn window(self) -> WindowState {
+        let open = WindowState::open(UVec2::new(1920, 1080), Backdrop::Key(DEFAULT_KEY));
+        match self {
+            Self::Idle => WindowState::Closed,
+            Self::Calibrating => open,
+            Self::TrackingLost => open.with_minimised(true),
+        }
+    }
+
+    /// The workspace on `runner`, showing this state.
     pub fn panel(self, runner: &dyn Runner) -> LivePanel {
         let mut model = LiveModel::new(runner);
         model.set_status(self.status());
         model.set_triggers(self.triggers());
-        let output = OutputWindow::new(OutputPlan::default(), Transparency::Fallback);
-        LivePanel::with_model(model, Some(Arc::new(Mutex::new(output))))
+        LivePanel::with_model(model)
     }
 }
 
-/// A runner with no document that offers `perform.calibrate`, `perform.set_retarget` and the trigger ops, and accepts
-/// them without doing anything; `trigger.list` lists its state's bindings ([`LiveState::triggers`]). It has no
-/// `perform.status`, so the workspace shows whatever status its model is given ([`LiveModel::set_status`]): the gallery
-/// and the evidence pictures pick a [`LiveState`] that way.
+/// A runner with no document that offers `perform.calibrate`, `perform.set_retarget`, the trigger ops, the output
+/// window's ops and the `input.*` surface, and accepts the actions without doing anything; `trigger.list`,
+/// `input.state` and `output.window.status` answer with its state's ([`LiveState`]). It has no `perform.status`, so
+/// the workspace shows whatever status its model is given ([`LiveModel::set_status`]): the gallery and the evidence
+/// pictures pick a [`LiveState`] that way.
 #[derive(Clone, Copy, Debug)]
 pub struct StoryRunner(pub LiveState);
 
@@ -97,19 +135,27 @@ impl Default for StoryRunner {
 
 impl Runner for StoryRunner {
     fn ops(&self) -> Vec<OpInfo> {
-        [OP_CALIBRATE, OP_SET_RETARGET, OP_TRIGGER_BIND, OP_TRIGGER_UNBIND, OP_TRIGGER_LIST]
-            .into_iter()
-            .filter_map(find)
-            .map(op_info)
-            .collect()
+        let registered = [
+            OP_CALIBRATE,
+            OP_SET_RETARGET,
+            OP_TRIGGER_BIND,
+            OP_TRIGGER_UNBIND,
+            OP_TRIGGER_LIST,
+            OP_WINDOW_OPEN,
+            OP_WINDOW_CLOSE,
+            OP_WINDOW_STATUS,
+        ];
+        registered.into_iter().filter_map(find).map(op_info).chain(input::op_infos()).collect()
     }
 
     fn run(&self, req: Request) -> Result<Outcome, OpError> {
-        if req.op != OP_TRIGGER_LIST {
-            return Ok(Outcome::new(Plan::default()));
-        }
-        let triggers = serde_json::to_value(self.0.triggers()).map_err(|e| OpError::internal(e.to_string()))?;
-        Ok(Outcome::new(Plan::answer(serde_json::json!({ "triggers": triggers }))))
+        let answer = match req.op.as_str() {
+            OP_TRIGGER_LIST => serde_json::json!({ "triggers": to_value(self.0.triggers())? }),
+            input::OP_STATE => to_value(self.0.input())?,
+            OP_WINDOW_STATUS => to_value(self.0.window())?,
+            _ => return Ok(Outcome::new(Plan::default())),
+        };
+        Ok(Outcome::new(Plan::answer(answer)))
     }
 
     fn begin(&self, _label: &str, _actor: &Actor) -> TxId {
@@ -144,6 +190,10 @@ impl Runner for StoryRunner {
     fn log(&self, _after_seq: u64, _limit: usize, _grants: &Grants) -> Result<Vec<OpRecord>, OpError> {
         Ok(Vec::new())
     }
+}
+
+fn to_value(value: impl serde::Serialize) -> Result<Value, OpError> {
+    serde_json::to_value(value).map_err(|e| OpError::internal(e.to_string()))
 }
 
 /// The story's state: the panel and the runner it runs on.

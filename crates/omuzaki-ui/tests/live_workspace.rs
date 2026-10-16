@@ -35,10 +35,13 @@ use omuzaki_ui::ds::testing::{
     all_strings, harness_state, press_for, reading_order_violations, tab_through, unlabelled_interactive,
 };
 use omuzaki_ui::ds::{Settings, set_strings};
+use omuzaki_stream_api::window::WindowHost;
+use omuzaki_ui::aux_window::{PhysicalSize, Transparency};
+use omuzaki_ui::live::input::{self, Camera, InputView, Permission, Preview, Source};
 use omuzaki_ui::live::model::{CALIBRATE_FRAMES, HOTKEY_ROWS, LiveModel, OP_IMPORT, Ops};
-use omuzaki_ui::live::panel::{LivePanel, SharedOutput};
+use omuzaki_ui::live::panel::LivePanel;
 use omuzaki_ui::live::story::{LiveState, StoryRunner};
-use omuzaki_ui::output_window::{DEFAULT_KEY, OutputBackdrop, OutputPlan, OutputWindow};
+use omuzaki_ui::output_window::{OutputHost, OutputPlan, OutputWindow};
 
 /// The performer as the ops see it, recording what they ask.
 #[derive(Default)]
@@ -108,10 +111,67 @@ impl PerformHost for FakeHost {
     }
 }
 
-/// The real executor with the fake host in its services, recording every request on its way through.
+/// The `input.*` surface as PR #2210 declares it, kept in memory: the stand-in for the stage's input ops until they
+/// merge. It changes what the real ops would, and refuses what they refuse (a preview with no camera bound).
+struct FakeInput(Mutex<InputView>);
+
+impl FakeInput {
+    /// Two cameras, none bound, the life layer driving the face, the permission as given.
+    fn new(permission: Permission) -> Arc<Self> {
+        let camera = |id: &str, name: &str| Camera { id: id.to_owned(), name: name.to_owned(), bound: false };
+        Arc::new(Self(Mutex::new(InputView {
+            source: Source::LifeLayer,
+            camera: None,
+            camera_present: false,
+            preview: Preview::Off,
+            permission,
+            cameras: vec![camera("usb:0", "Logitech C920"), camera("usb:1", "Integrated Camera")],
+            tracking: Tracking::NoFrames,
+        })))
+    }
+
+    fn view(&self) -> InputView {
+        self.0.lock().unwrap().clone()
+    }
+
+    /// What the stage's op would answer or refuse.
+    fn run(&self, req: &Request) -> Result<Value, OpError> {
+        let mut view = self.0.lock().unwrap();
+        match req.op.as_str() {
+            input::OP_STATE => {}
+            input::OP_SELECT => view.source = serde_json::from_value(req.args["source"].clone()).unwrap(),
+            input::OP_BIND_CAMERA => {
+                let id = req.args["camera"].as_str().map(str::to_owned);
+                if id.as_ref().is_some_and(|id| !view.cameras.iter().any(|c| &c.id == id)) {
+                    return Err(OpError::not_found("no such camera"));
+                }
+                for camera in &mut view.cameras {
+                    camera.bound = id.as_deref() == Some(camera.id.as_str());
+                }
+                view.camera_present = id.is_some();
+                view.camera = id;
+            }
+            input::OP_PREVIEW => {
+                view.preview = match (req.args["on"].as_bool().unwrap(), view.camera.clone()) {
+                    (false, _) => Preview::Off,
+                    (true, Some(camera)) if view.source == Source::Webcam => Preview::On { camera },
+                    (true, _) => return Err(OpError::conflict("bind a camera and select the webcam first")),
+                };
+            }
+            input::OP_REQUEST_CAMERA => view.permission = Permission::Granted,
+            other => return Err(OpError::not_found(format!("no op {other}"))),
+        }
+        Ok(serde_json::to_value(&*view).unwrap())
+    }
+}
+
+/// The real executor with the fake performer and the app's real output window host in its services, plus (when given)
+/// the `input.*` surface, recording every request on its way through.
 struct Recording {
     inner: Executor,
     requests: Mutex<Vec<(String, Value)>>,
+    window: OutputHost,
+    input: Option<Arc<FakeInput>>,
 }
 
 impl Recording {
@@ -124,13 +184,30 @@ impl Recording {
             "trigger.bind",
             "trigger.unbind",
             "trigger.list",
+            "output.window.open",
+            "output.window.close",
+            "output.window.status",
         ]
         .map(|op| find(op).expect("linked"));
-        let services = ServicesBuilder::new().insert::<dyn PerformHost>(host).build();
+        let window = OutputHost::new(Transparency::Fallback, PhysicalSize::FULL_HD);
+        let services = ServicesBuilder::new()
+            .insert::<dyn PerformHost>(host)
+            .insert::<dyn WindowHost>(Arc::new(window.clone()))
+            .build();
         let inner = Executor::with_registrations(Box::new(MemDoc::new()), Arc::new(FakeClock::new(Seconds(0.0))), ops)
             .expect("an executor")
             .with_services(services);
-        Self { inner, requests: Mutex::new(Vec::new()) }
+        Self { inner, requests: Mutex::new(Vec::new()), window, input: None }
+    }
+
+    fn with_input(host: Arc<FakeHost>, input: Arc<FakeInput>) -> Self {
+        Self { input: Some(input), ..Self::new(host) }
+    }
+
+    /// One frame of the app's UI thread: the window the ops asked for opens or closes, and says what it is.
+    fn ui_frame(&self, window: &mut OutputWindow) {
+        self.window.take_requests(window);
+        self.window.publish(window, 1.0);
     }
 
     fn ops_run(&self) -> Vec<String> {
@@ -144,11 +221,17 @@ impl Recording {
 
 impl Runner for Recording {
     fn ops(&self) -> Vec<OpInfo> {
-        self.inner.ops()
+        let input = self.input.as_ref().map(|_| input::op_infos()).unwrap_or_default();
+        self.inner.ops().into_iter().chain(input).collect()
     }
     fn run(&self, req: Request) -> Result<Outcome, OpError> {
         self.requests.lock().unwrap().push((req.op.clone(), req.args.clone()));
-        self.inner.run(req)
+        match &self.input {
+            Some(input) if req.op.starts_with("input.") => {
+                Ok(Outcome::new(omuzaki_ops_api::Plan::answer(input.run(&req)?)))
+            }
+            _ => self.inner.run(req),
+        }
     }
     fn begin(&self, label: &str, actor: &Actor) -> TxId {
         self.inner.begin(label, actor)
@@ -194,9 +277,26 @@ fn workspace<R: Runner + 'static>(runner: R, panel: LivePanel, size: egui::Vec2)
 }
 
 fn live(host: &Arc<FakeHost>) -> Harness<'static, World<Recording>> {
-    let runner = Recording::new(Arc::clone(host));
-    let panel = LivePanel::new(&runner, None);
-    workspace(runner, panel, vec2(1366.0, 1400.0))
+    live_on(Recording::new(Arc::clone(host)))
+}
+
+fn live_on(runner: Recording) -> Harness<'static, World<Recording>> {
+    let panel = LivePanel::new(&runner);
+    workspace(runner, panel, vec2(1366.0, 1600.0))
+}
+
+/// Chooses `option` in the dropdown named `name`, as a screen reader (or an agent driving the UI) does.
+fn choose(h: &mut Harness<'_, World<Recording>>, name: &str, option: &str) {
+    let (target_node, target_tree) = named(h, Role::ComboBox, name).accesskit_node().locate();
+    let data = Some(egui::accesskit::ActionData::Value(option.into()));
+    let action = egui::accesskit::Action::SetValue;
+    h.event(egui::Event::AccessKitActionRequest(egui::accesskit::ActionRequest {
+        action,
+        target_tree,
+        target_node,
+        data,
+    }));
+    h.run_steps(3);
 }
 
 /// The node named `name` (exactly) with `role`.
@@ -259,26 +359,27 @@ fn the_smoothing_slider_commits_through_perform_set_retarget() {
 fn controls_whose_ops_are_not_on_main_are_disabled_with_not_available_yet() {
     let host = Arc::new(FakeHost::default());
     let mut h = live(&host);
-    for (role, name) in
-        [(Role::Button, "Choose a camera"), (Role::ComboBox, "Camera"), (Role::CheckBox, "Mirrored preview")]
-    {
+    for (role, name) in [(Role::ComboBox, "Camera"), (Role::Switch, "Track my face")] {
         assert!(is_disabled(&h, role, name), "{name} is disabled");
     }
     // The reason shows on keyboard focus: the tooltip says "Not available yet".
-    named(&h, Role::Button, "Choose a camera").focus();
+    named(&h, Role::Switch, "Track my face").focus();
     h.run_steps(4);
     assert!(all_strings(&h).iter().any(|s| s.starts_with("Not available yet: choosing a camera")));
-    // Nothing but the reads ran: no op was called under a guessed name.
-    assert!(h.state().runner.ops_run().iter().all(|op| op == "perform.status" || op == "trigger.list"));
+    // Nothing but the reads ran: no op was called under a name this build doesn't have.
+    let reads = ["perform.status", "trigger.list", "output.window.status"];
+    assert!(h.state().runner.ops_run().iter().all(|op| reads.contains(&op.as_str())), "{:?}", h.state().runner.ops_run());
 }
 
 #[test]
 fn a_build_without_the_perform_ops_says_so_and_has_no_drop_target_without_io_import() {
-    let h = workspace(NoOps, LivePanel::new(&NoOps, None), vec2(1366.0, 1400.0));
+    let h = workspace(NoOps, LivePanel::new(&NoOps), vec2(1366.0, 1400.0));
     assert!(is_disabled(&h, Role::Button, "Calibrate"));
     assert!(is_disabled(&h, Role::Slider, "Smoothing"));
     assert!(is_disabled(&h, Role::Button, "Happy trigger: Not bound"), "no trigger ops, no binding");
     assert!(is_disabled(&h, Role::Button, "Add hotkey"));
+    assert!(is_disabled(&h, Role::Switch, "Output window"), "no window ops, no output window");
+    assert!(is_disabled(&h, Role::Switch, "Keep on top"));
     assert!(!all_strings(&h).iter().any(|s| s.contains("Drop a VRM")), "absent, not broken");
     assert!(all_strings(&h).iter().any(|s| s == "Waiting for the performer"));
 }
@@ -286,7 +387,7 @@ fn a_build_without_the_perform_ops_says_so_and_has_no_drop_target_without_io_imp
 #[test]
 fn the_drop_target_is_there_when_io_import_is_and_a_drop_runs_it() {
     let ops = Ops { import: true, ..Ops::default() };
-    let mut h = workspace(NoOps, LivePanel::with_model(LiveModel::with_ops(ops), None), vec2(1366.0, 1400.0));
+    let mut h = workspace(NoOps, LivePanel::with_model(LiveModel::with_ops(ops)), vec2(1366.0, 1400.0));
     assert!(all_strings(&h).iter().any(|s| s == "Drop a VRM here to import it"));
     // The model runs `io.import` with the dropped path (the op lives in `omuzaki-io-ops`, which the app links).
     let recorder = Recorder::default();
@@ -345,28 +446,123 @@ fn the_workspace_speaks_only_through_its_message_table() {
 }
 
 #[test]
-fn the_output_toggle_opens_the_window_and_shows_its_size_and_fallback() {
-    let plan = OutputPlan { backdrop: OutputBackdrop::Transparent { fallback: DEFAULT_KEY }, ..OutputPlan::default() };
-    let output: SharedOutput =
-        Arc::new(Mutex::new(OutputWindow::new(plan, omuzaki_ui::aux_window::Transparency::Fallback)));
-    let panel = LivePanel::with_model(
-        LiveState::Idle.panel(&StoryRunner(LiveState::Idle)).model().clone(),
-        Some(Arc::clone(&output)),
-    );
-    let mut h = workspace(StoryRunner(LiveState::Idle), panel, vec2(1366.0, 1400.0));
-    let strings = all_strings(&h);
-    assert!(strings.iter().any(|s| s == "1920 × 1080 px"), "the size shows");
-    assert!(strings.iter().any(|s| s.starts_with("fallback")), "the fallback shows");
+fn the_output_switch_opens_and_closes_the_window_through_its_ops() {
+    let host = Arc::new(FakeHost::default());
+    let mut h = live(&host);
+    let mut window = OutputWindow::new(OutputPlan::default(), Transparency::Fallback);
+    assert!(all_strings(&h).iter().any(|s| s == "Capture it as the window “Omuzaki Output”"), "closed: where to find it");
     named(&h, Role::Switch, "Output window").click();
     h.run_steps(2);
-    assert!(output.lock().unwrap().status().open, "the toggle opened the window");
+    let args = h.state().runner.last("output.window.open").expect("the switch ran the op");
+    assert_eq!(args, object(&[("backdrop", Value::from("key")), ("always_on_top", Value::from(false))]));
+    assert!((find("output.window.open").expect("registered").decode)(args).is_ok(), "the op decodes what the UI sends");
+    // The app's UI thread opens it on its next frame; the panel's next read shows it.
+    h.state().runner.ui_frame(&mut window);
+    assert!(window.status().open && !window.plan().always_on_top, "open, and not on top unless asked");
+    h.state_mut().panel.model_mut().refresh(&h.state().runner, &person());
+    h.run_steps(2);
+    assert!(all_strings(&h).iter().any(|s| s == "1920 × 1080 px over #00b140"), "{:?}", all_strings(&h));
+    assert!(named(&h, Role::Switch, "Output window").accesskit_node().is_toggled().is_some());
+
+    named(&h, Role::Switch, "Output window").click();
+    h.run_steps(2);
+    assert_eq!(h.state().runner.last("output.window.close"), Some(object(&[])));
+    h.state().runner.ui_frame(&mut window);
+    assert!(!window.status().open, "the switch closed it");
 }
 
 #[test]
-fn a_build_without_an_output_window_disables_the_toggle() {
-    let model = LiveState::Idle.panel(&StoryRunner(LiveState::Idle)).model().clone();
-    let h = workspace(StoryRunner(LiveState::Idle), LivePanel::with_model(model, None), vec2(1366.0, 1400.0));
-    assert!(is_disabled(&h, Role::Switch, "Output window"));
+fn backdrop_and_keep_on_top_reopen_an_open_window_and_a_fallback_says_so() {
+    let host = Arc::new(FakeHost::default());
+    let mut h = live(&host);
+    let mut window = OutputWindow::new(OutputPlan::default(), Transparency::Fallback);
+    named(&h, Role::Switch, "Output window").click();
+    h.run_steps(2);
+    h.state().runner.ui_frame(&mut window);
+    h.state_mut().panel.model_mut().refresh(&h.state().runner, &person());
+    h.run_steps(2);
+
+    named(&h, Role::RadioButton, "Transparent").click();
+    h.run_steps(2);
+    let args = h.state().runner.last("output.window.open").expect("re-opened");
+    assert_eq!(args["backdrop"], "transparent");
+    h.state().runner.ui_frame(&mut window);
+    h.state_mut().panel.model_mut().refresh(&h.state().runner, &person());
+    h.run_steps(2);
+    // This host has no verified transparent surface: the window took the key, and the panel says so.
+    assert!(all_strings(&h).iter().any(|s| s.starts_with("fallback")), "{:?}", all_strings(&h));
+
+    named(&h, Role::Switch, "Keep on top").click();
+    h.run_steps(2);
+    assert_eq!(h.state().runner.last("output.window.open").expect("re-opened")["always_on_top"], true);
+    h.state().runner.ui_frame(&mut window);
+    assert!(window.plan().always_on_top, "the setting reached the window");
+}
+
+#[test]
+fn a_minimised_window_says_it_cannot_be_captured() {
+    let h = workspace(StoryRunner(LiveState::TrackingLost), LiveState::TrackingLost.panel(&StoryRunner(LiveState::TrackingLost)), vec2(1366.0, 1600.0));
+    assert!(all_strings(&h).iter().any(|s| s.starts_with("Minimised")), "{:?}", all_strings(&h));
+}
+
+#[test]
+fn the_camera_section_binds_a_camera_and_tracks_through_the_input_ops() {
+    let host = Arc::new(FakeHost::default());
+    let input = FakeInput::new(Permission::Granted);
+    let mut h = live_on(Recording::with_input(Arc::clone(&host), Arc::clone(&input)));
+    assert_eq!(h.state().runner.last(input::OP_STATE), Some(object(&[])), "it reads the input");
+    assert!(is_disabled(&h, Role::Switch, "Track my face"), "nothing to track from until a camera is chosen");
+
+    choose(&mut h, "Camera", "Logitech C920");
+    assert_eq!(h.state().runner.last(input::OP_BIND_CAMERA), Some(object(&[("camera", Value::from("usb:0"))])));
+    assert_eq!(input.view().camera.as_deref(), Some("usb:0"));
+
+    named(&h, Role::Switch, "Track my face").click();
+    h.run_steps(2);
+    let ops = h.state().runner.ops_run();
+    let tail: Vec<&str> = ops.iter().rev().take(3).rev().map(String::as_str).collect();
+    assert_eq!(tail, ["input.select", "input.preview", "input.state"], "the webcam source, then the capture");
+    assert_eq!(h.state().runner.last(input::OP_SELECT), Some(object(&[("source", Value::from("webcam"))])));
+    assert_eq!(h.state().runner.last(input::OP_PREVIEW), Some(object(&[("on", Value::from(true))])));
+    assert!(all_strings(&h).iter().any(|s| s == "Tracking from Logitech C920"), "{:?}", all_strings(&h));
+
+    named(&h, Role::Switch, "Track my face").click();
+    h.run_steps(2);
+    assert_eq!(h.state().runner.last(input::OP_PREVIEW), Some(object(&[("on", Value::from(false))])));
+    assert_eq!(input.view().preview, Preview::Off);
+}
+
+#[test]
+fn an_unplugged_camera_says_so_and_retry_starts_it_again() {
+    let host = Arc::new(FakeHost::default());
+    let input = FakeInput::new(Permission::Granted);
+    {
+        let mut view = input.0.lock().unwrap();
+        view.source = Source::Webcam;
+        view.camera = Some("usb:0".to_owned());
+        view.camera_present = false;
+        view.preview = Preview::On { camera: "usb:0".to_owned() };
+    }
+    let mut h = live_on(Recording::with_input(host, Arc::clone(&input)));
+    assert!(all_strings(&h).iter().any(|s| s.starts_with("Camera unplugged")));
+    named(&h, Role::Button, "Retry").click();
+    h.run_steps(2);
+    assert_eq!(h.state().runner.last(input::OP_PREVIEW), Some(object(&[("on", Value::from(true))])));
+}
+
+#[test]
+fn the_camera_permission_is_asked_through_its_op_and_a_refusal_says_where_to_allow_it() {
+    let host = Arc::new(FakeHost::default());
+    let input = FakeInput::new(Permission::Unknown);
+    let mut h = live_on(Recording::with_input(Arc::clone(&host), Arc::clone(&input)));
+    named(&h, Role::Button, "Allow the camera").click();
+    h.run_steps(2);
+    assert_eq!(h.state().runner.last(input::OP_REQUEST_CAMERA), Some(object(&[])));
+    assert_eq!(input.view().permission, Permission::Granted);
+
+    let denied = FakeInput::new(Permission::Denied);
+    let h = live_on(Recording::with_input(host, denied));
+    assert!(all_strings(&h).iter().any(|s| s.starts_with("Camera access is off")));
 }
 
 #[test]

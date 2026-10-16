@@ -9,7 +9,10 @@ use omuzaki_ops_api::{Actor, Grants, Mode, OpError, Request, Runner};
 use omuzaki_stage::perform::Tracking;
 use omuzaki_stage::perform::host::{CalibrationState, PerformStatus};
 use omuzaki_stage::perform::triggers::TriggerInfo;
+use omuzaki_stream_api::window::WindowState;
 use serde::Deserialize as _;
+
+use super::input::{self, InputView, Source};
 
 /// `perform.calibrate`: start a neutral capture.
 pub const OP_CALIBRATE: &str = "perform.calibrate";
@@ -25,6 +28,12 @@ pub const OP_TRIGGER_BIND: &str = "trigger.bind";
 pub const OP_TRIGGER_UNBIND: &str = "trigger.unbind";
 /// `trigger.list`: the bindings, and which one is showing.
 pub const OP_TRIGGER_LIST: &str = "trigger.list";
+/// `output.window.open`: open (or re-open with other settings) the clean output window.
+pub const OP_WINDOW_OPEN: &str = "output.window.open";
+/// `output.window.close`: close the clean output window.
+pub const OP_WINDOW_CLOSE: &str = "output.window.close";
+/// `output.window.status`: whether the output window is open, its size, backdrop and whether it is minimised.
+pub const OP_WINDOW_STATUS: &str = "output.window.status";
 
 /// Frames the Calibrate button asks for: 10 s at a webcam's 30 fps (the prompt says 10 seconds).
 pub const CALIBRATE_FRAMES: u64 = 300;
@@ -63,6 +72,22 @@ pub struct Ops {
     pub trigger_unbind: bool,
     /// `trigger.list` is registered.
     pub trigger_list: bool,
+    /// `output.window.open` is registered.
+    pub window_open: bool,
+    /// `output.window.close` is registered.
+    pub window_close: bool,
+    /// `output.window.status` is registered.
+    pub window_status: bool,
+    /// `input.state` is registered.
+    pub input_state: bool,
+    /// `input.select` is registered.
+    pub input_select: bool,
+    /// `input.bind_camera` is registered.
+    pub input_bind_camera: bool,
+    /// `input.preview` is registered.
+    pub input_preview: bool,
+    /// `input.request_camera` is registered.
+    pub input_request_camera: bool,
 }
 
 impl Ops {
@@ -78,11 +103,24 @@ impl Ops {
             trigger_bind: has(OP_TRIGGER_BIND),
             trigger_unbind: has(OP_TRIGGER_UNBIND),
             trigger_list: has(OP_TRIGGER_LIST),
+            window_open: has(OP_WINDOW_OPEN),
+            window_close: has(OP_WINDOW_CLOSE),
+            window_status: has(OP_WINDOW_STATUS),
+            input_state: has(input::OP_STATE),
+            input_select: has(input::OP_SELECT),
+            input_bind_camera: has(input::OP_BIND_CAMERA),
+            input_preview: has(input::OP_PREVIEW),
+            input_request_camera: has(input::OP_REQUEST_CAMERA),
         }
     }
 
     fn control(registered: bool, op: &'static str) -> Control {
         if registered { Control::Ready } else { Control::Missing(op) }
+    }
+
+    /// The first of `needed` that isn't registered, as the control's state.
+    fn all(needed: &[(bool, &'static str)]) -> Control {
+        needed.iter().find(|(registered, _)| !registered).map_or(Control::Ready, |(_, op)| Control::Missing(op))
     }
 
     /// The Calibrate button.
@@ -100,22 +138,73 @@ impl Ops {
         Self::control(self.import, OP_IMPORT)
     }
 
-    /// The camera picker and preview: `input.bind_camera` and `input.preview` are not on main.
-    pub const fn camera() -> Control {
-        Control::NotYet
+    /// The camera picker and the tracking switch: they read `input.state` and run `input.bind_camera`,
+    /// `input.select` and `input.preview`. Those ops are not on main yet (PR #2210), so a runner without them leaves
+    /// the section "not available yet" rather than missing.
+    pub fn camera(self) -> Control {
+        let needed = [
+            (self.input_state, input::OP_STATE),
+            (self.input_select, input::OP_SELECT),
+            (self.input_bind_camera, input::OP_BIND_CAMERA),
+            (self.input_preview, input::OP_PREVIEW),
+        ];
+        match Self::all(&needed) {
+            Control::Ready => Control::Ready,
+            _ => Control::NotYet,
+        }
+    }
+
+    /// The Allow camera button: `input.request_camera`.
+    pub fn request_camera(self) -> Control {
+        if self.input_request_camera { Control::Ready } else { Control::NotYet }
+    }
+
+    /// The output window's switch and settings: they open, close and read the window through its ops.
+    pub fn output(self) -> Control {
+        Self::all(&[
+            (self.window_open, OP_WINDOW_OPEN),
+            (self.window_close, OP_WINDOW_CLOSE),
+            (self.window_status, OP_WINDOW_STATUS),
+        ])
     }
 
     /// The hotkey table: it binds, unbinds and lists, so it needs all three trigger ops.
     pub fn hotkeys(self) -> Control {
-        [
+        Self::all(&[
             (self.trigger_bind, OP_TRIGGER_BIND),
             (self.trigger_unbind, OP_TRIGGER_UNBIND),
             (self.trigger_list, OP_TRIGGER_LIST),
-        ]
-        .into_iter()
-        .find(|(registered, _)| !registered)
-        .map_or(Control::Ready, |(_, op)| Control::Missing(op))
+        ])
     }
+}
+
+/// What the output window shows behind the character, as the person picks it.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum Backdrop {
+    /// The key colour, which every capture tool can remove. The default.
+    #[default]
+    Key,
+    /// A transparent surface, where this computer has one; elsewhere the window takes the key and says so.
+    Transparent,
+}
+
+impl Backdrop {
+    /// `output.window.open`'s `backdrop` argument.
+    pub const fn arg(self) -> &'static str {
+        match self {
+            Self::Key => "key",
+            Self::Transparent => "transparent",
+        }
+    }
+}
+
+/// The output window's settings as the person picked them; they are the arguments of the next open.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct WindowChoice {
+    /// What shows behind the character.
+    pub backdrop: Backdrop,
+    /// Keep the window above other windows.
+    pub on_top: bool,
 }
 
 /// What went wrong with the last op, for the workspace's status line.
@@ -136,6 +225,11 @@ pub struct LiveModel {
     smoothing: f64,
     failure: Option<Failure>,
     imported: Option<String>,
+    input: Option<InputView>,
+    window: Option<WindowState>,
+    window_choice: WindowChoice,
+    /// The last open asked for a transparent surface and got the key (`output.window.open`'s `fallback`).
+    window_fallback: bool,
 }
 
 impl LiveModel {
@@ -146,7 +240,18 @@ impl LiveModel {
 
     /// The model with these ops (the gallery story builds one without a runner).
     pub fn with_ops(ops: Ops) -> Self {
-        Self { ops, status: None, triggers: Vec::new(), smoothing: 0.0, failure: None, imported: None }
+        Self {
+            ops,
+            status: None,
+            triggers: Vec::new(),
+            smoothing: 0.0,
+            failure: None,
+            imported: None,
+            input: None,
+            window: None,
+            window_choice: WindowChoice::default(),
+            window_fallback: false,
+        }
     }
 
     /// The ops.
@@ -209,6 +314,31 @@ impl LiveModel {
         matches!(self.calibration(), Some(CalibrationState::Capturing { .. }))
     }
 
+    /// The tracking input as `input.state` last read it.
+    pub fn input(&self) -> Option<&InputView> {
+        self.input.as_ref()
+    }
+
+    /// The output window as `output.window.status` last read it.
+    pub fn window(&self) -> Option<WindowState> {
+        self.window
+    }
+
+    /// Whether the output window is open, as last read.
+    pub fn window_open(&self) -> bool {
+        matches!(self.window, Some(WindowState::Open { .. }))
+    }
+
+    /// The output window settings the next open asks for.
+    pub fn window_choice(&self) -> WindowChoice {
+        self.window_choice
+    }
+
+    /// Whether the window that is open asked for transparency and got the key instead.
+    pub fn window_fallback(&self) -> bool {
+        self.window_fallback && self.window_open()
+    }
+
     /// Takes `status` in, as `perform.status` returned it. The slider follows the applied smoothing when the first
     /// status arrives and whenever the performer has applied a newer settings change, never in between: a status read
     /// during a drag must not pull the handle back.
@@ -225,6 +355,43 @@ impl LiveModel {
     pub fn refresh(&mut self, runner: &dyn Runner, actor: &Actor) {
         self.refresh_status(runner, actor);
         self.refresh_triggers(runner, actor);
+        self.refresh_input(runner, actor);
+        self.refresh_window(runner, actor);
+    }
+
+    /// Reads `input.state`.
+    fn refresh_input(&mut self, runner: &dyn Runner, actor: &Actor) {
+        if !self.ops.input_state {
+            return;
+        }
+        let read = run(runner, actor, input::OP_STATE, object(&[])).and_then(|output| {
+            InputView::deserialize(output).map_err(|e| OpError::internal(format!("{} answered {e}", input::OP_STATE)))
+        });
+        match read {
+            Ok(view) => self.input = Some(view),
+            Err(error) => {
+                self.input = None;
+                self.fail(input::OP_STATE, &error);
+            }
+        }
+    }
+
+    /// Reads `output.window.status`.
+    fn refresh_window(&mut self, runner: &dyn Runner, actor: &Actor) {
+        if !self.ops.window_status {
+            return;
+        }
+        let read = run(runner, actor, OP_WINDOW_STATUS, object(&[])).and_then(|output| {
+            WindowState::deserialize(output)
+                .map_err(|e| OpError::internal(format!("{OP_WINDOW_STATUS} answered {e}")))
+        });
+        match read {
+            Ok(state) => self.window = Some(state),
+            Err(error) => {
+                self.window = None;
+                self.fail(OP_WINDOW_STATUS, &error);
+            }
+        }
     }
 
     /// Reads `perform.status`.
@@ -297,6 +464,79 @@ impl LiveModel {
         self.smoothing = self.smoothing.clamp(*SMOOTHING_RANGE.start(), *SMOOTHING_RANGE.end());
         let args = object(&[("smoothing", Value::from(self.smoothing))]);
         self.act(runner, actor, self.ops.set_retarget, OP_SET_RETARGET, args);
+    }
+
+    /// Opens the output window with the settings picked ([`WindowChoice`]) through `output.window.open`, or closes it
+    /// through `output.window.close`, then reads its status again.
+    pub fn set_window_open(&mut self, runner: &dyn Runner, actor: &Actor, open: bool) {
+        if open {
+            self.open_window(runner, actor);
+        } else if self.act(runner, actor, self.ops.window_close, OP_WINDOW_CLOSE, object(&[])) {
+            self.window_fallback = false;
+        }
+        self.refresh_window(runner, actor);
+    }
+
+    /// Picks the window's settings; an open window re-opens with them (an open replaces the window).
+    pub fn set_window_choice(&mut self, runner: &dyn Runner, actor: &Actor, choice: WindowChoice) {
+        if choice == self.window_choice {
+            return;
+        }
+        self.window_choice = choice;
+        if self.window_open() {
+            self.open_window(runner, actor);
+            self.refresh_window(runner, actor);
+        }
+    }
+
+    fn open_window(&mut self, runner: &dyn Runner, actor: &Actor) {
+        if !self.ops.window_open {
+            return;
+        }
+        let args = object(&[
+            ("backdrop", Value::from(self.window_choice.backdrop.arg())),
+            ("always_on_top", Value::from(self.window_choice.on_top)),
+        ]);
+        match run(runner, actor, OP_WINDOW_OPEN, args) {
+            Ok(answer) => {
+                self.failure = None;
+                self.window_fallback = answer.get("fallback").and_then(Value::as_bool).unwrap_or(false);
+            }
+            Err(error) => self.fail(OP_WINDOW_OPEN, &error),
+        }
+    }
+
+    /// Binds `camera` (an id `input.state` listed; `None` unbinds) through `input.bind_camera`, then reads the input
+    /// again.
+    pub fn bind_camera(&mut self, runner: &dyn Runner, actor: &Actor, camera: Option<&str>) {
+        let args = object(&[("camera", Value::from(camera))]);
+        if self.act(runner, actor, self.ops.input_bind_camera, input::OP_BIND_CAMERA, args) {
+            self.refresh_input(runner, actor);
+        }
+    }
+
+    /// Starts tracking the face from the bound camera (`input.select` to the webcam when another source is chosen,
+    /// then `input.preview` on), or stops it (`input.preview` off); then reads the input again. Also the Retry after an
+    /// unplug: starting again opens the camera afresh.
+    pub fn set_tracking(&mut self, runner: &dyn Runner, actor: &Actor, on: bool) {
+        let webcam = self.input.as_ref().is_some_and(|view| view.source == Source::Webcam);
+        if on && !webcam {
+            let args = object(&[("source", Value::from("webcam"))]);
+            if !self.act(runner, actor, self.ops.input_select, input::OP_SELECT, args) {
+                return;
+            }
+        }
+        let args = object(&[("on", Value::from(on))]);
+        if self.act(runner, actor, self.ops.input_preview, input::OP_PREVIEW, args) {
+            self.refresh_input(runner, actor);
+        }
+    }
+
+    /// Shows the OS camera prompt through `input.request_camera`, then reads the input again.
+    pub fn request_camera(&mut self, runner: &dyn Runner, actor: &Actor) {
+        if self.act(runner, actor, self.ops.input_request_camera, input::OP_REQUEST_CAMERA, object(&[])) {
+            self.refresh_input(runner, actor);
+        }
     }
 
     /// Runs `io.import` on the dropped file at `path`.
@@ -384,8 +624,18 @@ mod tests {
         assert_eq!(ops.calibrate(), Control::Ready);
         assert_eq!(ops.smoothing(), Control::Missing(OP_SET_RETARGET));
         assert_eq!(ops.import(), Control::Missing(OP_IMPORT));
-        assert_eq!(Ops::camera(), Control::NotYet);
+        assert_eq!(ops.camera(), Control::NotYet, "the input ops aren't on main yet");
+        assert_eq!(ops.output(), Control::Missing(OP_WINDOW_OPEN));
         assert_eq!(ops.hotkeys(), Control::Missing(OP_TRIGGER_BIND));
+        let input = Ops {
+            input_state: true,
+            input_select: true,
+            input_bind_camera: true,
+            input_preview: true,
+            ..Ops::default()
+        };
+        assert_eq!(input.camera(), Control::Ready);
+        assert_eq!(input.request_camera(), Control::NotYet, "the prompt has its own op");
         let triggers = Ops { trigger_bind: true, trigger_unbind: true, ..Ops::default() };
         assert_eq!(triggers.hotkeys(), Control::Missing(OP_TRIGGER_LIST), "the table needs all three");
     }

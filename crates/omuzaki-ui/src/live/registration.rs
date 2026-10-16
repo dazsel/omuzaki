@@ -1,14 +1,14 @@
 //! The Live panel, the Perform workspace and the Live story, registered with `omuzaki-ui-api` (`shell.md` sections 3
 //! and 12), so the shell and the gallery show them once they read that registry.
 //!
-//! The panel reads the output window from the shell's view models ([`SharedOutput`]); a shell that provides none
-//! gets the toggle disabled with its reason, as a build without an output window does.
+//! The panel needs nothing from the shell but its runner: the output window, the performer and the input are reached
+//! through their ops, so a shell (or a build) without them gets each control disabled with its reason.
 
 use omuzaki_ui_api::layout::{Dir, Node};
 use omuzaki_ui_api::panel::{Panel, PanelCtx};
 use omuzaki_ui_api::registry::{Group, Region, StoryGroup};
 
-use super::panel::{LivePanel, SharedOutput};
+use super::panel::LivePanel;
 use super::story::{self, StoryState};
 use crate::ds::icons;
 
@@ -24,15 +24,13 @@ pub struct LiveUiPanel(LivePanel);
 
 impl Panel for LiveUiPanel {
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &PanelCtx<'_>) {
-        // Looked up each frame, so a window the shell makes after the panel is built still reaches the toggle.
-        self.0.set_output(ctx.view::<SharedOutput>().cloned());
         self.0.ui(ui, ctx.runner(), ctx.actor());
     }
 }
 
 omuzaki_ui_api::register_panel! {
     id: "live", title: "Live", icon: icons::PLAY, region: Region::Right, min_size: [288.0, 160.0], order: 10,
-    build: |ctx| Box::new(LiveUiPanel(LivePanel::new(ctx.runner(), ctx.view::<SharedOutput>().cloned()))),
+    build: |ctx| Box::new(LiveUiPanel(LivePanel::new(ctx.runner()))),
 }
 
 /// The Perform workspace's default layout: the viewport, and the Live panel in the right dock.

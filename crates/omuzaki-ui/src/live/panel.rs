@@ -4,24 +4,26 @@
 //! Every control is a design-system widget with an accessible name. A control whose op is not on main is drawn
 //! disabled and says why on hover and on keyboard focus.
 
-use std::sync::{Arc, Mutex, PoisonError};
-
 use egui::{Event, Key, Modifiers, RichText, ScrollArea, Sense, Ui, WidgetInfo, WidgetType, vec2};
 use omuzaki_ops_api::{Actor, Runner};
 use omuzaki_stage::perform::Tracking;
 use omuzaki_stage::perform::host::CalibrationState;
+use omuzaki_stream_api::window::{Backdrop as Shown, DEFAULT_TITLE, WindowState};
 
-use super::model::{Control, HOTKEY_ROWS, LiveModel, OP_CALIBRATE, OP_SET_RETARGET, Ops, SMOOTHING_RANGE};
+use super::input::Permission;
+use super::model::{
+    Backdrop, Control, HOTKEY_ROWS, LiveModel, OP_CALIBRATE, OP_SET_RETARGET, SMOOTHING_RANGE,
+    WindowChoice,
+};
 use super::text::{Word, say, text};
 use crate::ds::a11y;
 use crate::ds::icons;
 use crate::ds::theme::ds;
 use crate::ds::tokens::{Status, space};
 use crate::ds::widgets::{
-    Button, Choice, Dropdown, EmptyState, FormRow, OpCall, ParamEvent, ParamSlider, Section, StatusChip, Tip,
-    TipExt as _, Toggle,
+    Button, Choice, Dropdown, EmptyState, FormRow, OpCall, ParamEvent, ParamSlider, Section, Segment, Segmented,
+    StatusChip, Tip, TipExt as _, Toggle,
 };
-use crate::output_window::OutputWindow;
 
 /// Seconds between `perform.status` reads while the workspace is shown.
 pub const REFRESH_S: f64 = 0.25;
@@ -47,14 +49,10 @@ enum Character {
     Kit,
 }
 
-/// The output window the toggle opens, shared with the app's frame loop, which shows it.
-pub type SharedOutput = Arc<Mutex<OutputWindow>>;
-
 /// The Live workspace.
 #[derive(Debug)]
 pub struct LivePanel {
     model: LiveModel,
-    output: Option<SharedOutput>,
     /// The `ctx` time of the last status read.
     refreshed: Option<f64>,
     /// The expression whose trigger button waits for a key press.
@@ -64,19 +62,14 @@ pub struct LivePanel {
 }
 
 impl LivePanel {
-    /// The workspace over `runner`'s ops, with the output window the app made (or `None` in a build without one).
-    pub fn new(runner: &dyn Runner, output: Option<SharedOutput>) -> Self {
-        Self::with_model(LiveModel::new(runner), output)
+    /// The workspace over `runner`'s ops.
+    pub fn new(runner: &dyn Runner) -> Self {
+        Self::with_model(LiveModel::new(runner))
     }
 
     /// The workspace showing `model` (the gallery story and tests).
-    pub fn with_model(model: LiveModel, output: Option<SharedOutput>) -> Self {
-        Self { model, output, refreshed: None, capturing: None, moods: HOTKEY_ROWS }
-    }
-
-    /// Replaces the output window the toggle drives (`None`: this build or shell has none).
-    pub fn set_output(&mut self, output: Option<SharedOutput>) {
-        self.output = output;
+    pub fn with_model(model: LiveModel) -> Self {
+        Self { model, refreshed: None, capturing: None, moods: HOTKEY_ROWS }
     }
 
     /// The model.
@@ -108,9 +101,9 @@ impl LivePanel {
         // Health and the output first: what a person checks before going live stays in view on a small screen.
         self.health(ui);
         self.failure(ui);
-        self.output(ui);
+        self.output(ui, runner, actor);
         self.character(ui, runner, actor);
-        camera(ui);
+        self.camera(ui, runner, actor);
         self.calibrate(ui, runner, actor);
         self.smoothing(ui, runner, actor);
         self.hotkeys(ui, runner, actor);
@@ -141,40 +134,85 @@ impl LivePanel {
     }
 }
 
-/// The camera picker, its preview and the no-camera state, all waiting on the input ops.
-fn camera(ui: &mut Ui) {
-    let ctx = ui.ctx().clone();
-    let title = text(&ctx, Word::CameraSection);
-    Section::new(&title).default_open(true).id_salt("live.camera").show(ui, |ui| {
-        let reason = not_yet(&ctx, Ops::camera(), Word::NotYetCamera);
-        let none = text(&ctx, Word::CameraNone);
-        let choices = [Choice::new(0_u8, &none)];
-        let mut chosen = 0_u8;
-        let label = text(&ctx, Word::CameraLabel);
-        FormRow::new(&label).show(ui, |ui, name| {
-            let dropdown = Dropdown::new(name, &mut chosen, &choices).id_salt("live.camera.pick").stretch();
-            ui.add(match reason.as_deref() {
-                Some(reason) => dropdown.disabled(reason),
-                None => dropdown,
-            })
+impl LivePanel {
+    /// The camera picker, the tracking switch and what the input says (no camera, unplugged, no permission), all
+    /// through the `input.*` ops. Without them the section is drawn disabled, "not available yet".
+    fn camera(&mut self, ui: &mut Ui, runner: &dyn Runner, actor: &Actor) {
+        let ctx = ui.ctx().clone();
+        let title = text(&ctx, Word::CameraSection);
+        let reason = not_yet(&ctx, self.model.ops().camera(), Word::NotYetCamera);
+        Section::new(&title).default_open(true).id_salt("live.camera").show(ui, |ui| {
+            let view = self.model.input().cloned();
+            let cameras = view.as_ref().map_or(&[][..], |view| &view.cameras[..]);
+            let none = text(&ctx, Word::CameraNone);
+            let mut choices = vec![Choice::new(None, &none)];
+            choices.extend(cameras.iter().enumerate().map(|(i, camera)| Choice::new(Some(i), &camera.name)));
+            let bound = cameras.iter().position(|camera| camera.bound);
+            let mut chosen = bound;
+            let label = text(&ctx, Word::CameraLabel);
+            FormRow::new(&label).show(ui, |ui, name| {
+                let dropdown = Dropdown::new(name, &mut chosen, &choices).id_salt("live.camera.pick").stretch();
+                ui.add(match reason.as_deref() {
+                    Some(reason) => dropdown.disabled(reason),
+                    None => dropdown,
+                })
+            });
+            if chosen != bound {
+                let camera = chosen.and_then(|i| cameras.get(i)).map(|camera| camera.id.as_str());
+                self.model.bind_camera(runner, actor, camera);
+            }
+            if cameras.is_empty() {
+                // The empty state of shell.md section 13: the life layer has the face until a camera tracks it.
+                EmptyState::new(icons::EYE_SLASH, &text(&ctx, Word::NoCameraHeadline), &text(&ctx, Word::NoCameraLine))
+                    .show(ui);
+            }
+            let capturing = view.as_ref().is_some_and(super::input::InputView::capturing);
+            let mut on = capturing;
+            let track = text(&ctx, Word::CameraTrack);
+            let unbound = text(&ctx, Word::CameraChooseFirst);
+            let toggle = Toggle::switch(&track, &mut on).id_salt("live.camera.track");
+            let toggle = match reason.as_deref() {
+                Some(reason) => toggle.disabled(reason),
+                None if bound.is_none() && !capturing => toggle.disabled(&unbound),
+                None => toggle,
+            };
+            if ui.add(toggle).changed() {
+                self.model.set_tracking(runner, actor, on);
+            }
+            if let Some(view) = &view {
+                self.camera_state(ui, runner, actor, view);
+            }
         });
-        // No camera is bound until the input ops land: the empty state of shell.md section 13.
-        EmptyState::new(icons::EYE_SLASH, &text(&ctx, Word::NoCameraHeadline), &text(&ctx, Word::NoCameraLine))
-            .show(ui);
-        let choose = text(&ctx, Word::ChooseCamera);
-        let button = Button::new(&choose).primary();
-        ui.add(match reason.as_deref() {
-            Some(reason) => button.disabled(reason),
-            None => button,
-        });
-        let preview = text(&ctx, Word::CameraPreview);
-        let mut mirrored = true;
-        let toggle = Toggle::checkbox(&preview, &mut mirrored);
-        ui.add(match reason.as_deref() {
-            Some(reason) => toggle.disabled(reason),
-            None => toggle,
-        });
-    });
+    }
+
+    /// The input's state under the switch: what is tracked, an unplugged camera with Retry, or the permission.
+    fn camera_state(&mut self, ui: &mut Ui, runner: &dyn Runner, actor: &Actor, view: &super::input::InputView) {
+        let ctx = ui.ctx().clone();
+        match view.permission {
+            Permission::Denied => {
+                ui.add(StatusChip::new(Status::Danger, &text(&ctx, Word::CameraDenied)));
+                return;
+            }
+            Permission::Unknown if self.model.ops().request_camera() == Control::Ready => {
+                let allow = text(&ctx, Word::CameraAllow);
+                if ui.add(Button::new(&allow)).clicked() {
+                    self.model.request_camera(runner, actor);
+                }
+            }
+            Permission::Unknown | Permission::Granted => {}
+        }
+        if view.camera.is_some() && !view.camera_present {
+            ui.horizontal(|ui| {
+                ui.add(StatusChip::new(Status::Warn, &text(&ctx, Word::CameraUnplugged)));
+                let retry = text(&ctx, Word::CameraRetry);
+                if ui.add(Button::new(&retry).icon(icons::ARROW_COUNTER_CLOCKWISE)).clicked() {
+                    self.model.set_tracking(runner, actor, true);
+                }
+            });
+        } else if let (true, Some(camera)) = (view.capturing(), view.bound()) {
+            ui.add(StatusChip::new(Status::Ok, &say(&ctx, Word::CameraTracking, &[("name", &camera.name)])));
+        }
+    }
 }
 
 impl LivePanel {
@@ -222,37 +260,63 @@ impl LivePanel {
         });
     }
 
-    fn output(&self, ui: &mut Ui) {
+    /// The output window: its switch, its backdrop and stacking, and what it is (size, fallback, minimised). Every
+    /// change runs an `output.window.*` op, so an agent sees and does the same.
+    fn output(&mut self, ui: &mut Ui, runner: &dyn Runner, actor: &Actor) {
         let ctx = ui.ctx().clone();
         let title = text(&ctx, Word::OutputSection);
+        let missing = missing_reason(&ctx, self.model.ops().output());
         Section::new(&title).default_open(true).id_salt("live.output").show(ui, |ui| {
             let label = text(&ctx, Word::OutputWindow);
-            let Some(output) = &self.output else {
-                let mut off = false;
-                let reason = text(&ctx, Word::OutputUnavailable);
-                ui.add(Toggle::switch(&label, &mut off).disabled(&reason));
-                return;
-            };
-            let mut window = output.lock().unwrap_or_else(PoisonError::into_inner);
-            let mut open = window.status().open;
-            if ui.add(Toggle::switch(&label, &mut open)).changed() {
-                window.set_open(open);
+            let mut open = self.model.window_open();
+            let switch = Toggle::switch(&label, &mut open).id_salt("live.output.open");
+            if ui.add(disable(switch, missing.as_deref(), Toggle::disabled)).changed() {
+                self.model.set_window_open(runner, actor, open);
             }
-            let status = window.status();
-            let size = window.plan().size;
-            let line = say(
-                &ctx,
-                Word::OutputSize,
-                &[("width", &size.width.to_string()), ("height", &size.height.to_string())],
-            );
-            ui.label(line);
-            if status.fallback {
-                ui.add(StatusChip::new(Status::Warn, &text(&ctx, Word::OutputFallback)));
+            let mut choice = self.model.window_choice();
+            let (key, clear) = (text(&ctx, Word::OutputKey), text(&ctx, Word::OutputTransparent));
+            let segments = [Segment::new(Backdrop::Key, &key), Segment::new(Backdrop::Transparent, &clear)];
+            let backdrop = text(&ctx, Word::OutputBackdrop);
+            FormRow::new(&backdrop).show(ui, |ui, name| {
+                let segmented = Segmented::new(name, &mut choice.backdrop, &segments).id_salt("live.output.backdrop");
+                ui.add(disable(segmented, missing.as_deref(), Segmented::disabled))
+            });
+            let on_top = text(&ctx, Word::OutputOnTop);
+            let toggle = Toggle::switch(&on_top, &mut choice.on_top).id_salt("live.output.on_top");
+            ui.add(disable(toggle, missing.as_deref(), Toggle::disabled));
+            if choice != self.model.window_choice() {
+                self.model.set_window_choice(runner, actor, choice);
             }
-            if status.open && status.minimised {
-                ui.add(StatusChip::new(Status::Warn, &text(&ctx, Word::OutputMinimised)));
-            }
+            self.output_state(ui, choice);
         });
+    }
+
+    /// What the output window is: its size and backdrop when open, where to find it when closed, and the two states a
+    /// capture can't use (a fallback from transparency, a minimised window).
+    fn output_state(&self, ui: &mut Ui, choice: WindowChoice) {
+        let ctx = ui.ctx().clone();
+        let small = ds(&ctx).text.small.clone();
+        match self.model.window() {
+            Some(WindowState::Open { physical, backdrop, minimised, .. }) => {
+                let (width, height) = (physical.x.to_string(), physical.y.to_string());
+                let size = say(&ctx, Word::OutputSize, &[("width", &width), ("height", &height)]);
+                let line = match backdrop {
+                    Shown::Key(key) => say(&ctx, Word::OutputOverKey, &[("size", &size), ("key", &key.to_string())]),
+                    Shown::Transparent => say(&ctx, Word::OutputOverNothing, &[("size", &size)]),
+                };
+                ui.label(RichText::new(line).font(small));
+                if self.model.window_fallback() && choice.backdrop == Backdrop::Transparent {
+                    ui.add(StatusChip::new(Status::Warn, &text(&ctx, Word::OutputFallback)));
+                }
+                if minimised {
+                    ui.add(StatusChip::new(Status::Warn, &text(&ctx, Word::OutputMinimised)));
+                }
+            }
+            Some(WindowState::Closed) | None => {
+                let hint = say(&ctx, Word::OutputHint, &[("title", DEFAULT_TITLE)]);
+                ui.label(RichText::new(hint).font(small));
+            }
+        }
     }
 
     /// The health strip: tracking state, frame rate and latency on one line (nothing in it takes the keyboard).
@@ -460,6 +524,14 @@ fn drop_zone(ui: &mut Ui, label: &str) -> Option<String> {
     a11y::describe(&response, || WidgetInfo::labeled(WidgetType::Label, true, label), |_| {});
     let over = response.contains_pointer();
     ui.ctx().input(|i| i.raw.dropped_files.first().filter(|_| over).map(|file| file.path().display().to_string()))
+}
+
+/// `widget`, disabled with `reason` when there is one (`disabled` is the widget's own `disabled(reason)`).
+fn disable<'a, W>(widget: W, reason: Option<&'a str>, disabled: impl FnOnce(W, &'a str) -> W) -> W {
+    match reason {
+        Some(reason) => disabled(widget, reason),
+        None => widget,
+    }
 }
 
 /// Why a control whose op is missing from this build is disabled.

@@ -14,9 +14,11 @@ pub mod wiring;
 #[doc(hidden)]
 pub use omuzaki_core::__record_registration;
 
-// The stage registers the `perform.*` ops the Live workspace runs, and the animation crate the retarget and life
-// layer the perform thread builds on, so the app links both (ADR 0015).
+// The stage registers the `perform.*` and `trigger.*` ops the Live workspace runs, the stream crate the
+// `output.window.*` ops its output switch runs, and the animation crate the retarget and life layer the perform thread
+// builds on, so the app links all three (ADR 0015).
 omuzaki_core::define_link! {
     omuzaki_anim::link();
     omuzaki_stage::link();
+    omuzaki_stream::link();
 }

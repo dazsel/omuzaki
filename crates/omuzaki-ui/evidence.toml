@@ -29,12 +29,3 @@ steps = [
     { run = ["cargo", "run", "--locked", "-p", "omuzaki-ui", "--bin", "gallery", "--", "--pseudo", "--scale", "200", "--group", "composites", "--screenshot", "{out}/pseudo-200-composites.png"] },
 ]
 images = ["pseudo-200-foundations.png", "pseudo-200-controls-1of4.png", "pseudo-200-controls-2of4.png", "pseudo-200-controls-3of4.png", "pseudo-200-controls-4of4.png", "pseudo-200-display-1of2.png", "pseudo-200-display-2of2.png", "pseudo-200-feedback-1of3.png", "pseudo-200-feedback-2of3.png", "pseudo-200-feedback-3of3.png", "pseudo-200-composites.png"]
-
-[[case]]
-name = "live-workspace"
-description = "The Live workspace (#305) in its three states (idle, calibrating, tracking lost) at 1366x768 and 1920x1080, dark palette, 100% scale: rendered headless by tests/live_workspace.rs on the story runner, which shows each state's perform.status."
-env = { OMUZAKI_LIVE_EVIDENCE_DIR = "{out}" }
-steps = [
-    { run = ["cargo", "test", "--locked", "-p", "omuzaki-ui", "--test", "live_workspace", "evidence_pictures_of_idle_calibrating_and_tracking_lost", "--", "--exact"] },
-]
-images = ["live-idle-1366x768.png", "live-idle-1920x1080.png", "live-calibrating-1366x768.png", "live-calibrating-1920x1080.png", "live-tracking-lost-1366x768.png", "live-tracking-lost-1920x1080.png"]

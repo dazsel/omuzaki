@@ -2,6 +2,7 @@
 //!
 //! | Module | Holds |
 //! |---|---|
+//! | [`input`] | the `input.*` op surface the Camera section drives (mirrored until PR #2210 merges) |
 //! | [`model`] | [`LiveModel`](model::LiveModel): the status it reads and the ops it runs, apart from drawing |
 //! | [`panel`] | [`LivePanel`](panel::LivePanel): the workspace's controls, top to bottom in Tab order |
 //! | [`registration`] | the Live panel, the Perform workspace and the story, registered with `omuzaki-ui-api` |
@@ -9,6 +10,7 @@
 //! | [`text`] | every word the workspace says |
 //! | [`wiring`] | the perform thread, the newest-wins hand-off, the render side and the quit order |
 
+pub mod input;
 pub mod model;
 pub mod panel;
 pub mod registration;

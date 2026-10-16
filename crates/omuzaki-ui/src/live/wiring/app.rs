@@ -8,6 +8,7 @@ use omuzaki_anim_api::{ChannelBuf, HumanoidPose};
 use omuzaki_face_api::ExpressionSet;
 use omuzaki_ops_api::{Runner, ServicesBuilder};
 use omuzaki_stage::perform::host::{PerformError, PerformHost};
+use omuzaki_stream_api::window::WindowHost;
 use omuzaki_track_api::camera::{CameraId, CameraInfo};
 use omuzaki_track_api::error::TrackError;
 use omuzaki_track_api::tracker::{LatencyStats, Tracker, TrackerConfig};
@@ -64,8 +65,8 @@ pub struct LiveApp {
 impl LiveApp {
     /// Starts the perform thread on `tracker` (idle until a camera is picked) and the life layer, timed by `clock`;
     /// gives the triggers the starter expressions until a character brings its own; and builds the runner: every op
-    /// linked into the app, over an empty document, with the performer in its services. The output window starts
-    /// closed, on a platform where a transparent surface is `transparency`.
+    /// linked into the app, over an empty document, with the performer and the output window's host in its services.
+    /// The output window starts closed, on a platform where a transparent surface is `transparency`.
     ///
     /// # Errors
     /// [`StartError`]; nothing is left running then.
@@ -79,14 +80,18 @@ impl LiveApp {
             LiveRig::start(tracker, TrackerConfig::default(), performer, clock).map_err(StartError::Wiring)?;
         let host = rig.host().map_err(|_| StartError::Wiring(WiringError::Stopped))?;
         host.set_expressions(ExpressionSet::starter(), ChannelBuf::NEUTRAL).map_err(StartError::Perform)?;
-        let services = ServicesBuilder::new().insert::<dyn PerformHost>(host).build();
+        let window = OutputHost::new(transparency, PhysicalSize::FULL_HD);
+        let services = ServicesBuilder::new()
+            .insert::<dyn PerformHost>(host)
+            .insert::<dyn WindowHost>(Arc::new(window.clone()))
+            .build();
         let runner = wiring::runner(services).map_err(StartError::Ops)?;
         Ok(Self {
             rig: Some(rig),
             reader: Some(reader),
             runner,
             output: OutputWindow::new(OutputPlan::default(), transparency),
-            host: OutputHost::new(transparency, PhysicalSize::FULL_HD),
+            host: window,
         })
     }
 
@@ -105,20 +110,14 @@ impl LiveApp {
         self.reader.as_mut()
     }
 
-    /// The output window, which the Live workspace's toggle opens and closes.
+    /// The output window, which the `output.window.*` ops open and close through the runner.
     pub fn output_mut(&mut self) -> &mut OutputWindow {
         &mut self.output
     }
 
-    /// The output window's host, for the `output.window.*` ops (`WindowHost` once #2146 merges). Clones share the
-    /// window.
-    pub fn output_host(&self) -> OutputHost {
-        self.host.clone()
-    }
-
     /// Draws this frame's output window (when it is open): `program`, the viewport's rendered frame, or the backdrop
-    /// alone until the viewport renders one. Requests the host queued are carried out first, and what the window is
-    /// is published after. Call once per frame from the main viewport.
+    /// alone until the viewport renders one. Requests the ops queued on the host are carried out first, and what the
+    /// window is is published after, for `output.window.status`. Call once per frame from the main viewport.
     pub fn show(&mut self, ctx: &Context, program: Option<Program>) {
         self.host.take_requests(&mut self.output);
         self.output.show(ctx, program);
@@ -133,7 +132,7 @@ impl LiveApp {
     /// [`WiringError::Panicked`] if the perform thread had panicked.
     pub fn shutdown(&mut self) -> Result<LoopReport, WiringError> {
         self.output.set_open(false);
-        self.host.publish(&self.output, self.host.surface().scale_factor);
+        self.host.publish(&self.output, WindowHost::surface(&self.host).scale_factor);
         self.reader = None;
         match self.rig.take() {
             Some(rig) => rig.shutdown(),

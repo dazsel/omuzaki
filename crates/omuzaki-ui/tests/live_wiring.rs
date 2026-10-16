@@ -439,9 +439,29 @@ fn the_app_starts_the_live_slice_with_its_ops_and_stops_it_in_order() {
         LiveApp::start(Box::new(tracker(30.0)), Box::new(RealClock::new()), Transparency::Fallback).expect("it starts");
     let runner = app.runner();
     let ops: Vec<String> = runner.ops().into_iter().map(|op| op.name.to_owned()).collect();
-    for op in ["perform.calibrate", "perform.set_retarget", "perform.status", "trigger.bind", "trigger.press"] {
+    for op in [
+        "perform.calibrate",
+        "perform.set_retarget",
+        "perform.status",
+        "trigger.bind",
+        "trigger.press",
+        "output.window.open",
+        "output.window.close",
+        "output.window.status",
+    ] {
         assert!(ops.iter().any(|name| name == op), "{op} is linked into the app's runner");
     }
+    // The output window's host is in the services: a dry-run plans the exact output size, and on a platform without a
+    // verified transparent surface a transparent window falls back to the key and says so.
+    let planned = runner
+        .run(Request { mode: Mode::DryRun, ..request("output.window.open", args(&[("backdrop", Value::from("transparent"))])) })
+        .expect("the host is wired")
+        .plan
+        .output
+        .expect("an answer");
+    assert_eq!((planned["physical"].clone(), planned["fallback"].clone()), (serde_json::json!([1920, 1080]), Value::from(true)));
+    let closed = runner.run(request("output.window.status", args(&[]))).expect("status").plan.output.expect("an answer");
+    assert_eq!(closed["state"], "closed", "a dry run opens nothing");
     let bind = args(&[("key", Value::from("F1")), ("expression", Value::from("happy"))]);
     runner.run(request("trigger.bind", bind)).expect("the starter expressions are loaded");
 

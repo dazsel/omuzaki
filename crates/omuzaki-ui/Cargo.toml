@@ -36,6 +36,8 @@ omuzaki-ops = { path = "../omuzaki-ops" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-render-api = { path = "../omuzaki-render-api" }
 omuzaki-stage = { path = "../omuzaki-stage" }
+omuzaki-stream = { path = "../omuzaki-stream" }
+omuzaki-stream-api = { path = "../omuzaki-stream-api" }
 omuzaki-track-api = { path = "../omuzaki-track-api" }
 omuzaki-ui-api = { path = "../omuzaki-ui-api" }
 tracing.workspace = true

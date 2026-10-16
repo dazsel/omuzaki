@@ -13,7 +13,8 @@
 //! - Its position is remembered per monitor arrangement and restored only while that monitor exists.
 //!
 //! Until the viewport hands it the program texture it shows its backdrop; the [`test_card`] is what the evidence
-//! renders through it. The ops drive it through [`OutputHost`], shaped to #2146's `WindowHost`.
+//! renders through it. The `output.window.*` ops drive it through [`OutputHost`], the app's `WindowHost` (#298), and
+//! the Live workspace's toggle runs those ops, so a person and an agent open the same window the same way.
 
 pub mod composite;
 pub mod host;
@@ -21,7 +22,7 @@ pub mod plan;
 pub mod test_card;
 pub mod window;
 
-pub use host::{HostCaps, HostError, HostState, HostSurface, OutputHost};
-pub use plan::{DEFAULT_FPS, DEFAULT_KEY, DEFAULT_TITLE, OutputBackdrop, OutputPlan, Shown};
+pub use host::OutputHost;
+pub use plan::{DEFAULT_FPS, DEFAULT_KEY, OutputBackdrop, OutputPlan, Shown};
 pub use test_card::test_card;
 pub use window::{OutputStatus, OutputWindow, Program, paint_output};
