@@ -530,3 +530,36 @@ fn a_loop_of_links_fails_instead_of_hanging() {
     assert!(disk.read(&p("hop44/x")).unwrap_err().to_string().contains("symbolic links"));
     assert_eq!(disk.read(&p("hop3/x")).unwrap_err().kind(), ErrorKind::NotFound);
 }
+
+#[test]
+fn a_staged_status_shows_the_holds_that_are_live_now() {
+    let updater = MockUpdater::new();
+    updater.stage(&release(2)).unwrap();
+    let held = updater.hold(HoldReason::ProjectSaving);
+    let version = Version::new(1, 2, 0);
+    assert_eq!(
+        updater.status(),
+        UpdateStatus::Staged { version: version.clone(), deferred_by: vec![HoldReason::ProjectSaving] }
+    );
+    drop(held);
+    assert_eq!(updater.status(), UpdateStatus::Staged { version, deferred_by: vec![] });
+}
+
+#[test]
+fn an_empty_symlink_target_is_refused() {
+    let disk = disk_with_dir();
+    assert_eq!(kind_of(disk.symlink("", &p("link"), LinkKind::Dir)), ErrorKind::NotFound);
+    assert!(!disk.exists(&p("link")));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_name_that_is_not_utf8_fails_the_listing_as_on_the_real_disk() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    let disk = disk_with_dir();
+    disk.write(&p("ok"), b"x").unwrap();
+    assert!(disk.list_dir(&p("")).is_ok());
+    disk.write(&p("").join(OsStr::from_bytes(b"bad\xff")), b"y").unwrap();
+    assert_eq!(kind_of(disk.list_dir(&p("")).map(|_| ())), ErrorKind::InvalidData);
+}

@@ -45,7 +45,8 @@ struct Inner {
 /// [`UpdateError::NothingToRollBack`], and success).
 ///
 /// Status follows the answers: a `check` that finds a release is `Available`, one that finds none is `Idle`, a `stage`
-/// that succeeds is `Staged` with the holds taken at that moment; failures leave it alone. [`MockUpdater::set_status`]
+/// that succeeds is `Staged`, whose `deferred_by` is always the holds live when `status` is read (the event
+/// carries those of the moment it was staged); failures leave it alone. [`MockUpdater::set_status`]
 /// sets it directly. Holds are real: [`Updater::hold`] registers one and dropping the [`Hold`] removes it.
 pub struct MockUpdater {
     inner: Mutex<Inner>,
@@ -138,7 +139,12 @@ impl MockUpdater {
 
 impl Updater for MockUpdater {
     fn status(&self) -> UpdateStatus {
-        locked(&self.inner).status.clone()
+        let status = locked(&self.inner).status.clone();
+        match status {
+            // The holds that would stop a restart now, not those of the moment it was staged.
+            UpdateStatus::Staged { version, .. } => UpdateStatus::Staged { version, deferred_by: self.holds() },
+            other => other,
+        }
     }
 
     fn check(&self, channel: Channel) -> Result<Option<Release>, UpdateError> {

@@ -494,23 +494,31 @@ impl Disk for FakeDisk {
             return Err(if inner.nodes.contains_key(&path) { not_a_folder(&path) } else { not_found(&path) });
         }
         // `nodes` is ordered by path, so the children come out sorted by name.
-        Ok(inner
+        inner
             .nodes
             .iter()
             .filter(|(k, _)| k.parent() == Some(path.as_path()))
             .filter_map(|(k, node)| {
-                Some(DirEntry {
-                    name: k.file_name()?.to_string_lossy().into_owned(),
+                // A name that is not UTF-8 is an error, as `StdDisk::list_dir` gives, never a lossy copy.
+                let name = k.file_name()?.to_str().map(str::to_owned).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, format!("a name in {} is not UTF-8", path.display()))
+                });
+                Some(name.map(|name| DirEntry {
+                    name,
                     is_dir: matches!(node, Node::Dir),
                     is_symlink: matches!(node, Node::Link { .. }),
-                })
+                }))
             })
-            .collect())
+            .collect()
     }
 
     fn symlink(&self, target: &str, link: &Path, kind: LinkKind) -> io::Result<()> {
         let mut inner = locked(&self.inner);
         inner.alive()?;
+        if target.is_empty() {
+            // The platform call refuses it; here it would read as the link's own folder.
+            return Err(io::Error::new(io::ErrorKind::NotFound, "a symlink needs a target"));
+        }
         let (link, _) = inner.resolve(link, false, false)?;
         if Inner::is_root(&link) || inner.nodes.contains_key(&link) {
             return Err(exists_already(&link));
