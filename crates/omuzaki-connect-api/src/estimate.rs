@@ -340,13 +340,16 @@ impl Preview {
         {
             return Some(Widening::endpoint(e.clone()));
         }
+        // Totals per kind on both sides, so two rows of one kind cannot each pass against the plan's one.
+        let total = |rows: &[Outbound], what: Sends| {
+            rows.iter()
+                .filter(|o| o.what == what)
+                .fold((0u32, 0u64), |(c, b), o| (c.saturating_add(o.count), b.saturating_add(o.bytes)))
+        };
         for now in &self.outbound {
-            let (count, bytes) = planned
-                .outbound
-                .iter()
-                .filter(|o| o.what == now.what)
-                .fold((0u32, 0u64), |(c, b), o| (c.saturating_add(o.count), b.saturating_add(o.bytes)));
-            if now.count > count || now.bytes > bytes {
+            let ((count, bytes), (planned_count, planned_bytes)) =
+                (total(&self.outbound, now.what), total(&planned.outbound, now.what));
+            if count > planned_count || bytes > planned_bytes {
                 return Some(Widening::outbound(now.what));
             }
         }

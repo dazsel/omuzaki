@@ -208,6 +208,53 @@ fn a_paid_run_that_never_meters_is_found() {
     assert_eq!(checks(&found), [conformance::METER_REFUSAL_STOPS]);
 }
 
+/// Rewrites what its fake returns: `Empty` drops every output, `Mislabelled` calls its images `audio/wav`.
+enum Tampers {
+    Empty(FakeConnector),
+    Mislabelled(FakeConnector),
+}
+
+impl Connector for Tampers {
+    fn run(&self, m: &ConnectorManifest, req: &Request, cx: &RunCx<'_>) -> Result<RunOutput, ConnectError> {
+        match self {
+            Tampers::Empty(fake) => fake.run(m, req, cx).map(|out| RunOutput { outputs: vec![], ..out }),
+            Tampers::Mislabelled(fake) => fake.run(m, req, cx).map(|mut out| {
+                for output in &mut out.outputs {
+                    if let Output::Asset(a) = output {
+                        a.media_type = "audio/wav".into();
+                    }
+                }
+                out
+            }),
+        }
+    }
+
+    fn ping(&self, m: &ConnectorManifest, cx: &RunCx<'_>) -> Result<(), ConnectError> {
+        match self {
+            Tampers::Empty(fake) | Tampers::Mislabelled(fake) => fake.ping(m, cx),
+        }
+    }
+}
+
+#[test]
+fn empty_or_mislabelled_outputs_are_found() {
+    let m = manifest("mock-image");
+    for tampered in [
+        Tampers::Empty(FakeConnector::image(Script::default())),
+        Tampers::Mislabelled(FakeConnector::image(Script::default())),
+    ] {
+        assert_eq!(checks(&findings(&tampered, &m, vec![image()], None)), [conformance::OUTPUTS_MATCH_MANIFEST]);
+    }
+    assert!(
+        conformance::media_type_fits(MediaKind::Image, "image/png")
+            && conformance::media_type_fits(MediaKind::Motion, "text/plain")
+    );
+    assert!(
+        !conformance::media_type_fits(MediaKind::Image, "audio/wav")
+            && !conformance::media_type_fits(MediaKind::Json, "text/plain")
+    );
+}
+
 #[test]
 fn a_connector_that_never_makes_anything_is_found() {
     let m = manifest("mock-image");

@@ -61,8 +61,8 @@ pub const METER_REFUSAL_STOPS: &str = "meter_refusal_stops";
 pub const CANCELLED_MAKES_NO_REQUEST: &str = "cancelled_makes_no_request";
 /// A paid connector with a cap of 0 is `Err(CapReached)` and sends nothing.
 pub const CAP_IS_CHECKED_FIRST: &str = "cap_is_checked_first";
-/// A declared request succeeds, and every output fits the capability's declaration, has a model and media type, and
-/// the first carries the seed.
+/// A declared request succeeds with at least one output, and every output fits the capability's declaration, has a
+/// model and a media type of its kind ([`media_type_fits`]), and the first carries the seed.
 pub const OUTPUTS_MATCH_MANIFEST: &str = "outputs_match_manifest";
 /// A request of an undeclared capability is `Unsupported`: no panic, no request.
 pub const UNSUPPORTED_IS_REFUSED: &str = "unsupported_is_refused";
@@ -426,6 +426,9 @@ impl Suite<'_, '_> {
                 }
             };
             let what = req.capability();
+            if out.outputs.is_empty() {
+                self.finding(OUTPUTS_MATCH_MANIFEST, format!("{what} succeeded with no outputs"));
+            }
             if out.outputs.len() > req.count() as usize {
                 self.finding(
                     OUTPUTS_MATCH_MANIFEST,
@@ -440,6 +443,11 @@ impl Suite<'_, '_> {
                             self.finding(
                                 OUTPUTS_MATCH_MANIFEST,
                                 format!("{what} output {i} has no model or media type"),
+                            );
+                        } else if !media_type_fits(a.kind, &a.media_type) {
+                            self.finding(
+                                OUTPUTS_MATCH_MANIFEST,
+                                format!("{what} output {i} is {} but says {}", a.kind, a.media_type),
                             );
                         }
                         first_seed.get_or_insert(a.seed);
@@ -649,5 +657,20 @@ impl HttpTransport for Fixed {
 
     fn open(&self, _: &HttpRequest, _: Arc<dyn Cancel>) -> Result<HttpStream, HttpError> {
         self.0.clone().map(|r| HttpStream { status: r.status, headers: r.headers, body: Box::new(Cursor::new(r.body)) })
+    }
+}
+
+/// Whether `media_type` can be an asset of `kind`, by its top-level type: `image/*`, `audio/*`, `model/*`,
+/// `video/*`, `text/*`, `application/json`; motion files are `text/*` (BVH), `model/*` or `application/*` (FBX).
+pub fn media_type_fits(kind: MediaKind, media_type: &str) -> bool {
+    let top = media_type.split('/').next().unwrap_or_default().to_ascii_lowercase();
+    match kind {
+        MediaKind::Image => top == "image",
+        MediaKind::Audio => top == "audio",
+        MediaKind::Mesh => top == "model",
+        MediaKind::Video => top == "video",
+        MediaKind::Text => top == "text",
+        MediaKind::Json => media_type.eq_ignore_ascii_case("application/json"),
+        MediaKind::Motion => matches!(top.as_str(), "text" | "model" | "application"),
     }
 }

@@ -172,6 +172,11 @@ fn only_wider_previews_are_refused() {
             Preview { outbound: vec![Outbound { what: Sends::Images, count: 3, bytes: 3_001 }], ..planned.clone() },
             Widening::outbound(Sends::Images),
         ),
+        (
+            // Two rows of the planned size send twice what was planned.
+            Preview { outbound: vec![Outbound { what: Sends::Images, count: 3, bytes: 3_000 }; 2], ..planned.clone() },
+            Widening::outbound(Sends::Images),
+        ),
         (Preview { trains_on_inputs: Tri::Yes, ..planned.clone() }, Widening::TrainsOnInputs),
         (Preview { retention: "Forever.".into(), ..planned.clone() }, Widening::Retention),
         (
