@@ -9,7 +9,7 @@ use omuzaki_ops_api::{Actor, Mode};
 use omuzaki_settings_api::error::SettingErrorKind;
 use omuzaki_settings_api::event::{CHANGE_LOG_CAPACITY, ChangeCause};
 use omuzaki_settings_api::meta::{AgentWrite, Apply, InProfile, SettingMeta, SettingScope};
-use omuzaki_settings_api::profile::ProfileSource;
+use omuzaki_settings_api::profile::{ProfileId, ProfileSource};
 use omuzaki_settings_api::service::{Layer, ListFilter, Settings, SettingsExt, Snapshot, Source};
 use omuzaki_settings_api::setting::Setting;
 use omuzaki_settings_api::{check_crate, error::SettingError, register_setting};
@@ -510,7 +510,7 @@ fn reload_falls_back_on_values_it_cannot_use_and_reports_them_as_findings() {
     // A profile's "file" is read too, and the active profile's usable values apply.
     let p = s.save_profile("P", ProfileSource::Current, false, Mode::Apply, &person()).unwrap();
     s.switch_profile(Some(&p.id), Mode::Apply, &person()).unwrap();
-    s.hand_edit_profile(&p.id, "ui.scale", Some(json!(90)));
+    s.hand_edit_profile(&p.id, "ui.scale", Some(json!(90))).unwrap();
     assert_eq!(dry_run_then_apply(&s, |s, m| s.reload(m, &person())).unwrap().changed, 1);
     assert_eq!(s.resolve("ui.scale").unwrap().source, Source::Profile(p.id));
 }
@@ -523,4 +523,90 @@ fn the_session_store_reports_the_durable_clear_and_flushes() {
     session.opened(Path::new("/p/a"), "A").unwrap();
     assert!(session.state().opening.is_none());
     session.flush().unwrap();
+}
+
+#[test]
+fn a_write_keeps_hand_edits_and_rejected_values_it_did_not_touch() {
+    let s = MemorySettings::default();
+    s.hand_edit_base("ui.scale", Some(json!(150)));
+    s.hand_edit_base("quality.tier", Some(json!("ultra")));
+    s.set::<Density>(&2, Layer::Base, Mode::Apply, &person()).unwrap();
+    // The hand edit was never reloaded, so it is not live, but the write must not erase it.
+    assert_eq!(s.get::<UiScale>().unwrap(), 100);
+    let report = dry_run_then_apply(&s, |s, m| s.reload(m, &person())).unwrap();
+    assert_eq!(report.changed, 1);
+    assert_eq!(s.get::<UiScale>().unwrap(), 150, "the hand edit survived the unrelated write");
+    assert_eq!(s.findings().len(), 1, "the rejected quality.tier is still reported");
+    assert_eq!(s.get::<Density>().unwrap(), 2);
+}
+
+#[test]
+fn profile_writes_keep_hand_edits_in_the_profile_file() {
+    let s = MemorySettings::default();
+    let p = s.save_profile("P", ProfileSource::Current, false, Mode::Apply, &person()).unwrap();
+    s.switch_profile(Some(&p.id), Mode::Apply, &person()).unwrap();
+    s.hand_edit_profile(&p.id, "ui.scale", Some(json!(90))).unwrap();
+    s.set::<QualityTier>(&Tier::High, Layer::Auto, Mode::Apply, &person()).unwrap();
+    s.reload(Mode::Apply, &person()).unwrap();
+    assert_eq!((s.get::<UiScale>().unwrap(), s.get::<QualityTier>().unwrap()), (90, Tier::High));
+    assert!(s.hand_edit_profile(&ProfileId::from_name("gone", "0000").unwrap(), "ui.scale", None).is_err());
+}
+
+#[test]
+fn reset_removes_a_stored_value_reload_rejected_apply_and_dry_run() {
+    let s = MemorySettings::default();
+    s.hand_edit_base("ui.scale", Some(json!(900)));
+    s.reload(Mode::Apply, &person()).unwrap();
+    assert_eq!(s.findings().len(), 1);
+    let change = dry_run_then_apply(&s, |s, m| s.reset("ui.scale", Layer::Auto, m, &person())).unwrap();
+    assert!(change.is_some(), "there was a stored value to reset");
+    assert!(s.findings().is_empty(), "the finding is gone with its value");
+    s.reload(Mode::Apply, &person()).unwrap();
+    assert!(s.findings().is_empty(), "the next reload does not report it again");
+    assert!(s.reset("ui.scale", Layer::Auto, Mode::Apply, &person()).unwrap().is_none());
+}
+
+#[test]
+fn a_listing_comes_from_one_snapshot() {
+    let s = MemorySettings::default();
+    s.set::<UiScale>(&150, Layer::Base, Mode::Apply, &person()).unwrap();
+    s.set::<QualityTier>(&Tier::High, Layer::Base, Mode::Apply, &person()).unwrap();
+    let p = s.save_profile("P", ProfileSource::Current, false, Mode::Apply, &person()).unwrap();
+    s.switch_profile(Some(&p.id), Mode::Apply, &person()).unwrap();
+    s.set::<UiScale>(&100, Layer::Auto, Mode::Apply, &person()).unwrap();
+    s.set::<QualityTier>(&Tier::Live, Layer::Auto, Mode::Apply, &person()).unwrap();
+    // Profile P reads (100, Live); the base reads (150, High). A listing must never mix the two.
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            for i in 0..2000 {
+                let to = (i % 2 == 0).then_some(&p.id);
+                s.switch_profile(to, Mode::Apply, &person()).unwrap();
+            }
+        });
+        for _ in 0..2000 {
+            let got = s.list(&ListFilter::default());
+            let value = |k: &str| got.iter().find(|r| r.key == k).unwrap().value.clone();
+            let pair = (value("ui.scale"), value("quality.tier"));
+            assert!(
+                pair == (json!(100), json!("live")) || pair == (json!(150), json!("high")),
+                "mixed listing {pair:?}"
+            );
+        }
+    });
+}
+
+#[test]
+fn reload_leaves_non_member_keys_out_of_a_profile_and_reports_them() {
+    let s = MemorySettings::default();
+    let p = s.save_profile("P", ProfileSource::Current, false, Mode::Apply, &person()).unwrap();
+    s.hand_edit_profile(&p.id, "ui.language", Some(json!("de"))).unwrap();
+    s.hand_edit_profile(&p.id, "update.channel", Some(json!("beta"))).unwrap();
+    s.hand_edit_profile(&p.id, "ui.scale", Some(json!(90))).unwrap();
+    dry_run_then_apply(&s, |s, m| s.reload(m, &person())).unwrap();
+    assert_eq!(s.profiles()[0].keys, 1, "only the Member key counts");
+    let found = s.findings();
+    assert_eq!(found.len(), 2);
+    assert!(found.iter().all(|f| f.error.kind == SettingErrorKind::NotInProfile && f.from == p.id.as_str()));
+    let copy = s.save_profile("Copy", ProfileSource::Profile(p.id), false, Mode::Apply, &person()).unwrap();
+    assert_eq!(copy.keys, 1, "duplication does not propagate them");
 }

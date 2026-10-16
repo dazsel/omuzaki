@@ -2,8 +2,9 @@
 //!
 //! The independent oracle for the file store: the same layering (default, base, active profile), the same events and
 //! the same rules, with no files, no threads and no clock but the one it is given. Differences from the real store
-//! are only the ones files cause: [`findings`](Settings::findings) is empty (nothing is read back), nothing is ever
-//! `Storage`-failed, and nothing is dirty or delayed.
+//! are only the ones files cause: nothing is ever `Storage`-failed, and nothing is dirty or delayed.
+//! [`findings`](Settings::findings) starts empty and only a [`reload`](Settings::reload) of hand-edited "files"
+//! fills it (an unknown key, a value the registry rejects, or a profile entry that is not a `Member` `User` key).
 //!
 //! Rules it implements, so a consumer's test can lean on them:
 //! - A write is validated first (type, then `Setting::check`); a rejected write changes nothing and emits nothing.
@@ -18,6 +19,8 @@
 //!   [`reload`](Settings::reload) re-reads that copy. [`hand_edit_base`](MemorySettings::hand_edit_base) and
 //!   [`hand_edit_profile`](MemorySettings::hand_edit_profile) change the copy the way a person editing a file would,
 //!   so a test can see a reload apply the difference, and a value that cannot be used become a finding.
+//!   A write merges only its own changes into that copy, so hand edits and rejected values it did not touch survive;
+//!   [`reset`](Settings::reset) also removes the stored entry it targets, even one that reload did not accept.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
@@ -139,11 +142,31 @@ impl Layers {
         }
     }
 
-    fn layer_mut(&mut self, target: &Target) -> Option<&mut BTreeMap<String, Value>> {
+    /// The map a write to `target` edits. A profile target that does not exist is an error, never a silent no-op.
+    fn layer_mut(&mut self, target: &Target) -> Result<&mut BTreeMap<String, Value>, SettingError> {
         match target {
-            Target::Base => Some(&mut self.base),
-            Target::Profile(id) => self.profiles.get_mut(id).map(|p| &mut p.values),
+            Target::Base => Ok(&mut self.base),
+            Target::Profile(id) => self.profiles.get_mut(id).map(|p| &mut p.values).ok_or_else(|| unknown_profile(id)),
         }
+    }
+
+    /// Carries what changed between `before` and `self` over to `disk`, leaving every other stored entry (a hand edit,
+    /// a value reload rejected) as it was.
+    fn merge_changes_into(&self, before: &Self, disk: &mut Self) {
+        merge_map(&before.base, &self.base, &mut disk.base);
+        disk.profiles.retain(|id, _| self.profiles.contains_key(id));
+        for (id, now) in &self.profiles {
+            match (before.profiles.get(id), disk.profiles.get_mut(id)) {
+                (Some(was), Some(stored)) => {
+                    stored.name.clone_from(&now.name);
+                    merge_map(&was.values, &now.values, &mut stored.values);
+                }
+                _ => {
+                    disk.profiles.insert(id.clone(), now.clone());
+                }
+            }
+        }
+        disk.active.clone_from(&self.active);
     }
 
     fn info(&self, id: &ProfileId) -> Option<ProfileInfo> {
@@ -160,10 +183,17 @@ impl Layers {
     /// value, the key reads as its default).
     fn usable(&self) -> (Self, Vec<SettingFinding>) {
         let mut findings = Vec::new();
-        let mut keep = |from: &str, values: &BTreeMap<String, Value>| -> BTreeMap<String, Value> {
+        let mut keep = |from: &str, in_profile: bool, values: &BTreeMap<String, Value>| -> BTreeMap<String, Value> {
             let mut kept = BTreeMap::new();
             for (key, value) in values {
-                match find(key).and_then(|reg| reg.validate(value)) {
+                // A profile holds only `Member` `User` keys (D3, D8): any other well-typed key is ignored and reported.
+                let usable = find(key).and_then(|reg| {
+                    if in_profile && !member(reg) {
+                        return Err(SettingError::new(key.as_str(), SettingErrorKind::NotInProfile));
+                    }
+                    reg.validate(value)
+                });
+                match usable {
                     Ok(()) => {
                         kept.insert(key.clone(), value.clone());
                     }
@@ -173,9 +203,9 @@ impl Layers {
             kept
         };
         let mut usable = self.clone();
-        usable.base = keep("base", &self.base);
+        usable.base = keep("base", false, &self.base);
         for (id, profile) in &mut usable.profiles {
-            profile.values = keep(id.as_str(), &profile.values);
+            profile.values = keep(id.as_str(), true, &profile.values);
         }
         (usable, findings)
     }
@@ -235,11 +265,15 @@ impl MemorySettings {
         edit_values(&mut locked(&self.state).disk.base, key, value);
     }
 
-    /// As [`hand_edit_base`](Self::hand_edit_base), for a profile's "file". Does nothing for an unknown profile.
-    pub fn hand_edit_profile(&self, id: &ProfileId, key: &str, value: Option<Value>) {
-        if let Some(profile) = locked(&self.state).disk.profiles.get_mut(id) {
-            edit_values(&mut profile.values, key, value);
-        }
+    /// As [`hand_edit_base`](Self::hand_edit_base), for a profile's "file".
+    ///
+    /// # Errors
+    /// [`SettingErrorKind::UnknownProfile`] when no such profile has a "file".
+    pub fn hand_edit_profile(&self, id: &ProfileId, key: &str, value: Option<Value>) -> Result<(), SettingError> {
+        let mut st = locked(&self.state);
+        let profile = st.disk.profiles.get_mut(id).ok_or_else(|| unknown_profile(id))?;
+        edit_values(&mut profile.values, key, value);
+        Ok(())
     }
 
     /// The one commit path, shared by every mutating method. [`Mode::DryRun`] stops here; [`Mode::Apply`] installs
@@ -273,7 +307,7 @@ impl MemorySettings {
         (out, changes)
     }
 
-    /// `finish` for a method that writes: the "files" follow the live data.
+    /// `finish` for a method that writes: the "files" take this operation's changes, and nothing else.
     fn write<T>(
         &self,
         st: &mut State,
@@ -283,11 +317,26 @@ impl MemorySettings {
         always_event: bool,
         by: &Actor,
     ) -> (T, Vec<Change>) {
+        let before = st.live.clone();
+        let after = plan.layers.clone();
         let done = self.finish(st, plan, mode, cause, always_event, by);
         if mode == Mode::Apply {
-            st.disk = st.live.clone();
+            after.merge_changes_into(&before, &mut st.disk);
         }
         done
+    }
+}
+
+/// Applies to `stored` the keys that differ between `was` and `now`: set where `now` has a value, removed where it
+/// dropped one.
+fn merge_map(was: &BTreeMap<String, Value>, now: &BTreeMap<String, Value>, stored: &mut BTreeMap<String, Value>) {
+    for (key, value) in now {
+        if was.get(key) != Some(value) {
+            stored.insert(key.clone(), value.clone());
+        }
+    }
+    for key in was.keys().filter(|key| !now.contains_key(*key)) {
+        stored.remove(key);
     }
 }
 
@@ -307,6 +356,12 @@ fn unknown_profile(id: &ProfileId) -> SettingError {
     SettingError::new("", SettingErrorKind::UnknownProfile { id: id.to_string() })
 }
 
+fn resolve_in(snap: &Snapshot, reg: &SettingRegistration) -> Option<Resolved> {
+    let key = reg.meta.key;
+    let (value, source) = (snap.value(key)?, snap.source(key)?);
+    Some(Resolved::new(key, value.clone(), reg.default_json(), source.clone(), reg.meta))
+}
+
 fn find(key: &str) -> Result<&'static SettingRegistration, SettingError> {
     registry::find(key).ok_or_else(|| SettingError::unknown_key(key))
 }
@@ -318,17 +373,15 @@ impl Settings for MemorySettings {
 
     fn resolve(&self, key: &str) -> Result<Resolved, SettingError> {
         let reg = find(key)?;
-        let snap = self.snapshot();
-        let (Some(value), Some(source)) = (snap.value(key), snap.source(key)) else {
-            return Err(SettingError::unknown_key(key));
-        };
-        Ok(Resolved::new(key, value.clone(), reg.default_json(), source.clone(), reg.meta))
+        resolve_in(&self.snapshot(), reg).ok_or_else(|| SettingError::unknown_key(key))
     }
 
     fn list(&self, filter: &ListFilter) -> Vec<Resolved> {
+        // One snapshot for the whole listing, so a concurrent profile switch cannot mix two profiles.
+        let snap = self.snapshot();
         registry::registrations()
             .filter(|reg| filter.area.as_deref().is_none_or(|a| reg.meta.area() == a))
-            .filter_map(|reg| self.resolve(reg.meta.key).ok())
+            .filter_map(|reg| resolve_in(&snap, reg))
             .filter(|r| !filter.changed || r.is_modified())
             .collect()
     }
@@ -339,9 +392,7 @@ impl Settings for MemorySettings {
         let mut st = locked(&self.state);
         let plan = st.plan(|layers| {
             let target = layers.target(reg, layer);
-            if let Some(map) = layers.layer_mut(&target) {
-                map.insert(key.to_owned(), value);
-            }
+            layers.layer_mut(&target)?.insert(key.to_owned(), value);
             Ok(())
         })?;
         let before = st.snapshot.value(key).cloned().unwrap_or(Value::Null);
@@ -353,15 +404,23 @@ impl Settings for MemorySettings {
     fn reset(&self, key: &str, layer: Layer, mode: Mode, by: &Actor) -> Result<Option<Change>, SettingError> {
         let reg = find(key)?;
         let mut st = locked(&self.state);
-        let plan = st.plan(|layers| {
-            let target = layers.target(reg, layer);
-            Ok(layers.layer_mut(&target).and_then(|map| map.remove(key)).is_some())
-        })?;
-        let removed = plan.out;
+        let target = st.live.target(reg, layer);
+        // A value reload rejected is stored but not live: reset must still remove it, or the next reload reports it again.
+        let stored = st.disk.layer_mut(&target)?.contains_key(key);
+        let plan = st.plan(|layers| Ok(layers.layer_mut(&target)?.remove(key).is_some()))?;
+        let removed = plan.out || stored;
         let before = st.snapshot.value(key).cloned().unwrap_or(Value::Null);
         let after = plan.snapshot.value(key).cloned().unwrap_or(Value::Null);
         if removed {
             self.write(&mut st, plan, mode, ChangeCause::Reset, false, by);
+            if mode == Mode::Apply {
+                st.disk.layer_mut(&target)?.remove(key);
+                let from = match &target {
+                    Target::Base => "base".to_owned(),
+                    Target::Profile(id) => id.to_string(),
+                };
+                st.findings.retain(|f| !(f.error.key == key && f.from == from));
+            }
         }
         Ok(removed.then(|| Change::new(key, before, after, reg.meta.apply)))
     }
@@ -541,5 +600,18 @@ impl SessionStore for MemorySession {
 
     fn flush(&self) -> Result<(), SettingError> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_target_layer_is_an_error_not_a_silent_success() {
+        let id = ProfileId::from_name("gone", "0000").expect("a valid id");
+        let mut layers = Layers { active: Some(id.clone()), ..Layers::default() };
+        let err = layers.layer_mut(&Target::Profile(id)).expect_err("no such profile");
+        assert!(matches!(err.kind, SettingErrorKind::UnknownProfile { .. }));
     }
 }
