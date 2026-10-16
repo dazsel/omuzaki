@@ -16,7 +16,7 @@ use omuzaki_performer_api::ears::{Ears, Heard};
 use omuzaki_performer_api::ids::{ConnectorId, VoiceId};
 use omuzaki_performer_api::intent::Intent;
 use omuzaki_performer_api::perception::{Glance, GlanceSource, Perception, PerceptionError};
-use omuzaki_performer_api::speech::{SpeakHow, SpeechState, Voice};
+use omuzaki_performer_api::speech::{SpeakHow, SpeechHandle, SpeechState, Voice, VoiceError};
 use omuzaki_performer_api::spend::{SpendError, SpendGate};
 use omuzaki_performer_api::stage::{ClipInfo, Inventory, Stage};
 use omuzaki_performer_api::voice::{CutState, VoiceInfo, VoiceLead, VoiceProvider};
@@ -28,12 +28,12 @@ use omuzaki_stage_api::ids::MemberId;
 
 struct Rig {
     clock: Arc<FakeClock>,
-    voice: FakeVoice,
+    voice: Box<dyn Voice>,
 }
 
 impl VoiceRig for Rig {
     fn voice(&mut self) -> &mut dyn Voice {
-        &mut self.voice
+        self.voice.as_mut()
     }
 
     fn voice_id(&self) -> VoiceId {
@@ -66,9 +66,35 @@ fn inventory() -> Inventory {
 fn fake_voice_conforms() {
     let mut make = || -> Box<dyn VoiceRig> {
         let clock = Arc::new(FakeClock::default());
-        Box::new(Rig { voice: FakeVoice::new(Arc::clone(&clock), s(0.2)), clock })
+        Box::new(Rig { voice: Box::new(FakeVoice::new(Arc::clone(&clock), s(0.2))), clock })
     };
     conformance::voice(&mut make).unwrap();
+}
+
+/// A voice that leaves a pause before every chunk after the first: it queues an unheard filler chunk first.
+struct PausingVoice {
+    inner: FakeVoice,
+    spoke: bool,
+}
+
+impl Voice for PausingVoice {
+    fn speak(&mut self, sentence: &str, voice: &VoiceId, how: &SpeakHow) -> Result<SpeechHandle, VoiceError> {
+        if std::mem::replace(&mut self.spoke, true) {
+            self.inner.speak(&"-".repeat(40), voice, how)?;
+        }
+        self.inner.speak(sentence, voice, how)
+    }
+}
+
+#[test]
+fn the_voice_check_catches_a_pause_between_queued_chunks() {
+    let mut make = || -> Box<dyn VoiceRig> {
+        let clock = Arc::new(FakeClock::default());
+        let inner = FakeVoice::new(Arc::clone(&clock), s(0.2));
+        Box::new(Rig { voice: Box::new(PausingVoice { inner, spoke: false }), clock })
+    };
+    let why = conformance::voice(&mut make).unwrap_err();
+    assert!(why.starts_with("chunks play back to back: "), "{why}");
 }
 
 #[test]

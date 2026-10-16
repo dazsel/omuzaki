@@ -94,8 +94,8 @@ impl VoiceAssignment {
     }
 
     /// Checks the assignment against the voice it names (§3.4, §3.5): speed and pitch in range, the voice from this
-    /// provider, and a consent record when the voice is cloned or imitates someone. Whether the record exists is the
-    /// caller's lookup.
+    /// provider, and a consent record when the voice is cloned or imitates someone, naming the person it imitates.
+    /// Whether the record exists is the caller's lookup.
     ///
     /// # Errors
     /// [`AssignError`] naming the first rule broken.
@@ -109,10 +109,18 @@ impl VoiceAssignment {
         if info.id != self.voice || !info.offered_by(&self.provider) {
             return Err(AssignError::Voice(VoiceError::unknown_voice(&self.voice)));
         }
-        if info.needs_consent() && self.consent.is_none() {
-            return Err(AssignError::Voice(VoiceError::no_consent(&self.voice)));
+        if !info.needs_consent() {
+            return Ok(());
         }
-        Ok(())
+        let Some(consent) = &self.consent else {
+            return Err(AssignError::Voice(VoiceError::no_consent(&self.voice)));
+        };
+        match &info.imitates {
+            Some(person) if *person != consent.person => {
+                Err(AssignError::consent_for_someone_else(&self.voice, person, &consent.person))
+            }
+            _ => Ok(()),
+        }
     }
 
     /// The feed's declared rate for a 24 kHz voice: `24_000 × 2^(p/12)` (§3.3), rounded to whole hertz.
@@ -148,6 +156,17 @@ pub enum AssignError {
         /// [`PITCH_MAX_SEMITONES`].
         max: f32,
     },
+    /// The consent record names someone other than the person the voice imitates.
+    #[error("voice {voice} imitates {imitates}, but its consent record is {consent}'s")]
+    #[non_exhaustive]
+    ConsentForSomeoneElse {
+        /// The voice.
+        voice: String,
+        /// [`VoiceInfo::imitates`].
+        imitates: String,
+        /// [`ConsentRef::person`].
+        consent: String,
+    },
     /// The voice itself is refused.
     #[error(transparent)]
     Voice(#[from] VoiceError),
@@ -162,6 +181,11 @@ impl AssignError {
     /// [`AssignError::Pitch`] for a shift of `got` semitones.
     pub fn pitch(got: f32) -> Self {
         Self::Pitch { got, min: PITCH_MIN_SEMITONES, max: PITCH_MAX_SEMITONES }
+    }
+
+    /// [`AssignError::ConsentForSomeoneElse`]: `voice` imitates `imitates`, and the record is `consent`'s.
+    pub fn consent_for_someone_else(voice: &VoiceId, imitates: &str, consent: &str) -> Self {
+        Self::ConsentForSomeoneElse { voice: voice.to_string(), imitates: imitates.into(), consent: consent.into() }
     }
 }
 
@@ -336,6 +360,10 @@ mod tests {
         let cloned = stock.clone().cloned_from("The Streamer");
         assert_eq!(ok.check(&cloned), Err(AssignError::Voice(VoiceError::no_consent(&kokoro()))));
         assert_eq!(ok.clone().with_consent(ConsentRef::new("The Streamer")).check(&cloned), Ok(()));
+        assert_eq!(
+            ok.clone().with_consent(ConsentRef::new("Someone Else")).check(&cloned),
+            Err(AssignError::consent_for_someone_else(&kokoro(), "The Streamer", "Someone Else"))
+        );
         let hosted =
             VoiceAssignment::new(mochi(), kokoro(), VoiceProvider::Hosted(ConnectorId::new("tts-cloud").unwrap()));
         assert_eq!(hosted.check(&stock), Err(AssignError::Voice(VoiceError::unknown_voice(&kokoro()))));

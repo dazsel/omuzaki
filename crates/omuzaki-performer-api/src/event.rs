@@ -220,7 +220,10 @@ impl PerformerEvent {
 }
 
 /// One transcript record: the runner clock in milliseconds, the persona revision, and the event.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+///
+/// Every way in redacts a private event: [`TranscriptLine::new`] and deserializing alike, so a line read from a file
+/// someone edited still can't carry a private turn's text.
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
 #[non_exhaustive]
 pub struct TranscriptLine {
     /// Runner clock, milliseconds.
@@ -253,6 +256,20 @@ impl TranscriptLine {
     /// When the text is not a transcript line.
     pub fn from_json(line: &str) -> Result<Self, serde_json::Error> {
         serde_json::from_str(line)
+    }
+}
+
+impl<'de> Deserialize<'de> for TranscriptLine {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Raw {
+            t: u64,
+            p: PersonaRevision,
+            #[serde(flatten)]
+            event: PerformerEvent,
+        }
+        let Raw { t, p, event } = Raw::deserialize(deserializer)?;
+        Ok(Self::new(t, p, event))
     }
 }
 
@@ -370,8 +387,12 @@ mod tests {
         ];
         for event in leaky {
             assert!(event.is_private());
-            let json = TranscriptLine::new(1, rev(), event).to_json().unwrap();
+            let json = TranscriptLine::new(1, rev(), event.clone()).to_json().unwrap();
             assert!(!json.contains("secret") && !json.contains("\"ms\"") && !json.contains("safety"), "{json}");
+            let edited = TranscriptLine { t: 1, p: rev(), event }.to_json().unwrap();
+            assert!(edited.contains("secret"), "{edited}");
+            let read = TranscriptLine::from_json(&edited).unwrap().to_json().unwrap();
+            assert_eq!(read, json, "parsing a leaky line redacts it");
         }
         assert!(!PerformerEvent::held(1).is_private());
     }

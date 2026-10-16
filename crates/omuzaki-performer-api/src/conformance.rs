@@ -39,6 +39,9 @@ const STEP: Seconds = Seconds(0.01);
 const PATIENCE_S: f64 = 60.0;
 /// Float slack for comparing program times.
 const EPS: f64 = 1e-6;
+/// The most silence allowed between a chunk ending and the next queued one starting: one [`STEP`], the check's own
+/// resolution. Anything longer is an audible pause.
+const GAP_MAX: Seconds = STEP;
 
 /// Runs every voice case.
 ///
@@ -106,8 +109,11 @@ fn back_to_back(rig: &mut dyn VoiceRig) -> Result<(), String> {
         return Err(format!("the first chunk ended as {:?}", a.state()));
     };
     match run_until(rig, &b, |s| matches!(s, SpeechState::Playing { .. } | SpeechState::Done { .. }))? {
-        SpeechState::Playing { from, .. } if from.0 + EPS >= a_done.0 => Ok(()),
-        other => Err(format!("the second chunk was {other:?} with the first done at {}", a_done.0)),
+        SpeechState::Playing { from, .. } if from.0 + EPS >= a_done.0 && from.0 <= a_done.0 + GAP_MAX.0 + EPS => Ok(()),
+        other => Err(format!(
+            "the second chunk was {other:?} with the first done at {}; it must start within {} s",
+            a_done.0, GAP_MAX.0
+        )),
     }
 }
 
