@@ -1,0 +1,5 @@
+{"request":{"body":{"max_tokens":256,"messages":[{"content":[{"text":"hello","type":"text"}],"role":"user"}],"model":"llama3.2","stream":true,"stream_options":{"include_usage":true}},"method":"POST","path":"/v1/chat/completions"}}
+{"Start":{"model":"m"}}
+{"TextDelta":"I can't help with that."}
+{"Usage":{"input":10,"output":6,"cache_read":0,"cache_write":0}}
+{"Stop":"Refused"}

@@ -1,5 +1,6 @@
 //! Who is running the command, and which runner executes it.
 
+use std::fmt;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -8,14 +9,14 @@ use omuzaki_doc_api::DocWrite;
 use omuzaki_mcp::Connections;
 use omuzaki_ops::Executor;
 use omuzaki_ops_api::{
-    Actor, ConnectionService, Grants, OpError, ProjectDir, ProjectDirError, Runner, ServicesBuilder,
+    Actor, ConnectionService, Grants, OpError, ProjectDir, ProjectDirError, Runner, ServicesBuilder, Sessions,
 };
 
 use crate::cli::Cli;
 use crate::project::{NoProject, SavedProject};
 
 /// The actor and grants every request of one `omuzaki` invocation carries.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Session {
     /// Who is acting; logged with every applied op.
     pub actor: Actor,
@@ -23,6 +24,19 @@ pub struct Session {
     pub grants: Grants,
     /// The agent sessions of this invocation: `omuzaki mcp` counts its clients here, and `agent.connection` reads it.
     pub connections: Connections,
+    /// The executor's session registry, once the runner is open: `omuzaki mcp` opens one session per client in it.
+    pub sessions: Option<Arc<dyn Sessions>>,
+}
+
+impl fmt::Debug for Session {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Session")
+            .field("actor", &self.actor)
+            .field("grants", &self.grants)
+            .field("connections", &self.connections)
+            .field("sessions", &self.sessions.is_some())
+            .finish()
+    }
 }
 
 impl Session {
@@ -32,6 +46,7 @@ impl Session {
             actor: Actor::Person { name: name.into() },
             grants: Grants::person(),
             connections: Connections::default(),
+            sessions: None,
         }
     }
 
@@ -62,6 +77,14 @@ pub fn open_runner(cli: &Cli) -> Result<Arc<dyn Runner>, OpError> {
 /// # Errors
 /// As [`open_runner`].
 pub fn open_runner_with(cli: &Cli, connections: &Connections) -> Result<Arc<dyn Runner>, OpError> {
+    Ok(open_executor_with(cli, connections)?)
+}
+
+/// As [`open_runner_with`], keeping the executor's type so its session registry can be reached too.
+///
+/// # Errors
+/// As [`open_runner`].
+pub fn open_executor_with(cli: &Cli, connections: &Connections) -> Result<Arc<Executor>, OpError> {
     // The folder is vetted first: `ProjectDir` names the reason in its own words, which beat the document's.
     let project_dir = cli.project.as_deref().map(open_project_dir).transpose()?;
     let doc: Box<dyn DocWrite> = match cli.project.as_deref() {

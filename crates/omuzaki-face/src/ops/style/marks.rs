@@ -7,10 +7,10 @@ use omuzaki_face_api::FaceMark;
 use omuzaki_ops_api::{Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value, json};
+use serde_json::Value;
 
 use crate::ops_shared::check::check_edit;
-use crate::ops_shared::edit::{changed, marks_len, stored_face, to_json};
+use crate::ops_shared::edit::{changed_output, marks_len, stored_face, to_json, working_copy};
 use crate::ops_shared::path::template;
 
 /// Adds a mark (freckles, a beauty mark, face paint or a scar) at the end of a character's marks list.
@@ -41,13 +41,13 @@ impl Op for AddMark {
         let index = marks_len(stored.as_ref());
         let mark = to_json(&self.mark)?;
 
-        let mut working = stored.clone().unwrap_or_else(|| Value::Object(Map::new()));
+        let mut working = working_copy(stored.as_ref());
         push_mark(&mut working, mark.clone())?;
         check_edit(stored.as_ref(), &working, &defaults)?;
 
         let patch = append_patch(&paths::face(&self.character), stored.as_ref(), working, index, mark);
         let mut plan = Plan::edit(patch);
-        plan.output = Some(json!({ "index": index, "changed": changed(&plan.patch) }));
+        plan.output = Some(changed_output(&plan.patch, Some(index)));
         Ok(plan)
     }
 }
@@ -103,7 +103,7 @@ impl Op for RemoveMark {
             .ok_or_else(|| OpError::internal("the last mark was counted but is missing"))?;
         let at = paths::face(&self.character).join("marks").join(last.to_string());
         let mut plan = Plan::edit(Patch::new().with(at, Some(mark), None));
-        plan.output = Some(json!({ "index": last, "changed": changed(&plan.patch) }));
+        plan.output = Some(changed_output(&plan.patch, Some(last)));
         Ok(plan)
     }
 }
