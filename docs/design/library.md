@@ -30,7 +30,7 @@ This page explains the decisions so that an implementer, a seed author or a revi
 | Crates, contract changes in other API crates, the mock | §5, §6 |
 | The task cut | §7 |
 
-Not covered here, on purpose: the marketplace (LB-08: reviews, moderation), team roles (VC-10), signed-pack distribution (LB-02's update channel) and image search (LB-05). Each gets room in the contract (a scope value, a query field, a pack format) and its own design when its phase is planned.
+Not covered here, on purpose: the marketplace (LB-08: reviews, moderation), team roles (VC-10), signed-pack distribution (LB-02's update channel) and image search (LB-05). Each gets room in the contract (a scope value, a query field, a pack format) and its own design when its phase is planned. Plugins are not library items: the plugin store (PL-04, ADR 0065, `plugin-store.md`) distributes them with the same identity contract, and the marketplace shares only library items.
 
 ## 2. The shape of it
 

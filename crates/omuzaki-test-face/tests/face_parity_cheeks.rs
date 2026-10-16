@@ -5,16 +5,17 @@
 //! premultiplied channel error over a whole texture is 2.
 //!
 //! The nose is one stroke 4 px wide and a 6 px dot, in a 35 x 43 px rectangle, so about every fortieth pixel of the
-//! rectangle is an edge pixel and 4 % of them is 50 pixels. Their edge error is the supersampler's: Skia fills a path
-//! with its 4-sub-scanline supersampler unless it has fewer points than width / 8 (`SkScan::AntiFillPath`), which for
-//! a 7 px dot is none, so the reference's edge coverages come in sixteenths, and its dot has 3 % more ink than the
-//! circle it draws (33.5 px of coverage against pi r^2 = 32.5). The CPU rasteriser's analytic coverage has 2 % less.
-//! Fitted to the references, the tick's end points agree to 0.09 px and its ink to 0.2 %, and the dot's centre to
-//! 0.03 px, so the geometry matches and the residual is the missing supersampling fallback (Skia's, for long many-point paths). Until that lands the
-//! nose is allowed 4 % bad pixels; then it returns to `T_FACE`. That allowance is conditional (a maintainer decision): the same test asserts the nose's alpha-weighted ink centroid is within 0.30 px of the reference's and
-//! its ink mass (sum of alpha) within 5 %, which edge quantisation cannot fake. Measured: centroid 0.269 px (the same
-//! on all 13 cases, so a constant supersampling bias, not drift; the fitted geometry agrees to 0.09 px for the
-//! tick and 0.03 px for the dot) and mass 0.993x.
+//! rectangle is an edge pixel and 4 % of them is 50 pixels. The references' edge coverages come in sixteenths, and
+//! their dot has 3 % more ink than the circle it draws (33.5 px of coverage against pi r^2 = 32.5), so whatever drew
+//! them supersampled or multisampled. Headless Chromium 141 in software fills analytically instead
+//! (`omuzaki-test-face/tests/raster_supersample.rs`), and the CPU rasteriser's coverage has 2 % less ink than the
+//! references' dot. Fitted to the references, the tick's end points agree to 0.09 px and its ink to 0.2 %, and the dot's
+//! centre to 0.03 px, so the geometry matches. #2023 settles how the references were rendered; until then the nose is
+//! allowed 4 % bad pixels, and then it returns to `T_FACE`. That allowance is conditional (a maintainer decision): the
+//! same test asserts the nose's alpha-weighted ink centroid is within 0.30 px of the reference's and its ink mass (sum
+//! of alpha) within 5 %, which edge quantisation cannot fake. Measured: centroid 0.269 px (the same on all 13 cases, so
+//! a constant bias, not drift; the fitted geometry agrees to 0.09 px for the tick and 0.03 px for the dot) and mass
+//! 0.993x.
 
 use omuzaki_face::Section;
 use omuzaki_test::compare::Tolerance;

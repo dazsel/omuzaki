@@ -131,6 +131,8 @@ fn shadow_visibility(position: vec3<f32>, n: vec3<f32>) -> f32 {
     if (any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) || depth > 1.0) {
         return 1.0;
     }
+    // Not transformed: the map is addressed by the light's projection of the point, not by a material UV (the
+    // material's `uv_transform` does not apply here).
     var sum = 0.0;
     for (var j = -1; j <= 1; j++) {
         for (var i = -1; i <= 1; i++) {
@@ -200,6 +202,8 @@ fn toon_colour(albedo: vec3<f32>, n: vec3<f32>, position: vec3<f32>) -> vec3<f32
 
 @fragment
 fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    // Transformed: the base texture and the UV overlays inside `surface_albedo` read `material_uv(in.uv)` (common.wgsl).
+    // The environment cube (`environment_light`, environment.wgsl) is addressed by direction, not UV: not transformed.
     let albedo = surface_albedo(in.uv, in.colour, in.local);
     if (material.flags.z == ALPHA_MASK && albedo.a < material.alpha.x) {
         discard;

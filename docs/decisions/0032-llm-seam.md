@@ -42,8 +42,8 @@ policy, key handling and test double.
    accepts.
 7. **Providers register themselves** with a manifest that CN-01 wraps as a connector; `FakeLlm` is CN-01's mock
    connector for the LLM capability.
-8. **One HTTP and TLS stack:** the workspace's `reqwest` with `rustls` over `aws-lc-rs` and `system-proxy`, as
-   `omuzaki-http` sets them, with the same user agent and proxy behaviour. All requests pass through one module,
+8. **One HTTP and TLS stack:** the workspace's `reqwest` with `rustls` over `ring` and `system-proxy` (the Director
+   switched this from `aws-lc-rs` to `ring`, 15 Oct, on #1504), as `omuzaki-http` sets them, with the same user agent and proxy behaviour. All requests pass through one module,
    `omuzaki_llm::http`, which becomes the implementation of an `HttpTransport` if the connectors design puts one
    in an API crate.
 
@@ -60,5 +60,5 @@ policy, key handling and test double.
   - **`LlmError::Refused`:** an error would drop the partial text and the usage that must be charged;
   - **`count_tokens` before each turn:** a round trip per turn, and the budget check must hold offline;
   - **automatic model fallback:** it substitutes the model under the caller, which breaks pinning and cost previews;
-  - **`ring` as a second crypto provider:** two TLS stacks in one binary to audit and patch; a mingw problem with
-    `aws-lc-rs` would be a workspace-wide change on its own issue.
+  - **a second crypto provider next to `ring`:** two TLS stacks in one binary to audit and patch; a change of
+    provider would be a workspace-wide change on its own issue.
