@@ -218,7 +218,13 @@ fn workspace(app: LiveApp, meter: &Arc<LatencyMeter>, size: egui::Vec2) -> Harne
 
 /// Steps the workspace until `done`, so the perform thread, the stage and the panel all move on.
 fn settle(harness: &mut Harness<'_, World>, mut done: impl FnMut(&World) -> bool) {
-    assert!(until(LIMIT, || harness.run_steps(1), || done(harness.state())), "the workspace reached its state");
+    let deadline = Instant::now() + LIMIT;
+    while !done(harness.state()) && Instant::now() < deadline {
+        harness.run_steps(1);
+        // Paces the loop; what it waits for is the state `done` reads, not the time.
+        std::thread::sleep(Duration::from_millis(8));
+    }
+    assert!(done(harness.state()), "the workspace reached its state");
     // One more frame so the picture and the panel agree on what they just reached.
     harness.run_steps(2);
 }

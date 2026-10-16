@@ -251,7 +251,7 @@ mod tests {
         channels.set(Channel::JAW_OPEN, 0.25);
         channels.set(Channel::HEAD_YAW, -0.125 * t);
         // Odd indices have an arrival and even ones none, so the round trip covers both.
-        let arrived = (index % 2 == 1).then(|| Seconds(0.5 * t));
+        let arrived = (index % 2 == 1).then(|| Seconds(f64::from(0.5 * t)));
         LiveFrame { tick: Tick::at_rate(index, 60.0), tracking: Tracking::Lost, pose, channels, arrived }
     }
 
