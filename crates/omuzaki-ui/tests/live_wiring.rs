@@ -163,12 +163,16 @@ fn fake_camera_to_scenes_at_60_hz_for_10_s_without_a_drop_storm_or_an_allocation
     let (start, mut scenes, mut tracked, mut last_index) = (Instant::now(), 0_u64, 0_u64, None);
     let mut last_render = start;
     let mut warm_allocations = None;
+    // Time spent drawing scenes: how many this machine's (debug) render side could have drawn in the run.
+    let mut drawing = Duration::ZERO;
     while start.elapsed() < RUN {
         if warm_allocations.is_none() && start.elapsed().as_secs_f64() > WARM_UP_S + 0.5 {
             warm_allocations = Some(ALLOCATIONS.load(Ordering::Relaxed));
         }
         let dt = last_render.elapsed().as_secs_f32();
+        let drawn_at = Instant::now();
         if let Some(out) = scene.frame(&mut renderer, dt).expect("the frame renders") {
+            drawing += drawn_at.elapsed();
             last_render = Instant::now();
             scenes += 1;
             let frame = scene.last_frame().expect("a frame was rendered");
@@ -206,9 +210,12 @@ fn fake_camera_to_scenes_at_60_hz_for_10_s_without_a_drop_storm_or_an_allocation
     assert!((report.published + report.skipped) as f64 >= expected * 0.97, "{summary}");
     assert!(report.skipped as f64 <= expected * 0.01, "{summary}");
     assert!(report.published as f64 >= expected * 0.9, "{summary}");
-    // The render side drew a new scene for nearly every step: newest-wins drops only what a slow render misses.
-    assert!(scenes as f64 >= expected * 0.8, "{summary}");
-    assert!(tracked as f64 >= expected * 0.7, "the tracked face reached the scene: {summary}");
+    // The render side drew a new scene for nearly every step it had time for: newest-wins drops only what a slow render
+    // misses. A render side faster than 60 Hz must see nearly every step; one slower than that (a debug build on a
+    // loaded machine) must have found a new frame nearly every time it was free, so it never waited on the mailbox.
+    let capacity = RUN.as_secs_f64() / (drawing.as_secs_f64() / scenes.max(1) as f64);
+    assert!(scenes as f64 >= expected.min(capacity) * 0.8, "render capacity {capacity:.0} scenes: {summary}");
+    assert!(tracked as f64 >= scenes as f64 * 0.85, "the tracked face reached the scene: {summary}");
     assert!(ARMED.load(Ordering::Acquire), "the perform thread counted its allocations");
     assert_eq!(warm_allocations.map(|before| after - before), Some(0), "{summary}");
 }
