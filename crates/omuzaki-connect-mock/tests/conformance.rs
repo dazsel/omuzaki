@@ -253,10 +253,20 @@ fn empty_or_mislabelled_outputs_are_found() {
         !conformance::media_type_fits(MediaKind::Image, "audio/wav")
             && !conformance::media_type_fits(MediaKind::Json, "text/plain")
     );
-    for malformed in ["image", "image/", "/png", "image/png/extra", "image/ png"] {
+    for malformed in [
+        "image",
+        "image/",
+        "/png",
+        "image/png/extra",
+        "image/ png",
+        "image/png;",
+        "image/png; charset",
+        "image/png; =x",
+    ] {
         assert!(!conformance::media_type_fits(MediaKind::Image, malformed), "{malformed}");
     }
     assert!(conformance::media_type_fits(MediaKind::Json, "application/json; charset=utf-8"));
+    assert!(conformance::media_type_fits(MediaKind::Text, r#"text/plain; charset="utf-8"; format=flowed"#));
 }
 
 #[test]

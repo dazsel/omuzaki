@@ -660,14 +660,22 @@ impl HttpTransport for Fixed {
     }
 }
 
-/// Whether `media_type` is a well-formed `type/subtype` (parameters after `;` allowed) that can be an asset of
-/// `kind`, by its top-level type: `image/*`, `audio/*`, `model/*`, `video/*`, `text/*`, `application/json`; motion
-/// files are `text/*` (BVH), `model/*` or `application/*` (FBX). `image`, `image/` and `image/png/x` fit nothing.
+/// Whether `media_type` is a well-formed `type/subtype`, each parameter after it a `name=value` (the value a token or
+/// a quoted string without `;`), that can be an asset of `kind`, by its top-level type: `image/*`, `audio/*`,
+/// `model/*`, `video/*`, `text/*`, `application/json`; motion files are `text/*` (BVH), `model/*` or
+/// `application/*` (FBX). `image`, `image/`, `image/png/x`, `image/png;` and `image/png; charset` fit nothing.
 pub fn media_type_fits(kind: MediaKind, media_type: &str) -> bool {
-    let essence = media_type.split(';').next().unwrap_or_default().trim();
     let token = |t: &str| !t.is_empty() && t.bytes().all(|b| b.is_ascii_alphanumeric() || b"!#$&-^_.+".contains(&b));
+    let quoted = |v: &str| v.len() >= 2 && v.starts_with('"') && v.ends_with('"') && !v[1..v.len() - 1].contains('"');
+    let mut parts = media_type.split(';');
+    let essence = parts.next().unwrap_or_default().trim();
     let Some((top, sub)) = essence.split_once('/') else { return false };
     if !token(top) || !token(sub) {
+        return false;
+    }
+    let parameter_ok =
+        |p: &str| p.trim().split_once('=').is_some_and(|(name, value)| token(name) && (token(value) || quoted(value)));
+    if !parts.all(parameter_ok) {
         return false;
     }
     let top = top.to_ascii_lowercase();
