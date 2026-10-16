@@ -381,6 +381,9 @@ fn call_is_unsupported_in_a_plain_job_and_forwards_in_a_driver_job() {
     assert_eq!(*calls.0.lock().unwrap(), vec![("x.y".to_owned(), json!({"k": 1}), Mode::DryRun)]);
 }
 
+/// An absolute path in this host's grammar that nothing covers (a POSIX root on Windows is root-relative: `Invalid`).
+const NOWHERE: &str = if cfg!(windows) { r"C:\nowhere\x" } else { "/nowhere/x" };
+
 #[test]
 fn scratch_needs_a_project_folder() {
     let actor = person();
@@ -389,7 +392,7 @@ fn scratch_needs_a_project_folder() {
     let grants = Grants::person();
     let ctx = JobCtx::new(JobId(3), &actor, &doc, &signal).with_grants(&grants);
     assert_eq!(ctx.scratch().unwrap_err().code, ErrorCode::Invalid, "relative path, no project folder");
-    assert_eq!(ctx.fs_access("/nowhere/x", omuzaki_ops_api::FsMode::Read).unwrap_err().code, ErrorCode::Denied);
+    assert_eq!(ctx.fs_access(NOWHERE, omuzaki_ops_api::FsMode::Read).unwrap_err().code, ErrorCode::Denied);
 }
 
 #[test]

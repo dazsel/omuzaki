@@ -21,7 +21,18 @@ pub type Gpu = (wgpu::Device, wgpu::Queue);
 pub fn adapter() -> Option<wgpu::Adapter> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
     match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())) {
-        Ok(adapter) => Some(adapter),
+        Ok(adapter) => {
+            // Which adapter ran is the first thing to know when a GPU test fails on a machine nobody can look at.
+            let info = adapter.get_info();
+            eprintln!("GPU tests run on {} ({:?}, {:?})", info.name, info.backend, info.device_type);
+            // Windows' only software adapter is WARP, which dies with an access violation when Vello runs on it (#2236), so
+            // these tests treat it as no adapter, like a machine with none. A real GPU on Windows still runs them.
+            if cfg!(windows) && adapter.get_info().device_type == wgpu::DeviceType::Cpu {
+                eprintln!("skipped: the only adapter is WARP (see #2236)");
+                return None;
+            }
+            Some(adapter)
+        }
         Err(e) => {
             eprintln!("skipped: no GPU adapter ({e}); install mesa-vulkan-drivers for lavapipe");
             None

@@ -306,6 +306,30 @@ fn text_that_is_not_an_unambiguous_path_is_invalid_with_a_hint() {
     }
 }
 
+/// An absolute path in this host's own grammar that nothing covers: a POSIX root on Windows is not one (it is
+/// root-relative, so `Invalid`, see `docs/design/ops-api.md` section 5).
+const NOWHERE: &str = if cfg!(windows) { r"C:\nowhere\x" } else { "/nowhere/x" };
+
+#[test]
+fn an_absolute_path_nobody_covers_is_denied_on_every_os() {
+    let site = Site::new();
+    for mode in [FsMode::Read, FsMode::Write] {
+        assert_eq!(code(ask(&Grants::person(), Some(&site.dir), NOWHERE, mode)), ErrorCode::Denied, "{mode:?}");
+        assert_eq!(code(ask(&Grants::person(), None, NOWHERE, mode)), ErrorCode::Denied, "{mode:?}, no project");
+    }
+}
+
+#[test]
+fn a_folder_opened_as_a_file_is_invalid_and_not_denied_on_every_os() {
+    let site = Site::new();
+    let (doc, actor, clock) = (MemDoc::default(), Actor::System, FakeClock::new(Seconds(0.0)));
+    let grants = Grants::person();
+    let ctx = OpCtx::new(&doc, &actor, &clock).with_grants(&grants).with_project_dir(&site.dir);
+    let folder = ctx.fs_access("assets", FsMode::Read).unwrap();
+    let e = folder.open_read().unwrap_err();
+    assert_eq!((e.code, e.field.as_deref()), (ErrorCode::Invalid, Some("path")));
+}
+
 /// Windows forms on a POSIX host: a file called `C:` is not what anyone means, so they are refused with a pointer to
 /// the form that works. (The mirror image, POSIX forms on Windows, is covered by the grammar tests in the crate.)
 #[cfg(unix)]
