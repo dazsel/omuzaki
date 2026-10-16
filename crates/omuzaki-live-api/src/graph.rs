@@ -116,7 +116,7 @@ impl GraphDef {
 }
 
 /// `graph.toml`.
-#[derive(Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct GraphFile {
     /// Display name; the id stands in when absent.
@@ -144,6 +144,13 @@ struct GraphNode {
     /// The nodes, by id (`nodes/<id>.toml`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     nodes: BTreeMap<NodeId, NodeDef>,
+}
+
+/// An absent `graph.toml` is every setting absent: enabled, as an absent `enabled` is.
+impl Default for GraphFile {
+    fn default() -> Self {
+        Self { name: None, enabled: enabled_default(), group: None, summary: None }
+    }
 }
 
 fn enabled_default() -> bool {
@@ -291,6 +298,18 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn omitted_settings_take_their_defaults() {
+        let only_nodes = json!({"nodes": {"cool": {"kind": "flow.cooldown"}}});
+        for node in [only_nodes, json!({"graph": {}}), json!({})] {
+            let graph = GraphDef::from_node(&node).unwrap();
+            assert!(graph.enabled, "{node}");
+            assert_eq!((graph.name.as_deref(), graph.group.as_ref(), graph.summary.as_deref()), (None, None, None));
+        }
+        let off = GraphDef::from_node(&json!({"graph": {"enabled": false}})).unwrap();
+        assert!(!off.enabled);
+    }
 
     #[test]
     fn a_graph_is_its_settings_and_its_nodes() {

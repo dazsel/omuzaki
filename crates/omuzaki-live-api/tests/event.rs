@@ -1,10 +1,13 @@
 //! The event envelope (#773): JSON round trips of the envelope and every payload with non-ASCII text, `of` and
-//! `decode`, the payload size limit, the registered kinds against design D9's table, and role ranks.
+//! `decode`, the payload size limit, the registered kinds against design D9's table, role ranks, and the sink a
+//! producer hands events and its losses to.
 
 // Helpers outside #[test] functions unwrap too: a panic there is a test failure (clippy.toml).
 #![allow(clippy::unwrap_used)]
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use omuzaki_core::time::Seconds;
 use omuzaki_live_api::event::payloads::{
@@ -12,8 +15,8 @@ use omuzaki_live_api::event::payloads::{
     Prediction, Raid, Redeem, Reward, Role, ShowLifecycle, Sub, SubGift, Tip, VarChanged,
 };
 use omuzaki_live_api::event::{
-    EventError, EventId, EventPayload, LiveEvent, PublishError, Source, UtcMillis, check_payload, event_kinds,
-    find_event_kind,
+    EventError, EventId, EventPayload, EventSink, LiveEvent, PublishError, Source, UtcMillis, check_payload,
+    event_kinds, find_event_kind,
 };
 use omuzaki_live_api::ids::{EventKind, GraphId, NodeId, Platform, ShowId, VarName};
 use omuzaki_live_api::limits::MAX_PAYLOAD_BYTES;
@@ -23,6 +26,11 @@ use proptest::prelude::*;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
+
+/// A string the slug rules accept (no Windows device names such as `con` or `com1`).
+fn slug() -> impl Strategy<Value = String> {
+    "[a-z][a-z0-9]{0,8}".prop_filter("a slug", |s| omuzaki_core::id::Slug::new(s.as_str()).is_ok())
+}
 
 /// Text that is often Japanese, Korean or emoji, never only ASCII by accident.
 fn text() -> impl Strategy<Value = String> {
@@ -153,7 +161,7 @@ proptest! {
     }
 
     #[test]
-    fn engine_payloads_round_trip(id in "[a-z][a-z0-9]{0,8}", old in text(), new in text()) {
+    fn engine_payloads_round_trip(id in slug(), old in text(), new in text()) {
         let lifecycle = ShowLifecycle::new(ShowId::new(id.as_str()).unwrap());
         prop_assert_eq!(through_event(&lifecycle), lifecycle);
         let changed = VarChanged::new(VarName::new(id.as_str()).unwrap(), VarScope::Show, json!(old), json!(new));
@@ -353,4 +361,32 @@ fn a_users_rank_follows_their_highest_role() {
     assert!(order.windows(2).all(|pair| pair[0] > pair[1]), "{order:?}");
     assert_eq!(with(&[Role::Moderator, Role::Subscriber]), with(&[Role::Moderator]));
     assert_eq!(with(&[]), 0);
+}
+
+/// A sink that takes nothing and counts what producers report lost, as the engine's inbox does.
+#[derive(Default)]
+struct Stalled {
+    producer: AtomicU64,
+}
+
+impl EventSink for Stalled {
+    fn publish(&self, _: LiveEvent) -> Result<(), PublishError> {
+        Err(PublishError::Full)
+    }
+    fn producer_dropped(&self, count: u64) {
+        self.producer.fetch_add(count, Ordering::Relaxed);
+    }
+}
+
+#[test]
+fn a_producer_reports_what_its_buffer_lost_through_a_shared_sink() {
+    let stalled = Arc::new(Stalled::default());
+    let sink: Arc<dyn EventSink> = stalled.clone();
+    let boxed: Box<dyn EventSink> = Box::new(Stalled::default());
+    assert_eq!(
+        boxed.publish(LiveEvent::of(&kiri_follow(), Source::Test, Seconds(0.0)).unwrap()),
+        Err(PublishError::Full)
+    );
+    std::thread::spawn(move || sink.producer_dropped(3)).join().unwrap();
+    assert_eq!(stalled.producer.load(Ordering::Relaxed), 3);
 }

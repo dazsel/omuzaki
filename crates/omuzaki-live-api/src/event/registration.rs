@@ -72,7 +72,7 @@ fn schema_of<P: EventPayload>() -> Schema {
 }
 
 fn validate_as<P: EventPayload>(payload: &Value) -> Result<(), EventError> {
-    P::deserialize(payload).map(|_| ()).map_err(|e| EventError::decode(P::KIND, &e))
+    P::deserialize(payload).map(|_| ()).map_err(|e| EventError::from_serde(P::KIND, &e))
 }
 
 inventory::collect!(EventKindRegistration);

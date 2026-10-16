@@ -504,7 +504,8 @@ impl NodeHarness {
         self.host.inputs.insert(port.to_owned(), value.into());
     }
 
-    /// A pulse on the event input `port` at the current time, in a fresh token.
+    /// A pulse on the event input `port` at the current time, in a fresh token, after any wake already due (a
+    /// wake due at `t` runs before an item arriving at `t`, design D5).
     ///
     /// # Panics
     /// If `port` isn't an event input.
@@ -515,11 +516,14 @@ impl NodeHarness {
             self.meta.id
         );
         self.ensure_started();
+        self.advance_to(self.now());
         let token = self.host.token(self.host.tick());
         self.step(self.now(), token, &Item::Event(port.to_owned()));
     }
 
-    /// `event` to a trigger at the current time, in a fresh token rooted at it.
+    /// `event` to a trigger at its timestamp, in a fresh token rooted at it, as the engine delivers an inbox item
+    /// (design D5): a later stamp first moves the clock to it, running the wakes and replies due by then (a wake
+    /// due at the same time runs first); an earlier one runs now, since time never goes backwards.
     ///
     /// # Panics
     /// If the node isn't a trigger or doesn't listen to the event's kind: the engine never delivers it.
@@ -527,8 +531,10 @@ impl NodeHarness {
         assert_eq!(self.meta.class, NodeClass::Trigger, "{} isn't a trigger", self.meta.id);
         assert!(self.listens.contains(&event.kind), "{} doesn't listen to {}", self.meta.id, event.kind);
         self.ensure_started();
+        let at = event.at;
+        self.advance_to(at);
         let token = self.host.token(event.clone());
-        self.step(self.now(), token, &Item::Trigger(event));
+        self.step(at, token, &Item::Trigger(event));
     }
 
     /// Moves the clock on by `by`, running due wakes and scripted replies in the engine's order.
@@ -583,28 +589,34 @@ impl NodeHarness {
         self.host.runner.respond(op, latency, answer);
     }
 
-    /// Delivers a reply to `call` now, in the token that made it (for calls no script answers).
+    /// Delivers a reply to `call` now, in the token that made it (for calls no script answers), after any wake
+    /// already due (a wake due at `t` runs before a reply arriving at `t`, design D5).
     ///
     /// # Panics
     /// If `call` isn't waiting for a reply.
     pub fn reply(&mut self, call: CallId, outcome: Result<Option<Value>, OpError>) {
         self.ensure_started();
+        assert!(self.host.in_flight.contains_key(&call), "call {call:?} isn't waiting for a reply");
+        self.advance_to(self.now());
         let Some(token) = self.host.in_flight.remove(&call) else { panic!("call {call:?} isn't waiting for a reply") };
         self.host.replies.retain(|reply| reply.call != call);
         self.step(self.now(), token, &Item::Reply(call, outcome));
     }
 
-    /// The live output `port`, computed now.
+    /// The live output `port`, computed now and checked against its declaration as the engine checks it.
     ///
     /// # Errors
-    /// [`NodeError::not_live`] if `port` isn't a live output, or what the node's `eval` returns.
+    /// [`NodeError::not_live`] if `port` isn't a live output, what the node's `eval` returns, or
+    /// [`NodeError::invalid_value`] and [`NodeError::type_mismatch`] for a value its port can't carry.
     pub fn read(&mut self, port: &str) -> Result<Val, NodeError> {
         self.ensure_started();
-        if !self.host.ports.output(port).is_some_and(|p| p.live) {
-            return Err(NodeError::not_live(port));
-        }
+        let ty = match self.host.ports.output(port) {
+            Some(decl) if decl.live => decl.ty,
+            _ => return Err(NodeError::not_live(port)),
+        };
         self.host.step_at = self.now();
-        self.node.eval(port, &mut EvalCx::new(&mut self.host))
+        let value = self.node.eval(port, &mut EvalCx::new(&mut self.host))?;
+        Host::check_value(port, &value, ty)
     }
 
     /// Sends `Stop` (the harness does it when dropped if the test doesn't). Outputs fired while stopping are ignored.

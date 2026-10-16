@@ -269,9 +269,9 @@ fn a_finding_serialises_without_the_fields_it_leaves_empty() {
 
 // ── Property tests ─────────────────────────────────────────────────────────────────────────────────────────────
 
+/// A string the slug rules accept (no Windows device names such as `con` or `com1`).
 fn slug() -> impl Strategy<Value = String> {
-    "[a-z][a-z0-9_-]{0,10}"
-        .prop_filter("not a Windows device name", |s| !["con", "prn", "aux", "nul"].contains(&s.as_str()))
+    "[a-z][a-z0-9_-]{0,10}".prop_filter("a slug", |s| omuzaki_core::id::Slug::new(s.as_str()).is_ok())
 }
 
 fn json_scalar() -> impl Strategy<Value = Value> {

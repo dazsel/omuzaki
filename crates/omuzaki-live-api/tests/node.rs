@@ -180,7 +180,7 @@ fn the_coercion_table_is_the_designs() {
             let converted = sample(from).coerce(to);
             match expected {
                 Same | Converts => assert_eq!(converted.unwrap().ty(), to, "{from:?} to {to:?}"),
-                Refused => assert_eq!(converted, Err(ValError::Refused { from, to })),
+                Refused => assert_eq!(converted, Err(ValError::refused(from, to))),
                 Checked => unreachable!(),
             }
         }
@@ -196,10 +196,7 @@ fn json_is_checked_when_read() {
         Val::from(json!([1, "a"])).coerce(PortType::List),
         Ok(Val::from(vec![Val::Number(1.0), Val::text("a")]))
     );
-    assert_eq!(
-        Val::from(json!("hi")).coerce(PortType::Number),
-        Err(ValError::Mismatch { expected: PortType::Number, found: "text" })
-    );
+    assert_eq!(Val::from(json!("hi")).coerce(PortType::Number), Err(ValError::mismatch(PortType::Number, "text")));
     assert!(Val::from(json!({"a": 1})).coerce(PortType::List).is_err());
 }
 

@@ -47,6 +47,7 @@ inventory::collect!(ShowKeyRegistration);
 #[non_exhaustive]
 pub enum KeyError {
     /// The key isn't a slug, so the project could not store it as a file or folder name.
+    #[non_exhaustive]
     #[error("show key `{key}` can't name a file or folder: {why}")]
     NotASlug {
         /// The key.
@@ -55,6 +56,7 @@ pub enum KeyError {
         why: SlugError,
     },
     /// The key is within [`MISSPELLING_DISTANCE`] edits of a built-in key: taken as a typo of it.
+    #[non_exhaustive]
     #[error("unknown field `{key}` in a show, did you mean `{near}`?")]
     Misspelt {
         /// The key.
@@ -65,6 +67,18 @@ pub enum KeyError {
     /// The key is registered more than once, or by a name the naming rule doesn't give its package.
     #[error("show key `{0}` is registered more than once or collides with a built-in key")]
     Collision(String),
+}
+
+impl KeyError {
+    /// `key` isn't a slug, for `why`.
+    pub fn not_a_slug(key: impl Into<String>, why: SlugError) -> Self {
+        KeyError::NotASlug { key: key.into(), why }
+    }
+
+    /// `key` is taken as a typo of the built-in `near`.
+    pub fn misspelt(key: impl Into<String>, near: &'static str) -> Self {
+        KeyError::Misspelt { key: key.into(), near }
+    }
 }
 
 /// What a key of a show node is.

@@ -81,7 +81,7 @@ impl LiveEvent {
         if !P::is_kind(kind.as_str()) {
             return Err(EventError::WrongKind { kind: kind.to_string(), payload: P::KIND });
         }
-        let value = serde_json::to_value(payload).map_err(|e| EventError::decode(kind.as_str(), &e))?;
+        let value = serde_json::to_value(payload).map_err(|e| EventError::from_serde(kind.as_str(), &e))?;
         check_payload_shape(&value)?;
         Ok(Self::new(kind, source, at, value))
     }
@@ -89,7 +89,7 @@ impl LiveEvent {
     /// The payload as `P`, or `None` when the event isn't of a kind `P` carries.
     pub fn decode<P: EventPayload>(&self) -> Option<Result<P, EventError>> {
         P::is_kind(self.kind.as_str())
-            .then(|| P::deserialize(&self.payload).map_err(|e| EventError::decode(self.kind.as_str(), &e)))
+            .then(|| P::deserialize(&self.payload).map_err(|e| EventError::from_serde(self.kind.as_str(), &e)))
     }
 
     /// With the platform's id for this event.
@@ -232,6 +232,7 @@ pub trait EventPayload: Serialize + DeserializeOwned + JsonSchema {
 #[non_exhaustive]
 pub enum EventError {
     /// The payload is larger than [`MAX_PAYLOAD_BYTES`] of JSON.
+    #[non_exhaustive]
     #[error("a payload of {bytes} bytes is larger than the limit of {max} bytes", max = MAX_PAYLOAD_BYTES)]
     TooLarge {
         /// Its size as JSON.
@@ -241,6 +242,7 @@ pub enum EventError {
     #[error("a payload is an object")]
     NotAnObject,
     /// The payload type doesn't carry this kind.
+    #[non_exhaustive]
     #[error("a {payload} payload can't be published as {kind}")]
     WrongKind {
         /// The kind asked for.
@@ -249,6 +251,7 @@ pub enum EventError {
         payload: &'static str,
     },
     /// The payload doesn't match the kind's type.
+    #[non_exhaustive]
     #[error("the payload doesn't fit {kind}: {reason}")]
     Decode {
         /// The kind.
@@ -259,8 +262,23 @@ pub enum EventError {
 }
 
 impl EventError {
-    fn decode(kind: &str, error: &serde_json::Error) -> Self {
-        EventError::Decode { kind: kind.to_owned(), reason: error.to_string() }
+    /// A payload of `bytes` bytes of JSON, over [`MAX_PAYLOAD_BYTES`].
+    pub fn too_large(bytes: usize) -> Self {
+        EventError::TooLarge { bytes }
+    }
+
+    /// A `payload` payload asked to be published as `kind`.
+    pub fn wrong_kind(kind: impl Into<String>, payload: &'static str) -> Self {
+        EventError::WrongKind { kind: kind.into(), payload }
+    }
+
+    /// A payload that doesn't fit `kind`, for `reason`.
+    pub fn decode(kind: impl Into<String>, reason: impl Into<String>) -> Self {
+        EventError::Decode { kind: kind.into(), reason: reason.into() }
+    }
+
+    pub(crate) fn from_serde(kind: &str, error: &serde_json::Error) -> Self {
+        Self::decode(kind, error.to_string())
     }
 }
 
@@ -274,6 +292,11 @@ pub trait EventSink: Send + Sync {
     /// [`PublishError::Acting`] for what only the engine may publish; [`PublishError::UnknownKind`],
     /// [`PublishError::BadPayload`] and [`PublishError::TooLarge`] for an event that doesn't fit its kind.
     fn publish(&self, event: LiveEvent) -> Result<(), PublishError>;
+
+    /// Reports that a producer's retry buffer of non-droppable events overflowed and dropped its `count` oldest
+    /// (design D9). The engine adds them to `dropped.producer` and raises the "events are being lost" finding.
+    /// **Never blocks.**
+    fn producer_dropped(&self, count: u64);
 }
 
 /// Why [`EventSink::publish`] didn't take an event.

@@ -28,6 +28,11 @@ fn round_trip<T: Serialize + DeserializeOwned>(value: &T) -> T {
     serde_json::from_value(serde_json::to_value(value).unwrap()).unwrap()
 }
 
+/// A string the slug rules accept (no Windows device names such as `con` or `com1`).
+fn slug() -> impl Strategy<Value = String> {
+    "[a-z]{1,8}".prop_filter("a slug", |s| omuzaki_core::id::Slug::new(s.as_str()).is_ok())
+}
+
 fn id<T: std::str::FromStr>(s: &str) -> T
 where
     T::Err: std::fmt::Debug,
@@ -47,13 +52,13 @@ fn need() -> impl Strategy<Value = Need> {
         )),
         ("[a-z]{1,8}", "[a-z0-9.]{1,12}").prop_map(|(name, host)| Need::secret(name, host)),
         "\\PC{1,12}".prop_map(Need::process),
-        "[a-z]{1,8}".prop_map(|name| Need::variable(VarName::new(name).unwrap(), VarType::List)),
-        "[a-z]{1,8}".prop_map(|group| Need::group(GroupId::new(group).unwrap())),
+        slug().prop_map(|name| Need::variable(VarName::new(name).unwrap(), VarType::List)),
+        slug().prop_map(|group| Need::group(GroupId::new(group).unwrap())),
     ]
 }
 
 fn graph_status() -> impl Strategy<Value = GraphStatus> {
-    ("[a-z]{1,8}", any::<bool>(), any::<u64>(), 0..3_usize, proptest::collection::vec(need(), 0..2), -1.0e6..1.0e6_f64)
+    (slug(), any::<bool>(), any::<u64>(), 0..3_usize, proptest::collection::vec(need(), 0..2), -1.0e6..1.0e6_f64)
         .prop_map(|(graph, active, errors, which, needs, at)| {
             let status = GraphStatus::new(id(&graph))
                 .with_active(active)
@@ -73,10 +78,10 @@ fn graph_status() -> impl Strategy<Value = GraphStatus> {
 }
 
 fn dropped() -> impl Strategy<Value = Dropped> {
-    proptest::collection::vec(any::<u64>(), 7).prop_map(|n| {
+    proptest::collection::vec(any::<u64>(), 8).prop_map(|n| {
         let mut dropped = Dropped::default();
         (dropped.rate, dropped.inbox, dropped.inbox_full, dropped.inert) = (n[0], n[1], n[2], n[3]);
-        (dropped.inactive, dropped.reload, dropped.paused) = (n[4], n[5], n[6]);
+        (dropped.inactive, dropped.reload, dropped.paused, dropped.producer) = (n[4], n[5], n[6], n[7]);
         dropped
     })
 }

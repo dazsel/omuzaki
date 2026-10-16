@@ -272,6 +272,80 @@ impl Node for Both {
     }
 }
 
+/// Calls an op and asks for a wake due at once.
+struct ZeroWait;
+
+impl NodeKind for ZeroWait {
+    type Params = EchoParams;
+
+    fn meta() -> NodeMeta {
+        NodeMeta::new("test.zero_wait", "Zero wait.", NodeClass::Active, Category::Flow)
+    }
+
+    fn ports(_: &EchoParams) -> Ports {
+        Ports::new().event_in("in", "Go.").event_out("woke", "The wake.").event_out("replied", "The reply.")
+    }
+
+    fn new(_: EchoParams) -> Self {
+        Self
+    }
+}
+
+impl Node for ZeroWait {
+    fn handle(&mut self, input: Input<'_>, cx: &mut NodeCx<'_>) -> Result<(), NodeError> {
+        match input {
+            Input::Event { .. } => {
+                cx.run_op("probe", json!({}))?;
+                cx.wake_after(Seconds(0.0)).map(|_| ())
+            }
+            Input::Wake { .. } => cx.fire("woke"),
+            Input::Reply { .. } => cx.fire("replied"),
+            Input::Start | Input::Stop | Input::Trigger { .. } => Ok(()),
+            other => Err(NodeError::unhandled(&other)),
+        }
+    }
+}
+
+/// Live outputs whose `eval` returns values their ports can't carry.
+struct BadEval;
+
+impl NodeKind for BadEval {
+    type Params = EchoParams;
+
+    fn meta() -> NodeMeta {
+        NodeMeta::new("test.bad_eval", "Bad eval.", NodeClass::Pure, Category::Flow)
+    }
+
+    fn ports(_: &EchoParams) -> Ports {
+        Ports::new()
+            .live_out("nan", PortType::Number, "Not a number.")
+            .live_out("flag", PortType::Bool, "Text, not a bool.")
+            .live_out("count", PortType::Text, "A number, read as text.")
+    }
+
+    fn new(_: EchoParams) -> Self {
+        Self
+    }
+}
+
+impl Node for BadEval {
+    fn handle(&mut self, input: Input<'_>, _: &mut NodeCx<'_>) -> Result<(), NodeError> {
+        match input {
+            Input::Start | Input::Stop => Ok(()),
+            other => Err(NodeError::unhandled(&other)),
+        }
+    }
+
+    fn eval(&self, port: &str, _: &mut EvalCx<'_>) -> Result<Val, NodeError> {
+        match port {
+            "nan" => Ok(Val::Number(f64::NAN)),
+            "flag" => Ok(Val::text("yes")),
+            "count" => Ok(Val::Number(3.0)),
+            other => Err(NodeError::not_live(other)),
+        }
+    }
+}
+
 /// Handles nothing: every input reaches its wildcard arm.
 struct Careless;
 
@@ -427,6 +501,38 @@ fn a_wake_due_at_t_runs_before_a_reply_arriving_at_t() {
 }
 
 #[test]
+fn a_wake_due_now_runs_before_a_manual_reply() {
+    let mut h = NodeHarness::of::<ZeroWait>(EchoParams::default());
+    h.send("in");
+    let call = h.calls()[0].id;
+    h.reply(call, Ok(None));
+    assert_eq!(ports(&h), ["woke", "replied"]);
+}
+
+#[test]
+fn json_on_a_typed_input_keeps_the_value_limits() {
+    let mut h = echo();
+    h.set_input("value", Val::from(json!("x".repeat(omuzaki_live_api::limits::MAX_TEXT_BYTES + 1))));
+    h.send("in");
+    assert_eq!(ports(&h), Vec::<&str>::new());
+    assert_eq!(h.faults().len(), 1);
+    assert_eq!(h.faults()[0].error.code, NodeErrorCode::Type);
+    #[allow(clippy::cast_precision_loss)] // the limit is small
+    let limit = omuzaki_live_api::limits::MAX_TEXT_BYTES as f64;
+    h.set_input("value", Val::from(json!("x".repeat(omuzaki_live_api::limits::MAX_TEXT_BYTES))));
+    assert_eq!(h.read("length"), Ok(Val::Number(limit)), "text at the limit itself reads");
+}
+
+#[test]
+fn a_live_output_is_checked_against_its_port() {
+    use omuzaki_live_api::value::ValError;
+    let mut h = NodeHarness::of::<BadEval>(EchoParams::default());
+    assert_eq!(h.read("nan"), Err(NodeError::invalid_value("nan", &ValError::NotFinite)));
+    assert_eq!(h.read("flag"), Err(NodeError::type_mismatch("flag", PortType::Bool, PortType::Text)));
+    assert_eq!(h.read("count"), Ok(Val::text("3")), "a number reads as text, as on any port");
+}
+
+#[test]
 fn a_wall_clock_jump_moves_utc_but_not_now() {
     let mut h = NodeHarness::of::<Delay>(DelayParams { seconds: 1.0 })
         .starting_at(Seconds(100.0), UtcMillis(1_700_000_000_000));
@@ -449,6 +555,10 @@ fn a_trigger_gets_its_events_in_tokens_rooted_at_them() {
     let texts: Vec<Val> = h.fired().iter().map(|f| f.values["text"].clone()).collect();
     assert_eq!(texts.len(), fixtures::NAMES.len());
     assert_eq!(texts[3], Val::text("hi from ことり"));
+    assert!(h.fired().iter().all(|f| f.at == Seconds(1.0)), "each runs at its event's time");
+    assert_eq!(h.now(), Seconds(1.0));
+    h.trigger(fixtures::at(fixtures::chat("kiri", "late"), Seconds(0.5)));
+    assert_eq!(h.fired().last().map(|f| f.at), Some(Seconds(1.0)), "an older stamp runs now: time never goes back");
 }
 
 /// The same script, with randomness, waits, calls, a variable and a group.

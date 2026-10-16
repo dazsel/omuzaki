@@ -301,6 +301,10 @@ pub struct Dropped {
     pub inbox: u64,
     /// Other events refused past the inbox's hard cap (`Full`; the producer retries).
     pub inbox_full: u64,
+    /// Non-droppable events a producer lost when its retry buffer overflowed, as producers report them through
+    /// [`EventSink::producer_dropped`](crate::event::EventSink::producer_dropped) (design D9). Any loss here raises
+    /// the "events are being lost" finding.
+    pub producer: u64,
     /// Activations that reached an inert node.
     pub inert: u64,
     /// Tokens, wakes and replies of an inactive graph.

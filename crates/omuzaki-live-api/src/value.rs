@@ -103,6 +103,7 @@ pub enum ValError {
     #[error("a number must be finite")]
     NotFinite,
     /// The two types never convert (design D3).
+    #[non_exhaustive]
     #[error("a {} value can't be used as {}", from.as_str(), to.as_str())]
     Refused {
         /// The value's type.
@@ -111,6 +112,7 @@ pub enum ValError {
         to: PortType,
     },
     /// A JSON value that doesn't have the asked type.
+    #[non_exhaustive]
     #[error("expected {}, got {found}", expected.as_str())]
     Mismatch {
         /// The type that was asked for.
@@ -119,17 +121,41 @@ pub enum ValError {
         found: &'static str,
     },
     /// Text longer than [`MAX_TEXT_BYTES`].
+    #[non_exhaustive]
     #[error("text of {bytes} bytes is longer than the limit of {max} bytes", max = MAX_TEXT_BYTES)]
     TextTooLong {
         /// Its length in bytes.
         bytes: usize,
     },
     /// A list with more than [`MAX_LIST_ITEMS`] items.
+    #[non_exhaustive]
     #[error("a list of {items} items is longer than the limit of {max}", max = MAX_LIST_ITEMS)]
     ListTooLong {
         /// Its length.
         items: usize,
     },
+}
+
+impl ValError {
+    /// `from` never converts to `to`.
+    pub fn refused(from: PortType, to: PortType) -> Self {
+        ValError::Refused { from, to }
+    }
+
+    /// JSON holding `found` where `expected` was asked for.
+    pub fn mismatch(expected: PortType, found: &'static str) -> Self {
+        ValError::Mismatch { expected, found }
+    }
+
+    /// Text of `bytes` bytes, over [`MAX_TEXT_BYTES`].
+    pub fn text_too_long(bytes: usize) -> Self {
+        ValError::TextTooLong { bytes }
+    }
+
+    /// A list of `items` items, over [`MAX_LIST_ITEMS`].
+    pub fn list_too_long(items: usize) -> Self {
+        ValError::ListTooLong { items }
+    }
 }
 
 /// A value on a value port. Cheap to clone: text, lists and JSON are shared.
@@ -196,7 +222,8 @@ impl Val {
     ///
     /// # Errors
     /// [`ValError::Refused`] for a pair that never converts (`text` to `number` included: that can fail, so it is
-    /// `text.to_number`'s job), [`ValError::Mismatch`] for JSON of the wrong shape.
+    /// `text.to_number`'s job), [`ValError::Mismatch`] for JSON of the wrong shape, and the errors of
+    /// [`Val::from_json`] for JSON over the D8 limits.
     pub fn coerce(&self, to: PortType) -> Result<Val, ValError> {
         match (PortType::coercion(self.ty(), to), self) {
             (Coercion::Same, _) => Ok(self.clone()),
@@ -225,7 +252,8 @@ impl Val {
     ///
     /// # Errors
     /// [`ValError::Mismatch`] if `value` doesn't have that shape, [`ValError::Refused`] for [`PortType::Event`],
-    /// [`ValError::NotFinite`] for a number JSON can't hold as a finite `f64`.
+    /// [`ValError::NotFinite`] for a number JSON can't hold as a finite `f64`, and [`ValError::TextTooLong`] or
+    /// [`ValError::ListTooLong`] for text or a list (at any depth) over the D8 limits, which typed values keep.
     pub fn from_json(value: &Value, ty: PortType) -> Result<Val, ValError> {
         let mismatch = || ValError::Mismatch { expected: ty, found: json_kind(value) };
         match ty {
@@ -233,8 +261,16 @@ impl Val {
             PortType::Json => Ok(Val::Json(Arc::new(value.clone()))),
             PortType::Bool => value.as_bool().map(Val::Bool).ok_or_else(mismatch),
             PortType::Number => value.as_f64().ok_or_else(mismatch).and_then(Val::number),
-            PortType::Text => value.as_str().map(Val::text).ok_or_else(mismatch),
+            PortType::Text => match value.as_str() {
+                Some(s) if s.len() > MAX_TEXT_BYTES => Err(ValError::TextTooLong { bytes: s.len() }),
+                Some(s) => Ok(Val::text(s)),
+                None => Err(mismatch()),
+            },
             PortType::List => match value {
+                // Checked before the items are built; nested lists and text check themselves in `natural`.
+                Value::Array(items) if items.len() > MAX_LIST_ITEMS => {
+                    Err(ValError::ListTooLong { items: items.len() })
+                }
                 Value::Array(items) => {
                     Ok(Val::List(items.iter().map(Val::natural).collect::<Result<Vec<_>, _>>()?.into()))
                 }
@@ -364,6 +400,20 @@ mod tests {
         let many = Val::from(vec![Val::Bool(true); MAX_LIST_ITEMS + 1]);
         assert_eq!(many.check(), Err(ValError::ListTooLong { items: MAX_LIST_ITEMS + 1 }));
         assert!(Val::from(vec![Val::Bool(true); MAX_LIST_ITEMS]).check().is_ok());
+    }
+
+    #[test]
+    fn json_read_as_a_typed_value_keeps_the_limits() {
+        let long = json!("x".repeat(MAX_TEXT_BYTES + 1));
+        assert_eq!(Val::from_json(&long, PortType::Text), Err(ValError::TextTooLong { bytes: MAX_TEXT_BYTES + 1 }));
+        let many = json!(vec![true; MAX_LIST_ITEMS + 1]);
+        assert_eq!(Val::from_json(&many, PortType::List), Err(ValError::ListTooLong { items: MAX_LIST_ITEMS + 1 }));
+        let nested = json!([["x".repeat(MAX_TEXT_BYTES + 1)]]);
+        assert_eq!(Val::from_json(&nested, PortType::List), Err(ValError::TextTooLong { bytes: MAX_TEXT_BYTES + 1 }));
+        let as_json = Val::Json(Arc::new(long));
+        assert_eq!(as_json.coerce(PortType::Text), Err(ValError::TextTooLong { bytes: MAX_TEXT_BYTES + 1 }));
+        assert!(Val::from_json(&json!("x".repeat(MAX_TEXT_BYTES)), PortType::Text).is_ok());
+        assert!(Val::from_json(&json!(vec![true; MAX_LIST_ITEMS]), PortType::List).is_ok());
     }
 
     #[test]
