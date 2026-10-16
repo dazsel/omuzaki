@@ -282,7 +282,8 @@ fn same_bits(a: &Layer, b: &Layer) -> bool {
 }
 
 /// Checks a [`BigMovePlanner`] (§5, §7): over a 10 s script it writes only [`OWNED_CHANNELS`], gives the same bits for
-/// the same seed, and moves nothing on a private turn.
+/// the same seed, and stays inactive (no weight or an empty mask) on a private turn, since even a layer of rest values
+/// would take its channels from the life layer.
 ///
 /// # Errors
 /// The first failing frame.
@@ -301,8 +302,8 @@ pub fn planner(make: &dyn Fn() -> Box<dyn BigMovePlanner>) -> Result<(), String>
         return Err(format!("frame {i}: the same seed gave different bits"));
     }
     for (i, layer) in run_planner(make().as_mut(), 7, true).iter().enumerate() {
-        if layer.is_active() && layer.mask.iter().any(|c| layer.values.get(c) != 0.0) {
-            return Err(format!("frame {i}: a private turn moved the face"));
+        if layer.is_active() {
+            return Err(format!("frame {i}: the layer is active on a private turn (weight {})", layer.weight));
         }
     }
     Ok(())

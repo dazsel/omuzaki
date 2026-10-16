@@ -4,7 +4,10 @@
 
 use std::sync::Arc;
 
+use omuzaki_anim_api::blend::{BlendMode, Layer};
+use omuzaki_anim_api::frame::Tick;
 use omuzaki_anim_api::score::{ClipId, ExpressionId};
+use omuzaki_core::rng::Rng;
 use omuzaki_core::time::{FakeClock, Seconds};
 use omuzaki_l10n_api::Locale;
 use omuzaki_llm_api::stream::{Cancel, StopReason};
@@ -15,6 +18,7 @@ use omuzaki_performer_api::conformance::{self, VoiceRig};
 use omuzaki_performer_api::ears::{Ears, Heard};
 use omuzaki_performer_api::ids::{ConnectorId, VoiceId};
 use omuzaki_performer_api::intent::Intent;
+use omuzaki_performer_api::moves::{BigMovePlanner, MoveContext, OWNED_CHANNELS, StyleKnobs, TalkState};
 use omuzaki_performer_api::perception::{Glance, GlanceSource, Perception, PerceptionError};
 use omuzaki_performer_api::speech::{SpeakHow, SpeechHandle, SpeechState, Voice, VoiceError};
 use omuzaki_performer_api::spend::{SpendError, SpendGate};
@@ -193,6 +197,23 @@ fn fake_catalog_conforms_and_the_check_catches_strays() {
 #[test]
 fn rest_planner_conforms() {
     conformance::planner(&|| Box::new(RestPlanner)).unwrap();
+}
+
+/// A planner that holds every channel it owns at rest values with full weight, private turn or not.
+struct HoldingPlanner;
+
+impl BigMovePlanner for HoldingPlanner {
+    fn plan(&mut self, _: Tick, _: &MoveContext, _: &TalkState, _: &StyleKnobs, _: &mut Rng, out: &mut Layer) {
+        *out = Layer::absent(BlendMode::Override);
+        out.mask = OWNED_CHANNELS;
+        out.weight = 1.0;
+    }
+}
+
+#[test]
+fn the_planner_check_catches_an_active_layer_on_a_private_turn() {
+    let why = conformance::planner(&|| Box::new(HoldingPlanner)).unwrap_err();
+    assert!(why.contains("active on a private turn"), "{why}");
 }
 
 #[test]

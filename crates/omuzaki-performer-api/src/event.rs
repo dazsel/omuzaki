@@ -5,6 +5,8 @@
 //! [`EVENT_QUEUE`](crate::limits::EVENT_QUEUE) per subscriber, oldest dropped); the transcript is the same lines, one
 //! JSON object each: `{"t":800,"p":"3f9a1c0e7b2d","ev":"speaking","turn":1,"chunk":0,"text":"Hi chat!","ms":480}`.
 
+use std::borrow::Cow;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -221,9 +223,9 @@ impl PerformerEvent {
 
 /// One transcript record: the runner clock in milliseconds, the persona revision, and the event.
 ///
-/// Every way in redacts a private event: [`TranscriptLine::new`] and deserializing alike, so a line read from a file
-/// someone edited still can't carry a private turn's text.
-#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
+/// Every way in and out redacts a private event: [`TranscriptLine::new`], deserializing and serializing alike, so a line
+/// read from a file someone edited, or one whose `event` was replaced, still can't write a private turn's text.
+#[derive(Clone, Debug, PartialEq, JsonSchema)]
 #[non_exhaustive]
 pub struct TranscriptLine {
     /// Runner clock, milliseconds.
@@ -256,6 +258,24 @@ impl TranscriptLine {
     /// When the text is not a transcript line.
     pub fn from_json(line: &str) -> Result<Self, serde_json::Error> {
         serde_json::from_str(line)
+    }
+}
+
+impl Serialize for TranscriptLine {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Raw<'a> {
+            t: u64,
+            p: &'a PersonaRevision,
+            #[serde(flatten)]
+            event: &'a PerformerEvent,
+        }
+        let event = if self.event.is_private() {
+            Cow::Owned(self.event.clone().redacted())
+        } else {
+            Cow::Borrowed(&self.event)
+        };
+        Raw { t: self.t, p: &self.p, event: &event }.serialize(serializer)
     }
 }
 
@@ -389,10 +409,16 @@ mod tests {
             assert!(event.is_private());
             let json = TranscriptLine::new(1, rev(), event.clone()).to_json().unwrap();
             assert!(!json.contains("secret") && !json.contains("\"ms\"") && !json.contains("safety"), "{json}");
-            let edited = TranscriptLine { t: 1, p: rev(), event }.to_json().unwrap();
-            assert!(edited.contains("secret"), "{edited}");
-            let read = TranscriptLine::from_json(&edited).unwrap().to_json().unwrap();
-            assert_eq!(read, json, "parsing a leaky line redacts it");
+            let mut swapped = TranscriptLine::new(1, rev(), PerformerEvent::held(1));
+            swapped.event = event.clone();
+            assert_eq!(swapped.to_json().unwrap(), json, "writing a line whose event was swapped redacts it");
+            let mut leaky = serde_json::to_value(&event).unwrap();
+            leaky["t"] = 1.into();
+            leaky["p"] = serde_json::to_value(rev()).unwrap();
+            let leaky_json = leaky.to_string();
+            assert!(leaky_json.contains("secret"), "{leaky_json}");
+            let read = TranscriptLine::from_json(&leaky_json).unwrap();
+            assert_eq!(read.event, event.clone().redacted(), "parsing a leaky line redacts it");
         }
         assert!(!PerformerEvent::held(1).is_private());
     }
