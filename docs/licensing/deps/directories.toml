@@ -1,0 +1,7 @@
+section = "rust"
+item = "directories, dirs-sys"
+kind = "crate"
+used_for = "The OS cache folder behind `omuzaki_http::app_cache_dir` (`BaseDirs::cache_dir`: the local app-data folder on Windows, the Library caches folder on macOS, the XDG cache folder on Linux)"
+status = "yes"
+audit = "(crates.io: MIT OR Apache-2.0)"
+crates = ["directories"]
