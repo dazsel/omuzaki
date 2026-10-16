@@ -386,12 +386,23 @@ mod tests {
         }
     }
 
-    /// A protocol that is never reached: the tests below cancel before the request is sent.
-    struct Unused;
+    /// A protocol for a loopback server that sends no events.
+    struct Quiet(String);
 
-    impl Protocol for Unused {
+    struct NoEvents;
+
+    impl Decoder for NoEvents {
+        fn event(&mut self, _: SseEvent) -> Result<Vec<LlmEvent>, Fail> {
+            Ok(Vec::new())
+        }
+        fn end(&mut self) -> Result<Vec<LlmEvent>, Fail> {
+            Err(Fail::network("the quiet server hung up"))
+        }
+    }
+
+    impl Protocol for Quiet {
         fn url(&self) -> String {
-            "http://127.0.0.1:1/".into()
+            self.0.clone()
         }
         fn headers(&self, _: Option<&SecretValue>) -> Result<Vec<(&'static str, HeaderValue)>, LlmError> {
             Ok(Vec::new())
@@ -403,41 +414,88 @@ mod tests {
             Fail::network("unused")
         }
         fn decoder(&self, _: Option<SecretValue>) -> Box<dyn Decoder> {
-            unreachable!("the request is never sent")
+            Box::new(NoEvents)
         }
     }
 
+    fn job(url: &str) -> Job {
+        let endpoint = crate::http::Endpoint::parse(url).unwrap_or_else(|e| panic!("{e}"));
+        Job {
+            http: Http::new(&endpoint).unwrap_or_else(|e| panic!("{e}")),
+            protocol: Arc::new(Quiet(format!("{url}/v1/x"))),
+            body: Vec::new(),
+            key: None,
+            max_retries: 0,
+            timeouts: Timeouts::default(),
+            seed: 1,
+        }
+    }
+
+    /// A server that answers every connection with an open event stream and reports, on `closed`, the instant the
+    /// client hung up. `connected` gets one message per accepted connection.
+    fn quiet_server() -> (String, std::sync::mpsc::Receiver<()>, std::sync::mpsc::Receiver<std::time::Instant>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap_or_else(|e| panic!("{e}"));
+        let url = format!("http://{}", listener.local_addr().unwrap_or_else(|e| panic!("{e}")));
+        let (connected_tx, connected) = std::sync::mpsc::channel();
+        let (closed_tx, closed) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let (connected_tx, closed_tx) = (connected_tx.clone(), closed_tx.clone());
+                std::thread::spawn(move || {
+                    let mut seen = Vec::new();
+                    let mut buf = [0u8; 1024];
+                    while !seen.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match stream.read(&mut buf) {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => seen.extend_from_slice(&buf[..n]),
+                        }
+                    }
+                    let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n:open\n\n";
+                    if stream.write_all(head.as_bytes()).is_err() {
+                        return;
+                    }
+                    let _ = connected_tx.send(());
+                    while matches!(stream.read(&mut buf), Ok(n) if n > 0) {}
+                    let _ = closed_tx.send(std::time::Instant::now());
+                });
+            }
+        });
+        (url, connected, closed)
+    }
+
     #[test]
-    fn building_a_large_request_does_not_hold_the_only_async_worker() {
+    fn a_cancel_closes_the_connection_within_50_ms_while_another_request_is_being_built() {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .enable_all()
             .build()
             .unwrap_or_else(|e| panic!("{e}"));
-        let cancel = Cancel::new();
-        let make = || {
-            // Stands for base64-encoding many large images.
-            std::thread::sleep(Duration::from_millis(400));
-            let endpoint = crate::http::Endpoint::parse("http://127.0.0.1:1").unwrap_or_else(|e| panic!("{e}"));
-            Job {
-                http: Http::new(&endpoint).unwrap_or_else(|e| panic!("{e}")),
-                protocol: Arc::new(Unused),
-                body: Vec::new(),
-                key: None,
-                max_retries: 0,
-                timeouts: Timeouts::default(),
-                seed: 1,
-            }
-        };
-        let _stream = spawn(rt.handle(), make, &cancel);
-        // Another turn's timer on the same single worker must keep firing while the first turn's request is built.
-        let late = rt.block_on(async {
-            let start = std::time::Instant::now();
-            tokio::time::sleep(Duration::from_millis(20)).await;
-            start.elapsed()
-        });
-        cancel.cancel();
-        assert!(late < Duration::from_millis(200), "the worker was held for {late:?}");
+        let (url, connected, closed) = quiet_server();
+        let cancel_a = Cancel::new();
+        let url_a = url.clone();
+        let _a = spawn(rt.handle(), move || job(&url_a), &cancel_a);
+        connected.recv_timeout(Duration::from_secs(5)).unwrap_or_else(|e| panic!("turn A never connected: {e}"));
+        // Turn B builds its request for 400 ms (standing for the base64 of many images) on the same one-worker runtime.
+        let (building_tx, building) = std::sync::mpsc::channel();
+        let cancel_b = Cancel::new();
+        let _b = spawn(
+            rt.handle(),
+            move || {
+                let _ = building_tx.send(());
+                std::thread::sleep(Duration::from_millis(400));
+                job(&url)
+            },
+            &cancel_b,
+        );
+        building.recv_timeout(Duration::from_secs(5)).unwrap_or_else(|e| panic!("turn B never began: {e}"));
+        let cancelled_at = std::time::Instant::now();
+        cancel_a.cancel();
+        let hung_up = closed.recv_timeout(Duration::from_secs(5)).unwrap_or_else(|e| panic!("never closed: {e}"));
+        let took = hung_up.saturating_duration_since(cancelled_at);
+        assert!(took <= Duration::from_millis(50), "the connection closed {took:?} after cancel()");
+        cancel_b.cancel();
     }
 
     #[test]

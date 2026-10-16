@@ -655,22 +655,6 @@ fn a_turn_error_message_is_redacted_whatever_its_json_spelling() {
 }
 
 #[test]
-fn a_key_straddling_the_error_body_cutoff_leaves_no_part_behind() {
-    // The reader keeps 64 KiB of an error body; the key starts so that the cut falls inside it at several places.
-    let cut = 64 * 1024;
-    for inside in [1, common::KEY.len() / 2, common::KEY.len() - 1] {
-        let before = cut - inside - r#"{"type":"error","error":{"type":"x","message":""#.len();
-        let echoed =
-            format!(r#"{{"type":"error","error":{{"type":"x","message":"{}{}"}}}}"#, "a".repeat(before), common::KEY);
-        let rig = Rig::new(vec![Reply::status(400, &echoed)]);
-        let (events, error) = play(&rig);
-        let shown = format!("{events:?} {error:?}");
-        assert!(!shown.contains("sk-test"), "{inside}: {shown}");
-        assert!(!shown.contains(&common::KEY[..6]), "{inside}: no leading part of the key either");
-    }
-}
-
-#[test]
 fn a_retry_after_on_a_5xx_or_overload_sets_the_wait() {
     for status in [500, 529] {
         let rig = Rig::new(vec![Reply::status_with(status, &[("retry-after", "1")], "{}"), ok_reply()]);

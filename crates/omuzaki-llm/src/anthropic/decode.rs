@@ -35,9 +35,9 @@ pub(crate) struct AnthropicDecoder {
     stopped: bool,
     open: HashMap<u64, Open>,
     usage: Usage,
-    /// The prompt and the output counters have each been reported at least once. A turn that stops without both has
-    /// no trustworthy usage, and a zero there would read as a free turn.
-    reported: (bool, bool),
+    /// The prompt counter has been reported (it comes with `message_start`). The output counter is not tracked here:
+    /// the one that counts is the final one, in the delta that stops the turn.
+    input_reported: bool,
     /// Redacted from the messages of an error event.
     secret: Option<SecretValue>,
 }
@@ -96,10 +96,10 @@ impl AnthropicDecoder {
     /// Folds the counters present in `usage` into the running (cumulative) totals.
     fn merge(&mut self, usage: &Value) -> LlmEvent {
         let take = |slot: &mut u64, found: Option<u64>| *slot = found.unwrap_or(*slot);
-        let (input, output) = (counter(usage, "input_tokens"), counter(usage, "output_tokens"));
-        self.reported = (self.reported.0 || input.is_some(), self.reported.1 || output.is_some());
+        let input = counter(usage, "input_tokens");
+        self.input_reported |= input.is_some();
         take(&mut self.usage.input, input);
-        take(&mut self.usage.output, output);
+        take(&mut self.usage.output, counter(usage, "output_tokens"));
         take(&mut self.usage.cache_read, counter(usage, "cache_read_input_tokens"));
         take(&mut self.usage.cache_write, counter(usage, "cache_creation_input_tokens"));
         LlmEvent::Usage(self.usage)
@@ -174,9 +174,12 @@ impl AnthropicDecoder {
         }
         if let Some(reason) = v.get("delta").and_then(|d| field(d, "stop_reason")) {
             let stop = stop_reason(reason)?;
-            // A turn always reports its usage before it stops; one that does not is an error, not a free turn.
-            if self.reported != (true, true) {
-                return Err(malformed("the turn stopped without reporting its input and output token counts"));
+            // A stopping turn carries its final output count, and it is at least one token: `message_start` only
+            // reports the first. A missing, mistyped or zero final count (or no prompt count at all) is an error,
+            // not a cheaper turn.
+            let final_output = v.get("usage").and_then(|u| counter(u, "output_tokens")).filter(|n| *n > 0);
+            if final_output.is_none() || !self.input_reported {
+                return Err(malformed("the turn stopped without a valid final token count"));
             }
             if events.is_empty() {
                 events.push(LlmEvent::Usage(self.usage));
@@ -291,22 +294,36 @@ mod tests {
     }
 
     #[test]
-    fn a_stop_without_both_token_counts_is_malformed() {
-        // No usage anywhere before the stop.
+    fn a_stop_without_a_valid_final_token_count_is_malformed() {
+        let start =
+            r#"{"type":"message_start","message":{"id":"m","model":"x","usage":{"input_tokens":3,"output_tokens":1}}}"#;
+        let stop = |usage: &str| format!(r#"{{"type":"message_delta","delta":{{"stop_reason":"end_turn"}}{usage}}}"#);
+        // The start's own output count never stands in for the final one.
+        for usage in [
+            String::new(),
+            r#","usage":{}"#.into(),
+            r#","usage":{"output_tokens":"9"}"#.into(),
+            r#","usage":{"output_tokens":-2}"#.into(),
+            r#","usage":{"output_tokens":0}"#.into(),
+            r#","usage":null"#.into(),
+        ] {
+            let mut d = AnthropicDecoder::default();
+            ok(feed(&mut d, start));
+            let got = feed(&mut d, &stop(&usage));
+            assert!(
+                matches!(got, Err(Fail::Fatal(LlmError::Malformed(m))) if m.contains("final token count")),
+                "{usage}"
+            );
+        }
+        // No prompt count at all is no report either.
         let mut d = AnthropicDecoder::default();
-        ok(feed(&mut d, r#"{"type":"message_start","message":{"id":"m","model":"claude-haiku-5-5"}}"#));
-        let stop = r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"}}"#;
-        assert!(matches!(feed(&mut d, stop), Err(Fail::Fatal(LlmError::Malformed(m))) if m.contains("token counts")));
-        // An empty usage object is no report either.
+        ok(feed(&mut d, r#"{"type":"message_start","message":{"id":"m","model":"x"}}"#));
+        assert!(feed(&mut d, &stop(r#","usage":{"output_tokens":4}"#)).is_err());
+        // Input from the start and the final output from the delta are together enough.
         let mut d = AnthropicDecoder::default();
-        ok(feed(&mut d, r#"{"type":"message_start","message":{"id":"m","model":"x","usage":{}}}"#));
-        let stop = r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{}}"#;
-        assert!(matches!(feed(&mut d, stop), Err(Fail::Fatal(LlmError::Malformed(_)))));
-        // Input from the start and output from the delta are together enough.
-        let mut d = AnthropicDecoder::default();
-        ok(feed(&mut d, r#"{"type":"message_start","message":{"id":"m","model":"x","usage":{"input_tokens":3}}}"#));
-        let stop = r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":4}}"#;
-        assert!(ok(feed(&mut d, stop)).contains(&LlmEvent::Usage(Usage::new(3, 4))));
+        ok(feed(&mut d, start));
+        let got = ok(feed(&mut d, &stop(r#","usage":{"output_tokens":4}"#)));
+        assert!(got.contains(&LlmEvent::Usage(Usage::new(3, 4))));
     }
 
     #[test]

@@ -160,23 +160,34 @@ impl Response {
 
     /// At most `limit` bytes of the body, with `secret` redacted from them.
     ///
-    /// The body is read `secret` bytes past `limit` and redacted before it is cut, so a key that straddles the cutoff
-    /// is replaced whole and no part of it survives in the kept bytes.
+    /// The body is read `K` bytes past `limit`, where `K` is the secret's length, and that whole window is redacted
+    /// before the cut to `limit` (on a character boundary). A secret that starts before `limit` ends inside the
+    /// window, so it is replaced whole before anything is cut, whatever the replacement does to the length.
     pub(crate) async fn read_limited(self, limit: usize, secret: Option<&SecretValue>) -> Result<Vec<u8>, HttpFail> {
-        let reach = limit.saturating_add(secret.map_or(0, |s| s.expose().len()));
-        let mut out = Vec::new();
+        let mut window = Vec::new();
         let mut body = self.stream();
+        let reach = limit.saturating_add(secret.map_or(0, |s| s.expose().len()));
         while let Some(chunk) = body.next().await {
-            out.extend_from_slice(&chunk?);
-            if out.len() >= reach {
-                out.truncate(reach);
+            window.extend_from_slice(&chunk?);
+            if window.len() >= reach {
                 break;
             }
         }
-        let mut out = redact_bytes(out, secret);
-        out.truncate(limit);
-        Ok(out)
+        Ok(bounded_redacted(window, limit, secret))
     }
+}
+
+/// `window` (the start of a body, at most `limit` plus the secret's length) with `secret` redacted, then cut to `limit`
+/// bytes on a character boundary.
+pub(crate) fn bounded_redacted(mut window: Vec<u8>, limit: usize, secret: Option<&SecretValue>) -> Vec<u8> {
+    window.truncate(limit.saturating_add(secret.map_or(0, |s| s.expose().len())));
+    let mut text = String::from_utf8_lossy(&redact_bytes(window, secret)).into_owned();
+    let mut end = limit.min(text.len());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text.truncate(end);
+    text.into_bytes()
 }
 
 /// Installs `ring` as the process's rustls provider, once. Another installer winning the race is fine: any provider
@@ -304,6 +315,30 @@ mod tests {
 
     fn parse(endpoint: &str) -> Result<Endpoint, LlmError> {
         Endpoint::parse(endpoint)
+    }
+
+    #[test]
+    fn a_secret_at_the_cutoff_is_redacted_before_the_cut_wherever_it_starts() {
+        let key = SecretValue::new("sk-test-0123456789-secret");
+        let limit = 64;
+        let tail = "tail-text ".repeat(20);
+        // The key starts at every offset from far before the cutoff to just after it.
+        for start in 0..=limit + 2 {
+            let body = format!("{}{}{}", "a".repeat(start), key.expose(), tail);
+            let reach = limit + key.expose().len();
+            let window = body.as_bytes()[..reach.min(body.len())].to_vec();
+            let got = bounded_redacted(window, limit, Some(&key));
+            let want = body.replace(key.expose(), "<redacted>");
+            assert_eq!(String::from_utf8_lossy(&got), &want[..limit.min(want.len())], "start {start}");
+        }
+    }
+
+    #[test]
+    fn the_cut_never_splits_a_character() {
+        let key = SecretValue::new("sk-abc");
+        let body = "é".repeat(40);
+        let got = bounded_redacted(body.as_bytes().to_vec(), 7, Some(&key));
+        assert_eq!(String::from_utf8_lossy(&got), "ééé");
     }
 
     #[test]
