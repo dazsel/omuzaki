@@ -37,7 +37,7 @@ fn application(item: &str, rights: ItemRights) -> ApplicationRecord {
 
 /// Rights of a fixture item that is not cleared for commercial use.
 fn non_commercial() -> ItemRights {
-    ItemRights::new("CC-BY-NC-4.0", Commercial::No)
+    ItemRights::first_party().with_licence("CC-BY-NC-4.0").with_commercial(Commercial::No).with_owned(false)
 }
 
 /// A part row as the library writes it: the item's rights, owned when the item says so.
@@ -130,8 +130,8 @@ fn a_non_commercial_face_item_fails_publish_at_its_record_and_private_passes() {
 #[test]
 fn an_unknown_status_and_private_test_material_are_not_cleared_either() {
     for rights in [
-        ItemRights::new("CC0-1.0", Commercial::Unknown),
-        ItemRights::new("CC0-1.0", Commercial::Ok).with_private_test(true),
+        ItemRights::first_party().with_commercial(Commercial::Unknown).with_owned(false),
+        ItemRights::first_party().with_private_test(true).with_owned(false),
     ] {
         let doc = doc(&ItemRights::first_party(), &[("hat", node("test/hat", rights))]);
         let publish = check(&doc, "publish");
