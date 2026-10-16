@@ -223,7 +223,7 @@ fn the_buttons_are_gold_with_the_highlight_band() {
         clusters.last_mut().unwrap().push(*y);
     }
     assert_eq!(clusters.len(), 3);
-    let centres: Vec<f32> = clusters.iter().map(|c| 0.5 * (c[0] + c[c.len() - 1])).collect();
+    let centres: Vec<f32> = clusters.iter().map(|c| f32::midpoint(c[0], c[c.len() - 1])).collect();
     assert!(((centres[1] - centres[0]) - 0.026).abs() < 0.002 && ((centres[2] - centres[1]) - 0.026).abs() < 0.002);
     // And they sit within the vest's front panel: above the hem tip, below the V tip.
     assert!(centres[0] > 0.336 && centres[2] < 0.432 + 0.02, "{centres:?}");
@@ -235,7 +235,7 @@ fn the_vest_is_skinned_to_the_torso_and_every_vertex_has_weights() {
     for m in &output.meshes {
         let g = &m.geometry;
         assert_eq!(g.joints.len(), g.positions.len(), "{}", m.name);
-        assert!(!m.joint_bones.is_empty());
+        assert_ne!(m.joint_bones.len(), 0, "{}", m.name);
     }
     // The hem is on the hips, the rim on the chest and above.
     let vest = mesh(&output, "garment-vest");

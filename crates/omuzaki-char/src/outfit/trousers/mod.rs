@@ -14,7 +14,7 @@ use omuzaki_face_api::{Check, ColourRef, Validate};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use self::rows::{GUSSET, add_rows, crotch, leg_rows, pelvis_rows, tile_uvs};
+use self::rows::{GUSSET, MIN_FALL, add_rows, crotch, leg_rows, pelvis_rows, tile_uvs};
 use self::shape::{BAND_RAMP, Band, CUFF_RAMP, LegCut, LegProfile, Rise};
 use super::common::{FabricStyle, Garment, GarmentCommon, GarmentError, GarmentOutput, MAX_EASE};
 use super::loft::Surface;
@@ -232,7 +232,7 @@ impl Layout {
             .project(bottom.centre)?
             .map(|projection| projection.t)
             .ok_or_else(|| GarmentError::invalid("legs", "no section of the leg passes through the torso's bottom"))?;
-        let crotch = crotch(legs, leg_top, p.common.ease)?;
+        let crotch = crotch(legs, leg_top + MIN_FALL, p.common.ease)?;
         let starts = crotch + GUSSET;
         let knee_at = legs[0]
             .weights()
