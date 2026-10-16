@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 
 use omuzaki_anim::BusAnimatorParams;
 use omuzaki_anim_api::{Channel, DeviceProfile, HeadPose, HumanoidBone, HumanoidPose, TrackFrame};
+use omuzaki_char_api::{BuildOptions, BuildServices, CharId, CharacterBuilder, RegistryBuilder};
 use omuzaki_char_api::{BuiltCharacter, JointRef};
 use omuzaki_core::glam::EulerRot;
 use omuzaki_core::glam::{Mat4, Quat, UVec2, Vec3};
@@ -32,6 +33,7 @@ use omuzaki_render_api::{
     PaintTarget, Painter as RenderPainter, Pass, Projection, Quality, RenderError, Renderer, ResourceRef,
     ResourceStats, Scene, TargetDesc, TargetId, TextureDesc, TextureId, budget,
 };
+use omuzaki_render_api::{Colour, Light};
 use omuzaki_render_mock::MockRenderer;
 use omuzaki_stage::frame::face::{FaceRig, InlineExecutor};
 use omuzaki_stage::frame::pose::seed_base_pose;
@@ -39,20 +41,18 @@ use omuzaki_stage::frame::{Stage, StageClock};
 use omuzaki_stage::perform::host::PerformHost;
 use omuzaki_stage::perform::input::{InputError, InputHost, LiveInput, NoPrompt, PreviewState, SourceKind, SourceSlot};
 use omuzaki_stage::perform::live::{LiveFrame, LiveStage};
-use omuzaki_stage::scene::resolve::{CheckedScene, Figure, ResolvedScene};
-use omuzaki_stage_api::{
-    Anchor, CameraDef, CameraId as SceneCameraId, CastMember, Framing, LightDef, LightId, LightShape, MemberId, SceneDef,
-    SceneSettings,
-};
-use omuzaki_char_api::{BuildOptions, BuildServices, CharId, CharacterBuilder, RegistryBuilder};
-use omuzaki_render_api::{Colour, Light};
-use std::collections::BTreeMap;
 use omuzaki_stage::perform::triggers::TriggerBinding;
 use omuzaki_stage::perform::{STEP_HZ, Tracking};
+use omuzaki_stage::scene::resolve::{CheckedScene, Figure, ResolvedScene};
 use omuzaki_stage::{StageError, UploadOptions};
+use omuzaki_stage_api::{
+    Anchor, CameraDef, CameraId as SceneCameraId, CastMember, Framing, LightDef, LightId, LightShape, MemberId,
+    SceneDef, SceneSettings,
+};
 use omuzaki_track_api::camera::CameraId;
 use omuzaki_track_api::tracker::TrackerConfig;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 
 use double::{Recorder, built};
 use support::{CameraLog, Cameras, face_for, mid_step, performer};
@@ -514,7 +514,11 @@ fn the_scheduler_measures_every_submission_and_steps_quality_down_over_budget() 
     assert!(live.live().scheduler().smoothed().is_some(), "the scheduler measured the frames");
     assert!(!changes.is_empty(), "two frames' worth of GPU time per frame steps quality down");
     assert!(live.live().scheduler().rungs() > 0);
-    assert_eq!(*live.live().stage().quality(), live.live().scheduler().quality(), "the stage renders at the scheduler's quality");
+    assert_eq!(
+        *live.live().stage().quality(),
+        live.live().scheduler().quality(),
+        "the stage renders at the scheduler's quality"
+    );
 }
 
 #[test]
@@ -637,7 +641,10 @@ fn live_submissions_are_numbered_through_a_pause_a_redraw_and_a_restart() {
     live.inner.as_mut().unwrap().restart(); // the timeline goes back to tick 0
     run(&mut live, 20);
     assert_eq!(reported.len(), 60);
-    assert!(reported.windows(2).all(|pair| pair[1] > pair[0]), "every submission is numbered above the last: {reported:?}");
+    assert!(
+        reported.windows(2).all(|pair| pair[1] > pair[0]),
+        "every submission is numbered above the last: {reported:?}"
+    );
     assert_eq!(reported, scene_indices, "the report names the submission the scene carried");
     assert!(live.live().scheduler().smoothed().is_some(), "the scheduler measured throughout");
 }
@@ -670,7 +677,13 @@ fn a_posted_scene_shows_in_the_next_frame_and_edits_follow() {
     let stage = live.live().stage();
     assert_ne!(stage.scene().camera, camera, "the camera yaw shows");
     assert_ne!(stage.scene().lights, lights, "the light colour shows");
-    assert!(stage.scene().lights.iter().any(|l| matches!(l, Light::Directional { colour, .. } if *colour == Colour::rgb(255, 0, 0))));
+    assert!(
+        stage
+            .scene()
+            .lights
+            .iter()
+            .any(|l| matches!(l, Light::Directional { colour, .. } if *colour == Colour::rgb(255, 0, 0)))
+    );
     assert!(live.live().owed().is_empty(), "values only: the renderer is owed nothing");
 
     // The subject moves: every instance of the character follows it, below the root each frame brings.
@@ -679,13 +692,17 @@ fn a_posted_scene_shows_in_the_next_frame_and_edits_follow() {
     live.inner.as_mut().unwrap().set_subject_root(step);
     live.frame();
     let after: Vec<Mat4> = live.live().stage().scene().instances.iter().map(|i| i.transform).collect();
-    assert!(!before.is_empty());
-    assert!(before.iter().zip(&after).all(|(b, a)| (*a - step * *b).abs_diff_eq(Mat4::ZERO, 1e-5)), "the instances moved by the subject root");
+    assert_ne!(before.len(), 0);
+    assert!(
+        before.iter().zip(&after).all(|(b, a)| (*a - step * *b).abs_diff_eq(Mat4::ZERO, 1e-5)),
+        "the instances moved by the subject root"
+    );
 }
 
 #[test]
 fn applying_a_scene_allocates_nothing_in_the_frames_after_it() {
-    let mut live = Live::new(Quiet(Recorder::new(false)), vec![("cam", turning(30.0, sweep))], Quality::live(), Painter::None);
+    let mut live =
+        Live::new(Quiet(Recorder::new(false)), vec![("cam", turning(30.0, sweep))], Quality::live(), Painter::None);
     live.go_live("cam");
     let mailbox = live.live().scenes();
     let mut def = scene_def();
@@ -702,7 +719,14 @@ fn applying_a_scene_allocates_nothing_in_the_frames_after_it() {
     });
     result.unwrap();
     assert_eq!(allocations, 0, "600 live frames after a scene allocated {allocations} times");
-    assert!(live.live().stage().scene().lights.iter().any(|l| matches!(l, Light::Directional { intensity, .. } if *intensity == 2.0)));
+    assert!(
+        live.live()
+            .stage()
+            .scene()
+            .lights
+            .iter()
+            .any(|l| matches!(l, Light::Directional { intensity, .. } if (*intensity - 2.0).abs() < 1e-6))
+    );
 }
 
 #[cfg(feature = "wgpu")]

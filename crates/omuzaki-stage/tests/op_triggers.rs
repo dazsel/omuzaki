@@ -574,7 +574,7 @@ fn a_switch_lists_the_outgoing_and_the_incoming_expression_as_active_until_the_o
     let active = |rig: &Rig| -> Vec<String> {
         rig.handle.triggers().into_iter().filter(|t| t.active).map(|t| t.binding.key).collect()
     };
-    assert!(active(&rig).is_empty());
+    assert_eq!(active(&rig), Vec::<String>::new());
     rig.handle.press("F1", true).unwrap();
     rig.steps(12);
     assert_eq!(active(&rig), ["F1"]);
@@ -587,5 +587,5 @@ fn a_switch_lists_the_outgoing_and_the_incoming_expression_as_active_until_the_o
     rig.steps(2);
     assert_eq!(active(&rig), ["F2"], "fading out");
     rig.steps(30);
-    assert!(active(&rig).is_empty());
+    assert_eq!(active(&rig), Vec::<String>::new());
 }
