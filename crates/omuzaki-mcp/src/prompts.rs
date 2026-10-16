@@ -49,8 +49,100 @@ pub struct PromptDef {
     pub template: &'static str,
 }
 
-/// The recipes this crate ships. Empty today: each lands with the feature whose ops it needs.
-pub(crate) const BUILT_IN: &[PromptDef] = &[];
+/// The recipes this crate ships (spec v3 §11). Each lists every op its text names in `needs`, so it is offered only to
+/// a session whose tools can do what it says; the recipes whose ops don't exist yet (setting up a first stream, a
+/// highlight as a short, tuning the life layer) are added with the features that bring those ops.
+pub(crate) const BUILT_IN: &[PromptDef] = &[
+    PromptDef {
+        name: "create_character_from_sheet",
+        title: "Create a character from this sheet",
+        description: "Build a character from a character sheet: body, palette, face and hair, then check it.",
+        arguments: &[
+            PromptArg {
+                name: "sheet",
+                description: "The character sheet: a file path in the project, or a description of the character",
+                required: true,
+            },
+            PromptArg { name: "name", description: "The new character's id (a lowercase slug)", required: false },
+        ],
+        needs: &["character.create", "body.set_template", "palette.set", "part.add", "face.set_profile"],
+        template: "Create a character from this sheet: {sheet}\n\
+            Work in this order, and group the edits into one transaction with {tool:tx.begin} and {tool:tx.commit} so the whole \
+            build undoes as one step.\n\
+            1. Read the sheet and write down what it shows: body type and proportions, skin, hair, eyes, clothes, colours.\n\
+            2. {tool:character.create} for the character (id: {name}; choose a short slug from the sheet if none was given), \
+               then {tool:body.set_template} if the sheet's body is not the default.\n\
+            3. {tool:palette.set} for the colours you read off the sheet, one slot at a time.\n\
+            4. {tool:part.add} for hair, garments and accessories, and {tool:face.set_profile} for the face.\n\
+            5. Preview each edit with dry_run first. When the character is built, check it as the instructions say, and tell \
+               me what you could not match from the sheet instead of guessing.",
+    },
+    PromptDef {
+        name: "match_reference_look",
+        title: "Match this reference look",
+        description: "Bring a character's rendering style and colours close to a reference image or video.",
+        arguments: &[
+            PromptArg {
+                name: "reference",
+                description: "The reference: a file path in the project, or a description of the look",
+                required: true,
+            },
+            PromptArg { name: "character", description: "The character to change", required: true },
+        ],
+        needs: &["look.list_presets", "look.set_preset", "look.set_param", "palette.set"],
+        template: "Make {character} look like this reference: {reference}\n\
+            1. Describe the reference's rendering style (outline weight, shading steps, bloom, texture) and its palette \
+               before you touch anything, and measure the reference rather than judging it by eye.\n\
+            2. {tool:look.list_presets}, then {tool:look.set_preset} for the closest preset.\n\
+            3. {tool:look.set_param} for each remaining difference, one parameter at a time, previewing with dry_run.\n\
+            4. {tool:palette.set} to match the reference's colours.\n\
+            Group the edits in one transaction. Say which differences remain and why.",
+    },
+    PromptDef {
+        name: "make_emote_pack",
+        title: "Make an emote pack",
+        description: "Create a set of named face expressions for a character.",
+        arguments: &[
+            PromptArg { name: "character", description: "The character the emotes are for", required: true },
+            PromptArg {
+                name: "emotes",
+                description: "The emotes to make, for example: happy, sad, surprised, sleepy",
+                required: false,
+            },
+        ],
+        needs: &[
+            "face.expression.set",
+            "face.expression.duplicate",
+            "face.expression.rename",
+            "face.expression.values",
+        ],
+        template: "Make an emote pack for {character}. Emotes: {emotes} (if none were named, make happy, sad, angry, \
+            surprised, sleepy and smug).\n\
+            1. {tool:face.expression.values} to see which channels an expression can set.\n\
+            2. {tool:face.expression.set} for each emote, starting from the closest one you have made with \
+               {tool:face.expression.duplicate} and {tool:face.expression.rename}.\n\
+            Keep every emote readable at small sizes: exaggerate eyes and mouth before anything else. Group the edits in one \
+            transaction and list the emotes you made.",
+    },
+    PromptDef {
+        name: "make_vrchat_quest_variant",
+        title: "Make a VRChat Quest variant",
+        description: "Create a lighter variant of a character for a mobile VRChat avatar, and check that it exports.",
+        arguments: &[PromptArg {
+            name: "character",
+            description: "The character to make the variant of",
+            required: true,
+        }],
+        needs: &["variant.create", "variant.set_override", "io.check_export"],
+        template: "Make a Quest-sized variant of {character}.\n\
+            1. {tool:variant.create} for a variant named quest that extends the base character.\n\
+            2. {tool:variant.set_override} to turn off or simplify what a mobile avatar cannot afford (extra accessories, \
+               secondary hair, heavy cloth). Change the variant only; the base character stays as it is.\n\
+            3. {tool:io.check_export} for the VRM format, and fix what it reports until it passes or only things you must \
+               ask me about remain.\n\
+            Tell me what the variant gave up.",
+    },
+];
 
 /// The prompts of one server: the built-in ones, then the host's.
 #[derive(Clone, Debug)]
@@ -211,7 +303,53 @@ mod tests {
         let (a, mut b) = (def("one"), def("two"));
         b.title = "B";
         let prompts = Prompts::new(&[a, b]);
-        assert_eq!(prompts.0.len(), 1);
-        assert_eq!(prompts.0[0].template, "two");
+        let named: Vec<_> = prompts.0.iter().filter(|d| d.name == "t").collect();
+        assert_eq!(named.len(), 1);
+        assert_eq!(named[0].template, "two");
+        assert_eq!(prompts.0.len(), BUILT_IN.len() + 1, "the built-in recipes are kept");
+    }
+
+    /// The tool names a template names with `{tool:..}`.
+    fn named_tools(template: &str) -> Vec<&str> {
+        template.split("{tool:").skip(1).filter_map(|rest| rest.split('}').next()).collect()
+    }
+
+    #[test]
+    fn every_tool_a_built_in_recipe_names_is_one_it_needs() {
+        for def in BUILT_IN {
+            for op in named_tools(def.template) {
+                let built_in_tool = op.starts_with("tx.") || op.starts_with("history.");
+                assert!(built_in_tool || def.needs.contains(&op), "{} names {op} without needing it", def.name);
+            }
+            for op in def.needs {
+                assert!(named_tools(def.template).contains(op), "{} needs {op} but never names it", def.name);
+            }
+        }
+    }
+
+    #[test]
+    fn every_placeholder_in_a_built_in_recipe_names_one_of_its_arguments() {
+        for def in BUILT_IN {
+            let mut rest = def.template;
+            while let Some(open) = rest.find('{') {
+                let close = rest[open..].find('}').map_or(rest.len(), |c| open + c);
+                let inner = &rest[open + 1..close];
+                assert!(
+                    inner.starts_with("tool:") || def.arguments.iter().any(|a| a.name == inner),
+                    "{}: {{{inner}}} names no argument",
+                    def.name
+                );
+                rest = &rest[close.min(rest.len() - 1) + 1..];
+            }
+        }
+    }
+
+    #[test]
+    fn built_in_recipe_names_are_unique_and_safe() {
+        let mut names: Vec<&str> = BUILT_IN.iter().map(|d| d.name).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), BUILT_IN.len());
+        assert!(names.iter().all(|n| n.chars().all(|c| c.is_ascii_lowercase() || c == '_')));
     }
 }

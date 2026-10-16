@@ -2,6 +2,7 @@
 //! from the registry's facts (kind, scope, undo) and from which tools actually exist, so it can't point an agent at a
 //! tool that isn't there or go stale when ops change.
 
+use omuzaki_doc_api::DocPath;
 use omuzaki_ops_api::{Grants, OpInfo, OpKind, Scope, Undo};
 use rmcp::model::ToolAnnotations;
 
@@ -111,7 +112,7 @@ pub(crate) fn annotations(info: &OpInfo) -> ToolAnnotations {
 }
 
 /// The server-level guide a client shows its model once per session (`instructions` in the handshake).
-pub(crate) fn instructions(grants: &Grants, guidance: &Guidance) -> String {
+pub(crate) fn instructions(grants: &Grants, guidance: &Guidance, registry: bool) -> String {
     let granted: Vec<&str> = Scope::ALL.into_iter().filter(|s| grants.allows(*s)).map(Scope::name).collect();
     let mut lines = vec![
         "Omuzaki is a character studio. Every tool is an operation on the project; the tool list is generated from the \
@@ -160,12 +161,45 @@ pub(crate) fn instructions(grants: &Grants, guidance: &Guidance) -> String {
                 .to_owned(),
         );
     }
+    if registry {
+        lines.push(
+            "A call can come back `waiting`: nothing ran, because a person must decide first (the request needs their \
+             approval in Omuzaki, or they paused this session). Don't retry it. For an approval, call approval_wait with \
+             the approval id to wait for the answer, or carry on with other work; only the person can approve. While \
+             the session is paused your calls are held briefly for them to resume it; session_info and approval_wait \
+             still answer, and session_info says why you are waiting."
+                .to_owned(),
+        );
+    }
     lines.push(
         "Tool names are area_verb (history_undo); each description starts with the op name as area.verb, which also \
          works as a tool name."
             .to_owned(),
     );
+    lines.push(
+        "Everything this server says is in English, whatever language the person uses. If you run the `omuzaki` command \
+         line from a shell, its human-readable output follows the person's locale (--lang, OMUZAKI_LANG, then the \
+         operating system): pass --json for output that never changes with the locale, or --lang en. Ids (tool names, \
+         op ids, scope ids, paths) are never translated."
+            .to_owned(),
+    );
     lines.join("\n")
+}
+
+/// The line for a session that has a fence (design §5.3), or says there is none: appended to the guide an agent reads
+/// when it connects, because a fence belongs to the session and not to the server.
+pub(crate) fn fence_note(fence: &[DocPath]) -> String {
+    if fence.is_empty() {
+        return "You have no fence: you may edit any part of the project except a part another session holds, and \
+                an edit to a held part is refused (nothing changes) naming who holds it."
+            .to_owned();
+    }
+    let paths: Vec<String> = fence.iter().map(|p| crate::changes::plain(&p.to_string(), 100)).collect();
+    format!(
+        "Your fence: {}. You may edit only inside it; an edit outside it, or in a part another session holds, is \
+         refused and nothing changes. session_info shows your fence.",
+        paths.join(", ")
+    )
 }
 
 #[cfg(test)]
@@ -236,7 +270,7 @@ mod tests {
         let text =
             tool_description(&info(OpKind::Edit, Scope::EditCharacter, Undo::Auto), &Grants::agent_default(), &none);
         assert!(!text.contains("render.") && !text.contains("measure."));
-        let guide = instructions(&Grants::agent_default(), &none);
+        let guide = instructions(&Grants::agent_default(), &none, false);
         assert!(!guide.contains("render.preview") && !guide.contains("measure."));
     }
 
@@ -255,35 +289,64 @@ mod tests {
 
     #[test]
     fn instructions_warn_when_nothing_can_work() {
-        assert!(instructions(&Grants::of([Scope::Render]), &guidance()).contains("WARNING: `read` is not granted"));
-        assert!(!instructions(&Grants::agent_default(), &guidance()).contains("WARNING"));
-        assert!(!instructions(&Grants::of([Scope::Render]), &guidance()).contains("omuzaki://log"));
+        assert!(
+            instructions(&Grants::of([Scope::Render]), &guidance(), false).contains("WARNING: `read` is not granted")
+        );
+        assert!(!instructions(&Grants::agent_default(), &guidance(), false).contains("WARNING"));
+        assert!(!instructions(&Grants::of([Scope::Render]), &guidance(), false).contains("omuzaki://log"));
     }
 
     #[test]
     fn instructions_say_to_read_the_log_and_subscribe_only_if_supported() {
-        let text = instructions(&Grants::agent_default(), &guidance());
+        let text = instructions(&Grants::agent_default(), &guidance(), false);
         assert!(
             text.contains("Read the resource omuzaki://log")
                 && text.contains("history_log")
                 && text.contains("if your client supports resource subscriptions")
         );
         assert!(text.contains("omuzaki://project") && text.contains("omuzaki://character/<id>"));
-        assert!(!instructions(&Grants::of([Scope::Render]), &guidance()).contains("omuzaki://project"));
+        assert!(!instructions(&Grants::of([Scope::Render]), &guidance(), false).contains("omuzaki://project"));
         assert!(text.contains("area_verb (history_undo)") && text.contains("starts with the op name as area.verb"));
     }
 
     #[test]
     fn instructions_explain_the_heads_up_only_to_sessions_that_can_see_it() {
-        let text = instructions(&Grants::agent_default(), &guidance());
+        let text = instructions(&Grants::agent_default(), &guidance(), false);
         assert!(text.contains("\"Heads-up\"") && text.contains("since_your_last_call") && text.contains("Re-read"));
-        assert!(!instructions(&Grants::of([Scope::Render]), &guidance()).contains("Heads-up"));
+        assert!(!instructions(&Grants::of([Scope::Render]), &guidance(), false).contains("Heads-up"));
     }
 
     #[test]
     fn instructions_list_the_granted_scopes() {
-        let text = instructions(&Grants::agent_default(), &guidance());
+        let text = instructions(&Grants::agent_default(), &guidance(), false);
         assert!(text.contains("read, edit:character, edit:scene, edit:library, edit:settings, render, review."));
         assert!(!text.contains("publish"));
+    }
+
+    #[test]
+    fn the_guide_says_the_server_is_english_and_the_cli_follows_the_locale() {
+        for grants in [Grants::agent_default(), Grants::of([Scope::Render]), Grants::person()] {
+            for registry in [false, true] {
+                let text = instructions(&grants, &guidance(), registry);
+                assert!(text.contains("Everything this server says is in English"), "{text}");
+                assert!(text.contains("--json") && text.contains("OMUZAKI_LANG"), "{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn approvals_and_pause_are_explained_only_where_a_registry_can_produce_them() {
+        let without = instructions(&Grants::agent_default(), &guidance(), false);
+        let with = instructions(&Grants::agent_default(), &guidance(), true);
+        assert!(!without.contains("approval_wait"));
+        assert!(with.contains("approval_wait") && with.contains("paused"));
+    }
+
+    #[test]
+    fn a_fence_is_told_to_its_session_and_its_absence_too() {
+        let fence = [DocPath::parse("characters/char-a/hair").unwrap()];
+        let fenced = fence_note(&fence);
+        assert!(fenced.contains("characters/char-a/hair") && fenced.contains("refused"), "{fenced}");
+        assert!(fence_note(&[]).contains("another session holds"));
     }
 }

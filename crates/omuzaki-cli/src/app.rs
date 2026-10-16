@@ -33,5 +33,7 @@ fn run_with_runner(cli: &Cli) -> Result<Reply, OpError> {
     let mut session = Session::from_env();
     let executor = open_executor_with(cli, &session.connections)?;
     session.sessions = Some(executor.clone());
+    session.jobs = Some(executor.clone());
+    session.project = cli.project.as_deref().map(|dir| dir.display().to_string());
     execute(cli, executor, &session, &mut io::stdin()).map(Reply::ok)
 }

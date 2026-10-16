@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use omuzaki_history_api::JournalStatus;
 use omuzaki_ops_api::{
-    Actor, Budget, Cause, CauseKind, ErrorCode, ErrorDetail, Grants, Jobs, Limits, Mode, OpError, OpKind, PauseReason,
-    Request, Runner, Scope, SessionSpec, SessionState, Sessions, Transport,
+    Actor, Budget, Cause, CauseKind, EndReason, ErrorCode, ErrorDetail, Grants, Jobs, Limits, Mode, OpError, OpKind,
+    Outcome, PauseReason, Request, Runner, Scope, SessionSpec, SessionState, Sessions, Transport,
 };
 use rmcp::ErrorData as McpError;
 use rmcp::handler::server::ServerHandler;
@@ -22,12 +22,18 @@ use rmcp::model::{
 };
 use rmcp::service::{RequestContext, RoleServer, SubscriptionContext};
 use serde_json::{Value, json};
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
+use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 
-use crate::builtin::{Builtin, CAUSE_MAX_CHARS};
+use crate::agent::{self, Link};
+use crate::approvals::{self, Own, OwnApprovals};
+use crate::builtin::{APPROVAL_WAIT_DEFAULT_SECONDS, APPROVAL_WAIT_MAX_SECONDS, Builtin, CAUSE_MAX_CHARS};
 use crate::catalog::{Entry, Route};
 use crate::changes::{OwnTxs, Report};
 use crate::events::{LOG_URI, Updates, lock};
+use crate::info;
 use crate::jobs::{self, JobWatch};
 use crate::names;
 use crate::render::{self, Call, OpenTx};
@@ -37,6 +43,11 @@ use crate::server::{Shared, View};
 
 /// How long a reply to a change waits for the journal to save it (spec v3 §6, journal design §5.5).
 const SAVE_WAIT: Duration = Duration::from_secs(5);
+
+/// The longest a result waits for the event feed to deliver ops the runner's log already holds, before its heads-up is
+/// built without them. The feed is a worker thread a few microseconds behind; this is for a stalled one, and the next
+/// result reports what this one missed.
+const FEED_LAG: Duration = Duration::from_secs(1);
 
 /// The handler for one client connection (an rmcp [`ServerHandler`]).
 ///
@@ -54,7 +65,18 @@ pub struct Session {
     jobs: Option<Arc<dyn Jobs>>,
     /// Fixed at the first call, so a transaction always belongs to one actor identity. If the host's registry would not
     /// open a session, the refusal is kept instead and answers every call: a connection without a session runs nothing.
-    actor: OnceLock<Result<Actor, OpError>>,
+    link: OnceLock<Result<Link, OpError>>,
+    /// Set when the session ends, by the registry (a person revoked it, the project closed) or by this handler as the
+    /// connection goes. The connection closes when it is set.
+    ended: watch::Sender<Option<EndReason>>,
+    /// Cancelled when this handler is dropped, which stops the tasks that follow the registry for it.
+    alive: CancellationToken,
+    /// An in-app session is admitted by its host, not by a handshake (see `in_app`).
+    in_app: bool,
+    /// The `Mcp-Session-Id` of this connection over HTTP, learned from its first request after `initialize`.
+    http_id: Arc<OnceLock<String>>,
+    /// When the client last asked for anything: what tells an idle drop from a disconnect.
+    last_active: Mutex<Instant>,
     state: Mutex<State>,
 }
 
@@ -75,6 +97,8 @@ struct State {
     /// The transactions this session made, from `tx_begin` and from each applied edit's result. Tells its own undo of
     /// an old transaction (whose ops have left the log) apart from someone else's.
     own: OwnTxs,
+    /// The approvals this session asked a person for, and which decisions it has been told about.
+    approvals: OwnApprovals,
 }
 
 /// Stops its task when dropped (unsubscribe, or the session ending).
@@ -89,8 +113,43 @@ impl Drop for AbortOnDrop {
 impl Session {
     pub(crate) fn new(shared: Arc<Shared>, view: Arc<View>, serial: u64) -> Self {
         shared.connections.open(serial);
-        let state = State { seen: shared.hub.latest(), ..State::default() };
-        Self { shared, view, serial, http: false, jobs: None, actor: OnceLock::new(), state: Mutex::new(state) }
+        let latest = shared.hub.latest();
+        let state = State { seen: latest, approvals: OwnApprovals::new(latest), ..State::default() };
+        Self {
+            shared,
+            view,
+            serial,
+            http: false,
+            jobs: None,
+            link: OnceLock::new(),
+            ended: watch::Sender::new(None),
+            alive: CancellationToken::new(),
+            in_app: false,
+            http_id: Arc::new(OnceLock::new()),
+            last_active: Mutex::new(Instant::now()),
+            state: Mutex::new(state),
+        }
+    }
+
+    /// A handler for an in-app session the host has already opened in the registry (see `in_app`): there is no handshake
+    /// to wait for, and the actor is the registry's.
+    pub(crate) fn in_app(shared: Arc<Shared>, view: Arc<View>, serial: u64, link: Link) -> Self {
+        let mut session = Self::new(shared, view, serial);
+        session.in_app = true;
+        let _ = session.link.set(Ok(link));
+        session
+    }
+
+    /// Follows the registry for the end of this session (an in-app host calls this once the session is open).
+    pub(crate) fn follow_registry(&self, after: u64) {
+        if let (Some(host), Some(Ok(link))) = (&self.shared.sessions, self.link.get()) {
+            self.watch_registry(host, link, after);
+        }
+    }
+
+    /// Wakes when this session ends, with the reason (see [`Session::ended`]).
+    pub(crate) fn ended(&self) -> watch::Receiver<Option<EndReason>> {
+        self.ended.subscribe()
     }
 
     /// Gives this handler the host's job manager (see [`McpServer::with_jobs`](crate::McpServer::with_jobs)).
@@ -129,6 +188,7 @@ impl Session {
     /// (`subscriptions/listen` included), skipping both `initialize` and `discover`, so every request handler calls this
     /// first. Over HTTP a session starts with `initialize`, which names it.
     fn name_client(&self, context: &RequestContext<RoleServer>) {
+        self.touch(context);
         if self.http {
             return;
         }
@@ -141,36 +201,104 @@ impl Session {
     /// Opens this connection's session in the registry now, so a client that has only connected is already in the
     /// agent panel. A refusal stays in the cached result, and the first call that needs the actor reports it.
     fn open_session(&self, context: &RequestContext<RoleServer>) {
-        let _ = self.actor(context);
+        let _ = self.link(context);
     }
 
     fn actor(&self, context: &RequestContext<RoleServer>) -> Result<&Actor, &OpError> {
-        self.actor
-            .get_or_init(|| {
-                let client = context.client_info().map_or_else(|| "mcp-client".to_owned(), |info| info.name);
-                let Some(host) = &self.shared.sessions else {
-                    return Ok(Actor::Agent { id: format!("{client}#{}", self.serial), model: None });
-                };
-                // The registry names the agent. No other name will do: one made here could equal a registered
-                // session's actor and borrow its grants.
-                let spec = SessionSpec {
-                    transport: if self.http { Transport::Http { token: "mcp".to_owned() } } else { Transport::Stdio },
-                    client,
-                    model: None,
-                    on_behalf_of: host.person.clone(),
-                    grants: self.view.grants.clone(),
-                    budget: Budget::default(),
-                    limits: Limits::default(),
-                    parent: None,
-                    role: None,
-                    fence: Vec::new(),
-                };
-                host.sessions
-                    .open(spec)
-                    .map(|info| info.actor)
-                    .inspect_err(|e| tracing::warn!(error = %e, "couldn't open a session for a connection"))
-            })
-            .as_ref()
+        self.link(context).map(|link| &link.actor)
+    }
+
+    /// The registered session of this connection, opened by the first request that finds the client's name.
+    fn link(&self, context: &RequestContext<RoleServer>) -> Result<&Link, &OpError> {
+        self.link.get_or_init(|| self.admit(context)).as_ref()
+    }
+
+    fn admit(&self, context: &RequestContext<RoleServer>) -> Result<Link, OpError> {
+        let client = context.client_info().map_or_else(|| "mcp-client".to_owned(), |info| info.name);
+        let Some(host) = &self.shared.sessions else {
+            return Ok(Link { id: None, actor: Actor::Agent { id: format!("{client}#{}", self.serial), model: None } });
+        };
+        // The registry names the agent. No other name will do: one made here could equal a registered session's actor
+        // and borrow its grants.
+        let (transport, person) = match &self.view.credential {
+            Some(credential) => {
+                // The person who issued the token, unless the host issued it as itself.
+                let issuer = credential.issuer();
+                let person = if matches!(issuer, Actor::Person { .. }) { issuer.clone() } else { host.person.clone() };
+                (Transport::Http { token: credential.label().to_owned() }, person)
+            }
+            None if self.http => (Transport::Http { token: "mcp".to_owned() }, host.person.clone()),
+            None => (Transport::Stdio, host.person.clone()),
+        };
+        let spec = SessionSpec {
+            transport,
+            client,
+            model: None,
+            on_behalf_of: person,
+            grants: self.view.grants.clone(),
+            budget: Budget::default(),
+            limits: Limits::default(),
+            parent: None,
+            role: None,
+            fence: Vec::new(),
+        };
+        // Before the open, so an end that follows at once is not missed.
+        let after = self.shared.hub.latest();
+        let info = host
+            .sessions
+            .open(spec)
+            .inspect_err(|e| tracing::warn!(error = %e, "couldn't open a session for a connection"))?;
+        let link = Link { id: Some(info.id), actor: info.actor };
+        self.watch_registry(host, &link, after);
+        Ok(link)
+    }
+
+    /// Starts following the registry for the end of this session (see [`agent::watch_end`]), and closes an HTTP
+    /// connection once it has ended.
+    fn watch_registry(&self, host: &crate::server::SessionHost, link: &Link, after: u64) {
+        agent::watch_end(
+            Arc::clone(&self.shared.hub),
+            Arc::clone(&host.sessions),
+            link.clone(),
+            after,
+            self.ended.clone(),
+            self.view.credential.clone(),
+            self.alive.clone(),
+        );
+        if let Some(credential) = self.view.credential.clone() {
+            let (http_id, mut ended) = (Arc::clone(&self.http_id), self.ended.subscribe());
+            tokio::spawn(async move {
+                if ended.wait_for(Option::is_some).await.is_ok()
+                    && let Some(id) = http_id.get()
+                {
+                    credential.close_session(id).await;
+                }
+            });
+        }
+    }
+
+    /// Notes that the client is active, and remembers which HTTP session it is.
+    fn touch(&self, context: &RequestContext<RoleServer>) {
+        *lock(&self.last_active) = Instant::now();
+        self.remember_http_session(&context.extensions);
+    }
+
+    /// Learns the `Mcp-Session-Id` of this connection from a request or notification that carries its HTTP headers. An
+    /// HTTP session the registry has already ended is closed at once if this is the first time its id is known.
+    fn remember_http_session(&self, extensions: &rmcp::model::Extensions) {
+        if self.http_id.get().is_some() {
+            return;
+        }
+        let Some(parts) = extensions.get::<hyper::http::request::Parts>() else { return };
+        let Some(id) = parts.headers.get(rmcp::transport::common::http_header::HEADER_SESSION_ID) else { return };
+        let Ok(id) = id.to_str() else { return };
+        let _ = self.http_id.set(id.to_owned());
+        if self.ended.borrow().is_some()
+            && let Some(credential) = self.view.credential.clone()
+        {
+            let id = id.to_owned();
+            tokio::spawn(async move { credential.close_session(&id).await });
+        }
     }
 
     /// What this connection's session stands for right now (see [`standing`]), asked of the registry again on every
@@ -249,6 +377,30 @@ impl Session {
         Ok(CallToolResult::success(vec![ContentBlock::text(body)]))
     }
 
+    /// Waits until the event feed has delivered every op the runner's log holds, up to [`FEED_LAG`]. The feed fills from a
+    /// worker thread, so without this a change that committed before a call could be missing from that call's
+    /// heads-up. The log is the authority on what committed: it holds a record before any event for it exists, so a
+    /// record past the feed's position means events are still on their way.
+    async fn catch_up_with_log(&self, grants: &Grants) {
+        if !grants.allows(Scope::Read) {
+            return;
+        }
+        let deadline = Instant::now() + FEED_LAG;
+        let mut arrivals = self.shared.hub.watch();
+        loop {
+            let delivered = self.shared.hub.log_seq();
+            let grants = grants.clone();
+            // A log that can't be read, or is not behind the feed, has nothing to wait for.
+            let behind = self.blocking(move |runner| runner.log(delivered, 1, &grants)).await;
+            if !matches!(behind, Ok(Ok(records)) if !records.is_empty()) {
+                return;
+            }
+            if tokio::time::timeout_at(deadline, arrivals.changed()).await.is_err() {
+                return;
+            }
+        }
+    }
+
     /// What other actors changed since this session was last told, if anything, moving its position forward so each
     /// change is reported once. Needs `read` for the same reason the log does: it names paths and ops.
     fn others_changed(&self, me: &Actor, grants: &Grants) -> Option<Report> {
@@ -309,8 +461,47 @@ impl Session {
         let tool = entry.tool.name.as_ref();
         match outcome {
             Ok(reply) => reply,
-            Err(e) => render::failure(tool, &in_tool_names(e, &entry.op, tool), Some(&entry.signature)).into(),
+            Err(e) => {
+                let e = self.explain_fence(e);
+                render::failure(tool, &in_tool_names(e, &entry.op, tool), Some(&entry.signature)).into()
+            }
         }
+    }
+
+    /// Words a fence refusal for the agent that hit it (design §5.3): who holds the part and what they hold, or what this
+    /// session's own fence is. The holder's fence comes from the registry now; names are sanitised like the heads-up.
+    fn explain_fence(&self, mut error: OpError) -> OpError {
+        let Some(ErrorDetail::Fenced { path, holder }) = error.detail.as_deref() else { return error };
+        let paths = |fence: &[omuzaki_doc_api::DocPath]| {
+            fence.iter().map(|p| crate::changes::plain(&p.to_string(), 100)).collect::<Vec<_>>().join(", ")
+        };
+        let registry = self.shared.sessions.as_ref().map(|host| &host.sessions);
+        let path_text = crate::changes::plain(&path.to_string(), 100);
+        match holder {
+            Some(holder) => {
+                let fence = registry.and_then(|r| r.session_of(holder)).map(|info| paths(&info.fence));
+                let theirs =
+                    fence.filter(|f| !f.is_empty()).map(|f| format!(" (their fence: {f})")).unwrap_or_default();
+                error.message = format!(
+                    "Refused: {path_text} is held by {}{theirs}. Nothing changed.",
+                    crate::changes::actor_label(holder)
+                );
+                error.hint = Some("Work on a part you hold, or ask the person to release it.".to_owned());
+            }
+            None => {
+                let mine = self
+                    .link
+                    .get()
+                    .and_then(|link| link.as_ref().ok())
+                    .zip(registry)
+                    .and_then(|(link, r)| r.session_of(&link.actor))
+                    .map(|info| paths(&info.fence))
+                    .unwrap_or_default();
+                error.message = format!("Refused: {path_text} is outside your fence ({mine}). Nothing changed.");
+                error.hint = Some("Edit only inside your fence, or ask the person to widen it.".to_owned());
+            }
+        }
+        error
     }
 
     async fn run_op(
@@ -332,13 +523,54 @@ impl Session {
         // Each edit that joins a transaction carries the cause its `tx_begin` gave; anything outside one has none.
         let cause = tx.as_ref().and_then(|t| t.cause.clone());
         let request = self.request(entry, unit_args, args, mode, actor, cause, tx.as_ref());
-        let outcome = self.blocking(move |runner| runner.run(request)).await??;
+        let outcome = match self.run_held(request).await {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                lock(&self.state).approvals.remember_queued(&error, &entry.tool.name, kind);
+                return Err(error);
+            }
+        };
         if let Some(record) = &outcome.applied {
             lock(&self.state).own.remember(record.tx);
         }
         let call = Call { op: &entry.tool.name, kind, mode, tx: tx.as_ref(), verify: self.shared.guidance.verify() };
         let result = render::success(&call, &outcome);
         Ok(if outcome.applied.is_some() { self.confirm_saved(result).await } else { result.into() })
+    }
+
+    /// Runs `request`, holding it through a pause or a rate limit instead of failing at once (design §4.3, §8.2):
+    ///
+    /// - refused because the session is **paused**: waits up to the host's pause hold for the person to resume it, then
+    ///   runs once more. If the session is still paused, the agent is told (`waiting`, nothing ran).
+    /// - refused by a **rate limit** that frees up soon: waits that long and runs again, for up to
+    ///   [`agent::LIMIT_HOLD`] in all. A burst over the edit limit is slowed, not failed.
+    async fn run_held(&self, request: Request) -> Result<Outcome, OpError> {
+        let (Some(host), Some(Ok(link))) = (&self.shared.sessions, self.link.get()) else {
+            return self.blocking(move |runner| runner.run(request)).await?;
+        };
+        let (mut held_for_pause, mut slowed_for) = (false, Duration::ZERO);
+        loop {
+            // Before the attempt, so a resume that lands while it runs is not missed.
+            let after = self.shared.hub.latest();
+            let attempt = request.clone();
+            let error = match self.blocking(move |runner| runner.run(attempt)).await? {
+                Ok(outcome) => return Ok(outcome),
+                Err(error) => error,
+            };
+            if agent::is_paused(&error) && !held_for_pause {
+                held_for_pause = true;
+                let resumed =
+                    agent::held_until_resumed(&self.shared.hub, host.sessions.as_ref(), link, after, host.pause_hold);
+                if resumed.await {
+                    continue;
+                }
+            } else if let Some(wait) = agent::limit_wait(&error, agent::LIMIT_HOLD.saturating_sub(slowed_for)) {
+                tokio::time::sleep(wait).await;
+                slowed_for += wait;
+                continue;
+            }
+            return Err(error);
+        }
     }
 
     /// The runner request for a call of `entry`, as `actor` with this session's grants.
@@ -362,8 +594,14 @@ impl Session {
             grants: self.view.grants.clone(),
             cause: Some(Cause { kind: CauseKind::Prompt, text: cause }),
             tx: tx.map(|t| t.id),
-            base: None,
+            base: self.base(),
         }
+    }
+
+    /// The newest document version this session has been told about, which its writes carry as their `base`: the
+    /// executor refuses one that touches what another actor changed after it (design §5.1).
+    fn base(&self) -> Option<omuzaki_doc_api::DocVersion> {
+        self.shared.hub.version_at(lock(&self.state).seen)
     }
 
     /// Starts a job op without waiting for it and answers with its task handle; a watcher then pushes the job's
@@ -440,7 +678,133 @@ impl Session {
                 self.begin_tx(args, actor).await.map(Reply::from)
             }
             Builtin::TxCommit | Builtin::TxRollback => self.finish_tx(builtin == Builtin::TxCommit, actor).await,
+            Builtin::SessionInfo | Builtin::SessionList | Builtin::ApprovalWait => {
+                let grants = standing.clone()?.grants;
+                if !grants.allows(Scope::Read) {
+                    return Err(OpError::denied(read_needed("reading session records")));
+                }
+                match builtin {
+                    Builtin::SessionInfo => self.session_info(&actor).map(Reply::from),
+                    Builtin::SessionList => self.session_list(&actor).map(Reply::from),
+                    _ => self.approval_wait(&args, &actor).await,
+                }
+            }
         }
+    }
+
+    /// The registry, which these three tools exist only for.
+    fn registry(&self) -> Result<&Arc<dyn Sessions>, OpError> {
+        self.shared
+            .sessions
+            .as_ref()
+            .map(|host| &host.sessions)
+            .ok_or_else(|| OpError::unsupported("this server has no session registry"))
+    }
+
+    /// `session_info`: this session's record, from the registry now.
+    fn session_info(&self, actor: &Actor) -> Result<CallToolResult, OpError> {
+        let registry = self.registry()?;
+        let me = registry.session_of(actor).ok_or_else(|| OpError::not_found("this connection's session is gone"))?;
+        let all = registry.approvals();
+        let pending = info::pending_of(&all, me.id);
+        {
+            // What the person is asked about is the agent's to wait on, so remember the ones it hasn't heard of.
+            let mut state = lock(&self.state);
+            for approval in &pending {
+                state.approvals.remember(approval.id, self.own_approval(approval));
+            }
+        }
+        Ok(info::session_info(&me, &pending, self.view.credential.as_deref()))
+    }
+
+    /// `session_list`: every live session, this one marked.
+    fn session_list(&self, actor: &Actor) -> Result<CallToolResult, OpError> {
+        Ok(info::session_list(&self.registry()?.sessions(), actor))
+    }
+
+    /// What is remembered about a pending approval this session did not see queued (its pairing, say).
+    fn own_approval(&self, approval: &omuzaki_ops_api::PendingApproval) -> Own {
+        let Some(request) = &approval.request else { return Own { tool: "pairing".to_owned(), kind: None } };
+        let tool = crate::names::tool_name(&request.op);
+        let kind = self.view.catalog.get(&tool).and_then(|entry| match entry.route {
+            Route::Op { kind, .. } => Some(kind),
+            Route::Builtin(_) => None,
+        });
+        Own { tool, kind }
+    }
+
+    /// `approval_wait`: waits for the person to decide one of this session's approvals and returns the outcome, once
+    /// (design §7.1). Resolving is never offered here: only the person can, in Omuzaki's window.
+    async fn approval_wait(&self, args: &JsonObject, actor: &Actor) -> Result<Reply, OpError> {
+        let registry = Arc::clone(self.registry()?);
+        let id = args
+            .get("id")
+            .and_then(Value::as_u64)
+            .map(omuzaki_ops_api::ApprovalId)
+            .ok_or_else(|| OpError::invalid("id", "`id` must be the approval's number"))?;
+        let seconds = args
+            .get("timeout_seconds")
+            .and_then(Value::as_u64)
+            .unwrap_or(APPROVAL_WAIT_DEFAULT_SECONDS)
+            .clamp(1, APPROVAL_WAIT_MAX_SECONDS);
+        let me = registry.session_of(actor).ok_or_else(|| OpError::not_found("this connection's session is gone"))?;
+        let pending = registry.approvals();
+        let not_yours = || {
+            OpError::not_found(format!("there is no approval #{} for this session", id.0)).hint(
+                "approval ids come from a `waiting` result or from session_info; only this session's can be waited on",
+            )
+        };
+        if pending.iter().any(|a| a.id == id && a.session != me.id) {
+            return Err(not_yours());
+        }
+        {
+            let mut state = lock(&self.state);
+            if let Some(approval) = pending.iter().find(|a| a.id == id) {
+                state.approvals.remember(id, self.own_approval(approval));
+            }
+            if state.approvals.get(id).is_none() {
+                return Err(not_yours());
+            }
+        }
+        let hub = &self.shared.hub;
+        let mut arrivals = hub.watch();
+        let deadline = Instant::now() + Duration::from_secs(seconds);
+        loop {
+            if let Some(resolution) = approvals::resolution_of(hub, id) {
+                let own = {
+                    let mut state = lock(&self.state);
+                    state.approvals.mark_reported(id);
+                    state.approvals.get(id).cloned()
+                };
+                let own = own.ok_or_else(not_yours)?;
+                return Ok(self
+                    .confirm_saved(approvals::outcome(&own, &resolution, self.shared.guidance.verify()))
+                    .await);
+            }
+            if tokio::time::timeout_at(deadline, arrivals.changed()).await.is_err() {
+                return Ok(self.still_pending(id, registry.as_ref()));
+            }
+        }
+    }
+
+    /// The answer when `approval_wait` ran out of time: the approval is still waiting for the person (or its outcome
+    /// is no longer in the feed).
+    fn still_pending(&self, id: omuzaki_ops_api::ApprovalId, registry: &dyn Sessions) -> Reply {
+        let waiting = approvals::is_pending(registry, id);
+        let text = if waiting {
+            format!(
+                "Approval #{} is still pending: the person has not decided. Call approval_wait again to keep waiting, \
+                 or carry on with other work; its outcome will be in the next result's heads-up.",
+                id.0
+            )
+        } else {
+            format!(
+                "Approval #{} is no longer pending, but its outcome is no longer in the event feed. Re-read the \
+                 project to see whether the request ran.",
+                id.0
+            )
+        };
+        render::confirmation(text, json!({"ok": true, "approval": id.0, "pending": waiting})).into()
     }
 
     async fn begin_tx(&self, mut args: JsonObject, actor: Actor) -> Result<CallToolResult, OpError> {
@@ -525,14 +889,49 @@ impl Session {
     }
 }
 
+impl Session {
+    /// The usage guide this client reads at the handshake: the grants' guide, and for a registered session its fence.
+    fn guide(&self) -> String {
+        let mut guide = self.view.instructions.clone();
+        let fence = self
+            .shared
+            .sessions
+            .as_ref()
+            .zip(self.link.get().and_then(|link| link.as_ref().ok()))
+            .and_then(|(host, link)| host.sessions.session_of(&link.actor))
+            .map(|info| info.fence);
+        if let Some(fence) = fence {
+            guide.push('\n');
+            guide.push_str(&crate::describe::fence_note(&fence));
+        }
+        guide
+    }
+}
+
 impl Drop for Session {
-    /// A connection that ends mid-transaction rolls it back: nothing else could ever finish it.
+    /// A connection that ends ends its session through the registry, which abandons the open transaction and tells
+    /// everyone. If the host has no registry, or it won't end the session, the transaction is rolled back here: nothing
+    /// else could ever finish it.
     fn drop(&mut self) {
+        self.alive.cancel();
         self.shared.connections.close(self.serial);
         let open = lock(&self.state).tx.take();
-        // A transaction can only exist once the actor is fixed, by the same call that opened it.
-        if let (Some(open), Some(Ok(actor))) = (open, self.actor.get())
-            && let Err(e) = self.shared.runner.rollback(open.id, actor)
+        let Some(Ok(link)) = self.link.get() else { return };
+        if self.ended.borrow().is_some() {
+            // The registry ended it first and abandoned the transaction with it.
+            return;
+        }
+        let quiet = lock(&self.last_active).elapsed();
+        let reason = agent::end_reason(self.in_app, self.view.credential.as_deref(), quiet);
+        self.ended.send_replace(Some(reason.clone()));
+        if let (Some(host), Some(id)) = (&self.shared.sessions, link.id) {
+            match host.sessions.end(id, reason) {
+                Ok(_) => return,
+                Err(e) => tracing::debug!(error = %e, "the registry would not end a session; rolling back instead"),
+            }
+        }
+        if let Some(open) = open
+            && let Err(e) = self.shared.runner.rollback(open.id, &link.actor)
         {
             tracing::warn!(tx = open.id.0, label = %open.label, error = %e, "couldn't roll back an abandoned tx");
         }
@@ -700,17 +1099,28 @@ fn unknown_resource(uri: &str, templates: &[ResourceTemplate]) -> McpError {
 // make them harder to read.
 #[allow(clippy::unused_async_trait_impl)]
 impl ServerHandler for Session {
-    /// The handshake names this session's client, which is what makes it count as connected (`agent.connection`).
-    /// The rest is the default: record the peer, then negotiate the protocol version.
+    /// The handshake names this session's client, which is what makes it count as connected (`agent.connection`), and
+    /// opens its session. Only a handshake that succeeds does either: a client whose protocol version can't be served is
+    /// refused here and was never connected.
     async fn initialize(
         &self,
         request: InitializeRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<InitializeResult, McpError> {
+        self.touch(&context);
+        let mut result = self.negotiate_initialize(&request)?;
         self.shared.connections.name(self.serial, &request.client_info.name);
         context.peer.set_peer_info(request.clone());
         self.open_session(&context);
-        self.negotiate_initialize(&request)
+        // After the open: the guide carries this session's own fence.
+        result.instructions = Some(self.guide());
+        Ok(result)
+    }
+
+    /// The client's `notifications/initialized` is the first message after the handshake that carries the HTTP session's
+    /// id, so it is where an HTTP session learns how to be closed from the inside.
+    async fn on_initialized(&self, context: rmcp::service::NotificationContext<RoleServer>) {
+        self.remember_http_session(&context.extensions);
     }
 
     /// Over HTTP, answered as a server without a stateless mode would (clients then fall back to `initialize`); over
@@ -734,7 +1144,7 @@ impl ServerHandler for Session {
         let capabilities = if self.jobs.is_some() { capabilities.enable_tasks() } else { capabilities }.build();
         ServerConfig::new(capabilities)
             .with_server_info(Implementation::new("omuzaki", env!("CARGO_PKG_VERSION")).with_title("Omuzaki Studio"))
-            .with_instructions(self.view.instructions.clone())
+            .with_instructions(self.guide())
     }
 
     async fn list_tools(
@@ -775,11 +1185,26 @@ impl ServerHandler for Session {
             None
         } else {
             let grants = self.session_grants(&context).ok();
+            if let Some(grants) = &grants {
+                self.catch_up_with_log(grants).await;
+            }
             self.actor(&context).ok().zip(grants).and_then(|(actor, grants)| self.others_changed(actor, &grants))
         };
         let result = match report {
             Some(report) => render::with_heads_up(result, &report),
             None => result,
+        };
+        // The agent's own approvals that were decided since it last heard, once each. `approval_wait` reports its own.
+        let result = if log_text || self.shared.sessions.is_none() {
+            result
+        } else {
+            let news = lock(&self.state).approvals.news(&self.shared.hub);
+            if news.is_empty() {
+                result
+            } else {
+                let (text, data) = approvals::heads_up(&news);
+                render::with_approvals(result, &text, data)
+            }
         };
         // Last, so the save warning leads the text, ahead of the heads-up: a client that shows only the first line
         // still sees that the change isn't saved.

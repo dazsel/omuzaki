@@ -9,7 +9,7 @@ use omuzaki_doc_api::DocWrite;
 use omuzaki_mcp::Connections;
 use omuzaki_ops::Executor;
 use omuzaki_ops_api::{
-    Actor, ConnectionService, Grants, OpError, ProjectDir, ProjectDirError, Runner, ServicesBuilder, Sessions,
+    Actor, ConnectionService, Grants, Jobs, OpError, ProjectDir, ProjectDirError, Runner, ServicesBuilder, Sessions,
 };
 
 use crate::cli::Cli;
@@ -26,6 +26,11 @@ pub struct Session {
     pub connections: Connections,
     /// The executor's session registry, once the runner is open: `omuzaki mcp` opens one session per client in it.
     pub sessions: Option<Arc<dyn Sessions>>,
+    /// The executor's job manager, once the runner is open: `omuzaki mcp` serves long ops to clients that ask for tasks.
+    pub jobs: Option<Arc<dyn Jobs>>,
+    /// The `--project` folder: the one place besides the document that `omuzaki mcp` lets an agent's files reach
+    /// (ADR 0013).
+    pub project: Option<String>,
 }
 
 impl fmt::Debug for Session {
@@ -35,6 +40,8 @@ impl fmt::Debug for Session {
             .field("grants", &self.grants)
             .field("connections", &self.connections)
             .field("sessions", &self.sessions.is_some())
+            .field("jobs", &self.jobs.is_some())
+            .field("project", &self.project)
             .finish()
     }
 }
@@ -47,6 +54,8 @@ impl Session {
             grants: Grants::person(),
             connections: Connections::default(),
             sessions: None,
+            jobs: None,
+            project: None,
         }
     }
 

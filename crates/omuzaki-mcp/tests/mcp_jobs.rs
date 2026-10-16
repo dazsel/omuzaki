@@ -7,18 +7,13 @@
 
 mod common;
 
-use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
-use common::{FakeRunner, data, fake_runner, text};
-use omuzaki_core::time::Seconds;
-use omuzaki_doc_api::DocPath;
+use common::jobs::Fake;
+use common::{data, text};
 use omuzaki_mcp::{McpOptions, McpServer};
-use omuzaki_ops_api::{
-    Actor, CancelReason, Event, Grants, JobId, JobInfo, JobState, Jobs, Lane, OpError, OpInfo, OpRecord, Outcome,
-    Request, Runner, SessionId, TxId,
-};
+use omuzaki_ops_api::{Actor, Grants, JobId, JobState, Jobs, OpError, Request, Runner, TxId};
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CancelTaskParams, ClientCapabilities, ClientConfig, GetTaskParams,
     Implementation, ProgressNotificationParam, TaskPayload, TaskStatus, TaskStatusNotificationParams,
@@ -27,130 +22,6 @@ use rmcp::service::{NotificationContext, RoleClient, RunningService};
 use rmcp::{ClientHandler, ClientLifecycleMode, ClientServiceExt};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
-
-/// The shared fake runner, plus a job manager whose jobs the test moves along by hand.
-struct Fake {
-    runner: FakeRunner,
-    sinks: Mutex<Vec<Sender<Event>>>,
-    jobs: Mutex<Vec<JobInfo>>,
-    started: Mutex<u32>,
-}
-
-impl Fake {
-    fn new() -> Arc<Self> {
-        Arc::new(Self {
-            runner: fake_runner(),
-            sinks: Mutex::default(),
-            jobs: Mutex::default(),
-            started: Mutex::new(0),
-        })
-    }
-
-    fn emit(&self, event: &Event) {
-        self.sinks.lock().unwrap().retain(|sink| sink.send(event.clone()).is_ok());
-    }
-
-    /// Moves job `id` to `state`, as the executor does, and announces it.
-    fn set_state(&self, id: u64, state: JobState) -> JobInfo {
-        let mut jobs = self.jobs.lock().unwrap();
-        let job = jobs.iter_mut().find(|j| j.id == JobId(id)).expect("job");
-        job.state = state;
-        let job = job.clone();
-        drop(jobs);
-        self.emit(&Event::job_changed(job.clone()));
-        job
-    }
-
-    fn progress(&self, id: u64, stage: &str, fraction: f32) {
-        self.emit(&Event::job_progress(JobId(id), stage, fraction));
-    }
-}
-
-impl Runner for Fake {
-    fn ops(&self) -> Vec<OpInfo> {
-        self.runner.ops()
-    }
-    fn run(&self, req: Request) -> Result<Outcome, OpError> {
-        self.runner.run(req)
-    }
-    fn begin(&self, label: &str, actor: &Actor) -> TxId {
-        self.runner.begin(label, actor)
-    }
-    fn commit(&self, tx: TxId, actor: &Actor) -> Result<(), OpError> {
-        self.runner.commit(tx, actor)
-    }
-    fn rollback(&self, tx: TxId, actor: &Actor) -> Result<(), OpError> {
-        self.runner.rollback(tx, actor)
-    }
-    fn undo(&self, actor: &Actor, grants: &Grants) -> Result<Option<String>, OpError> {
-        self.runner.undo(actor, grants)
-    }
-    fn redo(&self, actor: &Actor, grants: &Grants) -> Result<Option<String>, OpError> {
-        self.runner.redo(actor, grants)
-    }
-    fn subscribe(&self, _grants: &Grants) -> Result<Receiver<Event>, OpError> {
-        let (tx, rx) = channel();
-        self.sinks.lock().unwrap().push(tx);
-        Ok(rx)
-    }
-    fn get(&self, path: &DocPath, grants: &Grants) -> Result<Option<Value>, OpError> {
-        self.runner.get(path, grants)
-    }
-    fn log(&self, after_seq: u64, limit: usize, grants: &Grants) -> Result<Vec<OpRecord>, OpError> {
-        self.runner.log(after_seq, limit, grants)
-    }
-}
-
-impl Jobs for Fake {
-    fn start(&self, req: Request) -> Result<JobInfo, OpError> {
-        let mut jobs = self.jobs.lock().unwrap();
-        *self.started.lock().unwrap() += 1;
-        let job = JobInfo {
-            id: JobId(jobs.len() as u64 + 1),
-            op: req.op,
-            label: "export".to_owned(),
-            actor: req.actor,
-            on_behalf_of: None,
-            session: None::<SessionId>,
-            cause: None,
-            lane: Lane::Gpu,
-            state: JobState::Queued,
-            stage: None,
-            fraction: 0.0,
-            estimate: None,
-            spent_usd_micros: 0,
-            queued_at: Seconds(0.0),
-            started_at: None,
-            ended_at: None,
-        };
-        jobs.push(job.clone());
-        Ok(job)
-    }
-
-    fn job(&self, id: JobId, _grants: &Grants) -> Result<Option<JobInfo>, OpError> {
-        Ok(self.jobs.lock().unwrap().iter().find(|j| j.id == id).cloned())
-    }
-
-    fn jobs(&self, _grants: &Grants) -> Result<Vec<JobInfo>, OpError> {
-        Ok(self.jobs.lock().unwrap().clone())
-    }
-
-    fn cancel(&self, id: JobId, by: &Actor) -> Result<JobInfo, OpError> {
-        let owner = self.job(id, &Grants::person())?.ok_or_else(|| OpError::not_found("no such job"))?.actor;
-        if &owner != by {
-            return Err(OpError::denied("only the session that started a job may cancel it"));
-        }
-        Ok(self.set_state(id.0, JobState::Cancelled { by: Some(by.clone()), reason: CancelReason::Requested }))
-    }
-
-    fn cancel_session(&self, _session: SessionId, _by: &Actor) -> Result<Vec<JobId>, OpError> {
-        Ok(Vec::new())
-    }
-
-    fn wait(&self, id: JobId, _timeout: Option<Duration>) -> Result<JobInfo, OpError> {
-        self.job(id, &Grants::person())?.ok_or_else(|| OpError::not_found("no such job"))
-    }
-}
 
 /// A client that keeps the progress and task-status notifications it is sent.
 struct TestClient {

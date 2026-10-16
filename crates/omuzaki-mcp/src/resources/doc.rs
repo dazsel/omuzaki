@@ -56,7 +56,8 @@ impl ResourceProvider for DocProvider {
             Some(id) => character(runner, grants, id)?,
             None => project(runner, grants)?,
         };
-        let text = serde_json::to_string_pretty(&body)
+        // Shown without the digits an `f32` widened to `f64` brings (see `floats`); the document keeps what it holds.
+        let text = serde_json::to_string_pretty(&crate::floats::tidied(body))
             .map_err(|e| OpError::internal(format!("couldn't encode {uri}: {e}")))?;
         Ok(vec![ResourceContents::text(text, uri).with_mime_type(JSON)])
     }

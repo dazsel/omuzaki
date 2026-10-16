@@ -255,3 +255,38 @@ async fn the_wired_handle_sees_the_servers_sessions() {
     );
     disconnect(connection).await;
 }
+
+/// A client is named only once `initialize` succeeds: one whose protocol version the server can't speak is refused and
+/// never counts as connected, while the same handshake with a version it can speak names it.
+#[tokio::test]
+async fn a_client_whose_initialize_fails_is_never_named_and_a_successful_one_is() {
+    let initialize = |version: &str| {
+        json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": version, "capabilities": {}, "clientInfo": {"name": "claude-code", "version": "1"}}
+        })
+    };
+    for (version, connected) in [("1999-01-01", false), ("2025-11-25", true)] {
+        let mcp = server();
+        let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+        let serving = mcp.clone();
+        let task = tokio::spawn(async move { serving.serve(server_io).await });
+        let (read, mut write) = tokio::io::split(client_io);
+        let mut lines = BufReader::new(read).lines();
+        write.write_all(format!("{}\n", initialize(version)).as_bytes()).await.expect("sends");
+        let reply: Value =
+            serde_json::from_str(&lines.next_line().await.expect("reads").expect("a reply")).expect("json");
+        assert_eq!(reply.get("error").is_some(), !connected, "{version}: {reply}");
+        assert_eq!(
+            mcp.connection()["connected"],
+            json!(connected),
+            "{version}: named only after a successful initialize"
+        );
+        if connected {
+            assert_eq!(mcp.connection()["client_name"], "claude-code");
+        }
+        drop((lines, write));
+        let _ = task.await;
+        assert_eq!(mcp.connection()["connected"], json!(false), "{version}: gone with the connection");
+    }
+}

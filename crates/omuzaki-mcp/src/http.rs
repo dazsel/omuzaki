@@ -11,9 +11,11 @@ use hyper::service::service_fn;
 use hyper_util::rt::{TokioIo, TokioTimer};
 use omuzaki_ops_api::{Actor, Grants};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Semaphore;
+use tokio::sync::{Semaphore, mpsc};
 use tokio::task::JoinHandle;
 use tokio_util::sync::{CancellationToken, DropGuard};
+
+use std::sync::Weak;
 
 use crate::access::{AccessToken, Registry, TokenId, TokenInfo, TokenRecord};
 use crate::error::ServerError;
@@ -250,7 +252,12 @@ impl McpServer {
             max_body_bytes: options.max_body_bytes,
             body_timeout: options.body_timeout,
         };
-        let registry = Arc::new(Registry::new(self.clone(), options.allowed_origins, limits, cancel.clone()));
+        let (revocations, revoked) = mpsc::unbounded_channel();
+        let registry =
+            Arc::new(Registry::new(self.clone(), options.allowed_origins, limits, cancel.clone(), revocations));
+        // A session whose credential the registry revoked asks for the token to be revoked: the token stops working and
+        // its other sessions end. Weak, so the port can still be dropped; the task ends with the port.
+        tokio::spawn(revoke_on_request(Arc::downgrade(&registry), revoked, cancel.clone()));
         let gate = Arc::new(Gate::new(Arc::clone(&registry), options.path.clone()));
         let connections = Arc::new(Semaphore::new(options.max_connections.clamp(1, Semaphore::MAX_PERMITS)));
         let acceptor = Acceptor {
@@ -372,6 +379,27 @@ impl HttpServer {
         registry.close_all().await;
         if let Err(error) = accept.await {
             tracing::warn!(%error, "the MCP HTTP accept loop ended abnormally");
+        }
+    }
+}
+
+/// Revokes each token a session asks to have revoked, until the port stops.
+async fn revoke_on_request(
+    registry: Weak<Registry>,
+    mut requests: mpsc::UnboundedReceiver<TokenId>,
+    cancel: CancellationToken,
+) {
+    loop {
+        let id = tokio::select! {
+            () = cancel.cancelled() => return,
+            request = requests.recv() => match request {
+                Some(id) => id,
+                None => return,
+            },
+        };
+        let Some(registry) = registry.upgrade() else { return };
+        if registry.revoke(id).await {
+            tracing::info!(token = %id, "access token revoked because its session's credential was revoked");
         }
     }
 }

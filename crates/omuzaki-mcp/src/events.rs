@@ -21,13 +21,14 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
 
-use omuzaki_doc_api::DocPath;
+use omuzaki_doc_api::{DocPath, DocVersion};
 use omuzaki_ops_api::{Actor, Event, Grants, Runner};
 use serde::Serialize;
 use tokio::sync::watch;
 
 use crate::changes::{self, OwnTxs, Report};
 use crate::error::ServerError;
+use crate::floats;
 use crate::resources::Providers;
 
 /// The resource that carries op events.
@@ -51,6 +52,10 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 pub(crate) struct Entry {
     pub(crate) n: u64,
     pub(crate) event: Event,
+    /// The newest document version any event up to this one reported. Not part of the log's JSON: it is how a session's
+    /// position becomes the `base` of its writes.
+    #[serde(skip)]
+    pub(crate) version: Option<DocVersion>,
 }
 
 /// The JSON body of `omuzaki://log` and of `history_log`.
@@ -65,7 +70,22 @@ struct LogView<'a> {
 struct Ring {
     /// Sequence number of the last event pushed (0 = none yet).
     last: u64,
+    /// The newest document version any event so far reported.
+    version: Option<DocVersion>,
+    /// The newest op-log record any `OpApplied` event so far carried, or the log's end when the feed started.
+    log_seq: u64,
     entries: VecDeque<Entry>,
+}
+
+/// The document version an event reports, if it carries one.
+fn version_of(event: &Event) -> Option<DocVersion> {
+    match event {
+        Event::OpApplied { record, .. } => Some(record.version),
+        Event::TxRolledBack { version, .. } | Event::Undone { version, .. } | Event::Redone { version, .. } => {
+            Some(*version)
+        }
+        _ => None,
+    }
 }
 
 /// Collects the runner's events and tells subscribers when one arrives.
@@ -85,6 +105,9 @@ impl EventHub {
     pub(crate) fn start(runner: &dyn Runner, grants: &Grants) -> Result<Arc<Self>, ServerError> {
         let hub = Arc::new(Self { ring: Mutex::default(), latest: watch::Sender::new(0) });
         let Ok(events) = runner.subscribe(grants) else { return Ok(hub) };
+        // After the subscription, so a record appended in between is also on its way as an event: the feed starts at
+        // the log's end, and only records past it are ones the feed owes us (see `Session::catch_up`).
+        lock(&hub.ring).log_seq = latest_log_seq(runner, grants);
         let weak = Arc::downgrade(&hub);
         std::thread::Builder::new()
             .name("omuzaki-mcp-events".to_owned())
@@ -98,7 +121,12 @@ impl EventHub {
             let mut ring = lock(&self.ring);
             ring.last += 1;
             let n = ring.last;
-            ring.entries.push_back(Entry { n, event });
+            ring.version = version_of(&event).or(ring.version);
+            if let Event::OpApplied { record, .. } = &event {
+                ring.log_seq = ring.log_seq.max(record.seq);
+            }
+            let version = ring.version;
+            ring.entries.push_back(Entry { n, event, version });
             if ring.entries.len() > LOG_CAPACITY {
                 ring.entries.pop_front();
             }
@@ -118,6 +146,28 @@ impl EventHub {
         lock(&self.ring).last
     }
 
+    /// The newest op-log record the feed has delivered (or the log's end when it started): the runner's log holds
+    /// records past this only while events are still on their way.
+    pub(crate) fn log_seq(&self) -> u64 {
+        lock(&self.ring).log_seq
+    }
+
+    /// The document version a reader that has been told of every event up to `seen` knows, to send as a write's `base`.
+    /// `None` while no event has reported one (nothing has changed yet, so nothing is stale). A position older than the
+    /// window can't be mapped; it reads as version 0, which makes the executor refuse a write over anything another
+    /// actor has changed, so the agent re-reads (and its position catches up) rather than overwrite what it never saw.
+    pub(crate) fn version_at(&self, seen: u64) -> Option<DocVersion> {
+        let ring = lock(&self.ring);
+        if seen == 0 && ring.last == 0 {
+            return None;
+        }
+        match ring.entries.iter().rev().find(|e| e.n <= seen) {
+            Some(entry) => entry.version,
+            None if ring.entries.front().is_some_and(|e| e.n > seen + 1) => Some(DocVersion(0)),
+            None => None,
+        }
+    }
+
     /// The events after number `n`, oldest first (those still in the window), each with its number.
     pub(crate) fn entries_after(&self, n: u64) -> Vec<(u64, Event)> {
         lock(&self.ring).entries.iter().filter(|e| e.n > n).map(|e| (e.n, e.event.clone())).collect()
@@ -134,7 +184,9 @@ impl EventHub {
             "the last {LOG_CAPACITY} events since this server started, oldest first; `n` rises by one per event"
         );
         let events = ring.entries.iter().filter(|entry| after.is_none_or(|after| entry.n > after)).collect();
-        let body = serde_json::to_string(&LogView { latest: ring.last, events, note })?;
+        // Shown without the digits an `f32` widened to `f64` brings (see `floats`).
+        let view = serde_json::to_value(&LogView { latest: ring.last, events, note })?;
+        let body = serde_json::to_string(&floats::tidied(view))?;
         Ok((body, ring.last))
     }
 
@@ -209,6 +261,34 @@ impl Updates {
         }
         uris
     }
+}
+
+/// The number of the newest record in the runner's op log (0 when it is empty or `grants` can't read it).
+///
+/// Records are numbered from 1 without gaps, so this finds the end by doubling and then halving, asking for one record at
+/// a time: a log of a million records costs forty calls, not a copy.
+fn latest_log_seq(runner: &dyn Runner, grants: &Grants) -> u64 {
+    let exists = |n: u64| runner.log(n - 1, 1, grants).is_ok_and(|records| !records.is_empty());
+    if !exists(1) {
+        return 0;
+    }
+    let (mut have, mut missing) = (1, 2);
+    while exists(missing) {
+        have = missing;
+        missing = missing.saturating_mul(2);
+        if missing == u64::MAX {
+            return have;
+        }
+    }
+    while missing - have > 1 {
+        let middle = have + (missing - have) / 2;
+        if exists(middle) {
+            have = middle;
+        } else {
+            missing = middle;
+        }
+    }
+    have
 }
 
 /// Worker body: move events from the runner's channel into the hub until either side goes away.
