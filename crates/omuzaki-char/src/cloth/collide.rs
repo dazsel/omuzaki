@@ -435,7 +435,7 @@ fn distance_to_segment(p: Vec3, a: Vec3, b: Vec3) -> f32 {
 
 /// A body region's sections, sampled once.
 struct Region {
-    region: BodyRegion,
+    kind: BodyRegion,
     sections: Vec<(f32, Section, Vec3, Vec3)>,
     /// A sphere holding every section's ellipse, to skip the region for points far from it.
     centre: Vec3,
@@ -550,7 +550,7 @@ impl Body {
                     .iter()
                     .map(|(_, s, ..)| s.centre.distance(centre) + s.radii.max_element())
                     .fold(0.0, f32::max);
-                Region { region, sections, centre, reach }
+                Region { kind: region, sections, centre, reach }
             })
         })
         .collect();
@@ -558,7 +558,7 @@ impl Body {
     }
 
     fn region(&self, region: BodyRegion) -> Option<&Region> {
-        self.regions.iter().find(|r| r.region == region)
+        self.regions.iter().find(|r| r.kind == region)
     }
 
     fn depth(&self, p: Vec3) -> f32 {
@@ -585,7 +585,7 @@ impl Body {
         // Bisect for the largest radius that fits: 2^-20 of the start, well under a micrometre.
         let (mut lo, mut hi) = (0.0_f32, radius);
         for _ in 0..20 {
-            let mid = 0.5 * (lo + hi);
+            let mid = f32::midpoint(lo, hi);
             if fits(mid) { lo = mid } else { hi = mid }
         }
         if lo >= MIN_RADIUS { Some(lo) } else { None }

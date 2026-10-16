@@ -440,6 +440,36 @@ impl ClothBinding {
         }
     }
 
+    /// For every cell (keyed by its top-left particle), the rotation [`ClothBinding::place`] would compute: the
+    /// skinned cell's frame turned into the simulated one's, or the identity for a degenerate cell.
+    fn cell_rotations(&self, wrap: bool, skinned: &[Vec3A], x: &[Vec3A], out: &mut [Mat3A]) {
+        let (rows, cols) = (self.size.rows, self.size.cols);
+        let cell_cols = if wrap { cols } else { cols - 1 };
+        for r in 0..rows - 1 {
+            for c in 0..cell_cols {
+                let at = |r: usize, c: usize| r * cols + c % cols;
+                let corners = [at(r, c), at(r, c + 1), at(r + 1, c), at(r + 1, c + 1)];
+                let (ps, px) = (corners.map(|i| skinned[i]), corners.map(|i| x[i]));
+                out[at(r, c)] = match (cell_frame(&ps), cell_frame(&px)) {
+                    (Some(fs), Some(fx)) => fx * fs.transpose(),
+                    _ => Mat3A::IDENTITY,
+                };
+            }
+        }
+    }
+
+    /// [`ClothBinding::place`] with the cell rotations precomputed by [`ClothBinding::cell_rotations`].
+    #[inline]
+    fn place_with(&self, v: usize, s: Vec3A, skinned: &[Vec3A], x: &[Vec3A], rotations: &[Mat3A]) -> Vec3A {
+        let e = &self.embed[v];
+        let (mut cs, mut cx) = (Vec3A::ZERO, Vec3A::ZERO);
+        for (&p, &w) in e.particles.iter().zip(&e.weights) {
+            cs += skinned[p as usize] * w;
+            cx += x[p as usize] * w;
+        }
+        cx + rotations[e.particles[0] as usize] * (s - cs)
+    }
+
     /// `values` (one per particle) interpolated at grid vertex `v`.
     #[inline]
     fn sample(&self, values: &[Vec3A], v: usize) -> Vec3A {
@@ -579,6 +609,8 @@ pub struct ClothRuntime {
     velocities: Vec<Vec3A>,
     previous_out: Vec<Vec3>,
     previous_normals: Vec<Vec3>,
+    /// Each sheet cell's rotation from skin to simulation, keyed by its top-left particle.
+    rotations: Vec<Mat3A>,
 }
 
 impl ClothRuntime {
@@ -680,6 +712,7 @@ impl ClothRuntime {
             velocities: vec![Vec3A::ZERO; max_particles],
             previous_out: vec![Vec3::ZERO; vertices],
             previous_normals: vec![Vec3::ZERO; vertices],
+            rotations: vec![Mat3A::IDENTITY; max_particles],
         };
         let mut normals = std::mem::take(&mut runtime.initial.normals);
         runtime.derive_normals_into(&runtime.initial.positions, &mut normals);
@@ -926,7 +959,8 @@ impl ClothRuntime {
             // The new particle sits on grid vertex `v`: skinned like it, placed in the old sheet like a drawn vertex.
             let v = vertex as usize;
             let skinned = self.grid_skin[v].skin(&self.d.matrices, self.grid_rest[v]);
-            let placed = if to_level.pins.binary_search(&(k as u32)).is_ok() {
+            let pinned = u32::try_from(k).is_ok_and(|k| to_level.pins.binary_search(&k).is_ok());
+            let placed = if pinned {
                 skinned
             } else {
                 from_level.binding.place(v, skinned, &self.skinned_particles, from_x)
@@ -985,6 +1019,7 @@ impl ClothRuntime {
         let level = &self.levels[active];
         let x = self.d.states[active].positions();
         let cols = self.grid_shape.1;
+        level.binding.cell_rotations(self.grid_shape.2, &self.skinned_particles, x, &mut self.rotations);
         let fade = if self.d.fade_s > 0.0 { self.d.fade_s / FADE_S } else { 0.0 };
         let mut changed = false;
         for (v, ((out, &rest), skin)) in
@@ -993,7 +1028,7 @@ impl ClothRuntime {
             let follow = self.follow[v / cols];
             let mut p = skin.skin(&self.d.matrices, rest);
             if follow > 0.0 {
-                p += (level.binding.place(v, p, &self.skinned_particles, x) - p) * follow;
+                p += (level.binding.place_with(v, p, &self.skinned_particles, x, &self.rotations) - p) * follow;
             }
             let mut p: Vec3 = self.d.root_inv.transform_point3a(p).into();
             if fade > 0.0 {

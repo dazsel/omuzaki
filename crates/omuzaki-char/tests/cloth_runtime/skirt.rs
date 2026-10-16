@@ -3,6 +3,7 @@
 //!
 //! Included by `#[path]` from each `cloth_*` test file; each uses the part it needs.
 #![allow(dead_code, clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::unwrap_used)]
+#![allow(clippy::many_single_char_names)] // vector geometry
 
 use std::f32::consts::TAU;
 

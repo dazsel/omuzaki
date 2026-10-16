@@ -57,3 +57,12 @@ images = [
     "heart-front.ppm", "heart-three-quarter.ppm", "heart-side.ppm",
     "long-front.ppm", "long-three-quarter.ppm", "long-side.ppm",
 ]
+
+[[case]]
+name = "cloth-runtime"
+description = "The cloth runtime's synthetic skirt mid-way through a 90-degree hips turn: Live and Offline side by side, then the 24x16, 12x8 and 8x6 levels of detail (tests/cloth_runtime.rs)."
+env = { OMUZAKI_CLOTH_RUNTIME_PPM = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-char", "--test", "cloth_runtime", "render_the_cloth_runtime_when_asked", "--", "--exact"] },
+]
+images = ["live-offline.ppm", "levels.ppm"]

@@ -6,6 +6,11 @@
 
 // A counting allocator is the only way to prove "no allocation"; the workspace denies unsafe code by default.
 #![allow(unsafe_code, clippy::unwrap_used, clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+#![allow(clippy::similar_names, clippy::too_many_arguments, clippy::items_after_statements)] // the evidence rasteriser
+#![allow(
+    clippy::disallowed_methods,
+    reason = "the evidence case writes images to a folder the developer names; the fence is for ops"
+)]
 
 #[path = "cloth_runtime/skirt.rs"]
 mod skirt;
@@ -335,4 +340,115 @@ fn offline_quality_builds_finer_sheets_with_the_same_pins() {
         assert_eq!(pinned(b_live), pinned(b_off), "level {level}");
     }
     assert_eq!((rt.solver_config().substeps, rt.solver_config().iterations), (4, 8));
+}
+
+/// Rasterises a drawn grid (`rows x cols`, wrapped) into `image` (`w x h`, RGB) at panel `x0`, orthographic from the
+/// front with a 30° turn, lit from the upper left, depth-tested.
+#[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss, clippy::many_single_char_names)]
+fn rasterise(
+    image: &mut [u8],
+    depth: &mut [f32],
+    w: usize,
+    h: usize,
+    x0: usize,
+    panel: usize,
+    p: &[Vec3],
+    n: &[Vec3],
+    rows: usize,
+    cols: usize,
+) {
+    let view = omuzaki_core::glam::Quat::from_rotation_y(0.5);
+    let scale = panel as f32 / 0.9;
+    let to_screen = |q: Vec3| {
+        let v = view * (q - Vec3::new(0.0, 0.8, 0.0));
+        (x0 as f32 + panel as f32 * 0.5 + v.x * scale, h as f32 * 0.5 - v.y * scale, v.z)
+    };
+    let light = Vec3::new(-0.4, 0.7, 0.6).normalize();
+    for r in 0..rows - 1 {
+        for c in 0..cols {
+            let at = |r: usize, c: usize| r * cols + c % cols;
+            for tri in [[at(r, c), at(r + 1, c), at(r, c + 1)], [at(r, c + 1), at(r + 1, c), at(r + 1, c + 1)]] {
+                let s = tri.map(|i| to_screen(p[i]));
+                let normal = (tri.iter().map(|&i| n[i]).sum::<Vec3>()).normalize_or(Vec3::Z);
+                let lit = 0.35 + 0.65 * (view * normal).dot(light).abs();
+                let colour = [(200.0 * lit) as u8, (90.0 * lit) as u8, (110.0 * lit) as u8];
+                let (minx, maxx) =
+                    (s.iter().map(|v| v.0).fold(f32::MAX, f32::min), s.iter().map(|v| v.0).fold(f32::MIN, f32::max));
+                let (miny, maxy) =
+                    (s.iter().map(|v| v.1).fold(f32::MAX, f32::min), s.iter().map(|v| v.1).fold(f32::MIN, f32::max));
+                let edge = |a: (f32, f32, f32), b: (f32, f32, f32), x: f32, y: f32| {
+                    (b.0 - a.0) * (y - a.1) - (b.1 - a.1) * (x - a.0)
+                };
+                let area = edge(s[0], s[1], s[2].0, s[2].1);
+                if area.abs() < 1e-9 {
+                    continue;
+                }
+                for y in (miny.max(0.0) as usize)..=(maxy.min(h as f32 - 1.0) as usize) {
+                    for x in (minx.max(x0 as f32) as usize)..=(maxx.min((x0 + panel) as f32 - 1.0) as usize) {
+                        let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+                        let (w0, w1, w2) = (
+                            edge(s[1], s[2], px, py) / area,
+                            edge(s[2], s[0], px, py) / area,
+                            edge(s[0], s[1], px, py) / area,
+                        );
+                        if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
+                            continue;
+                        }
+                        let z = w0 * s[0].2 + w1 * s[1].2 + w2 * s[2].2;
+                        let i = y * w + x;
+                        if z > depth[i] {
+                            depth[i] = z;
+                            image[3 * i..3 * i + 3].copy_from_slice(&colour);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Writes panels of drawn meshes side by side as a PPM.
+fn write_panels(path: &std::path::Path, meshes: &[(Vec<Vec3>, Vec<Vec3>)], rows: usize, cols: usize) {
+    let panel = 384;
+    let (w, h) = (panel * meshes.len(), panel);
+    let mut image = vec![0x24_u8; w * h * 3];
+    let mut depth = vec![f32::MIN; w * h];
+    for (k, (p, n)) in meshes.iter().enumerate() {
+        rasterise(&mut image, &mut depth, w, h, k * panel, panel, p, n, rows, cols);
+    }
+    let mut out = format!("P6\n{w} {h}\n255\n").into_bytes();
+    out.extend(image);
+    std::fs::write(path, out).unwrap();
+}
+
+/// The `cloth-runtime` evidence case (`evidence.toml`): the synthetic skirt mid-way through a 90° hips turn, Live and
+/// Offline side by side, and the three levels of detail side by side. Garments wire `ClothSpec` to the runtime in a
+/// later change, so the skirt is this file's own on its small rig. Writes only when `OMUZAKI_CLOTH_RUNTIME_PPM` names
+/// a folder.
+#[test]
+fn render_the_cloth_runtime_when_asked() {
+    let Some(directory) = std::env::var_os("OMUZAKI_CLOTH_RUNTIME_PPM") else { return };
+    let directory = std::path::PathBuf::from(directory);
+    std::fs::create_dir_all(&directory).unwrap();
+    let grid = skirt_grid();
+    let mid_turn = |mut rt: ClothRuntime| {
+        rt.reset(&Pose::default());
+        rt.settle(&Pose::default(), 1.5);
+        for frame in 1..=15 {
+            step(&mut rt, &turn(frame as f32 * FRAME), frame);
+        }
+        let m = rt.dynamic_mesh(0).unwrap();
+        (m.positions.to_vec(), m.normals.to_vec())
+    };
+    let offline = ClothSpec { quality: Quality::Offline, ..ClothSpec::default() };
+    let qualities = [mid_turn(skirt()), mid_turn(ClothRuntime::new(&grid, &offline, skirt::leg_colliders()).unwrap())];
+    write_panels(&directory.join("live-offline.ppm"), &qualities, grid.rows, grid.cols);
+    let levels: Vec<_> = (0..3)
+        .map(|level| {
+            let mut rt = skirt();
+            rt.force_level(Some(level));
+            mid_turn(rt)
+        })
+        .collect();
+    write_panels(&directory.join("levels.ppm"), &levels, grid.rows, grid.cols);
 }

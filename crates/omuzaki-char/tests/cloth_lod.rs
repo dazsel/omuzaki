@@ -35,7 +35,7 @@ fn zoom(t: f32) -> f32 {
     1100.0 * (0.5 + 0.5 * (t * 1.3).cos()).powi(2)
 }
 
-fn frame_ctx<'a>(pose: &'a Pose, frame: u32, ppm: Option<f32>) -> StepCtx<'a> {
+fn frame_ctx(pose: &Pose, frame: u32, ppm: Option<f32>) -> StepCtx<'_> {
     StepCtx::new(FRAME, Seconds(f64::from(frame) * f64::from(FRAME)), pose, Vec3::new(1.0, 0.0, 0.5))
         .with_pixels_per_metre(ppm)
 }
@@ -141,8 +141,8 @@ fn a_switch_does_not_pop_and_the_threshold_has_hysteresis() {
         let pose = dance(t);
         rt.step(&frame_ctx(&pose, frame, Some(ppm)));
         let p = positions(&rt);
-        let moved = p.iter().zip(&last).map(|(a, b)| a.distance(*b)).fold(0.0, f32::max);
-        moves.push(moved);
+        let step = p.iter().zip(&last).map(|(a, b)| a.distance(*b)).fold(0.0, f32::max);
+        moves.push(step);
         if rt.level() != level {
             switches.push((moves.len() - 1, ppm));
             level = rt.level();

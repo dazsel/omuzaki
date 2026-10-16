@@ -5,6 +5,7 @@
 //! sheet's folds, which a straight chain cannot hold: printed, and named in the bake's warnings.)
 
 #![allow(clippy::unwrap_used, clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+#![allow(clippy::too_many_lines)] // one scenario: build the skeleton, step both, compare
 
 #[path = "../../omuzaki-char/tests/cloth_runtime/skirt.rs"]
 mod skirt;
@@ -24,13 +25,12 @@ use skirt::{HIP_L, HIP_R, HIPS, KNEE_L, KNEE_R, Pose as RigPose, skirt_grid};
 /// The synthetic rig's joints in bind space.
 fn joint(bone: HumanoidBone) -> Vec3 {
     match bone {
-        HumanoidBone::Hips => HIPS,
         HumanoidBone::Spine => HIPS + Vec3::Y * 0.12,
         HumanoidBone::LeftUpperLeg => HIP_L,
         HumanoidBone::RightUpperLeg => HIP_R,
         HumanoidBone::LeftLowerLeg => KNEE_L,
         HumanoidBone::RightLowerLeg => KNEE_R,
-        _ => HIPS,
+        _ => HIPS, // the hips, and any bone the rig lacks
     }
 }
 

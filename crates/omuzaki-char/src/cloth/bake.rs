@@ -230,6 +230,7 @@ pub fn bake(
     let follow = runtime.follow();
     let mut weights = Vec::with_capacity(rest.len());
     let mut max_cut = 0.0_f32;
+    #[allow(clippy::needless_range_loop)] // `v` indexes the rest, skin and follow lists and makes the grid row
     for v in 0..rest.len() {
         let (gr, gc) = (v / grid_cols, v % grid_cols);
         let f = follow[gr];

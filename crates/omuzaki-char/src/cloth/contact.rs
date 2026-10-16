@@ -19,8 +19,8 @@
 //!
 //! **Thin colliders (limit 1, #129).** The sweep tests particles, so a collider thinner than the particle spacing (a
 //! hairpin, a 3 mm strap against 2 cm cells) could pass between particles. Once the environment knows the sheet
-//! ([`ClothEnvironment::set_sheet`]), every collider whose diameter (with clearance) is under the sheet's longest rest
-//! edge is also tested against the sheet's **triangles**: its axis, clipped to each nearby triangle's prism, must stay
+//! ([`ClothEnvironment::set_sheet`]), every collider whose diameter (with clearance) is under three quarters of the
+//! sheet's longest rest edge is also tested against the sheet's **triangles**: its axis, clipped to each nearby triangle's prism, must stay
 //! `radius + thickness + margin` on the side of the triangle that the same stretch of axis was on at the sub-step's
 //! start, and a triangle that is closer is moved away by that depth as a whole (its movable corners each by the depth:
 //! the barycentric triangle-point projection of position-based dynamics can fling a corner when the point under the
@@ -70,6 +70,12 @@ use super::solver::{SheetShape, Substep, SubstepHook};
 
 /// Particles per broad-phase chunk.
 const CHUNK: usize = 8;
+
+/// A collider is thin, and meets the sheet's triangles too, when its diameter (with clearance) is under this share of
+/// the sheet's longest rest edge. A collider nearly a cell thick cannot pass between particles (they lie in its path
+/// at any angle but square-on to a cell's diagonal), and the triangle test costs a pass over the cells per collider:
+/// a garment's shell of capsules each a little thinner than the outer layer's cells would cost more than the solver.
+const THIN: f32 = 0.75;
 
 /// Why a collider, a parameter or a wind was refused.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -494,7 +500,7 @@ fn push_triangle(
     let normal = (x1 - x0).cross(x2 - x0);
     let area2 = normal.length();
     // A corner the solver has yet to repair (non-finite) must not spread to the others.
-    if !(area2 >= 1e-12 && area2.is_finite()) || !(previous[i] + previous[j] + previous[k]).is_finite() {
+    if area2 < 1e-12 || !area2.is_finite() || !(previous[i] + previous[j] + previous[k]).is_finite() {
         return;
     }
     let mut n = normal / area2;
@@ -524,7 +530,7 @@ fn push_triangle(
     // again; one exactly through the axis has none and is left to the particle contacts.
     let (y0, y1, y2) = (previous[i], previous[j], previous[k]);
     let n0 = (y1 - y0).cross(y2 - y0).normalize_or(n);
-    let start = n0.dot(pose.a0 + pose.e0 * (0.5 * (t0 + t1)) - y0);
+    let start = n0.dot(pose.a0 + pose.e0 * f32::midpoint(t0, t1) - y0);
     if start.abs() < 1e-7 || !start.is_finite() {
         return;
     }
@@ -861,7 +867,7 @@ impl SubstepHook for ClothEnvironment {
         // Limit 1: colliders thinner than the particle spacing also meet the sheet's triangles.
         if let Some(shape) = self.sheet {
             for pose in poses {
-                if 2.0 * pose.reach < self.spacing {
+                if 2.0 * pose.reach < THIN * self.spacing {
                     triangle_contacts(pose, shape, self.spacing, positions, previous, inv_mass);
                 }
             }
