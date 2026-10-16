@@ -9,10 +9,13 @@
 //! pub struct VestParams { pub common: GarmentCommon, pub trims: Vec<TrimSpec>, /* the vest's own shape */ }
 //!
 //! fn build(p: &VestParams, ctx: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
-//!     let surface = Surface::new(ctx.fit()?, BodyRegion::Torso, SOFT_SQUARE, p.common.ease)?; // over the layer below
+//!     // The loft's own errors become this part's build error.
+//!     let fail = |e: GarmentError| ctx.fail(e.to_string());
+//!     // Over the layer below.
+//!     let surface = Surface::new(ctx.fit()?, BodyRegion::Torso, SOFT_SQUARE, p.common.ease).map_err(fail)?;
 //!     let mut out = GarmentOutput::new(ctx, &p.common)?; // the fabric's material and texture
 //!     let mut mesh = MeshBuilder::new();
-//!     surface.loft(0.25, 0.85, 24, 48)?.add_to(&mut mesh, out.tile())?;
+//!     surface.loft(0.25, 0.85, 24, 48).map_err(fail)?.add_to(&mut mesh, out.tile()).map_err(fail)?;
 //!     out.surface(ctx, "body", mesh)?;
 //!     for (k, trim) in p.trims.iter().enumerate() {
 //!         add_trim(&mut out, ctx, &surface, &format!("trim{k}"), trim)?;

@@ -10,7 +10,7 @@
 
 use omuzaki_char_api::{AnchorId, AnchorsFact, BuildCtx, BuildError, MaterialSpec, PartId, Quality, TextureData};
 use omuzaki_core::colour::Colour;
-use omuzaki_core::glam::{DVec2, UVec2};
+use omuzaki_core::glam::{DVec2, DVec3, UVec2};
 use omuzaki_face_api::{Check, DrawList, FaceRect, Validate};
 use omuzaki_render_api::{AlphaMode, TextureDesc};
 use omuzaki_store_api::ContentHash;
@@ -35,7 +35,7 @@ pub const LIVE_PX_PER_M: f64 = 10_000.0;
 /// The density for an offline build.
 pub const OFFLINE_PX_PER_M: f64 = 25_000.0;
 /// Cells each way across a decal's sheet.
-const CELLS: usize = 12;
+pub const CELLS: usize = 12;
 
 /// Where a decal's picture comes from.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -117,7 +117,8 @@ impl Validate for Decal {
 /// the surface, [`LIFT`] off it, with UVs from the picture's top left.
 ///
 /// # Errors
-/// The surface's errors; [`TrimError::Invalid`] where the surface has no extent to lay the sheet on.
+/// The surface's errors; [`TrimError::Invalid`] where the surface has no extent to lay the sheet on, or where the sheet
+/// would reach past either end of the region.
 pub fn sheet(surface: &Surface, at: [f64; 2], size: [f64; 2], rotation: f64) -> Result<MeshBuilder, TrimError> {
     // How far the surface moves per unit of t and of phi at the centre: the first-order map from the tangent plane.
     let (per_t, per_phi) = rates(surface, at)?;
@@ -127,12 +128,21 @@ pub fn sheet(surface: &Surface, at: [f64; 2], size: [f64; 2], rotation: f64) -> 
         DVec2::new(q.x * cos - q.y * sin, q.x * sin + q.y * cos)
     };
     let mut points = Vec::with_capacity((CELLS + 1) * (CELLS + 1));
+    let mut rows = Vec::with_capacity((CELLS + 1) * (CELLS + 1));
     for i in 0..=CELLS {
         for j in 0..=CELLS {
             let q = local(i, j);
-            let (t, phi) = ((at[0] + q.y / per_t).clamp(0.0, 1.0), at[1] + q.x / per_phi);
+            let (t, phi) = (at[0] + q.y / per_t, at[1] + q.x / per_phi);
+            // Clamping would fold the rows past the end onto it: a sheet must fit on the region.
+            if !(0.0..=1.0).contains(&t) {
+                return Err(TrimError::invalid(
+                    "decal",
+                    format!("its sheet reaches t = {t:.3}, past the end of the region: move it or make it smaller"),
+                ));
+            }
             let frame = surface.at(t, phi)?;
             points.push(frame.point + frame.normal * LIFT);
+            rows.push(t);
         }
     }
     // The sheet is small beside its section: its ring's centre is inside it everywhere.
@@ -140,12 +150,11 @@ pub fn sheet(surface: &Surface, at: [f64; 2], size: [f64; 2], rotation: f64) -> 
     let grid = Grid::new(CELLS + 1, CELLS + 1, points)?;
     let inside = |_: usize, _: usize| middle;
     let uv = |i: usize, j: usize| DVec2::new(fraction(j, CELLS), fraction(i, CELLS));
-    let options = GridOptions {
-        inside: Some(&inside),
-        uv: Some(&uv),
-        skin: Skin::Blend(surface.weights().at(at[0])),
-        ..GridOptions::default()
-    };
+    // Each vertex skinned as the garment is where it lies, so the sheet bends with the cloth across a joint.
+    let weights = surface.weights();
+    let per_vertex = |_: DVec3, i: usize, j: usize| weights.at(rows[i * (CELLS + 1) + j]);
+    let options =
+        GridOptions { inside: Some(&inside), uv: Some(&uv), skin: Skin::Per(&per_vertex), ..GridOptions::default() };
     let mut builder = MeshBuilder::new();
     builder.add_grid(&grid, &options)?;
     Ok(builder)

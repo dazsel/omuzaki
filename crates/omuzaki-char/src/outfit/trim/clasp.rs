@@ -97,10 +97,14 @@ pub struct ClaspPieces {
 
 /// The clasp's frame at the anchor `foot` with the surface's `up` and `normal` there: `y` up, `x = up x normal`,
 /// `z = x x y` (the prototype's, with no tilt).
-pub fn frame(foot: DVec3, up: DVec3, normal: DVec3) -> Basis {
-    let x = up.cross(normal).normalize_or_zero();
-    let z = x.cross(up).normalize_or_zero();
-    Basis { origin: foot, x, y: up, z }
+///
+/// # Errors
+/// [`TrimError::Invalid`] when `up` has no length or lies along `normal`: there is no frame.
+pub fn frame(foot: DVec3, up: DVec3, normal: DVec3) -> Result<Basis, TrimError> {
+    let none = || TrimError::invalid("clasp", "its up lies along the surface's normal: it has no frame");
+    let y = up.try_normalize().ok_or_else(none)?;
+    let x = y.cross(normal).try_normalize().ok_or_else(none)?;
+    Ok(Basis { origin: foot, x, y, z: x.cross(y) })
 }
 
 /// The clasp of `style` at `scale` of the prototype's: its stud in the surface's frame `on` and its hanging pieces in
@@ -296,8 +300,8 @@ pub fn build(surface: &Surface, spec: &Clasp) -> Result<ClaspPieces, TrimError> 
     // cloth is upright, and on a slope (a bust) they hang down rather than along it into the garment. A surface
     // facing almost straight up or down has no level out, so there the clasp follows the surface.
     let up = if anchor.normal.y.abs() < LEVEL_LIMIT { DVec3::Y } else { anchor.along };
-    let basis = frame(anchor.point, up, anchor.normal);
-    let on = frame(anchor.point, anchor.along, anchor.normal);
+    let basis = frame(anchor.point, up, anchor.normal)?;
+    let on = frame(anchor.point, anchor.along, anchor.normal)?;
     let k = spec.size / CLASP_SIZE;
     let skin = surface.weights().at(spec.at[0]);
     let standoff = standoff(surface, &basis, spec.style, k)?;

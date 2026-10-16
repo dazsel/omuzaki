@@ -12,13 +12,16 @@
 //! On each of the 4 templates × 3 shapes it builds a body and the garment (layer [`LAYER_SHIRT`]) and checks:
 //! - **clearance**: each vertex lies at least half the ease outside the fit it was built over, and nothing lies inside
 //!   it; a failure names the vertex, the region, where along it and how deep;
-//! - **body**: no vertex and no triangle (its centroid) is inside any region of the body fit;
+//! - **body**: no point of any triangle is inside any region of the body fit: each triangle is probed at its corners
+//!   and on a barycentric grid no coarser than [`CROSSING_SPACING`], so a triangle that passes through the body
+//!   between its corners is caught too;
 //! - **closure**: after welding coincident positions every edge is shared by at most two triangles wound opposite ways,
 //!   and the boundary edges form exactly [`Garment::open_borders`] loops;
 //! - **skin**: every mesh passes `PartMesh::validate` (weights normalised, joints listed) and every joint is in the rig;
 //! - **names**: every material and texture is named after the part, and every reference between them resolves;
 //! - **determinism**: a second build is byte-identical;
-//! - **time**: the build takes at most [`MAX_BUILD_MS`] (asserted in release builds only; measured always).
+//! - **time**: the build takes at most [`MAX_BUILD_MS`] in a release build, and [`UNOPTIMISED_SLOWDOWN`] times that in
+//!   the unoptimised test build CI runs.
 //!
 //! The geometry checks measure against the fit's analytic sections, not against the loft code under test: a vertex is
 //! located on a region by finding where along the region's axis its section plane passes through the vertex.
@@ -50,6 +53,16 @@ use serde_json::{Value, json};
 pub const TEMPLATES: [&str; 4] = ["soft-sd", "mini", "standard", "tall"];
 /// The longest a garment may take to build, milliseconds (asserted in release builds).
 pub const MAX_BUILD_MS: f64 = 40.0;
+/// How much slower an unoptimised test build of the garment code may be than [`MAX_BUILD_MS`] allows: CI's gates run
+/// the test profile, so the budget is asserted there too, scaled by this (the trimmed test tube is about 10 ms in a
+/// release build and about 15 times that unoptimised).
+pub const UNOPTIMISED_SLOWDOWN: f64 = 25.0;
+
+/// The build budget for this build of the suite, ms: [`MAX_BUILD_MS`], scaled by [`UNOPTIMISED_SLOWDOWN`] when debug
+/// assertions are on (the test profile).
+pub fn build_budget_ms() -> f64 {
+    if cfg!(debug_assertions) { MAX_BUILD_MS * UNOPTIMISED_SLOWDOWN } else { MAX_BUILD_MS }
+}
 /// Every region of the body fit, checked for crossings.
 pub const REGIONS: [BodyRegion; 8] = [
     BodyRegion::Torso,
@@ -202,8 +215,9 @@ pub fn run<K: Garment>(params: &K::Params, services: &BuildServices) -> Result<V
             check_skin(output, &stack.published).map_err(|e| format!("{case}: {e}"))?;
             check_names(output, PART).map_err(|e| format!("{case}: {e}"))?;
             let build_ms = check_repeat(&def, output, before, services).map_err(|e| format!("{case}: {e}"))?;
-            if cfg!(not(debug_assertions)) && build_ms > MAX_BUILD_MS {
-                return Err(format!("{case}: the build took {build_ms:.1} ms, over the {MAX_BUILD_MS} ms budget"));
+            let budget = build_budget_ms();
+            if build_ms > budget {
+                return Err(format!("{case}: the build took {build_ms:.1} ms, over the {budget} ms budget"));
             }
             rows.push(Row {
                 template,
@@ -388,8 +402,9 @@ fn ellipse_distance(q: DVec2, r: DVec2) -> f64 {
 
 // ------------------------------------------------------------------------------------------------------- checks
 
-/// Every vertex and triangle centroid is outside the body; every vertex is at least half the ease outside the
-/// fit under the garment, measured on the covered region it lies deepest in. Returns the least clearance, metres.
+/// Every vertex and every point [`triangle_probes`] gives is outside the body; every vertex is at least half the ease
+/// outside the fit under the garment, measured on the covered region it lies deepest in. Returns the least clearance,
+/// metres.
 fn check_clearance(
     output: &PartOutput,
     body: &Tables,
@@ -437,15 +452,16 @@ fn check_clearance(
         }
         for (n, tri) in g.indices.chunks_exact(3).enumerate() {
             let [a, b, c] = [p(tri[0]), p(tri[1]), p(tri[2])];
-            let probe = (a + b + c) / 3.0;
-            if let Some(l) = inside_body(body, probe) {
-                return Err(format!(
-                    "triangle {n} of `{}` crosses the body: region {:?} at t = {:.3}, depth {:.2} mm at {probe}",
-                    mesh.name,
-                    l.region,
-                    l.t,
-                    -l.distance() * 1e3
-                ));
+            for probe in triangle_probes(a, b, c) {
+                if let Some(l) = inside_body(body, probe) {
+                    return Err(format!(
+                        "triangle {n} of `{}` crosses the body: region {:?} at t = {:.3}, depth {:.2} mm at {probe}",
+                        mesh.name,
+                        l.region,
+                        l.t,
+                        -l.distance() * 1e3
+                    ));
+                }
             }
         }
     }
@@ -453,6 +469,45 @@ fn check_clearance(
         return Err("no vertex lies over the regions the garment says it covers".to_owned());
     }
     Ok(least)
+}
+
+/// The most a crossing probe is from the next along a triangle, metres. A flat triangle through a convex region of
+/// radius `R` crosses it along a chord of `2 sqrt(2 R d)` at depth `d`; at 2 mm, a crossing deeper than about 10 µm on
+/// a 5 cm limb reaches a probe.
+pub const CROSSING_SPACING: f64 = 0.002;
+/// The most probes per side of a triangle, so a huge triangle can't stall the suite (a garment's are far smaller).
+const MAX_PROBES_PER_SIDE: usize = 64;
+
+/// The points of triangle `abc` checked for crossings, besides its corners (which are checked as vertices): its
+/// centroid and a barycentric grid of `n` steps a side, `n` set by its longest edge and [`CROSSING_SPACING`].
+fn triangle_probes(a: DVec3, b: DVec3, c: DVec3) -> Vec<DVec3> {
+    let longest = a.distance(b).max(b.distance(c)).max(c.distance(a));
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a small positive ratio, clamped
+    let n = ((longest / CROSSING_SPACING).ceil() as usize).clamp(1, MAX_PROBES_PER_SIDE);
+    let mut probes = vec![(a + b + c) / 3.0];
+    for i in 0..=n {
+        for j in 0..=n - i {
+            let k = n - i - j;
+            if i == n || j == n || k == n {
+                continue; // a corner
+            }
+            #[allow(clippy::cast_precision_loss)] // tiny counts
+            let (u, v, w) = (i as f64 / n as f64, j as f64 / n as f64, k as f64 / n as f64);
+            probes.push(a * u + b * v + c * w);
+        }
+    }
+    probes
+}
+
+/// Whether `p` is inside any region of `fit`.
+pub fn inside(fit: &dyn BodyFit, p: DVec3) -> bool {
+    inside_body(&Tables::of(fit), p).is_some()
+}
+
+/// The first point of triangle `abc` the suite finds inside a region of `fit`, corners included.
+pub fn crossing(fit: &dyn BodyFit, [a, b, c]: [DVec3; 3]) -> Option<DVec3> {
+    let body = Tables::of(fit);
+    [a, b, c].into_iter().chain(triangle_probes(a, b, c)).find(|p| inside_body(&body, *p).is_some())
 }
 
 /// The region of the body `p` is inside, if any.
