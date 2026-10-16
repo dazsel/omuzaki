@@ -3677,6 +3677,7 @@ version = "0.0.0"
 dependencies = [
  "clap",
  "omuzaki-anim-api",
+ "omuzaki-char-api",
  "omuzaki-core",
  "omuzaki-doc",
  "omuzaki-doc-api",
@@ -3692,6 +3693,7 @@ dependencies = [
  "omuzaki-store",
  "omuzaki-store-api",
  "omuzaki-track-api",
+ "rmcp",
  "schemars",
  "serde",
  "serde_json",
