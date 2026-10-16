@@ -29,9 +29,9 @@ use std::collections::BTreeMap;
 use std::ops::Range;
 
 use omuzaki_char_api::{
-    AnchorsFact, BodyRegion, BuildCtx, BuildError, FaceOverlay, Generator, GroupId, HAIR_UV, HairParams, HeadSurface, JointRef, KindProvenance,
-    MaterialName, MaterialSpec, PartCategory, PartId, PartKind, PartMesh, PartMeta, PartOutput, RecolourCtx,
-    Recoloured,
+    AnchorsFact, BodyRegion, BuildCtx, BuildError, FaceOverlay, Generator, GroupId, HAIR_UV, HairParams, HeadSurface,
+    JointRef, KindProvenance, MaterialName, MaterialSpec, PartCategory, PartId, PartKind, PartMesh, PartMeta,
+    PartOutput, RecolourCtx, Recoloured,
 };
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::{Vec2, Vec3};
@@ -369,7 +369,8 @@ fn skin_runs(mesh: &mut MeshData, runs: &[Run<'_>]) -> Result<Vec<JointRef>, Str
                 base
             }
         };
-        let index = |bone: usize| u16::try_from(base + bone).map_err(|_| "more joints than a mesh can index".to_owned());
+        let index =
+            |bone: usize| u16::try_from(base + bone).map_err(|_| "more joints than a mesh can index".to_owned());
         for v in run.range.clone() {
             let s = tail::skin(run.chain, mesh.positions[v]);
             let [head, here, next] = s.weights();
@@ -427,9 +428,8 @@ fn tie_material_name(part: &PartId) -> Result<MaterialName, omuzaki_core::id::Sl
 
 /// The hair tie's material: a toon of the shading's `tie` colour. `build` and `recolour` share it.
 fn tie_material(part: &PartId, params: &HairParams, palette: &Palette) -> Result<MaterialSpec, BuildError> {
-    let colour = palette
-        .resolve(&params.shading.tie)
-        .map_err(|error| BuildError::Colour { part: part.clone(), error })?;
+    let colour =
+        palette.resolve(&params.shading.tie).map_err(|error| BuildError::Colour { part: part.clone(), error })?;
     Ok(MaterialSpec::toon(colour))
 }
 

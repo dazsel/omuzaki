@@ -160,7 +160,10 @@ fn the_bangs_check_every_layer_and_wisp_value() {
 #[test]
 fn guides_check_each_clump_shade() {
     let mut g = GuidesGen::default();
-    g.clumps = vec![GuideClump { points: vec![GuidePoint::Head([0.0; 3]), GuidePoint::Head([0.0, -0.1, 0.0])], ..GuideClump::default() }];
+    g.clumps = vec![GuideClump {
+        points: vec![GuidePoint::Head([0.0; 3]), GuidePoint::Head([0.0, -0.1, 0.0])],
+        ..GuideClump::default()
+    }];
     assert_eq!(errors(Generator::Guides(g.clone())), "");
     g.clumps[0].shade = NAN;
     assert!(errors(Generator::Guides(g.clone())).contains("groups/g/generator/clumps/0/shade:"));
@@ -202,7 +205,12 @@ fn the_tail_and_bun_check_their_numbers() {
 #[test]
 fn the_defaults_and_every_preset_still_pass() {
     assert_eq!(HairParams::default().validate(), Ok(()));
-    let group = |generator: Generator, mirror: bool| HairGroup { enabled: true, mirror, dynamics: Dynamics::default(), generator };
+    let group = |generator: Generator, mirror: bool| HairGroup {
+        enabled: true,
+        mirror,
+        dynamics: Dynamics::default(),
+        generator,
+    };
     let all: BTreeMap<GroupId, HairGroup> = [
         ("a", group(Generator::Cap(CapGen::default()), false)),
         ("b", group(Generator::PartSweep(PartSweepGen::default()), false)),

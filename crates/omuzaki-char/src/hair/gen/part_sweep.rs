@@ -91,8 +91,9 @@ pub fn control_points(
     out: &mut [DVec3; CONTROL_POINTS],
 ) {
     let s = if g.count > 1 { i as f64 / f64::from(g.count - 1) } else { 0.0 };
-    let start =
-        (part_direction(g, g.part_start + (1.0 - g.part_start) * s) + DVec3::new(side * g.part_spread, 0.0, 0.0)).normalize();
+    let start = (part_direction(g, g.part_start + (1.0 - g.part_start) * s)
+        + DVec3::new(side * g.part_spread, 0.0, 0.0))
+    .normalize();
     let azimuth = side * (g.end_from_deg + (g.end_to_deg - g.end_from_deg) * s.powf(g.end_spread)).to_radians();
     let blend = (g.height_blend_deg[0], g.height_blend_deg[1]);
     let end = height_direction(g.end_height_front, g.end_height_back, blend, head, azimuth);

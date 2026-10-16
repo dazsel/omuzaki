@@ -13,10 +13,10 @@ use omuzaki_anim_api::{Collider, ColliderGroup, ColliderShape, HumanoidBone};
 use omuzaki_char::hair::compile::{Dispatch, HairGenCtx, UnitStream, compile_groups, stream};
 use omuzaki_char::hair::r#gen::{bun, tail};
 use omuzaki_char_api::{
-    Anchor, Attach, AttachOffset, BuildCtx, BuildError, BuildOptions, BuildServices, BuiltCharacter, CharId,
+    Anchor, Attach, AttachOffset, BuildCtx, BuildError, BuildOptions, BuildServices, BuiltCharacter, BunGen, CharId,
     CharacterBuilder, CharacterDef, CollidersFact, Dynamics, Generator, GroupId, HairClump, HairGroup, HairParams,
-    HairRng, HeadSurface, JointRef, PartCategory, PartDef, PartId, PartKind, PartKindId, PartMeta, PartOutput, Publishes,
-    Quality, RegistryBuilder, TailGen, BunGen, Wave,
+    HairRng, HeadSurface, JointRef, PartCategory, PartDef, PartId, PartKind, PartKindId, PartMeta, PartOutput,
+    Publishes, Quality, RegistryBuilder, TailGen, Wave,
 };
 use omuzaki_char_mock::mock_character;
 use omuzaki_core::glam::{Quat, Vec3};
@@ -163,7 +163,13 @@ fn non_finite_input_changes_neither_the_count_nor_the_finiteness() {
         droop: f64::INFINITY,
         spread_deg: f64::NAN,
         tie_radius: f64::NAN,
-        wave: Wave { amplitude: f64::NAN, frequency: f64::INFINITY, phase: f64::NAN, curl: f64::NAN, growth: [f64::NAN; 2] },
+        wave: Wave {
+            amplitude: f64::NAN,
+            frequency: f64::INFINITY,
+            phase: f64::NAN,
+            curl: f64::NAN,
+            growth: [f64::NAN; 2],
+        },
         ..TailGen::default()
     };
     let (clumps, _) = compile_tail(&bad);
@@ -241,7 +247,10 @@ fn the_bun_publishes_its_centre_and_its_tie() {
     let anchors = bun::anchors(&g, &Ball);
     let find = |name: &str| anchors.iter().find(|(n, _)| *n == name).map(|(_, a)| a.clone()).unwrap();
     let (centre, tie) = (find("bun_centre"), find("bun_tie"));
-    assert!(((centre.position - tie.position).length() - g.radius as f32).abs() < 1e-5, "the tie is a radius from the centre");
+    assert!(
+        ((centre.position - tie.position).length() - g.radius as f32).abs() < 1e-5,
+        "the tie is a radius from the centre"
+    );
     assert!((outside(tie.position) - g.centre[2] as f32).abs() < 1e-5);
     assert!(tie.rotation.dot(Quat::from_rotation_arc(Vec3::Y, (tie.position - CENTRE).normalize())).abs() > 0.9999);
 }
@@ -310,7 +319,8 @@ fn the_bun_winds_round_a_ball_that_rests_on_the_head() {
         }
         // The strands go round: they do not all lie in one half of the ball.
         let first = &strands[0].rest;
-        let spread = first.iter().map(|p| (*p - centre).x).fold((f32::MAX, f32::MIN), |(lo, hi), x| (lo.min(x), hi.max(x)));
+        let spread =
+            first.iter().map(|p| (*p - centre).x).fold((f32::MAX, f32::MIN), |(lo, hi), x| (lo.min(x), hi.max(x)));
         assert!(spread.1 - spread.0 > 1.2 * g.radius as f32, "one strand spans {spread:?}");
     }
 }
@@ -516,7 +526,8 @@ const TRIANGLE_BUDGET: usize = 8_000;
 fn every_preset_builds_on_every_template_clear_of_head_and_shoulders() {
     for template in TEMPLATES {
         for (name, hair) in presets() {
-            let built = build(&character(template, &hair, None)).unwrap_or_else(|e| panic!("{name} on {template}: {e}"));
+            let built =
+                build(&character(template, &hair, None)).unwrap_or_else(|e| panic!("{name} on {template}: {e}"));
             let count = triangles(&built, "hair");
             assert!(count > 0 && count <= TRIANGLE_BUDGET, "{name} on {template}: {count} triangles");
             let warnings: Vec<_> = built.report.parts.iter().flat_map(|p| p.warnings.iter()).collect();
@@ -555,7 +566,12 @@ fn another_part_attaches_to_a_published_tail_anchor() {
     };
     let built = build(&character("standard", hair, Some(("charm", attach)))).unwrap();
     let root = built.anchors[&(pid("hair"), "pony_tail_root".parse().unwrap())].position;
-    let charm: Vec<Vec3> = built.meshes.iter().filter(|m| m.part.as_str() == "charm").flat_map(|m| m.mesh.geometry.positions.clone()).collect();
+    let charm: Vec<Vec3> = built
+        .meshes
+        .iter()
+        .filter(|m| m.part.as_str() == "charm")
+        .flat_map(|m| m.mesh.geometry.positions.clone())
+        .collect();
     assert!(!charm.is_empty());
     let middle = charm.iter().copied().sum::<Vec3>() / charm.len() as f32;
     assert!((middle - root).length() < 0.15, "the charm hangs at {middle:?}, the anchor is at {root:?}");
@@ -595,11 +611,16 @@ fn render_the_presets_when_asked() {
             let centre = top - Vec3::Y * 0.3;
             for (view, azimuth_deg) in [("front", 0.0_f32), ("side", 90.0), ("back", 180.0)] {
                 let mut renderer = MockRenderer::new();
-                let eye = centre + Mat4::from_rotation_y(azimuth_deg.to_radians()).transform_vector3(Vec3::new(0.0, 0.05, 2.1));
+                let eye = centre
+                    + Mat4::from_rotation_y(azimuth_deg.to_radians()).transform_vector3(Vec3::new(0.0, 0.05, 2.1));
                 let mut scene = Scene::new(Camera::look_at(eye, centre, Vec3::Y, Camera::default().projection));
                 scene.background = Background::Solid { colour: Colour::hex(0x001e_1c24) };
                 scene.lights = vec![
-                    Light::Hemisphere { sky: Colour::hex(0x00f1_eef8), ground: Colour::hex(0x004a_3e36), intensity: 0.75 },
+                    Light::Hemisphere {
+                        sky: Colour::hex(0x00f1_eef8),
+                        ground: Colour::hex(0x004a_3e36),
+                        intensity: 0.75,
+                    },
                     Light::Directional {
                         to_light: Vec3::new(1.6, 3.0, 2.4),
                         colour: Colour::hex(0x00ff_f6ec),
@@ -616,7 +637,8 @@ fn render_the_presets_when_asked() {
                     scene.instances.push(Instance::new(mesh, material, Mat4::IDENTITY));
                 }
                 let quality = Quality { samples: 4, ..Quality::offline() };
-                let image = renderer.render_image(UVec2::splat(512), AlphaEncoding::Straight, &scene, &quality).unwrap();
+                let image =
+                    renderer.render_image(UVec2::splat(512), AlphaEncoding::Straight, &scene, &quality).unwrap();
                 let mut ppm = format!("P6\n{} {}\n255\n", image.size.x, image.size.y).into_bytes();
                 for y in 0..image.size.y {
                     for x in 0..image.size.x {
@@ -642,7 +664,11 @@ fn the_tail_is_one_mass_of_broad_overlapping_locks_at_the_tie() {
     let k = 2;
     let mean = clumps.iter().map(|c| c.rest[k]).sum::<Vec3>() / clumps.len() as f32;
     for c in &clumps {
-        assert!((c.rest[k] - mean).length() < 0.5 * c.width.start as f32, "a lock stands {} off the bunch", (c.rest[k] - mean).length());
+        assert!(
+            (c.rest[k] - mean).length() < 0.5 * c.width.start as f32,
+            "a lock stands {} off the bunch",
+            (c.rest[k] - mean).length()
+        );
     }
     // And the tips are pointed.
     assert!(clumps[0].width.at(1.0) < 0.3 * clumps[0].width.at(0.5));
@@ -659,7 +685,11 @@ fn the_tie_band_sits_fifteen_to_twenty_millimetres_off_the_scalp_and_hides_the_g
         let group = tail::compile(&g, &mut ctx);
         let GroupGeometry::Tied { ties } = &group.geometry else { panic!("a tail is tied") };
         let [tie] = ties.as_slice() else { panic!("one tie per tail") };
-        assert!((0.015..=0.021).contains(&outside(tie.centre)), "{name}: the tie is {} off the scalp", outside(tie.centre));
+        assert!(
+            (0.015..=0.021).contains(&outside(tie.centre)),
+            "{name}: the tie is {} off the scalp",
+            outside(tie.centre)
+        );
         // The ring clears the bunch plus half a lock, so the locks start inside it.
         assert!(tie.radius > g.tie_radius as f32 + 0.3 * g.width.start as f32);
         assert!(tie.tube > 0.004);
@@ -735,7 +765,12 @@ fn hair_mesh<'a>(built: &'a BuiltCharacter, name: &str) -> (&'a omuzaki_char_api
 }
 
 /// Where the mesh's vertices are when the skeleton is posed with `pose`.
-fn skinned(built: &BuiltCharacter, mesh: &omuzaki_char_api::PartMesh, bones: &[usize], pose: &omuzaki_anim_api::Pose) -> Vec<Vec3> {
+fn skinned(
+    built: &BuiltCharacter,
+    mesh: &omuzaki_char_api::PartMesh,
+    bones: &[usize],
+    pose: &omuzaki_anim_api::Pose,
+) -> Vec<Vec3> {
     let mut world = omuzaki_anim_api::Pose::IDENTITY;
     built.rig.skeleton.world_pose(pose, &mut world);
     let inverse = built.rig.inverse_bind();

@@ -5,14 +5,14 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // helpers build fixtures; a bad one should stop the test with its reason
 #![allow(clippy::float_cmp, clippy::cast_precision_loss)] // exact values that were copied, not computed
 
+use omuzaki_char::hair::compile::{Forked, HairGenCtx};
 use omuzaki_char::hair::r#gen::cap::{self, RINGS, SEGMENTS};
 use omuzaki_char::hair::r#gen::part_sweep::{self, Lock};
-use omuzaki_char::hair::compile::{Forked, HairGenCtx};
 use omuzaki_char_api::{CapGen, Dynamics, GroupId, HAIR_INFO, HeadSurface, PartSweepGen, Quality};
-use omuzaki_core::rng::Rng;
-use omuzaki_face_api::Palette;
 use omuzaki_core::glam::Vec3;
 use omuzaki_core::mesh::MeshData;
+use omuzaki_core::rng::Rng;
+use omuzaki_face_api::Palette;
 use serde_json::json;
 
 #[derive(Debug)]
@@ -56,12 +56,17 @@ fn the_defaults_are_the_numbers_the_generators_used() {
     assert_eq!((s.part_start, s.part_spread, s.end_spread, s.sweep_ease), (0.02, 0.02, 0.9, 0.9));
     assert_eq!((s.height_blend_deg, s.lift, s.belly, s.alternate_step), ([70.0, 180.0], 0.030, 0.016, 0.005));
     assert_eq!(s.shades, [0.97, 1.0]);
-    assert_eq!(part_sweep::HEIGHT_BLEND, (s.height_blend_deg[0], s.height_blend_deg[1]), "the braid shares the default");
+    assert_eq!(
+        part_sweep::HEIGHT_BLEND,
+        (s.height_blend_deg[0], s.height_blend_deg[1]),
+        "the braid shares the default"
+    );
 }
 
 #[test]
 fn a_saved_file_without_the_new_fields_reads_back_as_the_defaults() {
-    let old_cap = json!({ "hairline_front_deg": 58.0, "hairline_back_deg": 118.0, "ear_notch_deg": 16.0, "thickness": 0.016 });
+    let old_cap =
+        json!({ "hairline_front_deg": 58.0, "hairline_back_deg": 118.0, "ear_notch_deg": 16.0, "thickness": 0.016 });
     assert_eq!(serde_json::from_value::<CapGen>(old_cap).unwrap(), CapGen::default());
     let old_sweep = json!({ "count": 26, "part_front_deg": -32.0 });
     assert_eq!(serde_json::from_value::<PartSweepGen>(old_sweep).unwrap(), PartSweepGen::default());

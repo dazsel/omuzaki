@@ -351,11 +351,7 @@ pub fn rig(
         let mut ids = Vec::with_capacity(chain.bones.len());
         let mut parent = JointRef::HEAD;
         for (bone, at) in chain.bones.iter().zip(&chain.rest) {
-            ids.push(out.add_bone(ExtraBone {
-                name: bone.clone(),
-                parent,
-                rest: Transform::from_translation(*at),
-            }));
+            ids.push(out.add_bone(ExtraBone { name: bone.clone(), parent, rest: Transform::from_translation(*at) }));
             parent = JointRef::Named(bone.clone());
         }
         let mut spring = SpringChain::tapered(chain.name, &ids, CHAIN_ROOT, CHAIN_TIP);
