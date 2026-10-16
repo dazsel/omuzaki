@@ -13,7 +13,7 @@ use omuzaki_library_api::{
     Bindings, ItemManifest, ItemRights, Params, Problem, RecipeError, StepRequest, check_ops, expand,
 };
 use omuzaki_ops_api::{OpKind, OpMeta, Scope, Undo};
-use omuzaki_store_api::ContentHash;
+use omuzaki_store_api::{Commercial, ContentHash};
 use proptest::prelude::*;
 use serde_json::{Value, json};
 
@@ -452,14 +452,9 @@ fn asset_info_round_trips_with_the_items_own_rights_type() {
     let manifest = ItemManifest::parse(&with_asset(&info)).unwrap();
     let AssetInfo { size, rights } = &manifest.asset_info["cap"];
     assert_eq!(*size, 1024);
-    let expected = ItemRights {
-        licence: "CC-BY-4.0".into(),
-        author: None,
-        owned: false,
-        terms_hash: Some(hash),
-        attestation: Some(Attestation { by: KeyId(THEM), claim: "own-work".into() }),
-        ..ItemRights::first_party()
-    };
+    let expected = ItemRights::new("CC-BY-4.0", Commercial::Ok)
+        .with_terms_hash(hash)
+        .with_attestation(Attestation { by: KeyId(THEM), claim: "own-work".into() });
     assert_eq!(rights, &expected);
     assert_eq!(fields(&problems_of(&with_asset(&info))), Vec::<&str>::new());
     let reparsed: ItemManifest = serde_json::from_slice(&manifest.canonical_bytes()).unwrap();
@@ -513,6 +508,10 @@ fn the_public_api_snapshot() {
         UnknownSection, Usage, Version, VersionError, VersionReq, When, check_ops, expand, migrations, record_path,
         sources,
     };
+    let rights = ItemRights::new("CC0-1.0", Commercial::Ok).with_owned(true);
+    let manifest =
+        ItemManifest::new("mira/hair/x", "1.0.0", "hair", ItemKind::Part, Target::Character, "X", rights.clone());
+    assert_eq!((manifest.rights, manifest.listed), (rights, true));
     assert_eq!(migrations::CURRENT_SCHEMA, 1);
     assert_eq!(Section::ALL.len(), 25);
 }

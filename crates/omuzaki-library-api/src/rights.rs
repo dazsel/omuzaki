@@ -24,10 +24,12 @@ pub struct Attestation {
     pub claim: String,
 }
 
-/// The rights of an item: the [`Provenance`] fields a part source row holds, so apply writes rows without
+/// The rights of an item. The struct is `#[non_exhaustive]` (ADR 0054): build it with [`ItemRights::new`] or
+/// [`ItemRights::first_party`] and the `with_*` builders, so a new field never breaks a caller. The [`Provenance`] fields a part source row holds, so apply writes rows without
 /// translating them. The `source` is implied: `Source::Library { item: "id@version" }`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct ItemRights {
     /// Who made it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -75,6 +77,93 @@ pub struct AssetInfo {
 }
 
 impl ItemRights {
+    /// Rights under `licence` with the given `commercial` status; everything else is empty, not private test and not
+    /// owned (the most restrictive reading).
+    pub fn new(licence: impl Into<String>, commercial: Commercial) -> Self {
+        Self {
+            author: None,
+            licence: licence.into(),
+            attribution: None,
+            commercial,
+            consent: None,
+            private_test: false,
+            terms: None,
+            owned: false,
+            attestation: None,
+            terms_hash: None,
+        }
+    }
+
+    /// Replaces the licence.
+    #[must_use]
+    pub fn with_licence(mut self, licence: impl Into<String>) -> Self {
+        self.licence = licence.into();
+        self
+    }
+
+    /// Replaces the commercial status.
+    #[must_use]
+    pub fn with_commercial(mut self, commercial: Commercial) -> Self {
+        self.commercial = commercial;
+        self
+    }
+
+    /// Sets who made it.
+    #[must_use]
+    pub fn with_author(mut self, author: impl Into<String>) -> Self {
+        self.author = Some(author.into());
+        self
+    }
+
+    /// Sets the attribution text.
+    #[must_use]
+    pub fn with_attribution(mut self, attribution: impl Into<String>) -> Self {
+        self.attribution = Some(attribution.into());
+        self
+    }
+
+    /// Sets the consent for a real person's likeness or voice.
+    #[must_use]
+    pub fn with_consent(mut self, consent: Consent) -> Self {
+        self.consent = Some(consent);
+        self
+    }
+
+    /// Marks it (or not) as private test material.
+    #[must_use]
+    pub fn with_private_test(mut self, private_test: bool) -> Self {
+        self.private_test = private_test;
+        self
+    }
+
+    /// Sets the permissions it grants for what it makes.
+    #[must_use]
+    pub fn with_terms(mut self, terms: UseTerms) -> Self {
+        self.terms = Some(terms);
+        self
+    }
+
+    /// Marks the result as owned by whoever applies it (or not).
+    #[must_use]
+    pub fn with_owned(mut self, owned: bool) -> Self {
+        self.owned = owned;
+        self
+    }
+
+    /// Sets the attestation (its `by` must be the manifest's publisher key, see [`Attestation`]).
+    #[must_use]
+    pub fn with_attestation(mut self, attestation: Attestation) -> Self {
+        self.attestation = Some(attestation);
+        self
+    }
+
+    /// Sets the hash of the custom terms text.
+    #[must_use]
+    pub fn with_terms_hash(mut self, terms_hash: ContentHash) -> Self {
+        self.terms_hash = Some(terms_hash);
+        self
+    }
+
     /// The one constant every first-party item carries: author `Omuzaki`, `CC0-1.0`, commercial `ok`, not private
     /// test, owned. The seed lint checks each first-party manifest equals it.
     pub fn first_party() -> Self {

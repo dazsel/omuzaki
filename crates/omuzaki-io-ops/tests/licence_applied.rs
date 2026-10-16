@@ -37,7 +37,7 @@ fn application(item: &str, rights: ItemRights) -> ApplicationRecord {
 
 /// Rights of a fixture item that is not cleared for commercial use.
 fn non_commercial() -> ItemRights {
-    ItemRights { licence: "CC-BY-NC-4.0".into(), commercial: Commercial::No, owned: false, ..ItemRights::first_party() }
+    ItemRights::new("CC-BY-NC-4.0", Commercial::No)
 }
 
 /// A part row as the library writes it: the item's rights, owned when the item says so.
@@ -130,8 +130,8 @@ fn a_non_commercial_face_item_fails_publish_at_its_record_and_private_passes() {
 #[test]
 fn an_unknown_status_and_private_test_material_are_not_cleared_either() {
     for rights in [
-        ItemRights { commercial: Commercial::Unknown, owned: false, ..ItemRights::first_party() },
-        ItemRights { private_test: true, owned: false, ..ItemRights::first_party() },
+        ItemRights::new("CC0-1.0", Commercial::Unknown),
+        ItemRights::new("CC0-1.0", Commercial::Ok).with_private_test(true),
     ] {
         let doc = doc(&ItemRights::first_party(), &[("hat", node("test/hat", rights))]);
         let publish = check(&doc, "publish");
@@ -177,7 +177,7 @@ fn a_character_of_first_party_items_publishes_without_findings_about_them() {
 
 #[test]
 fn a_whitespace_only_licence_is_an_error_in_derive_describe_and_check_export() {
-    let blank = ItemRights { licence: "  \t".into(), ..ItemRights::first_party() };
+    let blank = ItemRights::first_party().with_licence("  \t");
     let doc = doc(&ItemRights::first_party(), &[("face", node("test/face-style", blank))]);
     let input = json!({ "character": "mira" });
     let derive_error = plan(&doc, "licence.derive", input.clone()).expect_err("blank licence");
@@ -210,7 +210,7 @@ fn an_owned_first_party_record_does_not_change_what_derive_says() {
 #[test]
 fn a_record_counts_as_owned_only_when_its_rights_carry_owned() {
     let rights = ItemRights::first_party();
-    let not_owned = ItemRights { owned: false, ..rights.clone() };
+    let not_owned = rights.clone().with_owned(false);
     let doc_not_owned = doc(&rights, &[("face", node("omuzaki/face/smile", not_owned))]);
     assert!(!derive(&doc_not_owned).project_owned);
     let doc_owned = doc(&rights, &[("face", node("omuzaki/face/smile", rights.clone()))]);
@@ -221,8 +221,7 @@ fn a_record_counts_as_owned_only_when_its_rights_carry_owned() {
 
 #[test]
 fn the_strictest_of_a_record_and_the_parts_wins_and_its_credit_travels() {
-    let mut rights =
-        ItemRights { attribution: Some("Smile by Eve".into()), author: Some("Eve".into()), ..non_commercial() };
+    let mut rights = non_commercial().with_attribution("Smile by Eve").with_author("Eve");
     rights.licence = "CC-BY-NC-4.0".into();
     let derived = derive(&doc(&ItemRights::first_party(), &[("face", node("test/face-style", rights))]));
     assert_eq!(derived.record.provenance.commercial, Commercial::No);
