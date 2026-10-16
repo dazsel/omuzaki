@@ -147,15 +147,16 @@ impl Provenance {
     }
 }
 
-/// The role of a number in a `scaled` report (spec §10: for GPU rows the central estimate is a hard gate and a
-/// pessimistic estimate over the budget only a warning). Every other number is a central one.
+/// The role of a number in a `scaled` report (spec §10: for `gpu.*` rows the central estimate is a hard gate and a
+/// pessimistic estimate over the budget only a warning). Anywhere else a pessimistic number is judged like a central one.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Estimate {
     /// The measurement, or a scaled central estimate: judged against the budget.
     #[default]
     Central,
-    /// A pessimistic scaled estimate: over the budget is a warning, never a failure.
+    /// A pessimistic scaled estimate: for a `gpu.*` row of a `scaled` report, over the budget is a warning, never a
+    /// failure.
     Pessimistic,
 }
 
@@ -308,7 +309,7 @@ impl Report {
             }
             comparable
         });
-        let rows = metrics.into_iter().map(|m| row(m, budgets, previous)).collect();
+        let rows = metrics.into_iter().map(|m| row(m, budgets, previous, class)).collect();
         Self { schema: SCHEMA, class, machine, provenance: None, rows, notes }
     }
 
@@ -471,14 +472,16 @@ impl Report {
     }
 }
 
-fn row(metric: Metric, budgets: &[Budget], previous: Option<&Report>) -> Row {
+fn row(metric: Metric, budgets: &[Budget], previous: Option<&Report>, class: Class) -> Row {
+    // Spec §10 downgrades a pessimistic estimate only for a scaled GPU row; everything else is compared directly.
+    let may_warn = class == Class::Scaled && metric.key.starts_with("gpu.") && metric.estimate == Estimate::Pessimistic;
     let budget = budgets.iter().find(|b| b.key == metric.key);
     let value = budget.and_then(|b| metric.statistic(b.statistic));
     let verdict = match (budget, budget.and_then(|b| b.limit), value) {
         (None, ..) => Verdict::NoBudget,
         (Some(_), Some(l), _) if l.unit != metric.unit => Verdict::UnitMismatch,
         (Some(_), Some(l), Some(v)) if v <= l.value => Verdict::Within,
-        (Some(_), Some(_), Some(_)) if metric.estimate == Estimate::Pessimistic => Verdict::Warn,
+        (Some(_), Some(_), Some(_)) if may_warn => Verdict::Warn,
         (Some(_), Some(_), Some(_)) => Verdict::Over,
         _ => Verdict::NotComparable,
     };
@@ -524,7 +527,7 @@ mod tests {
     use crate::budget::table::parse_spec;
 
     const SPEC: &str = "## 10. P\n| Key | Item | Budget | Tier | Statistic | Gate |\n|-|-|-|-|-|-|\n\
-| `physics.step` | p | ≤ 0.5 ms | `R` | p95 | g |\n| `ram.runtime` | r | ≤ 400 MB | `R` | max over 5 min | g |\n\
+| `physics.step` | p | ≤ 0.5 ms | `R` | p95 | g |\n| `ram.runtime` | r | ≤ 400 MB | `R` | max over 5 min | g |\n| `gpu.frame` | f | ≤ 1.5 ms | `R`, `U` | p95 | g |\n\
 | `asr.live` | a | CPU ≤ 1.5 %, GPU ≤ 1 ms | `R` | mean | g |\n";
 
     fn machine(vcpus: usize) -> Machine {
@@ -640,19 +643,30 @@ mod tests {
     }
 
     #[test]
-    fn a_pessimistic_scaled_estimate_over_budget_is_a_warning_and_the_central_one_a_failure() {
-        let ram = |mb: f64| Metric::single("ram.runtime", Unit::Bytes, mb * 1024.0 * 1024.0).unwrap();
-        let scaled = |central: f64, pessimistic: f64| {
-            let metrics = vec![ram(pessimistic).pessimistic(), ram(central)];
-            Report::build(machine(4), metrics, &parse_spec(SPEC).unwrap(), None, Class::Scaled, vec![])
+    fn a_pessimistic_scaled_gpu_estimate_over_budget_is_a_warning_and_the_central_one_a_failure() {
+        let scaled = |central: u64, pessimistic: u64, class| {
+            let metrics = vec![us("gpu.frame", pessimistic).pessimistic(), us("gpu.frame", central)];
+            Report::build(machine(4), metrics, &parse_spec(SPEC).unwrap(), None, class, vec![])
         };
-        let warned = scaled(300.0, 500.0);
+        let warned = scaled(1000, 2000, Class::Scaled);
         let roles: Vec<_> = warned.rows.iter().map(|r| (r.metric.estimate, r.verdict)).collect();
         assert_eq!(roles, [(Estimate::Central, Verdict::Within), (Estimate::Pessimistic, Verdict::Warn)]);
         assert_eq!(warned.failures(), Vec::<String>::new());
-        assert_eq!(warned.violations(), ["ram.runtime: over budget on the pessimistic estimate (warning)"]);
-        assert!(warned.to_markdown().contains("`ram.runtime` (pessimistic)"));
-        assert_eq!(scaled(500.0, 500.0).failures(), ["ram.runtime: over budget"]);
+        assert_eq!(warned.violations(), ["gpu.frame: over budget on the pessimistic estimate (warning)"]);
+        assert!(warned.to_markdown().contains("`gpu.frame` (pessimistic)"));
+        assert_eq!(scaled(2000, 2000, Class::Scaled).failures(), ["gpu.frame: over budget",]);
+    }
+
+    #[test]
+    fn a_pessimistic_number_is_a_warning_only_for_a_scaled_gpu_row() {
+        let ram = Metric::single("ram.runtime", Unit::Bytes, 500.0 * 1024.0 * 1024.0).unwrap().pessimistic();
+        let build =
+            |metrics, class| Report::build(machine(4), metrics, &parse_spec(SPEC).unwrap(), None, class, vec![]);
+        // Memory is compared directly, scaled or not.
+        assert_eq!(build(vec![ram], Class::Scaled).failures(), ["ram.runtime: over budget"]);
+        // And a measured number has no pessimistic estimate to downgrade.
+        let gpu = vec![us("gpu.frame", 2000).pessimistic()];
+        assert_eq!(build(gpu, Class::Measured).failures(), ["gpu.frame: over budget"]);
     }
 
     #[test]
