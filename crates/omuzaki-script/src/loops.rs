@@ -15,8 +15,11 @@
 //!   `index_of` also clone the value they look for once per element.
 //!
 //! The versions here make the same calls, in the same order, with the same results, and check the run
-//! (`Run::check`) before each element and before they return. Every other loop in the packages calls a closure,
-//! whose body ticks after its first tick (a closure must have a body, `closures.rs`), and passes its errors on.
+//! (`Run::check`) before each element and before they return. Every error a call back raises ends the loop and is
+//! raised unchanged: a stop, a limit or a refusal inside a comparer must end the run and roll it back, where the
+//! package's `sort` and `dedup` read any error as an answer and carried on. Every other loop in the packages calls a
+//! closure, whose body ticks after its first tick (a closure must have a body, `closures.rs`), and passes its errors
+//! on.
 
 use std::cmp::Ordering;
 
@@ -164,8 +167,10 @@ fn maps_equal(context: &NativeCallContext<'_>, first: &mut Map, mut second: Map)
     Ok(true)
 }
 
-/// `dedup()` (with `==`) and `dedup(comparer)`: drop each element its predecessor's comparison calls equal. The package
-/// calls `comparer(previous, element)` and treats an error as "not equal"; here a run that must stop calls nothing more.
+/// `dedup()` (with `==`) and `dedup(comparer)`: drop each element its predecessor's comparison calls equal, calling
+/// `comparer(previous, element)` as the package does. The package reads a comparer's error as "not equal" and carries
+/// on; here the first error ends the loop and is raised unchanged, so a limit or a refusal inside the comparer ends
+/// the run (and rolls it back) instead of being lost. A run that must stop calls nothing more.
 fn dedup(
     context: &NativeCallContext<'_>,
     array: &mut Array,
@@ -175,42 +180,57 @@ fn dedup(
         return Ok(());
     }
     let run = run_of(context)?;
+    let mut failed = None;
     array.dedup_by(|element, previous| {
-        if run.halted() {
+        if failed.is_some() || run.halted() {
             return false;
         }
         let answer = match comparer {
             Some(comparer) => comparer.call_raw(context, None, [previous.clone(), element.clone()]),
             None => context.call_fn_raw(EQUALS, false, false, &mut [&mut previous.clone(), &mut element.clone()]),
         };
-        answer.ok().and_then(|equal| equal.as_bool().ok()).unwrap_or(false)
+        answer.map_or_else(
+            |error| {
+                failed = Some(error);
+                false
+            },
+            |equal| equal.as_bool().unwrap_or(false),
+        )
     });
-    run.check()
+    failed.map_or_else(|| run.check(), Err)
 }
 
 /// `sort(comparer)`: the package's order, where the comparer answers a number (its sign) or a boolean (`true` for
-/// "before"), and anything else or an error orders by type. Here a run that must stop calls nothing more and keeps the
-/// elements in place.
+/// "before"), and anything else orders by type. The package reads a comparer's error as "anything else" and carries
+/// on; here the first error ends the sort and is raised unchanged, as in [`dedup`]. A run that must stop calls nothing
+/// more and keeps the elements where they are.
 fn sort(context: &NativeCallContext<'_>, array: &mut Array, comparer: &FnPtr) -> Result<(), Box<EvalAltResult>> {
     if array.len() <= 1 {
         return Ok(());
     }
     let run = run_of(context)?;
+    let mut failed = None;
     // A comparer that is not a total order can make the standard sort panic; the package reports that as an error.
     let sorted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         array.sort_by(|first, second| {
-            if run.halted() {
+            if failed.is_some() || run.halted() {
                 return Ordering::Equal;
             }
-            comparer
-                .call_raw(context, None, [first.clone(), second.clone()])
-                .ok()
-                .and_then(|answer| {
-                    answer.as_int().or_else(|_| answer.as_bool().map(|before| if before { -1 } else { 1 })).ok()
-                })
-                .map_or_else(|| first.type_id().cmp(&second.type_id()), |order| order.cmp(&0))
+            match comparer.call_raw(context, None, [first.clone(), second.clone()]) {
+                Ok(answer) => answer
+                    .as_int()
+                    .or_else(|_| answer.as_bool().map(|before| if before { -1 } else { 1 }))
+                    .map_or_else(|_| first.type_id().cmp(&second.type_id()), |order| order.cmp(&0)),
+                Err(error) => {
+                    failed = Some(error);
+                    Ordering::Equal
+                }
+            }
         });
     }));
+    if let Some(error) = failed {
+        return Err(error);
+    }
     run.check()?;
     sorted.map_err(|_| EvalAltResult::ErrorRuntime("error in comparer for sorting".into(), Position::NONE).into())
 }

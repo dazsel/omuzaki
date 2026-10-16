@@ -503,3 +503,39 @@ fn a_zero_engine_limit_is_refused_instead_of_lifting_the_limit() {
     }
     assert_eq!(Limits::console().zero_engine_limit(), None);
 }
+
+/// Runs an edit, then `sort` and `dedup` with a comparer that runs `inside` first, and checks the run ends with
+/// `kind` and rolls the edit back. The array functions that call a comparer end with the first error it raises,
+/// unchanged: a limit or a refusal inside the comparer ends the run, instead of being read as an answer while the edit
+/// commits.
+fn assert_comparer_limit(limits: &Limits, inside: &str, kind: LimitKind) {
+    for call in ["a.sort(|x, y| { BODY x - y })", "a.dedup(|x, y| { BODY x == y })"] {
+        let source = format!("{EDIT}\nlet a = [3, 1, 2];\n{}", call.replace("BODY", inside));
+        let (runner, result) = run_with(request(&source), &Flag::default(), limits.clone(), FakeRunner::default());
+        let error = result.expect_err(call);
+        assert_eq!(error.kind, limit(kind), "{call}: {error}");
+        assert_eq!(runner.requests().len(), 1, "{call}: the edit was sent");
+        runner.assert_rolled_back();
+    }
+}
+
+#[test]
+fn the_call_limit_inside_a_comparer_ends_the_run_and_rolls_it_back() {
+    // With one call allowed, the edit spends it and the comparer's `get` is over the limit.
+    assert_comparer_limit(&Limits { calls: 1, ..Limits::console() }, "get(\"a/b\");", LimitKind::Calls);
+}
+
+#[test]
+fn a_pad_refused_inside_a_comparer_ends_the_run_and_rolls_it_back() {
+    // `pad` refuses before it copies: a thousand copies of a map with a half-megabyte key would be 500 MiB.
+    let inside = "let k = \"x\"; while k.len < 500000 { k += k; } let m = #{}; m[k] = 1; let b = []; b.pad(1000, m);";
+    assert_comparer_limit(&Limits::console(), inside, LimitKind::Memory);
+}
+
+/// An error a comparer throws ends the sort with it too, and a script can catch it, as any thrown value.
+#[test]
+fn an_error_a_comparer_throws_ends_the_sort_and_can_be_caught() {
+    let (_, result) =
+        run("let a = [3, 1, 2];\nlet r = 0;\ntry { a.sort(|x, y| throw \"no order\"); } catch (e) { r = e; }\nr");
+    assert_eq!(result.expect("caught").value, "no order");
+}

@@ -260,8 +260,9 @@ the same engine serves both and never holds a borrow across a job. `run` is a me
   could be a template's `to_string` call: the package functions whose calls have no tick of their own after the first
   (`contains`, `index_of`, `==` and `!=` on arrays and maps) and those that ignore their calls' errors (`sort` and
   `dedup` with a comparer, `dedup()`) are replaced by versions that check the run before each element and before they
-  return, and a closure must have a body. Rhai's own operation limit is off (it fires inside that first tick, and Rhai's
-  count drops what a callback of `map` or `filter` did); the host counts every tick instead.
+  return, and end with the first error a call back raises, unchanged (a limit inside a comparer ends the run and rolls
+  it back); and a closure must have a body. Rhai's own operation limit is off (it fires inside that first tick, and
+  Rhai's count drops what a callback of `map` or `filter` did); the host counts every tick instead.
 - **Closures** are accepted only as the callback of `try_op` or of an array function (`map`, `filter`, `reduce`, ...), so
   none outlives its call: what a closure captures is not counted by Rhai's limits either. A closure with an empty body
   (`|x| {}`) is refused too: a call of it has no operation after its first, where a stop may be held (above).
