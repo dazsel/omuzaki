@@ -256,13 +256,21 @@ fn a_cmyk_jpeg_without_a_profile_is_refused() {
     let jpeg = include_bytes!("fixtures/cmyk.jpg");
     let error = decode(jpeg, ContentHash::of(jpeg), FIELD).unwrap_err();
     assert_eq!(error.code, ErrorCode::Invalid);
-    assert!(error.message.contains("a CMYK image without a colour profile"), "{}", error.message);
+    assert!(
+        error.message.contains("CMYK images aren't supported for measuring; save it as RGB (sRGB or Display P3) first"),
+        "{}",
+        error.message
+    );
 }
 
 #[test]
-fn a_cmyk_jpeg_with_a_profile_is_refused_because_the_decoder_gives_no_ink_values() {
+fn a_cmyk_jpeg_with_a_profile_is_refused_the_same_way() {
     // The decoder converts the inks to RGB itself and offers no way to read them, so a CMYK profile cannot be applied.
     let tagged = with_icc_jpeg(include_bytes!("fixtures/cmyk.jpg"), &display_p3_profile());
     let error = decode(&tagged, ContentHash::of(&tagged), FIELD).unwrap_err();
-    assert!(error.message.contains("whose ink values the decoder does not give"), "{}", error.message);
+    assert!(
+        error.message.contains("CMYK images aren't supported for measuring; save it as RGB (sRGB or Display P3) first"),
+        "{}",
+        error.message
+    );
 }

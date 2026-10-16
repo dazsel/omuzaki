@@ -148,12 +148,10 @@ pub fn decode(bytes: &[u8], hash: ContentHash, field: &str) -> Result<Rgba8, OpE
     if format == ImageFormat::Jpeg && is_cmyk(bytes) {
         // The decoder hands back RGB it has already made from the inks, with no way to get the ink values a CMYK profile
         // needs, so no CMYK image can be converted faithfully: its colours cannot be known.
-        let why = if icc.is_some() {
-            "a CMYK image whose ink values the decoder does not give, so its colour profile cannot be applied"
-        } else {
-            "a CMYK image without a colour profile"
-        };
-        return Err(colour_unsupported(field, why));
+        return Err(refuse_unreadable(
+            field,
+            "CMYK images aren't supported for measuring; save it as RGB (sRGB or Display P3) first".to_owned(),
+        ));
     }
     let declared = if format == ImageFormat::Png { png_colour(bytes, icc) } else { Declared::from_icc(icc) };
     let dynamic = DynamicImage::from_decoder(decoder).map_err(|error| decode_error(bytes, field, error))?;
