@@ -4,7 +4,7 @@
     dispatch-check.py ISSUE [ISSUE ...]    `go #N` or `wait #N: reasons` per task; exit 0 only if all are go
     dispatch-check.py --report             open pull requests by crate and by lane, oldest first
     options: --crate-cap N (default 3), --total-cap N (default 40), --module-cap N (default 3), --module-ceiling N
-    (default 12), --json (for the checks)
+    (default 12), --json (for the checks), --mine (the claim on these tasks is yours, so it does not make them wait)
 
 Why a script: conflicts are decided when a task starts, not when it merges (ADR 0053 sections 1.2 and 2.1). The
 Director or the cloud lead runs it once before starting work. Standard library plus `gh`; it only reads GitHub.
@@ -31,19 +31,32 @@ holds at most 3,000 files, so a PR with 3,000 or more counts as unreadable. If t
 
 Open PRs are listed in one call with a limit of PR_LIMIT. Reaching the limit means the list may be cut, so the script
 stops rather than guess.
+
+The open PRs and the claimed issues come first from the snapshot the Director's loop publishes every few minutes
+(SNAPSHOT_URL, a raw file, so it costs no API call). It is used when `generated_at` is at most SNAPSHOT_MAX_AGE seconds
+old; otherwise GraphQL, then REST, read the same list. stderr says which source was used. A task whose issue is claimed
+(in the snapshot, or labelled `claimed`) waits with `claimed`, unless `--mine` is passed.
 """
 
 import argparse
+import datetime
 import fnmatch
+import http.client
 import json
 import os
 import re
 import subprocess
 import sys
+import urllib.request
 from collections import defaultdict
 
 REPO = "dazsel/omuzaki"
 PR_LIMIT = 1000
+SNAPSHOT_URL = "https://raw.githubusercontent.com/dazsel/omuzaki/refs/heads/ops/snapshot/open-prs.json"
+# The snapshot is used only when it is this fresh. DISPATCH_CHECK_SNAPSHOT overrides its URL; the tests use file://.
+SNAPSHOT_MAX_AGE = 600
+# `gh pr list` lists at most this many files per PR; a PR with this many has its full list read from REST.
+GH_FILE_LIST_CAP = 100
 # The REST files endpoint returns at most this many files; a list of this size or more may be cut short.
 REST_FILE_CAP = 3000
 LANES = ("cloud", "local", "port")
@@ -202,17 +215,19 @@ def note_fallback(exc):
 
 
 def load_issue(number):
-    """The issue's number, title and body, with a null body read as "".
+    """The issue's number, title, body and label names, with a null body read as "".
 
     GraphQL first; cloud sessions sit behind a proxy that refuses GraphQL, so a refused call falls back to REST.
     """
     if not rest_only():
         try:
-            return gh_json(["issue", "view", str(number), "-R", REPO, "--json", "number,title,body"])
+            data = gh_json(["issue", "view", str(number), "-R", REPO, "--json", "number,title,body,labels"])
+            return {**data, "labels": [label["name"] for label in data.get("labels") or []]}
         except GhError as exc:
             note_fallback(exc)
     data = gh_json(["api", f"repos/{REPO}/issues/{number}"])
-    return {"number": data["number"], "title": data["title"], "body": data.get("body") or ""}
+    return {"number": data["number"], "title": data["title"], "body": data.get("body") or "",
+            "labels": [label["name"] for label in data.get("labels") or []]}
 
 
 def load_dependencies(number):
@@ -346,6 +361,48 @@ def check_list_limit(raw):
         raise GhError(f"{len(raw)} open pull requests reached the list limit of {PR_LIMIT}; the list may be cut")
 
 
+def snapshot_prs(raw):
+    """The open PRs of a snapshot, in the shape load_prs returns. Its `files` are gh pr list's, so no REST call is made
+    unless a PR lists GH_FILE_LIST_CAP files or more, when its full list is read from REST (None if unreadable)."""
+    prs = []
+    for pr in raw:
+        files = pr.get("files") or []
+        listed = [f["path"] for f in files]
+        # gh pr list gives the new path only; a publisher that adds `previous_filename` keeps a rename's old path too.
+        sources = [f["previous_filename"] for f in files if f.get("previous_filename")]
+        listed += [source for source in sources if source not in listed]
+        prs.append({
+            "number": int(pr["number"]),
+            "branch": pr["headRefName"],
+            "draft": bool(pr["isDraft"]),
+            "created": pr.get("createdAt") or "",
+            "files": listed if len(listed) < GH_FILE_LIST_CAP else rest_pr_files(pr["number"]),
+            "closes": closing_numbers(pr.get("closingIssuesReferences")),
+        })
+    return prs
+
+
+def load_snapshot():
+    """(prs, claimed) from the snapshot, or None when it is missing, unreadable, for another repository or older than
+    SNAPSHOT_MAX_AGE seconds. The source is printed on stderr either way; the verdict on stdout does not change."""
+    try:
+        with urllib.request.urlopen(os.environ.get("DISPATCH_CHECK_SNAPSHOT", SNAPSHOT_URL), timeout=20) as resp:
+            snap = json.load(resp)
+        if snap.get("repo") != REPO:
+            raise ValueError(f"it is for {snap.get('repo')}")
+        generated = datetime.datetime.fromisoformat(snap["generated_at"].replace("Z", "+00:00"))
+        age = (datetime.datetime.now(datetime.timezone.utc) - generated).total_seconds()
+        if not 0 <= age <= SNAPSHOT_MAX_AGE:
+            raise ValueError(f"generated {age:.0f} seconds ago, not within {SNAPSHOT_MAX_AGE}")
+        check_list_limit(snap["prs"])
+        prs, claimed = snapshot_prs(snap["prs"]), {int(n) for n in snap["claimed"]}
+    except (OSError, http.client.HTTPException, ValueError, KeyError, TypeError, AttributeError) as exc:
+        print(f"dispatch-check: snapshot not used ({exc}); reading GitHub instead", file=sys.stderr)
+        return None
+    print(f"dispatch-check: open PRs from the snapshot, generated {snap['generated_at']}", file=sys.stderr)
+    return prs, claimed
+
+
 def load_prs():
     """Every open pull request, with its draft flag, branch, creation time, changed paths and the issues it closes.
 
@@ -362,6 +419,7 @@ def load_prs():
         note_fallback(exc)
         return load_prs_rest()
     check_list_limit(raw)
+    print("dispatch-check: open PRs from GraphQL", file=sys.stderr)
     return [
         {
             "number": pr["number"],
@@ -390,6 +448,7 @@ def load_prs_rest():
     default = load_default_branch()
     raw = gh_json_pages(["api", "--paginate", f"repos/{REPO}/pulls?state=open&per_page=100"])
     check_list_limit(raw)
+    print("dispatch-check: open PRs from REST", file=sys.stderr)
     return [
         {
             "number": pr["number"],
@@ -820,12 +879,14 @@ def main(argv):
                         help=f"open PRs per top-level module of omuzaki-char or omuzaki-face (default {MODULE_CAP})")
     parser.add_argument("--module-ceiling", type=int, default=MODULE_CEILING,
                         help=f"open PRs per omuzaki-char or omuzaki-face crate (default {MODULE_CEILING})")
+    parser.add_argument("--mine", action="store_true", help="the claim on these tasks is yours: do not wait on it")
     args = parser.parse_args(argv)
     if not args.issues and not args.report:
         parser.error("give issue numbers, or --report")
     numbers = parse_issue_numbers(args.issues, parser)
     try:
-        prs = load_prs()
+        snapshot = load_snapshot()
+        prs, claimed = snapshot if snapshot else (load_prs(), set())
         if args.report:
             print(report(prs))
         if not numbers:
@@ -844,6 +905,9 @@ def main(argv):
             blocked, blocking = load_dependencies(number)
             reasons = check_issue(issue, prs, args.crate_cap, args.total_cap, blocked, blocking, crate_names,
                                   top_level, args.module_cap, args.module_ceiling)
+            # A claim is the snapshot's list or the issue's own `claimed` label (the only source without a snapshot).
+            if (number in claimed or "claimed" in issue["labels"]) and not args.mine:
+                reasons.insert(0, "claimed")
             results.append({"issue": issue["number"], "go": not reasons, "reasons": reasons})
     except GhError as exc:
         print(f"dispatch-check: {exc}", file=sys.stderr)
