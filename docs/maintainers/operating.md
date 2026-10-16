@@ -150,7 +150,7 @@ How work is cut into large changes, one agent and one PR each, is in [`large-cha
   (dispatching needs write access), and when that run succeeds re-runs the PR run's failed jobs
   (`gh run rerun <run id> --failed`): `self-gate` then accepts the successful dispatch run for the head, because
   GitHub's required `gate` is the PR run's, not the dispatch's. A PR that changes anything under `.github/`,
-  `tools/ci/`, `xtask/`, `.config/`, `.cargo/`, `rust-toolchain*` or the lint configs (`clippy.toml`, `rustfmt.toml`, `deny.toml`), or edits the root `Cargo.toml` in `[workspace]`, a `[patch]`/`[replace]` section or an xtask line, is excluded (adding or bumping a `[workspace.dependencies]` entry and `Cargo.lock` changes stay eligible) (the dispatch runs the branch's own workflow, scripts and planner) and needs a human `Self-gate:` line. The merge loop starts
+  `tools/ci/`, `xtask/`, `.config/`, `.cargo/`, `rust-toolchain*` or the lint configs (`clippy.toml`, `rustfmt.toml`, `deny.toml`), or edits the root `Cargo.toml` anywhere but `[workspace.dependencies]` (compared as parsed TOML; a dependency naming xtask counts too), is excluded (adding or bumping a `[workspace.dependencies]` entry and `Cargo.lock` changes stay eligible) (the dispatch runs the branch's own workflow, scripts and planner) and needs a human `Self-gate:` line. The merge loop starts
   the dispatch and re-run by itself only when CI has spare capacity (the repo is capped at 60 concurrent jobs, which
   is why PR runs skip the tests).
 - **Merge `main` into a pull request only on a conflict.** When a failure in `main` itself is fixed, the Director

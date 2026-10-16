@@ -12,7 +12,7 @@
 #                  `gate` passes only if every test job succeeded. Then the PR run's failed jobs are re-run and its
 #                  `self-gate` accepts the verified dispatch run for the head (tools/ci/self-gate.py). Not for PRs that
 #                  change .github/, tools/ci/, xtask/, .config/, .cargo/, rust-toolchain*, clippy.toml, rustfmt.toml or
-#                  deny.toml, or edit the root Cargo.toml in [workspace], [patch], [replace] or an xtask line: the dispatch runs the branch's own copy of them.
+#                  deny.toml, or edit the root Cargo.toml outside [workspace.dependencies]: the dispatch runs the branch's own copy of them.
 #   merge queue    fmt, clippy and the lints on EVERYTHING affected (dependents included), the full test matrix, plus
 #                  the Windows cross-build. The queue builds the exact commit that will land on main, so this is the
 #                  authoritative run, and it is exactly as strict as before.

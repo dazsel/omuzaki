@@ -202,6 +202,40 @@ base = '[workspace]\nmembers = ["crates/*"]\n[patch.crates-io]\na = { path = "a"
 sys.exit(0 if sg.manifest_protected(base, base + 'b = { path = "b" }\n') and sg.manifest_protected(None, base) and sg.manifest_protected(base, None) else 1)
 PY
 
+# The root manifest is compared as parsed TOML (not by lines), minus [workspace.dependencies].
+python3 -I - "$GATE" <<'PY' && pass "quoted and spaced headers, multi-line arrays, profiles and unparsable text are refused; a reorder is eligible" || fail "parsed manifest comparison"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sg", sys.argv[1]); sg = importlib.util.module_from_spec(spec); spec.loader.exec_module(sg)
+if sg.tomllib is None:
+    sys.exit(0)  # Python before 3.11 treats every edit as protected; CI's python has tomllib
+base = '[workspace]\nresolver = "2"\nmembers = ["crates/*"]\nexclude = [\n  "crates/a",\n  "crates/b",\n]\n\n[workspace.dependencies]\nserde = "1"\nregex = "1"\n\n[profile.dev]\nopt-level = 1\n'
+protected = [
+    base + '\n["patch".crates-io]\nserde = { path = "x" }\n',
+    base + '\n[ patch . crates-io ]\nserde = { path = "x" }\n',
+    'patch.crates-io.serde = { path = "x" }\n' + base,
+    'patch = { crates-io = { serde = { path = "x" } } }\n' + base,
+    base.replace('  "crates/b",\n', '  "crates/b",\n  "crates/c",\n'),
+    base.replace('opt-level = 1', 'opt-level = 3'),
+    base + "this is not toml",
+    base.replace('regex = "1"', 'regex = "1"\nxtask = { path = "xtask" }'),
+    base.replace('regex = "1"', 'regex = "1"\nrunner = { path = "xtask" }'),
+]
+eligible = [
+    base.replace('serde = "1"', 'serde = "1.0.200"'),
+    base.replace('regex = "1"', 'regex = "1"\nanyhow = "1"'),
+    base.replace('serde = "1"\nregex = "1"', 'regex = "1"\nserde = "1"'),
+    base.replace('[profile.dev]\nopt-level = 1\n', '') + '\n[profile.dev]\nopt-level = 1\n',
+]
+bad = [e for e in protected if not sg.manifest_protected(base, e)] + [e for e in eligible if sg.manifest_protected(base, e)]
+if sg.manifest_protected(base, base):
+    bad.append("unchanged")
+if not sg.manifest_protected(base + "this is not toml", base):
+    bad.append("unparsable base")
+for e in bad:
+    print("wrong verdict for:", e, file=sys.stderr)
+sys.exit(1 if bad else 0)
+PY
+
 # The failure message: a PR touching a protected path is told only a human line counts; others may use hosted tests.
 msg() { python3 -I - "$GATE" "$1" <<'PY'
 import importlib.util, json, sys

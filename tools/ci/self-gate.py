@@ -25,8 +25,8 @@ Hosted run. When no author can build, a maintainer dispatches ci.yml on the PR b
 re-runs this job. `check` then also accepts a successful hosted run, found through the API, that is ALL of: event
 `workflow_dispatch`; workflow path `.github/workflows/ci.yml`; `head_sha` equal to the pull request head; conclusion
 success with every `test (...)` job success (skipped or cancelled does not count); and the pull request changes nothing
-under `.github/`, `tools/ci/`, `xtask/`, `.config/`, `.cargo/`, `rust-toolchain*` or the lint configs, or edits the root `Cargo.toml` in `[workspace]`, a `[patch]`/`[replace]`
-section or an xtask line (a dependency entry in `[workspace.dependencies]`, or `Cargo.lock`, does not count), because a dispatched run executes the branch's own workflow, CI
+under `.github/`, `tools/ci/`, `xtask/`, `.config/`, `.cargo/`, `rust-toolchain*` or the lint configs, or edits the root `Cargo.toml` outside `[workspace.dependencies]`
+or adds an xtask dependency (the parsed manifests are compared; a dependency entry, or `Cargo.lock`, does not count), because a dispatched run executes the branch's own workflow, CI
 scripts and planner, so a PR that edits them could vouch for itself. Such a PR needs a human `Self-gate:` line.
 Needs `actions: read` besides `pull-requests: read`.
 """
@@ -36,6 +36,10 @@ import base64
 import json
 import os
 import re
+try:
+    import tomllib
+except ImportError:  # Python before 3.11: nothing to parse with, so every root manifest edit is protected
+    tomllib = None
 import subprocess
 import sys
 import urllib.request
@@ -119,52 +123,26 @@ PROTECTED = (".github/", "tools/ci/", "xtask/", ".config/", ".cargo/", "rust-too
 ROOT_MANIFEST = "Cargo.toml"
 
 
-# A dotted or inline key that reaches those tables from outside their header: `patch.crates-io.x = ...`,
-# `patch = { ... }`, `replace."x:1" = ...`, `workspace.members = [...]`, `workspace = { ... }`.
-DOTTED_TABLE = re.compile(r"""^\s*["']?(patch|replace|workspace)["']?\s*[.=]""")
-SECTION = re.compile(r"^\s*\[+\s*([^\]]+?)\s*\]+\s*(#.*)?$")
-
-
-def manifest_sections(text):
-    """A manifest's meaningful lines by section: {section name: [lines]}; lines before any header are in ''."""
-    sections, current = {"": []}, ""
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if (header := SECTION.match(line)) is not None:
-            current = header.group(1)
-            sections.setdefault(current, [])
-        sections[current].append(line)
-    return sections
-
-
-def decides_what_runs(section):
-    """Whether a manifest section picks the workspace's members or redirects crates: `[workspace]` itself (members,
-    default-members, exclude), `[patch.*]` and `[replace]`."""
-    return section == "workspace" or section.split(".")[0] in ("patch", "replace")
-
-
 def manifest_protected(base_text, head_text):
     """Whether the root manifest edit from `base_text` to `head_text` could change what the dispatched run executes.
 
-    Protected: any change in `[workspace]`, a `[patch.*]` or `[replace]` section, to a dotted or inline `patch`,
-    `replace` or `workspace` key, or to a line mentioning xtask (the planner CI runs from the branch). Unreadable text (None) is protected. Anything else, such as a
-    `[workspace.dependencies]` addition or bump, is not.
+    Both texts are parsed as TOML and `[workspace.dependencies]` is dropped from each. The edit is protected if anything
+    else differs (members, exclude, `[patch]`, `[replace]`, profiles, in whatever spelling: the parser sees structure,
+    not lines), if either side is unreadable or does not parse, or if a changed dependency entry names xtask (the
+    planner CI runs from the branch). Adding or bumping other dependency entries is not protected.
     """
-    if base_text is None or head_text is None:
+    if tomllib is None or base_text is None or head_text is None:
         return True
-    base, head = manifest_sections(base_text), manifest_sections(head_text)
-    for section in set(base) | set(head):
-        if decides_what_runs(section) and base.get(section) != head.get(section):
-            return True
-
-    def risky(sections):
-        """Lines mentioning xtask, and dotted or inline keys reaching patch, replace or workspace from any section."""
-        return sorted(line for lines in sections.values() for line in lines
-                      if "xtask" in line or DOTTED_TABLE.match(line))
-
-    return risky(base) != risky(head)
+    try:
+        base, head = tomllib.loads(base_text), tomllib.loads(head_text)
+    except tomllib.TOMLDecodeError:
+        return True
+    base_deps = base.get("workspace", {}).pop("dependencies", {})
+    head_deps = head.get("workspace", {}).pop("dependencies", {})
+    if base != head:
+        return True
+    changed = {name for name in base_deps.keys() | head_deps.keys() if base_deps.get(name) != head_deps.get(name)}
+    return any("xtask" in name or "xtask" in json.dumps([base_deps.get(name), head_deps.get(name)]) for name in changed)
 
 
 def is_protected(path):
@@ -215,7 +193,7 @@ def verdict(comments, heads, allowed, runs=(), files=()):
     seen = f"the latest trusted line names {sha}" if sha else "no trusted comment has one"
     short = heads[0][:MIN_SHA]
     protected = ", ".join(f"`{path}`" for path in PROTECTED) + (
-        ", or an edit of the root `Cargo.toml` in `[workspace]`, a `[patch]`/`[replace]` section or an xtask line")
+        ", or an edit of the root `Cargo.toml` outside `[workspace.dependencies]` (or one naming xtask)")
     if any(is_protected(path) for path in files):
         hosted_hint = (f" This PR touches a protected path ({protected}), so hosted tests cannot vouch for it: only a "
                        f"human `Self-gate:` line counts.")
