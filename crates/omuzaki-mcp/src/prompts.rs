@@ -270,6 +270,7 @@ mod tests {
     /// Adding a recipe adds a file and nothing else: every file under `src/recipes/` registers exactly one recipe, each
     /// registered recipe is well-formed, and the server lists it. No count here changes when a recipe is added.
     #[test]
+    #[allow(clippy::disallowed_methods)] // a test reading this crate's own source folder, not an op reaching a file
     fn every_recipe_file_registers_a_well_formed_recipe_the_server_lists() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/recipes");
         let files = std::fs::read_dir(dir)
