@@ -81,20 +81,21 @@ doesn't wake twice for the same thing. Implementer sessions don't watch anything
    which says `Closes #<issue>`.
 4. Mark it ready. CI's `gate` is the gate; Codex reviews on GitHub and posts findings as inline review comments
    (a 👍 on the pull request when it finds nothing).
-5. **Answer every finding:** fixed, or dismissed with a one-line reason (a maintainer ruling settles a finding; point
-   to it). Answer in the finding's thread, or in the comment that ends the fix round: it starts `fixed (head <sha7>)`
-   and has one line per finding. That one comment per round triggers Codex's re-review (the merge loop requests it).
+5. **Fix every finding in the PR, yourself** (rules and rounds: `operating.md`, "Findings are fixed in the PR"). A
+   finding is answered instead of fixed only when it is wrong (reply with why) or in another area's code (reply with
+   that area's owning issue); a maintainer ruling settles a finding, so point to it. Answer in the finding's thread,
+   or in the comment that ends the fix round: it starts `fixed (head <sha7>)` and has one line per finding. That one
+   comment per round triggers Codex's re-check (the merge loop requests it).
    Sessions never request reviews, and a merge of `main` needs no comment. Resolving the thread (and a 👎 on a false
    positive) is welcome if your tool can, but optional: the merge loop resolves answered threads. A pull request
-   merges when Codex has reviewed its latest fix round, every finding is answered, `gate` is green and the sign-offs
-   are in.
+   merges when Codex has reviewed its latest fix round, every finding is fixed or answered, `gate` is green and the
+   sign-offs are in.
 6. The Director enqueues; the merge queue merges. Never push to `main`; force-push only your own branch, with
    `--force-with-lease`.
 
-**Archive each session as soon as its work is done and pushed:** its pull request is ready or its fix round is pushed,
-`git status` is clean, and the remote branch head matches the head it reported. An archived session can't be
-re-prompted, so it costs nothing while it waits for review or CI, and a later round gets a fresh session. Archiving
-destroys anything that exists only in the session's VM, so:
+**A session stays open until its pull request merges,** and does every fix round itself. Archive it after the merge (or
+if the PR is closed), and only when `git status` is clean and the remote branch head matches the head it reported.
+Archiving destroys anything that exists only in the session's VM, so:
 - **A session that has posted a question stays open until it's answered.** The answer arrives as a message in that
   session.
 - **A session stopped early** (replaced, stalled or superseded) first commits and pushes to `<branch>-wip`, or
@@ -176,10 +177,15 @@ What every lead does, learned the hard way. Each line costs review rounds or idl
    classes Codex keeps finding in the area, and writes one `Self-review:` line per front in the pull request body.
 2. **Class sweep on a repeat.** When a round finds a class an earlier round found, fix every instance of it across the
    fence in that round (search for them) and say so in the `fixed` comment.
-3. **Fix-round triage.** Every P0 and P1 is fixed in place. A P2 or P3 is fixed if it's a line or two; otherwise it
-   becomes a follow-up issue, linked in the finding's thread.
-4. **Round cap.** After 6 Codex rounds, you rule instead of starting a seventh: fix now, move to a follow-up task's
-   acceptance, or accept as out of scope, posted on the pull request. Later findings are answered by citing it.
+3. **No triage out of the PR.** Every finding, P0 to P3, is fixed in the PR by its session. It leaves only as wrong or
+   as another area's code, answered on its thread. Never file a review finding as a follow-up issue.
+4. **Round cap.** The merge loop allows 6 fix rounds. At 6, find out why the findings keep coming (a class the session
+   keeps missing, a fence that is too wide, a task spec that was unclear) and fix that cause. The findings still get
+   fixed in the PR.
+4a. **Fold follow-ups back** into their open PR or the area's next Change (`operating.md`, "Existing follow-ups").
+   Never open a single-fix PR.
+4b. **`run-nightly` and jumps.** To run the full nightly on a same-repo PR head, add the `run-nightly` label
+   (`operating.md`, "Flow"). Ask for a merge-queue jump only to clear a jam or for a security fix.
 5. **Check before you call it clean.** Before reporting a pull request as Codex-clean, confirm no thread is open.
 6. **Rulings go where reviews read them:** on the pull request (or its issue), not only on #2.
 
@@ -187,7 +193,7 @@ What every lead does, learned the hard way. Each line costs review rounds or idl
 7. **Prior art first.** Before building a feature, record the best open-source implementation of it (and its licence)
    in the task or design. The acceptance compares against it: the bar is to beat it.
 8. **Designs are whole:** one design pull request covers the whole decision, with no size limit. **Reserve an ADR number on #2** before writing one.
-9. **Visual work is judged on renders.** The area lead signs a `visual` pull request (`lead-approved`) from CI's
+9. **Visual work is judged on renders.** The area lead signs a `visual` pull request (`lead-approved`, once every finding is fixed or answered) from CI's
    evidence sheet; the Director spot-checks after merge. Before reshaping anything toward a reference, measure the
    reference.
 
@@ -230,7 +236,7 @@ What every lead does, learned the hard way. Each line costs review rounds or idl
    area's lead, even if it was once this lane's. Reconcile ownership with the state
    issue and the handovers recorded on #2.
 3. Post on #2: "taken over", what you found, and anything inconsistent.
-4. Resume fix rounds first, then the next tasks from the state issue.
+4. Resume fix rounds first (the new lead's sessions take over the open branches as fix rounds), then the next tasks from the state issue.
 
 **For the outgoing lead**, when its account is near its limits:
 1. Stop starting new sessions.
@@ -268,10 +274,11 @@ Work
 - No unwrap or expect in library code; docs on every public item; tests with every change; fmt and clippy -D warnings clean; deterministic; nothing non-commercial.
 - Update a branch by merging origin/main, never by rebasing.
 - Self-gate (timeout 3600 cargo xtask check --affected) before marking ready or pushing a fix round.
+- Stay open until your PR merges; you do every fix round yourself. Don't wait to be archived or replaced.
 - Before opening, review your own diff against AGENTS.md's five review fronts and write one "Self-review:" line per front in the PR body.
 - Open your PR yourself as soon as your gate passes, and answer each fix round when it arrives; don't wait to be told.
 - When a review repeats a class of finding, fix every instance of that class in your fence in the same round and say so.
-- Every P0 and P1 finding is fixed in place; a P2 or P3 is fixed if it's a line or two, otherwise answered with a follow-up issue your lead files.
+- Every finding (P0 to P3) is fixed in your PR. A finding leaves only if it is wrong (reply with why) or in another area's code (reply with that area's owning issue). Never ask for a follow-up issue.
 
 Gate and review
 - CI's gate check is the gate. After a fix round, post ONE comment starting "fixed (head <sha7>): …", with what changed per finding. Approved means frozen. Red CI is yours: never skip a test or push an empty commit.
