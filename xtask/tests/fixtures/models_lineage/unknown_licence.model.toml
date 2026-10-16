@@ -1,0 +1,25 @@
+id = "tiny"
+version = "1.0.0"
+name = "Tiny"
+slot = "test_echo@1"
+runtime = "fake"
+providers = ["cpu"]
+
+[[files]]
+name = "tiny.fake.toml"
+sha256 = "e5b9c1f03be8153f32f0df28a9196840741698957730b384a262d2b9517bb99c"
+size = 226
+urls = ["https://models.example/tiny/1.0.0/tiny.fake.toml"]
+
+[card]
+register = "Tiny model"
+authors = "Omuzaki"
+
+[card.licence]
+spdx = "MIT"
+
+[[card.lineage]]
+kind = "training_data"
+name = "Mystery set 3"
+licence = "scraped, terms unclear"
+url = "https://data.example/mystery"

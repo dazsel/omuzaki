@@ -5,7 +5,7 @@ use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use omuzaki_anim::hands::{HandLibrary, HandRest};
-use omuzaki_anim::poses::{PoseLibrary, PoseMask, Posture};
+use omuzaki_anim::poses::{ClipLibrary, PoseLibrary, PoseMask, Posture};
 use omuzaki_anim_api::HumanoidBone;
 
 fn poses(c: &mut Criterion) {
@@ -26,5 +26,25 @@ fn poses(c: &mut Criterion) {
     c.bench_function("poses: blend only", |bench| bench.iter(|| Posture::blend(black_box(&a), black_box(&b), 0.4)));
 }
 
-criterion_group!(benches, poses);
+/// `PoseClip::sample_posture`, the per-frame clip path: wrapping, segment lookup, easing and the blend.
+fn clips(c: &mut Criterion) {
+    let Ok(library) = ClipLibrary::builtin() else { panic!("built-in clips") };
+    let clip = |id: &str| library.get(id).unwrap_or_else(|| panic!("clip {id}"));
+    let (walk, yawn) = (clip("walk"), clip("yawn"));
+    let mut t = 0.0_f32;
+    c.bench_function("clips: sample a looped clip (walk)", |bench| {
+        bench.iter(|| {
+            t += 0.033;
+            black_box(walk.sample_posture(black_box(t)))
+        });
+    });
+    c.bench_function("clips: sample a one-shot clip (yawn)", |bench| {
+        bench.iter(|| {
+            t = (t + 0.033) % 4.2;
+            black_box(yawn.sample_posture(black_box(t)))
+        });
+    });
+}
+
+criterion_group!(benches, poses, clips);
 criterion_main!(benches);
