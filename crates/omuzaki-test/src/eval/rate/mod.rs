@@ -98,27 +98,39 @@ pub fn ratings_path(evals: &Path, set: &str) -> Result<PathBuf, RateError> {
     Ok(evals.join("ratings").join(format!("{set}.jsonl")))
 }
 
+/// How many leading bytes of a ratings file are whole lines. A last line with no newline is a write that stopped half way
+/// (`append_all` cuts it before the next write); it is kept only if it is a whole rating that merely lost its newline.
+/// The bytes are looked at before they are read as text, because the cut can fall inside a multi-byte character.
+fn whole_lines(bytes: &[u8]) -> usize {
+    if bytes.is_empty() || bytes.last() == Some(&b'\n') {
+        return bytes.len();
+    }
+    let start = bytes.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
+    if serde_json::from_slice::<Rating>(&bytes[start..]).is_ok() { bytes.len() } else { start }
+}
+
 /// Every rating in `path`, oldest first. A missing file is an empty set.
 ///
+/// A last line that was cut short (no newline, and not a whole rating) is a write that stopped half way, for example when
+/// the process died: it is dropped, not reported, so that a restart can read the file and go on. The file is read under a
+/// shared lock, so it is never read in the middle of another process's write.
+///
 /// # Errors
-/// [`RateError`] for a file that cannot be read or a line that is not a rating: a ratings file is the ground truth, so
-/// a line that cannot be read is not skipped.
+/// [`RateError`] for a file that cannot be read or a complete line that is not a rating: a ratings file is the ground
+/// truth, so a line that cannot be read is not skipped.
 pub fn read(path: &Path) -> Result<Vec<Rating>, RateError> {
-    let text = match fs::read_to_string(path) {
-        Ok(text) => text,
+    let io_err = |source| RateError::Io { path: path.to_owned(), source };
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(source) => return Err(RateError::Io { path: path.to_owned(), source }),
+        Err(source) => return Err(io_err(source)),
     };
-    // A last line with no newline is a write that stopped half way (`append_all` cuts it before the next write). It is
-    // not a rating yet, so it is not an error here: a restart after a crash can read the file and go on. Any other line
-    // that cannot be read still is.
-    let torn_tail = !text.is_empty() && !text.ends_with('\n');
-    let lines: Vec<&str> = text.lines().collect();
-    let complete = if torn_tail && serde_json::from_str::<Rating>(lines.last().copied().unwrap_or_default()).is_err() {
-        &lines[..lines.len() - 1]
-    } else {
-        &lines[..]
-    };
+    file.lock_shared().map_err(io_err)?;
+    let mut bytes = Vec::new();
+    io::Read::read_to_end(&mut file, &mut bytes).map_err(io_err)?;
+    bytes.truncate(whole_lines(&bytes));
+    let text = String::from_utf8(bytes).map_err(|e| io_err(io::Error::new(io::ErrorKind::InvalidData, e)))?;
+    let complete: Vec<&str> = text.lines().collect();
     let all: Vec<Rating> = complete
         .iter()
         .enumerate()
@@ -152,30 +164,30 @@ pub fn append(path: &Path, rating: &Rating) -> Result<(), RateError> {
 
 /// Appends `ratings` in one write: the lines are put together first and written with a single call to a file opened for
 /// appending, so a result's answers reach the file together or, when the write fails, not at all as far as a reader can
-/// tell (a partial write leaves a line that does not parse, which [`read`] reports instead of counting).
+/// tell: a partial write leaves a last line that is not a whole rating, which [`read`] drops and the next call to this
+/// function cuts before it writes. An answer that is already in the file (the same rater, item and question) is not written
+/// again, so a batch that failed part-way can be sent again whole. The file is locked for the whole call (read, cut and
+/// write), so two sessions of two raters cannot cut away each other's half-done write.
 ///
 /// # Errors
-/// [`RateError::Io`] when the file cannot be written.
+/// [`RateError::Io`] when the file cannot be locked, read or written.
 pub fn append_all(path: &Path, ratings: &[Rating]) -> Result<(), RateError> {
     let io_err = |source| RateError::Io { path: path.to_owned(), source };
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(io_err)?;
     }
     let mut file = OpenOptions::new().read(true).append(true).create(true).open(path).map_err(io_err)?;
+    file.lock().map_err(io_err)?;
     let mut existing = Vec::new();
     io::Read::read_to_end(&mut file, &mut existing).map_err(io_err)?;
-    // A write that stopped half way left a last line with no newline. Cut it before writing on, or the retry would be
-    // glued to it and make a line that does not parse. (A complete rating that only lacks its newline is kept.)
+    // A write that stopped half way left a last line that is not a whole rating. Cut it before writing on, or the retry
+    // would be glued to it and make a line that does not parse. (A whole rating that only lacks its newline is kept.)
     let mut lines = String::new();
-    let mut kept = existing.len();
-    if !existing.is_empty() && existing.last() != Some(&b'\n') {
-        let start = existing.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
-        if serde_json::from_slice::<Rating>(&existing[start..]).is_ok() {
-            lines.push('\n');
-        } else {
-            file.set_len(start as u64).map_err(io_err)?;
-            kept = start;
-        }
+    let kept = whole_lines(&existing);
+    if kept < existing.len() {
+        file.set_len(kept as u64).map_err(io_err)?;
+    } else if !existing.is_empty() && existing.last() != Some(&b'\n') {
+        lines.push('\n');
     }
     // Each answer is written once: a batch that failed part-way and is sent again finds its first rows already there.
     let present: std::collections::BTreeSet<(String, String, String)> = String::from_utf8_lossy(&existing[..kept])
@@ -196,8 +208,8 @@ mod tests {
 
     #[test]
     fn a_torn_last_line_is_cut_before_the_next_write_and_a_whole_one_is_kept() {
-        let dir = std::env::temp_dir().join(format!("ratings-torn-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_owned();
         let path = dir.join("r.jsonl");
         let one = rating("i/1", "Q?", Answer::Yes);
         let line = serde_json::to_string(&one).unwrap();
@@ -214,13 +226,12 @@ mod tests {
         fs::write(&path, &line[..10]).unwrap();
         append_all(&path, &[rating("i/4", "Q?", Answer::No)]).unwrap();
         assert_eq!(read(&path).unwrap().len(), 1);
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn a_batch_that_failed_part_way_is_not_written_twice_when_it_is_sent_again() {
-        let dir = std::env::temp_dir().join(format!("ratings-batch-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_owned();
         let path = dir.join("r.jsonl");
         let batch =
             [rating("i/1", "A?", Answer::Yes), rating("i/1", "B?", Answer::No), rating("i/1", "C?", Answer::Yes)];
@@ -243,13 +254,12 @@ mod tests {
         // An older file with a row twice reads it once.
         fs::write(&path, format!("{}\n{}\n", line(&batch[0]), line(&batch[0]))).unwrap();
         assert_eq!(read(&path).unwrap().len(), 1);
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn two_raters_answers_to_the_same_question_are_both_kept_and_a_torn_tail_is_not_an_error() {
-        let dir = std::env::temp_dir().join(format!("ratings-raters-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_owned();
         let path = dir.join("r.jsonl");
         let by = |rater: &str, answer: Answer| Rating { rater: rater.to_owned(), ..rating("i/1", "Q?", answer) };
         append_all(&path, &[by("ann", Answer::Yes)]).unwrap();
@@ -267,10 +277,22 @@ mod tests {
         text.push_str(&torn[..torn.len() / 2]);
         fs::write(&path, &text).unwrap();
         assert_eq!(read(&path).unwrap().len(), 2);
+        // A cut inside a multi-byte character ("José" with the "é" cut in two) is a torn tail too, and the file reads.
+        let accented = serde_json::to_string(&by("José", Answer::Yes)).unwrap();
+        let cut = accented.find('é').unwrap() + 1;
+        let mut bytes = fs::read(&path).unwrap();
+        bytes.extend_from_slice(&accented.as_bytes()[..cut]);
+        assert!(std::str::from_utf8(&bytes).is_err(), "the cut is inside the character");
+        fs::write(&path, &bytes).unwrap();
+        assert_eq!(read(&path).unwrap().len(), 2);
+        // The next write cuts it away and writes whole.
+        append_all(&path, &[by("José", Answer::Yes)]).unwrap();
+        let after = read(&path).unwrap();
+        assert_eq!(after.len(), 3);
+        assert_eq!(after[2].rater, "José");
         // A bad line that is not the last one is still an error.
         fs::write(&path, format!("not json\n{}\n", serde_json::to_string(&by("ann", Answer::Yes)).unwrap())).unwrap();
         assert!(read(&path).is_err());
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     fn rating(item: &str, question: &str, answer: Answer) -> Rating {

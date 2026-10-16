@@ -362,3 +362,28 @@ fn a_binary_that_never_answers_ends_the_host_with_an_error_and_not_a_hang() {
     assert!(error.to_string().contains("did not complete within"), "{error}");
     assert!(started.elapsed() < std::time::Duration::from_secs(20), "{:?}", started.elapsed());
 }
+
+/// A child that answers the handshake after a second and then never answers `tools/list`: `binary_within` has one
+/// startup budget for both waits, so it ends near the budget, not near the sum of two full budgets.
+#[cfg(unix)]
+#[test]
+fn binary_within_gives_the_tool_list_only_the_time_the_handshake_left() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let slow = dir.path().join("slow");
+    std::fs::write(
+        &slow,
+        "#!/bin/sh\nread line\nsleep 1\nprintf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":0,\"result\":{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{},\"serverInfo\":{\"name\":\"x\",\"version\":\"0\"}}}'\nexec sleep 60\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let started = std::time::Instant::now();
+    let result =
+        Host::binary_within(&slow, dir.path(), &Grants::agent_default(), std::time::Duration::from_millis(2000));
+    let elapsed = started.elapsed();
+    let Err(error) = result else { panic!("a child that never lists its tools must not connect") };
+    assert!(error.to_string().contains("the tool list did not complete"), "{error}");
+    // One budget of 2 s: about 2 s. Two full budgets would be about 3 s (1 s handshake + 2 s list).
+    assert!(elapsed < std::time::Duration::from_millis(2600), "{elapsed:?}");
+    assert!(elapsed >= std::time::Duration::from_millis(1900), "{elapsed:?}");
+}
