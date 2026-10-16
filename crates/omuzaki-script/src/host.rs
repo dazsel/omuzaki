@@ -1,6 +1,6 @@
 //! The Rhai engine: one fresh engine per run, the limits, cancel, output and error mapping.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use omuzaki_core::time::{Clock, SystemClock};
@@ -70,6 +70,9 @@ pub(crate) enum Stop {
 #[derive(Clone)]
 pub(crate) struct Refusal(pub(crate) Arc<OpError>);
 
+/// The most ticks a due stop is held back; see [`Run::progress`].
+const GRACE_TICKS: u32 = 3;
+
 /// The run's services, borrowed from `run`'s caller.
 struct Lent {
     calls: &'static dyn Calls,
@@ -95,11 +98,15 @@ pub(crate) struct Run {
     reads: AtomicU32,
     /// JSON bytes of the dry-run plans kept so far.
     plan_bytes: AtomicUsize,
-    /// Set when a formatting function cut its text at the string limit. Rhai swallows an error from `to_string` and
-    /// formats the value in full, so the function answers the cut text instead and the run stops at the next tick.
-    string_overflow: AtomicBool,
-    /// Set by the first tick that finds a reason to stop and lets it pass; see [`Run::progress`].
-    grace_given: AtomicBool,
+    /// A stop a formatting function asked for: 0 none, 1 `StringSize` (its text was cut at the string limit), 2
+    /// `Memory` (the run was already over its memory limit when asked to format). Rhai swallows an error from
+    /// `to_string` and formats the value in full, so the function answers a short text instead and the run stops at the
+    /// next tick or before it commits.
+    pending_stop: AtomicU8,
+    /// Ticks that found a reason to stop and were let pass; see [`Run::progress`].
+    held_ticks: AtomicU32,
+    /// The operation count of the last tick.
+    last_ops: AtomicU64,
     output: Mutex<Output>,
     plans: Mutex<Vec<PlannedCall>>,
 }
@@ -240,22 +247,44 @@ impl Run {
 
     /// Records that a text was cut at the string limit; the run ends with `Limit(StringSize)`.
     pub(crate) fn note_string_overflow(&self) {
-        self.string_overflow.store(true, Ordering::SeqCst);
+        self.pending_stop.fetch_max(1, Ordering::SeqCst);
     }
 
-    /// The engine's per-operation check: `Some` ends the run.
+    /// Whether the run already holds more than its memory limit; if so the run is marked to end with `Limit(Memory)`.
+    /// Every formatting path asks this first and formats nothing when it is true: a value the run could only copy past
+    /// its limit is not worth formatting, and formatting it is what costs several times its size.
+    pub(crate) fn over_budget(&self) -> bool {
+        let over = budget::used_here() > self.limits.memory_bytes;
+        if over {
+            self.pending_stop.fetch_max(2, Ordering::SeqCst);
+        }
+        over
+    }
+
+    /// The stop a formatting function asked for, if one did.
+    fn requested_stop(&self) -> Option<LimitKind> {
+        match self.pending_stop.load(Ordering::SeqCst) {
+            0 => None,
+            1 => Some(LimitKind::StringSize),
+            _ => Some(LimitKind::Memory),
+        }
+    }
+
+    /// The engine's per-operation check: `Some` ends the run. `ops` is the operation count Rhai passes.
     ///
-    /// The first tick that finds a reason to stop (cancel, time or memory) lets that one operation pass and ends the run
-    /// at the next, which still comes before the script can do anything more. Rhai calls `to_string` for an
-    /// interpolated string through a function whose own tick comes first and whose error it swallows, falling back to
-    /// formatting the value in full: a stop delivered there would not stop the run, and would make that unbounded
-    /// formatting happen. The one operation of delay lets the bounded `to_string` run instead for the usual shape (a
-    /// value copied, then interpolated at once). A memory overshoot in that operation is caught by the peak check
-    /// before the run commits. Residual: a run that has already passed its limit and then interpolates a value with
-    /// two or more ticks in between formats that value once in full, at about 4.5 times its size, before it stops.
-    fn progress(&self, started: f64, clock: &dyn Clock) -> Option<Dynamic> {
-        if self.string_overflow.load(Ordering::SeqCst) {
-            return Some(Dynamic::from(Stop::Limit(LimitKind::StringSize)));
+    /// A stop that is due (cancel, time or memory) is held back for a few ticks, never more than [`GRACE_TICKS`], and
+    /// delivered at the first tick whose count repeats the one before it. The reason is Rhai's interpolated string: it
+    /// calls `to_string` through a function whose own tick comes first, on a copy of the run state, and it swallows an
+    /// error from that call, formatting the value in full instead (`print_with_func`). A stop delivered there would not
+    /// stop the run and would make that unbounded formatting happen. That tick is the only one that does not advance
+    /// the count, so the next tick, the real one, repeats it: a repeated count proves the tick before was that one.
+    /// While a stop is held, the formatting paths see the run is over its limit and format nothing
+    /// ([`Run::over_budget`]). Only an adversary that lines the end of the hold up with such a tick gets a value
+    /// formatted in full, once; the memory it adds is caught by the peak check before the run commits.
+    fn progress(&self, ops: u64, started: f64, clock: &dyn Clock) -> Option<Dynamic> {
+        let repeated = self.last_ops.swap(ops, Ordering::Relaxed) == ops;
+        if let Some(kind) = self.requested_stop() {
+            return Some(Dynamic::from(Stop::Limit(kind)));
         }
         // A callback that outlives its lease stops at once: nothing it can reach is borrowed any more.
         if self.lent.read().unwrap_or_else(PoisonError::into_inner).is_none() {
@@ -266,7 +295,7 @@ impl Run {
         } else {
             self.stop(started, clock).map(Dynamic::from)
         };
-        if reason.is_some() && !self.grace_given.swap(true, Ordering::SeqCst) {
+        if reason.is_some() && !repeated && self.held_ticks.fetch_add(1, Ordering::SeqCst) < GRACE_TICKS {
             return None;
         }
         reason
@@ -397,13 +426,16 @@ impl ScriptHost {
         let room = self.limits.output_bytes.saturating_add(1);
         // By reference: a by-value argument is a copy of the whole value, which is what this is trying not to make.
         engine.register_fn("log", move |value: &mut Dynamic| {
+            if sink.over_budget() {
+                return;
+            }
             sink.print(OutputKind::Note, &crate::guards::format_bounded(value, false, room).0);
         });
         let sink = run.clone();
         // A float would otherwise reach the math package's `log(x)` (the logarithm), so it is overloaded too.
         engine.register_fn("log", move |value: f64| sink.print(OutputKind::Note, &value.to_string()));
         let (watch, clock) = (run.clone(), self.clock.clone());
-        engine.on_progress(move |_| watch.progress(started, clock.as_ref()));
+        engine.on_progress(move |ops| watch.progress(ops, started, clock.as_ref()));
         engine
     }
 
@@ -495,8 +527,9 @@ impl ScriptHost {
             sent: AtomicU32::new(0),
             reads: AtomicU32::new(0),
             plan_bytes: AtomicUsize::new(2),
-            string_overflow: AtomicBool::new(false),
-            grace_given: AtomicBool::new(false),
+            pending_stop: AtomicU8::new(0),
+            held_ticks: AtomicU32::new(0),
+            last_ops: AtomicU64::new(0),
             output: Mutex::new(Output::default()),
             plans: Mutex::new(Vec::new()),
         });
@@ -572,8 +605,12 @@ impl ScriptHost {
         // The progress tick reads the live heap between operations; the last operation (or the conversion of the
         // result) can pass the budget and free it again before another tick, so the peak is read here, before anything
         // becomes durable.
-        if run.string_overflow.load(Ordering::SeqCst) {
-            return Err(fail(ScriptErrorKind::Limit(LimitKind::StringSize), "a text was longer than the string limit"));
+        match run.requested_stop() {
+            Some(LimitKind::Memory) => {
+                return Err(fail(ScriptErrorKind::Limit(LimitKind::Memory), "the run held more memory than the limit"));
+            }
+            Some(kind) => return Err(fail(ScriptErrorKind::Limit(kind), "a text was longer than the string limit")),
+            None => {}
         }
         if budget::peak_here() > self.limits.memory_bytes {
             return Err(fail(
@@ -760,8 +797,9 @@ mod tests {
             sent: AtomicU32::new(0),
             reads: AtomicU32::new(0),
             plan_bytes: AtomicUsize::new(2),
-            string_overflow: AtomicBool::new(false),
-            grace_given: AtomicBool::new(false),
+            pending_stop: AtomicU8::new(0),
+            held_ticks: AtomicU32::new(0),
+            last_ops: AtomicU64::new(0),
             output: Mutex::new(Output::default()),
             plans: Mutex::new(Vec::new()),
         })
@@ -785,7 +823,7 @@ mod tests {
         assert!(kept.lent.read().unwrap().is_none(), "the slot is empty once `lend` returns");
         let after = kept.invoke("face.set_profile", Value::Null, Position::NONE).unwrap_err();
         assert!(is_cancel(&after), "a late call stops as cancelled");
-        assert!(kept.progress(0.0, &SystemClock::new()).is_some(), "a late progress tick stops the engine");
+        assert!(kept.progress(1, 0.0, &SystemClock::new()).is_some(), "a late progress tick stops the engine");
         assert_eq!(reached.load(Ordering::SeqCst), 1, "nothing reached the services after the lease");
     }
 
@@ -1040,6 +1078,32 @@ mod peak {
                 peak >> 20,
                 held >> 20
             );
+        }
+    }
+
+    /// A run that is already over its memory limit formats nothing, on any path, and ends with `Limit(Memory)`.
+    #[test]
+    fn a_run_over_its_limit_formats_nothing_and_stops_with_the_memory_limit() {
+        let tight = Limits { memory_bytes: 2_500_000, ..Limits::console() };
+        // Three half-megabyte keys: 1.5 MB held, so one more copy of the map is over the limit.
+        let build = format!("{LONG_KEY} let m = #{{}}; for i in 0..3 {{ m[k + i] = 1; }} let over = m;");
+        let (_, base) = peak_with(tight.clone(), &build);
+        for (name, statement) in [
+            ("interpolation", "let s = `a${m}b`;"),
+            ("interpolated array", "let s = `${[m]}`;"),
+            ("string plus value", r#"let s = "a" + m;"#),
+            ("value plus string", r#"let s = m + "a";"#),
+            ("string append", r#"let s = "a"; s += m;"#),
+            ("to_string", "let s = m.to_string();"),
+            ("to_debug", "let s = m.to_debug();"),
+            ("print", "print(m);"),
+            ("debug", "debug(m);"),
+            ("log", "log(m);"),
+        ] {
+            let (result, peak) = peak_with(tight.clone(), &format!("{build} {statement}"));
+            assert_eq!(result.expect_err(name).kind, ScriptErrorKind::Limit(LimitKind::Memory), "{name}");
+            // The limit plus the copy the statement itself makes plus a tick's worth of small work.
+            assert!(peak <= base + 1_500_000 + (1 << 20), "{name}: peak {} KiB from {} KiB", peak >> 10, base >> 10);
         }
     }
 

@@ -284,9 +284,12 @@ pub(crate) fn install_formatting(engine: &mut Engine, limits: &Limits) {
     {
         let room = if output { output_room } else { string_room };
         let answer = move |context: &NativeCallContext<'_>, value: &Dynamic| -> ImmutableString {
+            if over_budget(context) {
+                return ImmutableString::new();
+            }
             let (text, cut) = format_bounded(value, debug, room);
             if cut && !output {
-                // The run ends at its next tick; see `Run::string_overflow`.
+                // The run ends at its next tick; see `Run::pending_stop`.
                 if let Ok(run) = crate::host::run_of(context) {
                     run.note_string_overflow();
                 }
@@ -310,8 +313,17 @@ pub(crate) fn install_formatting(engine: &mut Engine, limits: &Limits) {
     install_concatenation(engine, string_room);
 }
 
+/// Whether the run is already over its memory limit (and now marked to end with `Limit(Memory)`). Asked before any
+/// formatting: the answer is then an empty text, and the run stops at its next tick or before it commits.
+fn over_budget(context: &NativeCallContext<'_>) -> bool {
+    crate::host::run_of(context).is_ok_and(|run| run.over_budget())
+}
+
 /// The text of `item` for a concatenation, cut at `room` bytes (the run is flagged when it was cut).
 fn text_for_concat(context: &NativeCallContext<'_>, item: &Dynamic, room: usize) -> String {
+    if over_budget(context) {
+        return String::new();
+    }
     let (text, cut) = format_bounded(item, false, room);
     if let (true, Ok(run)) = (cut, crate::host::run_of(context)) {
         run.note_string_overflow();

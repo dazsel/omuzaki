@@ -32,7 +32,7 @@ marked *planned*. What exists today is the runtime in `crates/omuzaki-script`, a
   twenty characters, instead of twenty tool calls. The agent needs the `script` scope, which no agent has by default.
   You grant it per session, like `publish`.
 
-`script.check`, `script.run`, `script.save`, `script.delete` and `script.list` are ops like any other, so everything
+`script.check`, `script.run`, `script.save`, `script.delete`, `script.save_mine`, `script.delete_mine` and `script.list` are ops like any other, so everything
 that can call an op can call them.
 
 ## The language in five minutes
@@ -210,8 +210,9 @@ A macro is the list of op calls you made, recorded as you worked.
    value by an amount keeps one call per gesture.
 3. **Replay.** Playing a macro runs its calls as one transaction named after the macro, so one undo step. The first call
    that fails ends it and undoes the rest, and the error names the step.
-4. **Save.** `script.save` keeps a macro (as `steps`) or a script (as `source`) in the project, where it is journalled
-   and visible to agents, or in My scripts, which travel across projects. `script.run` with an `id` runs a saved script or
+4. **Save.** `script.save` keeps a macro (as `steps`) or a script (as `source`) in the project, where it is journalled,
+   undoable and visible to agents, and `script.save_mine` keeps it in My scripts, which travel across projects (a script
+   can save into the project, not into My scripts). `script.run` with an `id` runs a saved script or
    macro.
 
 A macro file is JSON lines: a header line and one call per line.

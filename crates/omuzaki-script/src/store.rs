@@ -35,7 +35,7 @@ pub struct StoredScript {
 }
 
 /// Where My scripts live. Taken by the `script.*` ops with `ctx.service::<dyn ScriptStore>()`; without one wired,
-/// `place: mine` is `Unavailable`.
+/// the `*_mine` ops are `Unavailable`.
 pub trait ScriptStore: Send + Sync {
     /// Every saved item, sorted by id.
     ///

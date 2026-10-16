@@ -147,10 +147,10 @@ fn check_works_with_read_alone_and_never_runs_the_script() {
 #[test]
 fn check_reports_the_scripts_own_ops_as_refused_or_known() {
     let runner = runner();
-    let source = "ops::script::run(#{ source: \"1\" }); ops::script::save(#{}); ops::script::list(#{});";
+    let source = "ops::script::run(#{ source: \"1\" }); ops::script::save_mine(#{}); ops::script::save(#{}); ops::script::list(#{});";
     let report = run_as_person(&runner, "script.check", json!({ "source": source })).unwrap().plan.output.unwrap();
     let refused: Vec<&str> = report["refused"].as_array().unwrap().iter().map(|r| r["op"].as_str().unwrap()).collect();
-    assert_eq!(refused, ["script.run", "script.save"], "a nested run and an effectful save are refused");
+    assert_eq!(refused, ["script.run", "script.save_mine"], "a nested run and an effectful save are refused");
 }
 
 // -- script.save, script.delete and script.list in the project ---------------------------------------------------------
@@ -158,12 +158,9 @@ fn check_reports_the_scripts_own_ops_as_refused_or_known() {
 #[test]
 fn save_writes_the_project_node_and_list_shows_it() {
     let runner = runner();
-    let saved = run_as_person(
-        &runner,
-        "script.save",
-        json!({ "id": "hello", "name": "Hello", "source": "print(\"hi\");", "place": "project" }),
-    )
-    .unwrap();
+    let saved =
+        run_as_person(&runner, "script.save", json!({ "id": "hello", "name": "Hello", "source": "print(\"hi\");" }))
+            .unwrap();
     let hash = content_hash("print(\"hi\");");
     assert_eq!(saved.plan.output.unwrap()["hash"], json!(hash));
     let node = doc_value(&runner, "scripts/hello").expect("the node");
@@ -184,8 +181,7 @@ fn save_writes_the_project_node_and_list_shows_it() {
 fn saving_again_replaces_and_a_second_item_joins_the_first() {
     let runner = runner();
     let save = |id: &str, source: &str| {
-        run_as_person(&runner, "script.save", json!({ "id": id, "name": id, "source": source, "place": "project" }))
-            .unwrap();
+        run_as_person(&runner, "script.save", json!({ "id": id, "name": id, "source": source })).unwrap();
     };
     save("one", "1");
     save("two", "2");
@@ -201,8 +197,7 @@ fn saving_again_replaces_and_a_second_item_joins_the_first() {
 fn a_macro_is_saved_as_steps_with_its_kind() {
     let runner = runner();
     let steps = json!([{ "op": "fake.set", "args": { "path": "a", "value": 1 } }]);
-    run_as_person(&runner, "script.save", json!({ "id": "m", "name": "M", "steps": steps, "place": "project" }))
-        .unwrap();
+    run_as_person(&runner, "script.save", json!({ "id": "m", "name": "M", "steps": steps })).unwrap();
     let node = doc_value(&runner, "scripts/m").unwrap();
     assert_eq!((node["kind"].as_str(), &node["steps"]), (Some("macro"), &steps));
     assert!(node.get("source").is_none());
@@ -213,12 +208,12 @@ fn a_macro_is_saved_as_steps_with_its_kind() {
 #[test]
 fn save_refuses_a_macro_step_a_script_could_not_call() {
     let runner = runner();
-    for (op, needle) in [("script.run", "another script run"), ("script.save", "outside the document")] {
+    for (op, needle) in [("script.run", "another script run"), ("script.save_mine", "outside the document")] {
         let steps = json!([
             { "op": "fake.set", "args": { "path": "a", "value": 1 } },
             { "op": op, "args": { "id": "loop" } },
         ]);
-        let args = json!({ "id": "loop", "name": "Loop", "steps": steps, "place": "project" });
+        let args = json!({ "id": "loop", "name": "Loop", "steps": steps });
         let error = run_as_person(&runner, "script.save", args).unwrap_err();
         assert_eq!((error.code, error.field.as_deref()), (ErrorCode::Invalid, Some("steps")), "{op}: {error}");
         assert!(error.message.contains("step 2") && error.message.contains(op), "{op}: {error}");
@@ -232,24 +227,46 @@ fn save_refuses_a_macro_step_a_script_could_not_call() {
 #[test]
 fn delete_removes_the_node_and_a_missing_one_is_not_found() {
     let runner = runner();
-    run_as_person(&runner, "script.save", json!({ "id": "x", "name": "X", "source": "1", "place": "project" }))
-        .unwrap();
-    run_as_person(&runner, "script.delete", json!({ "id": "x", "place": "project" })).unwrap();
+    run_as_person(&runner, "script.save", json!({ "id": "x", "name": "X", "source": "1" })).unwrap();
+    run_as_person(&runner, "script.delete", json!({ "id": "x" })).unwrap();
     assert_eq!(doc_value(&runner, "scripts/x"), None);
-    let missing = run_as_person(&runner, "script.delete", json!({ "id": "x", "place": "project" })).unwrap_err();
+    let missing = run_as_person(&runner, "script.delete", json!({ "id": "x" })).unwrap_err();
     assert_eq!(missing.code, ErrorCode::NotFound);
     let nothing_at_all = MockRunner::new(MemDoc::new());
-    let error = run_as_person(&nothing_at_all, "script.delete", json!({ "id": "x", "place": "project" })).unwrap_err();
+    let error = run_as_person(&nothing_at_all, "script.delete", json!({ "id": "x" })).unwrap_err();
     assert_eq!(error.code, ErrorCode::NotFound);
+}
+
+#[test]
+fn undoing_a_project_save_or_delete_puts_the_previous_text_back() {
+    let runner = runner();
+    let source_of =
+        |runner: &MockRunner<MemDoc>| doc_value(runner, "scripts/x/source").map(|v| v.as_str().unwrap().to_owned());
+    for (op, undo) in [("script.save", Undo::Auto), ("script.delete", Undo::Auto)] {
+        assert_eq!((find(op).unwrap().meta)().undo, undo, "{op}: a project edit undoes with its patch");
+    }
+    run_as_person(&runner, "script.save", json!({ "id": "x", "name": "X", "source": "old text" })).unwrap();
+    run_as_person(&runner, "script.save", json!({ "id": "x", "name": "X", "source": "new text" })).unwrap();
+    assert_eq!(source_of(&runner).as_deref(), Some("new text"));
+    // Ctrl+Z: the save over it goes, and the file is what it was.
+    assert!(runner.undo(&alice(), &Grants::person()).unwrap().is_some(), "the second save is a step of its own");
+    assert_eq!(source_of(&runner).as_deref(), Some("old text"));
+    // A delete is undone the same way.
+    run_as_person(&runner, "script.delete", json!({ "id": "x" })).unwrap();
+    assert_eq!(source_of(&runner), None);
+    runner.undo(&alice(), &Grants::person()).unwrap();
+    assert_eq!(source_of(&runner).as_deref(), Some("old text"));
+    // And the first save goes away entirely.
+    runner.undo(&alice(), &Grants::person()).unwrap();
+    assert_eq!(doc_value(&runner, "scripts/x"), None);
 }
 
 #[test]
 fn an_agent_without_the_script_scope_is_denied_naming_it() {
     let runner = runner();
-    for (op, args) in [
-        ("script.save", json!({ "id": "x", "name": "X", "source": "1", "place": "project" })),
-        ("script.delete", json!({ "id": "x", "place": "project" })),
-    ] {
+    for (op, args) in
+        [("script.save", json!({ "id": "x", "name": "X", "source": "1" })), ("script.delete", json!({ "id": "x" }))]
+    {
         let error = runner.run(request(op, args, &agent(), &Grants::agent_default())).unwrap_err();
         assert_eq!(error.code, ErrorCode::Denied, "{op}");
         assert!(error.message.contains("`script`"), "{op}: {}", error.message);
@@ -257,14 +274,7 @@ fn an_agent_without_the_script_scope_is_denied_naming_it() {
     assert_eq!(runner.records(), vec![], "nothing was planted");
     // With the scope granted for the session, the agent may.
     let granted = Grants::agent_default().with(Scope::Script);
-    runner
-        .run(request(
-            "script.save",
-            json!({ "id": "x", "name": "X", "source": "1", "place": "project" }),
-            &agent(),
-            &granted,
-        ))
-        .unwrap();
+    runner.run(request("script.save", json!({ "id": "x", "name": "X", "source": "1" }), &agent(), &granted)).unwrap();
 }
 
 #[test]
@@ -278,13 +288,13 @@ fn listing_and_checking_need_only_read() {
 fn save_refuses_bad_input_naming_the_field() {
     let runner = runner();
     let cases = [
-        (json!({ "id": "x", "name": "X", "place": "project" }), "source"),
-        (json!({ "id": "x", "name": "X", "source": "1", "steps": [], "place": "project" }), "source"),
-        (json!({ "id": "x", "name": "  ", "source": "1", "place": "project" }), "name"),
-        (json!({ "id": "x", "name": "X", "source": "x".repeat(64 * 1024 + 1), "place": "project" }), "source"),
-        (json!({ "id": "x", "name": "X", "steps": [{ "op": "a.b", "args": [] }], "place": "project" }), "steps"),
-        (json!({ "id": "x", "name": "X", "steps": [{ "op": "", "args": {} }], "place": "project" }), "steps"),
-        (json!({ "id": "Not A Slug", "name": "X", "source": "1", "place": "project" }), "id"),
+        (json!({ "id": "x", "name": "X" }), "source"),
+        (json!({ "id": "x", "name": "X", "source": "1", "steps": [] }), "source"),
+        (json!({ "id": "x", "name": "  ", "source": "1" }), "name"),
+        (json!({ "id": "x", "name": "X", "source": "x".repeat(64 * 1024 + 1) }), "source"),
+        (json!({ "id": "x", "name": "X", "steps": [{ "op": "a.b", "args": [] }] }), "steps"),
+        (json!({ "id": "x", "name": "X", "steps": [{ "op": "", "args": {} }] }), "steps"),
+        (json!({ "id": "Not A Slug", "name": "X", "source": "1" }), "id"),
     ];
     for (args, field) in cases {
         let error = run_as_person(&runner, "script.save", args.clone()).unwrap_err();
@@ -307,9 +317,7 @@ fn list_reports_a_damaged_scripts_node_instead_of_an_empty_list() {
 #[test]
 fn a_damaged_scripts_node_is_reported_not_overwritten() {
     let runner = MockRunner::new(MemDoc::from_value(json!({ "scripts": "oops" })));
-    let error =
-        run_as_person(&runner, "script.save", json!({ "id": "x", "name": "X", "source": "1", "place": "project" }))
-            .unwrap_err();
+    let error = run_as_person(&runner, "script.save", json!({ "id": "x", "name": "X", "source": "1" })).unwrap_err();
     assert_eq!(error.code, ErrorCode::Invalid);
     assert_eq!(doc_value(&runner, "scripts"), Some(json!("oops")));
 }
@@ -328,8 +336,8 @@ fn list_marks_a_node_it_cannot_read() {
 fn mine_without_a_store_is_unavailable() {
     let runner = runner();
     for (op, args) in [
-        ("script.save", json!({ "id": "x", "name": "X", "source": "1", "place": "mine" })),
-        ("script.delete", json!({ "id": "x", "place": "mine" })),
+        ("script.save_mine", json!({ "id": "x", "name": "X", "source": "1" })),
+        ("script.delete_mine", json!({ "id": "x" })),
     ] {
         let error = run_as_person(&runner, op, args).unwrap_err();
         assert_eq!(error.code, ErrorCode::Unavailable, "{op}");
@@ -342,7 +350,7 @@ fn mine_without_a_store_is_unavailable() {
 fn save_to_mine_writes_the_store_changes_no_node_and_carries_an_effect() {
     let store = Arc::new(MemScriptStore::new());
     let doc = MemDoc::new();
-    let op = decode("script.save", json!({ "id": "mine1", "name": "Mine", "source": "print(1);", "place": "mine" }));
+    let op = decode("script.save_mine", json!({ "id": "mine1", "name": "Mine", "source": "print(1);" }));
 
     let dry = plan_with(op.as_ref(), &doc, &services(&store), true).unwrap();
     assert!(store.list().unwrap().is_empty(), "a dry run writes nothing");
@@ -354,11 +362,8 @@ fn save_to_mine_writes_the_store_changes_no_node_and_carries_an_effect() {
     assert_eq!((stored.kind, stored.body.as_str(), stored.name.as_str()), (ScriptKind::Script, "print(1);", "Mine"));
     assert_eq!(stored.hash, content_hash("print(1);"));
     let effect = plan.effect.expect("an effect");
-    assert_eq!(
-        (effect.undo.op.as_str(), &effect.undo.args),
-        ("script.delete", &json!({ "id": "mine1", "place": "mine" }))
-    );
-    assert_eq!(effect.redo.op, "script.save");
+    assert_eq!((effect.undo.op.as_str(), &effect.undo.args), ("script.delete_mine", &json!({ "id": "mine1" })));
+    assert_eq!(effect.redo.op, "script.save_mine");
     assert_eq!(effect.redo.args["source"], "print(1);");
 }
 
@@ -366,12 +371,12 @@ fn save_to_mine_writes_the_store_changes_no_node_and_carries_an_effect() {
 fn saving_over_an_item_in_mine_undoes_to_the_earlier_one() {
     let store = Arc::new(MemScriptStore::new());
     let doc = MemDoc::new();
-    let first = decode("script.save", json!({ "id": "s", "name": "S", "source": "old", "place": "mine" }));
+    let first = decode("script.save_mine", json!({ "id": "s", "name": "S", "source": "old" }));
     plan_with(first.as_ref(), &doc, &services(&store), false).unwrap();
-    let second = decode("script.save", json!({ "id": "s", "name": "S2", "source": "new", "place": "mine" }));
+    let second = decode("script.save_mine", json!({ "id": "s", "name": "S2", "source": "new" }));
     let plan = plan_with(second.as_ref(), &doc, &services(&store), false).unwrap();
     let undo = plan.effect.unwrap().undo;
-    assert_eq!(undo.op, "script.save");
+    assert_eq!(undo.op, "script.save_mine");
     assert_eq!((undo.args["source"].as_str(), undo.args["name"].as_str()), (Some("old"), Some("S")));
 }
 
@@ -380,17 +385,17 @@ fn delete_from_mine_removes_the_entry_and_its_undo_saves_it_back() {
     let store = Arc::new(MemScriptStore::new());
     let doc = MemDoc::new();
     let steps = json!([{ "op": "fake.set", "args": { "path": "a", "value": 1 } }]);
-    let save = decode("script.save", json!({ "id": "mac", "name": "Mac", "steps": steps, "place": "mine" }));
+    let save = decode("script.save_mine", json!({ "id": "mac", "name": "Mac", "steps": steps }));
     plan_with(save.as_ref(), &doc, &services(&store), false).unwrap();
     assert_eq!(store.get("mac").unwrap().unwrap().kind, ScriptKind::Macro);
 
-    let delete = decode("script.delete", json!({ "id": "mac", "place": "mine" }));
+    let delete = decode("script.delete_mine", json!({ "id": "mac" }));
     let plan = plan_with(delete.as_ref(), &doc, &services(&store), false).unwrap();
     assert!(store.get("mac").unwrap().is_none());
     let effect = plan.effect.unwrap();
-    assert_eq!(effect.undo.op, "script.save");
+    assert_eq!(effect.undo.op, "script.save_mine");
     assert_eq!(effect.undo.args["steps"], steps, "the macro comes back as steps");
-    assert_eq!(effect.redo.op, "script.delete");
+    assert_eq!(effect.redo.op, "script.delete_mine");
 
     let again = plan_with(delete.as_ref(), &doc, &services(&store), false).unwrap_err();
     assert_eq!(again.code, ErrorCode::NotFound);
@@ -400,7 +405,7 @@ fn delete_from_mine_removes_the_entry_and_its_undo_saves_it_back() {
 fn list_shows_both_places_with_a_store() {
     let store = Arc::new(MemScriptStore::new());
     let doc = MemDoc::from_value(json!({ "scripts": { "pj": { "name": "P", "kind": "script", "source": "1" } } }));
-    let save = decode("script.save", json!({ "id": "mn", "name": "M", "source": "2", "place": "mine" }));
+    let save = decode("script.save_mine", json!({ "id": "mn", "name": "M", "source": "2" }));
     plan_with(save.as_ref(), &doc, &services(&store), false).unwrap();
     let list = decode("script.list", json!({}));
     let listing = plan_with(list.as_ref(), &doc, &services(&store), false).unwrap().output.unwrap();
@@ -486,7 +491,7 @@ fn run_by_id_finds_a_project_script_and_a_my_scripts_macro() {
     let store = Arc::new(MemScriptStore::new());
     let empty = MemDoc::new();
     let steps = json!([{ "op": "fake.set", "args": { "path": "a", "value": 1 } }]);
-    let save = decode("script.save", json!({ "id": "mac", "name": "Mac", "steps": steps, "place": "mine" }));
+    let save = decode("script.save_mine", json!({ "id": "mac", "name": "Mac", "steps": steps }));
     plan_with(save.as_ref(), &empty, &services(&store), false).unwrap();
     let run = decode("script.run", json!({ "id": "mac" }));
     let planned = plan_with(run.as_ref(), &empty, &services(&store), false).unwrap().output.unwrap();
@@ -645,7 +650,7 @@ fn work_runs_a_saved_macro_step_by_step() {
 #[test]
 fn replay_refuses_a_step_a_script_could_not_call_before_sending_anything() {
     // A macro saved by an older build or edited by hand can hold what `script.save` now refuses.
-    for (op, needle) in [("script.run", "another script run"), ("script.save", "outside the document")] {
+    for (op, needle) in [("script.run", "another script run"), ("script.save_mine", "outside the document")] {
         let calls = Calls::default();
         let doc = json!({ "scripts": { "loop": { "name": "Loop", "kind": "macro", "steps": [
             { "op": "fake.set", "args": { "path": "a", "value": 1 } },

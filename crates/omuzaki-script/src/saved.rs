@@ -1,4 +1,4 @@
-//! Saved scripts and macros: what `script.save`, `script.delete`, `script.list` and `script.run` share about an item,
+//! Saved scripts and macros: what the save and delete ops (project and `_mine`), `script.list` and `script.run` share about an item,
 //! wherever it lives. In a project it is the document node `scripts/<id>`; in My scripts it is a [`StoredScript`].
 
 use omuzaki_doc_api::{DocPath, DocRead, Patch, Value};

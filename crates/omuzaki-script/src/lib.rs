@@ -10,7 +10,7 @@
 //! | [`CheckReport`], [`effective_grants`] | the static check, and the grants a run gets from it |
 //! | [`Calls`], [`RunnerCalls`], [`JobScript`] | where a run's requests go: a `Runner` (console, CLI) or a driver job (`script.run`) |
 //! | [`Macro`], [`MacroRecorder`], [`play`], [`to_jsonl`] | macros: record a person's edits, replay them as one transaction, the file |
-//! | [`ops`] | the `script.check`, `script.run`, `script.save`, `script.delete` and `script.list` ops |
+//! | [`ops`] | the `script.check`, `script.run`, `script.save`, `script.delete`, `script.save_mine`, `script.delete_mine` and `script.list` ops |
 //! | [`run_script`], [`check_script`] | the two commands behind `omuzaki script run` and `check`, as pure functions |
 //! | [`ScriptStore`], [`MemScriptStore`] | My scripts, the person's own scripts across projects |
 //!

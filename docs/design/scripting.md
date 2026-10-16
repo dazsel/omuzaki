@@ -244,9 +244,11 @@ the same engine serves both and never holds a borrow across a job. `run` is a me
   and freed its memory again still fails the run.
 - **Turning a value into text** (`print`, `debug`, `log`, `to_string`, `to_debug`, `${...}` interpolation, `+` and `+=`
   with a string, the message of an uncaught `throw`) is built into a sink that stops at the output or string limit, so
-  formatting a value costs that limit and not the size of the value. Rhai formats an interpolated item by calling
-  `to_string` and, if that call fails, formats the whole value itself; so a stop due at the call's own tick is held for
-  one operation, and `to_string` answers a cut text and flags the run (`Limit(StringSize)`) instead of failing.
+  formatting a value costs that limit and not the size of the value. Every one of these paths first checks whether the
+  run is already over its memory limit and, if so, formats nothing and ends the run with `Limit(Memory)`. Rhai formats
+  an interpolated item by calling `to_string` and, if that call fails, formats the whole value itself; so `to_string`
+  never fails (it answers a cut or empty text and flags the run), and a stop that is due is held back for at most three
+  ticks, or until a repeated operation count shows the tick before was the one inside that call.
 - **Closures** are accepted only as the callback of `try_op` or of an array function (`map`, `filter`, `reduce`, ...), so
   none outlives its call: what a closure captures is not counted by Rhai's limits either.
 - **Values that cross in** (`params`, op results) are measured as a whole before they are converted: all slots, all
@@ -264,18 +266,12 @@ the same engine serves both and never holds a borrow across a job. `run` is a me
 |---|---|---|---|
 | `script.check {source}` | Query | `read` | Parses and resolves, without running: the ops named with line and column; unknown ops; for argument maps written as literals, unknown and missing fields against each op's schema; the scopes the script needs; the effective ceiling; parse errors. The console runs it as you type |
 | `script.run {source \| id, params?, dry_run?, seconds?}` | Job (driver) | `script` | Runs a script (section 4). Source capped at 64 KiB; refused if `script.check` finds errors. Returns `ScriptOutcome` or the `ScriptError` as an `OpError` with code `invalid` and a `detail` carrying line and column |
-| `script.save {id, name, source \| steps, place}` / `script.delete {id, place}` | Edit | `script` | `place: project` writes the document node `scripts/<id>` (a real patch: journalled and branchable, and removed by `script.delete`; Ctrl+Z refuses the step while the op's undo is `Explicit`, see below); `place: mine` writes My scripts through a `ScriptStore` service (`Undo::Explicit`, empty patch, like the settings ops) (section 7) |
+| `script.save {id, name, source \| steps}` / `script.delete {id}` | Edit | `script` | Write or remove the document node `scripts/<id>` in the project: a real patch (`Undo::Auto`), so it is journalled, branchable and undone with Ctrl+Z, and a script may call them |
+| `script.save_mine {id, name, source \| steps}` / `script.delete_mine {id}` | Edit | `script` | Write or remove an item in My scripts through a `ScriptStore` service (`Undo::Explicit`, empty patch, like the settings ops) (section 7); a script cannot call them, because a rollback could not undo the write |
 | `script.list {}` | Query | `read` | Project scripts and macros, with last author and content hash |
 
-`script.save` and `script.delete` are one op each for both places, and an op's undo mode is fixed per op type, so both
-are `Undo::Explicit`. Today that means Ctrl+Z refuses a step that holds either, for the project place too (the executor
-reverses no effects yet, ADR 0036 decision 9); a person takes a saved item back with `script.delete`, or with
-`script.save` of the old content. A script cannot call them (a rollback could not undo the My scripts write).
-Undoing a project save from history needs the project place to be an op of its own with `Undo::Auto`; that is a change
-to the op set for the Agents and ops lead to decide.
-
 - **A `script` scope, held by no default agent ceiling.** An agent gets it per session or per credential from the
-  person, like `publish`. `script.save` needs it too: otherwise an agent could write a script for the person to run
+  person, like `publish`. `script.save` and `script.save_mine` need it too: otherwise an agent could write a script for the person to run
   with the person's grants. The scope (`Scope::Script`, serialised `script`) lands with the ops contract change, so the
   hub crate changes once.
 - **Why a driver job (ADR 0036):** a run can take seconds and must be cancellable; the job manager gives progress,
