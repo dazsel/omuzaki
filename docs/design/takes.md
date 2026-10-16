@@ -308,34 +308,42 @@ another frame rate samples the bus between chunks (linear; booleans and onsets a
 
 ```rust
 pub const MAJOR: u8 = 1; pub const MINOR: u8 = 0;
-pub const CHUNK_MAGIC: [u8; 4] = *b"TKCH"; pub const FILE_MAGIC: [u8; 8] = *b"OMUZAKIINP";
+pub const CHUNK_MAGIC: [u8; 4] = *b"TKCH"; pub const FILE_MAGIC: [u8; 10] = *b"OMUZAKIINP";
 pub const CHUNK_HEADER_LEN: usize = 32;
 #[non_exhaustive] #[repr(u8)] pub enum RecordKind { Track = 1, Voice, Cue, Bus, Event, EventRef, State, Withheld, Delay, Incomplete, Watermark }
 pub struct ChunkFlags(pub u16);   // GROUP_START, HAS_WITHHELD, TAIL; MUST_UNDERSTAND = 0xFF00
-pub struct ChunkHeader { pub major: u8, pub minor: u8, pub flags: ChunkFlags, pub frame: i64, pub tick: Seconds, pub len: u32 }
-pub struct TakeHeader { pub take: String, pub kind: TakeKind, pub fps: (u32, u32), pub first_frame: i64,
+#[non_exhaustive] pub struct ChunkHeader { pub major: u8, pub minor: u8, pub flags: ChunkFlags, pub frame: i64, pub tick: Seconds, pub len: u32 }
+// ChunkHeader::new(..); ChunkHeader::check() -> Result<(), TakeError>: a newer major or an unknown must-understand flag is TakeError::Newer
+#[non_exhaustive] pub enum TakeKind { Recording, Replay }
+#[non_exhaustive] pub enum SnapshotAt { Start, End }
+#[non_exhaustive] pub struct TakeHeader { pub take: String, pub kind: TakeKind, pub fps: (u32, u32), pub first_frame: i64,
     pub created: String, pub app: String, pub snapshot: Option<SnapshotId>, pub snapshot_lsn: Lsn,
     pub snapshot_at: SnapshotAt /* Start | End */, pub doc_version: DocVersion,
-    pub video: Option<String>, pub audio: BTreeMap<String, String> }
-pub struct StateRecord { pub doc_version: DocVersion, pub project: String, pub scene: Option<SceneId>,
+    pub video: Option<String>, pub audio: BTreeMap<String, String> }   // TakeHeader::new(..) + with_snapshot, with_video, with_audio
+pub struct ProjectName(/* private */ String);   // ProjectName::new(..) -> Option<Self>: None if empty or blank; the one rule for constructors and the reader
+#[non_exhaustive] pub struct StateRecord { pub doc_version: DocVersion, pub project: Option<ProjectName> /* None only when overflow */, pub scene: Option<SceneId>,
     pub camera: Option<String>, pub cast: Vec<CastEntry>, pub sources: Vec<SourceEntry>, pub voices: Vec<VoiceEntry>,
     pub models: BTreeMap<String, String>, pub delay_s: f32, pub after_lsn: Lsn, pub withheld: Vec<Withheld>,
     pub omitted: Vec<String>, pub omitted_more: u32, pub overflow: bool, pub live: BTreeMap<String, Value> }
-pub struct EventRecord { pub lsn: Lsn, pub applied_frame: i64, pub entry: TakeEntry }
-pub enum TakeEntry { Full(HistoryEntry) /* Op's cause text cleared; never Mark or Session */, Placeholder { kind: String } }
-pub struct Incomplete { pub from_lsn: Lsn, pub cause: String }
-pub struct Withheld { pub voice: u8, pub cause: WithheldCause /* Muted | Private | CohostOnly */, pub from: Seconds, pub to: Option<Seconds> }
-pub enum Record<'a> { Track(TrackFrame, u8), Voice { voice: u8, perf_time: Seconds, layer: Layer }, Cue { voice: u8,
+// StateRecord::new(doc_version, ProjectName, after_lsn, withheld) + with_*; StateRecord::minimal(doc_version, after_lsn, withheld) (the overflow State, no project).
+// Reading refuses a State without a project unless overflow is true. CastEntry, SourceEntry and VoiceEntry are #[non_exhaustive] with new(..).
+#[non_exhaustive] pub struct EventRecord { pub lsn: Lsn, pub applied_frame: i64, pub entry: TakeEntry }
+#[non_exhaustive] pub enum TakeEntry { Full(HistoryEntry) /* Op's cause text cleared; never Mark or Session */, Placeholder { kind: String }, Unknown /* a newer form */ }
+#[non_exhaustive] pub struct Incomplete { pub from_lsn: Lsn, pub cause: String }
+#[non_exhaustive] pub struct Withheld { pub voice: u8, pub cause: WithheldCause /* #[non_exhaustive]: Muted | Private | CohostOnly | Unknown */, pub from: Seconds, pub to: Option<Seconds> }
+#[non_exhaustive] pub enum Record<'a> { Track(TrackFrame, u8), Voice { voice: u8, perf_time: Seconds, layer: Layer }, Cue { voice: u8,
     perf_time: Seconds, cues: Cues }, Bus { member: u8, buf: ChannelBuf, mask: ChannelMask }, Event(&'a [u8]),
     EventRef { lsn: Lsn, applied_frame: i64 }, Watermark(i64), State(&'a [u8]), Withheld(&'a [u8]), Incomplete(&'a [u8]), Delay(f32), Unknown { kind: u8, body: &'a [u8] } }
+#[non_exhaustive] pub struct ChunkView<'a> { pub header: ChunkHeader, pub payload: &'a [u8] }   // ChunkView::new(..)
 pub trait TakeSource { fn header(&self) -> &TakeHeader; fn seek(&mut self, frame: i64) -> Result<(), TakeError>;
     fn next_chunk(&mut self) -> Result<Option<ChunkView<'_>>, TakeError>; fn report(&self) -> &TakeReport; }
-pub struct TakeReport { pub chunks: u64, pub truncated_at: Option<u64>, pub skipped: BTreeMap<u8, u64>,
+#[non_exhaustive] pub struct TakeReport { pub chunks: u64, pub truncated_at: Option<u64>, pub skipped: BTreeMap<u8, u64>,
     pub withheld: Vec<Withheld> /* clamped to the window */, pub event_refs: u64, pub deferred: u64,
     pub omitted: BTreeMap<String, u64>, pub state_overflow: u64, pub incomplete: Vec<Incomplete>,
-    pub max_defer_frames: u32, pub incomplete_tail: bool, pub indexed: bool }
-#[non_exhaustive] pub enum TakeError { Newer { found: (u8, u8), supported: (u8, u8), hint: String }, BadMagic,
+    pub max_defer_frames: u32, pub incomplete_tail: bool, pub indexed: bool }   // TakeReport::new() + with_*
+#[non_exhaustive] pub enum TakeError { Newer { found: (u16, u16) /* the file header holds u16; a chunk's u8 pair widens */, supported: (u8, u8), hint: String }, BadMagic,
     Crc { offset: u64 }, Truncated { offset: u64 }, StateGap { from_lsn: Lsn }, WrongSnapshotSide, Json(String), Io(String) }
+#[non_exhaustive] pub struct StateProvider { pub name: &'static str, pub capture: fn() -> Value }   // StateProvider::new(..), built by the macro
 #[macro_export] macro_rules! register_take_state { /* (name, fn() -> serde_json::Value), inventory */ }
 // omuzaki-stream-api (amends):
 pub struct FrameStamp { pub index: i64, pub tick: Seconds, pub until: Seconds, pub group_start: bool }

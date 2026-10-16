@@ -5,6 +5,7 @@
 //! Where the spec's pseudocode is loose, this follows the structure the spec describes: tails are stored in centre
 //! space, inertia is evaluated there, and gravity, stiffness and collisions are in world space.
 
+use omuzaki_anim_api::spring::JointLimit;
 use omuzaki_anim_api::{ColliderShape, PHYSICS_STEP, Pose, Skeleton, SpringSet};
 use omuzaki_core::glam::{DMat4, DQuat, DVec3};
 
@@ -21,6 +22,7 @@ struct Joint {
     drag: f64,
     gravity: DVec3,
     hit_radius: f64,
+    limit: Option<JointLimit>,
 }
 
 struct Chain {
@@ -94,6 +96,7 @@ impl Reference {
                     drag: f64::from(p.drag_force),
                     gravity: p.gravity_dir.as_dvec3() * f64::from(p.gravity_power),
                     hit_radius: f64::from(p.hit_radius),
+                    limit: pair[0].limit,
                 });
             }
             let center = chain.center.map(omuzaki_anim_api::BoneId::index);
@@ -166,6 +169,7 @@ impl Reference {
         let external = dt * joint.gravity;
         let mut next_tail = center_to_world.transform_point3(joint.current_tail + inertia) + stiffness + external;
         next_tail = world_position + (next_tail - world_position).normalize() * joint.bone_length;
+        next_tail = limit_tail(joint, parent_world_rotation, world_position, next_tail);
 
         // Collision with colliders.
         for &(bone, shape) in &self.chains[c].colliders {
@@ -174,6 +178,7 @@ impl Reference {
             if distance < 0.0 {
                 next_tail -= direction * distance;
                 next_tail = world_position + (next_tail - world_position).normalize() * joint.bone_length;
+                next_tail = limit_tail(joint, parent_world_rotation, world_position, next_tail);
             }
         }
 
@@ -190,30 +195,129 @@ impl Reference {
     }
 }
 
-/// The spec's sphere and capsule collider pseudocode: the direction from the collider to the joint, and the signed
-/// distance between their surfaces (negative when they overlap). Note the spec's capsule listing reads `delta` before it
-/// assigns it; the order here is the intended one.
+/// The spec's collider pseudocode: the direction from the collider to the joint, and the signed distance between their
+/// surfaces (negative when they overlap). Note the spec's capsule listing reads `delta` before it assigns it; the order
+/// here is the intended one. The extended colliders (`VRMC_springBone_extended_collider`) flip the sign of the distance
+/// for the inside shapes, and a plane's direction is its normal.
 fn collide(world: &DMat4, shape: ColliderShape, next_tail: DVec3, joint_radius: f64) -> (DVec3, f64) {
+    let capsule_delta = |offset: omuzaki_core::glam::Vec3, tail: omuzaki_core::glam::Vec3| {
+        let transformed_offset = world.transform_point3(offset.as_dvec3());
+        let transformed_tail = world.transform_point3(tail.as_dvec3());
+        let offset_to_tail = transformed_tail - transformed_offset;
+        let mut delta = next_tail - transformed_offset;
+        if offset_to_tail.length_squared() == 0.0 {
+            // The ends coincide: a ball. The spec's division by the span would be 0/0.
+            return delta;
+        }
+        let dot = offset_to_tail.dot(delta);
+        if dot < 0.0 {
+            // At the head side of the capsule: nothing to do.
+        } else if dot > offset_to_tail.length_squared() {
+            delta -= offset_to_tail;
+        } else {
+            delta -= offset_to_tail * (dot / offset_to_tail.length_squared());
+        }
+        delta
+    };
+    let sphere_delta = |offset: omuzaki_core::glam::Vec3| next_tail - world.transform_point3(offset.as_dvec3());
+    let outside =
+        |delta: DVec3, radius: f32| (delta.normalize_or_zero(), delta.length() - f64::from(radius) - joint_radius);
+    // Inside: the joint must stay within the radius, and is pushed back toward the axis.
+    let inside =
+        |delta: DVec3, radius: f32| (-delta.normalize_or_zero(), f64::from(radius) - delta.length() - joint_radius);
     match shape {
-        ColliderShape::Sphere { offset, radius } => {
-            let transformed_offset = world.transform_point3(offset.as_dvec3());
-            let delta = next_tail - transformed_offset;
-            (delta.normalize_or_zero(), delta.length() - f64::from(radius) - joint_radius)
+        ColliderShape::Sphere { offset, radius } => outside(sphere_delta(offset), radius),
+        ColliderShape::Capsule { offset, radius, tail } => outside(capsule_delta(offset, tail), radius),
+        ColliderShape::SphereInside { offset, radius } => inside(sphere_delta(offset), radius),
+        ColliderShape::CapsuleInside { offset, radius, tail } => inside(capsule_delta(offset, tail), radius),
+        ColliderShape::Plane { offset, normal } => {
+            let normal = world.transform_vector3(normal.as_dvec3()).normalize();
+            let delta = next_tail - world.transform_point3(offset.as_dvec3());
+            (normal, delta.dot(normal) - joint_radius)
         }
-        ColliderShape::Capsule { offset, radius, tail } => {
-            let transformed_offset = world.transform_point3(offset.as_dvec3());
-            let transformed_tail = world.transform_point3(tail.as_dvec3());
-            let offset_to_tail = transformed_tail - transformed_offset;
-            let mut delta = next_tail - transformed_offset;
-            let dot = offset_to_tail.dot(delta);
-            if dot < 0.0 {
-                // At the head side of the capsule: nothing to do.
-            } else if dot > offset_to_tail.length_squared() {
-                delta -= offset_to_tail;
-            } else {
-                delta -= offset_to_tail * (dot / offset_to_tail.length_squared());
-            }
-            (delta.normalize_or_zero(), delta.length() - f64::from(radius) - joint_radius)
-        }
+        _ => (DVec3::ZERO, 0.0),
     }
+}
+
+/// `VRMC_springBone_limit`'s appendix: `next_tail` with its direction from `world_position` held inside the joint's
+/// limit and the joint's bone length kept. The `Rotation` listing, then the limit's listing, written as printed.
+#[allow(clippy::float_cmp)] // the listings test for exactly -Y, +-X and a zero length, as printed
+fn limit_tail(joint: &Joint, parent_world_rotation: DQuat, world_position: DVec3, next_tail: DVec3) -> DVec3 {
+    let Some(limit) = joint.limit else { return next_tail };
+    let rotation = match limit {
+        JointLimit::Cone { rotation, .. }
+        | JointLimit::Hinge { rotation, .. }
+        | JointLimit::Spherical { rotation, .. } => rotation.as_dquat(),
+        _ => return next_tail,
+    };
+    let axis = joint.bone_axis;
+    let axis_rotation = if axis.y == -1.0 {
+        DQuat::from_xyzw(1.0, 0.0, 0.0, 0.0)
+    } else {
+        DQuat::from_xyzw(axis.z, 0.0, -axis.x, axis.y + 1.0).normalize()
+    };
+    let frame = parent_world_rotation * joint.initial_local_rotation * axis_rotation * rotation;
+    let tail_dir = limit_direction(&limit, frame.inverse() * (next_tail - world_position).normalize());
+    world_position + (frame * tail_dir) * joint.bone_length
+}
+
+/// The limit listings of the appendix as printed: the unit `tail_dir` in the limit's own space, held inside `limit`.
+#[allow(clippy::float_cmp)] // the listings test for exactly -Y, +-X and a zero length, as printed
+pub fn limit_direction(limit: &JointLimit, mut tail_dir: DVec3) -> DVec3 {
+    use std::f64::consts::{FRAC_PI_2, PI};
+    match *limit {
+        JointLimit::Cone { angle, .. } => {
+            let limit_angle = f64::from(angle).clamp(0.0, PI);
+            let cos_limit = limit_angle.cos();
+            if tail_dir.y < cos_limit {
+                let horizontal_sq = 1.0 - tail_dir.y * tail_dir.y;
+                if horizontal_sq == 0.0 {
+                    tail_dir.x = 0.0;
+                    tail_dir.z = (1.0 - cos_limit * cos_limit).sqrt();
+                } else {
+                    let scale = ((1.0 - cos_limit * cos_limit) / horizontal_sq).sqrt();
+                    tail_dir.x *= scale;
+                    tail_dir.z *= scale;
+                }
+                tail_dir.y = cos_limit;
+            }
+        }
+        JointLimit::Hinge { angle, .. } => {
+            let limit_angle = f64::from(angle).clamp(0.0, PI);
+            let projected_sq = tail_dir.y * tail_dir.y + tail_dir.z * tail_dir.z;
+            if projected_sq == 0.0 {
+                tail_dir = DVec3::new(0.0, 1.0, 0.0);
+            } else {
+                tail_dir = DVec3::new(0.0, tail_dir.y, tail_dir.z) / projected_sq.sqrt();
+                let cos_limit = limit_angle.cos();
+                if tail_dir.y < cos_limit {
+                    let sin_limit = (1.0 - cos_limit * cos_limit).sqrt();
+                    let z_sign = if tail_dir.z < 0.0 { -1.0 } else { 1.0 };
+                    tail_dir.y = cos_limit;
+                    tail_dir.z = sin_limit * z_sign;
+                }
+            }
+        }
+        JointLimit::Spherical { pitch, yaw, .. } => {
+            let limit_pitch = f64::from(pitch).clamp(0.0, PI);
+            let limit_yaw = f64::from(yaw).clamp(0.0, FRAC_PI_2);
+            let mut pitch = if tail_dir.y == -1.0 {
+                PI
+            } else if tail_dir.x.abs() == 1.0 {
+                0.0
+            } else {
+                tail_dir.z.atan2(tail_dir.y)
+            };
+            let mut yaw = tail_dir.x.clamp(-1.0, 1.0).asin();
+            if pitch.abs() > limit_pitch {
+                pitch = limit_pitch * pitch.signum();
+            }
+            if yaw.abs() > limit_yaw {
+                yaw = limit_yaw * yaw.signum();
+            }
+            tail_dir = DVec3::new(yaw.sin(), yaw.cos() * pitch.cos(), yaw.cos() * pitch.sin());
+        }
+        _ => {}
+    }
+    tail_dir
 }

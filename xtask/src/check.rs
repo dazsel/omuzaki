@@ -19,8 +19,10 @@ use crate::lint_mods;
 use crate::lint_registers;
 use crate::lint_seed;
 use crate::lint_ui_writes;
+use crate::models;
 use crate::process::{cargo, describe};
 use crate::report::Report;
+use crate::scans;
 use crate::workspace::Workspace;
 
 /// Options of `cargo xtask check`.
@@ -82,6 +84,8 @@ enum Action {
     LintLicences,
     /// The UI-writes lint (QG-11), run in this process.
     LintUiWrites,
+    /// The shipped-model licence gate (ML-01, ADR 0017), run in this process.
+    Models,
     /// The crate-table lint (ADR 0053), run in this process.
     LintCrateTable,
     /// The generated-modules lint (ADR 0054), run in this process.
@@ -90,6 +94,8 @@ enum Action {
     LintDocsIndex,
     /// The seed lint (library D15, D16), run in this process when a file under `crates/*/library/` changed.
     LintSeed,
+    /// The scan-test list lint (`scans.rs`), run in this process.
+    LintScans,
 }
 
 impl Step {
@@ -110,10 +116,12 @@ impl Step {
             Action::LintRegisters => "lint-registers".to_owned(),
             Action::LintLicences => "lint-licences".to_owned(),
             Action::LintUiWrites => "lint-ui-writes".to_owned(),
+            Action::Models => "models".to_owned(),
             Action::LintCrateTable => "lint-crate-table".to_owned(),
             Action::LintMods => "lint-mods".to_owned(),
             Action::LintDocsIndex => "lint-docs-index".to_owned(),
             Action::LintSeed => "lint-seed".to_owned(),
+            Action::LintScans => "lint-scans".to_owned(),
         }
     }
 }
@@ -144,10 +152,12 @@ fn plan(scope: &Scope) -> Vec<Step> {
     steps.extend(selected.link_gates.iter().map(|package| {
         Step::cargo("link-gate", &["test"], &["-p".to_owned(), package.clone()], &["--test", LINK_GATE_TEST])
     }));
+    steps.extend(scan_steps(scope));
     steps.extend([
         Step::cargo("deny", &["deny", "--log-level", "error", "check", "licenses", "bans", "sources"], &[], &[]),
         Step { name: "lint-deps", action: Action::LintDeps },
         Step { name: "lint-links", action: Action::LintLinks },
+        Step { name: "models", action: Action::Models },
         Step { name: "lint-registers", action: Action::LintRegisters },
         Step { name: "lint-licences", action: Action::LintLicences },
         Step { name: "lint-ui-writes", action: Action::LintUiWrites },
@@ -155,8 +165,38 @@ fn plan(scope: &Scope) -> Vec<Step> {
         Step { name: "lint-mods", action: Action::LintMods },
         Step { name: "lint-docs-index", action: Action::LintDocsIndex },
         Step { name: "lint-seed", action: Action::LintSeed },
+        Step { name: "lint-scans", action: Action::LintScans },
     ]);
     steps
+}
+
+/// One step per workspace-scan test target that no other step already runs: always, whatever the scope. A crate
+/// tested in full (or a whole-workspace scope) already runs its targets; a link-only crate runs its link gate.
+fn scan_steps(scope: &Scope) -> Vec<Step> {
+    let covered = |scan: &scans::Scan| match scope {
+        Scope::Workspace { .. } => true,
+        Scope::Crates { full, link_only } => {
+            full.contains(scan.krate) || (link_only.contains(scan.krate) && scan.test == LINK_GATE_TEST)
+        }
+    };
+    scans::SCANS
+        .iter()
+        .filter(|scan| !covered(scan))
+        .map(|scan| Step { name: "scan", action: Action::Cargo(scan.cargo_args()) })
+        .collect()
+}
+
+/// The steps for `scope`: [`plan`], or, when no crate is affected, only the repo-wide gates: models (a register-only
+/// change, ML-01, can break it without touching any crate) and the workspace-scan tests.
+fn steps_for(scope: &Scope) -> Vec<Step> {
+    if scope.is_empty() {
+        let mut steps = vec![Step { name: "models", action: Action::Models }];
+        steps.extend(scan_steps(scope));
+        steps.push(Step { name: "lint-scans", action: Action::LintScans });
+        steps
+    } else {
+        plan(scope)
+    }
 }
 
 /// The cargo package selectors each step of a [`Scope`] uses.
@@ -275,11 +315,7 @@ pub fn run(workspace: &Workspace, args: &CheckArgs) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
     println!("{}", banner(&scope, workspace, &args.base));
-    if scope.is_empty() {
-        println!("check: nothing to run");
-        return Ok(ExitCode::SUCCESS);
-    }
-    let results = execute(&plan(&scope), |step| run_step(workspace, step, &args.base));
+    let results = execute(&steps_for(&scope), |step| run_step(workspace, step, &args.base));
     println!("{}", summary(&results));
     Ok(if results.iter().all(|result| result.passed) { ExitCode::SUCCESS } else { ExitCode::FAILURE })
 }
@@ -302,6 +338,7 @@ fn run_step(workspace: &Workspace, step: &Step, base: &str) -> bool {
             eprintln!("lint-ui-writes: {error}");
             false
         }),
+        Action::Models => models::report(workspace),
         Action::LintCrateTable => crate_table::lint(workspace).map_or_else(
             |error| {
                 eprintln!("lint-crate-table: {error}");
@@ -324,6 +361,7 @@ fn run_step(workspace: &Workspace, step: &Step, base: &str) -> bool {
             |code| code == ExitCode::SUCCESS,
         ),
         Action::LintSeed => lint_seed::check(workspace, base),
+        Action::LintScans => scans::report(workspace),
         Action::Cargo(args) => {
             let mut command = Command::new(cargo());
             command.args(args).current_dir(&workspace.root);
@@ -360,10 +398,12 @@ mod tests {
             Action::LintRegisters => "<lint-registers>".to_owned(),
             Action::LintLicences => "<lint-licences>".to_owned(),
             Action::LintUiWrites => "<lint-ui-writes>".to_owned(),
+            Action::Models => "<models>".to_owned(),
             Action::LintCrateTable => "<lint-crate-table>".to_owned(),
             Action::LintMods => "<lint-mods>".to_owned(),
             Action::LintDocsIndex => "<lint-docs-index>".to_owned(),
             Action::LintSeed => "<lint-seed>".to_owned(),
+            Action::LintScans => "<lint-scans>".to_owned(),
         }
     }
 
@@ -381,9 +421,13 @@ mod tests {
                         .to_owned(),
                 ),
                 ("test", "test -p omuzaki-cli -p omuzaki-render --features omuzaki-cli/test-fixtures".to_owned()),
+                ("scan", "test -p omuzaki-ops-api --test fs_fence".to_owned()),
+                ("scan", "test -p omuzaki-stage --test registrations".to_owned()),
+                ("scan", "test -p omuzaki-test --test eval_lint".to_owned()),
                 ("deny", "deny --log-level error check licenses bans sources".to_owned()),
                 ("lint-deps", "<lint-deps>".to_owned()),
                 ("lint-links", "<lint-links>".to_owned()),
+                ("models", "<models>".to_owned()),
                 ("lint-registers", "<lint-registers>".to_owned()),
                 ("lint-licences", "<lint-licences>".to_owned()),
                 ("lint-ui-writes", "<lint-ui-writes>".to_owned()),
@@ -391,6 +435,7 @@ mod tests {
                 ("lint-mods", "<lint-mods>".to_owned()),
                 ("lint-docs-index", "<lint-docs-index>".to_owned()),
                 ("lint-seed", "<lint-seed>".to_owned()),
+                ("lint-scans", "<lint-scans>".to_owned()),
             ]
         );
     }
@@ -408,7 +453,16 @@ mod tests {
                 ("link-gate", "test -p omuzaki-cli --test registrations".to_owned()),
             ]
         );
-        assert_eq!(got.len(), 14, "the same trailing steps as ever: {got:?}");
+        // The link-only crate's gate covers its own scan; the other three scan targets still run.
+        assert_eq!(got.len(), 19, "the same trailing steps as ever, plus three scans and lint-scans: {got:?}");
+    }
+
+    #[test]
+    fn an_empty_scope_still_runs_the_models_gate() {
+        let names: Vec<&str> = steps_for(&crates(&[])).iter().map(|step| step.name).collect();
+        // Nothing affected still runs every scan target: they read crates the change never names.
+        assert_eq!(names, ["models", "scan", "scan", "scan", "scan", "lint-scans"]);
+        assert!(steps_for(&crates(&["omuzaki-core"])).len() > 1);
     }
 
     #[test]
@@ -440,16 +494,22 @@ mod tests {
                 "fmt",
                 "clippy",
                 "test",
+                "scan",
+                "scan",
+                "scan",
+                "scan",
                 "deny",
                 "lint-deps",
                 "lint-links",
+                "models",
                 "lint-registers",
                 "lint-licences",
                 "lint-ui-writes",
                 "lint-crate-table",
                 "lint-mods",
                 "lint-docs-index",
-                "lint-seed"
+                "lint-seed",
+                "lint-scans"
             ]
         );
         assert_eq!(results.iter().filter(|result| !result.passed).count(), 1);

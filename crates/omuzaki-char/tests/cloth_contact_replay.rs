@@ -147,7 +147,7 @@ fn gusty_against_a_scaled_collider() -> u64 {
         Vec3::new(0.08, -0.12, 0.0),
     );
     let sphere = ColliderShape::Sphere { offset: Vec3::ZERO, radius: 0.06 };
-    replay(&sheet, 1, 300, Some(wind), |_| vec![Shape::from_collider(&sphere, &to_solver)])
+    replay(&sheet, 1, 300, Some(wind), |_| vec![Shape::from_collider(&sphere, &to_solver).unwrap()])
 }
 
 /// The hashes recorded from the portable (`libm`) maths, once, on Linux (#1585). The rework's original hashes came

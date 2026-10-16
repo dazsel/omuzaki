@@ -11,10 +11,10 @@ use std::fmt;
 use omuzaki_core::glam::{Mat4, UVec2, Vec2, Vec3};
 use omuzaki_core::id::{Slug, SlugError};
 use omuzaki_render_api::{
-    AlphaEncoding, AlphaMode, Background, Camera, Colour, EnvironmentDesc, EnvironmentUse, ExtraAttribute, Fog,
+    AlphaEncoding, AlphaMode, Background, Camera, Colour, EnvironmentDesc, EnvironmentUse, ExtraAttribute, Filter, Fog,
     FrameReport, Image, Instance, JointRange, Light, Mapping, Material, MaterialId, MeshData, MeshId, MeshOptions,
     MeshUsage, MorphRange, MorphSet, Outline, Overlay, PaintTarget, ParamValue, PixelRect, ProgramParams, Projection,
-    Quality, RenderError, Renderer, RendererExt, Rim, Scene, Shading, TargetDesc, TextureDesc, Tonemap, Toon,
+    Quality, RenderError, Renderer, RendererExt, Rim, Sampler, Scene, Shading, TargetDesc, TextureDesc, Tonemap, Toon,
     UvTransform, limits,
 };
 
@@ -84,6 +84,7 @@ pub const CHECKS: &[(&str, Check)] = &[
     ("an HDRI is equirectangular and rotates", an_hdri_is_equirectangular_and_rotates),
     ("the toon ramp quantises the sky's light", the_toon_ramp_quantises_the_skys_light),
     ("environments are resources", environments_are_resources),
+    ("a UV transform picks the atlas cell", uv_transform_atlas),
 ];
 
 /// The checks for dynamic meshes: a renderer whose [`Capabilities::dynamic_meshes`] is true must pass them.
@@ -102,23 +103,6 @@ pub const MORPH_CHECKS: &[(&str, Check)] = &[
     ("morphing happens before skinning", morphing_happens_before_skinning),
     ("morph input is validated", morph_input_is_validated),
 ];
-
-/// The checks for [`Material::uv_transform`], kept apart from [`CHECKS`] until the GPU renderer samples through it;
-/// the mock passes them today.
-pub const UV_TRANSFORM_CHECKS: &[(&str, Check)] = &[("a UV transform picks the atlas cell", uv_transform_atlas)];
-
-/// Runs every check of [`UV_TRANSFORM_CHECKS`] on `renderer`, which must be fresh and is left as it was found.
-///
-/// # Errors
-/// The first [`Failure`], prefixed with the check's name.
-pub fn run_uv_transform(renderer: &mut dyn Renderer) -> Outcome {
-    let before = counts(renderer);
-    for (name, check) in UV_TRANSFORM_CHECKS {
-        check(renderer).map_err(|f| Failure(format!("{name}: {f}")))?;
-    }
-    ensure!(before == counts(renderer), "resources leaked");
-    Ok(())
-}
 
 /// Runs [`DYNAMIC_CHECKS`] if `renderer` claims `dynamic_meshes` and [`MORPH_CHECKS`] if it claims `morph_targets`;
 /// a renderer that claims neither passes trivially. It must be fresh and is left as it was found.
@@ -1253,7 +1237,12 @@ fn morph_input_is_validated(r: &mut dyn Renderer) -> Outcome {
 /// offset (0 or 0.5) picks which; the base texture and a `Mapping::Uv` overlay both go through the transform.
 fn uv_transform_atlas(r: &mut dyn Renderer) -> Outcome {
     let tol = tolerance(r).max(1);
-    let atlas = r.create_texture(&TextureDesc::colour(UVec2::new(2, 1)), Some(&[255, 0, 0, 255, 0, 0, 255, 255]))?;
+    // Hard texels: the mock reads the nearest texel whatever the filter, so the check asks for nearest sampling too.
+    let desc = TextureDesc {
+        sampler: Sampler { filter: Filter::Nearest, ..Sampler::default() },
+        ..TextureDesc::colour(UVec2::new(2, 1))
+    };
+    let atlas = r.create_texture(&desc, Some(&[255, 0, 0, 255, 0, 0, 255, 255]))?;
     let quad = r.create_mesh(&shapes::quad(Vec2::splat(0.5)))?;
     let (red, blue) = (Colour::rgb(255, 0, 0), Colour::rgb(0, 0, 255));
     let transform = |offset: f32| UvTransform { scale: Vec2::new(0.5, 1.0), offset: Vec2::new(offset, 0.0) };

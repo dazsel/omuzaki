@@ -1,0 +1,41 @@
+# Render cases for `tools/ci/evidence.py`: CI renders each at the PR's base and at the PR, for pull requests labelled
+# `visual` (.github/workflows/visual-evidence.yml). The format is documented at the top of tools/ci/evidence.py.
+#
+# The brows are painted by omuzaki-face and rasterised by its CPU rasteriser, so the case renders through the same
+# painter the app uses, with no GPU and no window.
+
+[[case]]
+name = "brows"
+description = "The brows over the skin: neutral, raised and lowered (Base layer), and the Brows layer alone that hair composites over the bangs."
+env = { OMUZAKI_FACE_EVIDENCE_DIR = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-face", "--test", "evidence", "--", "--exact", "render_the_brows_when_asked"] },
+]
+images = ["brows-neutral.png", "brows-raised.png", "brows-lowered.png", "brows-through-bangs.png"]
+
+[[case]]
+name = "mouth-switch"
+description = "The mouth at openings 0.04, 0.06, 0.08, 0.12 and 0.22: the closed line thins towards the switch at 0.06, then the rim eases from the closed line to the open mouth's over 0.06 to 0.2."
+env = { OMUZAKI_FACE_EVIDENCE_DIR = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-face", "--test", "evidence", "--", "--exact", "render_the_mouth_switch_when_asked"] },
+]
+images = ["mouth-switch-0.04.png", "mouth-switch-0.06.png", "mouth-switch-0.08.png", "mouth-switch-0.12.png", "mouth-switch-0.22.png"]
+
+[[case]]
+name = "mouth-cases"
+description = "Mouth cases without pictures before: a closed smile with the fang, a kiss, the clenched teeth's split line either side of two teeth_lower thresholds (0.01, where the lower row and the split line first show, and 0.5, where the upper band deepens), and a narrow mouth (wide 0.3) with the fangs at the corners (position 1.0)."
+env = { OMUZAKI_FACE_EVIDENCE_DIR = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-face", "--test", "evidence", "--", "--exact", "render_the_mouth_cases_when_asked"] },
+]
+images = ["mouth-closed-smile-fang.png", "mouth-kiss.png", "mouth-split-line-0.0100.png", "mouth-split-line-0.0101.png", "mouth-split-line-at-threshold.png", "mouth-split-line-above-threshold.png", "mouth-narrow-fangs.png"]
+
+[[case]]
+name = "mouth-switch-smiling"
+description = "The switch at openings 0.0599 and 0.0601 with both smiles at 1: the closed line and the open lens either side of it, where a smiling mouth's corners lift."
+env = { OMUZAKI_FACE_EVIDENCE_DIR = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-face", "--test", "evidence", "--", "--exact", "render_the_smiling_mouth_switch_when_asked"] },
+]
+images = ["mouth-switch-smiling-0.0599.png", "mouth-switch-smiling-0.0601.png"]

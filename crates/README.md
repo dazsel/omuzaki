@@ -68,8 +68,6 @@ A crate whose folder uses `omuzaki_embed::modules` (ADR 0054) lists that folder 
 
 **Planned crates** (not in the workspace yet):
 
-- `omuzaki-llm-api` (API): not in the workspace yet (design): the LLM seam (CN-09, AG-01, AP-03): `LlmClient`, `TurnRequest` and the provider-neutral `ContentBlock`s, the pull-based `TurnStream` of `LlmEvent`s, `Usage` with `cost` in integer micro-dollars from a dated `PriceTable`, the offline pre-request `Ledger` bound, `LlmError`, `Cancel`, `register_llm_provider!`; design in `docs/design/llm-api.md`, ADR 0032
-- `omuzaki-llm-mock` (Mock): not in the workspace yet (design): `FakeLlm` (scripted turns, chunking, usage and error injection on `FakeClock`; deterministic), CN-01's mock connector for the LLM capability, and the `conformance` suite every provider passes
 - `omuzaki-llm` (Implementation): not in the workspace yet (design): the Anthropic Messages and OpenAI-compatible chat providers (HTTP over the workspace `reqwest` and rustls stack shared with `omuzaki-http`, SSE, retries before the first event, cancellation within 50 ms), the price data, model listing and probing, and the MCP tool and result mapping; tested against a loopback fake server, no network in CI
 - `omuzaki-agent-api` (API): not in the workspace yet: the in-app assistant's panel contract (`Assistant`, `UserMessage`, `ContextChip`, `AssistantEvent`, `HostError`) and `RationaleSource` for "Explain this"; design in `docs/design/agent-runtime.md`, ADR 0040
 - `omuzaki-agent-mock` (Mock): not in the workspace yet: `ScriptedAssistant`, which plays an event script on `FakeClock` for panel tests and the gallery
@@ -104,13 +102,14 @@ App's `Services`.
     cargo xtask check --all            # the whole workspace
     cargo xtask lint-deps              # only the layering rule above
     cargo xtask lint-links             # only the link() wiring (ADR 0015)
+    cargo xtask models                 # only the shipped-model licence gate (ML-01, ADR 0017)
     cargo xtask lint-crate-table       # only the crate metadata (ADR 0053)
 
 `check` maps the files that differ from `--base` (default `origin/main`, via the merge-base; uncommitted and untracked
 files count) to crates, adds every crate that depends on them (dev-dependencies too), then runs in order: `fmt --check`,
-`clippy -D warnings`, `test`, `cargo deny check licenses bans sources`, `lint-deps`, `lint-links`. A change to `Cargo.toml`,
+`clippy -D warnings`, `test`, `cargo deny check licenses bans sources`, `lint-deps`, `lint-links`, `models` (every shipped model has an allowed licence file). A change to `Cargo.toml`,
 `Cargo.lock`, `deny.toml`, `clippy.toml`, `rustfmt.toml`, `rust-toolchain.toml` or `.cargo/` checks everything; a change
-outside every crate (docs, tools) runs nothing. It always runs every step and ends with a one-screen summary; the exit
+outside every crate (docs, tools) runs only the `models` gate, since a licence-file change can break it. It always runs every step and ends with a one-screen summary; the exit
 code is non-zero if any step failed.
 
 **Link gate only.** An App such as `omuzaki-cli` links every op crate only to carry their registrations (ADR 0015), so a

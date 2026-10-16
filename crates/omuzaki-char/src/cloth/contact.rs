@@ -3,7 +3,7 @@
 //!
 //! # Contacts
 //!
-//! Colliders are the rig's [`ColliderShape`]s (VRM spheres and capsules) placed in the solver's space by the caller
+//! Colliders are the rig's [`ColliderShape`]s (VRM spheres and capsules; the inside shapes and planes are for springs and are skipped) placed in the solver's space by the caller
 //! ([`Shape::from_collider`]). Each frame the caller gives every collider's pose at the frame's end; the hook moves it
 //! linearly from its pose at the frame's start, so a collider that follows the pose is where the pins are in every
 //! sub-step. A sphere is a capsule with both ends at its centre, so one code path serves both.
@@ -103,15 +103,21 @@ impl Shape {
 
     /// A rig collider placed by `to_solver`, its bone's space in the solver's (see `omuzaki_anim_api::Collider`). The
     /// radius scales by the transform's mean scale.
-    pub fn from_collider(shape: &ColliderShape, to_solver: &Affine3A) -> Self {
+    ///
+    /// Cloth contacts are spheres and capsules only: the inside shapes and planes of the spring colliders (and any
+    /// shape added later) return `None` and are skipped.
+    pub fn from_collider(shape: &ColliderShape, to_solver: &Affine3A) -> Option<Self> {
         let scale = libm::cbrtf(to_solver.matrix3.determinant().abs());
         match *shape {
             ColliderShape::Sphere { offset, radius } => {
-                Self::sphere(to_solver.transform_point3(offset), radius * scale)
+                Some(Self::sphere(to_solver.transform_point3(offset), radius * scale))
             }
-            ColliderShape::Capsule { offset, radius, tail } => {
-                Self::capsule(to_solver.transform_point3(offset), to_solver.transform_point3(tail), radius * scale)
-            }
+            ColliderShape::Capsule { offset, radius, tail } => Some(Self::capsule(
+                to_solver.transform_point3(offset),
+                to_solver.transform_point3(tail),
+                radius * scale,
+            )),
+            _ => None,
         }
     }
 

@@ -1,10 +1,14 @@
 # The gate for pull requests and for the merge queue. One required check, `gate`, aggregates every job below, so jobs
 # can be added, split or renamed without touching the branch ruleset.
 #
-#   pull request   fmt, clippy -D warnings on the changed crates and their direct dependents, tests of the changed
-#                  crates only, the link gates, the licence/dependency lints.
-#   merge queue    the same on EVERYTHING affected (dependents included), plus the Windows cross-build. The queue
-#                  builds the exact commit that will land on main, so this is the run that protects main.
+#   pull request   fmt, clippy -D warnings on the changed crates and their direct dependents, the link gates, the
+#                  licence/dependency lints, and the self-gate check. NO tests: the session that wrote the change ran
+#                  `cargo xtask check --affected` on its own machine and attests it with a `Self-gate: pass at <sha7>`
+#                  comment line; `self-gate` fails unless the latest trusted line names the head (tools/ci/self-gate.py).
+#                  A push that only merges main into the branch runs nothing: the queue tests against main anyway.
+#   merge queue    fmt, clippy and the lints on EVERYTHING affected (dependents included), the full test matrix, plus
+#                  the Windows cross-build. The queue builds the exact commit that will land on main, so this is the
+#                  authoritative run, and it is exactly as strict as before.
 #
 # Scope comes from `cargo xtask check --format json` (xtask/src/affected.rs). The full Windows test suite runs in
 # nightly.yml, not here. Dependency caches are written by cache-warm.yml on main; these jobs only restore them.
@@ -45,6 +49,8 @@ jobs:
     # Draft pull requests get no CI (it would queue behind real work); `ready_for_review` starts it.
     if: github.event.pull_request.draft != true
     outputs:
+      skip: ${{ steps.heads.outputs.skip }}
+      owned: ${{ steps.heads.outputs.owned }}
       mode: ${{ steps.outputs.outputs.mode }}
       empty: ${{ steps.outputs.outputs.empty }}
       has_tests: ${{ steps.outputs.outputs.has_tests }}
@@ -59,11 +65,23 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0   # the affected-crate diff needs the base branch's history
+      # The heads whose self-gate attestation still counts, and whether this push only merged main into the branch
+      # (then nothing of the PR's own changed and the rest of the run is skipped). Git and the standard library only.
+      - name: Owned heads
+        id: heads
+        if: github.event_name == 'pull_request'
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BEFORE: ${{ github.event.action == 'synchronize' && github.event.before || '' }}
+          MAIN: origin/${{ github.base_ref }}
+        run: python3 -I tools/ci/self-gate.py heads "$HEAD_SHA" "$MAIN" $BEFORE | tee -a "$GITHUB_OUTPUT"
       - uses: ./.github/actions/setup-linux
+        if: steps.heads.outputs.skip != 'true'
         with:
           cache-key: xtask
       - name: Affected crates
         id: outputs
+        if: steps.heads.outputs.skip != 'true'
         env:
           EVENT: ${{ github.event_name }}
           # A PR is measured against its base branch; a merge-queue run against the commit the queue built on, so the
@@ -77,6 +95,7 @@ jobs:
   lint:
     name: lint
     needs: plan
+    if: needs.plan.outputs.skip != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -114,6 +133,7 @@ jobs:
         run: |
           cargo xtask lint-deps
           cargo xtask lint-links
+          cargo xtask models
           cargo xtask lint-registers
           cargo xtask lint-ui-writes
           cargo xtask lint-crate-table
@@ -141,6 +161,7 @@ jobs:
   test:
     name: test (${{ matrix.name }})
     needs: plan
+    # Merge queue only (tools/ci/plan-outputs.py): a pull request's tests are the session's attested self-gate.
     if: needs.plan.outputs.has_tests == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -200,7 +221,7 @@ jobs:
     name: link gate
     needs: plan
     # Also whenever the CLI is in scope, full or link-only, for its product configuration below.
-    if: needs.plan.outputs.has_link_gates == 'true' || needs.plan.outputs.cli_in_scope == 'true'
+    if: needs.plan.outputs.skip != 'true' && (needs.plan.outputs.has_link_gates == 'true' || needs.plan.outputs.cli_in_scope == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -243,12 +264,38 @@ jobs:
           packages=(); for name in $CROSS_CRATES; do packages+=(-p "$name"); done
           cargo build --locked --target x86_64-pc-windows-gnu "${packages[@]}"
 
+  # Pull requests only: the tests ran on the session's own machine, so check its word. Reads comments with the job's
+  # own read-only token and runs no pull request code beyond this one script; it runs even on a push that only merged
+  # main, because the attestation of the earlier head still has to hold.
+  self-gate:
+    name: self-gate
+    needs: plan
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: tools/ci
+          persist-credentials: false
+      - name: Latest trusted Self-gate line names the head
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ALLOWED: ${{ vars.PR_ALLOWED_AUTHORS }}
+          HEADS: ${{ needs.plan.outputs.owned }}
+          PR: ${{ github.event.pull_request.number }}
+        run: python3 -I tools/ci/self-gate.py check --pr "$PR" --heads "$HEADS" --allowed "$ALLOWED"
+
   # THE required check. It passes when every job it waits for passed or was legitimately skipped (a draft, a docs-only
   # change, a job that only runs in the queue), and fails if any failed or was cancelled. `if: always()` makes it run
   # even then; without it a failed job would leave this one skipped, and a skipped required check counts as passing.
   gate:
     name: gate
-    needs: [plan, lint, test, link-gate, win-cross]
+    needs: [plan, lint, test, link-gate, win-cross, self-gate]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -257,16 +304,23 @@ jobs:
       - name: Aggregate
         env:
           NEEDS: ${{ toJSON(needs) }}
+          EVENT: ${{ github.event_name }}
         run: |
           python3 -I - <<'PY'
           import json, os, sys
-          results = {name: job["result"] for name, job in json.loads(os.environ["NEEDS"]).items()}
+          needs = json.loads(os.environ["NEEDS"])
+          results = {name: job["result"] for name, job in needs.items()}
           for name, result in results.items():
               print(f"{name}: {result}")
           bad = [name for name, result in results.items() if result not in ("success", "skipped")]
-          # lint always runs once plan succeeded; skipped there means something upstream went wrong.
-          if results.get("plan") == "success" and results.get("lint") != "success":
+          # A push that only merged main skips lint on purpose (plan's `skip`); otherwise lint always runs once plan
+          # succeeded, and skipped there means something upstream went wrong.
+          merge_only = needs["plan"]["outputs"].get("skip") == "true"
+          if results.get("plan") == "success" and results.get("lint") != "success" and not merge_only:
               bad.append("lint")
+          # Pull requests are held to the self-gate line; only a pull request skips it (the queue has no such job).
+          if results.get("plan") == "success" and os.environ["EVENT"] == "pull_request" and results.get("self-gate") != "success":
+              bad.append("self-gate")
           if bad:
               print("gate failed: " + ", ".join(sorted(set(bad))))
               sys.exit(1)

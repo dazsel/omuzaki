@@ -1,7 +1,7 @@
 section = "rust"
 item = "wgpu"
 kind = "crate"
-used_for = "renderer"
+used_for = "renderer; the transparent window in `spikes/mascot-window`"
 status = "yes"
 audit = "B1"
 crates = ["wgpu"]
