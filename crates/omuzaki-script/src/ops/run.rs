@@ -214,6 +214,7 @@ fn replay(job: &JobCtx<'_>, steps: &[RecordedCall], dry_run: bool, seconds: u32)
     let clock = SystemClock::new();
     let started = clock.now().0;
     let mut plans = Vec::new();
+    let mut plan_bytes = 0_usize;
     for (index, step) in steps.iter().enumerate() {
         job.checkpoint("macro", index as f32 / steps.len() as f32)?;
         let outcome = job.call(&step.op, step.args.clone(), mode).map_err(|error| step_failed(index, step, error))?;
@@ -223,7 +224,21 @@ fn replay(job: &JobCtx<'_>, steps: &[RecordedCall], dry_run: bool, seconds: u32)
             return Err(limit_error(LimitKind::Time, format!("the macro ran over its {seconds}-second limit")));
         }
         if dry_run {
-            plans.push(json!({ "op": step.op, "args": step.args, "plan": outcome.plan }));
+            let planned = json!({ "op": step.op, "args": step.args, "plan": outcome.plan });
+            // The plans are held to the result limit together, as a script's are: a dry run of thousands of steps
+            // would otherwise answer with all of them.
+            plan_bytes = plan_bytes.saturating_add(serde_json::to_vec(&planned).map_or(usize::MAX, |json| json.len()));
+            if plan_bytes > limits.result_bytes {
+                return Err(limit_error(
+                    LimitKind::Result,
+                    format!(
+                        "the plans of a dry run are larger than the {}-byte result limit after step {}",
+                        limits.result_bytes,
+                        index + 1
+                    ),
+                ));
+            }
+            plans.push(planned);
         }
     }
     Ok(json!({ "value": null, "output": [], "calls": steps.len(), "tx": null, "plans": plans }))

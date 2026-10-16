@@ -44,22 +44,47 @@ try_op(|| ops::face::set_profile(#{ character: \"c\" }));
 
 #[test]
 fn a_directive_that_would_be_ignored_is_refused_where_it_stands() {
-    for (source, line, place) in [
-        ("1;\n// omuzaki: grants = [\"read\"]\n2", 2, "after the first line"),
-        ("// a note\n  // omuzaki: grants = []\n", 2, "after the first line"),
-        ("\u{feff}// omuzaki: grants = [\"read\"]\n1;", 1, "after a byte order mark"),
+    for (source, position, place) in [
+        ("1;\n// omuzaki: grants = [\"read\"]\n2", (2, 1), "after the first line"),
+        ("// a note\n  // omuzaki: grants = []\n", (2, 3), "after the first line"),
+        ("\u{feff}// omuzaki: grants = [\"read\"]\n1;", (1, 2), "after a byte order mark"),
     ] {
         let report = host().check(source);
         // Ours comes first; Rhai may add its own complaint about the same line.
         let found = report.parse_errors.first().expect(source);
-        assert_eq!((found.line, found.column), (line, 1), "{source:?}: {report:?}");
+        assert_eq!((found.line, found.column), position, "{source:?}: {report:?}");
         assert!(found.message.contains(place), "{source:?}: {found:?}");
         let (runner, result) = run(source);
         assert_eq!(result.expect_err("refused").kind, ScriptErrorKind::Parse, "{source:?}");
         assert_eq!(runner.requests(), vec![], "{source:?}");
     }
+    // After code on the first line is not the first thing on it either.
+    let report = host().check("1; // omuzaki: grants = [\"read\"]");
+    assert!(report.parse_errors[0].message.contains("after code on the line"), "{report:?}");
     // On the first line, with no mark, it is still read.
     assert_eq!(host().check("// omuzaki: grants = [\"read\"]\n1").ceiling, Some(vec![Scope::Read]));
+}
+
+#[test]
+fn directive_text_that_is_not_a_comment_is_just_text() {
+    for source in [
+        "let s = `\n// omuzaki: grants = []\n`; s",
+        "let s = `a ${ `\n// omuzaki: nope\n` } b`; s",
+        "/*\n// omuzaki: grants = []\n*/ 1",
+        "/* /* nested */\n// omuzaki: grants = [] */ 1",
+        "let c = '\\'';\nlet s = \"it's\";\n1",
+        "let s = \"say \\\" // omuzaki: grants = []\"; s",
+    ] {
+        let report = host().check(source);
+        assert!(report.parse_errors.is_empty(), "{source:?}: {report:?}");
+        assert_eq!(report.ceiling, None, "{source:?}");
+    }
+    // A real comment after such a string is still found.
+    let report = host().check("let s = \"x\";\n// omuzaki: grants = []\n");
+    assert_eq!(report.parse_errors[0].line, 2, "{report:?}");
+    let (runner, result) = run("let s = `\n// omuzaki: grants = [\\\"read\\\"]\n`; s.len()");
+    assert!(result.is_ok(), "text in a string narrows nothing and refuses nothing");
+    assert_eq!(runner.requests(), vec![]);
 }
 
 #[test]

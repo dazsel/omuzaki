@@ -21,7 +21,7 @@ use crate::bindings::Bindings;
 use crate::budget;
 use crate::check::{Diagnostic, effective_grants};
 use crate::closures;
-use crate::convert::{Convert, from_json, map_breaks, oversized, oversized_in, size_kind, to_json};
+use crate::convert::{Convert, from_json, oversized, oversized_fields, size_kind, to_json};
 use crate::{Calls, Cancel, LimitKind, Limits, OutputKind, OutputLine, PlannedCall, ScriptError, ScriptErrorKind};
 
 /// What to run and as whom.
@@ -333,6 +333,7 @@ impl ScriptHost {
             engine.register_global_module(package.clone());
         }
         self.bindings.install(&mut engine);
+        crate::guards::install(&mut engine, &self.limits);
         let limits = &self.limits;
         engine
             .set_max_operations(limits.operations)
@@ -507,9 +508,8 @@ impl ScriptHost {
                 ..fail(ScriptErrorKind::Parse, &problem.message)
             });
         }
-        let params_break = map_breaks(&run.request.params, &self.limits)
-            .or_else(|| run.request.params.values().find_map(|value| oversized_in(value, &self.limits, 1)));
-        if let Some(kind) = params_break {
+        // Measured before `params` is converted: the whole map is held to the limits as one value.
+        if let Some(kind) = oversized_fields(&run.request.params, &self.limits) {
             return Err(fail(ScriptErrorKind::Limit(kind), "`params` holds a value larger than the script limits"));
         }
         let started = self.clock.now().0;
@@ -847,5 +847,85 @@ mod tests {
         let (dropped, result) = marked("let v = marker(); throw 1;");
         assert!(result.is_err());
         assert!(dropped.load(Ordering::SeqCst), "the scope is gone before `run` rolls back");
+    }
+}
+
+/// The peak heap a run reaches, read after the run on the same thread (`run_here`), against the budget.
+#[cfg(test)]
+mod peak {
+    use super::*;
+
+    /// Answers nothing: the scripts here call no op.
+    struct NoCalls;
+
+    impl Calls for NoCalls {
+        fn call(&self, _: Request) -> Result<omuzaki_ops_api::Outcome, OpError> {
+            Err(OpError::internal("no op is expected"))
+        }
+
+        fn get(&self, _: &DocPath) -> Result<Option<Value>, OpError> {
+            Ok(None)
+        }
+    }
+
+    struct Never;
+
+    impl Cancel for Never {
+        fn is_cancelled(&self) -> bool {
+            false
+        }
+    }
+
+    /// Runs `source` under the console limits and returns how it ended and the most heap it held, in bytes.
+    fn peak_of(source: &str) -> (Result<ScriptOutcome, ScriptError>, usize) {
+        let host = ScriptHost::new(&[], Limits::console());
+        let request = RunRequest {
+            name: "peak".into(),
+            source: source.into(),
+            actor: Actor::Person { name: "tester".into() },
+            grants: Grants::person(),
+            tx: None,
+            params: JsonMap::new(),
+            dry_run: false,
+        };
+        let result = host.run_here(request, &NoCalls, &Never);
+        (result, budget::peak_here())
+    }
+
+    const LONG_KEY: &str = r#"let k = "x"; while k.len < 500000 { k += k; }"#;
+
+    /// A native call that copies a value many times must be refused before it copies, not after: the budget is only
+    /// read between operations, so the peak is what shows whether a call got through.
+    #[test]
+    fn a_native_call_cannot_copy_past_the_budget_before_the_next_read() {
+        let limit = Limits::console().memory_bytes;
+        // `pad` clones a map whose keys no data limit counts: 100 copies of ten half-megabyte keys is 500 MiB.
+        let pad = format!("{LONG_KEY} let m = #{{}}; for i in 0..10 {{ m[k + i] = 1; }} let a = []; a.pad(100, m); 1");
+        // `replace` builds a result as long as the matches times the replacement, 20,000 x 20,000 here.
+        let replace = r#"let a = "a"; while a.len < 20000 { a += a; } let b = a.replace("a", a); b.len"#;
+        for (name, source) in [("pad", pad.as_str()), ("replace", replace)] {
+            let (result, peak) = peak_of(source);
+            let kind = result.expect_err(name).kind;
+            assert!(matches!(kind, ScriptErrorKind::Limit(_)), "{name}: {kind:?}");
+            assert!(peak < limit / 4, "{name}: held {} MiB before it was refused", peak >> 20);
+        }
+    }
+
+    /// Without any one call to blame, the run still ends at the budget, within one operation of it.
+    #[test]
+    fn map_keys_stop_within_one_operation_of_the_budget() {
+        let limit = Limits::console().memory_bytes;
+        let (result, peak) = peak_of(&format!("{LONG_KEY} let m = #{{}}; for i in 0..2000 {{ m[k + i] = 1; }}"));
+        assert_eq!(result.expect_err("stops").kind, ScriptErrorKind::Limit(LimitKind::Memory));
+        assert!(peak <= limit + (4 << 20), "held {} MiB with a {} MiB budget", peak >> 20, limit >> 20);
+    }
+
+    #[test]
+    fn padding_and_replacing_within_the_limits_still_work() {
+        let (result, _) = peak_of(r#"let a = [1]; a.pad(5, "x"); let s = "a-b-c"; s.replace("-", "+"); [a.len(), s]"#);
+        assert_eq!(result.expect("runs").value, serde_json::json!([5, "a+b+c"]));
+        let (result, _) =
+            peak_of(r#"let s = "abc"; s.replace('b', "XY"); s.replace("XY", 'z'); s.replace('a', 'q'); s"#);
+        assert_eq!(result.expect("runs").value, "qzc");
     }
 }

@@ -684,6 +684,25 @@ fn replay_stops_at_the_seconds_it_was_given() {
 }
 
 #[test]
+fn a_saved_macros_dry_run_plans_are_held_to_the_result_limit_together() {
+    // 400 steps of about 220 bytes each plan to more than the 64 KiB a result may hold, though no one plan does.
+    let note = "x".repeat(150);
+    let steps: Vec<Value> =
+        (0..400).map(|_| json!({ "op": "fake.set", "args": { "path": "a", "value": note } })).collect();
+    let doc = json!({ "scripts": { "wide": { "name": "Wide", "kind": "macro", "steps": steps } } });
+    let calls = Calls::default();
+    let error = work(json!({ "id": "wide", "dry_run": true }), doc.clone(), &calls, &Signal::default()).unwrap_err();
+    assert_eq!(error.code, ErrorCode::Invalid, "{error}");
+    assert!(error.message.contains("larger than the 65536-byte result limit"), "{error}");
+    let sent = calls.sent.lock().unwrap().len();
+    assert!((100..400).contains(&sent), "it stopped part way, after {sent} steps");
+    // Applied for real, the same macro lists no plans and is not held to it.
+    let calls = Calls::default();
+    let result = work(json!({ "id": "wide" }), doc, &calls, &Signal::default()).unwrap();
+    assert_eq!(result["calls"], 400);
+}
+
+#[test]
 fn replay_fails_when_the_deadline_passes_during_its_last_call() {
     // One step, so no later step is left to notice: the check after the call must.
     let calls = Calls { delay: std::time::Duration::from_millis(1_200), ..Calls::default() };

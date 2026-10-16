@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::ScriptHost;
 use crate::bindings::{Bindings, OpEntry};
 use crate::closures;
+use crate::directive;
 use crate::host::line_col;
 
 /// A problem or a finding at a place in the source.
@@ -319,34 +320,32 @@ fn list(names: &[&str]) -> String {
 /// The ceiling in the first line, if there is one: `// omuzaki: grants = ["edit:character"]`. Any other `omuzaki:`
 /// directive, a list that is not JSON strings and a scope that doesn't exist are errors, so a typo never leaves a
 /// script with more than it meant to have.
-/// Whether `line` is a `// omuzaki: ...` comment.
-fn is_directive(line: &str) -> bool {
-    line.trim_start().strip_prefix("//").map(str::trim).is_some_and(|comment| comment.starts_with("omuzaki:"))
-}
-
 fn ceiling_of(source: &str) -> Result<Option<Vec<Scope>>, Diagnostic> {
-    // A directive anywhere but the first line, or behind a byte order mark, would be ignored, and the author would
-    // believe the run was narrowed. Refuse it instead.
-    for (index, line) in source.lines().enumerate() {
-        let text = line.strip_prefix('\u{feff}').unwrap_or(line);
-        let behind_a_mark = index == 0 && text.len() != line.len();
-        if (index > 0 || behind_a_mark) && is_directive(text) {
-            let place = if behind_a_mark { "after a byte order mark" } else { "after the first line" };
-            return Err(Diagnostic {
-                message: format!("the `// omuzaki:` directive is only read on the first line, not {place}"),
-                line: u32::try_from(index + 1).unwrap_or(u32::MAX),
-                column: 1,
-            });
-        }
+    // A directive anywhere but the first thing on the first line would be ignored, and the author would believe the run
+    // was narrowed. Refuse it instead. Only real comments count: the same words inside a string are just text.
+    let behind_a_mark = source.starts_with('\u{feff}');
+    let found = directive::directives(source);
+    let misplaced = found.iter().find(|d| d.line != 1 || d.after_code || behind_a_mark);
+    if let Some(d) = misplaced {
+        let place = if behind_a_mark && d.line == 1 {
+            "after a byte order mark"
+        } else if d.line == 1 {
+            "after code on the line"
+        } else {
+            "after the first line"
+        };
+        return Err(Diagnostic {
+            message: format!(
+                "the `// omuzaki:` directive is only read as the first thing on the first line, not {place}"
+            ),
+            line: d.line,
+            column: d.column,
+        });
     }
-    let first = source.lines().next().unwrap_or_default();
-    let Some(directive) = first.trim_start().strip_prefix("//").map(str::trim).and_then(|c| c.strip_prefix("omuzaki:"))
-    else {
-        return Ok(None);
-    };
+    let Some(first) = found.first() else { return Ok(None) };
+    let text = first.text.as_str();
     let problem = |message: String| Diagnostic { message, line: 1, column: 1 };
-    let Some(list) = directive.trim().strip_prefix("grants").map(str::trim_start).and_then(|d| d.strip_prefix('='))
-    else {
+    let Some(list) = text.trim().strip_prefix("grants").map(str::trim_start).and_then(|d| d.strip_prefix('=')) else {
         return Err(problem("the first-line directive must read `// omuzaki: grants = [\"scope\", ...]`".to_owned()));
     };
     let names: Vec<String> = serde_json::from_str(list.trim()).map_err(|_| {

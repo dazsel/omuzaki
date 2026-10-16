@@ -30,6 +30,8 @@ thread_local! {
     /// Bytes allocated minus bytes freed on this thread since counting started. Signed: a block freed here that was
     /// allocated before counting started would otherwise wrap.
     static LIVE: Cell<isize> = const { Cell::new(0) };
+    /// The most `LIVE` reached since counting started.
+    static PEAK: Cell<isize> = const { Cell::new(0) };
 }
 
 /// Set by the first allocation that goes through a [`MemoryBudget`].
@@ -65,7 +67,13 @@ fn note(delta: isize) {
     // `try_with`: the slots are gone while a thread is being torn down, and an allocation may happen then.
     let _ = COUNTING.try_with(|counting| {
         if counting.get() {
-            let _ = LIVE.try_with(|live| live.set(live.get().saturating_add(delta)));
+            let _ = LIVE.try_with(|live| {
+                let now = live.get().saturating_add(delta);
+                live.set(now);
+                if delta > 0 {
+                    let _ = PEAK.try_with(|peak| peak.set(peak.get().max(now)));
+                }
+            });
         }
     });
 }
@@ -130,6 +138,7 @@ impl Counting {
     /// Starts counting on this thread from zero.
     pub(crate) fn start() -> Self {
         LIVE.with(|live| live.set(0));
+        PEAK.with(|peak| peak.set(0));
         COUNTING.with(|counting| counting.set(true));
         Self { _not_send: std::marker::PhantomData }
     }
@@ -144,4 +153,10 @@ impl Drop for Counting {
 /// Bytes the current thread holds beyond what it held when its [`Counting`] started; 0 when it isn't counting.
 pub(crate) fn used_here() -> usize {
     LIVE.with(|live| usize::try_from(live.get()).unwrap_or(0))
+}
+
+/// The most bytes the current thread held beyond its start while it was last counting (or is counting now).
+#[cfg(test)]
+pub(crate) fn peak_here() -> usize {
+    PEAK.with(|peak| usize::try_from(peak.get()).unwrap_or(0))
 }

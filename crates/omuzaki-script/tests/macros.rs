@@ -81,7 +81,7 @@ impl Stream {
     }
 
     fn finish(&mut self) -> Macro {
-        self.recorder.take().unwrap().finish("m")
+        self.recorder.take().unwrap().finish("m").unwrap()
     }
 }
 
@@ -156,8 +156,22 @@ fn a_recorder_stops_taking_edits_at_its_cap_and_says_so() {
     }
     s.recorder.as_mut().unwrap().poll();
     s.blend(200_000, 0.0, "after", 0.5);
-    let m = s.finish();
-    assert_eq!(m.steps.len(), 1, "room again after the rollbacks");
+    // The rollbacks freed room, so the later edit is kept; but an edit was left out earlier, so it is not complete.
+    let error = s.recorder.take().unwrap().finish("m").expect_err("an edit was left out");
+    assert_eq!(error.partial.steps.len(), 1, "room again after the rollbacks");
+}
+
+#[test]
+fn a_recording_that_overflowed_cannot_finish_as_complete() {
+    let mut s = Stream::new();
+    for n in 0..100_001_u64 {
+        s.applied(&alice(), n + 1, 0.0, "face.set_blend", json!({ "character": "a", "blend": n }), replaces("x"), None);
+        s.runner.emit(&Event::tx_committed(TxId(n + 1), "x", alice()));
+    }
+    let error = s.recorder.take().unwrap().finish("big").expect_err("it left edits out");
+    assert!(error.to_string().contains("not complete"), "{error}");
+    assert_eq!(error.partial.name, "big");
+    assert!(!error.partial.steps.is_empty(), "the edits that were kept come with the error");
 }
 
 #[test]

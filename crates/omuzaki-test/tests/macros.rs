@@ -158,7 +158,7 @@ fn record_session(runner: &Executor) -> Macro {
     for i in 1..=20 {
         set(runner, "macrotest.setpoint", "face/blend", json!(f64::from(i) / 20.0));
     }
-    recorder.finish("oval and amber")
+    recorder.finish("oval and amber").unwrap()
 }
 
 #[test]
@@ -189,7 +189,7 @@ fn queries_and_another_persons_edits_are_never_recorded() {
     assert_eq!(runner.undo(&alice(), &Grants::person()).unwrap(), None);
     set(&runner, "macrotest.set", "eye/size", json!(4.0));
     recorder.poll();
-    let m = recorder.finish("mine");
+    let m = recorder.finish("mine").unwrap();
     assert_eq!(
         m.steps,
         vec![RecordedCall { op: "macrotest.set".into(), args: json!({ "path": "eye/size", "value": 4.0 }) }]
@@ -225,7 +225,11 @@ fn a_replay_is_not_recorded_by_a_recorder_that_is_running() {
     let mut recorder = MacroRecorder::start(&runner, &alice(), &Grants::person()).unwrap();
     play(&runner, &m, &alice(), &Grants::person()).unwrap();
     recorder.poll();
-    assert_eq!(recorder.finish("x").steps, vec![], "a replay carries the Script cause, which is never recorded");
+    assert_eq!(
+        recorder.finish("x").unwrap().steps,
+        vec![],
+        "a replay carries the Script cause, which is never recorded"
+    );
 }
 
 #[test]

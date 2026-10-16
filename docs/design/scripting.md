@@ -227,12 +227,24 @@ the same engine serves both and never holds a borrow across a job. `run` is a me
 | Inner op calls | 10 000 | 10 000 | the bindings |
 | Call depth / expression depth | 64 / 64 (32 in functions) | same | `set_max_call_levels`, `set_max_expr_depths` |
 | String / array / map size | 1 MiB / 100 000 / 10 000 | same | Rhai's size limits |
+| Memory (heap held by the run's thread) | 256 MiB | 256 MiB | `MemoryBudget`, a counting global allocator, read in `on_progress` every operation |
 | Output (`print`, `log`) | 1 000 lines and 64 KiB; then one "output truncated" line | same | the host |
 | Wall clock | 10 s | 120 s default, 600 s at most (`limits.seconds`) | `on_progress`, checked every operation |
 | Result value | 64 KiB of JSON | 64 KiB | the host |
 
-- **Memory** is bounded by the size limits times the operation count; Rhai has no allocator cap, and the 10⁶-operation
-  string-doubling probe stopped at the 1 MiB string limit in 2 ms.
+- **Memory** is bounded by a counting allocator, not by the size limits. Rhai's size limits count the values held in
+  arrays and maps and the strings in them, but not a map's keys, so a script could hold gigabytes in keys without
+  reaching one (2,000 half-megabyte keys is 1 GiB). `omuzaki_script::MemoryBudget` wraps the system allocator, counts
+  what the run's own thread holds, and `on_progress` stops the run at `Limits::memory_bytes` (256 MiB) with the limit
+  `memory`. A binary that runs scripts installs it with `#[global_allocator]`, and a run refuses to start without it.
+  It costs under 1 ns per allocation on the run's thread and nothing measurable on other threads. The count is read
+  once per operation, so a single native call could pass the limit by what it allocates; the two functions that
+  multiply a value (`array.pad`, `string.replace`) are checked before they copy, and every other one is bounded by
+  what the run already holds.
+- **Closures** are accepted only as the callback of `try_op` or of an array function (`map`, `filter`, `reduce`, ...), so
+  none outlives its call: what a closure captures is not counted by Rhai's limits either.
+- **Values that cross in** (`params`, op results) are measured as a whole before they are converted: all slots, all
+  entries, all string bytes and all key bytes are held to the array, map and string limits together.
 - **Cancellation:** the console's Stop button and the job manager's cancel both set the `Cancel` the host polls in
   `on_progress` (every operation) and before every inner call. A cancelled run rolls back.
 - **No `import`** in v1. One file is the unit people paste, review and share; reuse comes from macros and saved

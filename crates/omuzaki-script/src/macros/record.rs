@@ -22,6 +22,14 @@ const COALESCE_WINDOW: Seconds = Seconds(1.0);
 /// grow without bound; [`MacroRecorder::overflowed`] says when it stopped.
 const MAX_ENTRIES: usize = 100_000;
 
+/// A recording that held 100,000 edits and left later ones out.
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
+#[error("the recording held more than 100000 edits and left the later ones out, so it is not complete")]
+pub struct Overflowed {
+    /// The macro of the edits that were kept: the first ones, not the whole session.
+    pub partial: Macro,
+}
+
 /// One recorded edit: the call, and what is needed to decide whether it merges with its neighbour.
 struct Entry {
     tx: TxId,
@@ -92,8 +100,8 @@ impl MacroRecorder {
         })
     }
 
-    /// Whether an edit was left out because the recorder held 100,000 edits already. The macro it gives is
-    /// then missing the later edits, so a surface should say so instead of saving it as if complete.
+    /// Whether an edit was left out because the recorder held 100,000 edits already, so a surface can stop the
+    /// recording and say so. [`finish`](Self::finish) fails in that case.
     pub fn overflowed(&self) -> bool {
         self.overflowed
     }
@@ -106,9 +114,15 @@ impl MacroRecorder {
     }
 
     /// Ends the recording and returns the macro named `name`. A transaction still open is not part of it.
-    pub fn finish(mut self, name: &str) -> Macro {
+    ///
+    /// # Errors
+    /// [`Overflowed`] if the recorder was full at any point, because the macro would be missing the later edits and
+    /// must not be saved as if it were complete. The error holds what was recorded, for a surface that wants to offer it
+    /// as a partial macro.
+    pub fn finish(mut self, name: &str) -> Result<Macro, Overflowed> {
         self.poll();
-        Macro { name: name.to_owned(), steps: merged(&self.kept) }
+        let recorded = Macro { name: name.to_owned(), steps: merged(&self.kept) };
+        if self.overflowed { Err(Overflowed { partial: recorded }) } else { Ok(recorded) }
     }
 
     fn take(&mut self, event: Event) {

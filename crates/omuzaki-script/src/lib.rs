@@ -26,7 +26,9 @@ mod check;
 mod closures;
 mod commands;
 mod convert;
+mod directive;
 mod error;
+mod guards;
 mod host;
 mod job;
 mod limits;
@@ -45,7 +47,8 @@ pub use host::{RunRequest, ScriptHost, ScriptOutcome};
 pub use job::JobScript;
 pub use limits::Limits;
 pub use macros::{
-    FileError, Macro, MacroRecorder, PlayError, PlayReport, RecordedCall, from_jsonl, play, play_within, to_jsonl,
+    FileError, Macro, MacroRecorder, Overflowed, PlayError, PlayReport, RecordedCall, from_jsonl, play, play_within,
+    to_jsonl,
 };
 pub use registered::{registered_host, registered_ops};
 pub use saved::{MAX_MACRO_BYTES, MAX_NAME_CHARS, Place, content_hash};

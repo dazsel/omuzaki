@@ -59,6 +59,8 @@ fn a_closure_anywhere_else_is_refused_by_the_check_and_by_the_run_before_anythin
         ("try_op(1, || 1)", 1, 11),
         ("try_op(|| 1, || 2)", 1, 8),
         ("[1].reduce(1, |a, b| a)", 1, 15),
+        // `reduce`'s initial value is a place a function pointer could be given, and a closure there is refused.
+        ("[1].reduce(|a, b| a, |c| c)", 1, 22),
         ("[1].reduce(|a, b| a, 0, 0)", 1, 12),
         ("[1].sort(|a, b| a, |c, d| c)", 1, 10),
     ];

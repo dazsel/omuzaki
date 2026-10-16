@@ -167,9 +167,10 @@ const PARSE: ScriptErrorKind = ScriptErrorKind::Parse;
 const RUNTIME: ScriptErrorKind = ScriptErrorKind::Runtime;
 const REFUSED: ScriptErrorKind = ScriptErrorKind::Refused;
 const OP: ScriptErrorKind = ScriptErrorKind::Op;
+const STRING_SIZE: ScriptErrorKind = ScriptErrorKind::Limit(omuzaki_script::LimitKind::StringSize);
 const MEMORY: ScriptErrorKind = ScriptErrorKind::Limit(omuzaki_script::LimitKind::Memory);
 
-const TABLE: [Row; 21] = [
+const TABLE: [Row; 23] = [
     row("eval.rhai", Caller::Person, PARSE, None),
     row("fn_pointer_by_name.rhai", Caller::Person, PARSE, None),
     row("call_function.rhai", Caller::Person, PARSE, None),
@@ -180,6 +181,8 @@ const TABLE: [Row; 21] = [
     row("closure_returned.rhai", Caller::Person, PARSE, None),
     row("map_keys_hold_memory.rhai", Caller::Person, MEMORY, None),
     row("map_keys_held_in_an_array.rhai", Caller::Person, MEMORY, None),
+    row("pad_copies_long_keys.rhai", Caller::Person, MEMORY, None),
+    row("replace_grows_a_string.rhai", Caller::Person, STRING_SIZE, None),
     row("closure_curried_capture.rhai", Caller::Person, PARSE, None),
     row("computed_name_variable.rhai", Caller::Person, RUNTIME, None),
     row("computed_index.rhai", Caller::Person, PARSE, None),

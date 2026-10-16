@@ -347,13 +347,42 @@ fn params_over_the_collection_limits_are_refused_before_the_run() {
 
 #[test]
 fn an_op_output_over_a_collection_limit_stops_the_run() {
-    // 9 bytes lets the edit's `character` key through; the report's 10-byte key is over. Rhai checks the size of a
-    // native function's string, array and map values itself, but not map keys.
+    // The report's 10-byte key is over a 9-byte limit. Rhai checks the size of a native function's string, array and
+    // map values itself, but not map keys.
     let limits = Limits { string_bytes: 9, ..Limits::console() };
-    let source = format!("{EDIT}\nlet r = ops::measure::report(#{{}}).len(); r");
-    let (runner, result) = run_with(request(&source), &Flag::default(), limits, FakeRunner::default());
-    assert_at(&result.expect_err("too long"), limit(LimitKind::StringSize), 2, 23);
+    let source = "let r = ops::measure::report(#{}).len(); r";
+    let (runner, result) = run_with(request(source), &Flag::default(), limits, FakeRunner::default());
+    assert_at(&result.expect_err("too long"), limit(LimitKind::StringSize), 1, 23);
     runner.assert_rolled_back();
+}
+
+#[test]
+fn the_keys_of_a_whole_value_are_held_to_the_string_limit_together() {
+    // Each key is within 12 bytes, but the keys of the two maps add up to 20: one value, one budget.
+    let two_maps = serde_json::json!({ "a": { "key_number_1": 1 }, "b": { "key_number_2": 2 } });
+    let limits = Limits { string_bytes: 12, ..Limits::console() };
+    let with_params = || {
+        let mut req = request("params");
+        req.params = two_maps.as_object().expect("an object").clone();
+        req
+    };
+    let (_, result) = run_with(with_params(), &Flag::default(), limits, FakeRunner::default());
+    assert_at(&result.expect_err("too many key bytes"), limit(LimitKind::StringSize), 1, 1);
+    let roomy = Limits { string_bytes: 30, ..Limits::console() };
+    let (_, result) = run_with(with_params(), &Flag::default(), roomy, FakeRunner::default());
+    result.expect("within the limit");
+}
+
+#[test]
+fn many_small_strings_are_held_to_the_string_limit_together() {
+    // Values converted into the script are measured as a whole, before they are converted: 40 strings of 3 bytes are
+    // 120 bytes of strings, over a 100-byte limit, though no one string is.
+    let strings: Vec<_> = (0..40).map(|_| serde_json::json!("abc")).collect();
+    let limits = Limits { string_bytes: 100, ..Limits::console() };
+    let mut req = request("params");
+    req.params = serde_json::json!({ "all": strings }).as_object().expect("an object").clone();
+    let (_, result) = run_with(req, &Flag::default(), limits, FakeRunner::default());
+    assert_at(&result.expect_err("too much text"), limit(LimitKind::StringSize), 1, 1);
 }
 
 #[test]

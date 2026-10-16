@@ -8,25 +8,73 @@ use serde_json::Map as JsonMap;
 
 use crate::{LimitKind, Limits};
 
-/// The first collection limit a JSON value breaks, if any. Values converted outside the engine (`params`, op outputs)
-/// are checked with this before conversion: Rhai doesn't size values pushed into the scope, and never checks map keys.
-/// Iterative, so a deeply nested value can't overflow the stack.
-pub(crate) fn oversized(value: &Value, limits: &Limits) -> Option<LimitKind> {
-    oversized_in(value, limits, 0)
+/// What a value (or several, that cross together) holds so far, to be held to the limits as one: Rhai counts the
+/// slots, entries and string bytes of a whole value tree against the array, map and string limits, and so does this.
+#[derive(Default)]
+pub(crate) struct Totals {
+    slots: usize,
+    entries: usize,
+    /// Bytes of string values.
+    strings: usize,
+    /// Bytes of map keys, which Rhai never counts and the string limit bounds here, in all.
+    keys: usize,
 }
 
-/// [`oversized`] for a value that sits `outer` containers deep already (a `params` field is inside the `params` map).
+/// The first collection limit a JSON value breaks, if any. Values converted outside the engine (`params`, op outputs)
+/// are checked with this before conversion: Rhai doesn't size values pushed into the scope, and never checks map keys.
+/// The limits apply to the whole tree, as Rhai applies them: all the array slots together, all the map entries, all the
+/// bytes of string values, and all the bytes of map keys (which Rhai doesn't count) against the string limit. Iterative, so a deeply nested value can't overflow the stack.
+pub(crate) fn oversized(value: &Value, limits: &Limits) -> Option<LimitKind> {
+    scan([(value, 0)], limits, &mut Totals::default())
+}
+
+/// [`oversized`] for the fields of `params`: one map, its fields one level inside it.
+pub(crate) fn oversized_fields(fields: &JsonMap<String, Value>, limits: &Limits) -> Option<LimitKind> {
+    let mut totals = Totals::default();
+    if let Some(kind) = count_map(fields, limits, &mut totals) {
+        return Some(kind);
+    }
+    scan(fields.values().map(|field| (field, 1)), limits, &mut totals)
+}
+
+/// Adds a map's entries and key bytes to `totals`, and says which limit that breaks.
+fn count_map(fields: &JsonMap<String, Value>, limits: &Limits, totals: &mut Totals) -> Option<LimitKind> {
+    totals.entries = totals.entries.saturating_add(fields.len());
+    if totals.entries > limits.map_len {
+        return Some(LimitKind::MapSize);
+    }
+    for key in fields.keys() {
+        totals.keys = totals.keys.saturating_add(key.len());
+    }
+    (totals.keys > limits.string_bytes).then_some(LimitKind::StringSize)
+}
+
+/// Walks `roots` (each with the number of containers it sits inside), adding what they hold to `totals`.
 /// Nesting beyond [`Limits::value_depth`] is [`LimitKind::Depth`], so the recursive conversion into Rhai is bounded.
-pub(crate) fn oversized_in(value: &Value, limits: &Limits, outer: usize) -> Option<LimitKind> {
-    let mut pending = vec![(value, outer)];
+fn scan<'a>(
+    roots: impl IntoIterator<Item = (&'a Value, usize)>,
+    limits: &Limits,
+    totals: &mut Totals,
+) -> Option<LimitKind> {
+    let mut pending: Vec<(&Value, usize)> = roots.into_iter().collect();
     while let Some((value, depth)) = pending.pop() {
         match value {
-            Value::String(text) if text.len() > limits.string_bytes => return Some(LimitKind::StringSize),
+            Value::String(text) => {
+                totals.strings = totals.strings.saturating_add(text.len());
+                if totals.strings > limits.string_bytes {
+                    return Some(LimitKind::StringSize);
+                }
+            }
             Value::Array(_) | Value::Object(_) if depth >= limits.value_depth => return Some(LimitKind::Depth),
-            Value::Array(items) if items.len() > limits.array_len => return Some(LimitKind::ArraySize),
-            Value::Array(items) => pending.extend(items.iter().map(|item| (item, depth + 1))),
+            Value::Array(items) => {
+                totals.slots = totals.slots.saturating_add(items.len());
+                if totals.slots > limits.array_len {
+                    return Some(LimitKind::ArraySize);
+                }
+                pending.extend(items.iter().map(|item| (item, depth + 1)));
+            }
             Value::Object(fields) => {
-                if let Some(kind) = map_breaks(fields, limits) {
+                if let Some(kind) = count_map(fields, limits, totals) {
                     return Some(kind);
                 }
                 pending.extend(fields.values().map(|field| (field, depth + 1)));
@@ -138,14 +186,6 @@ fn abandon(stack: Vec<Frame>, extra: Option<Dynamic>) {
             pending.extend(item.try_cast::<Map>().unwrap_or_default().into_values());
         }
     }
-}
-
-/// The limit a map itself breaks: its size, or a key (which becomes a Rhai string) over the string limit.
-pub(crate) fn map_breaks(fields: &JsonMap<String, Value>, limits: &Limits) -> Option<LimitKind> {
-    if fields.len() > limits.map_len {
-        return Some(LimitKind::MapSize);
-    }
-    fields.keys().any(|key| key.len() > limits.string_bytes).then_some(LimitKind::StringSize)
 }
 
 pub(crate) fn size_kind(typ: &str) -> LimitKind {
