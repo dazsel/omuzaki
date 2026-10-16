@@ -501,6 +501,15 @@ fn a_wake_due_at_t_runs_before_a_reply_arriving_at_t() {
 }
 
 #[test]
+fn an_older_event_after_an_idle_advance_runs_now() {
+    let mut h = NodeHarness::of::<OnChat>(EchoParams::default());
+    h.advance_to(Seconds(10.0));
+    h.trigger(fixtures::at(fixtures::chat("kiri", "late"), Seconds(5.0)));
+    assert_eq!(h.fired().last().map(|f| f.at), Some(Seconds(10.0)));
+    assert_eq!(h.now(), Seconds(10.0), "the clock never goes back");
+}
+
+#[test]
 fn a_wake_due_now_runs_before_a_manual_reply() {
     let mut h = NodeHarness::of::<ZeroWait>(EchoParams::default());
     h.send("in");

@@ -634,9 +634,12 @@ impl NodeHarness {
         self.stopped = true;
     }
 
-    /// Runs one step: the node handles `item` in `token` at `at` (or the previous step's time, if later).
+    /// Runs one step: the node handles `item` in `token` at `at`, or at the clock's time if that is later (the
+    /// previous step's, or where an idle advance moved it): time never goes backwards.
     fn step(&mut self, at: Seconds, token: u64, item: &Item) {
-        let at = if at.0 > self.host.last_step.0 { at } else { self.host.last_step };
+        let floor = self.host.clock.now();
+        let floor = if floor.0 > self.host.last_step.0 { floor } else { self.host.last_step };
+        let at = if at.0 > floor.0 { at } else { floor };
         self.host.clock.set(at);
         (self.host.step_at, self.host.current) = (at, token);
         let input = match item {
