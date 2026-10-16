@@ -111,6 +111,16 @@ fn check_state(f: &SetupFlow) {
         f.then.is_none() || f.input_op.settled(f.input) || f.input_op.request().is_some() || f.input_op.failed(f.input),
         "a waiting Continue has something to wait for"
     );
+    // A step is listed as given up only while its choice is not applied.
+    assert!(!f.skipped.contains(&Step::Output) || !f.output_op.settled(f.output), "Output skipped yet applied");
+    assert!(
+        !f.skipped.contains(&Step::Calibrate) || f.calibration_op.applied().is_none(),
+        "Calibrate skipped yet done"
+    );
+    assert!(
+        !f.skipped.contains(&Step::Input) || f.input == Some(InputChoice::LifeLayerOnly),
+        "Input skipped yet chosen"
+    );
     // A step past Input has a source.
     assert!(f.step <= Step::Input || f.input.is_some());
 }
@@ -133,6 +143,11 @@ fn random_event_orders_keep_the_invariants() {
             let before = f.clone();
             let fx = f.handle(event, i * 10);
             check_move(&before, &f, event);
+            // A new project takes the old project's output with it.
+            if before.character_op.applied() != f.character_op.applied() {
+                assert!(f.output.is_none() && f.output_op.applied().is_none(), "output survived a project change");
+                assert!(!f.skipped.contains(&Step::Output));
+            }
             check_state(&f);
             // Persist always carries the progress as it is, and nothing is shown before it is saved.
             if let Some(show) = fx.iter().position(|e| matches!(e, Effect::Show(_))) {

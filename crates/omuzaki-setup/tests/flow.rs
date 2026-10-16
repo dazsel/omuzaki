@@ -1144,3 +1144,48 @@ fn a_stored_calibration_result_counts_even_if_the_probe_dropped_meanwhile() {
     let again = send_raw(&mut g, &[Event::Next]);
     assert!(matches!(again.as_slice(), [Effect::StartCalibration { .. }]), "{again:?}");
 }
+
+#[test]
+fn a_new_project_does_not_inherit_the_old_projects_output() {
+    let p = Probes { project_open: true, ..probes() };
+    let current = Current { input: Some(InputChoice::Webcam), output: Some(OutputKind::Spout) };
+    let mut f = SetupFlow::new(p, Progress::default(), current);
+    send(&mut f, &[Event::Next]);
+    // Sample creates a new project: the configured Spout belonged to the old one.
+    send(&mut f, &[Event::ChooseCharacter(CharacterChoice::Sample)]);
+    assert_eq!(f.view().step, Step::Input);
+    send(&mut f, &[Event::Next, Event::Next, Event::CalibrationDone { request: LAST }]);
+    assert_eq!(f.view().step, Step::Output);
+    assert_eq!(f.view().output, None, "nothing chosen for the new project");
+    assert_eq!(send_raw(&mut f, &[Event::Next]), no_effects(), "Continue does not advance on the old output");
+    let fx = send_raw(&mut f, &[Event::ChooseOutput(OutputKind::Spout)]);
+    assert!(matches!(fx.as_slice(), [Effect::ShowTestPattern { .. }]), "it is configured again: {fx:?}");
+    send_raw(&mut f, &[Event::Applied { request: request_of(&fx) }, Event::Next]);
+    assert_eq!(f.view().step, Step::GoLive);
+    // Keeping the open project keeps its output.
+    let mut g = SetupFlow::new(p, Progress::default(), current);
+    send(&mut g, &[Event::Next, Event::ChooseCharacter(CharacterChoice::Keep)]);
+    assert_eq!(g.view().output, Some(OutputKind::Spout));
+}
+
+#[test]
+fn an_output_already_applied_is_not_listed_as_later() {
+    let current = Current { input: Some(InputChoice::Webcam), output: Some(OutputKind::Spout) };
+    let at = || SetupFlow::new(probes(), Progress { step: Step::Output, ..Progress::default() }, current);
+    // Skip on an output the host holds has nothing to defer.
+    let mut f = at();
+    send_raw(&mut f, &[Event::Skip]);
+    assert_eq!(f.view().step, Step::GoLive);
+    assert_eq!(f.progress().skipped, Vec::<Step>::new());
+    // Skipped while nothing was applied, then applied: Later is lifted by choosing, and by Continue alone.
+    for accept in [Event::ChooseOutput(OutputKind::Spout), Event::Next] {
+        let mut g = SetupFlow::new(probes(), Progress { step: Step::Output, ..Progress::default() }, webcam());
+        let fx = send_raw(&mut g, &[Event::ChooseOutput(OutputKind::Spout)]);
+        send_raw(&mut g, &[Event::Skip]);
+        assert!(g.progress().skipped.contains(&Step::Output));
+        send_raw(&mut g, &[Event::Applied { request: request_of(&fx) }]);
+        assert!(!g.progress().skipped.contains(&Step::Output), "the answer lifts it");
+        send_raw(&mut g, &[Event::Back, accept]);
+        assert_eq!(g.progress().skipped, Vec::<Step>::new(), "{accept:?}");
+    }
+}

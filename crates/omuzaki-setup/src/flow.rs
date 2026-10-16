@@ -98,7 +98,7 @@ pub enum Effect {
     /// skip that must drop the applied source, or a source only preselected when Continue is pressed; never for a
     /// source already in the host's settings. At most one request is outstanding: a later choice waits for the
     /// answer to this one, then the latest choice is requested. The host answers each `request` exactly once with
-    /// [`Event::InputApplied`] or [`Event::InputRejected`].
+    /// [`Event::Applied`] or [`Event::Refused`].
     SelectInput {
         /// Numbers this request; the answer carries it back.
         request: u32,
@@ -591,8 +591,12 @@ impl SetupFlow {
                 }
             }
         } else if self.character_op.owns(request) {
-            if self.character_op.reply(ok, self.character) == Some(Reply::Failed) {
+            let reply = self.character_op.reply(ok, self.character);
+            if reply == Some(Reply::Failed) {
                 return;
+            }
+            if reply == Some(Reply::Applied) {
+                self.project_changed();
             }
             if !self.character_op.settled(self.character) {
                 self.pump_character(fx);
@@ -617,6 +621,15 @@ impl SetupFlow {
                 self.advance(fx);
             }
         }
+    }
+
+    /// A character card that made another project was carried out. Everything the old project held is gone with
+    /// it: its output is not the new project's, so Output starts over.
+    fn project_changed(&mut self) {
+        self.output = None;
+        self.output_op.forget();
+        self.output_then = None;
+        self.skipped.remove(&Step::Output);
     }
 
     /// Continue on Calibrate: a stored result moves on; otherwise a run is started if the probes allow one.
@@ -712,6 +725,7 @@ impl SetupFlow {
             return;
         }
         if self.output_op.settled(self.output) {
+            self.skipped.remove(&Step::Output);
             self.advance(fx);
         } else {
             self.output_then = Some(Then::Continue);
@@ -740,7 +754,10 @@ impl SetupFlow {
             }
             Step::Output => {
                 self.output_then = None;
-                self.skipped.insert(Step::Output);
+                // "Later" defers an output; one the host already holds has nothing left to defer.
+                if !self.output_op.settled(self.output) {
+                    self.skipped.insert(Step::Output);
+                }
             }
             _ => return,
         }
