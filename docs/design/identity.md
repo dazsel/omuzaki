@@ -178,7 +178,7 @@ The design reserves only the interface. The payload is `KeyId::mark_payload()`: 
 | `Approval` | `omuzaki-approval-v1` | 0043's `Signed<ApprovalStatement>` (VC-11) and 0057's `Signed<ReviewRecord>` (item reviews) | the approval log; the review records | 0043, 0057 |
 | `ReviewBundle` | `omuzaki-review-bundle-v1` | a review bundle's manifest | the bundle | review links |
 | `KeyStatement` | `omuzaki-key-statement-v1` | `Signed<KeyStatement>` | statement files, rosters | this design (D5) |
-| `Entitlement` | `omuzaki-entitlement-v1` | a signed receipt (reserved, not built) | the receipt | 0057, LB-08, a hosted key |
+| `Entitlement` | `omuzaki-entitlement-v1` | a market-signed document: a receipt, a head, a revocation or takedown page (each a distinct `deny_unknown_fields` body with a required `doc` field; ADR 0063, `docs/design/marketplace-protocol.md`) | the document | 0057, 0063, LB-08, a hosted key |
 
 Every tag above ends in `\0`. The other consumers:
 

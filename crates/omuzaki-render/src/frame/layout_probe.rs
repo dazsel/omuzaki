@@ -25,7 +25,11 @@ use crate::shared::Shared;
 
 /// Chunks of each struct: vec4s in declaration order (matrices as four columns, arrays element by element).
 const FRAME_CHUNKS: usize = 12 + 3 + 32 + 4;
-const MATERIAL_CHUNKS: usize = 9 + 8 + 8;
+/// Chunks before the program parameters: the nine leading vec4s and the four overlays' two each.
+const PROGRAM_START: usize = 9 + 8;
+/// Chunks of the program parameters (`program: array<vec4<f32>, 8>`).
+const PROGRAM_CHUNKS: usize = 8;
+const MATERIAL_CHUNKS: usize = PROGRAM_START + PROGRAM_CHUNKS + 1; // the UV transform is the last vec4
 const INSTANCE_CHUNKS: usize = 4 + 3 + 1;
 
 const PROBE: &str = r"
@@ -70,7 +74,8 @@ fn material_chunk(i: u32) -> vec4<u32> {
         if ((i - 9u) % 2u == 0u) { return bits(overlay.rect); }
         return bits(overlay.params);
     }
-    return bits(material.program[i - 17u]);
+    if (i < 25u) { return bits(material.program[i - 17u]); }
+    return bits(material.uv_transform);
 }
 
 fn instance_chunk(i: u32) -> vec4<u32> {
@@ -134,7 +139,7 @@ fn probe_material(face: TextureId) -> Material {
         vertex_colours: true,
         outline: Some(Outline { colour: Colour::rgb(40, 30, 60), width: 0.0123 }),
         receives_shadows: false,
-        uv_transform: UvTransform::IDENTITY,
+        uv_transform: UvTransform { scale: Vec2::new(0.5, 0.25), offset: Vec2::new(0.125, 0.75) },
     }
 }
 
@@ -220,7 +225,10 @@ fn the_wgsl_structs_read_the_bytes_the_rust_structs_write() {
         let material_uniform = MaterialUniform::new(&material, &resources.textures);
         if name == "hair program" {
             assert!(
-                chunks(&material_uniform)[MATERIAL_CHUNKS - 8..].iter().flatten().any(|bits| *bits != 0),
+                chunks(&material_uniform)[PROGRAM_START..PROGRAM_START + PROGRAM_CHUNKS]
+                    .iter()
+                    .flatten()
+                    .any(|bits| *bits != 0),
                 "the hair material's `program[]` must carry values for this check to mean anything"
             );
         }
@@ -229,7 +237,7 @@ fn the_wgsl_structs_read_the_bytes_the_rust_structs_write() {
         let quad = omuzaki_render_mock::shapes::quad(Vec2::ONE);
         let (mesh_slot, mesh_generation) = resources
             .meshes
-            .insert(GpuMesh::upload(&shared.gpu, &quad, &omuzaki_render_api::MeshOptions::default()).unwrap());
+            .insert(GpuMesh::upload(&shared.gpu, &quad, &omuzaki_render_api::MeshOptions::default(), false).unwrap());
         let scene = probe_scene(
             MeshId::from_parts(mesh_slot, mesh_generation),
             MaterialId::from_parts(material_slot, material_generation),
