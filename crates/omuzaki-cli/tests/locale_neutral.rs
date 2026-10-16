@@ -92,7 +92,7 @@ fn mcp_output(project: &Path, env: &[(&str, &str)]) -> String {
         })
         .collect();
     replies.sort_unstable();
-    replies.into_iter().map(|(_, line)| format!("{line}\n")).collect()
+    replies.into_iter().map(|(_, line)| line).collect::<Vec<_>>().join("\n")
 }
 
 #[test]
