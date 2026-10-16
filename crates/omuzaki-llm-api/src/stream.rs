@@ -224,9 +224,14 @@ impl TurnStream {
             return Ok(Next::End);
         };
         let polled = source.poll(wait);
-        // A cancel that lands while the poll blocks makes the provider's task finish the channel, and the poll then
-        // reports `End`; the flag, read again, is what tells that from a turn that really ended.
-        if self.cancel.is_cancelled() && matches!(polled, Ok(Next::End | Next::Wait)) {
+        // A cancel that lands while the poll blocks can race with any outcome: the provider's task may finish the
+        // channel (`End`), or an event or error may already be queued. The contract is that the first call after
+        // `cancel()` returns only `Cancelled`, so the flag, read again, wins over every poll result. A usage report
+        // the poll carried is still counted, because the provider bills it.
+        if self.cancel.is_cancelled() {
+            if let Ok(Next::Event(LlmEvent::Usage(u))) = &polled {
+                self.usage = Some(self.usage.map_or(*u, |old| keep_largest(old, *u)));
+            }
             self.finish();
             return Err(LlmError::Cancelled);
         }
@@ -517,6 +522,42 @@ mod tests {
         };
         assert!(matches!(s.collect(Duration::from_secs(5)), Err(LlmError::Cancelled)));
         canceller.join().unwrap_or_else(|_| panic!("the canceller panicked"));
+    }
+
+    /// A source that is cancelled while its poll runs and then reports `result`: the race of a cancel landing
+    /// between the queue read and the flag read.
+    struct CancelsThenReturns(Cancel, Option<Result<Next, LlmError>>);
+
+    impl EventSource for CancelsThenReturns {
+        fn poll(&mut self, _wait: Duration) -> Result<Next, LlmError> {
+            self.0.cancel();
+            self.1.take().unwrap_or(Ok(Next::End))
+        }
+    }
+
+    #[test]
+    fn a_cancel_during_a_poll_beats_an_event_a_stop_and_an_error() {
+        let outcomes = [
+            event(LlmEvent::TextDelta("x".into())),
+            event(LlmEvent::Stop(StopReason::EndTurn)),
+            Err(LlmError::Network("late".into())),
+        ];
+        for outcome in outcomes {
+            let cancel = Cancel::new();
+            let mut s = TurnStream::new(Box::new(CancelsThenReturns(cancel.clone(), Some(outcome))), &cancel);
+            assert!(matches!(s.try_next(), Err(LlmError::Cancelled)));
+            assert!(matches!(s.try_next(), Ok(Next::End)));
+        }
+    }
+
+    #[test]
+    fn a_usage_report_caught_by_a_cancel_is_still_counted() {
+        let cancel = Cancel::new();
+        let usage = Usage { input: 7, ..Usage::default() };
+        let mut s =
+            TurnStream::new(Box::new(CancelsThenReturns(cancel.clone(), Some(event(LlmEvent::Usage(usage))))), &cancel);
+        assert!(matches!(s.try_next(), Err(LlmError::Cancelled)));
+        assert_eq!(s.usage_so_far(), Some(usage));
     }
 
     #[test]

@@ -71,7 +71,7 @@ impl Ask<'_> {
 
     /// The status and body of `request`.
     async fn run(&self, request: Request) -> Result<(u16, Vec<u8>), LlmError> {
-        let (status, body) = fetch_metadata(self.http, request, self.limit).await?;
+        let (status, body) = fetch_metadata(self.http, request, self.limit, self.key).await?;
         if matches!(status, 401 | 403) {
             return Err(LlmError::Auth);
         }

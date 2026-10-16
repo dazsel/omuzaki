@@ -157,8 +157,20 @@ async fn stopped(cancel: &Cancel, token: &CancellationToken) {
     }
 }
 
-async fn run(make: impl FnOnce() -> Job, cancel: Cancel, token: CancellationToken, mut tx: Sender) {
-    let job = make();
+async fn run(make: impl FnOnce() -> Job + Send + 'static, cancel: Cancel, token: CancellationToken, mut tx: Sender) {
+    // The encoding of a large history (base64 of many images) is CPU work: it runs on the blocking pool, so it never
+    // holds the async worker that polls other turns' sockets and cancel ticks, and a cancel does not wait for it.
+    let built = tokio::select! {
+        biased;
+        () = stopped(&cancel, &token) => None,
+        built = tokio::task::spawn_blocking(make) => Some(built),
+    };
+    let job = match built {
+        None => return tx.finish(),
+        Some(Ok(job)) => job,
+        // The encoder panicked: a turn that never started is a failure, not an empty success.
+        Some(Err(_)) => return tx.fail(LlmError::Malformed("the request could not be built".into())).await,
+    };
     // `biased`: a stop request wins over a ready body chunk, so cancellation never waits behind the network.
     let result = tokio::select! {
         biased;
@@ -176,8 +188,8 @@ async fn run(make: impl FnOnce() -> Job, cancel: Cancel, token: CancellationToke
 /// make the client grow without bound.
 pub(crate) const MAX_BUFFERED: usize = 4 * 1024 * 1024;
 
-/// Redacts `secret` from the bytes of an answer, before anything reads or cuts them: a key that sits across a
-/// truncation point would otherwise survive in part.
+/// Redacts `secret` from the bytes of an answer. Callers that cut a body to a limit redact first (`read_limited`): a key
+/// that sits across a truncation point would otherwise survive in part.
 pub(crate) fn redact_bytes(body: Vec<u8>, secret: Option<&SecretValue>) -> Vec<u8> {
     match secret {
         Some(s) if !s.expose().is_empty() => redact(String::from_utf8_lossy(&body).into_owned(), Some(s)).into_bytes(),
@@ -256,12 +268,12 @@ async fn attempt_with(job: &Job, tx: &Sender, started: &mut bool, secret: Option
     };
     if !(200..300).contains(&response.status) {
         let (status, retry_after) = (response.status, response.retry_after);
-        let body = match timeout(job.timeouts.idle, response.read_limited(MAX_ERROR_BODY)).await {
+        let body = match timeout(job.timeouts.idle, response.read_limited(MAX_ERROR_BODY, secret)).await {
             Ok(Ok(body)) => body,
             // The status alone decides how to treat the failure; a body that cannot be read adds nothing.
             Ok(Err(_)) | Err(_) => Vec::new(),
         };
-        return Err(job.protocol.classify(status, retry_after, &redact_bytes(body, secret), secret));
+        return Err(job.protocol.classify(status, retry_after, &body, secret));
     }
     let (events, activity) = sse::events(response.stream());
     let mut events = Box::pin(events);
@@ -372,6 +384,60 @@ mod tests {
             Fail::Fatal(e) => format!("fatal {e}"),
             Fail::Retry { error, retry_after, .. } => format!("retry {error} after {retry_after:?}"),
         }
+    }
+
+    /// A protocol that is never reached: the tests below cancel before the request is sent.
+    struct Unused;
+
+    impl Protocol for Unused {
+        fn url(&self) -> String {
+            "http://127.0.0.1:1/".into()
+        }
+        fn headers(&self, _: Option<&SecretValue>) -> Result<Vec<(&'static str, HeaderValue)>, LlmError> {
+            Ok(Vec::new())
+        }
+        fn key_required(&self) -> bool {
+            false
+        }
+        fn classify(&self, _: u16, _: Option<Duration>, _: &[u8], _: Option<&SecretValue>) -> Fail {
+            Fail::network("unused")
+        }
+        fn decoder(&self, _: Option<SecretValue>) -> Box<dyn Decoder> {
+            unreachable!("the request is never sent")
+        }
+    }
+
+    #[test]
+    fn building_a_large_request_does_not_hold_the_only_async_worker() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap_or_else(|e| panic!("{e}"));
+        let cancel = Cancel::new();
+        let make = || {
+            // Stands for base64-encoding many large images.
+            std::thread::sleep(Duration::from_millis(400));
+            let endpoint = crate::http::Endpoint::parse("http://127.0.0.1:1").unwrap_or_else(|e| panic!("{e}"));
+            Job {
+                http: Http::new(&endpoint).unwrap_or_else(|e| panic!("{e}")),
+                protocol: Arc::new(Unused),
+                body: Vec::new(),
+                key: None,
+                max_retries: 0,
+                timeouts: Timeouts::default(),
+                seed: 1,
+            }
+        };
+        let _stream = spawn(rt.handle(), make, &cancel);
+        // Another turn's timer on the same single worker must keep firing while the first turn's request is built.
+        let late = rt.block_on(async {
+            let start = std::time::Instant::now();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            start.elapsed()
+        });
+        cancel.cancel();
+        assert!(late < Duration::from_millis(200), "the worker was held for {late:?}");
     }
 
     #[test]

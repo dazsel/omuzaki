@@ -19,7 +19,7 @@ use serde_json::Value;
 use tokio::runtime::Handle;
 
 use crate::common::{KeyRef, check_hosted_prices, key_ref, refuse_camera};
-use crate::engine::{self, Decoder, Fail, Job, Protocol, Timeouts, redact_bytes, redact_error};
+use crate::engine::{self, Decoder, Fail, Job, Protocol, Timeouts, redact_error};
 use crate::http::{Endpoint, HeaderValue, Http, Request, fetch_metadata, query_value};
 use crate::prices::{ANTHROPIC_IMAGE_TILE, anthropic_model};
 use crate::retry::random_seed;
@@ -232,9 +232,9 @@ pub fn list_models_within(
                 ("anthropic-version", HeaderValue::Plain(VERSION.into())),
                 ("x-api-key", HeaderValue::Secret(key.clone())),
             ];
-            let (status, body) = fetch_metadata(&http, Request::get(url, headers), limit).await?;
+            let (status, body) = fetch_metadata(&http, Request::get(url, headers), limit, Some(&key)).await?;
             if status != 200 {
-                let error = match decode::classify(status, None, &redact_bytes(body, Some(&key)), 0, Some(&key)) {
+                let error = match decode::classify(status, None, &body, 0, Some(&key)) {
                     Fail::Fatal(e) | Fail::Retry { error: e, .. } => e,
                 };
                 // A server may echo the key into its message.

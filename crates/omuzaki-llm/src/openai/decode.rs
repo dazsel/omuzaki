@@ -96,12 +96,18 @@ impl OpenAiDecoder {
             events.push(LlmEvent::start(model));
         }
         if let Some(usage) = v.get("usage").filter(|u| u.is_object()) {
-            let count = |value: Option<&Value>| value.and_then(Value::as_u64).unwrap_or(0);
-            let prompt = count(usage.get("prompt_tokens"));
-            let cached = count(usage.get("prompt_tokens_details").and_then(|d| d.get("cached_tokens")));
+            let count = |value: Option<&Value>| value.and_then(Value::as_u64);
+            // Both counters are mandatory: a report without them would be priced as zero.
+            let (Some(prompt), Some(completion)) =
+                (count(usage.get("prompt_tokens")), count(usage.get("completion_tokens")))
+            else {
+                return Err(Fail::Fatal(LlmError::Malformed(
+                    "the usage report lacks prompt_tokens or completion_tokens".into(),
+                )));
+            };
+            let cached = count(usage.get("prompt_tokens_details").and_then(|d| d.get("cached_tokens"))).unwrap_or(0);
             // llm-api D4: `input` excludes the cached tokens, which are reported as `cache_read`.
-            let total = Usage::new(prompt.saturating_sub(cached), count(usage.get("completion_tokens")))
-                .with_cache_read(cached);
+            let total = Usage::new(prompt.saturating_sub(cached), completion).with_cache_read(cached);
             self.usage = Some(total);
             events.push(LlmEvent::Usage(total));
         }
@@ -402,6 +408,21 @@ mod tests {
         let mut cut = decoder();
         feed(&mut cut, r#"{"choices":[{"delta":{"content":"x"}}]}"#);
         assert!(matches!(cut.end(), Err(Fail::Retry { error: LlmError::Network(_), .. })));
+    }
+
+    #[test]
+    fn a_usage_report_missing_a_counter_is_malformed() {
+        for usage in [
+            "{}",
+            r#"{"prompt_tokens":3}"#,
+            r#"{"completion_tokens":2}"#,
+            r#"{"prompt_tokens":"3","completion_tokens":2}"#,
+        ] {
+            let mut d = decoder();
+            let chunk = format!(r#"{{"choices":[],"usage":{usage}}}"#);
+            let got = d.event(SseEvent { event: None, data: chunk });
+            assert!(matches!(got, Err(Fail::Fatal(LlmError::Malformed(m))) if m.contains("usage")), "{usage}");
+        }
     }
 
     #[test]

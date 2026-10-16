@@ -15,6 +15,8 @@ use futures_util::{Stream, StreamExt};
 use omuzaki_llm_api::error::LlmError;
 use omuzaki_llm_api::provider::{SecretValue, is_loopback_endpoint};
 
+use crate::engine::redact_bytes;
+
 /// The user agent every request sends.
 pub(crate) const USER_AGENT: &str = concat!("Omuzaki/", env!("CARGO_PKG_VERSION"));
 /// How long a connection may take to open.
@@ -156,17 +158,23 @@ impl Response {
         Box::pin(self.inner.bytes_stream().map(|chunk| chunk.map_err(|e| HttpFail::Body(e.without_url().to_string()))))
     }
 
-    /// At most `limit` bytes of the body.
-    pub(crate) async fn read_limited(self, limit: usize) -> Result<Vec<u8>, HttpFail> {
+    /// At most `limit` bytes of the body, with `secret` redacted from them.
+    ///
+    /// The body is read `secret` bytes past `limit` and redacted before it is cut, so a key that straddles the cutoff
+    /// is replaced whole and no part of it survives in the kept bytes.
+    pub(crate) async fn read_limited(self, limit: usize, secret: Option<&SecretValue>) -> Result<Vec<u8>, HttpFail> {
+        let reach = limit.saturating_add(secret.map_or(0, |s| s.expose().len()));
         let mut out = Vec::new();
         let mut body = self.stream();
         while let Some(chunk) = body.next().await {
             out.extend_from_slice(&chunk?);
-            if out.len() >= limit {
-                out.truncate(limit);
+            if out.len() >= reach {
+                out.truncate(reach);
                 break;
             }
         }
+        let mut out = redact_bytes(out, secret);
+        out.truncate(limit);
         Ok(out)
     }
 }
@@ -197,15 +205,20 @@ pub(crate) fn query_value(text: &str) -> String {
     out
 }
 
-/// Sends `request` and reads the whole (bounded) answer within `limit`: the status and the body.
+/// Sends `request` and reads the whole (bounded) answer within `limit`: the status and the body, with `secret` redacted.
 ///
 /// # Errors
 /// `Network` if the server does not answer in time, or the transport error.
-pub(crate) async fn fetch_metadata(http: &Http, request: Request, limit: Duration) -> Result<(u16, Vec<u8>), LlmError> {
+pub(crate) async fn fetch_metadata(
+    http: &Http,
+    request: Request,
+    limit: Duration,
+    secret: Option<&SecretValue>,
+) -> Result<(u16, Vec<u8>), LlmError> {
     let work = async {
         let response = http.send(request).await.map_err(LlmError::from)?;
         let status = response.status;
-        let body = response.read_limited(MAX_METADATA_BODY).await.map_err(LlmError::from)?;
+        let body = response.read_limited(MAX_METADATA_BODY, secret).await.map_err(LlmError::from)?;
         Ok((status, body))
     };
     tokio::time::timeout(limit, work)

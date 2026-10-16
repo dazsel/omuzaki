@@ -2,6 +2,7 @@
 //! on a condition variable, and a full queue stops the task from reading the socket.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, TryLockError};
 use std::time::{Duration, Instant};
 
@@ -21,14 +22,15 @@ enum Message {
 #[derive(Default)]
 struct State {
     queue: VecDeque<Message>,
-    /// The consumer dropped its end, so the task should stop.
-    receiver_gone: bool,
     /// The task will send nothing more.
     finished: bool,
 }
 
 struct Shared {
     state: Mutex<State>,
+    /// The consumer dropped its end, so the task should stop. Outside the mutex so that dropping the receiver (which
+    /// `cancel()` and `try_next` do on the UI thread) never waits on a lock the task holds.
+    receiver_gone: AtomicBool,
     ready: Condvar,
     space: Notify,
 }
@@ -53,7 +55,12 @@ pub(crate) struct Receiver {
 
 /// A channel of [`CAPACITY`] messages.
 pub(crate) fn channel() -> (Sender, Receiver) {
-    let shared = Arc::new(Shared { state: Mutex::default(), ready: Condvar::new(), space: Notify::new() });
+    let shared = Arc::new(Shared {
+        state: Mutex::default(),
+        receiver_gone: AtomicBool::new(false),
+        ready: Condvar::new(),
+        space: Notify::new(),
+    });
     (Sender { shared: Arc::clone(&shared), done: false }, Receiver { shared })
 }
 
@@ -68,11 +75,11 @@ impl Sender {
             tokio::pin!(notified);
             // Register before looking, so a pop between the look and the await is not missed.
             notified.as_mut().enable();
+            if self.shared.receiver_gone.load(Ordering::SeqCst) {
+                return Err(Closed);
+            }
             {
                 let mut state = self.shared.lock();
-                if state.receiver_gone {
-                    return Err(Closed);
-                }
                 if state.queue.len() < CAPACITY {
                     state.queue.extend(message.take());
                     self.shared.ready.notify_one();
@@ -119,7 +126,7 @@ impl Drop for Sender {
 
 impl Drop for Receiver {
     fn drop(&mut self) {
-        self.shared.lock().receiver_gone = true;
+        self.shared.receiver_gone.store(true, Ordering::SeqCst);
         self.shared.space.notify_one();
     }
 }
@@ -197,6 +204,25 @@ mod tests {
         assert!(started.elapsed() < Duration::from_millis(200), "{:?}", started.elapsed());
         held.join().unwrap_or_else(|_| panic!("the holder panicked"));
         drop(tx);
+    }
+
+    #[test]
+    fn dropping_the_receiver_does_not_wait_for_a_lock_the_task_holds() {
+        let (tx, rx) = channel();
+        let held = std::thread::spawn({
+            let shared = Arc::clone(&tx.shared);
+            move || {
+                let _guard = shared.lock();
+                std::thread::sleep(Duration::from_millis(400));
+            }
+        });
+        std::thread::sleep(Duration::from_millis(50));
+        let started = Instant::now();
+        drop(rx);
+        assert!(started.elapsed() < Duration::from_millis(200), "{:?}", started.elapsed());
+        held.join().unwrap_or_else(|_| panic!("the holder panicked"));
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap_or_else(|e| panic!("{e}"));
+        assert!(rt.block_on(tx.event(text("late"))).is_err(), "the sender still learns the consumer left");
     }
 
     #[test]

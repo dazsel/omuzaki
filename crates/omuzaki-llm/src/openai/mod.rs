@@ -24,7 +24,7 @@ use serde_json::Value;
 use tokio::runtime::Handle;
 
 use crate::common::{KeyRef, check_hosted_prices, key_ref, refuse_camera};
-use crate::engine::{self, Decoder, Fail, Job, Protocol, Timeouts, redact_bytes, redact_error};
+use crate::engine::{self, Decoder, Fail, Job, Protocol, Timeouts, redact_error};
 use crate::http::{Endpoint, HeaderValue, Http, Request, bearer, fetch_metadata};
 use crate::prices::local_prices;
 use crate::retry::random_seed;
@@ -261,15 +261,10 @@ pub fn list_models_within(
     block_on(&handle, async move {
         let mut headers = vec![("accept", HeaderValue::Plain("application/json".into()))];
         headers.extend(key.as_ref().map(bearer));
-        let (status, body) = fetch_metadata(&http, Request::get(endpoint.url("/v1/models"), headers), limit).await?;
+        let (status, body) =
+            fetch_metadata(&http, Request::get(endpoint.url("/v1/models"), headers), limit, key.as_ref()).await?;
         if status != 200 {
-            let error = match decode::classify(
-                status,
-                None,
-                &redact_bytes(body, key.as_ref()),
-                window.unwrap_or(FALLBACK_CONTEXT),
-                key.as_ref(),
-            ) {
+            let error = match decode::classify(status, None, &body, window.unwrap_or(FALLBACK_CONTEXT), key.as_ref()) {
                 Fail::Fatal(e) | Fail::Retry { error: e, .. } => e,
             };
             // A server may echo the key into its message.
