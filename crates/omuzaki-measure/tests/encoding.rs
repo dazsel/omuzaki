@@ -243,3 +243,41 @@ fn a_png_cicp_chunk_outranks_every_other_colour_chunk() {
     let png = with_chunks(&tagged, &[srgb_cicp]);
     assert!(decode(&png, ContentHash::of(&png), FIELD).is_ok());
 }
+
+#[test]
+fn the_first_cicp_chunk_is_the_one_that_counts() {
+    // The decoder keeps the first `cICP` and treats a repeat as a bad ancillary chunk, so Display P3 first and sRGB second
+    // is Display P3, and the reverse is sRGB.
+    let display_p3 = chunk(*b"cICP", &[12, 13, 0, 1]);
+    let srgb = chunk(*b"cICP", &[1, 13, 0, 1]);
+    let p3_first = with_chunks(&png_2x2(), &[display_p3.clone(), srgb.clone()]);
+    assert!(refusal(&p3_first).contains("primaries 12"));
+    let srgb_first = with_chunks(&png_2x2(), &[srgb, display_p3]);
+    assert!(decode(&srgb_first, ContentHash::of(&srgb_first), FIELD).is_ok());
+}
+
+#[test]
+fn an_srgb_cicp_beside_a_large_profile_is_not_refused_for_the_profile() {
+    // A 40 MiB profile of zeros compresses to about 40 KiB. It is not read when `cICP` decides the colour, so the image is
+    // accepted, where a profile that large with no `cICP` is refused.
+    let mut tagged = Vec::new();
+    let mut encoder = PngEncoder::new(&mut tagged);
+    encoder.set_icc_profile(vec![0_u8; 40 << 20]).unwrap();
+    let pixels = [9_u8, 8, 7, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+    encoder.write_image(&pixels, 2, 2, ExtendedColorType::Rgb8).unwrap();
+    assert!(refusal(&tagged).contains("inflates to more than 16 MiB"));
+    let png = with_chunks(&tagged, &[chunk(*b"cICP", &[1, 13, 0, 1])]);
+    assert!(decode(&png, ContentHash::of(&png), FIELD).is_ok());
+}
+
+#[test]
+fn a_large_png_with_an_srgb_cicp_still_decodes() {
+    // The decoder of a PNG whose `cICP` decides the colour is built under the profile bound; that must not touch the pixel
+    // decode of a big image (1500 x 1500 at 16-bit RGBA is 18 MB of output, over that bound).
+    let samples = vec![0_u8; 1500 * 1500 * 8];
+    let mut out = Vec::new();
+    PngEncoder::new(&mut out).write_image(&samples, 1500, 1500, ExtendedColorType::Rgba16).unwrap();
+    let png = with_chunks(&out, &[chunk(*b"cICP", &[1, 13, 0, 1])]);
+    let decoded = decode(&png, ContentHash::of(&png), FIELD).expect("a big sRGB PNG decodes");
+    assert_eq!((decoded.width, decoded.height), (1500, 1500));
+}

@@ -163,10 +163,13 @@ pub fn decode(bytes: &[u8], hash: ContentHash, field: &str) -> Result<Rgba8, OpE
     {
         return Err(too_large(field, plan.width, plan.height));
     }
+    // A PNG whose `cICP` chunk decides the colour never has its profile read, and the decoder is built under the profile
+    // bound too, so a large `iCCP` beside it is dropped at that bound instead of being inflated under the whole budget.
+    let cicp_decides = format == ImageFormat::Png && header::png_colour(bytes).cicp.is_some();
     let mut input = reader(bytes).map_err(|error| unreadable(field, &error))?;
-    input.limits(limits());
+    input.limits(if cicp_decides { limits_with_alloc(max_profile_bytes()) } else { limits() });
     let mut decoder = input.into_decoder().map_err(|error| unreadable(field, &error))?;
-    let icc = decoder.icc_profile().map_err(|error| unreadable(field, &error))?;
+    let icc = if cicp_decides { None } else { decoder.icc_profile().map_err(|error| unreadable(field, &error))? };
     // The decoder yields no profile for APP2 chunks it cannot put together (a sequence number out of range, a count that
     // disagrees). That is a file that declared a profile and gave none: refused, not read as untagged sRGB.
     if declared.is_some() && icc.is_none() {
@@ -254,7 +257,10 @@ fn plan(bytes: &[u8], format: ImageFormat) -> Result<Plan, String> {
         limits.max_alloc = Some(max_profile_bytes());
         input.limits(limits);
         let mut decoder = input.into_decoder().map_err(|error| error.to_string())?;
-        if header::png_colour(bytes).iccp && decoder.icc_profile().map_err(|error| error.to_string())?.is_none() {
+        // A `cICP` chunk decides the colour on its own (PNG colour chunk precedence), so a profile beside it is not looked at:
+        // one the limit dropped does not make the file unreadable.
+        let colour = header::png_colour(bytes);
+        if colour.iccp && colour.cicp.is_none() && decoder.icc_profile().map_err(|error| error.to_string())?.is_none() {
             return Err(format!(
                 "its embedded colour profile is corrupt or inflates to more than {} MiB",
                 max_profile_bytes() >> 20
@@ -293,10 +299,15 @@ fn reader(bytes: &[u8]) -> Result<ImageReader<Cursor<&[u8]>>, ImageError> {
 
 /// The decoder's own limits, the same caps the header check applies.
 fn limits() -> Limits {
+    limits_with_alloc(max_decoded_bytes())
+}
+
+/// The decoder's limits with `max_alloc` as the most it may allocate for its own data.
+fn limits_with_alloc(max_alloc: u64) -> Limits {
     let mut limits = Limits::default();
     limits.max_image_width = Some(MAX_SIDE);
     limits.max_image_height = Some(MAX_SIDE);
-    limits.max_alloc = Some(max_decoded_bytes());
+    limits.max_alloc = Some(max_alloc);
     limits
 }
 

@@ -117,7 +117,8 @@ pub(crate) fn png_colour(bytes: &[u8]) -> PngColour {
             b"IDAT" | b"IEND" => break,
             b"sRGB" => colour.srgb = true,
             b"iCCP" => colour.iccp = true,
-            b"cICP" if data.len() == 4 => colour.cicp = data.try_into().ok(),
+            // The decoder keeps the first `cICP` and treats a repeat as a bad ancillary chunk, so the first is the one that counts.
+            b"cICP" if data.len() == 4 && colour.cicp.is_none() => colour.cicp = data.try_into().ok(),
             b"gAMA" if data.len() == 4 => colour.gamma = be_u32(data, 0),
             b"cHRM" if data.len() == 32 => {
                 colour.chromaticities = Some(std::array::from_fn(|i| be_u32(data, 4 * i).unwrap_or(0)));
