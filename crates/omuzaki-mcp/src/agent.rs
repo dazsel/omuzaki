@@ -260,7 +260,11 @@ mod tests {
     fn a_connection_that_leaves_disconnects_unless_it_was_quiet_for_the_idle_timeout() {
         let idle = Duration::from_secs(1800);
         let token = credential(idle);
-        assert_eq!(end_reason(false, None, Duration::from_hours(10)), EndReason::Disconnected, "stdio has no idle drop");
+        assert_eq!(
+            end_reason(false, None, Duration::from_hours(10)),
+            EndReason::Disconnected,
+            "stdio has no idle drop"
+        );
         assert_eq!(end_reason(false, Some(&token), Duration::from_secs(5)), EndReason::Disconnected);
         assert_eq!(end_reason(false, Some(&token), idle), EndReason::IdleTimeout);
         // The port's clock runs a moment ahead of this crate's, so a hair short still counts.
@@ -279,10 +283,8 @@ mod tests {
 
     #[test]
     fn only_a_pause_is_held_for_a_resume_and_only_a_short_limit_is_waited_out() {
-        let mut paused = OpError::conflict("paused").with_detail(ErrorDetail::Paused {
-            by: Actor::System,
-            reason: PauseReason::Person,
-        });
+        let mut paused = OpError::conflict("paused")
+            .with_detail(ErrorDetail::Paused { by: Actor::System, reason: PauseReason::Person });
         assert!(!is_paused(&paused), "a conflict is not a pause");
         paused.code = ErrorCode::Waiting;
         assert!(is_paused(&paused));

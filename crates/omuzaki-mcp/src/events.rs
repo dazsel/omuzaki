@@ -17,6 +17,7 @@
 //! are event numbers, so nothing is lost or repeated.
 
 use std::collections::{BTreeSet, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
@@ -91,11 +92,19 @@ fn version_of(event: &Event) -> Option<DocVersion> {
 /// Collects the runner's events and tells subscribers when one arrives.
 pub(crate) struct EventHub {
     ring: Mutex<Ring>,
+    /// The runner accepted the subscription, so events are being delivered. Without it (the server's grants lack `read`)
+    /// the log stays empty and there is nothing to catch up with.
+    fed: AtomicBool,
     /// The sequence number of the newest event; watchers wake on every change.
     latest: watch::Sender<u64>,
 }
 
 impl EventHub {
+    /// A hub with no events; `fed` says whether a runner is going to deliver any.
+    fn empty(fed: bool) -> Self {
+        Self { ring: Mutex::default(), fed: AtomicBool::new(fed), latest: watch::Sender::new(0) }
+    }
+
     /// Subscribes to `runner` now (so no event is missed) and starts the worker that drains it. Events carry document
     /// values, so the feed needs `grants` to hold `read`: without it the runner refuses the subscription and the log
     /// stays empty, never leaking what the server's agents may not see.
@@ -103,11 +112,12 @@ impl EventHub {
     /// # Errors
     /// [`ServerError::EventFeed`] if the worker thread can't start.
     pub(crate) fn start(runner: &dyn Runner, grants: &Grants) -> Result<Arc<Self>, ServerError> {
-        let hub = Arc::new(Self { ring: Mutex::default(), latest: watch::Sender::new(0) });
+        let hub = Arc::new(Self::empty(false));
         let Ok(events) = runner.subscribe(grants) else { return Ok(hub) };
         // After the subscription, so a record appended in between is also on its way as an event: the feed starts at
         // the log's end, and only records past it are ones the feed owes us (see `Session::catch_up`).
         lock(&hub.ring).log_seq = latest_log_seq(runner, grants);
+        hub.fed.store(true, Ordering::Release);
         let weak = Arc::downgrade(&hub);
         std::thread::Builder::new()
             .name("omuzaki-mcp-events".to_owned())
@@ -144,6 +154,11 @@ impl EventHub {
     /// The number of the newest event so far (0 = none yet): where a session starts, caught up with the log.
     pub(crate) fn latest(&self) -> u64 {
         lock(&self.ring).last
+    }
+
+    /// Whether the runner is delivering events at all.
+    pub(crate) fn is_fed(&self) -> bool {
+        self.fed.load(Ordering::Acquire)
     }
 
     /// The newest op-log record the feed has delivered (or the log's end when it started): the runner's log holds
@@ -335,7 +350,7 @@ mod tests {
     }
 
     fn quiet_hub() -> Arc<EventHub> {
-        Arc::new(EventHub { ring: Mutex::default(), latest: watch::Sender::new(0) })
+        Arc::new(EventHub::empty(true))
     }
 
     #[test]
@@ -381,7 +396,7 @@ mod tests {
 
     #[test]
     fn push_numbers_events_and_keeps_a_bounded_window() {
-        let hub = Arc::new(EventHub { ring: Mutex::default(), latest: watch::Sender::new(0) });
+        let hub = Arc::new(EventHub::empty(true));
         let watcher = hub.watch();
         for i in 1..=(LOG_CAPACITY as u64 + 10) {
             hub.push(committed(i));
@@ -398,7 +413,7 @@ mod tests {
 
     #[tokio::test]
     async fn wait_for_stays_pending_until_its_event_arrives_from_another_thread() {
-        let hub = Arc::new(EventHub { ring: Mutex::default(), latest: watch::Sender::new(0) });
+        let hub = Arc::new(EventHub::empty(true));
         let waiter = {
             let hub = hub.clone();
             tokio::spawn(async move { hub.wait_for(2).await })
@@ -424,7 +439,7 @@ mod tests {
 
     #[tokio::test]
     async fn wait_for_returns_at_once_when_the_event_is_already_logged() {
-        let hub = Arc::new(EventHub { ring: Mutex::default(), latest: watch::Sender::new(0) });
+        let hub = Arc::new(EventHub::empty(true));
         hub.push(committed(1));
         hub.push(committed(2));
         hub.wait_for(1).await;
@@ -434,7 +449,8 @@ mod tests {
     #[test]
     fn the_worker_stops_when_the_hub_is_dropped() {
         let (tx, rx) = mpsc::channel();
-        let hub = Arc::new(EventHub { ring: Mutex::default(), latest: watch::Sender::new(0) });
+        let hub = Arc::new(EventHub::empty(true));
+        hub.fed.store(true, Ordering::Release);
         let weak = Arc::downgrade(&hub);
         let worker = std::thread::spawn(move || drain(&rx, &weak));
         tx.send(committed(1)).unwrap();

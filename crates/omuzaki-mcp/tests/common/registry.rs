@@ -417,7 +417,7 @@ impl Sessions for Studio {
         let effective = spec.grants.intersect(&principal);
         let id = SessionId(state.next_session);
         state.next_session += 1;
-        let pairing = state.pairing == Pairing::Required && matches!(spec.transport, Transport::Http { .. });
+        let pairing = state.pairing == Pairing::Required;
         let info = SessionInfo {
             id,
             actor: Actor::Agent { id: format!("{}#{}", spec.client, id.0), model: spec.model.clone() },

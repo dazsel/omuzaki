@@ -172,3 +172,34 @@ async fn a_recipe_refuses_a_missing_required_argument() {
     let error = client.get_prompt(GetPromptRequestParams::new("match_reference_look")).await.unwrap_err();
     assert!(error.to_string().contains("needs the argument"), "{error}");
 }
+
+/// The transcript the PR shows: the recipes listed, and each read with its arguments.
+#[tokio::test]
+async fn the_recipes_transcript() {
+    use common::wire::{Wire, check_transcript};
+
+    let runner = Arc::new(Without { inner: fake_runner(), hidden: &[] });
+    let mcp = McpServer::new(runner, McpOptions::default()).expect("server builds");
+    let mut wire = Wire::open(&mcp, "claude-code", json!({})).await;
+    wire.result("prompts/list", json!({})).await;
+    let get = |name: &str, arguments: serde_json::Value| json!({"name": name, "arguments": arguments});
+    wire.result("prompts/get", get("create_character_from_sheet", json!({"sheet": "sheets/mira.png", "name": "mira"})))
+        .await;
+    wire.result(
+        "prompts/get",
+        get("match_reference_look", json!({"reference": "refs/anime-key-art.png", "character": "mira"})),
+    )
+    .await;
+    wire.result("prompts/get", get("make_emote_pack", json!({"character": "mira", "emotes": "happy, sad, surprised"})))
+        .await;
+    wire.result("prompts/get", get("make_vrchat_quest_variant", json!({"character": "mira"}))).await;
+    wire.request("prompts/get", get("make_emote_pack", json!({}))).await;
+    check_transcript(
+        "recipes",
+        &wire.transcript(
+            "the built-in recipes",
+            "`prompts/list` offers the four recipes whose ops exist; each `prompts/get` fills in its arguments and names \
+             the tools by the names the agent calls; a missing required argument is `invalid_params`.",
+        ),
+    );
+}

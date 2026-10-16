@@ -382,7 +382,7 @@ impl Session {
     /// heads-up. The log is the authority on what committed: it holds a record before any event for it exists, so a
     /// record past the feed's position means events are still on their way.
     async fn catch_up_with_log(&self, grants: &Grants) {
-        if !grants.allows(Scope::Read) {
+        if !grants.allows(Scope::Read) || !self.shared.hub.is_fed() {
             return;
         }
         let deadline = Instant::now() + FEED_LAG;
