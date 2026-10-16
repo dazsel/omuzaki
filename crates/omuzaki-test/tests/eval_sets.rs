@@ -338,6 +338,37 @@ fn holdout_check_will_not_pass_when_it_cannot_name_every_protected_item_or_read_
 }
 
 #[test]
+fn a_file_that_changed_after_it_was_judged_leaves_nothing_in_the_store() {
+    let world = World::new();
+    let file = world.file("a", "sheet.png", b"first bytes");
+    let expected = ContentHash::of(b"other bytes");
+    let error = world.store().put_file_expecting(std::path::Path::new(&file), &expected).unwrap_err().to_string();
+    assert!(error.contains("changed while it was being added"), "{error}");
+    // Neither the object nor its index entry nor a staging file is left behind.
+    let actual = ContentHash::of(b"first bytes");
+    assert!(!world.store.path().join("objects").join(actual.to_string()).exists());
+    let leftovers: Vec<_> =
+        walk(world.store.path()).into_iter().filter(|p| !p.starts_with(world.store.path().join("incoming"))).collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+    // With the right hash it is stored.
+    let right = ContentHash::of(b"first bytes");
+    assert_eq!(world.store().put_file_expecting(std::path::Path::new(&file), &right).unwrap().hash, right);
+}
+
+fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    for entry in fs::read_dir(dir).unwrap().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            found.extend(walk(&path));
+        } else {
+            found.push(path);
+        }
+    }
+    found
+}
+
+#[test]
 fn the_file_source_returns_the_path_of_verified_bytes_for_a_pin() {
     let dir = tempfile::tempdir().unwrap();
     let store = SetStore::new(dir.path());

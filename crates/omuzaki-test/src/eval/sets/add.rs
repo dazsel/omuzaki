@@ -175,10 +175,7 @@ pub fn add(
 
     let target = match find_target(root, discovery, request, &text_hash)? {
         Found::Already(manifest) => {
-            let stored = store.put_file(&request.file)?;
-            if stored.hash != hash {
-                return Err(changed_while_added(&text_hash, &stored.hash));
-            }
+            store.put_file_expecting(&request.file, &hash)?;
             return Ok(Added { hash, manifest, new_item: false, created_set: false });
         }
         Found::Target(target) => target,
@@ -195,10 +192,7 @@ pub fn add(
         return Err(invalid("the manifest would not read back as the item that was added"));
     }
 
-    let stored = store.put_file(&request.file)?;
-    if stored.hash != hash {
-        return Err(changed_while_added(&text_hash, &stored.hash));
-    }
+    store.put_file_expecting(&request.file, &hash)?;
     let path = root.join(&relative);
     if created_set {
         if let Some(dir) = path.parent() {
@@ -213,10 +207,6 @@ pub fn add(
         fs::rename(&staging, &path).map_err(io(&path))?;
     }
     Ok(Added { hash, manifest: relative, new_item: true, created_set })
-}
-
-fn changed_while_added(text_hash: &str, now: &impl std::fmt::Display) -> SetsError {
-    invalid(format!("the file changed while it was being added ({text_hash} became {HASH_PREFIX}{now})"))
 }
 
 /// Judges the item before anything is stored: by the file's own path (never written down), by the recorded path, by its

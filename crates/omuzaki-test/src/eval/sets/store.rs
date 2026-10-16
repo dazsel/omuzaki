@@ -129,6 +129,19 @@ impl SetStore {
     /// # Errors
     /// [`SetsError::Io`] when the file cannot be read or the item cannot be written.
     pub fn put_file(&self, source: &Path) -> Result<Stored, SetsError> {
+        self.put_file_checked(source, None)
+    }
+
+    /// As [`SetStore::put_file`], but the copy is committed only if it hashes to `expected`: a file that changed after it
+    /// was judged leaves nothing in the store and no index entry.
+    ///
+    /// # Errors
+    /// [`SetsError::Invalid`] when the copy does not hash to `expected`; otherwise as [`SetStore::put_file`].
+    pub fn put_file_expecting(&self, source: &Path, expected: &ContentHash) -> Result<Stored, SetsError> {
+        self.put_file_checked(source, Some(expected))
+    }
+
+    fn put_file_checked(&self, source: &Path, expected: Option<&ContentHash>) -> Result<Stored, SetsError> {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let objects = self.root.join(OBJECTS);
         fs::create_dir_all(&objects).map_err(io_err(&objects))?;
@@ -142,6 +155,14 @@ impl SetStore {
                 return Err(e);
             }
         };
+        if let Some(expected) = expected
+            && *expected != hash
+        {
+            drop(fs::remove_file(&staging));
+            return Err(SetsError::Invalid(format!(
+                "the file changed while it was being added (b3:{expected} became b3:{hash})"
+            )));
+        }
         let target = self.object_path(&hash);
         if self.state(&hash)? == ItemState::Present {
             drop(fs::remove_file(&staging));

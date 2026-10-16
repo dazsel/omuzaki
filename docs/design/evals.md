@@ -403,7 +403,9 @@ attempts per outcome, spend against each cap, wall time, and `valid`.
 
 `$OMUZAKI_ASSETS/evals/runs/<run>/<task>/<attempt>/`: `transcript.jsonl` (every model request and response
 with usage, every tool call and result; the tools list stored once per run by hash), `checks.json` (the full check
-report with before and after values) and the renders the checks made, named by hash. Never in git (decision 0003).
+report with before and after values) and the renders the checks made: the first render check's pair is `before.png`
+and `after.png` (the fixture's and the result's, which the rating page shows), a later check's `<check id>.before.png` and
+`<check id>.after.png`; a check id is a plain name for that reason. Never in git (decision 0003).
 `omuzaki-test eval gc` removes run folders older than 90 days unless an open regression issue or a promoted script names
 them; it is a dry run unless given `--apply`, like the golden `gc`.
 
@@ -528,8 +530,8 @@ The loader (and the lint) refuse:
 - any item without a provenance record whose commercial status is `yes` and whose source is `synthetic` (made by our
   code, with the generator's commit), `own` (made for the project by a maintainer, with a consent record when a person is
   in it), `cc0`, `public-domain`, or `licensed` with a licence that allows commercial use and use in test fixtures;
-- any item whose hash or original path matches the **private list** (`crates/omuzaki-test/evals/private.toml`: path
-  prefixes of the private test material and its file hashes), even with
+- any item whose hash or original path matches the **private list** (`docs/licensing/private-material.toml`, shared with
+  `cargo xtask lint-seed`: names, path prefixes of the private test material and its file hashes), even with
   a record;
 - any fixture whose built project fails the licence gate (VF-08).
 

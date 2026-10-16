@@ -495,6 +495,39 @@ fn a_run_id_in_the_history_is_taken_even_when_its_folder_is_gone() {
 }
 
 #[test]
+fn a_recorded_run_needs_an_id_that_begins_with_its_start_minute() {
+    let ws = workspace();
+    let tmp = tempfile::tempdir().unwrap();
+    let folders = Folders::new(tmp.path());
+    let discovery = eval::discover(ws.path()).unwrap();
+    let no_items = |_: &eval::fixture::SetItemRef| Err(String::new());
+    let attempt = |id: &str, record: bool| {
+        let options = Options {
+            select: Selection::default(),
+            attempts: 1,
+            jobs: 1,
+            binary: None,
+            kind: "manual".to_owned(),
+            run_id: id.to_owned(),
+            commit: "c".to_owned(),
+            out: folders.out.clone(),
+            status: record.then(|| folders.status.clone()),
+            scratch: folders.scratch.clone(),
+            item_path: &no_items,
+            store: None,
+        };
+        run_scripted(&discovery, caps(), &PrivateList::default(), &options)
+    };
+    // An undated id would sort before every dated run in the gate and the sampler.
+    let error = attempt("manual-2", true).unwrap_err().to_string();
+    assert!(error.contains("start minute"), "{error}");
+    assert!(!folders.out.join("runs/manual-2").exists() && !folders.status.join(RUNS_FILE).exists());
+    // Unrecorded, any plain name does; recorded, a dated one does.
+    assert!(attempt("manual-2", false).is_ok());
+    assert!(attempt("2026-10-13T1000Z-mine", true).is_ok());
+}
+
+#[test]
 fn a_fixture_id_that_could_leave_the_scratch_folder_is_refused() {
     let ws = workspace();
     let dir = ws.path().join("crates/c/evals");

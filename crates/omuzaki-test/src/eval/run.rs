@@ -340,6 +340,14 @@ fn claim_run_id(options: &Options<'_>) -> Result<(), RunError> {
             "run id `{id}` is not a folder name: use {RUN_ID_CHARS}, not starting with a dot"
         )));
     }
+    // The gate, the sampler and `eval gc` order runs by the minute their id begins with: a recorded run without one would
+    // sort before every dated run.
+    if options.status.is_some() && super::clock::run_started(id).is_none() {
+        return Err(RunError::Options(format!(
+            "run id `{id}` is recorded in the history, so it must begin with its start minute (`YYYY-MM-DDTHHMMZ-...`, \
+             as the default id does)"
+        )));
+    }
     if let Some(status) = &options.status
         && history::read_runs(&status.join(RUNS_FILE))?.iter().any(|r| &r.run == id)
     {
