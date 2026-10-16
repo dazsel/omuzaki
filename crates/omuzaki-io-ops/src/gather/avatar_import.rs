@@ -22,7 +22,7 @@ use omuzaki_avatar_api::avatar::AvatarFace;
 use omuzaki_avatar_api::body::BodyView;
 use omuzaki_avatar_api::def::AvatarDef;
 use omuzaki_avatar_api::expression::AvatarExpression;
-use omuzaki_avatar_api::retained::{Retained, RetainedSprings};
+use omuzaki_avatar_api::retained::{Retained, RetainedInstance, RetainedMesh, RetainedSprings};
 use omuzaki_core::glam::{Mat4, Vec3};
 use omuzaki_io_api::{
     self as io, Avatar, Blob, EncodedImage, FirstPerson, IoError, IoScene, MaterialIx, MeshAnnotation, MeshIx, Node,
@@ -55,10 +55,10 @@ pub fn gather_imported(
     let r = export.retained;
     let mut scene = IoScene::new();
     let node_of_bone = node_of_bone(r, body.skeleton.len());
-    let mesh_index = kept_meshes(r);
-    scene.nodes = nodes(body, r, &mesh_index);
+    let meshes = meshes(body, r)?;
+    scene.nodes = nodes(body, r, &meshes.of_node);
     scene.roots = r.roots.iter().map(|&n| NodeIx(n)).collect();
-    scene.meshes = meshes(body, r)?;
+    scene.meshes = meshes.list;
     scene.skins = skins(body, r);
     scene.materials = r
         .materials
@@ -92,7 +92,7 @@ pub fn gather_imported(
             avatar.humanoid.bones.insert(name, *node);
         }
     }
-    avatar.expressions = expressions(&face, r);
+    avatar.expressions = expressions(body, &face, r);
     avatar.look_at = export.look_at.map(|l| io::LookAt {
         kind: l.kind,
         offset_from_head_bone: l.offset_from_head_bone,
@@ -156,24 +156,10 @@ fn scale_folds(r: &Retained) -> Vec<Option<Mat4>> {
     folds
 }
 
-/// The new index of each retained mesh: meshes no node draws are left out, and the rest close up.
-fn kept_meshes(r: &Retained) -> Vec<Option<u32>> {
-    let mut next = 0u32;
-    r.meshes
-        .iter()
-        .map(|m| {
-            (!m.instances.is_empty()).then(|| {
-                next += 1;
-                next - 1
-            })
-        })
-        .collect()
-}
-
 /// The file's nodes: bones at their rest (the T-pose, no scale), every other node as the file had it, except that a node
 /// under a bone whose scale the import baked keeps its place in the world: its transform takes the scale its parent no
 /// longer carries.
-fn nodes(body: &BodyView<'_>, r: &Retained, mesh_index: &[Option<u32>]) -> Vec<Node> {
+fn nodes(body: &BodyView<'_>, r: &Retained, mesh_of: &BTreeMap<u32, u32>) -> Vec<Node> {
     let folds = scale_folds(r);
     let mut parent = vec![None; r.nodes.len()];
     for (i, n) in r.nodes.iter().enumerate() {
@@ -203,7 +189,7 @@ fn nodes(body: &BodyView<'_>, r: &Retained, mesh_index: &[Option<u32>]) -> Vec<N
                 }
             };
             node.children = n.children.iter().map(|&c| NodeIx(c)).collect();
-            node.mesh = n.mesh.and_then(|m| mesh_index.get(usize::try_from(m).ok()?).copied().flatten()).map(MeshIx);
+            node.mesh = u32::try_from(i).ok().and_then(|i| mesh_of.get(&i)).map(|&m| MeshIx(m));
             node.skin = n.skin.map(SkinIx);
             node.passthrough = n.passthrough.clone();
             node
@@ -211,51 +197,107 @@ fn nodes(body: &BodyView<'_>, r: &Retained, mesh_index: &[Option<u32>]) -> Vec<N
         .collect()
 }
 
-/// Each source mesh a node draws, once: its primitives from the runtime meshes of one instance (every instance holds the
-/// same geometry; a skinned one is preferred, since a rigid instance's joints were made up at import), its morphs made
-/// dense, and its target names. A mesh drawn without a skin has that made-up skin taken off again, and the scale the
-/// import folded into its matrix baked back into its vertices, so it sits where the file had it.
+/// The meshes an export writes, and the mesh each drawing node draws.
+struct Meshes {
+    /// The meshes, in the file's order, then the copies (see [`meshes`]).
+    list: Vec<io::Mesh>,
+    /// The index in `list` of the mesh each node draws, by node.
+    of_node: BTreeMap<u32, u32>,
+}
+
+/// Each source mesh a node draws, with its primitives from the runtime meshes, its morphs made dense, and its target
+/// names. Every drawing node needs the mesh as it sees it: a skinned node as the runtime holds it, a node that draws it
+/// rigidly with the scale its one-joint skin carried baked into the vertices (that skin's joints were made up at
+/// import, so they come off again). Nodes that need the same are one mesh, which keeps the file's place in the list,
+/// so an unscaled file exports its meshes as they were. A rigid node that needs another scale gets a copy, written
+/// after every file mesh: two rigid nodes drawing one mesh at 2× and 3× both keep their own size.
 ///
 /// # Errors
 /// [`IoError::Internal`] when an instance names a runtime mesh the body does not have (a validated avatar never does).
-fn meshes(body: &BodyView<'_>, r: &Retained) -> Result<Vec<io::Mesh>, IoError> {
+fn meshes(body: &BodyView<'_>, r: &Retained) -> Result<Meshes, IoError> {
     let skinned =
         |node: u32| r.nodes.get(usize::try_from(node).unwrap_or(usize::MAX)).is_some_and(|n| n.skin.is_some());
-    let mut out = Vec::with_capacity(r.meshes.len());
+    let mut out = Meshes { list: Vec::with_capacity(r.meshes.len()), of_node: BTreeMap::new() };
+    let mut copies: Vec<(io::Mesh, Vec<u32>)> = Vec::new();
     for source in &r.meshes {
-        let Some(instance) = source.instances.iter().find(|i| skinned(i.node)).or_else(|| source.instances.first())
-        else {
-            continue;
-        };
-        let rigid = !skinned(instance.node);
-        let mut mesh = io::Mesh::new(source.name.clone());
-        mesh.morph_target_names.clone_from(&source.morph_target_names);
-        for (primitive, &runtime) in source.primitives.iter().zip(&instance.meshes) {
-            let view = body.meshes.get(usize::from(runtime)).ok_or_else(|| {
-                IoError::Internal(format!(
-                    "source mesh {:?} names runtime mesh {runtime}, which the body lacks",
-                    source.name
-                ))
-            })?;
-            let mut geometry = view.mesh.geometry.clone();
-            let count = geometry.positions.len();
-            let mut targets = view.morphs.map(|m| dense(m, count)).unwrap_or_default();
-            if rigid {
-                geometry.joints.clear();
-                geometry.weights.clear();
-                let fold = view.inverse_bind.and_then(|m| m.first()).copied().unwrap_or(Mat4::IDENTITY);
-                if fold != Mat4::IDENTITY {
-                    bake(fold, &mut geometry, &mut targets);
+        // The instances grouped by the matrix their geometry needs (identity for a skinned node), skinned groups first,
+        // each group with whether it keeps the skin's joints.
+        let mut groups: Vec<(Mat4, bool, Vec<&RetainedInstance>)> = Vec::new();
+        for instance in &source.instances {
+            let rigid = !skinned(instance.node);
+            let fold = if rigid { rigid_fold(body, instance) } else { Mat4::IDENTITY };
+            match groups.iter_mut().find(|(m, ..)| *m == fold) {
+                Some((_, keeps_joints, members)) => {
+                    *keeps_joints |= !rigid;
+                    members.push(instance);
                 }
+                None => groups.push((fold, !rigid, vec![instance])),
             }
-            let mut out = io::Primitive::new(geometry);
-            out.material = primitive.material.map(MaterialIx);
-            out.morph_targets = targets;
-            mesh.primitives.push(out);
         }
-        out.push(mesh);
+        groups.sort_by_key(|(_, keeps_joints, _)| !keeps_joints);
+        let mut groups = groups.into_iter();
+        let Some((fold, joints, members)) = groups.next() else { continue };
+        let index = u32::try_from(out.list.len()).unwrap_or(u32::MAX);
+        out.list.push(drawn(body, source, members[0], fold, joints)?);
+        out.of_node.extend(members.iter().map(|i| (i.node, index)));
+        for (fold, joints, members) in groups {
+            copies.push((drawn(body, source, members[0], fold, joints)?, members.iter().map(|i| i.node).collect()));
+        }
+    }
+    for (mesh, nodes) in copies {
+        let index = u32::try_from(out.list.len()).unwrap_or(u32::MAX);
+        out.list.push(mesh);
+        out.of_node.extend(nodes.into_iter().map(|n| (n, index)));
     }
     Ok(out)
+}
+
+/// The matrix a rigid instance's made-up skin carried: the scale its node had in the file (identity for none).
+fn rigid_fold(body: &BodyView<'_>, instance: &RetainedInstance) -> Mat4 {
+    instance
+        .meshes
+        .first()
+        .and_then(|&m| body.meshes.get(usize::from(m)))
+        .and_then(|v| v.inverse_bind)
+        .and_then(|m| m.first())
+        .copied()
+        .unwrap_or(Mat4::IDENTITY)
+}
+
+/// `source` as the nodes of one group see it, from the runtime meshes of `instance`: `fold` baked into the vertices,
+/// and the skin's joints kept only when a skinned node draws it.
+fn drawn(
+    body: &BodyView<'_>,
+    source: &RetainedMesh,
+    instance: &RetainedInstance,
+    fold: Mat4,
+    joints: bool,
+) -> Result<io::Mesh, IoError> {
+    let mut mesh = io::Mesh::new(source.name.clone());
+    mesh.morph_target_names.clone_from(&source.morph_target_names);
+    for (primitive, &runtime) in source.primitives.iter().zip(&instance.meshes) {
+        let view = body.meshes.get(usize::from(runtime)).ok_or_else(|| {
+            IoError::Internal(format!(
+                "source mesh {:?} names runtime mesh {runtime}, which the body lacks",
+                source.name
+            ))
+        })?;
+        let mut geometry = view.mesh.geometry.clone();
+        let count = geometry.positions.len();
+        let mut targets = view.morphs.map(|m| dense(m, count)).unwrap_or_default();
+        if !joints {
+            geometry.joints.clear();
+            geometry.weights.clear();
+        }
+        if fold != Mat4::IDENTITY {
+            bake(fold, &mut geometry, &mut targets);
+        }
+        let mut out = io::Primitive::new(geometry);
+        out.material = primitive.material.map(MaterialIx);
+        out.morph_targets = targets;
+        mesh.primitives.push(out);
+    }
+    Ok(mesh)
 }
 
 /// Moves a rigid mesh's vertices, normals and morph deltas by `fold`, the matrix its one-joint skin carried.
@@ -321,24 +363,31 @@ fn skins(body: &BodyView<'_>, r: &Retained) -> Vec<io::Skin> {
         .collect()
 }
 
-/// The expressions: each with its binds and overrides, a morph bind once per node and target (the runtime binds every
-/// primitive of the node's instance).
-fn expressions(face: &AvatarFace<'_>, r: &Retained) -> BTreeMap<io::ExpressionName, io::Expression> {
-    face.expressions.iter().map(|e| (e.name.clone(), expression(e, r))).collect()
+/// The expressions: each with its binds and overrides. The runtime binds a file's morph bind once per primitive of the
+/// node's instance that has the target, so each file bind is the replica on the first such primitive, and a file that
+/// binds one target twice (at different weights, which add up) keeps both.
+fn expressions(
+    body: &BodyView<'_>,
+    face: &AvatarFace<'_>,
+    r: &Retained,
+) -> BTreeMap<io::ExpressionName, io::Expression> {
+    face.expressions.iter().map(|e| (e.name.clone(), expression(body, e, r))).collect()
 }
 
 /// One expression in the file's form.
-fn expression(e: &AvatarExpression, r: &Retained) -> io::Expression {
+fn expression(body: &BodyView<'_>, e: &AvatarExpression, r: &Retained) -> io::Expression {
     let material = |name: &omuzaki_char_api::MaterialName| {
         r.materials.iter().position(|m| &m.name == name).and_then(|i| u32::try_from(i).ok()).map(MaterialIx)
     };
     let mut out = io::Expression::new();
     for bind in &e.morph {
-        let node = bind.node.or_else(|| drawing_node(r, bind.mesh));
-        let Some(node) = node.map(NodeIx) else { continue };
-        let index = u32::from(bind.target);
-        if !out.morph_binds.iter().any(|b| b.node == node && b.index == index) {
-            out.morph_binds.push(io::MorphBind { node, index, weight: bind.weight });
+        let Some(node) = bind.node.or_else(|| drawing_node(r, bind.mesh)) else { continue };
+        if first_replica(body, r, node, bind.target) == Some(bind.mesh) {
+            out.morph_binds.push(io::MorphBind {
+                node: NodeIx(node),
+                index: u32::from(bind.target),
+                weight: bind.weight,
+            });
         }
     }
     out.color_binds = e
@@ -355,6 +404,18 @@ fn expression(e: &AvatarExpression, r: &Retained) -> io::Expression {
     out.override_look_at = e.overrides.look_at;
     out.override_mouth = e.overrides.mouth;
     out
+}
+
+/// The runtime mesh of node `node`'s instance that a file bind of `target` is replicated on first: its first primitive
+/// whose runtime mesh has that target.
+fn first_replica(body: &BodyView<'_>, r: &Retained, node: u32, target: u16) -> Option<u16> {
+    let instance = r.meshes.iter().find_map(|m| m.instance(node))?;
+    instance.meshes.iter().copied().find(|&m| {
+        body.meshes
+            .get(usize::from(m))
+            .and_then(|v| v.morphs)
+            .is_some_and(|morphs| usize::from(target) < morphs.targets().len())
+    })
 }
 
 /// The node whose instance holds runtime mesh `mesh`.

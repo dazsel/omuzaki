@@ -3,7 +3,7 @@
 //! The eight `eyeLook*` channels reach the model through exactly one route, first match wins:
 //! 1. **Bone**: the file's look-at is bone type (or absent) and both eye bones exist;
 //! 2. **Native `ARKit`**: the model has its own `eyeLook*` expressions (synthesis outcome `Present` or `FromMorph`,
-//!    never `FromPreset`);
+//!    never `FromPreset`) or the generator made them from its irises (`Generated`);
 //! 3. **Presets**: the model has look presets;
 //! 4. **Inert**: none of these (`arkit.gaze_inert`).
 //!
@@ -27,7 +27,7 @@ pub fn choose(scene: &IoScene, arkit: &Arkit52Report, avatar: &mut ImportedAvata
         [HumanoidBone::LeftEye, HumanoidBone::RightEye].iter().all(|b| avatar.skeleton.humanoid_bone(*b).is_some());
     let native = arkit.channels.iter().any(|c| {
         Channel::from_name(c.channel).is_some_and(|ch| ch.region() == Region::Gaze)
-            && matches!(c.how, Synthesis::Present | Synthesis::FromMorph { .. })
+            && matches!(c.how, Synthesis::Present | Synthesis::FromMorph { .. } | Synthesis::Generated { .. })
     });
     let presets = LookDirection::ALL.iter().any(|d| avatar.expression(&ExpressionName::Preset(d.preset())).is_some());
     avatar.gaze = if bone_type && eyes {

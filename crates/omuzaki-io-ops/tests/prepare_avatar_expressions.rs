@@ -304,3 +304,71 @@ fn two_runs_give_equal_expressions_and_reports() {
     let f = face(false, 2, &[("happy", 0), ("lookUp", 1)]);
     assert_eq!(import(&f), import(&f));
 }
+
+#[test]
+fn a_collider_on_a_scaled_node_keeps_its_place_and_size_in_the_unscaled_skeleton() {
+    let mut f = face(true, 1, &[]);
+    let head = f.node("head");
+    // The head is twice the size in the file; the skeleton carries no scale, so the collider must grow with it.
+    f.scene.nodes[head.index()].transform.scale = Vec3::splat(2.0);
+    let springs = &mut f.scene.avatar.as_mut().unwrap().spring_bones;
+    springs.colliders = vec![
+        Collider { node: head, shape: ColliderShape::Sphere { offset: Vec3::Y * 0.05, radius: 0.03 } },
+        Collider {
+            node: head,
+            shape: ColliderShape::Capsule { offset: Vec3::X * 0.01, radius: 0.02, tail: Vec3::Y * 0.04 },
+        },
+        Collider { node: head, shape: ColliderShape::Plane { offset: Vec3::Z * 0.02, normal: Vec3::Y } },
+    ];
+    springs.collider_groups = vec![ColliderGroup { name: "Head".into(), colliders: vec![0, 1, 2] }];
+    let (a, _) = import(&f);
+    let shapes: Vec<omuzaki_anim_api::ColliderShape> = a.springs.groups[0].colliders.iter().map(|c| c.shape).collect();
+    let near = |a: Vec3, b: Vec3| a.distance(b) < 1e-6;
+    match shapes[..] {
+        [
+            omuzaki_anim_api::ColliderShape::Sphere { offset, radius },
+            omuzaki_anim_api::ColliderShape::Capsule { offset: c_offset, radius: c_radius, tail },
+            omuzaki_anim_api::ColliderShape::Plane { offset: p_offset, normal },
+        ] => {
+            assert!(near(offset, Vec3::Y * 0.1) && (radius - 0.06).abs() < 1e-6, "{offset} {radius}");
+            assert!(near(c_offset, Vec3::X * 0.02) && near(tail, Vec3::Y * 0.08) && (c_radius - 0.04).abs() < 1e-6);
+            assert!(near(p_offset, Vec3::Z * 0.04) && near(normal, Vec3::Y), "{p_offset} {normal}");
+        }
+        _ => panic!("three colliders in order: {shapes:?}"),
+    }
+    // The file's own records are what export writes, so they stay as the file had them.
+    let retained = &a.retained.springs.colliders;
+    assert_eq!(retained[0].shape, omuzaki_anim_api::ColliderShape::Sphere { offset: Vec3::Y * 0.05, radius: 0.03 });
+}
+
+#[test]
+fn gaze_shapes_made_from_the_irises_drive_the_eyes_of_a_model_without_eye_bones() {
+    let mut f = common::head::head();
+    // No eye bones and no look presets: before, the generated eyeLook shapes were left undriven.
+    let humanoid = &mut f.scene.avatar.as_mut().unwrap().humanoid;
+    humanoid.bones.retain(|bone, _| !matches!(bone.as_str(), "leftEye" | "rightEye"));
+    let (a, report) = import(&f);
+    assert_eq!(a.gaze, AvatarGaze::NativeArkit, "{report:?}");
+    assert!(!report.has_rule("arkit.gaze_inert"), "{report:?}");
+    for channel in [
+        "eyeLookUpLeft",
+        "eyeLookDownLeft",
+        "eyeLookInLeft",
+        "eyeLookOutLeft",
+        "eyeLookUpRight",
+        "eyeLookDownRight",
+        "eyeLookInRight",
+        "eyeLookOutRight",
+    ] {
+        let live = Channel::from_name(channel).unwrap();
+        let driven = a.drivers.get(live).unwrap_or_else(|| panic!("{channel} drives an expression"));
+        let expression = &a.expressions[driven.index()];
+        assert_eq!(expression.name, name(channel), "{channel} drives its own generated shape");
+        // A gaze weight of 1 moves the iris: the shape binds its target at full weight.
+        assert!(
+            !expression.morph.is_empty() && expression.morph.iter().all(|b| (b.weight - 1.0).abs() < 1e-6),
+            "{channel}"
+        );
+        assert!(gaze(&a).contains(live), "{channel} reaches the model");
+    }
+}

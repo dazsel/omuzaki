@@ -158,3 +158,70 @@ fn a_scaled_rigid_mesh_and_a_mesh_drawn_with_and_without_a_skin_export_where_the
     let skinned = again.nodes.iter().find(|n| n.name == "Body").and_then(|n| n.mesh).unwrap();
     assert!(!again.meshes[skinned.index()].primitives[0].mesh.joints.is_empty(), "the skinned use keeps its skin");
 }
+
+/// A small rigid triangle mesh on material 0.
+fn ribbon(scene: &mut IoScene) -> omuzaki_io_api::MeshIx {
+    use omuzaki_core::glam::{Vec2, Vec3};
+    use omuzaki_io_api::{MaterialIx, Mesh, MeshData, Primitive};
+    let data = MeshData {
+        positions: vec![Vec3::ZERO, Vec3::X * 0.02, Vec3::Y * 0.02],
+        normals: vec![Vec3::Z; 3],
+        uvs: vec![Vec2::ZERO; 3],
+        indices: vec![0, 1, 2],
+        ..MeshData::default()
+    };
+    let mut primitive = Primitive::new(data);
+    primitive.material = Some(MaterialIx(0));
+    let mut mesh = Mesh::new("Ribbon");
+    mesh.primitives = vec![primitive];
+    scene.add_mesh(mesh)
+}
+
+#[test]
+fn one_rigid_mesh_drawn_at_two_scales_exports_each_at_its_own_size() {
+    use omuzaki_core::glam::Vec3;
+    use omuzaki_io_api::Node;
+    let mut f = humanoid(0.0);
+    f.scene.add_material(off_grid());
+    add_skinned_mesh(&mut f, "Body", &["hips", "spine", "head"], 0, Some(0));
+    let mesh = ribbon(&mut f.scene);
+    for (name, scale, at) in [("Twice", 2.0, -0.1), ("Thrice", 3.0, 0.1)] {
+        let mut node = Node::new(name).at(Vec3::X * at);
+        node.mesh = Some(mesh);
+        node.transform.scale = Vec3::splat(scale);
+        let node = f.scene.add_node(node);
+        f.scene.attach(f.node("head"), node);
+    }
+    let original = through_vrm(&f.scene);
+    let (_, again) = round_trip(&original, &def());
+    let error = common::max_error(&common::file_skinning(&again), &common::file_skinning(&original));
+    assert!(error < 1e-5, "each copy sits and sizes as the file had it: {error}");
+}
+
+#[test]
+fn a_target_bound_twice_keeps_both_binds_and_their_sum() {
+    use omuzaki_io_api::{Mesh, MorphBind};
+    let mut f = humanoid(0.0);
+    f.scene.add_material(off_grid());
+    let face = add_skinned_mesh(&mut f, "Face", &["head", "neck"], 2, Some(0));
+    // A second primitive, so the runtime holds every file bind once per primitive.
+    let mesh = f.scene.nodes[face.index()].mesh.unwrap().index();
+    let copy = f.scene.meshes[mesh].primitives[0].clone();
+    f.scene.meshes[mesh].primitives.push(copy);
+    let _: &Mesh = &f.scene.meshes[mesh];
+    let mut expression = Expression::new();
+    expression.morph_binds = vec![
+        MorphBind { node: face, index: 0, weight: 0.3 },
+        MorphBind { node: face, index: 0, weight: 0.45 },
+        MorphBind { node: face, index: 1, weight: 1.0 },
+    ];
+    f.scene.avatar.as_mut().unwrap().expressions.insert(ExpressionName::parse("Pout").unwrap(), expression);
+    let original = through_vrm(&f.scene);
+    let (_, again) = round_trip(&original, &def());
+    let binds = |scene: &IoScene| {
+        let e = &scene.avatar.as_ref().unwrap().expressions[&ExpressionName::parse("Pout").unwrap()];
+        e.morph_binds.iter().map(|b| (b.index, b.weight)).collect::<Vec<_>>()
+    };
+    assert_eq!(binds(&again), vec![(0, 0.3), (0, 0.45), (1, 1.0)], "both binds of target 0, at their own weights");
+    assert_eq!(binds(&again), binds(&original));
+}

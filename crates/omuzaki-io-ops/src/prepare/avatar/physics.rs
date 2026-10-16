@@ -22,6 +22,7 @@ use omuzaki_avatar_api::avatar::ImportedAvatar;
 use omuzaki_avatar_api::retained::{
     RetainedCollider, RetainedColliderGroup, RetainedSpringChain, RetainedSpringJoint, RetainedSprings,
 };
+use omuzaki_core::glam::{Mat4, Vec3};
 use omuzaki_io_api::{self as io, Finding, IoScene, Report};
 
 use super::skeleton::Rig;
@@ -54,7 +55,11 @@ fn springs(
             .colliders
             .iter()
             .filter_map(|&c| file.colliders.get(usize::try_from(c).ok()?))
-            .filter_map(|c| Some(Collider { bone: rig.bone(c.node)?, shape: collider_shape(c.shape) }))
+            .filter_map(|c| {
+                let shape = collider_shape(c.shape);
+                let shape = rig.scale_fix(c.node).map_or(shape, |fix| in_bone_frame(shape, fix));
+                Some(Collider { bone: rig.bone(c.node)?, shape })
+            })
             .collect();
         set.groups.push(ColliderGroup { name: name.clone(), colliders });
         retained
@@ -159,7 +164,33 @@ fn collider_shape(shape: io::ColliderShape) -> ColliderShape {
             ColliderShape::CapsuleInside { offset, radius, tail }
         }
         io::ColliderShape::Plane { offset, normal } => ColliderShape::Plane { offset, normal },
-        _ => ColliderShape::Sphere { offset: omuzaki_core::glam::Vec3::ZERO, radius: 0.0 },
+        _ => ColliderShape::Sphere { offset: Vec3::ZERO, radius: 0.0 },
+    }
+}
+
+/// `shape`, given in its node's file frame, in the frame of the node's bone: the skeleton carries no scale, so a scale
+/// on the node or above it moves the offsets and tails by `fix` (the node's scale fix), grows the radii by the scale
+/// (the mean of the three axes', exact for the uniform scale a sphere can follow), and turns a plane's normal as a
+/// normal turns.
+fn in_bone_frame(shape: ColliderShape, fix: Mat4) -> ColliderShape {
+    let at = |p: Vec3| fix.transform_point3(p);
+    let grow = (fix.x_axis.truncate().length() + fix.y_axis.truncate().length() + fix.z_axis.truncate().length()) / 3.0;
+    match shape {
+        ColliderShape::Sphere { offset, radius } => ColliderShape::Sphere { offset: at(offset), radius: radius * grow },
+        ColliderShape::Capsule { offset, radius, tail } => {
+            ColliderShape::Capsule { offset: at(offset), radius: radius * grow, tail: at(tail) }
+        }
+        ColliderShape::SphereInside { offset, radius } => {
+            ColliderShape::SphereInside { offset: at(offset), radius: radius * grow }
+        }
+        ColliderShape::CapsuleInside { offset, radius, tail } => {
+            ColliderShape::CapsuleInside { offset: at(offset), radius: radius * grow, tail: at(tail) }
+        }
+        ColliderShape::Plane { offset, normal } => {
+            let turned = fix.inverse().transpose().transform_vector3(normal).try_normalize().unwrap_or(normal);
+            ColliderShape::Plane { offset: at(offset), normal: turned }
+        }
+        other => other,
     }
 }
 
