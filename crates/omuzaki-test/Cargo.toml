@@ -46,6 +46,10 @@ tempfile.workspace = true
 # The eval check library's tests (tests/eval_checks.rs): the shared mock runner over an in-memory document, with demo ops.
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 omuzaki-ops-mock = { path = "../omuzaki-ops-mock" }
+# The macro recorder and player over the real executor (tests/macros.rs): an implementation crate may not depend on the
+# executor, so the end-to-end tests live here.
+omuzaki-ops = { path = "../omuzaki-ops" }
+omuzaki-script = { path = "../omuzaki-script" }
 # The render checks fetch the renders both projects made from one asset store (tests/eval_checks_render.rs).
 omuzaki-store-mock = { path = "../omuzaki-store-mock" }
 # The real-format round trip (tests/gather_real_gltf.rs): the gather of `omuzaki-io-ops` through omuzaki-io-gltf, which no

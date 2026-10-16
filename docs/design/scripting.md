@@ -223,16 +223,51 @@ the same engine serves both and never holds a borrow across a job. `run` is a me
 | Limit | Console (person) | `script.run` (job) | Enforced by |
 |---|---|---|---|
 | Source size | 64 KiB | 64 KiB | the host, before parsing |
-| Operations (Rhai's count) | 10⁶ | 10⁷ | `set_max_operations` |
+| Operations (every tick, callbacks included) | 10⁶ | 10⁷ | `on_progress`, counted by the host |
 | Inner op calls | 10 000 | 10 000 | the bindings |
 | Call depth / expression depth | 64 / 64 (32 in functions) | same | `set_max_call_levels`, `set_max_expr_depths` |
 | String / array / map size | 1 MiB / 100 000 / 10 000 | same | Rhai's size limits |
+| Memory (heap held by the run's thread) | 256 MiB | 256 MiB | `MemoryBudget`, a counting global allocator, read in `on_progress` every operation |
 | Output (`print`, `log`) | 1 000 lines and 64 KiB; then one "output truncated" line | same | the host |
 | Wall clock | 10 s | 120 s default, 600 s at most (`limits.seconds`) | `on_progress`, checked every operation |
 | Result value | 64 KiB of JSON | 64 KiB | the host |
 
-- **Memory** is bounded by the size limits times the operation count; Rhai has no allocator cap, and the 10⁶-operation
-  string-doubling probe stopped at the 1 MiB string limit in 2 ms.
+- **Memory** is bounded by a counting allocator, not by the size limits. Rhai's size limits count the values held in
+  arrays and maps and the strings in them, but not a map's keys, so a script could hold gigabytes in keys without
+  reaching one (2,000 half-megabyte keys is 1 GiB). `omuzaki_script::MemoryBudget` wraps the system allocator, counts
+  what the run's own thread holds, and `on_progress` stops the run at `Limits::memory_bytes` (256 MiB) with the limit
+  `memory`. A binary that runs scripts installs it with `#[global_allocator]`, and a run refuses to start without it.
+  It costs under 1 ns per allocation on the run's thread and nothing measurable on other threads. The count is read
+  once per operation, so a single native call could pass the limit by what it allocates; the two functions that
+  multiply a value (`array.pad`, `string.replace`) are checked before they copy, and every other one is bounded by
+  what the run already holds. The check of `pad` measures the heap of every kind of value Rhai has (strings, arrays,
+  blobs, maps by their B-tree nodes, function pointers and what they capture, timestamps, ranges, each shared value
+  once) and refuses one it can't measure (a locked shared value, an unknown custom type). The peak is read again
+  before the run commits, so a last call that passed the limit and freed its memory again still fails the run.
+- **Turning a value into text** (`print`, `debug`, `log`, `to_string`, `to_debug`, `${...}` interpolation, `+`, `+=`
+  and `append` with a string, a map's `to_json`, the message of an uncaught `throw`) is built into a sink that stops at
+  the output or string limit, so formatting a value costs that limit and not the size of the value. The host registers
+  its own version of each for every type Rhai's packages have one for (and for any value), and each one never fails:
+  it answers the text cut at the limit and flags the run, which ends with `Limit(StringSize)`; a run that must stop
+  (already over its memory limit, or with any other reason found) gets an empty text and ends at its next operation.
+  Never failing matters because Rhai formats an interpolated part by calling `to_string` and, if that call fails in any
+  way, formats the whole value itself, unbounded. The call's first step is an operation tick, the first after Rhai
+  clones its call state for a call from native code, which the host sees (cloning the engine's tag marks the run). Every
+  call a native function makes back into the engine starts the same way (`contains` comparing with `==`, a closure
+  called by `map`), so a stop due at such a first tick is held once: the formatting function confirms the call was its
+  own and answers an empty text, and the run stops at the next tick; a hold nobody confirmed is delivered at the next
+  tick, so a native loop stops at its next element. A loop must not end with a stop still held, or the next first tick
+  could be a template's `to_string` call: the package functions whose calls have no tick of their own after the first
+  (`contains`, `index_of`, `==` and `!=` on arrays and maps) and those that ignore their calls' errors (`sort` and
+  `dedup` with a comparer, `dedup()`) are replaced by versions that check the run before each element and before they
+  return, and end with the first error a call back raises, unchanged (a limit inside a comparer ends the run and rolls
+  it back); and a closure must have a body. Rhai's own operation limit is off (it fires inside that first tick, and
+  Rhai's count drops what a callback of `map` or `filter` did); the host counts every tick instead.
+- **Closures** are accepted only as the callback of `try_op` or of an array function (`map`, `filter`, `reduce`, ...), so
+  none outlives its call: what a closure captures is not counted by Rhai's limits either. A closure with an empty body
+  (`|x| {}`) is refused too: a call of it has no operation after its first, where a stop may be held (above).
+- **Values that cross in** (`params`, op results) are measured as a whole before they are converted: all slots, all
+  entries, all string bytes and all key bytes are held to the array, map and string limits together.
 - **Cancellation:** the console's Stop button and the job manager's cancel both set the `Cancel` the host polls in
   `on_progress` (every operation) and before every inner call. A cancelled run rolls back.
 - **No `import`** in v1. One file is the unit people paste, review and share; reuse comes from macros and saved
@@ -246,11 +281,12 @@ the same engine serves both and never holds a borrow across a job. `run` is a me
 |---|---|---|---|
 | `script.check {source}` | Query | `read` | Parses and resolves, without running: the ops named with line and column; unknown ops; for argument maps written as literals, unknown and missing fields against each op's schema; the scopes the script needs; the effective ceiling; parse errors. The console runs it as you type |
 | `script.run {source \| id, params?, dry_run?, seconds?}` | Job (driver) | `script` | Runs a script (section 4). Source capped at 64 KiB; refused if `script.check` finds errors. Returns `ScriptOutcome` or the `ScriptError` as an `OpError` with code `invalid` and a `detail` carrying line and column |
-| `script.save {id, name, source \| steps, place}` / `script.delete {id, place}` | Edit | `script` | `place: project` writes the document node `scripts/<id>` (undoable); `place: mine` writes My scripts through a `ScriptStore` service (`Undo::Explicit`, empty patch, like the settings ops) (section 7) |
+| `script.save {id, name, source \| steps}` / `script.delete {id}` | Edit | `script` | Write or remove the document node `scripts/<id>` in the project: a real patch (`Undo::Auto`), so it is journalled, branchable and undone with Ctrl+Z, and a script may call them |
+| `script.save_mine {id, name, source \| steps}` / `script.delete_mine {id}` | Edit | `script` | Write or remove an item in My scripts through a `ScriptStore` service (`Undo::Explicit`, empty patch, like the settings ops) (section 7); a script cannot call them, because a rollback could not undo the write |
 | `script.list {}` | Query | `read` | Project scripts and macros, with last author and content hash |
 
 - **A `script` scope, held by no default agent ceiling.** An agent gets it per session or per credential from the
-  person, like `publish`. `script.save` needs it too: otherwise an agent could write a script for the person to run
+  person, like `publish`. `script.save` and `script.save_mine` need it too: otherwise an agent could write a script for the person to run
   with the person's grants. The scope (`Scope::Script`, serialised `script`) lands with the ops contract change, so the
   hub crate changes once.
 - **Why a driver job (ADR 0036):** a run can take seconds and must be cancellable; the job manager gives progress,
@@ -300,7 +336,7 @@ the same engine serves both and never holds a borrow across a job. `run` is a me
   op this build lacks is listed as unavailable, naming the op, like a library item (D3 rule 3).
 - **Where macros live:** in **My scripts** by default (`<config dir>/omuzaki/scripts/<id>.macro.jsonl`, next to
   `<id>.rhai`; a personal habit travels across projects, like layouts), or in the project ("Save to project") as a
-  document node `scripts/<id>` (`{name, kind: macro, steps}`), where it is undoable, journalled, branchable and
+  document node `scripts/<id>` (`{name, kind: macro, steps}`), where it is journalled, branchable and
   visible to agents through `script.list`. Saved scripts live in the same two places.
 - **Replay** runs the steps as one transaction labelled with the macro's name, through the same `Calls` path as a
   script (grants, limits, refusals; from the console over `RunnerCalls`, as a driver job when an agent or the

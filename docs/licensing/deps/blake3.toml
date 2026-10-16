@@ -1,7 +1,7 @@
 section = "rust"
 item = "blake3"
 kind = "crate"
-used_for = "content hashes for the asset store, and the names of the images in stored assistant conversations (`omuzaki-agent`)"
+used_for = "content hashes for the asset store; for saved scripts (`omuzaki-script`), whose hash a consent card is remembered by; and the names of the images in stored assistant conversations (`omuzaki-agent`)"
 status = "yes"
 audit = "(crates.io: CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception)"
 crates = ["blake3"]
