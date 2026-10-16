@@ -37,6 +37,19 @@ fn source_over_64_kib_is_refused_before_parsing() {
 }
 
 #[test]
+fn get_reads_count_against_the_call_limit_with_the_calls() {
+    // 10,000 reads are fine on their own...
+    let (_, result) = run("let n = 0; for i in 0..10000 { get(\"a/b\"); n += 1; } n");
+    assert_eq!(result.expect("10,000 reads").calls, 0, "a read is not reported as a call");
+    // ...and the 10,001st stops the run, whether reads or calls make up the count.
+    let (_, error) = fails("for i in 0..10001 {\n  get(\"a/b\");\n}");
+    assert_eq!(error.kind, limit(LimitKind::Calls));
+    let (runner, error) = fails(&format!("for i in 0..5000 {{ get(\"a/b\"); }}\nfor i in 0..5001 {{\n  {EDIT}\n}}"));
+    assert_eq!(error.kind, limit(LimitKind::Calls));
+    assert_eq!(runner.requests().len(), 5000, "5,000 reads left room for 5,000 calls");
+}
+
+#[test]
 fn endless_loop_stops_at_the_operation_limit() {
     let (_, error) = fails(&format!("{EDIT}\nloop {{ }}"));
     assert_at(&error, limit(LimitKind::Operations), 2, 6);
@@ -239,6 +252,23 @@ fn a_dry_run_plans_every_call_and_opens_nothing() {
     let outcome = result.expect("runs");
     assert_eq!((outcome.plans.len(), outcome.plans[0].op.as_str()), (1, "face.set_profile"));
     assert_eq!((runner.begins(), runner.requests()[0].mode), (0, Mode::DryRun));
+}
+
+#[test]
+fn dry_run_plans_are_bounded_like_the_result() {
+    let limits = Limits { result_bytes: 600, ..Limits::console() };
+    let mut dry = request(&format!("for i in 0..50 {{\n  {EDIT}\n}}"));
+    dry.dry_run = true;
+    let (runner, result) = run_with(dry, &Flag::default(), limits.clone(), FakeRunner::default());
+    let error = result.expect_err("the plans outgrow the limit");
+    assert_eq!(error.kind, limit(LimitKind::Result), "{error}");
+    assert!(runner.requests().len() < 50, "it stopped part way: {}", runner.requests().len());
+    runner.assert_rolled_back();
+    // Within the limit the plans are all listed.
+    let mut small = request(EDIT);
+    small.dry_run = true;
+    let (_, result) = run_with(small, &Flag::default(), limits, FakeRunner::default());
+    assert_eq!(result.expect("one plan fits").plans.len(), 1);
 }
 
 #[test]

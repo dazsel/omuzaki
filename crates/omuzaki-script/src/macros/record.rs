@@ -17,6 +17,11 @@ use crate::bindings::refusal_for;
 /// Two calls in different transactions merge only when they are this close on the runner's clock.
 const COALESCE_WINDOW: Seconds = Seconds(1.0);
 
+/// Most edits a recorder holds, open and kept together, before it stops taking more. A macro can't replay more than
+/// [`Limits::calls`](crate::Limits::calls) steps anyway, and a recorder left running (a drag is many edits) must not
+/// grow without bound; [`MacroRecorder::overflowed`] says when it stopped.
+const MAX_ENTRIES: usize = 100_000;
+
 /// One recorded edit: the call, and what is needed to decide whether it merges with its neighbour.
 struct Entry {
     tx: TxId,
@@ -49,6 +54,10 @@ pub struct MacroRecorder {
     open: HashMap<TxId, Vec<Entry>>,
     /// Committed, in commit order.
     kept: Vec<Entry>,
+    /// Entries held, open and kept together: what [`MAX_ENTRIES`] limits.
+    held: usize,
+    /// Set when an edit was dropped because the recorder was full.
+    overflowed: bool,
 }
 
 impl MacroRecorder {
@@ -72,7 +81,21 @@ impl MacroRecorder {
                 )
             })
             .collect();
-        Ok(Self { events, person: person.clone(), ops, open: HashMap::new(), kept: Vec::new() })
+        Ok(Self {
+            events,
+            person: person.clone(),
+            ops,
+            open: HashMap::new(),
+            kept: Vec::new(),
+            held: 0,
+            overflowed: false,
+        })
+    }
+
+    /// Whether an edit was left out because the recorder held 100,000 edits already. The macro it gives is
+    /// then missing the later edits, so a surface should say so instead of saving it as if complete.
+    pub fn overflowed(&self) -> bool {
+        self.overflowed
     }
 
     /// Takes in the events that are waiting, without blocking.
@@ -95,7 +118,8 @@ impl MacroRecorder {
                 self.kept.extend(self.open.remove(&tx).unwrap_or_default());
             }
             Event::TxRolledBack { tx, .. } => {
-                self.open.remove(&tx);
+                let dropped = self.open.remove(&tx).map_or(0, |entries| entries.len());
+                self.held = self.held.saturating_sub(dropped);
             }
             Event::Undone { tx, owner, .. } if owner == self.person => self.set_live(tx, false),
             Event::Redone { tx, owner, .. } if owner == self.person => self.set_live(tx, true),
@@ -112,6 +136,11 @@ impl MacroRecorder {
         if facts.kind != OpKind::Edit || !facts.replayable {
             return;
         }
+        if self.held >= MAX_ENTRIES {
+            self.overflowed = true;
+            return;
+        }
+        self.held += 1;
         self.open.entry(record.tx).or_default().push(Entry {
             tx: record.tx,
             call: RecordedCall { op: record.op.clone(), args: record.args.clone() },

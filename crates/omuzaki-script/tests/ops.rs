@@ -20,6 +20,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+/// A run refuses to start without the memory budget as the global allocator.
+#[global_allocator]
+static ALLOCATOR: omuzaki_script::MemoryBudget = omuzaki_script::MemoryBudget::system();
+
 // -- two fake ops for scripts to call ---------------------------------------------------------------------------------
 
 /// Sets a document path (an edit that undoes with its patch).

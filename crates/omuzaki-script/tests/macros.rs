@@ -143,6 +143,24 @@ fn edits_a_replay_could_not_roll_back_or_run_are_never_recorded() {
 }
 
 #[test]
+fn a_recorder_stops_taking_edits_at_its_cap_and_says_so() {
+    let mut s = Stream::new();
+    for n in 0..100_001_u64 {
+        s.applied(&alice(), n + 1, 0.0, "face.set_blend", json!({ "character": "a", "blend": n }), replaces("x"), None);
+    }
+    s.recorder.as_mut().unwrap().poll();
+    assert!(s.recorder.as_ref().unwrap().overflowed());
+    // Nothing was committed, so nothing is kept; the rolled-back ones free their room.
+    for n in 0..100_001_u64 {
+        s.runner.emit(&Event::tx_rolled_back(TxId(n + 1), alice(), DocVersion(0)));
+    }
+    s.recorder.as_mut().unwrap().poll();
+    s.blend(200_000, 0.0, "after", 0.5);
+    let m = s.finish();
+    assert_eq!(m.steps.len(), 1, "room again after the rollbacks");
+}
+
+#[test]
 fn a_rolled_back_or_unfinished_transaction_is_not_recorded() {
     let mut s = Stream::new();
     s.applied(&alice(), 1, 0.0, "face.set_profile", json!({ "character": "a" }), replaces("a"), None);

@@ -15,7 +15,7 @@ use crate::bindings::refusal_registered;
 use crate::job::JobScript;
 use crate::saved::{Body, Item, Place, item_path, not_saved, store};
 use crate::{
-    LimitKind, Limits, RecordedCall, RunRequest, ScriptError, ScriptErrorKind, ScriptHost, registered_host, registered_ops,
+    LimitKind, Limits, RecordedCall, RunRequest, ScriptError, ScriptErrorKind, registered_host,
 };
 
 /// Seconds a run gets when the caller doesn't say.
@@ -68,8 +68,8 @@ enum Planned {
 impl ScriptRun {
     /// Runs `source` on the engine over the job's calls.
     fn run_script(&self, job: &JobCtx<'_>, name: String, source: String) -> Result<Value, OpError> {
-        let ops = registered_ops();
-        let host = ScriptHost::new(&ops, Limits::job(self.seconds));
+        let ops = crate::registered::shared_ops();
+        let host = registered_host(Limits::job(self.seconds));
         let calls = JobScript::new(job, &ops);
         let request = RunRequest {
             name,

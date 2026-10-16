@@ -43,6 +43,26 @@ try_op(|| ops::face::set_profile(#{ character: \"c\" }));
 }
 
 #[test]
+fn a_directive_that_would_be_ignored_is_refused_where_it_stands() {
+    for (source, line, place) in [
+        ("1;\n// omuzaki: grants = [\"read\"]\n2", 2, "after the first line"),
+        ("// a note\n  // omuzaki: grants = []\n", 2, "after the first line"),
+        ("\u{feff}// omuzaki: grants = [\"read\"]\n1;", 1, "after a byte order mark"),
+    ] {
+        let report = host().check(source);
+        // Ours comes first; Rhai may add its own complaint about the same line.
+        let found = report.parse_errors.first().expect(source);
+        assert_eq!((found.line, found.column), (line, 1), "{source:?}: {report:?}");
+        assert!(found.message.contains(place), "{source:?}: {found:?}");
+        let (runner, result) = run(source);
+        assert_eq!(result.expect_err("refused").kind, ScriptErrorKind::Parse, "{source:?}");
+        assert_eq!(runner.requests(), vec![], "{source:?}");
+    }
+    // On the first line, with no mark, it is still read.
+    assert_eq!(host().check("// omuzaki: grants = [\"read\"]\n1").ceiling, Some(vec![Scope::Read]));
+}
+
+#[test]
 fn a_position_in_the_check_is_the_position_a_run_reports() {
     let source = "let x = 1;\nops::face::set_profil(#{ character: \"a\" });";
     let report = host().check(source);

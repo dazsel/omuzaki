@@ -15,6 +15,10 @@ use omuzaki_ops_api::{
 use omuzaki_script::{Cancel, Limits, RunRequest, RunnerCalls, ScriptError, ScriptHost, ScriptOutcome};
 use schemars::Schema;
 
+/// A run refuses to start without the memory budget as the global allocator.
+#[global_allocator]
+static ALLOCATOR: omuzaki_script::MemoryBudget = omuzaki_script::MemoryBudget::system();
+
 /// What the fake runner was asked, in order.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Entry {

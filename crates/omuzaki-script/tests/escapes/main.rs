@@ -25,6 +25,10 @@ use omuzaki_script::{Limits, RunRequest, RunnerCalls, ScriptErrorKind, ScriptHos
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// A run refuses to start without the memory budget as the global allocator.
+#[global_allocator]
+static ALLOCATOR: omuzaki_script::MemoryBudget = omuzaki_script::MemoryBudget::system();
+
 // -- the ops the corpus reaches for -------------------------------------------------------------------------------------
 
 macro_rules! fake_op {
@@ -163,8 +167,9 @@ const PARSE: ScriptErrorKind = ScriptErrorKind::Parse;
 const RUNTIME: ScriptErrorKind = ScriptErrorKind::Runtime;
 const REFUSED: ScriptErrorKind = ScriptErrorKind::Refused;
 const OP: ScriptErrorKind = ScriptErrorKind::Op;
+const MEMORY: ScriptErrorKind = ScriptErrorKind::Limit(omuzaki_script::LimitKind::Memory);
 
-const TABLE: [Row; 19] = [
+const TABLE: [Row; 21] = [
     row("eval.rhai", Caller::Person, PARSE, None),
     row("fn_pointer_by_name.rhai", Caller::Person, PARSE, None),
     row("call_function.rhai", Caller::Person, PARSE, None),
@@ -173,6 +178,8 @@ const TABLE: [Row; 19] = [
     row("closure_kept_in_array.rhai", Caller::Person, PARSE, None),
     row("closure_kept_in_map.rhai", Caller::Person, PARSE, None),
     row("closure_returned.rhai", Caller::Person, PARSE, None),
+    row("map_keys_hold_memory.rhai", Caller::Person, MEMORY, None),
+    row("map_keys_held_in_an_array.rhai", Caller::Person, MEMORY, None),
     row("closure_curried_capture.rhai", Caller::Person, PARSE, None),
     row("computed_name_variable.rhai", Caller::Person, RUNTIME, None),
     row("computed_index.rhai", Caller::Person, PARSE, None),

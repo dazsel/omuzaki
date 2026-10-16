@@ -20,6 +20,7 @@
 #![deny(missing_docs)]
 
 mod bindings;
+mod budget;
 mod calls;
 mod check;
 mod closures;
@@ -31,10 +32,11 @@ mod job;
 mod limits;
 mod macros;
 pub mod ops;
-mod registered;
+pub(crate) mod registered;
 mod saved;
 mod store;
 
+pub use budget::MemoryBudget;
 pub use calls::{Calls, Cancel, PlannedCall, RunnerCalls};
 pub use check::{CheckReport, Diagnostic, FieldError, FieldErrorKind, OpUse, Refused, effective_grants};
 pub use commands::{RunOptions, check_script, run_script};
@@ -48,3 +50,8 @@ pub use saved::{MAX_MACRO_BYTES, MAX_NAME_CHARS, Place, content_hash};
 pub use store::{MemScriptStore, ScriptKind, ScriptStore, StoredScript};
 
 omuzaki_core::define_link!();
+
+// The crate's own unit tests run scripts, and a run refuses to start without the budget allocator.
+#[cfg(test)]
+#[global_allocator]
+static ALLOCATOR: MemoryBudget = MemoryBudget::system();

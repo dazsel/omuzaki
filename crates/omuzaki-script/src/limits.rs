@@ -33,7 +33,7 @@ pub struct Limits {
     pub source_bytes: usize,
     /// Rhai operations.
     pub operations: u64,
-    /// Inner op calls.
+    /// Inner op calls, and `get(path)` reads, which are counted with them.
     pub calls: u32,
     /// Script function call depth.
     pub call_depth: usize,
@@ -47,6 +47,9 @@ pub struct Limits {
     pub array_len: usize,
     /// Largest map.
     pub map_len: usize,
+    /// Bytes the run's thread may hold on the heap, counted by [`MemoryBudget`](crate::MemoryBudget). Rhai's data
+    /// limits don't count a map's keys, so this is what bounds a run's memory in fact.
+    pub memory_bytes: usize,
     /// Output lines kept before the "output truncated" line.
     pub output_lines: usize,
     /// Output bytes kept before the "output truncated" line.
@@ -117,6 +120,7 @@ impl Limits {
             string_bytes: 1024 * 1024,
             array_len: 100_000,
             map_len: 10_000,
+            memory_bytes: 256 * 1024 * 1024,
             output_lines: 1_000,
             output_bytes: 64 * 1024,
             seconds: 10,

@@ -18,15 +18,19 @@ build has, with their arguments. Characters in the examples are the synthetic `a
 
 ## Running a script
 
-- **The Script console** has an editor, an output pane and a Run button (Ctrl+Enter; Ctrl+Shift+Enter is a dry run).
-  It checks the script as you type and underlines each problem at its line and column.
-- **The command line:** `omuzaki --project <folder> script run <file>` runs a file as you. `--dry-run` shows what it
-  would do and changes nothing, and `--params @file.json` gives the script its `params`. `omuzaki script check <file>`
-  prints what the script names and what is wrong with it (`--json` for the full report). A script error exits with the
-  code of the op error behind it; a script that does not parse or hits a limit exits with `invalid` (3).
-- **An AI agent** calls the `script_run` tool, which is the `script.run` op: one call for a loop over twenty
-  characters, instead of twenty tool calls. The agent needs the `script` scope, which no agent has by default. You
-  grant it per session, like `publish`.
+**None of these surfaces is wired into an app yet** (driver jobs, which `script.run` needs, come first), so each is
+marked *planned*. What exists today is the runtime in `crates/omuzaki-script`, and its ops once an app links it.
+
+- **The Script console** *(planned)* has an editor, an output pane and a Run button (Ctrl+Enter; Ctrl+Shift+Enter is a
+  dry run). It checks the script as you type and underlines each problem at its line and column.
+- **The command line** *(planned)*: `omuzaki --project <folder> script run <file>` runs a file as you. `--dry-run`
+  shows what it would do and changes nothing, and `--params @file.json` gives the script its `params`.
+  `omuzaki script check <file>` prints what the script names and what is wrong with it (`--json` for the full report).
+  A script error exits with the code of the op error behind it; a script that does not parse or hits a limit exits with
+  `invalid` (3).
+- **An AI agent** *(planned)* calls the `script_run` tool, which is the `script.run` op: one call for a loop over
+  twenty characters, instead of twenty tool calls. The agent needs the `script` scope, which no agent has by default.
+  You grant it per session, like `publish`.
 
 `script.check`, `script.run`, `script.save`, `script.delete` and `script.list` are ops like any other, so everything
 that can call an op can call them.
@@ -112,7 +116,7 @@ It can only narrow. A ceiling that names a scope you lack widens nothing, and on
 rather than being ignored. Paths typed inside a script add no file roots: a script reaches only the folders you
 already allowed.
 
-Before you first run a script that someone else wrote (an agent, an import), or one that names an op with `broadcast`,
+*(Planned, with the console.)* Before you first run a script that someone else wrote (an agent, an import), or one that names an op with `broadcast`,
 `publish`, `spend`, `net`, `fs` or `native`, the console shows a **consent card** listing each op with its summary and
 scope. You say Run once per script text.
 
@@ -135,11 +139,18 @@ and the column.
 | String size (bytes) | 1048576 | 1048576 |
 | Array length | 100000 | 100000 |
 | Map size | 10000 | 10000 |
+| Memory (bytes) | 268435456 | 268435456 |
 | Output lines | 1000 | 1000 |
 | Output bytes | 65536 | 65536 |
 | Wall clock (seconds) | 10 | 120 |
 | Result size (JSON bytes) | 65536 | 65536 |
-| Nesting of arrays and maps | 64 | 64 |
+| Nesting of values passed in or out | 64 | 64 |
+
+The nesting limit applies to a value that crosses the sandbox: the result, `params`, and the arguments and answers of
+ops. Inside a script, how deep arrays and maps nest is bounded by the array and map limits. Memory is the heap the run
+holds, counted as it allocates, and it includes what the data limits do not count (a map's keys, for one). A program
+that runs scripts must install `omuzaki_script::MemoryBudget` as its global allocator, and a run refuses to start
+without it.
 
 `script.run` takes `seconds` (1 to 600, 120 if you leave it out). Output past the cap becomes one "output truncated"
 line. Stop in the console, or cancelling the job, ends the run within one operation and rolls it back.

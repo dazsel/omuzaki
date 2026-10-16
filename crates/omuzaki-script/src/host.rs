@@ -1,6 +1,6 @@
 //! The Rhai engine: one fresh engine per run, the limits, cancel, output and error mapping.
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use omuzaki_core::time::{Clock, SystemClock};
@@ -18,6 +18,7 @@ use serde::Serialize;
 use serde_json::Map as JsonMap;
 
 use crate::bindings::Bindings;
+use crate::budget;
 use crate::check::{Diagnostic, effective_grants};
 use crate::closures;
 use crate::convert::{Convert, from_json, map_breaks, oversized, oversized_in, size_kind, to_json};
@@ -90,6 +91,10 @@ pub(crate) struct Run {
     limits: Limits,
     request: RunRequest,
     sent: AtomicU32,
+    /// `get(path)` reads, which count against [`Limits::calls`] with the calls sent but are not reported as calls.
+    reads: AtomicU32,
+    /// JSON bytes of the dry-run plans kept so far.
+    plan_bytes: AtomicUsize,
     output: Mutex<Output>,
     plans: Mutex<Vec<PlannedCall>>,
 }
@@ -152,7 +157,7 @@ impl Run {
         if lent.cancel.is_cancelled() {
             return Err(terminate(Stop::Cancelled));
         }
-        if self.sent.load(Ordering::SeqCst) >= self.limits.calls {
+        if self.used_calls() >= self.limits.calls {
             return Err(terminate(Stop::Limit(LimitKind::Calls)));
         }
         self.sent.fetch_add(1, Ordering::SeqCst);
@@ -171,16 +176,25 @@ impl Run {
             Ok(outcome) => {
                 let value = outcome.plan.output.clone().unwrap_or(Value::Null);
                 if dry {
-                    self.plans.lock().unwrap_or_else(PoisonError::into_inner).push(PlannedCall {
-                        op: op.to_owned(),
-                        args,
-                        plan: outcome.plan,
-                    });
+                    let planned = PlannedCall { op: op.to_owned(), args, plan: outcome.plan };
+                    // The plans are bounded like the result: together they may be no larger than `result_bytes` of
+                    // JSON, or the run stops (a dry run of 10,000 calls would otherwise hold 10,000 plans).
+                    let size = serde_json::to_vec(&planned).map_or(usize::MAX, |json| json.len());
+                    let total = self.plan_bytes.fetch_add(size, Ordering::SeqCst).saturating_add(size);
+                    if total > self.limits.result_bytes {
+                        return Err(terminate_at(Stop::Limit(LimitKind::Result), at));
+                    }
+                    self.plans.lock().unwrap_or_else(PoisonError::into_inner).push(planned);
                 }
                 Ok(value)
             }
             Err(error) => Err(raise(&error, op, at)),
         }
+    }
+
+    /// Calls sent plus reads made: what [`Limits::calls`] limits.
+    fn used_calls(&self) -> u32 {
+        self.sent.load(Ordering::SeqCst).saturating_add(self.reads.load(Ordering::SeqCst))
     }
 
     /// `get(path)`: reads the document through [`Calls::get`], as a script value (`()` when there is nothing there).
@@ -190,6 +204,10 @@ impl Run {
         if lent.cancel.is_cancelled() {
             return Err(terminate(Stop::Cancelled));
         }
+        if self.used_calls() >= self.limits.calls {
+            return Err(terminate_at(Stop::Limit(LimitKind::Calls), at));
+        }
+        self.reads.fetch_add(1, Ordering::SeqCst);
         let path = DocPath::parse(path).map_err(|e| {
             let error =
                 OpError::invalid("path", e.to_string()).hint("write a document path such as `characters/aki/face`");
@@ -212,6 +230,9 @@ impl Run {
     }
 
     fn progress(&self, started: f64, clock: &dyn Clock) -> Option<Dynamic> {
+        if budget::used_here() > self.limits.memory_bytes {
+            return Some(Dynamic::from(Stop::Limit(LimitKind::Memory)));
+        }
         self.stop(started, clock).map(Dynamic::from)
     }
 
@@ -283,6 +304,12 @@ impl ScriptHost {
         ];
         let bindings = Arc::new(Bindings::new(ops, &limits));
         Self { packages, bindings, limits, clock: Arc::new(SystemClock::new()) }
+    }
+
+    /// A host over bindings built earlier from the same ops and limits (see `registered_host`).
+    pub(crate) fn from_bindings(bindings: Arc<Bindings>, limits: Limits) -> Self {
+        let host = Self::new(&[], limits);
+        Self { bindings, ..host }
     }
 
     /// The limits this host holds its runs to.
@@ -357,6 +384,12 @@ impl ScriptHost {
         calls: &dyn Calls,
         cancel: &dyn Cancel,
     ) -> Result<ScriptOutcome, ScriptError> {
+        if !budget::installed() {
+            return Err(refused(
+                "no memory budget is installed: set `omuzaki_script::MemoryBudget` as the binary's `#[global_allocator]` \
+                 so a run's memory can be limited",
+            ));
+        }
         let Some(stack) = self.limits.worker_stack_bytes() else {
             return Err(refused(
                 "the array and map limits allow nesting that needs more stack than a run may have; lower `array_len` or `map_len`",
@@ -406,6 +439,7 @@ impl ScriptHost {
         calls: &dyn Calls,
         cancel: &dyn Cancel,
     ) -> Result<ScriptOutcome, ScriptError> {
+        let _counting = budget::Counting::start();
         // The run's grants are the caller's, narrowed to what the script names (design section 3). A source that does
         // not analyse cleanly is refused below, so its grants are never used.
         let analysis = self.analyze(&request.source);
@@ -417,6 +451,8 @@ impl ScriptHost {
             limits: self.limits.clone(),
             request,
             sent: AtomicU32::new(0),
+            reads: AtomicU32::new(0),
+            plan_bytes: AtomicUsize::new(0),
             output: Mutex::new(Output::default()),
             plans: Mutex::new(Vec::new()),
         });
@@ -654,6 +690,8 @@ mod tests {
                 dry_run: false,
             },
             sent: AtomicU32::new(0),
+            reads: AtomicU32::new(0),
+            plan_bytes: AtomicUsize::new(0),
             output: Mutex::new(Output::default()),
             plans: Mutex::new(Vec::new()),
         })
@@ -700,40 +738,78 @@ mod tests {
         "let v = []; loop { v = [#{ a: v }]; }",
     ];
 
+    /// Runs `source` on a thread with only `stack` bytes.
+    #[allow(clippy::result_large_err)] // the run's own result
+    fn run_on_share(host: &ScriptHost, stack: usize, source: &str) -> Result<ScriptOutcome, ScriptError> {
+        std::thread::scope(|scope| {
+            std::thread::Builder::new()
+                .stack_size(stack)
+                .spawn_scoped(scope, || {
+                    let request = RunRequest {
+                        name: "nest".into(),
+                        source: source.into(),
+                        actor: Actor::Person { name: "tester".into() },
+                        grants: Grants::person(),
+                        tx: None,
+                        params: JsonMap::new(),
+                        dry_run: false,
+                    };
+                    host.run_here(request, &Counting(&AtomicUsize::new(0)), &Never)
+                })
+                .unwrap()
+                .join()
+                .unwrap()
+        })
+    }
+
+    fn share_limits() -> Limits {
+        Limits { array_len: 5_000, map_len: 5_000, operations: 1_000_000_000, seconds: 120, ..Limits::console() }
+    }
+
     /// Nesting as deep as the limits allow, run on a thread with only the per-level share of the worker stack (the
     /// base is left out), must end with the size limit. This asserts the margin of `Limits::STACK_PER_LEVEL`: if a
     /// level cost more than it is allotted, the thread would overflow and abort the test process.
     #[test]
-    #[allow(clippy::result_large_err)] // the closures return the run's own result
     fn the_per_level_share_of_the_worker_stack_holds_the_deepest_nesting_the_limits_allow() {
-        let limits = Limits { array_len: 5_000, map_len: 5_000, operations: 1_000_000_000, ..Limits::console() };
+        let limits = share_limits();
         let stack = limits.worker_stack_bytes().unwrap() - Limits::STACK_BASE;
         let host = ScriptHost::new(&[], limits);
         for source in NESTERS {
-            let reached = std::thread::scope(|scope| {
-                std::thread::Builder::new()
-                    .stack_size(stack)
-                    .spawn_scoped(scope, || {
-                        let request = RunRequest {
-                            name: "nest".into(),
-                            source: source.into(),
-                            actor: Actor::Person { name: "tester".into() },
-                            grants: Grants::person(),
-                            tx: None,
-                            params: JsonMap::new(),
-                            dry_run: false,
-                        };
-                        host.run_here(request, &Counting(&AtomicUsize::new(0)), &Never)
-                    })
-                    .unwrap()
-                    .join()
-                    .unwrap()
-            });
-            let kind = reached.unwrap_err().kind;
+            let kind = run_on_share(&host, stack, source).unwrap_err().kind;
             assert!(
                 matches!(kind, ScriptErrorKind::Limit(LimitKind::ArraySize | LimitKind::MapSize)),
                 "{source}: {kind:?}"
             );
+        }
+    }
+
+    /// What a script can do to a value nested just under the limits (printing it, interpolating it, comparing it,
+    /// throwing it) recurses once per level too, so each must fit in the same per-level share.
+    #[test]
+    fn the_per_level_share_also_holds_what_a_script_does_with_the_deepest_value() {
+        let limits = Limits { array_len: 1_000, map_len: 1_000, ..share_limits() };
+        let stack = limits.worker_stack_bytes().unwrap() - Limits::STACK_BASE;
+        let host = ScriptHost::new(&[], limits);
+        let builds = [
+            "let v = []; for i in 0..950 { v = [v]; }",
+            "let v = #{}; for i in 0..950 { v = #{ a: v }; }",
+            "let v = []; for i in 0..480 { v = [#{ a: v }]; }",
+        ];
+        let uses = [
+            "let s = `${v}`; s.len()",
+            "print(v); 1",
+            "let w = v; v == w",
+            "let w = v; v != w",
+            "throw v",
+            "try { throw v; } catch (e) { 1 }",
+            "let w = [v, v]; w.len()",
+        ];
+        for build in builds {
+            for usage in uses {
+                let source = format!("{build}\n{usage}");
+                // Any outcome but an abort is fine: a value, a runtime error or a size limit.
+                let _ = run_on_share(&host, stack, &source);
+            }
         }
     }
 

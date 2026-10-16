@@ -45,7 +45,7 @@ fn the_limits_the_guide_quotes_are_the_limits_the_host_enforces() {
     let table = limits_table(&guide());
     let (console, job) = (Limits::console(), Limits::job(None));
     let expected = |pick: fn(&Limits) -> u64| (pick(&console), pick(&job));
-    let rows: [(&str, (u64, u64)); 14] = [
+    let rows: [(&str, (u64, u64)); 15] = [
         ("Source size (bytes)", expected(|l| l.source_bytes as u64)),
         ("Operations", expected(|l| l.operations)),
         ("Inner op calls", expected(|l| u64::from(l.calls))),
@@ -55,11 +55,12 @@ fn the_limits_the_guide_quotes_are_the_limits_the_host_enforces() {
         ("String size (bytes)", expected(|l| l.string_bytes as u64)),
         ("Array length", expected(|l| l.array_len as u64)),
         ("Map size", expected(|l| l.map_len as u64)),
+        ("Memory (bytes)", expected(|l| l.memory_bytes as u64)),
         ("Output lines", expected(|l| l.output_lines as u64)),
         ("Output bytes", expected(|l| l.output_bytes as u64)),
         ("Wall clock (seconds)", expected(|l| u64::from(l.seconds))),
         ("Result size (JSON bytes)", expected(|l| l.result_bytes as u64)),
-        ("Nesting of arrays and maps", expected(|l| l.value_depth as u64)),
+        ("Nesting of values passed in or out", expected(|l| l.value_depth as u64)),
     ];
     for (label, numbers) in rows {
         assert_eq!(table.get(label), Some(&numbers), "{label}");

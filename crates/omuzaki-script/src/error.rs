@@ -21,6 +21,9 @@ pub enum LimitKind {
     ArraySize,
     /// A map larger than [`Limits::map_len`](crate::Limits::map_len).
     MapSize,
+    /// The run's thread holds more heap than [`Limits::memory_bytes`](crate::Limits::memory_bytes), counted by
+    /// [`MemoryBudget`](crate::MemoryBudget).
+    Memory,
     /// The wall-clock cap, read from the host's clock.
     Time,
     /// The result is larger than [`Limits::result_bytes`](crate::Limits::result_bytes) of JSON.
