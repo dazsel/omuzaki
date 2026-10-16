@@ -31,7 +31,7 @@ mod rationale;
 mod resume;
 mod rfc3339;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -68,9 +68,10 @@ struct Shared {
     clock: Arc<dyn Clock>,
     /// Serialises every change to the folder: create, append, blob writes, delete, purge.
     lock: Mutex<()>,
-    /// Blobs written whose entry has not been appended yet. A delete in the gap must not take a blob another
-    /// conversation is about to name again.
-    pinned: Mutex<HashSet<String>>,
+    /// For each conversation and blob, how many `put_blob` calls are still waiting for the entry that names the blob.
+    /// A delete in the gap must not take a blob a conversation is about to name; counted, because the same bytes can
+    /// be put by two conversations, or twice by one, and each put has its own append.
+    pinned: Mutex<HashMap<(u64, String), usize>>,
 }
 
 impl std::fmt::Debug for ConversationStore {
@@ -89,7 +90,7 @@ impl ConversationStore {
             project: project.to_owned(),
             clock,
             lock: Mutex::new(()),
-            pinned: Mutex::new(HashSet::new()),
+            pinned: Mutex::new(HashMap::new()),
         };
         Self { shared: Arc::new(shared) }
     }
@@ -186,7 +187,7 @@ impl ConversationStore {
         }
         let block = blobs::put(&self.project_dir()?, bytes, mime)?;
         if let StoredBlock::Image { blob, .. } = &block {
-            self.pins().insert(blob.clone());
+            *self.pins().entry((id.0, blob.clone())).or_insert(0) += 1;
         }
         Ok(block)
     }
@@ -275,15 +276,21 @@ impl ConversationStore {
         let line = log::entry_line(&self.now_string(), entry)?;
         let _guard = self.guard();
         log::append(&self.conversation_dir(id)?.join(LOG), &line)?;
-        // The entry now names its blobs, so a delete can see them in a log and the pins are done.
+        // The entry now names its blobs, so a delete can see them in this log: one pending put is done per blob named.
         let mut pins = self.pins();
         for hash in blob_hashes(entry) {
-            pins.remove(hash);
+            let key = (id.0, hash.to_owned());
+            if let Some(pending) = pins.get_mut(&key) {
+                *pending -= 1;
+                if *pending == 0 {
+                    pins.remove(&key);
+                }
+            }
         }
         Ok(())
     }
 
-    fn pins(&self) -> MutexGuard<'_, HashSet<String>> {
+    fn pins(&self) -> MutexGuard<'_, HashMap<(u64, String), usize>> {
         self.shared.pinned.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -301,7 +308,13 @@ impl ConversationStore {
         for id in self.ids()? {
             remaining.push(read_log_text(&project_dir.join(id.to_string()))?);
         }
-        blobs::release(&project_dir, &removed, &remaining, &self.pins())
+        // A deleted conversation will never append, so its pending puts no longer protect anything.
+        let pinned: HashSet<String> = {
+            let mut pins = self.pins();
+            pins.retain(|(conversation, _), _| !ids.contains(conversation));
+            pins.keys().map(|(_, hash)| hash.clone()).collect()
+        };
+        blobs::release(&project_dir, &removed, &remaining, &pinned)
     }
 }
 

@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use omuzaki_agent::sink::EntrySink;
 use omuzaki_agent::{AssistantHost, Caps, HostConfig, McpClientLink};
 use omuzaki_agent_api::Assistant;
-use omuzaki_agent_api::entry::Entry;
+use omuzaki_agent_api::entry::{Entry, StoredBlock};
 use omuzaki_agent_api::error::HostError;
 use omuzaki_agent_api::event::AssistantEvent;
 use omuzaki_agent_api::hub::EventReceiver;
@@ -20,7 +20,7 @@ use omuzaki_agent_api::message::UserMessage;
 use omuzaki_core::time::{Clock, FakeClock, Seconds};
 use omuzaki_llm_api::LlmClient;
 use omuzaki_llm_api::error::LlmError;
-use omuzaki_llm_api::message::TurnRequest;
+use omuzaki_llm_api::message::{ImageMime, TurnRequest};
 use omuzaki_llm_api::provider::RuntimeHandle;
 use omuzaki_llm_api::stream::{Cancel, EventSource, LlmEvent, Next, StopReason, TurnStream};
 use omuzaki_llm_api::usage::ModelInfo;
@@ -655,6 +655,8 @@ impl Sessions for FakeSessions {
 #[derive(Default)]
 pub struct RecordingSink {
     entries: Mutex<Vec<Entry>>,
+    /// Makes `put_blob` fail, as a full disk would.
+    pub fail_blobs: std::sync::atomic::AtomicBool,
 }
 
 impl RecordingSink {
@@ -667,6 +669,13 @@ impl EntrySink for RecordingSink {
     fn append(&self, entry: &Entry) -> Result<(), HostError> {
         lock(&self.entries).push(entry.clone());
         Ok(())
+    }
+
+    fn put_blob(&self, bytes: &[u8], mime: ImageMime) -> Result<StoredBlock, HostError> {
+        if self.fail_blobs.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(HostError::Store("the disk is full".into()));
+        }
+        Ok(StoredBlock::image(mime, format!("{:x}", bytes.len())))
     }
 }
 
@@ -764,6 +773,8 @@ pub struct RigOptions {
     /// Serve a hand-written JSON-RPC server that answers `render_preview` even after the call was cancelled, as a
     /// server that finished the work first does. rmcp's own server never does.
     pub late_server: bool,
+    /// The sink refuses to keep images.
+    pub fail_blobs: bool,
 }
 
 impl Default for RigOptions {
@@ -778,6 +789,7 @@ impl Default for RigOptions {
             window: None,
             language: None,
             late_server: false,
+            fail_blobs: false,
         }
     }
 }
@@ -828,6 +840,7 @@ impl Rig {
         let sessions = FakeSessions::new(clock.clone());
         let server = make_server(&sessions);
         let sink = Arc::new(RecordingSink::default());
+        sink.fail_blobs.store(options.fail_blobs, std::sync::atomic::Ordering::SeqCst);
         let (server_io, client_io) = tokio::io::duplex(64 * 1024);
         let serving = server.clone();
         // `serve` returns only once the client has shaken hands, so it runs on the runtime while the client connects.

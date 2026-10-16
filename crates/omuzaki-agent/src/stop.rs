@@ -21,7 +21,8 @@ impl Worker {
         // `msg_from` is rebased when the history is compacted, but a stale one must never index past the end.
         let turns =
             self.messages.iter_mut().skip(run.msg_from).filter(|m| m.role == Role::Assistant).map(|m| &mut m.content);
-        cut_text_blocks(turns, read);
+        // Stop counts the answer's text from its first byte; what compaction folded into the summary is not in `turns`.
+        cut_text_blocks(turns, read.saturating_sub(run.compacted_text));
     }
 
     /// After Stop: charge is done, the stream and the call are down. The executor pauses the session, cancels its jobs,

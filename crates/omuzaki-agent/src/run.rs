@@ -48,6 +48,8 @@ pub(crate) struct AnswerRun {
     pub msg_from: usize,
     /// The conversation was compacted during this answer.
     pub compacted: bool,
+    /// Bytes of the answer's text that compaction folded into the summary, so are no longer in the history.
+    pub compacted_text: usize,
 }
 
 impl Worker {
@@ -63,6 +65,7 @@ impl Worker {
             continued: false,
             msg_from: self.messages.len(),
             compacted: false,
+            compacted_text: 0,
         };
         let result = match self.drive(&mut run, msg) {
             // Stop pressed as the answer was finishing still stops it: the queue was already cut.

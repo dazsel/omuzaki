@@ -357,18 +357,23 @@ impl Worker {
             .filter_map(|b| if let ContentBlock::Text(t) = b { Some(t.as_str()) } else { None })
             .collect::<Vec<_>>()
             .join("\n");
-        let rebuilt_render = rebuilt.iter().find_map(|b| match b {
-            ContentBlock::Image { bytes, mime, .. } => Some((bytes.clone(), *mime)),
+        // A render the rebuilt message kept is stored as a blob first, so a resume puts it back. If it cannot be stored
+        // the compaction fails with nothing changed: a history that differs from the log is worse than no compaction.
+        let render = match rebuilt.iter().find_map(|b| match b {
+            ContentBlock::Image { bytes, mime, .. } => Some((bytes, *mime)),
             _ => None,
-        });
+        }) {
+            Some((bytes, mime)) => Some(self.cfg.sink.put_blob(bytes, mime).map_err(Flow::Fail)?),
+            None => None,
+        };
         self.messages = vec![Message::new(Role::User, rebuilt)];
-        // The answer now starts after the rebuilt message; `msg_from` pointed into the history that is gone.
+        // The answer now starts after the rebuilt message; `msg_from` pointed into the history that is gone, and so did
+        // the text of the answer's earlier turns, which Stop's byte count still includes.
         run.msg_from = 1;
+        run.compacted_text = self.shared.answer_text_bytes();
         self.ledger = Ledger::new();
         self.measured = 0;
         run.compacted = true;
-        // A render the rebuilt message kept is stored as a blob, so a resume puts it back.
-        let render = rebuilt_render.and_then(|(bytes, mime)| self.cfg.sink.put_blob(&bytes, mime).ok());
         self.shared.record(match render {
             Some(block) => Entry::compacted_with_render(message, block),
             None => Entry::compacted(message),

@@ -502,3 +502,52 @@ fn a_charge_the_executor_refuses_ends_the_answer_as_session_ended_without_a_step
     assert_eq!(charges, 1, "only the first turn's charge was accepted");
     assert!(rig.sink.entries().iter().all(|e| !matches!(e, Entry::Step { .. })));
 }
+
+#[test]
+fn stop_after_a_compaction_cuts_by_the_text_read_since_the_summary_not_the_whole_answer() {
+    let heavy = ScriptTurn::new(vec![
+        LlmEvent::start("m"),
+        LlmEvent::TextDelta("AAAAAAAAAA".into()),
+        LlmEvent::tool_use_start("c1", "render_preview"),
+        LlmEvent::tool_use_end("c1"),
+        LlmEvent::Usage(omuzaki_llm_api::usage::Usage::new(15_001, 10)),
+        LlmEvent::Stop(StopReason::ToolUse),
+    ]);
+    let after = ScriptTurn::new(vec![
+        LlmEvent::start("m"),
+        LlmEvent::TextDelta("BBBBB".into()),
+        LlmEvent::TextDelta("CCCCC".into()),
+        usage(5, 5),
+        LlmEvent::Stop(StopReason::EndTurn),
+    ]);
+    let held = 6 + SUMMARY_TURN_EVENTS + 3;
+    let rig = Rig::with(
+        script(vec![heavy, say_turn("SUMMARY"), after, say_turn("ok")]),
+        RigOptions { window: Some(20_000), prices: free_prices(), hold_after: Some(held), ..RigOptions::default() },
+        standard_server,
+    );
+    rig.host.send(UserMessage::new("go")).unwrap();
+    Rig::wait_for("the held stream", || rig.gate.delivered.load(std::sync::atomic::Ordering::Acquire) >= held);
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    // The person has read the ten bytes before the summary and "BBBBB" after it, not "CCCCC".
+    let mut read = 0;
+    while read < 15 {
+        match rig.rx.try_recv() {
+            Some(AssistantEvent::TextDelta(t)) => read += t.len(),
+            Some(_) => {}
+            None => std::thread::sleep(std::time::Duration::from_millis(1)),
+        }
+    }
+    rig.host.stop();
+    rig.until_done(0.0);
+    rig.gate.open();
+    rig.say("again", 0.0);
+    let requests = rig.llm.requests();
+    let kept: String = requests[3]
+        .messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .filter_map(|b| if let ContentBlock::Text(t) = b { Some(t.as_str()) } else { None })
+        .collect();
+    assert!(kept.contains("BBBBB") && !kept.contains("CCCCC"), "{kept:?}");
+}

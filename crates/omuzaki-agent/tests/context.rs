@@ -367,3 +367,19 @@ fn a_render_the_compaction_keeps_is_stored_so_a_resume_can_put_it_back() {
         .find_map(|e| if let Entry::Compacted { render, .. } = e { render } else { None });
     assert!(stored.is_some(), "and named in the compaction entry");
 }
+
+#[test]
+fn a_render_that_cannot_be_stored_fails_the_compaction_and_leaves_the_history_alone() {
+    let options = RigOptions { fail_blobs: true, ..window(20_000) };
+    let rig = Rig::with(script(vec![heavy_turn("c1", 15_001), say_turn("SUMMARY"), say_turn("done")]), options, |s| {
+        let server = standard_server(s);
+        server.add_fixed(tool("render_preview", "Render preview", "query", true), Outcome::image(&[137, 80, 78, 71]));
+        server
+    });
+    let events = rig.say("go", 0.0);
+    assert!(events.iter().any(|e| matches!(e, AssistantEvent::Error(HostError::Store(_)))), "{events:?}");
+    assert!(
+        !rig.sink.entries().iter().any(|e| matches!(e, Entry::Compacted { .. })),
+        "nothing was compacted, so a resume still sees the whole history"
+    );
+}

@@ -315,3 +315,26 @@ fn the_conversations_trait_lists_opens_deletes_and_writes_like_the_store() {
     assert!(view.list().unwrap().is_empty());
     assert_eq!(other.read(kept).unwrap(), vec![Entry::stopped(None)]);
 }
+
+#[test]
+fn a_stop_cut_applies_to_the_transcript_and_the_raw_log_keeps_the_whole_text() {
+    let f = fixture();
+    let id = f.store.create("m").unwrap();
+    append_ticking(
+        &f,
+        id,
+        &[
+            Entry::user("go", Vec::new()),
+            Entry::assistant(vec![ContentBlock::text("AAAAAAAAAA")]),
+            Entry::assistant(vec![ContentBlock::text("BBBBBBBBBB")]),
+            Entry::stopped(Some(12)),
+        ],
+    );
+    let out = f.dir.path().join("out");
+    f.store.export(id, &out).unwrap();
+    let md = fs::read_to_string(out.join(format!("conversation-{}.md", id.0))).unwrap();
+    assert!(md.contains("AAAAAAAAAA"), "{md}");
+    assert!(md.contains("BB") && !md.contains("BBB"), "the second turn is cut to what was read: {md}");
+    let raw = fs::read_to_string(out.join("log.jsonl")).unwrap();
+    assert!(raw.contains("BBBBBBBBBB"), "the copy of the log is whole");
+}

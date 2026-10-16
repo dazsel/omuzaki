@@ -32,10 +32,13 @@ impl ConversationStore {
         let project_dir = self.project_dir()?;
         fs::create_dir_all(dest).map_err(|e| io_err("create the export folder", e))?;
 
+        // The transcript shows what the person saw: where a Stop recorded how much of its answer was read, the earlier
+        // turns of that answer are cut to it. The raw log, copied below, is untouched.
+        let cut = crate::resume::apply_stop_cuts(parsed.entries.iter().map(|s| s.entry.clone()).collect());
         let mut markdown = header(id, &parsed);
-        for stamped in &parsed.entries {
-            let missing = copy_images(&project_dir, dest, &stamped.entry)?;
-            markdown.push_str(&render(stamped, &missing));
+        for (stamped, entry) in parsed.entries.iter().zip(cut) {
+            let missing = copy_images(&project_dir, dest, &entry)?;
+            markdown.push_str(&render(&Stamped { at: stamped.at.clone(), entry }, &missing));
         }
         fs::write(dest.join(format!("conversation-{}.md", id.0)), markdown)
             .map_err(|e| io_err("write the transcript", e))?;

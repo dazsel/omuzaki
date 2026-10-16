@@ -34,11 +34,13 @@ struct Rebuild<'a> {
     results: HashMap<String, (bool, Vec<StoredBlock>)>,
     /// Where the answer in progress starts in `messages`, for a Stop to cut its text.
     answer_from: usize,
+    /// Bytes of the answer's text that sit before a compaction, so are not in `messages`.
+    answer_skip: usize,
 }
 
 impl<'a> Rebuild<'a> {
     fn new(sink: Option<&'a dyn EntrySink>) -> Self {
-        Self { sink, messages: Vec::new(), open: Vec::new(), results: HashMap::new(), answer_from: 0 }
+        Self { sink, messages: Vec::new(), open: Vec::new(), results: HashMap::new(), answer_from: 0, answer_skip: 0 }
     }
 
     fn run(mut self, entries: &[Entry]) -> Vec<Message> {
@@ -50,6 +52,11 @@ impl<'a> Rebuild<'a> {
                     // The render the rebuilt message kept comes back from its blob, after the text.
                     blocks.extend(self.content(&render.iter().cloned().collect::<Vec<_>>()));
                     self.push(Role::User, blocks);
+                    self.answer_from = self.messages.len();
+                    // Stop counted the answer's text from its start, which may be before this compaction.
+                    let answer_start =
+                        entries[..at].iter().rposition(|e| matches!(e, Entry::User { .. })).map_or(0, |u| u + 1);
+                    self.answer_skip = assistant_text_bytes(&entries[answer_start..at]);
                 }
                 &entries[at + 1..]
             }
@@ -61,6 +68,7 @@ impl<'a> Rebuild<'a> {
                     self.close_open(false);
                     self.push(Role::User, vec![ContentBlock::text(person_text(text, chips))]);
                     self.answer_from = self.messages.len();
+                    self.answer_skip = 0;
                 }
                 // Stop cut the answer's text to what the person had seen; the turns stored before it were whole.
                 Entry::Stopped { text_read, .. } => {
@@ -68,7 +76,7 @@ impl<'a> Rebuild<'a> {
                     if let Some(read) = text_read {
                         let turns =
                             self.messages.iter_mut().skip(self.answer_from).filter(|m| m.role == Role::Assistant);
-                        cut_text_blocks(turns.map(|m| &mut m.content), *read);
+                        cut_text_blocks(turns.map(|m| &mut m.content), read.saturating_sub(self.answer_skip));
                     }
                 }
                 Entry::Assistant { blocks, .. } => {
@@ -139,6 +147,16 @@ fn stopped_before(tail: &[Entry], at: usize) -> bool {
         .rev()
         .take_while(|e| !matches!(e, Entry::User { .. } | Entry::Assistant { .. }))
         .any(|e| matches!(e, Entry::Stopped { .. }))
+}
+
+/// Bytes of assistant text in `entries`.
+fn assistant_text_bytes(entries: &[Entry]) -> usize {
+    entries
+        .iter()
+        .filter_map(|e| if let Entry::Assistant { blocks, .. } = e { Some(blocks) } else { None })
+        .flatten()
+        .map(|b| if let ContentBlock::Text(t) = b { t.len() } else { 0 })
+        .sum()
 }
 
 /// The entries as the person saw them: where a Stop recorded how much of its answer was read, the text of that answer's

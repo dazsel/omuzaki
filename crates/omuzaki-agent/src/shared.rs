@@ -216,6 +216,18 @@ impl Shared {
         entries
     }
 
+    /// Bytes of the text the answer in progress has written so far, in the turns already recorded. Stop counts the
+    /// answer's text from its first byte, so this is the offset to subtract once the history it came from is gone.
+    pub(crate) fn answer_text_bytes(&self) -> usize {
+        let ctl = self.lock();
+        ctl.transcript[ctl.answer_from..]
+            .iter()
+            .filter_map(|e| if let Entry::Assistant { blocks, .. } = e { Some(blocks) } else { None })
+            .flatten()
+            .map(|b| if let ContentBlock::Text(t) = b { t.len() } else { 0 })
+            .sum()
+    }
+
     /// Marks the session over so later `send`s are refused.
     pub(crate) fn mark_ended(&self) {
         self.lock().ended = true;

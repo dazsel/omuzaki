@@ -396,3 +396,33 @@ fn store_errors_carry_no_paths() {
     let Err(HostError::Store(why)) = f.store.read(ConversationId(5)) else { panic!("expected an error") };
     assert!(!why.contains(&root), "{why}");
 }
+
+#[test]
+fn each_conversations_pending_put_of_the_same_bytes_holds_the_blob_until_its_own_append() {
+    let f = fixture();
+    let (a, b, c) = (f.store.create("m").unwrap(), f.store.create("m").unwrap(), f.store.create("m").unwrap());
+    let shared = f.store.put_blob(a, b"the same render", ImageMime::Png).unwrap();
+    f.store.sink(a).append(&Entry::tool_result("c", true, vec![shared.clone()])).unwrap();
+    // b has put the bytes and not appended yet; c puts and appends them (which must not release b's hold).
+    assert_eq!(f.store.put_blob(b, b"the same render", ImageMime::Png).unwrap(), shared);
+    assert_eq!(f.store.put_blob(c, b"the same render", ImageMime::Png).unwrap(), shared);
+    f.store.sink(c).append(&Entry::tool_result("c", true, vec![shared.clone()])).unwrap();
+    f.store.delete(a).unwrap();
+    f.store.delete(c).unwrap();
+    assert_eq!(f.blob_files().len(), 1, "b is about to name it");
+    f.store.sink(b).append(&Entry::tool_result("c", true, vec![shared])).unwrap();
+    f.store.delete(b).unwrap();
+    assert!(f.blob_files().is_empty());
+}
+
+#[test]
+fn deleting_a_conversation_drops_its_pending_holds() {
+    let f = fixture();
+    let (a, b) = (f.store.create("m").unwrap(), f.store.create("m").unwrap());
+    let shared = f.store.put_blob(a, b"render", ImageMime::Png).unwrap();
+    f.store.sink(a).append(&Entry::tool_result("c", true, vec![shared])).unwrap();
+    f.store.put_blob(b, b"render", ImageMime::Png).unwrap(); // b never appends
+    f.store.delete(b).unwrap();
+    f.store.delete(a).unwrap();
+    assert!(f.blob_files().is_empty(), "a hold of a deleted conversation does not keep a file forever");
+}
