@@ -101,8 +101,8 @@ Hot path means: runs every frame, may not allocate, lock or block, and is tested
 |---|---|---|
 | `MailboxReader::poll` | stage | hot: wait-free, one atomic load when empty, one swap and 71 relaxed loads when not |
 | `MailboxWriter::publish` | camera | hot: wait-free, 71 relaxed stores and one swap |
-| `ClockMap::map` | tracker | hot: fixed arrays, O(`CLOCK_WINDOW`) arithmetic |
-| `CameraStream::next_frame` | tracker | may block up to `timeout`, may not allocate per frame: frames are borrowed from the stream's own buffers |
+| `ClockMap::map` | camera | hot: fixed arrays, O(`CLOCK_WINDOW`) arithmetic |
+| `CameraStream::next_frame` | camera | may block up to `timeout`, may not allocate per frame: frames are borrowed from the stream's own buffers |
 | `Camera::open`, `Tracker::start` | any | cold: allocate, open devices, load models |
 
 `omuzaki-track-api/tests/hot_path.rs` proves the first three with a counting allocator (10,000 rounds, zero
@@ -277,7 +277,7 @@ thread that runs `next_frame → pixfmt → ClockMap::map → hand off → publi
 `FaceTracker::track → to_track_frame`, joined by one-slot channels; lost and stall frames per §8, sent by the camera thread;
 `LatencyStats` from a fixed histogram; `QualityTier` mapped to the tracker's settings. Acceptance: runs over
 `FakeCamera::synthetic` and `omuzaki-ai-mock` sessions; zero allocations per frame after warm-up (the anim-mock
-test); `stop` joins the thread within 100 ms; p95 of the tracking step reported against `track.face`.
+test); `stop` joins the thread within 100 ms, camera stream teardown included (a capture that returns after `stop` is dropped, and the tracker's return is handed over before the stream is torn down); p95 of the tracking step reported against `track.face`.
 
 **T3: `omuzaki-camera`: Windows capture (Media Foundation).**
 Fence: new `crates/omuzaki-camera` (Implementation, `cfg(windows)` backend first). Contracts: `omuzaki-track-api`.

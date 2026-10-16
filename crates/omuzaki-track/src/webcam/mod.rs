@@ -44,7 +44,7 @@ use crate::frame::RgbFrame;
 use crate::pipeline::FaceTracker;
 use crate::sample::{FaceSample, StageTimings};
 use preview::PreviewTap;
-use thread::{JOIN_GRACE, Outcome, Run, STOP_SLACK, Stats, StopSignal, Worker};
+use thread::{Handoff, JOIN_GRACE, Outcome, Run, STOP_SLACK, Stats, StopSignal, Worker};
 
 /// What turns an RGB frame into a face sample. [`FaceTracker`] implements it; tests script it.
 pub trait FrameTracker: Send {
@@ -195,7 +195,8 @@ pub const fn tier_stride(tier: QualityTier) -> u32 {
 
 /// One running session: its thread and the flags that end it.
 struct Session {
-    camera: JoinHandle<Option<Outcome>>,
+    camera: JoinHandle<Option<()>>,
+    handoff: Handoff,
     stop: Arc<StopSignal>,
     live: Arc<AtomicBool>,
 }
@@ -393,6 +394,7 @@ impl Tracker for WebcamTracker {
         };
         // The camera thread is handed its `Run` through a cell, so that if it cannot be started, the closure's drop
         // does not take the worker (and the tracker in it) or the camera stream with it.
+        let handoff = Handoff::default();
         let cell = Arc::new(Mutex::new(Some(Run {
             stream,
             writer,
@@ -406,6 +408,7 @@ impl Tracker for WebcamTracker {
             stats: Arc::clone(&stats),
             error: Arc::clone(&error),
             worker,
+            handoff: Arc::clone(&handoff),
         })));
         let body = {
             let cell = Arc::clone(&cell);
@@ -421,40 +424,39 @@ impl Tracker for WebcamTracker {
             }
         };
         (self.stats, self.error) = (stats, error);
-        self.session = Some(Session { camera, stop, live: Arc::clone(&live) });
+        self.session = Some(Session { camera, handoff, stop, live: Arc::clone(&live) });
         Ok(Box::new(Source { reader, live }))
     }
 
     fn stop(&mut self) {
-        let Some(Session { camera, stop, live }) = self.session.take() else { return };
+        let Some(Session { camera, handoff, stop, live }) = self.session.take() else { return };
         let hard_limit = stop.request(self.join_grace);
         live.store(false, Ordering::Relaxed);
         // One clock for both threads: the camera thread counts the tracker's grace from the request, gets a short floor
-        // when it is late, and is never allowed past the hard limit. This wait ends a slack after that limit, so
-        // whatever the camera thread does, it has finished (and handed the tracker back) before `stop` gives up on it.
+        // when it is late, and is never allowed past the hard limit. This wait ends a slack after that limit and covers
+        // the camera stream's teardown, which follows the tracker's return.
         let give_up = hard_limit + STOP_SLACK;
         while !camera.is_finished() && Instant::now() < give_up {
             std::thread::sleep(Duration::from_millis(1));
         }
-        let failure = if camera.is_finished() {
-            match camera.join() {
-                Ok(Some(Outcome { tracker, next_seq })) => {
-                    self.next_seq = next_seq;
-                    self.tracker = tracker;
-                    self.tracker.is_none().then(|| {
-                        format!(
-                            "the face tracker did not return within {:?} of stop; its thread was let go",
-                            self.join_grace
-                        )
-                    })
-                }
-                // `None` cannot happen: the cell is only emptied by the thread that runs. Treated like a panic.
-                Ok(None) | Err(_) => Some("the camera thread panicked".to_owned()),
+        // The outcome is left before the stream is torn down, so a tracker that came back is kept even when the camera
+        // thread is still busy releasing the device and is let go.
+        let outcome = handoff.lock().unwrap_or_else(PoisonError::into_inner).take();
+        let panicked = camera.is_finished() && camera.join().is_err();
+        let failure = match outcome {
+            Some(Outcome { tracker, next_seq }) => {
+                self.next_seq = next_seq;
+                self.tracker = tracker;
+                self.tracker.is_none().then(|| {
+                    format!(
+                        "the face tracker did not return within {:?} of stop; its thread was let go",
+                        self.join_grace
+                    )
+                })
             }
-        } else {
+            None if panicked => Some("the camera thread panicked".to_owned()),
             // Dropping the handle lets the thread go; it ends when the camera lets it, because `stop` is set.
-            drop(camera);
-            Some("the camera thread did not stop in time and was let go".to_owned())
+            None => Some("the camera thread did not stop in time and was let go".to_owned()),
         };
         if let Some(why) = failure {
             *self.error.lock().unwrap_or_else(PoisonError::into_inner) = Some(TrackError::Backend(why));

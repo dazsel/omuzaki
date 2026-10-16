@@ -80,6 +80,15 @@ impl StopSignal {
         self.requested.load(Ordering::Acquire)
     }
 
+    /// How long one wait may last: `poll`, but once `stop` was asked for, no longer than what is left of the hard limit,
+    /// so no wait can carry the camera thread past it.
+    pub(super) fn wait(&self, poll: Duration) -> Duration {
+        match self.limits.get() {
+            Some(limits) => poll.min(limits.hard.saturating_duration_since(Instant::now())),
+            None => poll,
+        }
+    }
+
     /// When to stop waiting for the tracker's thread: the deadline `stop` set, but at least [`JOIN_FLOOR`] from now and
     /// never past the hard limit `stop` waits for; or, when the thread ended by itself, `grace` from now.
     pub(super) fn give_up_at(&self, grace: Duration) -> Instant {
@@ -241,9 +250,15 @@ pub(super) struct Run {
     pub(super) stats: Arc<Stats>,
     pub(super) error: Arc<Mutex<Option<TrackError>>>,
     pub(super) worker: Worker,
+    pub(super) handoff: Handoff,
 }
 
-/// What the thread hands back when it ends: the tracker, if its thread came back, and the next free `seq`.
+/// Where the camera thread leaves its [`Outcome`] for `stop`. It is filled before the camera stream is torn down, so a
+/// camera that is slow to release its device cannot take the recovered tracker with it when `stop` stops waiting.
+pub(super) type Handoff = Arc<Mutex<Option<Outcome>>>;
+
+/// What the camera thread hands over when its work is done: the tracker, if its thread came back, and the next free
+/// `seq`.
 pub(super) struct Outcome {
     pub(super) tracker: Option<Box<dyn FrameTracker>>,
     pub(super) next_seq: u64,
@@ -410,9 +425,40 @@ enum Ended {
     Died,
 }
 
+/// Waits for the worker's answer to the frame just submitted. The camera thread does not run inference, so it can keep
+/// time while the tracker works: it waits a tick at a time, says so if the silence passes `lost_after`, and looks at
+/// `stop`, so neither a slow tracker nor one that never returns can hold up the lost frame or the end. Once `stop` was
+/// asked for, no tick outlasts the hard limit.
+fn await_answer(worker: &Worker, stop: &StopSignal, out: &mut Publisher) -> Result<Done, Ended> {
+    loop {
+        match worker.done.recv_timeout(stop.wait(POLL)) {
+            Ok(done) => return Ok(done),
+            Err(RecvTimeoutError::Timeout) if stop.is_requested() => return Err(Ended::Stopped),
+            Err(RecvTimeoutError::Timeout) => out.notify(true),
+            Err(RecvTimeoutError::Disconnected) => return Err(Ended::Died),
+        }
+    }
+}
+
+/// Ends the session's threads: the tracker's thread is told to end first and joined, then the outcome is left for `stop`,
+/// and only then is the camera stream torn down. A driver can take tens of milliseconds to release its device, and that
+/// must neither delay the tracker's return nor lose it if `stop` gives up on this thread meanwhile.
+fn hand_over(
+    worker: Worker,
+    stop: &StopSignal,
+    grace: Duration,
+    handoff: &Handoff,
+    next_seq: u64,
+    stream: Box<dyn CameraStream>,
+) {
+    let tracker = worker.finish(stop.give_up_at(grace));
+    *handoff.lock().unwrap_or_else(PoisonError::into_inner) = Some(Outcome { tracker, next_seq });
+    drop(stream);
+}
+
 impl Run {
     /// Runs until `stop` is set or the stream fails. A failure publishes one lost frame and is kept in `error`.
-    pub(super) fn run(self) -> Outcome {
+    pub(super) fn run(self) {
         let Self {
             mut stream,
             writer,
@@ -426,6 +472,7 @@ impl Run {
             stats,
             error,
             worker,
+            handoff,
         } = self;
         let mut out = Publisher {
             writer,
@@ -463,6 +510,10 @@ impl Run {
                     break;
                 }
             };
+            // A capture returning after `stop` is dropped: tracking it would spend the shutdown budget.
+            if stop.is_requested() {
+                break;
+            }
             let arrived = clock.now();
             if let Some(previous) = camera_seq {
                 stats.dropped.fetch_add(frame.seq.saturating_sub(previous + 1), Ordering::Relaxed);
@@ -485,23 +536,17 @@ impl Run {
                 out.publish_unusable(time);
                 continue;
             }
+            // `stop` can arrive during conversion.
+            if stop.is_requested() {
+                break;
+            }
             let job = Job { rgb: std::mem::take(&mut rgb), width: frame.width, height: frame.height, time };
             if worker.jobs.try_send(job).is_err() {
                 fail(TrackError::Backend("the face tracker's thread is gone".to_owned()));
                 out.notify(false);
                 break;
             }
-            // The camera thread does not run inference, so it can keep time while the tracker works: it waits a tick
-            // at a time, says so if the silence passes `lost_after`, and looks at `stop`, so neither a slow tracker
-            // nor one that never returns can hold up the lost frame or the end.
-            let answer = loop {
-                match worker.done.recv_timeout(POLL) {
-                    Ok(done) => break Ok(done),
-                    Err(RecvTimeoutError::Timeout) if stop.is_requested() => break Err(Ended::Stopped),
-                    Err(RecvTimeoutError::Timeout) => out.notify(true),
-                    Err(RecvTimeoutError::Disconnected) => break Err(Ended::Died),
-                }
-            };
+            let answer = await_answer(&worker, &stop, &mut out);
             let Ok(Done { rgb: pixels, result }) = answer else {
                 if matches!(answer, Err(Ended::Died)) {
                     fail(TrackError::Backend("the face tracker's thread panicked".to_owned()));
@@ -524,8 +569,7 @@ impl Run {
                 RgbFrame { data: &rgb, width: frame.width, height: frame.height, stride: 3 * frame.width as usize };
             preview.offer(&mut scratch, &frame, seq, sample.as_ref().map(|s| &s.landmarks));
         }
-        let tracker = worker.finish(stop.give_up_at(grace));
-        Outcome { tracker, next_seq: out.seq }
+        hand_over(worker, &stop, grace, &handoff, out.seq, stream);
     }
 }
 

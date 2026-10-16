@@ -109,6 +109,8 @@ struct Scripted {
     slow: Option<(Arc<FakeClock>, f64)>,
     /// While set, the gate is open: frames pass without a token, so a test can end a session without a race.
     open: Arc<AtomicBool>,
+    /// Landmarks for every face found, instead of the one repeated point.
+    landmarks: Option<[[f32; 3]; 478]>,
     calls: usize,
 }
 
@@ -124,6 +126,7 @@ impl Scripted {
             waiting: None,
             slow: None,
             open: Arc::default(),
+            landmarks: None,
             calls: 0,
         }
     }
@@ -170,7 +173,13 @@ impl FrameTracker for Scripted {
         }
         let has_face = self.faces.get(self.calls).or(self.faces.last()).copied().unwrap_or(false);
         self.calls += 1;
-        Ok((has_face.then(face), StageTimings::default()))
+        let sample = has_face.then(face).map(|mut sample| {
+            if let Some(landmarks) = self.landmarks {
+                sample.landmarks = landmarks;
+            }
+            sample
+        });
+        Ok((sample, StageTimings::default()))
     }
 
     fn reset(&mut self) {
@@ -630,6 +639,70 @@ fn the_preview_costs_nothing_while_off_and_scales_the_landmarks_while_on() {
     assert!(out.landmarks.is_none());
     // The thread is waiting for the next token; with the sender gone the scripted tracker stops waiting.
     drop(tokens);
+}
+
+/// A face-shaped set of 478 normalised landmarks: an outline ring, two eye rings and a mouth line, in the frame's own
+/// coordinates, so a picture of them shows whether they stay on the face after the preview is scaled down.
+fn face_shaped_landmarks() -> [[f32; 3]; 478] {
+    let mut points = [[0.0; 3]; 478];
+    for (i, point) in points.iter_mut().enumerate() {
+        let t = f32::from(u16::try_from(i % 100).unwrap()) / 100.0 * std::f32::consts::TAU;
+        let (x, y, rx, ry) = match i / 100 {
+            0 => (0.5, 0.5, 0.18, 0.36),
+            1 => (0.42, 0.42, 0.05, 0.03),
+            2 => (0.58, 0.42, 0.05, 0.03),
+            3 => (0.5, 0.68, 0.08, 0.02),
+            _ => (0.5, 0.55, 0.02, 0.05),
+        };
+        *point = [x + rx * t.cos(), y + ry * t.sin(), 0.0];
+    }
+    points
+}
+
+/// 1280x720 synthetic frames shrunk to the 640x360 preview keep every landmark on the pixel it names: the corner
+/// points of the ring land where the normalised coordinates say, to within the preview's rounding. With
+/// `OMUZAKI_PREVIEW_EVIDENCE` set to a file name, the preview with its landmarks drawn is also written there as a
+/// binary PPM, for the evidence picture of the pull request (synthetic input only).
+#[test]
+fn the_preview_of_a_synthetic_720p_frame_keeps_the_landmarks_on_their_pixels() {
+    let scripted = Scripted { landmarks: Some(face_shaped_landmarks()), ..Scripted::new(vec![true]) };
+    let camera = FakeCamera::synthetic(nv12(1280, 720), 100);
+    let mut tracker = webcam(camera, scripted, WebcamConfig::default());
+    tracker.set_preview(true);
+    let mut source = start(&mut tracker);
+    let mut out = PreviewFrame::default();
+    let deadline = Instant::now() + BACKSTOP;
+    // Frames keep coming; take the first preview that has a face.
+    loop {
+        next(&mut *source);
+        if tracker.preview(&mut out) && out.landmarks.is_some() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "no preview with landmarks");
+    }
+    assert_eq!((out.width, out.height), (640, 360));
+    let points = out.landmarks.as_ref().expect("a face was found");
+    for (point, want) in points.iter().zip(face_shaped_landmarks()) {
+        let (x, y) = (want[0] * 640.0, want[1] * 360.0);
+        assert!((point[0] - x).abs() < 1e-3 && (point[1] - y).abs() < 1e-3, "{point:?} for {want:?}");
+    }
+    if let Some(path) = std::env::var_os("OMUZAKI_PREVIEW_EVIDENCE") {
+        let mut rgb = out.rgb.clone();
+        for point in points {
+            let (cx, cy) = (point[0].round() as i64, point[1].round() as i64);
+            for (dx, dy) in (-1..=1).flat_map(|dx| (-1..=1).map(move |dy| (dx, dy))) {
+                let (x, y) = (cx + dx, cy + dy);
+                if (0..640).contains(&x) && (0..360).contains(&y) {
+                    let at = (y as usize * 640 + x as usize) * 3;
+                    rgb[at..at + 3].copy_from_slice(&[255, 0, 0]);
+                }
+            }
+        }
+        let mut file = b"P6\n640 360\n255\n".to_vec();
+        file.extend_from_slice(&rgb);
+        std::fs::write(path, file).unwrap();
+    }
+    tracker.stop();
 }
 
 /// A fake camera whose stream marks the camera thread for the counting allocator over a range of frames, and
@@ -1252,6 +1325,142 @@ fn a_camera_that_outlasts_the_stop_deadline_is_let_go_inside_the_budget() {
         assert!(tracker.error().is_some(), "the camera thread was let go and that is reported");
     }
     assert!(fastest < STOP_BUDGET, "the fastest of {ATTEMPTS} stops took {fastest:?}");
+}
+
+/// A camera whose `next_frame` is held until the test lets it go, as a driver is that returns a capture late. It tells
+/// the test each time the camera thread enters a call.
+struct Held {
+    inner: FakeCamera,
+    entered: Sender<()>,
+    release: Arc<Mutex<Receiver<()>>>,
+}
+struct HeldStream {
+    inner: Box<dyn CameraStream>,
+    entered: Sender<()>,
+    release: Arc<Mutex<Receiver<()>>>,
+}
+impl Camera for Held {
+    fn enumerate(&self) -> Vec<CameraInfo> {
+        self.inner.enumerate()
+    }
+
+    fn open(&mut self, id: &CameraId, request: &CameraFormatRequest) -> Result<Box<dyn CameraStream>, TrackError> {
+        let release = Arc::clone(&self.release);
+        Ok(Box::new(HeldStream { inner: self.inner.open(id, request)?, entered: self.entered.clone(), release }))
+    }
+}
+impl CameraStream for HeldStream {
+    fn format(&self) -> CameraFormat {
+        self.inner.format()
+    }
+
+    fn next_frame(&mut self, timeout: Duration) -> Result<Option<CameraFrame<'_>>, TrackError> {
+        // Best effort: the test only listens while it waits for an entry.
+        let _ = self.entered.send(());
+        // Held until the test sends a token (or, as a backstop against a hang, for a long time).
+        if self.release.lock().unwrap().recv_timeout(BACKSTOP).is_err() {
+            return Ok(None);
+        }
+        self.inner.next_frame(timeout)
+    }
+}
+
+/// A capture that returns after `stop` was asked for is dropped, not tracked: the tracker never sees it and comes back
+/// at once. Synchronised, not timed: the helper thread lets the capture go once `stop` is under way, and the
+/// tracker's own call count says whether the frame was submitted.
+#[test]
+fn a_capture_that_returns_after_stop_is_not_tracked() {
+    let (entered, entries) = channel();
+    let (release, gate) = channel();
+    let (waiting, tracked) = channel();
+    let camera =
+        Held { inner: FakeCamera::synthetic(nv12(64, 48), 10_000_000), entered, release: Arc::new(Mutex::new(gate)) };
+    let scripted = Scripted { waiting: Some(waiting), ..Scripted::new(vec![true]) };
+    let mut tracker = WebcamTracker::new(
+        Box::new(camera),
+        Box::new(scripted),
+        WebcamConfig::default().with_mode(64, 48, 30),
+        standing_clock(),
+    );
+    let mut source = start(&mut tracker);
+    // One frame goes through, so the session is live; then the camera thread is held inside its next call.
+    release.send(()).unwrap();
+    assert_eq!(next(&mut *source).status, TrackStatus::Tracking);
+    entries.recv_timeout(BACKSTOP).expect("the camera thread entered its first call");
+    entries.recv_timeout(BACKSTOP).expect("and is held inside the next one");
+    while tracked.try_recv().is_ok() {}
+    let letting_go = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(30));
+        release.send(()).ok();
+    });
+    tracker.stop();
+    letting_go.join().unwrap();
+    assert!(tracked.try_recv().is_err(), "the late capture was handed to the tracker");
+    assert_eq!(tracker.error(), None, "the tracker came back; nothing was let go");
+}
+
+/// Starts again on a camera that may still be releasing its device from the last session: `Busy` is the camera's own
+/// answer and is waited out, but any other failure (the tracker lost, say) is a test failure.
+fn start_when_released(tracker: &mut WebcamTracker) -> Box<dyn FrameSource> {
+    let config = tracker.tracker_config();
+    let deadline = Instant::now() + BACKSTOP;
+    loop {
+        match tracker.start(&FakeCamera::id(), &config) {
+            Ok(source) => return source,
+            Err(TrackError::Busy(_)) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(5)),
+            Err(e) => panic!("start failed: {e:?}"),
+        }
+    }
+}
+
+/// A camera stream that takes its second field to be torn down, as a driver can to release its device.
+struct SlowToRelease(Box<dyn CameraStream>, Duration);
+impl Drop for SlowToRelease {
+    fn drop(&mut self) {
+        std::thread::sleep(self.1);
+    }
+}
+impl CameraStream for SlowToRelease {
+    fn format(&self) -> CameraFormat {
+        self.0.format()
+    }
+
+    fn next_frame(&mut self, timeout: Duration) -> Result<Option<CameraFrame<'_>>, TrackError> {
+        self.0.next_frame(timeout)
+    }
+}
+struct SlowToReleaseCamera(FakeCamera, Duration);
+impl Camera for SlowToReleaseCamera {
+    fn enumerate(&self) -> Vec<CameraInfo> {
+        self.0.enumerate()
+    }
+
+    fn open(&mut self, id: &CameraId, request: &CameraFormatRequest) -> Result<Box<dyn CameraStream>, TrackError> {
+        Ok(Box::new(SlowToRelease(self.0.open(id, request)?, self.1)))
+    }
+}
+
+/// A stream whose teardown outlasts the whole stop budget: `stop` returns inside the budget, and the tracker that came
+/// back before the teardown began is kept, so the next `start` works (it was lost with the camera thread before).
+#[test]
+fn a_camera_that_is_slow_to_release_does_not_cost_the_tracker() {
+    let camera = SlowToReleaseCamera(FakeCamera::synthetic(nv12(64, 48), 10_000_000), Duration::from_millis(300));
+    let mut tracker = WebcamTracker::new(
+        Box::new(camera),
+        Box::new(Scripted::new(vec![true])),
+        WebcamConfig::default().with_mode(64, 48, 30),
+        standing_clock(),
+    );
+    let mut fastest = Duration::MAX;
+    for _ in 0..3 {
+        let mut source = start_when_released(&mut tracker);
+        assert_eq!(next(&mut *source).status, TrackStatus::Tracking);
+        let stopping = Instant::now();
+        tracker.stop();
+        fastest = fastest.min(stopping.elapsed());
+        assert_eq!(tracker.error(), None, "the tracker came back before the teardown; nothing was lost");
+    }
+    assert!(fastest < STOP_BUDGET, "the fastest stop took {fastest:?}");
 }
 
 /// A camera that only ever hands over frames too short for their size, and tells the test at call 300 (calls 20 to 299
