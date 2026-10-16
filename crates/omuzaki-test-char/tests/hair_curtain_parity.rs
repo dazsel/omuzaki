@@ -95,7 +95,7 @@ fn the_strip_mesh_has_the_prototypes_counts_order_and_static_attributes() {
     assert!(rest.iter().all(|g| g.len() == POINTS));
     let looks = vec![StripLook { shade: 1.0, colour: [1.0; 4] }; rest.len()];
     // The flip test needs the outward direction at one point; the dump's own bulge there gives it (see below).
-    let mesh = strip_mesh(&rest, &looks, COLUMNS, Spacing::Prototype, HEAD_CENTRE, |_| Vec3::Z).unwrap();
+    let mesh = strip_mesh(&rest, &looks, COLUMNS, Spacing::Prototype, HEAD_CENTRE, |_| Vec3::Z, |p| p).unwrap();
     assert_eq!((mesh.positions.len(), mesh.triangle_count()), (js.mesh.positions.len(), js.mesh.triangle_count()));
     assert_eq!((mesh.positions.len(), mesh.triangle_count()), (5720, 8800));
 

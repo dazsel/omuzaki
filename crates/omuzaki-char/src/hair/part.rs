@@ -41,7 +41,7 @@ use omuzaki_render_api::{AlphaMode, Outline};
 
 use super::compile::{self, CompiledEntry, Dispatch, GroupGenerator, GroupGeometry, enabled};
 use super::r#gen::bangs;
-use super::r#gen::curtain::{self, Folds, StripError};
+use super::r#gen::curtain::{self, BodyKeepOut, Folds, StripError};
 use super::r#gen::tail::Chain;
 use super::r#gen::{bun, tail};
 use super::tie;
@@ -99,12 +99,22 @@ pub fn build_with(
     generators: &dyn GroupGenerator,
 ) -> Result<PartOutput, BuildError> {
     let head = ctx.head()?;
+    // The body the hair hangs over: the curtain keeps off it. A character without one still builds.
+    let body = ctx.fit().ok();
+    let keep_out = body.as_deref().map(BodyKeepOut::new);
     let fail = |message: String| BuildError::Part { part: ctx.part.clone(), message };
     let mut stream =
         compile::stream(params.rng, &mut ctx.rng).map_err(|seed| fail(format!("invalid legacy seed {seed}")))?;
-    let mut entries =
-        compile::compile_groups(params, generators, head.as_ref(), ctx.palette, ctx.quality, stream.as_mut())
-            .map_err(|e| fail(e.to_string()))?;
+    let mut entries = compile::compile_groups_over(
+        params,
+        generators,
+        head.as_ref(),
+        body.as_deref(),
+        ctx.palette,
+        ctx.quality,
+        stream.as_mut(),
+    )
+    .map_err(|e| fail(e.to_string()))?;
     drop(stream);
     apply_streaks(params, ctx.palette, &mut entries).map_err(|e| ctx.fail(e.to_string()))?;
 
@@ -112,8 +122,8 @@ pub fn build_with(
     clear_fringes(params, head.as_ref(), &frame, &mut entries).map_err(|e| ctx.fail(e))?;
     let mut warnings = Vec::new();
     let chains = tail_chains(params, ctx, head.as_ref())?;
-    let Meshes { stat, dynamic, ties } =
-        mesh_groups(&entries, &frame, &chains, &mut warnings).map_err(|e| ctx.fail(e.to_string()))?;
+    let Meshes { stat, dynamic, ties } = mesh_groups(&entries, &frame, keep_out.as_ref(), &chains, &mut warnings)
+        .map_err(|e| ctx.fail(e.to_string()))?;
 
     let material_name =
         MaterialName::new(format!("{}-hair", ctx.part)).map_err(|e| ctx.fail(format!("material name: {e}")))?;
@@ -251,6 +261,7 @@ enum MeshError {
 fn mesh_groups<'a>(
     entries: &[CompiledEntry],
     frame: &OutwardFrame,
+    keep_out: Option<&BodyKeepOut>,
     chains: &'a BTreeMap<GroupId, Vec<Chain>>,
     warnings: &mut Vec<String>,
 ) -> Result<Meshes<'a>, MeshError> {
@@ -300,7 +311,7 @@ fn mesh_groups<'a>(
                 warnings.push(format!("the '{}' group made no clumps", entry.id));
                 continue;
             }
-            let strips = curtain::group_mesh(&entry.group.clumps, u, *columns, frame, Folds::Prototype)?;
+            let strips = curtain::group_mesh(&entry.group.clumps, u, *columns, frame, Folds::Prototype, keep_out)?;
             if strips.indices.is_empty() {
                 warnings.push(format!(
                     "the '{}' group has {columns} columns, so there is nothing to draw between them",

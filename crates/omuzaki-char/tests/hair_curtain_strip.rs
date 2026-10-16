@@ -40,6 +40,7 @@ fn curtain(count: u16, columns: u8) -> CurtainGen {
         count,
         columns,
         envelope: vec![[1.6, 0.11], [1.4, 0.17], [1.2, 0.22], [0.9, 0.26], [0.5, 0.3]],
+        root_tuck_deg: 0.0, // the prototype's own guides; the tuck has its own tests
         ..CurtainGen::default()
     }
 }
@@ -56,7 +57,7 @@ fn compile(g: &CurtainGen, seed: u64, folds: Folds) -> (Vec<HairClump>, Vec<f32>
 
 fn mesh_of(g: &CurtainGen, seed: u64, folds: Folds) -> MeshData {
     let (clumps, u) = compile(g, seed, folds);
-    curtain::group_mesh(&clumps, &u, g.columns, &frame(), folds).unwrap()
+    curtain::group_mesh(&clumps, &u, g.columns, &frame(), folds, None).unwrap()
 }
 
 /// Straight parallel guides 2 cm apart along x, hanging from y = 0 to -0.5 in the plane z = 0, outward +Z.
@@ -69,7 +70,7 @@ fn flat_guides(n: usize) -> Vec<Vec<Vec3>> {
 fn flat_mesh(guides: &[Vec<Vec3>], columns: u8, spacing: Spacing) -> MeshData {
     let refs: Vec<&[Vec3]> = guides.iter().map(Vec::as_slice).collect();
     let looks = vec![StripLook { shade: 1.0, colour: [1.0; 4] }; guides.len()];
-    strip_mesh(&refs, &looks, columns, spacing, Vec3::new(0.0, 0.1, -0.5), |_| Vec3::Z).unwrap()
+    strip_mesh(&refs, &looks, columns, spacing, Vec3::new(0.0, 0.1, -0.5), |_| Vec3::Z, |p| p).unwrap()
 }
 
 fn smoothstep(x: f32, lo: f32, hi: f32) -> f32 {
@@ -300,12 +301,12 @@ fn a_lone_guide_and_a_non_finite_guide_still_build() {
 fn the_strips_follow_u_not_the_order_of_the_clumps() {
     let g = curtain(8, 5);
     let (clumps, u) = compile(&g, 1, Folds::Prototype);
-    let straight = curtain::group_mesh(&clumps, &u, 5, &frame(), Folds::Prototype).unwrap();
+    let straight = curtain::group_mesh(&clumps, &u, 5, &frame(), Folds::Prototype, None).unwrap();
     let reversed_clumps: Vec<_> = clumps.iter().rev().cloned().collect();
     let reversed_u: Vec<f32> = u.iter().rev().copied().collect();
-    let again = curtain::group_mesh(&reversed_clumps, &reversed_u, 5, &frame(), Folds::Prototype).unwrap();
+    let again = curtain::group_mesh(&reversed_clumps, &reversed_u, 5, &frame(), Folds::Prototype, None).unwrap();
     assert_eq!(straight, again);
-    assert!(curtain::group_mesh(&clumps, &u[1..], 5, &frame(), Folds::Prototype).is_err());
+    assert!(curtain::group_mesh(&clumps, &u[1..], 5, &frame(), Folds::Prototype, None).is_err());
 }
 
 #[test]
@@ -314,7 +315,7 @@ fn the_streak_tint_and_shade_of_a_clump_reach_its_strip() {
     let (mut clumps, u) = compile(&g, 1, Folds::Prototype);
     clumps[2].tint = Some(omuzaki_core::colour::Colour::hex(0x00ff_0000));
     clumps[1].shade = 0.5;
-    let mesh = curtain::group_mesh(&clumps, &u, 3, &frame(), Folds::Prototype).unwrap();
+    let mesh = curtain::group_mesh(&clumps, &u, 3, &frame(), Folds::Prototype, None).unwrap();
     let per = 3 * GUIDE_POINTS;
     assert_eq!(mesh.colours[0], [1.0; 4]);
     assert!(mesh.colours[2 * per..3 * per].iter().all(|c| c[0] > 0.9 && c[1] < 0.1));
@@ -478,7 +479,7 @@ mod sheet {
                 let GroupGeometry::Strip { u, .. } = &group.geometry else { panic!("a strip") };
                 let body_axis = Vec2::new(proxy.centre.x, -0.03);
                 let frame = OutwardFrame { head: proxy.centre, body_axis };
-                let mesh = curtain::group_mesh(&group.clumps, u, g.columns, &frame, folds).unwrap();
+                let mesh = curtain::group_mesh(&group.clumps, u, g.columns, &frame, folds, None).unwrap();
                 eprintln!("{name} {label}: inward share {:.4}", inward_share(&mesh, &frame));
                 let target = Vec3::new(0.0, proxy.centre.y - 0.25 * proxy.axes.x / base.axes.x, 0.0);
                 let reach = 2.1 * proxy.axes.x / base.axes.x;

@@ -305,7 +305,8 @@ pub struct StripLook {
 }
 
 /// The whole strip mesh at rest. `guides` are in curtain order and `looks` has one entry per guide; `head` is the head
-/// centre, from which `hair-info` takes its polar angle.
+/// centre, from which `hair-info` takes its polar angle. `keep` is applied to every vertex once placed (the body's
+/// keep-out; `|p| p` for none), before the winding and normals are worked out.
 ///
 /// # Errors
 /// As [`strip_positions`], plus [`StripError::GuideCount`] if `looks` and `guides` differ in length and
@@ -317,6 +318,7 @@ pub fn strip_mesh(
     spacing: Spacing,
     head: Vec3,
     outward: impl Fn(Vec3) -> Vec3,
+    keep: impl Fn(Vec3) -> Vec3,
 ) -> Result<MeshData, StripError> {
     if looks.len() != guides.len() {
         return Err(StripError::GuideCount { clumps: guides.len(), u: looks.len() });
@@ -325,6 +327,7 @@ pub fn strip_mesh(
     let count = column_count(columns);
     let mut positions = vec![Vec3::ZERO; vertex_count(guides.len(), points, columns)];
     strip_positions(guides, columns, spacing, &outward, &mut positions)?;
+    positions.iter_mut().for_each(|p| *p = keep(*p));
     let flip = winding_flips(&positions, guides.len(), points, columns, &outward);
     let indices = strip_indices(guides.len(), points, columns, flip)?;
     let normals = strip_normals(&positions, &indices);
