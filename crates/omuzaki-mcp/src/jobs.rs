@@ -21,7 +21,7 @@ use serde_json::Value;
 use crate::events::EventHub;
 use crate::floats;
 use crate::render;
-use crate::session::Reporter;
+use crate::session::{PushCursor, Reporter};
 
 /// How long a client should wait between `tasks/get` polls, in milliseconds.
 const POLL_INTERVAL_MS: u64 = 1000;
@@ -90,6 +90,7 @@ fn task_of(info: &JobInfo, tool: &str, verify: Option<&str>, created: &str, unsa
 pub(crate) async fn task_saved(
     journal: Option<Arc<dyn JournalSink>>,
     reporter: Option<&Reporter>,
+    push: Option<&mut PushCursor>,
     info: &JobInfo,
     tool: &str,
     verify: Option<&str>,
@@ -104,7 +105,7 @@ pub(crate) async fn task_saved(
     if let TaskPayload::Completed { result } = &task.payload
         && let Ok(call) = serde_json::from_value::<CallToolResult>(Value::Object(result.clone()))
     {
-        let call = reporter.finish(call, unsaved, false).await;
+        let call = reporter.finish(call, unsaved, false, push).await;
         task.payload = TaskPayload::Completed { result: object(&call) };
     }
     task
@@ -168,6 +169,8 @@ pub(crate) struct JobWatch {
     pub hub: Arc<EventHub>,
     /// The host's journal, which a finished job's result waits for.
     pub journal: Option<Arc<dyn JournalSink>>,
+    /// The executor's job manager, the authority a watcher re-reads when events have left the hub's window.
+    pub jobs: Arc<dyn Jobs>,
     /// The session's result processing, for the results the pushes carry.
     pub reporter: Option<Reporter>,
     /// The hub's position from before the job started, so no event of the job can fall in the gap.
@@ -185,11 +188,13 @@ pub(crate) struct JobWatch {
 impl JobWatch {
     /// Forwards the job's events until it ends or the client goes away. The hub coalesces a burst into one wake, so a
     /// fast job sends the newest progress and status, not every step. If events fell out of the hub's window unseen
-    /// the last known state stands until the next one arrives; `tasks/get` always reads the executor.
+    /// the watcher re-reads the job from the executor (see `events`); `tasks/get` always reads the executor.
     pub(crate) async fn run(self) {
-        let Self { hub, journal, reporter, mut after, peer, token, mut job, tool, verify, created } = self;
+        let Self { hub, journal, jobs, reporter, mut after, peer, token, mut job, tool, verify, created } = self;
         let mut arrivals = hub.watch();
         let mut sent = job.fraction;
+        // This watcher's own place in the feed: reporting a push never moves the session's (see `events`).
+        let mut cursor = PushCursor::new(after);
         // Events are read before each wait, not after it: a job that finished before this watcher subscribed (inside
         // `Jobs::start`, say) has its events buffered already, and a watch only wakes for what arrives after it.
         loop {
@@ -198,6 +203,18 @@ impl JobWatch {
             }
             let mut progress = None;
             let mut changed = false;
+            if hub.lost_after(after) {
+                // Events left the window before they were read; the job may have ended in them. The executor knows
+                // where it is now, and everything in the window is older than that, so it is skipped.
+                let latest = hub.latest();
+                let grants = reporter.as_ref().and_then(Reporter::grants);
+                if let Some(grants) = grants
+                    && let Ok(now) = read_job(Arc::clone(&jobs), job.id, grants).await
+                {
+                    (job, changed) = (now, true);
+                }
+                after = latest;
+            }
             for (n, event) in hub.entries_after(after) {
                 after = n;
                 match event {
@@ -220,8 +237,16 @@ impl JobWatch {
                 }
             }
             if changed {
-                let task =
-                    task_saved(journal.clone(), reporter.as_ref(), &job, &tool, verify.as_deref(), &created).await;
+                let task = task_saved(
+                    journal.clone(),
+                    reporter.as_ref(),
+                    Some(&mut cursor),
+                    &job,
+                    &tool,
+                    verify.as_deref(),
+                    &created,
+                )
+                .await;
                 let status = Notification::new(TaskStatusNotificationParams::new(task));
                 if peer.send_notification(ServerNotification::TaskStatusNotification(status)).await.is_err() {
                     return;

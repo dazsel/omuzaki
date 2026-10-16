@@ -15,6 +15,24 @@
 //! An event reaches the log a moment after the op that caused it (a worker thread moves it over from the runner), so
 //! a result may leave out a change made a few microseconds earlier. It is then reported by the next result: positions
 //! are event numbers, so nothing is lost or repeated.
+//!
+//! # Consumers and cursors
+//!
+//! The ring is shared; every consumer of it keeps a cursor of its own, and reporting to one never moves another's:
+//!
+//! - **the session's results** (a blocking call, `tasks/get`, `approval_wait`): the session cursors in `State`
+//!   (`seen` for document changes, which is also the stale-write guard's `base`; the approval cursor). They are
+//!   *consuming*: what a result reports is marked told, because the agent has it;
+//! - **a task's pushes** (status notifications): a `PushCursor` owned by that task's watcher. A client may ignore
+//!   notifications, so a push must not consume what a later poll or call has yet to deliver; the watcher reports from
+//!   its own position and leaves the session's alone;
+//! - **resource subscribers** (`Updates`): one position each.
+//!
+//! A cursor can fall behind the ring (256 entries). A consumer that must not miss an event checks
+//! [`EventHub::lost_after`] and refreshes from the authority instead of waiting for an event that is gone: a task
+//! watcher re-reads the job from `Jobs::job`; a document position reads as version 0 (see [`EventHub::version_at`]).
+//! An approval decision that left the ring is no longer in the feed, and `approval_wait` then answers from the
+//! registry's pending list.
 
 use std::collections::{BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -194,6 +212,12 @@ impl EventHub {
             None if ring.entries.front().is_some_and(|e| e.n > seen + 1) => Some(DocVersion(0)),
             None => ring.start_version,
         }
+    }
+
+    /// Whether events after number `n` have already left the window, so a consumer at `n` has missed some.
+    pub(crate) fn lost_after(&self, n: u64) -> bool {
+        let ring = lock(&self.ring);
+        ring.last > n && ring.entries.front().is_none_or(|e| e.n > n + 1)
     }
 
     /// The events after number `n`, oldest first (those still in the window), each with its number.

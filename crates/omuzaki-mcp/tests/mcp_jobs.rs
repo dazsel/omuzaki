@@ -247,3 +247,15 @@ async fn a_job_that_finishes_inside_start_still_pushes_its_completion() {
     assert_eq!(client.next_status().await.task.status(), TaskStatus::Completed);
     assert_eq!(client.task(&id).await.status(), TaskStatus::Completed);
 }
+
+#[tokio::test]
+async fn a_completion_pushed_out_of_the_event_window_is_still_reported() {
+    let fake = Fake::new();
+    *fake.finish_in_start.lock().unwrap() = Some(done());
+    // More events than the hub keeps (256) follow the completion before the watcher looks.
+    *fake.flood_in_start.lock().unwrap() = 400;
+    let mut client = Client::connect(&server(&fake), true).await;
+    let id = task_id(client.export().await);
+    assert_eq!(client.next_status().await.task.status(), TaskStatus::Completed);
+    assert_eq!(client.task(&id).await.status(), TaskStatus::Completed);
+}

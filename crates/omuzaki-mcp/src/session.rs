@@ -28,7 +28,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::{self, Link};
-use crate::approvals::{self, Own, OwnApprovals};
+use crate::approvals::{self, ApprovalCursor, Own, OwnApprovals};
 use crate::builtin::{APPROVAL_WAIT_DEFAULT_SECONDS, APPROVAL_WAIT_MAX_SECONDS, Builtin, CAUSE_MAX_CHARS};
 use crate::catalog::{Entry, Route};
 use crate::changes::{OwnTxs, Report};
@@ -610,6 +610,7 @@ impl Session {
         context: &RequestContext<RoleServer>,
     ) -> Result<Reply, OpError> {
         let jobs = self.task_jobs(context).ok_or_else(|| OpError::unsupported("this client did not declare tasks"))?;
+        let watched = Arc::clone(&jobs);
         // A plain job joins no transaction (ADR 0036 decision 1), so there is no cause to carry either.
         let request = self.request(entry, unit_args, args, Mode::Apply, actor, None, None);
         let hub = Arc::clone(&self.shared.hub);
@@ -620,12 +621,13 @@ impl Session {
         let verify = self.shared.guidance.verify().map(str::to_owned);
         let created = self.shared.task_times.of(job.id);
         let journal = self.shared.journal.clone();
-        let task = jobs::task_saved(journal.clone(), None, &job, &tool, verify.as_deref(), &created).await;
+        let task = jobs::task_saved(journal.clone(), None, None, &job, &tool, verify.as_deref(), &created).await;
         let token = context.meta.get_progress_token();
         tokio::spawn(
             JobWatch {
                 hub,
                 journal,
+                jobs: watched,
                 reporter: self.reporter(context),
                 after,
                 peer: context.peer.clone(),
@@ -778,7 +780,12 @@ impl Session {
                 let own = {
                     let mut state = lock(&self.state);
                     state.approvals.mark_reported(id);
-                    state.approvals.get(id).cloned()
+                    let own = state.approvals.get(id).cloned();
+                    // An approval this decision queued is shown with it, so it must be one the agent can wait on.
+                    if let Some(own) = &own {
+                        state.approvals.remember_chained(&resolution, own);
+                    }
+                    own
                 };
                 let own = own.ok_or_else(not_yours)?;
                 let result = approvals::outcome(&own, &resolution, self.shared.guidance.verify());
@@ -1043,6 +1050,19 @@ fn standing(sessions: Option<&Arc<dyn Sessions>>, actor: Option<&Actor>, ceiling
     Ok(Standing { grants: ceiling.intersect(&info.grants), paused })
 }
 
+/// Where a task's status pushes are up to, apart from the session's own cursors (see the module docs of `events`).
+pub(crate) struct PushCursor {
+    seen: u64,
+    approvals: ApprovalCursor,
+}
+
+impl PushCursor {
+    /// A cursor at event `at`: pushes report what happened after the task began.
+    pub(crate) fn new(at: u64) -> Self {
+        Self { seen: at, approvals: ApprovalCursor::new(at) }
+    }
+}
+
 /// Everything a result gets after the call itself: the wait for the event feed, the heads-up about what others changed,
 /// the decisions on this session's approvals, and the save warning. One place for blocking calls, `tasks/get` and the
 /// task-status pushes, so a task client is told exactly what a blocking caller is.
@@ -1056,7 +1076,7 @@ pub(crate) struct Reporter {
 
 impl Reporter {
     /// What this session may do now, or `None` once it is over.
-    fn grants(&self) -> Option<Grants> {
+    pub(crate) fn grants(&self) -> Option<Grants> {
         standing(self.watch.sessions.as_ref(), self.watch.actor.as_ref(), &self.watch.ceiling).ok().map(|s| s.grants)
     }
 
@@ -1099,13 +1119,20 @@ impl Reporter {
 
     /// What other actors changed since this session was last told, if anything, moving its position forward so each
     /// change is reported once. Needs `read` for the same reason the log does: it names paths and ops.
-    fn others_changed(&self, grants: &Grants) -> Option<Report> {
+    ///
+    /// `push` is a consumer with a cursor of its own (a task's status pushes): it is read and moved instead of the
+    /// session's, which stays as it was for the results the agent calls for.
+    fn others_changed(&self, grants: &Grants, push: Option<&mut PushCursor>) -> Option<Report> {
         if !grants.allows(Scope::Read) {
             return None;
         }
         let mut state = lock(&self.state);
-        let (report, latest) = self.shared.hub.changes_since(state.seen, &self.me, &state.own);
-        state.seen = latest;
+        let seen = push.as_ref().map_or(state.seen, |p| p.seen);
+        let (report, latest) = self.shared.hub.changes_since(seen, &self.me, &state.own);
+        match push {
+            Some(push) => push.seen = latest,
+            None => state.seen = latest,
+        }
         report
     }
 
@@ -1117,6 +1144,7 @@ impl Reporter {
         result: CallToolResult,
         unsaved: Option<String>,
         log_text: bool,
+        mut push: Option<&mut PushCursor>,
     ) -> CallToolResult {
         // After the call, so a change another actor made while it ran is included, and so this call's own events
         // (which carry this session's actor) are passed over.
@@ -1127,7 +1155,7 @@ impl Reporter {
             if let Some(grants) = &grants {
                 self.catch_up_with_log(grants).await;
             }
-            grants.and_then(|grants| self.others_changed(&grants))
+            grants.and_then(|grants| self.others_changed(&grants, push.as_deref_mut()))
         };
         let result = match report {
             Some(report) => render::with_heads_up(result, &report),
@@ -1137,7 +1165,12 @@ impl Reporter {
         let result = if log_text || self.shared.sessions.is_none() {
             result
         } else {
-            let news = lock(&self.state).approvals.news(&self.shared.hub);
+            let mut state = lock(&self.state);
+            let news = match push.as_deref_mut() {
+                Some(push) => state.approvals.news_for(&self.shared.hub, &mut push.approvals),
+                None => state.approvals.news(&self.shared.hub),
+            };
+            drop(state);
             if news.is_empty() {
                 result
             } else {
@@ -1314,7 +1347,7 @@ impl ServerHandler for Session {
         // snapshot already caught this session up, so later events are reported by the next call, not lost.
         let log_text = reads_log && result.is_error != Some(true);
         let result = match self.reporter(&context) {
-            Some(reporter) => reporter.finish(result, unsaved, log_text).await,
+            Some(reporter) => reporter.finish(result, unsaved, log_text, None).await,
             None => match unsaved {
                 Some(warning) => render::with_warning(result, &warning),
                 None => result,
@@ -1346,6 +1379,7 @@ impl ServerHandler for Session {
             jobs::task_saved(
                 self.shared.journal.clone(),
                 self.reporter(&context).as_ref(),
+                None,
                 &info,
                 &tool,
                 verify,

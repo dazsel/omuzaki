@@ -25,6 +25,8 @@ pub struct Fake {
     pub started: Mutex<u32>,
     /// When set, a job reaches this state inside `start`, before the call returns, as a very fast job does.
     pub finish_in_start: Mutex<Option<JobState>>,
+    /// With `finish_in_start`: this many unrelated events follow the completion, enough to push it out of the hub's window.
+    pub flood_in_start: Mutex<usize>,
 }
 
 impl Fake {
@@ -35,6 +37,7 @@ impl Fake {
             jobs: Mutex::default(),
             started: Mutex::new(0),
             finish_in_start: Mutex::new(None),
+            flood_in_start: Mutex::new(0),
         })
     }
 
@@ -134,8 +137,11 @@ impl Jobs for Fake {
         drop(jobs);
         if let Some(state) = self.finish_in_start.lock().unwrap().clone() {
             self.set_state(job.id.0, state);
+            for n in 0..*self.flood_in_start.lock().unwrap() {
+                self.progress(99, "unrelated", (n % 100) as f32 / 100.0);
+            }
             // Let the event feed take the announcement in, so it is buffered before the caller can watch for it.
-            std::thread::sleep(Duration::from_millis(300));
+            std::thread::sleep(Duration::from_millis(600));
         }
         Ok(job)
     }

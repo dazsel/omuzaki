@@ -30,16 +30,31 @@ pub(crate) struct Own {
 #[derive(Default)]
 pub(crate) struct OwnApprovals {
     known: BTreeMap<ApprovalId, Own>,
-    /// Approvals whose outcome the agent has been told, by `approval_wait` or the heads-up.
+    /// What the session's own results (blocking calls, `tasks/get`, `approval_wait`) have delivered.
+    cursor: ApprovalCursor,
+}
+
+/// How far one consumer has been told about decisions: the newest event looked at, and the approvals whose outcome it
+/// has been given. Each consumer of the feed has its own (see the module docs of `events`).
+#[derive(Default)]
+pub(crate) struct ApprovalCursor {
+    /// Approvals whose outcome this consumer has been told.
     reported: BTreeSet<ApprovalId>,
     /// The newest event already looked at for outcomes.
     scanned: u64,
 }
 
+impl ApprovalCursor {
+    /// A cursor that starts at event `scanned`: only decisions after it are news.
+    pub(crate) fn new(scanned: u64) -> Self {
+        Self { scanned, ..Self::default() }
+    }
+}
+
 impl OwnApprovals {
     /// Starts at the feed's current end: only decisions from now on are news.
     pub(crate) fn new(scanned: u64) -> Self {
-        Self { scanned, ..Self::default() }
+        Self { cursor: ApprovalCursor::new(scanned), ..Self::default() }
     }
 
     /// Remembers an approval this session's refused call queued.
@@ -59,19 +74,41 @@ impl OwnApprovals {
     }
 
     pub(crate) fn mark_reported(&mut self, id: ApprovalId) {
-        self.reported.insert(id);
+        self.cursor.reported.insert(id);
     }
 
-    /// The decisions on this session's approvals that arrived since the last look and have not been reported, oldest
-    /// first, marking them reported.
+    /// Remembers the approval a decision itself queued: an approved request that then failed because it needs another
+    /// approval (`Resolved::Failed` carrying `Queued`). The agent is shown that approval, so it must be one it can
+    /// wait on and hear about; it belongs to the same call as the one it came from.
+    pub(crate) fn remember_chained(&mut self, resolution: &Resolution, from: &Own) {
+        if let Resolved::Failed { error } = &resolution.result
+            && let Some(ErrorDetail::Queued { approval, .. }) = error.detail.as_deref()
+        {
+            self.remember(*approval, from.clone());
+        }
+    }
+
+    /// The decisions on this session's approvals that the session's own results have not delivered, oldest first,
+    /// marking them delivered. Consuming: only results the agent receives call this.
     pub(crate) fn news(&mut self, hub: &EventHub) -> Vec<(Own, Resolution)> {
+        let mut cursor = std::mem::take(&mut self.cursor);
+        let out = self.news_for(hub, &mut cursor);
+        self.cursor = cursor;
+        out
+    }
+
+    /// As [`OwnApprovals::news`] for a consumer with a `cursor` of its own (a task's pushes): it moves that cursor and
+    /// leaves the session's untouched, so reporting to one consumer never consumes what another has not seen.
+    pub(crate) fn news_for(&mut self, hub: &EventHub, cursor: &mut ApprovalCursor) -> Vec<(Own, Resolution)> {
         let mut out = Vec::new();
-        for (n, event) in hub.entries_after(self.scanned) {
-            self.scanned = n;
+        for (n, event) in hub.entries_after(cursor.scanned) {
+            cursor.scanned = n;
             let Event::ApprovalResolved { resolution, .. } = event else { continue };
-            let Some(own) = self.known.get(&resolution.id) else { continue };
-            if self.reported.insert(resolution.id) {
-                out.push((own.clone(), resolution));
+            let Some(own) = self.known.get(&resolution.id).cloned() else { continue };
+            // Whether or not it is news to this consumer, what it queued must be tracked.
+            self.remember_chained(&resolution, &own);
+            if cursor.reported.insert(resolution.id) {
+                out.push((own, resolution));
             }
         }
         out
