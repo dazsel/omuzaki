@@ -224,7 +224,9 @@ fn args(rig: &Rig, extra: &Value) -> Value {
 #[test]
 fn the_op_is_a_job_and_the_job_builds_the_layer_and_hands_it_to_the_app() {
     let rig = rig(None);
-    assert_eq!(decode(args(&rig, &json!({}))).unwrap().meta().kind, omuzaki_ops_api::OpKind::Job);
+    let meta = decode(args(&rig, &json!({}))).unwrap().meta();
+    assert_eq!(meta.kind, omuzaki_ops_api::OpKind::Job, "the read, decode and resample run off the document lock");
+    assert_eq!(meta.undo, omuzaki_ops_api::Undo::None, "a view change has no patch, so nothing to undo");
     let out = run(&rig, args(&rig, &json!({}))).expect("sets the underlay");
     assert_eq!(out["rebuilt"], json!(true));
     assert_eq!(out["view"]["opacity"], json!(0.5));
