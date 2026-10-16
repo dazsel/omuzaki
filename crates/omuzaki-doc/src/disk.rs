@@ -354,6 +354,8 @@ struct Hooks<'a> {
     sync_off: Cell<bool>,
     /// Make flushing a displaced file fail after it was opened (tests only).
     flush_file_off: Cell<bool>,
+    /// Make looking at the target fail with an error other than "not found" after a deletion moved it aside (tests only).
+    look_off: Cell<bool>,
     /// Take Windows's replacement without a swap on any system (tests only).
     windows_shaped: Cell<bool>,
     /// Pretend the system has no file identities, as on Windows: a linked backup records none (tests only).
@@ -505,6 +507,7 @@ impl Default for Hooks<'_> {
             posix_rename_off: Cell::new(false),
             sync_off: Cell::new(faults::sync_off()),
             flush_file_off: Cell::new(false),
+            look_off: Cell::new(false),
             windows_shaped: Cell::new(false),
             ids_off: Cell::new(false),
             copy_fails: Cell::new(false),
@@ -544,6 +547,17 @@ impl Hooks<'_> {
             }
             _ => sync_folder(folder),
         }
+    }
+
+    /// `fs::symlink_metadata`, unless a test made it fail.
+    fn look(&self, path: &Path) -> io::Result<fs::Metadata> {
+        if self.look_off.get() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "looking at the file failed (forced by a test)",
+            ));
+        }
+        fs::symlink_metadata(path)
     }
 
     /// [`flush_file`], unless a test made it fail.
@@ -1449,7 +1463,7 @@ fn unlink_held(dir: &Path, path: &Path, held: &Held, hooks: &Hooks<'_>) -> Resul
     if held.is_file_at(&quarantine) {
         // An editor may have created the file again since it was moved aside. Then that file is theirs and the
         // deletion is a conflict: the file moved aside is kept in the replaced folder, never deleted.
-        match fs::symlink_metadata(path) {
+        match hooks.look(path) {
             Ok(_) => {
                 preserve(dir, &quarantine, hooks)?;
                 return Ok(false);
@@ -2634,5 +2648,22 @@ mod tests {
         assert_eq!(fs::read_to_string(&path).unwrap(), "newer = 3\n");
         let items = kept(d);
         assert!(items.iter().any(|(n, t)| n.ends_with(".displaced") && t == "theirs = 2\n"), "{items:?}");
+    }
+
+    /// A target that cannot be looked at after the move aside (an error other than "not found") returns that error, but
+    /// the file moved aside is kept in the replaced folder with its bytes, never left under its hidden `.del` name.
+    #[test]
+    fn a_failed_look_at_the_target_after_the_move_aside_keeps_the_original_and_returns_the_error() {
+        let tmp = TempDir::new().unwrap();
+        let d = tmp.path();
+        write(d, "a.toml", "x = 1\n");
+        let hooks = Hooks::default();
+        hooks.look_off.set(true); // the one place that looks at the target is right after the move aside
+        let err = remove_checked_with(d, &["a".to_owned()], Some(ContentHash::of(b"x = 1\n")), &hooks).unwrap_err();
+        assert!(err.to_string().contains("forced by a test"), "the target's error is the one returned: {err}");
+        let items = kept(d);
+        assert!(items.iter().any(|(n, t)| n.ends_with(".displaced") && t == "x = 1\n"), "{items:?}");
+        let names: Vec<_> = fs::read_dir(d).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert!(names.iter().all(|n| !n.to_string_lossy().ends_with(".del")), "{names:?}");
     }
 }
