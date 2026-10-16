@@ -1,5 +1,5 @@
 //! The framing contact sheet: the four templates (soft-sd, mini, standard, tall) in the four framing presets (face, bust,
-//! full, hands), at 16:9 and at 9:16, on the mock renderer. It is visual evidence for the Director's sign-off on the
+//! full, hands), at 16:9, 9:16 and 1:1, on the mock renderer. It is visual evidence for the Director's sign-off on the
 //! framing (`tools/ci/evidence.py`, `evidence.toml`). The sheets are written only when `OMUZAKI_FRAMING_PNG` names a
 //! folder; otherwise the one test that writes them returns at once.
 //!
@@ -26,8 +26,11 @@ use omuzaki_stage_api::{CameraDef, Framing};
 /// The presets, in column order.
 const PRESETS: [Framing; 4] = [Framing::Face, Framing::Bust, Framing::Full, Framing::Hands];
 /// The sheets written for the evidence case: file name, pixels per picture, and the picture's aspect (width / height).
-const SHEETS: [(&str, UVec2, f32); 2] =
-    [("framing-16x9.png", UVec2::new(480, 270), 16.0 / 9.0), ("framing-9x16.png", UVec2::new(270, 480), 9.0 / 16.0)];
+const SHEETS: [(&str, UVec2, f32); 3] = [
+    ("framing-16x9.png", UVec2::new(480, 270), 16.0 / 9.0),
+    ("framing-9x16.png", UVec2::new(270, 480), 9.0 / 16.0),
+    ("framing-1x1.png", UVec2::new(320, 320), 1.0),
+];
 /// The grey between cells, pixels.
 const GUTTER: u32 = 1;
 const GUTTER_RGBA: [u8; 4] = [128, 128, 128, 255];

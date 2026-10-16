@@ -255,7 +255,7 @@ impl Lexical {
     /// literally: no `MAX_PATH`, no rewriting of names. The names were checked when the place was parsed (no `.`,
     /// `..`, reserved names or trailing dots), so the literal reading is the same as the ordinary one. The anchor's
     /// root keeps its trailing separator.
-    #[cfg(any(windows, test))]
+    #[cfg(any(windows, test, feature = "fuzzing"))]
     pub(crate) fn verbatim(&self, keep: usize) -> String {
         let names = &self.names[..keep.min(self.names.len())];
         match &self.anchor {
