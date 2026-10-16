@@ -237,3 +237,59 @@ fn the_hands_shot_shows_the_hands_at_the_sides_of_the_middle_band() {
         }
     }
 }
+
+/// Codex on #2177: the warm-up of the springs and runtimes (hair here) runs under the base pose too, not under the
+/// T-pose the stage starts in. The mock's bind turns the head, which the head's hair chain follows; the reference is
+/// the same sequence on a stage driven by hand, base pose first.
+#[test]
+fn the_runtimes_settle_under_the_base_pose() {
+    use omuzaki_anim_api::{ChannelBuf, HumanoidBone, HumanoidPose};
+    use omuzaki_core::glam::Quat;
+    use omuzaki_render_api::{AlphaEncoding, TargetDesc};
+    use omuzaki_stage::UploadOptions;
+    use omuzaki_stage::frame::face::{FaceRig, SETTLE_STEPS};
+    use omuzaki_stage::frame::{FrameInput, Stage, StageClock};
+
+    let turned = || {
+        let mut built = character();
+        built.rig.bind.set(HumanoidBone::Head, Quat::from_rotation_z(0.6));
+        built
+    };
+    let built = turned();
+    let shot = front();
+    let spec = spec();
+    let stills =
+        render_stills(&mut MockRenderer::new(), turned(), &spec, std::slice::from_ref(&shot)).expect("renders");
+
+    let mut renderer = MockRenderer::new();
+    let target =
+        renderer.create_target(&TargetDesc { size: spec.size, alpha: AlphaEncoding::Straight }).expect("a target");
+    let mut scene = omuzaki_render_api::Scene::new(shot.camera);
+    scene.lights.clone_from(&spec.light.lights);
+    scene.background = spec.light.background;
+    scene.post = spec.light.post;
+    scene.outline_light = spec.light.outline_light;
+    let mut base = HumanoidPose::REST;
+    omuzaki_stage::frame::pose::seed_base_pose(&built.rig, &mut base);
+    let mut stage = Stage::new(
+        &mut renderer,
+        built,
+        UploadOptions::default(),
+        scene,
+        target,
+        Quality::offline(),
+        StageClock::fixed(60.0),
+    )
+    .expect("the stage starts");
+    stage.set_face(&mut renderer, FaceRig::standard()).expect("the face binds");
+    let frame = FrameInput { pose: base, ..FrameInput::default() };
+    stage.tick(&mut renderer, &frame).expect("a frame");
+    stage.settle(SETTLE_STEPS);
+    stage.tick(&mut renderer, &frame).expect("a frame");
+    stage.scene_mut().camera = shot.camera;
+    let shown = FrameInput { channels: ChannelBuf::NEUTRAL, ..frame };
+    stage.redraw(&mut renderer, &shown).expect("a redraw");
+    let by_hand = renderer.read_target(stage.target()).expect("the target reads");
+    stage.release(&mut renderer).expect("released");
+    assert_eq!(stills[0].image, by_hand, "the still is the base pose settled under the base pose");
+}

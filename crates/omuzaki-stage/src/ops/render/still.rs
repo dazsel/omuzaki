@@ -186,10 +186,14 @@ fn render_shots(
     if has_face {
         stage.set_face(renderer, FaceRig::standard())?;
     }
+    let base_frame = FrameInput { pose: *base, ..FrameInput::default() };
+    // The stage starts in the T-pose and `settle` warms the spring bones and the part runtimes under the last frame's
+    // pose, so the base pose has to be that frame before the warm-up, not only after it.
+    stage.tick(renderer, &base_frame)?;
     stage.settle(SETTLE_STEPS);
     // One tick after the warm-up puts the rig and the face in their frame state; every shot then redraws that state, so
     // a shot's pixels don't depend on how many shots came before it.
-    stage.tick(renderer, &FrameInput { pose: *base, ..FrameInput::default() })?;
+    stage.tick(renderer, &base_frame)?;
     let target = stage.target();
     let mut stills = Vec::with_capacity(shots.len());
     for shot in shots {
