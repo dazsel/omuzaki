@@ -17,9 +17,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use omuzaki_cli::cli::{self, Cli};
+use omuzaki_cli::session::Session;
 use omuzaki_doc_api::DocPath;
 use omuzaki_mcp::{Connections, McpOptions, McpServer, ServerError};
-use omuzaki_ops_api::{Grants, Runner, Scope};
+use omuzaki_ops_api::{Actor, Grants, Runner, Scope, Sessions};
 use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, CallToolResult, Tool};
 use rmcp::service::{RoleClient, RunningService};
@@ -109,7 +110,7 @@ impl Host {
     /// # Errors
     /// [`HostError`] when the runtime, the server or the client cannot start, or the document cannot be read.
     pub fn with_runner(runner: Arc<dyn Runner>, grants: Grants) -> Result<Self, HostError> {
-        Self::serve(runner, grants, Connections::default())
+        Self::serve(runner, grants, Connections::default(), None)
     }
 
     /// Opens the project copy in `project` with `omuzaki-cli`'s own constructor and serves it in this process.
@@ -118,13 +119,24 @@ impl Host {
     /// [`HostError::Open`] when the project cannot be opened; otherwise as [`Host::with_runner`].
     pub fn in_process(project: &Path, grants: Grants) -> Result<Self, HostError> {
         let connections = Connections::default();
-        let runner = open_runner(project, &connections)?;
-        Self::serve(runner, grants, connections)
+        let (runner, sessions) = open_executor(project, &connections)?;
+        // As `omuzaki mcp` does: the agent's session is opened in the executor's registry, for the person at the
+        // command line, and the executor refuses an agent that has none.
+        let host = SessionHost { sessions, person: Session::from_env().actor };
+        Self::serve(runner, grants, connections, Some(host))
     }
 
-    fn serve(runner: Arc<dyn Runner>, grants: Grants, connections: Connections) -> Result<Self, HostError> {
+    fn serve(
+        runner: Arc<dyn Runner>,
+        grants: Grants,
+        connections: Connections,
+        sessions: Option<SessionHost>,
+    ) -> Result<Self, HostError> {
         let runtime = runtime()?;
-        let options = McpOptions::with_grants(grants).with_connections(connections);
+        let mut options = McpOptions::with_grants(grants).with_connections(connections);
+        if let Some(SessionHost { sessions, person }) = sessions {
+            options = options.with_sessions(sessions, person);
+        }
         let server = McpServer::new(runner.clone(), options).map_err(|e| HostError::Connection(e.to_string()))?;
         let tool_names = ToolNames::of_server(&server);
         let tools_hash = hash_tools(&server.tools())?;
@@ -352,10 +364,23 @@ pub fn open_project_runner(project: &Path) -> Result<Arc<dyn Runner>, HostError>
     open_runner(project, &Connections::default())
 }
 
+/// The session registry of a project's executor, and the person its agents work for.
+struct SessionHost {
+    sessions: Arc<dyn Sessions>,
+    person: Actor,
+}
+
 fn open_runner(project: &Path, connections: &Connections) -> Result<Arc<dyn Runner>, HostError> {
+    Ok(open_executor(project, connections)?.0)
+}
+
+/// The executor of `project`, as the runner it is and as the session registry it holds.
+fn open_executor(project: &Path, connections: &Connections) -> Result<(Arc<dyn Runner>, Arc<dyn Sessions>), HostError> {
     // The ops are linked into the binary that calls this; `link()` keeps the linker from dropping them (ADR 0015).
     omuzaki_cli::link();
-    omuzaki_cli::session::open_runner_with(&cli_for(project)?, connections).map_err(|e| HostError::Open(e.to_string()))
+    let executor = omuzaki_cli::session::open_executor_with(&cli_for(project)?, connections)
+        .map_err(|e| HostError::Open(e.to_string()))?;
+    Ok((executor.clone(), executor))
 }
 
 fn read_document(reader: &Reader) -> Result<Value, HostError> {
