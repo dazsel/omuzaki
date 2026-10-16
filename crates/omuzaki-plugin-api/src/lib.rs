@@ -12,6 +12,7 @@
 //! - **[`grants`]**: what the person approved, and the grants the plugin's session runs under.
 //! - **[`limits`]**: the sandbox's numbers and each call kind's fuel and deadline budgets, shared by the host and the
 //!   mock.
+//! - **[`setting_schema`]**: the JSON Schema subset a setting's `schema` may use, and the check of a value against it.
 //! - **[`state`]**: what a plugin is, what state it is in and what it said; [`PluginId`] names one.
 //! - **[`PluginError`]**: why a request about a plugin failed; it converts to [`OpError`](omuzaki_ops_api::OpError).
 //! - **[`Plugins`]**: the service the `plugin.*` ops and the plugin manager call. The host implements it, the mock
@@ -23,6 +24,7 @@ pub mod grants;
 pub mod limits;
 pub mod manifest;
 pub mod service;
+pub mod setting_schema;
 pub mod state;
 pub mod summary;
 

@@ -37,6 +37,12 @@ pub enum Behaviour {
     /// Works long enough for another thread to ask for a reload (the mock sleeps 50 ms; a wasm guest loops within its
     /// CPU share), logs `init done` and returns `ok`.
     Slow,
+    /// Logs `flood` this many times at `info`, then returns `ok`: past the log's burst.
+    Flood(u32),
+    /// Returns `ok` from `init`; its `shutdown` logs `bye` at `info`.
+    ByeOnShutdown,
+    /// Works like [`Behaviour::Slow`], logs `init failing` and returns `err("slow failure")`.
+    SlowFailure,
     /// Calls each op in order, logs `<op>: ok` or `<op>: <code>`, returns `ok`; `approval-resolved` logs
     /// `approval <n>: ok` or `approval <n>: <code>`. Needs the op bridge.
     Calls(Vec<ScriptedCall>),
@@ -333,6 +339,29 @@ pub fn concurrent_enables<S: Subject>(subject: &S) {
     assert!(plugins.disable(&slow, &person()).is_ok());
     let ends = world.sessions.end_reasons();
     assert_eq!(ends.len(), 1, "no session was left open: {ends:?}");
+
+    // The same when the start fails: every waiter gets the one start's fault, and `init` ran once.
+    let world = World::new();
+    let plugins = Arc::new(subject.build(&world, vec![(manifest("failing", &[]), Behaviour::SlowFailure)]));
+    let failing = id("failing");
+    let gate = Arc::new(std::sync::Barrier::new(4));
+    let threads: Vec<_> = (0..4)
+        .map(|_| {
+            let (plugins, failing, gate) = (plugins.clone(), failing.clone(), gate.clone());
+            std::thread::spawn(move || {
+                gate.wait();
+                plugins.enable(&failing, &person())
+            })
+        })
+        .collect();
+    for thread in threads {
+        let result = thread.join().unwrap_or_else(|_| panic!("an enabling thread panicked"));
+        assert_eq!(result, Err(PluginError::Fault(FaultKind::InitError)), "every waiter gets the settled fault");
+    }
+    let runs = log_texts(plugins.as_ref(), "failing").iter().filter(|t| *t == "init failing").count();
+    assert_eq!(runs, 1, "one failing start, not one per caller");
+    let faults = plugins.info(&failing).map(|i| i.faults.len());
+    assert_eq!(faults, Ok(1), "one fault toward the auto-disable count");
 }
 
 /// Log lines keep their order and page by sequence number.
@@ -352,6 +381,20 @@ pub fn logs<S: Subject>(subject: &S) {
     let page = plugins.log(&talker, all[1].seq, 2).map(|p| p.into_iter().map(|l| l.text).collect::<Vec<_>>());
     assert_eq!(page, Ok(vec!["line 2".to_owned(), "line 3".to_owned()]));
     assert_eq!(plugins.log(&id("nobody"), 0, 1), Err(PluginError::NotFound));
+
+    // A flood that ends with the run still says how much it lost, and `shutdown`'s lines are kept.
+    let plugins = subject.build(
+        &world,
+        vec![(manifest("flood", &[]), Behaviour::Flood(150)), (manifest("bye", &[]), Behaviour::ByeOnShutdown)],
+    );
+    for name in ["flood", "bye"] {
+        assert!(plugins.enable(&id(name), &person()).is_ok(), "enable {name}");
+        assert!(plugins.disable(&id(name), &person()).is_ok(), "disable {name}");
+    }
+    let flood = log_texts(&plugins, "flood");
+    assert_eq!(flood.len(), 101, "the burst and one notice: {:?}", flood.last());
+    assert_eq!(flood.last().map(String::as_str), Some("50 lines dropped"), "flushed when the plugin stopped");
+    assert_eq!(log_texts(&plugins, "bye"), ["bye"], "the line `shutdown` logged");
 }
 
 /// The ceiling (design §3.2) and per-use queueing with `approval-resolved` (§2.2).
@@ -368,7 +411,7 @@ pub fn ceiling_and_queueing<S: OpSubject>(subject: &S) {
         subject.add_op(&plugins, name, MockOp { scope, output: Ok("{}".into()) });
     }
     let caller = id("caller");
-    let approval = Approval { scopes: vec![Scope::Read, Scope::Publish], ..Approval::default() };
+    let approval = Approval::new(vec![Scope::Read, Scope::Publish], Vec::new(), None);
     assert!(plugins.set_approval(&caller, approval, &person()).is_ok());
     assert_eq!(plugins.enable(&caller, &person()).map(|i| i.state), Ok(PluginState::Running));
     let texts = log_texts(&plugins, "caller");

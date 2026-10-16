@@ -15,11 +15,25 @@ use serde_json::Value;
 
 use crate::PluginId;
 
-/// The base world every plugin targets (`omuzaki:plugin`'s `plugin`). The extension worlds of PL-03 join this list.
+/// The base world every plugin targets (`omuzaki:plugin`'s `plugin`).
 pub const BASE_WORLD: &str = "plugin";
 
-/// The worlds this host knows.
-pub const KNOWN_WORLDS: [&str; 1] = [BASE_WORLD];
+/// A world a plugin may name in `worlds`, registered where the world is defined (ADR 0054: added, not edited in):
+/// `inventory::submit! { WorldRegistration { name: "node" } }` in the crate that serves it.
+#[derive(Debug)]
+pub struct WorldRegistration {
+    /// The world's name in `omuzaki:plugin`.
+    pub name: &'static str,
+}
+
+inventory::collect!(WorldRegistration);
+
+inventory::submit! { WorldRegistration { name: BASE_WORLD } }
+
+/// Every registered world, in link order.
+pub fn known_worlds() -> impl Iterator<Item = &'static str> {
+    inventory::iter::<WorldRegistration>.into_iter().map(|w| w.name)
+}
 
 /// Ids a plugin may not take: they name Omuzaki itself. The first-party op families are checked at install, against
 /// the op registry.
@@ -608,7 +622,7 @@ impl Manifest {
             report.error("plugin.worlds_empty", "worlds", "name at least the base world `plugin`");
         }
         for (i, world) in self.worlds.iter().enumerate() {
-            if !KNOWN_WORLDS.contains(&world.as_str()) {
+            if !known_worlds().any(|known| known == world) {
                 report.error(
                     "plugin.world_unknown",
                     format!("worlds/{i}"),
@@ -683,6 +697,13 @@ impl Manifest {
                 ),
                 (Some(_), Some(_)) | (None, None) => {
                     report.error("plugin.setting_type", path, "give exactly one of `type` and `schema`");
+                }
+                (None, Some(schema)) => {
+                    if let Some(problem) = crate::setting_schema::schema_problem(schema) {
+                        report.error("plugin.setting_schema", format!("{path}/schema"), problem);
+                    } else if let Some(problem) = crate::setting_schema::value_problem(schema, &setting.default) {
+                        report.error("plugin.setting_default", format!("{path}/default"), problem);
+                    }
                 }
                 _ => {}
             }

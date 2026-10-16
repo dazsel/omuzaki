@@ -80,7 +80,38 @@ pub fn compile(engine: &PluginEngine, bytes: &[u8]) -> Result<Component, PluginE
         Some(head) if head == COMPONENT_PREAMBLE => {}
         _ => return Err(PluginError::Instantiate("not a WebAssembly component".into())),
     }
+    refuse_non_utf8_strings(bytes)?;
     Component::new(engine.wasmtime(), bytes).map_err(|e| PluginError::Instantiate(format!("{e:#}")))
+}
+
+/// Refuses a component whose lifted or lowered functions pass strings as UTF-16 or Latin-1+UTF-16. The host reads
+/// UTF-8 strings in place and checks their length before any copy; another encoding would make wasmtime transcode, and
+/// allocate, before that check. Async canonical functions, which also carry options, are refused by validation: the
+/// engine does not enable the component model's async features.
+fn refuse_non_utf8_strings(bytes: &[u8]) -> Result<(), PluginError> {
+    use wasmparser::{CanonicalFunction, CanonicalOption, Payload};
+    let refused = |options: &[CanonicalOption]| {
+        options.iter().any(|o| matches!(o, CanonicalOption::UTF16 | CanonicalOption::CompactUTF16))
+    };
+    for payload in wasmparser::Parser::new(0).parse_all(bytes) {
+        let payload = payload.map_err(|e| PluginError::Instantiate(format!("not a valid component: {e}")))?;
+        let Payload::ComponentCanonicalSection(section) = payload else { continue };
+        for function in section {
+            let function = function.map_err(|e| PluginError::Instantiate(format!("not a valid component: {e}")))?;
+            let (CanonicalFunction::Lift { options, .. }
+            | CanonicalFunction::Lower { options, .. }
+            | CanonicalFunction::TaskReturn { options, .. }) = &function
+            else {
+                continue;
+            };
+            if refused(options) {
+                return Err(PluginError::Instantiate(
+                    "the component passes strings as UTF-16 or Latin-1; plugins pass UTF-8 strings".into(),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// What the component was built against, from its imports and exports.

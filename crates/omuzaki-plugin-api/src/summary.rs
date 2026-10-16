@@ -117,7 +117,7 @@ pub struct PermissionDiff {
     /// New scopes, as card lines in the card's order. `net` is here when it is new or asks for a host not yet
     /// approved; its detail then names only those hosts.
     pub added: Vec<PermLine>,
-    /// The data folder, when the update asks for it and it was not approved.
+    /// The data folder, when the update asks for it and it was not approved, or asks for a larger quota than approved.
     pub data: Option<DataLine>,
     /// Approved scopes the update no longer asks for, by scope name.
     pub removed: Vec<Scope>,
@@ -180,14 +180,15 @@ pub fn summarise(manifest: &Manifest) -> PermissionSummary {
 }
 
 /// What `new` asks for that the person has not approved (`approved`): new scopes, hosts not yet approved, the data
-/// folder; and what approved scopes it drops.
+/// folder or a larger quota for it; and what approved scopes it drops.
 pub fn diff(new: &Manifest, approved: &Approval) -> PermissionDiff {
     let requests = &new.requests;
     let new_hosts: Vec<String> = requests.net_hosts.iter().filter(|h| !approved.hosts.contains(h)).cloned().collect();
     let asks = |s: &Scope| !approved.scopes.contains(s) || (*s == Scope::Net && !new_hosts.is_empty());
     let hosts = if approved.scopes.contains(&Scope::Net) { &new_hosts } else { &requests.net_hosts };
     let added = lines(requests.scopes.iter().copied().filter(asks), hosts);
-    let data = (requests.data && !approved.data)
+    let more_data = !approved.data || requests.data_quota_mb > approved.data_quota_mb;
+    let data = (requests.data && more_data)
         .then(|| DataLine { quota_mb: requests.data_quota_mb, text: perm_data(i64::from(requests.data_quota_mb)) });
     let mut removed: Vec<Scope> = approved.scopes.iter().copied().filter(|s| !requests.scopes.contains(s)).collect();
     removed.sort_by_key(|s| s.name());

@@ -50,6 +50,45 @@ fn slow() -> Vec<u8> {
     component(HOST_IMPORT, &[log_import()], &format!(r#"(data (i32.const 100) "init done") {}"#, init_doing(body)), 1)
 }
 
+/// `init` logs `flood` `n` times.
+fn flood(n: u32) -> Vec<u8> {
+    let body = format!(
+        "(local $i i32) (block $done (loop $l (br_if $done (i32.ge_u (local.get $i) (i32.const {n})))
+          (call $log (i32.const 2) (i32.const 100) (i32.const 5))
+          (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $l)))"
+    );
+    component(HOST_IMPORT, &[log_import()], &format!(r#"(data (i32.const 100) "flood") {}"#, init_doing(&body)), 1)
+}
+
+/// `init` returns `ok`; `shutdown` logs `bye`.
+fn bye_on_shutdown() -> Vec<u8> {
+    let main = format!(
+        r#"(data (i32.const 100) "bye") {INIT_OK}
+    (func (export "shutdown") (call $log (i32.const 2) (i32.const 100) (i32.const 3)))"#
+    );
+    let text = component_text(HOST_IMPORT, &[log_import()], &main, 1).replace(
+        r#"(instance $lifecycle (export "init" (func $init)))"#,
+        r#"(alias core export $maini "shutdown" (core func $shutdown-core))
+  (func $shutdown (canon lift (core func $shutdown-core)))
+  (instance $lifecycle (export "init" (func $init)) (export "shutdown" (func $shutdown)))"#,
+    );
+    wat::parse_str(&text).unwrap_or_else(|e| panic!("{e}\n{text}"))
+}
+
+/// `init` works like [`slow`], logs `init failing` and returns `err("slow failure")`.
+fn slow_failure() -> Vec<u8> {
+    let main = r#"(data (i32.const 100) "init failing") (data (i32.const 200) "slow failure")
+        (func (export "init") (param i32 i32) (result i32)
+          (local $i i32) (loop $l (local.set $i (i32.add (local.get $i) (i32.const 1)))
+            (br_if $l (i32.lt_u (local.get $i) (i32.const 5000000))))
+          (call $log (i32.const 2) (i32.const 100) (i32.const 12))
+          (i32.store8 (i32.const 16) (i32.const 1))
+          (i32.store (i32.const 20) (i32.const 200))
+          (i32.store (i32.const 24) (i32.const 12))
+          (i32.const 16))"#;
+    component(HOST_IMPORT, &[log_import()], main, 1)
+}
+
 fn bytes_of(behaviour: &Behaviour) -> Vec<u8> {
     match behaviour {
         Behaviour::Ok => ok_component(),
@@ -58,6 +97,9 @@ fn bytes_of(behaviour: &Behaviour) -> Vec<u8> {
         Behaviour::Loop => plain("(loop $l (br $l))"),
         Behaviour::Logs(n) => logs(*n),
         Behaviour::Slow => slow(),
+        Behaviour::Flood(n) => flood(*n),
+        Behaviour::ByeOnShutdown => bye_on_shutdown(),
+        Behaviour::SlowFailure => slow_failure(),
         Behaviour::Calls(_) => panic!("op calls need the op bridge, which this host does not have yet"),
     }
 }

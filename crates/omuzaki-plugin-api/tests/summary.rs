@@ -53,7 +53,7 @@ fn per_use_scopes_the_licence_and_an_unsigned_plugin_are_reported() {
 
 /// An approval of `scopes`, the hosts in `hosts` and the data folder.
 fn approval(scopes: &[Scope], hosts: &[&str]) -> Approval {
-    Approval { scopes: scopes.to_vec(), hosts: hosts.iter().map(|h| (*h).to_owned()).collect(), data: true }
+    Approval::new(scopes.to_vec(), hosts.iter().map(|h| (*h).to_owned()).collect(), Some(64))
 }
 
 #[test]
@@ -79,10 +79,16 @@ fn the_diff_shows_a_new_host_under_an_approved_net_and_a_new_data_folder() {
     let all_hosts = approval(&[Scope::Read, Scope::Net], &["example.com", "other.example"]);
     assert!(diff(&update, &all_hosts).is_empty());
 
-    let no_data = Approval { data: false, ..approval(&[Scope::Read], &[]) };
+    let no_data = Approval::new(vec![Scope::Read], Vec::new(), None);
     let wants_data = diff(&manifest(&[Scope::Read], "MIT", true), &no_data);
     assert_eq!(wants_data.added, []);
     assert_eq!(wants_data.data.map(|d| d.quota_mb), Some(64));
+
+    let mut bigger = manifest(&[Scope::Read], "MIT", true);
+    bigger.requests.data_quota_mb = 512;
+    let raised = diff(&bigger, &approval(&[Scope::Read], &[]));
+    assert_eq!(raised.data.map(|d| d.quota_mb), Some(512), "a larger quota than the one approved is shown");
+    assert!(diff(&manifest(&[Scope::Read], "MIT", true), &approval(&[Scope::Read], &[])).is_empty());
 }
 
 #[test]

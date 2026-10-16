@@ -6,6 +6,7 @@
 
 mod common;
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use common::*;
@@ -405,4 +406,63 @@ fn growing_past_a_declared_maximum_never_leaks_the_all_plugins_budget() {
     let linear = plugin.reserved_bytes() - omuzaki_plugin_api::limits::HOST_SIDE_BYTES;
     assert_eq!(linear, 2 * 65536, "two pages reserved, however many grows were refused");
     assert_eq!(engine.memory().used(), plugin.reserved_bytes());
+}
+
+/// A bridge whose op list is 1,000 names of 100 bytes.
+struct LongList;
+
+impl omuzaki_plugin::bridge::OpBridge for LongList {
+    fn call(&self, op: &str, _: &str) -> Result<String, omuzaki_ops_api::OpError> {
+        Err(omuzaki_ops_api::OpError::not_found(format!("no op `{op}`")))
+    }
+
+    fn plan(&self, op: &str, args: &str) -> Result<String, omuzaki_ops_api::OpError> {
+        self.call(op, args)
+    }
+
+    fn describe(&self, _: &str) -> Option<String> {
+        None
+    }
+
+    fn list(&self) -> Vec<String> {
+        (0..1000).map(|i| format!("{i:0>100}")).collect()
+    }
+}
+
+#[test]
+fn the_bytes_ops_list_hands_back_cost_fuel() {
+    let (engine, clock) = engine();
+    let list = Lowered {
+        alias: r#"(alias export $ops "list" (func $list'))"#.into(),
+        name: "list".into(),
+        core_import: r#"(import "env" "list" (func $list (param i32)))"#.into(),
+    };
+    let imports = format!("{HOST_IMPORT}{WORLD_IMPORTS}");
+    let bytes = component(&imports, &[list], &init_doing("(call $list (i32.const 32))"), 4);
+    let compiled = load::compile(&engine, &bytes).unwrap();
+    let mut setup = setup(log("lister", clock), 1);
+    setup.bridge = Arc::new(LongList);
+    let mut plugin = omuzaki_plugin::LoadedPlugin::start(&engine, &compiled, setup).unwrap_or_else(|e| panic!("{e:?}"));
+    plugin.init("{}").unwrap();
+    let returned = 1000 * 100;
+    assert!(plugin.fuel_used() >= returned, "{} fuel for {returned} bytes handed back", plugin.fuel_used());
+}
+
+#[test]
+fn a_component_passing_utf16_or_latin1_strings_is_refused_before_it_compiles() {
+    let (engine, _) = engine();
+    let lift = "(canon lift (core func $init-core) (memory $memory) (realloc $realloc))";
+    for encoding in ["utf16", "latin1+utf16"] {
+        let text = component_text("", &[], INIT_OK, 1).replace(
+            lift,
+            &format!(
+                "(canon lift (core func $init-core) (memory $memory) (realloc $realloc) string-encoding={encoding})"
+            ),
+        );
+        assert!(text.contains("string-encoding"), "the lift names its encoding");
+        let refused = load::compile(&engine, &wat::parse_str(&text).unwrap()).map(|_| ());
+        let why = "the component passes strings as UTF-16 or Latin-1; plugins pass UTF-8 strings";
+        assert_eq!(refused, Err(PluginError::Instantiate(why.into())), "{encoding}");
+    }
+    assert!(load::compile(&engine, &ok_component()).is_ok(), "UTF-8, the default, is accepted");
 }

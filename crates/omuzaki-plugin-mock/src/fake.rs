@@ -64,6 +64,9 @@ struct Entry {
     log_dropped: u64,
     /// An entry call is running outside the lock.
     busy: bool,
+    /// Starts begun so far, and how the last one settled: a caller that waited out a start returns its outcome.
+    attempt: u64,
+    settled: Result<(), PluginError>,
 }
 
 struct Pending {
@@ -144,6 +147,8 @@ impl MockPlugins {
                 log_at: Seconds(0.0),
                 log_dropped: 0,
                 busy: false,
+                attempt: 0,
+                settled: Ok(()),
             },
         );
         Ok(id)
@@ -212,6 +217,7 @@ impl MockPlugins {
     }
 
     fn record_fault(&self, entry: &mut Entry, fault: FaultKind, detail: String) {
+        flush_dropped(entry, self.clock.now());
         if let Some(session) = entry.session.take() {
             // The session may already have ended (revoked); the fault is still recorded.
             let _ended = self.sessions.end(session, EndReason::faulted(detail.clone()));
@@ -232,11 +238,20 @@ impl MockPlugins {
 
     /// Starts `id`: opens its session and runs `init`. Called with the plugin idle.
     fn start(&self, id: &PluginId, by: &Actor, why: Start) -> Result<PluginInfo, PluginError> {
-        let mut inner = self.drained(id);
+        let mut inner = self.lock();
+        // A start already under way when this one arrives is the one it waits for, and its outcome is the answer.
+        let joined = inner.plugins.get(id).filter(|e| e.state == PluginState::Loading).map(|e| e.attempt);
+        while inner.plugins.get(id).is_some_and(|e| e.busy) {
+            inner = self.idle.wait(inner).unwrap_or_else(PoisonError::into_inner);
+        }
         let entry = inner.plugins.get_mut(id).ok_or(PluginError::NotFound)?;
+        if joined == Some(entry.attempt) {
+            return entry.settled.clone().map(|()| info_of(id, entry));
+        }
         if let Some(answer) = may_start(id, entry, why) {
             return answer;
         }
+        entry.attempt += 1;
         let grants = ceiling(&entry.manifest.requests, &entry.approval, &self.person);
         let spec = SessionSpec {
             transport: Transport::Plugin,
@@ -284,7 +299,7 @@ impl MockPlugins {
         }
         entry.busy = false;
         self.idle.notify_all();
-        match outcome {
+        let settled = match outcome {
             Ok(Ok(())) => {
                 if kind == CallKind::Init {
                     entry.state = PluginState::Running;
@@ -300,7 +315,11 @@ impl MockPlugins {
                 self.record_fault(entry, fault, format!("{} in {}", fault_name(fault), kind.entry()));
                 Err(PluginError::Fault(fault))
             }
+        };
+        if kind == CallKind::Init {
+            entry.settled.clone_from(&settled);
         }
+        settled
     }
 
     fn stop(&self, entry: &mut Entry) {
@@ -310,8 +329,17 @@ impl MockPlugins {
             // `shutdown` runs after the session has ended, so every effectful import is refused; a trap only drops
             // the instance.
             let mut host = Host { plugins: self, id: entry.manifest.id.clone(), session: None, lines: Vec::new() };
-            let _ignored = guest.shutdown(&mut host);
+            let stopped = guest.shutdown(&mut host);
+            let now = self.clock.now();
+            for (level, text) in std::mem::take(&mut host.lines) {
+                push_line(entry, now, level, &text);
+            }
+            if let Err(Trap(fault)) = stopped {
+                // Logged as the host logs it; a line the bucket refuses is counted in the notice below.
+                push_line(entry, now, LogLevel::Warn, &format!("shutdown stopped: {} in shutdown", fault_name(fault)));
+            }
         }
+        flush_dropped(entry, self.clock.now());
     }
 }
 
@@ -375,12 +403,18 @@ fn push_line(entry: &mut Entry, at: Seconds, level: LogLevel, text: &str) {
         return;
     }
     entry.log_tokens -= 1.0;
+    flush_dropped(entry, at);
+    keep_line(entry, at, level, cut(text).to_owned());
+}
+
+/// Writes the "N lines dropped" line now, if lines were dropped: when the plugin stops or faults, as the host's
+/// `PluginLog::flush` does, so a flood that ended its run still says how much it lost.
+fn flush_dropped(entry: &mut Entry, at: Seconds) {
     if entry.log_dropped > 0 {
         let notice = format!("{} lines dropped", entry.log_dropped);
         entry.log_dropped = 0;
         keep_line(entry, at, LogLevel::Warn, notice);
     }
-    keep_line(entry, at, level, cut(text).to_owned());
 }
 
 fn keep_line(entry: &mut Entry, at: Seconds, level: LogLevel, text: String) {
@@ -495,15 +529,13 @@ impl Plugins for MockPlugins {
         let mut inner = self.lock();
         let entry = inner.plugins.get_mut(id).ok_or(PluginError::NotFound)?;
         let requests = &entry.manifest.requests;
-        entry.approval = Approval {
-            scopes: approval.scopes.into_iter().filter(|s| requests.scopes.contains(s)).collect(),
-            hosts: approval.hosts.into_iter().filter(|h| requests.net_hosts.contains(h)).collect(),
-            data: approval.data && requests.data,
-        };
+        let approval = approval.within(requests);
+        // The live session's grants change first: when that is refused, the approval stays as it was.
         if let Some(session) = entry.session {
-            let grants = ceiling(requests, &entry.approval, &self.person);
+            let grants = ceiling(requests, &approval, &self.person);
             self.sessions.set_grants(session, grants, by).map_err(|e| PluginError::Instantiate(e.message))?;
         }
+        entry.approval = approval;
         Ok(info_of(id, entry))
     }
 

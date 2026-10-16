@@ -153,6 +153,16 @@ fn every_hostile_archive_is_refused_with_its_own_error() {
     entries.push(("caf\u{e9}.txt".into(), b"1".to_vec()));
     entries.push(("cafe\u{301}.txt".into(), b"2".to_vec()));
     assert!(matches!(open(&zip_of(&entries)), Err(PackageError::Duplicate(..))));
+    // Full case folding, not lower-casing: each pair is one name ("ß" folds to "ss", the "ﬁ" ligature to "fi", the
+    // long "ſ" to "s").
+    for (one, other) in
+        [("stra\u{df}e.txt", "STRASSE.txt"), ("\u{fb01}le.txt", "FILE.txt"), ("\u{17f}ee.txt", "see.txt")]
+    {
+        let mut entries = files(false, &component);
+        entries.push((one.into(), b"1".to_vec()));
+        entries.push((other.into(), b"2".to_vec()));
+        assert!(matches!(open(&zip_of(&entries)), Err(PackageError::Duplicate(..))), "{one} and {other}");
+    }
 
     let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
     for (name, bytes) in files(false, &component) {
@@ -342,6 +352,61 @@ fn an_install_approves_nothing_and_a_refused_one_changes_nothing_on_disk() {
     let dirs =
         std::fs::read_dir(storage.install.plugin_dir(&id)).unwrap().filter(|e| e.as_ref().unwrap().path().is_dir());
     assert_eq!(dirs.count(), 1);
+    let cached = std::fs::read_dir(root.path().join("cache").join("plugins")).unwrap().count();
+    assert_eq!(cached, 1, "the refused package's compiled code was not kept");
+}
+
+#[test]
+fn a_failed_install_leaves_nothing_in_staging() {
+    let root = tempfile::tempdir().unwrap();
+    let installs = InstallRoot::new(root.path());
+    let package = open(&zip_of(&files(false, &common::ok_component()))).unwrap();
+    // A file where the plugin's folder goes: making that folder fails after staging.
+    let in_the_way = installs.plugin_dir(&package.manifest.id);
+    std::fs::create_dir_all(in_the_way.parent().unwrap()).unwrap();
+    std::fs::write(&in_the_way, b"in the way").unwrap();
+    assert!(matches!(installs.install(&package), Err(PackageError::Io(_))));
+    let staging = in_the_way.parent().unwrap().join(".staging");
+    let staged: Vec<_> = std::fs::read_dir(staging).unwrap().collect();
+    assert!(staged.is_empty(), "{staged:?}");
+}
+
+#[test]
+fn two_installs_of_one_id_at_once_copy_one_version() {
+    let world = World::new();
+    let engine = Arc::new(
+        omuzaki_plugin::PluginEngine::new(omuzaki_plugin::HostConfig::default(), world.clock.clone()).unwrap(),
+    );
+    let plugins = Arc::new(WasmPlugins::new(engine, world.sessions.clone(), Grants::person(), None));
+    let root = tempfile::tempdir().unwrap();
+    let storage = Arc::new(Storage {
+        install: InstallRoot::new(root.path().join("data")),
+        cache: CodeCache::new(root.path().join("cache")),
+    });
+    let paths: Vec<_> = (0..2u8)
+        .map(|note| {
+            let mut entries = files(false, &common::ok_component());
+            entries.push(("note.txt".into(), vec![note]));
+            let path = root.path().join(format!("example-{note}.zip"));
+            std::fs::write(&path, zip_of(&entries)).unwrap();
+            path
+        })
+        .collect();
+    let gate = Arc::new(std::sync::Barrier::new(2));
+    let threads: Vec<_> = paths
+        .into_iter()
+        .map(|path| {
+            let (plugins, storage, gate) = (plugins.clone(), storage.clone(), gate.clone());
+            std::thread::spawn(move || {
+                gate.wait();
+                plugins.install(&path, &storage, &person())
+            })
+        })
+        .collect();
+    let results: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+    assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1, "{results:?}");
+    let id = omuzaki_plugin_api::PluginId::new("example").unwrap();
+    assert_eq!(storage.install.versions(&id).len(), 1, "the refused install copied nothing");
 }
 
 /// A folder with the package's files written out.

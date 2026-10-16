@@ -121,9 +121,17 @@ fn every_error_rule_fires_with_its_id_and_path() {
 }
 
 #[test]
-fn a_schema_setting_skips_the_simple_type_check() {
-    let text = edited(r#"type = "string""#, r#"schema = { type = "string" }"#);
+fn a_schema_setting_checks_its_default_against_the_schema() {
+    let text = edited(r#"type = "string""#, r#"schema = { type = "string", maxLength = 8 }"#);
     assert!(Manifest::parse(&text).unwrap().check().is_clean());
+    let long = edited(r#"type = "string""#, r#"schema = { type = "string", maxLength = 3 }"#);
+    let report = Manifest::parse(&long).unwrap().check();
+    let found: Vec<(&str, &str)> = report.errors().map(|f| (f.id.as_str(), f.path.as_str())).collect();
+    assert_eq!(found, [("plugin.setting_default", "settings/0/default")], "the default \"hello\" is 5 characters");
+    let unsupported = edited(r#"type = "string""#, r#"schema = { type = "string", pattern = "^h" }"#);
+    let report = Manifest::parse(&unsupported).unwrap().check();
+    let found: Vec<&str> = report.errors().map(|f| f.id.as_str()).collect();
+    assert_eq!(found, ["plugin.setting_schema"], "a keyword the subset doesn't check is refused, not ignored");
 }
 
 #[test]
@@ -166,4 +174,15 @@ fn no_publisher_is_a_warning_not_an_error() {
     let finding = report.findings.iter().find(|f| f.id == "plugin.unsigned").unwrap();
     assert_eq!(finding.severity, Severity::Warning);
     assert!(!report.has_errors());
+}
+
+// A world registered by the crate that serves it, as an extension world's crate does.
+inventory::submit! { omuzaki_plugin_api::manifest::WorldRegistration { name: "test_world" } }
+
+#[test]
+fn a_registered_world_is_known_without_editing_a_list() {
+    let worlds: Vec<&str> = omuzaki_plugin_api::manifest::known_worlds().collect();
+    assert!(worlds.contains(&"plugin") && worlds.contains(&"test_world"), "{worlds:?}");
+    let text = edited(r#"worlds = ["plugin"]"#, r#"worlds = ["plugin", "test_world"]"#);
+    assert!(Manifest::parse(&text).unwrap().check().is_clean());
 }

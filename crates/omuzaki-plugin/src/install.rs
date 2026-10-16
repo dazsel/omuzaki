@@ -60,7 +60,8 @@ impl InstallRoot {
 
     /// Stages `package`, checks the staged files hash to what was verified, moves them to `plugins/<id>/<hash>/` and
     /// keeps only the last [`KEPT_VERSIONS`]. Installing a hash already there changes nothing but its place in the
-    /// list.
+    /// list. Whatever fails, nothing is left in staging. Pruning is best effort: an old version that can't be removed
+    /// stays in the list, oldest first, and is tried again on the next install.
     ///
     /// # Errors
     /// [`PackageError::Io`] when a file can't be written; [`PackageError::Signature`] when the staged files hash
@@ -68,32 +69,48 @@ impl InstallRoot {
     pub fn install(&self, package: &PluginPackage) -> Result<Installed, PackageError> {
         let id = package.manifest.id.clone();
         let (staged, hash) = package.stage(&self.staging())?;
-        if hash != package.hash {
+        let placed = self.place(&id, &staged, hash, package.hash);
+        if staged.exists() {
+            // Leave no staging folder behind; the step's own error is the one to report.
             let _cleaned = fs::remove_dir_all(&staged);
-            return Err(PackageError::Signature("the staged files do not hash to the package's hash".into()));
         }
+        let dir = placed?;
         let plugin_dir = self.plugin_dir(&id);
-        fs::create_dir_all(&plugin_dir).map_err(|e| io(&e))?;
-        let dir = plugin_dir.join(hash.to_string());
-        if dir.exists() {
-            fs::remove_dir_all(&staged).map_err(|e| io(&e))?;
-        } else if let Err(error) = fs::rename(&staged, &dir) {
-            // Leave no staging folder behind; the rename's error is the one to report.
-            let _cleaned = fs::remove_dir_all(&staged);
-            return Err(io(&error));
-        }
         let mut versions: Vec<ContentHash> = self.versions(&id).into_iter().filter(|h| *h != hash).collect();
         versions.push(hash);
+        let mut kept = Vec::new();
         while versions.len() > KEPT_VERSIONS {
             let old = versions.remove(0);
             let old_dir = plugin_dir.join(old.to_string());
-            if old_dir.exists() {
-                fs::remove_dir_all(&old_dir).map_err(|e| io(&e))?;
+            if old_dir.exists() && fs::remove_dir_all(&old_dir).is_err() {
+                kept.push(old);
             }
         }
-        let listing = versions.iter().map(|h| format!("{h}\n")).collect::<Vec<_>>().concat();
+        kept.extend(versions);
+        let listing = kept.iter().map(|h| format!("{h}\n")).collect::<Vec<_>>().concat();
         write_atomic(&plugin_dir.join(VERSIONS_FILE), listing.as_bytes())?;
         Ok(Installed { id, hash, dir })
+    }
+
+    /// Moves the staged folder to `plugins/<id>/<hash>/`, unless that version is already there. `hash` is what the
+    /// staged files hash to, `verified` the package's own hash.
+    fn place(
+        &self,
+        id: &PluginId,
+        staged: &Path,
+        hash: ContentHash,
+        verified: ContentHash,
+    ) -> Result<PathBuf, PackageError> {
+        if hash != verified {
+            return Err(PackageError::Signature("the staged files do not hash to the package's hash".into()));
+        }
+        let plugin_dir = self.plugin_dir(id);
+        fs::create_dir_all(&plugin_dir).map_err(|e| io(&e))?;
+        let dir = plugin_dir.join(hash.to_string());
+        if !dir.exists() {
+            fs::rename(staged, &dir).map_err(|e| io(&e))?;
+        }
+        Ok(dir)
     }
 }
 

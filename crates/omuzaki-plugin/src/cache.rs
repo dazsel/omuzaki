@@ -70,6 +70,12 @@ impl CodeCache {
         write_atomic(&file, &contents).map_err(PluginError::from)?;
         Ok((component, CacheOutcome::Compiled))
     }
+
+    /// Removes the file for `hash` on `engine`, if there is one: for a package refused after it was compiled. Best
+    /// effort: a file left behind is only ever read for that same hash.
+    pub fn forget(&self, engine: &PluginEngine, hash: &ContentHash) {
+        let _removed = fs::remove_file(self.file_for(engine, hash));
+    }
 }
 
 /// The component in a cache file, or `None` when the file is unusable for any reason.

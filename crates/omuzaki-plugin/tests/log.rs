@@ -137,22 +137,26 @@ fn a_blocked_file_never_blocks_the_log() {
 }
 
 #[test]
-fn a_blocked_file_holds_at_most_the_queue_and_counts_the_rest() {
+fn a_blocked_file_holds_at_most_each_plugins_share_and_one_flood_never_takes_anothers_place() {
     let (release, wait) = channel();
     let (seen, _lines) = channel();
     let writer = LogWriter::spawn(Box::new(Blocked { release: Arc::new(Mutex::new(wait)), seen })).unwrap();
     let clock = Arc::new(FakeClock::new(Seconds(0.0)));
-    let log = log_on(&clock, Some(&writer));
+    let flooding = log_on(&clock, Some(&writer));
+    let quiet = PluginLog::new(PluginId::new("quiet").unwrap(), clock.clone(), Some(&writer));
     let over = 50;
     for i in 0..LOG_QUEUE_LINES + over {
         clock.advance(Seconds(0.05)); // one bucket token a line: every line is kept
-        assert!(log.push(LogLevel::Info, &format!("line {i}"), false));
+        assert!(flooding.push(LogLevel::Info, &format!("line {i}"), false));
     }
-    // The writer may have taken one line off the queue before blocking on it.
-    let refused = writer.failures();
-    assert!(refused == over as u64 || refused == over as u64 - 1, "{refused}");
-    assert_eq!(log.page(0, usize::MAX).len(), LOG_RING_LINES, "the ring keeps its lines whatever the queue does");
-    for _ in 0..=LOG_QUEUE_LINES {
+    assert_eq!(flooding.file_failures(), over as u64, "its share holds {LOG_QUEUE_LINES} lines; the rest are counted");
+    assert_eq!(flooding.page(0, usize::MAX).len(), LOG_QUEUE_LINES + over, "the ring keeps every line");
+    for i in 0..10 {
+        assert!(quiet.push(LogLevel::Info, &format!("quiet {i}"), false));
+    }
+    assert_eq!(quiet.file_failures(), 0, "another plugin's lines still reach the queue");
+    assert_eq!(writer.failures(), over as u64);
+    for _ in 0..=LOG_QUEUE_LINES + 10 {
         release.send(()).unwrap();
     }
     drop(writer);

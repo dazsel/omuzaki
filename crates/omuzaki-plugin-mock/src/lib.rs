@@ -55,6 +55,21 @@ impl MockSubject {
                 host.log(LogLevel::Info, "init done");
                 Ok(Ok(()))
             }),
+            Behaviour::Flood(n) => MockGuest::new(move |host, _| {
+                for _ in 0..n {
+                    host.log(LogLevel::Info, "flood");
+                }
+                Ok(Ok(()))
+            }),
+            Behaviour::ByeOnShutdown => MockGuest::new(|_, _| Ok(Ok(()))).on_shutdown(|host| {
+                host.log(LogLevel::Info, "bye");
+                Ok(())
+            }),
+            Behaviour::SlowFailure => MockGuest::new(|host, _| {
+                std::thread::sleep(SLOW_INIT);
+                host.log(LogLevel::Info, "init failing");
+                Ok(Err("slow failure".into()))
+            }),
             Behaviour::Calls(script) => MockGuest::scripted(script),
         }
     }

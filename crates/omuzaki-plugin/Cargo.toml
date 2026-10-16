@@ -10,6 +10,7 @@ repository.workspace = true
 
 [dependencies]
 blake3.workspace = true
+caseless.workspace = true
 semver.workspace = true
 chacha20.workspace = true
 # Not used directly: zip's `deflate-flate2` feature picks no backend, the workspace entry supplies the pure-Rust one.
@@ -20,6 +21,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 unicode-normalization.workspace = true
 wasmtime.workspace = true
+wasmparser.workspace = true
 zip.workspace = true
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-identity-api = { path = "../omuzaki-identity-api" }
@@ -48,4 +50,8 @@ wasm = false
 
 [[bench]]
 name = "install"
+harness = false
+
+[[bench]]
+name = "host"
 harness = false

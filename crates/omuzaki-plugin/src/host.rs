@@ -5,7 +5,7 @@
 //! 10 s; the third fault in ten minutes disables the plugin until the person turns it on again. Disabling and
 //! reloading wait for the running call, end the session `Closed` and run `shutdown`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
@@ -19,7 +19,7 @@ use omuzaki_plugin_api::{PluginError, PluginId, Plugins};
 use wasmtime::component::Component;
 
 use crate::bridge::{NoBridge, OpBridge};
-use crate::cache::CodeCache;
+use crate::cache::{CacheOutcome, CodeCache};
 use crate::engine::PluginEngine;
 use crate::install::InstallRoot;
 use crate::instance::{Fault, InstanceKind, InstanceSetup, insecure_seed};
@@ -48,6 +48,9 @@ struct Entry {
     log: Arc<PluginLog>,
     worker: Option<Worker>,
     busy: bool,
+    /// Starts begun so far, and how the last one settled: a caller that waited out a start returns its outcome.
+    attempt: u64,
+    settled: Result<(), PluginError>,
 }
 
 /// The wasmtime host's [`Plugins`] service.
@@ -59,6 +62,8 @@ pub struct WasmPlugins {
     writer: Option<LogWriter>,
     plugins: Mutex<BTreeMap<PluginId, Entry>>,
     idle: Condvar,
+    /// Ids an install is under way for, so two installs of one id never both copy files.
+    installing: Mutex<BTreeSet<PluginId>>,
 }
 
 fn person_only(by: &Actor) -> Result<(), PluginError> {
@@ -104,6 +109,7 @@ impl WasmPlugins {
             writer,
             plugins: Mutex::new(BTreeMap::new()),
             idle: Condvar::new(),
+            installing: Mutex::new(BTreeSet::new()),
         }
     }
 
@@ -144,8 +150,15 @@ impl WasmPlugins {
         if package.publisher() == PublisherCheck::Mismatch {
             return Err(PluginError::Signature("the signature does not match the package or its publisher".into()));
         }
-        let (component, _) = storage.cache.load(&self.engine, &package.hash, package.component())?;
-        self.admissible(&package.manifest, &component)?;
+        let _claim = Claim::take(&self.installing, &package.manifest.id)?;
+        let (component, outcome) = storage.cache.load(&self.engine, &package.hash, package.component())?;
+        if let Err(error) = self.admissible(&package.manifest, &component) {
+            // A refused package keeps nothing: not even the compiled code this install wrote.
+            if outcome == CacheOutcome::Compiled {
+                storage.cache.forget(&self.engine, &package.hash);
+            }
+            return Err(error);
+        }
         let installed = storage.install.install(&package)?;
         let id = self.register(package.manifest, component, installed.hash.0, Approval::default())?;
         self.info(&id)
@@ -193,6 +206,8 @@ impl WasmPlugins {
                 log,
                 worker: None,
                 busy: false,
+                attempt: 0,
+                settled: Ok(()),
             },
         );
         Ok(id)
@@ -269,11 +284,20 @@ impl WasmPlugins {
 
     /// Starts `id` for `by`: opens its session, starts its worker and runs `init` there, off the lock.
     fn start(&self, id: &PluginId, by: &Actor, why: Start) -> Result<PluginInfo, PluginError> {
-        let mut plugins = self.drained(id);
+        let mut plugins = self.lock();
+        // A start already under way when this one arrives is the one it waits for, and its outcome is the answer.
+        let joined = plugins.get(id).filter(|e| e.state == PluginState::Loading).map(|e| e.attempt);
+        while plugins.get(id).is_some_and(|e| e.busy) {
+            plugins = self.idle.wait(plugins).unwrap_or_else(PoisonError::into_inner);
+        }
         let entry = plugins.get_mut(id).ok_or(PluginError::NotFound)?;
+        if joined == Some(entry.attempt) {
+            return entry.settled.clone().map(|()| info_of(id, entry));
+        }
         if let Some(answer) = may_start(id, entry, why) {
             return answer;
         }
+        entry.attempt += 1;
         let spec = SessionSpec {
             transport: Transport::Plugin,
             client: format!("plugin:{}@{}", entry.manifest.id, entry.manifest.version),
@@ -308,11 +332,11 @@ impl WasmPlugins {
         let entry = plugins.get_mut(id).ok_or(PluginError::NotFound)?;
         entry.busy = false;
         self.idle.notify_all();
-        match started {
+        entry.settled = match started {
             Ok(worker) => {
                 entry.worker = Some(worker);
                 entry.state = PluginState::Running;
-                Ok(info_of(id, entry))
+                Ok(())
             }
             Err(Failed::Faulted(fault)) => {
                 self.record_fault(entry, &fault);
@@ -325,7 +349,8 @@ impl WasmPlugins {
                 entry.state = PluginState::Installed;
                 Err(error)
             }
-        }
+        };
+        entry.settled.clone().map(|()| info_of(id, entry))
     }
 }
 
@@ -353,11 +378,7 @@ impl Plugins for WasmPlugins {
         let mut plugins = self.lock();
         let entry = plugins.get_mut(id).ok_or(PluginError::NotFound)?;
         let requests = &entry.manifest.requests;
-        let approval = Approval {
-            scopes: approval.scopes.into_iter().filter(|s| requests.scopes.contains(s)).collect(),
-            hosts: approval.hosts.into_iter().filter(|h| requests.net_hosts.contains(h)).collect(),
-            data: approval.data && requests.data,
-        };
+        let approval = approval.within(requests);
         // The live session's grants change first: when that is refused, the approval stays as it was.
         if let Some(session) = entry.session {
             let grants = ceiling(requests, &approval, &self.person);
@@ -399,6 +420,29 @@ impl Plugins for WasmPlugins {
         let plugins = self.lock();
         let entry = plugins.get(id).ok_or(PluginError::NotFound)?;
         Ok(entry.log.page(after, limit))
+    }
+}
+
+/// An install's hold on its id, given back when the install ends however it ends.
+struct Claim<'a> {
+    claims: &'a Mutex<BTreeSet<PluginId>>,
+    id: PluginId,
+}
+
+impl<'a> Claim<'a> {
+    /// Holds `id`, or refuses when another install of it is under way.
+    fn take(claims: &'a Mutex<BTreeSet<PluginId>>, id: &PluginId) -> Result<Self, PluginError> {
+        let mut held = claims.lock().unwrap_or_else(PoisonError::into_inner);
+        if !held.insert(id.clone()) {
+            return Err(PluginError::Manifest(format!("`{id}` is being installed already")));
+        }
+        Ok(Self { claims, id: id.clone() })
+    }
+}
+
+impl Drop for Claim<'_> {
+    fn drop(&mut self) {
+        self.claims.lock().unwrap_or_else(PoisonError::into_inner).remove(&self.id);
     }
 }
 

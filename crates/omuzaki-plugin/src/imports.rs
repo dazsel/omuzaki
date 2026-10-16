@@ -106,8 +106,8 @@ fn cap(len: usize, cap: usize, what: &str, entry: &str) -> wasmtime::Result<()> 
 }
 
 /// The byte length of a guest string, read in place in the guest's memory: no copy is made, so a string near the
-/// guest's whole memory costs the host nothing before its cap is checked. (A UTF-16 component's string is transcoded
-/// here; every component the SDK builds is UTF-8, which is read in place.)
+/// guest's whole memory costs the host nothing before its cap is checked. Every string is UTF-8, read in place:
+/// [`load::compile`](crate::load::compile) refuses a component that picks another encoding.
 pub(crate) fn guest_len(cx: &StoreContextMut<'_, StoreData>, text: &WasmStr) -> wasmtime::Result<usize> {
     Ok(text.to_str(cx)?.len())
 }
@@ -177,6 +177,8 @@ pub(crate) fn add(linker: &mut Linker<StoreData>, _kind: InstanceKind) -> wasmti
         let schema = cx.data().bridge.describe(&name);
         if let Some(schema) = &schema {
             cap(schema.len(), EXPORT_LIST_BYTES_MAX, "a describe schema", cx.data().entry())?;
+            // The bytes handed back cost fuel like the bytes handed in, as `ops.call`'s output does.
+            enter_or_trap(&mut cx, schema.len())?;
         }
         Ok((schema,))
     })?;
@@ -188,6 +190,7 @@ pub(crate) fn add(linker: &mut Linker<StoreData>, _kind: InstanceKind) -> wasmti
         let names = cx.data().bridge.list();
         let bytes: usize = names.iter().map(String::len).sum();
         cap(bytes, EXPORT_LIST_BYTES_MAX, "the op list", cx.data().entry())?;
+        enter_or_trap(&mut cx, bytes)?;
         Ok((names,))
     })?;
 

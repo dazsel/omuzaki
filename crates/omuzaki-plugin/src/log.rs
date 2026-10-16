@@ -7,15 +7,17 @@
 //!   with `after` even once the oldest lines are gone.
 //! - **The file:** a [`LogWriter`] thread hands kept lines to a [`LineSink`]; [`FileSink`] appends them to
 //!   `<dir>/<id>.log` and rotates at [`LOG_FILE_MAX_BYTES`] to one `<id>.log.1`. Pushing a line only offers it to the
-//!   thread's queue of [`LOG_QUEUE_LINES`], so a slow disk never blocks `host.log` and never holds more than that;
-//!   a line the full queue refuses stays in the ring and is counted in [`LogWriter::failures`].
+//!   thread's queue, where each plugin may have at most [`LOG_QUEUE_LINES`] waiting: a slow disk never blocks
+//!   `host.log`, a plugin's waiting lines stay inside its own host-side memory, and one plugin's flood never takes
+//!   another's place. A line its plugin's full share refuses stays in the ring and is counted in
+//!   [`PluginLog::file_failures`] and [`LogWriter::failures`].
 
 use std::collections::VecDeque;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write as _};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 
@@ -27,9 +29,9 @@ use omuzaki_plugin_api::state::{LogLevel, LogLine};
 /// The size at which a plugin's log file rotates, in bytes.
 pub const LOG_FILE_MAX_BYTES: u64 = 1024 * 1024;
 
-/// Kept lines waiting for the writer thread, across every plugin: with lines of at most [`LOG_LINE_MAX_BYTES`], a
-/// few MiB at most however slow the disk is.
-pub const LOG_QUEUE_LINES: usize = 4096;
+/// Kept lines of one plugin waiting for the writer thread: with lines of at most [`LOG_LINE_MAX_BYTES`], at most
+/// 256 KiB however slow the disk is, inside the plugin's host-side memory.
+pub const LOG_QUEUE_LINES: usize = 256;
 
 /// `text` cut to at most [`LOG_LINE_MAX_BYTES`] bytes, never inside a character.
 pub fn cut_line(text: &str) -> &str {
@@ -91,7 +93,7 @@ impl PluginLog {
         let line = LogLine { seq: state.next_seq, at, level, text, dry_run };
         state.next_seq += 1;
         if let Some(sink) = &self.sink {
-            sink.offer(Message::Line(self.id.clone(), line.clone()));
+            sink.offer(&self.id, &line);
         }
         state.lines.push_back(line);
         if state.lines.len() > LOG_RING_LINES {
@@ -111,6 +113,11 @@ impl PluginLog {
         }
     }
 
+    /// This plugin's kept lines that never reached the file because its share of the writer's queue was full.
+    pub fn file_failures(&self) -> u64 {
+        self.sink.as_ref().map_or(0, |q| q.refused.load(Ordering::Acquire))
+    }
+
     /// Up to `limit` lines with a sequence number above `after`, oldest first.
     pub fn page(&self, after: u64, limit: usize) -> Vec<LogLine> {
         let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -120,25 +127,36 @@ impl PluginLog {
 
 /// What the writer thread receives.
 enum Message {
-    /// A kept line of a plugin's log.
-    Line(PluginId, LogLine),
+    /// A kept line of a plugin's log, and that plugin's count of lines waiting, which the writer lowers.
+    Line(PluginId, LogLine, Arc<AtomicUsize>),
     /// Write what came before, then stop.
     Stop,
 }
 
-/// The writer thread's queue as a log holds it.
-#[derive(Clone)]
+/// The writer thread's queue as one plugin's log holds it: its own share of [`LOG_QUEUE_LINES`].
 struct Queue {
-    tx: SyncSender<Message>,
+    tx: Sender<Message>,
+    /// This plugin's lines waiting for the writer.
+    waiting: Arc<AtomicUsize>,
+    /// This plugin's lines refused because its share was full.
+    refused: AtomicU64,
+    /// Every plugin's lines not written, for [`LogWriter::failures`].
     failures: Arc<AtomicU64>,
 }
 
 impl Queue {
-    /// Offers a line without waiting. A full queue counts it as not written; a stopped writer drops it (the writer
+    /// Offers a line without waiting. A full share counts it as not written; a stopped writer drops it (the writer
     /// outlives every log in normal use). Either way the ring still keeps the line.
-    fn offer(&self, message: Message) {
-        if let Err(TrySendError::Full(_)) = self.tx.try_send(message) {
+    fn offer(&self, plugin: &PluginId, line: &LogLine) {
+        if self.waiting.fetch_add(1, Ordering::AcqRel) >= LOG_QUEUE_LINES {
+            self.waiting.fetch_sub(1, Ordering::AcqRel);
+            self.refused.fetch_add(1, Ordering::AcqRel);
             self.failures.fetch_add(1, Ordering::AcqRel);
+            return;
+        }
+        let message = Message::Line(plugin.clone(), line.clone(), self.waiting.clone());
+        if self.tx.send(message).is_err() {
+            self.waiting.fetch_sub(1, Ordering::AcqRel);
         }
     }
 }
@@ -154,7 +172,7 @@ pub trait LineSink: Send {
 
 /// The thread that writes every plugin's kept lines to a [`LineSink`]. Dropping it stops and joins the thread.
 pub struct LogWriter {
-    tx: Option<SyncSender<Message>>,
+    tx: Option<Sender<Message>>,
     thread: Option<JoinHandle<()>>,
     failures: Arc<AtomicU64>,
 }
@@ -165,7 +183,7 @@ impl LogWriter {
     /// # Errors
     /// The OS refused to start a thread.
     pub fn spawn(sink: Box<dyn LineSink>) -> io::Result<Self> {
-        let (tx, rx) = sync_channel::<Message>(LOG_QUEUE_LINES);
+        let (tx, rx) = channel::<Message>();
         let failures = Arc::new(AtomicU64::new(0));
         let counted = failures.clone();
         let thread =
@@ -173,22 +191,28 @@ impl LogWriter {
         Ok(Self { tx: Some(tx), thread: Some(thread), failures })
     }
 
-    /// Lines not written so far: the sink failed, or the queue was full.
+    /// Lines not written so far, across every plugin: the sink failed, or a plugin's share of the queue was full.
     pub fn failures(&self) -> u64 {
         self.failures.load(Ordering::Acquire)
     }
 
     fn queue(&self) -> Option<Queue> {
-        self.tx.clone().map(|tx| Queue { tx, failures: self.failures.clone() })
+        self.tx.clone().map(|tx| Queue {
+            tx,
+            waiting: Arc::new(AtomicUsize::new(0)),
+            refused: AtomicU64::new(0),
+            failures: self.failures.clone(),
+        })
     }
 }
 
 fn write_all(mut sink: Box<dyn LineSink>, rx: &Receiver<Message>, failures: &AtomicU64) {
     for message in rx {
-        let Message::Line(plugin, line) = message else { break };
+        let Message::Line(plugin, line, waiting) = message else { break };
         if sink.write(&plugin, &line).is_err() {
             failures.fetch_add(1, Ordering::AcqRel);
         }
+        waiting.fetch_sub(1, Ordering::AcqRel);
     }
 }
 

@@ -9,6 +9,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+inventory.workspace = true
 schemars.workspace = true
 semver.workspace = true
 serde.workspace = true
@@ -21,7 +22,6 @@ omuzaki-l10n-api = { path = "../omuzaki-l10n-api" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 
 [dev-dependencies]
-inventory.workspace = true
 # Parses the WIT file in `tests/wit.rs` (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT); never linked into a build.
 wit-parser = { version = "0.262", default-features = false }
 

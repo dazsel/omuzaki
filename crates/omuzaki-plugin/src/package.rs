@@ -152,9 +152,9 @@ fn canonical(raw: &[u8]) -> Result<String, PackageError> {
     Ok(trimmed.nfc().collect())
 }
 
-/// The key two names collide on: NFC, then lower-cased.
+/// The key two names collide on: NFC, Unicode full case folding (`ß` and `SS`, `ﬁ` and `FI` collide), NFC again.
 fn fold(path: &str) -> String {
-    path.nfc().collect::<String>().to_lowercase()
+    caseless::default_case_fold_str(&path.nfc().collect::<String>()).nfc().collect()
 }
 
 /// The content hash of `files` (path to bytes), leaving out `plugin.sig`.
@@ -428,12 +428,20 @@ fn walk(root: &Path, dir: &Path, collector: &mut Collector) -> Result<(), Packag
             return Err(PackageError::UnsafePath { path, why: "is not UTF-8" });
         };
         let name = canonical(raw.join("/").as_bytes())?;
-        let kind = fs::symlink_metadata(&path).map_err(|e| io(&e))?.file_type();
+        let seen = fs::symlink_metadata(&path).map_err(|e| io(&e))?;
+        let kind = seen.file_type();
         if kind.is_dir() {
             collector.entry(&name)?;
             walk(root, &path, collector)?;
+            // A folder swapped for a link while it was read is refused: what was read may not be the package's.
+            let after = fs::symlink_metadata(&path).map_err(|e| io(&e))?;
+            if !after.is_dir() || !same_file(&seen, &after) {
+                return Err(PackageError::NotRegular(name));
+            }
         } else if kind.is_file() {
-            let mut file = fs::File::open(&path).map_err(|e| io(&e))?;
+            let Some(mut file) = open_regular(&path, &seen).map_err(|e| io(&e))? else {
+                return Err(PackageError::NotRegular(name));
+            };
             if hard_linked(&file).map_err(|e| io(&e))? {
                 return Err(PackageError::NotRegular(name));
             }
@@ -444,6 +452,45 @@ fn walk(root: &Path, dir: &Path, collector: &mut Collector) -> Result<(), Packag
         }
     }
     Ok(())
+}
+
+/// Opens `path` as the regular file `seen` described, or `None` when what opened is not that file: a path swapped
+/// for a link after it was looked at is never followed into.
+#[cfg(unix)]
+fn open_regular(path: &Path, seen: &fs::Metadata) -> std::io::Result<Option<fs::File>> {
+    let file = fs::File::open(path)?;
+    let opened = file.metadata()?;
+    Ok((opened.is_file() && same_file(seen, &opened)).then_some(file))
+}
+
+/// Windows: the open does not follow a link (`FILE_FLAG_OPEN_REPARSE_POINT`), so a link swapped in opens as the link
+/// itself and is refused.
+#[cfg(windows)]
+fn open_regular(path: &Path, _seen: &fs::Metadata) -> std::io::Result<Option<fs::File>> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+    let file = fs::OpenOptions::new().read(true).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(path)?;
+    let opened = file.metadata()?;
+    Ok((opened.is_file() && !opened.file_type().is_symlink()).then_some(file))
+}
+
+/// Elsewhere a swapped path can't be told from the original, so nothing opens.
+#[cfg(not(any(unix, windows)))]
+fn open_regular(_: &Path, _: &fs::Metadata) -> std::io::Result<Option<fs::File>> {
+    Ok(None)
+}
+
+/// Whether two looks at a path saw the same file (device and inode on Unix).
+#[cfg(unix)]
+fn same_file(a: &fs::Metadata, b: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    a.dev() == b.dev() && a.ino() == b.ino()
+}
+
+/// Windows: std gives no stable file identity, so a folder is held to being a folder, not a link, at both looks.
+#[cfg(not(unix))]
+fn same_file(_: &fs::Metadata, b: &fs::Metadata) -> bool {
+    !b.file_type().is_symlink()
 }
 
 /// Whether an open regular file has other names: a hardlink could make one staged file another file's bytes. Read
@@ -476,4 +523,26 @@ fn hard_linked(file: &fs::File) -> std::io::Result<bool> {
 #[cfg(not(any(unix, windows)))]
 fn hard_linked(_: &fs::File) -> std::io::Result<bool> {
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_swapped_for_a_link_after_it_was_looked_at_is_not_opened() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let (path, outside) = (dir.path().join("plugin.wasm"), dir.path().join("outside"));
+        fs::write(&path, b"package").unwrap_or_else(|e| panic!("{e}"));
+        fs::write(&outside, b"secret").unwrap_or_else(|e| panic!("{e}"));
+        let seen = fs::symlink_metadata(&path).unwrap_or_else(|e| panic!("{e}"));
+        assert!(open_regular(&path, &seen).unwrap_or_else(|e| panic!("{e}")).is_some(), "the file it saw opens");
+        fs::remove_file(&path).unwrap_or_else(|e| panic!("{e}"));
+        std::os::unix::fs::symlink(&outside, &path).unwrap_or_else(|e| panic!("{e}"));
+        assert!(
+            open_regular(&path, &seen).unwrap_or_else(|e| panic!("{e}")).is_none(),
+            "the swapped-in link is refused"
+        );
+    }
 }
