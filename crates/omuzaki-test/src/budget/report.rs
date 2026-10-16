@@ -694,7 +694,8 @@ mod tests {
 
     #[test]
     fn a_scaled_latency_or_installer_row_is_shown_and_never_judged() {
-        let build = |metrics, class| Report::build(machine(4), metrics, &parse_spec(SPEC).unwrap(), None, class, vec![]);
+        let build =
+            |metrics, class| Report::build(machine(4), metrics, &parse_spec(SPEC).unwrap(), None, class, vec![]);
         let latency = Metric::single("latency.desktop", Unit::Ms, 10_000.0).unwrap();
         let scaled = build(vec![latency.clone()], Class::Scaled);
         assert_eq!(scaled.rows[0].verdict, Verdict::NotConverted);
