@@ -5,14 +5,17 @@
 use omuzaki_anim_api::spring::JointLimit;
 use omuzaki_anim_api::{BoneId, ColliderShape, SpringParams};
 use omuzaki_avatar_api::retained::{
-    Retained, RetainedAnnotation, RetainedCollider, RetainedColliderGroup, RetainedFirstPerson, RetainedImage,
-    RetainedMaterial, RetainedMesh, RetainedNode, RetainedPrimitive, RetainedSkin, RetainedSpringChain,
+    Retained, RetainedAnnotation, RetainedCollider, RetainedColliderGroup, RetainedFirstPerson, RetainedGeometry,
+    RetainedImage, RetainedMaterial, RetainedMesh, RetainedNode, RetainedPrimitive, RetainedSkin, RetainedSpringChain,
     RetainedSpringJoint, RetainedSprings, RetainedTransform,
 };
 use omuzaki_char_api::MaterialName;
-use omuzaki_core::glam::{Mat4, Quat, Vec3, Vec4};
+use omuzaki_core::glam::{Mat4, Quat, Vec2, Vec3, Vec4};
+use omuzaki_core::id::Slug;
+use omuzaki_core::mesh::{ExtraAttribute, MeshData};
 use omuzaki_io_api::{
-    ImageIx, ImageMime, Material, Passthrough, Sampler, Shading, TexRef, Texture, TextureIx, Toon, VrmMeta,
+    ImageIx, ImageMime, Material, MaterialIx, MorphTarget, Passthrough, Primitive, Sampler, Shading, TexRef, Texture,
+    TextureIx, Toon, VrmMeta,
 };
 use omuzaki_store_api::ContentHash;
 use serde_json::json;
@@ -71,7 +74,7 @@ fn retained() -> Retained {
     ];
     let primitive = RetainedPrimitive::new().with_material(0);
     r.meshes = vec![
-        RetainedMesh::new("Face", vec![primitive, RetainedPrimitive::new()])
+        RetainedMesh::new("Face", vec![primitive.clone(), RetainedPrimitive::new()])
             .with_instance(2, vec![0, 1])
             .with_morph_target_names(vec!["Fcl_ALL_A".into(), "Fcl_EYE_Close_L".into()]),
         RetainedMesh::new("Body", vec![primitive]),
@@ -192,4 +195,57 @@ fn an_empty_retained_writes_an_empty_table_and_unknown_keys_are_refused() {
 /// The transform of the hips node in [`retained`].
 fn r_transform(r: &Retained) -> RetainedTransform {
     r.nodes[1].transform
+}
+
+/// A skinned primitive with every optional stream, an extra attribute and (when `morphs`) two off-grid morph targets.
+fn undrawn_primitive(morphs: bool) -> Primitive {
+    let mesh = MeshData {
+        positions: vec![Vec3::new(0.1, 0.123, 0.9999), Vec3::X, Vec3::Y],
+        normals: vec![Vec3::Z; 3],
+        uvs: vec![Vec2::new(0.123, 0.9999); 3],
+        colours: vec![[0.5, 0.123, 0.9999, 0.25]; 3],
+        joints: vec![[0, 1, 2, 3]; 3],
+        weights: vec![[0.5, 0.25, 0.125, 0.125]; 3],
+        extra: vec![ExtraAttribute { name: Slug::new("strand").unwrap(), components: 2, data: vec![0.123; 6] }],
+        indices: vec![0, 1, 2],
+    };
+    let mut p = Primitive::new(mesh);
+    p.material = Some(MaterialIx(3));
+    if morphs {
+        let mut a = MorphTarget::new(vec![Vec3::new(0.0123, -0.5, 0.9999); 3]);
+        a.normals = vec![Vec3::new(0.001, 0.002, -0.003); 3];
+        p.morph_targets = vec![a, MorphTarget::new(vec![Vec3::splat(f32::MIN_POSITIVE); 3])];
+    }
+    p
+}
+
+#[test]
+fn an_undrawn_primitive_comes_back_from_its_geometry_bit_for_bit() {
+    for morphs in [true, false] {
+        let original = undrawn_primitive(morphs);
+        let kept = RetainedGeometry::from_primitive(&original);
+        assert_eq!(kept.to_primitive(original.material).unwrap(), original, "morphs: {morphs}");
+        assert_eq!(kept.to_primitive(None).unwrap().material, None, "the material is the caller's");
+    }
+}
+
+#[test]
+fn an_undrawn_mesh_survives_serde_bit_for_bit() {
+    let mut r = retained();
+    let geometry = RetainedGeometry::from_primitive(&undrawn_primitive(true));
+    r.meshes[1] = RetainedMesh::new("Body", vec![RetainedPrimitive::new().with_material(0).with_geometry(geometry)]);
+    let text = serde_json::to_string(&r).unwrap();
+    let back: Retained = serde_json::from_str(&text).unwrap();
+    assert_eq!(back, r);
+    assert_eq!(serde_json::to_string(&back).unwrap(), text, "writing again gives the same text");
+    let kept = back.meshes[1].primitives[0].geometry.as_ref().unwrap();
+    assert_eq!(kept.to_primitive(Some(MaterialIx(3))).unwrap(), undrawn_primitive(true));
+    assert!(!text.contains("\"geometry\":null"), "a drawn primitive writes no geometry");
+}
+
+#[test]
+fn an_extra_attribute_with_a_bad_name_is_refused() {
+    let mut kept = RetainedGeometry::from_primitive(&undrawn_primitive(false));
+    kept.extra[0].name = "Not A Slug".to_owned();
+    assert!(kept.to_primitive(None).is_err());
 }

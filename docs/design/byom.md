@@ -359,7 +359,8 @@ dropped: the avatar retains them for export (D8), so they round-trip whatever th
 3), attachments included, into an `IoScene`, then `run_export`. What the avatar does not model at run time (the MToon
 fields beyond `Toon`, passthrough extensions and extras, the meta, the thumbnail, node names and order) is kept in
 `ImportedAvatar::retained`, carried from the import, and the gather writes it back, so an unedited avatar re-exports
-with every field of the original.
+with every field of the original. That includes a mesh no node draws: it has no runtime mesh, so its primitives keep
+their geometry and morph targets themselves (`RetainedPrimitive::geometry`), exactly, and `validate` insists on it.
 
 **Materials are retained exactly.** The runtime `MaterialSpec` holds an 8-bit sRGB `Colour`, so converting back would
 nudge values (linear 0.5 comes back as about 0.502886). `retained` therefore keeps every source material as the file

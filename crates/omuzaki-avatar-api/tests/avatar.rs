@@ -14,8 +14,8 @@ use omuzaki_avatar_api::expression::{ColourBind, ExprIx, MorphBind, UvBind};
 use omuzaki_avatar_api::gaze::{AvatarGaze, AvatarLookAt};
 use omuzaki_avatar_api::retained::{Retained, RetainedMaterial};
 use omuzaki_avatar_api::retained::{
-    RetainedAnnotation, RetainedCollider, RetainedColliderGroup, RetainedFirstPerson, RetainedMesh, RetainedNode,
-    RetainedPrimitive, RetainedSkin, RetainedSpringChain, RetainedSpringJoint,
+    RetainedAnnotation, RetainedCollider, RetainedColliderGroup, RetainedFirstPerson, RetainedGeometry, RetainedMesh,
+    RetainedNode, RetainedPrimitive, RetainedSkin, RetainedSpringChain, RetainedSpringJoint,
 };
 use omuzaki_char_api::{BoneName, FaceOverlay, JointRef, MaterialName, TextureData, TextureName};
 use omuzaki_core::glam::Vec3;
@@ -478,4 +478,72 @@ fn texture_bytes_count_rgba8_and_the_mip_chain() {
         a.textures.insert(TextureName::new(format!("t{i}")).unwrap(), texture(2048, true));
     }
     assert_eq!(a.texture_bytes(), 447_392_400);
+}
+
+/// A valid triangle with `targets` morph targets of `deltas` position deltas each.
+fn triangle(targets: usize, deltas: usize) -> RetainedGeometry {
+    let mut p = omuzaki_io_api::Primitive::new(omuzaki_core::mesh::MeshData {
+        positions: vec![Vec3::ZERO, Vec3::X, Vec3::Y],
+        normals: vec![Vec3::Z; 3],
+        indices: vec![0, 1, 2],
+        ..Default::default()
+    });
+    p.morph_targets = vec![omuzaki_io_api::MorphTarget::new(vec![Vec3::Z; deltas]); targets];
+    RetainedGeometry::from_primitive(&p)
+}
+
+/// An avatar whose retained scene has a drawn source mesh (the runtime mesh 0) and, after it, one source mesh that no
+/// node draws, with `primitive`.
+fn with_undrawn(primitive: RetainedPrimitive) -> ImportedAvatar {
+    let mut a = avatar(false, 0, &[]);
+    a.retained.nodes = vec![RetainedNode::new("Face").with_mesh(0, None)];
+    a.retained.meshes = vec![
+        RetainedMesh::new("Face", vec![RetainedPrimitive::new()]).with_instance(0, vec![0]),
+        RetainedMesh::new("Spare", vec![primitive]),
+    ];
+    a
+}
+
+#[test]
+fn an_undrawn_mesh_must_keep_its_geometry_and_a_drawn_one_must_not() {
+    let kept = RetainedPrimitive::new().with_geometry(triangle(2, 3));
+    assert_eq!(with_undrawn(kept.clone()).validate(), Ok(()), "geometry and morph targets kept");
+    assert_eq!(with_undrawn(RetainedPrimitive::new()).validate(), Err(AvatarError::undrawn_geometry(1, 0)));
+
+    let mut a = avatar(false, 0, &[]);
+    a.retained.nodes = vec![RetainedNode::new("Face").with_mesh(0, None)];
+    a.retained.meshes = vec![RetainedMesh::new("Face", vec![kept]).with_instance(0, vec![0])];
+    assert_eq!(a.validate(), Err(AvatarError::drawn_geometry(0, 0)));
+}
+
+#[test]
+fn kept_geometry_must_be_a_valid_mesh_with_fitting_morph_targets() {
+    let invalid = |a: &ImportedAvatar| matches!(a.validate(), Err(AvatarError::RetainedGeometryInvalid { .. }));
+    let short = with_undrawn(RetainedPrimitive::new().with_geometry(triangle(1, 2)));
+    assert!(invalid(&short), "a target of 2 deltas on 3 vertices: {:?}", short.validate());
+
+    let mut geometry = triangle(1, 3);
+    geometry.morph_targets[0].normals = vec![Vec3::Z; 2];
+    assert!(
+        invalid(&with_undrawn(RetainedPrimitive::new().with_geometry(geometry))),
+        "normal deltas of the wrong length"
+    );
+
+    let mut geometry = triangle(0, 0);
+    geometry.indices.clear();
+    assert!(invalid(&with_undrawn(RetainedPrimitive::new().with_geometry(geometry))), "a mesh without triangles");
+
+    let mut geometry = triangle(0, 0);
+    geometry.extra = vec![omuzaki_avatar_api::retained::RetainedAttribute::new("Bad Name", 1, vec![0.0; 3])];
+    let a = with_undrawn(RetainedPrimitive::new().with_geometry(geometry));
+    assert!(matches!(a.validate(), Err(AvatarError::ExtraAttributeName { .. })), "{:?}", a.validate());
+}
+
+#[test]
+fn an_undrawn_meshs_target_names_must_match_its_kept_targets() {
+    let mut a = with_undrawn(RetainedPrimitive::new().with_geometry(triangle(2, 3)));
+    a.retained.meshes[1] = a.retained.meshes[1].clone().with_morph_target_names(vec!["A".into(), "B".into()]);
+    assert_eq!(a.validate(), Ok(()));
+    a.retained.meshes[1].morph_target_names.pop();
+    assert_eq!(a.validate(), Err(AvatarError::morph_names(1, 1, 2)));
 }
