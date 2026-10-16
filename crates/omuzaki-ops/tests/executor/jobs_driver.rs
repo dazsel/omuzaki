@@ -13,8 +13,8 @@ use omuzaki_history_api::HistoryEntry;
 use omuzaki_history_mock::RecordingSink;
 use omuzaki_ops::Executor;
 use omuzaki_ops_api::{
-    ErrorCode, ErrorDetail, Event, Grants, JobCtx, JobShape, JobState, Jobs, Mode, Op, OpCtx, OpError, OpKind, OpMeta,
-    Plan, Request, Runner, Scope, SessionSpec, Sessions, Undo, register_op,
+    CauseKind, ErrorCode, ErrorDetail, Event, Grants, JobCtx, JobShape, JobState, Jobs, Mode, Op, OpCtx, OpError,
+    OpKind, OpMeta, Plan, Request, Runner, Scope, SessionSpec, Sessions, Undo, register_op,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -127,6 +127,14 @@ fn three_inner_edits_are_one_undo_entry_and_their_events_arrive_at_the_commit() 
         events.iter().position(|e| matches!(e, Event::TxCommitted { label, .. } if label == "Drive the test's edits."));
     let last_applied = events.iter().rposition(|e| matches!(e, Event::OpApplied { .. }));
     assert!(last_applied < committed, "held events go out before the commit: {events:?}");
+    // Each inner record is a script's step, named by the job, in the job's transaction.
+    let inner: Vec<_> = rig.log().into_iter().filter(|r| r.op == "test.set").collect();
+    assert_eq!(inner.len(), 3);
+    for record in &inner {
+        let cause = record.cause.as_ref().expect("an inner call has a cause");
+        assert_eq!((cause.kind, cause.text.as_deref()), (CauseKind::Script, Some("Drive the test's edits.")));
+        assert_eq!(record.tx, inner[0].tx);
+    }
     assert_eq!(rig.undo().unwrap().as_deref(), Some("Drive the test's edits."), "one undo entry");
     assert_eq!((rig.at("a"), rig.at("b"), rig.at("c")), (Some(json!(0)), Some(json!(0)), Some(json!(0))));
 }
