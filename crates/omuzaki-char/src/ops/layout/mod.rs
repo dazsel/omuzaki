@@ -3,9 +3,9 @@
 //! layout from ratios.
 //!
 //! The layout is stored at `characters/<id>/face/layout` (`FaceLayout`, `omuzaki-face-api`). Ratios are head-size
-//! independent, so they are read against the head's chin: the head part's `outline.chin_y()` (see [`chin`]). The
-//! ratio math and its inverse live in [`ratios`], the shared checks and patch-building in [`edit`], and the ops in
-//! [`measure`] and [`set`].
+//! independent, so they are read against the head's chin: the head part's `outline.chin_y()` (see `chin`). The
+//! ratio math and its inverse live in `ratios`, the shared checks and patch-building in `edit`, and the ops in
+//! `measure` and `set`.
 //!
 //! Every op plans against the document and returns a patch; none writes it. A value is checked on a copy of the layout,
 //! and an edit is refused only for the problems it introduces, so a layout damaged elsewhere still takes unrelated edits.
