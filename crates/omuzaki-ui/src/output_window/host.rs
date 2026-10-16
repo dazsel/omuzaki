@@ -102,7 +102,7 @@ impl WindowHost for OutputHost {
         if size.width == 0 || size.height == 0 {
             return Err(WindowError::Host(format!("the size {}x{} has a zero side", size.width, size.height)));
         }
-        self.lock().pending = Some(Request::Open(output_plan(size, settings)));
+        self.lock().pending = Some(Request::Open(output_plan(size, settings)?));
         Ok(())
     }
 
@@ -122,20 +122,24 @@ impl std::fmt::Debug for OutputHost {
 }
 
 /// The window the ops asked for: `size` pixels, with the settings' title, backdrop, cursor and stacking.
-fn output_plan(size: PhysicalSize, settings: &WindowSettings) -> OutputPlan {
+///
+/// # Errors
+/// [`WindowError::Unsupported`] for a backdrop newer than this host.
+fn output_plan(size: PhysicalSize, settings: &WindowSettings) -> Result<OutputPlan, WindowError> {
     let backdrop = match settings.backdrop {
         Backdrop::Key(key) => OutputBackdrop::Key(colour32(key)),
         // The ops pass `Transparent` only to a host that verified it; the key stays the fallback all the same.
         Backdrop::Transparent => OutputBackdrop::Transparent { fallback: DEFAULT_KEY },
+        other => return Err(WindowError::Unsupported(format!("backdrop {other:?}"))),
     };
-    OutputPlan {
+    Ok(OutputPlan {
         size,
         backdrop,
         title: settings.title.clone(),
         hide_cursor: settings.hide_cursor,
         always_on_top: settings.always_on_top,
         fps: DEFAULT_FPS,
-    }
+    })
 }
 
 /// The contract's backdrop for what the window shows.

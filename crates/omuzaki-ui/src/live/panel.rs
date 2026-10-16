@@ -318,6 +318,8 @@ impl LivePanel {
                 let line = match backdrop {
                     Shown::Key(key) => say(&ctx, Word::OutputOverKey, &[("size", &size), ("key", &key.to_string())]),
                     Shown::Transparent => say(&ctx, Word::OutputOverNothing, &[("size", &size)]),
+                    // A backdrop newer than this panel: the size alone.
+                    _ => size,
                 };
                 ui.label(RichText::new(line).font(small));
                 if self.model.window_fallback() && choice.backdrop == Backdrop::Transparent {
