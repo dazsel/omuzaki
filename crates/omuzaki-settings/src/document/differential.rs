@@ -137,3 +137,87 @@ proptest! {
         }
     }
 }
+
+/// Renames of every relation between the old and the new key: (file, old key, new key).
+const RENAMES: [(&str, &str, &str); 11] = [
+    ("[ui]\nold = 7\n", "ui.old", "ui.old.new"),
+    ("[ui.old]\nnew = 7\n", "ui.old.new", "ui.old"),
+    ("[ui]\na = 7\nz = 1\n", "ui.a", "ui.b"),
+    ("[x]\na = 7\n", "x.a", "ui.b"),
+    ("ui = { old = 7 }\n", "ui.old", "ui.new"),
+    ("ui = { old = 7 # c\n, k = 1 }\n", "ui.old", "ui.new"),
+    ("ui.old = 7\nui.k = 1\n", "ui.old", "ui.new"),
+    ("[ui]\nold.p = 7\n", "ui.old", "ui.new"),
+    ("[ui]\nold = { p = 7 }\nnew2 = 1\n", "ui.old", "ui.new2x"),
+    ("ui = { old = 7, new = { q = 1 } }\n", "ui.old", "ui.new.r"),
+    ("ui = {\n  new = 1,\n  old = 7 # old\n  ,\n}\n", "ui.old", "ui.new"),
+];
+
+fn rename_edits(from: &str, to: &str, value: &Value) -> ([Edit; 2], BTreeMap<String, String>) {
+    let edits = [Edit { key: to.into(), value: Some((value.clone(), 1)) }, Edit { key: from.into(), value: None }];
+    (edits, BTreeMap::from([(from.to_owned(), to.to_owned())]))
+}
+
+fn related(a: &str, b: &str) -> bool {
+    a.starts_with(&format!("{b}.")) || b.starts_with(&format!("{a}."))
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(1500))]
+
+    #[test]
+    fn a_rename_group_applies_in_full_or_not_at_all_and_a_retry_after_repair_succeeds(
+        which in 0..RENAMES.len(),
+        crlf in proptest::bool::ANY,
+        comments in proptest::bool::ANY,
+        blocked in proptest::bool::ANY,
+    ) {
+        let (body, from, to) = RENAMES[which];
+        // A blocked rename has its new name under a plain value; repair removes that value.
+        let (to, blocker) = if blocked { ("zz.new", "zz = 0\n") } else { (to, "") };
+        let head = if comments { "u0 = 1\n# c1\n" } else { "u0 = 1\n" };
+        let tail = if comments { "# c2\n[uother]\nuk = 1\n" } else { "[uother]\nuk = 1\n" };
+        let wrap = |t: String| if crlf { t.replace('\n', "\r\n") } else { t };
+        let text = wrap(format!("{head}{blocker}{body}{tail}"));
+        let Ok(doc) = parse(&text) else { return Ok(()) };
+        let Some(value) = lookup(&doc, from) else { return Ok(()) };
+        let (edits, needs) = rename_edits(from, to, &value);
+        let keep = outside(&text);
+
+        let done = apply_each(Some(&text), &edits, &needs).unwrap();
+        if blocked {
+            prop_assert_eq!(&done.text, &text, "a refused group changes nothing");
+            prop_assert_eq!(done.refused.len(), 2);
+            // Repaired, the same edits apply.
+            let repaired = wrap(format!("{head}{body}{tail}"));
+            let retry = apply_each(Some(&repaired), &edits, &needs).unwrap();
+            prop_assert!(retry.refused.is_empty(), "retry refused: {:?}\n{:?}", retry.refused, repaired);
+            let reopened = parse(&retry.text).unwrap();
+            prop_assert_eq!(lookup(&reopened, to), Some(value));
+        } else {
+            prop_assert!(done.refused.is_empty(), "{from} -> {to} refused: {:?}\n{:?}", done.refused, text);
+            let reopened = parse(&done.text).unwrap();
+            prop_assert_eq!(lookup(&reopened, to), Some(value.clone()), "{} -> {} in {:?} gave {:?}", from, to, text, done.text);
+            if !related(from, to) {
+                prop_assert_eq!(lookup(&reopened, from), None, "{} -> {} left the old name in {:?}", from, to, done.text);
+            }
+            prop_assert!(subsequence(&keep, &done.text), "{} -> {} lost outside lines\n{:?}\n{:?}", from, to, text, done.text);
+            if crlf {
+                prop_assert_eq!(done.text.matches('\n').count(), done.text.matches("\r\n").count(), "bare LF {:?}", done.text);
+            }
+            let strip = |t: &str| {
+                let mut json = item_to_json(parse(t).unwrap().as_item());
+                for key in [from, to] {
+                    remove_path(&mut json, &key.split('.').collect::<Vec<_>>());
+                }
+                json
+            };
+            if !related(from, to) {
+                prop_assert_eq!(strip(&text), strip(&done.text), "{} -> {} moved another key", from, to);
+            }
+            // Applying the group again changes nothing more.
+            let again = apply_each(Some(&done.text), &edits[..1], &BTreeMap::new()).unwrap();
+            prop_assert_eq!(&again.text, &done.text);
+        }
+    }
+}

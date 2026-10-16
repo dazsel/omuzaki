@@ -118,6 +118,25 @@ impl Setting for Moved {
     }
 }
 
+/// Renamed from an ancestor: `deep.old` (a value) became `deep.old.new`.
+struct Deeper;
+impl Setting for Deeper {
+    type Value = i32;
+    const META: SettingMeta = SettingMeta::new(
+        "deep.old.new",
+        "deeper",
+        SettingScope::User,
+        AgentWrite::Free,
+        InProfile::Excluded,
+        Apply::Live,
+        1,
+    );
+    const RENAMED_FROM: &'static [&'static str] = &["deep.old"];
+    fn default() -> i32 {
+        0
+    }
+}
+
 struct Renamed;
 impl Setting for Renamed {
     type Value = i32;
@@ -149,6 +168,7 @@ fn registrations() -> Vec<&'static SettingRegistration> {
             SettingRegistration::of::<Migrated>(p),
             SettingRegistration::of::<Renamed>(p),
             SettingRegistration::of::<Moved>(p),
+            SettingRegistration::of::<Deeper>(p),
         ]
     })
     .iter()
@@ -999,4 +1019,28 @@ fn a_table_section_under_a_dotted_parent_sets_resets_and_reopens() {
     drop(store);
     assert_eq!(get::<Migrated>(&rig.open()), 100);
     assert!(rig.user_text().contains("theme = \"dark\"") && !rig.user_text().contains("mig"));
+}
+
+#[test]
+fn a_rename_whose_old_name_is_an_ancestor_of_the_new_one_moves_set_resets_and_reopens() {
+    for crlf in [false, true] {
+        let eol = if crlf { "\r\n" } else { "\n" };
+        let rig = Rig::new();
+        rig.write_user(&format!("# top{eol}[deep]{eol}old = 7 # mine{eol}{eol}[other]{eol}k = 1{eol}"));
+        let store = rig.open();
+        assert_eq!(get::<Deeper>(&store), 7, "read from the ancestor");
+        store.flush().unwrap();
+        let text = rig.user_text();
+        assert!(text.contains("new = 7") && !text.contains("old = 7"), "the value moved: {text:?}");
+        assert!(text.contains(&format!("[other]{eol}k = 1{eol}")), "{text:?}");
+        drop(store);
+        let store = rig.open();
+        assert_eq!(get::<Deeper>(&store), 7, "reopened");
+        set::<Deeper>(&store, &9);
+        store.flush().unwrap();
+        store.reset("deep.old.new", Layer::Auto, Mode::Apply, &person()).unwrap();
+        store.flush().unwrap();
+        drop(store);
+        assert_eq!(get::<Deeper>(&rig.open()), 0, "reset and reopened");
+    }
 }

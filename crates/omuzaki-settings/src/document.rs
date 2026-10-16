@@ -159,8 +159,10 @@ pub(crate) fn apply_each(
     Ok(Applied { text, refused })
 }
 
-/// Applies each group of edits to a copy of the state and keeps the copy only if every edit in the group was made. A
-/// refused group leaves the state as it was and lists all its keys. Only text that is not TOML fails the whole call.
+/// Applies each group of edits to a copy of the state and keeps the copy only if every edit in the group was made, in
+/// some order: a rename whose old name is an ancestor of the new one needs the old name removed first, and one whose
+/// old name is a descendant needs the new name written first. A group no order can make leaves the state as it was and
+/// lists all its keys. Only text that is not TOML fails the whole call.
 fn run_groups<S: Clone>(
     groups: &[Vec<&Edit>],
     start: S,
@@ -168,29 +170,64 @@ fn run_groups<S: Clone>(
 ) -> Result<(S, Vec<(String, String)>), ApplyError> {
     let (mut state, mut refused) = (start, Vec::new());
     for group in groups {
-        let mut trial = state.clone();
-        let mut failure = None;
-        for edit in group {
-            match step(&trial, edit) {
-                Ok(next) => trial = next,
-                Err(ApplyError::Conflict(reason)) => {
-                    failure = Some((edit.key.clone(), reason));
+        let mut first_failure = None;
+        let mut made = None;
+        for order in orders(group.len()) {
+            let mut trial = state.clone();
+            let mut failure = None;
+            for &i in &order {
+                match step(&trial, group[i]) {
+                    Ok(next) => trial = next,
+                    Err(ApplyError::Conflict(reason)) => {
+                        failure = Some((group[i].key.clone(), reason));
+                        break;
+                    }
+                    Err(unparsable) => return Err(unparsable),
+                }
+            }
+            match failure {
+                None => {
+                    made = Some(trial);
                     break;
                 }
-                Err(unparsable) => return Err(unparsable),
+                Some(why) => first_failure = first_failure.or(Some(why)),
             }
         }
-        match failure {
-            None => state = trial,
-            Some((key, reason)) => {
+        match (made, first_failure) {
+            (Some(trial), _) => state = trial,
+            (None, Some((key, reason))) => {
                 for edit in group {
                     let why = if edit.key == key { reason.clone() } else { format!("kept with `{key}`: {reason}") };
                     refused.push((edit.key.clone(), why));
                 }
             }
+            (None, None) => {}
         }
     }
     Ok((state, refused))
+}
+
+/// The orders in which a group of `n` edits may be tried: as given first, then every other (groups are a handful of
+/// edits; a larger one is tried as given and reversed only).
+fn orders(n: usize) -> Vec<Vec<usize>> {
+    fn permute(rest: &mut Vec<usize>, built: &mut Vec<usize>, out: &mut Vec<Vec<usize>>) {
+        if rest.is_empty() {
+            out.push(built.clone());
+        }
+        for i in 0..rest.len() {
+            let item = rest.remove(i);
+            built.push(item);
+            permute(rest, built, out);
+            built.pop();
+            rest.insert(i, item);
+        }
+    }
+    if n > 6 {
+        return vec![(0..n).collect(), (0..n).rev().collect()];
+    }
+    let mut out = Vec::new();
+    permute(&mut (0..n).collect(), &mut Vec::new(), &mut out);
+    out
 }
 
 /// [`apply_each`] for callers that want every edit or an error.
