@@ -12,7 +12,7 @@ use omuzaki_ops::Executor;
 use omuzaki_ops_api::{ErrorCode, Grants, Mode, Request, Runner, Scope};
 use serde_json::json;
 
-use super::{agent, agent_request, person, request, rig};
+use super::{agent, agent_request, open_agents, person, request, rig};
 
 /// A dry-run plan carries `before` values, so it needs `read` like everything else.
 #[test]
@@ -122,7 +122,9 @@ fn undo_never_reverts_another_actors_step() {
 #[test]
 fn subscriber_churn_during_concurrent_ops_does_not_deadlock() {
     let clock = Arc::new(FakeClock::new(Seconds(0.0)));
-    let exec = Arc::new(Executor::new(Box::new(MemDoc::new()), clock).unwrap());
+    let exec = Executor::new(Box::new(MemDoc::new()), clock).unwrap();
+    open_agents(&exec);
+    let exec = Arc::new(exec);
     let _slow = exec.subscribe(&Grants::person()).unwrap(); // never drained
     let (done_tx, done_rx) = channel();
     let mut handles = Vec::new();
