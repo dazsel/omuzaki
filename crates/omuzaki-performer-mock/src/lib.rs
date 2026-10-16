@@ -16,6 +16,11 @@
 //! (`omuzaki_performer_api::conformance`) in `tests/conformance.rs`.
 #![deny(missing_docs)]
 
+omuzaki_core::define_link! {
+    omuzaki_performer_api::link();
+    omuzaki_stage_api::link();
+}
+
 mod brain;
 mod ears;
 mod other;

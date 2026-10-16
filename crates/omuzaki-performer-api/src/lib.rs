@@ -24,6 +24,11 @@
 //! `omuzaki-live-api` (#1915). Callers import by module path (ADR 0054 §2).
 #![deny(missing_docs)]
 
+omuzaki_core::define_link! {
+    omuzaki_char_api::link();
+    omuzaki_stage_api::link();
+}
+
 pub mod brain;
 pub mod conformance;
 pub mod ears;
