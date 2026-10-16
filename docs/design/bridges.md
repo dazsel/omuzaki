@@ -25,7 +25,7 @@ are PF-04 and PF-05's; this design states only the rules they share with the shi
 | Question | Decision | § |
 |---|---|---|
 | Where the shim lives | `crates/omuzaki-vts/src/server/**`, beside CN-13's client; one WebSocket crate (#726's) for the client, the shim and BR-19 | 2 |
-| Who a tool is | One `Transport::Plugin` session per authenticated connection, client `vts-<name>`, actor `<client>#<id>` as the executor builds it, principal the person who paired (stored with the token), ceiling `perform` and nothing else | 4 |
+| Who a tool is | One `Transport::Plugin` session per authenticated connection, client `vts-<name>`, actor `<client>#<id>` as the executor builds it, principal the person who paired (stored with the token), ceiling `{read, perform}` and nothing else | 4 |
 | Pairing | `Sessions::request_pairing` (new, additive, task S0) pauses the session `Pairing` and queues `Need::Pairing`; only a person in Omuzaki's window pairs; the token's keyed hash is kept machine-wide | 4 |
 | What reaches Omuzaki | Only ops through the `Runner`, as the tool's session: live actions for hotkeys and expressions, `vts_server.catalog` for lists, `vts_server.feed` to claim parameters, `vts_server.param_create` and `param_delete` | 3, 5 |
 | Contract change | One additive change to `omuzaki-ops-api` (S0, Director's approval): `Sessions::request_pairing` and `Sessions::gate`, both with default bodies that return `Unsupported` | 4, 5.1 |
@@ -80,7 +80,7 @@ read 2026-10-15); request semantics are the [README](https://github.com/DenchiSo
 (lists both documented permissions as not granted).
 
 **Every request that changes anything runs one op** through `Runner::run` with `actor` = the session's actor and
-`grants` = `{perform}`, so the executor checks the live session, scope, limits and pause:
+`grants` = `{read, perform}` (the executor requires `read` before it looks at any op, so it is the mandatory baseline; the shim builds every request itself and exposes no op that returns document content, so `read` reaches nothing a tool can name), so the executor checks the live session, scope, limits and pause:
 
 | Request | Op | Kind |
 |---|---|---|
@@ -113,7 +113,7 @@ pairing, else 205 `HotkeyExecutionFailedBecauseBadState` for hotkeys and 0 `Inte
 | `client` | `vts-<name>`: `pluginName` lowercased, every character outside `[a-z0-9-]` replaced by `-`, at most 36 characters. The shim builds it in that alphabet so the executor's sanitising leaves it unchanged |
 | actor | built by the executor as ADR 0020 says, `<client>#<session id>` (for example `vts-bonktool#7`); the shim never builds one. The chip shows the declared name and developer from the shim's status |
 | `on_behalf_of` | for a token request, the studio's person (the only one who can resolve the card, 7.2); for an authentication, the `principal` stored in the token's record |
-| `grants` | `{perform}`. Never widened: the shim offers no "approve for this session" path for other scopes, and an op needing another scope is refused, not queued |
+| `grants` | `{read, perform}`. Never widened: the shim offers no "approve for this session" path for other scopes, and an op needing another scope is refused, not queued |
 | `budget`, `limits` | `usd_micros` 0; `Limits::default()` (agent-sessions 8.2) |
 
 Before authentication a connection has **no session**: only `APIStateRequest`, `AuthenticationTokenRequest` and
@@ -309,7 +309,7 @@ PF-04 (VMC in and out, #468) and PF-05 (OSC, MIDI, gamepad, keyboard, Stream Dec
 own tasks to come; PL-05 adds **no tasks** for them. What it settles is the rule set every bridge follows:
 
 1. **Off by default, started by a person** (a person-only op; settings `Machine`, `AgentWrite::Never`).
-2. **A session per bridge**, `Transport::Plugin`, principal the person who started it, ceiling `perform`; actions run
+2. **A session per bridge**, `Transport::Plugin`, principal the person who started it, ceiling `{read, perform}`; actions run
    as ops through the `Runner` in that session; per-frame data flows under a feed op and the session's `SessionGate`, and every value expires 1 s after it arrives (§5).
 3. **Loopback by default.** VMC is the exception the shim is not: phones and mocap PCs send over the LAN (mocopi,
    XR Animator), so PF-04 may offer a LAN bind behind a person's choice with a sender allowlist.
@@ -359,12 +359,12 @@ nothing. `S` = session, `G` = effective grants.
 | 3 | `HotkeysInCurrentModelRequest` | not authenticated | `APIError` 8 | none / none |
 | 4 | `AuthenticationTokenRequest {pluginName: "BonkTool", pluginDeveloper: "Example Dev"}` | `Sessions::open {client: "vts-bonktool", on_behalf_of: the studio's person}` → `S7`, actor `vts-bonktool#7`; `request_pairing(S7)` → `Paused { Pairing }`, `Need::Pairing { client: "vts-bonktool" }`; the card shows | (waits, at most 120 s) | S7 paused / `{perform}` |
 | 5 | (the person clicks Pair in Omuzaki) | `ApprovalResolved {by: person}` forwarded; token drawn; record stored with `principal` = person; S7 resumed by the executor | `authenticationToken: "<43 chars>"` | S7 active / `{perform}` |
-| 6 | `AuthenticationRequest {…, authenticationToken}` | hash matches | `authenticated: true` | S7 / `{perform}` |
-| 7 | `HotkeysInCurrentModelRequest` | `Runner::run(vts_server.catalog)` as `vts-bonktool#7` | `modelID: "9f3a…"`, hotkeys `[{name: "Smug", type: "ToggleExpression", hotkeyID: "c41e…"}, …]` | S7 / `{perform}` |
-| 8 | `HotkeyTriggerRequest {hotkeyID: "c41e…"}` | `Runner::run(<PF-25 press>, {trigger: smug})` as S7; journal: live action, actor `vts-bonktool#7`, `on_behalf_of` the person | `HotkeyTriggerResponse {hotkeyID}`; `HotkeyTriggeredEvent` to subscribers | S7 / `{perform}` |
-| 9 | `InjectParameterDataRequest {faceFound: false, mode: "set", parameterValues: [{id: "FaceAngleZ", value: 12, weight: 0.5}]}` | first use: `Runner::run(vts_server.feed {params: [FaceAngleZ], mode: set})` → slot 0 and S7's gate; claim on `FaceAngleZ` (set); value written to slot 0 | `InjectParameterDataResponse` | S7 / `{perform}` |
-| 10 | the same request every frame | values only, no op; frame thread: `roll = lerp(roll, 12°, 0.5)` in the tracker layer | `InjectParameterDataResponse` | S7 / `{perform}` |
-| 11 | (the tool stops sending) | 1 s after the last value: the frame thread eases `FaceAngleZ` out over 100 ms; the housekeeping tick releases the claim at that deadline and disarms the slot | none | S7 / `{perform}` |
+| 6 | `AuthenticationRequest {…, authenticationToken}` | hash matches | `authenticated: true` | S7 / `{read, perform}` |
+| 7 | `HotkeysInCurrentModelRequest` | `Runner::run(vts_server.catalog)` as `vts-bonktool#7` | `modelID: "9f3a…"`, hotkeys `[{name: "Smug", type: "ToggleExpression", hotkeyID: "c41e…"}, …]` | S7 / `{read, perform}` |
+| 8 | `HotkeyTriggerRequest {hotkeyID: "c41e…"}` | `Runner::run(<PF-25 press>, {trigger: smug})` as S7; journal: live action, actor `vts-bonktool#7`, `on_behalf_of` the person | `HotkeyTriggerResponse {hotkeyID}`; `HotkeyTriggeredEvent` to subscribers | S7 / `{read, perform}` |
+| 9 | `InjectParameterDataRequest {faceFound: false, mode: "set", parameterValues: [{id: "FaceAngleZ", value: 12, weight: 0.5}]}` | first use: `Runner::run(vts_server.feed {params: [FaceAngleZ], mode: set})` → slot 0 and S7's gate; claim on `FaceAngleZ` (set); value written to slot 0 | `InjectParameterDataResponse` | S7 / `{read, perform}` |
+| 10 | the same request every frame | values only, no op; frame thread: `roll = lerp(roll, 12°, 0.5)` in the tracker layer | `InjectParameterDataResponse` | S7 / `{read, perform}` |
+| 11 | (the tool stops sending) | 1 s after the last value: the frame thread eases `FaceAngleZ` out over 100 ms; the housekeeping tick releases the claim at that deadline and disarms the slot | none | S7 / `{read, perform}` |
 | 12 | (the person revokes BonkTool with `vts_server.revoke`) | `Sessions::end(S7, Revoked { credential: true })`: S7's gate is cleared before it returns; `SessionEnded` → record deleted | next request: `APIError` 50 | ended / none |
 
 ## 12. Tests
@@ -448,7 +448,7 @@ Each task: Parent #529, `lane:cloud`, priority P1 unless stated. File when ADR 0
 ## 14. Open questions (for the owner, with a recommendation)
 
 1. **Pairing machine-wide or per project?** Recommend machine-wide: a stream tool serves every project, and the
-   ceiling is fixed at `perform`, so there are no project grants to scope.
+   ceiling is fixed at `{read, perform}`, so there are no project grants to scope.
 2. **Rate-limit and unsupported-move error id.** No documented id fits; recommend 0 with an explanatory `message`.
 3. **Live tracking values to tools?** Recommend never in phase 1; a later person-only opt-in if a real tool needs it.
 4. **Events we never produce:** recommend accept and never fire (tools subscribe in bulk on connect) over 950.
