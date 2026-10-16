@@ -93,6 +93,66 @@ mod wide {
 
     register_part_kind!(Wide);
 
+    /// A point on a line.
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+    #[serde(default, deny_unknown_fields)]
+    pub struct Point {
+        /// Along, `0..=1`.
+        pub x: f64,
+        /// Up, `0..=2`.
+        pub y: f64,
+    }
+
+    impl Default for Point {
+        fn default() -> Self {
+            Self { x: 0.5, y: 1.0 }
+        }
+    }
+
+    /// A line of points, at least two.
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+    #[serde(default, deny_unknown_fields)]
+    pub struct LineParams {
+        /// The points.
+        pub points: Vec<Point>,
+    }
+
+    impl Default for LineParams {
+        fn default() -> Self {
+            Self { points: vec![Point::default(), Point::default()] }
+        }
+    }
+
+    impl Validate for LineParams {
+        fn check(&self, c: &mut Check) {
+            super::POINTS_CHECKED.fetch_add(self.points.len(), Ordering::Relaxed);
+            if self.points.len() < 2 {
+                c.fail("points", "a line needs at least two points");
+            }
+            for (i, p) in self.points.iter().enumerate() {
+                c.range(&format!("points/{i}/x"), p.x, 0.0, 1.0);
+                c.range(&format!("points/{i}/y"), p.y, 0.0, 2.0);
+            }
+        }
+    }
+
+    /// The `line` kind: builds nothing.
+    pub struct Line;
+
+    impl PartKind for Line {
+        type Params = LineParams;
+
+        fn meta() -> PartMeta {
+            PartMeta { id: "line", summary: "A line of points.", category: PartCategory::Accessory, requires: &[] }
+        }
+
+        fn build(_: &LineParams, _: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
+            Ok(PartOutput::default())
+        }
+    }
+
+    register_part_kind!(Line);
+
     /// One share of a whole.
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
     #[serde(default, deny_unknown_fields)]
@@ -148,6 +208,8 @@ mod wide {
 static GROUPS_CHECKED: AtomicUsize = AtomicUsize::new(0);
 /// Held by the tests that use the `wide` kind, so the counter reads one test's work.
 static WIDE: Mutex<()> = Mutex::new(());
+/// Points the `line` kind's validator has looked at (under the same lock).
+static POINTS_CHECKED: AtomicUsize = AtomicUsize::new(0);
 
 fn describe(doc: &MemDoc, part: &str) -> Value {
     plan(doc, "part.describe", json!({"character": "mock", "part": part})).unwrap().output.unwrap()
@@ -284,11 +346,48 @@ fn groups_checked_describing(n: usize, named: usize) -> usize {
 
 #[test]
 fn describe_does_work_in_proportion_to_the_part_not_its_square() {
-    // Linear doubles; a probe that checks the whole part quadruples. Named groups (a streak's) are kept in every probe.
-    for named in [0, 2] {
-        let (small, large) = (groups_checked_describing(10, named), groups_checked_describing(20, named));
-        assert!(large * 10 <= small * 25, "{named} named: 10 groups checked {small}, 20 checked {large}: not linear");
-        assert!(large > small, "the larger part costs more");
+    // Linear doubles; a probe that checks the whole part quadruples. Half the groups are named by a list of references
+    // (a streak's `groups`), so the references grow with the part.
+    let timed = |n: usize| {
+        let start = std::time::Instant::now();
+        let checked = groups_checked_describing(n, n / 2);
+        eprintln!("{n} groups, {} named: {checked} groups checked, {:?}", n / 2, start.elapsed());
+        checked
+    };
+    let (small, large) = (timed(10), timed(20));
+    assert!(large * 10 <= small * 25, "10 groups checked {small}, 20 checked {large}: not linear");
+    assert!(large > small, "the larger part costs more");
+    // None named, and a few named, as before.
+    let (small, large) = (groups_checked_describing(10, 2), groups_checked_describing(20, 2));
+    assert!(large * 10 <= small * 25, "10 groups checked {small}, 20 checked {large}: not linear");
+}
+
+/// The points the `line` validator looks at over one `describe` of a line of `n` points.
+fn points_checked_describing(n: usize) -> usize {
+    let points: Vec<Value> = (0..n).map(|_| json!({})).collect();
+    let doc = with_probe("line", &json!({ "points": points }));
+    let _only = WIDE.lock().unwrap();
+    let before = POINTS_CHECKED.load(Ordering::Relaxed);
+    let d = describe(&doc, "probe");
+    assert_eq!(d["valid"], true);
+    let probed = d["parameters"].as_array().unwrap().iter().filter(|p| p.get("maximum").is_some()).count();
+    assert_eq!(probed, 2 * n, "every number still gets its range");
+    POINTS_CHECKED.load(Ordering::Relaxed) - before
+}
+
+#[test]
+fn describe_does_work_in_proportion_to_a_list_not_its_square() {
+    let (small, large) = (points_checked_describing(20), points_checked_describing(40));
+    assert!(large * 10 <= small * 25, "20 points checked {small}, 40 checked {large}: not linear");
+}
+
+#[test]
+fn the_ends_of_a_list_keep_the_neighbour_a_minimum_length_needs() {
+    // The first and last point are probed with one neighbour, so "at least two points" still holds.
+    let d = describe(&with_probe("line", &json!({"points": [{"x": 0.1}, {"x": 0.2}, {"x": 0.3}]})), "probe");
+    let find = |path: &str| d["parameters"].as_array().unwrap().iter().find(|p| p["path"] == path).cloned().unwrap();
+    for path in ["points/0/x", "points/1/x", "points/2/x"] {
+        assert_eq!((find(path)["minimum"].clone(), find(path)["maximum"].clone()), (json!(0.0), json!(1.0)), "{path}");
     }
 }
 
