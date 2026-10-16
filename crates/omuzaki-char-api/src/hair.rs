@@ -585,6 +585,12 @@ pub struct CurtainGen {
     pub envelope: Vec<[f64; 2]>,
     /// The wave and tip curl.
     pub wave: Wave,
+    /// How far up the head, in degrees of polar angle, each guide's first point is carried from its root, to stand
+    /// just under the cap's shell so the curtain starts hidden under the cap's edge. 0 starts the guide at its root, as
+    /// the prototype does.
+    pub root_tuck_deg: f64,
+    /// How far off the skull that first point stands, a little under the cap's own thickness, metres.
+    pub root_tuck_offset: f64,
     /// Columns per strip (the width of the curtain's clump separation), `1..=9`.
     pub columns: u8,
     /// Clump width.
@@ -604,6 +610,8 @@ impl Default for CurtainGen {
             length_back: 0.56,
             envelope: vec![[0.7, 0.2], [0.5, 0.31], [0.3, 0.34], [0.2, 0.32]],
             wave: Wave { amplitude: 0.036, frequency: 2.1, phase: 0.0, curl: 0.045, growth: [0.15, 0.65] },
+            root_tuck_deg: 20.0,
+            root_tuck_offset: 0.015,
             columns: 5,
             width: Taper { start: 0.066, mid: 0.095, tip: 0.014, tip_at: 0.8 },
             thickness: Bulge { base: 0.006, swell: 0.004 },
@@ -1413,6 +1421,8 @@ impl Validate for HairGroup {
                 c.range("generator/spread_deg", g.spread_deg, 20.0, 180.0);
                 c.range("generator/length_front", g.length_front, 0.05, 1.5);
                 c.range("generator/length_back", g.length_back, 0.05, 1.5);
+                c.range("generator/root_tuck_deg", g.root_tuck_deg, 0.0, 60.0);
+                c.range("generator/root_tuck_offset", g.root_tuck_offset, 0.0, 0.1);
                 c.range("generator/root_height_front", g.root_height_front, -2.0, 2.0);
                 c.range("generator/root_height_back", g.root_height_back, -2.0, 2.0);
                 if g.envelope.len() < 2 {

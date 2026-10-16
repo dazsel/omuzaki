@@ -27,8 +27,10 @@
 //!
 //! The group's stiffness and follow are its [`Dynamics`](omuzaki_char_api::Dynamics), applied by the context.
 
+mod body;
 mod strip;
 
+pub use body::BodyKeepOut;
 pub use strip::{
     MIN_GAP, Spacing, StripError, StripLook, column_count, curtain_order, strip_indices, strip_mesh, strip_normals,
     strip_positions, vertex_count, winding_flips,
@@ -118,11 +120,12 @@ pub fn compile_folds(g: &CurtainGen, ctx: &mut HairGenCtx<'_>, folds: Folds) -> 
     if folds == Folds::Coherent {
         smooth_jitter(&mut draws);
     }
+    let keep_out = ctx.body.map(BodyKeepOut::new);
     let mut clumps = Vec::with_capacity(count);
     let mut across = Vec::with_capacity(count);
     for (i, draws) in draws.iter().enumerate() {
         let u = across_back(i, count);
-        let rest = guide(g, ctx, centre, u, draws);
+        let rest = guide(g, ctx, keep_out.as_ref(), centre, u, draws);
         clumps.push(ctx.clump(rest, g.width, g.thickness, 1.0));
         across.push(narrow_f32(u));
     }
@@ -155,7 +158,7 @@ fn smooth_jitter(draws: &mut [Draws]) {
 
 /// The curtain as one mesh at rest, from the compiled `clumps` and their `u` (a strip's position across the back): each
 /// guide's strip of `columns` columns, in order of `u`, every strip with vertices of its own. Each strip takes its
-/// clump's shade and streak tint.
+/// clump's shade and streak tint. Vertices inside the body (`keep_out`) are moved out of it.
 ///
 /// # Errors
 /// [`StripError`] if `u` and `clumps` differ in length or the guides cannot make a strip (fewer than two points, or not
@@ -167,6 +170,7 @@ pub fn group_mesh(
     columns: u8,
     frame: &OutwardFrame,
     folds: Folds,
+    keep_out: Option<&BodyKeepOut>,
 ) -> Result<MeshData, StripError> {
     if u.len() != clumps.len() {
         return Err(StripError::GuideCount { clumps: clumps.len(), u: u.len() });
@@ -175,7 +179,15 @@ pub fn group_mesh(
     let guides: Vec<&[Vec3]> = order.iter().map(|&i| clumps[i].rest.as_slice()).collect();
     let looks: Vec<StripLook> =
         order.iter().map(|&i| StripLook { shade: clumps[i].shade, colour: vertex_colour(clumps[i].tint) }).collect();
-    strip_mesh(&guides, &looks, columns, folds.spacing(), frame.head, |p| frame.rest(p))
+    strip_mesh(
+        &guides,
+        &looks,
+        columns,
+        folds.spacing(),
+        frame.head,
+        |p| frame.rest(p),
+        |p| keep_out.map_or(p, |k| k.push_out(p, STRIP_BODY_MARGIN)),
+    )
 }
 
 /// How many clumps [`compile`] makes, from the parameters alone: one per guide.
@@ -233,12 +245,13 @@ fn angle_of(g: &CurtainGen, u: f64) -> f64 {
 }
 
 /// The guide's root: on the head just under the braid line, which is found as `part_sweep` finds its own.
-fn root_point(g: &CurtainGen, head: &dyn HeadSurface, phi: f64) -> Vec3 {
+fn root_point(g: &CurtainGen, head: &dyn HeadSurface, phi: f64) -> (Vec3, f64) {
     let blend = smoothstep(phi.abs().to_degrees(), BRAID_BLEND_DEG.0, BRAID_BLEND_DEG.1);
     let height = lerp(g.root_height_front, g.root_height_back, blend) - ROOT_BELOW_BRAID;
     let crown = f64::from(head.radius(Vec3::Y)).max(1e-6);
     let theta = (height / crown).clamp(-1.0, 1.0).acos();
-    GuidePoint::Surface([theta.to_degrees(), phi.to_degrees(), ROOT_OFFSET]).resolve(head)
+    let theta = theta.to_degrees();
+    (GuidePoint::Surface([theta, phi.to_degrees(), ROOT_OFFSET]).resolve(head), theta)
 }
 
 /// The distance the hair stands from the body axis at height `y`: linear between the table's rows, held at the first
@@ -255,9 +268,17 @@ fn envelope_at(table: &[[f64; 2]], y: f64, fallback: f64) -> f64 {
 }
 
 /// One guide's rest shape: the hand-built path, resampled evenly by arc length.
-fn guide(params: &CurtainGen, ctx: &HairGenCtx<'_>, centre: Vec3, u: f64, draws: &Draws) -> Vec<Vec3> {
+fn guide(
+    params: &CurtainGen,
+    ctx: &HairGenCtx<'_>,
+    keep_out: Option<&BodyKeepOut>,
+    centre: Vec3,
+    u: f64,
+    draws: &Draws,
+) -> Vec<Vec3> {
     let phi = angle_of(params, u);
-    let root = root_point(params, ctx.head, phi).as_dvec3();
+    let (root, root_theta) = root_point(params, ctx.head, phi);
+    let root = root.as_dvec3();
     let backness = phi.cos().abs();
     let length =
         lerp(params.length_front, params.length_back, backness) * (0.95 + 0.05 * (u * 23.0).sin() + draws.length);
@@ -291,11 +312,32 @@ fn guide(params: &CurtainGen, ctx: &HairGenCtx<'_>, centre: Vec3, u: f64, draws:
             point.z += tz * curl * curling - cos * pull;
             point.y += CURL_LIFT * curl_scale * curling * curling;
         }
-        point
+        clear_of_body(keep_out, point)
     };
-    let path: Vec<DVec3> = std::iter::once(root).chain((1..=SEGMENTS).map(|k| at(along(k, SEGMENTS)))).collect();
-    spaced_points(&path, GUIDE_POINTS)
-        .map_or_else(|_| straight_fall(root, length), |pts| pts.into_iter().map(DVec3::as_vec3).collect())
+    // The tuck: a first point carried up the head, just under the cap's shell, so the curtain starts hidden under the
+    // cap's edge instead of standing off the head as a band. It is zero in the prototype's own parameters.
+    let tuck = (params.root_tuck_deg > 0.0).then(|| {
+        let theta = (root_theta - params.root_tuck_deg).max(0.0);
+        GuidePoint::Surface([theta, phi.to_degrees(), params.root_tuck_offset]).resolve(ctx.head).as_dvec3()
+    });
+    let path: Vec<DVec3> =
+        tuck.into_iter().chain(std::iter::once(root)).chain((1..=SEGMENTS).map(|k| at(along(k, SEGMENTS)))).collect();
+    spaced_points(&path, GUIDE_POINTS).map_or_else(
+        |_| straight_fall(root, length),
+        |pts| pts.into_iter().map(|p| clear_of_body(keep_out, p).as_vec3()).collect(),
+    )
+}
+
+/// How far a guide's points keep from the body, metres. The strips take a smaller margin ([`STRIP_BODY_MARGIN`]):
+/// they stand a little sideways of their guide.
+const GUIDE_BODY_MARGIN: f32 = 0.010;
+/// How far the strips' vertices keep from the body, metres.
+pub const STRIP_BODY_MARGIN: f32 = 0.006;
+
+/// `p` moved out of the body, if there is one and `p` is inside it. Points that start the guide (on the head, above the
+/// shoulders) are in no region, so only the fall is touched.
+fn clear_of_body(keep_out: Option<&BodyKeepOut>, p: DVec3) -> DVec3 {
+    keep_out.map_or(p, |k| k.push_out(p.as_vec3(), GUIDE_BODY_MARGIN).as_dvec3())
 }
 
 /// The guide as a straight drop, for a path that cannot be resampled (a non-finite parameter): the group still builds

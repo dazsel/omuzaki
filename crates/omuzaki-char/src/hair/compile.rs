@@ -13,8 +13,8 @@
 //! prototype's Park-Miller stream shared by all groups (parity mode). Generators never construct their own generators.
 
 use omuzaki_char_api::{
-    Bulge, Dynamics, Generator, GroupId, GuidePoint, HairClump, HairGroup, HairParams, HairRng, HairSide, HeadSurface,
-    LegacyLcg, Quality, Taper,
+    BodyFit, Bulge, Dynamics, Generator, GroupId, GuidePoint, HairClump, HairGroup, HairParams, HairRng, HairSide,
+    HeadSurface, LegacyLcg, Quality, Taper,
 };
 use omuzaki_core::glam::Vec3;
 use omuzaki_core::mesh::MeshData;
@@ -72,6 +72,9 @@ pub struct HairGenCtx<'a> {
     pub palette: &'a Palette,
     /// Level of detail.
     pub quality: Quality,
+    /// The body the hair hangs over, where the build has one (a test or tool with a bare head has none). Generators
+    /// that fall past the shoulders keep clear of it ([`curtain`](super::r#gen::curtain)).
+    pub body: Option<&'a dyn BodyFit>,
     group: &'a GroupId,
     dynamics: &'a Dynamics,
     rng: &'a mut dyn UnitStream,
@@ -87,7 +90,14 @@ impl<'a> HairGenCtx<'a> {
         dynamics: &'a Dynamics,
         rng: &'a mut dyn UnitStream,
     ) -> Self {
-        Self { head, palette, quality, group, dynamics, rng }
+        Self { head, palette, quality, body: None, group, dynamics, rng }
+    }
+
+    /// The same context with the `body` the hair hangs over.
+    #[must_use]
+    pub fn with_body(mut self, body: Option<&'a dyn BodyFit>) -> Self {
+        self.body = body;
+        self
     }
 
     /// The next random number in `0..1` (the prototype's `rnd`).
@@ -311,10 +321,26 @@ pub fn compile_groups(
     quality: Quality,
     rng: &mut dyn UnitStream,
 ) -> Result<Vec<CompiledEntry>, CompileError> {
+    compile_groups_over(params, generators, head, None, palette, quality, rng)
+}
+
+/// [`compile_groups`] for hair that hangs over `body`.
+///
+/// # Errors
+/// As [`compile_groups`].
+pub fn compile_groups_over(
+    params: &HairParams,
+    generators: &dyn GroupGenerator,
+    head: &dyn HeadSurface,
+    body: Option<&dyn BodyFit>,
+    palette: &Palette,
+    quality: Quality,
+    rng: &mut dyn UnitStream,
+) -> Result<Vec<CompiledEntry>, CompileError> {
     let mid_x = head.centre().x;
     let mut entries = Vec::new();
     for (id, group) in enabled(params) {
-        let mut ctx = HairGenCtx::new(head, palette, quality, id, &group.dynamics, rng);
+        let mut ctx = HairGenCtx::new(head, palette, quality, id, &group.dynamics, rng).with_body(body);
         let mut compiled = generators.compile(&group.generator, &mut ctx);
         let reported = generators.clump_count(&group.generator);
         if compiled.clumps.len() != reported {

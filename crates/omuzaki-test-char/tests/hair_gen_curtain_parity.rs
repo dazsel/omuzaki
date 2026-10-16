@@ -69,7 +69,10 @@ fn private() -> Option<(JsRef, Local)> {
         eprintln!("skipped: no local curtain numbers at {}", path.display());
         return None;
     };
-    Some((js, serde_json::from_str(&text).expect("the local curtain file parses")))
+    let mut local: Local = serde_json::from_str(&text).expect("the local curtain file parses");
+    // The prototype's guides start at their roots: the tuck under the cap's shell is the port's own.
+    local.curtain.root_tuck_deg = 0.0;
+    Some((js, local))
 }
 
 /// The curtain's guides as the prototype's stream makes them for the character.

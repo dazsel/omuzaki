@@ -36,6 +36,7 @@ fn params(count: u16) -> CurtainGen {
     CurtainGen {
         count,
         envelope: vec![[1.6, 0.11], [1.4, 0.17], [1.2, 0.22], [0.9, 0.26], [0.5, 0.3]],
+        root_tuck_deg: 0.0, // the prototype's own guides; the tuck has its own tests
         ..CurtainGen::default()
     }
 }
