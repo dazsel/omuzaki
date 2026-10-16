@@ -1,9 +1,9 @@
 //! `MockPlugins` passes the conformance suite, and its own promises: injected faults, deterministic scripts.
 
 use omuzaki_ops_api::{Grants, Scope};
-use omuzaki_plugin_api::{PluginError, Plugins};
 use omuzaki_plugin_api::limits::LOG_BURST;
 use omuzaki_plugin_api::state::{FaultKind, LogLevel, PluginState};
+use omuzaki_plugin_api::{PluginError, Plugins};
 use omuzaki_plugin_mock::conformance::{self, Behaviour, Subject, World, manifest, person};
 use omuzaki_plugin_mock::{MockGuest, MockOp, MockPlugins, MockSubject, ScriptedCall};
 
