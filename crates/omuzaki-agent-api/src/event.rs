@@ -115,8 +115,14 @@ pub enum AssistantEvent {
     },
     /// Something failed; the panel shows the error with its one action.
     Error(HostError),
-    /// The answer is over; the panel re-enables its box.
+    /// The answer is over and its changes are closed: committed as one undo step, discarded, or there were none.
+    /// The panel re-enables its box.
     Done,
+    /// The answer is over, but its changes could not be closed: the executor confirmed neither a commit nor a
+    /// rollback, so they are not an undo step yet. The `Error` events before it say what was refused. The panel keeps
+    /// this as a visible state ("the changes of this answer are still open; your next message closes them first") and
+    /// re-enables its box. The next `send` closes them before anything else and ends the same way if it still cannot.
+    Unclosed,
 }
 
 impl AssistantEvent {
@@ -143,6 +149,12 @@ impl AssistantEvent {
     /// The meter line's data.
     pub fn budget(spent: Spend, budget: Budget) -> Self {
         Self::Budget { spent, budget }
+    }
+
+    /// Whether this event ends the answer: [`Done`](Self::Done) or [`Unclosed`](Self::Unclosed). The host sends exactly
+    /// one of them per accepted `send`, last.
+    pub fn ends_answer(&self) -> bool {
+        matches!(self, Self::Done | Self::Unclosed)
     }
 
     /// Whether Stop withdraws this event while it is still unread (D4): the output the person would otherwise keep
@@ -173,6 +185,7 @@ mod tests {
             AssistantEvent::budget(Spend { usd_micros: 814, tokens: 6_327, seconds: 0 }, Budget::default()),
             AssistantEvent::Error(HostError::NeedsKey),
             AssistantEvent::Done,
+            AssistantEvent::Unclosed,
         ]
     }
 
@@ -187,6 +200,13 @@ mod tests {
     #[test]
     fn stop_withdraws_exactly_the_four_output_kinds() {
         let withdrawn: Vec<bool> = every_event().iter().map(AssistantEvent::is_withdrawn_by_stop).collect();
-        assert_eq!(withdrawn, [true, true, false, false, false, false, true, true, false, false, false, false]);
+        assert_eq!(withdrawn, [true, true, false, false, false, false, true, true, false, false, false, false, false]);
+    }
+
+    #[test]
+    fn exactly_done_and_unclosed_end_an_answer() {
+        let ending: Vec<bool> = every_event().iter().map(AssistantEvent::ends_answer).collect();
+        let last_two = ending.len() - 2;
+        assert!(ending[..last_two].iter().all(|e| !e) && ending[last_two..].iter().all(|e| *e), "{ending:?}");
     }
 }

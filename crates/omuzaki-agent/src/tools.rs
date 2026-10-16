@@ -123,7 +123,7 @@ impl Worker {
         match call.name.as_str() {
             ASK_PERSON => self.ask_person(run, &call.input),
             UPDATE_PLAN => Ok(self.update_plan(&call.input)),
-            DISCARD_CHANGES => self.discard_changes(run),
+            DISCARD_CHANGES => self.discard_changes(),
             _ => self.read_resource(&call.input),
         }
     }
@@ -139,10 +139,13 @@ impl Worker {
         }
     }
 
-    fn discard_changes(&mut self, run: &mut AnswerRun) -> Result<(Vec<ContentBlock>, bool), Flow> {
-        match self.rollback_tx(run)? {
+    fn discard_changes(&mut self) -> Result<(Vec<ContentBlock>, bool), Flow> {
+        match self.rollback_tx()? {
             None => Ok(text_result("there were no changes in this answer to discard", false)),
-            Some(reply) => Ok(tool_result_blocks(DISCARD_CHANGES, &reply)),
+            Some(reply) => {
+                self.delivered("tx_rollback", None, &reply);
+                Ok(tool_result_blocks(DISCARD_CHANGES, &reply))
+            }
         }
     }
 

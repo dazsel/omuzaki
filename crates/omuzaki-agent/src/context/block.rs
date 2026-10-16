@@ -19,8 +19,6 @@ const UI_CONTEXT_URI: &str = "omuzaki://ui/context";
 const DESCRIBE_TOOL: &str = "project_describe";
 /// The tool whose result carries the heads-up.
 const SESSION_INFO_TOOL: &str = "session_info";
-/// The key the server puts what others changed under in a structured result.
-const HEADS_UP_KEY: &str = "since_your_last_call";
 
 impl Worker {
     /// The blocks of the context for `msg`; empty when there is nothing to add.
@@ -45,6 +43,7 @@ impl Worker {
         if let Some(heads_up) = self.heads_up() {
             sections.push(wrap_data(SESSION_INFO_TOOL, &heads_up));
         }
+        // Late results first: a heads-up one carried joins the changes held for this message.
         sections.extend(self.late_notes());
         sections.extend(self.missed_note());
         for chip in &msg.chips {
@@ -84,12 +83,15 @@ impl Worker {
         self.call_plain(tool, None).ok().filter(|reply| !reply.is_error)
     }
 
-    /// The project summary: in full the first time, afterwards only when it changed.
+    /// The project summary: in full the first time, afterwards only when it changed. A heads-up leads its text, so
+    /// the model reads it here when the summary is given.
     fn describe_if_new(&mut self) -> Option<String> {
-        let text = plain_text(&self.optional_call(DESCRIBE_TOOL)?.blocks);
+        let reply = self.optional_call(DESCRIBE_TOOL)?;
+        let text = plain_text(&reply.blocks);
         if self.last_describe.as_deref() == Some(text.as_str()) {
             return None;
         }
+        self.delivered(DESCRIBE_TOOL, None, &reply);
         self.last_describe = Some(text.clone());
         Some(text)
     }
@@ -97,8 +99,9 @@ impl Worker {
     /// What others changed since the last answer, from the structured result of `session_info`.
     fn heads_up(&mut self) -> Option<String> {
         let reply = self.optional_call(SESSION_INFO_TOOL)?;
-        let heads_up = reply.structured?.get(HEADS_UP_KEY)?.clone();
-        (!heads_up.is_null()).then(|| heads_up.to_string())
+        let heads_up = crate::history::heads_up_of(&reply)?;
+        self.delivered(SESSION_INFO_TOOL, None, &reply);
+        Some(heads_up.json)
     }
 
     /// Results that arrived after Stop, once, in the next message (D4).
@@ -110,6 +113,9 @@ impl Worker {
         // The outcome can carry the first line of a server's result, so the whole note is data like any tool result.
         late.into_iter()
             .map(|l| {
+                if let Some(heads_up) = l.heads_up {
+                    self.log.hold(heads_up);
+                }
                 wrap_data("late_result", &format!("[your call `{}` finished after the stop: {}]", l.tool, l.outcome))
             })
             .collect()

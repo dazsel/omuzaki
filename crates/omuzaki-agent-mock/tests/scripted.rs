@@ -70,6 +70,20 @@ fn the_full_d10_script_plays_in_order_as_the_clock_advances() {
 }
 
 #[test]
+fn an_answer_that_ends_unclosed_is_over_like_one_that_ends_done() {
+    let unclosed =
+        vec![at(0.0, AssistantEvent::Error(HostError::Mcp("cannot commit".into()))), at(1.0, AssistantEvent::Unclosed)];
+    let (clock, a) = setup(vec![ScriptedAnswer::new(unclosed)]);
+    let rx = a.events();
+    a.send(UserMessage::new("go")).unwrap();
+    drain(&a, &rx);
+    assert_eq!(a.send(UserMessage::new("too soon")), Err(HostError::Busy));
+    clock.advance(Seconds(1.0));
+    assert_eq!(drain(&a, &rx), vec![AssistantEvent::Unclosed]);
+    assert_eq!(a.send(UserMessage::new("again")), Ok(()), "the failed state ends the answer, so the box is free");
+}
+
+#[test]
 fn a_late_tick_delivers_everything_due_in_order() {
     let (clock, a) =
         setup(vec![ScriptedAnswer::new(vec![at(0.0, delta("a")), at(1.0, delta("b")), at(2.0, AssistantEvent::Done)])]);

@@ -107,13 +107,14 @@ fn server_with_context(sessions: &Arc<FakeSessions>) -> ScriptedServer {
         let _ = &described;
         Outcome::text(if n < 2 { "Project: two characters." } else { "Project: three characters." })
     });
-    server.add(tool("session_info", "Session info", "builtin", true), |_, n| {
-        let mut out = Outcome::text("session");
+    // Somebody changes the head as the second message's context is built: the server's heads-up on `session_info`
+    // reports it, as on any result.
+    let others = Arc::clone(sessions);
+    server.add(tool("session_info", "Session info", "builtin", true), move |_, n| {
         if n == 1 {
-            out.result.structured_content =
-                Some(serde_json::json!({"since_your_last_call": {"changed": "head width, by sam"}}));
+            others.other_change("head.width");
         }
-        out
+        Outcome::text("session")
     });
     server.resources.lock().unwrap().insert(
         "omuzaki://ui/context".into(),
@@ -154,7 +155,7 @@ fn each_message_carries_a_context_block_with_the_summary_in_full_once_and_again_
     assert!(first.ends_with("first"), "the context comes before the person's text: {first}");
     let second = texts(&rig.llm.requests()[1].messages[2].content);
     assert!(!second.contains("Project:"), "unchanged, so not repeated: {second}");
-    assert!(second.contains("head width, by sam"), "the heads-up: {second}");
+    assert!(second.contains("head.width"), "the heads-up: {second}");
     let third = texts(&rig.llm.requests()[2].messages[4].content);
     assert!(third.contains("Project: three characters."), "changed, so repeated: {third}");
 }

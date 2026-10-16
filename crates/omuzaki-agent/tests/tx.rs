@@ -36,7 +36,7 @@ fn an_edit_opens_the_transaction_with_the_label_and_cause_and_the_answer_commits
     assert_eq!(rig.server.called("tx_commit"), 1);
     let order = names(&rig);
     assert_eq!(order, ["tx_begin", "face_set_profile", "face_set_profile", "tx_commit"]);
-    assert_eq!(rig.server.host_log_reads(), 1, "the host reads the log's head once per answer, and no more");
+    assert_eq!(rig.server.host_log_reads(), 1, "the host reads the log's head once, when it starts, and no more");
 }
 
 #[test]
@@ -162,11 +162,11 @@ fn a_transaction_the_executor_would_not_commit_is_kept_and_committed_by_the_next
         },
     );
     let first = rig.say("make it round", 0.0);
-    assert!(matches!(first.last(), Some(AssistantEvent::Done)));
+    assert_eq!(first.last(), Some(&AssistantEvent::Unclosed), "a refused commit is not Done: {first:?}");
     assert!(rig.sink.entries().iter().all(|e| !matches!(e, Entry::Step { .. })), "no step yet");
     assert!(rig.sessions.open_tx().is_some(), "the transaction is still open");
 
-    rig.say("thanks", 0.0);
+    assert_eq!(rig.say("thanks", 0.0).last(), Some(&AssistantEvent::Done));
     assert_eq!(rig.server.called("tx_commit"), 2, "the next answer tried again");
     assert!(rig.sessions.open_tx().is_none());
     assert_eq!(rig.sink.entries().iter().filter(|e| matches!(e, Entry::Step { .. })).count(), 1);
@@ -233,10 +233,10 @@ fn a_transaction_that_cannot_be_committed_twice_is_discarded_and_the_person_is_t
 }
 
 #[test]
-fn the_host_reads_the_op_log_once_per_answer_and_the_model_calls_are_untouched() {
+fn the_host_reads_the_op_log_only_when_it_starts_unless_an_outcome_is_retained() {
     let rig = Rig::new(script(vec![say_turn("one"), say_turn("two")]));
     rig.say("first", 0.0);
     rig.say("second", 0.0);
-    assert_eq!(rig.server.host_log_reads(), 2, "one read of the log's head for each answer");
+    assert_eq!(rig.server.host_log_reads(), 1, "the start read; nothing is retained, so nothing else");
     assert!(rig.server.calls().iter().all(|(name, _)| name != "history_log"), "the model never called it");
 }

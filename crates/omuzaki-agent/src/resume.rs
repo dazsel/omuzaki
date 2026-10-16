@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use omuzaki_agent_api::entry::{Entry, StoredBlock};
+use omuzaki_agent_api::entry::{AnswerId, Entry, StoredBlock};
 use omuzaki_llm_api::message::{ContentBlock, ImageOrigin, Message, Role};
 
 use crate::context::person_text;
@@ -36,11 +36,21 @@ struct Rebuild<'a> {
     answer_from: usize,
     /// Bytes of the answer's text that sit before a compaction, so are not in `messages`.
     answer_skip: usize,
+    /// The answer in progress, as its `User` entry names it.
+    answer: Option<AnswerId>,
 }
 
 impl<'a> Rebuild<'a> {
     fn new(sink: Option<&'a dyn EntrySink>) -> Self {
-        Self { sink, messages: Vec::new(), open: Vec::new(), results: HashMap::new(), answer_from: 0, answer_skip: 0 }
+        Self {
+            sink,
+            messages: Vec::new(),
+            open: Vec::new(),
+            results: HashMap::new(),
+            answer_from: 0,
+            answer_skip: 0,
+            answer: None,
+        }
     }
 
     fn run(mut self, entries: &[Entry]) -> Vec<Message> {
@@ -54,9 +64,9 @@ impl<'a> Rebuild<'a> {
                     self.push(Role::User, blocks);
                     self.answer_from = self.messages.len();
                     // Stop counted the answer's text from its start, which may be before this compaction.
-                    let answer_start =
-                        entries[..at].iter().rposition(|e| matches!(e, Entry::User { .. })).map_or(0, |u| u + 1);
-                    self.answer_skip = assistant_text_bytes(&entries[answer_start..at]);
+                    let user = entries[..at].iter().rposition(|e| matches!(e, Entry::User { .. }));
+                    self.answer = user.and_then(|u| entries[u].answer_id());
+                    self.answer_skip = assistant_text_bytes(&entries[user.map_or(0, |u| u + 1)..at]);
                 }
                 &entries[at + 1..]
             }
@@ -64,16 +74,19 @@ impl<'a> Rebuild<'a> {
         };
         for (at, entry) in tail.iter().enumerate() {
             match entry {
-                Entry::User { text, chips, .. } => {
+                Entry::User { text, chips, answer, .. } => {
                     self.close_open(false);
                     self.push(Role::User, vec![ContentBlock::text(person_text(text, chips))]);
                     self.answer_from = self.messages.len();
                     self.answer_skip = 0;
+                    self.answer = *answer;
                 }
-                // Stop cut the answer's text to what the person had seen; the turns stored before it were whole.
-                Entry::Stopped { text_read, .. } => {
+                // Stop cut its answer's text to what the person had seen; the turns stored before it were whole.
+                Entry::Stopped { text_read, answer, .. } => {
                     self.close_open(true);
-                    if let Some(read) = text_read {
+                    if let Some(read) = text_read
+                        && stop_applies(*answer, self.answer)
+                    {
                         cut_history(&mut self.messages, self.answer_from, *read, self.answer_skip);
                     }
                 }
@@ -147,14 +160,33 @@ fn stopped_before(tail: &[Entry], at: usize) -> bool {
         .any(|e| matches!(e, Entry::Stopped { .. }))
 }
 
+/// Whether a `Stopped` entry naming answer `stopped` applies to the answer in progress, `current` (the one the latest
+/// `User` entry names). A numbered cutoff applies to its own answer only, so one recorded for an answer must never cut
+/// another; an unnumbered one (a log written before answers were numbered) applies to the latest answer.
+pub(crate) fn stop_applies(stopped: Option<AnswerId>, current: Option<AnswerId>) -> bool {
+    stopped.is_none() || stopped == current
+}
+
+/// The number of answers in `entries`: the highest an entry names, or the count of the person's messages if that is
+/// more (a log written before answers were numbered). The next answer is numbered one higher.
+pub(crate) fn answers_in(entries: &[Entry]) -> u64 {
+    let numbered = entries.iter().filter_map(Entry::answer_id).map(|a| a.0).max().unwrap_or(0);
+    let messages = entries.iter().filter(|e| matches!(e, Entry::User { .. })).count();
+    numbered.max(u64::try_from(messages).unwrap_or(u64::MAX))
+}
+
 /// The entries as the person saw them: where a Stop recorded how much of its answer was read, the text of that answer's
 /// earlier turns (stored whole, before the Stop) is cut to it.
 pub(crate) fn apply_stop_cuts(mut entries: Vec<Entry>) -> Vec<Entry> {
     let mut answer_from = 0;
+    let mut current = None;
     for at in 0..entries.len() {
         match &entries[at] {
-            Entry::User { .. } => answer_from = at + 1,
-            Entry::Stopped { text_read: Some(read), .. } => {
+            Entry::User { answer, .. } => {
+                answer_from = at + 1;
+                current = *answer;
+            }
+            Entry::Stopped { text_read: Some(read), answer, .. } if stop_applies(*answer, current) => {
                 let read = *read;
                 cut_text_blocks(assistant_blocks_mut(&mut entries[answer_from..at]), read);
             }
@@ -293,6 +325,50 @@ mod tests {
             })
             .collect();
         assert_eq!(kinds, ["text", "image", "text"]);
+    }
+
+    fn assistant_text(messages: &[Message]) -> String {
+        messages
+            .iter()
+            .filter(|m| m.role == Role::Assistant)
+            .flat_map(|m| &m.content)
+            .filter_map(|b| if let ContentBlock::Text(t) = b { Some(t.as_str()) } else { None })
+            .collect()
+    }
+
+    #[test]
+    fn a_cutoff_cuts_only_the_answer_it_names() {
+        // A cutoff written for answer 2 before answer 2's message (as a Stop during the close of answer 1's changes
+        // once was) must not touch answer 1.
+        let entries = vec![
+            Entry::user("one", vec![]).in_answer(AnswerId(1)),
+            Entry::assistant(vec![ContentBlock::text("first answer")]),
+            Entry::stopped(Some(0)).in_answer(AnswerId(2)),
+            Entry::user("two", vec![]).in_answer(AnswerId(2)),
+            Entry::stopped(Some(0)).in_answer(AnswerId(2)),
+        ];
+        assert_eq!(assistant_text(&messages_from_entries(&entries)), "first answer");
+        let shown = apply_stop_cuts(entries.clone());
+        assert_eq!(shown[1], entries[1], "the view keeps it too");
+    }
+
+    #[test]
+    fn an_unnumbered_cutoff_cuts_the_latest_answer_as_before() {
+        let entries = vec![
+            Entry::user("one", vec![]),
+            Entry::assistant(vec![ContentBlock::text("abcdef")]),
+            Entry::stopped(Some(3)),
+        ];
+        assert_eq!(assistant_text(&messages_from_entries(&entries)), "abc");
+        assert_eq!(apply_stop_cuts(entries)[1], Entry::assistant(vec![ContentBlock::text("abc")]));
+    }
+
+    #[test]
+    fn answers_are_counted_from_the_numbers_entries_carry_or_the_messages() {
+        let numbered = [Entry::user("a", vec![]).in_answer(AnswerId(7)), Entry::stopped(None).in_answer(AnswerId(7))];
+        assert_eq!(answers_in(&numbered), 7);
+        assert_eq!(answers_in(&[Entry::user("a", vec![]), Entry::user("b", vec![])]), 2, "an older log");
+        assert_eq!(answers_in(&[]), 0);
     }
 
     #[test]

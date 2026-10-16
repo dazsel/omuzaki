@@ -32,6 +32,13 @@ impl StoredBlock {
     }
 }
 
+/// One answer of a conversation: the person's messages counted from 1 in the order they were sent. The entries that
+/// belong to one answer and change how it reads (the message itself, and Stop's cutoff) name it, so a replay applies
+/// each to that answer and to no other.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+pub struct AnswerId(pub u64);
+
 /// What happened to the session a conversation runs in.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[non_exhaustive]
@@ -56,6 +63,9 @@ pub enum Entry {
         text: String,
         /// What they attached.
         chips: Vec<ContextChip>,
+        /// The answer this message starts; `None` in logs written before answers were numbered.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        answer: Option<AnswerId>,
     },
     /// The model's final content blocks for one turn; opaque ones byte for byte.
     #[non_exhaustive]
@@ -154,13 +164,17 @@ pub enum Entry {
         /// whole, so a replay cuts their text to this; `None` when it is not known.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         text_read: Option<usize>,
+        /// The answer that was stopped. A replay cuts only that answer, and only while it is the latest one; `None`
+        /// (logs written before answers were numbered) means the answer of the latest `User` entry before it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        answer: Option<AnswerId>,
     },
 }
 
 impl Entry {
     /// The person's message.
     pub fn user(text: impl Into<String>, chips: Vec<ContextChip>) -> Self {
-        Self::User { text: text.into(), chips }
+        Self::User { text: text.into(), chips, answer: None }
     }
 
     /// The model's blocks for one turn.
@@ -220,7 +234,25 @@ impl Entry {
 
     /// The person pressed Stop after being shown `text_read` bytes of the answer's text.
     pub fn stopped(text_read: Option<usize>) -> Self {
-        Self::Stopped { text_read }
+        Self::Stopped { text_read, answer: None }
+    }
+
+    /// The same entry, naming `id` as its answer. Only a `User` and a `Stopped` entry carry one; others are unchanged.
+    #[must_use]
+    pub fn in_answer(mut self, id: AnswerId) -> Self {
+        match &mut self {
+            Self::User { answer, .. } | Self::Stopped { answer, .. } => *answer = Some(id),
+            _ => {}
+        }
+        self
+    }
+
+    /// The answer a `User` or `Stopped` entry names, if it names one.
+    pub fn answer_id(&self) -> Option<AnswerId> {
+        match self {
+            Self::User { answer, .. } | Self::Stopped { answer, .. } => *answer,
+            _ => None,
+        }
     }
 }
 
@@ -240,7 +272,7 @@ mod tests {
             at: Seconds(3.0),
         };
         vec![
-            Entry::user("make her face more oval", vec![ContextChip::Viewport]),
+            Entry::user("make her face more oval", vec![ContextChip::Viewport]).in_answer(AnswerId(3)),
             Entry::assistant(vec![
                 ContentBlock::text("Let me look."),
                 ContentBlock::opaque("anthropic", json!({"type": "thinking", "signature": "abc"})),
@@ -265,7 +297,7 @@ mod tests {
             Entry::compacted("Summary: ..."),
             Entry::compacted_with_render("Summary: ...", StoredBlock::image(ImageMime::Png, "cd".repeat(32))),
             Entry::stopped(None),
-            Entry::stopped(Some(120)),
+            Entry::stopped(Some(120)).in_answer(AnswerId(3)),
         ]
     }
 
@@ -293,5 +325,19 @@ mod tests {
             assert_eq!(value["kind"], kind);
             assert_eq!(serde_json::from_value::<Entry>(value).unwrap(), entry);
         }
+    }
+
+    #[test]
+    fn an_entry_without_an_answer_reads_back_as_before_and_one_with_names_it() {
+        let old = serde_json::to_value(Entry::stopped(Some(5))).unwrap();
+        assert_eq!(old, json!({"kind": "stopped", "text_read": 5}), "nothing new is written for an unnumbered entry");
+        let numbered = Entry::stopped(Some(5)).in_answer(AnswerId(2));
+        assert_eq!(serde_json::to_value(&numbered).unwrap()["answer"], 2);
+        assert_eq!(numbered.answer_id(), Some(AnswerId(2)));
+        assert_eq!(
+            Entry::charge(Usage::new(1, 1), 1).in_answer(AnswerId(2)).answer_id(),
+            None,
+            "only User and Stopped"
+        );
     }
 }

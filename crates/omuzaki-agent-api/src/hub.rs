@@ -62,12 +62,13 @@ impl EventHub {
     }
 
     /// Queues `event`. Returns `false`, queueing nothing, once [`stop`](Self::stop) has been called, except for
-    /// `Paused`, `Done` and `Error`, which are always accepted (an error is state the person must see, for example a
+    /// `Paused`, the answer's end (`Done`, `Unclosed`) and `Error`, which are always accepted (an error is state the person must see, for example a
     /// Stop the executor refused, not output). With no receiver the event is dropped and `true` is returned:
     /// a panel opened late reads `transcript()` instead.
     pub fn send(&self, event: AssistantEvent) -> bool {
         let mut shared = self.lock();
-        if shared.stopped && !matches!(event, AssistantEvent::Paused | AssistantEvent::Done | AssistantEvent::Error(_))
+        if shared.stopped
+            && !(event.ends_answer() || matches!(event, AssistantEvent::Paused | AssistantEvent::Error(_)))
         {
             return false;
         }
@@ -81,7 +82,7 @@ impl EventHub {
         true
     }
 
-    /// Stop's synchronous half, under the queue's lock: nothing but `Paused`, `Done` and `Error` is accepted from now on, and
+    /// Stop's synchronous half, under the queue's lock: nothing but `Paused`, `Done`, `Unclosed` and `Error` is accepted from now on, and
     /// every unread `TextDelta`, `ToolCall`, `Question` and `Plan` is withdrawn. Unread `ToolResult`, `Waiting`,
     /// `Budget`, `Limit`, `Error`, `Paused` and `Resumed` stay, because they are state, not output. Calling it again
     /// withdraws nothing and reports the same `text_read`.

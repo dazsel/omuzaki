@@ -60,6 +60,7 @@ impl AssistantHost {
             session,
             crate::resume::apply_stop_cuts(cfg.history.clone()),
         ));
+        let answers = crate::resume::answers_in(&cfg.history);
         let mut worker = Worker {
             shared: Arc::clone(&shared),
             link: link.clone(),
@@ -74,10 +75,10 @@ impl AssistantHost {
             late: Arc::default(),
             plan: Vec::new(),
             measured: 0,
-            tx_unconfirmed: None,
-            unresolved: Vec::new(),
-            missed: Vec::new(),
-            log_seen: 0,
+            tx: None,
+            retained: Vec::new(),
+            log: crate::history::LogState::default(),
+            answers,
             last_describe: None,
             model_checked: false,
             prompt_fetch: PromptFetch::default(),
@@ -100,12 +101,15 @@ impl AssistantHost {
 }
 
 impl Worker {
-    /// The host thread: records the session, then serves commands until told to stop.
+    /// The host thread: records the session and where its log numbering starts, then serves commands until told to
+    /// stop. While idle it reads the log for outcomes still retained (`history.rs`).
     fn run(&mut self, commands: &Receiver<Cmd>) {
         self.messages = messages_from_entries_with(&self.cfg.history, self.cfg.sink.as_ref());
         self.shared.record(Entry::session(self.session, SessionNote::Opened));
+        self.start_log();
         loop {
             self.service_prompts();
+            self.reconcile_when_due();
             match commands.recv_timeout(TICK) {
                 Ok(Cmd::Send(msg)) => {
                     self.answer(&msg);

@@ -39,14 +39,16 @@ use prompts::PromptsState;
 /// The assistant as the chat panel sees it. Every method returns at once: none waits on the model, the server or the
 /// disk, except [`prompt`](Assistant::prompt), which is one bounded round trip.
 pub trait Assistant: Send + Sync {
-    /// Sends the person's message and starts an answer. The panel disables its box until [`event::AssistantEvent::Done`].
+    /// Sends the person's message and starts an answer. The panel disables its box until the answer's end:
+    /// [`event::AssistantEvent::Done`], or [`event::AssistantEvent::Unclosed`] when its changes could not be closed.
     ///
     /// # Errors
     /// [`HostError::Busy`] while an answer runs; [`HostError::SessionEnded`] after a revoke.
     fn send(&self, msg: UserMessage) -> Result<(), HostError>;
 
     /// Stops the answer: the always-visible Stop button and `Esc` (D4). After it returns, [`hub::EventReceiver::try_recv`]
-    /// yields no new output; `Paused` and `Done` follow. A second call while stopping changes nothing.
+    /// yields no new output; `Paused` and the answer's end (`Done`, or `Unclosed`) follow. A second call while stopping
+    /// changes nothing.
     fn stop(&self);
 
     /// Answers an open [`event::AssistantEvent::Question`] (the `ask_person` tool, D9).

@@ -19,10 +19,12 @@ use crate::wait;
 const PAUSE_POLL: f64 = 0.25;
 
 /// A call's result that arrived after Stop (D4): shown to the model in the next message's context.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct LateResult {
     pub tool: String,
     pub outcome: String,
+    /// The heads-up the result carried, which the model has not seen (`history.rs`).
+    pub heads_up: Option<crate::history::HeadsUp>,
 }
 
 /// Everything the host thread owns.
@@ -49,16 +51,17 @@ pub(crate) struct Worker {
     pub prompt_fetch: crate::prompts::PromptFetch,
     /// An answer just ended: the prompt list is refetched (§7).
     pub refetch_after_answer: bool,
-    /// An answer ended without the executor confirming its transaction closed (a refused commit, a failed Stop). The
-    /// transaction is still the host's to close before the next message is admitted; this is what that answer's model
-    /// wrote, the rationale of the step it will become.
-    pub tx_unconfirmed: Option<String>,
-    /// Commits the log did not show when Stop ended an answer; asked about again before the next message.
-    pub unresolved: Vec<crate::history::Unresolved>,
-    /// Changes of others that the host's reads of the log used up, for the next message's context.
-    pub missed: Vec<String>,
-    /// The newest log event number already looked at, so a read repeated in one Stop does not list a change twice.
-    pub log_seen: u64,
+    /// The transaction the host opened and the executor may still hold: Open during its answer, Closing while a close
+    /// is unconfirmed, Unclosed between answers when every close failed (`tx.rs`).
+    pub tx: Option<crate::tx::HostTx>,
+    /// Transactions the executor confirmed closed whose outcome the log has not shown yet (`history.rs`).
+    pub retained: Vec<crate::history::Retained>,
+    /// The host's cursors in the op log and the changes of others held for the model (`history.rs`).
+    pub log: crate::history::LogState,
+    /// Answers so far in the conversation, the stored ones included: the last [`AnswerId`] used.
+    ///
+    /// [`AnswerId`]: omuzaki_agent_api::entry::AnswerId
+    pub answers: u64,
 }
 
 impl Worker {

@@ -22,24 +22,6 @@ use omuzaki_ops_api::{PauseReason, SessionState, Sessions as _};
 /// The events of a turn that calls one tool with a short text: start, text, the call's three, usage and stop.
 const FIRST_TURN_EVENTS: usize = 7;
 
-/// A turn of `n` text events of ten milliseconds each.
-fn long_text(n: usize) -> ScriptTurn {
-    let mut events = vec![LlmEvent::start("m")];
-    events.extend((0..n).map(|i| LlmEvent::TextDelta(format!("w{i} "))));
-    events.push(usage(5, 5));
-    events.push(LlmEvent::Stop(StopReason::EndTurn));
-    ScriptTurn::new(events).with_delay_ms(20)
-}
-
-fn assistant_text(entries: &[Entry]) -> String {
-    entries
-        .iter()
-        .filter_map(|e| if let Entry::Assistant { blocks, .. } = e { Some(blocks) } else { None })
-        .flatten()
-        .filter_map(|b| if let ContentBlock::Text(t) = b { Some(t.as_str()) } else { None })
-        .collect()
-}
-
 fn is_output(event: &AssistantEvent) -> bool {
     matches!(
         event,
@@ -404,7 +386,12 @@ fn a_commit_the_executor_refuses_claims_no_step_and_shows_the_error() {
             .any(|e| matches!(e, AssistantEvent::Error(HostError::Mcp(text)) if text.contains("cannot commit")))
     );
     assert!(rig.sink.entries().iter().all(|e| !matches!(e, Entry::Step { .. })), "no undo step was made");
-    assert!(matches!(events.last(), Some(AssistantEvent::Done)));
+    assert_eq!(
+        events.last(),
+        Some(&AssistantEvent::Unclosed),
+        "the executor still holds it, so the answer is not Done"
+    );
+    assert!(!events.contains(&AssistantEvent::Done), "{events:?}");
 }
 
 #[test]
@@ -674,9 +661,11 @@ fn a_commit_that_lands_while_stop_cancels_the_call_still_records_its_step() {
     rig.host.send(UserMessage::new("make it round")).unwrap();
     Rig::wait_for("the commit", || rig.server.called("tx_commit") == 1);
     rig.host.stop();
-    rig.until_done(0.0);
-    let steps = rig.sink.entries().iter().filter(|e| matches!(e, Entry::Step { .. })).count();
-    assert_eq!(steps, 1, "the undo step the executor made is recorded");
+    let events = rig.until_done(0.0);
+    assert_eq!(events.last(), Some(&AssistantEvent::Done), "the executor holds nothing: closed, outcome to come");
+    rig.settle_steps(1);
+    let steps = rig.steps();
+    assert_eq!(steps.len(), 1, "the undo step the executor made is recorded, once the log shows it: {steps:?}");
 }
 
 #[test]
@@ -729,16 +718,16 @@ fn a_stop_the_executor_refuses_is_shown_and_the_host_closes_the_transaction_befo
 }
 
 #[test]
-fn a_refused_stop_whose_transaction_cannot_be_closed_says_so_and_the_next_message_closes_it() {
+fn a_refused_stop_whose_transaction_cannot_be_closed_ends_unclosed_and_the_next_message_closes_it_first() {
     let refuse = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let flag = Arc::clone(&refuse);
     let rig = Rig::with(
-        script(vec![call_turn("", &[("c1", "face_set_profile", "{}")]), long_text(20), say_turn("fine")]),
+        script(vec![call_turn("WHY", &[("c1", "face_set_profile", "{}")]), long_text(20), say_turn("fine")]),
         RigOptions { hold_after: Some(FIRST_TURN_EVENTS + 2), ..RigOptions::default() },
         move |sessions| {
             let server = standard_server(sessions);
-            let commit = Arc::clone(sessions);
-            let f = Arc::clone(&flag);
+            let (commit, rollback) = (Arc::clone(sessions), Arc::clone(sessions));
+            let (f, g) = (Arc::clone(&flag), Arc::clone(&flag));
             server.add(tool("tx_commit", "tx.commit", "builtin", false), move |_, _| {
                 if f.load(std::sync::atomic::Ordering::SeqCst) {
                     return Outcome::failure("cannot commit now");
@@ -746,7 +735,13 @@ fn a_refused_stop_whose_transaction_cannot_be_closed_says_so_and_the_next_messag
                 commit.commit_open_tx();
                 Outcome::text("tx committed")
             });
-            server.add_fixed(tool("tx_rollback", "tx.rollback", "builtin", false), Outcome::failure("no"));
+            server.add(tool("tx_rollback", "tx.rollback", "builtin", false), move |_, _| {
+                if g.load(std::sync::atomic::Ordering::SeqCst) {
+                    return Outcome::failure("cannot roll back now");
+                }
+                rollback.rollback_open_tx();
+                Outcome::text("tx rolled back")
+            });
             server
         },
     );
@@ -758,16 +753,56 @@ fn a_refused_stop_whose_transaction_cannot_be_closed_says_so_and_the_next_messag
     rig.host.stop();
     rig.gate.open();
     let events = rig.until_done(0.0);
-    assert!(
-        events.iter().any(|e| matches!(e, AssistantEvent::Error(HostError::Mcp(t)) if t.contains("still open"))),
-        "{events:?}"
-    );
-    assert!(rig.sessions.open_tx().is_some());
+    // Stop, the host's commit and its rollback all failed: the answer ends in the failed state, never `Done`.
+    assert_eq!(events.last(), Some(&AssistantEvent::Unclosed), "{events:?}");
+    assert!(!events.contains(&AssistantEvent::Done), "{events:?}");
+    for said in ["Stop was refused", "cannot commit now", "cannot roll back now", "still open"] {
+        assert!(
+            events.iter().any(|e| matches!(e, AssistantEvent::Error(HostError::Mcp(t)) if t.contains(said))),
+            "the person is told {said:?}: {events:?}"
+        );
+    }
+    assert!(rig.sessions.open_tx().is_some(), "the executor still holds it");
+    assert!(rig.steps().is_empty());
+    assert_eq!(rig.server.called("tx_commit"), 1);
+    assert_eq!(rig.server.called("tx_rollback"), 1);
+
     refuse.store(false, std::sync::atomic::Ordering::SeqCst);
-    rig.sessions.set_stop(StopBehaviour::Committed, 0.0);
-    rig.say("again", 0.0);
+    let calls_before = rig.server.calls().len();
+    let events = rig.say("again", 0.0);
+    assert_eq!(events.last(), Some(&AssistantEvent::Done), "{events:?}");
+    let second: Vec<String> = rig.server.calls()[calls_before..].iter().map(|(n, _)| n.clone()).collect();
+    assert_eq!(second.first().map(String::as_str), Some("tx_commit"), "closed before anything else: {second:?}");
     assert!(rig.sessions.open_tx().is_none(), "the next message closed it first");
-    assert_eq!(rig.sink.entries().iter().filter(|e| matches!(e, Entry::Step { .. })).count(), 1);
+    let steps = rig.steps();
+    assert_eq!(steps.len(), 1, "{steps:?}");
+    assert!(steps[0].1.ends_with("(stopped)") && steps[0].2.contains("WHY"), "its own label and rationale: {steps:?}");
+}
+
+#[test]
+fn a_message_sent_while_the_changes_are_still_unclosed_does_not_run_and_ends_unclosed_again() {
+    let rig = Rig::with(
+        script(vec![call_turn("", &[("c1", "face_set_profile", "{}")]), say_turn("done"), say_turn("never")]),
+        RigOptions::default(),
+        |sessions| {
+            let server = standard_server(sessions);
+            server.add_fixed(tool("tx_commit", "tx.commit", "builtin", false), Outcome::failure("cannot commit"));
+            server
+                .add_fixed(tool("tx_rollback", "tx.rollback", "builtin", false), Outcome::failure("cannot roll back"));
+            server
+        },
+    );
+    assert_eq!(rig.say("make it round", 0.0).last(), Some(&AssistantEvent::Unclosed));
+    let requests = rig.llm.requests().len();
+    let events = rig.say("and wider", 0.0);
+    assert_eq!(events.last(), Some(&AssistantEvent::Unclosed), "{events:?}");
+    assert_eq!(rig.llm.requests().len(), requests, "the message did not run");
+    assert!(rig.sessions.open_tx().is_some());
+    // The message is kept, as the person sent it, and a continued conversation reads it back the same way.
+    let entries = rig.sink.entries();
+    assert!(entries.iter().any(|e| matches!(e, Entry::User { text, .. } if text == "and wider")));
+    let (resumed, _) = store_replay(&entries);
+    assert_eq!(resumed.entries, rig.host.transcript());
 }
 
 #[test]
@@ -826,24 +861,10 @@ fn a_pending_stop_that_commits_is_recorded_as_a_step_by_its_transaction() {
     });
     rig.host.stop();
     rig.until_done(0.1);
-    let labels: Vec<String> = rig
-        .sink
-        .entries()
-        .into_iter()
-        .filter_map(|e| if let Entry::Step { label, .. } = e { Some(label) } else { None })
-        .collect();
+    rig.settle_steps(1);
+    let labels: Vec<String> = rig.steps().into_iter().map(|(_, label, _)| label).collect();
     assert_eq!(labels.len(), 1, "{labels:?}");
     assert!(labels[0].contains("(stopped)"), "{labels:?}");
-}
-
-fn request_text(request: &omuzaki_llm_api::message::TurnRequest) -> String {
-    request
-        .messages
-        .iter()
-        .flat_map(|m| &m.content)
-        .filter_map(|b| if let ContentBlock::Text(t) = b { Some(t.as_str()) } else { None })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 #[test]
@@ -878,141 +899,143 @@ fn the_summary_is_built_only_from_text_the_person_has_read() {
     assert!(!logged.contains("AAAAAAAAAA"), "nor does the log carry it: {logged}");
 }
 
-/// A `history_log` that shows the committed transactions only once `visible` is set (the server's worker moves events
-/// into the log a moment after the commit), plus a change somebody else made.
-fn lagging_log(sessions: &Arc<FakeSessions>, visible: &Arc<std::sync::atomic::AtomicBool>) -> ScriptedServer {
-    let server = standard_server(sessions);
-    let log = Arc::clone(sessions);
-    let visible = Arc::clone(visible);
-    server.add(tool("history_log", "history.log", "builtin", true), move |_, _| {
-        let mut events = Vec::new();
-        if visible.load(std::sync::atomic::Ordering::SeqCst) {
-            events.push(serde_json::json!({"n": 20, "event": {"event": "op_applied",
-                "record": {"op": "hair.set_colour", "actor": {"kind": "person", "name": "Sam"}}}}));
-            for (n, tx) in log.committed().iter().enumerate() {
-                events.push(serde_json::json!({"n": 30 + n, "event": {"event": "tx_committed", "tx": tx, "label": "l",
-                    "actor": {"kind": "agent", "id": "a"}}}));
-            }
-        }
-        let latest = events.iter().filter_map(|e| e["n"].as_u64()).max().unwrap_or(0);
-        Outcome::text(&serde_json::json!({"latest": latest, "events": events}).to_string())
-    });
-    server
-}
-
 #[test]
-fn a_commit_the_log_shows_late_still_becomes_a_step_with_its_rationale_and_others_changes_are_not_lost() {
-    let visible = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let flag = Arc::clone(&visible);
+fn a_commit_the_log_shows_late_does_not_delay_done_and_becomes_its_step_when_the_log_shows_it() {
     let rig = Rig::with(
         script(vec![call_turn("WHY-ONE", &[("c1", "face_set_profile", "{}")]), long_text(20), say_turn("fine")]),
         RigOptions { hold_after: Some(FIRST_TURN_EVENTS + 2), ..RigOptions::default() },
-        move |sessions| lagging_log(sessions, &flag),
+        standard_server,
     );
     rig.sessions.set_stop(StopBehaviour::Pending { close_after: 0.0 }, 0.0);
+    rig.sessions.set_log_lag(true);
     rig.host.send(UserMessage::new("go")).unwrap();
     Rig::wait_for("the edit", || rig.server.called("face_set_profile") == 1);
+    let clicked = rig.clock.now().0;
+    let reads = rig.server.host_log_reads();
     rig.host.stop();
-    rig.until_done(0.1);
-    assert!(rig.sink.entries().iter().all(|e| !matches!(e, Entry::Step { .. })), "the log has not shown it yet");
-    visible.store(true, std::sync::atomic::Ordering::SeqCst);
-    rig.gate.open();
-    rig.say("again", 0.0);
-    let steps: Vec<(String, String)> = rig
-        .sink
-        .entries()
-        .into_iter()
-        .filter_map(|e| if let Entry::Step { label, rationale, .. } = e { Some((label, rationale)) } else { None })
-        .collect();
+    // The clock never moves and the log never shows the commit: had the host waited on either, there would be no end.
+    let events = rig.until_done(0.0);
+    assert_eq!(events.last(), Some(&AssistantEvent::Done), "{events:?}");
+    assert!(rig.clock.now().0 - clicked <= 0.1, "Done within D4's 100 ms with nothing joined");
+    // With the clock still, the idle host has not come to its first read either, so this counts only Stop's ending.
+    assert_eq!(rig.server.host_log_reads(), reads, "no read of the log before Done");
+    assert!(rig.steps().is_empty(), "the log has not shown it yet");
+    rig.sessions.release_log();
+    rig.settle_steps(1);
+    let steps = rig.steps();
     assert_eq!(steps.len(), 1, "{steps:?}");
-    assert!(steps[0].0.contains("(stopped)") && steps[0].1.contains("WHY-ONE"), "{steps:?}");
-    let context = request_text(rig.llm.requests().last().unwrap());
-    assert!(context.contains("hair.set_colour by Sam"), "the person's change reaches the model: {context}");
+    assert!(steps[0].1.contains("(stopped)") && steps[0].2.contains("WHY-ONE"), "{steps:?}");
 }
 
 #[test]
-fn a_stop_during_the_recovery_commit_keeps_the_rationale_of_the_answer_that_made_the_changes() {
-    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let release = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let (n, r) = (Arc::clone(&calls), Arc::clone(&release));
+fn an_outcome_the_log_shows_only_after_the_next_message_began_is_still_recorded() {
     let rig = Rig::with(
-        script(vec![call_turn("RATIONALE-ONE", &[("c1", "face_set_profile", "{}")]), say_turn("done")]),
+        script(vec![call_turn("WHY-ONE", &[("c1", "face_set_profile", "{}")]), long_text(20), say_turn("fine")]),
+        RigOptions { hold_after: Some(FIRST_TURN_EVENTS + 2), ..RigOptions::default() },
+        standard_server,
+    );
+    rig.sessions.set_stop(StopBehaviour::Pending { close_after: 0.0 }, 0.0);
+    rig.sessions.set_log_lag(true);
+    rig.host.send(UserMessage::new("go")).unwrap();
+    Rig::wait_for("the edit", || rig.server.called("face_set_profile") == 1);
+    rig.host.stop();
+    rig.until_done(0.0);
+    rig.gate.open();
+    // The next message starts while the log still lags: its read succeeds and does not show the commit, which must
+    // not drop it.
+    let reads = rig.server.host_log_reads();
+    rig.say("again", 0.0);
+    assert!(rig.server.host_log_reads() > reads, "the next message asked the log");
+    assert!(rig.steps().is_empty());
+    rig.sessions.release_log();
+    rig.settle_steps(1);
+    let steps = rig.steps();
+    assert_eq!(steps.len(), 1, "{steps:?}");
+    assert!(steps[0].2.contains("WHY-ONE"), "the rationale of the answer that made it: {steps:?}");
+}
+
+#[test]
+fn a_stop_while_the_previous_answers_changes_are_closed_cuts_only_the_new_answer() {
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let commits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (g, n) = (Arc::clone(&gate), Arc::clone(&commits));
+    let rig = Rig::with(
+        script(vec![call_turn("RATIONALE-ONE ", &[("c1", "face_set_profile", "{}")]), say_turn("ANSWER-ONE-TEXT")]),
         RigOptions::default(),
         move |sessions| {
             let server = standard_server(sessions);
             let commit = Arc::clone(sessions);
-            let (n, r) = (Arc::clone(&n), Arc::clone(&r));
             server.add(tool("tx_commit", "tx.commit", "builtin", false), move |_, _| {
                 if n.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
                     return Outcome::failure("cannot commit now");
                 }
-                for _ in 0..500 {
-                    if r.load(std::sync::atomic::Ordering::SeqCst) {
-                        break;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
+                // The second commit is the next message's close of the first answer's changes: held until the test has
+                // pressed Stop.
                 commit.commit_open_tx();
-                Outcome::text("tx committed")
+                Outcome::text("tx committed").held(&g)
             });
             server
         },
     );
-    rig.say("one", 0.0);
-    assert!(rig.sessions.open_tx().is_some(), "the first answer's commit was refused");
+    assert_eq!(rig.say("one", 0.0).last(), Some(&AssistantEvent::Unclosed));
+    let shown_before = assistant_text(&rig.host.transcript());
+    assert!(shown_before.contains("ANSWER-ONE-TEXT"));
     rig.host.send(UserMessage::new("two")).unwrap();
-    Rig::wait_for("the recovery commit", || calls.load(std::sync::atomic::Ordering::SeqCst) == 2);
+    Rig::wait_for("the close of the first answer's changes", || commits.load(std::sync::atomic::Ordering::SeqCst) == 2);
     rig.host.stop();
-    rig.until_done(0.0);
-    release.store(true, std::sync::atomic::Ordering::SeqCst);
-    let steps: Vec<String> = rig
-        .sink
-        .entries()
-        .into_iter()
-        .filter_map(|e| if let Entry::Step { rationale, .. } = e { Some(rationale) } else { None })
-        .collect();
+    gate.notify_one();
+    let events = rig.until_done(0.0);
+    assert_eq!(events.last(), Some(&AssistantEvent::Done), "{events:?}");
+
+    let entries = rig.sink.entries();
+    let user_two = entries.iter().position(|e| matches!(e, Entry::User { text, .. } if text == "two")).unwrap();
+    let stopped = entries.iter().position(|e| matches!(e, Entry::Stopped { .. })).unwrap();
+    assert!(user_two < stopped, "the cutoff follows the message it belongs to");
+    assert_eq!(entries[user_two].answer_id(), entries[stopped].answer_id(), "and names it");
+    assert!(entries[stopped].answer_id().is_some());
+    // The first answer's text survives everywhere it is shown again.
+    assert_eq!(assistant_text(&rig.host.transcript()), shown_before, "the live transcript");
+    let (resumed, markdown) = store_replay(&entries);
+    assert_eq!(assistant_text(&resumed.entries), shown_before, "the resumed conversation");
+    assert!(!resumed.interrupted);
+    assert!(markdown.contains("ANSWER-ONE-TEXT"), "the export: {markdown}");
+    let continued = Rig::with(
+        script(vec![say_turn("ok")]),
+        RigOptions { history: entries, ..RigOptions::default() },
+        standard_server,
+    );
+    continued.say("three", 0.0);
+    assert!(request_text(&continued.llm.requests()[0]).contains("ANSWER-ONE-TEXT"), "a continued history");
+    // And the step is the first answer's, with its rationale.
+    let steps = rig.steps();
     assert_eq!(steps.len(), 1, "{steps:?}");
-    assert!(steps[0].contains("RATIONALE-ONE"), "{steps:?}");
+    assert!(steps[0].2.contains("RATIONALE-ONE"), "{steps:?}");
 }
 
 #[test]
-fn a_stop_lists_only_the_changes_made_after_the_answer_began_not_older_ones() {
-    let others: Arc<std::sync::Mutex<Vec<serde_json::Value>>> = Arc::default();
-    let change = |n: u64, op: &str| {
-        serde_json::json!({"n": n, "event": {"event": "op_applied",
-            "record": {"op": op, "actor": {"kind": "person", "name": "Sam"}}}})
-    };
-    others.lock().unwrap().push(change(1, "old.change"));
-    let shared = Arc::clone(&others);
+fn a_change_by_others_after_the_answer_began_reaches_the_model_once_and_older_ones_never() {
     let rig = Rig::with(
         script(vec![call_turn("", &[("c1", "face_set_profile", "{}")]), long_text(20), say_turn("fine")]),
         RigOptions { hold_after: Some(FIRST_TURN_EVENTS + 2), ..RigOptions::default() },
-        move |sessions| {
-            let server = standard_server(sessions);
-            let log = Arc::clone(sessions);
-            server.add(tool("history_log", "history.log", "builtin", true), move |args, _| {
-                let after = args.get("after_n").and_then(serde_json::Value::as_u64).unwrap_or(0);
-                let mut events = shared.lock().unwrap().clone();
-                for (i, tx) in log.committed().iter().enumerate() {
-                    events.push(serde_json::json!({"n": 100 + i, "event": {"event": "tx_committed", "tx": tx,
-                        "label": "l", "actor": {"kind": "agent", "id": "a"}}}));
-                }
-                let latest = events.iter().filter_map(|e| e["n"].as_u64()).max().unwrap_or(0);
-                events.retain(|e| e["n"].as_u64().unwrap_or(0) > after);
-                Outcome::text(&serde_json::json!({"latest": latest, "events": events}).to_string())
-            });
-            server
+        |sessions| {
+            // Before the session opened: not this session's news.
+            sessions.other_change("old.change");
+            sessions.open_caught_up();
+            standard_server(sessions)
         },
     );
     rig.sessions.set_stop(StopBehaviour::Pending { close_after: 0.0 }, 0.0);
     rig.host.send(UserMessage::new("go")).unwrap();
     Rig::wait_for("the edit", || rig.server.called("face_set_profile") == 1);
-    others.lock().unwrap().push(change(2, "new.change"));
+    rig.wait_parked();
+    rig.sessions.other_change("new.change");
     rig.host.stop();
-    rig.until_done(0.1);
+    rig.until_done(0.0);
+    // The stopped step's outcome is read from the log while the host is idle: that read reaches "new.change".
+    rig.settle_steps(1);
     rig.gate.open();
     rig.say("again", 0.0);
     let context = request_text(rig.llm.requests().last().unwrap());
-    assert!(context.contains("new.change"), "{context}");
-    assert!(!context.contains("old.change"), "older changes were already told: {context}");
+    assert_eq!(context.matches("new.change").count(), 1, "told once: {context}");
+    assert!(!context.contains("old.change"), "older changes are not this session's: {context}");
 }

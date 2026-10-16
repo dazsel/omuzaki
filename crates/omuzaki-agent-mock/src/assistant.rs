@@ -29,8 +29,8 @@ impl TimedEvent {
     }
 }
 
-/// The events one `send` plays, in order. Give the last answer a `Done`: the assistant stays busy until it is
-/// delivered.
+/// The events one `send` plays, in order. End each answer with its end, `Done` (or `Unclosed`, the state where the
+/// answer's changes could not be closed): the assistant stays busy until it is delivered.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ScriptedAnswer {
     /// The events, in delivery order.
@@ -54,7 +54,7 @@ struct State {
     answers: Vec<ScriptedAnswer>,
     next: usize,
     playing: Option<Playing>,
-    /// The answer is running (or stopping) and its `Done` has not been delivered.
+    /// The answer is running (or stopping) and its end (`Done` or `Unclosed`) has not been delivered.
     busy: bool,
     /// After a stop with a delay: when the `Done` is due.
     done_due: Option<Seconds>,
@@ -162,7 +162,7 @@ impl ScriptedAssistant {
                     break;
                 }
                 let Some(timed) = playing.events.pop_front() else { break };
-                finished = timed.event == AssistantEvent::Done;
+                finished = timed.event.ends_answer();
                 if let AssistantEvent::Question { id, .. } = &timed.event {
                     asked.push(*id);
                 }
@@ -207,8 +207,8 @@ impl ScriptedAssistant {
 }
 
 impl Assistant for ScriptedAssistant {
-    /// Records the message, resets the hub and starts the next answer. `Err(Busy)` until the previous answer's
-    /// `Done` has been delivered.
+    /// Records the message, resets the hub and starts the next answer. `Err(Busy)` until the previous answer's end
+    /// (`Done` or `Unclosed`) has been delivered.
     fn send(&self, msg: UserMessage) -> Result<(), HostError> {
         let mut state = self.lock();
         if state.busy {

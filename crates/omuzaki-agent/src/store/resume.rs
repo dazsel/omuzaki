@@ -25,9 +25,15 @@ impl ConversationStore {
 /// even with a call in flight, and whatever the host wrote after it). Anything else, including a log that ends on the person's message, is interrupted.
 /// Session notes after the last answer are not part of it. A conversation with no entries has no answer to interrupt.
 fn is_interrupted(entries: &[Entry]) -> bool {
-    // A Stop closes its answer, whatever bookkeeping follows it: the stopped step, a late result, session notes.
-    let start = entries.iter().rposition(|e| matches!(e, Entry::User { .. })).map_or(0, |at| at + 1);
-    if entries[start..].iter().any(|e| matches!(e, Entry::Stopped { .. })) {
+    // A Stop closes its answer, whatever bookkeeping follows it: the stopped step, a late result, session notes. Only a
+    // Stop recorded for this answer counts.
+    let user = entries.iter().rposition(|e| matches!(e, Entry::User { .. }));
+    let current = user.and_then(|at| entries[at].answer_id());
+    let start = user.map_or(0, |at| at + 1);
+    if entries[start..]
+        .iter()
+        .any(|e| matches!(e, Entry::Stopped { answer, .. } if crate::resume::stop_applies(*answer, current)))
+    {
         return false;
     }
     let Some(last) = entries.iter().rev().find(|e| !matches!(e, Entry::Session { .. })) else {
@@ -86,6 +92,23 @@ mod tests {
             omuzaki_agent_api::entry::SessionNote::Ended(omuzaki_ops_api::EndReason::Closed),
         );
         assert!(!is_interrupted(&[Entry::user("hi", Vec::new()), text(), charge(), ended]));
+    }
+
+    #[test]
+    fn only_a_stop_recorded_for_the_latest_answer_closes_it() {
+        use omuzaki_agent_api::entry::AnswerId;
+        let foreign = vec![
+            Entry::user("two", vec![]).in_answer(AnswerId(2)),
+            Entry::stopped(Some(0)).in_answer(AnswerId(1)),
+            Entry::assistant(vec![ContentBlock::tool_use("c", "t", json!({}))]),
+        ];
+        assert!(is_interrupted(&foreign), "a cutoff of another answer says nothing about this one");
+        let own = vec![
+            Entry::user("two", vec![]).in_answer(AnswerId(2)),
+            Entry::assistant(vec![ContentBlock::tool_use("c", "t", json!({}))]),
+            Entry::stopped(Some(0)).in_answer(AnswerId(2)),
+        ];
+        assert!(!is_interrupted(&own));
     }
 
     #[test]

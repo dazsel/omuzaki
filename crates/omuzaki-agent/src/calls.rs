@@ -22,6 +22,9 @@ use crate::worker::{LateResult, Worker};
 const MAX_RETRY_WAIT: f64 = 10.0;
 /// How long one `approval_wait` is asked to hold, in seconds; `omuzaki-mcp` holds it at most this long.
 const APPROVAL_HOLD_S: u64 = 20;
+/// A call's result when an earlier answer's changes could not be closed (`tx.rs`). No call runs then; the text exists so
+/// every `Flow` has one.
+const UNCLOSED_TEXT: &str = "not run: the changes of an earlier answer are still open";
 
 /// One tool call of a turn.
 #[derive(Clone, Debug)]
@@ -109,7 +112,8 @@ impl Worker {
     }
 
     /// Calls a tool and waits for the result, without any of D2.6's behaviour. Stop abandons the call at once; a link
-    /// that closed ends the answer; a protocol error becomes an error result the model can read.
+    /// that closed ends the answer; a protocol error becomes an error result the model can read. A heads-up the result
+    /// carries is held for the model until the caller says the model received it (`history.rs`).
     pub(crate) fn call_plain(&mut self, name: &str, args: Option<JsonObject>) -> Result<ToolReply, Flow> {
         self.call_plain_with(name, args, None)
     }
@@ -124,7 +128,10 @@ impl Worker {
         let pending = self.link.call_tool(name, args, cancel, late);
         loop {
             match pending.poll(Duration::from_millis(1)) {
-                Some(Ok(Ok(reply))) => return Ok(reply),
+                Some(Ok(Ok(reply))) => {
+                    self.took_reply(&reply);
+                    return Ok(reply);
+                }
                 Some(Ok(Err(LinkError::Cancelled))) => return Err(Flow::Stopped),
                 Some(Ok(Err(LinkError::Protocol(text)))) => return Ok(protocol_reply(&text)),
                 Some(Ok(Err(LinkError::Closed)) | Err(_)) => return Err(self.link_down()),
@@ -226,16 +233,18 @@ impl Worker {
     ) -> Result<(Vec<ContentBlock>, bool), Flow> {
         let kind = tx::kind_of(info);
         let undo_like = matches!(call.name.as_str(), "history_undo" | "history_redo");
-        if undo_like && run.tx_open {
+        if undo_like && self.tx_open() {
             return Ok(note_result(tx::UNDO_WHILE_OPEN));
         }
         if tx::tx_use(kind) == TxUse::Join
-            && !run.tx_open
+            && !self.tx_open()
             && let Some(refused) = self.begin_tx(run)?
         {
+            self.delivered("tx_begin", None, &refused);
             return Ok(tool_result_blocks(&call.name, &refused));
         }
         let reply = self.send_with_refusals(run, call)?;
+        self.delivered(&call.name, Some(&call.input), &reply);
         Ok(tool_result_blocks(&call.name, &reply))
     }
 
@@ -315,7 +324,7 @@ impl Worker {
             let (ok, text) = (!reply.is_error, plain_text(&reply.blocks));
             let outcome = if ok { "applied".to_owned() } else { format!("failed: {}", tx::first_line(&text)) };
             if let Ok(mut late) = late.lock() {
-                late.push(LateResult { tool, outcome });
+                late.push(LateResult { tool, outcome, heads_up: crate::history::heads_up_of(&reply) });
             }
             // The id is suffixed so a resumed history does not read this as the answer to the original call.
             shared.record(Entry::tool_result(format!("{id}:late"), ok, vec![StoredBlock::Text(text)]));
@@ -340,6 +349,7 @@ fn in_flight_text(flow: &Flow) -> String {
         Flow::Stopped => "stopped by the person before its result arrived".to_owned(),
         Flow::Revoked(_) => "the session ended before its result arrived".to_owned(),
         Flow::Fail(e) => format!("not finished: {e}"),
+        Flow::Unclosed => UNCLOSED_TEXT.to_owned(),
     }
 }
 
@@ -349,6 +359,7 @@ fn not_run_text(flow: &Flow) -> String {
         Flow::Revoked(EndReason::Closed) => "not run: the session was closed".to_owned(),
         Flow::Revoked(_) => "not run: the session ended".to_owned(),
         Flow::Fail(e) => format!("not run: {e}"),
+        Flow::Unclosed => UNCLOSED_TEXT.to_owned(),
     }
 }
 
