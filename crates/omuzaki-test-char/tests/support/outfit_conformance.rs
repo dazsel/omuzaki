@@ -12,9 +12,9 @@
 //! On each of the 4 templates × 3 shapes it builds a body and the garment (layer [`LAYER_SHIRT`]) and checks:
 //! - **clearance**: each vertex lies at least half the ease outside the fit it was built over, and nothing lies inside
 //!   it; a failure names the vertex, the region, where along it and how deep;
-//! - **body**: no point of any triangle is inside any region of the body fit: each triangle is probed at its corners
-//!   and on a barycentric grid no coarser than [`CROSSING_SPACING`], so a triangle that passes through the body
-//!   between its corners is caught too (and a triangle too large to probe that finely is refused);
+//! - **body**: no vertex is inside any region of the body fit, and no point of any triangle is either: each triangle is
+//!   tested whole against convex hulls that contain the region (GJK, proving it clear with a separating plane or
+//!   reporting it), so a crossing of any depth is caught, never sampled past;
 //! - **closure**: after welding coincident positions every edge is shared by at most two triangles wound opposite ways,
 //!   and the boundary edges form exactly [`Garment::open_borders`] loops;
 //! - **skin**: every mesh passes `PartMesh::validate` (weights normalised, joints listed) and every joint is in the rig;
@@ -402,9 +402,9 @@ fn ellipse_distance(q: DVec2, r: DVec2) -> f64 {
 
 // ------------------------------------------------------------------------------------------------------- checks
 
-/// Every vertex and every point [`triangle_probes`] gives is outside the body; every vertex is at least half the ease
-/// outside the fit under the garment, measured on the covered region it lies deepest in. Returns the least clearance,
-/// metres.
+/// Every vertex is outside the body and no triangle reaches it ([`triangle_reach`]); every vertex is at least half the
+/// ease outside the fit under the garment, measured on the covered region it lies deepest in. Returns the least
+/// clearance, metres.
 fn check_clearance(
     output: &PartOutput,
     body: &Tables,
@@ -414,6 +414,7 @@ fn check_clearance(
 ) -> Result<f64, String> {
     let mut least = f64::INFINITY;
     let mut located = 0_usize;
+    let pieces = body_pieces(body);
     for mesh in &output.meshes {
         let g = &mesh.geometry;
         let p = |i: u32| g.positions[i as usize].as_dvec3();
@@ -452,18 +453,14 @@ fn check_clearance(
         }
         for (n, tri) in g.indices.chunks_exact(3).enumerate() {
             let [a, b, c] = [p(tri[0]), p(tri[1]), p(tri[2])];
-            let probes = triangle_probes(a, b, c)
-                .map_err(|longest| format!("triangle {n} of `{}`: {}", mesh.name, too_large(longest)))?;
-            for probe in probes {
-                if let Some(l) = inside_body(body, probe) {
-                    return Err(format!(
-                        "triangle {n} of `{}` crosses the body: region {:?} at t = {:.3}, depth {:.2} mm at {probe}",
-                        mesh.name,
-                        l.region,
-                        l.t,
-                        -l.distance() * 1e3
-                    ));
-                }
+            if let Some(r) = triangle_reach(&pieces, [a, b, c]) {
+                return Err(format!(
+                    "triangle {n} of `{}` reaches the body: region {:?} near t = {:.3}, within {:.3} mm of it",
+                    mesh.name,
+                    r.region,
+                    r.t,
+                    r.within * 1e3
+                ));
             }
         }
     }
@@ -473,50 +470,205 @@ fn check_clearance(
     Ok(least)
 }
 
-/// The most a crossing probe is from the next along a triangle, metres. Every point of a triangle lies within this of
-/// a probe, so a crossing whose deepest point is `d` deep reaches a probe whenever the region stays at least `d - h`
-/// deep within `h` of that point. On a convex region of radius `R` the depth falls off as `r^2 / 2R`, so at 2 mm any
-/// crossing deeper than `h^2 / 2R` is caught: 40 µm on a 5 cm limb, 0.2 mm on a 1 cm finger.
-pub const CROSSING_SPACING: f64 = 0.002;
-/// The most steps a side the probe grid takes. A triangle longer than this many [`CROSSING_SPACING`]s (128 mm) can't
-/// be probed that finely in reasonable time, so the suite refuses it rather than check it coarsely: a garment's
-/// triangles are far smaller.
-pub const MAX_PROBES_PER_SIDE: usize = 64;
+// ----------------------------------------------------------------------------------------------- crossings
 
-/// The points of triangle `abc` checked for crossings, besides its corners (which are checked as vertices): its
-/// centroid and a barycentric grid of `n` steps a side, `n` set by its longest edge and [`CROSSING_SPACING`].
-///
-/// # Errors
-/// The triangle's longest edge, metres, when it needs more than [`MAX_PROBES_PER_SIDE`] steps a side.
-fn triangle_probes(a: DVec3, b: DVec3, c: DVec3) -> Result<Vec<DVec3>, f64> {
-    let longest = a.distance(b).max(b.distance(c)).max(c.distance(a));
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a positive ratio, checked below
-    let n = ((longest / CROSSING_SPACING).ceil() as usize).max(1);
-    if n > MAX_PROBES_PER_SIDE || !longest.is_finite() {
-        return Err(longest);
-    }
-    let mut probes = vec![(a + b + c) / 3.0];
-    for i in 0..=n {
-        for j in 0..=n - i {
-            let k = n - i - j;
-            if i == n || j == n || k == n {
-                continue; // a corner
-            }
-            #[allow(clippy::cast_precision_loss)] // tiny counts
-            let (u, v, w) = (i as f64 / n as f64, j as f64 / n as f64, k as f64 / n as f64);
-            probes.push(a * u + b * v + c * w);
-        }
-    }
-    Ok(probes)
+/// The most a sub-slab's radii change from one end to the other, metres: a slab between two table rows is split until
+/// it is this even, so the convex hull the crossing test uses stays within half of this of the region itself.
+const SUB_SLAB_STEP: f64 = 0.0002;
+/// The most sub-slabs one slab is split into.
+const MAX_SUB_SLABS: usize = 64;
+/// The most GJK iterations before the test gives up proving a triangle clear (and reports it, to stay conservative).
+const GJK_ITERATIONS: usize = 64;
+
+/// A triangle that reaches a region of the body: the region, about where along it, and how near the region's hull it
+/// comes (0 when it passes into it), metres.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Reach {
+    /// The region.
+    pub region: BodyRegion,
+    /// About where along it.
+    pub t: f64,
+    /// An upper bound on the distance between the triangle and the hull it was tested against, metres.
+    pub within: f64,
 }
 
-/// The message for a triangle too large to probe.
-fn too_large(longest: f64) -> String {
-    format!(
-        "it is {:.0} mm across: the suite checks crossings on triangles up to {:.0} mm, so subdivide it",
-        longest * 1e3,
-        CROSSING_SPACING * MAX_PROBES_PER_SIDE as f64 * 1e3
-    )
+/// A convex piece that contains one sub-slab of a region: the convex hull of its two end sections (filled ellipses),
+/// and the margin within which the interpolated region may stand outside that hull.
+///
+/// Between two sections the suite's region is the union over `s` of the filled ellipse of `lerp(e0, e1, s)`: centre
+/// and radii interpolate linearly, so with fixed frames each such point is the same convex combination of points of
+/// the two end ellipses, and lies in their hull. The frames are normalised lerps, which turn by at most the angle
+/// between the ends; a point therefore lies within `rx·|A0 - A1| + ry·|B0 - B1|` of the hull (`A`, `B` the across and
+/// through directions, `rx`, `ry` the larger radii), which is `margin`.
+struct Piece {
+    ends: [Slice; 2],
+    margin: f64,
+    bounds: (DVec3, DVec3),
+}
+
+impl Piece {
+    fn new(e0: Slice, e1: Slice) -> Self {
+        let r = e0.radii.max(e1.radii);
+        let margin = r.x * e0.across.distance(e1.across) + r.y * e0.through.distance(e1.through);
+        let extent = |e: &Slice| {
+            let along = |k: usize| {
+                let (a, b) = (e.across.to_array()[k] * e.radii.x, e.through.to_array()[k] * e.radii.y);
+                a.hypot(b)
+            };
+            DVec3::new(along(0), along(1), along(2))
+        };
+        let (x0, x1) = (extent(&e0), extent(&e1));
+        let lo = (e0.centre - x0).min(e1.centre - x1) - DVec3::splat(margin);
+        let hi = (e0.centre + x0).max(e1.centre + x1) + DVec3::splat(margin);
+        Self { ends: [e0, e1], margin, bounds: (lo, hi) }
+    }
+
+    /// The point of the hull farthest along `d`.
+    fn support(&self, d: DVec3) -> DVec3 {
+        let ellipse = |e: &Slice| {
+            let (a, b) = (e.radii.x * d.dot(e.across), e.radii.y * d.dot(e.through));
+            let n = a.hypot(b);
+            if n > 0.0 { e.centre + e.across * (e.radii.x * a / n) + e.through * (e.radii.y * b / n) } else { e.centre }
+        };
+        let (p, q) = (ellipse(&self.ends[0]), ellipse(&self.ends[1]));
+        if p.dot(d) >= q.dot(d) { p } else { q }
+    }
+}
+
+/// The pieces of `table`, every slab split until its radii change by at most [`SUB_SLAB_STEP`].
+fn pieces(table: &RegionTable) -> Vec<Piece> {
+    let mut out = Vec::new();
+    for pair in table.rows.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        let change = (b.radii - a.radii).abs().max_element();
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a small positive ratio, clamped
+        let k = ((change / SUB_SLAB_STEP).ceil() as usize).clamp(1, MAX_SUB_SLABS);
+        for i in 0..k {
+            #[allow(clippy::cast_precision_loss)] // tiny counts
+            let (s0, s1) = (i as f64 / k as f64, (i + 1) as f64 / k as f64);
+            out.push(Piece::new(a.lerp(&b, s0), a.lerp(&b, s1)));
+        }
+    }
+    out
+}
+
+/// The point of triangle `abc` nearest `p` (Ericson, Real-Time Collision Detection 5.1.5).
+fn closest_on_triangle(p: DVec3, a: DVec3, b: DVec3, c: DVec3) -> DVec3 {
+    let (ab, ac, ap) = (b - a, c - a, p - a);
+    let (d1, d2) = (ab.dot(ap), ac.dot(ap));
+    if d1 <= 0.0 && d2 <= 0.0 {
+        return a;
+    }
+    let bp = p - b;
+    let (d3, d4) = (ab.dot(bp), ac.dot(bp));
+    if d3 >= 0.0 && d4 <= d3 {
+        return b;
+    }
+    let vc = d1 * d4 - d3 * d2;
+    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
+        return a + ab * (d1 / (d1 - d3));
+    }
+    let cp = p - c;
+    let (d5, d6) = (ab.dot(cp), ac.dot(cp));
+    if d6 >= 0.0 && d5 <= d6 {
+        return c;
+    }
+    let vb = d5 * d2 - d1 * d6;
+    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
+        return a + ac * (d2 / (d2 - d6));
+    }
+    let va = d3 * d6 - d5 * d4;
+    if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
+        return b + (c - b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6)));
+    }
+    let denom = 1.0 / (va + vb + vc);
+    a + ab * (vb * denom) + ac * (vc * denom)
+}
+
+/// The point of the simplex `points` (1 to 4 of them) nearest the origin, and the smallest face of it that holds that
+/// point (the next simplex).
+fn nearest_on_simplex(points: &[DVec3]) -> (DVec3, Vec<DVec3>) {
+    let origin = DVec3::ZERO;
+    match points.len() {
+        1 => (points[0], points.to_vec()),
+        2 => {
+            let (a, b) = (points[0], points[1]);
+            let ab = b - a;
+            let s = if ab.length_squared() > 0.0 { (-a.dot(ab) / ab.length_squared()).clamp(0.0, 1.0) } else { 0.0 };
+            (a + ab * s, points.to_vec())
+        }
+        3 => (closest_on_triangle(origin, points[0], points[1], points[2]), points.to_vec()),
+        _ => {
+            let [a, b, c, d] = [points[0], points[1], points[2], points[3]];
+            let faces = [[a, b, c], [a, b, d], [a, c, d], [b, c, d]];
+            // Inside the tetrahedron: the origin is on the same side of each face as the opposite corner.
+            let side = |[p, q, r]: [DVec3; 3], o: DVec3| {
+                let n = (q - p).cross(r - p);
+                (n.dot(origin - p), n.dot(o - p))
+            };
+            let inside = faces.iter().zip([d, c, b, a]).all(|(f, o)| {
+                let (x, y) = side(*f, o);
+                y != 0.0 && x * y >= 0.0
+            });
+            if inside {
+                return (origin, points.to_vec());
+            }
+            faces
+                .into_iter()
+                .map(|[p, q, r]| (closest_on_triangle(origin, p, q, r), vec![p, q, r]))
+                .min_by(|x, y| x.0.length_squared().total_cmp(&y.0.length_squared()))
+                .unwrap_or((a, vec![a]))
+        }
+    }
+}
+
+/// Whether triangle `tri` comes within `piece.margin` of the piece's hull: GJK on the Minkowski difference. It proves
+/// the triangle clear only with a separating plane (a lower bound on the distance above the margin); anything it can't
+/// prove clear it reports, with an upper bound on the distance, so the test never misses a crossing.
+fn reaches(tri: [DVec3; 3], piece: &Piece) -> Option<f64> {
+    let support_tri = |d: DVec3| tri.into_iter().max_by(|x, y| x.dot(d).total_cmp(&y.dot(d))).unwrap_or(tri[0]);
+    // A point of the difference `triangle - hull`, and the support of the difference in direction `-v`.
+    let mut v = tri[0] - piece.ends[0].centre;
+    let mut simplex = vec![v];
+    for _ in 0..GJK_ITERATIONS {
+        let distance = v.length();
+        if distance <= piece.margin {
+            return Some(distance);
+        }
+        let w = support_tri(-v) - piece.support(v);
+        // Every point z of the difference has v·z ≥ v·w, so the distance is at least v·w / |v|.
+        if v.dot(w) / distance > piece.margin {
+            return None;
+        }
+        if distance * distance - v.dot(w) <= 1e-12 * distance * distance {
+            return Some(distance); // converged at the margin: report it
+        }
+        simplex.push(w);
+        (v, simplex) = nearest_on_simplex(&simplex);
+    }
+    Some(v.length())
+}
+
+/// Where triangle `abc` reaches a region of `body` (comes within the margin of a hull containing it), if anywhere.
+fn triangle_reach(body: &[(BodyRegion, Vec<Piece>)], [a, b, c]: [DVec3; 3]) -> Option<Reach> {
+    let (lo, hi) = (a.min(b).min(c), a.max(b).max(c));
+    for (region, pieces) in body {
+        for piece in pieces {
+            if lo.cmpgt(piece.bounds.1).any() || hi.cmplt(piece.bounds.0).any() {
+                continue;
+            }
+            if let Some(within) = reaches([a, b, c], piece) {
+                let t = f64::midpoint(piece.ends[0].t, piece.ends[1].t);
+                return Some(Reach { region: *region, t, within });
+            }
+        }
+    }
+    None
+}
+
+/// The convex pieces of every region of `tables`.
+fn body_pieces(tables: &Tables) -> Vec<(BodyRegion, Vec<Piece>)> {
+    tables.0.iter().map(|t| (t.region, pieces(t))).collect()
 }
 
 /// Whether `p` is inside any region of `fit`.
@@ -524,14 +676,9 @@ pub fn inside(fit: &dyn BodyFit, p: DVec3) -> bool {
     inside_body(&Tables::of(fit), p).is_some()
 }
 
-/// The first point of triangle `abc` the suite finds inside a region of `fit`, corners included.
-///
-/// # Errors
-/// As the suite reports a triangle too large to probe.
-pub fn crossing(fit: &dyn BodyFit, [a, b, c]: [DVec3; 3]) -> Result<Option<DVec3>, String> {
-    let body = Tables::of(fit);
-    let probes = triangle_probes(a, b, c).map_err(too_large)?;
-    Ok([a, b, c].into_iter().chain(probes).find(|p| inside_body(&body, *p).is_some()))
+/// Where triangle `tri` reaches a region of `fit`, as the suite's crossing check sees it.
+pub fn crossing(fit: &dyn BodyFit, tri: [DVec3; 3]) -> Option<Reach> {
+    triangle_reach(&body_pieces(&Tables::of(fit)), tri)
 }
 
 /// The region of the body `p` is inside, if any.

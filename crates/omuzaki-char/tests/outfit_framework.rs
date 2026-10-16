@@ -505,11 +505,12 @@ fn the_suite_finds_a_triangle_through_the_body_between_its_corners() {
     let tri = [front - ring.across * 0.055, front + ring.across * 0.055, front + ring.through * 0.05];
     assert!(tri.iter().all(|p| !conformance::inside(fit.as_ref(), *p)), "corners outside");
     assert!(!conformance::inside(fit.as_ref(), (tri[0] + tri[1] + tri[2]) / 3.0), "centroid outside");
-    let hit = conformance::crossing(fit.as_ref(), tri).unwrap().expect("the crossing is found");
-    assert!(conformance::inside(fit.as_ref(), hit));
+    let hit = conformance::crossing(fit.as_ref(), tri).expect("the crossing is found");
+    assert_eq!(hit.region, BodyRegion::Torso);
+    assert_eq!(hit.within, 0.0, "it passes into the region");
     // And a triangle wholly outside has no crossing.
     let clear = tri.map(|p| p + ring.through * 0.5);
-    assert_eq!(conformance::crossing(fit.as_ref(), clear).unwrap(), None);
+    assert_eq!(conformance::crossing(fit.as_ref(), clear), None);
 }
 
 /// A body of one region: a straight cylinder of radius [`LIMB`] along y from 0 to 1 m, as a 5 cm limb.
@@ -542,14 +543,30 @@ fn the_suite_finds_a_triangle_grazing_a_limb_by_half_a_millimetre() {
     let tri = [DVec3::new(x, 0.46, 0.05), DVec3::new(x, 0.54, 0.05), DVec3::new(x, 0.5, -0.05)];
     assert!(tri.iter().all(|p| !conformance::inside(&Limb, *p)), "corners outside");
     assert!(!conformance::inside(&Limb, (tri[0] + tri[1] + tri[2]) / 3.0), "the centroid is clear of the strip");
-    let hit = conformance::crossing(&Limb, tri).unwrap().expect("the graze is found");
-    assert!(hit.z.abs() < 0.0071, "inside the strip: {hit}");
+    let hit = conformance::crossing(&Limb, tri).expect("the graze is found");
+    assert_eq!(hit.within, 0.0, "it passes into the limb");
     // Moved out by a millimetre it no longer touches.
-    assert_eq!(conformance::crossing(&Limb, tri.map(|p| p + DVec3::X * 0.001)).unwrap(), None);
-    // A metre-long triangle grazing the same way is refused: the suite won't check it at a coarser spacing.
+    assert_eq!(conformance::crossing(&Limb, tri.map(|p| p + DVec3::X * 0.001)), None);
+    // A metre-long triangle grazing the same way is found too: the test has no size limit.
     let huge = [DVec3::new(x, 0.0, 0.5), DVec3::new(x, 1.0, 0.5), DVec3::new(x, 0.5, -0.5)];
-    let refused = conformance::crossing(&Limb, huge).expect_err("too large to probe");
-    assert!(refused.contains("subdivide"), "{refused}");
+    assert!(conformance::crossing(&Limb, huge).is_some());
+}
+
+#[test]
+fn the_suite_finds_a_triangle_grazing_a_limb_by_ten_micrometres() {
+    let r = f64::from(LIMB);
+    for depth in [1e-5, 1e-6] {
+        // The strip it dips into is 2 sqrt(2 r depth) wide: 2 mm at 10 µm, 0.6 mm at 1 µm. The f32 sections round
+        // the radius to about 4 nm, far below either.
+        let x = r - depth;
+        let tri = [DVec3::new(x, 0.3, 0.4), DVec3::new(x, 0.7, 0.4), DVec3::new(x, 0.5, -0.4)];
+        assert!(tri.iter().all(|p| !conformance::inside(&Limb, *p)), "corners outside");
+        assert!(conformance::crossing(&Limb, tri).is_some(), "a {} µm graze is found", depth * 1e6);
+    }
+    // 10 µm clear of the limb, the same triangle is proved clear.
+    let x = r + 1e-5;
+    let tri = [DVec3::new(x, 0.3, 0.4), DVec3::new(x, 0.7, 0.4), DVec3::new(x, 0.5, -0.4)];
+    assert_eq!(conformance::crossing(&Limb, tri), None);
 }
 
 #[test]
