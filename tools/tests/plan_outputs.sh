@@ -43,6 +43,14 @@ J
 out=$(python3 -I "$PLAN" "$work/split.json" merge_group)
 expect test_matrix '{"include":[{"name":"1","crates":"a-api","parts":"a-big@1/2"},{"name":"2","crates":"","parts":"a-big@2/2"}]}' "a partitioned crate keeps its partitions apart from whole crates"
 
+# An isolated binary and the partitions that skip it all travel in `parts`, never in `crates`.
+cat >"$work/isolated.json" <<'J'
+{"mode":"workspace","trigger":"Cargo.lock","empty":false,"changed":[],"direct":[],"full":["a-api","a-big"],"link_only":[],
+ "shards_changed":[],"shards_full":[["a-big@=slow"],["a-api","a-big@1/2!slow"],["a-big@2/2!slow"]]}
+J
+out=$(python3 -I "$PLAN" "$work/isolated.json" merge_group)
+expect test_matrix '{"include":[{"name":"1","crates":"","parts":"a-big@=slow"},{"name":"2","crates":"a-api","parts":"a-big@1/2!slow"},{"name":"3","crates":"","parts":"a-big@2/2!slow"}]}' "isolated binaries and the partitions that skip them are parts"
+
 expect has_tests true "the queue runs the test matrix"
 out=$(python3 -I "$PLAN" "$work/split.json" pull_request)
 expect has_tests false "a workspace-wide PR still runs no tests"
