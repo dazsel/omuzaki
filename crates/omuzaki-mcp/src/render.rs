@@ -3,7 +3,7 @@
 //! continue (changes, answers, next steps) and the JSON carries everything else.
 
 use omuzaki_doc_api::Change;
-use omuzaki_ops_api::{CostHint, ErrorCode, Mode, OpError, OpKind, Outcome, TxId};
+use omuzaki_ops_api::{CostHint, ErrorCode, JobInfo, JobState, Mode, OpError, OpKind, Outcome, TxId};
 use rmcp::model::{CallToolResult, ContentBlock};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -169,6 +169,20 @@ fn next_steps(call: &Call<'_>, applied: bool) -> Vec<String> {
     steps
 }
 
+/// A job that ended and applied its change: the task's result, worded like the blocking call's. The job manager keeps
+/// the job's snapshot, not the op's `Outcome`, so this reports what the snapshot knows: the log entry and the undo step.
+pub(crate) fn job_done(op: &str, info: &JobInfo) -> CallToolResult {
+    let JobState::Done { tx, seq } = &info.state else {
+        return failure(op, &OpError::internal("the job has not finished"), None);
+    };
+    let (log, headline) = match seq {
+        Some(seq) => (json!(seq), format!("Ran {op} as job {} (log #{seq}, transaction {}).", info.id.0, tx.0)),
+        None => (Value::Null, format!("Ran {op} as job {}; it changed nothing.", info.id.0)),
+    };
+    let data = json!({"ok": true, "op": op, "job": info.id.0, "label": info.label, "applied": seq.is_some(), "log": log, "tx": tx.0});
+    result(vec![headline], data, false)
+}
+
 /// A failed call. Always a tool error (not a protocol error) so the agent sees code, field and hint.
 ///
 /// `signature` is added for `invalid` errors so the agent sees the expected call shape next to the complaint.
@@ -219,9 +233,7 @@ fn default_hint(code: ErrorCode) -> &'static str {
         ErrorCode::Internal => "this is a bug in Omuzaki; tell the user and don't retry unchanged",
         ErrorCode::Waiting => "nothing ran: a person must decide in Omuzaki first; don't retry, wait for the result",
         ErrorCode::Limited => "this session hit a rate limit; wait the time in the detail, then retry",
-        ErrorCode::Cancelled => {
-            "the job was cancelled, by a person or a limit named in the detail; don't retry unchanged"
-        }
+        ErrorCode::Cancelled => "the job was cancelled; start it again if you still want it",
         // A code added later reads as a failure the caller can't act on until this table learns it.
         _ => "check the error's message and hint, then retry or tell the user",
     }
