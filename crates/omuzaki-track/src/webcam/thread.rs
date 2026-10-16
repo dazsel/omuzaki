@@ -307,6 +307,21 @@ impl Publisher {
         (seq, now)
     }
 
+    /// Counts a frame whose device time went backwards and runs the silence rule. A rejected frame is not a sign of
+    /// life, so a stream of them must not hold a stale face: the rule runs here as it does when the camera delivers
+    /// nothing.
+    fn reject(&mut self) {
+        self.stats.backwards.fetch_add(1, Ordering::Relaxed);
+        self.notify(true);
+    }
+
+    /// Publishes the lost frame for a camera frame that could not be used. It is a publication like any other, so it
+    /// is in the latency numbers too.
+    fn publish_unusable(&mut self, time: Seconds) {
+        let (_, now) = self.publish(None, time);
+        self.stats.record(Seconds(now.0 - time.0));
+    }
+
     /// Publishes the one lost frame that stands for no camera frame, so it repeats the last frame's `seq` and takes
     /// no new one (`track-api.md` §8). `silent` is the stall rule's: sent only once nothing has gone out for
     /// `lost_after`, once per silence, and not at all before the first frame, when there is no face to clear. The
@@ -407,10 +422,7 @@ impl Run {
             // A device time before the last accepted one is a glitch, not a new epoch: the contract is to drop the
             // frame and keep the fit.
             let Ok(time) = device_clock.map(frame.captured, arrived) else {
-                stats.backwards.fetch_add(1, Ordering::Relaxed);
-                // A rejected frame is not a sign of life, so a stream of them must not hold a stale face: the silence
-                // rule runs here as it does when the camera delivers nothing.
-                out.notify(true);
+                out.reject();
                 continue;
             };
             // A lowered tier skips frames between the ones it tracks.
@@ -421,9 +433,7 @@ impl Run {
             // A frame that cannot be converted or tracked is a lost frame: the pipeline must not hold a stale face.
             if convert_into(&mut mjpg, &frame, &mut rgb).is_err() {
                 stats.conversion.fetch_add(1, Ordering::Relaxed);
-                // The lost frame is a publication like any other, so it is in the latency numbers too.
-                let (_, now) = out.publish(None, time);
-                stats.record(Seconds(now.0 - time.0));
+                out.publish_unusable(time);
                 continue;
             }
             let job = Job { rgb: std::mem::take(&mut rgb), width: frame.width, height: frame.height, time };
