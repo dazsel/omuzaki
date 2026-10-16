@@ -242,6 +242,11 @@ impl Inner {
                             not_found(&goes_to)
                         });
                     }
+                    // `create_dir_all` makes no folder through a link whose target is not a folder, as on a real disk
+                    // (`via -> nowhere`, then `via/child`): the link is in the way.
+                    if create && !self.resolve(&found.join(target), true, false).is_ok_and(|(to, _)| self.is_dir(&to)) {
+                        return Err(exists_already(&here));
+                    }
                     // The target is relative to the link's own folder (`found`) unless it starts at the root.
                     for step in steps(Path::new(target)).into_iter().rev() {
                         queue.push_front(step);

@@ -500,6 +500,9 @@ fn a_file_link_above_a_path_is_not_a_folder_and_a_dangling_link_is_not_found() {
     assert_eq!(disk.read(&p("dangling")).unwrap_err().kind(), ErrorKind::NotFound);
     // Naming something that is already there as a new folder is refused even through a dangling link.
     assert_eq!(kind_of(disk.create_dir_all(&p("dangling"))), ErrorKind::AlreadyExists);
+    // And no folder is made through it: the target stays absent, as `std::fs::create_dir_all` leaves it.
+    assert_eq!(kind_of(disk.create_dir_all(&p("dangling/child"))), ErrorKind::AlreadyExists);
+    assert!(!disk.exists(&p("nowhere")) && !disk.exists(&p("nowhere/child")));
 }
 
 #[test]
