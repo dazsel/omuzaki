@@ -618,11 +618,8 @@ fn painting_an_empty_rectangle_is_not_an_error() {
 #[test]
 fn a_renderer_can_be_built_on_a_device_the_caller_already_has() {
     // What the egui app does: it owns the adapter, device and queue, and hands them over.
-    // Vulkan only: the GL backend crashes at start-up on WSL's D3D12-backed GL.
-    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
-    descriptor.backends = wgpu::Backends::VULKAN;
-    let instance = wgpu::Instance::new(descriptor);
-    let adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::VULKAN));
+    let instance = support::instance();
+    let adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::PRIMARY));
     let adapter = adapters
         .into_iter()
         .find(|a| a.get_info().device_type == wgpu::DeviceType::Cpu)

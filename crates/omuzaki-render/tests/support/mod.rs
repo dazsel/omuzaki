@@ -11,3 +11,12 @@ pub fn renderer() -> WgpuRenderer {
     WgpuRenderer::headless(&HeadlessOptions { adapter: AdapterPreference::Software })
         .expect("a software Vulkan adapter (install mesa-vulkan-drivers) or WGPU_ADAPTER_NAME")
 }
+
+/// A headless wgpu instance on the product's backends (`Backends::PRIMARY`; `WGPU_BACKEND` can opt in to GL), the same
+/// choice `Gpu::open_headless` makes. Tests that need a raw adapter open it here; wgpu's default (every backend) starts
+/// GL, which on WSL with NVIDIA's D3D12 driver crashes the process at exit (`cargo xtask lint-gpu-instances`).
+pub fn instance() -> wgpu::Instance {
+    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+    descriptor.backends = wgpu::Backends::PRIMARY;
+    wgpu::Instance::new(descriptor.with_env())
+}

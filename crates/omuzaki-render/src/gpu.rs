@@ -324,7 +324,7 @@ async fn choose_adapter(
             .await
             .map_err(|e| RenderError::Backend(format!("no GPU adapter: {e}")));
     }
-    let mut adapters = instance.enumerate_adapters(wgpu::Backends::all()).await;
+    let mut adapters = instance.enumerate_adapters(wgpu::Backends::PRIMARY).await;
     let candidates: Vec<Candidate> = adapters
         .iter()
         .map(|a| {

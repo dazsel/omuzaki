@@ -7,6 +7,10 @@
 use std::any::Any;
 use std::sync::mpsc;
 
+// One source file shared with `omuzaki-face`'s own GPU tests: see its header for why.
+#[path = "../../../omuzaki-face/tests/support/gpu_instance.rs"]
+mod gpu_instance;
+
 use image::RgbaImage;
 use omuzaki_face::GpuRasterizer;
 use omuzaki_face::raster::SkiaRasterizer;
@@ -19,7 +23,7 @@ pub type Gpu = (wgpu::Device, wgpu::Queue);
 
 /// An adapter, or `None` after printing why there is none.
 pub fn adapter() -> Option<wgpu::Adapter> {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let instance = gpu_instance::instance();
     match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())) {
         Ok(adapter) => Some(adapter),
         Err(e) => {
