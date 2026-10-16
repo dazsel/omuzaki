@@ -147,10 +147,11 @@ hosted "$EMPTY" '[".github/workflows/ci.yml"]' "$HEAD" && fail "empty plan, work
 hosted "$GOOD" '["docs/a.md",".github/workflows/ci.yml"]' "$HEAD" \
     && fail "(e) workflow edit" || pass "(e) a PR that edits a workflow needs a human line"
 hosted "$GOOD" '[".github/workflows/new.yml"]' "$HEAD" && fail "(e) other workflow" || pass "(e) any file under workflows counts"
-for path in tools/ci/gate-aggregate.py tools/ci/plan-outputs.py xtask/src/affected.rs .config/nextest.toml .cargo/config.toml rust-toolchain.toml Cargo.toml Cargo.lock deny.toml clippy.toml rustfmt.toml .github/actions/setup-linux/action.yml; do
+for path in tools/ci/gate-aggregate.py tools/ci/plan-outputs.py xtask/src/affected.rs .config/nextest.toml .cargo/config.toml rust-toolchain.toml Cargo.toml deny.toml clippy.toml rustfmt.toml .github/actions/setup-linux/action.yml; do
     hosted "$GOOD" "[\"$path\"]" "$HEAD" && fail "(e) $path" || pass "(e) a PR that edits $path needs a human line"
 done
-hosted "$GOOD" '["tools/tests/self_gate.sh","crates/a/src/lib.rs","crates/a/Cargo.toml"]' "$HEAD" && pass "(e) tests and crate code do not exclude" || fail "(e) over-broad"
+hosted "$GOOD" '["Cargo.lock"]' "$HEAD" && pass "(e) a lockfile-only change is eligible" || fail "lockfile only"
+hosted "$GOOD" '["Cargo.lock","tools/tests/self_gate.sh","crates/a/src/lib.rs","crates/a/Cargo.toml"]' "$HEAD" && pass "(e) tests and crate code do not exclude" || fail "(e) over-broad"
 
 # The changed-file list: complete below the API cap, refused at it (a protected path could lie beyond).
 cap() { python3 -I - "$GATE" "$1" <<'PY'
@@ -167,6 +168,36 @@ PY
 [[ $(cap 29) == 2900 ]] && pass "a list just under the cap is returned whole" || fail "list under cap"
 [[ $(cap 30) == none ]] && pass "a list at the API cap is refused (fail closed)" || fail "list at cap"
 
+# The root manifest: protected only for an edit that chooses what runs (workspace members, [patch], [replace], xtask).
+python3 -I - "$GATE" <<'PY' && pass "a workspace dependency addition and a bump are eligible" || fail "workspace dependency edit"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sg", sys.argv[1]); sg = importlib.util.module_from_spec(spec); spec.loader.exec_module(sg)
+base = '[workspace]\nmembers = ["crates/*", "xtask"]\n\n[workspace.dependencies]\nserde = "1"\n\n[profile.dev]\nopt-level = 1\n'
+added = base.replace('serde = "1"', 'serde = "1"\nregex = "1"')
+bumped = base.replace('serde = "1"', 'serde = "1.0.200"')
+sys.exit(1 if sg.manifest_protected(base, added) or sg.manifest_protected(base, bumped) else 0)
+PY
+python3 -I - "$GATE" <<'PY' && pass "a members, exclude, [patch], [replace] or xtask edit is refused" || fail "protected manifest edits"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sg", sys.argv[1]); sg = importlib.util.module_from_spec(spec); spec.loader.exec_module(sg)
+base = '[workspace]\nmembers = ["crates/*", "xtask"]\n\n[workspace.dependencies]\nserde = "1"\n'
+edits = [
+    base.replace('"crates/*", ', '"crates/*", "spikes/*", '),
+    base.replace('members = ["crates/*", "xtask"]', 'members = ["crates/*", "xtask"]\nexclude = ["crates/a"]'),
+    base.replace('members = ["crates/*", "xtask"]', 'members = ["crates/*"]'),
+    base + '\n[patch.crates-io]\nserde = { path = "x" }\n',
+    base + '\n[replace]\n"serde:1.0.0" = { path = "x" }\n',
+    base.replace('serde = "1"', 'serde = "1"\nxtask-helper = "1"'),
+]
+sys.exit(0 if all(sg.manifest_protected(base, edit) for edit in edits) else 1)
+PY
+python3 -I - "$GATE" <<'PY' && pass "an edit to an existing [patch] section and unreadable text are refused" || fail "patch edit / missing text"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sg", sys.argv[1]); sg = importlib.util.module_from_spec(spec); spec.loader.exec_module(sg)
+base = '[workspace]\nmembers = ["crates/*"]\n[patch.crates-io]\na = { path = "a" }\n'
+sys.exit(0 if sg.manifest_protected(base, base + 'b = { path = "b" }\n') and sg.manifest_protected(None, base) and sg.manifest_protected(base, None) else 1)
+PY
+
 # The failure message: a PR touching a protected path is told only a human line counts; others may use hosted tests.
 msg() { python3 -I - "$GATE" "$1" <<'PY'
 import importlib.util, json, sys
@@ -174,7 +205,7 @@ spec = importlib.util.spec_from_file_location("sg", sys.argv[1]); sg = importlib
 print(sg.verdict([], ["a" * 40], set(), [], json.loads(sys.argv[2]))[1])
 PY
 }
-m=$(msg '["Cargo.lock","docs/a.md"]')
+m=$(msg '["deny.toml","docs/a.md"]')
 [[ $m == *"only a human"* && $m == *'`Cargo.toml`'* && $m != *"Or dispatch"* ]] && pass "a protected-path PR is told only a human line counts" || fail "protected message: $m"
 m=$(msg '["docs/a.md"]')
 [[ $m == *"Or dispatch ci.yml with hosted_tests=true"* && $m == *'`deny.toml`'* ]] && pass "an ordinary PR is offered hosted tests and told the protected paths" || fail "ordinary message: $m"

@@ -25,12 +25,14 @@ Hosted run. When no author can build, a maintainer dispatches ci.yml on the PR b
 re-runs this job. `check` then also accepts a successful hosted run, found through the API, that is ALL of: event
 `workflow_dispatch`; workflow path `.github/workflows/ci.yml`; `head_sha` equal to the pull request head; conclusion
 success with every `test (...)` job success (skipped or cancelled does not count); and the pull request changes nothing
-under `.github/`, `tools/ci/`, `xtask/`, `.config/`, `.cargo/`, `rust-toolchain*`, the root `Cargo.toml`/`Cargo.lock` or the lint configs, because a dispatched run executes the branch's own workflow, CI
+under `.github/`, `tools/ci/`, `xtask/`, `.config/`, `.cargo/`, `rust-toolchain*` or the lint configs, or edits the root `Cargo.toml` in `[workspace]`, a `[patch]`/`[replace]`
+section or an xtask line (a dependency entry in `[workspace.dependencies]`, or `Cargo.lock`, does not count), because a dispatched run executes the branch's own workflow, CI
 scripts and planner, so a PR that edits them could vouch for itself. Such a PR needs a human `Self-gate:` line.
 Needs `actions: read` besides `pull-requests: read`.
 """
 
 import argparse
+import base64
 import json
 import os
 import re
@@ -105,11 +107,65 @@ CI_WORKFLOW = ".github/workflows/ci.yml"
 # What the dispatched run executes from the PR branch to decide its own verdict: the workflow files and the actions they
 # use, the scripts that plan, aggregate and attest, xtask (which computes the affected set), the nextest profile and
 # Cargo's own configuration (`.cargo/` can set a runner for `cargo run -p xtask`) and toolchain pin. A PR
-# touching any of them could make its own hosted run green, so it needs a human `Self-gate:` line.
+# touching any of them could make its own hosted run green, so it needs a human `Self-gate:` line. The self-gate is an
+# efficiency gate: review and the merge queue are the security boundary, so only edits that plainly choose what runs
+# are listed.
 PROTECTED = (".github/", "tools/ci/", "xtask/", ".config/", ".cargo/", "rust-toolchain",
-             # The root workspace manifest and lock decide which crates exist (so which xtask runs); the lint configs
-             # decide what clippy, rustfmt and cargo-deny accept. Member manifests are the code under test.
-             "Cargo.toml", "Cargo.lock", "clippy.toml", ".clippy.toml", "rustfmt.toml", ".rustfmt.toml", "deny.toml")
+             # The lint configs decide what clippy, rustfmt and cargo-deny accept. Member manifests are the code under
+             # test, and Cargo.lock changes are visible in review and checked by cargo-deny.
+             "clippy.toml", ".clippy.toml", "rustfmt.toml", ".rustfmt.toml", "deny.toml")
+# The root manifest is protected only for the edits that choose what runs (see manifest_protected): adding or bumping a
+# `[workspace.dependencies]` entry, which nearly every dependency PR does, stays eligible.
+ROOT_MANIFEST = "Cargo.toml"
+
+
+SECTION = re.compile(r"^\s*\[+\s*([^\]]+?)\s*\]+\s*(#.*)?$")
+
+
+def manifest_sections(text):
+    """A manifest's meaningful lines by section: {section name: [lines]}; lines before any header are in ''."""
+    sections, current = {"": []}, ""
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if (header := SECTION.match(line)) is not None:
+            current = header.group(1)
+            sections.setdefault(current, [])
+        sections[current].append(line)
+    return sections
+
+
+def decides_what_runs(section):
+    """Whether a manifest section picks the workspace's members or redirects crates: `[workspace]` itself (members,
+    default-members, exclude), `[patch.*]` and `[replace]`."""
+    return section == "workspace" or section.split(".")[0] in ("patch", "replace")
+
+
+def manifest_protected(base_text, head_text):
+    """Whether the root manifest edit from `base_text` to `head_text` could change what the dispatched run executes.
+
+    Protected: any change in `[workspace]`, a `[patch.*]` or `[replace]` section, or to a line mentioning xtask (the
+    planner CI runs from the branch). Unreadable text (None) is protected. Anything else, such as a
+    `[workspace.dependencies]` addition or bump, is not.
+    """
+    if base_text is None or head_text is None:
+        return True
+    base, head = manifest_sections(base_text), manifest_sections(head_text)
+    for section in set(base) | set(head):
+        if decides_what_runs(section) and base.get(section) != head.get(section):
+            return True
+
+    def mentions(sections):
+        return sorted(line for lines in sections.values() for line in lines if "xtask" in line)
+
+    return mentions(base) != mentions(head)
+
+
+def is_protected(path):
+    """Whether a changed path keeps the hosted proof from vouching. A root manifest still listed here was not cleared
+    by `manifest_protected` (fetch_hosted drops it from the list when its edit is harmless)."""
+    return path.startswith(PROTECTED) or path == ROOT_MANIFEST
 
 
 def workflow_file(run):
@@ -132,7 +188,7 @@ def hosted_proof(runs, head, files):
 
     `runs` are workflow runs, each with its `jobs`; `files` are the (current and previous) paths the pull request changes.
     """
-    if any(path.startswith(PROTECTED) for path in files):
+    if any(is_protected(path) for path in files):
         return None
     for run in sorted(runs, key=lambda r: r["id"], reverse=True):
         tests = [job for job in run.get("jobs", []) if is_test_job(job)]
@@ -153,8 +209,9 @@ def verdict(comments, heads, allowed, runs=(), files=()):
         return True, f"self-gate: hosted run {hosted} on {heads[0][:MIN_SHA]}"
     seen = f"the latest trusted line names {sha}" if sha else "no trusted comment has one"
     short = heads[0][:MIN_SHA]
-    protected = ", ".join(f"`{path}`" for path in PROTECTED)
-    if any(path.startswith(PROTECTED) for path in files):
+    protected = ", ".join(f"`{path}`" for path in PROTECTED) + (
+        ", or an edit of the root `Cargo.toml` in `[workspace]`, a `[patch]`/`[replace]` section or an xtask line")
+    if any(is_protected(path) for path in files):
         hosted_hint = (f" This PR touches a protected path ({protected}), so hosted tests cannot vouch for it: only a "
                        f"human `Self-gate:` line counts.")
     else:
@@ -204,7 +261,31 @@ def fetch_hosted(repo, number, head):
     runs = [dict(run, jobs=api_get(f"{base}/actions/runs/{run['id']}/jobs?per_page=100&filter=latest")["jobs"])
             for run in runs if workflow_file(run) == CI_WORKFLOW and run.get("conclusion") == "success"]
     files = changed_files(lambda page: api_get(f"{base}/pulls/{number}/files?per_page=100&page={page}"))
-    return (runs, files) if files is not None else ([], set())
+    if files is None:
+        return [], set()
+    if ROOT_MANIFEST in files and not root_manifest_protected(base, number, head):
+        files.discard(ROOT_MANIFEST)
+    return runs, files
+
+
+def file_at(base, path, ref):
+    """The text of `path` at `ref`, or None when the API cannot give it (absent, too large, not base64)."""
+    try:
+        entry = api_get(f"{base}/contents/{path}?ref={ref}")
+        return base64.b64decode(entry["content"]).decode("utf-8") if entry.get("encoding") == "base64" else None
+    except (OSError, KeyError, ValueError):
+        return None
+
+
+def root_manifest_protected(base, number, head):
+    """Whether this pull request's edit of the root manifest is protected (`manifest_protected`) between the merge base
+    and `head`; any API trouble counts as protected."""
+    try:
+        tip = api_get(f"{base}/pulls/{number}")["base"]["sha"]
+        merge_base = api_get(f"{base}/compare/{tip}...{head}")["merge_base_commit"]["sha"]
+    except (OSError, KeyError):
+        return True
+    return manifest_protected(file_at(base, ROOT_MANIFEST, merge_base), file_at(base, ROOT_MANIFEST, head))
 
 
 FILES_API_CAP = 3000  # GitHub's list-PR-files endpoint returns at most this many entries
