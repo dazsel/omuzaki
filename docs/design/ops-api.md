@@ -250,6 +250,8 @@ gets, and where the earlier docs disagreed.
 - **Why `run` waits.** The automation's job workers, the CLI and scripts call `Runner::run` and expect an
   `Outcome`. A blocking `run` keeps all of them correct with no change; MCP and the UI use `Jobs::start` and events.
   A cancelled or failed job makes `run` return the job's error (`Cancelled`, `Limited`, or the op's own).
+  A job that polls instead (`Jobs::job`, `Jobs::wait`) finds the same `Outcome` in `JobState::Done` (in memory only, never
+  journalled), so an MCP task renders what the blocking call would.
 - **What a finish sees.** The document now, and the actor's grants now. If the target was deleted meanwhile, the
   finish fails (`NotFound` or `Conflict`) and the job ends `Failed`; anything `work` put in the store is left to the
   store's garbage collection. If a session's grants narrowed, a finish they no longer allow is `Denied`.

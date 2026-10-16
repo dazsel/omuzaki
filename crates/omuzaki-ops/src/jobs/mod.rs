@@ -455,8 +455,8 @@ impl Manager {
         let done = result
             .as_ref()
             .ok()
-            .and_then(|outcome| outcome.applied.as_ref())
-            .map(|record| JobState::Done { tx: record.tx, seq: Some(record.seq) });
+            .and_then(|outcome| outcome.applied.as_ref().map(|record| (outcome, record)))
+            .map(|(outcome, record)| JobState::done(record.tx, Some(record.seq)).with_outcome(Arc::new(outcome.clone())));
         let (state, outcome) = match (done, result, cancelling) {
             // The edit is in. Under shutdown too: `finish` holds the shutdown flag through its apply, so the apply
             // came before the shutdown began, and the job's state must not deny an edit the log holds.
