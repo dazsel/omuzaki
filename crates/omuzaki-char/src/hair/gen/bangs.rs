@@ -146,7 +146,13 @@ fn hj(k: usize) -> f64 {
 
 /// The [`Taper`] that stands in for the prototype's outline of a lock of width `w`.
 pub fn taper(w: f64) -> Taper {
-    Taper { start: ROOT_WIDTH, mid: (MID_GAIN * w + FLOOR).clamp(MIN_WIDTH, MAX_WIDTH), tip: FLOOR, tip_at: TIP_AT }
+    Taper {
+        start: ROOT_WIDTH,
+        mid: (MID_GAIN * w + FLOOR).clamp(MIN_WIDTH, MAX_WIDTH),
+        tip: FLOOR,
+        tip_at: TIP_AT,
+        ..Taper::default()
+    }
 }
 
 /// The prototype's outline of a lock of width `w` at `t`: `lerp(0.040, w, ss(t, 0, 0.45)) (1 - ss(t, 0.5, 1))^0.7 + 0.0015`.

@@ -70,7 +70,7 @@ pub use hair::{
     BangLayer, BangsGen, BraidGen, Bulge, BunGen, CapGen, CurtainGen, Dynamics, Falloff, Follow, FramingGen, Generator,
     GuideClump, GuidePoint, GuidesGen, HAIR_INFO, HAIR_PROGRAM, HAIR_UV, HairClump, HairGroup, HairParams, HairPhysics,
     HairRng, HairShading, HairShadingError, HairSide, LegacyLcg, PartSweepGen, SphereCollider, Streak, StreakBlend,
-    TailGen, Taper, Wave, Wisp,
+    TailGen, Taper, TaperShape, Wave, Wisp,
 };
 pub use head::{Chin, Cranium, EarKind, Ears, FaceWindow, HeadOutline, HeadParams, Neck, SkinColours, TracedHead};
 pub use ids::{

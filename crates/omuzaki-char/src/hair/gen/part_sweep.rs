@@ -125,11 +125,15 @@ fn part_direction(g: &PartSweepGen, s: f64) -> DVec3 {
 /// The unit direction of the braid line at azimuth `phi` (radians from the front): at that azimuth's height, blended
 /// from `front` to `back` over [`HEIGHT_BLEND`], round the head. Shared with the braid-crown generator.
 pub fn braid_direction(front: f64, back: f64, head: &dyn HeadSurface, phi: f64) -> DVec3 {
+    braid_direction_with(front, back, f64::from(head.radius(Vec3::Y)), phi)
+}
+
+/// [`braid_direction`] with the radius that turns the height into an angle given (the prototype's is a constant).
+pub fn braid_direction_with(front: f64, back: f64, crown: f64, phi: f64) -> DVec3 {
     let a = phi.sin().atan2(phi.cos()).abs().to_degrees();
     let blend = smoothstep(a, HEIGHT_BLEND.0, HEIGHT_BLEND.1);
     let height = front + (back - front) * blend;
-    let crown = f64::from(head.radius(Vec3::Y)).max(1e-6);
-    let theta = (height / crown).clamp(-1.0, 1.0).acos();
+    let theta = (height / crown.max(1e-6)).clamp(-1.0, 1.0).acos();
     DVec3::new(theta.sin() * phi.sin(), theta.cos(), theta.sin() * phi.cos())
 }
 
