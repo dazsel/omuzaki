@@ -44,7 +44,7 @@ use crate::frame::RgbFrame;
 use crate::pipeline::FaceTracker;
 use crate::sample::{FaceSample, StageTimings};
 use preview::PreviewTap;
-use thread::{JOIN_GRACE, Outcome, POLL, Run, Stats, Worker};
+use thread::{JOIN_GRACE, Outcome, POLL, Run, STOP_SLACK, Stats, Worker};
 
 /// What turns an RGB frame into a face sample. [`FaceTracker`] implements it; tests script it.
 pub trait FrameTracker: Send {
@@ -97,7 +97,7 @@ pub struct WebcamConfig {
 
 impl Default for WebcamConfig {
     /// 1280 x 720 at 60 fps (as `CameraFormatRequest::default()`: a camera that offers 30 and 60 gives 60), the first
-    /// camera, and [Nv12, Yuy2, Bgra8, Rgb8, Mjpg]: the raw formats first, cheapest to convert first. MJPG is last,
+    /// camera, and [Rgb8, Bgra8, Nv12, Yuy2, Mjpg] (`PixelFormat::convert_cost`'s order): the raw formats first, cheapest to convert first. MJPG is last,
     /// chosen only when the camera has no raw format for the requested mode, because decoding it allocates inside
     /// the JPEG library on every frame (`FrameConverter`).
     fn default() -> Self {
@@ -107,10 +107,10 @@ impl Default for WebcamConfig {
             height: 720,
             fps: 60,
             formats: vec![
+                PixelFormat::Rgb8,
+                PixelFormat::Bgra8,
                 PixelFormat::Nv12,
                 PixelFormat::Yuy2,
-                PixelFormat::Bgra8,
-                PixelFormat::Rgb8,
                 PixelFormat::Mjpg,
             ],
         }
@@ -213,7 +213,7 @@ impl FrameSource for Source {
 }
 
 /// The webcam [`Tracker`]. It owns its [`Camera`] and [`FrameTracker`]; `start` opens the stream and moves the tracker
-/// onto the camera thread, `stop` joins the thread (within 200 ms) and takes the tracker back, so `stop` then `start`
+/// onto the camera thread, `stop` joins the thread (within 100 ms) and takes the tracker back, so `stop` then `start`
 /// works. Every frame the thread publishes is a [`TrackFrame`]: a face, or a lost frame when none is found, when a
 /// frame cannot be converted or tracked, when the camera is silent for [`TrackerConfig::lost_after`] (once), or when
 /// the stream fails.
@@ -291,7 +291,7 @@ impl WebcamTracker {
     }
 
     /// Sets how long `stop` waits for the camera thread to come back before it detaches it. The default is short
-    /// enough for `stop`'s 200 ms budget; a test on a loaded machine may want it long, so that a slow thread is not
+    /// enough for `stop`'s 100 ms budget; a test on a loaded machine may want it long, so that a slow thread is not
     /// mistaken for a stuck one.
     #[doc(hidden)]
     pub fn set_join_grace(&mut self, grace: Duration) {
@@ -315,8 +315,8 @@ impl WebcamTracker {
         self.preview.set(on);
     }
 
-    /// Copies the newest preview into `out`; false if none is new since the last call. May wait for the camera thread
-    /// to finish swapping a frame in (a pointer swap), never for a downscale.
+    /// Copies the newest preview into `out`; false if none is new since the last call, or if the camera thread is
+    /// swapping a frame in right now (the next call gets it). Never waits, so it is safe on a render loop.
     pub fn preview(&self, out: &mut PreviewFrame) -> bool {
         self.preview.take(out)
     }
@@ -377,8 +377,9 @@ impl Tracker for WebcamTracker {
         tracker.reset();
         let (writer, reader) = mailbox();
         let (stop, live) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(true)));
-        self.stats = Arc::new(Stats::new());
-        *self.error.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        // The new session's numbers are installed only once both threads are running, so a start that fails leaves the
+        // last session's counters and error where they were.
+        let (stats, error) = (Arc::new(Stats::new()), Arc::<Mutex<Option<TrackError>>>::default());
         // Inference gets a thread of its own, so that the camera thread, which publishes, keeps time while the tracker
         // works, and can say so if it takes longer than `lost_after` or never returns.
         let worker = match Worker::start(tracker, |body| self.spawn("omuzaki-webcam-track", body)) {
@@ -402,8 +403,8 @@ impl Tracker for WebcamTracker {
             grace: self.join_grace,
             stop: Arc::clone(&stop),
             preview: Arc::clone(&self.preview),
-            stats: Arc::clone(&self.stats),
-            error: Arc::clone(&self.error),
+            stats: Arc::clone(&stats),
+            error: Arc::clone(&error),
             worker,
         })));
         let body = {
@@ -419,6 +420,7 @@ impl Tracker for WebcamTracker {
                 return Err(TrackError::Backend(format!("camera thread: {e}")));
             }
         };
+        (self.stats, self.error) = (stats, error);
         self.session = Some(Session { camera, stop, live: Arc::clone(&live) });
         Ok(Box::new(Source { reader, live }))
     }
@@ -427,8 +429,9 @@ impl Tracker for WebcamTracker {
         let Some(Session { camera, stop, live }) = self.session.take() else { return };
         stop.store(true, Ordering::Relaxed);
         live.store(false, Ordering::Relaxed);
-        // The camera thread notices `stop` within a poll, and then gives the tracker's thread `join_grace`.
-        let give_up = Instant::now() + self.join_grace + 2 * POLL;
+        // The camera thread notices `stop` within a poll and then gives the tracker's thread `join_grace`: with the
+        // slack, that is the whole of the stop budget when `join_grace` is the default.
+        let give_up = Instant::now() + self.join_grace + POLL + STOP_SLACK;
         while !camera.is_finished() && Instant::now() < give_up {
             std::thread::sleep(Duration::from_millis(1));
         }

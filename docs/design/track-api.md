@@ -66,17 +66,25 @@ Mock: `FakeCamera` (`from_frames`, `synthetic`, `synthetic_luma`, `id`, `ID`) an
 ## 3. Threads
 
 ```text
- tracker thread (one per running Tracker)                                     stage thread
- CameraStream::next_frame ─▶ convert ─▶ infer ─▶ ClockMap::map ─▶ publish ┄┄▶ poll ─▶ Retarget ─▶ … ─▶ render
- (blocks on the device)      (pixfmt)   (track)                     (wait-free)  (wait-free, once per frame)
+ camera thread (one per running Tracker)                                      stage thread
+ CameraStream::next_frame ─▶ convert ─▶ ClockMap::map ─▶ hand off ┄┄┐ ┌┄▶ publish ┄┄▶ poll ─▶ Retarget ─▶ … ─▶ render
+ (blocks on the device)      (pixfmt)                    (1-slot)   │ │    (wait-free)  (wait-free, once per frame)
+                                                                    ▼ │
+ inference thread (one per running Tracker)                      infer (track)
 ```
 
-- **The tracker owns one thread** from `start` to `stop`: capture, conversion and inference run in sequence on it.
-  The spike measured one thread as enough at 30 fps and found that more inference threads cost more CPU than they
-  save when paced (`spikes/webcam-track/README.md`, "one thread is enough"). A separate capture thread would add a
-  second hand-off and a second copy of the frame for nothing: the camera driver already buffers.
-- **Inference stays on that thread**, as `omuzaki-ai-api` sessions do: no spinning workers (ONNX Runtime one
-  intra-op thread, the spike's recommendation 3).
+- **A running Tracker owns two threads** from `start` to `stop`: the camera thread captures, converts, maps the clock
+  and publishes (it is the only thread that publishes, so publication takes no lock), and the inference thread runs
+  `track`. They are joined by two one-slot channels, one per direction, that allocate nothing per frame (the pixel
+  buffer travels out and back). The camera thread waits for each answer a poll tick at a time, so a slow or stuck
+  model still gets its one `Lost` frame out within `lost_after` (§8) and `stop` stays bounded (within 100 ms; a
+  tracker that does not return in time is let go and reported through `error()`). With one thread, both would wait on
+  a long `track`, and PF-01's lost-face handover depends on the `Lost` frame arriving on time.
+- **Inference stays on one thread**, as `omuzaki-ai-api` sessions do: no spinning workers (ONNX Runtime one
+  intra-op thread, the spike's recommendation 3). The spike measured one thread as enough at 30 fps and found that
+  more inference threads cost more CPU than they save when paced (`spikes/webcam-track/README.md`, "one thread is
+  enough"); this keeps that, and adds a second thread only for timekeeping and publishing. The cost is one hand-off per
+  frame (no copy of the frame: the buffer moves), which `benches/webcam.rs` (`worker_path`) measures with the glue.
 - **The stage thread only polls**, once per render frame. `poll` is the only tracker call on the stage's hot path.
 - **The UI and ops** call `Tracker::start`, `stop`, `devices` and `latency` from wherever they run; these are cold
   except `latency`, which is a few relaxed loads.
@@ -92,7 +100,7 @@ Hot path means: runs every frame, may not allocate, lock or block, and is tested
 | Call | Thread | Rule |
 |---|---|---|
 | `MailboxReader::poll` | stage | hot: wait-free, one atomic load when empty, one swap and 71 relaxed loads when not |
-| `MailboxWriter::publish` | tracker | hot: wait-free, 71 relaxed stores and one swap |
+| `MailboxWriter::publish` | camera | hot: wait-free, 71 relaxed stores and one swap |
 | `ClockMap::map` | tracker | hot: fixed arrays, O(`CLOCK_WINDOW`) arithmetic |
 | `CameraStream::next_frame` | tracker | may block up to `timeout`, may not allocate per frame: frames are borrowed from the stream's own buffers |
 | `Camera::open`, `Tracker::start` | any | cold: allocate, open devices, load models |
@@ -200,9 +208,9 @@ Spec §10 rows this contract touches, all on tier `R`:
 
 | Key | Budget | Where it is spent |
 |---|---|---|
-| `track.face` | ≤ 5 ms p95, camera frame in to channels out | convert + infer + `map` + `publish` on the tracker thread |
+| `track.face` | ≤ 5 ms p95, camera frame in to channels out | convert + infer + `map` + `publish` across the camera and inference threads, hand-off included |
 | `latency.laptop` | ≤ 80 ms p95 camera to photon (`latency.desktop`: ≤ 50 ms on `D`) | the chain below |
-| `cpu.total` | ≤ 3 % of 8 cores, tracker included | one tracker thread, no spinning workers |
+| `cpu.total` | ≤ 3 % of 8 cores, tracker included | the camera and inference threads, no spinning workers |
 
 The issue's brief says 100 ms glass-to-glass; the spec's rows are tighter, and the spec wins. Camera to photon at
 60 fps, as an estimate except for this crate's row, which is measured (nothing is measured on `R` yet):
@@ -264,8 +272,9 @@ Each names its fence, contracts and acceptance, in the style of the earlier desi
 
 **T2: `omuzaki-track`: the `Tracker` behind the face tracker.**
 Fence: `crates/omuzaki-track`. Contracts: `omuzaki-track-api` (`Camera`, `Tracker`, `ClockMap`, mailbox),
-`omuzaki-ai-api`, `omuzaki-anim-api`; `omuzaki-pixfmt` (lib). Work: `FaceTrackerHost` owns a thread that runs
-`next_frame → pixfmt → FaceTracker::track → to_track_frame → ClockMap::map → publish`; lost and stall frames per §8;
+`omuzaki-ai-api`, `omuzaki-anim-api`; `omuzaki-pixfmt` (lib). Work: `FaceTrackerHost` owns two threads (§3): a camera
+thread that runs `next_frame → pixfmt → ClockMap::map → hand off → publish`, and an inference thread that runs
+`FaceTracker::track → to_track_frame`, joined by one-slot channels; lost and stall frames per §8, sent by the camera thread;
 `LatencyStats` from a fixed histogram; `QualityTier` mapped to the tracker's settings. Acceptance: runs over
 `FakeCamera::synthetic` and `omuzaki-ai-mock` sessions; zero allocations per frame after warm-up (the anim-mock
 test); `stop` joins the thread within 100 ms; p95 of the tracking step reported against `track.face`.

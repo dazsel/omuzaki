@@ -22,16 +22,21 @@ use crate::error::FaceTrackError;
 use crate::frame::RgbFrame;
 use crate::sample::{FaceSample, StageTimings, to_track_frame};
 
-/// The longest the thread waits inside the camera, so `stop` is noticed within this (the join budget is 200 ms).
+/// What `stop` must finish in: the task's budget for joining the thread (`track-api.md` T2).
+pub(super) const STOP_BUDGET: Duration = Duration::from_millis(100);
+
+/// What the outer wait in `stop` adds for the scheduler.
+pub(super) const STOP_SLACK: Duration = Duration::from_millis(5);
+
+/// The longest the thread waits inside the camera, or for the tracker's thread, so `stop` is noticed within this.
 pub(super) const POLL: Duration = Duration::from_millis(20);
 
-/// How long the camera thread waits at its end for the tracker's thread, which `stop` then waits for in turn (and `stop`
-/// has two polls on top); a tracker that is not back by then is let go.
-pub(super) const JOIN_GRACE: Duration = Duration::from_millis(100);
+/// How long the camera thread waits at its end for the tracker's thread: what is left of [`STOP_BUDGET`] after the
+/// poll that notices `stop` and the slack. A tracker that is not back by then is let go.
+pub(super) const JOIN_GRACE: Duration = Duration::from_millis(75);
 
-// `stop` waits at most the grace period and two camera polls (the camera thread's and its own); the task's budget
-// for it is 200 ms.
-const _: () = assert!(JOIN_GRACE.as_millis() + 2 * POLL.as_millis() <= 200);
+// One shared deadline: noticing `stop` (a poll), the grace for the tracker and the outer wait's slack fit the budget.
+const _: () = assert!(JOIN_GRACE.as_millis() + POLL.as_millis() + STOP_SLACK.as_millis() <= STOP_BUDGET.as_millis());
 
 /// How long a thread blocks on an empty channel to warm up its blocking path (see the tracker thread's loop). std checks
 /// the deadline before it first blocks, so the wait must outlast a thread being descheduled or page-faulting there
@@ -403,6 +408,9 @@ impl Run {
             // frame and keep the fit.
             let Ok(time) = device_clock.map(frame.captured, arrived) else {
                 stats.backwards.fetch_add(1, Ordering::Relaxed);
+                // A rejected frame is not a sign of life, so a stream of them must not hold a stale face: the silence
+                // rule runs here as it does when the camera delivers nothing.
+                out.notify(true);
                 continue;
             };
             // A lowered tier skips frames between the ones it tracks.
@@ -413,7 +421,9 @@ impl Run {
             // A frame that cannot be converted or tracked is a lost frame: the pipeline must not hold a stale face.
             if convert_into(&mut mjpg, &frame, &mut rgb).is_err() {
                 stats.conversion.fetch_add(1, Ordering::Relaxed);
-                out.publish(None, time);
+                // The lost frame is a publication like any other, so it is in the latency numbers too.
+                let (_, now) = out.publish(None, time);
+                stats.record(Seconds(now.0 - time.0));
                 continue;
             }
             let job = Job { rgb: std::mem::take(&mut rgb), width: frame.width, height: frame.height, time };

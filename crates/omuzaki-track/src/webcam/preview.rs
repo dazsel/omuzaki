@@ -1,7 +1,7 @@
 //! The preview tap: a downscaled copy of the newest frame for the UI, made on the camera thread only while it is on.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Mutex, TryLockError};
 
 use crate::frame::RgbFrame;
 use crate::landmarks::NUM_LANDMARKS;
@@ -113,10 +113,16 @@ impl PreviewTap {
         }
     }
 
-    /// UI thread: copies the newest preview into `out`; false if none is new since the last call.
+    /// UI thread: copies the newest preview into `out`; false if none is new since the last call. Never waits: if the
+    /// camera thread holds the slot (to swap a frame in), there is nothing new to report yet and the next call will
+    /// find it, as the camera thread in turn skips a frame rather than wait for a reader.
     pub(super) fn take(&self, out: &mut PreviewFrame) -> bool {
         // A panic on the camera thread cannot leave the slot half-written in a way that matters: it is a pixel copy.
-        let mut slot = self.slot.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut slot = match self.slot.try_lock() {
+            Ok(slot) => slot,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => return false,
+        };
         if !slot.fresh {
             return false;
         }
@@ -205,6 +211,25 @@ mod tests {
         assert!(downscale(&frame(&data, 1280, 4), &mut out));
         assert_eq!((out.width, out.height), (640, 2));
         assert!(out.rgb.iter().all(|&v| v == 75), "{:?}", &out.rgb[..6]);
+    }
+
+    #[test]
+    fn a_poll_while_the_camera_thread_holds_the_slot_returns_at_once_and_the_next_one_gets_the_frame() {
+        let tap = PreviewTap::default();
+        tap.set(true);
+        let data = vec![9_u8; 4 * 2 * 3];
+        tap.offer(&mut PreviewFrame::default(), &frame(&data, 4, 2), 7, None);
+        let mut out = PreviewFrame::default();
+        {
+            // The camera thread is in the middle of its swap. On this thread a blocking `lock` would never return.
+            let _swapping = tap.slot.lock().unwrap();
+            assert!(!tap.take(&mut out), "nothing is reported while the slot is held");
+            assert_eq!(out.width, 0, "and `out` is untouched");
+        }
+        assert!(tap.take(&mut out));
+        assert_eq!(out.seq, 7);
+        assert_eq!(out.rgb, data);
+        assert!(!tap.take(&mut out), "a frame is reported once");
     }
 
     #[test]

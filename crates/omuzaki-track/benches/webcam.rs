@@ -1,20 +1,27 @@
 //! The camera thread's glue cost per 1280x720 NV12 frame: pixel conversion, a scripted tracker, `to_track_frame` and
 //! the mailbox publish, and again with the preview tap's box filter on top. The networks come on top
 //! (`benches/pipeline.rs`). The budget is 3 ms at p95 (issue #378) for the glue; the criterion mean is printed with the
-//! measured p95 and worst case below it. A last case times an MJPG decode, whose library allocates per frame.
+//! measured p95 and worst case below it. The glue cases time the work inline on one thread; `worker_path` runs the real
+//! `WebcamTracker`, whose camera thread hands each frame to the tracker's thread and waits for the answer, and reports
+//! the tracker's own capture-to-publish latency, so the hand-off is in the number. A last case times an MJPG decode,
+//! whose library allocates per frame.
 
 // A bench that cannot run its frames should stop loudly; the casts only build synthetic data and times.
 #![allow(clippy::expect_used, clippy::cast_possible_truncation, clippy::cast_precision_loss)]
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use omuzaki_anim_api::{ARKIT_COUNT, ChannelMask};
-use omuzaki_core::time::Seconds;
-use omuzaki_track::webcam::{FrameConverter, FrameTracker, PreviewFrame};
+use omuzaki_core::time::{Seconds, SystemClock};
+use omuzaki_track::webcam::{FrameConverter, FrameTracker, PreviewFrame, WebcamConfig, WebcamTracker};
 use omuzaki_track::{FaceSample, FaceTrackError, NormRect, RgbFrame, StageTimings, to_track_frame};
+use omuzaki_track_api::camera::CameraFormat;
 use omuzaki_track_api::camera::{CameraFrame, DeviceTime, PixelFormat};
 use omuzaki_track_api::mailbox::mailbox;
+use omuzaki_track_api::tracker::Tracker;
+use omuzaki_track_mock::FakeCamera;
 
 const W: u32 = 1280;
 const H: u32 = 720;
@@ -99,5 +106,39 @@ fn bench_glue(c: &mut Criterion) {
     println!("convert_mjpg_64x48: p95 {p95:?}, max {max:?} over 1000 frames");
 }
 
-criterion_group!(benches, bench_glue);
+/// Frames the worker-path case runs: enough for a stable p95 at the histogram's 0.1 ms resolution.
+const WORKER_FRAMES: u64 = 2000;
+
+/// The real `WebcamTracker` over a fake camera that delivers 1280x720 NV12 frames as fast as they are taken, and the
+/// scripted tracker: what its own `latency()` reports is the time from a frame's capture to its publication, with the
+/// camera thread's conversion and publish and the hand-off to the tracker's thread and back all in it. The fake camera
+/// stamps its frames 1/60 s apart but delivers them far faster, so the clock map reads each as arriving with no delay,
+/// and the latency is that of the work.
+fn bench_worker_path(_: &mut Criterion) {
+    for previewing in [false, true] {
+        let camera = FakeCamera::synthetic(CameraFormat::new(W, H, 60, PixelFormat::Nv12), WORKER_FRAMES);
+        let config = WebcamConfig::default().with_mode(W, H, 60);
+        let mut tracker =
+            WebcamTracker::new(Box::new(camera), Box::new(Scripted(sample())), config, Arc::new(SystemClock::new()));
+        tracker.set_preview(previewing);
+        let started = tracker.tracker_config();
+        let _source = tracker.start(&FakeCamera::id(), &started).expect("the fake camera opens");
+        // The fake camera runs dry after its frames, which ends the session with an error.
+        while tracker.error().is_none() {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        tracker.stop();
+        let latency = tracker.latency();
+        println!(
+            "worker_path_nv12_720p{}: p50 {:?}, p95 {:?}, max {:?} over {} frames (capture to publish, hand-off included)",
+            if previewing { "_preview_on" } else { "" },
+            latency.p50,
+            latency.p95,
+            latency.max,
+            latency.frames,
+        );
+    }
+}
+
+criterion_group!(benches, bench_glue, bench_worker_path);
 criterion_main!(benches);

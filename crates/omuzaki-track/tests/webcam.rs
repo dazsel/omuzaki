@@ -388,7 +388,7 @@ fn stop_then_start_works_and_the_old_source_goes_quiet() {
     let mut first = start(&mut tracker);
     let before = next(&mut *first);
     // How long `stop` takes is bounded by the camera thread's poll interval, which `thread.rs` checks against the
-    // 200 ms budget at compile time; a stopwatch here would only measure the machine's load.
+    // 100 ms budget at compile time; a stopwatch here would only measure the machine's load.
     tracker.stop();
     assert!(first.poll(Seconds(0.0)).is_none());
     assert!(tracker.latency().frames > 0);
@@ -1002,4 +1002,144 @@ fn a_backwards_device_time_drops_the_frame_and_the_stream_carries_on() {
     assert_eq!(tracker.failures(), Failures::new(1, 0, 0));
     // A backwards frame is not a skipped one: the camera's own `seq` has no gap.
     assert_eq!(tracker.latency().dropped, 0);
+}
+
+/// One good frame, then, once `quiet` is set, nothing but frames stamped before it. Each of those moves the stage clock
+/// on by 10 ms, so the silence costs no wall time.
+struct Rejected {
+    data: Vec<u8>,
+    clock: Arc<FakeClock>,
+    quiet: Arc<AtomicBool>,
+}
+struct RejectedStream(Rejected, u64);
+impl Camera for Rejected {
+    fn enumerate(&self) -> Vec<CameraInfo> {
+        vec![CameraInfo::new(FakeCamera::id(), "rejected", vec![nv12(64, 48)])]
+    }
+
+    fn open(&mut self, _: &CameraId, _: &CameraFormatRequest) -> Result<Box<dyn CameraStream>, TrackError> {
+        let (clock, quiet) = (Arc::clone(&self.clock), Arc::clone(&self.quiet));
+        Ok(Box::new(RejectedStream(Rejected { data: self.data.clone(), clock, quiet }, 0)))
+    }
+}
+impl CameraStream for RejectedStream {
+    fn format(&self) -> CameraFormat {
+        nv12(64, 48)
+    }
+
+    fn next_frame(&mut self, _: Duration) -> Result<Option<CameraFrame<'_>>, TrackError> {
+        let seq = self.1;
+        let captured = match seq {
+            0 => DeviceTime(1_000_000_000),
+            _ if self.0.quiet.load(Ordering::Acquire) => {
+                self.0.clock.advance(Seconds(0.010));
+                DeviceTime(500_000_000)
+            }
+            _ => {
+                std::thread::yield_now();
+                return Ok(None);
+            }
+        };
+        self.1 += 1;
+        Ok(Some(CameraFrame::new(&self.0.data, 64, 48, 64, PixelFormat::Nv12, captured, seq)))
+    }
+}
+
+#[test]
+fn a_stream_of_rejected_timestamps_still_gives_the_one_lost_frame() {
+    let clock = Arc::new(FakeClock::new(Seconds(10.0)));
+    let quiet = Arc::new(AtomicBool::new(false));
+    let camera =
+        Rejected { data: picture(PixelFormat::Nv12, (64, 48)), clock: Arc::clone(&clock), quiet: Arc::clone(&quiet) };
+    let mut tracker = patient(
+        Box::new(camera),
+        Box::new(Scripted::new(vec![true])),
+        WebcamConfig::default().with_mode(64, 48, 30),
+        clock,
+    );
+    let config = TrackerConfig::default().with_lost_after(Duration::from_millis(30));
+    let mut source = tracker.start(&FakeCamera::id(), &config).unwrap();
+    let tracked = next(&mut *source);
+    assert_eq!(tracked.status, TrackStatus::Tracking);
+    // From here on every frame the camera delivers is stamped before the first. None is a sign of life, and the camera
+    // never goes quiet in the `next_frame` sense, so only the rule run on a rejected frame can say the face is gone.
+    quiet.store(true, Ordering::Release);
+    let lost = next(&mut *source);
+    assert_eq!(lost.status, TrackStatus::Lost);
+    assert_eq!(lost.seq, tracked.seq, "a notice repeats the last frame's seq");
+    assert_eq!(tracker.error(), None, "the stream is still running: this is the stall rule, not the stream's end");
+    // Plenty more rejected frames, many times `lost_after`, and still only the one lost frame.
+    let rejected = tracker.failures().backwards;
+    while tracker.failures().backwards < rejected + 100 {
+        std::thread::yield_now();
+    }
+    assert!(source.poll(Seconds(0.0)).is_none(), "only one lost frame per silence");
+    tracker.stop();
+}
+
+/// A stage clock that moves 1 ms on every time it is read, so work between two readings takes time.
+struct TickingClock(AtomicU32);
+impl Clock for TickingClock {
+    fn now(&self) -> Seconds {
+        Seconds(100.0 + f64::from(self.0.fetch_add(1, Ordering::Relaxed)) * 1e-3)
+    }
+}
+
+#[test]
+fn a_frame_that_cannot_be_converted_is_in_the_latency_numbers() {
+    // Not a JPEG: the frame arrives, cannot be converted, and goes out as a lost frame.
+    let frames = (0..5).map(|i| (DeviceTime(i * 33_000_000), vec![0xFF, 0xD8, 1, 2, 3])).collect();
+    let camera = FakeCamera::from_frames(CameraFormat::new(64, 48, 30, PixelFormat::Mjpg), frames);
+    let mut tracker = patient(
+        Box::new(camera),
+        Box::new(Scripted::new(vec![true])),
+        WebcamConfig::default().with_mode(64, 48, 30),
+        Arc::new(TickingClock(AtomicU32::new(0))),
+    );
+    let _source = start(&mut tracker);
+    wait_for_error(&tracker);
+    tracker.stop();
+    assert_eq!(tracker.failures(), Failures::new(0, 5, 0));
+    let latency = tracker.latency();
+    // Five lost frames for the five bad ones, and one for the stream's end, which has no capture time to measure from.
+    assert_eq!(latency.frames, 6);
+    // Each of the five went out at least one clock reading after it arrived. Without them in the histogram the
+    // worst case and the median would both read zero.
+    assert!(latency.max >= Duration::from_millis(1), "{latency:?}");
+    assert!(latency.p50 >= Duration::from_millis(1), "{latency:?}");
+}
+
+#[test]
+fn a_start_that_fails_leaves_the_last_sessions_numbers_where_they_were() {
+    let good = picture(PixelFormat::Nv12, (64, 48));
+    let frames = [0_u64, 33, 20, 66].iter().map(|ms| (DeviceTime(ms * 1_000_000), good.clone())).collect();
+    let camera = FakeCamera::from_frames(nv12(64, 48), frames);
+    let mut tracker = webcam(camera, Scripted::new(vec![true]), WebcamConfig::default().with_mode(64, 48, 30));
+    let _source = start(&mut tracker);
+    assert_eq!(wait_for_error(&tracker), TrackError::Lost);
+    tracker.stop();
+    let (latency, failures, error) = (tracker.latency(), tracker.failures(), tracker.error());
+    assert_eq!(failures, Failures::new(1, 0, 0));
+    assert!(latency.frames > 0);
+    // The tracker's thread refused, and then the camera thread did.
+    for plan in [vec![true], vec![false, true]] {
+        tracker.fail_spawns(plan);
+        let config = tracker.tracker_config();
+        assert!(tracker.start(&FakeCamera::id(), &config).is_err());
+        assert_eq!((tracker.latency(), tracker.failures(), tracker.error()), (latency, failures, error.clone()));
+    }
+}
+
+#[test]
+fn the_default_preference_tries_the_cheapest_format_to_convert_first() {
+    // The camera offers only YUY2, so each cheaper format is tried and refused on the way to it.
+    let (mut tracker, requests) = spy(WebcamConfig::default());
+    let config = tracker.tracker_config();
+    tracker.start(&FakeCamera::id(), &config).expect("the fake camera opens");
+    tracker.stop();
+    let tried: Vec<_> = requests.lock().unwrap().iter().map(|r| r.pixel).collect();
+    assert_eq!(
+        tried,
+        [Some(PixelFormat::Rgb8), Some(PixelFormat::Bgra8), Some(PixelFormat::Nv12), Some(PixelFormat::Yuy2)]
+    );
 }
