@@ -464,7 +464,7 @@ impl Engine {
     /// through `queue` (ordered before `encoder`'s commands once it is submitted).
     ///
     /// # Errors
-    /// A message if the scene draws images or glyphs (the face draws neither, and the image atlas is a stand-in).
+    /// A message if the scene draws images (the face draws none, and the image atlas is a one-texel stand-in).
     pub(super) fn record(
         &mut self,
         device: &wgpu::Device,

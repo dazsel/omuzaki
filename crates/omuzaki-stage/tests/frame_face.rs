@@ -1206,3 +1206,22 @@ fn a_painter_failing_while_a_switch_is_staged_is_reported_and_the_current_varian
     stage.release(&mut renderer).expect("released");
     assert_eq!(held(renderer.stats()), (0, 0, 0), "nothing leaked");
 }
+
+#[test]
+fn the_face_expressions_are_shared_and_a_variant_swap_replaces_them_with_a_pointer_store() {
+    let mut renderer = Spy::new(false);
+    let mut stage = stage_about_to_zoom(&mut renderer, mock_rig());
+    let profile_expressions = |stage: &Stage| stage.built().face.as_ref().expect("a face").profile.expressions.clone();
+    let before = Arc::clone(stage.face_expressions().expect("the mock character has a face"));
+    assert_eq!(*before, profile_expressions(&stage), "the table is the face profile's");
+    let (held, allocations) = allocations_in(|| stage.face_expressions().map(Arc::clone));
+    assert_eq!(allocations, 0, "holding the table is a pointer copy: no clone, no allocation");
+    drop(held);
+
+    tick_at(&mut stage, &mut renderer, 0.8).expect("the switching frame");
+    assert_eq!(stage.built().variant, Some(id("close-up")));
+    let after = stage.face_expressions().expect("the close-up has a face");
+    assert!(!Arc::ptr_eq(&before, after), "the swap stored the table the build job made for the new variant");
+    assert_eq!(**after, profile_expressions(&stage), "and it is the new character's");
+    stage.release(&mut renderer).expect("released");
+}
