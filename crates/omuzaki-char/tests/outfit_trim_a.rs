@@ -53,8 +53,13 @@ impl Validate for TrimmedParams {
     }
 }
 
-/// Where the tube runs along the torso, clear of the arm roots on every template.
-const SPAN: (f64, f64) = (0.2, 0.55);
+/// Where the tube runs along the torso: from the hips to below the arms, which hang close beside the torso on soft-sd
+/// (a garment higher up needs armholes).
+const SPAN: (f64, f64) = (0.2, 0.48);
+/// Rings along the tube, and segments round it: fine enough that the tube's facets lie within a few hundredths of a
+/// millimetre of the surface, so trims are measured against the cloth and not its tessellation.
+const TUBE_RINGS: usize = 96;
+const TUBE_SEGMENTS: usize = 96;
 
 struct Trimmed;
 
@@ -70,7 +75,11 @@ impl PartKind for Trimmed {
         let surface = Surface::new(ctx.fit()?, BodyRegion::Torso, 2.0, p.common.ease).map_err(fail)?;
         let mut out = GarmentOutput::new(ctx, &p.common)?;
         let mut builder = MeshBuilder::new();
-        surface.loft(SPAN.0, SPAN.1, 24, 48).map_err(fail)?.add_to(&mut builder, out.tile()).map_err(fail)?;
+        surface
+            .loft(SPAN.0, SPAN.1, TUBE_RINGS, TUBE_SEGMENTS)
+            .map_err(fail)?
+            .add_to(&mut builder, out.tile())
+            .map_err(fail)?;
         out.surface(ctx, "tube", builder)?;
         for (k, trim) in p.trims.iter().enumerate() {
             add_trim(&mut out, ctx, &surface, &format!("trim{k}"), trim)?;
@@ -105,7 +114,7 @@ fn rail(points: &[[f64; 2]], closed: bool) -> RailSpec {
 
 /// The front placket's rail: straight down the front.
 fn placket() -> RailSpec {
-    rail(&[[0.52, 0.0], [0.24, 0.0]], false)
+    rail(&[[0.46, 0.0], [0.24, 0.0]], false)
 }
 
 /// A hem round the tube near its bottom.
@@ -126,30 +135,30 @@ fn trims() -> Vec<TrimSpec> {
             bevel: 0.5,
             ramp: 5,
             caps: true,
-            ..strip(rail(&[[0.5, 2.0], [0.3, 2.2]], false), 0.008)
+            ..strip(rail(&[[0.45, 2.0], [0.3, 2.2]], false), 0.008)
         }),
         TrimSpec::Piping(Piping { flip: true, ..strip(hem(), 0.008) }),
         TrimSpec::Cord(Cord {
-            rail: rail(&[[0.5, 0.0], [0.5, 2.1], [0.5, 4.2]], true),
+            rail: rail(&[[0.38, 0.0], [0.38, 2.1], [0.38, 4.2]], true),
             radius: VEST_PIPING,
             segments: 6,
             finish: Finish::default(),
         }),
         TrimSpec::Cord(Cord {
-            rail: rail(&[[0.5, -1.0], [0.3, -1.1]], false),
+            rail: rail(&[[0.45, -1.0], [0.3, -1.1]], false),
             radius: 0.0007,
             segments: 5,
             finish: Finish::default(),
         }),
         TrimSpec::Braid(Braid {
-            rail: rail(&[[0.5, -0.4], [0.3, -0.5]], false),
+            rail: rail(&[[0.45, -0.4], [0.3, -0.5]], false),
             strands: 3,
             lobes: 4,
             strand_width: 0.002,
             finish: Finish::cloth(ColourRef::rgb(0xc8, 0x9a, 0x3c)),
         }),
         TrimSpec::Braid(Braid {
-            rail: rail(&[[0.45, 0.0], [0.45, 2.1], [0.45, 4.2]], true),
+            rail: rail(&[[0.34, 0.0], [0.34, 2.1], [0.34, 4.2]], true),
             strands: 2,
             lobes: 40,
             strand_width: 0.0015,
@@ -162,7 +171,7 @@ fn trims() -> Vec<TrimSpec> {
         }),
         TrimSpec::ButtonRow(ButtonRow { rail: placket(), count: 4, spacing: Some(0.012), button: gold_dome(0.004) }),
         TrimSpec::ButtonRow(ButtonRow {
-            rail: rail(&[[0.5, 2.6], [0.3, 2.6]], false),
+            rail: rail(&[[0.45, 2.6], [0.3, 2.6]], false),
             count: 4,
             spacing: None,
             button: ButtonStyle { radius: 0.003, shank: 0.0, shape: ButtonShape::Rivet, finish: Finish::default() },
@@ -190,7 +199,7 @@ fn strip(rail: RailSpec, width: f64) -> Piping {
 
 /// A rail beside the placket, for a strip.
 fn placket_side() -> RailSpec {
-    rail(&[[0.52, 0.35], [0.24, 0.35]], false)
+    rail(&[[0.46, 0.35], [0.24, 0.35]], false)
 }
 
 // ------------------------------------------------------------------------------------------------------- the suite
