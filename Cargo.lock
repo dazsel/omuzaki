@@ -2502,6 +2502,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -4148,6 +4150,28 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "omuzaki-measure"
+version = "0.0.0"
+dependencies = [
+ "image",
+ "inventory",
+ "libm",
+ "moxcms",
+ "omuzaki-core",
+ "omuzaki-doc-mock",
+ "omuzaki-l10n-api",
+ "omuzaki-ops-api",
+ "omuzaki-store-api",
+ "omuzaki-store-mock",
+ "png",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "zune-jpeg",
 ]
 
 [[package]]
