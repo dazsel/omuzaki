@@ -10,6 +10,9 @@
 //! stand a little apart, so they do not share a surface). Every strand therefore starts and ends in the same two
 //! poles, like the hair gathered into a tie.
 //!
+//! **Gather locks.** [`BunGen::gather`] broad flat locks (after the strands) sweep from the back and side hairline along the
+//! scalp up into the bun's base, ending [`INSET`] of the radius inside the ball ([`gather_locks`]); the presets have them, and `0` turns them off.
+//!
 //! **Clearance.** Every rest point stands at least [`CLEARANCE`] off the head ([`Root::keep_outside`]).
 //!
 //! **Anchors.** [`anchors`] gives `bun_centre` (the ball's centre) and `bun_tie` (the lowest pole, +Y along the ball's
@@ -20,7 +23,7 @@ use std::f64::consts::{PI, TAU};
 use omuzaki_char_api::{Anchor, BunGen, HeadSurface, JointRef};
 use omuzaki_core::glam::{DQuat, DVec3, Quat, Vec3};
 
-use super::root::{Root, sane};
+use super::root::{GATHER_SHADE, GATHER_THICKNESS, Root, gather_locks, gather_width, head_scale, sane};
 use crate::hair::compile::{CompiledGroup, HairGenCtx};
 
 /// Points per strand.
@@ -31,6 +34,8 @@ pub const LAYER_STEP: f64 = 0.0015;
 pub const LAYERS: u8 = 3;
 /// The root used for a coordinate of [`BunGen::centre`] that is not finite (the default's).
 const DEFAULT_CENTRE: [f64; 3] = [30.0, 180.0, 0.02];
+/// How far into the ball, as a fraction of its radius, the gather locks end from its lowest pole.
+pub const INSET: f64 = 0.4;
 /// Shade of the first strand; each later strand is [`SHADE_STEP`] darker.
 const SHADE: f64 = 1.0;
 /// Shade lost per strand.
@@ -38,12 +43,12 @@ const SHADE_STEP: f64 = 0.02;
 
 /// The low bun preset: a bun at the nape.
 pub fn low_bun() -> BunGen {
-    BunGen { centre: [105.0, 180.0, 0.015], radius: 0.055, ..BunGen::default() }
+    BunGen { centre: [105.0, 180.0, 0.015], radius: 0.055, gather: 6, ..BunGen::default() }
 }
 
 /// The high bun preset: a bun on the crown, behind the top of the head.
 pub fn high_bun() -> BunGen {
-    BunGen { centre: [38.0, 180.0, 0.015], radius: 0.05, ..BunGen::default() }
+    BunGen { centre: [38.0, 180.0, 0.015], radius: 0.05, gather: 6, ..BunGen::default() }
 }
 
 /// The ball a bun is wound round.
@@ -67,18 +72,24 @@ impl Ball {
 pub fn compile(g: &BunGen, ctx: &mut HairGenCtx<'_>) -> CompiledGroup {
     let ball = Ball::new(g, ctx.head);
     let frame = DQuat::from_rotation_arc(DVec3::Y, ball.root.outward);
-    let clumps = (0..g.strands)
+    let mut clumps: Vec<_> = (0..g.strands)
         .map(|k| {
             let rest = strand(g, &ball, ctx.head, frame, k);
             ctx.clump(rest, g.width, g.thickness, SHADE - SHADE_STEP * f64::from(k))
         })
         .collect();
+    // The gather locks end at the bun's base, inside the ball.
+    let width = gather_width(head_scale(ctx.head));
+    let end = ball.root.point + ball.root.outward * (INSET * ball.radius);
+    for rest in gather_locks(&ball.root, ctx.head, g.gather, end) {
+        clumps.push(ctx.clump(rest, width, GATHER_THICKNESS, GATHER_SHADE));
+    }
     CompiledGroup::tubes(clumps)
 }
 
-/// How many clumps [`compile`] makes: [`BunGen::strands`].
+/// How many clumps [`compile`] makes: [`BunGen::strands`], then [`BunGen::gather`] gather locks.
 pub fn clump_count(g: &BunGen) -> usize {
-    usize::from(g.strands)
+    usize::from(g.strands) + usize::from(g.gather)
 }
 
 /// Strand `k`: [`REST_POINTS`] points from the lowest pole to the top one.

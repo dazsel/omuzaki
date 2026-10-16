@@ -957,6 +957,9 @@ pub struct TailGen {
     /// How the hanging part leans, `-1..=1`: positive toward the head's vertical axis (a ponytail hugging the back of
     /// the neck), negative away from it (twintails swinging out over the shoulders).
     pub lean: f64,
+    /// Gather locks: broad flat locks that sweep from the back and side hairline up into the tie, so the hair reads as
+    /// gathered rather than cut off (`0` for none, the default; the presets set some).
+    pub gather: u8,
 }
 
 impl Default for TailGen {
@@ -973,6 +976,7 @@ impl Default for TailGen {
             tie_radius: 0.008,
             chain_bones: 5,
             lean: 0.0,
+            gather: 0,
         }
     }
 }
@@ -993,6 +997,9 @@ pub struct BunGen {
     pub width: Taper,
     /// Strand thickness.
     pub thickness: Bulge,
+    /// Gather locks: broad flat locks that sweep from the back and side hairline up into the bun's base (`0` for none,
+    /// the default; the presets set some).
+    pub gather: u8,
 }
 
 impl Default for BunGen {
@@ -1004,6 +1011,7 @@ impl Default for BunGen {
             wraps: 1.5,
             width: Taper { start: 0.02, mid: 0.034, tip: 0.012, tip_at: 0.5, ..Taper::default() },
             thickness: Bulge { base: 0.012, swell: 0.006 },
+            gather: 0,
         }
     }
 }
@@ -1592,14 +1600,8 @@ impl Validate for HairGroup {
                 c.range("generator/spread_deg", g.spread_deg, 20.0, 180.0);
                 c.range("generator/length_front", g.length_front, 0.05, 1.5);
                 c.range("generator/length_back", g.length_back, 0.05, 1.5);
-                c.range("generator/root_height_front", g.root_height_front, -2.0, 2.0);
-                c.range("generator/root_height_back", g.root_height_back, -2.0, 2.0);
                 if g.envelope.len() < 2 {
                     c.fail("generator/envelope", "needs at least two [y, distance] points");
-                }
-                for (i, [y, distance]) in g.envelope.iter().enumerate() {
-                    c.range(&format!("generator/envelope/{i}/y"), *y, -4.0, 4.0);
-                    c.range(&format!("generator/envelope/{i}/distance"), *distance, 0.0, 4.0);
                 }
                 c.nested("generator/wave", &g.wave);
                 c.nested("generator/width", &g.width);
@@ -1700,23 +1702,8 @@ fn check_generator_values(generator: &Generator, c: &mut Check) {
                 c.range(&format!("generator/envelope/{i}/distance"), p[1], 0.0, 2.0);
             }
         }
-        Generator::Bangs(x) => {
-            c.range(&g("sweep_deg"), x.sweep_deg, -90.0, 90.0);
-            for (i, l) in x.layers.iter().enumerate() {
-                for (k, v) in l.tip_heights.iter().enumerate() {
-                    c.range(&format!("generator/layers/{i}/tip_heights/{k}"), *v, -HEAD_SCALE, HEAD_SCALE);
-                }
-                c.range(&format!("generator/layers/{i}/width"), l.width, 0.001, 0.3);
-                c.range(&format!("generator/layers/{i}/hook_deg"), l.hook_deg, -90.0, 90.0);
-                c.range(&format!("generator/layers/{i}/root_offset"), l.root_offset, -0.05, 0.3);
-                c.range(&format!("generator/layers/{i}/tip_offset"), l.tip_offset, -0.05, 0.3);
-            }
-            for (i, w) in x.wisps.iter().enumerate() {
-                c.range(&format!("generator/wisps/{i}/phi_deg"), w.phi_deg, -360.0, 360.0);
-                c.range(&format!("generator/wisps/{i}/tip_height"), w.tip_height, -HEAD_SCALE, HEAD_SCALE);
-                c.range(&format!("generator/wisps/{i}/width"), w.width, 0.001, 0.3);
-            }
-        }
+        // `BangsGen`'s own `Validate` (run by the arm above) ranges every value of the fringe.
+        Generator::Bangs(_) => {}
         Generator::Tail(x) => {
             c.nested(&g("root"), &GuidePoint::Surface(x.root));
             c.range(&g("root/phi_deg"), x.root[1], -360.0, 360.0);
@@ -1724,6 +1711,7 @@ fn check_generator_values(generator: &Generator, c: &mut Check) {
             c.range(&g("tie_radius"), x.tie_radius, 0.002, 0.05);
             count(&g("chain_bones"), c, u32::from(x.chain_bones), 4, 6);
             c.range(&g("lean"), x.lean, -1.0, 1.0);
+            count(&g("gather"), c, u32::from(x.gather), 0, 12);
             c.nested(&g("width"), &x.width);
             c.nested(&g("thickness"), &x.thickness);
         }
@@ -1731,6 +1719,7 @@ fn check_generator_values(generator: &Generator, c: &mut Check) {
             c.nested(&g("centre"), &GuidePoint::Surface(x.centre));
             c.range(&g("centre/phi_deg"), x.centre[1], -360.0, 360.0);
             c.range(&g("wraps"), x.wraps, 0.0, 6.0);
+            count(&g("gather"), c, u32::from(x.gather), 0, 12);
             c.nested(&g("width"), &x.width);
             c.nested(&g("thickness"), &x.thickness);
         }
