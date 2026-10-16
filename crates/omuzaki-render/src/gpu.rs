@@ -324,7 +324,9 @@ async fn choose_adapter(
             .await
             .map_err(|e| RenderError::Backend(format!("no GPU adapter: {e}")));
     }
-    let mut adapters = instance.enumerate_adapters(wgpu::Backends::PRIMARY).await;
+    // `all()` is a filter over the backends the instance started, not a request to start them; `PRIMARY` here would hide
+    // the GL adapters that `WGPU_BACKEND=gl` opted in to.
+    let mut adapters = instance.enumerate_adapters(wgpu::Backends::all()).await;
     let candidates: Vec<Candidate> = adapters
         .iter()
         .map(|a| {

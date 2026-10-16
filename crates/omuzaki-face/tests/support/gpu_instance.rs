@@ -1,4 +1,4 @@
-//! The one way the GPU tests, benches and examples open a wgpu instance (`cargo xtask lint-gpu-instances` enforces it).
+//! The one way the GPU tests, benches and examples open a wgpu instance (`cargo test -p omuzaki-test --test gpu_instances` enforces it).
 //!
 //! Why not wgpu's default (every backend, GL included): on WSL with NVIDIA's D3D12 driver, starting GL makes Mesa's EGL
 //! load that driver, and a thread-exit destructor it registers outlives the library, so the process dies with SIGSEGV

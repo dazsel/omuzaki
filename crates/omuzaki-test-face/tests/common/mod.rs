@@ -7,10 +7,6 @@
 use std::any::Any;
 use std::sync::mpsc;
 
-// One source file shared with `omuzaki-face`'s own GPU tests: see its header for why.
-#[path = "../../../omuzaki-face/tests/support/gpu_instance.rs"]
-mod gpu_instance;
-
 use image::RgbaImage;
 use omuzaki_face::GpuRasterizer;
 use omuzaki_face::raster::SkiaRasterizer;
@@ -21,9 +17,18 @@ use omuzaki_test_face::probes::straight_image;
 /// The device and queue the GPU tests draw with.
 pub type Gpu = (wgpu::Device, wgpu::Queue);
 
+/// A headless instance on the product's backends (`Backends::PRIMARY`; `WGPU_BACKEND` can opt in to GL). wgpu's default
+/// starts GL, which crashes the process at exit on WSL with NVIDIA's D3D12 driver (`cargo test -p omuzaki-test --test
+/// gpu_instances` enforces this).
+fn instance() -> wgpu::Instance {
+    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+    descriptor.backends = wgpu::Backends::PRIMARY;
+    wgpu::Instance::new(descriptor.with_env())
+}
+
 /// An adapter, or `None` after printing why there is none.
 pub fn adapter() -> Option<wgpu::Adapter> {
-    let instance = gpu_instance::instance();
+    let instance = instance();
     match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())) {
         Ok(adapter) => Some(adapter),
         Err(e) => {

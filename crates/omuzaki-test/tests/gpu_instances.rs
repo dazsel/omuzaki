@@ -14,13 +14,15 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// The files that may build an instance themselves, relative to the workspace root: the product's opener and the two
-/// test-support helpers (`omuzaki-face`'s is shared by path with `omuzaki-test-face`; impl crates may not depend on the
-/// App crate `omuzaki-test`, ADR 0054).
+/// The files that may build an instance themselves, relative to the workspace root: the product's opener and the
+/// three test-support helpers, one per crate (impl crates may not depend on the App crate `omuzaki-test`, ADR 0054).
 const ALLOWED: &[&str] = &[
     "crates/omuzaki-render/src/gpu.rs",
     "crates/omuzaki-render/tests/support/mod.rs",
     "crates/omuzaki-face/tests/support/gpu_instance.rs",
+    "crates/omuzaki-test-face/tests/common/mod.rs",
+    // The GL opt-in regression builds a GL-only instance on purpose, and only when `WGPU_BACKEND=gl` is set.
+    "crates/omuzaki-render/tests/gl_opt_in.rs",
 ];
 
 /// The spellings that start every backend: wgpu's default, which includes GL.
