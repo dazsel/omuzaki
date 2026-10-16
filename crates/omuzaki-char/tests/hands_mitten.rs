@@ -86,11 +86,6 @@ impl Pieces {
         Self { ring, thumb, sleeve, stem: sleeve + 2 * ring }
     }
 
-    /// The prototype's block: its rings one after the other.
-    fn block<'a>(&self, positions: &'a [Vec3]) -> &'a [Vec3] {
-        &positions[..self.thumb]
-    }
-
     /// The thumb's root ring, which sits on the layout's proximal thumb joint.
     fn root<'a>(&self, positions: &'a [Vec3]) -> &'a [Vec3] {
         &positions[self.thumb..self.thumb + THUMB_RING]
