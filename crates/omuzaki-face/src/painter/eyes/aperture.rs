@@ -166,8 +166,10 @@ pub(super) struct Eye {
     /// Half-width in metres: one eye unit.
     width: f32,
     shape: Shape,
-    /// Effective openness: `open`, closed by the blink, by the arc, `0..=1.9`.
+    /// Effective openness: `open`, closed by the blink, by the arc and by the squeeze, `0..=1.9`.
     open: f32,
+    /// The same without the squeeze: how open the eye would be if it were not squeezed.
+    unsqueezed: f32,
     tilt: f32,
     low_lid: f32,
     arc: f32,
@@ -187,20 +189,29 @@ impl Eye {
         // A blink or wink closes the lid in proportion; an arc closes it too (the prototype's `1 - smileEye`).
         // A squeeze closes the lid too, as it turns the eye into a `>` or `<`.
         let squeeze = params.effects.squeeze.clamp(0.0, 1.0);
-        let open = eye.open.clamp(0.0, MAX_OPEN)
-            * (1.0 - eye.close.clamp(0.0, 1.0))
-            * (1.0 - eye.arc.clamp(0.0, 1.0))
-            * (1.0 - squeeze);
+        let unsqueezed =
+            eye.open.clamp(0.0, MAX_OPEN) * (1.0 - eye.close.clamp(0.0, 1.0)) * (1.0 - eye.arc.clamp(0.0, 1.0));
+        let open = unsqueezed * (1.0 - squeeze);
         Self {
             side,
             centre: Vec2::new(x as f32, (layout.eye_y - style.drop) as f32),
             width: (layout.eye_width * style.scale) as f32,
             shape: Shape::new(&style.aperture),
             open,
+            unsqueezed,
             tilt: params.eye_tilt,
             low_lid: eye.lower_lid,
             arc: eye.arc,
         }
+    }
+
+    /// How much of the closed curve shows when a squeeze (`squeeze`, `0..=1`) is what shut the eye. The open pieces
+    /// vanish the moment the openness falls under [`SHUT_BELOW`], so the closed curve takes over at full strength there
+    /// and fades out to nothing at full squeeze (where the chevron has fully replaced it): no jump at the switch. An
+    /// eye already shut by a blink or an arc just fades with the squeeze.
+    pub(super) fn closed_strength(&self, squeeze: f32) -> f32 {
+        let fade = 1.0 - squeeze.clamp(0.0, 1.0);
+        if self.unsqueezed > SHUT_BELOW { (fade * self.unsqueezed / SHUT_BELOW).min(1.0) } else { fade }
     }
 
     /// How the eye is drawn: the open aperture, or which shut curve (`closedEye`'s `dir`).

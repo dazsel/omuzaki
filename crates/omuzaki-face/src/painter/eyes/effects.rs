@@ -174,7 +174,7 @@ fn spiral(ctx: &mut PaintCtx<'_>, iris: &Iris, strength: f32) {
     let path = list.path().polyline(&points).finish();
     list.push(Cmd::Stroke {
         path,
-        paint: Paint::Solid(Colour::rgb(colour.r, colour.g, colour.b)),
+        paint: Paint::Solid(colour),
         width: SPIRAL_WIDTH,
         cap: Cap::Round,
         join: Join::Round,

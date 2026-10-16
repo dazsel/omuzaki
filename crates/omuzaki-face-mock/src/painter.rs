@@ -280,7 +280,12 @@ fn paint_fangs(
             .line_to(base + Vec2::new(0.0, -length))
             .close()
             .finish();
-        list.fill(fang, solid(fixed(&profile.mouth.interior.teeth).faded(m.fangs.min(1.0))));
+        // The strength is the command's opacity, so the teeth colour keeps its own alpha (as in the real painter).
+        list.push(Cmd::Fill {
+            path: fang,
+            paint: solid(fixed(&profile.mouth.interior.teeth)),
+            opacity: m.fangs.clamp(0.0, 1.0),
+        });
     }
 }
 
@@ -419,6 +424,28 @@ mod tests {
         let input = FaceInput { profile: &profile, params: &p, time: Seconds(0.0), view: FaceView::default() };
         let e = MockPainter::default().paint(&input, &mut FaceDrawing::new()).unwrap_err();
         assert!(matches!(e, FaceError::Invalid(_)));
+    }
+
+    #[test]
+    fn fangs_keep_the_alpha_of_the_teeth_colour() {
+        let mut profile = mock_profile();
+        profile.mouth.interior.teeth = ColourRef::Fixed(Colour::rgba(10, 20, 30, 0));
+        let mut p = FaceMapping::default().rest_params();
+        p.mouth.open = 0.8;
+        p.mouth.fangs = 1.0;
+        let input = FaceInput { profile: &profile, params: &p, time: Seconds(0.0), view: FaceView::default() };
+        let mut out = FaceDrawing::new();
+        MockPainter::default().paint(&input, &mut out).unwrap();
+        let alphas: Vec<u8> = out[FaceLayerId::Base]
+            .cmds()
+            .iter()
+            .filter_map(|c| match c {
+                Cmd::Fill { paint: Paint::Solid(c), .. } if (c.r, c.g, c.b) == (10, 20, 30) => Some(c.a),
+                _ => None,
+            })
+            .collect();
+        assert!(!alphas.is_empty(), "no fang was drawn");
+        assert!(alphas.iter().all(|&a| a == 0), "transparent teeth drew opaque fangs: {alphas:?}");
     }
 
     #[test]

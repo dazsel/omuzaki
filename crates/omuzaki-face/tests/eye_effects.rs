@@ -13,6 +13,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::hint::black_box;
 
+use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::Vec2;
 use omuzaki_core::time::Seconds;
 use omuzaki_face::raster::SkiaRasterizer;
@@ -543,6 +544,61 @@ fn a_squeeze_crossfades_the_closed_eye_into_the_chevron_with_no_jump() {
             last = closed;
         }
     }
+}
+
+#[test]
+fn the_spiral_keeps_the_alpha_of_the_iris_ring_colour() {
+    let mut profile = profile();
+    profile.eyes.iris.ring = omuzaki_face_api::ColourRef::Fixed(Colour::rgba(10, 20, 30, 0));
+    let p = params(|e, _| e.spiral = 1.0);
+    let drawn = paint(&profile, &p).into_base();
+    let ring: Vec<u8> = drawn
+        .cmds()
+        .iter()
+        .filter_map(|c| match c {
+            Cmd::Stroke { paint: omuzaki_face_api::Paint::Solid(c), .. } if (c.r, c.g, c.b) == (10, 20, 30) => {
+                Some(c.a)
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(!ring.is_empty(), "the spiral was not drawn in the ring colour");
+    assert!(ring.iter().all(|&a| a == 0), "a transparent ring drew an opaque spiral: {ring:?}");
+}
+
+#[test]
+fn squeezing_an_open_eye_hands_over_to_the_closed_curve_without_a_jump() {
+    let profile = profile();
+    let mut open_seen = false;
+    let mut last_shown = 1.0_f32;
+    for step in 0..=200_u16 {
+        let squeeze = f32::from(step) / 200.0;
+        let mut p = params(|e, _| e.squeeze = squeeze);
+        p.left_eye = omuzaki_face_api::EyeParams { open: 1.0, close: 0.0, arc: 0.0, lower_lid: 0.0 };
+        p.right_eye = p.left_eye;
+        let drawn = paint(&profile, &p).into_base();
+        let closed = closed_opacity(&drawn);
+        // An open eye is drawn with a clip round its iris; a shut one has none.
+        let open = drawn.cmds().iter().any(|c| matches!(c, Cmd::PushClip(_)));
+        if open {
+            open_seen = true;
+            assert!(closed == 0.0, "squeeze {squeeze}: an open eye and a closed curve together");
+        } else {
+            // The closed curve is there from the first frame the open eye is gone, and strong where it takes over.
+            assert!(closed > 0.0 || squeeze >= 1.0, "squeeze {squeeze}: neither eye is drawn");
+            if last_shown == 1.0 && closed > 0.0 {
+                assert!(closed >= 0.95, "squeeze {squeeze}: the closed curve takes over at only {closed}");
+            }
+            if closed > 0.0 {
+                assert!(
+                    last_shown - closed < 0.05,
+                    "squeeze {squeeze}: the closed curve jumped from {last_shown} to {closed}"
+                );
+                last_shown = closed;
+            }
+        }
+    }
+    assert!(open_seen, "the sweep never drew the open eye");
 }
 
 // ------------------------------------------------------------------------------------------------ allocation

@@ -41,8 +41,8 @@ pub(super) fn paint(ctx: &mut PaintCtx<'_>, side: Side) {
         Lid::Relaxed => |u| RELAXED_BASE - RELAXED_BOW * (1.0 - u * u) + RELAXED_SLOPE * u,
     };
     // A squeeze turns the eye into the chevron of `effects`: the closed curve and its lashes fade out as the chevron
-    // fades in, so the two cross-fade without a jump at any squeeze.
-    let opacity = 1.0 - ctx.params.effects.squeeze.clamp(0.0, 1.0);
+    // fades in, and take over from the open eye at full strength where it shuts, so there is no jump at any squeeze.
+    let opacity = eye.closed_strength(ctx.params.effects.squeeze);
     if opacity <= 0.0 {
         return;
     }
