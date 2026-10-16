@@ -211,11 +211,13 @@ impl Table {
     /// Where `p` lies along the region in rows: `k + share` between rows `k` and `k + 1` whose planes it lies between
     /// ([`locate`](Self::locate)), else `-1` before the first row's plane and `ROWS + 1` past the last's.
     fn row_coordinate(&self, p: DVec3) -> f64 {
-        match self.locate(p) {
-            Some(at) => fraction(at.row, 1) + at.share,
-            None if self.rows[0].height(p) < 0.0 => -1.0,
-            None => fraction(ROWS + 1, 1),
-        }
+        self.locate(p).map_or_else(|| self.off_the_ends(p), |at| fraction(at.row, 1) + at.share)
+    }
+
+    /// Where `p`, which no row's plane reaches, lies along the region: `-1` before the first row and `ROWS + 1` past
+    /// the last.
+    fn off_the_ends(&self, p: DVec3) -> f64 {
+        if self.rows[0].height(p) < 0.0 { -1.0 } else { fraction(ROWS + 1, 1) }
     }
 
     /// The plane of this region's sections through `p`, if one is: of the places along the region whose plane passes
@@ -280,11 +282,10 @@ impl Table {
         self.layout_level(at) > INSIDE_LEVEL
     }
 
-    /// Keeps `p` in the two rows either side of its plane, [`HOLD_MARGIN`] further out, when it lies outside the
-    /// layout's section there; [`settle_all`](Self::settle_all) then widens the rows to hold what they keep.
-    fn keep_if_outside(&mut self, p: DVec3) {
-        let Some(at) = self.locate(p) else { return };
-        if !self.outside_layout(&at) {
+    /// Keeps the point `at` locates in the two rows either side of its plane, [`HOLD_MARGIN`] further out, when it lies
+    /// outside the layout's section there; [`settle_all`](Self::settle_all) then widens the rows to hold what they keep.
+    fn keep_located(&mut self, at: &Located) {
+        if !self.outside_layout(at) {
             return;
         }
         let (a, b) = (at.row, (at.row + 1).min(self.rows.len() - 1));
@@ -336,20 +337,27 @@ impl Table {
             along[k] = along[k - 1] + self.rows[k - 1].centre.distance(self.rows[k].centre);
         }
         for side in 0..4 {
-            let reach: Vec<f64> = self.extra.iter().map(|e| e[side]).collect();
+            // Each widened row's bump: its place along the region, its reach, and its run.
+            let bumps: Vec<(f64, f64, f64)> = self
+                .extra
+                .iter()
+                .zip(&along)
+                .filter(|(e, _)| e[side] > 0.0)
+                .map(|(e, s)| (*s, e[side], (1.5 * e[side] / MAX_SLOPE).max(MIN_EASE)))
+                .collect();
+            if bumps.is_empty() {
+                continue;
+            }
             for k in 0..self.rows.len() {
-                let eased = reach
+                // A smoothstep's steepest slope is 1.5 over its run.
+                let eased = bumps
                     .iter()
-                    .zip(&along)
-                    .filter(|(r, _)| **r > 0.0)
-                    .map(|(r, s)| {
-                        // A smoothstep's steepest slope is 1.5 over its run.
-                        let run = (1.5 * r / MAX_SLOPE).max(MIN_EASE);
-                        let x = ((along[k] - s).abs() / run).min(1.0);
-                        r * (1.0 - x * x * (3.0 - 2.0 * x))
+                    .filter_map(|&(s, reach, run)| {
+                        let x = (along[k] - s).abs() / run;
+                        (x < 1.0).then(|| reach * (1.0 - x * x * (3.0 - 2.0 * x)))
                     })
                     .fold(0.0, f64::max);
-                self.extra[k][side] = eased.max(reach[k]);
+                self.extra[k][side] = self.extra[k][side].max(eased);
             }
         }
     }
@@ -528,38 +536,40 @@ fn holders(tables: &[Table], region: BodyRegion, p: DVec3) -> Vec<usize> {
 fn keep_outside(tables: &mut [Table], region: BodyRegion, mesh: &MeshData) {
     let points: Vec<DVec3> = mesh.positions.iter().map(|v| v.as_dvec3()).collect();
     let owners: Vec<Vec<usize>> = points.iter().map(|p| holders(tables, region, *p)).collect();
-    for (p, owners) in points.iter().zip(&owners) {
+    // Where each vertex lies along each table that holds it or one of its neighbours, worked out once.
+    let mut along: Vec<Vec<Option<f64>>> = vec![vec![None; points.len()]; tables.len()];
+    for (v, (p, owners)) in points.iter().zip(&owners).enumerate() {
         for &k in owners {
-            tables[k].keep_if_outside(*p);
+            let at = tables[k].locate(*p);
+            along[k][v] = Some(at.map_or_else(|| tables[k].off_the_ends(*p), |at| fraction(at.row, 1) + at.share));
+            if let Some(at) = at {
+                tables[k].keep_located(&at);
+            }
         }
     }
     let own = tables.iter().position(|t| t.region == region);
     let torso = tables.iter().position(|t| t.region == BodyRegion::Torso);
-    // Where each vertex lies along each table, worked out the first time an edge needs it.
-    let mut along: Vec<Vec<Option<f64>>> = vec![vec![None; points.len()]; tables.len()];
-    let mut edges = std::collections::BTreeSet::new();
-    for tri in mesh.indices.chunks_exact(3) {
-        let corners = [tri[0], tri[1], tri[2]].map(|i| i as usize);
-        if corners.iter().any(|&i| i >= points.len()) {
-            continue;
-        }
-        for (i, j) in [(corners[0], corners[1]), (corners[1], corners[2]), (corners[2], corners[0])] {
-            if !edges.insert((i.min(j), i.max(j))) {
-                continue;
-            }
-            let mut candidates: Vec<usize> = owners[i].iter().chain(&owners[j]).copied().collect();
-            candidates.sort_unstable();
-            candidates.dedup();
-            for k in candidates {
-                let mut coordinate = |v: usize| *along[k][v].get_or_insert_with(|| tables[k].row_coordinate(points[v]));
-                let (xa, xb) = (coordinate(i), coordinate(j));
-                // A point on the region's own rows, or on the torso's rows from a leg, is that table's to hold.
-                let always =
-                    Some(k) == own || (Some(k) == torso && matches!(region, BodyRegion::LegL | BodyRegion::LegR));
-                for (row, p) in crossings(&tables[k], (points[i], xa), (points[j], xb)) {
-                    if always || holders(tables, region, p).contains(&k) {
-                        tables[k].keep_on_row(row, p);
-                    }
+    let mut edges: Vec<(usize, usize)> = mesh
+        .indices
+        .chunks_exact(3)
+        .flat_map(|t| [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])])
+        .map(|(i, j)| (i.min(j) as usize, i.max(j) as usize))
+        .filter(|&(_, j)| j < points.len())
+        .collect();
+    edges.sort_unstable();
+    edges.dedup();
+    for (i, j) in edges {
+        let mut candidates: Vec<usize> = owners[i].iter().chain(&owners[j]).copied().collect();
+        candidates.sort_unstable();
+        candidates.dedup();
+        for k in candidates {
+            let mut coordinate = |v: usize| *along[k][v].get_or_insert_with(|| tables[k].row_coordinate(points[v]));
+            let (xa, xb) = (coordinate(i), coordinate(j));
+            // A point on the region's own rows, or on the torso's rows from a leg, is that table's to hold.
+            let always = Some(k) == own || (Some(k) == torso && matches!(region, BodyRegion::LegL | BodyRegion::LegR));
+            for (row, p) in crossings(&tables[k], (points[i], xa), (points[j], xb)) {
+                if always || holders(tables, region, p).contains(&k) {
+                    tables[k].keep_on_row(row, p);
                 }
             }
         }
