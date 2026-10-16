@@ -188,8 +188,8 @@ async fn run(make: impl FnOnce() -> Job + Send + 'static, cancel: Cancel, token:
 /// make the client grow without bound.
 pub(crate) const MAX_BUFFERED: usize = 4 * 1024 * 1024;
 
-/// Redacts `secret` from the bytes of an answer. Callers that cut a body to a limit redact first (`read_limited`): a key
-/// that sits across a truncation point would otherwise survive in part.
+/// Redacts `secret` from the bytes of an answer. A body is never cut and then redacted: `read_limited` withholds one
+/// over its limit and redacts a smaller one whole.
 pub(crate) fn redact_bytes(body: Vec<u8>, secret: Option<&SecretValue>) -> Vec<u8> {
     match secret {
         Some(s) if !s.expose().is_empty() => redact(String::from_utf8_lossy(&body).into_owned(), Some(s)).into_bytes(),
@@ -197,12 +197,20 @@ pub(crate) fn redact_bytes(body: Vec<u8>, secret: Option<&SecretValue>) -> Vec<u
     }
 }
 
-/// Redacts `secret` from `text`, in case a server echoes it.
+/// Redacts `secret` from `text`, in case a server echoes it: as it is, percent-encoded (a URL echoed back) and
+/// JSON-escaped (a message quoted inside a JSON body).
 fn redact(text: String, secret: Option<&SecretValue>) -> String {
-    match secret {
-        Some(s) if !s.expose().is_empty() => text.replace(s.expose(), "<redacted>"),
-        _ => text,
+    let Some(s) = secret.filter(|s| !s.expose().is_empty()) else { return text };
+    let raw = s.expose();
+    let encoded = crate::http::query_value(raw);
+    let escaped = serde_json::to_string(raw).map(|q| q.trim_matches('"').to_owned()).unwrap_or_default();
+    let mut out = text.replace(raw, "<redacted>");
+    for form in [encoded, escaped] {
+        if !form.is_empty() && form != raw {
+            out = out.replace(&form, "<redacted>");
+        }
     }
+    out
 }
 
 async fn drive(job: &Job, tx: &Sender) -> Result<(), LlmError> {

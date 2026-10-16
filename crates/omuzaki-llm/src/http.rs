@@ -158,36 +158,33 @@ impl Response {
         Box::pin(self.inner.bytes_stream().map(|chunk| chunk.map_err(|e| HttpFail::Body(e.without_url().to_string()))))
     }
 
-    /// At most `limit` bytes of the body, with `secret` redacted from them.
-    ///
-    /// The body is read `K` bytes past `limit`, where `K` is the secret's length, and that whole window is redacted
-    /// before the cut to `limit` (on a character boundary). A secret that starts before `limit` ends inside the
-    /// window, so it is replaced whole before anything is cut, whatever the replacement does to the length.
+    /// The body, with `secret` redacted, if it is at most `limit` bytes. A longer body is withheld and replaced by a
+    /// fixed note: cutting a body and then redacting it cannot be proven safe, because redaction changes lengths and a
+    /// secret has several spellings, so a body is either redacted whole or not shown.
     pub(crate) async fn read_limited(self, limit: usize, secret: Option<&SecretValue>) -> Result<Vec<u8>, HttpFail> {
-        let mut window = Vec::new();
-        let mut body = self.stream();
-        let reach = limit.saturating_add(secret.map_or(0, |s| s.expose().len()));
-        while let Some(chunk) = body.next().await {
-            window.extend_from_slice(&chunk?);
-            if window.len() >= reach {
-                break;
-            }
-        }
-        Ok(bounded_redacted(window, limit, secret))
+        read_within(self.stream(), limit, secret).await
     }
 }
 
-/// `window` (the start of a body, at most `limit` plus the secret's length) with `secret` redacted, then cut to `limit`
-/// bytes on a character boundary.
-pub(crate) fn bounded_redacted(mut window: Vec<u8>, limit: usize, secret: Option<&SecretValue>) -> Vec<u8> {
-    window.truncate(limit.saturating_add(secret.map_or(0, |s| s.expose().len())));
-    let mut text = String::from_utf8_lossy(&redact_bytes(window, secret)).into_owned();
-    let mut end = limit.min(text.len());
-    while !text.is_char_boundary(end) {
-        end -= 1;
+/// [`Response::read_limited`] on any stream of chunks.
+pub(crate) async fn read_within(
+    mut stream: ByteStream,
+    limit: usize,
+    secret: Option<&SecretValue>,
+) -> Result<Vec<u8>, HttpFail> {
+    let mut body = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        body.extend_from_slice(&chunk?);
+        if body.len() > limit {
+            return Ok(withheld(limit));
+        }
     }
-    text.truncate(end);
-    text.into_bytes()
+    Ok(redact_bytes(body, secret))
+}
+
+/// What stands in for a body over its `limit`.
+pub(crate) fn withheld(limit: usize) -> Vec<u8> {
+    format!("response body withheld (over the {limit}-byte limit)").into_bytes()
 }
 
 /// Installs `ring` as the process's rustls provider, once. Another installer winning the race is fine: any provider
@@ -317,28 +314,38 @@ mod tests {
         Endpoint::parse(endpoint)
     }
 
+    fn chunks(body: &[u8], size: usize) -> ByteStream {
+        let items: Vec<Result<Bytes, HttpFail>> = body.chunks(size).map(|c| Ok(Bytes::copy_from_slice(c))).collect();
+        Box::pin(futures_util::stream::iter(items))
+    }
+
+    fn read(body: &[u8], limit: usize, key: &SecretValue) -> String {
+        let got = futures_util::FutureExt::now_or_never(read_within(chunks(body, 7), limit, Some(key)))
+            .and_then(Result::ok)
+            .unwrap_or_default();
+        String::from_utf8_lossy(&got).into_owned()
+    }
+
     #[test]
-    fn a_secret_at_the_cutoff_is_redacted_before_the_cut_wherever_it_starts() {
+    fn a_body_over_the_limit_yields_only_the_note() {
         let key = SecretValue::new("sk-test-0123456789-secret");
-        let limit = 64;
-        let tail = "tail-text ".repeat(20);
-        // The key starts at every offset from far before the cutoff to just after it.
-        for start in 0..=limit + 2 {
-            let body = format!("{}{}{}", "a".repeat(start), key.expose(), tail);
-            let reach = limit + key.expose().len();
-            let window = body.as_bytes()[..reach.min(body.len())].to_vec();
-            let got = bounded_redacted(window, limit, Some(&key));
-            let want = body.replace(key.expose(), "<redacted>");
-            assert_eq!(String::from_utf8_lossy(&got), &want[..limit.min(want.len())], "start {start}");
+        // The key sits at the start, in the middle and across the limit; none of it may come out.
+        for at in [0, 20, 60, 90] {
+            let body = format!("{}{}{}", "a".repeat(at), key.expose(), "b".repeat(200));
+            assert_eq!(read(body.as_bytes(), 100, &key), "response body withheld (over the 100-byte limit)", "{at}");
         }
     }
 
     #[test]
-    fn the_cut_never_splits_a_character() {
-        let key = SecretValue::new("sk-abc");
-        let body = "é".repeat(40);
-        let got = bounded_redacted(body.as_bytes().to_vec(), 7, Some(&key));
-        assert_eq!(String::from_utf8_lossy(&got), "ééé");
+    fn a_body_within_the_limit_is_redacted_whole_in_every_spelling() {
+        let key = SecretValue::new("sk-te/st+key=9&x");
+        let encoded = crate::http::query_value(key.expose());
+        let escaped = serde_json::to_string(key.expose()).unwrap_or_default().trim_matches('"').to_owned();
+        let body = format!("raw {} enc {encoded} json {escaped} header x-api-key: {}", key.expose(), key.expose());
+        let got = read(body.as_bytes(), body.len(), &key);
+        assert_eq!(got, "raw <redacted> enc <redacted> json <redacted> header x-api-key: <redacted>");
+        // Exactly at the limit is within it.
+        assert!(!read(key.expose().as_bytes(), key.expose().len(), &key).contains("sk-te"));
     }
 
     #[test]
