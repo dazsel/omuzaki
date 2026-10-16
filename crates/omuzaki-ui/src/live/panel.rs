@@ -327,7 +327,8 @@ impl LivePanel {
                     ui.add(StatusChip::new(Status::Warn, &text(&ctx, Word::OutputMinimised)));
                 }
             }
-            Some(WindowState::Closed) | None => {
+            // Closed, not read yet, or a state this build doesn't know: where to find the window once it opens.
+            _ => {
                 let hint = say(&ctx, Word::OutputHint, &[("title", DEFAULT_TITLE)]);
                 ui.label(RichText::new(hint).font(small));
             }
