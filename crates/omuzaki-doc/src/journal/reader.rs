@@ -65,8 +65,9 @@ impl Reader {
     /// were deleted), it starts at the first segment, and the LSN of the first record shows the gap.
     ///
     /// # Errors
-    /// [`JournalError::Io`] for a folder or file that can't be read. [`JournalError::TooNew`] for a newer header or an
-    /// unknown required kind: nothing is returned, because the project opens read-only (4.5).
+    /// [`JournalError::Io`] for a folder or file that can't be read. [`JournalError::TooNew`] for a newer header of a segment the scan reaches
+    /// (one after the log's end, such as past a zero tail or a prepared segment, is not read) or an unknown required
+    /// kind: nothing is returned, because the project opens read-only (4.5).
     /// [`JournalError::BadPayload`] from [`decode`].
     ///
     /// Looking past a bad frame for valid ones has a fixed work budget. If it runs out, the result is
@@ -83,11 +84,6 @@ impl Reader {
     pub fn scan_with_budget(dir: &Path, from: Lsn, budget: usize) -> Result<Scan, JournalError> {
         let segments = list_segments(dir)?;
         let start = start_index(&segments, from);
-        for segment in segments.iter().skip(start) {
-            if let Err(HeaderFault::TooNew { version }) = segment.header {
-                return Err(JournalError::TooNew { version, kind: None });
-            }
-        }
         let mut scanner = Scanner {
             segments: &segments,
             from,
@@ -142,14 +138,30 @@ fn list_segments(dir: &Path) -> Result<Vec<Segment>, JournalError> {
     Ok(segments)
 }
 
-/// The last segment with a real header whose first LSN is at most `from + 1`; the first segment when there is none, and
-/// always the first segment when `from` is 0 (a scan of the whole log must not skip a segment that restarts at LSN 1).
+/// The segment a scan from `from` starts in: the last one with a real header whose first LSN is at most `from + 1`,
+/// among the segments whose first LSNs strictly increase in sequence order. A segment that restarts at an earlier LSN
+/// is never a start: the scan reaches it from the segment before it and reports the discontinuity. The first segment
+/// when none qualifies, and always when `from` is 0 (a scan of the whole log must not skip anything).
 fn start_index(segments: &[Segment], from: Lsn) -> usize {
     if from == Lsn(0) {
         return 0;
     }
     let wanted = from.0.saturating_add(1);
-    segments.iter().rposition(|s| s.header.is_ok_and(|h| !h.is_prepared() && h.first.0 <= wanted)).unwrap_or(0)
+    let (mut start, mut previous) = (0, 0);
+    for (idx, segment) in segments.iter().enumerate() {
+        let Ok(header) = segment.header else { continue };
+        if header.is_prepared() {
+            continue;
+        }
+        if header.first.0 <= previous {
+            break;
+        }
+        previous = header.first.0;
+        if header.first.0 <= wanted {
+            start = idx;
+        }
+    }
+    start
 }
 
 /// The most payload bytes one scan hashes or skims while it looks past a bad frame (journal.md 8.2): 256 MiB, a
@@ -283,6 +295,7 @@ impl Scanner<'_> {
                 return Ok(End::Clean);
             };
             let header = match segment.header {
+                Err(HeaderFault::TooNew { version }) => return Err(JournalError::TooNew { version, kind: None }),
                 Err(_) => return Ok(End::TornTail { at: self.position(segment, 0) }),
                 Ok(header) if header.is_prepared() => return Ok(End::Clean),
                 Ok(header) => header,

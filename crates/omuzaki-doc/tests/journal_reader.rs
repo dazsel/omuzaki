@@ -460,3 +460,52 @@ fn an_exhausted_resync_budget_reports_damage_with_at_least_one_frame() {
     assert_eq!(lsns(&scan), [1]);
     assert_eq!(scan.end, End::Damaged { at: at(1, second, 1), later_valid: 1 });
 }
+
+/// `bytes` with its header rewritten to format version 2.
+fn newer(mut bytes: Vec<u8>) -> Vec<u8> {
+    bytes[8..10].copy_from_slice(&2u16.to_le_bytes());
+    let crc = crc32fast::hash(&bytes[..28]);
+    bytes[28..32].copy_from_slice(&crc.to_le_bytes());
+    bytes
+}
+
+#[test]
+fn a_newer_segment_past_the_end_of_the_log_is_not_reached() {
+    // A zero tail ends the log, so the newer segment after it is never read.
+    let dir = tempfile::tempdir().unwrap();
+    let mut first = segment(1, &commits(1, 3));
+    first.extend([0u8; 40]);
+    put(dir.path(), 1, &first);
+    put(dir.path(), 2, &newer(segment(4, &commits(4, 5))));
+    let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
+    assert_eq!((lsns(&scan), scan.end), (vec![1, 2, 3], End::Clean));
+
+    // A prepared segment ends the log too.
+    let dir = tempfile::tempdir().unwrap();
+    put(dir.path(), 1, &segment(1, &commits(1, 3)));
+    put(dir.path(), 2, &SegmentHeader::prepared().encode());
+    put(dir.path(), 3, &newer(segment(4, &commits(4, 5))));
+    let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
+    assert_eq!((lsns(&scan), scan.end), (vec![1, 2, 3], End::Clean));
+}
+
+#[test]
+fn a_newer_first_segment_is_too_new() {
+    let dir = tempfile::tempdir().unwrap();
+    put(dir.path(), 1, &newer(segment(1, &commits(1, 3))));
+    let err = Reader::scan(dir.path(), Lsn(0)).unwrap_err();
+    assert!(matches!(err, JournalError::TooNew { version: 2, kind: None }), "{err:?}");
+}
+
+#[test]
+fn a_segment_that_restarts_at_an_earlier_lsn_is_never_a_start() {
+    // Segment 2 restarts at LSN 1: every scan starts in segment 1 and reaches the discontinuity from there.
+    let dir = tempfile::tempdir().unwrap();
+    put(dir.path(), 1, &segment(1, &commits(1, 3)));
+    put(dir.path(), 2, &segment(1, &commits(1, 2)));
+    for (from, want) in [(0, vec![1, 2, 3]), (1, vec![2, 3]), (2, vec![3]), (3, vec![])] {
+        let scan = Reader::scan(dir.path(), Lsn(from)).unwrap();
+        assert_eq!(lsns(&scan), want, "from {from}");
+        assert_eq!(scan.end, End::Damaged { at: at(2, 0, 3), later_valid: 2 }, "from {from}");
+    }
+}
