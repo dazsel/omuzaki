@@ -42,7 +42,9 @@ pub enum Backdrop {
 pub enum SizePolicy {
     /// Exactly the output size in physical pixels, at any DPI scale factor.
     Output,
-    /// The output size times a factor (`0.1` to `2.0`), rounded: a smaller preview-sized window.
+    /// The output size times a factor ([`MIN_SCALE`] to [`MAX_SCALE`]), each side rounded: below `1` a smaller window
+    /// (a preview), above `1` a request for a larger one. `plan` (in `omuzaki-stream`) caps each side at its `MAX_SIDE`
+    /// with the aspect ratio kept, so an output already at or past the cap comes out at the cap.
     Scale(f32),
 }
 

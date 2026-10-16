@@ -46,7 +46,9 @@ pub struct Open {
     /// confused with the cast. With `transparent`, it is the colour used if the host cannot do transparency.
     #[serde(default)]
     pub key: Option<Colour>,
-    /// Make the window this fraction (`0.1` to `2.0`) of the output size. Default: exactly the output size.
+    /// Size the window at this factor (`0.1` to `2.0`) of the output: below `1` a smaller preview, above `1` a request
+    /// for a larger window. Each side is capped at the window size limit with the aspect ratio kept, so an output
+    /// already at the limit opens at the limit. Default: exactly the output size.
     #[serde(default)]
     pub scale: Option<f32>,
     /// The window title, 1 to 64 characters, no control characters. Default `Omuzaki Output`; capture tools find the
