@@ -53,8 +53,13 @@ impl Validate for TrimmedParams {
     }
 }
 
-/// Where the tube runs along the torso, clear of the arm roots on every template.
-const SPAN: (f64, f64) = (0.2, 0.55);
+/// Where the tube runs along the torso: from the hips to below the arms, which hang close beside the torso on soft-sd
+/// (a garment higher up needs armholes).
+const SPAN: (f64, f64) = (0.2, 0.48);
+/// Rings along the tube, and segments round it: fine enough that the tube's facets lie within a few hundredths of a
+/// millimetre of the surface, so trims are measured against the cloth and not its tessellation.
+const TUBE_RINGS: usize = 96;
+const TUBE_SEGMENTS: usize = 96;
 
 struct Trimmed;
 
@@ -70,7 +75,11 @@ impl PartKind for Trimmed {
         let surface = Surface::new(ctx.fit()?, BodyRegion::Torso, 2.0, p.common.ease).map_err(fail)?;
         let mut out = GarmentOutput::new(ctx, &p.common)?;
         let mut builder = MeshBuilder::new();
-        surface.loft(SPAN.0, SPAN.1, 24, 48).map_err(fail)?.add_to(&mut builder, out.tile()).map_err(fail)?;
+        surface
+            .loft(SPAN.0, SPAN.1, TUBE_RINGS, TUBE_SEGMENTS)
+            .map_err(fail)?
+            .add_to(&mut builder, out.tile())
+            .map_err(fail)?;
         out.surface(ctx, "tube", builder)?;
         for (k, trim) in p.trims.iter().enumerate() {
             add_trim(&mut out, ctx, &surface, &format!("trim{k}"), trim)?;
@@ -114,7 +123,7 @@ impl PartKind for Mount {
     }
 
     fn build(_: &Nothing, ctx: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
-        let ring = omuzaki_char::outfit::loft::ring_at(ctx.fit()?.as_ref(), BodyRegion::Torso, 0.42, 2.0, 0.02)
+        let ring = omuzaki_char::outfit::loft::ring_at(ctx.fit()?.as_ref(), BodyRegion::Torso, 0.36, 2.0, 0.02)
             .map_err(|e| ctx.fail(e.to_string()))?;
         let anchor = Anchor { bone: JointRef::HIPS, position: ring.point(0.3).as_vec3(), rotation: Quat::IDENTITY };
         Ok(PartOutput::new()
@@ -165,8 +174,8 @@ fn trims() -> Vec<TrimSpec> {
     };
     vec![
         TrimSpec::Chain(Chain {
-            from: [0.45, -0.5],
-            to: [0.45, 0.5],
+            from: [0.42, -0.5],
+            to: [0.42, 0.5],
             sag: 0.012,
             bow: chain::SAG.1,
             link_size: chain::LINK.0,
@@ -175,14 +184,14 @@ fn trims() -> Vec<TrimSpec> {
             finish: Finish::default(),
         }),
         TrimSpec::Clasp(Clasp {
-            at: [0.48, 0.6],
+            at: [0.44, 0.6],
             style: ClaspStyle::Medallion,
             size: 0.02,
             jewel: Some(ColourRef::rgb(0x30, 0x60, 0xd0)),
             finish: Finish::default(),
         }),
         TrimSpec::Clasp(Clasp {
-            at: [0.48, -0.6],
+            at: [0.44, -0.6],
             style: ClaspStyle::Cross,
             size: 0.02,
             jewel: None,
@@ -394,9 +403,15 @@ fn decals_sit_just_off_the_surface_and_in_front_of_the_garment_on_every_template
                         .map(|[a, b, c]| closest_on_triangle(p, *a, *b, *c))
                         .min_by(|x, y| x.distance(p).total_cmp(&y.distance(p)))
                         .unwrap();
+                    // In front of the tube's facets, which stand up to about 0.2 mm out of the smooth surface where the
+                    // body's fit turns over a ring of the body's mesh (it holds that mesh, rings and all).
                     assert!(
-                        (p - front).dot(normal) > 0.0001,
-                        "{template}/{label}: {name} is not in front of the garment"
+                        (p - front).dot(normal) > 0.00005,
+                        "{template}/{label}: {name} at {p} is not in front of the garment: {:.3} mm along the surface's \
+                         outward direction from its nearest point, {:.3} mm from it, {:.3} mm off the surface",
+                        (p - front).dot(normal) * 1e3,
+                        p.distance(front) * 1e3,
+                        off * 1e3
                     );
                 }
             }

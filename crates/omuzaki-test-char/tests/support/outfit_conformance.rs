@@ -12,7 +12,10 @@
 //! On each of the 4 templates × 3 shapes it builds a body and the garment (layer [`LAYER_SHIRT`]) and checks:
 //! - **clearance**: each vertex lies at least half the ease outside the fit it was built over, and nothing lies inside
 //!   it; a failure names the vertex, the region, where along it and how deep;
-//! - **body**: no vertex is inside any region of the body fit, and no point of any triangle is either: each triangle is
+//! - **body mesh**: no garment triangle meets a triangle of the body's own mesh (a separating-axis test against every
+//!   body triangle near it), so a body that stands outside its published fit is caught too, and so is a garment that
+//!   reaches a part of the body it doesn't cover (an arm beside the torso);
+//! - **body**: no vertex is inside a region of the body fit the garment covers, and no point of any triangle is either: each triangle is
 //!   tested whole against convex hulls that contain the region (GJK, proving it clear with a separating plane or
 //!   reporting it), so a crossing of any depth is caught, never sampled past. A hull spans two sections the fit itself
 //!   reports, with a margin for the frames turning between them and for the fit's own curve bulging past the straight
@@ -78,6 +81,8 @@ pub const REGIONS: [BodyRegion; 8] = [
 ];
 /// The part id the garment is built as.
 pub const PART: &str = "garment";
+/// The part id the body is built as.
+pub const BODY: &str = "body";
 /// Sections per region in the lookup table a vertex is located with, and the rows the crossing test's hulls start from.
 pub const TABLE: usize = 256;
 /// Positions closer than this weld into one vertex, metres.
@@ -161,7 +166,7 @@ pub fn character(template: &str, shape: &BodyShape, garments: &[(&str, &str, i32
         attach: None,
         params,
     };
-    def.parts.insert(PartId::new("body").unwrap(), part("body", 0, json!({ "shape": shape })));
+    def.parts.insert(PartId::new(BODY).unwrap(), part("body", 0, json!({ "shape": shape })));
     for (id, kind, layer, params) in garments {
         def.parts.insert(PartId::new(*id).unwrap(), part(kind, *layer, params.clone()));
     }
@@ -209,11 +214,12 @@ pub fn run<K: Garment>(params: &K::Params, services: &BuildServices) -> Result<V
             let fits = &before.get::<FitFact>().fits;
             let body = fits.first().ok_or_else(|| format!("{case}: no body fit"))?;
             let inner = before.outer_fit().ok_or_else(|| format!("{case}: no fit under the garment"))?;
-            let body_table = Tables::of(body.as_ref());
+            let body_table = Tables::of(body.as_ref()).only(&regions);
             let body_pieces = body_pieces(body.as_ref(), &body_table);
             let inner_table = Tables::of(inner.as_ref());
             let min_clearance = check_clearance(output, &body_table, &body_pieces, &inner_table, &regions, ease)
                 .map_err(|e| format!("{case}: {e}"))?;
+            check_body_mesh(output, stack.output(BODY)).map_err(|e| format!("{case}: {e}"))?;
             check_closure(output, K::open_borders(params)).map_err(|e| format!("{case}: {e}"))?;
             check_skin(output, &stack.published).map_err(|e| format!("{case}: {e}"))?;
             check_names(output, PART).map_err(|e| format!("{case}: {e}"))?;
@@ -317,10 +323,17 @@ impl Located {
 }
 
 /// The sections of every region of a fit.
-struct Tables(Vec<RegionTable>);
+pub struct Tables(Vec<RegionTable>);
 
 impl Tables {
-    fn of(fit: &dyn BodyFit) -> Self {
+    /// These tables, of the `regions` only.
+    #[must_use]
+    pub fn only(self, regions: &[BodyRegion]) -> Self {
+        Self(self.0.into_iter().filter(|t| regions.contains(&t.region)).collect())
+    }
+
+    /// The tables of `fit`'s regions.
+    pub fn of(fit: &dyn BodyFit) -> Self {
         let tables = REGIONS
             .iter()
             .filter_map(|&region| {
@@ -405,9 +418,10 @@ fn ellipse_distance(q: DVec2, r: DVec2) -> f64 {
 
 // ------------------------------------------------------------------------------------------------------- checks
 
-/// Every vertex is outside the body and no triangle reaches it ([`triangle_reach`]); every vertex is at least half the
-/// ease outside the fit under the garment, measured on the covered region it lies deepest in. Returns the least
-/// clearance, metres.
+/// Every vertex is outside the regions of the body fit the garment covers (`body`, their tables) and no triangle reaches
+/// them ([`triangle_reach`]); every vertex is at least half the ease outside the fit under the garment, measured on the
+/// covered region it lies deepest in. Returns the least clearance, metres. The rest of the body is the body-mesh
+/// check's ([`check_body_mesh`]).
 fn check_clearance(
     output: &PartOutput,
     body: &Tables,
@@ -747,6 +761,32 @@ fn body_pieces(fit: &dyn BodyFit, tables: &Tables) -> Vec<(BodyRegion, Vec<Piece
     tables.0.iter().map(|t| (t.region, pieces(t))).collect()
 }
 
+/// How far `p` stands outside every region of `fit` (negative inside one), metres: the least, over the regions whose
+/// section planes pass through it, of its distance outside that section's ellipse. `None` where no region's section
+/// plane passes through it (past every region's ends).
+pub fn outside_fit(tables: &Tables, p: DVec3) -> Option<f64> {
+    tables.0.iter().filter_map(|t| t.locate(p)).map(|l| l.distance()).reduce(f64::min)
+}
+
+/// Where `p` lies on each region whose section plane passes through it: the region, the fraction along it and how far
+/// outside that section's ellipse it is (negative inside), metres.
+pub fn located(tables: &Tables, p: DVec3) -> Vec<(BodyRegion, f64, f64)> {
+    tables.0.iter().filter_map(|t| t.locate(p)).map(|l| (l.region, l.t, l.distance())).collect()
+}
+
+/// Where `p` lies along `region`'s axis: before its first section's plane, between its planes, or past its last.
+pub fn along(tables: &Tables, region: BodyRegion, p: DVec3) -> Option<std::cmp::Ordering> {
+    let rows = &tables.region(region)?.rows;
+    let (first, last) = (rows.first()?, rows.last()?);
+    Some(if first.height(p) < 0.0 {
+        std::cmp::Ordering::Less
+    } else if last.height(p) > 0.0 {
+        std::cmp::Ordering::Greater
+    } else {
+        std::cmp::Ordering::Equal
+    })
+}
+
 /// Whether `p` is inside any region of `fit`.
 pub fn inside(fit: &dyn BodyFit, p: DVec3) -> bool {
     inside_body(&Tables::of(fit), p).is_some()
@@ -760,6 +800,111 @@ pub fn crossing(fit: &dyn BodyFit, tri: [DVec3; 3]) -> Option<Reach> {
 /// The region of the body `p` is inside, if any.
 fn inside_body(body: &Tables, p: DVec3) -> Option<Located> {
     body.0.iter().filter(|t| t.may_contain(p)).filter_map(|t| t.locate(p)).find(|l| l.level() < 1.0)
+}
+
+// --------------------------------------------------------------------------------------------- the body's own mesh
+
+/// The side of a cell of the grid the body's triangles are filed in, metres.
+const MESH_CELL: f64 = 0.015;
+
+/// The body's triangles filed by the grid cells their boxes overlap.
+struct BodyMesh<'a> {
+    triangles: Vec<([DVec3; 3], &'a str, usize)>,
+    cells: HashMap<[i64; 3], Vec<usize>>,
+}
+
+/// The grid cell of `p`.
+fn cell(p: DVec3) -> [i64; 3] {
+    (p / MESH_CELL).floor().as_i64vec3().to_array()
+}
+
+impl<'a> BodyMesh<'a> {
+    fn of(body: &'a PartOutput) -> Self {
+        let mut triangles = Vec::new();
+        let mut cells: HashMap<[i64; 3], Vec<usize>> = HashMap::new();
+        for mesh in &body.meshes {
+            let g = &mesh.geometry;
+            for (n, tri) in g.indices.chunks_exact(3).enumerate() {
+                let t = [0, 1, 2].map(|k| g.positions[tri[k] as usize].as_dvec3());
+                let (lo, hi) = (cell(t[0].min(t[1]).min(t[2])), cell(t[0].max(t[1]).max(t[2])));
+                for x in lo[0]..=hi[0] {
+                    for y in lo[1]..=hi[1] {
+                        for z in lo[2]..=hi[2] {
+                            cells.entry([x, y, z]).or_default().push(triangles.len());
+                        }
+                    }
+                }
+                triangles.push((t, mesh.name.as_str(), n));
+            }
+        }
+        Self { triangles, cells }
+    }
+
+    /// The body triangles whose cells `tri`'s box overlaps, each once.
+    fn near(&self, tri: &[DVec3; 3]) -> Vec<usize> {
+        let (lo, hi) = (cell(tri[0].min(tri[1]).min(tri[2])), cell(tri[0].max(tri[1]).max(tri[2])));
+        let mut out = Vec::new();
+        for x in lo[0]..=hi[0] {
+            for y in lo[1]..=hi[1] {
+                for z in lo[2]..=hi[2] {
+                    out.extend(self.cells.get(&[x, y, z]).into_iter().flatten().copied());
+                }
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+}
+
+/// Whether triangles `a` and `b` share a point: the separating-axis test on their two normals, the nine cross
+/// products of their edges and, for triangles in one plane, each edge turned in its normal's plane. Triangles are
+/// convex, so they are apart exactly when one of these axes separates them; touching counts as meeting.
+fn triangles_meet(a: &[DVec3; 3], b: &[DVec3; 3]) -> bool {
+    let edges = |t: &[DVec3; 3]| [t[1] - t[0], t[2] - t[1], t[0] - t[2]];
+    let (ea, eb) = (edges(a), edges(b));
+    let (na, nb) = (ea[0].cross(ea[1]), eb[0].cross(eb[1]));
+    let mut axes = vec![na, nb];
+    for u in ea {
+        for v in eb {
+            axes.push(u.cross(v));
+        }
+    }
+    axes.extend(ea.iter().map(|e| na.cross(*e)));
+    axes.extend(eb.iter().map(|e| nb.cross(*e)));
+    let span = |t: &[DVec3; 3], axis: DVec3| {
+        let d = t.map(|p| p.dot(axis));
+        (d[0].min(d[1]).min(d[2]), d[0].max(d[1]).max(d[2]))
+    };
+    !axes.into_iter().filter(|axis| axis.length_squared() > 1e-30).any(|axis| {
+        let ((a0, a1), (b0, b1)) = (span(a, axis), span(b, axis));
+        a1 < b0 || b1 < a0
+    })
+}
+
+/// No triangle of the garment meets a triangle of the body's own mesh. The fit checks measure against the published
+/// fit; this measures against the body itself, so a body that stands outside its own fit is caught too.
+///
+/// # Errors
+/// A message naming the first garment triangle that meets the body's mesh, and the body triangle it meets.
+pub fn check_body_mesh(output: &PartOutput, body: &PartOutput) -> Result<(), String> {
+    let mesh = BodyMesh::of(body);
+    for garment in &output.meshes {
+        let g = &garment.geometry;
+        for (n, tri) in g.indices.chunks_exact(3).enumerate() {
+            let t = [0, 1, 2].map(|k| g.positions[tri[k] as usize].as_dvec3());
+            if let Some(&(_, name, k)) =
+                mesh.near(&t).into_iter().map(|i| &mesh.triangles[i]).find(|(b, ..)| triangles_meet(&t, b))
+            {
+                let centre = (t[0] + t[1] + t[2]) / 3.0;
+                return Err(format!(
+                    "triangle {n} of `{}` (centred {centre}) passes through the body's own mesh: `{name}` triangle {k}",
+                    garment.name
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Every edge is shared by at most two triangles, wound opposite ways, and the boundary forms `borders` loops in all.
