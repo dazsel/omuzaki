@@ -56,7 +56,8 @@ sizes
 - Numbers are integers (`1`) or floats (`1.5`); they are different types, and `1` stays `1` when it goes into an op.
 - A map's keys are kept in sorted order, so a script does the same thing every time it runs.
 - A `fn` is defined at the top level of the script. A closure (`|x| ...`) is how you pass a call to `try_op`
-  or to an array's `map` and `filter`.
+  or to an array's `map` and `filter`. A closure can only be passed straight to those, not kept in a variable,
+  an array or a map, or returned.
 - `print(x)` adds a line to the output. `log(x)` adds a note, which the console shows muted. Both are capped (see the
   limits).
 - `params` is the map the caller passed in. Check a key with `"key" in params` before using it.

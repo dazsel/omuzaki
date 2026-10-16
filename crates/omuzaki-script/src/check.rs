@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ScriptHost;
 use crate::bindings::{Bindings, OpEntry};
+use crate::closures;
 use crate::host::line_col;
 
 /// A problem or a finding at a place in the source.
@@ -191,6 +192,10 @@ impl ScriptHost {
                 report.parse_errors.push(Diagnostic { message: error.0.to_string(), line, column });
             }
             Ok(ast) => {
+                if let Some(stray) = closures::stray(&ast) {
+                    let (line, column) = line_col(stray.at);
+                    report.parse_errors.push(Diagnostic { message: stray.message, line, column });
+                }
                 let mut found = Found::default();
                 ast.walk(&mut |nodes: &[ASTNode<'_>]| {
                     if let Some(ASTNode::Expr(Expr::FnCall(call, at)) | ASTNode::Stmt(Stmt::FnCall(call, at))) =

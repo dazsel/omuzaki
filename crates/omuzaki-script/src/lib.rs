@@ -22,6 +22,7 @@
 mod bindings;
 mod calls;
 mod check;
+mod closures;
 mod commands;
 mod convert;
 mod error;

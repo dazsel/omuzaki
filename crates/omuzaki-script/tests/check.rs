@@ -25,7 +25,7 @@ ops::face::set_profile(#{ character: \"a\" });
 fn helper(c) {
     ops::measure::likeness(#{ character: c })
 }
-let f = || ops::face::set_profile(#{ character: \"b\" });
+[0].for_each(|x| ops::face::set_profile(#{ character: \"b\" }));
 try_op(|| ops::face::set_profile(#{ character: \"c\" }));
 ";
     let report = host().check(source);
@@ -34,7 +34,7 @@ try_op(|| ops::face::set_profile(#{ character: \"c\" }));
         [
             ("face.set_profile".to_owned(), 1, 12),
             ("measure.likeness".to_owned(), 3, 19),
-            ("face.set_profile".to_owned(), 5, 23),
+            ("face.set_profile".to_owned(), 5, 29),
             ("face.set_profile".to_owned(), 6, 22),
         ],
         "{report:?}"

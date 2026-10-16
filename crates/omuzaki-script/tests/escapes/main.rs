@@ -164,12 +164,16 @@ const RUNTIME: ScriptErrorKind = ScriptErrorKind::Runtime;
 const REFUSED: ScriptErrorKind = ScriptErrorKind::Refused;
 const OP: ScriptErrorKind = ScriptErrorKind::Op;
 
-const TABLE: [Row; 15] = [
+const TABLE: [Row; 19] = [
     row("eval.rhai", Caller::Person, PARSE, None),
     row("fn_pointer_by_name.rhai", Caller::Person, PARSE, None),
     row("call_function.rhai", Caller::Person, PARSE, None),
     row("curry_pointer.rhai", Caller::Person, PARSE, None),
     row("import_module.rhai", Caller::Person, PARSE, None),
+    row("closure_kept_in_array.rhai", Caller::Person, PARSE, None),
+    row("closure_kept_in_map.rhai", Caller::Person, PARSE, None),
+    row("closure_returned.rhai", Caller::Person, PARSE, None),
+    row("closure_curried_capture.rhai", Caller::Person, PARSE, None),
     row("computed_name_variable.rhai", Caller::Person, RUNTIME, None),
     row("computed_index.rhai", Caller::Person, PARSE, None),
     row("op_inside_fn.rhai", Caller::Person, REFUSED, Some(ErrorCode::Unsupported)),

@@ -7,6 +7,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, json};
 
+use crate::bindings::refusal_registered;
 use crate::store::{ScriptKind, ScriptStore, StoredScript};
 use crate::{Limits, Macro, RecordedCall, from_jsonl, to_jsonl};
 
@@ -59,6 +60,17 @@ impl Body {
             (None, Some(steps)) => {
                 if steps.iter().any(|step| step.op.is_empty() || !step.args.is_object()) {
                     return Err(OpError::invalid("steps", "every step needs an `op` name and `args` as an object"));
+                }
+                // A macro plays as a script does, so a step a script couldn't call is refused here, not at replay.
+                for (index, step) in steps.iter().enumerate() {
+                    if let Some(refusal) = refusal_registered(&step.op) {
+                        let mut error = OpError::invalid(
+                            "steps",
+                            format!("step {} (`{}`) can't be in a macro: {}", index + 1, step.op, refusal.message),
+                        );
+                        error.hint = refusal.hint;
+                        return Err(error);
+                    }
                 }
                 let body = Self::Steps(steps.to_vec());
                 let size = body.text("").len();

@@ -1,6 +1,7 @@
 //! `script.run`: run a script, or replay a saved macro, as a driver job.
 
 use omuzaki_core::id::Slug;
+use omuzaki_core::time::{Clock, SystemClock};
 use omuzaki_doc_api::{Patch, Value};
 use omuzaki_ops_api::{
     CostHint, ErrorDetail, Grants, JobCtx, JobShape, Mode, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo,
@@ -10,10 +11,11 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, json};
 
+use crate::bindings::refusal_registered;
 use crate::job::JobScript;
 use crate::saved::{Body, Item, Place, item_path, not_saved, store};
 use crate::{
-    Limits, RecordedCall, RunRequest, ScriptError, ScriptErrorKind, ScriptHost, registered_host, registered_ops,
+    LimitKind, Limits, RecordedCall, RunRequest, ScriptError, ScriptErrorKind, ScriptHost, registered_host, registered_ops,
 };
 
 /// Seconds a run gets when the caller doesn't say.
@@ -179,7 +181,7 @@ impl Op for ScriptRun {
             .map_err(|e| OpError::internal(format!("the planned script does not read back: {e}")))?;
         match planned {
             Planned::Script { name, source } => self.run_script(job, name, source),
-            Planned::Macro { steps, .. } => replay(job, &steps, self.dry_run),
+            Planned::Macro { steps, .. } => replay(job, &steps, self.dry_run, self.seconds.unwrap_or(DEFAULT_SECONDS)),
         }
     }
 
@@ -188,22 +190,59 @@ impl Op for ScriptRun {
     }
 }
 
-/// A macro's steps through the job, one inner request each, stopping at the first failure or cancel.
+/// A macro's steps through the job, one inner request each, stopping at the first failure or cancel. A replay is held
+/// to what a script is: a step a script couldn't call (a job, an edit with outside effects, `script.run`) is refused
+/// before anything is sent, at most [`Limits::calls`] steps run, and the clock stops it after `seconds`.
 #[allow(clippy::cast_precision_loss)] // a progress fraction
-fn replay(job: &JobCtx<'_>, steps: &[RecordedCall], dry_run: bool) -> Result<Value, OpError> {
+fn replay(job: &JobCtx<'_>, steps: &[RecordedCall], dry_run: bool, seconds: u32) -> Result<Value, OpError> {
+    let limits = Limits::job(Some(seconds));
+    if steps.len() > limits.calls as usize {
+        return Err(limit_error(
+            LimitKind::Calls,
+            format!("the macro has {} steps, over the {}-call limit", steps.len(), limits.calls),
+        ));
+    }
+    for (index, step) in steps.iter().enumerate() {
+        if let Some(refusal) = refusal_registered(&step.op) {
+            let mut error = step_failed(index, step, refusal);
+            error.hint = error.hint.or_else(|| Some("run it on its own, outside the macro".to_owned()));
+            return Err(error);
+        }
+    }
     let mode = if dry_run { Mode::DryRun } else { Mode::Apply };
+    let clock = SystemClock::new();
+    let started = clock.now().0;
     let mut plans = Vec::new();
     for (index, step) in steps.iter().enumerate() {
         job.checkpoint("macro", index as f32 / steps.len() as f32)?;
-        let outcome = job.call(&step.op, step.args.clone(), mode).map_err(|mut error| {
-            error.message = format!("step {} (`{}`) failed: {}", index + 1, step.op, error.message);
-            error
-        })?;
+        if clock.now().0 - started > f64::from(seconds) {
+            return Err(limit_error(LimitKind::Time, format!("the macro ran over its {seconds}-second limit")));
+        }
+        let outcome = job.call(&step.op, step.args.clone(), mode).map_err(|error| step_failed(index, step, error))?;
         if dry_run {
             plans.push(json!({ "op": step.op, "args": step.args, "plan": outcome.plan }));
         }
     }
     Ok(json!({ "value": null, "output": [], "calls": steps.len(), "tx": null, "plans": plans }))
+}
+
+/// `error` as the failure of step `index` (0-based), named by its 1-based number and op.
+fn step_failed(index: usize, step: &RecordedCall, mut error: OpError) -> OpError {
+    error.message = format!("step {} (`{}`) failed: {}", index + 1, step.op, error.message);
+    error
+}
+
+/// A limit a macro replay hit, as the error a script run that hit the same limit gives.
+fn limit_error(kind: LimitKind, message: String) -> OpError {
+    ScriptError {
+        kind: ScriptErrorKind::Limit(kind),
+        line: 1,
+        column: 1,
+        op_error: None,
+        message,
+        output: Vec::new(),
+    }
+    .to_op_error()
 }
 
 /// How a failed run reaches the caller: a cancel as the job's cancellation, anything else as

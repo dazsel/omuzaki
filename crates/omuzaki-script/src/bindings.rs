@@ -49,8 +49,19 @@ impl Bindings {
         for info in ops {
             let Some((area, verb)) = info.name.split_once('.') else { continue };
             let spelled = (spelled_in_script(&probe, area), spelled_in_script(&probe, verb));
-            let schema = serde_json::to_value(&info.schema).unwrap_or(Value::Bool(true));
-            let entry = OpEntry { name: info.name, scope: info.scope, refusal: refusal(info).map(Arc::new), schema };
+            // A schema that can't be read would leave the argument checks off, so the op is refused instead.
+            let (schema, unreadable) = match serde_json::to_value(&info.schema) {
+                Ok(schema) => (schema, None),
+                Err(error) => (
+                    Value::Bool(true),
+                    Some(
+                        OpError::internal(format!("the argument schema of `{}` can't be read: {error}", info.name))
+                            .hint("report this: the op is registered with a schema that doesn't serialise"),
+                    ),
+                ),
+            };
+            let refusal = refusal(info).or(unreadable).map(Arc::new);
+            let entry = OpEntry { name: info.name, scope: info.scope, refusal, schema };
             entries.insert(spelled, entry);
         }
         let mut areas: BTreeMap<String, Module> = BTreeMap::new();
@@ -105,14 +116,20 @@ fn spelled_in_script(probe: &Engine, word: &str) -> String {
 /// Why `info` can't be called from a script, if it can't: v1 runs `Query` ops and `Edit` ops that undo with their
 /// patch. A job never joins a transaction and an edit with outside effects can't be rolled back with the run.
 fn refusal(info: &OpInfo) -> Option<OpError> {
-    let name = info.name;
+    refusal_for(info.name, info.kind, info.undo)
+}
+
+/// [`refusal`] from the facts it reads. A recorded macro is held to the same rule, since its replay is a transaction
+/// too: a step that is a job or an edit with outside effects can't be played, recorded or saved, and a step can't
+/// start `script.run`, which would recurse with no call cap and no clock.
+pub(crate) fn refusal_for(name: &str, kind: OpKind, undo: Undo) -> Option<OpError> {
     if name == SCRIPT_RUN {
         return Some(
             OpError::unsupported("a script can't start another script run")
                 .hint("scripts don't nest: call the ops you need from this script instead"),
         );
     }
-    match (info.kind, info.undo) {
+    match (kind, undo) {
         (OpKind::Query, _) | (OpKind::Edit, Undo::Auto) => None,
         (OpKind::Job, _) => Some(
             OpError::unsupported(format!("`{name}` is a job, which a script can't start"))
@@ -125,6 +142,18 @@ fn refusal(info: &OpInfo) -> Option<OpError> {
             .hint("run it on its own, outside the script"),
         ),
     }
+}
+
+/// The refusal for the op `name` among `ops` (what a runner lists); an op that isn't listed has none here, and its
+/// call fails as unknown.
+pub(crate) fn refusal_in(ops: &[OpInfo], name: &str) -> Option<OpError> {
+    ops.iter().find(|info| info.name == name).and_then(refusal)
+}
+
+/// The refusal for the op `name` among the ops linked into this binary, for the places that have no runner to ask.
+pub(crate) fn refusal_registered(name: &str) -> Option<OpError> {
+    let meta = (omuzaki_ops_api::find(name)?.meta)();
+    refusal_for(meta.name, meta.kind, meta.undo)
 }
 
 /// The native function behind one `ops::area::verb`.

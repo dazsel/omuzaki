@@ -19,6 +19,7 @@ use serde_json::Map as JsonMap;
 
 use crate::bindings::Bindings;
 use crate::check::{Diagnostic, effective_grants};
+use crate::closures;
 use crate::convert::{Convert, from_json, map_breaks, oversized, oversized_in, size_kind, to_json};
 use crate::{Calls, Cancel, LimitKind, Limits, OutputKind, OutputLine, PlannedCall, ScriptError, ScriptErrorKind};
 
@@ -485,6 +486,9 @@ impl ScriptHost {
             };
             located(kind, e.0.to_string(), e.1, None)
         })?;
+        if let Some(stray) = closures::stray(&ast) {
+            return Err(located(ScriptErrorKind::Parse, stray.message, stray.at, None));
+        }
         let value = evaluate(&engine, &ast, &run.request.params, &self.limits)?;
         let too_big = serde_json::to_vec(&value).map_or(true, |json| json.len() > self.limits.result_bytes);
         if too_big {
@@ -517,8 +521,7 @@ impl ScriptHost {
 
 /// Evaluates `ast` and returns its result as JSON. The scope, the returned value and every local a script built are
 /// dropped before this returns, on success and on error alike, so dropping a deeply nested value happens before
-/// `Calls::commit` makes anything durable and before a limit error rolls back. The nesting bound itself (and a worker
-/// thread whose stack comes from the operation limit) is open in #1877.
+/// `Calls::commit` makes anything durable and before a limit error rolls back.
 #[allow(clippy::result_large_err)] // as `ScriptHost::run`
 fn evaluate(
     engine: &Engine,

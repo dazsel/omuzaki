@@ -15,7 +15,7 @@ use omuzaki_ops_api::{
     ServicesBuilder, Undo, find, register_op,
 };
 use omuzaki_ops_mock::MockRunner;
-use omuzaki_script::{MemScriptStore, ScriptKind, ScriptStore, content_hash};
+use omuzaki_script::{Limits, MemScriptStore, ScriptKind, ScriptStore, content_hash};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -204,6 +204,25 @@ fn a_macro_is_saved_as_steps_with_its_kind() {
     assert!(node.get("source").is_none());
     let listing = run_as_person(&runner, "script.list", json!({})).unwrap().plan.output.unwrap();
     assert_eq!(listing["scripts"][0]["kind"], "macro");
+}
+
+#[test]
+fn save_refuses_a_macro_step_a_script_could_not_call() {
+    let runner = runner();
+    for (op, needle) in [("script.run", "another script run"), ("script.save", "outside the document")] {
+        let steps = json!([
+            { "op": "fake.set", "args": { "path": "a", "value": 1 } },
+            { "op": op, "args": { "id": "loop" } },
+        ]);
+        let args = json!({ "id": "loop", "name": "Loop", "steps": steps, "place": "project" });
+        let error = run_as_person(&runner, "script.save", args).unwrap_err();
+        assert_eq!((error.code, error.field.as_deref()), (ErrorCode::Invalid, Some("steps")), "{op}: {error}");
+        assert!(error.message.contains("step 2") && error.message.contains(op), "{op}: {error}");
+        assert!(error.message.contains(needle), "{op}: {error}");
+        assert!(error.hint.is_some(), "{op}: {error}");
+    }
+    assert_eq!(runner.records(), vec![], "nothing was saved");
+    assert_eq!(doc_value(&runner, "scripts/loop"), None);
 }
 
 #[test]
@@ -496,11 +515,14 @@ impl JobDoc for Doc {
 struct Calls {
     sent: Mutex<Vec<(String, Value, Mode)>>,
     cancel_after_first: Option<Arc<Signal>>,
+    /// How long each request takes.
+    delay: std::time::Duration,
 }
 
 impl JobCalls for Calls {
     fn call(&self, op: &str, args: Value, mode: Mode) -> Result<Outcome, OpError> {
         self.sent.lock().unwrap().push((op.to_owned(), args, mode));
+        std::thread::sleep(self.delay);
         if let Some(signal) = &self.cancel_after_first {
             signal.cancelled.cancel();
         }
@@ -599,6 +621,52 @@ fn work_runs_a_saved_macro_step_by_step() {
     assert_eq!(error.code, ErrorCode::NotFound);
     assert!(error.message.starts_with("step 2 (`fake.nope`) failed"), "{}", error.message);
     assert_eq!(calls.sent.lock().unwrap().len(), 2, "the third step never ran");
+}
+
+#[test]
+fn replay_refuses_a_step_a_script_could_not_call_before_sending_anything() {
+    // A macro saved by an older build or edited by hand can hold what `script.save` now refuses.
+    for (op, needle) in [("script.run", "another script run"), ("script.save", "outside the document")] {
+        let calls = Calls::default();
+        let doc = json!({ "scripts": { "loop": { "name": "Loop", "kind": "macro", "steps": [
+            { "op": "fake.set", "args": { "path": "a", "value": 1 } },
+            { "op": op, "args": { "id": "loop" } }
+        ] } } });
+        for dry_run in [false, true] {
+            let error =
+                work(json!({ "id": "loop", "dry_run": dry_run }), doc.clone(), &calls, &Signal::default()).unwrap_err();
+            assert_eq!(error.code, ErrorCode::Unsupported, "{op}: {error}");
+            assert!(error.message.starts_with(&format!("step 2 (`{op}`) failed")), "{op}: {}", error.message);
+            assert!(error.message.contains(needle), "{op}: {}", error.message);
+            assert!(error.hint.is_some(), "{op}: {error}");
+        }
+        assert!(calls.sent.lock().unwrap().is_empty(), "{op}: not even the first step was sent");
+    }
+}
+
+#[test]
+fn replay_holds_a_macro_to_the_call_limit() {
+    let calls = Calls::default();
+    let limit = Limits::job(None).calls as usize;
+    let steps: Vec<Value> =
+        (0..=limit).map(|_| json!({ "op": "fake.set", "args": { "path": "a", "value": 1 } })).collect();
+    let doc = json!({ "scripts": { "long": { "name": "Long", "kind": "macro", "steps": steps } } });
+    let error = work(json!({ "id": "long" }), doc, &calls, &Signal::default()).unwrap_err();
+    assert_eq!(error.code, ErrorCode::Invalid, "{error}");
+    assert!(error.message.contains(&format!("{} steps, over the {limit}-call limit", limit + 1)), "{error}");
+    assert!(calls.sent.lock().unwrap().is_empty(), "the macro was refused before it started");
+}
+
+#[test]
+fn replay_stops_at_the_seconds_it_was_given() {
+    let calls = Calls { delay: std::time::Duration::from_millis(600), ..Calls::default() };
+    let steps: Vec<Value> = (0..5).map(|_| json!({ "op": "fake.set", "args": { "path": "a", "value": 1 } })).collect();
+    let doc = json!({ "scripts": { "slow": { "name": "Slow", "kind": "macro", "steps": steps } } });
+    let error = work(json!({ "id": "slow", "seconds": 1 }), doc, &calls, &Signal::default()).unwrap_err();
+    assert_eq!(error.code, ErrorCode::Invalid, "{error}");
+    assert!(error.message.contains("1-second limit"), "{error}");
+    let sent = calls.sent.lock().unwrap().len();
+    assert!((2..5).contains(&sent), "it stopped partway, after {sent} steps");
 }
 
 #[test]

@@ -128,6 +128,21 @@ fn queries_other_actors_and_other_causes_are_never_recorded() {
 }
 
 #[test]
+fn edits_a_replay_could_not_roll_back_or_run_are_never_recorded() {
+    // `file.write` is an edit with effects outside the document (`Undo::Explicit`), `script.run` and `render.video` are
+    // jobs: a macro plays as a script does, so none of them can be a step.
+    let mut s = Stream::new();
+    s.blend(1, 0.0, "a", 0.5);
+    s.edit(2, 1.0, "file.write", json!({ "path": "out.txt" }), adds("file/out"));
+    s.edit(3, 2.0, "script.run", json!({ "id": "other" }), adds("run/a"));
+    s.edit(4, 3.0, "render.video", json!({}), adds("run/b"));
+    s.blend(5, 4.0, "b", 0.6);
+    let m = s.finish();
+    let ops: Vec<&str> = m.steps.iter().map(|step| step.op.as_str()).collect();
+    assert_eq!(ops, ["face.set_blend", "face.set_blend"], "{m:?}");
+}
+
+#[test]
 fn a_rolled_back_or_unfinished_transaction_is_not_recorded() {
     let mut s = Stream::new();
     s.applied(&alice(), 1, 0.0, "face.set_profile", json!({ "character": "a" }), replaces("a"), None);
@@ -422,6 +437,27 @@ fn a_failing_step_rolls_everything_back_and_names_the_step() {
     assert_eq!(runner.requests().len(), 2, "the third step never ran");
     runner.assert_rolled_back();
     assert!(error.to_string().contains("step 2"), "{error}");
+}
+
+#[test]
+fn a_step_a_script_could_not_call_is_refused_before_a_transaction_begins() {
+    for (op, needle) in
+        [("script.run", "another script run"), ("render.video", "is a job"), ("file.write", "outside the document")]
+    {
+        let runner = FakeRunner::default();
+        let m = macro_of(&[
+            ("face.set_profile", json!({ "character": "a" })),
+            (op, json!({})),
+            ("face.set_profile", json!({ "character": "never" })),
+        ]);
+        let error = play(&runner, &m, &alice(), &Grants::person()).expect_err(op);
+        assert_eq!((error.step, error.op.as_str()), (2, op));
+        assert_eq!(error.error.code, ErrorCode::Unsupported, "{op}: {error}");
+        assert!(error.error.message.contains(needle), "{op}: {error}");
+        assert!(error.error.hint.is_some(), "{op}: the refusal says what to do");
+        assert_eq!(runner.begins(), 0, "{op}: nothing began");
+        assert_eq!(runner.requests(), vec![], "{op}: no step, not even the first, was sent");
+    }
 }
 
 #[test]

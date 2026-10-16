@@ -12,6 +12,7 @@ use omuzaki_doc_api::{Patch, Value};
 use omuzaki_ops_api::{Actor, CauseKind, Event, Grants, OpError, OpKind, OpRecord, Runner, TxId, find};
 
 use super::{Macro, RecordedCall};
+use crate::bindings::refusal_for;
 
 /// Two calls in different transactions merge only when they are this close on the runner's clock.
 const COALESCE_WINDOW: Seconds = Seconds(1.0);
@@ -29,11 +30,13 @@ struct Entry {
     live: bool,
 }
 
-/// What the recorder knows about an op: whether it is an edit, and whether it coalesces.
+/// What the recorder knows about an op: whether it is an edit, whether it coalesces, and whether a replay may call
+/// it (a macro plays as a script does: no jobs, no edits with outside effects, no `script.run`).
 #[derive(Copy, Clone)]
 struct Facts {
     kind: OpKind,
     coalesces: bool,
+    replayable: bool,
 }
 
 /// Records a person's edits from the runner's events. Create it with [`start`](Self::start), call
@@ -58,7 +61,16 @@ impl MacroRecorder {
         let ops = runner
             .ops()
             .into_iter()
-            .map(|info| (info.name.to_owned(), Facts { kind: info.kind, coalesces: info.coalesces }))
+            .map(|info| {
+                (
+                    info.name.to_owned(),
+                    Facts {
+                        kind: info.kind,
+                        coalesces: info.coalesces,
+                        replayable: refusal_for(info.name, info.kind, info.undo).is_none(),
+                    },
+                )
+            })
             .collect();
         Ok(Self { events, person: person.clone(), ops, open: HashMap::new(), kept: Vec::new() })
     }
@@ -97,7 +109,7 @@ impl MacroRecorder {
             return;
         }
         let Some(facts) = self.facts(&record.op) else { return };
-        if facts.kind != OpKind::Edit {
+        if facts.kind != OpKind::Edit || !facts.replayable {
             return;
         }
         self.open.entry(record.tx).or_default().push(Entry {
@@ -114,7 +126,11 @@ impl MacroRecorder {
     fn facts(&self, op: &str) -> Option<Facts> {
         self.ops.get(op).copied().or_else(|| {
             let meta = (find(op)?.meta)();
-            Some(Facts { kind: meta.kind, coalesces: false })
+            Some(Facts {
+                kind: meta.kind,
+                coalesces: false,
+                replayable: refusal_for(meta.name, meta.kind, meta.undo).is_none(),
+            })
         })
     }
 

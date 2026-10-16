@@ -3,6 +3,7 @@
 use omuzaki_ops_api::{Actor, Cause, CauseKind, Grants, Mode, OpError, Request, Runner};
 
 use super::Macro;
+use crate::bindings::refusal_in;
 
 /// What a macro that played did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,12 +28,23 @@ pub struct PlayError {
 /// Plays `m` as `actor`, within `grants`, as one transaction labelled with the macro's name. Every call is sent with
 /// the cause `Script` named after the macro: a replay is a scripted batch, so the executor never queues it for approval.
 ///
+/// A step is held to the rule a script's calls are: a job, an edit with effects outside the document (which the
+/// rollback can't undo) and `script.run` (which would recurse) are refused before anything starts.
+///
 /// # Errors
 /// A [`PlayError`] naming the first step that failed; everything the macro did is rolled back first. If the rollback
-/// itself fails, its error is added to the message and the transaction stays open on the runner.
+/// itself fails, its error is added to the message and the transaction stays open on the runner. A refused step
+/// fails the same way before the transaction begins, so there is nothing to roll back.
 pub fn play(runner: &dyn Runner, m: &Macro, actor: &Actor, grants: &Grants) -> Result<PlayReport, PlayError> {
     if m.steps.is_empty() {
         return Ok(PlayReport { steps: 0 });
+    }
+    let ops = runner.ops();
+    let refused = m.steps.iter().enumerate().find_map(|(index, step)| {
+        refusal_in(&ops, &step.op).map(|error| PlayError { step: index + 1, op: step.op.clone(), error })
+    });
+    if let Some(refused) = refused {
+        return Err(refused);
     }
     let tx = runner.begin(&m.name, actor);
     let cause = Cause { kind: CauseKind::Script, text: Some(m.name.clone()) };
