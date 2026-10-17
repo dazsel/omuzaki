@@ -29,6 +29,12 @@ fn axis<'a>(shape: &'a mut BodyShape, name: &str) -> Option<&'a mut f64> {
 /// the preset the shape was derived from stays recorded.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "axis": "build", "value": 0.2}
+    ],
+    "x-omuzaki-fixture" = "character"
+))]
 pub struct SetShape {
     /// The character whose body changes.
     pub character: CharId,

@@ -17,9 +17,40 @@ use omuzaki_test_face::probes::straight_image;
 /// The device and queue the GPU tests draw with.
 pub type Gpu = (wgpu::Device, wgpu::Queue);
 
+/// What the renderer's `native()` hands a face layer painter (`omuzaki_render::NativePaintTarget`): the device, the
+/// queue, the layer's texture and the encoder the painter records into.
+pub type Native = (wgpu::Device, wgpu::Queue, wgpu::Texture, wgpu::CommandEncoder);
+
+/// A native handle like the renderer's for a fresh face texture of `size`.
+pub fn native(gpu: &Gpu, size: (u32, u32)) -> Native {
+    native_for(gpu, face_texture(&gpu.0, size))
+}
+
+/// A native handle like the renderer's for `texture`.
+pub fn native_for(gpu: &Gpu, texture: wgpu::Texture) -> Native {
+    (gpu.0.clone(), gpu.1.clone(), texture, encoder(&gpu.0))
+}
+
+fn encoder(device: &wgpu::Device) -> wgpu::CommandEncoder {
+    device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("face paint") })
+}
+
+/// Submits what a painter recorded into `native`'s encoder, as the renderer does when the painter returns, and gives
+/// it a fresh encoder for the next paint.
+pub fn submit(native: &mut Native) {
+    let recorded = std::mem::replace(&mut native.3, encoder(&native.0));
+    native.1.submit([recorded.finish()]);
+}
+
+/// Submits what was recorded into `native`, then reads its texture's level 0 back.
+pub fn read_native(native: &mut Native) -> Vec<u8> {
+    submit(native);
+    read_back(&(native.0.clone(), native.1.clone()), &native.2)
+}
+
 /// An adapter, or `None` after printing why there is none.
 pub fn adapter() -> Option<wgpu::Adapter> {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let instance = instance();
     match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())) {
         Ok(adapter) => Some(adapter),
         Err(e) => {
@@ -109,6 +140,8 @@ pub fn read_back(gpu: &Gpu, texture: &wgpu::Texture) -> Vec<u8> {
 }
 
 /// `list` through `rasterizer` into `native`, inside a validation error scope: whether it drew, and any validation error.
+/// A handle that is the renderer's tuple has its encoder submitted inside the scope, as the renderer does, so an invalid
+/// recorded command is reported here.
 pub fn paint(
     gpu: &Gpu,
     rasterizer: &mut VelloRasterizer,
@@ -118,14 +151,17 @@ pub fn paint(
 ) -> (bool, Option<wgpu::Error>) {
     let scope = gpu.0.push_error_scope(wgpu::ErrorFilter::Validation);
     let drawn = rasterizer.rasterize_native(spec, list, native).unwrap();
+    if let Some(native) = native.downcast_mut::<Native>() {
+        submit(native);
+    }
     (drawn, pollster::block_on(scope.pop()))
 }
 
 /// `list` on the GPU, as premultiplied RGBA8. Asserts that it drew and that wgpu raised no validation error.
 pub fn gpu_pixels(gpu: &Gpu, rasterizer: &mut VelloRasterizer, spec: &FaceLayerSpec, list: &DrawList) -> Vec<u8> {
-    let mut native = (gpu.0.clone(), gpu.1.clone(), face_texture(&gpu.0, spec.size_px()));
+    let mut native = native(gpu, spec.size_px());
     let (drawn, error) = paint(gpu, rasterizer, spec, list, &mut native);
-    assert!(drawn, "the rasteriser declined a tuple of (Device, Queue, Texture)");
+    assert!(drawn, "the rasteriser declined a tuple of (Device, Queue, Texture, CommandEncoder)");
     assert!(error.is_none(), "wgpu raised a validation error: {error:?}");
     read_back(gpu, &native.2)
 }
@@ -140,4 +176,13 @@ pub fn cpu_pixels(spec: &FaceLayerSpec, list: &DrawList) -> Vec<u8> {
 /// Premultiplied pixels of a `size` raster as the straight-alpha image the comparison takes.
 pub fn image(size: (u32, u32), pixels: &[u8]) -> RgbaImage {
     straight_image(size.0, size.1, pixels).unwrap()
+}
+
+/// A headless instance on the product's backends (`Backends::PRIMARY`; `WGPU_BACKEND` can opt in to GL). wgpu's default
+/// starts GL, which crashes the process at exit on WSL with NVIDIA's D3D12 driver (`cargo test -p omuzaki-test --test
+/// gpu_instances` enforces this).
+fn instance() -> wgpu::Instance {
+    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+    descriptor.backends = wgpu::Backends::PRIMARY;
+    wgpu::Instance::new(descriptor.with_env())
 }

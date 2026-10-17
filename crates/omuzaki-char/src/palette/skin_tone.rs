@@ -597,6 +597,12 @@ fn skin_colours() -> Result<Value, OpError> {
 /// Sets a character's skin tone: the palette slots, the recorded tone, and every colour that should follow.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "tone": "tone-04", "undertone": "warm"}
+    ],
+    "x-omuzaki-fixture" = "character"
+))]
 pub struct SetSkinTone {
     /// The character.
     pub character: CharId,
@@ -666,6 +672,13 @@ register_op!(SetSkinTone);
 /// Lists the skin-tone range with every slot colour, so a picker (or an agent) can choose by eye.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {},
+        {"undertone": "cool"}
+    ],
+    "x-omuzaki-fixture" = "demo"
+))]
 pub struct ListSkinTones {
     /// Only this undertone; all three when omitted.
     #[serde(default)]

@@ -19,6 +19,13 @@ use crate::ops::character::access as character;
 /// a portrait, 1 and above for an extreme close-up); a variant without one is only chosen by name.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "id": "portrait", "shot": {"min": 0.5, "max": 2.0}},
+        {"character": "kit", "id": "detail", "extends": "close-up"}
+    ],
+    "x-omuzaki-fixture" = "character-variant"
+))]
 pub struct VariantCreate {
     /// The character the variant belongs to.
     pub character: CharId,
