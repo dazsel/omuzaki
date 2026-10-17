@@ -68,6 +68,7 @@ pub fn skin_head(ctx: &BuildCtx<'_>, p: &HeadParams, head_centre: Vec3) -> Resul
         vertex_colours: false,
         outline: Some(Outline { colour: lighten(line, base, FACE_LINE_LIGHTEN), width: HEAD_OUTLINE }),
         receives_shadows: false,
+        uv_transform: omuzaki_render_api::UvTransform::IDENTITY,
     })
 }
 
@@ -89,6 +90,7 @@ pub fn skin_ear(ctx: &BuildCtx<'_>, p: &HeadParams) -> Result<MaterialSpec, Buil
         vertex_colours: false,
         outline: Some(Outline { colour: ctx.colour(&p.skin.line)?, width: EAR_OUTLINE }),
         receives_shadows: true,
+        uv_transform: omuzaki_render_api::UvTransform::IDENTITY,
     })
 }
 

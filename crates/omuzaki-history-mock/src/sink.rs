@@ -163,7 +163,7 @@ mod tests {
         .unwrap();
         assert!(matches!(&started, HistoryEntry::JobStarted { job: JobId(1), .. }));
         assert_eq!(serde_json::to_value(&started).unwrap()["at"], 0.5);
-        let ended = HistoryEntry::JobEnded { job: JobId(1), state: JobState::Done { tx: TxId(5), seq: Some(12) } };
+        let ended = HistoryEntry::JobEnded { job: JobId(1), state: JobState::done(TxId(5), Some(12)) };
         let revert = HistoryEntry::TxRevert {
             tx: TxId(4),
             seqs: vec![11],
