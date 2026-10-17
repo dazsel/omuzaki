@@ -15,6 +15,11 @@ use super::ResourceProvider;
 
 pub(crate) const RENDER_PREFIX: &str = "omuzaki://render/";
 const PNG_SUFFIX: &str = ".png";
+
+/// The URI under which the render stored as `hash` is read.
+pub(crate) fn render_uri(hash: &ContentHash) -> String {
+    format!("{RENDER_PREFIX}{hash}{PNG_SUFFIX}")
+}
 const PNG: &str = "image/png";
 /// The eight bytes every PNG file starts with.
 const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
