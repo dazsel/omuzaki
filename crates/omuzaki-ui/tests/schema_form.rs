@@ -394,14 +394,22 @@ fn escape_in_a_text_or_integer_field_puts_the_value_back_and_cancels() {
 }
 
 #[test]
-fn a_curve_field_does_not_offer_a_tangent_it_cannot_save() {
+fn a_tangent_typed_into_a_curve_field_is_dropped_so_what_is_shown_is_what_is_saved() {
     let mut h = rig(&one_field(json!({
         "title": "Response", "type": "array", "items": {"type": "number"}, "x-ui": {"widget": "curve"}
     })));
     focus(&mut h, Role::Slider, "Response, point 1 of 2");
     h.run_steps(2);
-    let tangent = h.get_by_role_and_label(Role::SpinButton, "Tangent");
-    assert!(tangent.accesskit_node().is_disabled(), "the array carries points only, so there is no tangent to edit");
+    focus(&mut h, Role::SpinButton, "Tangent");
+    press(&mut h, Modifiers::COMMAND, Key::A);
+    h.event(Event::Text("3".to_owned()));
+    h.run_steps(3);
+    press(&mut h, Modifiers::NONE, Key::Enter);
+    h.run_steps(3);
+    // The array carries points only: the curve the form holds is the curve it will submit, tangents automatic.
+    let FormValue::Object(fields) = &h.state().value else { panic!("an object") };
+    let FormValue::Curve(curve) = &fields[0].1 else { panic!("a curve") };
+    assert!(curve.points().iter().all(|p| p.tangent.is_none()), "{:?}", curve.points());
     assert_eq!(json_of(&h), json!({"field": [0, 0, 1, 1]}), "what is shown is what is saved");
 }
 

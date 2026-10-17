@@ -384,6 +384,159 @@ fn a_drag_among_equal_layer_siblings_lands_where_it_is_dropped() {
     assert_eq!(row_names(&h), ["b", "c", "a"]);
 }
 
+/// A request from an agent, run straight on the document (not through the panel).
+fn agent_runs(h: &Harness<'_, Rig>, op: &str, args: Value) {
+    let request = Request {
+        op: op.to_owned(),
+        args,
+        mode: omuzaki_ops_api::Mode::Apply,
+        actor: Actor::Agent { id: "designer".to_owned(), model: None },
+        grants: Grants::agent_default(),
+        cause: None,
+        tx: None,
+        base: None,
+    };
+    h.state().runner.inner.run(request).unwrap_or_else(|e| panic!("{e}"));
+}
+
+/// The drop lines on screen: the 2 pt accent bars a row paints when a drag would land on it.
+fn drop_lines(h: &Harness<'_, Rig>) -> Vec<Rect> {
+    let accent = omuzaki_ui::ds::theme::ds(&h.ctx).theme.accent;
+    let mut found = Vec::new();
+    for clipped in &h.output().shapes {
+        collect_bars(&clipped.shape, accent, &mut found);
+    }
+    found
+}
+
+fn collect_bars(shape: &egui::Shape, accent: egui::Color32, found: &mut Vec<Rect>) {
+    match shape {
+        egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| collect_bars(s, accent, found)),
+        egui::Shape::Rect(r) if r.fill == accent && (r.rect.height() - 2.0).abs() < 0.01 => found.push(r.rect),
+        _ => {}
+    }
+}
+
+#[test]
+fn the_row_under_the_pointer_shows_where_the_drag_would_land() {
+    let mut h = rig();
+    let vest = h.get_by_role_and_label(Role::TreeItem, "vest").rect().center();
+    let shirt = h.get_by_role_and_label(Role::TreeItem, "shirt").rect();
+    let above_shirt = egui::pos2(shirt.center().x, shirt.top() + 3.0);
+    let below_shirt = egui::pos2(shirt.center().x, shirt.bottom() - 3.0);
+    assert!(drop_lines(&h).is_empty(), "no line before a drag");
+    h.hover_at(vest);
+    h.run();
+    h.event(UiEvent::PointerButton {
+        pos: vest,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    });
+    for p in [vest + vec2(0.0, -4.0), vest + vec2(0.0, -10.0)] {
+        h.event(UiEvent::PointerMoved(p));
+        h.run();
+    }
+    h.event(UiEvent::PointerMoved(above_shirt));
+    h.run();
+    let lines = drop_lines(&h);
+    assert_eq!(lines.len(), 1, "one line while the drag is over the shirt: {lines:?}");
+    assert!((lines[0].center().y - (shirt.top() + 1.0)).abs() < 1.0, "on the shirt's top edge: {lines:?} {shirt:?}");
+    h.event(UiEvent::PointerMoved(below_shirt));
+    h.run();
+    let lines = drop_lines(&h);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!((lines[0].center().y - (shirt.bottom() - 1.0)).abs() < 1.0, "the shirt's bottom edge: {lines:?}");
+    // Out over the empty space under the rows: no target, so no line.
+    h.event(UiEvent::PointerMoved(egui::pos2(160.0, 440.0)));
+    h.run();
+    assert!(drop_lines(&h).is_empty(), "{:?}", drop_lines(&h));
+}
+
+#[test]
+fn a_drag_drops_the_part_it_began_on_even_if_the_tree_was_read_again_meanwhile() {
+    let mut h = rig();
+    let vest = h.get_by_role_and_label(Role::TreeItem, "vest").rect().center();
+    let shirt = h.get_by_role_and_label(Role::TreeItem, "shirt").rect();
+    let above_shirt = egui::pos2(shirt.center().x, shirt.top() + 3.0);
+    h.hover_at(vest);
+    h.run();
+    h.event(UiEvent::PointerButton {
+        pos: vest,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    });
+    for p in [vest + vec2(0.0, -4.0), vest + vec2(0.0, -10.0), above_shirt] {
+        h.event(UiEvent::PointerMoved(p));
+        h.run();
+    }
+    // An agent adds a part that sorts first by id and builds last, so every part's index in the tree moves by one
+    // while the rows the pointer is over stay where they are.
+    agent_runs(&h, "part.duplicate", json!({"character": "mock", "part": "vest", "new_id": "aaa"}));
+    agent_runs(&h, "part.reorder", json!({"character": "mock", "part": "aaa", "layer": 99}));
+    h.run_steps(3);
+    assert_eq!(row_names(&h).last().map(String::as_str), Some("aaa"), "the tree was read again");
+    h.event(UiEvent::PointerButton {
+        pos: above_shirt,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    settle(&mut h);
+    assert_eq!(row_names(&h), ["body", "hair", "head", "vest", "shirt", "aaa"], "the vest moved, nothing else");
+}
+
+/// Reorders `part` one place down (`Move down`) or up from its context menu.
+fn move_from_menu(h: &mut Harness<'_, Rig>, part: &str, item: &str) {
+    h.get_by_role_and_label(Role::TreeItem, part).click_secondary();
+    settle(h);
+    h.get_by_label(item).click();
+    settle(h);
+}
+
+#[test]
+fn moving_a_part_above_one_that_has_a_child_takes_a_free_layer_instead_of_raising_the_parent() {
+    // The vest (30) goes above the shirt (20). Raising the shirt to 31 would put it above its own hood (20).
+    let mut h = rig_over(
+        runner(Some(json!({
+            "body": {"kind": "mock-body"},
+            "shirt": {"kind": "mock-garment", "layer": 20},
+            "hood": {"kind": "mock-garment", "parent": "shirt", "layer": 20},
+            "vest": {"kind": "mock-garment", "layer": 30}
+        }))),
+        vec2(320.0, 480.0),
+    );
+    assert_eq!(row_names(&h), ["body", "shirt", "hood", "vest"]);
+    move_from_menu(&mut h, "vest", "Move up");
+    assert!(h.query_by_label_contains("didn't work").is_none(), "the op was refused");
+    assert_eq!(row_names(&h), ["body", "vest", "shirt", "hood"]);
+    assert_eq!(h.state().runner.ops(), ["part.reorder"], "one op, on the vest alone");
+}
+
+#[test]
+fn layer_changes_that_would_fail_midway_are_applied_in_an_order_every_step_accepts() {
+    // a and b are heads and c is hair, which needs a head built first; all on layer 0. Moving a below b gives a layer 1
+    // while c stays at 0, and then c would have to build before the head it reads: the op refuses that step.
+    let mut h = rig_over(
+        runner(Some(json!({
+            "a": {"kind": "mock-head"},
+            "b": {"kind": "mock-head"},
+            "c": {"kind": "mock-hair"}
+        }))),
+        vec2(320.0, 480.0),
+    );
+    assert_eq!(row_names(&h), ["a", "b", "c"]);
+    move_from_menu(&mut h, "a", "Move down");
+    assert!(h.query_by_label_contains("didn't work").is_none(), "an op was refused");
+    assert_eq!(row_names(&h), ["b", "a", "c"], "a moved one place");
+    // And one undo undoes the whole move.
+    let (runner, actor) = (Arc::clone(&h.state().runner), person());
+    runner.undo(&actor, &Grants::person()).unwrap_or_else(|e| panic!("{e}"));
+    settle(&mut h);
+    assert_eq!(row_names(&h), ["a", "b", "c"]);
+}
+
 // ---- the keyboard ----
 
 #[test]

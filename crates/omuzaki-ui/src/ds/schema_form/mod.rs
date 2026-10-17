@@ -43,9 +43,29 @@
 //!
 //! # Gestures
 //!
-//! [`FormOutput::edit`] names the field edited and where its gesture is ([`EditPhase`]): a drag, a colour being picked
-//! or text being typed previews, its end commits, and Esc cancels after putting the value back. A click, a key or a
-//! reset commits at once. A host makes one gesture one transaction (`shell.md` section 7).
+//! [`FormOutput::edit`] names the field edited and where its gesture is ([`EditPhase`]). A host makes one gesture one
+//! transaction (`shell.md` section 7). Every control follows the same life cycle, and every input that can end a
+//! gesture is in this table:
+//!
+//! | Control | Starts and goes on (`Preview`) | Ends (`Commit`) | Esc (`Cancel`) | Leaves the field (Tab, click away) |
+//! |---|---|---|---|---|
+//! | slider | press and drag, or a held key | release; a key press is one step | puts the value back first | n/a |
+//! | colour field | the picker moving | the picker closed | puts the value back first | n/a |
+//! | curve editor | a point dragged | release | puts the curve back first | n/a |
+//! | text field | every changed keystroke | Enter or leaving the field | puts back the text the field had when it took focus | commits the text as it is |
+//! | exact integer (text) | a keystroke that makes an allowed number | Enter or leaving, with the last allowed number even if the text no longer parses | puts back the number the field had when it took focus | commits the last allowed number, and the text goes back to it |
+//! | number field, choice, segmented, toggle | none: one step | the change | none | none |
+//! | reset (any row) | none | the default | none | none |
+//!
+//! The rules behind the table, which the tests in `tests/schema_form.rs` check:
+//!
+//! 1. A `Preview` is always followed by exactly one `Commit` or `Cancel` of the same field: no way out of a control
+//!    (blur, Enter, release, Esc) leaves the host's transaction open.
+//! 2. A `Cancel` is reported after the value is back to what it was when the gesture began, and the blur that Esc
+//!    causes reports nothing more.
+//! 3. A value the field would refuse (text that is not an allowed number, a tangent the array has no place for) is
+//!    never previewed or committed; the form holds the last value that can be saved, so what is shown is what is sent.
+//! 4. One person edits one field at a time; if two report in one frame, an end of gesture wins over a preview.
 //!
 //! # What it promises
 //!

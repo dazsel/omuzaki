@@ -8,6 +8,15 @@
 //! - **One gesture is one transaction** ([`EditPhase`]): the first preview of a drag (or a colour being picked, or
 //!   text being typed) opens one with `Runner::begin`, every preview runs in it, the gesture's end commits it (one
 //!   undo step), and Esc rolls it back. A one-step edit (a click, a key, a reset) is its own transaction.
+//!
+//!   | Form reports | Gesture closed | Gesture open |
+//!   |---|---|---|
+//!   | `Preview` | begin, then run the edit in it | run the edit in it |
+//!   | `Commit` | run the edit in its own transaction (nothing to send if the value is already there) | run the last value in it, commit |
+//!   | `Cancel` | nothing | roll it back |
+//!   | an op is refused | the error is shown | roll it back; a refused rollback keeps the id, shows "Try again" / "Keep the change", and nothing else is sent until one succeeds |
+//!
+//!   The form is read again only when no gesture is open, so a previewed value is never overwritten mid-gesture.
 //! - **Several parts of one kind** selected are edited together: the edit runs on each, in one transaction. The form
 //!   shows the primary part's values.
 //!

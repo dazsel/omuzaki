@@ -7,18 +7,34 @@
 //! (Ctrl+D) and `part.remove` (Delete; several at once are one transaction, so one undo step). The selection is the
 //! shared [`EditFocus`], which the inspector and the viewport follow.
 //!
+//! **A drag** has one life cycle; every input that can end it is in the table.
+//!
+//! | State | Input | Next state |
+//! |---|---|---|
+//! | idle | a drag starts on a row | dragging that part (kept by id: the tree can be read again under the pointer) |
+//! | dragging | the pointer is over a visible sibling row | that row shows the drop line (found before the row is painted) |
+//! | dragging | the pointer is over anything else (another level, the gap under the rows, outside the list or the window) | no target, no line |
+//! | dragging | the button is released with a target | idle; the part is moved with `part.reorder` (one transaction) |
+//! | dragging | the button is released with no target, or the pointer is no longer down | idle; nothing is run |
+//! | dragging | Esc | idle; nothing is run, and the release that follows does nothing |
+//! | dragging | another character is opened, or the dragged part is gone when it is dropped | idle; nothing is run |
+//!
+//! A drop is applied by [`reorder`]: the layers that give the order, applied in an order the build rules accept at
+//! every step, as one transaction.
+//!
 //! **Keyboard** (when a row has focus; one row is the Tab stop): Up and Down move (Shift extends), Left collapses or
 //! goes to the parent, Right expands or goes to the first child, Home and End, Enter sends the keyboard to the
 //! inspector, Delete, Ctrl+D, Ctrl+F or typing starts the filter, Esc cancels a drag. Every drag has a menu equivalent
 //! in the row's context menu (WCAG 2.5.7).
 
+mod reorder;
 pub mod rows;
 pub mod tree;
 
 use std::collections::BTreeMap;
 
-use egui::{EventFilter, Key, Modifiers, Pos2, ScrollArea, Ui};
-use omuzaki_char_api::{CharId, PartId};
+use egui::{EventFilter, Key, Modifiers, Rect, ScrollArea, Ui};
+use omuzaki_char_api::{CharId, CharacterDef, PartId};
 use omuzaki_ops_api::{Actor, Event, OpError};
 use serde_json::json;
 
@@ -74,10 +90,11 @@ enum Step {
     Down,
 }
 
-/// A drag in progress: the part dragged and where it would land.
-#[derive(Clone, Copy, Debug)]
+/// A drag in progress: the part dragged (by id, because the tree can be read again under the pointer) and where it
+/// would land. The target is the row under the pointer *this frame*, found before the rows are painted.
+#[derive(Clone, Debug)]
 struct Drag {
-    source: usize,
+    source: PartId,
     target: Option<(usize, DropLine)>,
 }
 
@@ -89,6 +106,8 @@ pub struct Outliner {
     /// The character the tree was read from, and the focus generation that was current then.
     character: Option<CharId>,
     tree: Tree,
+    /// The document the tree was read from: the build rules a reorder is checked against.
+    def: Option<CharacterDef>,
     /// Counts tree builds, for the row cache.
     built: u64,
     collapsed: Collapsed,
@@ -121,6 +140,7 @@ impl Outliner {
             watch: DocWatch::default(),
             character: None,
             tree: Tree::default(),
+            def: None,
             built: 0,
             collapsed: Collapsed::default(),
             rows: Rows::default(),
@@ -185,11 +205,12 @@ impl Outliner {
         match io.character(character) {
             Ok(Some(def)) => {
                 self.tree = Tree::of(&def);
+                self.def = Some(def);
                 self.problem = None;
             }
-            Ok(None) => self.tree = Tree::default(),
+            Ok(None) => (self.tree, self.def) = (Tree::default(), None),
             Err(e) => {
-                self.tree = Tree::default();
+                (self.tree, self.def) = (Tree::default(), None);
                 self.problem = Some(e.message);
             }
         }
@@ -283,7 +304,10 @@ impl Outliner {
                     let row = rows[at];
                     let Some(node) = tree.node(row.node) else { continue };
                     let tab_stop = at == target_row;
-                    let drawn = draw_row(ui, ds, node, row, focus, touched, &invalid, tab_stop, *drag);
+                    // The drop line is found from the pointer before the row is painted: the row paints it.
+                    let slot = Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), height));
+                    let line = drop_line(ui, slot, tree, row.node, drag);
+                    let drawn = draw_row(ui, ds, node, row, focus, touched, &invalid, tab_stop, line);
                     // A row that kept the keyboard after the cursor moved on (a copy was selected, a part was
                     // removed) hands it to the cursor row next frame.
                     if !tab_stop && drawn.response.has_focus() {
@@ -306,7 +330,9 @@ impl Outliner {
                         }
                     }
                     action = action.or_else(|| row_action(&drawn, row, node.enabled));
-                    track_drag(ui, &drawn, tree, row.node, drag);
+                    if drawn.response.drag_started() {
+                        *drag = Some(Drag { source: node.id.clone(), target: None });
+                    }
                     if let Some(menu) = context_menu(&drawn.response, ds, row.node, node.enabled) {
                         action = Some(menu);
                     }
@@ -332,7 +358,7 @@ impl Outliner {
 
     /// Ends a drag: a release over a sibling drops there, Esc or a release anywhere else cancels it.
     fn finish_drag(&mut self, ui: &Ui) -> Option<Action> {
-        let drag = self.drag?;
+        let drag = self.drag.clone()?;
         let (released, escaped) =
             ui.input(|i| (i.pointer.any_released() || !i.pointer.any_down(), i.key_pressed(Key::Escape)));
         if escaped {
@@ -343,8 +369,10 @@ impl Outliner {
             return None;
         }
         self.drag = None;
+        // The part is found again by id: the tree may have been read anew since the drag began.
+        let source = self.tree.find(&drag.source)?;
         let (target, line) = drag.target?;
-        Some(Action::Drop { source: drag.source, target, line })
+        Some(Action::Drop { source, target, line })
     }
 
     /// Does what the person asked for.
@@ -473,11 +501,13 @@ impl Outliner {
         if source == target || !same_parent(&self.tree, source, target) || line == DropLine::None {
             return Ok(());
         }
-        // The siblings as they will be, then the fewest layer changes that make that the build order.
+        // The siblings as they will be, then the layer changes that make that the build order ([`reorder`]).
         let mut order: Vec<usize> = self.tree.siblings(source).iter().copied().filter(|&s| s != source).collect();
         let Some(at) = order.iter().position(|&s| s == target) else { return Ok(()) };
-        order.insert(if line == DropLine::Above { at } else { at + 1 }, source);
-        let changes = layers_for(&self.tree, &order)?;
+        let moved = if line == DropLine::Above { at } else { at + 1 };
+        order.insert(moved, source);
+        let Some(def) = &self.def else { return Ok(()) };
+        let changes = reorder::plan(def, &self.tree, &order, moved)?;
         let tx = (changes.len() > 1).then(|| io.runner.begin("Reorder part", io.actor));
         for &(node, layer) in &changes {
             let Some(id) = self.tree.node(node).map(|n| n.id.clone()) else { continue };
@@ -548,7 +578,7 @@ fn draw_row(
     touched: &BTreeMap<PartId, String>,
     invalid: &str,
     tab_stop: bool,
-    drag: Option<Drag>,
+    line: DropLine,
 ) -> TreeRowOutput {
     let mut icons: [RowIcon<'_>; 3] = [RowIcon::Visible(node.enabled); 3];
     let mut count = 1;
@@ -560,10 +590,6 @@ fn draw_row(
         icons[count] = RowIcon::GateWarning { text: invalid };
         count += 1;
     }
-    let line = match drag.and_then(|d| d.target) {
-        Some((target, line)) if target == row.node => line,
-        _ => DropLine::None,
-    };
     let mut tree_row = TreeRow::new((ROW, node.id.as_str()), node.id.as_str(), node.icon)
         .level(node.depth)
         .expand(row.expand)
@@ -615,47 +641,23 @@ fn row_action(drawn: &TreeRowOutput, row: Row, enabled: bool) -> Option<Action> 
     })
 }
 
-/// Starts a drag on a row, and while one is going on, finds the sibling row under the pointer and the side.
-fn track_drag(ui: &Ui, drawn: &TreeRowOutput, tree: &Tree, node: usize, drag: &mut Option<Drag>) {
-    if drawn.response.drag_started() {
-        *drag = Some(Drag { source: node, target: None });
-    }
-    let Some(d) = drag.as_mut() else { return };
-    let pointer: Option<Pos2> = ui.input(|i| i.pointer.interact_pos());
-    // Over the row, and over the part of it the list shows: a row cut by the list's edge is not a target outside it.
-    let Some(pointer) = pointer.filter(|p| drawn.response.rect.contains(*p) && ui.clip_rect().contains(*p)) else {
-        return;
+/// While a drag is going on, the drop line this row takes: the pointer must be over the row, over the part of it the
+/// list shows (a row cut by the list's edge is not a target outside it), and the row a sibling of the dragged part.
+/// `slot` is where the row is about to be laid out. The target is recorded for [`Outliner::finish_drag`]; a frame in
+/// which no row takes it leaves none, so a release there cancels.
+fn drop_line(ui: &Ui, slot: Rect, tree: &Tree, node: usize, drag: &mut Option<Drag>) -> DropLine {
+    let Some(d) = drag.as_mut() else { return DropLine::None };
+    let pointer = ui.input(|i| i.pointer.interact_pos());
+    let Some(pointer) = pointer.filter(|p| slot.contains(*p) && ui.clip_rect().contains(*p)) else {
+        return DropLine::None;
     };
-    d.target = (node != d.source && same_parent(tree, d.source, node)).then(|| {
-        let line = if pointer.y < drawn.response.rect.center().y { DropLine::Above } else { DropLine::Below };
-        (node, line)
-    });
-}
-
-/// The layer changes that make `order` (sibling node indices) the build order, which sorts by layer and then by id. A
-/// part keeps its layer when it already sorts after the one before it; otherwise it takes the layer just past it, and
-/// that can push the parts after it along. Siblings that share a layer are told apart this way, so moving one of three
-/// equal-layer parts down one place moves it exactly one place.
-///
-/// # Errors
-/// A layer would pass `i32::MAX`.
-fn layers_for(tree: &Tree, order: &[usize]) -> Result<Vec<(usize, i32)>, OpError> {
-    let mut changes = Vec::new();
-    let mut before: Option<(i32, &PartId)> = None;
-    for &node in order {
-        let Some(part) = tree.node(node) else { continue };
-        let keeps = before.is_none_or(|(layer, id)| (part.layer, &part.id) > (layer, id));
-        let layer = if keeps {
-            part.layer
-        } else {
-            let next = before.map_or(part.layer, |(layer, _)| layer).checked_add(1);
-            let next = next.ok_or_else(|| OpError::invalid("layer", "no layer is left after the last one"))?;
-            changes.push((node, next));
-            next
-        };
-        before = Some((layer, &part.id));
+    let Some(source) = tree.find(&d.source) else { return DropLine::None };
+    if source == node || !same_parent(tree, source, node) {
+        return DropLine::None;
     }
-    Ok(changes)
+    let line = if pointer.y < slot.center().y { DropLine::Above } else { DropLine::Below };
+    d.target = Some((node, line));
+    line
 }
 
 /// Whether parts `a` and `b` are siblings.
