@@ -98,6 +98,18 @@ How work is cut into large changes, one agent and one PR each, is in [`large-cha
     runs after #2141 merges") is a separate issue.
   - **Why:** small pull requests took 4 rounds at the median and 12 times more review per line than large ones, and
     rework was 61% of all pull request time (measured on 193 merged PRs).
+  - **Which reviewer, and the standing fallback (owner, 2026-10-16).**
+    - **Simple reviews** (small, mechanical or docs-only PRs, and re-checks) run on Codex `gpt-6.1-sol` at reasoning
+      xhigh.
+    - **Strong and deep reviews** (large PRs, and those touching design docs, decisions, CI or `xtask`) run on Codex
+      `gpt-6-astra` at reasoning high. A deep review's header carries `, deep)`.
+    - **When Codex is down or gives no verdict,** a Claude reviewer takes the same review in the same format: a
+      VERDICT line, then numbered findings with file:line, posted as a PR comment.
+      - Sonnet stands in for the simple, strong and deep reviews.
+      - Opus stands in for an extremely large PR, about 3,000 or more changed lines.
+    - **Extremely large PRs** also get one Opus review: the Director, the area lead, or an Opus reviewer at high
+      effort with a short report on the riskiest parts. That review, or the sign-off, is the senior check. There's no
+      split into parallel per-topic reviews.
   - **What Codex is asked:** the first request asks for every finding in one pass, and fix rounds ask only whether the
     earlier findings are fixed and what the changes broke (`pub-review-dispatch.sh`).
   - **The Director's process-doc pull requests** (label `director-docs`) merge on a green gate without a review.
@@ -214,3 +226,28 @@ The progress tracker reports, every hour:
 
 A red health reading, or a P0 bug older than a day, gets a fix or an owner the same check-in. The number to drive
 down is review rounds per merged pull request.
+
+### Activity reporting
+
+Every agent working for the organisation reports what it did, in a form the tracker can read exactly. That covers
+local and cloud sessions, every role, and leads. A cloud session leaves no other record.
+- **Commit trailers,** in every commit, before `Co-Authored-By`:
+  ```
+  Agent-Id: <agent or session id>
+  Agent-Model: <model id>
+  Agent-Lane: <local | cloud>
+  Agent-Role: <implementer | reviewer | lead | director>
+  Agent-Area: <area label without "area:", comma-separated if several>
+  ```
+- **An activity marker,** at the end of every pull request or issue comment and every final report. It is one hidden
+  line covering the work since your previous marker; leave out fields that don't apply:
+  ```
+  <!-- agent-activity: id=<id> model=<model> lane=<lane> role=<role> area=<area> pr=<n> issue=<n> start=<ISO 8601 UTC> end=<ISO 8601 UTC> tokens_in=<n> tokens_out=<n> cache_write=<n> cache_read=<n> handoff=<id> -->
+  ```
+  Token types are reported separately, never summed: `tokens_in` is uncached input, `tokens_out` output, and
+  `cache_write` and `cache_read` the prompt cache. `handoff` names the agent the work passes to.
+- **Leads and the Director:** decisions open with `**<Area> lead (ruling):**` or `**Director (ruling…)**`, sign-offs
+  with `**Director (sign-off): signed at <sha7>**`, and status posts with `**<Area> lead (status):**`. They carry the
+  marker too.
+
+The markers hold metadata only (ids, models, areas, times and token counts), never secrets or private material.

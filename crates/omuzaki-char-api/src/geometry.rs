@@ -71,6 +71,10 @@ pub struct MaterialSpec {
     pub outline: Option<Outline>,
     /// Whether shadow maps darken this surface. Faces turn it off.
     pub receives_shadows: bool,
+    /// Scale and offset applied to the UV of every UV-addressed texture of the material (the renderer's
+    /// `Material::uv_transform`). Identity for every built part; an imported material keeps its file's texture
+    /// transform here, and an expression's UV bind moves it (`byom.md` D3).
+    pub uv_transform: UvTransform,
 }
 
 /// A name the stage could not turn into a handle.
@@ -98,6 +102,7 @@ impl MaterialSpec {
             vertex_colours: m.vertex_colours,
             outline: m.outline,
             receives_shadows: m.receives_shadows,
+            uv_transform: m.uv_transform,
         }
     }
 
@@ -143,8 +148,7 @@ impl MaterialSpec {
             vertex_colours: self.vertex_colours,
             outline: self.outline,
             receives_shadows: self.receives_shadows,
-            // The spec's own field is wired by a later task.
-            uv_transform: UvTransform::IDENTITY,
+            uv_transform: self.uv_transform,
         })
     }
 }
@@ -272,6 +276,16 @@ mod tests {
 
     fn projection() -> FaceProjection {
         FaceProjection { rect: FaceRect { x0: -0.2, x1: 0.2, y0: -0.3, y1: 0.1 }, front_fade: [0.0, 0.07] }
+    }
+
+    #[test]
+    fn the_uv_transform_reaches_the_renderer_material() {
+        let mut spec = MaterialSpec::toon(Colour::WHITE);
+        assert_eq!(spec.uv_transform, UvTransform::IDENTITY, "identity by default");
+        spec.uv_transform = UvTransform { scale: Vec2::new(0.5, 1.0), offset: Vec2::new(0.5, 0.0) };
+        let material = spec.to_material(&|_| None, &|_| None).unwrap();
+        assert_eq!(material.uv_transform, spec.uv_transform);
+        assert_eq!(spec.validate(), Ok(()));
     }
 
     #[test]
