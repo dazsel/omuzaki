@@ -8,8 +8,10 @@
 
 mod support;
 // The counting allocator is installed only in this test binary, so the other tests run on the plain allocator.
-#[path = "support/counting.rs"]
-mod counting;
+use omuzaki_render_mock::counting;
+
+#[global_allocator]
+static ALLOCATOR: counting::Counting = counting::Counting::new(env!("CARGO_PKG_NAME"));
 
 use std::collections::BTreeMap;
 
@@ -90,7 +92,7 @@ fn a_frame_with_blended_instances_allocates_nothing_in_the_renderers_own_code() 
     }
     let per_frame = allocations_per_frame(20);
     println!("allocations per frame by owner: {per_frame:?}");
-    for owner in ["omuzaki-render", "render-api", "test and mock", "unattributed"] {
+    for owner in [counting::OWN, counting::WORKSPACE, counting::TESTS, counting::UNATTRIBUTED] {
         assert_eq!(per_frame.get(owner).copied().unwrap_or(0), 0, "{owner} allocated per frame: {per_frame:?}");
     }
 }
