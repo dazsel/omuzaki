@@ -1,0 +1,11 @@
+{
+  "about": "A variant `close-up` with one override, so there is a variant to list, preview, change or clear.",
+  "base": "character",
+  "steps": [
+    { "op": "variant.create", "args": { "character": "kit", "id": "close-up" } },
+    {
+      "op": "variant.set_override",
+      "args": { "character": "kit", "variant": "close-up", "path": "face/layout/eye_spacing", "value": 0.09 }
+    }
+  ]
+}
