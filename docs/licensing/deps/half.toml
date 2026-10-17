@@ -1,0 +1,8 @@
+section = "rust"
+item = "half 2.7"
+kind = "crate"
+used_for = "the `f16` element type `ort` needs for float16 tensors (its `half` feature), which `omuzaki-ai-ort` carries as raw bits (#840)"
+status = "yes"
+condition = "MIT OR Apache-2.0 (the `license` field of half 2.7.1, checked 2026-10-15): keep the notices; already in the lock through other crates, so no new crate"
+audit = "#840"
+crates = ["half"]
