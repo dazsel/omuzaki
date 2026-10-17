@@ -11,6 +11,12 @@ use super::access;
 /// Lists the registered look presets, sorted by id. Writes nothing.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {}
+    ],
+    "x-omuzaki-fixture" = "demo"
+))]
 pub struct LookListPresets {}
 
 impl Op for LookListPresets {

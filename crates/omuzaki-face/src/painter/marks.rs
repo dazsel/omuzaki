@@ -8,9 +8,9 @@
 use std::f32::consts::{PI, TAU};
 
 use omuzaki_core::glam::Vec2;
-use omuzaki_face_api::{Cap, Cmd, Colour, ColourRef, FaceLayerId, FaceMark, FaceRect, Join, MarkKind, Paint, narrow};
+use omuzaki_face_api::{Cap, Cmd, Colour, FaceLayerId, FaceMark, FaceRect, Join, MarkKind, Paint, narrow};
 
-use crate::painter::PaintCtx;
+use crate::painter::{PaintCtx, fixed_colour};
 
 /// A freckle's radius as a share of the patch radius (`size`).
 const FRECKLE_RADIUS: f32 = 0.12;
@@ -49,10 +49,7 @@ pub(super) fn paint(ctx: &mut PaintCtx<'_>) {
     let rect = ctx.specs[FaceLayerId::Base as usize].rect;
     let profile = ctx.profile;
     for mark in &profile.marks {
-        let colour = match &mark.colour {
-            ColourRef::Fixed(c) => *c,
-            ColourRef::Slot(_) => FALLBACK_COLOUR,
-        };
+        let colour = fixed_colour(&mark.colour, FALLBACK_COLOUR);
         // A mark that cannot fit the rect at its size is scaled down until its full reach does, so it never leaves it.
         let size = narrow(mark.size).min(rect.width().min(rect.height()) / (2.0 * REACH));
         let centre = keep_inside(Vec2::new(narrow(mark.at[0]), narrow(mark.at[1])), &rect, REACH * size);
