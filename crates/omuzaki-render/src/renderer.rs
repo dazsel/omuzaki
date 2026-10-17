@@ -142,7 +142,7 @@ impl WgpuRenderer {
     /// adapter. Not part of the renderer's contract.
     ///
     /// # Errors
-    /// `Invalid` once a mesh with morph targets has been created.
+    /// `Invalid` once a mesh with morph targets or a dynamic mesh has been created.
     #[doc(hidden)]
     pub fn force_cpu_morph(&mut self) -> Result<(), RenderError> {
         self.resources.morphs.force_cpu()
@@ -206,6 +206,16 @@ fn internal_size(target: UVec2, render_scale: f32) -> UVec2 {
     UVec2::new(scale(target.x), scale(target.y))
 }
 
+/// Whether every component of `vectors` is finite. Reads the exponent bits and accumulates, with no early exit, so the
+/// loop vectorises: this runs over every vertex of a dynamic mesh on every update.
+fn all_finite(vectors: &[Vec3]) -> bool {
+    const EXPONENT: u32 = 0x7f80_0000;
+    let non_finite = bytemuck::cast_slice::<Vec3, u32>(vectors)
+        .iter()
+        .fold(0_u32, |any, bits| any | u32::from(bits & EXPONENT == EXPONENT));
+    non_finite == 0
+}
+
 impl Renderer for WgpuRenderer {
     fn capabilities(&self) -> &Capabilities {
         &self.capabilities
@@ -228,9 +238,9 @@ impl Renderer for WgpuRenderer {
             }
         }
         let gpu = &self.shared.gpu;
-        // The GPU morph path reads the mesh's own vertices from a compute shader, so only then do they need `STORAGE`.
-        let blend_on_gpu = self.resources.morphs.path() == morph::MorphPath::Gpu;
-        let uploaded = gpu.scoped("a mesh", || GpuMesh::upload(gpu, mesh, options, blend_on_gpu))?;
+        // The GPU path reads and writes a mesh's streams from compute shaders, so only then do they need `STORAGE`.
+        let compute = self.resources.morphs.path() == morph::MorphPath::Gpu;
+        let uploaded = gpu.scoped("a mesh", || GpuMesh::upload(gpu, mesh, options, compute))?;
         let (index, generation) = self.resources.meshes.insert(uploaded);
         // The GPU morph path uploads the mesh's targets once, here; a mesh it cannot hold is refused outright.
         let attached = self.resources.meshes.get(index, generation).map_or(Ok(()), |m| {
@@ -260,7 +270,7 @@ impl Renderer for WgpuRenderer {
                 format!("{} positions and {} normals for a mesh of {count} vertices", positions.len(), normals.len());
             return Err(RenderError::invalid("vertex update", reason));
         }
-        if positions.iter().chain(normals).any(|v| !v.is_finite()) {
+        if !all_finite(positions) || !all_finite(normals) {
             return Err(RenderError::invalid("vertex update", "positions and normals must be finite"));
         }
         // A dynamic mesh's seams are found once, at creation (`resource/mesh.rs`). Tearing one apart is cheap to spot, so
@@ -274,10 +284,7 @@ impl Renderer for WgpuRenderer {
             );
             return Err(RenderError::invalid("vertex update", reason));
         }
-        gpu.scoped("a vertex update", || {
-            entry.update_vertices(&gpu.queue, positions, normals);
-            Ok(())
-        })
+        gpu.scoped("a vertex update", || entry.update_vertices(&gpu.queue, positions, normals))
     }
 
     fn create_texture(&mut self, desc: &TextureDesc, rgba: Option<&[u8]>) -> Result<TextureId, RenderError> {
@@ -416,7 +423,7 @@ impl Renderer for WgpuRenderer {
         // The refresh writes GPU buffers (staging memory can run out), so it sits in an error scope like every other
         // GPU call: a failure is a `RenderError`, not wgpu's uncaptured-error panic.
         shared.gpu.scoped("a mesh refresh", || {
-            resources.refresh_dynamic(&shared.gpu.queue, scene);
+            resources.refresh_dynamic(&shared.gpu.queue, scene, crate::pass::shadows::fits_shadows(scene, quality));
             Ok(())
         })?;
         let gpu = &shared.gpu;
@@ -544,6 +551,23 @@ mod tests {
     }
 
     #[test]
+    fn all_finite_sees_every_component_and_every_kind_of_non_finite() {
+        use omuzaki_core::glam::Vec3;
+        let mut points = vec![Vec3::new(1.0, -2.0, 3.5); 37];
+        assert!(all_finite(&points));
+        assert!(all_finite(&[]));
+        for (slot, bad) in [(0, f32::NAN), (17, f32::INFINITY), (36, f32::NEG_INFINITY)] {
+            for axis in 0..3 {
+                let mut broken = points.clone();
+                broken[slot][axis] = bad;
+                assert!(!all_finite(&broken), "{bad} at {slot}.{axis}");
+            }
+        }
+        points[5] = Vec3::new(f32::MAX, f32::MIN_POSITIVE, -0.0);
+        assert!(all_finite(&points), "the largest and the subnormal-adjacent floats are finite");
+    }
+
+    #[test]
     fn internal_size_scales_and_never_reaches_zero() {
         assert_eq!(internal_size(UVec2::new(1920, 1080), 1.5), UVec2::new(2880, 1620));
         assert_eq!(internal_size(UVec2::new(64, 64), 0.25), UVec2::splat(16));
@@ -588,6 +612,154 @@ mod tests {
         let image = r.render_image(UVec2::splat(64), AlphaEncoding::Straight, &scene, &quality).unwrap();
         assert_eq!(image.pixel(40, 32).map(|p| p[0]), Some(255), "the blend ran: the quad is where the weight puts it");
         assert_eq!(image.pixel(28, 32).map(|p| p[0]), Some(0), "and not where the base mesh is");
+    }
+
+    /// A dynamic mesh with morph targets, an outlined material and a one-quad scene, for the tests of what a frame
+    /// refreshes (#1843).
+    struct Morphed {
+        r: WgpuRenderer,
+        mesh: omuzaki_render_api::MeshId,
+        target: omuzaki_render_api::TargetId,
+        scene: Scene,
+        quad: omuzaki_render_api::MeshData,
+    }
+
+    impl Morphed {
+        fn new(cpu: bool, material: &Material) -> Self {
+            use omuzaki_core::glam::{Mat4, Vec2, Vec3};
+            use omuzaki_core::id::Slug;
+            use omuzaki_render_api::{MeshOptions, MeshUsage, MorphRange, MorphSet};
+
+            let mut r = renderer();
+            if cpu {
+                r.force_cpu_morph().unwrap();
+            }
+            let quad = omuzaki_render_mock::shapes::quad(Vec2::splat(0.25));
+            let slide = vec![Vec3::new(0.5, 0.0, 0.0); quad.positions.len()];
+            let targets =
+                MorphSet::from_dense(quad.positions.len(), &[(Slug::new("slide").unwrap(), &slide, &[])], 0.0).unwrap();
+            let options = MeshOptions { usage: MeshUsage::Dynamic, morphs: Some(targets) };
+            let mesh = r.create_mesh_with(&quad, &options).unwrap();
+            let material = r.create_material(material).unwrap();
+            let target =
+                r.create_target(&TargetDesc { size: UVec2::splat(32), alpha: AlphaEncoding::Straight }).unwrap();
+            let mut scene = Scene::new(Camera::default());
+            let mut instance = Instance::new(mesh, material, Mat4::IDENTITY);
+            instance.morph = Some(MorphRange { start: 0, len: 1 });
+            scene.instances.push(instance);
+            scene.morph_weights.push(0.5);
+            Self { r, mesh, target, scene, quad }
+        }
+
+        /// Moves the mesh and draws the frame.
+        fn frame(&mut self) {
+            self.r.update_vertices(self.mesh, &self.quad.positions, &self.quad.normals).unwrap();
+            self.r.render(self.target, &self.scene, &Quality::live()).unwrap();
+        }
+
+        /// Whether (outline directions, bounds) lag the mesh's vertices.
+        fn lags(&self) -> (bool, bool) {
+            self.r.resources.meshes.get(self.mesh.index(), self.mesh.generation()).unwrap().lags().unwrap()
+        }
+    }
+
+    fn outlined() -> Material {
+        let mut material = Material::unlit(Colour::WHITE);
+        material.outline = Some(omuzaki_render_api::Outline { colour: Colour::BLACK, width: 0.01 });
+        material
+    }
+
+    /// An instance that draws only its morph stream reads nothing the mesh's own refresh produces, so a dynamic morphed mesh
+    /// updated every frame and drawn morphed and outlined re-smooths and uploads no base directions: they stay stale
+    /// until a frame draws the base stream, which then refreshes them first.
+    #[test]
+    fn a_dynamic_morphed_mesh_drawn_only_morphed_does_no_base_outline_refresh() {
+        for cpu in [false, true] {
+            let mut m = Morphed::new(cpu, &outlined());
+            m.frame();
+            m.frame();
+            assert!(m.lags().0, "cpu {cpu}: the base directions were refreshed for a stream nothing draws");
+            m.scene.morph_weights[0] = 0.0;
+            m.frame();
+            assert!(!m.lags().0, "cpu {cpu}: drawing the base stream brings its directions up to date");
+        }
+    }
+
+    /// The bounds of a dynamic morphed mesh matter to its instances only on the GPU path, which grows the mesh's by what the
+    /// weights can move a vertex; the CPU path fits the blended copy's. Neither reads them for shadows or the sort here.
+    #[test]
+    fn a_dynamic_morphed_mesh_refits_its_base_bounds_only_where_the_gpu_path_grows_them() {
+        let mut gpu = Morphed::new(false, &outlined());
+        gpu.frame();
+        assert!(!gpu.lags().1, "the GPU path grows the mesh's own bounds, so they must be current");
+        let mut cpu = Morphed::new(true, &outlined());
+        cpu.frame();
+        assert!(cpu.lags().1, "the CPU path fits the blended copy and never reads the mesh's");
+    }
+
+    /// Shadow fitting and the blended sort are what read a base draw's bounds; a frame without either leaves them stale
+    /// (and costs no refit), one with a shadow-casting light refits them.
+    #[test]
+    fn a_dynamic_meshs_bounds_are_refitted_for_shadows_and_not_otherwise() {
+        use omuzaki_core::glam::Vec3;
+        use omuzaki_render_api::{Light, ShadowQuality};
+
+        let mut m = Morphed::new(true, &outlined());
+        m.scene.morph_weights[0] = 0.0;
+        m.frame();
+        assert!(m.lags().1, "no light casts a shadow and nothing is blended: nobody reads the bounds");
+        m.scene.lights.push(Light::Directional {
+            to_light: Vec3::Y,
+            colour: Colour::WHITE,
+            intensity: 1.0,
+            casts_shadow: true,
+        });
+        let quality = Quality { shadows: ShadowQuality::Low, ..Quality::live() };
+        m.r.update_vertices(m.mesh, &m.quad.positions, &m.quad.normals).unwrap();
+        m.r.render(m.target, &m.scene, &quality).unwrap();
+        assert!(!m.lags().1, "a casting light fits a shadow map to the bounds");
+    }
+
+    /// A dynamic mesh's outline directions are welded by a dispatch on the GPU path; a frame that fails before it records
+    /// the dispatch must not leave the mesh believing they are fresh.
+    #[test]
+    fn a_frame_that_fails_before_the_outline_weld_runs_does_not_make_the_next_one_skip_it() {
+        use omuzaki_core::glam::{Mat4, Vec3};
+        use omuzaki_render_api::{Background, MeshOptions, MeshUsage, Projection, RendererExt, Tonemap};
+
+        let mut r = renderer();
+        let cube = omuzaki_render_mock::shapes::cuboid(Vec3::splat(0.4));
+        let mesh = r.create_mesh_with(&cube, &MeshOptions { usage: MeshUsage::Dynamic, morphs: None }).unwrap();
+        // Wide enough to be pixels at this size: the outline is what tells stale directions from fresh.
+        let mut wide = outlined();
+        wide.outline = Some(omuzaki_render_api::Outline { colour: Colour::BLACK, width: 0.1 });
+        let material = r.create_material(&wide).unwrap();
+        let target = r.create_target(&TargetDesc { size: UVec2::splat(64), alpha: AlphaEncoding::Straight }).unwrap();
+        let camera = Camera::look_at(
+            Vec3::new(0.0, 0.0, 5.0),
+            Vec3::ZERO,
+            Vec3::Y,
+            Projection::Orthographic { height: 2.0, near: 0.1, far: 20.0 },
+        );
+        let mut scene = Scene::new(camera);
+        scene.background = Background::Solid { colour: Colour::WHITE };
+        scene.post.tonemap = Tonemap::None;
+        scene.instances.push(Instance::new(mesh, material, Mat4::IDENTITY));
+        let quality = Quality { samples: 1, render_scale: 1.0, post_effects: false, ..Quality::offline() };
+
+        // Flipped normals push the hull inwards, which a stale (creation-time) set of directions would not.
+        let flipped: Vec<Vec3> = cube.normals.iter().map(|n| -*n).collect();
+        r.update_vertices(mesh, &cube.positions, &flipped).unwrap();
+        r.inject_frame_failure = true;
+        assert!(r.render(target, &scene, &quality).is_err(), "the injected scope error fails the frame");
+        r.inject_frame_failure = false;
+        let retried = r.render_image(UVec2::splat(64), AlphaEncoding::Straight, &scene, &quality).unwrap();
+
+        let fresh_cube = omuzaki_render_api::MeshData { normals: flipped, ..cube };
+        let fresh = r.create_mesh(&fresh_cube).unwrap();
+        scene.instances[0].mesh = fresh;
+        let want = r.render_image(UVec2::splat(64), AlphaEncoding::Straight, &scene, &quality).unwrap();
+        assert_eq!(retried.rgba8, want.rgba8, "the retried frame drew the creation-time outline directions");
     }
 
     #[test]
