@@ -7,6 +7,9 @@ use serde_json::json;
 
 use super::presets::PRESETS;
 
+/// The op's name, for the hints of ops that point to it.
+pub const NAME: &str = "hair.bangs.list_presets";
+
 /// Lists the bangs presets in their fixed order. Writes nothing.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -15,7 +18,7 @@ pub struct HairBangsListPresets {}
 impl Op for HairBangsListPresets {
     fn meta() -> OpMeta {
         OpMeta {
-            name: "hair.bangs.list_presets",
+            name: NAME,
             summary: "List the bangs presets (blunt, side-swept, curtain, wispy, none) with what each looks like.",
             kind: OpKind::Query,
             scope: Scope::Read,

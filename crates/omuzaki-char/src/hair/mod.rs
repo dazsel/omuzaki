@@ -9,5 +9,6 @@ pub mod edit;
 pub mod r#gen;
 pub mod part;
 pub mod physics;
+pub mod tie;
 pub mod trace;
 pub mod tube;

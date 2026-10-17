@@ -22,14 +22,14 @@
 //!    still had to move a particle, the pass repeats in the same order, up to [`COLLIDER_PASSES`] in all: alternating
 //!    pushes between two overlapping spheres walk a particle out sideways, slowly near the line through both centres.
 //!    A particle on that line never walks out, so if the last pass still pushed, each particle still inside a sphere
-//!    goes to the nearest point of the circle where that sphere's surface meets the surface of the overlapping sphere
-//!    it is closest to leaving: on both, inside neither. Measured over 120 000 seeded overlapping pairs (seven seeds,
-//!    one and two iterations), a particle ends at most 3.4e-6 m inside `radius + collider_margin` (the tests assert
-//!    1e-5 m). The fallback can move a particle into a third sphere over the same spot, so after it the passes run
-//!    again, and the fallback again if they still push, up to [`UNWEDGE_ROUNDS`] times in all (a bounded cost per
-//!    frame). Measured over 30 000 seeded overlapping triples (three seeds, one and two iterations),
-//!    a particle ends at most 1.2e-5 m inside `radius + collider_margin`, inside the accepted 1e-4 m (the test asserts
-//!    that). A cluster of four or more spheres over one spot is not measured.
+//!    goes to the nearest point of the spheres' union boundary among its candidates (its projection onto one surface,
+//!    the nearest point of a circle where two surfaces meet and, if none of those is clear, the points where three
+//!    meet), keeping only candidates inside no sphere. The fallback can still leave a point the passes then push, so
+//!    they run again, and the fallback again if they still push, up to [`UNWEDGE_ROUNDS`] times in all (a bounded
+//!    cost per frame). Measured over seeded stacks of overlapping spheres (one and two iterations; three seeds each),
+//!    a particle ends at most this far inside `radius + collider_margin`: 3.2e-7 m for 10 000 pairs, 3.1e-7 m for
+//!    30 000 triples and 4.0e-7 m for 54 000 stacks of four to six spheres (the tests assert 1e-5 m, 1e-4 m and
+//!    1e-5 m). The earlier fallback, which tried one pair only, left up to 1.7e-2 m inside four or more.
 //!
 //! Not in the prototype: wind (beside gravity), [`ChainSet::reset`] also clearing the carried time (#68), the repeated
 //! collider passes, and a particle at a collider's exact centre leaving along its segment instead of staying inside.
@@ -53,11 +53,11 @@ pub const MAX_DT: f32 = 0.1;
 /// The most collider passes per constraint iteration: the prototype's one, then repeats while overlapping colliders
 /// still move particles (the `SphereCollider` contract: hair does not enter a sphere).
 pub const COLLIDER_PASSES: u32 = 4;
-/// How deep inside a collider a particle may sit before a pass counts it as pushed, metres: the rounding of a push
-/// that put it exactly on the surface.
 /// How many times the fallback may run per chain and iteration; each is followed by up to [`COLLIDER_PASSES`] more
 /// collider passes, so a sphere the fallback moved a particle into is checked again.
 pub const UNWEDGE_ROUNDS: u32 = 12;
+/// How deep inside a collider a particle may sit before a pass counts it as pushed, metres: the rounding of a push
+/// that put it exactly on the surface.
 const SURFACE_TOLERANCE: f32 = 1e-6;
 /// The largest rest-point or collider-centre coordinate accepted, metres (bind space): far beyond any character.
 pub const MAX_COORDINATE: f32 = 1e3;
@@ -439,37 +439,84 @@ impl ChainSet {
             .unwrap_or(Vec3::Y)
     }
 
-    /// After the capped passes: each particle still inside a sphere `a` goes to the nearest point of the circle where
-    /// `a`'s surface meets that of the overlapping sphere `b` whose surface is nearest the particle. Deterministic: the
-    /// first such `a` and `b` in collider order, and a fixed perpendicular for a particle on the line of centres.
+    /// After the capped passes: each particle still inside a sphere goes to the nearest point that is on the boundary
+    /// of the spheres' union, found among the candidates that can be the nearest: its projection onto one sphere's
+    /// surface, the nearest point of the circle where two crossing surfaces meet, and (only when none of those is
+    /// clear of every sphere) the points where three surfaces meet. A candidate counts only if it is inside no
+    /// sphere. Deterministic: ties go to the first candidate in collider order, and a fixed perpendicular serves a
+    /// particle on a line of centres. Runs only when the collider passes still pushed, a handful of times per frame.
     fn unwedge(&mut self, chain: Chain) {
         for i in chain.start + 1..chain.end {
             let p = self.pos[i];
-            let Some(&(ca, ra)) = self.spheres.iter().find(|&&(c, r)| r - p.distance(c) > SURFACE_TOLERANCE) else {
+            if self.spheres.iter().all(|&(c, r)| r - p.distance(c) <= SURFACE_TOLERANCE) {
                 continue;
-            };
-            let mut best: Option<(f32, Vec3, f32)> = None;
-            for &(cb, rb) in &self.spheres {
-                let d = ca.distance(cb);
-                // Only spheres whose surfaces cross `a`'s: neither inside the other, and not `a` itself.
-                if d <= (ra - rb).abs() || d >= ra + rb {
-                    continue;
-                }
-                let gap = (p.distance(cb) - rb).abs();
-                if best.is_none_or(|(g, _, _)| gap < g) {
-                    best = Some((gap, cb, rb));
+            }
+            if let Some(q) = self.nearest_clear(p, false).or_else(|| self.nearest_clear(p, true)) {
+                self.pos[i] = q;
+            }
+        }
+    }
+
+    /// Whether `q` is inside no sphere (to within [`SURFACE_TOLERANCE`]).
+    fn is_clear(&self, q: Vec3) -> bool {
+        q.is_finite() && self.spheres.iter().all(|&(c, r)| r - q.distance(c) <= SURFACE_TOLERANCE)
+    }
+
+    /// The candidate nearest to `point` that is inside no sphere: with `triples` false the projections onto single
+    /// surfaces and onto the circles of pairs, true the points common to three surfaces.
+    fn nearest_clear(&self, point: Vec3, triples: bool) -> Option<Vec3> {
+        let mut best: Option<(f32, Vec3)> = None;
+        let mut consider = |candidate: Vec3| {
+            let distance_sq = point.distance_squared(candidate);
+            if self.is_clear(candidate) && best.is_none_or(|(least, _)| distance_sq < least) {
+                best = Some((distance_sq, candidate));
+            }
+        };
+        for (first, &(ca, ra)) in self.spheres.iter().enumerate() {
+            if !triples {
+                // A particle at the centre has no nearest surface point of this sphere; the circles below serve it.
+                if let Some(dir) = (point - ca).try_normalize() {
+                    consider(ca + dir * ra);
                 }
             }
-            let Some((_, cb, rb)) = best else { continue };
-            let d = ca.distance(cb);
-            let axis = (cb - ca) / d;
-            let along = (d * d + ra * ra - rb * rb) / (2.0 * d);
-            let ring = (ra * ra - along * along).max(0.0).sqrt();
-            let centre = ca + axis * along;
-            let off = p - centre;
-            let side = (off - axis * off.dot(axis)).try_normalize().unwrap_or_else(|| axis.any_orthonormal_vector());
-            self.pos[i] = centre + side * ring;
+            for (second, &(cb, rb)) in self.spheres.iter().enumerate().skip(first + 1) {
+                let span = ca.distance(cb);
+                // Only spheres whose surfaces cross: neither inside the other.
+                if span <= (ra - rb).abs() || span >= ra + rb {
+                    continue;
+                }
+                let axis = (cb - ca) / span;
+                let along = (span * span + ra * ra - rb * rb) / (2.0 * span);
+                let ring = (ra * ra - along * along).max(0.0).sqrt();
+                let centre = ca + axis * along;
+                if !triples {
+                    let off = point - centre;
+                    let side =
+                        (off - axis * off.dot(axis)).try_normalize().unwrap_or_else(|| axis.any_orthonormal_vector());
+                    consider(centre + side * ring);
+                    continue;
+                }
+                // Where the circle meets a third surface: the plane of that sphere and the first cuts it at two points.
+                for &(cc, rc) in self.spheres.iter().skip(second + 1) {
+                    let to_c = cc - ca;
+                    let plane = (to_c.length_squared() + ra * ra - rc * rc) * 0.5;
+                    let along_n = to_c.dot(axis);
+                    let across = to_c - axis * along_n;
+                    let Some(unit_u) = across.try_normalize() else { continue };
+                    // Points `centre + unit_u a + unit_w b` on the plane: `a` from the plane's offset, `b` from the circle's radius.
+                    let along_u = (plane - along_n * along) / across.length();
+                    let rest = ring * ring - along_u * along_u;
+                    if rest < 0.0 {
+                        continue;
+                    }
+                    let unit_w = axis.cross(unit_u);
+                    let half_chord = rest.sqrt();
+                    consider(ca + axis * along + unit_u * along_u + unit_w * half_chord);
+                    consider(ca + axis * along + unit_u * along_u - unit_w * half_chord);
+                }
+            }
         }
+        best.map(|(_, candidate)| candidate)
     }
 
     /// One pass of every non-root particle against every collider in order; whether it pushed any particle.

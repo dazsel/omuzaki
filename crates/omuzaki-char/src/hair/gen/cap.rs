@@ -7,12 +7,12 @@
 //! `(sin theta sin phi, cos theta, sin theta cos phi)`, pushed out by the shell's offset.
 //!
 //! **The hairline.** The shell ends at `theta_max(phi)`: [`CapGen::hairline_back_deg`] at the back, easing (smoothstep
-//! of `cos phi` from [`FRONT_BLEND`]) to [`CapGen::hairline_front_deg`] at the forehead, minus an ear notch,
-//! [`CapGen::ear_notch_deg`] x `exp(-cos^2 phi / `[`NOTCH_WIDTH`]`)` x smoothstep of `cos phi` over [`NOTCH_EDGES`],
+//! of `cos phi` over [`CapGen::front_blend`]) to [`CapGen::hairline_front_deg`] at the forehead, minus an ear notch,
+//! [`CapGen::ear_notch_deg`] x `exp(-cos^2 phi / `[`CapGen::notch_width`]`)` x smoothstep of `cos phi` over [`CapGen::notch_edges`],
 //! that lifts the edge above each ear. Rings past the hairline collapse onto it (the prototype's `min`), so the grid
 //! keeps its shape and the surplus triangles have no area.
 //!
-//! **The offset.** [`CapGen::thickness`] at the hairline, rising by [`CROWN_RISE`] of itself (0.010 m on the default
+//! **The offset.** [`CapGen::thickness`] at the hairline, rising by [`CapGen::crown_rise`] of itself (0.010 m on the default
 //! 0.016 m) toward the crown, so the shell is a thin cap over the scalp and stands a little off it at the top where the
 //! locks overlap.
 //!
@@ -26,7 +26,10 @@
 //! `computeVertexNormals`), seam and pole vertices kept separate as in the prototype.
 //!
 //! The generator draws no random numbers. [`fill_shell`] writes into a caller-owned mesh and, once that mesh has the
-//! capacity, allocates nothing, so a rebuild on a slider drag reuses the same buffers.
+//! capacity, allocates nothing: a tool that keeps its own mesh (the bench, the zero-allocation test) gets that path.
+//! [`compile`], which every whole-hair rebuild goes through, starts from a fresh mesh: measured in release on the
+//! default style, a fresh shell takes 4.2 ms against 3.9 ms on a warm one (a 7 % difference inside a 7.7 ms rebuild), so
+//! the fresh mesh is not worth threading a kept shell through the compile pipeline.
 
 use std::f64::consts::TAU;
 
@@ -41,19 +44,6 @@ use crate::hair::compile::{CompiledGroup, GroupGeometry, HairGenCtx};
 pub const SEGMENTS: usize = 96;
 /// Rings of quads from the crown to the hairline.
 pub const RINGS: usize = 48;
-/// `cos phi` range over which the hairline eases from the back height to the front one: the part of the head that
-/// counts as "forehead".
-pub const FRONT_BLEND: (f64, f64) = (-0.2, 0.75);
-/// Width of the ear notch's gaussian in `cos^2 phi`: how far along the side of the head it reaches.
-pub const NOTCH_WIDTH: f64 = 0.10;
-/// `cos phi` range over which the ear notch fades in from the back to the front half of the head.
-pub const NOTCH_EDGES: (f64, f64) = (-0.6, 0.2);
-/// How much higher the shell stands at the crown than at the hairline, as a fraction of [`CapGen::thickness`].
-pub const CROWN_RISE: f64 = 0.625;
-/// `hair-info.x`, the cap's strand seed.
-const SEED: f32 = 0.37;
-/// `hair-info.y`, the shade of the underlayer (it sits in the shadow of the locks).
-const SHADE: f32 = 0.93;
 
 /// Compiles the group: one shell and no clumps.
 pub fn compile(g: &CapGen, ctx: &mut HairGenCtx<'_>) -> CompiledGroup {
@@ -87,11 +77,11 @@ pub const fn vertex_count() -> usize {
 /// The polar angle (radians) where the shell ends at azimuth `phi`: the hairline, lifted over the ears.
 fn hairline(g: &CapGen, back: f64, phi: f64) -> f64 {
     let front = phi.cos();
-    let blend = smoothstep(front, FRONT_BLEND.0, FRONT_BLEND.1);
+    let blend = smoothstep(front, g.front_blend[0], g.front_blend[1]);
     let edge = back + (g.hairline_front_deg.to_radians() - back) * blend;
     let notch = g.ear_notch_deg.to_radians()
-        * (-front * front / NOTCH_WIDTH).exp()
-        * smoothstep(front, NOTCH_EDGES.0, NOTCH_EDGES.1);
+        * (-front * front / g.notch_width).exp()
+        * smoothstep(front, g.notch_edges[0], g.notch_edges[1]);
     (edge - notch).max(0.0)
 }
 
@@ -110,12 +100,18 @@ fn direction(theta: f64, phi: f64) -> Vec3 {
 pub fn fill_shell(g: &CapGen, head: &dyn HeadSurface, out: &mut MeshData) {
     ensure_attributes(&mut out.extra);
     let MeshData { positions, normals, indices, extra, .. } = out;
-    let [uv, info] = extra.as_mut_slice() else { return };
+    let [uv, info] = extra.as_mut_slice() else {
+        // `ensure_attributes` leaves exactly these two, and `attribute_names_are_slugs` proves it can create them; a
+        // shell without them would be silently empty, so a broken invariant stops a debug build.
+        debug_assert!(false, "ensure_attributes leaves exactly hair-uv and hair-info");
+        return;
+    };
     // A hairline at 0 would divide by zero below; the contract's range keeps it far from that.
     let back = g.hairline_back_deg.to_radians().max(1e-6);
     // The grid reaches the farther of the two hairlines, whichever end that is (the contract allows a front hairline
     // lower on the head than the back one); by default that is the back, as in the prototype.
     let reach = back.max(g.hairline_front_deg.to_radians());
+    let (seed, shade) = (g.strand_seed as f32, g.shade as f32);
     positions.clear();
     uv.data.clear();
     info.data.clear();
@@ -124,10 +120,10 @@ pub fn fill_shell(g: &CapGen, head: &dyn HeadSurface, out: &mut MeshData) {
         for j in 0..=SEGMENTS {
             let phi = j as f64 / SEGMENTS as f64 * TAU;
             let t = theta.min(hairline(g, back, phi));
-            let offset = g.thickness * (1.0 + CROWN_RISE * (1.0 - t / reach));
+            let offset = g.thickness * (1.0 + g.crown_rise * (1.0 - t / reach));
             positions.push(head.point(direction(t, phi), offset as f32));
             uv.data.extend([phi.sin() as f32, (t / reach) as f32]);
-            info.data.extend([SEED, SHADE, t as f32]);
+            info.data.extend([seed, shade, t as f32]);
         }
     }
     indices.clear();
@@ -199,7 +195,11 @@ fn ensure_attributes(extra: &mut Vec<ExtraAttribute>) {
         return;
     }
     extra.clear();
-    if let (Ok(uv), Ok(info)) = (Slug::new(HAIR_UV), Slug::new(HAIR_INFO)) {
+    // Both names are constants that are valid slugs (`attribute_names_are_slugs` proves it), so this never fails; if
+    // it ever did, `fill_shell` would stop on its own `debug_assert!` instead of building an empty shell.
+    let names = (Slug::new(HAIR_UV), Slug::new(HAIR_INFO));
+    debug_assert!(names.0.is_ok() && names.1.is_ok(), "the hair attribute names are valid slugs");
+    if let (Ok(uv), Ok(info)) = names {
         extra.push(ExtraAttribute { name: uv, components: 2, data: Vec::new() });
         extra.push(ExtraAttribute { name: info, components: 3, data: Vec::new() });
     }
@@ -220,5 +220,19 @@ fn smooth_normals(positions: &[Vec3], indices: &[u32], normals: &mut [Vec3]) {
     let middle = (lo + hi) * 0.5;
     for (n, p) in normals.iter_mut().zip(positions) {
         *n = if n.length_squared() > 1e-30 { n.normalize() } else { (*p - middle).try_normalize().unwrap_or(Vec3::Y) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn attribute_names_are_slugs() {
+        assert!(Slug::new(HAIR_UV).is_ok() && Slug::new(HAIR_INFO).is_ok());
+        let mut extra = Vec::new();
+        ensure_attributes(&mut extra);
+        let names: Vec<&str> = extra.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, [HAIR_UV, HAIR_INFO]);
     }
 }
