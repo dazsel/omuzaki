@@ -95,8 +95,6 @@ impl ClientHandler for Client {
 
 struct Harness {
     runner: Arc<FakeRunner>,
-    /// The server the client talks to, kept to wait for the event log (it fills from a worker thread).
-    server: McpServer,
     client: RunningService<RoleClient, Client>,
 }
 
@@ -105,11 +103,10 @@ impl Harness {
         let runner = Arc::new(fake_runner());
         let mcp = McpServer::new(runner.clone(), options).expect("server builds");
         let (server_io, client_io) = tokio::io::duplex(64 * 1024);
-        let server = mcp.clone();
         let _server = tokio::spawn(async move { mcp.serve(server_io).await });
         let client =
             Client.serve_with_lifecycle(client_io, ClientLifecycleMode::Initialize).await.expect("client connects");
-        Self { runner, server, client }
+        Self { runner, client }
     }
 
     async fn call(&self, tool: &str, args: Value) -> CallToolResult {
@@ -240,8 +237,8 @@ async fn an_unsaved_change_warns_on_the_first_line_even_when_another_actor_chang
     let h = Harness::connect(with(&probe)).await;
     // A person edits the project after the session's start, so this call's heads-up has something to report.
     h.runner.person_sets_blend(0.5);
-    // The log fills from a worker thread, so the heads-up only has the person's edit once the log holds it.
-    h.server.wait_for_log(1).await;
+    // No wait for the event log here: the result must report a change that committed before the call, however far the
+    // feed lags (see `a_change_committed_before_the_call_is_in_its_heads_up_however_slow_the_feed_is`).
 
     let result = h.call("face_set_blend", json!({"character": "mira", "blend": 0.4})).await;
     assert_eq!(result.is_error, Some(false));

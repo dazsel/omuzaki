@@ -15,19 +15,39 @@
 //! An event reaches the log a moment after the op that caused it (a worker thread moves it over from the runner), so
 //! a result may leave out a change made a few microseconds earlier. It is then reported by the next result: positions
 //! are event numbers, so nothing is lost or repeated.
+//!
+//! # Consumers and cursors
+//!
+//! The ring is shared; every consumer of it keeps a cursor of its own, and reporting to one never moves another's:
+//!
+//! - **the session's results** (a blocking call, `tasks/get`, `approval_wait`): the session cursors in `State`
+//!   (`seen` for document changes, which is also the stale-write guard's `base`; the approval cursor). They are
+//!   *consuming*: what a result reports is marked told, because the agent has it;
+//! - **a task's pushes** (status notifications): a `PushCursor` owned by that task's watcher. A client may ignore
+//!   notifications, so a push must not consume what a later poll or call has yet to deliver; the watcher reports from
+//!   its own position and leaves the session's alone;
+//! - **resource subscribers** (`Updates`): one position each.
+//!
+//! A cursor can fall behind the ring (256 entries). A consumer that must not miss an event checks
+//! [`EventHub::lost_after`] and refreshes from the authority instead of waiting for an event that is gone: a task
+//! watcher re-reads the job from `Jobs::job`; a document position reads as version 0 (see [`EventHub::version_at`]).
+//! An approval decision that left the ring is no longer in the feed, and `approval_wait` then answers from the
+//! registry's pending list.
 
 use std::collections::{BTreeSet, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
 
-use omuzaki_doc_api::DocPath;
+use omuzaki_doc_api::{DocPath, DocVersion};
 use omuzaki_ops_api::{Actor, Event, Grants, Runner};
 use serde::Serialize;
 use tokio::sync::watch;
 
 use crate::changes::{self, OwnTxs, Report};
 use crate::error::ServerError;
+use crate::floats;
 use crate::resources::Providers;
 
 /// The resource that carries op events.
@@ -51,6 +71,10 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 pub(crate) struct Entry {
     pub(crate) n: u64,
     pub(crate) event: Event,
+    /// The newest document version any event up to this one reported. Not part of the log's JSON: it is how a session's
+    /// position becomes the `base` of its writes.
+    #[serde(skip)]
+    pub(crate) version: Option<DocVersion>,
 }
 
 /// The JSON body of `omuzaki://log` and of `history_log`.
@@ -65,17 +89,42 @@ struct LogView<'a> {
 struct Ring {
     /// Sequence number of the last event pushed (0 = none yet).
     last: u64,
+    /// The newest document version any event so far reported (or the feed's starting version).
+    version: Option<DocVersion>,
+    /// The document's version when the feed started.
+    start_version: Option<DocVersion>,
+    /// The newest op-log record any `OpApplied` event so far carried, or the log's end when the feed started.
+    log_seq: u64,
     entries: VecDeque<Entry>,
+}
+
+/// The document version an event reports, if it carries one.
+fn version_of(event: &Event) -> Option<DocVersion> {
+    match event {
+        Event::OpApplied { record, .. } => Some(record.version),
+        Event::TxRolledBack { version, .. } | Event::Undone { version, .. } | Event::Redone { version, .. } => {
+            Some(*version)
+        }
+        _ => None,
+    }
 }
 
 /// Collects the runner's events and tells subscribers when one arrives.
 pub(crate) struct EventHub {
     ring: Mutex<Ring>,
+    /// The runner accepted the subscription, so events are being delivered. Without it (the server's grants lack `read`)
+    /// the log stays empty and there is nothing to catch up with.
+    fed: AtomicBool,
     /// The sequence number of the newest event; watchers wake on every change.
     latest: watch::Sender<u64>,
 }
 
 impl EventHub {
+    /// A hub with no events; `fed` says whether a runner is going to deliver any.
+    fn empty(fed: bool) -> Self {
+        Self { ring: Mutex::default(), fed: AtomicBool::new(fed), latest: watch::Sender::new(0) }
+    }
+
     /// Subscribes to `runner` now (so no event is missed) and starts the worker that drains it. Events carry document
     /// values, so the feed needs `grants` to hold `read`: without it the runner refuses the subscription and the log
     /// stays empty, never leaking what the server's agents may not see.
@@ -83,8 +132,26 @@ impl EventHub {
     /// # Errors
     /// [`ServerError::EventFeed`] if the worker thread can't start.
     pub(crate) fn start(runner: &dyn Runner, grants: &Grants) -> Result<Arc<Self>, ServerError> {
-        let hub = Arc::new(Self { ring: Mutex::default(), latest: watch::Sender::new(0) });
+        let hub = Arc::new(Self::empty(false));
         let Ok(events) = runner.subscribe(grants) else { return Ok(hub) };
+        // After the subscription, so a record appended in between is also on its way as an event: the feed starts at
+        // the log's end, and only records past it are ones the feed owes us (see `Session::catch_up`).
+        let end = latest_log_seq(runner, grants);
+        // The document's version as the feed starts, so a session's first write is guarded against whatever changes after
+        // it connected, before any event has told it a version. An empty log is the document as it was opened.
+        let version = runner
+            .log(end.saturating_sub(1), 1, grants)
+            .ok()
+            .and_then(|records| records.first().map(|r| r.version))
+            .filter(|_| end > 0)
+            .unwrap_or(DocVersion(0));
+        {
+            let mut ring = lock(&hub.ring);
+            ring.log_seq = end;
+            ring.start_version = Some(version);
+            ring.version = Some(version);
+        }
+        hub.fed.store(true, Ordering::Release);
         let weak = Arc::downgrade(&hub);
         std::thread::Builder::new()
             .name("omuzaki-mcp-events".to_owned())
@@ -98,7 +165,12 @@ impl EventHub {
             let mut ring = lock(&self.ring);
             ring.last += 1;
             let n = ring.last;
-            ring.entries.push_back(Entry { n, event });
+            ring.version = version_of(&event).or(ring.version);
+            if let Event::OpApplied { record, .. } = &event {
+                ring.log_seq = ring.log_seq.max(record.seq);
+            }
+            let version = ring.version;
+            ring.entries.push_back(Entry { n, event, version });
             if ring.entries.len() > LOG_CAPACITY {
                 ring.entries.pop_front();
             }
@@ -118,6 +190,36 @@ impl EventHub {
         lock(&self.ring).last
     }
 
+    /// Whether the runner is delivering events at all.
+    pub(crate) fn is_fed(&self) -> bool {
+        self.fed.load(Ordering::Acquire)
+    }
+
+    /// The newest op-log record the feed has delivered (or the log's end when it started): the runner's log holds
+    /// records past this only while events are still on their way.
+    pub(crate) fn log_seq(&self) -> u64 {
+        lock(&self.ring).log_seq
+    }
+
+    /// The document version a reader that has been told of every event up to `seen` knows, to send as a write's `base`.
+    /// The feed starts at the document's version when it began, so this is `None` only when the runner delivers no events. A position older than the
+    /// window can't be mapped; it reads as version 0, which makes the executor refuse a write over anything another
+    /// actor has changed, so the agent re-reads (and its position catches up) rather than overwrite what it never saw.
+    pub(crate) fn version_at(&self, seen: u64) -> Option<DocVersion> {
+        let ring = lock(&self.ring);
+        match ring.entries.iter().rev().find(|e| e.n <= seen) {
+            Some(entry) => entry.version,
+            None if ring.entries.front().is_some_and(|e| e.n > seen + 1) => Some(DocVersion(0)),
+            None => ring.start_version,
+        }
+    }
+
+    /// Whether events after number `n` have already left the window, so a consumer at `n` has missed some.
+    pub(crate) fn lost_after(&self, n: u64) -> bool {
+        let ring = lock(&self.ring);
+        ring.last > n && ring.entries.front().is_none_or(|e| e.n > n + 1)
+    }
+
     /// The events after number `n`, oldest first (those still in the window), each with its number.
     pub(crate) fn entries_after(&self, n: u64) -> Vec<(u64, Event)> {
         lock(&self.ring).entries.iter().filter(|e| e.n > n).map(|e| (e.n, e.event.clone())).collect()
@@ -134,7 +236,9 @@ impl EventHub {
             "the last {LOG_CAPACITY} events since this server started, oldest first; `n` rises by one per event"
         );
         let events = ring.entries.iter().filter(|entry| after.is_none_or(|after| entry.n > after)).collect();
-        let body = serde_json::to_string(&LogView { latest: ring.last, events, note })?;
+        // Shown without the digits an `f32` widened to `f64` brings (see `floats`).
+        let view = serde_json::to_value(&LogView { latest: ring.last, events, note })?;
+        let body = serde_json::to_string(&floats::tidied(view))?;
         Ok((body, ring.last))
     }
 
@@ -211,6 +315,34 @@ impl Updates {
     }
 }
 
+/// The number of the newest record in the runner's op log (0 when it is empty or `grants` can't read it).
+///
+/// Records are numbered from 1 without gaps, so this finds the end by doubling and then halving, asking for one record at
+/// a time: a log of a million records costs forty calls, not a copy.
+pub(crate) fn latest_log_seq(runner: &dyn Runner, grants: &Grants) -> u64 {
+    let exists = |n: u64| runner.log(n - 1, 1, grants).is_ok_and(|records| !records.is_empty());
+    if !exists(1) {
+        return 0;
+    }
+    let (mut have, mut missing) = (1, 2);
+    while exists(missing) {
+        have = missing;
+        missing = missing.saturating_mul(2);
+        if missing == u64::MAX {
+            return have;
+        }
+    }
+    while missing - have > 1 {
+        let middle = have + (missing - have) / 2;
+        if exists(middle) {
+            have = middle;
+        } else {
+            missing = middle;
+        }
+    }
+    have
+}
+
 /// Worker body: move events from the runner's channel into the hub until either side goes away.
 fn drain(events: &Receiver<Event>, hub: &Weak<EventHub>) {
     loop {
@@ -255,7 +387,7 @@ mod tests {
     }
 
     fn quiet_hub() -> Arc<EventHub> {
-        Arc::new(EventHub { ring: Mutex::default(), latest: watch::Sender::new(0) })
+        Arc::new(EventHub::empty(true))
     }
 
     #[test]
@@ -301,7 +433,7 @@ mod tests {
 
     #[test]
     fn push_numbers_events_and_keeps_a_bounded_window() {
-        let hub = Arc::new(EventHub { ring: Mutex::default(), latest: watch::Sender::new(0) });
+        let hub = Arc::new(EventHub::empty(true));
         let watcher = hub.watch();
         for i in 1..=(LOG_CAPACITY as u64 + 10) {
             hub.push(committed(i));
@@ -318,7 +450,7 @@ mod tests {
 
     #[tokio::test]
     async fn wait_for_stays_pending_until_its_event_arrives_from_another_thread() {
-        let hub = Arc::new(EventHub { ring: Mutex::default(), latest: watch::Sender::new(0) });
+        let hub = Arc::new(EventHub::empty(true));
         let waiter = {
             let hub = hub.clone();
             tokio::spawn(async move { hub.wait_for(2).await })
@@ -344,7 +476,7 @@ mod tests {
 
     #[tokio::test]
     async fn wait_for_returns_at_once_when_the_event_is_already_logged() {
-        let hub = Arc::new(EventHub { ring: Mutex::default(), latest: watch::Sender::new(0) });
+        let hub = Arc::new(EventHub::empty(true));
         hub.push(committed(1));
         hub.push(committed(2));
         hub.wait_for(1).await;
@@ -354,7 +486,8 @@ mod tests {
     #[test]
     fn the_worker_stops_when_the_hub_is_dropped() {
         let (tx, rx) = mpsc::channel();
-        let hub = Arc::new(EventHub { ring: Mutex::default(), latest: watch::Sender::new(0) });
+        let hub = Arc::new(EventHub::empty(true));
+        hub.fed.store(true, Ordering::Release);
         let weak = Arc::downgrade(&hub);
         let worker = std::thread::spawn(move || drain(&rx, &weak));
         tx.send(committed(1)).unwrap();
