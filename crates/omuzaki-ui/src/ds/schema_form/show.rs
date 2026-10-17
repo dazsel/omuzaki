@@ -1,24 +1,59 @@
 //! Drawing a [`Form`]: one ds control per field, chosen by [`Kind`].
 
-use egui::{Id, RichText, Ui, WidgetInfo, WidgetType};
+use egui::{Id, Rect, RichText, Sense, Ui, WidgetInfo, WidgetType, vec2};
 
-use super::model::{Entry, Form, Kind, Layout, MAX_SEGMENTS, Node, OPEN, Opt, TextRule};
+use super::model::{Entry, Form, IntControl, Kind, Layout, MAX_SEGMENTS, Node, OPEN, Opt, TextRule};
+use super::text;
 use super::value::FormValue;
 use crate::ds::a11y;
+use crate::ds::icons;
+use crate::ds::paint::{self, RingPlacement};
 use crate::ds::strings::Msg;
 use crate::ds::theme::{Ds, ds};
+use crate::ds::tokens::{radius, size, space};
 use crate::ds::widgets::{
-    Choice, Dropdown, FormRow, NumberField, ParamSlider, Section, Segment, Segmented, TextField, Toggle,
+    Choice, ColourEvent, ColourField, Curve, CurveEditor, CurveEvent, Dropdown, FormRow, NumberField, ParamEvent,
+    ParamSlider, Section, Segment, Segmented, TextField, Toggle,
 };
 
 /// Options a dropdown holds without allocating; a longer list costs one `Vec` per frame.
 const INLINE_CHOICES: usize = 32;
 
+/// One field of a form, as [`FormOutput::edit`] names it. [`Form::pointer`] gives its place in the value as a JSON
+/// Pointer and [`Form::field_value`] its value.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct FieldId(pub(super) usize);
+
+/// Where an edit is in its gesture, so a host can make one gesture one transaction (`shell.md` section 7: "One
+/// gesture is one transaction; Esc rolls it back").
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EditPhase {
+    /// The value moved during a gesture that is still going on (a drag, a colour being picked, text being typed):
+    /// apply it live, inside the gesture's transaction.
+    Preview,
+    /// The gesture ended, or a one-step edit happened (a click, a key, a reset): the value now is its result.
+    Commit,
+    /// The gesture was cancelled (Esc) and the value put back as it was before it.
+    Cancel,
+}
+
+/// One field's edit this frame.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FieldEdit {
+    /// The field edited.
+    pub field: FieldId,
+    /// Where the edit is in its gesture.
+    pub phase: EditPhase,
+}
+
 /// What showing a form reported.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct FormOutput {
-    /// Some control changed the value this frame (including a drag in progress and a reset).
+    /// Some control changed the value this frame (including a drag in progress, a cancel and a reset).
     pub changed: bool,
+    /// The field edited this frame and where its gesture is. One person edits one field at a time; if two report
+    /// in one frame, an end of gesture wins over a preview.
+    pub edit: Option<FieldEdit>,
 }
 
 /// A form that edits `value` according to `form`.
@@ -29,17 +64,48 @@ pub struct SchemaForm<'a> {
     salt: Option<Id>,
 }
 
+/// What a form keeps from frame to frame, so a field that needs a buffer allocates nothing once it has one.
+#[derive(Clone, Default)]
+struct Scratch {
+    /// Where messages with a placeholder are written ("Reset Width").
+    words: String,
+    /// The text of each exact integer field, by its id: what the person typed, which may not be a number yet.
+    ints: Vec<IntText>,
+}
+
+/// An exact integer field's text, and the value it was last written from or parsed to.
+#[derive(Clone)]
+struct IntText {
+    id: Id,
+    text: String,
+    value: i128,
+    /// The field had keyboard focus last frame: the person is typing, so the text is theirs.
+    focused: bool,
+    /// The value when the field took focus: what Escape puts back.
+    start: i128,
+    /// Escape cancelled the gesture; the blur it causes has nothing left to end.
+    cancelled: bool,
+}
+
 /// What one frame of a form carries down to its fields.
 struct Cx<'a> {
     ds: &'a Ds,
-    changed: bool,
-    /// Where messages with a placeholder are written ("Reset Width"), so a field that needs one allocates nothing:
-    /// the buffer lives from frame to frame.
-    words: String,
+    out: FormOutput,
+    scratch: Scratch,
 }
 
-/// Where the buffer is kept between frames.
-const WORDS: &str = "ds.schema_form.words";
+impl Cx<'_> {
+    fn report(&mut self, node: &Node, phase: EditPhase) {
+        self.out.changed = true;
+        let keep = self.out.edit.is_some_and(|e| e.phase != EditPhase::Preview) && phase == EditPhase::Preview;
+        if !keep {
+            self.out.edit = Some(FieldEdit { field: FieldId(node.index), phase });
+        }
+    }
+}
+
+/// Where the scratch is kept between frames.
+const SCRATCH: &str = "ds.schema_form.scratch";
 
 /// `msg` with its one placeholder `{key}` replaced by `value`, written into `buf`.
 fn say<'b>(buf: &'b mut String, ds: &Ds, msg: Msg, key: &str, value: &str) -> &'b str {
@@ -70,14 +136,15 @@ impl<'a> SchemaForm<'a> {
         self
     }
 
-    /// Shows the form and reports whether it changed the value.
+    /// Shows the form and reports whether, and how, it changed the value.
     pub fn show(self, ui: &mut Ui) -> FormOutput {
         let ds = ds(ui.ctx());
-        let words_id = Id::new(WORDS);
-        let words = ui.ctx().data_mut(|d| d.remove_temp::<String>(words_id)).unwrap_or_default();
-        let mut cx = Cx { ds: &ds, changed: false, words };
         let Self { form, value, salt } = self;
-        ui.push_id(salt.unwrap_or_else(|| Id::new("ds.schema_form")), |ui| match (&form.root.kind, value) {
+        let salt = salt.unwrap_or_else(|| Id::new("ds.schema_form"));
+        let scratch_id = Id::new(SCRATCH).with(salt);
+        let scratch = ui.ctx().data_mut(|d| d.remove_temp::<Scratch>(scratch_id)).unwrap_or_default();
+        let mut cx = Cx { ds: &ds, out: FormOutput::default(), scratch };
+        ui.push_id(salt, |ui| match (&form.root.kind, value) {
             (Kind::Section(children), FormValue::Object(values)) => {
                 let has_advanced = form.advanced.count > 0;
                 if has_advanced {
@@ -89,8 +156,9 @@ impl<'a> SchemaForm<'a> {
             }
             (_, value) => field(ui, &mut cx, &form.root, value),
         });
-        ui.ctx().data_mut(|d| d.insert_temp(words_id, cx.words));
-        FormOutput { changed: cx.changed }
+        let out = cx.out;
+        ui.ctx().data_mut(|d| d.insert_temp(scratch_id, cx.scratch));
+        out
     }
 }
 
@@ -148,71 +216,95 @@ fn field_at(ui: &mut Ui, cx: &mut Cx<'_>, children: &[Node], values: &mut [(Stri
     }
 }
 
+/// The phase of a one-step edit: a commit when something changed.
+fn one_step(changed: bool) -> Option<EditPhase> {
+    changed.then_some(EditPhase::Commit)
+}
+
+/// What one row decided: where its edit is, and whether its reset was pressed.
+#[derive(Default)]
+struct RowOut {
+    phase: Option<EditPhase>,
+    reset: bool,
+}
+
 fn field(ui: &mut Ui, cx: &mut Cx<'_>, node: &Node, value: &mut FormValue) {
-    // Borrowed apart, so a control's closure can write `changed` while the row holds the buffer.
-    let Cx { ds, changed, words } = &mut *cx;
-    let ds: &Ds = ds;
+    let modified = node.default.as_ref().is_some_and(|d| d != value);
+    let mut out = RowOut::default();
+    let ds = cx.ds;
     match (&node.kind, &mut *value) {
         (Kind::Real { min, max, slider }, FormValue::Number(n)) => {
             let range = min.unwrap_or(-OPEN)..=max.unwrap_or(OPEN);
             if *slider {
-                *changed |= slider_over(ui, node, n, range, false);
+                out.phase = slider_over(ui, node, n, range);
             } else {
-                row(ui, node, |ui, name| {
-                    *changed |= NumberField::new(name, n, range).id_salt(&node.path).show(ui).response.changed();
+                row(ui, ds, &mut cx.scratch.words, node, modified, &mut out, |ui, name, _, out| {
+                    let shown = number_field(NumberField::new(name, n, range), node).show(ui);
+                    out.phase = one_step(shown.response.changed());
+                    out.reset |= shown.reset;
                 });
             }
         }
-        (Kind::Int { min, max, slider }, FormValue::Integer(n)) => {
-            // The widgets edit a float: an untouched integer is never converted, an edited one is read back whole
-            // and kept inside its bounds.
-            #[allow(clippy::cast_precision_loss, reason = "only an edited value passes through a float")]
-            let range = min.map_or(-OPEN, |m| m as f64)..=max.map_or(OPEN, |m| m as f64);
-            #[allow(clippy::cast_precision_loss, reason = "only an edited value passes through a float")]
-            let mut edited = *n as f64;
-            let moved = if *slider {
-                slider_over(ui, node, &mut edited, range, true)
-            } else {
-                let mut moved = false;
-                row(ui, node, |ui, name| {
-                    let field = NumberField::new(name, &mut edited, range).decimals(0).step(1.0);
-                    moved = field.id_salt(&node.path).show(ui).response.changed();
-                });
-                moved
-            };
-            if moved {
-                #[allow(clippy::cast_possible_truncation, reason = "a float cast saturates, and the bounds clamp it")]
-                let whole = edited.round() as i128;
-                *n = whole.clamp(min.unwrap_or(i128::MIN), max.unwrap_or(i128::MAX));
-                *changed = true;
-            }
+        (Kind::Int { min, max, control }, FormValue::Integer(n)) => {
+            out = int_field(ui, cx, node, (*min, *max), *control, n, modified);
         }
         (Kind::Choice(opts), FormValue::Choice { index, value }) => {
-            row(ui, node, |ui, name| {
+            row(ui, ds, &mut cx.scratch.words, node, modified, &mut out, |ui, name, _, out| {
                 if choice(ui, name, node, opts, index) {
                     if let Some(opt) = opts.get(*index) {
                         value.clone_from(&opt.value);
                     }
-                    *changed = true;
+                    out.phase = Some(EditPhase::Commit);
                 }
             });
         }
-        // A toggle draws its own label, so there is no row.
         (Kind::Toggle, FormValue::Bool(on)) => {
-            *changed |= ui.add(Toggle::switch(&node.label, on).id_salt(&node.path)).changed();
+            // A toggle draws its own label, so there is no row; the reset follows it.
+            let response = ui.add(Toggle::switch(&node.label, on).id_salt(&node.path));
+            out.phase = one_step(response.changed());
+            if node.default.is_some() {
+                let at =
+                    egui::pos2(response.rect.right() + space::S4 + size::MIN_TARGET / 2.0, response.rect.center().y);
+                let words = &mut cx.scratch.words;
+                reset_target(ui, ds, words, (&node.label, &node.path), at, modified, &mut out.reset);
+            }
+        }
+        (Kind::Colour { alpha }, FormValue::Colour(colour)) => {
+            row(ui, ds, &mut cx.scratch.words, node, modified, &mut out, |ui, name, _, out| {
+                let shown = ColourField::new(name, colour).alpha(*alpha).id_salt(&node.path).show(ui);
+                out.phase = match shown.event {
+                    Some(ColourEvent::Preview(_)) => Some(EditPhase::Preview),
+                    Some(ColourEvent::Commit { .. }) => Some(EditPhase::Commit),
+                    Some(ColourEvent::Cancel(_)) => Some(EditPhase::Cancel),
+                    _ => one_step(shown.response.changed()),
+                };
+            });
+        }
+        (Kind::Curve, FormValue::Curve(curve)) => {
+            row(ui, ds, &mut cx.scratch.words, node, modified, &mut out, |ui, name, _, out| {
+                let shown = CurveEditor::new(name, curve).id_salt(&node.path).show(ui);
+                forget_tangents(curve);
+                out.phase = match shown.event {
+                    Some(CurveEvent::Preview) => Some(EditPhase::Preview),
+                    Some(CurveEvent::Commit { .. }) => Some(EditPhase::Commit),
+                    Some(CurveEvent::Rollback) => Some(EditPhase::Cancel),
+                    None => one_step(shown.response.changed()),
+                };
+            });
         }
         (Kind::Text(rule), FormValue::Text(text)) => {
             let checked = ui.id().with(("checked", node.path.as_str()));
             let pattern_ok = rule.pattern.as_ref().is_none_or(|p| pattern_holds(ui.ctx(), checked, p, text));
             let length_ok = rule.length_ok(text);
-            row(ui, node, |ui, name| {
+            row(ui, ds, &mut cx.scratch.words, node, modified, &mut out, |ui, name, words, out| {
                 let mut field = TextField::new(name, text).id_salt(&node.path);
                 if !length_ok {
                     field = field.error(say_length(words, ds, rule));
                 } else if let (false, Some(pattern)) = (pattern_ok, &rule.pattern) {
                     field = field.error(say(words, ds, Msg::FormPatternError, "pattern", pattern.source()));
                 }
-                *changed |= ui.add(field).changed();
+                let response = ui.add(field);
+                out.phase = text_phase(ui.ctx(), checked.with("original"), &response, text);
             });
         }
         (Kind::Section(children), FormValue::Object(values)) => {
@@ -224,15 +316,274 @@ fn field(ui: &mut Ui, cx: &mut Cx<'_>, node: &Node, value: &mut FormValue) {
         }
         _ => read_only(ui, cx, node),
     }
+    if let (true, Some(default)) = (out.reset, &node.default) {
+        value.clone_from(default);
+        out.phase = Some(EditPhase::Commit);
+    }
+    if let Some(phase) = out.phase {
+        cx.report(node, phase);
+    }
 }
 
-fn slider_over(ui: &mut Ui, node: &Node, n: &mut f64, range: std::ops::RangeInclusive<f64>, integer: bool) -> bool {
-    let mut slider = ParamSlider::new(&node.label, n, range).id_salt(&node.path);
-    // A whole-number field steps by one and shows no decimals.
-    if integer {
-        slider = slider.step(1.0).decimals(0);
+/// Puts every point's tangent back to automatic. The schema's `number[]` carries points only, so a tangent typed into
+/// the editor's readout could not be saved: dropping it here keeps what is drawn the same as what is submitted. The
+/// widget is not changed (it lives outside this module); the readout shows the automatic slope again next frame.
+fn forget_tangents(curve: &mut Curve) {
+    for i in 0..curve.points().len() {
+        curve.set_tangent(i, None);
     }
-    slider.show(ui).response.changed()
+}
+
+/// A text field's phase: Escape puts back the text the field had when it took focus and cancels the gesture; anything
+/// else is [`typed`].
+fn text_phase(ctx: &egui::Context, id: Id, response: &egui::Response, text: &mut String) -> Option<EditPhase> {
+    let cancelled = id.with("cancelled");
+    if response.gained_focus() {
+        ctx.data_mut(|d| {
+            d.insert_temp(id, text.clone());
+            d.remove_temp::<bool>(cancelled);
+        });
+    }
+    // The blur that follows an Escape ends nothing more: the gesture was cancelled.
+    if response.lost_focus() && ctx.data_mut(|d| d.remove_temp::<bool>(cancelled)).is_some() {
+        return None;
+    }
+    let escaped = ctx.input(|i| i.key_pressed(egui::Key::Escape)) && (response.has_focus() || response.lost_focus());
+    if escaped {
+        ctx.data_mut(|d| d.insert_temp(cancelled, true));
+        // The text field clears on Escape; the person asked to leave, not to delete.
+        if let Some(original) = ctx.data(|d| d.get_temp::<String>(id)) {
+            *text = original;
+        }
+        response.surrender_focus();
+        return Some(EditPhase::Cancel);
+    }
+    typed(response)
+}
+
+/// A typed field's phase: every change is a preview, and leaving the field ends the gesture.
+fn typed(response: &egui::Response) -> Option<EditPhase> {
+    if response.lost_focus() { Some(EditPhase::Commit) } else { response.changed().then_some(EditPhase::Preview) }
+}
+
+/// `field` with the `x-ui` keys of `node`.
+fn number_field<'a>(mut field: NumberField<'a>, node: &'a Node) -> NumberField<'a> {
+    field = field.unit(&node.unit).id_salt(&node.path);
+    if let Some(step) = node.step {
+        field = field.step(step);
+    }
+    if let Some(decimals) = node.decimals {
+        field = field.decimals(decimals);
+    }
+    match default_f64(node) {
+        Some(d) => field.default_value(d),
+        None => field,
+    }
+}
+
+/// A number field's default as the float its widget edits.
+fn default_f64(node: &Node) -> Option<f64> {
+    match node.default {
+        Some(FormValue::Number(d)) => Some(d),
+        #[allow(clippy::cast_precision_loss, reason = "only fields whose integers are exact as floats edit a float")]
+        Some(FormValue::Integer(d)) => Some(d as f64),
+        _ => None,
+    }
+}
+
+/// A `ParamSlider` with the `x-ui` keys of `node`; it draws its own label, modified dot and reset.
+fn slider_over(ui: &mut Ui, node: &Node, n: &mut f64, range: std::ops::RangeInclusive<f64>) -> Option<EditPhase> {
+    let mut slider = ParamSlider::new(&node.label, n, range).unit(&node.unit).id_salt(&node.path);
+    if let Some(d) = default_f64(node) {
+        slider = slider.default_value(d);
+    }
+    if let Some(step) = node.step {
+        slider = slider.step(step);
+    }
+    if let Some(decimals) = node.decimals {
+        slider = slider.decimals(decimals);
+    }
+    let shown = slider.show(ui);
+    let mut phase = None;
+    for event in shown.events.iter() {
+        let this = match event {
+            ParamEvent::Begin(_) | ParamEvent::Preview(_) => EditPhase::Preview,
+            ParamEvent::Commit { .. } => EditPhase::Commit,
+            ParamEvent::Rollback(_) => EditPhase::Cancel,
+            ParamEvent::ShowInHistory => continue,
+        };
+        if phase.is_none_or(|p| p == EditPhase::Preview) {
+            phase = Some(this);
+        }
+    }
+    phase.or_else(|| one_step(shown.response.changed()))
+}
+
+/// An integer field: a slider or number field over a float when every value it allows is exact as one, else text
+/// parsed exactly.
+fn int_field(
+    ui: &mut Ui,
+    cx: &mut Cx<'_>,
+    node: &Node,
+    (min, max): (Option<i128>, Option<i128>),
+    control: IntControl,
+    n: &mut i128,
+    modified: bool,
+) -> RowOut {
+    let mut out = RowOut::default();
+    let ds = cx.ds;
+    if control == IntControl::Exact {
+        let id = ui.id().with(("int", node.path.as_str()));
+        let Scratch { words, ints } = &mut cx.scratch;
+        let at = if let Some(at) = ints.iter().position(|t| t.id == id) {
+            at
+        } else {
+            ints.push(IntText { id, text: n.to_string(), value: *n, focused: false, start: *n, cancelled: false });
+            ints.len() - 1
+        };
+        if let Some(entry) = ints.get_mut(at) {
+            row(ui, ds, words, node, modified, &mut out, |ui, name, words, out| {
+                exact_int(ui, ds, words, name, node, (min, max), entry, n, out);
+            });
+        }
+        return out;
+    }
+    // The widgets edit a float: an untouched integer is never converted, an edited one is read back whole and kept
+    // inside its bounds. Only fields whose every value is exact as a float come here.
+    #[allow(clippy::cast_precision_loss, reason = "every value of this field is exact as a float")]
+    let range = min.map_or(-OPEN, |m| m as f64)..=max.map_or(OPEN, |m| m as f64);
+    #[allow(clippy::cast_precision_loss, reason = "every value of this field is exact as a float")]
+    let mut edited = *n as f64;
+    if control == IntControl::Slider {
+        out.phase = slider_over(ui, node, &mut edited, range);
+    } else {
+        row(ui, ds, &mut cx.scratch.words, node, modified, &mut out, |ui, name, _, out| {
+            let shown = number_field(NumberField::new(name, &mut edited, range), node).show(ui);
+            out.phase = one_step(shown.response.changed());
+            out.reset |= shown.reset;
+        });
+    }
+    if out.phase.is_some() {
+        #[allow(clippy::cast_possible_truncation, reason = "a float cast saturates, and the bounds clamp it")]
+        let whole = edited.round() as i128;
+        *n = whole.clamp(min.unwrap_or(i128::MIN), max.unwrap_or(i128::MAX));
+    }
+    out
+}
+
+/// Writes `n` into `text`, replacing what it held, without a new allocation once `text` has room.
+fn write_int(text: &mut String, n: i128) {
+    text.clear();
+    // Writing into a `String` cannot fail.
+    let _ = std::fmt::Write::write_fmt(text, format_args!("{n}"));
+}
+
+/// An integer typed as text: parsed as an integer, never through a float, and refused with a message when it is not
+/// a whole number within the bounds. The value only ever changes to a number the field allows.
+#[allow(clippy::too_many_arguments, reason = "one row's state, borrowed apart")]
+fn exact_int(
+    ui: &mut Ui,
+    ds: &Ds,
+    words: &mut String,
+    name: &str,
+    node: &Node,
+    (min, max): (Option<i128>, Option<i128>),
+    entry: &mut IntText,
+    n: &mut i128,
+    out: &mut RowOut,
+) {
+    let salt = ("int-field", node.path.as_str());
+    // A value changed from outside (a reset, an undo, another view) is shown, unless the person is typing.
+    if entry.value != *n && !entry.focused {
+        write_int(&mut entry.text, *n);
+        entry.value = *n;
+    }
+    // Up and Down step the value, as they do in a number field (Shift: ten steps), staying within the bounds.
+    // Only a focused field takes the keys: stepping consumes them.
+    let stepped = if entry.focused { arrow_step(ui, node, *n, (min, max)) } else { None };
+    if let Some(stepped) = stepped {
+        *n = stepped;
+        write_int(&mut entry.text, stepped);
+        entry.value = stepped;
+        out.phase = Some(EditPhase::Commit);
+    }
+    let refusal = match entry.text.trim().parse::<i128>() {
+        Err(_) => Some(text::say(ds, text::WHOLE, &[])),
+        Ok(v) => match (min, max) {
+            (Some(m), _) if v < m => Some(text::say(ds, text::AT_LEAST, &[("min", &m.to_string())])),
+            (_, Some(m)) if v > m => Some(text::say(ds, text::AT_MOST, &[("max", &m.to_string())])),
+            _ => None,
+        },
+    };
+    let mut field = TextField::new(name, &mut entry.text).id_salt(salt).clearable(false);
+    if let Some(refusal) = &refusal {
+        words.clear();
+        words.push_str(refusal);
+        field = field.error(words);
+    }
+    let response = ui.add(field);
+    if response.gained_focus() {
+        entry.start = *n;
+        entry.cancelled = false;
+    }
+    if response.lost_focus() && std::mem::take(&mut entry.cancelled) {
+        return;
+    }
+    let escaped =
+        ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) && (response.has_focus() || response.lost_focus());
+    entry.focused = response.has_focus() && !escaped;
+    if escaped {
+        entry.cancelled = true;
+        // The text field clears on Escape; the person asked to leave, not to delete.
+        *n = entry.start;
+        entry.value = entry.start;
+        write_int(&mut entry.text, entry.start);
+        response.surrender_focus();
+        out.phase = Some(EditPhase::Cancel);
+        return;
+    }
+    if !response.changed() && !response.lost_focus() {
+        return;
+    }
+    match entry.text.trim().parse::<i128>() {
+        Ok(v) if min.is_none_or(|m| v >= m) && max.is_none_or(|m| v <= m) => {
+            entry.value = v;
+            if *n != v {
+                *n = v;
+                out.phase = Some(EditPhase::Preview);
+            }
+            if response.lost_focus() {
+                out.phase = Some(EditPhase::Commit);
+            }
+        }
+        // Text that is not an allowed number leaves the value alone; leaving the field puts the value's text back.
+        // The value is the last valid preview, so that is what the gesture ends with.
+        _ if response.lost_focus() => {
+            write_int(&mut entry.text, *n);
+            entry.value = *n;
+            out.phase = Some(EditPhase::Commit);
+        }
+        _ => {}
+    }
+}
+
+/// The value an Up or Down key press moves `n` to, if one was pressed and moved it.
+fn arrow_step(ui: &Ui, node: &Node, n: i128, (min, max): (Option<i128>, Option<i128>)) -> Option<i128> {
+    #[allow(clippy::cast_possible_truncation, reason = "a whole step of at least one, saturating")]
+    let step = node.step.map_or(1, |s| s as i128).max(1);
+    let (up, down, ten) = ui.input_mut(|i| {
+        let shift = i.modifiers.shift_only();
+        let mods = if shift { egui::Modifiers::SHIFT } else { egui::Modifiers::NONE };
+        (i.consume_key(mods, egui::Key::ArrowUp), i.consume_key(mods, egui::Key::ArrowDown), shift)
+    });
+    let by = if ten { step.saturating_mul(10) } else { step };
+    let moved = match (up, down) {
+        (true, false) => n.saturating_add(by),
+        (false, true) => n.saturating_sub(by),
+        _ => return None,
+    };
+    let moved = moved.clamp(min.unwrap_or(i128::MIN), max.unwrap_or(i128::MAX));
+    (moved != n).then_some(moved)
 }
 
 /// What the last pattern check of one field was, so the matcher runs when the text changes and not every frame.
@@ -295,16 +646,70 @@ fn choice(ui: &mut Ui, name: &str, node: &Node, opts: &[Opt], index: &mut usize)
     ui.add(Dropdown::new(name, index, &choices).id_salt(&node.path).stretch()).changed()
 }
 
-/// A row: the field's label, then its control.
-fn row(ui: &mut Ui, node: &Node, control: impl FnOnce(&mut Ui, &str)) {
-    FormRow::new(&node.label).show(ui, |ui, name| control(ui, name));
+/// A labelled row: the field's label, its control and, for a field with a default, the reset after it, whose space
+/// is kept while it is hidden so the control never moves when the value leaves its default (`shell.md` section 7).
+fn row(
+    ui: &mut Ui,
+    ds: &Ds,
+    words: &mut String,
+    node: &Node,
+    modified: bool,
+    out: &mut RowOut,
+    control: impl FnOnce(&mut Ui, &str, &mut String, &mut RowOut),
+) {
+    FormRow::new(&node.label).modified(modified).show(ui, |ui, name| {
+        if node.default.is_none() {
+            control(ui, name, words, out);
+            return;
+        }
+        // The control gets the row less the reset's column; the reset is placed by hand, not in a child `Ui` (which
+        // would allocate every frame).
+        let full = ui.available_rect_before_wrap();
+        ui.set_max_width((full.width() - size::MIN_TARGET - space::S4).max(0.0));
+        let top = ui.cursor().top();
+        control(ui, name, words, out);
+        let centre_y = top.midpoint(ui.min_rect().bottom());
+        let at = egui::pos2(full.right() - size::MIN_TARGET / 2.0, centre_y);
+        reset_target(ui, ds, words, (name, &node.path), at, modified, &mut out.reset);
+    });
+}
+
+/// The 24 pt reset target centred on `at`: drawn, focusable and named ("Reset Width") only while the value is away
+/// from its default; its space is kept otherwise, so nothing moves when it appears.
+fn reset_target(
+    ui: &mut Ui,
+    ds: &Ds,
+    words: &mut String,
+    (label, path): (&str, &str),
+    at: egui::Pos2,
+    modified: bool,
+    reset: &mut bool,
+) {
+    let rect = Rect::from_center_size(at, vec2(size::MIN_TARGET, size::MIN_TARGET));
+    ui.expand_to_include_rect(rect);
+    if !modified {
+        return;
+    }
+    let id = ui.id().with(("reset", path));
+    let response = ui.interact(rect, id, Sense::click());
+    let t = &ds.theme;
+    let hover = paint::fade(ui.ctx(), ds, id, paint::hot(&response));
+    let box_rect = paint::square(rect.center(), 22.0);
+    if hover > 0.0 {
+        ui.painter().rect_filled(box_rect, radius::CONTROL, t.bg3.gamma_multiply(hover));
+    }
+    let ink = paint::lerp(t.text3, t.text, hover);
+    paint::icon(ui.painter(), ds, rect.center(), icons::ARROW_COUNTER_CLOCKWISE, 14.0, ink, false);
+    paint::focus_ring(ui.painter(), t, &response, box_rect, radius::CONTROL, RingPlacement::Outside);
+    let name = say(words, ds, Msg::ParamReset, "label", label);
+    a11y::describe(&response, || WidgetInfo::labeled(WidgetType::Button, true, name), |_| {});
+    *reset |= response.clicked();
 }
 
 /// A shape no control handles, or a value that does not fit its field: say so, and leave the value alone.
 fn read_only(ui: &mut Ui, cx: &mut Cx<'_>, node: &Node) {
-    let Cx { ds, words, .. } = cx;
-    let ds: &Ds = ds;
-    let text = say(words, ds, Msg::FormUnsupported, "type", &node.type_name);
+    let ds = cx.ds;
+    let text = say(&mut cx.scratch.words, ds, Msg::FormUnsupported, "type", &node.type_name);
     FormRow::new(&node.label).show(ui, |ui, name| {
         let response = ui.label(RichText::new(text).font(ds.text.body.clone()).color(ds.theme.text3));
         a11y::describe(&response, || WidgetInfo::labeled(WidgetType::Label, true, format!("{name}: {text}")), |_| {});

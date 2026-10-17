@@ -4,10 +4,15 @@
 #![deny(missing_docs)]
 
 pub mod ds;
+pub mod panels;
 pub mod shell;
 
 // Lets `register_story!` and `register_contrast!` record each registration for the link gate (ADR 0015).
 #[doc(hidden)]
 pub use omuzaki_core::__record_registration;
 
-omuzaki_core::define_link!();
+omuzaki_core::define_link! {
+    omuzaki_char_api::link();
+    omuzaki_render::link();
+    omuzaki_stage::link();
+}
