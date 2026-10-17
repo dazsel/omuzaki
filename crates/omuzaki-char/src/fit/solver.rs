@@ -23,7 +23,7 @@ use std::cmp::Ordering;
 use omuzaki_char_api::BodyParams;
 use omuzaki_core::mesh::MeshData;
 
-use super::{FitError, FitParams, FitView, Objective, Score, Target};
+use super::{FitError, FitParams, FitView, Follow, Objective, Score, Target};
 
 /// The most evaluations (builds and scores of a candidate) one fit makes.
 pub const MAX_EVALUATIONS: usize = 600;
@@ -225,8 +225,12 @@ pub fn fit_ordered(input: &FitInput<'_>, order: &[Param]) -> Result<FitResult, F
 
 /// Fits the body to `input` in [`PARAM_ORDER`], starting from `body`'s proportions and shape (each value clamped into
 /// its parameter's range) and building every candidate with `body`'s hands, which the fit does not move. The baseline
-/// `IoU`s are those of `body` itself (with `input`'s fixed parts), and the result never costs more than it: what an op
+/// `IoU`s are those of `body` itself (with `input`'s fixed parts and the parts `follow` builds), and the result never costs more than it: what an op
 /// fitting a stored character needs, so a fit cannot make the body it claims to fit worse.
+///
+/// `follow` builds, for every candidate, the parts that move with the body (a tail or wings built on its joints): they
+/// are drawn with the candidate's body in scoring, so the fit sees the silhouette the rebuilt character will have.
+/// `input.fixed` stays where it is.
 ///
 /// `watch` is called before every evaluation with the number made so far (at most [`MAX_EVALUATIONS`]); returning
 /// `false` stops the fit with [`FitError::Stopped`]. A job reports its progress and checks for a cancel there.
@@ -236,9 +240,10 @@ pub fn fit_ordered(input: &FitInput<'_>, order: &[Param]) -> Result<FitResult, F
 pub fn fit_from(
     input: &FitInput<'_>,
     body: &BodyParams,
+    follow: Option<Follow<'_>>,
     watch: &mut dyn FnMut(usize) -> bool,
 ) -> Result<FitResult, FitError> {
-    let objective = Objective::new(input.template, input.targets, input.fixed)?.with_body(body);
+    let objective = Objective::new(input.template, input.targets, input.fixed)?.with_body(body).with_follow(follow);
     let mut params = FitParams { proportions: body.proportions.clone(), shape: body.shape.clone() };
     for p in PARAM_ORDER {
         let value = p.get(&params).clamp(p.range().0, p.range().1);
@@ -255,7 +260,7 @@ trait Cost {
     fn view_list(&self) -> Vec<FitView>;
 }
 
-impl Cost for Objective {
+impl Cost for Objective<'_> {
     fn score(&self, params: &FitParams) -> Result<Score, FitError> {
         self.evaluate(params)
     }

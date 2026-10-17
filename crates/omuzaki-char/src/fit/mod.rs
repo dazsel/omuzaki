@@ -458,7 +458,7 @@ pub(crate) struct Score {
 pub struct ViewMasks {
     /// The view.
     pub view: FitView,
-    /// The silhouette of the body (and the fixed parts) of the parameters.
+    /// The silhouette of the body (and the fixed and followed parts) of the parameters.
     pub model: Silhouette,
     /// The target the fit compares it with (the denoised mask).
     pub target: Silhouette,
@@ -477,15 +477,22 @@ pub fn view_masks(
     Objective::new(template, targets, fixed)?.masks(params)
 }
 
+/// Builds the parts that move with the body: for a candidate's parameters, their meshes in metres, in the same space as
+/// the body's. The fit calls it for every candidate, so a neck, tail or wings built on the body's joints and
+/// dimensions follow the candidate instead of staying where the starting body put them.
+pub type Follow<'a> = &'a dyn Fn(&FitParams) -> Result<Vec<MeshData>, FitError>;
+
 /// Everything a fit evaluates a candidate against.
-pub(crate) struct Objective {
+pub(crate) struct Objective<'a> {
     template: &'static dyn Template,
     views: Vec<ViewObjective>,
     /// The body every candidate is built from, with the candidate's proportions and shape: its hands stay as they are.
     base: BodyParams,
+    /// The parts rebuilt for every candidate, drawn with its body.
+    follow: Option<Follow<'a>>,
 }
 
-impl Objective {
+impl<'a> Objective<'a> {
     /// Prepares `targets` and the projection of the parts that stay fixed.
     pub(crate) fn new(template: &str, targets: &[Target], fixed: &[MeshData]) -> Result<Self, FitError> {
         let template = registry::find(template).ok_or_else(|| FitError::UnknownTemplate(template.to_owned()))?;
@@ -518,13 +525,28 @@ impl Objective {
                 fixed: tris,
             });
         }
-        Ok(Self { template, views, base: BodyParams::default() })
+        Ok(Self { template, views, base: BodyParams::default(), follow: None })
     }
 
     /// The same objective building every candidate with `body`'s hands (its proportions and shape are the candidate's).
     pub(crate) fn with_body(mut self, body: &BodyParams) -> Self {
         self.base = body.clone();
         self
+    }
+
+    /// The same objective drawing, with every candidate, the parts `follow` builds for it.
+    pub(crate) fn with_follow(mut self, follow: Option<Follow<'a>>) -> Self {
+        self.follow = follow;
+        self
+    }
+
+    /// The meshes of a candidate: its body, then the parts that follow it.
+    fn candidate(&self, params: &FitParams) -> Result<Vec<MeshData>, FitError> {
+        let mut meshes = body_geometry(self.template, &self.base, params)?;
+        if let Some(follow) = self.follow {
+            meshes.extend(follow(params)?);
+        }
+        Ok(meshes)
     }
 
     /// The targets' views, in order.
@@ -535,7 +557,7 @@ impl Objective {
     /// For each view, the body of `params` and the (denoised) target the fit compares it with, aligned and rasterised
     /// exactly as the score does: what the difference heatmap draws.
     pub(crate) fn masks(&self, params: &FitParams) -> Result<Vec<ViewMasks>, FitError> {
-        let meshes = body_geometry(self.template, &self.base, params)?;
+        let meshes = self.candidate(params)?;
         self.views
             .iter()
             .map(|v| {
@@ -549,7 +571,7 @@ impl Objective {
 
     /// Scores a body of `params`.
     pub(crate) fn evaluate(&self, params: &FitParams) -> Result<Score, FitError> {
-        let meshes = body_geometry(self.template, &self.base, params)?;
+        let meshes = self.candidate(params)?;
         let mut per_view = Vec::with_capacity(self.views.len());
         let mut cost = 0.0;
         for v in &self.views {

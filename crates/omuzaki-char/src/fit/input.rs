@@ -49,38 +49,56 @@ pub struct ViewMask {
     pub asset: Option<ContentHash>,
 }
 
-/// The targets of `views`, checked for the count and each mask. `store` is read only for a view given as an
-/// `asset`; without one, such a view is `Unavailable`.
+/// Where a view given as an `asset` is read.
+#[derive(Clone, Copy)]
+pub enum Assets<'a> {
+    /// Not here: the caller is under the document lock, and reading the store hashes the whole asset. Such a view
+    /// yields no target (it is read where [`Assets::Read`] is used); the bool says whether a store is wired, so the
+    /// absence of one is still refused where the arguments are checked.
+    Defer(bool),
+    /// From this store (`None`: the app wired none, and an asset view is `Unavailable`).
+    Read(Option<&'a dyn Store>),
+}
+
+/// The targets of `views`, checked for the count, the view names and each mask. A view given as an `asset` is read
+/// as `assets` says.
 ///
 /// # Errors
 /// `Invalid`, naming the field, for any bad view; `NotFound` for an asset the store lacks; `Unavailable` for an asset
 /// with no store.
-pub fn parse_views(views: &[ViewMask], store: Option<&dyn Store>) -> Result<Vec<Target>, OpError> {
+pub fn parse_views(views: &[ViewMask], assets: Assets<'_>) -> Result<Vec<Target>, OpError> {
     if views.is_empty() || views.len() > MAX_VIEWS {
         return Err(OpError::invalid("views", format!("{} views given", views.len()))
             .hint("give one silhouette per view: front, side, back"));
     }
-    let targets: Vec<Target> =
-        views.iter().enumerate().map(|(i, v)| parse_view(i, v, store)).collect::<Result<_, _>>()?;
-    for (i, t) in targets.iter().enumerate() {
-        if targets[..i].iter().any(|earlier| earlier.view == t.view) {
-            return Err(from_fit(&FitError::DuplicateView(t.view)));
+    let names: Vec<FitView> = views.iter().enumerate().map(|(i, v)| view_of(i, v)).collect::<Result<_, _>>()?;
+    for (i, view) in names.iter().enumerate() {
+        if names[..i].contains(view) {
+            return Err(from_fit(&FitError::DuplicateView(*view)));
+        }
+    }
+    let mut targets = Vec::with_capacity(views.len());
+    for (i, (v, &view)) in views.iter().zip(&names).enumerate() {
+        if let Some(mask) = parse_mask(i, v, assets)? {
+            targets.push(Target { view, mask });
         }
     }
     Ok(targets)
 }
 
-fn parse_view(i: usize, v: &ViewMask, store: Option<&dyn Store>) -> Result<Target, OpError> {
+fn view_of(i: usize, v: &ViewMask) -> Result<FitView, OpError> {
+    match v.view.as_str() {
+        "front" => Ok(FitView::Front),
+        "side" => Ok(FitView::Side),
+        "back" => Ok(FitView::Back),
+        other => Err(OpError::invalid(format!("views/{i}/view"), format!("`{other}` is not a view"))
+            .hint("valid views: front, side, back")),
+    }
+}
+
+/// The mask of view `i`, or `None` for an asset left for later ([`Assets::Defer`]).
+fn parse_mask(i: usize, v: &ViewMask, assets: Assets<'_>) -> Result<Option<Silhouette>, OpError> {
     let field = |what: &str| format!("views/{i}/{what}");
-    let view = match v.view.as_str() {
-        "front" => FitView::Front,
-        "side" => FitView::Side,
-        "back" => FitView::Back,
-        other => {
-            return Err(OpError::invalid(field("view"), format!("`{other}` is not a view"))
-                .hint("valid views: front, side, back"));
-        }
-    };
     let mask = match (&v.rows, &v.png, &v.asset) {
         (Some(rows), None, None) => parse_rows(rows, &field("rows"))?,
         (None, Some(text), None) => {
@@ -90,20 +108,25 @@ fn parse_view(i: usize, v: &ViewMask, store: Option<&dyn Store>) -> Result<Targe
             })?;
             decode_png(&bytes, &field("png"))?
         }
-        (None, None, Some(hash)) => {
-            let store = store.ok_or_else(|| OpError::unavailable("omuzaki_store_api::Store"))?;
-            let bytes = store.get(hash).map_err(|e| {
-                OpError::not_found(format!("the asset {hash} can't be read from the store: {e}"))
-                    .hint("store the sheet view first, or pass it as `png`")
-            })?;
-            decode_png(&bytes, &field("asset"))?
-        }
+        (None, None, Some(hash)) => match assets {
+            Assets::Defer(true) => return Ok(None),
+            Assets::Defer(false) | Assets::Read(None) => {
+                return Err(OpError::unavailable("omuzaki_store_api::Store"));
+            }
+            Assets::Read(Some(store)) => {
+                let bytes = store.get(hash).map_err(|e| {
+                    OpError::not_found(format!("the asset {hash} can't be read from the store: {e}"))
+                        .hint("store the sheet view first, or pass it as `png`")
+                })?;
+                decode_png(&bytes, &field("asset"))?
+            }
+        },
         _ => {
             return Err(OpError::invalid(field("rows"), "a view takes exactly one of `rows`, `png` and `asset`")
                 .hint("give the mask once, in one form"));
         }
     };
-    Ok(Target { view, mask })
+    Ok(Some(mask))
 }
 
 /// A mask given as rows of `#` and `.`.

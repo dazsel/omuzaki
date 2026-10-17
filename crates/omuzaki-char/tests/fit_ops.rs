@@ -34,24 +34,31 @@ use omuzaki_ops_api::{
 use omuzaki_store_api::{ContentHash, Provenance, Store, StoreError};
 use serde_json::{Value, json};
 
-/// A store that counts what is put in it: neither op may put anything.
+/// A store that counts what is put in it (neither op may put anything) and what is read from it (planning, which runs
+/// under the document lock, may read nothing).
 #[derive(Default)]
-struct MemStore(Mutex<HashMap<ContentHash, (Vec<u8>, Provenance)>>);
+struct MemStore {
+    held: Mutex<HashMap<ContentHash, (Vec<u8>, Provenance)>>,
+    reads: AtomicUsize,
+}
 
 impl Store for MemStore {
     fn put(&self, bytes: &[u8], provenance: Provenance) -> Result<ContentHash, StoreError> {
         let hash = ContentHash::of(bytes);
-        self.0.lock().unwrap().entry(hash).or_insert_with(|| (bytes.to_vec(), provenance));
+        self.held.lock().unwrap().entry(hash).or_insert_with(|| (bytes.to_vec(), provenance));
         Ok(hash)
     }
     fn get(&self, hash: &ContentHash) -> Result<Vec<u8>, StoreError> {
-        self.0.lock().unwrap().get(hash).map(|(b, _)| b.clone()).ok_or(StoreError::Missing(*hash))
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        self.held.lock().unwrap().get(hash).map(|(b, _)| b.clone()).ok_or(StoreError::Missing(*hash))
     }
     fn provenance(&self, hash: &ContentHash) -> Result<Provenance, StoreError> {
-        self.0.lock().unwrap().get(hash).map(|(_, p)| p.clone()).ok_or(StoreError::Missing(*hash))
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        self.held.lock().unwrap().get(hash).map(|(_, p)| p.clone()).ok_or(StoreError::Missing(*hash))
     }
     fn contains(&self, hash: &ContentHash) -> bool {
-        self.0.lock().unwrap().contains_key(hash)
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        self.held.lock().unwrap().contains_key(hash)
     }
 }
 
@@ -255,7 +262,7 @@ fn a_dry_run_checks_the_arguments_and_fits_nothing() {
         eprintln!("{op}: plan {took:?}");
     }
     assert_eq!(doc.root(), &before);
-    assert!(store.0.lock().unwrap().is_empty(), "a dry run put something in the store");
+    assert!(store.held.lock().unwrap().is_empty(), "a dry run put something in the store");
 }
 
 #[test]
@@ -265,7 +272,7 @@ fn fit_reference_proposes_returns_heatmaps_and_changes_nothing_anywhere() {
     let plan = run_job(&doc, &store, "fit.reference", &json!({ "character": "mock", "views": views() })).unwrap();
     assert!(plan.patch.is_empty(), "the query's finish changes nothing");
     assert_eq!(doc.root(), &before);
-    assert!(store.0.lock().unwrap().is_empty(), "fit.reference put something in the store");
+    assert!(store.held.lock().unwrap().is_empty(), "fit.reference put something in the store");
     let out = answer(&plan);
     let (b, a) = (out["iou_before"].as_f64().unwrap(), out["iou_after"].as_f64().unwrap());
     eprintln!("fit.reference: iou {b:.4} -> {a:.4}, patch {}", out["patch"]);
@@ -307,7 +314,7 @@ fn apply_is_one_undoable_step_of_only_the_proportions_and_shape() {
     assert_eq!(doc.root(), &original, "undo restores the document exactly");
     doc.apply(&planned.patch).unwrap();
     assert_eq!(doc.root(), &applied, "redo gives the same document");
-    assert!(store.0.lock().unwrap().is_empty(), "fit.apply put something in the store");
+    assert!(store.held.lock().unwrap().is_empty(), "fit.apply put something in the store");
 
     // With params stored, only `proportions` and `shape` are written, and the rest stays.
     let mut node = mock_node();
@@ -597,18 +604,18 @@ fn bad_pngs_and_assets_are_refused_by_their_field() {
             "exactly one",
         ),
         (json!({ "view": "front" }), ErrorCode::Invalid, Some("views/0/rows"), "exactly one"),
-        (
-            json!({ "view": "front", "asset": ContentHash::of(b"never stored") }),
-            ErrorCode::NotFound,
-            None,
-            "can't be read",
-        ),
     ];
     for (view, code, field, text) in cases {
         let e = dry_run(&doc, &store, "fit.reference", json!({ "character": "mock", "views": [view] })).unwrap_err();
         assert_eq!((e.code, e.field.as_deref()), (code, field), "{e:?}");
         assert!(e.message.contains(text), "{}", e.message);
     }
+    // A missing asset is found when the work loads it, not when the arguments are checked (planning reads nothing).
+    let missing = json!({ "character": "mock", "views": [{ "view": "front", "asset": ContentHash::of(b"never stored") }] });
+    dry_run(&doc, &store, "fit.reference", missing.clone()).unwrap();
+    let e = work(&doc, &store, "fit.reference", &missing, &Signal::default()).unwrap_err();
+    assert_eq!(e.code, ErrorCode::NotFound, "{e:?}");
+    assert!(e.message.contains("can't be read"), "{}", e.message);
     // An asset needs the store: an app that wired none is told so.
     let hash = store.put(&png_of(&mask), common_provenance()).unwrap();
     let args = json!({ "character": "mock", "views": [{ "view": "front", "asset": hash }] });
@@ -704,4 +711,112 @@ fn write_the_heatmaps_when_asked() {
         let png = BASE64.decode(v["heatmap_png"].as_str().unwrap()).unwrap();
         std::fs::write(format!("{dir}/heatmap-{}.png", v["view"].as_str().unwrap()), png).unwrap();
     }
+}
+
+/// Planning runs under the document lock, so it reads nothing from the asset store (a disk store hashes a whole asset
+/// per read): an asset view is loaded and decoded in the work.
+#[test]
+fn planning_reads_nothing_from_the_store_and_the_work_does() {
+    let (doc, store) = (project(), Arc::new(MemStore::default()));
+    let shown = [FitView::Front, FitView::Side];
+    let views: Vec<Value> = shown
+        .iter()
+        .map(|&v| {
+            let mask = render_target("soft-sd", &truth(), &[], v, ROWS).unwrap();
+            json!({ "view": view_name(v), "asset": store.put(&png_of(&mask), common_provenance()).unwrap() })
+        })
+        .collect();
+    let reads = || store.reads.load(Ordering::SeqCst);
+    for op in ["fit.reference", "fit.apply"] {
+        let args = json!({ "character": "mock", "views": views, "heatmaps": false });
+        let args = if op == "fit.apply" { json!({ "character": "mock", "views": views }) } else { args };
+        let plan = dry_run(&doc, &store, op, args.clone()).unwrap();
+        assert!(plan.patch.is_empty() && plan.output.is_some(), "{op}");
+        assert_eq!(reads(), 0, "{op}: planning read the store");
+        // The same plan as a job's, then the work: the work is what reads (every view, once).
+        let result = work(&doc, &store, op, &args, &Signal::default()).unwrap();
+        assert!(reads() >= shown.len(), "{op}: the work did not load the assets");
+        store.reads.store(0, Ordering::SeqCst);
+        assert!(result.is_object(), "{op}");
+    }
+}
+
+/// The parts drawn with the body are rebuilt for every candidate: head and hair (and a tail or wings) are built on the
+/// body's joints and stature, so after the fit the character the document now describes must draw what the fit
+/// reported. Reported `IoU` against the `IoU` of the rebuilt character, which a frozen-parts fit does not match.
+#[test]
+fn the_reported_fit_is_what_the_rebuilt_character_draws() {
+    const PART_ROWS: usize = 64;
+    let store = Arc::new(MemStore::default());
+    let shown = [FitView::Front, FitView::Side];
+    let fixed = other_parts(&with_parts("soft-sd", Some(&truth()), head_and_hair()));
+    let masks: Vec<Silhouette> =
+        shown.iter().map(|&v| render_target("soft-sd", &truth(), &fixed, v, PART_ROWS).unwrap()).collect();
+    let views: Value = shown
+        .iter()
+        .zip(&masks)
+        .map(|(&v, m)| {
+            let rows: Vec<String> = m
+                .pixels()
+                .chunks(m.width())
+                .map(|r| r.iter().map(|&on| if on { '#' } else { '.' }).collect())
+                .collect();
+            json!({ "view": view_name(v), "rows": rows })
+        })
+        .collect();
+    let doc = with_parts("soft-sd", None, head_and_hair());
+    let args = json!({ "character": "mock", "views": views, "heatmaps": false });
+    let out = answer(&run_job(&doc, &store, "fit.reference", &args).unwrap()).clone();
+    let proposed = proposed(&out);
+    // The character as the document would hold it after an apply: built again, its other parts drawn with its body.
+    let rebuilt = other_parts(&with_parts("soft-sd", Some(&proposed), head_and_hair()));
+    let tg: Vec<Target> = shown.iter().zip(&masks).map(|(&view, m)| Target { view, mask: m.clone() }).collect();
+    let drawn = iou_of(&FitInput { template: "soft-sd", targets: &tg, fixed: &rebuilt }, &proposed).unwrap();
+    let reported = out["iou_after"].as_f64().unwrap();
+    eprintln!("reported IoU {reported:.5}, the rebuilt character draws {drawn:.5}");
+    assert!((reported - drawn).abs() < 1e-9, "reported {reported}, rebuilt {drawn}");
+}
+
+/// Writes `after` at `path` (`None` removes it), whatever is there now.
+fn set(doc: &mut MemDoc, path: &str, after: Option<Value>) {
+    let path = DocPath::parse(path).unwrap();
+    let before = doc.get(&path).cloned();
+    doc.apply(&Patch { changes: vec![Change { path, before, after }] }).unwrap();
+}
+
+/// What the fit drew the body with is part of what it fitted: editing, disabling or removing a drawn part while the
+/// fit ran leaves a result fitted to geometry that is gone, so the apply is refused. An edit that cannot change the
+/// geometry (the character's name) is not, and neither is any edit when the body is fitted alone.
+#[test]
+fn parts_changed_while_the_fit_ran_refuse_the_apply() {
+    let store = Arc::new(MemStore::default());
+    let doc = with_parts("soft-sd", None, head_and_hair());
+    let apply = |args: &Value, result: &Value, edit: &dyn Fn(&mut MemDoc)| {
+        let mut edited = MemDoc::from_value(doc.root().clone());
+        edit(&mut edited);
+        finish(&edited, &store, "fit.apply", args, result.clone())
+    };
+    // One fit (the slow part), finished against several documents.
+    let args = json!({ "character": "mock", "views": views() });
+    let result = work(&doc, &store, "fit.apply", &args, &Signal::default()).unwrap();
+    let hair = "characters/mock/parts/hair";
+    let head_params = "characters/mock/parts/head/params";
+    let edits: [(&str, Box<dyn Fn(&mut MemDoc)>); 4] = [
+        ("hair edited", Box::new(|d| set(d, &format!("{hair}/params"), Some(json!({ "rng": "legacy_lcg" }))))),
+        ("hair disabled", Box::new(|d| set(d, &format!("{hair}/enabled"), Some(json!(false))))),
+        ("hair removed", Box::new(|d| set(d, hair, None))),
+        ("head edited", Box::new(|d| set(d, head_params, Some(json!({ "window": { "half_width": 0.2 } }))))),
+    ];
+    for (what, edit) in &edits {
+        let e = apply(&args, &result, edit.as_ref()).unwrap_err();
+        assert_eq!(e.code, ErrorCode::Conflict, "{what}: {e:?}");
+        assert!(e.message.contains("parts drawn with the body"), "{what}: {}", e.message);
+    }
+    let renamed = apply(&args, &result, &|d| set(d, "characters/mock/name", Some(json!("Renamed")))).unwrap();
+    assert!(!renamed.patch.is_empty(), "an edit that leaves the geometry alone still applies");
+    // With the body alone nothing else is drawn, so editing the other parts changes nothing the fit used.
+    let alone = json!({ "character": "mock", "views": views(), "parts": [] });
+    let result = work(&doc, &store, "fit.apply", &alone, &Signal::default()).unwrap();
+    let edit = |d: &mut MemDoc| set(d, &format!("{hair}/enabled"), Some(json!(false)));
+    assert!(apply(&alone, &result, &edit).is_ok());
 }

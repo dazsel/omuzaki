@@ -17,13 +17,18 @@
 //! only `read` changes nothing anywhere, and nothing derived from a caller's reference is given a licence record.
 //!
 //! **Inputs** ([`input`](super::input)): each view's silhouette as text rows, a base64 PNG, or a PNG in the asset
-//! store. **Parts**: the character's other parts (head, hair, accessories, garments) are drawn into the silhouette with
-//! every candidate body, as built on the stored body (the solver's fixed parts, built once in the job), so a reference
-//! of the whole character fits the body inside it; `parts` picks which (all enabled ones by default, `[]` for the body
-//! alone). They stay where the stored body put them, as the head and hair do when the body changes today (the head
-//! is placed from its own parameters, #825); the neck and anything else built on the body's joints is drawn as on the
-//! stored body. The fit is deterministic, so `fit.apply` writes exactly what `fit.reference` proposed for the same
-//! arguments and the same stored character.
+//! store. `plan` reads nothing from the store (a read hashes the whole asset, and the plan runs under the document
+//! lock); an asset is loaded and decoded in `work`, so a missing one is refused there.
+//!
+//! **Parts**: the character's other parts (head, hair, accessories, garments) are drawn into the silhouette with every
+//! candidate body; `parts` picks which (all enabled ones by default, `[]` for the body alone). They are **rebuilt for
+//! every candidate**: a neck, tail or wings are built on the body's joints and dimensions, so a candidate's silhouette
+//! is the one the rebuilt character will have, and what is reported (the `IoU`, the heatmaps) is what `fit.apply`
+//! leaves in the document. The character is rebuilt whole with the candidate body (the parts publish to each other),
+//! and the chosen parts' meshes are drawn. The fit is deterministic, so `fit.apply` writes exactly what
+//! `fit.reference` proposed for the same arguments and the same stored character. `fit.apply` also refuses with
+//! `Conflict` when the other parts it fitted against (their kinds, parameters, attachments, enabled flags) changed
+//! while the fit ran, as it does for the body.
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -38,7 +43,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::heatmap::heatmap;
-use super::input::{ViewMask, from_fit, parse_views};
+use super::input::{Assets, ViewMask, from_fit, parse_views};
 use super::solver::{FitInput, FitResult, MAX_EVALUATIONS, PARAM_ORDER, fit_from};
 use super::{FitError, FitParams, FitView, Objective, Target};
 use crate::ops::character::access;
@@ -179,8 +184,8 @@ fn pick_parts(def: &CharacterDef, body: &PartId, asked: Option<&[PartId]>) -> Re
     Ok(picked)
 }
 
-/// The plan both ops share: the arguments and the stored character checked under the lock (each mask decoded, the
-/// views distinct and not only specks, the template known, the parts the character's own), with no fitting.
+/// The plan both ops share: the arguments and the stored character checked under the lock (each mask given inline
+/// decoded, the views distinct and not only specks, the template known, the parts the character's own), with no fitting.
 fn plan_fit(
     ctx: &OpCtx<'_>,
     character: &CharId,
@@ -188,9 +193,12 @@ fn plan_fit(
     parts: Option<&[PartId]>,
 ) -> Result<Plan, OpError> {
     let (def, part, body) = load(ctx, character)?;
-    let targets = parse_views(views, ctx.service::<dyn Store>().ok())?;
+    // Under the document lock nothing is read from the store: an asset view is loaded and decoded in `work`.
+    let targets = parse_views(views, Assets::Defer(ctx.service::<dyn Store>().is_ok()))?;
     let template = def.template.to_string();
-    Objective::new(&template, &targets, &[]).map_err(|e| from_fit(&e))?;
+    if !targets.is_empty() {
+        Objective::new(&template, &targets, &[]).map_err(|e| from_fit(&e))?;
+    }
     let parts = pick_parts(&def, &part, parts)?;
     let chosen = Chosen {
         character: character.clone(),
@@ -214,44 +222,100 @@ fn chosen(job: &JobCtx<'_>) -> Result<Chosen, OpError> {
         .map_err(|e| OpError::internal(format!("the fit job's plan output is malformed: {e}")))
 }
 
-/// The meshes of the parts drawn with the body: the character as stored, built on the planned body, with every mesh of
-/// `chosen.parts`. Empty when none is drawn.
-fn parts_in_job(job: &JobCtx<'_>, chosen: &Chosen) -> Result<Vec<MeshData>, OpError> {
-    if chosen.parts.is_empty() {
-        return Ok(Vec::new());
-    }
-    let node = job.read(|doc| doc.get(&paths::character(&chosen.character)).cloned()).ok_or_else(|| {
-        access::not_found("character", format!("character `{}` was removed while the fit ran", chosen.character))
-    })?;
-    let mut def = CharacterDef::from_node(&node)
-        .map_err(|e| OpError::invalid("character", format!("character `{}` no longer loads: {e}", chosen.character)))?;
-    // Built on the body the plan chose, so the parts sit where the fit starts.
-    if let Some(body) = def.parts.get_mut(&chosen.part) {
-        body.params = to_value(&chosen.body)?;
-    }
-    let built = build_character(&chosen.character, &def)?;
-    Ok(built.meshes.into_iter().filter(|m| chosen.parts.contains(&m.part)).map(|m| m.mesh.geometry).collect())
+/// The character as `work` read it, to rebuild with every candidate body.
+struct Rebuild {
+    id: CharId,
+    def: CharacterDef,
+    /// The body part, whose parameters are the candidate's.
+    body: PartId,
+    /// The body as stored: its hands, skin and shape preset stay in every candidate.
+    base: BodyParams,
+    /// The parts whose meshes are drawn with the body.
+    drawn: Vec<PartId>,
 }
 
-/// Runs the fit of `chosen` against `views` in a job: progress after each evaluation, and a cancel stops it.
+impl Rebuild {
+    /// Reads the character from the document and checks that it builds as stored (the plan did not build it).
+    fn read(job: &JobCtx<'_>, chosen: &Chosen) -> Result<Self, OpError> {
+        let node = job.read(|doc| doc.get(&paths::character(&chosen.character)).cloned()).ok_or_else(|| {
+            access::not_found("character", format!("character `{}` was removed while the fit ran", chosen.character))
+        })?;
+        let def = CharacterDef::from_node(&node).map_err(|e| {
+            OpError::invalid("character", format!("character `{}` no longer loads: {e}", chosen.character))
+        })?;
+        let rebuild = Self {
+            id: chosen.character.clone(),
+            def,
+            body: chosen.part.clone(),
+            base: chosen.body.clone(),
+            drawn: chosen.parts.clone(),
+        };
+        rebuild.build(&FitParams { proportions: chosen.body.proportions.clone(), shape: chosen.body.shape.clone() })?;
+        Ok(rebuild)
+    }
+
+    /// The character built with `params` as its body's proportions and shape (the stored hands kept).
+    fn build(&self, params: &FitParams) -> Result<omuzaki_char_api::BuiltCharacter, OpError> {
+        let mut def = self.def.clone();
+        if let Some(part) = def.parts.get_mut(&self.body) {
+            let body = BodyParams {
+                proportions: params.proportions.clone(),
+                shape: params.shape.clone(),
+                ..self.base.clone()
+            };
+            part.params = to_value(&body)?;
+        }
+        build_character(&self.id, &def)
+    }
+
+    /// The meshes of the drawn parts of the character built with `params`: what the solver draws with that candidate.
+    fn meshes(&self, params: &FitParams) -> Result<Vec<MeshData>, FitError> {
+        let built = self.build(params).map_err(|e| FitError::Build(e.message))?;
+        Ok(built.meshes.into_iter().filter(|m| self.drawn.contains(&m.part)).map(|m| m.mesh.geometry).collect())
+    }
+}
+
+/// What the meshes of the drawn parts are built from, other than the body's own proportions, shape and hands: every
+/// part's definition (kind, parent, enabled, layer, attachment, parameters) and the seed. `Null` when no part is drawn,
+/// because then nothing but the body matters. `fit.apply` compares it after the fit to refuse a result fitted against
+/// parts that were edited, disabled or removed meanwhile.
+fn geometry_inputs(def: &CharacterDef, body: &PartId, drawn: &[PartId]) -> Result<Value, OpError> {
+    if drawn.is_empty() {
+        return Ok(Value::Null);
+    }
+    let mut parts = serde_json::Map::new();
+    for (id, part) in &def.parts {
+        let mut value = to_value(part)?;
+        if id == body {
+            // The body's parameters are compared in full by `still_fits`; its other fields count here.
+            value["params"] = Value::Null;
+        }
+        parts.insert(id.to_string(), value);
+    }
+    Ok(json!({ "seed": def.seed, "parts": parts }))
+}
+
+/// Runs the fit of `chosen` against `views` in a job: progress after each evaluation, and a cancel stops it. Returns
+/// the targets, the character as read (to draw the heatmaps with, if any part is drawn) and the result.
 fn fit_in_job(
     job: &JobCtx<'_>,
     chosen: &Chosen,
     views: &[ViewMask],
-) -> Result<(Vec<Target>, Vec<MeshData>, FitResult), OpError> {
-    let targets = parse_views(views, job.service::<dyn Store>().ok())?;
-    let parts = parts_in_job(job, chosen)?;
-    let input = FitInput { template: &chosen.template, targets: &targets, fixed: &parts };
+) -> Result<(Vec<Target>, Option<Rebuild>, FitResult), OpError> {
+    let targets = parse_views(views, Assets::Read(job.service::<dyn Store>().ok()))?;
+    let rebuild = if chosen.parts.is_empty() { None } else { Some(Rebuild::read(job, chosen)?) };
+    let follow = |params: &FitParams| rebuild.as_ref().map_or_else(|| Ok(Vec::new()), |r| r.meshes(params));
+    let input = FitInput { template: &chosen.template, targets: &targets, fixed: &[] };
     #[allow(clippy::cast_precision_loss)] // counts up to MAX_EVALUATIONS, far inside f32's exact integers
     let mut watch = |done: usize| {
         job.progress("fitting", done as f32 / MAX_EVALUATIONS as f32);
         !job.is_cancelled()
     };
-    let result = fit_from(&input, &chosen.body, &mut watch).map_err(|e| match e {
+    let result = fit_from(&input, &chosen.body, rebuild.is_some().then_some(&follow), &mut watch).map_err(|e| match e {
         FitError::Stopped => OpError::cancelled(job.id()),
         other => from_fit(&other),
     })?;
-    Ok((targets, parts, result))
+    Ok((targets, rebuild, result))
 }
 
 /// `{name: value}` of the parameters of `fit` that differ from `before`, in [`PARAM_ORDER`].
@@ -298,14 +362,18 @@ fn view_name(view: FitView) -> &'static str {
 }
 
 /// The heatmap of each view as a base64 PNG, in the targets' order: the fitted body with the stored hands and the
-/// parts drawn with it, against the target as the fit saw it.
+/// parts drawn with it (rebuilt on the fitted body), against the target as the fit saw it.
 fn heatmaps(
     chosen: &Chosen,
     targets: &[Target],
-    parts: &[MeshData],
+    rebuild: Option<&Rebuild>,
     result: &FitResult,
 ) -> Result<Vec<String>, OpError> {
-    let objective = Objective::new(&chosen.template, targets, parts).map_err(|e| from_fit(&e))?.with_body(&chosen.body);
+    let follow = |params: &FitParams| rebuild.map_or_else(|| Ok(Vec::new()), |r| r.meshes(params));
+    let objective = Objective::new(&chosen.template, targets, &[])
+        .map_err(|e| from_fit(&e))?
+        .with_body(&chosen.body)
+        .with_follow(rebuild.is_some().then_some(&follow));
     let masks = objective.masks(&result.params).map_err(|e| from_fit(&e))?;
     masks
         .iter()
@@ -335,10 +403,10 @@ impl Op for FitReference {
 
     fn work(&self, job: &JobCtx<'_>) -> Result<Value, OpError> {
         let chosen = chosen(job)?;
-        let (targets, parts, result) = fit_in_job(job, &chosen, &self.views)?;
+        let (targets, rebuild, result) = fit_in_job(job, &chosen, &self.views)?;
         let mut out = summary(&chosen, &result);
         if self.heatmaps {
-            let maps = heatmaps(&chosen, &targets, &parts, &result)?;
+            let maps = heatmaps(&chosen, &targets, rebuild.as_ref(), &result)?;
             if let Some(views) = out["per_view"].as_array_mut() {
                 for (v, png) in views.iter_mut().zip(maps) {
                     v["heatmap_png"] = json!(png);
@@ -358,6 +426,10 @@ struct Fitted {
     part: PartId,
     template: String,
     from: BodyParams,
+    /// What the drawn parts were built from ([`geometry_inputs`]).
+    inputs: Value,
+    /// The parts drawn with the body.
+    drawn: Vec<PartId>,
     proportions: Proportions,
     shape: BodyShape,
     summary: Value,
@@ -391,9 +463,15 @@ impl Op for FitApply {
 
     fn work(&self, job: &JobCtx<'_>) -> Result<Value, OpError> {
         let chosen = chosen(job)?;
-        let (_, _, result) = fit_in_job(job, &chosen, &self.views)?;
+        let (_, rebuild, result) = fit_in_job(job, &chosen, &self.views)?;
+        let inputs = match &rebuild {
+            Some(r) => geometry_inputs(&r.def, &chosen.part, &chosen.parts)?,
+            None => Value::Null,
+        };
         let fitted = Fitted {
             summary: summary(&chosen, &result),
+            inputs,
+            drawn: chosen.parts.clone(),
             proportions: result.params.proportions,
             shape: result.params.shape,
             part: chosen.part,
@@ -414,6 +492,13 @@ impl Op for FitApply {
                 self.character
             ))
             .hint("run fit.apply again: it fits the body as it is now"));
+        }
+        if geometry_inputs(&def, &part, &fitted.drawn)? != fitted.inputs {
+            return Err(OpError::conflict(format!(
+                "the parts drawn with the body of character `{}` changed while the fit ran",
+                self.character
+            ))
+            .hint("run fit.apply again: it fits against the parts as they are now"));
         }
         // The stored hands, skin and shape preset stay; only the fitted proportions and shape axes are written.
         let after = BodyParams {
