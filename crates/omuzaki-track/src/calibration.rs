@@ -192,8 +192,7 @@ impl CalibrationStore {
             }
         };
         match table.remove("version") {
-            None => {}
-            Some(toml::Value::Integer(FILE_VERSION)) => {}
+            None | Some(toml::Value::Integer(FILE_VERSION)) => {}
             Some(_) => return Self::locked_with("the file has a version this build does not know".to_owned()),
         }
         let items = match table.remove("calibration") {
@@ -364,9 +363,8 @@ fn decode(item: &toml::Value) -> (Option<Key>, Result<Calibration, String>) {
         return (key, Err("the entry has no `calibration`".to_owned()));
     };
     // `try_into` reports a serde message that names the field but never quotes the value.
-    let calibration = match body.clone().try_into::<Calibration>() {
-        Ok(calibration) => calibration,
-        Err(_) => return (key, Err("the calibration does not read".to_owned())),
+    let Ok(calibration) = body.clone().try_into::<Calibration>() else {
+        return (key, Err("the calibration does not read".to_owned()));
     };
     match check_calibration(&profile, &calibration) {
         Ok(()) => (key, Ok(calibration)),
@@ -468,7 +466,7 @@ mod tests {
         let reopened = CalibrationStore::open(&path);
         assert_eq!(reopened, store);
         assert_eq!(reopened.for_character("kiri", DeviceProfile::Webcam), Some(tuned(DeviceProfile::Webcam)));
-        assert!(reopened.findings().is_empty());
+        assert_eq!(reopened.findings(), []);
     }
 
     #[test]
@@ -559,7 +557,7 @@ mod tests {
         assert_eq!(store.findings().len(), 1, "the person's own fix clears it");
         assert_eq!(store.forget("noor"), Ok(true), "forgetting a character drops a bad entry too");
         let again = CalibrationStore::open(&path);
-        assert!(again.findings().is_empty());
+        assert_eq!(again.findings(), []);
         assert_eq!(again.len(), 1);
     }
 
