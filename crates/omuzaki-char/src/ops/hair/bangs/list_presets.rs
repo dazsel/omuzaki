@@ -10,6 +10,12 @@ use super::presets::PRESETS;
 /// Lists the bangs presets in their fixed order. Writes nothing.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {}
+    ],
+    "x-omuzaki-fixture" = "demo"
+))]
 pub struct HairBangsListPresets {}
 
 impl Op for HairBangsListPresets {

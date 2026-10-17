@@ -61,6 +61,12 @@ const RANGES_NOTE: &str = "found by trying values against the kind's own validat
 /// parameter's `path` to `part.set_param`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "part": "head"}
+    ],
+    "x-omuzaki-fixture" = "character"
+))]
 pub struct PartDescribe {
     /// The character the part belongs to.
     pub character: CharId,
