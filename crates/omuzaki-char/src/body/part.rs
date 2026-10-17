@@ -1,5 +1,5 @@
 //! The `body` part kind: its layout from the character's template, its meshes, its skin material, and what it publishes
-//! (the template fit with the bind pose, and the character's real-world stature).
+//! (the fit, the template's widened to hold the mesh, with the bind pose; and the character's real-world stature).
 
 use std::sync::Arc;
 
@@ -10,6 +10,7 @@ use omuzaki_char_api::{
 use omuzaki_core::colour::Colour;
 use omuzaki_render_api::{Outline, Rim, Shading, Skin, Toon};
 
+use super::fit::BodyMeshFit;
 use super::{hands, mesh};
 use crate::kit::skin::SegmentSet;
 use crate::template::registry;
@@ -46,16 +47,18 @@ impl PartKind for Body {
             .try_layout(&params.proportions, &params.shape, &params.hand)
             .map_err(|e| ctx.fail(format!("template `{}` cannot build a layout: {e}", template.id())))?;
         let stature = template.stature(&layout);
-        let fit = Arc::new(TemplateFit::new(layout));
+        let fit = TemplateFit::new(layout);
         let material_id = MaterialName::new(SKIN_MATERIAL).map_err(|e| ctx.fail(format!("internal id: {e}")))?;
         let to_build_error = |e: crate::kit::KitError| ctx.fail(e.to_string());
-        let segments = SegmentSet::from_fit(fit.as_ref(), &mesh::all_bones()).map_err(to_build_error)?;
+        let segments = SegmentSet::from_fit(&fit, &mesh::all_bones()).map_err(to_build_error)?;
         let regions = mesh::build_regions(fit.layout(), &segments, mesh::Detail::of(ctx.quality), &material_id)
             .map_err(to_build_error)?;
+        // The published fit holds the mesh: its junctions and caps stand outside the layout's sections.
+        let published = Arc::new(BodyMeshFit::new(fit, regions.iter().map(|(region, m)| (*region, &m.geometry))));
         let mut meshes: Vec<PartMesh> = regions.into_iter().map(|(_, m)| m).collect();
-        meshes.extend(hands::build(params, fit.layout(), &material_id).map_err(to_build_error)?);
+        meshes.extend(hands::build(params, published.layout(), &material_id).map_err(to_build_error)?);
         let material = skin_material(params, ctx)?;
-        let mut publishes = Publishes::default().with::<FitFact>(fit);
+        let mut publishes = Publishes::default().with::<FitFact>(published);
         if let Some(stature) = stature {
             publishes.put::<StatureFact>(stature);
         }
