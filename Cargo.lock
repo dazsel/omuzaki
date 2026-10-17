@@ -4059,6 +4059,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-library-mock"
+version = "0.0.0"
+dependencies = [
+ "ed25519-dalek",
+ "omuzaki-char-api",
+ "omuzaki-char-mock",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-doc-mock",
+ "omuzaki-library-api",
+ "omuzaki-ops-api",
+ "omuzaki-store-api",
+ "schemars",
+ "serde",
+ "serde_json",
+ "unicode-normalization",
+]
+
+[[package]]
 name = "omuzaki-link-build"
 version = "0.0.0"
 dependencies = [

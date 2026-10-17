@@ -1,0 +1,804 @@
+//! Regression tests for the review of the first version: visibility and identity, seed validation, and apply
+//! containment. Each test fails on the behaviour it replaced, except the argument test, which pins a rule the
+//! recipe expansion already enforced.
+
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
+mod support;
+
+use std::fmt::Write as _;
+
+use omuzaki_doc_api::DocRead;
+use omuzaki_library_api::{Bindings, ItemManifest, ItemScope, ItemSource, Library, LibraryError, Query, VersionReq};
+use omuzaki_library_mock::{MockLibrary, apply_for_test, fixtures, seed};
+use omuzaki_ops_api::{ErrorCode, ErrorDetail};
+
+#[derive(Default)]
+struct Source(Vec<ItemManifest>);
+
+impl ItemSource for Source {
+    fn id(&self) -> &'static str {
+        "review-source"
+    }
+
+    fn items(&self) -> Vec<ItemManifest> {
+        self.0.clone()
+    }
+}
+
+/// A valid `omuzaki/` item whose recipe is `steps`, appended after the header. `extra` goes before `[rights]`.
+fn item(id: &str, section: &str, kind: &str, extra: &str, steps: &str) -> ItemManifest {
+    let text = format!(
+        "schema = 1\nid = \"{id}\"\nversion = \"1.0.0\"\nsection = \"{section}\"\nkind = \"{kind}\"\ntarget = \"character\"\n\
+         title = \"{id}\"\nsummary = \"A review fixture.\"\ntags = [\"seed\"]\norigin = \"test fixture\"\n{extra}\n\
+         [rights]\nauthor = \"Omuzaki\"\nlicence = \"CC0-1.0\"\ncommercial = \"ok\"\nowned = true\n\n{steps}"
+    );
+    ItemManifest::parse(&text).unwrap_or_else(|e| panic!("{e}\n{text}"))
+}
+
+fn setting(id: &str, steps: &str) -> ItemManifest {
+    item(id, "colourways", "setting", "", steps)
+}
+
+const PALETTE: &str = "[[step]]\nop = \"palette.set\"\n[step.args]\ncharacter = \"$character\"\nslot = \"outfit\"\ncolour = \"#2a2346\"\n";
+
+fn bound() -> Bindings {
+    Bindings { character: Some(support::character()), ..Bindings::default() }
+}
+
+fn rules(problems: &[seed::SeedProblem]) -> Vec<(&str, &str)> {
+    problems.iter().map(|p| (p.item.as_str(), p.rule)).collect()
+}
+
+// --- Class A: visibility and identity ---
+
+#[test]
+fn search_and_list_hide_unlisted_and_deprecated_items_before_paging_and_facets_but_they_still_resolve() {
+    let mut library = MockLibrary::fixtures();
+    let before = library.search(&Query { limit: 100, ..Query::default() }).unwrap();
+    let mut hidden = fixtures::setting();
+    hidden.id = "test/colourways/hidden".into();
+    hidden.listed = false;
+    let mut old = fixtures::setting();
+    old.id = "test/colourways/retired".into();
+    let mut retired = old.clone();
+    retired.version = "2.0.0".into();
+    retired.deprecated = Some("replaced".into());
+    let _ = old;
+    for m in [hidden.clone(), retired] {
+        library.insert(m, ItemScope::FirstParty).unwrap();
+    }
+    let search = library.search(&Query { limit: 100, ..Query::default() }).unwrap();
+    assert_eq!(search, before, "total, rows and facets are unchanged by hidden items");
+    let paged = library.search(&Query { offset: before.total - 1, limit: 1, ..Query::default() }).unwrap();
+    assert_eq!(paged.items, before.items[before.total - 1..], "the last page has the last visible row");
+    let listed = library.list(None, None, 0, 100).unwrap();
+    assert_eq!(listed.total, before.total);
+    for id in ["test/colourways/hidden", "test/colourways/retired"] {
+        assert!(search.items.iter().all(|i| i.id.as_str() != id), "{id} is not in search");
+        assert!(listed.items.iter().all(|i| i.id.as_str() != id), "{id} is not in a listing");
+        let id = id.parse().unwrap();
+        library.resolve(&id, &VersionReq::Any).expect("a pin or dependency still resolves it");
+        library.describe(&id, None).expect("and describes it");
+    }
+    assert_eq!(
+        library.resolve(&"test/colourways/retired".parse().unwrap(), &VersionReq::Any).unwrap().manifest.version,
+        "2.0.0"
+    );
+}
+
+#[test]
+fn a_publisher_renaming_itself_between_versions_is_still_one_publisher() {
+    let mut library = MockLibrary::new();
+    let mut renamed = fixtures::signed_ember("1.1.0");
+    renamed.publisher.as_mut().unwrap().name = "Signer Studio".into();
+    assert_eq!(renamed.publisher.as_ref().unwrap().key, fixtures::signed_ember("1.0.0").publisher.unwrap().key);
+    library.insert(fixtures::signed_ember("1.0.0"), ItemScope::Mine).unwrap();
+    library.insert(renamed, ItemScope::Mine).unwrap();
+    let ember = "signer/colourways/ember".parse().unwrap();
+    assert_eq!(library.resolve(&ember, &VersionReq::Any).unwrap().manifest.version, "1.1.0");
+    assert_eq!(library.versions(&ember).unwrap().len(), 2);
+    // A different key under the same id and version is still ambiguous, whatever it calls itself.
+    let mut rival = fixtures::shared_bow(fixtures::RIVAL_SEED);
+    rival.publisher.as_mut().unwrap().name = "Signer".into();
+    library.insert(fixtures::shared_bow(fixtures::SIGNER_SEED), ItemScope::Mine).unwrap();
+    library.insert(rival, ItemScope::Mine).unwrap();
+    let bow = "shared/colourways/bow".parse().unwrap();
+    assert!(
+        matches!(library.resolve(&bow, &VersionReq::Any), Err(LibraryError::Ambiguous { candidates, .. }) if candidates.len() == 2)
+    );
+}
+
+#[test]
+fn one_id_and_version_cannot_hold_different_content_in_two_scopes() {
+    let mut library = MockLibrary::new();
+    library.insert(fixtures::unverified(), ItemScope::Mine).unwrap();
+    let mut changed = fixtures::unverified();
+    changed.summary = "Different content, same version.".into();
+    let team = ItemScope::Team("studio".into());
+    let err = library.insert(changed.clone(), team.clone()).unwrap_err();
+    assert!(matches!(&err, LibraryError::Storage(m) if m.contains("different hash")), "{err}");
+    // The same content in a second scope is fine, and the clash is symmetric.
+    library.insert(fixtures::unverified(), team.clone()).unwrap();
+    let mut other = MockLibrary::new();
+    other.insert(changed, team).unwrap();
+    assert!(other.insert(fixtures::unverified(), ItemScope::Mine).is_err());
+}
+
+// --- Class B: seed validation ---
+
+#[test]
+fn a_repeated_seed_id_is_reported_whether_identical_or_a_new_version() {
+    let doc = support::doc();
+    let one = setting("omuzaki/colourways/seed-twice", PALETTE);
+    let mut newer = one.clone();
+    newer.version = "1.1.0".into();
+    assert_eq!(seed::check_source(&Source(vec![one.clone()]), &doc), vec![]);
+    for (items, what) in [(vec![one.clone(), one.clone()], "twice"), (vec![one.clone(), newer], "1.0.0 and 1.1.0")] {
+        let problems = seed::check_source(&Source(items), &doc);
+        assert_eq!(rules(&problems), [("omuzaki/colourways/seed-twice", "id")], "{problems:?}");
+        assert!(problems[0].detail.contains(what), "{}", problems[0]);
+    }
+}
+
+fn tint(kinds: &str) -> ItemManifest {
+    item(
+        "omuzaki/bangs/seed-tint",
+        "bangs",
+        "setting",
+        &format!("target_part = [{kinds}]\n"),
+        "[[step]]\nop = \"part.tint\"\n[step.args]\ncharacter = \"$character\"\npart = \"$target\"\ncolour = \"#112233\"\n",
+    )
+}
+
+#[test]
+fn target_binds_the_one_part_of_the_wanted_kind_and_reports_none_or_several() {
+    let doc = support::doc();
+    // The mock character has one `mock-hair` part, two `mock-garment` parts and no `mock-wing`.
+    assert_eq!(seed::check_source(&Source(vec![tint("\"mock-hair\"")]), &doc), vec![]);
+    let hair =
+        apply_for_test(&tint("\"mock-hair\""), &doc, &Bindings { target: Some("hair".parse().unwrap()), ..bound() })
+            .unwrap();
+    assert_eq!(hair.changes[0].path.to_string(), "characters/mira/parts/hair/tint");
+
+    let several = seed::check_source(&Source(vec![tint("\"mock-garment\"")]), &doc);
+    assert_eq!(rules(&several), [("omuzaki/bangs/seed-tint", "apply")]);
+    assert!(several[0].detail.contains("ambiguous") && several[0].detail.contains("shirt, vest"), "{}", several[0]);
+
+    let none = seed::check_source(&Source(vec![tint("\"mock-wing\"")]), &doc);
+    assert!(none[0].detail.contains("mock-wing") && none[0].detail.contains("none"), "{}", none[0]);
+    // Either kind is eligible: the hair and the two garments are three candidates.
+    let any = seed::check_source(&Source(vec![tint("\"mock-hair\", \"mock-garment\"")]), &doc);
+    assert!(any[0].detail.contains("ambiguous") && any[0].detail.contains("hair, shirt, vest"), "{}", any[0]);
+}
+
+const RIBBON: &str = "[[step]]\nop = \"part.add\"\n[step.args]\ncharacter = \"$character\"\nkind = \"mock-hair\"\nid = \"$parts.ribbon\"\n";
+
+fn ribbon_part() -> ItemManifest {
+    item(
+        "omuzaki/hair/seed-ribbon",
+        "hair",
+        "part",
+        "slot = \"hairstyle\"\ncreates.ribbon = { kind = \"hair\", id = \"ribbon\", layer = 5 }\n",
+        RIBBON,
+    )
+}
+
+#[test]
+fn a_bundle_binds_part_keys_only_from_its_own_dependency_closure() {
+    let doc = support::doc();
+    let nested = "[[step]]\nitem = \"omuzaki/hair/seed-ribbon\"\nversion = \"^1\"\n";
+    let with_part = item("omuzaki/outfits/seed-look", "outfits", "bundle", "", &format!("{nested}{PALETTE}"));
+    let own_step = item("omuzaki/outfits/seed-bare", "outfits", "bundle", "", &format!("{RIBBON}{PALETTE}"));
+    // The nested part item is in the bundle's tree, so `ribbon` is bound for it.
+    assert_eq!(seed::check_source(&Source(vec![ribbon_part(), with_part]), &doc), vec![]);
+    // Another item of the source creating `ribbon` is not the bundle's: the key stays unbound and the apply says so.
+    let problems = seed::check_source(&Source(vec![ribbon_part(), own_step]), &doc);
+    assert_eq!(rules(&problems), [("omuzaki/outfits/seed-bare", "apply")], "{problems:?}");
+}
+
+// --- Class C: apply containment ---
+
+fn refused(steps: &str, bindings: &Bindings) -> (ErrorCode, String) {
+    let e = apply_for_test(&setting("omuzaki/colourways/seed-bad", steps), &support::doc(), bindings).unwrap_err();
+    (e.code, e.to_string())
+}
+
+#[test]
+fn a_dry_run_refuses_ops_above_the_recipe_ceiling() {
+    let peek = "[[step]]\nop = \"mock.peek\"\n[step.args]\ncharacter = \"$character\"\n";
+    let export = "[[step]]\nop = \"mock.export\"\n[step.args]\ncharacter = \"$character\"\n";
+    let (code, message) = refused(peek, &bound());
+    assert_eq!(code, ErrorCode::Denied);
+    assert!(message.contains("mock.peek") && message.contains("edit ops"), "{message}");
+    let (code, message) = refused(export, &bound());
+    assert_eq!(code, ErrorCode::Denied);
+    assert!(message.contains("mock.export") && message.contains("fs"), "{message}");
+}
+
+#[test]
+fn a_dry_run_refuses_arguments_that_name_another_character_or_a_scene_and_needs_a_bound_character() {
+    let other = PALETTE.replace("$character", "zed");
+    let (code, message) = refused(&other, &bound());
+    assert_eq!(code, ErrorCode::Invalid);
+    assert!(message.contains("must be `$character`"), "{message}");
+    let scene = PALETTE.replace("slot", "scene = \"$character\"\nslot");
+    assert!(refused(&scene, &bound()).1.contains("scene"), "a scene argument is refused");
+    // Without a bound character there is nothing to confine to.
+    let (code, message) = refused(PALETTE, &Bindings::default());
+    assert_eq!(code, ErrorCode::Invalid);
+    assert!(message.contains("character"), "{message}");
+}
+
+#[test]
+fn a_change_outside_the_bound_character_fails_the_dry_run_and_the_seed_check() {
+    let stray = "[[step]]\nop = \"mock.stray\"\n[step.args]\ncharacter = \"$character\"\n";
+    let (code, message) = refused(stray, &bound());
+    assert_eq!(code, ErrorCode::Denied);
+    assert!(message.contains("characters/other/mark") && message.contains("characters/mira"), "{message}");
+    let doc = support::doc();
+    assert!(
+        doc.get(&omuzaki_doc_api::DocPath::parse("characters/other").unwrap()).is_none(),
+        "the dry run changes nothing"
+    );
+    let problems = seed::check_source(&Source(vec![setting("omuzaki/colourways/seed-bad", stray)]), &doc);
+    assert!(problems.iter().any(|p| p.rule == "apply" && p.detail.contains("outside the target")), "{problems:?}");
+    // The same recipe on its own character is fine.
+    apply_for_test(&setting("omuzaki/colourways/seed-good", PALETTE), &doc, &bound()).unwrap();
+}
+
+// --- Round 2: errors keep their structure, availability agrees with apply ---
+
+fn refused_error(steps: &str, bindings: &Bindings) -> omuzaki_ops_api::OpError {
+    apply_for_test(&setting("omuzaki/colourways/seed-bad", steps), &support::doc(), bindings).unwrap_err()
+}
+
+#[test]
+fn a_planned_ops_error_keeps_its_code_hint_and_detail_with_only_the_step_put_in_front() {
+    let refuse = |how: &str| {
+        format!("[[step]]\nop = \"mock.refuse\"\n[step.args]\ncharacter = \"$character\"\nhow = \"{how}\"\n")
+    };
+    let missing = refused_error(&refuse("missing"), &bound());
+    assert_eq!(missing.code, ErrorCode::NotFound);
+    assert_eq!(missing.hint.as_deref(), Some("restore it first"));
+    assert_eq!(missing.message, "step/0: the thing is gone");
+    let person = refused_error(&refuse("person"), &bound());
+    assert_eq!(person.code, ErrorCode::Denied);
+    assert!(matches!(person.detail.as_deref(), Some(ErrorDetail::NeedsPerson { .. })), "{person:?}");
+    // An error that names a field gets the step in front of the field instead.
+    let tint = "[[step]]\nop = \"part.tint\"\n[step.args]\ncharacter = \"$character\"\npart = \"nowhere\"\ncolour = \"#000000\"\n";
+    let invalid = refused_error(tint, &bound());
+    assert_eq!((invalid.code, invalid.field.as_deref()), (ErrorCode::Invalid, Some("step/0/part")));
+}
+
+#[test]
+fn expansion_and_library_failures_keep_their_kind_field_and_hint() {
+    // An unbound placeholder keeps the hint saying what to pass.
+    let unbound = refused_error(RIBBON, &bound());
+    assert_eq!(unbound.code, ErrorCode::Invalid);
+    assert!(unbound.field.as_deref().is_some_and(|f| f.contains("step/0")) && unbound.hint.is_some(), "{unbound:?}");
+    let doc = support::doc();
+    let library = MockLibrary::fixtures();
+    let apply = |m: &ItemManifest| omuzaki_library_mock::apply_with_library(&library, m, &doc, &bound()).unwrap_err();
+    // A missing dependency is NotFound on its step, not Invalid.
+    let dangling = apply(&fixtures::dangling_bundle());
+    assert_eq!((dangling.code, dangling.field.as_deref()), (ErrorCode::NotFound, Some("step/0")));
+    // A range nothing matches says what is installed; a publisher clash says to name one.
+    let range = apply(&bundle_of("test/hair/ribbon", "^9"));
+    assert_eq!(range.code, ErrorCode::Invalid);
+    assert!(range.hint.as_deref().is_some_and(|h| h.contains("1.0.0")), "{range:?}");
+    let clash = apply(&bundle_of("shared/colourways/bow", "^1"));
+    assert_eq!((clash.code, clash.hint.as_deref()), (ErrorCode::Invalid, Some("name one publisher")));
+}
+
+fn bundle_of(dependency: &str, version: &str) -> ItemManifest {
+    item(
+        "omuzaki/outfits/seed-dep",
+        "outfits",
+        "bundle",
+        "",
+        &format!("[[step]]\nitem = \"{dependency}\"\nversion = \"{version}\"\n"),
+    )
+}
+
+// --- availability agrees with apply, and every resolution path uses one tiering ---
+
+#[test]
+fn a_bundle_is_unavailable_exactly_when_applying_it_fails_on_a_dependency() {
+    let mut library = MockLibrary::fixtures();
+    let doc = support::doc();
+    let nested = |item: &str| bundle_of(item, "^1");
+    // Missing, unavailable through a nested bundle two levels down, and available.
+    let mut cases = vec![
+        (nested("test/hair/nonexistent"), true),
+        (nested("test/outfits/ghosted"), true),
+        (nested("test/outfits/casual"), false),
+    ];
+    for (i, (m, _)) in cases.iter_mut().enumerate() {
+        m.id = format!("test/outfits/probe-{i}");
+    }
+    for (m, unavailable) in cases {
+        library.insert(m.clone(), ItemScope::FirstParty).unwrap();
+        let info = library.describe(&m.item_id().unwrap(), None).unwrap().info;
+        assert_eq!(info.unavailable.is_some(), unavailable, "{}: {:?}", m.id, info.unavailable);
+        let applied = omuzaki_library_mock::apply_with_library(&library, &m, &doc, &bindings_for_bundle());
+        assert_eq!(applied.is_err(), unavailable, "{}: {applied:?}", m.id);
+    }
+}
+
+#[test]
+fn a_dependency_cycle_is_unavailable_like_it_fails_to_apply() {
+    let mut library = MockLibrary::new();
+    let (a, b) = (bundle_of("test/outfits/b", "^1"), bundle_of("test/outfits/a", "^1"));
+    for (m, id) in [(a, "test/outfits/a"), (b, "test/outfits/b")] {
+        let mut m = m;
+        m.id = id.into();
+        library.insert(m, ItemScope::FirstParty).unwrap();
+    }
+    let a = "test/outfits/a".parse().unwrap();
+    let why = library.describe(&a, None).unwrap().info.unavailable.expect("a cycle is unavailable");
+    assert!(why.contains("cycle"), "{why}");
+}
+
+fn bindings_for_bundle() -> Bindings {
+    let mut b = bound();
+    b.parts.insert("ribbon".into(), "new-ribbon".parse().unwrap());
+    b
+}
+
+#[test]
+fn all_teams_are_one_tier_for_resolve_describe_and_versions() {
+    let mut library = MockLibrary::new();
+    // "atelier" sorts before "studio" and holds the older version.
+    library.insert(fixtures::tide("1.0.0"), ItemScope::Team("atelier".into())).unwrap();
+    library.insert(fixtures::tide("1.1.0"), ItemScope::Team("studio".into())).unwrap();
+    let tide = "signer/colourways/tide".parse().unwrap();
+    assert_eq!(library.resolve(&tide, &VersionReq::Any).unwrap().scope, ItemScope::Team("studio".into()));
+    assert_eq!(library.describe(&tide, None).unwrap().info.version.to_string(), "1.1.0");
+    assert_eq!(library.versions(&tide).unwrap().len(), 2);
+    // Two publishers in two teams are ambiguous in every path; Mine still beats both.
+    library.insert(fixtures::reef(fixtures::SIGNER_SEED), ItemScope::Team("atelier".into())).unwrap();
+    library.insert(fixtures::reef(fixtures::RIVAL_SEED), ItemScope::Team("studio".into())).unwrap();
+    let reef = "shared/colourways/reef".parse().unwrap();
+    assert!(matches!(library.resolve(&reef, &VersionReq::Any), Err(LibraryError::Ambiguous { .. })));
+    assert!(matches!(library.describe(&reef, None), Err(LibraryError::Ambiguous { .. })));
+    assert!(matches!(library.versions(&reef), Err(LibraryError::Ambiguous { .. })));
+}
+
+#[test]
+fn compatible_with_filters_by_body_template_and_parts_and_keeps_style_mismatches_with_the_warning() {
+    use omuzaki_library_api::{CompatStatus, CompatTarget};
+    let mut library = MockLibrary::fixtures();
+    library.set_characters(fixtures::characters());
+    let mira = support::character();
+    let query = Query { compatible_with: Some(CompatTarget::Character(mira)), limit: 100, ..Query::default() };
+    let page = library.search(&query).unwrap();
+    let ids: Vec<&str> = page.items.iter().map(|i| i.id.as_str()).collect();
+    for gone in ["creature-only", "other-template", "needs-wings"] {
+        assert!(!ids.contains(&format!("test/colourways/{gone}").as_str()), "{gone}");
+    }
+    let gothic = page.items.iter().find(|i| i.id.as_str() == "test/colourways/gothic").expect("a style mismatch stays");
+    assert!(matches!(gothic.compat, CompatStatus::StyleMismatch { .. }));
+    // Without the facts the mock refuses rather than answering unfiltered.
+    assert!(matches!(MockLibrary::fixtures().search(&query), Err(LibraryError::NotFound(_))));
+    // A newer incompatible version is skipped for the newest one that fits.
+    let mut older = fixtures::fits();
+    older.id = "test/colourways/versioned".into();
+    let mut newer = older.clone();
+    newer.version = "2.0.0".into();
+    newer.compat.templates = vec!["tall".into()];
+    library.insert(older, ItemScope::FirstParty).unwrap();
+    library.insert(newer, ItemScope::FirstParty).unwrap();
+    let page = library.search(&query).unwrap();
+    let row = page.items.iter().find(|i| i.id.as_str() == "test/colourways/versioned").unwrap();
+    assert_eq!(row.version.to_string(), "1.0.0", "the row shows the newest version that fits");
+}
+
+// --- Round 3: one visibility rule for every candidate, bundle key ownership, localised and ranked text ---
+
+fn character_query() -> Query {
+    use omuzaki_library_api::CompatTarget;
+    Query { compatible_with: Some(CompatTarget::Character(support::character())), limit: 100, ..Query::default() }
+}
+
+fn shown_version(library: &MockLibrary, id: &str) -> Option<String> {
+    let page = library.search(&character_query()).unwrap();
+    page.items.iter().find(|i| i.id.as_str() == id).map(|i| i.version.to_string())
+}
+
+#[test]
+fn the_compatibility_fallback_never_picks_a_hidden_version() {
+    let mut library = MockLibrary::new();
+    library.set_characters(fixtures::characters());
+    let version = |v: &str, edit: &dyn Fn(&mut ItemManifest)| {
+        let mut m = fixtures::fits();
+        m.id = "test/colourways/history".into();
+        m.version = v.into();
+        edit(&mut m);
+        m
+    };
+    // 3.0.0 is listed but refuses the character; 2.0.0 fits but is deprecated; 1.0.0 fits and is listed.
+    for m in [
+        version("1.0.0", &|_| {}),
+        version("2.0.0", &|m| m.deprecated = Some("replaced".into())),
+        version("3.0.0", &|m| m.compat.templates = vec!["tall".into()]),
+    ] {
+        library.insert(m, ItemScope::FirstParty).unwrap();
+    }
+    assert_eq!(shown_version(&library, "test/colourways/history").as_deref(), Some("1.0.0"));
+    // An unlisted release is just as hidden, and neither a hidden newest release nor a hidden middle one hides the
+    // listed 1.0.0 or lets itself be picked.
+    library.insert(version("1.5.0", &|m| m.listed = false), ItemScope::FirstParty).unwrap();
+    library.insert(version("4.0.0", &|m| m.listed = false), ItemScope::FirstParty).unwrap();
+    assert_eq!(shown_version(&library, "test/colourways/history").as_deref(), Some("1.0.0"));
+    // Hidden versions still resolve and list, for pins.
+    let id = "test/colourways/history".parse().unwrap();
+    assert_eq!(library.versions(&id).unwrap().len(), 5);
+    assert_eq!(library.resolve(&id, &VersionReq::parse("^2").unwrap()).unwrap().manifest.version, "2.0.0");
+}
+
+fn creator(id: &str) -> ItemManifest {
+    let mut m = ribbon_part();
+    m.id = id.into();
+    m
+}
+
+fn bundle_applying(id: &str, items: &[&str]) -> ItemManifest {
+    let steps = items.iter().fold(String::new(), |mut steps, i| {
+        let _ = writeln!(steps, "[[step]]\nitem = \"{i}\"\nversion = \"^1\"");
+        steps
+    });
+    item(id, "outfits", "bundle", "", &steps)
+}
+
+#[test]
+fn two_items_of_a_bundle_creating_one_key_are_refused_naming_both() {
+    let (a, b) = ("omuzaki/hair/seed-ribbon-a", "omuzaki/hair/seed-ribbon-b");
+    let siblings = bundle_applying("omuzaki/outfits/seed-pair", &[a, b]);
+    let inner = bundle_applying("omuzaki/outfits/seed-inner", &[a]);
+    let nested = bundle_applying("omuzaki/outfits/seed-outer", &["omuzaki/outfits/seed-inner", b]);
+    let twice = bundle_applying("omuzaki/outfits/seed-twice", &[a, a]);
+    let source = Source(vec![creator(a), creator(b), inner, siblings, nested, twice]);
+    let mut library = MockLibrary::new();
+    for m in source.items() {
+        library.insert(m, ItemScope::FirstParty).unwrap();
+    }
+    let unavailable = |id: &str| library.describe(&id.parse().unwrap(), None).unwrap().info.unavailable;
+    for outer in ["omuzaki/outfits/seed-pair", "omuzaki/outfits/seed-outer"] {
+        let why = unavailable(outer).unwrap_or_else(|| panic!("{outer} must be refused"));
+        assert!(why.contains(a) && why.contains(b) && why.contains("ribbon"), "{outer}: {why}");
+    }
+    assert!(unavailable("omuzaki/outfits/seed-twice").is_some_and(|w| w.contains(a)), "the same item twice collides");
+    assert_eq!(unavailable("omuzaki/outfits/seed-inner"), None, "one creator is fine");
+    let problems = seed::check_source(&source, &support::doc());
+    let library_rule: Vec<&str> = problems.iter().filter(|p| p.rule == "library").map(|p| p.item.as_str()).collect();
+    assert_eq!(
+        library_rule,
+        ["omuzaki/outfits/seed-pair", "omuzaki/outfits/seed-outer", "omuzaki/outfits/seed-twice"],
+        "{problems:?}"
+    );
+}
+
+#[test]
+fn a_bundle_cycle_is_named_in_its_reason_and_in_the_seed_check() {
+    let (a, b) = ("omuzaki/outfits/seed-a", "omuzaki/outfits/seed-b");
+    let source = Source(vec![bundle_applying(a, &[b]), bundle_applying(b, &[a])]);
+    let mut library = MockLibrary::new();
+    for m in source.items() {
+        library.insert(m, ItemScope::FirstParty).unwrap();
+    }
+    let why = library.describe(&a.parse().unwrap(), None).unwrap().info.unavailable.expect("a cycle is refused");
+    assert!(why.contains(&format!("{a} -> {b} -> {a}")), "{why}");
+    let problems = seed::check_source(&source, &support::doc());
+    assert!(problems.iter().any(|p| p.rule == "library" && p.detail.contains(&format!("{a} -> {b} -> {a}"))));
+}
+
+#[test]
+fn a_localised_tag_alone_makes_an_item_a_search_hit_and_ranks_like_an_english_tag() {
+    fn hits(library: &MockLibrary, text: &str) -> Vec<String> {
+        let q = Query { text: Some(text.into()), limit: 100, ..Query::default() };
+        library.search(&q).unwrap().items.into_iter().map(|i| i.id.to_string()).collect()
+    }
+    let mut library = MockLibrary::fixtures();
+    assert_eq!(hits(&library, "veilleuse"), ["test/colourways/lantern"]);
+    assert_eq!(hits(&library, "提灯"), ["test/colourways/lantern"]);
+    // The English text has neither word: before this was searched, both queries found nothing.
+    let lantern = fixtures::lantern();
+    assert!(!lantern.tags.iter().any(|t| t == "veilleuse") && !lantern.summary.contains("veilleuse"));
+    // A localised tag ranks as a tag: above a prefix match on a summary word, below an exact title.
+    let mut tagged = fixtures::setting();
+    tagged.id = "test/colourways/other".into();
+    tagged.summary = "Mentions veilleuses in passing.".into();
+    library.insert(tagged, ItemScope::FirstParty).unwrap();
+    let order = hits(&library, "veilleuse");
+    assert_eq!(order, ["test/colourways/lantern", "test/colourways/other"], "tag before summary prefix");
+}
+
+#[test]
+fn text_ranks_exact_then_tag_then_prefix_then_fuzzy_and_ties_go_by_section_then_id() {
+    let mut library = MockLibrary::new();
+    let make = |id: &str, title: &str, tags: &[&str]| {
+        let mut m = fixtures::setting();
+        m.id = id.into();
+        m.title = title.into();
+        m.summary = "Nothing relevant.".into();
+        m.tags = tags.iter().map(|t| (*t).to_owned()).collect();
+        m
+    };
+    for m in [
+        make("test/colourways/d", "Garnat", &[]),        // one edit away
+        make("test/colourways/c", "Garnetine", &[]),     // starts with the word
+        make("test/colourways/b", "Plain", &["garnet"]), // a tag
+        make("test/colourways/a", "Garnet", &[]),        // the exact title
+        make("test/colourways/e", "Unrelated", &[]),     // no match
+    ] {
+        library.insert(m, ItemScope::FirstParty).unwrap();
+    }
+    let q = Query { text: Some("Garnet".into()), limit: 100, ..Query::default() };
+    let ids: Vec<String> = library.search(&q).unwrap().items.into_iter().map(|i| i.id.to_string()).collect();
+    assert_eq!(ids, ["test/colourways/a", "test/colourways/b", "test/colourways/c", "test/colourways/d"]);
+    // Accents and case fold, and every query word must match.
+    let q = Query { text: Some("GARNÉT plain".into()), limit: 100, ..Query::default() };
+    let ids: Vec<String> = library.search(&q).unwrap().items.into_iter().map(|i| i.id.to_string()).collect();
+    assert_eq!(ids, ["test/colourways/b"], "only the item with both words");
+}
+
+#[test]
+fn a_bundle_is_publishable_only_if_everything_it_applies_is() {
+    let library = MockLibrary::fixtures();
+    let publish_ok = |id: &str| library.describe(&id.parse().unwrap(), None).unwrap().info.rights.publish_ok;
+    assert!(!publish_ok("anon/colourways/mint"));
+    assert!(!publish_ok("test/outfits/with-mint"), "it applies a non-commercial item");
+    assert!(publish_ok("test/outfits/casual"));
+}
+
+// --- Round 4: per-version visibility, one lineage for every version lookup, bounded part ids ---
+
+#[test]
+fn an_unlisted_newest_version_does_not_hide_a_listed_older_one() {
+    let mut library = MockLibrary::new();
+    let mut older = fixtures::setting();
+    older.id = "test/colourways/draft".into();
+    let mut newer = older.clone();
+    newer.version = "2.0.0".into();
+    newer.listed = false;
+    library.insert(older, ItemScope::FirstParty).unwrap();
+    library.insert(newer, ItemScope::FirstParty).unwrap();
+    for page in [library.list(None, None, 0, 100).unwrap(), library.search(&Query::default()).unwrap()] {
+        let rows: Vec<String> = page.items.iter().map(|i| format!("{}@{}", i.id, i.version)).collect();
+        assert_eq!(rows, ["test/colourways/draft@1.0.0"], "the listed release stays, the unlisted one stays out");
+        assert_eq!(page.total, 1);
+    }
+}
+
+#[test]
+fn versions_describe_and_resolve_never_merge_two_publishers_histories() {
+    let mut library = MockLibrary::new();
+    // Mine holds publisher A's 1.0.0; a team holds publisher B's 2.0.0 under the same id.
+    let a = fixtures::shared_bow(fixtures::SIGNER_SEED);
+    let mut b = fixtures::shared_bow(fixtures::RIVAL_SEED);
+    b.version = "2.0.0".into();
+    library.insert(a, ItemScope::Mine).unwrap();
+    library.insert(b, ItemScope::Team("studio".into())).unwrap();
+    let bow = "shared/colourways/bow".parse().unwrap();
+    let two = omuzaki_library_api::Version::new(2, 0, 0);
+    let versions = library.versions(&bow).unwrap();
+    assert_eq!(versions, [omuzaki_library_api::Version::new(1, 0, 0)], "only the publisher precedence selects");
+    assert_eq!(library.describe(&bow, None).unwrap().versions, versions);
+    // B's 2.0.0 can't be reached by number either; it is still reachable by its hash.
+    assert!(matches!(library.resolve(&bow, &VersionReq::Exact(two)), Err(LibraryError::NoMatchingVersion { .. })));
+    assert!(matches!(library.describe(&bow, Some(&two)), Err(LibraryError::NoMatchingVersion { .. })));
+    // One publisher across tiers is one history, as before.
+    let mut library = MockLibrary::new();
+    library.insert(fixtures::signed_ember("1.0.0"), ItemScope::Mine).unwrap();
+    library.insert(fixtures::signed_ember("1.2.0"), ItemScope::Team("studio".into())).unwrap();
+    assert_eq!(library.versions(&"signer/colourways/ember".parse().unwrap()).unwrap().len(), 2);
+}
+
+#[test]
+fn a_create_key_as_long_as_a_part_id_still_gets_a_valid_seed_binding() {
+    let key = "k".repeat(64);
+    let part = item(
+        "omuzaki/hair/seed-longkey",
+        "hair",
+        "part",
+        &format!("slot = \"hairstyle\"\ncreates.{key} = {{ kind = \"hair\", id = \"ribbon\", layer = 5 }}\n"),
+        &RIBBON.replace("$parts.ribbon", &format!("$parts.{key}")),
+    );
+    assert_eq!(part.check(), vec![]);
+    assert_eq!(seed::check_source(&Source(vec![part]), &support::doc()), vec![]);
+}
+
+// --- Round 5: one entry across scopes, and availability is the validation an apply runs ---
+
+#[test]
+fn the_same_manifest_in_two_scopes_is_one_entry_that_a_scoped_query_still_finds() {
+    let mut library = MockLibrary::new();
+    let team = ItemScope::Team("studio".into());
+    library.insert(fixtures::signed_ember("1.0.0"), ItemScope::Mine).unwrap();
+    library.insert(fixtures::signed_ember("1.0.0"), team.clone()).unwrap();
+    let ember = "signer/colourways/ember";
+    for page in [library.list(None, None, 0, 100).unwrap(), library.search(&Query::default()).unwrap()] {
+        assert_eq!(page.total, 1, "{page:?}");
+        assert_eq!(page.items.iter().filter(|i| i.id.as_str() == ember).count(), 1);
+        assert_eq!(page.facets.sections.values().sum::<usize>(), 1);
+        assert_eq!(page.facets.kinds.values().sum::<usize>(), 1);
+        assert_eq!(page.facets.scopes.values().sum::<usize>(), 1, "counted once in the scope facet too");
+        assert_eq!(page.items[0].scope, ItemScope::Mine, "shown under the first scope");
+    }
+    for scope in [ItemScope::Mine, team] {
+        let page = library.search(&Query { scope: Some(scope.clone()), ..Query::default() }).unwrap();
+        assert_eq!((page.total, page.items[0].scope.clone()), (1, scope.clone()), "{scope:?} still finds it");
+        assert_eq!(library.list(None, Some(&scope), 0, 100).unwrap().total, 1);
+    }
+    // Different content, or a different publisher, is not the same entry.
+    let mut other = MockLibrary::new();
+    other.insert(fixtures::shared_bow(fixtures::SIGNER_SEED), ItemScope::Mine).unwrap();
+    other.insert(fixtures::shared_bow(fixtures::RIVAL_SEED), ItemScope::Team("studio".into())).unwrap();
+    assert_eq!(other.search(&Query::default()).unwrap().total, 2);
+}
+
+/// Every dependency a bundle step can name, and every parameter override it can pass them.
+const DEPENDENCIES: [&str; 5] =
+    ["test/hair/layered", "test/hair/ribbon", "test/colourways/ghost", "test/hair/nonexistent", "test/outfits/casual"];
+const OVERRIDES: [&str; 6] = ["", "layer = 7", "layer = 99", "nope = 1", "layer = \"high\"", "layer = 7, nope = 1"];
+
+#[test]
+fn an_item_is_unavailable_exactly_when_the_validation_an_apply_runs_fails_and_for_the_same_reason() {
+    let mut library = MockLibrary::fixtures();
+    let doc = support::doc();
+    let (mut checked, mut unavailable_count) = (0, 0);
+    for (d, dependency) in DEPENDENCIES.iter().enumerate() {
+        for (o, params) in OVERRIDES.iter().enumerate() {
+            let steps = format!("[[step]]\nitem = \"{dependency}\"\nversion = \"^1\"\nparams = {{ {params} }}\n");
+            let id = format!("omuzaki/outfits/matrix-{d}-{o}");
+            let m = item(&id, "outfits", "bundle", "", &steps);
+            library.insert(m.clone(), ItemScope::FirstParty).unwrap();
+            let mut bindings = bound();
+            for key in ["ribbon", "layered"] {
+                bindings.parts.insert(key.into(), format!("new-{key}").parse().unwrap());
+            }
+            let applied = omuzaki_library_mock::apply_with_library(&library, &m, &doc, &bindings);
+            let why = library.describe(&id.parse().unwrap(), None).unwrap().info.unavailable;
+            assert_eq!(why.is_some(), applied.is_err(), "{dependency} with {{ {params} }}: {why:?} vs {applied:?}");
+            if let (Some(why), Err(e)) = (&why, &applied) {
+                assert!(why.contains(&e.message) || e.message.contains(why.as_str()), "{why:?} vs {e:?}");
+                unavailable_count += 1;
+            }
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 30);
+    assert!(unavailable_count >= 20, "the matrix must exercise failures, not just successes: {unavailable_count}");
+}
+
+#[test]
+fn a_parameter_override_is_validated_against_the_dependency_it_is_passed_to() {
+    let library = MockLibrary::fixtures();
+    let reason = |id: &str| library.describe(&id.parse().unwrap(), None).unwrap().info.unavailable;
+    assert!(reason("test/outfits/undeclared-param").is_some_and(|r| r.contains("step/0") && r.contains("nope")));
+    assert!(reason("test/outfits/out-of-range").is_some_and(|r| r.contains("step/0") && r.contains("layer")));
+    assert_eq!(reason("test/outfits/layered-ok"), None);
+    let e = omuzaki_library_mock::apply_with_library(
+        &library,
+        &fixtures::out_of_range_param_bundle(),
+        &support::doc(),
+        &bindings_for_bundle(),
+    )
+    .unwrap_err();
+    assert!(e.field.as_deref().is_some_and(|f| f.contains("step/0")), "{e:?}");
+}
+
+// --- Round 6: availability is the checks an apply makes, on every guard branch; seeds are first-party ---
+
+/// Steps whose validity differs: an op that is fine, and ones whose arguments or op an apply refuses.
+const STEP_VARIANTS: [(&str, &str); 7] = [
+    ("fine", "palette.set\"\n[step.args]\ncharacter = \"$character\"\nslot = \"outfit\"\ncolour = \"#112233\""),
+    ("missing-arg", "palette.set\"\n[step.args]\ncharacter = \"$character\"\nslot = \"outfit\""),
+    ("mistyped-arg", "palette.set\"\n[step.args]\ncharacter = \"$character\"\nslot = \"outfit\"\ncolour = 5"),
+    (
+        "unknown-arg",
+        "palette.set\"\n[step.args]\ncharacter = \"$character\"\nslot = \"outfit\"\ncolour = \"#112233\"\nzzz = 1",
+    ),
+    ("unregistered", "ghost.missing\"\n[step.args]\ncharacter = \"$character\""),
+    ("above-ceiling", "mock.export\"\n[step.args]\ncharacter = \"$character\""),
+    ("a-query", "mock.peek\"\n[step.args]\ncharacter = \"$character\""),
+];
+const GUARDS: [(&str, &str); 4] = [
+    ("always", ""),
+    ("soft", "when = { templates = [\"soft-sd\"] }\n"),
+    ("tall", "when = { templates = [\"tall\"] }\n"),
+    ("any", "when = { templates = [\"*\"] }\n"),
+];
+/// A template each guard names, and one none does.
+const TEMPLATES: [&str; 3] = ["soft-sd", "tall", "elsewhere"];
+
+fn library_knowing_the_test_ops() -> MockLibrary {
+    let mut library = MockLibrary::new();
+    library.set_known_ops(
+        [
+            "part.add",
+            "palette.set",
+            "face.set_style",
+            "part.tint",
+            "mock.stray",
+            "mock.peek",
+            "mock.export",
+            "mock.refuse",
+        ]
+        .map(String::from),
+    );
+    library
+}
+
+#[test]
+fn an_item_is_unavailable_exactly_when_a_dry_run_apply_fails_on_some_template() {
+    let mut library = library_knowing_the_test_ops();
+    let doc = support::doc();
+    let (mut unavailable_count, mut available_count) = (0, 0);
+    for (variant, step) in STEP_VARIANTS {
+        for (guard_name, guard) in GUARDS {
+            let id = format!("omuzaki/colourways/guard-{variant}-{guard_name}");
+            let m = setting(&id, &format!("[[step]]\n{guard}op = \"{step}\n"));
+            library.insert(m.clone(), ItemScope::FirstParty).unwrap();
+            let why = library.describe(&id.parse().unwrap(), None).unwrap().info.unavailable;
+            let applies = |template: &str| {
+                let bindings = Bindings { template: Some(template.parse().unwrap()), ..bound() };
+                apply_for_test(&m, &doc, &bindings)
+            };
+            let failing: Vec<&str> = TEMPLATES.iter().copied().filter(|t| applies(t).is_err()).collect();
+            assert_eq!(why.is_some(), !failing.is_empty(), "{id}: {why:?}, fails on {failing:?}");
+            if why.is_some() {
+                unavailable_count += 1;
+            } else {
+                available_count += 1;
+            }
+        }
+    }
+    assert_eq!((unavailable_count, available_count), (24, 4), "only the fine step is available, under any guard");
+}
+
+#[test]
+fn a_guarded_step_is_validated_whichever_template_the_item_is_applied_to() {
+    let mut library = library_knowing_the_test_ops();
+    // A missing op under a guard for one template and a fine step otherwise: unavailable, naming the op.
+    let guarded = setting(
+        "omuzaki/colourways/guarded-ghost",
+        &format!(
+            "{PALETTE}[[step]]\nwhen = {{ templates = [\"soft-sd\"] }}\nop = \"ghost.missing\"\n[step.args]\ncharacter = \"$character\"\n"
+        ),
+    );
+    library.insert(guarded.clone(), ItemScope::FirstParty).unwrap();
+    let why = library.describe(&guarded.item_id().unwrap(), None).unwrap().info.unavailable;
+    assert!(why.is_some_and(|w| w.contains("ghost.missing")));
+    // It is the same on a soft-sd character, where the step runs and an apply fails.
+    let bindings = Bindings { template: Some("soft-sd".parse().unwrap()), ..bound() };
+    assert!(apply_for_test(&guarded, &support::doc(), &bindings).is_err());
+    // Arguments that don't decode are named in the reason, the way the decoder names them.
+    let mistyped = setting(
+        "omuzaki/colourways/mistyped",
+        "[[step]]\nop = \"palette.set\"\n[step.args]\ncharacter = \"$character\"\nslot = \"outfit\"\ncolour = 5\n",
+    );
+    library.insert(mistyped.clone(), ItemScope::FirstParty).unwrap();
+    let why = library.describe(&mistyped.item_id().unwrap(), None).unwrap().info.unavailable.expect("refused");
+    assert!(why.contains("step/0") && why.contains("colour"), "{why}");
+}
+
+#[test]
+fn a_seed_item_must_be_first_party_by_id_publisher_and_signature() {
+    let doc = support::doc();
+    let good = setting("omuzaki/colourways/seed-ok", PALETTE);
+    assert_eq!(seed::check_source(&Source(vec![good.clone()]), &doc), vec![]);
+    let mut foreign = good.clone();
+    foreign.id = "acme/colourways/seed-ok".into();
+    let problems = seed::check_source(&Source(vec![foreign]), &doc);
+    assert!(problems.iter().any(|p| p.rule == "id" && p.detail.contains("omuzaki/")), "{problems:?}");
+    let mut published = good.clone();
+    published.publisher = Some(omuzaki_library_api::Publisher { name: "Acme".into(), key: "00".repeat(32) });
+    let mut signed = good;
+    signed.signature = Some("00".repeat(64));
+    for broken in [published, signed] {
+        let problems = seed::check_source(&Source(vec![broken]), &doc);
+        assert!(problems.iter().any(|p| p.rule == "publisher"), "{problems:?}");
+    }
+}
