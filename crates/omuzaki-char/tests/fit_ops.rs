@@ -207,13 +207,26 @@ fn dry_run(doc: &MemDoc, store: &Arc<MemStore>, op: &str, args: Value) -> Result
 
 /// The work of a job planned against `doc`: its result, for the finish.
 fn work(doc: &MemDoc, store: &Arc<MemStore>, op: &str, args: &Value, signal: &Signal) -> Result<Value, OpError> {
+    work_between(doc, doc, store, op, args, signal)
+}
+
+/// The work of a job planned against `planned` that reads `now`: the document as the executor's lock-free work sees it
+/// when someone edited the character after the plan.
+fn work_between(
+    planned: &MemDoc,
+    now: &MemDoc,
+    store: &Arc<MemStore>,
+    op: &str,
+    args: &Value,
+    signal: &Signal,
+) -> Result<Value, OpError> {
     omuzaki_char::link();
     let op = (find(op).unwrap().decode)(args.clone())?;
     let (actor, clock, services) = (person(), FakeClock::default(), services(store));
-    let plan = op.plan(&OpCtx::new(doc, &actor, &clock).with_services(&services))?;
+    let plan = op.plan(&OpCtx::new(planned, &actor, &clock).with_services(&services))?;
     assert!(plan.patch.is_empty(), "a job's plan changes nothing");
     let output = plan.output.expect("the plan hands its choice to the work");
-    let reader = DocJob(doc);
+    let reader = DocJob(now);
     let job = JobCtx::new(JobId(1), &actor, &reader, signal).with_services(&services).with_plan_output(&output);
     op.work(&job)
 }
@@ -821,4 +834,84 @@ fn parts_changed_while_the_fit_ran_refuse_the_apply() {
     let result = work(&doc, &store, "fit.apply", &alone, &Signal::default()).unwrap();
     let edit = |d: &mut MemDoc| set(d, &format!("{HAIR}/enabled"), Some(json!(false)));
     assert!(apply(&alone, &result, &edit).is_ok());
+}
+
+/// Sets one field of the face layout. The fixture has no `face` table, so the whole table is written.
+fn set_layout(doc: &mut MemDoc, field: &str, value: f64) {
+    set(doc, "characters/mock/face", Some(json!({ "layout": { field: value } })));
+}
+
+/// The head, hair and glasses (which place their frames by the face layout) beside the body.
+fn head_hair_and_glasses() -> Value {
+    json!({ "head": { "kind": "head" }, "hair": { "kind": "hair" }, "glasses": { "kind": "glasses" } })
+}
+
+/// A glasses part reads the character's face layout (eye spacing and height), so a layout edit while the fit ran leaves
+/// a result fitted to frames that moved. The face profile is in the guard whole, and so is the seed.
+#[test]
+fn a_face_layout_changed_while_the_fit_ran_refuses_the_apply() {
+    let store = Arc::new(MemStore::default());
+    let doc = with_parts("soft-sd", None, head_hair_and_glasses());
+    let args = json!({ "character": "mock", "views": views() });
+    let result = work(&doc, &store, "fit.apply", &args, &Signal::default()).unwrap();
+    type Edit = Box<dyn Fn(&mut MemDoc)>;
+    let edits: [(&str, Edit); 3] = [
+        ("eye spacing", Box::new(|d| set_layout(d, "eye_spacing", 0.12))),
+        ("eye height", Box::new(|d| set_layout(d, "eye_y", -0.05))),
+        ("seed", Box::new(|d| set(d, "characters/mock/seed", Some(json!(8))))),
+    ];
+    for (what, edit) in &edits {
+        let mut edited = MemDoc::from_value(doc.root().clone());
+        edit(&mut edited);
+        let e = finish(&edited, &store, "fit.apply", &args, result.clone()).unwrap_err();
+        assert_eq!(e.code, ErrorCode::Conflict, "{what}: {e:?}");
+        assert!(e.message.contains("parts drawn with the body"), "{what}: {}", e.message);
+    }
+    // The body alone does not look at the face.
+    let alone = json!({ "character": "mock", "views": views(), "parts": [] });
+    let result = work(&doc, &store, "fit.apply", &alone, &Signal::default()).unwrap();
+    let mut edited = MemDoc::from_value(doc.root().clone());
+    set_layout(&mut edited, "eye_spacing", 0.12);
+    assert!(finish(&edited, &store, "fit.apply", &alone, result).is_ok());
+}
+
+/// The plan chose the parts from the character as it was; `work` reads the character again. A chosen part that is gone
+/// or changed by then is a `Conflict`, not a fit that leaves it out while the answer lists it.
+#[test]
+fn parts_changed_between_the_plan_and_the_work_are_refused() {
+    const HAIR: &str = "characters/mock/parts/hair";
+    type Edit = Box<dyn Fn(&mut MemDoc)>;
+    let store = Arc::new(MemStore::default());
+    let planned = with_parts("soft-sd", None, head_hair_and_glasses());
+    let edits: [(&str, &str, Edit); 5] = [
+        ("hair removed", "hair", Box::new(|d| set(d, HAIR, None))),
+        ("hair disabled", "hair", Box::new(|d| set(d, &format!("{HAIR}/enabled"), Some(json!(false))))),
+        (
+            "hair edited",
+            "changed before",
+            Box::new(|d| set(d, &format!("{HAIR}/params"), Some(json!({ "rng": "legacy_lcg" })))),
+        ),
+        ("face layout edited", "changed before", Box::new(|d| set_layout(d, "eye_spacing", 0.12))),
+        ("seed edited", "changed before", Box::new(|d| set(d, "characters/mock/seed", Some(json!(8))))),
+    ];
+    for op in ["fit.reference", "fit.apply"] {
+        // Hair asked for by name, as well as by default.
+        for args in [
+            json!({ "character": "mock", "views": views(), "parts": ["hair"] }),
+            json!({ "character": "mock", "views": views() }),
+        ] {
+            for (what, says, edit) in &edits {
+                let mut now = MemDoc::from_value(planned.root().clone());
+                edit(&mut now);
+                let e = work_between(&planned, &now, &store, op, &args, &Signal::default()).unwrap_err();
+                assert_eq!(e.code, ErrorCode::Conflict, "{op}, {what}: {e:?}");
+                assert!(e.message.contains(says), "{op}, {what}: {}", e.message);
+            }
+        }
+    }
+    // Parts the fit does not draw may change meanwhile.
+    let args = json!({ "character": "mock", "views": views(), "parts": [] });
+    let mut now = MemDoc::from_value(planned.root().clone());
+    set(&mut now, HAIR, None);
+    assert!(work_between(&planned, &now, &store, "fit.reference", &args, &Signal::default()).is_ok());
 }

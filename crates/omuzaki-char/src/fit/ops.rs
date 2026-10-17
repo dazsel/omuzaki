@@ -26,13 +26,17 @@
 //! is the one the rebuilt character will have, and what is reported (the `IoU`, the heatmaps) is what `fit.apply`
 //! leaves in the document. The character is rebuilt whole with the candidate body (the parts publish to each other),
 //! and the chosen parts' meshes are drawn. The fit is deterministic, so `fit.apply` writes exactly what
-//! `fit.reference` proposed for the same arguments and the same stored character. `fit.apply` also refuses with
-//! `Conflict` when the other parts it fitted against (their kinds, parameters, attachments, enabled flags) changed
-//! while the fit ran, as it does for the body.
+//! `fit.reference` proposed for the same arguments and the same stored character. Both refuse with `Conflict` when
+//! the parts they draw (or anything they are built from: the other parts' kinds, parameters, attachments and enabled
+//! flags, the face profile, the seed; see `geometry_inputs`) changed between the plan and the work, and `fit.apply`
+//! does so too when they changed while the fit ran, as it does for the body.
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use omuzaki_char_api::{BodyParams, BodyShape, CharId, CharacterDef, PartId, Proportions, paths};
+use omuzaki_char_api::keying::{CommonKeyInputs, PartKeyInputs, common_key_inputs, part_key_inputs};
+use omuzaki_char_api::{
+    BodyParams, BodyShape, BuildOptions, CharId, CharacterDef, PartDef, PartId, Proportions, paths,
+};
 use omuzaki_core::mesh::MeshData;
 use omuzaki_doc_api::Change;
 use omuzaki_face_api::Validate;
@@ -123,6 +127,9 @@ struct Chosen {
     views: Vec<String>,
     /// The other parts drawn with the body.
     parts: Vec<PartId>,
+    /// What those parts are built from when the job is planned ([`geometry_inputs`]): `work` refuses a character that
+    /// no longer matches it, because the choice above was made against the character as planned.
+    inputs: Value,
 }
 
 /// The character's only body part, as stored, with its parameters checked.
@@ -200,6 +207,7 @@ fn plan_fit(
         Objective::new(&template, &targets, &[]).map_err(|e| from_fit(&e))?;
     }
     let parts = pick_parts(&def, &part, parts)?;
+    let inputs = geometry_inputs(&def, &part, &parts)?;
     let chosen = Chosen {
         character: character.clone(),
         part,
@@ -207,6 +215,7 @@ fn plan_fit(
         body,
         views: views.iter().map(|v| v.view.clone()).collect(),
         parts,
+        inputs,
     };
     Ok(Plan {
         output: Some(to_value(&chosen)?),
@@ -243,6 +252,8 @@ impl Rebuild {
         let def = CharacterDef::from_node(&node).map_err(|e| {
             OpError::invalid("character", format!("character `{}` no longer loads: {e}", chosen.character))
         })?;
+        // The plan chose the parts against the character as it was then; `work` read it again off the lock.
+        refuse_changed_selection(&def, chosen)?;
         let rebuild = Self {
             id: chosen.character.clone(),
             def,
@@ -275,24 +286,71 @@ impl Rebuild {
     }
 }
 
-/// What the meshes of the drawn parts are built from, other than the body's own proportions, shape and hands: every
-/// part's definition (kind, parent, enabled, layer, attachment, parameters) and the seed. `Null` when no part is drawn,
-/// because then nothing but the body matters. `fit.apply` compares it after the fit to refuse a result fitted against
-/// parts that were edited, disabled or removed meanwhile.
+/// What the meshes of the drawn parts are built from, other than the body's own proportions, shape and hands (which
+/// [`still_fits`] compares in full). `Null` when no part is drawn, because then nothing but the body matters.
+///
+/// **The list of inputs.** The silhouette of a drawn part is a function of the build's inputs, which are the ones
+/// `omuzaki_char_api::keying` lists for the caching builder's keys. This function takes them from there and
+/// destructures both [`CommonKeyInputs`] and [`PartDef`] *exhaustively*, so a field added to either fails to compile
+/// here until it is put in the guard or left out with a reason:
+/// - **in:** the body template, the seed, and the whole face profile (`face.layout` places glasses, the head's
+///   features and the hair line; every part can read it);
+/// - **in, for every part of the character** (the drawn ones, and the ones they are built beside, which publish facts
+///   to them): its kind, parameters, attachment, parent, enabled flag and layer, so adding, removing, disabling,
+///   re-parenting or editing any part counts. The body's parameters are left out because the fit rewrites them
+///   (`still_fits` compares them);
+/// - **out, because no silhouette depends on it:** `name`, `skin_tone` (informational) and `palette` (colours only; a
+///   part's geometry never depends on them, the builder's decision Q6), `weight_brushes` (skin weights, applied after
+///   a part builds, not positions), and the build options (the fit always builds with the defaults).
+///
+/// `fit.apply` compares it after the fit to refuse a result fitted against parts, face layout or seed that were edited
+/// meanwhile, and `work` compares it with the plan's to refuse a character edited between the two.
 fn geometry_inputs(def: &CharacterDef, body: &PartId, drawn: &[PartId]) -> Result<Value, OpError> {
     if drawn.is_empty() {
         return Ok(Value::Null);
     }
+    let options = BuildOptions::default();
+    let CommonKeyInputs { template, seed, quality: _, rig_export: _, face } = common_key_inputs(def, &options);
     let mut parts = serde_json::Map::new();
-    for (id, part) in &def.parts {
-        let mut value = to_value(part)?;
-        if id == body {
-            // The body's parameters are compared in full by `still_fits`; its other fields count here.
-            value["params"] = Value::Null;
-        }
-        parts.insert(id.to_string(), value);
+    for (id, part_def) in &def.parts {
+        let PartDef { kind: _, params: _, parent, enabled, layer, attach: _ } = part_def;
+        let PartKeyInputs { kind, params, attach } = part_key_inputs(part_def);
+        let params = if id == body { Value::Null } else { params.clone() };
+        parts.insert(
+            id.to_string(),
+            json!({
+                "kind": kind, "params": params, "attach": attach,
+                "parent": parent, "enabled": enabled, "layer": layer,
+            }),
+        );
     }
-    Ok(json!({ "seed": def.seed, "parts": parts }))
+    Ok(json!({ "template": template, "seed": seed, "face": to_value(face)?, "parts": parts }))
+}
+
+/// Refuses with `Conflict` when the character `work` read is not the one the plan chose the parts against: a chosen
+/// part removed or disabled (named), or anything else the drawn parts are built from edited ([`geometry_inputs`]).
+/// Without it a requested part that vanished would be left out of the fit while the answer reports it as included.
+fn refuse_changed_selection(def: &CharacterDef, chosen: &Chosen) -> Result<(), OpError> {
+    let again = "run the op again: it chooses the parts from the character as it is now";
+    for id in &chosen.parts {
+        match def.parts.get(id) {
+            None => {
+                return Err(OpError::conflict(format!("part `{id}` was removed before the fit started")).hint(again));
+            }
+            Some(part) if !part.enabled => {
+                return Err(OpError::conflict(format!("part `{id}` was disabled before the fit started")).hint(again));
+            }
+            Some(_) => {}
+        }
+    }
+    if geometry_inputs(def, &chosen.part, &chosen.parts)? != chosen.inputs {
+        return Err(OpError::conflict(format!(
+            "the parts drawn with the body of character `{}` changed before the fit started",
+            chosen.character
+        ))
+        .hint(again));
+    }
+    Ok(())
 }
 
 /// Runs the fit of `chosen` against `views` in a job: progress after each evaluation, and a cancel stops it. Returns
@@ -464,14 +522,11 @@ impl Op for FitApply {
 
     fn work(&self, job: &JobCtx<'_>) -> Result<Value, OpError> {
         let chosen = chosen(job)?;
-        let (_, rebuild, result) = fit_in_job(job, &chosen, &self.views)?;
-        let inputs = match &rebuild {
-            Some(r) => geometry_inputs(&r.def, &chosen.part, &chosen.parts)?,
-            None => Value::Null,
-        };
+        let (_, _, result) = fit_in_job(job, &chosen, &self.views)?;
+        // `work` checked that the character still matches the plan's inputs, so the plan's are what the fit used.
         let fitted = Fitted {
             summary: summary(&chosen, &result),
-            inputs,
+            inputs: chosen.inputs.clone(),
             drawn: chosen.parts.clone(),
             proportions: result.params.proportions,
             shape: result.params.shape,
