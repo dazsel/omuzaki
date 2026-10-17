@@ -157,7 +157,8 @@ pub fn enforce_minimums(tree: &mut Tree<PanelId>, registry: &Registry) {
         let length = if horizontal { rect.width() } else { rect.height() };
         let children = linear.children.clone();
         let shares: Vec<f32> = children.iter().map(|child| linear.shares[*child]).collect();
-        let mins: Vec<f32> = children.iter().map(|child| min_extent(&tree.tiles, *child, horizontal, registry)).collect();
+        let mins: Vec<f32> =
+            children.iter().map(|child| min_extent(&tree.tiles, *child, horizontal, registry)).collect();
         let Some(fixed) = clamp_shares(&shares, &mins, length) else { continue };
         if let Some(Tile::Container(Container::Linear(linear))) = tree.tiles.get_mut(id) {
             for (child, share) in children.iter().zip(fixed) {

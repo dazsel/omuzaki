@@ -546,6 +546,73 @@ mod tests {
     }
 
     #[test]
+    fn a_registered_default_is_converted_node_for_node() {
+        use omuzaki_ui_api::layout::{Dir as ApiDir, Node as ApiNode};
+        let api = ApiNode::split(
+            ApiDir::Vertical,
+            vec![ApiNode::tabs(&["outliner", "library"]), ApiNode::pane("viewport")],
+            &[2.0, 3.0],
+        );
+        let expected =
+            Node::split(Dir::Vertical, vec![Node::tabs(&["outliner", "library"]), Node::pane("viewport")], &[2.0, 3.0]);
+        assert_eq!(Node::from_api(&api), Some(expected));
+    }
+
+    #[test]
+    fn a_registered_default_loses_unknown_and_repeated_panels_and_gets_usable_shares() {
+        use omuzaki_ui_api::layout::{Dir as ApiDir, Node as ApiNode};
+        let api = ApiNode::split(
+            ApiDir::Vertical,
+            vec![ApiNode::tabs(&["outliner", "library", "gone"]), ApiNode::pane("viewport"), ApiNode::pane("viewport")],
+            &[f32::NAN, 3.0],
+        );
+        let layout = Layout::from_registered(&api, &|p| p != "gone").expect("something is left");
+        assert_eq!(layout.panels(), ["outliner", "library", "viewport"]);
+        let Node::Split { dir, shares, .. } = &layout.root else { panic!("still a split") };
+        assert_eq!(
+            (*dir, shares.as_slice()),
+            (Dir::Vertical, &[3.0, 3.0][..]),
+            "the NaN share is the mean of the rest"
+        );
+        assert!(Layout::from_registered(&ApiNode::pane("gone"), &|p| p != "gone").is_none());
+        layout.to_tree("t");
+    }
+
+    #[test]
+    fn a_layout_is_not_held_to_a_primary_panel_when_its_workspace_has_none() {
+        let known = Known { exists: &all_exist, primary: None };
+        let tabs = Layout::new(Node::tabs(&["outliner", "inspector"]));
+        assert_eq!(tabs.clone().repaired(&known, &Layout::new(Node::pane("inspector"))), tabs);
+    }
+
+    #[test]
+    fn showing_a_panel_the_layout_lacks_joins_a_group_or_adds_a_column() {
+        // Beside an anchor that is in the layout: a lone anchor becomes a group, an anchor in a group takes it in.
+        let beside = build().with_panel("notes", Some("inspector"), false);
+        assert_eq!(
+            beside.panels(),
+            ["outliner", "library", "viewport", "expressions", "inspector", "notes", "agent", "history"]
+        );
+        let tabbed = build().with_panel("notes", Some("agent"), false);
+        assert!(tabbed.panels().ends_with(&["agent", "history", "notes"]), "{:?}", tabbed.panels());
+        // No anchor: a column at the left edge or the right, a quarter of the shares in total.
+        let Node::Split { children, shares, .. } = &build().with_panel("notes", None, true).root else {
+            panic!("split")
+        };
+        assert_eq!((children[0].clone(), shares[0]), (Node::pane("notes"), (300.0 + 1260.0 + 360.0) / 4.0));
+        let Node::Split { children, .. } = &build().with_panel("notes", Some("not in the layout"), false).root else {
+            panic!("split")
+        };
+        assert_eq!(children.last(), Some(&Node::pane("notes")));
+        // A root that is not a horizontal split is wrapped.
+        let one = Layout::new(Node::pane("viewport")).with_panel("notes", None, false);
+        assert_eq!(one.panels(), ["viewport", "notes"]);
+        // Already there: unchanged.
+        assert_eq!(build().with_panel("viewport", None, true), build());
+        build().with_panel("notes", None, false).to_tree("t");
+    }
+
+    #[test]
     fn a_panel_listed_twice_is_drawn_once() {
         let known = Known { exists: &all_exist, primary: Some("viewport") };
         let twice = Layout::new(Node::split(

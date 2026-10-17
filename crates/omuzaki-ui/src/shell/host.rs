@@ -42,9 +42,13 @@ impl Bodies {
         };
         // The panel says more to a screen reader than its title does: name the region its body is.
         let response = ui.scope(|ui| panel.ui(ui, ctx)).response;
-        a11y::describe(&response, || WidgetInfo::labeled(WidgetType::Other, true, label.as_ref()), |node| {
-            node.set_role(accesskit::Role::Region);
-        });
+        a11y::describe(
+            &response,
+            || WidgetInfo::labeled(WidgetType::Other, true, label.as_ref()),
+            |node| {
+                node.set_role(accesskit::Role::Region);
+            },
+        );
     }
 
     /// How many panels have been built.

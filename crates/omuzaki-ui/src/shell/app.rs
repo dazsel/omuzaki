@@ -722,7 +722,10 @@ fn workspaces_of(registry: &Registry) -> (Vec<&'static WorkspaceDef>, Vec<Layout
             tracing::warn!(workspace = workspace.id, panels = ?missing, "the default layout names panels nobody registered");
         }
         let Some(layout) = Layout::from_registered(&tree, &|p| registry.panel(p).is_some()) else {
-            tracing::warn!(workspace = workspace.id, "the default layout has no panel the shell can show; the workspace is left out");
+            tracing::warn!(
+                workspace = workspace.id,
+                "the default layout has no panel the shell can show; the workspace is left out"
+            );
             continue;
         };
         if !layout.panels().iter().any(|p| registry.panel(p).is_some_and(|d| d.kind == PanelKind::Primary)) {

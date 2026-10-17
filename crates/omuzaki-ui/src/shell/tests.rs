@@ -16,10 +16,10 @@ use omuzaki_ui_api::layout::{Dir as ApiDir, Node as ApiNode};
 use omuzaki_ui_api::register_workspace;
 use omuzaki_ui_api::registry::Group;
 
+use super::Shell;
 use super::layout::{Dir, Layout, Node};
 use super::persist::LayoutStore;
 use super::stub::NullRunner;
-use super::Shell;
 use crate::ds::icons;
 use crate::ds::testing::{drag, press};
 
@@ -179,6 +179,70 @@ fn a_layout_the_person_changes_is_saved_and_comes_back_in_the_next_session() {
     assert!(ratio(&shares(&saved)) > ratio(&default), "the right dock got wider: {saved:?}");
     let second = shell_at(size, Some(store.clone()), Arc::new(NullRunner));
     assert_eq!(second.state().shown_layout(), Some(saved), "the next session shows the saved arrangement");
+}
+
+/// A `build.toml` exactly as #70's shell wrote it: the Inspector moved to the left of the viewport, Agent and History
+/// pulled out into a group of their own, and a panel (`telemetry`) that a later version of the app no longer has.
+const SAVED_BY_70: &str = r#"version = 1
+
+[root]
+kind = "split"
+dir = "horizontal"
+shares = [360.0, 1200.0, 300.0]
+
+[[root.children]]
+kind = "split"
+dir = "vertical"
+shares = [2.0, 1.0]
+
+[[root.children.children]]
+kind = "pane"
+panel = "inspector"
+
+[[root.children.children]]
+kind = "tabs"
+active = 1
+
+[[root.children.children.children]]
+kind = "pane"
+panel = "agent"
+
+[[root.children.children.children]]
+kind = "pane"
+panel = "history"
+
+[[root.children]]
+kind = "pane"
+panel = "viewport"
+
+[[root.children]]
+kind = "tabs"
+active = 0
+
+[[root.children.children]]
+kind = "pane"
+panel = "outliner"
+
+[[root.children.children]]
+kind = "pane"
+panel = "telemetry"
+"#;
+
+#[test]
+fn a_layout_file_written_by_the_first_shell_still_loads_through_the_registry() {
+    let (_keep, store) = store();
+    std::fs::create_dir_all(store.dir()).expect("dir");
+    std::fs::write(store.dir().join("build.toml"), SAVED_BY_70).expect("write");
+    let harness = shell_at(vec2(1920.0, 1080.0), Some(store), Arc::new(NullRunner));
+    let shown = harness.state().shown_layout().expect("built");
+    // The arrangement is the saved one, less the panel nobody registers any more; the tab group left with one panel
+    // is just that panel.
+    assert_eq!(shown.panels(), ["inspector", "agent", "history", "viewport", "outliner"]);
+    let Node::Split { children, shares, .. } = &shown.root else { panic!("the root is a split") };
+    assert_eq!(shares, &[360.0, 1200.0, 300.0]);
+    assert_eq!(children[2], Node::pane("outliner"));
+    assert_shows(&harness, "Pick a part to edit it");
+    assert_shows(&harness, "Select a part to edit it");
 }
 
 #[test]
