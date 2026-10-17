@@ -36,7 +36,7 @@ pub(crate) struct OwnApprovals {
 
 /// How far one consumer has been told about decisions: the newest event looked at, and the approvals whose outcome it
 /// has been given. Each consumer of the feed has its own (see the module docs of `events`).
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct ApprovalCursor {
     /// Approvals whose outcome this consumer has been told.
     reported: BTreeSet<ApprovalId>,
@@ -67,6 +67,11 @@ impl OwnApprovals {
         if let Some(ErrorDetail::Queued { approval, .. }) = error.detail.as_deref() {
             self.remember(*approval, Own { tool: tool.to_owned(), kind: Some(kind) });
         }
+    }
+
+    /// A copy of the session's own cursor, for a consumer that starts from what the session has yet to be told.
+    pub(crate) fn cursor(&self) -> ApprovalCursor {
+        self.cursor.clone()
     }
 
     pub(crate) fn get(&self, id: ApprovalId) -> Option<&Own> {

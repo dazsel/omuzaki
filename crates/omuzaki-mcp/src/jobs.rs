@@ -175,6 +175,9 @@ pub(crate) struct JobWatch {
     pub reporter: Option<Reporter>,
     /// The hub's position from before the job started, so no event of the job can fall in the gap.
     pub after: u64,
+    /// Where the pushes are up to in telling the client about others' changes and approval decisions: a copy of the
+    /// session's cursors from when the task began, and then the watcher's own.
+    pub push: PushCursor,
     pub peer: Peer<RoleServer>,
     pub token: Option<ProgressToken>,
     pub job: JobInfo,
@@ -190,11 +193,23 @@ impl JobWatch {
     /// fast job sends the newest progress and status, not every step. If events fell out of the hub's window unseen
     /// the watcher re-reads the job from the executor (see `events`); `tasks/get` always reads the executor.
     pub(crate) async fn run(self) {
-        let Self { hub, journal, jobs, reporter, mut after, peer, token, mut job, tool, verify, created } = self;
+        let Self {
+            hub,
+            journal,
+            jobs,
+            reporter,
+            mut after,
+            push: mut cursor,
+            peer,
+            token,
+            mut job,
+            tool,
+            verify,
+            created,
+        } = self;
         let mut arrivals = hub.watch();
         let mut sent = job.fraction;
-        // This watcher's own place in the feed: reporting a push never moves the session's (see `events`).
-        let mut cursor = PushCursor::new(after);
+        // `cursor` is this watcher's own place in the feed: reporting a push never moves the session's (see `events`).
         // Events are read before each wait, not after it: a job that finished before this watcher subscribed (inside
         // `Jobs::start`, say) has its events buffered already, and a watch only wakes for what arrives after it.
         loop {

@@ -37,6 +37,8 @@ struct Starter {
     refuse_next: Mutex<Option<OpError>>,
     /// Jobs start queued and finish when the test says so, announced on the feed.
     hold: std::sync::atomic::AtomicBool,
+    /// The job runs without the stale-write guard, as a job over a part of the document nobody else changed does.
+    unguarded: std::sync::atomic::AtomicBool,
     outcomes: Mutex<Vec<omuzaki_ops_api::Outcome>>,
 }
 
@@ -57,13 +59,17 @@ impl Starter {
             jobs: Mutex::default(),
             refuse_next: Mutex::default(),
             hold: std::sync::atomic::AtomicBool::new(false),
+            unguarded: std::sync::atomic::AtomicBool::new(false),
             outcomes: Mutex::default(),
         })
     }
 }
 
 impl Jobs for Starter {
-    fn start(&self, req: Request) -> Result<JobInfo, OpError> {
+    fn start(&self, mut req: Request) -> Result<JobInfo, OpError> {
+        if self.unguarded.load(std::sync::atomic::Ordering::SeqCst) {
+            req.base = None;
+        }
         if let Some(error) = self.refuse_next.lock().unwrap().take() {
             return Err(error);
         }
@@ -348,4 +354,47 @@ async fn an_approval_chained_inside_a_failed_decision_can_be_waited_on_after_it_
     decide(78, Resolved::Rejected { comment: None });
     let second = agent.call("approval_wait", json!({"id": 78, "timeout_seconds": 5})).await;
     assert!(text(&second).contains("The person rejected this"), "{}", text(&second));
+}
+
+#[tokio::test]
+async fn a_change_and_a_decision_that_arrived_before_the_task_began_are_in_its_first_push_and_in_the_poll() {
+    use omuzaki_ops_api::{ErrorCode, ErrorDetail, Need, Resolution, Resolved};
+    let studio = Studio::new();
+    studio.person_holds(Grants::person());
+    let starter = Starter::new(&studio);
+    starter.hold.store(true, std::sync::atomic::Ordering::SeqCst);
+    starter.unguarded.store(true, std::sync::atomic::Ordering::SeqCst);
+    let mut queued = OpError::conflict("queued for a person")
+        .with_detail(ErrorDetail::Queued { approval: ApprovalId(77), need: Need::Scope { scope: Scope::Publish } });
+    queued.code = ErrorCode::Waiting;
+    *starter.refuse_next.lock().unwrap() = Some(queued);
+    let grants = Grants::agent_default().with(Scope::Publish);
+    let options = McpOptions::with_grants(grants).with_sessions(studio.clone(), Studio::person());
+    let mcp = McpServer::new(studio.clone(), options).unwrap().with_jobs(starter.clone());
+    let mut agent = Agent::connect(&mcp).await;
+    let CallToolResponse::Complete(refused) = agent.export().await else { panic!("a refusal is a tool result") };
+    assert_eq!(data(&refused)["detail"]["kind"], "queued", "{}", text(&refused));
+
+    // After the agent's last result and before its next task begins: another actor edits, and the person decides.
+    studio.person_sets_blend(0.9);
+    studio.emit(&omuzaki_ops_api::Event::approval_resolved(Resolution {
+        id: ApprovalId(77),
+        by: Some(Studio::person()),
+        result: Resolved::Rejected { comment: Some("not now".to_owned()) },
+        at: Seconds(1.0),
+    }));
+    let CallToolResponse::Task(created) = agent.export().await else { panic!("a task") };
+    starter.finish(1);
+
+    let pushed = tokio::time::timeout(Duration::from_secs(5), agent.pushed.recv()).await.expect("in time").unwrap();
+    assert_eq!(pushed.task.status(), TaskStatus::Completed);
+    let TaskPayload::Completed { result } = pushed.task.payload else { panic!("completed push") };
+    assert!(result["structuredContent"]["since_your_last_call"].is_object(), "push, edit: {result:?}");
+    assert_eq!(result["structuredContent"]["approvals"][0]["decision"], "rejected", "push, decision: {result:?}");
+
+    // The client ignored the push; the poll says the same, because the push consumed nothing of the session's.
+    let task = agent.client.get_task(GetTaskParams::new(&created.task.task_id)).await.expect("tasks/get").task;
+    let TaskPayload::Completed { result } = task.payload else { panic!("completed") };
+    assert!(result["structuredContent"]["since_your_last_call"].is_object(), "poll, edit: {result:?}");
+    assert_eq!(result["structuredContent"]["approvals"][0]["decision"], "rejected", "poll, decision: {result:?}");
 }

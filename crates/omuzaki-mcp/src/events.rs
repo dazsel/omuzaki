@@ -25,7 +25,9 @@
 //!   *consuming*: what a result reports is marked told, because the agent has it;
 //! - **a task's pushes** (status notifications): a `PushCursor` owned by that task's watcher. A client may ignore
 //!   notifications, so a push must not consume what a later poll or call has yet to deliver; the watcher reports from
-//!   its own position and leaves the session's alone;
+//!   its own position and leaves the session's alone. It *starts* as a copy of the session's cursors at the moment the
+//!   task is created, not at the task's start: whatever arrived since the session's last result and has not been
+//!   reported to the agent is in the first push as well as in the poll, so the two say the same thing;
 //! - **resource subscribers** (`Updates`): one position each.
 //!
 //! A cursor can fall behind the ring (256 entries). A consumer that must not miss an event checks

@@ -614,8 +614,10 @@ impl Session {
         // A plain job joins no transaction (ADR 0036 decision 1), so there is no cause to carry either.
         let request = self.request(entry, unit_args, args, Mode::Apply, actor, None, None);
         let hub = Arc::clone(&self.shared.hub);
-        // Before the start, so the job's first events can't be missed.
+        // Before the start, so the job's first events can't be missed. The push cursor is copied from the session's in
+        // the same breath: a change that arrived since the session's last result is for the task's first push as well.
         let after = hub.latest();
+        let push = PushCursor::of_session(&lock(&self.state));
         let job = self.run_held(request, &entry.tool.name, OpKind::Job, move |_, request| jobs.start(request)).await?;
         let tool = entry.tool.name.to_string();
         let verify = self.shared.guidance.verify().map(str::to_owned);
@@ -630,6 +632,7 @@ impl Session {
                 jobs: watched,
                 reporter: self.reporter(context),
                 after,
+                push,
                 peer: context.peer.clone(),
                 token,
                 job,
@@ -1057,9 +1060,11 @@ pub(crate) struct PushCursor {
 }
 
 impl PushCursor {
-    /// A cursor at event `at`: pushes report what happened after the task began.
-    pub(crate) fn new(at: u64) -> Self {
-        Self { seen: at, approvals: ApprovalCursor::new(at) }
+    /// A copy of the session's cursors as they stand now. A push reports what the session has yet to be told, the
+    /// same as the poll that follows it, so what arrived after the session's last result and before the task began is
+    /// in the first push too; from here on the two move apart.
+    fn of_session(state: &State) -> Self {
+        Self { seen: state.seen, approvals: state.approvals.cursor() }
     }
 }
 
