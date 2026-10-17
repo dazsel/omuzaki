@@ -4717,12 +4717,11 @@ dependencies = [
  "omuzaki-pixfmt",
  "omuzaki-track-api",
  "omuzaki-track-mock",
- "schemars",
- "serde",
  "serde_json",
  "sha2",
  "tempfile",
  "thiserror 2.0.21",
+ "toml",
 ]
 
 [[package]]

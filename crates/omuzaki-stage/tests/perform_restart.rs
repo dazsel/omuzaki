@@ -26,8 +26,9 @@ use omuzaki_stage::perform::Performer;
 use omuzaki_stage::perform::host::{CalibrationState, PerformControl, PerformHandle, PerformHost, perform_channel};
 use omuzaki_stage::perform::input::{InputCamera, InputHost, InputSource, LiveInput, NoPrompt, SourceKind, SourceSlot};
 use omuzaki_stage::perform::settings::{
-    PerformCalibrations, PerformRetarget, PerformTriggers, Restored, RetargetPrefs, restore, save, save_calibration,
+    PerformRetarget, PerformTriggers, Restored, RetargetPrefs, restore, save, save_calibration,
 };
+use omuzaki_track::calibration::{CalibrationError, CalibrationStore, calibration_file};
 use omuzaki_track_api::camera::CameraId;
 use omuzaki_track_api::tracker::TrackerConfig;
 use serde_json::{Value, json};
@@ -43,6 +44,8 @@ struct App {
     input: Arc<LiveInput>,
     slot: Arc<SourceSlot>,
     store: Arc<Store>,
+    /// The calibration state, in its own file beside the settings (ADR 0026).
+    calibrations: CalibrationStore,
     step: u64,
 }
 
@@ -52,6 +55,7 @@ impl App {
         let paths = Paths::new(dir.join("config"), dir.join("data"));
         omuzaki_stream::link(); // registers `output.window`
         let store = Arc::new(Store::open(&paths));
+        let calibrations = CalibrationStore::open(calibration_file(paths.data()));
         let mut performer = performer(&HumanoidPose::REST);
         let (handle, mut control) = perform_channel(&performer);
         control.advance(&mut performer, mid_step(0));
@@ -67,7 +71,7 @@ impl App {
             perform,
         ));
         handle.set_expressions(ExpressionSet::starter(), ChannelBuf::NEUTRAL).unwrap();
-        let mut app = Self { handle, control, performer, input, slot, store, step: 1 };
+        let mut app = Self { handle, control, performer, input, slot, store, calibrations, step: 1 };
         app.steps(2);
         app
     }
@@ -107,7 +111,8 @@ impl App {
 
     /// What `restore` gives back on this app, after letting the performer take the requests.
     fn restore(&mut self, character: &str) -> Restored {
-        let restored = restore(&self.handle, &*self.input, &*self.store, character, DeviceProfile::Webcam);
+        let restored =
+            restore(&self.handle, &*self.input, &*self.store, &self.calibrations, character, DeviceProfile::Webcam);
         self.steps(8);
         restored
     }
@@ -167,7 +172,7 @@ fn first_run(dir: &Path) -> View {
     app.op("input.select", json!({ "source": "life_layer" })).unwrap();
     app.steps(8);
     save(&app.handle, &*app.store, &App::person()).unwrap();
-    save_calibration(&app.handle, &*app.store, CHARACTER, &App::person()).unwrap();
+    save_calibration(&app.handle, &mut app.calibrations, CHARACTER).unwrap();
     let view = app.view();
     app.quit();
     view
@@ -220,13 +225,20 @@ fn garbage_in_a_file_never_stops_the_start() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().to_path_buf();
     first_run(&path);
-    for name in ["config/settings.toml", "data/machine.toml"] {
+    for name in ["config/settings.toml", "data/machine.toml", "data/perform/calibration.toml"] {
         std::fs::write(path.join(name), "this is [not toml").unwrap();
     }
     let mut app = App::start(&path, &["a"]);
     let restored = app.restore(CHARACTER);
     assert!(!restored.calibration && restored.triggers == 0, "{restored:?}");
     assert_eq!(app.view().retarget.smoothing.to_bits(), RetargetPrefs::default().smoothing.to_bits());
+    // The person is told why nothing came back: a file that does not parse names no key, so it is found by its file.
+    let mut files: Vec<&str> = restored.findings.iter().map(|f| f.from.as_str()).collect();
+    files.sort_unstable();
+    assert_eq!(files, ["machine.toml", "settings.toml"], "{:?}", restored.findings);
+    assert!(restored.findings.iter().all(|f| f.error.key.is_empty() && f.error.to_string().contains("does not parse")));
+    assert_eq!(restored.calibration_findings.len(), 1, "{:?}", restored.calibration_findings);
+    assert!(app.calibrations.locked().is_some());
 }
 
 #[test]
@@ -241,10 +253,9 @@ fn a_calibration_for_another_character_is_not_applied() {
     assert_ne!(app.handle.calibration(), saved.calibration);
     assert_eq!(app.handle.calibration(), default, "the device's default is still in use");
     // And a character saved beside it keeps its own.
-    save_calibration(&app.handle, &*app.store, "mira", &App::person()).unwrap();
-    let store = app.store.get::<PerformCalibrations>().unwrap();
-    assert_eq!(store.len(), 2);
-    assert_eq!(store.for_character(CHARACTER, DeviceProfile::Webcam), Some(saved.calibration));
+    save_calibration(&app.handle, &mut app.calibrations, "mira").unwrap();
+    assert_eq!(app.calibrations.len(), 2);
+    assert_eq!(app.calibrations.for_character(CHARACTER, DeviceProfile::Webcam), Some(saved.calibration));
 }
 
 #[test]
@@ -266,7 +277,6 @@ fn each_v0_key_declares_who_may_write_it_and_where_it_lives() {
         (InputCamera::META, SettingScope::Machine, AgentWrite::Never, InProfile::Excluded),
         (PerformRetarget::META, SettingScope::User, AgentWrite::Free, InProfile::Member),
         (PerformTriggers::META, SettingScope::User, AgentWrite::Free, InProfile::Member),
-        (PerformCalibrations::META, SettingScope::Machine, AgentWrite::Confirm, InProfile::Excluded),
     ];
     for (meta, scope, agent, profile) in table {
         assert_eq!(
@@ -277,6 +287,8 @@ fn each_v0_key_declares_who_may_write_it_and_where_it_lives() {
         );
         assert!(registry::find(meta.key).is_some(), "{} is registered", meta.key);
     }
+    // ADR 0026: a calibration is state with its own file, not a setting.
+    assert!(registry::find("perform.calibrations").is_none());
 }
 
 #[test]
@@ -359,7 +371,7 @@ fn a_full_set_of_hotkeys_the_dials_and_the_calibration_all_restore_before_the_fi
         app.handle.set_calibration(calibration_of(0.3)).unwrap();
         app.steps(2);
         save(&app.handle, &*app.store, &App::person()).unwrap();
-        save_calibration(&app.handle, &*app.store, CHARACTER, &App::person()).unwrap();
+        save_calibration(&app.handle, &mut app.calibrations, CHARACTER).unwrap();
         let view = app.view();
         app.quit();
         view
@@ -368,7 +380,7 @@ fn a_full_set_of_hotkeys_the_dials_and_the_calibration_all_restore_before_the_fi
 
     // A new run restores with no performer step in between: 16 hotkeys, the dials and the calibration, one queue.
     let mut app = App::start(&path, &["a"]);
-    let restored = restore(&app.handle, &*app.input, &*app.store, CHARACTER, DeviceProfile::Webcam);
+    let restored = restore(&app.handle, &*app.input, &*app.store, &app.calibrations, CHARACTER, DeviceProfile::Webcam);
     assert!(restored.problems.is_empty(), "{:?}", restored.problems);
     assert_eq!(restored.triggers, MAX_TRIGGERS);
     assert!(restored.calibration);
@@ -398,33 +410,99 @@ fn one_corrupt_calibration_neither_hides_the_others_nor_is_written_over() {
         let mut app = App::start(&path, &["a"]);
         app.handle.set_calibration(calibration_of(0.3)).unwrap();
         app.steps(2);
-        save_calibration(&app.handle, &*app.store, CHARACTER, &App::person()).unwrap();
+        save_calibration(&app.handle, &mut app.calibrations, CHARACTER).unwrap();
         app.quit();
     }
-    // A second character's entry is corrupt beside the good one (a hand edit, or a newer build's shape).
-    let file = path.join("data").join("machine.toml");
-    {
-        let app = App::start(&path, &["a"]);
-        let mut value = serde_json::to_value(app.store.get::<PerformCalibrations>().unwrap()).unwrap();
-        value["mira"] = json!({ "webcam": { "profile": "webcam", "ranges": "garbage" } });
-        app.store.set_raw("perform.calibrations", value, Layer::Base, Mode::Apply, &App::person()).unwrap();
-        app.quit();
-    }
+    // Beside the good entry: one character whose whole value is the wrong type, and one with garbage inside (a hand
+    // edit, or a newer build's shape).
+    let file = path.join("data").join("perform").join("calibration.toml");
+    let mut text = std::fs::read_to_string(&file).unwrap();
+    text.push_str("\n[[calibration]]\ncharacter = \"mira\"\nprofile = \"webcam\"\ncalibration = \"garbage\"\n");
+    text.push_str("\n[[calibration]]\ncharacter = \"ola\"\nprofile = \"webcam\"\n[calibration.calibration]\nprofile = \"webcam\"\nranges = \"garbage\"\n");
+    std::fs::write(&file, text).unwrap();
 
     let mut app = App::start(&path, &["a"]);
     let restored = app.restore(CHARACTER);
     assert!(restored.calibration, "the good calibration still comes back: {restored:?}");
-    assert_eq!(restored.unreadable_calibrations, [("mira".to_owned(), "webcam".to_owned())]);
-    // Saving a third character's calibration keeps both: the good one and the corrupt one as it was.
-    save_calibration(&app.handle, &*app.store, "noor", &App::person()).unwrap();
+    let named: Vec<_> = restored.calibration_findings.iter().map(|f| f.character.as_deref()).collect();
+    assert_eq!(named, [Some("mira"), Some("ola")]);
+    // Saving a third character's calibration keeps both: the good one and the corrupt ones as they were.
+    save_calibration(&app.handle, &mut app.calibrations, "noor").unwrap();
     app.quit();
     let written = std::fs::read_to_string(&file).unwrap();
-    assert!(written.contains("garbage"), "the unreadable entry was not rewritten:\n{written}");
+    assert_eq!(written.matches("garbage").count(), 2, "the unreadable entries were not rewritten:\n{written}");
     let again = App::start(&path, &["a"]);
-    let store = again.store.get::<PerformCalibrations>().unwrap();
-    assert!(store.for_character(CHARACTER, DeviceProfile::Webcam).is_some());
-    assert!(store.for_character("noor", DeviceProfile::Webcam).is_some());
-    assert_eq!(store.unreadable().len(), 1);
+    assert!(again.calibrations.for_character(CHARACTER, DeviceProfile::Webcam).is_some());
+    assert!(again.calibrations.for_character("noor", DeviceProfile::Webcam).is_some());
+    assert_eq!(again.calibrations.findings().len(), 2);
+}
+
+#[test]
+fn a_calibration_file_that_cannot_be_read_is_reported_and_never_saved_over() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().to_path_buf();
+    let file = path.join("data").join("perform").join("calibration.toml");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, "version = 7\n").unwrap();
+    let mut app = App::start(&path, &["a"]);
+    let restored = app.restore(CHARACTER);
+    assert!(!restored.calibration);
+    assert_eq!(restored.calibration_findings.len(), 1, "{restored:?}");
+    let refused = save_calibration(&app.handle, &mut app.calibrations, CHARACTER);
+    assert!(matches!(refused, Err(CalibrationError::Locked { .. })), "{refused:?}");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "version = 7\n", "the file is as it was");
+}
+
+#[test]
+fn calibrations_live_in_their_own_file_and_not_in_the_settings_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().to_path_buf();
+    first_run(&path);
+    let own = std::fs::read_to_string(path.join("data").join("perform").join("calibration.toml")).unwrap();
+    assert!(own.contains("character = \"kiri\"") && own.contains("version = 1"), "{own}");
+    for name in ["config/settings.toml", "data/machine.toml"] {
+        let text = std::fs::read_to_string(path.join(name)).unwrap_or_default();
+        assert!(!text.contains("kiri") && !text.contains("calibration"), "{name} holds no calibration:\n{text}");
+    }
+}
+
+#[test]
+fn saving_a_calibration_right_after_setting_it_saves_what_was_set() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().to_path_buf();
+    {
+        let mut app = App::start(&path, &["a"]);
+        // `set_calibration` only queues; no performer step has run when the calibration is saved.
+        app.handle.set_calibration(calibration_of(0.4)).unwrap();
+        assert_ne!(app.handle.calibration(), calibration_of(0.4), "not applied yet");
+        assert_eq!(app.handle.requested_calibration(), calibration_of(0.4), "but it is what was asked for");
+        save_calibration(&app.handle, &mut app.calibrations, CHARACTER).unwrap();
+        app.steps(2);
+        assert_eq!(app.handle.calibration(), calibration_of(0.4), "applied now");
+        assert_eq!(app.handle.requested_calibration(), app.handle.calibration(), "and the two views agree again");
+        app.quit();
+    }
+    let app = App::start(&path, &["a"]);
+    assert_eq!(app.calibrations.for_character(CHARACTER, DeviceProfile::Webcam), Some(calibration_of(0.4)));
+}
+
+#[test]
+fn a_restored_calibration_saved_before_the_first_step_is_not_replaced_by_the_default() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().to_path_buf();
+    {
+        let mut app = App::start(&path, &["a"]);
+        app.handle.set_calibration(calibration_of(0.3)).unwrap();
+        app.steps(2);
+        save_calibration(&app.handle, &mut app.calibrations, CHARACTER).unwrap();
+        app.quit();
+    }
+    // The app restores and saves again at once (an exit right after start): the queued restore is what is saved.
+    let mut app = App::start(&path, &["a"]);
+    let restored = restore(&app.handle, &*app.input, &*app.store, &app.calibrations, CHARACTER, DeviceProfile::Webcam);
+    assert!(restored.calibration);
+    save_calibration(&app.handle, &mut app.calibrations, CHARACTER).unwrap();
+    assert_eq!(app.calibrations.for_character(CHARACTER, DeviceProfile::Webcam), Some(calibration_of(0.3)));
 }
 
 /// A calibration every range of which depends on `seed`.

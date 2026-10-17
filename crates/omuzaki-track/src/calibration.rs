@@ -1,21 +1,60 @@
 //! Saved calibrations (PF-20): what a restart gives back to the retarget.
 //!
 //! A neutral-face calibration is worth keeping: it takes ten seconds to make and it is right only for one performer
-//! on one kind of device, wearing one character's face. [`CalibrationStore`] holds the finished
-//! [`Calibration`]s by character and [`DeviceProfile`], as plain data the settings store writes; it does not touch
-//! the files itself. [`for_character`](CalibrationStore::for_character) is the restore: it hands back the calibration
-//! saved for exactly that character and device class and nothing else, so a calibration made for another character
-//! or for an iPhone never reaches a webcam performer.
+//! on one kind of device, wearing one character's face. ADR 0026 classes it as *state*, not as a setting: it is
+//! written by the app as a side effect of a calibration, has no op to set it and no default, so it has its own file,
+//! `perform/calibration.toml` in the local data folder ([`calibration_file`]; it describes a face on this computer's
+//! camera, so it never roams). [`CalibrationStore`] reads that file and writes it back.
 //!
-//! A stored value is checked before it is used ([`CalibrationStore::check`]): every range finite and wider than
-//! nothing, the head rest pose finite. A calibration that fails is a finding for the settings store and the restore
-//! falls back to the device's default, so a hand-edited file cannot freeze the face or fill it with NaN.
+//! # The file
+//!
+//! ```toml
+//! version = 1
+//!
+//! [[calibration]]
+//! character = "kiri"
+//! profile = "webcam"
+//! [calibration.calibration]
+//! # profile, ranges and head_rest, as `omuzaki-anim-api` writes a `Calibration`
+//! ```
+//!
+//! TOML has no null, so a head rest pose without a position leaves the field out. A top-level key this build does not
+//! know is kept and written back.
+//!
+//! # Invariants
+//!
+//! 1. **One bad part never costs the others.** Every `[[calibration]]` element is read on its own, and the character
+//!    and device class an element is filed under decide nothing about its neighbours. An element that cannot be used
+//!    (not a table, a missing or mistyped field, a calibration that does not read, a value out of range, one filed
+//!    under the wrong device class, a repeat of a key already read) is listed in [`CalibrationStore::findings`] and
+//!    kept exactly as it was read.
+//! 2. **What was read is what is written.** A kept element is written back untouched, so a later save for another
+//!    character does not lose it and a hand fix of the file is still possible. The one element a save replaces is
+//!    the one filed under the same character and device class: the person's own recalibration. [`forget`](CalibrationStore::forget)
+//!    drops a character on purpose.
+//! 3. **A file that cannot be read at all is never written.** A file that does not parse, has a version this build does
+//!    not know, or has `calibration` of the wrong shape leaves the store *locked*: it reads as empty, reports the
+//!    reason, and [`save`](CalibrationStore::save) and [`forget`](CalibrationStore::forget) refuse
+//!    ([`CalibrationError::Locked`]), because writing would replace a file whose content is unknown.
+//! 4. **A calibration is checked before it is used** ([`CalibrationStore::for_character`] only hands back one that
+//!    passed): every range finite and wider than nothing, the head rest pose finite. A hand-edited file cannot freeze
+//!    the face or fill it with NaN.
+//! 5. **Never another character's or device's.** [`for_character`](CalibrationStore::for_character) returns the
+//!    calibration filed for exactly that character and device class.
+//! 6. **A failed write changes nothing.** The file is replaced atomically and the store keeps its previous state when
+//!    the write fails.
+//!
+//! No finding text carries a calibration value, and the store logs nothing: a calibration and a character id describe
+//! a face.
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 use omuzaki_anim_api::{Calibration, Channel, DeviceProfile};
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use omuzaki_core::fsx::write_atomic;
+
+/// The file format version this build reads and writes.
+pub const FILE_VERSION: i64 = 1;
 
 /// How many characters a store keeps calibrations for: a bound on a file that grows with every character tried.
 pub const MAX_CHARACTERS: usize = 64;
@@ -23,84 +62,315 @@ pub const MAX_CHARACTERS: usize = 64;
 /// The most characters in a character id, the key of an entry.
 pub const MAX_ID_CHARS: usize = 128;
 
-/// One stored calibration: usable, or kept exactly as it was read because it could not be used.
-#[derive(Clone, Debug, PartialEq)]
-enum Entry {
-    /// A calibration that read back and passed its checks.
-    Good(Box<Calibration>),
-    /// What the file held: a value that did not parse, failed a check or was filed under the wrong device class. It is
-    /// never used and never rewritten, so one bad entry cannot cost the person the good ones, and a hand fix of the
-    /// file is still there to make.
-    Unreadable(serde_json::Value),
+/// Where the calibrations live, under the local data folder: `perform/calibration.toml`.
+pub fn calibration_file(data_dir: &Path) -> PathBuf {
+    data_dir.join("perform").join("calibration.toml")
 }
 
-/// Calibrations by character and device class.
+/// A character and the device class a calibration is filed under.
+type Key = (String, String);
+
+/// Something in the file that could not be used. Carries no calibration value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CalibrationFinding {
+    /// The character the entry is filed under, when it could be read.
+    pub character: Option<String>,
+    /// The device class the entry is filed under, when it could be read.
+    pub profile: Option<String>,
+    /// What is wrong, in words. `None` for `character` means a whole-file problem or an entry with no readable id.
+    pub reason: String,
+}
+
+/// An element of the file that could not be used, kept as it was read.
+#[derive(Clone, Debug, PartialEq)]
+struct Kept {
+    key: Option<Key>,
+    raw: toml::Value,
+}
+
+/// Calibrations by character and device class, with the file they come from.
 ///
-/// Entries are read one by one: a calibration that cannot be used is kept untouched and listed by
-/// [`unreadable`](Self::unreadable), and every other entry still loads, is returned and is written back. Only a
-/// whole value of the wrong shape (not a table of tables) cannot be read at all.
+/// See the module docs for the invariants. A store from [`new`](Self::new) has no file and lives in memory.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CalibrationStore {
-    entries: BTreeMap<String, BTreeMap<String, Entry>>,
+    path: Option<PathBuf>,
+    good: BTreeMap<Key, Box<Calibration>>,
+    kept: Vec<Kept>,
+    /// Top-level keys of the file this build does not know.
+    extra: toml::Table,
+    /// Why the file could not be read at all; the store refuses to write while this is set.
+    locked: Option<String>,
+    findings: Vec<CalibrationFinding>,
 }
 
-impl JsonSchema for CalibrationStore {
-    fn schema_name() -> std::borrow::Cow<'static, str> {
-        "CalibrationStore".into()
-    }
-
-    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        <BTreeMap<String, BTreeMap<String, Calibration>>>::json_schema(generator)
-    }
+/// Why a calibration cannot be kept or a store cannot be changed.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum CalibrationError {
+    /// More than [`MAX_CHARACTERS`] characters.
+    #[error("calibrations for {count} characters; at most {MAX_CHARACTERS} are kept")]
+    TooMany {
+        /// How many there were.
+        count: usize,
+    },
+    /// A character id that is empty or longer than [`MAX_ID_CHARS`].
+    #[error("a character id is 1 to {MAX_ID_CHARS} characters")]
+    BadId,
+    /// An entry whose calibration is for another device class than the one it is filed under.
+    #[error("a calibration filed under {filed} was made for {made}")]
+    WrongProfile {
+        /// The class it is filed under.
+        filed: String,
+        /// The class it was made for.
+        made: String,
+    },
+    /// A range or rest pose that is not a finite, usable number.
+    #[error("a calibration has {what} that is not finite or has no span")]
+    Unusable {
+        /// What is wrong: a channel name or the head rest pose.
+        what: String,
+    },
+    /// The file could not be read at all, so nothing is written over it.
+    #[error("the saved calibrations could not be read ({reason}); fix or remove the file before saving another")]
+    Locked {
+        /// Why the file could not be read.
+        reason: String,
+    },
+    /// The file could not be written. The store is as it was.
+    #[error("the calibrations could not be written: {reason}")]
+    Write {
+        /// The operating system's reason.
+        reason: String,
+    },
 }
 
-impl Serialize for CalibrationStore {
-    /// Writes the store without `null`s in the good entries (a head pose with no position leaves the field out, because
-    /// the settings files are TOML, which has no null) and the unreadable ones as they were read.
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut out = serde_json::Map::new();
-        for (character, by_profile) in &self.entries {
-            let mut profiles = serde_json::Map::new();
-            for (profile, entry) in by_profile {
-                let value = match entry {
-                    Entry::Good(calibration) => {
-                        let mut value = serde_json::to_value(**calibration).map_err(serde::ser::Error::custom)?;
-                        strip_nulls(&mut value);
-                        value
-                    }
-                    Entry::Unreadable(raw) => raw.clone(),
-                };
-                profiles.insert(profile.clone(), value);
-            }
-            out.insert(character.clone(), serde_json::Value::Object(profiles));
+impl CalibrationError {
+    /// A short reason without any id, for a finding.
+    fn reason(&self) -> String {
+        match self {
+            Self::WrongProfile { .. } => "filed under a device class it was not made for".to_owned(),
+            Self::Unusable { what } => format!("{what} is not finite or has no span"),
+            Self::BadId => format!("the character id is not 1 to {MAX_ID_CHARS} characters"),
+            other => other.to_string(),
         }
-        serde_json::Value::Object(out).serialize(serializer)
     }
 }
 
-impl<'de> Deserialize<'de> for CalibrationStore {
-    /// Reads every entry on its own. Only a value that is not a table of tables is an error.
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let raw = BTreeMap::<String, BTreeMap<String, serde_json::Value>>::deserialize(deserializer)?;
-        let entries = raw
-            .into_iter()
-            .map(|(character, by_profile)| {
-                let entries = by_profile
-                    .into_iter()
-                    .map(|(filed, raw)| {
-                        let entry = match serde_json::from_value::<Calibration>(raw.clone()) {
-                            Ok(calibration) if check_calibration(&character, &filed, &calibration).is_ok() => {
-                                Entry::Good(Box::new(calibration))
-                            }
-                            _ => Entry::Unreadable(raw),
-                        };
-                        (filed, entry)
-                    })
-                    .collect();
-                (character, entries)
-            })
-            .collect();
-        Ok(Self { entries })
+impl CalibrationStore {
+    /// An empty store with no file: it lives in memory (the tests, the CLI).
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Opens the store on `path` (see [`calibration_file`]). A missing file is an empty store. Never fails: whatever
+    /// cannot be read is listed by [`findings`](Self::findings), and a file that cannot be read at all locks the store
+    /// against writing (invariant 3).
+    pub fn open(path: impl Into<PathBuf>) -> Self {
+        let path = path.into();
+        let mut store = match std::fs::read_to_string(&path) {
+            Ok(text) => Self::parse(&text),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::new(),
+            Err(e) => Self::locked_with(format!("the file cannot be read: {}", e.kind())),
+        };
+        store.path = Some(path);
+        store
+    }
+
+    fn locked_with(reason: String) -> Self {
+        let finding = CalibrationFinding { character: None, profile: None, reason: reason.clone() };
+        Self { locked: Some(reason), findings: vec![finding], ..Self::default() }
+    }
+
+    /// Reads the text of a file. Each element is read on its own (invariant 1).
+    fn parse(text: &str) -> Self {
+        let mut table: toml::Table = match text.parse() {
+            Ok(table) => table,
+            Err(e) => {
+                // Not `Display`: that quotes the offending line, which may hold a calibration.
+                let line = e.span().map_or(0, |span| text[..span.start.min(text.len())].matches('\n').count() + 1);
+                return Self::locked_with(format!("the file does not parse ({}, line {line})", e.message()));
+            }
+        };
+        match table.remove("version") {
+            None => {}
+            Some(toml::Value::Integer(FILE_VERSION)) => {}
+            Some(_) => return Self::locked_with("the file has a version this build does not know".to_owned()),
+        }
+        let items = match table.remove("calibration") {
+            None => Vec::new(),
+            Some(toml::Value::Array(items)) => items,
+            Some(_) => return Self::locked_with("`calibration` is not a list of tables".to_owned()),
+        };
+        let mut store = Self { extra: table, ..Self::default() };
+        for item in items {
+            store.read_element(item);
+        }
+        store
+    }
+
+    fn read_element(&mut self, item: toml::Value) {
+        let (key, outcome) = decode(&item);
+        let problem = match (&key, outcome) {
+            (Some(key), Ok(calibration)) => {
+                let characters = self.good.keys().map(|(c, _)| c).collect::<std::collections::BTreeSet<_>>();
+                if self.good.contains_key(key) {
+                    Some("the same character and device class appears twice; the first is used".to_owned())
+                } else if !characters.contains(&key.0) && characters.len() >= MAX_CHARACTERS {
+                    Some(CalibrationError::TooMany { count: characters.len() + 1 }.to_string())
+                } else {
+                    self.good.insert(key.clone(), Box::new(calibration));
+                    return;
+                }
+            }
+            (_, Ok(_)) => Some("the entry has no readable character and device class".to_owned()),
+            (_, Err(reason)) => Some(reason),
+        };
+        let (character, profile) = key.clone().map_or((None, None), |(c, p)| (Some(c), Some(p)));
+        self.findings.push(CalibrationFinding { character, profile, reason: problem.unwrap_or_default() });
+        self.kept.push(Kept { key, raw: item });
+    }
+
+    /// What in the file could not be used, each kept as it was read. Empty for a clean file. See invariant 1 and 3.
+    pub fn findings(&self) -> &[CalibrationFinding] {
+        &self.findings
+    }
+
+    /// Why the whole file could not be read, if it could not: the store is then empty and refuses to write.
+    pub fn locked(&self) -> Option<&str> {
+        self.locked.as_deref()
+    }
+
+    /// The calibration saved for `character` on `profile`, if there is one. Another character's, or another device
+    /// class's, is never returned (invariant 5).
+    pub fn for_character(&self, character: &str, profile: DeviceProfile) -> Option<Calibration> {
+        self.good.get(&(character.to_owned(), profile_key(profile))).map(|calibration| **calibration)
+    }
+
+    /// Saves `calibration` for `character` (under the device class it was made for), replacing the one before, and
+    /// writes the file when the store has one.
+    ///
+    /// # Errors
+    /// [`CalibrationError`] for an id that is not 1 to [`MAX_ID_CHARS`] characters, a calibration with a value that is
+    /// not usable, a new character past [`MAX_CHARACTERS`], a locked store or a failed write; the store is unchanged
+    /// then.
+    pub fn save(&mut self, character: &str, calibration: Calibration) -> Result<(), CalibrationError> {
+        self.refuse_if_locked()?;
+        check_id(character)?;
+        let profile = profile_key(calibration.profile);
+        check_calibration(&profile, &calibration)?;
+        if !self.good.keys().any(|(c, _)| c == character) && self.characters() >= MAX_CHARACTERS {
+            return Err(CalibrationError::TooMany { count: self.characters() + 1 });
+        }
+        let key = (character.to_owned(), profile);
+        self.changed(|store| {
+            // The person's own recalibration replaces an unreadable entry filed under the same key.
+            store.kept.retain(|kept| kept.key.as_ref() != Some(&key));
+            store.findings.retain(|f| (f.character.as_ref(), f.profile.as_ref()) != (Some(&key.0), Some(&key.1)));
+            store.good.insert(key, Box::new(calibration));
+        })
+    }
+
+    /// Forgets everything saved for `character`, unreadable entries included, and writes the file. Returns whether
+    /// there was anything.
+    ///
+    /// # Errors
+    /// [`CalibrationError::Locked`] or [`CalibrationError::Write`]; the store is unchanged then.
+    pub fn forget(&mut self, character: &str) -> Result<bool, CalibrationError> {
+        self.refuse_if_locked()?;
+        let had = self.good.keys().any(|(c, _)| c == character)
+            || self.kept.iter().any(|kept| kept.key.as_ref().is_some_and(|(c, _)| c == character));
+        if had {
+            self.changed(|store| {
+                store.good.retain(|(c, _), _| c != character);
+                store.kept.retain(|kept| kept.key.as_ref().is_none_or(|(c, _)| c != character));
+                store.findings.retain(|f| f.character.as_deref() != Some(character));
+            })?;
+        }
+        Ok(had)
+    }
+
+    /// How many characters have a calibration that can be used.
+    pub fn len(&self) -> usize {
+        self.characters()
+    }
+
+    /// Whether no calibration can be used.
+    pub fn is_empty(&self) -> bool {
+        self.good.is_empty()
+    }
+
+    fn characters(&self) -> usize {
+        self.good.keys().map(|(character, _)| character).collect::<std::collections::BTreeSet<_>>().len()
+    }
+
+    fn refuse_if_locked(&self) -> Result<(), CalibrationError> {
+        self.locked.clone().map_or(Ok(()), |reason| Err(CalibrationError::Locked { reason }))
+    }
+
+    /// Applies `edit`, then writes; when the write fails the store goes back to what it was (invariant 6).
+    fn changed(&mut self, edit: impl FnOnce(&mut Self)) -> Result<(), CalibrationError> {
+        let before = self.clone();
+        edit(self);
+        match self.write() {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                *self = before;
+                Err(error)
+            }
+        }
+    }
+
+    /// Writes the file: the usable entries in order, then the kept ones as they were read.
+    fn write(&self) -> Result<(), CalibrationError> {
+        let Some(path) = &self.path else { return Ok(()) };
+        let write_error = |reason: String| CalibrationError::Write { reason };
+        let mut items: Vec<toml::Value> = Vec::with_capacity(self.good.len() + self.kept.len());
+        for ((character, profile), calibration) in &self.good {
+            let mut value = serde_json::to_value(**calibration).map_err(|e| write_error(e.to_string()))?;
+            strip_nulls(&mut value);
+            let body = toml::Value::try_from(value).map_err(|e| write_error(e.to_string()))?;
+            let mut element = toml::Table::new();
+            element.insert("character".to_owned(), toml::Value::String(character.clone()));
+            element.insert("profile".to_owned(), toml::Value::String(profile.clone()));
+            element.insert("calibration".to_owned(), body);
+            items.push(toml::Value::Table(element));
+        }
+        items.extend(self.kept.iter().map(|kept| kept.raw.clone()));
+        let mut root = toml::Table::new();
+        root.insert("version".to_owned(), toml::Value::Integer(FILE_VERSION));
+        root.extend(self.extra.clone());
+        if !items.is_empty() {
+            root.insert("calibration".to_owned(), toml::Value::Array(items));
+        }
+        let text = toml::to_string(&root).map_err(|e| write_error(e.to_string()))?;
+        write_atomic(path, &text).map_err(|e| write_error(e.kind().to_string()))
+    }
+}
+
+/// Reads one element: its key when it has one, and the calibration or the reason it cannot be used.
+fn decode(item: &toml::Value) -> (Option<Key>, Result<Calibration, String>) {
+    let Some(table) = item.as_table() else {
+        return (None, Err("the entry is not a table".to_owned()));
+    };
+    let text = |name: &str| table.get(name).and_then(toml::Value::as_str).map(str::to_owned);
+    let key = text("character").zip(text("profile"));
+    let Some((character, profile)) = key.clone() else {
+        return (key, Err("the entry needs a `character` and a `profile`, both text".to_owned()));
+    };
+    if let Err(error) = check_id(&character) {
+        return (key, Err(error.reason()));
+    }
+    let Some(body) = table.get("calibration") else {
+        return (key, Err("the entry has no `calibration`".to_owned()));
+    };
+    // `try_into` reports a serde message that names the field but never quotes the value.
+    let calibration = match body.clone().try_into::<Calibration>() {
+        Ok(calibration) => calibration,
+        Err(_) => return (key, Err("the calibration does not read".to_owned())),
+    };
+    match check_calibration(&profile, &calibration) {
+        Ok(()) => (key, Ok(calibration)),
+        Err(error) => (key, Err(error.reason())),
     }
 }
 
@@ -116,115 +386,6 @@ fn strip_nulls(value: &mut serde_json::Value) {
     }
 }
 
-/// Why a store cannot be used.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-#[non_exhaustive]
-pub enum CalibrationError {
-    /// More than [`MAX_CHARACTERS`] characters.
-    #[error("calibrations for {count} characters; at most {MAX_CHARACTERS} are kept")]
-    TooMany {
-        /// How many there were.
-        count: usize,
-    },
-    /// A character id that is empty or longer than [`MAX_ID_CHARS`].
-    #[error("a character id is 1 to {MAX_ID_CHARS} characters")]
-    BadId,
-    /// An entry whose calibration is for another device class than the one it is filed under.
-    #[error("the calibration for character '{character}' filed under {filed} was made for {made}")]
-    WrongProfile {
-        /// The character.
-        character: String,
-        /// The class it is filed under.
-        filed: String,
-        /// The class it was made for.
-        made: String,
-    },
-    /// A range or rest pose that is not a finite, usable number.
-    #[error("the calibration for character '{character}' has {what} that is not finite or has no span")]
-    Unusable {
-        /// The character.
-        character: String,
-        /// What is wrong: a channel name or the head rest pose.
-        what: String,
-    },
-}
-
-impl CalibrationStore {
-    /// An empty store.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// The calibration saved for `character` on `profile`, if there is one. Another character's, or another device
-    /// class's, is never returned.
-    pub fn for_character(&self, character: &str, profile: DeviceProfile) -> Option<Calibration> {
-        match self.entries.get(character).and_then(|by_profile| by_profile.get(&profile_key(profile))) {
-            Some(Entry::Good(calibration)) => Some(**calibration),
-            Some(Entry::Unreadable(_)) | None => None,
-        }
-    }
-
-    /// The entries that could not be used, as `(character, device class)`: kept as they were read and never rewritten.
-    /// A new calibration saved for the same character and device class replaces its entry, which is the person's own
-    /// recalibration; every other unreadable entry stays.
-    pub fn unreadable(&self) -> Vec<(String, String)> {
-        self.entries
-            .iter()
-            .flat_map(|(character, by_profile)| {
-                by_profile
-                    .iter()
-                    .filter(|(_, entry)| matches!(entry, Entry::Unreadable(_)))
-                    .map(move |(profile, _)| (character.clone(), profile.clone()))
-            })
-            .collect()
-    }
-
-    /// Saves `calibration` for `character` (under the device class it was made for), replacing the one before.
-    ///
-    /// # Errors
-    /// [`CalibrationError`] for an id that is not 1 to [`MAX_ID_CHARS`] characters, a calibration with a value that is
-    /// not usable, or a new character past [`MAX_CHARACTERS`]; the store is unchanged then.
-    pub fn save(&mut self, character: &str, calibration: Calibration) -> Result<(), CalibrationError> {
-        check_id(character)?;
-        check_calibration(character, &profile_key(calibration.profile), &calibration)?;
-        if !self.entries.contains_key(character) && self.entries.len() >= MAX_CHARACTERS {
-            return Err(CalibrationError::TooMany { count: self.entries.len() + 1 });
-        }
-        self.entries
-            .entry(character.to_owned())
-            .or_default()
-            .insert(profile_key(calibration.profile), Entry::Good(Box::new(calibration)));
-        Ok(())
-    }
-
-    /// Forgets everything saved for `character`. Returns whether there was anything.
-    pub fn forget(&mut self, character: &str) -> bool {
-        self.entries.remove(character).is_some()
-    }
-
-    /// How many characters have a calibration.
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    /// Whether nothing is saved.
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-
-    /// Checks what the settings store runs on a stored value before it is used: how many characters and their ids. An
-    /// entry that cannot be used does not fail the value: it is listed by [`unreadable`](Self::unreadable) instead.
-    ///
-    /// # Errors
-    /// The first [`CalibrationError`] found.
-    pub fn check(&self) -> Result<(), CalibrationError> {
-        if self.entries.len() > MAX_CHARACTERS {
-            return Err(CalibrationError::TooMany { count: self.entries.len() });
-        }
-        self.entries.keys().try_for_each(|character| check_id(character))
-    }
-}
-
 fn check_id(character: &str) -> Result<(), CalibrationError> {
     let chars = character.chars().count();
     if (1..=MAX_ID_CHARS).contains(&chars) { Ok(()) } else { Err(CalibrationError::BadId) }
@@ -235,12 +396,12 @@ fn profile_key(profile: DeviceProfile) -> String {
     serde_json::to_value(profile).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default()
 }
 
-fn check_calibration(character: &str, filed: &str, calibration: &Calibration) -> Result<(), CalibrationError> {
+fn check_calibration(filed: &str, calibration: &Calibration) -> Result<(), CalibrationError> {
     let made = profile_key(calibration.profile);
     if made != filed {
-        return Err(CalibrationError::WrongProfile { character: character.to_owned(), filed: filed.to_owned(), made });
+        return Err(CalibrationError::WrongProfile { filed: filed.to_owned(), made });
     }
-    let unusable = |what: String| CalibrationError::Unusable { character: character.to_owned(), what };
+    let unusable = |what: String| CalibrationError::Unusable { what };
     for info in Channel::arkit() {
         let range = calibration.range(info.channel);
         if !(range.lo.is_finite() && range.hi.is_finite() && range.hi > range.lo) {
@@ -268,6 +429,22 @@ mod tests {
         calibration
     }
 
+    /// A store on a file in a fresh folder, and the file's path.
+    fn on_disk() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = calibration_file(dir.path());
+        (dir, path)
+    }
+
+    /// The file's text with one more element (given as TOML) appended to its `[[calibration]]` list.
+    fn with_element(path: &Path, element: &str) {
+        let mut text = std::fs::read_to_string(path).unwrap_or_else(|_| "version = 1\n".to_owned());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        text.push_str("\n[[calibration]]\n");
+        text.push_str(element);
+        std::fs::write(path, text).unwrap();
+    }
+
     #[test]
     fn a_calibration_comes_back_for_its_character_and_device_only() {
         let mut store = CalibrationStore::new();
@@ -278,22 +455,20 @@ mod tests {
     }
 
     #[test]
-    fn the_store_survives_a_round_trip_through_json() {
-        let mut store = CalibrationStore::new();
+    fn the_file_round_trips_bit_for_bit_and_holds_no_null() {
+        let (_dir, path) = on_disk();
+        let mut store = CalibrationStore::open(&path);
+        assert!(store.is_empty() && store.findings().is_empty(), "a missing file is an empty store");
         store.save("kiri", tuned(DeviceProfile::Webcam)).unwrap();
-        store.save("kiri", tuned(DeviceProfile::Arkit)).unwrap();
+        store.save("kiri", Calibration::identity(DeviceProfile::Arkit)).unwrap(); // no head position: nothing to write
         store.save("mira", tuned(DeviceProfile::Webcam)).unwrap();
-        let json = serde_json::to_value(&store).unwrap();
-        assert_eq!(serde_json::from_value::<CalibrationStore>(json).unwrap(), store);
-    }
-
-    #[test]
-    fn the_written_form_has_no_null_and_reads_back_equal() {
-        let mut store = CalibrationStore::new();
-        store.save("kiri", Calibration::identity(DeviceProfile::Webcam)).unwrap(); // head rest with no position
-        let json = serde_json::to_value(&store).unwrap();
-        assert!(!json.to_string().contains("null"), "{json}");
-        assert_eq!(serde_json::from_value::<CalibrationStore>(json).unwrap(), store);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("version = 1"), "{text}");
+        assert!(!text.contains("null"), "{text}");
+        let reopened = CalibrationStore::open(&path);
+        assert_eq!(reopened, store);
+        assert_eq!(reopened.for_character("kiri", DeviceProfile::Webcam), Some(tuned(DeviceProfile::Webcam)));
+        assert!(reopened.findings().is_empty());
     }
 
     #[test]
@@ -303,7 +478,9 @@ mod tests {
         store.save("kiri", tuned(DeviceProfile::Webcam)).unwrap();
         assert_eq!(store.len(), 1);
         assert_eq!(store.for_character("kiri", DeviceProfile::Webcam), Some(tuned(DeviceProfile::Webcam)));
-        assert!(store.forget("kiri") && store.is_empty());
+        assert_eq!(store.forget("kiri"), Ok(true));
+        assert!(store.is_empty());
+        assert_eq!(store.forget("kiri"), Ok(false));
     }
 
     #[test]
@@ -323,45 +500,6 @@ mod tests {
     }
 
     #[test]
-    fn a_misfiled_entry_is_unreadable_and_kept_while_the_others_load() {
-        let mut store = CalibrationStore::new();
-        store.save("kiri", tuned(DeviceProfile::Webcam)).unwrap();
-        store.save("mira", tuned(DeviceProfile::Webcam)).unwrap();
-        let mut json = serde_json::to_value(&store).unwrap();
-        // kiri's webcam calibration filed under `arkit`.
-        let webcam = json["kiri"]["webcam"].take();
-        json["kiri"] = serde_json::json!({ "arkit": webcam.clone() });
-        let moved: CalibrationStore = serde_json::from_value(json).unwrap();
-        assert_eq!(moved.for_character("kiri", DeviceProfile::Arkit), None);
-        assert_eq!(
-            moved.for_character("mira", DeviceProfile::Webcam),
-            Some(tuned(DeviceProfile::Webcam)),
-            "the good one loads"
-        );
-        assert_eq!(moved.unreadable(), [("kiri".to_owned(), "arkit".to_owned())]);
-        // Written back as it was read.
-        assert_eq!(serde_json::to_value(&moved).unwrap()["kiri"]["arkit"], webcam);
-        assert_eq!(moved.check(), Ok(()), "an unreadable entry does not fail the value");
-    }
-
-    #[test]
-    fn a_corrupt_entry_survives_a_save_for_another_character() {
-        let mut store = CalibrationStore::new();
-        store.save("mira", tuned(DeviceProfile::Webcam)).unwrap();
-        let mut json = serde_json::to_value(&store).unwrap();
-        json["kiri"] = serde_json::json!({ "webcam": { "profile": "webcam", "ranges": "garbage" } });
-        let mut loaded: CalibrationStore = serde_json::from_value(json).unwrap();
-        assert_eq!(loaded.unreadable(), [("kiri".to_owned(), "webcam".to_owned())]);
-        loaded.save("noor", tuned(DeviceProfile::Webcam)).unwrap();
-        let written = serde_json::to_value(&loaded).unwrap();
-        assert_eq!(written["kiri"]["webcam"]["ranges"], "garbage", "the corrupt entry is untouched");
-        assert!(written["mira"]["webcam"].is_object() && written["noor"]["webcam"].is_object());
-        // Recalibrating that very character replaces its entry: the person's own fix.
-        loaded.save("kiri", tuned(DeviceProfile::Webcam)).unwrap();
-        assert_eq!(loaded.unreadable(), Vec::<(String, String)>::new());
-    }
-
-    #[test]
     fn the_store_is_bounded() {
         let mut store = CalibrationStore::new();
         for i in 0..MAX_CHARACTERS {
@@ -372,5 +510,119 @@ mod tests {
             Err(CalibrationError::TooMany { .. })
         ));
         store.save("c0", tuned(DeviceProfile::Webcam)).unwrap();
+    }
+
+    #[test]
+    fn bad_elements_of_every_shape_cost_the_good_ones_nothing_and_are_kept() {
+        let (_dir, path) = on_disk();
+        let mut store = CalibrationStore::open(&path);
+        store.save("kiri", tuned(DeviceProfile::Webcam)).unwrap();
+        // An entry whose calibration is the wrong type, one with garbage inside, one with no profile, and an element
+        // with nothing in it.
+        with_element(&path, "character = \"mira\"\nprofile = \"webcam\"\ncalibration = \"garbage\"\n");
+        with_element(
+            &path,
+            "character = \"noor\"\nprofile = \"webcam\"\n[calibration.calibration]\nprofile = \"webcam\"\nranges = \"garbage\"\n",
+        );
+        with_element(&path, "character = \"ola\"\n");
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        text.push_str("\n[[calibration]]\n");
+        std::fs::write(&path, text).unwrap();
+
+        let loaded = CalibrationStore::open(&path);
+        assert_eq!(loaded.for_character("kiri", DeviceProfile::Webcam), Some(tuned(DeviceProfile::Webcam)));
+        assert_eq!(loaded.locked(), None, "bad elements do not lock the file");
+        let named: Vec<_> = loaded.findings().iter().map(|f| f.character.as_deref()).collect();
+        assert_eq!(named, [Some("mira"), Some("noor"), None, None]);
+        let all = format!("{:?}", loaded.findings());
+        assert!(!all.contains("garbage"), "a finding never quotes a stored value: {all}");
+
+        // A save for another character keeps every bad element as it was.
+        let mut loaded = loaded;
+        loaded.save("pia", tuned(DeviceProfile::Webcam)).unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(written.matches("garbage").count(), 2, "{written}");
+        let again = CalibrationStore::open(&path);
+        assert_eq!(again.findings().len(), 4);
+        assert!(again.for_character("kiri", DeviceProfile::Webcam).is_some());
+        assert!(again.for_character("pia", DeviceProfile::Webcam).is_some());
+    }
+
+    #[test]
+    fn recalibrating_a_character_replaces_its_unreadable_entry_and_forgetting_drops_it() {
+        let (_dir, path) = on_disk();
+        with_element(&path, "character = \"mira\"\nprofile = \"webcam\"\ncalibration = \"garbage\"\n");
+        with_element(&path, "character = \"noor\"\nprofile = \"webcam\"\ncalibration = \"garbage\"\n");
+        let mut store = CalibrationStore::open(&path);
+        assert_eq!(store.findings().len(), 2);
+        store.save("mira", tuned(DeviceProfile::Webcam)).unwrap();
+        assert_eq!(store.findings().len(), 1, "the person's own fix clears it");
+        assert_eq!(store.forget("noor"), Ok(true), "forgetting a character drops a bad entry too");
+        let again = CalibrationStore::open(&path);
+        assert!(again.findings().is_empty());
+        assert_eq!(again.len(), 1);
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_at_all_is_never_written_over() {
+        for (what, text) in [
+            ("does not parse", "this is [not toml"),
+            ("a version this build does not know", "version = 2\n[[calibration]]\ncharacter = \"kiri\"\n"),
+            ("is not a list of tables", "version = 1\ncalibration = \"garbage\"\n"),
+        ] {
+            let (_dir, path) = on_disk();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, text).unwrap();
+            let mut store = CalibrationStore::open(&path);
+            assert!(store.is_empty());
+            assert!(store.locked().is_some(), "{what}");
+            assert_eq!(store.findings().len(), 1, "{what}");
+            assert!(store.findings()[0].character.is_none());
+            assert!(!format!("{:?}", store.findings()).contains("garbage"), "{what}");
+            assert!(
+                matches!(store.save("kiri", tuned(DeviceProfile::Webcam)), Err(CalibrationError::Locked { .. })),
+                "{what}"
+            );
+            assert!(matches!(store.forget("kiri"), Err(CalibrationError::Locked { .. })), "{what}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), text, "{what}: the file is as it was");
+        }
+    }
+
+    #[test]
+    fn keys_this_build_does_not_know_are_written_back() {
+        let (_dir, path) = on_disk();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "version = 1\nnote = \"from a newer build\"\n").unwrap();
+        let mut store = CalibrationStore::open(&path);
+        store.save("kiri", tuned(DeviceProfile::Webcam)).unwrap();
+        assert!(std::fs::read_to_string(&path).unwrap().contains("from a newer build"));
+    }
+
+    #[test]
+    fn a_failed_write_leaves_the_store_and_the_file_as_they_were() {
+        let (dir, path) = on_disk();
+        let mut store = CalibrationStore::open(&path);
+        store.save("kiri", tuned(DeviceProfile::Webcam)).unwrap();
+        let before = store.clone();
+        // The folder the file lives in is replaced by a file, so the write cannot succeed.
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(dir.path().join("perform"), "in the way").unwrap();
+        assert!(matches!(store.save("mira", tuned(DeviceProfile::Webcam)), Err(CalibrationError::Write { .. })));
+        assert_eq!(store, before, "memory still matches what was last written");
+        assert_eq!(store.for_character("mira", DeviceProfile::Webcam), None);
+    }
+
+    #[test]
+    fn an_entry_filed_under_the_wrong_device_class_is_kept_and_not_used() {
+        let (_dir, path) = on_disk();
+        let mut store = CalibrationStore::open(&path);
+        store.save("kiri", tuned(DeviceProfile::Webcam)).unwrap();
+        let text =
+            std::fs::read_to_string(&path).unwrap().replacen("profile = \"webcam\"\n", "profile = \"arkit\"\n", 1);
+        std::fs::write(&path, text).unwrap();
+        let moved = CalibrationStore::open(&path);
+        assert_eq!(moved.for_character("kiri", DeviceProfile::Arkit), None);
+        assert_eq!(moved.for_character("kiri", DeviceProfile::Webcam), None);
+        assert_eq!(moved.findings().len(), 1);
     }
 }

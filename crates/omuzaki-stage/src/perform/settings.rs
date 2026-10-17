@@ -7,16 +7,35 @@
 //! | `input.camera` | Machine | Never | Excluded | the bound camera ([`InputCamera`](super::input::InputCamera)) |
 //! | `perform.retarget` | User | Free | Member | the smoothing dial, exaggeration, head gain and mirror ([`PerformRetarget`]) |
 //! | `perform.triggers` | User | Free | Member | the expression hotkeys ([`PerformTriggers`]) |
-//! | `perform.calibrations` | Machine | Confirm | Excluded | the neutral-face calibrations by character and device ([`PerformCalibrations`]) |
+//!
+//! The neutral-face calibrations are not settings. ADR 0026 classes them as *state*, with a store of their own
+//! (`perform/calibration.toml` in the local data folder, [`CalibrationStore`]): an app writes one as a side effect of
+//! calibrating, there is no op to set it and no default. [`restore`] reads the store it is given and [`save_calibration`]
+//! writes it.
 //!
 //! The two input keys are written by the `input.*` ops themselves when the app has a settings service. The perform
-//! keys are written by [`save`] and [`save_calibration`], which the app calls after a `perform.*` or `trigger.*` op
-//! succeeds and at exit: those ops change the live performer only, so the performer can run without a store (the
-//! tests, the CLI) and V0 does not wait for the `settings.*` ops. [`restore`] puts every key back at start.
+//! keys are written by [`save`], which the app calls after a `perform.*` or `trigger.*` op succeeds and at exit: those
+//! ops change the live performer only, so the performer can run without a store (the tests, the CLI) and V0 does not
+//! wait for the `settings.*` ops. [`restore`] puts everything back at start.
 //!
-//! A stored value that cannot be used never fails the start. The store reads the key as its default and lists a
-//! finding naming the key ([`Settings::findings`]); [`restore`] returns those findings for the V0 keys, and carries on
-//! with the defaults. A calibration made for another character or another device class is never applied.
+//! # Invariants
+//!
+//! 1. **Saving never loses a decision already made.** What [`save`] and [`save_calibration`] write is the live state
+//!    *once every request made so far has run* ([`PerformHost::requested_retarget`], [`PerformHost::requested_calibration`],
+//!    the hotkeys as bound), not what the performer has applied by now. A request is queued and applied on the next
+//!    performer step, so saving in between with the applied view would write the previous value back.
+//! 2. **Saving never writes over what could not be read.** A calibration file that cannot be read at all is left
+//!    alone ([`CalibrationStore`] refuses to write), and an entry that cannot be used is written back as it was.
+//! 3. **Restoring fits the performer's queue.** The performer takes [`COMMAND_QUEUE_LEN`](super::host::COMMAND_QUEUE_LEN) requests between two of its
+//!    steps and refuses the rest. [`restore`] makes three: the dials, the whole set of hotkeys as one request
+//!    ([`PerformHost::bind_triggers`]) and the calibration, however many hotkeys there are. Nothing it asks is dropped
+//!    by a full queue; a refusal is reported in [`Restored::problems`].
+//! 4. **Restoring never fails the start, and never hides what it lost.** A stored value that cannot be used reads as
+//!    its default and is returned in [`Restored::findings`], naming its key; a file that cannot be read at all (a
+//!    finding with no key) is returned there too, as is anything wrong in the calibration store
+//!    ([`Restored::calibration_findings`]). The person is told why their settings are not back.
+//! 5. **Never another character's or device's calibration.** [`restore`] applies the calibration saved for exactly the
+//!    character and device class it is asked for.
 //!
 //! The output window's own key, `output.window` (Machine scope, written by `output.window.open`), is read here too:
 //! [`restore`] hands back what was saved as [`Restored::output_window`], and the app opens the window with it. This
@@ -24,14 +43,14 @@
 //! bad one is a finding and `None`.
 
 use omuzaki_anim::MAX_TRIGGERS;
-use omuzaki_anim_api::{Calibration, DeviceProfile};
+use omuzaki_anim_api::DeviceProfile;
 use omuzaki_ops_api::{Actor, Mode};
 use omuzaki_settings_api::error::{SettingError, SettingFinding};
 use omuzaki_settings_api::meta::{AgentWrite, Apply, InProfile, SettingMeta, SettingScope};
 use omuzaki_settings_api::register_setting;
 use omuzaki_settings_api::service::{Layer, Settings, SettingsExt, Source};
 use omuzaki_settings_api::setting::Setting;
-use omuzaki_track::calibration::CalibrationStore;
+use omuzaki_track::calibration::{CalibrationError, CalibrationFinding, CalibrationStore};
 use omuzaki_track_api::camera::CameraId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -41,15 +60,8 @@ use super::input::{InputCamera, InputError, InputHost, InputSource};
 use super::triggers::{TriggerBinding, check_key, same_key};
 use crate::ops::perform::set_retarget::{EXAGGERATION, HEAD_GAIN, SMOOTHING};
 
-/// The keys V0 restores, so [`restore`] reports only findings about them.
-const KEYS: [&str; 6] = [
-    "input.source",
-    "input.camera",
-    "perform.retarget",
-    "perform.triggers",
-    "perform.calibrations",
-    "output.window",
-];
+/// The keys V0 restores, so [`restore`] reports only findings about them (and the file-level ones, which name no key).
+const KEYS: [&str; 5] = ["input.source", "input.camera", "perform.retarget", "perform.triggers", "output.window"];
 
 /// The key the output window saves its last open request under (`output.window.open`, `omuzaki-stream`).
 const OUTPUT_WINDOW: &str = "output.window";
@@ -168,39 +180,12 @@ impl Setting for PerformTriggers {
 
 register_setting!(PerformTriggers);
 
-/// The neutral-face calibrations by character and device, as the Machine setting `perform.calibrations`. A
-/// calibration fits one face on one camera, so it stays on this computer. Only a person recalibrates (an agent's write
-/// is queued for confirmation).
-pub struct PerformCalibrations;
-
-impl Setting for PerformCalibrations {
-    type Value = CalibrationStore;
-    const META: SettingMeta = SettingMeta::new(
-        "perform.calibrations",
-        "The saved neutral-face calibrations, by character and device",
-        SettingScope::Machine,
-        AgentWrite::Confirm,
-        InProfile::Excluded,
-        Apply::Live,
-        1,
-    );
-
-    fn default() -> CalibrationStore {
-        CalibrationStore::new()
-    }
-
-    fn check(value: &CalibrationStore) -> Result<(), SettingError> {
-        value.check().map_err(|e| SettingError::invalid(Self::META.key, e.to_string()))
-    }
-}
-
-register_setting!(PerformCalibrations);
-
 /// What [`restore`] did, so the app can tell the person what did not come back.
 #[derive(Clone, Debug, Default, PartialEq)]
 #[non_exhaustive]
 pub struct Restored {
-    /// Stored values of the V0 keys that were not used, each naming its key. The key read as its default.
+    /// Stored values of the V0 keys that were not used, each naming its key (the key read as its default), and the
+    /// files that could not be read at all, which name no key (everything in them read as its default).
     pub findings: Vec<SettingFinding>,
     /// The camera that was bound but is not connected now. The binding is kept in the settings; the source runs
     /// without a capture until the camera is back or another is chosen.
@@ -212,15 +197,15 @@ pub struct Restored {
     /// The output window's last open request as saved (`output.window`), for the app to open the window with; `None`
     /// when nothing was saved or the stored value was not usable (then a finding names the key).
     pub output_window: Option<omuzaki_doc_api::Value>,
-    /// Calibrations in the settings that could not be used, as `(character, device class)`: kept as they were and not
-    /// rewritten by a later save (see [`CalibrationStore::unreadable`]).
-    pub unreadable_calibrations: Vec<(String, String)>,
+    /// What in the calibration file could not be used: entries kept as they were and not rewritten by a later save,
+    /// or the whole file, which is then left alone (see [`CalibrationStore::findings`]).
+    pub calibration_findings: Vec<CalibrationFinding>,
     /// What could not be applied, in words: a performer that is gone, a queue that is full.
     pub problems: Vec<String>,
 }
 
-/// Puts the saved settings back: the retarget dials, the hotkeys, the calibration saved for `character` on `profile`,
-/// and the input source and camera. Never fails; see [`Restored`] for what did not come back.
+/// Puts the saved settings back: the retarget dials, the hotkeys, the calibration saved for `character` on `profile`
+/// (from `calibrations`), and the input source and camera. Never fails; see [`Restored`] for what did not come back.
 ///
 /// Hotkeys whose expression the character does not have are bound anyway and listed as missing by `trigger.list`, so
 /// they work again when the expression returns.
@@ -228,20 +213,26 @@ pub fn restore(
     host: &dyn PerformHost,
     input: &dyn InputHost,
     settings: &dyn Settings,
+    calibrations: &CalibrationStore,
     character: &str,
     profile: DeviceProfile,
 ) -> Restored {
-    let findings = settings.findings().into_iter().filter(|f| KEYS.contains(&f.error.key.as_str())).collect();
+    // A finding with no key is a whole file that did not parse or could not be read: every key in it read as its
+    // default, and the person has to be told why (invariant 4).
+    let findings = settings
+        .findings()
+        .into_iter()
+        .filter(|f| f.error.key.is_empty() || KEYS.contains(&f.error.key.as_str()))
+        .collect();
     let mut problems = Vec::new();
     let mut note = |what: &str, error: &dyn std::fmt::Display| problems.push(format!("{what}: {error}"));
 
+    // Three requests in all, whatever the stored values: the dials, the hotkeys as one, the calibration (invariant 3).
     let prefs = settings.get::<PerformRetarget>().unwrap_or_default();
     if let Err(error) = host.set_retarget(prefs.change()) {
         note("the retarget dials", &error);
     }
 
-    // One request for the whole set: sixteen hotkeys, the dials and the calibration must fit the performer's queue
-    // together before its first step.
     let mut bound = 0;
     let hotkeys = settings.get::<PerformTriggers>().unwrap_or_default();
     if !hotkeys.is_empty() {
@@ -251,7 +242,6 @@ pub fn restore(
         }
     }
 
-    let calibrations = settings.get::<PerformCalibrations>().unwrap_or_default();
     let mut calibrated = false;
     if let Some(calibration) = calibrations.for_character(character, profile) {
         match host.set_calibration(calibration) {
@@ -278,31 +268,29 @@ pub fn restore(
         Some(Source::Default) | None => None,
         Some(_) => snapshot.value(OUTPUT_WINDOW).cloned(),
     };
-    let unreadable_calibrations = calibrations.unreadable();
     Restored {
         findings,
         missing_camera,
         calibration: calibrated,
         triggers: bound,
         output_window,
-        unreadable_calibrations,
+        calibration_findings: calibrations.findings().to_vec(),
         problems,
     }
 }
 
 /// Writes the live retarget dials and hotkeys to the settings: what [`restore`] reads. Call it after a `perform.*` or
-/// `trigger.*` op succeeds and at exit. The dials saved are the ones the performer applied.
+/// `trigger.*` op succeeds and at exit. The dials saved are the ones requested so far, applied or not (invariant 1).
 ///
 /// # Errors
 /// The first [`SettingError`] the store refuses; nothing after it is written.
 pub fn save(host: &dyn PerformHost, settings: &dyn Settings, by: &Actor) -> Result<(), SettingError> {
-    // What was asked for, not only what the performer has applied: a `perform.set_retarget` that is still queued counts.
-    let applied = host.requested_retarget();
+    let requested = host.requested_retarget();
     let prefs = RetargetPrefs {
-        smoothing: applied.smoothing,
-        exaggeration: applied.exaggeration,
-        head_gain: applied.head_gain,
-        mirror: applied.mirror,
+        smoothing: requested.smoothing,
+        exaggeration: requested.exaggeration,
+        head_gain: requested.head_gain,
+        mirror: requested.mirror,
     };
     settings.set::<PerformRetarget>(&prefs, Layer::Auto, Mode::Apply, by)?;
     let bindings: Vec<TriggerBinding> = host.triggers().into_iter().map(|info| info.binding).collect();
@@ -310,33 +298,21 @@ pub fn save(host: &dyn PerformHost, settings: &dyn Settings, by: &Actor) -> Resu
     Ok(())
 }
 
-/// Saves the host's calibration for `character` (under the device class it was made for), keeping the calibrations of
-/// every other character and device.
+/// Saves the host's calibration for `character` (under the device class it was made for) in `calibrations`, which
+/// writes its file, and keeps the calibrations of every other character and device. The calibration saved is the one
+/// requested so far, applied or not (invariant 1).
 ///
-/// Every other entry is written back as it was read, an unreadable one included ([`CalibrationStore::unreadable`]).
+/// Every other entry is written back as it was read, an unusable one included (invariant 2).
 ///
 /// # Errors
-/// [`SettingError`] when the calibration or the character id cannot be kept, when the stored calibrations could not be
-/// read at all (nothing is written then), or when the store refuses the write.
+/// [`CalibrationError`] when the calibration or the character id cannot be kept, when the stored calibrations could
+/// not be read at all (nothing is written then), or when the write fails.
 pub fn save_calibration(
     host: &dyn PerformHost,
-    settings: &dyn Settings,
+    calibrations: &mut CalibrationStore,
     character: &str,
-    by: &Actor,
-) -> Result<(), SettingError> {
-    let key = PerformCalibrations::META.key;
-    // A stored value that could not be read at all reads as empty: saving now would write over what is in the file.
-    if settings.findings().iter().any(|finding| finding.error.key == key) {
-        return Err(SettingError::invalid(
-            key,
-            "the saved calibrations could not be read; fix or remove them before saving another",
-        ));
-    }
-    let mut store = settings.get::<PerformCalibrations>()?;
-    let calibration: Calibration = host.calibration();
-    store.save(character, calibration).map_err(|e| SettingError::invalid(key, e.to_string()))?;
-    settings.set::<PerformCalibrations>(&store, Layer::Auto, Mode::Apply, by)?;
-    Ok(())
+) -> Result<(), CalibrationError> {
+    calibrations.save(character, host.requested_calibration())
 }
 
 #[cfg(test)]
@@ -348,7 +324,6 @@ mod tests {
         assert_eq!(PerformRetarget::check(&PerformRetarget::default()), Ok(()));
         assert!(RetargetPrefs::default().mirror, "VTuber apps mirror the webcam");
         assert_eq!(PerformTriggers::check(&PerformTriggers::default()), Ok(()));
-        assert_eq!(PerformCalibrations::check(&PerformCalibrations::default()), Ok(()));
     }
 
     #[test]

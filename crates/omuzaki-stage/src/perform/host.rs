@@ -20,6 +20,11 @@
 //! ([`RetargetReceipt`]). **Applied** is what the performer has acknowledged, and it is the only view
 //! [`PerformHost::status`] reports, with the number of the newest request it includes. The handle is made from the
 //! performer ([`perform_channel`]), so both views start from the settings really in use.
+//!
+//! The calibration has the same two views: [`PerformHost::calibration`] is what the performer applied and
+//! [`PerformHost::requested_calibration`] what has been asked for. Whatever saves state (`perform::settings`) saves
+//! the requested view, because a request that is only queued is already a decision the person made; saving the applied
+//! view would write the old value back over it.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering, fence};
@@ -93,6 +98,13 @@ pub trait PerformHost: Send + Sync {
 
     /// The calibration the performer is using (the last one it applied).
     fn calibration(&self) -> Calibration;
+
+    /// The calibration once every [`set_calibration`](Self::set_calibration) made so far has run: what a caller that
+    /// just set one (and may be about to save it) means, where [`calibration`](Self::calibration) shows only what the
+    /// performer has applied. A capture that is still running is not a request: its result does not exist yet.
+    fn requested_calibration(&self) -> Calibration {
+        self.calibration()
+    }
 
     /// The status the perform thread published last. Reports applied state only. Its parts are read one after the
     /// other, so they can describe slightly different instants (see [`PerformStatus`]).
@@ -330,6 +342,10 @@ struct RetargetBook {
     applied_seq: u64,
     /// The last sequence number handed out.
     last_seq: u64,
+    /// The calibration of the newest `set_calibration`, and how many were queued: while that is more than the
+    /// performer has applied ([`Shared::calibrations_applied`]), this is the calibration once the queue has run.
+    requested_calibration: Option<Calibration>,
+    calibrations_queued: u64,
     /// Requests the performer has not acknowledged yet, with the config each asked for. At most the queue's length.
     in_flight: VecDeque<(u64, RetargetConfig)>,
 }
@@ -357,6 +373,8 @@ struct Shared {
     acknowledged: AtomicU64,
     /// The calibration the performer is using.
     calibration: CalibrationMailbox,
+    /// How many `set_calibration` requests the performer has applied.
+    calibrations_applied: AtomicU64,
     /// For each slot, the generation of the binding whose expression is shown or wanted, or 0
     /// (`TriggerLayer::active_generations`), published by the control each step. A binding is active when its own
     /// generation is the one published.
@@ -558,12 +576,15 @@ pub fn perform_channel(performer: &Performer) -> (PerformHandle, PerformControl)
         running: AtomicBool::new(true),
         acknowledged: AtomicU64::new(0),
         calibration: CalibrationMailbox::new(performer.retarget().calibration()),
+        calibrations_applied: AtomicU64::new(0),
         active_triggers: std::array::from_fn(|_| AtomicU64::new(0)),
         book: Mutex::new(RetargetBook {
             requested: config.clone(),
             applied: config,
             applied_seq: 0,
             last_seq: 0,
+            requested_calibration: None,
+            calibrations_queued: 0,
             in_flight: VecDeque::with_capacity(COMMAND_QUEUE_LEN),
         }),
         triggers: Mutex::new(TriggerBook::new()),
@@ -677,7 +698,22 @@ impl PerformHost for PerformHandle {
     }
 
     fn set_calibration(&self, calibration: Calibration) -> Result<(), PerformError> {
-        self.send(Command::Calibration(calibration))
+        // Held across the send, like `set_retarget`, so the count and the last value agree with the queue's order.
+        let mut book = self.book();
+        self.send(Command::Calibration(calibration))?;
+        book.requested_calibration = Some(calibration);
+        book.calibrations_queued += 1;
+        Ok(())
+    }
+
+    fn requested_calibration(&self) -> Calibration {
+        let book = self.book();
+        // Applied is read first: if it is behind, the queue still holds a request and the last one wins.
+        let applied = self.shared.calibrations_applied.load(Ordering::Acquire);
+        match book.requested_calibration {
+            Some(requested) if book.calibrations_queued > applied => requested,
+            _ => self.shared.calibration.read(),
+        }
     }
 
     fn calibration(&self) -> Calibration {
@@ -951,7 +987,10 @@ impl PerformControl {
                 performer.retarget_mut().set_config(config);
                 self.shared.acknowledged.store(seq, Ordering::Release);
             }
-            Command::Calibration(calibration) => self.set_calibration(performer, &calibration),
+            Command::Calibration(calibration) => {
+                self.set_calibration(performer, &calibration);
+                self.shared.calibrations_applied.fetch_add(1, Ordering::AcqRel);
+            }
             Command::Trigger { index, slot, generation } => self.set_trigger(index, slot.as_ref(), generation),
             Command::Triggers(slots) => {
                 self.triggers.rebake(&slots);
