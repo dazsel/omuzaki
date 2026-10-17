@@ -4,9 +4,9 @@
 //! style's `size` scales every length of the mark about `(0, nose_y)`.
 
 use omuzaki_core::glam::Vec2;
-use omuzaki_face_api::{Cap, Cmd, Colour, ColourRef, FaceLayerId, Join, NoseKind, Paint, narrow};
+use omuzaki_face_api::{Cap, Cmd, Colour, FaceLayerId, Join, NoseKind, Paint, narrow};
 
-use crate::painter::PaintCtx;
+use crate::painter::{PaintCtx, fixed_colour};
 
 /// The tick runs from the first point to the second, as offsets from `(0, nose_y)`.
 const TICK_FROM: Vec2 = Vec2::new(0.0012, 0.0017);
@@ -28,10 +28,7 @@ const FALLBACK_COLOUR: Colour = Colour::rgb(0xbe, 0x78, 0x78);
 /// Paints the nose on the Base layer.
 pub(super) fn paint(ctx: &mut PaintCtx<'_>) {
     let style = &ctx.profile.nose;
-    let colour = match &style.colour {
-        ColourRef::Fixed(c) => *c,
-        ColourRef::Slot(_) => FALLBACK_COLOUR,
-    };
+    let colour = fixed_colour(&style.colour, FALLBACK_COLOUR);
     let origin = Vec2::new(0.0, narrow(ctx.profile.layout.nose_y));
     let size = narrow(style.size);
     let at = |offset: Vec2| origin + offset * size;

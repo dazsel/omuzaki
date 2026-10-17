@@ -14,6 +14,12 @@ use crate::ops::character::access::{list, not_found};
 /// still resolve without it, so an override another override depends on is refused.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "variant": "close-up", "path": "face/layout/eye_spacing"}
+    ],
+    "x-omuzaki-fixture" = "character-variant"
+))]
 pub struct VariantClearOverride {
     /// The character the variant belongs to.
     pub character: CharId,

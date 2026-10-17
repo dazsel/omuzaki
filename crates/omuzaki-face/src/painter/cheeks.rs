@@ -1,16 +1,16 @@
 //! Cheeks: the warm wash over the lower face, the two blush patches (soft or hatched) and the shade under the fringe;
-//! the prototype's `blush()` and the strip in `draw()` (`face.js` 380-409).
+//! the prototype's `blush()` and the strip in `draw()` (`face.js` 380-409). The puffed cheek (`cheek_puff`, which the
+//! prototype has no channel for) is drawn over the blush as a shaded rim along the lower outer edge of each patch and a
+//! small highlight on its swell, so a pout reads even though the blush it adds is faint.
 //!
 //! Heights are in the face plane. The prototype writes them in its head frame, whose origin is 0.778 m lower; the
 //! layout (`blush_y`) is already in the face plane, and the fringe strip, which the prototype fixes in head-frame
 //! metres, is [`HEAD_TO_PLANE`] lower here.
 
 use omuzaki_core::glam::{Affine2, Vec2};
-use omuzaki_face_api::{
-    BlushKind, Cap, CheekStyle, Cmd, Colour, ColourRef, FaceLayerId, FaceRect, Join, Paint, Stops, narrow,
-};
+use omuzaki_face_api::{BlushKind, Cap, CheekStyle, Cmd, Colour, FaceLayerId, FaceRect, Join, Paint, Stops, narrow};
 
-use crate::painter::PaintCtx;
+use crate::painter::{PaintCtx, fixed_colour, scaled};
 
 /// Radius of the warm wash (the prototype's `0.17`).
 const WASH_RADIUS: f32 = 0.17;
@@ -31,6 +31,33 @@ const FRINGE_BOTTOM_HEAD: f32 = 0.80;
 /// Add to a head-frame height for the face plane (the prototype's eye line, `0.680`, is `-0.098` on the sheet).
 const HEAD_TO_PLANE: f32 = -0.778;
 
+/// Segments along the puffed cheek's rim, a half ellipse.
+const PUFF_SEGMENTS: usize = 16;
+/// The puffed cheek bulges outward: its centre sits this share of the patch's half-width further from the midline.
+const PUFF_OUT: f32 = 0.10;
+/// The rim's radii, as shares of the patch's: a little taller than the patch, so the rim clears the blush.
+const PUFF_RIM: Vec2 = Vec2::new(1.0, 1.1);
+/// The rim is the lower half of the ellipse, from this angle (radians, measured from the outer side, downwards)
+/// round to its mirror image on the inner side: a little more than half, so its ends turn up.
+const PUFF_SWEEP: f32 = 3.4;
+/// The soft shade under the rim: its width in metres and its opacity at a full puff.
+const PUFF_SHADE_WIDTH: f32 = 0.006;
+const PUFF_SHADE_ALPHA: f32 = 0.18;
+/// The crisp line on the rim: width in metres and opacity at a full puff. Its colour is the blush's, darkened.
+const PUFF_LINE_WIDTH: f32 = 0.0012;
+const PUFF_LINE_ALPHA: f32 = 0.45;
+/// How much the line's colour is the blush's colour (the rest is darkness).
+const PUFF_LINE_DARKEN: f32 = 0.7;
+/// The swell's highlight: its centre's place inside the patch (shares of the half-width and half-height, towards the
+/// midline and up), its radii (shares of the patch's), and its opacity at a full puff.
+const PUFF_HIGHLIGHT_AT: Vec2 = Vec2::new(-0.25, 0.35);
+const PUFF_HIGHLIGHT_RADII: Vec2 = Vec2::new(0.30, 0.22);
+const PUFF_HIGHLIGHT_ALPHA: f32 = 0.35;
+/// The highlight's colour, `rgb(255,244,240)`.
+const PUFF_HIGHLIGHT_COLOUR: [u8; 3] = [255, 244, 240];
+/// A puff below this paints nothing.
+const PUFF_MIN: f32 = 0.005;
+
 /// A hatched patch is cut by this many gaps, so every radius gets the same look at its own scale.
 const HATCH_GAPS: u8 = 12;
 /// Hatch line width as a share of the gap between lines.
@@ -48,6 +75,12 @@ pub(super) fn paint(ctx: &mut PaintCtx<'_>) {
     let strength = narrow(style.strength) * ctx.params.blush;
     for side in [1.0, -1.0] {
         patch(ctx, style, strength, Vec2::new(side * spacing, blush_y));
+    }
+    let puff = ctx.params.cheek_puff.clamp(0.0, 1.0);
+    if puff > PUFF_MIN {
+        for side in [1.0, -1.0] {
+            puffed_cheek(ctx, style, puff, side, Vec2::new(side * spacing, blush_y));
+        }
     }
     fringe_shade(ctx, &rect);
 }
@@ -80,10 +113,7 @@ fn corners(rect: &FaceRect, lo: Vec2, hi: Vec2) -> [Vec2; 4] {
 
 /// One blush patch centred on `centre`, in the style's kind.
 fn patch(ctx: &mut PaintCtx<'_>, style: &CheekStyle, strength: f32, centre: Vec2) {
-    let colour = match &style.colour {
-        ColourRef::Fixed(c) => *c,
-        ColourRef::Slot(_) => FALLBACK_COLOUR,
-    };
+    let colour = fixed_colour(&style.colour, FALLBACK_COLOUR);
     // Coverage saturates first (the prototype's `rgba()` clamps alpha at 1), then the colour's own alpha scales it, so
     // a translucent colour never peaks above its alpha and a transparent one paints nothing.
     let alpha = colour.alpha();
@@ -142,6 +172,35 @@ fn hatched_patch(ctx: &mut PaintCtx<'_>, rgb: [u8; 3], alpha: f32, centre: Vec2,
         });
     }
     list.push(Cmd::PopClip);
+}
+
+/// One puffed cheek: a shaded rim along the lower outer edge of the patch at `centre` and a highlight on the swell,
+/// both scaled by `puff` (`0..=1`), so a half pout is half as strong everywhere and nothing pops in.
+fn puffed_cheek(ctx: &mut PaintCtx<'_>, style: &CheekStyle, puff: f32, side: f32, centre: Vec2) {
+    let radii = Vec2::new(narrow(style.radius[0]), narrow(style.radius[1]));
+    let blush = fixed_colour(&style.colour, FALLBACK_COLOUR);
+    let rim_centre = centre + Vec2::new(side * PUFF_OUT * radii.x, 0.0);
+    let rim_radii = radii * PUFF_RIM;
+    // The lower half (and a little more) of the ellipse, from the outer side round the bottom to the inner side.
+    let mut rim = [Vec2::ZERO; PUFF_SEGMENTS + 1];
+    for (i, p) in rim.iter_mut().enumerate() {
+        // Indices are at most `PUFF_SEGMENTS`, exact in f32.
+        #[allow(clippy::cast_precision_loss)]
+        let angle = -0.2 - PUFF_SWEEP * (i as f32 / PUFF_SEGMENTS as f32);
+        *p = rim_centre + Vec2::new(side * angle.cos() * rim_radii.x, angle.sin() * rim_radii.y);
+    }
+    let darker = |c: u8| (f32::from(c) * PUFF_LINE_DARKEN).round().clamp(0.0, 255.0);
+    // Between 0 and 255 by construction.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let line = Colour::rgba(darker(blush.r) as u8, darker(blush.g) as u8, darker(blush.b) as u8, blush.a);
+    let shade = with_alpha(FRINGE_COLOUR, PUFF_SHADE_ALPHA * puff);
+    let list = ctx.list(FaceLayerId::Base);
+    let path = list.path().polyline(&rim).finish();
+    list.stroke(path, Paint::Solid(shade), PUFF_SHADE_WIDTH);
+    list.stroke(path, Paint::Solid(scaled(line, PUFF_LINE_ALPHA * puff)), PUFF_LINE_WIDTH);
+    let at = centre + Vec2::new(side * PUFF_HIGHLIGHT_AT.x * radii.x, PUFF_HIGHLIGHT_AT.y * radii.y);
+    let spot = list.path().ellipse(at, PUFF_HIGHLIGHT_RADII.x * radii.x, PUFF_HIGHLIGHT_RADII.y * radii.y).finish();
+    list.fill(spot, Paint::Solid(with_alpha(PUFF_HIGHLIGHT_COLOUR, PUFF_HIGHLIGHT_ALPHA * puff)));
 }
 
 /// The warm strip under the fringe: full across the face, from the top of the rect down to a gradient that is gone
