@@ -31,7 +31,10 @@ const FORBIDDEN: &[&str] = &[
     "InstanceDescriptor::default(",
     "Instance::default(",
     "new_without_display_handle()",
-    "_from_env(",
+    // wgpu's environment constructors, which fall back to every backend: matched by name, not by any `_from_env(`
+    // suffix, so a function such as `nightly_from_env()` or `Config::from_env()` is no violation.
+    "display_handle_from_env(",
+    "from_env_or_default(",
 ];
 
 /// `Backends::all()` as the argument of `enumerate_adapters(` is only a filter over the backends the instance already
@@ -106,6 +109,12 @@ fn a_default_instance_fails_with_file_line_and_the_reason() {
     assert_eq!(violations("crates/x/tests/t.rs", "let a = wgpu::Backends::all();").len(), 1);
     assert_eq!(violations("crates/x/tests/t.rs", "i.enumerate_adapters(wgpu::Backends::all())").len(), 0);
     assert_eq!(violations("crates/x/tests/t.rs", "InstanceDescriptor::new_without_display_handle_from_env()").len(), 1);
+    assert_eq!(violations("crates/x/tests/t.rs", "let d = wgpu::InstanceDescriptor::from_env_or_default();").len(), 1);
+    // A name that merely ends in `_from_env` is not a wgpu instance (the budget harness's nightly entry).
+    assert_eq!(
+        violations("crates/x/tests/t.rs", "fn nightly_from_env() {\n    run(&Config::from_env().unwrap());\n}").len(),
+        0
+    );
 }
 
 #[test]
