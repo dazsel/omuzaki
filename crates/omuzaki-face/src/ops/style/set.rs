@@ -5,10 +5,10 @@ use omuzaki_doc_api::Patch;
 use omuzaki_ops_api::{Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value, json};
+use serde_json::Value;
 
 use crate::ops_shared::check::check_edit;
-use crate::ops_shared::edit::{changed, diff, first_null, marks_len, put, stored_face};
+use crate::ops_shared::edit::{changed_output, diff, first_null, marks_len, put, stored_face, working_copy};
 use crate::ops_shared::path::{canonical, chain, steps, template};
 
 /// Sets one field of a character's face: a key under `face/eyes`, `brows`, `mouth`, `nose` or `cheeks`, or a field of one
@@ -55,14 +55,14 @@ impl Op for SetStyle {
                 .hint("give the field a value of its type; a null can't be written"));
         }
 
-        let mut working = stored.clone().unwrap_or_else(|| Value::Object(Map::new()));
+        let mut working = working_copy(stored.as_ref());
         put(&mut working, "face", &keys, &chain, self.value.clone())?;
         check_edit(stored.as_ref(), &working, &defaults)?;
 
         let mut patch = Patch::new();
         diff(&paths::face(&self.character), stored.as_ref(), Some(&working), &mut patch);
         let mut plan = Plan::edit(patch);
-        plan.output = Some(json!({ "changed": changed(&plan.patch) }));
+        plan.output = Some(changed_output(&plan.patch, None));
         Ok(plan)
     }
 }

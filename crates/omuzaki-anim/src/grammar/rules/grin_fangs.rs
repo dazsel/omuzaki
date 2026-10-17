@@ -22,8 +22,9 @@
 //! ## A character without fangs
 //!
 //! `show` is the character's own number for how much fang it has: at `0` the rule never writes anything. It reads that
-//! from its configuration, never from the painter. The face profile cannot yet say "no fangs" on its own (its
-//! `FangStyle` has no `None`), so a character that has none either sets `show` to 0 or switches the rule off.
+//! from its configuration, never from the painter. A profile whose fang style is `none` ([`FangKind::None`]) switches
+//! the rule off ([`GrammarConfig::from_profile`]), so a character without fangs needs no setting of its own; `show` is
+//! for a character that has fangs but wants them dialled down.
 //!
 //! ## Ownership
 //!
@@ -31,8 +32,12 @@
 //! too. A score or a person that does own it is left alone ([`RuleCtx::put`]), and a higher value is never lowered.
 
 use omuzaki_anim_api::Channel;
+#[cfg(doc)]
+use omuzaki_face_api::FangKind;
 
 use super::common::{Band, MAX_ATTACK, Presence, Timing, net_smile, raise};
+#[cfg(doc)]
+use crate::grammar::GrammarConfig;
 use crate::grammar::{GrammarRule, RuleCtx, RuleParams};
 
 /// The fangs are only believed after 0.08 s, then rise in 0.08 s and linger a moment after the grin.

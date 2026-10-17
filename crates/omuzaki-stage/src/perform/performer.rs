@@ -159,16 +159,23 @@ impl Performer {
         &mut *self.parts.retarget
     }
 
-    /// Swaps the frame source. The new source starts without frames, so the tracker layer is cleared until it speaks,
-    /// and the retarget forgets the old source's held pose (its calibration and settings stay).
-    pub fn set_source(&mut self, source: Box<dyn FrameSource>) {
-        self.parts.source = source;
+    /// Swaps the frame source and returns the old one, so a caller on the perform thread can hand it elsewhere to be
+    /// dropped instead of freeing it here. The new source starts without frames, so the tracker layer is cleared until
+    /// it speaks, and the retarget forgets the old source's held pose (its calibration and settings stay).
+    pub fn set_source(&mut self, source: Box<dyn FrameSource>) -> Box<dyn FrameSource> {
+        let old = std::mem::replace(&mut self.parts.source, source);
         self.parts.retarget.reset();
         self.stack.tracker.clear();
         self.last_frame = None;
         self.arrived = false;
         self.last_apply = None;
         self.tracking = Tracking::NoFrames;
+        old
+    }
+
+    /// The resting expression the triggers blend onto.
+    pub fn rest(&self) -> &ChannelBuf {
+        &self.stack.rest
     }
 
     /// Replaces the resting expression and the base pose.

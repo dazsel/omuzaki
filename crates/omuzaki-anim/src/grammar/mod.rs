@@ -52,17 +52,21 @@ pub use framework::{
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct GrammarConfig {
     rules: GrammarRules,
+    /// The character has no fangs, so `grin-fangs` stays off.
+    fangless: bool,
 }
 
 impl GrammarConfig {
-    /// The switches of `profile`. A profile without a `grammar` section runs every known rule at its defaults.
+    /// The switches of `profile`. A profile without a `grammar` section runs every known rule at its defaults. A
+    /// profile with no fangs ([`FaceProfile::has_fangs`]) switches `grin-fangs` off, whatever its `grammar` section says
+    /// for it: the rule never writes the `fangs` channel for a character that has none.
     pub fn from_profile(profile: &FaceProfile) -> Self {
-        Self::from_rules(profile.grammar.clone())
+        Self { rules: profile.grammar.clone(), fangless: !profile.has_fangs() }
     }
 
     /// The given switches.
     pub fn from_rules(rules: GrammarRules) -> Self {
-        Self { rules }
+        Self { rules, fangless: false }
     }
 
     /// The switches.
@@ -76,11 +80,14 @@ impl GrammarConfig {
         let config = self.rules.rule(&slot.id);
         #[allow(clippy::cast_possible_truncation)] // a value clamped to 0..=2
         let strength = if config.strength.is_finite() { config.strength.clamp(0.0, 2.0) as f32 } else { 1.0 };
-        slot.enabled = config.enabled;
+        slot.enabled = config.enabled && !(self.fangless && slot.id.as_str() == FANG_RULE);
         slot.strength = strength;
         slot.rule.configure(RuleParams::new(&config.params));
     }
 }
+
+/// The rule that shows the fangs, which a character without fangs does not run.
+const FANG_RULE: &str = "grin-fangs";
 
 /// One rule of a stage with its current settings.
 #[derive(Debug)]

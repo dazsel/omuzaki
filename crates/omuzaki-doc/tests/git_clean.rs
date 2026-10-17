@@ -57,9 +57,11 @@ fn init_and_commit(dir: &Path, message: &str) {
     git(dir, &["commit", "-q", "-m", message]);
 }
 
-/// The `.toml` files under `dir` (relative paths), with their bytes; `.git` is git's and is not read.
+/// The `.toml` files under `dir` (relative paths), with their bytes; `.git` is git's and the `.omuzaki` folder is the
+/// project lock's, and neither is read (on Windows the lock is a mandatory byte-range lock, which refuses even the
+/// holder's own read).
 fn toml_files(dir: &Path) -> Vec<(String, Vec<u8>)> {
-    snapshot_except(dir, &[".git"])
+    snapshot_except(dir, &[".git", ".omuzaki"])
         .into_iter()
         .filter(|(rel, _)| Path::new(rel).extension().is_some_and(|ext| ext == "toml"))
         .collect()

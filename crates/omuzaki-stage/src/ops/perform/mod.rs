@@ -32,6 +32,8 @@ fn op_error(error: PerformError) -> OpError {
         PerformError::UnknownKey => {
             OpError::not_found(error.to_string()).hint("check the spelling with `trigger.list`, or bind the key first")
         }
+        PerformError::UnknownExpression => OpError::not_found(error.to_string())
+            .hint("use an expression from the character's face"),
         PerformError::InvalidKey => OpError::invalid("key", error.to_string())
             .hint(format!("use 1 to {MAX_KEY_CHARS} printable characters, such as `F1`")),
     }
@@ -53,6 +55,7 @@ mod tests {
             (PerformError::Unsupported, ErrorCode::Unsupported),
             (PerformError::TooManyTriggers, ErrorCode::Conflict),
             (PerformError::UnknownKey, ErrorCode::NotFound),
+            (PerformError::UnknownExpression, ErrorCode::NotFound),
             (PerformError::InvalidKey, ErrorCode::Invalid),
         ];
         for (error, code) in cases {

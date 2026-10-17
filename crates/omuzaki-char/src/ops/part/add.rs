@@ -1,7 +1,7 @@
 //! `part.add`: put a new part of any registered kind into a character.
 
 use omuzaki_char_api::{
-    CharId, CharacterDef, PartDef, PartId, PartKindId, PartKindRegistration, find_kind, kinds, paths,
+    CharId, CharacterDef, PartDef, PartId, PartKindId, PartKindRegistration, find_kind, paths,
 };
 use omuzaki_doc_api::Value;
 use omuzaki_face_api::ParamErrors;
@@ -10,7 +10,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::source;
+use super::{list_kinds, source};
 use crate::ops::character::access::{self, list};
 use crate::ops::character::tree::{self, Problem};
 
@@ -50,13 +50,6 @@ pub struct PartAdd {
     #[serde(default)]
     #[schemars(with = "Option<std::collections::BTreeMap<String, Value>>")]
     pub params: Option<Value>,
-}
-
-/// Every registered kind id, for "unknown kind" hints.
-fn registered_kinds() -> Vec<&'static str> {
-    let mut ids: Vec<&'static str> = kinds().map(|k| (k.meta)().id).collect();
-    ids.sort_unstable();
-    ids
 }
 
 /// The starting parameters: the kind's defaults, or `given` laid over them, normalised through the kind.
@@ -135,7 +128,7 @@ impl Op for PartAdd {
         let def = access::load(ctx, &self.character)?;
         let kind = find_kind(self.kind.as_str()).ok_or_else(|| {
             OpError::invalid("kind", format!("there is no part kind `{}`", self.kind))
-                .hint(format!("the registered kinds are: {}", list(registered_kinds())))
+                .hint(format!("the registered kinds are: {}", list(list_kinds::registered().iter().map(|m| m.id))))
         })?;
         if let Some(existing) = def.parts.get(&self.id) {
             return Err(OpError::invalid(

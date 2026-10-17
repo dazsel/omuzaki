@@ -166,6 +166,20 @@ pub(crate) fn diff(path: &DocPath, before: Option<&Value>, after: Option<&Value>
     }
 }
 
+/// A copy of the stored face to write a change into; an empty face when the character has none.
+pub(crate) fn working_copy(stored: Option<&Value>) -> Value {
+    stored.cloned().unwrap_or_else(|| Value::Object(Map::new()))
+}
+
+/// The output of an edit that changes paths: `{"changed": [...]}`, with the `index` of a mark when the edit is about one.
+pub(crate) fn changed_output(patch: &Patch, index: Option<usize>) -> Value {
+    let mut output = serde_json::json!({ "changed": changed(patch) });
+    if let (Some(index), Value::Object(fields)) = (index, &mut output) {
+        fields.insert("index".to_owned(), Value::from(index));
+    }
+    output
+}
+
 /// The document paths an edit changes, and nothing else: the plan's output.
 pub(crate) fn changed(patch: &Patch) -> Vec<String> {
     patch.changes.iter().map(|c| c.path.to_string()).collect()

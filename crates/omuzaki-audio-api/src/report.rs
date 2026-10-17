@@ -132,7 +132,8 @@ pub struct BridgeStatus {
 pub struct TapDrops {
     /// The consumer's name from its `TapRequest`.
     pub consumer: String,
-    /// Samples refused or overwritten so far.
+    /// Samples lost so far: refused (a full `DropNewest` ring, or a sink that took fewer than it was given) plus
+    /// overwritten (an `Overwrite` ring whose writer lapped the reader; `Producer::overwritten` in `ring`).
     pub dropped: u64,
 }
 

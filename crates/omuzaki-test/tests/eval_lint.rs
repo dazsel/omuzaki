@@ -32,7 +32,11 @@ fn workspace() -> TempDir {
     let root = dir.path();
     write(root, "docs/product/02-studio-spec-v3.md", SPEC_ROW);
     write(root, "crates/omuzaki-test/evals/defaults.toml", "[caps]\nturns=1\ntool_calls=1\nwall_s=1\ntokens=1\n");
-    write(root, "crates/omuzaki-test/evals/private.toml", "prefixes = ['characters/example-private/']\nhashes = []\n");
+    write(
+        root,
+        "docs/licensing/private-material.toml",
+        "names = ['example-private']\nprefixes = ['characters/example-private/']\nhashes = []\n",
+    );
     write(root, "crates/c/evals/a.one.toml", TASK);
     write(root, "crates/c/evals/a.one.x.pass.jsonl", "{}\n");
     write(root, "crates/c/evals/a.one.x.fail.jsonl", "{}\n");
@@ -124,13 +128,29 @@ fn a_fixture_item_from_example_private_is_refused_naming_the_private_list_even_w
     );
     let (status, out) = lint(dir.path(), &[]);
     assert_eq!(status, 1);
-    assert!(out.contains("private list") && out.contains("private.toml"), "{out}");
+    assert!(out.contains("private list") && out.contains("private-material.toml"), "{out}");
+}
+
+#[test]
+fn a_private_list_missing_names_or_prefixes_is_harness_trouble_not_a_pass() {
+    for list in [
+        "prefixes = ['characters/example-private/']\nhashes = []\n",
+        "names = []\nprefixes = ['characters/example-private/']\n",
+        "names = ['example-private']\n",
+        "names = ['example-private']\nprefixes = []\n",
+    ] {
+        let dir = workspace();
+        fs::write(dir.path().join("docs/licensing/private-material.toml"), list).unwrap();
+        let out = run(&["eval", "lint", "--root", arg(dir.path())], &[]);
+        assert_eq!(code(&out), 2, "{list:?}: {}", text(&out.stdout));
+        assert!(text(&out.stderr).contains("would match nothing"), "{list:?}: {}", text(&out.stderr));
+    }
 }
 
 #[test]
 fn a_missing_private_list_is_harness_trouble_not_a_pass() {
     let dir = workspace();
-    fs::remove_file(dir.path().join("crates/omuzaki-test/evals/private.toml")).unwrap();
+    fs::remove_file(dir.path().join("docs/licensing/private-material.toml")).unwrap();
     assert_eq!(lint(dir.path(), &[]).0, 2);
 }
 
@@ -180,4 +200,48 @@ fn list_fails_and_prints_no_catalogue_when_a_task_file_is_malformed() {
     assert_eq!(code(&out), 1);
     assert!(text(&out.stdout).is_empty(), "{}", text(&out.stdout));
     assert!(text(&out.stderr).contains("broken.toml: does not parse"), "{}", text(&out.stderr));
+}
+
+#[test]
+fn lint_with_no_flags_reads_the_linked_registry_and_says_so() {
+    let dir = workspace();
+    let (status, out) = lint(dir.path(), &[]);
+    assert_eq!(status, 0, "{out}");
+    assert!(out.contains("prompt-leak check ran against the linked registry"), "{out}");
+}
+
+#[test]
+fn a_prompt_that_quotes_a_tool_description_is_a_leak_found_without_any_dump() {
+    // Take the opening words of a real tool's description from the registry the lint itself reads.
+    let linked = omuzaki_test::eval::lint::registry::linked().unwrap();
+    let quoted: String = linked
+        .texts
+        .iter()
+        .filter(|t| t.source.starts_with("tool "))
+        .map(|t| t.text.split_whitespace().collect::<Vec<_>>())
+        .find(|words| words.len() >= 12)
+        .map(|words| words[..10].join(" ").replace('\'', ""))
+        .unwrap();
+    let dir = workspace();
+    write(dir.path(), "crates/c/evals/a.one.toml", &TASK.replace("Make her hair shorter", &quoted));
+    let (status, out) = lint(dir.path(), &[]);
+    assert_eq!(status, 1, "{out}");
+    assert!(out.contains("a.one.toml") && out.contains("shares 8+ words with tool "), "{out}");
+}
+
+#[test]
+fn a_check_that_calls_an_edit_op_or_an_unknown_op_is_found_through_the_linked_registry() {
+    let dir = workspace();
+    let task = TASK.replace(
+        "[[check]]\nid = 'c'\nkind = 'doc.exists'\npath = 'a'\n",
+        "[[check]]\nid = 'edits'\nkind = 'query'\nop = 'character.rename'\nat = '/a'\nexpect = { equals = 1 }\n\
+         [[check]]\nid = 'ghost'\nkind = 'query'\nop = 'no.such_op'\nat = '/a'\nexpect = { equals = 1 }\n\
+         [[check]]\nid = 'reads'\nkind = 'query'\nop = 'colourway.list'\nat = '/a'\nexpect = { equals = 1 }\n",
+    );
+    write(dir.path(), "crates/c/evals/a.one.toml", &task);
+    let (status, out) = lint(dir.path(), &[]);
+    assert_eq!(status, 1, "{out}");
+    assert!(out.contains("check `edits` calls `character.rename` is Edit"), "{out}");
+    assert!(out.contains("check `ghost` calls `no.such_op` is not a registered op"), "{out}");
+    assert!(!out.contains("check `reads`"), "a read-only query is fine: {out}");
 }
