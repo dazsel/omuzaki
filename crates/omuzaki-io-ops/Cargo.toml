@@ -30,11 +30,16 @@ omuzaki-render-api = { path = "../omuzaki-render-api" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
 
 [dev-dependencies]
+criterion.workspace = true
 tempfile.workspace = true
 omuzaki-char-mock = { path = "../omuzaki-char-mock" }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 omuzaki-io-mock = { path = "../omuzaki-io-mock" }
 omuzaki-store-mock = { path = "../omuzaki-store-mock" }
+
+[[bench]]
+name = "fit"
+harness = false
 
 [build-dependencies]
 omuzaki-embed = { path = "../omuzaki-embed" }
