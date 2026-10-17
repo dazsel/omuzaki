@@ -167,11 +167,23 @@ jobs:
       - name: Licences of fuzz/
         working-directory: fuzz
         run: cargo deny --manifest-path Cargo.toml --config ../deny.toml check licenses bans sources
+      # `cargo fuzz run` takes no `--locked` (it fails with "unexpected argument"), so the lockfile is held another way:
+      # cargo-fuzz builds with fuzz/Cargo.toml, so fuzz/Cargo.lock beside it is the lockfile in use. `cargo metadata
+      # --locked` fails first if that file is out of date, and `git diff --exit-code` fails after the run if cargo had
+      # to change it, so the fuzzers always build from the committed versions.
+      - name: Lockfile of fuzz/ is current
+        working-directory: fuzz
+        run: cargo metadata --locked --format-version 1 > /dev/null
+      # cargo-binstall installs cargo-fuzz's musl build, and cargo-fuzz defaults --target to the triple it was built for;
+      # the sanitizers need glibc ("incompatible with statically linked libc"), so the host triple is named.
       - name: Fuzz ${{ matrix.target }} for 10 minutes
         working-directory: fuzz
         run: |
           cargo run --release --locked --bin seed -- corpus
-          cargo +nightly fuzz run --locked "${{ matrix.target }}" "corpus/${{ matrix.target }}" -- -max_total_time=600 -print_final_stats=1
+          cargo +nightly fuzz run --target x86_64-unknown-linux-gnu "${{ matrix.target }}" "corpus/${{ matrix.target }}" -- -max_total_time=600 -print_final_stats=1
+      - name: Lockfile of fuzz/ is unchanged
+        if: ${{ !cancelled() }}
+        run: git diff --exit-code -- fuzz/Cargo.lock
       - name: Upload the crash
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
