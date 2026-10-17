@@ -149,5 +149,10 @@ fn a_native_handle_that_is_not_the_tuple_is_declined_and_nothing_is_drawn() {
     let mut wrong_order = (texture.clone(), gpu.0.clone(), gpu.1.clone());
     let (drawn, _) = paint(&gpu, &mut rasterizer, &layer(), &list, &mut wrong_order);
     assert!(!drawn);
+    // The convention before #2074, without the renderer's encoder, is declined: a renderer that drifted back to it
+    // gets the CPU raster, not a paint that is never submitted.
+    let mut without_encoder = (gpu.0.clone(), gpu.1.clone(), texture.clone());
+    let (drawn, _) = paint(&gpu, &mut rasterizer, &layer(), &list, &mut without_encoder);
+    assert!(!drawn, "a (Device, Queue, Texture) tuple is not the native handle any more");
     assert!(read_back(&gpu, &texture).iter().all(|&b| b == 0), "a declined paint wrote pixels");
 }

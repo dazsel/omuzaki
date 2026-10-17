@@ -1,14 +1,14 @@
 //! The tongue poking out under an open mouth (`face.js` 369-379): a rounded tab with a centre groove and a shine.
 //!
 //! The tab starts just above the open shape's lowest edge and hangs below it, never above, growing with the `tongue`
-//! channel. Not for a closed mouth or a kiss. Colours come from the resting tongue's colour in the profile and the lip
+//! channel. Not for a closed mouth or a kiss, except while a kiss gives way to the open shape (then at the partial `reveal`). Colours come from the resting tongue's colour in the profile and the lip
 //! tint: the tab is a touch lighter than the tongue, outlined in the rim's dark.
 
 use omuzaki_core::glam::Vec2;
 use omuzaki_face_api::{Cap, Cmd, FaceLayerId, Join, Paint, PathRef};
 
-use super::lips::{DARKEN, DEFAULT_TONGUE, darken, lighten, resolve, solid, tint};
-use crate::painter::PaintCtx;
+use super::lips::{DARKEN, DEFAULT_TONGUE, darken, lighten, solid, tint};
+use crate::painter::{PaintCtx, fixed_colour};
 
 /// Shows from this strength, and fades in over the next [`FADE_IN`] of it, so a channel that crosses the threshold does
 /// not make the tab pop in at full size (the prototype does).
@@ -51,7 +51,7 @@ const SHINE_RY: f32 = 0.18;
 pub(super) fn paint(ctx: &mut PaintCtx<'_>) {
     let strength = ctx.params.mouth.tongue;
     let Some(open) = ctx.open_mouth else { return };
-    let opacity = ((strength - MIN) / FADE_IN).clamp(0.0, 1.0);
+    let opacity = ((strength - MIN) / FADE_IN).clamp(0.0, 1.0) * open.reveal;
     if opacity <= 0.0 {
         return;
     }
@@ -60,7 +60,7 @@ pub(super) fn paint(ctx: &mut PaintCtx<'_>) {
     let half = (open.half_width * WIDTH_SHARE).min(MAX_HALF_WIDTH * open.grow);
     let height = (HEIGHT + HEIGHT_PER_UNIT * strength) * open.grow;
     let groove_to = y0 - height * GROOVE_TO;
-    let base = resolve(&ctx.profile.mouth.interior.tongue, DEFAULT_TONGUE);
+    let base = fixed_colour(&ctx.profile.mouth.interior.tongue, DEFAULT_TONGUE);
     let outline = darken(tint(ctx), DARKEN);
 
     let list = ctx.list(FaceLayerId::Base);

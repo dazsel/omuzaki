@@ -304,6 +304,22 @@ impl CharacterDef {
     }
 }
 
+/// The sibling key of an imported character's avatar node (`omuzaki-avatar-api`'s `AvatarDef`).
+const IMPORTED_KEY: &str = "avatar";
+
+/// Why a character node does not read as a [`CharacterDef`].
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum CharacterNodeError {
+    /// The node is an imported character (an `avatar` and no `template`): it has no parts, template or face to edit,
+    /// so procedural ops do not apply to it.
+    #[error("this character is an imported avatar, not one built from parts, so it has no parts or template to edit")]
+    Imported,
+    /// The node does not match the character format.
+    #[error(transparent)]
+    Invalid(#[from] serde_json::Error),
+}
+
 /// Why the parts don't form a buildable tree.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum TreeError {
@@ -355,12 +371,13 @@ impl CharacterDef {
 
     /// The other keys of `characters/<id>`: the character's other files, each a sub-tree with its own contract
     /// (`variants`, `colourways`, `rig.toml`, `look.toml`, the `licence` record, the per-part `sources` rows, the
-    /// `applied` library records, the `poses` and the `emotes` sets). They are not part of the definition;
-    /// [`from_node`](Self::from_node) skips them and [`to_node`](Self::to_node) leaves them alone.
+    /// `applied` library records, the `poses` and the `emotes` sets, and an imported character's `avatar`). They are not
+    /// part of the definition; [`from_node`](Self::from_node) skips them and [`to_node`](Self::to_node) leaves them
+    /// alone.
     ///
     /// This is the built-in list; a new file of the character registers its key with
     /// [`register_doc_key!`](crate::register_doc_key), and [`doc_key::sibling_keys`] lists both.
-    pub const SIBLING_KEYS: [&'static str; 9] = doc_key::BUILT_IN_SIBLING_KEYS;
+    pub const SIBLING_KEYS: [&'static str; 10] = doc_key::BUILT_IN_SIBLING_KEYS;
 
     /// The definition stored in the character node `node` (`characters/<id>`): reads [`NODE_KEYS`](Self::NODE_KEYS) and
     /// skips the [`SIBLING_KEYS`](Self::SIBLING_KEYS), so a character with variants, colourways, a rig or a look reads
@@ -369,14 +386,21 @@ impl CharacterDef {
     /// A key in neither list is refused, as `deny_unknown_fields` refuses it inside the definition: a misspelt
     /// `skintone` must not read as an absent `skin_tone` and be lost on the next save.
     ///
+    /// An imported character (`avatar` and no `template`, design `byom.md` D5) has no definition to read: it is refused
+    /// with [`CharacterNodeError::Imported`], so procedural ops say so in a sentence instead of "missing field".
+    ///
     /// # Errors
-    /// The [`serde_json::Error`] naming the unknown key (with the nearest valid key when one is close) or the field
-    /// that does not match the character format, or a node that is not a table.
-    pub fn from_node(node: &Value) -> Result<Self, serde_json::Error> {
+    /// [`CharacterNodeError::Imported`] for an imported character; otherwise [`CharacterNodeError::Invalid`] with the
+    /// [`serde_json::Error`] naming the unknown key (with the nearest valid key when one is close) or the field that
+    /// does not match the character format, or a node that is not a table.
+    pub fn from_node(node: &Value) -> Result<Self, CharacterNodeError> {
         let own = match node {
+            Value::Object(map) if map.contains_key(IMPORTED_KEY) && !map.contains_key("template") => {
+                return Err(CharacterNodeError::Imported);
+            }
             Value::Object(map) => {
                 if let Some(unknown) = map.keys().find(|key| doc_key::check(key).is_err() || !Self::is_node_key(key)) {
-                    return Err(<serde_json::Error as serde::de::Error>::custom(unknown_key_message(unknown)));
+                    return Err(<serde_json::Error as serde::de::Error>::custom(unknown_key_message(unknown)).into());
                 }
                 Value::Object(
                     map.iter()
@@ -387,7 +411,7 @@ impl CharacterDef {
             }
             other => other.clone(),
         };
-        serde_json::from_value(own)
+        Ok(serde_json::from_value(own)?)
     }
 
     /// True for a key a character node may hold: a definition key or the key of another file.
@@ -614,7 +638,22 @@ mod tests {
             "applied": {"hairstyle": {"item": "hair-bun"}},
             "poses": {"wave": {"arm_r": [0.0, 1.0, 0.0]}},
             "emotes": {"hi": {"clip": "wave-short"}},
+            "avatar": {"schema": 1},
         })
+    }
+
+    #[test]
+    fn an_imported_character_is_refused_by_name() {
+        let imported = serde_json::json!({"name": "Ava", "avatar": {"schema": 1}, "licence": {}});
+        let e = CharacterDef::from_node(&imported).unwrap_err();
+        assert!(matches!(e, CharacterNodeError::Imported), "{e:?}");
+        assert!(e.to_string().contains("imported avatar"), "{e}");
+        let mut built = node_with_siblings();
+        assert!(built.get("avatar").is_some() && CharacterDef::from_node(&built).is_ok(), "a template makes it built");
+        built.as_object_mut().unwrap().remove("template");
+        assert!(matches!(CharacterDef::from_node(&built), Err(CharacterNodeError::Imported)));
+        let e = CharacterDef::from_node(&serde_json::json!({"name": "x"})).unwrap_err();
+        assert!(matches!(e, CharacterNodeError::Invalid(_)) && e.to_string().contains("template"), "{e}");
     }
 
     #[test]

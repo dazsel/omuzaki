@@ -7,8 +7,10 @@
 
 mod support;
 // The counting allocator is installed only in this test binary, so the other tests run on the plain allocator.
-#[path = "support/counting.rs"]
-mod counting;
+use omuzaki_render_mock::counting;
+
+#[global_allocator]
+static ALLOCATOR: counting::Counting = counting::Counting::new(env!("CARGO_PKG_NAME"));
 #[path = "support/grid.rs"]
 mod grid;
 
@@ -64,7 +66,7 @@ fn morphing_allocates_nothing_in_this_crate_after_warm_up(cpu: bool) {
         }
     });
     println!("allocations over 20 frames by owner: {totals:?}");
-    for owner in ["omuzaki-render", "render-api", "unattributed"] {
+    for owner in [counting::OWN, counting::WORKSPACE, counting::UNATTRIBUTED] {
         assert_eq!(totals.get(owner).copied().unwrap_or(0), 0, "{owner} allocated: {totals:?}");
     }
 }

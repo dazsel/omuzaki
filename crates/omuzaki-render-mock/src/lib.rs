@@ -36,6 +36,8 @@
 
 mod arena;
 pub mod conformance;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod counting;
 mod environment;
 mod frame;
 mod morph;

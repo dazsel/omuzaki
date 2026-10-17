@@ -34,7 +34,7 @@
 //! name alone, so a file listed for one crate fails in another. Each generator emits only `mod` / `#[path]` lines into
 //! the crate's own `src/` tree (every file there is scanned), `link()` calls, or data, and never a registration macro:
 //!
-//! - `ops_mods.rs`, `crate_mods.rs`: `omuzaki_embed::modules`, one `#[path = "<abs>"] pub mod <name>;` per file or
+//! - `ops_mods.rs`, `crate_mods.rs`, `recipes_mods.rs`: `omuzaki_embed::modules`, one `#[path = "<abs>"] pub mod <name>;` per file or
 //!   folder of the crate's `src/`;
 //! - `migrations.rs`: `omuzaki-doc`'s `module_decls`, the same `#[path]` + `mod` lines for `src/migrations/`;
 //! - `link_calls.rs`: `omuzaki_link_build::emit`, one `<crate>::link();` per flagged dependency (`omuzaki-link-probe`
@@ -345,7 +345,7 @@ fn is_non_commercial(spdx: &str) -> bool {
 /// `(crate, file, generator)`. The generator is the call that must appear in that crate's `build.rs`. A file allowed for
 /// one crate is not allowed for another, and nothing is allowed by file name alone. Each generator emits only `mod` /
 /// `#[path]` lines into the crate's own `src/`, `link()` calls, or data, never a registration macro.
-const GENERATED: [(&str, &str, &str); 14] = [
+const GENERATED: [(&str, &str, &str); 15] = [
     ("omuzaki-anim", "crate_mods.rs", "omuzaki_embed::modules"),
     ("omuzaki-char", "ops_mods.rs", "omuzaki_embed::modules"),
     ("omuzaki-char", "looks.rs", "looks.rs"),
@@ -354,6 +354,7 @@ const GENERATED: [(&str, &str, &str); 14] = [
     ("omuzaki-face", "ops_mods.rs", "omuzaki_embed::modules"),
     ("omuzaki-io-ops", "ops_mods.rs", "omuzaki_embed::modules"),
     ("omuzaki-link-probe", "link_calls.rs", "omuzaki_link_build::emit"),
+    ("omuzaki-mcp", "recipes_mods.rs", "omuzaki_embed::modules"),
     ("omuzaki-script", "ops_mods.rs", "omuzaki_embed::modules"),
     ("omuzaki-stage", "crate_mods.rs", "omuzaki_embed::modules"),
     ("omuzaki-stage", "ops_mods.rs", "omuzaki_embed::modules"),
@@ -1859,6 +1860,10 @@ const DOC: &str = "register_model!(\"tiny\", include_str!(\"../models/tiny.model
             let other = Crate { name: "omuzaki-other", dir: "crates/omuzaki-tiny", build_script: Some(BUILD) };
             assert_eq!(unchecked_registrations(&other, &included(file)).len(), 1, "{name} {file}: other crate");
         }
+        // The MCP crate's recipe list is its own (`src/recipes/`); no other crate may include a file of that name.
+        let mcp = |name| Crate { name, dir: "crates/omuzaki-tiny", build_script: Some(BUILD) };
+        assert_eq!(unchecked_registrations(&mcp("omuzaki-mcp"), &included("recipes_mods.rs")).len(), 0);
+        assert_eq!(unchecked_registrations(&mcp("omuzaki-stage"), &included("recipes_mods.rs")).len(), 1);
         // `looks.rs` is the char crate's only; the stage crate has no such pairing.
         let stage = Crate { name: "omuzaki-stage", dir: "crates/omuzaki-tiny", build_script: Some(BUILD) };
         let found = unchecked_registrations(&stage, &included("looks.rs"));

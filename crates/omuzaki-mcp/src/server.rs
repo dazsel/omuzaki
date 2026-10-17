@@ -3,15 +3,17 @@
 use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use omuzaki_history_api::JournalSink;
-use omuzaki_ops_api::{Actor, Grants, OpInfo, Runner, Sessions};
+use omuzaki_ops_api::{Actor, Grants, Jobs, OpInfo, Runner, Sessions};
 use rmcp::ServiceExt;
 use rmcp::model::Tool;
 use rmcp::service::RoleServer;
 use rmcp::transport::IntoTransport;
 use serde_json::Value;
 
+use crate::agent::{self, Credential};
 use crate::catalog::Catalog;
 use crate::connection::{self, Connections};
 use crate::describe::{Guidance, instructions};
@@ -35,8 +37,8 @@ impl fmt::Debug for Journal {
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct McpOptions {
-    /// What agents connected to this server may do (spec §6). Defaults to [`Grants::agent_default`]: read, edit and
-    /// render. `broadcast`, `publish` and `spend` need an explicit per-session grant.
+    /// What agents connected to this server may do (spec §6). Defaults to [`Grants::agent_default`]: read, edit, render and
+    /// review. `broadcast`, `publish` and `spend` need an explicit per-session grant.
     pub grants: Grants,
     /// Resource families the host adds to the built-in ones (see [`ResourceProvider`]).
     providers: Vec<Arc<dyn ResourceProvider>>,
@@ -48,14 +50,17 @@ pub struct McpOptions {
     journal: Option<Journal>,
     /// Where the server opens a session for each connection's agent, and the person they work for.
     sessions: Option<SessionHost>,
+    /// The folders agents may reach besides the document (see [`McpOptions::with_roots`]).
+    roots: Vec<String>,
 }
 
-/// The executor's session registry and the person every connection works for. A stand-in that #358 (MCP sessions
-/// through the executor's registry) replaces with the real open and end wiring.
+/// The executor's session registry, the person every connection works for, and how long a paused session's calls are
+/// held.
 #[derive(Clone)]
 pub(crate) struct SessionHost {
     pub sessions: Arc<dyn Sessions>,
     pub person: Actor,
+    pub pause_hold: Duration,
 }
 
 impl std::fmt::Debug for SessionHost {
@@ -74,7 +79,15 @@ impl McpOptions {
     /// Options with these grants.
     #[must_use]
     pub fn with_grants(grants: Grants) -> Self {
-        Self { grants, providers: Vec::new(), prompts: Vec::new(), connections: None, journal: None, sessions: None }
+        Self {
+            grants,
+            providers: Vec::new(),
+            prompts: Vec::new(),
+            connections: None,
+            journal: None,
+            sessions: None,
+            roots: Vec::new(),
+        }
     }
 
     /// Also serves the resources of `provider`: it is listed, templated and readable alongside the built-in ones.
@@ -106,12 +119,43 @@ impl McpOptions {
     }
 
     /// Opens a session in `sessions` for each connection's agent, working for `person`, and uses the actor the registry
-    /// builds. An executor refuses agents without a session, so the host that runs one wires this. Without it the
-    /// server names the agent itself, which only a runner that does not check sessions accepts. A stand-in: #358
-    /// replaces it with the real open and end wiring (a connection's session is not ended yet).
+    /// builds. An executor refuses agents without a session, so the host that runs one wires this (the app passes the
+    /// executor, which is both the runner and the registry). Without it the server names the agent itself, which only a
+    /// runner that does not check sessions accepts.
+    ///
+    /// What it gives the connection:
+    /// - A session per connection, opened at the handshake with the client's name, the transport (stdio, or the HTTP
+    ///   token's label), `person`, and the server's grants as its ceiling. It is ended through the registry when the
+    ///   connection drops (`Disconnected`), goes idle (`IdleTimeout`), or its token is revoked (`Revoked`).
+    /// - A registry that ends the session first (a person revoked it, the project closed) closes the connection, and
+    ///   when it revoked the credential too, the token stops working.
+    /// - Every write carries the newest document version the agent has been told about (`Request::base`), so a
+    ///   person's edit between its read and its write is a `Conflict`, not an overwrite.
+    /// - `session_info`, `session_list` and `approval_wait` are offered, and a call made while the session is paused
+    ///   is held (see [`McpOptions::with_pause_hold`]).
     #[must_use]
     pub fn with_sessions(mut self, sessions: Arc<dyn Sessions>, person: Actor) -> Self {
-        self.sessions = Some(SessionHost { sessions, person });
+        self.sessions = Some(SessionHost { sessions, person, pause_hold: agent::PAUSE_HOLD });
+        self
+    }
+
+    /// How long a call refused because its session is paused waits for the person to resume it before the agent is told
+    /// (default 20 seconds). The call then runs once; if the session is still paused the agent gets `waiting`. Applies
+    /// only with [`McpOptions::with_sessions`].
+    #[must_use]
+    pub fn with_pause_hold(mut self, hold: Duration) -> Self {
+        if let Some(host) = &mut self.sessions {
+            host.pause_hold = hold;
+        }
+        self
+    }
+
+    /// Gives agents the project folder and the folders the person shared with agents (ADR 0013), on top of the grants:
+    /// every session's ceiling gains these file roots, and nothing else. A folder the person picked in a dialog, or
+    /// that a CLI argument named, is not shared unless the host lists it here.
+    #[must_use]
+    pub fn with_roots(mut self, project_dir: impl Into<String>, shared: impl IntoIterator<Item = String>) -> Self {
+        self.roots = std::iter::once(project_dir.into()).chain(shared).collect();
         self
     }
 
@@ -138,6 +182,10 @@ pub(crate) struct Shared {
     pub journal: Option<Arc<dyn JournalSink>>,
     /// The registry that names each connection's agent, if the host wired one.
     pub sessions: Option<SessionHost>,
+    /// The file roots agents get besides their scopes (see [`McpOptions::with_roots`]).
+    pub roots: Vec<String>,
+    /// When each task was created.
+    pub task_times: crate::jobs::TaskTimes,
     next_session: AtomicU64,
 }
 
@@ -148,13 +196,21 @@ pub(crate) struct View {
     pub grants: Grants,
     pub catalog: Catalog,
     pub instructions: String,
+    /// The HTTP token these sessions come in with, if they do.
+    pub credential: Option<Arc<Credential>>,
 }
 
 impl View {
-    fn build(ops: &[OpInfo], grants: Grants, guidance: &Guidance) -> Result<Self, ServerError> {
-        let catalog = Catalog::build(ops, &grants, guidance)?;
-        let instructions = instructions(&grants, guidance);
-        Ok(Self { grants, catalog, instructions })
+    fn build(
+        ops: &[OpInfo],
+        grants: Grants,
+        shared: &Shared,
+        credential: Option<Arc<Credential>>,
+    ) -> Result<Self, ServerError> {
+        let grants = with_roots(grants, &shared.roots);
+        let catalog = Catalog::build(ops, &grants, &shared.guidance, shared.sessions.is_some())?;
+        let instructions = instructions(&grants, &shared.guidance, shared.sessions.is_some());
+        Ok(Self { grants, catalog, instructions, credential })
     }
 }
 
@@ -176,6 +232,8 @@ fn offered(runner: &dyn Runner, connection_wired: bool) -> Vec<OpInfo> {
 pub struct McpServer {
     shared: Arc<Shared>,
     view: Arc<View>,
+    /// The executor's job manager, if the host wired one (see [`McpServer::with_jobs`]).
+    jobs: Option<Arc<dyn Jobs>>,
 }
 
 impl McpServer {
@@ -188,8 +246,7 @@ impl McpServer {
         let connection_wired = options.connections.is_some();
         let ops = offered(runner.as_ref(), connection_wired);
         let guidance = Guidance::new(ops.iter().map(|op| op.name));
-        let view = View::build(&ops, options.grants, &guidance)?;
-        let hub = EventHub::start(runner.as_ref(), &view.grants)?;
+        let hub = EventHub::start(runner.as_ref(), &options.grants)?;
         let shared = Shared {
             runner,
             guidance,
@@ -200,9 +257,22 @@ impl McpServer {
             connection_wired,
             journal: options.journal.map(|journal| journal.0),
             sessions: options.sessions,
+            roots: options.roots,
+            task_times: crate::jobs::TaskTimes::default(),
             next_session: AtomicU64::new(1),
         };
-        Ok(Self { shared: Arc::new(shared), view: Arc::new(view) })
+        let view = View::build(&ops, options.grants, &shared, None)?;
+        Ok(Self { shared: Arc::new(shared), view: Arc::new(view), jobs: None })
+    }
+
+    /// Serves job ops as MCP tasks to clients that declare the tasks extension: the call returns a task handle once
+    /// `jobs` has started the job, `tasks/get` reads it, `tasks/cancel` cancels it, and its progress and status changes
+    /// are pushed. `jobs` must be the manager of the runner this server was built from. Clients that did not declare
+    /// the extension, and servers without this, keep the blocking call: `Runner::run` returns when the job ends.
+    #[must_use]
+    pub fn with_jobs(mut self, jobs: Arc<dyn Jobs>) -> Self {
+        self.jobs = Some(jobs);
+        self
     }
 
     /// Resolves once the event log holds event `n` (or a later one), at once if it already does. Await it before
@@ -220,12 +290,23 @@ impl McpServer {
     /// # Errors
     /// As [`McpServer::new`]; an op list that built once builds again, so this only fails if the runner's ops changed.
     pub fn with_grants(&self, grants: Grants) -> Result<Self, ServerError> {
-        let view = View::build(
-            &offered(self.shared.runner.as_ref(), self.shared.connection_wired),
-            grants,
-            &self.shared.guidance,
-        )?;
-        Ok(Self { shared: Arc::clone(&self.shared), view: Arc::new(view) })
+        self.with_credential(grants, None)
+    }
+
+    /// As [`McpServer::with_grants`], for the sessions of one HTTP access token.
+    pub(crate) fn with_credential(
+        &self,
+        grants: Grants,
+        credential: Option<Arc<Credential>>,
+    ) -> Result<Self, ServerError> {
+        let ops = offered(self.shared.runner.as_ref(), self.shared.connection_wired);
+        let view = View::build(&ops, grants, &self.shared, credential)?;
+        Ok(Self { shared: Arc::clone(&self.shared), view: Arc::new(view), jobs: self.jobs.clone() })
+    }
+
+    /// The person this server's sessions work for, or the system when the host wired no registry.
+    pub(crate) fn person(&self) -> Actor {
+        self.shared.sessions.as_ref().map_or(Actor::System, |host| host.person.clone())
     }
 
     /// The tools this server lists, sorted by name: one per op, plus the built-ins.
@@ -247,8 +328,28 @@ impl McpServer {
 
     /// A handler for one client connection. Pass it to rmcp's `serve` with any transport.
     pub fn session(&self) -> Session {
-        let serial = self.shared.next_session.fetch_add(1, Ordering::Relaxed);
-        Session::new(Arc::clone(&self.shared), Arc::clone(&self.view), serial)
+        Session::new(Arc::clone(&self.shared), Arc::clone(&self.view), self.next_serial()).with_jobs(self.jobs.clone())
+    }
+
+    pub(crate) fn shared(&self) -> &Shared {
+        &self.shared
+    }
+
+    pub(crate) fn shared_arc(&self) -> Arc<Shared> {
+        Arc::clone(&self.shared)
+    }
+
+    pub(crate) fn view_arc(&self) -> Arc<View> {
+        Arc::clone(&self.view)
+    }
+
+    pub(crate) fn jobs(&self) -> Option<Arc<dyn Jobs>> {
+        self.jobs.clone()
+    }
+
+    /// The next connection's serial, which names it in `agent.connection` before the registry does.
+    pub(crate) fn next_serial(&self) -> u64 {
+        self.shared.next_session.fetch_add(1, Ordering::Relaxed)
     }
 
     /// A handler for one HTTP session: as [`McpServer::session`], steering clients to the `initialize` lifecycle (see
@@ -267,8 +368,7 @@ impl McpServer {
         T: IntoTransport<RoleServer, E, A>,
         E: std::error::Error + Send + Sync + 'static,
     {
-        let running = self.session().serve(transport).await.map_err(|e| ServerError::Handshake(e.to_string()))?;
-        running.waiting().await.map(drop).map_err(|e| ServerError::Session(e.to_string()))
+        serve_session(self.session(), transport).await
     }
 
     /// Serves one client over this process's stdin and stdout until it disconnects: what `omuzaki mcp` runs.
@@ -280,4 +380,51 @@ impl McpServer {
     pub async fn serve_stdio(&self) -> Result<(), ServerError> {
         self.serve(rmcp::transport::stdio()).await
     }
+}
+
+/// Serves `session` over `transport` until the client leaves or the registry ends the session, whichever comes first.
+pub(crate) async fn serve_session<T, E, A>(session: Session, transport: T) -> Result<(), ServerError>
+where
+    T: IntoTransport<RoleServer, E, A>,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    let mut ended = session.ended();
+    // The registry may end the session before the client says anything (the project closed while the client was still
+    // connecting): the handshake is dropped then, which closes the transport, instead of waiting for an `initialize`
+    // that may never come.
+    let handshake = session.serve(transport);
+    let running = {
+        let mut early = ended.clone();
+        tokio::select! {
+            running = handshake => running.map_err(|e| ServerError::Handshake(e.to_string()))?,
+            Ok(_) = early.wait_for(Option::is_some) => {
+                return Err(ServerError::Handshake("the session ended before the client initialized".to_owned()));
+            }
+        }
+    };
+    let cancel = running.cancellation_token();
+    let waiting = running.waiting();
+    tokio::pin!(waiting);
+    // The registry may end the session before the client leaves (a person revoked it, the project closed): the
+    // connection closes with it.
+    let session_ended = async { ended.wait_for(Option::is_some).await.is_ok() };
+    let quit = tokio::select! {
+        quit = &mut waiting => quit,
+        true = session_ended => {
+            cancel.cancel();
+            waiting.await
+        }
+    };
+    quit.map(drop).map_err(|e| ServerError::Session(e.to_string()))
+}
+
+/// `grants` plus file access under each of `roots` (the project folder and the folders shared with agents), skipping
+/// any it already has. Used for every session's ceiling, the in-app ones included.
+pub(crate) fn with_roots(grants: Grants, roots: &[String]) -> Grants {
+    roots.iter().fold(
+        grants,
+        |grants, root| {
+            if grants.fs_roots().contains(root) { grants } else { grants.with_fs_root(root.clone()) }
+        },
+    )
 }

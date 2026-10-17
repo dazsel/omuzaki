@@ -617,10 +617,14 @@ impl Manager {
         let Some(job) = inner.jobs.get(&id) else { return };
         let (lane, cancelling, driver) = (job.info.lane, job.cancelling.clone(), job.driver);
         inner.lanes.finished(lane);
-        // A driver's run is its transaction, whether or not its finish added a record to it.
-        let done = result.as_ref().ok().and_then(|outcome| match outcome.applied.as_ref() {
-            Some(record) => Some(JobState::Done { tx: record.tx, seq: Some(record.seq) }),
-            None => driver.map(|d| JobState::Done { tx: d.tx, seq: None }),
+        // A driver's run is its transaction, whether or not its finish added a record to it. The state keeps the
+        // outcome, so a client that polls renders what one that waited does.
+        let done = result.as_ref().ok().and_then(|outcome| {
+            let state = match outcome.applied.as_ref() {
+                Some(record) => JobState::done(record.tx, Some(record.seq)),
+                None => JobState::done(driver?.tx, None),
+            };
+            Some(state.with_outcome(Arc::new(outcome.clone())))
         });
         let (state, outcome) = match (done, result, cancelling) {
             // The edit is in. Under shutdown too: `finish` holds the shutdown flag through its apply, so the apply

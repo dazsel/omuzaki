@@ -15,6 +15,12 @@ use crate::ops::character::access;
 /// a problem it introduces, naming the field and the range it accepts. A mouth must stay below the eye line.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "field": "eye_spacing", "value": 0.09}
+    ],
+    "x-omuzaki-fixture" = "character"
+))]
 pub struct SetLayout {
     /// The character whose layout changes.
     pub character: CharId,
@@ -60,6 +66,15 @@ register_op!(SetLayout);
 /// the head's chin fixes the eye-to-chin drop, and the ratios give the eye distance and every feature's height.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "ratios": {
+            "eye_width_to_iod": 0.284, "drop_to_iod": 0.625, "nose": 0.227, "mouth": 0.6, "blush": 0.364,
+            "blush_spacing_to_iod": 0.568
+        }}
+    ],
+    "x-omuzaki-fixture" = "character"
+))]
 pub struct SetLayoutRatios {
     /// The character whose layout changes.
     pub character: CharId,

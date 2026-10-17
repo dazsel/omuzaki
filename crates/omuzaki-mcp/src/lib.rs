@@ -9,7 +9,8 @@
 //! # What an agent sees
 //!
 //! **Tools.** One per `Runner::ops()` entry, plus `history_undo`, `history_redo`, `history_log`, `tx_begin`, `tx_commit` and
-//! `tx_rollback`, sorted by name. The list is built once for each set of grants (at startup, and for each HTTP access
+//! `tx_rollback`, and, when the host wired a session registry ([`McpOptions::with_sessions`]), `session_info`,
+//! `session_list` and `approval_wait`, sorted by name. The list is built once for each set of grants (at startup, and for each HTTP access
 //! token), and construction fails rather than serve a list that differs from `ops()`.
 //!
 //! - `name`: the op name with `.` replaced by `_` (`face.set_profile` is the tool `face_set_profile`), because
@@ -45,13 +46,62 @@
 //!   seconds still succeeds, and its text opens with `Warning: applied, not yet saved: <status>`, before any heads-up.
 //!   `structuredContent.warning` carries the same text. See [`McpOptions::with_journal`].
 //!
-//! **Sessions.** The actor is `Actor::Agent { id: "<client name>#<n>" }` from the client's handshake; grants come from
-//! [`McpOptions`] (default `Grants::agent_default()`), or from the access token on the HTTP port, and the tool
-//! descriptions and instructions an agent reads are written for its own grants. Every call needs the `read` scope plus the op's own; a preview
-//! (`dry_run`) needs only `read`. `tx_begin` opens the session's one transaction and later applied edits join it
-//! until `tx_commit` or `tx_rollback`; a second `tx_begin` is refused before it reaches the runner. A connection that
-//! ends first rolls the transaction back. Undo and redo are per actor: an
-//! agent's `history_undo` reverts only its own changes, never the user's or another agent's.
+//! **Sessions.** With a registry ([`McpOptions::with_sessions`]) every connection is a
+//! registered session (design `agent-sessions.md`): it is opened at the handshake with the client's name, the
+//! transport (stdio, or the HTTP token's label), the person it works for (the host's, or the one who issued the token)
+//! and the server's grants as its ceiling, and the actor is `Actor::Agent { id: "<client>#<n>", .. }` **as the registry
+//! built it**; this crate invents no name. A client whose handshake fails (a protocol version it can't speak) is never
+//! named or connected. The session ends through the registry: `Disconnected` when the client leaves, `IdleTimeout` when
+//! an HTTP session goes quiet, `Revoked` when its token is revoked or its grants change; the open transaction is
+//! abandoned with it. When the registry ends a session first (a person revoked it, the project closed) the connection
+//! closes, and when it revoked the credential too, the token stops working and its other sessions end. Without a
+//! registry the server names the agent itself and rolls the transaction back on drop.
+//!
+//! **Headless.** `omuzaki mcp` has no window to approve in, so the app opens its executor with no approver (design
+//! §7.6): a request that would queue is refused with `denied`, what it needs as the detail and a hint that says how to
+//! grant it in advance, and `approval_wait` has nothing to wait for. With the studio's window the same request queues
+//! and the person answers it there.
+//!
+//! Grants come from [`McpOptions`] (default `Grants::agent_default()`), or from the access token on the HTTP port, plus
+//! the file roots the host lists with [`McpOptions::with_roots`] (the project folder and the folders the person shared
+//! with agents, nothing else, ADR 0013); the tool descriptions and instructions an agent reads are written for its own
+//! grants. Every call needs the `read` scope plus the op's own; a preview (`dry_run`) needs only `read`. `tx_begin`
+//! opens the session's one transaction and later applied edits join it until `tx_commit` or `tx_rollback`; a second
+//! `tx_begin` is refused before it reaches the runner. Undo and redo are per actor: an agent's `history_undo` reverts only
+//! its own changes, never the user's or another agent's.
+//!
+//! - **The stale-write guard.** Every request carries `base`, the newest document version the session's heads-up
+//!   cursor has told the agent about, so a person's (or another agent's) edit to the same value between the agent's
+//!   read and its write is a `conflict` (`structuredContent.detail.kind` is `changed`, naming who and where) and the
+//!   retry, caught up by the heads-up, goes through.
+//! - **Waiting.** A call refused because a person must act comes back `waiting`, never retried by this crate beyond the
+//!   rules below: *paused* says "the person paused this session; nothing ran"; *queued* says "approval #N asks the
+//!   person to ...; nothing ran; don't retry; call `approval_wait` or carry on". A call refused for a **pause** is held
+//!   up to [`McpOptions::with_pause_hold`] (20 s) for the person to resume the session, then runs once more. A call
+//!   refused by a **rate limit** that frees up within 2 s in all is slowed, not failed; a longer wait is `limited`
+//!   with the time to wait.
+//! - **`approval_wait { id, timeout_seconds? }`** waits (30 s by default, 50 at most) for the person to decide one of
+//!   *this session's* approvals, including the pairing of a new client, and returns the outcome once: an approved
+//!   request renders like the op's own success, a failure like its error, a rejection carries the person's comment, a
+//!   withdrawal says why. Time running out says the approval is still pending. Outcomes the agent didn't wait for are
+//!   listed in the heads-up of its next result, once. Nothing in this crate can approve anything.
+//! - **`session_info`** (no arguments) is the session's own record: actor, person, transport, credential (label and
+//!   whether it is paired), grants (scopes and file roots), fence, budget and spend, limits, state, open transaction
+//!   and pending approvals. **`session_list`** lists every live session with this one marked `you`. Both need `read`,
+//!   and both answer while the session is paused, including while it waits to be paired.
+//! - **Fences.** An edit outside the session's fence, or inside another's, is refused: "Refused: <path> is held by
+//!   <holder> (their fence: <paths>). Nothing changed." (or "outside your fence"), with
+//!   `structuredContent.detail = {kind: "fenced", path, holder?}`; names pass through the same one-line sanitiser as the
+//!   heads-up. The server guide tells a session its own fence, or that parts held by others are refused.
+//!
+//! **Tasks.** With [`McpServer::with_jobs`], a job op called by a client that declared the tasks capability starts
+//! through `Jobs::start` and answers with a task handle (`job-<n>`); `tasks/get` reads the job, `tasks/cancel` cancels it
+//! (only the session that started it may), progress and task-status notifications follow the job's events, and a
+//! finished task's result is exactly what the blocking call of the same op returns. Other clients keep the blocking call.
+//!
+//! **In-app.** [`McpServer::connect_in_app`] opens a session for the built-in assistant (or a sub-agent) at once and
+//! serves it on an in-memory stream: the same tools, results and rules as any session, no port, and an
+//! [`InAppLink`] that says when the session ended.
 //!
 //! **What others changed.** Most clients never show a model the resource notifications below, so an agent that edits
 //! while the user or another agent also edits could act on stale state without knowing. Every session therefore
@@ -92,14 +142,19 @@
 //! adds a family with [`McpOptions::with_provider`], never by editing a list here. [`MeasureProvider`] serves
 //! `omuzaki://measure/liveliness/..`: a read runs the liveliness measurement and returns its answer, nothing is stored.
 //! [`RenderProvider`] serves `omuzaki://render/<id>.png`, a PNG the asset store holds, read as an `image/png` blob.
+//! [`MetricsProvider`] serves `omuzaki://metrics/live`, the studio's live numbers from a [`MetricsSource`] the app supplies,
+//! and [`LibraryProvider`] serves `omuzaki://library/<item>[@<version>]`, one library item with its publisher, manifest
+//! and versions (the publisher's text is marked as data unless the publisher is first-party or verified).
 //!
 //! **Prompts.** Recipes the client offers its user (`prompts/list`, `prompts/get`). A [`PromptDef`] names the ops its
 //! text relies on (`needs`), and a session is offered only the prompts whose ops are all among its tools, so a recipe
 //! never recommends a missing tool. The text is a template
 //! with `{argument}` and `{tool:face.set_profile}` placeholders (the latter becomes `face_set_profile`); a missing
 //! required argument, an unknown one or a non-text one is `invalid_params` naming it, and an unknown or unlisted prompt
-//! is `invalid_params` listing those that exist, as rmcp's own prompt router answers. No recipe ships yet: each lands
-//! with the feature whose ops it needs. A host adds one with [`McpOptions::with_prompt`].
+//! is `invalid_params` listing those that exist, as rmcp's own prompt router answers. The built-in recipes (create a
+//! character from a sheet, match a reference look, make an emote pack, make a Quest variant) are listed when their ops
+//! exist; the rest of the spec's seven land with the features whose ops they need. A host adds one with
+//! [`McpOptions::with_prompt`].
 //!
 //! # Transports and logging
 //!
@@ -149,6 +204,8 @@
 #![deny(missing_docs)]
 
 mod access;
+mod agent;
+mod approvals;
 mod builtin;
 mod catalog;
 mod changes;
@@ -156,11 +213,16 @@ mod connection;
 mod describe;
 mod error;
 mod events;
+mod floats;
 mod gate;
 mod http;
+mod in_app;
+mod info;
+mod jobs;
 mod limits;
 mod names;
 mod prompts;
+mod recipes;
 mod remote;
 mod render;
 mod resources;
@@ -173,11 +235,16 @@ mod suggest;
 pub use access::{AccessToken, RECORD_VERSION, TokenId, TokenInfo, TokenRecord};
 pub use connection::Connections;
 pub use error::ServerError;
-pub use http::{HttpOptions, HttpServer};
+pub use http::{HttpOptions, HttpServer, RevokedHook};
+pub use in_app::{InAppEnd, InAppLink, InAppSpec};
 pub use prompts::{PromptArg, PromptDef};
-pub use resources::{MeasureProvider, RenderProvider, ResourceProvider};
+pub use resources::{
+    LibraryProvider, MeasureProvider, MetricsProvider, MetricsSource, RenderProvider, ResourceProvider,
+};
 pub use server::{McpOptions, McpServer};
 pub use session::Session;
 
 // This crate registers ops (`agent.connection`), so the app that calls it links them in (ADR 0015).
-omuzaki_core::define_link!();
+omuzaki_core::define_link! {
+    omuzaki_library_api::link();
+}

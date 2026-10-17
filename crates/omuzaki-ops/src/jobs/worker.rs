@@ -148,7 +148,7 @@ fn apply_finish(
         .or_else(|| applied.as_ref().map(|r| r.tx))
         .ok_or_else(|| OpError::internal("a job's finish applied nothing"))?;
     let mut info = task.info.clone();
-    info.state = JobState::Done { tx: done_tx, seq: applied.as_ref().map(|r| r.seq) };
+    info.state = JobState::done(done_tx, applied.as_ref().map(|r| r.seq));
     journal_end(env, state, &info);
     let outcome = Outcome::new(plan);
     Ok(match applied {

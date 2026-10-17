@@ -1,15 +1,19 @@
-//! Steady state of the GPU rasteriser (#1433 A5 and A6, #902): after warm-up a repaint through `VelloRasterizer` allocates
-//! nothing in `omuzaki-face`'s own code, only what Vello and wgpu allocate, and that count is pinned and the same on every
-//! repaint, for a mouth-only change and for a change of the whole face. Also: no wgpu validation error over 100 repaints, and
-//! the repaint time (CPU encode, GPU render and resolve, waited for) over 1,000 warmed repaints of each. Lavapipe is a
-//! software adapter, so the times are not a GPU timing (decision 7.3); the owner's run is #1658. Without an adapter the tests
-//! print why and pass.
+//! Steady state of the GPU rasteriser (#1433 A5 and A6, #902, #2074): after warm-up a repaint through `VelloRasterizer`
+//! allocates nothing in `omuzaki-face`'s own code, nor in Vello's scene encoding; what is left is wgpu's own share of the
+//! passes and queue writes it records (the submit is the renderer's), and that count is pinned and the same on every
+//! repaint, for a mouth-only change and for a change of the whole face. Also: no wgpu validation error over 100
+//! repaints, and the repaint time (CPU encode and record, the submit, GPU raster and resolve, waited for) over 1,000
+//! warmed repaints of each. Lavapipe is a software adapter, so the times are not a GPU timing (decision 7.3); the GPU
+//! timing is `examples/gpu_face_timing.rs`. Without an adapter the tests print why and pass.
 
 // The GPU rasteriser exists on native targets only (#2207).
 #![cfg(not(target_arch = "wasm32"))]
 // A counting allocator is the only way to *prove* an allocation budget; the workspace denies unsafe code by default.
 // Tests may unwrap: a panic is a clear failure.
 #![allow(unsafe_code, clippy::unwrap_used, clippy::expect_used)]
+
+#[path = "support/gpu_instance.rs"]
+mod gpu_instance;
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -24,15 +28,23 @@ use omuzaki_face_api::{
 };
 use omuzaki_face_mock::{mock_profile, mock_projection};
 
-/// The most allocations one warmed repaint makes on the calling thread, measured on lavapipe over 32 repaints after 50
-/// warm-up ones (815 or 816 for either change: Vello's fixed cost dominates), and the spread allowed around it. The count is Vello's and wgpu's: encoding, the scenes, the views and the
-/// bookkeeping are `omuzaki-face`'s own and allocate nothing (`gpu_encode.rs`). Cutting it is #902's upstream report.
-const MOUTH_ONLY_ALLOCS: usize = 816;
-const WHOLE_FACE_ALLOCS: usize = 816;
+/// The most allocations one warmed repaint may make on the calling thread. The count is wgpu's and the driver's: the
+/// compute pass and its dispatches, the resolve's render pass, the three queue writes (scene, config, origin), and the
+/// copy and mapping of Vello's counters that catch a scene outgrowing its buffers. Fingerprinting, encoding, packing the
+/// scene and the bookkeeping allocate nothing (`gpu_encode.rs`, and `face_gpu_alloc.rs` in `omuzaki-test-stage`, which
+/// attributes every allocation). Measured over 32 repaints after 50 warm-up ones: 30 on a hardware Vulkan driver and on
+/// the dev machine's lavapipe, 65 on CI's lavapipe (a newer Mesa allocates more per submission). So the bound is a
+/// ceiling over every driver, far under the 816 a repaint made while Vello's own renderer ran the stages, and the
+/// steadiness checks below catch any growth from repaint to repaint.
+const MOUTH_ONLY_ALLOCS: usize = 100;
+const WHOLE_FACE_ALLOCS: usize = 100;
+/// How much the typical count may rise from the first half of the measured repaints to the second: a leak of even one
+/// allocation per repaint rises by about 16 over 32 repaints, while a driver's jitter around a steady count (CI's
+/// lavapipe moves between 50 and 83 around 65) leaves both halves' medians in place.
 const SPREAD: usize = 2;
-/// What the occasional repaint pays on top (one in about 30: wgpu's periodic cleanup of its resource tables, measured at +27).
+/// What the occasional repaint may pay on top: wgpu's periodic cleanup of its resource tables (none in the 32 measured).
 const SPIKE: usize = 50;
-/// Repaints before anything is counted or timed: Vello grows its buffers over the first few dozen.
+/// Repaints before anything is counted or timed: the engine grows its buffers to the largest scene it is given.
 const WARM_UP: usize = 50;
 
 struct Counting;
@@ -72,7 +84,9 @@ static GLOBAL: Counting = Counting;
 /// Everything a repaint needs: a device, the layer's texture, the rasteriser and the frames it alternates between.
 struct Setup {
     device: wgpu::Device,
-    native: (wgpu::Device, wgpu::Queue, wgpu::Texture),
+    /// What the renderer's `native()` hands the rasteriser: the device, the queue, the layer's texture and the encoder it
+    /// records into.
+    native: (wgpu::Device, wgpu::Queue, wgpu::Texture, wgpu::CommandEncoder),
     spec: FaceLayerSpec,
     rasterizer: VelloRasterizer,
     /// The drawing and its section ranges of the neutral face, the face with the mouth open, and a face with everything
@@ -87,7 +101,7 @@ const MOUTH: usize = 1;
 const WHOLE: usize = 2;
 
 fn setup() -> Option<Setup> {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let instance = gpu_instance::instance();
     let adapter = match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())) {
         Ok(adapter) => adapter,
         Err(e) => {
@@ -136,8 +150,9 @@ fn setup() -> Option<Setup> {
             | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
+    let encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     Some(Setup {
-        native: (device.clone(), queue, texture),
+        native: (device.clone(), queue, texture, encoder),
         device,
         spec,
         rasterizer: VelloRasterizer::new(),
@@ -147,8 +162,9 @@ fn setup() -> Option<Setup> {
 }
 
 impl Setup {
-    /// Paints `frame`, a different one from the last, through the sections path.
-    fn repaint(&mut self, frame: usize) {
+    /// Paints `frame`, a different one from the last, through the sections path: what the rasteriser itself does,
+    /// recording into the encoder. The submit is the renderer's, so it is [`submit`](Self::submit), outside.
+    fn record(&mut self, frame: usize) {
         let (drawing, sections) = &self.frames[frame];
         let drawn = self
             .rasterizer
@@ -157,10 +173,29 @@ impl Setup {
         assert!(drawn, "the rasteriser declined the wgpu tuple");
     }
 
-    /// One repaint of the change under test: the neutral face and `other` in turn.
-    fn alternate(&mut self, other: usize) {
+    /// Submits what the last paint recorded, as the renderer does when the painter returns, with a fresh encoder for the
+    /// next one.
+    fn submit(&mut self) {
+        let fresh = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        let recorded = std::mem::replace(&mut self.native.3, fresh);
+        self.native.1.submit([recorded.finish()]);
+    }
+
+    fn repaint(&mut self, frame: usize) {
+        self.record(frame);
+        self.submit();
+    }
+
+    /// The next frame of the change under test: the neutral face and `other` in turn.
+    fn next_frame(&mut self, other: usize) -> usize {
         let frame = if self.next == 0 { other } else { NEUTRAL };
         self.next = 1 - self.next;
+        frame
+    }
+
+    /// One repaint of the change under test, submitted.
+    fn alternate(&mut self, other: usize) {
+        let frame = self.next_frame(other);
         self.repaint(frame);
     }
 
@@ -178,14 +213,30 @@ fn check_allocations(other: usize, pinned: usize, what: &str) {
     s.warm(other);
     // The first repaint after the device went idle also pays for waking it, so it is not counted.
     s.alternate(other);
-    let counts: Vec<usize> = (0..32).map(|_| count_allocations(|| s.alternate(other))).collect();
+    let counts: Vec<usize> = (0..32)
+        .map(|_| {
+            let frame = s.next_frame(other);
+            let counted = count_allocations(|| s.record(frame));
+            s.submit();
+            counted
+        })
+        .collect();
     eprintln!("allocations per warmed repaint, {what}: {counts:?}");
-    let mut sorted = counts.clone();
-    sorted.sort_unstable();
-    let (median, least, most) = (sorted[sorted.len() / 2], sorted[0], sorted[sorted.len() - 1]);
+    let (median, most) = (median_of(&counts), counts.iter().copied().max().unwrap_or(0));
     assert!(median <= pinned, "{what}: a typical repaint makes {median} allocations, pinned at {pinned}");
-    assert!(median - least <= SPREAD, "{what}: the count moves between repaints: {counts:?}");
+    let (first, second) = (median_of(&counts[..counts.len() / 2]), median_of(&counts[counts.len() / 2..]));
+    assert!(
+        second <= first + SPREAD,
+        "{what}: the count grows between repaints (median {first}, then {second}): {counts:?}"
+    );
     assert!(most <= pinned + SPIKE, "{what}: {most} allocations in one repaint, more than {pinned} + {SPIKE}");
+}
+
+/// The middle value of `counts` (the upper one of the two middles for an even length).
+fn median_of(counts: &[usize]) -> usize {
+    let mut sorted = counts.to_vec();
+    sorted.sort_unstable();
+    sorted[sorted.len() / 2]
 }
 
 #[test]
@@ -204,7 +255,8 @@ fn an_unchanged_repaint_allocates_nothing() {
     s.warm(MOUTH);
     s.repaint(NEUTRAL);
     s.repaint(NEUTRAL);
-    let allocations = count_allocations(|| s.repaint(NEUTRAL));
+    let allocations = count_allocations(|| s.record(NEUTRAL));
+    s.submit();
     assert_eq!(allocations, 0, "fingerprinting the sections of an unchanged face allocated");
     assert_eq!(s.rasterizer.sections_encoded(), 0);
 }

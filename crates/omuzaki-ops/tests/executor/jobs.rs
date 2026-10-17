@@ -358,6 +358,10 @@ fn a_running_job_does_not_block_another_actor_and_its_finish_is_one_undo_step() 
     gate.release.send(()).unwrap();
     let ended = rig.exec.wait(info.id, None).unwrap();
     assert!(matches!(ended.state, JobState::Done { seq: Some(_), .. }), "{:?}", ended.state);
+    // The finished job keeps what the op returned, so a client that polls renders what one that waited would.
+    let kept = ended.state.outcome().expect("a done job carries its outcome");
+    let JobState::Done { seq, .. } = &ended.state else { panic!("{:?}", ended.state) };
+    assert_eq!(kept.applied.as_ref().map(|r| r.seq), *seq);
     assert_eq!(rig.at("a1"), Some(json!("done")));
 
     // One undo step, on the requesting actor's history: the other person's agent's edit is not touched.
@@ -1187,7 +1191,7 @@ fn a_finish_is_journalled_right_after_its_record_in_the_same_hold() {
     let exec = Executor::new(Box::new(MemDoc::from_value(json!({}))), clock).unwrap().with_journal(sink.clone());
     let info = exec.start(job("f1", &json!("echo"))).unwrap();
     let ended = exec.wait(info.id, None).unwrap();
-    let JobState::Done { tx, seq: Some(seq) } = ended.state else { panic!("{:?}", ended.state) };
+    let JobState::Done { tx, seq: Some(seq), .. } = ended.state else { panic!("{:?}", ended.state) };
     let entries = sink.entries();
     let op = entries.iter().position(
         |e| matches!(e, omuzaki_history_api::HistoryEntry::Op { record, .. } if record.seq == seq && record.tx == tx),

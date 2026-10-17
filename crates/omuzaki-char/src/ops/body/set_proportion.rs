@@ -40,6 +40,12 @@ fn slider<'a>(proportions: &'a mut Proportions, name: &str) -> Option<&'a mut f6
 /// template as it is, and the range is `0.5` to `2`. A value outside it is refused, naming the field and its range.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "name": "leg_length", "value": 1.08}
+    ],
+    "x-omuzaki-fixture" = "character"
+))]
 pub struct SetProportion {
     /// The character whose body changes.
     pub character: CharId,

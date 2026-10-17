@@ -73,7 +73,7 @@ pub enum Command {
     /// Serve the ops to an AI agent over MCP on stdin/stdout.
     ///
     /// Reads JSON-RPC messages from stdin and writes only protocol messages to stdout, until the client closes stdin.
-    /// The agent can read, edit and render, and its changes are saved to the project as it makes them. Point an
+    /// The agent can read, edit, render and review, and its changes are saved to the project as it makes them. Point an
     /// MCP client at `omuzaki --project <DIR> mcp`.
     Mcp,
 
