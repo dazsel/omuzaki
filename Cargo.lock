@@ -3800,6 +3800,7 @@ dependencies = [
 name = "omuzaki-face"
 version = "0.0.0"
 dependencies = [
+ "bytemuck",
  "criterion",
  "image",
  "inventory",
@@ -3829,6 +3830,8 @@ dependencies = [
  "toml",
  "tracing",
  "vello",
+ "vello_encoding",
+ "vello_shaders",
  "wgpu",
 ]
 
@@ -4659,6 +4662,24 @@ dependencies = [
  "thiserror 2.0.21",
  "toml",
  "wgpu",
+]
+
+[[package]]
+name = "omuzaki-test-stage"
+version = "0.0.0"
+dependencies = [
+ "image",
+ "omuzaki-anim-api",
+ "omuzaki-char-api",
+ "omuzaki-char-mock",
+ "omuzaki-core",
+ "omuzaki-face",
+ "omuzaki-face-api",
+ "omuzaki-render",
+ "omuzaki-render-api",
+ "omuzaki-render-mock",
+ "omuzaki-stage",
+ "omuzaki-test",
 ]
 
 [[package]]
