@@ -12,8 +12,9 @@
 #            Either way it hashes the archive and uploads it, its programs and a one-line digest
 #   collect  merges the three digests into this workflow's outputs (a matrix job's output is one value)
 #   check    per platform, on a fresh runner: the archive against collect's SHA-256, BUILDINFO.json against the pins,
-#            the library loaded by the smoke program, the three face graphs fully delegated to XNNPACK and within 1e-4
-#            of the official wheel, and an error caught through the shim. It runs on a cache hit too.
+#            the library loaded by the smoke program, each face graph's XNNPACK delegation equal to its pin in
+#            tools/litert/pins.toml and its outputs within 1e-4 of the official wheel, and an error caught through the
+#            shim. It runs on a cache hit too.
 #   save     only with save-cache, only after every check passed: the checked archive and programs go into the cache
 #            under the key the build restored from, so a bad build never occupies a key
 #
