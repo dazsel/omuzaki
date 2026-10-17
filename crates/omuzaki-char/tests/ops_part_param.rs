@@ -403,10 +403,8 @@ fn every_parameter_says_what_it_is_and_every_number_its_range() {
             let path = path_of(entry);
             assert!(seen.insert(path.to_owned()), "{}: `{path}` is listed twice", subject.label);
             assert!(entry["type"].is_string(), "{}: `{path}` has no type", subject.label);
-            // The tag of a tagged enum (`type`) is a name the schema derives, not a field anyone wrote a comment on.
-            let tag = entry["type"] == "choice" && entry["values"].as_array().is_some_and(|v| v.len() == 1);
             assert!(
-                tag || entry["description"].as_str().is_some_and(|d| !d.is_empty()),
+                entry["description"].as_str().is_some_and(|d| !d.is_empty()),
                 "{}: `{path}` has no description",
                 subject.label
             );
@@ -996,7 +994,10 @@ fn tagged_enums_and_mixed_names_are_followed_through_the_current_value() {
     assert!(!paths.contains(&"groups/b-bangs/generator/sweep_deg"), "the fixture has no bangs group");
     let tag =
         hair["parameters"].as_array().unwrap().iter().find(|p| path_of(p) == "groups/a-cap/generator/type").unwrap();
-    assert_eq!((tag["type"].as_str(), &tag["values"]), (Some("choice"), &json!(["cap"])));
+    let variants = tag["values"].as_array().unwrap();
+    assert_eq!(tag["type"], "choice");
+    assert!(variants.len() > 1, "every generator is listed, not only the cap: {variants:?}");
+    assert!(variants.contains(&json!("cap")) && variants.contains(&json!("bangs")), "{variants:?}");
 
     // `rng` is the name `forked` or an object: it is a choice that can also be set to the object form.
     let rng = hair["parameters"].as_array().unwrap().iter().find(|p| path_of(p) == "rng").unwrap();
