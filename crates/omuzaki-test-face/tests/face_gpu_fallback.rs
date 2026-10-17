@@ -91,15 +91,14 @@ fn a_device_vello_cannot_run_on_is_declined_every_time_and_nothing_is_drawn() {
         eprintln!("skipped: the adapter has no downlevel device");
         return;
     };
-    let texture = common::face_texture(&device, spec().size_px());
-    let mut native = (device.clone(), queue.clone(), texture.clone());
+    let mut native = common::native(&(device, queue), spec().size_px());
     let mut list = DrawList::new();
     overlapping_fills(&mut list);
     let mut rasterizer = VelloRasterizer::new();
     for attempt in 0..3 {
         assert!(!rasterizer.rasterize_native(&spec(), &list, &mut native).unwrap(), "attempt {attempt} drew");
     }
-    assert!(common::read_back(&(device, queue), &texture).iter().all(|&b| b == 0), "a declined paint wrote pixels");
+    assert!(common::read_native(&mut native).iter().all(|&b| b == 0), "a declined paint wrote pixels");
 }
 
 #[test]
@@ -121,7 +120,7 @@ fn a_device_that_cannot_run_vello_does_not_stop_a_capable_device_that_comes_late
     overlapping_fills(&mut list);
     let mut rasterizer = VelloRasterizer::new();
 
-    let mut on_weak = (weak.0.clone(), weak.1.clone(), common::face_texture(&weak.0, spec().size_px()));
+    let mut on_weak = common::native(&weak, spec().size_px());
     assert!(!rasterizer.rasterize_native(&spec(), &list, &mut on_weak).unwrap(), "the weak device was declined");
 
     // As after the renderer rebuilt its device: the same rasteriser, now with a device Vello can run on.
@@ -132,4 +131,60 @@ fn a_device_that_cannot_run_vello_does_not_stop_a_capable_device_that_comes_late
         "the capable device draws what a fresh rasteriser draws"
     );
     assert!(drawn.chunks(4).any(|p| p[3] != 0), "and it is not blank");
+}
+
+/// A paint target like the wgpu renderer's (its `native()` is the renderer's tuple), whose `write_rgba` keeps the pixels.
+struct WgpuTarget {
+    desc: TextureDesc,
+    written: Option<Vec<u8>>,
+    native: common::Native,
+}
+
+impl PaintTarget for WgpuTarget {
+    fn desc(&self) -> &TextureDesc {
+        &self.desc
+    }
+
+    fn write_rgba(&mut self, rect: PixelRect, rgba: &[u8]) -> Result<(), RenderError> {
+        assert_eq!(rect, PixelRect::full(self.desc.size));
+        self.written = Some(rgba.to_vec());
+        Ok(())
+    }
+
+    fn native(&mut self) -> &mut dyn Any {
+        &mut self.native
+    }
+}
+
+#[test]
+fn a_hardware_only_rasteriser_declines_a_software_adapter_every_time_and_the_cpu_raster_draws() {
+    let Some(adapter) = common::adapter() else { return };
+    if adapter.get_info().device_type != wgpu::DeviceType::Cpu {
+        eprintln!("skipped: the adapter is a hardware one, which `hardware_only` draws on (lavapipe runs this in CI)");
+        return;
+    }
+    let descriptor = wgpu::DeviceDescriptor { required_limits: adapter.limits(), ..wgpu::DeviceDescriptor::default() };
+    let Ok(gpu) = pollster::block_on(adapter.request_device(&descriptor)) else {
+        eprintln!("skipped: the adapter gave no device");
+        return;
+    };
+    let mut list = DrawList::new();
+    overlapping_fills(&mut list);
+    let mut rasterizer = VelloRasterizer::hardware_only();
+    let mut native = common::native(&gpu, spec().size_px());
+    for attempt in 0..3 {
+        assert!(!rasterizer.rasterize_native(&spec(), &list, &mut native).unwrap(), "attempt {attempt} drew");
+    }
+    assert!(common::read_native(&mut native).iter().all(|&b| b == 0), "a declined paint wrote pixels");
+
+    // Registered on a face system, the layer gets the CPU raster through `write_rgba`, byte for byte.
+    let mut system =
+        FaceSystem::real(RealPainter::new(mock_projection(), DEFAULT_PX_PER_M), Box::new(SkiaRasterizer::new()));
+    system.set_gpu_rasterizer(Some(Box::new(VelloRasterizer::hardware_only())));
+    system.update(&ChannelBuf::NEUTRAL, &mock_profile(), Seconds(0.0), FaceView::default()).unwrap();
+    let layer = system.layers().iter().find(|l| l.id == FaceLayerId::Base).copied().unwrap();
+    let mut target =
+        WgpuTarget { desc: face_texture_desc(&layer), written: None, native: common::native(&gpu, layer.size_px()) };
+    system.layer_painter(FaceLayerId::Base).unwrap().paint(&mut target).unwrap();
+    assert_eq!(target.written.expect("the CPU raster was written"), base_layer_pixels(false));
 }
