@@ -39,6 +39,7 @@ src/lib.rs: pub mod mux;
 src/lib.rs: pub mod output;
 src/lib.rs: pub mod packet;
 src/lib.rs: pub mod time;
+src/lib.rs: pub mod window;
 src/lib.rs: pub use input::{FrameStamp, InputTap, TailMode, TailStep};
 src/mux.rs: pub enum Container {
 src/mux.rs: pub struct MuxReport {
@@ -71,3 +72,26 @@ src/packet.rs: pub fn get(&self) -> u64 {
 src/time.rs: pub struct Ticks(pub i64);
 src/time.rs: pub struct Timebase {
 src/time.rs: pub fn rescale(self, value: i64, to: Timebase) -> Result<i64, StreamError> {
+src/window.rs: pub const DEFAULT_TITLE: &str = "Omuzaki Output";
+src/window.rs: pub const DEFAULT_KEY: Colour = Colour::hex(0x0000_b140);
+src/window.rs: pub const MIN_TITLE_CHARS: usize = 1;
+src/window.rs: pub const MAX_TITLE_CHARS: usize = 64;
+src/window.rs: pub const MIN_SCALE_FACTOR: f64 = 0.5;
+src/window.rs: pub const MAX_SCALE_FACTOR: f64 = 4.0;
+src/window.rs: pub const MIN_SCALE: f32 = 0.1;
+src/window.rs: pub const MAX_SCALE: f32 = 2.0;
+src/window.rs: pub enum Backdrop {
+src/window.rs: pub enum SizePolicy {
+src/window.rs: pub struct WindowSettings {
+src/window.rs: pub struct WindowPlan {
+src/window.rs: pub enum WindowError {
+src/window.rs: pub struct WindowCaps {
+src/window.rs: pub struct OutputSurface {
+src/window.rs: pub enum WindowState {
+src/window.rs: pub const fn new(physical: UVec2, logical: (f64, f64), scale_factor: f64) -> Self {
+src/window.rs: pub const fn new(transparent: bool, always_on_top: bool) -> Self {
+src/window.rs: pub const fn new(size: UVec2, scale_factor: f64) -> Self {
+src/window.rs: pub const fn open(physical: UVec2, backdrop: Backdrop) -> Self {
+src/window.rs: pub const fn with_minimised(self, minimised: bool) -> Self {
+src/window.rs: pub trait WindowHost: Service {
+src/window.rs: pub trait PaletteSource: Service {

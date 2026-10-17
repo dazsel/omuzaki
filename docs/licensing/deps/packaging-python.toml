@@ -1,0 +1,7 @@
+section = "in-use"
+item = "packaging 26.3 (Python)"
+kind = "python"
+used_for = "a dependency of onnxruntime in the LiteRT parity reference (`nightly.yml`, #1751)"
+status = "yes"
+condition = "CI only, hash-pinned in `tools/litert/requirements-reference.txt`; never shipped"
+audit = "(PyPI: Apache-2.0 OR BSD-2-Clause; licence expression)"

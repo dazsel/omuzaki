@@ -12,6 +12,7 @@
 //! | [`input`] | the [`InputTap`] trait, [`FrameStamp`] and the tail contract |
 //! | [`output`] | the [`Output`](output::Output) trait and its config and status |
 //! | [`error`] | [`StreamError`](error::StreamError) |
+//! | [`window`] | the clean output window: the [`WindowHost`](window::WindowHost) and [`PaletteSource`](window::PaletteSource) services and their types |
 
 #![deny(missing_docs)]
 
@@ -22,5 +23,6 @@ pub mod mux;
 pub mod output;
 pub mod packet;
 pub mod time;
+pub mod window;
 
 pub use input::{FrameStamp, InputTap, TailMode, TailStep};

@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rate results</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header>
+  <h1>Rate results</h1>
+  <p id="progress" role="status" aria-live="polite">Loading…</p>
+</header>
+<main id="main" tabindex="-1">
+  <section aria-labelledby="prompt-heading">
+    <h2 id="prompt-heading">What the person asked</h2>
+    <p id="prompt"></p>
+  </section>
+  <section id="pictures" aria-label="Renders"></section>
+  <section aria-labelledby="questions-heading">
+    <h2 id="questions-heading">Questions</h2>
+    <div id="questions"></div>
+  </section>
+</main>
+<footer>
+  <button type="button" id="previous">Previous item</button>
+  <button type="button" id="next">Next item</button>
+  <button type="button" id="finish">Finish</button>
+  <p class="keys">Keys: <kbd>Y</kbd> yes · <kbd>N</kbd> no · <kbd>U</kbd> unsure · <kbd>←</kbd> <kbd>→</kbd> items. Nothing leaves this machine.</p>
+</footer>
+<script src="/app.js"></script>
+</body>
+</html>

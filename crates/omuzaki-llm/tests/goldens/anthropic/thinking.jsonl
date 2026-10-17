@@ -1,0 +1,8 @@
+{"request":{"body":{"max_tokens":256,"messages":[{"content":[{"text":"hello","type":"text"}],"role":"user"}],"model":"claude-haiku-5-5","stream":true},"method":"POST","path":"/v1/messages"}}
+{"Start":{"model":"claude-haiku-5-5"}}
+{"Usage":{"input":50,"output":3,"cache_read":0,"cache_write":0}}
+{"Opaque":{"provider":"anthropic","block":{"signature":"EqQBCgIYAhIM1gbcDa9GJwZA2b3hGgxBdjrkzLoky3dl1pkiMOYds","thinking":"I need to find the GCD of 1071 and 462 using the Euclidean algorithm.\n\n1071 = 2 × 462 + 147","type":"thinking"}}}
+{"Opaque":{"provider":"anthropic","block":{"data":"EmwKAhgBEgy3va3pzix/LafPsn4aDFIT2Xlxh0L5L8rLVyIwxtE3rAFBa8cr3qpP","type":"redacted_thinking"}}}
+{"TextDelta":"The GCD of 1071 and 462 is 21."}
+{"Usage":{"input":50,"output":120,"cache_read":0,"cache_write":0}}
+{"Stop":"EndTurn"}
