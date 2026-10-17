@@ -119,9 +119,9 @@ fn text(result: &CallToolResult) -> String {
 /// Blocks until the executor announces that a session ended, and returns what ending it did.
 fn session_ended(events: &Receiver<Event>) -> (omuzaki_ops_api::SessionInfo, omuzaki_ops_api::Ended) {
     loop {
-        match events.recv_timeout(PATIENCE).expect("the executor never ended the session") {
-            Event::SessionEnded { session, ended, .. } => return (session, ended),
-            _ => {}
+        let event = events.recv_timeout(PATIENCE).expect("the executor never ended the session");
+        if let Event::SessionEnded { session, ended, .. } = event {
+            return (session, ended);
         }
     }
 }

@@ -1127,6 +1127,15 @@ fn end_recorded(ends: Arc<Mutex<Vec<(JobId, JobState)>>>) -> Rig {
     Rig { exec, clock }
 }
 
+/// The state as the journal holds it: a finished job's outcome stays in memory (`JobState::Done`), so it is not in an
+/// entry.
+fn without_outcome(state: JobState) -> JobState {
+    match state {
+        JobState::Done { tx, seq, .. } => JobState::done(tx, seq),
+        other => other,
+    }
+}
+
 #[test]
 fn every_end_is_journalled_once_with_the_state_the_snapshot_shows() {
     let ends = Arc::new(Mutex::new(Vec::new()));
@@ -1151,6 +1160,7 @@ fn every_end_is_journalled_once_with_the_state_the_snapshot_shows() {
         .into_iter()
         .map(|id| (id, live(&rig, id).state))
         .chain([(detached.id, detached_end.state)])
+        .map(|(id, state)| (id, without_outcome(state)))
         .collect();
     let recorded = ends.lock().unwrap().clone();
     for snapshot in &snapshots {
