@@ -2,6 +2,7 @@
 //!
 //! | Module | Holds |
 //! |---|---|
+//! | [`hotkeys`] | [`Hotkeys`](hotkeys::Hotkeys): the keyboard's presses and releases, sent to the bound triggers |
 //! | [`model`] | [`LiveModel`](model::LiveModel): the status it reads and the ops it runs, apart from drawing |
 //! | [`panel`] | [`LivePanel`](panel::LivePanel): the workspace's controls, top to bottom in Tab order |
 //! | [`registration`] | the Live panel, the Perform workspace and the story, registered with `omuzaki-ui-api` |
@@ -10,6 +11,7 @@
 //! | [`viewport`] | the stage view: the kit character on the real renderer, the program frame and the latency it measures |
 //! | [`wiring`] | the perform thread, the newest-wins hand-off, the render side and the quit order |
 
+pub mod hotkeys;
 pub mod latency;
 pub mod model;
 pub mod panel;

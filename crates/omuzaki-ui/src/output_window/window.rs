@@ -2,10 +2,12 @@
 
 use std::time::Instant;
 
-use egui::{Color32, Context, CursorIcon, Key, Pos2, Rect, TextureId, Ui, ViewportBuilder, ViewportId};
+use egui::{
+    Color32, Context, CursorIcon, Key, Pos2, Rect, TextureId, Ui, ViewportBuilder, ViewportCommand, ViewportId,
+};
 
 use super::plan::{OutputPlan, Shown};
-use crate::aux_window::{Arrangement, PhysicalSize, PlacementBook, Transparency, resize_command};
+use crate::aux_window::{Arrangement, PhysicalSize, PlacementBook, Transparency, fit_commands};
 
 /// The viewport's id: one output window per app.
 pub const VIEWPORT: &str = "omuzaki-output";
@@ -46,12 +48,22 @@ pub struct OutputWindow {
     status: OutputStatus,
     /// Start of the current one-second fps window and the frames presented in it.
     fps_window: Option<(Instant, u64)>,
+    /// The scale the viewport's size and bounds were last planned at: the main viewport's when the window opened, then
+    /// the output viewport's own once it has drawn. The two differ when the window sits on another monitor.
+    planned_at: Option<f32>,
 }
 
 impl OutputWindow {
     /// A closed window for `plan`, on a platform where a transparent surface is `transparency`.
     pub fn new(plan: OutputPlan, transparency: Transparency) -> Self {
-        Self { plan, transparency, placement: PlacementBook::new(), status: OutputStatus::default(), fps_window: None }
+        Self {
+            plan,
+            transparency,
+            placement: PlacementBook::new(),
+            status: OutputStatus::default(),
+            fps_window: None,
+            planned_at: None,
+        }
     }
 
     /// The plan.
@@ -79,6 +91,7 @@ impl OutputWindow {
         if open != self.status.open {
             self.status = OutputStatus { open, ..OutputStatus::default() };
             self.fps_window = None;
+            self.planned_at = None;
         }
     }
 
@@ -109,13 +122,32 @@ impl OutputWindow {
         ctx.request_repaint_after(self.plan.frame_interval());
     }
 
-    fn builder(&self, ctx: &Context) -> ViewportBuilder {
+    /// The viewport the plan asks for. The position is read at the main viewport's scale (the arrangement it was saved
+    /// under); the size and bounds are planned at the scale the output viewport has been seen at, else the main one.
+    fn builder(&mut self, ctx: &Context) -> ViewportBuilder {
         let ppp = ctx.pixels_per_point();
         let monitor = ctx.input(|i| i.viewport().monitor_size).map(|size| PhysicalSize::of_points(size, ppp));
         let position = monitor
             .and_then(|monitor| self.placement.restore(&[Arrangement::new(monitor, ppp)]))
             .map(|(x, y)| physical_to_points(x, y, ppp));
-        self.plan.viewport(ppp, self.shown(), position)
+        let planned = *self.planned_at.get_or_insert(ppp);
+        self.plan.viewport(planned, self.shown(), position)
+    }
+
+    /// What brings the output viewport back to the plan, given the physical size it measures and the scale `ppp` it is
+    /// drawn at now: its size and both bounds, at that scale. `None` while it already is the planned size and its
+    /// bounds are planned at this scale. Moving to a monitor of another scale needs it even when the pixels happen to
+    /// come out right, because the bounds are in points.
+    fn refit(&mut self, measured: PhysicalSize, ppp: f32) -> Option<[ViewportCommand; 3]> {
+        let settled = measured == self.plan.size && self.planned_at.is_some_and(|at| at.to_bits() == ppp.to_bits());
+        if settled {
+            return None;
+        }
+        let commands = fit_commands(self.plan.size, ppp);
+        if commands.is_some() {
+            self.planned_at = Some(ppp);
+        }
+        commands
     }
 
     /// One frame inside the output viewport.
@@ -130,7 +162,7 @@ impl OutputWindow {
         if let Some(rect) = rect {
             let measured = PhysicalSize::of_points(rect.size(), ppp);
             self.status.measured = Some(measured);
-            if let Some(command) = resize_command(self.plan.size, measured, ppp) {
+            for command in self.refit(measured, ppp).into_iter().flatten() {
                 ctx.send_viewport_cmd(command);
             }
         }
@@ -224,5 +256,50 @@ mod tests {
         assert!(OutputWindow::new(plan.clone(), Transparency::Fallback).status().fallback);
         assert!(!OutputWindow::new(plan, Transparency::Verified).status().fallback);
         assert!(!OutputWindow::new(OutputPlan::default(), Transparency::Fallback).status().fallback);
+    }
+
+    #[test]
+    fn moving_to_a_monitor_of_another_scale_refits_the_size_and_both_bounds_at_that_scale() {
+        let ctx = Context::default();
+        let mut window = OutputWindow::new(OutputPlan::default(), Transparency::Fallback);
+        window.set_open(true);
+        // Opened from the main viewport at 100 %: the viewport is planned in its points.
+        let opened = window.builder(&ctx);
+        assert_eq!(opened.min_inner_size, Some(egui::vec2(1920.0, 1080.0)));
+        assert_eq!(window.refit(PhysicalSize::FULL_HD, 1.0), None, "right size, right scale: nothing to do");
+
+        // It lands on a 150 % monitor, where those points are 2880 x 1620 pixels. All three are corrected, at 150 %.
+        let at_150 = egui::vec2(1280.0, 720.0);
+        let moved = window.refit(PhysicalSize::new(2880, 1620), 1.5);
+        assert_eq!(
+            moved,
+            Some([
+                ViewportCommand::InnerSize(at_150),
+                ViewportCommand::MinInnerSize(at_150),
+                ViewportCommand::MaxInnerSize(at_150),
+            ])
+        );
+        assert_eq!(window.refit(PhysicalSize::FULL_HD, 1.5), None, "settled at the new scale");
+        // The viewport egui is handed each frame follows, so it can't pull the bounds back to the main viewport's.
+        let builder = window.builder(&ctx);
+        assert_eq!(
+            (builder.inner_size, builder.min_inner_size, builder.max_inner_size),
+            (Some(at_150), Some(at_150), Some(at_150))
+        );
+
+        // Back on the 100 % monitor the OS may keep 1920 x 1080 pixels; the bounds are still 150 %'s points.
+        let back = window.refit(PhysicalSize::FULL_HD, 1.0).expect("the stale bounds are corrected");
+        assert!(back.iter().all(|command| matches!(
+            command,
+            ViewportCommand::InnerSize(v) | ViewportCommand::MinInnerSize(v) | ViewportCommand::MaxInnerSize(v)
+                if *v == egui::vec2(1920.0, 1080.0)
+        )));
+    }
+
+    #[test]
+    fn a_scale_that_is_not_a_number_is_not_planned_at() {
+        let mut window = OutputWindow::new(OutputPlan::default(), Transparency::Fallback);
+        assert_eq!(window.refit(PhysicalSize::new(10, 10), 0.0), None);
+        assert_eq!(window.planned_at, None);
     }
 }

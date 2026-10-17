@@ -23,7 +23,9 @@ use omuzaki_char_api::{
 use omuzaki_core::glam::UVec2;
 use omuzaki_face_api::ExpressionSet;
 use omuzaki_render::WgpuRenderer;
-use omuzaki_render_api::{AlphaEncoding, Image, Quality, RenderError, Renderer, Scene, TargetDesc, TargetId};
+use omuzaki_render_api::{
+    AlphaEncoding, Background, Image, Quality, RenderError, Renderer, Scene, TargetDesc, TargetId,
+};
 use omuzaki_stage::frame::face::FaceRig;
 use omuzaki_stage::frame::{Stage, StageClock};
 use omuzaki_stage::recipe::{LightRig, RecipeError};
@@ -152,7 +154,9 @@ pub fn kit_stage(renderer: &mut dyn Renderer, size: UVec2) -> Result<Stage, View
     scene.background = rig.background();
     scene.post = rig.post(false);
     let has_face = built.face.is_some();
-    let target = renderer.create_target(&TargetDesc { size, alpha: AlphaEncoding::Straight })?;
+    // Premultiplied, because egui blends its textures that way: a straight-alpha picture would fringe at every soft edge
+    // once the backdrop is clear ([`LiveViewport::set_clean`]).
+    let target = renderer.create_target(&TargetDesc { size, alpha: AlphaEncoding::Premultiplied })?;
     let stage =
         Stage::new(renderer, built, UploadOptions::default(), scene, target, Quality::live(), StageClock::live());
     let mut stage = match stage {
@@ -193,15 +197,32 @@ pub trait Presenter: Send {
 }
 
 /// Shares the renderer's own texture with egui when both run on one device (the app): nothing is copied.
+///
+/// The registration with egui (a texture view, a sampler and a bind group, under the painter's write lock) is made once
+/// and kept: the view points into the target's texture, so it shows each new picture by itself. It is made again only
+/// when the target's texture is replaced (a resized target), so a frame that changes nothing about the target takes no
+/// lock and allocates nothing here.
 pub struct NativePresenter {
     state: egui_wgpu::RenderState,
-    id: Option<egui::TextureId>,
+    registered: Option<Registered>,
+    registrations: u64,
+}
+
+/// A texture egui holds a view of, and the id it paints it under.
+struct Registered {
+    id: egui::TextureId,
+    texture: egui_wgpu::wgpu::Texture,
 }
 
 impl NativePresenter {
     /// A presenter on the app's wgpu state.
     pub fn new(state: egui_wgpu::RenderState) -> Self {
-        Self { state, id: None }
+        Self { state, registered: None, registrations: 0 }
+    }
+
+    /// How many times the texture was registered or re-pointed at egui: once for a stage whose target never changes.
+    pub fn registrations(&self) -> u64 {
+        self.registrations
     }
 }
 
@@ -213,25 +234,32 @@ impl Presenter for NativePresenter {
         target: TargetId,
     ) -> Result<egui::TextureId, ViewportError> {
         let texture = renderer.target_texture(target)?;
+        if let Some(registered) = &self.registered
+            && registered.texture == texture
+        {
+            return Ok(registered.id);
+        }
         let view = texture.create_view(&egui_wgpu::wgpu::TextureViewDescriptor::default());
-        let mut painter = self.state.renderer.write();
         let filter = egui_wgpu::wgpu::FilterMode::Linear;
-        let id = match self.id {
-            Some(id) => {
-                painter.update_egui_texture_from_wgpu_texture(&self.state.device, &view, filter, id);
-                id
+        let mut painter = self.state.renderer.write();
+        let id = match &self.registered {
+            Some(registered) => {
+                painter.update_egui_texture_from_wgpu_texture(&self.state.device, &view, filter, registered.id);
+                registered.id
             }
             None => painter.register_native_texture(&self.state.device, &view, filter),
         };
-        self.id = Some(id);
+        drop(painter);
+        self.registered = Some(Registered { id, texture });
+        self.registrations += 1;
         Ok(id)
     }
 }
 
 impl Drop for NativePresenter {
     fn drop(&mut self) {
-        if let Some(id) = self.id.take() {
-            self.state.renderer.write().free_texture(&id);
+        if let Some(registered) = self.registered.take() {
+            self.state.renderer.write().free_texture(&registered.id);
         }
     }
 }
@@ -250,8 +278,13 @@ impl Presenter for ReadbackPresenter {
         renderer: &mut WgpuRenderer,
         target: TargetId,
     ) -> Result<egui::TextureId, ViewportError> {
-        let Image { size, rgba8, .. } = renderer.read_target(target)?;
-        let image = egui::ColorImage::from_rgba_unmultiplied([size.x as usize, size.y as usize], &rgba8);
+        let Image { size, rgba8, alpha } = renderer.read_target(target)?;
+        let sides = [size.x as usize, size.y as usize];
+        // egui blends premultiplied pixels; a straight-alpha target (another stage's) is converted on the way in.
+        let image = match alpha {
+            AlphaEncoding::Premultiplied => egui::ColorImage::from_rgba_premultiplied(sides, &rgba8),
+            AlphaEncoding::Straight => egui::ColorImage::from_rgba_unmultiplied(sides, &rgba8),
+        };
         let handle = match self.texture.take() {
             Some(mut handle) => {
                 handle.set(image, egui::TextureOptions::LINEAR);
@@ -311,6 +344,8 @@ pub struct LiveViewport {
     presenter: Box<dyn Presenter>,
     size: PhysicalSize,
     program: Option<Program>,
+    /// The backdrop the stage was made with, drawn while the output window is closed.
+    studio: Background,
     clock: Option<ClockObserver>,
     tracker: Option<SharedTracker>,
     meter: Arc<LatencyMeter>,
@@ -332,12 +367,14 @@ impl LiveViewport {
         tracker: Option<SharedTracker>,
     ) -> Self {
         let size = PhysicalSize::new(size.x, size.y);
+        let studio = stage.scene().background;
         Self {
             renderer,
             scene: LiveScene::new(stage, reader),
             presenter,
             size,
             program: None,
+            studio,
             clock,
             tracker,
             meter: LatencyMeter::shared(),
@@ -348,6 +385,16 @@ impl LiveViewport {
     /// Records its latency in `meter` instead of the shared one (tests).
     pub fn set_meter(&mut self, meter: Arc<LatencyMeter>) {
         self.meter = meter;
+    }
+
+    /// Draws the program frame with nothing behind the character (`true`) or over the studio backdrop the stage was made
+    /// with (`false`), from the next frame on.
+    ///
+    /// The output window shows the program over its own backdrop, a key colour or the desktop, so while it is open the
+    /// studio backdrop would cover exactly what the capture app keys out: the frame must carry the character alone,
+    /// with alpha.
+    pub fn set_clean(&mut self, clean: bool) {
+        self.scene.stage_mut().scene_mut().background = if clean { Background::Transparent } else { self.studio };
     }
 
     /// Draws the newest perform frame, if one arrived, and returns the program frame: the newest picture, or `None`

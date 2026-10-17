@@ -170,6 +170,49 @@ fn the_whole_head_is_in_frame_with_headroom_at_every_stage_size() {
     }
 }
 
+/// The alpha of the picture's top-left pixel: the backdrop, since the character never reaches the corner.
+fn corner_alpha(app: &mut LiveApp) -> u8 {
+    app.viewport_mut().expect("attached").snapshot().expect("the picture reads back").rgba8[3]
+}
+
+#[test]
+fn the_program_frame_carries_no_backdrop_while_the_output_window_is_open() {
+    let meter = Arc::new(LatencyMeter::new());
+    let mut app = live(FakeTracker::scripted(Vec::new()), UVec2::new(160, 200), &meter);
+    let runner = app.runner();
+    // A context that can open OS windows, so the output window really opens.
+    let ctx = egui::Context::default();
+    ctx.set_embed_viewports(false);
+    let frame = |app: &mut LiveApp| {
+        ctx.run_ui(egui::RawInput::default(), |ui| app.show(ui.ctx())).drop_without_applying_deltas();
+    };
+    let until_corner = |app: &mut LiveApp, alpha: u8| {
+        let deadline = Instant::now() + LIMIT;
+        while Instant::now() < deadline {
+            frame(app);
+            if published(&ctx).is_some() && corner_alpha(app) == alpha {
+                return true;
+            }
+            // Paces the loop; what it waits for is a new perform frame drawn under the new backdrop.
+            std::thread::sleep(Duration::from_millis(8));
+        }
+        false
+    };
+
+    assert!(until_corner(&mut app, 255), "with the window closed the stage draws its studio backdrop, opaque");
+
+    run(&runner, "output.window.open", &[("backdrop", Value::from("key"))]);
+    assert!(until_corner(&mut app, 0), "an output window over a key gets the character alone: the backdrop is clear");
+    assert!(app.output_mut().status().open, "the window is open");
+    let picture = app.viewport_mut().expect("attached").snapshot().expect("the picture reads back");
+    let (pixels, _) = picture.rgba8.as_chunks::<4>();
+    assert!(pixels.iter().any(|px| px[3] == 255), "the character itself is still opaque");
+
+    run(&runner, "output.window.close", &[]);
+    assert!(until_corner(&mut app, 255), "closing the window brings the studio backdrop back");
+    app.shutdown().expect("a clean shutdown");
+}
+
 #[test]
 fn the_latency_is_a_dash_until_a_tracked_frame_is_drawn_and_a_number_after() {
     let meter = Arc::new(LatencyMeter::new());

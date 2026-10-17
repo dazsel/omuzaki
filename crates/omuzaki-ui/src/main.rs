@@ -32,6 +32,10 @@ impl eframe::App for App {
             live.show(ui.ctx());
         }
         self.shell.ui(ui);
+        // The keyboard last: a key the Live panel took to bind, or a text field took to type, is no longer in the input.
+        if let Some(live) = self.live.as_mut() {
+            live.keys(ui.ctx());
+        }
     }
 
     fn on_exit(&mut self) {

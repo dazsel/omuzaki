@@ -4,7 +4,7 @@
 //! winit rounds to whole pixels. So the points for a physical size are `physical / pixels_per_point`, computed in the
 //! same `f32` arithmetic, and [`points_for`] checks that the round trip lands on the exact size. The scale is the
 //! monitor's (times egui's zoom), known only once the window is open, so the window re-plans when it reads a scale it
-//! wasn't planned for ([`resize_command`]).
+//! wasn't planned for ([`fit_commands`]).
 
 use egui::{Vec2, ViewportCommand};
 use serde::{Deserialize, Serialize};
@@ -48,13 +48,18 @@ pub fn points_for(size: PhysicalSize, pixels_per_point: f32) -> Option<Vec2> {
     Some(points)
 }
 
-/// The command that brings a window measured at `measured` physical pixels back to `wanted`, at the scale it now
-/// reports; `None` when it already is that size (or the scale is unusable). Send it from the window's own frame.
-pub fn resize_command(wanted: PhysicalSize, measured: PhysicalSize, pixels_per_point: f32) -> Option<ViewportCommand> {
-    if measured == wanted {
-        return None;
-    }
-    points_for(wanted, pixels_per_point).map(ViewportCommand::InnerSize)
+/// The commands that fit a window to `wanted` physical pixels at `pixels_per_point`, the scale of the monitor it is on
+/// now; `None` for a scale that is not a positive finite number. All three, always: the size, and the minimum and
+/// maximum that pin a fixed-size window to it. Bounds left at the points of the monitor the window came from would
+/// fight the new size (they are in points, which are a different number of pixels on each monitor). Send them from the
+/// window's own frame, so the scale is its own.
+pub fn fit_commands(wanted: PhysicalSize, pixels_per_point: f32) -> Option<[ViewportCommand; 3]> {
+    let points = points_for(wanted, pixels_per_point)?;
+    Some([
+        ViewportCommand::InnerSize(points),
+        ViewportCommand::MinInnerSize(points),
+        ViewportCommand::MaxInnerSize(points),
+    ])
 }
 
 #[cfg(test)]
@@ -92,11 +97,17 @@ mod tests {
     }
 
     #[test]
-    fn a_window_on_a_monitor_of_another_scale_is_resized_and_a_right_one_is_left_alone() {
+    fn a_window_is_fitted_with_its_size_and_both_bounds_at_the_scale_it_is_on() {
         let wanted = PhysicalSize::FULL_HD;
-        assert_eq!(resize_command(wanted, wanted, 1.5), None);
-        // Planned at 100 %, it landed on a 150 % monitor: 1920 points became 2880 pixels.
-        let command = resize_command(wanted, PhysicalSize::new(2880, 1620), 1.5);
-        assert_eq!(command, Some(ViewportCommand::InnerSize(Vec2::new(1280.0, 720.0))));
+        let at_150 = Vec2::new(1280.0, 720.0);
+        assert_eq!(
+            fit_commands(wanted, 1.5),
+            Some([
+                ViewportCommand::InnerSize(at_150),
+                ViewportCommand::MinInnerSize(at_150),
+                ViewportCommand::MaxInnerSize(at_150),
+            ])
+        );
+        assert_eq!(fit_commands(wanted, 0.0), None, "an unusable scale fits nothing");
     }
 }

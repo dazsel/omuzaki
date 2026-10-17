@@ -18,5 +18,5 @@ pub mod size;
 pub mod surface;
 
 pub use placement::{Arrangement, PlacementBook};
-pub use size::{PhysicalSize, points_for, resize_command};
+pub use size::{PhysicalSize, fit_commands, points_for};
 pub use surface::{Backend, Platform, SurfaceRoute, Transparency, transparency};

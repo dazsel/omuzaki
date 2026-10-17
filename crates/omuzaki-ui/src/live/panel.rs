@@ -6,12 +6,13 @@
 
 use std::sync::Arc;
 
-use egui::{Event, Key, Modifiers, RichText, ScrollArea, Sense, Ui, WidgetInfo, WidgetType, vec2};
+use egui::{Event, Key, RichText, ScrollArea, Sense, Ui, WidgetInfo, WidgetType, vec2};
 use omuzaki_ops_api::{Actor, Runner};
 use omuzaki_stage::perform::Tracking;
 use omuzaki_stage::perform::host::CalibrationState;
 use omuzaki_stream_api::window::{Backdrop as Shown, DEFAULT_TITLE, WindowState};
 
+use super::hotkeys::chord;
 use super::latency::LatencyMeter;
 use super::model::{
     Backdrop, Control, HOTKEY_ROWS, LiveModel, OP_CALIBRATE, OP_SET_RETARGET, SMOOTHING_RANGE, WindowChoice,
@@ -597,21 +598,6 @@ fn cell<R>(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
         add(ui)
     })
     .inner
-}
-
-/// The name a key press is bound under: its modifiers, then the key, as `Ctrl+Shift+F12`.
-fn chord(modifiers: Modifiers, key: Key) -> String {
-    let mut name = String::new();
-    for (held, word) in
-        [(modifiers.ctrl, "Ctrl"), (modifiers.alt, "Alt"), (modifiers.shift, "Shift"), (modifiers.mac_cmd, "Cmd")]
-    {
-        if held {
-            name.push_str(word);
-            name.push('+');
-        }
-    }
-    name.push_str(key.name());
-    name
 }
 
 /// A target that takes a dropped file; returns its path when one is dropped while the pointer is over it.

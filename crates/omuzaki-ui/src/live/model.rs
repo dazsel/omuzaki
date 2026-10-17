@@ -27,6 +27,8 @@ pub const OP_TRIGGER_BIND: &str = "trigger.bind";
 pub const OP_TRIGGER_UNBIND: &str = "trigger.unbind";
 /// `trigger.list`: the bindings, and which one is showing.
 pub const OP_TRIGGER_LIST: &str = "trigger.list";
+/// `trigger.press`: press or release a bound key, as a keyboard would.
+pub const OP_TRIGGER_PRESS: &str = "trigger.press";
 /// `output.window.open`: open (or re-open with other settings) the clean output window.
 pub const OP_WINDOW_OPEN: &str = "output.window.open";
 /// `output.window.close`: close the clean output window.
@@ -572,7 +574,7 @@ impl LiveModel {
 }
 
 /// Runs `op` with `args` as `actor` (a person: the UI is a person's transport) and returns its output.
-fn run(runner: &dyn Runner, actor: &Actor, op: &str, args: Value) -> Result<Value, OpError> {
+pub(super) fn run(runner: &dyn Runner, actor: &Actor, op: &str, args: Value) -> Result<Value, OpError> {
     let request = Request {
         op: op.to_owned(),
         args,
@@ -587,7 +589,7 @@ fn run(runner: &dyn Runner, actor: &Actor, op: &str, args: Value) -> Result<Valu
 }
 
 /// A JSON object of `pairs`.
-fn object(pairs: &[(&str, Value)]) -> Value {
+pub(super) fn object(pairs: &[(&str, Value)]) -> Value {
     Value::Object(pairs.iter().map(|(key, value)| ((*key).to_owned(), value.clone())).collect())
 }
 

@@ -15,3 +15,10 @@ pub fn wgpu_setup() -> WgpuSetup {
     }
     setup
 }
+
+/// An egui render state on that setup: the device, queue and renderer the app shares with the stage when the stage
+/// draws into egui's own textures (`NativePresenter`). Fresh, so a `WgpuTestRenderer` can take it.
+#[allow(dead_code)] // the tests that draw into egui's own textures use it; the others don't
+pub fn render_state() -> eframe::egui_wgpu::RenderState {
+    egui_kittest::wgpu::create_render_state(wgpu_setup(), eframe::egui_wgpu::RendererOptions::PREDICTABLE)
+}

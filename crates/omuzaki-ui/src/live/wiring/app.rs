@@ -7,7 +7,7 @@ use egui::Context;
 use omuzaki_anim_api::{ChannelBuf, HumanoidPose};
 use omuzaki_core::glam::UVec2;
 use omuzaki_face_api::ExpressionSet;
-use omuzaki_ops_api::{Runner, ServicesBuilder};
+use omuzaki_ops_api::{Actor, Runner, ServicesBuilder};
 use omuzaki_render::WgpuRenderer;
 use omuzaki_stage::frame::Stage;
 use omuzaki_stage::perform::host::{PerformError, PerformHost};
@@ -22,6 +22,7 @@ use super::mailbox::FrameReader;
 use super::rig::{LiveRig, live_performer};
 use super::thread::{LoopReport, WiringError};
 use crate::aux_window::{PhysicalSize, Transparency};
+use crate::live::hotkeys::Hotkeys;
 use crate::live::viewport::{LiveViewport, Presenter, SharedTracker, ViewportError};
 use crate::output_window::{OutputHost, OutputPlan, OutputWindow, Program};
 use crate::wiring::{self, ExecutorError};
@@ -68,6 +69,7 @@ pub struct LiveApp {
     clock: Option<ClockObserver>,
     tracker: SharedTracker,
     viewport: Option<LiveViewport>,
+    hotkeys: Hotkeys,
 }
 
 impl LiveApp {
@@ -112,6 +114,7 @@ impl LiveApp {
             clock: observer,
             tracker,
             viewport: None,
+            hotkeys: Hotkeys::new(),
         })
     }
 
@@ -169,11 +172,19 @@ impl LiveApp {
     /// until there is one. Requests the ops queued on the host are carried out first, and what the window is is
     /// published after, for `output.window.status`. Call once per frame from the main viewport.
     pub fn show(&mut self, ctx: &Context) {
-        let program = self.viewport.as_mut().and_then(|view| match view.frame(ctx, ctx.input(|i| i.unstable_dt)) {
-            Ok(program) => program,
-            Err(error) => {
-                tracing::warn!(%error, "the stage did not draw this frame");
-                None
+        // An open output window shows the program over its own backdrop (the key, or the desktop), so while one is open
+        // the program carries the character alone, with alpha. Requests the ops queued are carried out first so the
+        // frame drawn now already follows them; a context that can't open an OS window keeps the window closed.
+        self.host.take_requests(&mut self.output);
+        let clean = self.output.status().open && !ctx.embed_viewports();
+        let program = self.viewport.as_mut().and_then(|view| {
+            view.set_clean(clean);
+            match view.frame(ctx, ctx.input(|i| i.unstable_dt)) {
+                Ok(program) => program,
+                Err(error) => {
+                    tracing::warn!(%error, "the stage did not draw this frame");
+                    None
+                }
             }
         });
         if self.viewport.is_some() {
@@ -181,6 +192,13 @@ impl LiveApp {
             ctx.request_repaint_after(std::time::Duration::from_millis(8));
         }
         self.show_program(ctx, program);
+    }
+
+    /// Sends this frame's key presses and releases to the triggers they are bound to (`trigger.press`). Call it once per
+    /// frame, after the shell has drawn: the Live panel's key capture and a focused text field take their keys from the
+    /// input first, so a key that binds or types never also fires.
+    pub fn keys(&mut self, ctx: &Context) {
+        self.hotkeys.dispatch(ctx, &*self.runner, &Actor::Person { name: "you".to_owned() });
     }
 
     /// [`show`](Self::show) with the program frame given: for a caller that renders elsewhere (the output window's
