@@ -850,11 +850,11 @@ fn head_hair_and_glasses() -> Value {
 /// a result fitted to frames that moved. The face profile is in the guard whole, and so is the seed.
 #[test]
 fn a_face_layout_changed_while_the_fit_ran_refuses_the_apply() {
+    type Edit = Box<dyn Fn(&mut MemDoc)>;
     let store = Arc::new(MemStore::default());
     let doc = with_parts("soft-sd", None, head_hair_and_glasses());
     let args = json!({ "character": "mock", "views": views() });
     let result = work(&doc, &store, "fit.apply", &args, &Signal::default()).unwrap();
-    type Edit = Box<dyn Fn(&mut MemDoc)>;
     let edits: [(&str, Edit); 3] = [
         ("eye spacing", Box::new(|d| set_layout(d, "eye_spacing", 0.12))),
         ("eye height", Box::new(|d| set_layout(d, "eye_y", -0.05))),
