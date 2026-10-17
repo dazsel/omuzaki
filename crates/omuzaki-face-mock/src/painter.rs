@@ -4,8 +4,8 @@ use omuzaki_anim_api::Channel;
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::Vec2;
 use omuzaki_face_api::{
-    Cap, Cmd, ColourExt, ColourRef, DrawList, FaceDrawing, FaceError, FaceInput, FaceLayerId, FaceLayerSpec,
-    FacePainter, FaceProfile, FaceProjection, FaceRect, Join, Paint, PaintParams, Stops, narrow,
+    Cap, Cmd, ColourRef, DrawList, FaceDrawing, FaceError, FaceInput, FaceLayerId, FaceLayerSpec, FacePainter,
+    FaceProfile, FaceProjection, FaceRect, Join, MouthParams, Paint, PaintParams, Stops, narrow,
 };
 
 /// Raster density the mock suggests for the base layer: 2 000 px/m puts a 0.4 m wide face at 800 px.
@@ -36,7 +36,7 @@ pub struct MockPainter {
 
 impl MockPainter {
     /// The channels the mock reacts to (through the default `FaceMapping`); the rest are accepted and ignored.
-    pub const SUPPORTED: [Channel; 24] = [
+    pub const SUPPORTED: [Channel; 25] = [
         Channel::EYE_BLINK_LEFT,
         Channel::EYE_BLINK_RIGHT,
         Channel::EYE_ARC_LEFT,
@@ -61,6 +61,7 @@ impl MockPainter {
         Channel::BLUSH,
         Channel::CHEEK_PUFF,
         Channel::TEARS,
+        Channel::FANGS,
     ];
 
     /// A painter for a face projected onto `projection`.
@@ -74,6 +75,12 @@ impl Default for MockPainter {
     fn default() -> Self {
         Self::new(mock_projection())
     }
+}
+
+/// `c` with its own alpha multiplied by `factor` (clamped to `0..=1`), as in the real painter.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // the product is within 0..=255
+fn scaled(c: Colour, factor: f32) -> Colour {
+    Colour { a: (f32::from(c.a) * factor.clamp(0.0, 1.0)).round() as u8, ..c }
 }
 
 fn solid(c: Colour) -> Paint {
@@ -94,9 +101,19 @@ fn finite(p: &PaintParams) -> bool {
         [p.left_eye, p.right_eye].iter().all(|e| [e.open, e.close, e.arc, e.lower_lid].iter().all(|v| v.is_finite()));
     let m = &p.mouth;
     eyes && p.gaze.is_finite()
-        && [m.open, m.wide, m.smile_left, m.smile_right, m.shift, p.blush, p.left_brow.height, p.right_brow.height]
-            .iter()
-            .all(|v| v.is_finite())
+        && [
+            m.open,
+            m.wide,
+            m.smile_left,
+            m.smile_right,
+            m.shift,
+            m.fangs,
+            p.blush,
+            p.left_brow.height,
+            p.right_brow.height,
+        ]
+        .iter()
+        .all(|v| v.is_finite())
 }
 
 impl FacePainter for MockPainter {
@@ -113,7 +130,7 @@ impl FacePainter for MockPainter {
         // Cheeks first, so features draw over them.
         let base = &mut out[FaceLayerId::Base];
         let blush =
-            fixed(&profile.cheeks.colour).faded((params.blush * narrow(profile.cheeks.strength)).clamp(0.0, 1.0));
+            scaled(fixed(&profile.cheeks.colour), (params.blush * narrow(profile.cheeks.strength)).clamp(0.0, 1.0));
         for side in [-1.0_f32, 1.0] {
             let centre = Vec2::new(side * narrow(profile.layout.blush_spacing), narrow(profile.layout.blush_y));
             let path = base
@@ -198,7 +215,7 @@ fn paint_eye(list: &mut DrawList, profile: &FaceProfile, params: &PaintParams, s
     let tears = params.effects.tears;
     if tears > 0.01 {
         let drop = list.path().ellipse(centre + Vec2::new(0.0, -half_h - 0.01), 0.004, 0.006).finish();
-        list.fill(drop, solid(fixed(&profile.eyes.tear).faded(tears)));
+        list.fill(drop, solid(scaled(fixed(&profile.eyes.tear), tears)));
     }
 }
 
@@ -235,7 +252,47 @@ fn paint_mouth(list: &mut DrawList, profile: &FaceProfile, params: &PaintParams)
         let teeth = list.path().polyline(&corners.map(|c| centre + c)).close().finish();
         list.fill(teeth, solid(fixed(&style.interior.teeth)));
     }
+    paint_fangs(list, profile, m, centre, half_w, (left, right));
     list.stroke(mouth, solid(line), narrow(style.line_width));
+}
+
+/// Two pointed fangs hanging from the open mouth's upper edge at the style's place, as opaque as the `fangs` channel.
+/// The mock draws them so a grin shows in a strip, as the real painter's do.
+fn paint_fangs(
+    list: &mut DrawList,
+    profile: &FaceProfile,
+    m: &MouthParams,
+    centre: Vec2,
+    half_w: f32,
+    ends: (f32, f32),
+) {
+    if m.fangs <= 0.01 || !profile.has_fangs() {
+        return;
+    }
+    let style = &profile.mouth.fang;
+    let (width, height, position) = (narrow(style.width), narrow(style.height), narrow(style.position));
+    let (left, right) = ends;
+    for side in [-1.0_f32, 1.0] {
+        // The mouth's upper edge is the quadratic from the right end through the control point to the left end; read
+        // it where the fang stands.
+        let t = 0.5 + 0.5 * side * position;
+        let edge = (1.0 - t) * (1.0 - t) * right - (1.0 - t) * t * (left + right) + t * t * left;
+        let base = centre + Vec2::new(side * position * half_w, edge);
+        let length = height.min(0.016 * m.open * 2.0);
+        let fang = list
+            .path()
+            .move_to(base - Vec2::new(width / 2.0, 0.0))
+            .line_to(base + Vec2::new(width / 2.0, 0.0))
+            .line_to(base + Vec2::new(0.0, -length))
+            .close()
+            .finish();
+        // The strength is the command's opacity, so the teeth colour keeps its own alpha (as in the real painter).
+        list.push(Cmd::Fill {
+            path: fang,
+            paint: solid(fixed(&profile.mouth.interior.teeth)),
+            opacity: m.fangs.clamp(0.0, 1.0),
+        });
+    }
 }
 
 #[cfg(test)]
@@ -373,6 +430,56 @@ mod tests {
         let input = FaceInput { profile: &profile, params: &p, time: Seconds(0.0), view: FaceView::default() };
         let e = MockPainter::default().paint(&input, &mut FaceDrawing::new()).unwrap_err();
         assert!(matches!(e, FaceError::Invalid(_)));
+    }
+
+    #[test]
+    fn fangs_keep_the_alpha_of_the_teeth_colour() {
+        let mut profile = mock_profile();
+        profile.mouth.interior.teeth = ColourRef::Fixed(Colour::rgba(10, 20, 30, 0));
+        let mut p = FaceMapping::default().rest_params();
+        p.mouth.open = 0.8;
+        p.mouth.fangs = 1.0;
+        let input = FaceInput { profile: &profile, params: &p, time: Seconds(0.0), view: FaceView::default() };
+        let mut out = FaceDrawing::new();
+        MockPainter::default().paint(&input, &mut out).unwrap();
+        let alphas: Vec<u8> = out[FaceLayerId::Base]
+            .cmds()
+            .iter()
+            .filter_map(|c| match c {
+                Cmd::Fill { paint: Paint::Solid(c), .. } if (c.r, c.g, c.b) == (10, 20, 30) => Some(c.a),
+                _ => None,
+            })
+            .collect();
+        assert!(!alphas.is_empty(), "no fang was drawn");
+        assert!(alphas.iter().all(|&a| a == 0), "transparent teeth drew opaque fangs: {alphas:?}");
+    }
+
+    #[test]
+    fn a_profile_with_no_fangs_draws_none() {
+        let mut profile = mock_profile();
+        profile.mouth.fang.kind = omuzaki_face_api::FangKind::None;
+        let draw = |fangs: f32| {
+            let mut p = FaceMapping::default().rest_params();
+            p.mouth.open = 0.8;
+            p.mouth.fangs = fangs;
+            let input = FaceInput { profile: &profile, params: &p, time: Seconds(0.0), view: FaceView::default() };
+            let mut out = FaceDrawing::new();
+            MockPainter::default().paint(&input, &mut out).unwrap();
+            out[FaceLayerId::Base].clone()
+        };
+        assert_eq!(draw(1.0), draw(0.0));
+    }
+
+    #[test]
+    fn a_non_finite_fang_channel_is_an_error() {
+        for bad in [f32::NAN, f32::INFINITY] {
+            let mut p = FaceMapping::default().rest_params();
+            p.mouth.fangs = bad;
+            let profile = mock_profile();
+            let input = FaceInput { profile: &profile, params: &p, time: Seconds(0.0), view: FaceView::default() };
+            let e = MockPainter::default().paint(&input, &mut FaceDrawing::new()).unwrap_err();
+            assert!(matches!(e, FaceError::Invalid(_)));
+        }
     }
 
     #[test]

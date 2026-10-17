@@ -12,6 +12,12 @@ use crate::ops::character::access as character;
 /// Lists a character's variants. Writes nothing.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit"}
+    ],
+    "x-omuzaki-fixture" = "character-variant"
+))]
 pub struct VariantList {
     /// The character whose variants to list.
     pub character: CharId,

@@ -18,6 +18,12 @@ use crate::ops::character::access;
 /// that reaches no vertex is still kept, and `rig.weights.report` lists it. The falloff is `smooth` unless given.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "part": "body", "centre": [0.2, 1.3, 0.0], "radius": 0.15, "joint": {"humanoid": "leftLowerArm"}, "strength": 0.6}
+    ],
+    "x-omuzaki-fixture" = "character"
+))]
 pub struct WeightsBrush {
     /// The character the part belongs to.
     pub character: CharId,

@@ -26,11 +26,12 @@ use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::Vec2;
 use omuzaki_face_api::{Cmd, DrawList, FaceLayerId, FaceProfile, Paint, PaintParams, PathRef, PupilShape, Stops};
 
+use super::FALLBACK_COLOUR;
 use super::Side;
 use super::aperture::Eye;
-use super::fixed_colour;
 use super::highlight;
 use crate::painter::PaintCtx;
+use crate::painter::fixed_colour;
 
 // ---- the prototype's constants that the profile does not parametrise
 
@@ -129,7 +130,11 @@ pub(super) fn paint(ctx: &mut PaintCtx<'_>, side: Side) {
     let style = &profile.eyes.iris;
     let outline = iris.outline(ctx.list(FaceLayerId::Base));
 
-    let (top, mid, low) = (fixed_colour(&style.top), fixed_colour(&style.mid), fixed_colour(&style.low));
+    let (top, mid, low) = (
+        fixed_colour(&style.top, FALLBACK_COLOUR),
+        fixed_colour(&style.mid, FALLBACK_COLOUR),
+        fixed_colour(&style.low, FALLBACK_COLOUR),
+    );
     let stops = Stops::new(&[(0.0, top), (0.5, mid), (LOW_STOP, low), (1.0, lighten(low, LIGHTEST))]);
     let gradient = Paint::Linear { from: iris.at(0.0, 1.0), to: iris.at(0.0, -1.0), stops };
     ctx.list(FaceLayerId::Base).fill(outline, gradient);
@@ -140,7 +145,7 @@ pub(super) fn paint(ctx: &mut PaintCtx<'_>, side: Side) {
     pupil(ctx, &iris);
     ctx.list(FaceLayerId::Base).push(Cmd::PopClip);
 
-    let ring = fixed_colour(&style.ring);
+    let ring = fixed_colour(&style.ring, FALLBACK_COLOUR);
     ctx.list(FaceLayerId::Base).stroke(outline, Paint::Solid(ring), RING_WIDTH);
     lid_shadow(ctx, &eye);
 }
@@ -160,7 +165,7 @@ fn crescent(list: &mut DrawList, iris: &Iris, colour: Colour) {
 fn pupil(ctx: &mut PaintCtx<'_>, iris: &Iris) {
     let style = &ctx.profile.eyes.iris.pupil;
     let scale = ctx.params.pupil.max(PUPIL_MIN_SCALE) * style.size as f32;
-    let paint = Paint::Solid(fixed_colour(&style.colour));
+    let paint = Paint::Solid(fixed_colour(&style.colour, FALLBACK_COLOUR));
     let centre = iris.at(0.0, PUPIL_RISE);
     let list = ctx.list(FaceLayerId::Base);
     let path = match style.shape {

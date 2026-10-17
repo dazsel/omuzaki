@@ -1,0 +1,4 @@
+# Design a character end to end: the test that walks the whole path, and examples for the Character area's ops
+
+- `omuzaki-cli/tests/design_e2e.rs`: a kit character is designed through ops alone (create, body shape and proportions, hands, face layout, style and a mark, hair, two accessories, palette and look), saved, reopened and rebuilt to the same meshes; the same script over MCP makes the same document; the rights sign-off and the export preflight run through ops; the VRM export reimports; the painted turnaround is the same before and after the reopen. The turnaround is an evidence case (`omuzaki-cli/evidence/design-e2e.toml`).
+- Op conformance gains fixtures built by running real ops: `character` (the standard template's kit character) and four that add one piece of state on top of it (`character-colourway`, `character-slot`, `character-variant`, `character-brush`). The Character area's ops carry examples against them, and their allowlist entries are gone.

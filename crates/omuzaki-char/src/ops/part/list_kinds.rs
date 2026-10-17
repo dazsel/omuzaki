@@ -14,6 +14,12 @@ use serde_json::json;
 /// Takes no arguments. Use a kind's id as `kind` in `part.add`, and `part.describe` on a part to see its parameters.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {}
+    ],
+    "x-omuzaki-fixture" = "demo"
+))]
 pub struct PartListKinds {}
 
 /// The facts of every registered kind, sorted by id. The registry holds them in link order, which differs between
