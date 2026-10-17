@@ -1,0 +1,41 @@
+[package]
+name = "omuzaki-test-stage"
+description = "Cross-crate tests of the stage area: the live stage with the face drawn on the GPU straight into the wgpu renderer (#151, #2074), its allocations and its bench."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Tests only: every dependency is a dev-dependency, so the library stays empty and links nothing. Only the stage area may
+# appear here: the stage, and the face and the renderer it links and draws the one into the other with
+# (`cargo xtask lint-deps`).
+[dev-dependencies]
+image.workspace = true
+omuzaki-anim-api = { path = "../omuzaki-anim-api" }
+omuzaki-char-api = { path = "../omuzaki-char-api" }
+omuzaki-char-mock = { path = "../omuzaki-char-mock" }
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-face = { path = "../omuzaki-face" }
+omuzaki-face-api = { path = "../omuzaki-face-api" }
+omuzaki-render = { path = "../omuzaki-render" }
+omuzaki-render-api = { path = "../omuzaki-render-api" }
+# The attributing counting allocator (`counting`), shared with the renderer's hot-loop tests.
+omuzaki-render-mock = { path = "../omuzaki-render-mock" }
+omuzaki-stage = { path = "../omuzaki-stage" }
+omuzaki-test = { path = "../omuzaki-test" }
+
+# The live stage drawing the face through `PaintTarget::native` on the GPU (#2074).
+[[bench]]
+name = "face"
+harness = false
+
+[lints]
+workspace = true
+
+# Native only: tests on the build machine
+[package.metadata.omuzaki]
+kind = "App"
+summary = "the stage area's cross-crate tests: the live stage with the face drawn on the GPU straight into the wgpu renderer (`face_gpu_interop`, #151), what that frame allocates (`face_gpu_alloc`), and its `face` bench"
+wasm = false
