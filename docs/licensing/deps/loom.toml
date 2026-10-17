@@ -1,0 +1,7 @@
+section = "rust"
+item = "loom"
+kind = "crate"
+used_for = "model-checks the metrics seqlock (every interleaving of one publish and two reads); a dev-dependency built only with `--cfg loom`, never shipped"
+status = "yes"
+audit = "(crates.io: MIT)"
+crates = ["loom"]

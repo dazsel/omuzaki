@@ -376,7 +376,7 @@ carrying the channels. The runtime's part is to make one pass as cheap as MediaP
 - **Against today's path:** the `tflite` outputs also stay within the converter's ONNX gate (5.5e-5 detector, 3.8e-4
   landmarks, 1.8e-6 blendshapes) of the `onnx` runtime's, so the migration doesn't move the tracker beyond what was
   accepted.
-- **Where:** a gated test in `omuzaki-ai-litert` (and the `track_models` tests in `omuzaki-test` for the tracker as a
+- **Where:** a gated test in `omuzaki-ai-litert` (and the `track_models` tests in `omuzaki-test-track` for the tracker as a
   whole), run on Linux and Windows by a nightly job that fetches the model folder with `tools/models/mediapipe-face.sh`
   and takes the archive from the LiteRT build it calls in the same run (8.2).
 - The tracker-level comparison against MediaPipe's own `FaceLandmarker` on real video is the separate tracker parity work;
@@ -610,7 +610,7 @@ thread) over the call. Two repetitions, `rep1 / rep2`. Nothing downloaded is com
 | `docs/licensing/deps/` | the rows of ADR 0061 decision 6 | 2 |
 | `crates/omuzaki-ai-litert` (new, Implementation) | the `tflite` runtime, with its model scan (`src/scan.rs`) | 3a, 3b |
 | `crates/omuzaki-ai-litert/tests`, `tools/models/litert_reference.py`, `nightly.yml` (calls the build workflow) | parity and determinism | 4 |
-| `crates/omuzaki-track`, `crates/omuzaki-test` (`track_models`, the track bench) | the face graphs load `.tflite` on `tflite` | 5 |
+| `crates/omuzaki-track`, `crates/omuzaki-test-track` (`track_models`, the track bench) | the face graphs load `.tflite` on `tflite` | 5 |
 | the `track_roi` timing probe (#1731) | both runtimes, 1, 2 and 4 threads, wall and CPU | 6 |
 
 ## 11. Alternatives
