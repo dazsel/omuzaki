@@ -64,23 +64,27 @@ A large change pays the fixed costs once: reading the crate, the gate, CI, the r
 6. **Keep the area's change map on your state issue,** in order, with each change's state. That's the area's plan;
    edit it in place.
 
-Open PRs aren't re-cut. They finish under the review rule (one more round at most, then merge with follow-ups), and
-the change that follows absorbs what's left.
+Open PRs aren't re-cut. They finish under the review rule in `operating.md` (findings fixed in the PR, as many rounds as needed), and
+the change that follows absorbs the open bugs and follow-ups left in its crates.
 
 ## Running a change
 
 - **The session starts with a short design note** at the top of its draft PR: the modules, the types, the order of
   work. Then it builds, committing and pushing often so nothing is lost. It runs the gate and self-reviews the whole
   diff before it marks the PR ready.
-- **Review:** one deep review at open, with every finding in one pass, then one verification after a single fix round
-  (`operating.md`). After that, only a blocking correctness or security bug that the lead confirms gets another push.
-  Everything else becomes a follow-up issue.
-- **Concurrency:** at most one change in flight per crate, or per top-level module in `omuzaki-char` and
-  `omuzaki-face`. File overlap stays absolute.
+- **Review:** one deep review at open, with every finding in one pass, then as many fix rounds as the findings need,
+  each by this same session, with a deep re-check of each round's head (`operating.md`). Every finding is fixed in the
+  PR; none becomes a follow-up issue. The change also absorbs the open bugs and follow-ups in its crates, wherever the
+  fence allows, and lists them in Covers.
+- **Concurrency:** at most one change in flight per crate, or per top-level module where a crate's module map was
+  built for parallel work. The owning lead decides which of its crates qualify; `omuzaki-char`, `omuzaki-face` and
+  `omuzaki-stage` do. File overlap stays absolute. Files at the crate root and `lib.rs` are shared, so only one
+  change at a time holds them.
 - **A change that spans two areas** has one owning lead, named in its issue. The other lead co-signs the part in its
   crates.
 
 ## Don't
 
 - Split for size, stack branches, or open a PR per task issue.
-- Start a new session per fix round. The owner session does every round of its own change.
+- Start a new session per fix round, or archive the owner session before its PR merges. The owner session does every
+  round of its own change.

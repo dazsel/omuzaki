@@ -1,0 +1,14 @@
+# The one-hand wave loop: the raised hand and the forearm swung out, 0.6 s a cycle.
+id = "wave"
+summary = "A looping hello with the right hand."
+length = 0.6
+looped = true
+easing = "smooth"
+
+[[keys]]
+t = 0.0
+pose = "wave-right"
+
+[[keys]]
+t = 0.3
+pose = "wave-right-swing"

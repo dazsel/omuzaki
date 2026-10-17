@@ -17,11 +17,13 @@ repository = "https://github.com/dazsel/omuzaki"
 # Pre-declared early so parallel changes don't collide on this file. Unused entries cost nothing.
 ab_glyph = "0.2"   # text rasteriser for character sheets (Apache-2.0; pure Rust, no shaping), omuzaki-stage
 base64 = "0.23"   # standard base64 for MCP blob resources (MIT OR Apache-2.0), omuzaki-mcp; already in the lock through rmcp
+crc32fast = "1.5"   # CRC-32 of journal frames (MIT OR Apache-2.0), omuzaki-doc; already in the lock
 blake3 = "1.8"
 bytemuck = { version = "1.25", features = ["derive"] }
 bytes = "1"
 clap = { version = "4.6", features = ["derive"] }
 constant_time_eq = "0.4"
+directories = "6.0"   # the OS config and local data folders (MIT OR Apache-2.0; pulls dirs-sys and option-ext MPL-2.0, unmodified), omuzaki-settings
 criterion = "0.8"
 ed25519-dalek = { version = "2.2", default-features = false, features = ["std"] }   # verifies library item signatures (BSD-3-Clause), omuzaki-library-api; signing only in tests
 eframe = { version = "0.36", default-features = false, features = ["wgpu", "wayland", "x11", "accesskit", "default_fonts"] }
@@ -33,6 +35,7 @@ flate2 = { version = "1.1", default-features = false, features = ["rust_backend"
 fluent-bundle = "0.16" # Fluent message formatting (Apache-2.0 OR MIT), omuzaki-l10n-api catalog
 fluent-langneg = "0.14" # locale negotiation (Apache-2.0), omuzaki-l10n-api
 fluent-syntax = "0.12" # Fluent parser for the l10n checks (Apache-2.0 OR MIT), omuzaki-l10n-api
+futures-util = { version = "0.3", default-features = false, features = ["std"] }   # drives the response body stream (MIT OR Apache-2.0), omuzaki-llm; already in the lock
 getrandom = "0.4"
 intl-memoizer = "0.5"   # named for the exact-integer FluentType in omuzaki-l10n-api (Apache-2.0 OR MIT; already a fluent-bundle dependency)
 harfrust = "0.14"   # OpenType shaping (MIT): Arabic joining, Devanagari conjuncts, Thai marks in the sheet text fallback, omuzaki-stage
@@ -54,10 +57,12 @@ reqwest = { version = "0.13", default-features = false }
 rhai = { version = "=1.26.1", default-features = false, features = ["std", "serde", "sync", "internals"] }   # the script runtime (MIT OR Apache-2.0); exact pin because `internals` is unstable API, omuzaki-script
 rmcp = { version = "3.5", features = ["server", "transport-io", "transport-streamable-http-server"] }
 rustix = { version = "1.1", default-features = false, features = ["std", "fs"] } # opens beneath a folder handle, never through a link (openat2, O_NOFOLLOW), omuzaki-ops-api; safe renameat2(RENAME_EXCHANGE), omuzaki-doc (Linux)
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] } # TLS with `ring` as its one crypto provider (rustls MIT OR Apache-2.0 OR ISC; ring Apache-2.0 AND ISC), omuzaki-http; omuzaki-mcp tests (llm-api D11)
 schemars = "1.2"
 semver = { version = "1", features = ["serde"] } # versions in the updater contract (MIT OR Apache-2.0), omuzaki-update-api
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] } # recorded tracks must replay bit-identically after a save
+sse-stream = "0.2"   # Server-Sent Events framing for the LLM providers (MIT OR Apache-2.0), omuzaki-llm; already in the lock through rmcp
 sha2 = "0.10"   # pins the lazily downloaded fallback fonts by SHA-256 (MIT OR Apache-2.0), omuzaki-stage
 tar = { version = "0.4", default-features = false } # unpacks the ONNX Runtime.tgz archives (MIT OR Apache-2.0), omuzaki-ai-native
 sys-locale = "0.3" # the OS language list (MIT OR Apache-2.0), omuzaki-l10n-api

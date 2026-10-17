@@ -36,11 +36,12 @@ fn a_docs_only_change_runs_only_the_models_gate() {
     fixture.write("docs/new-note.md", "untracked\n");
     assert_eq!(listed(&fixture), Vec::<String>::new());
 
-    // No crate is affected, so no build starts: the one step is the repo-wide models gate, which reads the licence files.
+    // No crate is affected, so no build starts: the steps are the repo-wide models gate, which reads the licence files,
+    // and the workspace-scan tests. The fixture has no such test targets, so the scans fail here; models still passes.
     fixture.write(LICENCE_FILE, LICENCE);
     let run = fixture.xtask(&["check", "--affected", "--base", "base"]);
-    assert!(run.success, "{}{}", run.stdout, run.stderr);
-    assert!(run.stdout.contains("==> models"), "{}", run.stdout);
+    assert!(run.stdout.contains("ok      models"), "{}{}", run.stdout, run.stderr);
+    assert!(run.stdout.contains("==> scan: cargo test -p omuzaki-ops-api --test fs_fence"), "{}", run.stdout);
     assert!(!run.stdout.contains("==> fmt"), "{}", run.stdout);
 }
 
@@ -67,6 +68,12 @@ authors = "Omuzaki"
 
 [card.licence]
 spdx = "MIT OR Apache-2.0"
+
+[[card.lineage]]
+kind = "training_data"
+name = "Tiny corpus 1"
+licence = "CC0-1.0"
+url = "https://data.example/tiny-corpus"
 "#;
 
 /// A committed workspace whose base already ships `tiny` with its licence file, so a later change to only the licence files
@@ -164,4 +171,26 @@ fn json_for_a_docs_only_change_is_empty_with_no_shards() {
     let report: serde_json::Value = serde_json::from_str(run.stdout.trim()).unwrap();
     assert_eq!(report["empty"], true);
     assert_eq!(report["shards_full"], serde_json::json!([]));
+}
+
+/// A pull request that adds a `register_op!` to a crate with no `clippy.toml` breaks `omuzaki-ops-api`'s `fs_fence`
+/// test, which that crate's own change never selects. The scope must carry the scan target anyway.
+#[test]
+fn a_change_in_an_unrelated_crate_still_carries_the_fs_fence_scan() {
+    let fixture = committed();
+    fixture.write("crates/omuzaki-audio/src/ops.rs", "register_op!(NewOp);\n");
+    let run = fixture.xtask(&["check", "--format", "json", "--base", "base"]);
+    assert!(run.success, "{}{}", run.stdout, run.stderr);
+    let report: serde_json::Value = serde_json::from_str(run.stdout.trim()).unwrap();
+    assert_eq!(report["changed"], serde_json::json!(["omuzaki-audio"]));
+    let scans = report["scans"].as_array().unwrap();
+    assert!(scans.contains(&serde_json::json!({"krate": "omuzaki-ops-api", "test": "fs_fence"})), "{scans:?}");
+
+    // The list does not depend on what changed: an empty scope carries the same targets.
+    let docs = committed();
+    docs.write("docs/README.md", "docs, edited\n");
+    let empty = docs.xtask(&["check", "--format", "json", "--base", "base"]);
+    let empty: serde_json::Value = serde_json::from_str(empty.stdout.trim()).unwrap();
+    assert_eq!(empty["empty"], true);
+    assert_eq!(empty["scans"], report["scans"]);
 }
