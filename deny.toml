@@ -25,6 +25,13 @@ ignore = [
     # the omuzaki-script runtime, which uses it unconditionally (no feature turns it off) and is pinned at =1.26.1.
     # Revisit when rhai moves to compact_str or smol_str, at the next rhai bump.
     { id = "RUSTSEC-2026-0249", reason = "unmaintained, not vulnerable; only through rhai, which has no way to drop it" },
+    # zbus_names, zvariant and zvariant_derive are unmaintained as standalone crates (not vulnerabilities): zbus 6
+    # folded them in. They come in only through eframe's Linux accessibility stack (egui-winit -> accesskit_winit ->
+    # accesskit_unix -> atspi / zbus 5), which is the app's screen-reader support, so it stays. Revisit when accesskit
+    # moves to zbus 6, at the next eframe bump.
+    { id = "RUSTSEC-2026-0370", reason = "unmaintained, not vulnerable; only through accesskit's AT-SPI stack (zbus 5)" },
+    { id = "RUSTSEC-2026-0371", reason = "unmaintained, not vulnerable; only through accesskit's AT-SPI stack (zbus 5)" },
+    { id = "RUSTSEC-2026-0372", reason = "unmaintained, not vulnerable; only through accesskit's AT-SPI stack (zbus 5)" },
 ]
 
 [licenses]
