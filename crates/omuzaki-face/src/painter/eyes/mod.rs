@@ -25,7 +25,7 @@ mod lid;
 mod sclera;
 
 use omuzaki_core::colour::Colour;
-use omuzaki_face_api::{Cmd, ColourRef, FaceLayerId};
+use omuzaki_face_api::{Cmd, FaceLayerId};
 
 use crate::painter::PaintCtx;
 use aperture::Eye;
@@ -39,30 +39,31 @@ pub(super) enum Side {
     Right,
 }
 
-/// The colour of a resolved profile colour. A palette slot never reaches a painter (the stage resolves them); if one
-/// does, it paints mid-grey rather than failing a frame.
-fn fixed_colour(colour: &ColourRef) -> Colour {
-    match colour {
-        ColourRef::Fixed(colour) => *colour,
-        ColourRef::Slot(_) => Colour::rgb(128, 128, 128),
-    }
-}
+/// The colour an eye piece paints for a palette slot nobody resolved: mid-grey, so the stage's bug shows in the picture.
+const FALLBACK_COLOUR: Colour = Colour::rgb(128, 128, 128);
 
 /// Paints both eyes.
 pub(super) fn paint(ctx: &mut PaintCtx<'_>) {
     for side in [Side::Left, Side::Right] {
         let eye = Eye::new(ctx.profile, ctx.params, side);
+        // The open pieces start here; an eye that is shutting (a blink, an arc or a squeeze) fades them all together (see `open_fade`).
+        let mark = ctx.list(FaceLayerId::Base).cmds().len();
         if eye.is_open() {
             let outline = aperture::outline(ctx.list(FaceLayerId::Base), &eye);
             sclera::paint(ctx, &eye, outline);
             ctx.list(FaceLayerId::Base).push(Cmd::PushClip(outline));
             iris::paint(ctx, side);
+            effects::paint_iris(ctx, side);
             highlight::paint(ctx, side);
             ctx.list(FaceLayerId::Base).push(Cmd::PopClip);
         }
         lid::paint(ctx, side);
         crease::paint(ctx, side);
         lash::paint(ctx, side);
+        let fade = eye.open_fade();
+        if fade < 1.0 {
+            ctx.list(FaceLayerId::Base).scale_opacity_from(mark, fade);
+        }
         closed::paint(ctx, side);
         effects::paint(ctx, side);
     }

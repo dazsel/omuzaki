@@ -4,9 +4,9 @@
 //! compiled with [`Score::compile`]. Five frames, at the start, a quarter, half, three quarters and the end of the
 //! score, are painted with the real face painter on the default face profile (a synthetic face), rasterised on the CPU
 //! as `face_parity` does, and written as one row per template. The caption under the row names the channels the
-//! score drives that the sheet does not show: head and body channels are "not painted", the eye effects whose painters
-//! have no painter ([`UNDRAWN`]) are "not drawn yet", and the clips and expressions that cues ask for are "not played",
-//! so the reviewer knows what is missing.
+//! score drives that the sheet does not show: head and body channels are "not painted", and the clips and
+//! expressions that cues ask for are "not played", so the reviewer knows what is missing. Every eye and overlay
+//! effect has a painter now; `every_effect_channel_paints_something` keeps it that way.
 //!
 //! `sheet` is ignored and writes `$OMUZAKI_SHEET_DIR/<id>.png` (the evidence case `score-templates` runs it).
 
@@ -152,23 +152,6 @@ fn over(dst: &mut [u8; 4], src: [u8; 4]) {
     }
 }
 
-/// Channels a score can drive that the face does not show: no painter draws them, because the painter is a stub or has
-/// no branch for them. The caption names them as "not drawn yet", so a sheet never hides an effect the score asks for.
-/// Each entry says where its painter is, and the entry goes when that painter lands. The test
-/// [`every_undrawn_channel_paints_as_nothing_or_as_a_blink`] checks the list against the frames.
-const UNDRAWN: [Channel; 7] = [
-    // eyeArc*: the happy `^` is not drawn. An arc closes the eye like a blink (`aperture.rs`, `lid()`); the arc itself is
-    // in `lid.rs` and `closed.rs`, both stubs.
-    Channel::EYE_ARC_LEFT,
-    Channel::EYE_ARC_RIGHT,
-    // eyesGloom and sweatDrop: `overlay.rs`, a stub.
-    Channel::EYES_GLOOM,
-    Channel::SWEAT_DROP,
-    // eyesSqueeze, eyesSpiral and tears: `painter/eyes/effects.rs`, a stub.
-    Channel::EYES_SQUEEZE,
-    Channel::EYES_SPIRAL,
-    Channel::TEARS,
-];
 /// A channel's name as words: `headShiftX` becomes `head shift x`.
 fn words(channel: Channel) -> String {
     let mut words = String::new();
@@ -206,24 +189,18 @@ fn push_once(names: &mut Vec<String>, name: &str) {
     }
 }
 
-/// The channels the score drives that the face does not paint, as words: head and body channels are "not painted", the
-/// stubs in [`UNDRAWN`] are "not drawn yet", and the cues the sheet does not play are listed by [`not_played`].
+/// The channels the score drives that the face does not paint, as words: head and body channels are "not painted", and
+/// the cues the sheet does not play are listed by [`not_played`].
 fn not_painted(score: &Score) -> String {
     let mut not_painted = Vec::new();
-    let mut not_drawn_yet = Vec::new();
     for channel in score.tracks.iter().map(|t| t.channel) {
-        if UNDRAWN.contains(&channel) {
-            not_drawn_yet.push(words(channel));
-        } else if matches!(channel.region(), Region::Head | Region::Body) {
+        if matches!(channel.region(), Region::Head | Region::Body) {
             not_painted.push(words(channel));
         }
     }
     let mut parts = Vec::new();
     if !not_painted.is_empty() {
         parts.push(format!("not painted: {}", not_painted.join(", ")));
-    }
-    if !not_drawn_yet.is_empty() {
-        parts.push(format!("not drawn yet: {}", not_drawn_yet.join(", ")));
     }
     let (clips, expressions) = not_played(score);
     if !clips.is_empty() {
@@ -377,32 +354,32 @@ fn holding(channel: Channel, value: f32) -> Score {
     ))
 }
 
-/// The blink that an eye arc closes the eye like: `eyeArcLeft` shuts the same eye as `eyeBlinkLeft`.
-fn blink_twin(channel: Channel) -> Option<Channel> {
-    match channel {
-        Channel::EYE_ARC_LEFT => Some(Channel::EYE_BLINK_LEFT),
-        Channel::EYE_ARC_RIGHT => Some(Channel::EYE_BLINK_RIGHT),
-        _ => None,
-    }
-}
-
 #[test]
-fn every_undrawn_channel_paints_as_nothing_or_as_a_blink() {
+fn every_effect_channel_paints_something() {
+    // These were stubs when the sheet was written (the caption said "not drawn yet"); each now has a painter, so a score
+    // that holds one at full strength must not look like the face at rest. The arcs are checked against the blink they
+    // used to look like, because an arc shuts the eye and draws the `^` on it.
     let profile = default_profile();
     let at = Seconds(0.5);
     let rest = paint_frame(&parse_and_compile(&at_rest()), at, &profile);
-    let mismatched: Vec<Channel> = UNDRAWN
-        .into_iter()
-        .filter(|&channel| {
-            let driven = paint_frame(&parse_and_compile(&holding(channel, 1.0)), at, &profile);
-            let expected = match blink_twin(channel) {
-                Some(blink) => paint_frame(&parse_and_compile(&holding(blink, 1.0)), at, &profile),
-                None => rest.clone(),
-            };
-            driven.as_raw() != expected.as_raw()
-        })
-        .collect();
-    assert!(mismatched.is_empty(), "listed as not drawn yet, but these paint something: {mismatched:?}");
+    let drawn = |channel: Channel| paint_frame(&parse_and_compile(&holding(channel, 1.0)), at, &profile);
+    let effects = [
+        Channel::EYE_ARC_LEFT,
+        Channel::EYE_ARC_RIGHT,
+        Channel::EYES_GLOOM,
+        Channel::SWEAT_DROP,
+        Channel::EYES_SQUEEZE,
+        Channel::EYES_SPIRAL,
+        Channel::TEARS,
+    ];
+    let unchanged: Vec<Channel> =
+        effects.into_iter().filter(|&channel| drawn(channel).as_raw() == rest.as_raw()).collect();
+    assert!(unchanged.is_empty(), "these channels paint nothing: {unchanged:?}");
+    for (arc, blink) in
+        [(Channel::EYE_ARC_LEFT, Channel::EYE_BLINK_LEFT), (Channel::EYE_ARC_RIGHT, Channel::EYE_BLINK_RIGHT)]
+    {
+        assert_ne!(drawn(arc).as_raw(), drawn(blink).as_raw(), "{arc:?} still looks like a plain blink");
+    }
 }
 
 fn parse_and_compile(score: &Score) -> CompiledScore {
