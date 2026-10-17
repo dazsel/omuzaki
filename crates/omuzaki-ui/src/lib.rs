@@ -16,10 +16,15 @@ pub use omuzaki_core::__record_registration;
 
 // The stage registers the `perform.*` and `trigger.*` ops the Live workspace runs, the stream crate the
 // `output.window.*` ops its output switch runs, and the animation crate the retarget and life layer the perform thread
-// builds on, so the app links all three, and the character crate, whose parts the kit character is built from (ADR 0015).
+// builds on, so the app links all three, and the character crate, whose parts the kit character is built from. The
+// character and stage contracts and the renderer self-register too (part kinds and looks, the stage's facts, shading
+// programs), and the viewport draws with all three (ADR 0015).
 omuzaki_core::define_link! {
     omuzaki_anim::link();
     omuzaki_char::link();
+    omuzaki_char_api::link();
+    omuzaki_render::link();
     omuzaki_stage::link();
+    omuzaki_stage_api::link();
     omuzaki_stream::link();
 }
