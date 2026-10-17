@@ -152,7 +152,11 @@ fn gusty_against_a_scaled_collider() -> u64 {
 
 /// The hashes recorded from the portable (`libm`) maths, once, on Linux (#1585). The rework's original hashes came
 /// from the platform's C library; the contact code itself is unchanged by the re-record.
-const RECORDED: [u64; 4] = [0x23f1_466c_81ab_7ee2, 0x3468_8c20_80fb_5c65, 0x6638_ab0b_96ef_4b6c, 0x6c56_fcf4_9084_20a4];
+///
+/// The third (`skirt_against_legs`, overlapping leg capsules) was re-recorded by #2082: #129's fix for limit 2 puts a
+/// particle that touched two colliders in a sub-step on their crease, which changes that scene by design. The other
+/// three scenes have no overlapping colliders and are unchanged.
+const RECORDED: [u64; 4] = [0x23f1_466c_81ab_7ee2, 0x3468_8c20_80fb_5c65, 0x7ba4_84ba_9749_2fcb, 0x6c56_fcf4_9084_20a4];
 
 #[test]
 fn contacts_replay_bit_for_bit_against_the_recorded_history() {

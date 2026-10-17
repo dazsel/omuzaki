@@ -59,7 +59,7 @@ impl MockLive {
     /// [`FaceError`] if the painter can't paint the frame; the simulations have already stepped.
     pub fn tick(&mut self, dt: f32, pose: &dyn PoseSource, channels: &ChannelBuf) -> Result<TickReport, FaceError> {
         self.clock += f64::from(dt);
-        let ctx = omuzaki_char_api::StepCtx { dt, time: Seconds(self.clock), pose, wind: Vec3::ZERO };
+        let ctx = omuzaki_char_api::StepCtx::new(dt, Seconds(self.clock), pose, Vec3::ZERO);
         for slot in &mut self.built.runtimes {
             slot.runtime.step(&ctx);
         }

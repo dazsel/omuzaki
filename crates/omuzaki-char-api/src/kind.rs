@@ -1013,7 +1013,7 @@ mod tests {
     }
 
     fn step_once(runtime: &mut dyn PartRuntime) {
-        runtime.step(&StepCtx { dt: 1.0 / 60.0, time: Seconds(0.0), pose: &Rest, wind: Vec3::ZERO });
+        runtime.step(&StepCtx::new(1.0 / 60.0, Seconds(0.0), &Rest, Vec3::ZERO));
     }
 
     fn steps(runtime: Option<&dyn PartRuntime>) -> Option<u32> {
