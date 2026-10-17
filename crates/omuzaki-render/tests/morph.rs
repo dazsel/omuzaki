@@ -478,7 +478,7 @@ on_both_paths!(
 
 /// A renderer on a device requested with `n` storage buffers per shader stage (and otherwise WebGPU's defaults).
 fn renderer_with_storage_buffers(n: u32) -> WgpuRenderer {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let instance = support::instance();
     let adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
     let adapter = adapters
         .into_iter()
