@@ -38,6 +38,9 @@ use omuzaki_face_mock::{mock_profile, mock_projection};
 /// steadiness checks below catch any growth from repaint to repaint.
 const MOUTH_ONLY_ALLOCS: usize = 100;
 const WHOLE_FACE_ALLOCS: usize = 100;
+/// How much the typical count may rise from the first half of the measured repaints to the second: a leak of even one
+/// allocation per repaint rises by about 16 over 32 repaints, while a driver's jitter around a steady count (CI's
+/// lavapipe moves between 50 and 83 around 65) leaves both halves' medians in place.
 const SPREAD: usize = 2;
 /// What the occasional repaint may pay on top: wgpu's periodic cleanup of its resource tables (none in the 32 measured).
 const SPIKE: usize = 50;
@@ -219,12 +222,21 @@ fn check_allocations(other: usize, pinned: usize, what: &str) {
         })
         .collect();
     eprintln!("allocations per warmed repaint, {what}: {counts:?}");
-    let mut sorted = counts.clone();
-    sorted.sort_unstable();
-    let (median, least, most) = (sorted[sorted.len() / 2], sorted[0], sorted[sorted.len() - 1]);
+    let (median, most) = (median_of(&counts), counts.iter().copied().max().unwrap_or(0));
     assert!(median <= pinned, "{what}: a typical repaint makes {median} allocations, pinned at {pinned}");
-    assert!(median - least <= SPREAD, "{what}: the count moves between repaints: {counts:?}");
+    let (first, second) = (median_of(&counts[..counts.len() / 2]), median_of(&counts[counts.len() / 2..]));
+    assert!(
+        second <= first + SPREAD,
+        "{what}: the count grows between repaints (median {first}, then {second}): {counts:?}"
+    );
     assert!(most <= pinned + SPIKE, "{what}: {most} allocations in one repaint, more than {pinned} + {SPIKE}");
+}
+
+/// The middle value of `counts` (the upper one of the two middles for an even length).
+fn median_of(counts: &[usize]) -> usize {
+    let mut sorted = counts.to_vec();
+    sorted.sort_unstable();
+    sorted[sorted.len() / 2]
 }
 
 #[test]
