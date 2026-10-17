@@ -16,6 +16,12 @@ use crate::ops::character::tree;
 /// without a part of the kind they need (the body under a shirt), and the error names them.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "part": "hair", "enabled": false}
+    ],
+    "x-omuzaki-fixture" = "character"
+))]
 pub struct PartSetEnabled {
     /// The character the part belongs to.
     pub character: CharId,

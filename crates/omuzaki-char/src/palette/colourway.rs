@@ -110,6 +110,12 @@ fn load_colourway(ctx: &OpCtx<'_>, character: &CharId, name: &ColourwayId) -> Re
 /// colourway holds every colour of the palette now; later palette edits do not change it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "name": "dusk"}
+    ],
+    "x-omuzaki-fixture" = "character"
+))]
 pub struct ColourwaySave {
     /// The character.
     pub character: CharId,
@@ -155,6 +161,12 @@ register_op!(ColourwaySave);
 /// slot the palette lacks is not added. `colourway.preview` shows the same changes without applying them.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "name": "dusk"}
+    ],
+    "x-omuzaki-fixture" = "character-colourway"
+))]
 pub struct ColourwayApply {
     /// The character.
     pub character: CharId,
@@ -221,6 +233,12 @@ register_op!(ColourwayDelete);
 /// or apply. Read-only: nothing in the document changes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit"}
+    ],
+    "x-omuzaki-fixture" = "character-colourway"
+))]
 pub struct ColourwayList {
     /// The character.
     pub character: CharId,
@@ -253,6 +271,12 @@ register_op!(ColourwayList);
 /// colourway does not name, and the slots it names that the palette lacks.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "name": "dusk"}
+    ],
+    "x-omuzaki-fixture" = "character-colourway"
+))]
 pub struct ColourwayPreview {
     /// The character.
     pub character: CharId,
