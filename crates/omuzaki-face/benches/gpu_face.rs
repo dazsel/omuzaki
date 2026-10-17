@@ -7,6 +7,9 @@
 // The GPU rasteriser exists on native targets only (#2207).
 #![cfg(not(target_arch = "wasm32"))]
 
+#[path = "../tests/support/gpu_instance.rs"]
+mod gpu_instance;
+
 use std::any::Any;
 use std::time::Instant;
 
@@ -58,7 +61,7 @@ fn clipped_gradient(d: &mut DrawList, shift: f32) {
 
 /// A device and queue, or `None` after printing why there is none.
 fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let instance = gpu_instance::instance();
     let adapter = match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())) {
         Ok(adapter) => adapter,
         Err(e) => {
