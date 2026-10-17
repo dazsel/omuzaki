@@ -19,6 +19,9 @@
 // The GPU rasteriser exists on native targets only (#2207).
 #![cfg(not(target_arch = "wasm32"))]
 
+#[path = "../tests/support/gpu_instance.rs"]
+mod gpu_instance;
+
 use std::process::ExitCode;
 
 use omuzaki_core::time::Seconds;
@@ -187,7 +190,7 @@ fn percentile(values: &[f64], p: usize) -> f64 {
 
 fn run() -> Result<(), String> {
     let (frames, probe) = arguments()?;
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let instance = gpu_instance::instance();
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
         .map_err(|e| format!("no GPU adapter ({e})"))?;
     if !adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
