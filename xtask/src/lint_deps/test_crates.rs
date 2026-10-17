@@ -1,6 +1,6 @@
 //! The test-crate rule of `lint-deps` (ADR 0054 §6): each area test crate `omuzaki-test-<area>` depends only on its
-//! area. (The harness `omuzaki-test` still holds the tests of the areas not split out yet, so it is not held to
-//! "no implementation" until they move.)
+//! area. An area whose own crate is an App (the stage) may use that App too. (The harness `omuzaki-test` still holds
+//! the tests of the areas not split out yet, so it is not held to "no implementation" until they move.)
 //!
 //! Why: a test crate is in scope whenever anything it depends on changes. One test crate that reached every
 //! implementation put every parity test in scope for any change; per-area crates keep a face change from running the
@@ -28,6 +28,9 @@ const MEMBERS: &[(&str, &str)] = &[
     ("omuzaki-anim", "char"),
     // The glTF format library sits under the io formats.
     ("omuzaki-gltf", "io"),
+    // The stage links the face and the renderer and draws the one into the other (#151, #2074): its tests meet both.
+    ("omuzaki-face", "stage"),
+    ("omuzaki-render", "stage"),
 ];
 
 /// Crates of another area that an area test crate loads at run time, with the area whose test crate may use them. The
@@ -56,7 +59,8 @@ pub fn violation(package: &Package, dependency: &Dependency, target: &Package, t
         CrateKind::Api | CrateKind::Mock => true,
         CrateKind::Lib if target.name == LINK_BUILD => dependency.kind == DepKind::Build,
         CrateKind::Implementation | CrateKind::Lib => in_area(&target.name, area),
-        CrateKind::App => target.name == HARNESS,
+        // The harness, and the area's own App (`omuzaki-stage` for the stage area).
+        CrateKind::App => target.name == HARNESS || in_area(&target.name, area),
     };
     if fine {
         return None;
@@ -211,6 +215,20 @@ mod tests {
         assert_eq!(got.len(), 2, "{got:?}");
         assert!(got[0].starts_with("omuzaki-test-face → omuzaki-stage: the face area test crate"), "{}", got[0]);
         assert!(got[1].starts_with("omuzaki-test-face → omuzaki-test-char"), "{}", got[1]);
+    }
+
+    #[test]
+    fn the_stage_area_test_crate_uses_the_stage_and_the_face_and_renderer_it_links_and_nothing_else() {
+        let fine = found(&with_leaves(&[(
+            "omuzaki-test-stage",
+            &[("omuzaki-stage", Dev), ("omuzaki-face", Dev), ("omuzaki-render", Dev), ("omuzaki-char-mock", Dev)],
+        )]));
+        assert_eq!(fine, Vec::<String>::new());
+        let got = found(&with_leaves(&[("omuzaki-test-stage", &[("omuzaki-char", Dev), ("omuzaki-io-ops", Dev)])]));
+        assert_eq!(got.len(), 2, "the character and io crates are other areas: {got:?}");
+        assert!(got[0].contains("(omuzaki-stage, omuzaki-stage-*, omuzaki-face, omuzaki-render)"), "{}", got[0]);
+        let other = found(&with_leaves(&[("omuzaki-test-face", &[("omuzaki-stage", Dev)])]));
+        assert_eq!(other.len(), 1, "another area's test crate still may not use the stage: {other:?}");
     }
 
     #[test]

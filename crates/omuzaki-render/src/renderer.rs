@@ -316,7 +316,7 @@ impl Renderer for WgpuRenderer {
     fn paint_texture(&mut self, texture: TextureId, painter: &mut dyn Painter) -> Result<(), RenderError> {
         self.shared.gpu.check_alive()?;
         let start = Instant::now();
-        let Self { shared, resources, paints, staging, .. } = self;
+        let Self { shared, resources, paints, staging, graph, .. } = self;
         let entry = resources
             .textures
             .get(texture.index(), texture.generation())
@@ -327,9 +327,26 @@ impl Renderer for WgpuRenderer {
                 "only dynamic textures can be painted; create it with TextureUsage::Dynamic",
             ));
         }
-        let mut target = GpuPaintTarget::new(&shared.gpu, entry, staging);
-        painter.paint(&mut target)?;
-        let changed = shared.gpu.scoped("a texture paint", || Ok(target.commit()))?;
+        // The painter runs inside the scope too: a GPU painter's own uploads and recorded commands are checked with the
+        // submit, so a fault in them is this call's error, not wgpu's uncaptured-error panic.
+        let mut submitted = None;
+        let changed = shared.gpu.scoped("a texture paint", || {
+            let mut target = GpuPaintTarget::new(&shared.gpu, entry, staging, graph.timer_mut());
+            painter.paint(&mut target)?;
+            let (changed, timed) = target.commit();
+            submitted = timed;
+            Ok(changed)
+        });
+        let changed = match changed {
+            Ok(changed) => changed,
+            Err(error) => {
+                // An invalid submit runs nothing, so its timestamps are never written: `PaintTextures` must not count them.
+                if let (Some(timer), Some(end)) = (graph.timer_mut(), submitted) {
+                    timer.cancel_paint(end);
+                }
+                return Err(error);
+            }
+        };
         paints.record(texture, changed, start.elapsed());
         Ok(())
     }
