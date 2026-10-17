@@ -3,8 +3,8 @@
 //!
 //! Everything is clipped to the open shape's outline ([`OpenMouth::path`]), so no pixel lands outside it, and the teeth
 //! and fangs are measured from the outline's own upper edge ([`OpenMouth::top`]), so they follow the lip however it
-//! curves. The inner-mouth gradient is the shape's fill, not drawn here. A closed mouth or a kiss has no interior; only
-//! a closed smile shows a fang.
+//! curves. The inner-mouth gradient is the shape's fill, not drawn here. A closed mouth or a kiss has no interior (only
+//! a closed smile shows a fang), except while a kiss gives way to the open shape: then it paints at the partial `reveal`.
 //!
 //! - **Tongue**: an ellipse resting on the bottom, with a small shine.
 //! - **Upper teeth**: a band hanging from the upper edge, as strong as the `teeth_upper` channel, and at least half
@@ -26,8 +26,8 @@ use omuzaki_face_api::{Cap, Cmd, FaceLayerId, Join, Paint, narrow};
 
 use super::OpenMouth;
 use super::lips::{DEFAULT_LINE, DEFAULT_TEETH, DEFAULT_TEETH_LOWER, DEFAULT_TONGUE, lighten};
-use super::shape::{Frame, Kind, along, resolve, solid};
-use crate::painter::PaintCtx;
+use super::shape::{Frame, Kind, along, solid};
+use crate::painter::{PaintCtx, fixed_colour};
 
 /// Samples along the teeth band, as along the open shape.
 const BAND_SEGMENTS: usize = 28;
@@ -105,24 +105,25 @@ fn open_interior(ctx: &mut PaintCtx<'_>, open: &OpenMouth) {
 }
 
 fn tongue(ctx: &mut PaintCtx<'_>, open: &OpenMouth) {
-    let colour = resolve(&ctx.profile.mouth.interior.tongue, DEFAULT_TONGUE);
+    let colour = fixed_colour(&ctx.profile.mouth.interior.tongue, DEFAULT_TONGUE);
     let (c, w, h) = (open.centre, open.half_width, open.height);
     let list = ctx.list(FaceLayerId::Base);
     let body = list.path().ellipse(c - Vec2::new(0.0, h * TONGUE_AT), w * TONGUE_RX, h * TONGUE_RY).finish();
-    list.fill(body, Paint::Solid(colour));
+    list.push(Cmd::Fill { path: body, paint: Paint::Solid(colour), opacity: open.reveal });
     let shine = list.path().ellipse(c + Vec2::new(w * SHINE_X, -h * SHINE_AT), w * SHINE_RX, h * SHINE_RY).finish();
-    list.fill(shine, solid(lighten(colour, SHINE_WHITE), SHINE_ALPHA));
+    list.push(Cmd::Fill { path: shine, paint: solid(lighten(colour, SHINE_WHITE), SHINE_ALPHA), opacity: open.reveal });
 }
 
 fn upper_teeth(ctx: &mut PaintCtx<'_>, open: &OpenMouth) {
     let mouth = &ctx.params.mouth;
-    let band = mouth.teeth_upper.max(if mouth.fangs > FANG_BAND_ABOVE { FANG_BAND } else { 0.0 });
+    let fanged = ctx.profile.has_fangs() && mouth.fangs > FANG_BAND_ABOVE;
+    let band = mouth.teeth_upper.max(if fanged { FANG_BAND } else { 0.0 });
     if band <= BAND_MIN {
         return;
     }
     let share = if mouth.teeth_lower > CLENCHED_ABOVE { BAND_SHARE_LOW } else { BAND_SHARE };
     let depth = (open.height * share).min(BAND_MAX * open.grow) * band;
-    let colour = resolve(&ctx.profile.mouth.interior.teeth, DEFAULT_TEETH);
+    let colour = fixed_colour(&ctx.profile.mouth.interior.teeth, DEFAULT_TEETH);
     let edge = |i: usize| {
         let u = along(i, BAND_SEGMENTS);
         open.centre + Vec2::new(u * open.half_width, open.top(u))
@@ -136,7 +137,7 @@ fn upper_teeth(ctx: &mut PaintCtx<'_>, open: &OpenMouth) {
         outline = outline.line_to(edge(i) - Vec2::new(0.0, depth));
     }
     let band = outline.close().finish();
-    list.fill(band, Paint::Solid(colour));
+    list.push(Cmd::Fill { path: band, paint: Paint::Solid(colour), opacity: open.reveal });
 }
 
 fn lower_teeth(ctx: &mut PaintCtx<'_>, open: &OpenMouth) {
@@ -144,8 +145,8 @@ fn lower_teeth(ctx: &mut PaintCtx<'_>, open: &OpenMouth) {
     if strength <= LOWER_MIN {
         return;
     }
-    let colour = resolve(&ctx.profile.mouth.interior.teeth_lower, DEFAULT_TEETH_LOWER);
-    let line = resolve(&ctx.profile.mouth.line_colour, DEFAULT_LINE);
+    let colour = fixed_colour(&ctx.profile.mouth.interior.teeth_lower, DEFAULT_TEETH_LOWER);
+    let line = fixed_colour(&ctx.profile.mouth.line_colour, DEFAULT_LINE);
     let clenched = ctx.params.mouth.teeth_upper > CLENCHED_ABOVE;
     let row_height = (open.height * LOWER_SHARE).max(ctx.metres_from_px(LOWER_MIN_PX));
     let (c, w, h) = (open.centre, open.half_width, open.height);
@@ -159,7 +160,7 @@ fn lower_teeth(ctx: &mut PaintCtx<'_>, open: &OpenMouth) {
         .line_to(Vec2::new(c.x - w, top - row_height))
         .close()
         .finish();
-    list.push(Cmd::Fill { path: row, paint: Paint::Solid(colour), opacity: strength.min(1.0) });
+    list.push(Cmd::Fill { path: row, paint: Paint::Solid(colour), opacity: strength.min(1.0) * open.reveal });
     if clenched {
         let y = c.y - h * SPLIT_AT;
         let split = list.path().move_to(Vec2::new(c.x - w, y)).line_to(Vec2::new(c.x + w, y)).finish();
@@ -170,19 +171,20 @@ fn lower_teeth(ctx: &mut PaintCtx<'_>, open: &OpenMouth) {
             width: SPLIT_WIDTH,
             cap: Cap::Round,
             join: Join::Round,
-            opacity: strength.min(1.0),
+            opacity: strength.min(1.0) * open.reveal,
         });
     }
 }
 
 fn fangs(ctx: &mut PaintCtx<'_>, open: &OpenMouth) {
     let strength = ctx.params.mouth.fangs;
-    if strength <= FANG_MIN {
+    // A character with no fangs paints none, whatever the channel says (a score or a person can still write it).
+    if strength <= FANG_MIN || !ctx.profile.has_fangs() {
         return;
     }
     let style = &ctx.profile.mouth.fang;
     let (width, height, position) = (narrow(style.width), narrow(style.height), narrow(style.position));
-    let colour = resolve(&ctx.profile.mouth.interior.teeth, DEFAULT_TEETH);
+    let colour = fixed_colour(&ctx.profile.mouth.interior.teeth, DEFAULT_TEETH);
     let half = width / 2.0 * open.grow;
     // The distance from a base's centre to the mouth's corner on its side. `position` is validated to `0.3..=1`, so
     // this is never negative and needs no clamp.
@@ -203,7 +205,7 @@ fn fangs(ctx: &mut PaintCtx<'_>, open: &OpenMouth) {
             .line_to(base + Vec2::new(side * FANG_LEAN, -length))
             .close()
             .finish();
-        list.push(Cmd::Fill { path: fang, paint: Paint::Solid(colour), opacity: strength.min(1.0) });
+        list.push(Cmd::Fill { path: fang, paint: Paint::Solid(colour), opacity: strength.min(1.0) * open.reveal });
     }
 }
 
@@ -212,12 +214,16 @@ fn fangs(ctx: &mut PaintCtx<'_>, open: &OpenMouth) {
 fn closed_fang(ctx: &mut PaintCtx<'_>, opacity: f32) {
     let frame = Frame::of(ctx);
     let smile = frame.smile[0];
-    if ctx.params.mouth.fangs <= FANG_BAND_ABOVE || smile <= CLOSED_FANG_SMILE || opacity <= 0.0 {
+    if !ctx.profile.has_fangs()
+        || ctx.params.mouth.fangs <= FANG_BAND_ABOVE
+        || smile <= CLOSED_FANG_SMILE
+        || opacity <= 0.0
+    {
         return;
     }
     let style = &ctx.profile.mouth;
-    let teeth = resolve(&style.interior.teeth, DEFAULT_TEETH);
-    let outline = resolve(&style.line_colour, DEFAULT_LINE);
+    let teeth = fixed_colour(&style.interior.teeth, DEFAULT_TEETH);
+    let outline = fixed_colour(&style.line_colour, DEFAULT_LINE);
     let (half, height) =
         (narrow(style.fang.width) / 2.0 * CLOSED_FANG_WIDTH, narrow(style.fang.height) * CLOSED_FANG_HEIGHT);
     let offset = frame.half_width * narrow(style.fang.position) * CLOSED_FANG_AT;

@@ -12,6 +12,12 @@ use super::access;
 /// the same.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "name": "Kit the Bold"}
+    ],
+    "x-omuzaki-fixture" = "character"
+))]
 pub struct CharacterRename {
     /// The character to rename.
     pub character: CharId,

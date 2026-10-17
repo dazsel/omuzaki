@@ -21,6 +21,12 @@ use crate::ops::character::access::list;
 /// named, and nothing is written.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "variant": "close-up", "path": "face/layout/mouth_y", "value": -0.12}
+    ],
+    "x-omuzaki-fixture" = "character-variant"
+))]
 pub struct VariantSetOverride {
     /// The character the variant belongs to.
     pub character: CharId,
