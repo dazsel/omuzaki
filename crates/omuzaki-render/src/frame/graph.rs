@@ -41,6 +41,12 @@ impl FrameGraph {
         self.timer.is_some()
     }
 
+    /// The timer, for the GPU painters that run before a frame (`paint_texture`): their commands are timed as part of
+    /// `PaintTextures`. `None` without timestamp support.
+    pub(crate) fn timer_mut(&mut self) -> Option<&mut GpuTimer> {
+        self.timer.as_mut()
+    }
+
     /// Runs every pass in order into `cx.encoder`.
     ///
     /// # Errors

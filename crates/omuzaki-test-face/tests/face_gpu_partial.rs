@@ -11,7 +11,7 @@ use std::any::Any;
 use std::fmt::Write as _;
 use std::sync::{Arc, Mutex};
 
-use common::{Gpu, device, face_texture, gpu_pixels, image, read_back, two_devices};
+use common::{Gpu, Native, device, gpu_pixels, image, native, read_native, two_devices};
 use omuzaki_anim_api::{Channel, ChannelBuf};
 use omuzaki_char_api::face_texture_desc;
 use omuzaki_core::glam::{Affine2, Vec2};
@@ -66,20 +66,36 @@ impl GpuRasterizer for Shared {
     fn device_lost(&mut self) {
         self.0.lock().unwrap().device_lost();
     }
+
+    fn last_damage(&self) -> Option<PixelRect> {
+        self.0.lock().unwrap().last_damage()
+    }
+
+    fn paint_failed(&mut self, layer: FaceLayerId) {
+        self.0.lock().unwrap().paint_failed(layer);
+    }
 }
 
-/// A paint target like the renderer's: its `native()` is the wgpu tuple.
+/// A paint target like the renderer's: its `native()` is the wgpu tuple, and it keeps what the painter marked.
 struct Target {
     desc: TextureDesc,
-    native: (wgpu::Device, wgpu::Queue, wgpu::Texture),
+    native: Native,
+    damage: Vec<PixelRect>,
 }
 
 impl Target {
     fn new(gpu: &Gpu, spec: &FaceLayerSpec) -> Self {
-        Self {
-            desc: face_texture_desc(spec),
-            native: (gpu.0.clone(), gpu.1.clone(), face_texture(&gpu.0, spec.size_px())),
-        }
+        Self { desc: face_texture_desc(spec), native: native(gpu, spec.size_px()), damage: Vec::new() }
+    }
+
+    /// The texture's pixels once what the painter recorded has run.
+    fn pixels(&mut self) -> Vec<u8> {
+        read_native(&mut self.native)
+    }
+
+    /// The rectangles painters reported changing since the last call.
+    fn take_damage(&mut self) -> Vec<PixelRect> {
+        std::mem::take(&mut self.damage)
     }
 }
 
@@ -95,6 +111,10 @@ impl PaintTarget for Target {
     fn native(&mut self) -> &mut dyn Any {
         &mut self.native
     }
+
+    fn mark_damage(&mut self, rect: PixelRect) {
+        self.damage.push(rect);
+    }
 }
 
 /// A system around the real painter at probe density, with `gpu` registered.
@@ -109,8 +129,10 @@ fn update(system: &mut FaceSystem, channels: &ChannelBuf) {
     system.update(channels, &mock_profile(), Seconds(0.0), FaceView::default()).unwrap();
 }
 
+/// Paints the Base layer into `target` and submits what the painter recorded, as the renderer does after each paint.
 fn paint_base(system: &mut FaceSystem, target: &mut Target) {
     system.layer_painter(FaceLayerId::Base).expect("Base is painted").paint(target).expect("the GPU path draws");
+    common::submit(&mut target.native);
 }
 
 fn base_spec(system: &FaceSystem) -> FaceLayerSpec {
@@ -132,19 +154,107 @@ fn a_mouth_only_change_encodes_only_the_mouth_and_an_unchanged_frame_encodes_not
     let shared = Shared::default();
     let mut system = system(&shared);
     update(&mut system, &channels(&[]));
-    let mut target = Target::new(&gpu, &base_spec(&system));
+    let spec = base_spec(&system);
+    let (width, height) = spec.size_px();
+    let whole = PixelRect { x: 0, y: 0, width, height };
+    let mut target = Target::new(&gpu, &spec);
     paint_base(&mut system, &mut target);
     assert_eq!(shared.encoded(), 7, "the first paint encodes every section");
-    let before = read_back(&gpu, &target.native.2);
+    assert_eq!(target.take_damage(), vec![whole], "and reports the whole layer as changed");
+    let before = target.pixels();
 
     paint_base(&mut system, &mut target);
     assert_eq!(shared.encoded(), 0, "an unchanged frame encodes nothing");
-    assert_eq!(read_back(&gpu, &target.native.2), before, "and leaves the texture as it was");
+    assert_eq!(
+        target.take_damage(),
+        vec![PixelRect { x: 0, y: 0, width: 0, height: 0 }],
+        "and reports nothing changed"
+    );
+    assert_eq!(target.pixels(), before, "and leaves the texture as it was");
 
     update(&mut system, &channels(&[(Channel::JAW_OPEN, 0.6)]));
     paint_base(&mut system, &mut target);
     assert_eq!(shared.encoded(), 1, "a mouth-only change encodes the mouth section alone");
-    assert_ne!(read_back(&gpu, &target.native.2), before, "and the picture changed");
+    let after = target.pixels();
+    let changed = changed_pixels(&before, &after, width).expect("the picture changed");
+    let damage = target.take_damage();
+    assert_eq!(damage.len(), 1, "one report per paint: {damage:?}");
+    let rect = damage[0];
+    assert!(rect.width * rect.height < width * height / 4, "a mouth-sized rectangle, not the layer: {rect:?}");
+    assert!(
+        contains(rect, changed),
+        "the reported rectangle {rect:?} holds every pixel that changed ({changed:?}), so the mips over it are enough"
+    );
+}
+
+/// The smallest rectangle holding every pixel that differs between two `width`-wide pictures; `None` if none does.
+fn changed_pixels(before: &[u8], after: &[u8], width: u32) -> Option<PixelRect> {
+    let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0, 0);
+    for (at, (a, b)) in before.chunks(4).zip(after.chunks(4)).enumerate() {
+        if a != b {
+            let at = u32::try_from(at).unwrap();
+            let (x, y) = (at % width, at / width);
+            (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x + 1), y1.max(y + 1));
+        }
+    }
+    (x1 > x0).then(|| PixelRect { x: x0, y: y0, width: x1 - x0, height: y1 - y0 })
+}
+
+/// Whether `outer` holds all of `inner`.
+fn contains(outer: PixelRect, inner: PixelRect) -> bool {
+    outer.x <= inner.x
+        && outer.y <= inner.y
+        && outer.x + outer.width >= inner.x + inner.width
+        && outer.y + outer.height >= inner.y + inner.height
+}
+
+/// Paints the Base layer of `system` into `target` and drops what the painter recorded, as the renderer does when the
+/// paint fails after the painter returned, then tells the system so, as the stage does.
+fn paint_base_and_drop(system: &mut FaceSystem, target: &mut Target, gpu: &Gpu) {
+    system.layer_painter(FaceLayerId::Base).expect("Base is painted").paint(target).expect("the GPU path draws");
+    target.native.3 = gpu.0.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    system.gpu_paint_failed(FaceLayerId::Base);
+}
+
+#[test]
+fn after_a_paint_the_renderer_dropped_the_next_one_redraws_the_whole_layer() {
+    let Some(gpu) = device() else { return };
+    let run = |report_failure: bool| {
+        let shared = Shared::default();
+        let mut live = system(&shared);
+        update(&mut live, &channels(&[]));
+        let spec = base_spec(&live);
+        let mut target = Target::new(&gpu, &spec);
+        paint_base(&mut live, &mut target);
+        // A blink the renderer never draws: its commands are dropped.
+        update(&mut live, &channels(&[(Channel::EYE_BLINK_LEFT, 1.0), (Channel::EYE_BLINK_RIGHT, 1.0)]));
+        if report_failure {
+            paint_base_and_drop(&mut live, &mut target, &gpu);
+        } else {
+            live.layer_painter(FaceLayerId::Base).unwrap().paint(&mut target).unwrap();
+            target.native.3 = gpu.0.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        }
+        // Then only the mouth moves.
+        let last = [(Channel::EYE_BLINK_LEFT, 1.0), (Channel::EYE_BLINK_RIGHT, 1.0), (Channel::JAW_OPEN, 0.6)];
+        update(&mut live, &channels(&last));
+        target.take_damage();
+        paint_base(&mut live, &mut target);
+        let damage = target.take_damage();
+        // The same frame from scratch.
+        let mut fresh_system = system(&Shared::default());
+        update(&mut fresh_system, &channels(&last));
+        let mut fresh = Target::new(&gpu, &spec);
+        paint_base(&mut fresh_system, &mut fresh);
+        (target.pixels() == fresh.pixels(), damage, spec.size_px())
+    };
+    let (matches, damage, (width, height)) = run(true);
+    assert!(matches, "after the dropped paint the texture shows what a fresh repaint shows");
+    assert_eq!(damage, vec![PixelRect { x: 0, y: 0, width, height }], "because the next paint redrew the whole layer");
+    let (matches_unreported, _, _) = run(false);
+    assert!(
+        !matches_unreported,
+        "without the report the blink would never reach the texture, or this test aims at nothing"
+    );
 }
 
 #[test]
@@ -158,11 +268,7 @@ fn a_new_target_texture_is_painted_whole_even_when_nothing_changed() {
     paint_base(&mut system, &mut first);
     paint_base(&mut system, &mut second);
     assert_eq!(shared.encoded(), 0, "no section changed");
-    assert_eq!(
-        read_back(&gpu, &first.native.2),
-        read_back(&gpu, &second.native.2),
-        "the new texture still got the picture"
-    );
+    assert_eq!(first.pixels(), second.pixels(), "the new texture still got the picture");
 }
 
 #[test]
@@ -190,14 +296,14 @@ fn twenty_four_mixed_changes_leave_the_texture_a_full_repaint_would() {
         let buf = channels(steps[frame % steps.len()]);
         update(&mut partial, &buf);
         paint_base(&mut partial, &mut target);
-        let partial_pixels = read_back(&gpu, &target.native.2);
+        let partial_pixels = target.pixels();
 
         // The same frame from scratch: a fresh rasteriser and texture, so everything is encoded and drawn whole.
         let mut full = system(&Shared::default());
         update(&mut full, &buf);
         let mut fresh = Target::new(&gpu, &spec);
         paint_base(&mut full, &mut fresh);
-        let full_pixels = read_back(&gpu, &fresh.native.2);
+        let full_pixels = fresh.pixels();
         identical += usize::from(partial_pixels == full_pixels);
 
         let report =
@@ -231,16 +337,17 @@ fn a_failed_encode_does_not_leave_the_old_picture_cached_over_a_half_built_scene
     let Some(gpu) = device() else { return };
     let (spec, good) = small_layer(false);
     let (_, broken) = small_layer(true);
-    let mut native = (gpu.0.clone(), gpu.1.clone(), face_texture(&gpu.0, spec.size_px()));
+    let mut native = native(&gpu, spec.size_px());
     let mut rasterizer = VelloRasterizer::new();
 
     assert!(rasterizer.rasterize_native(&spec, &good, &mut native).unwrap(), "the first frame draws");
+    common::submit(&mut native);
     assert!(rasterizer.rasterize_native(&spec, &broken, &mut native).is_err(), "the broken frame fails to encode");
     assert!(rasterizer.rasterize_native(&spec, &good, &mut native).unwrap(), "the old content comes back");
     assert_eq!(rasterizer.sections_encoded(), 1, "so its section is encoded again, not taken from the failed one");
 
     let fresh = gpu_pixels(&gpu, &mut VelloRasterizer::new(), &spec, &good);
-    assert_eq!(read_back(&gpu, &native.2), fresh, "and the texture shows what a fresh repaint shows");
+    assert_eq!(read_native(&mut native), fresh, "and the texture shows what a fresh repaint shows");
     assert!(fresh.chunks(4).any(|p| p[3] != 0), "the picture has ink, so equality is not two blank textures");
 }
 
@@ -268,7 +375,7 @@ fn a_non_finite_opacity_is_an_error_on_the_gpu_path_as_on_the_cpu_path() {
     let mut list = DrawList::new();
     let ellipse = list.path().ellipse(Vec2::ZERO, 0.3, 0.2).finish();
     list.push(Cmd::Fill { path: ellipse, paint: Paint::Solid(Colour::rgba(200, 40, 60, 255)), opacity: f32::NAN });
-    let mut native = (gpu.0.clone(), gpu.1.clone(), face_texture(&gpu.0, spec.size_px()));
+    let mut native = native(&gpu, spec.size_px());
     let error = VelloRasterizer::new().rasterize_native(&spec, &list, &mut native).unwrap_err();
     assert!(matches!(error, FaceError::Raster(_)), "{error:?}");
     assert!(
@@ -297,13 +404,13 @@ fn a_sheared_stroke_leaves_no_stale_ink_when_it_goes_away() {
     stroked.push(Cmd::PopTransform);
     let gone = DrawList::new();
 
-    let mut native = (gpu.0.clone(), gpu.1.clone(), face_texture(&gpu.0, spec.size_px()));
+    let mut native = native(&gpu, spec.size_px());
     let mut rasterizer = VelloRasterizer::new();
     assert!(rasterizer.rasterize_native(&spec, &stroked, &mut native).unwrap());
-    let ink = read_back(&gpu, &native.2).chunks(4).filter(|p| p[3] != 0).count();
+    let ink = read_native(&mut native).chunks(4).filter(|p| p[3] != 0).count();
     assert!(ink > 0, "the dash has ink to go stale");
     assert!(rasterizer.rasterize_native(&spec, &gone, &mut native).unwrap());
-    let left: usize = read_back(&gpu, &native.2).chunks(4).filter(|p| p[3] != 0).count();
+    let left: usize = read_native(&mut native).chunks(4).filter(|p| p[3] != 0).count();
     assert_eq!(left, 0, "{left} pixels of the old dash are left after the repaint");
 }
 
@@ -340,7 +447,7 @@ fn device_lost_also_forgets_a_device_vello_was_rejected_on() {
     let Some(strong) = device() else { return };
     let (spec, list) = small_layer(false);
     let mut rasterizer = VelloRasterizer::new();
-    let mut on_weak = (weak.0.clone(), weak.1.clone(), face_texture(&weak.0, spec.size_px()));
+    let mut on_weak = native(&weak, spec.size_px());
     assert!(!rasterizer.rasterize_native(&spec, &list, &mut on_weak).unwrap(), "the weak device was declined");
 
     // The capable device is the first of another instance, so it may compare equal to the weak one.
