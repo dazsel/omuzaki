@@ -22,6 +22,7 @@ pub mod icons;
 pub mod input;
 pub mod os_prefs;
 pub mod paint;
+pub mod schema_form;
 pub mod strings;
 #[cfg(any(test, feature = "capture"))]
 pub mod testing;

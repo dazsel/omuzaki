@@ -1,0 +1,7 @@
+section = "rust"
+item = "webpki-root-certs"
+kind = "crate"
+used_for = "Mozilla root certificates; a wasm32-only dependency of rustls-platform-verifier. `cargo tree -i webpki-root-certs` is empty for the wasm32, Linux, macOS and Windows targets: no target we build links it (omuzaki-http is native only), and it shows up only with `--target all`, so `cargo deny` still sees it"
+status = "conditions"
+condition = "CDLA-Permissive-2.0: allowed by a per-crate `deny.toml` exception and listed in `about.toml` `accepted`; the licence text ships in the third-party notices if the crate is ever linked"
+audit = "(crates.io: CDLA-Permissive-2.0)"

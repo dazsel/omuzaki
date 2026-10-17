@@ -25,6 +25,9 @@ const RING_U32: u32 = 8;
 /// Vertices in one ring of a tube (the prototype's `K`).
 pub const RING: usize = RING_U32 as usize;
 
+/// The vertices a tube's two caps add after its rings: a centre and a rim copy per end (see `TubeMesh::push_cap`).
+pub const CAP_VERTICES: usize = 2 * (RING + 1);
+
 /// A smoothstep that is 0 at or below `lo`, 1 at or above `hi` (three.js `MathUtils.smoothstep`).
 fn smoothstep(x: f32, lo: f32, hi: f32) -> f32 {
     let t = ((x - lo) / (hi - lo)).clamp(0.0, 1.0);
@@ -192,6 +195,32 @@ pub fn polar_angles(points: &[Vec3], head_centre: Vec3) -> Vec<f32> {
     points.iter().map(|p| (*p - head_centre).normalize_or_zero().y.clamp(-1.0, 1.0).acos()).collect()
 }
 
+/// Checks that a tube of `rings` rings, with its two caps, appended at vertex `first`, still gets `u32` indices. Every
+/// vertex of the tube is counted before anything is written, so an over-full mesh is refused, not saturated.
+fn vertices_fit(first: usize, rings: usize) -> Result<(), TubeError> {
+    let vertices = rings.checked_mul(RING).and_then(|n| n.checked_add(CAP_VERTICES)).and_then(|n| n.checked_add(first));
+    match vertices.map(u32::try_from) {
+        Some(Ok(_)) => Ok(()),
+        _ => Err(TubeError::TooMany),
+    }
+}
+
+/// One end of a tube to close.
+struct Cap {
+    /// The index of the end ring's first vertex.
+    ring: u32,
+    /// The end point of the polyline.
+    centre: Vec3,
+    /// The outward unit direction along the tube axis, the cap's normal.
+    axis: Vec3,
+    /// `hair-uv.y` there.
+    t: f32,
+    /// `hair-info`'s polar angle there, the same as the end ring's.
+    polar: f32,
+    /// Whether this is the root end, whose fan is wound to face back along the axis.
+    flip_winding: bool,
+}
+
 /// The per-clump data a tube mesh carries beside its geometry.
 #[derive(Clone, Copy, Debug)]
 pub struct TubeLook<'a> {
@@ -253,7 +282,15 @@ impl TubeMesh {
         }
         let count = points.len() * RING;
         let first = self.mesh.positions.len();
-        u32::try_from(first + count).map_err(|_| TubeError::TooMany)?;
+        // The caps come after the rings, so the caps' vertices count too, before anything is written.
+        vertices_fit(first, points.len())?;
+        let (Some(&root_polar), Some(&tip_polar)) = (look.polar.first(), look.polar.last()) else {
+            return Err(TubeError::WrongOutputLength {
+                points: points.len(),
+                expected: points.len(),
+                got: look.polar.len(),
+            });
+        };
         let base = u32::try_from(first).map_err(|_| TubeError::TooMany)?;
         self.mesh.positions.resize(first + count, Vec3::ZERO);
         self.mesh.normals.resize(first + count, Vec3::ZERO);
@@ -282,6 +319,47 @@ impl TubeMesh {
         }
         self.mesh.colours.extend(std::iter::repeat_n(vertex_colour(look.tint), count));
         self.mesh.indices.extend(tube_indices(base, points.len()));
+        // The caps come after every ring vertex, so the ring vertices keep their indices.
+        let tip_ring = base + RING_U32 * u32::try_from(last).map_err(|_| TubeError::TooMany)?;
+        let root_axis = (points[0] - points[1]).normalize_or_zero();
+        let tip_axis = (points[last] - points[last - 1]).normalize_or_zero();
+        let root =
+            Cap { ring: base, centre: points[0], axis: root_axis, t: 0.0, polar: root_polar, flip_winding: true };
+        self.push_cap(&root, look)?;
+        let tip =
+            Cap { ring: tip_ring, centre: points[last], axis: tip_axis, t: 1.0, polar: tip_polar, flip_winding: false };
+        self.push_cap(&tip, look)
+    }
+
+    /// Closes the ring at `cap.ring` with a flat fan: a centre vertex and a copy of the rim, all with the axis as normal
+    /// (a flat cap needs its own normals, so it cannot share the ring's vertices; the copies sit at the same positions,
+    /// so the mesh is closed once vertices at one position are welded, as an exporter does).
+    fn push_cap(&mut self, cap: &Cap, look: &TubeLook<'_>) -> Result<(), TubeError> {
+        // Fails before anything is written, so a refused cap leaves no half-built fan behind.
+        let centre = u32::try_from(self.mesh.positions.len()).map_err(|_| TubeError::TooMany)?;
+        let colour = vertex_colour(look.tint);
+        let rim = cap.ring as usize;
+        let add = |m: &mut Self, p: Vec3, across: f32| {
+            m.mesh.positions.push(p);
+            m.mesh.normals.push(cap.axis);
+            m.uv.extend([across * look.flip, cap.t]);
+            m.info.extend([look.seed, look.shade, cap.polar]);
+            m.mesh.uvs.push(Vec2::new(0.5 + 0.5 * across * look.flip, cap.t));
+            m.mesh.colours.push(colour);
+        };
+        add(self, cap.centre, 0.0);
+        for k in 0..RING {
+            let p = self.mesh.positions[rim + k];
+            add(self, p, ring_angle(k).cos());
+        }
+        for k in 0..RING_U32 {
+            let (a, b) = (centre + 1 + k, centre + 1 + (k + 1) % RING_U32);
+            if cap.flip_winding {
+                self.mesh.indices.extend([centre, a, b]);
+            } else {
+                self.mesh.indices.extend([centre, b, a]);
+            }
+        }
         Ok(())
     }
 
@@ -354,8 +432,8 @@ mod tests {
     #[test]
     fn a_tube_has_a_ring_per_point_and_validates() {
         let m = mesh_of(&line(6));
-        assert_eq!(m.positions.len(), 6 * RING);
-        assert_eq!(m.triangle_count(), 5 * RING * 2);
+        assert_eq!(m.positions.len(), 6 * RING + 2 * (RING + 1), "ring vertices, then two caps");
+        assert_eq!(m.triangle_count(), 5 * RING * 2 + 2 * RING);
         assert_eq!(m.extra_attribute(HAIR_UV).unwrap().data.len(), 2 * m.positions.len());
         assert_eq!(m.extra_attribute(HAIR_INFO).unwrap().data.len(), 3 * m.positions.len());
         assert_eq!(m.colours.len(), m.positions.len());
@@ -366,7 +444,7 @@ mod tests {
     fn every_triangle_faces_out_of_the_closed_tube() {
         let points = line(9);
         let m = mesh_of(&points);
-        for tri in m.indices.chunks_exact(3) {
+        for tri in m.indices.chunks_exact(3).take(8 * RING * 2) {
             let [a, b, c] = [tri[0], tri[1], tri[2]].map(|i| m.positions[i as usize]);
             let normal = (b - a).cross(c - a);
             let ring = tri[0] as usize / RING;
@@ -377,10 +455,44 @@ mod tests {
     }
 
     #[test]
+    fn the_caps_are_flat_fans_facing_along_the_axis_after_the_rings() {
+        let points = line(4);
+        let m = mesh_of(&points);
+        let rings = 4 * RING;
+        assert_eq!(m.positions.len(), rings + 2 * (RING + 1));
+        let axis = (points[3] - points[0]).normalize();
+        let info = &m.extra_attribute(HAIR_INFO).unwrap().data;
+        for (cap, sign) in [(0, -1.0), (1, 1.0)] {
+            let first = rings + cap * (RING + 1);
+            // Each cap's centre carries its end ring's polar angle: the root's the first ring's, the tip's the last.
+            let end_ring = if cap == 0 { 0 } else { 3 * RING };
+            assert_eq!(info[3 * first + 2], info[3 * end_ring + 2], "cap {cap}: polar angle");
+            assert!(m.normals[first..=first + RING].iter().all(|n| n.dot(axis) * sign > 0.99));
+            for tri in m.indices.chunks_exact(3).skip(3 * RING * 2 + cap * RING).take(RING) {
+                assert!(tri.iter().all(|i| (first..=first + RING).contains(&(*i as usize))));
+                let [a, b, c] = [tri[0], tri[1], tri[2]].map(|i| m.positions[i as usize]);
+                assert!((b - a).cross(c - a).dot(axis) * sign > 0.0, "cap {cap} faces into the tube");
+            }
+        }
+    }
+
+    #[test]
+    fn the_caps_count_against_the_index_limit_before_anything_is_written() {
+        let rings = 2;
+        let last_fit = u32::MAX as usize - rings * RING - CAP_VERTICES;
+        assert!(vertices_fit(last_fit, rings).is_ok(), "the rings and both caps end at the last index");
+        let ring_prefix = last_fit + 1;
+        assert!(
+            matches!(vertices_fit(ring_prefix, rings), Err(TubeError::TooMany)),
+            "the rings fit but the caps don't"
+        );
+    }
+
+    #[test]
     fn vertex_normals_point_away_from_the_spine() {
         let points = line(5);
         let m = mesh_of(&points);
-        for (v, n) in m.positions.iter().zip(&m.normals) {
+        for (v, n) in m.positions.iter().zip(&m.normals).take(5 * RING) {
             let ring = points.iter().min_by(|a, b| a.distance(*v).total_cmp(&b.distance(*v))).unwrap();
             assert!((n.length() - 1.0).abs() < 1e-4);
             assert!(n.dot(*v - *ring) > 0.0);
