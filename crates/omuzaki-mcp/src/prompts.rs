@@ -2,7 +2,7 @@
 //!
 //! A [`PromptDef`] says which ops it needs. A session is offered only the prompts whose ops all exist in its tool
 //! catalogue, because this crate never recommends a tool that is missing. The
-//! built-in list is Rust data in [`BUILT_IN`], not Markdown files: it is empty until the features whose ops the first
+//! built-in recipes are Rust data, one file each under `src/recipes/`, not Markdown files: it is empty until the features whose ops the first
 //! recipes need exist, and a recipe is a few lines of template that is reviewed next to the ops it names. A host adds
 //! its own with [`McpOptions::with_prompt`](crate::McpOptions::with_prompt).
 //!
@@ -49,8 +49,14 @@ pub struct PromptDef {
     pub template: &'static str,
 }
 
-/// The recipes this crate ships. Empty today: each lands with the feature whose ops it needs.
-pub(crate) const BUILT_IN: &[PromptDef] = &[];
+/// Every recipe linked into this binary, sorted by name so the order never depends on link order. A recipe is added by
+/// adding a file under `src/recipes/` that calls `register_recipe!`; no list here names it (ADR 0053 §3, ADR 0054 §1).
+pub(crate) fn built_in() -> Vec<&'static PromptDef> {
+    let mut all: Vec<&'static PromptDef> =
+        omuzaki_core::__inventory::iter::<crate::recipes::Recipe>().map(|r| r.0).collect();
+    all.sort_by_key(|def| def.name);
+    all
+}
 
 /// The prompts of one server: the built-in ones, then the host's.
 #[derive(Clone, Debug)]
@@ -59,8 +65,8 @@ pub(crate) struct Prompts(Vec<PromptDef>);
 impl Prompts {
     /// A host prompt with the name of an earlier one replaces it, so a host can override a built-in recipe.
     pub(crate) fn new(extra: &[PromptDef]) -> Self {
-        let mut all: Vec<PromptDef> = Vec::with_capacity(BUILT_IN.len() + extra.len());
-        for def in BUILT_IN.iter().chain(extra) {
+        let mut all: Vec<PromptDef> = Vec::new();
+        for def in built_in().into_iter().chain(extra) {
             match all.iter_mut().find(|d| d.name == def.name) {
                 Some(existing) => *existing = *def,
                 None => all.push(*def),
@@ -211,7 +217,72 @@ mod tests {
         let (a, mut b) = (def("one"), def("two"));
         b.title = "B";
         let prompts = Prompts::new(&[a, b]);
-        assert_eq!(prompts.0.len(), 1);
-        assert_eq!(prompts.0[0].template, "two");
+        let named: Vec<_> = prompts.0.iter().filter(|d| d.name == "t").collect();
+        assert_eq!(named.len(), 1);
+        assert_eq!(named[0].template, "two");
+        assert_eq!(prompts.0.len(), built_in().len() + 1, "the built-in recipes are kept");
+    }
+
+    /// The tool names a template names with `{tool:..}`.
+    fn named_tools(template: &str) -> Vec<&str> {
+        template.split("{tool:").skip(1).filter_map(|rest| rest.split('}').next()).collect()
+    }
+
+    #[test]
+    fn every_tool_a_built_in_recipe_names_is_one_it_needs() {
+        for def in built_in() {
+            for op in named_tools(def.template) {
+                let built_in_tool = op.starts_with("tx.") || op.starts_with("history.");
+                assert!(built_in_tool || def.needs.contains(&op), "{} names {op} without needing it", def.name);
+            }
+            for op in def.needs {
+                assert!(named_tools(def.template).contains(op), "{} needs {op} but never names it", def.name);
+            }
+        }
+    }
+
+    #[test]
+    fn every_placeholder_in_a_built_in_recipe_names_one_of_its_arguments() {
+        for def in built_in() {
+            let mut rest = def.template;
+            while let Some(open) = rest.find('{') {
+                let close = rest[open..].find('}').map_or(rest.len(), |c| open + c);
+                let inner = &rest[open + 1..close];
+                assert!(
+                    inner.starts_with("tool:") || def.arguments.iter().any(|a| a.name == inner),
+                    "{}: {{{inner}}} names no argument",
+                    def.name
+                );
+                rest = &rest[close.min(rest.len() - 1) + 1..];
+            }
+        }
+    }
+
+    #[test]
+    fn built_in_recipe_names_are_unique_and_safe() {
+        let mut names: Vec<&str> = built_in().iter().map(|d| d.name).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), built_in().len());
+        assert!(names.iter().all(|n| n.chars().all(|c| c.is_ascii_lowercase() || c == '_')));
+    }
+
+    /// Adding a recipe adds a file and nothing else: every file under `src/recipes/` registers exactly one recipe, each
+    /// registered recipe is well-formed, and the server lists it. No count here changes when a recipe is added.
+    #[test]
+    #[allow(clippy::disallowed_methods)] // a test reading this crate's own source folder, not an op reaching a file
+    fn every_recipe_file_registers_a_well_formed_recipe_the_server_lists() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/recipes");
+        let files = std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|f| f.file_name() != "mod.rs" && f.path().extension().is_some_and(|e| e == "rs"))
+            .count();
+        assert_eq!(built_in().len(), files, "each file under src/recipes registers exactly one recipe");
+        let listed = Prompts::new(&[]);
+        for def in built_in() {
+            assert!(!def.title.is_empty() && !def.description.is_empty() && !def.template.is_empty(), "{}", def.name);
+            assert!(listed.0.iter().any(|d| d.name == def.name), "{} is not listed", def.name);
+        }
     }
 }

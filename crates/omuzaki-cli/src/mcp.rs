@@ -15,7 +15,7 @@ use tracing_subscriber::EnvFilter;
 
 use crate::session::Session;
 
-/// Serves `runner` to one MCP client on stdin/stdout, with the default agent grants (read, edit, render). Returns when
+/// Serves `runner` to one MCP client on stdin/stdout, with the default agent grants (read, edit, render and review). Returns when
 /// the client closes the connection. `connections` is the handle the runner's services hold (see
 /// [`open_runner_with`](crate::session::open_runner_with)), which is what makes `agent.connection` listed and
 /// answerable. Warnings and errors are logged to stderr; set `RUST_LOG` (for example `RUST_LOG=debug`) for more.
@@ -30,7 +30,15 @@ pub fn serve_stdio(runner: Arc<dyn Runner>, session: &Session) -> Result<(), OpE
         // The agent works for the person running the command.
         options = options.with_sessions(Arc::clone(sessions), session.actor.clone());
     }
-    let server = McpServer::new(runner, options).map_err(|e| server_error(&e))?;
+    if let Some(project) = &session.project {
+        // The project folder, and no folder the person did not share with agents (ADR 0013): the command line shares none.
+        options = options.with_roots(project.clone(), []);
+    }
+    let mut server = McpServer::new(runner, options).map_err(|e| server_error(&e))?;
+    if let Some(jobs) = &session.jobs {
+        // Long ops become tasks for clients that ask for them.
+        server = server.with_jobs(Arc::clone(jobs));
+    }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

@@ -5,6 +5,9 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, dead_code)]
 
 pub mod http;
+pub mod jobs;
+pub mod registry;
+pub mod wire;
 
 use omuzaki_core::id::Slug;
 use omuzaki_doc_api::{DocPath, Patch, Value};
