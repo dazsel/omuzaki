@@ -26,10 +26,24 @@ schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
+omuzaki-anim = { path = "../omuzaki-anim" }
+omuzaki-anim-api = { path = "../omuzaki-anim-api" }
+omuzaki-char = { path = "../omuzaki-char" }
+omuzaki-char-api = { path = "../omuzaki-char-api" }
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-doc-api = { path = "../omuzaki-doc-api" }
+omuzaki-face-api = { path = "../omuzaki-face-api" }
 omuzaki-l10n-api = { path = "../omuzaki-l10n-api" }
+omuzaki-ops = { path = "../omuzaki-ops" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
+omuzaki-render = { path = "../omuzaki-render" }
+omuzaki-render-api = { path = "../omuzaki-render-api" }
+omuzaki-stage = { path = "../omuzaki-stage" }
+omuzaki-stage-api = { path = "../omuzaki-stage-api" }
+omuzaki-stream = { path = "../omuzaki-stream" }
+omuzaki-stream-api = { path = "../omuzaki-stream-api" }
+omuzaki-track-api = { path = "../omuzaki-track-api" }
+omuzaki-ui-api = { path = "../omuzaki-ui-api" }
 tracing.workspace = true
 
 # Unix only: signal a probe's whole process group when it ends
@@ -40,6 +54,12 @@ rustix = { workspace = true, features = ["process"] }
 egui_kittest.workspace = true
 image.workspace = true
 tempfile.workspace = true
+omuzaki-anim-mock = { path = "../omuzaki-anim-mock" }
+omuzaki-char-mock = { path = "../omuzaki-char-mock" }
+omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
+omuzaki-render-mock = { path = "../omuzaki-render-mock" }
+omuzaki-track-mock = { path = "../omuzaki-track-mock" }
+omuzaki-ui-mock = { path = "../omuzaki-ui-mock" }
 
 [lints]
 workspace = true
