@@ -50,12 +50,6 @@ impl Bodies {
             },
         );
     }
-
-    /// How many panels have been built.
-    #[cfg(test)]
-    pub fn built(&self) -> usize {
-        self.built.len()
-    }
 }
 
 /// The empty state of a panel that cannot work: the registered words, or a generic notice when it registered none.
