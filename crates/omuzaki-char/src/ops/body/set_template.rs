@@ -31,6 +31,12 @@ const MOVED: f32 = 0.005;
 /// and after, and a move of more than 5 mm counts. A template that does not build the character is refused.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "template": "tall"}
+    ],
+    "x-omuzaki-fixture" = "character"
+))]
 pub struct SetTemplate {
     /// The character whose template changes.
     pub character: CharId,

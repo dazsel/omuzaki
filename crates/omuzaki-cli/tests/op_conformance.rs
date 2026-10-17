@@ -11,6 +11,7 @@
 #![allow(clippy::disallowed_methods, reason = "the test reads the project folder to prove an op left it alone")]
 
 mod common;
+mod window_host;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -36,8 +37,109 @@ use omuzaki_track_api::camera::CameraId;
 
 const ALLOWLIST: &str = include_str!("op_conformance_allowlist.txt");
 
-/// The one fixture project there is: an empty project named `demo`.
+/// The default fixture project: an empty project named `demo`.
 const DEFAULT_FIXTURE: &str = "demo";
+
+/// The fixture projects other than `demo`: one JSON file each, `<name>.json`, so a new fixture is a new file and this
+/// test doesn't change. A file holds `about` (what the fixture is for), an optional `base` (the fixture it builds on)
+/// and `steps`, each an `op` and its `args`. A fixture is made by running those real ops (never by writing the document
+/// by hand), so what an example sees is what a person's own steps would leave.
+const FIXTURE_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/op_fixtures");
+
+/// The deepest chain of `base` fixtures followed before the chain is taken for a loop.
+const MAX_FIXTURE_DEPTH: usize = 8;
+
+/// One fixture file.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FixtureFile {
+    /// What the fixture is for: the state it leaves and which ops need it.
+    about: String,
+    /// The fixture whose steps run first.
+    #[serde(default)]
+    base: Option<String>,
+    /// The ops that make it, in order.
+    steps: Vec<FixtureStep>,
+}
+
+/// One op run while building a fixture.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FixtureStep {
+    op: String,
+    args: Value,
+}
+
+/// The names of the fixture files, sorted: what an op's `x-omuzaki-fixture` may name besides `demo`.
+fn fixture_names() -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(FIXTURE_DIR)
+        .map(|entries| {
+            entries
+                .filter_map(|entry| {
+                    entry.ok()?.file_name().into_string().ok()?.strip_suffix(".json").map(str::to_owned)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
+/// The `(op, args)` steps that build the fixture `name` on top of an empty `demo` project, its bases' steps first.
+fn fixture_steps(name: &str) -> Result<Vec<FixtureStep>, String> {
+    let mut chain = Vec::new();
+    let mut next = Some(name.to_owned());
+    while let Some(name) = next {
+        if chain.len() == MAX_FIXTURE_DEPTH {
+            return Err(format!(
+                "fixture `{name}`: its `base` chain is longer than {MAX_FIXTURE_DEPTH}; is it a loop?"
+            ));
+        }
+        let path = Path::new(FIXTURE_DIR).join(format!("{name}.json"));
+        let text = std::fs::read_to_string(&path).map_err(|_| {
+            let known = fixture_names().join("`, `");
+            format!("names fixture `{name}`, and the conformance test knows only `{DEFAULT_FIXTURE}`, `{known}`")
+        })?;
+        let file: FixtureFile =
+            serde_json::from_str(&text).map_err(|e| format!("fixture file `{name}.json` doesn't read: {e}"))?;
+        if file.about.trim().is_empty() {
+            return Err(format!("fixture file `{name}.json` says nothing in `about`"));
+        }
+        next = file.base;
+        chain.push(file.steps);
+    }
+    Ok(chain.into_iter().rev().flatten().collect())
+}
+
+/// Builds the fixture `name` in a fresh project folder: the steps run through an executor that has every op registered
+/// (the rig itself registers only the op under test), then the folder is closed so the rig reopens it from disk, as a
+/// person's next session would.
+fn fixture_project(name: &str) -> Result<tempfile::TempDir, String> {
+    let dir = common::new_project();
+    if name == DEFAULT_FIXTURE {
+        return Ok(dir);
+    }
+    let steps = fixture_steps(name)?;
+    let doc = SavedProject::open(dir.path()).map_err(|e| format!("opening the project for fixture `{name}`: {e}"))?;
+    let project = ProjectDir::open(dir.path()).map_err(|e| format!("opening the folder for fixture `{name}`: {e}"))?;
+    let setup = Executor::new(Box::new(doc), Arc::new(SystemClock::new()))
+        .map_err(|e| e.to_string())?
+        .with_project_dir(project);
+    for FixtureStep { op, args } in steps {
+        let request = Request {
+            op: op.clone(),
+            args,
+            mode: Mode::Apply,
+            actor: Actor::Person { name: "conformance".to_owned() },
+            grants: Grants::person(),
+            cause: None,
+            tx: None,
+            base: None,
+        };
+        setup.run(request).map_err(|e| format!("fixture `{name}` step `{op}` failed: {}", e.message))?;
+    }
+    Ok(dir)
+}
 
 /// What a run can leave behind: the document tree, every file under the project folder, and the op log's length.
 #[derive(PartialEq, Debug)]
@@ -138,21 +240,13 @@ struct Rig {
 
 impl Rig {
     fn new(reg: &'static OpRegistration, fixture: Option<&str>) -> Result<Self, String> {
-        match fixture.unwrap_or(DEFAULT_FIXTURE) {
-            DEFAULT_FIXTURE => {}
-            other => {
-                return Err(format!(
-                    "names fixture `{other}`, and the conformance test knows only `{DEFAULT_FIXTURE}`"
-                ));
-            }
-        }
-        let dir = common::new_project();
+        let dir = fixture_project(fixture.unwrap_or(DEFAULT_FIXTURE))?;
         let doc = SavedProject::open(dir.path()).map_err(|e| format!("opening the fixture failed: {e}"))?;
         let project = ProjectDir::open(dir.path()).map_err(|e| format!("opening the fixture folder failed: {e}"))?;
         let runner = Executor::with_registrations(Box::new(doc), Arc::new(SystemClock::new()), [reg])
             .map_err(|e| e.to_string())?
             .with_services(
-                ServicesBuilder::new()
+                window_host::with_window(ServicesBuilder::new())
                     .insert::<dyn PerformHost>(Arc::new(IdleHost))
                     .insert::<dyn InputHost>(Arc::new(IdleInput))
                     .build(),
@@ -260,11 +354,32 @@ fn check_example(reg: &'static OpRegistration, kind: OpKind, undo: Undo, args: &
             .filter(|k| before.files.get(*k) != after.files.get(*k))
             .collect();
         return Err(format!(
-            "is not restored exactly by undo (tree changed: {}, files changed: {moved:?})",
-            after.tree != before.tree
+            "is not restored exactly by undo (tree changed: {}, files changed: {moved:?}{})",
+            after.tree != before.tree,
+            first_text_difference(&before.files, &after.files)
         ));
     }
     Ok(())
+}
+
+/// The first line that differs in the first text file that does, as `; line N was ... now ...`, or nothing when no text
+/// file differs line-wise. It makes a failure say what moved, not only where.
+fn first_text_difference(before: &BTreeMap<String, Vec<u8>>, after: &BTreeMap<String, Vec<u8>>) -> String {
+    for (name, old) in before {
+        let Some(new) = after.get(name).filter(|new| *new != old) else { continue };
+        let (Ok(old), Ok(new)) = (std::str::from_utf8(old), std::str::from_utf8(new)) else { continue };
+        let (mut old_lines, mut new_lines) = (old.lines(), new.lines());
+        for n in 1.. {
+            let (a, b) = (old_lines.next(), new_lines.next());
+            if a != b {
+                return format!("; {name} line {n} was {a:?}, now {b:?}");
+            }
+            if a.is_none() {
+                break;
+            }
+        }
+    }
+    String::new()
 }
 
 /// The section of the allowlist file for edits that still declare `Undo::None`; the lines above it are ops without
@@ -312,6 +427,17 @@ fn stale_undo_none(violating: &BTreeMap<&'static str, bool>, listed: &BTreeSet<&
         .filter(|name| !violating.get(*name).copied().unwrap_or(false))
         .map(|name| format!("{name}: no longer an edit with `Undo::None`; delete it from the allowlist"))
         .collect()
+}
+
+/// Every fixture file reads and builds, whether or not an op names it yet, so a broken fixture fails here by name
+/// rather than as some op's example.
+#[test]
+fn every_fixture_file_builds() {
+    omuzaki_cli::link();
+    let names = fixture_names();
+    assert!(!names.is_empty(), "no fixture files in {FIXTURE_DIR}");
+    let broken: Vec<String> = names.iter().filter_map(|name| fixture_project(name).err()).collect();
+    assert!(broken.is_empty(), "{}", broken.join("\n"));
 }
 
 #[test]

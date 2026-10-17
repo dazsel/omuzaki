@@ -19,6 +19,12 @@ use crate::ops::character::access;
 /// original) to compare them.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "part": "hair", "new_id": "hair-b"}
+    ],
+    "x-omuzaki-fixture" = "character"
+))]
 pub struct PartDuplicate {
     /// The character the part belongs to.
     pub character: CharId,

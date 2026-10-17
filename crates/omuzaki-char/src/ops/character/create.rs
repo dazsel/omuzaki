@@ -40,6 +40,12 @@ pub enum StartingParts {
 /// `skin_line`) that the head and body refer to, and the face starts as the template's.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"id": "kit", "name": "Kit", "template": "standard", "seed": 7}
+    ],
+    "x-omuzaki-fixture" = "demo"
+))]
 pub struct CharacterCreate {
     /// The new character's id: lowercase letters, digits, `-` and `_`, starting with a letter or digit, at most 64
     /// characters. It names the character's folder in the project, so it never changes. Must not be in use.
