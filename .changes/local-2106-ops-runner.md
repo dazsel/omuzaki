@@ -6,6 +6,8 @@
 - A request a person could allow waits in the approval queue (missing scope, a confirmation, a budget, a team review)
   and runs exactly once when approved; with no approver, or from a script, it is refused with a hint (#316, #1003,
   #1095, #1146, #1283).
+- `omuzaki mcp` has no window to ask in, so its executor has no approver: a request that would wait for a person is
+  refused with a hint to grant it in advance (design `agent-sessions.md` §7.6).
 - Sessions have rate limits, budgets in exact micro-dollars with pause at the cap, fences, and the stale-write guard
   (#244, #403, #967, #356). Client names are cleaned once, when the session opens (#208).
 - A person's undo covers their agents' steps, newest first, and pauses a running agent (#245).
