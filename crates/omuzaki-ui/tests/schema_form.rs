@@ -16,7 +16,7 @@ use std::sync::Arc;
 use egui::accesskit::Role;
 use egui::{Context, Event, Key, Modifiers, Pos2, RawInput, Rect, vec2};
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable as _;
+use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use omuzaki_core::colour::Colour;
 use omuzaki_doc_api::Value;
 use omuzaki_ui::ds::schema_form::{EditPhase, Form, FormValue, MAX_ESSENTIALS, SchemaForm};
@@ -394,23 +394,30 @@ fn escape_in_a_text_or_integer_field_puts_the_value_back_and_cancels() {
 }
 
 #[test]
-fn a_tangent_typed_into_a_curve_field_is_dropped_so_what_is_shown_is_what_is_saved() {
+fn a_curve_field_disables_its_tangent_so_tangents_cannot_change_through_the_form() {
     let mut h = rig(&one_field(json!({
         "title": "Response", "type": "array", "items": {"type": "number"}, "x-ui": {"widget": "curve"}
     })));
     focus(&mut h, Role::Slider, "Response, point 1 of 2");
     h.run_steps(2);
-    h.get_by_role_and_label(Role::SpinButton, "Tangent").click();
+    let tangent = h.get_by_role_and_label(Role::SpinButton, "Tangent");
+    assert!(tangent.accesskit_node().is_disabled(), "the array carries points only, so there is no tangent to edit");
+    assert_eq!(
+        tangent.accesskit_node().description().as_deref(),
+        Some("Tangents are not saved in this field"),
+        "and it says why"
+    );
+    // Clicking it and typing changes nothing: the curve the form holds still has automatic tangents throughout.
+    tangent.click();
     h.run_steps(3);
-    h.get_by_role_and_label(Role::TextInput, "Tangent value").type_text("0");
-    h.run();
-    press(&mut h, Modifiers::NONE, Key::Enter);
-    h.run_steps(3);
-    // The array carries points only: the curve the form holds is the curve it will submit, tangents automatic.
+    assert!(h.query_by_role_and_label(Role::TextInput, "Tangent value").is_none(), "a disabled field does not edit");
+    press(&mut h, Modifiers::CTRL, Key::Backspace);
+    h.run_steps(2);
     let FormValue::Object(fields) = &h.state().value else { panic!("an object") };
     let FormValue::Curve(curve) = &fields[0].1 else { panic!("a curve") };
     assert!(curve.points().iter().all(|p| p.tangent.is_none()), "{:?}", curve.points());
     assert_eq!(json_of(&h), json!({"field": [0, 0, 1, 1]}), "what is shown is what is saved");
+    assert!(h.state().edits.is_empty(), "no edit was reported: {:?}", h.state().edits);
 }
 
 #[test]

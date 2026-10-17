@@ -12,8 +12,8 @@ use crate::ds::strings::Msg;
 use crate::ds::theme::{Ds, ds};
 use crate::ds::tokens::{radius, size, space};
 use crate::ds::widgets::{
-    Choice, ColourEvent, ColourField, Curve, CurveEditor, CurveEvent, Dropdown, FormRow, NumberField, ParamEvent,
-    ParamSlider, Section, Segment, Segmented, TextField, Toggle,
+    Choice, ColourEvent, ColourField, CurveEditor, CurveEvent, Dropdown, FormRow, NumberField, ParamEvent, ParamSlider,
+    Section, Segment, Segmented, TextField, Toggle,
 };
 
 /// Options a dropdown holds without allocating; a longer list costs one `Vec` per frame.
@@ -282,8 +282,8 @@ fn field(ui: &mut Ui, cx: &mut Cx<'_>, node: &Node, value: &mut FormValue) {
         }
         (Kind::Curve, FormValue::Curve(curve)) => {
             row(ui, ds, &mut cx.scratch.words, node, modified, &mut out, |ui, name, _, out| {
-                let shown = CurveEditor::new(name, curve).id_salt(&node.path).show(ui);
-                forget_tangents(curve);
+                let reason = text::say(ds, text::NO_TANGENTS, &[]);
+                let shown = CurveEditor::new(name, curve).id_salt(&node.path).without_tangents(&reason).show(ui);
                 out.phase = match shown.event {
                     Some(CurveEvent::Preview) => Some(EditPhase::Preview),
                     Some(CurveEvent::Commit { .. }) => Some(EditPhase::Commit),
@@ -322,15 +322,6 @@ fn field(ui: &mut Ui, cx: &mut Cx<'_>, node: &Node, value: &mut FormValue) {
     }
     if let Some(phase) = out.phase {
         cx.report(node, phase);
-    }
-}
-
-/// Puts every point's tangent back to automatic. The schema's `number[]` carries points only, so a tangent typed into
-/// the editor's readout could not be saved: dropping it here keeps what is drawn the same as what is submitted. The
-/// widget is not changed (it lives outside this module); the readout shows the automatic slope again next frame.
-fn forget_tangents(curve: &mut Curve) {
-    for i in 0..curve.points().len() {
-        curve.set_tangent(i, None);
     }
 }
 
