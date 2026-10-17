@@ -138,7 +138,12 @@ pub fn kit_character() -> Result<BuiltCharacter, ViewportError> {
 pub fn kit_stage(renderer: &mut dyn Renderer, size: UVec2) -> Result<Stage, ViewportError> {
     let built = kit_character()?;
     let rig = LightRig::load(LIGHT_RIG).map_err(ViewportError::Light)?;
-    let landmarks = Landmarks::measure(&built)?;
+    let mut landmarks = Landmarks::measure(&built)?;
+    // The stage's crown is the top of the head mesh, which leaves the hair out; the kit's hair stands above it, so the
+    // bust shot would crop it. The head, for framing, reaches the highest point of the character.
+    if let Some(head) = landmarks.head.as_mut() {
+        head.max.y = head.max.y.max(landmarks.body.max.y);
+    }
     #[allow(clippy::cast_precision_loss)] // a picture's sides are far below 2^24
     let aspect = size.x as f32 / size.y.max(1) as f32;
     let camera = frame_camera(Framing::Bust, &landmarks, &CameraDef::preset(Framing::Bust), aspect)?;

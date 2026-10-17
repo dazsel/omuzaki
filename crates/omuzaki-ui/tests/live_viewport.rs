@@ -131,6 +131,45 @@ fn the_kit_character_is_drawn_and_moves_before_any_camera_is_chosen() {
     app.shutdown().expect("a clean shutdown");
 }
 
+/// The share of the picture's height above the first row that holds anything but the background.
+fn headroom(image: &Image) -> f32 {
+    let (pixels, _) = image.rgba8.as_chunks::<4>();
+    let width = image.size.x as usize;
+    let corner = pixels[0];
+    let top = pixels
+        .chunks(width)
+        .position(|row| row.iter().any(|px| px.iter().zip(corner).any(|(a, b)| a.abs_diff(b) > 12)))
+        .expect("the character is drawn");
+    #[allow(clippy::cast_precision_loss)] // a picture's sides are far below 2^24
+    {
+        top as f32 / image.size.y as f32
+    }
+}
+
+#[test]
+fn the_whole_head_is_in_frame_with_headroom_at_every_stage_size() {
+    // The 1920 x 1080 program frame (the output window), and the stage panel beside the dock at 1366 x 768 and
+    // 1920 x 1080.
+    for (w, h) in [(1920, 1080), (1060, 768), (1480, 1080)] {
+        let meter = Arc::new(LatencyMeter::new());
+        let mut app = live(FakeTracker::scripted(Vec::new()), UVec2::new(w, h), &meter);
+        let ctx = egui::Context::default();
+        assert!(until(LIMIT, || app.show(&ctx), || published(&ctx).is_some()), "the stage draws its first frame");
+        let picture = app.viewport_mut().expect("attached").snapshot().expect("the picture reads back");
+        let room = headroom(&picture);
+        // Bust framing puts the top of the hair about 8 % below the frame; the margin allows for the idle sway.
+        assert!((0.05..=0.13).contains(&room), "{w} x {h}: the hair's top is {room} of the height from the top");
+        // The shoulders are in frame: the bottom row is body, not background.
+        let (pixels, _) = picture.rgba8.as_chunks::<4>();
+        let last = &pixels[pixels.len() - picture.size.x as usize..];
+        assert!(
+            last.iter().any(|px| px.iter().zip(pixels[0]).any(|(a, b)| a.abs_diff(b) > 12)),
+            "{w} x {h}: body at the bottom"
+        );
+        app.shutdown().expect("a clean shutdown");
+    }
+}
+
 #[test]
 fn the_latency_is_a_dash_until_a_tracked_frame_is_drawn_and_a_number_after() {
     let meter = Arc::new(LatencyMeter::new());
