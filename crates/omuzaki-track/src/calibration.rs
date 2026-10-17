@@ -31,10 +31,12 @@
 //! 2. **What was read is what is written.** A kept element is written back untouched, so a later save for another
 //!    character does not lose it and a hand fix of the file is still possible. The one element a save replaces is
 //!    the one filed under the same character and device class: the person's own recalibration. [`forget`](CalibrationStore::forget)
-//!    drops a character on purpose.
+//!    drops one device class of a character on purpose, and [`forget_all_devices`](CalibrationStore::forget_all_devices)
+//!    every class of it.
 //! 3. **A file that cannot be read at all is never written.** A file that does not parse, has a version this build does
 //!    not know, or has `calibration` of the wrong shape leaves the store *locked*: it reads as empty, reports the
-//!    reason, and [`save`](CalibrationStore::save) and [`forget`](CalibrationStore::forget) refuse
+//!    reason, and [`save`](CalibrationStore::save), [`forget`](CalibrationStore::forget) and
+//!    [`forget_all_devices`](CalibrationStore::forget_all_devices) refuse
 //!    ([`CalibrationError::Locked`]), because writing would replace a file whose content is unknown.
 //! 4. **A calibration is checked before it is used** ([`CalibrationStore::for_character`] only hands back one that
 //!    passed): every range finite and wider than nothing, the head rest pose finite. A hand-edited file cannot freeze
@@ -269,20 +271,40 @@ impl CalibrationStore {
         })
     }
 
-    /// Forgets everything saved for `character`, unreadable entries included, and writes the file. Returns whether
-    /// there was anything.
+    /// Forgets what is saved for `character` on `profile` only, an unreadable entry filed under that key included,
+    /// and writes the file. Another device class of the same character, and every other character, stay. Returns
+    /// whether there was anything.
     ///
     /// # Errors
     /// [`CalibrationError::Locked`] or [`CalibrationError::Write`]; the store is unchanged then.
-    pub fn forget(&mut self, character: &str) -> Result<bool, CalibrationError> {
+    pub fn forget(&mut self, character: &str, profile: DeviceProfile) -> Result<bool, CalibrationError> {
+        let key = (character.to_owned(), profile_key(profile));
+        self.forget_where(|(c, p)| (c, p) == (&key.0, &key.1))
+    }
+
+    /// Forgets everything saved for `character` on every device class, unreadable entries included, and writes the
+    /// file. This is the deliberate "forget all for this character"; [`forget`](Self::forget) takes one device.
+    /// Returns whether there was anything.
+    ///
+    /// # Errors
+    /// [`CalibrationError::Locked`] or [`CalibrationError::Write`]; the store is unchanged then.
+    pub fn forget_all_devices(&mut self, character: &str) -> Result<bool, CalibrationError> {
+        self.forget_where(|(c, _)| c == character)
+    }
+
+    /// Drops every usable and kept entry whose key `matches`, and writes. Findings go with their entries.
+    fn forget_where(&mut self, matches: impl Fn((&String, &String)) -> bool) -> Result<bool, CalibrationError> {
         self.refuse_if_locked()?;
-        let had = self.good.keys().any(|(c, _)| c == character)
-            || self.kept.iter().any(|kept| kept.key.as_ref().is_some_and(|(c, _)| c == character));
+        let had = self.good.keys().any(|(c, p)| matches((c, p)))
+            || self.kept.iter().any(|kept| kept.key.as_ref().is_some_and(|(c, p)| matches((c, p))));
         if had {
             self.changed(|store| {
-                store.good.retain(|(c, _), _| c != character);
-                store.kept.retain(|kept| kept.key.as_ref().is_none_or(|(c, _)| c != character));
-                store.findings.retain(|f| f.character.as_deref() != Some(character));
+                store.good.retain(|(c, p), _| !matches((c, p)));
+                store.kept.retain(|kept| kept.key.as_ref().is_none_or(|(c, p)| !matches((c, p))));
+                store.findings.retain(|f| match (&f.character, &f.profile) {
+                    (Some(c), Some(p)) => !matches((c, p)),
+                    _ => true,
+                });
             })?;
         }
         Ok(had)
@@ -476,9 +498,29 @@ mod tests {
         store.save("kiri", tuned(DeviceProfile::Webcam)).unwrap();
         assert_eq!(store.len(), 1);
         assert_eq!(store.for_character("kiri", DeviceProfile::Webcam), Some(tuned(DeviceProfile::Webcam)));
-        assert_eq!(store.forget("kiri"), Ok(true));
+        assert_eq!(store.forget("kiri", DeviceProfile::Webcam), Ok(true));
         assert!(store.is_empty());
-        assert_eq!(store.forget("kiri"), Ok(false));
+        assert_eq!(store.forget("kiri", DeviceProfile::Webcam), Ok(false));
+    }
+
+    #[test]
+    fn forgetting_one_device_keeps_the_other_and_other_characters_across_a_restart() {
+        let (_dir, path) = on_disk();
+        let mut store = CalibrationStore::open(&path);
+        store.save("kiri", tuned(DeviceProfile::Webcam)).unwrap();
+        store.save("kiri", tuned(DeviceProfile::Arkit)).unwrap();
+        store.save("mira", tuned(DeviceProfile::Webcam)).unwrap();
+        assert_eq!(store.forget("kiri", DeviceProfile::Webcam), Ok(true));
+        assert_eq!(store.forget("kiri", DeviceProfile::Webcam), Ok(false), "already gone");
+        let again = CalibrationStore::open(&path);
+        assert_eq!(again.for_character("kiri", DeviceProfile::Webcam), None);
+        assert_eq!(again.for_character("kiri", DeviceProfile::Arkit), Some(tuned(DeviceProfile::Arkit)));
+        assert_eq!(again.for_character("mira", DeviceProfile::Webcam), Some(tuned(DeviceProfile::Webcam)));
+        let mut again = again;
+        assert_eq!(again.forget_all_devices("kiri"), Ok(true));
+        let last = CalibrationStore::open(&path);
+        assert_eq!(last.for_character("kiri", DeviceProfile::Arkit), None);
+        assert_eq!(last.for_character("mira", DeviceProfile::Webcam), Some(tuned(DeviceProfile::Webcam)));
     }
 
     #[test]
@@ -555,7 +597,7 @@ mod tests {
         assert_eq!(store.findings().len(), 2);
         store.save("mira", tuned(DeviceProfile::Webcam)).unwrap();
         assert_eq!(store.findings().len(), 1, "the person's own fix clears it");
-        assert_eq!(store.forget("noor"), Ok(true), "forgetting a character drops a bad entry too");
+        assert_eq!(store.forget("noor", DeviceProfile::Webcam), Ok(true), "forgetting drops a bad entry too");
         let again = CalibrationStore::open(&path);
         assert_eq!(again.findings(), []);
         assert_eq!(again.len(), 1);
@@ -581,7 +623,11 @@ mod tests {
                 matches!(store.save("kiri", tuned(DeviceProfile::Webcam)), Err(CalibrationError::Locked { .. })),
                 "{what}"
             );
-            assert!(matches!(store.forget("kiri"), Err(CalibrationError::Locked { .. })), "{what}");
+            assert!(
+                matches!(store.forget("kiri", DeviceProfile::Webcam), Err(CalibrationError::Locked { .. })),
+                "{what}"
+            );
+            assert!(matches!(store.forget_all_devices("kiri"), Err(CalibrationError::Locked { .. })), "{what}");
             assert_eq!(std::fs::read_to_string(&path).unwrap(), text, "{what}: the file is as it was");
         }
     }
