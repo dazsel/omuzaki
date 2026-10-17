@@ -12,8 +12,8 @@ use crate::ds::strings::Msg;
 use crate::ds::theme::{Ds, ds};
 use crate::ds::tokens::{radius, size, space};
 use crate::ds::widgets::{
-    Choice, ColourEvent, ColourField, Curve, CurveEditor, CurveEvent, Dropdown, FormRow, NumberField, ParamEvent, ParamSlider,
-    Section, Segment, Segmented, TextField, Toggle,
+    Choice, ColourEvent, ColourField, Curve, CurveEditor, CurveEvent, Dropdown, FormRow, NumberField, ParamEvent,
+    ParamSlider, Section, Segment, Segmented, TextField, Toggle,
 };
 
 /// Options a dropdown holds without allocating; a longer list costs one `Vec` per frame.

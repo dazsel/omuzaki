@@ -74,9 +74,7 @@ fn in_place(tree: &Tree, order: &[usize], moved: usize) -> Option<Vec<Change>> {
     let (own, id) = key(tree, node)?;
     let before = moved.checked_sub(1).and_then(|i| key(tree, order[i]));
     let after = order.get(moved + 1).and_then(|&n| key(tree, n));
-    let fits = |layer: i32| {
-        before.is_none_or(|b| (layer, id) > b) && after.is_none_or(|a| (layer, id) < a)
-    };
+    let fits = |layer: i32| before.is_none_or(|b| (layer, id) > b) && after.is_none_or(|a| (layer, id) < a);
     let mut tries = Vec::with_capacity(4);
     if let Some((layer, _)) = before {
         tries.extend([Some(layer), layer.checked_add(1)]);
@@ -139,6 +137,7 @@ mod tests {
 
     use super::*;
 
+    #[allow(clippy::needless_pass_by_value, reason = "the tests pass a `json!` literal")]
     fn def(parts: serde_json::Value) -> CharacterDef {
         omuzaki_char::link();
         omuzaki_char_mock::link();
@@ -165,7 +164,7 @@ mod tests {
         }));
         let tree = Tree::of(&d);
         let order = [node(&tree, "body"), node(&tree, "vest"), node(&tree, "shirt")];
-        let plan = plan(&d, &tree, &order, 1).unwrap_or_default();
+        let plan = plan(&d, &tree, &order, 1).unwrap_or_else(|e| panic!("{}", e.message));
         assert_eq!(layers(&tree, &plan), [("vest".to_owned(), 19)]);
     }
 
@@ -179,7 +178,7 @@ mod tests {
         }));
         let tree = Tree::of(&d);
         let order = [node(&tree, "b"), node(&tree, "a"), node(&tree, "c")];
-        let plan = plan(&d, &tree, &order, 1).unwrap_or_default();
+        let plan = plan(&d, &tree, &order, 1).unwrap_or_else(|e| panic!("{}", e.message));
         assert_eq!(layers(&tree, &plan), [("c".to_owned(), 1), ("a".to_owned(), 1)]);
     }
 
@@ -188,6 +187,7 @@ mod tests {
         let d = def(json!({"a": {"kind": "mock-garment"}, "b": {"kind": "mock-garment"}}));
         let tree = Tree::of(&d);
         let order = [node(&tree, "a"), node(&tree, "b")];
-        assert!(plan(&d, &tree, &order, 0).unwrap_or_default().is_empty());
+        let none = plan(&d, &tree, &order, 0).unwrap_or_else(|e| panic!("{}", e.message));
+        assert_eq!(none.len(), 0, "{none:?}");
     }
 }

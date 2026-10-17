@@ -16,7 +16,7 @@ use std::sync::Arc;
 use egui::accesskit::Role;
 use egui::{Context, Event, Key, Modifiers, Pos2, RawInput, Rect, vec2};
 use egui_kittest::Harness;
-use egui_kittest::kittest::{NodeT as _, Queryable as _};
+use egui_kittest::kittest::Queryable as _;
 use omuzaki_core::colour::Colour;
 use omuzaki_doc_api::Value;
 use omuzaki_ui::ds::schema_form::{EditPhase, Form, FormValue, MAX_ESSENTIALS, SchemaForm};
@@ -400,10 +400,10 @@ fn a_tangent_typed_into_a_curve_field_is_dropped_so_what_is_shown_is_what_is_sav
     })));
     focus(&mut h, Role::Slider, "Response, point 1 of 2");
     h.run_steps(2);
-    focus(&mut h, Role::SpinButton, "Tangent");
-    press(&mut h, Modifiers::COMMAND, Key::A);
-    h.event(Event::Text("3".to_owned()));
+    h.get_by_role_and_label(Role::SpinButton, "Tangent").click();
     h.run_steps(3);
+    h.get_by_role_and_label(Role::TextInput, "Tangent value").type_text("0");
+    h.run();
     press(&mut h, Modifiers::NONE, Key::Enter);
     h.run_steps(3);
     // The array carries points only: the curve the form holds is the curve it will submit, tangents automatic.
