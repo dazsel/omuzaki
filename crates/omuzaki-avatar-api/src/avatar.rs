@@ -218,8 +218,10 @@ impl ImportedAvatar {
     ///   instance nodes, first-person annotations, morph-bind nodes, spring colliders, groups, joints and centres)
     ///   points into its list, every retained skin has one inverse bind matrix per joint, or none, and each retained
     ///   spring group or chain names a runtime one that exists, and no other record names it;
+    /// - the retained nodes are a forest (one parent each, roots without a parent, no cycle), and the retained
+    ///   textures, materials and thumbnail point at images and textures that exist;
     /// - the retained source meshes, when kept, list every node that draws them once, one runtime mesh per primitive
-    ///   at each, every runtime mesh exactly once overall, and their target names fit;
+    ///   at each, every runtime mesh exactly once overall, and their morph targets follow glTF's counting rule;
     /// - every anchor follows a bone the skeleton has;
     /// - every morph bind names a mesh and a target that exist, and, when it names a source node and the source meshes
     ///   are kept, a mesh of that node's instance; every colour and UV bind names a material that exists;
@@ -296,8 +298,10 @@ impl ImportedAvatar {
     /// - each instance lists one runtime mesh per primitive, at a node that draws that source mesh, and every node
     ///   that draws a source mesh is one of its instances exactly once;
     /// - every runtime mesh comes from exactly one primitive of one instance;
-    /// - a source mesh's target names, when it has any, count the targets of each of its runtime meshes that has
-    ///   targets (glTF requires every primitive of a mesh to have the same number).
+    /// - the morph targets of a source mesh follow glTF's rule, as `IoScene::check` has it, whether the mesh is drawn
+    ///   (the targets of its runtime meshes) or not (the targets of its kept geometry): every primitive that has
+    ///   targets has the same number, every copy of a primitive agrees, and the name table, when there is one, names
+    ///   exactly that many ([`TargetCounts`]).
     ///
     /// Runs after [`validate_retained_graph`](Self::validate_retained_graph), so every node index is in range.
     fn validate_retained_meshes(&self) -> Result<(), AvatarError> {
@@ -307,8 +311,7 @@ impl ImportedAvatar {
         }
         let mut groups = vec![0usize; self.meshes.len()];
         for (source, retained) in r.meshes.iter().enumerate() {
-            let names = retained.morph_target_names.len();
-            let mut fits_a_primitive = names == 0 || retained.instances.is_empty();
+            let mut counts = TargetCounts::new(source, retained.primitives.len());
             for instance in &retained.instances {
                 let draws_it =
                     r.nodes.get(as_index(instance.node)).is_some_and(|n| n.mesh.map(as_index) == Some(source));
@@ -319,24 +322,17 @@ impl ImportedAvatar {
                     let (meshes, primitives) = (instance.meshes.len(), retained.primitives.len());
                     return Err(AvatarError::instance_primitives(source, instance.node, meshes, primitives));
                 }
-                for &mesh in &instance.meshes {
+                for (primitive, &mesh) in instance.meshes.iter().enumerate() {
                     let at = usize::from(mesh);
                     let (Some(mesh), Some(count)) = (self.meshes.get(at), groups.get_mut(at)) else {
                         return Err(AvatarError::unknown_primitive(source, at));
                     };
                     *count += 1;
-                    match mesh.morph_count() {
-                        0 => {}
-                        targets if names == 0 || targets == names => fits_a_primitive = true,
-                        targets => return Err(AvatarError::morph_names(source, names, targets)),
-                    }
+                    counts.see(primitive, mesh.morph_count())?;
                 }
             }
-            if !fits_a_primitive {
-                // Names for a mesh none of whose primitives has a target.
-                return Err(AvatarError::morph_names(source, names, 0));
-            }
-            check_kept_geometry(source, retained)?;
+            check_kept_geometry(source, retained, &mut counts)?;
+            counts.finish(retained.morph_target_names.len())?;
         }
         for (node, drawn) in r.nodes.iter().enumerate().filter_map(|(n, node)| Some((n, as_index(node.mesh?)))) {
             let instances =
@@ -373,6 +369,8 @@ impl ImportedAvatar {
         for &root in &r.roots {
             check_index(&|| "a root".to_owned(), root, nodes)?;
         }
+        self.validate_retained_hierarchy()?;
+        self.validate_retained_images()?;
         for (s, skin) in r.skins.iter().enumerate() {
             for &joint in skin.joints.iter().chain(&skin.skeleton) {
                 check_index(&|| format!("skin {s}'s joint"), joint, nodes)?;
@@ -398,6 +396,62 @@ impl ImportedAvatar {
             }
         }
         self.validate_retained_springs()
+    }
+
+    /// The retained nodes form the forest `IoScene::check` accepts (`scene.node_multiple_parents`,
+    /// `scene.root_has_parent`, `scene.node_cycle`), so export, which walks it, always ends. Every child and root
+    /// index is in range (the caller checked).
+    fn validate_retained_hierarchy(&self) -> Result<(), AvatarError> {
+        let r = &self.retained;
+        let mut parent: Vec<Option<usize>> = vec![None; r.nodes.len()];
+        for (n, node) in r.nodes.iter().enumerate() {
+            for &child in &node.children {
+                if parent.get_mut(as_index(child)).and_then(|p| p.replace(n)).is_some() {
+                    return Err(AvatarError::node_parents(as_index(child)));
+                }
+            }
+        }
+        if let Some(&root) = r.roots.iter().find(|&&root| parent.get(as_index(root)).is_some_and(Option::is_some)) {
+            return Err(AvatarError::root_has_parent(as_index(root)));
+        }
+        // Walk up from every node once: 0 = unvisited, 1 = on the path being walked, 2 = known to reach a root.
+        let mut state = vec![0u8; parent.len()];
+        for start in 0..parent.len() {
+            let mut path = Vec::new();
+            let mut at = Some(start);
+            while let Some(n) = at {
+                match state[n] {
+                    2 => break,
+                    1 => return Err(AvatarError::node_cycle(n)),
+                    _ => {}
+                }
+                state[n] = 1;
+                path.push(n);
+                at = parent[n];
+            }
+            for n in path {
+                state[n] = 2;
+            }
+        }
+        Ok(())
+    }
+
+    /// The retained images, textures and materials point into each other: every texture names an image, every
+    /// material's texture slots name textures, and the meta's thumbnail names an image.
+    fn validate_retained_images(&self) -> Result<(), AvatarError> {
+        let r = &self.retained;
+        for (t, texture) in r.textures.iter().enumerate() {
+            check_index(&|| format!("texture {t}'s image"), texture.image.0, r.images.len())?;
+        }
+        for (m, material) in r.materials.iter().enumerate() {
+            for (slot, texture) in material.source.texture_refs() {
+                check_index(&|| format!("material {m}'s {slot}"), texture.texture.0, r.textures.len())?;
+            }
+        }
+        if let Some(thumbnail) = r.meta.as_ref().and_then(|m| m.thumbnail_image) {
+            check_index(&|| "the meta's thumbnail".to_owned(), thumbnail.0, r.images.len())?;
+        }
+        Ok(())
     }
 
     /// The retained spring records: every collider, joint and centre names a node, every group names colliders and
@@ -566,14 +620,58 @@ pub fn texture_bytes(texture: &TextureData) -> u64 {
     bytes
 }
 
+/// The morph-target counts of one source mesh, collected from its runtime meshes (drawn) or its kept geometry
+/// (undrawn), so both are held to the one rule `IoScene::check` has (`scene.morph_target_mismatch`):
+/// - every primitive that has targets has the same number (a primitive without any beside them is glTF-valid);
+/// - every copy of a primitive, one per instance, has the same number as the others;
+/// - the name table, when the mesh has one, names exactly that many.
+struct TargetCounts {
+    source: usize,
+    /// The count each primitive has been seen with.
+    primitives: Vec<Option<usize>>,
+    /// The number every primitive with targets must have: the first nonzero count seen.
+    expected: Option<usize>,
+}
+
+impl TargetCounts {
+    fn new(source: usize, primitives: usize) -> Self {
+        Self { source, primitives: vec![None; primitives], expected: None }
+    }
+
+    /// Records that `primitive` has `count` targets in one copy.
+    fn see(&mut self, primitive: usize, count: usize) -> Result<(), AvatarError> {
+        let mismatch = |expected| AvatarError::morph_counts(self.source, primitive, count, expected);
+        if let Some(seen) = self.primitives.get_mut(primitive) {
+            match *seen {
+                Some(before) if before != count => return Err(mismatch(before)),
+                _ => *seen = Some(count),
+            }
+        }
+        match self.expected {
+            Some(expected) if count != 0 && count != expected => Err(mismatch(expected)),
+            None if count != 0 => {
+                self.expected = Some(count);
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Checks the mesh's `names` (the length of its name table) against the targets seen.
+    fn finish(self, names: usize) -> Result<(), AvatarError> {
+        let targets = self.expected.unwrap_or(0);
+        if names != 0 && names != targets {
+            return Err(AvatarError::morph_names(self.source, names, targets));
+        }
+        Ok(())
+    }
+}
+
 /// Checks the geometry a source mesh keeps for itself: an undrawn mesh keeps every primitive's (export has no runtime
 /// mesh to read), a drawn one none (its runtime meshes hold it), and what is kept is a valid mesh whose morph targets
-/// fit it. Across its primitives the kept targets follow glTF's rule, as `IoScene::check` does
-/// (`scene.morph_target_mismatch`): every primitive that has targets has the same number, and a name table, when the
-/// mesh has one, names exactly that many.
-fn check_kept_geometry(source: usize, mesh: &RetainedMesh) -> Result<(), AvatarError> {
+/// fit it. The kept targets' counts go to `counts`, which holds them to glTF's rule.
+fn check_kept_geometry(source: usize, mesh: &RetainedMesh, counts: &mut TargetCounts) -> Result<(), AvatarError> {
     let drawn = !mesh.instances.is_empty();
-    let mut targets: Option<(usize, usize)> = None;
     for (at, primitive) in mesh.primitives.iter().enumerate() {
         match (&primitive.geometry, drawn) {
             (None, false) => return Err(AvatarError::undrawn_geometry(source, at)),
@@ -597,23 +695,9 @@ fn check_kept_geometry(source: usize, mesh: &RetainedMesh) -> Result<(), AvatarE
                         )));
                     }
                 }
-                let count = geometry.morph_targets.len();
-                match targets {
-                    Some((first, others)) if count != 0 && count != others => {
-                        return Err(invalid(format!(
-                            "{count} morph targets, where primitive {first} of the same mesh has {others}"
-                        )));
-                    }
-                    None if count != 0 => targets = Some((at, count)),
-                    _ => {}
-                }
+                counts.see(at, geometry.morph_targets.len())?;
             }
         }
-    }
-    let names = mesh.morph_target_names.len();
-    let count = targets.map_or(0, |(_, count)| count);
-    if !drawn && names != 0 && names != count {
-        return Err(AvatarError::morph_names(source, names, count));
     }
     Ok(())
 }

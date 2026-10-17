@@ -378,6 +378,39 @@ plane, a cone and a hinge limit, roll, aim and rotation constraints; no third-pa
 3. export, re-import: the springs, colliders, limits and constraints equal the original (floats to 1e-6) and
    `io-api`'s round-trip checks pass. The UniVRM-made file of BY5 repeats steps 1 and 3 on a maintainer's machine (QG-10).
 
+**What `validate` guarantees.** `ImportedAvatar::validate` is the one gate between an importer or a cache and every
+consumer (stage, evaluator, export), so it holds an avatar to three things: every index in it points into the list it
+names; the retained data and the runtime data agree; and the `IoScene` that export rebuilds from it passes the
+structural rules of `IoScene::check`. Each row below has a test in `omuzaki-avatar-api/tests/avatar.rs`, and a new rule
+adds a row and a test together.
+
+| # | Invariant | Error | Test |
+|---|---|---|---|
+| 1 | At most `MAX_INDEXED` meshes and expressions (binds and drivers index them with a `u16`) | `TooMany` | `meshes_and_expressions_are_capped_at_what_a_u16_indexes` |
+| 2 | Every mesh is a valid `PartMesh` | `Mesh` | `a_mesh_the_renderer_would_refuse_is_refused` |
+| 3 | Every mesh joint and every anchor follows a bone the skeleton has | `UnresolvedBone` | `an_unresolved_bone_reference_is_refused`, `anchors_must_follow_bones_the_skeleton_has` |
+| 4 | One inverse bind matrix per mesh joint | `InverseBindLength` | `inverse_binds_must_match_the_joint_list` |
+| 5 | Morph targets fit their own mesh's vertices | `Morphs` | `morph_targets_must_fit_their_own_mesh` |
+| 6 | Every mesh, colour bind and UV bind names a material the avatar has | `UnknownMaterial` | `binds_and_meshes_must_name_existing_materials` |
+| 7 | Materials pass the renderer's rules, name textures the avatar has and composite no face layer; textures carry their pixels | `Material`, `UnknownTexture`, `FaceOverlay`, `Texture` | `materials_and_textures_are_checked_as_upload_will_check_them` |
+| 8 | Every morph bind names a mesh and a target that exist | `MorphOutOfRange` | `a_morph_bind_out_of_range_is_refused` |
+| 9 | Every driver names an expression that exists; gaze channels drive expressions on the native `ARKit` route only | `DriverOutOfRange`, `GazeDriverOffRoute` | `a_driver_out_of_range_is_refused`, `a_gaze_driver_is_refused_off_the_native_route` |
+| 10 | Springs and constraints fit the skeleton | `Springs`, `Constraints` | `springs_must_fit_the_skeleton`, `constraints_must_fit_the_skeleton` |
+| 11 | Every index the retained data holds (children, roots, meshes, skins, joints, materials, bones, instance nodes, first-person nodes, morph-bind nodes, spring colliders, groups, joints and centres) is in range | `RetainedIndex` | `every_index_of_the_retained_scene_graph_is_checked` |
+| 12 | A retained skin has one inverse bind matrix per joint, or none | `SkinInverseBind` | `every_index_of_the_retained_scene_graph_is_checked` |
+| 13 | The retained nodes are a forest: one parent each, roots without a parent, no cycle (`scene.node_multiple_parents`, `scene.root_has_parent`, `scene.node_cycle`) | `NodeParents`, `RootHasParent`, `NodeCycle` | `the_retained_nodes_form_a_forest` |
+| 14 | Every retained texture names an image, every material texture slot a texture, and the thumbnail an image | `RetainedIndex` | `the_retained_images_textures_and_materials_point_into_each_other` |
+| 15 | Each instance of a source mesh sits at a node that draws it and lists one runtime mesh per primitive; every drawing node is listed once | `InstanceNode`, `InstancePrimitives`, `NodeInstances` | `a_mesh_drawn_by_two_nodes_is_one_runtime_mesh_per_node` |
+| 16 | Every runtime mesh comes from exactly one primitive of one instance, and exists | `UnknownPrimitive`, `MeshGrouping` | `retained_source_meshes_group_every_mesh_once_and_name_its_targets`, `a_mesh_drawn_by_two_nodes_is_one_runtime_mesh_per_node` |
+| 17 | A morph bind that names a source node moves a mesh of that node's instance | `MorphBindInstance` | `a_mesh_drawn_by_two_nodes_is_one_runtime_mesh_per_node` |
+| 18 | Morph-target counts follow glTF (`scene.morph_target_mismatch`), drawn or not: every primitive that has targets has the same number, every copy of a primitive agrees, and a name table names exactly that many | `MorphCounts`, `MorphNames` | `every_primitive_of_a_drawn_mesh_with_targets_has_the_same_number_whatever_the_names`, `every_primitive_of_an_undrawn_mesh_with_targets_has_the_same_number`, `every_copy_of_a_primitive_has_the_same_number_of_targets`, `an_undrawn_meshs_target_names_must_match_its_kept_targets` |
+| 19 | A mesh no node draws keeps every primitive's geometry and a drawn one none; what is kept is a valid mesh whose targets fit it and whose extra attributes are named validly | `UndrawnGeometry`, `DrawnGeometry`, `RetainedGeometryInvalid`, `ExtraAttributeName` | `an_undrawn_mesh_must_keep_its_geometry_and_a_drawn_one_must_not`, `kept_geometry_must_be_a_valid_mesh_with_fitting_morph_targets` |
+| 20 | Each runtime spring chain or group a retained record names exists, and one record names it | `UnknownRuntimeSpring`, `SharedRuntimeSpring` | `retained_spring_records_keep_the_files_shape_and_name_runtime_entries_once` |
+
+Not re-checked here: the values inside the file's own records (transform numbers, collider shapes, joint limits, chain
+order and centres, bind weight ranges). `run_import` already refuses them through `IoScene::check`, and the retained
+records keep them verbatim.
+
 ### D9. The geometry-based ARKit shape generator
 
 BY4 reuses what the model has. The rest (cheek puff, mouth roll and shrug, squint and wide, look in and out, and
