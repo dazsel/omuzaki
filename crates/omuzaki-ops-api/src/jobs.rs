@@ -70,11 +70,20 @@ pub enum JobState {
     /// `work` is done, the session is paused and `finish` waits for it to resume.
     Held,
     /// `finish` ran and the job ended.
+    #[non_exhaustive]
     Done {
         /// The transaction the finish went into.
         tx: TxId,
         /// The finish's op-log record; `None` if it changed nothing.
         seq: Option<u64>,
+        /// What the op returned: the same [`Outcome`] a blocking [`Runner::run`](crate::Runner::run) of the op returns,
+        /// so a client that polls renders the same result as one that waited. Held in memory only: it is not
+        /// serialised (a journal entry or an event log would carry every job's patch), so it is `None` after a
+        /// round trip and for a job recovered from a journal. Build one with [`JobState::done`] and
+        /// [`JobState::with_outcome`].
+        #[serde(skip)]
+        #[schemars(skip)]
+        outcome: Option<Arc<Outcome>>,
     },
     /// The job ended with an error.
     Failed {
@@ -90,6 +99,33 @@ pub enum JobState {
     },
     /// The job was running at a crash. Set by recovery; jobs are never re-run.
     Interrupted,
+}
+
+impl JobState {
+    /// A finished job whose finish went into `tx` and wrote log record `seq` (`None` if it changed nothing). It carries
+    /// no outcome; add one with [`JobState::with_outcome`].
+    #[must_use]
+    pub fn done(tx: TxId, seq: Option<u64>) -> Self {
+        Self::Done { tx, seq, outcome: None }
+    }
+
+    /// This state carrying `outcome`, when it is [`JobState::Done`]; any other state is returned unchanged.
+    #[must_use]
+    pub fn with_outcome(mut self, outcome: Arc<Outcome>) -> Self {
+        if let Self::Done { outcome: slot, .. } = &mut self {
+            *slot = Some(outcome);
+        }
+        self
+    }
+
+    /// What the op returned, for a finished job that kept it (see [`JobState::Done`]).
+    #[must_use]
+    pub fn outcome(&self) -> Option<&Outcome> {
+        match self {
+            Self::Done { outcome, .. } => outcome.as_deref(),
+            _ => None,
+        }
+    }
 }
 
 /// A snapshot of one job, for lists, events and `wait`.

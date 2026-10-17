@@ -255,3 +255,36 @@ async fn the_wired_handle_sees_the_servers_sessions() {
     );
     disconnect(connection).await;
 }
+
+/// A client is named only once `initialize` has succeeded: a `ping` that comes first names nobody (a legacy request
+/// carries no identity), and the handshake that follows does. (rmcp 3.5 negotiates any protocol version down rather than
+/// refusing it, so the refusal path itself cannot be driven from a client; the server names the client after the
+/// negotiation returns, which is the order this pins.)
+#[tokio::test]
+async fn a_client_is_named_by_a_successful_initialize_and_not_by_a_ping_before_it() {
+    let mcp = server();
+    let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+    let serving = mcp.clone();
+    let task = tokio::spawn(async move { serving.serve(server_io).await });
+    let (read, mut write) = tokio::io::split(client_io);
+    let mut lines = BufReader::new(read).lines();
+    let mut send = async |message: Value| {
+        write.write_all(format!("{message}\n").as_bytes()).await.expect("sends");
+    };
+    send(json!({"jsonrpc": "2.0", "id": 1, "method": "ping"})).await;
+    let pong = lines.next_line().await.expect("reads").expect("a reply");
+    assert!(pong.contains("\"result\""), "{pong}");
+    assert_eq!(mcp.connection()["connected"], json!(false), "a ping names nobody");
+
+    send(json!({
+        "jsonrpc": "2.0", "id": 2, "method": "initialize",
+        "params": {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "claude-code", "version": "1"}}
+    }))
+    .await;
+    let reply: Value = serde_json::from_str(&lines.next_line().await.expect("reads").expect("a reply")).expect("json");
+    assert!(reply.get("result").is_some(), "{reply}");
+    assert_eq!(mcp.connection()["client_name"], "claude-code");
+    drop((lines, write));
+    let _ = task.await;
+    assert_eq!(mcp.connection()["connected"], json!(false), "gone with the connection");
+}

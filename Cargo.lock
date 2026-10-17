@@ -3617,6 +3617,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-avatar"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+ "omuzaki-anim-api",
+ "omuzaki-avatar-api",
+ "omuzaki-char-api",
+ "omuzaki-core",
+ "omuzaki-io-api",
+ "omuzaki-render-api",
+ "omuzaki-store-api",
+]
+
+[[package]]
+name = "omuzaki-avatar-api"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-anim-api",
+ "omuzaki-char-api",
+ "omuzaki-char-mock",
+ "omuzaki-core",
+ "omuzaki-face-api",
+ "omuzaki-io-api",
+ "omuzaki-render-api",
+ "omuzaki-store-api",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "toml",
+]
+
+[[package]]
 name = "omuzaki-budget"
 version = "0.0.0"
 dependencies = [
@@ -4192,8 +4225,10 @@ dependencies = [
  "omuzaki-core",
  "omuzaki-doc-api",
  "omuzaki-doc-mock",
+ "omuzaki-embed",
  "omuzaki-history-api",
  "omuzaki-history-mock",
+ "omuzaki-library-api",
  "omuzaki-ops-api",
  "omuzaki-ops-mock",
  "omuzaki-store-api",
@@ -4205,6 +4240,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",
