@@ -138,7 +138,8 @@ fn a_shut_eye_draws_no_aperture() {
     let open = lids(1.0, 0.0, 0.0);
     for shut in [lids(1.0, 1.0, 0.0), lids(1.0, 0.0, 1.0), lids(0.0, 0.0, 0.0), lids(1.0, 0.0, 0.5)] {
         let both = paint_eyes(&FaceProfile::default(), &params(shut, shut));
-        assert!(both[FaceLayerId::Base].is_empty(), "{shut:?}");
+        // A shut eye is a closed curve (see `eyes_lash.rs`), never an aperture.
+        assert!(open_eyes(&both[FaceLayerId::Base]).is_empty(), "{shut:?}");
         // A wink: the other eye still opens.
         let wink = paint_eyes(&FaceProfile::default(), &params(shut, open));
         let eyes = open_eyes(&wink[FaceLayerId::Base]);

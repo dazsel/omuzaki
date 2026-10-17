@@ -2,7 +2,9 @@
 //!
 //! Pieces are functions of the section context and draw nothing when they do not apply. They recompute what they share
 //! from the paint parameters; the one thing only the shape can hand on, the open mouth's outline in the draw list, is
-//! left in [`PaintCtx::open_mouth`] for the pieces that follow it.
+//! left in [`PaintCtx::open_mouth`] for the pieces that follow it. A kiss has no interior, rim or tongue, except while
+//! it gives way to the open shape (the short band of openings below the open shape's threshold): then the outline is
+//! recorded with a partial `reveal` and those pieces paint at that share.
 
 mod interior;
 mod lips;
