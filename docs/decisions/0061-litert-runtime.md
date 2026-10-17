@@ -267,8 +267,8 @@ Sizes are changed lines. Each task's acceptance includes `timeout 3600 cargo xta
      - the measured cost of `SLOW_CONSISTENT_ARITHMETIC` in the PR body.
 5. **Slot migration: the face graphs on `tflite`** (model: sonnet, about 250 lines).
    - **Fence:** `crates/omuzaki-track/**` (`ModelDir` picks `.tflite` or `.onnx` by the runtime's id),
-     `crates/omuzaki-test/tests/track_models.rs`, `crates/omuzaki-test/benches/track.rs`, `crates/omuzaki-test/Cargo.toml`,
-     and the face model rows in `docs/licensing/deps/`.
+     `crates/omuzaki-test-track/tests/track_models.rs`, `crates/omuzaki-test-track/benches/track.rs`,
+     `crates/omuzaki-test-track/Cargo.toml`, and the face model rows in `docs/licensing/deps/`.
    - **Acceptance:**
      - the gated `track_models` tests pass on both runtimes;
      - `tflite` is the face graphs' runtime in CI and the probe; the app's default stays `onnx` until a published pin

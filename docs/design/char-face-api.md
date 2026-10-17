@@ -371,7 +371,7 @@ A hairstyle is `HairParams { shading, physics, groups }`. Each group has `enable
 |---|---|---|
 | `cap` | scalp shell | hairline front and back (degrees from the top), ear notch, thickness |
 | `part_sweep` | scalp locks from the part line | part angles, count, end angles and heights, width, thickness |
-| `framing` | locks framing the face (tuck behind the ear on one side, hang to the chest on the other) | side, count, spread, an `[y, x]` inner-edge outline traced from the sheet, a free `tail` of guide points, wave |
+| `framing` | locks framing the face (tuck behind the ear on one side, hang to the chest on the other) | side, count, spread, an `[y, x]` inner-edge outline traced from the sheet, a free `tail` of guide points, wave, and optional `locks` (the prototype's own heights: `top`, `upper`, `lower`, `cheek`, `tuck_a`, `tuck_b`, `tuck_max_x`, the ear points `ear_top` and `ear_back`, `drop`, `end`); with `locks` unset the outline's rows and the `tail` are used |
 | `braid` | braid crown | path angles and heights, strands, lobes, swing, strand width |
 | `curtain` | long wavy hair | count, spread, root heights, lengths, a body-axis `envelope`, wave and curl, columns per strip |
 | `bangs` | close-up fringe | layers (count, spread, per-lock tip heights, width, hook, offsets, shade), wisps, sweep |
@@ -481,7 +481,7 @@ Implemented by `omuzaki-char` and `omuzaki-face` (vertical slices, §39.1 rule 3
 |---|---|
 | `character.create`, `part.add`, `part.remove`, `part.set_enabled`, `part.reorder`, `part.duplicate` | `parts/<id>`, `enabled`, `layer`, `parent` (`part.duplicate` also copies `weight_brushes/<id>`) |
 | `character.rename { character, name }` | `name` |
-| `part.set_param { character, part, path, value }` | `parts/<id>/params/<path>`, validated through the kind's `check` |
+| `part.set_param { character, part, path, value, replace? }` | `parts/<id>/params/<path>`, validated through the kind's `check`. An object merges into the current one unless `replace` is true; setting a tagged enum's tag switches the variant; `null` removes an optional parameter or a map entry |
 | `face.set_profile { character, profile, blend }` | head `outline` and face `layout` together |
 | `face.set_style { character, path, value }` | `face/eyes`, `brows`, `mouth`, `nose`, `cheeks`, `marks` |
 | `face.set_mapping { character, path, value }` | `face/mapping/...` (exaggeration profiles) |
