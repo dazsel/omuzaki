@@ -98,6 +98,18 @@ How work is cut into large changes, one agent and one PR each, is in [`large-cha
     runs after #2141 merges") is a separate issue.
   - **Why:** small pull requests took 4 rounds at the median and 12 times more review per line than large ones, and
     rework was 61% of all pull request time (measured on 193 merged PRs).
+  - **Which reviewer, and the standing fallback (owner, 2026-10-16).**
+    - **Simple reviews** (small, mechanical or docs-only PRs, and re-checks) run on Codex `gpt-6.1-sol` at reasoning
+      xhigh.
+    - **Strong and deep reviews** (large PRs, and those touching design docs, decisions, CI or `xtask`) run on Codex
+      `gpt-6-astra` at reasoning high. A deep review's header carries `, deep)`.
+    - **When Codex is down or gives no verdict,** a Claude reviewer takes the same review in the same format: a
+      VERDICT line, then numbered findings with file:line, posted as a PR comment.
+      - Sonnet stands in for the simple, strong and deep reviews.
+      - Opus stands in for an extremely large PR, about 3,000 or more changed lines.
+    - **Extremely large PRs** also get one Opus review: the Director, the area lead, or an Opus reviewer at high
+      effort with a short report on the riskiest parts. That review, or the sign-off, is the senior check. There's no
+      split into parallel per-topic reviews.
   - **What Codex is asked:** the first request asks for every finding in one pass, and fix rounds ask only whether the
     earlier findings are fixed and what the changes broke (`pub-review-dispatch.sh`).
   - **The Director's process-doc pull requests** (label `director-docs`) merge on a green gate without a review.
