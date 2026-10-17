@@ -15,13 +15,31 @@ mod nose;
 mod overlay;
 mod real;
 
+use omuzaki_core::colour::Colour;
 use omuzaki_core::time::Seconds;
 use omuzaki_face_api::{
-    DEFAULT_PX_PER_M, DrawList, FaceDrawing, FaceInput, FaceLayerId, FaceLayerSpec, FaceProfile, FaceView, PaintParams,
+    ColourRef, DEFAULT_PX_PER_M, DrawList, FaceDrawing, FaceInput, FaceLayerId, FaceLayerSpec, FaceProfile, FaceView,
+    PaintParams,
 };
 
 pub use mouth::{MouthPiece, OpenMouth};
 pub use real::{LayerSections, RealPainter, SectionRanges};
+
+/// A profile colour as a colour. A palette slot never reaches a painter (the stage resolves them); if one does, the
+/// section paints its own `fallback` rather than failing a frame.
+pub(crate) fn fixed_colour(colour: &ColourRef, fallback: Colour) -> Colour {
+    match colour {
+        ColourRef::Fixed(colour) => *colour,
+        ColourRef::Slot(_) => fallback,
+    }
+}
+
+/// `colour` with its own alpha multiplied by `factor` (clamped to `0..=1`). A strength scales what the profile resolved
+/// to: a transparent or translucent colour stays that much more transparent, instead of its alpha being replaced.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // the product is within 0..=255
+pub(crate) fn scaled(colour: Colour, factor: f32) -> Colour {
+    Colour { a: (f32::from(colour.a) * factor.clamp(0.0, 1.0)).round() as u8, ..colour }
+}
 
 /// One part of the face, in the order [`RealPainter`] paints them.
 ///
@@ -78,7 +96,8 @@ pub struct PaintCtx<'a> {
     pub only: Option<Section>,
     /// The open mouth's outline, recorded by the mouth section before any of its pieces paints (`record_outline`), so
     /// the pieces that need it (gloss, interior, rim, tongue) have it even when painted alone. `None` before the mouth
-    /// paints, and for a closed mouth or a kiss.
+    /// paints, and for a closed mouth or a kiss; a kiss that is giving way to the open shape (a pucker over the kiss
+    /// threshold with the opening in the short band below the open shape's) records the outline, with a partial `reveal`.
     pub open_mouth: Option<OpenMouth>,
     /// Test hook: when set, only this piece of the mouth paints ([`RealPainter::paint_mouth_piece`]).
     mouth_only: Option<MouthPiece>,

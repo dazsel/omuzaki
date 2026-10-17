@@ -21,6 +21,12 @@ use crate::ops::character::access as character;
 /// (positive hooks the tips inward, negative outward). A layer field alone applies to every layer; `layers/<i>/<field>` (`layers/1/hook_deg`) applies to layer `i`, counting from 0, the bottom layer.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "part": "hair", "group": "b-bangs", "field": "sweep_deg", "value": 12.0}
+    ],
+    "x-omuzaki-fixture" = "character"
+))]
 pub struct HairBangsSet {
     /// The character the hair belongs to.
     pub character: CharId,
