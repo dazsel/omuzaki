@@ -101,8 +101,22 @@ pub trait PaintTarget {
     /// face painter's ≤ 0.5 ms budget needs this). A painter downcasts it to the concrete type its sibling renderer
     /// documents, and falls back to [`write_rgba`](PaintTarget::write_rgba) if the downcast fails. No backend type
     /// appears in this contract: the two implementation crates agree on the type out of band
-    /// (`docs/design/render-api.md`, "GPU interop").
+    /// (`docs/design/render-api.md`, "GPU interop"). For the wgpu renderer that is a tuple with the renderer's command
+    /// encoder: the painter records into it and the renderer submits it when the painter returns, so the painter's GPU
+    /// work is part of the renderer's frame and of its GPU timings.
+    ///
+    /// A painter that draws through the handle can't be followed by the renderer, so after a call the whole texture
+    /// counts as changed, unless the painter says what it changed with [`mark_damage`](PaintTarget::mark_damage).
     fn native(&mut self) -> &mut dyn Any;
+
+    /// Reports that this paint changed only `rect` of what it drew through [`native`](PaintTarget::native), so the
+    /// renderer refreshes only that part of the texture (its mip chain, say). Calls add up (the union counts); an empty
+    /// rectangle reports nothing, and a rectangle reaching outside the texture is clipped to it. Pixels written with
+    /// [`write_rgba`](PaintTarget::write_rgba) count on their own and need no call. The default ignores it: a renderer
+    /// that refreshes nothing, or always everything, has no use for it.
+    fn mark_damage(&mut self, rect: PixelRect) {
+        let _ = rect;
+    }
 }
 
 /// Something that fills a dynamic texture: the face painter (`omuzaki-face`), a video frame source, a debug overlay.

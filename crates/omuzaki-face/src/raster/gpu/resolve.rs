@@ -118,14 +118,21 @@ impl Resolve {
     }
 
     /// Records the pass: every pixel of `level_zero` inside `rect` (`x`, `y`, width, height) is overwritten with the
-    /// premultiplied `source` pixel; the rest is kept.
+    /// premultiplied `source` pixel; the rest is kept. `timestamps` (a query set and the first of two indices) times the
+    /// pass on the GPU, for the timing probe.
     pub fn encode(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         source: &wgpu::BindGroup,
         level_zero: &wgpu::TextureView,
         rect: [u32; 4],
+        timestamps: Option<(&wgpu::QuerySet, u32)>,
     ) {
+        let timestamp_writes = timestamps.map(|(query_set, at)| wgpu::RenderPassTimestampWrites {
+            query_set,
+            beginning_of_pass_write_index: Some(at),
+            end_of_pass_write_index: Some(at + 1),
+        });
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("face-resolve"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -134,6 +141,7 @@ impl Resolve {
                 resolve_target: None,
                 ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
             })],
+            timestamp_writes,
             ..wgpu::RenderPassDescriptor::default()
         });
         pass.set_scissor_rect(rect[0], rect[1], rect[2], rect[3]);
