@@ -17,6 +17,12 @@ use crate::ops::character::access as character;
 /// variant removes has only a `before`. Builds nothing and writes nothing.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "variant": "close-up"}
+    ],
+    "x-omuzaki-fixture" = "character-variant"
+))]
 pub struct VariantPreview {
     /// The character the variant belongs to.
     pub character: CharId,

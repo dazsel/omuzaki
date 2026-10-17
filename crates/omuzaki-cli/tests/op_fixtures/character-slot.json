@@ -1,0 +1,7 @@
+{
+  "about": "A spare palette slot `accent` nothing refers to, so it can be renamed or removed.",
+  "base": "character",
+  "steps": [
+    { "op": "palette.add_slot", "args": { "character": "kit", "slot": "accent", "colour": "#e07a9a" } }
+  ]
+}

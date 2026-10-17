@@ -1,0 +1,11 @@
+# Outcome #2216, design a VTuber character end to end. Read by tools/ci/evidence.py; the format is documented at the top
+# of that script.
+
+[[case]]
+name = "design-e2e"
+description = "The character the end-to-end test designs through ops (body, face, hair, accessories, look), as its turnaround: front, three-quarter, side and back, the face painted by the production face rig, through the mock renderer."
+env = { OMUZAKI_DESIGN_E2E_DIR = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-cli", "--test", "design_e2e", "a_character_designed_through_ops_saves_reopens_and_builds_the_same", "--", "--exact"] },
+]
+images = ["designed-front.png", "designed-threequarter.png", "designed-side.png", "designed-back.png"]
