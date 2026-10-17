@@ -6,7 +6,7 @@ use omuzaki_ops_api::{Grants, OpError, Runner};
 use rmcp::model::{Resource, ResourceContents, ResourceTemplate};
 use serde_json::{Map, Value, json};
 
-use super::ResourceProvider;
+use super::{ResourceProvider, json_contents};
 
 /// The project summary's URI.
 pub(crate) const PROJECT_URI: &str = "omuzaki://project";
@@ -56,9 +56,7 @@ impl ResourceProvider for DocProvider {
             Some(id) => character(runner, grants, id)?,
             None => project(runner, grants)?,
         };
-        let text = serde_json::to_string_pretty(&body)
-            .map_err(|e| OpError::internal(format!("couldn't encode {uri}: {e}")))?;
-        Ok(vec![ResourceContents::text(text, uri).with_mime_type(JSON)])
+        json_contents(uri, body)
     }
 
     /// `characters/<id>/..` is that character's node; any change at all shows in the project summary. A change above

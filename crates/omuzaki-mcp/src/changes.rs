@@ -353,7 +353,7 @@ fn position(first: u64, last: u64) -> String {
     if first == last { format!("n={first}") } else { format!("n={first}-{last}") }
 }
 
-fn actor_label(actor: &Actor) -> String {
+pub(crate) fn actor_label(actor: &Actor) -> String {
     let named = |kind: &str, name: String| if name.is_empty() { kind.to_owned() } else { format!("{kind} {name}") };
     match actor {
         Actor::Person { name } => named("user", plain(name, MAX_NAME_CHARS)),
@@ -386,7 +386,7 @@ fn path_label(path: &DocPath) -> String {
 /// every other character (controls, format characters such as tag characters, bidi controls and zero-width
 /// characters, variation selectors, private use, emoji) becomes a `?`, one per run, so the reader can see that
 /// something was there.
-fn plain(text: &str, max: usize) -> String {
+pub(crate) fn plain(text: &str, max: usize) -> String {
     let mut flat = String::with_capacity(text.len());
     let (mut space_pending, mut replaced) = (false, false);
     for c in text.chars() {
@@ -442,7 +442,7 @@ mod tests {
     impl Log {
         fn push(&mut self, event: Event) -> &mut Self {
             let n = self.0.back().map_or(1, |e| e.n + 1);
-            self.0.push_back(Entry { n, event });
+            self.0.push_back(Entry { n, event, version: None });
             self
         }
 
@@ -843,7 +843,7 @@ mod tests {
 
             let (mut after, mut reported) = (0_u64, 0_usize);
             for stop in stops {
-                let window: VecDeque<Entry> = log.0.iter().filter(|e| e.n <= stop).map(|e| Entry { n: e.n, event: e.event.clone() }).collect();
+                let window: VecDeque<Entry> = log.0.iter().filter(|e| e.n <= stop).map(|e| Entry { n: e.n, event: e.event.clone(), version: None }).collect();
                 let own = OwnTxs::default();
                 if let Some(report) = summarise(&window, stop, after, &actors[0], &own) {
                     prop_assert!(report.listed.len() <= MAX_LINES);
