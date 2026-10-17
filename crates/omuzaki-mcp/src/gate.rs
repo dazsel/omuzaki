@@ -22,6 +22,39 @@ use crate::limits::{
     BodyRefusal, Limits, REFUSAL_WARN_INTERVAL, RefusalLog, SessionsFull, may_open_session, read_body,
 };
 
+/// Where the gate writes the refusals it logs. The default writes `tracing` events; a test substitutes a sink of its own
+/// and reads what the gate decided without installing a process-wide subscriber (whose callsite cache other threads'
+/// events can disturb).
+pub(crate) trait RefusalSink: Send + Sync {
+    /// A request without a valid token. `suppressed` is `Some(n)` when it is written at `warn` (with `n` earlier
+    /// refusals only counted), `None` when it is only a `debug` event.
+    fn token_refused(&self, suppressed: Option<u64>, denied: Denied, method: &Method);
+    /// A request body that was not accepted, with the status it got and the message it was answered with.
+    fn body_refused(&self, suppressed: Option<u64>, status: StatusCode, message: &str);
+}
+
+/// The production sink: `warn` for the first refusal of an interval, `debug` for the rest.
+struct Tracing;
+
+impl RefusalSink for Tracing {
+    fn token_refused(&self, suppressed: Option<u64>, denied: Denied, method: &Method) {
+        // Never the credential itself: only that there was a failure, and what kind.
+        if let Some(suppressed) = suppressed {
+            tracing::warn!(?denied, %method, suppressed, "refused a request without a valid access token");
+        } else {
+            tracing::debug!(?denied, %method, "refused a request without a valid access token");
+        }
+    }
+
+    fn body_refused(&self, suppressed: Option<u64>, status: StatusCode, message: &str) {
+        if let Some(suppressed) = suppressed {
+            tracing::warn!(status = status.as_u16(), %message, suppressed, "refused a request body");
+        } else {
+            tracing::debug!(status = status.as_u16(), %message, "refused a request body");
+        }
+    }
+}
+
 /// What every response from this port carries.
 pub(crate) type ResponseBody = BoxBody<Bytes, Infallible>;
 
@@ -32,15 +65,22 @@ pub(crate) struct Gate {
     /// Each kind of refusal is rate-limited on its own, so a flood of one cannot hide the other.
     token_refusals: RefusalLog,
     body_refusals: RefusalLog,
+    sink: Arc<dyn RefusalSink>,
 }
 
 impl Gate {
     pub(crate) fn new(registry: Arc<Registry>, path: String) -> Self {
+        Self::with_sink(registry, path, Arc::new(Tracing))
+    }
+
+    /// A gate that writes its logged refusals to `sink`.
+    pub(crate) fn with_sink(registry: Arc<Registry>, path: String, sink: Arc<dyn RefusalSink>) -> Self {
         Self {
             registry,
             path,
             token_refusals: RefusalLog::new(REFUSAL_WARN_INTERVAL),
             body_refusals: RefusalLog::new(REFUSAL_WARN_INTERVAL),
+            sink,
         }
     }
 
@@ -56,17 +96,7 @@ impl Gate {
         let endpoint = match self.registry.authorize(request.headers()) {
             Ok(endpoint) => endpoint,
             Err(denied) => {
-                // Never the credential itself: only that there was a failure, and what kind.
-                if let Some(suppressed) = self.token_refusals.warn_now() {
-                    tracing::warn!(
-                        ?denied,
-                        method = %request.method(),
-                        suppressed,
-                        "refused a request without a valid access token"
-                    );
-                } else {
-                    tracing::debug!(?denied, method = %request.method(), "refused a request without a valid access token");
-                }
+                self.sink.token_refused(self.token_refusals.warn_now(), denied, request.method());
                 return unauthorized(denied);
             }
         };
@@ -78,7 +108,7 @@ impl Gate {
         let (body, _admission) = if parts.method == Method::POST {
             let bytes = match read_body(body, limits.max_body_bytes, limits.body_timeout).await {
                 Ok(bytes) => bytes,
-                Err(refusal) => return refuse_body(&refusal, limits, &self.body_refusals),
+                Err(refusal) => return refuse_body(&refusal, limits, &self.body_refusals, self.sink.as_ref()),
             };
             // Held until rmcp has answered, by which time a session it opened is in its table.
             let admission = if may_open_session(&parts.headers, &bytes) {
@@ -116,7 +146,12 @@ fn unauthorized(denied: Denied) -> Response<ResponseBody> {
 
 /// 408, 413 or 400 for a body that was not accepted, closing the connection: what is left of the body is not worth
 /// reading, and the client has shown it cannot be trusted to finish it.
-fn refuse_body(refusal: &BodyRefusal, limits: &Limits, log: &RefusalLog) -> Response<ResponseBody> {
+fn refuse_body(
+    refusal: &BodyRefusal,
+    limits: &Limits,
+    log: &RefusalLog,
+    sink: &dyn RefusalSink,
+) -> Response<ResponseBody> {
     let (status, message) = match refusal {
         BodyRefusal::TooLarge => (
             StatusCode::PAYLOAD_TOO_LARGE,
@@ -133,11 +168,7 @@ fn refuse_body(refusal: &BodyRefusal, limits: &Limits, log: &RefusalLog) -> Resp
             (StatusCode::BAD_REQUEST, format!("Bad Request: the request body could not be read: {cause}"))
         }
     };
-    if let Some(suppressed) = log.warn_now() {
-        tracing::warn!(status = status.as_u16(), %message, suppressed, "refused a request body");
-    } else {
-        tracing::debug!(status = status.as_u16(), %message, "refused a request body");
-    }
+    sink.body_refused(log.warn_now(), status, &message);
     let mut response = text(status, message);
     response.headers_mut().insert(CONNECTION, HeaderValue::from_static("close"));
     response
