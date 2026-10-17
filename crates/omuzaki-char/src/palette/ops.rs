@@ -137,6 +137,12 @@ fn texts(locations: &[DocPath]) -> Vec<String> {
 /// colour is a fixed `#rrggbb` or `#rrggbbaa`. Setting a slot to the colour it already has changes nothing.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "slot": "skin", "colour": "#f6d2c4"}
+    ],
+    "x-omuzaki-fixture" = "character"
+))]
 pub struct PaletteSet {
     /// The character.
     pub character: CharId,
@@ -186,6 +192,12 @@ register_op!(PaletteSet);
 /// reference resolve. The colour is a fixed `#rrggbb` or `#rrggbbaa`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "slot": "accent", "colour": "#e07a9a"}
+    ],
+    "x-omuzaki-fixture" = "character"
+))]
 pub struct PaletteAddSlot {
     /// The character.
     pub character: CharId,
@@ -232,6 +244,12 @@ register_op!(PaletteAddSlot);
 /// not seen, so removing the slot can strand one of them.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "slot": "accent"}
+    ],
+    "x-omuzaki-fixture" = "character-slot"
+))]
 pub struct PaletteRemoveSlot {
     /// The character.
     pub character: CharId,
@@ -281,6 +299,12 @@ register_op!(PaletteRemoveSlot);
 /// override that names `@from` is not rewritten.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "from": "accent", "to": "highlight"}
+    ],
+    "x-omuzaki-fixture" = "character-slot"
+))]
 pub struct PaletteRenameSlot {
     /// The character.
     pub character: CharId,
@@ -378,6 +402,12 @@ register_op!(PaletteRenameSlot);
 /// overrides are not listed.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit"}
+    ],
+    "x-omuzaki-fixture" = "character"
+))]
 pub struct PaletteUsage {
     /// The character.
     pub character: CharId,

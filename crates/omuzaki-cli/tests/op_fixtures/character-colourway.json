@@ -1,0 +1,8 @@
+{
+  "about": "A colourway `dusk` saved, then the skin recoloured, so applying `dusk` has a palette to restore.",
+  "base": "character",
+  "steps": [
+    { "op": "colourway.save", "args": { "character": "kit", "name": "dusk" } },
+    { "op": "palette.set", "args": { "character": "kit", "slot": "skin", "colour": "#d9a58f" } }
+  ]
+}
