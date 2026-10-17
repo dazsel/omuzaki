@@ -311,10 +311,11 @@ fn fit_in_job(
         job.progress("fitting", done as f32 / MAX_EVALUATIONS as f32);
         !job.is_cancelled()
     };
-    let result = fit_from(&input, &chosen.body, rebuild.is_some().then_some(&follow), &mut watch).map_err(|e| match e {
-        FitError::Stopped => OpError::cancelled(job.id()),
-        other => from_fit(&other),
-    })?;
+    let result =
+        fit_from(&input, &chosen.body, rebuild.is_some().then_some(&follow), &mut watch).map_err(|e| match e {
+            FitError::Stopped => OpError::cancelled(job.id()),
+            other => from_fit(&other),
+        })?;
     Ok((targets, rebuild, result))
 }
 

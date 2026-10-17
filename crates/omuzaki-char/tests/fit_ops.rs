@@ -611,7 +611,8 @@ fn bad_pngs_and_assets_are_refused_by_their_field() {
         assert!(e.message.contains(text), "{}", e.message);
     }
     // A missing asset is found when the work loads it, not when the arguments are checked (planning reads nothing).
-    let missing = json!({ "character": "mock", "views": [{ "view": "front", "asset": ContentHash::of(b"never stored") }] });
+    let missing =
+        json!({ "character": "mock", "views": [{ "view": "front", "asset": ContentHash::of(b"never stored") }] });
     dry_run(&doc, &store, "fit.reference", missing.clone()).unwrap();
     let e = work(&doc, &store, "fit.reference", &missing, &Signal::default()).unwrap_err();
     assert_eq!(e.code, ErrorCode::NotFound, "{e:?}");
@@ -789,6 +790,9 @@ fn set(doc: &mut MemDoc, path: &str, after: Option<Value>) {
 /// geometry (the character's name) is not, and neither is any edit when the body is fitted alone.
 #[test]
 fn parts_changed_while_the_fit_ran_refuse_the_apply() {
+    const HAIR: &str = "characters/mock/parts/hair";
+    const HEAD_PARAMS: &str = "characters/mock/parts/head/params";
+    type Edit = Box<dyn Fn(&mut MemDoc)>;
     let store = Arc::new(MemStore::default());
     let doc = with_parts("soft-sd", None, head_and_hair());
     let apply = |args: &Value, result: &Value, edit: &dyn Fn(&mut MemDoc)| {
@@ -799,13 +803,11 @@ fn parts_changed_while_the_fit_ran_refuse_the_apply() {
     // One fit (the slow part), finished against several documents.
     let args = json!({ "character": "mock", "views": views() });
     let result = work(&doc, &store, "fit.apply", &args, &Signal::default()).unwrap();
-    let hair = "characters/mock/parts/hair";
-    let head_params = "characters/mock/parts/head/params";
-    let edits: [(&str, Box<dyn Fn(&mut MemDoc)>); 4] = [
-        ("hair edited", Box::new(|d| set(d, &format!("{hair}/params"), Some(json!({ "rng": "legacy_lcg" }))))),
-        ("hair disabled", Box::new(|d| set(d, &format!("{hair}/enabled"), Some(json!(false))))),
-        ("hair removed", Box::new(|d| set(d, hair, None))),
-        ("head edited", Box::new(|d| set(d, head_params, Some(json!({ "window": { "half_width": 0.2 } }))))),
+    let edits: [(&str, Edit); 4] = [
+        ("hair edited", Box::new(|d| set(d, &format!("{HAIR}/params"), Some(json!({ "rng": "legacy_lcg" }))))),
+        ("hair disabled", Box::new(|d| set(d, &format!("{HAIR}/enabled"), Some(json!(false))))),
+        ("hair removed", Box::new(|d| set(d, HAIR, None))),
+        ("head edited", Box::new(|d| set(d, HEAD_PARAMS, Some(json!({ "window": { "half_width": 0.2 } }))))),
     ];
     for (what, edit) in &edits {
         let e = apply(&args, &result, edit.as_ref()).unwrap_err();
@@ -817,6 +819,6 @@ fn parts_changed_while_the_fit_ran_refuse_the_apply() {
     // With the body alone nothing else is drawn, so editing the other parts changes nothing the fit used.
     let alone = json!({ "character": "mock", "views": views(), "parts": [] });
     let result = work(&doc, &store, "fit.apply", &alone, &Signal::default()).unwrap();
-    let edit = |d: &mut MemDoc| set(d, &format!("{hair}/enabled"), Some(json!(false)));
+    let edit = |d: &mut MemDoc| set(d, &format!("{HAIR}/enabled"), Some(json!(false)));
     assert!(apply(&alone, &result, &edit).is_ok());
 }
