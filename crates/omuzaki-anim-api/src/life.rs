@@ -74,6 +74,7 @@ impl Dynamics {
 
 /// How channels chase their targets (replaces fixed easing, so everything has momentum).
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
 pub struct LifeDynamics {
     /// Lids: stiff.
     pub eye: Dynamics,
@@ -89,6 +90,9 @@ pub struct LifeDynamics {
     pub gaze: Dynamics,
     /// Cheek flush: no overshoot.
     pub slow: Dynamics,
+    /// With texture on, the leading side's springs run this fraction faster and the other this fraction slower, so
+    /// the two sides of the face do not arrive together. `0` removes the skew.
+    pub side_skew: f32,
 }
 
 impl Default for LifeDynamics {
@@ -101,12 +105,14 @@ impl Default for LifeDynamics {
             lean: Dynamics::new(2.0, 0.65),
             gaze: Dynamics::new(12.0, 0.9),
             slow: Dynamics::new(1.5, 1.0),
+            side_skew: 0.08,
         }
     }
 }
 
 /// Blink timing (spec PF-24: 15 to 20 a minute, never regular).
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
 pub struct BlinkParams {
     /// No blink comes sooner than this after the last, seconds.
     pub gap_floor_s: f32,
@@ -130,6 +136,18 @@ pub struct BlinkParams {
     pub on_glance_chance: f32,
     /// Chance of an extra blink when the head turns fast.
     pub on_head_turn_chance: f32,
+    /// After a person lets go of the eyes, or a score's shut eyes open, wait this long before the first blink, seconds.
+    pub settle_s: f32,
+    /// Retry delay when the source's eyes are already shut, seconds: drawn from this span.
+    pub retry_s: Span,
+    /// No extra blink (from a glance or a head turn) within this long of the last blink, seconds.
+    pub extra_cooldown_s: f32,
+    /// Both source lids blinked at least this much count as already shut.
+    pub shut_blink: f32,
+    /// A source `eyesSqueeze`, or ^^ arcs, at least this closed count as already shut.
+    pub shut_arc: f32,
+    /// Both source eyes squinted at least this much count as already shut (the prototype's "open below 0.15").
+    pub shut_squint: f32,
 }
 
 impl Default for BlinkParams {
@@ -146,6 +164,12 @@ impl Default for BlinkParams {
             eye_lag_s: Span::new(0.005, 0.015),
             on_glance_chance: 0.3,
             on_head_turn_chance: 0.4,
+            settle_s: 0.3,
+            retry_s: Span::new(0.3, 0.6),
+            extra_cooldown_s: 0.3,
+            shut_blink: 0.6,
+            shut_arc: 0.5,
+            shut_squint: 0.85,
         }
     }
 }
@@ -167,6 +191,7 @@ impl BlinkParams {
 
 /// Gaze behaviour: micro-saccades, glances away, and the eyes leading a head turn.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
 pub struct GazeParams {
     /// Time between micro-saccades, seconds.
     pub saccade_gap_s: Span,
@@ -190,6 +215,26 @@ pub struct GazeParams {
     pub lead_hold_s: Span,
     /// Longest the eyes may lead, look units.
     pub lead_max: f32,
+    /// The gaze offset never exceeds this, look units.
+    pub reach: f32,
+    /// The first glance comes sooner than the usual gap: this fraction of a normal draw.
+    pub first_glance: f32,
+    /// A saccade steered back toward the centre aims with this much random spread, radians.
+    pub steer_spread_rad: f32,
+    /// Fixation drift sine frequency, Hz, for the horizontal and vertical axes.
+    pub drift_hz: [f32; 2],
+    /// Fixation drift sine amplitude as a fraction of the drift, horizontal and vertical (a sine on top of the noise
+    /// keeps every half second moving: noise alone parks at its extremes).
+    pub drift_sine: [f32; 2],
+    /// The head speed estimate follows the raw speed with this time constant, seconds, so a 30 fps tracker feeding a
+    /// 60 fps loop does not flicker around the lead threshold.
+    pub lead_speed_tau_s: f32,
+    /// This long below the lead threshold re-arms the eyes-lead trigger, seconds.
+    pub lead_calm_s: f32,
+    /// A lead ends once the head is within this of its target, radians (about 1.5 degrees).
+    pub lead_settled_rad: f32,
+    /// A lead ends after this long whatever the head does, seconds.
+    pub lead_max_s: f32,
 }
 
 impl Default for GazeParams {
@@ -206,12 +251,22 @@ impl Default for GazeParams {
             lead_speed_rad_s: 0.698_131_7,
             lead_hold_s: Span::new(0.12, 0.20),
             lead_max: 0.6,
+            reach: 0.8,
+            first_glance: 0.4,
+            steer_spread_rad: 1.2,
+            drift_hz: [0.83, 1.07],
+            drift_sine: [0.6, 0.5],
+            lead_speed_tau_s: 0.05,
+            lead_calm_s: 0.25,
+            lead_settled_rad: 0.026_2,
+            lead_max_s: 1.5,
         }
     }
 }
 
 /// Head and body motion that rides on the source: noise, speech nods, laugh bob, breathing.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
 pub struct HeadParams {
     /// Head noise amplitude about yaw, pitch and roll, radians.
     pub noise_rad: [f32; 3],
@@ -229,6 +284,19 @@ pub struct HeadParams {
     pub breath_hz: f32,
     /// Head pitch moved by breathing, radians.
     pub breath_pitch_rad: f32,
+    /// The breathing rate wanders by this fraction of itself, slowly.
+    pub breath_wander: f32,
+    /// A nod decays with this time constant, seconds.
+    pub nod_decay_s: f32,
+    /// The smoothed loudness that makes the head sway more while talking follows the speech with this time constant,
+    /// seconds.
+    pub talk_tau_s: f32,
+    /// The laugh bob swings about its mean by this much, radians (0.7 degrees).
+    pub bob_swing_rad: f32,
+    /// The laugh's roll jitter, the sine part, radians (0.9 degrees).
+    pub roll_jitter_rad: f32,
+    /// The laugh's roll jitter, the noise part, radians (0.5 degrees).
+    pub roll_noise_rad: f32,
 }
 
 impl Default for HeadParams {
@@ -242,12 +310,19 @@ impl Default for HeadParams {
             laugh_bob_hz: 4.0,
             breath_hz: 0.25,
             breath_pitch_rad: 0.007,
+            breath_wander: 0.1,
+            nod_decay_s: 0.12,
+            talk_tau_s: 0.4,
+            bob_swing_rad: 0.012_2,
+            roll_jitter_rad: 0.015_7,
+            roll_noise_rad: 0.008_7,
         }
     }
 }
 
 /// Couplings between channels, and the texture noise that keeps the face from being a still image.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
 pub struct FaceParams {
     /// Lower lids rise by this much per unit of smile (the cheek push).
     pub smile_to_lids: f32,
@@ -273,6 +348,21 @@ pub struct FaceParams {
     pub side_lag_s: Span,
     /// Left and right noise amplitudes differ by up to this fraction.
     pub side_amp: f32,
+    /// A coupling (smile, laugh) raises a lid channel at most to this, but never lowers what the source already shows.
+    pub coupled_lid_cap: f32,
+    /// Jaw opening at which the surprise look starts (`lo`) and is complete (`hi`).
+    pub surprise_jaw: Span,
+    /// Brow height at which the surprise look starts (`lo`) and is complete (`hi`).
+    pub surprise_brows: Span,
+    /// The lid drift is noise plus a slow sine at this fraction of its amplitude (noise alone parks at its extremes).
+    pub lid_drift_sine: f32,
+    /// Frequency of that sine, Hz.
+    pub lid_drift_hz: f32,
+    /// A brow kick varies by up to this much from one syllable to the next, so no two are identical.
+    pub brow_kick_jitter: f32,
+    /// After a person lets go of a region, its texture noise and couplings ease in over this long, seconds, so
+    /// handing back has no jump. `0` brings them in at once.
+    pub hand_back_s: f32,
 }
 
 impl Default for FaceParams {
@@ -290,6 +380,59 @@ impl Default for FaceParams {
             lid_drift: 0.03,
             side_lag_s: Span::new(0.03, 0.06),
             side_amp: 0.1,
+            coupled_lid_cap: 0.6,
+            surprise_jaw: Span::new(0.6, 0.9),
+            surprise_brows: Span::new(0.3, 0.6),
+            lid_drift_sine: 0.4,
+            lid_drift_hz: 1.21,
+            brow_kick_jitter: 0.03,
+            hand_back_s: 0.2,
+        }
+    }
+}
+
+/// Laugh detection: when a big open-mouthed loud smile counts as a laugh, and how it ramps.
+///
+/// A laugh starts when smile, jaw opening and loudness all pass the `start_*` thresholds, and ends once they have
+/// stayed below the (lower) `keep_*` thresholds for `hold_s`, so a flicker in loudness cannot make it chatter.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct LaughParams {
+    /// Net smile needed to start a laugh.
+    pub start_smile: f32,
+    /// Jaw opening needed to start a laugh.
+    pub start_jaw: f32,
+    /// Loudness needed to start a laugh.
+    pub start_loud: f32,
+    /// Net smile below which a running laugh may end.
+    pub keep_smile: f32,
+    /// Jaw opening below which a running laugh may end.
+    pub keep_jaw: f32,
+    /// Loudness below which a running laugh may end.
+    pub keep_loud: f32,
+    /// How long the keep thresholds must be missed before the laugh ends, seconds.
+    pub hold_s: f32,
+    /// A laugh ramps in and out over this long, seconds.
+    pub ramp_s: f32,
+    /// Closing into ^^ needs a laugh at least this loud.
+    pub arc_loud: f32,
+    /// The bob rate wanders by this fraction of itself.
+    pub rate_wander: f32,
+}
+
+impl Default for LaughParams {
+    fn default() -> Self {
+        Self {
+            start_smile: 0.6,
+            start_jaw: 0.3,
+            start_loud: 0.45,
+            keep_smile: 0.45,
+            keep_jaw: 0.2,
+            keep_loud: 0.3,
+            hold_s: 0.12,
+            ramp_s: 0.15,
+            arc_loud: 0.85,
+            rate_wander: 0.1,
         }
     }
 }
@@ -308,6 +451,8 @@ pub struct LifeParams {
     pub head: HeadParams,
     /// Couplings and texture.
     pub face: FaceParams,
+    /// Laugh detection.
+    pub laugh: LaughParams,
 }
 
 /// A personality preset (spec PF-24). Presets are starting points for [`LifeParams`]; the params are the truth.
@@ -328,21 +473,30 @@ pub enum Personality {
 }
 
 impl LifeParams {
-    /// The starting numbers for a personality. The multipliers are first guesses; they are tuned against the
-    /// liveliness metrics (spec §15), and only this function changes when they are.
+    /// The starting numbers for a personality, tuned against the liveliness metrics (spec §15) on a still face. The
+    /// measurement is `omuzaki-anim/tests/personality_tuning.rs`: eight seeds of two minutes at 60 fps, every run
+    /// inside the at-rest band with no frozen window of 0.5 s, and the means below.
+    ///
+    /// | Preset | Blinks a minute | Saccades a second | Change a second |
+    /// |---|---|---|---|
+    /// | Natural | 18.2 | 0.22 | 0.0352 |
+    /// | Energetic | 19.7 | 0.45 | 0.0385 |
+    /// | Calm | 16.7 | 0.22 | 0.0326 |
+    /// | Shy | 18.7 | 0.32 | 0.0375 |
+    /// | Sleepy | 15.7 | 0.15 | 0.0305 |
     pub fn for_personality(personality: Personality) -> Self {
         let mut p = Self::default();
         match personality {
             Personality::Natural => {}
-            Personality::Energetic => p.tune(0.8, 0.7, 1.4, 1.15, 1.0),
-            Personality::Calm => p.tune(1.3, 1.3, 0.6, 0.9, 1.0),
+            Personality::Energetic => p.tune(0.7, 0.7, 2.0, 1.2, 1.0),
+            Personality::Calm => p.tune(1.4, 1.3, 0.65, 0.9, 1.0),
             Personality::Shy => {
-                p.tune(1.0, 1.0, 0.7, 1.0, 1.6);
-                p.gaze.glance_gap_s = p.gaze.glance_gap_s.scaled(0.6);
-                p.gaze.glance_x = p.gaze.glance_x.scaled(1.3);
+                p.tune(1.0, 1.0, 0.75, 1.0, 1.6);
+                p.gaze.glance_gap_s = p.gaze.glance_gap_s.scaled(0.7);
+                p.gaze.glance_x = p.gaze.glance_x.scaled(1.15);
             }
             Personality::Sleepy => {
-                p.tune(0.85, 1.5, 0.8, 0.8, 1.0);
+                p.tune(1.1, 1.5, 0.85, 0.8, 1.0);
                 p.blink.close_s = p.blink.close_s.scaled(1.6);
                 p.blink.open_s = p.blink.open_s.scaled(1.8);
                 p.gaze.glance_gap_s = p.gaze.glance_gap_s.scaled(1.5);

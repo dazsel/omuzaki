@@ -9,14 +9,8 @@ use omuzaki_core::rng::Rng;
 
 use super::frame::Frame;
 
-/// The speed estimate follows the raw speed with this time constant, so a 30 fps tracker feeding a 60 fps loop does
-/// not flicker around the threshold.
-const SPEED_TAU_S: f32 = 0.05;
-/// This long below the threshold re-arms the trigger.
-const CALM_S: f32 = 0.25;
-/// A lead ends once the head is within this of its target (about 1.5 degrees), or after [`MAX_LEAD_S`].
-const SETTLED_RAD: f32 = 0.026_2;
-const MAX_LEAD_S: f64 = 1.5;
+/// The shortest time constant the speed estimate may have, seconds, so a zero `lead_speed_tau_s` cannot divide by zero.
+const MIN_TAU_S: f32 = 1e-3;
 /// The fastest raw head speed the estimate is allowed (rad/s, far above any real head). It keeps a tiny but normal
 /// `dt` from overflowing the raw speed to infinity, where `inf * 0` would leave the estimate NaN for good.
 const MAX_RAW_SPEED: f32 = 1.0e4;
@@ -87,7 +81,7 @@ impl Lead {
         let timed = frame.dt.is_normal() && frame.dt > 0.0;
         if let Some(prev) = self.previous.filter(|_| timed) {
             let raw = ((source[0] - prev[0]).hypot(source[1] - prev[1]) / frame.dt).min(MAX_RAW_SPEED);
-            self.speed += (raw - self.speed) * (1.0 - (-frame.dt / SPEED_TAU_S).exp());
+            self.speed += (raw - self.speed) * (1.0 - (-frame.dt / params.lead_speed_tau_s.max(MIN_TAU_S)).exp());
             if self.speed >= params.lead_speed_rad_s {
                 if frame.systems.gaze_lead && self.armed && !self.active {
                     started = true;
@@ -96,7 +90,7 @@ impl Lead {
                 self.calm_for = 0.0;
             } else {
                 self.calm_for += frame.dt;
-                if self.calm_for >= CALM_S {
+                if self.calm_for >= params.lead_calm_s {
                     self.armed = true;
                 }
             }
@@ -112,8 +106,8 @@ impl Lead {
         let reach = |angle: f32| (angle / LOOK_FULL_RAD).clamp(-params.lead_max, params.lead_max);
         let gaze = (reach(yaw_error), reach(-pitch_error));
         let arrived =
-            frame.clock >= self.hold_until && yaw_error.abs() < SETTLED_RAD && pitch_error.abs() < SETTLED_RAD;
-        if arrived || frame.clock - self.began > MAX_LEAD_S {
+            frame.clock >= self.hold_until && yaw_error.abs() < params.lead_settled_rad && pitch_error.abs() < params.lead_settled_rad;
+        if arrived || frame.clock - self.began > f64::from(params.lead_max_s) {
             self.active = false;
         }
         LeadOut { hold, gaze, active: true, started }
