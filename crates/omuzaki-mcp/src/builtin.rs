@@ -19,11 +19,32 @@ pub(crate) enum Builtin {
     TxBegin,
     TxCommit,
     TxRollback,
+    SessionInfo,
+    SessionList,
+    ApprovalWait,
 }
 
+/// The longest `approval_wait` waits, in seconds, and how long it waits when no timeout is given.
+pub(crate) const APPROVAL_WAIT_MAX_SECONDS: u64 = 50;
+pub(crate) const APPROVAL_WAIT_DEFAULT_SECONDS: u64 = 30;
+
 impl Builtin {
-    pub(crate) const ALL: [Builtin; 6] =
-        [Self::Undo, Self::Redo, Self::Log, Self::TxBegin, Self::TxCommit, Self::TxRollback];
+    pub(crate) const ALL: [Builtin; 9] = [
+        Self::Undo,
+        Self::Redo,
+        Self::Log,
+        Self::TxBegin,
+        Self::TxCommit,
+        Self::TxRollback,
+        Self::SessionInfo,
+        Self::SessionList,
+        Self::ApprovalWait,
+    ];
+
+    /// Whether the tool talks to the executor's session registry, and so exists only when the host wired one.
+    pub(crate) const fn needs_registry(self) -> bool {
+        matches!(self, Self::SessionInfo | Self::SessionList | Self::ApprovalWait)
+    }
 
     /// The dotted name, shown as the tool's title and on the first line of its description.
     pub(crate) const fn title(self) -> &'static str {
@@ -34,6 +55,9 @@ impl Builtin {
             Self::TxBegin => "tx.begin",
             Self::TxCommit => "tx.commit",
             Self::TxRollback => "tx.rollback",
+            Self::SessionInfo => "session.info",
+            Self::SessionList => "session.list",
+            Self::ApprovalWait => "approval.wait",
         }
     }
 
@@ -46,6 +70,9 @@ impl Builtin {
             Self::TxBegin => "tx_begin",
             Self::TxCommit => "tx_commit",
             Self::TxRollback => "tx_rollback",
+            Self::SessionInfo => "session_info",
+            Self::SessionList => "session_list",
+            Self::ApprovalWait => "approval_wait",
         }
     }
 
@@ -94,9 +121,35 @@ impl Builtin {
                  apply, and with `not_found` if no transaction is open.",
                 true,
             ),
+            Self::SessionInfo => (
+                "Show this session's own record: who it acts as and for, how it is connected, its credential and whether \
+                 the person has paired it, what it may do (scopes and file roots), its fence (the parts of the project \
+                 it may edit; empty means the whole project except what another session holds), its budget and spend, \
+                 its rate limits, whether it is active or paused, its open transaction, and the approvals it is waiting \
+                 on. Needs `read`. Still answers while the session is paused, including while it waits to be paired: \
+                 then approve the client in Omuzaki's window.",
+                false,
+            ),
+            Self::SessionList => (
+                "List every live agent session on this project: id, actor, client, model, transport, state, fence and \
+                 steps. Your own is marked `you: true`. Use it to see who else is working, and where, before you edit. \
+                 Needs `read`. Still answers while the session is paused.",
+                false,
+            ),
+            Self::ApprovalWait => (
+                "Wait for the person to decide one of YOUR pending approvals (the `approval` id a `waiting` result \
+                 gave, or the pairing approval in session_info), up to `timeout_seconds` (default 30, at most 50). An \
+                 approved request returns what the op returned; a failed one its error; a rejected one says so with \
+                 the person's comment; a withdrawn one says why. If the time runs out the approval is still pending: \
+                 call again, or carry on with something else. This tool never approves anything: only the person can, \
+                 in Omuzaki's window. Another session's approval is `not_found`.",
+                false,
+            ),
         };
-        let annotations =
-            ToolAnnotations::new().read_only(self == Self::Log).destructive(destructive).open_world(false);
+        let annotations = ToolAnnotations::new()
+            .read_only(matches!(self, Self::Log | Self::SessionInfo | Self::SessionList | Self::ApprovalWait))
+            .destructive(destructive)
+            .open_world(false);
         let description = format!("{}: {description}", self.title());
         Tool::new(self.name(), description, input_schema(self))
             .with_title(self.title())
@@ -133,6 +186,24 @@ fn input_schema(builtin: Builtin) -> JsonObject {
                 }
             },
             "required": ["label"],
+            "additionalProperties": false
+        }),
+        Builtin::ApprovalWait => json!({
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "The approval to wait for: the number a `waiting` result or session_info names."
+                },
+                "timeout_seconds": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": APPROVAL_WAIT_MAX_SECONDS,
+                    "description": "How long to wait. Default 30, at most 50."
+                }
+            },
+            "required": ["id"],
             "additionalProperties": false
         }),
         _ => json!({"type": "object", "properties": {}, "additionalProperties": false}),
