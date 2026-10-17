@@ -13,7 +13,7 @@
 //! above [`REPORT_ABOVE_DEG`] is reported too (`avatar.rest_normalised`); smaller ones are made silently.
 
 use omuzaki_anim_api::{HumanoidFrames, HumanoidPose, Transform};
-use omuzaki_core::glam::{Quat, Vec3};
+use omuzaki_core::glam::{Mat3, Mat4, Quat, Vec3};
 use omuzaki_io_api::{Finding, IoScene, NodeIx, Report};
 
 use super::avatar::skeleton::{self, unit};
@@ -109,15 +109,26 @@ fn swing_onto(scene: &mut IoScene, at: NodeIx, tail: NodeIx, axis: Vec3) -> Opti
     if degrees.is_nan() || degrees <= CORRECT_ABOVE_DEG {
         return None;
     }
-    let swing = Quat::from_rotation_arc(direction, axis);
-    // In world space the bone turns by `swing` about its own origin; in its parent's frame that is the swing seen from
-    // the parent: `Pw⁻¹ · swing · Pw · local`.
-    let up = parent.get(at.index()).copied().flatten().and_then(|p| world.matrices.get(p));
-    let parent_rotation = up.map_or(Quat::IDENTITY, |m| unit(m.to_scale_rotation_translation().1));
+    // The node's rotation acts in its parent's frame, which may carry rotation and non-uniform scale (`L`, the
+    // parent's world matrix without its translation). Seen from there the bone points along `L⁻¹ · direction` and must
+    // end along `L⁻¹ · axis`; the arc between the two is the local swing. A world-space swing cannot be carried through
+    // a scaled frame (`L⁻¹ · swing · L` shears), while this one turns the bone onto `axis` exactly. Applying it on the
+    // left keeps the node's own twist.
+    let frame = up_matrix(&parent, &world.matrices, at).map_or(Mat3::IDENTITY, Mat3::from_mat4);
+    let inverse = frame.inverse();
+    if !inverse.is_finite() {
+        return None;
+    }
+    let swing = Quat::from_rotation_arc((inverse * direction).try_normalize()?, (inverse * axis).try_normalize()?);
     let node = scene.nodes.get_mut(at.index())?;
-    let local = parent_rotation.conjugate() * swing * parent_rotation * node.transform.rotation;
-    node.transform.rotation = unit(local);
+    node.transform.rotation = unit(swing * node.transform.rotation);
     Some(degrees)
+}
+
+/// The world matrix of `node`'s parent, if it has one.
+fn up_matrix(parent: &[Option<usize>], matrices: &[Mat4], node: NodeIx) -> Option<Mat4> {
+    let up = parent.get(node.index()).copied().flatten()?;
+    matrices.get(up).copied()
 }
 
 /// The first child of `node`, if it has one.

@@ -118,3 +118,42 @@ fn two_runs_give_the_same_rest_and_bind() {
     assert_eq!(normalise_rest(&mut a), normalise_rest(&mut b));
     assert_eq!(a, b);
 }
+
+/// A humanoid whose left shoulder (the upper arm's parent) is scaled by `scale` and turned by `turn` about Y, with the
+/// upper arms 45 degrees down in their own frames.
+fn under_scaled_shoulder(scale: Vec3, turn_degrees: f32) -> (common::Fixture, IoScene) {
+    let mut f = humanoid(45.0);
+    let shoulder = f.node("leftShoulder").index();
+    f.scene.nodes[shoulder].transform.scale = scale;
+    f.scene.nodes[shoulder].transform.rotation = Quat::from_rotation_y(turn_degrees.to_radians());
+    let mut scene = f.scene.clone();
+    normalise_rest(&mut scene);
+    (f, scene)
+}
+
+#[test]
+fn a_limb_under_a_non_uniformly_scaled_parent_still_lands_on_its_axis() {
+    // (2, 1, 1) is the case a world-space swing gets wrong; the turned one shears it from the other side.
+    for (scale, turn) in
+        [(Vec3::new(2.0, 1.0, 1.0), 0.0), (Vec3::new(2.0, 1.0, 1.0), 30.0), (Vec3::new(1.0, 3.0, 0.5), 60.0)]
+    {
+        let (f, scene) = under_scaled_shoulder(scale, turn);
+        for (a, b) in [("UpperArm", "LowerArm"), ("LowerArm", "Hand"), ("Hand", "MiddleProximal")] {
+            let d = direction(&scene, &f, &format!("left{a}"), &format!("left{b}"));
+            assert!((d - Vec3::X).length() < 1e-5, "left{a} under scale {scale} turned {turn} points {d}");
+        }
+        let right = direction(&scene, &f, "rightUpperArm", "rightLowerArm");
+        assert!((right + Vec3::X).length() < 1e-5, "the unscaled side still points {right}");
+    }
+}
+
+#[test]
+fn a_correction_under_a_scaled_parent_changes_only_the_rotation() {
+    let (f, scene) = under_scaled_shoulder(Vec3::new(2.0, 1.0, 1.0), 0.0);
+    let upper = f.node("leftUpperArm").index();
+    let (before, after) = (f.scene.nodes[upper].transform, scene.nodes[upper].transform);
+    assert_eq!(before.scale, after.scale, "only the rotation changes");
+    assert_eq!(before.translation, after.translation);
+    assert!((after.rotation.length() - 1.0).abs() < 1e-6, "a unit rotation");
+    assert!(before.rotation.angle_between(after.rotation) > 0.1, "the arm was turned");
+}
