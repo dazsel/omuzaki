@@ -8,7 +8,7 @@ use crate::ds::gallery::text::tr;
 use crate::ds::theme::ds;
 use crate::ds::tokens::Status;
 use crate::ds::widgets::{ActorChip, ActorKind, CostChip, GateChip, ScopeBadge, StatusChip};
-use crate::register_story;
+use omuzaki_ui_api::register_story;
 
 #[derive(Default)]
 struct State;

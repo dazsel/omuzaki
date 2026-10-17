@@ -12,21 +12,23 @@ use omuzaki_core::time::Seconds;
 use omuzaki_doc_api::{DocPath, DocVersion, Patch, Value};
 use omuzaki_ops_api::{Actor, Event, Grants, OpError, OpInfo, OpRecord, Outcome, Request, Runner, TxId};
 
+use omuzaki_ui_api::layout::{Dir as ApiDir, Node as ApiNode};
+use omuzaki_ui_api::register_workspace;
+use omuzaki_ui_api::registry::Group;
+
 use super::layout::{Dir, Layout, Node};
 use super::persist::LayoutStore;
-use super::registry::Group;
 use super::stub::NullRunner;
-use super::{Shell, registry};
+use super::Shell;
 use crate::ds::icons;
 use crate::ds::testing::{drag, press};
-use crate::register_workspace;
 
 // A second workspace, so the numbered keys have something to switch to.
 register_workspace! { id: "probe", title: "Probe", icon: icons::EYE, order: 90, group: Group::Make,
-layout: probe_layout }
+default_layout: probe_layout }
 
-fn probe_layout() -> Layout {
-    Layout::new(Node::split(Dir::Horizontal, vec![Node::pane("viewport"), Node::pane("inspector")], &[3.0, 1.0]))
+fn probe_layout() -> ApiNode {
+    ApiNode::split(ApiDir::Horizontal, vec![ApiNode::pane("viewport"), ApiNode::pane("inspector")], &[3.0, 1.0])
 }
 
 fn record(seq: u64) -> OpRecord {
@@ -234,7 +236,7 @@ fn the_numbered_keys_switch_workspaces_and_each_keeps_its_own_layout() {
     assert_eq!(harness.state().active_workspace(), Some("build"));
     press(&mut harness, Modifiers::COMMAND, Key::Num0);
     assert_eq!(harness.state().active_workspace(), Some("build"), "there is no Theatre yet");
-    assert!(registry::workspace("theatre").is_none());
+    assert!(harness.state().registry().workspace("theatre").is_none());
 }
 
 #[test]

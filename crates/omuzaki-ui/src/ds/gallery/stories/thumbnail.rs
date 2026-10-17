@@ -8,7 +8,7 @@ use crate::ds::gallery::layout::caption;
 use crate::ds::gallery::text::translate;
 use crate::ds::theme::ds;
 use crate::ds::widgets::{Thumb, ThumbnailTile};
-use crate::register_story;
+use omuzaki_ui_api::register_story;
 
 #[derive(Default)]
 struct State {

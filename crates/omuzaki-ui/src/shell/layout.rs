@@ -9,6 +9,7 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 
 use egui_tiles::{Container, Linear, LinearDir, Tabs, Tile, TileId, Tiles, Tree};
+use omuzaki_ui_api::layout::{Dir as ApiDir, Node as ApiNode};
 use serde::{Deserialize, Serialize};
 
 /// The file format version. A file with another version is replaced by the default layout.
@@ -71,6 +72,27 @@ impl Node {
     /// A split of `children` with `shares`.
     pub fn split(dir: Dir, children: Vec<Self>, shares: &[f32]) -> Self {
         Self::Split { dir, children, shares: shares.to_vec() }
+    }
+
+    /// The node for a workspace's registered default layout, written in the contract's tree (`omuzaki_ui_api::layout`).
+    /// `None` when the tree holds a kind of node this shell does not know, so a newer contract never half-converts.
+    pub fn from_api(node: &ApiNode) -> Option<Self> {
+        match node {
+            ApiNode::Pane { panel, .. } => Some(Self::Pane { panel: panel.clone() }),
+            ApiNode::Tabs { children, active, .. } => {
+                Some(Self::Tabs { children: Self::from_api_all(children)?, active: *active })
+            }
+            ApiNode::Split { dir, children, shares, .. } => Some(Self::Split {
+                dir: if *dir == ApiDir::Vertical { Dir::Vertical } else { Dir::Horizontal },
+                children: Self::from_api_all(children)?,
+                shares: shares.clone(),
+            }),
+            _ => None,
+        }
+    }
+
+    fn from_api_all(children: &[ApiNode]) -> Option<Vec<Self>> {
+        children.iter().map(Self::from_api).collect()
     }
 
     fn collect<'a>(&'a self, out: &mut Vec<&'a str>) {
@@ -163,8 +185,9 @@ pub struct Layout {
 pub struct Known<'a> {
     /// Whether a panel id is registered.
     pub exists: &'a dyn Fn(&str) -> bool,
-    /// The panel that must be in the layout: the workspace's primary panel.
-    pub primary: &'a str,
+    /// The panel that must be in the layout: the workspace's primary panel. A workspace that registered none has no
+    /// such requirement.
+    pub primary: Option<&'a str>,
 }
 
 impl Layout {
@@ -193,13 +216,45 @@ impl Layout {
         if self.version != VERSION {
             return default.clone();
         }
-        // A panel can be drawn once: the first of a duplicate wins (`pruned` visits panes in reading order).
-        let seen = RefCell::new(HashSet::new());
-        let kept = self.root.pruned(&|p| (known.exists)(p) && seen.borrow_mut().insert(p.to_owned()));
-        let Some(mut root) = kept else { return default.clone() };
-        root.sanitise_shares();
+        let Some(root) = vetted(&self.root, known.exists) else { return default.clone() };
         let repaired = Self { version: VERSION, root };
-        if repaired.contains(known.primary) { repaired } else { default.clone() }
+        if known.primary.is_none_or(|primary| repaired.contains(primary)) { repaired } else { default.clone() }
+    }
+
+    /// The layout a workspace registered as its default, made safe the same way a loaded one is: panels that are not
+    /// registered are dropped (the caller reports them), a panel listed twice is drawn once, and shares the docking
+    /// widget would panic on are made usable. `None` when the tree is empty after that or holds a node this shell does
+    /// not know.
+    pub fn from_registered(root: &ApiNode, exists: &dyn Fn(&str) -> bool) -> Option<Self> {
+        vetted(&Node::from_api(root)?, exists).map(Self::new)
+    }
+
+    /// This layout with `panel` added, for "Show panel" on a panel the layout lacks: as a tab beside `anchor` when that
+    /// is in the layout, else as a new column at the left edge of the root (`front`) or the right. The new column
+    /// starts as a quarter of the root's shares; the shell raises it to the panel's minimum before it is drawn.
+    #[must_use]
+    pub fn with_panel(&self, panel: &str, anchor: Option<&str>, front: bool) -> Self {
+        if self.contains(panel) {
+            return self.clone();
+        }
+        if let Some(anchor) = anchor.filter(|a| self.contains(a)) {
+            return Self::new(self.root.clone().joined(anchor, &[panel]));
+        }
+        let pane = Node::pane(panel);
+        let (mut children, mut shares) = match &self.root {
+            Node::Split { dir: Dir::Horizontal, children, shares } => (children.clone(), shares.clone()),
+            other => (vec![other.clone()], Vec::new()),
+        };
+        shares.resize(children.len(), 1.0);
+        let share = shares.iter().sum::<f32>() / 4.0;
+        if front {
+            children.insert(0, pane);
+            shares.insert(0, share);
+        } else {
+            children.push(pane);
+            shares.push(share);
+        }
+        Self::new(Node::Split { dir: Dir::Horizontal, children, shares })
     }
 
     /// This layout without `panels`. A layout that would be left empty is returned unchanged.
@@ -254,6 +309,15 @@ impl Layout {
         let root = tree.root?;
         Some(Self::new(extract(&tree.tiles, root)?))
     }
+}
+
+/// `root` with the panels `exists` refuses dropped (and containers left with one child flattened), a panel listed twice
+/// kept once (the first in reading order, which `pruned` visits in), and every split's shares made usable.
+fn vetted(root: &Node, exists: &dyn Fn(&str) -> bool) -> Option<Node> {
+    let seen = RefCell::new(HashSet::new());
+    let mut root = root.pruned(&|p| exists(p) && seen.borrow_mut().insert(p.to_owned()))?;
+    root.sanitise_shares();
+    Some(root)
 }
 
 fn insert(tiles: &mut Tiles<PanelId>, node: &Node) -> TileId {
@@ -373,7 +437,7 @@ mod tests {
 
     #[test]
     fn a_panel_that_no_longer_exists_is_dropped_and_a_container_left_with_one_child_is_flattened() {
-        let known = Known { exists: &|p| p != "library" && p != "expressions", primary: "viewport" };
+        let known = Known { exists: &|p| p != "library" && p != "expressions", primary: Some("viewport") };
         let repaired = build().repaired(&known, &build());
         assert_eq!(repaired.panels(), ["outliner", "viewport", "inspector", "agent", "history"]);
         let Node::Split { children, shares, .. } = &repaired.root else { panic!("root is a split") };
@@ -383,7 +447,7 @@ mod tests {
 
     #[test]
     fn a_layout_without_the_primary_panel_or_with_another_version_is_replaced_by_the_default() {
-        let known = Known { exists: &all_exist, primary: "viewport" };
+        let known = Known { exists: &all_exist, primary: Some("viewport") };
         let default = build();
         let no_viewport = Layout::new(Node::tabs(&["outliner", "inspector"]));
         assert_eq!(no_viewport.repaired(&known, &default), default);
@@ -391,19 +455,19 @@ mod tests {
         old.version = 0;
         assert_eq!(old.repaired(&known, &default), default);
         let nothing = Layout::new(Node::tabs(&["gone"]));
-        let known_none = Known { exists: &|_| false, primary: "viewport" };
+        let known_none = Known { exists: &|_| false, primary: Some("viewport") };
         assert_eq!(nothing.repaired(&known_none, &default), default);
     }
 
     #[test]
     fn a_good_layout_is_returned_as_it_was() {
-        let known = Known { exists: &all_exist, primary: "viewport" };
+        let known = Known { exists: &all_exist, primary: Some("viewport") };
         assert_eq!(build().repaired(&known, &Layout::new(Node::pane("viewport"))), build());
     }
 
     #[test]
     fn bad_shares_are_made_usable() {
-        let known = Known { exists: &all_exist, primary: "viewport" };
+        let known = Known { exists: &all_exist, primary: Some("viewport") };
         let bad = Layout::new(Node::split(
             Dir::Horizontal,
             vec![Node::pane("outliner"), Node::pane("viewport"), Node::pane("inspector")],
@@ -483,7 +547,7 @@ mod tests {
 
     #[test]
     fn a_panel_listed_twice_is_drawn_once() {
-        let known = Known { exists: &all_exist, primary: "viewport" };
+        let known = Known { exists: &all_exist, primary: Some("viewport") };
         let twice = Layout::new(Node::split(
             Dir::Horizontal,
             vec![Node::tabs(&["outliner", "library"]), Node::pane("viewport"), Node::tabs(&["library", "outliner"])],

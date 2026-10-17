@@ -9,7 +9,7 @@ use crate::ds::icons;
 use crate::ds::theme::ds;
 use crate::ds::tokens::radius;
 use crate::ds::widgets::{TabBar, TabItem, TabKind};
-use crate::register_story;
+use omuzaki_ui_api::register_story;
 
 struct State {
     workspace: usize,

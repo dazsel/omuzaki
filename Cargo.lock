@@ -4758,6 +4758,8 @@ dependencies = [
  "omuzaki-doc-api",
  "omuzaki-l10n-api",
  "omuzaki-ops-api",
+ "omuzaki-ui-api",
+ "omuzaki-ui-mock",
  "rustix 1.1.5",
  "schemars",
  "serde",
@@ -4765,6 +4767,7 @@ dependencies = [
  "tempfile",
  "toml",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

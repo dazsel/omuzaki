@@ -4,9 +4,11 @@
 use egui::{Context, Response, Ui, WidgetText};
 use egui_tiles::{Behavior, Container, LinearDir, SimplificationOptions, Tile, TileId, Tiles, Tree, UiResponse};
 
+use omuzaki_ui_api::panel::PanelCtx;
+use omuzaki_ui_api::registry::{PanelKind, Registry};
+
+use super::host::Bodies;
 use super::layout::PanelId;
-use super::panels::{self, Env};
-use super::registry::{self, PanelKind};
 use super::text::title;
 use crate::ds::theme::ds;
 use crate::ds::tokens::size;
@@ -20,8 +22,12 @@ const SLACK: f32 = 0.5;
 pub struct Dock<'a> {
     /// The egui context, for the theme and the language.
     pub ctx: &'a Context,
-    /// What the panel bodies read.
-    pub env: Env<'a>,
+    /// The registered panels.
+    pub registry: &'a Registry,
+    /// The panels built so far; a body is drawn through it.
+    pub bodies: &'a mut Bodies,
+    /// What a panel reads and runs this frame.
+    pub panel_ctx: &'a PanelCtx<'a>,
     /// Layout lock: no tile moves and no divider drags.
     pub locked: bool,
     /// The tiles that hold the primary panel ([`pinned`]); they never move.
@@ -32,14 +38,14 @@ pub struct Dock<'a> {
 
 impl Behavior<PanelId> for Dock<'_> {
     fn pane_ui(&mut self, ui: &mut Ui, _tile: TileId, pane: &mut PanelId) -> UiResponse {
-        let def = registry::panel(&pane.0);
+        let def = self.registry.panel(&pane.0);
         debug_assert!(def.is_some(), "the layout was repaired against the registry, so {} exists", pane.0);
         if let Some(def) = def {
             let rect = ui.max_rect();
             if ui.input(|i| i.pointer.any_pressed()) && ui.rect_contains_pointer(rect) {
                 *self.focus = Some(def.id.to_owned());
             }
-            panels::body(ui, def, &self.env);
+            self.bodies.draw(ui, def, self.panel_ctx);
             if self.focus.as_deref() == Some(def.id) {
                 let accent = ds(self.ctx).theme.accent;
                 ui.painter().hline(rect.x_range(), rect.top(), egui::Stroke::new(2.0, accent));
@@ -58,7 +64,8 @@ impl Behavior<PanelId> for Dock<'_> {
     }
 
     fn tab_title_for_pane(&mut self, pane: &PanelId) -> WidgetText {
-        registry::panel(&pane.0).map_or_else(|| pane.0.clone(), |def| title(self.ctx, def.title).into_owned()).into()
+        let name = self.registry.panel(&pane.0).map(|def| self.bodies.title(def));
+        name.map_or_else(|| pane.0.clone(), |name| title(self.ctx, &name).into_owned()).into()
     }
 
     /// Nothing moves while locked, and the primary panel never leaves the centre: a group holding it stays put too.
@@ -86,33 +93,33 @@ impl Behavior<PanelId> for Dock<'_> {
 
 /// The tiles that are, or contain, a primary panel. Worked out before the frame: while a container is drawn the widget
 /// takes it out of the tree, so the question cannot be asked of the tree during the frame.
-pub fn pinned(tree: &Tree<PanelId>) -> Vec<TileId> {
-    tree.tiles.tile_ids().filter(|tile| holds_primary(&tree.tiles, *tile)).collect()
+pub fn pinned(tree: &Tree<PanelId>, registry: &Registry) -> Vec<TileId> {
+    tree.tiles.tile_ids().filter(|tile| holds_primary(&tree.tiles, *tile, registry)).collect()
 }
 
 /// Whether `tile` is, or contains, a primary panel.
-fn holds_primary(tiles: &Tiles<PanelId>, tile: TileId) -> bool {
+fn holds_primary(tiles: &Tiles<PanelId>, tile: TileId, registry: &Registry) -> bool {
     match tiles.get(tile) {
-        Some(Tile::Pane(PanelId(panel))) => registry::panel(panel).is_some_and(|def| def.kind == PanelKind::Primary),
-        Some(Tile::Container(container)) => container.children().any(|child| holds_primary(tiles, *child)),
+        Some(Tile::Pane(PanelId(panel))) => registry.panel(panel).is_some_and(|def| def.kind == PanelKind::Primary),
+        Some(Tile::Container(container)) => container.children().any(|child| holds_primary(tiles, *child, registry)),
         None => false,
     }
 }
 
 /// The least room `tile` needs along an axis: its panels' registered minimum, summed along a split's own axis and the
 /// largest of its children across it.
-fn min_extent(tiles: &Tiles<PanelId>, tile: TileId, horizontal: bool) -> f32 {
+fn min_extent(tiles: &Tiles<PanelId>, tile: TileId, horizontal: bool, registry: &Registry) -> f32 {
     match tiles.get(tile) {
         Some(Tile::Pane(PanelId(panel))) => {
-            registry::panel(panel).map_or(MIN_TILE, |def| def.min_size[usize::from(!horizontal)])
+            registry.panel(panel).map_or(MIN_TILE, |def| def.min_size[usize::from(!horizontal)])
         }
         Some(Tile::Container(Container::Linear(linear))) => {
             let along = (linear.dir == LinearDir::Horizontal) == horizontal;
-            let each = linear.children.iter().map(|child| min_extent(tiles, *child, horizontal));
+            let each = linear.children.iter().map(|child| min_extent(tiles, *child, horizontal, registry));
             if along { each.sum() } else { each.fold(0.0, f32::max) }
         }
         Some(Tile::Container(container)) => {
-            container.children().map(|child| min_extent(tiles, *child, horizontal)).fold(0.0, f32::max)
+            container.children().map(|child| min_extent(tiles, *child, horizontal, registry)).fold(0.0, f32::max)
         }
         None => 0.0,
     }
@@ -141,7 +148,7 @@ pub fn clamp_shares(shares: &[f32], mins: &[f32], length: f32) -> Option<Vec<f32
 
 /// Pulls every split's shares back to what its panels need, from where the last frame laid them out. A divider dragged
 /// past a panel's minimum is put back on the next frame.
-pub fn enforce_minimums(tree: &mut Tree<PanelId>) {
+pub fn enforce_minimums(tree: &mut Tree<PanelId>, registry: &Registry) {
     let splits: Vec<TileId> = tree.tiles.tile_ids().collect();
     for id in splits {
         let Some(Tile::Container(Container::Linear(linear))) = tree.tiles.get(id) else { continue };
@@ -150,7 +157,7 @@ pub fn enforce_minimums(tree: &mut Tree<PanelId>) {
         let length = if horizontal { rect.width() } else { rect.height() };
         let children = linear.children.clone();
         let shares: Vec<f32> = children.iter().map(|child| linear.shares[*child]).collect();
-        let mins: Vec<f32> = children.iter().map(|child| min_extent(&tree.tiles, *child, horizontal)).collect();
+        let mins: Vec<f32> = children.iter().map(|child| min_extent(&tree.tiles, *child, horizontal, registry)).collect();
         let Some(fixed) = clamp_shares(&shares, &mins, length) else { continue };
         if let Some(Tile::Container(Container::Linear(linear))) = tree.tiles.get_mut(id) {
             for (child, share) in children.iter().zip(fixed) {
@@ -196,8 +203,9 @@ mod tests {
         ));
         let tree = layout.to_tree("t");
         let root = tree.root.expect("a root");
-        assert_eq!(min_extent(&tree.tiles, root, true), 240.0 + 480.0 + 288.0);
-        assert_eq!(min_extent(&tree.tiles, root, false), 320.0, "the stacked right dock needs 160 + 160");
+        let registry = Registry::collect();
+        assert_eq!(min_extent(&tree.tiles, root, true, &registry), 240.0 + 480.0 + 288.0);
+        assert_eq!(min_extent(&tree.tiles, root, false, &registry), 320.0, "the stacked right dock needs 160 + 160");
     }
 
     #[test]
@@ -208,7 +216,7 @@ mod tests {
             &[1.0, 1.0],
         ))
         .to_tree("t");
-        let pinned = pinned(&tree);
+        let pinned = pinned(&tree, &Registry::collect());
         // The viewport, the group it is in and the split above that; not the Inspector or the Outliner.
         assert_eq!(pinned.len(), 3, "{pinned:?}");
         for id in tree.tiles.tile_ids() {

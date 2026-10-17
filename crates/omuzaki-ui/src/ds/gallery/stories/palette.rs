@@ -9,7 +9,7 @@ use crate::ds::gallery::text::translate;
 use crate::ds::paint;
 use crate::ds::theme::{Ds, ds};
 use crate::ds::tokens::radius;
-use crate::register_story;
+use omuzaki_ui_api::register_story;
 
 #[derive(Default)]
 struct State;

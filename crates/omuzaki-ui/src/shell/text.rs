@@ -73,7 +73,9 @@ words! {
     HistoryHeadline = "shell-history-headline" => "Your changes will appear here",
     HistoryLine = "shell-history-line" => "Everything you or an agent does can be undone.",
     HistoryUnavailable = "shell-history-unavailable" => "History is not available: {why}",
-    PanelNoView = "shell-panel-no-view" => "{panel} has nothing to show yet",
+    PanelUnavailable = "shell-panel-unavailable" => "{panel} can't work right now",
+    PanelUnavailableLine = "shell-panel-unavailable-line" => "It has not said why, and works again once what it needs is there.",
+    ShowPanel = "shell-show-panel" => "Show panel",
     AgentHeadline = "shell-agent-headline" => "Connect an agent",
     AgentLine = "shell-agent-line" => "Agents work through the same ops you do, and you approve what they ask for.",
 }
