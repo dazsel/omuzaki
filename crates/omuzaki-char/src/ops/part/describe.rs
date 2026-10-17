@@ -1,8 +1,8 @@
 //! `part.describe`: what a part's parameters are and what each one accepts. The same parameter model is what
 //! `part.set_param` edits against, so the two cannot disagree about which paths exist.
 //!
-//! The model ([`Params`]) walks the kind's JSON Schema together with the part's current values and lists every node as
-//! a [`Param`], parents before children, keys in alphabetical order (the order of the schema's keys depends on a
+//! The model (`Params`) walks the kind's JSON Schema together with the part's current values and lists every node as
+//! a `Param`, parents before children, keys in alphabetical order (the order of the schema's keys depends on a
 //! `serde_json` feature, so it is never relied on). The schema gives each node its type, allowed names, description and
 //! unit; the values decide which branch of a tagged enum, and which entries of a map or list, are there to list.
 //!
@@ -13,7 +13,26 @@
 //! bound changes. Two limits: a rule that ties two parameters together (a chin point that must stay below the stretch
 //! top) shows up as a bound that moves with the other one, and a parameter whose section is absent (an optional section
 //! that is off) has no value to probe from, so it reports none.
+//!
+//! **The cost is linear.** A probe checks a copy of the part that leaves out what the number does not depend on: the
+//! other entries of the maps on the way to it, the list items more than one away from it (so a "at least two
+//! points" rule still holds), and all but the first few items or entries of any list or map off the path. An entry that
+//! a value left in the probe names by key (a streak's group, a collider's bone) is kept with it, found from the probe's
+//! own bounded copy rather than from the whole part, so references held by entries that were left out never pull theirs
+//! in; and lists of such names (a streak's `groups`) are stripped of the keys of the entries left out. The check then
+//! costs one entry rather than the whole part, one scratch copy per number is written into by every probe instead of
+//! being cloned per probe, and entries are found by key, not by walking the map. That assumes the entries of
+//! a map do not constrain one another, which cannot be proved of a kind's `check`: so for each parameter that entries
+//! or list items share, the found bounds of all of them are set at once and the kind must accept the whole part, and a
+//! kind that refuses (a sum over the entries) has that parameter probed in the whole part instead. A rule tying two
+//! different parameters of different entries is not found this way, nor is one between list items more than one
+//! apart. If the kind refuses the smaller copy, the whole part is probed. A part whose stored parameters fail the check
+//! is described from the defaults with the stored values laid over them, so its own entries are listed; a number only
+//! the part holds has no default to probe from and reports no range. A stored tag that names no variant is still
+//! listed, with every variant, so it can be set.
 
+use std::cell::OnceCell;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::num::FpCategory;
 
@@ -113,6 +132,9 @@ pub(crate) fn kind_of(id: &PartId, part: &PartDef) -> Result<&'static PartKindRe
     })
 }
 
+/// How many items of a list, or entries of a map, a probe keeps beside the one it is about (see [`Params::shrink`]).
+const CONTEXT: usize = 3;
+
 /// What a parameter holds.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Ty {
@@ -167,8 +189,13 @@ pub(crate) struct Param {
     unit: Option<String>,
     /// The pattern text must match.
     pattern: Option<String>,
-    /// Whether the schema allows `null`, which here means "not set": the value can be removed.
+    /// Whether the value can be removed: the schema allows `null` (which here means "not set"), or it is an entry of a
+    /// map (a hair group), which `null` deletes.
     pub(crate) optional: bool,
+    /// Whether this is the tag of a tagged enum, whose names are the variants: setting it switches the variant.
+    pub(crate) tag: bool,
+    /// The length of a list that has one fixed (a pair of positions), whose items cannot be left out of a probe.
+    fixed: Option<u64>,
     /// Whether its members are listed after it. A container that is not expanded is a value of its own (a list of
     /// numbers, an empty map) and is set whole.
     expanded: bool,
@@ -187,11 +214,19 @@ pub(crate) struct Params {
     pub(crate) stored: Value,
     /// Every node, parents before children.
     entries: Vec<Param>,
+    /// Where each path is in `entries`, so a lookup does not scan the part.
+    index: HashMap<String, usize>,
+    /// The base with every list of names that are map keys (a streak's `groups`) stripped of them, so a probe that leaves
+    /// entries out does not keep, copy and check a reference to each.
+    lean: Value,
+    /// The range of every number, found when first asked for (see [`Self::ranges`]).
+    ranges: OnceCell<HashMap<String, Range>>,
 }
 
 impl Params {
     /// The parameters of a part of `kind` that holds `stored`. A part whose stored parameters fail the kind's check is
-    /// still described (from the defaults) so it can be repaired.
+    /// still described so it can be repaired: from the defaults with the stored values laid over them, so the entries
+    /// only the part holds (a hair group the defaults lack) are listed and reachable.
     ///
     /// # Errors
     /// `internal` if the schema cannot be written as JSON, which would be a bug in the kind.
@@ -201,8 +236,27 @@ impl Params {
         let defaults = (kind.defaults)();
         let current = (kind.check)(stored);
         let mut entries = Vec::new();
-        members(&schema, Some(current.as_ref().unwrap_or(&defaults)), "", None, &mut entries);
-        Ok(Self { kind, schema, defaults, current, stored: stored.clone(), entries })
+        if let Ok(normalised) = &current {
+            members(&schema, Some(normalised), "", None, &mut entries);
+        } else {
+            let mut overlay = defaults.clone();
+            assign(&mut overlay, stored.clone());
+            members(&schema, Some(&overlay), "", None, &mut entries);
+        }
+        let index = entries.iter().enumerate().map(|(i, p)| (p.path.clone(), i)).collect();
+        let base = current.as_ref().unwrap_or(&defaults);
+        let lean = without_key_lists(base, &entries);
+        Ok(Self {
+            kind,
+            schema,
+            defaults,
+            current,
+            stored: stored.clone(),
+            entries,
+            index,
+            lean,
+            ranges: OnceCell::new(),
+        })
     }
 
     /// The values to show as current: the normalised ones, or the stored ones when they do not pass the check.
@@ -212,7 +266,7 @@ impl Params {
 
     /// The node at `path`, if there is one.
     pub(crate) fn entry(&self, path: &str) -> Option<&Param> {
-        self.entries.iter().find(|p| p.path == path)
+        self.index.get(path).and_then(|&i| self.entries.get(i))
     }
 
     /// The node `path` names.
@@ -264,24 +318,261 @@ impl Params {
         OpError::invalid("path", message).hint(format!("{suggestion}the parameters {place} are: {}", list(siblings)))
     }
 
-    /// Whether the kind accepts `value` at `path`, with every other parameter as it is now (or as the defaults have
-    /// it, when the stored ones do not pass the check).
-    fn accepts(&self, path: &str, value: Value) -> bool {
-        let mut probe = self.current.as_ref().unwrap_or(&self.defaults).clone();
-        set_at(&mut probe, path, Some(value)).is_ok() && (self.kind.check)(&probe).is_ok()
+    /// The parameters probes start from: the normalised ones, or the defaults when the stored ones fail the check.
+    fn base(&self) -> &Value {
+        self.current.as_ref().unwrap_or(&self.defaults)
+    }
+
+    /// The tree to probe the number at `path` in, and where the number is in it. Every probe writes the same slot, so
+    /// nothing needs restoring between them. The entries of the maps on the way, other than the one the path goes
+    /// through and the ones a value in the probe names by key, and the items of the lists on the way more than one away
+    /// from the item the path goes through, are left out: the check then costs what one entry costs rather than what
+    /// the whole part does. If the kind refuses the smaller tree, the whole of `base` is used.
+    ///
+    /// The entries to keep for references are found from the probe itself, not from the whole part: a first copy keeps
+    /// none, the values in it name some entries of the maps it passes through, and those are added (with whatever they
+    /// name in turn) until nothing new is named. Every copy is bounded, so what the references add is too: a list of
+    /// colliders cut to its first few items names the bones of those few, not of all of them.
+    fn scratch(&self, path: &str, prune: bool) -> (Value, String) {
+        if !prune {
+            return (self.base().clone(), path.to_owned());
+        }
+        let steps: Vec<&str> = path.split('/').collect();
+        let mut kept = Kept::new();
+        loop {
+            let mut mapped = Vec::with_capacity(steps.len());
+            let mut maps = Vec::new();
+            let pruned = self.spine(&self.lean, "", &steps, &mut mapped, &kept, &mut maps);
+            if !kept.add_named(&pruned, &maps) {
+                return if (self.kind.check)(&pruned).is_ok() {
+                    (pruned, mapped.join("/"))
+                } else {
+                    (self.base().clone(), path.to_owned())
+                };
+            }
+        }
+    }
+
+    /// A copy of `node`, at `prefix`, without what `scratch` leaves out; `mapped` collects the steps of the path as
+    /// they are in the copy (a list item's position moves when the items before it are left out), and `maps` the maps
+    /// the copy passes through, by path, so the entries the copy's values name can be found in them.
+    fn spine<'a>(
+        &self,
+        node: &'a Value,
+        prefix: &str,
+        steps: &[&str],
+        mapped: &mut Vec<String>,
+        kept: &Kept,
+        maps: &mut Vec<(String, &'a Map<String, Value>)>,
+    ) -> Value {
+        let Some((step, rest)) = steps.split_first() else { return node.clone() };
+        let child = |name: &str| if prefix.is_empty() { name.to_owned() } else { format!("{prefix}/{name}") };
+        let holder = self.entry(prefix);
+        match node {
+            Value::Object(fields) if holder.is_some_and(|p| p.ty == Ty::Map) => {
+                maps.push((prefix.to_owned(), fields));
+                // The key of the path, once, then the entries the probe's values name (which may include the same key).
+                let keys = std::iter::once(*step).chain(kept.of(prefix).filter(|key| key != step));
+                mapped.push((*step).to_owned());
+                Value::Object(
+                    keys.filter_map(|key| {
+                        let item = fields.get(key)?;
+                        let item = if key == *step {
+                            self.spine(item, &child(key), rest, mapped, kept, maps)
+                        } else {
+                            self.shrink(item, &child(key), kept, maps)
+                        };
+                        Some((key.to_owned(), item))
+                    })
+                    .collect(),
+                )
+            }
+            Value::Object(fields) => {
+                mapped.push((*step).to_owned());
+                Value::Object(
+                    fields
+                        .iter()
+                        .map(|(key, item)| {
+                            let item = if key == step {
+                                self.spine(item, &child(key), rest, mapped, kept, maps)
+                            } else {
+                                self.shrink(item, &child(key), kept, maps)
+                            };
+                            (key.clone(), item)
+                        })
+                        .collect(),
+                )
+            }
+            Value::Array(items) => {
+                let at = step.parse::<usize>().ok().filter(|i| *i < items.len());
+                let window = holder.is_some_and(|p| p.ty == Ty::List && p.fixed.is_none());
+                let (lo, hi) = match at {
+                    Some(i) if window => (i.saturating_sub(1), (i + 1).min(items.len() - 1)),
+                    _ => (0, items.len().saturating_sub(1)),
+                };
+                mapped.push(at.map_or_else(|| (*step).to_owned(), |i| (i - lo).to_string()));
+                Value::Array(
+                    items
+                        .iter()
+                        .enumerate()
+                        .skip(lo)
+                        .take(hi + 1 - lo)
+                        .map(|(i, item)| {
+                            let place = child(&i.to_string());
+                            if at == Some(i) {
+                                self.spine(item, &place, rest, mapped, kept, maps)
+                            } else {
+                                self.shrink(item, &place, kept, maps)
+                            }
+                        })
+                        .collect(),
+                )
+            }
+            other => other.clone(),
+        }
+    }
+
+    /// A copy of `value`, at `path`, that a probe carries as context only: a list is cut to its first `CONTEXT` items and
+    /// a map to its first `CONTEXT` entries (and the ones `kept` names), all the way down, so what the probe copies and
+    /// the kind then checks does not grow with the part. A kind that needs more (a minimum length of more than
+    /// `CONTEXT`) refuses the copy, and the probe then uses the whole part. `maps` collects the maps it passes through.
+    fn shrink<'a>(
+        &self,
+        value: &'a Value,
+        path: &str,
+        kept: &Kept,
+        maps: &mut Vec<(String, &'a Map<String, Value>)>,
+    ) -> Value {
+        let child = |name: &str| format!("{path}/{name}");
+        match value {
+            Value::Array(items) => Value::Array(
+                items
+                    .iter()
+                    .take(CONTEXT)
+                    .enumerate()
+                    .map(|(i, item)| self.shrink(item, &child(&i.to_string()), kept, maps))
+                    .collect(),
+            ),
+            Value::Object(fields) if self.entry(path).is_some_and(|p| p.ty == Ty::Map) => {
+                maps.push((path.to_owned(), fields));
+                let first = fields.keys().take(CONTEXT).map(String::as_str);
+                let mut keys: Vec<&str> = first.chain(kept.of(path)).collect();
+                keys.sort_unstable();
+                keys.dedup();
+                Value::Object(
+                    keys.into_iter()
+                        .filter_map(|key| Some((key.to_owned(), self.shrink(fields.get(key)?, &child(key), kept, maps))))
+                        .collect(),
+                )
+            }
+            Value::Object(fields) => Value::Object(
+                fields.iter().map(|(key, item)| (key.clone(), self.shrink(item, &child(key), kept, maps))).collect(),
+            ),
+            other => other.clone(),
+        }
+    }
+
+    /// Whether the kind accepts `value` at `path` of `probe`, which is left holding it.
+    fn accepts(&self, probe: &mut Value, path: &str, value: Value) -> bool {
+        set_at(probe, path, Some(value), false).is_ok() && (self.kind.check)(probe).is_ok()
     }
 
     /// The legal range of the number at `param`, found by probing (see the module docs). `None` for anything that is
     /// not a number or has no value to probe from.
     fn range(&self, param: &Param) -> Option<Range> {
-        let here = at(self.current.as_ref().unwrap_or(&self.defaults), &param.path)?;
+        match self.ranges.get() {
+            Some(found) => found.get(&param.path).cloned(),
+            // One number (a refusal's hint) is probed in the whole part when it sits in a map entry: it is a single
+            // search, and the whole part is what the entries' independence is tested against.
+            None => self.range_in(param, self.template(&param.path).is_none()),
+        }
+    }
+
+    /// The range of every number of the part. Each is probed in its own map entry (see [`Self::scratch`]), which assumes
+    /// the entries of a map do not constrain one another. That cannot be proved of a kind's `check`, so it is tested
+    /// where it would show: for every parameter that map entries share (`groups/*/length`), all the entries' values are
+    /// set to their found bounds at once, and the kind must accept the whole part. A kind that refuses (a sum over the
+    /// entries, an ordering between them) has that parameter probed in the whole part instead, at the cost of the
+    /// whole part per probe. A rule that ties two different parameters of different entries is not found this way.
+    fn ranges(&self) -> &HashMap<String, Range> {
+        self.ranges.get_or_init(|| {
+            let numbers = self.entries.iter().filter(|p| matches!(p.ty, Ty::Number | Ty::Integer));
+            let mut found: HashMap<String, Range> =
+                numbers.clone().filter_map(|p| Some((p.path.clone(), self.range_in(p, true)?))).collect();
+            let mut shared: BTreeMap<String, Vec<&Param>> = BTreeMap::new();
+            for param in numbers {
+                if let Some(template) = self.template(&param.path) {
+                    shared.entry(template).or_default().push(param);
+                }
+            }
+            for members in shared.values().filter(|m| m.len() > 1) {
+                if self.entries_agree(members, &found) {
+                    continue;
+                }
+                for param in members {
+                    match self.range_in(param, false) {
+                        Some(range) => found.insert(param.path.clone(), range),
+                        None => found.remove(&param.path),
+                    };
+                }
+            }
+            found
+        })
+    }
+
+    /// Whether the kind accepts the whole part with every one of `members` (the same parameter in each entry of a map)
+    /// at its found upper bound, and again at its lower bound. A bound the kind refuses at the edge itself (an open
+    /// one) is left out of the test.
+    fn entries_agree(&self, members: &[&Param], found: &HashMap<String, Range>) -> bool {
+        [true, false].into_iter().all(|upper| {
+            let mut probe = self.base().clone();
+            for param in members {
+                let Some(range) = found.get(&param.path) else { continue };
+                let (edge, open) = if upper { (&range.max, range.open_max) } else { (&range.min, range.open_min) };
+                if let (Some(edge), false) = (edge, open)
+                    && set_at(&mut probe, &param.path, Some(Value::Number(edge.clone())), false).is_err()
+                {
+                    return false;
+                }
+            }
+            (self.kind.check)(&probe).is_ok()
+        })
+    }
+
+    /// `path` with the key of every map entry and the position of every list item on the way written `*`, or `None` if
+    /// it goes through neither.
+    fn template(&self, path: &str) -> Option<String> {
+        let (mut prefix, mut out, mut keyed, mut after_map) = (String::new(), String::new(), false, false);
+        for step in path.split('/') {
+            if !out.is_empty() {
+                out.push('/');
+            }
+            if after_map {
+                out.push('*');
+                keyed = true;
+            } else {
+                out.push_str(step);
+            }
+            if !prefix.is_empty() {
+                prefix.push('/');
+            }
+            prefix.push_str(step);
+            after_map = self.entry(&prefix).is_some_and(|p| p.ty == Ty::Map || (p.ty == Ty::List && p.fixed.is_none()));
+        }
+        keyed.then_some(out)
+    }
+
+    /// [`Self::range`], probing the pruned tree or (`prune` false) the whole of the part.
+    fn range_in(&self, param: &Param, prune: bool) -> Option<Range> {
+        let here = at(self.base(), &param.path)?;
+        let (mut probe, slot) = self.scratch(&param.path, prune);
         match param.ty {
             Ty::Number => Some(Range::of_floats(here.as_f64()?, |x| {
-                Number::from_f64(x).is_some_and(|n| self.accepts(&param.path, Value::Number(n)))
+                Number::from_f64(x).is_some_and(|n| self.accepts(&mut probe, &slot, Value::Number(n)))
             })),
-            Ty::Integer => {
-                Some(Range::of_integers(here.as_i64()?, |i| self.accepts(&param.path, Value::Number(Number::from(i)))))
-            }
+            Ty::Integer => Some(Range::of_integers(here.as_i64()?, |i| {
+                self.accepts(&mut probe, &slot, Value::Number(Number::from(i)))
+            })),
             _ => None,
         }
     }
@@ -333,11 +624,78 @@ impl Params {
                     entry.insert(key.to_owned(), value.clone());
                 }
             }
-            if let Some(range) = self.range(param) {
+            if let Some(range) = self.ranges().get(&param.path) {
                 range.write(&mut entry);
             }
         }
         Value::Object(entry)
+    }
+}
+
+/// `base` with every list of text stripped of the texts that are keys of a map entry (a streak's `groups` names hair
+/// groups): a probe that leaves entries out would otherwise keep a reference to each, and copying and checking those
+/// grows with the part. A kind that needs such a list to be non-empty refuses the stripped tree, and the probe then
+/// uses the whole part.
+fn without_key_lists(base: &Value, entries: &[Param]) -> Value {
+    fn strip(value: &Value, keys: &HashSet<&str>) -> Value {
+        match value {
+            Value::Array(items) if items.iter().all(Value::is_string) => Value::Array(
+                items.iter().filter(|i| i.as_str().is_none_or(|text| !keys.contains(text))).cloned().collect(),
+            ),
+            Value::Array(items) => Value::Array(items.iter().map(|item| strip(item, keys)).collect()),
+            Value::Object(fields) => Value::Object(fields.iter().map(|(k, v)| (k.clone(), strip(v, keys))).collect()),
+            other => other.clone(),
+        }
+    }
+    let keys: HashSet<&str> = entries
+        .iter()
+        .filter(|p| p.ty == Ty::Map)
+        .filter_map(|p| match at(base, &p.path)? {
+            Value::Object(held) => Some(held.keys().map(String::as_str)),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    if keys.is_empty() { base.clone() } else { strip(base, &keys) }
+}
+
+/// For each map a probe passes through (by its path in the part), the keys of the entries the probe keeps because a
+/// value in it names them (a streak's group, a collider's bone): see [`Params::scratch`].
+struct Kept(HashMap<String, BTreeSet<String>>);
+
+impl Kept {
+    /// None kept yet.
+    fn new() -> Self {
+        Self(HashMap::new())
+    }
+
+    /// The keys kept in the map at `path`.
+    fn of(&self, path: &str) -> impl Iterator<Item = &str> {
+        self.0.get(path).into_iter().flatten().map(String::as_str)
+    }
+
+    /// Adds the keys of `maps` (the maps `probe` passes through, with every entry they hold in the part) that a string
+    /// value of `probe` equals. Returns whether any was new. Both are bounded by the probe's size, not the part's.
+    fn add_named(&mut self, probe: &Value, maps: &[(String, &Map<String, Value>)]) -> bool {
+        fn strings<'v>(value: &'v Value, into: &mut BTreeSet<&'v str>) {
+            match value {
+                Value::String(text) => {
+                    into.insert(text);
+                }
+                Value::Array(items) => items.iter().for_each(|item| strings(item, into)),
+                Value::Object(fields) => fields.values().for_each(|item| strings(item, into)),
+                _ => {}
+            }
+        }
+        let mut values = BTreeSet::new();
+        strings(probe, &mut values);
+        let mut grew = false;
+        for (path, held) in maps {
+            for text in values.iter().filter(|text| held.contains_key(**text)) {
+                grew |= self.0.entry(path.clone()).or_default().insert((*text).to_owned());
+            }
+        }
+        grew
     }
 }
 
@@ -367,7 +725,12 @@ fn members(alt: &Value, current: Option<&Value>, path: &str, described: Option<&
         let mut held: Vec<(&String, &Value)> = held.iter().collect();
         held.sort_unstable_by_key(|(key, _)| *key);
         for (key, item) in &held {
+            let at = out.len();
             node(values, Some(item), &child(key), None, out);
+            // `null` deletes an entry.
+            if let Some(entry) = out.get_mut(at) {
+                entry.optional = true;
+            }
         }
         return !held.is_empty();
     }
@@ -394,7 +757,17 @@ fn node(schema: &Value, current: Option<&Value>, path: &str, described: Option<&
         .or_else(|| chosen.and_then(|a| text(a, "description")))
         .or_else(|| described.map(str::to_owned));
     let mut children = Vec::new();
-    let expanded = chosen.is_some_and(|alt| members(alt, current, path, description.as_deref(), &mut children));
+    let mut expanded = chosen.is_some_and(|alt| members(alt, current, path, description.as_deref(), &mut children));
+    mark_tag(&alternatives, path, &mut children);
+    // A value whose tag matches no variant (a stored `"bogus"`) has no members to list; its tag is still listed, so the
+    // part can be repaired by setting it.
+    if chosen.is_none()
+        && current.is_some_and(Value::is_object)
+        && let Some((key, names)) = tag_of(&alternatives)
+    {
+        children.push(tag_param(path, key, names));
+        expanded = true;
+    }
     out.push(Param {
         path: path.to_owned(),
         ty: ty_of(chosen.or_else(|| alternatives.first().copied()), choices(&alternatives)),
@@ -402,9 +775,66 @@ fn node(schema: &Value, current: Option<&Value>, path: &str, described: Option<&
         unit: unit_of(schema),
         pattern: text(schema, "pattern"),
         optional: nullable(schema),
+        tag: false,
+        fixed: chosen.and_then(fixed_len),
         expanded,
     });
     out.extend(children);
+}
+
+/// The tag of a tagged enum and the names of its variants: the property that each object branch of `alternatives`
+/// fixes to a constant text (the first such by name, when there are several).
+fn tag_of(alternatives: &[&Value]) -> Option<(String, Vec<String>)> {
+    let branches: Vec<&Map<String, Value>> = alternatives
+        .iter()
+        .filter(|a| type_name(a) == Some("object"))
+        .filter_map(|a| a.get("properties")?.as_object())
+        .collect();
+    let [first, _, ..] = branches.as_slice() else { return None };
+    let tags = first.iter().filter_map(|(key, p)| p.get("const")?.as_str().map(|_| key));
+    let mut tagged: Vec<(&String, Vec<String>)> = tags
+        .map(|key| (key, branches.iter().filter_map(|b| b.get(key)?.get("const")?.as_str().map(str::to_owned)).collect()))
+        .filter(|(_, names): &(_, Vec<String>)| names.len() == branches.len())
+        .collect();
+    tagged.sort_unstable_by_key(|(key, _)| *key);
+    tagged.into_iter().next().map(|(key, names)| (key.clone(), names))
+}
+
+/// The listing of a tag at `path`/`key` that offers every variant.
+fn tag_param(path: &str, key: String, names: Vec<String>) -> Param {
+    Param {
+        path: if path.is_empty() { key } else { format!("{path}/{key}") },
+        ty: Ty::Choice(names),
+        description: Some(
+            "Which variant this is; setting it switches to that variant, which starts from its own defaults.".to_owned(),
+        ),
+        unit: None,
+        pattern: None,
+        optional: false,
+        tag: true,
+        fixed: None,
+        expanded: false,
+    }
+}
+
+/// Makes the tag of a tagged enum a choice of every variant's name, not just the one the value is in: `children` are the
+/// members of the branch the value holds.
+fn mark_tag(alternatives: &[&Value], path: &str, children: &mut [Param]) {
+    let Some((key, names)) = tag_of(alternatives) else { return };
+    let tag = tag_param(path, key, names);
+    if let Some(child) = children.iter_mut().find(|c| c.path == tag.path) {
+        child.ty = tag.ty;
+        child.tag = true;
+        if child.description.is_none() {
+            child.description = tag.description;
+        }
+    }
+}
+
+/// The length of the list `alt` describes when it fixes one (`minItems` equal to `maxItems`).
+fn fixed_len(alt: &Value) -> Option<u64> {
+    let (min, max) = (alt.get("minItems")?, alt.get("maxItems")?);
+    (type_name(alt) == Some("array") && min == max).then(|| min.as_u64()).flatten()
 }
 
 /// The schemas `schema` may be, without `null`: itself, or the branches of its `oneOf` / `anyOf` (an enum, an option),
@@ -528,12 +958,13 @@ pub(crate) fn at<'a>(root: &'a Value, path: &str) -> Option<&'a Value> {
     })
 }
 
-/// Writes `value` at `path` below `root`, creating the sections on the way. An object written over an object sets the
-/// fields it names and leaves the others; anything else replaces what was there. `None` removes the key.
+/// Writes `value` at `path` below `root`, creating the sections on the way. With `merge`, an object written over an
+/// object sets the fields it names and leaves the others; otherwise, and for anything else, it replaces what was
+/// there. `None` removes the key.
 ///
 /// # Errors
 /// `invalid` if a step lands on a value that cannot hold the next one, or on a list position that does not exist.
-pub(crate) fn set_at(root: &mut Value, path: &str, value: Option<Value>) -> Result<(), OpError> {
+pub(crate) fn set_at(root: &mut Value, path: &str, value: Option<Value>, merge: bool) -> Result<(), OpError> {
     let steps: Vec<&str> = path.split('/').collect();
     let Some((last, parents)) = steps.split_last() else {
         return Err(OpError::invalid("path", "the path is empty"));
@@ -555,7 +986,8 @@ pub(crate) fn set_at(root: &mut Value, path: &str, value: Option<Value>) -> Resu
     }
     match (node, value) {
         (Value::Object(fields), Some(value)) => match fields.get_mut(*last) {
-            Some(slot) => assign(slot, value),
+            Some(slot) if merge => assign(slot, value),
+            Some(slot) => *slot = value,
             None => {
                 fields.insert((*last).to_owned(), value);
             }
@@ -566,7 +998,12 @@ pub(crate) fn set_at(root: &mut Value, path: &str, value: Option<Value>) -> Resu
         (Value::Array(items), Some(value)) => {
             let len = items.len();
             let slot = last.parse::<usize>().ok().and_then(|i| items.get_mut(i));
-            assign(slot.ok_or_else(|| blocked(above(parents.len()), last, &format!("a list of {len}")))?, value);
+            let slot = slot.ok_or_else(|| blocked(above(parents.len()), last, &format!("a list of {len}")))?;
+            if merge {
+                assign(slot, value);
+            } else {
+                *slot = value;
+            }
         }
         (other, _) => return Err(blocked(above(parents.len()), last, kind_name(other))),
     }
@@ -800,16 +1237,56 @@ mod tests {
         assert_eq!(at(&params, "a/b/1/c"), Some(&json!(2)));
         assert_eq!(at(&params, "a/b/5"), None);
 
-        set_at(&mut params, "a/b/1/c", Some(json!(9))).unwrap();
-        set_at(&mut params, "new/inside/x", Some(json!(true))).unwrap();
-        set_at(&mut params, "a", Some(json!({"extra": 1}))).unwrap();
+        set_at(&mut params, "a/b/1/c", Some(json!(9)), true).unwrap();
+        set_at(&mut params, "new/inside/x", Some(json!(true)), true).unwrap();
+        set_at(&mut params, "a", Some(json!({"extra": 1})), true).unwrap();
         assert_eq!(params, json!({"a": {"b": [1, {"c": 9}], "extra": 1}, "keep": 1, "new": {"inside": {"x": true}}}));
 
-        set_at(&mut params, "keep", None).unwrap();
+        set_at(&mut params, "keep", None, true).unwrap();
         assert_eq!(at(&params, "keep"), None);
-        let blocked = set_at(&mut params, "a/extra/deeper", Some(json!(1))).unwrap_err();
+        let blocked = set_at(&mut params, "a/extra/deeper", Some(json!(1)), true).unwrap_err();
         assert!(blocked.message.contains("`a/extra` holds a number"), "{}", blocked.message);
-        let missing = set_at(&mut params, "a/b/7", Some(json!(1))).unwrap_err();
+        let missing = set_at(&mut params, "a/b/7", Some(json!(1)), true).unwrap_err();
         assert!(missing.message.contains("`a/b` holds a list of 2"), "{}", missing.message);
+
+        set_at(&mut params, "a", Some(json!({"only": 1})), false).unwrap();
+        assert_eq!(at(&params, "a"), Some(&json!({"only": 1})), "replacing keeps nothing of the old object");
+    }
+
+    #[test]
+    fn a_probe_keeps_only_the_groups_its_own_colliders_name() {
+        // A hair collider follows a bone by name, and a bone named like a group (`g007`) reads as a reference to it.
+        // Each probe carries a few colliders, so it keeps the few groups those name, not every group some collider
+        // names: with every group named, a probe that kept them all would cost the whole part, for every number.
+        let kind = find_kind("hair").unwrap();
+        let defaults = (kind.defaults)();
+        let group = defaults["groups"].as_object().unwrap().values().next().unwrap().clone();
+        let largest_probe = |n: usize| {
+            let mut stored = defaults.clone();
+            stored["groups"] = Value::Object((0..n).map(|i| (format!("g{i:03}"), group.clone())).collect());
+            stored["physics"]["colliders"] = (0..n)
+                .map(|i| json!({"bone": {"named": format!("g{i:03}")}, "centre": [0.0, 0.0, 0.0], "radius": 0.05}))
+                .collect();
+            let params = Params::new(kind, &stored).unwrap();
+            assert!(params.current.is_ok(), "{:?}", params.current);
+            let numbers = params.entries.iter().filter(|p| matches!(p.ty, Ty::Number | Ty::Integer));
+            numbers.map(|p| params.scratch(&p.path, true).0["groups"].as_object().map_or(0, Map::len)).max().unwrap()
+        };
+        let (small, large) = (largest_probe(12), largest_probe(24));
+        assert!(small <= 2 * CONTEXT + 1, "a probe of 12 groups kept {small}");
+        assert_eq!(small, large, "what a probe keeps does not grow with the part");
+    }
+
+    #[test]
+    fn probing_the_pruned_tree_gives_the_ranges_probing_the_whole_part_gives() {
+        let mut probed = 0;
+        for kind in omuzaki_char_api::kinds() {
+            let params = Params::new(kind, &(kind.defaults)()).unwrap();
+            for param in params.entries.iter().filter(|p| matches!(p.ty, Ty::Number | Ty::Integer)) {
+                assert_eq!(params.range_in(param, true), params.range_in(param, false), "{} {}", (kind.meta)().id, param.path);
+                probed += 1;
+            }
+        }
+        assert!(probed > 100, "the registered kinds have many numbers; probed {probed}");
     }
 }

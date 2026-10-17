@@ -1,0 +1,23 @@
+schema = 1
+id = "omuzaki/colourways/seed-dusk"
+version = "1.0.0"
+section = "colourways"
+kind = "setting"
+target = "character"
+title = "Seed dusk"
+summary = "A valid first-party seed item for the seed checks."
+tags = ["seed"]
+origin = "test fixture"
+
+[rights]
+author = "Omuzaki"
+licence = "CC0-1.0"
+commercial = "ok"
+owned = true
+
+[[step]]
+op = "palette.set"
+[step.args]
+character = "$character"
+slot = "outfit"
+colour = "#2a2346"
