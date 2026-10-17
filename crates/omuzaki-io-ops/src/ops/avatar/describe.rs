@@ -13,7 +13,6 @@ use super::{read_def, rebuild};
 /// Reports on an imported character as it is now.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(extend("examples" = [{ "character": "avatar" }], "x-omuzaki-fixture" = "avatar"))]
 pub struct Describe {
     /// The imported character.
     pub character: CharId,

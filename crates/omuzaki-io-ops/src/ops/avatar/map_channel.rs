@@ -21,10 +21,6 @@ use super::{def_patch, read_def, rebuild, require_clean};
 /// Sets or clears which expression one channel drives on an imported character.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(extend(
-    "examples" = [{ "character": "avatar", "channel": "custom03", "expression": "happy" }],
-    "x-omuzaki-fixture" = "avatar"
-))]
 pub struct MapChannel {
     /// The imported character.
     pub character: CharId,

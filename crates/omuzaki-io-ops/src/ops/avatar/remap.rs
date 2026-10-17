@@ -22,10 +22,6 @@ use super::{def_patch, mtoon, prepare_imported, read, read_def, require_clean, s
 /// Sets or clears which node plays one humanoid bone of an imported character.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(extend(
-    "examples" = [{ "character": "avatar", "bone": "leftHand", "node": 8 }],
-    "x-omuzaki-fixture" = "avatar"
-))]
 pub struct Remap {
     /// The imported character.
     pub character: CharId,
