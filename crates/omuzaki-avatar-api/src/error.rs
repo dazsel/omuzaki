@@ -147,6 +147,44 @@ pub enum AvatarError {
         /// How many targets the runtime mesh has.
         targets: usize,
     },
+    /// The primitives of a retained source mesh don't all have the same number of morph targets, or the copies of one
+    /// primitive disagree.
+    #[error(
+        "source mesh {source_mesh}'s primitive {primitive} has {targets} morph targets, where {expected} are expected: \
+         every primitive with targets has the same number, and every copy of a primitive agrees"
+    )]
+    #[non_exhaustive]
+    MorphCounts {
+        /// The source mesh, an index into `Retained::meshes`.
+        source_mesh: usize,
+        /// The primitive, an index into the mesh's primitives.
+        primitive: usize,
+        /// How many targets it has (as kept, or in the runtime mesh of one instance).
+        targets: usize,
+        /// How many the mesh's other primitives, or the other copies of this one, have.
+        expected: usize,
+    },
+    /// A retained node is the child of more than one node.
+    #[error("retained node {node} is the child of more than one node")]
+    #[non_exhaustive]
+    NodeParents {
+        /// The node, an index into `Retained::nodes`.
+        node: usize,
+    },
+    /// A retained root is also some node's child.
+    #[error("retained root {node} is also some node's child")]
+    #[non_exhaustive]
+    RootHasParent {
+        /// The node, an index into `Retained::nodes`.
+        node: usize,
+    },
+    /// The retained nodes' children make a cycle.
+    #[error("retained node {node} is its own ancestor")]
+    #[non_exhaustive]
+    NodeCycle {
+        /// A node on the cycle, an index into `Retained::nodes`.
+        node: usize,
+    },
     /// An instance of a retained source mesh lists a runtime mesh the avatar does not have.
     #[error("source mesh {source_mesh} lists mesh {mesh}, which the avatar does not have")]
     #[non_exhaustive]
@@ -375,6 +413,26 @@ impl AvatarError {
     /// [`AvatarError::MorphNames`].
     pub const fn morph_names(source_mesh: usize, names: usize, targets: usize) -> Self {
         Self::MorphNames { source_mesh, names, targets }
+    }
+
+    /// [`AvatarError::MorphCounts`].
+    pub const fn morph_counts(source_mesh: usize, primitive: usize, targets: usize, expected: usize) -> Self {
+        Self::MorphCounts { source_mesh, primitive, targets, expected }
+    }
+
+    /// [`AvatarError::NodeParents`].
+    pub const fn node_parents(node: usize) -> Self {
+        Self::NodeParents { node }
+    }
+
+    /// [`AvatarError::RootHasParent`].
+    pub const fn root_has_parent(node: usize) -> Self {
+        Self::RootHasParent { node }
+    }
+
+    /// [`AvatarError::NodeCycle`].
+    pub const fn node_cycle(node: usize) -> Self {
+        Self::NodeCycle { node }
     }
 
     /// [`AvatarError::UnknownPrimitive`].

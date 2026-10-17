@@ -3,13 +3,17 @@
 //! continue (changes, answers, next steps) and the JSON carries everything else.
 
 use omuzaki_doc_api::Change;
-use omuzaki_ops_api::{CostHint, ErrorCode, Mode, OpError, OpKind, Outcome, TxId};
+use omuzaki_ops_api::{
+    CostHint, ErrorCode, ErrorDetail, JobInfo, JobState, Mode, OpError, OpKind, Outcome, PauseReason, TxId,
+};
 use rmcp::model::{CallToolResult, ContentBlock};
 use serde::Serialize;
 use serde_json::{Value, json};
 
+use crate::approvals::need_text;
 use crate::builtin::Builtin;
-use crate::changes::Report;
+use crate::changes::{Report, actor_label, plain};
+use crate::floats;
 
 /// Change lines listed in the first text block. A longer patch is listed in full in a second block.
 const MAX_CHANGE_LINES: usize = 100;
@@ -44,7 +48,19 @@ pub(crate) struct Call<'a> {
 /// full output as pretty JSON (announced in the first line when it is large) and the structured copy repeats it.
 pub(crate) fn success(call: &Call<'_>, outcome: &Outcome) -> CallToolResult {
     let plan = &outcome.plan;
-    let changes = &plan.patch.changes;
+    // Shown without the digits an `f32` widened to `f64` brings (see `floats`); the document keeps what it holds.
+    let tidy_changes: Vec<Change> = plan
+        .patch
+        .changes
+        .iter()
+        .map(|c| Change {
+            path: c.path.clone(),
+            before: c.before.clone().map(floats::tidied),
+            after: c.after.clone().map(floats::tidied),
+        })
+        .collect();
+    let changes = &tidy_changes;
+    let shown_output = plan.output.clone().map(floats::tidied);
     let applied = outcome.applied.is_some();
     let mut data = json!({"ok": true, "op": call.op});
     if call.kind != OpKind::Query {
@@ -53,7 +69,7 @@ pub(crate) fn success(call: &Call<'_>, outcome: &Outcome) -> CallToolResult {
         data["applied"] = json!(applied);
     }
     let fields = [
-        ("output", plan.output.clone()),
+        ("output", shown_output.clone()),
         ("changes", (!changes.is_empty()).then(|| value_of(changes))),
         ("cost", plan.cost.as_ref().map(value_of)),
         ("log", outcome.applied.as_ref().map(|r| json!({"seq": r.seq, "tx": r.tx.0, "version": r.version.0}))),
@@ -64,7 +80,7 @@ pub(crate) fn success(call: &Call<'_>, outcome: &Outcome) -> CallToolResult {
         }
     }
 
-    let output = plan.output.as_ref().map(pretty);
+    let output = shown_output.as_ref().map(pretty);
     let mut text = vec![headline(call, outcome)];
     if let Some(output) = output.as_ref().filter(|o| o.len() > LARGE_OUTPUT_BYTES) {
         let note = format!(" The output is large ({} KB); all of it follows.", output.len() / 1000);
@@ -169,28 +185,55 @@ fn next_steps(call: &Call<'_>, applied: bool) -> Vec<String> {
     steps
 }
 
+/// A job that ended and applied its change: the task's result. When the job kept the op's `Outcome` (it does, unless
+/// it was recovered from a journal) this is exactly the result the blocking call of the same op returns; otherwise
+/// it reports what the snapshot knows: the log entry and the undo step.
+pub(crate) fn job_done(op: &str, info: &JobInfo, verify: Option<&str>) -> CallToolResult {
+    let JobState::Done { tx, seq, .. } = &info.state else {
+        return failure(op, &OpError::internal("the job has not finished"), None);
+    };
+    if let Some(outcome) = info.state.outcome() {
+        return success(&Call { op, kind: OpKind::Job, mode: Mode::Apply, tx: None, verify }, outcome);
+    }
+    let (log, headline) = match seq {
+        Some(seq) => (json!(seq), format!("Ran {op} as job {} (log #{seq}, transaction {}).", info.id.0, tx.0)),
+        None => (Value::Null, format!("Ran {op} as job {}; it changed nothing.", info.id.0)),
+    };
+    let data = json!({"ok": true, "op": op, "job": info.id.0, "label": info.label, "applied": seq.is_some(), "log": log, "tx": tx.0});
+    result(vec![headline], data, false)
+}
+
 /// A failed call. Always a tool error (not a protocol error) so the agent sees code, field and hint.
 ///
 /// `signature` is added for `invalid` errors so the agent sees the expected call shape next to the complaint.
 pub(crate) fn failure(op: &str, error: &OpError, signature: Option<&str>) -> CallToolResult {
     let signature = signature.filter(|_| error.code == ErrorCode::Invalid);
+    let explained = explain(error);
+    let message = explained.as_ref().map_or(error.message.as_str(), |e| e.message.as_str());
     let hint = match signature {
         // An argument that doesn't decode carries ops-api's hint, which is aimed at the CLI (`omuzaki help`); over MCP
         // the expected call is right here.
         Some(_) if error.is_decode_error() => {
             "match the `Expected:` call below; the message says what didn't fit".to_owned()
         }
-        _ => error.hint.clone().unwrap_or_else(|| default_hint(error.code).to_owned()),
+        _ => explained
+            .as_ref()
+            .map(|e| e.hint.clone())
+            .or_else(|| error.hint.clone())
+            .unwrap_or_else(|| default_hint(error.code).to_owned()),
     };
     let mut data = json!({
         "ok": false,
         "op": op,
         "code": value_of(&error.code),
-        "message": error.message,
+        "message": message,
         "hint": hint,
     });
     if let Some(field) = &error.field {
         data["field"] = json!(field);
+    }
+    if let Some(detail) = error.detail.as_deref().and_then(detail_json) {
+        data["detail"] = detail;
     }
     if let Some(signature) = signature {
         data["signature"] = json!(signature);
@@ -198,11 +241,75 @@ pub(crate) fn failure(op: &str, error: &OpError, signature: Option<&str>) -> Cal
 
     // `args` means the arguments as a whole didn't fit the schema; the message says why.
     let at = error.field.as_ref().filter(|f| *f != "args").map(|f| format!(" (argument `{f}`)")).unwrap_or_default();
-    let mut text = vec![format!("{op} failed [{}]{at}: {}", error.code, error.message), format!("Hint: {hint}")];
+    let mut text = vec![format!("{op} failed [{}]{at}: {message}", error.code), format!("Hint: {hint}")];
     if let Some(signature) = signature {
         text.push(format!("Expected: {signature}"));
     }
     result(vec![text.join("\n")], data, true)
+}
+
+/// The words for a refusal whose detail says more than the executor's own message: the session is paused, the request
+/// was queued for a person, or a limit was hit. They name what to do next, not what the executor did.
+struct Explained {
+    message: String,
+    hint: String,
+}
+
+fn explain(error: &OpError) -> Option<Explained> {
+    match (error.code, error.detail.as_deref()?) {
+        (ErrorCode::Waiting, ErrorDetail::Paused { reason, .. }) => {
+            let why = match reason {
+                PauseReason::Person => "the person paused this session",
+                PauseReason::Budget => "this session paused itself because its budget ran out",
+                PauseReason::Undo => "the person is undoing this session's work, so it is paused",
+                PauseReason::Step => "this session pauses after each step",
+                PauseReason::Pairing => "this session is waiting to be paired in Omuzaki's window",
+            };
+            Some(Explained {
+                message: format!("{why}; nothing ran"),
+                hint: "wait for a person to resume it; do not retry. session_info says why it waits".to_owned(),
+            })
+        }
+        (ErrorCode::Waiting, ErrorDetail::Queued { approval, need }) => Some(Explained {
+            message: format!("approval #{} asks the person to {}; nothing ran", approval.0, need_text(need)),
+            hint: format!(
+                "don't retry: call approval_wait with id {} to wait for the answer, or carry on with other work",
+                approval.0
+            ),
+        }),
+        (ErrorCode::Limited, ErrorDetail::RetryAfter { seconds, limit }) => Some(Explained {
+            message: format!("this session hit its {} limit; nothing ran", plain(limit, 60)),
+            hint: format!("wait {:.1} seconds, then retry", floats::widened(*seconds)),
+        }),
+        _ => None,
+    }
+}
+
+/// The structured form of a refusal's detail, for the details an agent can act on. Names that other parties chose go
+/// through the same sanitiser as the heads-up.
+fn detail_json(detail: &ErrorDetail) -> Option<Value> {
+    Some(match detail {
+        ErrorDetail::Fenced { path, holder } => {
+            let mut out = json!({"kind": "fenced", "path": plain(&path.to_string(), 100)});
+            if let Some(holder) = holder {
+                out["holder"] = json!(actor_label(holder));
+            }
+            out
+        }
+        ErrorDetail::Paused { by, reason } => {
+            json!({"kind": "paused", "by": actor_label(by), "reason": value_of(reason)})
+        }
+        ErrorDetail::Queued { approval, need } => {
+            json!({"kind": "queued", "approval": approval.0, "need": crate::info::need_json(need), "asks": need_text(need)})
+        }
+        ErrorDetail::RetryAfter { seconds, limit } => {
+            json!({"kind": "retry_after", "seconds": floats::widened(*seconds), "limit": plain(limit, 60)})
+        }
+        ErrorDetail::Changed { path, by, version } => {
+            json!({"kind": "changed", "path": plain(&path.to_string(), 100), "by": actor_label(by), "version": version.0})
+        }
+        _ => return None,
+    })
 }
 
 /// What to do about an error whose op gave no hint of its own.
@@ -219,9 +326,7 @@ fn default_hint(code: ErrorCode) -> &'static str {
         ErrorCode::Internal => "this is a bug in Omuzaki; tell the user and don't retry unchanged",
         ErrorCode::Waiting => "nothing ran: a person must decide in Omuzaki first; don't retry, wait for the result",
         ErrorCode::Limited => "this session hit a rate limit; wait the time in the detail, then retry",
-        ErrorCode::Cancelled => {
-            "the job was cancelled, by a person or a limit named in the detail; don't retry unchanged"
-        }
+        ErrorCode::Cancelled => "the job was cancelled; start it again if you still want it",
         // A code added later reads as a failure the caller can't act on until this table learns it.
         _ => "check the error's message and hint, then retry or tell the user",
     }
@@ -261,6 +366,19 @@ pub(crate) fn with_heads_up(mut result: CallToolResult, report: &Report) -> Call
     result
 }
 
+/// Puts a paragraph of news about the agent's own approvals at the top of `result`'s text, and the same facts under
+/// `structuredContent.approvals`.
+pub(crate) fn with_approvals(mut result: CallToolResult, text: &str, data: Value) -> CallToolResult {
+    match result.content.first().and_then(ContentBlock::as_text) {
+        Some(first) => result.content[0] = ContentBlock::text(format!("{text}\n\n{}", first.text)),
+        None => result.content.insert(0, ContentBlock::text(text)),
+    }
+    if let Some(Value::Object(map)) = result.structured_content.as_mut() {
+        map.insert("approvals".to_owned(), data);
+    }
+    result
+}
+
 /// Puts `warning` at the top of `result`'s text, as a `Warning:` line, and under `structuredContent.warning`. It goes
 /// in front of whatever is already there, the heads-up included, so it is the first line of the reply.
 pub(crate) fn with_warning(mut result: CallToolResult, warning: &str) -> CallToolResult {
@@ -294,14 +412,15 @@ pub(crate) fn unknown_tool(name: &str, similar: &[&str]) -> CallToolResult {
 fn result(blocks: Vec<String>, data: Value, is_error: bool) -> CallToolResult {
     let content: Vec<ContentBlock> = blocks.into_iter().map(ContentBlock::text).collect();
     let mut result = if is_error { CallToolResult::error(content) } else { CallToolResult::success(content) };
-    result.structured_content = Some(data);
+    // Every structured result an agent reads passes here, so the `f32` noise is removed once (see `floats`).
+    result.structured_content = Some(floats::tidied(data));
     result
 }
 
 /// Plain data as JSON. These types can't fail to serialise; if one ever does, say so in the output rather than
 /// panicking or dropping the field silently.
-fn value_of<T: Serialize + ?Sized>(value: &T) -> Value {
-    serde_json::to_value(value).unwrap_or_else(|e| json!({"serialisation_error": e.to_string()}))
+pub(crate) fn value_of<T: Serialize + ?Sized>(value: &T) -> Value {
+    serde_json::to_value(value).map_or_else(|e| json!({"serialisation_error": e.to_string()}), floats::tidied)
 }
 
 /// Indented JSON: the form agents read best.
@@ -533,7 +652,7 @@ mod tests {
 
     /// A report of one change by `Actor::System`, for a session that is somebody else.
     fn heads_up() -> Report {
-        let entries = VecDeque::from([Entry { n: 1, event: Event::op_applied(record()) }]);
+        let entries = VecDeque::from([Entry { n: 1, event: Event::op_applied(record()), version: None }]);
         let me = Actor::Agent { id: "claude#1".into(), model: None };
         summarise(&entries, 1, 0, &me, &crate::changes::OwnTxs::default()).unwrap()
     }

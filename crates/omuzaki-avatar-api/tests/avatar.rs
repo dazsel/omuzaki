@@ -4,27 +4,28 @@ mod common;
 
 use common::{avatar, ix, skin};
 use omuzaki_anim_api::{
-    BoneId, Channel, ChannelMask, Collider, ColliderGroup, ColliderShape, HumanoidBone, SpringChain, SpringParams,
-    SpringSet,
+    BoneConstraint, BoneId, Channel, ChannelMask, Collider, ColliderGroup, ColliderShape, ConstraintKind,
+    ConstraintSet, HumanoidBone, SpringChain, SpringParams, SpringSet,
 };
-use omuzaki_avatar_api::avatar::ImportedAvatar;
 use omuzaki_avatar_api::avatar::texture_bytes;
+use omuzaki_avatar_api::avatar::{ImportedAvatar, MAX_INDEXED};
 use omuzaki_avatar_api::error::AvatarError;
-use omuzaki_avatar_api::expression::{ColourBind, ExprIx, MorphBind, UvBind};
+use omuzaki_avatar_api::expression::{AvatarExpression, ColourBind, ExprIx, MorphBind, UvBind};
 use omuzaki_avatar_api::gaze::{AvatarGaze, AvatarLookAt};
 use omuzaki_avatar_api::retained::{Retained, RetainedMaterial};
 use omuzaki_avatar_api::retained::{
-    RetainedAnnotation, RetainedCollider, RetainedColliderGroup, RetainedFirstPerson, RetainedGeometry, RetainedMesh,
-    RetainedNode, RetainedPrimitive, RetainedSkin, RetainedSpringChain, RetainedSpringJoint,
+    RetainedAnnotation, RetainedCollider, RetainedColliderGroup, RetainedFirstPerson, RetainedGeometry, RetainedImage,
+    RetainedMesh, RetainedNode, RetainedPrimitive, RetainedSkin, RetainedSpringChain, RetainedSpringJoint,
 };
-use omuzaki_char_api::{BoneName, FaceOverlay, JointRef, MaterialName, TextureData, TextureName};
+use omuzaki_char_api::{Anchor, AnchorId, BoneName, FaceOverlay, JointRef, MaterialName, TextureData, TextureName};
 use omuzaki_core::glam::Vec3;
 use omuzaki_core::glam::{Mat4, UVec2, Vec2, Vec4};
 use omuzaki_core::id::Slug;
 use omuzaki_face_api::{FaceLayerId, PlanarWindow};
 use omuzaki_io_api::{ColorBindKind, LookAtKind, RangeMap};
-use omuzaki_io_api::{Material, Shading};
+use omuzaki_io_api::{ImageIx, ImageMime, Material, Sampler, Shading, TexRef, Texture, TextureIx, VrmMeta};
 use omuzaki_render_api::{AlphaMode, MorphSet, SparseMorph, TextureDesc};
+use omuzaki_store_api::ContentHash;
 
 #[test]
 fn a_well_formed_avatar_validates() {
@@ -348,6 +349,50 @@ fn springs_must_fit_the_skeleton() {
     assert!(matches!(a.validate(), Err(AvatarError::Springs(_))));
 }
 
+#[test]
+fn constraints_must_fit_the_skeleton() {
+    let mut a = avatar(false, 0, &[]);
+    let bone = |i| BoneId(i);
+    let follow = |bone, source| BoneConstraint { bone, source, kind: ConstraintKind::Rotation, weight: 1.0 };
+    a.constraints = ConstraintSet { constraints: vec![follow(bone(1), bone(0))] };
+    assert_eq!(a.validate(), Ok(()));
+    a.constraints = ConstraintSet { constraints: vec![follow(bone(1), bone(900))] };
+    assert!(matches!(a.validate(), Err(AvatarError::Constraints(_))), "a bone the skeleton lacks");
+    a.constraints = ConstraintSet { constraints: vec![follow(bone(1), bone(0)), follow(bone(0), bone(1))] };
+    assert!(matches!(a.validate(), Err(AvatarError::Constraints(_))), "a cycle");
+}
+
+#[test]
+fn anchors_must_follow_bones_the_skeleton_has() {
+    let mut a = avatar(false, 0, &[]);
+    let id = AnchorId::new("tip").unwrap();
+    let anchor = |bone| Anchor { bone, position: Vec3::ZERO, rotation: omuzaki_core::glam::Quat::IDENTITY };
+    a.anchors.insert(id.clone(), anchor(JointRef::HEAD));
+    assert_eq!(a.validate(), Ok(()));
+    a.anchors.insert(id, anchor(JointRef::Named(BoneName::new("tail").unwrap())));
+    let e = a.validate().unwrap_err();
+    assert!(matches!(&e, AvatarError::UnresolvedBone { .. }) && e.to_string().contains("anchor tip"), "{e}");
+}
+
+#[test]
+fn a_mesh_the_renderer_would_refuse_is_refused() {
+    let mut a = avatar(false, 0, &[]);
+    a.meshes[0].mesh.geometry.indices.clear();
+    assert!(matches!(a.validate(), Err(AvatarError::Mesh { mesh: 0, .. })), "{:?}", a.validate());
+}
+
+#[test]
+fn meshes_and_expressions_are_capped_at_what_a_u16_indexes() {
+    let mut a = avatar(false, 0, &[]);
+    a.meshes = vec![a.meshes[0].clone(); MAX_INDEXED + 1];
+    assert_eq!(a.validate(), Err(AvatarError::too_many("meshes", MAX_INDEXED + 1)));
+    let mut a = avatar(false, 0, &[]);
+    a.expressions = vec![AvatarExpression::new(common::name("happy")); MAX_INDEXED + 1];
+    assert_eq!(a.validate(), Err(AvatarError::too_many("expressions", MAX_INDEXED + 1)));
+    a.expressions.pop();
+    assert_eq!(a.validate(), Ok(()), "exactly MAX_INDEXED is the limit");
+}
+
 /// The gaze part of what the avatar drives.
 fn gaze(a: &omuzaki_avatar_api::avatar::ImportedAvatar) -> ChannelMask {
     a.driven() & ChannelMask::GAZE
@@ -560,15 +605,118 @@ fn undrawn_primitives(targets: &[usize], names: &[&str]) -> ImportedAvatar {
 
 #[test]
 fn every_primitive_of_an_undrawn_mesh_with_targets_has_the_same_number() {
-    let invalid = |a: &ImportedAvatar| matches!(a.validate(), Err(AvatarError::RetainedGeometryInvalid { .. }));
     // One and two targets: invalid with no names, and with two names (which would match the larger count alone).
-    assert!(invalid(&undrawn_primitives(&[1, 2], &[])), "{:?}", undrawn_primitives(&[1, 2], &[]).validate());
-    assert!(invalid(&undrawn_primitives(&[2, 1], &["A", "B"])), "the smaller count after the larger one too");
-    assert!(invalid(&undrawn_primitives(&[1, 2], &["A", "B"])));
+    assert_eq!(undrawn_primitives(&[1, 2], &[]).validate(), Err(AvatarError::morph_counts(1, 1, 2, 1)));
+    assert_eq!(undrawn_primitives(&[2, 1], &["A", "B"]).validate(), Err(AvatarError::morph_counts(1, 1, 1, 2)));
+    assert_eq!(undrawn_primitives(&[1, 2], &["A", "B"]).validate(), Err(AvatarError::morph_counts(1, 1, 2, 1)));
     // A primitive without targets beside ones with two is glTF-valid, as `IoScene::check` has it.
     assert_eq!(undrawn_primitives(&[2, 0, 2], &["A", "B"]).validate(), Ok(()));
     assert_eq!(undrawn_primitives(&[0, 0], &[]).validate(), Ok(()));
     // A name table must name exactly the targets.
     assert_eq!(undrawn_primitives(&[2, 2], &["A"]).validate(), Err(AvatarError::morph_names(1, 1, 2)));
     assert_eq!(undrawn_primitives(&[0], &["A"]).validate(), Err(AvatarError::morph_names(1, 1, 0)));
+}
+
+/// An avatar whose one drawn source mesh has one primitive per entry of `targets`, each made into a runtime mesh
+/// with that many morph targets, and the target names `names`.
+fn drawn_primitives(targets: &[usize], names: &[&str]) -> ImportedAvatar {
+    let mut a = avatar(false, 0, &[]);
+    a.meshes = targets.iter().map(|&t| common::head_mesh(t)).collect();
+    let runtime: Vec<u16> = (0..).take(targets.len()).collect();
+    a.retained = sources(&[("Face", &runtime, names)]);
+    a
+}
+
+#[test]
+fn every_primitive_of_a_drawn_mesh_with_targets_has_the_same_number_whatever_the_names() {
+    // The review's cases: one and two targets in either order, with no name table to compare against.
+    assert_eq!(drawn_primitives(&[1, 2], &[]).validate(), Err(AvatarError::morph_counts(0, 1, 2, 1)));
+    assert_eq!(drawn_primitives(&[2, 1], &[]).validate(), Err(AvatarError::morph_counts(0, 1, 1, 2)));
+    assert_eq!(drawn_primitives(&[2, 1], &["A", "B"]).validate(), Err(AvatarError::morph_counts(0, 1, 1, 2)));
+    assert_eq!(drawn_primitives(&[1, 2], &["A", "B"]).validate(), Err(AvatarError::morph_counts(0, 1, 2, 1)));
+    assert_eq!(drawn_primitives(&[2, 0, 2], &[]).validate(), Ok(()), "glTF allows a primitive without targets");
+    assert_eq!(drawn_primitives(&[2, 0, 2], &["A", "B"]).validate(), Ok(()));
+    assert_eq!(drawn_primitives(&[0, 0], &[]).validate(), Ok(()));
+    assert_eq!(drawn_primitives(&[2, 2], &["A"]).validate(), Err(AvatarError::morph_names(0, 1, 2)));
+    assert_eq!(drawn_primitives(&[0], &["A"]).validate(), Err(AvatarError::morph_names(0, 1, 0)));
+}
+
+#[test]
+fn every_copy_of_a_primitive_has_the_same_number_of_targets() {
+    // `instanced()`: one primitive, drawn at two nodes, a runtime mesh each.
+    let two_copies = |first: usize, second: usize| {
+        let mut a = avatar(false, 0, &[]);
+        a.meshes = vec![common::head_mesh(first), common::head_mesh(second)];
+        a.retained = instanced();
+        a
+    };
+    assert_eq!(two_copies(2, 2).validate(), Ok(()));
+    assert_eq!(two_copies(0, 0).validate(), Ok(()));
+    assert_eq!(two_copies(2, 0).validate(), Err(AvatarError::morph_counts(0, 0, 0, 2)), "targets in one copy only");
+    assert_eq!(two_copies(0, 2).validate(), Err(AvatarError::morph_counts(0, 0, 2, 0)));
+    assert_eq!(two_copies(1, 2).validate(), Err(AvatarError::morph_counts(0, 0, 2, 1)));
+}
+
+/// An avatar whose retained nodes have `children[i]` as node `i`'s children, and `roots` as its roots.
+fn forest(children: &[&[u32]], roots: &[u32]) -> ImportedAvatar {
+    let mut a = avatar(false, 0, &[]);
+    a.retained.nodes =
+        (0..).zip(children).map(|(i, c)| RetainedNode::new(format!("n{i}")).with_children(c.to_vec())).collect();
+    a.retained.roots = roots.to_vec();
+    a
+}
+
+#[test]
+fn the_retained_nodes_form_a_forest() {
+    assert_eq!(forest(&[&[1, 2], &[3], &[], &[]], &[0]).validate(), Ok(()), "a tree");
+    assert_eq!(
+        forest(&[&[1], &[], &[3], &[]], &[0, 2]).validate(),
+        Ok(()),
+        "two roots; a file may leave nodes unrooted"
+    );
+    assert_eq!(forest(&[&[], &[]], &[]).validate(), Ok(()), "no roots");
+
+    assert_eq!(forest(&[&[2], &[2], &[]], &[0]).validate(), Err(AvatarError::node_parents(2)), "two parents");
+    assert_eq!(forest(&[&[1, 1], &[]], &[0]).validate(), Err(AvatarError::node_parents(1)), "listed twice");
+    assert_eq!(forest(&[&[1], &[]], &[1]).validate(), Err(AvatarError::root_has_parent(1)), "a root with a parent");
+    assert_eq!(forest(&[&[1], &[0]], &[]).validate(), Err(AvatarError::node_cycle(0)), "a cycle of two");
+    assert_eq!(forest(&[&[], &[1]], &[]).validate(), Err(AvatarError::node_cycle(1)), "its own child");
+    assert_eq!(
+        forest(&[&[], &[2], &[3], &[1]], &[0]).validate(),
+        Err(AvatarError::node_cycle(1)),
+        "a cycle apart from the root"
+    );
+}
+
+#[test]
+fn the_retained_images_textures_and_materials_point_into_each_other() {
+    let mut a = avatar(false, 0, &[]);
+    let mut material = Material::new("Skin", Shading::Unlit);
+    material.base_color_texture = Some(TexRef::of(TextureIx(0)));
+    a.retained.materials = vec![RetainedMaterial::new(skin(), material)];
+    a.retained.textures = vec![Texture { image: ImageIx(1), sampler: Sampler::default() }];
+    a.retained.images = vec![
+        RetainedImage::new("a", ImageMime::Png, ContentHash([1; 32])),
+        RetainedImage::new("b", ImageMime::Png, ContentHash([2; 32])),
+    ];
+    let mut meta = VrmMeta::default();
+    meta.thumbnail_image = Some(ImageIx(1));
+    a.retained.meta = Some(meta);
+    assert_eq!(a.validate(), Ok(()), "a consistent set");
+
+    let broken: [(&str, Breaks); 3] = [
+        ("texture 0's image", |r| r.textures[0].image = ImageIx(2)),
+        ("material 0's baseColorTexture", |r| r.textures.clear()),
+        ("the meta's thumbnail", |r| r.images.truncate(1)),
+    ];
+    for (at, break_it) in broken {
+        let mut b = a.clone();
+        break_it(&mut b.retained);
+        // Truncating the images also strands the texture, which is checked first.
+        if at == "the meta's thumbnail" {
+            b.retained.textures[0].image = ImageIx(0);
+        }
+        let e = b.validate().unwrap_err();
+        assert!(matches!(&e, AvatarError::RetainedIndex { at: got, .. } if got == at), "{at}: {e:?}");
+    }
 }

@@ -301,7 +301,7 @@ async fn each_token_holds_its_own_grants_and_its_tools_say_so() {
     let port = Port::start().await;
     let local = port.agent_token();
     let publisher = port.server.issue("exporter", Grants::agent_default().with(Scope::Publish)).unwrap();
-    assert_eq!(local.grants(), &Grants::agent_default(), "the default is read, edit and render only");
+    assert_eq!(local.grants(), &Grants::agent_default(), "the default is read, edit, render and review only");
 
     let plain = port.connect(&local, "plain").await;
     let trusted = port.connect(&publisher, "trusted").await;
