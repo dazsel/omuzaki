@@ -75,18 +75,11 @@ const INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","param
 const INITIALIZED: &str = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
 const LIST_TOOLS: &str = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#;
 
-/// One gate test at a time. tracing caches each callsite's `Interest` process-wide, and the gate's `warn!` callsites are
-/// hit by every test that refuses a request, on whichever thread runs it. A test that captures events with a
-/// thread-local `set_default` can race those threads: the callsite is cached as disabled while its recorder is live,
-/// and its `warn!` is silently lost. Holding this lock for a whole test keeps the cache and the recorder in step.
-/// A poisoned lock still guards valid state, so it is taken through `PoisonError::into_inner`.
-static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 struct Rig {
     gate: Gate,
     registry: Arc<Registry>,
-    // Last, so the lock is released only after the server it guards has been dropped.
-    _serial: std::sync::MutexGuard<'static, ()>,
+    /// What the gate logged. The gate writes to this, not to `tracing`, so no test depends on a process-wide subscriber.
+    recorder: Recorder,
 }
 
 impl Rig {
@@ -95,10 +88,12 @@ impl Rig {
     }
 
     fn with(limits: Limits) -> Self {
-        let serial = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let server = McpServer::new(Arc::new(NoOps), McpOptions::default()).unwrap();
-        let registry = Arc::new(Registry::new(server, Vec::new(), limits, CancellationToken::new()));
-        Self { gate: Gate::new(Arc::clone(&registry), "/mcp".to_owned()), registry, _serial: serial }
+        let (revocations, _) = tokio::sync::mpsc::unbounded_channel();
+        let registry = Arc::new(Registry::new(server, Vec::new(), limits, CancellationToken::new(), revocations));
+        let recorder = Recorder::default();
+        let gate = Gate::with_sink(Arc::clone(&registry), "/mcp".to_owned(), Arc::new(recorder.clone()));
+        Self { gate, registry, recorder }
     }
 
     fn token(&self) -> AccessToken {
@@ -485,43 +480,25 @@ impl Recorder {
     }
 }
 
-/// Writes every field of an event as `name=value`, which is all these tests check.
-struct FieldText(String);
+impl RefusalSink for Recorder {
+    fn token_refused(&self, suppressed: Option<u64>, denied: Denied, method: &hyper::Method) {
+        self.push(suppressed, format!("{UNAUTHORIZED_LINE}: {denied:?} {method}"));
+    }
 
-impl tracing::field::Visit for FieldText {
-    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        use std::fmt::Write;
-        // Writing to a `String` cannot fail.
-        let _ = write!(self.0, "{}={:?} ", field.name(), value);
+    fn body_refused(&self, suppressed: Option<u64>, status: StatusCode, message: &str) {
+        self.push(suppressed, format!("{BODY_LINE}: {status} {message}"));
     }
 }
 
-impl tracing::Subscriber for Recorder {
-    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
-        true
+impl Recorder {
+    /// Records a refusal as `warn` (with its suppressed count) or `debug`, as the production sink writes it.
+    fn push(&self, suppressed: Option<u64>, text: String) {
+        let (level, fields) = match suppressed {
+            Some(n) => (tracing::Level::WARN, format!("{text} suppressed={n}")),
+            None => (tracing::Level::DEBUG, text),
+        };
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((level, fields));
     }
-    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-        tracing::span::Id::from_u64(1)
-    }
-    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
-    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
-    fn event(&self, event: &tracing::Event<'_>) {
-        let mut fields = FieldText(String::new());
-        event.record(&mut fields);
-        let mut events = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        events.push((*event.metadata().level(), fields.0));
-    }
-    fn enter(&self, _: &tracing::span::Id) {}
-    fn exit(&self, _: &tracing::span::Id) {}
-}
-
-/// Makes `recorder` this thread's subscriber for as long as the guard lives, and re-asks every callsite for its
-/// interest: a callsite cached as disabled by an earlier test would otherwise hide its events. Hold the `Rig` first
-/// (see `SERIAL`), so no other gate test is running while the recorder is set.
-fn capture(recorder: &Recorder) -> tracing::subscriber::DefaultGuard {
-    let guard = tracing::subscriber::set_default(recorder.clone());
-    tracing::callsite::rebuild_interest_cache();
-    guard
 }
 
 const UNAUTHORIZED_LINE: &str = "refused a request without a valid access token";
@@ -530,8 +507,7 @@ const BODY_LINE: &str = "refused a request body";
 #[tokio::test(start_paused = true)]
 async fn a_loop_of_refused_requests_warns_once_per_interval_and_debugs_the_rest() {
     let rig = Rig::new();
-    let recorder = Recorder::default();
-    let _guard = capture(&recorder);
+    let recorder = rig.recorder.clone();
     let token = rig.token();
 
     for _ in 0..100 {
@@ -560,8 +536,7 @@ async fn a_loop_of_refused_requests_warns_once_per_interval_and_debugs_the_rest(
 #[tokio::test(start_paused = true)]
 async fn a_refused_body_warns_on_its_own_limiter_and_does_not_wait_for_token_refusals() {
     let rig = Rig::new();
-    let recorder = Recorder::default();
-    let _guard = capture(&recorder);
+    let recorder = rig.recorder.clone();
     let token = rig.token();
 
     for _ in 0..5 {
