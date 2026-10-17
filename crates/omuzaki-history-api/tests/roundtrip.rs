@@ -53,7 +53,7 @@ fn scopes() -> impl Strategy<Value = std::collections::BTreeSet<Scope>> {
 }
 
 fn record() -> impl Strategy<Value = OpRecord> {
-    let approval = (any::<u64>(), actor()).prop_map(|(id, by)| ApprovalRef { id: ApprovalId(id), by });
+    let approval = (any::<u64>(), actor()).prop_map(|(id, by)| ApprovalRef::new(ApprovalId(id), by));
     (
         any::<u64>(),
         "[a-z.]{1,10}",

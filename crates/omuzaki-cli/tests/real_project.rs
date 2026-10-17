@@ -94,10 +94,11 @@ fn undo_and_redo_move_the_files_back_and_forth_and_name_the_step() {
     process.omuzaki(&SET_HELLO).unwrap();
     let applied = project_toml(project.path());
 
-    assert_eq!(process.omuzaki(&["undo"]).unwrap(), "undid \"note.set\"\n");
+    // A one-op step is named by the op's summary (#1662).
+    assert_eq!(process.omuzaki(&["undo"]).unwrap(), "undid \"Set the project's note.\"\n");
     assert_eq!(project_toml(project.path()), original);
 
-    assert_eq!(process.omuzaki(&["redo", "--json"]).unwrap(), "{\n  \"redone\": \"note.set\"\n}\n");
+    assert_eq!(process.omuzaki(&["redo", "--json"]).unwrap(), "{\n  \"redone\": \"Set the project's note.\"\n}\n");
     assert_eq!(project_toml(project.path()), applied);
 
     assert_eq!(process.omuzaki(&["redo"]).unwrap(), "nothing to redo\n");

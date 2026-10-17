@@ -5,6 +5,10 @@
 //! Examples are declared on the args type (`OpRegistration::examples`). Ops with none are listed in
 //! `op_conformance_allowlist.txt`, which may only shrink: an op that is missing from it and has no examples fails, and
 //! so does a line for an op that now has examples. The suite prints the list's size.
+//!
+//! An edit or job with `Undo::None` is a live action (`automation.md` D7): it changes live state, never the document.
+//! The executor refuses one whose plan changes the document (`checks::check_plan`), so its examples' dry-runs fail if
+//! it does; it is applied by nothing here, since a live action has no inverse to check.
 
 // Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
 #![allow(clippy::expect_used, clippy::unwrap_used)]
@@ -216,9 +220,6 @@ fn problems(reg: &'static OpRegistration) -> Vec<String> {
     let mut found = Vec::new();
     let mut flag = |what: String| found.push(format!("{name}: {what}"));
 
-    if meta.undo == Undo::None && meta.kind != OpKind::Query && !allowlist().1.contains(name) {
-        flag(format!("is a {:?} op with `Undo::None`; only queries have nothing to undo", meta.kind));
-    }
     let schema = serde_json::to_value((reg.schema)()).expect("a schema serialises");
     if schema.get("type") != Some(&Value::from("object")) {
         flag("its schema is not an object schema".to_owned());
@@ -268,22 +269,9 @@ fn check_example(reg: &'static OpRegistration, kind: OpKind, undo: Undo, args: &
     Ok(())
 }
 
-/// The section of the allowlist file for edits that still declare `Undo::None`; the lines above it are ops without
-/// examples.
-const UNDO_NONE_SECTION: &str = "[edits with Undo::None]";
-
-/// The allowlist's two sections: ops without examples, and edits that still declare `Undo::None`.
-fn allowlist() -> (BTreeSet<&'static str>, BTreeSet<&'static str>) {
-    let (mut no_examples, mut undo_none) = (BTreeSet::new(), BTreeSet::new());
-    let mut section = &mut no_examples;
-    for line in ALLOWLIST.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with('#')) {
-        if line == UNDO_NONE_SECTION {
-            section = &mut undo_none;
-        } else {
-            section.insert(line);
-        }
-    }
-    (no_examples, undo_none)
+/// The allowlist: ops without examples.
+fn allowlist() -> BTreeSet<&'static str> {
+    ALLOWLIST.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with('#')).collect()
 }
 
 /// Everything wrong with `registered` against `allowed`: ops with no examples that aren't listed, and listed names that
@@ -306,29 +294,17 @@ fn allowlist_problems(registered: &BTreeMap<&'static str, bool>, allowed: &BTree
     found
 }
 
-/// Lines of the `Undo::None` section that no longer name an edit with `Undo::None`.
-fn stale_undo_none(violating: &BTreeMap<&'static str, bool>, listed: &BTreeSet<&str>) -> Vec<String> {
-    listed
-        .iter()
-        .filter(|name| !violating.get(*name).copied().unwrap_or(false))
-        .map(|name| format!("{name}: no longer an edit with `Undo::None`; delete it from the allowlist"))
-        .collect()
-}
-
 #[test]
 fn every_registered_op_conforms() {
     omuzaki_cli::link();
     let mut registered = BTreeMap::new();
-    let mut registered_kinds = BTreeMap::new();
     let mut found = Vec::new();
     for reg in registrations() {
         let meta = (reg.meta)();
         registered.insert(meta.name, !reg.examples().is_empty());
-        registered_kinds.insert(meta.name, meta.undo == Undo::None && meta.kind != OpKind::Query);
         found.extend(problems(reg));
     }
-    let (allowed, undo_none) = allowlist();
-    found.extend(stale_undo_none(&registered_kinds, &undo_none));
+    let allowed = allowlist();
     found.extend(allowlist_problems(&registered, &allowed));
     println!(
         "op conformance: {} ops registered, {} with examples, {} on the allowlist",
@@ -467,17 +443,35 @@ mod planted {
         }
     }
 
-    /// An edit that says there is nothing to undo.
+    /// A live action: an edit with nothing to undo, which changes live state and never the document.
     #[derive(Serialize, Deserialize, JsonSchema)]
-    pub struct EditWithoutUndo {}
+    #[schemars(extend("examples" = [{}]))]
+    pub struct LiveAction {}
+
+    impl Op for LiveAction {
+        fn meta() -> OpMeta {
+            meta("planted.live_action", Undo::None)
+        }
+
+        fn plan(&self, _ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+            Ok(Plan::answer(json!({ "played": true })))
+        }
+    }
+
+    /// Says there is nothing to undo, and changes the document.
+    #[derive(Serialize, Deserialize, JsonSchema)]
+    #[schemars(extend("examples" = [{ "text": "hello" }]))]
+    pub struct EditWithoutUndo {
+        text: String,
+    }
 
     impl Op for EditWithoutUndo {
         fn meta() -> OpMeta {
             meta("planted.edit_without_undo", Undo::None)
         }
 
-        fn plan(&self, _ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
-            Ok(Plan::default())
+        fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+            Ok(set_note(ctx, &self.text))
         }
     }
 
@@ -543,20 +537,14 @@ fn failures_are_reported_in_name_order() {
 }
 
 #[test]
-fn undo_none_on_an_edit_fails() {
-    assert_flagged(planted_reg!(planted::EditWithoutUndo), "only queries have nothing to undo");
+fn a_live_action_conforms_and_an_edit_without_undo_that_changes_the_document_fails() {
+    assert_eq!(problems(planted_reg!(planted::LiveAction)), Vec::<String>::new());
+    assert_flagged(planted_reg!(planted::EditWithoutUndo), "is a live action (`Undo::None`) but planned a change");
 }
 
 #[test]
 fn an_example_that_does_not_decode_fails() {
     assert_flagged(planted_reg!(planted::BadExample), "doesn't decode");
-}
-
-#[test]
-fn the_undo_none_section_may_only_shrink() {
-    let violating = BTreeMap::from([("a.bad", true), ("a.fixed", false)]);
-    let found = stale_undo_none(&violating, &BTreeSet::from(["a.bad", "a.fixed", "a.gone"]));
-    assert_eq!(found.len(), 2, "{found:?}");
 }
 
 #[test]

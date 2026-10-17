@@ -1,9 +1,11 @@
-//! Undo and redo: per-actor stacks of committed transactions, conflicts that drop the step, permissions.
+//! Undo and redo: per-actor stacks of committed transactions, a person's undo reaching their own agents' steps and
+//! no one else's (#245; `principal_undo.rs` has the cases where it does reach them), conflicts that drop the step,
+//! permissions.
 
 use omuzaki_ops_api::{ErrorCode, Grants, Request, Runner, Scope};
 use serde_json::json;
 
-use super::{agent, person, request, rig};
+use super::{SET, person, request, rig};
 
 #[test]
 fn nothing_to_undo_or_redo_is_none() {
@@ -18,15 +20,15 @@ fn undo_then_redo_round_trips_through_labels() {
     rig.set("a", json!(2));
     rig.set("a", json!(3));
 
-    assert_eq!(rig.undo().unwrap().as_deref(), Some("test.set"));
+    assert_eq!(rig.undo().unwrap().as_deref(), Some(SET));
     assert_eq!(rig.at("a"), Some(json!(2)));
-    assert_eq!(rig.undo().unwrap().as_deref(), Some("test.set"));
+    assert_eq!(rig.undo().unwrap().as_deref(), Some(SET));
     assert_eq!(rig.at("a"), Some(json!(1)));
     assert_eq!(rig.undo().unwrap(), None);
 
-    assert_eq!(rig.redo().unwrap().as_deref(), Some("test.set"));
+    assert_eq!(rig.redo().unwrap().as_deref(), Some(SET));
     assert_eq!(rig.at("a"), Some(json!(2)));
-    assert_eq!(rig.redo().unwrap().as_deref(), Some("test.set"));
+    assert_eq!(rig.redo().unwrap().as_deref(), Some(SET));
     assert_eq!(rig.at("a"), Some(json!(3)));
     assert_eq!(rig.redo().unwrap(), None);
 }
@@ -35,9 +37,10 @@ fn undo_then_redo_round_trips_through_labels() {
 fn undo_still_works_after_a_later_edit_to_another_path() {
     let rig = rig(json!({"a": 1, "b": 1}));
     rig.set("a", json!(2));
-    rig.agent_set("b", json!(2)); // a later edit, by someone else, elsewhere
+    let other = rig.bobs_agent();
+    rig.set_as(&other, "b", json!(2)); // a later edit, by someone else's agent, elsewhere
 
-    assert_eq!(rig.undo().unwrap().as_deref(), Some("test.set"));
+    assert_eq!(rig.undo().unwrap().as_deref(), Some(SET));
     assert_eq!((rig.at("a"), rig.at("b")), (Some(json!(1)), Some(json!(2))), "only the person's step reverted");
 
     // The same actor's own later edit, still in an open transaction, is not on the stack yet either.
@@ -49,17 +52,18 @@ fn undo_still_works_after_a_later_edit_to_another_path() {
 }
 
 #[test]
-fn undo_is_per_actor() {
+fn undo_is_per_principal() {
     let rig = rig(json!({"a": 1, "b": 1}));
-    rig.set("a", json!(2)); // the person
-    rig.agent_set("b", json!(2)); // the agent, later
+    let other = rig.bobs_agent();
+    rig.set("a", json!(2)); // alice
+    rig.set_as(&other, "b", json!(2)); // bob's agent, later
 
-    // The person's undo skips past the agent's later step; the agent's undo has its own.
-    assert_eq!(rig.undo().unwrap().as_deref(), Some("test.set"));
+    // Alice's undo skips past the later step of an agent that works for someone else; that agent's undo has its own.
+    assert_eq!(rig.undo().unwrap().as_deref(), Some(SET));
     assert_eq!((rig.at("a"), rig.at("b")), (Some(json!(1)), Some(json!(2))));
-    assert_eq!(rig.undo().unwrap(), None, "the person has nothing else; the agent's step is not theirs");
+    assert_eq!(rig.undo().unwrap(), None, "alice has nothing else; the agent's step is not hers");
     assert_eq!(rig.at("b"), Some(json!(2)));
-    assert_eq!(rig.agent_undo().unwrap().as_deref(), Some("test.set"));
+    assert_eq!(rig.exec.undo(&other, &Grants::agent_default()).unwrap().as_deref(), Some(SET));
     assert_eq!(rig.at("b"), Some(json!(1)));
 }
 
@@ -70,22 +74,23 @@ fn an_agent_cannot_undo_a_persons_step() {
     assert_eq!(rig.agent_undo().unwrap(), None);
     assert_eq!(rig.at("x"), Some(json!(1)));
     assert_eq!(rig.agent_redo().unwrap(), None);
-    assert_eq!(rig.undo().unwrap().as_deref(), Some("test.set"));
+    assert_eq!(rig.undo().unwrap().as_deref(), Some(SET));
     assert_eq!(rig.at("x"), Some(json!(0)));
 }
 
 #[test]
-fn a_commit_clears_only_its_own_actors_redo() {
+fn a_commit_clears_only_its_own_principals_redo() {
     let rig = rig(json!({}));
+    let other = rig.bobs_agent();
     rig.set("p", json!(1));
-    rig.agent_set("q", json!(1));
+    rig.set_as(&other, "q", json!(1));
     rig.undo().unwrap();
-    rig.agent_undo().unwrap();
+    rig.exec.undo(&other, &Grants::agent_default()).unwrap();
 
-    // The agent commits something new: its redo ends, the person's survives.
-    rig.agent_set("r", json!(1));
-    assert_eq!(rig.agent_redo().unwrap(), None);
-    assert_eq!(rig.redo().unwrap().as_deref(), Some("test.set"));
+    // Bob's agent commits something new: its redo ends, alice's survives.
+    rig.set_as(&other, "r", json!(1));
+    assert_eq!(rig.exec.redo(&other, &Grants::agent_default()).unwrap(), None);
+    assert_eq!(rig.redo().unwrap().as_deref(), Some(SET));
     assert_eq!(rig.at("p"), Some(json!(1)));
 }
 
@@ -108,14 +113,19 @@ fn a_new_commit_clears_redo_for_single_ops_and_transactions() {
 #[test]
 fn a_transaction_is_undone_by_the_actor_that_committed_it() {
     let rig = rig(json!({"a": 1, "b": 1}));
-    let tx = rig.exec.begin("agent's pair", &agent());
+    let other = rig.bobs_agent();
+    let tx = rig.exec.begin("agent's pair", &other);
     for (path, value) in [("a", 2), ("b", 2)] {
-        let req = Request { tx: Some(tx), ..super::agent_request("test.set", json!({"path": path, "value": value})) };
+        let req = Request {
+            tx: Some(tx),
+            actor: other.clone(),
+            ..super::agent_request("test.set", json!({"path": path, "value": value}))
+        };
         rig.exec.run(req).unwrap();
     }
-    rig.exec.commit(tx, &agent()).unwrap();
-    assert_eq!(rig.undo().unwrap(), None, "not the person's");
-    assert_eq!(rig.agent_undo().unwrap().as_deref(), Some("agent's pair"));
+    rig.exec.commit(tx, &other).unwrap();
+    assert_eq!(rig.undo().unwrap(), None, "not alice's, nor one of her agents'");
+    assert_eq!(rig.exec.undo(&other, &Grants::agent_default()).unwrap().as_deref(), Some("agent's pair"));
     assert_eq!((rig.at("a"), rig.at("b")), (Some(json!(1)), Some(json!(1))));
 }
 
@@ -128,16 +138,16 @@ fn a_conflicting_undo_names_the_path_and_who_changed_it_and_drops_the_step() {
 
     let e = rig.agent_undo().unwrap_err();
     assert_eq!(e.code, ErrorCode::Conflict);
-    assert!(e.message.contains("test.set") && e.message.contains(" x ") && e.message.contains("person alice"), "{e}");
+    assert!(e.message.contains(SET) && e.message.contains(" x ") && e.message.contains("person alice"), "{e}");
     assert!(e.hint.as_deref().unwrap().contains("dropped"), "{e}");
     assert_eq!(rig.at("x"), Some(json!(5)), "a refused undo changes nothing");
 
     // The step is gone, so history is not wedged: the next undo reaches the step before it.
-    assert_eq!(rig.agent_undo().unwrap().as_deref(), Some("test.set"));
+    assert_eq!(rig.agent_undo().unwrap().as_deref(), Some(SET));
     assert_eq!(rig.at("a"), Some(json!(0)));
     assert_eq!(rig.agent_undo().unwrap(), None);
     // The person's own step is untouched by all of this.
-    assert_eq!(rig.undo().unwrap().as_deref(), Some("test.set"));
+    assert_eq!(rig.undo().unwrap().as_deref(), Some(SET));
     assert_eq!(rig.at("x"), Some(json!(1)), "undoing the person's edit restores what the agent's dropped step left");
 }
 
@@ -166,7 +176,7 @@ fn steps_that_change_nothing_do_not_clear_redo() {
     let tx = rig.exec.begin("empty", &person());
     rig.exec.commit(tx, &person()).unwrap();
 
-    assert_eq!(rig.redo().unwrap().as_deref(), Some("test.set"));
+    assert_eq!(rig.redo().unwrap().as_deref(), Some(SET));
     assert_eq!(rig.at("a"), Some(json!(2)));
 }
 
@@ -211,11 +221,12 @@ fn a_conflicting_redo_names_the_culprit_and_drops_the_step() {
     let rig = rig(json!({"a": 1}));
     rig.set("a", json!(2));
     rig.undo().unwrap();
-    rig.agent_set("a", json!(7)); // someone else edits the same path between undo and redo
+    let other = rig.bobs_agent();
+    rig.set_as(&other, "a", json!(7)); // someone else edits the same path between undo and redo
 
     let e = rig.redo().unwrap_err();
     assert_eq!(e.code, ErrorCode::Conflict);
-    assert!(e.message.contains("redo") && e.message.contains("agent claude#1"), "{e}");
+    assert!(e.message.contains("redo") && e.message.contains("agent helper#3"), "{e}");
     assert!(e.hint.as_deref().unwrap().contains("dropped"), "{e}");
     assert_eq!(rig.at("a"), Some(json!(7)));
     assert_eq!(rig.redo().unwrap(), None, "the conflicting step was dropped from the redo history");
@@ -226,11 +237,12 @@ fn history_never_wedges_however_the_conflicts_fall() {
     // Every step of the person's conflicts with an agent edit made afterwards. Each undo reports one conflict and
     // drops one step; the loop must end with `None` after exactly as many calls as there were steps.
     let rig = rig(json!({"a": 0, "b": 0, "c": 0}));
+    let other = rig.bobs_agent();
     for key in ["a", "b", "c"] {
         rig.set(key, json!(1));
     }
     for key in ["a", "b", "c"] {
-        rig.agent_set(key, json!(2));
+        rig.set_as(&other, key, json!(2));
     }
     let mut calls = 0;
     loop {

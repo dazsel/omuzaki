@@ -9,9 +9,11 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+serde_json.workspace = true
 thiserror.workspace = true
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-doc-api = { path = "../omuzaki-doc-api" }
+omuzaki-history-api = { path = "../omuzaki-history-api" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 
 [dev-dependencies]
@@ -22,6 +24,7 @@ serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
+omuzaki-history-mock = { path = "../omuzaki-history-mock" }
 omuzaki-ops-mock = { path = "../omuzaki-ops-mock" }
 
 [[bench]]

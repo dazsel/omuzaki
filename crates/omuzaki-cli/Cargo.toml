@@ -58,6 +58,9 @@ omuzaki-face-api = { path = "../omuzaki-face-api" }
 omuzaki-track-api = { path = "../omuzaki-track-api" }
 # The output window and palette the conformance rig gives the `output.window.*` examples (`tests/window_host/`).
 omuzaki-stream-api = { path = "../omuzaki-stream-api" }
+# `script.run` through the real executor over an in-memory document (`tests/script_run.rs`, #1220).
+omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
+omuzaki-script = { path = "../omuzaki-script" }
 # The registration scan behind the link gate (`tests/registrations.rs`, ADR 0015).
 xtask = { path = "../../xtask" }
 

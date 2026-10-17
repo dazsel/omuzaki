@@ -46,9 +46,30 @@ pub(super) fn lower() -> bool {
     unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL) != 0 }
 }
 
-/// Lowers the calling thread's priority: other platforms have no per-thread call the job manager uses yet (on macOS
-/// `setpriority` would lower the whole process), so the thread keeps normal priority.
-#[cfg(not(any(target_os = "linux", windows)))]
+/// The quality-of-service class a job thread runs at on macOS: `QOS_CLASS_UTILITY`, below the user-interactive and
+/// user-initiated classes the app's own threads have (`<sys/qos.h>`).
+#[cfg(target_os = "macos")]
+pub(super) const QOS_CLASS_UTILITY: u32 = 0x11;
+
+/// Lowers the calling thread's priority; `false` if the platform refused.
+///
+/// macOS: `pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0)` sets the calling thread's class only (`setpriority`
+/// would lower the whole process) (#1611).
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)] // an OS shim: the libSystem call std does not wrap
+pub(super) fn lower() -> bool {
+    use std::ffi::{c_int, c_uint};
+
+    unsafe extern "C" {
+        fn pthread_set_qos_class_self_np(qos_class: c_uint, relative_priority: c_int) -> c_int;
+    }
+    // SAFETY: the call takes plain integers and changes only the calling thread's scheduling class.
+    unsafe { pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0) == 0 }
+}
+
+/// Lowers the calling thread's priority: other platforms have no per-thread call the job manager uses yet, so the
+/// thread keeps normal priority.
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub(super) fn lower() -> bool {
     false
 }
@@ -70,5 +91,33 @@ mod tests {
         let lowered = std::thread::spawn(|| (lower(), nice())).join().unwrap_or((false, i32::MIN));
         assert_eq!(lowered, (true, before.max(NICE)));
         assert_eq!(nice(), before, "the spawning thread keeps its priority");
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod macos_tests {
+    use super::*;
+
+    /// The calling thread's QoS class.
+    #[allow(unsafe_code)] // reading back what `lower` set, with the libSystem call std does not wrap
+    fn qos_class() -> u32 {
+        use std::ffi::{c_int, c_uint, c_void};
+
+        unsafe extern "C" {
+            fn pthread_self() -> *mut c_void;
+            fn pthread_get_qos_class_np(thread: *mut c_void, qos_class: *mut c_uint, relative: *mut c_int) -> c_int;
+        }
+        let (mut class, mut relative) = (0, 0);
+        // SAFETY: `pthread_self` names the calling thread, and both out-pointers point at locals that outlive the call.
+        let ok = unsafe { pthread_get_qos_class_np(pthread_self(), &raw mut class, &raw mut relative) } == 0;
+        if ok { class } else { 0 }
+    }
+
+    #[test]
+    fn lowering_sets_the_utility_class_on_the_calling_thread_only() {
+        let before = qos_class();
+        let lowered = std::thread::spawn(|| (lower(), qos_class())).join().unwrap_or((false, 0));
+        assert_eq!(lowered, (true, QOS_CLASS_UTILITY));
+        assert_eq!(qos_class(), before, "the spawning thread keeps its class");
     }
 }
