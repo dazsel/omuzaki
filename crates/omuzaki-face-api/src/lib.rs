@@ -7,6 +7,7 @@
 //! - [`expression`]: named expressions (channel deltas) and the five lip-sync visemes
 //! - [`grammar`]: the anime grammar rule switches (FE-05), which the grammar stage in `omuzaki-anim` reads
 //! - [`paint`]: the [`FacePainter`] contract and the vector [`DrawList`] it produces, and how layers composite
+//! - [`underlay`]: what `face.underlay.set` needs from the app that shows the head (the sheet's pixels go to it as plain data)
 //! - [`palette`] and [`check`]: palette slots (colours are `omuzaki_core::colour::Colour`) and the validation helper shared
 //!   with `omuzaki-char-api`
 //!
@@ -22,9 +23,10 @@ pub mod paint;
 pub mod palette;
 pub mod profile;
 mod resolve;
+pub mod underlay;
 
 pub use baker::{BakerInput, FaceBakerConflict, FaceBakerFactory, FaceBakerRegistration, face_baker};
-pub use check::{Check, ParamError, ParamErrors, Validate};
+pub use check::{Check, FieldRange, ParamError, ParamErrors, Validate};
 pub use expression::{
     ChannelValues, Expression, ExpressionId, ExpressionKind, ExpressionSet, IntensityCurve, UnknownExpression, VISEMES,
     Weight,
@@ -43,8 +45,8 @@ pub use paint::{
 pub use palette::{ColourError, ColourRef, Palette, PaletteSlot};
 pub use profile::{
     Aperture, BlushKind, BrowStyle, CatchlightShape, CheekStyle, Crease, EyeStyle, FaceLayout, FaceMark, FaceProfile,
-    FaceRatios, FangStyle, Highlights, Iris, Lash, Lips, LowerLidStyle, MarkKind, MouthInterior, MouthStyle, NoseKind,
-    NoseStyle, Pupil, PupilShape, Sclera,
+    FaceRatios, FangKind, FangStyle, Highlights, Iris, Lash, Lips, LowerLidStyle, MarkKind, MouthInterior, MouthStyle,
+    NoseKind, NoseStyle, Pupil, PupilShape, Sclera,
 };
 pub use resolve::ResolveError;
 

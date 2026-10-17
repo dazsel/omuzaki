@@ -58,6 +58,7 @@ fn arb_outline() -> impl Strategy<Value = HeadOutline> {
             top,
             height,
             exponent,
+            exponent_lower: None,
             chin,
             cheek_puff,
         },
@@ -241,6 +242,7 @@ fn arb_pair_outline(with_chin: bool) -> impl Strategy<Value = HeadOutline> {
             top,
             height,
             exponent,
+            exponent_lower: None,
             chin: with_chin.then_some(chin),
             cheek_puff,
         },
@@ -298,6 +300,7 @@ fn the_chinless_blend_of_1272_has_no_pop() {
         top: -0.089_669_353_125_719_78,
         height: 0.089_213_496_921_877_01,
         exponent: 2.158_230_690_793_918_6,
+        exponent_lower: None,
         chin: None,
         cheek_puff: 0.0,
     };
@@ -306,6 +309,7 @@ fn the_chinless_blend_of_1272_has_no_pop() {
         top: -0.109_450_828_117_683_81,
         height: 0.115_237_720_350_093_35,
         exponent: 1.6,
+        exponent_lower: None,
         chin: None,
         cheek_puff: 0.0,
     };

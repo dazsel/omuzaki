@@ -11,6 +11,8 @@
 //! - [`summary`]: the PR-comment text built from what the checks found
 //! - [`meshcmp`]: [`meshcmp::compare_meshes`], per-vertex, Chamfer and Hausdorff mesh distances (the geometry parity oracle)
 //! - [`regioncmp`]: [`compare::compare`] inside a pixel rectangle, with a markdown table and a side-by-side picture
+//! - [`budget`]: the spec §10 budget harness: the budget table parsed from the spec, per-system timing spans, and a markdown
+//!   and JSON report compared with the budgets and the previous night (`tools/ci/budget-report.sh`)
 //! - [`eval`]: agent eval task files, fixtures and eval sets: format, discovery, loader, lint and provenance
 //! - [`jsref`]: the JS prototype's reference dumps (under the assets folder) loaded into meshes, hair clumps, materials and face state
 //!
@@ -18,6 +20,7 @@
 //! depends on no implementation crate: tests across crates belong in the area test crates (`omuzaki-test-<area>`).
 #![deny(missing_docs)]
 
+pub mod budget;
 pub mod compare;
 pub mod dirs;
 pub mod error;
@@ -34,3 +37,10 @@ pub mod objects;
 pub mod regioncmp;
 pub mod summary;
 pub mod verify;
+
+// The eval harness serves the product's ops (`omuzaki-cli`) and its MCP server; crates that link this one (the area test
+// crates) reach their registrations through here (ADR 0015). `build.rs` writes the calls from the dependencies that set
+// `registers = true` (ADR 0054 section 6).
+omuzaki_core::define_link! {
+    include!(concat!(env!("OUT_DIR"), "/link_calls.rs"));
+}

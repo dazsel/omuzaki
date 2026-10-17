@@ -58,6 +58,10 @@ pub trait Calls: Send + Sync {
 }
 
 /// [`Calls`] over a [`Runner`], for the console and the CLI: one transaction per run, opened before the first edit.
+///
+/// The grants of a request are the run's own, narrowed by the script to the scopes of the ops it names and its declared
+/// ceiling; they are intersected with the caller's grants given to [`new`](Self::new), so a script never holds more than
+/// the person or session that runs it.
 pub struct RunnerCalls {
     runner: Arc<dyn Runner>,
     actor: Actor,
@@ -98,7 +102,8 @@ impl Calls for RunnerCalls {
         let is_edit = request.mode == Mode::Apply && self.edits.contains(&request.op);
         request.tx = if is_edit { Some(self.tx_for_edit()) } else { self.open_tx() };
         request.actor = self.actor.clone();
-        request.grants = self.grants.clone();
+        // The host narrows a run's grants to the scopes the script names; the caller's own grants are the ceiling.
+        request.grants = self.grants.intersect(&request.grants);
         request.cause = Some(Cause { kind: CauseKind::Script, text: Some(self.name.clone()) });
         request.base = None;
         self.runner.run(request)

@@ -21,6 +21,10 @@ ignore = [
     # ttf-parser is unmaintained (not a vulnerability); it comes in through ab_glyph, the character-sheet text
     # rasteriser in omuzaki-stage. Moving to the maintained skrifa/read-fonts stack is tracked in #1506.
     { id = "RUSTSEC-2026-0192", reason = "unmaintained, not vulnerable; replacement tracked in #1506" },
+    # smartstring is unmaintained (not a vulnerability; archived upstream 2026-05-03). It comes in only through rhai,
+    # the omuzaki-script runtime, which uses it unconditionally (no feature turns it off) and is pinned at =1.26.1.
+    # Revisit when rhai moves to compact_str or smol_str, at the next rhai bump.
+    { id = "RUSTSEC-2026-0249", reason = "unmaintained, not vulnerable; only through rhai, which has no way to drop it" },
 ]
 
 [licenses]
@@ -50,9 +54,16 @@ unused-allowed-license = "allow"
 # Per-crate exceptions for licences that are fine in one place only (e.g. fonts bundled by egui).
 # Add with a register row; never widen the global allow list for one crate.
 exceptions = [
+    # libFuzzer, which libfuzzer-sys bundles, is under LLVM's earlier NCSA licence: permissive and fine for commercial
+    # use. Only fuzz/ uses it, and fuzz/ ships nothing (register: libfuzzer-sys, "yes"). Allowed for this one crate only.
+    { crate = "libfuzzer-sys", allow = ["NCSA"] },
     # egui's bundled UI fonts (Hack, Ubuntu-Light, emoji icons): font licences, fine to ship with their notices
     # (register: egui/eframe, "conditions"; notices generated). Allowed for this one crate only.
     { crate = "epaint_default_fonts", allow = ["OFL-1.1", "Ubuntu-font-1.0"] },
+    # Mozilla's root certificates: a wasm32-only dependency of rustls-platform-verifier that no target we build links (it
+    # appears only in `cargo tree --target all`). A permissive data licence, fine to ship with its text (register:
+    # webpki-root-certs, "conditions"). Allowed for this one crate only.
+    { crate = "webpki-root-certs", allow = ["CDLA-Permissive-2.0"] },
 ]
 
 [licenses.private]

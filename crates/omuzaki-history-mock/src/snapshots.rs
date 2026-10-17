@@ -82,14 +82,24 @@ impl Snapshots for MemorySnapshots {
     }
 
     fn take(&self, trigger: Trigger, name: Option<&str>) -> Result<SnapshotId, SnapshotError> {
-        if name.is_some() != matches!(trigger, Trigger::Named) {
-            return Err(SnapshotError::Invalid("a name goes with Trigger::Named, and only with it".to_owned()));
+        let allowed = match trigger {
+            Trigger::Named => name.is_some(),
+            Trigger::Take => true,
+            _ => name.is_none(),
+        };
+        if !allowed {
+            return Err(SnapshotError::Invalid(
+                "a name goes with Trigger::Named, a stem with Trigger::Take, and no other trigger takes one".to_owned(),
+            ));
         }
         let mut state = lock(&self.state);
         let bytes = serde_json::to_vec(&state.tree).map_err(|e| SnapshotError::Io(e.to_string()))?;
         let id = SnapshotId(ContentHash::of(&bytes));
         let mut info = SnapshotInfo::new(id, state.lsn, "mock-session", self.clock.now(), trigger);
-        info.name = name.map(str::to_owned);
+        match trigger {
+            Trigger::Take => info.stem = name.map(str::to_owned),
+            _ => info.name = name.map(str::to_owned),
+        }
         let tree = state.tree.clone();
         state.snapshots.push(Stored { info, tree });
         Ok(id)
@@ -181,6 +191,19 @@ mod tests {
         assert_eq!(snaps.restore_outside_tree(&missing), Err(SnapshotError::NotFound(missing)));
         assert!(matches!(snaps.take(Trigger::Manual, Some("x")), Err(SnapshotError::Invalid(_))));
         assert!(matches!(snaps.take(Trigger::Named, None), Err(SnapshotError::Invalid(_))));
+        assert!(matches!(snaps.take(Trigger::Auto, Some("x")), Err(SnapshotError::Invalid(_))));
+        assert!(matches!(snaps.take(Trigger::Close, Some("x")), Err(SnapshotError::Invalid(_))));
+    }
+
+    #[test]
+    fn a_take_stem_reads_back_from_list_and_names_nothing() {
+        let (snaps, _) = service(json!({"a": 1}));
+        assert!(snaps.take(Trigger::Take, Some("rec-2026-10-15")).is_ok());
+        assert!(snaps.take(Trigger::Take, None).is_ok());
+        let listed = snaps.list().unwrap_or_default();
+        assert_eq!(listed.iter().map(|i| i.stem.as_deref()).collect::<Vec<_>>(), vec![None, Some("rec-2026-10-15")]);
+        assert!(listed.iter().all(|i| i.name.is_none()));
+        assert!(listed.iter().all(|i| i.trigger == Trigger::Take));
     }
 
     #[test]

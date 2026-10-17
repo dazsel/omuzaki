@@ -1,0 +1,17 @@
+{
+  "blocks": [
+    {
+      "Image": {
+        "mime": "Jpeg",
+        "bytes": [
+          255,
+          216,
+          255,
+          224
+        ],
+        "origin": "File"
+      }
+    }
+  ],
+  "is_error": false
+}

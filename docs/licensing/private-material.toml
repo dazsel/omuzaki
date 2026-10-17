@@ -1,0 +1,33 @@
+# The private-material list: names, path prefixes and hashes of material that is not licensed for the product and must
+# never be committed, shipped, shown, used as training data or turned into an eval record. One file, read at run time by
+# both lints so that the two cannot drift:
+#   - `omuzaki-test eval` reads `prefixes`, `hashes` and `names` (crates/omuzaki-test/src/eval/provenance.rs);
+#   - `cargo xtask lint-seed` reads `names` and `face_profile_ids` (xtask/src/lint_seed/private.rs).
+# Every entry names its source in `docs/licensing/policy.md`, "Private test material". Placeholders stand in for the real
+# names, prefixes and hashes until the owner supplies them; never write a real one in a public place.
+
+# Source: policy.md, "Private test material": third parties' characters. Matched case-insensitively as substrings of a
+# item path (and, for `lint-seed`, a name, id, title, tag or origin), so a suffix or a path component is caught too.
+names = [
+  "example-private",
+  "example-private-2",
+]
+
+# Source: policy.md, "Private test material": a face profile fitted to a sheet that cannot be shipped. `sheet` is an
+# ordinary word elsewhere, so it counts only as a whole segment of a face-profile id.
+face_profile_ids = [
+  "sheet",
+]
+
+# Source: policy.md, "Private test material": the folders that hold the material, for eval items. Prefixes match from the
+# start of a path or after any `/`, ignoring case.
+prefixes = [
+  "characters/example-private/",
+  "characters/example-private-2/",
+  # A recording of a person (policy.md: "a recording of a person"): a local test clip's folder, never committed.
+  "example-clip/",
+]
+
+# Source: policy.md, "Private test material": file hashes (`b3:<hex>`) of the same material, so a renamed copy is still
+# caught. The owner supplies them.
+hashes = []

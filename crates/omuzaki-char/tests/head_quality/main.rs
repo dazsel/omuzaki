@@ -122,6 +122,7 @@ fn arb_outline() -> impl Strategy<Value = HeadOutline> {
             top,
             height,
             exponent,
+            exponent_lower: None,
             chin,
             cheek_puff,
         },

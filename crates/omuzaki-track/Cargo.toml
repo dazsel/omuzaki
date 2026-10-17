@@ -16,10 +16,13 @@ thiserror.workspace = true
 omuzaki-ai-api = { path = "../omuzaki-ai-api" }
 omuzaki-anim-api = { path = "../omuzaki-anim-api" }
 omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-pixfmt = { path = "../omuzaki-pixfmt" }
+omuzaki-track-api = { path = "../omuzaki-track-api" }
 
 [dev-dependencies]
 criterion.workspace = true
 omuzaki-ai-mock = { path = "../omuzaki-ai-mock" }
+omuzaki-track-mock = { path = "../omuzaki-track-mock" }
 sha2.workspace = true
 tempfile.workspace = true
 
@@ -27,10 +30,14 @@ tempfile.workspace = true
 name = "pipeline"
 harness = false
 
+[[bench]]
+name = "webcam"
+harness = false
+
 # Native only: the webcam capture path (camera thread, pixel conversion) has no wasm32 counterpart.
 [package.metadata.omuzaki]
 kind = "Implementation"
-summary = "the webcam face tracker (PF-01), ported from the `spikes/webcam-track` spike: MediaPipe's BlazeFace detector, Face Mesh V2 and Blendshape V2 graphs as `omuzaki-ai-api` sessions (`FaceGraphs`, three slot signatures), video-mode ROI tracking, One-Euro landmark smoothing and the Procrustes head-pose fit; `FaceTracker::track` allocates nothing after warm-up and returns a fixed-size `FaceSample`, which `to_track_frame` turns into an `anim-api` `TrackFrame`. Tested over `omuzaki-ai-mock` scripted sessions; the real models, camera thread and `Tracker` seam are separate work"
+summary = "the webcam face tracker (PF-01), ported from the `spikes/webcam-track` spike: MediaPipe's BlazeFace detector, Face Mesh V2 and Blendshape V2 graphs as `omuzaki-ai-api` sessions (`FaceGraphs`, three slot signatures), video-mode ROI tracking, One-Euro landmark smoothing and the Procrustes head-pose fit; `FaceTracker::track` allocates nothing after warm-up and returns a fixed-size `FaceSample`, which `to_track_frame` turns into an `anim-api` `TrackFrame`. Tested over `omuzaki-ai-mock` scripted sessions. The `webcam` module adds `WebcamTracker` (the `omuzaki-track-api` `Tracker`): a camera thread that converts each frame (`omuzaki-pixfmt`), tracks it, times it on the stage clock and publishes it to the newest-wins mailbox, with a preview tap for the UI, tested over `omuzaki-track-mock`'s `FakeCamera`. The real models and parity with MediaPipe are separate work"
 wasm = false
 
 [lints]

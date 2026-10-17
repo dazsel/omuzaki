@@ -1,5 +1,14 @@
-src/conformance.rs: pub type Make<'a> = &'a dyn Fn(Script) -> Box<dyn LlmClient>;
-src/conformance.rs: pub fn run(make: Make<'_>) -> Result<(), String> {
+src/conformance/broken.rs: pub struct RetriesAfterStart(FakeLlm);
+src/conformance/broken.rs: pub fn new(mut script: Script) -> Self {
+src/conformance/mod.rs: pub use broken::RetriesAfterStart;
+src/conformance/mod.rs: pub type Make<'a> = &'a dyn Fn(Script) -> Box<dyn LlmClient>;
+src/conformance/mod.rs: pub struct Harness<'a> {
+src/conformance/mod.rs: pub fn new(make: Make<'a>) -> Self {
+src/conformance/mod.rs: pub fn with_opaque_provider(mut self, provider: &'a str) -> Self {
+src/conformance/mod.rs: pub fn with_cache_writes(mut self) -> Self {
+src/conformance/mod.rs: pub fn with_secret(mut self, secret: &'a str) -> Self {
+src/conformance/mod.rs: pub fn run(harness: &Harness<'_>) -> Result<(), String> {
+src/conformance/mod.rs: pub fn case_names(harness: &Harness<'_>) -> Vec<&'static str> {
 src/fake.rs: pub struct FakeLlm {
 src/fake.rs: pub fn new(script: Script) -> Self {
 src/fake.rs: pub fn from_json(json: &str) -> Result<Self, LlmError> {
@@ -21,6 +30,7 @@ src/script.rs: pub fn with_expect(mut self, expect: Expect) -> Self {
 src/script.rs: pub fn with_chunk(mut self, bytes: usize) -> Self {
 src/script.rs: pub fn with_error(mut self, error: Injected) -> Self {
 src/script.rs: pub fn with_retries(mut self, retries: u8) -> Self {
+src/script.rs: pub fn with_retry_after_ms(mut self, ms: u64) -> Self {
 src/script.rs: pub fn with_delay_ms(mut self, ms: u64) -> Self {
 src/script.rs: pub fn new() -> Self {
 src/script.rs: pub fn with_user_contains(mut self, text: impl Into<String>) -> Self {
