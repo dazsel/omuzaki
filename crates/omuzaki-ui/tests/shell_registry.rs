@@ -6,14 +6,14 @@
 use std::borrow::Cow;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use egui::accesskit::Role;
-use egui::{Key, Modifiers, Ui, vec2};
+use egui::{Ui, vec2};
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable as _;
+use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use omuzaki_doc_api::{DocPath, Value};
 use omuzaki_ops_api::{Actor, Event, Grants, OpError, OpInfo, OpRecord, Outcome, Request, Runner, TxId};
-use omuzaki_ui::ds::testing::press;
 use omuzaki_ui::shell::Shell;
 use omuzaki_ui::shell::persist::LayoutStore;
 use omuzaki_ui::shell::stub::NullRunner;
@@ -57,6 +57,21 @@ impl Panel for Blank {
     }
 }
 
+/// A panel that cannot work and registered words of its own, with a screen-reader label that says more than its title.
+struct Offline;
+
+impl Panel for Offline {
+    fn ui(&mut self, _ui: &mut Ui, _ctx: &PanelCtx<'_>) {}
+
+    fn available(&self, _ctx: &PanelCtx<'_>) -> bool {
+        false
+    }
+
+    fn accessibility_label(&self) -> Option<Cow<'static, str>> {
+        Some(Cow::Borrowed("Offline sheet tools"))
+    }
+}
+
 register_panel! {
     id: "test.canvas", title: "Canvas", icon: "", region: Region::Center, min_size: [480.0, 320.0], order: 10,
     kind: PanelKind::Primary, empty: EmptyState::new("No sheet is loaded", "Import a sheet"),
@@ -70,11 +85,16 @@ register_panel! {
     id: "test.blank", title: "Blank", icon: "", region: Region::Right, min_size: [288.0, 160.0], order: 901,
     build: |_| Box::new(Blank),
 }
+register_panel! {
+    id: "test.offline", title: "Offline", icon: "", region: Region::Right, min_size: [288.0, 160.0], order: 902,
+    empty: EmptyState::new("The sheet tools are offline", "Reconnect them"),
+    build: |_| Box::new(Offline),
+}
 register_workspace! {
     id: "test.sheet", title: "Sheet", icon: "", order: 900, group: Group::Make,
     default_layout: || Node::split(
         Dir::Horizontal,
-        vec![Node::tabs(&["test.notes", "test.blank"]), Node::pane("test.canvas")],
+        vec![Node::tabs(&["test.notes", "test.blank", "test.offline"]), Node::pane("test.canvas")],
         &[1.0, 3.0],
     ),
 }
@@ -98,33 +118,50 @@ fn assert_shows(harness: &Harness<'_, Shell>, label: &str) {
     assert!(harness.query_all_by_label(label).next().is_some(), "{label:?} is not on screen");
 }
 
-fn ids<T>(items: &[&T], id: impl Fn(&T) -> &'static str) -> Vec<&'static str> {
-    items.iter().map(|item| id(item)).collect()
+/// Opens a workspace the way a person does, by clicking its tab.
+fn open_workspace(harness: &mut Harness<'_, Shell>, id: &str) {
+    let Some(title) = harness.state().registry().workspace(id).map(|w| w.title) else {
+        panic!("{id:?} is not a registered workspace");
+    };
+    harness.get_by_role_and_label(Role::Tab, title).click();
+    harness.run_steps(3);
+    assert_eq!(harness.state().active_workspace(), Some(id), "the {title} tab opens {id}");
+}
+
+/// Whether a region named `label` is on screen.
+fn has_region(harness: &Harness<'_, Shell>, label: &str) -> bool {
+    harness.query_all_by_role_and_label(Role::Region, label).next().is_some()
+}
+
+/// Where each of `wanted` stands in `listed`, which must hold them all and in this order. Other registrations may sit
+/// between and around them: a crate that registers more never breaks this.
+#[track_caller]
+fn assert_in_order(listed: &[&str], wanted: &[&str]) {
+    let at = |id: &str| listed.iter().position(|l| *l == id).unwrap_or_else(|| panic!("{id:?} is not in {listed:?}"));
+    let places: Vec<usize> = wanted.iter().map(|id| at(id)).collect();
+    assert!(places.windows(2).all(|w| w[0] < w[1]), "expected {wanted:?} in this order, got {places:?} in {listed:?}");
+}
+
+/// Whether `keys` are strictly increasing: sorted, and no two registrations tied on all of it.
+#[track_caller]
+fn assert_sorted<K: Ord + std::fmt::Debug>(keys: &[K]) {
+    assert!(keys.windows(2).all(|w| w[0] < w[1]), "not sorted: {keys:?}");
 }
 
 #[test]
 fn registrations_from_other_crates_join_the_shells_lists_by_group_then_order_then_id() {
     let harness = plain();
     let registry = harness.state().registry();
-    // Left, centre, right: within a region by order, then id (`mock.probe` and `test.notes` share order 900).
-    let panels = ids(registry.panels(), |p| p.id);
-    assert_eq!(
-        panels,
-        [
-            "outliner",
-            "library",
-            "test.canvas",
-            "viewport",
-            "inspector",
-            "agent",
-            "history",
-            "mock.probe",
-            "test.notes",
-            "test.blank"
-        ]
-    );
-    // Make before Watch whatever the order key says.
-    assert_eq!(ids(registry.workspaces(), |w| w.id), ["build", "test.sheet", "mock.probe"]);
+    // Whatever else is registered, the whole list is in the documented order: region (group), then order, then id.
+    assert_sorted(&registry.panels().iter().map(|p| (p.region, p.order, p.id)).collect::<Vec<_>>());
+    assert_sorted(&registry.workspaces().iter().map(|w| (w.group, w.order, w.id)).collect::<Vec<_>>());
+    // These crates' own registrations stand where that order puts them: the centre before the right dock, and within
+    // the right dock by order, then id (`mock.probe` and `test.notes` share order 900).
+    let panels: Vec<&str> = registry.panels().iter().map(|p| p.id).collect();
+    assert_in_order(&panels, &["test.canvas", "mock.probe", "test.notes", "test.blank", "test.offline"]);
+    // Make before Watch whatever the order key says (both have order 900).
+    let workspaces: Vec<&str> = registry.workspaces().iter().map(|w| w.id).collect();
+    assert_in_order(&workspaces, &["test.sheet", "mock.probe"]);
     assert!(registry.duplicates().is_empty(), "{:?}", registry.duplicates());
 }
 
@@ -134,7 +171,9 @@ fn the_order_is_the_same_on_every_start() {
     let second = plain();
     let describe = |h: &Harness<'_, Shell>| {
         let registry = h.state().registry();
-        (ids(registry.panels(), |p| p.id), ids(registry.workspaces(), |w| w.id))
+        let panels: Vec<_> = registry.panels().iter().map(|p| p.id).collect();
+        let workspaces: Vec<_> = registry.workspaces().iter().map(|w| w.id).collect();
+        (panels, workspaces)
     };
     assert_eq!(describe(&first), describe(&second));
 }
@@ -142,32 +181,55 @@ fn the_order_is_the_same_on_every_start() {
 #[test]
 fn every_registered_workspace_is_a_tab_and_each_renders_its_own_panels() {
     let mut harness = plain();
-    for tab in ["Build", "Sheet", "Probe"] {
-        assert_shows(&harness, tab);
+    let workspaces: Vec<&str> = harness.state().registry().workspaces().iter().map(|w| w.id).collect();
+    for id in &workspaces {
+        let title = harness.state().registry().workspace(id).map(|w| w.title).expect("registered");
+        assert!(harness.query_by_role_and_label(Role::Tab, title).is_some(), "{id} has no tab");
     }
-    // The second tab is the sheet workspace of this crate: its canvas says why it is empty, its notes draw.
-    press(&mut harness, Modifiers::COMMAND, Key::Num2);
-    assert_eq!(harness.state().active_workspace(), Some("test.sheet"));
-    harness.run_steps(2);
+    // The sheet workspace of this crate: its canvas says why it is empty, its notes draw.
+    open_workspace(&mut harness, "test.sheet");
     for label in ["No sheet is loaded", "Import a sheet", "Notes body"] {
         assert_shows(&harness, label);
     }
-    // The third is the mock's probe: a panel from a second crate, drawing every frame.
-    press(&mut harness, Modifiers::COMMAND, Key::Num3);
-    assert_eq!(harness.state().active_workspace(), Some("mock.probe"));
-    harness.run_steps(2);
+    // The mock's probe: a panel from a second crate, drawing every frame.
+    open_workspace(&mut harness, "mock.probe");
     assert!(harness.query_by_label_contains("frames, 0 events").is_some(), "the probe panel draws its body");
 }
 
 #[test]
 fn a_panel_says_more_to_a_screen_reader_than_its_title_and_an_unavailable_one_without_words_gets_a_notice() {
     let mut harness = plain();
-    press(&mut harness, Modifiers::COMMAND, Key::Num2);
-    harness.run_steps(2);
+    open_workspace(&mut harness, "test.sheet");
     assert_shows(&harness, "Notes about the sheet");
     harness.get_by_label("Blank").click();
     harness.run_steps(3);
     assert_shows(&harness, "Blank can't work right now");
+}
+
+#[test]
+fn every_panel_body_is_a_region_named_by_its_label_or_else_its_title_even_when_unavailable() {
+    let mut harness = plain();
+    open_workspace(&mut harness, "test.sheet");
+    // An explicit label names the region, and the tab keeps the title.
+    assert!(has_region(&harness, "Notes about the sheet"));
+    assert!(!has_region(&harness, "Notes"), "the explicit label replaces the title");
+    // An unavailable panel with no label is named by its title (the primary one is always drawn).
+    assert!(has_region(&harness, "Canvas"));
+    harness.get_by_label("Blank").click();
+    harness.run_steps(3);
+    assert!(has_region(&harness, "Blank"));
+    // An unavailable panel with a label of its own still answers to it, over its empty state.
+    harness.get_by_label("Offline").click();
+    harness.run_steps(3);
+    assert_shows(&harness, "The sheet tools are offline");
+    assert!(has_region(&harness, "Offline sheet tools"));
+    assert!(!has_region(&harness, "Offline"));
+    // An available panel without a label: the probe renames itself every frame, and its region follows.
+    open_workspace(&mut harness, "mock.probe");
+    let named = |h: &Harness<'_, Shell>| {
+        h.query_all_by_role(Role::Region).any(|n| n.accesskit_node().label().is_some_and(|l| l.starts_with("Probe (")))
+    };
+    assert!(named(&harness), "the probe's region is named by its own title");
 }
 
 #[test]
@@ -243,18 +305,60 @@ impl Runner for Feed {
     }
 }
 
+/// How long a test waits for the event thread before it calls the shell deaf. A pass takes microseconds, so this is
+/// only ever spent when the shell is broken.
+const WAKE: Duration = Duration::from_secs(60);
+
+/// Hands the test a message each time egui asks its integration for a frame, as eframe's window wake-up does.
+fn wakes(harness: &Harness<'_, Shell>) -> Receiver<()> {
+    let (tx, rx) = channel();
+    harness.ctx.set_request_repaint_callback(move |_| {
+        // The test may have stopped listening; the shell does not care.
+        tx.send(()).ok();
+    });
+    rx
+}
+
+/// Settles the harness, then forgets the wake-ups its own passes asked for: a request that repaints leaves a second one
+/// for the frame after, so the shell must be idle before the next event can be told apart.
+fn settle(harness: &mut Harness<'_, Shell>, wakes: &Receiver<()>) {
+    harness.run();
+    while wakes.try_recv().is_ok() {}
+}
+
+fn committed(n: u64) -> Event {
+    Event::tx_committed(TxId(n), "Edit", Actor::System)
+}
+
 #[test]
 fn panels_see_the_runners_events_once_each() {
     let (feed, sender) = Feed::new();
     let mut harness = shell(feed, None);
-    press(&mut harness, Modifiers::COMMAND, Key::Num3);
-    harness.run_steps(2);
+    open_workspace(&mut harness, "mock.probe");
+    let wakes = wakes(&harness);
+    settle(&mut harness, &wakes);
     assert!(harness.query_by_label_contains("frames, 0 events").is_some());
     for n in 1..=3 {
-        sender.send(Event::tx_committed(TxId(n), "Edit", Actor::System)).expect("the shell holds the receiver");
+        sender.send(committed(n)).expect("the shell holds the receiver");
+        // The event thread has put the event in the inbox by the time it asks for the frame this waits for.
+        wakes.recv_timeout(WAKE).expect("the event woke the shell");
+        harness.run();
+        let counted = format!("frames, {n} events");
+        assert!(harness.query_by_label_contains(&counted).is_some(), "the probe counted {n} events once");
+        while wakes.try_recv().is_ok() {}
     }
     harness.run_steps(3);
-    assert!(harness.query_by_label_contains("frames, 3 events").is_some(), "the probe counted the three events once");
-    harness.run_steps(3);
     assert!(harness.query_by_label_contains("frames, 3 events").is_some(), "later frames bring no new events");
+}
+
+#[test]
+fn an_event_wakes_an_idle_shell_without_a_frame_being_stepped() {
+    let (feed, sender) = Feed::new();
+    let mut harness = shell(feed, None);
+    let wakes = wakes(&harness);
+    settle(&mut harness, &wakes);
+    // Idle: no frame is asked for until something happens.
+    assert!(wakes.try_recv().is_err(), "an idle shell asks for nothing");
+    sender.send(committed(1)).expect("the shell holds the receiver");
+    wakes.recv_timeout(WAKE).expect("an event the runner sends wakes the idle shell");
 }

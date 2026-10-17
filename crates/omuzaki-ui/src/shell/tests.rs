@@ -5,7 +5,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 
-use egui::{Key, Modifiers, Vec2, vec2};
+use egui::accesskit::Role;
+use egui::{Key, Modifiers, Ui, Vec2, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable as _;
 use omuzaki_core::time::Seconds;
@@ -13,8 +14,9 @@ use omuzaki_doc_api::{DocPath, DocVersion, Patch, Value};
 use omuzaki_ops_api::{Actor, Event, Grants, OpError, OpInfo, OpRecord, Outcome, Request, Runner, TxId};
 
 use omuzaki_ui_api::layout::{Dir as ApiDir, Node as ApiNode};
-use omuzaki_ui_api::register_workspace;
-use omuzaki_ui_api::registry::Group;
+use omuzaki_ui_api::panel::{Panel, PanelCtx};
+use omuzaki_ui_api::registry::{Group, Region};
+use omuzaki_ui_api::{register_panel, register_workspace};
 
 use super::Shell;
 use super::layout::{Dir, Layout, Node};
@@ -26,6 +28,18 @@ use crate::ds::testing::{drag, press};
 // A second workspace, so the numbered keys have something to switch to.
 register_workspace! { id: "probe", title: "Probe", icon: icons::EYE, order: 90, group: Group::Make,
 default_layout: probe_layout }
+
+/// A left-dock panel no layout names: the one the View menu adds where the shell shows only a rail.
+struct Extra;
+
+impl Panel for Extra {
+    fn ui(&mut self, ui: &mut Ui, _ctx: &PanelCtx<'_>) {
+        ui.label("Extra body");
+    }
+}
+
+register_panel! { id: "test.extra", title: "Extra", icon: icons::EYE, region: Region::Left, min_size: [240.0, 160.0],
+order: 900, build: |_| Box::new(Extra) }
 
 fn probe_layout() -> ApiNode {
     ApiNode::split(ApiDir::Horizontal, vec![ApiNode::pane("viewport"), ApiNode::pane("inspector")], &[3.0, 1.0])
@@ -162,6 +176,48 @@ fn at_the_smallest_window_the_left_dock_is_a_rail_whose_button_opens_a_drawer() 
     press(&mut harness, Modifiers::NONE, Key::Escape);
     harness.run_steps(3);
     assert!(!shows(&harness, "Pick a part to edit it"), "Esc closes the drawer");
+}
+
+/// The rail's buttons, which are one per left-dock panel the rail stands for.
+fn rail_shows(harness: &Harness<'_, Shell>, panel: &str) -> bool {
+    harness.query_by_label(&format!("Show {panel}")).is_some()
+}
+
+#[test]
+fn a_left_panel_shown_while_the_dock_is_a_rail_joins_the_rail_and_is_still_there_when_the_dock_unfolds() {
+    let (_keep, store) = store();
+    let mut harness = shell_at(vec2(1280.0, 720.0), Some(store.clone()), Arc::new(NullRunner));
+    assert!(!rail_shows(&harness, "Extra"), "Build does not dock the Extra panel");
+    harness.state_mut().show_panel("test.extra");
+    harness.run_steps(3);
+    assert!(rail_shows(&harness, "Extra"), "the rail stands for it now");
+    assert_shows(&harness, "Extra body");
+    // Unfolding: the dock is back with the panel in it, in the arrangement that is saved.
+    harness.set_size(vec2(1920.0, 1080.0));
+    harness.run_steps(4);
+    assert!(harness.state().shown_layout().is_some_and(|l| l.contains("test.extra")), "it is docked at full size");
+    harness.state().flush();
+    let saved = store.load("build").expect("readable").expect("the full-size arrangement was saved");
+    assert!(saved.contains("test.extra") && saved.contains("viewport"), "{:?}", saved.panels());
+    // Folding again keeps it on the rail.
+    harness.set_size(vec2(1280.0, 720.0));
+    harness.run_steps(4);
+    assert!(rail_shows(&harness, "Extra"));
+}
+
+#[test]
+fn a_left_panel_added_to_the_rail_is_there_in_the_next_session() {
+    let (_keep, store) = store();
+    let size = vec2(1280.0, 720.0);
+    let mut first = shell_at(size, Some(store.clone()), Arc::new(NullRunner));
+    first.state_mut().show_panel("test.extra");
+    first.run_steps(3);
+    first.state().flush();
+    let second = shell_at(size, Some(store.clone()), Arc::new(NullRunner));
+    assert!(rail_shows(&second, "Extra"), "a new session at the small size still has it on the rail");
+    // And a big window finds it docked, not only a small one.
+    let big = shell_at(vec2(1920.0, 1080.0), Some(store), Arc::new(NullRunner));
+    assert!(big.state().shown_layout().is_some_and(|l| l.contains("test.extra")));
 }
 
 #[test]
@@ -373,7 +429,7 @@ fn the_keys_still_work_after_a_click_has_focused_a_tab_or_button() {
 #[test]
 fn focus_follows_tab_presses_workspace_switches_and_f6_which_shows_the_panel_it_picks() {
     let mut harness = plain(vec2(1920.0, 1080.0));
-    harness.get_by_label("History").click();
+    harness.get_by_role_and_label(Role::Button, "History").click();
     harness.run_steps(3);
     assert_eq!(harness.state().focused_panel(), Some("history"));
     press(&mut harness, Modifiers::COMMAND, Key::Space);
@@ -399,14 +455,28 @@ fn focus_follows_tab_presses_workspace_switches_and_f6_which_shows_the_panel_it_
 }
 
 #[test]
+fn a_maximised_panel_has_no_tab_so_its_body_names_itself_by_its_title() {
+    let mut harness = plain(vec2(1920.0, 1080.0));
+    let region = |h: &Harness<'_, Shell>, label: &str| h.query_all_by_role_and_label(Role::Region, label).count();
+    // Docked, every panel body is a region named by its title (these panels give no label of their own).
+    assert_eq!(region(&harness, "Outliner"), 1);
+    press(&mut harness, Modifiers::NONE, Key::F6);
+    press(&mut harness, Modifiers::COMMAND, Key::Space);
+    harness.run_steps(2);
+    assert_eq!(region(&harness, "Outliner"), 1, "the maximised panel is named, with no tab beside it");
+    assert!(harness.query_by_role_and_label(Role::Button, "Outliner").is_none(), "no tab is drawn");
+    assert_eq!(region(&harness, "Viewport"), 0, "the others are not drawn");
+}
+
+#[test]
 fn the_primary_panel_cannot_be_dragged_out_and_the_lock_stops_every_other_move_and_divider() {
     let mut harness = plain(vec2(1920.0, 1080.0));
     let before = harness.state().shown_layout();
-    let viewport = harness.get_by_label("Viewport").rect().center();
+    let viewport = harness.get_by_role_and_label(Role::Button, "Viewport").rect().center();
     drag(&mut harness, &[viewport, egui::pos2(1700.0, 300.0), egui::pos2(1700.0, 320.0)]);
     assert_eq!(harness.state().shown_layout(), before, "the viewport tab stays in the centre");
     // Control: another panel's tab does move when unlocked, and not when locked.
-    let history = harness.get_by_label("History").rect().center();
+    let history = harness.get_by_role_and_label(Role::Button, "History").rect().center();
     press(&mut harness, Modifiers::COMMAND | Modifiers::SHIFT, Key::L);
     drag(&mut harness, &[history, egui::pos2(150.0, 600.0), egui::pos2(150.0, 620.0)]);
     drag(&mut harness, &[egui::pos2(1552.0, 500.0), egui::pos2(1500.0, 500.0)]);

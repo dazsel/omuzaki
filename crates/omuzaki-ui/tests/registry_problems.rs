@@ -6,12 +6,12 @@
 use std::io;
 use std::sync::{Arc, Mutex};
 
-use egui::{Key, Modifiers, Ui, vec2};
+use egui::accesskit::Role;
+use egui::{Ui, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable as _;
 use omuzaki_ui::ds::Settings;
 use omuzaki_ui::ds::gallery::{self, Gallery, Group};
-use omuzaki_ui::ds::testing::press;
 use omuzaki_ui::shell::Shell;
 use omuzaki_ui::shell::stub::NullRunner;
 use omuzaki_ui_api::layout::{Dir, Node};
@@ -88,10 +88,12 @@ fn the_shell_reports_a_workspace_or_panel_registered_twice_and_shows_the_first_o
     let log = logged(|| shell = Some(Shell::new(Arc::new(NullRunner), None)));
     let shell = shell.expect("the shell started");
 
-    // The registry lists the story too; the shell reports only what it shows.
-    let found: Vec<(DefKind, &str)> = shell.registry().duplicates().iter().map(|d| (d.kind, d.id)).collect();
+    // The registry lists the story too; the shell reports only what it shows. Only this file's clashes count: a crate
+    // linked in later may have its own, and this test is not the place to list them.
+    let ours: Vec<_> = shell.registry().duplicates().iter().filter(|d| d.id.starts_with("dup.")).collect();
+    let found: Vec<(DefKind, &str)> = ours.iter().map(|d| (d.kind, d.id)).collect();
     assert_eq!(found, [(DefKind::Workspace, "dup.ws"), (DefKind::Panel, "dup.panel"), (DefKind::Story, "dup.story")]);
-    for duplicate in shell.registry().duplicates() {
+    for duplicate in ours {
         assert!(duplicate.kept.contains("registry_problems.rs:"), "{duplicate}");
         assert!(duplicate.dropped.contains("registry_problems.rs:"), "{duplicate}");
         assert_ne!(duplicate.kept, duplicate.dropped);
@@ -133,7 +135,8 @@ fn the_gallery_reports_a_story_registered_twice_and_lists_the_first_once() {
 
     let ids: Vec<_> = gallery::all().iter().filter(|s| s.id == "dup.story").map(|s| s.title).collect();
     assert_eq!(ids, ["Story first"]);
-    let reported: Vec<_> = gallery::duplicates().iter().map(|d| (d.kind, d.id)).collect();
+    let reported: Vec<_> =
+        gallery::duplicates().iter().filter(|d| d.id.starts_with("dup.")).map(|d| (d.kind, d.id)).collect();
     assert_eq!(reported, [(DefKind::Story, "dup.story")]);
 }
 
@@ -167,13 +170,12 @@ fn a_workspace_with_a_missing_panel_or_without_a_primary_panel_still_opens_and_d
         .with_size(vec2(1920.0, 1080.0))
         .build_ui_state(|ui, shell: &mut Shell| shell.ui(ui), Shell::new(Arc::new(NullRunner), None));
     harness.run_steps(4);
-    // Tabs, in order: build, dup.ws, stray.ws, headless.ws.
-    for (key, workspace, body) in
-        [(Key::Num3, "stray.ws", "Start with a character"), (Key::Num4, "headless.ws", "Select a part to edit it")]
-    {
-        press(&mut harness, Modifiers::COMMAND, key);
-        assert_eq!(harness.state().active_workspace(), Some(workspace));
+    for (workspace, body) in [("stray.ws", "Start with a character"), ("headless.ws", "Select a part to edit it")] {
+        // Opened as a person does, by its tab: where the tab stands among the others is nobody's business here.
+        let title = harness.state().registry().workspace(workspace).map(|w| w.title).expect("registered");
+        harness.get_by_role_and_label(Role::Tab, title).click();
         harness.run_steps(3);
+        assert_eq!(harness.state().active_workspace(), Some(workspace));
         assert!(harness.query_all_by_label(body).next().is_some(), "{workspace} does not draw {body:?}");
     }
 }
