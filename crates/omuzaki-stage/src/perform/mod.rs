@@ -11,6 +11,7 @@ pub mod host;
 pub mod input;
 pub mod live;
 mod performer;
+pub mod settings;
 pub mod triggers;
 
 pub use performer::{

@@ -4504,10 +4504,13 @@ dependencies = [
  "omuzaki-render-api",
  "omuzaki-render-mock",
  "omuzaki-rig",
+ "omuzaki-settings",
  "omuzaki-settings-api",
  "omuzaki-stage-api",
  "omuzaki-store-api",
  "omuzaki-store-mock",
+ "omuzaki-stream",
+ "omuzaki-track",
  "omuzaki-track-api",
  "omuzaki-track-mock",
  "proptest",
@@ -4754,6 +4757,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "thiserror 2.0.21",
+ "toml",
 ]
 
 [[package]]

@@ -37,6 +37,7 @@ omuzaki-render-api = { path = "../omuzaki-render-api" }
 omuzaki-settings-api = { path = "../omuzaki-settings-api" }
 omuzaki-stage-api = { path = "../omuzaki-stage-api" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
+omuzaki-track = { path = "../omuzaki-track" }
 omuzaki-track-api = { path = "../omuzaki-track-api" }
 # Linked for their self-registrations (part kinds, retargets, ...) and for the rig, which the frame loop calls directly.
 omuzaki-anim = { path = "../omuzaki-anim" }
@@ -68,6 +69,8 @@ omuzaki-char-mock = { path = "../omuzaki-char-mock" }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 omuzaki-face-mock = { path = "../omuzaki-face-mock" }
 omuzaki-render-mock = { path = "../omuzaki-render-mock" }
+omuzaki-settings = { path = "../omuzaki-settings" }
+omuzaki-stream = { path = "../omuzaki-stream" }
 omuzaki-store-mock = { path = "../omuzaki-store-mock" }
 omuzaki-track-mock = { path = "../omuzaki-track-mock" }
 # The registration scan behind the link gate (`tests/registrations.rs`, ADR 0015).
