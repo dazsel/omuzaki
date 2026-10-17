@@ -217,14 +217,14 @@ fn workspace(app: LiveApp, meter: &Arc<LatencyMeter>, size: egui::Vec2) -> Harne
 }
 
 /// Steps the workspace until `done`, so the perform thread, the stage and the panel all move on.
-fn settle(harness: &mut Harness<'_, World>, mut done: impl FnMut(&World) -> bool) {
+fn settle(harness: &mut Harness<'_, World>, what: &str, mut done: impl FnMut(&World) -> bool) {
     let deadline = Instant::now() + LIMIT;
     while !done(harness.state()) && Instant::now() < deadline {
         harness.run_steps(1);
         // Paces the loop; what it waits for is the state `done` reads, not the time.
         std::thread::sleep(Duration::from_millis(8));
     }
-    assert!(done(harness.state()), "the workspace reached its state");
+    assert!(done(harness.state()), "the workspace reached: {what}");
     // One more frame so the picture and the panel agree on what they just reached.
     harness.run_steps(2);
 }
@@ -268,25 +268,26 @@ fn evidence_pictures_of_idle_calibrating_and_face_lost_with_the_character_on_the
         // The stage draws at the size of the space it has; the program frame itself is the output size in the app.
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // whole sizes
         let stage_px = UVec2::new((w - dock) as u32, h as u32);
-        let app = live(tracker(9.0), stage_px, &meter);
+        // Long enough that the slow software renders between polls can not outlast the script before "tracking" is seen.
+        let app = live(tracker(40.0), stage_px, &meter);
         let runner = app.runner();
         let mut harness = workspace(app, &meter, size);
 
         // Idle: the app just opened, no camera yet: the life layer moves the character.
-        settle(&mut harness, |world| world.shown);
+        settle(&mut harness, "the first picture", |world| world.shown);
         assert!(stage_shows_a_character(&mut harness, dock), "idle: the character is on the stage");
         save(&mut harness, dir.as_deref(), "idle", (w, h));
 
         // Calibrating: the camera is on, the face is found and a calibration runs over it.
         track_my_face(&runner);
-        settle(&mut harness, |_| run(&runner, "perform.status", &[])["tracking"] == "tracking");
+        settle(&mut harness, "tracking", |_| run(&runner, "perform.status", &[])["tracking"] == "tracking");
         run(&runner, "perform.calibrate", &[("frames", Value::from(300))]);
-        settle(&mut harness, |_| meter.reading().is_some());
+        settle(&mut harness, "a measured latency", |_| meter.reading().is_some());
         assert!(stage_shows_a_character(&mut harness, dock), "calibrating: the character is on the stage");
         save(&mut harness, dir.as_deref(), "calibrating", (w, h));
 
         // Face lost: the script ends, the source goes quiet and the life layer takes the face over.
-        settle(&mut harness, |_| run(&runner, "perform.status", &[])["tracking"] == "lost");
+        settle(&mut harness, "face lost", |_| run(&runner, "perform.status", &[])["tracking"] == "lost");
         assert!(stage_shows_a_character(&mut harness, dock), "face lost: the character is on the stage");
         save(&mut harness, dir.as_deref(), "face-lost", (w, h));
     }

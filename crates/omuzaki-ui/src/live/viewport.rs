@@ -118,6 +118,11 @@ pub fn kit_character() -> Result<BuiltCharacter, ViewportError> {
         };
         def.parts.insert(PartId::new(kind).map_err(|e| bad(&e))?, part);
     }
+    // The colours the kit's body, head and hair ask for: skin with its shade and line, and an outfit colour.
+    def.palette = serde_json::from_value(serde_json::json!({
+        "skin": "#f9d3c5", "skin_shade": "#f2b4ab", "skin_line": "#c98a80", "outfit": "#24392f",
+    }))
+    .map_err(|e| bad(&e))?;
     def.face.expressions = ExpressionSet::starter();
     let id = CharId::new("kit").map_err(|e| bad(&e))?;
     RegistryBuilder.build(&id, &def, &BuildOptions::default(), &BuildServices::default()).map_err(ViewportError::Character)
