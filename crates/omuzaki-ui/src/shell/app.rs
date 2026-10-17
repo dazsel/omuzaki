@@ -10,8 +10,8 @@
 //! own name (`Fold::key`), so a small window never overwrites the layout made on a big one and each is remembered.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 use std::sync::mpsc::Receiver;
+use std::sync::{Arc, Mutex, Weak};
 
 use egui::{
     Align, CentralPanel, Context, Frame, Key, Layout as Flow, Margin, Panel, Popup, Response, RichText, Ui, Vec2,
@@ -123,8 +123,10 @@ pub struct Shell {
     models: ViewModels,
     /// Who panels act for.
     actor: Actor,
-    /// The runner's event stream, when it gave one.
+    /// The runner's event stream, until the first frame hands it to the thread that waits on it ([`wake_on_events`]).
     events: Option<Receiver<Event>>,
+    /// Events that thread has received and no frame has taken yet.
+    inbox: Arc<Mutex<Vec<Event>>>,
     /// The events of this frame, which every panel sees; refilled once per egui frame, not per pass.
     frame_events: Vec<Event>,
     /// The egui frame `frame_events` belongs to.
@@ -181,6 +183,7 @@ impl Shell {
             models: ViewModels::new(),
             actor,
             events,
+            inbox: Arc::default(),
             frame_events: Vec::new(),
             events_frame: u64::MAX,
             store,
@@ -263,17 +266,20 @@ impl Shell {
         self.save_if_edited(&ctx);
     }
 
-    /// Reads what the runner sent since the last frame, once per egui frame: egui may run `ui` again in the same frame
+    /// Takes what the runner sent since the last frame, once per egui frame: egui may run `ui` again in the same frame
     /// when a pass is discarded, and every panel (in each pass) must see the same events.
     fn pump_events(&mut self, ctx: &Context) {
+        if let Some(events) = self.events.take() {
+            wake_on_events(events, &self.inbox, ctx);
+        }
         let frame = ctx.cumulative_frame_nr();
         if frame == self.events_frame {
             return;
         }
         self.events_frame = frame;
         self.frame_events.clear();
-        if let Some(events) = &self.events {
-            self.frame_events.extend(events.try_iter());
+        if let Ok(mut inbox) = self.inbox.lock() {
+            self.frame_events.append(&mut inbox);
         }
     }
 
@@ -355,12 +361,7 @@ impl Shell {
             Some(view) => view.saved,
             None => self.full_layout(self.active, plan, from_disk),
         };
-        let rail: Vec<_> = if fold.left_rail {
-            let panels = saved.panels().into_iter().filter_map(|p| self.registry.panel(p));
-            panels.filter(|p| p.region == Region::Left).collect()
-        } else {
-            Vec::new()
-        };
+        let rail = if fold.left_rail { self.rail_of(&saved) } else { Vec::new() };
         let shown = if fold == Fold::NONE {
             saved.clone()
         } else {
@@ -380,6 +381,12 @@ impl Shell {
         }
         let tree = shown.to_tree(egui::Id::new(("shell_tree", workspace.id)));
         self.views[self.active] = Some(View { saved, shown, tree, fold, rail });
+    }
+
+    /// The left-dock panels of `saved`: what the rail stands for when the left dock is folded.
+    fn rail_of(&self, saved: &Layout) -> Vec<&'static PanelDef> {
+        let panels = saved.panels().into_iter().filter_map(|p| self.registry.panel(p));
+        panels.filter(|p| p.region == Region::Left).collect()
     }
 
     /// The layout of `workspace` at full size: the saved one made safe, or the default sized for this window.
@@ -488,6 +495,18 @@ impl Shell {
         }
     }
 
+    /// Takes `layout` as the full-size arrangement of the active workspace, even while a smaller window shows a folded
+    /// one, and queues it to be saved under the workspace's own name.
+    fn record_full(&mut self, layout: &Layout) {
+        let Some(&workspace) = self.workspaces.get(self.active) else { return };
+        let Some(view) = self.views.get_mut(self.active).and_then(Option::as_mut) else { return };
+        view.saved = layout.clone();
+        if let Some(saver) = &self.saver {
+            saver.save(workspace.id, layout);
+            self.forgotten.remove(workspace.id);
+        }
+    }
+
     /// Shows the panel registered as `id` in the active workspace (View, Show panel): a panel in the arrangement is
     /// brought to the front and focused; one the arrangement lacks joins the tab group of a panel of its region, or
     /// gets a column of its own; a left panel in a window that folds the left dock opens as the drawer.
@@ -495,8 +514,19 @@ impl Shell {
         let Some(def) = self.registry.panel(id) else { return };
         let Some(view) = self.views.get_mut(self.active).and_then(Option::as_mut) else { return };
         if view.fold.left_rail && def.region == Region::Left {
-            if !view.rail.iter().any(|p| p.id == id) {
-                view.rail.push(def);
+            // The rail stands for the left panels of the full-size arrangement, so a left panel it lacks is added there
+            // and saved under the workspace's own name: it survives a resize that unfolds the dock and a restart.
+            if !view.saved.contains(id) {
+                let saved = view.saved.clone();
+                let anchor = saved.panels().into_iter().find(|p| {
+                    self.registry.panel(p).is_some_and(|d| d.region == Region::Left && d.kind != PanelKind::Primary)
+                });
+                let layout = saved.with_panel(id, anchor, true);
+                self.record_full(&layout);
+            }
+            let rail = self.views.get(self.active).and_then(Option::as_ref).map(|v| self.rail_of(&v.saved));
+            if let (Some(rail), Some(view)) = (rail, self.views.get_mut(self.active).and_then(Option::as_mut)) {
+                view.rail = rail;
             }
             self.drawer = Some(id.to_owned());
             return;
@@ -695,6 +725,26 @@ fn icon_button(ui: &mut Ui, glyph: &str, tip: &Tip<'_>, enabled: bool) -> Respon
     // The glyph is not a name: the tooltip's words are what a screen reader says.
     a11y::describe(&response, || WidgetInfo::labeled(WidgetType::Button, enabled, tip.name), |_| {});
     response.tip(*tip)
+}
+
+/// Moves the runner's events into `inbox` as they arrive and asks egui for a frame each time, so an event reaches the
+/// panels while the window is otherwise idle (the shell never repaints on its own). The thread blocks on the stream
+/// and so costs nothing at rest; it ends when the runner closes the stream, or, after the next event, once the shell
+/// that owns `inbox` is gone.
+fn wake_on_events(events: Receiver<Event>, inbox: &Arc<Mutex<Vec<Event>>>, ctx: &Context) {
+    let (inbox, ctx): (Weak<Mutex<Vec<Event>>>, Context) = (Arc::downgrade(inbox), ctx.clone());
+    let spawned = std::thread::Builder::new().name("shell-events".to_owned()).spawn(move || {
+        for event in events {
+            let Some(inbox) = inbox.upgrade() else { return };
+            let Ok(mut held) = inbox.lock() else { return };
+            held.push(event);
+            drop(held);
+            ctx.request_repaint();
+        }
+    });
+    if let Err(error) = spawned {
+        tracing::warn!(%error, "panels will see no events");
+    }
 }
 
 /// The widths the docks have in a window of this plan: the left and right docks by region, nothing for the others.

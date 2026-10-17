@@ -30,18 +30,26 @@ impl Bodies {
 
     /// Draws the body of `def` into `ui`, building the panel first if this is its first frame. While the panel says it
     /// cannot work, the registered empty state is drawn instead: a headline saying why and a line saying what to do.
+    ///
+    /// Either way the body is one AccessKit region named by [`Panel::accessibility_label`] or, when the panel gives
+    /// none, by its title (the API's promise). A maximised panel has no tab to name it, and an unavailable one still
+    /// answers to its explicit label, so the name belongs to the body and not to the tab.
     pub fn draw(&mut self, ui: &mut Ui, def: &'static PanelDef, ctx: &PanelCtx<'_>) {
         let panel = self.built.entry(def.id).or_insert_with(|| (def.build)(ctx));
-        if !panel.available(ctx) {
-            unavailable(ui, def);
-            return;
-        }
-        let Some(label) = panel.accessibility_label() else {
-            panel.ui(ui, ctx);
-            return;
+        let egui_ctx = ui.ctx().clone();
+        let label = match panel.accessibility_label() {
+            Some(label) => label,
+            None => title(&egui_ctx, &panel.title().unwrap_or(Cow::Borrowed(def.title))).into_owned().into(),
         };
-        // The panel says more to a screen reader than its title does: name the region its body is.
-        let response = ui.scope(|ui| panel.ui(ui, ctx)).response;
+        let response = ui
+            .scope(|ui| {
+                if panel.available(ctx) {
+                    panel.ui(ui, ctx);
+                } else {
+                    unavailable(ui, def);
+                }
+            })
+            .response;
         a11y::describe(
             &response,
             || WidgetInfo::labeled(WidgetType::Other, true, label.as_ref()),
