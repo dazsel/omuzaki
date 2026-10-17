@@ -88,5 +88,6 @@ fn skin_material(params: &BodyParams, ctx: &BuildCtx<'_>) -> Result<MaterialSpec
         vertex_colours: false,
         outline: Some(Outline { colour: ctx.colour(&params.skin.line)?, width: OUTLINE_WIDTH }),
         receives_shadows: true,
+        uv_transform: omuzaki_render_api::UvTransform::IDENTITY,
     })
 }
