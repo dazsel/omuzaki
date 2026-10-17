@@ -188,9 +188,16 @@ fn encode(frame: &LiveFrame) -> [u32; WORDS] {
     let [time_lo, time_hi] = halves(frame.tick.time.0.to_bits());
     // No arrival is a NaN, which no clock reads.
     let [arrived_lo, arrived_hi] = halves(frame.arrived.map_or(f64::NAN, |at| at.0).to_bits());
-    for word in
-        [index_lo, index_hi, time_lo, time_hi, frame.tick.dt.to_bits(), tracking_word(frame.tracking), arrived_lo, arrived_hi]
-    {
+    for word in [
+        index_lo,
+        index_hi,
+        time_lo,
+        time_hi,
+        frame.tick.dt.to_bits(),
+        tracking_word(frame.tracking),
+        arrived_lo,
+        arrived_hi,
+    ] {
         put(word);
     }
     for value in frame.pose.hips_offset.to_array() {

@@ -9,6 +9,8 @@
 // Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+mod support;
+
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -94,18 +96,16 @@ const LIMIT: Duration = Duration::from_secs(120);
 
 /// How many pixels differ from the picture's top-left corner (the background) by more than a few levels.
 fn drawn_pixels(image: &Image) -> usize {
-    let corner = &image.rgba8[..4];
-    image
-        .rgba8
-        .chunks_exact(4)
-        .filter(|px| px.iter().zip(corner).any(|(a, b)| a.abs_diff(*b) > 12))
-        .count()
+    let (pixels, _) = image.rgba8.as_chunks::<4>();
+    let corner = pixels[0];
+    pixels.iter().filter(|px| px.iter().zip(corner).any(|(a, b)| a.abs_diff(b) > 12)).count()
 }
 
 /// How many pixels differ between two pictures of one size by more than a few levels.
 fn changed_pixels(a: &Image, b: &Image) -> usize {
     assert_eq!(a.size, b.size);
-    a.rgba8.chunks_exact(4).zip(b.rgba8.chunks_exact(4)).filter(|(p, q)| p.iter().zip(*q).any(|(x, y)| x.abs_diff(*y) > 12)).count()
+    let ((a, _), (b, _)) = (a.rgba8.as_chunks::<4>(), b.rgba8.as_chunks::<4>());
+    a.iter().zip(b).filter(|(p, q)| p.iter().zip(*q).any(|(x, y)| x.abs_diff(*y) > 12)).count()
 }
 
 #[test]
@@ -197,7 +197,7 @@ fn workspace(app: LiveApp, meter: &Arc<LatencyMeter>, size: egui::Vec2) -> Harne
     let runner = app.runner();
     let panel = LivePanel::new(&*runner).with_latency(Arc::clone(meter));
     let dock = (size.x * live_dock_share()).round();
-    Harness::builder().with_size(size).wgpu().build_ui_state(
+    Harness::builder().with_size(size).wgpu_setup(support::wgpu_setup()).build_ui_state(
         |ui, world: &mut World| {
             omuzaki_ui::ds::apply_settings(ui.ctx(), Settings::default());
             // The stage first, so its picture is this frame's.
@@ -244,6 +244,7 @@ fn save(harness: &mut Harness<'_, World>, dir: Option<&std::path::Path>, state: 
 fn stage_shows_a_character(harness: &mut Harness<'_, World>, dock: f32) -> bool {
     let image = harness.render().expect("renders");
     let (width, height) = image.dimensions();
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a whole, positive dock width
     let stage_width = width - dock as u32;
     let background = *image.get_pixel(2, 2);
     let mut differing = 0_usize;

@@ -8,8 +8,8 @@
 //! What it leaves out is the constant best-case transport delay of the camera itself (`LatencyStats` documents it),
 //! so it reads a little under the true glass-to-glass figure; the latency harness (#1967) measures that one.
 
-use std::sync::{Arc, OnceLock};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 /// Samples the median is taken over: about a second of frames at 60 Hz.

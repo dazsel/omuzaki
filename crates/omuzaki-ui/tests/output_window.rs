@@ -8,6 +8,8 @@
 // Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+mod support;
+
 use egui::{Color32, TextureOptions, vec2};
 use egui_kittest::Harness;
 use omuzaki_ui::aux_window::{PhysicalSize, points_for};
@@ -23,12 +25,15 @@ fn render(size: PhysicalSize, scale: f32, key: Color32) -> (image::RgbaImage, eg
     let points = points_for(size, scale).expect("a usable scale");
     let shown = card.clone();
     let mut texture = None;
-    let mut harness = Harness::builder().with_size(points).with_pixels_per_point(scale).wgpu().build_ui(|ui| {
-        let handle =
-            texture.get_or_insert_with(|| ui.ctx().load_texture("program", shown.clone(), TextureOptions::NEAREST));
-        let program = Program { texture: handle.id(), size };
-        paint_output(ui.painter(), ui.ctx().content_rect(), key, Some(program));
-    });
+    let mut harness =
+        Harness::builder().with_size(points).with_pixels_per_point(scale).wgpu_setup(support::wgpu_setup()).build_ui(
+            |ui| {
+                let handle = texture
+                    .get_or_insert_with(|| ui.ctx().load_texture("program", shown.clone(), TextureOptions::NEAREST));
+                let program = Program { texture: handle.id(), size };
+                paint_output(ui.painter(), ui.ctx().content_rect(), key, Some(program));
+            },
+        );
     harness.run_steps(2);
     let image = harness.render().expect("a software or hardware adapter renders");
     if let Some(dir) = std::env::var_os("OMUZAKI_OUTPUT_WINDOW_PNG") {
@@ -79,12 +84,13 @@ fn a_program_of_another_aspect_is_fitted_and_the_rest_is_key() {
     let size = PhysicalSize::new(320, 180);
     let card = test_card(90, 90);
     let mut texture = None;
-    let mut harness = Harness::builder().with_size(vec2(320.0, 180.0)).wgpu().build_ui(|ui| {
-        let handle =
-            texture.get_or_insert_with(|| ui.ctx().load_texture("square", card.clone(), TextureOptions::NEAREST));
-        let program = Program { texture: handle.id(), size: PhysicalSize::new(90, 90) };
-        paint_output(ui.painter(), ui.ctx().content_rect(), DEFAULT_KEY, Some(program));
-    });
+    let mut harness =
+        Harness::builder().with_size(vec2(320.0, 180.0)).wgpu_setup(support::wgpu_setup()).build_ui(|ui| {
+            let handle =
+                texture.get_or_insert_with(|| ui.ctx().load_texture("square", card.clone(), TextureOptions::NEAREST));
+            let program = Program { texture: handle.id(), size: PhysicalSize::new(90, 90) };
+            paint_output(ui.painter(), ui.ctx().content_rect(), DEFAULT_KEY, Some(program));
+        });
     harness.run_steps(2);
     let image = harness.render().expect("renders");
     assert_eq!(image.dimensions(), (size.width, size.height));

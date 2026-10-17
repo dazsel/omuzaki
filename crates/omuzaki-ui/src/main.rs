@@ -81,11 +81,11 @@ fn start_live(cc: &eframe::CreationContext<'_>) -> Option<LiveApp> {
 
 /// The renderer on eframe's own device, the kit stage on it, and the presenter that shares its picture with egui.
 fn start_stage(
-    state: &eframe::egui_wgpu::RenderState,
+    gpu: &eframe::egui_wgpu::RenderState,
 ) -> Result<(WgpuRenderer, Stage, Box<dyn Presenter>), ViewportError> {
-    let mut renderer = WgpuRenderer::from_device(&state.adapter, state.device.clone(), state.queue.clone())?;
+    let mut renderer = WgpuRenderer::from_device(&gpu.adapter, gpu.device.clone(), gpu.queue.clone())?;
     let stage = kit_stage(&mut renderer, PROGRAM_SIZE)?;
-    Ok((renderer, stage, Box::new(NativePresenter::new(state.clone()))))
+    Ok((renderer, stage, Box::new(NativePresenter::new(gpu.clone()))))
 }
 
 fn main() -> eframe::Result {

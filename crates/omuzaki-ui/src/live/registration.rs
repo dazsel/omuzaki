@@ -9,8 +9,8 @@ use omuzaki_ui_api::panel::{Panel, PanelCtx};
 use omuzaki_ui_api::registry::{Group, Region, StoryGroup};
 
 use super::panel::LivePanel;
-use super::viewport::StagePanel;
 use super::story::{self, StoryState};
+use super::viewport::StagePanel;
 use crate::ds::icons;
 
 /// The Live panel's id.

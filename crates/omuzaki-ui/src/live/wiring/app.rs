@@ -8,9 +8,9 @@ use omuzaki_anim_api::{ChannelBuf, HumanoidPose};
 use omuzaki_core::glam::UVec2;
 use omuzaki_face_api::ExpressionSet;
 use omuzaki_ops_api::{Runner, ServicesBuilder};
-use omuzaki_stage::perform::host::{PerformError, PerformHost};
 use omuzaki_render::WgpuRenderer;
 use omuzaki_stage::frame::Stage;
+use omuzaki_stage::perform::host::{PerformError, PerformHost};
 use omuzaki_stage::perform::input::{InputHost, NoSource};
 use omuzaki_stream_api::window::WindowHost;
 use omuzaki_track_api::camera::{CameraId, CameraInfo};
@@ -133,7 +133,8 @@ impl LiveApp {
             }
             return Err(ViewportError::Stopped);
         };
-        let view = LiveViewport::new(renderer, stage, size, reader, presenter, self.clock.clone(), Some(self.tracker.clone()));
+        let view =
+            LiveViewport::new(renderer, stage, size, reader, presenter, self.clock.clone(), Some(self.tracker.clone()));
         self.viewport = Some(view);
         Ok(())
     }

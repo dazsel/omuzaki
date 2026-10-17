@@ -95,8 +95,14 @@ impl PerformThread {
         let (writer, reader) = frame_mailbox();
         let sources = Arc::new(SourceSlot::new());
         let (stop, stats) = (Arc::new(AtomicBool::new(false)), Arc::new(Stats::default()));
-        let mut run =
-            PerformLoop { performer, control, writer, sources: Arc::clone(&sources), stats: Arc::clone(&stats), arrival: None };
+        let mut run = PerformLoop {
+            performer,
+            control,
+            writer,
+            sources: Arc::clone(&sources),
+            stats: Arc::clone(&stats),
+            arrival: None,
+        };
         let flag = Arc::clone(&stop);
         let thread = std::thread::Builder::new()
             .name(THREAD_NAME.to_owned())

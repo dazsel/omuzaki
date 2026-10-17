@@ -125,7 +125,9 @@ pub fn kit_character() -> Result<BuiltCharacter, ViewportError> {
     .map_err(|e| bad(&e))?;
     def.face.expressions = ExpressionSet::starter();
     let id = CharId::new("kit").map_err(|e| bad(&e))?;
-    RegistryBuilder.build(&id, &def, &BuildOptions::default(), &BuildServices::default()).map_err(ViewportError::Character)
+    RegistryBuilder
+        .build(&id, &def, &BuildOptions::default(), &BuildServices::default())
+        .map_err(ViewportError::Character)
 }
 
 /// The kit character on `renderer`, rendering into a target of `size`, lit and framed for the stage view, with its
@@ -146,7 +148,8 @@ pub fn kit_stage(renderer: &mut dyn Renderer, size: UVec2) -> Result<Stage, View
     scene.post = rig.post(false);
     let has_face = built.face.is_some();
     let target = renderer.create_target(&TargetDesc { size, alpha: AlphaEncoding::Straight })?;
-    let stage = Stage::new(renderer, built, UploadOptions::default(), scene, target, Quality::live(), StageClock::live());
+    let stage =
+        Stage::new(renderer, built, UploadOptions::default(), scene, target, Quality::live(), StageClock::live());
     let mut stage = match stage {
         Ok(stage) => stage,
         Err(error) => {
@@ -154,9 +157,7 @@ pub fn kit_stage(renderer: &mut dyn Renderer, size: UVec2) -> Result<Stage, View
             return Err(error.into());
         }
     };
-    if has_face
-        && let Err(error) = stage.set_face(renderer, FaceRig::standard())
-    {
+    if has_face && let Err(error) = stage.set_face(renderer, FaceRig::standard()) {
         if let Err(cleanup) = stage.release(renderer) {
             tracing::warn!(%cleanup, "releasing a stage that could not start failed too");
         }
@@ -448,6 +449,11 @@ impl StagePanel {
             );
             return;
         };
-        crate::output_window::paint_output(&ui.painter().with_clip_rect(rect), rect, egui::Color32::TRANSPARENT, Some(program));
+        crate::output_window::paint_output(
+            &ui.painter().with_clip_rect(rect),
+            rect,
+            egui::Color32::TRANSPARENT,
+            Some(program),
+        );
     }
 }
