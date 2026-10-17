@@ -242,6 +242,22 @@ mod tolerance {
     pub const MATRIX: f32 = 1e-5;
 }
 
+/// How far `y` is from `x`. A NaN on either side is infinite drift: a VRM never holds one, and `f32::max` would
+/// silently drop it.
+fn drift(x: f32, y: f32) -> f32 {
+    if x.is_nan() || y.is_nan() { f32::INFINITY } else { (x - y).abs() }
+}
+
+#[test]
+fn a_nan_on_either_side_is_infinite_drift() {
+    assert!(drift(1.0, f32::NAN).is_infinite());
+    assert!(drift(f32::NAN, 1.0).is_infinite());
+    assert!(drift(f32::NAN, f32::NAN).is_infinite());
+    let mut d = Drift::default();
+    d.floats("unit", tolerance::UNIT, "nan check", &[0.0, 1.0], &[0.0, f32::NAN]);
+    assert!(d.0["unit"].0.is_infinite());
+}
+
 /// The largest difference seen per kind of value in a VRM round trip, against the [`tolerance`] for that kind.
 #[derive(Default)]
 struct Drift(std::collections::BTreeMap<&'static str, (f32, f32)>);
@@ -250,7 +266,7 @@ impl Drift {
     /// Records `a` against `b` (same length, or the comparison fails) under `kind` with `limit`.
     fn floats(&mut self, kind: &'static str, limit: f32, what: &str, a: &[f32], b: &[f32]) {
         assert_eq!(a.len(), b.len(), "{what}: {kind} count");
-        let worst = a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max);
+        let worst = a.iter().zip(b).map(|(&x, &y)| drift(x, y)).fold(0.0, |m: f32, d| if d > m { d } else { m });
         let entry = self.0.entry(kind).or_insert((0.0, limit));
         entry.0 = entry.0.max(worst);
     }
