@@ -33,6 +33,12 @@ const MEMBERS: &[(&str, &str)] = &[
     ("omuzaki-render", "stage"),
 ];
 
+/// Crates of another area that an area test crate loads at run time, with the area whose test crate may use them. The
+/// track area's real-model tests run the graphs through the ONNX Runtime wrapper (`omuzaki-ai-ort`), which no
+/// implementation crate may depend on, so its test crate is the one place the tracker meets the runtime. Only that
+/// crate is allowed: every other area's test crate still fails on it.
+const GUESTS: &[(&str, &str)] = &[("omuzaki-ai-ort", "track")];
+
 /// The area an area test crate covers, from its name; `None` for every other crate.
 pub fn area_of(name: &str) -> Option<&str> {
     name.strip_prefix(AREA_PREFIX).filter(|area| !area.is_empty())
@@ -42,7 +48,7 @@ pub fn area_of(name: &str) -> Option<&str> {
 fn in_area(name: &str, area: &str) -> bool {
     let named = name.strip_prefix("omuzaki-").and_then(|rest| rest.strip_prefix(area));
     matches!(named, Some(rest) if rest.is_empty() || rest.starts_with('-'))
-        || MEMBERS.iter().any(|&(member, owner)| member == name && owner == area)
+        || MEMBERS.iter().chain(GUESTS).any(|&(member, owner)| member == name && owner == area)
 }
 
 /// What the test-crate rule finds wrong with `package`'s dependency on `target`, a crate of kind `to`; `None` when it
@@ -60,7 +66,9 @@ pub fn violation(package: &Package, dependency: &Dependency, target: &Package, t
         return None;
     }
     let mut crates = vec![format!("omuzaki-{area}"), format!("omuzaki-{area}-*")];
-    crates.extend(MEMBERS.iter().filter(|&&(_, owner)| owner == area).map(|(member, _)| (*member).to_owned()));
+    crates.extend(
+        MEMBERS.iter().chain(GUESTS).filter(|&&(_, owner)| owner == area).map(|(member, _)| (*member).to_owned()),
+    );
     Some(Violation {
         from: package.name.clone(),
         to: dependency.name.clone(),
@@ -99,6 +107,9 @@ mod tests {
         ("omuzaki-io-gltf", &[]),
         ("omuzaki-gltf", &[]),
         ("omuzaki-stage", &[]),
+        ("omuzaki-track", &[]),
+        ("omuzaki-ai-ort", &[]),
+        ("omuzaki-ai", &[]),
     ];
 
     fn with_leaves<'a>(crates: &[(&'a str, &'a [(&'a str, DepKind)])]) -> Vec<(&'a str, &'a [(&'a str, DepKind)])> {
@@ -153,6 +164,7 @@ mod tests {
                 ],
             ),
             ("omuzaki-test-face", &[("omuzaki-test", Normal), ("omuzaki-face", Normal), ("omuzaki-core", Normal)]),
+            ("omuzaki-test-track", &[("omuzaki-track", Dev), ("omuzaki-ai-ort", Dev), ("omuzaki-core", Dev)]),
             (
                 "omuzaki-test-io",
                 &[("omuzaki-io-ops", Dev), ("omuzaki-io-gltf", Dev), ("omuzaki-gltf", Dev), ("omuzaki-char-mock", Dev)],
@@ -179,6 +191,18 @@ mod tests {
         assert!(got[0].contains("(omuzaki-char, omuzaki-char-*, omuzaki-rig, omuzaki-anim)"), "{}", got[0]);
         assert!(got[1].contains("may not depend on lib crate under [dependencies]"), "{}", got[1]);
         assert!(got[2].starts_with("omuzaki-test-char → omuzaki-render"), "{}", got[2]);
+    }
+
+    #[test]
+    fn only_the_track_test_crate_may_load_the_onnx_runtime_wrapper() {
+        let got = found(&with_leaves(&[
+            ("omuzaki-test-face", &[("omuzaki-face", Dev), ("omuzaki-ai-ort", Dev)]),
+            ("omuzaki-test-track", &[("omuzaki-track", Dev), ("omuzaki-ai-ort", Dev), ("omuzaki-ai", Dev)]),
+        ]));
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert!(got[0].starts_with("omuzaki-test-face → omuzaki-ai-ort: the face area test crate"), "{}", got[0]);
+        assert!(got[1].starts_with("omuzaki-test-track → omuzaki-ai:"), "{}", got[1]);
+        assert!(got[1].contains("(omuzaki-track, omuzaki-track-*, omuzaki-ai-ort)"), "{}", got[1]);
     }
 
     #[test]

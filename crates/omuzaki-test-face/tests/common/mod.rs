@@ -50,7 +50,7 @@ pub fn read_native(native: &mut Native) -> Vec<u8> {
 
 /// An adapter, or `None` after printing why there is none.
 pub fn adapter() -> Option<wgpu::Adapter> {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let instance = instance();
     match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())) {
         Ok(adapter) => Some(adapter),
         Err(e) => {
@@ -176,4 +176,13 @@ pub fn cpu_pixels(spec: &FaceLayerSpec, list: &DrawList) -> Vec<u8> {
 /// Premultiplied pixels of a `size` raster as the straight-alpha image the comparison takes.
 pub fn image(size: (u32, u32), pixels: &[u8]) -> RgbaImage {
     straight_image(size.0, size.1, pixels).unwrap()
+}
+
+/// A headless instance on the product's backends (`Backends::PRIMARY`; `WGPU_BACKEND` can opt in to GL). wgpu's default
+/// starts GL, which crashes the process at exit on WSL with NVIDIA's D3D12 driver (`cargo test -p omuzaki-test --test
+/// gpu_instances` enforces this).
+fn instance() -> wgpu::Instance {
+    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+    descriptor.backends = wgpu::Backends::PRIMARY;
+    wgpu::Instance::new(descriptor.with_env())
 }

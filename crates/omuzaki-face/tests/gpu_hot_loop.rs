@@ -12,6 +12,9 @@
 // Tests may unwrap: a panic is a clear failure.
 #![allow(unsafe_code, clippy::unwrap_used, clippy::expect_used)]
 
+#[path = "support/gpu_instance.rs"]
+mod gpu_instance;
+
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::time::Instant;
@@ -94,7 +97,7 @@ const MOUTH: usize = 1;
 const WHOLE: usize = 2;
 
 fn setup() -> Option<Setup> {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let instance = gpu_instance::instance();
     let adapter = match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())) {
         Ok(adapter) => adapter,
         Err(e) => {

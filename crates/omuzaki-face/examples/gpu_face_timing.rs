@@ -34,6 +34,9 @@
 use std::process::ExitCode;
 use std::time::Instant;
 
+#[path = "../tests/support/gpu_instance.rs"]
+mod gpu_instance;
+
 use omuzaki_core::time::Seconds;
 use omuzaki_face::raster::gpu::VelloRasterizer;
 use omuzaki_face::{GpuRasterizer, LayerSections, RealPainter};
@@ -332,7 +335,7 @@ fn face_texture(device: &wgpu::Device, (width, height): (u32, u32)) -> wgpu::Tex
 
 /// A device with timestamp queries and its backend.
 fn device() -> Result<(wgpu::Device, wgpu::Queue, wgpu::Backend), String> {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let instance = gpu_instance::instance();
     let options = wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
         ..wgpu::RequestAdapterOptions::default()
