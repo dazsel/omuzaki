@@ -25,7 +25,7 @@ pub struct Scan {
 
 /// Every workspace-scanning test target. Together they run in well under two minutes once built; keep it that way by
 /// listing targets, never whole crates.
-pub const SCANS: [Scan; 4] = [
+pub const SCANS: [Scan; 5] = [
     // Every crate that registers ops carries the file fence in its own `clippy.toml`.
     Scan { krate: "omuzaki-ops-api", test: "fs_fence" },
     // The link gates compare an App's registrations with those of every crate it links (ADR 0015).
@@ -33,6 +33,8 @@ pub const SCANS: [Scan; 4] = [
     Scan { krate: "omuzaki-stage", test: "registrations" },
     // The eval lint runs over the real workspace's task files.
     Scan { krate: "omuzaki-test", test: "eval_lint" },
+    // No test, bench or example may start wgpu's GL backend (it crashes at exit on WSL with NVIDIA's D3D12 driver).
+    Scan { krate: "omuzaki-test", test: "gpu_instances" },
 ];
 
 /// Test targets that reach for the workspace root but do not scan it, each with the reason. `lint_seed` is a library

@@ -19,7 +19,9 @@ review; breaking changes need a decision record (§39.2 item 8).
 **Area test crates** (ADR 0054 §6). A test across crates goes in its area's test crate, `omuzaki-test-<area>` (a new
 area is a new crate), not in the harness `omuzaki-test`. An area test crate may depend on API crates, mocks, the harness
 and its own area's implementation and lib crates: `omuzaki-<area>`, `omuzaki-<area>-*`, plus the few whose names don't
-say their area (`omuzaki-rig` and `omuzaki-anim` are `char`, `omuzaki-gltf` is `io`). A change to one area then doesn't
+say their area (`omuzaki-rig` and `omuzaki-anim` are `char`, `omuzaki-gltf` is `io`). The track area's test crate
+`omuzaki-test-track` also loads the ONNX Runtime wrapper `omuzaki-ai-ort` (its real-model tests and bench), which no
+other test crate may. A change to one area then doesn't
 put the other areas' tests in scope. `lint-deps` enforces it.
 
 **Lib crates** (ADR 0011) hold code that several implementations need and that is too large to write twice, and that is
