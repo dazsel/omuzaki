@@ -8,7 +8,7 @@
 //! let out = SchemaForm::new(&form, &mut value).id_salt("palette-args").show(ui);
 //! if run_pressed && form.invalid_count(&value) == 0 { request.args = Value::from(&value); }
 //! // or, one field at a time (the inspector), one gesture as one transaction:
-//! if let Some(edit) = out.edit { send(form.pointer(edit.field), form.field_value(&value, edit.field), edit.phase); }
+//! for edit in out.edits { send(form.pointer(edit.field), form.field_value(&value, edit.field), edit.phase); }
 //! ```
 //!
 //! # The mapping
@@ -43,8 +43,8 @@
 //!
 //! # Gestures
 //!
-//! [`FormOutput::edit`] names the field edited and where its gesture is ([`EditPhase`]). A host makes one gesture one
-//! transaction (`shell.md` section 7). Every control follows the same life cycle, and every input that can end a
+//! [`FormOutput::edits`] names each field edited this frame and where its gesture is ([`EditPhase`]). A host makes one
+//! gesture one transaction (`shell.md` section 7). Every control follows the same life cycle, and every input that can end a
 //! gesture is in this table:
 //!
 //! | Control | Starts and goes on (`Preview`) | Ends (`Commit`) | Esc (`Cancel`) | Leaves the field (Tab, click away) |
@@ -65,7 +65,22 @@
 //!    causes reports nothing more.
 //! 3. A value the field would refuse (text that is not an allowed number, a tangent the array has no place for) is
 //!    never previewed or committed; the form holds the last value that can be saved, so what is shown is what is sent.
-//! 4. One person edits one field at a time; if two report in one frame, an end of gesture wins over a preview.
+//! 4. Every field that reports in a frame gets its own entry in [`FormOutput::edits`]; none replaces or merges into
+//!    another. A gesture's end that another input caused comes before that input's edit (a text field's blur is
+//!    reported when the pointer is released), then the rest in the order the fields are drawn. So a host that handles
+//!    them in order closes the old gesture before it applies the next edit.
+//!
+//! What can share a frame, and what [`FormOutput::edits`] then holds (`tests/schema_form.rs`,
+//! `two_fields_in_one_frame_each_reach_their_own_edit_in_order`). "A" is a text or exact integer field with focus,
+//! the one gesture that has no pointer of its own and so can be open while another control is used:
+//!
+//! | Input | Reports | Order in `edits` |
+//! |---|---|---|
+//! | release on a toggle, choice, segment, or press a reset, while A is focused | A: Commit; the other: Commit, in the same frame | A, then the other |
+//! | press and drag a slider while A is focused | the other: Preview in the frames it moves; at the release A: Commit and the other: Commit | Preview of the other first; then A, then the other. A host takes another field's Preview as the end of A's gesture |
+//! | Tab or click into another text or integer field | A: Commit, once (egui reports a lost focus in more than one frame; only an open gesture ends); the other reports nothing until it changes | A |
+//! | Esc | A: Cancel; the blur it causes reports nothing | A |
+//! | a drag or picker going on, and no other input | Preview | the one field |
 //!
 //! # What it promises
 //!

@@ -622,3 +622,97 @@ fn task_flow_edit_a_parameter_then_undo_is_one_gesture_and_one_key() {
         undone.as_secs_f64() * 1e3
     );
 }
+
+/// The wings kind (a text field, "Feathers", beside sliders and a choice) with its Advanced section open.
+fn wings_rig() -> Harness<'static, Rig<MockRunner<MemDoc>>> {
+    let mut h = rig(real(json!({"probe": at_defaults("wings")})), &["probe"], vec2(420.0, 4000.0));
+    if h.query_by_role_and_label(Role::DisclosureTriangle, "Advanced").is_some() {
+        h.get_by_role_and_label(Role::DisclosureTriangle, "Advanced").click();
+        h.run_steps(3);
+    }
+    h
+}
+
+/// Presses the primary button at the centre of the node in one frame and releases it in the next, as a mouse does.
+fn click_with_mouse(h: &mut Harness<'_, Rig<MockRunner<MemDoc>>>, role: Role, label: &str) {
+    let pos = h.get_by_role_and_label(role, label).rect().center();
+    h.hover_at(pos);
+    h.run_steps(3);
+    for pressed in [true, false] {
+        h.event(UiEvent::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
+        h.step();
+    }
+    h.run_steps(3);
+}
+
+#[test]
+fn a_click_on_another_control_while_a_text_field_is_focused_applies_both_edits_as_two_undo_steps() {
+    // Clicking a segment takes focus from the Feathers field: in the release frame the form reports the field's
+    // Commit and the segment's Commit. The later report used to replace the earlier, and the inspector never sent
+    // the segment's change (its refresh put the old one back).
+    let mut h = wings_rig();
+    h.get_by_role_and_label(Role::TextInput, "Feathers").focus();
+    h.run_steps(3);
+    h.event(UiEvent::Text("7".to_owned()));
+    h.run_steps(3);
+    assert_eq!(param(&h.state().runner, "probe", "feathers"), json!(7), "typing previews");
+    click_with_mouse(&mut h, Role::RadioButton, "bat");
+    let runner = &h.state().runner;
+    assert_eq!(param(runner, "probe", "kind"), json!("bat"), "the segment's change was applied");
+    assert_eq!(param(runner, "probe", "feathers"), json!(7), "and the typed number kept");
+    assert!(h.query_by_role_and_label(Role::RadioButton, "bat").is_some());
+    let state = h.state();
+    assert!(state.runner.undo(&state.actor, &Grants::person()).unwrap_or_else(|e| panic!("{e}")).is_some());
+    assert_eq!(param(&state.runner, "probe", "kind"), json!("feathered"), "one undo takes the segment back");
+    assert_eq!(param(&state.runner, "probe", "feathers"), json!(7), "and leaves the typing");
+    let second = state.runner.undo(&state.actor, &Grants::person()).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(second.as_deref(), Some("Set feathers"), "the typing is its own step");
+    assert_eq!(param(&state.runner, "probe", "feathers"), Value::Null);
+    assert!(state.runner.undo(&state.actor, &Grants::person()).unwrap_or_else(|e| panic!("{e}")).is_none());
+}
+
+#[test]
+fn a_slider_drag_begun_while_a_text_field_is_focused_closes_the_fields_gesture_first() {
+    let mut h = wings_rig();
+    h.get_by_role_and_label(Role::TextInput, "Feathers").focus();
+    h.run_steps(3);
+    h.event(UiEvent::Text("7".to_owned()));
+    h.run_steps(3);
+    let from = h.get_by_role_and_label(Role::Slider, "Gravity").rect().center();
+    h.hover_at(from);
+    h.run_steps(3);
+    h.event(UiEvent::PointerButton {
+        pos: from,
+        button: PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    });
+    h.step();
+    for dx in [10.0, 30.0] {
+        h.event(UiEvent::PointerMoved(from + vec2(dx, 0.0)));
+        h.step();
+    }
+    h.event(UiEvent::PointerButton {
+        pos: from + vec2(30.0, 0.0),
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    h.run_steps(4);
+    let runner = &h.state().runner;
+    assert_eq!(param(runner, "probe", "feathers"), json!(7));
+    assert_ne!(param(runner, "probe", "gravity"), json!(0.05), "the drag moved the slider");
+    let state = h.state();
+    let first = state.runner.undo(&state.actor, &Grants::person()).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(first.as_deref(), Some("Set gravity"), "the drag is one undo step");
+    assert_eq!(param(&state.runner, "probe", "gravity"), json!(0.05), "and one undo undoes all of it");
+    let gravity: Vec<_> =
+        set_params(&state.runner).into_iter().filter(|r| r.args["path"] == json!("gravity")).collect();
+    assert!(
+        gravity.len() > 1 && gravity.windows(2).all(|w| w[0].tx == w[1].tx),
+        "every move of the drag is in one transaction"
+    );
+    let second = state.runner.undo(&state.actor, &Grants::person()).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(second.as_deref(), Some("Set feathers"), "and the typing is another, not part of the drag");
+    assert!(state.runner.undo(&state.actor, &Grants::person()).unwrap_or_else(|e| panic!("{e}")).is_none());
+}

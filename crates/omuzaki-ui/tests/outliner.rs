@@ -540,6 +540,25 @@ fn layer_changes_that_would_fail_midway_are_applied_in_an_order_every_step_accep
 // ---- the keyboard ----
 
 #[test]
+fn moving_above_a_part_on_the_last_layer_is_one_op_that_lowers_the_moved_part() {
+    // A body on layer 0 and two garments on i32::MAX. Moving b above a cannot raise a (there is no layer after the
+    // last), but b can take the layer below it.
+    let mut h = rig_over(
+        runner(Some(json!({
+            "body": {"kind": "mock-body"},
+            "a": {"kind": "mock-garment", "layer": i32::MAX},
+            "b": {"kind": "mock-garment", "layer": i32::MAX}
+        }))),
+        vec2(320.0, 480.0),
+    );
+    assert_eq!(row_names(&h), ["body", "a", "b"]);
+    move_from_menu(&mut h, "b", "Move up");
+    assert!(h.query_by_label_contains("didn't work").is_none(), "the move was refused");
+    assert_eq!(row_names(&h), ["body", "b", "a"]);
+    assert_eq!(h.state().runner.ops(), ["part.reorder"], "one op, on b alone");
+}
+
+#[test]
 fn a_keyboard_only_flow_selects_expands_filters_and_edits() {
     let mut h = rig_over(
         runner(Some(json!({

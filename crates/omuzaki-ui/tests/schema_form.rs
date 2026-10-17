@@ -34,6 +34,8 @@ struct Rig {
     changes: u32,
     /// Every edit the form reported, with its field's pointer.
     edits: Vec<(String, EditPhase)>,
+    /// The same, one entry per frame that reported any, in the order the form gave them.
+    frames: Vec<Vec<(String, EditPhase)>>,
 }
 
 fn schema(json: Value) -> Schema {
@@ -43,14 +45,17 @@ fn schema(json: Value) -> Schema {
 fn rig(schema: &Schema) -> Harness<'static, Rig> {
     let form = Form::from_schema(schema);
     let value = form.default_value();
-    let rig = Rig { form, value, changes: 0, edits: Vec::new() };
+    let rig = Rig { form, value, changes: 0, edits: Vec::new(), frames: Vec::new() };
     harness_state(Settings::default(), vec2(420.0, 1400.0), rig, |ui, r| {
         let out = SchemaForm::new(&r.form, &mut r.value).id_salt("test").show(ui);
         if out.changed {
             r.changes += 1;
         }
-        if let Some(edit) = out.edit {
-            r.edits.push((r.form.pointer(edit.field).unwrap_or("?").to_owned(), edit.phase));
+        let frame: Vec<_> =
+            out.edits.iter().map(|e| (r.form.pointer(e.field).unwrap_or("?").to_owned(), e.phase)).collect();
+        r.edits.extend(frame.iter().cloned());
+        if !frame.is_empty() {
+            r.frames.push(frame);
         }
     })
 }
@@ -297,6 +302,123 @@ fn typing_previews_and_leaving_the_field_commits() {
     );
     press(&mut h, Modifiers::NONE, Key::Tab);
     assert_eq!(h.state().edits.last(), Some(&("/field".to_owned(), EditPhase::Commit)));
+}
+
+// ---- two fields reporting in one frame ----
+
+/// Presses the primary button at the centre of `node` in one frame and releases it in the next, as a mouse does.
+/// With `drag`, the pointer moves along the control before the release, as it does on a slider.
+fn click(h: &mut Harness<'_, Rig>, role: Role, label: &str, drag: bool) {
+    let pos = h.get_by_role_and_label(role, label).rect().center();
+    h.hover_at(pos);
+    h.run_steps(3);
+    for pressed in [true, false] {
+        h.event(Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+        h.step();
+        if pressed && drag {
+            h.event(Event::PointerMoved(pos + vec2(30.0, 0.0)));
+            h.step();
+        }
+    }
+    h.run_steps(3);
+}
+
+/// `tail` of the edits since typing began, as (pointer, phase) pairs.
+fn after_typing(h: &Harness<'_, Rig>, typed: usize) -> Vec<(String, EditPhase)> {
+    h.state().edits[typed..].to_vec()
+}
+
+#[test]
+fn two_fields_in_one_frame_each_reach_their_own_edit_in_order() {
+    use EditPhase::{Commit, Preview};
+    // The other control sits above the text field it takes focus from. Each case: its schema, how it is clicked, and
+    // the phase it reports; the text field's blur is its Commit and must come first, whatever the draw order.
+    let others = [
+        ("toggle", json!({"title": "Outlines", "type": "boolean"}), Role::Switch, "Outlines", Commit),
+        ("segmented", json!({"title": "Style", "enum": ["flat", "soft", "hard"]}), Role::RadioButton, "soft", Commit),
+        (
+            "reset",
+            json!({"title": "Tilt", "type": "number", "minimum": 0.0, "maximum": 1.0, "x-ui": {"default": 0.5}}),
+            Role::Button,
+            "Reset Tilt",
+            Commit,
+        ),
+        (
+            "slider",
+            json!({"title": "Width", "type": "number", "minimum": 0.0, "maximum": 1.0, "x-ui": {"default": 0.5}}),
+            Role::Slider,
+            "Width",
+            Preview,
+        ),
+    ];
+    for (focused, text_schema, label) in [
+        ("text", json!({"title": "Name", "type": "string"}), "Name"),
+        ("exact integer", json!({"title": "Name", "type": "integer", "format": "int64"}), "Name"),
+    ] {
+        for (kind, other, role, other_label, phase) in &others {
+            let mut h = rig(&schema(json!({"type": "object", "properties": {"other": other, "field": text_schema}})));
+            if *kind == "reset" {
+                let away = h.state().form.value_from_json(&json!({"other": 0.2}));
+                h.state_mut().value = away;
+                h.run();
+            }
+            focus(&mut h, Role::TextInput, label);
+            h.event(Event::Text("7".to_owned()));
+            h.run_steps(3);
+            let typed = h.state().edits.len();
+            let frames_before = h.state().frames.len();
+            assert!(typed > 0, "{focused}: typing previewed");
+            click(&mut h, *role, other_label, *phase == Preview);
+            let got = after_typing(&h, typed);
+            let text_ends = ("/field".to_owned(), Commit);
+            let other_ends = ("/other".to_owned(), Commit);
+            // The text field's own Commit, once, and the other control's own edit: nothing replaced, nothing doubled.
+            assert_eq!(got.iter().filter(|e| **e == text_ends).count(), 1, "{focused} then {kind}: {got:?}");
+            assert!(got.contains(&("/other".to_owned(), *phase)), "{focused} then {kind}: its edit is kept: {got:?}");
+            // egui reports the blur when the pointer is released, in the frame that ends the other control's edit.
+            // The blur, as the older gesture's end, comes first in that frame.
+            let at = |e: &(String, EditPhase)| got.iter().rposition(|g| g == e);
+            assert!(at(&text_ends) < at(&other_ends), "{focused} then {kind}: the blur comes first: {got:?}");
+            let frames = &h.state().frames[frames_before..];
+            let together = frames.iter().find(|f| f.contains(&other_ends));
+            assert_eq!(
+                together,
+                Some(&vec![text_ends.clone(), other_ends.clone()]),
+                "{focused} then {kind}: {frames:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn tabbing_from_one_text_field_to_another_ends_the_first_gesture_exactly_once() {
+    let mut h = rig(&schema(json!({"type": "object", "properties": {
+        "a": {"title": "First", "type": "string"},
+        "b": {"title": "Second", "type": "integer", "format": "int64"}
+    }})));
+    focus(&mut h, Role::TextInput, "First");
+    h.event(Event::Text("x".to_owned()));
+    h.run_steps(3);
+    press(&mut h, Modifiers::NONE, Key::Tab);
+    h.run_steps(3);
+    h.run_steps(3);
+    assert_eq!(h.state().edits.last(), Some(&("/a".to_owned(), EditPhase::Commit)));
+    focus(&mut h, Role::TextInput, "Second");
+    h.event(Event::Text("5".to_owned()));
+    h.run_steps(3);
+    press(&mut h, Modifiers::NONE, Key::Tab);
+    h.run_steps(3);
+    let count = |pointer: &str, phase| h.state().edits.iter().filter(|e| **e == (pointer.to_owned(), phase)).count();
+    let commits = |pointer: &str| count(pointer, EditPhase::Commit);
+    assert_eq!((commits("/a"), commits("/b")), (1, 1), "each gesture ends once: {:?}", h.state().edits);
+    let previews = |pointer: &str| count(pointer, EditPhase::Preview);
+    assert!(previews("/a") > 0 && previews("/b") > 0, "{:?}", h.state().edits);
+    assert_eq!(json_of(&h), json!({"a": "x", "b": 5}));
 }
 
 // ---- #2030's verification findings ----

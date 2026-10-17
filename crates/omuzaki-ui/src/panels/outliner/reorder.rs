@@ -28,16 +28,20 @@ pub(super) type Change = (usize, i32);
 /// new place) the build order of those siblings. Empty when `order` already is.
 ///
 /// # Errors
-/// A layer would pass the end of `i32`.
+/// No plan exists: every one of them would pass the end of `i32`.
 pub(super) fn plan(def: &CharacterDef, tree: &Tree, order: &[usize], moved: usize) -> Result<Vec<Change>, OpError> {
-    let forward = forward(tree, order)?;
-    if forward.is_empty() {
-        return Ok(forward);
+    let forward = forward(tree, order);
+    if forward.as_ref().is_some_and(Vec::is_empty) {
+        return Ok(Vec::new());
     }
-    // In place first; it is empty only when the part already sorts there, which `forward` would have said.
+    // A strategy that runs out of layers is one that is not offered; the others are still tried. In place goes first;
+    // it is empty only when the part already sorts there, which `forward` would have said.
     let mut candidates: Vec<Vec<Change>> = in_place(tree, order, moved).into_iter().collect();
-    candidates.push(forward);
+    candidates.extend(forward);
     candidates.extend(backward(tree, order));
+    if candidates.is_empty() {
+        return Err(past_the_end());
+    }
     if def.build_order(&requires_of).is_ok() {
         for candidate in &candidates {
             let mut reversed = candidate.clone();
@@ -88,15 +92,16 @@ fn in_place(tree: &Tree, order: &[usize], moved: usize) -> Option<Vec<Change>> {
 }
 
 /// Walks `order` from the front: a part that already sorts after the one before it keeps its layer; any other takes
-/// the layer of the one before it if its id sorts after that one's, else the layer just past it.
-fn forward(tree: &Tree, order: &[usize]) -> Result<Vec<Change>, OpError> {
+/// the layer of the one before it if its id sorts after that one's, else the layer just past it. `None` when a layer
+/// would pass the end of `i32`.
+fn forward(tree: &Tree, order: &[usize]) -> Option<Vec<Change>> {
     let mut changes = Vec::new();
     let mut before: Option<(i32, &PartId)> = None;
     for &node in order {
         let Some((own, id)) = key(tree, node) else { continue };
         let layer = match before {
             Some(b) if (own, id) <= b => {
-                let layer = if id > b.1 { b.0 } else { b.0.checked_add(1).ok_or_else(past_the_end)? };
+                let layer = if id > b.1 { b.0 } else { b.0.checked_add(1)? };
                 changes.push((node, layer));
                 layer
             }
@@ -104,7 +109,7 @@ fn forward(tree: &Tree, order: &[usize]) -> Result<Vec<Change>, OpError> {
         };
         before = Some((layer, id));
     }
-    Ok(changes)
+    Some(changes)
 }
 
 /// The mirror of [`forward`], from the back: parts are pulled down. `None` when a layer would pass the end of `i32`.
@@ -189,5 +194,55 @@ mod tests {
         let order = [node(&tree, "a"), node(&tree, "b")];
         let none = plan(&d, &tree, &order, 0).unwrap_or_else(|e| panic!("{}", e.message));
         assert_eq!(none.len(), 0, "{none:?}");
+    }
+
+    /// Garments `a`, `b` (and `c`) on the last layer an `i32` has, after a body on layer 0.
+    fn at_the_end(ids: &[&str]) -> CharacterDef {
+        let mut parts = serde_json::Map::new();
+        parts.insert("body".to_owned(), json!({"kind": "mock-body"}));
+        for id in ids {
+            parts.insert((*id).to_owned(), json!({"kind": "mock-garment", "layer": i32::MAX}));
+        }
+        def(serde_json::Value::Object(parts))
+    }
+
+    #[test]
+    fn moving_above_a_part_on_the_last_layer_lowers_the_moved_part_instead_of_failing_to_raise_the_other() {
+        // b above a, both on i32::MAX: raising a would pass the end of i32, but b can take the layer below.
+        let d = at_the_end(&["a", "b"]);
+        let tree = Tree::of(&d);
+        let order = [node(&tree, "body"), node(&tree, "b"), node(&tree, "a")];
+        let plan = plan(&d, &tree, &order, 1).unwrap_or_else(|e| panic!("{}", e.message));
+        assert_eq!(layers(&tree, &plan), [("b".to_owned(), i32::MAX - 1)]);
+    }
+
+    #[test]
+    fn a_plan_that_must_pull_parts_down_is_used_when_pushing_them_up_would_pass_the_last_layer() {
+        // c between a and b, all on i32::MAX: nothing fits c's own layer, and b can't be pushed past the end, so a
+        // and c are pulled down.
+        let d = at_the_end(&["a", "b", "c"]);
+        let tree = Tree::of(&d);
+        let order = [node(&tree, "body"), node(&tree, "a"), node(&tree, "c"), node(&tree, "b")];
+        assert!(forward(&tree, &order).is_none(), "pushing b up passes the end");
+        let plan = plan(&d, &tree, &order, 2).unwrap_or_else(|e| panic!("{}", e.message));
+        let mut moved = layers(&tree, &plan);
+        moved.sort();
+        assert_eq!(moved, [("a".to_owned(), i32::MAX - 1), ("c".to_owned(), i32::MAX - 1)]);
+    }
+
+    #[test]
+    fn the_first_layer_of_i32_is_a_boundary_too() {
+        // a, c, b all on i32::MIN with c moved between a and b: nothing fits c, so b is pushed one layer up; pulling
+        // a and c down instead would pass the start of i32 and is not offered.
+        let d = def(json!({
+            "a": {"kind": "mock-garment", "layer": i32::MIN},
+            "b": {"kind": "mock-garment", "layer": i32::MIN},
+            "c": {"kind": "mock-garment", "layer": i32::MIN}
+        }));
+        let tree = Tree::of(&d);
+        let order = [node(&tree, "a"), node(&tree, "c"), node(&tree, "b")];
+        assert!(backward(&tree, &order).is_none(), "pulling a down passes the start");
+        let plan = plan(&d, &tree, &order, 1).unwrap_or_else(|e| panic!("{}", e.message));
+        assert_eq!(layers(&tree, &plan), [("b".to_owned(), i32::MIN + 1)]);
     }
 }

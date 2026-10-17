@@ -47,13 +47,16 @@ pub struct FieldEdit {
 }
 
 /// What showing a form reported.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct FormOutput {
     /// Some control changed the value this frame (including a drag in progress, a cancel and a reset).
     pub changed: bool,
-    /// The field edited this frame and where its gesture is. One person edits one field at a time; if two report
-    /// in one frame, an end of gesture wins over a preview.
-    pub edit: Option<FieldEdit>,
+    /// Every field that was edited this frame and where its gesture is, in the order a host must handle them. Two
+    /// fields can report in one frame (clicking a toggle takes focus from a text field: the text field's gesture
+    /// ends and the toggle changes), and each reports its own phase: none is merged into or replaces another. A
+    /// gesture that ends comes before the edit that ended it, and the rest follow in the order the fields are drawn.
+    /// Empty when nothing was edited. A frame without edits allocates nothing.
+    pub edits: Vec<FieldEdit>,
 }
 
 /// A form that edits `value` according to `form`.
@@ -85,22 +88,42 @@ struct IntText {
     start: i128,
     /// Escape cancelled the gesture; the blur it causes has nothing left to end.
     cancelled: bool,
+    /// A preview began a gesture that leaving the field has not ended yet.
+    open: bool,
 }
 
 /// What one frame of a form carries down to its fields.
 struct Cx<'a> {
     ds: &'a Ds,
     out: FormOutput,
+    /// The ends of gestures reported this frame. They go before everything in `out.edits`: a gesture ends (a text
+    /// field loses focus) because of the input that made the other edit, so it happened first.
+    ends: Vec<FieldEdit>,
     scratch: Scratch,
 }
 
 impl Cx<'_> {
+    /// Records `node`'s edit. Every report is kept: a field reports once per frame, and two fields in one frame are
+    /// two edits.
     fn report(&mut self, node: &Node, phase: EditPhase) {
         self.out.changed = true;
-        let keep = self.out.edit.is_some_and(|e| e.phase != EditPhase::Preview) && phase == EditPhase::Preview;
-        if !keep {
-            self.out.edit = Some(FieldEdit { field: FieldId(node.index), phase });
+        let edit = FieldEdit { field: FieldId(node.index), phase };
+        if phase != EditPhase::Preview && has_gesture(&node.kind) {
+            self.ends.push(edit);
+        } else {
+            self.out.edits.push(edit);
         }
+    }
+}
+
+/// Whether the control of `kind` has gestures that last (a drag, a picker, text being typed), so that a `Commit` or
+/// `Cancel` from it can be the end of one begun in an earlier frame. The rest are one step: the change is the edit.
+const fn has_gesture(kind: &Kind) -> bool {
+    match kind {
+        Kind::Real { slider, .. } => *slider,
+        Kind::Int { control, .. } => !matches!(control, IntControl::Number),
+        Kind::Colour { .. } | Kind::Curve | Kind::Text(_) => true,
+        Kind::Choice(_) | Kind::Toggle | Kind::Section(_) | Kind::ReadOnly => false,
     }
 }
 
@@ -143,7 +166,7 @@ impl<'a> SchemaForm<'a> {
         let salt = salt.unwrap_or_else(|| Id::new("ds.schema_form"));
         let scratch_id = Id::new(SCRATCH).with(salt);
         let scratch = ui.ctx().data_mut(|d| d.remove_temp::<Scratch>(scratch_id)).unwrap_or_default();
-        let mut cx = Cx { ds: &ds, out: FormOutput::default(), scratch };
+        let mut cx = Cx { ds: &ds, out: FormOutput::default(), ends: Vec::new(), scratch };
         ui.push_id(salt, |ui| match (&form.root.kind, value) {
             (Kind::Section(children), FormValue::Object(values)) => {
                 let has_advanced = form.advanced.count > 0;
@@ -156,8 +179,12 @@ impl<'a> SchemaForm<'a> {
             }
             (_, value) => field(ui, &mut cx, &form.root, value),
         });
-        let out = cx.out;
-        ui.ctx().data_mut(|d| d.insert_temp(scratch_id, cx.scratch));
+        let Cx { mut out, mut ends, scratch, .. } = cx;
+        if !ends.is_empty() {
+            ends.append(&mut out.edits);
+            out.edits = ends;
+        }
+        ui.ctx().data_mut(|d| d.insert_temp(scratch_id, scratch));
         out
     }
 }
@@ -329,10 +356,12 @@ fn field(ui: &mut Ui, cx: &mut Cx<'_>, node: &Node, value: &mut FormValue) {
 /// else is [`typed`].
 fn text_phase(ctx: &egui::Context, id: Id, response: &egui::Response, text: &mut String) -> Option<EditPhase> {
     let cancelled = id.with("cancelled");
+    let open = id.with("open");
     if response.gained_focus() {
         ctx.data_mut(|d| {
             d.insert_temp(id, text.clone());
             d.remove_temp::<bool>(cancelled);
+            d.remove_temp::<bool>(open);
         });
     }
     // The blur that follows an Escape ends nothing more: the gesture was cancelled.
@@ -341,7 +370,10 @@ fn text_phase(ctx: &egui::Context, id: Id, response: &egui::Response, text: &mut
     }
     let escaped = ctx.input(|i| i.key_pressed(egui::Key::Escape)) && (response.has_focus() || response.lost_focus());
     if escaped {
-        ctx.data_mut(|d| d.insert_temp(cancelled, true));
+        ctx.data_mut(|d| {
+            d.insert_temp(cancelled, true);
+            d.remove_temp::<bool>(open);
+        });
         // The text field clears on Escape; the person asked to leave, not to delete.
         if let Some(original) = ctx.data(|d| d.get_temp::<String>(id)) {
             *text = original;
@@ -349,12 +381,22 @@ fn text_phase(ctx: &egui::Context, id: Id, response: &egui::Response, text: &mut
         response.surrender_focus();
         return Some(EditPhase::Cancel);
     }
-    typed(response)
+    typed(ctx, open, response)
 }
 
-/// A typed field's phase: every change is a preview, and leaving the field ends the gesture.
-fn typed(response: &egui::Response) -> Option<EditPhase> {
-    if response.lost_focus() { Some(EditPhase::Commit) } else { response.changed().then_some(EditPhase::Preview) }
+/// A typed field's phase: every change is a preview, and leaving the field ends the gesture, once. egui reports a
+/// lost focus in more than one frame (and in each pass of a frame that runs twice), so the end is reported only for
+/// a gesture that is open: one a preview began (kept under `open`), or one this frame's keystroke began.
+fn typed(ctx: &egui::Context, open: Id, response: &egui::Response) -> Option<EditPhase> {
+    if response.lost_focus() {
+        let was_open = ctx.data_mut(|d| d.remove_temp::<bool>(open)).is_some();
+        return (was_open || response.changed()).then_some(EditPhase::Commit);
+    }
+    if response.changed() {
+        ctx.data_mut(|d| d.insert_temp(open, true));
+        return Some(EditPhase::Preview);
+    }
+    None
 }
 
 /// `field` with the `x-ui` keys of `node`.
@@ -429,7 +471,15 @@ fn int_field(
         let at = if let Some(at) = ints.iter().position(|t| t.id == id) {
             at
         } else {
-            ints.push(IntText { id, text: n.to_string(), value: *n, focused: false, start: *n, cancelled: false });
+            ints.push(IntText {
+                id,
+                text: n.to_string(),
+                value: *n,
+                focused: false,
+                start: *n,
+                cancelled: false,
+                open: false,
+            });
             ints.len() - 1
         };
         if let Some(entry) = ints.get_mut(at) {
@@ -516,6 +566,7 @@ fn exact_int(
     if response.gained_focus() {
         entry.start = *n;
         entry.cancelled = false;
+        entry.open = false;
     }
     if response.lost_focus() && std::mem::take(&mut entry.cancelled) {
         return;
@@ -525,6 +576,7 @@ fn exact_int(
     entry.focused = response.has_focus() && !escaped;
     if escaped {
         entry.cancelled = true;
+        entry.open = false;
         // The text field clears on Escape; the person asked to leave, not to delete.
         *n = entry.start;
         entry.value = entry.start;
@@ -536,23 +588,28 @@ fn exact_int(
     if !response.changed() && !response.lost_focus() {
         return;
     }
+    // Leaving the field ends the gesture once, even though egui reports the lost focus in more than one frame.
+    let leaving = response.lost_focus();
+    let was_open = leaving && std::mem::take(&mut entry.open);
     match entry.text.trim().parse::<i128>() {
         Ok(v) if min.is_none_or(|m| v >= m) && max.is_none_or(|m| v <= m) => {
             entry.value = v;
             if *n != v {
                 *n = v;
                 out.phase = Some(EditPhase::Preview);
+                entry.open = true;
             }
-            if response.lost_focus() {
+            if leaving && (was_open || out.phase.is_some()) {
+                entry.open = false;
                 out.phase = Some(EditPhase::Commit);
             }
         }
         // Text that is not an allowed number leaves the value alone; leaving the field puts the value's text back.
         // The value is the last valid preview, so that is what the gesture ends with.
-        _ if response.lost_focus() => {
+        _ if leaving => {
             write_int(&mut entry.text, *n);
             entry.value = *n;
-            out.phase = Some(EditPhase::Commit);
+            out.phase = was_open.then_some(EditPhase::Commit);
         }
         _ => {}
     }

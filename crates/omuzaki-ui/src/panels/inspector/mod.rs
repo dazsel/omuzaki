@@ -16,6 +16,12 @@
 //!   | `Cancel` | nothing | roll it back |
 //!   | an op is refused | the error is shown | roll it back; a refused rollback keeps the id, shows "Try again" / "Keep the change", and nothing else is sent until one succeeds |
 //!
+//!   A frame can carry two edits (a click on a toggle takes focus from a focused text field: that field's `Commit`,
+//!   then the toggle's). They run in order, so the first closes its gesture before the second is applied. A gesture
+//!   belongs to one field: an edit of another field commits the open gesture first, and the end the form reports late
+//!   for the field it closed (egui reports a blur at the pointer's release, after a drag on another field began) is
+//!   dropped instead of sent again.
+//!
 //!   The form is read again only when no gesture is open, so a previewed value is never overwritten mid-gesture.
 //! - **Several parts of one kind** selected are edited together: the edit runs on each, in one transaction. The form
 //!   shows the primary part's values.
@@ -35,7 +41,7 @@ use super::edit::EditFocus;
 use super::io::{DocWatch, Io};
 use super::text::{self, say};
 use crate::ds::icons;
-use crate::ds::schema_form::{EditPhase, FieldEdit, Form, FormValue, SchemaForm};
+use crate::ds::schema_form::{EditPhase, FieldEdit, FieldId, Form, FormValue, SchemaForm};
 use crate::ds::theme::{Ds, ds};
 use crate::ds::widgets::{Button, EmptyState, TextField};
 
@@ -76,6 +82,10 @@ pub struct Inspector {
     query: String,
     /// The transaction of the gesture in progress.
     gesture: Option<TxId>,
+    /// The field the gesture in progress belongs to (meaningful while `gesture` is set).
+    gesture_field: Option<FieldId>,
+    /// A field whose gesture another field's edit ended: the end the form reports for it, late, is not applied again.
+    ended_early: Option<FieldId>,
     /// The gesture's rollback was refused: the transaction stays open until the person retries or keeps it.
     stuck: bool,
     problem: Option<String>,
@@ -91,6 +101,8 @@ impl Inspector {
             shown: None,
             query: String::new(),
             gesture: None,
+            gesture_field: None,
+            ended_early: None,
             stuck: false,
             problem: None,
         }
@@ -156,8 +168,12 @@ impl Inspector {
             .auto_shrink([false, false])
             .show(ui, |ui| SchemaForm::new(&shown.form, &mut shown.value).id_salt((ID, shown.part.as_str())).show(ui))
             .inner;
-        if let Some(edit) = out.edit {
+        // Every edit, in the order the form gives them: a toggle clicked while a text field is focused is the text
+        // field's Commit and then the toggle's, and each is its own transaction.
+        for edit in out.edits {
             self.edit(io, edit, &ds);
+        }
+        if out.changed {
             // The viewport shows the edit on the next frame, which has to happen even if no input follows.
             ui.ctx().request_repaint();
         }
@@ -171,6 +187,7 @@ impl Inspector {
             return;
         }
         self.read_at = Some(generation);
+        self.ended_early = None;
         self.watch.built();
         let (Some(character), Some(part)) = (self.focus.character(), self.focus.primary()) else {
             self.shown = None;
@@ -211,6 +228,22 @@ impl Inspector {
 
     /// Runs an edit the form reported, as one gesture's part.
     fn edit(&mut self, io: Io<'_>, edit: FieldEdit, ds: &Ds) {
+        // An edit before this one in the frame left a gesture stuck: nothing more is sent until the person decides.
+        if self.stuck {
+            return;
+        }
+        // A field's end that arrives after another field's edit already closed its gesture has nothing left to end.
+        if self.ended_early == Some(edit.field) {
+            self.ended_early = None;
+            if edit.phase != EditPhase::Preview {
+                return;
+            }
+        }
+        // A gesture belongs to one field: an edit of another field ends it first (egui reports a text field's blur
+        // when the pointer is released, so a drag on a slider can begin before the text field's own end arrives).
+        if self.gesture.is_some() && self.gesture_field != Some(edit.field) && !self.end_gesture(io, ds) {
+            return;
+        }
         let Some(shown) = self.shown.as_ref() else { return };
         let (Some(pointer), Some(value)) =
             (shown.form.pointer(edit.field), shown.form.field_value(&shown.value, edit.field))
@@ -221,9 +254,10 @@ impl Inspector {
         let value = Value::from(value);
         let result = match edit.phase {
             EditPhase::Preview => {
-                let tx = *self
-                    .gesture
-                    .get_or_insert_with(|| io.runner.begin(&say(ds, text::SET, &[("name", &path)]), io.actor));
+                let tx = *self.gesture.get_or_insert_with(|| {
+                    self.gesture_field = Some(edit.field);
+                    io.runner.begin(&say(ds, text::SET, &[("name", &path)]), io.actor)
+                });
                 set(io, shown, &path, &value, Some(tx))
             }
             EditPhase::Commit => self.commit(io, &path, &value, ds),
@@ -242,6 +276,25 @@ impl Inspector {
                 }
                 self.problem = Some(say(ds, text::REFUSED, &[("reason", &e.message)]).into_owned());
                 self.watch.force();
+            }
+        }
+    }
+
+    /// Commits the open gesture as it stands (its previews are already in the document), because another field's edit
+    /// follows. False when the commit was refused: the gesture stays open for `recovery`.
+    fn end_gesture(&mut self, io: Io<'_>, ds: &Ds) -> bool {
+        let Some(tx) = self.gesture else { return true };
+        match io.runner.commit(tx, io.actor) {
+            Ok(()) => {
+                self.gesture = None;
+                self.ended_early = self.gesture_field;
+                self.watch.force();
+                true
+            }
+            Err(e) => {
+                self.stuck = true;
+                self.problem = Some(say(ds, text::REFUSED, &[("reason", &e.message)]).into_owned());
+                false
             }
         }
     }
