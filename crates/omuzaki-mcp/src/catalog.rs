@@ -69,9 +69,14 @@ impl Catalog {
     /// [`ServerError::UnusableOp`] for an op that can't be a tool (a name clients would reject, or an argument schema
     /// that isn't an object) and [`ServerError::DuplicateTool`] for two ops that become the same tool name. Failing
     /// here keeps the tool list identical to `ops()`.
-    pub(crate) fn build(ops: &[OpInfo], grants: &Grants, guidance: &Guidance) -> Result<Self, ServerError> {
+    pub(crate) fn build(
+        ops: &[OpInfo],
+        grants: &Grants,
+        guidance: &Guidance,
+        registry: bool,
+    ) -> Result<Self, ServerError> {
         let mut entries = ops.iter().map(|op| op_entry(op, grants, guidance)).collect::<Result<Vec<_>, _>>()?;
-        entries.extend(Builtin::ALL.map(|b| {
+        entries.extend(Builtin::ALL.into_iter().filter(|b| registry || !b.needs_registry()).map(|b| {
             let tool = b.tool();
             let signature = signature(b.name(), &tool.input_schema);
             Entry { tool, op: b.title().to_owned(), route: Route::Builtin(b), signature }
@@ -132,7 +137,7 @@ mod tests {
     }
 
     fn build(ops: &[OpInfo]) -> Result<Catalog, ServerError> {
-        Catalog::build(ops, &Grants::agent_default(), &Guidance::default())
+        Catalog::build(ops, &Grants::agent_default(), &Guidance::default(), false)
     }
 
     #[test]

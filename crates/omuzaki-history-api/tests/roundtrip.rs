@@ -98,7 +98,7 @@ fn job_state() -> impl Strategy<Value = JobState> {
         Just(JobState::Queued),
         Just(JobState::Running),
         Just(JobState::Held),
-        (tx(), proptest::option::of(any::<u64>())).prop_map(|(tx, seq)| JobState::Done { tx, seq }),
+        (tx(), proptest::option::of(any::<u64>())).prop_map(|(tx, seq)| JobState::done(tx, seq)),
         "[a-z ]{0,10}".prop_map(|message| JobState::Failed { error: OpError::unsupported(message) }),
         (
             proptest::option::of(actor()),
