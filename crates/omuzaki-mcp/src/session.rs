@@ -4,29 +4,38 @@ use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use omuzaki_history_api::JournalStatus;
+use omuzaki_history_api::{JournalSink, JournalStatus};
 use omuzaki_ops_api::{
-    Actor, Budget, Cause, CauseKind, ErrorCode, ErrorDetail, Grants, Limits, Mode, OpError, OpKind, PauseReason,
-    Request, Runner, Scope, SessionSpec, SessionState, Sessions, Transport,
+    Actor, Budget, Cause, CauseKind, EndReason, ErrorCode, ErrorDetail, Grants, Jobs, Limits, Mode, OpError, OpKind,
+    PauseReason, Request, Runner, Scope, SessionSpec, SessionState, Sessions, Transport,
 };
 use rmcp::ErrorData as McpError;
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, DiscoverRequestMethod, DiscoverResult,
-    GetPromptRequestParams, GetPromptResponse, Implementation, InitializeRequestParams, InitializeResult, JsonObject,
-    ListPromptsResult, ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
-    ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource, ResourceContents,
-    ResourceTemplate, ResourceUpdatedNotificationParam, ServerCapabilities, ServerConfig, SubscribeRequestParams,
-    SubscriptionFilter, Tool, UnsubscribeRequestParams,
+    CallToolRequestParams, CallToolResponse, CallToolResult, CancelTaskParams, ContentBlock, CreateTaskResult,
+    DiscoverRequestMethod, DiscoverResult, GetPromptRequestParams, GetPromptResponse, GetTaskParams, GetTaskResult,
+    Implementation, InitializeRequestParams, InitializeResult, JsonObject, ListPromptsResult,
+    ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams, ProtocolVersion,
+    ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource, ResourceContents, ResourceTemplate,
+    ResourceUpdatedNotificationParam, ServerCapabilities, ServerConfig, SubscribeRequestParams, SubscriptionFilter,
+    Tool, UnsubscribeRequestParams,
 };
 use rmcp::service::{RequestContext, RoleServer, SubscriptionContext};
 use serde_json::{Value, json};
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
+use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 
-use crate::builtin::{Builtin, CAUSE_MAX_CHARS};
+use crate::agent::{self, Link};
+use crate::approvals::{self, ApprovalCursor, Own, OwnApprovals};
+use crate::builtin::{APPROVAL_WAIT_DEFAULT_SECONDS, APPROVAL_WAIT_MAX_SECONDS, Builtin, CAUSE_MAX_CHARS};
 use crate::catalog::{Entry, Route};
 use crate::changes::{OwnTxs, Report};
 use crate::events::{LOG_URI, Updates, lock};
+use crate::info;
+use crate::jobs::{self, JobWatch};
+use crate::names;
 use crate::render::{self, Call, OpenTx};
 use crate::resources::protocol_error;
 use crate::schema::{DRY_RUN, check_args};
@@ -34,6 +43,11 @@ use crate::server::{Shared, View};
 
 /// How long a reply to a change waits for the journal to save it (spec v3 §6, journal design §5.5).
 const SAVE_WAIT: Duration = Duration::from_secs(5);
+
+/// The longest a result waits for the event feed to deliver ops the runner's log already holds, before its heads-up is
+/// built without them. The feed is a worker thread a few microseconds behind; this is for a stalled one, and the next
+/// result reports what this one missed.
+const FEED_LAG: Duration = Duration::from_secs(1);
 
 /// The handler for one client connection (an rmcp [`ServerHandler`]).
 ///
@@ -47,10 +61,23 @@ pub struct Session {
     serial: u64,
     /// Served over HTTP, where a request that stands alone gets a fresh handler (see [`Session::for_http`]).
     http: bool,
+    /// The job manager, if the host wired one: job ops then answer a client that declared tasks with a task handle.
+    jobs: Option<Arc<dyn Jobs>>,
     /// Fixed at the first call, so a transaction always belongs to one actor identity. If the host's registry would not
     /// open a session, the refusal is kept instead and answers every call: a connection without a session runs nothing.
-    actor: OnceLock<Result<Actor, OpError>>,
-    state: Mutex<State>,
+    link: OnceLock<Result<Link, OpError>>,
+    /// Set when the session ends, by the registry (a person revoked it, the project closed) or by this handler as the
+    /// connection goes. The connection closes when it is set.
+    ended: watch::Sender<Option<EndReason>>,
+    /// Cancelled when this handler is dropped, which stops the tasks that follow the registry for it.
+    alive: CancellationToken,
+    /// An in-app session is admitted by its host, not by a handshake (see `in_app`).
+    in_app: bool,
+    /// The `Mcp-Session-Id` of this connection over HTTP, learned from its first request after `initialize`.
+    http_id: Arc<OnceLock<String>>,
+    /// When the client last asked for anything: what tells an idle drop from a disconnect.
+    last_active: Mutex<Instant>,
+    state: Arc<Mutex<State>>,
 }
 
 #[derive(Default)]
@@ -70,6 +97,8 @@ struct State {
     /// The transactions this session made, from `tx_begin` and from each applied edit's result. Tells its own undo of
     /// an old transaction (whose ops have left the log) apart from someone else's.
     own: OwnTxs,
+    /// The approvals this session asked a person for, and which decisions it has been told about.
+    approvals: OwnApprovals,
 }
 
 /// Stops its task when dropped (unsubscribe, or the session ending).
@@ -84,8 +113,55 @@ impl Drop for AbortOnDrop {
 impl Session {
     pub(crate) fn new(shared: Arc<Shared>, view: Arc<View>, serial: u64) -> Self {
         shared.connections.open(serial);
-        let state = State { seen: shared.hub.latest(), ..State::default() };
-        Self { shared, view, serial, http: false, actor: OnceLock::new(), state: Mutex::new(state) }
+        let latest = shared.hub.latest();
+        let state = State { seen: latest, approvals: OwnApprovals::new(latest), ..State::default() };
+        Self {
+            shared,
+            view,
+            serial,
+            http: false,
+            jobs: None,
+            link: OnceLock::new(),
+            ended: watch::Sender::new(None),
+            alive: CancellationToken::new(),
+            in_app: false,
+            http_id: Arc::new(OnceLock::new()),
+            last_active: Mutex::new(Instant::now()),
+            state: Arc::new(Mutex::new(state)),
+        }
+    }
+
+    /// A handler for an in-app session the host has already opened in the registry (see `in_app`): there is no handshake
+    /// to wait for, and the actor is the registry's.
+    pub(crate) fn in_app(shared: Arc<Shared>, view: Arc<View>, serial: u64, link: Link) -> Self {
+        let mut session = Self::new(shared, view, serial);
+        session.in_app = true;
+        let _ = session.link.set(Ok(link));
+        session
+    }
+
+    /// Follows the registry for the end of this session (an in-app host calls this once the session is open).
+    pub(crate) fn follow_registry(&self, after: u64) {
+        if let (Some(host), Some(Ok(link))) = (&self.shared.sessions, self.link.get()) {
+            self.watch_registry(host, link, after);
+        }
+    }
+
+    /// Wakes when this session ends, with the reason (see [`Session::ended`]).
+    pub(crate) fn ended(&self) -> watch::Receiver<Option<EndReason>> {
+        self.ended.subscribe()
+    }
+
+    /// Gives this handler the host's job manager (see [`McpServer::with_jobs`](crate::McpServer::with_jobs)).
+    #[must_use]
+    pub(crate) fn with_jobs(mut self, jobs: Option<Arc<dyn Jobs>>) -> Self {
+        self.jobs = jobs;
+        self
+    }
+
+    /// The job manager, when this call may become a task: the host wired one and the client declared the extension.
+    fn task_jobs(&self, context: &RequestContext<RoleServer>) -> Option<Arc<dyn Jobs>> {
+        self.jobs.clone().filter(|_| context.client_capabilities().is_some_and(|caps| caps.supports_tasks()))
     }
 
     /// Marks this handler as serving HTTP.
@@ -112,6 +188,7 @@ impl Session {
     /// (`subscriptions/listen` included), skipping both `initialize` and `discover`, so every request handler calls this
     /// first. Over HTTP a session starts with `initialize`, which names it.
     fn name_client(&self, context: &RequestContext<RoleServer>) {
+        self.touch(context);
         if self.http {
             return;
         }
@@ -123,37 +200,110 @@ impl Session {
 
     /// Opens this connection's session in the registry now, so a client that has only connected is already in the
     /// agent panel. A refusal stays in the cached result, and the first call that needs the actor reports it.
+    ///
+    /// Only once the client has said who it is: a `ping` may come first (the spec allows it) and would otherwise open
+    /// the session as `mcp-client` and pin that name for good. A call that needs the actor before then still opens it.
     fn open_session(&self, context: &RequestContext<RoleServer>) {
-        let _ = self.actor(context);
+        if context.client_info().is_some() {
+            let _ = self.link(context);
+        }
     }
 
     fn actor(&self, context: &RequestContext<RoleServer>) -> Result<&Actor, &OpError> {
-        self.actor
-            .get_or_init(|| {
-                let client = context.client_info().map_or_else(|| "mcp-client".to_owned(), |info| info.name);
-                let Some(host) = &self.shared.sessions else {
-                    return Ok(Actor::Agent { id: format!("{client}#{}", self.serial), model: None });
-                };
-                // The registry names the agent. No other name will do: one made here could equal a registered
-                // session's actor and borrow its grants.
-                let spec = SessionSpec {
-                    transport: if self.http { Transport::Http { token: "mcp".to_owned() } } else { Transport::Stdio },
-                    client,
-                    model: None,
-                    on_behalf_of: host.person.clone(),
-                    grants: self.view.grants.clone(),
-                    budget: Budget::default(),
-                    limits: Limits::default(),
-                    parent: None,
-                    role: None,
-                    fence: Vec::new(),
-                };
-                host.sessions
-                    .open(spec)
-                    .map(|info| info.actor)
-                    .inspect_err(|e| tracing::warn!(error = %e, "couldn't open a session for a connection"))
-            })
-            .as_ref()
+        self.link(context).map(|link| &link.actor)
+    }
+
+    /// The registered session of this connection, opened by the first request that finds the client's name.
+    fn link(&self, context: &RequestContext<RoleServer>) -> Result<&Link, &OpError> {
+        self.link.get_or_init(|| self.admit(context)).as_ref()
+    }
+
+    fn admit(&self, context: &RequestContext<RoleServer>) -> Result<Link, OpError> {
+        let client = context.client_info().map_or_else(|| "mcp-client".to_owned(), |info| info.name);
+        let Some(host) = &self.shared.sessions else {
+            return Ok(Link { id: None, actor: Actor::Agent { id: format!("{client}#{}", self.serial), model: None } });
+        };
+        // The registry names the agent. No other name will do: one made here could equal a registered session's actor
+        // and borrow its grants.
+        let (transport, person) = match &self.view.credential {
+            Some(credential) => {
+                // The person who issued the token, unless the host issued it as itself.
+                let issuer = credential.issuer();
+                let person = if matches!(issuer, Actor::Person { .. }) { issuer.clone() } else { host.person.clone() };
+                (Transport::Http { token: credential.label().to_owned() }, person)
+            }
+            None if self.http => (Transport::Http { token: "mcp".to_owned() }, host.person.clone()),
+            None => (Transport::Stdio, host.person.clone()),
+        };
+        let spec = SessionSpec {
+            transport,
+            client,
+            model: None,
+            on_behalf_of: person,
+            grants: self.view.grants.clone(),
+            budget: Budget::default(),
+            limits: Limits::default(),
+            parent: None,
+            role: None,
+            fence: Vec::new(),
+        };
+        // Before the open, so an end that follows at once is not missed.
+        let after = self.shared.hub.latest();
+        let info = host
+            .sessions
+            .open(spec)
+            .inspect_err(|e| tracing::warn!(error = %e, "couldn't open a session for a connection"))?;
+        let link = Link { id: Some(info.id), actor: info.actor };
+        self.watch_registry(host, &link, after);
+        Ok(link)
+    }
+
+    /// Starts following the registry for the end of this session (see [`agent::watch_end`]), and closes an HTTP
+    /// connection once it has ended.
+    fn watch_registry(&self, host: &crate::server::SessionHost, link: &Link, after: u64) {
+        agent::watch_end(
+            Arc::clone(&self.shared.hub),
+            Arc::clone(&host.sessions),
+            link.clone(),
+            after,
+            self.ended.clone(),
+            self.view.credential.clone(),
+            self.alive.clone(),
+        );
+        if let Some(credential) = self.view.credential.clone() {
+            let (http_id, mut ended) = (Arc::clone(&self.http_id), self.ended.subscribe());
+            tokio::spawn(async move {
+                if ended.wait_for(Option::is_some).await.is_ok()
+                    && let Some(id) = http_id.get()
+                {
+                    credential.close_session(id).await;
+                }
+            });
+        }
+    }
+
+    /// Notes that the client is active, and remembers which HTTP session it is.
+    fn touch(&self, context: &RequestContext<RoleServer>) {
+        *lock(&self.last_active) = Instant::now();
+        self.remember_http_session(&context.extensions);
+    }
+
+    /// Learns the `Mcp-Session-Id` of this connection from a request or notification that carries its HTTP headers. An
+    /// HTTP session the registry has already ended is closed at once if this is the first time its id is known.
+    fn remember_http_session(&self, extensions: &rmcp::model::Extensions) {
+        if self.http_id.get().is_some() {
+            return;
+        }
+        let Some(parts) = extensions.get::<hyper::http::request::Parts>() else { return };
+        let Some(id) = parts.headers.get(rmcp::transport::common::http_header::HEADER_SESSION_ID) else { return };
+        let Ok(id) = id.to_str() else { return };
+        let _ = self.http_id.set(id.to_owned());
+        if self.ended.borrow().is_some()
+            && let Some(credential) = self.view.credential.clone()
+        {
+            let id = id.to_owned();
+            tokio::spawn(async move { credential.close_session(&id).await });
+        }
     }
 
     /// What this connection's session stands for right now (see [`standing`]), asked of the registry again on every
@@ -177,6 +327,18 @@ impl Session {
     /// registry no longer has, reads nothing.
     fn session_grants(&self, context: &RequestContext<RoleServer>) -> Result<Grants, McpError> {
         self.standing(context).map(|s| s.grants)
+    }
+
+    /// The result processing for this session, which tasks carry to wherever their results are reported. `None` when
+    /// the connection has no session (nothing to report to).
+    fn reporter(&self, context: &RequestContext<RoleServer>) -> Option<Reporter> {
+        let me = self.actor(context).ok()?.clone();
+        Some(Reporter {
+            shared: Arc::clone(&self.shared),
+            state: Arc::clone(&self.state),
+            me,
+            watch: self.watch(context),
+        })
     }
 
     /// What a notification feed needs to ask the registry again later, without the request that started it.
@@ -232,18 +394,6 @@ impl Session {
         Ok(CallToolResult::success(vec![ContentBlock::text(body)]))
     }
 
-    /// What other actors changed since this session was last told, if anything, moving its position forward so each
-    /// change is reported once. Needs `read` for the same reason the log does: it names paths and ops.
-    fn others_changed(&self, me: &Actor, grants: &Grants) -> Option<Report> {
-        if !grants.allows(Scope::Read) {
-            return None;
-        }
-        let mut state = lock(&self.state);
-        let (report, latest) = self.shared.hub.changes_since(state.seen, me, &state.own);
-        state.seen = latest;
-        report
-    }
-
     /// Runs blocking runner work off the async threads, turning a panic in an op into an `internal` error instead of
     /// a dead session.
     async fn blocking<T: Send + 'static>(
@@ -251,10 +401,7 @@ impl Session {
         work: impl FnOnce(&dyn Runner) -> T + Send + 'static,
     ) -> Result<T, OpError> {
         let runner = Arc::clone(&self.shared.runner);
-        tokio::task::spawn_blocking(move || work(runner.as_ref())).await.map_err(|e| {
-            OpError::internal(format!("the operation panicked or was cancelled: {e}"))
-                .hint("this is a bug in Omuzaki: tell the user, and don't retry unchanged")
-        })
+        jobs::off_thread(move || work(runner.as_ref())).await
     }
 
     /// Every call lands here and always yields a tool result: failures become tool errors, never protocol errors.
@@ -279,6 +426,9 @@ impl Session {
             Route::Op { kind, unit_args } => match take_dry_run(&mut args)
                 .and_then(|dry_run| check_args(&args, &entry.tool.input_schema).map(|()| dry_run))
             {
+                Ok(false) if kind == OpKind::Job && self.task_jobs(context).is_some() => {
+                    self.start_task(entry, unit_args, args, actor, context).await
+                }
                 Ok(dry_run) => self.run_op(entry, kind, unit_args, args, dry_run, actor).await,
                 Err(e) => Err(e),
             },
@@ -292,8 +442,43 @@ impl Session {
         let tool = entry.tool.name.as_ref();
         match outcome {
             Ok(reply) => reply,
-            Err(e) => render::failure(tool, &in_tool_names(e, &entry.op, tool), Some(&entry.signature)).into(),
+            Err(e) => {
+                let e = self.explain_fence(e);
+                render::failure(tool, &in_tool_names(e, &entry.op, tool), Some(&entry.signature)).into()
+            }
         }
+    }
+
+    /// Words a fence refusal for the agent that hit it (design §5.3): who holds the part and what they hold, or what this
+    /// session's own fence is. The holder's fence comes from the registry now; names are sanitised like the heads-up.
+    fn explain_fence(&self, mut error: OpError) -> OpError {
+        let Some(ErrorDetail::Fenced { path, holder }) = error.detail.as_deref() else { return error };
+        let paths = |fence: &[omuzaki_doc_api::DocPath]| {
+            fence.iter().map(|p| crate::changes::plain(&p.to_string(), 100)).collect::<Vec<_>>().join(", ")
+        };
+        let registry = self.shared.sessions.as_ref().map(|host| &host.sessions);
+        let path_text = crate::changes::plain(&path.to_string(), 100);
+        if let Some(holder) = holder {
+            let fence = registry.and_then(|r| r.session_of(holder)).map(|info| paths(&info.fence));
+            let theirs = fence.filter(|f| !f.is_empty()).map(|f| format!(" (their fence: {f})")).unwrap_or_default();
+            error.message = format!(
+                "Refused: {path_text} is held by {}{theirs}. Nothing changed.",
+                crate::changes::actor_label(holder)
+            );
+            error.hint = Some("Work on a part you hold, or ask the person to release it.".to_owned());
+        } else {
+            let mine = self
+                .link
+                .get()
+                .and_then(|link| link.as_ref().ok())
+                .zip(registry)
+                .and_then(|(link, r)| r.session_of(&link.actor))
+                .map(|info| paths(&info.fence))
+                .unwrap_or_default();
+            error.message = format!("Refused: {path_text} is outside your fence ({mine}). Nothing changed.");
+            error.hint = Some("Edit only inside your fence, or ask the person to widen it.".to_owned());
+        }
+        error
     }
 
     async fn run_op(
@@ -314,17 +499,8 @@ impl Session {
         let tx = if mode == Mode::Apply && kind == OpKind::Edit { lock(&self.state).tx.clone() } else { None };
         // Each edit that joins a transaction carries the cause its `tx_begin` gave; anything outside one has none.
         let cause = tx.as_ref().and_then(|t| t.cause.clone());
-        let request = Request {
-            op: entry.op.clone(),
-            args: if unit_args { Value::Null } else { Value::Object(args) },
-            mode,
-            actor,
-            grants: self.view.grants.clone(),
-            cause: Some(Cause { kind: CauseKind::Prompt, text: cause }),
-            tx: tx.as_ref().map(|t| t.id),
-            base: None,
-        };
-        let outcome = self.blocking(move |runner| runner.run(request)).await??;
+        let request = self.request(entry, unit_args, args, mode, actor, cause, tx.as_ref());
+        let outcome = self.run_held(request, &entry.tool.name, kind, |runner, request| runner.run(request)).await?;
         if let Some(record) = &outcome.applied {
             lock(&self.state).own.remember(record.tx);
         }
@@ -333,22 +509,148 @@ impl Session {
         Ok(if outcome.applied.is_some() { self.confirm_saved(result).await } else { result.into() })
     }
 
+    /// Runs `request`, holding it through a pause or a rate limit instead of failing at once (design §4.3, §8.2):
+    ///
+    /// - refused because the session is **paused**: waits up to the host's pause hold for the person to resume it, then
+    ///   runs once more. If the session is still paused, the agent is told (`waiting`, nothing ran).
+    /// - refused by a **rate limit** that frees up soon: waits that long and runs again, for up to
+    ///   [`agent::LIMIT_HOLD`] in all. A burst over the edit limit is slowed, not failed.
+    ///
+    /// `attempt` is the one try (a blocking run, or a job start), so a job started as a task gets the same holding and
+    /// the same memory of a queued approval as a blocking call. A refusal that queued an approval is remembered
+    /// under `tool`, so `approval_wait` knows it.
+    async fn run_held<T: Send + 'static>(
+        &self,
+        request: Request,
+        tool: &str,
+        kind: OpKind,
+        attempt: impl Fn(&dyn Runner, Request) -> Result<T, OpError> + Clone + Send + 'static,
+    ) -> Result<T, OpError> {
+        match self.hold_and_run(request, attempt).await {
+            Ok(done) => Ok(done),
+            Err(error) => {
+                lock(&self.state).approvals.remember_queued(&error, tool, kind);
+                Err(error)
+            }
+        }
+    }
+
+    async fn hold_and_run<T: Send + 'static>(
+        &self,
+        request: Request,
+        attempt: impl Fn(&dyn Runner, Request) -> Result<T, OpError> + Clone + Send + 'static,
+    ) -> Result<T, OpError> {
+        let (Some(host), Some(Ok(link))) = (&self.shared.sessions, self.link.get()) else {
+            return self.blocking(move |runner| attempt(runner, request)).await?;
+        };
+        let (mut held_for_pause, mut slowed_for) = (false, Duration::ZERO);
+        loop {
+            // Before the attempt, so a resume that lands while it runs is not missed.
+            let after = self.shared.hub.latest();
+            let (try_it, this) = (request.clone(), attempt.clone());
+            let error = match self.blocking(move |runner| this(runner, try_it)).await? {
+                Ok(done) => return Ok(done),
+                Err(error) => error,
+            };
+            if agent::is_paused(&error) && !held_for_pause {
+                held_for_pause = true;
+                let resumed =
+                    agent::held_until_resumed(&self.shared.hub, host.sessions.as_ref(), link, after, host.pause_hold);
+                if resumed.await {
+                    continue;
+                }
+            } else if let Some(wait) = agent::limit_wait(&error, agent::LIMIT_HOLD.saturating_sub(slowed_for)) {
+                tokio::time::sleep(wait).await;
+                slowed_for += wait;
+                continue;
+            }
+            return Err(error);
+        }
+    }
+
+    /// The runner request for a call of `entry`, as `actor` with this session's grants.
+    // The call's parts, which `run_op` and `start_task` each have to hand over; a struct would only rename them.
+    #[allow(clippy::too_many_arguments)]
+    fn request(
+        &self,
+        entry: &Entry,
+        unit_args: bool,
+        args: JsonObject,
+        mode: Mode,
+        actor: Actor,
+        cause: Option<String>,
+        tx: Option<&OpenTx>,
+    ) -> Request {
+        Request {
+            op: entry.op.clone(),
+            args: if unit_args { Value::Null } else { Value::Object(args) },
+            mode,
+            actor,
+            grants: self.view.grants.clone(),
+            cause: Some(Cause { kind: CauseKind::Prompt, text: cause }),
+            tx: tx.map(|t| t.id),
+            base: self.base(),
+        }
+    }
+
+    /// The newest document version this session has been told about, which its writes carry as their `base`: the
+    /// executor refuses one that touches what another actor changed after it (design §5.1).
+    fn base(&self) -> Option<omuzaki_doc_api::DocVersion> {
+        self.shared.hub.version_at(lock(&self.state).seen)
+    }
+
+    /// Starts a job op without waiting for it and answers with its task handle; a watcher then pushes the job's
+    /// progress and status to the client. The job belongs to this session's actor, so only this session can cancel it.
+    async fn start_task(
+        &self,
+        entry: &Entry,
+        unit_args: bool,
+        args: JsonObject,
+        actor: Actor,
+        context: &RequestContext<RoleServer>,
+    ) -> Result<Reply, OpError> {
+        let jobs = self.task_jobs(context).ok_or_else(|| OpError::unsupported("this client did not declare tasks"))?;
+        let watched = Arc::clone(&jobs);
+        // A plain job joins no transaction (ADR 0036 decision 1), so there is no cause to carry either.
+        let request = self.request(entry, unit_args, args, Mode::Apply, actor, None, None);
+        let hub = Arc::clone(&self.shared.hub);
+        // Before the start, so the job's first events can't be missed. The push cursor is copied from the session's in
+        // the same breath: a change that arrived since the session's last result is for the task's first push as well.
+        let after = hub.latest();
+        let push = PushCursor::of_session(&lock(&self.state));
+        let job = self.run_held(request, &entry.tool.name, OpKind::Job, move |_, request| jobs.start(request)).await?;
+        let tool = entry.tool.name.to_string();
+        let verify = self.shared.guidance.verify().map(str::to_owned);
+        let created = self.shared.task_times.of(job.id);
+        let journal = self.shared.journal.clone();
+        let task = jobs::task_saved(journal.clone(), None, None, &job, &tool, verify.as_deref(), &created).await;
+        let token = context.meta.get_progress_token();
+        tokio::spawn(
+            JobWatch {
+                hub,
+                journal,
+                jobs: watched,
+                reporter: self.reporter(context),
+                after,
+                push,
+                peer: context.peer.clone(),
+                token,
+                job,
+                tool,
+                verify,
+                created,
+            }
+            .run(),
+        );
+        Ok(Reply { task: Some(CreateTaskResult::new(task.task)), ..Reply::from(CallToolResult::success(Vec::new())) })
+    }
+
     /// Waits until the journal has saved the change `result` reports, then returns it. A change that applied but isn't
     /// saved yet (the wait timed out, or saving fails) still succeeds: the reply carries the warning, which
     /// `call_tool` puts first.
     async fn confirm_saved(&self, result: CallToolResult) -> Reply {
-        let Some(journal) = self.shared.journal.clone() else { return result.into() };
-        let waited = tokio::task::spawn_blocking(move || match journal.sync(SAVE_WAIT) {
-            Ok(_) => None,
-            Err(_) => Some(journal.status()),
-        })
-        .await;
-        let unsaved = match waited {
-            Ok(None) => None,
-            Ok(Some(status)) => Some(format!("applied, not yet saved: {}", describe(&status))),
-            Err(_) => Some("applied, not yet saved: the journal's status couldn't be read".to_owned()),
-        };
-        Reply { result, unsaved }
+        let unsaved = unsaved_warning(self.shared.journal.clone()).await;
+        Reply { result, unsaved, task: None }
     }
 
     async fn run_builtin(
@@ -382,7 +684,142 @@ impl Session {
                 self.begin_tx(args, actor).await.map(Reply::from)
             }
             Builtin::TxCommit | Builtin::TxRollback => self.finish_tx(builtin == Builtin::TxCommit, actor).await,
+            Builtin::SessionInfo | Builtin::SessionList | Builtin::ApprovalWait => {
+                let grants = standing.clone()?.grants;
+                if !grants.allows(Scope::Read) {
+                    return Err(OpError::denied(read_needed("reading session records")));
+                }
+                match builtin {
+                    Builtin::SessionInfo => self.session_info(&actor).map(Reply::from),
+                    Builtin::SessionList => self.session_list(&actor).map(Reply::from),
+                    _ => self.approval_wait(&args, &actor).await,
+                }
+            }
         }
+    }
+
+    /// The registry, which these three tools exist only for.
+    fn registry(&self) -> Result<&Arc<dyn Sessions>, OpError> {
+        self.shared
+            .sessions
+            .as_ref()
+            .map(|host| &host.sessions)
+            .ok_or_else(|| OpError::unsupported("this server has no session registry"))
+    }
+
+    /// `session_info`: this session's record, from the registry now.
+    fn session_info(&self, actor: &Actor) -> Result<CallToolResult, OpError> {
+        let registry = self.registry()?;
+        let me = registry.session_of(actor).ok_or_else(|| OpError::not_found("this connection's session is gone"))?;
+        let all = registry.approvals();
+        let pending = info::pending_of(&all, me.id);
+        {
+            // What the person is asked about is the agent's to wait on, so remember the ones it hasn't heard of.
+            let mut state = lock(&self.state);
+            for approval in &pending {
+                state.approvals.remember(approval.id, self.own_approval(approval));
+            }
+        }
+        Ok(info::session_info(&me, &pending, self.view.credential.as_deref()))
+    }
+
+    /// `session_list`: every live session, this one marked.
+    fn session_list(&self, actor: &Actor) -> Result<CallToolResult, OpError> {
+        Ok(info::session_list(&self.registry()?.sessions(), actor))
+    }
+
+    /// What is remembered about a pending approval this session did not see queued (its pairing, say).
+    fn own_approval(&self, approval: &omuzaki_ops_api::PendingApproval) -> Own {
+        let Some(request) = &approval.request else { return Own { tool: "pairing".to_owned(), kind: None } };
+        let tool = crate::names::tool_name(&request.op);
+        let kind = self.view.catalog.get(&tool).and_then(|entry| match entry.route {
+            Route::Op { kind, .. } => Some(kind),
+            Route::Builtin(_) => None,
+        });
+        Own { tool, kind }
+    }
+
+    /// `approval_wait`: waits for the person to decide one of this session's approvals and returns the outcome, once
+    /// (design §7.1). Resolving is never offered here: only the person can, in Omuzaki's window.
+    async fn approval_wait(&self, args: &JsonObject, actor: &Actor) -> Result<Reply, OpError> {
+        let registry = Arc::clone(self.registry()?);
+        let id = args
+            .get("id")
+            .and_then(Value::as_u64)
+            .map(omuzaki_ops_api::ApprovalId)
+            .ok_or_else(|| OpError::invalid("id", "`id` must be the approval's number"))?;
+        let seconds = args
+            .get("timeout_seconds")
+            .and_then(Value::as_u64)
+            .unwrap_or(APPROVAL_WAIT_DEFAULT_SECONDS)
+            .clamp(1, APPROVAL_WAIT_MAX_SECONDS);
+        let me = registry.session_of(actor).ok_or_else(|| OpError::not_found("this connection's session is gone"))?;
+        let pending = registry.approvals();
+        let not_yours = || {
+            OpError::not_found(format!("there is no approval #{} for this session", id.0)).hint(
+                "approval ids come from a `waiting` result or from session_info; only this session's can be waited on",
+            )
+        };
+        if pending.iter().any(|a| a.id == id && a.session != me.id) {
+            return Err(not_yours());
+        }
+        {
+            let mut state = lock(&self.state);
+            if let Some(approval) = pending.iter().find(|a| a.id == id) {
+                state.approvals.remember(id, self.own_approval(approval));
+            }
+            if state.approvals.get(id).is_none() {
+                return Err(not_yours());
+            }
+        }
+        let hub = &self.shared.hub;
+        let mut arrivals = hub.watch();
+        let deadline = Instant::now() + Duration::from_secs(seconds);
+        loop {
+            if Instant::now() >= deadline {
+                return Ok(Self::still_pending(id, registry.as_ref()));
+            }
+            if let Some(resolution) = approvals::resolution_of(hub, id) {
+                let own = {
+                    let mut state = lock(&self.state);
+                    state.approvals.mark_reported(id);
+                    let own = state.approvals.get(id).cloned();
+                    // An approval this decision queued is shown with it, so it must be one the agent can wait on.
+                    if let Some(own) = &own {
+                        state.approvals.remember_chained(&resolution, own);
+                    }
+                    own
+                };
+                let own = own.ok_or_else(not_yours)?;
+                let result = approvals::outcome(&own, &resolution, self.shared.guidance.verify());
+                // Only a change that applied waits for the journal: a rejection or a withdrawal saved nothing.
+                let applied = matches!(&resolution.result, omuzaki_ops_api::Resolved::Applied { outcome } if outcome.applied.is_some());
+                return Ok(if applied { self.confirm_saved(result).await } else { result.into() });
+            }
+            if tokio::time::timeout_at(deadline, arrivals.changed()).await.is_err() {
+                return Ok(Self::still_pending(id, registry.as_ref()));
+            }
+        }
+    }
+
+    /// The answer when `approval_wait` ran out of time: the approval is still waiting for the person (or its outcome
+    /// is no longer in the feed).
+    fn still_pending(id: omuzaki_ops_api::ApprovalId, registry: &dyn Sessions) -> Reply {
+        let waiting = approvals::is_pending(registry, id);
+        let text = if waiting {
+            format!(
+                "Approval #{} is still pending: the person has not decided. Call approval_wait again to keep waiting, \
+                 or carry on with other work; its outcome will be in the next result's heads-up.",
+                id.0
+            )
+        } else {
+            format!(
+                "Approval #{} is no longer pending, but its outcome is no longer in the event feed. Re-read the \
+                 project to see whether the request ran.",
+                id.0
+            )
+        };
+        render::confirmation(text, json!({"ok": true, "approval": id.0, "pending": waiting})).into()
     }
 
     async fn begin_tx(&self, mut args: JsonObject, actor: Actor) -> Result<CallToolResult, OpError> {
@@ -467,14 +904,49 @@ impl Session {
     }
 }
 
+impl Session {
+    /// The usage guide this client reads at the handshake: the grants' guide, and for a registered session its fence.
+    fn guide(&self) -> String {
+        let mut guide = self.view.instructions.clone();
+        let fence = self
+            .shared
+            .sessions
+            .as_ref()
+            .zip(self.link.get().and_then(|link| link.as_ref().ok()))
+            .and_then(|(host, link)| host.sessions.session_of(&link.actor))
+            .map(|info| info.fence);
+        if let Some(fence) = fence {
+            guide.push('\n');
+            guide.push_str(&crate::describe::fence_note(&fence));
+        }
+        guide
+    }
+}
+
 impl Drop for Session {
-    /// A connection that ends mid-transaction rolls it back: nothing else could ever finish it.
+    /// A connection that ends ends its session through the registry, which abandons the open transaction and tells
+    /// everyone. If the host has no registry, or it won't end the session, the transaction is rolled back here: nothing
+    /// else could ever finish it.
     fn drop(&mut self) {
+        self.alive.cancel();
         self.shared.connections.close(self.serial);
         let open = lock(&self.state).tx.take();
-        // A transaction can only exist once the actor is fixed, by the same call that opened it.
-        if let (Some(open), Some(Ok(actor))) = (open, self.actor.get())
-            && let Err(e) = self.shared.runner.rollback(open.id, actor)
+        let Some(Ok(link)) = self.link.get() else { return };
+        if self.ended.borrow().is_some() {
+            // The registry ended it first and abandoned the transaction with it.
+            return;
+        }
+        let quiet = lock(&self.last_active).elapsed();
+        let reason = agent::end_reason(self.in_app, self.view.credential.as_deref(), quiet);
+        self.ended.send_replace(Some(reason.clone()));
+        if let (Some(host), Some(id)) = (&self.shared.sessions, link.id) {
+            match host.sessions.end(id, reason) {
+                Ok(_) => return,
+                Err(e) => tracing::debug!(error = %e, "the registry would not end a session; rolling back instead"),
+            }
+        }
+        if let Some(open) = open
+            && let Err(e) = self.shared.runner.rollback(open.id, &link.actor)
         {
             tracing::warn!(tx = open.id.0, label = %open.label, error = %e, "couldn't roll back an abandoned tx");
         }
@@ -486,11 +958,30 @@ impl Drop for Session {
 struct Reply {
     result: CallToolResult,
     unsaved: Option<String>,
+    /// Set when the call started a job: the client gets this handle instead of the result.
+    task: Option<CreateTaskResult>,
 }
 
 impl From<CallToolResult> for Reply {
     fn from(result: CallToolResult) -> Self {
-        Self { result, unsaved: None }
+        Self { result, unsaved: None, task: None }
+    }
+}
+
+/// Waits until the journal has saved what was just applied. `None` means it is saved (or there is no journal); otherwise
+/// the "applied, not yet saved" warning. Shared by every reply that reports an applied change: blocking calls,
+/// `approval_wait`, and tasks (polled or pushed).
+pub(crate) async fn unsaved_warning(journal: Option<Arc<dyn JournalSink>>) -> Option<String> {
+    let journal = journal?;
+    let waited = tokio::task::spawn_blocking(move || match journal.sync(SAVE_WAIT) {
+        Ok(_) => None,
+        Err(_) => Some(journal.status()),
+    })
+    .await;
+    match waited {
+        Ok(None) => None,
+        Ok(Some(status)) => Some(format!("applied, not yet saved: {}", describe(&status))),
+        Err(_) => Some("applied, not yet saved: the journal's status couldn't be read".to_owned()),
     }
 }
 
@@ -562,7 +1053,147 @@ fn standing(sessions: Option<&Arc<dyn Sessions>>, actor: Option<&Actor>, ceiling
     Ok(Standing { grants: ceiling.intersect(&info.grants), paused })
 }
 
+/// Where a task's status pushes are up to, apart from the session's own cursors (see the module docs of `events`).
+pub(crate) struct PushCursor {
+    seen: u64,
+    approvals: ApprovalCursor,
+}
+
+impl PushCursor {
+    /// A copy of the session's cursors as they stand now. A push reports what the session has yet to be told, the
+    /// same as the poll that follows it, so what arrived after the session's last result and before the task began is
+    /// in the first push too; from here on the two move apart.
+    fn of_session(state: &State) -> Self {
+        Self { seen: state.seen, approvals: state.approvals.cursor() }
+    }
+}
+
+/// Everything a result gets after the call itself: the wait for the event feed, the heads-up about what others changed,
+/// the decisions on this session's approvals, and the save warning. One place for blocking calls, `tasks/get` and the
+/// task-status pushes, so a task client is told exactly what a blocking caller is.
+#[derive(Clone)]
+pub(crate) struct Reporter {
+    shared: Arc<Shared>,
+    state: Arc<Mutex<State>>,
+    me: Actor,
+    watch: Watch,
+}
+
+impl Reporter {
+    /// What this session may do now, or `None` once it is over.
+    pub(crate) fn grants(&self) -> Option<Grants> {
+        standing(self.watch.sessions.as_ref(), self.watch.actor.as_ref(), &self.watch.ceiling).ok().map(|s| s.grants)
+    }
+
+    async fn blocking<T: Send + 'static>(
+        &self,
+        work: impl FnOnce(&dyn Runner) -> T + Send + 'static,
+    ) -> Result<T, OpError> {
+        let runner = Arc::clone(&self.shared.runner);
+        jobs::off_thread(move || work(runner.as_ref())).await
+    }
+    /// Waits until the event feed has delivered every op the runner's log holds, up to [`FEED_LAG`]. The feed fills from a
+    /// worker thread, so without this a change that committed before a call could be missing from that call's
+    /// heads-up. The log is the authority on what committed: it holds a record before any event for it exists, so a
+    /// record past the feed's position means events are still on their way.
+    async fn catch_up_with_log(&self, grants: &Grants) {
+        if !grants.allows(Scope::Read) || !self.shared.hub.is_fed() {
+            return;
+        }
+        let deadline = Instant::now() + FEED_LAG;
+        let mut arrivals = self.shared.hub.watch();
+        // Is the feed behind the log at all? Usually not, and that is the one cheap question every result asks.
+        let grants_now = grants.clone();
+        let delivered = self.shared.hub.log_seq();
+        let behind = self.blocking(move |runner| runner.log(delivered, 1, &grants_now)).await;
+        if !matches!(behind, Ok(Ok(records)) if !records.is_empty()) {
+            return;
+        }
+        // The log's end now: the feed owes us exactly that much, however much more is committed while we wait.
+        let grants = grants.clone();
+        let Ok(target) = self.blocking(move |runner| crate::events::latest_log_seq(runner, &grants)).await else {
+            return;
+        };
+        // The deadline is checked on every pass: a feed that keeps delivering must not keep the result waiting.
+        while self.shared.hub.log_seq() < target && Instant::now() < deadline {
+            if tokio::time::timeout_at(deadline, arrivals.changed()).await.is_err() {
+                return;
+            }
+        }
+    }
+
+    /// What other actors changed since this session was last told, if anything, moving its position forward so each
+    /// change is reported once. Needs `read` for the same reason the log does: it names paths and ops.
+    ///
+    /// `push` is a consumer with a cursor of its own (a task's status pushes): it is read and moved instead of the
+    /// session's, which stays as it was for the results the agent calls for.
+    fn others_changed(&self, grants: &Grants, push: Option<&mut PushCursor>) -> Option<Report> {
+        if !grants.allows(Scope::Read) {
+            return None;
+        }
+        let mut state = lock(&self.state);
+        let seen = push.as_ref().map_or(state.seen, |p| p.seen);
+        let (report, latest) = self.shared.hub.changes_since(seen, &self.me, &state.own);
+        match push {
+            Some(push) => push.seen = latest,
+            None => state.seen = latest,
+        }
+        report
+    }
+
+    /// `result` with the heads-up and approval news a result carries, then the save warning in front of both.
+    ///
+    /// `log_text` is a result that is the log itself, which nothing may precede.
+    pub(crate) async fn finish(
+        &self,
+        result: CallToolResult,
+        unsaved: Option<String>,
+        log_text: bool,
+        mut push: Option<&mut PushCursor>,
+    ) -> CallToolResult {
+        // After the call, so a change another actor made while it ran is included, and so this call's own events
+        // (which carry this session's actor) are passed over.
+        let report = if log_text {
+            None
+        } else {
+            let grants = self.grants();
+            if let Some(grants) = &grants {
+                self.catch_up_with_log(grants).await;
+            }
+            grants.and_then(|grants| self.others_changed(&grants, push.as_deref_mut()))
+        };
+        let result = match report {
+            Some(report) => render::with_heads_up(result, &report),
+            None => result,
+        };
+        // The agent's own approvals that were decided since it last heard, once each. `approval_wait` reports its own.
+        let result = if log_text || self.shared.sessions.is_none() {
+            result
+        } else {
+            let mut state = lock(&self.state);
+            let news = match push {
+                Some(push) => state.approvals.news_for(&self.shared.hub, &mut push.approvals),
+                None => state.approvals.news(&self.shared.hub),
+            };
+            drop(state);
+            if news.is_empty() {
+                result
+            } else {
+                let (text, data) = approvals::heads_up(&news);
+                render::with_approvals(result, &text, data)
+            }
+        };
+        // Last, so the save warning leads the text, ahead of the heads-up: a client that shows only the first line
+        // still sees that the change isn't saved.
+        match unsaved {
+            Some(warning) => render::with_warning(result, &warning),
+            None => result,
+        }
+    }
+}
+
 /// A notification feed's way back to the registry.
+#[derive(Clone)]
 struct Watch {
     sessions: Option<Arc<dyn Sessions>>,
     actor: Option<Actor>,
@@ -640,17 +1271,28 @@ fn unknown_resource(uri: &str, templates: &[ResourceTemplate]) -> McpError {
 // make them harder to read.
 #[allow(clippy::unused_async_trait_impl)]
 impl ServerHandler for Session {
-    /// The handshake names this session's client, which is what makes it count as connected (`agent.connection`).
-    /// The rest is the default: record the peer, then negotiate the protocol version.
+    /// The handshake names this session's client, which is what makes it count as connected (`agent.connection`), and
+    /// opens its session. Only a handshake that succeeds does either: a client whose protocol version can't be served is
+    /// refused here and was never connected.
     async fn initialize(
         &self,
         request: InitializeRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<InitializeResult, McpError> {
+        self.touch(&context);
+        let mut result = self.negotiate_initialize(&request)?;
         self.shared.connections.name(self.serial, &request.client_info.name);
         context.peer.set_peer_info(request.clone());
         self.open_session(&context);
-        self.negotiate_initialize(&request)
+        // After the open: the guide carries this session's own fence.
+        result.instructions = Some(self.guide());
+        Ok(result)
+    }
+
+    /// The client's `notifications/initialized` is the first message after the handshake that carries the HTTP session's
+    /// id, so it is where an HTTP session learns how to be closed from the inside.
+    async fn on_initialized(&self, context: rmcp::service::NotificationContext<RoleServer>) {
+        self.remember_http_session(&context.extensions);
     }
 
     /// Over HTTP, answered as a server without a stateless mode would (clients then fall back to `initialize`); over
@@ -670,11 +1312,11 @@ impl ServerHandler for Session {
             .enable_tools()
             .enable_prompts()
             .enable_resources()
-            .enable_resources_subscribe()
-            .build();
+            .enable_resources_subscribe();
+        let capabilities = if self.jobs.is_some() { capabilities.enable_tasks() } else { capabilities }.build();
         ServerConfig::new(capabilities)
             .with_server_info(Implementation::new("omuzaki", env!("CARGO_PKG_VERSION")).with_title("Omuzaki Studio"))
-            .with_instructions(self.view.instructions.clone())
+            .with_instructions(self.guide())
     }
 
     async fn list_tools(
@@ -702,29 +1344,69 @@ impl ServerHandler for Session {
             .catalog
             .get(request.name.as_ref())
             .is_some_and(|entry| matches!(entry.route, Route::Builtin(Builtin::Log)));
-        let Reply { result, unsaved } = self.dispatch(request, &context).await;
+        let Reply { result, unsaved, task } = self.dispatch(request, &context).await;
+        if let Some(task) = task {
+            return Ok(CallToolResponse::Task(task));
+        }
         // A successful `history_log` is the log itself as its whole text, so nothing may be put in front of it. Its
         // snapshot already caught this session up, so later events are reported by the next call, not lost.
         let log_text = reads_log && result.is_error != Some(true);
-        // After the call, so a change another actor made while it ran is included, and so this call's own events
-        // (which carry this session's actor) are passed over.
-        let report = if log_text {
-            None
-        } else {
-            let grants = self.session_grants(&context).ok();
-            self.actor(&context).ok().zip(grants).and_then(|(actor, grants)| self.others_changed(actor, &grants))
-        };
-        let result = match report {
-            Some(report) => render::with_heads_up(result, &report),
-            None => result,
-        };
-        // Last, so the save warning leads the text, ahead of the heads-up: a client that shows only the first line
-        // still sees that the change isn't saved.
-        let result = match unsaved {
-            Some(warning) => render::with_warning(result, &warning),
-            None => result,
+        let result = match self.reporter(&context) {
+            Some(reporter) => reporter.finish(result, unsaved, log_text, None).await,
+            None => match unsaved {
+                Some(warning) => render::with_warning(result, &warning),
+                None => result,
+            },
         };
         Ok(result.into())
+    }
+
+    /// `tasks/get`: the job behind a task, as the executor reports it. Needs `read`, like `Jobs::job`.
+    async fn get_task(
+        &self,
+        request: GetTaskParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<GetTaskResult, McpError> {
+        self.name_client(&context);
+        let (jobs, id) = (self.jobs.clone(), jobs::job_of(&request.task_id)?);
+        let jobs = jobs.ok_or_else(McpError::method_not_found::<rmcp::model::GetTaskMethod>)?;
+        let info = jobs::read_job(jobs, id, self.session_grants(&context)?).await.map_err(protocol_error)?;
+        // A task belongs to the session that started it, as `tasks/cancel` already requires: another session (another
+        // token's included) is told there is no such task, not what that job is or returned.
+        let mine = self.actor(&context).is_ok_and(|actor| *actor == info.actor);
+        if !mine {
+            return Err(protocol_error(OpError::not_found(format!("no task `{}`", jobs::task_id(id)))));
+        }
+        let tool = names::tool_name(&info.op);
+        let verify = self.shared.guidance.verify();
+        let created = self.shared.task_times.of(info.id);
+        Ok(GetTaskResult::new(
+            jobs::task_saved(
+                self.shared.journal.clone(),
+                self.reporter(&context).as_ref(),
+                None,
+                &info,
+                &tool,
+                verify,
+                &created,
+            )
+            .await,
+        ))
+    }
+
+    /// `tasks/cancel`: cancels the job. The executor decides who may, so a session can cancel only its own jobs; its
+    /// refusal is passed on as it is. The task ends `cancelled` once the job has stopped (see `tasks/get`).
+    async fn cancel_task(
+        &self,
+        request: CancelTaskParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<(), McpError> {
+        self.name_client(&context);
+        let id = jobs::job_of(&request.task_id)?;
+        let jobs = self.jobs.clone().ok_or_else(McpError::method_not_found::<rmcp::model::CancelTaskMethod>)?;
+        let actor = self.actor(&context).map_err(|e| McpError::invalid_request(e.message.clone(), None))?.clone();
+        jobs::off_thread(move || jobs.cancel(id, &actor)).await.and_then(|r| r).map_err(protocol_error)?;
+        Ok(())
     }
 
     async fn list_prompts(

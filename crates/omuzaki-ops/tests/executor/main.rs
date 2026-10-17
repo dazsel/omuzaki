@@ -101,7 +101,7 @@ pub(crate) fn request(op: &str, args: Value) -> Request {
     }
 }
 
-/// Like [`request`], but run by the agent with the default agent grants (read, edit, render; no publish).
+/// Like [`request`], but run by the agent with the default agent grants (read, edit, render and review; no publish).
 pub(crate) fn agent_request(op: &str, args: Value) -> Request {
     Request { actor: agent(), grants: Grants::agent_default(), ..request(op, args) }
 }

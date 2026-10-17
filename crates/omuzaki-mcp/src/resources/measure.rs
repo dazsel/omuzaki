@@ -6,7 +6,7 @@ use omuzaki_ops_api::{Actor, ErrorCode, Grants, Mode, OpError, Request, Runner};
 use rmcp::model::{ResourceContents, ResourceTemplate};
 use serde_json::{Map, Value, json};
 
-use super::ResourceProvider;
+use super::{ResourceProvider, json_contents};
 
 pub(crate) const MEASURE_PREFIX: &str = "omuzaki://measure/";
 const LIVELINESS_PREFIX: &str = "omuzaki://measure/liveliness/";
@@ -75,9 +75,7 @@ impl ResourceProvider for MeasureProvider {
         let answer =
             outcome.plan.output.ok_or_else(|| OpError::internal(format!("{LIVELINESS_OP} returned no answer")))?;
         let body = json!({"op": LIVELINESS_OP, "args": args, "result": answer});
-        let text = serde_json::to_string_pretty(&body)
-            .map_err(|e| OpError::internal(format!("couldn't encode {uri}: {e}")))?;
-        Ok(vec![ResourceContents::text(text, uri).with_mime_type(JSON)])
+        json_contents(uri, body)
     }
 }
 
