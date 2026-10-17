@@ -35,9 +35,11 @@
 //!   pretty JSON, **never cut** (a result over 100 KB says so in the first line and is still included whole). Change
 //!   lists over 100 lines, or with a value over 200 characters, are shortened in the first block and given in full
 //!   in a second text block.
-//! - Failure (`isError: true`): `{ok: false, op, code, message, field?, hint, signature?}` where `code` is the
+//! - Failure (`isError: true`): `{ok: false, op, code, message, field?, hint, detail?, signature?}` where `code` is the
 //!   [`ErrorCode`](omuzaki_ops_api::ErrorCode) (`invalid`, `not_found`, `denied`, `conflict`, `unsupported`,
-//!   `unavailable`, `internal`). `hint` is the op's own, or a default for the code. `invalid` errors also carry the
+//!   `unavailable`, `internal`). `hint` is the op's own, or a default for the code. `detail` is the op's
+//!   [`ErrorDetail`](omuzaki_ops_api::ErrorDetail) as its own JSON, when it has one (a queued approval, a pause, a retry
+//!   time, why a session ended), for clients that branch on it rather than on the text. `invalid` errors also carry the
 //!   expected call `signature` (nested shapes spelt out, e.g. `eye?: {size: number}`), and the text ends with
 //!   `Expected: ...`.
 //!   Unknown tool names get suggestions.
