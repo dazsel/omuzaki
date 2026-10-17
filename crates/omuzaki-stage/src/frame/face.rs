@@ -7,7 +7,11 @@
 //!    one step, with pointer swaps and nothing built, allocated or locked. The frame then solves, steps and draws the
 //!    new character with its own input, so the swapping frame shows no skeleton or simulation from an earlier frame;
 //! 2. **map and paint**, in step 5: [`FaceSystem::update`] maps the bus with the palette-resolved profile and says which
-//!    layers changed; exactly those are painted into their textures with [`FaceLayerPainter`].
+//!    layers changed; exactly those are painted into their textures with [`FaceLayerPainter`]. With the
+//!    [`standard`](FaceRig::standard) rig on the wgpu renderer and a hardware adapter, that paint is the GPU rasteriser
+//!    recording into the renderer's own encoder through `PaintTarget::native` (#2074): no pixels cross to the CPU. A
+//!    layer the GPU rasteriser asks for ([`FaceSystem::gpu_repaint_needed`]: an earlier GPU paint of it turned out, a
+//!    frame or two later, to have outgrown a buffer) is painted too, although it did not change.
 //!
 //! # Variant switches never run inside `tick`
 //!
@@ -48,8 +52,10 @@ use omuzaki_char_api::{
 use omuzaki_core::glam::{Mat4, Vec2, Vec3};
 use omuzaki_core::time::Seconds;
 use omuzaki_face::raster::cpu::SkiaRasterizer;
-use omuzaki_face::{FaceSystem, RealPainter};
-use omuzaki_face_api::{FaceLayerId, FaceProfile, FaceProjection, FaceView, Palette};
+#[cfg(not(target_arch = "wasm32"))]
+use omuzaki_face::raster::gpu::VelloRasterizer;
+use omuzaki_face::{FaceSystem, GpuRasterizer, RealPainter};
+use omuzaki_face_api::{ExpressionSet, FaceLayerId, FaceProfile, FaceProjection, FaceView, Palette};
 use omuzaki_render_api::{Projection, Renderer};
 
 use super::rig::{RigFrame, SkinPose};
@@ -102,8 +108,20 @@ impl SwitchExecutor for ThreadExecutor {
     }
 }
 
-/// What a build job answers: the warmed character, or why it could not be made.
-type BuildResult = Result<BuiltCharacter, String>;
+/// What a build job answers: the warmed character and its face's expression table, or why it could not be made.
+type BuildResult = Result<Warmed, String>;
+
+/// A variant built and warmed off the frame thread.
+struct Warmed {
+    built: BuiltCharacter,
+    /// The new face's expressions, shared: built in the job so that the swap only moves a pointer. `None` without a face.
+    expressions: Option<Arc<ExpressionSet>>,
+}
+
+/// A character's face expressions, shared: what [`Stage::face_expressions`] hands out.
+fn expressions_of(built: &BuiltCharacter) -> Option<Arc<ExpressionSet>> {
+    built.face.as_ref().map(|face| Arc::new(face.profile.expressions.clone()))
+}
 
 /// Everything a variant build needs, owned so it can run off the frame thread.
 struct WarmJob {
@@ -124,7 +142,7 @@ struct WarmJob {
 }
 
 impl WarmJob {
-    /// Builds the variant and warms its runtimes: reset under the pose, then `steps` steps.
+    /// Builds the variant, warms its runtimes (reset under the pose, then `steps` steps) and shares its expressions.
     fn run(self) -> BuildResult {
         let mut built =
             self.builder.build(&self.id, &self.def, &self.options, &self.services).map_err(|e| e.to_string())?;
@@ -139,7 +157,8 @@ impl WarmJob {
         };
         let skin = solved.as_deref().unwrap_or(&self.skin);
         warm_runtimes(&mut built, skin, self.root, self.steps);
-        Ok(built)
+        let expressions = expressions_of(&built);
+        Ok(Warmed { built, expressions })
     }
 }
 
@@ -174,6 +193,8 @@ struct Retiring {
     dynamic: Option<DynamicMeshes>,
     plan: Option<ScenePlan>,
     bound: Option<Bound>,
+    /// What a kept face system's old profile and expressions were.
+    face: Option<(FaceProfile, Arc<ExpressionSet>)>,
     retired: Option<Retired>,
 }
 
@@ -214,6 +235,8 @@ struct Bound {
     system: FaceSystem,
     /// The face profile with palette slots resolved.
     profile: FaceProfile,
+    /// The profile's expressions, shared ([`Stage::face_expressions`]).
+    expressions: Arc<ExpressionSet>,
     projection: FaceProjection,
     head: Option<Head>,
 }
@@ -221,6 +244,7 @@ struct Bound {
 /// What binding a rig to a character needs from it, worked out before anything is committed.
 struct Resolved {
     profile: FaceProfile,
+    expressions: Arc<ExpressionSet>,
     projection: FaceProjection,
     head: Option<Head>,
 }
@@ -229,6 +253,9 @@ struct Resolved {
 /// asks for it.
 pub struct FaceRig {
     factory: FaceFactory,
+    /// The GPU rasteriser waiting for the first face system. From then on it moves from each system to the one that
+    /// replaces it (variant switches, density changes), so its compiled pipelines outlive face systems.
+    gpu: Option<Box<dyn GpuRasterizer>>,
     source: Option<CharacterSource>,
     settle_steps: u32,
     bound: Option<Bound>,
@@ -252,6 +279,7 @@ impl FaceRig {
     pub fn new(factory: FaceFactory) -> Self {
         Self {
             factory,
+            gpu: None,
             source: None,
             settle_steps: SETTLE_STEPS,
             bound: None,
@@ -265,11 +293,41 @@ impl FaceRig {
         }
     }
 
-    /// The production rig: the real painter and the CPU rasteriser (the GPU one registers on the system later).
+    /// The production rig: the real painter (kept by value, so the GPU rasteriser repaints only the sections that
+    /// changed), the CPU rasteriser as the fallback, and on native targets the GPU rasteriser, which draws straight into
+    /// the renderer's face textures through `PaintTarget::native` when the renderer is the wgpu one on a hardware adapter
+    /// (`VelloRasterizer::hardware_only`); anywhere else the CPU raster is written instead.
     pub fn standard() -> Self {
-        Self::new(Box::new(|projection, px_per_m| {
-            FaceSystem::new(Box::new(RealPainter::new(*projection, px_per_m)), Box::new(SkiaRasterizer::new()))
-        }))
+        let rig = Self::new(Box::new(|projection, px_per_m| {
+            FaceSystem::real(RealPainter::new(*projection, px_per_m), Box::new(SkiaRasterizer::new()))
+        }));
+        #[cfg(not(target_arch = "wasm32"))]
+        let rig = rig.with_gpu_rasterizer(Box::new(VelloRasterizer::hardware_only()));
+        rig
+    }
+
+    /// Draws the face layers with `gpu`: it is installed on the first face system (replacing any rasteriser the factory
+    /// gave that system), then handed from each system to the one that replaces it. It replaces the rig's own, so
+    /// `FaceRig::standard().with_gpu_rasterizer(..)` swaps the production GPU rasteriser for another.
+    #[must_use]
+    pub fn with_gpu_rasterizer(mut self, gpu: Box<dyn GpuRasterizer>) -> Self {
+        self.gpu = Some(gpu);
+        self
+    }
+
+    /// Gives `new` the GPU rasteriser of the system it replaces, or the rig's own if this is the first system or the
+    /// last one had none. Moving a box allocates nothing, so this is safe inside the swap.
+    fn hand_over_gpu(&mut self, old: Option<&mut FaceSystem>, new: &mut FaceSystem) {
+        if let Some(gpu) = old.and_then(FaceSystem::take_gpu_rasterizer).or_else(|| self.gpu.take()) {
+            new.set_gpu_rasterizer(Some(gpu));
+        }
+    }
+
+    /// Keeps the GPU rasteriser of a face system that goes away with no successor, for the next one.
+    fn keep_gpu(&mut self, old: &mut FaceSystem) {
+        if let Some(gpu) = old.take_gpu_rasterizer() {
+            self.gpu = Some(gpu);
+        }
     }
 
     /// Lets the stage switch variants and apply palettes by rebuilding from `source`.
@@ -295,34 +353,43 @@ impl FaceRig {
 
     /// Binds the rig to `built` at `px_per_m`: [`resolve`](Self::resolve), then [`commit_bound`](Self::commit_bound).
     fn bind(&mut self, built: &BuiltCharacter, px_per_m: f32) -> Result<(), StageError> {
-        let resolved = Self::resolve(built)?;
+        let resolved = Self::resolve(built, None)?;
         self.commit_bound(resolved, px_per_m);
         Ok(())
     }
 
-    /// The part of binding that can fail: the face profile with its palette slots resolved, and the head. `None` for a
-    /// character without a face.
-    fn resolve(built: &BuiltCharacter) -> Result<Option<Resolved>, StageError> {
+    /// The part of binding that can fail: the face profile with its palette slots resolved, its expressions shared
+    /// (`expressions`, when a build job already made them, else made here) and the head. `None` for a character without
+    /// a face.
+    fn resolve(built: &BuiltCharacter, expressions: Option<Arc<ExpressionSet>>) -> Result<Option<Resolved>, StageError> {
         let Some(face) = &built.face else { return Ok(None) };
         let profile = face
             .profile
             .resolve_colours(&built.palette)
             .map_err(|source| StageError::Face { reason: source.to_string() })?;
-        Ok(Some(Resolved { profile, projection: face.projection, head: head_of(built, &face.projection) }))
+        let expressions = expressions.unwrap_or_else(|| Arc::new(face.profile.expressions.clone()));
+        Ok(Some(Resolved { profile, expressions, projection: face.projection, head: head_of(built, &face.projection) }))
     }
 
     /// Binds `resolved` (cannot fail): makes a new face system if there is none or the projection changed (else the old
     /// one keeps its fingerprints, so only layers whose picture changed repaint). No face unbinds it.
     fn commit_bound(&mut self, resolved: Option<Resolved>, px_per_m: f32) {
-        let Some(Resolved { profile, projection, head }) = resolved else {
-            self.bound = None;
+        let Some(Resolved { profile, expressions, projection, head }) = resolved else {
+            if let Some(mut old) = self.bound.take() {
+                self.keep_gpu(&mut old.system);
+            }
             return;
         };
         let system = match self.bound.take() {
             Some(old) if old.projection == projection => old.system,
-            _ => (self.factory)(&projection, px_per_m),
+            old => {
+                let mut system = (self.factory)(&projection, px_per_m);
+                let mut old = old.map(|old| old.system);
+                self.hand_over_gpu(old.as_mut(), &mut system);
+                system
+            }
         };
-        self.bound = Some(Bound { system, profile, projection, head });
+        self.bound = Some(Bound { system, profile, expressions, projection, head });
     }
 
     /// Readies a face system made between frames for the next [`tick`](Stage::tick): its first update (which sets up
@@ -396,9 +463,9 @@ pub(super) fn discard_switch(renderer: &mut dyn Renderer, rig: &mut FaceRig) {
 /// Drops what the last swap replaced and gives its renderer resources back. A failed release is logged: the new
 /// character is long in place and there is no one left to tell.
 fn release_retiring(renderer: &mut dyn Renderer, rig: &mut FaceRig) {
-    let Retiring { built, rig: old_rig, dynamic, plan, bound, retired } = mem::take(&mut rig.retiring);
+    let Retiring { built, rig: old_rig, dynamic, plan, bound, face, retired } = mem::take(&mut rig.retiring);
     // Dropped here, off the tick.
-    drop((built, old_rig, dynamic, plan, bound));
+    drop((built, old_rig, dynamic, plan, bound, face));
     if let Some(retired) = retired
         && let Err(error) = retired.release(renderer)
     {
@@ -420,6 +487,34 @@ impl Stage {
             discard_switch(renderer, &mut old);
         }
         Ok(())
+    }
+
+    /// The live face's expression table, shared; `None` without a face rig or for a character without a face.
+    ///
+    /// For the triggers (`perform`), which bake key bindings against it: holding a clone of the `Arc` costs a counter
+    /// increment, with no copy of the table, no lock and no allocation, so it can be taken in the frame loop's cold step
+    /// after every variant swap. The table is built where the character is: by a variant switch's build job, off the
+    /// frame thread, or by the cold calls that bind a face ([`set_face`](Self::set_face),
+    /// [`apply_palette`](Self::apply_palette), [`resize_face`](Self::resize_face)); the swap only stores the pointer.
+    /// A new table is a new `Arc` (`Arc::ptr_eq` tells whether it changed); the old one is dropped by the next
+    /// [`service_variants`](Self::service_variants), not in the swapping tick.
+    pub fn face_expressions(&self) -> Option<&Arc<ExpressionSet>> {
+        self.face.as_ref()?.bound.as_ref().map(|bound| &bound.expressions)
+    }
+
+    /// Tells the face that the renderer was rebuilt after a device loss: its GPU rasteriser drops everything it made on
+    /// the old device (`GpuRasterizer::device_lost`), and every face layer is painted again on the next
+    /// [`tick`](Stage::tick). Call it before that tick: the rasteriser cannot always tell a rebuilt device from the old one
+    /// (wgpu numbers resources per instance). A no-op without a face rig.
+    pub fn face_device_lost(&mut self) {
+        let Some(rig) = self.face.as_mut() else { return };
+        if let Some(gpu) = rig.gpu.as_mut() {
+            gpu.device_lost();
+        }
+        if let Some(bound) = rig.bound.as_mut() {
+            bound.system.gpu_device_lost();
+        }
+        rig.unpainted = [true; FaceLayerId::COUNT];
     }
 
     /// Warms the rig's spring bones and the part runtimes (hair, cloth, tails) by `steps` steps of [`SETTLE_DT`], under
@@ -471,8 +566,10 @@ impl Stage {
             && let Some(rig) = self.face.as_mut()
         {
             // A new system, because the painter's layer specs carry the density. It is warmed here, not in the next
-            // tick, and every layer is owed a paint: the new textures are empty.
-            rig.bound = None;
+            // tick, and every layer is owed a paint: the new textures are empty. The GPU rasteriser carries over.
+            if let Some(mut old) = rig.bound.take() {
+                rig.keep_gpu(&mut old.system);
+            }
             let bound = rig.bind(&self.built, self.character.face_px_per_m()).and_then(|()| rig.warm_bound());
             resized?;
             return bound;
@@ -562,6 +659,12 @@ impl Stage {
         }
         let mut first_error = None;
         for layer in FaceLayerId::ALL {
+            // A GPU paint of an earlier frame can turn out, a frame or two later, to have drawn the layer wrong (it
+            // outgrew a GPU buffer): repaint it although the face did not change, or a face that stopped changing would
+            // keep the wrong picture.
+            if bound.system.gpu_repaint_needed(layer) {
+                rig.unpainted[layer as usize] = true;
+            }
             if !rig.unpainted[layer as usize] {
                 continue;
             }
@@ -574,6 +677,8 @@ impl Stage {
             match renderer.paint_texture(texture, &mut painter) {
                 Ok(()) => rig.unpainted[layer as usize] = false,
                 Err(source) => {
+                    // What a GPU rasteriser recorded for this paint was dropped: its retry must redraw the layer whole.
+                    bound.system.gpu_paint_failed(layer);
                     first_error.get_or_insert_with(|| {
                         StageError::render(format!("painting the {layer:?} face layer"), source)
                     });
@@ -641,7 +746,7 @@ impl Stage {
             self.request_switch(rig, &target, input, tick)?;
         }
         let Some(answer) = rig.building.take() else { return Ok(()) };
-        let built = match answer.try_recv() {
+        let warmed = match answer.try_recv() {
             Ok(result) => result.map_err(rebuild_error)?,
             Err(mpsc::TryRecvError::Empty) => {
                 rig.building = Some(answer);
@@ -651,7 +756,7 @@ impl Stage {
                 return Err(rebuild_error("the variant build ended without a result"));
             }
         };
-        let staged = self.stage_switch(renderer, rig, built, input, tick)?;
+        let staged = self.stage_switch(renderer, rig, warmed, input, tick)?;
         // The swapping frame fills the scene with the new plan: room for it is made here, not in that frame.
         staged.plan.reserve(&mut self.scene);
         rig.staged = Some(staged);
@@ -691,31 +796,32 @@ impl Stage {
         Ok(())
     }
 
-    /// Prepares `new` (built and warmed by the job) beside the live character: everything that can fail or allocate.
+    /// Prepares `warmed` (built and warmed by the job) beside the live character: everything that can fail or allocate.
     /// On an error nothing is left on the renderer and the live character is untouched.
     fn stage_switch(
         &self,
         renderer: &mut dyn Renderer,
         rig: &FaceRig,
-        new: BuiltCharacter,
+        warmed: Warmed,
         input: &FrameInput,
         tick: Tick,
     ) -> Result<Staged, StageError> {
+        let Warmed { built: new, expressions } = warmed;
         let mut new_rig = (new.rig != self.built.rig).then(|| RigFrame::new(&new.rig)).transpose()?;
         if let Some(frame) = new_rig.as_mut() {
             // A first solve off the frame path; the swapping frame solves it again with its own input.
             frame.solve(tick, &input.pose, &input.goals);
         }
-        let bound = match FaceRig::resolve(&new)? {
+        let bound = match FaceRig::resolve(&new, expressions)? {
             None => NextBound::Unbound,
             Some(next) if rig.bound.as_ref().is_some_and(|live| live.projection == next.projection) => {
                 NextBound::Keep(Box::new(next))
             }
-            Some(Resolved { profile, projection, head }) => {
+            Some(Resolved { profile, expressions, projection, head }) => {
                 let mut system = (rig.factory)(&projection, self.character.face_px_per_m());
                 // The first update of a face system sets up its scratch; do it here so the swap tick's update does not.
                 warm_face(&mut system, &profile, &input.channels, tick.time)?;
-                NextBound::Fresh(Box::new(Bound { system, profile, projection, head }))
+                NextBound::Fresh(Box::new(Bound { system, profile, expressions, projection, head }))
             }
         };
         let prepared = self.character.prepare_sync(renderer, &self.built, &new)?;
@@ -767,19 +873,28 @@ impl Stage {
         match bound {
             NextBound::Keep(next) => {
                 if let Some(live) = rig.bound.take() {
-                    rig.bound = Some(Bound {
-                        system: live.system,
-                        profile: next.profile,
-                        projection: next.projection,
-                        head: next.head,
-                    });
+                    let Resolved { profile, expressions, projection, head } = *next;
+                    rig.bound = Some(Bound { system: live.system, profile, expressions, projection, head });
+                    // The old profile and expression table are dropped with the rest of the old character, not here.
+                    rig.retiring.face = Some((live.profile, live.expressions));
                 } else {
                     // Staged against a face that has since gone: cannot be made here without allocating.
                     tracing::error!("a staged variant kept a face system the rig no longer has; the face is unbound");
                 }
             }
-            NextBound::Fresh(next) => rig.retiring.bound = rig.bound.replace(*next),
-            NextBound::Unbound => rig.retiring.bound = rig.bound.take(),
+            NextBound::Fresh(mut next) => {
+                let mut live = rig.bound.take();
+                rig.hand_over_gpu(live.as_mut().map(|live| &mut live.system), &mut next.system);
+                rig.bound = Some(*next);
+                rig.retiring.bound = live;
+            }
+            NextBound::Unbound => {
+                let mut live = rig.bound.take();
+                if let Some(live) = live.as_mut() {
+                    rig.keep_gpu(&mut live.system);
+                }
+                rig.retiring.bound = live;
+            }
         }
         // A new layer texture is empty, and the face system's fingerprints still say its picture was shown.
         for layer in FaceLayerId::ALL {
@@ -809,7 +924,7 @@ impl Stage {
         mut new: BuiltCharacter,
     ) -> Result<(SyncReport, Result<(), StageError>), StageError> {
         let new_rig = (new.rig != self.built.rig).then(|| RigFrame::new(&new.rig)).transpose()?;
-        let resolved = FaceRig::resolve(&new)?;
+        let resolved = FaceRig::resolve(&new, None)?;
         let prepared = self.character.prepare_sync(renderer, &self.built, &new)?;
 
         let skin = new_rig.as_ref().map_or_else(|| self.rig.skin(), RigFrame::skin);

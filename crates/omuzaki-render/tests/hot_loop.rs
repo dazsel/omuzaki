@@ -11,8 +11,10 @@
 
 mod support;
 // The counting allocator is installed only in this test binary, so the other tests run on the plain allocator.
-#[path = "support/counting.rs"]
-mod counting;
+use omuzaki_render_mock::counting;
+
+#[global_allocator]
+static ALLOCATOR: counting::Counting = counting::Counting::new(env!("CARGO_PKG_NAME"));
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -110,7 +112,7 @@ fn the_renderers_own_code_allocates_nothing_per_frame() {
     }
     let per_frame = allocations_per_frame(20);
     println!("allocations per frame by owner: {per_frame:?}");
-    for owner in ["omuzaki-render", "render-api", "test and mock", "unattributed"] {
+    for owner in [counting::OWN, counting::WORKSPACE, counting::TESTS, counting::UNATTRIBUTED] {
         assert_eq!(per_frame.get(owner).copied().unwrap_or(0), 0, "{owner} allocated per frame: {per_frame:?}");
     }
 }
@@ -124,7 +126,10 @@ fn wgpus_share_stays_bounded() {
         return;
     }
     let per_frame = allocations_per_frame(20);
-    let wgpu = per_frame.get("wgpu and other dependencies").copied().unwrap_or(0);
+    let wgpu = [counting::WGPU, counting::DEPENDENCIES]
+        .iter()
+        .map(|owner| per_frame.get(owner).copied().unwrap_or(0))
+        .sum::<usize>();
     // Measured on wgpu 30: 212 for this scene, of which about 100 are the six mip-level passes a repaint triggers.
     assert!(wgpu <= 260, "wgpu allocated {wgpu} times per frame (measured 212): {per_frame:?}");
 }
