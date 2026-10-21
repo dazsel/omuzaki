@@ -156,6 +156,36 @@ impl Project {
         Ok(project)
     }
 
+    /// Changes the document to `root` in one patch of its top-level entries (the root itself can't be replaced), so
+    /// the layout rules apply as for any edit and the next [`save`](Self::save) writes exactly the files that differ.
+    /// Recovery uses it to bring the files' project to a snapshot's tree. Returns the patch it applied, empty when the
+    /// trees were already equal.
+    ///
+    /// # Errors
+    /// `root` is not an object, or the store can't hold it (the same refusals as [`DocWrite::apply`]).
+    pub fn reset_to(&mut self, root: &Value) -> Result<Patch, PatchError> {
+        let (Value::Object(now), Value::Object(target)) = (&self.root, root) else {
+            return Err(PatchError::Unreachable {
+                path: DocPath::root(),
+                reason: "a project's tree is an object".into(),
+            });
+        };
+        let mut keys: Vec<&String> = now.keys().chain(target.keys()).collect();
+        keys.sort();
+        keys.dedup();
+        let mut patch = Patch::new();
+        for key in keys {
+            let (before, after) = (now.get(key), target.get(key));
+            if before != after {
+                patch = patch.with(DocPath::root().join(key), before.cloned(), after.cloned());
+            }
+        }
+        if !patch.changes.is_empty() {
+            self.apply(&patch)?;
+        }
+        Ok(patch)
+    }
+
     /// The project folder.
     pub fn dir(&self) -> &Path {
         &self.dir

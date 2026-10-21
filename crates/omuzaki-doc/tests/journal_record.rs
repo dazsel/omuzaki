@@ -59,7 +59,7 @@ fn every_kind() -> Vec<Record> {
             on_behalf_of: Some(Actor::System),
             at: Seconds(3.0),
         }),
-        Record::Entry(HistoryEntry::JobEnded { job: JobId(4), state: JobState::Done { tx: TxId(3), seq: Some(5) } }),
+        Record::Entry(HistoryEntry::JobEnded { job: JobId(4), state: JobState::done(TxId(3), Some(5)) }),
         Record::Entry(HistoryEntry::TxRevert { tx: TxId(1), seqs: vec![1], patch: patch(), remaining }),
     ]
 }

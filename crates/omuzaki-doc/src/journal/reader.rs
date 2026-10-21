@@ -61,6 +61,13 @@ pub struct Scan {
     pub end: End,
 }
 
+impl Scan {
+    /// The scan of a journal with no records: nothing read, a clean end.
+    pub fn empty() -> Self {
+        Self { records: Vec::new(), end: End::Clean }
+    }
+}
+
 /// Reads journal folders.
 pub struct Reader;
 

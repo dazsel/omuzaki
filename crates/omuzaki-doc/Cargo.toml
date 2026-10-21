@@ -19,6 +19,7 @@ omuzaki-assets-lock = { path = "../omuzaki-assets-lock" }
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-doc-api = { path = "../omuzaki-doc-api" }
 omuzaki-history-api = { path = "../omuzaki-history-api" }
+omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
@@ -32,7 +33,6 @@ criterion.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
-omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-stage-api = { path = "../omuzaki-stage-api" }
 
 [[bench]]
