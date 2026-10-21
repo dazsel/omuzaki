@@ -60,6 +60,8 @@ enum How {
     Open { path: String },
     /// Returns at once; its `finish` signals, then holds the document lock until the job is cancelled.
     SlowFinish,
+    /// Reads the document from inside a read, reporting progress in the inner one (#1593).
+    NestedRead,
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]
@@ -218,6 +220,17 @@ impl Op for TestJob {
             How::Fail => Err(OpError::invalid("key", "boom")),
             How::Panic => panic!("the job's work panicked"),
             How::Nice => Ok(json!(thread_nice())),
+            How::NestedRead => {
+                let (outer, inner) = job.read(|doc| {
+                    let outer = doc.get(&path("seen")).cloned();
+                    let inner = job.read(|again| {
+                        job.progress("inner", 0.5);
+                        again.get(&path("seen")).cloned()
+                    });
+                    (outer, inner)
+                });
+                Ok(json!({"same": outer == inner && outer.is_some()}))
+            }
             How::ReadSignals => {
                 let refused = job.read(|_| {
                     job.progress("reading", 0.25);
@@ -337,8 +350,9 @@ fn a_running_job_does_not_block_another_actor_and_its_finish_is_one_undo_step() 
     gate.wait_entered();
     assert_eq!(live(&rig, info.id).state, JobState::Running);
 
+    let other = rig.bobs_agent();
     let began = Instant::now();
-    rig.agent_set("other", json!(1));
+    rig.set_as(&other, "other", json!(1));
     assert!(began.elapsed() < Duration::from_millis(5), "an edit by another actor waited for the job");
 
     gate.release.send(()).unwrap();
@@ -350,8 +364,12 @@ fn a_running_job_does_not_block_another_actor_and_its_finish_is_one_undo_step() 
     assert_eq!(kept.applied.as_ref().map(|r| r.seq), *seq);
     assert_eq!(rig.at("a1"), Some(json!("done")));
 
-    // One undo step, on the requesting actor's history: the agent's edit is not touched.
-    assert_eq!(rig.undo().unwrap().as_deref(), Some("test.job"));
+    // One undo step, on the requesting actor's history: the other person's agent's edit is not touched.
+    assert_eq!(
+        rig.undo().unwrap().as_deref(),
+        Some("A job the tests drive."),
+        "a one-op step is labelled by its summary"
+    );
     assert_eq!(rig.at("a1"), None);
     assert_eq!(rig.at("other"), Some(json!(1)));
     assert_eq!(rig.undo().unwrap(), None);
@@ -399,15 +417,6 @@ fn a_dry_run_is_the_plan_alone_and_never_starts_work() {
     assert_eq!(rig.exec.jobs(&Grants::person()).unwrap().len(), 0);
     assert!(matches!(gate.entered.try_recv(), Err(TryRecvError::Empty)), "work ran");
     assert_eq!(code(&rig.exec.start(req).unwrap_err()), ErrorCode::Invalid, "Jobs::start needs apply mode");
-}
-
-#[test]
-fn a_driver_op_is_refused_until_the_driver_task() {
-    let rig = rig(json!({}));
-    let error = rig.run("test.driver_job", json!({})).unwrap_err();
-    assert_eq!(code(&error), ErrorCode::Unsupported);
-    assert!(error.message.contains("driver jobs are not available yet"), "{error}");
-    assert_eq!(code(&rig.exec.start(request("test.driver_job", json!({}))).unwrap_err()), ErrorCode::Unsupported);
 }
 
 #[test]
@@ -989,26 +998,28 @@ fn a_job_carries_its_session_and_principal() {
 }
 
 #[test]
-fn a_job_whose_session_is_paused_while_it_works_changes_nothing() {
+fn a_finish_whose_session_is_paused_is_held_until_it_resumes() {
     let rig = rig(json!({}));
     let gate = Gate::new("p1");
+    let events = rig.subscribe();
     let info = rig.exec.start(agent_job("p1", &json!("block"))).unwrap();
     gate.wait_entered();
     rig.exec.pause(SessionId(1), &person()).unwrap();
     gate.release.send(()).unwrap();
 
-    let ended = rig.exec.wait(info.id, None).unwrap();
-    assert!(
-        matches!(&ended.state, JobState::Failed { error } if error.code == ErrorCode::Waiting),
-        "{:?}",
-        ended.state
-    );
-    assert_eq!(rig.at("p1"), None, "the finish was refused");
+    let held = ended_event(&events, info.id, 30).unwrap();
+    assert_eq!(held.state, JobState::Held, "a paused session changes nothing (design 4.3)");
+    assert_eq!(rig.at("p1"), None);
     assert_eq!(rig.log().len(), 0);
+
+    rig.exec.resume(SessionId(1), &person()).unwrap();
+    let ended = rig.exec.wait(info.id, None).unwrap();
+    assert!(matches!(ended.state, JobState::Done { .. }), "{:?}", ended.state);
+    assert_eq!(rig.at("p1"), Some(json!("done")), "applied once the session resumed");
 }
 
 #[test]
-fn a_queued_job_whose_session_is_paused_never_starts() {
+fn a_queued_job_waits_while_its_session_is_paused() {
     let rig = rig(json!({}));
     let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
     let width = (cores / 2).clamp(1, 4);
@@ -1026,13 +1037,19 @@ fn a_queued_job_whose_session_is_paused_never_starts() {
     for gate in &gates {
         gate.release.send(()).unwrap();
     }
-    let ended = rig.exec.wait(waiting.id, None).unwrap();
-    assert!(
-        matches!(&ended.state, JobState::Failed { error } if error.code == ErrorCode::Waiting),
-        "{:?}",
-        ended.state
-    );
+    let others: Vec<JobId> =
+        rig.exec.jobs(&Grants::person()).unwrap().iter().map(|j| j.id).filter(|id| *id != waiting.id).collect();
+    for id in others {
+        rig.exec.wait(id, None).unwrap();
+    }
+    rig.exec.poll_jobs();
+    assert_eq!(live(&rig, waiting.id).state, JobState::Queued, "a paused session's queued job does not start");
     assert_eq!(rig.at("qa"), None, "its work never ran");
+
+    rig.exec.resume(SessionId(1), &person()).unwrap();
+    rig.exec.poll_jobs();
+    let ended = rig.exec.wait(waiting.id, None).unwrap();
+    assert!(matches!(ended.state, JobState::Done { .. }), "it starts once resumed: {:?}", ended.state);
 }
 
 #[test]
@@ -1072,4 +1089,183 @@ fn a_queued_job_works_with_the_grants_its_session_holds_when_it_starts() {
         "its work read a file the session no longer holds: {:?}",
         ended.state
     );
+}
+
+// ---- #1593, #1602, #1603 ----------------------------------------------------------------------------------------
+
+#[test]
+fn a_read_inside_a_read_is_served_from_the_held_document() {
+    let rig = rig(json!({"seen": 7}));
+    let events = rig.subscribe();
+    let info = rig.exec.start(job("nr", &json!("nested_read"))).unwrap();
+    let (done, ended) = channel();
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let _ = done.send(rig.exec.wait(info.id, None));
+        });
+        let ended = ended.recv_timeout(Duration::from_secs(30)).expect("a nested read hung").unwrap();
+        assert!(matches!(ended.state, JobState::Done { .. }), "{:?}", ended.state);
+    });
+    assert_eq!(rig.at("nr"), Some(json!({"same": true})), "both closures saw the same document");
+    let progress = drain(&events)
+        .into_iter()
+        .filter(|e| matches!(e, Event::JobProgress { job, stage, .. } if *job == info.id && stage == "inner"))
+        .count();
+    assert_eq!(progress, 1, "the inner read's progress went out once, after the outer read");
+}
+
+/// A rig whose job ends are recorded by a hook, as `(id, state)`.
+fn end_recorded(ends: Arc<Mutex<Vec<(JobId, JobState)>>>) -> Rig {
+    let clock = Arc::new(FakeClock::new(Seconds(0.0)));
+    let exec = Executor::new(Box::new(MemDoc::from_value(json!({}))), clock.clone()).unwrap().with_job_end_journal(
+        move |info| {
+            ends.lock().unwrap().push((info.id, info.state.clone()));
+            Ok(())
+        },
+    );
+    open_agents(&exec);
+    Rig { exec, clock }
+}
+
+/// The state as the journal holds it: a finished job's outcome stays in memory (`JobState::Done`), so it is not in an
+/// entry.
+fn without_outcome(state: JobState) -> JobState {
+    match state {
+        JobState::Done { tx, seq, .. } => JobState::done(tx, seq),
+        other => other,
+    }
+}
+
+#[test]
+fn every_end_is_journalled_once_with_the_state_the_snapshot_shows() {
+    let ends = Arc::new(Mutex::new(Vec::new()));
+    let rig = end_recorded(ends.clone());
+    let done = rig.exec.start(job("e1", &json!("echo"))).unwrap();
+    let failed = rig.exec.start(job("e2", &json!("fail"))).unwrap();
+    for id in [done.id, failed.id] {
+        rig.exec.wait(id, None).unwrap();
+    }
+    let gate = Gate::new("e3");
+    let running = rig.exec.start(job("e3", &json!("coop"))).unwrap();
+    gate.wait_entered();
+    rig.exec.cancel(running.id, &person()).unwrap();
+    rig.exec.wait(running.id, None).unwrap();
+    let stuck = Gate::new("e4");
+    let detached = rig.exec.start(job("e4", &json!("block"))).unwrap();
+    stuck.wait_entered();
+    rig.exec.cancel(detached.id, &person()).unwrap();
+    advance(&rig, 11.0);
+    let detached_end = rig.exec.wait(detached.id, None).unwrap();
+    let snapshots: Vec<(JobId, JobState)> = [done.id, failed.id, running.id]
+        .into_iter()
+        .map(|id| (id, live(&rig, id).state))
+        .chain([(detached.id, detached_end.state)])
+        .map(|(id, state)| (id, without_outcome(state)))
+        .collect();
+    let recorded = ends.lock().unwrap().clone();
+    for snapshot in &snapshots {
+        assert_eq!(recorded.iter().filter(|r| r.0 == snapshot.0).count(), 1, "{snapshot:?} once");
+        assert!(recorded.contains(snapshot), "{snapshot:?} in {recorded:?}");
+    }
+    drop(stuck);
+    rig.exec.wait_detached(0);
+}
+
+#[test]
+fn a_cancel_while_queued_and_shutdown_are_journalled_too() {
+    let ends = Arc::new(Mutex::new(Vec::new()));
+    let rig = end_recorded(ends.clone());
+    let gpu = json!({"gpu": true});
+    let gate = Gate::new("s1");
+    // Cooperative, so shutdown ends it at its next checkpoint.
+    let running = rig.exec.start(job_with("s1", &json!("coop"), gpu.clone())).unwrap();
+    gate.wait_entered();
+    let queued = rig.exec.start(job_with("s2", &json!("echo"), gpu.clone())).unwrap();
+    let last = rig.exec.start(job_with("s3", &json!("echo"), gpu)).unwrap();
+    rig.exec.cancel(queued.id, &person()).unwrap();
+    rig.exec.shutdown_jobs();
+    rig.exec.wait(running.id, None).unwrap();
+    drop(gate);
+    let recorded = ends.lock().unwrap().clone();
+    let reason = |id| recorded.iter().find(|(r, _)| *r == id).map(|(_, state)| state.clone());
+    assert!(matches!(reason(queued.id), Some(JobState::Cancelled { reason: CancelReason::Requested, .. })));
+    for id in [running.id, last.id] {
+        assert!(matches!(reason(id), Some(JobState::Cancelled { reason: CancelReason::Shutdown, .. })), "{recorded:?}");
+    }
+}
+
+#[test]
+fn a_finish_is_journalled_right_after_its_record_in_the_same_hold() {
+    let sink = Arc::new(omuzaki_history_mock::RecordingSink::new());
+    let clock = Arc::new(FakeClock::new(Seconds(0.0)));
+    let exec = Executor::new(Box::new(MemDoc::from_value(json!({}))), clock).unwrap().with_journal(sink.clone());
+    let info = exec.start(job("f1", &json!("echo"))).unwrap();
+    let ended = exec.wait(info.id, None).unwrap();
+    let JobState::Done { tx, seq: Some(seq), .. } = ended.state else { panic!("{:?}", ended.state) };
+    let entries = sink.entries();
+    let op = entries.iter().position(
+        |e| matches!(e, omuzaki_history_api::HistoryEntry::Op { record, .. } if record.seq == seq && record.tx == tx),
+    );
+    let end = entries
+        .iter()
+        .position(|e| matches!(e, omuzaki_history_api::HistoryEntry::JobEnded { job, .. } if *job == info.id));
+    let started = entries
+        .iter()
+        .position(|e| matches!(e, omuzaki_history_api::HistoryEntry::JobStarted { job, .. } if *job == info.id));
+    assert!(started.is_some() && op.is_some() && end == op.map(|at| at + 1), "{entries:?}");
+}
+
+#[test]
+fn a_panicking_end_journal_strands_nothing() {
+    let clock = Arc::new(FakeClock::new(Seconds(0.0)));
+    let exec = Executor::new(Box::new(MemDoc::from_value(json!({}))), clock)
+        .unwrap()
+        .with_job_end_journal(|_| panic!("the end journal broke"));
+    for how in ["echo", "fail"] {
+        let info = exec.start(job(how, &json!(how))).unwrap();
+        let ended = exec.wait(info.id, None).unwrap();
+        assert!(!matches!(ended.state, JobState::Queued | JobState::Running), "{:?}", ended.state);
+    }
+}
+
+#[test]
+fn job_ids_continue_after_the_journal_and_never_restart() {
+    let clock = Arc::new(FakeClock::new(Seconds(0.0)));
+    let exec = Executor::new(Box::new(MemDoc::from_value(json!({}))), clock).unwrap().with_last_job_id(41);
+    let first = exec.start(job("i1", &json!("echo"))).unwrap();
+    assert_eq!(first.id, JobId(42));
+    let exec = exec.with_last_job_id(7);
+    assert_eq!(exec.start(job("i2", &json!("echo"))).unwrap().id, JobId(43), "seeding after a job has no effect");
+}
+
+#[test]
+fn the_listing_keeps_the_last_hundred_ended_jobs_while_waiters_pin_more() {
+    let rig = rig(json!({}));
+    let gpu = json!({"gpu": true});
+    let gate = Gate::new("w");
+    rig.exec.start(job_with("w", &json!("block"), gpu.clone())).unwrap();
+    gate.wait_entered();
+    let outcomes = std::thread::scope(|scope| {
+        let callers: Vec<_> =
+            (0..150).map(|_| scope.spawn(|| rig.exec.run(job_with("w", &json!("block"), gpu.clone())))).collect();
+        while rig.exec.jobs(&Grants::person()).unwrap().iter().filter(|j| j.state == JobState::Queued).count() < 150 {
+            std::thread::yield_now();
+        }
+        rig.exec.shutdown_jobs();
+        let ended = rig
+            .exec
+            .jobs(&Grants::person())
+            .unwrap()
+            .iter()
+            .filter(|j| !matches!(j.state, JobState::Queued | JobState::Running))
+            .count();
+        assert!(ended <= 100, "{ended} ended jobs listed");
+        callers.into_iter().map(|c| c.join().unwrap()).collect::<Vec<_>>()
+    });
+    for outcome in outcomes {
+        let error = outcome.unwrap_err();
+        assert!(matches!(error.detail.as_deref(), Some(ErrorDetail::Cancelled { reason: CancelReason::Shutdown, .. })));
+    }
+    assert!(rig.exec.jobs(&Grants::person()).unwrap().len() <= 101, "trimmed back once the waiters have read");
+    drop(gate);
 }

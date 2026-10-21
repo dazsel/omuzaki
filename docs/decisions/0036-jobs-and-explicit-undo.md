@@ -245,6 +245,9 @@ folded in here so the hub crate changes once; the wire formats stay compatible.
 
 ## Consequences
 
+- A driver job's inner calls carry the `Script` cause (the job's label as its text), not the job's own cause, as
+  `scripting.md` §3 and §4 ask (decision 10 above says "the job's cause"). The job's own cause stays on the job and on
+  its `JobStarted` record.
 - `omuzaki-io-api::Progress` and `omuzaki-ai-api::Progress` stay (they are used outside jobs too); an op passes a small
   adapter over its `JobCtx`. Their "will merge" notes are updated, not acted on.
 - A job's result appears in history when it lands, not when it was asked for; history shows the newest change on top.

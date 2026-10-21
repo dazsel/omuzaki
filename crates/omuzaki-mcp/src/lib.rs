@@ -57,10 +57,10 @@
 //! closes, and when it revoked the credential too, the token stops working and its other sessions end. Without a
 //! registry the server names the agent itself and rolls the transaction back on drop.
 //!
-//! **Until #2106.** The executor in the app does not yet implement `Sessions::end`, approvals or the stale-write guard.
-//! Against it, a disconnected session stays active in the registry with its jobs running (this crate rolls the open
-//! transaction back itself), `approval_wait` finds no approval, and `base` is sent but nothing checks it. The behaviour
-//! above is what this crate does and what its tests pin against a stand-in registry; it reaches the app when #2106 lands.
+//! **Headless.** `omuzaki mcp` has no window to approve in, so the app opens its executor with no approver (design
+//! §7.6): a request that would queue is refused with `denied`, what it needs as the detail and a hint that says how to
+//! grant it in advance, and `approval_wait` has nothing to wait for. With the studio's window the same request queues
+//! and the person answers it there.
 //!
 //! Grants come from [`McpOptions`] (default `Grants::agent_default()`), or from the access token on the HTTP port, plus
 //! the file roots the host lists with [`McpOptions::with_roots`] (the project folder and the folders the person shared

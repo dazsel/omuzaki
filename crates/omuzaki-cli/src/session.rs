@@ -91,9 +91,23 @@ pub fn open_runner_with(cli: &Cli, connections: &Connections) -> Result<Arc<dyn 
 
 /// As [`open_runner_with`], keeping the executor's type so its session registry can be reached too.
 ///
+/// The command line is headless: no window is open to ask a person, so a request of an agent session that would wait
+/// for an approval is refused at once, with a hint that says how to grant what it needs in advance (design
+/// `agent-sessions.md` §7.6). A host with a window opens the executor with [`open_executor_unshared`] instead.
+///
 /// # Errors
 /// As [`open_runner`].
 pub fn open_executor_with(cli: &Cli, connections: &Connections) -> Result<Arc<Executor>, OpError> {
+    Ok(Arc::new(open_executor_unshared(cli, connections)?.with_approver(false)))
+}
+
+/// The executor of [`open_executor_with`] before it is shared and before it is told whether a person can be asked: it
+/// has an approver, as the studio's window gives it. A host sets what only it knows (`Executor::with_approver`) and
+/// then shares it.
+///
+/// # Errors
+/// As [`open_runner`].
+pub fn open_executor_unshared(cli: &Cli, connections: &Connections) -> Result<Executor, OpError> {
     // The folder is vetted first: `ProjectDir` names the reason in its own words, which beat the document's.
     let project_dir = cli.project.as_deref().map(open_project_dir).transpose()?;
     let doc: Box<dyn DocWrite> = match cli.project.as_deref() {
@@ -106,10 +120,10 @@ pub fn open_executor_with(cli: &Cli, connections: &Connections) -> Result<Arc<Ex
     })?;
     let services = ServicesBuilder::new().insert::<dyn ConnectionService>(Arc::new(connections.clone())).build();
     let executor = executor.with_services(services);
-    Ok(Arc::new(match project_dir {
+    Ok(match project_dir {
         Some(dir) => executor.with_project_dir(dir),
         None => executor,
-    }))
+    })
 }
 
 /// The project folder as agents are granted it: its real path, relative names and symlinks resolved (ADR 0013), because

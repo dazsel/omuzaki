@@ -7,22 +7,31 @@ use std::time::Duration;
 use omuzaki_core::time::Clock;
 use omuzaki_doc_api::{DocPath, DocWrite, Value};
 use omuzaki_ops_api::{
-    Actor, ApprovalId, Budget, Cause, Decision, DynOp, EndReason, Ended, Event, Grants, JobId, JobInfo, JobShape, Jobs,
-    Mode, OpCtx, OpError, OpInfo, OpKind, OpRecord, OpRegistration, Outcome, PendingApproval, Plan, Principals,
-    ProjectDir, Request, Resolution, Runner, Scope, Services, SessionChange, SessionId, SessionInfo, SessionSpec,
-    SessionUndo, Sessions, Spend, TxId, checks, registrations,
+    Actor, ApprovalRef, Cause, DynOp, Event, Grants, JobId, JobInfo, JobShape, Jobs, Mode, OpCtx, OpError, OpInfo,
+    OpKind, OpRecord, OpRegistration, Outcome, Plan, Principals, ProjectDir, Request, ReviewPolicies, Runner, Scope,
+    Services, SessionId, TxId, checks, registrations,
 };
+
+use omuzaki_history_api::{HistoryExport, JournalSink, WallClock};
 
 use crate::ExecutorError;
 use crate::bus::Bus;
+use crate::gate::Allowance;
+use crate::history::{Direction, HistoryLimits};
 use crate::index::OpIndex;
 use crate::jobs::Manager;
+use crate::journal::Journal;
+use crate::limits::Bucket;
+use crate::sessions::Entry;
 use crate::state::{Edit, State};
 use crate::sync::lock;
 
 /// Records that a job is starting: called with its snapshot and arguments before its `work` can run. See
 /// [`Executor::with_job_journal`].
 pub(crate) type JobStartedHook = Arc<dyn Fn(&JobInfo, &Value) -> Result<(), OpError> + Send + Sync>;
+
+/// Records that a job ended: called once with its final snapshot. See [`Executor::with_job_end_journal`].
+pub(crate) type JobEndedHook = Arc<dyn Fn(&JobInfo) -> Result<(), OpError> + Send + Sync>;
 
 /// What a job thread needs from the executor, as shared handles: it outlives any borrow of the [`Executor`].
 #[derive(Clone)]
@@ -33,6 +42,16 @@ pub(crate) struct Env {
     pub(crate) services: Arc<Services>,
     pub(crate) project_dir: Option<Arc<ProjectDir>>,
     pub(crate) job_started: Option<JobStartedHook>,
+    pub(crate) job_ended: Option<JobEndedHook>,
+    /// The highest job id a journal recorded: new ids continue after it (#1602).
+    pub(crate) last_job_id: u64,
+    /// Every op this executor runs: the job threads need it for a driver job's inner calls and an effect's calls.
+    pub(crate) ops: Arc<OpIndex>,
+    /// Whether a person can be asked: without one, a request that would queue for approval is refused instead
+    /// (design §7.6, headless `omuzaki mcp`).
+    pub(crate) approver: bool,
+    /// The team's review rules, if the app installed any (VC-11).
+    pub(crate) review: Option<Arc<dyn ReviewPolicies>>,
 }
 
 impl Env {
@@ -63,10 +82,25 @@ impl Env {
         by: (&Actor, &Option<Cause>, Option<TxId>),
         plan: &Plan,
     ) -> Result<OpRecord, OpError> {
+        self.apply_approved(state, op, by, plan, (None, None))
+    }
+
+    /// [`apply`](Self::apply), stamping the record with the approval that allowed the run, and holding its event for
+    /// the transaction's commit when it is a driver job's inner edit.
+    pub(crate) fn apply_approved(
+        &self,
+        state: &mut State,
+        op: &dyn DynOp,
+        by: (&Actor, &Option<Cause>, Option<TxId>),
+        plan: &Plan,
+        stamps: (Option<ApprovalRef>, Option<JobId>),
+    ) -> Result<OpRecord, OpError> {
+        let (approval, driver) = stamps;
         let meta = op.meta();
         let (actor, cause, tx) = by;
         state.apply_edit(Edit {
             op: meta.name,
+            summary: meta.summary,
             scope: meta.scope,
             undo: meta.undo,
             args: checks::record_args(op)?,
@@ -75,7 +109,27 @@ impl Env {
             cause: cause.clone(),
             tx,
             at: self.clock.now(),
+            approval,
+            effect: plan.effect.clone(),
+            driver,
         })
+    }
+
+    /// Authorizes, plans and checks `op` against the current document, with the checks every runner shares
+    /// ([`checks::plan`]). `confirmed_by` is the person who confirmed the run, after an approval.
+    pub(crate) fn plan(
+        &self,
+        state: &State,
+        op: &dyn DynOp,
+        req: &Request,
+        confirmed_by: Option<&Actor>,
+    ) -> Result<Plan, OpError> {
+        let ctx = self.op_ctx(state, &req.actor, &req.grants, req.mode == Mode::DryRun);
+        let ctx = match confirmed_by {
+            Some(person) => ctx.with_confirmation(person),
+            None => ctx,
+        };
+        checks::plan(op, req, ctx)
     }
 
     /// Sends the queued events. Called after the state lock is released, so no subscriber is ever called (or waited
@@ -91,13 +145,12 @@ impl Env {
 /// the executor unchanged: its jobs stay listed, cancellable and waitable, and the configuration they run under stays
 /// the one every op sees.
 pub struct Executor {
-    ops: OpIndex,
     /// The document and everything that must change with it (one lock: this is the authoring plane, where
     /// correctness beats concurrency, and a single lock makes "plan, apply, log" atomic by construction), the clock,
     /// and what ops may reach beyond the document. Fixed before the executor starts: the fields have no setters.
-    env: Env,
+    pub(crate) env: Env,
     /// The job manager, built over `env` and `job_budget` when the executor is configured.
-    jobs: Arc<Manager>,
+    pub(crate) jobs: Arc<Manager>,
     job_budget: u64,
 }
 
@@ -122,15 +175,20 @@ impl Executor {
         registrations: impl IntoIterator<Item = &'static OpRegistration>,
     ) -> Result<Self, ExecutorError> {
         let env = Env {
+            ops: Arc::new(OpIndex::build(registrations)?),
             state: Arc::new(Mutex::new(State::new(doc))),
             bus: Arc::new(Bus::default()),
             clock,
             services: Arc::new(Services::none()),
             project_dir: None,
             job_started: None,
+            job_ended: None,
+            last_job_id: 0,
+            approver: true,
+            review: None,
         };
         let jobs = Manager::new(env.clone(), u64::MAX);
-        Ok(Self { ops: OpIndex::build(registrations)?, env, jobs, job_budget: u64::MAX })
+        Ok(Self { env, jobs, job_budget: u64::MAX })
     }
 
     /// Applies a builder's change to the environment and the job budget, then rebuilds the job manager over them.
@@ -182,6 +240,28 @@ impl Executor {
         self.rewired(|env, _| env.job_started = Some(Arc::new(record)))
     }
 
+    /// The same executor, with `record` called once for every job as it ends, with its final snapshot (the `JobEnded`
+    /// entry of ADR 0036 decision 7, #1602). A finish that applies calls it in the same document lock hold as its op
+    /// record, right after it, so a crash never leaves an applied finish whose job reads as interrupted. Every other
+    /// end (a failure, a cancel while queued or running, a detach, shutdown) calls it as the job ends. It must not
+    /// block; if it fails or panics, the job still ends and its money is still settled. Without it (and without
+    /// [`with_journal`](Self::with_journal)) ends are not journalled; with a journal, `JobStarted` and `JobEnded`
+    /// entries go to it unless a hook is set.
+    #[must_use]
+    pub fn with_job_end_journal(
+        self,
+        record: impl Fn(&JobInfo) -> Result<(), OpError> + Send + Sync + 'static,
+    ) -> Self {
+        self.rewired(|env, _| env.job_ended = Some(Arc::new(record)))
+    }
+
+    /// The same executor, giving new jobs ids after `last` (the highest the project's journal recorded), so ids are
+    /// never reused across a reopen (#1602). Ignored once a job was admitted, like every builder.
+    #[must_use]
+    pub fn with_last_job_id(self, last: u64) -> Self {
+        self.rewired(|env, _| env.last_job_id = last)
+    }
+
     /// The same executor, with `usd_micros` (millionths of a dollar) as the most that jobs may reserve and spend in
     /// all (ADR 0036 decision 3). A job whose reservation would not fit is refused with `Limited`. Without it the
     /// budget is unlimited: the session rules, which own the real budget, come with the sessions task.
@@ -204,6 +284,59 @@ impl Executor {
         self.rewired(|env, _| lock(&env.state).sessions.set_first_id(first))
     }
 
+    /// The same executor, told whether a person can be asked (default `true`: the studio's window is there). Without
+    /// an approver (headless `omuzaki mcp`, design §7.6) a request that would wait for approval is refused at once:
+    /// `Denied`, with what it needs as the detail and a hint that says how to grant it in advance.
+    #[must_use]
+    pub fn with_approver(self, approver: bool) -> Self {
+        self.rewired(|env, _| env.approver = approver)
+    }
+
+    /// The same executor, with the team's review rules (VC-11): a request whose op scope, or a scope grant it asks
+    /// for, has a requirement waits for that many distinct reviewers ([`Need::Review`](omuzaki_ops_api::Need)).
+    /// Without it nothing asks for a review. `policies` is asked under the executor's lock, so it must not call back
+    /// into the executor.
+    #[must_use]
+    pub fn with_review_policies(self, policies: Arc<dyn ReviewPolicies>) -> Self {
+        self.rewired(|env, _| env.review = Some(policies))
+    }
+
+    /// The same executor, handing every change to `journal` (#251, design `journal.md` §5.1): each entry is appended
+    /// under the executor's lock right after its change succeeds, so journal order is history order; the journal is
+    /// asked to admit an applied edit, an undo or a redo before it is planned (never a commit or a rollback); and when
+    /// it wants a mark, the next change is followed by a [`HistoryEntry::Mark`](omuzaki_history_api::HistoryEntry)
+    /// with the history. Without it nothing is journalled and every edit is admitted.
+    #[must_use]
+    pub fn with_journal(self, journal: Arc<dyn JournalSink>) -> Self {
+        self.rewired(|env, _| lock(&env.state).set_journal(Journal::new(journal)))
+    }
+
+    /// The same executor, keeping at most `limits.undo_depth` steps per actor and `limits.log_records` records in
+    /// the in-memory op log (#150; defaults 1,000 and 10,000). Older steps and records are in the journal's archive.
+    #[must_use]
+    pub fn with_history_limits(self, limits: HistoryLimits) -> Self {
+        self.rewired(|env, _| lock(&env.state).set_limits(limits))
+    }
+
+    /// The same executor, noting in wall time when each actor last acted, so a history export leaves out actors not
+    /// seen for 30 days (`journal.md` §9). Without it, every actor's last-seen time is unknown and nobody is left out.
+    #[must_use]
+    pub fn with_wall_clock(self, wall: Arc<dyn WallClock>) -> Self {
+        self.rewired(|env, _| lock(&env.state).set_wall(wall))
+    }
+
+    /// The whole history as data: every actor's undo and redo stacks, the open transactions and the next transaction
+    /// id and op `seq`. Steps share their patches with the executor, so this copies pointers.
+    pub fn history_export(&self) -> HistoryExport {
+        lock(&self.env.state).history_export()
+    }
+
+    /// Appends a [`HistoryEntry::Mark`](omuzaki_history_api::HistoryEntry) with the history now, as a clean close
+    /// does. Without a journal it does nothing.
+    pub fn flush_history(&self) {
+        lock(&self.env.state).mark();
+    }
+
     /// Enforces the jobs' time caps and cancel deadlines against the executor's clock. A supervisor thread calls it
     /// about every 50 ms of wall time, so a host with the system clock never calls it; a host or test with a
     /// [`FakeClock`](omuzaki_core::time::FakeClock) calls it after moving the clock.
@@ -224,57 +357,30 @@ impl Executor {
         self.jobs.wait_detached(at_most);
     }
 
-    /// Authorizes, plans and checks `op` against the current document, with the checks every runner shares
-    /// ([`checks::plan`]).
-    fn plan(&self, state: &State, op: &dyn DynOp, req: &Request) -> Result<Plan, OpError> {
-        checks::plan(op, req, self.env.op_ctx(state, &req.actor, &req.grants, req.mode == Mode::DryRun))
-    }
-
     /// The refusals that depend only on the request and the op: a job is not part of a transaction, and a driver job
     /// is not available yet.
     fn check_job_request(op: &dyn DynOp, req: &Request) -> Result<(), OpError> {
-        if req.tx.is_some() {
+        // A driver job may join the caller's open transaction (ADR 0036 decision 10); a plain job's finish is always
+        // a step of its own.
+        if req.tx.is_some() && op.job_shape() != JobShape::Driver {
             return Err(OpError::invalid("tx", "a job cannot join a transaction")
                 .hint("run the job without `tx`: its finish is one undo step of its own"));
-        }
-        if op.job_shape() == JobShape::Driver {
-            return Err(OpError::unsupported("driver jobs are not available yet"));
         }
         Ok(())
     }
 
-    /// Plans a job under the lock and starts it on the manager. `awaited` keeps its outcome for [`Runner::run`].
-    fn start_job(&self, op: Arc<dyn DynOp>, mut req: Request, awaited: bool) -> Result<JobInfo, OpError> {
-        let mut state = lock(&self.env.state);
-        // Admitted again under the lock the plan is made in: the session may have changed since `run` looked.
-        req.grants = state.sessions.admit(&req.actor, &req.grants, self.env.clock.now())?;
-        let plan = self.plan(&state, &*op, &req)?;
-        drop(state);
-        self.jobs.start(op, req, plan, awaited)
-    }
-
-    /// The part of [`Runner::run`] that holds the lock.
-    fn run_locked(&self, state: &mut State, op: &dyn DynOp, mut req: Request) -> Result<Outcome, OpError> {
-        // Admitted again under the lock that plans and applies: a pause or a narrowing that landed since `run` looked
-        // must win, and the grants the op plans with are the ones that hold now.
-        req.grants = state.sessions.admit(&req.actor, &req.grants, self.env.clock.now())?;
-        if let Some(tx) = req.tx {
-            state.check_tx(tx, &req.actor)?;
-        }
-        // `read` was checked before the lookup; the op's own scope is checked before it plans.
-        let plan = self.plan(state, op, &req)?;
-        if checks::answers_only(op.meta(), req.mode) {
-            return Ok(Outcome::new(plan));
-        }
-        let record = self.env.apply(state, op, (&req.actor, &req.cause, req.tx), &plan)?;
-        Ok(Outcome::new(plan).with_applied(record))
-    }
-
-    /// Lets `req`'s actor through (see [`Registry::admit`](crate::sessions::Registry::admit)) and returns the request
-    /// with the grants it may use: its own, narrowed by the session's and the principal's.
-    fn admitted(&self, mut req: Request) -> Result<Request, OpError> {
-        req.grants = self.admit(&req.actor, &req.grants)?;
-        Ok(req)
+    /// Checks and plans a job under the lock (the same gate as any request: a person may be asked first) and starts
+    /// it on the manager, which reserves its money against the session's budget. `awaited` keeps its outcome for
+    /// [`Runner::run`]; `allow` is what an approval of the start satisfied.
+    pub(crate) fn start_job(
+        &self,
+        op: Arc<dyn DynOp>,
+        req: Request,
+        awaited: bool,
+        allow: &Allowance,
+    ) -> Result<JobInfo, OpError> {
+        let (req, plan) = self.with_state(|state| self.env.check_job(state, &*op, req, allow))?;
+        self.jobs.start(op, req, plan, awaited, allow.over_budget)
     }
 
     /// What `actor` may do with `grants` right now, or why it may do nothing.
@@ -282,8 +388,8 @@ impl Executor {
         lock(&self.env.state).sessions.admit(actor, grants, self.env.clock.now())
     }
 
-    /// Admits `actor` and runs `change` with the grants it may use, in one hold of the lock: a pause or a narrowing
-    /// cannot land between the check and the change.
+    /// Admits `actor` for a call that counts as an edit against its session's rate limit, and runs `change` with the
+    /// grants it may use, in one hold of the lock: a pause or a narrowing cannot land between the check and the change.
     fn with_admitted<T>(
         &self,
         actor: &Actor,
@@ -291,13 +397,14 @@ impl Executor {
         change: impl FnOnce(&mut State, &Grants) -> Result<T, OpError>,
     ) -> Result<T, OpError> {
         self.with_state(|state| {
-            let granted = state.sessions.admit(actor, grants, self.env.clock.now())?;
+            let entry = Entry::Call(Some(Bucket::Edits));
+            let granted = state.sessions.admit_run(actor, grants, self.env.clock.now(), entry)?.grants;
             change(state, &granted)
         })
     }
 
     /// Runs `change` under the lock, then publishes whatever events it queued.
-    fn with_state<T>(&self, change: impl FnOnce(&mut State) -> T) -> T {
+    pub(crate) fn with_state<T>(&self, change: impl FnOnce(&mut State) -> T) -> T {
         let result = change(&mut lock(&self.env.state));
         self.env.publish();
         result
@@ -317,31 +424,34 @@ pub(crate) fn require(grants: &Grants, actor: &Actor, scope: Scope, op: &str) ->
 
 impl Runner for Executor {
     fn ops(&self) -> Vec<OpInfo> {
-        self.ops.infos()
+        self.env.ops.infos()
     }
 
     fn run(&self, req: Request) -> Result<Outcome, OpError> {
-        let req = self.admitted(req)?;
-        // Plans and conflict messages carry document values, so nothing runs without `read`, not even a dry-run.
-        require(&req.grants, &req.actor, Scope::Read, &req.op)?;
-        let registration = self.ops.find(&req.op)?;
+        // Plans and conflict messages carry document values, so nothing runs without `read`, not even a dry-run. The
+        // request keeps the grants it was sent with: they are narrowed again under the lock, and an approval queued
+        // there must know what the caller itself holds.
+        let granted = self.admit(&req.actor, &req.grants)?;
+        require(&granted, &req.actor, Scope::Read, &req.op)?;
+        let registration = self.env.ops.find(&req.op)?;
         let op = (registration.decode)(req.args.clone())?;
         if op.meta().kind == OpKind::Job {
             Self::check_job_request(&*op, &req)?;
             // A dry-run is the plan alone (below). An apply starts the job and waits, holding no lock: every other
             // actor keeps editing while it runs, and the finish lands through the same apply path as any edit.
             if req.mode == Mode::Apply {
-                let info = self.start_job(Arc::from(op), req, true)?;
+                let info = self.start_job(Arc::from(op), req, true, &Allowance::default())?;
                 return self.jobs.outcome(info.id);
             }
         }
-        self.with_state(|state| self.run_locked(state, &*op, req))
+        self.with_state(|state| self.env.run_locked(state, &*op, req, &Allowance::default()))
     }
 
     fn begin(&self, label: &str, actor: &Actor) -> TxId {
         let at = self.env.clock.now();
-        self.with_state(|state| match state.sessions.admit(actor, &Grants::default(), at) {
-            Ok(_) => state.begin(label, actor),
+        let entry = Entry::Call(Some(Bucket::Edits));
+        self.with_state(|state| match state.sessions.admit_run(actor, &Grants::default(), at, entry) {
+            Ok(_) => state.begin(label, actor, at),
             // `begin` cannot say no: the id it hands back is never open, so every use of it is refused.
             Err(_) => state.reserve_tx(),
         })
@@ -352,15 +462,20 @@ impl Runner for Executor {
     }
 
     fn rollback(&self, tx: TxId, actor: &Actor) -> Result<(), OpError> {
-        self.with_admitted(actor, &Grants::default(), |state, _| state.rollback(tx, actor))
+        let at = self.env.clock.now();
+        self.with_admitted(actor, &Grants::default(), |state, _| {
+            // Rollback takes no grants: the effects' undo calls run with what the actor holds.
+            let grants = Env::own_grants(state, actor, at);
+            self.env.rollback_tx(state, tx, actor, &grants)
+        })
     }
 
     fn undo(&self, actor: &Actor, grants: &Grants) -> Result<Option<String>, OpError> {
-        self.with_admitted(actor, grants, |state, granted| state.undo(actor, granted))
+        self.with_admitted(actor, grants, |state, granted| self.env.travel(state, Direction::Undo, actor, granted))
     }
 
     fn redo(&self, actor: &Actor, grants: &Grants) -> Result<Option<String>, OpError> {
-        self.with_admitted(actor, grants, |state, granted| state.redo(actor, granted))
+        self.with_admitted(actor, grants, |state, granted| self.env.travel(state, Direction::Redo, actor, granted))
     }
 
     fn subscribe(&self, grants: &Grants) -> Result<Receiver<Event>, OpError> {
@@ -375,27 +490,24 @@ impl Runner for Executor {
 
     fn log(&self, after_seq: u64, limit: usize, grants: &Grants) -> Result<Vec<OpRecord>, OpError> {
         checks::require_read(grants, "read the op log")?;
-        let state = lock(&self.env.state);
-        // Sequence numbers run 1, 2, 3, ... so the records after `after_seq` start at that index.
-        let start = usize::try_from(after_seq).unwrap_or(usize::MAX);
-        Ok(state.log().iter().skip(start).take(limit).cloned().collect())
+        Ok(lock(&self.env.state).log_after(after_seq, limit))
     }
 }
 
 impl Jobs for Executor {
     fn start(&self, req: Request) -> Result<JobInfo, OpError> {
-        let req = self.admitted(req)?;
+        let granted = self.admit(&req.actor, &req.grants)?;
         if req.mode != Mode::Apply {
             return Err(OpError::invalid("mode", "a job starts only in apply mode").hint("a dry-run is the plan alone"));
         }
-        require(&req.grants, &req.actor, Scope::Read, &req.op)?;
-        let registration = self.ops.find(&req.op)?;
+        require(&granted, &req.actor, Scope::Read, &req.op)?;
+        let registration = self.env.ops.find(&req.op)?;
         let op = (registration.decode)(req.args.clone())?;
         if op.meta().kind != OpKind::Job {
             return Err(OpError::invalid("op", format!("{} is not a job", req.op)).hint("run it with `Runner::run`"));
         }
         Self::check_job_request(&*op, &req)?;
-        self.start_job(Arc::from(op), req, false)
+        self.start_job(Arc::from(op), req, false, &Allowance::default())
     }
 
     fn job(&self, id: JobId, grants: &Grants) -> Result<Option<JobInfo>, OpError> {
@@ -412,92 +524,25 @@ impl Jobs for Executor {
         self.jobs.cancel(id, by)
     }
 
-    fn cancel_session(&self, session: SessionId, _by: &Actor) -> Result<Vec<JobId>, OpError> {
-        // Sessions are the session task's: until they exist, no session id is known.
-        Err(OpError::not_found(format!("session {} is not known", session.0)))
+    fn cancel_session(&self, session: SessionId, by: &Actor) -> Result<Vec<JobId>, OpError> {
+        {
+            // An agent may cancel only its own session's jobs; a person may cancel any (design `ops-api.md` §8.3).
+            let state = lock(&self.env.state);
+            let info = state
+                .sessions
+                .find(session)
+                .ok_or_else(|| OpError::not_found(format!("session {} is not known", session.0)))?;
+            if info.actor != *by && !matches!(by, Actor::Person { .. }) {
+                return Err(OpError::denied(format!(
+                    "only session {}'s own agent, or a person, can cancel its jobs",
+                    session.0
+                )));
+            }
+        }
+        Ok(self.jobs.cancel_session(session, Some(by), omuzaki_ops_api::CancelReason::Requested))
     }
 
     fn wait(&self, id: JobId, timeout: Option<Duration>) -> Result<JobInfo, OpError> {
         self.jobs.wait(id, timeout)
-    }
-}
-
-impl Sessions for Executor {
-    fn open(&self, spec: SessionSpec) -> Result<SessionInfo, OpError> {
-        let at = self.env.clock.now();
-        self.with_state(|state| {
-            let info = state.sessions.open(spec, at)?;
-            let snapshot = state.session_info(&info);
-            state.queue_event(Event::session_opened(snapshot.clone()));
-            Ok(snapshot)
-        })
-    }
-
-    fn sessions(&self) -> Vec<SessionInfo> {
-        let state = lock(&self.env.state);
-        state.sessions.all().iter().map(|s| state.session_info(s)).collect()
-    }
-
-    fn session(&self, id: SessionId) -> Option<SessionInfo> {
-        lock(&self.env.state).session(id)
-    }
-
-    fn session_of(&self, actor: &Actor) -> Option<SessionInfo> {
-        let state = lock(&self.env.state);
-        state.sessions.of_actor(actor).map(|s| state.session_info(s))
-    }
-
-    fn pause(&self, id: SessionId, by: &Actor) -> Result<SessionInfo, OpError> {
-        self.change_sessions(id, |state| state.sessions.pause(id, by))
-    }
-
-    fn resume(&self, id: SessionId, by: &Actor) -> Result<SessionInfo, OpError> {
-        self.change_sessions(id, |state| state.sessions.resume(id, by))
-    }
-
-    fn set_grants(&self, id: SessionId, grants: Grants, by: &Actor) -> Result<SessionInfo, OpError> {
-        self.change_sessions(id, |state| state.sessions.set_grants(id, grants, by))
-    }
-
-    fn set_budget(&self, id: SessionId, budget: Budget, by: &Actor) -> Result<SessionInfo, OpError> {
-        self.change_sessions(id, |state| Ok(vec![(id, state.sessions.set_budget(id, budget, by)?)]))
-    }
-
-    fn charge(&self, _id: SessionId, _spend: Spend) -> Result<SessionInfo, OpError> {
-        Err(OpError::unsupported("session budgets are not enforced by this executor yet"))
-    }
-
-    fn end(&self, _id: SessionId, _reason: EndReason) -> Result<Ended, OpError> {
-        Err(OpError::unsupported("ending a session is not supported by this executor yet"))
-    }
-
-    fn undo_session(&self, _id: SessionId, _by: &Actor) -> Result<SessionUndo, OpError> {
-        Err(OpError::unsupported("undoing a session is not supported by this executor yet"))
-    }
-
-    fn approvals(&self) -> Vec<PendingApproval> {
-        Vec::new()
-    }
-
-    fn resolve(&self, id: ApprovalId, _decision: Decision, _by: &Actor) -> Result<Resolution, OpError> {
-        Err(OpError::not_found(format!("approval {} is gone", id.0)))
-    }
-}
-
-impl Executor {
-    /// Runs a session control under the lock and emits one `SessionChanged` per session it changed. Returns session
-    /// `id` as it stands afterwards.
-    fn change_sessions(
-        &self,
-        id: SessionId,
-        change: impl FnOnce(&mut State) -> Result<Vec<(SessionId, SessionChange)>, OpError>,
-    ) -> Result<SessionInfo, OpError> {
-        self.with_state(|state| {
-            for (changed, what) in change(state)? {
-                let snapshot = state.session(changed).ok_or_else(|| OpError::internal("a changed session vanished"))?;
-                state.queue_event(Event::session_changed(snapshot, what));
-            }
-            state.session(id).ok_or_else(|| OpError::internal("a controlled session vanished"))
-        })
     }
 }

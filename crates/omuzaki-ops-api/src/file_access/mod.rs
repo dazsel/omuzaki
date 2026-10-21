@@ -164,12 +164,13 @@ impl<'a> Reach<'a> {
             || self.roots.iter().any(|root| place.covers(root))
     }
 
-    /// The allowed folder a real place lies in, as its number of names: the project's real folder, else the first
-    /// root that covers it.
+    /// The allowed folder a real place lies in, as its number of names: the project's real folder, else the deepest
+    /// root that covers it (#818). The most specific grant is the natural one, and the answer then does not depend on
+    /// the order the roots were granted in.
     fn anchor(&self, real: &PathKey) -> Option<usize> {
         match self.project {
             Some(dir) if dir.covers_resolved(real) => Some(dir.base().depth()),
-            _ => self.roots.iter().find(|root| root.covers(real)).map(PathKey::depth),
+            _ => self.roots.iter().filter(|root| root.covers(real)).map(PathKey::depth).max(),
         }
     }
 }
@@ -490,5 +491,17 @@ mod tests {
         let e = check_in(Style::Posix, &disk, &Grants::person(), None, "a.vrm", FsMode::Read).unwrap_err();
         assert_eq!(e.code, ErrorCode::Invalid);
         assert_eq!(disk.asked(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn the_anchor_is_the_deepest_covering_root_whatever_the_grant_order() {
+        let key = |raw: &str| PathKey::absolute(raw, Style::Posix).unwrap();
+        let place = key("/a/b/c.vrm");
+        for roots in [vec![key("/a"), key("/a/b")], vec![key("/a/b"), key("/a")]] {
+            let reach = Reach { project: None, roots };
+            assert_eq!(reach.anchor(&place), Some(key("/a/b").depth()));
+        }
+        let reach = Reach { project: None, roots: vec![key("/a/b"), key("/a")] };
+        assert_eq!(reach.anchor(&key("/a/x")), Some(key("/a").depth()), "only the roots that cover it count");
     }
 }

@@ -120,10 +120,8 @@ impl McpOptions {
 
     /// Opens a session in `sessions` for each connection's agent, working for `person`, and uses the actor the registry
     /// builds. An executor refuses agents without a session, so the host that runs one wires this (the app passes the
-    /// executor, which is both the runner and the registry; until #2106 it implements only part of `Sessions`: a
-    /// disconnected session stays active with its jobs running, and approvals and the stale-write guard are absent).
-    /// Without it the server names the agent itself, which
-    /// only a runner that does not check sessions accepts.
+    /// executor, which is both the runner and the registry). Without it the server names the agent itself, which only a
+    /// runner that does not check sessions accepts.
     ///
     /// What it gives the connection:
     /// - A session per connection, opened at the handshake with the client's name, the transport (stdio, or the HTTP

@@ -7,7 +7,8 @@
 //! does not edit this crate, and it makes every authorization, plan and history check through
 //! [`omuzaki_ops_api::checks`], the executor's own copy, so the two cannot disagree on them.
 //!
-//! This is a test oracle, not an executor: no sessions, approvals, fences or jobs.
+//! This is a test oracle, not an executor: no sessions, approvals, fences or jobs, and no effects outside the document
+//! (a step holding one is refused).
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -29,7 +30,9 @@ struct Step {
     owner: Actor,
     /// The scopes undo and redo need ([`checks::step_scope`]).
     scopes: BTreeSet<Scope>,
-    /// The first `Undo::Explicit` op, which makes undo and redo refuse the step.
+    /// The first `Undo::Explicit` op that recorded an effect outside the document: this oracle runs no effects, so
+    /// undo and redo refuse the step. An Explicit op without an effect changed nothing outside, and is undone by its
+    /// patch, as the executor does.
     explicit: Option<&'static str>,
 }
 
@@ -38,10 +41,10 @@ impl Step {
         Self { tx, label: label.to_owned(), patch: Patch::new(), owner, scopes: BTreeSet::new(), explicit: None }
     }
 
-    /// Adds one applied op to the step.
-    fn absorb(&mut self, meta: OpMeta, patch: &Patch) {
+    /// Adds one applied op to the step; `effect` says whether it recorded an effect outside the document.
+    fn absorb(&mut self, meta: OpMeta, patch: &Patch, effect: bool) {
         self.scopes.extend(checks::step_scope(meta.scope, meta.undo, patch));
-        if meta.undo == Undo::Explicit && self.explicit.is_none() {
+        if meta.undo == Undo::Explicit && effect && self.explicit.is_none() {
             self.explicit = Some(meta.name);
         }
         self.patch.extend(patch.clone());
@@ -119,15 +122,15 @@ impl<D: DocWrite> Inner<D> {
     }
 
     /// Adds an applied op to `tx` if it is open, or makes it a one-step transaction of its own.
-    fn attach(&mut self, tx: Option<TxId>, actor: &Actor, meta: OpMeta, patch: &Patch) -> TxId {
+    fn attach(&mut self, tx: Option<TxId>, actor: &Actor, meta: OpMeta, patch: &Patch, effect: bool) -> TxId {
         if let Some((tx, open)) = tx.and_then(|tx| self.open.get_mut(&tx).map(|open| (tx, open))) {
-            open.absorb(meta, patch);
+            open.absorb(meta, patch, effect);
             return tx;
         }
         let tx = TxId(self.next_tx);
         self.next_tx += 1;
         let mut step = Step::new(tx, meta.summary, actor.clone());
-        step.absorb(meta, patch);
+        step.absorb(meta, patch, effect);
         self.commit_step(step);
         tx
     }
@@ -202,7 +205,7 @@ impl<D: DocWrite + Send> Runner for MockRunner<D> {
         let args = checks::record_args(&*op)?;
         let version = checks::apply_patch(&mut inner.doc, &plan.patch)
             .map_err(|e| OpError::conflict(e.to_string()).hint("re-plan and retry"))?;
-        let tx = inner.attach(req.tx, &req.actor, meta, &plan.patch);
+        let tx = inner.attach(req.tx, &req.actor, meta, &plan.patch, plan.effect.is_some());
         let record = OpRecord::new(
             inner.log.len() as u64 + 1,
             req.op,

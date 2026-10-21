@@ -34,11 +34,14 @@ fn set_counter(ctx: &OpCtx<'_>, value: i64) -> Patch {
     Patch::new().with(counter(), ctx.doc.get(&counter()).cloned(), Some(json!(value)))
 }
 
-/// The summary is the name: the executor labels a one-op undo step with the op's name and the mock with its summary,
-/// a difference these tests leave aside (#1662) so that every answer, error text included, compares whole.
+/// An op's facts, its summary the name. `parity.set` has a summary of its own, which pins that both runners label a
+/// one-op undo step by the summary (#1662).
 const fn meta(name: &'static str, kind: OpKind, scope: Scope, undo: Undo) -> OpMeta {
     OpMeta { name, summary: name, kind, scope, undo }
 }
+
+/// The summary `parity.set`'s one-op steps are labelled with.
+const SET_SUMMARY: &str = "Set the counter.";
 
 /// Sets `counter`. Callers may spell `value` as `val`, and `note` has a default, so its arguments as sent are not
 /// canonical. It coalesces.
@@ -52,7 +55,7 @@ struct Set {
 
 impl Op for Set {
     fn meta() -> OpMeta {
-        meta("parity.set", OpKind::Edit, Scope::EditScene, Undo::Auto)
+        OpMeta { summary: SET_SUMMARY, ..meta("parity.set", OpKind::Edit, Scope::EditScene, Undo::Auto) }
     }
 
     fn coalesces() -> bool {
@@ -127,7 +130,7 @@ impl Op for SneakyQuery {
 }
 register_op!(SneakyQuery);
 
-/// Marks `effect` and has an effect outside the document (`Undo::Explicit`), so undo must refuse its step.
+/// Marks `effect` and is `Undo::Explicit`, but records no effect outside the document: undone by its patch.
 #[derive(Serialize, Deserialize, JsonSchema)]
 struct Explicit;
 
@@ -334,7 +337,7 @@ fn no_op_edits_stay_out_of_history_and_keep_redo() {
     pair.undo(&Grants::person()).unwrap();
     // Setting the value it already has changes nothing: no step, and the redo of `2` survives.
     pair.run(&request("parity.set", json!({"value": 1}))).unwrap();
-    assert_eq!(pair.redo(&Grants::person()).unwrap().as_deref(), Some("parity.set"));
+    assert_eq!(pair.redo(&Grants::person()).unwrap().as_deref(), Some(SET_SUMMARY));
     assert_eq!(pair.counter(), Some(json!(2)));
     pair.undo(&Grants::person()).unwrap();
     pair.undo(&Grants::person()).unwrap();
@@ -354,25 +357,21 @@ fn an_empty_patch_keeps_the_version_and_redo() {
     let twice = pair.run(&request("parity.nothing", json!(null))).unwrap();
     assert_eq!(once["applied"]["version"], twice["applied"]["version"], "an empty patch keeps the version");
     assert_eq!(pair.log().as_array().unwrap().len(), logged + 2, "each run is still logged");
-    assert_eq!(pair.redo(&Grants::person()).unwrap().as_deref(), Some("parity.set"));
+    assert_eq!(pair.redo(&Grants::person()).unwrap().as_deref(), Some(SET_SUMMARY));
     assert_eq!(pair.counter(), Some(json!(2)));
-    assert_eq!(pair.undo(&Grants::person()).unwrap().as_deref(), Some("parity.set"));
+    assert_eq!(pair.undo(&Grants::person()).unwrap().as_deref(), Some(SET_SUMMARY));
     assert_eq!(pair.counter(), Some(json!(1)), "undo skipped the empty step");
 }
 
 #[test]
-fn an_explicit_step_is_refused_and_dropped() {
+fn an_explicit_record_without_an_effect_is_undone_by_its_patch() {
     let pair = Pair::new();
     pair.run(&request("parity.set", json!({"value": 1}))).unwrap();
     pair.run(&request("parity.explicit", json!(null))).unwrap();
-    assert_eq!(code(pair.undo(&Grants::person())), ErrorCode::Unsupported);
+    assert_eq!(pair.undo(&Grants::person()).unwrap().as_deref(), Some("parity.explicit"));
     let effect = pair.both(|runner| runner.get(&effect(), &Grants::person()).unwrap());
-    assert_eq!(effect, Some(json!(true)), "the refused step's patch was not reverted");
-    assert_eq!(
-        pair.undo(&Grants::person()).unwrap().as_deref(),
-        Some("parity.set"),
-        "the next undo reaches the step before"
-    );
+    assert_eq!(effect, None, "its patch was reverted");
+    assert_eq!(pair.undo(&Grants::person()).unwrap().as_deref(), Some(SET_SUMMARY), "labelled by its summary");
     assert_eq!(pair.counter(), None);
 }
 
