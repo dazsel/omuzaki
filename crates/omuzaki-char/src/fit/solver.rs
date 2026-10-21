@@ -15,8 +15,9 @@
 //! **What a silhouette identifies.** Widths, arm length, foot size and the shape axes show in the outline. Sole and
 //! crown are aligned, so `leg_length`, `torso_length` and the `height` axis trade off: the share of the leg against
 //! the torso is identified, each one alone is not. `neck_length` is not visible (the neck lies inside the torso loft)
-//! and `hand_size` is not either until `hands::build` makes a mesh; both stay at their defaults. The search stops at
-//! [`MAX_EVALUATIONS`] or after two sweeps in a row that each lower the cost by less than [`MIN_GAIN`].
+//! and stays at its default. `hand_size` is searched (the hands are meshed), though the hands hang over the hip outline
+//! and a silhouette reads them less well than the rest. The search stops at [`MAX_EVALUATIONS`] or after two sweeps in a row that
+//! each lower the cost by less than [`MIN_GAIN`].
 
 use std::cmp::Ordering;
 
@@ -60,7 +61,7 @@ pub enum Param {
     ArmLength,
     /// `Proportions::leg_length`.
     LegLength,
-    /// `Proportions::hand_size` (no mesh yet, so not visible).
+    /// `Proportions::hand_size`.
     HandSize,
     /// `Proportions::foot_size`.
     FootSize,

@@ -15,8 +15,10 @@ use crate::kit::skin::SegmentSet;
 use crate::template::registry;
 use crate::template::skeleton::TemplateFit;
 
-/// The name of the body's one material.
+/// The name of the body's skin material.
 const SKIN_MATERIAL: &str = "body-skin";
+/// The name of the hands' material: the skin, with the vertex colours on for the warmer tint towards the fingertips.
+const HAND_MATERIAL: &str = "body-hands";
 /// The skin's outline, metres at the renderer's reference distance (`body.js` `skin-hand`).
 const OUTLINE_WIDTH: f32 = 0.0016;
 
@@ -53,15 +55,17 @@ impl PartKind for Body {
         let regions = mesh::build_regions(fit.layout(), &segments, mesh::Detail::of(ctx.quality), &material_id)
             .map_err(to_build_error)?;
         let mut meshes: Vec<PartMesh> = regions.into_iter().map(|(_, m)| m).collect();
-        meshes.extend(hands::build(params, fit.layout(), &material_id).map_err(to_build_error)?);
-        let material = skin_material(params, ctx)?;
+        let hand_id = MaterialName::new(HAND_MATERIAL).map_err(|e| ctx.fail(format!("internal id: {e}")))?;
+        meshes.extend(hands::build(params, fit.layout(), &hand_id).map_err(to_build_error)?);
+        let skin = skin_material(params, ctx)?;
+        let hand = MaterialSpec { vertex_colours: true, ..skin.clone() };
         let mut publishes = Publishes::default().with::<FitFact>(fit);
         if let Some(stature) = stature {
             publishes.put::<StatureFact>(stature);
         }
         Ok(PartOutput::new()
             .with_meshes(meshes)
-            .with_materials(vec![(material_id, material)])
+            .with_materials(vec![(material_id, skin), (hand_id, hand)])
             .with_publishes(publishes))
     }
 }
@@ -69,7 +73,8 @@ impl PartKind for Body {
 register_part_kind!(Body);
 
 /// The skin: the prototype's `skin-hand` toon (a low terminator shift, a soft edge, a thin warm rim) with the skin
-/// treatment and a coloured outline, from the palette slots in `params.skin`.
+/// treatment and a coloured outline, from the palette slots in `params.skin`. The body takes no vertex colours; the hands'
+/// copy turns them on.
 fn skin_material(params: &BodyParams, ctx: &BuildCtx<'_>) -> Result<MaterialSpec, BuildError> {
     Ok(MaterialSpec {
         base: ctx.colour(&params.skin.base)?,
