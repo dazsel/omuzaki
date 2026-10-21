@@ -76,7 +76,8 @@ impl GroupGenerator for Stub {
                         ctx.clump(vec![root, root - Vec3::Y * 0.1], c.width, c.thickness, 1.0)
                     })
                     .collect();
-                CompiledGroup { clumps, geometry: GroupGeometry::Strip { columns: c.columns, u: Vec::new() } }
+                let u = (0..c.count).map(|k| f32::from(k) / f32::from(c.count.max(2) - 1)).collect();
+                CompiledGroup { clumps, geometry: GroupGeometry::Strip { columns: c.columns, u } }
             }
             _ => CompiledGroup::tubes(Vec::new()),
         }
@@ -457,7 +458,7 @@ fn a_disabled_group_is_not_in_the_mesh() {
 }
 
 #[test]
-fn a_shell_follows_the_tubes_and_a_strip_is_reported_not_drawn() {
+fn a_shell_follows_the_tubes_and_a_strip_follows_them_both_in_the_simulated_mesh() {
     let mut style = two_group_style();
     style.groups.insert(
         gid("0-cap"),
@@ -481,13 +482,15 @@ fn a_shell_follows_the_tubes_and_a_strip_is_reported_not_drawn() {
         tube_mesh_indices(4, 4) + 3,
         "the shell's triangle is renumbered after the tubes"
     );
-    assert!(out.warnings.iter().any(|w| w.contains("z-curtain") && w.contains("strip")), "{:?}", out.warnings);
+    assert!(out.warnings.is_empty(), "the curtain is drawn, so nothing is reported: {:?}", out.warnings);
     let dynamic = out.meshes.iter().find(|m| m.name == "hair-dynamic").unwrap();
+    dynamic.geometry.validate().unwrap();
     assert_eq!(
         dynamic.geometry.positions.len(),
-        tube_mesh_vertices(1, 4),
-        "the strip's clumps add nothing to the tube mesh"
+        tube_mesh_vertices(1, 4) + 3 * 5 * 2,
+        "the tube, then the strips: 3 guides of 5 columns of the stub's 2 points"
     );
+    assert_eq!(dynamic.geometry.indices.len(), tube_mesh_indices(1, 4) + 3 * 4 * 6);
 }
 
 #[test]
@@ -647,4 +650,27 @@ fn a_missing_tube_mesh_asks_for_a_rebuild_instead_of_claiming_done() {
     let mut none = built();
     none.meshes.clear();
     assert_eq!(recolour_part(&def, &pid("hair"), &services, &mut none), Ok(Recoloured::NeedsRebuild));
+}
+
+#[test]
+fn a_recolour_finds_every_strip_and_paints_its_columns_with_its_tint() {
+    omuzaki_char::link();
+    let mut before = character(&streaked());
+    colourway(&mut before, 5);
+    let mut after = before.clone();
+    colourway(&mut after, 120);
+    let mut recoloured = hair_output(&before).unwrap();
+    assert_eq!(recolour_part(&after, &pid("hair"), &BuildServices::default(), &mut recoloured), Ok(Recoloured::Done));
+    let rebuilt = hair_output(&after).unwrap();
+    let simulated =
+        |out: &PartOutput| out.meshes.iter().find(|m| m.name == "hair-dynamic").unwrap().geometry.colours.clone();
+    let (new, want, old) = (simulated(&recoloured), simulated(&rebuilt), simulated(&hair_output(&before).unwrap()));
+    let strips = new.len() - 44 * 5 * 2..new.len();
+    assert!(
+        strips.start >= tube_mesh_vertices(1, 4),
+        "the curtain's 44 strips of 5 columns of 2 points follow the tubes"
+    );
+    assert_eq!(new[strips.clone()], want[strips.clone()]);
+    assert!(new[strips.clone()] != old[strips.clone()], "the palette really changes some strip's colour");
+    assert!(new[strips].iter().any(|c| *c != [1.0; 4]), "some strip is streaked");
 }

@@ -11,32 +11,34 @@ use crate::ops::character::access as character;
 use crate::ops::character::access::{list, not_found};
 use crate::ops::part::describe::{at, kind_of, nearest};
 
+use omuzaki_char_api::hair::bangs_limits as limits;
+
 /// Most layers a fringe may have.
-pub const MAX_LAYERS: usize = 6;
+pub const MAX_LAYERS: usize = limits::LAYERS.1;
 /// Most clumps a layer may have (the generator's own limit).
-pub const MAX_CLUMPS: u8 = 30;
+pub const MAX_CLUMPS: u8 = limits::CLUMPS.1;
 /// Most tip heights a layer may list: one per clump.
-pub const MAX_TIP_HEIGHTS: usize = MAX_CLUMPS as usize;
+pub const MAX_TIP_HEIGHTS: usize = limits::TIP_HEIGHTS.1;
 /// Most wisps a fringe may have.
-pub const MAX_WISPS: usize = 8;
+pub const MAX_WISPS: usize = limits::WISPS.1;
 /// Tip heights and wisp heights are head-local (relative to the head's centre), within this distance of it.
-pub const HEIGHT_LIMIT: f64 = 0.5;
+pub const HEIGHT_LIMIT: f64 = limits::HEIGHT;
 /// The fringe's sweep, either way, in degrees.
-pub const SWEEP_LIMIT_DEG: f64 = 60.0;
+pub const SWEEP_LIMIT_DEG: f64 = limits::SWEEP_DEG;
 /// The tip hook, either way, in degrees.
-pub const HOOK_LIMIT_DEG: f64 = 45.0;
+pub const HOOK_LIMIT_DEG: f64 = limits::HOOK_DEG;
 /// Range of a layer's fan half-angle, degrees (the generator's own).
-pub const SPREAD_DEG: (f64, f64) = (5.0, 90.0);
+pub const SPREAD_DEG: (f64, f64) = limits::SPREAD_DEG;
 /// Range of a layer's shade (the generator's own).
-pub const SHADE: (f64, f64) = (0.5, 1.0);
+pub const SHADE: (f64, f64) = limits::SHADE;
 /// Range of a clump's width.
-pub const WIDTH: (f64, f64) = (0.002, 0.2);
+pub const WIDTH: (f64, f64) = limits::WIDTH;
 /// Range of a layer's root and tip distances from the skull.
-pub const OFFSET: (f64, f64) = (0.0, 0.2);
+pub const OFFSET: (f64, f64) = limits::OFFSET;
 /// Range of a wisp's width.
-pub const WISP_WIDTH: (f64, f64) = (0.002, 0.1);
+pub const WISP_WIDTH: (f64, f64) = limits::WISP_WIDTH;
 /// A wisp's angle from the front, either way, in degrees.
-pub const WISP_PHI_LIMIT_DEG: f64 = 90.0;
+pub const WISP_PHI_LIMIT_DEG: f64 = limits::WISP_PHI_DEG;
 
 /// A bangs group as stored: where it is, the whole part's normalised parameters, and the fringe.
 pub(crate) struct BangsGroup {
@@ -141,7 +143,8 @@ pub fn check(bangs: &BangsGen) -> Result<(), Fault> {
         within(&format!("wisps/{i}/tip_height"), wisp.tip_height, -HEIGHT_LIMIT, HEIGHT_LIMIT)?;
         within(&format!("wisps/{i}/width"), wisp.width, WISP_WIDTH.0, WISP_WIDTH.1)?;
     }
-    within("sweep_deg", bangs.sweep_deg, -SWEEP_LIMIT_DEG, SWEEP_LIMIT_DEG)
+    within("sweep_deg", bangs.sweep_deg, -SWEEP_LIMIT_DEG, SWEEP_LIMIT_DEG)?;
+    bangs.tip_radius.map_or(Ok(()), |r| within("tip_radius", r, limits::TIP_RADIUS.0, limits::TIP_RADIUS.1))
 }
 
 /// `Ok` when `value` is finite and within `lo..=hi`.
