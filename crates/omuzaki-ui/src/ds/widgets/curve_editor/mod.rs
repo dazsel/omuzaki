@@ -101,6 +101,8 @@ pub struct CurveEditor<'a> {
     plot_height: f32,
     live: Option<f32>,
     disabled: Option<&'a str>,
+    /// Why the tangent can't be edited, for a host whose format has no tangents.
+    no_tangents: Option<&'a str>,
     salt: Option<Id>,
 }
 
@@ -126,7 +128,7 @@ impl<'a> CurveEditor<'a> {
     /// An editor named `label` (the accessible name) for `curve`.
     pub fn new(label: &'a str, curve: &'a mut Curve) -> Self {
         a11y::require_label(label);
-        Self { label, curve, plot_height: 160.0, live: None, disabled: None, salt: None }
+        Self { label, curve, plot_height: 160.0, live: None, disabled: None, no_tangents: None, salt: None }
     }
 
     /// The plot's height; 160 pt by default. Its width is the room it is given.
@@ -145,6 +147,12 @@ impl<'a> CurveEditor<'a> {
     /// Disables the editor, saying why.
     pub const fn disabled(mut self, reason: &'a str) -> Self {
         self.disabled = Some(reason);
+        self
+    }
+
+    /// Turns the tangent field off, saying why: for a host that stores points only and would lose a tangent.
+    pub const fn without_tangents(mut self, reason: &'a str) -> Self {
+        self.no_tangents = Some(reason);
         self
     }
 
@@ -634,6 +642,9 @@ impl<'a> Show<'a> {
                 field = field.disabled(&pinned);
             }
             if k == 2 {
+                if let Some(reason) = self.e.no_tangents {
+                    field = field.disabled(reason);
+                }
                 field = field.default_value(f64::from(auto)).modified(p.tangent.is_some());
             }
             let out = field.show_at(ui, self.readout_id(k), rect);
