@@ -1,0 +1,19 @@
+kind = "net.http"
+pos = [260.0, 0.0]
+
+[in]
+in = "cmd.fired"
+user = "cmd.user"
+
+[params]
+method = "POST"
+url = "http://127.0.0.1:7474/DoAction"
+
+[params.body.json.action]
+name = "Lurk"
+
+[params.body.json.args]
+user = "$in.user"
+
+[params.headers]
+Authorization = "Bearer {secret:streamerbot}"

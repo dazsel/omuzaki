@@ -1,0 +1,8 @@
+kind = "on.event"
+pos = [0.0, 0.0]
+
+[params]
+kind = "redeem"
+
+[params.where]
+"reward.title" = "Bonk"
