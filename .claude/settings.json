@@ -9,8 +9,6 @@
       "WebFetch"
     ],
     "deny": [
-      "mcp__github__merge_pull_request",
-      "Bash(gh pr merge *)",
       "Bash(gh release *)",
       "Bash(gh repo delete *)",
       "Bash(gh repo edit *)",

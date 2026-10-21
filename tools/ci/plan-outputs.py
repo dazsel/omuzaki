@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """Turn `cargo xtask check --format json` into the step outputs the CI plan job publishes.
 
-    plan-outputs.py REPORT.json EVENT        EVENT is `pull_request`, `merge_group` or `workflow_dispatch` (hosted tests, planned like the queue)
+    plan-outputs.py REPORT.json
 
 Prints `key=value` lines (append them to $GITHUB_OUTPUT). Why a script and not jq in the workflow: it can be run and
 tested by hand (tools/tests/plan_outputs.sh), and the policy lives in one readable place.
 
-Policy. A pull request runs no tests: the session that wrote it runs `cargo xtask check --affected` on its own machine
-and attests it (tools/ci/self-gate.py). It lints the crates it changed plus their direct dependents and runs the link
-gates. The merge queue tests and lints everything affected, direct or not, in shards, and cross-builds it for Windows;
-it builds the exact commit that will land, so it is the authoritative run.
+Policy (ADR 0067, spine first). Every run tests and lints everything the change affects, in shards, on GitHub's
+runners: a pull request, a push to `main` and a manual dispatch alike. No run is a required gate; the results inform
+the agent that landed the change, and a red run on `main` is the first thing its author fixes.
 """
 
 import json
@@ -31,11 +30,10 @@ def shard_matrix(shards):
     return {"include": include}
 
 
-def outputs(report, event):
-    """The outputs for `report` (the xtask JSON) on `event`, as an ordered dict of strings."""
-    queue = event != "pull_request"
-    shards = report["shards_full"] if queue else []
-    lint = sorted(set(report["full"] + report["link_only"])) if queue else report["direct"]
+def outputs(report):
+    """The outputs for `report` (the xtask JSON), as an ordered dict of strings."""
+    shards = report["shards_full"]
+    lint = sorted(set(report["full"] + report["link_only"]))
     return {
         "mode": report["mode"],
         "empty": str(report["empty"]).lower(),
@@ -55,12 +53,12 @@ def outputs(report, event):
 
 
 def main(argv):
-    if len(argv) != 3:
+    if len(argv) != 2:
         print(__doc__, file=sys.stderr)
         return 2
     with open(argv[1], encoding="utf-8") as handle:
         report = json.load(handle)
-    for key, value in outputs(report, argv[2]).items():
+    for key, value in outputs(report).items():
         print(f"{key}={value}")
     return 0
 

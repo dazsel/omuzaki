@@ -11,6 +11,12 @@ again. It's for everyone who runs the work: the Director, the area leads, implem
 automation (the merge loop, the stall audit, the watchers). The rules themselves live in `operating.md`; this file keeps
 the reasons, so nobody has to relearn them.
 
+**The biggest lesson (2026-10-21, ADR 0067):** a process built for many small, fenced, reviewed tasks produced about
+400,000 lines of good parts and no running product: integration had no owner, because every task was fenced to its own
+crates, and 61% of pull-request time went on review rounds. The project now builds spine first, one high-agency owner
+per area, with no review gate. The review, merge-loop and lead entries below are kept as history; the engineering
+lessons (parsers, test ordering, GPU ceilings, process hygiene) still apply.
+
 **Add an entry** when a problem costs real time or lets a defect through. Write down what happened, the cause and the rule.
 Leave out slips that cost nothing.
 
