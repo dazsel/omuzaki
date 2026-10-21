@@ -73,7 +73,7 @@ fn chain_to_io(chain: &SpringChain, springs: &SpringSet, scale: f32) -> io::Spri
 }
 
 /// The file's twin of `shape`, lengths scaled by `scale`. A plane's normal is a direction and does not scale.
-fn shape(shape: anim::ColliderShape, scale: f32) -> Option<io::ColliderShape> {
+pub(crate) fn shape(shape: anim::ColliderShape, scale: f32) -> Option<io::ColliderShape> {
     Some(match shape {
         anim::ColliderShape::Sphere { offset, radius } => {
             io::ColliderShape::Sphere { offset: offset * scale, radius: radius * scale }

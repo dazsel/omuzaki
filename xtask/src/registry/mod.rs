@@ -12,8 +12,8 @@
 //! - [`lint_links`] checks the `link()` wiring that keeps registrations in binaries on every target.
 //!
 //! What counts as a registration: a call, at item level in a library source file (the file's top level or an inline
-//! `mod` block), of a macro named `register_<kind>` that some crate in the workspace defines with `macro_rules!`, and
-//! that the build compiles. The `cfg`s on the call, on its inline modules and on the `mod` declarations that lead to
+//! `mod` block), of a macro named `register_<kind>` that some crate in the workspace defines with `macro_rules!`, or of
+//! `omuzaki-l10n-api`'s `messages!` (kind `messages`, named `messages`), and that the build compiles. The `cfg`s on the call, on its inline modules and on the `mod` declarations that lead to
 //! its file are evaluated (`cfg::Cfg`): `#[cfg(test)]` code is left out, and a `cfg` the scan can't decide (a cargo
 //! feature) is an error, never a guess. Binary targets (`src/main.rs`, `src/bin/`) count for their own binary only;
 //! `tests/`, `benches/` and `examples/` never ship.
