@@ -62,14 +62,8 @@ words! {
     StatusHealth = "shell-status-health" => "Idle",
 
 
-    OutlinerHeadline = "shell-outliner-headline" => "Pick a part to edit it",
-    OutlinerLine = "shell-outliner-line" => "The part tree appears when a character is open.",
     LibraryHeadline = "shell-library-headline" => "The library is empty",
     LibraryLine = "shell-library-line" => "Parts and assets you add show up here.",
-    ViewportHeadline = "shell-viewport-headline" => "Start with a character",
-    ViewportLine = "shell-viewport-line" => "The live character appears here.",
-    InspectorHeadline = "shell-inspector-headline" => "Select a part to edit it",
-    InspectorLine = "shell-inspector-line" => "Its settings appear here.",
     HistoryHeadline = "shell-history-headline" => "Your changes will appear here",
     HistoryLine = "shell-history-line" => "Everything you or an agent does can be undone.",
     HistoryUnavailable = "shell-history-unavailable" => "History is not available: {why}",

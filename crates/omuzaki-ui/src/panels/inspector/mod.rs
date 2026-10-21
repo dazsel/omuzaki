@@ -425,7 +425,7 @@ impl omuzaki_ui_api::panel::Panel for InspectorPanel {
 
 omuzaki_ui_api::register_panel! {
     id: "inspector", title: "Inspector", icon: icons::SLIDERS_HORIZONTAL,
-    region: omuzaki_ui_api::registry::Region::Right, min_size: [280.0, 200.0], order: 10,
+    region: omuzaki_ui_api::registry::Region::Right, min_size: [288.0, 200.0], order: 10,
     empty: omuzaki_ui_api::panel::EmptyState::new(text::NO_CHARACTER, text::OPEN_CHARACTER),
     build: |ctx| Box::new(InspectorPanel(Inspector::new(EditFocus::from_ctx(ctx)))),
 }

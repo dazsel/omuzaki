@@ -322,7 +322,7 @@ impl omuzaki_ui_api::panel::Panel for ViewportPanel {
 
 omuzaki_ui_api::register_panel! {
     id: "viewport", title: "Viewport", icon: icons::CUBE,
-    region: omuzaki_ui_api::registry::Region::Center, min_size: [320.0, 240.0], order: 10,
+    region: omuzaki_ui_api::registry::Region::Center, min_size: [480.0, 320.0], order: 10,
     kind: omuzaki_ui_api::registry::PanelKind::Primary,
     empty: omuzaki_ui_api::panel::EmptyState::new(text::NO_CHARACTER, text::OPEN_CHARACTER),
     build: |ctx| Box::new(ViewportPanel { focus: EditFocus::from_ctx(ctx), viewport: None }),

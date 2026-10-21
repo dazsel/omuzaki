@@ -1,30 +1,22 @@
-//! The panels the shell ships with, and the Build workspace that arranges them (`shell.md` sections 2, 3 and 13).
+//! The panels the shell ships with, and the Build workspace that arranges them (`shell.md` sections 2, 3 and 13). The
+//! edit panels (outliner, viewport, inspector) register next to their own code in `crate::panels`.
 //!
-//! Every body is its empty state until the panel's own task lands: a headline, one line of why, and no action that
-//! would do nothing. A panel never closes itself; it says why it is empty.
+//! A body with nothing to show is its empty state: a headline, one line of why, and no action that would do nothing.
+//! A panel never closes itself; it says why it is empty.
 
 use egui::{RichText, ScrollArea, Ui};
 use omuzaki_ops_api::OpRecord;
 use omuzaki_ui_api::layout::{Dir, Node};
 use omuzaki_ui_api::panel::{Panel, PanelCtx};
-use omuzaki_ui_api::registry::{Group, PanelKind, Region};
+use omuzaki_ui_api::registry::{Group, Region};
 
 use super::text::{Word, say};
 use crate::ds::icons;
 use crate::ds::theme::ds;
 use crate::ds::widgets::EmptyState;
 
-omuzaki_ui_api::register_panel! { id: "outliner", title: "Outliner", icon: icons::TREE_STRUCTURE, region: Region::Left,
-min_size: [240.0, 160.0], order: 10,
-build: |_| placeholder(icons::TREE_STRUCTURE, Word::OutlinerHeadline, Word::OutlinerLine) }
 omuzaki_ui_api::register_panel! { id: "library", title: "Library", icon: icons::FOLDER, region: Region::Left,
 min_size: [240.0, 160.0], order: 20, build: |_| placeholder(icons::FOLDER, Word::LibraryHeadline, Word::LibraryLine) }
-omuzaki_ui_api::register_panel! { id: "viewport", title: "Viewport", icon: icons::CUBE, region: Region::Center,
-min_size: [480.0, 320.0], order: 10, kind: PanelKind::Primary,
-build: |_| placeholder(icons::CUBE, Word::ViewportHeadline, Word::ViewportLine) }
-omuzaki_ui_api::register_panel! { id: "inspector", title: "Inspector", icon: icons::SLIDERS_HORIZONTAL,
-region: Region::Right, min_size: [288.0, 160.0], order: 10,
-build: |_| placeholder(icons::SLIDERS_HORIZONTAL, Word::InspectorHeadline, Word::InspectorLine) }
 omuzaki_ui_api::register_panel! { id: "agent", title: "Agent", icon: icons::ROBOT, region: Region::Right,
 min_size: [288.0, 160.0], order: 20, build: |_| placeholder(icons::ROBOT, Word::AgentHeadline, Word::AgentLine) }
 omuzaki_ui_api::register_panel! { id: "history", title: "History", icon: icons::CLOCK, region: Region::Right,
@@ -124,7 +116,7 @@ fn history_list(ui: &mut Ui, records: &[OpRecord]) {
 
 #[cfg(test)]
 mod tests {
-    use omuzaki_ui_api::registry::Registry;
+    use omuzaki_ui_api::registry::{PanelKind, Registry};
 
     use super::super::layout::Layout;
     use super::*;
@@ -135,8 +127,13 @@ mod tests {
         for panel in Layout::from_registered(&build_layout(), &|_| true).expect("a layout").panels() {
             assert!(registry.panel(panel).is_some(), "{panel} is not registered");
         }
-        let primary: Vec<_> = registry.panels().iter().filter(|p| p.kind == PanelKind::Primary).collect();
-        assert_eq!(primary.len(), 1, "one primary panel per workspace");
+        let layout = Layout::from_registered(&build_layout(), &|_| true).expect("a layout");
+        let primary: Vec<_> = layout
+            .panels()
+            .into_iter()
+            .filter(|p| registry.panel(p).is_some_and(|def| def.kind == PanelKind::Primary))
+            .collect();
+        assert_eq!(primary, ["viewport"], "one primary panel per workspace");
     }
 
     #[test]
