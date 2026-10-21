@@ -1,0 +1,30 @@
+# A test fake (connectors design D11): generated in code, free, and never leaves this computer.
+id = "mock-image"
+name = "Mock images"
+version = "1.0.0"
+transport = "fake"
+
+[[capabilities]]
+capability = "image"
+inputs = ["image", "text"]
+outputs = ["image"]
+max_count = 8
+
+[auth]
+kind = "none"
+
+[cost]
+model = "free"
+
+[privacy]
+leaves_machine = false
+destinations = []
+sends = ["prompt", "images"]
+retention = "Stays on this computer."
+trains_on_inputs = "no"
+
+[licence]
+register = "Omuzaki mock connector"
+outputs = "vendor_terms"
+spdx = "LicenseRef-Omuzaki-Mock"
+commercial = "ok"
