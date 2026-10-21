@@ -4052,6 +4052,7 @@ dependencies = [
 name = "omuzaki-io-ops"
 version = "0.0.0"
 dependencies = [
+ "criterion",
  "image",
  "inventory",
  "omuzaki-anim-api",
