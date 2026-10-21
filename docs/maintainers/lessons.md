@@ -8,7 +8,7 @@ area: maintainers
 
 This file records what went wrong while running the project, why it happened, and the rule that keeps it from happening
 again. It's for everyone who runs the work: the Director, the area leads, implementer sessions and whoever maintains the
-automation (the merge loop, the stall audit, the watchers). The rules themselves live in `operating.md`; this file keeps
+automation (the merge loop, the stall audit, the watchers). The rules themselves live in `CLAUDE.md`; this file keeps
 the reasons, so nobody has to relearn them.
 
 **The biggest lesson (2026-10-21, ADR 0067):** a process built for many small, fenced, reviewed tasks produced about
