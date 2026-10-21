@@ -1052,7 +1052,7 @@ answered yes. No embedded browser engine.
 
 ## 6. The task cut
 
-The Director's rule since 2026-10-15 is large changes (`docs/maintainers/large-changes.md`), so the six covered
+Cut as large changes (the rule from 2026-10-15 to 2026-10-21, before ADR 0067), so the six covered
 issues become four changes along the contract seams, plus the asks:
 
 | Change | Covers | Crates | Depends on |

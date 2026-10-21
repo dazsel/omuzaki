@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """PreToolUse hook for Bash (.claude/settings.json): refuse commands that read secrets or do what only the Director does.
 
-The settings allow `Bash` wholesale, and their `Bash(...)` denies match a command only as written, so `gh pr -R o/r
-merge 1` would pass `Bash(gh pr merge *)`. This hook reads each command the way the tools parse it instead, in any
+The settings allow `Bash` wholesale, and their `Bash(...)` denies match a command only as written, so `gh repo -R o/r
+delete o/r` would pass `Bash(gh repo delete *)`. This hook reads each command the way the tools parse it instead, in any
 argument order, and blocks:
 - secrets: secret paths (`.env`, `~/.ssh`, `~/.config`, `~/.cache` and the Hugging Face cache, `.netrc`, git
   credentials, private keys, `/proc/*/environ`), including the bare directories (`tar ~/.config` reads every file in
@@ -10,7 +10,7 @@ argument order, and blocks:
   printing the environment (`env`, `printenv`, `export -p`, `set` on their own) or a secret variable (`$GH_TOKEN`,
   `printenv NAME` and `declare -p NAME` for a name with TOKEN, SECRET, PASSWORD, API_KEY, PRIVATE_KEY or CREDENTIAL in
   it);
-- `gh pr merge`, `gh release`, repository settings, secrets and variables, and turning workflows on or off;
+- `gh release`, repository settings, secrets and variables, and turning workflows on or off;
 - every `gh api` call that writes: any method but GET, fields or `--input` without a method (gh then sends a POST), and
   GraphQL mutations, and a GraphQL body read from a file (`--input`), which the hook can't inspect. A session writes
   through `gh` subcommands (`gh pr comment`, `gh pr edit`), whose reserved ones are listed above, so an endpoint list
@@ -64,9 +64,9 @@ ENV_DUMPERS = {"env", "printenv", "set", "export", "declare", "typeset"}
 # block a command that quotes a forbidden one; it never hides one.
 SEPARATORS = re.compile(r"\n|;|&&|\|\||\||&|\$\(|`|\(|\)")
 
-# gh: the subcommands of each command group that only the Director runs (None: the whole group).
+# gh: the subcommands of each command group that only the maintainers run (None: the whole group). Merging is not
+# among them: the agent that wrote a change lands it (ADR 0067).
 GH_RESERVED = {
-    "pr": {"merge"},
     "release": None,
     "repo": {"delete", "edit", "rename", "archive", "unarchive"},
     "secret": None,
@@ -101,7 +101,7 @@ GH_API_LONG = {
     "--cache", "--field", "--header", "--help", "--hostname", "--include", "--input", "--jq", "--method", "--paginate",
     "--preview", "--raw-field", "--silent", "--slurp", "--template", "--verbose",
 }
-# Nesting depth for commands quoted inside commands (`sh -c "gh pr merge 1"`).
+# Nesting depth for commands quoted inside commands (`sh -c "gh secret set X"`).
 MAX_DEPTH = 3
 
 
@@ -207,7 +207,7 @@ def gh_api_refusal(args, endpoint):
 
 def gh_refusal(args):
     """Why a gh call is reserved, as (reason, whether the GitHub MCP tools do the same write), or None. Only `gh api`
-    writes have an MCP equivalent: `gh pr merge` and the rest are the Director's, and MCP has no route to them."""
+    writes have an MCP equivalent: `gh release` and the rest are the maintainers', and MCP has no route to them."""
     args = without_repo_flags(args)
     words = [a for a in args if not a.startswith("-")]
     if not words:
@@ -524,9 +524,9 @@ def main():
         step = (
             "Use the GitHub MCP tools (`mcp__github__*`) instead."
             if via_mcp
-            else "Write through gh subcommands (gh pr comment, gh pr edit) and ask your lead for anything reserved."
+            else "Write through gh subcommands (gh pr comment, gh pr edit) and leave anything reserved to the maintainers."
         )
-        print(f"Blocked by tools/hooks/guard_bash.py: {why}. {step} See docs/maintainers/cloud-lane.md.",
+        print(f"Blocked by tools/hooks/guard_bash.py: {why}. {step} See docs/maintainers/operating.md.",
               file=sys.stderr)
         return 2
     return 0
