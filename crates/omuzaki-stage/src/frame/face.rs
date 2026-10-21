@@ -439,7 +439,7 @@ fn step_runtimes(built: &mut BuiltCharacter, skin: &[Mat4], root: Mat4, steps: u
     let pose = SkinPose { character: &built.rig, skin, root };
     for step in 0..steps {
         let time = Seconds(f64::from(step) * f64::from(SETTLE_DT));
-        let ctx = StepCtx { dt: SETTLE_DT, time, pose: &pose, wind: Vec3::ZERO };
+        let ctx = StepCtx::new(SETTLE_DT, time, &pose, Vec3::ZERO);
         DynamicMeshes::step(&mut built.runtimes, &ctx);
     }
 }
@@ -530,7 +530,7 @@ impl Stage {
             let tick = Tick { index: u64::from(step), time, dt: SETTLE_DT };
             self.rig.solve(tick, &self.pose, &self.goals);
             let pose = SkinPose { character: &self.built.rig, skin: self.rig.skin(), root: self.root };
-            let ctx = StepCtx { dt: SETTLE_DT, time, pose: &pose, wind: Vec3::ZERO };
+            let ctx = StepCtx::new(SETTLE_DT, time, &pose, Vec3::ZERO);
             DynamicMeshes::step(&mut self.built.runtimes, &ctx);
         }
     }

@@ -280,7 +280,7 @@ impl Stage {
         self.tick = tick;
         self.rig.solve_with_channels(tick, &input.pose, &input.goals, &input.channels);
         let pose = SkinPose { character: &self.built.rig, skin: self.rig.skin(), root: self.root };
-        let ctx = StepCtx { dt: tick.dt, time: tick.time, pose: &pose, wind: input.wind };
+        let ctx = StepCtx::new(tick.dt, tick.time, &pose, input.wind);
         DynamicMeshes::step(&mut self.built.runtimes, &ctx);
         let prepared = self
             .dynamic
