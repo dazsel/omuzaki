@@ -117,6 +117,10 @@ fn parse_size(text: &str) -> Result<(f32, f32), String> {
 
 fn main() -> ExitCode {
     let args = Args::parse();
+    // An id registered twice shows once: say so here, where a person starting the gallery will see it.
+    for duplicate in omuzaki_ui::ds::gallery::duplicates() {
+        eprintln!("warning: {duplicate}");
+    }
     match run(&args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {

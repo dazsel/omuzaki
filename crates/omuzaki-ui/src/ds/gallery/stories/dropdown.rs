@@ -10,7 +10,7 @@ use crate::ds::paint;
 use crate::ds::theme::ds;
 use crate::ds::tokens::Theme;
 use crate::ds::widgets::{Choice, Dropdown, ListItem, Listbox};
-use crate::register_story;
+use omuzaki_ui_api::register_story;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Look {

@@ -30,6 +30,7 @@ omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-doc-api = { path = "../omuzaki-doc-api" }
 omuzaki-l10n-api = { path = "../omuzaki-l10n-api" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
+omuzaki-ui-api = { path = "../omuzaki-ui-api" }
 tracing.workspace = true
 
 # Unix only: signal a probe's whole process group when it ends
@@ -40,6 +41,8 @@ rustix = { workspace = true, features = ["process"] }
 egui_kittest.workspace = true
 image.workspace = true
 tempfile.workspace = true
+omuzaki-ui-mock = { path = "../omuzaki-ui-mock" }
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true

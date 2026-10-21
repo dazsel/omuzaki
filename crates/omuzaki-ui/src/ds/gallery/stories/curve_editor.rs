@@ -7,7 +7,7 @@ use crate::ds::gallery::layout::caption;
 use crate::ds::gallery::text::tr;
 use crate::ds::theme::ds;
 use crate::ds::widgets::{Curve, CurveCause, CurveEditor, CurveEvent, CurvePoint, Preset};
-use crate::register_story;
+use omuzaki_ui_api::register_story;
 
 struct State {
     response: Curve,
