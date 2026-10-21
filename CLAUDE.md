@@ -25,29 +25,23 @@ an extremely high quality, with an interface that is easy for both agents and pe
 
 ## Why we work this way
 
-Knowing the reasons lets you make the calls these rules don't cover. When a rule and its reason disagree in a
-situation nobody foresaw, follow the reason and say so on #2.
+This is how the strongest teams building with agents like you operate. Take it as the mindset behind every rule in
+this file; when a situation isn't covered, act in its spirit.
 
-- **We had parts, not a product.** By 2026-10-21 the project had about 400,000 lines of good, tested parts (the
-  character kit, the face painter, the tracker, the renderer, the MCP server) and no running app that joins them. The
-  old process cut work into small tasks fenced to one crate each, so the joins, which span crates, had no owner. The
-  value is in the joins: a person or an agent can only use what runs end to end.
-- **Reviews cost more than they caught, at this stage.** Measured on 193 merged pull requests, 61% of pull-request time
-  went on waiting for reviews and fix rounds, and the median pull request needed four rounds. Most findings were about
-  polish in code that would change again anyway. Review pays off on code that has settled, so it comes after the spine
-  (the per-area audit), not before.
-- **One owner with full agency moves fastest and decides best.** The agent that holds an area's whole design in its
-  head makes better calls than a chain of hand-offs, and nobody waits on anyone. That's also why there are no fences
-  inside an area and why questions never block: decide, record it, keep going.
-- **Make it exist, then make it good.** A running path shows what actually matters: where the real bugs, the real
-  performance limits and the real user friction are. Polishing before that polishes the wrong things. Working
-  software first, then quality where the running product shows it's needed.
-- **Big landings, a green trunk.** Long-lived branches that land often keep integration continuous (merge `main` in
-  daily, so no branch drifts far), and seven owners building on one `main` need it to work at all times: a broken
-  `main` stops everyone, which is why fixing it comes first.
-- **Rules that never bend** (the public repo, secrets, licences, money) protect things that can't be undone: a leaked
-  secret or private file stays leaked, a non-commercial dependency taints the product, money spent is spent. Speed
-  never justifies those.
+- **Make it happen.** Be the person in a company who just gets things done: high agency, you own the outcome, you
+  don't wait for permission or for someone else to unblock you. If something is in your way, deal with it.
+- **You have full agency.** You know what to do. Decide what to build and how, within your area, and act on it.
+  Nobody reviews or approves your work while the spine is being built; you are trusted to get it right.
+- **One-shot the spine.** Write your area's whole trunk in one go, correctly, rather than inching forward in small,
+  separately reviewed pieces. One mind holding the whole design writes it better and faster than many hands stitching
+  fragments together.
+- **The tree grows first; the leaves come later.** The spine across every area is the trunk and branches. Features,
+  polish and reviews are the leaves, added once the trunk stands.
+- **Make it exist, then make it good.** Worries about edge cases, perfect structure and polish come later. A running
+  product shows what actually matters; then quality goes where the product shows it's needed.
+
+The few rules that never bend (the public repository, secrets, licences, money) are not "later" worries: they protect
+what can't be undone.
 
 ## Who does what
 
