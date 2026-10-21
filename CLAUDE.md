@@ -23,6 +23,32 @@ an extremely high quality, with an interface that is easy for both agents and pe
   audit (correctness, security, performance), its findings are fixed, and then its leaves start: the rest of its
   spec, in the order of spec §35. Everything in the spec ships; the spine changes the order, not the scope.
 
+## Why we work this way
+
+Knowing the reasons lets you make the calls these rules don't cover. When a rule and its reason disagree in a
+situation nobody foresaw, follow the reason and say so on #2.
+
+- **We had parts, not a product.** By 2026-10-21 the project had about 400,000 lines of good, tested parts (the
+  character kit, the face painter, the tracker, the renderer, the MCP server) and no running app that joins them. The
+  old process cut work into small tasks fenced to one crate each, so the joins, which span crates, had no owner. The
+  value is in the joins: a person or an agent can only use what runs end to end.
+- **Reviews cost more than they caught, at this stage.** Measured on 193 merged pull requests, 61% of pull-request time
+  went on waiting for reviews and fix rounds, and the median pull request needed four rounds. Most findings were about
+  polish in code that would change again anyway. Review pays off on code that has settled, so it comes after the spine
+  (the per-area audit), not before.
+- **One owner with full agency moves fastest and decides best.** The agent that holds an area's whole design in its
+  head makes better calls than a chain of hand-offs, and nobody waits on anyone. That's also why there are no fences
+  inside an area and why questions never block: decide, record it, keep going.
+- **Make it exist, then make it good.** A running path shows what actually matters: where the real bugs, the real
+  performance limits and the real user friction are. Polishing before that polishes the wrong things. Working
+  software first, then quality where the running product shows it's needed.
+- **Big landings, a green trunk.** Long-lived branches that land often keep integration continuous (merge `main` in
+  daily, so no branch drifts far), and seven owners building on one `main` need it to work at all times: a broken
+  `main` stops everyone, which is why fixing it comes first.
+- **Rules that never bend** (the public repo, secrets, licences, money) protect things that can't be undone: a leaked
+  secret or private file stays leaked, a non-commercial dependency taints the product, money spent is spent. Speed
+  never justifies those.
+
 ## Who does what
 
 - **The owner** decides the product (the spec, and any change to it), money and access (new repositories, accounts,
@@ -86,15 +112,17 @@ something is private, leave it out and ask the owner.
 
 - **One long-lived branch per area,** `spine/<slug>`, with one pull request open against `main`. Open it early (a
   draft is fine) and keep its body current: what works now, what's next, the evidence.
-- **Commit and push often,** at least every 30 minutes of work: a cloud session can be lost when idle.
+- **Commit and push often,** at least every 30 minutes of work: a cloud session's VM can be lost when idle, and only
+  pushed work survives.
 - **Merge `main` into your branch** at least daily and right before you land. Never rebase a shared branch; never
   force-push `main`.
 - **Land it yourself** with a merge commit (not a squash) when a working slice is in, then open the next pull request
-  from the same branch. Any size.
+  from the same branch. Any size. (A merge commit keeps your commits and their trailers on `main` and lets the branch
+  carry on without conflicts; a squash would make the branch conflict with its own landed work.)
 - **Keep `main` green.** After you land, watch CI on `main`. If your change broke the build or a test, fixing it comes
   first. Anyone may fix a red `main`; say so on #2.
 - **Another area's code:** change it when your work needs a call site, a test or one line of wiring; for anything
-  bigger, tell that area's owner on #2 first.
+  bigger, tell that area's owner on #2 first, because it's building on that code right now.
 - **Bugs:** a bug in your area is yours to fix or to list on your pull request; a bug elsewhere becomes an issue
   labelled `bug` with the area named in its body.
 - **Never block on a question.** Decide, keep working, and ask on #2 with options and a recommendation. Questions for
@@ -334,6 +362,8 @@ and watchdog → OBS WebSocket control (#600) → platform events and the automa
 
 The area named first builds the contract; the others use it. Additive changes are the building area's call; a change
 that breaks another area's code is agreed between the two owners on #2 first, and the Director settles a disagreement.
+These are the only places where one owner's choice can stop another's work, so they are the only things agreed in
+advance.
 
 | Contract | Built by | Used by | What it carries |
 |---|---|---|---|
