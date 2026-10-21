@@ -10,7 +10,7 @@ area: decisions
 review round on average), §5 (review and merge-queue mechanics) and §6.2 (the attested self-gate); the review, sign-off,
 fix-round and flow-cap rules of `docs/maintainers/operating.md` as they stood before this record. **Keeps:** ADR 0053
 §3 and ADR 0054 (code structured so parallel work doesn't collide), the licence policy, the safety rules and the
-standing rulings in `CLAUDE.md`. **The map:** `docs/plan/spine.md`.
+standing rulings in `CLAUDE.md`. **The map and the rules:** `CLAUDE.md`.
 
 ## Context
 
@@ -31,7 +31,7 @@ trunk in one go. "Make it exist first, then make it good."
 ## Decision
 
 1. **Spine first.** The spine of an area is the thinnest end-to-end path through it that the product needs in order
-   to exist: what a person or an agent can actually do, start to finish. `docs/plan/spine.md` names each area's
+   to exist: what a person or an agent can actually do, start to finish. The spine map in `CLAUDE.md` names each area's
    spine, its "exists when" test and the contracts between areas. The rest of the spec (every remaining feature,
    polish, tuning and hardening) is the leaves, built after the spine runs. Everything in the spec still ships; this
    changes the order, not the scope.
