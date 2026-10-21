@@ -1,0 +1,19 @@
+[package]
+name = "omuzaki-secrets-mock"
+description = "An in-memory secret store for tests: MemorySecrets implements SecretStore without touching the OS keychain (CN-05)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+omuzaki-secrets-api = { path = "../omuzaki-secrets-api" }
+
+[lints]
+workspace = true
+
+[package.metadata.omuzaki]
+kind = "Mock"
+summary = "the in-memory secret store (CN-05): `MemorySecrets` implements `SecretStore` over a mutex-guarded map, can be told to fail with a chosen `SecretError`, and holds the shared `conformance` suite every store runs; the one fake every secret caller tests against"
