@@ -5,7 +5,7 @@
 //! the section `SpringBone Algorithm`): Verlet integration of each joint's tail with inertia, stiffness and gravity, a constraint
 //! that keeps the tail at the bone's length, push-out from sphere and capsule colliders (and, from `VRMC_springBone_extended_collider`, push-in to the
 //! inside of a sphere or capsule and push-out of a plane's back side), and then the bone is rotated
-//! to point at the tail. A joint's `VRMC_springBone_limit` (cone, hinge or spherical, see [`limit`]) holds the tail's direction
+//! to point at the tail. A joint's `VRMC_springBone_limit` (cone, hinge or spherical, see the `limit` module) holds the tail's direction
 //! inside its range right after the inertia update and again after each collider push. Chains are updated root to tip, and a chain hanging off another chain's joint after it.
 //!
 //! # Provenance
@@ -25,15 +25,35 @@
 //!
 //! # Choices where the spec leaves room
 //!
-//! - **The animated pose is held across a frame's sub-steps.** Colliders, chain roots and centres follow `pose` as it
-//!   enters [`step`](omuzaki_anim_api::SpringSolver::step); they jump at the first sub-step rather than gliding.
+//! - **The animated pose is interpolated across a frame's sub-steps** (#79). Sub-step `i` of a frame's `n` sees the
+//!   animated bones `i/n` of the way from the previous frame's pose to this one's (translations lerped, rotations
+//!   slerped), so colliders, chain roots and centres glide instead of jumping at the first sub-step. Measured on the
+//!   hair fixture against a 120 fps run (one sub-step a frame, so nothing to interpolate), worst tip error (rms):
+//!
+//!   | motion        | fps | held            | interpolated  |
+//!   |---------------|-----|-----------------|---------------|
+//!   | walk and sway | 30  | 47.0 mm (17.6)  | 0.9 mm (0.5)  |
+//!   | walk and sway | 60  | 19.0 mm (6.9)   | 0.2 mm (0.1)  |
+//!   | head turn     | 30  | 12.5 mm (4.1)   | 1.3 mm (0.4)  |
+//!   | head turn     | 60  | 4.2 mm (1.4)    | 0.3 mm (0.1)  |
+//!
+//!   It costs re-placing the animated bones and colliders each sub-step instead of once a frame: 2% at 60 fps and 3% at
+//!   30 fps on the 300-joint bench, held pose against interpolated (96 to 98 µs, 190 to 196 µs). A bone that did not
+//!   move skips the blend, so a still pose steps bit for bit as a held one at any frame rate. The first frame (and the
+//!   one after a reset or a warm-up) has no previous pose and is held.
+//!   [`VrmSpringSolver::set_pose_interpolation`]`(false)` holds the pose as `pose` enters
+//!   [`step`](omuzaki_anim_api::SpringSolver::step), as the spec's single step per frame and three-vrm do; the
+//!   comparisons with them run that way.
+//! - **A frame too short for a sub-step** (above 120 fps) keeps every tail where it is and re-aims the bones at them
+//!   from that frame's pose. The oracle holds such a frame the same way (#1849: comparing a held solver against an
+//!   oracle given nothing that frame read the previous frame's pose, 0.03 m apart at 144 fps).
 //! - **Spring bones start from their rest.** A swinging bone's `initialLocalMatrix` is its skeleton rest transform, not
 //!   whatever the incoming pose holds, and only its rotation is written back. An animation clip that rotates a hair
 //!   bone is overridden, as it is in other VRM runtimes.
 //! - **Tails start at rest in the pose they are first seen in**, and again after [`reset`](omuzaki_anim_api::SpringSolver::reset),
 //!   so a character that first appears away from the origin does not whip its hair into place.
 //! - **A limit sits in the head's rest frame under its parent's current rotation**, as the limit spec's `Rotation` listing
-//!   has it, so it bounds the swing rather than following the bone. Its order in the step is quoted in [`limit`]'s docs. A
+//!   has it, so it bounds the swing rather than following the bone. Its order in the step is quoted in the `limit` module's docs. A
 //!   limit on a chain's last joint is ignored, as the spec requires.
 //! - **A zero-length pair does not move.** A joint on top of the next one has no direction to swing in; it keeps its
 //!   rest rotation.
@@ -42,9 +62,10 @@
 //!   (or to the wall of an inside shape) than a bone length can still end a step behind it. The guarantee is on the
 //!   push, which leaves no joint more than rounding behind the plane or outside the shape; the end of the step keeps
 //!   the bone length. A test pins the case (root 0.1 m above a plane, a 0.2 m bone hanging straight down).
-//! - **Centre space** is applied at the step boundary: tails are stored relative to the centre bone, mapped to world
-//!   space when a step begins, simulated there, and mapped back. With the pose held across the step this is the spec's
-//!   per-sub-step formulation exactly, and it makes nested chains and gravity (always world space) free.
+//! - **Centre space** is applied at the boundary of each span of held pose: tails are stored relative to the centre
+//!   bone, mapped to world space when the span begins, simulated there, and mapped back. A held frame is one span; an
+//!   interpolated frame is one span per sub-step. With the centre still within a span this is the spec's per-sub-step
+//!   formulation exactly, and it makes nested chains and gravity (always world space) free.
 //! - **A bone that is a joint of two chains, or a centre below another chain's joint, is not rejected.** The spec
 //!   forbids both but [`SpringSet::validate`](omuzaki_anim_api::SpringSet::validate) doesn't check; the later chain by
 //!   bone order wins, deterministically.

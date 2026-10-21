@@ -90,7 +90,10 @@ pub struct FrameInput {
     pub pose: HumanoidPose,
     /// IK and look-at goals; [`IkGoals::NONE`] turns the stage off.
     pub goals: IkGoals,
-    /// The channels for the face.
+    /// The channel values of the frame: the face paints from them, and the character's bone drivers read them, so a
+    /// channel a driver names (a custom channel folding a wing) moves its bone, and the spring chains under that bone,
+    /// this frame. The rig keeps the last values a [`Stage::tick`] gave it:
+    /// [`Stage::redraw`], [`Stage::settle`] and [`Stage::unpin_time`] pose the driven bones with them.
     pub channels: ChannelBuf,
     /// Wind velocity in world space, metres per second.
     pub wind: Vec3,
@@ -139,6 +142,8 @@ pub struct TimePin {
     input_root: Mat4,
     pose: HumanoidPose,
     goals: IkGoals,
+    /// The channels the bone drivers last read (boxed: 512 bytes).
+    channels: Box<ChannelBuf>,
 }
 
 /// The bookkeeping behind [`Stage::commit_scene`]: the ground and skin floor the last scene wants, in a resolved scene
@@ -273,7 +278,7 @@ impl Stage {
         self.pose = input.pose;
         self.goals = input.goals;
         self.tick = tick;
-        self.rig.solve(tick, &input.pose, &input.goals);
+        self.rig.solve_with_channels(tick, &input.pose, &input.goals, &input.channels);
         let pose = SkinPose { character: &self.built.rig, skin: self.rig.skin(), root: self.root };
         let ctx = StepCtx { dt: tick.dt, time: tick.time, pose: &pose, wind: input.wind };
         DynamicMeshes::step(&mut self.built.runtimes, &ctx);
@@ -298,21 +303,29 @@ impl Stage {
     /// on every frame, whatever the clock is and however many frames ran before. The clock itself does not move. For
     /// renders that must not depend on history: a character sheet, a still.
     pub fn pin_time(&mut self, tick: Tick) -> TimePin {
-        let pin = TimePin { pinned: self.pinned, tick: self.tick, root: self.root, input_root: self.input_root, pose: self.pose, goals: self.goals };
+        let pin = TimePin {
+            pinned: self.pinned,
+            tick: self.tick,
+            root: self.root,
+            input_root: self.input_root,
+            pose: self.pose,
+            goals: self.goals,
+            channels: Box::new(*self.rig.channels()),
+        };
         self.pinned = Some(tick);
         pin
     }
 
     /// Ends [`pin_time`](Stage::pin_time): puts back the pin that was in force before it (none, or an outer caller's),
-    /// and the last frame's tick, root, pose and goals, with the rig, the scene's instances and its frame info
-    /// following them, so the stage looks as it did before the pin (what the runtimes settled to stays). Nothing is
-    /// sent to the renderer.
+    /// and the last frame's tick, root, pose, goals and bone-driver channels, with the rig, the scene's instances and
+    /// its frame info following them, so the stage looks as it did before the pin (what the runtimes settled to stays).
+    /// Nothing is sent to the renderer.
     pub fn unpin_time(&mut self, pin: &TimePin) {
         self.pinned = pin.pinned;
         (self.tick, self.root, self.input_root, self.pose, self.goals) =
             (pin.tick, pin.root, pin.input_root, pin.pose, pin.goals);
-        // A solve for no time: the bones follow the restored pose without stepping the springs.
-        self.rig.solve(Tick { dt: 0.0, ..pin.tick }, &pin.pose, &pin.goals);
+        // A solve for no time: the bones follow the restored pose and channels without stepping the springs.
+        self.rig.solve_with_channels(Tick { dt: 0.0, ..pin.tick }, &pin.pose, &pin.goals, &pin.channels);
         self.plan.fill(&mut self.scene, self.rig.skin(), pin.root);
         self.scene.frame = FrameInfo { index: pin.tick.index, time: pin.tick.time };
     }
@@ -435,8 +448,9 @@ impl Stage {
     /// the scene, for a still that differs from the last frame only by its camera or expression.
     ///
     /// Nothing advances: the clock, the rig and the part runtimes stay where the last tick left them, so the same shot
-    /// renders the same pixels however many shots came before it. The face is repainted for `input.channels`; the pose
-    /// and goals of `input` and its `dt`, `wind` and `root` are not read, so a change of pose needs a
+    /// renders the same pixels however many shots came before it. The face is repainted for `input.channels`, but the
+    /// bone drivers keep the last tick's channels, as the rest of the rig keeps its pose; the pose and goals of `input`
+    /// and its `dt`, `wind` and `root` are not read, so a change of pose or of a driven bone needs a
     /// [`tick`](Stage::tick). A variant switch that is pending completes on a tick, not here. It sends the renderer the
     /// dynamic meshes whose revision moved since the last upload, as a tick does, and reports how many in
     /// [`FrameOutput::uploads`]: after [`settle`](Stage::settle) the still shows the settled hair. It allocates nothing

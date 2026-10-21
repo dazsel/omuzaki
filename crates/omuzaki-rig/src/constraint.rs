@@ -10,6 +10,21 @@
 //!   alone (glam's `from_rotation_arc`), so the result is deterministic;
 //! - only rotations are written; translations are never touched.
 //!
+//! ## The order constraints run in
+//!
+//! A constraint runs after every constraint whose output it reads, so a whole set is solved in one pass:
+//! - **roll and rotation** read only their source's local rotation, so they run after the constraint on the source;
+//! - **an aim** reads two world transforms, its source's and its destination's parent's, so it runs after the
+//!   constraints on its source and on each of the source's ancestors, and after the constraint on each ancestor of
+//!   its destination (the rule of three-vrm's `VRMNodeConstraintManager`). Otherwise an aim declared before a
+//!   constraint that turns one of those ancestors would point at where the source used to be.
+//!
+//! Among constraints with nothing left to wait for, the earliest declared goes first, so the order is stable. A loop
+//! through any of these edges (an aim at a descendant of its own destination included) is
+//! [`ConstraintError::Cycle`], naming the destination bones of the loop, each waiting on the next.
+//! [`ConstraintSet::order`] knows only the source edges, since it has no skeleton; [`VrmConstraintSolver::new`]
+//! applies the full rule.
+//!
 //! ## Where it goes in a frame
 //!
 //! After the humanoid pose, look-at and IK have written the pose, and before spring bones (the order of
@@ -17,8 +32,11 @@
 //! constrained bones. In the composed rig (`full::FullRig`) that is between the IK stage and the spring stage, set with
 //! [`FullRig::with_constraints`](crate::full::FullRig::with_constraints).
 
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
+
 use omuzaki_anim_api::{
-    Axis, BoneConstraint, ConstraintError, ConstraintKind, ConstraintSet, Pose, SignedAxis, Skeleton, Transform,
+    Axis, BoneConstraint, BoneId, ConstraintError, ConstraintKind, ConstraintSet, Pose, SignedAxis, Skeleton, Transform,
 };
 use omuzaki_core::glam::{Quat, Vec3};
 
@@ -32,14 +50,21 @@ pub struct VrmConstraintSolver {
 }
 
 impl VrmConstraintSolver {
-    /// Validates `set` against `skeleton` and fixes the run order. Everything `apply` needs is allocated here.
+    /// Validates `set` against `skeleton` and fixes the run order (see the module docs). Everything `apply` needs is
+    /// allocated here.
     ///
     /// # Errors
-    /// Whatever [`ConstraintSet::validate`] reports.
+    /// Whatever [`ConstraintSet::validate`] reports, and [`ConstraintError::Cycle`] for a loop through an aim's
+    /// ancestor edges.
     pub fn new(set: &ConstraintSet, skeleton: &Skeleton) -> Result<Self, ConstraintError> {
         set.validate(skeleton)?;
-        let ordered = set.order()?.into_iter().map(|i| set.constraints[i]).collect();
+        let ordered = run_order(set, skeleton)?.into_iter().map(|i| set.constraints[i]).collect();
         Ok(Self { ordered })
+    }
+
+    /// The constraints in the order [`apply`](Self::apply) runs them.
+    pub fn ordered(&self) -> &[BoneConstraint] {
+        &self.ordered
     }
 
     /// Writes the constrained bones' local rotations into `pose`. Hot path: no allocation, no locking.
@@ -51,6 +76,73 @@ impl VrmConstraintSolver {
             pose.local[c.bone.index()].rotation = rotation;
         }
     }
+}
+
+/// The bones whose constraints `c` must run after (see the module docs): its source and, for an aim, the source's
+/// ancestors and the destination's ancestors.
+fn reads(c: &BoneConstraint, skeleton: &Skeleton) -> Vec<BoneId> {
+    let parent = |bone: BoneId| skeleton.get(bone).and_then(|def| def.parent);
+    let mut bones = vec![c.source];
+    if matches!(c.kind, ConstraintKind::Aim { .. }) {
+        bones.extend(std::iter::successors(parent(c.source), |&b| parent(b)));
+        bones.extend(std::iter::successors(parent(c.bone), |&b| parent(b)));
+    }
+    bones
+}
+
+/// Indices into the constraints in run order: a stable topological sort (Kahn's, always taking the earliest-declared
+/// ready constraint) over the edges of [`reads`]. The constraints are already validated, so no bone has two. Cold.
+fn run_order(constraints: &ConstraintSet, skeleton: &Skeleton) -> Result<Vec<usize>, ConstraintError> {
+    let list = &constraints.constraints;
+    let driver_of: BTreeMap<BoneId, usize> = list.iter().enumerate().map(|(i, c)| (c.bone, i)).collect();
+    // What each constraint waits for, ascending, so a loop is reported the same way every time.
+    let waits_for: Vec<BTreeSet<usize>> = list
+        .iter()
+        .map(|c| reads(c, skeleton).iter().filter_map(|bone| driver_of.get(bone).copied()).collect())
+        .collect();
+    let mut waiting_on_me = vec![Vec::new(); list.len()];
+    for (i, waits) in waits_for.iter().enumerate() {
+        for &d in waits {
+            waiting_on_me[d].push(i);
+        }
+    }
+    let mut pending: Vec<usize> = waits_for.iter().map(BTreeSet::len).collect();
+    let mut ready: BinaryHeap<Reverse<usize>> = (0..list.len()).filter(|&i| pending[i] == 0).map(Reverse).collect();
+    let mut out = Vec::with_capacity(list.len());
+    while let Some(Reverse(i)) = ready.pop() {
+        out.push(i);
+        for &j in &waiting_on_me[i] {
+            pending[j] -= 1;
+            if pending[j] == 0 {
+                ready.push(Reverse(j));
+            }
+        }
+    }
+    if out.len() == list.len() {
+        return Ok(out);
+    }
+    Err(ConstraintError::Cycle { bones: cycle(constraints, &waits_for, &out) })
+}
+
+/// The destination bones of a loop among the constraints `placed` left out. Each of those waits on another left out
+/// (or it would have been placed), so following the lowest such wait from the first one must come back to a
+/// constraint already visited.
+fn cycle(constraints: &ConstraintSet, waits_for: &[BTreeSet<usize>], placed: &[usize]) -> Vec<u16> {
+    let mut left = vec![true; waits_for.len()];
+    for &i in placed {
+        left[i] = false;
+    }
+    let mut walk: Vec<usize> = Vec::new();
+    let mut at = left.iter().position(|&l| l);
+    while let Some(i) = at {
+        if let Some(start) = walk.iter().position(|&j| j == i) {
+            return walk[start..].iter().map(|&j| constraints.constraints[j].bone.0).collect();
+        }
+        walk.push(i);
+        at = waits_for[i].iter().copied().find(|&j| left[j]);
+    }
+    debug_assert!(false, "every constraint left out waits on another left out");
+    Vec::new()
 }
 
 fn rest_of(skeleton: &Skeleton, index: usize) -> Transform {
