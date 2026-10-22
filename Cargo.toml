@@ -87,7 +87,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 wgpu = "30"
 windows = { version = "0.62", features = ["Win32_Media_MediaFoundation", "Win32_System_Com", "Win32_Foundation", "Win32_Security", "Win32_System_Threading"] }   # Media Foundation and COM (MIT OR Apache-2.0), omuzaki-camera-mf
 windows-core = "0.62"   # the `implement` macro for the camera's COM callback (MIT OR Apache-2.0), omuzaki-camera-mf
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem"] } # the Windows side of the same: reparse-point-aware opens, final-path checks
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_UI_WindowsAndMessaging"] } # the Windows side of the same: reparse-point-aware opens, final-path checks; the studio's reduce-motion read
 url = "2"   # WHATWG URL parsing (MIT OR Apache-2.0), the xtask models gate; already in the lock
 zeroize = "1.9"   # zeroes a secret value on drop (Apache-2.0 OR MIT; already in the lock), omuzaki-secrets-api
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] } # unpacks the ONNX Runtime Windows.zip archives (MIT), omuzaki-ai-native
