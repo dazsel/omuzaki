@@ -17,7 +17,8 @@
 //! squarer than an ellipse ([`Surface::exponent`](super::loft::Surface::exponent) above 2) reaches past its ellipse at
 //! the diagonals, so its envelope is widened by [`enclosing_scale`] to keep the next layer clear of the corners.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use omuzaki_anim_api::HumanoidPose;
 use omuzaki_char_api::{
@@ -422,7 +423,11 @@ pub struct Envelope {
     inner: Arc<dyn BodyFit>,
     regions: Vec<BodyRegion>,
     ease: f32,
+    exponent: f64,
     scale: f32,
+    /// The covered sections already worked out, by region and `t`: a garment's ring clears its neighbours with a search
+    /// of the fit inside it, and the layers over it ask for the same sections many times.
+    known: Arc<Mutex<HashMap<(BodyRegion, u32), Option<Section>>>>,
 }
 
 impl Envelope {
@@ -449,7 +454,14 @@ impl Envelope {
         regions.sort_unstable();
         regions.dedup();
         #[allow(clippy::cast_possible_truncation)] // a fit is f32
-        Ok(Self { inner, regions, ease: ease as f32, scale: enclosing_scale(exponent) as f32 })
+        Ok(Self {
+            inner,
+            regions,
+            ease: ease as f32,
+            exponent,
+            scale: enclosing_scale(exponent) as f32,
+            known: Arc::default(),
+        })
     }
 
     /// The fit inside this one.
@@ -470,11 +482,23 @@ impl Envelope {
 
 impl BodyFit for Envelope {
     fn section(&self, region: BodyRegion, t: f32) -> Option<Section> {
-        let inner = self.inner.section(region, t)?;
         if self.regions.binary_search(&region).is_err() {
-            return Some(inner);
+            return self.inner.section(region, t);
         }
-        Some(Section { radii: (inner.radii + Vec2::splat(self.ease)) * self.scale, ..inner })
+        let key = (region, t.to_bits());
+        if let Some(known) = self.known.lock().ok().and_then(|known| known.get(&key).copied()) {
+            return known;
+        }
+        // The garment's own ring, which also clears what closes into the region (the thighs round the hips).
+        let section = self.inner.section(region, t).map(|inner| {
+            let ring = super::loft::ring_at(self.inner.as_ref(), region, f64::from(t), self.exponent, f64::from(self.ease));
+            let radii = ring.map_or(inner.radii + Vec2::splat(self.ease), |ring| ring.radii.as_vec2());
+            Section { radii: radii * self.scale, ..inner }
+        });
+        if let Ok(mut known) = self.known.lock() {
+            known.insert(key, section);
+        }
+        section
     }
 
     /// The caps are the body's: a garment closes over none.

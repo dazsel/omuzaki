@@ -159,7 +159,9 @@ pub fn ring_at(
         radii,
         exponent,
     };
+    // A ring inside the body's sections (a negative offset) stays inside them.
     match region {
+        _ if offset < 0.0 => {}
         BodyRegion::Torso => {
             for leg in [BodyRegion::LegL, BodyRegion::LegR] {
                 clear_region(fit, &mut ring, leg, offset);
@@ -175,8 +177,11 @@ pub fn ring_at(
 
 /// Points taken round a neighbour's section that a ring clears.
 const CLEAR_SAMPLES: usize = 48;
-/// Bisections that find a neighbour's section through a ring's centre: far below a micrometre.
-const CLEAR_BISECTIONS: usize = 32;
+/// Widths tried between a ring's own and its whole scale when it grows to clear a neighbour.
+const CLEAR_WIDTHS: usize = 32;
+/// Steps that find a neighbour's section through a ring's centre, and how near its plane must pass, metres.
+const CLEAR_STEPS: usize = 16;
+const CLEAR_TOLERANCE: f64 = 1e-6;
 
 /// Grows `ring` until it clears, by `offset`, `neighbour` where the ring's plane cuts it: its section whose plane passes
 /// through the ring's centre, or past its ends its cap ([`BodyFit::cap`]). The thighs rise into the pelvis, so a ring
@@ -193,16 +198,32 @@ fn clear_region(fit: &dyn BodyFit, ring: &mut Ring, neighbour: BodyRegion, offse
         clear_cap(fit, ring, neighbour, end, offset, None);
         return;
     }
-    let (mut lo, mut hi) = (0.0, 1.0);
-    for _ in 0..CLEAR_BISECTIONS {
-        let mid = f64::midpoint(lo, hi);
-        match height(mid) {
-            Some(h) if h.signum() == h0.signum() => lo = mid,
-            Some(_) => hi = mid,
-            None => return,
+    // A limb is near straight: the false position between the bracketing heights (Illinois: the end that stays has
+    // its height halved, so neither end sticks) lands within a hair in a few steps.
+    let ((mut lo, mut h_lo), (mut hi, mut h_hi)) = ((0.0, h0), (1.0, h1));
+    let mut t = 0.0;
+    let mut last_side = 0;
+    for _ in 0..CLEAR_STEPS {
+        t = lo + (hi - lo) * h_lo / (h_lo - h_hi);
+        let Some(h) = height(t) else { return };
+        if h.abs() < CLEAR_TOLERANCE {
+            break;
+        }
+        if h.signum() == h_lo.signum() {
+            (lo, h_lo) = (t, h);
+            if last_side == -1 {
+                h_hi /= 2.0;
+            }
+            last_side = -1;
+        } else {
+            (hi, h_hi) = (t, h);
+            if last_side == 1 {
+                h_lo /= 2.0;
+            }
+            last_side = 1;
         }
     }
-    if let Some(s) = section(f64::midpoint(lo, hi)) {
+    if let Some(s) = section(t) {
         clear_section(ring, neighbour, &s, offset, None);
     }
 }
@@ -236,28 +257,49 @@ fn clear_cap(
     }
 }
 
-/// Grows `ring`, keeping its shape and centre, until it holds `section` of `region` with `offset` added to its radii;
-/// with `side`, only the part of the section on that side of the body's midplane.
+/// Grows `ring` until it holds `section` of `region` with `offset` added to its radii; with `side`, only the part of
+/// the section on that side of the body's midplane.
 fn clear_section(ring: &mut Ring, region: BodyRegion, section: &Section, offset: f64, side: Option<f64>) {
     let (across, through) = section_basis(region, section.axis);
     let (centre, across, through) = (section.centre.as_dvec3(), across.as_dvec3(), through.as_dvec3());
     let radii = section.radii.as_dvec2() + DVec2::splat(offset);
+    let points: Vec<DVec2> = (0..CLEAR_SAMPLES)
+        .filter_map(|k| {
+            let (sin, cos) = (TAU * crate::kit::curve::fraction(k, CLEAR_SAMPLES)).sin_cos();
+            let p = centre + across * (radii.x * cos) + through * (radii.y * sin);
+            let d = p - ring.centre;
+            (!side.is_some_and(|side| p.x * side < 0.0)).then(|| DVec2::new(d.dot(ring.across), d.dot(ring.through)))
+        })
+        .collect();
+    grow_to_hold(ring, &points);
+}
+
+/// Grows `ring`, keeping its shape and centre, until it holds every one of `points` (in its plane): of the rings that
+/// do, the one of least area, widened and deepened by as little as each needs.
+fn grow_to_hold(ring: &mut Ring, points: &[DVec2]) {
+    let points: Vec<DVec2> = points.iter().copied().filter(|q| q.is_finite()).collect();
     let e = ring.exponent;
-    let mut scale = 1.0_f64;
-    for k in 0..CLEAR_SAMPLES {
-        let (sin, cos) = (TAU * crate::kit::curve::fraction(k, CLEAR_SAMPLES)).sin_cos();
-        let p = centre + across * (radii.x * cos) + through * (radii.y * sin);
-        if side.is_some_and(|side| p.x * side < 0.0) {
-            continue;
-        }
-        let d = p - ring.centre;
-        let q = DVec2::new(d.dot(ring.across), d.dot(ring.through));
-        let level = ((q.x / ring.radii.x).abs().powf(e) + (q.y / ring.radii.y).abs().powf(e)).powf(1.0 / e);
-        if level.is_finite() {
-            scale = scale.max(level);
-        }
+    let r = ring.radii;
+    let level = |q: DVec2, r: DVec2| ((q.x / r.x).abs().powf(e) + (q.y / r.y).abs().powf(e)).powf(1.0 / e);
+    let scale = points.iter().map(|q| level(*q, r)).fold(1.0_f64, f64::max);
+    if scale <= 1.0 {
+        return;
     }
-    ring.radii *= scale;
+    // For each width from the ring's own to the whole scale's, the least depth that holds every point there: a point
+    // needs `|q_y| / (1 - |q_x / r_x|^e)^(1/e)`, and can't be held at a width it lies beyond.
+    let depth = |width: f64| {
+        points.iter().try_fold(r.y, |most, q| {
+            let room = 1.0 - (q.x / width).abs().powf(e);
+            (room > 0.0).then(|| most.max(q.y.abs() / room.powf(1.0 / e)))
+        })
+    };
+    ring.radii = (0..=CLEAR_WIDTHS)
+        .filter_map(|k| {
+            let width = r.x * (1.0 + (scale - 1.0) * crate::kit::curve::fraction(k, CLEAR_WIDTHS));
+            depth(width).map(|d| DVec2::new(width, d))
+        })
+        .min_by(|a, b| (a.x * a.y).total_cmp(&(b.x * b.y)))
+        .unwrap_or(r * scale);
 }
 
 // -------------------------------------------------------------------------------------------------------- weights

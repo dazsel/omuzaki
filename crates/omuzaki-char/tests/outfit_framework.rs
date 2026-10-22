@@ -162,7 +162,8 @@ fn an_ease_that_is_too_small_fails_naming_the_vertex_region_and_depth() {
     // Built 3 mm closer than its 4 mm ease: 1 mm off the body, below half the ease.
     let tight = TubeParams { sink: 0.003, ..TubeParams::default() };
     let error = conformance::run::<Tube>(&tight, &services()).expect_err("a tight garment fails");
-    for word in ["vertex", "region Torso", "depth", "below half the ease"] {
+    // Round the hips the tube clears the thighs, and the nearest vertex may be over one of them.
+    for word in ["vertex", "region ", "depth", "below half the ease"] {
         assert!(error.contains(word), "the failure names the {word}: {error}");
     }
     // Built 6 mm in: through the body.

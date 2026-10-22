@@ -219,7 +219,9 @@ pub fn run<K: Garment>(params: &K::Params, services: &BuildServices) -> Result<V
             let body_table = Tables::of(body.as_ref()).only(&regions);
             let body_pieces = body_pieces(body.as_ref(), &body_table);
             let inner_table = Tables::of(inner.as_ref());
-            let min_clearance = check_clearance(output, &body_table, &body_pieces, &inner_table, &regions, ease)
+            // Round the hips a garment over the torso clears the tops of the thighs too, and is measured from them.
+            let under = with_thighs(&regions);
+            let min_clearance = check_clearance(output, &body_table, &body_pieces, &inner_table, &under, ease)
                 .map_err(|e| format!("{case}: {e}"))?;
             check_fit_tight(body.as_ref(), stack.output(BODY), &regions).map_err(|e| format!("{case}: {e}"))?;
             check_body_mesh(output, stack.output(BODY)).map_err(|e| format!("{case}: {e}"))?;
@@ -242,6 +244,18 @@ pub fn run<K: Garment>(params: &K::Params, services: &BuildServices) -> Result<V
         }
     }
     Ok(rows)
+}
+
+/// `regions` and, when they hold the torso, the legs: the thighs rise into the pelvis, and a garment round the hips
+/// goes round them (`omuzaki_char::outfit::loft::ring_at`).
+fn with_thighs(regions: &[BodyRegion]) -> Vec<BodyRegion> {
+    let mut out = regions.to_vec();
+    if regions.contains(&BodyRegion::Torso) {
+        out.extend([BodyRegion::LegL, BodyRegion::LegR]);
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
 }
 
 /// Runs the suite and panics with the failure, or prints the table.
