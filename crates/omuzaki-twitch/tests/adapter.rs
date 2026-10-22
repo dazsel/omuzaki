@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 
 use omuzaki_core::time::{FakeClock, Seconds};
 use omuzaki_doc_mock::MemDoc;
-use omuzaki_http_api::{HttpTransport, Method};
-use omuzaki_http_mock::FakeHttp;
+use omuzaki_http_api::{HttpError, HttpResponse, HttpTransport, Method};
+use omuzaki_http_mock::{FakeHttp, Reply};
 use omuzaki_live_api::event::{EventSink, LiveEvent, PublishError};
 use omuzaki_ops_api::{Actor, OpCtx, Services, ServicesBuilder, find};
 use omuzaki_secrets_api::prelude::{SecretLabel, SecretStore, SecretValue};
@@ -259,7 +259,10 @@ fn a_redeem_reaches_the_show_through_the_subscriptions_the_token_allows() {
 
 #[test]
 fn a_reconnect_moves_to_the_new_address_and_keeps_the_subscriptions() {
-    let second = FakeSocket::new(vec![Box::new(|ws| {
+    // The old connection delivers a redeem after asking for the move; the new one says welcome only once it has.
+    let (sent, old_done) = channel::<()>();
+    let second = FakeSocket::new(vec![Box::new(move |ws| {
+        old_done.recv_timeout(WAIT).unwrap();
         send(ws, &welcome("S2"));
         send(ws, &follow("n2"));
         hold(ws);
@@ -268,25 +271,31 @@ fn a_reconnect_moves_to_the_new_address_and_keeps_the_subscriptions() {
     let first = FakeSocket::new(vec![Box::new(move |ws| {
         send(ws, &welcome("S1"));
         send(ws, &message("session_reconnect", "m2", &json!({ "session": { "id": "S1", "reconnect_url": next } })));
+        send(ws, &redeem("n1", "Late"));
+        sent.send(()).unwrap();
         hold(ws);
     })]);
-    let http = helix(&["moderator:read:followers"]);
+    let http = helix(&["moderator:read:followers", "channel:read:redemptions"]);
     let (sink, events) = Sink::new(0);
     let twitch = service(&first.url, &http, &sink);
     twitch.connect(SecretValue::new(TOKEN)).unwrap();
 
+    let late = events.recv_timeout(WAIT).unwrap();
+    assert_eq!(late.kind.as_str(), "redeem", "the old connection delivers until the new one is open");
+    assert_eq!(late.payload["reward"]["title"], "Late");
     let event = events.recv_timeout(WAIT).unwrap();
     assert_eq!(event.kind.as_str(), "follow");
     assert_eq!(event.payload["user"]["name"], "NewFan");
     let status = until(&twitch, |s| s.reconnects == 1 && s.connected);
     assert_eq!(status.reconnects, 1);
     assert!(status.error.is_none());
-    // Follows and raids, subscribed once on S1; S2 inherits them.
+    // Redeems, follows and raids, subscribed once on S1; S2 inherits them.
     let made = subscriptions(&http);
-    assert_eq!(made.len(), 2);
+    assert_eq!(made.len(), 3);
     assert!(made.iter().all(|s| s["transport"]["session_id"] == "S1"));
 
     drop(twitch);
+    // The old connection was closed once the new one opened, so its script has ended.
     first.join();
     second.join();
 }
@@ -362,6 +371,90 @@ fn a_refused_token_is_reported_and_nothing_connects() {
     assert!(status.error.as_deref().unwrap().contains("refused the token"));
     assert!(!format!("{status:?}").contains(TOKEN));
     assert_eq!(http.calls().len(), 1);
+}
+
+#[test]
+fn a_token_check_that_cannot_reach_twitch_is_tried_again() {
+    let socket = FakeSocket::new(vec![Box::new(|ws| {
+        send(ws, &welcome("S1"));
+        hold(ws);
+    })]);
+    let info = json!({ "client_id": "test-client", "login": "kitdemo", "user_id": "1001", "scopes": [],
+                       "expires_in": 3600 });
+    let ok = HttpResponse { status: 200, headers: Vec::new(), body: info.to_string().into_bytes() };
+    let http = Arc::new(
+        FakeHttp::new()
+            .route(
+                Method::Get,
+                &format!("{OAUTH}/validate"),
+                vec![Reply::Error(HttpError::Network("offline".to_owned())), Reply::Response(ok)],
+            )
+            .json(Method::Post, &format!("{API}/eventsub/subscriptions"), 202, json!({ "data": [] })),
+    );
+    let (sink, _events) = Sink::new(0);
+    let twitch = service(&socket.url, &http, &sink);
+    twitch.connect(SecretValue::new(TOKEN)).unwrap();
+
+    let status = until(&twitch, |s| s.connected);
+    assert!(status.connected, "a network blip at the start doesn't end the adapter: {status:?}");
+    assert_eq!(http.calls_to("/validate"), 2);
+    assert_eq!(status.events, ["raid"]);
+    drop(twitch);
+    socket.join();
+}
+
+#[test]
+fn an_expired_token_stops_the_adapter_instead_of_reconnecting_forever() {
+    let socket = FakeSocket::new(vec![Box::new(|ws| {
+        send(ws, &welcome("S1"));
+        let _ = ws.close(None);
+        let _ = ws.flush();
+    })]);
+    let info = json!({ "client_id": "test-client", "login": "kitdemo", "user_id": "1001", "scopes": [],
+                       "expires_in": 3600 });
+    let ok = HttpResponse { status: 200, headers: Vec::new(), body: info.to_string().into_bytes() };
+    let expired = HttpResponse { status: 401, headers: Vec::new(), body: b"{}".to_vec() };
+    let http = Arc::new(
+        FakeHttp::new()
+            .route(Method::Get, &format!("{OAUTH}/validate"), vec![Reply::Response(ok), Reply::Response(expired)])
+            .json(Method::Post, &format!("{API}/eventsub/subscriptions"), 202, json!({ "data": [] })),
+    );
+    let (sink, _events) = Sink::new(0);
+    let twitch = service(&socket.url, &http, &sink);
+    twitch.connect(SecretValue::new(TOKEN)).unwrap();
+
+    let status = until(&twitch, |s| s.error.as_deref().is_some_and(|e| e.contains("new token")));
+    assert!(!status.connected);
+    let error = status.error.unwrap();
+    assert!(error.contains("refused the token") && error.contains("twitch.connect"), "{error}");
+    assert!(!error.contains(TOKEN));
+    // Checked at the start and before starting over; subscribed once, on the first session only.
+    assert_eq!(http.calls_to("/validate"), 2);
+    assert_eq!(subscriptions(&http).len(), 1);
+    drop(twitch);
+    socket.join();
+}
+
+#[test]
+fn a_revoked_subscription_leaves_the_events_list_and_triggers_a_token_check() {
+    let socket = FakeSocket::new(vec![Box::new(|ws| {
+        send(ws, &welcome("S1"));
+        let revoked = json!({ "subscription": { "type": "channel.follow", "status": "authorization_revoked" } });
+        send(ws, &message("revocation", "r1", &revoked));
+        hold(ws);
+    })]);
+    let http = helix(&["moderator:read:followers"]);
+    let (sink, _events) = Sink::new(0);
+    let twitch = service(&socket.url, &http, &sink);
+    twitch.connect(SecretValue::new(TOKEN)).unwrap();
+
+    let status = until(&twitch, |s| !s.refused.is_empty() && http.calls_to("/validate") == 2);
+    assert_eq!(status.events, ["raid"], "the follow subscription is gone");
+    assert!(status.refused[0].contains("channel.follow") && status.refused[0].contains("authorization_revoked"));
+    assert_eq!(http.calls_to("/validate"), 2, "the revocation checks the token at once");
+    assert!(status.connected, "a token that still works keeps the connection");
+    drop(twitch);
+    socket.join();
 }
 
 #[test]
