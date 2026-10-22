@@ -47,6 +47,7 @@ hyper = { version = "1", default-features = false, features = ["http1", "server"
 hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 inventory = "0.3"
+libc = "0.2"   # the Linux virtual camera's device calls (open, ioctl, write) (MIT OR Apache-2.0), omuzaki-vcam; already in the lock
 libm = "0.2"   # transcendental maths bit-identical on every platform (the CPU rasteriser's stroker, ADR 0009)
 loom = "0.7"   # model checker for the metrics seqlock (MIT), omuzaki-metrics-api dev-dependency; only built with --cfg loom
 # ONNX Runtime wrapper. `load-dynamic`: the app loads Microsoft's official MIT library from a path we choose, so Pyke's prebuilt binaries

@@ -3964,6 +3964,7 @@ dependencies = [
  "omuzaki-stream",
  "omuzaki-stream-api",
  "omuzaki-track-api",
+ "omuzaki-vcam",
  "rmcp",
  "schemars",
  "serde",
@@ -4878,6 +4879,7 @@ version = "0.0.0"
 dependencies = [
  "bytes",
  "criterion",
+ "directories",
  "hound",
  "image",
  "omuzaki-audio-api",
@@ -4902,6 +4904,7 @@ name = "omuzaki-stream-api"
 version = "0.0.0"
 dependencies = [
  "bytes",
+ "inventory",
  "omuzaki-core",
  "omuzaki-history-api",
  "omuzaki-ops-api",
@@ -5158,6 +5161,16 @@ version = "0.0.0"
 dependencies = [
  "omuzaki-ai-api",
  "omuzaki-update-api",
+]
+
+[[package]]
+name = "omuzaki-vcam"
+version = "0.0.0"
+dependencies = [
+ "libc",
+ "omuzaki-core",
+ "omuzaki-render-api",
+ "omuzaki-stream-api",
 ]
 
 [[package]]

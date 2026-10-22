@@ -1,33 +1,26 @@
 //! The recording and streaming implementation (spec v3 §9, §25; `docs/design/record.md`).
 //!
-//! This crate turns rendered frames and audio into files and live streams: the A/V timeline, the PNG and WAV sinks,
-//! the recorder, the replay buffer, the `FFmpeg` encoders and muxers, the watchdog that keeps a stream alive, and the
-//! stream and record ops. The contracts it implements (encoders, muxers, packets, outputs) live in
+//! This crate turns rendered frames and audio into files and live streams: the stream service every frame leaves
+//! the app through, the PNG and WAV sinks, the recorder, the replay buffer, the encoders, the watchdog that keeps a
+//! stream alive, and the output and record ops. The contracts it implements (encoders, muxers, packets, outputs) live in
 //! `omuzaki-stream-api`; this crate is native only.
 //!
 //! # Module map
 //!
-//! The whole tree exists from the start, so parallel tasks never edit this file or `Cargo.toml`: each stub file starts
-//! with a `//!` line naming its purpose, the table below names the task that fills each module, and each folder's
-//! `mod.rs` lists its submodules.
-//!
-//! | Module | Holds | Filled by |
+//! | Module | Holds | State |
 //! |---|---|---|
-//! | [`timeline`] | the A/V timeline and the [`AudioSource`](timeline::AudioSource) trait | the A/V timeline task |
-//! | [`alpha`] | alpha handling for the record formats | the A/V timeline task |
-//! | [`sinks`] | [`sinks::png`] and [`sinks::wav`] | the PNG and WAV sinks task |
-//! | [`record`] | [`settings`](record::settings), [`take`](record::take), [`runtime`](record::runtime) | the recording settings task, the recorder task |
-//! | [`replay`] | [`ring`](replay::ring), [`segment`](replay::segment), [`runtime`](replay::runtime) | the rolling buffer task, the disk segment store task, the replay buffer task |
-//! | `ffmpeg` (feature `ffmpeg`) | [`encode`](ffmpeg::encode), [`mux`](ffmpeg::mux), [`hw`](ffmpeg::hw), [`probe`](ffmpeg::probe) | the `FFmpeg` encoders task, the green-screen MP4 task |
-//! | [`watchdog`] | [`policy`](watchdog::policy), [`supervisor`](watchdog::supervisor), [`launch`](watchdog::launch) | the watchdog policy task, the supervisor runtime task |
-//! | [`window`] | the clean window plan | the clean window plan task |
-//! | [`service`] | the stream service | the stream service task |
-//! | [`ops`] | [`record`](ops::record), [`window`](ops::window) | the record ops task, the clean window plan task |
-//! | [`settings_keys`] | the setting keys the recorder and the stream read | the record ops task |
-//! | `testing` (feature `testing`, or tests) | [`encoder`](testing::encoder), [`muxer`](testing::muxer), [`source`](testing::source) | the testing kit task |
-//!
-//! The outputs of the spout, NDI and virtual camera tasks (`spout.rs`, `ndi.rs`, `vcam_*.rs`) are not part of this
-//! crate's map.
+//! | [`service`] | [`StreamService`](service::StreamService): frames from the frame loop fanned out to every output, paced on each output's grid | works |
+//! | [`alpha`] | the exact straight, premultiplied and flattened conversions of D9 | works |
+//! | [`sinks`] | [`sinks::png`] (one file per frame, crash-safe) and [`sinks::wav`] (float WAV, header current each second) | works |
+//! | [`record`] | [`settings`](record::settings), [`take`](record::take) naming and manifest, [`runtime`](record::runtime): the recorder output | PNG sequence works; `WebM` VP9 alpha next |
+//! | [`ops`] | [`record`](ops::record) (`record.start`, `stop`, `status`), [`output`](ops::output) (`output.kinds`, `list`, `start`, `stop`), [`window`](ops::window) | works |
+//! | [`timeline`] | the [`AudioSource`](timeline::AudioSource) trait recording reads audio through | works |
+//! | [`window`] | the clean window plan | works |
+//! | [`settings_keys`] | the setting keys the stream reads | stub |
+//! | [`replay`] | the replay buffer | stub |
+//! | `ffmpeg` (feature `ffmpeg`) | `FFmpeg` encoders | stub |
+//! | [`watchdog`] | the supervisor | stub |
+//! | `testing` (feature `testing`, or tests) | a fake encoder, a memory muxer and a scripted audio source | works |
 //!
 //! Benchmarks sit in `benches/` (`ring`, `replay`); the fake worker that the supervisor tests launch is `fake-worker`,
 //! built from `src/bin/fake_worker.rs`.

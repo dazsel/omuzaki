@@ -12,6 +12,8 @@ repository.workspace = true
 # encoders task is the one exception: it adds the optional FFmpeg dependency.
 [dependencies]
 bytes.workspace = true
+# The person's videos folder, where takes go by default (`record/settings.rs`).
+directories.workspace = true
 hound.workspace = true
 image.workspace = true
 schemars.workspace = true
@@ -35,6 +37,9 @@ tempfile.workspace = true
 # Writes the `output.window` setting as TOML the way the settings store does (`tests/settings.rs`).
 toml.workspace = true
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
+# Reads the recorded frames and tracks back (`tests/record.rs`).
+image.workspace = true
+hound.workspace = true
 
 [features]
 # The testing kit (`testing`): a fake encoder, a memory muxer and a scripted audio source. Tests always see it.
