@@ -16,7 +16,7 @@ use omuzaki_core::glam::{DVec2, DVec3};
 
 use super::cloud::Cloud;
 use super::edge::{Tube, loop_tube};
-use super::hang::{HangSpec, Table};
+use super::hang::{Arms, HangSpec, Table};
 use super::reach::HangReach;
 use super::{CoatCut, Front, MAX_LENGTH, MIN_LENGTH};
 use crate::kit::curve::{TAU, fraction, lerp, sstep};
@@ -141,8 +141,9 @@ impl Frame {
         // A cropped hem stays on the lower torso, below the arms, on every body.
         let hem = (hip - length * (hip - ankle)).min(column.bottom() + HIGHEST_HEM * column.length());
         // On a body whose hips sit high in the torso the seam rises to keep a skirt's length above a short hem.
-        let waist = (column.bottom() + cut.waist.clamp(0.0, 1.0) * column.length()).max(hem + 2.0 * MIN_SKIRT);
-        if waist > column.top() - MIN_SKIRT || hem > waist - MIN_SKIRT {
+        let seam = cut.waist.clamp(0.0, 1.0 + cut.neckline.rise.max(0.0));
+        let waist = (column.bottom() + seam * column.length()).max(hem + 2.0 * MIN_SKIRT);
+        if hem > waist - MIN_SKIRT {
             return Err(GarmentError::invalid(
                 "length",
                 format!("the hem at {hem:.3} m is not {MIN_SKIRT} m below the waist seam at {waist:.3} m"),
@@ -219,6 +220,9 @@ impl Frame {
         let floor = (self.column.top() - len * self.cut.armhole).min(neck);
         let from_side = (a - PI / 2.0).abs();
         if self.cut.armhole <= 0.0 {
+            if self.cut.arms == Arms::Enclose {
+                return neck;
+            }
             // With sleeves the bodice covers the shoulders: its sides rise over the torso's top whatever the neckline,
             // so each armhole is a hole in the cloth, clear of the neckline.
             let side = 1.0 - sstep(SHOULDER.0, SHOULDER.1, from_side);

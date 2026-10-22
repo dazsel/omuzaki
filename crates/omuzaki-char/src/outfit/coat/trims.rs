@@ -14,7 +14,10 @@ use super::shell::{Frame, Skinning, Tones};
 use crate::kit::curve::{TAU, fraction, lerp, sstep};
 use crate::kit::grid::MeshBuilder;
 use crate::outfit::common::GarmentError;
+use crate::outfit::trim::Basis;
 use crate::outfit::trim::buttons::{ButtonStyle, button};
+use crate::outfit::trim::chain::{LINK, PITCH, add_links, links};
+use crate::outfit::trim::clasp::{self, CLASP_SIZE, ClaspStyle};
 
 /// How far a piece's underside stands beyond the shell's outside, over the rolled edge's lip, metres.
 const STANDOFF: f64 = 0.0004;
@@ -243,3 +246,94 @@ pub fn stitch(
 
 /// The centre back's angle.
 pub const BACK: f64 = PI;
+
+/// A pair of clasps either side of an open front, joined by a chain that hangs between them.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct Clasps {
+    /// Whether there are any.
+    pub on: bool,
+    /// Their height, as a fraction of the way from the waist seam (0) to the collar line (1).
+    pub at: f64,
+    /// Each one's ring diameter, metres.
+    pub size: f64,
+    /// What hangs under each ring.
+    pub style: ClaspStyle,
+    /// How far the chain sags below them, metres; 0 for none.
+    pub sag: f64,
+    /// Each link's size, metres.
+    pub link: f64,
+    /// A pendant at the chain's middle.
+    pub pendant: bool,
+}
+
+impl Default for Clasps {
+    fn default() -> Self {
+        Self { on: true, at: 0.85, size: 0.022, style: ClaspStyle::Medallion, sag: 0.014, link: 0.0018, pendant: false }
+    }
+}
+
+impl Clasps {
+    /// Checks the clasps, their fields under `c`.
+    pub fn check(&self, c: &mut omuzaki_face_api::Check) {
+        c.range("at", self.at, 0.0, 1.0);
+        c.range("size", self.size, 0.006, 0.08);
+        c.range("sag", self.sag, 0.0, 0.2);
+        c.range("link", self.link, 0.0008, 0.008);
+    }
+}
+
+/// How far a clasp's hanging pieces stand off the cloth beyond the stud, metres per unit of scale.
+const CLASP_STANDOFF: f64 = 0.002;
+/// How far in from each front edge a clasp's stud sits, radians.
+const CLASP_IN: f64 = 0.06;
+
+/// Adds `clasps` on the open front of `frame` to `metal`.
+///
+/// # Errors
+/// The kit's.
+#[allow(clippy::cast_possible_truncation)] // a share for a skin weight
+pub fn clasps(metal: &mut MeshBuilder, frame: &Frame, clasps: &Clasps) -> Result<(), GarmentError> {
+    let trim = |e: crate::outfit::trim::TrimError| GarmentError::invalid("clasps", e.to_string());
+    if !clasps.on {
+        return Ok(());
+    }
+    let y = lerp(frame.waist(), frame.top, clasps.at).min(frame.top - 0.012);
+    let edge = frame.edge(y);
+    let k = clasps.size / CLASP_SIZE;
+    let mut studs = Vec::with_capacity(2);
+    for phi in [edge + CLASP_IN, TAU - edge - CLASP_IN] {
+        let (foot, normal, skin) = frame.on(y, phi, frame.cut.lip)?;
+        let level = (normal - DVec3::Y * normal.y).try_normalize().unwrap_or(normal);
+        let basis = clasp::frame(foot, DVec3::Y, level).map_err(trim)?;
+        clasp::pieces(metal, None, (&basis, &basis), clasps.style, (k, CLASP_STANDOFF * k), &skin).map_err(trim)?;
+        studs.push((foot, level, skin));
+    }
+    if clasps.sag > 0.0 {
+        let scale = clasps.link / LINK.0;
+        let lift = (LINK.0 * 1.45 + LINK.1) * scale + 0.002;
+        let out = (studs[0].1 + studs[1].1).try_normalize().unwrap_or(DVec3::Z);
+        let hang = crate::outfit::trim::chain::Hang {
+            from: studs[0].0 + studs[0].1 * lift,
+            to: studs[1].0 + studs[1].1 * lift,
+            up: DVec3::Y,
+            out,
+            sag: clasps.sag,
+            bow: 0.004,
+        };
+        let chain = links(&hang, PITCH * scale, None, 0.002 * scale).map_err(trim)?;
+        let n = chain.len();
+        let skin = |k: usize| -> Skinning {
+            let s = (fraction(k, n.max(1))).clamp(0.0, 1.0);
+            crate::outfit::trousers::rows::mix_skin(&studs[0].2, &studs[1].2, s as f32)
+        };
+        add_links(metal, &chain, out, scale, &skin).map_err(trim)?;
+        if clasps.pendant {
+            let middle = hang.at(0.5);
+            let basis = Basis { origin: middle, x: DVec3::Y.cross(out), y: DVec3::Y, z: out };
+            let basis = Basis { origin: basis.place(DVec3::new(0.0, 0.0, 0.004)), ..basis };
+            clasp::pendant_cross(metal, &basis, k, &skin(n / 2)).map_err(trim)?;
+        }
+    }
+    Ok(())
+}

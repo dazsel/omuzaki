@@ -123,8 +123,8 @@ pub struct CoatCut {
     pub ease: f64,
     /// How far the outside stands over the lining, metres.
     pub thickness: f64,
-    /// The waist seam, as a fraction of the torso: the bodice above, the skirt below (1 hangs the whole coat from the
-    /// neck, a cape).
+    /// The waist seam, as a fraction of the torso: the bodice above, the skirt below (above 1, up to the collar line,
+    /// hangs the whole coat from the neck over the shoulders: a cape).
     pub waist: f64,
     /// The front.
     pub front: Front,

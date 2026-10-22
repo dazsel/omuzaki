@@ -159,7 +159,10 @@ impl Table {
         let mut needs: Vec<(Knot, Vec<DVec2>)> = Vec::with_capacity(KNOTS);
         for k in 0..KNOTS {
             let y = lerp(top, spec.bottom, fraction(k, KNOTS - 1));
-            let points = cloud.body_at(y, band);
+            let mut points = cloud.body_at(y, band);
+            if spec.arms == Arms::Enclose {
+                points.extend(cloud.arms_at(y, band).map(|a| DVec2::new(a.p.x, a.p.z)));
+            }
             let need = match bounds(&points, x) {
                 Some((half, front, back)) if k > 0 => {
                     let knot = Knot { y, half: half + spec.ease, front: front + spec.ease, back: back - spec.ease };

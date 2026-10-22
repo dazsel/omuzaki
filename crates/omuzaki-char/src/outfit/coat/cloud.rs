@@ -25,7 +25,7 @@ const MIN_RINGS: usize = 8;
 const MAX_RINGS: usize = 400;
 /// The hand beyond the wrist: its length as a share of the forearm, its half-width as a multiple of the wrist's, and
 /// the rings it is sampled with. Generous: the mitten and the five-finger hands both fit inside.
-const HAND: (f64, f64, usize) = (0.8, 1.6, 6);
+const HAND: (f64, f64, usize) = (1.05, 2.2, 8);
 
 /// One point of an arm: where it is and how far along the arm (0 the shoulder, 1 the wrist, above 1 the hand).
 #[derive(Copy, Clone, Debug, PartialEq)]
