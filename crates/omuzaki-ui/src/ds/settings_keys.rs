@@ -20,6 +20,7 @@ use omuzaki_settings_api::setting::Setting;
 
 use omuzaki_l10n_api::{Catalog, Locale, SHIPPED, negotiate, os_locales};
 
+use super::script_fonts::ScriptFonts;
 use super::strings::{CatalogStrings, English, Strings};
 use super::theme::{Settings, apply_settings, set_strings};
 use super::tokens::{Density, Scale, ThemeKind};
@@ -183,6 +184,8 @@ pub struct SettingsLink {
     applied: Option<Settings>,
     /// The language last applied.
     speaks: Option<Locale>,
+    /// The faces a language's script needs, fetched when it is chosen.
+    fonts: Option<ScriptFonts>,
 }
 
 impl std::fmt::Debug for SettingsLink {
@@ -195,7 +198,19 @@ impl SettingsLink {
     /// A link over `service`, subscribed now so no change made after this call is missed.
     pub fn new(service: Arc<dyn SettingsService>) -> Self {
         let events = service.subscribe();
-        Self { service, events, applied: None, speaks: None }
+        Self { service, events, applied: None, speaks: None, fonts: None }
+    }
+
+    /// The same link, fetching the faces a chosen language's script needs from `fonts` (#205).
+    #[must_use]
+    pub fn with_fonts(mut self, fonts: ScriptFonts) -> Self {
+        self.fonts = Some(fonts);
+        self
+    }
+
+    /// The script faces, when the link fetches them.
+    pub const fn fonts(&mut self) -> Option<&mut ScriptFonts> {
+        self.fonts.as_mut()
     }
 
     /// The look last applied, if any.
@@ -211,6 +226,9 @@ impl SettingsLink {
     /// Applies the settings to `ctx` on the first call and after any change to a `ui.*` key; otherwise does nothing.
     /// Call it once per frame, before drawing.
     pub fn sync(&mut self, ctx: &Context) {
+        if let Some(fonts) = self.fonts.as_mut() {
+            fonts.poll(ctx);
+        }
         let mut changed = self.applied.is_none();
         while let Some(event) = self.events.next() {
             changed |= touches_ui(&event);
@@ -226,6 +244,9 @@ impl SettingsLink {
         if self.speaks.as_ref() != Some(&locale) {
             // Building a catalog parses the language's files: once per switch, never per frame.
             set_strings(ctx, strings_for(&locale));
+            if let Some(fonts) = self.fonts.as_mut() {
+                fonts.want(&locale);
+            }
             self.speaks = Some(locale);
         }
     }

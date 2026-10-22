@@ -20,6 +20,7 @@ use omuzaki_render::WgpuRenderer;
 use omuzaki_settings_api::service::Settings as SettingsService;
 use omuzaki_stage::frame::Stage;
 use omuzaki_ui::aux_window::{Backend, Platform, SurfaceRoute, transparency};
+use omuzaki_ui::ds::script_fonts::ScriptFonts;
 use omuzaki_ui::ds::settings_keys::SettingsLink;
 use omuzaki_ui::live::viewport::{NativePresenter, Presenter, ViewportError, kit_stage, project_stage};
 use omuzaki_ui::live::wiring::{LiveApp, LiveScene, RealClock};
@@ -134,6 +135,18 @@ fn start_live(
 /// The folder the app is installed in: the executable's, where the release puts the face models and natives.
 fn install_dir() -> PathBuf {
     std::env::current_exe().ok().and_then(|exe| exe.parent().map(PathBuf::from)).unwrap_or_default()
+}
+
+/// The faces Japanese, Korean and Chinese text needs, from the stage's pinned list through the download cache models
+/// share (#205); `None` when this machine has no cache folder, and such text then falls back to egui's own faces.
+fn script_fonts() -> Option<ScriptFonts> {
+    let dir = omuzaki_http::app_cache_dir()
+        .map_err(
+            |error| tracing::warn!(%error, "no download cache: Japanese, Korean and Chinese faces can't be fetched"),
+        )
+        .ok()?;
+    let cache = Arc::new(omuzaki_ai::VerifiedCache::new(dir, omuzaki_http::HttpFetcher::new()));
+    Some(ScriptFonts::new(Arc::new(omuzaki_stage::sheet::layout::PinnedFonts::new(cache))))
 }
 
 /// Where the model registry keeps its state: `models` beside the studio's own project folder.
@@ -256,7 +269,13 @@ fn main() -> eframe::Result {
         Box::new(move |cc| {
             // Applying before the first frame lets the bundled fonts activate on the second.
             let settings = studio_settings();
-            let mut look = settings.clone().map(SettingsLink::new);
+            let mut look = settings.clone().map(|store| {
+                let link = SettingsLink::new(store);
+                match script_fonts() {
+                    Some(fonts) => link.with_fonts(fonts),
+                    None => link,
+                }
+            });
             match look.as_mut() {
                 Some(look) => look.sync(&cc.egui_ctx),
                 None => omuzaki_ui::ds::apply_settings(&cc.egui_ctx, omuzaki_ui::ds::Settings::default()),

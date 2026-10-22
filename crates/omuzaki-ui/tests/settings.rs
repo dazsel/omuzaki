@@ -188,3 +188,50 @@ fn a_translated_word_is_said_in_its_language_and_an_untranslated_one_in_english(
     assert_eq!(ds(&ctx).status_word(omuzaki_ui::ds::tokens::Status::Ok), "正常");
     assert_eq!(say(&ctx, Word::MenuHelp, &[]), "Help", "an untranslated word falls back to English");
 }
+
+/// A font source that hands out a bundled Latin face in place of the pinned file and counts what it is asked for.
+#[derive(Default)]
+struct FakeFonts(std::sync::Mutex<Vec<String>>);
+
+impl omuzaki_stage::sheet::layout::FontSource for FakeFonts {
+    fn load(
+        &self,
+        spec: &omuzaki_stage::sheet::layout::FontSpec,
+    ) -> Result<Vec<u8>, omuzaki_stage::sheet::layout::FontError> {
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(spec.file_name.to_owned());
+        Ok(include_bytes!("../src/ds/fonts/JetBrainsMono.ttf").to_vec())
+    }
+}
+
+#[test]
+fn a_cjk_language_fetches_its_face_once_and_english_fetches_none() {
+    use omuzaki_stage::sheet::layout::Family;
+    use omuzaki_ui::ds::script_fonts::ScriptFonts;
+    omuzaki_ui::link();
+    let store: Arc<dyn SettingsService> = Arc::new(omuzaki_settings_mock::MemorySettings::with_clock(Arc::new(
+        omuzaki_core::time::FakeClock::new(omuzaki_core::time::Seconds(0.0)),
+    )));
+    let services = omuzaki_ops_api::ServicesBuilder::new().insert::<dyn SettingsService>(Arc::clone(&store)).build();
+    let runner = omuzaki_ui::wiring::runner(services).unwrap_or_else(|e| panic!("{e}"));
+    let source = Arc::new(FakeFonts::default());
+    let fonts = ScriptFonts::new(Arc::clone(&source) as Arc<dyn omuzaki_stage::sheet::layout::FontSource>);
+    let ctx = Context::default();
+    let mut link = SettingsLink::new(Arc::clone(&store)).with_fonts(fonts);
+    let person = Actor::Person { name: "kit".into() };
+    set(runner.as_ref(), &person, "ui.language", serde_json::json!("en"));
+    frame(&ctx, &mut link);
+    let fonts = link.fonts().unwrap_or_else(|| panic!("the link fetches faces"));
+    assert!(!fonts.loading() && fonts.installed().is_empty(), "English needs no face");
+
+    set(runner.as_ref(), &person, "ui.language", serde_json::json!("ja"));
+    frame(&ctx, &mut link);
+    let fonts = link.fonts().unwrap_or_else(|| panic!("the link fetches faces"));
+    assert!(fonts.finish(&ctx), "the Japanese face arrived and went into the fonts");
+    assert_eq!(fonts.installed(), vec![Family::Jp]);
+    set(runner.as_ref(), &person, "ui.language", serde_json::json!("en"));
+    frame(&ctx, &mut link);
+    set(runner.as_ref(), &person, "ui.language", serde_json::json!("ja"));
+    frame(&ctx, &mut link);
+    let asked = source.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    assert_eq!(asked, vec!["NotoSansJP-Regular.otf".to_owned()], "fetched once, for Japanese only");
+}
