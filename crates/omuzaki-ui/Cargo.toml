@@ -101,6 +101,8 @@ omuzaki-settings-mock = { path = "../omuzaki-settings-mock" }
 omuzaki-test = { path = "../omuzaki-test" }
 omuzaki-track-mock = { path = "../omuzaki-track-mock" }
 omuzaki-ui-mock = { path = "../omuzaki-ui-mock" }
+omuzaki-obs = { path = "../omuzaki-obs", features = ["testing"] }
+omuzaki-secrets-mock = { path = "../omuzaki-secrets-mock" }
 omuzaki-vts = { path = "../omuzaki-vts", features = ["testing"] }
 tempfile.workspace = true
 

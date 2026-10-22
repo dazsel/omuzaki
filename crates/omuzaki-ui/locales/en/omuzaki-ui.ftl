@@ -2122,6 +2122,9 @@ ui-settings-area-ui = Appearance
 ui-settings-changed-by = Last changed by
 
 # The Settings window, with its Models page.
+ui-settings-connectors = App
+
+# The Settings window, with its Models page.
 ui-settings-machine = This computer
 
 # The Settings window, with its Models page.
@@ -2257,6 +2260,121 @@ ui-settings-no-match-line = Try another word, or clear the search to see every s
 ui-settings-not-saved = Not saved: { $reason }
 
 # The Settings window, with its Models page.
+ui-settings-obs-allow-remote = Allow OBS on another computer
+
+# The Settings window, with its Models page.
+ui-settings-obs-auth-failed = Wrong or missing password
+
+# The Settings window, with its Models page.
+ui-settings-obs-auth-failed-line = Enter OBS's WebSocket password, Save it, then Connect
+
+# The Settings window, with its Models page.
+ui-settings-obs-connect = Connect
+
+# The Settings window, with its Models page.
+# $version (id, never translated): "hair-b"
+ui-settings-obs-connected = Connected: OBS WebSocket { $version }
+
+# The Settings window, with its Models page.
+ui-settings-obs-connecting = Connecting
+
+# The Settings window, with its Models page.
+ui-settings-obs-disconnect = Disconnect
+
+# The Settings window, with its Models page.
+ui-settings-obs-disconnected = Not connected
+
+# The Settings window, with its Models page.
+# $reason (id, never translated): "hair-b"
+ui-settings-obs-failed = Can't reach OBS: { $reason }
+
+# The Settings window, with its Models page.
+ui-settings-obs-forget-password = Forget
+
+# The Settings window, with its Models page.
+ui-settings-obs-host = Host
+
+# The Settings window, with its Models page.
+ui-settings-obs-host-hint = The other computer's address, like 192.168.1.20
+
+# The Settings window, with its Models page.
+ui-settings-obs-no-keychain = This build has no keychain to keep a password in: use OBS without one.
+
+# The Settings window, with its Models page.
+ui-settings-obs-not-affiliated = Not affiliated with or endorsed by the OBS Project.
+
+# The Settings window, with its Models page.
+ui-settings-obs-on-program = On program
+
+# The Settings window, with its Models page.
+ui-settings-obs-password = Password
+
+# The Settings window, with its Models page.
+ui-settings-obs-password-empty = Type the password first
+
+# The Settings window, with its Models page.
+ui-settings-obs-password-hint = OBS's WebSocket password
+
+# The Settings window, with its Models page.
+ui-settings-obs-password-saved = Password saved
+
+# The Settings window, with its Models page.
+ui-settings-obs-port = Port
+
+# The Settings window, with its Models page.
+ui-settings-obs-port-hint = 4455
+
+# The Settings window, with its Models page.
+ui-settings-obs-remote = OBS on another computer
+
+# The Settings window, with its Models page.
+ui-settings-obs-remote-warning = The link to another computer is not encrypted. The password itself is never sent, but everything else can be read on the network: do this only on a network you trust.
+
+# The Settings window, with its Models page.
+# $reason (id, never translated): "hair-b"
+ui-settings-obs-retrying = Reconnecting: { $reason }
+
+# The Settings window, with its Models page.
+ui-settings-obs-save-password = Save password
+
+# The Settings window, with its Models page.
+ui-settings-obs-scenes = Scenes
+
+# The Settings window, with its Models page.
+# $n (id, never translated): "hair-b"
+# $step (id, never translated): "hair-b"
+ui-settings-obs-step = { $n }. { $step }
+
+# The Settings window, with its Models page.
+ui-settings-obs-step-1 = In OBS, open Tools, then WebSocket Server Settings
+
+# The Settings window, with its Models page.
+ui-settings-obs-step-2 = Turn on Enable WebSocket server
+
+# The Settings window, with its Models page.
+ui-settings-obs-step-3 = Click Show Connect Info for the port and the password
+
+# The Settings window, with its Models page.
+ui-settings-obs-step-4 = Enter them here, then Connect
+
+# The Settings window, with its Models page.
+ui-settings-obs-title = OBS Studio
+
+# The Settings window, with its Models page.
+ui-settings-obs-unavailable = The OBS bridge isn't in this build
+
+# The Settings window, with its Models page.
+ui-settings-obs-unencrypted = Not encrypted: use this only on a network you trust
+
+# The Settings window, with its Models page.
+# $host (id, never translated): "hair-b"
+# $port (id, never translated): "hair-b"
+ui-settings-obs-where = On { $host }, port { $port }
+
+# The Settings window, with its Models page.
+ui-settings-page-connectors = Connectors
+
+# The Settings window, with its Models page.
 ui-settings-page-models = Models
 
 # The Settings window, with its Models page.
@@ -2277,6 +2395,159 @@ ui-settings-unavailable = The settings can't be read
 # The Settings window, with its Models page.
 # $reason (id, never translated): "hair-b"
 ui-settings-unavailable-line = { $reason }
+
+# The Settings window, with its Models page.
+ui-settings-vts-add-expression = Add
+
+# The Settings window, with its Models page.
+ui-settings-vts-advanced = Advanced: an expression file
+
+# The Settings window, with its Models page.
+ui-settings-vts-allow-again = Allow access again in VTube Studio, then Connect
+
+# The Settings window, with its Models page.
+ui-settings-vts-awaiting = Waiting for approval in VTube Studio
+
+# The Settings window, with its Models page.
+ui-settings-vts-confirm = Confirm
+
+# The Settings window, with its Models page.
+ui-settings-vts-confirm-all = Confirm all
+
+# The Settings window, with its Models page.
+# $id (id, never translated): "hair-b"
+ui-settings-vts-confirm-row = Confirm { $id }
+
+# The Settings window, with its Models page.
+# $name (id, never translated): "hair-b"
+ui-settings-vts-conflict = { $name } is owned by another plugin: Omuzaki adds to it instead of replacing it
+
+# The Settings window, with its Models page.
+ui-settings-vts-connect = Connect
+
+# The Settings window, with its Models page.
+# $version (id, never translated): "hair-b"
+ui-settings-vts-connected = Connected: VTube Studio { $version }
+
+# The Settings window, with its Models page.
+ui-settings-vts-connecting = Connecting
+
+# The Settings window, with its Models page.
+ui-settings-vts-copy = Copy the names
+
+# The Settings window, with its Models page.
+ui-settings-vts-denied = Denied
+
+# The Settings window, with its Models page.
+ui-settings-vts-disconnect = Disconnect
+
+# The Settings window, with its Models page.
+ui-settings-vts-disconnected = Not connected
+
+# The Settings window, with its Models page.
+ui-settings-vts-expression-file = Expression file
+
+# The Settings window, with its Models page.
+ui-settings-vts-expression-file-hint = Expression file, like Cry.exp3.json
+
+# The Settings window, with its Models page.
+ui-settings-vts-expression-id = Omuzaki expression
+
+# The Settings window, with its Models page.
+ui-settings-vts-expression-id-hint = Omuzaki expression, like cry
+
+# The Settings window, with its Models page.
+ui-settings-vts-expression-warning = An expression file switched on by Omuzaki stays on if Omuzaki quits; a hotkey is safer.
+
+# The Settings window, with its Models page.
+# $reason (id, never translated): "hair-b"
+ui-settings-vts-failed = Can't reach VTube Studio: { $reason }
+
+# The Settings window, with its Models page.
+# $name (id, never translated): "hair-b"
+ui-settings-vts-input-off = { $name }: off
+
+# The Settings window, with its Models page.
+# $name (id, never translated): "hair-b"
+ui-settings-vts-input-on = { $name }: on
+
+# The Settings window, with its Models page.
+ui-settings-vts-inputs = VTube Studio inputs Omuzaki can feed
+
+# The Settings window, with its Models page.
+ui-settings-vts-mapping = Expressions to hotkeys
+
+# The Settings window, with its Models page.
+ui-settings-vts-mapping-none = Nothing mapped yet: Suggest matches your expressions to the model's hotkeys by name.
+
+# The Settings window, with its Models page.
+# $name (id, never translated): "hair-b"
+ui-settings-vts-model = Model: { $name }
+
+# The Settings window, with its Models page.
+ui-settings-vts-no-model = No model loaded in VTube Studio
+
+# The Settings window, with its Models page.
+ui-settings-vts-not-affiliated = Not affiliated with or endorsed by DenchiSoft or Live2D Inc. VTube Studio is a product of DenchiSoft.
+
+# The Settings window, with its Models page.
+# $count (id, never translated): "hair-b"
+ui-settings-vts-parameter-count = { $count } parameters
+
+# The Settings window, with its Models page.
+ui-settings-vts-parameters = Parameters to map in VTube Studio
+
+# The Settings window, with its Models page.
+ui-settings-vts-parameters-line = Omuzaki sends these. Map each to your model's parameter in VTube Studio's model settings.
+
+# The Settings window, with its Models page.
+ui-settings-vts-port = Port
+
+# The Settings window, with its Models page.
+ui-settings-vts-port-hint = 8001, or found automatically
+
+# The Settings window, with its Models page.
+ui-settings-vts-remove = Remove
+
+# The Settings window, with its Models page.
+# $id (id, never translated): "hair-b"
+ui-settings-vts-remove-row = Remove { $id }
+
+# The Settings window, with its Models page.
+ui-settings-vts-revoked = Access revoked
+
+# The Settings window, with its Models page.
+# $target (id, never translated): "hair-b"
+ui-settings-vts-runs = runs { $target }
+
+# The Settings window, with its Models page.
+ui-settings-vts-show-names = The names, and the VTube Studio inputs
+
+# The Settings window, with its Models page.
+# $n (id, never translated): "hair-b"
+# $step (id, never translated): "hair-b"
+ui-settings-vts-step = { $n }. { $step }
+
+# The Settings window, with its Models page.
+ui-settings-vts-step-1 = Open VTube Studio and load your model
+
+# The Settings window, with its Models page.
+ui-settings-vts-step-2 = In its settings, turn on Allow Plugin API access
+
+# The Settings window, with its Models page.
+ui-settings-vts-step-3 = Click Connect here, then Allow in VTube Studio
+
+# The Settings window, with its Models page.
+ui-settings-vts-suggest = Suggest
+
+# The Settings window, with its Models page.
+ui-settings-vts-suggested = Suggested
+
+# The Settings window, with its Models page.
+ui-settings-vts-title = VTube Studio
+
+# The Settings window, with its Models page.
+ui-settings-vts-unavailable = The VTube Studio bridge isn't in this build
 
 # The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
 ui-shell-agent-chip = Agents

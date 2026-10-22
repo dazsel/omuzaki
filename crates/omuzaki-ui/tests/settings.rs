@@ -226,8 +226,9 @@ fn a_cjk_language_fetches_its_face_once_and_english_fetches_none() {
     set(runner.as_ref(), &person, "ui.language", serde_json::json!("ja"));
     frame(&ctx, &mut link);
     let fonts = link.fonts().unwrap_or_else(|| panic!("the link fetches faces"));
-    assert!(fonts.finish(&ctx), "the Japanese face arrived and went into the fonts");
-    assert_eq!(fonts.installed(), vec![Family::Jp]);
+    // The second pass of `frame` may already have taken the face; `finish` waits for it otherwise.
+    fonts.finish(&ctx);
+    assert_eq!(fonts.installed(), vec![Family::Jp], "the Japanese face arrived and went into the fonts");
     set(runner.as_ref(), &person, "ui.language", serde_json::json!("en"));
     frame(&ctx, &mut link);
     set(runner.as_ref(), &person, "ui.language", serde_json::json!("ja"));
