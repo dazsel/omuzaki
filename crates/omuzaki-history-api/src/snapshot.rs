@@ -125,6 +125,36 @@ pub struct SnapshotInfo {
     /// The latest check, if it has been checked.
     #[serde(default)]
     pub verified: Option<Verification>,
+    /// The highest job id the journal had recorded at `lsn`, so a reopen numbers new jobs after it and never reuses
+    /// an id (ADR 0036 decision 10). 0: none, or a ref written before jobs were counted.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub last_job: u64,
+    /// The jobs that had started and not ended at `lsn`. A reopen marks those that end nowhere in the journal after it
+    /// as interrupted (journal.md 8.3): a job is never re-run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub running_jobs: Vec<RunningJob>,
+}
+
+/// A job that was running when a snapshot was taken.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct RunningJob {
+    /// The job's id.
+    pub job: u64,
+    /// The op it runs.
+    pub op: String,
+}
+
+impl RunningJob {
+    /// Job `job`, running `op`.
+    pub fn new(job: u64, op: impl Into<String>) -> Self {
+        Self { job, op: op.into() }
+    }
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref, reason = "serde's skip_serializing_if passes a reference")]
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 impl SnapshotInfo {
@@ -143,6 +173,8 @@ impl SnapshotInfo {
             stem: None,
             keep_until: None,
             verified: None,
+            last_job: 0,
+            running_jobs: Vec::new(),
         }
     }
 }

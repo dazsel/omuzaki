@@ -275,3 +275,94 @@ fn the_lock_is_not_held_across_a_run() {
     rig.exec.wait(info.id, None).unwrap();
     assert_eq!((rig.at("a"), rig.at("b"), rig.at("c")), (Some(json!(1)), Some(json!(1)), Some(json!(7))));
 }
+
+/// Where a restart's snapshot is taken in [`a_joined_driver_s_failed_edits_stay_gone_after_a_restart`].
+#[derive(Clone, Copy, Debug)]
+enum SnapshotAt {
+    /// Before the caller began: the whole session is replayed.
+    Start,
+    /// After the driver's records, before its revert: replay starts at the `TxRevert`.
+    MidDriver,
+}
+
+/// The same executor started again from a snapshot (`doc` and `history`) and the journal after it.
+fn restarted(
+    doc: Value,
+    history: &omuzaki_history_api::HistoryExport,
+    tail: &[(omuzaki_history_api::Lsn, HistoryEntry)],
+) -> Executor {
+    let clock = Arc::new(FakeClock::new(Seconds(0.0)));
+    let wall = Arc::new(omuzaki_history_mock::FakeWallClock::new(omuzaki_history_api::WallTime(1)));
+    let exec = Executor::restore(Box::new(MemDoc::from_value(doc)), clock, wall, history).unwrap();
+    exec.replay(tail).unwrap();
+    exec
+}
+
+fn whole(exec: &Executor) -> Value {
+    exec.get(&omuzaki_doc_api::DocPath::root(), &Grants::person()).unwrap().unwrap()
+}
+
+/// A joined driver fails after two edits (pausing in between, where `at` may take the snapshot), and the caller
+/// commits its own edit. Returns the snapshot and the journal after it.
+fn joined_driver_fails(
+    key: &str,
+    at: SnapshotAt,
+    commit: bool,
+) -> (Value, omuzaki_history_api::HistoryExport, Vec<(omuzaki_history_api::Lsn, HistoryEntry)>) {
+    let sink = Arc::new(RecordingSink::new());
+    let exec = Executor::new(Box::new(MemDoc::from_value(doc())), Arc::new(FakeClock::new(Seconds(0.0))))
+        .unwrap()
+        .with_journal(sink.clone());
+    let mut snapshot = (whole(&exec), exec.history_export(), 0);
+    let tx = exec.begin("caller", &person());
+    exec.run(Request { tx: Some(tx), ..request("test.set", json!({"path": "a", "value": 5})) }).unwrap();
+    let pause = Pause::new(key);
+    let joined = Request {
+        tx: Some(tx),
+        ..drive(key, &[("b", 1), ("c", 1), ("y", 1)], json!({"pause_after": 2, "fail_after": 2}))
+    };
+    let info = exec.start(joined).unwrap();
+    pause.entered.recv().unwrap();
+    if matches!(at, SnapshotAt::MidDriver) {
+        snapshot = (whole(&exec), exec.history_export(), sink.numbered().len());
+        assert_eq!(snapshot.0["b"], json!(1), "the snapshot holds the driver's edits");
+    }
+    pause.release.send(()).unwrap();
+    assert!(matches!(exec.wait(info.id, None).unwrap().state, JobState::Failed { .. }));
+    if commit {
+        exec.commit(tx, &person()).unwrap();
+    }
+    let entries = sink.numbered();
+    assert!(entries[snapshot.2..].iter().any(|(_, e)| matches!(e, HistoryEntry::TxRevert { .. })));
+    (snapshot.0, snapshot.1, entries[snapshot.2..].to_vec())
+}
+
+#[test]
+fn a_joined_driver_s_failed_edits_stay_gone_after_a_restart() {
+    for (n, at) in [SnapshotAt::Start, SnapshotAt::MidDriver].into_iter().enumerate() {
+        let (doc0, history, tail) = joined_driver_fails(&format!("restart{n}"), at, true);
+        let exec = restarted(doc0, &history, &tail);
+        let only_caller = json!({"a": 5, "b": 0, "c": 0, "x": 1, "y": 0});
+        assert_eq!(whole(&exec), only_caller, "{at:?}: the driver's edits are absent");
+        assert_eq!(exec.undo(&person(), &Grants::person()).unwrap().as_deref(), Some("caller"), "{at:?}");
+        assert_eq!(whole(&exec), doc(), "{at:?}");
+        assert_eq!(exec.redo(&person(), &Grants::person()).unwrap().as_deref(), Some("caller"), "{at:?}");
+        assert_eq!(whole(&exec), only_caller, "{at:?}: redo never brings the driver's edits back");
+    }
+}
+
+#[test]
+fn a_crash_between_the_revert_and_the_callers_commit_rolls_the_transaction_back_whole() {
+    for (n, at) in [SnapshotAt::Start, SnapshotAt::MidDriver].into_iter().enumerate() {
+        let (doc0, history, tail) = joined_driver_fails(&format!("crash{n}"), at, false);
+        let exec = restarted(doc0, &history, &tail);
+        // What recovery does with a transaction left open: roll it back with its remaining patch's inverse.
+        let open = exec.history_export().open;
+        assert_eq!(open.len(), 1, "{at:?}");
+        assert_eq!(open[0].patch.changes.len(), 1, "{at:?}: only the caller's edit remains in it");
+        let lsn = tail.last().map(|(lsn, _)| *lsn).unwrap();
+        exec.replay(&[(lsn, HistoryEntry::Rollback { tx: open[0].tx, patch: open[0].patch.inverse() })]).unwrap();
+        assert_eq!(whole(&exec), doc(), "{at:?}: nothing half-applied remains");
+        assert_eq!(exec.undo(&person(), &Grants::person()).unwrap(), None, "{at:?}");
+    }
+}

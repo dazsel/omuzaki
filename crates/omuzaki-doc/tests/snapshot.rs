@@ -272,6 +272,24 @@ fn refs_list_newest_first_and_a_damaged_newest_falls_back_to_the_one_before() {
 }
 
 #[test]
+fn a_raw_snapshot_is_never_the_base_even_when_it_is_the_newest() {
+    let (tmp, project) = project();
+    let store = Arc::new(MemStore::new());
+    let snaps = snapshotter(tmp.path(), &store);
+    let base = snaps.take_rendered(&project, facts(5), &HistoryExport::empty()).unwrap().info.id;
+    write(tmp.path(), "characters/mia/face.toml", "half = \"writ\n");
+    // Same LSN, taken later: it would sort first.
+    snaps
+        .take_raw(Facts::new(Lsn(5), "s", Trigger::PreRecovery, WallTime(2_000_000_000_000)), &HistoryExport::empty())
+        .unwrap();
+    snaps
+        .take_raw(Facts::new(Lsn(6), "s", Trigger::PreMigration, WallTime(2_000_000_000_000)), &HistoryExport::empty())
+        .unwrap();
+    assert_eq!(snaps.refs().unwrap().len(), 3);
+    assert_eq!(snaps.newest_loadable().unwrap().unwrap().0.id, base);
+}
+
+#[test]
 fn a_sweep_keeps_what_refs_reach_and_removes_the_rest_after_the_grace() {
     let now = Arc::new(Mutex::new(SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000)));
     let clock = now.clone();

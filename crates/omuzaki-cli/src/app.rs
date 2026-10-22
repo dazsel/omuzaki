@@ -98,6 +98,7 @@ fn recovery_notice(report: &RecoveryReport, json: bool) -> String {
         "replayed": report.replayed,
         "rolled_back": report.rolled_back,
         "kept": report.kept,
+        "interrupted": report.interrupted,
         "stopped": report.stopped,
         "untrusted": report.untrusted,
         "archived": report.archived.as_ref().map(ToString::to_string),

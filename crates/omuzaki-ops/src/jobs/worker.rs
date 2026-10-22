@@ -66,9 +66,20 @@ pub(super) fn run(mgr: &Arc<Manager>, id: JobId) {
                 (Err(error), false)
             }
         };
+        remove_scratch(&mgr.env, id);
         mgr.complete(id, outcome, journalled);
+    } else {
+        remove_scratch(&mgr.env, id);
     }
     mgr.env.publish();
+}
+
+/// Deletes the job's scratch folder (`JobCtx::scratch`), once `work` and `finish` are done with it. Best effort: one
+/// left behind (a file held open elsewhere) is removed by the next open's recovery.
+fn remove_scratch(env: &Env, id: JobId) {
+    let Some(dir) = &env.project_dir else { return };
+    let scratch = dir.as_path().join(".omuzaki").join("jobs").join(id.0.to_string());
+    drop(std::fs::remove_dir_all(scratch));
 }
 
 /// Runs the op's `finish` under the lock against the document as it is now, re-checks the op's scope with the grants

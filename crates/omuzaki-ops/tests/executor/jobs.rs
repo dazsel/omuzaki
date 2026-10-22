@@ -1000,22 +1000,22 @@ fn a_job_carries_its_session_and_principal() {
 #[test]
 fn a_finish_whose_session_is_paused_is_held_until_it_resumes() {
     let rig = rig(json!({}));
-    let gate = Gate::new("p1");
+    let gate = Gate::new("held1");
     let events = rig.subscribe();
-    let info = rig.exec.start(agent_job("p1", &json!("block"))).unwrap();
+    let info = rig.exec.start(agent_job("held1", &json!("block"))).unwrap();
     gate.wait_entered();
     rig.exec.pause(SessionId(1), &person()).unwrap();
     gate.release.send(()).unwrap();
 
     let held = ended_event(&events, info.id, 30).unwrap();
     assert_eq!(held.state, JobState::Held, "a paused session changes nothing (design 4.3)");
-    assert_eq!(rig.at("p1"), None);
+    assert_eq!(rig.at("held1"), None);
     assert_eq!(rig.log().len(), 0);
 
     rig.exec.resume(SessionId(1), &person()).unwrap();
     let ended = rig.exec.wait(info.id, None).unwrap();
     assert!(matches!(ended.state, JobState::Done { .. }), "{:?}", ended.state);
-    assert_eq!(rig.at("p1"), Some(json!("done")), "applied once the session resumed");
+    assert_eq!(rig.at("held1"), Some(json!("done")), "applied once the session resumed");
 }
 
 #[test]
@@ -1176,9 +1176,9 @@ fn a_cancel_while_queued_and_shutdown_are_journalled_too() {
     let ends = Arc::new(Mutex::new(Vec::new()));
     let rig = end_recorded(ends.clone());
     let gpu = json!({"gpu": true});
-    let gate = Gate::new("s1");
+    let gate = Gate::new("shut1");
     // Cooperative, so shutdown ends it at its next checkpoint.
-    let running = rig.exec.start(job_with("s1", &json!("coop"), gpu.clone())).unwrap();
+    let running = rig.exec.start(job_with("shut1", &json!("coop"), gpu.clone())).unwrap();
     gate.wait_entered();
     let queued = rig.exec.start(job_with("s2", &json!("echo"), gpu.clone())).unwrap();
     let last = rig.exec.start(job_with("s3", &json!("echo"), gpu)).unwrap();
@@ -1268,4 +1268,26 @@ fn the_listing_keeps_the_last_hundred_ended_jobs_while_waiters_pin_more() {
     }
     assert!(rig.exec.jobs(&Grants::person()).unwrap().len() <= 101, "trimmed back once the waiters have read");
     drop(gate);
+}
+
+#[test]
+fn a_job_whose_start_cannot_be_made_durable_never_runs() {
+    let sink = Arc::new(omuzaki_history_mock::RecordingSink::new());
+    sink.script_sync(Some(omuzaki_history_api::SyncError::Failing { reason: "the disk is full".into() }));
+    let clock = Arc::new(FakeClock::new(Seconds(0.0)));
+    let exec = Executor::new(Box::new(MemDoc::from_value(json!({}))), clock).unwrap().with_journal(sink.clone());
+    let error = match exec.start(job("durable1", &json!("echo"))) {
+        Ok(info) => match exec.wait(info.id, None).unwrap().state {
+            JobState::Failed { error } => error,
+            other => panic!("{other:?}"),
+        },
+        Err(error) => error,
+    };
+    assert_eq!(error.code, ErrorCode::Unavailable, "{error:?}");
+    assert!(!FLAGS.lock().unwrap().contains_key("durable1"), "work never began");
+
+    // Once the journal writes again, jobs start.
+    sink.script_sync(None);
+    let info = exec.start(job("durable2", &json!("echo"))).unwrap();
+    assert!(matches!(exec.wait(info.id, None).unwrap().state, JobState::Done { .. }));
 }

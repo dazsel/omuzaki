@@ -41,6 +41,8 @@ const SESSION_RUNNING: usize = 4;
 const SESSION_QUEUED: usize = 16;
 /// How often the supervisor thread checks deadlines against the clock, and a timed `wait` re-reads it, in wall time.
 const SUPERVISOR_TICK: Duration = Duration::from_millis(50);
+/// How long a job's start waits for its `JobStarted` record to be durable before the start is refused.
+const START_SYNC: Duration = Duration::from_secs(10);
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 enum Phase {
@@ -418,16 +420,21 @@ impl Manager {
             return catch_unwind(AssertUnwindSafe(|| record(&job.info, &job.args)))
                 .unwrap_or_else(|_| Err(OpError::internal("the job journal panicked")));
         }
-        let state = lock(&self.env.state);
-        state.journal.append(|| HistoryEntry::JobStarted {
-            job: job.info.id,
-            op: job.info.op.clone(),
-            args: job.args.clone(),
-            actor: job.info.actor.clone(),
-            on_behalf_of: job.info.on_behalf_of.clone(),
-            at: job.info.queued_at,
-        });
-        Ok(())
+        let journal = {
+            let state = lock(&self.env.state);
+            state.journal.append(|| HistoryEntry::JobStarted {
+                job: job.info.id,
+                op: job.info.op.clone(),
+                args: job.args.clone(),
+                actor: job.info.actor.clone(),
+                on_behalf_of: job.info.on_behalf_of.clone(),
+                at: job.info.queued_at,
+            });
+            state.journal.clone()
+        };
+        // Durable before `work` can begin and before the start is acknowledged, so no paid call or written file ever
+        // lacks its record (ADR 0036 decision 7). Off the document lock: edits go on while it syncs.
+        journal.sync(START_SYNC)
     }
 
     /// Records that a job ended (#1602), with the state it ended in, once.

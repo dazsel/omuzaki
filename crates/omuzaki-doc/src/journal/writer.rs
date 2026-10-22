@@ -20,6 +20,7 @@
 //! Dropping the journal without closing stops the threads without the `close` record: the next open recovers, which
 //! is what a crash does too.
 
+use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -31,8 +32,8 @@ use std::time::{Duration, Instant};
 
 use omuzaki_doc_api::{DocWrite, Patch};
 use omuzaki_history_api::{
-    HistoryEntry, HistoryExport, JournalSink, JournalStatus, Lsn, SnapshotId, SnapshotInfo, SyncError, Trigger,
-    WallClock, WallTime,
+    HistoryEntry, HistoryExport, JournalSink, JournalStatus, Lsn, RunningJob, SnapshotId, SnapshotInfo, SyncError,
+    Trigger, WallClock, WallTime,
 };
 use omuzaki_ops_api::OpError;
 
@@ -126,6 +127,8 @@ pub struct SessionStart {
     pub base_lsn: Lsn,
     /// The executor's history as the session starts (restored, or empty), for the base snapshot.
     pub history: HistoryExport,
+    /// The highest job id the project has started (0: none), carried in every snapshot so job ids never repeat.
+    pub last_job: u64,
     /// Wall time, for the session record and snapshot times.
     pub wall: Arc<dyn WallClock>,
     /// Where the session's snapshots go.
@@ -143,7 +146,22 @@ impl SessionStart {
         wall: Arc<dyn WallClock>,
         snapshots: Arc<Snapshotter>,
     ) -> Self {
-        Self { session: session.into(), app_version: app_version.into(), base_lsn, history, wall, snapshots }
+        Self {
+            session: session.into(),
+            app_version: app_version.into(),
+            base_lsn,
+            history,
+            last_job: 0,
+            wall,
+            snapshots,
+        }
+    }
+
+    /// This start, with `last_job` the highest job id the project has started.
+    #[must_use]
+    pub fn with_last_job(mut self, last_job: u64) -> Self {
+        self.last_job = last_job;
+        self
     }
 }
 
@@ -225,7 +243,7 @@ impl ProjectJournal {
     pub fn start(project: Project, start: SessionStart, options: JournalOptions) -> Result<Arc<Self>, JournalError> {
         let dir = project.dir().to_path_buf();
         let created = start.wall.now();
-        let base = Facts::new(start.base_lsn, &start.session, Trigger::Session, created);
+        let base = Facts::new(start.base_lsn, &start.session, Trigger::Session, created).with_last_job(start.last_job);
         let base_id = start
             .snapshots
             .take_rendered(&project, base, &start.history)
@@ -258,6 +276,8 @@ impl ProjectJournal {
             snapshots: Arc::clone(&start.snapshots),
             session: start.session,
             label: String::new(),
+            last_job: start.last_job,
+            running: BTreeMap::new(),
             published: start.base_lsn,
             wall: start.wall,
             applied: session_lsn,
@@ -625,6 +645,10 @@ struct Keeper {
     session: String,
     /// The last transaction's label, for the next snapshot's ref.
     label: String,
+    /// The highest job id started, for the next snapshot's ref.
+    last_job: u64,
+    /// The jobs started and not ended, by id, with their ops: for the next snapshot's ref.
+    running: BTreeMap<u64, String>,
     /// The LSN of the newest snapshot published in this session, the base included: compaction moves what lies
     /// wholly before the one before the newest.
     published: Lsn,
@@ -694,6 +718,11 @@ impl Keeper {
             match &entry {
                 HistoryEntry::Begin { label, .. } => label.clone_into(&mut self.label),
                 HistoryEntry::Op { record, commits: true } => record.op.clone_into(&mut self.label),
+                HistoryEntry::JobStarted { job, op, .. } => {
+                    self.last_job = self.last_job.max(job.0);
+                    self.running.insert(job.0, op.clone());
+                }
+                HistoryEntry::JobEnded { job, .. } => drop(self.running.remove(&job.0)),
                 _ => {}
             }
             if let Some(patch) = patch_of(&entry) {
@@ -752,6 +781,8 @@ impl Keeper {
     }
 
     fn publish(&mut self, facts: Facts, history: &HistoryExport) -> Result<SnapshotInfo, String> {
+        let running = self.running.iter().map(|(job, op)| RunningJob::new(*job, op)).collect();
+        let facts = facts.with_last_job(self.last_job).with_running_jobs(running);
         let lsn = facts.lsn;
         let taken = self
             .snapshots

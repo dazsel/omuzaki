@@ -27,7 +27,8 @@ use std::time::{Duration, SystemTime};
 
 use omuzaki_core::fsx::write_atomic;
 use omuzaki_history_api::{
-    HistoryExport, Lsn, SnapshotError, SnapshotId, SnapshotInfo, Trigger, Verification, VerifyHow, WallTime, is_derived,
+    HistoryExport, Lsn, RunningJob, SnapshotError, SnapshotId, SnapshotInfo, Trigger, Verification, VerifyHow,
+    WallTime, is_derived,
 };
 use omuzaki_store_api::{Commercial, ContentHash, Provenance, Source, StoreError as ObjectError, StoreGc, SweepReport};
 
@@ -61,6 +62,11 @@ pub fn snapshot_dir(project_dir: &Path) -> PathBuf {
 }
 
 /// The refs folder.
+/// Whether snapshots taken for `trigger` hold the folder's raw files rather than a project as it was open.
+fn is_raw(trigger: Trigger) -> bool {
+    matches!(trigger, Trigger::PreRecovery | Trigger::PreMigration)
+}
+
 fn refs_dir(project_dir: &Path) -> PathBuf {
     snapshot_dir(project_dir).join("refs")
 }
@@ -85,6 +91,10 @@ pub struct Facts {
     pub stem: Option<String>,
     /// A pin.
     pub keep_until: Option<WallTime>,
+    /// The highest job id started up to this point (0: none), so job ids carry on after a reopen.
+    pub last_job: u64,
+    /// The jobs started and not yet ended.
+    pub running_jobs: Vec<RunningJob>,
 }
 
 impl Facts {
@@ -99,6 +109,8 @@ impl Facts {
             name: None,
             stem: None,
             keep_until: None,
+            last_job: 0,
+            running_jobs: Vec::new(),
         }
     }
 
@@ -120,6 +132,20 @@ impl Facts {
     #[must_use]
     pub fn with_stem(mut self, stem: impl Into<String>) -> Self {
         self.stem = Some(stem.into());
+        self
+    }
+
+    /// These facts with the highest job id started so far.
+    #[must_use]
+    pub fn with_last_job(mut self, last_job: u64) -> Self {
+        self.last_job = last_job;
+        self
+    }
+
+    /// These facts with `running` the jobs started and not yet ended.
+    #[must_use]
+    pub fn with_running_jobs(mut self, running: Vec<RunningJob>) -> Self {
+        self.running_jobs = running;
         self
     }
 
@@ -367,6 +393,8 @@ impl Snapshotter {
         info.name = facts.name;
         info.stem = facts.stem;
         info.keep_until = facts.keep_until;
+        info.last_job = facts.last_job;
+        info.running_jobs = facts.running_jobs;
         info.verified = Some(Verification::new(facts.created, VerifyHow::Hash, true));
         self.write_ref(&info)?;
         *self.parent.lock().unwrap_or_else(PoisonError::into_inner) = Some(manifest.clone());
@@ -495,12 +523,14 @@ impl Snapshotter {
     }
 
     /// The newest snapshot that loads, with its project and history, skipping damaged ones (recovery falls back to the
-    /// one before).
+    /// one before). Raw snapshots (before a recovery or a migration) are never a base: they keep the folder as it was,
+    /// files a crash may have cut short included, for the person to look at, and they share the LSN of the session
+    /// base taken right after them.
     ///
     /// # Errors
     /// [`SnapshotError::Io`] if the refs can't be listed.
     pub fn newest_loadable(&self) -> Result<Option<(SnapshotInfo, Project, HistoryExport)>, SnapshotError> {
-        for info in self.refs()? {
+        for info in self.refs()?.into_iter().filter(|info| !is_raw(info.trigger)) {
             match self.load(&info.id).and_then(|project| Ok((project, self.history(&info)?))) {
                 Ok((project, history)) => return Ok(Some((info, project, history))),
                 Err(error) => tracing::warn!(id = %info.id, %error, "a snapshot doesn't load; trying the one before"),

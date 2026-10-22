@@ -17,9 +17,10 @@
 //! The new session's base snapshot, which covers whatever recovery did, is written by
 //! [`ProjectJournal::start`](super::ProjectJournal::start).
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
-use omuzaki_history_api::{HistoryEntry, HistoryExport, Lsn, SnapshotId, Trigger, WallClock};
+use omuzaki_history_api::{HistoryEntry, HistoryExport, Lsn, RunningJob, SnapshotId, SnapshotInfo, Trigger, WallClock};
 
 use super::{End, JournalError, Reader, Record, Scan, SystemWall, journal_dir};
 use crate::Project;
@@ -55,6 +56,12 @@ pub struct Reopened {
     pub last_lsn: Lsn,
     /// What recovery found, when the last session didn't close.
     pub recovery: Option<Recovery>,
+    /// The highest job id the project ever started (0: none): new jobs are numbered after it, so an id is never
+    /// reused (ADR 0036 decision 10).
+    pub last_job: u64,
+    /// Jobs that started and never ended, oldest first: they were running when Omuzaki stopped. They are never
+    /// re-run; the host journals an `Interrupted` end for each and deletes its scratch folder.
+    pub interrupted: Vec<RunningJob>,
 }
 
 /// What an unclean open found.
@@ -97,13 +104,24 @@ pub fn reopen_with(dir: &Path, snapshots: &Snapshotter, mode: Recover) -> Result
         let scan = scan(&journal, Lsn(0))?;
         let last_lsn = scan.records.last().map_or(Lsn(0), |(lsn, _)| *lsn);
         let project = Project::open(dir)?;
-        return Ok(Reopened { project, history: HistoryExport::empty(), tail: Vec::new(), last_lsn, recovery: None });
+        let (last_job, interrupted) = jobs(None, &scan.records);
+        return Ok(Reopened {
+            project,
+            history: HistoryExport::empty(),
+            tail: Vec::new(),
+            last_lsn,
+            recovery: None,
+            last_job,
+            interrupted,
+        });
     };
     let scan = scan(&journal, info.lsn)?;
     let last_lsn = scan.records.last().map_or(info.lsn, |(lsn, _)| *lsn);
     let closed = matches!(scan.records.last(), Some((_, Record::Close { .. })));
+    let (last_job, interrupted) = jobs(Some(&info), &scan.records);
     if closed {
-        return Ok(Reopened { project: Project::open(dir)?, history, tail: Vec::new(), last_lsn, recovery: None });
+        let project = Project::open(dir)?;
+        return Ok(Reopened { project, history, tail: Vec::new(), last_lsn, recovery: None, last_job, interrupted });
     }
     // Unclean. First keep the folder exactly as the crash left it, before anything is written.
     let now = SystemWall.now();
@@ -113,7 +131,8 @@ pub fn reopen_with(dir: &Path, snapshots: &Snapshotter, mode: Recover) -> Result
     let recovery = Some(Recovery { base: info.id, kept, mode, base_lsn: info.lsn, end: scan.end });
     if mode == Recover::Disk {
         let project = Project::open(dir)?;
-        return Ok(Reopened { project, history: HistoryExport::empty(), tail: Vec::new(), last_lsn, recovery });
+        let history = HistoryExport::empty();
+        return Ok(Reopened { project, history, tail: Vec::new(), last_lsn, recovery, last_job, interrupted });
     }
     let mut project = base;
     project.write_exact()?;
@@ -125,7 +144,27 @@ pub fn reopen_with(dir: &Path, snapshots: &Snapshotter, mode: Recover) -> Result
             _ => None,
         })
         .collect();
-    Ok(Reopened { project, history, tail, last_lsn, recovery })
+    Ok(Reopened { project, history, tail, last_lsn, recovery, last_job, interrupted })
+}
+
+/// The highest job id `base` and `records` hold, and the jobs that never ended: those running at `base` or started
+/// in `records`, less those `records` end.
+fn jobs(base: Option<&SnapshotInfo>, records: &[(Lsn, Record)]) -> (u64, Vec<RunningJob>) {
+    let mut last = base.map_or(0, |info| info.last_job);
+    let mut running: BTreeMap<u64, String> =
+        base.into_iter().flat_map(|info| &info.running_jobs).map(|job| (job.job, job.op.clone())).collect();
+    for (_, record) in records {
+        match record {
+            Record::Entry(HistoryEntry::JobStarted { job, op, .. }) => {
+                last = last.max(job.0);
+                running.insert(job.0, op.clone());
+            }
+            Record::Entry(HistoryEntry::JobEnded { job, .. }) => drop(running.remove(&job.0)),
+            _ => {}
+        }
+    }
+    last = last.max(running.keys().next_back().copied().unwrap_or(0));
+    (last, running.into_iter().map(|(job, op)| RunningJob::new(job, op)).collect())
 }
 
 /// The journal's records after `from`; a project that was never journalled has no folder and no records.

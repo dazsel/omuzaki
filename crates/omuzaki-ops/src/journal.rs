@@ -6,6 +6,7 @@
 //! transaction is always possible.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use omuzaki_history_api::{HistoryEntry, JournalSink};
 use omuzaki_ops_api::OpError;
@@ -40,6 +41,18 @@ impl Journal {
     /// The sink's refusal: saving cannot keep up or has failed.
     pub(crate) fn admit(&self) -> Result<(), OpError> {
         self.sink.as_ref().map_or(Ok(()), |sink| sink.admit())
+    }
+
+    /// Waits until everything appended so far is durable. Without a sink there is nothing to wait for.
+    ///
+    /// # Errors
+    /// `Unavailable` naming the journal when it can't write or doesn't catch up within `timeout`.
+    pub(crate) fn sync(&self, timeout: Duration) -> Result<(), OpError> {
+        let Some(sink) = &self.sink else { return Ok(()) };
+        sink.sync(timeout).map(drop).map_err(|error| {
+            OpError::unavailable("journal")
+                .hint(format!("{error}; nothing was started. Check the disk has space, then try again"))
+        })
     }
 
     /// Whether the sink wants a [`HistoryEntry::Mark`].

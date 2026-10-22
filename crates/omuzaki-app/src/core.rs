@@ -171,7 +171,8 @@ impl AppCore {
             Executor::restore(Box::new(shadow.clone()), Arc::new(SystemClock::new()), wall.clone(), &reopened.history)?
                 .with_services(services)
                 .with_project_dir(project_dir)
-                .with_approver(options.approver);
+                .with_approver(options.approver)
+                .with_last_job_id(reopened.last_job);
         let mut recovery = RecoveryReport::default();
         if let Some(found) = &reopened.recovery {
             recovery.archived = Some(found.kept);
@@ -190,8 +191,11 @@ impl AppCore {
             executor.history_export(),
             wall,
             snapshots,
-        );
+        )
+        .with_last_job(reopened.last_job);
+        recover::remove_job_scratch(dir);
         let journal = ProjectJournal::start(shadow, start, options.journal)?;
+        recover::end_interrupted(&journal, &reopened.interrupted, &mut recovery);
         session_snapshots.bind(journal.clone());
         let executor = Arc::new(executor.with_journal(journal.clone()));
 
