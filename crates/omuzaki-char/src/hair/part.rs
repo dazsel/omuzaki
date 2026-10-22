@@ -46,6 +46,7 @@ use super::r#gen::curtain::{self, BodyKeepOut, StripError};
 use super::r#gen::tail::Chain;
 use super::r#gen::{bun, tail};
 use super::physics::{self, runtime::HairRuntime};
+use super::reach::{HairReach, HairReachFact};
 use super::tie;
 use super::tube::{CAP_VERTICES, OutwardFrame, RING, TubeError, TubeLook, TubeMesh, polar_angles, vertex_colour};
 
@@ -187,6 +188,8 @@ pub fn build_with(
     }
     let colliders: Vec<String> = ctx.colliders().iter().map(|group| group.name.clone()).collect();
     tail::add_chains(strands, &colliders, &mut out.rig);
+    let reach = HairReach::from_points(head.as_ref(), out.meshes.iter().flat_map(|m| &m.geometry.positions));
+    out.publishes.put::<HairReachFact>(reach);
     publish_ties(params, ctx, head.as_ref(), &mut out)?;
     Ok(out)
 }
