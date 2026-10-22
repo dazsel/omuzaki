@@ -103,7 +103,8 @@ fn a_contact_sheet_lays_renders_out_in_a_grid() {
     let harness = harness();
     let renders: Vec<String> =
         [0.0, 30.0, 60.0, 90.0, 120.0].iter().map(|yaw| preview(&harness, "mock", *yaw).uri).collect();
-    let sheet: ContactSheetResult = run::<ContactSheet, _>(&harness, json!({ "images": renders })).unwrap();
+    let sheet: ContactSheetResult =
+        run::<ContactSheet, _>(&harness, json!({ "images": renders, "labels": false })).unwrap();
     assert_eq!((sheet.columns, sheet.rows, sheet.cell), (3, 2, [64, 96]));
     assert_eq!(sheet.size, [3 * (64 + 8) + 8, 2 * (96 + 8) + 8]);
     let image = picture(&harness, &sheet.hash);
@@ -311,6 +312,13 @@ fn on_the_gpu_a_face_outline_edit_changes_only_the_head() {
         let row: TurnaroundResult = run::<Turnaround, _>(&harness, args).unwrap();
         let png = harness.store.get(&row.hash.parse().unwrap()).unwrap();
         std::fs::write(dir.join("render-turnaround-kit.png"), png).unwrap();
+        let args = json!({
+            "character": "kit", "expressions": ["happy", "sad", "angry", "surprised"], "framing": "face",
+            "cell": [192, 192], "quality": "offline"
+        });
+        let faces: ContactSheetResult = run::<ContactSheet, _>(&harness, args).unwrap();
+        let png = harness.store.get(&faces.hash.parse().unwrap()).unwrap();
+        std::fs::write(dir.join("render-contact-expressions.png"), png).unwrap();
     }
     println!("changed {} pixels, {:.1}% inside the head box {lo:?}..{hi:?}", difference.changed, share * 100.0);
     assert!(share > 0.9, "{:.1}% of the changed pixels are inside the head's box", share * 100.0);
