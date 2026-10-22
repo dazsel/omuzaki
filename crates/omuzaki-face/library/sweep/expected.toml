@@ -1,0 +1,298 @@
+# What each face channel is expected to do to the face (#229), read by `face.channel.sweep`'s direction check
+# (`omuzaki_face::preview::direction`). One table per channel, in the bus's own names; the test fails on a face channel
+# with no entry.
+#
+# - `measure`: the quantity of the paint parameters it moves (the list is `Measure` in `preview/direction.rs`):
+#   `eye_open.<side>` (the aperture: openness, less a blink or an arc), `lower_lid.<side>`, `brow_height.<side>`,
+#   `brow_inner` (both brows' inner ends), `gaze_y`, `pupil_x.<side>` (+ toward the character's left),
+#   `mouth_open`, `mouth_wide`, `mouth_round`, `mouth_press`, `mouth_pucker`, `mouth_shift` (+ toward the character's
+#   left), `corner.<side>` (mouth-corner lift), `teeth_upper`, `tongue`, `fangs`, `blush`, `cheek_puff`, `sweat`, and
+#   `effect.<name>` for the eye effects.
+# - `sign`: +1 when raising the channel raises the measure, -1 when it lowers it.
+# - `side`: `left` or `right` (the character's) when the painted change must fall mostly on that half of the face.
+#   Left out when the change is central or shared by both sides (the gaze, the mouth's width).
+# - `inert = true`: the contract gives the channel no painted effect (`UNMAPPED`); nothing is checked.
+
+[browDownLeft]
+measure = "brow_height.left"
+sign = -1
+side = "left"
+
+[browDownRight]
+measure = "brow_height.right"
+sign = -1
+side = "right"
+
+[browInnerUp]
+measure = "brow_inner"
+sign = 1
+
+[browOuterUpLeft]
+measure = "brow_height.left"
+sign = 1
+side = "left"
+
+[browOuterUpRight]
+measure = "brow_height.right"
+sign = 1
+side = "right"
+
+[cheekPuff]
+measure = "cheek_puff"
+sign = 1
+
+[cheekSquintLeft]
+measure = "lower_lid.left"
+sign = 1
+side = "left"
+
+[cheekSquintRight]
+measure = "lower_lid.right"
+sign = 1
+side = "right"
+
+[eyeBlinkLeft]
+measure = "eye_open.left"
+sign = -1
+side = "left"
+
+[eyeBlinkRight]
+measure = "eye_open.right"
+sign = -1
+side = "right"
+
+[eyeLookDownLeft]
+measure = "gaze_y"
+sign = -1
+
+[eyeLookDownRight]
+measure = "gaze_y"
+sign = -1
+
+[eyeLookInLeft]
+measure = "pupil_x.left"
+sign = -1
+side = "left"
+
+[eyeLookInRight]
+measure = "pupil_x.right"
+sign = 1
+side = "right"
+
+[eyeLookOutLeft]
+measure = "pupil_x.left"
+sign = 1
+side = "left"
+
+[eyeLookOutRight]
+measure = "pupil_x.right"
+sign = -1
+side = "right"
+
+[eyeLookUpLeft]
+measure = "gaze_y"
+sign = 1
+
+[eyeLookUpRight]
+measure = "gaze_y"
+sign = 1
+
+[eyeSquintLeft]
+measure = "eye_open.left"
+sign = -1
+side = "left"
+
+[eyeSquintRight]
+measure = "eye_open.right"
+sign = -1
+side = "right"
+
+[eyeWideLeft]
+measure = "eye_open.left"
+sign = 1
+side = "left"
+
+[eyeWideRight]
+measure = "eye_open.right"
+sign = 1
+side = "right"
+
+[jawForward]
+inert = true
+
+[jawLeft]
+measure = "mouth_shift"
+sign = 1
+
+[jawOpen]
+measure = "mouth_open"
+sign = 1
+
+[jawRight]
+measure = "mouth_shift"
+sign = -1
+
+[mouthClose]
+measure = "mouth_press"
+sign = 1
+
+[mouthDimpleLeft]
+measure = "corner.left"
+sign = 1
+side = "left"
+
+[mouthDimpleRight]
+measure = "corner.right"
+sign = 1
+side = "right"
+
+[mouthFrownLeft]
+measure = "corner.left"
+sign = -1
+side = "left"
+
+[mouthFrownRight]
+measure = "corner.right"
+sign = -1
+side = "right"
+
+[mouthFunnel]
+measure = "mouth_round"
+sign = 1
+
+[mouthLeft]
+measure = "mouth_shift"
+sign = 1
+
+[mouthLowerDownLeft]
+measure = "mouth_open"
+sign = 1
+
+[mouthLowerDownRight]
+measure = "mouth_open"
+sign = 1
+
+[mouthPressLeft]
+measure = "mouth_press"
+sign = 1
+
+[mouthPressRight]
+measure = "mouth_press"
+sign = 1
+
+[mouthPucker]
+measure = "mouth_pucker"
+sign = 1
+
+[mouthRight]
+measure = "mouth_shift"
+sign = -1
+
+[mouthRollLower]
+measure = "mouth_press"
+sign = 1
+
+[mouthRollUpper]
+measure = "mouth_press"
+sign = 1
+
+[mouthShrugLower]
+inert = true
+
+[mouthShrugUpper]
+inert = true
+
+[mouthSmileLeft]
+measure = "corner.left"
+sign = 1
+side = "left"
+
+[mouthSmileRight]
+measure = "corner.right"
+sign = 1
+side = "right"
+
+[mouthStretchLeft]
+measure = "mouth_wide"
+sign = 1
+
+[mouthStretchRight]
+measure = "mouth_wide"
+sign = 1
+
+[mouthUpperUpLeft]
+measure = "teeth_upper"
+sign = 1
+
+[mouthUpperUpRight]
+measure = "teeth_upper"
+sign = 1
+
+[noseSneerLeft]
+measure = "brow_height.left"
+sign = -1
+side = "left"
+
+[noseSneerRight]
+measure = "brow_height.right"
+sign = -1
+side = "right"
+
+[tongueOut]
+measure = "tongue"
+sign = 1
+
+[eyeArcLeft]
+measure = "eye_open.left"
+sign = -1
+side = "left"
+
+[eyeArcRight]
+measure = "eye_open.right"
+sign = -1
+side = "right"
+
+[eyesHeart]
+measure = "effect.heart"
+sign = 1
+
+[eyesStar]
+measure = "effect.star"
+sign = 1
+
+[eyesGloom]
+measure = "effect.gloom"
+sign = 1
+
+[eyesShock]
+measure = "effect.shock"
+sign = 1
+
+[eyesSqueeze]
+measure = "effect.squeeze"
+sign = 1
+
+[eyesSpiral]
+measure = "effect.spiral"
+sign = 1
+
+[sparkle]
+measure = "effect.sparkle"
+sign = 1
+
+[tears]
+measure = "effect.tears"
+sign = 1
+
+[sweatDrop]
+measure = "sweat"
+sign = 1
+side = "left"
+
+[blush]
+measure = "blush"
+sign = 1
+
+[fangs]
+measure = "fangs"
+sign = 1

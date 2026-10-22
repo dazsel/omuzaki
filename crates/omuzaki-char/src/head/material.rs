@@ -62,7 +62,10 @@ pub fn skin_head(ctx: &BuildCtx<'_>, p: &HeadParams, head_centre: Vec3) -> Resul
         base,
         base_texture: None,
         shading: Shading::Toon(toon(ctx, p, -0.28, 0.28, 0.10)?),
-        overlays: vec![FaceOverlay::of(&p.face_projection(), head_centre, FaceLayerId::Base)],
+        // The overlay (sweat drop, gloom hatch) goes on the skin and on the hair, so it shows on whichever is in front.
+        overlays: [FaceLayerId::Base, FaceLayerId::Overlay]
+            .map(|layer| FaceOverlay::of(&p.face_projection(), head_centre, layer))
+            .to_vec(),
         alpha: AlphaMode::Opaque,
         double_sided: false,
         vertex_colours: false,

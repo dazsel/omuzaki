@@ -1,0 +1,32 @@
+[package]
+name = "omuzaki-track-net"
+description = "Phone and mocap receivers (PF-02 to PF-04): iFacialMocap, VTube Studio's iPhone link, Live Link Face and VMC over UDP, each a track-api Tracker publishing anim-api track frames."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+omuzaki-anim-api = { path = "../omuzaki-anim-api" }
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-settings-api = { path = "../omuzaki-settings-api" }
+omuzaki-track-api = { path = "../omuzaki-track-api" }
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true
+
+# Native only: the receivers bind UDP sockets and run their own threads.
+[package.metadata.omuzaki]
+kind = "Implementation"
+summary = "the phone and mocap receivers (PF-02 to PF-04): `NetTracker`, a track-api `Tracker` that listens on UDP on its own thread and publishes anim-api `TrackFrame`s through the newest-wins mailbox, with one decoder per protocol: iFacialMocap (text, 0-100 weights, head and eye angles), VTube Studio's iPhone link (JSON, re-requested every second), Live Link Face (Epic's binary packet, 61 floats) and VMC (OSC bundles: perfect-sync blendshapes, `Blink` presets and the head bone). Sender timestamps go through `ClockMap` where the protocol has them; the `input.phone` setting holds the phone's address and the ports. Decoding allocates nothing per packet. Tested over loopback UDP with packets built to each protocol's layout"
+wasm = false
+registers = true

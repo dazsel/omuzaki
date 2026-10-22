@@ -230,8 +230,9 @@ of the `ai_voice` bus. 1 s holds the 500 ms lead plus a 500 ms pump stall.
   through one `SpendGate`** (`omuzaki-performer-api`, shared by the `LlmBrain` and the TTS host, wired by the App):
   `reserve(bound)` succeeds only when the bound plus every outstanding reservation fits the session's remaining
   money, and returns a `Reservation`; `settle(final)` charges `Sessions::charge` and releases the rest. **Only a request
-  that completed may settle**, with its final usage (the LLM stream's `Done { usage }`, ADR 0032; a hosted synthesis's
-  returned chunk). A provider may bill a cut or failed request for more than it reported so far, so a `Reservation`
+  that completed may settle**, with its final usage (the LLM stream's final `Usage` event, which comes just before
+  `Stop`, ADR 0032; a hosted synthesis's returned chunk). A provider may bill a cut or failed request for more than it
+  reported so far, so a `Reservation`
   that is cancelled, errors or is dropped is **charged its whole bound, whatever partial usage (`usage_so_far`) it
   saw**: partial usage is shown on the meter, never used to release money. Liability never leaves the gate before
   the final bill is known. A refused reservation is a crossed cap
