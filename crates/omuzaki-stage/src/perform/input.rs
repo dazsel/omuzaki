@@ -34,6 +34,7 @@ use omuzaki_track_api::tracker::{Tracker, TrackerConfig};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::guided::{FrameTap, GuidedRun, GuidedStatus};
 use super::host::PerformHost;
 use super::{Performer, Tracking};
 
@@ -224,6 +225,15 @@ pub enum InputError {
     /// The camera refused to start.
     #[error("the camera could not start: {0}")]
     Device(TrackError),
+    /// The guided calibration reads the running capture, and none runs.
+    #[error("no capture is running for the calibration to read")]
+    CaptureOff,
+    /// A guided calibration is already running.
+    #[error("a guided calibration is already running")]
+    CalibrationRunning,
+    /// This input cannot run the guided calibration.
+    #[error("this input has no guided calibration")]
+    NoGuidedCalibration,
 }
 
 impl InputError {
@@ -275,6 +285,26 @@ pub trait InputHost: Send + Sync {
 
     /// Makes the running tracker's doctor measure again from now. A no-op with no capture running.
     fn recheck(&self) {}
+
+    /// Starts the guided calibration (PF-20) over the running capture, and answers its status.
+    ///
+    /// # Errors
+    /// [`InputError::CaptureOff`] with no capture running, [`InputError::CalibrationRunning`] while one runs, and
+    /// [`InputError::NoGuidedCalibration`] for a host without one.
+    fn calibrate_guided(&self, mode: Mode) -> Result<GuidedStatus, InputError> {
+        let _ = mode;
+        Err(InputError::NoGuidedCalibration)
+    }
+
+    /// Stops a running guided calibration; the earlier calibration stays. Returns whether one was running.
+    fn cancel_guided(&self) -> bool {
+        false
+    }
+
+    /// Where the guided calibration stands.
+    fn guided(&self) -> GuidedStatus {
+        GuidedStatus::Idle
+    }
 }
 
 /// A source that never delivers a frame: what the performer reads with no capture running (the life layer moves the
@@ -429,6 +459,8 @@ struct Inner {
     preview: PreviewState,
     /// A camera refused access since the last prompt, whatever the OS reported before opening it.
     refused: bool,
+    /// Where each posted source copies its frames, for the guided calibration.
+    tap: Arc<FrameTap>,
 }
 
 impl Inner {
@@ -481,7 +513,7 @@ impl Inner {
         };
         match started {
             Ok(source) => {
-                slot.post(source);
+                slot.post(self.tap.tee(source));
                 self.preview = PreviewState::On { camera };
                 Ok(())
             }
@@ -517,6 +549,7 @@ pub struct LiveInput {
     inner: Mutex<Inner>,
     slot: Arc<SourceSlot>,
     perform: Arc<dyn PerformHost>,
+    guided: GuidedRun,
 }
 
 impl LiveInput {
@@ -539,8 +572,9 @@ impl LiveInput {
             camera: None,
             preview: PreviewState::Off,
             refused: false,
+            tap: Arc::default(),
         };
-        Self { inner: Mutex::new(inner), slot, perform }
+        Self { inner: Mutex::new(inner), slot, perform, guided: GuidedRun::default() }
     }
 
     /// With `phone` as the tracker the iPhone source starts (`omuzaki-track-net`'s `NetTracker`: its one device is
@@ -549,7 +583,7 @@ impl LiveInput {
     pub fn with_phone(self, phone: Box<dyn Tracker>) -> Self {
         let mut inner = self.inner.into_inner().unwrap_or_else(PoisonError::into_inner);
         inner.phone = Some(phone);
-        Self { inner: Mutex::new(inner), slot: self.slot, perform: self.perform }
+        Self { inner: Mutex::new(inner), slot: self.slot, perform: self.perform, guided: self.guided }
     }
 
     fn inner(&self) -> MutexGuard<'_, Inner> {
@@ -663,6 +697,36 @@ impl InputHost for LiveInput {
         if let Some(phone) = &inner.phone {
             phone.recheck();
         }
+    }
+
+    fn calibrate_guided(&self, mode: Mode) -> Result<GuidedStatus, InputError> {
+        let tap = {
+            let inner = self.inner();
+            if !inner.preview.is_on() {
+                return Err(InputError::CaptureOff);
+            }
+            Arc::clone(&inner.tap)
+        };
+        if self.guided.status().is_running() {
+            return Err(InputError::CalibrationRunning);
+        }
+        if mode == Mode::DryRun {
+            return Ok(self.guided.status());
+        }
+        let base = self.perform.requested_calibration();
+        match self.guided.start(tap, base, Arc::clone(&self.perform)) {
+            Ok(true) => Ok(self.guided.status()),
+            Ok(false) => Err(InputError::CalibrationRunning),
+            Err(e) => Err(InputError::Device(TrackError::Backend(format!("the calibration thread: {e}")))),
+        }
+    }
+
+    fn cancel_guided(&self) -> bool {
+        self.guided.cancel()
+    }
+
+    fn guided(&self) -> GuidedStatus {
+        self.guided.status()
     }
 }
 

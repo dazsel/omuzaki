@@ -27,6 +27,7 @@ use omuzaki_ops_api::{
     Actor, Grants, Mode, OpKind, OpRegistration, ProjectDir, Request, Runner, ServicesBuilder, Undo, registrations,
 };
 use omuzaki_stage::perform::Tracking;
+use omuzaki_stage::perform::guided::GuidedStatus;
 use omuzaki_stage::perform::host::{
     CalibrationState, PerformError, PerformHost, PerformStatus, RetargetChange, RetargetReceipt,
 };
@@ -196,6 +197,11 @@ impl InputHost for IdleInput {
             cameras: vec![CameraEntry { id: Self::camera(), name: "Fake camera".to_owned(), bound: false }],
             tracking: Tracking::NoFrames,
         }
+    }
+
+    // A guided calibration that "starts" without running: the `input.calibrate` examples dry-run against it.
+    fn calibrate_guided(&self, _mode: Mode) -> Result<GuidedStatus, InputError> {
+        Ok(GuidedStatus::Idle)
     }
 }
 

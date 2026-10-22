@@ -87,6 +87,8 @@ fn every_op_declares_its_kind_scope_and_undo() {
         ("input.state", OpKind::Query, Scope::Read, Undo::None),
         ("input.doctor", OpKind::Query, Scope::Read, Undo::None),
         ("input.recheck", OpKind::Edit, Scope::Perform, Undo::Explicit),
+        ("input.calibrate", OpKind::Edit, Scope::Perform, Undo::Explicit),
+        ("input.calibration", OpKind::Query, Scope::Read, Undo::None),
     ];
     for (name, kind, scope, undo) in cases {
         let meta = (find(name).expect("registered").meta)();
@@ -120,6 +122,8 @@ fn an_agent_is_refused_the_device_ops_and_queued_for_the_capture_ops() {
         ("input.state", json!({}), None, None),
         ("input.doctor", json!({}), None, None),
         ("input.recheck", json!({}), None, None),
+        ("input.calibration", json!({}), None, None),
+        ("input.calibrate", json!({ "cancel": true }), None, None),
     ];
     for (op, args, as_agent, as_person) in table {
         for dry_run in [true, false] {
@@ -461,4 +465,21 @@ fn the_doctor_answers_the_running_trackers_findings_and_a_recheck_clears_them() 
     let done = rig.plan("input.recheck", json!({}), &agent(), false).unwrap().output.unwrap();
     assert_eq!((done["cleared"].as_array().unwrap().len(), rig.log.rechecks()), (1, 1));
     assert_eq!(rig.output("input.doctor", json!({})), healthy);
+}
+
+#[test]
+fn calibrating_needs_the_person_and_a_running_preview_and_anyone_may_cancel() {
+    let rig = Rig::new(false);
+    assert_eq!(refusal(rig.plan("input.calibrate", json!({}), &agent(), false)), Some("needs_person"));
+    let error = rig.run("input.calibrate", json!({})).unwrap_err();
+    assert_eq!(error.code, ErrorCode::Conflict, "{error:?}");
+    assert_eq!(rig.output("input.calibration", json!({})), json!({ "state": "idle" }));
+    rig.run("input.select", json!({ "source": "webcam" })).unwrap();
+    rig.run("input.bind_camera", json!({ "camera": "a" })).unwrap();
+    rig.run("input.preview", json!({ "on": true })).unwrap();
+    let started = rig.output("input.calibrate", json!({}));
+    assert_eq!((started["started"].clone(), started["status"]["state"].clone()), (json!(true), json!("waiting")));
+    let stopped = rig.plan("input.calibrate", json!({ "cancel": true }), &agent(), false).unwrap().output.unwrap();
+    assert_eq!(stopped["cancelled"], true);
+    assert_eq!(rig.output("input.calibration", json!({})), json!({ "state": "cancelled" }));
 }

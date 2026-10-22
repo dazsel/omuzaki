@@ -13,6 +13,7 @@
 //! | [`blendshapes`] | Blendshape V2: the landmark subset in, 52 scores out |
 //! | [`metadata`] | the canonical face ([`GeometryMetadata`]) and the protobuf reader for it |
 //! | [`geometry`] | the head-pose fit (Procrustes through a virtual camera) |
+//! | [`guided`] | [`guided::GuidedCalibrator`]: the guided calibration's prompts fitted into per-channel ranges (PF-20) |
 //! | [`smoothing`] | the One-Euro landmark filter |
 //! | [`models`] | [`models::ModelDir`]: the verified model folder and its three loaded graphs |
 //! | [`provision`] | the app's face tracker: the shipped model folder through the runtime it is made for |
@@ -35,6 +36,7 @@ pub mod doctor;
 pub mod error;
 pub mod frame;
 pub mod geometry;
+pub mod guided;
 pub mod landmarks;
 pub mod metadata;
 pub mod models;
