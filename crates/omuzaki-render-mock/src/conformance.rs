@@ -60,7 +60,6 @@ macro_rules! ensure {
 }
 
 mod particles;
-pub use particles::{PARTICLE_CHECKS, run_particles};
 
 /// Every check, by name.
 pub const CHECKS: &[(&str, Check)] = &[
@@ -90,6 +89,23 @@ pub const CHECKS: &[(&str, Check)] = &[
     ("the environment backdrop shows the sky", the_environment_backdrop_shows_the_sky),
     ("gradient and texture backdrops show as authored", pictures_behind_show_as_authored),
     ("a UV transform picks the atlas cell", uv_transform_atlas),
+    // Particles (#810, particles.md D2 to D7), in `conformance/particles.rs`.
+    ("particles_none_without_batches", particles::particles_none_without_batches),
+    ("particle_ballistic", particles::particle_ballistic),
+    ("particle_gravity", particles::particle_gravity),
+    ("particle_drag", particles::particle_drag),
+    ("particle_unborn_and_dead", particles::particle_unborn_and_dead),
+    ("particle_density", particles::particle_density),
+    ("particles_deterministic", particles::particles_deterministic),
+    ("particles_no_history", particles::particles_no_history),
+    ("particles_premultiplied", particles::particles_premultiplied),
+    ("particle_depth", particles::particle_depth),
+    ("particle_before_blended", particles::particle_before_blended),
+    ("particle_fog", particles::particle_fog),
+    ("particle_toon", particles::particle_toon),
+    ("particle_atlas_cell", particles::particle_atlas_cell),
+    ("particle_handles", particles::particle_handles),
+    ("particle_limits", particles::particle_limits),
 ];
 
 /// The checks for dynamic meshes: a renderer whose [`Capabilities::dynamic_meshes`] is true must pass them.
@@ -145,9 +161,9 @@ pub fn run_all(renderer: &mut dyn Renderer) -> Outcome {
 }
 
 /// Live counts only: `gpu_bytes` may lag a release by the frames still in flight.
-fn counts(r: &dyn Renderer) -> [u32; 5] {
+fn counts(r: &dyn Renderer) -> [u32; 6] {
     let s = r.stats();
-    [s.meshes, s.textures, s.materials, s.targets, s.environments]
+    [s.meshes, s.textures, s.materials, s.targets, s.environments, s.particle_systems]
 }
 
 // ---- fixtures ---------------------------------------------------------------------------------------------------
@@ -282,7 +298,9 @@ fn stats_follow_creation_and_release(r: &mut dyn Renderer) -> Outcome {
     let sky = EnvironmentDesc::Sky { zenith: Colour::WHITE, horizon: Colour::WHITE, ground: Colour::BLACK };
     let environment = r.create_environment(&sky)?;
     let during = counts(r);
-    let expected = before.map(|n| n + 1);
+    // One of each kind but particle systems, whose counts `particle_handles` checks.
+    let mut expected = before.map(|n| n + 1);
+    expected[5] = before[5];
     ensure!(during == expected, "counts after creating one of each were {during:?}, expected {expected:?}");
     ensure!(r.stats().gpu_bytes > 0, "gpu_bytes should reflect what was uploaded");
     for resource in [mesh.into(), texture.into(), material.into(), target.into(), environment.into()] {

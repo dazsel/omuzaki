@@ -40,21 +40,3 @@ fn each_dynamic_and_morph_check_passes_alone_on_a_fresh_renderer() {
         }
     }
 }
-
-#[test]
-fn the_mock_passes_the_particle_checks() {
-    let mut renderer = MockRenderer::new();
-    if let Err(failure) = conformance::run_particles(&mut renderer) {
-        panic!("particle conformance failed: {failure}");
-    }
-}
-
-#[test]
-fn each_particle_check_passes_alone_on_a_fresh_renderer() {
-    for (name, check) in conformance::PARTICLE_CHECKS {
-        let mut renderer = MockRenderer::new();
-        if let Err(failure) = check(&mut renderer) {
-            panic!("{name}: {failure}");
-        }
-    }
-}

@@ -370,3 +370,251 @@ impl FramePass for Particles {
         Ok(Outcome::Ran)
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+mod tests {
+    use std::f32::consts::PI;
+    use std::sync::mpsc;
+
+    use omuzaki_core::glam::{Mat4, Quat, Vec2, Vec3};
+    use omuzaki_render_api::particles::evaluate;
+    use omuzaki_render_api::{
+        CellPick, Colour, ColourSet, EmitterShape, Flutter, Orientation, ParticleParams, ParticleShading,
+        ParticleSystemDesc, ParticleSystemId, Span, Sprite, SpriteShape, TextureId,
+    };
+
+    use super::*;
+    use crate::gpu::{AdapterPreference, Gpu, HeadlessOptions};
+
+    fn params(shape_orientation: Orientation) -> ParticleParams {
+        ParticleParams {
+            lifetime: Span::new(2.0, 5.0),
+            speed: Span::new(0.5, 2.5),
+            direction: [0.2, 1.0, -0.1],
+            spread_deg: 35.0,
+            gravity: [0.0, -2.0, 0.0],
+            drag: 0.0,
+            wind: [0.0; 3],
+            flutter: None,
+            size: Span::new(0.02, 0.06),
+            size_curve: [0.3, 1.0, 0.8, 0.0],
+            orientation: shape_orientation,
+            colours: ColourSet::new(&[Colour::rgb(250, 90, 120), Colour::rgb(80, 200, 255), Colour::rgb(255, 230, 90)])
+                .unwrap(),
+            coverage: 1.0,
+            shading: ParticleShading::Unlit,
+            edge: None,
+            glow: 0.0,
+            floor: None,
+        }
+    }
+
+    /// One system per shape and orientation, with drag, wind, flutter, a floor, and an atlas with listed and any cells.
+    fn systems() -> Vec<ParticleSystemDesc> {
+        let shape = |s| Sprite::Shape(s);
+        let mut confetti = params(Orientation::tumble(Span::new(-400.0, 400.0)));
+        (confetti.drag, confetti.spread_deg, confetti.wind) = (0.8, 180.0, [0.3, 0.0, -0.2]);
+        confetti.flutter = Some(Flutter { amplitude_m: 0.1, frequency_hz: 1.3 });
+        let mut snow = params(Orientation::billboard(Span::new(-90.0, 90.0)));
+        (snow.drag, snow.floor) = (1.5, Some(-0.5));
+        snow.flutter = Some(Flutter { amplitude_m: 0.2, frequency_hz: 0.4 });
+        let mut rain = params(Orientation::velocity(0.05));
+        (rain.gravity, rain.floor, rain.spread_deg) = ([0.0, -9.8, 0.0], Some(-1.0), 0.0);
+        let mut stars = params(Orientation::billboard(Span::fixed(0.0)));
+        stars.spread_deg = 180.0;
+        let atlas = Sprite::atlas(TextureId::from_parts(0, 1), 4, 3);
+        vec![
+            ParticleSystemDesc { sprite: shape(SpriteShape::rect(0.5)), params: confetti },
+            ParticleSystemDesc { sprite: shape(SpriteShape::Disc), params: snow },
+            ParticleSystemDesc { sprite: shape(SpriteShape::Streak), params: rain },
+            ParticleSystemDesc { sprite: shape(SpriteShape::star(5)), params: stars.clone() },
+            ParticleSystemDesc {
+                sprite: shape(SpriteShape::Heart),
+                params: params(Orientation::tumble(Span::fixed(90.0))),
+            },
+            ParticleSystemDesc { sprite: atlas, params: stars },
+        ]
+    }
+
+    /// `count` batches of `system`: bursts and streams from each emitter shape, turned and moving.
+    fn batches(system: ParticleSystemId, count: u32, per_batch: u32) -> Vec<SpawnBatch> {
+        let shapes = [
+            EmitterShape::Point,
+            EmitterShape::sphere(0.4),
+            EmitterShape::cuboid(Vec3::new(0.5, 0.2, 0.3)),
+            EmitterShape::rect(Vec2::new(1.5, 0.8)),
+        ];
+        (0..count)
+            .map(|i| {
+                let f = i as f32;
+                let turn = Quat::from_euler(omuzaki_core::glam::EulerRot::YXZ, 0.3 * f, 0.2 * f - 0.4, 0.1 * f);
+                let emitter = Mat4::from_rotation_translation(turn, Vec3::new(f * 0.1 - 1.0, 0.5, -f * 0.05));
+                SpawnBatch {
+                    shape: shapes[i as usize % shapes.len()],
+                    velocity: Vec3::new(0.1 * f, 0.0, -0.05),
+                    start: Seconds(0.1 * f64::from(i % 7)),
+                    interval: if i % 3 == 0 { 0.0 } else { 0.01 * (1 + i % 5) as f32 },
+                    first: 37 * i,
+                    count: per_batch,
+                    seed: 0x5EED_0000 ^ i.wrapping_mul(2_654_435_761),
+                    cells: if i % 2 == 0 { CellPick::All } else { CellPick::list(&[1, 5, 11]).unwrap() },
+                    colours: (i % 4 == 1).then(|| ColourSet::one(Colour::rgb(10, 250, 40))),
+                    scale: 0.5 + 0.1 * (i % 6) as f32,
+                    ..SpawnBatch::new(system, emitter)
+                }
+            })
+            .collect()
+    }
+
+    /// Runs `particles_state.wgsl` on every slot of the block at offset 0 and returns three vectors per slot:
+    /// (position, alive), (velocity, roll), (extent, cell, colour red).
+    fn probe(gpu: &Gpu, blocks: &[u8], slots: u32) -> Vec<[f32; 4]> {
+        let device = &gpu.device;
+        let source = format!(
+            "{}\n{}\n{}",
+            include_str!("../shader/common.wgsl"),
+            include_str!("../shader/particles_state.wgsl"),
+            r"
+@group(0) @binding(4) var<storage, read_write> probes: array<vec4<f32>>;
+
+@compute @workgroup_size(64)
+fn cs_probe(@builtin(global_invocation_id) id: vec3<u32>) {
+    let slot = id.x;
+    if (slot * 3u + 2u >= arrayLength(&probes)) {
+        return;
+    }
+    let r = find_batch(slot);
+    let s = particle_state(r, block.batches[r].ids.x + (slot - block.batches[r].misc.x));
+    probes[slot * 3u] = vec4<f32>(s.position, select(0.0, 1.0, s.alive));
+    probes[slot * 3u + 1u] = vec4<f32>(s.velocity, s.roll);
+    probes[slot * 3u + 2u] = vec4<f32>(s.extent, f32(s.cell), s.colour.r);
+}
+"
+        );
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("particle parity"),
+            source: wgpu::ShaderSource::Wgsl(source.into()),
+        });
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("particle parity"),
+            layout: None,
+            module: &module,
+            entry_point: Some("cs_probe"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
+        let uniform = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: BLOCK_BYTES as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        gpu.queue.write_buffer(&uniform, 0, &blocks[..blocks.len().min(BLOCK_BYTES)]);
+        let bytes = u64::from(slots) * 48;
+        let output = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: bytes,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let read = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: bytes,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 3, resource: uniform.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: output.as_entire_binding() },
+            ],
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &group, &[]);
+            pass.dispatch_workgroups(slots.div_ceil(64), 1, 1);
+        }
+        encoder.copy_buffer_to_buffer(&output, 0, &read, 0, bytes);
+        gpu.queue.submit([encoder.finish()]);
+        let (sender, receiver) = mpsc::channel();
+        read.slice(..).map_async(wgpu::MapMode::Read, move |r| sender.send(r).unwrap());
+        gpu.wait_idle(crate::gpu::WAIT_LIMIT).unwrap();
+        receiver.recv().unwrap().unwrap();
+        bytemuck::cast_slice::<u8, [f32; 4]>(&read.slice(..).get_mapped_range().unwrap()).to_vec()
+    }
+
+    /// D6's parity test: 10,800 particles over every shape, orientation and emitter, evaluated by the shader, match
+    /// `particles::evaluate` within 1e-4 m plus 1e-5 of the distance from the origin.
+    #[test]
+    fn the_shader_evaluates_particles_as_the_reference_does() {
+        let gpu = Gpu::open_headless(HeadlessOptions { adapter: AdapterPreference::Software }).unwrap();
+        let shared = Shared::new(gpu);
+        let mut arena = Arena::default();
+        let mut packer = Packer::new(256);
+        let (mut compared, mut alive, mut flipped, mut worst) = (0, 0, 0, 0.0f32);
+        for (k, desc) in systems().into_iter().enumerate() {
+            desc.validate().unwrap();
+            let (index, generation) = arena.insert(GpuParticleSystem::create(&shared, &Arena::default(), &desc));
+            let id = ParticleSystemId::from_parts(index, generation);
+            let mut scene = Scene::new(omuzaki_render_api::Camera::default());
+            scene.particles = batches(id, 90, 20);
+            scene.frame.time = Seconds(1.1 + 0.2 * k as f64);
+            let density = if k == 3 { 0.5 } else { 1.0 };
+            let used = packer.pack(&scene, &arena, density);
+            assert_eq!(packer.blocks.len(), 1, "90 batches of one system are one block");
+            let slots = packer.blocks[0].slots;
+            let gpu_values = probe(&shared.gpu, &packer.staging[..used], slots);
+            let mut slot = 0usize;
+            for batch in &scene.particles {
+                for g in batch.first..batch.first + batch.count {
+                    let [position, velocity, extent] =
+                        [gpu_values[slot * 3], gpu_values[slot * 3 + 1], gpu_values[slot * 3 + 2]];
+                    slot += 1;
+                    compared += 1;
+                    let reference = evaluate(&desc, batch, g, scene.frame.time, density);
+                    let Some(state) = reference else {
+                        flipped += usize::from(position[3] > 0.5);
+                        continue;
+                    };
+                    if position[3] < 0.5 {
+                        flipped += 1;
+                        continue;
+                    }
+                    alive += 1;
+                    let got = Vec3::new(position[0], position[1], position[2]);
+                    let error = got.distance(state.position);
+                    let allowed = 1e-4 + 1e-5 * state.position.length();
+                    worst = worst.max(error / allowed);
+                    assert!(error <= allowed, "system {k} particle {g}: {got} against {}", state.position);
+                    let v = Vec3::new(velocity[0], velocity[1], velocity[2]);
+                    assert!(v.distance(state.velocity) <= 1e-4 * (1.0 + state.velocity.length()), "velocity");
+                    let e = Vec2::new(extent[0], extent[1]);
+                    assert!((e - state.extent).abs().max_element() <= 1e-5 + 1e-4 * state.extent.max_element());
+                    assert_eq!(extent[2] as u32, state.cell, "system {k} particle {g}: the cell");
+                    assert!((extent[3] - state.colour.x).abs() <= 1e-4, "the colour");
+                    let roll_error = (velocity[3] - state.roll).abs() % (2.0 * PI);
+                    assert!(roll_error.min(2.0 * PI - roll_error) <= 1e-3, "system {k} particle {g}: the roll");
+                }
+            }
+        }
+        eprintln!(
+            "compared {compared} particles, {alive} alive, {flipped} on a boundary, worst {worst:.3} of the allowance"
+        );
+        assert!(compared >= 10_000 && alive > compared / 3, "{alive} of {compared} alive");
+        // Life, the density test and the floor are comparisons of exactly computed numbers; a contracted multiply-add
+        // can move one at a boundary, never more than a handful.
+        assert!(flipped <= compared / 1000, "{flipped} particles alive on one side only");
+    }
+
+    #[test]
+    fn a_block_is_a_header_and_its_records_at_aligned_offsets() {
+        assert_eq!(BLOCK_BYTES, 16_272);
+        let source = include_str!("../shader/particles_state.wgsl");
+        assert!(source.contains(&format!("const BLOCK_BATCHES: u32 = {BLOCK_BATCHES}u;")));
+    }
+}

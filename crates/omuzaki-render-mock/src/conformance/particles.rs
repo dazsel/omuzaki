@@ -1,6 +1,6 @@
 //! The particle checks (#810, particles.md D2 to D7): what every renderer that lists [`Pass::Particles`] must do.
 //!
-//! A check passes trivially on a renderer without the pass. Unless a check says otherwise: a 64 x 64 target, a
+//! The checks are listed in [`CHECKS`](super::CHECKS). A check passes trivially on a renderer without the pass. Unless a check says otherwise: a 64 x 64 target, a
 //! perspective camera at (0, 0, 5) looking at the origin with a 30 degree field of view, no tone curve, exposure 1,
 //! the offline preset at 4 samples and an opaque black background. Pictures are measured (centroids, covered-pixel
 //! counts), never compared pixel for pixel across renderers: sample patterns are each renderer's own.
@@ -15,45 +15,8 @@ use omuzaki_render_api::{
     Tonemap, limits,
 };
 
-use super::{Check, Failure, Outcome, expect_err, is_invalid, is_unknown};
+use super::{Failure, Outcome, expect_err, is_invalid, is_unknown};
 use crate::shapes;
-
-/// Every particle check, by name. Kept apart from [`CHECKS`](super::CHECKS) until every renderer draws particles.
-pub const PARTICLE_CHECKS: &[(&str, Check)] = &[
-    ("particles_none_without_batches", particles_none_without_batches),
-    ("particle_ballistic", particle_ballistic),
-    ("particle_gravity", particle_gravity),
-    ("particle_drag", particle_drag),
-    ("particle_unborn_and_dead", particle_unborn_and_dead),
-    ("particle_density", particle_density),
-    ("particles_deterministic", particles_deterministic),
-    ("particles_no_history", particles_no_history),
-    ("particles_premultiplied", particles_premultiplied),
-    ("particle_depth", particle_depth),
-    ("particle_before_blended", particle_before_blended),
-    ("particle_fog", particle_fog),
-    ("particle_toon", particle_toon),
-    ("particle_atlas_cell", particle_atlas_cell),
-    ("particle_handles", particle_handles),
-    ("particle_limits", particle_limits),
-];
-
-/// Runs every particle check on `renderer`, which must be fresh and is left as it was found. A renderer without
-/// [`Pass::Particles`] passes.
-///
-/// # Errors
-/// The first [`Failure`], prefixed with the check's name.
-pub fn run_particles(renderer: &mut dyn Renderer) -> Outcome {
-    let before = renderer.stats();
-    for (name, check) in PARTICLE_CHECKS {
-        check(renderer).map_err(|f| Failure(format!("{name}: {f}")))?;
-    }
-    let after = renderer.stats();
-    let live =
-        |s: omuzaki_render_api::ResourceStats| [s.meshes, s.textures, s.materials, s.targets, s.particle_systems];
-    ensure!(live(before) == live(after), "resources leaked: {:?} before, {:?} after", live(before), live(after));
-    Ok(())
-}
 
 const SIZE: UVec2 = UVec2::new(64, 64);
 
@@ -164,7 +127,7 @@ fn lands_at(r: &mut dyn Renderer, params: ParticleParams, t: f64, want: Vec3) ->
     Ok(())
 }
 
-fn particles_none_without_batches(r: &mut dyn Renderer) -> Outcome {
+pub(super) fn particles_none_without_batches(r: &mut dyn Renderer) -> Outcome {
     let without = draw_at(r, scene(), 1.0)?;
     let Some(id) = system(r, mover(0.2))? else { return Ok(()) };
     let target = r.create_target(&omuzaki_render_api::TargetDesc { size: SIZE, alpha: AlphaEncoding::Straight })?;
@@ -179,19 +142,19 @@ fn particles_none_without_batches(r: &mut dyn Renderer) -> Outcome {
     Ok(())
 }
 
-fn particle_ballistic(r: &mut dyn Renderer) -> Outcome {
+pub(super) fn particle_ballistic(r: &mut dyn Renderer) -> Outcome {
     lands_at(r, mover(0.2), 1.0, Vec3::X)
 }
 
-fn particle_gravity(r: &mut dyn Renderer) -> Outcome {
+pub(super) fn particle_gravity(r: &mut dyn Renderer) -> Outcome {
     lands_at(r, ParticleParams { gravity: [0.0, -2.0, 0.0], ..mover(0.2) }, 1.0, Vec3::new(1.0, -1.0, 0.0))
 }
 
-fn particle_drag(r: &mut dyn Renderer) -> Outcome {
+pub(super) fn particle_drag(r: &mut dyn Renderer) -> Outcome {
     lands_at(r, ParticleParams { drag: 1.0, ..mover(0.2) }, 1.0, Vec3::new(1.0 - (-1.0f32).exp(), 0.0, 0.0))
 }
 
-fn particle_unborn_and_dead(r: &mut dyn Renderer) -> Outcome {
+pub(super) fn particle_unborn_and_dead(r: &mut dyn Renderer) -> Outcome {
     let Some(id) = system(r, ParticleParams { speed: Span::fixed(0.0), ..mover(0.5) })? else { return Ok(()) };
     let mut s = scene();
     s.particles.push(SpawnBatch::new(id, Mat4::IDENTITY));
@@ -221,7 +184,7 @@ fn cloud(r: &mut dyn Renderer, density: f32) -> Result<Option<u32>, Failure> {
     Ok(Some(lit(&image).1))
 }
 
-fn particle_density(r: &mut dyn Renderer) -> Outcome {
+pub(super) fn particle_density(r: &mut dyn Renderer) -> Outcome {
     let (Some(full), Some(half), Some(none)) = (cloud(r, 1.0)?, cloud(r, 0.5)?, cloud(r, 0.0)?) else { return Ok(()) };
     ensure!(none == 0, "density 0 drew {none} pixels");
     ensure!(full > 0, "density 1 drew nothing");
@@ -257,7 +220,7 @@ fn max_difference(a: &Image, b: &Image) -> u8 {
     a.rgba8.iter().zip(&b.rgba8).map(|(x, y)| x.abs_diff(*y)).max().unwrap_or(0)
 }
 
-fn particles_deterministic(r: &mut dyn Renderer) -> Outcome {
+pub(super) fn particles_deterministic(r: &mut dyn Renderer) -> Outcome {
     let Some(id) = system(r, burst_params())? else { return Ok(()) };
     let first = draw_at(r, burst_scene(id), 1.5)?;
     let second = draw_at(r, burst_scene(id), 1.5)?;
@@ -269,7 +232,7 @@ fn particles_deterministic(r: &mut dyn Renderer) -> Outcome {
     Ok(())
 }
 
-fn particles_no_history(r: &mut dyn Renderer) -> Outcome {
+pub(super) fn particles_no_history(r: &mut dyn Renderer) -> Outcome {
     let Some(id) = system(r, burst_params())? else { return Ok(()) };
     let direct = draw_at(r, burst_scene(id), 2.0)?;
     draw_at(r, burst_scene(id), 0.0)?;
@@ -282,7 +245,7 @@ fn particles_no_history(r: &mut dyn Renderer) -> Outcome {
     Ok(())
 }
 
-fn particles_premultiplied(r: &mut dyn Renderer) -> Outcome {
+pub(super) fn particles_premultiplied(r: &mut dyn Renderer) -> Outcome {
     let params = burst_params();
     let Some(id) = system(r, params.clone())? else { return Ok(()) };
     let mut s = burst_scene(id);
@@ -322,7 +285,7 @@ fn still_at(r: &mut dyn Renderer, colour: Colour, size: f32) -> Result<Option<Pa
     system(r, ParticleParams { speed: Span::fixed(0.0), colours: ColourSet::one(colour), ..mover(size) })
 }
 
-fn particle_depth(r: &mut dyn Renderer) -> Outcome {
+pub(super) fn particle_depth(r: &mut dyn Renderer) -> Outcome {
     let Some(id) = still_at(r, Colour::rgb(0, 255, 0), 0.4)? else { return Ok(()) };
     let mesh = r.create_mesh(&shapes::quad(Vec2::splat(1.0)))?;
     let wall = r.create_material(&Material::unlit(Colour::rgb(255, 0, 0)))?;
@@ -340,7 +303,7 @@ fn particle_depth(r: &mut dyn Renderer) -> Outcome {
     Ok(())
 }
 
-fn particle_before_blended(r: &mut dyn Renderer) -> Outcome {
+pub(super) fn particle_before_blended(r: &mut dyn Renderer) -> Outcome {
     let Some(id) = still_at(r, Colour::rgb(0, 0, 255), 0.4)? else { return Ok(()) };
     let mesh = r.create_mesh(&shapes::quad(Vec2::splat(1.0)))?;
     let mut glass = Material::unlit(Colour::rgba(255, 0, 0, 128));
@@ -358,7 +321,7 @@ fn particle_before_blended(r: &mut dyn Renderer) -> Outcome {
     Ok(())
 }
 
-fn particle_fog(r: &mut dyn Renderer) -> Outcome {
+pub(super) fn particle_fog(r: &mut dyn Renderer) -> Outcome {
     let Some(id) = still_at(r, Colour::WHITE, 0.6)? else { return Ok(()) };
     let mut s = scene();
     s.fog = Some(Fog { colour: Colour::BLACK, near: 4.0, far: 6.0 });
@@ -370,7 +333,7 @@ fn particle_fog(r: &mut dyn Renderer) -> Outcome {
     Ok(())
 }
 
-fn particle_toon(r: &mut dyn Renderer) -> Outcome {
+pub(super) fn particle_toon(r: &mut dyn Renderer) -> Outcome {
     if !r.capabilities().supports(Pass::Particles) {
         return Ok(());
     }
@@ -406,7 +369,7 @@ fn particle_toon(r: &mut dyn Renderer) -> Outcome {
     Ok(())
 }
 
-fn particle_atlas_cell(r: &mut dyn Renderer) -> Outcome {
+pub(super) fn particle_atlas_cell(r: &mut dyn Renderer) -> Outcome {
     if !r.capabilities().supports(Pass::Particles) {
         return Ok(());
     }
@@ -431,7 +394,7 @@ fn particle_atlas_cell(r: &mut dyn Renderer) -> Outcome {
     Ok(())
 }
 
-fn particle_handles(r: &mut dyn Renderer) -> Outcome {
+pub(super) fn particle_handles(r: &mut dyn Renderer) -> Outcome {
     if !r.capabilities().supports(Pass::Particles) {
         return Ok(());
     }
@@ -456,7 +419,7 @@ fn particle_handles(r: &mut dyn Renderer) -> Outcome {
     Ok(())
 }
 
-fn particle_limits(r: &mut dyn Renderer) -> Outcome {
+pub(super) fn particle_limits(r: &mut dyn Renderer) -> Outcome {
     if !r.capabilities().supports(Pass::Particles) {
         return Ok(());
     }

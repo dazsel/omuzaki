@@ -32,21 +32,6 @@ struct ParticleOut {
     @location(5) @interpolate(flat) shape: vec4<f32>,
 }
 
-// The batch slot `slot` belongs to: the last batch of the block whose first slot is at or before it.
-fn find_batch(slot: u32) -> u32 {
-    var lo = 0u;
-    var hi = max(block.system.atlas.w, 1u);
-    while (hi - lo > 1u) {
-        let mid = (lo + hi) / 2u;
-        if (block.batches[mid].misc.x <= slot) {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    return lo;
-}
-
 fn hidden() -> ParticleOut {
     var out: ParticleOut;
     out.clip = vec4<f32>(2.0, 2.0, 2.0, 1.0);
@@ -200,7 +185,10 @@ fn particle_colour(in: ParticleOut) -> vec4<f32> {
     let rows = max(sys.atlas.y, 1u);
     let cell = u32(in.shape.w);
     let cell_corner = vec2<f32>(f32(cell % columns), f32(cell / columns));
-    let at = (cell_corner + clamp(in.uv, vec2<f32>(0.0), vec2<f32>(1.0))) / vec2<f32>(f32(columns), f32(rows));
+    let grid = vec2<f32>(f32(columns), f32(rows));
+    // Held half a texel inside the cell, so filtering never reads the neighbouring cell.
+    let inset = 0.5 / vec2<f32>(textureDimensions(base_texture));
+    let at = clamp((cell_corner + in.uv) / grid, cell_corner / grid + inset, (cell_corner + 1.0) / grid - inset);
     // Sampled for every sprite, in uniform control flow; a shape's material holds the white stand-in.
     let sampled = texel(textureSample(base_texture, base_sampler, at), texture_flags(0u));
 

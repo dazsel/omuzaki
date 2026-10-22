@@ -7,174 +7,25 @@
 
 use std::path::{Path, PathBuf};
 
-use omuzaki_core::glam::{Mat4, UVec2, Vec3};
+use omuzaki_core::glam::{Mat4, UVec2};
 use omuzaki_core::time::Seconds;
 use omuzaki_render_api::{
-    AlphaEncoding, Background, Camera, CellPick, Colour, ColourSet, Edge, EmitterShape, Image, Light, Orientation,
-    ParticleParams, ParticleShading, ParticleSystemDesc, Pass, Quality, RenderError, Renderer, RendererExt, Scene,
-    Span, SpawnBatch, Sprite, SpriteShape, TextureDesc,
+    AlphaEncoding, Background, CellPick, Colour, ColourSet, EmitterShape, Image, Orientation, ParticleParams,
+    ParticleSystemDesc, Pass, Quality, RenderError, Renderer, RendererExt, Scene, Span, SpawnBatch, Sprite,
+    SpriteShape, TextureDesc,
 };
 use omuzaki_render_mock::MockRenderer;
+use omuzaki_render_mock::particle_sheet::{self, camera, quality, still};
 
 #[global_allocator]
 static ALLOCATOR: omuzaki_render_mock::counting::Counting =
     omuzaki_render_mock::counting::Counting::new(env!("CARGO_PKG_NAME"));
 
-const CELL: UVec2 = UVec2::new(192, 192);
 /// Cross-platform slack for the float functions the standard library doesn't pin down.
 const TOLERANCE: u8 = 2;
 
-/// A still particle: no speed, no gravity, a long life.
-fn still(size: f32, orientation: Orientation, colour: Colour) -> ParticleParams {
-    ParticleParams {
-        lifetime: Span::fixed(20.0),
-        speed: Span::fixed(0.0),
-        direction: [0.0, 1.0, 0.0],
-        spread_deg: 0.0,
-        gravity: [0.0; 3],
-        drag: 0.0,
-        wind: [0.0; 3],
-        flutter: None,
-        size: Span::fixed(size),
-        size_curve: [1.0; 4],
-        orientation,
-        colours: ColourSet::one(colour),
-        coverage: 1.0,
-        shading: ParticleShading::Unlit,
-        edge: None,
-        glow: 0.0,
-        floor: None,
-    }
-}
-
-fn camera() -> Camera {
-    Camera::look_at(Vec3::new(0.0, 0.0, 3.0), Vec3::ZERO, Vec3::Y, Camera::default().projection)
-}
-
-/// A soft sky and a warm key from the upper left, for the toon-lit cases.
-fn lights() -> Vec<Light> {
-    vec![
-        Light::Hemisphere { sky: Colour::hex(0x00f3_e8ff), ground: Colour::hex(0x003a_2a24), intensity: 0.6 },
-        Light::Directional {
-            to_light: Vec3::new(-0.6, 1.0, 1.5),
-            colour: Colour::hex(0x00ff_f0e0),
-            intensity: 2.5,
-            casts_shadow: false,
-        },
-    ]
-}
-
-fn quality() -> Quality {
-    Quality { samples: 4, ..Quality::offline() }
-}
-
-/// One golden case: a system and the time it is drawn at.
-struct Case {
-    desc: ParticleSystemDesc,
-    time: f64,
-    cells: CellPick,
-}
-
-/// A 2 x 2 atlas, premultiplied: red, green, blue and a white ring, so the cell picked is plain to see.
-fn atlas_pixels() -> Vec<u8> {
-    let mut rgba = Vec::new();
-    for y in 0..32u32 {
-        for x in 0..32u32 {
-            let (cx, cy) = (x / 16, y / 16);
-            let (lx, ly) = ((x % 16) as f32 - 7.5, (y % 16) as f32 - 7.5);
-            let d = (lx * lx + ly * ly).sqrt();
-            let px = match (cx, cy) {
-                (0, 0) => [255, 0, 0, 255],
-                (1, 0) => [0, 255, 0, 255],
-                (0, 1) => [0, 0, 255, 255],
-                _ if (4.0..7.0).contains(&d) => [255, 255, 255, 255],
-                _ => [0, 0, 0, 0],
-            };
-            rgba.extend(px);
-        }
-    }
-    rgba
-}
-
-fn cases(renderer: &mut MockRenderer) -> Vec<Case> {
-    let pink = Colour::hex(0x00ff_5a7a);
-    let shapes = [
-        SpriteShape::Square,
-        SpriteShape::rect(0.6),
-        SpriteShape::Disc,
-        SpriteShape::Petal,
-        SpriteShape::star(5),
-        SpriteShape::Heart,
-    ];
-    let mut out = Vec::new();
-    for edge in [None, Some(Edge { shade: 0.45, width_px: 3.0 })] {
-        for shape in shapes {
-            let params = ParticleParams { edge, ..still(1.1, Orientation::billboard(Span::fixed(0.0)), pink) };
-            out.push(Case {
-                desc: ParticleSystemDesc { sprite: Sprite::Shape(shape), params },
-                time: 1.0,
-                cells: CellPick::All,
-            });
-        }
-        // The streak stands upright: it follows a velocity straight up.
-        let mut params = ParticleParams {
-            edge,
-            speed: Span::fixed(0.2),
-            ..still(0.25, Orientation::velocity(4.0), Colour::hex(0x00c8_d6ec))
-        };
-        params.direction = [0.0, 1.0, 0.0];
-        out.push(Case {
-            desc: ParticleSystemDesc { sprite: Sprite::Shape(SpriteShape::Streak), params },
-            time: 0.0,
-            cells: CellPick::All,
-        });
-    }
-    for step in 0..3 {
-        let params = ParticleParams {
-            shading: ParticleShading::toon(Colour::hex(0x00b8_a8c8), 0.0, 0.1),
-            ..still(1.1, Orientation::tumble(Span::fixed(45.0)), Colour::hex(0x00ff_c94d))
-        };
-        let desc = ParticleSystemDesc { sprite: Sprite::Shape(SpriteShape::rect(0.6)), params };
-        out.push(Case { desc, time: 2.0 + f64::from(step), cells: CellPick::All });
-    }
-    let mut desc = TextureDesc::colour(UVec2::new(32, 32));
-    desc.alpha = AlphaEncoding::Premultiplied;
-    desc.mips = false;
-    let texture = renderer.create_texture(&desc, Some(&atlas_pixels())).unwrap();
-    let params = still(1.1, Orientation::billboard(Span::fixed(0.0)), Colour::WHITE);
-    out.push(Case {
-        desc: ParticleSystemDesc { sprite: Sprite::atlas(texture, 2, 2), params },
-        time: 1.0,
-        cells: CellPick::list(&[3]).unwrap(),
-    });
-    out
-}
-
-/// Every case side by side, six to a row, over `background` into a target of `alpha`.
 fn sheet(background: Background, alpha: AlphaEncoding) -> Image {
-    let mut renderer = MockRenderer::new();
-    let cases = cases(&mut renderer);
-    let columns = 6u32;
-    let rows = (cases.len() as u32).div_ceil(columns);
-    let size = UVec2::new(CELL.x * columns, CELL.y * rows);
-    let mut sheet = vec![0u8; (size.x * size.y * 4) as usize];
-    for (i, case) in cases.iter().enumerate() {
-        let system = renderer.create_particle_system(&case.desc).unwrap();
-        let mut scene = Scene::new(camera());
-        scene.background = background;
-        scene.lights = lights();
-        scene.frame.time = Seconds(case.time);
-        scene.particles.push(SpawnBatch { cells: case.cells, seed: 3, ..SpawnBatch::new(system, Mat4::IDENTITY) });
-        let image = renderer.render_image(CELL, alpha, &scene, &quality()).unwrap();
-        let (cx, cy) = (i as u32 % columns, i as u32 / columns);
-        for y in 0..CELL.y {
-            let from = (y * CELL.x * 4) as usize;
-            let to = (((cy * CELL.y + y) * size.x + cx * CELL.x) * 4) as usize;
-            sheet[to..to + (CELL.x * 4) as usize].copy_from_slice(&image.rgba8[from..from + (CELL.x * 4) as usize]);
-        }
-        renderer.release(system.into()).unwrap();
-    }
-    Image { size, alpha, rgba8: sheet }
+    particle_sheet::sheet(&mut MockRenderer::new(), background, alpha).unwrap()
 }
 
 fn save_png(image: &Image, path: &Path) {

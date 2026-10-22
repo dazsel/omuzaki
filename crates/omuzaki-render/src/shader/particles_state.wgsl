@@ -121,6 +121,21 @@ fn size_curve(curve: vec4<f32>, x: f32) -> f32 {
     return curve[i] + (curve[i + 1u] - curve[i]) * f;
 }
 
+// The batch slot `slot` belongs to: the last batch of the block whose first slot is at or before it.
+fn find_batch(slot: u32) -> u32 {
+    var lo = 0u;
+    var hi = max(block.system.atlas.w, 1u);
+    while (hi - lo > 1u) {
+        let mid = (lo + hi) / 2u;
+        if (block.batches[mid].misc.x <= slot) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo;
+}
+
 // `particles::ParticleState`, plus whether the particle is drawn at all.
 struct ParticleState {
     alive: bool,

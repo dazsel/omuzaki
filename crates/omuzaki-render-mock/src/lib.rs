@@ -42,6 +42,7 @@ mod environment;
 mod frame;
 mod morph;
 mod particles;
+pub mod particle_sheet;
 mod raster;
 mod resources;
 mod shade;

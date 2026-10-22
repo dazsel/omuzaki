@@ -20,9 +20,9 @@ fn missing_pass(capabilities: &Capabilities, name: &str) -> Option<Pass> {
     NEEDS_PASS.iter().find(|(n, pass)| *n == name && !capabilities.supports(*pass)).map(|&(_, pass)| pass)
 }
 
-fn counts(r: &dyn Renderer) -> [u32; 5] {
+fn counts(r: &dyn Renderer) -> [u32; 6] {
     let s = r.stats();
-    [s.meshes, s.textures, s.materials, s.targets, s.environments]
+    [s.meshes, s.textures, s.materials, s.targets, s.environments, s.particle_systems]
 }
 
 #[test]
@@ -87,24 +87,5 @@ fn the_capability_checks_pass_for_every_capability_the_renderer_claims() {
     assert!(renderer.capabilities().dynamic_meshes, "R2 reports dynamic meshes");
     if let Err(failure) = conformance::run_capable(&mut renderer) {
         panic!("capability checks failed: {failure}");
-    }
-}
-
-#[test]
-fn the_renderer_draws_particles_and_passes_the_particle_checks() {
-    let mut renderer = support::renderer();
-    assert!(renderer.capabilities().supports(Pass::Particles), "the Particles pass is implemented");
-    if let Err(failure) = conformance::run_particles(&mut renderer) {
-        panic!("particle checks failed: {failure}");
-    }
-}
-
-#[test]
-fn each_particle_check_passes_alone_on_a_fresh_renderer() {
-    for (name, check) in conformance::PARTICLE_CHECKS {
-        let mut renderer = support::renderer();
-        if let Err(failure) = check(&mut renderer) {
-            panic!("{name} (fresh renderer): {failure}");
-        }
     }
 }
