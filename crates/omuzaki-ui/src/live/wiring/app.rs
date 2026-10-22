@@ -5,6 +5,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use egui::Context;
+use omuzaki_ai_api::ModelRegistry;
 use omuzaki_anim_api::{ChannelBuf, HumanoidPose};
 use omuzaki_core::glam::UVec2;
 use omuzaki_core::time::{Clock, Seconds, SystemClock};
@@ -21,7 +22,7 @@ use omuzaki_track_api::tracker::{LatencyStats, Tracker, TrackerConfig};
 use omuzaki_track_net::PhoneSettings;
 
 use super::clock::{ClockObserver, PerformClock};
-use super::inputs::studio_inputs;
+use super::inputs::{model_registry, studio_inputs};
 use super::mailbox::FrameReader;
 use super::rig::{Extras, LiveRig, live_performer};
 use super::thread::{LoopReport, WiringError};
@@ -113,13 +114,15 @@ impl LiveApp {
     /// [`start_on`](Self::start_on), with the studio's real inputs: the webcam tracker over the install's face models,
     /// the phone link and VMC out ([`studio_inputs`]), timed on `clock`. When the webcam can't track (no face
     /// models in `install`, no camera backend on this platform) it still lists its cameras and says why on start; the
-    /// reason is logged here.
+    /// reason is logged here. The model registry keeps its state in `models` and puts the `model.*` ops in the
+    /// runner's services; with no folder, or one that can't be opened, those ops answer that they're unavailable.
     ///
     /// # Errors
     /// [`StartError`]; nothing is left running then.
     pub fn start_studio(
         document: Document,
         install: &Path,
+        models: Option<&Path>,
         clock: Box<dyn PerformClock>,
         transparency: Transparency,
         base: HumanoidPose,
@@ -133,7 +136,15 @@ impl LiveApp {
         if let Some(problem) = &inputs.webcam_problem {
             tracing::warn!(%problem, "the webcam can't track yet");
         }
-        let extras = Extras { phone: Some(inputs.phone), pose_out: Some(inputs.pose_out) };
+        let models = models.ok_or_else(|| "the app has no data folder".to_owned()).and_then(model_registry);
+        let models = match models {
+            Ok(registry) => Some(Arc::new(registry) as Arc<dyn ModelRegistry>),
+            Err(problem) => {
+                tracing::warn!(%problem, "the model registry did not open: the `model.*` ops are unavailable");
+                None
+            }
+        };
+        let extras = Extras { phone: Some(inputs.phone), pose_out: Some(inputs.pose_out), models };
         Self::start_with(document, inputs.webcam, extras, clock, transparency, &base)
     }
 
@@ -149,6 +160,7 @@ impl LiveApp {
         // The viewport reads the tracker's latency while the input owns the tracker: two handles to one.
         let tracker = SharedTracker::new(tracker);
         let observer = clock.observer();
+        let models = extras.models.clone();
         let (rig, reader) =
             LiveRig::start_with(Box::new(tracker.clone()), extras, TrackerConfig::default(), performer, clock)
                 .map_err(StartError::Wiring)?;
@@ -156,11 +168,14 @@ impl LiveApp {
         host.set_expressions(ExpressionSet::starter(), ChannelBuf::NEUTRAL).map_err(StartError::Perform)?;
         let window = OutputHost::new(transparency, PhysicalSize::FULL_HD);
         let input: Arc<dyn InputHost> = rig.input();
-        let services = ServicesBuilder::new()
+        let mut services = ServicesBuilder::new()
             .insert::<dyn PerformHost>(host)
             .insert::<dyn InputHost>(input)
-            .insert::<dyn WindowHost>(Arc::new(window.clone()))
-            .build();
+            .insert::<dyn WindowHost>(Arc::new(window.clone()));
+        if let Some(models) = models {
+            services = services.insert::<dyn ModelRegistry>(models);
+        }
+        let services = services.build();
         let core = wiring::core_on(document, services).map_err(StartError::Ops)?;
         Ok(Self {
             rig: Some(rig),

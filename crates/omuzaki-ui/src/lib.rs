@@ -20,9 +20,10 @@ pub use omuzaki_core::__record_registration;
 // `output.window.*` ops its output switch runs, and the animation crate the retarget and life layer the perform thread
 // builds on, so the app links all three, and the character crate, whose parts the kit character is built from. The
 // character and stage contracts and the renderer self-register too (part kinds and looks, the stage's facts, shading
-// programs), and the viewport draws with all three. The face tracker and the phone link register
-// their own (the phone's `input.phone` setting) (ADR 0015).
+// programs), and the viewport draws with all three. The model registry registers the `model.*` ops,
+// and the face tracker and the phone link their own (the phone's `input.phone` setting) (ADR 0015).
 omuzaki_core::define_link! {
+    omuzaki_ai::link();
     omuzaki_anim::link();
     omuzaki_char::link();
     omuzaki_char_api::link();

@@ -18,9 +18,11 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use omuzaki_ai::{CACHE_DIR, Registry, RegistrySettings, VerifiedCache};
 use omuzaki_ai_api::{FetchError, FileSource, PinnedFile, Progress, Sha256};
 use omuzaki_anim_api::FrameSource;
 use omuzaki_core::time::Clock;
+use omuzaki_http::HttpFetcher;
 use omuzaki_track_api::camera::{Camera, CameraId, CameraInfo};
 use omuzaki_track_api::error::TrackError;
 use omuzaki_track_api::pose_out::PoseOutput;
@@ -31,6 +33,18 @@ use sha2::Digest;
 
 use omuzaki_track::provision::{face_models, face_tracker};
 use omuzaki_track::webcam::{WebcamConfig, WebcamTracker};
+
+/// The model registry over `data_dir` (the app's data folder): the shipped models' slots and the person's own models,
+/// with the `model.*` ops over it. Files a model needs are downloaded through a verified cache in `<data_dir>/cache`,
+/// checked against their pins; a user model runs in the sandboxed worker beside the executable.
+///
+/// # Errors
+/// The registry's state folder can't be read or written.
+pub fn model_registry(data_dir: &Path) -> Result<Registry, String> {
+    let files = Arc::new(VerifiedCache::new(data_dir.join(CACHE_DIR), HttpFetcher::new()));
+    let version = env!("CARGO_PKG_VERSION").parse().map_err(|e| format!("the app's version: {e}"))?;
+    Registry::new(data_dir, files, version, RegistrySettings::default()).map_err(|e| e.to_string())
+}
 
 /// Where the face models sit under the install folder.
 pub const FACE_MODELS_DIR: &str = "models/mediapipe-face";

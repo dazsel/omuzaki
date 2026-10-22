@@ -530,6 +530,7 @@ fn the_studio_starts_on_its_real_inputs_and_vmc_out_sends_from_the_perform_threa
     let app = LiveApp::start_studio(
         omuzaki_ui::wiring::Document::empty(),
         install.path(),
+        Some(&install.path().join("models")),
         Box::new(RealClock::new()),
         Transparency::Fallback,
         HumanoidPose::REST,
@@ -538,6 +539,8 @@ fn the_studio_starts_on_its_real_inputs_and_vmc_out_sends_from_the_perform_threa
     let runner = app.runner();
     let picked = runner.run(request("input.select", args(&[("source", Value::from("iphone"))])));
     picked.expect("the phone link is wired in, so the iPhone source can be chosen");
+    let models = runner.run(request("model.list", args(&[]))).expect("the model registry is wired in");
+    assert!(models.plan.output.is_some(), "it answers");
 
     let receiver = std::net::UdpSocket::bind("127.0.0.1:0").expect("a receiver");
     receiver.set_read_timeout(Some(Duration::from_secs(5))).expect("a timeout");

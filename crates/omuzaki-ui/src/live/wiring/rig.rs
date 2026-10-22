@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use omuzaki_ai_api::ModelRegistry;
 use omuzaki_anim::BusAnimator;
 use omuzaki_anim::life::Life;
 use omuzaki_anim::retarget::ArkitRetarget;
@@ -39,6 +40,8 @@ pub struct Extras {
     pub phone: Option<Box<dyn Tracker>>,
     /// VMC out.
     pub pose_out: Option<Box<dyn PoseOutput>>,
+    /// The model registry, for the `model.*` ops (the app puts it in the runner's services; the rig ignores it).
+    pub models: Option<Arc<dyn ModelRegistry>>,
 }
 
 impl std::fmt::Debug for Extras {
@@ -46,6 +49,7 @@ impl std::fmt::Debug for Extras {
         f.debug_struct("Extras")
             .field("phone", &self.phone.is_some())
             .field("pose_out", &self.pose_out.is_some())
+            .field("models", &self.models.is_some())
             .finish()
     }
 }

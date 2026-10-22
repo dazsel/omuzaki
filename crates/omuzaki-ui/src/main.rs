@@ -98,8 +98,14 @@ fn start_live(cc: &eframe::CreationContext<'_>, document: Document) -> Option<Li
         }
     });
     let base = stage.as_ref().map_or(HumanoidPose::REST, |(_, stage, _)| LiveScene::base_pose(stage));
-    let mut live = match LiveApp::start_studio(document, &install_dir(), Box::new(RealClock::new()), transparency, base)
-    {
+    let mut live = match LiveApp::start_studio(
+        document,
+        &install_dir(),
+        models_dir().as_deref(),
+        Box::new(RealClock::new()),
+        transparency,
+        base,
+    ) {
         Ok(live) => live,
         Err(error) => {
             tracing::error!(%error, "the live slice did not start");
@@ -117,6 +123,11 @@ fn start_live(cc: &eframe::CreationContext<'_>, document: Document) -> Option<Li
 /// The folder the app is installed in: the executable's, where the release puts the face models and natives.
 fn install_dir() -> PathBuf {
     std::env::current_exe().ok().and_then(|exe| exe.parent().map(PathBuf::from)).unwrap_or_default()
+}
+
+/// Where the model registry keeps its state: `models` beside the studio's own project folder.
+fn models_dir() -> Option<PathBuf> {
+    default_project_dir()?.parent().map(|data| data.join("models"))
 }
 
 /// The renderer on eframe's own device, `character` (else the kit's) staged on it, and the presenter that shares its
