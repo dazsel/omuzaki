@@ -19,6 +19,7 @@
 
 pub mod app;
 pub mod class;
+pub mod compare;
 pub mod dock;
 pub mod handles;
 pub mod history;

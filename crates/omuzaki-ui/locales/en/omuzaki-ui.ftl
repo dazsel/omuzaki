@@ -3839,6 +3839,64 @@ ui-shell-history-by = By { $who }
 ui-shell-history-by-because = By { $who }, for: { $cause }
 
 # The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-history-compare = Compare with…
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+# $label (id, never translated): "hair-b"
+ui-shell-history-compare-after = After: { $label }
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+# $label (id, never translated): "hair-b"
+ui-shell-history-compare-before = Before: { $label }
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+# $percent (id, never translated): "hair-b"
+ui-shell-history-compare-changed = { $percent }% of the picture changed
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+# $count (id, never translated): "hair-b"
+ui-shell-history-compare-changes = { $count } changed
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-history-compare-close = Close
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+# $why (id, never translated): "hair-b"
+ui-shell-history-compare-failed = These steps can't be compared: { $why }
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-history-compare-heatmap = Show what changed
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-history-compare-hint = Ctrl+click another step to compare the two.
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-history-compare-no-pictures = There are no pictures of these steps to compare.
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+# $label (id, never translated): "hair-b"
+ui-shell-history-compare-pick = Choose a step to compare with { $label }. Esc cancels.
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-history-compare-same = Nothing differs between these two states.
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+# $part (id, never translated): "hair-b"
+ui-shell-history-compare-select = Select { $part }
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-history-compare-sizes = The two pictures are different sizes, so they can't be laid over each other.
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-history-compare-split = Before and after, side by side
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-history-compare-title = Compare steps
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-history-compare-waiting = Waiting for the pictures of these steps…
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
 ui-shell-history-conflict = Couldn't undo
 
 # The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.

@@ -196,3 +196,7 @@ pub const FLOPPY: &str = egui_phosphor::regular::FLOPPY_DISK;
 pub const BRACKETS_CURLY: &str = egui_phosphor::regular::BRACKETS_CURLY;
 /// A saved script.
 pub const FILE_CODE: &str = egui_phosphor::regular::FILE_CODE;
+/// Select: pick a part from another view.
+pub const CURSOR: &str = egui_phosphor::regular::CURSOR_CLICK;
+/// Compare two states: a diff.
+pub const GIT_DIFF: &str = egui_phosphor::regular::GIT_DIFF;

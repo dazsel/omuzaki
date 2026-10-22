@@ -17,9 +17,13 @@
 //! - **Undo conflicts:** an undo the runner refuses because a later change touches the same values leaves a card
 //!   saying so at the top of the list until it is dismissed or a step goes through.
 //!
+//! - **Compare:** with a row's details open, **Compare with…** then a second row (or Ctrl+click, or Ctrl+Enter on
+//!   another row) opens the two states side by side with a heatmap and the values that differ ([`super::compare`]).
+//!
 //! **Restore this state** and **Name this version** run app core's `history.restore` and `history.name` (#443); a
 //! build without them shows both off, saying why.
 
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
@@ -30,6 +34,7 @@ use omuzaki_ops_api::{Actor, Grants, Mode, OpRecord, Request, Runner, TxId, tool
 use omuzaki_ui_api::panel::{Panel, PanelCtx};
 use omuzaki_ui_api::registry::Region;
 
+use super::compare::Compare;
 use super::pictures::{Atlas, HistoryPictures};
 use super::requests::{ShellRequest, ShellRequests};
 use super::text::{Word, say};
@@ -37,6 +42,7 @@ use crate::ds::icons;
 use crate::ds::paint::{self, RingPlacement};
 use crate::ds::theme::ds;
 use crate::ds::widgets::{ActorChip, ActorKind, Button, Choice, Dropdown, EmptyState, Segment, Segmented, TextField};
+use crate::panels::edit::EditFocus;
 
 omuzaki_ui_api::register_panel! { id: "history", title: "History", icon: icons::CLOCK, region: Region::Right,
 min_size: [288.0, 160.0], order: 30, build: |_| Box::new(History::default()) }
@@ -202,6 +208,10 @@ pub struct History {
     /// Where each step's picture comes from, when the app takes them, and the ones loaded.
     pictures: Option<HistoryPictures>,
     atlas: Atlas,
+    /// The step chosen with "Compare with…", waiting for the row to compare it with, by `seq`.
+    picking: Option<u64>,
+    /// The two steps being compared.
+    compare: Option<Compare>,
 }
 
 impl Panel for History {
@@ -216,10 +226,18 @@ impl Panel for History {
         undo_bar(ui, self.requests.as_ref());
         conflict_card(ui, log, self.requests.as_ref());
         self.viewing_line(ui);
+        self.picking_line(ui, log);
         self.filters(ui, log, ctx.actor());
         ui.add_space(4.0);
         ui.scope(|ui| self.list(ui, log, ctx.runner(), ctx.actor()));
-        if self.open.is_some() && ui.ctx().input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+        // The compare window takes Esc first, then a pick waiting for its second row, then the details.
+        if let Some(compare) = &mut self.compare
+            && !compare.show(ui.ctx(), self.pictures.as_ref(), ctx.view::<EditFocus>())
+        {
+            self.compare = None;
+        } else if self.picking.is_some() && ui.ctx().input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+            self.picking = None;
+        } else if self.open.is_some() && ui.ctx().input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
             self.set_open(None, log, ctx.runner());
         }
         // A step no longer in the log (a new project) takes its preview with it.
@@ -232,6 +250,109 @@ impl Panel for History {
 }
 
 impl History {
+    /// The keys a row takes while it has the keyboard: ↑ and ↓ move, Enter opens or closes its details (or ends a
+    /// pick), Ctrl+Enter compares it with the open or picked step.
+    #[allow(clippy::too_many_arguments, reason = "the row's own facts, passed down from the list")]
+    fn row_keys(
+        &mut self,
+        ctx: &egui::Context,
+        id: Id,
+        record: &OpRecord,
+        place: usize,
+        open: bool,
+        log: &HistoryLog,
+        runner: &dyn Runner,
+    ) {
+        // The rows take ↑ and ↓ themselves, so egui's own arrow navigation never skips a row or leaves the list.
+        let filter = egui::EventFilter { vertical_arrows: true, escape: open, ..egui::EventFilter::default() };
+        ctx.memory_mut(|m| m.set_focus_lock_filter(id, filter));
+        self.focus = Some(record.seq);
+        let (down, up, enter, with) = ctx.input_mut(|i| {
+            (
+                i.consume_key(Modifiers::NONE, Key::ArrowDown),
+                i.consume_key(Modifiers::NONE, Key::ArrowUp),
+                i.consume_key(Modifiers::NONE, Key::Enter),
+                i.consume_key(Modifiers::COMMAND, Key::Enter),
+            )
+        });
+        if with && let Some(first) = self.picking.or(self.open) {
+            self.compare_steps(first, record.seq, log, runner);
+        }
+        let enter = enter && !self.take_pick(record.seq, log, runner);
+        if down && place + 1 < self.rows.len() {
+            self.move_to = Some(place + 1);
+        }
+        if up && place > 0 {
+            self.move_to = Some(place - 1);
+        }
+        if enter {
+            self.set_open((!open).then_some(record.seq), log, runner);
+            // The "Viewing" line above the list pushes it down: keep the opened row, and so its details, in view.
+            self.move_to = self.move_to.or(Some(place));
+        }
+        if self.move_to.is_some() || enter {
+            ctx.request_repaint();
+        }
+    }
+
+    /// A click on a row: with Ctrl, compares it with the open step; while a pick waits, ends it; otherwise opens or
+    /// closes its details.
+    fn row_clicked(
+        &mut self,
+        ctx: &egui::Context,
+        record: &OpRecord,
+        place: usize,
+        open: bool,
+        log: &HistoryLog,
+        runner: &dyn Runner,
+    ) {
+        let ctrl = ctx.input(|i| i.modifiers.command);
+        match self.open.filter(|first| ctrl && *first != record.seq) {
+            Some(first) => self.compare_steps(first, record.seq, log, runner),
+            None if self.take_pick(record.seq, log, runner) => {}
+            None => {
+                self.set_open((!open).then_some(record.seq), log, runner);
+                self.move_to = Some(place);
+            }
+        }
+    }
+
+    /// The two steps being compared, while the compare window is open.
+    pub fn compare(&self) -> Option<&Compare> {
+        self.compare.as_ref()
+    }
+
+    /// Opens the compare window over the steps `a` and `b`.
+    fn compare_steps(&mut self, a: u64, b: u64, log: &HistoryLog, runner: &dyn Runner) {
+        self.picking = None;
+        let find = |seq: u64| log.records.iter().find(|r| r.seq == seq);
+        if let (Some(a), Some(b)) = (find(a), find(b))
+            && a.seq != b.seq
+        {
+            self.compare = Some(Compare::open(a, b, log, runner));
+            self.set_open(None, log, runner);
+        }
+    }
+
+    /// When "Compare with…" is waiting, compares its step with `seq` and says so.
+    fn take_pick(&mut self, seq: u64, log: &HistoryLog, runner: &dyn Runner) -> bool {
+        match self.picking.filter(|first| *first != seq) {
+            Some(first) => {
+                self.compare_steps(first, seq, log, runner);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// While "Compare with…" waits for its second row: which step, and how to cancel.
+    fn picking_line(&self, ui: &mut Ui, log: &HistoryLog) {
+        let Some(record) = self.picking.and_then(|seq| log.records.iter().find(|r| r.seq == seq)) else { return };
+        let ctx = ui.ctx().clone();
+        let line = say(&ctx, Word::HistoryComparePick, &[("label", &step_label(record))]);
+        ui.add(egui::Label::new(RichText::new(line).color(ds(&ctx).theme.accent)).wrap());
+    }
+
     /// How many steps' pictures are loaded as textures: at most the rows drawn lately, never the whole log.
     pub fn pictures_kept(&self) -> usize {
         self.atlas.kept()
@@ -400,41 +521,20 @@ impl History {
             self.move_to = None;
         }
         if response.has_focus() {
-            // The rows take ↑ and ↓ themselves, so egui's own arrow navigation never skips a row or leaves the list.
-            let filter = egui::EventFilter { vertical_arrows: true, escape: open, ..egui::EventFilter::default() };
-            ctx.memory_mut(|m| m.set_focus_lock_filter(id, filter));
-            self.focus = Some(record.seq);
-            let (down, up, enter) = ctx.input_mut(|i| {
-                (
-                    i.consume_key(Modifiers::NONE, Key::ArrowDown),
-                    i.consume_key(Modifiers::NONE, Key::ArrowUp),
-                    i.consume_key(Modifiers::NONE, Key::Enter),
-                )
-            });
-            if down && place + 1 < self.rows.len() {
-                self.move_to = Some(place + 1);
-            }
-            if up && place > 0 {
-                self.move_to = Some(place - 1);
-            }
-            if enter {
-                self.set_open((!open).then_some(record.seq), log, runner);
-                // The "Viewing" line above the list pushes it down: keep the opened row, and so its details, in view.
-                self.move_to = self.move_to.or(Some(place));
-            }
-            if self.move_to.is_some() || enter {
-                ctx.request_repaint();
-            }
+            self.row_keys(&ctx, id, record, place, open, log, runner);
         }
         if response.clicked() {
-            self.set_open((!open).then_some(record.seq), log, runner);
-            self.move_to = Some(place);
+            self.row_clicked(&ctx, record, place, open, log, runner);
         }
         if open && ui.is_rect_visible(rect) {
             let no_preview =
                 self.no_preview.as_ref().filter(|(seq, _)| *seq == record.seq).map(|(_, why)| why.as_str());
-            let place = Place { requests: self.requests.as_ref(), runner, actor, no_preview };
+            let compare = Cell::new(false);
+            let place = Place { requests: self.requests.as_ref(), runner, actor, no_preview, compare: &compare };
             popover(&ctx, rect, record, log, &place);
+            if compare.get() {
+                self.picking = Some(record.seq);
+            }
         }
         let viewing = self.preview.as_ref().and_then(Preview::seq) == Some(record.seq);
         if ui.is_rect_visible(rect) {
@@ -486,6 +586,8 @@ struct Place<'a> {
     runner: &'a dyn Runner,
     actor: &'a Actor,
     no_preview: Option<&'a str>,
+    /// Set when "Compare with…" was pressed.
+    compare: &'a Cell<bool>,
 }
 
 /// The width of a step's details, in points.
@@ -557,7 +659,14 @@ fn details_ui(ui: &mut Ui, record: &OpRecord, log: &HistoryLog, place: &Place<'_
                 let call = serde_json::json!({"name": tool_name(&record.op), "arguments": record.args});
                 ctx.copy_text(serde_json::to_string_pretty(&call).unwrap_or_else(|_| call.to_string()));
             }
+            let compare = say(&ctx, Word::HistoryCompare, &[]);
+            if ui.add(Button::new(&compare).ghost().icon(icons::GIT_DIFF)).clicked() {
+                place.compare.set(true);
+            }
         });
+        ui.label(
+            RichText::new(say(&ctx, Word::HistoryCompareHint, &[])).font(ds.text.small.clone()).color(ds.theme.text3),
+        );
         ui.horizontal_wrapped(|ui| {
             let to = serde_json::json!({"tx": record.tx});
             let restore =
