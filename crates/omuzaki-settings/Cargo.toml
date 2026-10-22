@@ -37,3 +37,4 @@ workspace = true
 kind = "Implementation"
 summary = "settings store (SE-10): `settings.toml` and `machine.toml` edited in place (comments and unknown keys kept), locked merge-on-write by a debounced writer thread, per-key migrations, `Arc` snapshots and change events"
 wasm = false
+registers = true
