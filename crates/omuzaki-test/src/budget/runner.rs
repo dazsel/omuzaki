@@ -263,10 +263,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut c = Config { provenance: Some(provenance()), strict: false, ..config(dir.path()) };
         let mut previous = measure(&c).unwrap();
-        // Pretend last night's busy-wait was twice as fast: today is a 100% slowdown of a metric with no budget.
+        // Pretend last night's busy-wait was a thousand times as fast: a slowdown of a metric with no budget that no
+        // amount of load on this machine can hide (halving it could: a slow first run left today under twice it, #2266).
         for row in &mut previous.rows {
             if row.metric.key == SYNTHETIC_KEY {
-                row.metric.stats.p95 /= 2.0;
+                row.metric.stats.p95 /= 1000.0;
             }
         }
         let prev_path = dir.path().join("previous.json");
