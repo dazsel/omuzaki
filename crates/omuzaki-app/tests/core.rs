@@ -13,7 +13,8 @@ use omuzaki_doc::{Project, StoreError};
 use omuzaki_doc_api::{DocPath, DocRead, Patch};
 use omuzaki_mcp::{HttpOptions, InAppSpec};
 use omuzaki_ops_api::{
-    Actor, Decision, Event, Grants, Mode, Need, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op,
+    Actor, ConnectionService, Decision, Event, Grants, Mode, Need, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope,
+    ServicesBuilder, Undo, register_op,
 };
 use rmcp::model::{CallToolRequestParams, CallToolResult, ClientCapabilities, ClientConfig, Implementation};
 use rmcp::service::{RoleClient, RunningService};
@@ -45,6 +46,43 @@ impl Op for SetNote {
     }
 }
 register_op!(SetNote);
+
+/// A service a host brings, as the studio brings its performer.
+trait Greeting: Send + Sync {
+    fn greeting(&self) -> String;
+}
+
+struct Hello;
+
+impl Greeting for Hello {
+    fn greeting(&self) -> String {
+        "hello from the host".into()
+    }
+}
+
+/// Sets the note to the host's greeting, and checks the core's own connections are there beside it.
+#[derive(Serialize, Deserialize, JsonSchema)]
+struct Greet {}
+
+impl Op for Greet {
+    fn meta() -> OpMeta {
+        OpMeta {
+            name: "test.greet",
+            summary: "Set the project's note to the host's greeting.",
+            kind: OpKind::Edit,
+            scope: Scope::EditCharacter,
+            undo: Undo::Auto,
+        }
+    }
+
+    fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+        ctx.service::<dyn ConnectionService>()?;
+        let greeting = ctx.service::<dyn Greeting>()?.greeting();
+        let at = note_path();
+        Ok(Plan::edit(Patch::new().with(at.clone(), ctx.doc.get(&at).cloned(), Some(json!(greeting)))))
+    }
+}
+register_op!(Greet);
 
 fn note_path() -> DocPath {
     DocPath::parse("project/note").unwrap()
@@ -198,6 +236,22 @@ fn a_project_open_in_one_core_is_refused_to_another() {
     let runner = core.runner();
     assert_eq!(runner.get(&note_path(), &Grants::person()).unwrap(), Some(json!("still works")));
     drop(runner);
+    core.close().unwrap();
+}
+
+#[test]
+fn the_host_s_services_reach_ops_beside_the_core_s_own() {
+    let tmp = tempfile::tempdir().unwrap();
+    AppCore::create(tmp.path(), "demo", options()).unwrap().close().unwrap();
+    let without = AppCore::open(tmp.path(), options()).unwrap();
+    let refused = without.run("test.greet", json!({})).unwrap_err();
+    assert_eq!(refused.code, omuzaki_ops_api::ErrorCode::Unavailable, "{refused}");
+    without.close().unwrap();
+
+    let host = ServicesBuilder::new().insert::<dyn Greeting>(std::sync::Arc::new(Hello)).build();
+    let core = AppCore::open(tmp.path(), options().with_services(host)).unwrap();
+    core.run("test.greet", json!({})).unwrap();
+    assert_eq!(note(&core), Some(json!("hello from the host")));
     core.close().unwrap();
 }
 

@@ -13,7 +13,7 @@ use omuzaki_history_api::{JournalSink, JournalStatus};
 use omuzaki_mcp::{AccessToken, Connections, HttpOptions, HttpServer, InAppLink, InAppSpec, McpOptions, McpServer};
 use omuzaki_ops::Executor;
 use omuzaki_ops_api::{
-    Actor, ConnectionService, Event, Grants, Jobs, Mode, OpError, Outcome, ProjectDir, Request, Runner,
+    Actor, ConnectionService, Event, Grants, Jobs, Mode, OpError, Outcome, ProjectDir, Request, Runner, Services,
     ServicesBuilder, Sessions,
 };
 use tokio::runtime::{Handle, Runtime};
@@ -45,6 +45,9 @@ pub struct AppOptions {
     pub journal: JournalOptions,
     /// The version written into the journal's session records.
     pub app_version: String,
+    /// The host's own services (the studio's performer, camera input and windows), which the core's executor carries
+    /// alongside its own connections.
+    pub services: Services,
 }
 
 impl AppOptions {
@@ -56,6 +59,7 @@ impl AppOptions {
             agent_grants: Grants::agent_default(),
             journal: JournalOptions::default(),
             app_version: env!("CARGO_PKG_VERSION").to_owned(),
+            services: Services::none(),
         }
     }
 
@@ -76,6 +80,14 @@ impl AppOptions {
     #[must_use]
     pub fn with_agent_grants(mut self, grants: Grants) -> Self {
         self.agent_grants = grants;
+        self
+    }
+
+    /// These options with the host's services: the executor gets them plus the core's own (a host's
+    /// [`ConnectionService`] is replaced by the core's, which tracks the agents it serves).
+    #[must_use]
+    pub fn with_services(mut self, services: Services) -> Self {
+        self.services = services;
         self
     }
 }
@@ -134,7 +146,9 @@ impl AppCore {
         let mut shadow = reopened.project;
 
         let connections = Connections::default();
-        let services = ServicesBuilder::new().insert::<dyn ConnectionService>(Arc::new(connections.clone())).build();
+        let services = ServicesBuilder::from(options.services.clone())
+            .insert::<dyn ConnectionService>(Arc::new(connections.clone()))
+            .build();
         let executor =
             Executor::restore(Box::new(shadow.clone()), Arc::new(SystemClock::new()), wall.clone(), &reopened.history)?
                 .with_services(services)

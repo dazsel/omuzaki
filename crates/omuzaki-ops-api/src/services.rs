@@ -151,6 +151,14 @@ impl ServicesBuilder {
     }
 }
 
+/// Starts a builder from a set built elsewhere, so a host can add its own services to one an app handed it (the
+/// studio's performer and windows, plus the app core's connections). The built set itself never changes.
+impl From<Services> for ServicesBuilder {
+    fn from(services: Services) -> Self {
+        Self { services }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,6 +229,15 @@ mod tests {
         let copy = services.clone();
         let (a, b) = (services.get::<dyn Greeter>(), copy.get::<dyn Greeter>());
         assert!(matches!((a, b), (Some(a), Some(b)) if std::ptr::addr_eq(a, b)));
+    }
+
+    #[test]
+    fn a_built_set_extends_into_a_new_one_and_stays_as_it_was() {
+        let host = ServicesBuilder::new().insert::<dyn Greeter>(Arc::new(English)).build();
+        let extended = ServicesBuilder::from(host.clone()).insert::<dyn Counter>(Arc::new(Three)).build();
+        assert_eq!((host.len(), extended.len()), (1, 2));
+        assert_eq!(extended.get::<dyn Greeter>().map(Greeter::greet), Some("hello".into()));
+        assert!(host.get::<dyn Counter>().is_none());
     }
 
     #[test]

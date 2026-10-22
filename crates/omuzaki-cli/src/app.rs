@@ -50,7 +50,6 @@ fn run_with_runner(cli: &Cli) -> Result<Reply, OpError> {
     execute(cli, executor, &session, &mut io::stdin()).map(Reply::ok)
 }
 
-/// Runs `cli`'s command on the project in `dir`, opened through the app core, and closes it.
 /// Relays stdio into the studio that holds `dir`, keeping the client's credential in the user's local data folder.
 fn bridge_to_studio(dir: &Path) -> Result<Reply, OpError> {
     crate::mcp::log_to_stderr();
@@ -60,6 +59,7 @@ fn bridge_to_studio(dir: &Path) -> Result<Reply, OpError> {
     Ok(Reply::ok(String::new()))
 }
 
+/// Runs `cli`'s command on the project in `dir`, opened through the app core, and closes it.
 fn run_on_core(cli: &Cli, dir: &Path, mut session: Session) -> Result<Reply, OpError> {
     let core = match AppCore::open(dir, AppOptions::headless(session.actor.clone())) {
         Ok(core) => core,
