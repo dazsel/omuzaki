@@ -376,10 +376,9 @@ impl Rig {
                         Arc::new(omuzaki_http_mock::FakeHttp::new()),
                         Arc::new(omuzaki_live::Automation::new()),
                     )))
-                    // Settings in memory: the `settings.*` examples read and write them as they would in the app.
-                    .insert::<dyn omuzaki_settings_api::service::Settings>(Arc::new(
-                        omuzaki_settings_mock::MemorySettings::default(),
-                    ))
+                    // Settings in memory: the `settings.*` examples read and write them as they would in the app,
+                    // with the profile `stream-0001` the `settings.profile.*` examples name.
+                    .insert::<dyn omuzaki_settings_api::service::Settings>(settings_with_a_profile())
                     .insert::<dyn PerformHost>(Arc::new(IdleHost))
                     .insert::<dyn InputHost>(Arc::new(IdleInput))
                     // Snapshots with nothing to reload: `project.save` and `project.reload` run as they would on a
@@ -828,4 +827,14 @@ fn the_snapshot_leaves_out_the_apps_own_folder_only() {
     std::fs::write(dir.path().join("marker.txt"), b"stray").expect("write a stray file");
     let files: Vec<String> = files_under(dir.path()).into_keys().collect();
     assert_eq!(files, vec!["marker.txt".to_string()]);
+}
+
+/// Settings in memory holding one profile, "Stream" (`stream-0001`, the mock's first id).
+fn settings_with_a_profile() -> Arc<dyn omuzaki_settings_api::service::Settings> {
+    use omuzaki_settings_api::service::Settings as _;
+    let settings = omuzaki_settings_mock::MemorySettings::default();
+    let person = Actor::Person { name: "conformance".into() };
+    let current = omuzaki_settings_api::profile::ProfileSource::Current;
+    settings.save_profile("Stream", current, false, Mode::Apply, &person).expect("the mock saves a profile");
+    Arc::new(settings)
 }

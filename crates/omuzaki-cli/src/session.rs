@@ -11,6 +11,7 @@ use omuzaki_ops::Executor;
 use omuzaki_ops_api::{
     Actor, ConnectionService, Grants, Jobs, OpError, ProjectDir, ProjectDirError, Runner, ServicesBuilder, Sessions,
 };
+use omuzaki_settings_api::service::Settings;
 
 use omuzaki_app::AppOptions;
 
@@ -113,9 +114,13 @@ pub fn open_project(cli: &Cli, dir: &Path, actor: Actor) -> Result<ProjectRunner
 /// `--recover` says, and for `mcp` with its `--grant` and `--tools`.
 pub fn core_options(cli: &Cli, actor: Actor) -> AppOptions {
     let mut options = AppOptions::headless(actor).with_recover(cli.recover.mode());
-    // The asset store is the person's, the one the studio uses: an import here is there in the studio.
+    // The asset store and the settings are the person's, the ones the studio uses: an import here is there in the
+    // studio, and `settings.set` changes the same file.
     if let Ok(paths) = omuzaki_settings::Paths::from_env() {
-        options = options.with_data_dir(paths.data());
+        let settings: Arc<dyn Settings> = Arc::new(omuzaki_settings::Store::open(&paths));
+        options = options
+            .with_data_dir(paths.data())
+            .with_services(ServicesBuilder::new().insert::<dyn Settings>(settings).build());
     }
     match &cli.command {
         // The person running `omuzaki mcp --grant ...` says yes in advance, since nobody is at a window to be asked.

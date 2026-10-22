@@ -595,7 +595,7 @@ fn every_mutating_settings_method_takes_a_mode_and_an_actor() {
 
 #[test]
 fn every_session_store_method_is_a_read_a_durable_write_with_a_result_or_a_named_debounced_write() {
-    const DEBOUNCED: [&str; 3] = ["forget", "set_window", "mark_version_seen"];
+    const DEBOUNCED: [&str; 4] = ["forget", "restore_recent", "set_window", "mark_version_seen"];
     let methods = trait_methods("src/session.rs", "SessionStore");
     assert!(methods.len() >= 6, "the scan found only {} methods: {methods:?}", methods.len());
     for (name, sig) in &methods {

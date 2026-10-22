@@ -118,6 +118,19 @@ impl SessionState {
         }
     }
 
+    /// Puts a forgotten entry back at `index` of Recent (the end when the list is shorter), and makes it the last
+    /// project again when `last`: the undo of [`forget`](Self::forget). An entry for the same path already there is
+    /// replaced.
+    pub fn restore_recent(&mut self, entry: RecentProject, index: usize, last: bool) {
+        if last {
+            self.last_project = Some(entry.path.clone());
+        }
+        self.recent.retain(|r| r.path != entry.path);
+        let index = index.min(self.recent.len());
+        self.recent.insert(index, entry);
+        self.recent.truncate(MAX_RECENT);
+    }
+
     /// Records a window's geometry.
     pub fn set_window(&mut self, id: &str, geometry: WindowGeometry) {
         self.windows.insert(id.to_owned(), geometry);
@@ -175,6 +188,10 @@ pub trait SessionStore: Send + Sync {
     /// [`flush`](Self::flush); it never fails the caller.
     fn forget(&self, project: &Path);
 
+    /// Puts a forgotten entry back at `index` (see [`SessionState::restore_recent`]): the undo of `session.forget`.
+    /// Debounced, like [`forget`](Self::forget).
+    fn restore_recent(&self, entry: RecentProject, index: usize, last: bool);
+
     /// Remembers a window's geometry. Debounced, like [`forget`](Self::forget).
     fn set_window(&self, id: &str, geometry: WindowGeometry);
 
@@ -214,6 +231,22 @@ mod tests {
         assert_eq!(s.opening.as_deref(), Some(Path::new("/p/a")));
         s.opened(Path::new("/p/a"), "A", 1);
         assert_eq!(s.opening, None);
+    }
+
+    #[test]
+    fn a_forgotten_entry_comes_back_where_it_was() {
+        let mut s = SessionState::default();
+        for (i, p) in ["/p/c", "/p/b", "/p/a"].iter().enumerate() {
+            s.opened(Path::new(p), "n", i64::try_from(i).unwrap_or(0));
+        }
+        let gone = s.recent[1].clone();
+        s.forget(Path::new("/p/b"));
+        s.restore_recent(gone.clone(), 1, false);
+        assert_eq!(s.recent[1], gone);
+        assert_eq!(s.recent.len(), 3);
+        s.restore_recent(gone, 99, true);
+        assert_eq!(s.last_project.as_deref(), Some(Path::new("/p/b")));
+        assert_eq!(s.recent.len(), 3, "one entry per path");
     }
 
     #[test]

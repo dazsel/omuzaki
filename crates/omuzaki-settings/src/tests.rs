@@ -636,12 +636,13 @@ fn reload_keeps_a_change_that_is_not_written_yet() {
 }
 
 #[test]
-fn profiles_are_not_stored_and_session_state_is_kept_in_memory() {
+fn a_store_starts_with_no_profiles_and_a_saved_one_is_listed() {
     let rig = Rig::new();
     let store = rig.open();
     assert_eq!(store.profiles(), Vec::new());
     assert_eq!(store.switch_profile(None, Mode::Apply, &person()).unwrap().changed, 0);
-    assert!(store.save_profile("x", ProfileSource::Current, false, Mode::Apply, &person()).is_err());
+    let saved = store.save_profile("x", ProfileSource::Current, false, Mode::Apply, &person()).unwrap();
+    assert_eq!(store.profiles(), vec![saved]);
     store.session().begin_open(Path::new("/p/a")).unwrap();
     assert_eq!(store.session().state().opening.as_deref(), Some(Path::new("/p/a")));
 }

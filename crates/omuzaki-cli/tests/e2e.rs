@@ -217,6 +217,24 @@ fn io_import_stores_the_model_in_the_person_s_asset_store() {
     assert!(walk_text(project.path()).contains(hash), "the project records the asset by its hash");
 }
 
+/// The command line works in the person's settings: a value set in one process is there in the next, in the file the
+/// studio reads (`machine.toml` for a machine key).
+#[test]
+fn a_setting_changed_from_the_command_line_is_the_persons_in_the_next_process() {
+    let project = new_project();
+    let folders = tempfile::tempdir().expect("temp dir");
+    let env = [("OMUZAKI_DATA_DIR", folders.path()), ("OMUZAKI_CONFIG_DIR", folders.path())];
+    let args = json!({"key": "obs.port", "value": 4460}).to_string();
+    let set = run_in(OMUZAKI, Some(project.path()), &["run", "settings.set", "--args", &args], &env);
+    assert_eq!(set.code, Some(0), "{}\n{}", set.stdout, set.stderr);
+    let read = json!({"key": "obs.port"}).to_string();
+    let got = run_in(OMUZAKI, Some(project.path()), &["--json", "run", "settings.get", "--args", &read], &env);
+    let reply: Value = serde_json::from_str(&got.stdout).expect("--json output");
+    assert_eq!(reply["plan"]["output"]["value"], 4460, "{reply}");
+    let machine = std::fs::read_to_string(folders.path().join("machine.toml")).expect("machine.toml");
+    assert!(machine.contains("4460"), "{machine}");
+}
+
 /// Every TOML file's text under `dir`, the app's own folder left out.
 fn walk_text(dir: &Path) -> String {
     let mut text = String::new();

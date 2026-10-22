@@ -39,6 +39,7 @@ omuzaki-app = { path = "../omuzaki-app" }
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-doc = { path = "../omuzaki-doc" }
 omuzaki-settings = { path = "../omuzaki-settings" }
+omuzaki-settings-api = { path = "../omuzaki-settings-api" }
 omuzaki-doc-api = { path = "../omuzaki-doc-api" }
 omuzaki-mcp = { path = "../omuzaki-mcp" }
 omuzaki-ops = { path = "../omuzaki-ops" }

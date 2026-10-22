@@ -8,7 +8,7 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use omuzaki_settings_api::error::SettingError;
-use omuzaki_settings_api::session::{SessionState, SessionStore, WindowGeometry};
+use omuzaki_settings_api::session::{RecentProject, SessionState, SessionStore, WindowGeometry};
 
 use crate::locked;
 
@@ -36,6 +36,10 @@ impl SessionStore for Ephemeral {
 
     fn forget(&self, project: &Path) {
         locked(&self.state).forget(project);
+    }
+
+    fn restore_recent(&self, entry: RecentProject, index: usize, last: bool) {
+        locked(&self.state).restore_recent(entry, index, last);
     }
 
     fn set_window(&self, id: &str, geometry: WindowGeometry) {

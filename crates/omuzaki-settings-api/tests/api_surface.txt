@@ -212,6 +212,7 @@ src/session.rs: struct SessionState: pub opening: Option<PathBuf>
 src/session.rs: impl SessionState: pub fn begin_open(&mut self, project: &Path)
 src/session.rs: impl SessionState: pub fn opened(&mut self, project: &Path, name: &str, at: i64)
 src/session.rs: impl SessionState: pub fn forget(&mut self, project: &Path)
+src/session.rs: impl SessionState: pub fn restore_recent(&mut self, entry: RecentProject, index: usize, last: bool)
 src/session.rs: impl SessionState: pub fn set_window(&mut self, id: &str, geometry: WindowGeometry)
 src/session.rs: impl SessionState: pub fn mark_version_seen(&mut self, version: &str)
 src/session.rs: pub trait SessionStore: Send + Sync
@@ -219,6 +220,7 @@ src/session.rs: trait SessionStore: fn state(&self) -> SessionState
 src/session.rs: trait SessionStore: fn begin_open(&self, project: &Path) -> Result<(), SettingError>
 src/session.rs: trait SessionStore: fn opened(&self, project: &Path, name: &str) -> Result<(), SettingError>
 src/session.rs: trait SessionStore: fn forget(&self, project: &Path)
+src/session.rs: trait SessionStore: fn restore_recent(&self, entry: RecentProject, index: usize, last: bool)
 src/session.rs: trait SessionStore: fn set_window(&self, id: &str, geometry: WindowGeometry)
 src/session.rs: trait SessionStore: fn mark_version_seen(&self, version: &str)
 src/session.rs: trait SessionStore: fn flush(&self) -> Result<(), SettingError>

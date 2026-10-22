@@ -10,8 +10,9 @@
 //! | `store` | [`Store`]: load, snapshot, events, the change log and the debounced writer thread |
 //! | `backend` | the private `Backend` trait and the file backend: lock, merge, atomic replace, quarantine |
 //! | `document` | reading keys out of a file and merging edits into its text without touching anything else |
-//! | `ephemeral` | session state in memory until the session file store lands |
-//! | [`ops`] | the `settings.*` ops over any `Settings` service (#767) |
+//! | [`session`] | [`SessionFile`]: `session.toml` in the local data folder, the opening guard written at once (D9) |
+//! | `ephemeral` | session state in memory, for a store over a test backend (tests only) |
+//! | [`ops`] | the `settings.*` and `session.*` ops over any `Settings` service (#767, #770) |
 //!
 //! # Choices a reviewer may disagree with
 //!
@@ -28,14 +29,18 @@
 
 mod backend;
 mod document;
+#[cfg(test)]
 mod ephemeral;
 pub mod ops;
 mod paths;
+mod profiles;
+pub mod session;
 mod store;
 #[cfg(test)]
 mod tests;
 
 pub use paths::{CONFIG_DIR_VAR, DATA_DIR_VAR, Paths};
+pub use session::SessionFile;
 pub use store::{DEBOUNCE, MAX_DELAY, Store};
 
 use std::sync::{Mutex, MutexGuard, PoisonError};

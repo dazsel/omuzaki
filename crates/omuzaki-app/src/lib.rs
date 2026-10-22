@@ -39,7 +39,9 @@ pub use error::AppError;
 pub use omuzaki_doc::journal::Recover;
 pub use recover::RecoveryReport;
 
-// The MCP server registers ops (`agent.connection`), so an App that links the core links them through this (ADR 0015).
+// The MCP server registers ops (`agent.connection`) and the library contract registers its own, so an App that links
+// the core links them through this (ADR 0015).
 omuzaki_core::define_link! {
     omuzaki_mcp::link();
+    omuzaki_library_api::link();
 }
