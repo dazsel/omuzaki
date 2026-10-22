@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use omuzaki_char_api::{BodyFit, BodyRegion};
+use omuzaki_char_api::{BodyFit, BodyRegion, RegionEnd};
 use omuzaki_core::glam::DVec3;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -41,6 +41,9 @@ const FOOT_BISECTIONS: usize = 24;
 /// a centimetre on the soft-sd body): the leg swells and turns into the hip there, and a tube close to the edge would
 /// cut through the swelling between its rings.
 const WAIST_MARGIN: f64 = 0.03;
+/// The step the torso's lower cap is walked down in, metres, and the most steps.
+const CAP_STEP: f64 = 0.001;
+const CAP_STEPS: usize = 200;
 /// Bisections that find that ring: far below a micrometre.
 const WAIST_BISECTIONS: usize = 40;
 /// How far from the waist edge to the knee a thigh-high ends, as a fraction.
@@ -196,7 +199,9 @@ fn ankle_t(
     Ok(lo)
 }
 
-/// The first `t` along the leg whose ring lies wholly below the torso's lower edge, [`WAIST_MARGIN`] clear of it.
+/// The first `t` along the leg whose ring lies wholly below the torso, [`WAIST_MARGIN`] clear of it: below its lower
+/// edge, and below the lowest point of the cap the torso closes in under that edge (the crotch, between the thighs,
+/// where the two tubes meet on the midplane and could not pass either side of it).
 fn waist_t(
     fit: &dyn BodyFit,
     region: BodyRegion,
@@ -207,7 +212,14 @@ fn waist_t(
     let margin = WAIST_MARGIN * length;
     let edge =
         fit.section(BodyRegion::Torso, 0.0).ok_or(GarmentError::NoSection { region: BodyRegion::Torso, t: 0.0 })?;
-    let (origin, up) = (edge.centre.as_dvec3(), edge.axis.as_dvec3().normalize_or_zero());
+    let up = edge.axis.as_dvec3().normalize_or_zero();
+    #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)] // a fit is sampled in f32
+    let depth = (1..=CAP_STEPS)
+        .map(|k| k as f64 * CAP_STEP)
+        .take_while(|&h| fit.cap(BodyRegion::Torso, RegionEnd::Start, h as f32).is_some())
+        .last()
+        .unwrap_or(0.0);
+    let origin = edge.centre.as_dvec3() - up * depth;
     // How far above the torso's lower edge the highest point of the ring at `t` is (negative below it).
     let height = |t: f64| -> Result<f64, GarmentError> {
         let ring = section(t)?;
