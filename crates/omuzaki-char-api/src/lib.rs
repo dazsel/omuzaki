@@ -92,7 +92,9 @@ pub use rig::{
     BindError, CharacterRig, ExtraBone, JointFit, RigContribution, extra_id, humanoid_id, humanoid_of, rest_skeleton,
 };
 pub use runtime::{DynamicMesh, PartRuntime, PoseSource, RuntimeCost, StepCtx};
-pub use services::{AssetError, AssetSource, BuildServices, RasterizerFactory};
+pub use services::{
+    AssetError, AssetSource, BuildServices, RasterizerFactory, RasterizerRegistration, linked_rasterizer,
+};
 pub use shape::{PRESET_IDS, ShapeProfile};
 pub use skin::{BrushFalloff, WeightBrush, apply_brushes, influence_cut};
 pub use stature::{Stature, scale_output};
