@@ -12,6 +12,8 @@ use omuzaki_audio_engine::{CpalBackend, LiveEngine};
 use omuzaki_core::glam::UVec2;
 use omuzaki_core::time::{Clock, Seconds, SystemClock};
 use omuzaki_face_api::ExpressionSet;
+use omuzaki_input::{BindingDispatcher, BindingRunner, DispatchReport, Hub, HubConfig};
+use omuzaki_input_api::feed::{InputControl, InputHub, IntentFeed, MotionFeed};
 use omuzaki_obs::service::ObsService;
 use omuzaki_ops_api::{Actor, Runner, ServicesBuilder};
 use omuzaki_render::WgpuRenderer;
@@ -82,6 +84,37 @@ pub struct LiveApp {
     hotkeys: Hotkeys,
     /// Feeds the program frame to the recorder, the replay buffer and the live outputs while any of them runs.
     feed: Option<ProgramFeed>,
+    /// The OS input hub and the dispatcher that runs its bindings; `None` if the hub's store could not be read.
+    input: Option<InputWiring>,
+}
+
+/// The OS input hub (ADR 0060) as the app runs it: its control is in the runner's services (the `input.*` capture and
+/// binding ops), and the dispatcher runs each binding's action as the person (#469). Capture stays off until a person
+/// starts it from a drawn indicator.
+struct InputWiring {
+    /// Runs the bindings' actions; dropped first, so no action runs while the hub stops.
+    dispatcher: Option<BindingDispatcher>,
+    /// The motion and intent feeds, held for the stage until it reads input motion (ST-1, ST-2).
+    _feeds: Option<(Box<dyn MotionFeed>, Box<dyn IntentFeed>)>,
+    hub: Hub,
+}
+
+impl InputWiring {
+    /// Takes the hub's feeds and starts the dispatcher on `runner`, as the person at the app.
+    fn start(hub: Hub, runner: Arc<dyn Runner>) -> Self {
+        let Some((motion, intents, bindings)) = hub.take_feeds() else {
+            return Self { dispatcher: None, _feeds: None, hub };
+        };
+        let person = Actor::Person { name: "you".to_owned() };
+        let dispatcher = match BindingRunner::new(bindings, runner, hub.control(), person).spawn() {
+            Ok(dispatcher) => Some(dispatcher),
+            Err(error) => {
+                tracing::warn!(%error, "the binding dispatcher did not start: bindings do nothing");
+                None
+            }
+        };
+        Self { dispatcher, _feeds: Some((motion, intents)), hub }
+    }
 }
 
 /// The frame rate the program is fed to the outputs at (spec §10's budget scene).
@@ -137,6 +170,8 @@ impl LiveApp {
         transparency: Transparency,
         base: HumanoidPose,
     ) -> Result<Self, StartError> {
+        // The input hub keeps its bindings in the data folder that holds the models' folder.
+        let input_dir = models.and_then(Path::parent).map(Path::to_path_buf);
         // The trackers stamp frames on the perform loop's own clock, so frames and steps share one time line.
         let tracking: Arc<dyn Clock> = match clock.observer() {
             Some(observer) => Arc::new(ObservedClock(observer)),
@@ -154,18 +189,30 @@ impl LiveApp {
                 None
             }
         };
-        let extras = Extras { phone: Some(inputs.phone), pose_out: Some(inputs.pose_out), models };
+        let extras = Extras { phone: Some(inputs.phone), pose_out: Some(inputs.pose_out), models, input_dir };
         Self::start_with(document, inputs.webcam, extras, clock, transparency, &base)
     }
 
     fn start_with(
         document: Document,
         tracker: Box<dyn Tracker>,
-        extras: Extras,
+        mut extras: Extras,
         clock: Box<dyn PerformClock>,
         transparency: Transparency,
         base: &HumanoidPose,
     ) -> Result<Self, StartError> {
+        // Input events are stamped on the perform loop's clock, as the trackers' frames are.
+        let input_clock: Arc<dyn Clock> = match clock.observer() {
+            Some(observer) => Arc::new(ObservedClock(observer)),
+            None => Arc::new(SystemClock::new()),
+        };
+        let hub = match Hub::new(HubConfig::new(input_clock, extras.input_dir.take())) {
+            Ok(hub) => Some(hub),
+            Err(error) => {
+                tracing::warn!(%error, "the input hub did not start: OS input and bindings are unavailable");
+                None
+            }
+        };
         let performer = live_performer(Box::new(NoSource), ChannelBuf::NEUTRAL, *base);
         // The viewport reads the tracker's latency while the input owns the tracker: two handles to one.
         let tracker = SharedTracker::new(tracker);
@@ -186,6 +233,9 @@ impl LiveApp {
         if let Some(models) = models {
             services = services.insert::<dyn ModelRegistry>(models);
         }
+        if let Some(hub) = &hub {
+            services = services.insert::<dyn InputControl>(hub.control());
+        }
         // Frames and the microphone count from one zero, so a take's audio lines up with its video.
         let epoch = std::time::Instant::now();
         let stream = match StreamService::with_epoch(epoch) {
@@ -204,6 +254,7 @@ impl LiveApp {
         }
         let services = services.build();
         let core = wiring::core_on(document, services).map_err(StartError::Ops)?;
+        let input = hub.map(|hub| InputWiring::start(hub, Arc::clone(&core.runner)));
         Ok(Self {
             rig: Some(rig),
             reader: Some(reader),
@@ -215,6 +266,7 @@ impl LiveApp {
             viewport: None,
             hotkeys: Hotkeys::new(),
             feed: stream.map(ProgramFeed::new),
+            input,
         })
     }
 
@@ -258,6 +310,18 @@ impl LiveApp {
     /// The app's executor: the runner, and the agent sessions on it.
     pub fn core(&self) -> Core {
         self.core.clone()
+    }
+
+    /// The OS input hub, for the shell's capture indicator and the binding editor (its `IndicatorHost`, `ChordStore` and
+    /// `ProtectList`). `None` if it did not start, or after [`shutdown`](Self::shutdown).
+    pub fn input_hub(&self) -> Option<&Hub> {
+        self.input.as_ref().map(|input| &input.hub)
+    }
+
+    /// What the bindings' actions did (ops run and failed, trigger edges, the latest failure), for the binding editor.
+    /// `None` if the dispatcher did not start, or after [`shutdown`](Self::shutdown).
+    pub fn binding_report(&self) -> Option<DispatchReport> {
+        self.input.as_ref()?.dispatcher.as_ref().map(BindingDispatcher::report)
     }
 
     /// The rig: the input and the loop's counts. `None` after [`shutdown`](Self::shutdown).
@@ -341,6 +405,8 @@ impl LiveApp {
         if let Some(feed) = self.feed.take() {
             feed.service().shutdown();
         }
+        // Capture ends and no binding runs from here on.
+        self.input = None;
         self.output.set_open(false);
         self.host.publish(&self.output, WindowHost::surface(&self.host).scale_factor);
         if let Some(view) = self.viewport.take()

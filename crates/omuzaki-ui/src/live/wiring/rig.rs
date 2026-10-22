@@ -42,6 +42,9 @@ pub struct Extras {
     pub pose_out: Option<Box<dyn PoseOutput>>,
     /// The model registry, for the `model.*` ops (the app puts it in the runner's services; the rig ignores it).
     pub models: Option<Arc<dyn ModelRegistry>>,
+    /// The data folder the OS input hub keeps its bindings and protected programs in; `None` keeps them in memory
+    /// (the app starts the hub; the rig ignores it).
+    pub input_dir: Option<std::path::PathBuf>,
 }
 
 impl std::fmt::Debug for Extras {
@@ -50,6 +53,7 @@ impl std::fmt::Debug for Extras {
             .field("phone", &self.phone.is_some())
             .field("pose_out", &self.pose_out.is_some())
             .field("models", &self.models.is_some())
+            .field("input_dir", &self.input_dir.is_some())
             .finish()
     }
 }
