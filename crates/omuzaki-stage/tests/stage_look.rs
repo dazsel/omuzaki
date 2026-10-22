@@ -102,3 +102,35 @@ fn a_character_from_the_document_comes_in_its_stored_look() {
     let error = draw_in_look(&broken, &id, &mut built).unwrap_err();
     assert_eq!(error.field.as_deref(), Some("look"));
 }
+
+#[test]
+fn the_look_turns_the_scenes_post_effects_off_and_sets_grain_and_grade() {
+    use omuzaki_render_api::{Bloom, DepthOfField, FilmGrain, Post};
+    use omuzaki_stage::scene::alone::post_in_look;
+    let scene = Post {
+        bloom: Some(Bloom { strength: 0.35, radius: 0.5, threshold: 0.9 }),
+        depth_of_field: Some(DepthOfField { focus_distance: 1.0, focus_range: 0.3, max_blur: 0.01 }),
+        grain: Some(FilmGrain { strength: 0.2 }),
+        ..Post::default()
+    };
+
+    // A look with no scene part: the scene's post as it is.
+    let mut post = scene;
+    post_in_look(&mut post, &LookParams::default().scene);
+    assert_eq!(post, scene);
+
+    let flat = look(&json!({ "overrides": { "scene": {
+        "bloom": false, "depth_of_field": false, "grain": 0.0, "grade": { "saturation": 0.5 }
+    } } }));
+    let mut post = scene;
+    post_in_look(&mut post, &flat.scene);
+    assert_eq!((post.bloom, post.depth_of_field, post.grain), (None, None, None), "switched off");
+    assert_eq!(post.grade.map(|g| g.saturation), Some(0.5));
+    assert_eq!(post.exposure, scene.exposure, "the scene's own settings stay");
+
+    let grainy = look(&json!({ "overrides": { "scene": { "bloom": true, "grain": 0.4 } } }));
+    let mut post = scene;
+    post_in_look(&mut post, &grainy.scene);
+    assert_eq!(post.bloom, scene.bloom, "a look that turns bloom on keeps the scene's");
+    assert_eq!(post.grain, Some(FilmGrain { strength: 0.4 }));
+}
