@@ -3,6 +3,10 @@
 //! automation engine runs against the same executor; a viewer's redeem arrives over a fake Twitch `EventSub` socket,
 //! and the rule's `op.run` switches the fake OBS to BRB. The switch is in the op log, by the show, with the rule as
 //! its cause.
+//!
+//! On the way, the two safety rails of design D11 and D5 run for real: the rule is inert until the person approves
+//! switching scenes for this show on this machine (no op can approve), and a graph added while the show runs is
+//! picked up by hot reload without a restart.
 
 // Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
 #![allow(clippy::expect_used)]
@@ -18,11 +22,16 @@ use omuzaki_core::time::SystemClock;
 use omuzaki_http_api::{HttpTransport, Method};
 use omuzaki_http_mock::FakeHttp;
 use omuzaki_live::Automation;
+use omuzaki_live::approvals::DiskApprovals;
+use omuzaki_live::vars::DiskVariables;
 use omuzaki_live_api::event::EventSink;
+use omuzaki_live_api::ids::ShowId;
+use omuzaki_live_api::need::Need;
+use omuzaki_live_api::services::ShowKey;
 use omuzaki_obs::service::ObsService;
 use omuzaki_obs::testing::{FakeConfig, FakeObs};
 use omuzaki_ops::Executor;
-use omuzaki_ops_api::{Actor, CauseKind, Grants, Mode, Request, Runner, ServicesBuilder};
+use omuzaki_ops_api::{Actor, CauseKind, Grants, Mode, Request, Runner, Scope, ServicesBuilder};
 use omuzaki_secrets_api::prelude::{SecretLabel, SecretStore, SecretValue};
 use omuzaki_secrets_mock::MemorySecrets;
 use omuzaki_twitch::helix::Helix;
@@ -97,6 +106,22 @@ fn until(what: &str, done: impl Fn() -> bool) {
     }
 }
 
+/// A graph added while the show runs is picked up by hot reload, without a restart (design D5).
+fn add_a_graph_while_running(runner: &Executor) {
+    person(
+        runner,
+        "automation.add_graph",
+        json!({
+            "id": "hello",
+            "graph": { "nodes": { "chat": { "kind": "on.event", "params": { "kind": "chat.message" } } } },
+        }),
+    );
+    until("the new graph to run", || {
+        let status = person(runner, "automation.status", json!({}));
+        status["graphs"].as_array().map(Vec::len) == Some(2)
+    });
+}
+
 #[test]
 fn a_twitch_redeem_switches_the_obs_scene_through_the_show() {
     omuzaki_live::link();
@@ -143,6 +168,12 @@ fn a_twitch_redeem_switches_the_obs_scene_through_the_show() {
             .with_services(services),
     );
     automation.attach(&(Arc::clone(&runner) as Arc<dyn Runner>));
+    // The app's data folder holds what this machine approved; the project never does.
+    let data = tempfile::tempdir().expect("a data folder");
+    let project = dir.path().to_string_lossy().into_owned();
+    automation.set_variables(Arc::new(DiskVariables::new(data.path())), Some(project.clone()));
+    let approvals = Arc::new(DiskApprovals::new(data.path()));
+    automation.set_approvals(Arc::clone(&approvals) as Arc<dyn omuzaki_live_api::services::Approvals>);
 
     // The person's setup, every step an op.
     person(&runner, "obs.connect", json!({ "port": obs.port() }));
@@ -167,6 +198,25 @@ fn a_twitch_redeem_switches_the_obs_scene_through_the_show() {
     );
     let started = person(&runner, "automation.start", json!({}));
     assert_eq!(started["graphs"].as_array().map(Vec::len), Some(1), "{started}");
+    // Switching OBS scenes needs the person's approval for this show on this machine; until then the rule is inert.
+    let waiting = &started["graphs"][0]["inert"][0];
+    assert_eq!(waiting["node"], "switch", "{started}");
+    assert_eq!(waiting["why"]["kind"], "not_approved", "{started}");
+    let findings = started["findings"].to_string();
+    assert!(findings.contains("waits for your approval"), "{findings}");
+
+    // The person allows it on the approval card (the app calls the store directly; no op can).
+    let key = ShowKey::new(project, ShowId::new("main").expect("an id"));
+    let needs = [Need::Scope(Scope::Broadcast), Need::op("obs.scene.set")];
+    approvals.allow(&key, &needs, &[], &Actor::Person { name: "host".to_owned() }).expect("approved");
+    automation.rearm();
+    until("the rule to arm", || {
+        let status = person(&runner, "automation.status", json!({}));
+        status["graphs"][0]["inert"].as_array().is_some_and(Vec::is_empty)
+    });
+
+    add_a_graph_while_running(&runner);
+
     person(&runner, "twitch.connect", json!({}));
 
     // A viewer redeems BRB on Twitch.

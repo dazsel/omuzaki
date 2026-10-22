@@ -31,6 +31,7 @@ use omuzaki_live_api::value::Val;
 use omuzaki_ops_api::{Actor, Event, Grants, OpError, Runner, Scope, SessionId, Sessions};
 use serde_json::Value;
 
+use crate::approvals::ceiling;
 use crate::compile::{Arming, FileHasher, ProgramHasher, compile_with};
 use crate::core::{Control, Core, Item};
 use crate::dispatch::{Dispatch, Work};
@@ -316,8 +317,15 @@ impl Automation {
         let stop = Arc::new(AtomicBool::new(false));
         let (work, pending) = channel();
         let sessions = lock(&self.sessions).clone();
-        let dispatch =
-            Dispatch::new(self.runner(), sessions, id, principal, Arc::clone(&inbox), Arc::clone(&self.clock));
+        let dispatch = Dispatch::new(
+            self.runner(),
+            sessions,
+            id,
+            principal,
+            ceiling(&approvals),
+            Arc::clone(&inbox),
+            Arc::clone(&self.clock),
+        );
         dispatch.spawn(pending)?;
         *lock(&self.shared.status) = Status::default().with_running(info.clone()).with_graphs(core.graphs());
         // A first snapshot before the engine thread runs, so a read right after the start never finds the last run's.
@@ -600,6 +608,8 @@ impl EngineThread {
         let approvals = self.arming.approvals();
         let arming = Arming { approvals: &approvals, hasher: self.arming.hasher.as_ref() };
         let compiled = compile_with(&self.info.show, &def, arming, Some(self.core.compiled_nodes()));
+        // The grants change in order with the calls: the ordered worker takes them before anything the reload asks.
+        let _ = self.calls.send(Work::Ceiling(ceiling(&approvals)));
         self.core.reload(compiled, self.clock.now(), self.wall.now());
         *lock(&self.def) = def;
     }
@@ -712,8 +722,9 @@ mod tests {
 
     #[test]
     fn a_show_runs_with_the_base_grants_only() {
-        let grants = crate::dispatch::show_grants();
+        let grants = crate::dispatch::base_grants();
         assert!(grants.allows(Scope::Perform) && !grants.allows(Scope::Fs) && !grants.allows(Scope::EditScene));
+        assert!(!grants.allows(Scope::Broadcast), "switching a stream needs the person's approval");
     }
 
     #[test]

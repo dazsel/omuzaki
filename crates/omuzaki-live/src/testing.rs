@@ -18,7 +18,7 @@ use omuzaki_live_api::value::Val;
 use omuzaki_ops_api::{Actor, OpError};
 use serde_json::{Value, json};
 
-use crate::compile::{Arming, FileHasher, ProgramHasher, compile_with};
+use crate::compile::{Arming, FileHasher, ProgramHasher, compile, compile_with};
 use crate::core::{Control, Core, Item, OpRequest};
 use crate::vars;
 
@@ -50,6 +50,12 @@ impl Requested {
         let acting = self.acting.as_ref().map(|a| serde_json::to_value(a).unwrap_or(Value::Null));
         json!({ "at": self.at.0, "op": self.op, "args": self.args, "cause": self.cause, "as": acting })
     }
+}
+
+/// Compiles `def` as show `show` with nothing approved and answers how many of its nodes are armed: what the compile
+/// bench times (design D19: 50 graphs of 20 nodes within 20 ms).
+pub fn compile_armed(show: &ShowId, def: &ShowDef) -> usize {
+    compile(show, def).nodes.iter().filter(|n| n.inert.is_none()).count()
 }
 
 /// A whole show on the real engine core, driven by a test.

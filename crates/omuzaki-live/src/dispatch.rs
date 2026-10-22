@@ -43,9 +43,9 @@ use crate::inbox::Inbox;
 /// How many workers run `OpKind::Job` calls.
 pub(crate) const JOB_WORKERS: usize = 4;
 
-/// The grants a show's calls run with until approvals add to them (design D7, D11).
-pub(crate) fn show_grants() -> Grants {
-    Grants::of([Scope::Read, Scope::Perform, Scope::Broadcast, Scope::Render])
+/// The grants a show's calls run with until a person approves more (design D11): reading and performing.
+pub(crate) fn base_grants() -> Grants {
+    Grants::of([Scope::Read, Scope::Perform])
 }
 
 /// D7's session limits for an automation.
@@ -92,6 +92,8 @@ pub(crate) enum Work {
     Call(OpRequest),
     /// Pause (`true`) or resume the show's session.
     Pause(bool),
+    /// The show's approvals changed: its calls and its session hold these grants from now on (design D11).
+    Ceiling(Grants),
 }
 
 /// One run's dispatch.
@@ -103,6 +105,8 @@ pub(crate) struct Dispatch {
     show: ShowId,
     /// The show's session, once the ordered worker opened it.
     session: OnceLock<SessionInfo>,
+    /// What the show's calls may do: the base plus what the person approved ([`crate::approvals::ceiling`]).
+    ceiling: Mutex<Grants>,
     inbox: Arc<Inbox>,
     clock: Arc<dyn Clock>,
     counters: Mutex<Counters>,
@@ -118,6 +122,7 @@ impl Dispatch {
         sessions: Option<Weak<dyn Sessions>>,
         show: &ShowId,
         principal: Option<Actor>,
+        ceiling: Grants,
         inbox: Arc<Inbox>,
         clock: Arc<dyn Clock>,
     ) -> Arc<Dispatch> {
@@ -127,6 +132,7 @@ impl Dispatch {
             principal,
             show: show.clone(),
             session: OnceLock::new(),
+            ceiling: Mutex::new(ceiling),
             inbox,
             clock,
             counters: Mutex::new(Counters::default()),
@@ -151,7 +157,7 @@ impl Dispatch {
             client: format!("automation:{}", self.show),
             model: None,
             on_behalf_of: person.clone(),
-            grants: show_grants(),
+            grants: lock(&self.ceiling).clone(),
             budget: Budget::default(),
             limits: automation_limits(),
             parent: None,
@@ -198,6 +204,10 @@ impl Dispatch {
                         Work::Call(call) => call,
                         Work::Pause(on) => {
                             me.pause(on);
+                            continue;
+                        }
+                        Work::Ceiling(grants) => {
+                            me.set_ceiling(grants);
                             continue;
                         }
                     };
@@ -321,9 +331,10 @@ impl Dispatch {
             };
             return (actor.clone(), grants);
         }
+        let ceiling = lock(&self.ceiling).clone();
         match self.session.get() {
-            Some(session) => (session.actor.clone(), session.grants.clone()),
-            None => (Actor::System, show_grants()),
+            Some(session) => (session.actor.clone(), ceiling),
+            None => (Actor::System, ceiling),
         }
     }
 
@@ -348,6 +359,17 @@ impl Dispatch {
 
     /// Pauses (`true`) or resumes the show's session, as its person. A session already in that state (or ended)
     /// refuses, which changes nothing.
+    /// New grants for the show's calls, and for its session when it has one.
+    fn set_ceiling(&self, grants: Grants) {
+        *lock(&self.ceiling) = grants.clone();
+        let (Some(session), Some(sessions)) = (self.session.get(), self.sessions.as_ref().and_then(Weak::upgrade))
+        else {
+            return;
+        };
+        // A refusal keeps the session's old grants; the calls still carry only the new ceiling.
+        let _ = sessions.set_grants(session.id, grants, &session.on_behalf_of);
+    }
+
     fn pause(&self, on: bool) {
         let (Some(session), Some(sessions)) = (self.session.get(), self.sessions.as_ref().and_then(Weak::upgrade))
         else {

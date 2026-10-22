@@ -55,4 +55,7 @@ omuzaki_l10n_api::messages! {
     /// A node with no wired event input.
     pub never_runs = "live-never-runs" (graph: Id, node: Id)
         => "Nothing is wired into { $node } in { $graph }, so it never runs.";
+    /// An approvals file that couldn't be read.
+    pub approvals_unreadable = "live-approvals-unreadable" (reason: Verbatim)
+        => "The approvals on this computer couldn't be read ({ $reason }), so nothing is approved until you approve again.";
 }

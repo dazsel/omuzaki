@@ -9,6 +9,9 @@
 //! - [`vars::DiskVariables`]: the values of `show` and `global` variables on disk, written atomically; the engine
 //!   writes each file at most once a second and flushes on stop (design D10).
 //!
+//! - [`approvals::DiskApprovals`]: what a person approved per show on this machine (design D11), and
+//!   [`approvals::ceiling`], the automation session's grants. Only the app's approval card writes it.
+//!
 //! - [`testing::ShowHarness`] (feature `testing`): a whole show on the real engine core, on fake time.
 //!
 //! The node catalogue is `omuzaki-live-nodes`; the engine finds kinds through the registry and never names one.
@@ -17,6 +20,7 @@ omuzaki_core::define_link! {
     omuzaki_live_api::link();
 }
 
+pub mod approvals;
 pub mod compile;
 mod core;
 mod dispatch;

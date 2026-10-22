@@ -6,7 +6,9 @@
 //!   event step at most 15 µs median);
 //! - **chat load**: 100 chat messages a second, one in ten a command, into 20 command graphs, for 60 seconds of fake
 //!   time (target: at most 10 ms of engine CPU per second);
-//! - **idle**: the same show with no events for 60 seconds of fake time (target: 0 steps).
+//! - **idle**: the same show with no events for 60 seconds of fake time (target: 0 steps);
+//! - **compile large**: a show of 50 graphs of 20 nodes (a command and a chain of 19 calls, every value wired)
+//!   compiled from scratch (target: at most 20 ms).
 //!
 //! `cargo bench -p omuzaki-live --bench engine`
 
@@ -181,6 +183,34 @@ fn main() {
         "chat load, 100 a second into 20 command graphs for {seconds} s: {:?} of engine CPU per second",
         cpu / seconds as u32
     );
+
+    // Compile large: 50 graphs x 20 nodes.
+    let large = (0..50).fold(ShowDef::new("Large").with_seed(1), |def, g| {
+        let mut nodes = serde_json::Map::new();
+        nodes.insert("n00".into(), json!({ "kind": "bench.command", "params": { "name": format!("c{g}") } }));
+        for i in 1..20 {
+            let previous = if i == 1 { "n00.fired".to_owned() } else { format!("n{:02}.done", i - 1) };
+            nodes.insert(
+                format!("n{i:02}"),
+                json!({ "kind": "bench.act", "params": { "op": "throw.item" },
+                        "in": { "in": previous, "user": "n00.user" } }),
+            );
+        }
+        def.with_graph(
+            GraphId::new(format!("g{g:02}")).unwrap(),
+            GraphDef::from_node(&json!({ "nodes": nodes })).unwrap(),
+        )
+    });
+    let show = ShowId::new("large").unwrap();
+    assert_eq!(omuzaki_live::testing::compile_armed(&show, &large), 1_000);
+    let times: Vec<Duration> = (0..50)
+        .map(|_| {
+            let started = Instant::now();
+            std::hint::black_box(omuzaki_live::testing::compile_armed(&show, &large));
+            started.elapsed()
+        })
+        .collect();
+    println!("compile large (50 graphs x 20 nodes, every node armed): median {:?}", median(times));
 
     // Idle: nothing happens, so nothing runs.
     let mut h = harness(20);

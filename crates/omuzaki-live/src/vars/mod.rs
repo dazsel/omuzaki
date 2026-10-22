@@ -8,7 +8,7 @@
 //!   second reaches each file; the final flush on stop writes every file the run changed. Values in a file that the
 //!   show no longer declares are written back untouched.
 
-mod disk;
+pub(crate) mod disk;
 
 use std::collections::BTreeMap;
 

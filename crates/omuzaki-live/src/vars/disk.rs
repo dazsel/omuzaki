@@ -59,7 +59,11 @@ fn from_toml(text: &str) -> Result<BTreeMap<VarName, Value>, VarStoreError> {
 
 /// Writes `bytes` to `path` through a temporary file in the same folder and a rename, so a reader (or a crash) sees
 /// the old file or the new one, never half of one. `before_rename` runs between the two (a test's failure point).
-fn write_atomic(path: &Path, bytes: &[u8], before_rename: impl FnOnce() -> io::Result<()>) -> io::Result<()> {
+pub(crate) fn write_atomic(
+    path: &Path,
+    bytes: &[u8],
+    before_rename: impl FnOnce() -> io::Result<()>,
+) -> io::Result<()> {
     let dir = path.parent().ok_or_else(|| io::Error::other("the values file has no folder"))?;
     // Not an op's file access: the engine's own state under the project's `.omuzaki/` and the data folder (design D10).
     #[allow(clippy::disallowed_methods)]
