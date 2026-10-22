@@ -83,6 +83,8 @@ const NOT_FOR_PEOPLE: &[&str] = &[
     "// key name",
     // Registrations: a panel's, workspace's or story's `title` is the English key the shell translates when it draws.
     "title: \"",
+    // A setting's summary, likewise: the English key the Settings window translates when it draws.
+    "const META: SettingMeta",
     // Key legends, as printed on keys.
     "shortcut_hint(",
     // A GPU object's debug label, and a type's debug name.

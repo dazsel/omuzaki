@@ -45,6 +45,10 @@ pub enum Owner {
     LifeLayer,
     /// A hotkey or expression override.
     Hotkey,
+    /// A score: an authored timeline, or an AI's intents compiled into cues.
+    Score,
+    /// Nobody: the channel holds the character's resting expression.
+    Rest,
 }
 
 impl Owner {
@@ -56,6 +60,8 @@ impl Owner {
             Self::Ai => Msg::OwnerAi,
             Self::LifeLayer => Msg::OwnerLifeLayer,
             Self::Hotkey => Msg::OwnerHotkey,
+            Self::Score => Msg::OwnerScore,
+            Self::Rest => Msg::OwnerRest,
         }
     }
 
@@ -66,6 +72,8 @@ impl Owner {
             Self::Ai => icons::SPARKLE,
             Self::LifeLayer => icons::HEARTBEAT,
             Self::Hotkey => icons::KEYBOARD,
+            Self::Score => icons::CLOCK,
+            Self::Rest => icons::CIRCLE_DASHED,
         }
     }
 }

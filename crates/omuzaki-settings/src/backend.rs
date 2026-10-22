@@ -4,6 +4,11 @@
 //! replace, so two processes never merge from the same old text. The lock file is never the data file and is never
 //! deleted.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "the store's own files in the app's config and data folders, never a path an op was given; the ops reach the store only through the `Settings` service"
+)]
+
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::hash::{DefaultHasher, Hash, Hasher};

@@ -316,6 +316,10 @@ pub const BACK: &str = "Back";
 pub const FRAME_SELECTION: &str = "Frame selection";
 /// Frames the whole character (Home).
 pub const FRAME_CHARACTER: &str = "Frame character";
+/// While History shows a past state in the viewport.
+pub const VIEWING_PAST: &str = "Viewing a past state: after {label}";
+/// The way back from it.
+pub const BACK_TO_NOW: &str = "Back to now";
 /// The viewport without a GPU to draw on.
 pub const NO_GPU: &str = "The viewport needs a GPU";
 /// What to do about it.

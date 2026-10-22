@@ -72,7 +72,7 @@ fn record(seq: u64) -> OpRecord {
 fn log(n: u64) -> HistoryLog {
     let records: Vec<OpRecord> = (1..=n).map(record).collect();
     let seen: HashMap<u64, Instant> = records.iter().map(|r| (r.seq, Instant::now())).collect();
-    HistoryLog { records, undone: HashSet::from([TxId(n)]), seen, error: None }
+    HistoryLog { records, undone: HashSet::from([TxId(n)]), seen, error: None, conflict: None }
 }
 
 struct Rig {

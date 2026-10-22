@@ -706,6 +706,70 @@ fn history_shows_a_steps_details_and_adjust_reopens_it_in_the_palette() {
     assert!(shown.iter().any(|v| v.starts_with(&expected)), "filled with the step's arguments: {shown:?}, {expected}");
 }
 
+#[test]
+fn history_previews_a_past_state_without_changing_the_document_and_back_returns_to_now() {
+    let core = core(Document::empty());
+    let runner = Arc::clone(&core.runner);
+    let mut h = studio(&core, None, vec2(1920.0, 1080.0));
+    h.get_by_role_and_label(Role::Button, "History").click();
+    h.run_steps(2);
+    let start = width(runner.as_ref());
+    let steps = [start * 1.1, start * 1.2, start * 1.3];
+    for value in steps {
+        set_width(runner.as_ref(), you(), value);
+    }
+    until(&mut h, "three steps listed", |h| h.query_all_by_label_contains(": part.set_param").count() == 3);
+    // The oldest of the three is the bottom row.
+    let first = format!("= {:.3}", steps[0]);
+    let row = h
+        .query_all_by_role(Role::Button)
+        .find(|n| {
+            n.accesskit_node().label().is_some_and(|l| l.starts_with("You: part.set_param") && l.contains(&first))
+        })
+        .unwrap_or_else(|| panic!("the first step is listed"));
+    row.click();
+    // The row scrolls into view under the new "Viewing" line, then its details size themselves.
+    h.run_steps(6);
+    let viewing = h.query_all_by_label_contains("Viewing: after part.set_param").count();
+    assert_eq!(viewing, 1, "History says which past state is on show");
+    assert!((width(runner.as_ref()) - steps[2]).abs() < 1e-9, "a preview changes nothing");
+    let past = h.state().shell.previewed().unwrap_or_else(|| panic!("a past state is on show"));
+    let past_width = omuzaki_doc_api::lookup(&past, &width_path()).and_then(serde_json::Value::as_f64);
+    assert_eq!(past_width, Some(steps[0]), "the state shown is the one right after the first step");
+
+    // Restore and naming are app core's ops (#443): without them the buttons are off and say why.
+    for label in ["Restore this state", "Name this version"] {
+        let button = h.get_by_role_and_label(Role::Button, label);
+        assert!(button.accesskit_node().is_disabled(), "{label} is off in a build without its op");
+    }
+
+    h.get_by_role_and_label(Role::Button, "Back to now").click();
+    h.run_steps(3);
+    assert!(h.state().shell.previewed().is_none(), "Back shows the document as it is");
+    assert_eq!(h.query_all_by_label_contains("Viewing: after").count(), 0);
+}
+
+#[test]
+fn an_undo_a_later_change_conflicts_with_leaves_a_card_until_it_is_dismissed() {
+    let core = core(Document::empty());
+    let runner = Arc::clone(&core.runner);
+    let mut h = studio(&core, None, vec2(1920.0, 1080.0));
+    h.get_by_role_and_label(Role::Button, "History").click();
+    h.run_steps(2);
+    let start = width(runner.as_ref());
+    set_width(runner.as_ref(), you(), start * 1.1);
+    let agent = connect_agent(&core);
+    set_width(runner.as_ref(), agent, start * 1.2);
+    until(&mut h, "both steps listed", |h| h.query_all_by_label_contains(": part.set_param").count() == 2);
+    h.get_by_role_and_label(Role::Button, "Undo").click();
+    h.run_steps(3);
+    assert!(h.query_by_label("Couldn't undo").is_some(), "the refused undo leaves a card");
+    assert!((width(runner.as_ref()) - start * 1.2).abs() < 1e-9, "and the agent's later change stands");
+    h.get_by_role_and_label(Role::Button, "Dismiss").click();
+    h.run_steps(3);
+    assert!(h.query_by_label("Couldn't undo").is_none(), "Dismiss puts it away");
+}
+
 /// History at 1920x1080 over the real studio: the person's and an agent's steps, newest first, with the agent's step's
 /// details open beside its row.
 #[test]

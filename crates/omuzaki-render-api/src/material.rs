@@ -13,7 +13,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::limits::{MAX_OVERLAYS, MAX_PROGRAM_PARAMS};
-use crate::{Colour, RenderError, TextureId};
+use crate::{Colour, Mtoon, RenderError, TextureId};
 
 /// How a surface is lit.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -316,6 +316,9 @@ pub struct Material {
     pub receives_shadows: bool,
     /// Applied to the UV of every UV-addressed texture (`base_texture` and [`Mapping::Uv`] overlays).
     pub uv_transform: UvTransform,
+    /// `MToon` 1.0's own lighting, for an imported model (LK-07): with toon shading, the surface is lit by the spec's
+    /// model ([`Mtoon`]) in place of the toon ramp. Boxed, as only imported materials carry it.
+    pub mtoon: Option<Box<Mtoon>>,
 }
 
 impl Material {
@@ -333,6 +336,7 @@ impl Material {
             outline_style: OutlineStyle::KIT,
             receives_shadows: true,
             uv_transform: UvTransform::IDENTITY,
+            mtoon: None,
         }
     }
 
@@ -347,6 +351,7 @@ impl Material {
             .into_iter()
             .chain(self.overlays.iter().map(|o| o.texture))
             .chain(self.outline_style.width_texture)
+            .chain(self.mtoon.iter().flat_map(|m| m.textures().copied()))
     }
 
     /// Checks the rules every renderer shares (ranges and counts; handles are checked by the renderer).
@@ -408,6 +413,9 @@ impl Material {
         }
         if !self.uv_transform.is_finite() {
             return bad("the uv transform must be finite");
+        }
+        if let Some(mtoon) = &self.mtoon {
+            mtoon.validate()?;
         }
         Ok(())
     }

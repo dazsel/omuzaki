@@ -23,6 +23,7 @@ use omuzaki_ops_api::{Actor, Runner, ServicesBuilder};
 use omuzaki_render::WgpuRenderer;
 use omuzaki_secrets::KeychainSecrets;
 use omuzaki_secrets_api::prelude::SecretStore;
+use omuzaki_settings_api::service::Settings;
 use omuzaki_stage::frame::Stage;
 use omuzaki_stage::perform::Tracking;
 use omuzaki_stage::perform::host::{PerformError, PerformHost};
@@ -44,6 +45,7 @@ use super::mailbox::FrameReader;
 use super::rig::{Extras, LiveRig, live_performer};
 use super::thread::{LoopReport, WiringError};
 use crate::aux_window::{PhysicalSize, Transparency};
+use crate::live::channels::ChannelFeed;
 use crate::live::hotkeys::Hotkeys;
 use crate::live::viewport::{LiveViewport, Presenter, SharedTracker, ViewportError};
 use crate::output_window::{OutputHost, OutputPlan, OutputWindow, Program};
@@ -85,6 +87,8 @@ impl std::error::Error for StartError {
 pub struct LiveApp {
     rig: Option<LiveRig>,
     reader: Option<FrameReader>,
+    /// A reader of its own for the Channels panel, which keeps reading after the viewport takes `reader`.
+    channel_reader: FrameReader,
     core: Core,
     output: OutputWindow,
     host: OutputHost,
@@ -142,13 +146,17 @@ impl LiveApp {
     /// models in `install`, no camera backend on this platform) it still lists its cameras and says why on start; the
     /// reason is logged here. The model registry keeps its state in `models` and puts the `model.*` ops in the
     /// runner's services; with no folder, or one that can't be opened, those ops answer that they're unavailable.
+    /// `settings` is the app's settings store, for the `settings.*` ops and the ops that save a choice; without it
+    /// they answer that it is unavailable, and choices last until the studio quits.
     ///
     /// # Errors
     /// [`StartError`]; nothing is left running then.
+    #[allow(clippy::too_many_arguments)] // Each is one of the app's own services or facts; a struct would only rename them.
     pub fn start_studio(
         document: Document,
         install: &Path,
         models: Option<&Path>,
+        settings: Option<Arc<dyn Settings>>,
         clock: Box<dyn PerformClock>,
         transparency: Transparency,
         base: HumanoidPose,
@@ -175,8 +183,15 @@ impl LiveApp {
         // the shows keep what this machine approved and their variables.
         let data = models_dir.and_then(Path::parent).map(Path::to_path_buf);
         let secrets = data.as_ref().map(|data| Arc::new(KeychainSecrets::new(data)) as Arc<dyn SecretStore>);
-        let extras =
-            Extras { phone: Some(inputs.phone), pose_out: Some(inputs.pose_out), models, secrets, data, tap: None };
+        let extras = Extras {
+            phone: Some(inputs.phone),
+            pose_out: Some(inputs.pose_out),
+            models,
+            secrets,
+            data,
+            tap: None,
+            settings,
+        };
         Self::start_with(document, inputs.webcam, extras, clock, transparency, &base)
     }
 
@@ -194,6 +209,7 @@ impl LiveApp {
         let observer = clock.observer();
         let models = extras.models.clone();
         let secrets = extras.secrets.clone();
+        let settings = extras.settings.clone();
         let data = extras.data.clone();
         // The shows: the automation engine runs their rules through this app's runner, and Twitch's events reach it.
         let automation = Arc::new(Automation::new());
@@ -234,6 +250,9 @@ impl LiveApp {
         if let Some(secrets) = secrets {
             services = services.insert::<dyn SecretStore>(secrets);
         }
+        if let Some(settings) = settings {
+            services = services.insert::<dyn Settings>(settings);
+        }
         services = services.insert::<Automation>(Arc::clone(&automation)).insert::<TwitchService>(Arc::new(twitch));
         if let Some(vts) = vts {
             services = services.insert::<VtsService>(vts);
@@ -272,6 +291,7 @@ impl LiveApp {
         });
         Ok(Self {
             rig: Some(rig),
+            channel_reader: reader.clone(),
             reader: Some(reader),
             core,
             output: OutputWindow::new(OutputPlan::default(), transparency),
@@ -348,6 +368,11 @@ impl LiveApp {
     /// The newest frames from the perform thread, for the render side. `None` after [`shutdown`](Self::shutdown).
     pub fn reader_mut(&mut self) -> Option<&mut FrameReader> {
         self.reader.as_mut()
+    }
+
+    /// The perform thread's frames for the Channels panel, to put in the shell's views.
+    pub fn channel_feed(&self) -> ChannelFeed {
+        ChannelFeed::new(self.channel_reader.clone())
     }
 
     /// The stream service the recorder, the replay buffer and the live outputs run in (the `record.*` and `output.*`
