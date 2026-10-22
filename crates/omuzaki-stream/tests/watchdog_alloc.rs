@@ -9,7 +9,7 @@ use std::cell::Cell;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use omuzaki_core::time::Seconds;
-use omuzaki_stream::watchdog::{HeartbeatCell, Monitor, Observation, RestartPolicy, WorkerId, WorkerKind, WorkerSpec};
+use omuzaki_stream::watchdog::{HeartbeatCell, Monitor, Observation, RestartPolicy, Scope, WorkerKind, WorkerSpec};
 
 /// Counts allocations on the measuring thread while it measures.
 struct Counting;
@@ -55,9 +55,9 @@ fn spec(name: &str) -> WorkerSpec {
     WorkerSpec {
         name: name.to_owned(),
         kind: WorkerKind::Renderer,
-        hold_outputs: true,
         start_grace: Seconds(5.0),
         hung_after: Seconds(0.5),
+        slow_after: Seconds(2.0),
         restart: RestartPolicy {
             backoff_first: Seconds(0.25),
             backoff_max: Seconds(4.0),
@@ -72,13 +72,13 @@ fn spec(name: &str) -> WorkerSpec {
 fn the_hot_paths_allocate_nothing_and_beats_are_never_lost() {
     // Both checks in one test, so no other test's allocations land inside the counted stretch.
     let cell = HeartbeatCell::new();
-    let mut monitor = Monitor::new(vec![spec("renderer"), spec("tracker")], Seconds(0.0));
+    let mut monitor = Monitor::new(Scope::Host, vec![spec("renderer"), spec("tracker")], Seconds(0.0));
     let mut out = Vec::with_capacity(16);
-    let w = WorkerId(0);
+    let Some(w) = monitor.ids().next() else { panic!("no worker") };
     // Warm up: a whole crash and recovery, so every path has run once.
     monitor.tick(Seconds(0.0), &mut out);
-    monitor.observe(Seconds(0.0), w, Observation::Spawned, &mut out);
-    monitor.observe(Seconds(0.1), w, Observation::Beat(1), &mut out);
+    assert!(monitor.observe(Seconds(0.0), w, Observation::Spawned, &mut out).is_ok());
+    assert!(monitor.observe(Seconds(0.1), w, Observation::Beat(1), &mut out).is_ok());
 
     MEASURING.with(|m| m.set(true));
     let mut t = 0.1;
@@ -86,18 +86,18 @@ fn the_hot_paths_allocate_nothing_and_beats_are_never_lost() {
         for _ in 0..30 {
             t += 0.033;
             cell.beat();
-            monitor.observe(Seconds(t), w, Observation::Beat(cell.read()), &mut out);
+            assert!(monitor.observe(Seconds(t), w, Observation::Beat(cell.read()), &mut out).is_ok());
             monitor.tick(Seconds(t), &mut out);
         }
         if round % 10 == 0 {
             // A crash, a respawn and a recovery, all inside the counted stretch.
-            monitor.observe(Seconds(t), w, Observation::Exited { code: Some(1) }, &mut out);
+            assert!(monitor.observe(Seconds(t), w, Observation::Exited { code: Some(1) }, &mut out).is_ok());
             monitor.tick(Seconds(t + 5.0), &mut out);
             t += 5.0;
-            monitor.observe(Seconds(t), w, Observation::Spawned, &mut out);
+            assert!(monitor.observe(Seconds(t), w, Observation::Spawned, &mut out).is_ok());
             cell.beat();
-            monitor.observe(Seconds(t + 0.01), w, Observation::Beat(1), &mut out);
-            monitor.observe(Seconds(t + 0.02), w, Observation::Beat(cell.read()), &mut out);
+            assert!(monitor.observe(Seconds(t + 0.01), w, Observation::Beat(1), &mut out).is_ok());
+            assert!(monitor.observe(Seconds(t + 0.02), w, Observation::Beat(cell.read()), &mut out).is_ok());
         }
     }
     MEASURING.with(|m| m.set(false));

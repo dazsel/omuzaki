@@ -28,6 +28,8 @@ pub enum FindingKind {
     MissingCharacter,
     /// The lighting has no light other than the ambient, so nothing casts a shape.
     NoLights,
+    /// The backdrop is the environment and the lighting has none, so the lighting's `background` colour shows.
+    NoEnvironment,
 }
 
 /// Something that looks wrong but is allowed (D13).

@@ -5,7 +5,7 @@ use omuzaki_core::text::nearest;
 use omuzaki_ops_api::{Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
 use omuzaki_render_api::Colour;
 use omuzaki_stage_api::{
-    Ambient, Anchor, BloomDef, LightDef, LightId, LightRole, LightShape, MAX_LIGHTS, SceneId,
+    Ambient, Anchor, BloomDef, EnvironmentDef, FogDef, LightDef, LightId, LightRole, LightShape, MAX_LIGHTS, SceneId,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -14,7 +14,7 @@ use serde_json::json;
 use super::edit::{OrOff, SceneEdit, changed, free_id, unknown};
 use crate::recipe::LightRig;
 
-/// The shape of a light: a sun-like directional light, or a point light in the room.
+/// The shape of a light: a sun-like directional light, a point light in the room, or a spot light.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum LightKind {
@@ -22,6 +22,61 @@ pub enum LightKind {
     Directional,
     /// From a point (`position`), fading out at `range`.
     Point,
+    /// From a lamp (`position`) toward `target` in a cone (`cone`, `penumbra`), fading out at `range`.
+    Spot,
+}
+
+/// A spot light's place and beam, as the ops take them: every field optional, so an edit changes only what it names.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+struct ShapeFields {
+    azimuth: Option<f32>,
+    elevation: Option<f32>,
+    position: Option<[f32; 3]>,
+    range: Option<f32>,
+    target: Option<[f32; 3]>,
+    cone: Option<f32>,
+    penumbra: Option<f32>,
+}
+
+impl ShapeFields {
+    /// The fields given that `kind` doesn't take, by name, first one first.
+    fn foreign(&self, kind: LightKind) -> Option<&'static str> {
+        let given = [
+            ("azimuth", self.azimuth.is_some(), kind == LightKind::Directional),
+            ("elevation", self.elevation.is_some(), kind == LightKind::Directional),
+            ("position", self.position.is_some(), kind != LightKind::Directional),
+            ("range", self.range.is_some(), kind != LightKind::Directional),
+            ("target", self.target.is_some(), kind == LightKind::Spot),
+            ("cone", self.cone.is_some(), kind == LightKind::Spot),
+            ("penumbra", self.penumbra.is_some(), kind == LightKind::Spot),
+        ];
+        given.into_iter().find(|(_, present, takes)| *present && !takes).map(|(name, ..)| name)
+    }
+}
+
+fn kind_of(shape: &LightShape) -> LightKind {
+    match shape {
+        LightShape::Directional { .. } => LightKind::Directional,
+        LightShape::Point { .. } => LightKind::Point,
+        LightShape::Spot { .. } => LightKind::Spot,
+    }
+}
+
+fn kind_name(kind: LightKind) -> &'static str {
+    match kind {
+        LightKind::Directional => "directional",
+        LightKind::Point => "point",
+        LightKind::Spot => "spot",
+    }
+}
+
+/// What a light of `kind` takes, for a hint.
+fn takes(kind: LightKind) -> &'static str {
+    match kind {
+        LightKind::Directional => "a directional light takes azimuth and elevation",
+        LightKind::Point => "a point light takes position and range",
+        LightKind::Spot => "a spot light takes position, target, cone, penumbra and range",
+    }
 }
 
 /// Adds a light to a scene.
@@ -30,7 +85,8 @@ pub enum LightKind {
 #[schemars(extend(
     "examples" = [
         {"kind": "directional", "role": "accent", "colour": "#ffd0e0", "azimuth": -120.0, "elevation": 20.0},
-        {"scene": "night_stream", "kind": "point", "role": "practical", "position": [1.2, 1.4, -0.8], "range": 4.0, "intensity": 3.0}
+        {"scene": "night_stream", "kind": "point", "role": "practical", "position": [1.2, 1.4, -0.8], "range": 4.0, "intensity": 3.0},
+        {"kind": "spot", "role": "accent", "position": [0.0, 2.6, 1.2], "target": [0.0, 1.0, 0.0], "cone": 25.0, "penumbra": 0.3, "intensity": 6.0}
     ],
     "x-omuzaki-fixture" = "scenes"
 ))]
@@ -41,7 +97,7 @@ pub struct AddLight {
     /// Its id; the role's name (then `-2`, `-3`...) when left out, else `light`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<LightId>,
-    /// `directional` or `point`.
+    /// `directional`, `point` or `spot`.
     pub kind: LightKind,
     /// What it does in the rig: `key`, `fill`, `rim`, `accent` or `practical`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -52,7 +108,8 @@ pub struct AddLight {
     /// Its intensity, 0 or more; 1 when left out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intensity: Option<f32>,
-    /// Whether it casts shadows (directional lights only; one per scene, so this takes it from the light that has it).
+    /// Whether it casts shadows: one directional light per scene, so on a directional light this takes it from the
+    /// light that has it; on a spot it is kept for renderers that draw spot shadows. Not for point lights.
     #[serde(default)]
     pub shadow: bool,
     /// What it is placed against: `subject` (the default), `stage` or `member:<id>`.
@@ -64,48 +121,45 @@ pub struct AddLight {
     /// A directional light's height, degrees, -90 to 90.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub elevation: Option<f32>,
-    /// A point light's position in metres from its anchor.
+    /// A point or spot light's position from its anchor, in subject units (metres on a 1 m figure: x right, y up, z
+    /// toward the front camera).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub position: Option<[f32; 3]>,
-    /// A point light's reach in metres.
+    /// A point or spot light's reach, in subject units.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub range: Option<f32>,
+    /// What a spot light points at, in subject units; the subject's chest when left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<[f32; 3]>,
+    /// A spot light's cone, degrees from its axis to its edge, above 0 and up to 90; 30 when left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cone: Option<f32>,
+    /// How soft a spot light's edge is, 0 (hard) to 1 (fading from the axis); 0.2 when left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub penumbra: Option<f32>,
 }
 
-/// The shape `kind` makes of the given fields, refusing the fields that belong to the other kind.
-fn shape(
-    kind: LightKind,
-    azimuth: Option<f32>,
-    elevation: Option<f32>,
-    position: Option<[f32; 3]>,
-    range: Option<f32>,
-) -> Result<LightShape, OpError> {
-    let not_for = |field: &str, kind: &str| {
-        OpError::invalid(field, format!("a {kind} light has no {field}")).hint(match kind {
-            "directional" => "a directional light takes azimuth and elevation",
-            _ => "a point light takes position and range",
-        })
-    };
-    match kind {
+/// The shape `kind` makes of the given fields, refusing the fields that belong to another kind.
+fn shape(kind: LightKind, f: ShapeFields) -> Result<LightShape, OpError> {
+    if let Some(field) = f.foreign(kind) {
+        return Err(OpError::invalid(field, format!("a {} light has no {field}", kind_name(kind))).hint(takes(kind)));
+    }
+    Ok(match kind {
         LightKind::Directional => {
-            if position.is_some() {
-                return Err(not_for("position", "directional"));
-            }
-            if range.is_some() {
-                return Err(not_for("range", "directional"));
-            }
-            Ok(LightShape::Directional { azimuth: azimuth.unwrap_or(0.0), elevation: elevation.unwrap_or(30.0) })
+            LightShape::Directional { azimuth: f.azimuth.unwrap_or(0.0), elevation: f.elevation.unwrap_or(30.0) }
         }
         LightKind::Point => {
-            if azimuth.is_some() {
-                return Err(not_for("azimuth", "point"));
-            }
-            if elevation.is_some() {
-                return Err(not_for("elevation", "point"));
-            }
-            Ok(LightShape::Point { position: position.unwrap_or([0.0, 1.5, 1.0]), range: range.unwrap_or(5.0) })
+            LightShape::Point { position: f.position.unwrap_or([0.0, 1.5, 1.0]), range: f.range.unwrap_or(5.0) }
         }
-    }
+        // Above and in front of the subject, aimed at its chest, wide enough for the upper body.
+        LightKind::Spot => LightShape::Spot {
+            position: f.position.unwrap_or([0.0, 2.4, 1.2]),
+            target: f.target.unwrap_or([0.0, 0.75, 0.0]),
+            cone: f.cone.unwrap_or(30.0),
+            penumbra: f.penumbra.unwrap_or(0.2),
+            range: f.range.unwrap_or(6.0),
+        },
+    })
 }
 
 /// Clears the shadow on every other directional light, so `keep` is the one caster; the ids it was taken from.
@@ -134,7 +188,8 @@ impl Op for AddLight {
     fn meta() -> OpMeta {
         OpMeta {
             name: "stage.add_light",
-            summary: "Add a directional or point light to a scene; a shadow on it moves the scene's one shadow to it.",
+            summary: "Add a directional, point or spot light to a scene; a shadow on a directional light moves the \
+                      scene's one shadow to it.",
             kind: OpKind::Edit,
             scope: Scope::EditScene,
             undo: Undo::Auto,
@@ -164,18 +219,29 @@ impl Op for AddLight {
             }
         };
         if self.shadow && self.kind == LightKind::Point {
-            return Err(OpError::invalid("shadow", "only a directional light casts shadows"));
+            return Err(OpError::invalid("shadow", "a point light casts no shadow")
+                .hint("a directional or spot light can cast one"));
         }
+        let fields = ShapeFields {
+            azimuth: self.azimuth,
+            elevation: self.elevation,
+            position: self.position,
+            range: self.range,
+            target: self.target,
+            cone: self.cone,
+            penumbra: self.penumbra,
+        };
         let light = LightDef {
             role: self.role,
             colour: self.colour.unwrap_or(Colour::WHITE),
             intensity: self.intensity.unwrap_or(1.0),
             shadow: self.shadow,
             anchor: self.anchor.clone().unwrap_or_default(),
-            shape: shape(self.kind, self.azimuth, self.elevation, self.position, self.range)?,
+            shape: shape(self.kind, fields)?,
         };
         lights.insert(id.clone(), light);
-        let moved = if self.shadow { take_shadow(lights, &id) } else { Vec::new() };
+        let moved =
+            if self.shadow && self.kind == LightKind::Directional { take_shadow(lights, &id) } else { Vec::new() };
         let output = json!({ "scene": edit.id.as_str(), "light": id.as_str(), "shadow_taken_from": moved });
         edit.finish(ctx, output)
     }
@@ -205,7 +271,8 @@ pub struct SetLight {
     /// Its intensity, 0 or more.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intensity: Option<f32>,
-    /// Whether it casts the scene's shadow (directional only); `true` takes it from the light that had it.
+    /// Whether it casts shadows (not a point light); on a directional light `true` takes the scene's one shadow from
+    /// the light that had it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shadow: Option<bool>,
     /// What it is placed against.
@@ -217,20 +284,29 @@ pub struct SetLight {
     /// A directional light's height, degrees.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub elevation: Option<f32>,
-    /// A point light's position, metres.
+    /// A point or spot light's position, subject units.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub position: Option<[f32; 3]>,
-    /// A point light's reach, metres.
+    /// A point or spot light's reach, subject units.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub range: Option<f32>,
+    /// What a spot light points at, subject units.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<[f32; 3]>,
+    /// A spot light's cone, degrees from its axis to its edge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cone: Option<f32>,
+    /// How soft a spot light's edge is, 0 to 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub penumbra: Option<f32>,
 }
 
 impl Op for SetLight {
     fn meta() -> OpMeta {
         OpMeta {
             name: "stage.set_light",
-            summary: "Change a light of a scene: colour, intensity, direction or position, role, anchor, shadow. Only \
-                      the fields given change.",
+            summary: "Change a light of a scene: colour, intensity, direction or position, a spot's target and cone, \
+                      role, anchor, shadow. Only the fields given change.",
             kind: OpKind::Edit,
             scope: Scope::EditScene,
             undo: Undo::Auto,
@@ -258,33 +334,48 @@ impl Op for SetLight {
         if let Some(anchor) = &self.anchor {
             light.anchor = anchor.clone();
         }
+        let fields = ShapeFields {
+            azimuth: self.azimuth,
+            elevation: self.elevation,
+            position: self.position,
+            range: self.range,
+            target: self.target,
+            cone: self.cone,
+            penumbra: self.penumbra,
+        };
+        let kind = kind_of(&light.shape);
+        if let Some(field) = fields.foreign(kind) {
+            return Err(OpError::invalid(
+                field,
+                format!("'{}' is a {} light, with no {field}", self.light, kind_name(kind)),
+            )
+            .hint(takes(kind)));
+        }
         match &mut light.shape {
             LightShape::Directional { azimuth, elevation } => {
-                if self.position.is_some() || self.range.is_some() {
-                    let field = if self.position.is_some() { "position" } else { "range" };
-                    return Err(OpError::invalid(field, format!("'{}' is a directional light, with no {field}", self.light))
-                        .hint("a directional light takes azimuth and elevation"));
-                }
-                *azimuth = self.azimuth.unwrap_or(*azimuth);
-                *elevation = self.elevation.unwrap_or(*elevation);
+                *azimuth = fields.azimuth.unwrap_or(*azimuth);
+                *elevation = fields.elevation.unwrap_or(*elevation);
             }
             LightShape::Point { position, range } => {
-                if self.azimuth.is_some() || self.elevation.is_some() {
-                    let field = if self.azimuth.is_some() { "azimuth" } else { "elevation" };
-                    return Err(OpError::invalid(field, format!("'{}' is a point light, with no {field}", self.light))
-                        .hint("a point light takes position and range"));
-                }
-                *position = self.position.unwrap_or(*position);
-                *range = self.range.unwrap_or(*range);
+                *position = fields.position.unwrap_or(*position);
+                *range = fields.range.unwrap_or(*range);
+            }
+            LightShape::Spot { position, target, cone, penumbra, range } => {
+                *position = fields.position.unwrap_or(*position);
+                *target = fields.target.unwrap_or(*target);
+                *cone = fields.cone.unwrap_or(*cone);
+                *penumbra = fields.penumbra.unwrap_or(*penumbra);
+                *range = fields.range.unwrap_or(*range);
             }
         }
         let mut moved = Vec::new();
         if let Some(shadow) = self.shadow {
-            if shadow && !light.is_directional() {
-                return Err(OpError::invalid("shadow", "only a directional light casts shadows"));
+            if shadow && kind == LightKind::Point {
+                return Err(OpError::invalid("shadow", "a point light casts no shadow")
+                    .hint("a directional or spot light can cast one"));
             }
             light.shadow = shadow;
-            if shadow {
+            if shadow && kind == LightKind::Directional {
                 moved = take_shadow(lights, &self.light);
             }
         }
@@ -345,14 +436,15 @@ pub struct AmbientEdit {
     pub intensity: Option<f32>,
 }
 
-/// Changes the lighting of a scene besides its lights: exposure, background, ambient, bloom, outline light and the
-/// skin's shadow floor.
+/// Changes the lighting of a scene besides its lights: exposure, background, ambient, bloom, outline light, the skin's
+/// shadow floor, fog and the environment.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(extend(
     "examples" = [
         {"exposure": 1.1},
-        {"scene": "night_stream", "ambient": {"intensity": 0.4}, "skin_floor": "off", "bloom": {"strength": 0.6, "radius": 0.4, "threshold": 0.9}}
+        {"scene": "night_stream", "ambient": {"intensity": 0.4}, "skin_floor": "off", "bloom": {"strength": 0.6, "radius": 0.4, "threshold": 0.9}},
+        {"fog": {"colour": "#2a2238", "near": 2.0, "far": 9.0}, "environment": {"kind": "sky", "zenith": "#6f86b8", "horizon": "#e8c9a0", "ground": "#3b3026", "intensity": 0.6}}
     ],
     "x-omuzaki-fixture" = "scenes"
 ))]
@@ -378,14 +470,22 @@ pub struct SetLighting {
     /// The glow of bright parts, or `off`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bloom: Option<OrOff<BloomDef>>,
+    /// Distance fog (`colour`, `near` and `far` in subject units from the camera), or `off`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fog: Option<OrOff<FogDef>>,
+    /// Image-based light, or `off`: `kind` `sky` (with `zenith`, `horizon`, `ground` colours) or `hdri` (with `asset`,
+    /// a stored Radiance `.hdr`), and `intensity`, `rotation` (degrees about the vertical) and `toon_ramp`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<OrOff<EnvironmentDef>>,
 }
 
 impl Op for SetLighting {
     fn meta() -> OpMeta {
         OpMeta {
             name: "stage.set_lighting",
-            summary: "Change a scene's exposure, background, ambient light, bloom, outline light or skin shadow floor; \
-                      only the fields given change.",
+            summary: "Change a scene's exposure, background, ambient light, bloom, outline light, skin shadow floor, \
+                      fog or environment (a sky or an HDRI that lights the cast and can be the backdrop); only the \
+                      fields given change.",
             kind: OpKind::Edit,
             scope: Scope::EditScene,
             undo: Undo::Auto,
@@ -421,6 +521,12 @@ impl Op for SetLighting {
         }
         if let Some(bloom) = &self.bloom {
             l.bloom = bloom.clone().into_option();
+        }
+        if let Some(fog) = &self.fog {
+            l.fog = fog.clone().into_option();
+        }
+        if let Some(environment) = &self.environment {
+            l.environment = environment.clone().into_option();
         }
         let id = edit.id.clone();
         let plan = edit.finish(ctx, serde_json::Value::Null)?;
@@ -469,7 +575,8 @@ impl Op for SetLightRig {
             };
             return Err(error);
         }
-        let internal = |name: &str, e: &dyn std::fmt::Display| OpError::internal(format!("the library rig '{name}': {e}"));
+        let internal =
+            |name: &str, e: &dyn std::fmt::Display| OpError::internal(format!("the library rig '{name}': {e}"));
         let rig = LightRig::load(&self.rig).map_err(|e| internal(&self.rig, &e))?;
         let lighting = rig.to_lighting().map_err(|e| internal(&self.rig, &e))?;
         let mut edit = SceneEdit::open(ctx.doc, self.scene.as_ref())?;

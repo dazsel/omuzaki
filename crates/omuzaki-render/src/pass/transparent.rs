@@ -262,9 +262,9 @@ impl FramePass for Transparent {
             }
         }
 
-        let environment = cx.environment_group();
+        let (environment, frame_group) = (cx.environment_group(), cx.frame_group());
         let mut pass = cx.attachments.geometry_pass(cx.encoder, "transparent", cx.frame.clear_colour());
-        pass.set_bind_group(0, cx.frame.bind_group, &[]);
+        pass.set_bind_group(0, frame_group, &[]);
         pass.set_bind_group(2, cx.attachments.shadow.receiver_group(), &[]);
         pass.set_bind_group(3, environment, &[]);
         for entry in &sorted {

@@ -11,11 +11,11 @@
 //! and chin landed in the picture (`face_landmarks`), which an agent passes to those ops as `source = "render"`.
 
 use omuzaki_char_api::{BuildServices, CharId, CharacterBuilder, VariantId};
+use omuzaki_core::glam::Vec3;
 use omuzaki_core::time::SystemClock;
 use omuzaki_doc_api::DocRead;
 use omuzaki_face_api::ExpressionId;
 use omuzaki_ops_api::{JobCtx, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
-use omuzaki_core::glam::Vec3;
 use omuzaki_render_api::{Camera, Capabilities, MtoonSupport, Outline, Post, Projection};
 use omuzaki_stage_api::{CameraId, Framing, Lighting, MemberId, SceneDef, SceneError, SceneId};
 use omuzaki_store_api::Store;
@@ -31,8 +31,8 @@ use crate::frame::face::FacePoints;
 use crate::recipe::preset::{PresetOutline, PresetPost, PresetProjection};
 use crate::recipe::{LightRig, RenderPreset};
 use crate::scene::alone::{ShotChoice, StagedScene, cast_alone, post_in_look, stage_alone};
-use crate::scene::landmarks::Landmarks;
 use crate::scene::default::scene_for;
+use crate::scene::landmarks::Landmarks;
 
 /// The size of a preview when none is given: a portrait frame.
 const DEFAULT_SIZE: [u32; 2] = [768, 1024];
@@ -330,8 +330,21 @@ impl Op for Preview {
         let aspect = size.x as f32 / size.y as f32;
         let mut staged =
             stage_alone(&def, &member, landmarks, aspect).map_err(|e| OpError::invalid("scene", e.to_string()))?;
+        if staged.resolved.environment.and_then(|e| e.hdri()).is_some() {
+            staged.resolved.load_hdri(job.service::<dyn Store>()?).map_err(|e| {
+                OpError::invalid("scene", e.to_string())
+                    .hint("an HDRI environment names a Radiance .hdr in the asset store")
+            })?;
+        }
+        if staged.resolved.backdrop_image.is_some() {
+            staged.resolved.load_backdrop(job.service::<dyn Store>()?).map_err(|e| {
+                OpError::invalid("scene", e.to_string())
+                    .hint("an image backdrop names a PNG or JPEG in the asset store")
+            })?;
+        }
         if preset.is_some_and(|p| p.post == PresetPost::Off) {
-            staged.resolved.post = Post { bloom: None, depth_of_field: None, grain: None, grade: None, ..staged.resolved.post };
+            staged.resolved.post =
+                Post { bloom: None, depth_of_field: None, grain: None, grade: None, ..staged.resolved.post };
         } else if let Body::Kit(built) = &body {
             // A kit character's look sets part of the frame too: its bloom, depth of field, grain and grade.
             post_in_look(&mut staged.resolved.post, &built.look().scene);
@@ -359,7 +372,10 @@ impl Op for Preview {
             let name = self.preset.as_deref().unwrap_or_default();
             return Err(OpError::invalid(
                 "size",
-                format!("the eyes are {:.0} px apart in the picture; the '{name}' preset needs at least {min}", face.iod()),
+                format!(
+                    "the eyes are {:.0} px apart in the picture; the '{name}' preset needs at least {min}",
+                    face.iod()
+                ),
             )
             .hint("give a larger size: a 768 px square gives about 250 px between the eyes"));
         }

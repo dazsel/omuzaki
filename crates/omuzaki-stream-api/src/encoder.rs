@@ -438,6 +438,13 @@ pub trait Encoder: Send {
     /// # Errors
     /// [`StreamError::Encode`] on failure.
     fn flush(&mut self, out: &mut Vec<Packet>) -> Result<(), StreamError>;
+
+    /// After a failure: the frames it was given whose packets never came out, oldest first, by frame index, for the
+    /// next encoder (`docs/design/supervisor.md` §15.5). Call once `receive` has taken every packet that did. Empty
+    /// for an encoder that keeps no frames it can give back.
+    fn unfinished(&mut self) -> Vec<(u64, Image)> {
+        Vec::new()
+    }
 }
 
 /// Finds and opens encoders.

@@ -1,6 +1,6 @@
 //! Per-pass frame times: `cargo run --release --example frame_times -- [--size 1920x1080] [--frames 600] [--samples 4]
 //! [--scale 1.0] [--triangles 130000] [--props 20] [--paint 0] [--outlines] [--blended] [--hair] [--post none] [--offline]
-//! [--shadows off|low|high] [--interval 2] [--environment sky|hdri] [--toon-ramp] [--spot] [--fog] [--software]`.
+//! [--shadows off|low|high] [--keys 1] [--interval 2] [--environment sky|hdri] [--toon-ramp] [--spot] [--fog] [--software]`.
 //!
 //! Renders a stage-like scene (one dense sphere standing in for a character, some props, a light rig) for a number of
 //! frames after a warm-up and prints, per pass, the CPU time spent recording and the GPU time from timestamp queries
@@ -27,7 +27,8 @@
 //!
 //! `--shadows low|high` makes the key light cast (the live and the quality preset's shadow maps, both fitted to the whole
 //! scene), and `--interval N` is the live redraw interval: the `shadows` row then averages the frames that redrew, so
-//! the cost per frame is that figure divided by `N`.
+//! the cost per frame is that figure divided by `N`. `--keys N` adds casting keys from other sides (up to four in all),
+//! each with its own map at `high`: run with `--keys 1` and `--keys 2` to see what one more map costs.
 //!
 //! `--environment sky|hdri` lights the scene with an environment as well (a procedural sky, or a synthesised 1024 x 512
 //! HDRI with a sun) and prints what creating it cost; `--toon-ramp` sends its diffuse light through the toon ramp. Run it
@@ -72,6 +73,8 @@ struct Args {
     offline: bool,
     shadows: ShadowQuality,
     interval: u8,
+    /// Casting key lights, 1 to 4.
+    keys: usize,
     /// `sky` or `hdri`: light the scene with an environment too.
     environment: Option<String>,
     toon_ramp: bool,
@@ -96,6 +99,7 @@ fn parse() -> Result<Args, String> {
         offline: false,
         shadows: ShadowQuality::Off,
         interval: 2,
+        keys: 1,
         environment: None,
         toon_ramp: false,
         spot: false,
@@ -142,6 +146,12 @@ fn parse() -> Result<Args, String> {
                 }
             }
             "--interval" => args.interval = value()?.parse().map_err(|e| format!("{e}"))?,
+            "--keys" => {
+                args.keys = value()?.parse().map_err(|e| format!("{e}"))?;
+                if !(1..=4).contains(&args.keys) {
+                    return Err(format!("--keys is 1 to 4, not {}", args.keys));
+                }
+            }
             "--environment" => {
                 let kind = value()?;
                 if !["sky", "hdri"].contains(&kind.as_str()) {
@@ -314,6 +324,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         scene.environment = Some(EnvironmentUse { toon_ramp: args.toon_ramp, ..EnvironmentUse::new(id) });
     }
     let mut lights = lights.to_vec();
+    // Further keys from the right, behind and above, dimmer than the first.
+    for to_light in
+        [Vec3::new(1.4, 1.8, 1.2), Vec3::new(0.3, 1.2, -2.0), Vec3::new(-0.2, 3.0, 0.4)].iter().take(args.keys - 1)
+    {
+        lights.push(Light::Directional {
+            to_light: *to_light,
+            colour: Colour::hex(0x00ff_e2c8),
+            intensity: 1.0,
+            casts_shadow: args.shadows != ShadowQuality::Off,
+        });
+    }
     if args.spot {
         lights.push(Light::Spot {
             position: Vec3::new(0.0, 1.6, 1.4),

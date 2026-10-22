@@ -1,6 +1,7 @@
 //! The live loop's frame times (spec v3 §10): `cargo run -p omuzaki-stage --features wgpu --release --example
 //! live_times -- [--character kit|vrm|both] [--size 1920x1080] [--fps 30] [--warmup 20] [--frames 3000] [--unpaced]
-//! [--steady MS [--steady-wait]] [--camera bust|full|face] [--software] [--gpu-face] [--out DIR]`.
+//! [--steady MS [--steady-wait]] [--camera bust|full|face] [--look studio|extras] [--software] [--gpu-face]
+//! [--out DIR]`.
 //!
 //! It runs the studio's live path from start to finish, with nothing stood in:
 //! - a project with the kit's default character, made the way `character.create` makes it (template `standard`, seed
@@ -8,7 +9,8 @@
 //!   the bring-your-own-model path without a third-party file;
 //! - the default scene, created by `stage.create_scene` (the studio light rig, its ground and backdrop), resolved on the
 //!   body's landmarks and opened on its `bust` camera (`--camera` picks another): the face and upper body, as §10's
-//!   budget scene frames them;
+//!   budget scene frames them; `--look extras` adds a spot light, distance fog and a sky environment shown as the
+//!   backdrop to it (LK-08's "all three on");
 //! - the body staged with its face (the production `FaceRig::standard`), and the one live loop (`LiveStage`) fed by a
 //!   scripted webcam through `LiveInput`: the real retarget, life layer and animator, the rig and spring bones, the face
 //!   painter, the frame-budget scheduler and the renderer;
@@ -76,6 +78,8 @@ use omuzaki_stage::body::{Body, BodyServices, load_body};
 use omuzaki_stage::frame::StageClock;
 use omuzaki_stage::frame::face::FaceRig;
 use omuzaki_stage::ops::scene::create::CreateScene;
+use omuzaki_stage::ops::scene::light::{AddLight, SetLighting};
+use omuzaki_stage::ops::scene::look::SetBackdrop;
 use omuzaki_stage::perform::STEP_HZ;
 use omuzaki_stage::perform::host::PerformHost;
 use omuzaki_stage::perform::input::{InputHost, LiveInput, NoPrompt, SourceKind, SourceSlot};
@@ -109,6 +113,8 @@ struct Args {
     /// Wait for the steady-clock load to finish before each frame, so no pass of the frame shares the GPU with it.
     steady_wait: bool,
     camera: String,
+    /// Add a spot, fog and a sky environment to the default scene.
+    extras: bool,
     software: bool,
     /// Paint the face with the GPU rasteriser on any adapter, software ones included, so `--software` runs the same
     /// face path as a hardware adapter (the live stage leaves a software adapter to the CPU raster).
@@ -127,6 +133,7 @@ fn parse() -> Result<Args, Box<dyn Error>> {
         steady: None,
         steady_wait: false,
         camera: "bust".to_owned(),
+        extras: false,
         software: false,
         gpu_face: false,
         out: None,
@@ -155,6 +162,13 @@ fn parse() -> Result<Args, Box<dyn Error>> {
             "--steady" => args.steady = Some(value()?.parse()?),
             "--steady-wait" => args.steady_wait = true,
             "--camera" => args.camera = value()?,
+            "--look" => {
+                args.extras = match value()?.as_str() {
+                    "studio" => false,
+                    "extras" => true,
+                    other => return Err(format!("--look is studio or extras, not {other}").into()),
+                }
+            }
             "--software" => args.software = true,
             "--gpu-face" => args.gpu_face = true,
             "--out" => args.out = Some(PathBuf::from(value()?)),
@@ -168,8 +182,9 @@ fn parse() -> Result<Args, Box<dyn Error>> {
 }
 
 /// The project: the kit character as `character.create` makes it, the same character as an imported VRM, and the
-/// default scene as `stage.create_scene` writes it, casting the kit.
-fn project(clock: &FakeClock) -> Result<(MemDoc, MemStore), Box<dyn Error>> {
+/// default scene as `stage.create_scene` writes it, casting the kit; with `extras`, a spot, fog and a sky environment
+/// as the backdrop, added by `stage.add_light`, `stage.set_lighting` and `stage.set_backdrop`.
+fn project(clock: &FakeClock, extras: bool) -> Result<(MemDoc, MemStore), Box<dyn Error>> {
     let mut doc = MemDoc::from_value(json!({}));
     let actor = Actor::Person { name: "budget".to_owned() };
     let create: CharacterCreate =
@@ -193,6 +208,20 @@ fn project(clock: &FakeClock) -> Result<(MemDoc, MemStore), Box<dyn Error>> {
     let scene: CreateScene = serde_json::from_value(json!({ "id": "main" }))?;
     let patch = scene.plan(&OpCtx::new(&doc, &actor, clock))?.patch;
     doc.apply(&patch)?;
+    if extras {
+        let spot: AddLight = serde_json::from_value(json!({
+            "kind": "spot", "role": "accent", "position": [-1.0, 1.2, 0.3], "target": [0.0, 0.8, 0.0],
+            "cone": 25.0, "penumbra": 0.4, "intensity": 1.2, "colour": "#ffc890"
+        }))?;
+        let look: SetLighting = serde_json::from_value(json!({
+            "fog": { "colour": "#2a2238", "near": 0.8, "far": 5.0 },
+            "environment": { "kind": "sky", "intensity": 0.35 }
+        }))?;
+        let backdrop: SetBackdrop = serde_json::from_value(json!({ "kind": "environment" }))?;
+        doc.apply(&spot.plan(&OpCtx::new(&doc, &actor, clock))?.patch)?;
+        doc.apply(&look.plan(&OpCtx::new(&doc, &actor, clock))?.patch)?;
+        doc.apply(&backdrop.plan(&OpCtx::new(&doc, &actor, clock))?.patch)?;
+    }
     Ok((doc, store))
 }
 
@@ -453,7 +482,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         capabilities.gpu_timings,
     );
     let clock = FakeClock::new(Seconds(0.0));
-    let (doc, store) = project(&clock)?;
+    let (doc, store) = project(&clock, args.extras)?;
     for id in &args.characters {
         let name = if *id == KIT { "the kit character" } else { "the kit character imported from its VRM" };
         let samples = measure(&mut renderer, &doc, &store, &clock, id, &args, load.as_ref())?;

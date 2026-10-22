@@ -7,7 +7,7 @@
 //! | Pass | File | State |
 //! |---|---|---|
 //! | `PaintTextures` | `paint_textures.rs` | done: rebuilds the mips of repainted textures |
-//! | `Shadows` | `shadows.rs` | done: one fitted, texel-snapped directional map for the first casting light, redrawn every `shadow_interval`-th live frame; the lookup is in `shader/toon.wgsl` |
+//! | `Shadows` | `shadows.rs` | done: a fitted, texel-snapped directional map per casting light (up to the quality's `max_maps`), each redrawn every `shadow_interval`-th live frame; the lookup is in `shader/toon.wgsl` |
 //! | `Opaque` | `opaque.rs` | done: toon shading (ramp, tinted shade, rim, skin, lights) over base colour, vertex colours, textures, overlays and skinning |
 //! | `Outlines` | `outlines.rs` | done: inverted hull on welded smooth normals, width by distance; `MToon`'s other width modes are not implemented yet |
 //! | `Transparent` | `transparent.rs` | done: blended instances sorted by `Instance::order`, then back to front, depth-tested without writing depth; the opaque shader and program hooks with a blend state |
@@ -21,6 +21,7 @@
 //! `cx.frame.draws.for_pass(Pass::X)`, already filtered; the quality is `cx.frame.quality`. A product another pass
 //! reads (the shadow map `Opaque` samples) is published through `frame/attachments.rs`.
 
+mod backdrop;
 mod bloom;
 mod dof;
 mod opaque;
@@ -72,9 +73,18 @@ pub(crate) struct PassCx<'a> {
     pub(crate) stats: FrameStats,
     /// CPU time the pass did outside `record` (painters ran before the frame); charged to the pass in the report.
     pub(crate) extra_cpu: Duration,
+    /// The supersampling round being drawn: 0, or up to the frame's rounds less one while the geometry passes repeat.
+    pub(crate) round: usize,
 }
 
 impl<'a> PassCx<'a> {
+    /// Group 0 for the round being drawn: the frame uniform with that round's sub-pixel offset, the instances and the
+    /// joints. Every pass that draws instances binds this.
+    pub(crate) fn frame_group(&self) -> &'a wgpu::BindGroup {
+        let groups = self.frame.bind_groups;
+        &groups[self.round.min(groups.len().saturating_sub(1))]
+    }
+
     /// Group 3 of the lit passes: the scene's environment, or the stand-in that lights nothing. It borrows the resources,
     /// not the context, so it can be fetched while a render pass holds the encoder.
     pub(crate) fn environment_group(&self) -> &'a wgpu::BindGroup {
