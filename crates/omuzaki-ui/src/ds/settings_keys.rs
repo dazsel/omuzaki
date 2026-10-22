@@ -1,10 +1,12 @@
-//! How the UI looks, as settings (`docs/design/settings.md` D2, #949): `ui.theme`, `ui.density`, `ui.scale` and
-//! `ui.reduce_motion`. Taste only, so an agent may set them (`AgentWrite::Free`), a profile may hold them, and they apply
-//! at once. Their defaults are [`Settings::default`].
+//! How the UI looks and speaks, as settings (`docs/design/settings.md` D2, #949, #206): `ui.theme`, `ui.density`,
+//! `ui.scale`, `ui.reduce_motion` and `ui.language`. Taste only, so an agent may set them (`AgentWrite::Free`), a
+//! profile may hold them, and they apply at once. The look's defaults are [`Settings::default`]; the language's is
+//! the computer's own (`system`), negotiated from the OS preference list (design `l10n-ops.md` section 6).
 //!
-//! [`SettingsLink`] keeps the design system in step with the settings service: it reads the four keys from the
-//! service's snapshot once, then again only when a change event touches a `ui.*` key, and applies them. There is no
-//! per-frame settings read: a frame with no event is one empty channel poll.
+//! [`SettingsLink`] keeps the design system in step with the settings service: it reads the keys from the service's
+//! snapshot once, then again only when a change event touches a `ui.*` key, and applies them. There is no per-frame
+//! settings read: a frame with no event is one empty channel poll. A new language swaps the design system's
+//! [`Strings`] table on the next frame, with no restart.
 
 use std::sync::Arc;
 
@@ -16,7 +18,10 @@ use omuzaki_settings_api::register_setting;
 use omuzaki_settings_api::service::{Settings as SettingsService, Snapshot};
 use omuzaki_settings_api::setting::Setting;
 
-use super::theme::{Settings, apply_settings};
+use omuzaki_l10n_api::{Catalog, Locale, SHIPPED, negotiate, os_locales};
+
+use super::strings::{CatalogStrings, English, Strings};
+use super::theme::{Settings, apply_settings, set_strings};
 use super::tokens::{Density, Scale, ThemeKind};
 
 /// The area the four keys share.
@@ -97,6 +102,61 @@ impl Setting for UiReduceMotion {
 
 register_setting!(UiReduceMotion);
 
+/// The language the studio speaks: `system` (the computer's, negotiated from its preference list) or a shipped
+/// language's tag. Each option's title is the language's own name, which reads the same in every language.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(transparent)]
+#[schemars(extend("oneOf" = [
+    { "const": "system" },
+    { "const": "en", "title": "English" },
+    { "const": "ja", "title": "日本語" },
+    { "const": "ko", "title": "한국어" },
+    { "const": "zh-Hans", "title": "简体中文" },
+    { "const": "es-419", "title": "Español (Latinoamérica)" },
+    { "const": "pt-BR", "title": "Português (Brasil)" },
+]))]
+pub struct Language(pub String);
+
+impl Language {
+    /// The computer's language.
+    pub const SYSTEM: &'static str = "system";
+
+    /// The locale this choice speaks: a shipped language as chosen, or the computer's preference list negotiated.
+    /// Traditional Chinese preferences give English until it ships, never Simplified Chinese (design section 6).
+    pub fn locale(&self) -> Locale {
+        if self.0 == Self::SYSTEM {
+            let preferences = os_locales();
+            let preferences: Vec<&str> = preferences.iter().map(String::as_str).collect();
+            return negotiate(&preferences);
+        }
+        SHIPPED.iter().find(|locale| locale.as_str() == self.0).cloned().unwrap_or(Locale::EN)
+    }
+}
+
+/// `ui.language`: the language of the studio's words.
+pub struct UiLanguage;
+
+impl Setting for UiLanguage {
+    type Value = Language;
+    const META: SettingMeta = taste("ui.language", "The studio's language; Traditional Chinese is on its way");
+    fn default() -> Language {
+        Language(Language::SYSTEM.to_owned())
+    }
+    fn check(value: &Language) -> Result<(), SettingError> {
+        if value.0 == Language::SYSTEM || SHIPPED.iter().any(|locale| locale.as_str() == value.0) {
+            return Ok(());
+        }
+        let tags: Vec<&str> = SHIPPED.iter().map(Locale::as_str).collect();
+        Err(SettingError::invalid(Self::META.key, format!("system or one of {}", tags.join(", "))))
+    }
+}
+register_setting!(UiLanguage);
+
+/// The table that speaks `locale`: English as written, or the language's Fluent catalog.
+pub fn strings_for(locale: &Locale) -> Arc<dyn Strings> {
+    if *locale == Locale::EN { Arc::new(English) } else { Arc::new(CatalogStrings::new(Catalog::new(locale.clone()))) }
+}
+
 impl Settings {
     /// The look the snapshot holds; a key it lacks or cannot read is its default. A scale between the fixed steps
     /// takes the nearest one.
@@ -121,6 +181,8 @@ pub struct SettingsLink {
     service: Arc<dyn SettingsService>,
     events: Subscription<SettingsEvent>,
     applied: Option<Settings>,
+    /// The language last applied.
+    speaks: Option<Locale>,
 }
 
 impl std::fmt::Debug for SettingsLink {
@@ -133,12 +195,17 @@ impl SettingsLink {
     /// A link over `service`, subscribed now so no change made after this call is missed.
     pub fn new(service: Arc<dyn SettingsService>) -> Self {
         let events = service.subscribe();
-        Self { service, events, applied: None }
+        Self { service, events, applied: None, speaks: None }
     }
 
     /// The look last applied, if any.
     pub const fn applied(&self) -> Option<Settings> {
         self.applied
+    }
+
+    /// The language last applied, if any.
+    pub const fn speaks(&self) -> Option<&Locale> {
+        self.speaks.as_ref()
     }
 
     /// Applies the settings to `ctx` on the first call and after any change to a `ui.*` key; otherwise does nothing.
@@ -151,8 +218,15 @@ impl SettingsLink {
         if !changed {
             return;
         }
-        let settings = Settings::from_snapshot(&self.service.snapshot());
+        let snapshot = self.service.snapshot();
+        let settings = Settings::from_snapshot(&snapshot);
         apply_settings(ctx, settings);
         self.applied = Some(settings);
+        let locale = snapshot.get::<UiLanguage>().unwrap_or_else(|_| UiLanguage::default()).locale();
+        if self.speaks.as_ref() != Some(&locale) {
+            // Building a catalog parses the language's files: once per switch, never per frame.
+            set_strings(ctx, strings_for(&locale));
+            self.speaks = Some(locale);
+        }
     }
 }

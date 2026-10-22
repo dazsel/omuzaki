@@ -27,6 +27,9 @@ pub use omuzaki_core::__record_registration;
 // `audio.*` ops, the OBS client the `obs.*` ops, the VTube Studio bridge the `vts.*` ops, the automation engine and its
 // nodes the `show.*` and `automation.*` ops, Twitch the `twitch.*` ops, the settings store the `settings.*` ops and the
 // virtual camera its output kind (ADR 0015). The studio's own `ui.*` settings register here (`ds::settings_keys`).
+// The studio's words in every shipped language (`locales/<lang>/omuzaki-ui.ftl`, design `l10n-ops.md` section 3.3).
+omuzaki_l10n_api::register_locales!();
+
 omuzaki_core::define_link! {
     omuzaki_ai::link();
     omuzaki_anim::link();
