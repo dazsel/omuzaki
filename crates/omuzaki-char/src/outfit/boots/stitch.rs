@@ -204,6 +204,29 @@ pub(super) fn add_rows(
     Ok(())
 }
 
+/// How finely a seam's path is walked to measure its length.
+const SEAM_WALK: usize = 256;
+
+/// `steps + 1` points of `path` (over its parameter from 0 to 1) evenly spaced along its length: the back seam climbs
+/// the heel's curve, where an even step in height is a long way round and its chord would cut into the leather.
+fn even_steps(path: &dyn Fn(f64) -> DVec3, steps: usize) -> Vec<DVec3> {
+    let walk: Vec<DVec3> = (0..=SEAM_WALK).map(|k| path(fraction(k, SEAM_WALK))).collect();
+    let mut along = vec![0.0; walk.len()];
+    for k in 1..walk.len() {
+        along[k] = along[k - 1] + walk[k].distance(walk[k - 1]);
+    }
+    let total = along[SEAM_WALK];
+    (0..=steps)
+        .map(|k| {
+            let at = total * fraction(k, steps);
+            let i = along.partition_point(|a| *a < at).clamp(1, SEAM_WALK);
+            let span = along[i] - along[i - 1];
+            let u = if span > 0.0 { (at - along[i - 1]) / span } else { 0.0 };
+            path(lerp(fraction(i - 1, SEAM_WALK), fraction(i, SEAM_WALK), u))
+        })
+        .collect()
+}
+
 /// Adds the dark seam tubes: the toe-cap seam's centre line (with `cap`) and the back seam's.
 pub(super) fn add_seams(boot: &Boot, tess: &Tess, cap: bool, builder: &mut MeshBuilder) -> Result<(), KitError> {
     let mut tubes: Vec<Vec<DVec3>> = Vec::new();
@@ -217,14 +240,8 @@ pub(super) fn add_seams(boot: &Boot, tess: &Tess, cap: bool, builder: &mut MeshB
                 .collect(),
         );
     }
-    tubes.push(
-        (0..=tess.seam_back)
-            .map(|k| {
-                let y = lerp(BACK_SEAM_TUBE.0, BACK_SEAM_TUBE.1, fraction(k, tess.seam_back));
-                boot.plan(y, std::f64::consts::PI, SEAM_LIFT).p
-            })
-            .collect(),
-    );
+    let back = |s: f64| boot.plan(lerp(BACK_SEAM_TUBE.0, BACK_SEAM_TUBE.1, s), std::f64::consts::PI, SEAM_LIFT).p;
+    tubes.push(even_steps(&back, tess.seam_back));
     for points in &tubes {
         let swept = tube(points, |_| SEAM_RADIUS, tess.seam_seg)?;
         let inside = |i: usize, _: usize| swept.centres[i];

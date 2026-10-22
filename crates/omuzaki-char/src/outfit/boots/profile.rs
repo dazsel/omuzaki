@@ -12,7 +12,7 @@
 //! height and fits the superellipse of `plan` round what it finds, with the garment's ease to spare.
 
 use omuzaki_anim_api::HumanoidBone;
-use omuzaki_char_api::{BodyFit, BodyRegion, JointRef};
+use omuzaki_char_api::{BodyFit, BodyRegion, JointRef, RegionEnd, Section};
 use omuzaki_core::glam::{DVec2, DVec3, Vec3};
 use omuzaki_face_api::{Check, Validate};
 use schemars::JsonSchema;
@@ -464,13 +464,16 @@ impl Cut {
     fn of(fit: &dyn BodyFit, region: BodyRegion, t: f64) -> Result<(Self, f64), GarmentError> {
         #[allow(clippy::cast_possible_truncation)] // a fit is sampled in f32
         let s = fit.section(region, t as f32).ok_or(GarmentError::NoSection { region, t })?;
+        Ok((Self::from_section(region, &s), f64::from(s.radii.y)))
+    }
+
+    fn from_section(region: BodyRegion, s: &Section) -> Self {
         let (across, through) = section_basis(region, s.axis);
-        let cut = Self {
+        Self {
             centre: s.centre.as_dvec3(),
             across: across.as_dvec3() * f64::from(s.radii.x),
             through: through.as_dvec3() * f64::from(s.radii.y),
-        };
-        Ok((cut, f64::from(s.radii.y)))
+        }
     }
 
     /// The `(x, z)` of the points where the ellipse crosses the horizontal plane at `y`.
@@ -499,7 +502,8 @@ impl Cut {
 /// The left foot and lower leg of the body, sampled once, and the heights the boot is placed by.
 struct Body {
     foot: Vec<Cut>,
-    /// From the hip down.
+    /// From the hip down, and on past the ankle through the slices of the leg's cap (its end, which the foot's sections
+    /// don't cover).
     leg: Vec<Cut>,
     /// The lowest point of the foot, metres.
     floor: f64,
@@ -513,6 +517,12 @@ struct Body {
 const FOOT_SAMPLES: usize = 64;
 const LEG_SAMPLES: usize = 96;
 const RING_POINTS: usize = 24;
+/// The share of the foot at each end sampled again, and how many sections in it.
+const END_SPAN: f64 = 0.15;
+const END_SAMPLES: usize = 48;
+/// The step between slices of the leg's cap past the ankle, metres, and the most slices taken.
+const CAP_STEP: f64 = 0.001;
+const CAP_SLICES: usize = 120;
 
 impl Body {
     fn of(fit: &dyn BodyFit) -> Result<Self, GarmentError> {
@@ -525,9 +535,25 @@ impl Body {
             halves.push(half);
             foot.push(cut);
         }
-        let leg = (0..=LEG_SAMPLES)
+        // The heel's and the toe's domes: a slice of the foot meets them only where a section's ellipse just reaches
+        // its height, so between even steps their far ends are missed by up to a step. They get more.
+        for k in 1..END_SAMPLES {
+            let t = END_SPAN * fraction(k, END_SAMPLES);
+            for t in [t, 1.0 - t] {
+                foot.push(Cut::of(fit, BodyRegion::FootL, t)?.0);
+            }
+        }
+        let mut leg = (0..=LEG_SAMPLES)
             .map(|k| Cut::of(fit, BodyRegion::LegL, fraction(k, LEG_SAMPLES)).map(|(cut, _)| cut))
             .collect::<Result<Vec<_>, _>>()?;
+        for k in 1..=CAP_SLICES {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)] // a fit is sampled in f32
+            let Some(slice) = fit.cap(BodyRegion::LegL, RegionEnd::End, (k as f64 * CAP_STEP) as f32) else { break };
+            if slice.centre.is_finite() && slice.radii.is_finite() && slice.axis.is_finite() {
+                leg.push(Cut::from_section(BodyRegion::LegL, &slice));
+            }
+        }
+
         halves.sort_by(f64::total_cmp);
         // The median half height of the foot: the foot is widest about that far above the sole.
         let equator = floor + halves[halves.len() / 2];
