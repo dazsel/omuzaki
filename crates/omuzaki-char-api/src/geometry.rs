@@ -59,7 +59,7 @@ pub struct MaterialSpec {
     /// Lighting model: toon, unlit or a named program (hair).
     pub shading: Shading,
     /// Face layers composited over the base, in order: the head carries `Base`, the hair carries `Brows` when its
-    /// shading says brows show through.
+    /// shading says brows show through, and both carry `Overlay`, which is in front of everything.
     pub overlays: Vec<FaceOverlay>,
     /// How alpha is used.
     pub alpha: AlphaMode,
