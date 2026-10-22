@@ -66,10 +66,54 @@ pub(crate) enum RawEvent {
     /// A pad's state now: its buttons (the backend's numbering), the zones they make, sticks in `-1..=1` (right and
     /// up positive) and triggers in `0..=1`.
     Pad { device: u64, buttons: u32, zones: PadZones, sticks: [[f32; 2]; 2], triggers: [f32; 2] },
-    /// A binding went active (`down`) or inactive by the desktop's own shortcut, with no key behind it (the Wayland
-    /// portal). Its `device` is the backend's, which is never announced: a shortcut has no motion.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code, reason = "only the Wayland portal sends shortcuts"))]
-    Shortcut { device: u64, id: BindingId, down: bool },
+    /// A binding went active (`down`) or inactive by id, with no key behind it: the desktop's own shortcut (the
+    /// Wayland portal, class keyboard) or an OSC message (class OSC). Its `device` is the backend's, which is never
+    /// announced: a shortcut has no motion.
+    Shortcut { device: u64, class: DeviceClass, id: BindingId, down: bool },
+    /// A MIDI control went down or up: a note, a controller past its middle, or a program change (a down and an up).
+    /// Never announced: MIDI makes no motion.
+    Midi { device: u64, control: MidiControl, down: bool },
+}
+
+/// A MIDI control a binding can be learned on: what kind of message, its channel and its number, packed. Crate-private
+/// like a key, and never printed.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub(crate) struct MidiControl(pub(crate) u16);
+
+impl MidiControl {
+    /// A note (on is down, off is up).
+    pub(crate) const NOTE: u16 = 0;
+    /// A controller (at 64 or more is down, under it is up).
+    pub(crate) const CONTROLLER: u16 = 1;
+    /// A program change (a down and an up at once).
+    pub(crate) const PROGRAM: u16 = 2;
+
+    /// The control of `kind` with `number` on `channel` (0 to 15).
+    pub(crate) const fn new(kind: u16, channel: u8, number: u8) -> Self {
+        Self(kind << 11 | ((channel & 0x0F) as u16) << 7 | (number & 0x7F) as u16)
+    }
+
+    /// Its kind: [`NOTE`](Self::NOTE), [`CONTROLLER`](Self::CONTROLLER) or [`PROGRAM`](Self::PROGRAM).
+    pub(crate) const fn kind(self) -> u16 {
+        self.0 >> 11
+    }
+
+    /// Its channel, 0 to 15.
+    pub(crate) const fn channel(self) -> u8 {
+        (self.0 >> 7 & 0x0F) as u8
+    }
+
+    /// Its note, controller or program number, 0 to 127.
+    pub(crate) const fn number(self) -> u8 {
+        (self.0 & 0x7F) as u8
+    }
+}
+
+impl std::fmt::Debug for MidiControl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<control>")
+    }
 }
 
 impl std::fmt::Debug for RawEvent {
@@ -114,6 +158,7 @@ enum PressKey {
     Key(HidUsage),
     Pad(u32),
     Shortcut(BindingId),
+    Midi(MidiControl),
 }
 
 struct Device {
@@ -288,12 +333,15 @@ impl RawSink {
         }
         self.sync_table();
         let class = match raw {
-            RawEvent::DeviceUp { class, .. } | RawEvent::Buttons { class, .. } => Some(class),
+            RawEvent::DeviceUp { class, .. } | RawEvent::Buttons { class, .. } | RawEvent::Shortcut { class, .. } => {
+                Some(class)
+            }
             RawEvent::DeviceGone { .. } => None,
             RawEvent::Motion { .. } => Some(DeviceClass::Mouse),
             RawEvent::Pen { .. } => Some(DeviceClass::Pen),
             RawEvent::Pad { .. } => Some(DeviceClass::Gamepad),
-            RawEvent::Key { .. } | RawEvent::Shortcut { .. } => Some(DeviceClass::Keyboard),
+            RawEvent::Key { .. } => Some(DeviceClass::Keyboard),
+            RawEvent::Midi { .. } => Some(DeviceClass::Midi),
         };
         // A class the person did not ask for is read by nobody; its devices are known but never announced.
         if class.is_some_and(|c| !self.shared.asked().contains(c)) && !matches!(raw, RawEvent::DeviceUp { .. }) {
@@ -311,7 +359,8 @@ impl RawSink {
             RawEvent::Pad { device, buttons, zones, sticks, triggers } => {
                 self.pad(device, buttons, zones, sticks, triggers);
             }
-            RawEvent::Shortcut { device, id, down } => self.shortcut(device, id, down),
+            RawEvent::Shortcut { device, class, id, down } => self.shortcut(device, class, id, down),
+            RawEvent::Midi { device, control, down } => self.midi(device, control, down),
         }
         !(self.out.motion.is_empty() && self.out.hits.is_empty() && self.out.free.is_empty())
     }
@@ -558,10 +607,10 @@ impl RawSink {
         }
     }
 
-    /// The desktop's shortcut for binding `id` went active or inactive: a press or a release of that binding from the
-    /// backend's silent source, matched by id (the portal hands over no key).
-    fn shortcut(&mut self, handle: u64, id: BindingId, down: bool) {
-        self.connect(handle, DeviceClass::Keyboard, true);
+    /// The desktop's shortcut or an OSC message for binding `id` went active or inactive: a press or a release of that
+    /// binding from the backend's silent source, matched by id (the portal hands over no key).
+    fn shortcut(&mut self, handle: u64, class: DeviceClass, id: BindingId, down: bool) {
+        self.connect(handle, class, true);
         let Some(src) = self.device_index(handle).and_then(|i| self.devices.get(i)).map(|d| d.src) else { return };
         let at = self.at();
         let key = PressKey::Shortcut(id);
@@ -619,6 +668,21 @@ impl RawSink {
                 self.end_press(src, PressKey::Key(usage), at);
             }
             (false, _) => {}
+        }
+    }
+
+    /// A MIDI control went down or up on a controller, which is a silent source: a pending `learn` takes a down, else it
+    /// presses the binding learned on it. A second down while held is ignored; an up with nothing held ends nothing.
+    fn midi(&mut self, handle: u64, control: MidiControl, down: bool) {
+        self.connect(handle, DeviceClass::Midi, true);
+        let Some(src) = self.device_index(handle).and_then(|i| self.devices.get(i)).map(|d| d.src) else { return };
+        let at = self.at();
+        let key = PressKey::Midi(control);
+        if !down {
+            self.end_press(src, key, at);
+        } else if self.press_of(src, key).is_none() && !self.learn(Chord::Midi { control }, false) {
+            let slot = matcher::match_midi(&self.table, control);
+            self.start_press(src, key, slot, at);
         }
     }
 

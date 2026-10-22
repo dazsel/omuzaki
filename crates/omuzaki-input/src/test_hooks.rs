@@ -13,6 +13,7 @@ use omuzaki_input_api::event::{DeviceClass, DeviceMask, PadZones};
 use omuzaki_input_api::zones::KeyZone;
 
 pub use crate::gamepad::script::PadScript;
+pub use crate::midi::script::MidiScript;
 pub use gilrs::{Axis as PadAxis, Button as PadButton};
 
 #[cfg(windows)]
@@ -46,6 +47,8 @@ fn all_available() -> CaptureCaps {
         pen_pressure: Support::Available,
         gamepad: Support::Available,
         bindings: Support::Available,
+        midi: Support::Available,
+        osc: Support::Available,
     }
 }
 
@@ -135,6 +138,33 @@ impl Hub {
         let (script, source) = gamepad::script::script(connected);
         let shared = Arc::clone(&self.core.shared);
         spawn_capture(shared, backend, "pads", move |sink| gamepad::run_with(sink, source)).map(|t| (script, t))
+    }
+
+    /// Runs the MIDI backend's capture loop on `backend` over a script instead of midir. The loop ends when the
+    /// script is dropped.
+    pub fn run_midi(&self, backend: usize) -> Option<(MidiScript, JoinHandle<()>)> {
+        let (script, source) = crate::midi::script::script();
+        let shared = Arc::clone(&self.core.shared);
+        spawn_capture(shared, backend, "midi", move |sink| crate::midi::run_with(sink, source)).map(|t| (script, t))
+    }
+
+    /// Runs the OSC backend's capture loop on `backend`, listening on a clone of `socket` (the test keeps the
+    /// original, so it knows the port) instead of the fixed port. The count goes up each time a run's socket is
+    /// ready, with whatever waited in it from before dropped.
+    pub fn run_osc(
+        &self,
+        backend: usize,
+        socket: &std::net::UdpSocket,
+    ) -> Option<(Arc<std::sync::atomic::AtomicU32>, JoinHandle<()>)> {
+        let socket = socket.try_clone().ok()?;
+        let runs = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let counted = Arc::clone(&runs);
+        let shared = Arc::clone(&self.core.shared);
+        let ready = move || {
+            counted.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        };
+        spawn_capture(shared, backend, "osc", move |sink| crate::osc::run_with(sink, || socket.try_clone(), ready))
+            .map(|t| (runs, t))
     }
 
     /// Runs the X11 backend's capture loop on `backend`, reading X display `display`. The returned mask mirrors the

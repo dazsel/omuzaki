@@ -110,7 +110,11 @@ fn masks_and_pad_sets_hold_what_was_put_in() {
     let mask = DeviceMask::of(&[DeviceClass::Keyboard, DeviceClass::Gamepad]);
     assert!(mask.contains(DeviceClass::Gamepad) && !mask.contains(DeviceClass::Mouse));
     assert_eq!(mask.iter().collect::<Vec<_>>(), [DeviceClass::Keyboard, DeviceClass::Gamepad]);
-    assert_eq!(DeviceMask::ALL.without(mask), DeviceMask::of(&[DeviceClass::Mouse, DeviceClass::Pen]));
+    assert_eq!(
+        DeviceMask::ALL.without(mask),
+        DeviceMask::of(&[DeviceClass::Mouse, DeviceClass::Pen, DeviceClass::Midi, DeviceClass::Osc])
+    );
+    assert_eq!(DeviceMask::of(&DeviceClass::ALL), DeviceMask::ALL);
     let sources = SourceMask::of(src(0)).with(src(63)).without(src(0));
     assert_eq!(sources.iter().collect::<Vec<_>>(), [src(63)]);
     assert_eq!(SourceTag::new(64), None);

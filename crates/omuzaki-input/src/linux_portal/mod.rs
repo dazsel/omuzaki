@@ -128,7 +128,7 @@ async fn session(sink: &mut RawSink, address: Option<&str>) -> Result<(), &'stat
         if let Some((id, down)) = shortcut
             && sink.epochs() == run
         {
-            sink.push(RawEvent::Shortcut { device: SHORTCUTS, id, down });
+            sink.push(RawEvent::Shortcut { device: SHORTCUTS, class: DeviceClass::Keyboard, id, down });
         }
         sink.idle();
     };

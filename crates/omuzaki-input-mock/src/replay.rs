@@ -168,11 +168,13 @@ fn class(word: &str) -> Result<DeviceClass, String> {
     DEVICE_NAMES.iter().find(|(_, name)| *name == word).map(|(c, _)| *c).ok_or_else(|| format!("no device `{word}`"))
 }
 
-const DEVICE_NAMES: [(DeviceClass, &str); 4] = [
+const DEVICE_NAMES: [(DeviceClass, &str); 6] = [
     (DeviceClass::Keyboard, "keyboard"),
     (DeviceClass::Mouse, "mouse"),
     (DeviceClass::Pen, "pen"),
     (DeviceClass::Gamepad, "gamepad"),
+    (DeviceClass::Midi, "midi"),
+    (DeviceClass::Osc, "osc"),
 ];
 
 fn class_name(class: DeviceClass) -> &'static str {

@@ -36,6 +36,10 @@ pub const DESK: TestBackend = TestBackend {
 };
 /// The gamepad backend.
 pub const PADS: TestBackend = TestBackend { name: "b.pads", classes: DeviceMask::NONE.with(DeviceClass::Gamepad) };
+/// The MIDI backend, in the rigs that have one (`Rig::with_midi`).
+pub const MIDI: TestBackend = TestBackend { name: "c.midi", classes: DeviceMask::NONE.with(DeviceClass::Midi) };
+/// The OSC backend, in the rigs that have one (`Rig::with_osc`).
+pub const OSC: TestBackend = TestBackend { name: "c.osc", classes: DeviceMask::NONE.with(DeviceClass::Osc) };
 
 pub struct Rig {
     pub clock: Arc<FakeClock>,
@@ -61,12 +65,24 @@ impl Rig {
     }
 
     pub fn in_dir(dir: Option<std::path::PathBuf>) -> Self {
+        Self::with_backends(dir, &[DESK, PADS])
+    }
+
+    /// A hub as [`new`](Self::new) with a third test backend, `MIDI`, at index 2.
+    pub fn with_midi() -> Self {
+        Self::with_backends(None, &[DESK, PADS, MIDI])
+    }
+
+    /// A hub as [`new`](Self::new) with a third test backend, `OSC`, at index 2.
+    pub fn with_osc() -> Self {
+        Self::with_backends(None, &[DESK, PADS, OSC])
+    }
+
+    fn with_backends(dir: Option<std::path::PathBuf>, backends: &[TestBackend]) -> Self {
         let clock = Arc::new(FakeClock::new(Seconds(10.0)));
         let processes = FakeProcesses::default();
-        let config = HubConfig::new(clock.clone(), dir)
-            .with_test_backends(&[DESK, PADS])
-            .manual()
-            .with_processes(processes.clone());
+        let config =
+            HubConfig::new(clock.clone(), dir).with_test_backends(backends).manual().with_processes(processes.clone());
         let hub = Hub::new(config).unwrap();
         let indicator = hub.indicator_host().install();
         indicator.beat();

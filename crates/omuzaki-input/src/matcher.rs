@@ -1,10 +1,10 @@
-//! Chords and matching (design §5). A chord is a key with its modifiers, or a pad's buttons; it never leaves the
-//! crate, and outside it a binding is only its id and action. Matching runs on the capture thread, after the zone.
+//! Chords and matching (design §5). A chord is a key with its modifiers, a pad's buttons or a MIDI control; it never
+//! leaves the crate, and outside it a binding is only its id and action. Matching runs on the capture thread, after the zone.
 
 use omuzaki_input_api::binding::ChordLabel;
 use serde::{Deserialize, Serialize};
 
-use crate::normalise::HidUsage;
+use crate::normalise::{HidUsage, MidiControl};
 use crate::normalise::zone_map;
 use crate::shared::Table;
 
@@ -47,6 +47,11 @@ pub(crate) enum Chord {
         /// The buttons, one bit each (the gamepad backend's numbering).
         buttons: u32,
     },
+    /// A MIDI note, controller or program change, on any controller.
+    Midi {
+        /// The control.
+        control: MidiControl,
+    },
 }
 
 /// No key value in a debug print: a chord is a key identity (design §3 rule 3).
@@ -76,6 +81,20 @@ impl Chord {
                 let names: Vec<String> = (0..32).filter(|b| buttons & (1 << b) != 0).map(|b| format!("Pad {b}")).collect();
                 ChordLabel::new(names.join("+"))
             }
+            Self::Midi { control } => {
+                let channel = control.channel() + 1;
+                let number = control.number();
+                ChordLabel::new(match control.kind() {
+                    MidiControl::NOTE => {
+                        const NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+                        let name = NAMES.get(usize::from(number % 12)).copied().unwrap_or("C");
+                        let octave = i32::from(number / 12) - 1;
+                        format!("MIDI note {name}{octave}, channel {channel}")
+                    }
+                    MidiControl::CONTROLLER => format!("MIDI controller {number}, channel {channel}"),
+                    _ => format!("MIDI program {}, channel {channel}", u16::from(number) + 1),
+                })
+            }
         }
     }
 }
@@ -87,6 +106,11 @@ pub(crate) fn match_key(table: &Table, usage: HidUsage, mods: Mods) -> Option<us
         table.entries.iter().position(|e| e.chord == Some(Chord::Key { usage, mods: want }))
     };
     find(mods).or_else(|| if mods.0 == 0 { None } else { find(Mods(0)) })
+}
+
+/// The slot of the binding a MIDI control matches.
+pub(crate) fn match_midi(table: &Table, control: MidiControl) -> Option<usize> {
+    table.entries.iter().position(|e| e.chord == Some(Chord::Midi { control }))
 }
 
 /// The slot of the binding a set of pad buttons matches exactly.
@@ -130,6 +154,10 @@ mod tests {
         assert_eq!(match_key(&t, w, Mods(Mods::SHIFT)), Some(2), "walk while running");
         assert_eq!(match_key(&t, HidUsage(0x1B), Mods(0)), None);
         assert_eq!(match_pad(&table(&[Chord::Pad { buttons: 0b11 }]), 0b11), Some(0));
+        let note = MidiControl::new(MidiControl::NOTE, 0, 60);
+        let t = table(&[Chord::Midi { control: MidiControl::new(MidiControl::CONTROLLER, 0, 60) }, Chord::Midi { control: note }]);
+        assert_eq!(match_midi(&t, note), Some(1), "a note is not the controller with its number");
+        assert_eq!(match_midi(&t, MidiControl::new(MidiControl::NOTE, 1, 60)), None, "nor the note on another channel");
     }
 
     #[test]
@@ -138,6 +166,15 @@ mod tests {
         let mut text = String::new();
         chord.label().render(&mut |t| text.push_str(t));
         assert_eq!(text, "Ctrl+Shift+F9");
+        let label = |control| {
+            let mut text = String::new();
+            Chord::Midi { control }.label().render(&mut |t| text.push_str(t));
+            text
+        };
+        assert_eq!(label(MidiControl::new(MidiControl::NOTE, 0, 60)), "MIDI note C4, channel 1");
+        assert_eq!(label(MidiControl::new(MidiControl::NOTE, 9, 37)), "MIDI note C#2, channel 10");
+        assert_eq!(label(MidiControl::new(MidiControl::CONTROLLER, 15, 20)), "MIDI controller 20, channel 16");
+        assert_eq!(label(MidiControl::new(MidiControl::PROGRAM, 0, 0)), "MIDI program 1, channel 1");
         assert_eq!(format!("{chord:?}"), "<chord>");
         assert_eq!(Mods::of(HidUsage(0xE5)), Mods::SHIFT);
     }

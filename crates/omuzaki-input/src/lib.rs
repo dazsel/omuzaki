@@ -24,7 +24,7 @@ pub use hub::{Hub, HubConfig};
 pub use test_hooks::{FAKE_KEYBOARDS, RawInputProbe};
 #[cfg(feature = "test-hooks")]
 pub use test_hooks::{
-    FakeProcesses, Injector, PadAxis, PadButton, PadScript, TestBackend, keys_in_zone, pad_button_bit,
+    FakeProcesses, Injector, MidiScript, PadAxis, PadButton, PadScript, TestBackend, keys_in_zone, pad_button_bit,
 };
 
 omuzaki_core::define_link!();

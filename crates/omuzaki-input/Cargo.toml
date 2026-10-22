@@ -24,9 +24,13 @@ toml.workspace = true
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-input-api = { path = "../omuzaki-input-api" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
+omuzaki-osc = { path = "../omuzaki-osc" }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
+
+[target.'cfg(any(target_os = "linux", windows, target_os = "macos"))'.dependencies]
+midir.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 ashpd.workspace = true
@@ -69,7 +73,7 @@ workspace = true
 # Native only: it reads the OS's input devices.
 [package.metadata.omuzaki]
 kind = "Implementation"
-summary = "OS input (ADR 0060, `docs/design/input-motion.md`): the hub behind `omuzaki-input-api`; capture is off by default, started only by a person while an installed indicator is drawn, paused by a stale indicator or a protected program and ended through epochs, never by writing into another thread's ring; one capture thread per backend normalises raw keys to zones (the only place key identities exist), matches chords and pushes to its own SPSC rings with held snapshots; the feeds keep per-binding holder sets so a release always ends what its press started; the binding store and the protected-program list live in the data folder"
+summary = "OS input (ADR 0060, `docs/design/input-motion.md`): the hub behind `omuzaki-input-api`; capture is off by default, started only by a person while an installed indicator is drawn, paused by a stale indicator or a protected program and ended through epochs, never by writing into another thread's ring; one capture thread per backend normalises raw keys to zones (the only place key identities exist), matches chords and pushes to its own SPSC rings with held snapshots; the feeds keep per-binding holder sets so a release always ends what its press started; the binding store and the protected-program list live in the data folder; MIDI controllers (midir) and OSC on 127.0.0.1 are binding sources, and `BindingRunner` runs each hit's op as the person or hands its trigger edges on (#469)"
 wasm = false
 registers = true
 generated-mods = ["src"]

@@ -268,6 +268,8 @@ fn merge_caps(specs: &[InputBackend]) -> CaptureCaps {
         pen_pressure: best(acc.pen_pressure, c.pen_pressure),
         gamepad: best(acc.gamepad, c.gamepad),
         bindings: best(acc.bindings, c.bindings),
+        midi: best(acc.midi, c.midi),
+        osc: best(acc.osc, c.osc),
     })
 }
 

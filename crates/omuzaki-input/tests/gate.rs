@@ -305,7 +305,9 @@ fn one_backend_leaving_ends_only_what_its_sources_held() {
     assert!(!reset.contains(rig.source(DeviceClass::Keyboard)), "the keyboard keeps its state");
     assert!(rig.motion.pad(pad).is_none());
     let report = rig.control.report();
-    assert_eq!(report.state, CaptureState::on(DESK.classes, DeviceMask::of(&[DeviceClass::Gamepad])));
+    // The rig has no MIDI or OSC backend, so those classes were degraded from the start.
+    let degraded = DeviceMask::of(&[DeviceClass::Gamepad, DeviceClass::Midi, DeviceClass::Osc]);
+    assert_eq!(report.state, CaptureState::on(DESK.classes, degraded));
     assert!(
         report
             .backends

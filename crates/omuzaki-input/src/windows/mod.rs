@@ -140,7 +140,9 @@ mod tests {
             RawEvent::Key { device, usage, down, repeat } => format!("key {device:#x} {:#x} {down} {repeat}", usage.0),
             RawEvent::Buttons { device, pressed, released, .. } => format!("buttons {device:#x} {pressed} {released}"),
             RawEvent::Motion { device, dx, dy, wheel } => format!("motion {device:#x} {dx} {dy} {wheel}"),
-            RawEvent::Pen { .. } | RawEvent::Pad { .. } | RawEvent::Shortcut { .. } => "other".to_owned(),
+            RawEvent::Pen { .. } | RawEvent::Pad { .. } | RawEvent::Shortcut { .. } | RawEvent::Midi { .. } => {
+                "other".to_owned()
+            }
         }
     }
 
