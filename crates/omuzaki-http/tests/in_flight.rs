@@ -5,7 +5,7 @@
 use std::io::Read;
 use std::net::TcpListener;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use omuzaki_http::{ConnectHttp, MAX_IN_FLIGHT};
 use omuzaki_http_api::{CancelFlag, HttpBody, HttpError, HttpRequest, HttpTransport, Method};
@@ -50,7 +50,10 @@ fn one_request_past_the_cap_is_refused_and_all_return_once_cancelled() {
     let probe = CancelFlag::new();
     probe.cancel();
     let mut ninth = transport.send(&req, &probe);
-    for _ in 0..500 {
+    // A deadline, not a count of tries: on a loaded runner the callers can take far longer than 500 yields to reach
+    // their slots.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
         if matches!(&ninth, Err(HttpError::Refused(m)) if m.contains("in flight")) {
             break;
         }
