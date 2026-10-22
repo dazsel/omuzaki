@@ -422,21 +422,27 @@ pub enum Tonemap {
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Bloom {
     /// How much glow is added, `>= 0`.
+    #[schemars(range(min = 0.0))]
     pub strength: f32,
     /// How far it spreads, `0..=1` of the image.
+    #[schemars(range(min = 0.0, max = 1.0))]
     pub radius: f32,
-    /// Brightness above which pixels glow, in display units.
+    /// Brightness above which pixels glow, in display units, `>= 0`.
+    #[schemars(range(min = 0.0))]
     pub threshold: f32,
 }
 
 /// Depth of field: things away from the focal plane blur.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct DepthOfField {
-    /// Distance from the camera, in metres, that is perfectly sharp.
+    /// Distance from the camera, in metres, that is perfectly sharp, `> 0`.
+    #[schemars(range(min = 0.0))]
     pub focus_distance: f32,
-    /// Depth in metres of the sharp zone around the focus distance.
+    /// Depth in metres of the sharp zone around the focus distance, `>= 0`.
+    #[schemars(range(min = 0.0))]
     pub focus_range: f32,
-    /// The strongest blur, as a fraction of the image height.
+    /// The strongest blur, as a fraction of the image height, `0..=1`. A renderer may cap it lower for cost.
+    #[schemars(range(min = 0.0, max = 1.0))]
     pub max_blur: f32,
 }
 
@@ -444,15 +450,18 @@ pub struct DepthOfField {
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct FilmGrain {
     /// Noise amplitude in display units, `0..=1`.
+    #[schemars(range(min = 0.0, max = 1.0))]
     pub strength: f32,
 }
 
 /// A simple colour grade.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ColourGrade {
-    /// 1 leaves colour alone, 0 is greyscale, above 1 is more vivid.
+    /// 1 leaves colour alone, 0 is greyscale, above 1 is more vivid; `>= 0`.
+    #[schemars(range(min = 0.0))]
     pub saturation: f32,
-    /// 1 leaves contrast alone; above 1 steepens the curve around mid grey.
+    /// 1 leaves contrast alone; above 1 steepens the curve around mid grey; `>= 0`.
+    #[schemars(range(min = 0.0))]
     pub contrast: f32,
 }
 
@@ -462,7 +471,8 @@ pub struct ColourGrade {
 /// lacks one skips it. [`FrameReport`](crate::FrameReport) says which passes ran.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Post {
-    /// Scene-light multiplier before tone mapping.
+    /// Scene-light multiplier before tone mapping, `>= 0` (0 is black: a fade).
+    #[schemars(range(min = 0.0))]
     pub exposure: f32,
     /// Tone mapping.
     pub tonemap: Tonemap,
@@ -476,6 +486,45 @@ pub struct Post {
     pub grade: Option<ColourGrade>,
 }
 
+impl Post {
+    /// Checks every number against its documented range, finite included, so every renderer refuses the same
+    /// settings (`Invalid { what: "post" }`, naming the field) instead of each one clamping its own way.
+    ///
+    /// # Errors
+    /// [`RenderError::Invalid`] for the first field out of range.
+    pub fn validate(&self) -> Result<(), RenderError> {
+        // Checked in place, field by field: this runs on every frame, so it allocates nothing.
+        let check = |ok: bool, field: &str, range: &str| {
+            if ok {
+                Ok(())
+            } else {
+                Err(RenderError::invalid("post", format!("{field} must be a finite number {range}")))
+            }
+        };
+        let at_least_zero = |v: f32| v.is_finite() && v >= 0.0;
+        let unit = |v: f32| v.is_finite() && (0.0..=1.0).contains(&v);
+        check(at_least_zero(self.exposure), "exposure", ">= 0")?;
+        if let Some(b) = self.bloom {
+            check(at_least_zero(b.strength), "bloom.strength", ">= 0")?;
+            check(unit(b.radius), "bloom.radius", "in 0..=1")?;
+            check(at_least_zero(b.threshold), "bloom.threshold", ">= 0")?;
+        }
+        if let Some(d) = self.depth_of_field {
+            check(d.focus_distance.is_finite() && d.focus_distance > 0.0, "depth_of_field.focus_distance", "> 0")?;
+            check(at_least_zero(d.focus_range), "depth_of_field.focus_range", ">= 0")?;
+            check(unit(d.max_blur), "depth_of_field.max_blur", "in 0..=1")?;
+        }
+        if let Some(g) = self.grain {
+            check(unit(g.strength), "grain.strength", "in 0..=1")?;
+        }
+        if let Some(g) = self.grade {
+            check(at_least_zero(g.saturation), "grade.saturation", ">= 0")?;
+            check(at_least_zero(g.contrast), "grade.contrast", ">= 0")?;
+        }
+        Ok(())
+    }
+}
+
 impl Default for Post {
     fn default() -> Self {
         Self { exposure: 1.0, tonemap: Tonemap::Aces, bloom: None, depth_of_field: None, grain: None, grade: None }
@@ -486,10 +535,11 @@ impl Default for Post {
 /// re-rendered exactly (spec §8, principle 4).
 #[derive(Copy, Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct FrameInfo {
-    /// Frame number: seeds film grain and dither (never the supersampling pattern, which is fixed). On the live path, where `omuzaki-budget`'s scheduler reads
-    /// the [`FrameReport`](crate::FrameReport)s, give every submission an index at least one higher than the last
-    /// (timeline position belongs in `time`): it identifies the submission in `FrameReport::frame` and
-    /// `GpuTimings::frame`. Offline renders may repeat an index on purpose to re-render a frame exactly.
+    /// Frame number: seeds film grain and dither (never the supersampling pattern, which is fixed). On the live path,
+    /// where `omuzaki-budget`'s scheduler reads the [`FrameReport`](crate::FrameReport)s, give every submission an index
+    /// at least one higher than the last (timeline position belongs in `time`): it identifies the submission in
+    /// `FrameReport::frame` and `GpuTimings::frame`. Offline renders may repeat an index on purpose to re-render a frame
+    /// exactly.
     pub index: u64,
     /// Time on the project timeline.
     pub time: Seconds,
@@ -521,6 +571,11 @@ pub struct Scene {
     pub environment: Option<EnvironmentUse>,
     /// Scales every outline colour: lower it in dark scenes so line art doesn't glow (the prototype's `OUTLINE_LIGHT`).
     pub outline_light: f32,
+    /// How strongly lights behind the subject edge its silhouette, `>= 0`: a stage's back light. The toon ramp tints
+    /// both sides of a form with every light, so a light from behind would otherwise only colour the front; with this
+    /// above 0 each light also adds its colour on the lit surfaces' fresnel edge, scaled by how far behind the surface
+    /// it sits as the camera sees it. 0 (the default) leaves the shading as it was.
+    pub back_light_rim: f32,
     /// The frame's post-processing look.
     pub post: Post,
 }
@@ -539,6 +594,7 @@ impl Scene {
             fog: None,
             environment: None,
             outline_light: 1.0,
+            back_light_rim: 0.0,
             post: Post::default(),
         }
     }
@@ -546,10 +602,9 @@ impl Scene {
     /// Empties the per-frame lists (`lights`, `instances` and `joints`) but keeps their allocations, ready to be refilled
     /// for the next frame.
     ///
-    /// Everything else stays as it was: `camera`, `frame`, `background`, `fog`, `environment`, `outline_light` and `post`.
-    /// Lights do go, so
-    /// a scene that wants the same lights every frame must push them again after each `clear`. To keep lights across
-    /// frames, leave them out of the reset and clear only what changes:
+    /// Everything else stays as it was: `camera`, `frame`, `background`, `fog`, `environment`, `outline_light`,
+    /// `back_light_rim` and `post`. Lights do go, so a scene that wants the same lights every frame must push them
+    /// again after each `clear`. To keep lights across frames, leave them out of the reset and clear only what changes:
     ///
     /// ```ignore
     /// scene.instances.clear();
@@ -585,8 +640,12 @@ impl Scene {
         if !(self.outline_light >= 0.0 && self.outline_light.is_finite()) {
             return Err(RenderError::invalid("scene", "outline_light must be >= 0"));
         }
+        if !(self.back_light_rim >= 0.0 && self.back_light_rim.is_finite()) {
+            return Err(RenderError::invalid("scene", "back_light_rim must be a finite number >= 0"));
+        }
         self.lights.iter().try_for_each(Light::validate)?;
         self.fog.iter().try_for_each(Fog::validate)?;
+        self.post.validate()?;
         self.environment.iter().try_for_each(EnvironmentUse::validate)?;
         for (i, inst) in self.instances.iter().enumerate() {
             if !inst.transform.is_finite() {
@@ -805,6 +864,49 @@ mod tests {
         for (i, light) in broken.into_iter().enumerate() {
             s.lights = vec![light];
             assert!(s.validate().is_err(), "case {i} should be invalid");
+        }
+    }
+
+    #[test]
+    fn post_settings_out_of_range_or_not_finite_are_refused_by_name() {
+        // The field the error names, and how to break it.
+        type Case = (&'static str, fn(&mut Post));
+        let good = Post {
+            exposure: 0.9,
+            tonemap: Tonemap::Aces,
+            bloom: Some(Bloom { strength: 0.3, radius: 0.5, threshold: 0.9 }),
+            depth_of_field: Some(DepthOfField { focus_distance: 2.0, focus_range: 0.3, max_blur: 0.01 }),
+            grain: Some(FilmGrain { strength: 0.05 }),
+            grade: Some(ColourGrade { saturation: 1.1, contrast: 1.0 }),
+        };
+        good.validate().unwrap();
+        Post { exposure: 0.0, ..good }.validate().unwrap();
+        let mut scene = Scene::new(Camera::default());
+        scene.post = good;
+        scene.validate().unwrap();
+        let cases: [Case; 13] = [
+            ("exposure", |p| p.exposure = -0.1),
+            ("exposure", |p| p.exposure = f32::NAN),
+            ("bloom.strength", |p| p.bloom.as_mut().unwrap().strength = f32::INFINITY),
+            ("bloom.radius", |p| p.bloom.as_mut().unwrap().radius = 1.5),
+            ("bloom.threshold", |p| p.bloom.as_mut().unwrap().threshold = -1.0),
+            ("depth_of_field.focus_distance", |p| p.depth_of_field.as_mut().unwrap().focus_distance = 0.0),
+            ("depth_of_field.focus_distance", |p| p.depth_of_field.as_mut().unwrap().focus_distance = f32::NAN),
+            ("depth_of_field.focus_range", |p| p.depth_of_field.as_mut().unwrap().focus_range = -0.1),
+            ("depth_of_field.max_blur", |p| p.depth_of_field.as_mut().unwrap().max_blur = 2.0),
+            ("grain.strength", |p| p.grain.as_mut().unwrap().strength = 1.5),
+            ("grade.saturation", |p| p.grade.as_mut().unwrap().saturation = f32::NEG_INFINITY),
+            ("grade.contrast", |p| p.grade.as_mut().unwrap().contrast = -1.0),
+            ("grade.contrast", |p| p.grade.as_mut().unwrap().contrast = f32::NAN),
+        ];
+        for (field, spoil) in cases {
+            let mut post = good;
+            spoil(&mut post);
+            scene.post = post;
+            let error = scene.validate().unwrap_err();
+            let RenderError::Invalid { what, reason } = &error else { panic!("{field}: {error:?}") };
+            assert_eq!(*what, "post", "{field}");
+            assert!(reason.starts_with(field), "{field}: {reason}");
         }
     }
 

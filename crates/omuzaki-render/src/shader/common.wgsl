@@ -78,7 +78,7 @@ struct Frame {
     target_size: vec4<f32>,      // internal width, height, 1/width, 1/height
     lights: array<Light, MAX_LIGHTS>,
     counts: vec4<u32>,           // x: light count; y, z: low and high words of the frame index
-    look: vec4<f32>,             // x: outline_light; y: scene time in seconds
+    look: vec4<f32>,             // x: outline_light; y: scene time in seconds; z: back_light_rim
     fog_colour: vec4<f32>,       // rgb: linear fog colour; w: the depth where fog starts
     fog_far: vec4<f32>,          // x: the depth where surfaces are fully fogged; y: 1 if fog is on
 }

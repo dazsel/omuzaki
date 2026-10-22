@@ -44,7 +44,7 @@ fn atlas_image(r: &mut dyn Renderer, offset: f32) -> Image {
     scene.background = Background::Solid { colour: Colour::BLACK };
     scene.post.tonemap = Tonemap::None;
     scene.instances.push(Instance::new(quad, material, Mat4::IDENTITY));
-    let quality = Quality { samples: 1, render_scale: 1.0, post_effects: false, ..Quality::offline() };
+    let quality = Quality { samples: 1, render_scale: 1.0, post_effects: false.into(), ..Quality::offline() };
     let img = r.render_image(UVec2::splat(SIZE), AlphaEncoding::Straight, &scene, &quality).unwrap();
     for resource in [material.into(), quad.into(), atlas.into()] {
         r.release(resource).unwrap();

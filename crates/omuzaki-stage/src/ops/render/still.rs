@@ -2,6 +2,7 @@
 //! PNG. Every `render.*` op renders through [`render_stills`] and [`encode_png`]; the ops add the asset store and the
 //! op results, nothing here knows about them.
 
+use image::{ExtendedColorType, ImageEncoder, codecs::png::PngEncoder};
 use omuzaki_anim_api::{ChannelBuf, HumanoidPose};
 use omuzaki_char_api::BuiltCharacter;
 use omuzaki_core::glam::UVec2;
@@ -10,7 +11,6 @@ use omuzaki_render_api::{
     AlphaEncoding, Background, Camera, FrameReport, Image, Light, Post, Quality, RenderError, Renderer, Scene,
     TargetDesc, TargetId,
 };
-use image::{ExtendedColorType, ImageEncoder, codecs::png::PngEncoder};
 
 use crate::avatar::AvatarStage;
 use crate::body::Body;
@@ -36,19 +36,28 @@ pub struct StillLight {
     pub post: Post,
     /// How strongly the outline is lit; `1.0` is the scene default.
     pub outline_light: f32,
+    /// How strongly lights behind the character edge its silhouette; `0.0` is the scene default.
+    pub back_light_rim: f32,
 }
 
 impl StillLight {
     /// A light with the scene's default outline light (`1.0`, as `Scene::new` sets it).
     #[must_use]
     pub fn new(lights: Vec<Light>, background: Background, post: Post) -> Self {
-        Self { lights, background, post, outline_light: 1.0 }
+        Self { lights, background, post, outline_light: 1.0, back_light_rim: 0.0 }
     }
 
     /// The same light with `outline_light` set.
     #[must_use]
     pub fn with_outline_light(mut self, outline_light: f32) -> Self {
         self.outline_light = outline_light;
+        self
+    }
+
+    /// The same light with `back_light_rim` set.
+    #[must_use]
+    pub fn with_back_light_rim(mut self, back_light_rim: f32) -> Self {
+        self.back_light_rim = back_light_rim;
         self
     }
 }
@@ -81,7 +90,9 @@ impl StillSpec {
     #[must_use]
     pub fn in_scene(scene: StagedScene, size: UVec2, quality: Quality) -> Self {
         let r = &scene.resolved;
-        let light = StillLight::new(r.lights.as_slice().to_vec(), r.background, r.post).with_outline_light(r.outline_light);
+        let light = StillLight::new(r.lights.as_slice().to_vec(), r.background, r.post)
+            .with_outline_light(r.outline_light)
+            .with_back_light_rim(r.back_light_rim);
         Self { light, size, quality, scene: Some(scene), pose: None }
     }
 
@@ -180,30 +191,32 @@ pub fn render_body_stills(
     let target = renderer
         .create_target(&TargetDesc { size: spec.size, alpha: AlphaEncoding::Straight })
         .map_err(|source| StageError::render("the still's target", source))?;
-    let outcome = AvatarStage::new(renderer, *avatar, still_scene(spec), target, spec.quality, StageClock::fixed(STILL_FPS))
-        .and_then(|mut stage| {
-            if let Some(staged) = &spec.scene {
-                stage.set_scene(&staged.resolved, staged.subject_root);
-                if let Err(error) = stage.pay_scene(renderer) {
-                    return first_error(Err(error), stage.release(renderer));
+    let outcome =
+        AvatarStage::new(renderer, *avatar, still_scene(spec), target, spec.quality, StageClock::fixed(STILL_FPS))
+            .and_then(|mut stage| {
+                if let Some(staged) = &spec.scene {
+                    stage.set_scene(&staged.resolved, staged.subject_root);
+                    if let Err(error) = stage.pay_scene(renderer) {
+                        return first_error(Err(error), stage.release(renderer));
+                    }
                 }
-            }
-            let base = FrameInput { pose: spec.pose.unwrap_or_else(|| stage.base_pose()), ..FrameInput::default() };
-            // As the kit's stills: a frame at the base pose, the springs settled from rest under it, and every shot a
-            // redraw of that state, so a shot's pixels don't depend on the shots before it.
-            let shot = stage.tick(renderer, &base).and_then(|_| {
-                stage.settle_from_rest(SETTLE_STEPS);
-                let mut stills = Vec::with_capacity(shots.len());
-                for shot in shots {
-                    stage.scene_mut().camera = shot.camera;
-                    let frame = stage.redraw(renderer, &base)?;
-                    let image = renderer.read_target(target).map_err(|source| StageError::render("the still", source))?;
-                    stills.push(Still { image, report: frame.report, face: None });
-                }
-                Ok(stills)
+                let base = FrameInput { pose: spec.pose.unwrap_or_else(|| stage.base_pose()), ..FrameInput::default() };
+                // As the kit's stills: a frame at the base pose, the springs settled from rest under it, and every shot a
+                // redraw of that state, so a shot's pixels don't depend on the shots before it.
+                let shot = stage.tick(renderer, &base).and_then(|_| {
+                    stage.settle_from_rest(SETTLE_STEPS);
+                    let mut stills = Vec::with_capacity(shots.len());
+                    for shot in shots {
+                        stage.scene_mut().camera = shot.camera;
+                        let frame = stage.redraw(renderer, &base)?;
+                        let image =
+                            renderer.read_target(target).map_err(|source| StageError::render("the still", source))?;
+                        stills.push(Still { image, report: frame.report, face: None });
+                    }
+                    Ok(stills)
+                });
+                first_error(shot, stage.release(renderer))
             });
-            first_error(shot, stage.release(renderer))
-        });
     let released = renderer.release(target.into()).map_err(|source| StageError::render("the still's target", source));
     first_error(outcome, released)
 }
@@ -215,6 +228,7 @@ fn still_scene(spec: &StillSpec) -> Scene {
     scene.background = spec.light.background;
     scene.post = spec.light.post;
     scene.outline_light = spec.light.outline_light;
+    scene.back_light_rim = spec.light.back_light_rim;
     scene
 }
 
@@ -310,12 +324,9 @@ fn channels_of(stage: &Stage, shot: &Shot) -> Result<ChannelBuf, StageError> {
     let face = stage.built().face.as_ref().ok_or_else(|| StageError::Face {
         reason: format!("expression '{id}' asked for, but the character has no face to show it on"),
     })?;
-    face.profile
-        .expressions
-        .blend(&ChannelBuf::NEUTRAL, &[(id, *weight)])
-        .map_err(|unknown| StageError::Face {
-            reason: format!("expression '{}' is not in the character's face profile", unknown.0),
-        })
+    face.profile.expressions.blend(&ChannelBuf::NEUTRAL, &[(id, *weight)]).map_err(|unknown| StageError::Face {
+        reason: format!("expression '{}' is not in the character's face profile", unknown.0),
+    })
 }
 
 /// The outcome of an operation followed by its cleanup. The first error wins; a cleanup error after it is logged, as

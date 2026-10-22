@@ -146,7 +146,7 @@ fn exact_scene() -> Scene {
 }
 
 fn plain() -> Quality {
-    Quality { samples: 1, render_scale: 1.0, post_effects: false, ..Quality::offline() }
+    Quality { samples: 1, render_scale: 1.0, post_effects: false.into(), ..Quality::offline() }
 }
 
 fn render_quad(renderer: &mut WgpuRenderer, mesh: omuzaki_render_api::MeshId, material: &Material) -> Image {
@@ -594,7 +594,7 @@ enum Hair {
 fn mock_head(hair: Hair) -> Image {
     let mut renderer = support::renderer();
     let scene = mock_head_scene(&mut renderer, hair);
-    let quality = Quality { samples: 1, render_scale: 1.0, post_effects: false, ..Quality::offline() };
+    let quality = Quality { samples: 1, render_scale: 1.0, post_effects: false.into(), ..Quality::offline() };
     renderer.render_image(MOCK_SIZE, AlphaEncoding::Straight, &scene, &quality).unwrap()
 }
 
