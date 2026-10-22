@@ -12,13 +12,13 @@
 <text x="556.0" y="316" text-anchor="middle" fill="#555">10-17</text>
 <text x="718.0" y="316" text-anchor="middle" fill="#555">10-21</text>
 <text x="880.0" y="316" text-anchor="middle" fill="#555">10-22</text>
-<polyline points="70.0,107.0 232.0,258.0 394.0,299.1 556.0,299.5 718.0,298.2 880.0,298.4" fill="none" stroke="#2a6fdb" stroke-width="2"/>
+<polyline points="70.0,107.0 232.0,258.0 394.0,299.1 556.0,299.5 718.0,298.2 880.0,298.1" fill="none" stroke="#2a6fdb" stroke-width="2"/>
 <circle cx="70.0" cy="107.0" r="3" fill="#2a6fdb"/>
 <circle cx="232.0" cy="258.0" r="3" fill="#2a6fdb"/>
 <circle cx="394.0" cy="299.1" r="3" fill="#2a6fdb"/>
 <circle cx="556.0" cy="299.5" r="3" fill="#2a6fdb"/>
 <circle cx="718.0" cy="298.2" r="3" fill="#2a6fdb"/>
-<circle cx="880.0" cy="298.4" r="3" fill="#2a6fdb"/>
+<circle cx="880.0" cy="298.1" r="3" fill="#2a6fdb"/>
 <polyline points="70.0,292.8 232.0,273.4 394.0,292.9 556.0,297.8 718.0,269.1 880.0,277.5" fill="none" stroke="#e0832b" stroke-width="2"/>
 <circle cx="70.0" cy="292.8" r="3" fill="#e0832b"/>
 <circle cx="232.0" cy="273.4" r="3" fill="#e0832b"/>

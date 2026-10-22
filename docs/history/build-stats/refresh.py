@@ -20,7 +20,8 @@ SINCE_DAY = now.date().isoformat()
 
 
 def sh(*a, **k):
-    return subprocess.run(a, check=True, capture_output=True, text=True, **k).stdout
+    # Run from the repository root so path-relative commands (git grep -- .) see the whole tree.
+    return subprocess.run(a, check=True, capture_output=True, text=True, cwd=DIR.parents[2], **k).stdout
 
 
 def read(name):
