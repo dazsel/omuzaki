@@ -98,7 +98,8 @@ impl Op for RangeTest {
                       and count how many read as distinct, with contact sheets",
             kind: OpKind::Job,
             scope: Scope::Render,
-            undo: Undo::None,
+            // It changes nothing in the document (its patch is empty); its sheets go to the content-addressed store.
+            undo: Undo::Auto,
         }
     }
 

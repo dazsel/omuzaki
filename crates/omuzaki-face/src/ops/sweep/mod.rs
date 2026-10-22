@@ -96,7 +96,8 @@ impl Op for SweepChannels {
                       face (dead controls), with a contact sheet",
             kind: OpKind::Job,
             scope: Scope::Render,
-            undo: Undo::None,
+            // It changes nothing in the document (its patch is empty); its sheets go to the content-addressed store.
+            undo: Undo::Auto,
         }
     }
 
