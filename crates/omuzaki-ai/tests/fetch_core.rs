@@ -1,4 +1,5 @@
 //! Smoke tests for the verified cache core; the full lists are in `fetch.rs` and `fetch_urls.rs`.
+#![allow(clippy::disallowed_methods, reason = "tests set up their fixtures on disk; the fence is for ops")]
 
 mod common;
 

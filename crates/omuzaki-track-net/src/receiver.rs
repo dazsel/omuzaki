@@ -21,6 +21,7 @@ use omuzaki_anim_api::{FrameSource, TrackFrame, TrackStatus};
 use omuzaki_core::time::{Clock, Seconds};
 use omuzaki_track_api::camera::{CameraId, CameraInfo, DeviceTime};
 use omuzaki_track_api::clock::{ClockError, ClockMap};
+use omuzaki_track_api::doctor::{Diagnosis, Doctor, DoctorBoard};
 use omuzaki_track_api::error::TrackError;
 use omuzaki_track_api::mailbox::{MailboxReader, MailboxWriter, mailbox};
 use omuzaki_track_api::tracker::{LatencyStats, Tracker, TrackerConfig};
@@ -43,6 +44,9 @@ const PERCENTILE_EVERY: u64 = 16;
 /// Seconds without a datagram after which iFacialMocap's handshake is sent again (the phone may have restarted).
 const IFACIALMOCAP_RETRY_S: f64 = 2.0;
 
+/// How often, in seconds, the tracking doctor reads the drop counters.
+const DOCTOR_EVERY: f64 = 0.5;
+
 /// What the session publishes for the health meter and `latency`, as atomics the thread writes and anyone reads.
 #[derive(Debug, Default)]
 struct Shared {
@@ -52,6 +56,8 @@ struct Shared {
     p50_ns: AtomicU64,
     p95_ns: AtomicU64,
     max_ns: AtomicU64,
+    /// The tracking doctor's findings: jitter and drops over the network (PF-28).
+    doctor: DoctorBoard,
 }
 
 impl Shared {
@@ -201,6 +207,14 @@ impl Tracker for NetTracker {
     fn latency(&self) -> LatencyStats {
         self.shared.latency()
     }
+
+    fn diagnoses(&self) -> Vec<Diagnosis> {
+        if self.session.is_some() { self.shared.doctor.diagnoses() } else { Vec::new() }
+    }
+
+    fn recheck(&self) {
+        self.shared.doctor.request_recheck();
+    }
 }
 
 impl Drop for NetTracker {
@@ -240,6 +254,9 @@ struct Run {
     seq: u64,
     latencies: [u32; WINDOW],
     latency_count: u64,
+    /// The tracking doctor, and when it last read the counters (stage seconds).
+    doctor: Doctor,
+    last_checkup: Option<f64>,
 }
 
 impl Receiver {
@@ -258,6 +275,8 @@ impl Receiver {
             seq: 0,
             latencies: [0; WINDOW],
             latency_count: 0,
+            doctor: Doctor::default(),
+            last_checkup: None,
         };
         while !self.stop.load(Ordering::Relaxed) {
             let now = self.clock.now().0;
@@ -333,6 +352,26 @@ impl Receiver {
         let frames = self.shared.frames.fetch_add(1, Ordering::Relaxed) + 1;
         let latency = (self.clock.now().0 - time.0).max(0.0);
         self.record(run, latency, frames);
+        self.checkup(run, arrived);
+    }
+
+    /// The tracking doctor's reading of a frame that arrived at `arrived`: the gaps between arrivals (a phone on a
+    /// busy Wi-Fi network), and the drops twice a second. Latency here is the network's, so it is not held against the
+    /// machine ([`Finding::Overloaded`](omuzaki_track_api::doctor::Finding::Overloaded) never shows). Allocates
+    /// nothing.
+    #[allow(clippy::cast_possible_truncation)] // seconds between readings are far inside f32
+    fn checkup(&self, run: &mut Run, arrived: Seconds) {
+        if self.shared.doctor.take_recheck() {
+            run.doctor.recheck();
+            run.last_checkup = None;
+        }
+        run.doctor.observe_arrival(arrived.0);
+        let since = run.last_checkup.map(|last| arrived.0 - last);
+        if since.is_none_or(|since| since >= DOCTOR_EVERY) {
+            run.doctor.observe_drops(&self.shared.latency(), since.unwrap_or(0.0) as f32);
+            run.last_checkup = Some(arrived.0);
+        }
+        self.shared.doctor.publish(&run.doctor);
     }
 
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a latency in µs, clamped to u32

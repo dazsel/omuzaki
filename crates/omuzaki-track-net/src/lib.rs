@@ -9,9 +9,10 @@
 //! | [`receiver`] | [`NetTracker`]: the receiver thread, clock mapping, the lost frame and the latency figures |
 //! | [`settings`] | the `input.phone` setting: the phone's address and the ports |
 //! | [`names`] | blendshape spellings onto channels |
+//! | [`vmc_out`] | [`VmcSender`](vmc_out::VmcSender): our solved pose and face sent out over VMC, for other VMC apps |
 //!
-//! Android tracker apps that send the same protocols (PF-03) are covered by the same receivers. Sending our own solved
-//! pose out over VMC (PF-04's "out") and body bones in are later work: [`protocol::osc::Writer`] already builds packets.
+//! Android tracker apps that send the same protocols (PF-03) are covered by the same receivers. Body bones in over VMC
+//! are later work.
 #![deny(missing_docs)]
 // Product names (iFacialMocap, VTube Studio, Live Link Face, ARKit, OSC) are prose here, not code.
 #![allow(clippy::doc_markdown)]
@@ -20,6 +21,7 @@ pub mod names;
 pub mod protocol;
 pub mod receiver;
 pub mod settings;
+pub mod vmc_out;
 
 pub use protocol::Protocol;
 pub use receiver::NetTracker;

@@ -34,6 +34,7 @@ omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-doc-api = { path = "../omuzaki-doc-api" }
 omuzaki-face-api = { path = "../omuzaki-face-api" }
 omuzaki-io-api = { path = "../omuzaki-io-api" }
+omuzaki-metrics-api = { path = "../omuzaki-metrics-api" }
 # An imported character's avatar, rebuilt from its stored original when it goes on a stage (`body`).
 omuzaki-io-ops = { path = "../omuzaki-io-ops" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }

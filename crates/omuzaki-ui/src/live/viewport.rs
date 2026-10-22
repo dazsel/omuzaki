@@ -374,6 +374,14 @@ impl Tracker for SharedTracker {
     fn latency(&self) -> LatencyStats {
         self.lock().latency()
     }
+
+    fn diagnoses(&self) -> Vec<omuzaki_track_api::doctor::Diagnosis> {
+        self.lock().diagnoses()
+    }
+
+    fn recheck(&self) {
+        self.lock().recheck();
+    }
 }
 
 /// The render side of the live slice.

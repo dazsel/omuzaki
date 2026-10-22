@@ -3649,11 +3649,21 @@ version = "0.0.0"
 dependencies = [
  "omuzaki-ai-api",
  "omuzaki-ai-mock",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-doc-mock",
+ "omuzaki-ops-api",
+ "omuzaki-store-api",
+ "omuzaki-update-api",
+ "rustix 1.1.5",
+ "schemars",
  "serde",
+ "serde_json",
  "sha2 0.10.9",
  "tempfile",
  "toml",
  "tracing",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4578,6 +4588,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-model-worker"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-ai",
+ "omuzaki-ai-api",
+ "omuzaki-ai-litert",
+ "omuzaki-ai-mock",
+ "omuzaki-ai-ort",
+ "tempfile",
+]
+
+[[package]]
 name = "omuzaki-obs"
 version = "0.0.0"
 dependencies = [
@@ -4868,6 +4890,7 @@ dependencies = [
  "omuzaki-io-vrm",
  "omuzaki-link-build",
  "omuzaki-measure",
+ "omuzaki-metrics-api",
  "omuzaki-ops-api",
  "omuzaki-render",
  "omuzaki-render-api",
@@ -5114,6 +5137,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
+ "windows",
 ]
 
 [[package]]
