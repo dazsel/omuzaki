@@ -344,6 +344,89 @@ fn on_the_gpu_fog_a_sky_environment_and_a_spot_on_two_statures() {
     }
 }
 
+/// On lavapipe (#1165): soft-sd and standard at `full` and `bust` in a scene lit by the studio rig (before) and by the
+/// `stage` rig (after), applied with `stage.set_light_rig`. The stage is dark around the character, the magenta spot
+/// colours the hair, and no skin is clipped white. Set `OMUZAKI_EVIDENCE_DIR` to keep the sheet.
+#[cfg(feature = "wgpu")]
+#[test]
+#[allow(clippy::disallowed_methods, reason = "the evidence image is written beside the test, not by an op")]
+fn on_the_gpu_the_stage_rig_beside_the_studio_rig() {
+    use omuzaki_char::ops::character::create::CharacterCreate;
+    use omuzaki_render::{AdapterPreference, HeadlessOptions, WgpuRenderer};
+    use omuzaki_stage::ops::render::contact_sheet::{ContactSheet, ContactSheetResult};
+    use omuzaki_stage::ops::scene::create::CreateScene;
+    use omuzaki_stage::ops::scene::light::SetLightRig;
+    use omuzaki_store_api::Store;
+
+    const SIZE: [u32; 2] = [192, 256];
+    let mut doc = MemDoc::from_value(json!({}));
+    for template in ["soft-sd", "standard"] {
+        let id = template.replace('-', "_");
+        apply::<CharacterCreate>(&mut doc, json!({ "id": id, "name": template, "template": template, "seed": 7 }));
+    }
+    for (scene, rig) in [("studio", "viewer-studio"), ("show", "stage")] {
+        apply::<CreateScene>(&mut doc, json!({ "id": scene, "cast": [] }));
+        apply::<SetLightRig>(&mut doc, json!({ "scene": scene, "rig": rig }));
+    }
+    let renderer =
+        WgpuRenderer::headless(&HeadlessOptions { adapter: AdapterPreference::Software }).expect("lavapipe opens");
+    let harness = Harness::on(TestDoc(doc), Box::new(renderer));
+    let image = |hash: &str| {
+        let png = harness.store.get(&hash.parse().unwrap()).unwrap();
+        image::load_from_memory(&png).unwrap().to_rgba8()
+    };
+    let (mut cells, mut found) = (Vec::new(), Vec::new());
+    for id in ["soft_sd", "standard"] {
+        for framing in ["full", "bust"] {
+            let shot = |scene: &str| {
+                run(
+                    &harness,
+                    json!({ "character": id, "scene": scene, "framing": framing, "size": SIZE, "quality": "offline" }),
+                )
+                .unwrap_or_else(|e| panic!("{id} {framing} in {scene}: {e:?}"))
+            };
+            let (before, after) = (shot("studio"), shot("show"));
+            let picture = image(&after.hash);
+            let corner = picture.get_pixel(0, 0).0;
+            let figure: Vec<_> =
+                picture.pixels().filter(|p| p.0.iter().zip(corner).any(|(a, b)| a.abs_diff(b) > 12)).collect();
+            let clipped = figure.iter().filter(|p| p.0[..3].iter().all(|c| *c >= 250)).count();
+            // Magenta light: red and blue both above green. Skin keeps its own hue under coloured light (the toon
+            // skin's hue-keep), so the tint shows on the hair the head spot falls on; the studio rig has none.
+            let magenta = |picture: &image::RgbaImage| {
+                picture
+                    .pixels()
+                    .filter(|p| {
+                        let [red, green, blue, _] = p.0.map(i32::from);
+                        red - green > 45 && blue - green > 10
+                    })
+                    .count()
+            };
+            let (tinted, in_studio) = (magenta(&picture), magenta(&image(&before.hash)));
+            println!(
+                "{id} {framing}: {} figure pixels, {clipped} clipped white, {tinted} magenta ({in_studio} in the studio)",
+                figure.len()
+            );
+            assert_eq!(in_studio, 0, "{id} {framing}: the studio rig tints nothing magenta");
+            found.push((format!("{id} {framing}"), corner, figure.len(), clipped, tinted));
+            cells.extend([before.uri, after.uri]);
+        }
+    }
+    let op: ContactSheet = serde_json::from_value(json!({ "images": cells, "columns": 4 })).unwrap();
+    let sheet: ContactSheetResult = serde_json::from_value(harness.run(&op).expect("lays out").1).unwrap();
+    if let Some(dir) = std::env::var_os("OMUZAKI_EVIDENCE_DIR") {
+        let png = harness.store.get(&sheet.hash.parse().unwrap()).unwrap();
+        std::fs::write(std::path::Path::new(&dir).join("scene-stage-rig-sheet.png"), png).unwrap();
+    }
+    // Checked after the sheet is written, so a failure leaves the picture to look at.
+    for (shot, corner, figure, clipped, tinted) in found {
+        assert!(corner[..3].iter().all(|c| *c < 24), "{shot}: the stage is near black, got {corner:?}");
+        assert!(figure > (SIZE[0] * SIZE[1]) as usize / 20, "{shot}: the character shows");
+        assert!(clipped * 200 < figure, "{shot}: {clipped} pixels of skin are clipped white");
+        assert!(tinted * 200 > figure, "{shot}: the head spot colours the hair ({tinted} of {figure})");
+    }
+}
+
 /// A synthetic 4:3 room for backdrop tests: a wall darkening upward, a window of four panes with a sky gradient, and a
 /// floor band; drawn here, so it is the project's own.
 #[cfg(feature = "wgpu")]

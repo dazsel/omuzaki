@@ -1,7 +1,8 @@
-//! The light-rig library: the prototype's seven rigs and the measurement rig, as data. Each rig is one TOML file under
-//! `library/light-rigs/`: the seven transcribed from the golden manifest's `spec.rig` blocks, and `measure-flat` (flat
-//! frontal light for the `measure.*` ops, `docs/design/likeness-measures.md` D10). Only lighting numbers are stored
-//! here; no image, mesh or likeness is.
+//! The light-rig library: the prototype's seven rigs, the measurement rig and our own designs, as data. Each rig is one
+//! TOML file under `library/light-rigs/`: the seven transcribed from the golden manifest's `spec.rig` blocks,
+//! `measure-flat` (flat frontal light for the `measure.*` ops, `docs/design/likeness-measures.md` D10), and `stage`
+//! (coloured spots from above, a strong rim and a dark stage, #1165). Only lighting numbers are stored here; no image,
+//! mesh or likeness is.
 //!
 //! Units are three.js's (render-api D10), so every number is copied as the prototype wrote it and never rescaled.
 //! Parts of a rig that the render contract has no field for (the key light's shadow frustum, the skin floor) stay in
@@ -20,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use super::RecipeError;
 
 /// The rigs shipped with the crate, by name. Each file is parsed on use, so a broken file fails the test that loads it.
-static LIBRARY: [(&str, &str); 8] = [
+static LIBRARY: [(&str, &str); 9] = [
     ("viewer-studio", include_str!("../../library/light-rigs/viewer-studio.toml")),
     ("viewer-candle", include_str!("../../library/light-rigs/viewer-candle.toml")),
     ("viewer-moonlit", include_str!("../../library/light-rigs/viewer-moonlit.toml")),
@@ -29,6 +30,7 @@ static LIBRARY: [(&str, &str); 8] = [
     ("dev-warm", include_str!("../../library/light-rigs/dev-warm.toml")),
     ("perform-facecam", include_str!("../../library/light-rigs/perform-facecam.toml")),
     ("measure-flat", include_str!("../../library/light-rigs/measure-flat.toml")),
+    ("stage", include_str!("../../library/light-rigs/stage.toml")),
 ];
 
 /// Directional lights shine from `position` toward this point. Three.js aims every directional light at the origin
@@ -82,6 +84,9 @@ pub struct LightRig {
     /// A point light placed relative to the feet (the candle), if the rig has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub point: Option<Point>,
+    /// Spot lights placed relative to the feet, each aimed at a point (`[[spot]]` in the file).
+    #[serde(default, rename = "spot", skip_serializing_if = "Vec::is_empty")]
+    pub spots: Vec<Spot>,
     /// Bloom settings. Whether a case uses them is the case's choice, not the rig's.
     pub bloom: BloomSettings,
 }
@@ -150,6 +155,28 @@ pub struct Point {
     /// Position in metres, relative to the feet (which the recipe puts at the origin).
     pub position: [f32; 3],
     /// Three.js `distance`: where the light reaches zero. It is the contract's `Light::Point::range`.
+    pub distance: f32,
+}
+
+/// A spot light: a cone from `position` toward `target`. Its falloff along the distance is a point light's (D10).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Spot {
+    /// Its id among the scene's lights once the rig is applied (`spot_left`).
+    pub id: String,
+    /// Light colour.
+    pub colour: Colour,
+    /// Brightness multiplier, `>= 0`.
+    pub intensity: f32,
+    /// The lamp, in metres relative to the feet.
+    pub position: [f32; 3],
+    /// What it points at, in metres relative to the feet.
+    pub target: [f32; 3],
+    /// The cone's outer half-angle, axis to edge, in degrees, `(0, 90]`.
+    pub cone: f32,
+    /// How much of the cone is soft, `0..=1`.
+    pub penumbra: f32,
+    /// Where the light reaches zero, in metres. It is the contract's `Light::Spot::range`.
     pub distance: f32,
 }
 
@@ -222,6 +249,9 @@ impl LightRig {
                 return Err(bad(format!("point distance {} must be above 0", point.distance)));
             }
         }
+        for spot in &self.spots {
+            spot.validate().map_err(bad)?;
+        }
         let b = self.bloom;
         non_negative(b.strength, "bloom strength").map_err(bad)?;
         non_negative(b.threshold, "bloom threshold").map_err(bad)?;
@@ -231,7 +261,8 @@ impl LightRig {
         Ok(())
     }
 
-    /// The lights this rig adds to a scene, in the order the prototype adds them: hemisphere, key, rim, fill, point.
+    /// The lights this rig adds to a scene, in the order the prototype adds them: hemisphere, key, rim, fill, point; then
+    /// the spots, in file order.
     ///
     /// # Errors
     /// [`RecipeError::Invalid`] if a directional light has no direction (its position is the target).
@@ -254,14 +285,26 @@ impl LightRig {
                 range: point.distance,
             });
         }
+        for spot in &self.spots {
+            lights.push(Light::Spot {
+                position: Vec3::from(spot.position),
+                direction: Vec3::from(spot.target) - Vec3::from(spot.position),
+                colour: spot.colour,
+                intensity: spot.intensity,
+                range: spot.distance,
+                cone_outer_deg: spot.cone,
+                penumbra: spot.penumbra,
+                casts_shadow: false,
+            });
+        }
         Ok(lights)
     }
 
     /// The rig as a scene's [`Lighting`] (design D3, D12): the values a scene stores and resolves against its cast.
     /// Directional positions become `azimuth` and `elevation` toward the origin, at full precision; the point light
-    /// is put in subject units at [`REFERENCE_HEIGHT_M`] (position and range divided by it, intensity by its square),
-    /// so a character of the reference height is lit exactly as the rig's own numbers light it; every light hangs off
-    /// the subject. The skin floor stays the rig's (D3): a scene only overrides it when a person sets one.
+    /// and the spots are put in subject units at [`REFERENCE_HEIGHT_M`] (positions, targets and ranges divided by it,
+    /// intensities by its square), so a character of the reference height is lit exactly as the rig's own numbers light
+    /// it; every light hangs off the subject. The skin floor stays the rig's (D3): a scene only overrides it when a person sets one.
     ///
     /// # Errors
     /// [`RecipeError::Invalid`] if a directional light has no direction, or a light id doesn't parse.
@@ -300,6 +343,26 @@ impl LightRig {
                 shape: LightShape::Point { position: point.position.map(|c| c / h), range: point.distance / h },
             };
             lights.insert(id("point")?, def);
+        }
+        for spot in &self.spots {
+            let h = REFERENCE_HEIGHT_M;
+            let def = LightDef {
+                role: Some(LightRole::Accent),
+                colour: spot.colour,
+                intensity: spot.intensity / (h * h),
+                shadow: false,
+                anchor: Anchor::Subject,
+                shape: LightShape::Spot {
+                    position: spot.position.map(|c| c / h),
+                    target: spot.target.map(|c| c / h),
+                    cone: spot.cone,
+                    penumbra: spot.penumbra,
+                    range: spot.distance / h,
+                },
+            };
+            if lights.insert(id(&spot.id)?, def).is_some() {
+                return Err(RecipeError::invalid(&self.name, format!("two lights are called '{}'", spot.id)));
+            }
         }
         Ok(Lighting {
             rig: Some(self.name.clone()),
@@ -363,6 +426,33 @@ impl Directional {
             intensity: self.intensity,
             casts_shadow: self.shadow.is_some(),
         })
+    }
+}
+
+impl Spot {
+    /// Checks the id, the numbers and that the spot points somewhere.
+    fn validate(&self) -> Result<(), String> {
+        let label = format!("spot '{}'", self.id);
+        LightId::new(&self.id).map_err(|e| format!("{label}: {e}"))?;
+        if ["key", "rim", "fill", "point"].contains(&self.id.as_str()) {
+            return Err(format!("{label}: the id is taken by the rig's own {} light", self.id));
+        }
+        non_negative(self.intensity, &format!("{label} intensity"))?;
+        finite_vec(self.position, &format!("{label} position"))?;
+        finite_vec(self.target, &format!("{label} target"))?;
+        if (Vec3::from(self.target) - Vec3::from(self.position)).try_normalize().is_none() {
+            return Err(format!("{label} target is its position, so it points nowhere"));
+        }
+        if !(self.cone > 0.0 && self.cone <= 90.0) {
+            return Err(format!("{label} cone {} must be in (0, 90] degrees", self.cone));
+        }
+        if !(0.0..=1.0).contains(&self.penumbra) {
+            return Err(format!("{label} penumbra {} must be in 0..=1", self.penumbra));
+        }
+        if !(self.distance.is_finite() && self.distance > 0.0) {
+            return Err(format!("{label} distance {} must be above 0", self.distance));
+        }
+        Ok(())
     }
 }
 

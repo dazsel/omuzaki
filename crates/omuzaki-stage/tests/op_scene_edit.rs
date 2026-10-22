@@ -245,7 +245,7 @@ fn a_light_rig_replaces_only_the_lighting_and_the_same_rig_again_changes_nothing
 
     let rigs = plan::<LightRigs>(&doc, json!({})).unwrap().output.unwrap();
     let rigs = rigs["rigs"].as_array().unwrap();
-    assert_eq!(rigs.len(), 8);
+    assert_eq!(rigs.len(), 9);
     for rig in rigs {
         assert!(!rig["title"].as_str().unwrap().is_empty() && !rig["summary"].as_str().unwrap().is_empty(), "{rig}");
     }
