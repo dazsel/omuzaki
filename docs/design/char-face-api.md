@@ -202,6 +202,14 @@ impl Painter for FaceLayerPainter<'_> {
 
 **Palette and the painter.** A face profile may name colours by palette slot (`@eyes`), but a painter never sees a slot. `FaceInput::profile` and `FaceBinding::profile` are slot-free: the stage calls `FaceProfile::resolve_colours(&palette)` before painting and again whenever the palette changes, so every painter, the GPU one included, reads plain colours. `resolve_colours` walks the profile's JSON and replaces each `@slot` by its colour, so a colour field added later is resolved with no change to the resolver. An unknown slot is an error that names its JSON path (`eyes/iris/top`). `FaceProfile::slots_used()` lists the slots a profile names, for the contrast checker and the palette UI.
 
+**The view.** `FaceView` carries what depends on the camera, which the stage works out each frame: `highlight_shift`
+(the eyes' reflections slide opposite the direction the camera sees the face from, #174) and `head_coverage` (the
+head's height over the frame's height at the head). The mouth reads `head_coverage` (#464): in a wide shot, at most
+`WIDE_SHOT` (0.12) of the frame, it grows by `mouth.wide_shot_scale` (default 1.4: width, opening and the line's weight
+by its square root), so lip sync still reads when the head is a few dozen pixels tall; it eases back to its own size by
+`CLOSE_SHOT` (0.3, a bust shot) with a smoothstep, so a dolly never jumps. An unknown coverage (a preview, a bake)
+draws the mouth at its own size.
+
 ### The face baker (G13)
 
 `io.export` (in `omuzaki-io-ops`) bakes the face into the scene, and the baker is built by the face implementation, which ops cannot depend on. So `omuzaki-face-api` owns the lookup: a `FaceBakerFactory` trait with `create(BakerInput { profile, projection, head_centre }) -> Box<dyn ExpressionBaker>` and a `priority()` that defaults to 0, a `register_face_baker!` macro over `inventory` (the same pattern as io-api's importers and exporters), and `face_baker()`, which returns the highest-priority registered factory. Two factories at the same priority are a wiring error: `face_baker()` returns `Err(FaceBakerConflict)` naming both, and the answer is cached after the first call. `omuzaki-face-mock` registers a trivial factory whose baker marks every channel inert, so the export path can be tested without a painter.

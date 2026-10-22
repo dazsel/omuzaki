@@ -419,7 +419,7 @@ fn warm_face(
     channels: &ChannelBuf,
     time: Seconds,
 ) -> Result<(), StageError> {
-    let view = FaceView { highlight_shift: Vec2::ZERO };
+    let view = FaceView { highlight_shift: Vec2::ZERO, head_coverage: None };
     system.update(channels, profile, time, view).map(|_| ()).map_err(face_error)
 }
 
@@ -688,9 +688,13 @@ impl Stage {
     ) -> Result<(), StageError> {
         rig.last_tick = Some(tick);
         rig.last_channels = input.channels;
-        let highlight_shift = rig.bound.as_ref().and_then(|b| b.head.as_ref()).map_or(Vec2::ZERO, |h| self.highlight(h));
+        let head = rig.bound.as_ref().and_then(|b| b.head.as_ref());
+        let highlight_shift = head.map_or(Vec2::ZERO, |h| self.highlight(h));
+        // A share of the frame, well inside f32.
+        #[allow(clippy::cast_possible_truncation)]
+        let head_coverage = head.and_then(|h| self.head_coverage(h)).map(|c| c as f32);
         let Some(bound) = rig.bound.as_mut() else { return Ok(()) };
-        let view = FaceView { highlight_shift };
+        let view = FaceView { highlight_shift, head_coverage };
         let update = bound.system.update(&input.channels, &bound.profile, tick.time, view).map_err(face_error)?;
         for layer in update.changed_layers() {
             rig.unpainted[layer as usize] = true;

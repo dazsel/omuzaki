@@ -481,7 +481,7 @@ fn the_catchlight_is_placed_and_sized_in_iris_radii_and_slides_with_the_view() {
         profile.eyes.highlights.size = size;
         profile.eyes.highlights.offset = offset;
         profile.eyes.highlights.view_motion = motion;
-        let drawing = paint_with(&profile, &base(), 0.0, FaceView { highlight_shift: shift });
+        let drawing = paint_with(&profile, &base(), 0.0, FaceView { highlight_shift: shift, head_coverage: None });
         let eyes = inside(&drawing[FaceLayerId::Base]);
         let iris = iris_of(&eyes[0]).0.to_vec();
         (catchlights(&eyes[0]).remove(0), iris)
@@ -631,7 +631,7 @@ fn the_shimmer_slides_against_the_view_but_the_stars_less() {
         p.eyes.highlights.view_motion = 1.0;
         p
     };
-    let at = |shift: Vec2| paint_with(&profile, &base(), 0.0, FaceView { highlight_shift: shift });
+    let at = |shift: Vec2| paint_with(&profile, &base(), 0.0, FaceView { highlight_shift: shift, head_coverage: None });
     let (rest, slid) = (at(Vec2::ZERO), at(Vec2::new(0.5, 0.0)));
     let (band0, _, stars0) = shimmer_of(&rest);
     let (band1, _, stars1) = shimmer_of(&slid);
@@ -659,7 +659,7 @@ fn an_eye_with_everything_on_is_a_handful_of_commands() {
 fn painting_the_same_face_twice_gives_the_same_list() {
     let (profile, mut params) = (shimmering(0.7), base());
     params.gaze = Vec2::new(0.3, -0.2);
-    let view = FaceView { highlight_shift: Vec2::new(0.1, 0.05) };
+    let view = FaceView { highlight_shift: Vec2::new(0.1, 0.05), head_coverage: None };
     assert_eq!(
         paint_with(&profile, &params, 1.25, view).fingerprints(),
         paint_with(&profile, &params, 1.25, view).fingerprints()
@@ -687,7 +687,7 @@ fn painting_irises_pupils_catchlights_and_shimmer_allocates_nothing_once_the_lis
     let mut drawing = FaceDrawing::new();
     let mut frame = |painter: &mut RealPainter, i: usize| {
         let (profile, params) = &faces[i % faces.len()];
-        let view = FaceView { highlight_shift: Vec2::new(0.1, -0.1) };
+        let view = FaceView { highlight_shift: Vec2::new(0.1, -0.1), head_coverage: None };
         let input = FaceInput { profile, params, time: Seconds(i as f64 * 0.016), view };
         painter.paint_section(Section::Eyes, &input, &mut drawing).unwrap();
     };

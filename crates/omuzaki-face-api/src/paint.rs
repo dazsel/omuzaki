@@ -714,6 +714,10 @@ pub struct FaceView {
     /// How far reflections slide, in `-1..=1` per axis: opposite the direction the camera sees the face from
     /// (the character's left is +x). The caller computes it from the camera and head; zero when unknown.
     pub highlight_shift: Vec2,
+    /// How large the head is in the shot: its height over the frame's height at the head (about 0.1 in a full-body
+    /// shot, 0.3 and more from a bust shot in). `None` when unknown. The mouth grows in a wide shot
+    /// ([`MouthStyle::shot_scale`](crate::MouthStyle::shot_scale)), so it still reads.
+    pub head_coverage: Option<f32>,
 }
 
 /// Everything a painter reads for one frame.
