@@ -31,6 +31,8 @@ omuzaki-settings-api = { path = "../omuzaki-settings-api" }
 omuzaki-stream-api = { path = "../omuzaki-stream-api" }
 
 [dev-dependencies]
+# Itself with the testing kit, so integration tests see it and the `fake-worker` binary is built for them.
+omuzaki-stream = { path = ".", features = ["testing"] }
 criterion.workspace = true
 proptest.workspace = true
 # A settings service for the `output.window` setting's tests (`tests/ops_window.rs`).

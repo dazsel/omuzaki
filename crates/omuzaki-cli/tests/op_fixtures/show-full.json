@@ -1,0 +1,11 @@
+{
+  "about": "The show `main` with the variable `bonks`, the `brb` graph in the group `intro`, and a `wait` node that also feeds the scene switch: for the ops that change groups, variables and wires.",
+  "base": "show-graph",
+  "steps": [
+    { "op": "automation.declare_variable", "args": { "show": "main", "name": "bonks", "type": "number", "scope": "show", "default": 0 } },
+    { "op": "automation.add_group", "args": { "show": "main", "id": "intro", "name": "Intro" } },
+    { "op": "automation.set_graph", "args": { "show": "main", "graph": "brb", "group": "intro" } },
+    { "op": "automation.add_node", "args": { "show": "main", "graph": "brb", "kind": "flow.wait", "id": "wait" } },
+    { "op": "automation.connect", "args": { "show": "main", "graph": "brb", "from": "wait.out", "to": "scene.in" } }
+  ]
+}

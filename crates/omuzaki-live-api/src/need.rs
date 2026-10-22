@@ -22,7 +22,7 @@ pub enum Need {
     /// An op `op.run` calls, so the approval card can say what it does ("switches OBS scenes").
     #[non_exhaustive]
     Op {
-        /// The op's name (`obs.set_scene`).
+        /// The op's name (`obs.scene.set`).
         op: String,
     },
     /// A host the node sends to: `net.http`, `net.udp_send`. Scheme, host and port are literal parameters.
@@ -213,6 +213,6 @@ mod tests {
     fn only_variables_and_groups_are_declarations() {
         assert!(Need::group(GroupId::new("redeems").unwrap()).is_declaration());
         assert!(Need::variable(VarName::new("bonks").unwrap(), VarType::Number).is_declaration());
-        assert!(!Need::op("obs.set_scene").is_declaration() && !Need::Scope(Scope::Broadcast).is_declaration());
+        assert!(!Need::op("obs.scene.set").is_declaration() && !Need::Scope(Scope::Broadcast).is_declaration());
     }
 }

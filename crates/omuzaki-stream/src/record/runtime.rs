@@ -29,6 +29,7 @@ use omuzaki_stream_api::error::StreamError;
 use omuzaki_stream_api::output::{
     AlphaNeed, Lanes, Output, OutputConfig, OutputInfo, OutputState, OutputStatus, SubmitReport,
 };
+use omuzaki_stream_api::time::Ticks;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -63,11 +64,27 @@ pub struct AudioTrack {
     pub rate: u32,
     /// Interleaved channels.
     pub channels: u16,
-    /// The stream position (in samples, as [`AudioSource`] counts them) that lines up with the first video frame.
-    /// Earlier samples are dropped, and silence fills up to it if the source starts later. `None` takes the source
-    /// from its first sample.
-    pub start_sample: Option<u64>,
+    /// Which stream position lines up with the first video frame.
+    pub start: TrackStart,
 }
+
+/// Which stream position of a track (in samples, as [`AudioSource`] counts them) lines up with the take's first video
+/// frame. Earlier samples are dropped, and silence fills up to it if the source starts later.
+pub enum TrackStart {
+    /// The source's first sample.
+    First,
+    /// This stream position.
+    Sample(u64),
+    /// The position this gives for the first frame's capture time: for an engine tap, the engine clock's sample at
+    /// that time plus the tap's capture offset. The track waits (its tap buffers) until the first frame arrives.
+    FirstFrame(Align),
+}
+
+/// Maps the first frame's capture time to a track's stream position.
+pub type Align = Box<dyn FnOnce(Ticks) -> u64 + Send>;
+
+/// A track's start before the first frame has fixed it.
+const START_PENDING: u64 = u64::MAX;
 
 /// What to record, with the format already chosen.
 pub struct RecordPlan {
@@ -404,6 +421,10 @@ struct TrackState {
     written: u64,
     /// Whether the first sample has been lined up with `start_sample`.
     aligned: bool,
+    /// The stream position that lines up with the first frame, if fixed.
+    start_sample: Option<u64>,
+    /// Set by the recorder at the first frame, for a [`TrackStart::FirstFrame`] track: [`START_PENDING`] until then.
+    pending: Option<Arc<AtomicU64>>,
 }
 
 impl TrackState {
@@ -428,8 +449,17 @@ impl TrackState {
         Ok(())
     }
 
-    /// Reads everything the source has now into the file.
-    fn drain(&mut self, buf: &mut [f32]) -> Result<(), StreamError> {
+    /// Reads everything the source has now into the file. A track still waiting for the first frame reads nothing,
+    /// unless this is the `last` pass (a take with no frames), which takes the source from its first sample.
+    fn drain(&mut self, buf: &mut [f32], last: bool) -> Result<(), StreamError> {
+        if let Some(pending) = &self.pending {
+            match pending.load(Ordering::Acquire) {
+                START_PENDING if !last => return Ok(()),
+                START_PENDING => {}
+                s0 => self.start_sample = Some(s0),
+            }
+            self.pending = None;
+        }
         loop {
             let run = self.track.source.read(buf);
             if run.len == 0 {
@@ -438,7 +468,7 @@ impl TrackState {
             let mut skip = 0usize;
             if self.aligned {
                 self.silence(run.gap_before, GapCause::Lost)?;
-            } else if let Some(s0) = self.track.start_sample {
+            } else if let Some(s0) = self.start_sample {
                 let end = run.start_sample + run.len as u64;
                 if end <= s0 {
                     continue;
@@ -483,7 +513,7 @@ impl AudioPump {
                 loop {
                     let last = flag.load(Ordering::Acquire);
                     for state in &mut states {
-                        state.drain(&mut buf)?;
+                        state.drain(&mut buf, last)?;
                     }
                     if last {
                         break;
@@ -511,6 +541,8 @@ pub struct Recorder {
     stem: String,
     format: RecordFormat,
     tracks: Vec<AudioTrack>,
+    /// The first-frame starts still to fix, each with the cell its track reads.
+    aligners: Vec<(Align, Arc<AtomicU64>)>,
     cfg: Option<OutputConfig>,
     state: OutputState,
     video: Option<Box<dyn VideoWriter>>,
@@ -531,6 +563,7 @@ impl Recorder {
             stem: plan.stem,
             format: plan.format,
             tracks: plan.tracks,
+            aligners: Vec::new(),
             cfg: None,
             state: OutputState::Idle,
             video: None,
@@ -602,6 +635,15 @@ impl Recorder {
     }
 }
 
+fn video_fps(cfg: Option<&OutputConfig>) -> (u32, u32) {
+    cfg.map_or((30, 1), |c| c.fps)
+}
+
+#[allow(clippy::cast_possible_truncation)] // Seconds of a take: far below 2^63 ns.
+fn seconds_to_ticks(seconds: f64) -> i64 {
+    (seconds * 1e9).round() as i64
+}
+
 #[allow(clippy::cast_precision_loss)] // Frame counts far below 2^52.
 fn seconds_of(frames: u64, fps: (u32, u32)) -> f64 {
     frames as f64 * f64::from(fps.1) / f64::from(fps.0.max(1))
@@ -620,10 +662,27 @@ impl Output for Recorder {
             .map_err(|e| StreamError::Io(format!("could not create {}: {e}", self.dir.display())))?;
         let video = self.open_video(cfg)?;
         let mut states = Vec::with_capacity(self.tracks.len());
-        for track in self.tracks.drain(..) {
+        for mut track in self.tracks.drain(..) {
             let sink =
                 WavSink::create(&self.dir.join(format!("{}_{}", self.stem, track.name)), track.rate, track.channels)?;
-            states.push(TrackState { track, sink, gaps: Vec::new(), written: 0, aligned: false });
+            let (start_sample, pending) = match std::mem::replace(&mut track.start, TrackStart::First) {
+                TrackStart::First => (None, None),
+                TrackStart::Sample(s) => (Some(s), None),
+                TrackStart::FirstFrame(align) => {
+                    let cell = Arc::new(AtomicU64::new(START_PENDING));
+                    self.aligners.push((align, Arc::clone(&cell)));
+                    (None, Some(cell))
+                }
+            };
+            states.push(TrackState {
+                track,
+                sink,
+                gaps: Vec::new(),
+                written: 0,
+                aligned: false,
+                start_sample,
+                pending,
+            });
         }
         self.audio = if states.is_empty() { None } else { Some(AudioPump::start(states)?) };
         self.video = Some(video);
@@ -639,6 +698,12 @@ impl Output for Recorder {
         let started = Instant::now();
         let image = frame.cpu.ok_or_else(|| StreamError::Config("the recorder reads the CPU image".into()))?;
         let video = self.video.as_mut().ok_or(StreamError::Stopped)?;
+        // The first frame fixes where the waiting tracks start: frame 0 is the take's first frame (the pacer's zero).
+        for (align, cell) in self.aligners.drain(..) {
+            let ticks =
+                Ticks(frame.capture_time.0 - seconds_to_ticks(seconds_of(frame.index, video_fps(self.cfg.as_ref()))));
+            cell.store(align(ticks).min(START_PENDING - 1), Ordering::Release);
+        }
         self.frames = self.frames.max(frame.index + 1);
         let dropped = match video.submit(frame.index, image) {
             Ok(true) => {
