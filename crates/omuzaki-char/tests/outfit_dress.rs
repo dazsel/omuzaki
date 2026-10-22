@@ -1,5 +1,4 @@
-//! The dress garment (#328): the conformance suite for every neckline, skirt cut and sleeve, its parameters, the reach
-//! it publishes for the layers over it, and its skirt as cloth.
+//! The dress garment (#328): the conformance suite for every neckline, skirt cut and sleeve, and its parameters.
 
 #![allow(clippy::expect_used, clippy::unwrap_used)] // test helpers: a panic is a clear failure
 #![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)] // test arithmetic

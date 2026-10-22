@@ -20,6 +20,7 @@ pub mod look;
 pub mod reach;
 pub mod shell;
 pub mod sleeves;
+pub mod trims;
 
 use omuzaki_face_api::Check;
 use schemars::JsonSchema;

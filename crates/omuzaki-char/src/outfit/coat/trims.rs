@@ -1,0 +1,245 @@
+//! The pieces that sit on a coat's outside: lapels along an open front's V, pocket flaps and welts, a row of buttons,
+//! a stitched line (a back vent, a seam). Each lies on the shell's outside ([`Frame::on`]) a little beyond the rolled
+//! edges, so it never comes nearer the body than the cloth under it.
+
+use std::f64::consts::PI;
+
+use omuzaki_core::glam::DVec3;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+use super::Front;
+use super::edge::{Patch, Tube, cord, patch};
+use super::shell::{Frame, Skinning, Tones};
+use crate::kit::curve::{TAU, fraction, lerp, sstep};
+use crate::kit::grid::MeshBuilder;
+use crate::outfit::common::GarmentError;
+use crate::outfit::trim::buttons::{ButtonStyle, button};
+
+/// How far a piece's underside stands beyond the shell's outside, over the rolled edge's lip, metres.
+const STANDOFF: f64 = 0.0004;
+/// A lapel's rows along the V and points across it.
+const LAPEL_GRID: (usize, usize) = (28, 6);
+/// A lapel starts where the front edges have opened this far either side of the centre, radians: above the overlap.
+const LAPEL_START: f64 = 0.03;
+/// The farthest round from the centre front a lapel reaches, radians.
+const LAPEL_REACH: f64 = 0.8;
+/// The narrowest a lapel is anywhere, as a share of its width: its point at the break.
+const LAPEL_TIP: f64 = 0.06;
+/// The notch: where along the lapel it starts and ends, and how much of the width it leaves.
+const NOTCH: (f64, f64, f64) = (0.74, 0.84, 0.3);
+/// The collar above the notch, as a share of the lapel's width.
+const COLLAR: f64 = 0.72;
+/// A pocket's points across and down.
+const POCKET_GRID: (usize, usize) = (4, 7);
+/// Steps up the height when looking for where the front has opened.
+const SEARCH: usize = 200;
+
+/// The lapels' cut.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LapelStyle {
+    /// A notched lapel: a step between the lapel and the collar.
+    #[default]
+    Notch,
+    /// A shawl lapel: one smooth curve up to the collar.
+    Shawl,
+    /// No lapels.
+    None,
+}
+
+/// The lapels of an open front.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct Lapel {
+    /// The cut.
+    pub style: LapelStyle,
+    /// The widest it is, metres round the body.
+    pub width: f64,
+    /// How far its fold rolls out from the chest, metres.
+    pub roll: f64,
+}
+
+impl Default for Lapel {
+    fn default() -> Self {
+        Self { style: LapelStyle::Notch, width: 0.045, roll: 0.002 }
+    }
+}
+
+impl Lapel {
+    /// Checks the lapel, its fields under `c`.
+    pub fn check(&self, c: &mut omuzaki_face_api::Check) {
+        c.range("width", self.width, 0.0, 0.12);
+        c.range("roll", self.roll, 0.0, 0.01);
+    }
+
+    /// The lapel's width at `s`, from the break (0) up to the collar line (1), as a share of [`Lapel::width`].
+    fn share(&self, s: f64) -> f64 {
+        let base = s.powf(0.6);
+        let w = match self.style {
+            LapelStyle::Shawl => base * (1.0 - 0.3 * s.powi(6)),
+            LapelStyle::Notch | LapelStyle::None => {
+                let (start, end, depth) = NOTCH;
+                let notch = sstep(start, start + 0.025, s) * (1.0 - sstep(end - 0.02, end, s));
+                let collar = lerp(1.0, COLLAR, sstep(end - 0.02, end, s));
+                base * collar * (1.0 - (1.0 - depth) * notch)
+            }
+        };
+        w.max(LAPEL_TIP)
+    }
+}
+
+/// The ring's mean radius at `y`: metres round the body to radians.
+pub fn radius(frame: &Frame, y: f64) -> f64 {
+    frame.ring(y).map_or(0.1, |r| f64::midpoint(r.radii.x, r.radii.y)).max(0.01)
+}
+
+/// Where the lapels break: at the V's start, or above it where the front edges have opened [`LAPEL_START`] either
+/// side of the centre.
+pub fn break_height(frame: &Frame) -> Option<f64> {
+    let Front::Open { point, .. } = frame.cut.front else { return None };
+    let (low, high) = (frame.waist().max(frame.torso(point)), frame.top - 0.01);
+    (0..=SEARCH).map(|k| lerp(low, high, fraction(k, SEARCH))).find(|&y| frame.edge(y) >= LAPEL_START)
+}
+
+/// Adds the lapels of an open front to `mesh`, the top in the cloth's tone, the underside in the lining's, rolled in
+/// the edge's; returns the open borders it added (two a lapel), 0 for none.
+///
+/// # Errors
+/// The kit's.
+#[allow(clippy::many_single_char_names)] // the grid's textbook names
+pub fn lapels(mesh: &mut MeshBuilder, frame: &Frame, lapel: &Lapel, tones: &Tones) -> Result<usize, GarmentError> {
+    if lapel.style == LapelStyle::None || lapel.width <= 0.0 {
+        return Ok(0);
+    }
+    let Some(from) = break_height(frame) else { return Ok(0) };
+    let to = frame.top - 0.003;
+    if to - from < 0.01 {
+        return Ok(0);
+    }
+    let (rows, cols) = LAPEL_GRID;
+    let lift = frame.cut.lip + STANDOFF;
+    let top = tones.outer.map(|c| c * 0.96);
+    for side in [1.0, -1.0] {
+        let (mut points, mut normals, mut skins) = (Vec::new(), Vec::new(), Vec::new());
+        for i in 0..rows {
+            let s = fraction(i, rows - 1);
+            let y = lerp(from, to, s);
+            let r = radius(frame, y);
+            let edge = frame.edge(y) + 0.002 / r;
+            // On a narrow body the lapel keeps to the chest, off the shoulders and the arms' roots.
+            let width = (lapel.width / r).min(LAPEL_REACH - edge).max(0.0) * lapel.share(s);
+            for j in 0..cols {
+                let t = fraction(j, cols - 1);
+                let phi = edge + t * width;
+                let phi = if side > 0.0 { phi } else { TAU - phi };
+                let (p, n, skin): (DVec3, DVec3, Skinning) = frame.on(y, phi, lift + lapel.roll * (1.0 - t))?;
+                points.push(p);
+                normals.push(n);
+                skins.push(skin);
+            }
+        }
+        let piece = Patch {
+            rows,
+            cols,
+            points,
+            normals,
+            skins,
+            thickness: frame.cut.thickness,
+            colours: (top, tones.lining),
+            edge: tones.edge,
+        };
+        patch(mesh, &piece)?;
+    }
+    Ok(4)
+}
+
+/// A pocket: a flap (or a welt, when short) hanging from its top edge.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Pocket {
+    /// The top edge's middle: its height and its angle round the body.
+    pub at: (f64, f64),
+    /// Its width round the body and its height down it, metres.
+    pub size: (f64, f64),
+    /// How much it stands off the cloth at its bottom, metres (a flap's sag).
+    pub sag: f64,
+}
+
+/// Adds `pocket` to `mesh`; returns the open borders it added (two).
+///
+/// # Errors
+/// The kit's.
+#[allow(clippy::many_single_char_names)] // the grid's textbook names
+pub fn pocket(mesh: &mut MeshBuilder, frame: &Frame, pocket: &Pocket, tones: &Tones) -> Result<usize, GarmentError> {
+    let (rows, cols) = POCKET_GRID;
+    let (y, phi) = pocket.at;
+    let (w, h) = pocket.size;
+    let half = w / 2.0 / radius(frame, y);
+    let lift = frame.cut.lip + STANDOFF;
+    let (mut points, mut normals, mut skins) = (Vec::new(), Vec::new(), Vec::new());
+    for i in 0..rows {
+        let s = fraction(i, rows - 1);
+        for j in 0..cols {
+            let t = fraction(j, cols - 1);
+            let (p, n, skin) = frame.on(y - s * h, phi - half + 2.0 * half * t, lift + pocket.sag * s)?;
+            points.push(p);
+            normals.push(n);
+            skins.push(skin);
+        }
+    }
+    let piece = Patch {
+        rows,
+        cols,
+        points,
+        normals,
+        skins,
+        thickness: frame.cut.thickness,
+        colours: (tones.outer.map(|c| c * 0.94), tones.lining),
+        edge: tones.edge,
+    };
+    patch(mesh, &piece)?;
+    Ok(2)
+}
+
+/// Adds a button of `style` at each `(height, angle)` of `at` to `builder`, on the outside.
+///
+/// # Errors
+/// The surface's or the kit's.
+pub fn buttons(
+    builder: &mut MeshBuilder,
+    frame: &Frame,
+    at: &[(f64, f64)],
+    style: &ButtonStyle,
+) -> Result<(), GarmentError> {
+    for &(y, phi) in at {
+        let (foot, normal, skin) = frame.on(y, phi, frame.cut.lip)?;
+        button(builder, foot, normal, style, &skin).map_err(|e| GarmentError::invalid("buttons", e.to_string()))?;
+    }
+    Ok(())
+}
+
+/// Adds a stitched line down the outside at angle `phi` from height `from` to `to`: a thin closed cord.
+///
+/// # Errors
+/// The kit's.
+pub fn stitch(
+    mesh: &mut MeshBuilder,
+    frame: &Frame,
+    phi: f64,
+    (from, to): (f64, f64),
+    colour: [f32; 3],
+) -> Result<(), GarmentError> {
+    const STEPS: usize = 24;
+    const RADIUS: f64 = 0.0007;
+    let mut points = Vec::with_capacity(STEPS + 1);
+    let mut skins = Vec::with_capacity(STEPS + 1);
+    for k in 0..=STEPS {
+        let (p, _, skin) = frame.on(lerp(from, to, fraction(k, STEPS)), phi, frame.cut.lip * 0.5)?;
+        points.push(p);
+        skins.push(skin);
+    }
+    cord(mesh, &Tube { points: &points, skins: &skins, radius: RADIUS, colour })
+}
+
+/// The centre back's angle.
+pub const BACK: f64 = PI;

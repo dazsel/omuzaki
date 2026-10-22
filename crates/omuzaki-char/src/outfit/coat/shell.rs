@@ -37,6 +37,8 @@ const SKIRT_ROW: f64 = 0.012;
 const BODICE_ROW: f64 = 0.009;
 /// The fewest and most rows of either.
 const ROWS: (usize, usize) = (6, 44);
+/// The highest a hem goes, as a fraction of the torso.
+const HIGHEST_HEM: f64 = 0.3;
 /// The least length of skirt below the waist seam, metres.
 const MIN_SKIRT: f64 = 0.02;
 /// How far the left panel stands over the right where the front crosses, beyond the cloth's thickness, metres.
@@ -136,9 +138,11 @@ impl Frame {
         };
         let (hip, ankle) = (joint(HumanoidBone::LeftUpperLeg)?, joint(HumanoidBone::LeftFoot)?);
         let length = cut.length.clamp(MIN_LENGTH, MAX_LENGTH);
-        let hem = hip - length * (hip - ankle);
-        let waist = column.bottom() + cut.waist.clamp(0.0, 1.0) * column.length();
-        if hem - cut.back_drop.max(0.0) > waist - MIN_SKIRT || hem > waist - MIN_SKIRT {
+        // A cropped hem stays on the lower torso, below the arms, on every body.
+        let hem = (hip - length * (hip - ankle)).min(column.bottom() + HIGHEST_HEM * column.length());
+        // On a body whose hips sit high in the torso the seam rises to keep a skirt's length above a short hem.
+        let waist = (column.bottom() + cut.waist.clamp(0.0, 1.0) * column.length()).max(hem + 2.0 * MIN_SKIRT);
+        if waist > column.top() - MIN_SKIRT || hem > waist - MIN_SKIRT {
             return Err(GarmentError::invalid(
                 "length",
                 format!("the hem at {hem:.3} m is not {MIN_SKIRT} m below the waist seam at {waist:.3} m"),
@@ -335,16 +339,14 @@ impl Shell {
 }
 
 /// The columns round the shell, as fractions `u`: [`SEGMENTS`] even ones, each cut in as many as keep the neckline's
-/// height within [`TOP_STEP`] from one column to the next (an armhole's climb, a round neck's sides). Each column's rows
-/// run evenly from the waist to its top, so where the top climbs fast neighbouring columns' rows are far apart in
-/// height, and a quad between them is a long sheared one whose diagonal chords across the chest's curve, into the body
-/// (the vest's columns do the same).
+/// height within [`TOP_STEP`] from one column to the next (an armhole's climb, a round neck's sides, a shoulder). Each
+/// column's rows run evenly from the waist to its top, so where the top climbs fast neighbouring columns' rows are far
+/// apart in height, and a quad between them is a long sheared one whose diagonal chords across the chest's curve, into
+/// the body (the vest's columns do the same).
 fn columns(frame: &Frame) -> Vec<f64> {
     let base: Vec<f64> = (0..=SEGMENTS).map(|j| fraction(j, SEGMENTS)).collect();
-    if !frame.closed() {
-        return base;
-    }
-    let top = |u: f64| frame.neck(frame.phi(u, frame.waist()));
+    let at = if frame.closed() { frame.waist() } else { frame.top };
+    let top = |u: f64| frame.neck(frame.phi(u, at));
     let mut out = vec![base[0]];
     for pair in base.windows(2) {
         // The steepest climb inside the interval, sampled finely.
