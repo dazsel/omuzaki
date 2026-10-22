@@ -97,7 +97,7 @@ impl ScriptFonts {
                 let faces: Vec<(String, Arc<FontData>)> = self
                     .installed
                     .iter()
-                    .map(|(family, data)| (format!("Noto-{family:?}"), Arc::clone(data)))
+                    .map(|(family, data)| (format!("script-face-{family:?}"), Arc::clone(data)))
                     .collect();
                 ctx.set_fonts(fonts::with_fallbacks(&faces));
                 true
