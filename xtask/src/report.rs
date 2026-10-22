@@ -26,7 +26,7 @@ pub struct Report {
     pub changed: Vec<String>,
     /// `changed` plus the crates that depend on one directly. Pull requests run clippy on these.
     pub direct: Vec<String>,
-    /// Everything affected, direct or not, except the link-only crates. The merge queue tests these.
+    /// Everything affected, direct or not, except the link-only crates. CI tests these.
     pub full: Vec<String>,
     /// Crates affected only through a dependency they hold for linking: clippy and their link gate test only.
     pub link_only: Vec<String>,

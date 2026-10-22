@@ -1120,7 +1120,7 @@ Each gate is built, tracked and closed like any other feature. The gates for bui
 
 > Restored/added 2026-10-11 (decision: no later tier): the phases carry the restored and added features; v1.0 means every feature closed.
 
-**Team model** (§39.3): maintainers set direction and review; contributors, people or agents, take small fenced tasks, each on one small PR in its own worktree, coordinated through the same Build Theatre we're building (dog-fooding from week one). Every PR meets the three standards: engineering, performance, correctness.
+**Team model** (ADR 0067, 2026-10-21): spine first. One high-agency agent owns each area and builds its spine, the thinnest end-to-end path the product needs, landing its own work without a review gate; the map is in `CLAUDE.md` ("The spine map"). Each area gets a deep audit once its spine runs, and then the leaves (the rest of this plan) follow. The three standards (engineering, performance, correctness) stay the bar.
 
 **Phase 0: foundations (weeks 0–2)**
 - Repo, ADRs, this spec, issue backlog from the feature IDs, CI (three OSes + WASM), cargo-deny, golden-render harness skeleton.
@@ -1226,6 +1226,8 @@ Omuzaki is free software, and these stay free:
 # Part VII: Built for massive parallel development
 
 ## 39. Architecture and workflow for many parallel PRs
+
+> The architecture rules (§39.1) stand. The workflow parts (small PRs, review and merge mechanics) are superseded for now by ADR 0067 (spine first).
 
 > Scope: epics cover §12–§16 and §34 as well as §17–§31, and a phase is done only when every feature in it is closed.
 

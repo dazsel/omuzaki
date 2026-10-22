@@ -71,7 +71,7 @@ GitHub Actions runs on GitHub-hosted runners (Linux and Windows).
 
 | Workflow | When | What |
 |---|---|---|
-| `ci.yml` | pull requests and the merge queue | One required check, `gate`, that waits for every job. Pull requests: fmt, clippy (`-D warnings`) on the changed crates and their direct dependents, tests of the changed crates, the link gates and the dependency lints. Merge queue: the same on everything affected, plus the Windows cross-build. Scope comes from `cargo xtask check --format json`. |
+| `ci.yml` | pull requests and pushes to `main` | fmt, clippy (`-D warnings`), the WebAssembly check, the layering, link and licence lints, and the tests, on everything the change affects; pushes to `main` also cross-build for Windows. One summary check, `gate`. Scope comes from `cargo xtask check --format json`. |
 | `cache-warm.yml` | pushes to `main` | Builds the dependency caches the other workflows restore. The only workflow that saves a cache. |
 | `nightly.yml` | daily | `tools/ci/nightly-check.sh`: the whole workspace, every cargo target and doctest, cargo-deny with advisories, the Windows build, the WebAssembly check. |
 | `macos-weekly.yml` | weekly | `cargo check --workspace` on macOS. |
