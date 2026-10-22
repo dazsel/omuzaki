@@ -158,21 +158,11 @@ pub struct PinnedFonts {
 }
 
 impl PinnedFonts {
-    /// Fonts from `source`.
+    /// Fonts from `source`. The app passes the shared download cache,
+    /// `VerifiedCache::new(omuzaki_http::app_cache_dir()?, HttpFetcher::new())`, so fonts download over HTTPS on first need
+    /// into the folder models share; the stage itself never links the HTTPS client, so it still builds for the web.
     pub fn new(source: Arc<dyn FileSource>) -> Self {
         Self { source, progress: Arc::new(NoProgress) }
-    }
-
-    /// The app's fonts: downloaded over HTTPS on first need into the shared cache folder
-    /// ([`omuzaki_http::app_cache_dir`]), where models share them.
-    ///
-    /// # Errors
-    /// [`FontError::Io`] when there is no cache folder to use; the message names `OMUZAKI_CACHE_DIR`.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn from_app_cache() -> Result<Self, FontError> {
-        let root = omuzaki_http::app_cache_dir()
-            .map_err(|e| FontError::Io { path: omuzaki_http::CACHE_DIR_ENV.to_owned(), reason: e.to_string() })?;
-        Ok(Self::new(Arc::new(omuzaki_ai::VerifiedCache::new(root, omuzaki_http::HttpFetcher::new()))))
     }
 
     /// Reports each download to `progress`, under the stage name [`PinnedFonts::download_label`] gives (and so a

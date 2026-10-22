@@ -51,12 +51,6 @@ omuzaki-rig = { path = "../omuzaki-rig" }
 # The wgpu renderer backend, linked only with the `wgpu` feature (R1).
 omuzaki-render = { path = "../omuzaki-render", optional = true }
 
-# Downloading the sheet fonts (`PinnedFonts::from_app_cache`) is native only: the HTTPS client does not build for
-# wasm32, and on the web the host hands the stage its fonts through a `FileSource`.
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-omuzaki-ai = { path = "../omuzaki-ai" }
-omuzaki-http = { path = "../omuzaki-http" }
-
 [features]
 # The wgpu renderer. The stage is written against `dyn Renderer`, so nothing here needs it; the feature links the
 # `omuzaki-render` backend. Tests use the render mock.
@@ -72,11 +66,14 @@ omuzaki-link-build = { path = "../omuzaki-link-build" }
 criterion.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
+omuzaki-ai = { path = "../omuzaki-ai" }
 omuzaki-ai-mock = { path = "../omuzaki-ai-mock" }
 omuzaki-anim-mock = { path = "../omuzaki-anim-mock" }
 omuzaki-char-mock = { path = "../omuzaki-char-mock" }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 omuzaki-face-mock = { path = "../omuzaki-face-mock" }
+# The real fetcher under the font download test (`tests/font_download.rs`).
+omuzaki-http = { path = "../omuzaki-http" }
 # A kit character exported to VRM and imported back as an avatar: the bring-your-own-model path without a third-party
 # file (`tests/avatar_stage.rs`).
 omuzaki-io-vrm = { path = "../omuzaki-io-vrm" }
