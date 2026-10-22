@@ -490,17 +490,30 @@ fn key<S>(h: &mut Harness<'_, S>, modifiers: Modifiers, key: Key) {
     }
 }
 
+/// The Script workspace for the pull request, on the software GPU at 1920x1080 and 1366x768: a run done in the
+/// console, a recording waiting to be saved in Macros. `OMUZAKI_EVIDENCE_OUT=<folder> cargo test -p omuzaki-ui --test
+/// script_console -- --ignored`.
 #[test]
-#[ignore = "evidence: renders the Script workspace on the software GPU"]
-fn evidence_the_script_workspace() {
-    // The studio as it opens, in the Script workspace: a run done, a recording waiting to be saved.
+#[ignore = "renders on the GPU (lavapipe in CI) and writes evidence images"]
+fn script_evidence() {
+    let Ok(out) = std::env::var("OMUZAKI_EVIDENCE_OUT") else { panic!("set OMUZAKI_EVIDENCE_OUT to a folder") };
+    let out = std::path::PathBuf::from(out);
+    std::fs::create_dir_all(&out).unwrap();
+    for (w, hgt) in [(1920.0, 1080.0), (1366.0, 768.0)] {
+        let image = script_workspace(vec2(w, hgt));
+        image.save(out.join(format!("script-{w}x{hgt}.png"))).unwrap();
+    }
+}
+
+/// The studio in the Script workspace at `size`: a run done, a recording waiting to be saved.
+fn script_workspace(size: egui::Vec2) -> image::RgbaImage {
     let studio = studio();
     let mine = Arc::clone(&studio.mine) as Arc<dyn ScriptStore>;
     let scripting = Scripting::new(Arc::clone(&studio.core.runner), Some(mine), "test", ConsentBook::in_memory());
     let mut shell = Shell::new(Arc::clone(&studio.core.runner), None);
     shell.insert_view(scripting.clone());
     let mut h = Harness::builder()
-        .with_size(vec2(1920.0, 1080.0))
+        .with_size(size)
         .with_pixels_per_point(1.0)
         .with_step_dt(1.0 / 60.0)
         .build_ui_state(|ui, s: &mut Shell| s.ui(ui), shell);
@@ -520,13 +533,12 @@ fn evidence_the_script_workspace() {
         widen(0.22),
         widen(0.23)
     );
-    let opened = Opened { saved: None, name: "Widen".into(), source, author: Author::Me };
-    scripting.open(opened);
+    scripting.open(Opened { saved: None, name: "Widen".into(), source, author: Author::Me });
     until(&mut h, "the check", |h| says(h, "No problems"));
     press_steps(&mut h, Modifiers::COMMAND, Key::Enter);
     until(&mut h, "the run", |h| says(h, "Undo: Widen"));
+    // Away from the tab the click left the pointer on.
+    h.event(Event::PointerMoved(egui::pos2(size.x / 2.0, size.y - 40.0)));
     h.run_steps(8);
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/evidence");
-    std::fs::create_dir_all(&dir).unwrap();
-    h.render().unwrap().save(dir.join("script-workspace.png")).unwrap();
+    h.render().unwrap()
 }
