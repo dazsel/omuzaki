@@ -80,7 +80,7 @@ pub use ids::{
 pub use kind::{
     Anchor, AnchorsFact, BodyFit, BodyRegion, BuildCtx, CollidersFact, FaceFact, FitFact, Fits, HeadFact, HeadSurface,
     KindProvenance, PartCategory, PartKind, PartKindRegistration, PartMeta, PartOutput, Published, Publishes, Quality,
-    RecolourCtx, Recoloured, Section, StatureFact, find_kind, kinds, requires_of,
+    RecolourCtx, Recoloured, RegionEnd, Section, StatureFact, find_kind, kinds, requires_of,
 };
 pub use look::{
     ClassLook, DEFAULT_PRESET, DERIVED_LINE, GradeOverride, LookDef, LookError, LookParams, LookPreset,

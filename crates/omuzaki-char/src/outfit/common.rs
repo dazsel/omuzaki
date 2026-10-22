@@ -22,7 +22,7 @@ use std::sync::Arc;
 use omuzaki_anim_api::HumanoidPose;
 use omuzaki_char_api::{
     BodyFit, BodyRegion, BuildCtx, BuildError, FitFact, JointRef, MaterialName, MaterialSpec, PartKind, PartMesh,
-    PartOutput, Publishes, Section, TextureName,
+    PartOutput, Publishes, RegionEnd, Section, TextureName,
 };
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::{UVec2, Vec2};
@@ -475,6 +475,11 @@ impl BodyFit for Envelope {
             return Some(inner);
         }
         Some(Section { radii: (inner.radii + Vec2::splat(self.ease)) * self.scale, ..inner })
+    }
+
+    /// The caps are the body's: a garment closes over none.
+    fn cap(&self, region: BodyRegion, end: RegionEnd, height: f32) -> Option<Section> {
+        self.inner.cap(region, end, height)
     }
 
     fn joint(&self, joint: &JointRef) -> Option<omuzaki_core::glam::Vec3> {

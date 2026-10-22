@@ -320,6 +320,15 @@ pub enum BodyRegion {
     FootR,
 }
 
+/// One end of a [`BodyRegion`]: its start (`t = 0`) or its end (`t = 1`).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum RegionEnd {
+    /// Where `t` is 0.
+    Start,
+    /// Where `t` is 1.
+    End,
+}
+
 /// An elliptical cross-section of a body region.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Section {
@@ -337,6 +346,16 @@ pub struct Section {
 pub trait BodyFit: Debug + Send + Sync {
     /// The cross-section of `region` at `t` in `0..=1` along its axis (0 at the start named in [`BodyRegion`]).
     fn section(&self, region: BodyRegion, t: f32) -> Option<Section>;
+
+    /// The cap that closes `region` past one of its ends, where its mesh runs on past the sections: a thigh's dome
+    /// rising into the pelvis, the pelvis's floor between the thighs, an ankle into the foot. The cross-section
+    /// `height` metres past the plane of the end's section, along the region's axis, holding every part of the cap at
+    /// that height or further out; `None` past the cap's top, or where the region has none. A garment round a
+    /// neighbouring region clears it. The default has no caps: a fit whose sections hold the whole body.
+    fn cap(&self, region: BodyRegion, end: RegionEnd, height: f32) -> Option<Section> {
+        let _ = (region, end, height);
+        None
+    }
 
     /// The bind-space position of a bone's joint.
     fn joint(&self, joint: &JointRef) -> Option<Vec3>;

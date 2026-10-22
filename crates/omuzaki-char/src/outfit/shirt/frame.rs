@@ -13,7 +13,7 @@
 use std::sync::Arc;
 
 use omuzaki_anim_api::HumanoidPose;
-use omuzaki_char_api::{BodyFit, BodyRegion, JointRef, Section};
+use omuzaki_char_api::{BodyFit, BodyRegion, JointRef, RegionEnd, Section};
 use omuzaki_core::glam::{DVec2, DVec3, Vec2, Vec3};
 
 use crate::outfit::common::{GarmentError, enclosing_scale};
@@ -165,6 +165,10 @@ impl BodyFit for Shell {
     fn section(&self, region: BodyRegion, t: f32) -> Option<Section> {
         let section = self.inner.section(region, t)?;
         Some(Section { radii: section.radii / Vec2::splat(self.scale), ..section })
+    }
+
+    fn cap(&self, region: BodyRegion, end: RegionEnd, height: f32) -> Option<Section> {
+        self.inner.cap(region, end, height)
     }
 
     fn joint(&self, joint: &JointRef) -> Option<Vec3> {

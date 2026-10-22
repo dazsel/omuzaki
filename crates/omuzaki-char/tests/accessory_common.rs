@@ -241,9 +241,7 @@ pub fn skinned(b: &BuiltCharacter, mesh: &PartMesh, local: &Pose) -> Vec<Vec3> {
     let g = &mesh.geometry;
     (0..g.positions.len())
         .map(|v| {
-            (0..4)
-                .map(|k| matrices[usize::from(joints[v][k])].transform_point3(g.positions[v]) * weights[v][k])
-                .sum()
+            (0..4).map(|k| matrices[usize::from(joints[v][k])].transform_point3(g.positions[v]) * weights[v][k]).sum()
         })
         .collect()
 }

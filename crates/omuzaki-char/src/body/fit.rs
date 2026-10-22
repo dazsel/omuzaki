@@ -29,11 +29,11 @@
 use std::collections::BTreeMap;
 
 use omuzaki_anim_api::HumanoidPose;
-use omuzaki_char_api::{BodyFit, BodyRegion, JointRef, Section};
+use omuzaki_char_api::{BodyFit, BodyRegion, JointRef, RegionEnd, Section};
 use omuzaki_core::glam::{DVec2, DVec3, Vec3};
 use omuzaki_core::mesh::MeshData;
 
-use crate::kit::curve::{TAU, fraction};
+use crate::kit::curve::fraction;
 use crate::template::layout::{BodyLayout, RegionSection, section_basis};
 use crate::template::skeleton::TemplateFit;
 
@@ -52,14 +52,10 @@ const GROWTH_STEPS: usize = 48;
 /// and for the frames of two rows taken between them.
 const HOLD_MARGIN: f64 = 5e-5;
 
-/// Points taken round the layout's ellipse in a row, which its widened ellipse keeps holding.
-const LAYOUT_SAMPLES: usize = 48;
-/// How far out the layout ellipse's points are taken, as a share of its radii: room for the chords between them.
-const LAYOUT_SLACK: f64 = 0.003;
 /// The radius of the arc each reach is eased with along its region, metres: a garment's rings 6 mm apart sag less
 /// than half a millimetre into an arc this round, and the fit stands at most `m^2 r / 2` past a body whose widening
 /// falls at slope `m` (4 mm at 45°).
-const EASE_RADIUS: f64 = 0.008;
+const EASE_RADIUS: f64 = 0.002;
 
 /// Rounds of easing a region's widening and holding its points again.
 const EASE_ROUNDS: usize = 2;
@@ -181,6 +177,13 @@ fn corner_growth(d: f64, r: f64) -> f64 {
     2.0 * (d.abs() - CORNER_SHARE * r).max(0.0) / (1.0 + CORNER_SHARE)
 }
 
+/// How far the box of `points` reaches past the ellipse of `radii` on each side (below zero inside it): the ellipse a
+/// box holds is the ring itself where the mesh's ring is an ellipse.
+fn boxed(radii: DVec2, points: &[DVec2]) -> Reach {
+    let reach = |f: fn(DVec2) -> f64, r: f64| points.iter().map(|q| f(*q) - r).fold(f64::NEG_INFINITY, f64::max);
+    [reach(|q| q.x, radii.x), reach(|q| -q.x, radii.x), reach(|q| q.y, radii.y), reach(|q| -q.y, radii.y)]
+}
+
 /// One region's table: the layout's rows and how far the fit reaches past each.
 #[derive(Clone, Debug)]
 struct Table {
@@ -268,32 +271,9 @@ impl Table {
         Some(Located { row, share, q: DVec2::new(d.dot(plane.across), d.dot(plane.through)) })
     }
 
-    /// The layout's radii and the fit's reach where `at` lies.
-    fn at(&self, at: &Located) -> (DVec2, Reach) {
-        let (a, b) = (at.row, (at.row + 1).min(self.rows.len() - 1));
-        let radii = self.rows[a].radii.lerp(self.rows[b].radii, at.share);
-        let extra: [f64; 4] =
-            std::array::from_fn(|k| self.extra[a][k] + (self.extra[b][k] - self.extra[a][k]) * at.share);
-        (radii, extra)
-    }
-
-    /// `at`'s level in the layout's own section there.
-    fn layout_level(&self, at: &Located) -> f64 {
-        let (radii, _) = self.at(at);
-        level(at.q, (DVec2::ZERO, radii))
-    }
-
-    /// Whether `at`'s point lies outside the layout's own section there.
-    fn outside_layout(&self, at: &Located) -> bool {
-        self.layout_level(at) > INSIDE_LEVEL
-    }
-
     /// Keeps the point `at` locates in the two rows either side of its plane, [`HOLD_MARGIN`] further out, when it lies
     /// outside the layout's section there; [`settle_all`](Self::settle_all) then widens the rows to hold what they keep.
     fn keep_located(&mut self, at: &Located) {
-        if !self.outside_layout(at) {
-            return;
-        }
         let (a, b) = (at.row, (at.row + 1).min(self.rows.len() - 1));
         let out = at.q.normalize_or_zero();
         for k in [a, b] {
@@ -307,9 +287,7 @@ impl Table {
         let row = &self.rows[k];
         let d = p - row.centre;
         let q = DVec2::new(d.dot(row.across), d.dot(row.through));
-        if level(q, (DVec2::ZERO, row.radii)) > INSIDE_LEVEL {
-            self.kept[k].push(q + q.normalize_or_zero() * HOLD_MARGIN);
-        }
+        self.kept[k].push(q + q.normalize_or_zero() * HOLD_MARGIN);
     }
 
     /// Widens every row to hold what it keeps ([`settle`](Self::settle)), then eases the widening along the region
@@ -317,6 +295,8 @@ impl Table {
     fn settle_all(&mut self) {
         for k in 0..self.rows.len() {
             if !self.kept[k].is_empty() {
+                // From the box of the row's own points, which may lie inside the layout's ellipse.
+                self.extra[k] = boxed(self.rows[k].radii, &self.kept[k]);
                 self.settle(k);
             }
         }
@@ -325,7 +305,7 @@ impl Table {
         for _ in 0..EASE_ROUNDS {
             self.ease();
             for k in 0..self.rows.len() {
-                if !self.kept[k].is_empty() || self.extra[k].iter().any(|e| *e > 0.0) {
+                if !self.kept[k].is_empty() {
                     self.settle(k);
                 }
             }
@@ -343,10 +323,12 @@ impl Table {
             along[k] = along[k - 1] + self.rows[k - 1].centre.distance(self.rows[k].centre);
         }
         for side in 0..4 {
-            let peaks: Vec<(f64, f64)> =
-                self.extra.iter().zip(&along).filter(|(e, _)| e[side] > 0.0).map(|(e, s)| (*s, e[side])).collect();
+            let peaks: Vec<(f64, f64)> = self.extra.iter().zip(&along).map(|(e, s)| (*s, e[side])).collect();
             for (extra, at) in self.extra.iter_mut().zip(&along) {
-                let eased = peaks.iter().map(|&(s, e)| e - (at - s).powi(2) / (2.0 * EASE_RADIUS)).fold(0.0, f64::max);
+                let eased = peaks
+                    .iter()
+                    .map(|&(s, e)| e - (at - s).powi(2) / (2.0 * EASE_RADIUS))
+                    .fold(f64::NEG_INFINITY, f64::max);
                 extra[side] = extra[side].max(eased);
             }
         }
@@ -359,18 +341,9 @@ impl Table {
     /// either side: the body is symmetric, and its fit stays so whichever side's points were held first.
     fn settle(&mut self, k: usize) {
         let radii = self.rows[k].radii;
-        let layout = (0..LAYOUT_SAMPLES).map(|j| {
-            let (sin, cos) = (TAU * fraction(j, LAYOUT_SAMPLES)).sin_cos();
-            DVec2::new(radii.x * cos, radii.y * sin) * (1.0 + LAYOUT_SLACK)
-        });
-        let points: Vec<DVec2> = layout.chain(self.kept[k].iter().copied()).collect();
-        // First to the points' box: the ellipse a box holds is the ring itself where the mesh's ring is an ellipse,
-        // which a junction's widening keeps it.
-        let reach = |f: fn(DVec2) -> f64, r: f64| points.iter().map(|q| f(*q) - r).fold(0.0, f64::max);
-        let e = &mut self.extra[k];
-        let boxed =
-            [reach(|q| q.x, radii.x), reach(|q| -q.x, radii.x), reach(|q| q.y, radii.y), reach(|q| -q.y, radii.y)];
-        for (e, b) in e.iter_mut().zip(boxed) {
+        let points = std::mem::take(&mut self.kept[k]);
+        let boxed = boxed(radii, &points);
+        for (e, b) in self.extra[k].iter_mut().zip(boxed) {
             *e = e.max(b);
         }
         let midline = matches!(self.region, BodyRegion::Torso | BodyRegion::Neck);
@@ -387,6 +360,7 @@ impl Table {
             // Exactly unchanged: a pass that grew nothing has settled the row.
             #[allow(clippy::float_cmp)]
             if self.extra[k] == before {
+                self.kept[k] = points;
                 return;
             }
         }
@@ -397,6 +371,7 @@ impl Table {
             let e = self.extra[k];
             self.extra[k] = [e[0] + more[0], e[1] + more[0], e[2] + more[1], e[3] + more[1]];
         }
+        self.kept[k] = points;
     }
 
     /// The published section `t` of the way along: the rows' either side, taken between them as [`locate`] takes
@@ -424,6 +399,7 @@ impl Table {
 pub struct BodyMeshFit {
     base: TemplateFit,
     tables: BTreeMap<BodyRegion, Table>,
+    caps: BTreeMap<(BodyRegion, RegionEnd), Cap>,
 }
 
 impl BodyMeshFit {
@@ -435,13 +411,16 @@ impl BodyMeshFit {
             .chain(&[BodyRegion::Neck])
             .filter_map(|&region| Table::of(base.layout(), region))
             .collect();
+        let mut caps = BTreeMap::new();
         for (region, mesh) in meshes {
-            keep_outside(&mut tables, region, mesh);
+            for (end, cap) in keep_outside(&mut tables, region, mesh) {
+                caps.insert((region, end), cap);
+            }
         }
         for table in &mut tables {
             table.settle_all();
         }
-        Self { base, tables: tables.into_iter().map(|t| (t.region, t)).collect() }
+        Self { base, tables: tables.into_iter().map(|t| (t.region, t)).collect(), caps }
     }
 
     /// The template fit under the widening.
@@ -458,24 +437,24 @@ impl BodyMeshFit {
 /// How far off an end row's plane a point may lie and still be on it, metres.
 const END_SLACK: f64 = 1e-6;
 
-/// Finds the points of the mesh of `region`, within the region's span, that lie outside the layout's sections, and
-/// gives each to the region's rows to keep: every vertex, and every point where an edge crosses a row. The edges
-/// matter even between two vertices the layout holds: where the layout's profile curves in (a waist), the mesh's
-/// straight edges between two rings stand out of it.
-fn keep_outside(tables: &mut [Table], region: BodyRegion, mesh: &MeshData) {
-    let Some(table) = tables.iter_mut().find(|t| t.region == region) else { return };
+/// Gives the mesh of `region`, within the region's span, to the region's rows to keep: every vertex, and every point
+/// where one of its edges crosses a row. The edges matter: where the layout's profile curves in (a waist), the mesh's
+/// straight edges between two rings stand out of the sections through their ends. Returns the region's caps: what of
+/// its mesh lies past each end ([`Cap`]).
+fn keep_outside(tables: &mut [Table], region: BodyRegion, mesh: &MeshData) -> Vec<(RegionEnd, Cap)> {
+    let Some(table) = tables.iter_mut().find(|t| t.region == region) else { return Vec::new() };
     let points: Vec<DVec3> = mesh.positions.iter().map(|v| v.as_dvec3()).collect();
-    // Where each vertex lies along the region, and the vertices within its span kept.
-    let along: Vec<f64> = points
-        .iter()
-        .map(|p| {
-            let at = table.locate(*p);
-            if let Some(at) = &at {
-                table.keep_located(at);
-            }
-            at.map_or_else(|| table.off_the_ends(*p), |at| fraction(at.row, 1) + at.share)
-        })
-        .collect();
+    // Where each vertex lies along the region, and which end the ones past it lie past.
+    let mut along = Vec::with_capacity(points.len());
+    let mut past = Vec::with_capacity(points.len());
+    for p in &points {
+        let at = table.locate(*p);
+        if let Some(at) = &at {
+            table.keep_located(at);
+        }
+        along.push(at.map_or_else(|| table.off_the_ends(*p), |at| fraction(at.row, 1) + at.share));
+        past.push(at.is_none().then(|| if table.rows[0].height(*p) < 0.0 { RegionEnd::Start } else { RegionEnd::End }));
+    }
     let mut edges: Vec<(usize, usize)> = mesh
         .indices
         .as_chunks::<3>()
@@ -487,11 +466,117 @@ fn keep_outside(tables: &mut [Table], region: BodyRegion, mesh: &MeshData) {
         .collect();
     edges.sort_unstable();
     edges.dedup();
-    for (i, j) in edges {
+    for &(i, j) in &edges {
         for (row, p) in crossings(table, (points[i], along[i]), (points[j], along[j])) {
             table.keep_on_row(row, p);
         }
     }
+    [RegionEnd::Start, RegionEnd::End]
+        .into_iter()
+        .filter_map(|end| {
+            let vertices: Vec<DVec3> =
+                points.iter().zip(&past).filter(|(_, e)| **e == Some(end)).map(|(p, _)| *p).collect();
+            let segments: Vec<(DVec3, DVec3)> = edges
+                .iter()
+                .filter(|(i, j)| past[*i] == Some(end) || past[*j] == Some(end))
+                .map(|&(i, j)| (points[i], points[j]))
+                .collect();
+            Cap::of(table, end, &vertices, &segments).map(|cap| (end, cap))
+        })
+        .collect()
+}
+
+/// Levels a cap is cut into, from its end's plane to its top.
+const CAP_LEVELS: usize = 16;
+
+/// The cap that closes a region past one of its ends ([`BodyFit::cap`]): its end's plane, how far the cap rises past
+/// it, and at each of [`CAP_LEVELS`] heights, the ellipse that holds every part of the cap at that height or further
+/// out.
+#[derive(Clone, Debug)]
+struct Cap {
+    row: Row,
+    /// Out of the region, past the end (unit).
+    outward: DVec3,
+    top: f64,
+    /// Per level, from the end's plane up: how far its ellipse reaches past the end row's layout ellipse.
+    extra: Vec<Reach>,
+}
+
+impl Cap {
+    /// The cap of `table` past `end`, from the `vertices` past it and the `segments` (edges) from them.
+    fn of(table: &Table, end: RegionEnd, vertices: &[DVec3], segments: &[(DVec3, DVec3)]) -> Option<Self> {
+        let row = match end {
+            RegionEnd::Start => table.rows[0],
+            RegionEnd::End => table.rows[table.rows.len() - 1],
+        };
+        let outward = match end {
+            RegionEnd::Start => -row.axis,
+            RegionEnd::End => row.axis,
+        };
+        let height = |p: DVec3| (p - row.centre).dot(outward);
+        let top = vertices.iter().map(|p| height(*p)).fold(0.0, f64::max);
+        if top <= 0.0 {
+            return None;
+        }
+        let in_plane = |p: DVec3| {
+            let d = p - row.centre;
+            let q = DVec2::new(d.dot(row.across), d.dot(row.through));
+            q + q.normalize_or_zero() * HOLD_MARGIN
+        };
+        let mut extra = Vec::with_capacity(CAP_LEVELS);
+        for level in 0..CAP_LEVELS {
+            let h = top * fraction(level, CAP_LEVELS);
+            // The vertices this high, the ends of the edges from them (the rim, on the end's plane, among them), and
+            // where edges cross this height.
+            let mut points: Vec<DVec2> = vertices.iter().filter(|p| height(**p) >= h).map(|p| in_plane(*p)).collect();
+            for &(a, b) in segments {
+                let (ha, hb) = (height(a) - h, height(b) - h);
+                points
+                    .extend([(a, ha), (b, hb)].into_iter().filter(|(_, d)| *d >= -END_SLACK).map(|(p, _)| in_plane(p)));
+                if (ha < 0.0) != (hb < 0.0) {
+                    points.push(in_plane(a.lerp(b, ha / (ha - hb))));
+                }
+            }
+            if points.is_empty() {
+                break;
+            }
+            extra.push(enclose(row.radii, &points));
+        }
+        (!extra.is_empty()).then_some(Self { row, outward, top, extra })
+    }
+
+    /// The section `height` past the end's plane, if the cap reaches that far.
+    fn section(&self, height: f64) -> Option<Section> {
+        if !(0.0..=self.top).contains(&height) {
+            return None;
+        }
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a non-negative level index
+        let level = ((height / self.top * fraction(CAP_LEVELS, 1)).floor() as usize).min(self.extra.len() - 1);
+        let (offset, radii) = ellipse(self.row.radii, self.extra[level]);
+        let centre = self.row.centre + self.outward * height + self.row.across * offset.x + self.row.through * offset.y;
+        Some(Section { centre: centre.as_vec3(), axis: self.row.axis.as_vec3(), radii: radii.as_vec2() })
+    }
+}
+
+/// The reach past the ellipse of `radii` that holds every one of `points`: from their box, grown side by side
+/// ([`hold`]) until a pass grows nothing, then scaled round its centre if that hasn't settled.
+fn enclose(radii: DVec2, points: &[DVec2]) -> Reach {
+    let mut extra = boxed(radii, points);
+    for _ in 0..SETTLE_PASSES {
+        let before = extra;
+        for q in points {
+            extra = hold(radii, extra, *q);
+        }
+        // Exactly unchanged: a pass that grew nothing has settled.
+        #[allow(clippy::float_cmp)]
+        if extra == before {
+            return extra;
+        }
+    }
+    let (offset, r) = ellipse(radii, extra);
+    let l = points.iter().map(|q| level(*q, (offset, r))).fold(1.0, f64::max);
+    let more = (r * (l - 1.0)).to_array();
+    [extra[0] + more[0], extra[1] + more[0], extra[2] + more[1], extra[3] + more[1]]
 }
 
 /// The rows of `table` whose planes the segment from `a` to `b` crosses (each end with where it lies along the table,
@@ -521,6 +606,10 @@ impl BodyFit for BodyMeshFit {
             Some(table) => Some(table.section(f64::from(t))),
             None => self.base.section(region, t),
         }
+    }
+
+    fn cap(&self, region: BodyRegion, end: RegionEnd, height: f32) -> Option<Section> {
+        self.caps.get(&(region, end))?.section(f64::from(height))
     }
 
     fn joint(&self, joint: &JointRef) -> Option<Vec3> {

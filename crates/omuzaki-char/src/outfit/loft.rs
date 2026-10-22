@@ -12,7 +12,7 @@
 use std::sync::Arc;
 
 use omuzaki_anim_api::HumanoidBone;
-use omuzaki_char_api::{BodyFit, BodyRegion, JointRef};
+use omuzaki_char_api::{BodyFit, BodyRegion, JointRef, RegionEnd, Section};
 use omuzaki_core::glam::{DVec2, DVec3, Vec3};
 
 use super::common::GarmentError;
@@ -149,7 +149,7 @@ pub fn ring_at(
         ));
     }
     let (across, through) = section_basis(region, axis.as_vec3());
-    Ok(Ring {
+    let mut ring = Ring {
         region,
         t,
         centre: section.centre.as_dvec3(),
@@ -158,7 +158,106 @@ pub fn ring_at(
         through: through.as_dvec3(),
         radii,
         exponent,
-    })
+    };
+    match region {
+        BodyRegion::Torso => {
+            for leg in [BodyRegion::LegL, BodyRegion::LegR] {
+                clear_region(fit, &mut ring, leg, offset);
+            }
+        }
+        // The pelvis's floor lies between the thighs, below the torso's first section: each leg clears its own side.
+        BodyRegion::LegL => clear_cap(fit, &mut ring, BodyRegion::Torso, RegionEnd::Start, offset, Some(1.0)),
+        BodyRegion::LegR => clear_cap(fit, &mut ring, BodyRegion::Torso, RegionEnd::Start, offset, Some(-1.0)),
+        _ => {}
+    }
+    Ok(ring)
+}
+
+/// Points taken round a neighbour's section that a ring clears.
+const CLEAR_SAMPLES: usize = 48;
+/// Bisections that find a neighbour's section through a ring's centre: far below a micrometre.
+const CLEAR_BISECTIONS: usize = 32;
+
+/// Grows `ring` until it clears, by `offset`, `neighbour` where the ring's plane cuts it: its section whose plane passes
+/// through the ring's centre, or past its ends its cap ([`BodyFit::cap`]). The thighs rise into the pelvis, so a ring
+/// round the hips goes round the tops of the thighs, and their domes, as well as the pelvis, as cloth does. A
+/// neighbour the ring's plane doesn't cut (a ring above the thighs' domes) leaves it as it is.
+fn clear_region(fit: &dyn BodyFit, ring: &mut Ring, neighbour: BodyRegion, offset: f64) {
+    #[allow(clippy::cast_possible_truncation)] // a fit is sampled in f32
+    let section = |t: f64| fit.section(neighbour, t as f32).filter(|s| s.centre.is_finite() && s.axis.is_finite());
+    let height = |t: f64| section(t).map(|s| (ring.centre - s.centre.as_dvec3()).dot(s.axis.as_dvec3()));
+    let (Some(h0), Some(h1)) = (height(0.0), height(1.0)) else { return };
+    if h0.signum() == h1.signum() {
+        // Past both ends: before the start when the ring lies behind the first section's plane.
+        let end = if h0 < 0.0 { RegionEnd::Start } else { RegionEnd::End };
+        clear_cap(fit, ring, neighbour, end, offset, None);
+        return;
+    }
+    let (mut lo, mut hi) = (0.0, 1.0);
+    for _ in 0..CLEAR_BISECTIONS {
+        let mid = f64::midpoint(lo, hi);
+        match height(mid) {
+            Some(h) if h.signum() == h0.signum() => lo = mid,
+            Some(_) => hi = mid,
+            None => return,
+        }
+    }
+    if let Some(s) = section(f64::midpoint(lo, hi)) {
+        clear_section(ring, neighbour, &s, offset, None);
+    }
+}
+
+/// Grows `ring` until it clears, by `offset`, the cap of `neighbour` past `end` where the ring's plane cuts it; with
+/// `side`, only the part of it on that side of the body's midplane (`+1` the character's left, +x).
+fn clear_cap(
+    fit: &dyn BodyFit,
+    ring: &mut Ring,
+    neighbour: BodyRegion,
+    end: RegionEnd,
+    offset: f64,
+    side: Option<f64>,
+) {
+    let t = match end {
+        RegionEnd::Start => 0.0,
+        RegionEnd::End => 1.0,
+    };
+    let Some(s) = fit.section(neighbour, t).filter(|s| s.centre.is_finite() && s.axis.is_finite()) else { return };
+    let outward = match end {
+        RegionEnd::Start => -s.axis.as_dvec3(),
+        RegionEnd::End => s.axis.as_dvec3(),
+    };
+    // The cap is cleared `offset` lower than the ring as well as round it, so the ring above its top clears it too.
+    let height = (ring.centre - s.centre.as_dvec3()).dot(outward.normalize_or_zero());
+    #[allow(clippy::cast_possible_truncation)] // a fit is sampled in f32
+    if height > 0.0
+        && let Some(cap) = fit.cap(neighbour, end, (height - offset).max(0.0) as f32)
+    {
+        clear_section(ring, neighbour, &cap, offset, side);
+    }
+}
+
+/// Grows `ring`, keeping its shape and centre, until it holds `section` of `region` with `offset` added to its radii;
+/// with `side`, only the part of the section on that side of the body's midplane.
+fn clear_section(ring: &mut Ring, region: BodyRegion, section: &Section, offset: f64, side: Option<f64>) {
+    let (across, through) = section_basis(region, section.axis);
+    let (centre, across, through) = (section.centre.as_dvec3(), across.as_dvec3(), through.as_dvec3());
+    let radii = section.radii.as_dvec2() + DVec2::splat(offset);
+    let e = ring.exponent;
+    let mut scale = 1.0_f64;
+    for k in 0..CLEAR_SAMPLES {
+        let (sin, cos) = (TAU * crate::kit::curve::fraction(k, CLEAR_SAMPLES)).sin_cos();
+        let p = centre + across * (radii.x * cos) + through * (radii.y * sin);
+        if side.is_some_and(|side| p.x * side < 0.0) {
+            continue;
+        }
+        let d = p - ring.centre;
+        let q = DVec2::new(d.dot(ring.across), d.dot(ring.through));
+        let level = ((q.x / ring.radii.x).abs().powf(e) + (q.y / ring.radii.y).abs().powf(e)).powf(1.0 / e);
+        if level.is_finite() {
+            scale = scale.max(level);
+        }
+    }
+    ring.radii *= scale;
 }
 
 // -------------------------------------------------------------------------------------------------------- weights
