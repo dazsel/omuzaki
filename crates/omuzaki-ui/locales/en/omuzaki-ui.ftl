@@ -2020,6 +2020,9 @@ ui-panels-widest-render = { $name } can read the project and render previews.
 ui-panels-widest-spend = { $name } can spend up to { $cap } on paid connectors.
 
 # The line under a setting in the Settings window, saying what it does.
+ui-setting-connectors-entries = Each connector's settings: enabled, endpoint, plan tier, command line, declared model licences
+
+# The line under a setting in the Settings window, saying what it does.
 ui-setting-input-camera = The camera the webcam source reads
 
 # The line under a setting in the Settings window, saying what it does.

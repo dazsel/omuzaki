@@ -67,8 +67,6 @@ omuzaki-stage = { path = "../omuzaki-stage" }
 omuzaki-store = { path = "../omuzaki-store" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
 omuzaki-stage-api = { path = "../omuzaki-stage-api" }
-omuzaki-store = { path = "../omuzaki-store" }
-omuzaki-store-api = { path = "../omuzaki-store-api" }
 omuzaki-stream = { path = "../omuzaki-stream" }
 omuzaki-stream-api = { path = "../omuzaki-stream-api" }
 # The studio's live inputs: the webcam from the install, the phone link and VMC out (live/wiring/app.rs).
