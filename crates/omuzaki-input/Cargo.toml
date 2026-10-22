@@ -49,8 +49,10 @@ omuzaki-embed = { path = "../omuzaki-embed" }
 criterion.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
+omuzaki-doc-api = { path = "../omuzaki-doc-api" }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 omuzaki-input = { path = ".", features = ["test-hooks"] }
+omuzaki-ops-mock = { path = "../omuzaki-ops-mock" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # XTest drives the X11 backend's test only; the crate itself never sends input (§3 rule 4).

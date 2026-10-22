@@ -58,6 +58,8 @@ pub enum CauseKind {
     Script,
     /// Replaying a log or recording.
     Replay,
+    /// A key, pad, MIDI or OSC binding the person set up (PF-05): the binding dispatcher runs its op as the person.
+    Binding,
 }
 
 /// The scopes an actor holds, plus file-path grants for [`Scope::Fs`]. A person holds `fs` but no roots, so a path

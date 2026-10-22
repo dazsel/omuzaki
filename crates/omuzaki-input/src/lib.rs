@@ -17,6 +17,7 @@
 // The crate's modules, declared from the folder by the build script (ADR 0054 §1).
 include!(concat!(env!("OUT_DIR"), "/crate_mods.rs"));
 
+pub use actions::{BindingDispatcher, BindingFailure, BindingRunner, DispatchReport, TriggerSink};
 pub use hub::{Hub, HubConfig};
 
 #[cfg(all(feature = "test-hooks", windows))]
