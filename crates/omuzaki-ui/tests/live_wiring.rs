@@ -191,10 +191,11 @@ fn fake_camera_to_scenes_at_60_hz_for_10_s_without_a_drop_storm_or_an_allocation
 
     let expected = RUN.as_secs_f64() * 60.0;
     let summary = format!(
-        "60 Hz run, {} s: perform passes that stepped {}, steps skipped {}, scenes rendered {}, scenes with a tracked \
-         face {}, allocations on the perform thread after {} s of warm-up: {}",
+        "60 Hz run, {} s: perform passes that stepped {}, steps run {}, steps skipped {}, scenes rendered {}, scenes \
+         with a tracked face {}, allocations on the perform thread after {} s of warm-up: {}",
         RUN.as_secs(),
         report.published,
+        report.stepped,
         report.skipped,
         scenes,
         tracked,
@@ -207,8 +208,9 @@ fn fake_camera_to_scenes_at_60_hz_for_10_s_without_a_drop_storm_or_an_allocation
         #[allow(clippy::disallowed_methods)]
         std::fs::write(path, &summary).expect("the report writes");
     }
-    // The perform loop kept its 60 Hz: every step ran or was counted as skipped, and skips are rare (no storm).
-    assert!((report.published + report.skipped) as f64 >= expected * 0.97, "{summary}");
+    // The perform loop kept its 60 Hz: every step ran (a late pass catches up) or was counted as skipped, and skips are
+    // rare (no storm).
+    assert!((report.stepped + report.skipped) as f64 >= expected * 0.97, "{summary}");
     assert!(report.skipped as f64 <= expected * 0.01, "{summary}");
     assert!(report.published as f64 >= expected * 0.9, "{summary}");
     // The render side drew a new scene for nearly every step it had time for: newest-wins drops only what a slow render
