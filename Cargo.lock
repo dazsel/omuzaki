@@ -5288,6 +5288,8 @@ dependencies = [
  "omuzaki-settings-mock",
  "omuzaki-stream",
  "omuzaki-stream-api",
+ "omuzaki-update-api",
+ "omuzaki-update-mock",
  "proptest",
  "schemars",
  "serde",
