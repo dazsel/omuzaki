@@ -2,7 +2,7 @@
 """Draw the build-stats charts as SVG files in charts/ from the CSVs next to this script (standard library only)."""
 import csv
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 DIR = Path(__file__).resolve().parent
@@ -34,7 +34,11 @@ def nice_max(v):
     return 10 * p
 
 
-def chart(fname, title, xs, series, kind="bars", note=""):
+def events():
+    return [(r["when_utc"], r["label"]) for r in rows("events.csv")]
+
+
+def chart(fname, title, xs, series, kind="bars", note="", keys=None):
     """xs: x labels (strings, evenly spaced); series: {name: [values]}; kind: bars (stacked), area (stacked) or line."""
     n = len(xs)
     if n == 0:
@@ -79,6 +83,20 @@ def chart(fname, title, xs, series, kind="bars", note=""):
                 o += [f'<circle cx="{X(i):.1f}" cy="{Y(vals[i]):.1f}" r="3" fill="{c}"/>' for i in range(n)]
         if stacked:
             base = [base[i] + vals[i] for i in range(n)]
+    if keys:
+        ei = -1
+        for when, label in events():
+            idx = next((i for i, k in enumerate(keys) if k[:16] >= when[:16]), None)
+            if idx is None or idx == 0:
+                continue
+            ei += 1
+            x = X(idx) - (pw / n / 2 if kind == "bars" else 0)
+            y = T + 12 + (ei % 5) * 14
+            o.append(f'<line x1="{x:.1f}" x2="{x:.1f}" y1="{T}" y2="{T + ph}" stroke="#444" stroke-dasharray="4 3"/>')
+            anchor = "end" if x > W - 170 else "start"
+            dx = -4 if anchor == "end" else 4
+            o.append(f'<text x="{x + dx:.1f}" y="{y}" text-anchor="{anchor}" font-size="11" fill="#222" '
+                     f'stroke="#fff" stroke-width="3" paint-order="stroke">{label}</text>')
     for si, name in enumerate(names):
         x = L + si * 150
         o.append(f'<rect x="{x}" y="{H - 22}" width="12" height="12" fill="{COLORS[si % len(COLORS)]}"/>'
@@ -105,7 +123,7 @@ chart("agents-at-once.svg", "Agents working at once (hourly average, UTC)",
        "local subagents": [sum(sum(hours[h][k]) / len(hours[h][k]) for k in ("opus_local", "sonnet_local", "haiku_local")) for h in hk],
        "cloud (reported)": [sum(hours[h]["cloud_reported"]) / len(hours[h]["cloud_reported"]) for h in hk],
        "cloud (estimated)": [sum(hours[h]["cloud_estimated"]) / len(hours[h]["cloud_estimated"]) for h in hk]},
-      "area", "Partial after 2026-10-21 3:36 PM PT: only agent-reported cloud time is counted")
+      "area", "Partial after 2026-10-21 3:36 PM PT: only agent-reported cloud time is counted", [h + ":00Z" for h in hk])
 
 ah = rows("agent_hours_daily.csv")
 chart("agent-hours.svg", "Agent-hours per day (Pacific)", [r["date_pt"][5:] for r in ah],
@@ -113,17 +131,19 @@ chart("agent-hours.svg", "Agent-hours per day (Pacific)", [r["date_pt"][5:] for 
        "local subagents": [num(r, "opus_local") + num(r, "sonnet_local") + num(r, "haiku_local") for r in ah],
        "cloud (reported)": [num(r, "cloud_reported") for r in ah],
        "cloud (estimated)": [num(r, "cloud_estimated") for r in ah]}, "bars",
-      "Cloud before 10-21 is estimated from commits; after 10-21 3:36 PM only reported time is counted")
+      "Cloud before 10-21 is estimated from commits; after 10-21 3:36 PM only reported time is counted",
+      [r["date_pt"] + "T07:00Z" for r in ah])
 
 lo = rows("loc_hourly.csv")
 chart("lines-of-code.svg", "Lines in the repository, by hour", [r["hour_pt"][5:13] for r in lo],
       {"Rust source": [num(r, "rust_src") for r in lo], "Rust tests and benches": [num(r, "rust_tests") for r in lo],
        "docs": [num(r, "docs") for r in lo], "tooling and CI": [num(r, "tooling") for r in lo],
-       "other": [num(r, "other") for r in lo]}, "area")
+       "other": [num(r, "other") for r in lo]}, "area",
+      keys=[datetime.fromisoformat(r["hour_pt"]).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%MZ") for r in lo])
 
 cm = rows("commits_daily.csv")
 chart("commits.svg", "Commits on main per day (Pacific)", [r["date_pt"][5:] for r in cm],
-      {"commits": [num(r, "commits") for r in cm]}, "bars")
+      {"commits": [num(r, "commits") for r in cm]}, "bars", keys=[r["date_pt"] + "T07:00Z" for r in cm])
 
 pr = defaultdict(lambda: [0, 0])
 for r in rows("prs_daily.csv"):
@@ -131,11 +151,11 @@ for r in rows("prs_daily.csv"):
     pr[r["date_pt"]][1] += num(r, "merged")
 pd = sorted(pr)
 chart("pull-requests.svg", "Pull requests per day (both repositories)", [d[5:] for d in pd],
-      {"opened": [pr[d][0] for d in pd], "merged": [pr[d][1] for d in pd]}, "line")
+      {"opened": [pr[d][0] for d in pd], "merged": [pr[d][1] for d in pd]}, "line", keys=[d + "T07:00Z" for d in pd])
 
 iss = rows("issues_daily.csv")
 chart("issues.svg", "Issues opened and closed per day", [r["date_pt"][5:] for r in iss],
-      {"opened": [num(r, "opened") for r in iss], "closed": [num(r, "closed") for r in iss]}, "line")
+      {"opened": [num(r, "opened") for r in iss], "closed": [num(r, "closed") for r in iss]}, "line", keys=[r["date_pt"] + "T07:00Z" for r in iss])
 
 ci = defaultdict(lambda: [0, 0, 0])
 for r in rows("ci_daily.csv"):
@@ -145,7 +165,7 @@ for r in rows("ci_daily.csv"):
     c[2] += num(r, "runs") - num(r, "success") - num(r, "failure")
 cd = sorted(ci)
 chart("ci-runs.svg", "CI runs per day", [d[5:] for d in cd],
-      {"success": [ci[d][0] for d in cd], "failure": [ci[d][1] for d in cd], "cancelled, skipped or other": [ci[d][2] for d in cd]}, "bars")
+      {"success": [ci[d][0] for d in cd], "failure": [ci[d][1] for d in cd], "cancelled, skipped or other": [ci[d][2] for d in cd]}, "bars", keys=[d + "T07:00Z" for d in cd])
 
 bk = rows("backlog_snapshots.csv")
 chart("backlog.svg", "Open issues and open pull requests (one point per refresh)", [r["snapshot_utc"][5:13] for r in bk],
