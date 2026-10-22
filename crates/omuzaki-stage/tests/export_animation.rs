@@ -323,3 +323,30 @@ fn a_host_without_a_builder_still_dry_runs_the_arguments_and_the_notices() {
         serde_json::from_value(json!({ "character": "nobody", "clip": "walk", "path": "walk.vrma" })).unwrap();
     assert_eq!(missing.plan(&ctx).unwrap_err().code, ErrorCode::NotFound);
 }
+
+#[test]
+fn a_path_outside_the_project_without_the_fs_grant_is_denied_before_anything_is_written() {
+    let doc = kit_project();
+    let (actor, clock) = (Actor::Person { name: "test".into() }, FakeClock::default());
+    let services = services();
+    let (dir, outside) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let project = ProjectDir::open(dir.path()).unwrap();
+    let target = outside.path().join("wave.vrma");
+    // Publish without `fs`: the project folder is open to the op, any other folder is not.
+    let grants = Grants::of([omuzaki_ops_api::Scope::Read, omuzaki_ops_api::Scope::Publish]);
+    let op: ExportAnimation =
+        serde_json::from_value(json!({ "character": "kit", "clip": "wave", "path": target.to_str().unwrap() }))
+            .unwrap();
+    let ctx = OpCtx::new(&doc, &actor, &clock).with_grants(&grants).with_project_dir(&project).with_services(&services);
+    let planned = op.plan(&ctx).unwrap_err();
+    assert_eq!(planned.code, ErrorCode::Denied, "the dry run refuses: {planned:?}");
+    let (job_doc, signal) = (Doc(&doc), Signal(CancelFlag::new()));
+    let job = JobCtx::new(JobId(1), &actor, &job_doc, &signal)
+        .with_grants(&grants)
+        .with_project_dir(&project)
+        .with_services(&services);
+    let worked = op.work(&job).unwrap_err();
+    assert_eq!(worked.code, ErrorCode::Denied, "and so does the job: {worked:?}");
+    assert!(!target.exists(), "nothing was written");
+    assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
+}
