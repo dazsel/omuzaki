@@ -23,6 +23,10 @@ use omuzaki_core::time::{FakeClock, Seconds};
 use omuzaki_doc_api::Value;
 use omuzaki_doc_mock::MemDoc;
 use omuzaki_face_api::ExpressionSet;
+use omuzaki_live::approvals::DiskApprovals;
+use omuzaki_live_api::ids::ShowId;
+use omuzaki_live_api::need::Need;
+use omuzaki_live_api::services::ShowKey;
 use omuzaki_ops::Executor;
 use omuzaki_ops_api::{Actor, Grants, Mode, Request, Runner, ServicesBuilder, find};
 use omuzaki_render_api::{AlphaEncoding, Camera, Projection, Quality, Renderer, Scene, TargetDesc};
@@ -504,6 +508,82 @@ fn request(op: &str, args: Value) -> Request {
 
 /// What `main.rs` starts: every linked op over the app's runner, the starter expressions on the triggers, a camera
 /// picked through the `input.*` ops reaching the performer's status, and the quit order.
+/// The studio runs shows: a rule made with the `show.*` and `automation.*` ops runs against the app's own runner when
+/// its event arrives (a Twitch redeem, sent here with `automation.fire`), and its action is in the op log with the
+/// rule as its cause. Twitch's service is in the app too, waiting for `twitch.connect`.
+#[test]
+fn a_show_rule_runs_its_action_through_the_studio_when_its_event_arrives() {
+    omuzaki_ui::link();
+    let mut app =
+        LiveApp::start(Box::new(tracker(30.0)), Box::new(RealClock::new()), Transparency::Fallback, HumanoidPose::REST)
+            .expect("it starts");
+    let runner = app.runner();
+    let run = |op: &str, args: Value| {
+        runner.run(request(op, args)).unwrap_or_else(|e| panic!("{op}: {}", e.message)).plan.output.unwrap_or_default()
+    };
+    let ops: Vec<String> = runner.ops().into_iter().map(|op| op.name.to_owned()).collect();
+    for op in ["show.create", "automation.start", "twitch.connect", "vts.connect"] {
+        assert!(ops.iter().any(|name| name == op), "{op} is linked into the app's runner");
+    }
+    let twitch = run("twitch.status", serde_json::json!({}));
+    assert_eq!(twitch["connected"], false, "{twitch}");
+
+    // The approvals store the studio keeps in its data folder (`start_studio` sets it; a bare `start` has none).
+    let data = tempfile::tempdir().expect("a data folder");
+    let approvals = Arc::new(DiskApprovals::new(data.path()));
+    app.automation().set_approvals(Arc::clone(&approvals) as Arc<dyn omuzaki_live_api::services::Approvals>);
+
+    run("trigger.bind", args(&[("key", Value::from("F1")), ("expression", Value::from("happy"))]));
+    run("show.create", serde_json::json!({ "id": "main", "name": "Main show" }));
+    let graph = serde_json::json!({
+        "id": "wave",
+        "graph": {
+            "graph": { "name": "Wave back" },
+            "nodes": {
+                "redeem": { "kind": "on.event", "params": { "kind": "redeem", "where": { "reward.title": "Wave" } } },
+                "smile": {
+                    "kind": "op.run",
+                    "params": { "op": "trigger.press", "args": { "key": "F1" } },
+                    "in": { "in": "redeem.fired" },
+                },
+            },
+        },
+    });
+    run("automation.add_graph", graph);
+    let started = run("automation.start", serde_json::json!({}));
+    let waiting = &started["graphs"][0]["inert"][0];
+    assert_eq!(waiting["why"]["kind"], "not_approved", "pressing a trigger waits for the person's approval: {started}");
+
+    // The person allows it on the approval card, which writes the app's approvals store (no op can) and rearms.
+    let key = ShowKey::new(String::new(), ShowId::new("main").expect("an id"));
+    approvals.allow(&key, &[Need::op("trigger.press")], &[], &Actor::Person { name: "performer".into() }).expect("ok");
+    app.automation().rearm();
+    assert!(
+        eventually(Duration::from_secs(10), || {
+            run("automation.status", serde_json::json!({}))["graphs"][0]["inert"].as_array().is_some_and(Vec::is_empty)
+        }),
+        "the rule arms once approved: {}",
+        run("automation.status", serde_json::json!({}))
+    );
+
+    let redeem = serde_json::json!({ "kind": "redeem", "payload": {
+        "platform": "twitch", "channel": { "id": "1", "name": "omuzaki" },
+        "user": { "id": "2", "login": "kiri", "name": "Kiri", "roles": [], "badges": [] },
+        "reward": { "id": "r1", "title": "Wave", "cost": 100 }, "redemption_id": "x1"
+    } });
+    run("automation.fire", redeem);
+    let pressed = || {
+        let log = runner.log(0, 200, &Grants::person()).expect("the op log");
+        log.into_iter().find(|r| r.op == "trigger.press")
+    };
+    assert!(eventually(Duration::from_secs(10), || pressed().is_some()), "the rule pressed F1");
+    let record = pressed().expect("found");
+    assert_eq!(record.args["key"], "F1");
+    assert_eq!(record.cause.map(|c| c.kind), Some(omuzaki_ops_api::CauseKind::Rule), "the rule is the cause");
+    run("automation.stop", serde_json::json!({}));
+    app.shutdown().expect("it stops in order");
+}
+
 #[test]
 fn the_app_starts_the_live_slice_with_its_ops_and_stops_it_in_order() {
     omuzaki_ui::link();

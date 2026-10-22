@@ -1,5 +1,6 @@
 //! [`LiveRig`]: the perform thread and the tracking input, started and stopped together in the documented order.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use omuzaki_ai_api::ModelRegistry;
@@ -46,6 +47,9 @@ pub struct Extras {
     /// The OS keychain, for the connectors' passwords and tokens (the app puts it in the runner's services; the rig
     /// ignores it).
     pub secrets: Option<Arc<dyn SecretStore>>,
+    /// The app's data folder, where the shows keep what this machine approved and their variables (the app uses it;
+    /// the rig ignores it).
+    pub data: Option<PathBuf>,
     /// Handed every frame the perform thread publishes (the `VTube Studio` bridge's feed).
     pub tap: Option<FrameTap>,
 }
@@ -57,6 +61,7 @@ impl std::fmt::Debug for Extras {
             .field("pose_out", &self.pose_out.is_some())
             .field("models", &self.models.is_some())
             .field("secrets", &self.secrets.is_some())
+            .field("data", &self.data)
             .field("tap", &self.tap.is_some())
             .finish()
     }
