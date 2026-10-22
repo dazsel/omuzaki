@@ -22,12 +22,13 @@ use omuzaki_ui::aux_window::{Backend, Platform, SurfaceRoute, transparency};
 use omuzaki_ui::ds::{Settings, apply_settings};
 use omuzaki_ui::live::viewport::{NativePresenter, Presenter, ViewportError, kit_stage};
 use omuzaki_ui::live::wiring::{LiveApp, LiveScene, NoTracker, RealClock};
+use omuzaki_ui::panels::agent::Agents;
 use omuzaki_ui::panels::edit::EditFocus;
 use omuzaki_ui::panels::viewport::ViewportServices;
 use omuzaki_ui::shell::persist::LayoutStore;
 use omuzaki_ui::shell::stub::NullRunner;
 use omuzaki_ui::shell::{Shell, class};
-use omuzaki_ui::wiring::{self, Document};
+use omuzaki_ui::wiring::{self, Core, Document};
 use omuzaki_ui::{studio, wiring::default_project_dir};
 
 /// The studio's command line.
@@ -132,22 +133,25 @@ fn open_document(dir: Option<&PathBuf>) -> Document {
     }
 }
 
-/// The runner the shell works through: the live slice's, or a plain one over the project when the slice did not start.
-fn runner_of(live: Option<&LiveApp>, dir: Option<&PathBuf>) -> Arc<dyn Runner> {
+/// The executor the shell works through: the live slice's, or a plain one over the project when the slice did not
+/// start; `None` when not even that could start (the shell then runs on a runner with no document).
+fn core_of(live: Option<&LiveApp>, dir: Option<&PathBuf>) -> Option<Core> {
     if let Some(live) = live {
-        return live.runner();
+        return Some(live.core());
     }
-    match wiring::runner_on(open_document(dir), omuzaki_ops_api::Services::default()) {
-        Ok(runner) => runner,
+    match wiring::core_on(open_document(dir), omuzaki_ops_api::Services::default()) {
+        Ok(core) => Some(core),
         Err(error) => {
             tracing::error!(%error, "the ops did not start: the studio has no document");
-            Arc::new(NullRunner)
+            None
         }
     }
 }
 
-/// The shell over `runner`, opened on the project's character, with the device egui draws with for the viewport.
-fn studio_shell(cc: &eframe::CreationContext<'_>, runner: Arc<dyn Runner>) -> Shell {
+/// The shell over `core`, opened on the project's character, with the device egui draws with for the viewport and
+/// the agent sessions for the Agent panel.
+fn studio_shell(cc: &eframe::CreationContext<'_>, core: Option<Core>) -> Shell {
+    let runner: Arc<dyn Runner> = core.as_ref().map_or_else(|| Arc::new(NullRunner) as _, |c| Arc::clone(&c.runner));
     let character = match studio::open_character(runner.as_ref()) {
         Ok(id) => Some(id),
         Err(error) => {
@@ -164,6 +168,9 @@ fn studio_shell(cc: &eframe::CreationContext<'_>, runner: Arc<dyn Runner>) -> Sh
         builder: Arc::new(RegistryBuilder),
         build: BuildServices::default(),
     });
+    if let Some(core) = core {
+        shell.insert_view(Agents(core.sessions));
+    }
     shell
 }
 
@@ -185,8 +192,8 @@ fn main() -> eframe::Result {
             // Applying before the first frame lets the bundled fonts activate on the second.
             apply_settings(&cc.egui_ctx, Settings::default());
             let live = start_live(cc, open_document(dir.as_ref()));
-            let runner = runner_of(live.as_ref(), dir.as_ref());
-            Ok(Box::new(App { shell: studio_shell(cc, runner), live }))
+            let core = core_of(live.as_ref(), dir.as_ref());
+            Ok(Box::new(App { shell: studio_shell(cc, core), live }))
         }),
     )
 }

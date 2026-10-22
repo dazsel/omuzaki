@@ -23,6 +23,7 @@ use egui_kittest::wgpu::WgpuTestRenderer;
 use omuzaki_char_api::{BuildServices, CharId, RegistryBuilder, paths};
 use omuzaki_doc_api::DocPath;
 use omuzaki_ops_api::{Actor, Budget, Grants, Limits, Mode, Request, Runner, Services, SessionSpec, Transport};
+use omuzaki_ui::panels::agent::Agents;
 use omuzaki_ui::panels::edit::EditFocus;
 use omuzaki_ui::panels::viewport::ViewportServices;
 use omuzaki_ui::shell::Shell;
@@ -44,10 +45,6 @@ fn you() -> Actor {
 fn core(document: Document) -> Core {
     omuzaki_ui::link();
     core_on(document, Services::default()).unwrap_or_else(|e| panic!("{e}"))
-}
-
-fn runner(document: Document) -> Arc<dyn Runner> {
-    core(document).runner
 }
 
 /// An agent connected as an MCP client is: a session the executor opens for it, working for the person.
@@ -77,10 +74,12 @@ fn gpu() -> Option<egui_wgpu::RenderState> {
     Some(state)
 }
 
-/// The studio over `runner` at `size`, as `main.rs` builds it: the project's character open, the viewport on `gpu`.
-fn studio(runner: &Arc<dyn Runner>, gpu: Option<egui_wgpu::RenderState>, size: egui::Vec2) -> Harness<'static, Studio> {
-    let character = studio::open_character(runner.as_ref()).unwrap_or_else(|e| panic!("{e}"));
-    let mut shell = Shell::new(Arc::clone(runner), None);
+/// The studio over `core` at `size`, as `main.rs` builds it: the project's character open, the viewport on `gpu`, the
+/// agent sessions in the Agent panel.
+fn studio(core: &Core, gpu: Option<egui_wgpu::RenderState>, size: egui::Vec2) -> Harness<'static, Studio> {
+    let character = studio::open_character(core.runner.as_ref()).unwrap_or_else(|e| panic!("{e}"));
+    let mut shell = Shell::new(Arc::clone(&core.runner), None);
+    shell.insert_view(Agents(Arc::clone(&core.sessions)));
     shell.insert_view(EditFocus::new(character));
     shell.insert_view(ViewportServices {
         gpu: gpu.clone(),
@@ -145,8 +144,8 @@ fn character_pixels(image: &image::RgbaImage, rect: egui::Rect) -> usize {
 #[test]
 fn the_studio_opens_on_the_kit_character_and_the_viewport_draws_it() {
     let Some(gpu) = gpu() else { return };
-    let runner = runner(Document::empty());
-    let mut h = studio(&runner, Some(gpu), vec2(1920.0, 1080.0));
+    let core = core(Document::empty());
+    let mut h = studio(&core, Some(gpu), vec2(1920.0, 1080.0));
     assert_eq!(h.state().shell.active_workspace(), Some("build"));
     for part in ["body", "head", "hair"] {
         assert!(h.query_by_label_contains(part).is_some(), "the outliner lists the {part}");
@@ -167,7 +166,7 @@ fn the_studio_opens_on_the_kit_character_and_the_viewport_draws_it() {
 fn an_agents_edit_reaches_the_studio_at_once_and_each_side_undoes_only_its_own() {
     let core = core(Document::empty());
     let runner = Arc::clone(&core.runner);
-    let mut h = studio(&runner, None, vec2(1920.0, 1080.0));
+    let mut h = studio(&core, None, vec2(1920.0, 1080.0));
     let agent = connect_agent(&core);
     let start = width(runner.as_ref());
     h.get_by_role_and_label(Role::Button, "History").click();
@@ -185,6 +184,9 @@ fn an_agents_edit_reaches_the_studio_at_once_and_each_side_undoes_only_its_own()
     h.run_steps(2);
     assert!((width(runner.as_ref()) - start * 1.1).abs() < 1e-6, "the person's undo took back only their own edit");
     assert!(h.query_by_label_contains("Undid").is_some(), "the status bar says what was undone");
+    assert!(h.query_all_by_label_contains("undone").next().is_some(), "History marks the undone step");
+    assert!(h.query_all_by_label_contains("designer").next().is_some(), "History names the agent as the actor");
+    assert!(h.query_all_by_label("You").next().is_some(), "and the person as You");
 
     // The agent undoes its own, as `history_undo` does over MCP.
     let undone = runner.undo(&agent, &Grants::agent_default()).unwrap_or_else(|e| panic!("{e}"));
@@ -197,15 +199,17 @@ fn a_project_folder_reopens_as_it_was_left() {
     let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
     let folder = dir.path().join("show");
     let edited = {
-        let runner = runner(Document::project(&folder).unwrap_or_else(|e| panic!("{e}")));
-        let _h = studio(&runner, None, vec2(1366.0, 768.0));
+        let core = core(Document::project(&folder).unwrap_or_else(|e| panic!("{e}")));
+        let runner = Arc::clone(&core.runner);
+        let _h = studio(&core, None, vec2(1366.0, 768.0));
         let edited = width(runner.as_ref()) * 0.9;
         set_width(runner.as_ref(), you(), edited);
         edited
     };
     assert!(Path::new(&folder).join("project.toml").exists(), "the folder is a project");
-    let runner = runner(Document::project(&folder).unwrap_or_else(|e| panic!("{e}")));
-    let h = studio(&runner, None, vec2(1366.0, 768.0));
+    let core = core(Document::project(&folder).unwrap_or_else(|e| panic!("{e}")));
+    let runner = Arc::clone(&core.runner);
+    let h = studio(&core, None, vec2(1366.0, 768.0));
     assert_eq!(studio::characters(runner.as_ref()).unwrap_or_else(|e| panic!("{e}")).len(), 1, "no second sample");
     assert!((width(runner.as_ref()) - edited).abs() < 1e-6, "the edit was saved");
     assert!(h.query_by_label_contains("head").is_some());
@@ -220,11 +224,43 @@ fn studio_evidence() {
         let Some(gpu) = gpu() else { panic!("the evidence needs a Vulkan adapter") };
         let core = core(Document::empty());
         let runner = Arc::clone(&core.runner);
-        let mut h = studio(&runner, Some(gpu), vec2(w, ht));
+        let mut h = studio(&core, Some(gpu), vec2(w, ht));
         set_width(runner.as_ref(), connect_agent(&core), width(runner.as_ref()) * 1.08);
         h.run_steps(4);
         let image = h.render().unwrap_or_else(|e| panic!("{e}"));
         let path = format!("{out}/studio-{w}x{ht}.png");
         image.save(&path).unwrap_or_else(|e| panic!("writing {path}: {e}"));
     }
+}
+
+#[test]
+fn the_agent_panel_shows_a_connected_agent_and_the_person_can_pause_it() {
+    let core = core(Document::empty());
+    let mut h = studio(&core, None, vec2(1920.0, 1080.0));
+    assert!(
+        h.query_all_by_label_contains("Connect an agent").next().is_some(),
+        "with no agent it says how to connect one"
+    );
+    let agent = connect_agent(&core);
+    h.run_steps(2);
+    assert!(h.query_all_by_label_contains("designer").next().is_some(), "the session is listed by its client name");
+
+    h.get_by_label("Pause").click();
+    h.run_steps(2);
+    let start = width(core.runner.as_ref());
+    let request = Request {
+        op: "part.set_param".into(),
+        args: json!({"character": studio::SAMPLE_ID, "part": "head", "path": WIDTH, "value": start * 1.1}),
+        mode: Mode::Apply,
+        actor: agent,
+        grants: Grants::agent_default(),
+        cause: None,
+        tx: None,
+        base: None,
+    };
+    assert!(core.runner.run(request).is_err(), "a paused agent's request does not run");
+    assert!((width(core.runner.as_ref()) - start).abs() < 1e-9);
+    h.get_by_label("Resume").click();
+    h.run_steps(2);
+    assert!(h.query_by_label("Pause").is_some(), "resumed, it can be paused again");
 }

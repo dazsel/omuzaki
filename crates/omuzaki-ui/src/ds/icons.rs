@@ -39,6 +39,8 @@ pub const CARET_UP: &str = egui_phosphor::regular::CARET_UP;
 pub const CARET_UP_DOWN: &str = egui_phosphor::regular::CARET_UP_DOWN;
 /// Reset to default.
 pub const ARROW_COUNTER_CLOCKWISE: &str = egui_phosphor::regular::ARROW_COUNTER_CLOCKWISE;
+/// Redo.
+pub const ARROW_CLOCKWISE: &str = egui_phosphor::regular::ARROW_CLOCKWISE;
 /// Search.
 pub const MAGNIFYING_GLASS: &str = egui_phosphor::regular::MAGNIFYING_GLASS;
 /// Pick a colour from the screen.

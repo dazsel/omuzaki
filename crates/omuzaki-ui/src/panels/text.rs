@@ -26,6 +26,35 @@ pub const VIEWPORT_EMPTY_HOW: &str = "Open a project that has a character, or cr
 pub const INSPECTOR_EMPTY: &str = "Select a part to edit it";
 /// Why it can't yet.
 pub const INSPECTOR_EMPTY_HOW: &str = "Its settings appear here once a character is open.";
+/// The Agent panel with no agent connected (`shell.md` section 13).
+pub const AGENT_NONE: &str = "Connect an agent";
+/// How.
+pub const AGENT_NONE_HOW: &str =
+    "Agents work through the same ops you do, and you approve what they ask for. Connect one over MCP to see it here.";
+/// A session's line: its state and how many steps it made.
+pub const AGENT_STATE: &str = "{state} \u{b7} {steps} steps";
+/// A session in the middle of a step.
+pub const AGENT_WORKING: &str = "Working";
+/// A session waiting for its next request.
+pub const AGENT_IDLE: &str = "Idle";
+/// A paused session.
+pub const AGENT_PAUSED: &str = "Paused";
+/// An ended session.
+pub const AGENT_ENDED: &str = "Ended";
+/// Pause a session.
+pub const AGENT_PAUSE: &str = "Pause";
+/// Resume a paused session.
+pub const AGENT_RESUME: &str = "Resume";
+/// Stop a session.
+pub const AGENT_STOP: &str = "Stop";
+/// Undo every step a session made, as one step.
+pub const AGENT_UNDO_ALL: &str = "Undo its work";
+/// An approval to run an op.
+pub const APPROVAL_RUN: &str = "Run {op}";
+/// An approval to pair a client.
+pub const APPROVAL_PAIR: &str = "Pair {client} with this studio";
+/// Any other approval.
+pub const APPROVAL_OTHER: &str = "Continue";
 /// A character with no parts.
 pub const NO_PARTS: &str = "This character has no parts yet";
 /// What to do about it.

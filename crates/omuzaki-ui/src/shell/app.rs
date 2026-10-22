@@ -339,13 +339,21 @@ impl Shell {
         if self.frame_events.iter().any(|e| matches!(e, Event::TxRolledBack { .. })) {
             return self.refresh_history();
         }
-        let applied = self.frame_events.iter().filter_map(|e| match e {
-            Event::OpApplied { record, .. } => Some(record),
-            _ => None,
-        });
         let Some(log) = self.models.get_mut::<HistoryLog>() else { return };
-        let last = log.records.last().map_or(0, |r| r.seq);
-        log.records.extend(applied.filter(|r| r.seq > last).cloned());
+        for event in &self.frame_events {
+            match event {
+                Event::OpApplied { record, .. } if log.records.last().is_none_or(|last| record.seq > last.seq) => {
+                    log.records.push(record.clone());
+                }
+                Event::Undone { tx, .. } => {
+                    log.undone.insert(*tx);
+                }
+                Event::Redone { tx, .. } => {
+                    log.undone.remove(tx);
+                }
+                _ => {}
+            }
+        }
         let over = log.records.len().saturating_sub(HISTORY_PAGE);
         log.records.drain(..over);
     }
@@ -392,9 +400,12 @@ impl Shell {
     /// Reads the op log again: after an undo or redo here, and when the runner says the log changed.
     fn refresh_history(&mut self) {
         let log = match newest_records(self.runner.as_ref(), HISTORY_PAGE) {
-            Ok(records) => HistoryLog { records, error: None },
-            Err(error) => HistoryLog { records: Vec::new(), error: Some(error.message) },
+            Ok(records) => HistoryLog { records, ..HistoryLog::default() },
+            Err(error) => HistoryLog { error: Some(error.message), ..HistoryLog::default() },
         };
+        // Which steps are undone is known only from the events, so it outlives a read of the log.
+        let undone = self.models.get_mut::<HistoryLog>().map(|old| std::mem::take(&mut old.undone));
+        let log = HistoryLog { undone: undone.unwrap_or_default(), ..log };
         self.models.insert(log);
     }
 

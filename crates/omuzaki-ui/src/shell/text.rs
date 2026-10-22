@@ -73,12 +73,15 @@ words! {
     LibraryLine = "shell-library-line" => "Parts and assets you add show up here.",
     HistoryHeadline = "shell-history-headline" => "Your changes will appear here",
     HistoryLine = "shell-history-line" => "Everything you or an agent does can be undone.",
+    HistoryUndo = "shell-history-undo" => "Undo",
+    HistoryRedo = "shell-history-redo" => "Redo",
+    HistoryUndone = "shell-history-undone" => "undone",
+    HistoryYou = "shell-history-you" => "You",
+    HistorySystem = "shell-history-system" => "Omuzaki",
     HistoryUnavailable = "shell-history-unavailable" => "History is not available: {why}",
     PanelUnavailable = "shell-panel-unavailable" => "{panel} can't work right now",
     PanelUnavailableLine = "shell-panel-unavailable-line" => "It has not said why, and works again once what it needs is there.",
     ShowPanel = "shell-show-panel" => "Show panel",
-    AgentHeadline = "shell-agent-headline" => "Connect an agent",
-    AgentLine = "shell-agent-line" => "Agents work through the same ops you do, and you approve what they ask for.",
 }
 
 /// The text of `word` with `{name}` placeholders filled from `args`, in the language the design system speaks.
