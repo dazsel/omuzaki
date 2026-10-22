@@ -15,7 +15,8 @@ use omuzaki_stream_api::window::{Backdrop as Shown, DEFAULT_TITLE, WindowState};
 use super::hotkeys::chord;
 use super::latency::LatencyMeter;
 use super::model::{
-    Backdrop, Control, HOTKEY_ROWS, LiveModel, OP_CALIBRATE, OP_SET_RETARGET, SMOOTHING_RANGE, WindowChoice,
+    Backdrop, Clicks, Control, HOTKEY_ROWS, LiveModel, OP_CALIBRATE, OP_SET_RETARGET, OP_WINDOW_SET, OPACITY_RANGE,
+    Place, SMOOTHING_RANGE, WindowChoice,
 };
 use super::text::{Word, say, text};
 use crate::ds::a11y;
@@ -72,6 +73,8 @@ pub struct LivePanel {
     moods: usize,
     /// The camera-to-output latency the render side measures.
     latency: Arc<LatencyMeter>,
+    /// The desktop opacity slider's value, in percent, while it is dragged; sent when it settles.
+    opacity: f64,
 }
 
 impl LivePanel {
@@ -89,7 +92,8 @@ impl LivePanel {
 
     /// The workspace showing `model` (the gallery story and tests).
     pub fn with_model(model: LiveModel) -> Self {
-        Self { model, refreshed: None, capturing: None, moods: HOTKEY_ROWS, latency: LatencyMeter::shared() }
+        let opacity = f64::from(model.window_choice().opacity);
+        Self { model, refreshed: None, capturing: None, moods: HOTKEY_ROWS, latency: LatencyMeter::shared(), opacity }
     }
 
     /// The model.
@@ -302,21 +306,72 @@ impl LivePanel {
                 self.model.set_window_open(runner, actor, open);
             }
             let mut choice = self.model.window_choice();
-            let (key, clear) = (text(&ctx, Word::OutputKey), text(&ctx, Word::OutputTransparent));
-            let segments = [Segment::new(Backdrop::Key, &key), Segment::new(Backdrop::Transparent, &clear)];
-            // Its two options name themselves; the whole width keeps both whole in a narrow dock.
-            let backdrop = text(&ctx, Word::OutputBackdrop);
-            let segmented =
-                Segmented::new(&backdrop, &mut choice.backdrop, &segments).id_salt("live.output.backdrop").stretch();
+            let (capture, desktop) = (text(&ctx, Word::OutputCapture), text(&ctx, Word::OutputDesktop));
+            let places = [Segment::new(Place::Capture, &capture), Segment::new(Place::Desktop, &desktop)];
+            let place = text(&ctx, Word::OutputPlace);
+            let segmented = Segmented::new(&place, &mut choice.place, &places).id_salt("live.output.place").stretch();
             ui.add(disable(segmented, missing.as_deref(), Segmented::disabled));
-            let on_top = text(&ctx, Word::OutputOnTop);
-            let toggle = Toggle::switch(&on_top, &mut choice.on_top).id_salt("live.output.on_top");
-            ui.add(disable(toggle, missing.as_deref(), Toggle::disabled));
+            if let Some(reason) = self.model.unavailable(Place::Desktop) {
+                // The host's own reason is detail for the curious; the line is the studio's words.
+                let line = RichText::new(text(&ctx, Word::OutputNoDesktop)).font(ds(&ctx).text.small.clone());
+                ui.label(line.color(ds(&ctx).theme.text2)).on_hover_text(reason);
+            }
+            match choice.place {
+                Place::Capture => Self::capture_controls(ui, &mut choice, missing.as_deref()),
+                Place::Desktop => self.desktop_controls(ui, &mut choice, missing.as_deref()),
+            }
             if choice != self.model.window_choice() {
                 self.model.set_window_choice(runner, actor, choice);
             }
             self.output_state(ui, choice);
         });
+    }
+
+    /// The capture window's backdrop and stacking.
+    fn capture_controls(ui: &mut Ui, choice: &mut WindowChoice, missing: Option<&str>) {
+        let ctx = ui.ctx().clone();
+        let (key, clear) = (text(&ctx, Word::OutputKey), text(&ctx, Word::OutputTransparent));
+        let segments = [Segment::new(Backdrop::Key, &key), Segment::new(Backdrop::Transparent, &clear)];
+        // Its two options name themselves; the whole width keeps both whole in a narrow dock.
+        let backdrop = text(&ctx, Word::OutputBackdrop);
+        let segmented =
+            Segmented::new(&backdrop, &mut choice.backdrop, &segments).id_salt("live.output.backdrop").stretch();
+        ui.add(disable(segmented, missing, Segmented::disabled));
+        let on_top = text(&ctx, Word::OutputOnTop);
+        let toggle = Toggle::switch(&on_top, &mut choice.on_top).id_salt("live.output.on_top");
+        ui.add(disable(toggle, missing, Toggle::disabled));
+    }
+
+    /// The desktop window's opacity and which clicks pass through it. The opacity is sent when the slider settles, so
+    /// a drag is one change, not one per frame.
+    fn desktop_controls(&mut self, ui: &mut Ui, choice: &mut WindowChoice, missing: Option<&str>) {
+        let ctx = ui.ctx().clone();
+        let label = text(&ctx, Word::OutputOpacity);
+        let slider = ParamSlider::new(&label, &mut self.opacity, OPACITY_RANGE)
+            .default_value(100.0)
+            .step(5.0)
+            .decimals(0)
+            .op_call(OpCall { op: OP_WINDOW_SET, target: "" })
+            .id_salt("live.output.opacity");
+        let out = match missing {
+            Some(reason) => slider.disabled(reason).show(ui),
+            None => slider.show(ui),
+        };
+        if out.events.iter().any(|event| matches!(event, ParamEvent::Commit { .. })) {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped to 10..=100 first
+            let percent = self.opacity.clamp(*OPACITY_RANGE.start(), *OPACITY_RANGE.end()).round() as u8;
+            choice.opacity = percent;
+        }
+        let (off, empty, all) =
+            (text(&ctx, Word::ClicksOff), text(&ctx, Word::ClicksEmpty), text(&ctx, Word::ClicksAll));
+        let segments =
+            [Segment::new(Clicks::Off, &off), Segment::new(Clicks::Empty, &empty), Segment::new(Clicks::All, &all)];
+        let clicks = text(&ctx, Word::OutputClicks);
+        let segmented = Segmented::new(&clicks, &mut choice.clicks, &segments).id_salt("live.output.clicks").stretch();
+        ui.add(disable(segmented, missing, Segmented::disabled));
+        if choice.clicks == Clicks::All {
+            ui.add(StatusChip::new(Status::Warn, &text(&ctx, Word::ClicksAllNote)));
+        }
     }
 
     /// What the output window is: its size and backdrop when open, where to find it when closed, and the two states a
@@ -325,18 +380,27 @@ impl LivePanel {
         let ctx = ui.ctx().clone();
         let small = ds(&ctx).text.small.clone();
         // Closed, not read yet, or a state this build doesn't know: where to find the window once it opens.
-        let Some(WindowState::Open { physical, backdrop, minimised, .. }) = self.model.window() else {
-            let hint = say(&ctx, Word::OutputHint, &[("title", DEFAULT_TITLE)]);
+        let Some(WindowState::Open { physical, backdrop, minimised, desktop, .. }) = self.model.window() else {
+            let hint = match choice.place {
+                Place::Capture => say(&ctx, Word::OutputHint, &[("title", DEFAULT_TITLE)]),
+                Place::Desktop => text(&ctx, Word::OutputDesktopHint).into_owned(),
+            };
             ui.label(RichText::new(hint).font(small));
             return;
         };
         let (width, height) = (physical.x.to_string(), physical.y.to_string());
         let size = say(&ctx, Word::OutputSize, &[("width", &width), ("height", &height)]);
-        let line = match backdrop {
-            Shown::Key(key) => say(&ctx, Word::OutputOverKey, &[("size", &size), ("key", &key.to_string())]),
-            Shown::Transparent => say(&ctx, Word::OutputOverNothing, &[("size", &size)]),
-            // A backdrop newer than this panel: the size alone.
-            _ => size,
+        let line = match (desktop, backdrop) {
+            (Some(desktop), _) => {
+                let percent = format!("{:.0}", desktop.opacity * 100.0);
+                say(&ctx, Word::OutputOnDesktop, &[("size", &size), ("opacity", &percent)])
+            }
+            (None, backdrop) => match backdrop {
+                Shown::Key(key) => say(&ctx, Word::OutputOverKey, &[("size", &size), ("key", &key.to_string())]),
+                Shown::Transparent => say(&ctx, Word::OutputOverNothing, &[("size", &size)]),
+                // A backdrop newer than this panel: the size alone.
+                _ => size,
+            },
         };
         ui.label(RichText::new(line).font(small));
         if self.model.window_fallback() && choice.backdrop == Backdrop::Transparent {

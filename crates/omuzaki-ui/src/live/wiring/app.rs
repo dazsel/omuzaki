@@ -36,7 +36,7 @@ use omuzaki_store::DiskStore;
 use omuzaki_store_api::Store;
 use omuzaki_stream::feed::ProgramFeed;
 use omuzaki_stream::service::{Program as StreamProgram, StreamService};
-use omuzaki_stream_api::window::WindowHost;
+use omuzaki_stream_api::window::{ClickThrough, WindowHost};
 use omuzaki_track_api::camera::{CameraId, CameraInfo};
 use omuzaki_track_api::error::TrackError;
 use omuzaki_track_api::tracker::{LatencyStats, Tracker, TrackerConfig};
@@ -56,6 +56,10 @@ use crate::live::hotkeys::Hotkeys;
 use crate::live::viewport::{LiveViewport, Presenter, SharedTracker, ViewportError};
 use crate::output_window::{OutputHost, OutputPlan, OutputWindow, Program};
 use crate::wiring::{self, Core, Document, ExecutorError};
+
+/// The studio's shortcut that turns a desktop character's full click-through off.
+pub const WAY_BACK: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::CTRL.plus(egui::Modifiers::ALT), egui::Key::M);
 
 /// Why the live slice did not start.
 #[derive(Debug)]
@@ -504,7 +508,22 @@ impl LiveApp {
     /// frame, after the shell has drawn: the Live panel's key capture and a focused text field take their keys from the
     /// input first, so a key that binds or types never also fires.
     pub fn keys(&mut self, ctx: &Context) {
-        self.hotkeys.dispatch(ctx, &*self.core.runner, &Actor::Person { name: "you".to_owned() });
+        let you = Actor::Person { name: "you".to_owned() };
+        self.way_back(ctx, &you);
+        self.hotkeys.dispatch(ctx, &*self.core.runner, &you);
+    }
+
+    /// The way back from a character every click passes through: [`WAY_BACK`] in the studio lets it take its own clicks
+    /// again (`output.window.set`, as the person), whatever panel is showing.
+    fn way_back(&self, ctx: &Context, you: &Actor) {
+        let through = self.output.plan().desktop.is_some_and(|d| d.click_through == ClickThrough::Full);
+        if !through || !ctx.input_mut(|i| i.consume_shortcut(&WAY_BACK)) {
+            return;
+        }
+        let args = crate::live::model::object(&[("click_through", "transparent".into())]);
+        if let Err(error) = crate::live::model::run(&*self.core.runner, you, "output.window.set", args) {
+            tracing::warn!(%error, "the character could not take its clicks back");
+        }
     }
 
     /// [`show`](Self::show) with the program frame given: for a caller that renders elsewhere (the output window's

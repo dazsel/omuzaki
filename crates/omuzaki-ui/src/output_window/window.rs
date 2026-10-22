@@ -173,11 +173,17 @@ impl OutputWindow {
             self.placement.remember(Arrangement::new(PhysicalSize::of_points(monitor, ppp), ppp), x, y);
         }
         let shown = self.shown();
+        let (opacity, drags) = (self.plan.opacity(), self.plan.drags());
         egui::CentralPanel::default().frame(egui::Frame::NONE.fill(shown.fill)).show(ui, |ui| {
             let area = ui.max_rect();
-            paint_output(ui.painter(), area, shown.fill, program);
+            let character = paint_output(ui.painter(), area, shown.fill, program, opacity);
             if self.plan.hide_cursor && ui.rect_contains_pointer(area) {
                 ctx.set_cursor_icon(CursorIcon::None);
+            }
+            // On the desktop the character is the handle: a press on it moves the window.
+            let pressed = ctx.input(|i| i.pointer.primary_pressed().then(|| i.pointer.interact_pos()).flatten());
+            if drags && pressed.is_some_and(|at| character.unwrap_or(area).contains(at)) {
+                ctx.send_viewport_cmd(ViewportCommand::StartDrag);
             }
         });
         self.presented();
@@ -203,20 +209,29 @@ fn physical_to_points(x: i32, y: i32, ppp: f32) -> Pos2 {
     Pos2::new(x as f32 / ppp, y as f32 / ppp)
 }
 
-/// Paints the output: `fill` (the key, or transparent) over `area`, and the program frame over it, fitted and
-/// centred. Nothing else, ever: no editor chrome, overlay or cursor is drawn into the output.
-pub fn paint_output(painter: &egui::Painter, area: Rect, fill: Color32, program: Option<Program>) {
+/// Paints the output: `fill` (the key, or transparent) over `area`, and the program frame over it at `opacity`
+/// (0 to 1), fitted and centred; returns where the frame went. Nothing else, ever: no editor chrome, overlay or cursor
+/// is drawn into the output.
+pub fn paint_output(
+    painter: &egui::Painter,
+    area: Rect,
+    fill: Color32,
+    program: Option<Program>,
+    opacity: f32,
+) -> Option<Rect> {
     painter.rect_filled(area, 0.0, fill);
-    let Some(program) = program else { return };
+    let program = program?;
     #[allow(clippy::cast_precision_loss)] // texture sides are far below 2^24
     let size = egui::vec2(program.size.width as f32, program.size.height as f32);
     if size.x <= 0.0 || size.y <= 0.0 {
-        return;
+        return None;
     }
     let scale = (area.width() / size.x).min(area.height() / size.y);
     let shown = Rect::from_center_size(area.center(), size * scale);
     let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
-    painter.image(program.texture, shown, uv, Color32::WHITE);
+    // The frame is premultiplied, so a white tint of this alpha fades colour and coverage together.
+    painter.image(program.texture, shown, uv, Color32::WHITE.gamma_multiply(opacity.clamp(0.0, 1.0)));
+    Some(shown)
 }
 
 #[cfg(test)]

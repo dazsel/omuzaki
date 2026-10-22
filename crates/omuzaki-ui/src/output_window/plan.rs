@@ -4,7 +4,7 @@
 //! hand it (`omuzaki_stream_api::window`): the exact size, and the settings in the form egui takes them.
 
 use egui::{Color32, ViewportBuilder, WindowLevel};
-use omuzaki_stream_api::window as contract;
+use omuzaki_stream_api::window::{self as contract, ClickThrough, DesktopSettings};
 
 use crate::aux_window::{PhysicalSize, Transparency, points_for};
 
@@ -27,7 +27,7 @@ pub enum OutputBackdrop {
 }
 
 /// The output window as the settings ask for it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct OutputPlan {
     /// The client area, exactly, in physical pixels.
     pub size: PhysicalSize,
@@ -41,6 +41,10 @@ pub struct OutputPlan {
     pub always_on_top: bool,
     /// How often the window presents, frames per second, even when it is covered.
     pub fps: u32,
+    /// The character alone on the desktop, at this opacity and click-through (`output.window.open { mode: desktop }`):
+    /// transparent, above other windows, out of the taskbar, moved by dragging the character. `None`: a window for
+    /// capture.
+    pub desktop: Option<DesktopSettings>,
 }
 
 impl Default for OutputPlan {
@@ -52,6 +56,7 @@ impl Default for OutputPlan {
             hide_cursor: true,
             always_on_top: false,
             fps: DEFAULT_FPS,
+            desktop: None,
         }
     }
 }
@@ -70,6 +75,10 @@ pub struct Shown {
 impl OutputPlan {
     /// The backdrop the window shows, given whether a transparent surface is verified here.
     pub fn shown(&self, transparency: Transparency) -> Shown {
+        if self.desktop.is_some() {
+            // The ops open the desktop only where this host lists it, which is only where transparency is verified.
+            return Shown { fill: Color32::TRANSPARENT, transparent: true, fallback: false };
+        }
         match (self.backdrop, transparency) {
             (OutputBackdrop::Key(key), _) => Shown { fill: key, transparent: false, fallback: false },
             (OutputBackdrop::Transparent { .. }, Transparency::Verified) => {
@@ -91,6 +100,14 @@ impl OutputPlan {
             .with_transparent(shown.transparent)
             .with_taskbar(true)
             .with_window_level(if self.always_on_top { WindowLevel::AlwaysOnTop } else { WindowLevel::Normal });
+        if let Some(desktop) = self.desktop {
+            // Above everything, out of the taskbar and Alt-Tab; with every click passing through, the OS hit-tests
+            // nothing in it.
+            builder = builder
+                .with_taskbar(false)
+                .with_window_level(WindowLevel::AlwaysOnTop)
+                .with_mouse_passthrough(desktop.click_through == ClickThrough::Full);
+        }
         if let Some(points) = points_for(self.size, pixels_per_point) {
             builder = builder.with_inner_size(points).with_min_inner_size(points).with_max_inner_size(points);
         }
@@ -98,6 +115,16 @@ impl OutputPlan {
             builder = builder.with_position(position);
         }
         builder
+    }
+
+    /// How opaque the character is drawn: the desktop window's opacity, else fully.
+    pub fn opacity(&self) -> f32 {
+        self.desktop.map_or(1.0, |d| d.opacity)
+    }
+
+    /// Whether a press on the character drags the window: on the desktop, unless every click passes through.
+    pub fn drags(&self) -> bool {
+        self.desktop.is_some_and(|d| d.click_through != ClickThrough::Full)
     }
 
     /// The time between presented frames.
@@ -137,6 +164,26 @@ mod tests {
         assert_eq!(fallback, Shown { fill: DEFAULT_KEY, transparent: false, fallback: true });
         assert_eq!(plan.viewport(1.0, verified, None).transparent, Some(true));
         assert_eq!(plan.viewport(1.0, fallback, None).transparent, Some(false));
+    }
+
+    #[test]
+    fn a_desktop_plan_is_transparent_on_top_out_of_the_taskbar_and_passes_clicks_only_when_asked() {
+        let desktop = DesktopSettings::new(0.6, ClickThrough::Transparent);
+        let plan = OutputPlan { desktop: Some(desktop), hide_cursor: false, ..OutputPlan::default() };
+        let shown = plan.shown(Transparency::Fallback);
+        assert!(shown.transparent && !shown.fallback, "the desktop is never a key-coloured box");
+        let viewport = plan.viewport(1.0, shown, None);
+        assert_eq!(viewport.transparent, Some(true));
+        assert_eq!(viewport.taskbar, Some(false));
+        assert_eq!(viewport.window_level, Some(WindowLevel::AlwaysOnTop));
+        assert_eq!(viewport.mouse_passthrough, Some(false), "the character takes its own clicks");
+        assert!((plan.opacity() - 0.6).abs() < f32::EPSILON && plan.drags());
+        let full = OutputPlan { desktop: Some(DesktopSettings::new(1.0, ClickThrough::Full)), ..plan };
+        assert_eq!(full.viewport(1.0, shown, None).mouse_passthrough, Some(true));
+        assert!(!full.drags(), "nothing takes a press when every click passes through");
+        let capture = OutputPlan::default();
+        assert!(!capture.drags() && capture.opacity() >= 1.0);
+        assert_eq!(capture.viewport(1.0, capture.shown(Transparency::Fallback), None).taskbar, Some(true));
     }
 
     #[test]

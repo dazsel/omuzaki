@@ -548,11 +548,12 @@ impl StagePanel {
             );
             return;
         };
-        crate::output_window::paint_output(
+        let _ = crate::output_window::paint_output(
             &ui.painter().with_clip_rect(rect),
             rect,
             egui::Color32::TRANSPARENT,
             Some(program),
+            1.0,
         );
     }
 }

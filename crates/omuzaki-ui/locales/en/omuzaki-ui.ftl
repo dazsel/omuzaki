@@ -1332,6 +1332,18 @@ ui-live-character-label = Character
 ui-live-character-section = Character
 
 # The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-clicks-all = All pass through
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-clicks-all-note = Every click passes through the character: turn it back here
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-clicks-empty = Empty pixels pass
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-clicks-off = Window takes them
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
 ui-live-drop-vrm = Drop a VRM here to import it
 
 # The Live workspace: the camera, tracking, the stage, expressions and outputs.
@@ -1456,6 +1468,21 @@ ui-live-op-failed = { $op } did not run: { $reason }
 ui-live-output-backdrop = Backdrop
 
 # The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-output-capture = For capture
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-output-clicks = Clicks
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-output-desktop = On the desktop
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-output-desktop-hint = Drag the character to move it
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-output-desktop-unverified = Showing the character on the desktop needs a transparent window, which hasn't been verified on this system; a window for capture works
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
 ui-live-output-fallback = fallback: key colour, no transparent surface here
 
 # The Live workspace: the camera, tracking, the stage, expressions and outputs.
@@ -1469,7 +1496,18 @@ ui-live-output-key = Key colour
 ui-live-output-minimised = Minimised: it can't be captured
 
 # The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-output-no-desktop = This computer can't show the character on the desktop yet
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+# $size (id, never translated): "hair-b"
+# $opacity (id, never translated): "hair-b"
+ui-live-output-on-desktop = { $size } on the desktop at { $opacity }%
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
 ui-live-output-on-top = Keep on top
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-output-opacity = Opacity
 
 # The Live workspace: the camera, tracking, the stage, expressions and outputs.
 # $size (id, never translated): "hair-b"
@@ -1479,6 +1517,9 @@ ui-live-output-over-key = { $size } over { $key }
 # The Live workspace: the camera, tracking, the stage, expressions and outputs.
 # $size (id, never translated): "hair-b"
 ui-live-output-over-nothing = { $size }, transparent
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-output-place = Show the character
 
 # The Live workspace: the camera, tracking, the stage, expressions and outputs.
 ui-live-output-section = Output
