@@ -11,8 +11,10 @@ use omuzaki_render_api::{Outline, Rim, Shading, Toon};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::shell::Tones;
-use crate::outfit::common::{FabricStyle, GarmentCommon};
+use super::shell::{Frame, Tones};
+use super::trims::{self, FrontBand};
+use crate::kit::grid::MeshBuilder;
+use crate::outfit::common::{FabricStyle, GarmentCommon, GarmentOutput, fabric_tile};
 use crate::outfit::trim::Finish;
 
 /// The cloth's terminator shift and softness.
@@ -115,4 +117,51 @@ pub fn metal(ctx: &BuildCtx<'_>, finish: &Finish, line: Colour) -> Result<(Mater
     };
     spec.outline = Some(Outline { colour: line, width: METAL_LINE });
     Ok((spec, class))
+}
+
+/// Adds a band `width` wide along both front edges of an open front (`<part>-band`), from the hem or from height
+/// `from` up, in its own material: `fabric`
+/// painted with the band's width as the repeat, laid with its length along the band (`<part>-band` texture), or plain.
+///
+/// # Errors
+/// [`BuildError::Part`] for a pattern that paints nothing or a mesh the kit refuses; [`BuildError::Colour`].
+pub fn front_band(
+    ctx: &BuildCtx<'_>,
+    out: &mut GarmentOutput,
+    frame: &Frame,
+    (width, from): (f64, Option<f64>),
+    fabric: &FabricStyle,
+    colours: &CoatColours,
+    tones: &Tones,
+) -> Result<(), BuildError> {
+    let fabric = with_period(fabric, width);
+    let tile = fabric_tile(&fabric, 1, |c| ctx.colour(c), |m| ctx.fail(m))?;
+    let mut spec = cloth(ctx, colours, false)?;
+    let (top, textured) = match (&fabric, tile) {
+        (FabricStyle::Plain { colour }, _) => (ctx.colour(colour)?.to_linear().to_array(), false),
+        (_, Some(tile)) => {
+            let data = tile.paint(|size, rect, list, desc| ctx.paint_texture(size, rect, list, desc))?;
+            spec.base_texture = Some(out.texture(ctx, "band", data)?);
+            ([1.0; 3], true)
+        }
+        (_, None) => return Err(ctx.fail("the band's pattern painted no tile")),
+    };
+    let band = FrontBand { width, colours: (top, tones.lining, tones.edge), textured, from };
+    let mut mesh = MeshBuilder::with_colours();
+    trims::front_band(&mut mesh, frame, &band).map_err(|e| ctx.fail(e.to_string()))?;
+    let material = out.material(ctx, "band", spec)?;
+    out.mesh(ctx, "band", mesh, material)
+}
+
+/// `fabric` with its repeat set to `period` (a band's pattern repeats once per width along it).
+fn with_period(fabric: &FabricStyle, period: f64) -> FabricStyle {
+    let mut fabric = fabric.clone();
+    match &mut fabric {
+        FabricStyle::Interlace { period: p, .. } | FabricStyle::Damask { period: p, .. } => *p = period,
+        FabricStyle::Plain { .. }
+        | FabricStyle::Weave { .. }
+        | FabricStyle::Stripes { .. }
+        | FabricStyle::Plaid { .. } => {}
+    }
+    fabric
 }

@@ -34,6 +34,20 @@ pub struct SleeveCut {
     pub cuff: f64,
     /// A knitted rib cuff's length up the arm from the sleeve's end, metres; 0 for none.
     pub rib: f64,
+    /// A pouch hanging from the sleeve's underside (a kimono's), if any.
+    pub pouch: Option<Pouch>,
+}
+
+/// A pouch of cloth hanging from a sleeve's underside, from part way down the arm to its end, its far bottom corner
+/// rounded (a kimono's sleeve).
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Pouch {
+    /// Where along the sleeve it starts, as a fraction from the shoulder (0) to the sleeve's end (1).
+    pub from: f64,
+    /// How far it hangs below the sleeve, as a fraction of the sleeve's length.
+    pub drop: f64,
+    /// Its far bottom corner's radius, as a fraction of the drop.
+    pub corner: f64,
 }
 
 /// Both sleeves in one mesh, left then right.
@@ -110,6 +124,9 @@ pub fn build(frame: &Frame, cut: &SleeveCut, tones: &Tones, tile: Option<f64>) -
     if cut.rib > 0.0 {
         rib_cuff(&mut side, &left, cut.rib, frame.cut.thickness, tones)?;
     }
+    if let Some(pouch) = &cut.pouch {
+        hang_pouch(&mut side, &left, pouch, frame, tones, tile)?;
+    }
     let mut mesh = side.clone();
     let offset = side.vertex_count();
     mesh.merge(&side.mirrored())?;
@@ -178,6 +195,105 @@ fn rib_cuff(
             ribs: RIB_RIBS,
         },
     )
+}
+
+/// Rows down a pouch.
+const POUCH_ROWS: usize = 10;
+/// How far a pouch keeps off the coat's outside, metres, beyond its rolled edges.
+const POUCH_MARGIN: f64 = 0.004;
+/// How far under the sleeve a pouch's top edge lies, metres.
+const POUCH_UNDER: f64 = 0.001;
+
+/// Adds `pouch` to `side`, under the left sleeve `left` (whose outside is the first sheet of `side`): a lined
+/// [`patch`](super::edge::patch) hanging straight down from the lowest point of each of the sleeve's rings, skinned
+/// as that point is, kept clear of the coat's outside (and so of the body). Two open borders, under its roll.
+///
+/// # Errors
+/// [`GarmentError::Invalid`] for a pouch along fewer than two of the sleeve's rings; the kit's.
+#[allow(clippy::many_single_char_names)] // the grid's textbook names
+fn hang_pouch(
+    side: &mut MeshBuilder,
+    left: &sleeve::Sleeve,
+    pouch: &Pouch,
+    frame: &Frame,
+    tones: &Tones,
+    tile: Option<f64>,
+) -> Result<(), GarmentError> {
+    let cols = SEGMENTS + 1;
+    let positions: Vec<DVec3> = side.mesh().positions[..left.rows * cols].iter().map(|p| p.as_dvec3()).collect();
+    let skins = skins_of(side, 0..left.rows * cols);
+    let along = |p: DVec3| (p - left.wrist).dot(left.forearm);
+    // The lowest point of each ring, and its index.
+    let lowest: Vec<usize> = (0..left.rows)
+        .map(|r| {
+            (r * cols..r * cols + SEGMENTS)
+                .min_by(|a, b| positions[*a].y.total_cmp(&positions[*b].y))
+                .unwrap_or(r * cols)
+        })
+        .collect();
+    let first = along(positions[lowest[0]]);
+    let last = along(positions[lowest[left.rows - 1]]);
+    let length = (last - first).abs();
+    let start = first + (last - first) * pouch.from.clamp(0.0, 1.0);
+    let ring: Vec<usize> =
+        lowest.iter().copied().filter(|k| (along(positions[*k]) - start) * (last - first).signum() >= 0.0).collect();
+    if ring.len() < 2 {
+        return Err(GarmentError::invalid("pouch", format!("{} of the sleeve's rings under it: need two", ring.len())));
+    }
+    let drop = pouch.drop * length;
+    let radius = pouch.corner.clamp(0.0, 1.0) * drop;
+    // Its plane holds the forearm's line across and the vertical: its normal faces the front.
+    let across = DVec3::new(left.forearm.x, 0.0, left.forearm.z).try_normalize().unwrap_or(DVec3::X);
+    let normal = {
+        let n = across.cross(DVec3::Y);
+        if n.z < 0.0 { -n } else { n }
+    };
+    let need = frame.cut.thickness + frame.cut.lip + POUCH_MARGIN;
+    let (mut points, mut normals, mut patch_skins, mut uvs) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for &k in &ring {
+        let top = positions[k] - DVec3::Y * POUCH_UNDER;
+        // How far short of the far end it is, metres: the corner rounds off the last `radius` of it.
+        let short = (along(positions[ring[ring.len() - 1]]) - along(positions[k])).abs();
+        let s = ((radius - short) / radius.max(1e-9)).clamp(0.0, 1.0);
+        let reach = drop - radius * (1.0 - (1.0 - s * s).sqrt());
+        for j in 0..POUCH_ROWS {
+            let t = fraction(j, POUCH_ROWS - 1);
+            let p = clear_of_coat(frame, top - DVec3::Y * reach * t, need);
+            points.push(p);
+            normals.push(normal);
+            patch_skins.push(skins[k].clone());
+            if let Some(tile) = tile {
+                let a = (along(positions[k]) - along(positions[ring[0]])).abs();
+                uvs.push(DVec2::new(a / tile, reach * t / tile));
+            }
+        }
+    }
+    let piece = super::edge::Patch {
+        rows: ring.len(),
+        cols: POUCH_ROWS,
+        points,
+        normals,
+        skins: patch_skins,
+        thickness: frame.cut.thickness,
+        colours: (tones.outer, tones.lining),
+        edge: tones.edge,
+        uvs: tile.map(|_| uvs),
+    };
+    super::edge::patch(side, &piece)
+}
+
+/// `p` moved out from the coat's axis until it stands `need` outside the lining, where the coat reaches its height.
+fn clear_of_coat(frame: &Frame, p: DVec3, need: f64) -> DVec3 {
+    if !(frame.hem..=frame.top).contains(&p.y) {
+        return p;
+    }
+    let Ok(ring) = frame.ring(p.y) else { return p };
+    let d = p - ring.centre;
+    let q = DVec2::new(d.dot(ring.across), d.dot(ring.through));
+    let (_, outside) = ring.along_ray(q);
+    let Some(dir) = q.try_normalize().filter(|_| outside < need) else { return p };
+    let moved = dir * (need - outside);
+    p + ring.across * moved.x + ring.through * moved.y
 }
 
 /// How far `p` is inside the bodice's outside (the cloth's ease and thickness over the torso), metres: negative outside

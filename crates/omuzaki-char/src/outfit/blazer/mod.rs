@@ -237,6 +237,7 @@ impl BlazerParams {
             shape: SleeveShape { flare: 0.004, past: 0.0, lining: 1.0 },
             cuff: 0.0016,
             rib: 0.0,
+            pouch: None,
         }
     }
 }

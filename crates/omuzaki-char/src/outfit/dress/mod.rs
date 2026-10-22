@@ -81,6 +81,7 @@ impl DressSleeves {
             shape: SleeveShape::default(),
             cuff: 0.0012,
             rib: 0.0,
+            pouch: None,
         };
         match self {
             Self::Straps => None,

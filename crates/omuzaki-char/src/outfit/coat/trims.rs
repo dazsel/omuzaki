@@ -367,6 +367,8 @@ pub struct FrontBand {
     pub colours: ([f32; 3], [f32; 3], [f32; 3]),
     /// Whether to give it texture coordinates: along it in widths, across it 0 to 1.
     pub textured: bool,
+    /// The height it starts from, metres, if above the hem (a collar that ends at a sash).
+    pub from: Option<f64>,
 }
 
 /// The rows of a front band are about this far apart, metres.
@@ -381,6 +383,7 @@ const BAND_ROW: f64 = 0.008;
 pub fn front_band(mesh: &mut MeshBuilder, frame: &Frame, band: &FrontBand) -> Result<usize, GarmentError> {
     let Front::Open { .. } = frame.cut.front else { return Ok(0) };
     let (from, to) = (frame.hem_at(frame.edge(frame.hem)) + 0.003, frame.top - 0.003);
+    let from = band.from.map_or(from, |f| f.clamp(from, to - 2.0 * BAND_ROW));
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a small row count
     let rows = (((to - from) / BAND_ROW).ceil() as usize).clamp(8, 240);
     let cols = 4;
@@ -543,6 +546,74 @@ pub fn drawstrings(
         }
     }
     Ok(())
+}
+
+/// How far inside an open front's edge an under-collar tucks under the edge's roll, metres.
+const UNDER_TUCK: f64 = 0.002;
+/// How far apart an under-collar's two strips stay at the bottom of the V, radians.
+const UNDER_GAP: f64 = 0.03;
+/// An under-collar's least width, metres, where the V is narrow.
+const UNDER_LEAST: f64 = 0.002;
+/// The step an under-collar's start is found by, metres.
+const UNDER_STEP: f64 = 0.002;
+
+/// Adds an under-robe's collar showing inside an open front's V to `mesh`: a strip along each edge, just inside it at
+/// the lining's level and tucked under the edge's roll, `width` wide where the V has room for both strips (narrower
+/// where it hasn't), from where the V opens up to the collar line. Its colours are the top's, the underside's and the
+/// roll's (linear RGB). Returns the open borders it added (two a side); none for a closed front.
+///
+/// # Errors
+/// The kit's.
+#[allow(clippy::many_single_char_names)] // the grid's textbook names
+pub fn under_collar(
+    mesh: &mut MeshBuilder,
+    frame: &Frame,
+    width: f64,
+    colours: ([f32; 3], [f32; 3], [f32; 3]),
+) -> Result<usize, GarmentError> {
+    let Front::Open { .. } = frame.cut.front else { return Ok(0) };
+    let to = frame.top - 0.003;
+    // The strip's width at `y`: what the V leaves either side of the centre, at most `width`.
+    let room = |y: f64| ((frame.edge(y) - UNDER_GAP) * radius(frame, y) - UNDER_TUCK).min(width);
+    let mut from = to;
+    while from - UNDER_STEP > frame.waist() && room(from - UNDER_STEP) >= UNDER_LEAST {
+        from -= UNDER_STEP;
+    }
+    let from = from.min(to - 4.0 * BAND_ROW);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a small row count
+    let rows = (((to - from) / BAND_ROW).ceil() as usize).clamp(4, 120);
+    let cols = 4;
+    let lift = STANDOFF - frame.cut.thickness;
+    for side in [1.0, -1.0] {
+        let (mut points, mut normals, mut skins) = (Vec::new(), Vec::new(), Vec::new());
+        for i in 0..rows {
+            let y = lerp(from, to, fraction(i, rows - 1));
+            let r = radius(frame, y);
+            let edge = frame.edge(y) - UNDER_TUCK / r;
+            let w = room(y).max(UNDER_LEAST);
+            for j in 0..cols {
+                let phi = edge - (1.0 - fraction(j, cols - 1)) * w / r;
+                let phi = if side > 0.0 { phi } else { TAU - phi };
+                let (p, n, skin) = frame.on(y, phi, lift)?;
+                points.push(p);
+                normals.push(n);
+                skins.push(skin);
+            }
+        }
+        let piece = Patch {
+            rows,
+            cols,
+            points,
+            normals,
+            skins,
+            thickness: frame.cut.thickness * 0.5,
+            colours: (colours.0, colours.1),
+            edge: colours.2,
+            uvs: None,
+        };
+        patch(mesh, &piece)?;
+    }
+    Ok(4)
 }
 
 /// How far `p` stands outside the body under the coat (the column at no offset), metres, in its height's plane.

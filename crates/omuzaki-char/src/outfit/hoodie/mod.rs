@@ -162,6 +162,7 @@ impl HoodieParams {
             // A rolled cuff only where there is no rib.
             cuff: if self.ribbing.cuffs > 0.0 { 0.0 } else { 0.0016 },
             rib: self.ribbing.cuffs,
+            pouch: None,
         }
     }
 }

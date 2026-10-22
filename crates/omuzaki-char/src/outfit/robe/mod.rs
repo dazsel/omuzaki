@@ -15,11 +15,9 @@ use super::coat::hang::{Arms, Fall};
 use super::coat::look::{self, CoatColours};
 use super::coat::shell::{self, Frame};
 use super::coat::sleeves::{self, SleeveCut};
-use super::coat::trims::{self, Clasps, FrontBand};
+use super::coat::trims::{self, Clasps};
 use super::coat::{CoatCut, Front, MAX_LENGTH, MIN_LENGTH, NeckShape, Neckline};
-use super::common::{
-    FabricStyle, Garment, GarmentCommon, GarmentError, GarmentOutput, LAYER_OUTER, MAX_EASE, fabric_tile,
-};
+use super::common::{FabricStyle, Garment, GarmentCommon, GarmentError, GarmentOutput, LAYER_OUTER, MAX_EASE};
 use super::hood::{self, Hood};
 use super::shirt::sleeve::SleeveShape;
 use super::trim::{Finish, MetalStyle};
@@ -221,6 +219,7 @@ impl RobeParams {
             shape: SleeveShape { flare: s.bell, past: s.past, lining: 1.0 },
             cuff: s.cuff,
             rib: 0.0,
+            pouch: None,
         }
     }
 }
@@ -256,7 +255,7 @@ impl PartKind for Robe {
         let tones = look::tones(ctx, &p.common, &p.colours)?;
         let shell = shell::build(&frame, &tones, out.tile()).map_err(fail)?;
         if p.band.width > 0.0 {
-            add_band(ctx, &mut out, &frame, p, &tones)?;
+            look::front_band(ctx, &mut out, &frame, (p.band.width, None), &p.band.fabric, &p.colours, &tones)?;
         }
         if let Some(hood) = hood::build(ctx, &frame, &p.hood, &tones)? {
             out.surface(ctx, "hood", hood)?;
@@ -272,46 +271,6 @@ impl PartKind for Robe {
         let sleeves = sleeves::build(&frame, &p.sleeve(), &tones, out.tile()).map_err(fail)?;
         super::coat::finish(ctx, out, &p.common, &p.colours, &frame, shell, Some(sleeves), &Self::regions(p))
     }
-}
-
-/// The band along the front edges, in its own material: its fabric painted with the band's width as the repeat.
-fn add_band(
-    ctx: &BuildCtx<'_>,
-    out: &mut GarmentOutput,
-    frame: &Frame,
-    p: &RobeParams,
-    tones: &shell::Tones,
-) -> Result<(), BuildError> {
-    let fabric = with_period(&p.band.fabric, p.band.width);
-    let tile = fabric_tile(&fabric, 1, |c| ctx.colour(c), |m| ctx.fail(m))?;
-    let mut spec = look::cloth(ctx, &p.colours, false)?;
-    let (top, textured) = match (&fabric, tile) {
-        (FabricStyle::Plain { colour }, _) => (ctx.colour(colour)?.to_linear().to_array(), false),
-        (_, Some(tile)) => {
-            let data = tile.paint(|size, rect, list, desc| ctx.paint_texture(size, rect, list, desc))?;
-            spec.base_texture = Some(out.texture(ctx, "band", data)?);
-            ([1.0; 3], true)
-        }
-        (_, None) => return Err(ctx.fail("the band's pattern painted no tile")),
-    };
-    let band = FrontBand { width: p.band.width, colours: (top, tones.lining, tones.edge), textured };
-    let mut mesh = MeshBuilder::with_colours();
-    trims::front_band(&mut mesh, frame, &band).map_err(|e| ctx.fail(e.to_string()))?;
-    let material = out.material(ctx, "band", spec)?;
-    out.mesh(ctx, "band", mesh, material)
-}
-
-/// `fabric` with its repeat set to `period` (a band's pattern repeats once per width along it).
-fn with_period(fabric: &FabricStyle, period: f64) -> FabricStyle {
-    let mut fabric = fabric.clone();
-    match &mut fabric {
-        FabricStyle::Interlace { period: p, .. } | FabricStyle::Damask { period: p, .. } => *p = period,
-        FabricStyle::Plain { .. }
-        | FabricStyle::Weave { .. }
-        | FabricStyle::Stripes { .. }
-        | FabricStyle::Plaid { .. } => {}
-    }
-    fabric
 }
 
 impl Garment for Robe {
