@@ -172,6 +172,11 @@ chart("backlog.svg", "Open issues and open pull requests (one point per refresh)
       {"open issues": [num(r, "open_issues") for r in bk], "open PRs": [num(r, "open_prs") for r in bk]}, "line")
 
 
+cu = rows("cloud_usage_snapshots.csv")
+chart("cloud-tokens.svg", "Cloud project tokens, cumulative (one point per refresh)", [r["snapshot_utc"][5:13] for r in cu],
+      {"output": [num(r, "output_tokens") for r in cu], "input": [num(r, "input_tokens") for r in cu]}, "line",
+      "Cache-read and cache-write tokens are in cloud_usage_snapshots.csv", keys=[r["snapshot_utc"] for r in cu])
+
 
 # ---- index.html: one self-contained page with the headline numbers, the charts and the story ---------------------
 import html
@@ -184,7 +189,7 @@ cards = [("Agent-hours", f'{s["agent_hours_total"]:,.0f}'), ("Most agents at onc
          ("Pull requests", f'{pr_["this_repo_opened"] + pr_["earlier_repo_opened"]:,}'),
          ("Issues opened", f'{iss_["opened"]:,}'), ("CI runs", f'{s["ci_runs"]:,}')]
 titles = {"agents-at-once": "Agents at once", "agent-hours": "Agent-hours per day", "lines-of-code": "Lines of code",
-          "commits": "Commits", "pull-requests": "Pull requests", "issues": "Issues", "backlog": "Backlog",
+          "commits": "Commits", "pull-requests": "Pull requests", "issues": "Issues", "backlog": "Backlog", "cloud-tokens": "Cloud tokens",
           "ci-runs": "CI runs"}
 figs = "".join(f'<figure>{(OUT / (k + ".svg")).read_text()}</figure>' for k in titles if (OUT / (k + ".svg")).exists())
 story = html.escape((DIR / "README.md").read_text().split("## Timeline", 1)[1].split("## The files", 1)[0].strip())

@@ -40,6 +40,7 @@ Drawn by `charts.py` (standard library only) from the CSVs; `refresh.py` redraws
 ![Issues opened and closed](charts/issues.svg)
 ![Open issues and pull requests](charts/backlog.svg)
 ![CI runs per day](charts/ci-runs.svg)
+![Cloud project tokens](charts/cloud-tokens.svg)
 
 ## Timeline
 
@@ -71,6 +72,7 @@ Drawn by `charts.py` (standard library only) from the CSVs; `refresh.py` redraws
 | `ci_daily.csv` | CI runs per day and workflow: result counts and wall-clock minutes (start to last update, not billed minutes); the earlier repository's runs are one "all" row a day | this repository 2026-10-22 4:11 PM PT; the earlier one 2026-10-18 8:22 AM PT |
 | `backlog_snapshots.csv` | Open issues and open pull requests at each refresh (one row per run) | each row's own time |
 | `events.csv` | The milestones drawn as dashed lines on the charts (the first commit, the move to this repository, the peak, the pause, the switch to spine-first work) | kept by hand; add a row when something changes how the work runs |
+| `cloud_usage_snapshots.csv` | Sessions in the cloud project and their token totals (input, output, cache read and write) at each refresh; totals only, no cost and no per-session detail | each row's own time |
 | `reviews_daily.csv` | Code reviews per day by reviewer, model and verdict, with blocking findings | **2026-10-17 6:21 PM PT**; the reviews from then until the review gate ended on 10-21 are missing |
 
 ## Coverage: what is measured and what is estimated
@@ -97,4 +99,4 @@ Drawn by `charts.py` (standard library only) from the CSVs; `refresh.py` redraws
 ## Not included
 
 Anything that isn't an aggregate count of work: conversation content, task descriptions, agent and session ids, branch
-names and titles from the earlier repository, token counts and spend, and anything about the machines the work ran on.
+names and titles from the earlier repository, spend and dollar cost, per-session token detail, and anything about the machines the work ran on.
