@@ -1,0 +1,34 @@
+[package]
+name = "omuzaki-theatre"
+description = "The Build Theatre's book (spec v3 §13): each agent's plan, the steps as cards with their cause, rationale and gate failures, the person's notes for the agents and the pause modes, with the theatre.* ops."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-doc-api = { path = "../omuzaki-doc-api" }
+omuzaki-ops-api = { path = "../omuzaki-ops-api" }
+
+[dev-dependencies]
+tempfile.workspace = true
+omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
+omuzaki-ops = { path = "../omuzaki-ops" }
+
+[lints]
+workspace = true
+
+# Native only: the watcher runs on a thread of its own and the book is saved to a file.
+[package.metadata.omuzaki]
+kind = "Implementation"
+summary = "the Build Theatre's book (spec v3 §13): `TheatreBook`, the service holding each agent's plan (`Plan`, `PlanItem`, `ItemStatus`), the steps as cards (`Step`, with cause, duration, rationale and `GateFailure`), the person's notes (`Note`, with region, part, camera and picture) and the `PauseMode`s, kept beside the project in `.omuzaki/theatre.json`; its watcher turns the runner's events into steps and pauses agents as their mode says; the ops `theatre.plan`, `theatre.item`, `theatre.explain`, `theatre.gate`, `theatre.direct`, `theatre.notes`, `theatre.take`, `theatre.status`, `theatre.pause_mode` and `theatre.reference`"
+wasm = false
+# The theatre.* ops register themselves (ADR 0015, `cargo xtask lint-registers`).
+registers = true

@@ -5903,6 +5903,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-theatre"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-doc-mock",
+ "omuzaki-ops",
+ "omuzaki-ops-api",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "omuzaki-track"
 version = "0.0.0"
 dependencies = [
