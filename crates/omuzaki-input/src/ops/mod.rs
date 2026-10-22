@@ -54,12 +54,18 @@ fn error(error: &InputError) -> OpError {
 
 /// Refuses an action whose op the caller could not run itself: a binding must never let an actor make the person's
 /// key press run an op beyond the actor's own grants (design §5). An op action must also name a registered op and
-/// carry arguments it decodes.
+/// carry arguments it decodes; a held op must also take a `down` argument.
 fn check_action(ctx: &OpCtx<'_>, field: &str, action: &BindingAction) -> Result<(), OpError> {
-    let BindingAction::Op { op, args, .. } = action else { return Ok(()) };
+    let Some((op, args)) = action.op_call() else { return Ok(()) };
     let registration = find(op)
         .ok_or_else(|| OpError::invalid(field, format!("no op is named {op:?}")).hint("list the ops with tools/list"))?;
-    (registration.decode)(args.clone()).map_err(|e| OpError::invalid(field, format!("{op}: {}", e.message)))?;
+    let held = matches!(action, BindingAction::Hold { .. });
+    if held && (registration.schema)().get("properties").and_then(|p| p.get("down")).is_none() {
+        return Err(OpError::invalid(field, format!("{op} takes no `down` argument, so it cannot be held"))
+            .hint("bind it as an op that runs on the press"));
+    }
+    let args = if held { crate::actions::with_down(args.clone(), true) } else { args.clone() };
+    (registration.decode)(args).map_err(|e| OpError::invalid(field, format!("{op}: {}", e.message)))?;
     let scope = (registration.meta)().scope;
     if ctx.allows(scope) && ctx.allows(Scope::Read) {
         Ok(())

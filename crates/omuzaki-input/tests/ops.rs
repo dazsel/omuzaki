@@ -217,6 +217,15 @@ fn a_binding_can_run_only_an_op_its_setter_could_run() {
     let refused = run("input.binding.set_action", unknown, &person(), ALL, &services).unwrap_err();
     assert_eq!((refused.code, refused.field.as_deref()), (ErrorCode::Invalid, Some("action")));
 
+    // A held op must take `down`: protect does not, the test's show op does.
+    let held = json!({ "id": id, "action": { "hold": { "op": "input.capture.protect", "args": { "programs": [] } } } });
+    let refused = run("input.binding.set_action", held, &person(), ALL, &services).unwrap_err();
+    assert_eq!((refused.code, refused.field.as_deref()), (ErrorCode::Invalid, Some("action")));
+    assert!(refused.message.contains("cannot be held"), "{refused:?}");
+    let held = json!({ "id": id, "action": { "hold": { "op": "opstest.show", "args": { "name": "smile" } } } });
+    run("input.binding.set_action", held, &person(), ALL, &services).unwrap();
+    assert_eq!(rig.control.bindings()[0].action, BindingAction::hold("opstest.show", json!({ "name": "smile" })));
+
     let by_agent = json!({ "id": id, "action": { "trigger": 2 } });
     assert!(needs_person(&run("input.binding.set_action", by_agent.clone(), &agent(), ALL, &services).unwrap_err()));
     run_with("input.binding.set_action", by_agent, &agent(), ALL, &services, Some(&person())).unwrap();
@@ -313,3 +322,28 @@ fn a_typed_string_never_reaches_an_op_s_answer() {
     assert!(!leaks(&format!("{text}[11, 24, 17, 23, 8, 21, 31]"), typed, &usages).is_empty());
     assert!(!leaks(&format!("{text}0x0b"), typed, &usages).is_empty());
 }
+
+/// Shows an expression while `down`: a stand-in for `trigger.press`, the op a held binding runs.
+#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+struct Show {
+    name: String,
+    #[serde(default)]
+    down: bool,
+}
+
+impl omuzaki_ops_api::Op for Show {
+    fn meta() -> omuzaki_ops_api::OpMeta {
+        omuzaki_ops_api::OpMeta {
+            name: "opstest.show",
+            summary: "Show an expression while down.",
+            kind: omuzaki_ops_api::OpKind::Edit,
+            scope: Scope::Perform,
+            undo: omuzaki_ops_api::Undo::None,
+        }
+    }
+
+    fn plan(&self, _ctx: &omuzaki_ops_api::OpCtx<'_>) -> Result<omuzaki_ops_api::Plan, OpError> {
+        Ok(omuzaki_ops_api::Plan::answer(json!({ "name": self.name, "down": self.down })))
+    }
+}
+omuzaki_ops_api::register_op!(Show);

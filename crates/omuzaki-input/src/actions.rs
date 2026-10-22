@@ -3,8 +3,10 @@
 //!
 //! - **An op** runs through the executor on the binding's press, as the person, with `cause: binding` (the binding's
 //!   name as the cause text) in the journal, so it lands in history like the person's own edit and undoes the same
-//!   way. A repeat or a release runs nothing: an op is one step, and an action that lasts while held is a trigger.
-//!   The action's scopes were checked when it was set (`input.binding.set_action`), so the person's grants apply.
+//!   way. A repeat or a release runs nothing: an op is one step. The action's scopes were checked when it was set
+//!   (`input.binding.set_action`), so the person's grants apply.
+//! - **A held op** runs the same way on the press with `down: true` and again on the release with `down: false` (an
+//!   expression shown while held, through `trigger.press`); a repeat runs nothing.
 //! - **A trigger** (PF-25, #478) goes to the trigger sink the App wires in, with every edge, so a held trigger ends on
 //!   its release.
 //! - **An intent** never arrives here: the feed routes it to the frame thread.
@@ -119,6 +121,11 @@ impl BindingRunner {
                     self.run_op(id, op, args);
                 }
             }
+            BindingAction::Hold { op, args, .. } => {
+                if edge != Edge::Repeat {
+                    self.run_op(id, op, with_down(args, edge == Edge::Press));
+                }
+            }
             BindingAction::Trigger(slot) => {
                 if let Some(sink) = &mut self.triggers {
                     lock(&self.report).triggers += 1;
@@ -170,6 +177,16 @@ impl BindingRunner {
         })?;
         Ok(BindingDispatcher { stop, report, thread: Some(thread) })
     }
+}
+
+/// A held op's arguments with `down` set; arguments that are not an object become `{ "down": down }`.
+pub(crate) fn with_down(args: serde_json::Value, down: bool) -> serde_json::Value {
+    let mut args = match args {
+        serde_json::Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    };
+    args.insert("down".to_owned(), serde_json::Value::Bool(down));
+    serde_json::Value::Object(args)
 }
 
 /// The running dispatcher; dropping it stops its thread.

@@ -54,6 +54,35 @@ impl Op for SetSmile {
 }
 omuzaki_ops_api::register_op!(SetSmile);
 
+fn showing() -> DocPath {
+    DocPath::parse("showing").unwrap()
+}
+
+/// Shows expression `name` while `down`: a stand-in for `trigger.press`, the op a held binding runs.
+#[derive(Serialize, Deserialize, JsonSchema)]
+struct Show {
+    name: String,
+    down: bool,
+}
+
+impl Op for Show {
+    fn meta() -> OpMeta {
+        OpMeta {
+            name: "bindingtest.show",
+            summary: "Show an expression while down.",
+            kind: OpKind::Edit,
+            scope: Scope::Perform,
+            undo: Undo::Auto,
+        }
+    }
+
+    fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+        let now = self.down.then(|| json!(self.name));
+        Ok(Plan::edit(Patch::new().with(showing(), ctx.doc.get(&showing()).cloned(), now)))
+    }
+}
+omuzaki_ops_api::register_op!(Show);
+
 /// A feed with nothing in it, left in the rig once the dispatcher takes the real one.
 struct Taken;
 
@@ -112,6 +141,28 @@ fn an_op_binding_runs_once_per_press_as_the_person_and_undoes_like_their_own_edi
     rig.desk.key(KEYBOARD, F9, true);
     dispatcher.pump();
     assert_eq!(runner.records().len(), 2);
+}
+
+#[test]
+fn a_held_op_runs_with_down_on_the_press_and_again_without_on_the_release() {
+    let (mut rig, runner, mut dispatcher) = rigged();
+    bind(&rig, "Smile while held", F9, BindingAction::hold("bindingtest.show", json!({ "name": "smile" })));
+
+    rig.desk.key(KEYBOARD, F9, true);
+    rig.desk.repeat(KEYBOARD, F9);
+    dispatcher.pump();
+    assert_eq!(runner.get(&showing(), &Grants::person()).unwrap(), Some(json!("smile")), "shown while held");
+    rig.desk.key(KEYBOARD, F9, false);
+    dispatcher.pump();
+    assert_eq!(runner.get(&showing(), &Grants::person()).unwrap(), None, "gone on the release");
+
+    let calls: Vec<_> = runner.records().into_iter().map(|r| r.args).collect();
+    assert_eq!(
+        calls,
+        [json!({ "name": "smile", "down": true }), json!({ "name": "smile", "down": false })],
+        "no repeat"
+    );
+    assert_eq!(dispatcher.report().ran, 2);
 }
 
 #[test]
