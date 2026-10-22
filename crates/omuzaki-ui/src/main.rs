@@ -203,6 +203,9 @@ fn studio_shell(cc: &eframe::CreationContext<'_>, core: Option<Core>) -> Shell {
         shell.insert_view(Agents(core.sessions));
     }
     // The first start opens the setup flow beside the stage (shell.md section 14).
+    if let Some(dir) = omuzaki_ui::shell::persist::user_config_dir() {
+        shell.keep_palette_recents_in(dir.join("palette-recents.json"));
+    }
     let first_run = FirstRun::in_user_config();
     first_run.open_if_new(&shell.requests());
     shell.insert_view(first_run);

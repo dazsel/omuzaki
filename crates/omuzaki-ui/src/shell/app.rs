@@ -10,8 +10,10 @@
 //! own name (`Fold::key`), so a small window never overwrites the layout made on a big one and each is remembered.
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex, Weak};
+use std::time::Instant;
 
 use egui::{
     Align, CentralPanel, Context, Frame, Key, Layout as Flow, Margin, Panel, Popup, Response, RichText, Ui, Vec2,
@@ -24,11 +26,11 @@ use omuzaki_ui_api::registry::{PanelDef, PanelKind, Region, Registry, WorkspaceD
 
 use super::class::{DockMode, Plan, RAIL, STATUS_BAR, TOP_BAR};
 use super::dock::{self, Dock};
+use super::history::{HistoryLog, step_label};
 use super::host::Bodies;
 use super::keys::{self, Action};
 use super::layout::{Known, Layout, PanelId};
 use super::palette::{Command, Palette, Place, PlaceTarget};
-use super::panels::HistoryLog;
 use super::persist::LayoutStore;
 use super::registry;
 use super::requests::{ShellRequest, ShellRequests};
@@ -38,6 +40,10 @@ use crate::ds::theme::ds;
 use crate::ds::tokens::ThemeKind;
 use crate::ds::widgets::{Button, TabBar, TabItem, Tip, TipExt as _};
 use crate::ds::{a11y, icons};
+use crate::panels::agent::approvals::{self, Answer};
+use crate::panels::agent::fences::{FenceBoard, fence_chip};
+use crate::panels::agent::review::Reviews;
+use crate::panels::agent::{self as agent, AgentFeed, Agents};
 use crate::panels::edit::EditFocus;
 
 const MENU_ICON: &str = egui_phosphor::regular::LIST;
@@ -116,6 +122,7 @@ enum Note {
 }
 
 /// The app shell.
+#[allow(clippy::struct_excessive_bools, reason = "independent switches of the shell's own state, not a mode")]
 pub struct Shell {
     runner: Arc<dyn Runner>,
     /// Everything registered when the shell started: its workspaces, the panels they dock and the View menu's list.
@@ -159,6 +166,8 @@ pub struct Shell {
     note: Note,
     palette: Palette,
     requests: ShellRequests,
+    /// The window title says an approval waits, because one arrived while the window was in the background.
+    attention: bool,
 }
 
 impl Shell {
@@ -210,6 +219,7 @@ impl Shell {
             focus: None,
             drawer: None,
             note: Note::Nothing,
+            attention: false,
             palette: Palette::default(),
             requests,
         };
@@ -222,6 +232,16 @@ impl Shell {
     /// before the first frame.
     pub fn insert_view<T: std::any::Any>(&mut self, value: T) {
         self.models.insert(value);
+    }
+
+    /// Keeps the command palette's recent ops in `file` between runs of the studio.
+    pub fn keep_palette_recents_in(&mut self, file: PathBuf) {
+        self.palette.keep_recents_in(file);
+    }
+
+    /// The command palette's recent ops, most recent first.
+    pub fn palette_recents(&self) -> &[String] {
+        self.palette.recents()
     }
 
     /// The queue panels and the app ask the shell through ([`ShellRequests`]); it is carried out each frame.
@@ -285,11 +305,12 @@ impl Shell {
         self.top_bar(ui, &plan);
         self.status_bar(ui);
         self.ensure_view(&plan);
-        self.carry_out(&plan);
+        self.carry_out(&ctx, &plan);
         if self.views.get(self.active).is_some_and(|v| v.as_ref().is_some_and(|v| !v.rail.is_empty())) {
             self.rail(ui);
         }
         CentralPanel::default().frame(Frame::new().fill(ds(&ctx).theme.bg1)).show(ui, |ui| self.body(ui));
+        self.approval_stack(&ctx);
         self.palette_ui(&ctx);
         self.save_if_edited(&ctx);
     }
@@ -305,6 +326,12 @@ impl Shell {
             self.palette.close();
             return;
         }
+        let places = self.places();
+        self.palette.open(self.runner.as_ref(), &places, ctx);
+    }
+
+    /// The workspaces and panels the palette finds.
+    fn places(&self) -> Vec<Place> {
         let mut places: Vec<Place> = self
             .workspaces
             .iter()
@@ -313,7 +340,7 @@ impl Shell {
             .collect();
         places
             .extend(self.registry.panels().iter().map(|p| Place { target: PlaceTarget::Panel(p.id), title: p.title }));
-        self.palette.open(self.runner.as_ref(), &places, ctx);
+        places
     }
 
     /// Draws the palette over everything, and does what it chose.
@@ -342,6 +369,62 @@ impl Shell {
             self.frame_events.append(&mut inbox);
         }
         self.follow_log();
+        self.follow_agents();
+    }
+
+    /// Keeps the studio's copy of the agent sessions and approvals current from this frame's events: loaded once from
+    /// the registry, then only followed, so every view of agent work agrees in every frame.
+    fn follow_agents(&mut self) {
+        let Some(Agents(sessions)) = self.models.get::<Agents>().cloned() else { return };
+        match self.models.get_mut::<AgentFeed>() {
+            Some(feed) => {
+                feed.follow(&self.frame_events);
+            }
+            None => {
+                self.models.insert(AgentFeed::load(sessions.as_ref()));
+            }
+        }
+    }
+
+    /// The approvals as a stack at the top right of the window while the Agent panel is not on screen, and the window
+    /// title's marker while one waits and the window is in the background.
+    fn approval_stack(&mut self, ctx: &Context) {
+        let Some(feed) = self.models.get::<AgentFeed>().cloned() else { return };
+        let waiting = !feed.approvals().is_empty();
+        let focused = ctx.input(|i| i.focused);
+        if waiting && !focused && !self.attention {
+            self.attention = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(say(ctx, Word::WindowWaiting, &[])));
+            ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational));
+        } else if self.attention && (focused || !waiting) {
+            self.attention = false;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(say(ctx, Word::WindowTitle, &[])));
+        }
+        if !waiting || self.bodies.on_screen(ctx, agent::ID) || self.palette.is_open() {
+            return;
+        }
+        let desk = self.models.get::<Reviews>().cloned();
+        let (answer, open_panel) = approvals::stack(ctx, TOP_BAR, &feed, desk.as_ref().map(|d| d.0.as_ref()));
+        if open_panel {
+            self.show_panel(agent::ID);
+        }
+        let Some(Agents(sessions)) = self.models.get::<Agents>().cloned() else { return };
+        let result = match answer {
+            Some(Answer::Decide(ids, decision)) => {
+                approvals::resolve_all(sessions.as_ref(), &ids, &decision, &self.actor)
+            }
+            Some(Answer::Export(id)) => {
+                let approval = feed.approvals().iter().find(|a| a.id == id);
+                match (desk, approval) {
+                    (Some(desk), Some(approval)) => desk.0.export(approval).map(drop),
+                    _ => Err(OpError::unavailable("review")),
+                }
+            }
+            None => Ok(()),
+        };
+        if let Err(error) = result {
+            self.note = Note::Failed(error.message);
+        }
     }
 
     /// Keeps History's copy of the op log current from this frame's events, so an agent's op over MCP shows up at
@@ -355,6 +438,7 @@ impl Shell {
         for event in &self.frame_events {
             match event {
                 Event::OpApplied { record, .. } if log.records.last().is_none_or(|last| record.seq > last.seq) => {
+                    log.seen.insert(record.seq, Instant::now());
                     log.records.push(record.clone());
                 }
                 Event::Undone { tx, .. } => {
@@ -367,7 +451,9 @@ impl Shell {
             }
         }
         let over = log.records.len().saturating_sub(HISTORY_PAGE);
-        log.records.drain(..over);
+        for gone in log.records.drain(..over) {
+            log.seen.remove(&gone.seq);
+        }
     }
 
     fn act(&mut self, action: Action) {
@@ -416,8 +502,13 @@ impl Shell {
             Err(error) => HistoryLog { error: Some(error.message), ..HistoryLog::default() },
         };
         // Which steps are undone is known only from the events, so it outlives a read of the log.
-        let undone = self.models.get_mut::<HistoryLog>().map(|old| std::mem::take(&mut old.undone));
-        let log = HistoryLog { undone: undone.unwrap_or_default(), ..log };
+        let old = self
+            .models
+            .get_mut::<HistoryLog>()
+            .map(|old| (std::mem::take(&mut old.undone), std::mem::take(&mut old.seen)));
+        let (undone, mut seen) = old.unwrap_or_default();
+        seen.retain(|seq, _| log.records.iter().any(|r| r.seq == *seq));
+        let log = HistoryLog { undone, seen, ..log };
         self.models.insert(log);
     }
 
@@ -460,6 +551,12 @@ impl Shell {
                 from_disk.then(|| self.compact.get(&key).cloned().or_else(|| self.stored(&key, &derived))).flatten();
             stored.map_or(derived, |l| l.without(&rail.iter().map(|p| p.id).collect::<Vec<_>>()))
         };
+        // The panel the person was working in stays open when the fold changes: it becomes the drawer when its dock
+        // folds into the rail, and the tab in front, focused, when it is docked again.
+        let front = self.focus.clone().or_else(|| self.drawer.clone());
+        if let Some(front) = front.as_deref().filter(|f| !shown.contains(f) && rail.iter().any(|p| p.id == *f)) {
+            self.drawer = Some(front.to_owned());
+        }
         // What was focused, maximised or open as a drawer may not be in the arrangement that is shown now.
         if self.focus.as_deref().is_some_and(|f| !shown.contains(f)) {
             self.focus = None;
@@ -468,7 +565,11 @@ impl Shell {
         if self.drawer.as_deref().is_some_and(|d| !rail.iter().any(|p| p.id == d)) {
             self.drawer = None;
         }
-        let tree = shown.to_tree(egui::Id::new(("shell_tree", workspace.id)));
+        let mut tree = shown.to_tree(egui::Id::new(("shell_tree", workspace.id)));
+        if let Some(front) = front.filter(|f| shown.contains(f)) {
+            tree.make_active(|_, tile| matches!(tile, Tile::Pane(PanelId(panel)) if *panel == front));
+            self.focus = Some(front);
+        }
         self.views[self.active] = Some(View { saved, shown, tree, fold, rail });
     }
 
@@ -628,7 +729,17 @@ impl Shell {
             let layout = view.shown.with_panel(id, anchor, def.region == Region::Left);
             let key = egui::Id::new(("shell_tree", self.workspaces[self.active].id));
             view.tree = layout.to_tree(key);
+            let folded = view.fold != Fold::NONE && !view.saved.contains(id);
+            let saved = view.saved.clone();
             self.record(&layout);
+            // A smaller window keeps its arrangement apart from the full-size one, so the panel joins that too: a resize
+            // that changes the fold builds the view again from it.
+            if folded {
+                let anchor = saved.panels().into_iter().find(|p| {
+                    self.registry.panel(p).is_some_and(|d| d.region == def.region && d.kind != PanelKind::Primary)
+                });
+                self.record_full(&saved.with_panel(id, anchor, def.region == Region::Left));
+            }
         }
         if let Some(view) = self.views.get_mut(self.active).and_then(Option::as_mut) {
             view.tree.make_active(|_, tile| matches!(tile, Tile::Pane(PanelId(panel)) if panel == id));
@@ -641,15 +752,24 @@ impl Shell {
     pub fn close_panel(&mut self, id: &str) {
         let Some(&workspace) = self.workspaces.get(self.active) else { return };
         let Some(view) = self.views.get_mut(self.active).and_then(Option::as_mut) else { return };
-        if !view.shown.contains(id) {
-            return;
+        // A smaller window's arrangement is kept apart from the full-size one (and a folded left dock shows neither),
+        // so the panel leaves both: a resize that changes the fold builds the view again from the full-size one.
+        let saved = (view.fold != Fold::NONE && view.saved.contains(id)).then(|| view.saved.without(&[id]));
+        if view.shown.contains(id) {
+            let layout = view.shown.without(&[id]);
+            if layout.contains(id) {
+                return;
+            }
+            view.tree = layout.to_tree(egui::Id::new(("shell_tree", workspace.id)));
+            self.record(&layout);
         }
-        let layout = view.shown.without(&[id]);
-        if layout.contains(id) {
-            return;
+        if let Some(saved) = saved.filter(|l| !l.contains(id)) {
+            self.record_full(&saved);
+            let rail = self.views.get(self.active).and_then(Option::as_ref).map(|v| self.rail_of(&v.saved));
+            if let (Some(rail), Some(view)) = (rail, self.views.get_mut(self.active).and_then(Option::as_mut)) {
+                view.rail = rail;
+            }
         }
-        view.tree = layout.to_tree(egui::Id::new(("shell_tree", workspace.id)));
-        self.record(&layout);
         if self.focus.as_deref() == Some(id) {
             self.focus = None;
         }
@@ -659,7 +779,7 @@ impl Shell {
     }
 
     /// Carries out what panels and the app asked for since the last frame ([`ShellRequests`]).
-    fn carry_out(&mut self, plan: &Plan) {
+    fn carry_out(&mut self, ctx: &Context, plan: &Plan) {
         for request in self.requests.take() {
             match request {
                 ShellRequest::Workspace(id) => {
@@ -670,6 +790,10 @@ impl Shell {
                 }
                 ShellRequest::ShowPanel(id) => self.show_panel(id),
                 ShellRequest::ClosePanel(id) => self.close_panel(id),
+                ShellRequest::Adjust { op, args } => {
+                    let places = self.places();
+                    self.palette.adjust(self.runner.as_ref(), &places, ctx, &op, &args);
+                }
             }
         }
     }
@@ -707,7 +831,11 @@ impl Shell {
                 self.menu(ui);
                 ui.label(RichText::new(say(&ctx, Word::ProjectName, &[])).font(ds.text.strong.clone()));
                 ui.separator();
-                self.workspace_tabs(ui, plan);
+                // Setup is the whole task while it shows (`shell.md` section 14): the workspace tabs come back when it
+                // ends or is skipped.
+                if !self.bodies.on_screen_before(&ctx, crate::panels::setup::ID) {
+                    self.workspace_tabs(ui, plan);
+                }
                 ui.with_layout(Flow::right_to_left(Align::Center), |ui| {
                     let off = say(&ctx, Word::GoLiveOff, &[]);
                     let go_live = say(&ctx, Word::GoLive, &[]);
@@ -716,8 +844,9 @@ impl Shell {
                     } else {
                         ui.add(Button::new(&go_live).icon(icons::BROADCAST).disabled(&off));
                     }
-                    ui.label(RichText::new(icons::ROBOT).font(ds.text.icon(16.0, false)).color(ds.theme.text2));
-                    ui.label(RichText::new(say(&ctx, Word::AgentChip, &[])).color(ds.theme.text2));
+                    if self.agent_chip(ui) {
+                        self.show_panel(agent::ID);
+                    }
                     let search = say(&ctx, Word::SearchOrRun, &[]);
                     if ui.add(Button::new(&search).icon(icons::MAGNIFYING_GLASS).shortcut_hint("Ctrl K")).clicked() {
                         self.toggle_palette(&ctx);
@@ -778,30 +907,68 @@ impl Shell {
         }
     }
 
-    fn status_bar(&self, ui: &mut Ui) {
+    /// The top bar's agent chip: how many agents are connected, or how many requests wait for the person. True when
+    /// it was clicked (it opens the Agent panel).
+    fn agent_chip(&self, ui: &mut Ui) -> bool {
+        let ctx = ui.ctx().clone();
+        let feed = self.models.get::<AgentFeed>();
+        let live = feed.map_or(0, |f| f.live().count());
+        let waiting = feed.map_or(0, |f| f.approvals().len());
+        let label = match (live, waiting) {
+            (_, w) if w > 0 => say(&ctx, Word::AgentChipWaiting, &[("count", &w.to_string())]),
+            (0, _) => say(&ctx, Word::AgentChip, &[]),
+            (n, _) => say(&ctx, Word::AgentChipCount, &[("count", &n.to_string())]),
+        };
+        // Quiet while nothing waits; a raised button while a request waits for the person.
+        let button = Button::new(&label).icon(icons::ROBOT);
+        ui.add(if waiting > 0 { button } else { button.ghost() }).clicked()
+    }
+
+    fn status_bar(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
         let ds = ds(&ctx);
         let frame = Frame::new().fill(ds.theme.bg2).inner_margin(Margin::symmetric(8, 0));
-        let undo = match &self.note {
-            Note::Nothing | Note::NothingToUndo => say(&ctx, Word::StatusNothingToUndo, &[]),
-            Note::Undid(label) => say(&ctx, Word::StatusUndid, &[("label", label)]),
-            Note::Redid(label) => say(&ctx, Word::StatusRedid, &[("label", label)]),
-            Note::NothingToRedo => say(&ctx, Word::StatusNothingToRedo, &[]),
-            Note::Failed(why) => why.clone(),
+        let next = self.models.get::<HistoryLog>().and_then(|log| log.next_undo(&self.actor)).map(step_label);
+        let undo = match (&self.note, next) {
+            (Note::Nothing | Note::NothingToUndo, Some(label)) => say(&ctx, Word::StatusCanUndo, &[("label", &label)]),
+            (Note::Nothing | Note::NothingToUndo, None) => say(&ctx, Word::StatusNothingToUndo, &[]),
+            (Note::Undid(label), _) => say(&ctx, Word::StatusUndid, &[("label", label)]),
+            (Note::Redid(label), _) => say(&ctx, Word::StatusRedid, &[("label", label)]),
+            (Note::NothingToRedo, _) => say(&ctx, Word::StatusNothingToRedo, &[]),
+            (Note::Failed(why), _) => why.clone(),
         };
+        let selection = match self.models.get::<EditFocus>().map(|f| (f.count(), f.primary())) {
+            Some((1, Some(part))) => say(&ctx, Word::StatusSelected, &[("part", part.as_str())]),
+            Some((n, _)) if n > 1 => say(&ctx, Word::StatusSelectedMany, &[("count", &n.to_string())]),
+            _ => say(&ctx, Word::StatusSelection, &[]),
+        };
+        let mut show_agent = false;
         Panel::bottom("shell_status").exact_size(STATUS_BAR).frame(frame).show(ui, |ui| {
             ui.horizontal_centered(|ui| {
                 let small = |text: String| RichText::new(text).font(ds.text.small.clone()).color(ds.theme.text2);
-                ui.label(small(say(&ctx, Word::StatusSelection, &[])));
+                ui.label(small(selection));
                 ui.separator();
                 ui.label(small(undo));
                 ui.separator();
-                ui.label(small(say(&ctx, Word::StatusFence, &[])));
+                let board = self.models.get::<AgentFeed>().map(FenceBoard::from_feed).unwrap_or_default();
+                let live = self.models.get::<AgentFeed>().is_some_and(|f| f.live().next().is_some());
+                if !board.is_empty() {
+                    if fence_chip(ui, &board).clicked() {
+                        show_agent = true;
+                    }
+                } else if live {
+                    ui.label(small(say(&ctx, Word::StatusNoFence, &[])));
+                } else {
+                    ui.label(small(say(&ctx, Word::StatusFence, &[])));
+                }
                 ui.with_layout(Flow::right_to_left(Align::Center), |ui| {
                     ui.label(small(say(&ctx, Word::StatusHealth, &[])));
                 });
             });
         });
+        if show_agent {
+            self.show_panel(agent::ID);
+        }
     }
 
     /// The icon rail that stands for a collapsed left dock; a button opens the panel as a drawer over the viewport.

@@ -149,6 +149,7 @@ messages! {
     ApprovalApprovePlan = "ds-approval-approve-plan" => "Approve plan",
     ApprovalApprove = "ds-approval-approve" => "Approve",
     ApprovalSession = "ds-approval-session" => "Approve for this session",
+    ApprovalProject = "ds-approval-project" => "Approve for this project",
     ApprovalReject = "ds-approval-reject" => "Reject…",
     ApprovalRejectName = "ds-approval-reject-name" => "Reject",
     /// The spoken name of a button: what it does, what it is about, who asked.
