@@ -46,6 +46,8 @@ use omuzaki_twitch::TwitchService;
 use omuzaki_vts::client::SecretTokens;
 use omuzaki_vts::service::VtsService;
 
+use omuzaki_metrics_api::MetricsReader;
+
 use super::clock::{ClockObserver, PerformClock};
 use super::inputs::{model_registry, studio_inputs};
 use super::mailbox::FrameReader;
@@ -53,6 +55,7 @@ use super::rig::{Extras, LiveRig, live_performer};
 use super::thread::{LoopReport, WiringError};
 use crate::aux_window::{PhysicalSize, Transparency};
 use crate::live::channels::ChannelFeed;
+use crate::live::health::HealthPublisher;
 use crate::live::hotkeys::Hotkeys;
 use crate::live::viewport::{LiveViewport, Presenter, SharedTracker, ViewportError};
 use crate::output_window::{OutputHost, OutputPlan, OutputWindow, Program};
@@ -125,6 +128,27 @@ pub struct LiveApp {
     renders: Option<Arc<dyn Store>>,
     /// My scripts.
     scripts: Option<Arc<dyn omuzaki_script::ScriptStore>>,
+    /// Writes the live-metrics snapshot the Health panel reads (#1348).
+    health: LiveHealth,
+}
+
+/// The live-metrics snapshot's writer, its reader, and the parts it samples that only the app holds.
+struct LiveHealth {
+    publisher: HealthPublisher,
+    reader: MetricsReader,
+    /// The snapshot's clock: seconds since the slice started.
+    started: std::time::Instant,
+    /// The performer, for its status.
+    perform: Arc<dyn PerformHost>,
+    /// The audio engine, for its health.
+    audio: Option<Arc<dyn AudioEngine>>,
+}
+
+impl LiveHealth {
+    fn new(perform: Arc<dyn PerformHost>, audio: Option<Arc<dyn AudioEngine>>) -> Self {
+        let (publisher, reader) = HealthPublisher::with_reader();
+        Self { publisher, reader, started: std::time::Instant::now(), perform, audio }
+    }
 }
 
 /// The OS input hub (ADR 0060) as the app runs it: its control is in the runner's services (the `input.*` capture and
@@ -297,6 +321,7 @@ impl LiveApp {
             LiveRig::start_with(Box::new(tracker.clone()), extras, TrackerConfig::default(), performer, clock)
                 .map_err(StartError::Wiring)?;
         let host = rig.host().map_err(StartError::Wiring)?;
+        let perform = Arc::clone(&host);
         host.set_expressions(ExpressionSet::starter(), ChannelBuf::NEUTRAL).map_err(StartError::Perform)?;
         let window = OutputHost::new(transparency, PhysicalSize::FULL_HD);
         let input: Arc<dyn InputHost> = rig.input();
@@ -347,8 +372,8 @@ impl LiveApp {
         let project_key = project.clone().unwrap_or_default();
         let core = wiring::core_on(document, services).map_err(StartError::Ops)?;
         automation.attach(&core.runner);
-        if let Some(audio) = audio {
-            follow_project(audio, &core.runner);
+        if let Some(audio) = &audio {
+            follow_project(Arc::clone(audio), &core.runner);
         }
         automation.attach_sessions(&core.sessions);
         if let Err(error) = theatre.attach(&core.runner, Arc::clone(&core.sessions)) {
@@ -383,6 +408,7 @@ impl LiveApp {
             theatre,
             renders,
             scripts,
+            health: LiveHealth::new(perform, audio),
         })
     }
 
@@ -529,6 +555,7 @@ impl LiveApp {
                 }
             }
         });
+        self.publish_health();
         if let (Some(feed), Some(view)) = (self.feed.as_mut(), self.viewport.as_mut())
             && let Err(error) = feed.offer(|| view.snapshot())
         {
@@ -539,6 +566,31 @@ impl LiveApp {
             ctx.request_repaint_after(std::time::Duration::from_millis(8));
         }
         self.show_program(ctx, program);
+    }
+
+    /// The live-metrics snapshot the Health panel and the health strip read.
+    pub fn metrics(&self) -> MetricsReader {
+        self.health.reader.clone()
+    }
+
+    /// Writes this frame into the snapshot: the stage's frame every call, the performer, the tracker and the audio at
+    /// 10 Hz. A part that is not running publishes nothing, so it reads as absent rather than zero.
+    fn publish_health(&mut self) {
+        let health = &mut self.health;
+        let now = health.started.elapsed().as_secs_f64();
+        if let Some(view) = self.viewport.as_mut() {
+            health.publisher.frame(now, view.take_rendered());
+        }
+        if !health.publisher.slow_due(now) {
+            return;
+        }
+        if let Some(rig) = &self.rig {
+            health.publisher.perform(now, &health.perform.status(), rig.report().skipped);
+            health.publisher.tracker(now, &self.tracker.latency());
+        }
+        if let Some(audio) = &health.audio {
+            health.publisher.audio(now, &audio.status(), &audio.report());
+        }
     }
 
     /// Sends this frame's key presses and releases to the triggers they are bound to (`trigger.press`). Call it once per

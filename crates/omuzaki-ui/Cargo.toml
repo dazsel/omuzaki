@@ -44,6 +44,7 @@ omuzaki-input-api = { path = "../omuzaki-input-api" }
 omuzaki-live = { path = "../omuzaki-live" }
 omuzaki-live-api = { path = "../omuzaki-live-api" }
 omuzaki-live-nodes = { path = "../omuzaki-live-nodes" }
+omuzaki-metrics-api = { path = "../omuzaki-metrics-api" }
 omuzaki-obs = { path = "../omuzaki-obs" }
 omuzaki-twitch = { path = "../omuzaki-twitch" }
 omuzaki-secrets = { path = "../omuzaki-secrets" }

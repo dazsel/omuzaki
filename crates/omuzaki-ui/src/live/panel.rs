@@ -7,6 +7,8 @@
 use std::sync::Arc;
 
 use egui::{Event, Key, RichText, ScrollArea, Sense, Ui, WidgetInfo, WidgetType, vec2};
+use omuzaki_metrics_api::MetricsReader;
+use omuzaki_metrics_api::sections::TrackingState;
 use omuzaki_ops_api::{Actor, Runner};
 use omuzaki_stage::perform::Tracking;
 use omuzaki_stage::perform::host::CalibrationState;
@@ -71,8 +73,10 @@ pub struct LivePanel {
     capturing: Option<String>,
     /// Mood rows shown: [`HOTKEY_ROWS`], and more after Add hotkey.
     moods: usize,
-    /// The camera-to-output latency the render side measures.
+    /// The camera-to-output latency the render side measures, read when there is no live-metrics snapshot.
     latency: Arc<LatencyMeter>,
+    /// The app's live-metrics snapshot: the health strip's source once the shell has one (#1348).
+    metrics: Option<MetricsReader>,
     /// The desktop opacity slider's value, in percent, while it is dragged; sent when it settles.
     opacity: f64,
 }
@@ -93,7 +97,18 @@ impl LivePanel {
     /// The workspace showing `model` (the gallery story and tests).
     pub fn with_model(model: LiveModel) -> Self {
         let opacity = f64::from(model.window_choice().opacity);
-        Self { model, refreshed: None, capturing: None, moods: HOTKEY_ROWS, latency: LatencyMeter::shared(), opacity }
+        let latency = LatencyMeter::shared();
+        Self { model, refreshed: None, capturing: None, moods: HOTKEY_ROWS, latency, metrics: None, opacity }
+    }
+
+    /// Reads the health strip from `reader` from now on: tracking, the camera's rate and the latency.
+    pub fn set_metrics(&mut self, reader: MetricsReader) {
+        self.metrics = Some(reader);
+    }
+
+    /// The snapshot the health strip reads, once one is set.
+    pub fn metrics(&self) -> Option<&MetricsReader> {
+        self.metrics.as_ref()
     }
 
     /// The model.
@@ -411,14 +426,23 @@ impl LivePanel {
         }
     }
 
-    /// The health strip: tracking state, frame rate and latency on one line (nothing in it takes the keyboard).
+    /// The health strip: tracking state, frame rate and latency on one line (nothing in it takes the keyboard). It reads
+    /// the live-metrics snapshot when the shell has one, and the performer's status and the latency meter otherwise.
     fn health(&self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
+        let snapshot = self.metrics.as_ref().map(MetricsReader::read);
+        let perform = snapshot.as_ref().and_then(|live| live.perform);
+        let tracking = match perform.map(|p| p.tracking) {
+            Some(TrackingState::Tracking) => Some(Tracking::Tracking),
+            Some(TrackingState::Lost) => Some(Tracking::Lost),
+            Some(_) => Some(Tracking::NoFrames),
+            None => self.model.tracking(),
+        };
         // Wrapped: in a narrow dock the frame rate and latency move to a second line rather than widen the panel.
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = space::S16;
             ui.label(RichText::new(text(&ctx, Word::HealthSection)).strong());
-            let (status, word) = match self.model.tracking() {
+            let (status, word) = match tracking {
                 None => (Status::Info, Word::HealthUnknown),
                 Some(Tracking::NoFrames) => (Status::Info, Word::HealthNoFrames),
                 Some(Tracking::Tracking) => (Status::Ok, Word::HealthTracking),
@@ -428,15 +452,22 @@ impl LivePanel {
             // Each reading stays on one line: a wrap moves it whole, never splits "29" from "fps".
             let reading =
                 |ui: &mut Ui, line: String| ui.add(egui::Label::new(line).wrap_mode(egui::TextWrapMode::Extend));
-            if let Some(status) = self.model.status() {
-                let fps = format!("{:.0}", status.source_fps);
+            if let Some(source_fps) =
+                perform.map(|p| p.source_fps).or_else(|| self.model.status().map(|s| s.source_fps))
+            {
+                let fps = format!("{source_fps:.0}");
                 reading(ui, say(&ctx, Word::HealthFps, &[("fps", &fps)]));
             }
             let latency = text(&ctx, Word::HealthLatency);
-            // A dash until the first frame has been through to the picture; then the measured number.
-            let (line, detail) = match self.latency.reading() {
-                Some(measured) => {
-                    let ms = format!("{:.0}", measured.as_secs_f64() * 1000.0);
+            // The snapshot's latency while a tracked face is in use, else the meter's; a dash until the first frame has
+            // been through to the picture.
+            let measured = match snapshot.as_ref().and_then(|snapshot| snapshot.frame) {
+                Some(frame) => frame.track_to_submit_ms.map(|ms| f64::from(ms) / 1000.0),
+                None => self.latency.reading().map(|d| d.as_secs_f64()),
+            };
+            let (line, detail) = match measured {
+                Some(secs) => {
+                    let ms = format!("{:.0}", secs * 1000.0);
                     (say(&ctx, Word::HealthLatencyValue, &[("ms", &ms)]), text(&ctx, Word::LatencyDetail))
                 }
                 None => (format!("{latency}: —"), text(&ctx, Word::LatencyUnknown)),
@@ -444,7 +475,7 @@ impl LivePanel {
             // The tip only adds detail to a plain label; nothing reads its response.
             let _ = reading(ui, line).tip(Tip::new(&latency).detail(&detail));
         });
-        if self.model.tracking() == Some(Tracking::Lost) {
+        if tracking == Some(Tracking::Lost) {
             ui.label(RichText::new(text(&ctx, Word::HealthLostLine)).font(ds(&ctx).text.small.clone()));
         }
     }

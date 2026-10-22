@@ -6088,6 +6088,7 @@ dependencies = [
  "omuzaki-live-api",
  "omuzaki-live-mock",
  "omuzaki-live-nodes",
+ "omuzaki-metrics-api",
  "omuzaki-obs",
  "omuzaki-ops",
  "omuzaki-ops-api",

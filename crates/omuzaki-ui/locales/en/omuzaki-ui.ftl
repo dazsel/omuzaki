@@ -1469,6 +1469,33 @@ ui-generate-why-private = private test material
 ui-generate-why-unknown = unknown licence
 
 # The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-budget-cpu = CPU
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-budget-face-paint = Face paint
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-budget-gpu-frame = GPU frame
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-budget-latency = Latency
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-budget-other = Budget
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-budget-physics = Physics step
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-budget-ram = Memory
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-budget-track-face = Face tracking
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-budget-voice-fx = Voice effects
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
 ui-live-calibrate = Calibrate
 
 # The Live workspace: the camera, tracking, the stage, expressions and outputs.
@@ -1829,8 +1856,42 @@ ui-live-expression-sad = Sad
 ui-live-expression-surprised = Surprised
 
 # The Live workspace: the camera, tracking, the stage, expressions and outputs.
+# $name (id, never translated): "hair-b"
+ui-live-health-budget-live = { $name } · live
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+# $value (id, never translated): "hair-b"
+# $budget (id, never translated): "hair-b"
+# $percent (id, never translated): "hair-b"
+ui-live-health-budget-value = { $value } of { $budget } ({ $percent }%)
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-health-budgets = Budgets
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+# $fps (id, never translated): "hair-b"
+ui-live-health-camera-fps = Camera { $fps } fps
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-health-dropped-frames = Dropped frames
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
 # $fps (id, never translated): "hair-b"
 ui-live-health-fps = { $fps } fps
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-health-frame-rate = Frame rate
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-health-frame-time = Frame time
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+# $ms (id, never translated): "hair-b"
+# $worst (id, never translated): "hair-b"
+ui-live-health-frame-time-value = { $ms } ms, worst { $worst } ms
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-health-late-frames = Late frames
 
 # The Live workspace: the camera, tracking, the stage, expressions and outputs.
 ui-live-health-latency = Latency
@@ -1840,19 +1901,80 @@ ui-live-health-latency = Latency
 ui-live-health-latency-value = Latency: { $ms } ms
 
 # The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-health-live-detail = The value right now against its budget, not the release gate's statistic.
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
 ui-live-health-lost = Face lost
 
 # The Live workspace: the camera, tracking, the stage, expressions and outputs.
 ui-live-health-lost-line = The life layer moves your character until the camera finds you again.
 
 # The Live workspace: the camera, tracking, the stage, expressions and outputs.
+# $n (id, never translated): "hair-b"
+ui-live-health-mb = { $n } MB
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+# $ms (id, never translated): "hair-b"
+ui-live-health-ms = { $ms } ms
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-health-no-budgets = No budget readings yet
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-health-no-face = No face in use
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
 ui-live-health-no-frames = No frames yet
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-health-not-applicable = n/a
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-health-not-reporting = — not reporting
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-health-off = No live readings
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-health-off-line = Health shows the stage, the camera and the audio while the live slice runs.
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+# $line (id, never translated): "hair-b"
+ui-live-health-over = Over budget: { $line }
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-health-partial = Partial
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-health-partial-detail = Partial: measured from the tracker frame's capture to the frame's submit; the camera's exposure and the display are not included.
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+# $n (id, never translated): "hair-b"
+ui-live-health-percent = { $n }%
 
 # The Live workspace: the camera, tracking, the stage, expressions and outputs.
 ui-live-health-section = Health
 
 # The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-health-story-idle = Idle
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-health-story-lost = Tracking lost
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-health-story-over = Over budget
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-health-story-state = State
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
 ui-live-health-tracking = Face found
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-health-tracking-drops = Tracking drops
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-health-underruns = Audio underruns
 
 # The Live workspace: the camera, tracking, the stage, expressions and outputs.
 ui-live-health-unknown = Waiting for the performer
