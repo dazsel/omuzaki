@@ -38,15 +38,19 @@ pub struct Connect {
 #[schemars(extend("examples" = [{}]))]
 pub struct Disconnect {}
 
+/// The `obs.host` setting, or its default.
+fn setting_host(ctx: &OpCtx<'_>) -> String {
+    ctx.service::<dyn Settings>()
+        .ok()
+        .and_then(|s| s.get::<settings::Host>().ok())
+        .unwrap_or_else(<settings::Host as omuzaki_settings_api::setting::Setting>::default)
+}
+
 impl Connect {
     /// Where to connect: the arguments, then the settings, then the defaults.
     fn config(&self, ctx: &OpCtx<'_>) -> ClientConfig {
         let settings = ctx.service::<dyn Settings>().ok();
-        let host = self.host.clone().unwrap_or_else(|| {
-            settings
-                .and_then(|s| s.get::<settings::Host>().ok())
-                .unwrap_or_else(<settings::Host as omuzaki_settings_api::setting::Setting>::default)
-        });
+        let host = self.host.clone().unwrap_or_else(|| setting_host(ctx));
         let port = self.port.unwrap_or_else(|| {
             settings.and_then(|s| s.get::<settings::Port>().ok()).unwrap_or(crate::limits::DEFAULT_PORT)
         });
@@ -65,6 +69,16 @@ impl Op for Connect {
         let config = self.config(ctx);
         let label = SecretLabel::new(self.password.as_deref().unwrap_or(DEFAULT_PASSWORD_LABEL))
             .map_err(|e| OpError::invalid("password", e.to_string()))?;
+        // Only OBS's own secrets: the challenge answer is derived from the value, so another service's key never
+        // feeds it.
+        if !label.as_str().starts_with("obs/") {
+            return Err(OpError::invalid("password", format!("{label} is not an OBS secret; OBS's labels start obs/")));
+        }
+        // A host other than the one the person set up gets the challenge answer, which a server that picks its own
+        // salt can attack offline: a remote host named in the arguments is the person's call.
+        if !config.is_loopback() && self.host.as_ref().is_some_and(|h| *h != setting_host(ctx)) {
+            ctx.require_person(format!("connect to OBS on another computer, {}", config.host))?;
+        }
         let store = ctx.service::<dyn SecretStore>().ok();
         if ctx.dry_run {
             let stored = store.and_then(|s| s.contains(&label).ok()).unwrap_or(false);

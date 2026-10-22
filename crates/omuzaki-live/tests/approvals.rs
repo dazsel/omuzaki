@@ -64,6 +64,29 @@ fn approvals_survive_a_restart_and_a_copied_project_has_none() {
 }
 
 #[test]
+fn an_unsaved_projects_approvals_last_one_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = DiskApprovals::new(dir.path());
+    store.allow(&key(""), &[Need::op("trigger.press")], &[], &person()).unwrap();
+    store.allow(&key("/projects/demo"), &[Need::op("obs.scene.set")], &[], &person()).unwrap();
+    assert_eq!(store.show(&key("")).granted.len(), 1, "approved for this run");
+
+    let again = DiskApprovals::new(dir.path());
+    assert_eq!(again.show(&key("")), ShowApprovals::default(), "another unsaved project's show starts with nothing");
+    assert_eq!(again.show(&key("/projects/demo")).granted.len(), 1);
+
+    // A hand-edited entry for an unsaved project is ignored.
+    let path = again.path().to_owned();
+    let written = std::fs::read_to_string(&path).unwrap();
+    let text = format!("{written}\n{}", written.replace("/projects/demo", ""));
+    std::fs::write(&path, text).unwrap();
+    let edited = DiskApprovals::new(dir.path());
+    assert_eq!(edited.findings().len(), 0, "the edited file reads");
+    assert_eq!(edited.show(&key("/projects/demo")).granted.len(), 1);
+    assert_eq!(edited.show(&key("")), ShowApprovals::default());
+}
+
+#[test]
 fn only_a_person_approves() {
     let dir = tempfile::tempdir().unwrap();
     let store = DiskApprovals::new(dir.path());
