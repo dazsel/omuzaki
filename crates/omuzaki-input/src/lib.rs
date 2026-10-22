@@ -19,6 +19,8 @@ include!(concat!(env!("OUT_DIR"), "/crate_mods.rs"));
 
 pub use hub::{Hub, HubConfig};
 
+#[cfg(all(feature = "test-hooks", windows))]
+pub use test_hooks::{FAKE_KEYBOARDS, RawInputProbe};
 #[cfg(feature = "test-hooks")]
 pub use test_hooks::{
     FakeProcesses, Injector, PadAxis, PadButton, PadScript, TestBackend, keys_in_zone, pad_button_bit,

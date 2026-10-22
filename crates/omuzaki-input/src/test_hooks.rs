@@ -15,6 +15,13 @@ use omuzaki_input_api::zones::KeyZone;
 pub use crate::gamepad::script::PadScript;
 pub use gilrs::{Axis as PadAxis, Button as PadButton};
 
+#[cfg(windows)]
+pub use crate::windows::raw::Probe as RawInputProbe;
+
+/// Two keyboards the Windows backend's test loop sees attached beside the real ones (handles no real device has).
+#[cfg(windows)]
+pub const FAKE_KEYBOARDS: [u64; 2] = [0x7FFF_0001, 0x7FFF_0002];
+
 use crate::gamepad;
 use crate::hub::{Chosen, Hub, HubConfig, InputBackend, spawn_capture};
 use crate::kill_switch::Processes;
@@ -150,6 +157,26 @@ impl Hub {
         spawn_capture(shared, backend, "evdev", move |sink| {
             crate::linux_evdev::run_in(sink, std::path::Path::new("/dev/input"), Some(&name));
         })
+    }
+
+    /// Runs the Windows Raw Input backend's capture loop on `backend`, with the keyboards in [`FAKE_KEYBOARDS`] attached
+    /// beside the real devices, so a test can unplug one by posting `WM_INPUT_DEVICE_CHANGE` to the probe's window.
+    #[cfg(windows)]
+    pub fn run_raw_input(&self, backend: usize) -> Option<(Arc<RawInputProbe>, JoinHandle<()>)> {
+        use crate::windows::raw;
+        fn attached() -> Vec<(u64, DeviceClass)> {
+            let mut all = raw::attached();
+            all.extend(FAKE_KEYBOARDS.map(|k| (k, DeviceClass::Keyboard)));
+            all
+        }
+        fn class_of(handle: u64) -> Option<DeviceClass> {
+            if FAKE_KEYBOARDS.contains(&handle) { Some(DeviceClass::Keyboard) } else { raw::class_of(handle) }
+        }
+        let probe = Arc::new(RawInputProbe::default());
+        let mirror = Arc::clone(&probe);
+        let shared = Arc::clone(&self.core.shared);
+        spawn_capture(shared, backend, "raw-input", move |sink| raw::run_on(sink, raw::Os { attached, class_of }, Some(mirror)))
+            .map(|t| (probe, t))
     }
 
     /// Fails backend `backend` as a panic on its thread would.

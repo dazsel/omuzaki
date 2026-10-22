@@ -14,6 +14,8 @@
 
 #[cfg(target_os = "linux")]
 pub(crate) mod linux_codes;
+#[cfg_attr(not(windows), allow(dead_code, reason = "only the Windows backend reads scan codes; its tests run everywhere"))]
+pub(crate) mod windows_codes;
 pub(crate) mod zone_map;
 
 use std::sync::Arc;
@@ -224,7 +226,7 @@ impl RawSink {
     }
 
     /// The classes the person asked for: a backend serving several selects only these from its OS (design §4).
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code, reason = "the Windows and macOS backends (IN-4, IN-7) use it"))]
+    #[cfg_attr(not(any(target_os = "linux", windows)), allow(dead_code, reason = "the macOS backend (IN-7) uses it"))]
     pub(crate) fn asked(&self) -> DeviceMask {
         self.shared.asked()
     }
