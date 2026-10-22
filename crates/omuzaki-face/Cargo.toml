@@ -10,6 +10,8 @@ repository.workspace = true
 
 # Every dependency the crate will need is declared here, so later work does not have to edit this file. Impl crates may not depend on `omuzaki-test`, an App crate.
 [dependencies]
+# The contact sheets' labels (`preview::sheet`).
+ab_glyph.workspace = true
 image.workspace = true
 inventory.workspace = true
 libm.workspace = true
