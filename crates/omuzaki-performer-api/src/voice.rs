@@ -283,8 +283,8 @@ impl CutState {
     }
 }
 
-/// What stands behind a [`CutProbe`]: read-only views of one feed's close flag and playhead. Until
-/// `omuzaki-audio-api` gains `FeedCloser` and `FeedPlayhead` (§3.3), the speech host implements it over its own.
+/// What stands behind a [`CutProbe`]: read-only views of one feed's close flag and playhead
+/// (`omuzaki_audio_api::feed::FeedCloser` and `FeedPlayhead`, §3.3), which the speech host wraps.
 pub trait CutSource: Send + Sync {
     /// The feed's cut state now. Never blocks.
     fn state(&self) -> CutState;

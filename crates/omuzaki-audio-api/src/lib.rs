@@ -19,7 +19,8 @@
 //! | [`semantics`] | the exact arithmetic both engines reproduce: fader ramp, mute, mono to stereo, ducking |
 //! | [`node`] | the [`Node`](node::Node) and [`NodeKind`](node::NodeKind) contract and `register_node_kind!` |
 //! | [`ring`] | the SPSC ring behind taps and feeds |
-//! | [`tap`] | taps, voice taps and feeds |
+//! | [`tap`] | taps, voice taps and feed requests |
+//! | [`feed`] | a feed's writer, playhead and closer, and the pull both engines run |
 //! | [`clock`] | the engine clock |
 //! | [`report`] | latency, health, events and meters |
 //! | [`engine`] | [`AudioEngine`], [`OfflineRender`] and [`AudioError`] |
@@ -37,6 +38,7 @@ pub mod backend;
 pub mod clock;
 pub mod device;
 pub mod engine;
+pub mod feed;
 pub mod graph;
 pub mod ids;
 pub mod node;
@@ -52,6 +54,7 @@ pub use backend::{AudioBackend, BackendError, CallbackTime, DeviceStream, Stream
 pub use clock::{ClockSnapshot, EngineClock};
 pub use device::{Binding, ChannelMap, DeviceId, DeviceInfo, DeviceState, Direction, ProfileStore};
 pub use engine::{AudioEngine, AudioError, BlockPlan, OfflineInput, OfflineOutput, OfflineRender};
+pub use feed::{FeedCloser, FeedPlayhead, FeedWriter, PlayRecord};
 pub use graph::{
     BusSpec, Channels, DuckRule, DuckTrigger, GraphError, GraphSpec, MicMode, SendSpec, SourceRef, egress_pairs,
 };

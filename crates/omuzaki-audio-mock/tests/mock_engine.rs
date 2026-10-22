@@ -182,7 +182,7 @@ fn a_short_feed_plays_silence_and_is_counted() {
 }
 
 #[test]
-fn a_stereo_feed_is_mixed_down_by_the_tap_and_a_wrong_rate_is_refused() {
+fn a_stereo_feed_is_mixed_down_by_the_tap_and_a_zero_rate_is_refused() {
     // Frames (1, 1) and (2, 2) down-mixed: (L + R) * (1/sqrt 2) = 2 * 0.70710678 = 1.41421356 and 2.82842712.
     let engine = MockEngine::new();
     let mut a = bus("a", feed_source("f"));
@@ -205,9 +205,52 @@ fn a_stereo_feed_is_mixed_down_by_the_tap_and_a_wrong_rate_is_refused() {
     both.format.mono = false;
     assert!(matches!(engine.tap_ring(&both), Err(AudioError::TapUnavailable(_))));
 
-    let mut slow = feed_request("g", true);
-    slow.rate = 24_000;
-    assert!(matches!(engine.feed(&slow), Err(AudioError::Internal(_))));
+    let mut none = feed_request("g", true);
+    none.rate = 0;
+    assert!(matches!(engine.feed(&none), Err(AudioError::Internal(_))));
+}
+
+/// A 24 kHz feed (a TTS voice) through the graph: its playhead places an impulse on the exact output sample, a close
+/// fades it out over 120 samples and silences it for good, and a feed reopened under the same id plays at once.
+#[test]
+fn a_feed_at_its_own_rate_reports_where_it_played_and_fades_when_closed() {
+    let engine = MockEngine::new();
+    engine.apply(&one_bus()).unwrap();
+    let mut request = feed_request("f", true);
+    request.rate = 24_000;
+    let mut writer = engine.feed(&request).unwrap();
+    let (mut reader, _) = engine.tap_ring(&ring_request(TapPoint::BusPostFader(bus_id("a")))).unwrap();
+    let mut pcm = vec![0.0f32; 4_000];
+    pcm[1_234] = 1.0;
+    writer.push(&pcm);
+    engine.advance(10_000);
+    let mut out = vec![0.0f32; 10_000];
+    assert_eq!(reader.read(&mut out).len, 10_000);
+    let peak = out.iter().enumerate().fold((0, 0.0f32), |m, (i, &s)| if s > m.1 { (i, s) } else { m }).0;
+    let playhead = writer.playhead();
+    assert_eq!(playhead.place(1_234, 0), Some(peak as u64));
+    assert_eq!(engine.feed_underruns(&feed_id("f")).map(|u| u > 0), Some(true), "the feed ran dry after 4000 samples");
+
+    writer.push(&vec![0.5; 24_000]);
+    engine.advance(480);
+    writer.closer().close();
+    engine.advance(480);
+    let mut tail = vec![0.0f32; 960];
+    assert_eq!(reader.read(&mut tail).len, 960);
+    let cut = playhead.cut_at_sample();
+    assert_eq!(cut, 10_480 + 120, "the fade ends 120 samples into the block after the close");
+    assert!(tail[600..].iter().all(|&s| s == 0.0));
+    assert!(tail[480..600].iter().all(|&s| s <= 0.5 + 1e-6));
+    engine.advance(16);
+    assert_eq!(reader.read(&mut [0.0f32; 16]).len, 16);
+    assert_eq!(engine.feed_underruns(&feed_id("f")), None, "a cut feed is gone at the next block");
+
+    let mut again = engine.feed(&request).unwrap();
+    again.push(&vec![0.25; 2_400]);
+    engine.advance(480);
+    let mut fresh = vec![0.0f32; 480];
+    assert_eq!(reader.read(&mut fresh).len, 480);
+    assert!(fresh[10..].iter().all(|&s| (s - 0.25).abs() < 1e-6), "the reopened feed plays at once");
 }
 
 #[test]
