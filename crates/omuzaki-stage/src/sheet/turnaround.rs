@@ -413,6 +413,8 @@ fn cell_bytes(cell: UVec2) -> Option<usize> {
 ///   ([`restore_settings`]);
 /// - the stage's last frame: its pin (an outer caller's, if any), `tick`, `root`, `pose` and `goals`, and with them the
 ///   rig, the scene's `instances` and `joints`, and `frame` ([`Stage::unpin_time`]);
+/// - the face: the sheet's frames paint the neutral face, so the caller's last channels are painted again at the
+///   caller's last tick, into the face rig the stage has after the sheet (a variant may have swapped in);
 /// - the sheet's own target, released.
 ///
 /// What it does not give back is what the hair and cloth settled to.
@@ -422,6 +424,8 @@ struct SheetScope<'a> {
     target: TargetId,
     saved: Option<Scene>,
     pin: Option<TimePin>,
+    /// The face channels and tick of the caller's last frame, if it painted a face.
+    face: Option<(omuzaki_anim_api::ChannelBuf, omuzaki_anim_api::Tick)>,
 }
 
 impl<'a> SheetScope<'a> {
@@ -438,21 +442,27 @@ impl<'a> SheetScope<'a> {
             .create_target(&TargetDesc { size: UVec2::splat(1), alpha: AlphaEncoding::Straight })
             .map_err(|e| StageError::render("the sheet's target", e))?;
         let saved = stage.scene().clone();
+        let face = stage.face_state();
         *stage.scene_mut() = neutral_scene(&saved, Camera::default(), lights, look, background);
         let pin = stage.pin_time(SHEET_TICK);
-        Ok(Self { stage, renderer, target, saved: Some(saved), pin: Some(pin) })
+        Ok(Self { stage, renderer, target, saved: Some(saved), pin: Some(pin), face })
     }
 
     /// Gives everything back, once.
     ///
     /// # Errors
-    /// [`StageError::Render`] if the renderer refuses to release the target; the rest is restored regardless.
+    /// [`StageError::Render`] if the renderer refuses to release the target, or what repainting the caller's face
+    /// reports; the rest is restored regardless.
     fn restore(&mut self) -> Result<(), StageError> {
         let (Some(saved), Some(pin)) = (self.saved.take(), self.pin.take()) else { return Ok(()) };
         self.stage.unpin_time(&pin);
+        let face = match self.face.take() {
+            Some((channels, tick)) => self.stage.repaint_face(self.renderer, channels, tick),
+            None => Ok(()),
+        };
         let released = self.renderer.release(ResourceRef::from(self.target));
         restore_settings(self.stage.scene_mut(), saved);
-        released.map_err(|e| StageError::render("the sheet's target", e))
+        released.map_err(|e| StageError::render("the sheet's target", e)).and(face)
     }
 
     /// Gives everything back and reports a failed release.
@@ -464,7 +474,7 @@ impl<'a> SheetScope<'a> {
 impl Drop for SheetScope<'_> {
     fn drop(&mut self) {
         if let Err(cleanup) = self.restore() {
-            tracing::warn!(%cleanup, "releasing the turnaround sheet's target failed");
+            tracing::warn!(%cleanup, "giving the stage back after the turnaround sheet failed");
         }
     }
 }

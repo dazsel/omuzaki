@@ -639,6 +639,29 @@ impl Stage {
         result
     }
 
+    /// The face channels the last frame painted and that frame's tick; `None` without a face rig or before any frame.
+    /// What a caller that borrows the stage for its own frames (a character sheet) gives back with
+    /// [`repaint_face`](Stage::repaint_face).
+    pub(crate) fn face_state(&self) -> Option<(ChannelBuf, Tick)> {
+        let rig = self.face.as_ref()?;
+        Some((rig.last_channels, rig.last_tick?))
+    }
+
+    /// Maps and paints the face for `channels` at `tick`, as a frame would, without drawing a frame: the face textures
+    /// and the rig's last channels are then what they were when [`face_state`](Stage::face_state) was read. A no-op
+    /// without a rig.
+    ///
+    /// # Errors
+    /// What painting the face reports.
+    pub(crate) fn repaint_face(
+        &mut self,
+        renderer: &mut dyn Renderer,
+        channels: ChannelBuf,
+        tick: Tick,
+    ) -> Result<(), StageError> {
+        self.update_face(renderer, tick, &FrameInput { channels, ..FrameInput::default() })
+    }
+
     /// Step 5 of [`tick`](Stage::tick): map and paint. A no-op without a rig.
     pub(super) fn update_face(
         &mut self,

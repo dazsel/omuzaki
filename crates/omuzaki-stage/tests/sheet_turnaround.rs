@@ -894,7 +894,13 @@ fn the_sheet_is_drawn_at_one_time_whatever_the_clock_and_the_frames_before() {
         }
         times.lock().expect("the notes").clear();
         let sheet = render_turnaround(&mut stage, &mut renderer, &spec()).expect("the sheet renders");
-        let seen = times.lock().expect("the notes").clone();
+        let mut seen = times.lock().expect("the notes").clone();
+        // After earlier frames the sheet paints the caller's face again at the caller's time when it gives the stage
+        // back; every paint before that is the sheet's.
+        if prior > 0 {
+            let restored = seen.pop().expect("the caller's face is painted again");
+            assert!(restored.to_bits() != SHEET_TICK.time.0.to_bits(), "the caller's own time: {restored}");
+        }
         // The frame after the sheet is the one the clock would have given without it.
         let next = stage.tick(&mut renderer, &FrameInput::default()).expect("a frame").tick.index;
         stage.release(&mut renderer).expect("released");
@@ -1040,4 +1046,49 @@ fn the_sheet_renders_on_the_software_adapter() {
     // On a GPU the moved tile camera rounds a hair strand's edge differently now and then, flipping a sample's
     // coverage in a handful of scattered pixels (7 of 28 800 measured on lavapipe), so only the total is held.
     assert_stitched(&single, &tiled, 48, usize::MAX);
+}
+
+/// A face painter that notes what it was asked to paint: the mapped parameters and the time.
+struct InputRecorder {
+    inner: MockPainter,
+    painted: Arc<Mutex<Vec<String>>>,
+}
+
+impl FacePainter for InputRecorder {
+    fn layers(&self) -> &[FaceLayerSpec] {
+        self.inner.layers()
+    }
+
+    fn paint(&mut self, input: &FaceInput<'_>, out: &mut FaceDrawing) -> Result<(), FaceError> {
+        self.painted.lock().expect("the notes").push(format!("{:?} at {}", input.params, input.time.0));
+        self.inner.paint(input, out)
+    }
+}
+
+#[test]
+fn the_sheet_gives_back_the_callers_face() {
+    let mut renderer = MockRenderer::new();
+    let mut stage = stage_clocked(&mut renderer, built(), StageClock::fixed(60.0));
+    let painted = Arc::new(Mutex::new(Vec::new()));
+    let noted = Arc::clone(&painted);
+    let rig = FaceRig::new(Box::new(move |projection, _| {
+        let painter = InputRecorder { inner: MockPainter::new(*projection), painted: Arc::clone(&noted) };
+        FaceSystem::new(Box::new(painter), Box::new(MockRasterizer))
+    }))
+    .with_executor(Box::new(InlineExecutor));
+    stage.set_face(&mut renderer, rig).expect("the face binds");
+    let last = || painted.lock().expect("the notes").last().cloned().expect("a paint");
+    let mut channels = omuzaki_anim_api::ChannelBuf::NEUTRAL;
+    channels.set(omuzaki_anim_api::Channel::JAW_OPEN, 1.0);
+    channels.set(omuzaki_anim_api::Channel::EYE_BLINK_LEFT, 1.0);
+    for _ in 0..3 {
+        stage.tick(&mut renderer, &FrameInput { channels, ..FrameInput::default() }).expect("an open-mouthed frame");
+    }
+    let callers = last();
+
+    render_turnaround(&mut stage, &mut renderer, &spec()).expect("the sheet renders");
+    let notes = painted.lock().expect("the notes").clone();
+    assert!(notes.iter().rev().skip(1).any(|n| *n != callers), "the sheet painted its own neutral face: {notes:?}");
+    assert_eq!(last(), callers, "the caller's face is painted again, at the caller's time, after the sheet's");
+    stage.release(&mut renderer).expect("released");
 }
