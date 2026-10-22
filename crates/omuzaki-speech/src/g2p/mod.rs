@@ -176,15 +176,15 @@ impl Lexicon {
         if let Some(base) = word.strip_suffix("'s").or_else(|| word.strip_suffix("s'")) {
             return stem(base).map(|r| plural(&r));
         }
-        if let Some(base) = word.strip_suffix("ies") {
-            if let Some(r) = stem(&format!("{base}y")) {
-                return Some(plural(&r));
-            }
+        if let Some(base) = word.strip_suffix("ies")
+            && let Some(r) = stem(&format!("{base}y"))
+        {
+            return Some(plural(&r));
         }
-        if let Some(base) = word.strip_suffix("es") {
-            if let Some(r) = stem(base) {
-                return Some(plural(&r));
-            }
+        if let Some(base) = word.strip_suffix("es")
+            && let Some(r) = stem(base)
+        {
+            return Some(plural(&r));
         }
         if let Some(base) = word.strip_suffix('s')
             && !base.ends_with('s')
@@ -192,10 +192,10 @@ impl Lexicon {
         {
             return Some(plural(&r));
         }
-        if let Some(base) = word.strip_suffix("ied") {
-            if let Some(r) = stem(&format!("{base}y")) {
-                return Some(past(&r));
-            }
+        if let Some(base) = word.strip_suffix("ied")
+            && let Some(r) = stem(&format!("{base}y"))
+        {
+            return Some(past(&r));
         }
         if let Some(base) = word.strip_suffix("ed") {
             for candidate in [base.to_owned(), format!("{base}e"), undouble(base)] {
@@ -211,15 +211,15 @@ impl Lexicon {
                 }
             }
         }
-        if let Some(base) = word.strip_suffix("ly") {
-            if let Some(r) = stem(base).or_else(|| base.strip_suffix('i').and_then(|b| stem(&format!("{b}y")))) {
-                return Some(format!("{r}li"));
-            }
+        if let Some(base) = word.strip_suffix("ly")
+            && let Some(r) = stem(base).or_else(|| base.strip_suffix('i').and_then(|b| stem(&format!("{b}y"))))
+        {
+            return Some(format!("{r}li"));
         }
-        if let Some(base) = word.strip_suffix("ness") {
-            if let Some(r) = stem(base).or_else(|| base.strip_suffix('i').and_then(|b| stem(&format!("{b}y")))) {
-                return Some(format!("{r}nəs"));
-            }
+        if let Some(base) = word.strip_suffix("ness")
+            && let Some(r) = stem(base).or_else(|| base.strip_suffix('i').and_then(|b| stem(&format!("{b}y"))))
+        {
+            return Some(format!("{r}nəs"));
         }
         None
     }

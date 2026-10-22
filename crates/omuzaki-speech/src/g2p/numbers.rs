@@ -100,7 +100,7 @@ pub fn ordinal(n: u64) -> String {
 #[must_use]
 pub fn year(n: u64) -> String {
     let (high, low) = (n / 100, n % 100);
-    if (2000..2010).contains(&n) || n % 1000 == 0 {
+    if (2000..2010).contains(&n) || n.is_multiple_of(1000) {
         return cardinal(n);
     }
     match low {

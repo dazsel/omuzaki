@@ -1,5 +1,6 @@
 //! The voice fakes give the numbers `ai-performer-voice-face.md` §6 works by hand (#1249).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::cast_precision_loss)] // a panic is a test failure
+#![allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // sample positions, small and positive
 
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -30,10 +31,10 @@ fn to_16k(x: &[f32]) -> Vec<f32> {
     let n = x.len() * 2 / 3;
     (0..n)
         .map(|i| {
-            let t = i as f64 * 1.5;
-            let (k, f) = (t.floor() as usize, (t - t.floor()) as f32);
-            let next = x.get(k + 1).copied().unwrap_or(0.0);
-            x[k] * (1.0 - f) + next * f
+            let at = i as f64 * 1.5;
+            let (index, frac) = (at.floor() as usize, (at - at.floor()) as f32);
+            let next = x.get(index + 1).copied().unwrap_or(0.0);
+            x[index] * (1.0 - frac) + next * frac
         })
         .collect()
 }
@@ -100,7 +101,9 @@ fn a_latency_delays_the_envelope_and_missed_blocks_are_scripted() {
     let (mut sink, mut source) = InlineStream::late_when(Box::new(face), spec, 2, 3, |seq| seq == 1);
     let mut out = TensorBuf::for_outputs(&omuzaki_ai_mock::voice_to_face_signature());
     let blocks: Vec<Block> = speech
-        .chunks_exact(320)
+        .as_chunks::<320>()
+        .0
+        .iter()
         .take(3)
         .map(|chunk| {
             let seq = sink.push(&[TensorRef::f32(chunk, &shape)]).unwrap();

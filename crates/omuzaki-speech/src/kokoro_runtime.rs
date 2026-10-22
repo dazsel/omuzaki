@@ -69,7 +69,7 @@ impl<'a> Parts<'a> {
         let graph = source
             .files
             .first()
-            .filter(|f| f.name.ends_with(".onnx"))
+            .filter(|f| Path::new(&f.name).extension().is_some_and(|e| e.eq_ignore_ascii_case("onnx")))
             .ok_or_else(|| LoadError::MissingFile("the Kokoro graph (.onnx, first)".into()))?;
         let need = |name: &str| source.file(name).ok_or_else(|| LoadError::MissingFile(name.into()));
         let voices: Vec<(&str, &Path)> = source
@@ -144,7 +144,7 @@ pub fn read_voice(bytes: &[u8]) -> Result<Vec<f32>, LoadError> {
             bytes.len()
         )));
     }
-    let rows: Vec<f32> = bytes.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
+    let rows: Vec<f32> = bytes.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect();
     if rows.iter().any(|v| !v.is_finite()) {
         return Err(LoadError::Format("a Kokoro voice has values that aren't numbers".into()));
     }
@@ -334,7 +334,7 @@ mod tests {
         assert_eq!(pieces, [&ids[..3], &ids[4..5]], "a clause break when no sentence ends in reach");
         let no_breaks = [5i64; 10];
         assert_eq!(split_ids(&no_breaks, 4, &[1], &[2], 9).iter().map(|p| p.len()).collect::<Vec<_>>(), [4, 4, 2]);
-        assert!(split_ids(&[], 4, &[1], &[2], 9).is_empty());
+        assert_eq!(split_ids(&[], 4, &[1], &[2], 9), Vec::<&[i64]>::new());
     }
 
     #[test]

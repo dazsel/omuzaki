@@ -3,6 +3,9 @@
 //! mouth drive test against numbers worked out by hand (§6: "Hi chat!" is 11,520 samples, a vowel opens the jaw to 0.53
 //! and a consonant to 0.14).
 
+// Sample counts and indices here stay far below 2^24, where `f32` is still exact.
+#![allow(clippy::cast_precision_loss)]
+
 use std::collections::BTreeSet;
 use std::f32::consts::TAU;
 use std::sync::Arc;
@@ -32,9 +35,9 @@ pub const CONSONANT: f32 = 0.08;
 pub const FACE_RATE: u32 = 16_000;
 /// Samples per block.
 pub const FACE_BLOCK: u32 = 320;
-/// `jawOpen`'s place in the ARKit-52 order (`omuzaki-anim-api`'s `ChannelId::JAW_OPEN`).
+/// `jawOpen`'s place in the ARKit-52 order (`omuzaki-anim-api`'s `Channel::JAW_OPEN`).
 pub const JAW_OPEN: usize = 24;
-/// Channels out: the ARKit 52.
+/// Channels out: the 52 of `ARKit`.
 pub const ARKIT: usize = 52;
 
 /// `tts@1`'s signature: `text u8[any]`, `voice u8[any]`, `speed f32[]`, `expressiveness f32[]` → `pcm f32[any]`.
@@ -48,7 +51,7 @@ pub fn tts_signature() -> Signature {
     }
 }
 
-/// `voice_to_face@1`'s signature: `audio f32[any]` (one 16 kHz block) → `channels f32[52]` (ARKit order).
+/// `voice_to_face@1`'s signature: `audio f32[any]` (one 16 kHz block) → `channels f32[52]`, in `ARKit` order.
 pub fn voice_to_face_signature() -> Signature {
     Signature {
         inputs: vec![TensorSpec::new("audio", DType::F32, [Dim::ANY])],
