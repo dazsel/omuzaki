@@ -592,7 +592,9 @@ pub fn emote_to_animation(
         return Err(ConvertError::Timing(format!("has a fade of {fade_s} s: give above 0 and at most {MAX_FADE_S} s")));
     }
     if !(hold_s.is_finite() && hold_s >= 0.0 && 2.0 * fade_s + hold_s <= MAX_DURATION_S) {
-        return Err(ConvertError::Timing(format!("has a hold of {hold_s} s: give 0 or more, {MAX_DURATION_S} s in all")));
+        return Err(ConvertError::Timing(format!(
+            "has a hold of {hold_s} s: give 0 or more, {MAX_DURATION_S} s in all"
+        )));
     }
     if !(intensity.is_finite() && (0.0..=1.0).contains(&intensity)) {
         return Err(ConvertError::Timing(format!("has an intensity of {intensity}: give 0 to 1")));

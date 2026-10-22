@@ -1,0 +1,18 @@
+{
+  "name": "omuzaki-vrma-interop",
+  "private": true,
+  "description": "Plays Omuzaki's exported .vrma files in three-vrm in headless Chromium and compares the pose with Omuzaki's own (#1277).",
+  "type": "module",
+  "license": "MIT OR Apache-2.0",
+  "scripts": {
+    "check": "node check.mjs"
+  },
+  "dependencies": {
+    "@pixiv/three-vrm": "3.5.5",
+    "@pixiv/three-vrm-animation": "3.5.5",
+    "three": "0.170.0"
+  },
+  "devDependencies": {
+    "playwright": "1.63.0"
+  }
+}
