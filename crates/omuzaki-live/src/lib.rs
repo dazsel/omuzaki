@@ -19,6 +19,7 @@ omuzaki_core::define_link! {
 
 mod compile;
 mod core;
+mod dispatch;
 mod inbox;
 mod l10n;
 pub mod ops;

@@ -13,7 +13,7 @@
 //! the per-run automation session (ADR 0020) come with the leaves.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -28,11 +28,12 @@ use omuzaki_live_api::services::{
 };
 use omuzaki_live_api::show::{Finding, ShowDef, VarScope, paths};
 use omuzaki_live_api::value::Val;
-use omuzaki_ops_api::{Actor, Cause, CauseKind, Grants, Mode, OpError, Request, Runner, Scope, SessionId};
+use omuzaki_ops_api::{Actor, Grants, OpError, Runner, Scope, SessionId, Sessions};
 use serde_json::Value;
 
 use crate::compile::compile;
-use crate::core::{Control, Core, Item, OpRequest};
+use crate::core::{Control, Core, Item};
+use crate::dispatch::{Dispatch, Work};
 use crate::inbox::Inbox;
 use crate::vars;
 
@@ -46,11 +47,6 @@ const BATCH: usize = 64;
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-/// The grants a show's calls run with until approvals add to them (design D7, D11).
-fn show_grants() -> Grants {
-    Grants::of([Scope::Read, Scope::Perform, Scope::Broadcast, Scope::Render])
 }
 
 /// What the engine thread publishes for the status and values queries, which never wait on it.
@@ -106,12 +102,16 @@ struct Running {
     inbox: Arc<Inbox>,
     stop: Arc<AtomicBool>,
     engine: Option<JoinHandle<()>>,
+    dispatch: Arc<Dispatch>,
+    /// The ordered worker's queue, for pausing and resuming the session in order with the calls.
+    work: Sender<Work>,
 }
 
 /// The automation engine. Build it once, register it as a service (and as `dyn EventSink` and
 /// `dyn AutomationControl`), then [`attach`](Self::attach) the app's runner once the executor exists.
 pub struct Automation {
     runner: Mutex<Option<Weak<dyn Runner>>>,
+    sessions: Mutex<Option<Weak<dyn Sessions>>>,
     clock: Arc<dyn Clock>,
     wall: Arc<dyn WallClock>,
     run: Mutex<Option<Running>>,
@@ -148,6 +148,7 @@ impl Automation {
     pub fn with_clocks(clock: Arc<dyn Clock>, wall: Arc<dyn WallClock>) -> Self {
         Self {
             runner: Mutex::new(None),
+            sessions: Mutex::new(None),
             clock,
             wall,
             run: Mutex::new(None),
@@ -194,16 +195,44 @@ impl Automation {
         *lock(&self.runner) = Some(Arc::downgrade(runner));
     }
 
+    /// Attaches the executor's sessions: a show started by a person (or by an agent working for one) then runs in an
+    /// automation session of its own (design D7). Held weakly, like the runner.
+    pub fn attach_sessions(&self, sessions: &Arc<dyn Sessions>) {
+        *lock(&self.sessions) = Some(Arc::downgrade(sessions));
+    }
+
+    /// The person a start by `by` runs on behalf of: `by` itself, or the person an agent's session works for.
+    fn principal(&self, by: &Actor) -> Option<Actor> {
+        if let Actor::Person { .. } = by {
+            return Some(by.clone());
+        }
+        let sessions = lock(&self.sessions).as_ref().and_then(Weak::upgrade)?;
+        sessions.session_of(by).map(|s| s.on_behalf_of)
+    }
+
     fn runner(&self) -> Option<Weak<dyn Runner>> {
         lock(&self.runner).clone()
     }
 
-    /// Compiles and starts `def` as show `id`. What a start from inside the executor uses (`automation.start`), since
-    /// it reads the show from the document it already holds.
+    /// Compiles and starts `def` as show `id` in Omuzaki's own name (no session): what tests and tools use.
     ///
     /// # Errors
     /// [`OpError::conflict`] when a show already runs.
     pub fn start_def(&self, id: &ShowId, def: &ShowDef) -> Result<RunInfo, OpError> {
+        self.start_for(id, def, None)
+    }
+
+    /// Compiles and starts `def` as show `id`, started by `by`: the show runs in an automation session on behalf of
+    /// `by`'s person when the executor's sessions are attached. What `automation.start` uses, since it reads the show
+    /// from the document it already holds.
+    ///
+    /// # Errors
+    /// [`OpError::conflict`] when a show already runs.
+    pub fn start_def_by(&self, id: &ShowId, def: &ShowDef, by: &Actor) -> Result<RunInfo, OpError> {
+        self.start_for(id, def, self.principal(by))
+    }
+
+    fn start_for(&self, id: &ShowId, def: &ShowDef, principal: Option<Actor>) -> Result<RunInfo, OpError> {
         let mut run = lock(&self.run);
         if let Some(running) = run.as_ref()
             && running.engine.as_ref().is_some_and(|h| !h.is_finished())
@@ -219,12 +248,11 @@ impl Automation {
         let (writer, files) = self.load_values(id, &mut core);
         let inbox = Arc::new(Inbox::default());
         let stop = Arc::new(AtomicBool::new(false));
-        let (calls, pending) = channel();
-        let dispatcher = Dispatcher { runner: self.runner(), inbox: Arc::clone(&inbox) };
-        std::thread::Builder::new()
-            .name(format!("automation-calls-{id}"))
-            .spawn(move || dispatcher.run(&pending))
-            .map_err(|e| OpError::internal(format!("the automation dispatcher didn't start: {e}")))?;
+        let (work, pending) = channel();
+        let sessions = lock(&self.sessions).clone();
+        let dispatch =
+            Dispatch::new(self.runner(), sessions, id, principal, Arc::clone(&inbox), Arc::clone(&self.clock));
+        dispatch.spawn(pending)?;
         *lock(&self.shared.status) = Status::default().with_running(info.clone()).with_graphs(core.graphs());
         // A first snapshot before the engine thread runs, so a read right after the start never finds the last run's.
         *lock(&self.shared.values) = Some(Arc::new(core.values()));
@@ -234,7 +262,8 @@ impl Automation {
             stop: Arc::clone(&stop),
             clock: Arc::clone(&self.clock),
             wall: Arc::clone(&self.wall),
-            calls,
+            calls: work.clone(),
+            dispatch: Arc::clone(&dispatch),
             shared: Arc::clone(&self.shared),
             next_event: Arc::clone(&self.next_event),
             info: info.clone(),
@@ -245,7 +274,8 @@ impl Automation {
             .name(format!("automation-{id}"))
             .spawn(move || engine.run())
             .map_err(|e| OpError::internal(format!("the automation engine didn't start: {e}")))?;
-        *run = Some(Running { info: info.clone(), def: def.clone(), inbox, stop, engine: Some(handle) });
+        *run =
+            Some(Running { info: info.clone(), def: def.clone(), inbox, stop, engine: Some(handle), dispatch, work });
         Ok(info)
     }
 
@@ -253,6 +283,14 @@ impl Automation {
     #[must_use]
     pub fn running(&self) -> Option<RunInfo> {
         lock(&self.run).as_ref().filter(|r| r.engine.as_ref().is_some_and(|h| !h.is_finished())).map(|r| r.info.clone())
+    }
+
+    /// Queues `work` for the running show's ordered worker.
+    fn session_work(&self, work: Work) {
+        if let Some(running) = lock(&self.run).as_ref() {
+            // The worker only goes away with the run.
+            let _ = running.work.send(work);
+        }
     }
 
     /// Checks `change` against the running show and queues it as a step of its own.
@@ -309,13 +347,13 @@ fn not_running() -> OpError {
 }
 
 impl AutomationControl for Automation {
-    fn start(&self, show: &ShowId, _by: &Actor) -> Result<RunInfo, OpError> {
+    fn start(&self, show: &ShowId, by: &Actor) -> Result<RunInfo, OpError> {
         let runner = self.runner().and_then(|w| w.upgrade()).ok_or_else(|| OpError::unavailable("runner"))?;
         let node = runner
             .get(&paths::show(show), &Grants::of([Scope::Read]))?
             .ok_or_else(|| OpError::not_found(format!("there is no show `{show}`")))?;
         let def = ShowDef::from_node(&node).map_err(|e| OpError::invalid("show", e.to_string()))?;
-        self.start_def(show, &def)
+        self.start_def_by(show, &def, by)
     }
 
     fn stop(&self, _by: &Actor) -> Result<(), OpError> {
@@ -326,15 +364,21 @@ impl AutomationControl for Automation {
         if let Some(handle) = running.engine.take() {
             let _ = handle.join();
         }
+        // Calls not yet started are dropped; the session ends once the ones in flight are back (at most 2 s).
+        running.dispatch.finish();
         Ok(())
     }
 
     fn pause(&self, _by: &Actor) -> Result<(), OpError> {
-        self.control(|_| Ok(Control::Pause))
+        self.control(|_| Ok(Control::Pause))?;
+        self.session_work(Work::Pause(true));
+        Ok(())
     }
 
     fn resume(&self, _by: &Actor) -> Result<(), OpError> {
-        self.control(|_| Ok(Control::Resume))
+        self.control(|_| Ok(Control::Resume))?;
+        self.session_work(Work::Pause(false));
+        Ok(())
     }
 
     fn status(&self) -> Status {
@@ -411,7 +455,8 @@ struct EngineThread {
     stop: Arc<AtomicBool>,
     clock: Arc<dyn Clock>,
     wall: Arc<dyn WallClock>,
-    calls: Sender<OpRequest>,
+    calls: Sender<Work>,
+    dispatch: Arc<Dispatch>,
     shared: Arc<Shared>,
     next_event: Arc<AtomicU64>,
     info: RunInfo,
@@ -442,7 +487,7 @@ impl EngineThread {
         loop {
             for call in self.core.take_outgoing() {
                 // The dispatcher only goes away with this thread; a send can't fail before then.
-                let _ = self.calls.send(call);
+                let _ = self.calls.send(Work::Call(call));
             }
             if self.stop.load(Ordering::SeqCst) {
                 break;
@@ -512,44 +557,13 @@ impl EngineThread {
         dropped.inbox_full = inbox_full;
         dropped.duplicate = duplicate;
         dropped.producer = self.shared.producer_dropped.load(Ordering::Relaxed);
+        let mut info = self.info.clone();
+        info.session = self.dispatch.session_id();
         *lock(&self.shared.status) = Status::default()
-            .with_running(self.info.clone())
+            .with_running(info)
             .with_paused(self.core.paused())
             .with_graphs(self.core.graphs())
             .with_dropped(dropped);
-    }
-}
-
-/// Runs a show's op calls in order through the runner and posts each reply to the inbox (design D7's ordered lane).
-struct Dispatcher {
-    runner: Option<Weak<dyn Runner>>,
-    inbox: Arc<Inbox>,
-}
-
-impl Dispatcher {
-    fn run(self, calls: &Receiver<OpRequest>) {
-        for call in calls {
-            let outcome = self.call(&call);
-            self.inbox.push_reply(Item::Reply { call: call.call, outcome });
-        }
-    }
-
-    fn call(&self, call: &OpRequest) -> Result<Option<Value>, OpError> {
-        let runner = self.runner.as_ref().and_then(Weak::upgrade).ok_or_else(|| {
-            OpError::unsupported("the automation engine has no op runner")
-                .hint("the app attaches its runner at startup")
-        })?;
-        let request = Request {
-            op: call.op.clone(),
-            args: call.args.clone(),
-            mode: Mode::Apply,
-            actor: call.acting.clone().unwrap_or(Actor::System),
-            grants: show_grants(),
-            cause: Some(Cause { kind: CauseKind::Rule, text: Some(call.cause.clone()) }),
-            tx: None,
-            base: None,
-        };
-        runner.run(request).map(|outcome| outcome.plan.output)
     }
 }
 
@@ -568,7 +582,7 @@ mod tests {
 
     #[test]
     fn a_show_runs_with_the_base_grants_only() {
-        let grants = show_grants();
+        let grants = crate::dispatch::show_grants();
         assert!(grants.allows(Scope::Perform) && !grants.allows(Scope::Fs) && !grants.allows(Scope::EditScene));
     }
 
