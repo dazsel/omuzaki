@@ -163,6 +163,13 @@ impl Document {
             message: format!("scene {wanted} doesn't exist"),
             at: Some("/scene".into()),
         })?;
+        if let Some((at, &node)) = scene.nodes.iter().enumerate().find(|&(_, &n)| n >= self.nodes.len()) {
+            // Refused here rather than carried on: a file of dangling roots would otherwise cost one finding each.
+            return Err(IoError::Malformed {
+                message: format!("scene {wanted} names node {node}, and there are {} nodes", self.nodes.len()),
+                at: Some(format!("/scenes/{wanted}/nodes/{at}")),
+            });
+        }
         Ok(scene.nodes.clone())
     }
 
@@ -350,14 +357,16 @@ pub struct Skin {
 /// `Vec<IgnoredAny>` stores nothing (the element is zero-sized), so counting a hostile file with millions of empty
 /// objects costs no memory, whichever array they are in. Every top-level array of [`Document`] is here, because a typed
 /// element is far larger than the `{}` that names it (a material is 888 bytes for 3 bytes of JSON): the reader checks
-/// these against the limits *before* the real parse allocates anything.
+/// these against the limits *before* the real parse allocates anything. The arrays nested in meshes, scenes, nodes and
+/// skins (primitives, morph targets, root and child indices, joints) are summed over the document the same way, with
+/// [`Sum`], which keeps no element either (#633).
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct Counts {
-    pub scenes: Vec<IgnoredAny>,
-    pub nodes: Vec<IgnoredAny>,
-    pub meshes: Vec<IgnoredAny>,
-    pub skins: Vec<IgnoredAny>,
+    pub scenes: Sum<SceneCount>,
+    pub nodes: Sum<NodeCount>,
+    pub meshes: Sum<MeshCount>,
+    pub skins: Sum<SkinCount>,
     pub materials: Vec<IgnoredAny>,
     pub textures: Vec<IgnoredAny>,
     pub images: Vec<IgnoredAny>,
@@ -367,6 +376,132 @@ pub(crate) struct Counts {
     pub buffers: Vec<IgnoredAny>,
     pub animations: Vec<IgnoredAny>,
     pub cameras: Vec<IgnoredAny>,
+}
+
+/// What an element of a counted array adds to the array's total.
+pub(crate) trait Tally: Default {
+    /// Adds `other`'s counts to these.
+    fn add(&mut self, other: &Self);
+}
+
+/// The length of a JSON array and the [`Tally`] of its elements, read one element at a time and kept by no one: an
+/// array of a million elements costs the size of one. `null` counts as empty.
+#[derive(Debug, Default)]
+pub(crate) struct Sum<T> {
+    /// How many elements the array has.
+    pub len: u64,
+    /// The elements' counts, added up.
+    pub total: T,
+}
+
+impl<T: Tally> Tally for Sum<T> {
+    fn add(&mut self, other: &Self) {
+        self.len += other.len;
+        self.total.add(&other.total);
+    }
+}
+
+impl<'de, T: Tally + Deserialize<'de>> Deserialize<'de> for Sum<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visit<T>(std::marker::PhantomData<T>);
+        impl<'de, T: Tally + Deserialize<'de>> serde::de::Visitor<'de> for Visit<T> {
+            type Value = Sum<T>;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("an array")
+            }
+            fn visit_unit<E: serde::de::Error>(self) -> Result<Sum<T>, E> {
+                Ok(Sum::default())
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Sum<T>, A::Error> {
+                let mut sum = Sum::<T>::default();
+                while let Some(element) = seq.next_element::<T>()? {
+                    sum.len += 1;
+                    sum.total.add(&element);
+                }
+                Ok(sum)
+            }
+        }
+        deserializer.deserialize_any(Visit(std::marker::PhantomData))
+    }
+}
+
+/// An element counted for its place only.
+#[derive(Debug, Default)]
+pub(crate) struct Any;
+
+impl Tally for Any {
+    fn add(&mut self, _: &Self) {}
+}
+
+impl<'de> Deserialize<'de> for Any {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        IgnoredAny::deserialize(deserializer).map(|_| Self)
+    }
+}
+
+/// A scene's root indices.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub(crate) struct SceneCount {
+    pub nodes: Sum<Any>,
+}
+
+impl Tally for SceneCount {
+    fn add(&mut self, other: &Self) {
+        self.nodes.add(&other.nodes);
+    }
+}
+
+/// A node's child indices.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub(crate) struct NodeCount {
+    pub children: Sum<Any>,
+}
+
+impl Tally for NodeCount {
+    fn add(&mut self, other: &Self) {
+        self.children.add(&other.children);
+    }
+}
+
+/// A mesh's primitives, and their morph targets.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub(crate) struct MeshCount {
+    pub primitives: Sum<PrimitiveCount>,
+}
+
+impl Tally for MeshCount {
+    fn add(&mut self, other: &Self) {
+        self.primitives.add(&other.primitives);
+    }
+}
+
+/// A primitive's morph targets.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub(crate) struct PrimitiveCount {
+    pub targets: Sum<Any>,
+}
+
+impl Tally for PrimitiveCount {
+    fn add(&mut self, other: &Self) {
+        self.targets.add(&other.targets);
+    }
+}
+
+/// A skin's joint indices.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub(crate) struct SkinCount {
+    pub joints: Sum<Any>,
+}
+
+impl Tally for SkinCount {
+    fn add(&mut self, other: &Self) {
+        self.joints.add(&other.joints);
+    }
 }
 
 #[cfg(test)]
@@ -381,8 +516,23 @@ mod tests {
             r#"{"asset":{"version":"2.0"},"nodes":[{},{"a":[1,2]},{}],"images":[{}],"bufferViews":[{},{}],"cameras":[]}"#,
         )
         .unwrap();
-        assert_eq!((counts.nodes.len(), counts.images.len(), counts.buffer_views.len()), (3, 1, 2));
+        assert_eq!((counts.nodes.len, counts.images.len(), counts.buffer_views.len()), (3, 1, 2));
         assert_eq!((counts.cameras.len(), counts.materials.len()), (0, 0), "empty and missing arrays count zero");
+    }
+
+    #[test]
+    fn counts_sum_the_nested_arrays() {
+        let counts: Counts = serde_json::from_str(
+            r#"{"meshes":[{"primitives":[{"targets":[{},{}]},{}]},{"primitives":[{"targets":[{}]}]},{}],
+                "scenes":[{"nodes":[0,1]},{"nodes":null}],"nodes":[{"children":[1,2]},{"children":[3]},{}],
+                "skins":[{"joints":[0,1,2]}]}"#,
+        )
+        .unwrap();
+        assert_eq!((counts.meshes.len, counts.meshes.total.primitives.len), (3, 3));
+        assert_eq!(counts.meshes.total.primitives.total.targets.len, 3);
+        assert_eq!((counts.scenes.len, counts.scenes.total.nodes.len), (2, 2));
+        assert_eq!((counts.nodes.len, counts.nodes.total.children.len), (3, 3));
+        assert_eq!(counts.skins.total.joints.len, 3);
     }
 
     #[test]
@@ -478,6 +628,12 @@ mod tests {
         assert_eq!(doc.default_roots().unwrap(), [2], "the first scene when none is named");
         doc.scene = Some(1);
         assert_eq!(doc.default_roots().unwrap(), [0]);
+        doc.scenes[1].nodes = vec![0, 3];
+        let Err(IoError::Malformed { at, .. }) = doc.default_roots() else {
+            panic!("a root past the nodes is refused")
+        };
+        assert_eq!(at.as_deref(), Some("/scenes/1/nodes/1"));
+        doc.scenes[1].nodes = vec![0];
         doc.scene = Some(9);
         assert!(doc.default_roots().is_err());
     }

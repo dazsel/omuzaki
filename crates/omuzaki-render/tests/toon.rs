@@ -806,18 +806,6 @@ fn max_difference(a: &Image, b: &Image, pixels: &[(u32, u32)]) -> u8 {
         .unwrap_or(0)
 }
 
-/// The mock's tone curve: Narkowicz's fit of ACES. The GPU renderer implements the curve three.js uses (Hill's fit, with
-/// its exposure / 0.6), which the prototype's goldens need; the two differ by up to about 15 levels on mid-tones, so the
-/// mock's golden is compared in linear light and put through the mock's curve here.
-fn mock_aces(rgb: [u8; 3]) -> [u8; 3] {
-    let decode = |v: u8| {
-        let v = f64::from(v) / 255.0;
-        if v <= 0.040_45 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
-    };
-    let fit = |x: f64| (x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14);
-    encode(DVec3::new(fit(decode(rgb[0])), fit(decode(rgb[1])), fit(decode(rgb[2]))))
-}
-
 #[test]
 fn the_cube_matches_the_mocks_golden_inside_its_faces() {
     const CUBE: UVec2 = UVec2::new(192, 192);
@@ -827,14 +815,10 @@ fn the_cube_matches_the_mocks_golden_inside_its_faces() {
 
     let mut gpu = support::renderer();
     let mesh = gpu.create_mesh(&shapes::cuboid(Vec3::splat(0.5))).unwrap();
-    let scene = cube_scene(&mut gpu, mesh);
-    let linear = gpu.render_image(CUBE, AlphaEncoding::Straight, &scene, &Quality::offline()).unwrap();
-    // Lit, then through the mock's tone curve: what the mock would have drawn from the GPU's lighting.
-    let mut image = linear.clone();
-    for pixel in image.rgba8.as_chunks_mut::<4>().0 {
-        let mapped = mock_aces([pixel[0], pixel[1], pixel[2]]);
-        pixel[..3].copy_from_slice(&mapped);
-    }
+    // The golden is drawn with the default tone map, which the mock and the GPU now share (three.js's ACES, #630).
+    let mut scene = cube_scene(&mut gpu, mesh);
+    scene.post.tonemap = Tonemap::Aces;
+    let image = gpu.render_image(CUBE, AlphaEncoding::Straight, &scene, &Quality::offline()).unwrap();
     if let Some(dir) = std::env::var_os("OMUZAKI_RENDER_OUT") {
         let image_path = PathBuf::from(dir).join("toon-cube-gpu.png");
         image::save_buffer(image_path, &image.rgba8, CUBE.x, CUBE.y, image::ColorType::Rgba8).unwrap();

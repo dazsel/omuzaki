@@ -118,13 +118,14 @@ fn material(file: &mut FbxBuilder, model: i64, name: &str, colour: [f64; 3]) -> 
     id
 }
 
-/// A texture file named `file_name`, as the diffuse colour of `material` (not embedded: read through the resolver).
-fn texture(file: &mut FbxBuilder, material: i64, file_name: &str) {
+/// A texture, as the diffuse colour of `material` (not embedded: read through the resolver), recording `path` as its file
+/// name and `relative` as its relative one, with more `properties` lines.
+fn texture_at(file: &mut FbxBuilder, material: i64, path: &str, relative: &str, properties: &str) {
     let id = file.id();
     let text = format!(
-        "\tTexture: {id}, \"Texture::{file_name}\", \"\" {{\n\t\tType: \"TextureVideoClip\"\n\t\tVersion: 202\n\
-         \t\tTextureName: \"Texture::{file_name}\"\n\t\tFileName: \"{file_name}\"\n\t\tRelativeFilename: \"{file_name}\"\n\
-         \t\tProperties70:  {{\n\t\t\tP: \"WrapModeU\", \"enum\", \"\", \"\",1\n\t\t}}\n\t}}\n"
+        "\tTexture: {id}, \"Texture::{relative}\", \"\" {{\n\t\tType: \"TextureVideoClip\"\n\t\tVersion: 202\n\
+         \t\tTextureName: \"Texture::{relative}\"\n\t\tFileName: \"{path}\"\n\t\tRelativeFilename: \"{relative}\"\n\
+         \t\tProperties70:  {{\n\t\t\tP: \"WrapModeU\", \"enum\", \"\", \"\",1\n{properties}\t\t}}\n\t}}\n"
     );
     file.raw(text, vec![(id, material, Some("DiffuseColor".to_owned()))]);
 }
@@ -387,48 +388,137 @@ fn a_blend_shape_is_a_morph_target_whose_offsets_follow_their_points_across_a_se
     );
 }
 
-/// Serves `skin.png` (a PNG signature and nothing else; the contract stores encoded images unread) and `skin.tga`.
+/// A 2 by 1 picture (red, then half-transparent blue) encoded as `format`.
+fn picture(format: image::ImageFormat) -> Vec<u8> {
+    let pixels = image::RgbaImage::from_raw(2, 1, vec![255, 0, 0, 255, 0, 0, 255, 128]).unwrap();
+    let mut bytes = Vec::new();
+    pixels.write_to(&mut std::io::Cursor::new(&mut bytes), format).unwrap();
+    bytes
+}
+
+/// Serves `skin.png` (a PNG signature and nothing else; the contract stores encoded images unread), `hair.tga`,
+/// `eyes.bmp`, `huge.tga` (a header claiming 20 000 by 1 pixels), `cloth.dds` and `textures/sub.png`.
 struct Files;
 
 impl Resolver for Files {
     fn read(&self, uri: &str) -> Result<Vec<u8>, IoError> {
         match uri {
             "skin.png" => Ok(b"\x89PNG\r\n\x1a\n-test-".to_vec()),
-            "skin.tga" => Ok(vec![0, 0, 2, 0]),
+            "textures/sub.png" => Ok(b"\x89PNG\r\n\x1a\n-sub-".to_vec()),
+            "hair.tga" => Ok(picture(image::ImageFormat::Tga)),
+            "eyes.bmp" => Ok(picture(image::ImageFormat::Bmp)),
+            "huge.tga" => {
+                let mut header = vec![0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+                header.extend(20_000_u16.to_le_bytes());
+                header.extend(1_u16.to_le_bytes());
+                header.extend([32, 8]);
+                Ok(header)
+            }
+            "cloth.dds" => Ok(b"DDS \x7c\0\0\0".to_vec()),
             _ => Err(IoError::Resource { uri: uri.to_owned(), reason: "no such file".to_owned() }),
         }
     }
 }
 
-#[test]
-fn a_texture_file_is_kept_as_its_png_and_another_format_is_left_out_with_a_warning() {
+/// A file with one material per texture name in `names`, each drawing one quad, imported with [`Files`].
+fn textured(textures: &[(&str, &str, &str)]) -> omuzaki_io_api::ImportOutcome {
     let mut file = maya();
     let model = file.model("Body", SCENE_ROOT, [0.0; 3], [0.0; 3]);
     let mut g = quad();
-    g.points.extend([[200.0, 0.0, 0.0], [200.0, 100.0, 0.0]]);
-    g.polygons.push(vec![1, 4, 5, 2]);
-    g.normals = Some(vec![[0.0, 0.0, 1.0]; 8]);
-    g.uvs = Some(vec![[0.0, 0.0]; 8]);
-    g.materials = Some(vec![0, 1]);
+    let n = textures.len();
+    for i in 1..n {
+        let x = 100.0 * f64::from(u32::try_from(i + 1).unwrap());
+        g.points.extend([[x, 0.0, 0.0], [x, 100.0, 0.0]]);
+        let base = i32::try_from(2 + 2 * i).unwrap();
+        let prev = if i == 1 { [1, 2] } else { [base - 2, base - 1] };
+        g.polygons.push(vec![prev[0], base, base + 1, prev[1]]);
+    }
+    g.normals = Some(vec![[0.0, 0.0, 1.0]; 4 * n]);
+    g.uvs = Some(vec![[0.0, 0.0]; 4 * n]);
+    g.materials = Some((0..i32::try_from(n).unwrap()).collect());
     g.write(&mut file, model);
-    let png = material(&mut file, model, "skin", [1.0; 3]);
-    texture(&mut file, png, "skin.png");
-    let tga = material(&mut file, model, "hair", [1.0; 3]);
-    texture(&mut file, tga, "skin.tga");
+    for (i, (path, relative, properties)) in textures.iter().enumerate() {
+        let m = material(&mut file, model, &format!("m{i}"), [1.0; 3]);
+        texture_at(&mut file, m, path, relative, properties);
+    }
     let options = ImportOptions::default();
-    let out =
-        run_import(&FbxImporter, &ImportInput::new(&file.bytes()), &ImportCtx::new(&options).with_resolver(&Files))
-            .expect("imports");
+    run_import(&FbxImporter, &ImportInput::new(&file.bytes()), &ImportCtx::new(&options).with_resolver(&Files))
+        .expect("imports")
+}
+
+/// The image material `m{i}` samples as its base colour, if it has one.
+fn base_image(out: &omuzaki_io_api::ImportOutcome, i: usize) -> Option<&omuzaki_io_api::EncodedImage> {
     let scene = &out.scene;
-    assert_eq!(scene.images.len(), 1);
-    assert_eq!(scene.images[0].bytes.as_slice(), b"\x89PNG\r\n\x1a\n-test-");
-    let skin = scene.materials.iter().find(|m| m.name == "skin").unwrap();
-    let texture = &scene.textures[skin.base_color_texture.expect("the PNG is the base colour").texture.index()];
+    let material = scene.materials.iter().find(|m| m.name == format!("m{i}")).unwrap();
+    let texture = &scene.textures[material.base_color_texture?.texture.index()];
+    Some(&scene.images[texture.image.index()])
+}
+
+#[test]
+fn a_png_texture_is_kept_byte_for_byte_with_its_wrap() {
+    let out = textured(&[("skin.png", "skin.png", "")]);
+    let image = base_image(&out, 0).expect("the PNG is the base colour");
+    assert_eq!(image.bytes.as_slice(), b"\x89PNG\r\n\x1a\n-test-");
+    let skin = &out.scene.materials[0];
+    let texture = &out.scene.textures[skin.base_color_texture.unwrap().texture.index()];
     assert_eq!(texture.sampler.wrap_u, Wrap::ClampToEdge, "WrapModeU 1 is clamp");
-    let hair = scene.materials.iter().find(|m| m.name == "hair").unwrap();
-    assert!(hair.base_color_texture.is_none());
-    let dropped = out.report.findings.iter().find(|f| f.rule == "fbx.texture_dropped").expect("the TGA is reported");
-    assert!(dropped.message.contains("neither PNG nor JPEG"), "{}", dropped.message);
+    assert_eq!(skin.base_color_texture.unwrap().transform, None, "no UV transform");
+}
+
+#[test]
+fn tga_and_bmp_textures_become_the_same_pixels_as_png() {
+    let out = textured(&[("hair.tga", "hair.tga", ""), ("eyes.bmp", "eyes.bmp", "")]);
+    for i in 0..2 {
+        let image = base_image(&out, i).expect("converted");
+        assert_eq!(image.mime, omuzaki_io_api::ImageMime::Png);
+        let pixels = image::load_from_memory(image.bytes.as_slice()).unwrap().to_rgba8();
+        let want: &[u8] = &[255, 0, 0, 255, 0, 0, 255, 128];
+        assert_eq!((pixels.width(), pixels.height()), (2, 1));
+        // BMP keeps no alpha in every writer; the colours are what must survive.
+        assert_eq!(pixels.as_raw()[..3], want[..3]);
+        assert_eq!(pixels.as_raw()[4..7], want[4..7]);
+        if i == 0 {
+            assert_eq!(pixels.as_raw().as_slice(), want, "TGA keeps the alpha too");
+        }
+    }
+    assert!(out.report.findings.iter().all(|f| f.rule != "fbx.texture_dropped"), "{:?}", out.report.findings);
+}
+
+#[test]
+fn an_oversized_or_unknown_texture_is_left_out_with_a_warning() {
+    let out = textured(&[("huge.tga", "huge.tga", ""), ("cloth.dds", "cloth.dds", "")]);
+    assert!(base_image(&out, 0).is_none() && base_image(&out, 1).is_none());
+    let messages: Vec<&str> =
+        out.report.findings.iter().filter(|f| f.rule == "fbx.texture_dropped").map(|f| f.message.as_str()).collect();
+    assert_eq!(messages.len(), 2, "{messages:?}");
+    assert!(messages.iter().any(|m| m.contains("20000 by 1 pixels")), "{messages:?}");
+    assert!(messages.iter().any(|m| m.contains("not PNG, JPEG, TGA or BMP")), "{messages:?}");
+}
+
+#[test]
+fn an_absolute_texture_path_falls_back_to_its_file_name_and_a_relative_one_is_read_as_written() {
+    let out = textured(&[
+        (r"C:\Users\artist\project\skin.png", "", ""),
+        ("/home/artist/old/textures/sub.png", r"textures\sub.png", ""),
+    ]);
+    assert_eq!(base_image(&out, 0).expect("by its file name").bytes.as_slice(), b"\x89PNG\r\n\x1a\n-test-");
+    assert_eq!(base_image(&out, 1).expect("by its relative name").bytes.as_slice(), b"\x89PNG\r\n\x1a\n-sub-");
+}
+
+#[test]
+fn a_texture_uv_translation_and_scale_carry_into_gltf_space_and_a_rotation_is_reported() {
+    let moved = "\t\t\tP: \"Translation\", \"Vector\", \"\", \"A\",0.25,0.125,0\n\
+                 \t\t\tP: \"Scaling\", \"Vector\", \"\", \"A\",2,0.5,1\n";
+    let turned = "\t\t\tP: \"Rotation\", \"Vector\", \"\", \"A\",0,0,30\n";
+    let out = textured(&[("skin.png", "skin.png", moved), ("skin.png", "skin.png", turned)]);
+    let transform = out.scene.materials[0].base_color_texture.unwrap().transform.expect("a UV transform");
+    // The file places the texture: scaled by (2, 0.5) and moved by (0.25, 0.125) in UV space, so a texture coordinate
+    // is (uv - translation) / scale with v up, which is uv * (0.5, 2) + (-0.125, -0.25). glTF's v runs down, so v's
+    // offset becomes 1 - 2 - (-0.25).
+    assert!((transform.scale - Vec2::new(0.5, 2.0)).abs().max_element() < 1e-6, "{transform:?}");
+    assert!((transform.offset - Vec2::new(-0.125, -0.75)).abs().max_element() < 1e-6, "{transform:?}");
+    let rotation = out.report.findings.iter().find(|f| f.rule == "fbx.texture_uv_rotation").expect("reported");
+    assert!(rotation.message.contains("m1"), "{}", rotation.message);
 }
 
 #[test]

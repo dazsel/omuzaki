@@ -38,7 +38,7 @@ pub struct Capabilities {
     pub morph_targets: bool,
     /// The most morph targets one mesh may have; 0 if `morph_targets` is false.
     pub max_morph_targets: u32,
-    /// The `MToon` groups this renderer draws. [`MtoonSupport::NONE`] today.
+    /// The `MToon` groups this renderer draws: [`MtoonSupport::OUTLINE_STYLE`] on the wgpu and mock renderers.
     pub mtoon: MtoonSupport,
 }
 
@@ -65,6 +65,12 @@ impl MtoonSupport {
     pub const RIM_LIGHTING_MIX: Self = Self(1 << 5);
     /// Mixing the outline colour with the scene lighting.
     pub const OUTLINE_LIGHTING_MIX: Self = Self(1 << 6);
+    /// The outline width multiplier texture.
+    pub const OUTLINE_WIDTH_TEXTURE: Self = Self(1 << 7);
+    /// The outline groups `Material::outline_style` carries (#647): screen-space widths, the lighting mix and the width
+    /// texture. Every renderer that implements the style draws all three.
+    pub const OUTLINE_STYLE: Self =
+        Self(Self::OUTLINE_WIDTH_SCREEN.0 | Self::OUTLINE_LIGHTING_MIX.0 | Self::OUTLINE_WIDTH_TEXTURE.0);
 
     /// True if every group in `group` is drawn (so `contains(NONE)` is always true).
     pub const fn contains(self, group: Self) -> bool {

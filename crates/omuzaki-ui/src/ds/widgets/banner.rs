@@ -53,7 +53,8 @@ impl<'a> Banner<'a> {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = space::S8;
                     ui.label(RichText::new(icons::status(self.status)).font(ds.text.icon(16.0, true)).color(colour));
-                    ui.label(RichText::new(self.text).font(ds.text.body.clone()).color(t.text));
+                    // A long note wraps in the room left beside the icon, never widening the panel.
+                    ui.add(egui::Label::new(RichText::new(self.text).font(ds.text.body.clone()).color(t.text)).wrap());
                     if let Some(action) = self.action {
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             out.action = ui.add(Button::new(action).kind(ButtonKind::Secondary)).clicked();

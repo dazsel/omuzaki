@@ -2,6 +2,9 @@
 # Three.js units (render-api D10): the numbers are copied, not rescaled.
 name = "perform-facecam"
 source = "js/perform/perform.js (face-cam: soft warm key from front-left, cool rim, gentle fill)"
+title = "Face cam"
+summary = "A soft warm key from the front left, a cool rim and a gentle fill, framed for a streaming face cam."
+tags = ["stream", "warm", "face"]
 exposure = 1.0
 background = "#3b2418"
 skin_floor = 0.42

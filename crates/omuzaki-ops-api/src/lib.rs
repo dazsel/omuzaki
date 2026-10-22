@@ -44,7 +44,7 @@ pub use jobs::{
     Lane, NeverCancel,
 };
 pub use registry::{OpRegistration, find, registrations};
-pub use runner::{ClashKind, Event, Mode, OpInfo, OpRecord, Outcome, Request, Runner, TxId};
+pub use runner::{ClashKind, Event, Mode, OpInfo, OpRecord, Outcome, Request, Runner, TxId, tool_name};
 pub use scope::Scope;
 pub use services::{ConnectionService, Service, Services, ServicesBuilder};
 pub use session::{

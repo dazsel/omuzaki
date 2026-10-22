@@ -20,6 +20,7 @@
 pub mod app;
 pub mod class;
 pub mod dock;
+pub mod history;
 pub mod host;
 pub mod keys;
 pub mod layout;

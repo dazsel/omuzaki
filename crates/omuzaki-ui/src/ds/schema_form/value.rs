@@ -35,6 +35,9 @@ pub enum FormValue {
     Curve(Curve),
     /// A nested object: its fields by key, in the schema's order.
     Object(Vec<(String, FormValue)>),
+    /// A field with no control of its own, as the JSON text the person typed; it may not parse while it is being typed
+    /// (see [`Form::invalid_count`](super::Form::invalid_count)).
+    Json(String),
     /// JSON the form shows but does not edit: a field whose shape has no control, or a value that does not fit its
     /// field (out of range, not one of the options). It passes through to [`Value`] unchanged.
     Raw(Value),
@@ -112,6 +115,7 @@ impl From<&FormValue> for Value {
                     .map(|(k, v)| (k.clone(), Self::from(v)))
                     .collect(),
             ),
+            FormValue::Json(text) => serde_json::from_str(text).unwrap_or(Self::Null),
             FormValue::Absent => Self::Null,
         }
     }

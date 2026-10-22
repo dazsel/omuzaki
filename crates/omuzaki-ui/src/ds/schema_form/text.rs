@@ -17,6 +17,13 @@ pub(super) const AT_LEAST: &str = "Enter a whole number of at least {min}";
 /// An integer field's text is a whole number above its upper bound.
 pub(super) const AT_MOST: &str = "Enter a whole number of at most {max}";
 
+/// Gives an optional field that is unset a value.
+pub(super) const SET: &str = "Set";
+/// Its accessible name.
+pub(super) const SET_FIELD: &str = "Set {label}";
+/// A JSON field's text doesn't parse.
+pub(super) const NOT_JSON: &str = "Enter a JSON value, such as 1, \"text\", [1, 2] or {\"key\": 1}";
+
 /// A curve field's tangent can't be edited: the schema's array carries points only, so a tangent would be lost.
 pub(super) const NO_TANGENTS: &str = "Tangents are not saved in this field";
 
