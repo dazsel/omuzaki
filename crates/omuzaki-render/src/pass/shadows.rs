@@ -1,24 +1,27 @@
-//! The `Shadows` pass: a fitted, depth-only map of the casters for the scene's shadow-casting directional light.
+//! The `Shadows` pass: a fitted, depth-only map of the casters for each of the scene's shadow-casting directional lights.
 //!
-//! **Which light.** The first directional light with `casts_shadow` owns the map; further casting lights are lit
-//! without shadow for now.
+//! **Which lights.** Each directional light with `casts_shadow` owns a map, in light order, up to the quality's
+//! [`max_maps`](omuzaki_render_api::ShadowQuality::max_maps): one at `Low` (the live default keeps one map's cost), up
+//! to [`MAX_SHADOW_MAPS`](omuzaki_render_api::limits::MAX_SHADOW_MAPS) at `High`. Casting lights past that are lit
+//! without shadow. Each further map costs one more depth-only drawing of the casters and nine more comparisons where a
+//! lit surface faces that light.
 //!
 //! **What is drawn.** `cx.frame.draws.for_pass(Pass::Shadows)`: the instances that cast. Single-sided surfaces draw
 //! their *back* faces into the map, as three.js does (the prototype's look), so a lit face never competes with its own
 //! depth and acne stays away from it; double-sided surfaces draw both. Masked and blended materials discard like the
 //! lit pass does (`shader/shadow.wgsl`). Skinned instances are posed by the same `pose` as the lit passes.
 //!
-//! **The frustum.** Fitted every redraw to the casters' world bounds (skinned ones included) and the receivers' depth
+//! **The frustum.** Fitted per map, every redraw of it, to the casters' world bounds (skinned ones included) and the receivers' depth
 //! (`shadow::fit`; opaque and blended receivers both count): a texel-snapped window around the casters' bounding sphere, stepped in scale, so nothing shimmers.
 //!
-//! **Live interval.** In `QualityMode::Live` the map is redrawn every `Quality::shadow_interval`-th frame and the frames
-//! between report the pass as skipped, while `Opaque` keeps sampling the map and the matrix of the last redraw. A first
-//! frame, a changed light direction or a new map size redraws at once. `QualityMode::Offline` redraws every frame, so a
+//! **Live interval.** In `QualityMode::Live` each map is redrawn every `Quality::shadow_interval`-th frame and a frame
+//! that redraws none reports the pass as skipped, while `Opaque` keeps sampling the maps and the matrices of their last
+//! redraws. A first frame, a changed light direction or a new map size redraws a map at once. `QualityMode::Offline` redraws every frame, so a
 //! frame depends on its own inputs only.
 //!
-//! **Looking it up.** The map and its settings are published to the lit passes as group 2 (`Attachments::shadow`);
-//! the lookup is `shadow_visibility` in `shader/toon.wgsl`. With shadows off, or no caster, sampling is switched off and
-//! the pass is skipped.
+//! **Looking it up.** The maps and their settings are published to the lit passes as group 2 (`Attachments::shadow`);
+//! the lookup is `shadow_visibility` in `shader/toon.wgsl`, which finds a directional light's map by its slot. With
+//! shadows off, or no caster, sampling is switched off and the pass is skipped.
 
 use std::collections::HashMap;
 
@@ -53,9 +56,9 @@ pub(crate) struct Shadows {
     pipelines: HashMap<Variant, wgpu::RenderPipeline>,
 }
 
-/// The first directional light that casts: its slot and the direction toward it.
-fn casting_light(lights: &[Light]) -> Option<(usize, Vec3)> {
-    lights.iter().take(omuzaki_render_api::limits::MAX_LIGHTS).enumerate().find_map(|(slot, light)| match *light {
+/// The directional lights that cast, in light order: each one's slot and the direction toward it.
+fn casting_lights(lights: &[Light]) -> impl Iterator<Item = (usize, Vec3)> + '_ {
+    lights.iter().take(omuzaki_render_api::limits::MAX_LIGHTS).enumerate().filter_map(|(slot, light)| match *light {
         Light::Directional { to_light, casts_shadow: true, .. } => Some((slot, to_light)),
         _ => None,
     })
@@ -64,7 +67,7 @@ fn casting_light(lights: &[Light]) -> Option<(usize, Vec3)> {
 /// Whether `scene` under `quality` fits a shadow map: a light casts and the quality has maps. A frame that does reads the
 /// bounds of every caster and receiver, and one that does not never reads them for shadows.
 pub(crate) fn fits_shadows(scene: &omuzaki_render_api::Scene, quality: &omuzaki_render_api::Quality) -> bool {
-    map::settings(quality.shadows).is_some() && casting_light(&scene.lights).is_some()
+    map::settings(quality.shadows).is_some() && casting_lights(&scene.lights).next().is_some()
 }
 
 impl Shadows {
@@ -164,28 +167,42 @@ impl FramePass for Shadows {
 
     fn record(&mut self, cx: &mut PassCx<'_>) -> Result<Outcome, RenderError> {
         let queue = &cx.shared.gpu.queue;
-        let (Some((size, spacing)), Some((slot, to_light))) =
-            (map::settings(cx.frame.quality.shadows), casting_light(&cx.frame.scene.lights))
-        else {
-            cx.attachments.shadow.disable(queue);
+        let most = cx.frame.quality.shadows.max_maps();
+        let count = casting_lights(&cx.frame.scene.lights).take(most).count();
+        let (Some((size, spacing)), true) = (map::settings(cx.frame.quality.shadows), count > 0) else {
+            cx.attachments.shadow.disable_from(queue, 0);
             return Ok(Outcome::Skipped);
         };
         if cx.frame.draws.for_pass(Pass::Shadows).next().is_none() {
-            cx.attachments.shadow.disable(queue);
+            cx.attachments.shadow.disable_from(queue, 0);
             return Ok(Outcome::Skipped);
         }
-        cx.attachments.shadow.resize(cx.shared, size);
-        if !cx.attachments.shadow.due(cx.frame.quality, to_light) {
-            return Ok(Outcome::Skipped);
+        cx.attachments.shadow.resize(cx.shared, size, count);
+        cx.attachments.shadow.disable_from(queue, count);
+
+        // The bounds are read once, by the first map due this frame.
+        let mut bounds = None;
+        let mut ran = false;
+        for (index, (slot, to_light)) in casting_lights(&cx.frame.scene.lights).take(count).enumerate() {
+            if !cx.attachments.shadow.due(index, cx.frame.quality, slot, to_light) {
+                continue;
+            }
+            let (casters, receivers) = *bounds.get_or_insert_with(|| scene_bounds(cx));
+            let Some(fitted) = fit::fit(to_light, &casters, &receivers, size, NORMAL_BIAS) else {
+                cx.attachments.shadow.disable(queue, index);
+                continue;
+            };
+            cx.attachments.shadow.publish(queue, index, &fitted, slot, spacing, to_light);
+            self.draw_map(cx, index);
+            ran = true;
         }
+        Ok(if ran { Outcome::Ran } else { Outcome::Skipped })
+    }
+}
 
-        let (casters, receivers) = scene_bounds(cx);
-        let Some(fitted) = fit::fit(to_light, &casters, &receivers, size, NORMAL_BIAS) else {
-            cx.attachments.shadow.disable(queue);
-            return Ok(Outcome::Skipped);
-        };
-        cx.attachments.shadow.publish(queue, &fitted, slot, spacing, to_light);
-
+impl Shadows {
+    /// Draws the casters into map `index`, whose matrix was just published.
+    fn draw_map(&mut self, cx: &mut PassCx<'_>, index: usize) {
         // Build any pipeline the frame needs before the render pass borrows the encoder.
         let device = &cx.shared.gpu.device;
         for draw in cx.frame.draws.for_pass(Pass::Shadows) {
@@ -201,9 +218,10 @@ impl FramePass for Shadows {
             }
         }
 
-        let mut pass = cx.attachments.shadow.begin_pass(cx.encoder);
+        let Some(mut pass) = cx.attachments.shadow.begin_pass(cx.encoder, index) else { return };
+        let (caster_group, offset) = cx.attachments.shadow.caster_group(index);
         pass.set_bind_group(0, cx.frame.bind_group, &[]);
-        pass.set_bind_group(2, cx.attachments.shadow.caster_group(), &[]);
+        pass.set_bind_group(2, caster_group, &[offset]);
         for draw in cx.frame.draws.for_pass(Pass::Shadows) {
             let (Some(mesh), Some(material)) =
                 (cx.resources.meshes.at(draw.mesh), cx.resources.materials.at(draw.material))
@@ -222,7 +240,6 @@ impl FramePass for Shadows {
             cx.stats.draw_calls += 1;
             cx.stats.triangles += mesh.triangles;
         }
-        Ok(Outcome::Ran)
     }
 }
 
@@ -237,22 +254,22 @@ mod tests {
     }
 
     #[test]
-    fn the_first_casting_directional_light_owns_the_map() {
+    fn every_casting_directional_light_gets_a_map_in_light_order() {
         let lights = [
             Light::Hemisphere { sky: Colour::WHITE, ground: Colour::BLACK, intensity: 1.0 },
             sun(false),
             Light::Directional { to_light: Vec3::X, colour: Colour::WHITE, intensity: 1.0, casts_shadow: true },
             sun(true),
         ];
-        assert_eq!(casting_light(&lights), Some((2, Vec3::X)));
-        assert_eq!(casting_light(&[sun(false)]), None);
-        assert_eq!(casting_light(&[]), None);
+        assert_eq!(casting_lights(&lights).collect::<Vec<_>>(), [(2, Vec3::X), (3, Vec3::Y)]);
+        assert_eq!(casting_lights(&[sun(false)]).next(), None);
+        assert_eq!(casting_lights(&[]).next(), None);
     }
 
     #[test]
     fn a_light_past_the_frames_limit_is_not_a_caster() {
         let mut lights = vec![sun(false); omuzaki_render_api::limits::MAX_LIGHTS];
         lights.push(sun(true));
-        assert_eq!(casting_light(&lights), None);
+        assert_eq!(casting_lights(&lights).next(), None);
     }
 }

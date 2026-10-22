@@ -4262,6 +4262,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-connect"
+version = "0.0.0"
+dependencies = [
+ "base64",
+ "omuzaki-ai-api",
+ "omuzaki-connect-api",
+ "omuzaki-connect-mock",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-doc-mock",
+ "omuzaki-http-api",
+ "omuzaki-http-mock",
+ "omuzaki-ops-api",
+ "omuzaki-secrets-api",
+ "omuzaki-secrets-mock",
+ "omuzaki-settings-api",
+ "omuzaki-settings-mock",
+ "omuzaki-store-api",
+ "omuzaki-store-mock",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "toml",
+ "tracing",
+ "zeroize",
+]
+
+[[package]]
 name = "omuzaki-connect-api"
 version = "0.0.0"
 dependencies = [
@@ -5284,6 +5313,7 @@ dependencies = [
  "omuzaki-core",
  "omuzaki-doc-api",
  "omuzaki-render-api",
+ "omuzaki-store-api",
  "proptest",
  "schemars",
  "serde",
@@ -5619,6 +5649,8 @@ dependencies = [
  "omuzaki-char",
  "omuzaki-char-api",
  "omuzaki-char-mock",
+ "omuzaki-connect",
+ "omuzaki-connect-api",
  "omuzaki-core",
  "omuzaki-doc",
  "omuzaki-doc-api",
@@ -5644,6 +5676,8 @@ dependencies = [
  "omuzaki-setup",
  "omuzaki-stage",
  "omuzaki-stage-api",
+ "omuzaki-store",
+ "omuzaki-store-api",
  "omuzaki-stream",
  "omuzaki-stream-api",
  "omuzaki-track",

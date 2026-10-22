@@ -7,7 +7,7 @@
 //! | Pass | File | State |
 //! |---|---|---|
 //! | `PaintTextures` | `paint_textures.rs` | done: rebuilds the mips of repainted textures |
-//! | `Shadows` | `shadows.rs` | done: one fitted, texel-snapped directional map for the first casting light, redrawn every `shadow_interval`-th live frame; the lookup is in `shader/toon.wgsl` |
+//! | `Shadows` | `shadows.rs` | done: a fitted, texel-snapped directional map per casting light (up to the quality's `max_maps`), each redrawn every `shadow_interval`-th live frame; the lookup is in `shader/toon.wgsl` |
 //! | `Opaque` | `opaque.rs` | done: toon shading (ramp, tinted shade, rim, skin, lights) over base colour, vertex colours, textures, overlays and skinning |
 //! | `Outlines` | `outlines.rs` | done: inverted hull on welded smooth normals, width by distance; `MToon`'s other width modes are not implemented yet |
 //! | `Transparent` | `transparent.rs` | done: blended instances sorted by `Instance::order`, then back to front, depth-tested without writing depth; the opaque shader and program hooks with a blend state |
@@ -21,6 +21,7 @@
 //! `cx.frame.draws.for_pass(Pass::X)`, already filtered; the quality is `cx.frame.quality`. A product another pass
 //! reads (the shadow map `Opaque` samples) is published through `frame/attachments.rs`.
 
+mod backdrop;
 mod bloom;
 mod dof;
 mod opaque;

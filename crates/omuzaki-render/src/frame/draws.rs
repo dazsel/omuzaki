@@ -162,6 +162,12 @@ impl FrameState {
                 .ok_or(RenderError::UnknownHandle { what: "environment" })?;
             self.draws.environment = Some(using.id.index());
         }
+        if let omuzaki_render_api::Background::Texture { texture, .. } = scene.background {
+            resources
+                .textures
+                .get(texture.index(), texture.generation())
+                .ok_or(RenderError::UnknownHandle { what: "texture" })?;
+        }
         for (index, instance) in (0u32..).zip(&scene.instances) {
             let (mesh_slot, material_slot) = (instance.mesh.index(), instance.material.index());
             let mesh = resources

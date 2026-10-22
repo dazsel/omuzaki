@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 
 use omuzaki_render_api::{Bloom, Colour};
+use omuzaki_store_api::ContentHash;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -43,6 +44,20 @@ pub enum LightShape {
         /// Where the light reaches zero, in the anchor's units, `> 0`.
         range: f32,
     },
+    /// A spot light (a stage light, a torch): a point light confined to a cone from `position` toward `target`
+    /// (LK-08, phase 2).
+    Spot {
+        /// The lamp, in the anchor's units (design D4).
+        position: [f32; 3],
+        /// What it points at, in the anchor's units; not the lamp's own position.
+        target: [f32; 3],
+        /// The cone's outer half-angle, axis to edge, in degrees, `(0, 90]`.
+        cone: f32,
+        /// How much of the cone is soft, `0..=1`: 0 is a hard edge, 1 fades from the axis.
+        penumbra: f32,
+        /// Where the light reaches zero, in the anchor's units, `> 0`.
+        range: f32,
+    },
 }
 
 /// One light of a rig. In the files the shape's fields sit beside the common ones (`kind = "point"`, `position`...).
@@ -54,13 +69,14 @@ pub struct LightDef {
     pub role: Option<LightRole>,
     /// Light colour.
     pub colour: Colour,
-    /// Brightness (three.js units, render-api D10), `>= 0`. Point intensities are given for a 1 m anchor.
+    /// Brightness (three.js units, render-api D10), `>= 0`. Point and spot intensities are given for a 1 m anchor.
     pub intensity: f32,
-    /// Casts shadows. At most one directional light of a scene may.
+    /// Casts shadows. At most one directional light of a scene may; a spot's is the author's wish, which a renderer
+    /// without spot shadows ignores.
     pub shadow: bool,
     /// What the shape's lengths are measured against.
     pub anchor: Anchor,
-    /// Directional or point, with the numbers each needs.
+    /// Directional, point or spot, with the numbers each needs.
     pub shape: LightShape,
 }
 
@@ -87,6 +103,12 @@ struct LightWire {
     position: Option<[f32; 3]>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     range: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    target: Option<[f32; 3]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cone: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    penumbra: Option<f32>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -94,6 +116,7 @@ struct LightWire {
 enum WireKind {
     Directional,
     Point,
+    Spot,
 }
 
 fn white() -> Colour {
@@ -113,9 +136,14 @@ impl TryFrom<LightWire> for LightDef {
         };
         let shape = match w.kind {
             WireKind::Directional => {
-                if let Some(e) =
-                    wrong(&[("position", w.position.is_some()), ("range", w.range.is_some())], "directional")
-                {
+                let extra = [
+                    ("position", w.position.is_some()),
+                    ("range", w.range.is_some()),
+                    ("target", w.target.is_some()),
+                    ("cone", w.cone.is_some()),
+                    ("penumbra", w.penumbra.is_some()),
+                ];
+                if let Some(e) = wrong(&extra, "directional") {
                     return Err(e);
                 }
                 LightShape::Directional {
@@ -124,14 +152,33 @@ impl TryFrom<LightWire> for LightDef {
                 }
             }
             WireKind::Point => {
-                if let Some(e) =
-                    wrong(&[("azimuth", w.azimuth.is_some()), ("elevation", w.elevation.is_some())], "point")
-                {
+                let extra = [
+                    ("azimuth", w.azimuth.is_some()),
+                    ("elevation", w.elevation.is_some()),
+                    ("target", w.target.is_some()),
+                    ("cone", w.cone.is_some()),
+                    ("penumbra", w.penumbra.is_some()),
+                ];
+                if let Some(e) = wrong(&extra, "point") {
                     return Err(e);
                 }
                 LightShape::Point {
                     position: w.position.ok_or("a point light needs `position`")?,
                     range: w.range.ok_or("a point light needs `range`")?,
+                }
+            }
+            WireKind::Spot => {
+                if let Some(e) =
+                    wrong(&[("azimuth", w.azimuth.is_some()), ("elevation", w.elevation.is_some())], "spot")
+                {
+                    return Err(e);
+                }
+                LightShape::Spot {
+                    position: w.position.ok_or("a spot light needs `position`")?,
+                    target: w.target.ok_or("a spot light needs `target`")?,
+                    cone: w.cone.ok_or("a spot light needs `cone`")?,
+                    penumbra: w.penumbra.unwrap_or(0.0),
+                    range: w.range.ok_or("a spot light needs `range`")?,
                 }
             }
         };
@@ -152,6 +199,9 @@ impl From<LightDef> for LightWire {
             elevation: None,
             position: None,
             range: None,
+            target: None,
+            cone: None,
+            penumbra: None,
         };
         match l.shape {
             LightShape::Directional { azimuth, elevation } => {
@@ -161,6 +211,14 @@ impl From<LightDef> for LightWire {
             LightShape::Point { position, range } => {
                 w.kind = WireKind::Point;
                 w.position = Some(position);
+                w.range = Some(range);
+            }
+            LightShape::Spot { position, target, cone, penumbra, range } => {
+                w.kind = WireKind::Spot;
+                w.position = Some(position);
+                w.target = Some(target);
+                w.cone = Some(cone);
+                w.penumbra = Some(penumbra);
                 w.range = Some(range);
             }
         }
@@ -220,6 +278,158 @@ impl From<Bloom> for BloomDef {
     }
 }
 
+/// Linear distance fog (LK-08, phase 2): surfaces fade to `colour` between `near` and `far`, measured from the camera
+/// along its view in subject units (design D4), so a rig fogs every stature alike. The backdrop is not fogged.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FogDef {
+    /// The colour distant surfaces fade to.
+    pub colour: Colour,
+    /// Where the fog starts, in subject units from the camera, `>= 0`.
+    pub near: f32,
+    /// Where surfaces are fully fogged, in subject units from the camera, `> near`.
+    pub far: f32,
+}
+
+/// What an environment's light comes from.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum EnvironmentSource {
+    /// A procedural gradient: no asset, the same on every machine, so seed rigs can use it (ADR 0019 D15).
+    Sky {
+        /// The colour straight up.
+        zenith: Colour,
+        /// The colour at the horizon.
+        horizon: Colour,
+        /// The colour straight down.
+        ground: Colour,
+    },
+    /// An equirectangular HDRI from the asset store (a Radiance `.hdr`), its provenance and licence in the store.
+    Hdri {
+        /// The asset's content hash.
+        asset: ContentHash,
+    },
+}
+
+/// Image-based light (LK-08, phase 2): a sky that lights the cast from every direction, and that the `environment`
+/// backdrop shows. Not a light: it takes no slot of the renderer's [`MAX_LIGHTS`](omuzaki_render_api::limits::MAX_LIGHTS).
+/// In the files the source's fields sit beside the common ones (`kind = "sky"`, `zenith`...).
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(try_from = "EnvironmentWire", into = "EnvironmentWire")]
+#[schemars(with = "EnvironmentWire")]
+pub struct EnvironmentDef {
+    /// Where the light comes from.
+    pub source: EnvironmentSource,
+    /// Brightness, `>= 0`.
+    pub intensity: f32,
+    /// Turns the sky about the vertical, in degrees, counter-clockwise seen from above.
+    pub rotation: f32,
+    /// Quantise the sky's diffuse light onto each material's toon ramp, keeping the cel look.
+    pub toon_ramp: bool,
+}
+
+/// The sky of the design's example (scenes D3): a dusk blue over a warm horizon.
+const SKY_ZENITH: Colour = Colour::hex(0x006f_86b8);
+const SKY_HORIZON: Colour = Colour::hex(0x00e8_c9a0);
+const SKY_GROUND: Colour = Colour::hex(0x003b_3026);
+
+impl Default for EnvironmentDef {
+    /// The design's example sky at full strength, through the toon ramp.
+    fn default() -> Self {
+        Self {
+            source: EnvironmentSource::Sky { zenith: SKY_ZENITH, horizon: SKY_HORIZON, ground: SKY_GROUND },
+            intensity: 1.0,
+            rotation: 0.0,
+            toon_ramp: true,
+        }
+    }
+}
+
+/// The file shape of an [`EnvironmentDef`]: flat, with the source's fields optional so a wrong one is named.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct EnvironmentWire {
+    kind: EnvironmentKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    zenith: Option<Colour>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    horizon: Option<Colour>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ground: Option<Colour>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    asset: Option<ContentHash>,
+    #[serde(default = "one")]
+    intensity: f32,
+    #[serde(default)]
+    rotation: f32,
+    #[serde(default = "yes")]
+    toon_ramp: bool,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum EnvironmentKind {
+    Sky,
+    Hdri,
+}
+
+fn yes() -> bool {
+    true
+}
+
+impl TryFrom<EnvironmentWire> for EnvironmentDef {
+    type Error = String;
+
+    fn try_from(w: EnvironmentWire) -> Result<Self, String> {
+        let source = match w.kind {
+            EnvironmentKind::Sky => {
+                if w.asset.is_some() {
+                    return Err("a sky environment has no `asset`".into());
+                }
+                EnvironmentSource::Sky {
+                    zenith: w.zenith.unwrap_or(SKY_ZENITH),
+                    horizon: w.horizon.unwrap_or(SKY_HORIZON),
+                    ground: w.ground.unwrap_or(SKY_GROUND),
+                }
+            }
+            EnvironmentKind::Hdri => {
+                let colours = [("zenith", w.zenith), ("horizon", w.horizon), ("ground", w.ground)];
+                if let Some((name, _)) = colours.iter().find(|(_, c)| c.is_some()) {
+                    return Err(format!("an hdri environment has no `{name}`"));
+                }
+                EnvironmentSource::Hdri { asset: w.asset.ok_or("an hdri environment needs `asset`")? }
+            }
+        };
+        Ok(Self { source, intensity: w.intensity, rotation: w.rotation, toon_ramp: w.toon_ramp })
+    }
+}
+
+impl From<EnvironmentDef> for EnvironmentWire {
+    fn from(e: EnvironmentDef) -> Self {
+        let mut w = Self {
+            kind: EnvironmentKind::Sky,
+            zenith: None,
+            horizon: None,
+            ground: None,
+            asset: None,
+            intensity: e.intensity,
+            rotation: e.rotation,
+            toon_ramp: e.toon_ramp,
+        };
+        match e.source {
+            EnvironmentSource::Sky { zenith, horizon, ground } => {
+                w.zenith = Some(zenith);
+                w.horizon = Some(horizon);
+                w.ground = Some(ground);
+            }
+            EnvironmentSource::Hdri { asset } => {
+                w.kind = EnvironmentKind::Hdri;
+                w.asset = Some(asset);
+            }
+        }
+        w
+    }
+}
+
 /// A scene's lighting, materialised: a rig's values copied in, the rig's name kept only as information.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -248,6 +458,12 @@ pub struct Lighting {
     /// The lights, by id.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub lights: BTreeMap<LightId, LightDef>,
+    /// Distance fog, if wanted (phase 2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fog: Option<FogDef>,
+    /// Image-based light, if wanted (phase 2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<EnvironmentDef>,
 }
 
 fn black() -> Colour {
@@ -265,6 +481,8 @@ impl Default for Lighting {
             ambient: Ambient::default(),
             bloom: None,
             lights: BTreeMap::new(),
+            fog: None,
+            environment: None,
         }
     }
 }
