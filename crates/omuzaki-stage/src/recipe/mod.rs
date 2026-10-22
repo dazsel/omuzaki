@@ -5,6 +5,7 @@
 pub mod camera;
 pub mod ground;
 pub mod lights;
+pub mod preset;
 
 use omuzaki_anim_api::skeleton::{HUMANOID_COUNT, HumanoidBone, HumanoidPose};
 use omuzaki_core::glam::{Quat, Vec3};
@@ -15,6 +16,7 @@ use std::collections::BTreeMap;
 pub use camera::CameraSpec;
 pub use ground::GroundRecipe;
 pub use lights::LightRig;
+pub use preset::RenderPreset;
 
 /// Anti-aliasing samples per pixel for every recipe (the manifest's `stage.msaa`).
 pub const MSAA_SAMPLES: u8 = 4;

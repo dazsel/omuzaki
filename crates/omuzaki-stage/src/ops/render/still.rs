@@ -15,7 +15,7 @@ use image::{ExtendedColorType, ImageEncoder, codecs::png::PngEncoder};
 use crate::avatar::AvatarStage;
 use crate::body::Body;
 use crate::error::StageError;
-use crate::frame::face::{FaceRig, SETTLE_STEPS};
+use crate::frame::face::{FacePoints, FaceRig, SETTLE_STEPS};
 use crate::frame::pose::seed_base_pose;
 use crate::frame::{FrameInput, Stage, StageClock};
 use crate::scene::alone::StagedScene;
@@ -117,6 +117,9 @@ pub struct Still {
     pub image: Image,
     /// The renderer's report for the frame that made the picture.
     pub report: FrameReport,
+    /// Where the painted face's eyes, mouth and chin are in the picture; `None` without a painted face (an imported
+    /// avatar) or when it isn't visible ([`Stage::face_points`]).
+    pub face: Option<FacePoints>,
 }
 
 /// Stages `built` on `renderer` once, settles it, and renders one still per shot, in order.
@@ -186,7 +189,7 @@ pub fn render_body_stills(
                     stage.scene_mut().camera = shot.camera;
                     let frame = stage.redraw(renderer, &base)?;
                     let image = renderer.read_target(target).map_err(|source| StageError::render("the still", source))?;
-                    stills.push(Still { image, report: frame.report });
+                    stills.push(Still { image, report: frame.report, face: None });
                 }
                 Ok(stills)
             });
@@ -250,17 +253,18 @@ fn shoot_on(
             stage.set_scene(&staged.resolved, staged.subject_root);
             stage.pay_scene(renderer)
         })
-        .and_then(|()| render_shots(renderer, &mut stage, has_face, &base, shots));
+        .and_then(|()| render_shots(renderer, &mut stage, has_face, &base, spec.size, shots));
     let released = stage.release(renderer);
     first_error(outcome, released)
 }
 
-/// Binds the face, settles the stage and renders each shot in order.
+/// Binds the face, settles the stage and renders each shot in order, with where the face is in each picture of `size`.
 fn render_shots(
     renderer: &mut dyn Renderer,
     stage: &mut Stage,
     has_face: bool,
     base: &HumanoidPose,
+    size: UVec2,
     shots: &[Shot],
 ) -> Result<Vec<Still>, StageError> {
     if has_face {
@@ -281,7 +285,7 @@ fn render_shots(
         let input = FrameInput { channels: channels_of(stage, shot)?, pose: *base, ..FrameInput::default() };
         let frame = stage.redraw(renderer, &input)?;
         let image = renderer.read_target(target).map_err(|source| StageError::render("the still", source))?;
-        stills.push(Still { image, report: frame.report });
+        stills.push(Still { image, report: frame.report, face: stage.face_points(size) });
     }
     Ok(stills)
 }

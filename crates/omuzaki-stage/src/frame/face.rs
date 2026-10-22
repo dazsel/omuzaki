@@ -996,3 +996,164 @@ fn refresh_dynamic(
     }
     Ok(())
 }
+
+/// Where a painted face's layout points land in a picture (`docs/design/likeness-measures.md` D10, §5): pixels of the
+/// target, origin top-left, x right, y down, pixel centres at .5. What `render.preview` reports as `face_landmarks`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct FacePoints {
+    /// The centre of the character's right eye (on the picture's left in a front view).
+    pub eye_right: Vec2,
+    /// The centre of the character's left eye.
+    pub eye_left: Vec2,
+    /// The centre of the mouth line.
+    pub mouth: Vec2,
+    /// The chin: the bottom of the head outline, under the mouth.
+    pub chin: Vec2,
+}
+
+impl FacePoints {
+    /// The distance between the eye centres, pixels.
+    #[must_use]
+    pub fn iod(&self) -> f32 {
+        self.eye_left.distance(self.eye_right)
+    }
+}
+
+/// A mesh the base face layer is painted on, with the bind-space window that layer covers on it.
+struct FaceCarrier<'a> {
+    mesh: &'a omuzaki_char_api::BuiltMesh,
+    window: omuzaki_face_api::PlanarWindow,
+}
+
+impl Stage {
+    /// Where the face layout's eye centres, mouth centre and chin land in the picture the stage last drew for a target
+    /// of `size`: each face-plane point is found on the head's front surface (the nearest surface the base face layer
+    /// is projected onto, as the renderer paints it), skinned by the current joint palette like the triangle under it,
+    /// placed by the character's root and projected through the scene's camera. Cold: walks the head's triangles.
+    ///
+    /// `None` for a character without a painted face (or whose head part's parameters don't read), a face point
+    /// behind the camera or off the head, a face turned away from the camera, or an eye outside the picture.
+    #[must_use]
+    pub fn face_points(&self, size: omuzaki_core::glam::UVec2) -> Option<FacePoints> {
+        let face = self.built.face.as_ref()?;
+        let carriers: Vec<FaceCarrier<'_>> = self
+            .built
+            .meshes
+            .iter()
+            .filter_map(|mesh| {
+                let material = self.built.materials.get(&mesh.mesh.material)?;
+                let overlay = material.overlays.iter().find(|o| o.layer == FaceLayerId::Base)?;
+                Some(FaceCarrier { mesh, window: overlay.window })
+            })
+            .collect();
+        let part = self.built.def.parts.get(&carriers.first()?.mesh.part)?;
+        let head: omuzaki_char_api::HeadParams = serde_json::from_value(part.params.clone()).ok()?;
+        let layout = &face.profile.layout;
+        let n = omuzaki_face_api::narrow;
+        let plane = [
+            Vec2::new(n(-layout.eye_spacing), n(layout.eye_y)),
+            Vec2::new(n(layout.eye_spacing), n(layout.eye_y)),
+            Vec2::new(0.0, n(layout.mouth_y)),
+            Vec2::new(0.0, n(head.outline.chin_y())),
+        ];
+        let camera = &self.scene.camera;
+        #[allow(clippy::cast_precision_loss, reason = "target sides are far below 2^24")]
+        let (width, height) = (size.x as f32, size.y as f32);
+        let to_clip = camera.projection_matrix(width / height.max(1.0)) * camera.view();
+        let view = camera.view();
+        let mut pixels = [Vec2::ZERO; 4];
+        for (pixel, at) in pixels.iter_mut().zip(plane) {
+            let world = self.face_surface(&carriers, &face.projection, at)?;
+            if view.transform_point3(world).z >= 0.0 {
+                return None;
+            }
+            let ndc = to_clip.project_point3(world);
+            *pixel = Vec2::new(ndc.x.midpoint(1.0) * width, (1.0 - ndc.y) * 0.5 * height);
+        }
+        // Turned away: the head's forward (+Z in bind space, where the face is projected from) points away from the
+        // camera at the face.
+        let head_bone = self.built.rig.bone(&JointRef::HEAD).map(omuzaki_anim_api::BoneId::index);
+        let head_to_world = self.root * super::scene::joint_matrix(head_bone, self.rig.skin());
+        let forward = head_to_world.transform_vector3(Vec3::Z);
+        let mouth_world = self.face_surface(&carriers, &face.projection, plane[2])?;
+        let toward_camera = match camera.projection {
+            Projection::Perspective { .. } => camera.position() - mouth_world,
+            Projection::Orthographic { .. } => camera.transform.z_axis.truncate(),
+        };
+        if forward.dot(toward_camera) <= 0.0 {
+            return None;
+        }
+        let inside = |p: Vec2| (0.0..=width).contains(&p.x) && (0.0..=height).contains(&p.y);
+        if !(inside(pixels[0]) && inside(pixels[1])) {
+            return None;
+        }
+        let [eye_right, eye_left, mouth, chin] = pixels;
+        Some(FacePoints { eye_right, eye_left, mouth, chin })
+    }
+
+    /// The world position of face-plane point `at` (head-local, the painter's units) on the head's front: the surface
+    /// nearest the front (largest bind `z`) of the carriers' triangles under the point's place in their window,
+    /// skinned like that triangle. `None` when no triangle lies under it.
+    fn face_surface(&self, carriers: &[FaceCarrier<'_>], projection: &FaceProjection, at: Vec2) -> Option<Vec3> {
+        let rect = projection.rect;
+        // Where `at` is across and up the face window, 0 to 1.
+        let across = Vec2::new((at.x - rect.x0) / rect.width(), (at.y - rect.y0) / rect.height());
+        // The nearest hit so far: its bind z, the carrier, the triangle's corners and their weights.
+        let mut best: Option<(f32, usize, [usize; 3], Vec3)> = None;
+        for (k, carrier) in carriers.iter().enumerate() {
+            let window = &carrier.window;
+            let point = window.min + across * (window.max - window.min);
+            let positions = self.runtime_positions(carrier.mesh).unwrap_or(&carrier.mesh.mesh.geometry.positions);
+            for triangle in carrier.mesh.mesh.geometry.indices.as_chunks::<3>().0 {
+                let corners = triangle.map(|i| i as usize);
+                let [Some(first), Some(second), Some(third)] = corners.map(|i| positions.get(i).copied()) else {
+                    continue;
+                };
+                let Some(weights) = barycentric(point, first.truncate(), second.truncate(), third.truncate()) else {
+                    continue;
+                };
+                let z = weights.dot(Vec3::new(first.z, second.z, third.z));
+                if best.is_none_or(|(nearest, ..)| z > nearest) {
+                    best = Some((z, k, corners, weights));
+                }
+            }
+        }
+        let (_, k, corners, weights) = best?;
+        let mesh = &carriers.get(k)?.mesh.mesh;
+        let positions = self.runtime_positions(carriers.get(k)?.mesh).unwrap_or(&mesh.geometry.positions);
+        let bones = super::scene::joint_bones(&self.built, mesh);
+        let skin = self.rig.skin();
+        let mut model = Vec3::ZERO;
+        for (corner, weight) in corners.into_iter().zip(weights.to_array()) {
+            let p = *positions.get(corner)?;
+            let posed = match (mesh.geometry.joints.get(corner), mesh.geometry.weights.get(corner)) {
+                (Some(joints), Some(joint_weights)) => {
+                    let blend = joints.iter().zip(joint_weights).fold(Mat4::ZERO, |sum, (joint, w)| {
+                        let bone = bones.get(usize::from(*joint)).copied().flatten();
+                        sum + super::scene::joint_matrix(bone, skin) * *w
+                    });
+                    blend.transform_point3(p)
+                }
+                _ => p,
+            };
+            model += posed * weight;
+        }
+        Some(self.root.transform_point3(model))
+    }
+}
+
+/// The barycentric weights of `p` in the triangle `a b c` (in the plane), if `p` is inside it or on its edge; `None`
+/// outside it or for a triangle with no area in the plane (seen edge on).
+fn barycentric(p: Vec2, a: Vec2, b: Vec2, c: Vec2) -> Option<Vec3> {
+    // A point on a shared edge belongs to both triangles; the small tolerance keeps it from falling between them.
+    const EDGE: f32 = -1e-5;
+    let area = (b - a).perp_dot(c - a);
+    if area.abs() < 1e-12 {
+        return None;
+    }
+    let wb = (p - a).perp_dot(c - a) / area;
+    let wc = (b - a).perp_dot(p - a) / area;
+    let wa = 1.0 - wb - wc;
+    (wa >= EDGE && wb >= EDGE && wc >= EDGE).then_some(Vec3::new(wa, wb, wc))
+}
