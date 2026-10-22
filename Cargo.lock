@@ -4622,6 +4622,7 @@ dependencies = [
  "omuzaki-ops-api",
  "omuzaki-store",
  "omuzaki-store-api",
+ "proptest",
  "rmcp",
  "schemars",
  "serde",
