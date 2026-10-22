@@ -4106,11 +4106,14 @@ dependencies = [
  "omuzaki-doc",
  "omuzaki-doc-api",
  "omuzaki-face-api",
+ "omuzaki-http-mock",
  "omuzaki-io-api",
  "omuzaki-io-gltf",
  "omuzaki-io-ops",
  "omuzaki-io-vrm",
  "omuzaki-link-build",
+ "omuzaki-live",
+ "omuzaki-live-nodes",
  "omuzaki-mcp",
  "omuzaki-obs",
  "omuzaki-ops",
@@ -4123,6 +4126,7 @@ dependencies = [
  "omuzaki-stream",
  "omuzaki-stream-api",
  "omuzaki-track-api",
+ "omuzaki-twitch",
  "omuzaki-vcam",
  "rmcp",
  "schemars",
@@ -5280,6 +5284,28 @@ dependencies = [
  "omuzaki-anim-api",
  "omuzaki-core",
  "omuzaki-track-api",
+]
+
+[[package]]
+name = "omuzaki-twitch"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-core",
+ "omuzaki-doc-mock",
+ "omuzaki-http-api",
+ "omuzaki-http-mock",
+ "omuzaki-live-api",
+ "omuzaki-live-mock",
+ "omuzaki-ops-api",
+ "omuzaki-secrets-api",
+ "omuzaki-secrets-mock",
+ "rustls",
+ "rustls-platform-verifier",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tungstenite",
 ]
 
 [[package]]
