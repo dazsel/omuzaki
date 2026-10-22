@@ -160,7 +160,7 @@ verifiable!(ModelV: 0 => u32, 1 => Tables<OperatorCodeV>, 2 => Tables<SubGraphV>
 verifiable!(SubGraphV: 0 => Tables<TensorV>, 1 => Scalars<i32>, 2 => Scalars<i32>, 3 => Tables<OperatorV>);
 verifiable!(TensorV: 0 => Scalars<i32>, 1 => i8, 2 => u32, 3 => ForwardsUOffset<&str>,
     4 => ForwardsUOffset<QuantizationV>, 5 => bool, 7 => Scalars<i32>, 8 => bool, 9 => Scalars<u32>, 10 => u32);
-verifiable!(QuantizationV:);
+verifiable!(QuantizationV: 0 => Scalars<f32>, 1 => Scalars<f32>, 2 => Scalars<f32>, 3 => Scalars<i64>);
 verifiable!(OperatorV: 0 => u32, 1 => Scalars<i32>, 2 => Scalars<i32>, 5 => Scalars<u8>, 6 => i8, 7 => Scalars<bool>,
     8 => Scalars<i32>, 9 => u64, 10 => u64);
 verifiable!(OperatorCodeV: 0 => i8, 1 => ForwardsUOffset<&str>, 2 => i32, 3 => i32);
@@ -336,7 +336,8 @@ fn tensor_checks(tensor: Fields<'_>, buffer: &dyn Fn(u32) -> Result<usize, LoadE
 }
 
 /// The graph's input or output tensor indices: 1 to `MAX_PORTS`, valid and unique; ports carry no data and no
-/// quantization.
+/// quantization. An empty quantization table (no min, max, scale, zero point or details) is no quantization: the
+/// TFLite converter writes one on float ports, MediaPipe's face landmark graph among them.
 fn ports(
     subgraph: Fields<'_>,
     slot: u16,
@@ -356,7 +357,7 @@ fn ports(
             return Err(malformed(&format!("tensor {i} is listed twice as a graph {kind}")));
         }
         let buffer = index_in(tensors[i].get::<u32>(2).unwrap_or(0), buffers.len(), "buffer")?;
-        if buffers[buffer].len::<u8>(0) > 0 || tensors[i].has(4) {
+        if buffers[buffer].len::<u8>(0) > 0 || quantized(tensors[i])? {
             return Err(refused(format!("graph {kind} {i} is a constant or quantized")));
         }
         indices.push(i);
@@ -365,6 +366,14 @@ fn ports(
 }
 
 /// A graph port's spec: a `DType`, a known rank and a name.
+/// Whether `tensor` carries quantization: a quantization table with any min, max, scale, zero point or details.
+fn quantized(tensor: Fields<'_>) -> Result<bool, LoadError> {
+    let table = tensor.get::<ForwardsUOffset<Table<'_>>>(4).map(|q| Fields::new(q, "QuantizationParameters", 7));
+    Ok(table.transpose()?.is_some_and(|q| {
+        q.len::<f32>(0) > 0 || q.len::<f32>(1) > 0 || q.len::<f32>(2) > 0 || q.len::<i64>(3) > 0 || q.has(4) || q.has(5)
+    }))
+}
+
 fn port_spec(tensor: Fields<'_>) -> Result<TensorSpec, LoadError> {
     let name = tensor.get::<ForwardsUOffset<&str>>(3).unwrap_or("");
     // LiteRT hands names back as C strings, so a NUL inside one would cut it short there.

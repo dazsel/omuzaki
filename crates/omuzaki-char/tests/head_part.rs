@@ -22,7 +22,7 @@ use omuzaki_char_api::{
 };
 use omuzaki_char_mock::mock_character;
 use omuzaki_core::glam::Vec3;
-use omuzaki_face_api::narrow;
+use omuzaki_face_api::{FaceLayerId, narrow};
 use omuzaki_render_api::Shading;
 use serde_json::{Value, json};
 
@@ -113,7 +113,8 @@ fn the_face_material_is_flat_lit_shadowless_outlined_and_carries_the_face_overla
     assert_eq!((skin.floor, skin.hue_keep), (0.66, 0.55));
     assert!(!m.receives_shadows && !m.double_sided);
     assert_eq!(m.outline.map(|o| o.width), Some(0.0014));
-    assert_eq!(m.overlays.len(), 1);
+    let layers: Vec<FaceLayerId> = m.overlays.iter().map(|o| o.layer).collect();
+    assert_eq!(layers, [FaceLayerId::Base, FaceLayerId::Overlay]);
     assert!(built.face.is_some(), "the build can attach the painted face");
     let ear = &built.materials[&"head-skin-ear".parse().unwrap()];
     assert!(ear.double_sided && ear.overlays.is_empty());

@@ -8,7 +8,7 @@ use crate::ds::gallery::layout::{caption, specimen};
 use crate::ds::gallery::text::tr;
 use crate::ds::theme::ds;
 use crate::ds::widgets::{ColourEvent, ColourField, PaletteSlot};
-use crate::register_story;
+use omuzaki_ui_api::register_story;
 
 struct State {
     free: Colour,

@@ -21,14 +21,16 @@ const OFF: f32 = 0.01;
 // ---- sweat
 
 /// The drop's half-width and half-height at full size, in metres, and how much of that it has when it first appears.
-const DROP_HALF: Vec2 = Vec2::new(0.0065, 0.0120);
+/// About an eye's height: the range test found a smaller drop vanishes at a small stream size (56 px), and on the head
+/// it sits where the face turns away, so it needs the size to read there too.
+const DROP_HALF: Vec2 = Vec2::new(0.013, 0.024);
 const DROP_SMALLEST: f32 = 0.6;
 /// The drop's place: out from the eye line's outer corner by this much, up from the eye line by this much, in metres.
 const TEMPLE_OUT: f32 = 0.026;
 const TEMPLE_UP: f32 = 0.045;
 /// The outline's colour (`rgba(110,150,190)`), width and opacity at full strength.
 const DROP_OUTLINE: Colour = Colour::rgb(110, 150, 190);
-const DROP_OUTLINE_WIDTH: f32 = 0.0008;
+const DROP_OUTLINE_WIDTH: f32 = 0.0012;
 const DROP_OUTLINE_OPACITY: f32 = 0.8;
 /// The highlight on the drop: its place and radii as shares of the half-size, and its opacity.
 const DROP_SHINE_AT: Vec2 = Vec2::new(-0.35, -0.30);

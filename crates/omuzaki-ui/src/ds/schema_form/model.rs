@@ -7,7 +7,9 @@ use omuzaki_doc_api::Value;
 use schemars::Schema;
 
 use super::pattern::Pattern;
-use super::value::{FormValue, integer};
+use super::show::FieldId;
+use super::value::{FormValue, curve_from_json, integer};
+use crate::ds::widgets::Curve;
 
 /// How many Essentials a form shows before the rest move to Advanced (principle P5).
 pub const MAX_ESSENTIALS: usize = 7;
@@ -17,8 +19,12 @@ pub const MAX_SEGMENTS: usize = 5;
 const MAX_REF_DEPTH: usize = 16;
 /// The range of a number field's open side: no bound the schema states is ever replaced by a smaller one.
 pub(super) const OPEN: f64 = 1.0e300;
-/// Integers up to here are exact as floats, so an integer slider (which edits a float) loses nothing.
-const EXACT: i128 = 1 << 53;
+/// The two patterns `omuzaki_core::colour::Colour` can publish, which mark a string as a colour without an `x-ui`
+/// hint: with and without the alpha pair.
+const COLOUR_PATTERNS: [(&str, bool); 2] = [("^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$", true), ("^#[0-9a-fA-F]{6}$", false)];
+/// Integers up to here are exact as floats, so an integer slider or number field (which edit a float) loses nothing;
+/// an integer field that can hold more is typed as text and parsed exactly.
+pub(super) const EXACT: i128 = 1 << 53;
 
 /// Where a field is listed (`x-ui.level`).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -61,22 +67,39 @@ impl TextRule {
 /// What a field edits, and so which control draws it.
 #[derive(Clone, Debug)]
 pub(super) enum Kind {
-    /// An `integer`, within the bounds the schema gives (inclusive, exclusive ones already moved in by one): a
-    /// `ParamSlider` when both exist and are exact as floats, else a `NumberField` that enforces the ones it has.
-    Int { min: Option<i128>, max: Option<i128>, slider: bool },
+    /// An `integer`, within the bounds the schema gives (inclusive, exclusive ones already moved in by one, and the
+    /// range of a `format` such as `uint8` applied): see [`IntControl`].
+    Int { min: Option<i128>, max: Option<i128>, control: IntControl },
     /// A `number`, with its bounds made inclusive (an exclusive one is moved to the next float inside): a
-    /// `ParamSlider` when both exist, else a `NumberField` that enforces the one it has.
+    /// `ParamSlider` when both exist and differ, else a `NumberField` that enforces the ones it has (both equal: the
+    /// one value the field allows).
     Real { min: Option<f64>, max: Option<f64>, slider: bool },
     /// An enum, or an integer with few values: a `Segmented` up to [`MAX_SEGMENTS`], else a `Dropdown`.
     Choice(Vec<Opt>),
     /// A boolean: a `Toggle`.
     Toggle,
+    /// A colour, written as `#rrggbb` (or `#rrggbbaa` when `alpha`): a `ColourField`.
+    Colour { alpha: bool },
+    /// A `number[]` of x, y pairs over the unit square (`x-ui.widget = "curve"`): a `CurveEditor`.
+    Curve,
     /// A string, checked against its `pattern`, `minLength` and `maxLength`: a `TextField`.
     Text(TextRule),
     /// A nested object: a section of fields.
     Section(Vec<Node>),
     /// A shape no control handles. The row names the type and the value passes through untouched.
     ReadOnly,
+}
+
+/// Which control edits an integer field.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum IntControl {
+    /// Both bounds, within the integers a float holds exactly: a `ParamSlider` stepping by whole numbers.
+    Slider,
+    /// Every value it allows is exact as a float: a `NumberField` stepping by whole numbers.
+    Number,
+    /// It allows values a float cannot hold (an `i64` or `u64` field): a `TextField` whose text is parsed as an
+    /// integer, exactly, and refused with a message when it is not a whole number within the bounds.
+    Exact,
 }
 
 /// One field of the form.
@@ -89,11 +112,19 @@ pub(super) struct Node {
     pub(super) path: String,
     /// What the row says: the schema's `title`, else the key.
     pub(super) label: String,
+    /// The field's place in the form, counted parents first ([`FieldId`]).
+    pub(super) index: usize,
     /// The JSON Schema type, for the read-only row ("object", "array of string").
     pub(super) type_name: String,
     pub(super) kind: Kind,
     pub(super) level: Level,
     pub(super) group: Option<String>,
+    /// `x-ui.unit`: what a number field's value is in ("mm", "°"), shown after it and accepted when typed.
+    pub(super) unit: String,
+    /// `x-ui.step`: how far an arrow key moves a number field (a whole number of at least one for an integer).
+    pub(super) step: Option<f64>,
+    /// `x-ui.decimals`: how many decimals a number field shows (none for an integer).
+    pub(super) decimals: Option<usize>,
     /// The default as a typed value, when the schema gives one that fits the field.
     pub(super) default: Option<FormValue>,
 }
@@ -119,6 +150,8 @@ pub struct Form {
     pub(super) essentials: Layout,
     pub(super) advanced: Layout,
     demoted: usize,
+    /// Every field's JSON Pointer, by [`FieldId`].
+    pointers: Vec<String>,
 }
 
 /// A schema node together with the `$ref` it points to, so an annotation written next to a `$ref` and one written
@@ -160,6 +193,8 @@ impl Form {
     pub fn from_schema(schema: &Schema) -> Self {
         let root_value = schema.as_value();
         let mut root = read_node(root_value, root_value, "", "");
+        let mut pointers = Vec::new();
+        number(&mut root, &mut pointers);
         let (mut essentials, mut advanced, mut demoted) = (Layout::default(), Layout::default(), 0);
         if let Kind::Section(children) = &mut root.kind {
             let mut shown = 0;
@@ -176,7 +211,23 @@ impl Form {
             essentials = layout(children, Level::Essentials);
             advanced = layout(children, Level::Advanced);
         }
-        Self { root, essentials, advanced, demoted }
+        Self { root, essentials, advanced, demoted, pointers }
+    }
+
+    /// Where `field` is in the value, as a JSON Pointer (`/cranium/half_width`; the root is the empty string).
+    pub fn pointer(&self, field: FieldId) -> Option<&str> {
+        self.pointers.get(field.0).map(String::as_str)
+    }
+
+    /// The field at the JSON Pointer `pointer`, if the form has one there.
+    pub fn field(&self, pointer: &str) -> Option<FieldId> {
+        self.pointers.iter().position(|p| p == pointer).map(FieldId)
+    }
+
+    /// The part of `value` that `field` edits, for a host that sends one field at a time (the inspector sends each
+    /// edit as one `part.set_param`). `None` when `value` was not made from this form.
+    pub fn field_value<'v>(&self, value: &'v FormValue, field: FieldId) -> Option<&'v FormValue> {
+        find(&self.root, value, field.0)
     }
 
     /// How many fields asked for Essentials beyond the cap of [`MAX_ESSENTIALS`] and were listed under Advanced
@@ -202,6 +253,29 @@ impl Form {
     /// for zero.
     pub fn invalid_count(&self, value: &FormValue) -> usize {
         count_invalid(&self.root, value)
+    }
+}
+
+/// Numbers `node` and its fields parents first, recording each one's pointer.
+fn number(node: &mut Node, pointers: &mut Vec<String>) {
+    node.index = pointers.len();
+    pointers.push(node.path.clone());
+    if let Kind::Section(children) = &mut node.kind {
+        for child in children {
+            number(child, pointers);
+        }
+    }
+}
+
+fn find<'v>(node: &Node, value: &'v FormValue, index: usize) -> Option<&'v FormValue> {
+    if node.index == index {
+        return Some(value);
+    }
+    match (&node.kind, value) {
+        (Kind::Section(children), FormValue::Object(values)) => {
+            children.iter().zip(values).find_map(|(child, (_, v))| find(child, v, index))
+        }
+        _ => None,
     }
 }
 
@@ -255,12 +329,21 @@ fn read_node(root: &Value, schema: &Value, key: &str, parent_path: &str) -> Node
         key: key.to_owned(),
         path,
         label,
+        index: 0,
         type_name,
         kind,
         level,
         group: view.ui("group").and_then(Value::as_str).map(str::to_owned),
+        unit: view.ui("unit").and_then(Value::as_str).unwrap_or_default().to_owned(),
+        step: view.ui("step").and_then(Value::as_f64).filter(|s| s.is_finite() && *s > 0.0),
+        decimals: view.ui("decimals").and_then(Value::as_u64).and_then(|d| usize::try_from(d).ok()),
         default: None,
     };
+    if let Kind::Int { .. } = node.kind {
+        // A whole-number field moves by whole numbers and shows none of the decimals a schema may ask for.
+        node.step = Some(node.step.map_or(1.0, |s| s.round().max(1.0)));
+        node.decimals = Some(0);
+    }
     let declared = view.ui("default").or_else(|| view.get("default"));
     node.default = declared.and_then(|json| node.fitted_value(json));
     node
@@ -270,11 +353,15 @@ fn read_only(key: &str, path: &str, schema: &Value, type_name: &str) -> Node {
     Node {
         key: key.to_owned(),
         path: path.to_owned(),
+        index: 0,
         label: schema.get("title").and_then(Value::as_str).filter(|t| !t.is_empty()).unwrap_or(key).to_owned(),
         type_name: type_name.to_owned(),
         kind: Kind::ReadOnly,
         level: Level::Essentials,
         group: None,
+        unit: String::new(),
+        step: None,
+        decimals: None,
         default: None,
     }
 }
@@ -302,7 +389,7 @@ fn read_kind(root: &Value, view: &View<'_>, path: &str) -> (Kind, String) {
     match *single {
         "boolean" => (Kind::Toggle, "boolean".to_owned()),
         "number" | "integer" => read_number(view, *single == "integer"),
-        "string" => read_string(view),
+        "string" => read_colour(view).unwrap_or_else(|| read_string(view)),
         "object" => match view.get("properties").and_then(Value::as_object) {
             Some(props) if !props.is_empty() => {
                 let children = props.iter().map(|(k, s)| read_node(root, s, k, path)).collect();
@@ -344,8 +431,15 @@ fn read_real(view: &View<'_>) -> Kind {
         tighter(lower, read(inclusive), beyond)
     };
     let (min, max) = (limit(true), limit(false));
+    // Equal inclusive bounds allow one value, a choice of one (as an integer's do); only a range with nothing in it
+    // (the lower bound above the upper, or an exclusive bound at the other's value) has no control.
     match (min, max) {
-        (Some(min), Some(max)) if min >= max => Kind::ReadOnly,
+        (Some(lo), Some(hi)) if lo > hi => Kind::ReadOnly,
+        #[allow(clippy::float_cmp, reason = "equal bounds are the case being found")]
+        (Some(lo), Some(hi)) if lo == hi => {
+            let value = super::value::number(lo);
+            Kind::Choice(vec![Opt { label: option_label(&value, None), value }])
+        }
         (Some(_), Some(_)) => Kind::Real { min, max, slider: true },
         _ => Kind::Real { min, max, slider: false },
     }
@@ -371,8 +465,12 @@ fn read_int(view: &View<'_>) -> Kind {
         };
         tighter(lower, read(inclusive, false), read(exclusive, true))
     };
-    let (min, max) = (limit(true), limit(false));
-    let Some((lo, hi)) = min.zip(max) else { return Kind::Int { min, max, slider: false } };
+    let format = view.get("format").and_then(Value::as_str).and_then(format_range);
+    let (min, max) =
+        (tighter(true, limit(true), format.map(|f| f.0)), tighter(false, limit(false), format.map(|f| f.1)));
+    let exact = |n: Option<i128>| n.is_some_and(|n| (-EXACT..=EXACT).contains(&n));
+    let control = if exact(min) && exact(max) { IntControl::Number } else { IntControl::Exact };
+    let Some((lo, hi)) = min.zip(max) else { return Kind::Int { min, max, control } };
     if lo > hi {
         return Kind::ReadOnly;
     }
@@ -380,7 +478,42 @@ fn read_int(view: &View<'_>) -> Kind {
         let opts = (lo..=hi).map(|n| Opt { value: integer(n), label: n.to_string() }).collect();
         return Kind::Choice(opts);
     }
-    Kind::Int { min, max, slider: lo >= -EXACT && hi <= EXACT }
+    // A slider only for a range the schema states: the range of a bare `uint32` is no parameter's.
+    let stated = limit(true).is_some() && limit(false).is_some();
+    Kind::Int { min, max, control: if control == IntControl::Number && stated { IntControl::Slider } else { control } }
+}
+
+/// The range of an integer `format` as `schemars` writes it for Rust's integer types, so a `u8` field refuses 256
+/// without the schema spelling the bounds out.
+fn format_range(format: &str) -> Option<(i128, i128)> {
+    let bits = |b: u32| (-(1i128 << (b - 1)), (1i128 << (b - 1)) - 1);
+    let ubits = |b: u32| (0, (1i128 << b) - 1);
+    Some(match format {
+        "int8" => bits(8),
+        "int16" => bits(16),
+        "int32" => bits(32),
+        "int64" => bits(64),
+        "uint8" => ubits(8),
+        "uint16" => ubits(16),
+        "uint32" => ubits(32),
+        "uint64" | "uint" => ubits(64),
+        _ => return None,
+    })
+}
+
+/// A string that holds a colour: `x-ui.widget` or `format` says `colour` (or `color`), or the pattern is one that
+/// `Colour` publishes. `None` for any other string.
+fn read_colour(view: &View<'_>) -> Option<(Kind, String)> {
+    let named = |v: Option<&Value>| matches!(v.and_then(Value::as_str), Some("colour" | "color"));
+    let pattern = view.get("pattern").and_then(Value::as_str);
+    let published = pattern.and_then(|p| COLOUR_PATTERNS.iter().find(|(known, _)| *known == p));
+    let alpha = match (published, pattern) {
+        (Some((_, alpha)), _) => *alpha,
+        (None, None) if named(view.ui("widget")) || named(view.get("format")) => false,
+        // A colour hint over a pattern this field cannot promise to satisfy is not taken as a colour.
+        _ => return None,
+    };
+    Some((Kind::Colour { alpha }, "colour".to_owned()))
 }
 
 fn read_string(view: &View<'_>) -> (Kind, String) {
@@ -412,7 +545,11 @@ fn read_array(root: &Value, view: &View<'_>) -> (Kind, String) {
         .get("items")
         .and_then(|items| self::view(root, items))
         .and_then(|v| v.get("type").and_then(Value::as_str).map(str::to_owned));
-    (Kind::ReadOnly, format!("array of {}", item_type.as_deref().unwrap_or("any")))
+    let name = format!("array of {}", item_type.as_deref().unwrap_or("any"));
+    if view.ui("widget").and_then(Value::as_str) == Some("curve") && item_type.as_deref() == Some("number") {
+        return (Kind::Curve, name);
+    }
+    (Kind::ReadOnly, name)
 }
 
 /// The options of a `oneOf` or `anyOf` whose every arm is a `const`, which is how documented enum variants are written.
@@ -455,8 +592,8 @@ impl Node {
             return default.clone();
         }
         match &self.kind {
-            Kind::Int { min, max, slider } => FormValue::Integer(match (slider, min) {
-                (true, Some(min)) => *min,
+            Kind::Int { min, max, control } => FormValue::Integer(match (control, min) {
+                (IntControl::Slider, Some(min)) => *min,
                 _ => 0.max(min.unwrap_or(i128::MIN)).min(max.unwrap_or(i128::MAX)),
             }),
             Kind::Real { min, max, slider } => FormValue::Number(match (slider, min) {
@@ -467,6 +604,8 @@ impl Node {
                 opts.first().map_or(FormValue::Absent, |o| FormValue::Choice { index: 0, value: o.value.clone() })
             }
             Kind::Toggle => FormValue::Bool(false),
+            Kind::Colour { .. } => FormValue::Colour(omuzaki_core::colour::Colour::BLACK),
+            Kind::Curve => FormValue::Curve(Curve::linear()),
             Kind::Text(_) => FormValue::Text(String::new()),
             Kind::Section(children) => {
                 FormValue::Object(children.iter().map(|c| (c.key.clone(), c.default_value())).collect())
@@ -497,18 +636,60 @@ impl Node {
                 (min.is_none_or(|m| whole >= m) && max.is_none_or(|m| whole <= m)).then_some(FormValue::Integer(whole))
             }
             (Kind::Real { min, max, .. }, Value::Number(n)) => {
-                let n = n.as_f64().filter(|n| min.is_none_or(|m| *n >= m) && max.is_none_or(|m| *n <= m))?;
-                Some(FormValue::Number(n))
+                let f = exact_f64(n)?;
+                (min.is_none_or(|m| f >= m) && max.is_none_or(|m| f <= m)).then_some(FormValue::Number(f))
             }
             (Kind::Section(_), Value::Object(_)) => Some(self.value_from_json(json)),
-            (Kind::Choice(opts), _) => {
-                opts.iter().position(|o| &o.value == json).map(|index| FormValue::Choice { index, value: json.clone() })
-            }
+            (Kind::Choice(opts), _) => opts
+                .iter()
+                .position(|o| same_json(&o.value, json))
+                .map(|index| FormValue::Choice { index, value: json.clone() }),
             (Kind::Toggle, Value::Bool(on)) => Some(FormValue::Bool(*on)),
+            (Kind::Colour { alpha }, Value::String(text)) => {
+                let colour: omuzaki_core::colour::Colour = text.parse().ok()?;
+                // A colour with alpha in a field that has none would lose it when edited.
+                (*alpha || colour.a == u8::MAX).then_some(FormValue::Colour(colour))
+            }
+            (Kind::Curve, Value::Array(numbers)) => curve_from_json(numbers).map(FormValue::Curve),
             (Kind::Text(_), Value::String(text)) => Some(FormValue::Text(text.clone())),
             _ => None,
         }
     }
+}
+
+/// Whether two JSON values are equal as JSON Schema's `enum` and `const` compare them: numbers by value (`1` is
+/// `1.0`), everything else structurally.
+fn same_json(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Number(x), Value::Number(y)) => {
+            let whole = |n: &serde_json::Number| n.as_i64().map(i128::from).or_else(|| n.as_u64().map(i128::from));
+            match (whole(x), whole(y)) {
+                (Some(x), Some(y)) => x == y,
+                #[allow(clippy::float_cmp, reason = "values the schema wrote compare exactly")]
+                _ => exact_f64(x).zip(exact_f64(y)).is_some_and(|(x, y)| x == y),
+            }
+        }
+        _ => a == b,
+    }
+}
+
+/// `n` as a float, or `None` when it is an integer a float cannot hold exactly: a `number` field edits a float, and
+/// the value must not change just by being read into it.
+fn exact_f64(n: &serde_json::Number) -> Option<f64> {
+    let f = n.as_f64()?;
+    // The float of an integer is whole, so it holds the integer exactly when it converts back to it.
+    let exact = match (n.as_i64(), n.as_u64()) {
+        (Some(i), _) => i128::from(i) == float_to_int(f),
+        (None, Some(u)) => i128::from(u) == float_to_int(f),
+        (None, None) => true,
+    };
+    exact.then_some(f)
+}
+
+/// A whole float as an integer, saturating; only compared with the integer it came from.
+#[allow(clippy::cast_possible_truncation, reason = "saturating, and only compared with the integer it came from")]
+const fn float_to_int(f: f64) -> i128 {
+    f as i128
 }
 
 #[cfg(test)]

@@ -72,6 +72,7 @@ mod lock;
 mod migrate;
 mod migrations;
 mod project;
+mod saving;
 pub mod snapshot;
 mod source;
 mod toml_read;
@@ -87,6 +88,7 @@ pub use lock::ProjectLock;
 pub use migrate::{BASE_SCHEMA, Migration, MigrationError, supported_schema};
 pub use omuzaki_assets_lock::{AssetsLock, LockError, LockRow};
 pub use project::{Project, RenderedFile, SaveReport};
+pub use saving::SavedProject;
 
 #[doc(hidden)]
 pub use inventory as __inventory;

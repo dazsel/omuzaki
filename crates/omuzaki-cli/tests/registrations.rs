@@ -12,11 +12,12 @@ use xtask::registry::{self, Registration};
 /// What `omuzaki` ships: each registering crate and the kind of registration it must contribute. The test
 /// below compares the binary with the source of the crates it links, so it cannot notice a crate dropped from the
 /// dependencies and from `link()` together; this list can.
-const SHIPPED: [(&str, &str); 7] = [
+const SHIPPED: [(&str, &str); 8] = [
     ("omuzaki-anim", "op"),
     ("omuzaki-char", "op"),
     ("omuzaki-face", "op"),
     ("omuzaki-io-ops", "op"),
+    ("omuzaki-io-fbx", "importer"),
     ("omuzaki-io-gltf", "importer"),
     ("omuzaki-io-vrm", "exporter"),
     ("omuzaki-char", "template"),

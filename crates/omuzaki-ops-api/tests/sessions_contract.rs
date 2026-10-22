@@ -362,21 +362,28 @@ fn intersect_keeps_only_scopes_both_sides_hold() {
     assert_eq!(scopes(&Grants::person().intersect(&Grants::default())), []);
 }
 
+/// A root spelled in this host's grammar: `/work/art` on a POSIX host, `C:\work\art` on Windows (where a POSIX root is
+/// root-relative and so no root at all).
+fn host_root(posix: &str) -> String {
+    if cfg!(windows) { format!("C:{}", posix.replace('/', "\\")) } else { posix.to_owned() }
+}
+
 #[test]
 fn intersect_keeps_roots_only_when_the_other_side_holds_fs() {
-    let session = Grants::agent_default().with_fs_root("/work/art");
+    let (art, work, other_root) = (host_root("/work/art"), host_root("/work"), host_root("/other"));
+    let session = Grants::agent_default().with_fs_root(art.clone());
     let person = Grants::person();
-    assert_eq!(session.intersect(&person).fs_roots(), ["/work/art"], "a person holds fs with no roots");
+    assert_eq!(session.intersect(&person).fs_roots(), std::slice::from_ref(&art), "a person holds fs with no roots");
 
     let no_fs = Grants::of([Scope::Read]);
     let narrowed = session.intersect(&no_fs);
     assert!(narrowed.fs_roots().is_empty() && !narrowed.allows(Scope::Fs));
 
     // When both sides name roots, only what the other side covers survives.
-    let other = Grants::person().with_fs_root("/work");
-    assert_eq!(session.intersect(&other).fs_roots(), ["/work/art"]);
-    assert_eq!(other.intersect(&session).fs_roots(), ["/work/art"], "symmetric");
-    let elsewhere = Grants::person().with_fs_root("/other");
+    let other = Grants::person().with_fs_root(work);
+    assert_eq!(session.intersect(&other).fs_roots(), std::slice::from_ref(&art));
+    assert_eq!(other.intersect(&session).fs_roots(), [art], "symmetric");
+    let elsewhere = Grants::person().with_fs_root(other_root);
     assert_eq!(session.intersect(&elsewhere).fs_roots(), [] as [String; 0]);
 }
 

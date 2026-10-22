@@ -1,0 +1,7 @@
+section = "rust"
+item = "option-ext"
+kind = "crate"
+used_for = "A small `Option` helper that `dirs-sys` (under `directories`) uses"
+status = "conditions"
+condition = "MPL-2.0 is file-level copyleft: keep the crate unmodified (a normal registry dependency) and ship its notice"
+audit = "(crates.io: MPL-2.0)"

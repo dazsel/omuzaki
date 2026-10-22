@@ -76,14 +76,26 @@ struct Site {
 
 fn site() -> Site {
     let dir = tempfile::tempdir().unwrap();
-    let base = fs::canonicalize(dir.path()).unwrap();
     // Canonical, so the paths the tests expect are the paths `fs_access` returns.
+    let base = plain(fs::canonicalize(dir.path()).unwrap());
     let (project, outside) = (base.join("project"), base.join("outside"));
     fs::create_dir_all(&project).unwrap();
     fs::create_dir_all(&outside).unwrap();
     fs::write(project.join("model.vrm"), "m").unwrap();
     fs::write(outside.join("secret.txt"), "s").unwrap();
     Site { _dir: dir, project, outside }
+}
+
+/// `canonicalize` returns `\\?\C:\...` on Windows, which `fs_access` answers as the plain `C:\...` form (the same place),
+/// so the tests spell expected paths the way it does.
+fn plain(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    if let Some(rest) = path.to_str().and_then(|text| text.strip_prefix(r"\\?\"))
+        && rest.as_bytes().get(1) == Some(&b':')
+    {
+        return PathBuf::from(rest);
+    }
+    path
 }
 
 fn executor(project: Option<&Path>) -> Executor {
@@ -209,7 +221,7 @@ fn a_relative_project_folder_is_pinned_to_where_it_pointed_when_given() {
     let exec = executor(Some(Path::new(".")));
     let as_agent = Request { actor: agent(), grants: Grants::agent_default(), ..request("test.open", json!({})) };
     let found = open(&exec, as_agent, "Cargo.toml").unwrap();
-    let expected = fs::canonicalize("Cargo.toml").unwrap();
+    let expected = plain(fs::canonicalize("Cargo.toml").unwrap());
     assert_eq!(found, text(&expected));
 }
 

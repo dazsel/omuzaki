@@ -43,6 +43,7 @@ omuzaki-stage-api = { path = "../omuzaki-stage-api" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
 omuzaki-track = { path = "../omuzaki-track" }
 omuzaki-track-api = { path = "../omuzaki-track-api" }
+omuzaki-track-voice = { path = "../omuzaki-track-voice" }
 # Linked for their self-registrations (part kinds, retargets, ...) and for the rig, which the frame loop calls directly.
 omuzaki-anim = { path = "../omuzaki-anim" }
 omuzaki-char = { path = "../omuzaki-char" }
@@ -72,14 +73,18 @@ omuzaki-anim-mock = { path = "../omuzaki-anim-mock" }
 omuzaki-char-mock = { path = "../omuzaki-char-mock" }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 omuzaki-face-mock = { path = "../omuzaki-face-mock" }
-# A kit character exported to VRM and imported back as an avatar: the bring-your-own-model path without a third-party
-# file (`tests/avatar_stage.rs`).
+# The real fetcher under the font download test (`tests/font_download.rs`).
+omuzaki-http = { path = "../omuzaki-http" }
+# A kit character exported to VRM (and written as FBX) and imported back as an avatar: the bring-your-own-model path
+# without a third-party file (`tests/avatar_stage.rs`, `tests/fbx_avatar.rs`).
+omuzaki-io-fbx = { path = "../omuzaki-io-fbx" }
 omuzaki-io-vrm = { path = "../omuzaki-io-vrm" }
 omuzaki-render-mock = { path = "../omuzaki-render-mock" }
 omuzaki-settings = { path = "../omuzaki-settings" }
 omuzaki-stream = { path = "../omuzaki-stream" }
 omuzaki-store-mock = { path = "../omuzaki-store-mock" }
 omuzaki-track-mock = { path = "../omuzaki-track-mock" }
+omuzaki-track-net = { path = "../omuzaki-track-net" }
 # The registration scan behind the link gate (`tests/registrations.rs`, ADR 0015).
 xtask = { path = "../../xtask" }
 

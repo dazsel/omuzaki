@@ -10,7 +10,7 @@ use crate::ds::theme::ds;
 use crate::ds::widgets::{
     ActorChip, ActorKind, AgentTouch, ColourField, FormRow, ParamSlider, Section, Segment, Segmented, TextField, Toggle,
 };
-use crate::register_story;
+use omuzaki_ui_api::register_story;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Profile {

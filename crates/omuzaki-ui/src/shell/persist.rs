@@ -30,6 +30,18 @@ impl std::fmt::Display for StoreError {
 
 impl std::error::Error for StoreError {}
 
+/// The studio's folder in the user's config directory: `$XDG_CONFIG_HOME/omuzaki`, else `~/.config/omuzaki`, and
+/// `%APPDATA%\omuzaki` on Windows. `None` when none of those is known.
+pub fn user_config_dir() -> Option<PathBuf> {
+    let env = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from);
+    let base = if cfg!(windows) {
+        env("APPDATA")
+    } else {
+        env("XDG_CONFIG_HOME").or_else(|| env("HOME").map(|home| home.join(".config")))
+    }?;
+    Some(base.join("omuzaki"))
+}
+
 /// The folder layouts are kept in.
 #[derive(Clone, Debug)]
 pub struct LayoutStore {
@@ -45,13 +57,7 @@ impl LayoutStore {
     /// The store in the user's config directory: `$XDG_CONFIG_HOME/omuzaki/layouts`, else `~/.config/omuzaki/layouts`, and
     /// `%APPDATA%\omuzaki\layouts` on Windows. `None` when none of those is known (the layout then lives only in memory).
     pub fn in_user_config() -> Option<Self> {
-        let env = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from);
-        let base = if cfg!(windows) {
-            env("APPDATA")
-        } else {
-            env("XDG_CONFIG_HOME").or_else(|| env("HOME").map(|home| home.join(".config")))
-        }?;
-        Some(Self::new(base.join("omuzaki").join("layouts")))
+        user_config_dir().map(|dir| Self::new(dir.join("layouts")))
     }
 
     fn file(&self, workspace: &str) -> PathBuf {
