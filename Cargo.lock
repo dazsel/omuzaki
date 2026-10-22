@@ -5711,6 +5711,7 @@ dependencies = [
  "omuzaki-render-mock",
  "omuzaki-secrets",
  "omuzaki-secrets-api",
+ "omuzaki-secrets-mock",
  "omuzaki-settings",
  "omuzaki-settings-api",
  "omuzaki-settings-mock",

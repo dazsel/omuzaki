@@ -1,4 +1,4 @@
-//! The Connectors page of the Settings window (#1446, CN-13): `VTube Studio`. Where the bridge stands and what to do
+//! The `VTube Studio` half of the Connectors page (#1446, CN-13). Where the bridge stands and what to do
 //! next, the setup steps while it isn't connected, the `Omuzaki*` parameters to map in VTS (a list to copy), the VTS
 //! inputs Omuzaki feeds and the ones another plugin owns, and the table that maps Omuzaki's expressions to the loaded
 //! model's hotkeys, with suggestions marked until the person confirms them. An expression file as a target is behind
@@ -13,14 +13,15 @@
 use std::sync::Arc;
 
 use egui::{RichText, ScrollArea, Ui, vec2};
-use omuzaki_ops_api::{Actor, Grants, Mode, OpError, Request, Runner};
+use omuzaki_ops_api::{Actor, OpError, Runner};
 use serde_json::{Value, json};
 
-use super::text::{Word, say};
+use super::run;
 use crate::ds::icons;
 use crate::ds::theme::ds;
 use crate::ds::tokens::{Status, space};
 use crate::ds::widgets::{Button, EmptyState, Section, StatusChip, TextField};
+use crate::settings::text::{Word, say};
 
 /// Seconds between reads while the page is open.
 const REFRESH_S: f64 = 1.0;
@@ -52,7 +53,7 @@ enum Action {
 
 /// The page's state, kept while the Settings window is open.
 #[derive(Default)]
-pub struct ConnectorsPage {
+pub struct VtsPage {
     status: Option<Value>,
     read_at: Option<f64>,
     /// Why `vts.status` failed (no bridge in this build, for one).
@@ -68,7 +69,7 @@ pub struct ConnectorsPage {
     expression_file: String,
 }
 
-impl ConnectorsPage {
+impl VtsPage {
     /// The state as `vts.status` last answered (`state` is `disconnected`, `connecting`, `awaiting_approval`,
     /// `connected`, `revoked`, `denied` or `failed`).
     pub fn state(&self) -> Option<&str> {
@@ -83,8 +84,6 @@ impl ConnectorsPage {
         }
         let mut actions = Vec::new();
         ScrollArea::vertical().id_salt("settings.connectors.scroll").auto_shrink([false, false]).show(ui, |ui| {
-            ui.label(RichText::new(say(&ctx, Word::VtsTitle, &[])).font(ds(&ctx).text.section.clone()));
-            ui.add_space(space::S4);
             if let Some(reason) = &self.refused {
                 ui.label(RichText::new(say(&ctx, Word::NotSaved, &[("reason", reason)])).color(ds(&ctx).theme.danger));
             }
@@ -390,19 +389,4 @@ fn map_row(raw: &Value, suggested: bool) -> Option<MapRow> {
         _ => return None,
     };
     Some(MapRow { omuzaki, target, raw: raw.clone(), suggested })
-}
-
-/// Runs `op` as the person and returns its answer.
-fn run(runner: &dyn Runner, actor: &Actor, op: &str, args: Value) -> Result<Value, OpError> {
-    let outcome = runner.run(Request {
-        op: op.to_owned(),
-        args,
-        mode: Mode::Apply,
-        actor: actor.clone(),
-        grants: Grants::person(),
-        cause: None,
-        tx: None,
-        base: None,
-    })?;
-    Ok(outcome.plan.output.unwrap_or(Value::Null))
 }

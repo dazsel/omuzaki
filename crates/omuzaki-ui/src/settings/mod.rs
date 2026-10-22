@@ -23,7 +23,7 @@ use omuzaki_settings_api::registry;
 use schemars::Schema;
 use serde_json::{Map, Value, json};
 
-use self::connectors::ConnectorsPage;
+use self::connectors::{ConnectorsPage, Keychain};
 use self::models::ModelsPage;
 use self::text::{Word, area_title, humanise, say, title};
 use crate::ds::icons;
@@ -72,7 +72,7 @@ pub enum Page {
     Settings,
     /// The model slots and their models.
     Models,
-    /// The connections to other apps: `VTube Studio`.
+    /// The connections to other apps: OBS Studio and `VTube Studio`.
     Connectors,
 }
 
@@ -112,6 +112,13 @@ impl SettingsWindow {
     /// A window open on `page`.
     pub fn on(page: Page) -> Self {
         Self { page, ..Self::default() }
+    }
+
+    /// The same window, keeping the OBS password in `keychain` (the app's; see [`Keychain`]).
+    #[must_use]
+    pub fn with_keychain(mut self, keychain: Option<Keychain>) -> Self {
+        self.connectors = std::mem::take(&mut self.connectors).with_keychain(keychain);
+        self
     }
 
     /// The page on show.

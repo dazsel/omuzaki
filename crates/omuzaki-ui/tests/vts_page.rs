@@ -1,4 +1,4 @@
-//! The Connectors page of the Settings window (#1446, CN-13) over the real `vts.*` ops and a loopback mock `VTube
+//! The `VTube Studio` half of the Settings window's Connectors page (#1446, CN-13) over the real `vts.*` ops and a loopback mock `VTube
 //! Studio`: without a bridge the page says why; disconnected, it shows the setup steps, the parameters to map in VTS
 //! (copied in one click) and the inputs Omuzaki can feed; a person connects with the keyboard alone, the popup's wait
 //! and the connection show, Suggest proposes hotkeys for the character's expressions, and the person confirms one,
@@ -21,6 +21,7 @@ use omuzaki_ui::ds::strings::{English, Pseudo};
 use omuzaki_ui::ds::testing::{all_strings, harness_state, press};
 use omuzaki_ui::ds::{Settings, set_strings};
 use omuzaki_ui::live::story::LiveState;
+use omuzaki_ui::settings::connectors::Connector;
 use omuzaki_ui::settings::{Page, SettingsWindow};
 use omuzaki_ui::wiring::Core;
 use omuzaki_vts::clock::SystemClock;
@@ -87,8 +88,7 @@ fn rig(vts: Option<Arc<VtsService>>) -> Harness<'static, Rig> {
     }
     let core = omuzaki_ui::wiring::core_on(omuzaki_ui::wiring::Document::empty(), services.build())
         .unwrap_or_else(|e| panic!("{e}"));
-    let state =
-        Rig { window: Some(SettingsWindow::on(Page::Connectors)), core, person: Actor::Person { name: "you".into() } };
+    let state = Rig { window: Some(vts_window()), core, person: Actor::Person { name: "you".into() } };
     let mut h = harness_state(Settings::default(), vec2(900.0, 1800.0), state, |ui, r| {
         let runner = Arc::clone(&r.core.runner);
         if let Some(window) = r.window.as_mut()
@@ -99,6 +99,13 @@ fn rig(vts: Option<Arc<VtsService>>) -> Harness<'static, Rig> {
     });
     h.run_steps(4);
     h
+}
+
+/// The Settings window on the Connectors page's `VTube Studio` half.
+fn vts_window() -> SettingsWindow {
+    let mut window = SettingsWindow::on(Page::Connectors);
+    window.connectors().show_connector(Connector::Vts);
+    window
 }
 
 fn bridge() -> Arc<VtsService> {
@@ -119,7 +126,7 @@ fn shows(h: &Harness<'_, Rig>, text: &str) -> bool {
 }
 
 fn state(h: &mut Harness<'_, Rig>) -> Option<String> {
-    h.state_mut().window.as_mut().and_then(|w| w.connectors().state().map(str::to_owned))
+    h.state_mut().window.as_mut().and_then(|w| w.connectors().vts().state().map(str::to_owned))
 }
 
 /// Runs frames (a second of egui's clock each round, so the page reads `vts.status` again) until `text` shows.
@@ -319,11 +326,11 @@ fn every_word_on_the_page_goes_through_the_message_table() {
 }
 
 /// Screenshots of the page for the pull request: each status at 1366x768 and 1920x1080, in English and the
-/// pseudo-locale. Run with `OMUZAKI_EVIDENCE_OUT=<dir> cargo test -p omuzaki-ui --features omuzaki-vts/testing --test
-/// connectors_page connectors_evidence -- --ignored` (software Vulkan).
+/// pseudo-locale. Run with `OMUZAKI_EVIDENCE_OUT=<dir> cargo test -p omuzaki-ui --test vts_page
+/// vts_evidence -- --ignored` (software Vulkan).
 #[test]
 #[ignore = "writes screenshots; run by hand for a pull request"]
-fn connectors_evidence() {
+fn vts_evidence() {
     let Ok(out) = std::env::var("OMUZAKI_EVIDENCE_OUT") else { panic!("set OMUZAKI_EVIDENCE_OUT to a folder") };
     for status in ["no-bridge", "disconnected", "connected", "revoked", "denied"] {
         for (w, h) in [(1366.0, 768.0), (1920.0, 1080.0)] {
@@ -355,7 +362,7 @@ fn connectors_evidence() {
                 harness.run_steps(8);
                 let image = harness.render().unwrap_or_else(|e| panic!("renders: {e}"));
                 let locale = if pseudo { "-pseudo" } else { "" };
-                let path = format!("{out}/connectors-{status}-{w}x{h}{locale}.png");
+                let path = format!("{out}/vts-{status}-{w}x{h}{locale}.png");
                 image.save(&path).unwrap_or_else(|e| panic!("writing {path}: {e}"));
             }
         }
@@ -371,8 +378,7 @@ fn evidence_rig(bridge_in: bool, size: egui::Vec2) -> Harness<'static, Rig> {
     }
     let core = omuzaki_ui::wiring::core_on(omuzaki_ui::wiring::Document::empty(), services.build())
         .unwrap_or_else(|e| panic!("{e}"));
-    let state =
-        Rig { window: Some(SettingsWindow::on(Page::Connectors)), core, person: Actor::Person { name: "you".into() } };
+    let state = Rig { window: Some(vts_window()), core, person: Actor::Person { name: "you".into() } };
     let mut h = Harness::builder().with_size(size).wgpu().build_ui_state(
         |ui, r: &mut Rig| {
             omuzaki_ui::ds::apply_settings(ui.ctx(), Settings::default());

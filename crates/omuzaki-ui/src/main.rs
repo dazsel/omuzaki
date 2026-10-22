@@ -266,6 +266,9 @@ fn main() -> eframe::Result {
             let mut shell = studio_shell(cc, core);
             if let Some(live) = live.as_ref() {
                 shell.insert_view(live.channel_feed());
+                if let Some(keychain) = live.keychain() {
+                    shell.insert_view(keychain);
+                }
             }
             Ok(Box::new(App { shell, live, look }))
         }),
