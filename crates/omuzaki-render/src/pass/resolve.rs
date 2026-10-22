@@ -17,11 +17,16 @@
 //! frame re-renders to the same bytes.
 
 use bytemuck::{Pod, Zeroable};
-use omuzaki_render_api::{AlphaEncoding, ColourGrade, FilmGrain, Pass, RenderError, Tonemap};
+use omuzaki_core::glam::Vec2;
+use omuzaki_render_api::{
+    AlphaEncoding, Background, Colour, ColourGrade, FilmGrain, Pass, RenderError, TextureDesc, TextureId, Tonemap,
+    gradient_at,
+};
 
 use super::dof::layers_layout;
 use super::{FramePass, Outcome, PassCx};
 use crate::gpu::{OUTPUT_FORMAT, SCENE_FORMAT};
+use crate::resource::texture::GpuTexture;
 use crate::shared::Shared;
 
 const FLAG_GLOW: u32 = 1;
@@ -53,7 +58,17 @@ struct Params {
     seed: [u32; 2],
     flags: u32,
     dither: f32,
+    backdrop: u32,
+    backdrop_flags: u32,
+    uv_scale: [f32; 2],
+    top: [f32; 4],
+    bottom: [f32; 4],
+    uv_offset: [f32; 2],
+    _pad: [f32; 2],
 }
+
+const BACKDROP_GRADIENT: u32 = 1;
+const BACKDROP_TEXTURE: u32 = 2;
 
 /// Taps per axis for an internal image `ratio` times the target: the footprint of one output pixel, rounded up.
 /// Zero means the sizes match and one exact texel is read.
@@ -110,7 +125,11 @@ fn empty(device: &wgpu::Device, format: wgpu::TextureFormat) -> wgpu::TextureVie
 pub(crate) struct Resolve {
     pipeline: wgpu::RenderPipeline,
     params: wgpu::Buffer,
+    params_layout: wgpu::BindGroupLayout,
+    /// Group 1 with the stand-in backdrop texture: every frame without a texture backdrop.
     params_group: wgpu::BindGroup,
+    /// Group 1 with the last backdrop texture, made when the texture changes so a frame allocates nothing.
+    texture_group: Option<(TextureId, wgpu::BindGroup)>,
     /// Stand-ins for the glow and the depth-of-field layers when those effects did not run this frame.
     no_glow: wgpu::BindGroup,
     no_layers: wgpu::BindGroup,
@@ -123,18 +142,37 @@ impl Resolve {
             label: Some("resolve"),
             source: wgpu::ShaderSource::Wgsl(include_str!("../shader/post_resolve.wgsl").into()),
         });
+        let fragment = wgpu::ShaderStages::FRAGMENT;
         let params_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("resolve params"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: fragment,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: fragment,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: fragment,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
         });
         let layers = layers_layout(device);
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -153,11 +191,8 @@ impl Resolve {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let params_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("resolve params"),
-            layout: &params_layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: params.as_entire_binding() }],
-        });
+        let params_group =
+            params_group(device, &params_layout, &params, &shared.defaults.white, &shared.defaults.linear_clamp);
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("resolve"),
             layout: Some(&layout),
@@ -199,13 +234,91 @@ impl Resolve {
             layout: &layers,
             entries: &[texture(0, &image), filtered, texture(2, &width)],
         });
-        Self { pipeline, params, params_group, no_glow, no_layers }
+        Self { pipeline, params, params_layout, params_group, texture_group: None, no_glow, no_layers }
     }
+
+    /// Makes group 1 for this frame's backdrop texture if it isn't the one held, or lets the held one go when the frame
+    /// has none.
+    fn group(&mut self, device: &wgpu::Device, texture: Option<(TextureId, &GpuTexture)>) {
+        match texture {
+            None => self.texture_group = None,
+            Some((id, texture)) if self.texture_group.as_ref().is_none_or(|(held, _)| *held != id) => {
+                let group = params_group(device, &self.params_layout, &self.params, &texture.view, &texture.sampler);
+                self.texture_group = Some((id, group));
+            }
+            Some(_) => {}
+        }
+    }
+
+    /// Group 1 as [`group`](Self::group) left it.
+    fn params_group(&self) -> &wgpu::BindGroup {
+        self.texture_group.as_ref().map_or(&self.params_group, |(_, group)| group)
+    }
+}
+
+/// Group 1: the params (b0) and a backdrop texture with its sampler (b1, b2).
+fn params_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    params: &wgpu::Buffer,
+    view: &wgpu::TextureView,
+    sampler: &wgpu::Sampler,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("resolve params"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: params.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(view) },
+            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(sampler) },
+        ],
+    })
+}
+
+/// The backdrop part of the params: which kind, the gradient's ends and where the texture sits. `texture` is the
+/// backdrop texture's description and shader flags when the background is one that is still alive.
+fn backdrop_params(background: Background, texture: Option<(&TextureDesc, u32)>, frame: f32) -> BackdropParams {
+    let encoded = |c: Colour| gradient_at(c, c, 0.0).to_array();
+    let gradient = |top, bottom| BackdropParams { top: encoded(top), bottom: encoded(bottom), ..BackdropParams::NONE };
+    match (background, texture) {
+        (Background::Gradient { top, bottom }, _) => {
+            BackdropParams { kind: BACKDROP_GRADIENT, ..gradient(top, bottom) }
+        }
+        (Background::Texture { fit, top, bottom, .. }, Some((desc, flags))) => {
+            let aspect = desc.size.as_vec2();
+            let offset = fit.uv(Vec2::ZERO, frame, aspect.x / aspect.y);
+            let scale = fit.uv(Vec2::ONE, frame, aspect.x / aspect.y) - offset;
+            BackdropParams {
+                kind: BACKDROP_TEXTURE,
+                flags,
+                uv_scale: scale.to_array(),
+                uv_offset: offset.to_array(),
+                ..gradient(top, bottom)
+            }
+        }
+        _ => BackdropParams::NONE,
+    }
+}
+
+/// See [`backdrop_params`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct BackdropParams {
+    kind: u32,
+    flags: u32,
+    uv_scale: [f32; 2],
+    uv_offset: [f32; 2],
+    top: [f32; 4],
+    bottom: [f32; 4],
+}
+
+impl BackdropParams {
+    const NONE: Self =
+        Self { kind: 0, flags: 0, uv_scale: [1.0; 2], uv_offset: [0.0; 2], top: [0.0; 4], bottom: [0.0; 4] };
 }
 
 /// What the shader needs to know about the frame: the output's encoding, the tap grid, which post images there are to fold
 /// in and which display-space effects to apply to the average.
-fn params_for(cx: &PassCx<'_>, glow: bool, depth_of_field: bool) -> Params {
+fn params_for(cx: &PassCx<'_>, glow: bool, depth_of_field: bool, backdrop: BackdropParams) -> Params {
     let post = &cx.frame.scene.post;
     let (internal, target) = (cx.frame.internal_size, cx.frame.target_size);
     #[allow(clippy::cast_precision_loss)] // sizes are far below 2^24
@@ -244,6 +357,13 @@ fn params_for(cx: &PassCx<'_>, glow: bool, depth_of_field: bool) -> Params {
             | flag(grain.is_some(), FLAG_GRAIN)
             | flag(any, FLAG_DITHER),
         dither: 1.0 / 255.0,
+        backdrop: backdrop.kind,
+        backdrop_flags: backdrop.flags,
+        uv_scale: backdrop.uv_scale,
+        top: backdrop.top,
+        bottom: backdrop.bottom,
+        uv_offset: backdrop.uv_offset,
+        _pad: [0.0; 2],
     }
 }
 
@@ -255,8 +375,20 @@ impl FramePass for Resolve {
     fn record(&mut self, cx: &mut PassCx<'_>) -> Result<Outcome, RenderError> {
         let glow = cx.attachments.post.glow.clone();
         let layers = cx.attachments.post.depth_of_field.clone();
-        let params = params_for(cx, glow.is_some(), layers.is_some());
+        let background = cx.frame.scene.background;
+        let texture = match background {
+            Background::Texture { texture, .. } => {
+                let found = cx.resources.textures.get(texture.index(), texture.generation());
+                Some((texture, found.ok_or(RenderError::UnknownHandle { what: "texture" })?))
+            }
+            _ => None,
+        };
+        let target = cx.frame.target_size.as_vec2();
+        let backdrop =
+            backdrop_params(background, texture.map(|(_, t)| (&t.desc, t.shader_flags)), target.x / target.y);
+        let params = params_for(cx, glow.is_some(), layers.is_some(), backdrop);
         cx.shared.gpu.queue.write_buffer(&self.params, 0, bytemuck::bytes_of(&params));
+        self.group(&cx.shared.gpu.device, texture);
 
         let input = cx.attachments.resolved_colour(cx.encoder);
         let mut pass = cx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -277,7 +409,7 @@ impl FramePass for Resolve {
         });
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, input, &[]);
-        pass.set_bind_group(1, &self.params_group, &[]);
+        pass.set_bind_group(1, self.params_group(), &[]);
         pass.set_bind_group(2, glow.as_ref().unwrap_or(&self.no_glow), &[]);
         pass.set_bind_group(3, layers.as_ref().unwrap_or(&self.no_layers), &[]);
         pass.draw(0..3, 0..1);
@@ -291,8 +423,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn params_are_sixty_four_bytes() {
-        assert_eq!(size_of::<Params>(), 64);
+    fn params_are_a_hundred_and_twenty_eight_bytes() {
+        assert_eq!(size_of::<Params>(), 128);
     }
 
     #[test]

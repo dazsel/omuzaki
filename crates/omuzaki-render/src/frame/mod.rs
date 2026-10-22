@@ -45,7 +45,8 @@ pub(crate) struct FrameView<'a> {
 }
 
 impl FrameView<'_> {
-    /// The scene's background as a premultiplied linear clear colour.
+    /// The scene's background as a premultiplied linear clear colour. The environment is drawn over opaque black by the
+    /// `Opaque` pass.
     pub(crate) fn clear_colour(&self) -> wgpu::Color {
         use omuzaki_render_api::Background;
         match self.scene.background {
@@ -53,7 +54,11 @@ impl FrameView<'_> {
                 let (rgb, a) = (colour.to_linear(), f64::from(colour.alpha()));
                 wgpu::Color { r: f64::from(rgb.x) * a, g: f64::from(rgb.y) * a, b: f64::from(rgb.z) * a, a }
             }
-            Background::Transparent => wgpu::Color::TRANSPARENT,
+            // A gradient or a picture is laid under the frame by the `Resolve` pass, so the scene renders over nothing.
+            Background::Transparent | Background::Gradient { .. } | Background::Texture { .. } => {
+                wgpu::Color::TRANSPARENT
+            }
+            Background::Environment => wgpu::Color::BLACK,
         }
     }
 }

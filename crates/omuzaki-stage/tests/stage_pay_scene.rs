@@ -12,15 +12,19 @@ use omuzaki_char_api::{
 };
 use omuzaki_core::glam::{Mat4, UVec2, Vec3};
 use omuzaki_render_api::{
-    AlphaEncoding, Camera, Capabilities, FrameReport, Image, Material, MaterialId, MeshData, MeshId, MeshOptions,
-    Painter, Projection, Quality, RenderError, Renderer, ResourceRef, ResourceStats, Scene, Shading, TargetDesc,
-    TargetId, TextureDesc, TextureId,
+    AlphaEncoding, BackdropFit, Background, Camera, Capabilities, Colour, EnvironmentDesc, EnvironmentId, FrameReport,
+    Image, Material, MaterialId, MeshData, MeshId, MeshOptions, Painter, Projection, Quality, RenderError, Renderer,
+    ResourceRef, ResourceStats, Scene, Shading, TargetDesc, TargetId, TextureDesc, TextureId,
 };
 use omuzaki_render_mock::MockRenderer;
+use omuzaki_stage::StageError;
 use omuzaki_stage::UploadOptions;
+use omuzaki_stage::frame::FrameInput;
 use omuzaki_stage::frame::{Stage, StageClock};
-use omuzaki_stage::scene::resolve::ResolvedScene;
-use omuzaki_stage_api::GroundKind;
+use omuzaki_stage::scene::resolve::{ResolvedEnvironment, ResolvedImage, ResolvedScene};
+use omuzaki_stage_api::{EnvironmentSource, GroundKind};
+use omuzaki_store_api::{Commercial, ContentHash, Provenance, Source, Store};
+use omuzaki_store_mock::MemStore;
 use serde_json::json;
 
 /// The mock renderer, keeping the last material sent for every id and counting updates.
@@ -29,6 +33,7 @@ struct Materials {
     held: BTreeMap<MaterialId, Material>,
     updates: usize,
     meshes_made: usize,
+    environments_made: usize,
 }
 
 impl Renderer for Materials {
@@ -72,6 +77,10 @@ impl Renderer for Materials {
     fn resize_target(&mut self, target: TargetId, size: UVec2) -> Result<(), RenderError> {
         self.inner.resize_target(target, size)
     }
+    fn create_environment(&mut self, desc: &EnvironmentDesc) -> Result<EnvironmentId, RenderError> {
+        self.environments_made += 1;
+        self.inner.create_environment(desc)
+    }
     fn release(&mut self, resource: ResourceRef) -> Result<(), RenderError> {
         self.inner.release(resource)
     }
@@ -84,7 +93,7 @@ impl Renderer for Materials {
 }
 
 fn renderer() -> Materials {
-    Materials { inner: MockRenderer::new(), held: BTreeMap::new(), updates: 0, meshes_made: 0 }
+    Materials { inner: MockRenderer::new(), held: BTreeMap::new(), updates: 0, meshes_made: 0, environments_made: 0 }
 }
 
 fn mock() -> BuiltCharacter {
@@ -219,4 +228,180 @@ fn a_ground_change_makes_exactly_one_mesh_and_a_value_change_none() {
     stage.pay_scene(&mut renderer).unwrap();
     assert_eq!(renderer.stats().meshes, meshes);
     stage.release(&mut renderer).unwrap();
+}
+
+fn sky(zenith: Colour) -> EnvironmentSource {
+    EnvironmentSource::Sky { zenith, horizon: Colour::hex(0x00e8_c9a0), ground: Colour::hex(0x003b_3026) }
+}
+
+/// A scene with no ground, the environment `source` used at `intensity`, shown behind the cast.
+fn environment_scene(source: Option<EnvironmentSource>, intensity: f32) -> ResolvedScene {
+    let mut resolved = scene(None);
+    resolved.environment = source.map(|s| {
+        let mut environment = ResolvedEnvironment::new(s);
+        environment.intensity = intensity;
+        environment
+    });
+    resolved.background = Background::Environment;
+    resolved
+}
+
+#[test]
+fn the_environment_is_made_when_its_source_changes_and_used_by_every_frame() {
+    let mut renderer = renderer();
+    let mut stage = staged(&mut renderer);
+    let first = environment_scene(Some(sky(Colour::hex(0x006f_86b8))), 0.6);
+    let owed = stage.set_scene(&first, Mat4::IDENTITY);
+    assert_eq!(owed.environment, Some(Some(sky(Colour::hex(0x006f_86b8)))));
+    assert_eq!(stage.scene().environment, None, "not used until it is made");
+    stage.pay_scene(&mut renderer).unwrap();
+    assert!(stage.owed().is_empty());
+    assert_eq!((renderer.environments_made, renderer.stats().environments), (1, 1));
+    let using = stage.scene().environment.expect("the frame uses it");
+    assert_eq!((using.intensity, using.toon_ramp), (0.6, true));
+    stage.tick(&mut renderer, &FrameInput::default()).expect("a frame renders with it");
+
+    // A value change reaches the frame at once and makes nothing.
+    let brighter = environment_scene(Some(sky(Colour::hex(0x006f_86b8))), 1.4);
+    assert!(stage.set_scene(&brighter, Mat4::IDENTITY).is_empty());
+    assert_eq!(stage.scene().environment.unwrap().intensity, 1.4);
+
+    // Another sky replaces it; no environment releases it.
+    stage.set_scene(&environment_scene(Some(sky(Colour::WHITE)), 1.0), Mat4::IDENTITY);
+    stage.pay_scene(&mut renderer).unwrap();
+    assert_eq!((renderer.environments_made, renderer.stats().environments), (2, 1), "the old one is released");
+    stage.set_scene(&environment_scene(None, 1.0), Mat4::IDENTITY);
+    stage.pay_scene(&mut renderer).unwrap();
+    assert_eq!((renderer.stats().environments, stage.scene().environment), (0, None));
+
+    stage.set_scene(&first, Mat4::IDENTITY);
+    stage.pay_scene(&mut renderer).unwrap();
+    stage.release(&mut renderer).unwrap();
+    assert_eq!(renderer.stats().environments, 0, "releasing the stage releases its environment");
+}
+
+/// A 2 x 1 Radiance file (flat RGBE).
+fn tiny_hdr() -> Vec<u8> {
+    let mut bytes = b"#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y 1 +X 2\n".to_vec();
+    bytes.extend_from_slice(&[128, 64, 32, 129, 128, 128, 128, 130]);
+    bytes
+}
+
+#[test]
+fn an_hdri_is_loaded_from_the_store_off_the_render_thread_then_made() {
+    let store = MemStore::new();
+    let provenance = Provenance {
+        source: Source::Authored,
+        author: None,
+        licence: "CC0-1.0".into(),
+        attribution: None,
+        commercial: Commercial::Ok,
+        consent: None,
+        private_test: false,
+    };
+    let asset = store.put(&tiny_hdr(), provenance).unwrap();
+    let mut renderer = renderer();
+    let mut stage = staged(&mut renderer);
+    let mut resolved = environment_scene(Some(EnvironmentSource::Hdri { asset }), 1.0);
+
+    // Not loaded: the work stays owed and says why.
+    stage.set_scene(&resolved, Mat4::IDENTITY);
+    let error = stage.pay_scene(&mut renderer).unwrap_err();
+    assert!(
+        matches!(error, StageError::Scene { ref source } if source.path == "lighting.environment.asset"),
+        "{error}"
+    );
+    assert!(stage.owed().environment.is_some());
+
+    resolved.load_hdri(&store).unwrap();
+    stage.set_scene(&resolved, Mat4::IDENTITY);
+    stage.pay_scene(&mut renderer).unwrap();
+    assert!(stage.owed().is_empty() && stage.scene().environment.is_some());
+
+    let mut missing = environment_scene(Some(EnvironmentSource::Hdri { asset: ContentHash::of(b"gone") }), 1.0);
+    let error = missing.load_hdri(&store).unwrap_err();
+    assert!(
+        matches!(error, StageError::Scene { ref source } if source.path == "lighting.environment.asset"),
+        "{error}"
+    );
+    stage.release(&mut renderer).unwrap();
+}
+
+/// A 2 x 2 PNG: red, green, blue and see-through.
+fn tiny_png() -> Vec<u8> {
+    let rgba = [255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 0, 0, 0, 0];
+    let mut bytes = Vec::new();
+    image::RgbaImage::from_raw(2, 2, rgba.to_vec())
+        .unwrap()
+        .write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png)
+        .unwrap();
+    bytes
+}
+
+/// A scene with no ground and the picture `asset` behind the cast, fitted by `fit`, its bars as the resolve gives them.
+fn image_scene(asset: Option<ContentHash>, fit: BackdropFit) -> ResolvedScene {
+    let mut resolved = scene(None);
+    let (top, bottom) = (Colour::hex(0x0010_2040), Colour::BLACK);
+    resolved.backdrop_image = asset.map(|asset| {
+        let mut image = ResolvedImage::new(asset);
+        (image.fit, image.top, image.bottom) = (fit, top, bottom);
+        image
+    });
+    resolved.background = Background::Gradient { top, bottom };
+    resolved
+}
+
+#[test]
+fn an_image_backdrop_is_uploaded_once_and_shown_by_every_frame() {
+    let store = MemStore::new();
+    let provenance = Provenance {
+        source: Source::Authored,
+        author: None,
+        licence: "CC0-1.0".into(),
+        attribution: None,
+        commercial: Commercial::Ok,
+        consent: None,
+        private_test: false,
+    };
+    let asset = store.put(&tiny_png(), provenance).unwrap();
+    let mut renderer = renderer();
+    let mut stage = staged(&mut renderer);
+    let textures = renderer.stats().textures;
+
+    // Not loaded: the bars show, the upload stays owed and says why.
+    let mut resolved = image_scene(Some(asset), BackdropFit::Cover);
+    let owed = stage.set_scene(&resolved, Mat4::IDENTITY);
+    assert_eq!(owed.image, Some(Some(asset)));
+    assert!(matches!(stage.scene().background, Background::Gradient { .. }), "the bars until it is up");
+    let error = stage.pay_scene(&mut renderer).unwrap_err();
+    assert!(matches!(error, StageError::Scene { ref source } if source.path == "scene.backdrop.asset"), "{error}");
+    assert!(stage.owed().image.is_some());
+
+    resolved.load_backdrop(&store).unwrap();
+    stage.set_scene(&resolved, Mat4::IDENTITY);
+    stage.pay_scene(&mut renderer).unwrap();
+    assert!(stage.owed().is_empty());
+    assert_eq!(renderer.stats().textures, textures + 1, "one texture for the picture");
+    let Background::Texture { fit, top, .. } = stage.scene().background else { panic!("the picture shows") };
+    assert_eq!((fit, top), (BackdropFit::Cover, Colour::hex(0x0010_2040)));
+    stage.tick(&mut renderer, &FrameInput::default()).expect("a frame renders over it");
+
+    // Its fit is a value: it reaches the frame at once and uploads nothing.
+    let mut contain = image_scene(Some(asset), BackdropFit::Contain);
+    contain.image.clone_from(&resolved.image);
+    assert!(stage.set_scene(&contain, Mat4::IDENTITY).is_empty());
+    assert!(matches!(stage.scene().background, Background::Texture { fit: BackdropFit::Contain, .. }));
+
+    // No picture releases it; releasing the stage releases one it holds.
+    stage.set_scene(&image_scene(None, BackdropFit::Cover), Mat4::IDENTITY);
+    stage.pay_scene(&mut renderer).unwrap();
+    assert_eq!(renderer.stats().textures, textures);
+    stage.set_scene(&resolved, Mat4::IDENTITY);
+    stage.pay_scene(&mut renderer).unwrap();
+    stage.release(&mut renderer).unwrap();
+    assert_eq!(renderer.stats().textures, 0, "releasing the stage releases the picture");
+
+    let mut missing = image_scene(Some(ContentHash::of(b"gone")), BackdropFit::Cover);
+    let error = missing.load_backdrop(&store).unwrap_err();
+    assert!(matches!(error, StageError::Scene { ref source } if source.path == "scene.backdrop.asset"), "{error}");
 }

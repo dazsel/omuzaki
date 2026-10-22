@@ -1,5 +1,6 @@
 //! The Shadows pass on the software adapter: where the shadow falls, that it is clean (no acne, no gap at the
-//! feet), that it does not shimmer, how the live interval reuses the map, and goldens of a small stage.
+//! feet), that it does not shimmer, how the live interval reuses the map, a map per casting light, and goldens of a small
+//! stage.
 //!
 //! Most checks are *differences between renders of one scene*: the same frame with the key light removed is exactly what
 //! a fully shadowed pixel must show, and the same frame with shadows off is what a lit pixel must show, so the expected
@@ -545,6 +546,86 @@ fn the_pass_is_skipped_without_shadows_a_caster_or_a_casting_light() {
     assert_eq!(differing(&off_image, &open, 0), 0);
 }
 
+// ---- several casting lights ----
+
+/// Light from the right and above at 45 degrees: shadows fall toward -X.
+const FROM_RIGHT: Vec3 = Vec3::new(1.0, 1.0, 0.0);
+
+/// `cube_scene` with a second casting key from the right (`second`), or with only one of the two keys.
+fn two_keys(w: &World, left: bool, right: bool) -> Scene {
+    let mut s = w.cube_scene(top_down(), FROM_LEFT, left, Vec3::ZERO);
+    if right {
+        s.lights.push(Light::Directional {
+            to_light: FROM_RIGHT,
+            colour: Colour::WHITE,
+            intensity: 2.0,
+            casts_shadow: true,
+        });
+    }
+    s
+}
+
+/// Two casting keys each get a map at `High`: the ground the left key's shadow covers is lit by the right key alone, and
+/// the other way round. At `Low` only the first casting light has a map, so the second key lights through the cube.
+#[test]
+fn two_casting_keys_cast_two_shadows_and_low_keeps_the_first() {
+    let _gpu = serial();
+    let mut w = World::new();
+    let both = two_keys(&w, true, true);
+    let off = quality(ShadowQuality::Off);
+    let (open, right_only, left_only) =
+        (w.image(&both, &off), w.image(&two_keys(&w, false, true), &off), w.image(&two_keys(&w, true, false), &off));
+    let high = w.image(&both, &quality(ShadowQuality::High));
+    let low = w.image(&both, &quality(ShadowQuality::Low));
+    for z in [-0.1, 0.0, 0.1] {
+        // The left key's shadow falls at x in (0.2, 0.6), the right key's at x in (-0.6, -0.2).
+        let (px, py) = pixel(0.4, z);
+        let (nx, ny) = pixel(-0.4, z);
+        assert!(close(rgb_at(&high, px, py), rgb_at(&right_only, px, py), 2), "the left key's shadow at (0.4, {z})");
+        assert!(close(rgb_at(&high, nx, ny), rgb_at(&left_only, nx, ny), 2), "the right key's shadow at (-0.4, {z})");
+        assert!(close(rgb_at(&low, px, py), rgb_at(&right_only, px, py), 2), "Low still shadows the first key");
+        assert!(close(rgb_at(&low, nx, ny), rgb_at(&open, nx, ny), 2), "and lights the second through the cube");
+    }
+    for (x, z) in [(0.75, 0.0), (-0.75, 0.0), (0.0, 0.9)] {
+        let (px, py) = pixel(x, z);
+        assert!(close(rgb_at(&high, px, py), rgb_at(&open, px, py), 2), "({x}, {z}) is lit by both");
+    }
+}
+
+/// Each map keeps its own live interval and redraws alone when its light turns; a rig that gains a casting light draws
+/// the new map at once, and one that loses it stops sampling it.
+#[test]
+fn each_map_keeps_its_own_interval_and_a_new_casting_light_is_drawn_at_once() {
+    let _gpu = serial();
+    let mut w = World::new();
+    let target = w.r.create_target(&TargetDesc { size: SIZE, alpha: AlphaEncoding::Straight }).unwrap();
+    // A long interval, so every redraw below is one a new or turned light asked for.
+    let q = live(ShadowQuality::High, 8);
+    let render = |w: &mut World, scene: &Scene| ran(&w.r.render(target, scene, &q).unwrap());
+    let one = two_keys(&w, true, false);
+    let both = two_keys(&w, true, true);
+    let mut turned = both.clone();
+    if let Some(Light::Directional { to_light, .. }) = turned.lights.last_mut() {
+        *to_light = Vec3::new(1.0, 1.0, 0.5);
+    }
+    let sequence = [
+        render(&mut w, &one),
+        render(&mut w, &one),
+        render(&mut w, &both),
+        render(&mut w, &both),
+        render(&mut w, &turned),
+        render(&mut w, &turned),
+    ];
+    assert_eq!(sequence, [true, false, true, false, true, false], "first, interval, new light, interval, turned");
+    // Back to one casting light: the second map is switched off, so the ground behind the cube on the left is lit by
+    // the right key's light again only because that key is gone; the picture equals a fresh one-key render.
+    render(&mut w, &one);
+    let after = w.r.read_target(target).unwrap();
+    let fresh = w.image(&one, &quality(ShadowQuality::High));
+    let (nx, ny) = pixel(-0.4, 0.0);
+    assert!(close(rgb_at(&after, nx, ny), rgb_at(&fresh, nx, ny), 2), "no stale second shadow");
+}
+
 // ---- the golden stage ----
 
 /// The character stand-in of the evidence: feet, legs, torso, an arm and a head on a ground disc, lit by the prototype's
@@ -616,6 +697,21 @@ fn the_stage_matches_its_goldens() {
         let image = w.r.render_image(STAGE_SIZE, AlphaEncoding::Straight, &scene, &q).unwrap();
         check_golden(name, &image, 60);
     }
+    let image =
+        w.r.render_image(STAGE_SIZE, AlphaEncoding::Straight, &two_key_stage(&scene), &quality(ShadowQuality::High));
+    check_golden("stage_two_keys_high", &image.unwrap(), 60);
+}
+
+/// The stage with a second casting key from the front-right, dimmer than the first, so the figure casts two shadows.
+fn two_key_stage(stage: &Scene) -> Scene {
+    let mut s = stage.clone();
+    s.lights.push(Light::Directional {
+        to_light: Vec3::new(1.4, 1.8, 1.2),
+        colour: Colour::hex(0x00ff_e2c8),
+        intensity: 1.2,
+        casts_shadow: true,
+    });
+    s
 }
 
 /// With `OMUZAKI_SHADOW_EVIDENCE=<dir>` the stage is also written there, at 512 px, once per quality, for the contact sheet.
@@ -629,8 +725,11 @@ fn write_the_evidence_pictures_when_asked() {
         ("rust_off", quality(ShadowQuality::Off)),
         ("rust_low", quality(ShadowQuality::Low)),
         ("rust_high", quality(ShadowQuality::High)),
+        ("rust_two_keys_low", quality(ShadowQuality::Low)),
+        ("rust_two_keys_high", quality(ShadowQuality::High)),
     ] {
-        let image = w.r.render_image(UVec2::splat(512), AlphaEncoding::Straight, &scene, &q).unwrap();
+        let shown = if name.contains("two_keys") { two_key_stage(&scene) } else { scene.clone() };
+        let image = w.r.render_image(UVec2::splat(512), AlphaEncoding::Straight, &shown, &q).unwrap();
         let path = PathBuf::from(&dir).join(format!("{name}.png"));
         image::save_buffer(path, &image.rgba8, 512, 512, image::ExtendedColorType::Rgba8).unwrap();
     }

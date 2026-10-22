@@ -102,32 +102,40 @@ fn spot_cone(l: Light, to_light: vec3<f32>) -> f32 {
 
 // ---- shadows ----
 
-// The shadow map of the light that casts (group 2), drawn by the Shadows pass. `view_proj` maps world space to the map's
-// clip space (depth 0..1).
-struct Shadow {
+// The shadow maps of the lights that cast (group 2), drawn by the Shadows pass: one layer per map. A map's `view_proj`
+// maps world space to its clip space (depth 0..1).
+struct ShadowMap {
     view_proj: mat4x4<f32>,
-    // x: the casting light's slot plus one (0: no shadow this frame), y: 1 / map size, z: depth bias in clip depth,
+    // x: the casting light's slot plus one (0: this map is off), y: 1 / map size, z: depth bias in clip depth,
     // w: normal bias in metres.
     params: vec4<f32>,
     // x: the spacing of the 3 x 3 comparison taps, in texels.
     kernel: vec4<f32>,
 }
 
-@group(2) @binding(0) var<uniform> shadow: Shadow;
-@group(2) @binding(1) var shadow_map: texture_depth_2d;
+// `MAX_SHADOW_MAPS` (render-api `limits`).
+const SHADOW_MAPS: u32 = 4u;
+
+struct Shadows {
+    maps: array<ShadowMap, SHADOW_MAPS>,
+}
+
+@group(2) @binding(0) var<uniform> shadows: Shadows;
+@group(2) @binding(1) var shadow_maps: texture_depth_2d_array;
 @group(2) @binding(2) var shadow_sampler: sampler_comparison;
 
-// How much of the light reaches `position` (normal `n`): 1 lit, 0 in shadow, in between across a soft edge. The point is
-// moved along the normal first (the prototype's `normalBias`) and the depth compared with the bias taken off, as in
-// three.js. The test is a 3 x 3 grid of bilinear comparisons: the softness of three's PCFSoftShadowMap. Outside the
-// map, and on materials that do not receive shadows (faces stay clean), it is 1.
-fn shadow_visibility(position: vec3<f32>, n: vec3<f32>) -> f32 {
+// How much of the light that map `m` belongs to reaches `position` (normal `n`): 1 lit, 0 in shadow, in between across
+// a soft edge. The point is moved along the normal first (the prototype's `normalBias`) and the depth compared with the
+// bias taken off, as in three.js. The test is a 3 x 3 grid of bilinear comparisons: the softness of three's
+// PCFSoftShadowMap. Outside the map, and on materials that do not receive shadows (faces stay clean), it is 1.
+fn shadow_visibility(position: vec3<f32>, n: vec3<f32>, m: u32) -> f32 {
     if ((material.flags.x & FLAG_RECEIVES_SHADOWS) == 0u) {
         return 1.0;
     }
-    let clip = shadow.view_proj * vec4<f32>(position + n * shadow.params.w, 1.0);
+    let map = shadows.maps[m];
+    let clip = map.view_proj * vec4<f32>(position + n * map.params.w, 1.0);
     let uv = clip.xy * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5, 0.5);
-    let depth = clip.z - shadow.params.z;
+    let depth = clip.z - map.params.z;
     if (any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) || depth > 1.0) {
         return 1.0;
     }
@@ -136,16 +144,39 @@ fn shadow_visibility(position: vec3<f32>, n: vec3<f32>) -> f32 {
     var sum = 0.0;
     for (var j = -1; j <= 1; j++) {
         for (var i = -1; i <= 1; i++) {
-            let tap = uv + vec2<f32>(f32(i), f32(j)) * (shadow.params.y * shadow.kernel.x);
-            sum += textureSampleCompareLevel(shadow_map, shadow_sampler, tap, depth);
+            let tap = uv + vec2<f32>(f32(i), f32(j)) * (map.params.y * map.kernel.x);
+            sum += textureSampleCompareLevel(shadow_maps, shadow_sampler, tap, m, depth);
         }
     }
     return sum / 9.0;
 }
 
+// How much of the light number `index` reaches `position`: its map's visibility, or 1 for a light without a map.
+fn light_shadow(position: vec3<f32>, n: vec3<f32>, index: u32) -> f32 {
+    for (var m = 0u; m < SHADOW_MAPS; m++) {
+        if (u32(shadows.maps[m].params.x) == index + 1u) {
+            return shadow_visibility(position, n, m);
+        }
+    }
+    return 1.0;
+}
+
+// How much of every shadowed light reaches `position`, multiplied (three.js's shadow mask), and whether any map is on.
+fn shadow_mask(position: vec3<f32>, n: vec3<f32>) -> vec2<f32> {
+    var mask = 1.0;
+    var any_on = 0.0;
+    for (var m = 0u; m < SHADOW_MAPS; m++) {
+        if (shadows.maps[m].params.x != 0.0) {
+            mask *= shadow_visibility(position, n, m);
+            any_on = 1.0;
+        }
+    }
+    return vec2<f32>(mask, any_on);
+}
+
 // What light number `index` (`l`, not a hemisphere light) sends toward a surface point at `position` with normal `n`:
 // its colour where it arrives (D10's falloff for point and spot lights, a spot's cone), the unit vector toward it, and
-// how much of it the shadow lets through (the light that casts shadows; 1 for the rest).
+// how much of it the shadow lets through (a light with a shadow map; 1 for the rest).
 struct Incident {
     colour: vec3<f32>,
     to_light: vec3<f32>,
@@ -166,8 +197,8 @@ fn incident_light(l: Light, index: u32, n: vec3<f32>, position: vec3<f32>) -> In
         if (l.vector.w == LIGHT_SPOT) {
             out.colour = out.colour * spot_cone(l, out.to_light);
         }
-    } else if (u32(shadow.params.x) == index + 1u) {
-        out.shadow = shadow_visibility(position, n);
+    } else {
+        out.shadow = light_shadow(position, n, index);
     }
     return out;
 }

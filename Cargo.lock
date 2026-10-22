@@ -5348,6 +5348,7 @@ dependencies = [
  "omuzaki-core",
  "omuzaki-doc-api",
  "omuzaki-render-api",
+ "omuzaki-store-api",
  "proptest",
  "schemars",
  "serde",

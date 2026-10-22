@@ -27,8 +27,8 @@ const TOL: f32 = 1e-6;
 const MATRIX_TOL: f32 = 1e-5;
 /// The hips' rest translation in the manifest's normalised rig: every case's hips sit here (pose `t` 0, no `par`).
 const REST_HIPS: Vec3 = Vec3::new(0.0, 0.37, 0.0);
-/// The rigs the library ships, in file order: the prototype's seven, then the measurement rig.
-const RIGS: [&str; 8] = [
+/// The rigs the library ships, in file order: the prototype's seven, the measurement rig, then our own `stage`.
+const RIGS: [&str; 9] = [
     "viewer-studio",
     "viewer-candle",
     "viewer-moonlit",
@@ -37,6 +37,7 @@ const RIGS: [&str; 8] = [
     "dev-warm",
     "perform-facecam",
     "measure-flat",
+    "stage",
 ];
 
 /// The manifest's cases, or `None` when the goldens are absent. The test then skips, saying why on stderr.
@@ -204,7 +205,7 @@ struct ResolvedBone {
 }
 
 #[test]
-fn the_library_holds_its_eight_rigs_in_file_order() {
+fn the_library_holds_its_nine_rigs_in_file_order() {
     assert_eq!(LightRig::names().collect::<Vec<_>>(), RIGS);
 }
 
@@ -217,6 +218,60 @@ fn every_library_rig_loads_validates_and_round_trips() {
         let again = LightRig::from_toml(&text).expect("the serialised rig parses and validates");
         assert_eq!(again, rig, "{name} round-trips");
     }
+}
+
+/// The `stage` rig's spots reach the render contract aimed at their targets, and a scene's lighting in subject units at
+/// the reference height (as the candle's point light does), with their own ids and the accent role.
+#[test]
+fn the_stage_rigs_spots_become_render_spots_and_scene_lights() {
+    use omuzaki_stage_api::{LightRole, LightShape, REFERENCE_HEIGHT_M};
+    let rig = LightRig::load("stage").expect("loads");
+    assert_eq!(rig.spots.len(), 3, "three coloured spots");
+    let lights = rig.to_lights().expect("lights");
+    let spots: Vec<_> = lights.iter().filter(|l| matches!(l, Light::Spot { .. })).collect();
+    assert_eq!(spots.len(), 3);
+    for (light, spot) in spots.iter().zip(&rig.spots) {
+        let Light::Spot { position, direction, cone_outer_deg, range, .. } = light else { unreachable!() };
+        assert_eq!(*position, Vec3::from(spot.position));
+        let aim = (Vec3::from(spot.target) - Vec3::from(spot.position)).normalize();
+        assert!(direction.normalize().abs_diff_eq(aim, 1e-6), "{}: aimed at its target", spot.id);
+        assert_eq!((*cone_outer_deg, *range), (spot.cone, spot.distance));
+        // Every spot points down from the truss, at the character.
+        assert!(spot.position[1] > spot.target[1] && spot.target[1] > 0.0, "{}: from above, at the body", spot.id);
+    }
+    let lighting = rig.to_lighting().expect("lighting");
+    let h = REFERENCE_HEIGHT_M;
+    for spot in &rig.spots {
+        let def = &lighting.lights[&omuzaki_stage_api::LightId::new(&spot.id).unwrap()];
+        assert_eq!(def.role, Some(LightRole::Accent));
+        assert!((def.intensity - spot.intensity / (h * h)).abs() < 1e-5);
+        let LightShape::Spot { position, target, range, .. } = def.shape else { panic!("{}: a spot", spot.id) };
+        assert_eq!(
+            (position, target, range),
+            (spot.position.map(|c| c / h), spot.target.map(|c| c / h), spot.distance / h)
+        );
+    }
+}
+
+/// A spot that points nowhere, has an out-of-range cone or penumbra, or takes another light's id is refused.
+#[test]
+fn a_bad_spot_is_refused_by_name() {
+    let stage = LightRig::load("stage").expect("loads");
+    let refused = |edit: &dyn Fn(&mut LightRig)| {
+        let mut rig = stage.clone();
+        edit(&mut rig);
+        rig.validate().expect_err("refused").to_string()
+    };
+    assert!(refused(&|r| r.spots[0].target = r.spots[0].position).contains("points nowhere"));
+    assert!(refused(&|r| r.spots[0].cone = 0.0).contains("cone"));
+    assert!(refused(&|r| r.spots[1].cone = 91.0).contains("cone"));
+    assert!(refused(&|r| r.spots[0].penumbra = 1.5).contains("penumbra"));
+    assert!(refused(&|r| r.spots[0].distance = 0.0).contains("distance"));
+    assert!(refused(&|r| r.spots[0].id = "rim".into()).contains("taken"));
+    assert!(refused(&|r| r.spots[0].id = "Not A Slug".into()).contains("spot"));
+    let mut twice = stage.clone();
+    twice.spots[1].id = twice.spots[0].id.clone();
+    assert!(twice.to_lighting().expect_err("refused").to_string().contains("two lights"));
 }
 
 #[test]
