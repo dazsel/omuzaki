@@ -4595,6 +4595,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-live-nodes"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-core",
+ "omuzaki-l10n-api",
+ "omuzaki-live-api",
+ "omuzaki-live-mock",
+ "omuzaki-ops-api",
+ "schemars",
+ "serde",
+ "serde_json",
+ "unicode-normalization",
+]
+
+[[package]]
 name = "omuzaki-llm"
 version = "0.0.0"
 dependencies = [

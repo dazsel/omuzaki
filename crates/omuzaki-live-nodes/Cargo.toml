@@ -1,0 +1,33 @@
+[package]
+name = "omuzaki-live-nodes"
+description = "The first-party automation nodes (BR-11, BR-26; design docs/design/automation.md §6): `on.event`, the trigger on any event kind with `where` and `min` filters, and `op.run`, any op allowed for automations as an action."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-l10n-api = { path = "../omuzaki-l10n-api" }
+omuzaki-live-api = { path = "../omuzaki-live-api" }
+omuzaki-ops-api = { path = "../omuzaki-ops-api" }
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+unicode-normalization.workspace = true
+
+[dev-dependencies]
+omuzaki-live-mock = { path = "../omuzaki-live-mock" }
+
+[lints]
+workspace = true
+
+# Native only, like the engine that runs the nodes (design D1).
+[package.metadata.omuzaki]
+kind = "Implementation"
+summary = "the first-party automation nodes: `on.event` (a trigger on any event kind, its value ports derived from the kind's payload schema, `where` and `min` filters) and `op.run` (any op allowed for automations, `$in.<name>` placeholders as typed value inputs, `done` with `output` or `failed` with `error`)"
+wasm = false
+# The nodes register themselves (ADR 0015, `cargo xtask lint-registers`).
+registers = true
