@@ -1,3 +1,9 @@
+---
+title: "How Omuzaki was built: the numbers"
+summary: "Aggregate numbers on how the repository was built: agent-hours, concurrency, lines of code, commits, pull requests, issues, CI runs and reviews over time"
+area: history
+---
+
 # How Omuzaki was built: the numbers
 
 A record of how this repository was made: agent-hours, how many agents worked at once, lines of code over time, commits,
