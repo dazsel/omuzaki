@@ -36,6 +36,13 @@ fn one() -> f32 {
 /// Renders one picture of a character and stores it as a PNG.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit"},
+        {"character": "kit", "framing": "bust", "yaw": 30.0, "size": [512, 512], "quality": "live"}
+    ],
+    "x-omuzaki-fixture" = "character"
+))]
 pub struct Preview {
     /// The character, built from the kit or imported.
     pub character: CharId,

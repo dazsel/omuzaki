@@ -12,6 +12,7 @@ use crate::scene::default::opening_scene;
 /// Lists the project's scenes.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend("examples" = [{}], "x-omuzaki-fixture" = "scenes"))]
 pub struct ListScenes {}
 
 impl Op for ListScenes {

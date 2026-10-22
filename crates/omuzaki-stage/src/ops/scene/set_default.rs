@@ -11,6 +11,7 @@ use super::put;
 /// Makes a scene the one the project opens in.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend("examples" = [{"scene": "night_stream"}, {"scene": "main"}], "x-omuzaki-fixture" = "scenes"))]
 pub struct SetDefaultScene {
     /// The scene.
     pub scene: SceneId,
@@ -37,8 +38,8 @@ impl Op for SetDefaultScene {
                 .hint("stage.list_scenes lists the project's scenes"));
         }
         let value = json!(self.scene.as_str());
-        let path = paths::default_scene();
-        let patch = if ctx.doc.get(&path) == Some(&value) { omuzaki_doc_api::Patch::new() } else { put(ctx.doc, &path, value) };
+        let at = paths::default_scene();
+        let patch = if ctx.doc.get(&at) == Some(&value) { omuzaki_doc_api::Patch::new() } else { put(ctx.doc, &at, value) };
         Ok(Plan { patch, output: Some(json!({ "default": self.scene.as_str() })), ..Plan::default() })
     }
 }

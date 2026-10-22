@@ -55,7 +55,7 @@ fn a_built_and_an_imported_character_both_preview_as_stored_pngs() {
             let result = run(&harness, args).unwrap_or_else(|e| panic!("{id} {framing}: {e}"));
             assert_eq!(result.body, body);
             assert_eq!(result.size, [64, 96]);
-            assert!(result.uri.starts_with("omuzaki://render/") && result.uri.ends_with(".png"), "{}", result.uri);
+            assert_eq!(result.uri, format!("omuzaki://render/{}.png", result.hash));
             let png = harness.store.get(&result.hash.parse().expect("a hash")).expect("the PNG is in the store");
             let image = image::load_from_memory(&png).expect("a PNG");
             assert_eq!((image.width(), image.height()), (64, 96), "{id} {framing}");

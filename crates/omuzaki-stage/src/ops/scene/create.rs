@@ -15,6 +15,14 @@ use crate::scene::default::default_scene;
 /// Creates a scene with the default look: the studio rig, a shadow ground, the full, bust and face cameras.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"id": "main"},
+        {"id": "night_stream", "name": "Night stream", "cast": ["kit"]},
+        {"id": "empty", "cast": []}
+    ],
+    "x-omuzaki-fixture" = "character"
+))]
 pub struct CreateScene {
     /// The new scene's id, a slug like `main` or `night_stream`.
     pub id: SceneId,
@@ -48,8 +56,8 @@ impl Op for CreateScene {
 
     fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
         let doc = ctx.doc;
-        let path = paths::scene(&self.id);
-        if doc.get(&path).is_some() {
+        let node_path = paths::scene(&self.id);
+        if doc.get(&node_path).is_some() {
             return Err(OpError::conflict(format!("there is already a scene '{}'", self.id))
                 .hint("pick another id, or edit that scene"));
         }
@@ -81,7 +89,7 @@ impl Op for CreateScene {
         scene.check_with(&has_character).map_err(|e| OpError::invalid("scene", e.to_string()))?;
         let mut node = Value::Null;
         scene.to_node(&mut node).map_err(|e| OpError::internal(format!("writing the scene: {e}")))?;
-        let mut patch = put(doc, &path, node);
+        let mut patch = put(doc, &node_path, node);
         let becomes_default = doc.get(&paths::default_scene()).is_none();
         if becomes_default {
             patch.extend(put(doc, &paths::default_scene(), json!(self.id.as_str())));
