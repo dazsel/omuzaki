@@ -4615,6 +4615,7 @@ name = "omuzaki-app"
 version = "0.0.0"
 dependencies = [
  "getrandom 0.4.3",
+ "omuzaki-char",
  "omuzaki-char-api",
  "omuzaki-core",
  "omuzaki-doc",

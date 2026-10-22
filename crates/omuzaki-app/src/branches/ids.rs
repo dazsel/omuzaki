@@ -48,7 +48,7 @@ impl IdMark {
         match omuzaki_core::fsx::write_atomic(&self.path, &format!("{mark}\n")) {
             Ok(()) => self.reserved.store(mark, Ordering::SeqCst),
             Err(error) => {
-                tracing::warn!(%error, "the session id mark couldn't be written; ids may repeat after a crash")
+                tracing::warn!(%error, "the session id mark couldn't be written; ids may repeat after a crash");
             }
         }
     }

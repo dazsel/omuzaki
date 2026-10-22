@@ -1,7 +1,8 @@
 //! The acceptance lists of the branch host issues that `branches.rs` doesn't already cover (`docs/design/branches.md`
 //! 5, 6, 8 and 9): undo on each side of a fork, forks from old states, reviews end to end, `contains` following the
 //! merges record, lanes reopening with their undo stacks, ids across restarts, restores that fail or come in quick
-//! succession, many threads on many lanes at once, and what a checkpoint and a switch cost on a 500-file project.
+//! succession, many threads on many lanes at once, and what a checkpoint, a switch and a merge preview cost on a
+//! 500-file project.
 
 // Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
 #![allow(clippy::expect_used, clippy::unwrap_used)]
@@ -492,5 +493,52 @@ fn checkpoint_and_switch_cost_on_a_500_file_project() {
     assert!(checkpoint < Duration::from_millis(1_000), "checkpoint {checkpoint:?}");
     assert!(closed < Duration::from_millis(3_000), "switch to a closed branch {closed:?}");
     assert!(open < Duration::from_millis(1_500), "switch to an open lane {open:?}");
+    core.close().unwrap();
+}
+
+/// #371: the merge preview of a 500-file project with 50 changed leaves on each side. The design's budget is 30 ms
+/// with the trees cached (release build); the ceiling here is for a debug build on a shared CI runner, and the median
+/// goes in the PR.
+#[test]
+fn a_merge_preview_of_a_500_file_project_with_50_changes_a_side() {
+    let tmp = tempfile::tempdir().unwrap();
+    five_hundred_files(tmp.path());
+    let core = AppCore::open(tmp.path(), options()).unwrap();
+    let side = create(&core, "bench/side");
+    let edit = |runner: &dyn Runner, part: u64, index: u64| {
+        let request = Request {
+            op: "test.set_index".to_owned(),
+            args: json!({ "part": part, "index": index }),
+            mode: Mode::Apply,
+            actor: person(),
+            grants: Grants::person(),
+            cause: None,
+            tx: None,
+            base: None,
+        };
+        runner.run(request).unwrap();
+    };
+    let lane_of_side = lane(&core, &side);
+    for part in 0..50 {
+        edit(lane_of_side.runner.as_ref(), part, 1_000 + part);
+    }
+    drop(lane_of_side);
+    core.branches().checkpoint(&side.id, "fifty", None, &person()).unwrap();
+    for part in 250..300 {
+        edit(core.runner().as_ref(), part, 2_000 + part);
+    }
+
+    let mut times = Vec::new();
+    for _ in 0..6 {
+        let started = Instant::now();
+        let preview = core.dry_run("branch.merge", json!({ "from": "bench/side" })).unwrap();
+        times.push(started.elapsed());
+        let output = preview.plan.output.unwrap();
+        assert!(output["units"].as_array().is_some_and(|u| !u.is_empty()), "{output:#}");
+    }
+    // The first preview reads the trees; the rest find them cached.
+    let cached = median(times.split_off(1));
+    println!("500 files, 50 changed leaves a side: merge preview {cached:?} (first, uncached: {:?})", times[0]);
+    assert!(cached < Duration::from_millis(1_000), "merge preview {cached:?}");
     core.close().unwrap();
 }
