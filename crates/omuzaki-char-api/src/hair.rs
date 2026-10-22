@@ -1028,6 +1028,11 @@ impl Default for BunGen {
     }
 }
 
+/// The most clumps a guides group holds.
+pub const MAX_GUIDE_CLUMPS: usize = 512;
+/// The most control points a guide clump holds.
+pub const MAX_GUIDE_POINTS: usize = 128;
+
 /// Explicit clumps: hand-edited or traced guide curves (CB-32). Every other generator can be baked into these.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -1639,9 +1644,18 @@ impl Validate for HairGroup {
                 c.range("generator/radius", g.radius, 0.01, 0.2);
             }
             Generator::Guides(g) => {
+                if g.clumps.len() > MAX_GUIDE_CLUMPS {
+                    c.fail("generator/clumps", format!("{} clumps: use at most {MAX_GUIDE_CLUMPS}", g.clumps.len()));
+                }
                 for (i, clump) in g.clumps.iter().enumerate() {
                     if clump.points.len() < 2 {
                         c.fail(&format!("generator/clumps/{i}/points"), "a clump needs at least two points");
+                    }
+                    if clump.points.len() > MAX_GUIDE_POINTS {
+                        c.fail(
+                            &format!("generator/clumps/{i}/points"),
+                            format!("{} points: use at most {MAX_GUIDE_POINTS}", clump.points.len()),
+                        );
                     }
                     for (k, p) in clump.points.iter().enumerate() {
                         c.nested(&format!("generator/clumps/{i}/points/{k}"), p);

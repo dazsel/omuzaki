@@ -1,0 +1,8 @@
+{
+  "about": "The kit character with a hand-drawn guides group `e-guides` in its hair: two clumps, rooted on the head's left side and falling to the shoulder. The base for the hair.guide ops.",
+  "base": "character",
+  "steps": [
+    { "op": "hair.guide.add_clump", "args": { "character": "kit", "part": "hair", "group": "e-guides", "clump": { "points": [ { "surface": [70.0, 40.0, 0.0] }, { "head": [0.08, -0.06, 0.02] }, { "head": [0.09, -0.16, 0.0] } ] } } },
+    { "op": "hair.guide.add_clump", "args": { "character": "kit", "part": "hair", "group": "e-guides", "clump": { "points": [ { "surface": [75.0, 60.0, 0.0] }, { "head": [0.09, -0.05, -0.02] }, { "head": [0.1, -0.15, -0.03] } ] } } }
+  ]
+}
