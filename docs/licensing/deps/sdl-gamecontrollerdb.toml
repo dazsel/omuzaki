@@ -1,0 +1,7 @@
+section = "rust"
+item = "SDL_GameControllerDB (through gilrs)"
+kind = "data"
+used_for = "the community gamepad mappings gilrs compiles in, so pads beyond the XInput ones get named buttons and axes (`omuzaki-input`, ADR 0060)"
+status = "conditions"
+condition = "Zlib (the repository's LICENSE file): keep the notice; mappings are crowd-sourced with no per-entry provenance, which is recorded here as a known low risk"
+audit = "(repository LICENSE, docs/research/2026-10-os-input-capture.md §4)"
