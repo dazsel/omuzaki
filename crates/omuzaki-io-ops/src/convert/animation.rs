@@ -44,6 +44,9 @@ pub const MAX_DURATION_S: f32 = 600.0;
 /// The frame rates the converter takes.
 pub const FPS_RANGE: std::ops::RangeInclusive<f32> = 1.0..=120.0;
 
+/// The longest fade an emote takes, seconds.
+pub const MAX_FADE_S: f32 = 10.0;
+
 /// Eyes that look further apart than this (degrees) cannot be one VRM gaze (V7).
 pub const EYE_ASYMMETRY_DEG: f32 = 2.0;
 
@@ -137,6 +140,14 @@ impl Default for EmoteTiming {
     }
 }
 
+impl EmoteTiming {
+    /// A fade of `fade_s` seconds each way around a hold of `hold_s` seconds at `intensity`.
+    #[must_use]
+    pub fn new(fade_s: f32, hold_s: f32, intensity: f32) -> Self {
+        Self { fade_s, hold_s, intensity }
+    }
+}
+
 /// An emote as the converter takes it: plain data, so it does not depend on where emote records live.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
@@ -174,6 +185,9 @@ pub enum ConvertError {
     /// The rest tree breaks an `anim.*` rule (a skeleton with no standing hips, say).
     #[error("the character's rest tree cannot be written: {0}")]
     Rest(String),
+    /// An emote's fades, hold or intensity are out of range.
+    #[error("the emote's timing {0}")]
+    Timing(String),
 }
 
 impl ConvertError {
@@ -184,6 +198,7 @@ impl ConvertError {
             Self::Fps(_) => "anim_export.fps",
             Self::Duration(_) => "anim_export.duration",
             Self::Rest(_) => "anim_export.rest",
+            Self::Timing(_) => "anim_export.timing",
         }
     }
 }
@@ -572,6 +587,16 @@ pub fn emote_to_animation(
     opts: &ClipExportOptions,
 ) -> Result<(IoAnimation, Report), ConvertError> {
     let timing = input.timing;
+    let EmoteTiming { fade_s, hold_s, intensity } = timing;
+    if !(fade_s.is_finite() && fade_s > 0.0 && fade_s <= MAX_FADE_S) {
+        return Err(ConvertError::Timing(format!("has a fade of {fade_s} s: give above 0 and at most {MAX_FADE_S} s")));
+    }
+    if !(hold_s.is_finite() && hold_s >= 0.0 && 2.0 * fade_s + hold_s <= MAX_DURATION_S) {
+        return Err(ConvertError::Timing(format!("has a hold of {hold_s} s: give 0 or more, {MAX_DURATION_S} s in all")));
+    }
+    if !(intensity.is_finite() && (0.0..=1.0).contains(&intensity)) {
+        return Err(ConvertError::Timing(format!("has an intensity of {intensity}: give 0 to 1")));
+    }
     let hold = Hold { pose: input.pose.unwrap_or(HumanoidPose::REST), timing };
     let mut report = Report::new();
     let envelope = match named_expression(&input.expression) {
@@ -603,7 +628,6 @@ pub fn emote_to_animation(
                     .at("expression"),
                 );
             }
-            let intensity = timing.intensity.clamp(0.0, 1.0);
             Some(Envelope { name, weight: Box::new(move |t| intensity * envelope_at(timing, t)) })
         }
         None => None,
