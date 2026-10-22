@@ -5,7 +5,7 @@
 //!
 //! ```text
 //! cargo run --release -p omuzaki-test-face --example gpu_face_timing -- [--frames N] [--probe] [--report DIR]
-//!     [--class reported|measured|scaled|relative] [--previous report.json] [--strict]
+//!     [--class reported|measured|scaled|relative] [--previous report.json] [--strict] [--paced FPS]
 //! ```
 //!
 //! `--frames` is how many repaints each case is timed over (2,000 by default); `--probe` uses the 256 px wide probe size
@@ -29,6 +29,13 @@
 //! - **CPU**, on the calling thread: the rasteriser's calls, which fingerprint the sections, encode the changed ones,
 //!   pack the scenes and record the passes. Submitting is the renderer's and is not in it.
 //!
+//! **The paced reading.** `--paced FPS` then times every case again as the live loop paints: no load, each repaint alone,
+//! `1/FPS` apart, after a 20 s warm-up (spec §10, "Paced, warm, long enough"). The GPU then idles between repaints,
+//! and the repaint is the first work it meets after the idle gap, as the face paint is in a live frame. Its rows are
+//! `<key>.paced`, reported beside the steady ones and never judged: §10 holds the steady reading against the budget,
+//! and the paced one shows what the GPU's clock state adds to the same work. The repaint's commands are recorded
+//! before a marker's are submitted with them, so here too no timestamp waits on the CPU.
+//!
 //! **The budget report.** The worst case's GPU total is `gpu.face_paint`, judged against the §10 table in the budget
 //! harness's report (#147); the other cases are reported beside it under `gpu.face_paint.<case>`, and the CPU side
 //! under `cpu.face_paint`. `--report DIR` writes `report.md` and `report.json` there, as `tools/ci/budget-report.sh`
@@ -46,7 +53,7 @@
 
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[path = "../../omuzaki-face/tests/support/gpu_instance.rs"]
 mod gpu_instance;
@@ -70,6 +77,8 @@ const BUDGET_KEY: &str = "gpu.face_paint";
 const SPEC: &str = include_str!("../../../docs/product/02-studio-spec-v3.md");
 const DEFAULT_FRAMES: usize = 2000;
 const WARM_UP: usize = 50;
+/// The paced reading's warm-up, in seconds (spec §10).
+const PACED_WARM_UP_S: u32 = 20;
 /// How long the load in front of each repaint keeps the GPU busy, in milliseconds: longer than the repaint's CPU work.
 const LOAD_MS: f64 = 2.0;
 /// The probe size's width in pixels.
@@ -199,6 +208,8 @@ struct Arguments {
     class: Class,
     previous: Option<PathBuf>,
     strict: bool,
+    /// The frame rate of the paced reading, if one is asked for.
+    paced: Option<u32>,
 }
 
 /// The command line, from `std::env::args`.
@@ -210,6 +221,7 @@ fn arguments() -> Result<Arguments, String> {
         class: Class::Reported,
         previous: None,
         strict: false,
+        paced: None,
     };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -220,6 +232,14 @@ fn arguments() -> Result<Arguments, String> {
             "--report" => parsed.report = Some(PathBuf::from(value()?)),
             "--previous" => parsed.previous = Some(PathBuf::from(value()?)),
             "--class" => parsed.class = Class::parse(&value()?).map_err(|e| e.to_string())?,
+            "--paced" => {
+                let value = value()?;
+                let fps: u32 = value.parse().map_err(|_| format!("--paced {value:?} is not a frame rate"))?;
+                if !(1..=240).contains(&fps) {
+                    return Err("--paced takes a frame rate from 1 to 240".to_owned());
+                }
+                parsed.paced = Some(fps);
+            }
             "--frames" => {
                 let value = value()?;
                 parsed.frames = value.parse().map_err(|_| format!("--frames {value:?} is not a number"))?;
@@ -230,7 +250,7 @@ fn arguments() -> Result<Arguments, String> {
             other => {
                 return Err(format!(
                     "unknown argument {other:?}; use --frames N, --probe, --report DIR, --class CLASS, --previous FILE \
-                     and --strict"
+                     --strict and --paced FPS"
                 ));
             }
         }
@@ -438,6 +458,31 @@ impl Load {
     }
 }
 
+/// An empty compute pass that writes timestamp `end`: the paced reading's start, submitted with the repaint it starts.
+fn marker(device: &wgpu::Device, set: &wgpu::QuerySet, end: u32) -> wgpu::CommandBuffer {
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("marker") });
+    drop(encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+        label: Some("marker"),
+        timestamp_writes: Some(wgpu::ComputePassTimestampWrites {
+            query_set: set,
+            beginning_of_pass_write_index: None,
+            end_of_pass_write_index: Some(end),
+        }),
+    }));
+    encoder.finish()
+}
+
+/// Waits for the next tick of a clock that ticks every `interval`, from `next`; a late tick starts the clock again.
+fn wait(next: &mut Instant, interval: Duration) {
+    *next += interval;
+    let now = Instant::now();
+    if *next > now {
+        std::thread::sleep(*next - now);
+    } else {
+        *next = now;
+    }
+}
+
 /// `p`-th percentile of sorted `values`.
 fn percentile(values: &[f64], p: usize) -> f64 {
     values[(values.len() * p / 100).min(values.len() - 1)]
@@ -498,12 +543,14 @@ struct Case {
     sections: usize,
 }
 
-/// What a case is timed with: the device, the timestamps and the load in front of each repaint.
+/// What a case is timed with: the device, the timestamps and the load in front of each repaint, or the pace.
 struct Bench<'a> {
     device: &'a wgpu::Device,
     queue: &'a wgpu::Queue,
     stamps: &'a Stamps,
     load: &'a Load,
+    /// The time between paced repaints; `None` for the steady reading (the load in front of each, no pause).
+    pace: Option<Duration>,
 }
 
 /// What the renderer lends a face painter through `PaintTarget::native`: the device, the queue, the layer's texture and
@@ -511,8 +558,15 @@ struct Bench<'a> {
 type Native = (wgpu::Device, wgpu::Queue, wgpu::Texture, wgpu::CommandEncoder);
 
 impl Bench<'_> {
-    /// Times one case: `count` repaints of `specs` (one per layer it repaints) after [`WARM_UP`], alternating `frames`.
+    /// Times one case: `count` repaints of `specs` (one per layer it repaints) after the warm-up, alternating `frames`.
     fn case(&self, specs: &[FaceLayerSpec], frames: [&Frame; 2], count: usize) -> Result<Case, String> {
+        let warm_up = self.pace.map_or(WARM_UP, |interval| {
+            // Whole frames, a few thousand at most.
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let frames = (f64::from(PACED_WARM_UP_S) / interval.as_secs_f64()).ceil() as usize;
+            frames
+        });
+        let mut next = Instant::now();
         let (device, queue) = (self.device, self.queue);
         let encoder = || device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         let mut natives: Vec<Native> = specs
@@ -522,13 +576,20 @@ impl Bench<'_> {
         let mut rasterizer = VelloRasterizer::new();
         let mut case = Case::default();
         let mut step = 0;
-        while step < WARM_UP + count {
-            let batch = BATCH.min(WARM_UP + count - step);
+        while step < warm_up + count {
+            let batch = BATCH.min(warm_up + count - step);
             let mut cpu = Vec::with_capacity(batch);
             for slot in 0..batch {
                 let frame = frames[(step + slot) % 2];
                 let base = Stamps::base(slot);
-                self.load.submit(device, queue, &self.stamps.set, [None, Some(base)]);
+                // Steady: the load runs while the repaint is recorded. Paced: a marker goes in with the repaint.
+                let start = match self.pace {
+                    None => {
+                        self.load.submit(device, queue, &self.stamps.set, [None, Some(base)]);
+                        None
+                    }
+                    Some(_) => Some(marker(device, &self.stamps.set, base)),
+                };
                 let (mut elapsed, mut sections) = (0.0, 0);
                 for (at, (spec, native)) in specs.iter().zip(&mut natives).enumerate() {
                     let first = base + 1 + u32::try_from(at * LAYER_STAMPS).map_err(|e| e.to_string())?;
@@ -551,11 +612,15 @@ impl Bench<'_> {
                 cpu.push(elapsed);
                 case.sections = sections;
                 // The renderer's part: submit what the painter recorded, with fresh encoders for the next paint.
-                queue.submit(natives.iter_mut().map(|n| std::mem::replace(&mut n.3, encoder()).finish()));
+                let painted = natives.iter_mut().map(|n| std::mem::replace(&mut n.3, encoder()).finish());
+                queue.submit(start.into_iter().chain(painted));
+                if let Some(interval) = self.pace {
+                    wait(&mut next, interval);
+                }
             }
             let times = self.stamps.read(device, queue, batch, specs.len())?;
             for (at, (t, cpu)) in times.iter().zip(cpu).enumerate() {
-                if step + at >= WARM_UP {
+                if step + at >= warm_up {
                     case.raster.push(t.raster);
                     case.resolve.push(t.resolve);
                     case.total.push(t.total);
@@ -582,6 +647,47 @@ fn specs(layers: &[FaceLayerId], probe: bool) -> Vec<FaceLayerSpec> {
     layers.iter().map(|&id| FaceLayerSpec::for_layer(id, &projection, base)).collect()
 }
 
+/// Times every case with `bench`, prints their table and returns their metrics: the steady reading's under each case's
+/// key, the paced reading's under `<key>.paced`.
+fn table(
+    bench: &Bench<'_>,
+    painter: &mut RealPainter,
+    neutral: &Frame,
+    args: &Arguments,
+) -> Result<Vec<Metric>, String> {
+    let suffix = if bench.pace.is_some() { ".paced" } else { "" };
+    println!();
+    println!(
+        "| case | layers | sections redone | GPU raster | GPU resolve | GPU total | CPU (encode + record) | budget ms | GPU p95 within budget |"
+    );
+    println!("|---|---:|---:|---:|---:|---:|---:|---:|---|");
+    let mut metrics = Vec::new();
+    for case in &CASES {
+        let changed = frame(painter, case.change)?;
+        let specs = specs(case.layers, args.probe);
+        let mut timed =
+            bench.case(&specs, [&changed, neutral], args.frames).map_err(|e| format!("{}: {e}", case.name))?;
+        metrics.extend(Metric::from_ns(&format!("{}{suffix}", case.key), &nanoseconds(&timed.total), 0));
+        if case.key == BUDGET_KEY {
+            metrics.extend(Metric::from_ns(&format!("cpu.face_paint{suffix}"), &nanoseconds(&timed.cpu), 0));
+        }
+        timed.total.sort_by(f64::total_cmp);
+        let within = percentile(&timed.total, 95) <= BUDGET_MS;
+        println!(
+            "| {} | {} | {} | {} | {} | {} | {} | {BUDGET_MS} | {} |",
+            case.name,
+            case.layers.len(),
+            timed.sections,
+            spread(&mut timed.raster),
+            spread(&mut timed.resolve),
+            spread(&mut timed.total),
+            spread(&mut timed.cpu),
+            if within { "yes" } else { "no" }
+        );
+    }
+    Ok(metrics)
+}
+
 fn run() -> Result<(), String> {
     let args = arguments()?;
     let budgets = parse_spec(SPEC).map_err(|e| format!("the built-in spec's §10 table: {e}"))?;
@@ -606,7 +712,6 @@ fn run() -> Result<(), String> {
     let stamps = Stamps::new(&device, &queue);
     let load = Load::new(&device);
     load.calibrate(&device, &queue, &stamps)?;
-    let bench = Bench { device: &device, queue: &queue, stamps: &stamps, load: &load };
     let sizes: Vec<String> = specs(&FaceLayerId::ALL, args.probe)
         .iter()
         .map(|s| format!("{:?} {} x {} px", s.id, s.size_px().0, s.size_px().1))
@@ -619,34 +724,17 @@ fn run() -> Result<(), String> {
         sizes.join(", "),
         args.frames
     );
-    println!();
-    println!(
-        "| case | layers | sections redone | GPU raster | GPU resolve | GPU total | CPU (encode + record) | budget ms | GPU p95 within budget |"
-    );
-    println!("|---|---:|---:|---:|---:|---:|---:|---:|---|");
-    let mut metrics = Vec::new();
-    for case in &CASES {
-        let changed = frame(&mut painter, case.change)?;
-        let specs = specs(case.layers, args.probe);
-        let mut timed =
-            bench.case(&specs, [&changed, &neutral], args.frames).map_err(|e| format!("{}: {e}", case.name))?;
-        metrics.extend(Metric::from_ns(case.key, &nanoseconds(&timed.total), 0));
-        if case.key == BUDGET_KEY {
-            metrics.extend(Metric::from_ns("cpu.face_paint", &nanoseconds(&timed.cpu), 0));
-        }
-        timed.total.sort_by(f64::total_cmp);
-        let within = percentile(&timed.total, 95) <= BUDGET_MS;
+    let steady = Bench { device: &device, queue: &queue, stamps: &stamps, load: &load, pace: None };
+    let mut metrics = table(&steady, &mut painter, &neutral, &args)?;
+    if let Some(fps) = args.paced {
+        println!();
         println!(
-            "| {} | {} | {} | {} | {} | {} | {} | {BUDGET_MS} | {} |",
-            case.name,
-            case.layers.len(),
-            timed.sections,
-            spread(&mut timed.raster),
-            spread(&mut timed.resolve),
-            spread(&mut timed.total),
-            spread(&mut timed.cpu),
-            if within { "yes" } else { "no" }
+            "Paced at {fps} fps: {} repaints per case after a {PACED_WARM_UP_S} s warm-up, each alone with no load \
+             (the paced reading of spec §10, reported beside the steady one and not judged). Times in ms, p50 / p95.",
+            args.frames
         );
+        let paced = Bench { pace: Some(Duration::from_secs_f64(1.0 / f64::from(fps))), ..steady };
+        metrics.extend(table(&paced, &mut painter, &neutral, &args)?);
     }
 
     let mut notes = vec![format!(
@@ -654,6 +742,12 @@ fn run() -> Result<(), String> {
          repaint after a {LOAD_MS} ms GPU load (the steady-clock reading of spec §10); the other `{BUDGET_KEY}.*` rows \
          are the lighter cases, reported only. Graphics backend {backend:?}.",
     )];
+    if let Some(fps) = args.paced {
+        notes.push(format!(
+            "the `.paced` rows time the same repaints at {fps} fps with no load, the paced reading of spec §10: the GPU \
+             idles between repaints, so they show its clock state on top of the face's work; reported, never judged"
+        ));
+    }
     if args.probe {
         notes.push(format!("probe size ({PROBE_WIDTH_PX} px wide), not the layers' real size"));
     }
