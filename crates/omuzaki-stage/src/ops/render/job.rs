@@ -52,6 +52,16 @@ impl RenderQuality {
         }
     }
 
+    /// The preset's name, as the arguments spell it.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Live => "live",
+            Self::High => "high",
+            Self::Offline => "offline",
+        }
+    }
+
     /// The character's level of detail. High uses the offline build too: a denser mesh than the live one is what
     /// `High` asks for.
     #[must_use]
@@ -63,18 +73,62 @@ impl RenderQuality {
     }
 }
 
-/// `size` as a target size.
+/// The largest side of a texture every renderer supports (wgpu's guaranteed `max_texture_dimension_2d`): the limit on a
+/// render's internal size, which is its output size times the preset's render scale.
+pub const MAX_TEXTURE_SIDE: u32 = 4096;
+
+/// `size` as a target size for a render at `quality`.
 ///
 /// # Errors
-/// `Invalid` for field `size`, naming the limits, when a side is outside [`MIN_SIDE`]`..=`[`MAX_SIDE`].
-pub fn check_size(size: [u32; 2]) -> Result<UVec2, OpError> {
+/// `Invalid` for field `size`, naming the limits, when a side is outside [`MIN_SIDE`]`..=`[`MAX_SIDE`], or when the
+/// preset's internal size (the side times its render scale, rounded up) is above [`MAX_TEXTURE_SIDE`]: `high` renders at
+/// 1.5 times the output, so its largest side is 2730.
+pub fn check_size(size: [u32; 2], quality: RenderQuality) -> Result<UVec2, OpError> {
     let [x, y] = size;
     let within = |side: u32| (MIN_SIDE..=MAX_SIDE).contains(&side);
-    if within(x) && within(y) {
-        return Ok(UVec2::new(x, y));
+    if !(within(x) && within(y)) {
+        return Err(OpError::invalid(
+            "size",
+            format!("size {x}x{y} is outside the limits: each side is {MIN_SIDE} to {MAX_SIDE} pixels"),
+        )
+        .hint("pick a size between the limits; the offline quality is slowest at the largest"));
     }
-    Err(OpError::invalid("size", format!("size {x}x{y} is outside the limits: each side is {MIN_SIDE} to {MAX_SIDE} pixels"))
-        .hint("pick a size between the limits; the offline quality is slowest at the largest"))
+    let largest = max_side(quality);
+    if x.max(y) > largest {
+        let scale = quality.quality().render_scale;
+        return Err(OpError::invalid(
+            "size",
+            format!(
+                "size {x}x{y} is too large for {} quality, which renders at {scale} times the size: each side is at most \
+                 {largest} pixels, for an internal size within the {MAX_TEXTURE_SIDE} pixel texture limit",
+                quality.name()
+            ),
+        )
+        .hint("pick a smaller size, or the live or offline quality, which render at the output size"));
+    }
+    Ok(UVec2::new(x, y))
+}
+
+/// The largest output side `quality` can render: the largest whose internal side is within [`MAX_TEXTURE_SIDE`], and
+/// never above [`MAX_SIDE`]. The internal side is worked out as `omuzaki-render` does (`internal_size`: the side times
+/// the render scale, rounded).
+#[must_use]
+pub fn max_side(quality: RenderQuality) -> u32 {
+    let scale = quality.quality().render_scale;
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "sides of at most 4096 and a positive scale, as the renderer computes them"
+    )]
+    let internal = |side: u32| (side as f32 * scale).round() as u32;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "a positive quotient below 2^14")]
+    let mut side = ((f64::from(MAX_TEXTURE_SIDE) / f64::from(scale)).floor() as u32).clamp(MIN_SIDE, MAX_SIDE);
+    // The rounding can put the quotient's side one over; step down until the internal side fits.
+    while side > MIN_SIDE && internal(side) > MAX_TEXTURE_SIDE {
+        side -= 1;
+    }
+    side
 }
 
 /// One mebibyte, in bytes.

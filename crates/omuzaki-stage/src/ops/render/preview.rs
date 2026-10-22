@@ -135,7 +135,7 @@ impl Preview {
     }
 
     fn check(&self) -> Result<(), OpError> {
-        check_size(self.size)?;
+        check_size(self.size, self.quality)?;
         if !(0.0..=1.0).contains(&self.weight) {
             return Err(OpError::invalid("weight", format!("weight {} is outside 0 to 1", self.weight)));
         }
@@ -184,12 +184,12 @@ impl Op for Preview {
                 .hint("check the id; characters live under characters/<id>"));
         }
         self.staged(ctx.doc)?;
-        let size = check_size(self.size)?;
+        let size = check_size(self.size, self.quality)?;
         Ok(Plan { cost: Some(cost(size, 1, self.quality)), ..Plan::default() })
     }
 
     fn work(&self, job: &JobCtx<'_>) -> Result<Value, OpError> {
-        let size = check_size(self.size)?;
+        let size = check_size(self.size, self.quality)?;
         let clock = SystemClock::default();
         let build = job.service::<BuildServices>()?;
         let services = BodyServices::new(

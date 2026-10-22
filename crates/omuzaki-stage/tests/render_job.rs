@@ -15,8 +15,8 @@ use omuzaki_ops_api::{ErrorCode, JobCtx, Op, OpCtx, OpError, OpKind, OpMeta, Pla
 use omuzaki_render_api::{AlphaEncoding, Image, Renderer};
 use omuzaki_stage::StageError;
 use omuzaki_stage::ops::render::job::{
-    DEFAULT_LIGHT_RIG, RenderQuality, build_character, check_size, cost, render_provenance, still_light, store_png,
-    with_renderer,
+    DEFAULT_LIGHT_RIG, RenderQuality, build_character, check_size, cost, max_side, render_provenance, still_light,
+    store_png, with_renderer,
 };
 use omuzaki_stage::ops::render::still::encode_png;
 use omuzaki_stage::recipe::LightRig;
@@ -42,11 +42,34 @@ fn code(error: Option<OpError>) -> Option<ErrorCode> {
 
 #[test]
 fn sizes_outside_the_limits_are_refused() {
+    let offline = RenderQuality::Offline;
     for size in [[0, 64], [64, 0], [15, 64], [64, 15], [4097, 64], [64, 4097]] {
-        assert_eq!(code(check_size(size).err()), Some(ErrorCode::Invalid), "{size:?} is refused");
+        assert_eq!(code(check_size(size, offline).err()), Some(ErrorCode::Invalid), "{size:?} is refused");
     }
-    assert_eq!(check_size([16, 16]).ok(), Some(UVec2::new(16, 16)), "the smallest side passes");
-    assert_eq!(check_size([4096, 4096]).ok(), Some(UVec2::new(4096, 4096)), "the largest side passes");
+    assert_eq!(check_size([16, 16], offline).ok(), Some(UVec2::new(16, 16)), "the smallest side passes");
+    assert_eq!(check_size([4096, 4096], offline).ok(), Some(UVec2::new(4096, 4096)), "the largest side passes");
+}
+
+#[test]
+fn a_high_size_whose_internal_size_is_over_the_texture_limit_is_refused_before_anything_is_built() {
+    // High renders at 1.5 times the output: 2730 is 4095 inside, 2731 would be 4097, above the 4096 every adapter has.
+    assert_eq!(
+        (max_side(RenderQuality::High), max_side(RenderQuality::Live), max_side(RenderQuality::Offline)),
+        (2730, 4096, 4096)
+    );
+    assert_eq!(check_size([2730, 1024], RenderQuality::High).ok(), Some(UVec2::new(2730, 1024)));
+    for size in [[2731, 1024], [1024, 2731], [4096, 4096]] {
+        let error = check_size(size, RenderQuality::High).unwrap_err();
+        assert_eq!((error.code, error.field.as_deref()), (ErrorCode::Invalid, Some("size")), "{size:?}");
+        assert!(
+            error.message.contains("2730") && error.message.contains("4096"),
+            "it names the limits: {}",
+            error.message
+        );
+    }
+    for quality in [RenderQuality::Live, RenderQuality::Offline] {
+        assert!(check_size([4096, 4096], quality).is_ok(), "{quality:?} renders at the output size");
+    }
 }
 
 #[test]

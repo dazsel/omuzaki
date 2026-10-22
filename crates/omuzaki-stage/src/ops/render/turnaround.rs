@@ -90,7 +90,7 @@ fn view_name(view: View) -> &'static str {
 
 impl Turnaround {
     fn check(&self) -> Result<UVec2, OpError> {
-        let size = check_size(self.size)?;
+        let size = check_size(self.size, self.quality)?;
         if matches!(self.framing, Framing::Free | Framing::Hands) {
             return Err(OpError::invalid("framing", "a turnaround frames the character: full, bust or face"));
         }
