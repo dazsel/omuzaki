@@ -377,7 +377,7 @@ impl CharacterDef {
     ///
     /// This is the built-in list; a new file of the character registers its key with
     /// [`register_doc_key!`](crate::register_doc_key), and [`doc_key::sibling_keys`] lists both.
-    pub const SIBLING_KEYS: [&'static str; 11] = doc_key::BUILT_IN_SIBLING_KEYS;
+    pub const SIBLING_KEYS: [&'static str; 12] = doc_key::BUILT_IN_SIBLING_KEYS;
 
     /// The definition stored in the character node `node` (`characters/<id>`): reads [`NODE_KEYS`](Self::NODE_KEYS) and
     /// skips the [`SIBLING_KEYS`](Self::SIBLING_KEYS), so a character with variants, colourways, a rig or a look reads
