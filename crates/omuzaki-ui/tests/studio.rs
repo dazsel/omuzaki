@@ -319,6 +319,7 @@ fn a_first_start_opens_setup_beside_the_stage_and_it_ends_where_the_person_choos
     let mut h = studio_with(&core, None, size, Some(FirstRun::at(mark.clone())));
     assert_eq!(h.state().shell.active_workspace(), Some("perform"), "setup sits beside the live stage");
     assert!(h.query_by_label("Welcome to Omuzaki").is_some());
+    assert!(h.query_by_label("Workspaces").is_none(), "setup is the whole task: no workspace tabs while it shows");
 
     // This core has no camera, performer or output ops: the flow leaves out what it can't do, and Continue goes on.
     h.get_by_role_and_label(Role::Button, "Start").click();
@@ -366,6 +367,7 @@ fn skip_setup_ends_the_flow_from_any_step() {
     assert!(mark.exists());
     assert!(h.query_by_label("Welcome to Omuzaki").is_none());
     assert_eq!(h.state().shell.active_workspace(), Some("perform"), "skipping leaves the person where they are");
+    assert!(h.query_by_label("Workspaces").is_some(), "the workspace tabs are back");
 }
 
 /// The setup panel's host for the evidence: chosen probes (shared, so a render can change them) and a live-looking
@@ -397,10 +399,7 @@ impl omuzaki_ui::panels::setup::SetupHost for EvidenceHost {
         }
     }
 
-    fn character(
-        &self,
-        choice: omuzaki_setup::CharacterChoice,
-    ) -> Result<(), omuzaki_ui::panels::setup::Unavailable> {
+    fn character(&self, choice: omuzaki_setup::CharacterChoice) -> Result<(), omuzaki_ui::panels::setup::Unavailable> {
         match choice {
             omuzaki_setup::CharacterChoice::FromSheetOrIdea => Err(omuzaki_ui::panels::setup::Unavailable::NotInBuild),
             _ => Ok(()),
@@ -448,6 +447,7 @@ fn evidence_probes() -> omuzaki_setup::Probes {
 /// state of Input (face found, no camera, refused, downloading), Calibrate and Output at 1366x768, dark and pseudo.
 #[test]
 #[ignore = "writes images; run by the visual evidence job"]
+#[allow(clippy::too_many_lines, reason = "the evidence walks every step of the flow, one render after another")]
 fn first_run_evidence() {
     use omuzaki_render::WgpuRenderer;
     use omuzaki_setup::{Cameras, Permission, Probes, TrackerModel};

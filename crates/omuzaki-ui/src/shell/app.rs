@@ -833,7 +833,7 @@ impl Shell {
                 ui.separator();
                 // Setup is the whole task while it shows (`shell.md` section 14): the workspace tabs come back when it
                 // ends or is skipped.
-                if !self.bodies.on_screen(&ctx, crate::panels::setup::ID) {
+                if !self.bodies.on_screen_before(&ctx, crate::panels::setup::ID) {
                     self.workspace_tabs(ui, plan);
                 }
                 ui.with_layout(Flow::right_to_left(Align::Center), |ui| {

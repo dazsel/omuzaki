@@ -163,8 +163,10 @@ fn tab_follows_the_screen_top_to_bottom() {
     for _ in 0..12 {
         h.key_press(Key::Tab);
         h.run_steps(2);
-        let Some(node) =
-            h.query_all_by_role(Role::Button).chain(h.query_all_by_role(Role::RadioButton)).find(|n| n.is_focused())
+        let Some(node) = h
+            .query_all_by_role(Role::Button)
+            .chain(h.query_all_by_role(Role::RadioButton))
+            .find(egui_kittest::Node::is_focused)
         else {
             continue;
         };

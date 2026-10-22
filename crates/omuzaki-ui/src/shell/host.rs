@@ -30,6 +30,12 @@ impl Bodies {
         self.drawn_in == ctx.cumulative_frame_nr() && self.drawn.contains(&id)
     }
 
+    /// Whether the panel registered as `id` was on screen in the frame before the docks were drawn: what the top bar,
+    /// drawn first, asks.
+    pub fn on_screen_before(&self, ctx: &egui::Context, id: &str) -> bool {
+        self.drawn_in.saturating_add(1) >= ctx.cumulative_frame_nr() && self.drawn.contains(&id)
+    }
+
     /// The tab title of `def`: the panel's own when it has one (an inspector naming its selection), else the
     /// registered English one. Not yet translated: the caller passes it through [`title`].
     pub fn title(&self, def: &PanelDef) -> Cow<'static, str> {

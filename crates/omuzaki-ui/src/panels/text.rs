@@ -470,7 +470,9 @@ pub const SETUP_CALIBRATE_HOW: &str =
 /// A capture runs.
 pub const SETUP_CALIBRATING: &str = "Hold still: {frames} of {of}";
 /// Calibrated.
-pub const SETUP_CALIBRATED: &str = "Calibrated. Your relaxed face is the character's rest.";
+pub const SETUP_CALIBRATED: &str = "Calibrated";
+/// What calibrating did.
+pub const SETUP_CALIBRATED_LINE: &str = "Your relaxed face is now the character's rest.";
 /// Skips calibrating.
 pub const SETUP_USE_DEFAULTS: &str = "Use defaults";
 /// What the defaults are.
@@ -485,7 +487,7 @@ pub const SETUP_OUTPUT_ON: &str = "On: add it in OBS";
 /// The window output.
 pub const SETUP_OUT_WINDOW: &str = "Output window";
 /// The window output's line.
-pub const SETUP_OUT_WINDOW_LINE: &str = "A clean window called \"{title}\" that OBS captures, with transparency.";
+pub const SETUP_OUT_WINDOW_LINE: &str = "A clean window called “{title}” that OBS captures, with transparency.";
 /// Spout.
 pub const SETUP_OUT_SPOUT: &str = "Spout";
 /// Spout's line.

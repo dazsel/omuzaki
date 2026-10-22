@@ -11,12 +11,27 @@ images = ["studio-1920x1080.png", "studio-1366x768.png"]
 
 [[case]]
 name = "first-run"
-description = "The whole app on a first start (spine/ui): the live slice with the project's sample character on the Perform stage, and the setup flow beside it at 1366x768, on its welcome and its character step."
+description = "First run over the real studio (spine/ui, #1184, #989): the setup flow beside the Perform stage with the sample character, through every step (welcome, character, input with a camera, no camera, a refused camera and a downloading tracker, calibrate, output, go live) at 1366x768 and 1920x1080, in dark, light and high contrast, the pseudo-locale and 200%. The setup host is simulated so every state renders; the Live panel beside it shows the CI machine as it is."
 env = { OMUZAKI_EVIDENCE_OUT = "{out}" }
 steps = [
     { run = ["cargo", "test", "--locked", "-p", "omuzaki-ui", "--test", "studio", "--", "--ignored", "--exact", "first_run_evidence"] },
 ]
-images = ["first-run-welcome-1366x768.png", "first-run-character-1366x768.png"]
+images = [
+    "setup-welcome-dark-1366x768.png",
+    "setup-welcome-light-1920x1080.png",
+    "setup-welcome-contrast-1366x768.png",
+    "setup-welcome-200pct-1920x1080.png",
+    "setup-character-dark-1366x768.png",
+    "setup-character-pseudo-1366x768.png",
+    "setup-input-face-dark-1366x768.png",
+    "setup-input-no-camera-dark-1366x768.png",
+    "setup-input-refused-pseudo-1366x768.png",
+    "setup-input-downloading-dark-1366x768.png",
+    "setup-calibrate-dark-1366x768.png",
+    "setup-output-dark-1366x768.png",
+    "setup-go-live-light-1920x1080.png",
+    "setup-go-live-contrast-1920x1080.png",
+]
 
 [[case]]
 name = "palette"

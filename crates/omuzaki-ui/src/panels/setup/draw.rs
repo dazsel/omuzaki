@@ -438,6 +438,7 @@ fn calibrate(ui: &mut Ui, page: &Page<'_>) -> Vec<Ask> {
         }
         Some(CalibrationState::Done { .. }) => {
             ui.add(StatusChip::new(Status::Ok, &say(ds, text::SETUP_CALIBRATED, &[])));
+            ui.label(RichText::new(say(ds, text::SETUP_CALIBRATED_LINE, &[])).font(ds.text.small.clone()));
         }
         _ => {}
     }

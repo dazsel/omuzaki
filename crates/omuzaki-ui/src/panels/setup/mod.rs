@@ -122,7 +122,10 @@ impl FirstRun {
 /// Makes the Setup panel's host, shared as a view model: a studio without one gets a [`LiveHost`]. Tests and the
 /// visual evidence give one with chosen probes.
 #[derive(Clone)]
-pub struct SetupHosts(pub std::rc::Rc<dyn Fn(&dyn omuzaki_ops_api::Runner, bool) -> Box<dyn SetupHost>>);
+pub struct SetupHosts(pub std::rc::Rc<MakeHost>);
+
+/// Makes a host over the runner; `true` when setup ran here before.
+pub type MakeHost = dyn Fn(&dyn omuzaki_ops_api::Runner, bool) -> Box<dyn SetupHost>;
 
 /// The Setup panel.
 #[derive(Default)]
