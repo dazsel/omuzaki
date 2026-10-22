@@ -84,4 +84,8 @@ omuzaki_ai_api::register_model!(
 );
 omuzaki_ai_api::register_model!("kokoro-82m", include_str!("../models/kokoro-82m.model.toml"));
 
-omuzaki_core::define_link!();
+omuzaki_core::define_link! {
+    omuzaki_char_api::link();
+    omuzaki_live_api::link();
+    omuzaki_performer_api::link();
+}

@@ -44,3 +44,7 @@ pub use listener::VoiceListener;
 pub use mailbox::{VoiceReader, VoiceWriter, voice_mailbox};
 pub use onset::OnsetDetector;
 pub use viseme::{Viseme, VowelProfile};
+
+omuzaki_core::define_link! {
+    omuzaki_performer_api::link();
+}
