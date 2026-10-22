@@ -60,9 +60,9 @@ pub fn merge_base(
     let best = candidates.iter().position(|c| candidates.iter().all(|other| c.includes(other)));
     let winner = match best {
         Some(i) => candidates.swap_remove(i),
-        None => candidates.into_iter().max_by(|a, b| {
-            a.point.at.cmp(&b.point.at).then_with(|| b.version.point.cmp(&a.version.point))
-        })?,
+        None => candidates
+            .into_iter()
+            .max_by(|a, b| a.point.at.cmp(&b.point.at).then_with(|| b.version.point.cmp(&a.version.point)))?,
     };
     Some(winner.version.point)
 }
@@ -71,9 +71,7 @@ pub fn merge_base(
 /// what theirs contains and with theirs itself, without ours' own branch.
 pub fn merged_record(ours: &BranchId, ours_merges: &Contains, theirs: &Point) -> Contains {
     let Ok(theirs_id) = theirs.id() else { return ours_merges.clone() };
-    let joined = ours_merges
-        .join(&theirs.contains)
-        .with(theirs.branch.clone(), Version::new(theirs.seq, theirs_id));
+    let joined = ours_merges.join(&theirs.contains).with(theirs.branch.clone(), Version::new(theirs.seq, theirs_id));
     joined
         .iter()
         .filter(|(branch, _)| *branch != ours)

@@ -331,6 +331,16 @@ impl Executor {
         lock(&self.env.state).history_export()
     }
 
+    /// The document as committed now, without any open transaction's changes, and the history export when none is
+    /// open: what a branch point records (design branches.md 5.3), read under the executor's lock so the tree and
+    /// the history agree.
+    ///
+    /// # Errors
+    /// `Conflict` naming an open transaction and its owner whose changes can't be taken out.
+    pub fn committed(&self) -> Result<crate::Committed, OpError> {
+        lock(&self.env.state).committed()
+    }
+
     /// Appends a [`HistoryEntry::Mark`](omuzaki_history_api::HistoryEntry) with the history now, as a clean close
     /// does. Without a journal it does nothing.
     pub fn flush_history(&self) {

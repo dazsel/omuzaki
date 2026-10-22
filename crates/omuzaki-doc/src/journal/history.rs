@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use omuzaki_history_api::branch::BranchId;
 use omuzaki_history_api::state::HistoryError;
 use omuzaki_history_api::{
     HistoryEntry, HistoryLog, HistoryPage, HistoryQuery, JournalSink, Lsn, Trigger, TxOutcome, TxSummary, WallTime,
@@ -17,7 +18,7 @@ use omuzaki_history_api::{
 use omuzaki_ops_api::TxId;
 
 use super::reader::Reader;
-use super::{HEADER_LEN, JournalError, Record, SegmentHeader, archive_dir, journal_dir, segment_seq};
+use super::{HEADER_LEN, JournalError, Record, SegmentHeader, archive_dir_in, journal_dir_in, segment_seq};
 use crate::snapshot::Snapshotter;
 
 /// How long a read waits for the journal to make what was appended before it durable.
@@ -29,8 +30,16 @@ const SYNC_WAIT: Duration = Duration::from_secs(10);
 /// # Errors
 /// As [`Reader::scan`].
 pub fn read_all(project_dir: &Path) -> Result<Vec<(Lsn, Record)>, JournalError> {
+    read_all_in(&crate::branch::private_dir(project_dir))
+}
+
+/// [`read_all`] for the branch whose root is `root` ([`branch_root`](crate::branch::branch_root)).
+///
+/// # Errors
+/// As [`Reader::scan`].
+pub fn read_all_in(root: &Path) -> Result<Vec<(Lsn, Record)>, JournalError> {
     let mut records = Vec::new();
-    for dir in [archive_dir(project_dir), journal_dir(project_dir)] {
+    for dir in [archive_dir_in(root), journal_dir_in(root)] {
         let after = records.last().map_or(Lsn(0), |(lsn, _): &(Lsn, Record)| *lsn);
         let Some(first) = first_lsn(&dir) else { continue };
         // Start where this folder starts when what came before it is gone (an archive that was pruned).
@@ -46,7 +55,12 @@ pub fn read_all(project_dir: &Path) -> Result<Vec<(Lsn, Record)>, JournalError> 
 /// (settings.md D9): it reads only the live journal, never opens the project and writes nothing. A project never
 /// journalled, or one whose journal does not read, is not reported; opening it says why.
 pub fn left_open(project_dir: &Path) -> bool {
-    let dir = journal_dir(project_dir);
+    left_open_in(&crate::branch::private_dir(project_dir))
+}
+
+/// [`left_open`] for the branch whose root is `root`: whether that branch's lane stopped without closing.
+pub fn left_open_in(root: &Path) -> bool {
+    let dir = journal_dir_in(root);
     let Some(first) = first_lsn(&dir) else { return false };
     Reader::scan(&dir, Lsn(first.0.saturating_sub(1)))
         .is_ok_and(|scan| scan.records.last().is_some_and(|(_, record)| !matches!(record, Record::Close { .. })))
@@ -139,7 +153,8 @@ fn settle(items: &mut [TxSummary], index: &HashMap<TxId, usize>, tx: TxId, last:
 
 /// [`HistoryLog`] over a project's journal and archive, with the named versions from its snapshots.
 pub struct JournalHistory {
-    dir: PathBuf,
+    root: PathBuf,
+    branch: BranchId,
     snapshots: Arc<Snapshotter>,
     journal: Mutex<Option<Arc<dyn JournalSink>>>,
 }
@@ -147,7 +162,14 @@ pub struct JournalHistory {
 impl JournalHistory {
     /// The history of the project in `dir`, whose snapshots `snapshots` keeps.
     pub fn new(dir: impl Into<PathBuf>, snapshots: Arc<Snapshotter>) -> Self {
-        Self { dir: dir.into(), snapshots, journal: Mutex::new(None) }
+        Self::on_branch(dir, BranchId::main(), snapshots)
+    }
+
+    /// The history of branch `branch` of the project in `dir`: its own journal and archive, and the named versions its
+    /// lane took.
+    pub fn on_branch(dir: impl Into<PathBuf>, branch: BranchId, snapshots: Arc<Snapshotter>) -> Self {
+        let root = crate::branch::branch_root(&dir.into(), &branch);
+        Self { root, branch, snapshots, journal: Mutex::new(None) }
     }
 
     /// Reads after making `journal`'s appends durable, so the newest commits are listed.
@@ -164,7 +186,7 @@ impl JournalHistory {
         if let Some(journal) = journal {
             journal.sync(SYNC_WAIT).map_err(|e| HistoryError::Io(e.to_string()))?;
         }
-        read_all(&self.dir).map_err(|e| HistoryError::Io(e.to_string()))
+        read_all_in(&self.root).map_err(|e| HistoryError::Io(e.to_string()))
     }
 
     /// Every transaction, oldest first, with the named versions taken of the state after each.
@@ -174,7 +196,7 @@ impl JournalHistory {
     pub fn summaries(&self) -> Result<Vec<TxSummary>, HistoryError> {
         let mut items = summarise(&self.records()?);
         let refs = self.snapshots.refs().map_err(|e| HistoryError::Io(e.to_string()))?;
-        for info in refs.iter().filter(|info| info.trigger == Trigger::Named) {
+        for info in refs.iter().filter(|info| info.trigger == Trigger::Named && info.branch == self.branch) {
             let Some(name) = &info.name else { continue };
             // The newest transaction settled at or before the snapshot: the state it holds.
             let named = items

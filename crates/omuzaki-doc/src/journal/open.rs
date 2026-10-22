@@ -20,10 +20,12 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use omuzaki_history_api::branch::BranchId;
 use omuzaki_history_api::{HistoryEntry, HistoryExport, Lsn, RunningJob, SnapshotId, SnapshotInfo, Trigger, WallClock};
 
-use super::{End, JournalError, Reader, Record, Scan, SystemWall, journal_dir};
+use super::{End, JournalError, Reader, Record, Scan, SystemWall, journal_dir_in};
 use crate::Project;
+use crate::branch::branch_root;
 use crate::snapshot::{Facts, Snapshotter};
 
 /// How long a pre-recovery snapshot is pinned: 30 days, in milliseconds.
@@ -97,9 +99,23 @@ pub fn reopen(dir: &Path, snapshots: &Snapshotter) -> Result<Reopened, JournalEr
 /// edited here); [`JournalError::Io`] and [`JournalError::BadPayload`] from reading the journal;
 /// [`JournalError::Snapshot`] if the snapshots can't be listed or the pre-recovery snapshot can't be kept.
 pub fn reopen_with(dir: &Path, snapshots: &Snapshotter, mode: Recover) -> Result<Reopened, JournalError> {
+    reopen_on(dir, snapshots, mode, &BranchId::main())
+}
+
+/// [`reopen_with`] for the folder lane of `branch` (design branches.md 5.2): the folder holds that branch's state,
+/// so its journal (under the branch's root) and its snapshots are read, and ADR 0021's rules apply to the folder.
+///
+/// # Errors
+/// As [`reopen_with`].
+pub fn reopen_on(
+    dir: &Path,
+    snapshots: &Snapshotter,
+    mode: Recover,
+    branch: &BranchId,
+) -> Result<Reopened, JournalError> {
     let snapshot_error = |e: omuzaki_history_api::SnapshotError| JournalError::Snapshot(e.to_string());
-    let journal = journal_dir(dir);
-    let Some((info, base, history)) = snapshots.newest_loadable().map_err(snapshot_error)? else {
+    let journal = journal_dir_in(&branch_root(dir, branch));
+    let Some((info, base, history)) = snapshots.newest_loadable_on(branch).map_err(snapshot_error)? else {
         // Never journalled (or its snapshots are gone): the files are all there is. The journal's numbering continues.
         let scan = scan(&journal, Lsn(0))?;
         let last_lsn = scan.records.last().map_or(Lsn(0), |(lsn, _)| *lsn);
@@ -126,6 +142,7 @@ pub fn reopen_with(dir: &Path, snapshots: &Snapshotter, mode: Recover) -> Result
     // Unclean. First keep the folder exactly as the crash left it, before anything is written.
     let now = SystemWall.now();
     let facts = Facts::new(last_lsn, "recovery", Trigger::PreRecovery, now)
+        .with_branch(branch.clone())
         .pinned_until(omuzaki_history_api::WallTime(now.0.saturating_add(PRE_RECOVERY_PIN_MS)));
     let kept = snapshots.take_raw(facts, &HistoryExport::empty()).map_err(snapshot_error)?.info.id;
     let recovery = Some(Recovery { base: info.id, kept, mode, base_lsn: info.lsn, end: scan.end });
@@ -136,6 +153,48 @@ pub fn reopen_with(dir: &Path, snapshots: &Snapshotter, mode: Recover) -> Result
     }
     let mut project = base;
     project.write_exact()?;
+    let tail = scan
+        .records
+        .into_iter()
+        .filter_map(|(lsn, record)| match record {
+            Record::Entry(entry) => Some((lsn, entry)),
+            _ => None,
+        })
+        .collect();
+    Ok(Reopened { project, history, tail, last_lsn, recovery, last_job, interrupted })
+}
+
+/// Opens the lane of `branch` beside the folder (design branches.md 5.2): a side lane, whose state lives only in its
+/// journal and snapshots. The folder is never read or written. The base is the newest snapshot the branch's lane took;
+/// a branch whose lane never ran starts from `head` (its head point's project and history). A journal that ended
+/// without `close` is recovered by the headless rules: its tail is replayed, and the caller rolls the transactions
+/// still open back and reports it ([`Reopened::recovery`] is set, with the base as what is kept).
+///
+/// # Errors
+/// [`JournalError::Snapshot`] if the snapshots can't be listed; what `head` returns; as [`Reader::scan`].
+pub fn reopen_side(
+    dir: &Path,
+    snapshots: &Snapshotter,
+    branch: &BranchId,
+    head: impl FnOnce() -> Result<(Project, HistoryExport), JournalError>,
+) -> Result<Reopened, JournalError> {
+    let snapshot_error = |e: omuzaki_history_api::SnapshotError| JournalError::Snapshot(e.to_string());
+    let journal = journal_dir_in(&branch_root(dir, branch));
+    let Some((info, project, history)) = snapshots.newest_loadable_on(branch).map_err(snapshot_error)? else {
+        let scan = scan(&journal, Lsn(0))?;
+        let last_lsn = scan.records.last().map_or(Lsn(0), |(lsn, _)| *lsn);
+        let (project, history) = head()?;
+        let (last_job, interrupted) = jobs(None, &scan.records);
+        return Ok(Reopened { project, history, tail: Vec::new(), last_lsn, recovery: None, last_job, interrupted });
+    };
+    let scan = scan(&journal, info.lsn)?;
+    let last_lsn = scan.records.last().map_or(info.lsn, |(lsn, _)| *lsn);
+    let (last_job, interrupted) = jobs(Some(&info), &scan.records);
+    if matches!(scan.records.last(), Some((_, Record::Close { .. }))) || scan.records.is_empty() {
+        return Ok(Reopened { project, history, tail: Vec::new(), last_lsn, recovery: None, last_job, interrupted });
+    }
+    let recovery =
+        Some(Recovery { base: info.id, kept: info.id, mode: Recover::Restore, base_lsn: info.lsn, end: scan.end });
     let tail = scan
         .records
         .into_iter()

@@ -35,7 +35,8 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use omuzaki_core::time::{Clock, Seconds, SystemClock};
-use omuzaki_doc_api::{DocWrite, Patch};
+use omuzaki_doc_api::{DocWrite, Patch, Value};
+use omuzaki_history_api::branch::BranchId;
 use omuzaki_history_api::{
     HistoryEntry, HistoryExport, JournalSink, JournalStatus, Lsn, RunningJob, SnapshotId, SnapshotInfo, SyncError,
     Trigger, WallClock, WallTime,
@@ -45,6 +46,7 @@ use omuzaki_ops_api::OpError;
 use super::fs::{Flush, JournalFs, StdFs};
 use super::segments::{Preparer, Segment};
 use super::{JournalError, Record, SegmentHeader, SessionInfo, encode, segment_seq};
+use crate::branch::branch_root;
 use crate::snapshot::{Facts, Snapshotter};
 use crate::{OutsideChanges, Project};
 
@@ -154,6 +156,11 @@ pub struct SessionStart {
     /// The keeper's clock, for its save delays and snapshot cadence: the system's unless a test sets one (then
     /// [`ProjectJournal::tick`] makes the keeper look at it).
     pub clock: Arc<dyn Clock>,
+    /// The branch whose lane this is (design branches.md 4.4): its journal lives under the branch's root and its
+    /// snapshots name it. `main` unless set.
+    pub branch: BranchId,
+    /// Whether the keeper saves the project files: only the folder lane's does (design 5.1). Yes unless set.
+    pub saves_files: bool,
 }
 
 impl SessionStart {
@@ -177,7 +184,24 @@ impl SessionStart {
             snapshots,
             fs: Arc::new(StdFs),
             clock: Arc::new(SystemClock::new()),
+            branch: BranchId::main(),
+            saves_files: true,
         }
+    }
+
+    /// This start, for the lane of `branch`: the journal under its root, its snapshots naming it.
+    #[must_use]
+    pub fn on_branch(mut self, branch: BranchId) -> Self {
+        self.branch = branch;
+        self
+    }
+
+    /// This start, with the keeper saving the files (`true`, the folder lane) or only snapshotting (`false`, a side
+    /// lane). [`ProjectJournal::set_folder`] changes it later.
+    #[must_use]
+    pub fn saving_files(mut self, saves: bool) -> Self {
+        self.saves_files = saves;
+        self
     }
 
     /// This start, with the keeper timing its saves and snapshots by `clock`.
@@ -268,6 +292,11 @@ enum KeeperMsg {
     Outside(Sender<Result<OutsideChanges, String>>),
     /// Take a snapshot for the service (a named version, a take, a manual one) and answer with its ref.
     Take(Trigger, Option<String>, Sender<Result<SnapshotInfo, String>>),
+    /// Take a point's snapshot (trigger `point`) of the shadow, or of `tree` when given, and answer with its ref.
+    Point(Option<Value>, String, HistoryExport, Sender<Result<SnapshotInfo, String>>),
+    /// Become the folder's keeper (rewrite the folder to match the shadow exactly, then save from there) or stop
+    /// saving the files; answer once done.
+    Folder(bool, Sender<Result<(), String>>),
     /// Save, write the close snapshot with this history, answer with its id, and stop.
     Close(HistoryExport, Sender<Result<SnapshotId, String>>),
     /// Stop without closing (the journal was dropped): what is durable is in the journal, and the next open recovers.
@@ -290,7 +319,9 @@ impl ProjectJournal {
     pub fn start(project: Project, start: SessionStart, options: JournalOptions) -> Result<Arc<Self>, JournalError> {
         let dir = project.dir().to_path_buf();
         let created = start.wall.now();
-        let base = Facts::new(start.base_lsn, &start.session, Trigger::Session, created).with_last_job(start.last_job);
+        let base = Facts::new(start.base_lsn, &start.session, Trigger::Session, created)
+            .with_last_job(start.last_job)
+            .with_branch(start.branch.clone());
         let base_id = start
             .snapshots
             .take_rendered(&project, base, &start.history)
@@ -298,7 +329,7 @@ impl ProjectJournal {
             .info
             .id;
 
-        let journal_dir = journal_dir(&dir);
+        let journal_dir = journal_dir_in(&branch_root(&dir, &start.branch));
         let session_lsn = Lsn(start.base_lsn.0 + 1);
         let info =
             SessionInfo::new(start.session.clone(), created, start.app_version, project.schema_version().unwrap_or(0))
@@ -338,6 +369,9 @@ impl ProjectJournal {
             dirty_since: None,
             last_change: None,
             records_since_snapshot: 0,
+            root: branch_root(&dir, &start.branch),
+            branch: start.branch,
+            saving: start.saves_files,
         };
         let writer = Writer {
             shared: Arc::clone(&shared),
@@ -411,6 +445,47 @@ impl ProjectJournal {
         self.keeper.send(KeeperMsg::Take(trigger, name, reply)).map_err(|_| self.stopped())?;
         match answer.recv_timeout(timeout) {
             Ok(Ok(info)) => Ok(info),
+            Ok(Err(reason)) => Err(SyncError::Failing { reason }),
+            Err(_) => Err(SyncError::Timeout { durable }),
+        }
+    }
+
+    /// Takes a point's snapshot (design branches.md 5.3) after everything appended before the call: of the document as
+    /// the journal has it, or of `tree` when given (the committed state without open transactions, or a state from
+    /// history), with `history` (the executor's export, or empty). Returns its ref once it exists; the host writes
+    /// the point that names it.
+    ///
+    /// # Errors
+    /// As [`take_snapshot`](Self::take_snapshot).
+    pub fn take_point(
+        &self,
+        tree: Option<Value>,
+        label: impl Into<String>,
+        history: HistoryExport,
+        timeout: Duration,
+    ) -> Result<SnapshotInfo, SyncError> {
+        let durable = self.sync(timeout)?;
+        let (reply, answer) = mpsc::channel();
+        self.keeper.send(KeeperMsg::Point(tree, label.into(), history, reply)).map_err(|_| self.stopped())?;
+        match answer.recv_timeout(timeout) {
+            Ok(Ok(info)) => Ok(info),
+            Ok(Err(reason)) => Err(SyncError::Failing { reason }),
+            Err(_) => Err(SyncError::Timeout { durable }),
+        }
+    }
+
+    /// Makes this lane's keeper the folder's (`true`: the folder is rewritten to match its document exactly, then
+    /// saved from there) or a side lane's (`false`: it stops saving the files and only snapshots), after everything
+    /// appended before the call has reached it (design branches.md 5.5).
+    ///
+    /// # Errors
+    /// As [`save_now`](Self::save_now).
+    pub fn set_folder(&self, folder: bool, timeout: Duration) -> Result<(), SyncError> {
+        let durable = self.sync(timeout)?;
+        let (reply, answer) = mpsc::channel();
+        self.keeper.send(KeeperMsg::Folder(folder, reply)).map_err(|_| self.stopped())?;
+        match answer.recv_timeout(timeout) {
+            Ok(Ok(())) => Ok(()),
             Ok(Err(reason)) => Err(SyncError::Failing { reason }),
             Err(_) => Err(SyncError::Timeout { durable }),
         }
@@ -783,6 +858,12 @@ struct Keeper {
     records_since_snapshot: u64,
     last_snapshot: Seconds,
     clock: Arc<dyn Clock>,
+    /// The lane's branch, which its snapshots name.
+    branch: BranchId,
+    /// The branch's root, where its journal and archive are.
+    root: PathBuf,
+    /// Whether this keeper saves the files: the folder lane's does, a side lane's only snapshots.
+    saving: bool,
 }
 
 impl Keeper {
@@ -803,6 +884,10 @@ impl Keeper {
                 Ok(KeeperMsg::Take(trigger, name, reply)) => {
                     drop(reply.send(self.snapshot_named(trigger, name)));
                 }
+                Ok(KeeperMsg::Point(tree, label, history, reply)) => {
+                    drop(reply.send(self.point_snapshot(tree.as_ref(), label, &history)));
+                }
+                Ok(KeeperMsg::Folder(folder, reply)) => drop(reply.send(self.set_folder(folder))),
                 Ok(KeeperMsg::Close(history, reply)) => {
                     let closed = self.save().and_then(|()| self.snapshot(Trigger::Close, self.applied, &history));
                     drop(reply.send(closed));
@@ -892,7 +977,7 @@ impl Keeper {
 
     /// Saves the files if anything changed, and records the result on the status.
     fn save(&mut self) -> Result<(), String> {
-        let saved = if self.shadow.is_dirty() { self.shadow.save().map(drop) } else { Ok(()) };
+        let saved = if self.saving && self.shadow.is_dirty() { self.shadow.save().map(drop) } else { Ok(()) };
         let mut progress = lock(&self.shared.progress);
         match saved {
             Ok(()) => {
@@ -923,15 +1008,18 @@ impl Keeper {
     }
 
     fn snapshot(&mut self, trigger: Trigger, lsn: Lsn, history: &HistoryExport) -> Result<SnapshotId, String> {
-        let facts = Facts::new(lsn, &self.session, trigger, self.wall.now()).with_label(self.label.clone());
+        let facts = Facts::new(lsn, &self.session, trigger, self.wall.now())
+            .with_label(self.label.clone())
+            .with_branch(self.branch.clone());
         self.publish(facts, history).map(|info| info.id)
     }
 
     /// A snapshot asked for through the service: a named version, a take's state, a manual one. It covers what the
     /// shadow holds, which is everything durable.
     fn snapshot_named(&mut self, trigger: Trigger, name: Option<String>) -> Result<SnapshotInfo, String> {
-        let mut facts =
-            Facts::new(self.applied, &self.session, trigger, self.wall.now()).with_label(self.label.clone());
+        let mut facts = Facts::new(self.applied, &self.session, trigger, self.wall.now())
+            .with_label(self.label.clone())
+            .with_branch(self.branch.clone());
         match (trigger, name) {
             (Trigger::Take, Some(stem)) => facts = facts.with_stem(stem),
             (_, Some(name)) => facts = facts.with_name(name),
@@ -939,6 +1027,46 @@ impl Keeper {
         }
         // The executor's undo history isn't the keeper's to know between marks; a version restores as one new step.
         self.publish(facts, &HistoryExport::empty())
+    }
+
+    /// A point's snapshot (design branches.md 5.3): of the shadow as it stands, or of a copy of it brought to `tree`
+    /// (a committed state without the open transactions, or a state from history), so the files beside the tree
+    /// come from the folder as for any snapshot. It never counts as the keeper's own cadence.
+    fn point_snapshot(
+        &mut self,
+        tree: Option<&Value>,
+        label: String,
+        history: &HistoryExport,
+    ) -> Result<SnapshotInfo, String> {
+        let facts = Facts::new(self.applied, &self.session, Trigger::Point, self.wall.now())
+            .with_label(label)
+            .with_branch(self.branch.clone())
+            .with_last_job(self.last_job);
+        let taken = match tree {
+            None => self.snapshots.take_rendered(&self.shadow, facts, history),
+            Some(tree) => {
+                let mut copy = self.shadow.clone();
+                copy.reset_to(tree).map_err(|e| format!("the state can't be stored as a project: {e}"))?;
+                self.snapshots.take_rendered(&copy, facts, history)
+            }
+        };
+        taken.map(|taken| taken.info).map_err(|e| format!("a point's snapshot can't be written: {e}"))
+    }
+
+    /// Becomes the folder's keeper, or stops saving (design branches.md 5.5 steps 4 and 5). Becoming it rewrites the
+    /// folder to match the shadow exactly, replacing only files whose bytes differ and leaving files outside the tree
+    /// alone; from then on saves start from what it wrote.
+    fn set_folder(&mut self, folder: bool) -> Result<(), String> {
+        if folder {
+            self.shadow.write_exact().map_err(|e| format!("the folder can't be rewritten for this branch: {e}"))?;
+            let mut progress = lock(&self.shared.progress);
+            progress.saved = self.applied;
+            progress.save_error = None;
+            self.dirty_since = None;
+            self.last_change = None;
+        }
+        self.saving = folder;
+        Ok(())
     }
 
     fn publish(&mut self, facts: Facts, history: &HistoryExport) -> Result<SnapshotInfo, String> {
@@ -956,7 +1084,7 @@ impl Keeper {
         self.last_snapshot = self.clock.now();
         // Compaction keeps one snapshot of slack: what lies wholly before the previous snapshot moves to the archive.
         let previous = std::mem::replace(&mut self.published, lsn);
-        if let Err(error) = archive_before(self.shadow.dir(), previous) {
+        if let Err(error) = archive_before_in(&self.root, previous) {
             tracing::warn!(%error, "the journal couldn't be compacted; it is tried again at the next snapshot");
         }
         Ok(taken.info)
@@ -986,9 +1114,14 @@ pub(crate) fn patch_of(entry: &HistoryEntry) -> Option<&Patch> {
     }
 }
 
-/// The archive of sealed segments (the op log) of the project in `project_dir`.
+/// The archive of sealed segments (the op log) of the project in `project_dir`: `main`'s.
 pub fn archive_dir(project_dir: &Path) -> PathBuf {
-    project_dir.join(".omuzaki").join(ARCHIVE_DIR)
+    archive_dir_in(&crate::branch::private_dir(project_dir))
+}
+
+/// The archive of the branch whose root is `root` ([`branch_root`]).
+pub fn archive_dir_in(root: &Path) -> PathBuf {
+    root.join(ARCHIVE_DIR)
 }
 
 /// Moves into the archive the sealed segments of the project in `project_dir` whose records all have an LSN at or
@@ -998,7 +1131,15 @@ pub fn archive_dir(project_dir: &Path) -> PathBuf {
 /// # Errors
 /// [`JournalError::Io`] if a folder can't be listed or a segment can't be moved; what moved before stays moved.
 pub fn archive_before(project_dir: &Path, before: Lsn) -> Result<usize, JournalError> {
-    let live = journal_dir(project_dir);
+    archive_before_in(&crate::branch::private_dir(project_dir), before)
+}
+
+/// [`archive_before`] for the branch whose root is `root` ([`branch_root`]).
+///
+/// # Errors
+/// As [`archive_before`].
+pub fn archive_before_in(root: &Path, before: Lsn) -> Result<usize, JournalError> {
+    let live = journal_dir_in(root);
     let io = |path: &Path| {
         let path = path.to_path_buf();
         move |source| JournalError::Io { path, source }
@@ -1023,7 +1164,7 @@ pub fn archive_before(project_dir: &Path, before: Lsn) -> Result<usize, JournalE
             None => break,
         }
     }
-    let archive = archive_dir(project_dir);
+    let archive = archive_dir_in(root);
     let mut moved = 0;
     for (i, (_, path)) in segments.iter().enumerate().take(firsts.len().saturating_sub(1)) {
         // A segment holds the records from its first LSN up to the next one's first, exclusive.
@@ -1048,9 +1189,14 @@ fn sync_dir(dir: &Path) -> std::io::Result<()> {
     if cfg!(unix) { File::open(dir)?.sync_all() } else { Ok(()) }
 }
 
-/// The live journal folder of the project in `project_dir`.
+/// The live journal folder of the project in `project_dir`: `main`'s.
 pub fn journal_dir(project_dir: &Path) -> PathBuf {
-    project_dir.join(".omuzaki").join(JOURNAL_DIR)
+    journal_dir_in(&crate::branch::private_dir(project_dir))
+}
+
+/// The live journal folder of the branch whose root is `root` ([`branch_root`]).
+pub fn journal_dir_in(root: &Path) -> PathBuf {
+    root.join(JOURNAL_DIR)
 }
 
 fn spawn(name: &str, dir: &Path, run: impl FnOnce() + Send + 'static) -> Result<JoinHandle<()>, JournalError> {

@@ -4980,6 +4980,7 @@ version = "0.0.0"
 dependencies = [
  "crc32fast",
  "criterion",
+ "getrandom 0.4.3",
  "inventory",
  "libc",
  "omuzaki-assets-lock",

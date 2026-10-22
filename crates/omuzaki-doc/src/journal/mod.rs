@@ -25,13 +25,13 @@ pub use format::{
     SegmentHeader, read_frame, segment_name, segment_seq, write_frame,
 };
 pub use fs::{Flush, JournalFile, JournalFs, StdFs};
-pub use history::{JournalHistory, left_open, read_all, summarise};
-pub use open::{Recover, Recovery, Reopened, reopen, reopen_with};
+pub use history::{JournalHistory, left_open, left_open_in, read_all, read_all_in, summarise};
+pub use open::{Recover, Recovery, Reopened, reopen, reopen_on, reopen_side, reopen_with};
 pub use reader::{End, Position, Reader, Scan};
 pub use record::{MAX_DEPTH, Record, SessionInfo, decode, encode, kind};
 pub use writer::{
-    ARCHIVE_DIR, JOURNAL_DIR, JournalOptions, ProjectJournal, SessionStart, SystemWall, archive_before, archive_dir,
-    journal_dir,
+    ARCHIVE_DIR, JOURNAL_DIR, JournalOptions, ProjectJournal, SessionStart, SystemWall, archive_before,
+    archive_before_in, archive_dir, archive_dir_in, journal_dir, journal_dir_in,
 };
 
 /// Why the journal can't be read or written.

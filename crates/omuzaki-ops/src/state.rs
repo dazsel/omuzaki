@@ -661,6 +661,33 @@ impl State {
         self.next_seq = history.next_seq;
     }
 
+    /// The document as committed (design branches.md 5.3): the tree now less every open transaction's changes, newest
+    /// first, with the history export when no transaction is open (an open one's steps would point at changes the
+    /// tree no longer holds).
+    ///
+    /// # Errors
+    /// `Conflict` naming the transaction and its owner when its changes can't be taken out: committed work by
+    /// someone else is built on them.
+    pub(crate) fn committed(&self) -> Result<crate::Committed, OpError> {
+        let mut tree = self.doc.get(&omuzaki_doc_api::DocPath::root()).cloned().unwrap_or_default();
+        let mut open: Vec<(&TxId, &OpenTx)> = self.open.iter().collect();
+        open.sort_unstable_by_key(|(tx, _)| std::cmp::Reverse(**tx));
+        for (tx, open) in &open {
+            omuzaki_doc_api::apply_to(&mut tree, &open.draft.patch.inverse()).map_err(|e| {
+                OpError::conflict(format!(
+                    "transaction {} '{}' of {} is still open and committed work is built on it ({e})",
+                    tx.0,
+                    open.label,
+                    error::who(&open.owner)
+                ))
+                .hint("the owner commits or cancels it first; then the state can be recorded")
+            })?;
+        }
+        let history = open.is_empty().then(|| self.history_export());
+        let open = open.into_iter().map(|(tx, o)| (*tx, o.owner.clone(), o.label.clone())).collect();
+        Ok(crate::Committed { tree, history, open })
+    }
+
     /// Appends a `Mark` with the history now.
     pub(crate) fn mark(&mut self) {
         if self.journal.on() {

@@ -62,6 +62,7 @@
 //! [`StoreError::SchemaTooNew`].
 #![deny(missing_docs)]
 
+pub mod branch;
 mod disk;
 mod error;
 mod exact;

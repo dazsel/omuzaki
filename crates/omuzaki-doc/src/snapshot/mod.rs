@@ -26,6 +26,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime};
 
 use omuzaki_core::fsx::write_atomic;
+use omuzaki_history_api::branch::BranchId;
 use omuzaki_history_api::{
     HistoryExport, Lsn, RunningJob, SnapshotError, SnapshotId, SnapshotInfo, Trigger, Verification, VerifyHow,
     WallTime, is_derived,
@@ -95,6 +96,8 @@ pub struct Facts {
     pub last_job: u64,
     /// The jobs started and not yet ended.
     pub running_jobs: Vec<RunningJob>,
+    /// The branch whose lane takes it (VC-02): `main` unless the lane is another branch's.
+    pub branch: BranchId,
 }
 
 impl Facts {
@@ -111,7 +114,15 @@ impl Facts {
             keep_until: None,
             last_job: 0,
             running_jobs: Vec::new(),
+            branch: BranchId::main(),
         }
+    }
+
+    /// These facts for a snapshot of branch `branch`'s lane.
+    #[must_use]
+    pub fn with_branch(mut self, branch: BranchId) -> Self {
+        self.branch = branch;
+        self
     }
 
     /// These facts with the last transaction's label.
@@ -210,7 +221,7 @@ impl std::fmt::Debug for Snapshotter {
 }
 
 /// The provenance every snapshot object gets: made here, internal, never published.
-fn internal() -> Provenance {
+pub(crate) fn internal() -> Provenance {
     Provenance {
         source: Source::Authored,
         author: None,
@@ -395,6 +406,7 @@ impl Snapshotter {
         info.keep_until = facts.keep_until;
         info.last_job = facts.last_job;
         info.running_jobs = facts.running_jobs;
+        info.branch = facts.branch;
         info.verified = Some(Verification::new(facts.created, VerifyHow::Hash, true));
         self.write_ref(&info)?;
         *self.parent.lock().unwrap_or_else(PoisonError::into_inner) = Some(manifest.clone());
@@ -530,7 +542,25 @@ impl Snapshotter {
     /// # Errors
     /// [`SnapshotError::Io`] if the refs can't be listed.
     pub fn newest_loadable(&self) -> Result<Option<(SnapshotInfo, Project, HistoryExport)>, SnapshotError> {
-        for info in self.refs()?.into_iter().filter(|info| !is_raw(info.trigger)) {
+        self.newest_loadable_on(&BranchId::main())
+    }
+
+    /// [`newest_loadable`](Self::newest_loadable) among the snapshots `branch`'s lane took: the base its journal
+    /// continues from (design branches.md 4.4). A point's own snapshot (trigger `point`) is never a base: a point
+    /// made from an older tree holds a state the journal didn't reach at its LSN, and the lane's session and keeper
+    /// snapshots already cover every state its journal did.
+    ///
+    /// # Errors
+    /// [`SnapshotError::Io`] if the refs can't be listed.
+    pub fn newest_loadable_on(
+        &self,
+        branch: &BranchId,
+    ) -> Result<Option<(SnapshotInfo, Project, HistoryExport)>, SnapshotError> {
+        let bases = self
+            .refs()?
+            .into_iter()
+            .filter(|info| !is_raw(info.trigger) && info.trigger != Trigger::Point && info.branch == *branch);
+        for info in bases {
             match self.load(&info.id).and_then(|project| Ok((project, self.history(&info)?))) {
                 Ok((project, history)) => return Ok(Some((info, project, history))),
                 Err(error) => tracing::warn!(id = %info.id, %error, "a snapshot doesn't load; trying the one before"),
@@ -544,7 +574,27 @@ impl Snapshotter {
     /// # Errors
     /// [`SnapshotError::Io`] from listing refs or the store.
     pub fn sweep(&self, grace: Duration, now: SystemTime) -> Result<SweepReport, SnapshotError> {
-        let mut reachable = BTreeSet::new();
+        self.sweep_keeping(&BTreeSet::new(), grace, now)
+    }
+
+    /// [`sweep`](Self::sweep), keeping also `roots` and, for each of them that is a snapshot, everything its
+    /// manifest names: the points branch refs reach, with the snapshots and history blobs they name
+    /// ([`Reachable`](crate::branch::Reachable), design branches.md 4.6).
+    ///
+    /// # Errors
+    /// As [`sweep`](Self::sweep).
+    pub fn sweep_keeping(
+        &self,
+        roots: &BTreeSet<ContentHash>,
+        grace: Duration,
+        now: SystemTime,
+    ) -> Result<SweepReport, SnapshotError> {
+        let mut reachable = roots.clone();
+        for root in roots {
+            if let Ok(manifest) = self.manifest(&SnapshotId(*root)) {
+                reachable.extend(manifest.objects());
+            }
+        }
         for info in self.refs()? {
             reachable.insert(info.id.0);
             reachable.extend(info.history);

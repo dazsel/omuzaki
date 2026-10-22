@@ -102,8 +102,15 @@ impl World {
             points: Vec::new(),
             undo: Vec::new(),
         };
-        let mut world =
-            Self { branches: vec![main], store: BTreeMap::new(), lost: BTreeSet::new(), next_token: 0, clock: 0, variant, merges: (0, 0) };
+        let mut world = Self {
+            branches: vec![main],
+            store: BTreeMap::new(),
+            lost: BTreeSet::new(),
+            next_token: 0,
+            clock: 0,
+            variant,
+            merges: (0, 0),
+        };
         world.checkpoint(0);
         world
     }
@@ -139,7 +146,8 @@ impl World {
         let branch = &self.branches[b];
         if let Some(head) = branch.points.last() {
             let stored = &self.store[head];
-            if stored.doc.tokens == branch.live.tokens && stored.point.contains == branch.live.record.join(&branch.inherits)
+            if stored.doc.tokens == branch.live.tokens
+                && stored.point.contains == branch.live.record.join(&branch.inherits)
             {
                 return *head;
             }
@@ -147,8 +155,16 @@ impl World {
         self.clock += 1;
         let seq = u64::try_from(branch.points.len()).unwrap_or(0) + 1;
         let snapshot = SnapshotId(ContentHash::of(format!("{}-{seq}", branch.id).as_bytes()));
-        let point = Point::new(branch.id.clone(), seq, snapshot, Lsn(seq), PointKind::Checkpoint, Actor::System, WallTime(self.clock))
-            .with_contains(branch.live.record.join(&branch.inherits));
+        let point = Point::new(
+            branch.id.clone(),
+            seq,
+            snapshot,
+            Lsn(seq),
+            PointKind::Checkpoint,
+            Actor::System,
+            WallTime(self.clock),
+        )
+        .with_contains(branch.live.record.join(&branch.inherits));
         let id = point.id().unwrap_or_else(|e| panic!("{e}"));
         let doc = branch.live.clone();
         self.store.insert(id, Stored { point, doc, includes });
@@ -160,7 +176,8 @@ impl World {
         let fork = self.checkpoint(source);
         let stored = &self.store[&fork];
         let id = BranchId::new(format!("{:016x}", rng.next())).unwrap_or_default();
-        let inherits = stored.point.contains.clone().with(stored.point.branch.clone(), Version::new(stored.point.seq, fork));
+        let inherits =
+            stored.point.contains.clone().with(stored.point.branch.clone(), Version::new(stored.point.seq, fork));
         let inherited = self.closure(&fork);
         let live = Doc { tokens: stored.doc.tokens.clone(), record: self.branches[source].live.record.clone() };
         self.branches.push(Branch { id, live, inherits, inherited, points: Vec::new(), undo: Vec::new() });

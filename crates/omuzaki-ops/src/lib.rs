@@ -67,6 +67,19 @@ mod sync;
 mod travel;
 
 pub use error::ExecutorError;
+
+/// The committed state of an executor's document ([`Executor::committed`]): what a branch point records.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct Committed {
+    /// The tree without the open transactions' changes.
+    pub tree: omuzaki_doc_api::Value,
+    /// The history export, when no transaction was open.
+    pub history: Option<omuzaki_history_api::HistoryExport>,
+    /// The open transactions taken out: id, owner and label.
+    pub open: Vec<(omuzaki_ops_api::TxId, omuzaki_ops_api::Actor, String)>,
+}
+
 pub use executor::Executor;
 pub use history::HistoryLimits;
 pub use replay::{ReplayError, ReplayReport};
