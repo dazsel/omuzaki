@@ -20,7 +20,7 @@ use super::job::{RenderQuality, check_size, cost, store_png, with_renderer};
 use super::still::{Shot, StillSpec, encode_png, render_body_stills};
 use crate::body::{BodyServices, load_body};
 use crate::recipe::LightRig;
-use crate::scene::alone::{ShotChoice, cast_alone, stage_alone};
+use crate::scene::alone::{ShotChoice, cast_alone, post_in_look, stage_alone};
 use crate::scene::default::scene_for;
 
 /// The size of a preview when none is given: a portrait frame.
@@ -209,7 +209,12 @@ impl Op for Preview {
         let landmarks = body.landmarks().map_err(|e| OpError::invalid("framing", e.to_string()))?;
         #[allow(clippy::cast_precision_loss, reason = "sides are at most 4096")]
         let aspect = size.x as f32 / size.y as f32;
-        let staged = stage_alone(&def, &member, landmarks, aspect).map_err(|e| OpError::invalid("scene", e.to_string()))?;
+        let mut staged =
+            stage_alone(&def, &member, landmarks, aspect).map_err(|e| OpError::invalid("scene", e.to_string()))?;
+        // A kit character's look sets part of the frame too: its bloom, depth of field, grain and grade.
+        if let crate::body::Body::Kit(built) = &body {
+            post_in_look(&mut staged.resolved.post, &built.look().scene);
+        }
         let camera = staged.camera().ok_or_else(|| OpError::internal("the staged scene has no camera"))?;
         let mut shot = Shot::new(camera);
         if let Some(expression) = &self.expression {

@@ -4,8 +4,9 @@
 
 use std::collections::BTreeMap;
 
-use omuzaki_char_api::{CharId, VariantId};
+use omuzaki_char_api::{CharId, SceneLook, VariantId};
 use omuzaki_core::glam::Mat4;
+use omuzaki_render_api::{FilmGrain, Post};
 use omuzaki_stage_api::{Anchor, CameraDef, CameraId, CastMember, Framing, MemberId, SceneDef, SceneError};
 
 use super::landmarks::Landmarks;
@@ -167,4 +168,22 @@ pub fn stage_alone(
     let mut resolved = ResolvedScene::new();
     resolved.resolve_into(checked, &BTreeMap::from([(member.clone(), figure)]), aspect)?;
     Ok(StagedScene { resolved, subject_root: Mat4::from(figure.root) })
+}
+
+/// `post` with a character's frame look over it (LK-05): bloom and depth of field switched off when the look says so (a
+/// look that switches one on keeps the scene's, as only the scene's lighting and camera carry their settings), film
+/// grain at the look's strength (0 removes it), and the look's colour grade. Unset fields keep the scene's.
+pub fn post_in_look(post: &mut Post, look: &SceneLook) {
+    if look.bloom == Some(false) {
+        post.bloom = None;
+    }
+    if look.depth_of_field == Some(false) {
+        post.depth_of_field = None;
+    }
+    if let Some(strength) = look.grain {
+        post.grain = (strength > 0.0).then_some(FilmGrain { strength });
+    }
+    if let Some(grade) = look.grade.to_grade() {
+        post.grade = Some(grade);
+    }
 }

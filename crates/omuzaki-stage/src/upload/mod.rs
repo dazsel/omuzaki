@@ -210,6 +210,34 @@ impl StageCharacter {
         self.materials.get(name).copied()
     }
 
+    /// Updates the materials called `names` in place to their specs in `built`: what a look edit changes (LK-06), with
+    /// no mesh or texture created. Every material is converted before the renderer is called, so a spec that doesn't
+    /// resolve changes nothing; a renderer refusal part way leaves the earlier ones updated, for the caller to restore.
+    /// Returns how many were updated.
+    ///
+    /// # Errors
+    /// [`StageError::NotUploaded`] for a name the character has no material or handle for, [`StageError::Material`] for a spec that names a texture the stage lacks, [`StageError::Render`] if the renderer
+    /// refuses an update.
+    pub(crate) fn update_materials(
+        &self,
+        renderer: &mut dyn Renderer,
+        built: &BuiltCharacter,
+        names: &[MaterialName],
+    ) -> Result<u32, StageError> {
+        let mut updates = Vec::with_capacity(names.len());
+        for name in names {
+            let unknown = || StageError::NotUploaded { what: "material", name: name.as_str().to_owned() };
+            let (Some(spec), Some(id)) = (built.materials.get(name), self.material(name)) else { return Err(unknown()) };
+            updates.push((id, name, material_of(name, spec, &self.textures, &self.face_layers)?));
+        }
+        for (id, name, material) in &updates {
+            renderer
+                .update_material(*id, material)
+                .map_err(|source| StageError::render(format!("updating material '{name}'"), source))?;
+        }
+        Ok(u32::try_from(updates.len()).unwrap_or(u32::MAX))
+    }
+
     /// The handle of the procedural texture called `name`.
     pub fn texture(&self, name: &TextureName) -> Option<TextureId> {
         self.textures.get(name).copied()

@@ -24,7 +24,7 @@ pub(crate) mod runtimes;
 pub(crate) mod scene;
 
 use omuzaki_anim_api::{ChannelBuf, HumanoidPose, IkGoals, Tick};
-use omuzaki_char_api::{BuiltCharacter, StepCtx};
+use omuzaki_char_api::{BuiltCharacter, LookParams, StepCtx};
 use omuzaki_core::glam::{Mat4, Vec3};
 use omuzaki_core::time::Seconds;
 use omuzaki_render_api::{FrameInfo, FrameReport, Quality, Renderer, Scene, TargetId};
@@ -476,6 +476,27 @@ impl Stage {
         }
         let ground = self.ground.release(renderer);
         self.character.release(renderer).and(ground)
+    }
+
+    /// Draws the character in `look` (LK-06, #714): the materials the look changes are updated on the renderer in
+    /// place, with no mesh or texture created and nothing rebuilt, so a `look.*` edit shows on the next frame. Cold.
+    /// Returns how many materials were updated.
+    ///
+    /// # Errors
+    /// [`StageError::Rebuild`] for a look the materials can't take (nothing changes then); what
+    /// [`StageCharacter`]'s update refuses, after which the previous look is put back on the character and the renderer.
+    pub fn apply_look(&mut self, renderer: &mut dyn Renderer, look: &LookParams) -> Result<u32, StageError> {
+        let before = self.built.look().clone();
+        let changed =
+            self.built.apply_look(look).map_err(|e| StageError::Rebuild { reason: format!("the look can't be drawn: {e}") })?;
+        self.character.update_materials(renderer, &self.built, &changed).inspect_err(|_| {
+            // The previous look was drawable a moment ago, so this restores both sides.
+            if let Ok(back) = self.built.apply_look(&before)
+                && let Err(error) = self.character.update_materials(renderer, &self.built, &back)
+            {
+                tracing::warn!(%error, "restoring the previous look after a refused look edit failed too");
+            }
+        })
     }
 
     /// Does the renderer work the last [`set_scene`](Self::set_scene) owes for the ground (a new disc, or none) and

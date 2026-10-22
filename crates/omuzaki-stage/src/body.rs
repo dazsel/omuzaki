@@ -5,8 +5,10 @@
 
 use omuzaki_anim_api::HumanoidPose;
 use omuzaki_avatar_api::avatar::ImportedAvatar;
-use omuzaki_char_api::{BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder, Quality as BuildQuality};
-use omuzaki_char_api::VariantId;
+use omuzaki_char_api::{
+    BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder, LookDef, MaterialName, Quality as BuildQuality,
+};
+use omuzaki_char_api::{VariantId, paths as char_paths};
 use omuzaki_core::time::Clock;
 use omuzaki_doc_api::DocRead;
 use omuzaki_io_ops::ops::avatar::{is_imported, load_avatar};
@@ -135,9 +137,28 @@ pub fn load_body(
     }
     let def = read_definition(doc, id, variant)?;
     let options = BuildOptions { variant: variant.cloned(), quality, rig_export: false };
-    let built = services
+    let mut built = services
         .builder
         .build(id, &def, &options, services.build)
         .map_err(|e| OpError::invalid("character", format!("character '{id}' doesn't build: {e}")))?;
+    draw_in_look(doc, id, &mut built)?;
     Ok(Body::Kit(Box::new(built)))
+}
+
+/// Draws `built` in the look stored at `characters/<id>/look` (LK-06, #714): its materials take the look's class
+/// settings, and [`BuiltCharacter::look`] keeps it for the frame's post ([`post_in_look`](crate::scene::alone::post_in_look)).
+/// No look node leaves the parts' own materials. Returns the materials that changed, for a stage that has them on the
+/// renderer already.
+///
+/// # Errors
+/// `Invalid` (field `look`) for a look node that doesn't read or resolve, or that the materials can't take.
+pub fn draw_in_look(doc: &dyn DocRead, id: &CharId, built: &mut BuiltCharacter) -> Result<Vec<MaterialName>, OpError> {
+    let Some(node) = doc.get(&char_paths::look(id)) else { return Ok(Vec::new()) };
+    let refused = |e: &dyn std::fmt::Display| {
+        OpError::invalid("look", format!("the look of '{id}' {e}")).hint("set it again with look.set_preset or look.set_param")
+    };
+    let look = LookDef::from_node(Some(node))
+        .and_then(|def| def.resolve())
+        .map_err(|e| refused(&format!("doesn't resolve: {e}")))?;
+    built.apply_look(&look).map_err(|e| refused(&format!("can't be drawn: {e}")))
 }
