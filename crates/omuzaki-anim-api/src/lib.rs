@@ -72,14 +72,14 @@ pub use frame::{DeviceProfile, EyeAngles, FrameSource, HeadPose, NotArkit, Tick,
 pub use humanoid_frames::HumanoidFrames;
 pub use ik::{IkGoals, IkSolver, Limb, LookAt};
 pub use life::{
-    BlinkParams, Cues, Dynamics, FaceParams, GazeParams, HeadParams, LifeConfig, LifeDynamics, LifeLayer, LifeParams,
-    LifeStreams, LifeSystems, LifeTraits, Personality, Span,
+    BlinkParams, Cues, Dynamics, FaceParams, GazeParams, HeadParams, LaughParams, LifeConfig, LifeDynamics, LifeLayer,
+    LifeParams, LifeStreams, LifeSystems, LifeTraits, Personality, Span,
 };
 pub use playout::{DEFAULT_CAPACITY, DelayRamp, MAX_SLEW, PlayoutDelay, PlayoutError};
 pub use pose_layer::{BoneMask, PoseLayer, PoseLayers, PoseMode};
 pub use retarget::{
     Calibration, CalibrationError, CalibrationOutcome, CalibrationPrompt, Calibrator, ChannelRange, EXAGGERATED, FAST,
-    LOOK_FULL_RAD, LostPolicy, MIN_FIT_SPAN, MIN_SPAN, OneEuroParams, Response, Retarget, RetargetConfig,
+    LOOK_FULL_RAD, LostPolicy, MIN_FIT_SPAN, MIN_SPAN, OneEuroParams, RangeSource, Response, Retarget, RetargetConfig,
 };
 pub use score::{ChannelTrack, ClipId, CompiledScore, Cue, CueKind, Ease, ExpressionId, Key, Score, ScoreError};
 pub use skeleton::{

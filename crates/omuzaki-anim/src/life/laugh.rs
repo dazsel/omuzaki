@@ -6,21 +6,8 @@ use std::f32::consts::TAU;
 use super::frame::{Frame, smoothstep};
 use super::noise::Texture;
 
-// The prototype's thresholds. A laugh starts on the first row and must fall below the second for `HOLD_S` to end, so a
-// flicker in loudness cannot make it chatter. (They are not in `LifeParams` yet; see the follow-up issue.)
-const START_SMILE: f32 = 0.6;
-const START_JAW: f32 = 0.3;
-const START_LOUD: f32 = 0.45;
-const KEEP_SMILE: f32 = 0.45;
-const KEEP_JAW: f32 = 0.2;
-const KEEP_LOUD: f32 = 0.3;
-const HOLD_S: f32 = 0.12;
-/// A laugh ramps in and out over this long.
-const RAMP_S: f32 = 0.15;
-/// Closing into ^^ needs a really loud laugh.
-const ARC_LOUD: f32 = 0.85;
-/// The bob rate wanders by this fraction of itself.
-const RATE_WANDER: f32 = 0.1;
+/// The shortest time constant a ramp may have, seconds: it keeps a zero or non-finite `ramp_s` from dividing by zero.
+const MIN_RAMP_S: f32 = 1e-3;
 
 /// The state of the laugh detector.
 #[derive(Clone, Debug, Default)]
@@ -48,25 +35,26 @@ impl Laugh {
     /// audio laughter detection, which only strengthens the case).
     pub fn step(&mut self, f: &Frame<'_>, smile: f32, jaw: f32, loud: f32) -> LaughOut {
         let dt = f.dt;
+        let p = &f.params.laugh;
         if !f.systems.laugh {
             self.on = false;
         } else if !self.on {
-            if smile > START_SMILE && jaw > START_JAW && loud > START_LOUD {
+            if smile > p.start_smile && jaw > p.start_jaw && loud > p.start_loud {
                 self.on = true;
                 self.below_for = 0.0;
             }
         } else {
-            let still = smile > KEEP_SMILE && jaw > KEEP_JAW && loud > KEEP_LOUD;
+            let still = smile > p.keep_smile && jaw > p.keep_jaw && loud > p.keep_loud;
             self.below_for = if still { 0.0 } else { self.below_for + dt };
-            if self.below_for > HOLD_S {
+            if self.below_for > p.hold_s {
                 self.on = false;
             }
         }
-        let ramp = |value: f32, up: bool| (value + if up { dt } else { -dt } / RAMP_S).clamp(0.0, 1.0);
+        let ramp = |value: f32, up: bool| (value + if up { dt } else { -dt } / p.ramp_s.max(MIN_RAMP_S)).clamp(0.0, 1.0);
         self.weight = ramp(self.weight, self.on);
-        self.arcs = ramp(self.arcs, self.on && loud >= ARC_LOUD);
+        self.arcs = ramp(self.arcs, self.on && loud >= p.arc_loud);
         if self.weight > 0.0 {
-            let wander = 1.0 + RATE_WANDER * f.noise(Texture::Laugh, 1.3, 0.0);
+            let wander = 1.0 + p.rate_wander * f.noise(Texture::Laugh, 1.3, 0.0);
             self.phase += TAU * f.params.head.laugh_bob_hz * wander * dt;
         } else {
             self.phase = 0.0;

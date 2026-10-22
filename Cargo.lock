@@ -4255,7 +4255,9 @@ dependencies = [
  "inventory",
  "omuzaki-anim-api",
  "omuzaki-anim-mock",
+ "omuzaki-char-api",
  "omuzaki-core",
+ "omuzaki-doc-api",
  "omuzaki-doc-mock",
  "omuzaki-embed",
  "omuzaki-face-api",
@@ -4957,6 +4959,7 @@ dependencies = [
 name = "omuzaki-io-ops"
 version = "0.0.0"
 dependencies = [
+ "criterion",
  "image",
  "inventory",
  "omuzaki-ai-api",
@@ -5809,6 +5812,7 @@ dependencies = [
  "omuzaki-char-api",
  "omuzaki-char-mock",
  "omuzaki-core",
+ "omuzaki-face-mock",
  "omuzaki-render-api",
  "omuzaki-rig",
  "omuzaki-test",

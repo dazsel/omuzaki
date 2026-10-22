@@ -138,6 +138,8 @@ struct WarmJob {
     tick: Tick,
     pose: HumanoidPose,
     goals: IkGoals,
+    /// The frame's channels, for the new rig's bone drivers (boxed: 512 bytes).
+    channels: Box<ChannelBuf>,
     steps: u32,
 }
 
@@ -152,7 +154,7 @@ impl WarmJob {
             None
         } else {
             let mut frame = RigFrame::new(&built.rig).map_err(|e| e.to_string())?;
-            frame.solve(self.tick, &self.pose, &self.goals);
+            frame.solve_with_channels(self.tick, &self.pose, &self.goals, &self.channels);
             Some(frame.skin().to_vec())
         };
         let skin = solved.as_deref().unwrap_or(&self.skin);
@@ -441,7 +443,7 @@ fn step_runtimes(built: &mut BuiltCharacter, skin: &[Mat4], root: Mat4, steps: u
     let pose = SkinPose { character: &built.rig, skin, root };
     for step in 0..steps {
         let time = Seconds(f64::from(step) * f64::from(SETTLE_DT));
-        let ctx = StepCtx { dt: SETTLE_DT, time, pose: &pose, wind: Vec3::ZERO };
+        let ctx = StepCtx::new(SETTLE_DT, time, &pose, Vec3::ZERO);
         DynamicMeshes::step(&mut built.runtimes, &ctx);
     }
 }
@@ -529,24 +531,26 @@ impl Stage {
     }
 
     /// Warms the rig's spring bones and the part runtimes (hair, cloth, tails) by `steps` steps of [`SETTLE_DT`], under
-    /// the last frame's pose, goals and root, so the first frame doesn't start from a rest shape ([`SETTLE_STEPS`] is
-    /// the usual count). Each step solves the rig and then steps the runtimes on the solved skeleton. The stage clock
-    /// doesn't move and nothing is sent to the renderer: the next [`tick`](Stage::tick) uploads the meshes that moved.
+    /// the last frame's pose, goals, root and bone-driver channels, so the first frame doesn't start from a rest shape
+    /// ([`SETTLE_STEPS`] is the usual count). Each step solves the rig and then steps the runtimes on the solved
+    /// skeleton. The stage clock doesn't move and nothing is sent to the renderer: the next [`tick`](Stage::tick)
+    /// uploads the meshes that moved.
     pub fn settle(&mut self, steps: u32) {
         for step in 0..steps {
             let time = Seconds(f64::from(step) * f64::from(SETTLE_DT));
             let tick = Tick { index: u64::from(step), time, dt: SETTLE_DT };
             self.rig.solve(tick, &self.pose, &self.goals);
             let pose = SkinPose { character: &self.built.rig, skin: self.rig.skin(), root: self.root };
-            let ctx = StepCtx { dt: SETTLE_DT, time, pose: &pose, wind: Vec3::ZERO };
+            let ctx = StepCtx::new(SETTLE_DT, time, &pose, Vec3::ZERO);
             DynamicMeshes::step(&mut self.built.runtimes, &ctx);
         }
     }
 
-    /// [`settle`](Stage::settle) from a clean start: the spring bones and the part runtimes are reset to rest under
-    /// the last frame's pose, goals and root, so the result depends on that pose and `steps` alone, not on the frames
-    /// before it (a sheet or a still must not depend on history). The stage clock doesn't move and nothing is sent to
-    /// the renderer: [`redraw`](Stage::redraw) or the next [`tick`](Stage::tick) uploads the meshes that moved.
+    /// [`settle`](Stage::settle) from a clean start: the spring bones and the part runtimes are reset to rest under the
+    /// last frame's pose, goals, root and bone-driver channels, so the result depends on those and `steps` alone, not
+    /// on the frames before it (a sheet or a still must not depend on history). The stage clock doesn't move and
+    /// nothing is sent to the renderer: [`redraw`](Stage::redraw) or the next [`tick`](Stage::tick) uploads the meshes
+    /// that moved.
     pub fn settle_from_rest(&mut self, steps: u32) {
         self.rig.reset();
         // One solve at the last frame's pose, for no time at all: the springs start from rest and the runtimes reset
@@ -822,6 +826,7 @@ impl Stage {
             tick,
             pose: input.pose,
             goals: input.goals,
+            channels: Box::new(input.channels),
             steps: rig.settle_steps,
         };
         let (sender, answer) = mpsc::channel();
@@ -847,7 +852,7 @@ impl Stage {
         let mut new_rig = (new.rig != self.built.rig).then(|| RigFrame::new(&new.rig)).transpose()?;
         if let Some(frame) = new_rig.as_mut() {
             // A first solve off the frame path; the swapping frame solves it again with its own input.
-            frame.solve(tick, &input.pose, &input.goals);
+            frame.solve_with_channels(tick, &input.pose, &input.goals, &input.channels);
         }
         let bound = match FaceRig::resolve(&new, expressions)? {
             None => NextBound::Unbound,
@@ -960,7 +965,11 @@ impl Stage {
         rig: &mut FaceRig,
         mut new: BuiltCharacter,
     ) -> Result<(SyncReport, Result<(), StageError>), StageError> {
-        let new_rig = (new.rig != self.built.rig).then(|| RigFrame::new(&new.rig)).transpose()?;
+        let mut new_rig = (new.rig != self.built.rig).then(|| RigFrame::new(&new.rig)).transpose()?;
+        if let Some(frame) = new_rig.as_mut() {
+            // The bone drivers go on reading the last frame's channels, as the live rig's do.
+            frame.set_channels(self.rig.channels());
+        }
         let resolved = FaceRig::resolve(&new, None)?;
         let prepared = self.character.prepare_sync(renderer, &self.built, &new)?;
 

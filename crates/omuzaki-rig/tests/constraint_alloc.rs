@@ -50,8 +50,8 @@ fn applying_32_constraints_allocates_nothing() {
     let ch = common::full_character(true);
     let constraints = (1_u16..=32)
         .map(|i| BoneConstraint {
-            bone: BoneId(i),
-            source: BoneId(if i % 4 == 0 { i - 1 } else { 64 + i }),
+            bone: BoneId(64 + i),
+            source: BoneId(if i % 4 == 0 { 63 + i } else { i }),
             kind: match i % 3 {
                 0 => ConstraintKind::Roll { axis: Axis::X },
                 1 => ConstraintKind::Aim { axis: SignedAxis::PositiveY },

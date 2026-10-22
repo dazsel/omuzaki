@@ -7,5 +7,6 @@
 pub mod bones;
 pub mod channels;
 pub mod colour;
+pub mod drivers;
 pub mod material;
 pub mod texture;
