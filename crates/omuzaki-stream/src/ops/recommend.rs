@@ -101,7 +101,10 @@ fn rank(kind: &str, obs: bool, window: Option<WindowCaps>) -> u8 {
 /// How to bring `kind` into OBS.
 fn obs_hint(kind: &str, window: Option<WindowCaps>) -> String {
     match kind {
-        "spout" => "In OBS, add a Spout2 Capture source and choose Omuzaki: full quality, with transparency.".into(),
+        // OBS's Spout2 source shows an opaque picture until a composite mode is picked (spikes/broadcast-out).
+        "spout" => "In OBS, add a Spout2 Capture source, choose Omuzaki and set Composite mode to Premultiplied Alpha: \
+                    full quality, with transparency."
+            .into(),
         "syphon" => "In OBS, add a Syphon Client source and choose Omuzaki: full quality, with transparency.".into(),
         "ndi" => "In OBS with the NDI plugin, add an NDI Source and choose Omuzaki.".into(),
         WINDOW if window.is_some_and(|c| c.transparent) => {
@@ -221,7 +224,7 @@ mod tests {
     #[test]
     fn the_obs_steps_name_the_source_to_add() {
         let spout = recommend(&[kind("spout", true)], None, true);
-        assert!(spout.obs_hint.is_some_and(|h| h.contains("Spout2 Capture")));
+        assert!(spout.obs_hint.is_some_and(|h| h.contains("Spout2 Capture") && h.contains("Premultiplied Alpha")));
         let keyed = recommend(&[], KEYED, true);
         assert!(keyed.obs_hint.is_some_and(|h| h.contains("Color Key") && h.contains("output.window.suggest_key")));
         let clear = recommend(&[], CLEAR, true);
