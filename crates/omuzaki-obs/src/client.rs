@@ -277,12 +277,22 @@ fn close_error(reason: Option<String>) -> ObsError {
     }
 }
 
-fn resolve(host: &str, port: u16) -> Result<SocketAddr, ObsError> {
+/// Connects to the first address `host` resolves to that answers: `localhost` names both `::1` and `127.0.0.1`, and
+/// OBS usually listens on only one of them.
+fn connect_any(host: &str, port: u16) -> Result<(TcpStream, SocketAddr), ObsError> {
     let addr = format!("{host}:{port}");
-    addr.to_socket_addrs()
+    let addrs: Vec<SocketAddr> = addr
+        .to_socket_addrs()
         .map_err(|e| ObsError::Unreachable { addr: addr.clone(), reason: e.to_string() })?
-        .next()
-        .ok_or_else(|| ObsError::Unreachable { addr, reason: "the host name resolves to nothing".into() })
+        .collect();
+    let mut last = ObsError::Unreachable { addr, reason: "the host name resolves to nothing".into() };
+    for candidate in addrs {
+        match TcpStream::connect_timeout(&candidate, CONNECT_TIMEOUT) {
+            Ok(stream) => return Ok((stream, candidate)),
+            Err(e) => last = ObsError::Unreachable { addr: candidate.to_string(), reason: e.to_string() },
+        }
+    }
+    Err(last)
 }
 
 impl ObsClient {
@@ -307,9 +317,8 @@ impl ObsClient {
         if !loopback && !config.allow_remote {
             return Err(ObsError::RemoteNotAllowed(format!("{host}:{port}")));
         }
-        let addr = resolve(host, port)?;
+        let (stream, addr) = connect_any(host, port)?;
         let unreachable = |reason: String| ObsError::Unreachable { addr: addr.to_string(), reason };
-        let stream = TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT).map_err(|e| unreachable(e.to_string()))?;
         stream.set_read_timeout(Some(CONNECT_TIMEOUT)).map_err(|e| unreachable(e.to_string()))?;
         stream.set_nodelay(true).map_err(|e| unreachable(e.to_string()))?;
         let url = format!("ws://{host}:{port}/");
