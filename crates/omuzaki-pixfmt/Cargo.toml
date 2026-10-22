@@ -19,10 +19,16 @@ zune-jpeg.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
+# The JPEG encoder that makes the MJPG bench's synthetic frames.
+image.workspace = true
 proptest.workspace = true
 
 [[bench]]
 name = "convert"
+harness = false
+
+[[bench]]
+name = "mjpg_jitter"
 harness = false
 
 [lints]
