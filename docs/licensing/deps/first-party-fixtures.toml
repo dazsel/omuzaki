@@ -57,4 +57,12 @@ paths = [
   "crates/omuzaki-test-face/fixtures/raster/round-capped-stroke.png",
   "crates/omuzaki-test-face/fixtures/raster/tiny-ellipse.png",
   "crates/omuzaki-test-face/fixtures/raster/translucent-stack.png",
+  "crates/omuzaki-render-mock/tests/golden/particles/grey.png",
+  "crates/omuzaki-render-mock/tests/golden/particles/transparent-premultiplied.png",
+  "crates/omuzaki-render-mock/tests/golden/particles/transparent-straight.png",
+  "crates/omuzaki-render/tests/golden/particles-grey.png",
+  "crates/omuzaki-render/tests/golden/particles-presets-grey.png",
+  "crates/omuzaki-render/tests/golden/particles-presets-transparent.png",
+  "crates/omuzaki-render/tests/golden/particles-transparent-premultiplied.png",
+  "crates/omuzaki-render/tests/golden/particles-transparent-straight.png",
 ]

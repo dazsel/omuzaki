@@ -39,7 +39,7 @@ fn golden(name: &str) -> PathBuf {
 fn matches_golden(image: &Image, name: &str) {
     let path = golden(name);
     if std::env::var_os("OMUZAKI_BLESS").is_some() {
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(golden("")).unwrap();
         save_png(image, &path);
     }
     let want = image::open(&path).unwrap().to_rgba8();
