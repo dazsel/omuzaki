@@ -1,0 +1,7 @@
+{
+  "about": "The show `main` with one variable, `bonks`: for the ops that change variable declarations.",
+  "base": "show",
+  "steps": [
+    { "op": "automation.declare_variable", "args": { "show": "main", "name": "bonks", "type": "number", "scope": "show", "default": 0 } }
+  ]
+}

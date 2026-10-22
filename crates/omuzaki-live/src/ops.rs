@@ -173,7 +173,7 @@ pub struct ResumeGraph {
     pub graph: GraphId,
 }
 
-fn service<'a>(ctx: &OpCtx<'a>) -> Result<&'a Automation, OpError> {
+pub(crate) fn service<'a>(ctx: &OpCtx<'a>) -> Result<&'a Automation, OpError> {
     ctx.service::<Automation>()
 }
 
@@ -181,16 +181,16 @@ fn live_action(name: &'static str, summary: &'static str, scope: Scope) -> OpMet
     OpMeta { name, summary, kind: OpKind::Edit, scope, undo: Undo::None }
 }
 
-fn query(name: &'static str, summary: &'static str) -> OpMeta {
+pub(crate) fn query(name: &'static str, summary: &'static str) -> OpMeta {
     OpMeta { name, summary, kind: OpKind::Query, scope: Scope::Read, undo: Undo::None }
 }
 
-fn document_edit(name: &'static str, summary: &'static str) -> OpMeta {
+pub(crate) fn document_edit(name: &'static str, summary: &'static str) -> OpMeta {
     OpMeta { name, summary, kind: OpKind::Edit, scope: Scope::EditScene, undo: Undo::Auto }
 }
 
 /// The show an op names, else the project's default, else the only show there is.
-fn resolve_show(ctx: &OpCtx<'_>, given: Option<&ShowId>) -> Result<ShowId, OpError> {
+pub(crate) fn resolve_show(ctx: &OpCtx<'_>, given: Option<&ShowId>) -> Result<ShowId, OpError> {
     if let Some(id) = given {
         return Ok(id.clone());
     }
@@ -200,17 +200,17 @@ fn resolve_show(ctx: &OpCtx<'_>, given: Option<&ShowId>) -> Result<ShowId, OpErr
     let shows = ctx.doc.get(&DocPath::root().join("shows")).and_then(Value::as_object);
     match shows.map(|s| s.keys().collect::<Vec<_>>()).as_deref() {
         Some([only]) => ShowId::new(only.as_str()).map_err(|e| OpError::invalid("show", e.to_string())),
-        Some([]) | None => Err(OpError::not_found("the project has no show").hint("make one with show.create")),
+        Some([]) | None => Err(OpError::not_found("the project has no show").hint("show.create {id: \"main\"}")),
         Some(_) => Err(OpError::invalid("show", "the project has several shows and no default; name one")),
     }
 }
 
 /// The show stored at `shows/<id>`.
-fn read_show(ctx: &OpCtx<'_>, id: &ShowId) -> Result<ShowDef, OpError> {
+pub(crate) fn read_show(ctx: &OpCtx<'_>, id: &ShowId) -> Result<ShowDef, OpError> {
     let node = ctx
         .doc
         .get(&paths::show(id))
-        .ok_or_else(|| OpError::not_found(format!("there is no show `{id}`")).hint("list shows under `shows`"))?;
+        .ok_or_else(|| OpError::not_found(format!("there is no show `{id}`")).hint("show.create {id: \"main\"}"))?;
     ShowDef::from_node(node).map_err(|e| OpError::invalid("show", format!("show `{id}` can't be read: {e}")))
 }
 
@@ -238,7 +238,7 @@ fn refuse_broken(def: &ShowDef, graph: &GraphId) -> Result<(), OpError> {
 
 /// A patch that writes `value` at `path`, creating the missing parent tables on the way (the document applies a
 /// change only under a parent that exists).
-fn create(ctx: &OpCtx<'_>, path: &DocPath, value: Value) -> Patch {
+pub(crate) fn create(ctx: &OpCtx<'_>, path: &DocPath, value: Value) -> Patch {
     let mut at = path.clone();
     let mut value = value;
     while let Some((parent, key)) = at.split_last() {
@@ -251,7 +251,7 @@ fn create(ctx: &OpCtx<'_>, path: &DocPath, value: Value) -> Patch {
     Patch::new().with(at, None, Some(value))
 }
 
-fn to_node(def: &ShowDef) -> Result<Value, OpError> {
+pub(crate) fn to_node(def: &ShowDef) -> Result<Value, OpError> {
     let mut node = Value::Null;
     def.to_node(&mut node).map_err(|e| OpError::internal(e.to_string()))?;
     Ok(node)

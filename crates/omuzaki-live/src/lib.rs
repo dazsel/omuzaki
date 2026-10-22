@@ -24,9 +24,11 @@ pub mod approvals;
 pub mod compile;
 mod core;
 mod dispatch;
+mod edits;
 mod inbox;
 mod l10n;
 pub mod ops;
+mod queries;
 mod service;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;

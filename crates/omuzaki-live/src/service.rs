@@ -204,6 +204,13 @@ impl Automation {
         }
     }
 
+    /// What this machine approved for show `id` (nothing without an approvals store), and how program files hash:
+    /// what `automation.describe` compiles against.
+    pub(crate) fn arming_for(&self, id: &ShowId) -> (ShowApprovals, Arc<dyn ProgramHasher>) {
+        let source = self.arming_source(id);
+        (source.approvals(), source.hasher)
+    }
+
     /// Swaps `def` into the running show between two steps (design D5's hot reload); nothing when no show runs.
     /// Edits made through the runner reload on their own; this is for a show that changes some other way.
     pub fn reload(&self, def: ShowDef) {
