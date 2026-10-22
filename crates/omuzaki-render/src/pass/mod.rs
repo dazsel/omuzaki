@@ -10,7 +10,7 @@
 //! | `Shadows` | `shadows.rs` | done: a fitted, texel-snapped directional map per casting light (up to the quality's `max_maps`), each redrawn every `shadow_interval`-th live frame; the lookup is in `shader/toon.wgsl` |
 //! | `Opaque` | `opaque.rs` | done: toon shading (ramp, tinted shade, rim, skin, lights) over base colour, vertex colours, textures, overlays and skinning |
 //! | `Outlines` | `outlines.rs` | done: inverted hull on welded smooth normals, width by distance; `MToon`'s other width modes are not implemented yet |
-//! | `Particles` | `particles.rs` | stub: reports `Skipped` until the particle pass lands (#940) |
+//! | `Particles` | `particles.rs` | done: the scene's spawn batches as sprites evaluated in the vertex stage, packed into uniform blocks by system, drawn with alpha-to-coverage and a second alpha-only draw so the output stays premultiplied without sorting |
 //! | `Transparent` | `transparent.rs` | done: blended instances sorted by `Instance::order`, then back to front, depth-tested without writing depth; the opaque shader and program hooks with a blend state |
 //! | `Bloom` | `bloom.rs` | done: the prototype's `UnrealBloomPass`, 12 small passes publishing a glow image |
 //! | `DepthOfField` | `dof.rs` | done: prepass, foreground search and gather on half-size images |

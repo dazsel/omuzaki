@@ -8,8 +8,8 @@ use std::time::Instant;
 use omuzaki_core::glam::{UVec2, Vec3};
 use omuzaki_render_api::{
     Capabilities, EnvironmentDesc, EnvironmentId, FrameReport, Image, Instance, Material, MaterialId, MeshData, MeshId,
-    MeshOptions, MtoonSupport, Painter, Quality, RenderError, Renderer, ResourceRef, ResourceStats, Scene, TargetDesc,
-    TargetId, TextureDesc, TextureId, TextureUsage,
+    MeshOptions, MtoonSupport, Painter, ParticleSystemDesc, ParticleSystemId, Quality, RenderError, Renderer,
+    ResourceRef, ResourceStats, Scene, TargetDesc, TargetId, TextureDesc, TextureId, TextureUsage,
 };
 
 use crate::caps::{self, CapabilityProfile};
@@ -26,6 +26,7 @@ use crate::readback;
 use crate::resource::Resources;
 use crate::resource::material::{self, GpuMaterial};
 use crate::resource::mesh::GpuMesh;
+use crate::resource::particles::GpuParticleSystem;
 use crate::resource::target::GpuTarget;
 use crate::resource::texture::GpuTexture;
 use crate::shared::Shared;
@@ -202,6 +203,17 @@ impl WgpuRenderer {
                 .map(drop)
                 .ok_or(RenderError::UnknownHandle { what: "texture" })
         })
+    }
+
+    /// The description is valid and its atlas texture, if any, is live.
+    fn check_particle_system(&self, desc: &ParticleSystemDesc) -> Result<(), RenderError> {
+        desc.validate()?;
+        match desc.sprite.texture() {
+            Some(t) if self.resources.textures.get(t.index(), t.generation()).is_none() => {
+                Err(RenderError::UnknownHandle { what: "texture" })
+            }
+            _ => Ok(()),
+        }
     }
 }
 
@@ -385,6 +397,29 @@ impl Renderer for WgpuRenderer {
         })
     }
 
+    fn create_particle_system(&mut self, desc: &ParticleSystemDesc) -> Result<ParticleSystemId, RenderError> {
+        self.check_particle_system(desc)?;
+        let shared = &self.shared;
+        let textures = &self.resources.textures;
+        let uploaded =
+            shared.gpu.scoped("a particle system", || Ok(GpuParticleSystem::create(shared, textures, desc)))?;
+        let (index, generation) = self.resources.particles.insert(uploaded);
+        Ok(ParticleSystemId::from_parts(index, generation))
+    }
+
+    fn update_particle_system(&mut self, id: ParticleSystemId, desc: &ParticleSystemDesc) -> Result<(), RenderError> {
+        self.check_particle_system(desc)?;
+        let Self { shared, resources, .. } = self;
+        let Resources { textures, particles, .. } = resources;
+        let slot = particles
+            .get_mut(id.index(), id.generation())
+            .ok_or(RenderError::UnknownHandle { what: "particle system" })?;
+        shared.gpu.scoped("a particle system", || {
+            slot.update(shared, textures, desc);
+            Ok(())
+        })
+    }
+
     fn create_target(&mut self, desc: &TargetDesc) -> Result<TargetId, RenderError> {
         self.check_size(desc.size, "target size")?;
         let gpu = &self.shared.gpu;
@@ -431,13 +466,17 @@ impl Renderer for WgpuRenderer {
                 if resources.materials.iter().any(|m| m.material.textures().any(|t| t == id)) {
                     return Err(RenderError::InUse { what: "texture", by: "material" });
                 }
+                if resources.particles.iter().any(|p| p.desc.sprite.texture() == Some(id)) {
+                    return Err(RenderError::InUse { what: "texture", by: "particle system" });
+                }
                 resources.textures.remove(id.index(), id.generation()).map(drop).ok_or_else(unknown)
             }
             ResourceRef::Environment(id) => {
                 resources.environments.remove(id.index(), id.generation()).map(drop).ok_or_else(unknown)
             }
-            // No particle system is ever created until the particle pass lands, so every handle is unknown.
-            ResourceRef::ParticleSystem(_) => Err(unknown()),
+            ResourceRef::ParticleSystem(id) => {
+                resources.particles.remove(id.index(), id.generation()).map(drop).ok_or_else(unknown)
+            }
         }
     }
 
@@ -494,6 +533,7 @@ impl Renderer for WgpuRenderer {
                 target_size: desc.size,
                 samples,
                 bind_groups: frame.bind_groups(rounds),
+                uniforms: &frame.uniforms,
                 draws: &frame.draws,
             };
             let mut encoder =
@@ -543,7 +583,7 @@ impl Renderer for WgpuRenderer {
                 gpu: gpu_timings,
                 draw_calls: stats.draw_calls,
                 triangles: stats.triangles,
-                particles: 0,
+                particles: frame.draws.particle_slots,
             })
         })?;
         // Only now, with the frame's error scopes passed, were its morph dispatches done: a scope that fails turns the

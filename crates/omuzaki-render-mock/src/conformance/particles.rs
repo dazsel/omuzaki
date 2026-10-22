@@ -410,9 +410,13 @@ fn particle_atlas_cell(r: &mut dyn Renderer) -> Outcome {
     if !r.capabilities().supports(Pass::Particles) {
         return Ok(());
     }
-    let mut desc = TextureDesc::colour(UVec2::new(2, 1));
+    // Two texels a cell each way, so a filtered read at the cell's centre sees only the cell.
+    let mut desc = TextureDesc::colour(UVec2::new(4, 2));
     desc.mips = false;
-    let texture = r.create_texture(&desc, Some(&[255, 0, 0, 255, 0, 255, 0, 255]))?;
+    let (red, green) = ([255, 0, 0, 255], [0, 255, 0, 255]);
+    let row = [red, red, green, green];
+    let texture =
+        r.create_texture(&desc, Some(row.iter().chain(&row).flatten().copied().collect::<Vec<u8>>().as_slice()))?;
     let params = ParticleParams { speed: Span::fixed(0.0), ..mover(0.6) };
     let id = r.create_particle_system(&ParticleSystemDesc { sprite: Sprite::atlas(texture, 2, 1), params })?;
     let mut s = scene();

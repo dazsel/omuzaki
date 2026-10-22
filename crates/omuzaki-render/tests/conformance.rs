@@ -89,3 +89,22 @@ fn the_capability_checks_pass_for_every_capability_the_renderer_claims() {
         panic!("capability checks failed: {failure}");
     }
 }
+
+#[test]
+fn the_renderer_draws_particles_and_passes_the_particle_checks() {
+    let mut renderer = support::renderer();
+    assert!(renderer.capabilities().supports(Pass::Particles), "the Particles pass is implemented");
+    if let Err(failure) = conformance::run_particles(&mut renderer) {
+        panic!("particle checks failed: {failure}");
+    }
+}
+
+#[test]
+fn each_particle_check_passes_alone_on_a_fresh_renderer() {
+    for (name, check) in conformance::PARTICLE_CHECKS {
+        let mut renderer = support::renderer();
+        if let Err(failure) = check(&mut renderer) {
+            panic!("{name} (fresh renderer): {failure}");
+        }
+    }
+}
