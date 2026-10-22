@@ -18,6 +18,7 @@
 //! The perform thread only calls [`SourceSlot::swap_into`] once per frame, which never blocks, allocates or frees: the
 //! source it replaces goes back into the slot, and the ops side drops it on its next call.
 
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -27,12 +28,18 @@ use omuzaki_ops_api::Mode;
 use omuzaki_settings_api::meta::{AgentWrite, Apply, InProfile, SettingMeta, SettingScope};
 use omuzaki_settings_api::register_setting;
 use omuzaki_settings_api::setting::Setting;
+use omuzaki_track::gesture::Gesture;
 use omuzaki_track_api::camera::CameraId;
+use omuzaki_metrics_api::budget::{BudgetKey, BudgetUse, TRACK_FACE};
+use omuzaki_track_api::doctor::{Diagnosis, Finding};
 use omuzaki_track_api::error::TrackError;
+use omuzaki_track_api::pose_out::{PoseOutStatus, PoseOutput};
 use omuzaki_track_api::tracker::{Tracker, TrackerConfig};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::gesture::GestureWatch;
+use super::guided::{FrameTap, GuidedRun, GuidedStatus};
 use super::host::PerformHost;
 use super::{Performer, Tracking};
 
@@ -201,6 +208,34 @@ pub struct InputState {
     pub tracking: Tracking,
 }
 
+/// How the running capture is doing (PF-26), read by `input.health`: its rate, latency and drops, its use of the
+/// `track.face` budget, and what the doctor finds.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
+pub struct InputHealth {
+    /// Whether a capture runs. With none, every other field is empty.
+    pub running: bool,
+    /// Tracker frames per second as the performer sees them.
+    pub source_fps: f32,
+    /// Latency from the frame's arrival to its publish, median, milliseconds.
+    pub latency_ms_p50: f32,
+    /// The same, 95th percentile.
+    pub latency_ms_p95: f32,
+    /// The same, worst seen.
+    pub latency_ms_max: f32,
+    /// Frames published this session.
+    pub frames: u64,
+    /// Frames lost or skipped this session.
+    pub dropped: u64,
+    /// `dropped` as a share of all the frames that came, 0 to 1.
+    pub dropped_share: f32,
+    /// The latency's 95th percentile against the spec §10 `track.face` budget (5 ms), for the webcam: the phone
+    /// tracks on the phone, so its latency is the network's and has no budget here.
+    pub budget: Option<BudgetUse>,
+    /// What the tracking doctor finds now (`input.doctor` gives the fixes).
+    pub findings: Vec<Finding>,
+}
+
 /// Why the input could not do what it was asked.
 #[derive(Clone, Debug, PartialEq, thiserror::Error)]
 #[non_exhaustive]
@@ -223,6 +258,21 @@ pub enum InputError {
     /// The camera refused to start.
     #[error("the camera could not start: {0}")]
     Device(TrackError),
+    /// The guided calibration reads the running capture, and none runs.
+    #[error("no capture is running for the calibration to read")]
+    CaptureOff,
+    /// A guided calibration is already running.
+    #[error("a guided calibration is already running")]
+    CalibrationRunning,
+    /// This input cannot run the guided calibration.
+    #[error("this input has no guided calibration")]
+    NoGuidedCalibration,
+    /// This build has no pose output (VMC out).
+    #[error("this build cannot send the pose to other apps")]
+    NoPoseOutput,
+    /// The pose output could not start.
+    #[error("the pose output could not start: {0}")]
+    PoseOutput(String),
 }
 
 impl InputError {
@@ -265,6 +315,60 @@ pub trait InputHost: Send + Sync {
 
     /// What the input is doing.
     fn state(&self) -> InputState;
+
+    /// What the running tracker's doctor finds wrong with the input now (PF-28); empty with no capture running, or for
+    /// a host without one.
+    fn diagnoses(&self) -> Vec<Diagnosis> {
+        Vec::new()
+    }
+
+    /// Makes the running tracker's doctor measure again from now. A no-op with no capture running.
+    fn recheck(&self) {}
+
+    /// Starts the guided calibration (PF-20) over the running capture, and answers its status.
+    ///
+    /// # Errors
+    /// [`InputError::CaptureOff`] with no capture running, [`InputError::CalibrationRunning`] while one runs, and
+    /// [`InputError::NoGuidedCalibration`] for a host without one.
+    fn calibrate_guided(&self, mode: Mode) -> Result<GuidedStatus, InputError> {
+        let _ = mode;
+        Err(InputError::NoGuidedCalibration)
+    }
+
+    /// Stops a running guided calibration; the earlier calibration stays. Returns whether one was running.
+    fn cancel_guided(&self) -> bool {
+        false
+    }
+
+    /// Where the guided calibration stands.
+    fn guided(&self) -> GuidedStatus {
+        GuidedStatus::Idle
+    }
+
+    /// How the running capture is doing (PF-26).
+    fn health(&self) -> InputHealth {
+        InputHealth::default()
+    }
+
+    /// Sends the performed pose and face to `target` over VMC (PF-04's "out"), or stops with `None`, and answers what
+    /// the output did before. Sending again to another target moves it.
+    ///
+    /// # Errors
+    /// [`InputError::NoPoseOutput`] for a host without one, and [`InputError::PoseOutput`] when it cannot start.
+    fn set_pose_out(&self, target: Option<SocketAddr>, mode: Mode) -> Result<PoseOutStatus, InputError> {
+        let _ = (target, mode);
+        Err(InputError::NoPoseOutput)
+    }
+
+    /// What the pose output is doing.
+    fn pose_out(&self) -> PoseOutStatus {
+        PoseOutStatus::default()
+    }
+
+    /// The face gestures showing now (PF-25): each presses its trigger key while it shows.
+    fn gestures(&self) -> Vec<Gesture> {
+        Vec::new()
+    }
 }
 
 /// A source that never delivers a frame: what the performer reads with no capture running (the life layer moves the
@@ -419,6 +523,10 @@ struct Inner {
     preview: PreviewState,
     /// A camera refused access since the last prompt, whatever the OS reported before opening it.
     refused: bool,
+    /// Where each posted source copies its frames, for the guided calibration.
+    tap: Arc<FrameTap>,
+    /// The App's pose output (VMC out), when it has one.
+    pose_out: Option<Box<dyn PoseOutput>>,
 }
 
 impl Inner {
@@ -471,7 +579,7 @@ impl Inner {
         };
         match started {
             Ok(source) => {
-                slot.post(source);
+                slot.post(self.tap.tee(source));
                 self.preview = PreviewState::On { camera };
                 Ok(())
             }
@@ -507,6 +615,9 @@ pub struct LiveInput {
     inner: Mutex<Inner>,
     slot: Arc<SourceSlot>,
     perform: Arc<dyn PerformHost>,
+    guided: GuidedRun,
+    /// The gesture watch, from the first capture on (PF-25).
+    gestures: Mutex<Option<GestureWatch>>,
 }
 
 impl LiveInput {
@@ -529,8 +640,10 @@ impl LiveInput {
             camera: None,
             preview: PreviewState::Off,
             refused: false,
+            tap: Arc::default(),
+            pose_out: None,
         };
-        Self { inner: Mutex::new(inner), slot, perform }
+        Self { inner: Mutex::new(inner), slot, perform, guided: GuidedRun::default(), gestures: Mutex::default() }
     }
 
     /// With `phone` as the tracker the iPhone source starts (`omuzaki-track-net`'s `NetTracker`: its one device is
@@ -539,7 +652,25 @@ impl LiveInput {
     pub fn with_phone(self, phone: Box<dyn Tracker>) -> Self {
         let mut inner = self.inner.into_inner().unwrap_or_else(PoisonError::into_inner);
         inner.phone = Some(phone);
-        Self { inner: Mutex::new(inner), slot: self.slot, perform: self.perform }
+        Self { inner: Mutex::new(inner), slot: self.slot, perform: self.perform, guided: self.guided, gestures: self.gestures }
+    }
+
+    /// With `output` as the pose output `input.vmc_out` starts (`omuzaki-track-net`'s `VmcOut`). Without one, that
+    /// op is [`InputError::NoPoseOutput`].
+    #[must_use]
+    pub fn with_pose_out(self, output: Box<dyn PoseOutput>) -> Self {
+        let mut inner = self.inner.into_inner().unwrap_or_else(PoisonError::into_inner);
+        inner.pose_out = Some(output);
+        Self { inner: Mutex::new(inner), slot: self.slot, perform: self.perform, guided: self.guided, gestures: self.gestures }
+    }
+
+    /// Starts the gesture watch over `tap` if it isn't running. A watch that can't start leaves gestures off and the
+    /// capture running.
+    fn watch_gestures(&self, tap: &Arc<FrameTap>) {
+        let mut watch = self.gestures.lock().unwrap_or_else(PoisonError::into_inner);
+        if watch.is_none() {
+            *watch = GestureWatch::start(Arc::clone(tap), Arc::clone(&self.perform)).ok();
+        }
     }
 
     fn inner(&self) -> MutexGuard<'_, Inner> {
@@ -606,6 +737,7 @@ impl InputHost for LiveInput {
         let (device, id) = inner.startable()?;
         if mode == Mode::Apply {
             inner.start_on(device, id, &self.slot)?;
+            self.watch_gestures(&inner.tap);
         }
         Ok(before)
     }
@@ -635,6 +767,111 @@ impl InputHost for LiveInput {
             cameras,
             tracking: self.perform.status().tracking,
         }
+    }
+
+    fn diagnoses(&self) -> Vec<Diagnosis> {
+        // A stopped tracker finds nothing, so the running one, if any, is the one that answers.
+        let inner = self.inner();
+        let mut found = inner.tracker.diagnoses();
+        if let Some(phone) = &inner.phone {
+            found.extend(phone.diagnoses());
+        }
+        found
+    }
+
+    fn recheck(&self) {
+        let inner = self.inner();
+        inner.tracker.recheck();
+        if let Some(phone) = &inner.phone {
+            phone.recheck();
+        }
+    }
+
+    fn calibrate_guided(&self, mode: Mode) -> Result<GuidedStatus, InputError> {
+        let tap = {
+            let inner = self.inner();
+            if !inner.preview.is_on() {
+                return Err(InputError::CaptureOff);
+            }
+            Arc::clone(&inner.tap)
+        };
+        if self.guided.status().is_running() {
+            return Err(InputError::CalibrationRunning);
+        }
+        if mode == Mode::DryRun {
+            return Ok(self.guided.status());
+        }
+        let base = self.perform.requested_calibration();
+        match self.guided.start(tap, base, Arc::clone(&self.perform)) {
+            Ok(true) => Ok(self.guided.status()),
+            Ok(false) => Err(InputError::CalibrationRunning),
+            Err(e) => Err(InputError::Device(TrackError::Backend(format!("the calibration thread: {e}")))),
+        }
+    }
+
+    fn cancel_guided(&self) -> bool {
+        self.guided.cancel()
+    }
+
+    fn guided(&self) -> GuidedStatus {
+        self.guided.status()
+    }
+
+    #[allow(clippy::cast_precision_loss)] // frame counts as a share
+    fn health(&self) -> InputHealth {
+        let findings = self.diagnoses().into_iter().map(|d| d.finding).collect();
+        let inner = self.inner();
+        if !inner.preview.is_on() {
+            return InputHealth::default();
+        }
+        let phone = inner.phone.as_ref().filter(|_| inner.source == SourceKind::Iphone);
+        let (stats, on_phone) = (phone.map_or_else(|| inner.tracker.latency(), |phone| phone.latency()), phone.is_some());
+        drop(inner);
+        let ms = |d: std::time::Duration| d.as_secs_f32() * 1e3;
+        let came = stats.frames + stats.dropped;
+        InputHealth {
+            running: true,
+            source_fps: self.perform.status().source_fps,
+            latency_ms_p50: ms(stats.p50),
+            latency_ms_p95: ms(stats.p95),
+            latency_ms_max: ms(stats.max),
+            frames: stats.frames,
+            dropped: stats.dropped,
+            dropped_share: if came > 0 { stats.dropped as f32 / came as f32 } else { 0.0 },
+            budget: (!on_phone).then(|| {
+                BudgetUse::new(BudgetKey::TrackFace, f64::from(ms(stats.p95)), TRACK_FACE.0 * 1e3, false)
+            }),
+            findings,
+        }
+    }
+
+    fn set_pose_out(&self, target: Option<SocketAddr>, mode: Mode) -> Result<PoseOutStatus, InputError> {
+        let mut inner = self.inner();
+        let output = inner.pose_out.as_mut().ok_or(InputError::NoPoseOutput)?;
+        let before = output.status();
+        if mode == Mode::DryRun || before.target == target {
+            return Ok(before);
+        }
+        if let Some(target) = target {
+            let tap = output.start(target).map_err(|e| InputError::PoseOutput(e.to_string()))?;
+            if let Err(e) = self.perform.set_pose_tap(Some(tap)) {
+                output.stop();
+                return Err(InputError::PoseOutput(e.to_string()));
+            }
+        } else {
+            // A tap left in place after a refused request only fills a slot nobody sends from.
+            self.perform.set_pose_tap(None).ok();
+            output.stop();
+        }
+        Ok(before)
+    }
+
+    fn pose_out(&self) -> PoseOutStatus {
+        self.inner().pose_out.as_ref().map(|output| output.status()).unwrap_or_default()
+    }
+
+    fn gestures(&self) -> Vec<Gesture> {
+        self.gestures.lock().unwrap_or_else(PoisonError::into_inner).as_ref().map(GestureWatch::active).unwrap_or_default()
     }
 }
 

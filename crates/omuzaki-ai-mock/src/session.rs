@@ -30,6 +30,7 @@ pub struct FakeSession {
     info: SessionInfo,
     runs: u64,
     crash_after: Option<u64>,
+    stall: Option<std::time::Duration>,
 }
 
 impl FakeSession {
@@ -51,13 +52,20 @@ impl FakeSession {
 
     fn with(signature: Signature, behaviour: Behaviour) -> Self {
         let info = SessionInfo { model: fake_model(), provider: Provider::Cpu, sandboxed: false, fallback_for: None };
-        Self { signature, behaviour, info, runs: 0, crash_after: None }
+        Self { signature, behaviour, info, runs: 0, crash_after: None, stall: None }
     }
 
     /// Every run after the first `runs` returns [`RunError::Crashed`], like a sandboxed model whose worker died.
     #[must_use]
     pub fn crashing_after(mut self, runs: u64) -> Self {
         self.crash_after = Some(runs);
+        self
+    }
+
+    /// Every run sleeps `stall` before it answers, like a model that hangs (a sandboxed one is then killed).
+    #[must_use]
+    pub fn stalling(mut self, stall: std::time::Duration) -> Self {
+        self.stall = Some(stall);
         self
     }
 
@@ -106,6 +114,9 @@ impl Session for FakeSession {
         self.signature.check_outputs(outputs)?;
         if self.crash_after.is_some_and(|n| self.runs >= n) {
             return Err(RunError::Crashed);
+        }
+        if let Some(stall) = self.stall {
+            std::thread::sleep(stall);
         }
         match &mut self.behaviour {
             Behaviour::Affine { scale, bias } => {

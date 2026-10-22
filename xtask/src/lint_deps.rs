@@ -37,9 +37,13 @@ impl CrateKind {
     pub fn of(name: &str) -> Self {
         match name {
             "omuzaki-core" => Self::Api,
-            "omuzaki-cli" | "omuzaki-ui" | "omuzaki-test" | "omuzaki-stage" | "omuzaki-link-probe" | "xtask" => {
-                Self::App
-            }
+            "omuzaki-cli"
+            | "omuzaki-ui"
+            | "omuzaki-test"
+            | "omuzaki-stage"
+            | "omuzaki-link-probe"
+            | "omuzaki-model-worker"
+            | "xtask" => Self::App,
             _ if name.ends_with("-api") => Self::Api,
             _ if name.ends_with("-mock") => Self::Mock,
             _ if test_crates::area_of(name).is_some() => Self::App,
@@ -204,7 +208,15 @@ mod tests {
         assert_eq!(CrateKind::of("omuzaki-doc-api"), CrateKind::Api);
         assert_eq!(CrateKind::of("omuzaki-doc-mock"), CrateKind::Mock);
         assert_eq!(CrateKind::of("omuzaki-render"), CrateKind::Implementation);
-        for app in ["omuzaki-cli", "omuzaki-ui", "omuzaki-test", "omuzaki-stage", "omuzaki-link-probe", "xtask"] {
+        for app in [
+            "omuzaki-cli",
+            "omuzaki-ui",
+            "omuzaki-test",
+            "omuzaki-stage",
+            "omuzaki-link-probe",
+            "omuzaki-model-worker",
+            "xtask",
+        ] {
             assert_eq!(CrateKind::of(app), CrateKind::App);
         }
     }
