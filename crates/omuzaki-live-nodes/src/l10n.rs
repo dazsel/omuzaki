@@ -82,4 +82,22 @@ omuzaki_l10n_api::messages! {
     /// `text.to_number` on text that isn't a number.
     pub not_a_number = "live-nodes-not-a-number" (text: Verbatim)
         => "{ $text } isn't a number.";
+    /// A variable node whose kind needs another variable type.
+    pub var_type_needed = "live-nodes-var-type-needed" (want: Id, found: Id)
+        => "This node needs a { $want } variable, not { $found }.";
+    /// A variable write the show refused.
+    pub var_refused = "live-nodes-var-refused" (variable: Id, reason: Verbatim)
+        => "{ $variable } wasn't changed: { $reason }";
+    /// A variable node with no variable chosen.
+    pub var_missing = "live-nodes-var-missing" ()
+        => "Choose a variable.";
+    /// `var.add` whose sum overflowed.
+    pub sum_not_finite = "live-nodes-sum-not-finite" ()
+        => "The sum is too large to be a number.";
+    /// A group node with no group chosen.
+    pub group_missing = "live-nodes-group-missing" ()
+        => "Choose a group.";
+    /// A group switch the show refused.
+    pub group_refused = "live-nodes-group-refused" (group: Id, reason: Verbatim)
+        => "{ $group } wasn't switched: { $reason }";
 }

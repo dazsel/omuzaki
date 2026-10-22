@@ -8,10 +8,12 @@
 //! | [`event`] | `on.event`: the trigger on any event kind, with `where` and `min` filters |
 //! | [`emit`] | `event.emit`: sends a `custom.<name>` event other automations hear |
 //! | [`flow`] | `flow.wait`, `flow.random`, `flow.sequence`, `flow.switch`, `flow.branch`, `flow.then`, `flow.cooldown`, `flow.gate` |
+//! | [`groups`] | `group.enable`, `group.disable`, `group.toggle`, `group.is_enabled` |
 //! | [`logic`] | `logic.and`, `logic.or`, `logic.not` |
 //! | [`math`] | `math.op`, `math.map_range`, `math.ease`, `math.compare`, `math.random_range` |
 //! | [`op`] | `op.run`: any op allowed for automations, as an action |
 //! | [`text`] | `text.format`, `text.to_number`, `text.contains` |
+//! | [`vars`] | `var.get`, `var.set`, `var.add`, `var.toggle`, `var.changed` |
 //!
 //! [`fold`] is the one case-insensitive comparison every node uses (NFKC, then lowercase), so filters and chat
 //! commands agree.
@@ -24,9 +26,11 @@ pub mod emit;
 pub mod event;
 pub mod flow;
 pub mod fold;
+pub mod groups;
 mod l10n;
 pub mod logic;
 pub mod math;
 pub mod op;
 mod schema;
 pub mod text;
+pub mod vars;
