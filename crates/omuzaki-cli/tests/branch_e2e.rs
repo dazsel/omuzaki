@@ -66,7 +66,7 @@ fn set_note(dir: &Path, text: &str) {
 fn note_on_disk(dir: &Path) -> Option<String> {
     let text = std::fs::read_to_string(dir.join("project.toml")).expect("project.toml");
     let table: toml::Table = text.parse().expect("project.toml parses");
-    table.get("project").and_then(|p| p.get("note")).and_then(|n| n.as_str()).map(str::to_owned)
+    table.get("note").and_then(|n| n.as_str()).map(str::to_owned)
 }
 
 #[test]
