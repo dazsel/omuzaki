@@ -11,21 +11,33 @@ repository.workspace = true
 [dependencies]
 omuzaki-ai-api = { path = "../omuzaki-ai-api" }
 omuzaki-audio-api = { path = "../omuzaki-audio-api" }
+# A character's voice lives next to it: `characters/<id>/voice-assignment.toml` (the `voice.*` ops).
+omuzaki-char-api = { path = "../omuzaki-char-api" }
 omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-doc-api = { path = "../omuzaki-doc-api" }
+# Voice languages in the catalog.
+omuzaki-l10n-api = { path = "../omuzaki-l10n-api" }
+# The `voice.*` ops.
+omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 # The performer's speech seam (`Voice`, `SpeechHandle`, `VoiceLead`) the TTS host implements.
 omuzaki-performer-api = { path = "../omuzaki-performer-api" }
+schemars.workspace = true
 # Reads the gold pronunciation lexicons (JSON) the text-to-speech G2P looks words up in.
 serde.workspace = true
 serde_json.workspace = true
 # Decodes the public-domain speech clips the `vad@1` and `asr@1` smoke tests fetch (MP3); used unmodified.
 symphonia.workspace = true
 thiserror.workspace = true
+# Reads the shipped public-figure list (`src/voices/public-figures.toml`).
+toml.workspace = true
 tracing.workspace = true
 # Only the `whisper-ggml` runtime (`whisper_runtime.rs`) uses it; the host reaches models through sessions.
 whisper-rs.workspace = true
 
 [dev-dependencies]
 hound.workspace = true
+omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
+omuzaki-store-api = { path = "../omuzaki-store-api" }
 omuzaki-ai-mock = { path = "../omuzaki-ai-mock" }
 omuzaki-audio-mock = { path = "../omuzaki-audio-mock" }
 

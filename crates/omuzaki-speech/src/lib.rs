@@ -19,6 +19,8 @@
 //! - [`host`]: [`SpeechHost`] runs both workers and owns the back-pressure policy.
 //! - [`tts`]: [`TtsHost`], the performer's voice: a synth thread and a pump writing the `ai_voice` feeds, cut at once,
 //!   resumed from a cache, pitched by the declared rate.
+//! - [`voices`]: the voice catalog, the consent gate every cloned voice passes, the public-figure warning and the
+//!   `voice.get`, `voice.list`, `voice.assign` and `voice.preview` ops.
 //! - [`slots::tts`] and [`kokoro_runtime`]: `tts@1` (text to speech, checked by a round trip through `asr@1`) and the
 //!   `kokoro` runtime, Kokoro-82M's ONNX graph behind [`g2p`], our own GPL-free English G2P over the gold lexicons.
 //!
@@ -44,6 +46,7 @@ pub mod slots;
 pub mod synth;
 pub mod tts;
 pub mod vad;
+pub mod voices;
 pub mod whisper_runtime;
 
 pub use asr::{AsrCall, Recognizer, Transcript, Whisper};

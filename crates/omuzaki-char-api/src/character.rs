@@ -371,13 +371,14 @@ impl CharacterDef {
 
     /// The other keys of `characters/<id>`: the character's other files, each a sub-tree with its own contract
     /// (`variants`, `colourways`, `rig.toml`, `look.toml`, the `licence` record, the per-part `sources` rows, the
-    /// `applied` library records, the `poses` and the `emotes` sets, and an imported character's `avatar`). They are not
+    /// `applied` library records, the `poses` and the `emotes` sets, an imported character's `avatar`, the effect presets
+    /// of `voice.toml` and the `voice-assignment`). They are not
     /// part of the definition; [`from_node`](Self::from_node) skips them and [`to_node`](Self::to_node) leaves them
     /// alone.
     ///
     /// This is the built-in list; a new file of the character registers its key with
     /// [`register_doc_key!`](crate::register_doc_key), and [`doc_key::sibling_keys`] lists both.
-    pub const SIBLING_KEYS: [&'static str; 10] = doc_key::BUILT_IN_SIBLING_KEYS;
+    pub const SIBLING_KEYS: [&'static str; 12] = doc_key::BUILT_IN_SIBLING_KEYS;
 
     /// The definition stored in the character node `node` (`characters/<id>`): reads [`NODE_KEYS`](Self::NODE_KEYS) and
     /// skips the [`SIBLING_KEYS`](Self::SIBLING_KEYS), so a character with variants, colourways, a rig or a look reads

@@ -7,6 +7,7 @@ use std::sync::Arc;
 use omuzaki_char_api::ids::CharId;
 use omuzaki_core::time::Seconds;
 use omuzaki_l10n_api::Locale;
+use omuzaki_llm_api::usage::MicroUsd;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -250,6 +251,38 @@ impl VoiceInfo {
     }
 }
 
+/// Characters a performer speaks in an hour at a 40 % talk share, 15 characters a second (§3.6): 15 × 3,600 × 0.4.
+pub const TALK_CHARS_PER_HOUR: u64 = 21_600;
+
+/// A hosted provider's dated price for speech (§3.6): micro-dollars per million characters, as read on a date.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct TtsPrice {
+    /// µ$ per million characters of text sent.
+    pub micro_usd_per_million_chars: u64,
+    /// `YYYY-MM-DD` the price was read.
+    pub as_of: String,
+}
+
+impl TtsPrice {
+    /// `micro_usd_per_million_chars`, read on `as_of`.
+    pub fn new(micro_usd_per_million_chars: u64, as_of: impl Into<String>) -> Self {
+        Self { micro_usd_per_million_chars, as_of: as_of.into() }
+    }
+
+    /// What `chars` characters cost, rounded up to a micro-dollar: the bound a request reserves before it is sent.
+    pub fn bound(&self, chars: u64) -> MicroUsd {
+        let micros = u128::from(chars) * u128::from(self.micro_usd_per_million_chars);
+        MicroUsd(u64::try_from(micros.div_ceil(1_000_000)).unwrap_or(u64::MAX))
+    }
+
+    /// The cost preview `voice.assign` shows: an hour at a 40 % talk share ([`TALK_CHARS_PER_HOUR`]).
+    pub fn per_hour(&self) -> MicroUsd {
+        self.bound(TALK_CHARS_PER_HOUR)
+    }
+}
+
 /// Answers "what voices are there" for a provider, over the model registry and the connectors (App-side).
 pub trait VoiceCatalog: Send + Sync {
     /// The voices `provider` offers, each once.
@@ -257,6 +290,11 @@ pub trait VoiceCatalog: Send + Sync {
     /// # Errors
     /// [`VoiceError::Provider`] when the list cannot be read (a connector offline).
     fn voices(&self, provider: &VoiceProvider) -> Result<Vec<VoiceInfo>, VoiceError>;
+
+    /// What `provider` charges, if it charges: `None` for a local model.
+    fn price(&self, _provider: &VoiceProvider) -> Option<TtsPrice> {
+        None
+    }
 }
 
 /// Where a feed's cut stands, as the mouth drive reads it (§4.2).
@@ -389,6 +427,16 @@ mod tests {
             VoiceAssignment::new(mochi(), kokoro(), VoiceProvider::Hosted(ConnectorId::new("tts-cloud").unwrap()));
         assert_eq!(hosted.check(&stock), Err(AssignError::Voice(VoiceError::unknown_voice(&kokoro()))));
         assert!(ok.check(&VoiceInfo::new(VoiceId::new("kokoro-82m/bf_emma").unwrap(), vec![])).is_err());
+    }
+
+    #[test]
+    fn a_dated_price_bounds_requests_and_previews_an_hour() {
+        // $15 per million characters: an hour at a 40 % talk share is 21,600 characters, $0.324.
+        let price = TtsPrice::new(15_000_000, "2026-10-01");
+        assert_eq!(price.per_hour(), MicroUsd(324_000));
+        assert_eq!(price.bound(1), MicroUsd(15));
+        assert_eq!(TtsPrice::new(1, "2026-10-01").bound(1), MicroUsd(1), "rounded up, never down");
+        assert_eq!(TtsPrice::new(u64::MAX, "x").bound(u64::MAX), MicroUsd(u64::MAX));
     }
 
     #[test]
