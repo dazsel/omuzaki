@@ -32,6 +32,7 @@ use omuzaki_core::time::Seconds;
 use crate::dsp::{Decimator, Resampler};
 use crate::meters::Meter;
 use crate::mix::{Inputs, Mix, Points, Stage};
+use crate::swap::Running;
 
 /// The most taps, feeds and bridges the executor holds; their lists are allocated this large up front.
 pub const MAX_ENTRIES: usize = 64;
@@ -154,7 +155,7 @@ pub(crate) enum Garbage {
 // Boxed entries move between threads as one pointer, so adding or retiring one never copies its buffers.
 #[allow(clippy::vec_box)]
 pub(crate) struct Executor {
-    graph: Box<Mix>,
+    running: Running,
     bridges: Vec<Box<Bridge>>,
     feeds: Vec<Box<Feed>>,
     taps: Vec<Box<Tap>>,
@@ -183,7 +184,7 @@ impl Executor {
         shared: Arc<Shared>,
     ) -> Self {
         Self {
-            graph,
+            running: Running::new(graph),
             bridges: Vec::with_capacity(MAX_ENTRIES),
             feeds: Vec::with_capacity(MAX_ENTRIES),
             taps: Vec::with_capacity(MAX_ENTRIES),
@@ -222,29 +223,33 @@ impl Executor {
                 Command::Swap(mut graph) => {
                     // Compiled under the mode the control side knew; a mode change since then ramps, as it would live.
                     graph.set_mic_mode(self.mic_mode);
-                    let old = std::mem::replace(&mut self.graph, graph);
-                    self.discard(Garbage::Graph(old));
+                    if let Some(superseded) = self.running.offer(graph) {
+                        self.discard(Garbage::Graph(superseded));
+                    }
                 }
                 Command::Gain { generation, bus, gain } => {
-                    if self.graph.generation == generation {
-                        self.graph.set_gain(bus, gain);
+                    if let Some(graph) = self.running.generation(generation) {
+                        graph.set_gain(bus, gain);
                     }
                 }
                 Command::Mute { generation, bus, muted } => {
-                    if self.graph.generation == generation {
-                        self.graph.set_muted(bus, muted);
+                    if let Some(graph) = self.running.generation(generation) {
+                        graph.set_muted(bus, muted);
                     }
                 }
                 Command::Param { generation, bus, node, param, value } => {
-                    if self.graph.generation == generation
-                        && let Some(link) = self.graph.buses.get_mut(bus).and_then(|b| b.chain.get_mut(node))
+                    if let Some(link) = self
+                        .running
+                        .generation(generation)
+                        .and_then(|g| g.buses.get_mut(bus))
+                        .and_then(|b| b.chain.get_mut(node))
                     {
                         link.node.set_param(param, value);
                     }
                 }
                 Command::MicMode(mode) => {
                     self.mic_mode = mode;
-                    self.graph.set_mic_mode(mode);
+                    self.running.set_mic_mode(mode);
                 }
                 Command::AddTap(tap) => push_bounded(&mut self.taps, tap, Garbage::Tap, &mut self.held),
                 Command::AddFeed(feed) => push_bounded(&mut self.feeds, feed, Garbage::Feed, &mut self.held),
@@ -328,18 +333,8 @@ impl Executor {
         let mic_mode = self.mic_mode;
         let inputs = LiveInputs { bridges: &self.bridges, feeds: &self.feeds };
         let mut points = LiveTaps { taps: &mut self.taps, mode: mic_mode };
-        self.graph.process(n, first_sample, &inputs, &mut points);
-        // Taps on a bus this graph does not have read silence, so their positions stay contiguous.
-        for tap in &mut self.taps {
-            let missing = match &tap.point {
-                TapPoint::BusPreChain(id) | TapPoint::BusPostChain(id) | TapPoint::BusPostFader(id) => {
-                    !self.graph.buses.iter().any(|b| &b.id == id)
-                }
-                _ => false,
-            };
-            if missing {
-                feed_silence(tap, n, mic_mode);
-            }
+        if let Some(old) = self.running.process(n, first_sample, &inputs, &mut points) {
+            self.discard(Garbage::Graph(old));
         }
         self.sample += n as u64;
         self.shared.sample.store(self.sample, Ordering::Relaxed);
@@ -413,6 +408,21 @@ struct LiveTaps<'a> {
 }
 
 impl Points for LiveTaps<'_> {
+    /// Taps on a bus this graph does not have read silence, so their positions stay contiguous.
+    fn ran(&mut self, mix: &Mix, frames: usize) {
+        for tap in self.taps.iter_mut() {
+            let missing = match &tap.point {
+                TapPoint::BusPreChain(id) | TapPoint::BusPostChain(id) | TapPoint::BusPostFader(id) => {
+                    !mix.buses.iter().any(|b| &b.id == id)
+                }
+                _ => false,
+            };
+            if missing {
+                feed_silence(tap, frames, self.mode);
+            }
+        }
+    }
+
     fn reached(&mut self, stage: Stage, bus: &BusId, channels: usize, block: [&[f32]; 2]) {
         for tap in self.taps.iter_mut() {
             let here = match (&tap.point, stage) {

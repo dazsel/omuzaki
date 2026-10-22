@@ -346,14 +346,23 @@ fn a_duck_moves_on_the_exact_samples_whatever_the_blocks_and_the_bus_order() {
 
     let depth = db_to_gain(-12.0);
     let start = rise + TRIGGER_DELAY;
-    assert!(factor[..start].iter().all(|&g| g.to_bits() == 1.0f32.to_bits()), "untouched before the trigger delay has passed");
+    assert!(
+        factor[..start].iter().all(|&g| g.to_bits() == 1.0f32.to_bits()),
+        "untouched before the trigger delay has passed"
+    );
     assert!(factor[start] < 1.0, "falling from sample {start}");
     assert!(factor[start + 478] > depth);
     let held_until = last_active + TRIGGER_DELAY + 4_800;
-    assert!(factor[start + 479..=held_until].iter().all(|&g| g.to_bits() == depth.to_bits()), "exactly -12 dB from 480 samples in");
+    assert!(
+        factor[start + 479..=held_until].iter().all(|&g| g.to_bits() == depth.to_bits()),
+        "exactly -12 dB from 480 samples in"
+    );
     assert!(factor[held_until + 1] > depth, "rising after exactly 4,800 samples of hold");
     assert!(factor[held_until + 9_599] < 1.0);
-    assert!(factor[held_until + 9_600..].iter().all(|&g| g.to_bits() == 1.0f32.to_bits()), "exactly 0 dB 9,600 samples later");
+    assert!(
+        factor[held_until + 9_600..].iter().all(|&g| g.to_bits() == 1.0f32.to_bits()),
+        "exactly 0 dB 9,600 samples later"
+    );
 
     let plans = [
         BlockPlan::Fixed { frames: 1 },

@@ -605,7 +605,7 @@ impl AudioEngine for LiveEngine {
     fn apply(&self, graph: &GraphSpec) -> Result<(), AudioError> {
         let mut control = lock(&self.inner.control);
         let generation = control.generation + 1;
-        let (compiled, order) = Mix::compile(graph, generation, control.mic_mode)?;
+        let (compiled, order) = Mix::compile(graph, generation, control.mic_mode, Some(&control.graph))?;
         let meters = compiled.buses.iter().map(|b| (b.id.clone(), Arc::clone(&b.meter))).collect();
         self.inner.send(Command::Swap(Box::new(compiled)))?;
         control.generation = generation;

@@ -15,11 +15,16 @@
 //!    `monitor_out` while `CohostOnly` keeps `ai_voice` private); a bus that triggers a duck rule feeds its level
 //!    follower, which the rule reads `TRIGGER_DELAY` samples later, so the result never depends on the block plan.
 //!
+//! A structural edit swaps in a new `Mix` at a block boundary, [`Mix::adopt`] moving every surviving node and every
+//! ramp, meter, trigger and rule state across by id, so untouched buses carry on sample for sample; a bus whose shape
+//! changed fades out over [`FADE`] samples in the old graph and in over [`FADE`] in the new one (design section 3.3).
+//!
 //! The recurrences (fader ramps, the level follower, the duck envelope, `db_to_gain`) are the ones in
 //! `omuzaki_audio_api::semantics`, which both engines share; the property test in `tests/offline.rs` holds the two to
 //! 1e-6 on random graphs and block plans.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
 use omuzaki_audio_api::engine::AudioError;
@@ -27,7 +32,7 @@ use omuzaki_audio_api::graph::{
     AI_VOICE_BUS, BusSpec, DuckTrigger, GraphSpec, MIC_BUS, MONITOR_OUT_ROLE, MicMode, PROGRAM_BUS, SourceRef,
 };
 use omuzaki_audio_api::ids::{BusId, DeviceRole, NodeId};
-use omuzaki_audio_api::node::{BlockMut, MAX_BLOCK, Node, NodeError, node_kind};
+use omuzaki_audio_api::node::{BlockMut, MAX_BLOCK, Node, NodeError, ParamIndex, node_kind};
 use omuzaki_audio_api::report::MeterCell;
 use omuzaki_audio_api::semantics::{
     DuckEnvelope, FaderRamp, LevelFollower, MONO_TO_STEREO_GAIN, TRIGGER_DELAY, db_to_gain, duck_factor,
@@ -40,6 +45,10 @@ use crate::meters::Meter;
 /// overwrites a level a rule still has to read, whatever order the buses run in.
 const HISTORY: usize = 2 * TRIGGER_DELAY;
 
+/// Half of a structural change's fade: a changed bus fades out over this many samples, then in over as many, 128 in
+/// all (2.7 ms).
+pub(crate) const FADE: u32 = 64;
+
 /// Each bus's node ids in chain order, by bus position: how the control side names a node to the executor.
 pub(crate) type NodeIds = Vec<(BusId, Vec<NodeId>)>;
 
@@ -47,6 +56,11 @@ pub(crate) type NodeIds = Vec<(BusId, Vec<NodeId>)>;
 pub(crate) struct Link {
     pub node: Box<dyn Node>,
     pub enabled: bool,
+    /// Its id and a fingerprint of its kind and config: a node with both unchanged survives a swap.
+    id: NodeId,
+    print: u64,
+    /// Every parameter's value in the spec (the default where it names none), set again on a node that survives.
+    params: Vec<(ParamIndex, f32)>,
     /// Runs instead of the node while it is disabled: the dry signal, `node.latency()` samples late.
     hold: HoldDelay,
     /// The position of the bus whose previous block the node reads, for a kind with a sidechain.
@@ -56,6 +70,8 @@ pub(crate) struct Link {
 /// One send, by its target's position.
 pub(crate) struct Send {
     pub to: usize,
+    /// The target's id, so a swap can match the send.
+    to_id: BusId,
     gain: f32,
     pre_fader: bool,
     ramp: FaderRamp,
@@ -87,6 +103,73 @@ pub(crate) struct Bus {
     pub post: [Vec<f32>; 2],
     pub meter: Arc<MeterCell>,
     meter_state: Meter,
+    /// A fingerprint of everything but gains: channels, sources, sends, outputs and the chain. A bus whose shape
+    /// changes fades out and in across a swap.
+    shape: u64,
+    fade: Fade,
+}
+
+/// Where a bus is in a structural change's fade.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Fade {
+    Steady,
+    /// Fading in: this many of [`FADE`] samples done.
+    In(u32),
+    /// Fading out: this many of [`FADE`] samples done; silent once it reaches [`FADE`].
+    Out(u32),
+}
+
+impl Fade {
+    /// Applies the fade to frames `start..end` of `buf`.
+    fn apply(&mut self, buf: &mut [Vec<f32>; 2], channels: usize, start: usize, end: usize) {
+        for i in start..end {
+            let factor = match *self {
+                Self::Steady => return,
+                Self::In(done) => {
+                    let done = done + 1;
+                    *self = if done >= FADE { Self::Steady } else { Self::In(done) };
+                    fraction(done)
+                }
+                Self::Out(done) => {
+                    let done = (done + 1).min(FADE);
+                    *self = Self::Out(done);
+                    fraction(FADE - done)
+                }
+            };
+            for channel in buf.iter_mut().take(channels) {
+                channel[i] *= factor;
+            }
+        }
+    }
+
+    /// Samples of fade-out still to run.
+    const fn out_left(self) -> u32 {
+        match self {
+            Self::Out(done) => FADE - done,
+            _ => 0,
+        }
+    }
+
+    /// The fade a bus continues with in a new graph: a fade-out turns round where it is, so nothing jumps.
+    const fn resume(self) -> Self {
+        match self {
+            Self::Out(done) if done >= FADE => Self::In(0),
+            Self::Out(done) => Self::In(FADE - done),
+            other => other,
+        }
+    }
+}
+
+/// `k / FADE` as a gain (both at most 64, exact in `f32`).
+fn fraction(k: u32) -> f32 {
+    f32::from(u16::try_from(k).unwrap_or(0)) / f32::from(u16::try_from(FADE).unwrap_or(1))
+}
+
+/// A fingerprint of a value's debug form (control thread): equal specs give equal prints.
+fn print(value: &impl std::fmt::Debug) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    format!("{value:?}").hash(&mut hasher);
+    hasher.finish()
 }
 
 /// What raises a rule.
@@ -95,11 +178,17 @@ enum RuleTrigger {
     Bus { bus: usize, threshold: f32 },
     /// A gate: opened by the player (#1160); closed until then.
     Gate,
+    /// A rule the graph before this one had and this one dropped: never active, so it releases to 0 dB.
+    Released,
 }
 
 struct Rule {
     envelope: DuckEnvelope,
     trigger: RuleTrigger,
+    /// A fingerprint of its trigger and target: the state carries across a swap to the rule with the same key.
+    key: u64,
+    /// Depth, attack, hold and release, set again on a carried envelope.
+    numbers: [f32; 4],
 }
 
 /// A bus that triggers a rule: its level follower and the last `HISTORY` levels, indexed by sample number.
@@ -134,6 +223,11 @@ pub(crate) trait Inputs {
 pub(crate) trait Points {
     /// `bus` reached `stage`; `channels` hold its `n` frames (the second ignored for a mono bus).
     fn reached(&mut self, stage: Stage, bus: &BusId, channels: usize, block: [&[f32]; 2]);
+
+    /// `mix` has run `frames` frames: a point on a bus it does not have can fill them with silence.
+    fn ran(&mut self, mix: &Mix, frames: usize) {
+        let _ = (mix, frames);
+    }
 }
 
 /// The compiled graph and its state.
@@ -194,7 +288,7 @@ fn history_slot(index: u64) -> usize {
 /// Whether a rule's trigger was above its threshold `TRIGGER_DELAY` samples before `index`.
 fn rule_active(rule: &Rule, triggers: &[Option<Trigger>], index: u64) -> bool {
     match &rule.trigger {
-        RuleTrigger::Gate => false,
+        RuleTrigger::Gate | RuleTrigger::Released => false,
         RuleTrigger::Bus { bus, threshold } => {
             let Some(back) = index.checked_sub(TRIGGER_DELAY as u64) else { return false };
             triggers[*bus].as_ref().is_some_and(|t| t.levels[history_slot(back)] > *threshold)
@@ -221,11 +315,17 @@ impl Mix {
     }
 
     /// Validates `spec` against the registered node kinds and compiles it, with every ramp at rest at its target for
-    /// `mic_mode`: nothing fades in.
+    /// `mic_mode`: nothing fades in. `before` is the graph this one will replace, if any: its duck rules that `spec`
+    /// drops stay on as released rules, so a swap mid-duck releases instead of jumping.
     ///
     /// # Errors
     /// [`AudioError::Graph`] for an invalid graph, [`AudioError::Node`] for a node that can't be made.
-    pub(crate) fn compile(spec: &GraphSpec, generation: u64, mic_mode: MicMode) -> Result<(Self, NodeIds), AudioError> {
+    pub(crate) fn compile(
+        spec: &GraphSpec,
+        generation: u64,
+        mic_mode: MicMode,
+        before: Option<&GraphSpec>,
+    ) -> Result<(Self, NodeIds), AudioError> {
         spec.validate_registered()?;
         let order = spec.bus_order()?;
         let position: BTreeMap<&BusId, usize> = order.iter().enumerate().map(|(i, id)| (id, i)).collect();
@@ -244,6 +344,7 @@ impl Mix {
                     .ok_or_else(|| internal(format!("bus `{id}` sends to the missing bus `{}`", s.to)))?;
                 sends.push(Send {
                     to,
+                    to_id: s.to.clone(),
                     gain: db_to_gain(s.gain_db),
                     pre_fader: s.pre_fader,
                     ramp: FaderRamp::new(0.0),
@@ -278,6 +379,14 @@ impl Mix {
                 post: buffers(),
                 meter: Arc::new(MeterCell::new()),
                 meter_state: if id.as_str() == PROGRAM_BUS { Meter::program() } else { Meter::plain() },
+                shape: print(&(
+                    &b.channels,
+                    &b.sources,
+                    b.sends.iter().map(|s| (&s.to, s.pre_fader)).collect::<Vec<_>>(),
+                    &b.outputs,
+                    b.chain.iter().map(|n| (&n.id, &n.kind, &n.config, n.enabled, &n.sidechain)).collect::<Vec<_>>(),
+                )),
+                fade: Fade::Steady,
             });
         }
         let mut mix = Self {
@@ -289,24 +398,7 @@ impl Mix {
             outputs,
             mic_mode,
         };
-        for duck in &spec.ducks {
-            let missing = |id: &BusId| internal(format!("a duck rule names the missing bus `{id}`"));
-            let target = *position.get(&duck.target).ok_or_else(|| missing(&duck.target))?;
-            let trigger = match &duck.trigger {
-                DuckTrigger::Bus { id } => {
-                    let bus = *position.get(id).ok_or_else(|| missing(id))?;
-                    mix.triggers[bus]
-                        .get_or_insert_with(|| Trigger { follower: LevelFollower::new(), levels: vec![0.0; HISTORY] });
-                    RuleTrigger::Bus { bus, threshold: db_to_gain(duck.threshold_db) }
-                }
-                DuckTrigger::Gate { .. } => RuleTrigger::Gate,
-            };
-            mix.buses[target].rules.push(mix.rules.len());
-            mix.rules.push(Rule {
-                envelope: DuckEnvelope::new(duck.depth_db, duck.attack_ms, duck.hold_ms, duck.release_ms),
-                trigger,
-            });
-        }
+        mix.add_rules(spec, before, &position)?;
         mix.retarget();
         for bus in &mut mix.buses {
             bus.mute = FaderRamp::new(bus.mute.target());
@@ -316,6 +408,40 @@ impl Mix {
             }
         }
         Ok((mix, ids))
+    }
+
+    /// Compiles `spec`'s duck rules, then `before`'s that `spec` dropped, as released rules.
+    fn add_rules(
+        &mut self,
+        spec: &GraphSpec,
+        before: Option<&GraphSpec>,
+        position: &BTreeMap<&BusId, usize>,
+    ) -> Result<(), AudioError> {
+        for duck in &spec.ducks {
+            let missing = |id: &BusId| internal(format!("a duck rule names the missing bus `{id}`"));
+            let target = *position.get(&duck.target).ok_or_else(|| missing(&duck.target))?;
+            let trigger = match &duck.trigger {
+                DuckTrigger::Bus { id } => {
+                    let bus = *position.get(id).ok_or_else(|| missing(id))?;
+                    self.triggers[bus]
+                        .get_or_insert_with(|| Trigger { follower: LevelFollower::new(), levels: vec![0.0; HISTORY] });
+                    RuleTrigger::Bus { bus, threshold: db_to_gain(duck.threshold_db) }
+                }
+                DuckTrigger::Gate { .. } => RuleTrigger::Gate,
+            };
+            self.buses[target].rules.push(self.rules.len());
+            self.rules.push(Rule::new(duck, trigger));
+        }
+        let kept: BTreeSet<u64> = self.rules.iter().map(|r| r.key).collect();
+        for duck in before.map_or(&[][..], |b| &b.ducks[..]) {
+            let Some(&target) = position.get(&duck.target) else { continue };
+            let rule = Rule::new(duck, RuleTrigger::Released);
+            if !kept.contains(&rule.key) {
+                self.buses[target].rules.push(self.rules.len());
+                self.rules.push(rule);
+            }
+        }
+        Ok(())
     }
 
     /// The mute ramp's target for a bus under the current mode: the mic is cut unless it is live.
@@ -361,42 +487,165 @@ impl Mix {
 
     /// Runs one block of `n` frames (at most `MAX_BLOCK`) whose first sample is graph-clock `first`.
     pub(crate) fn process(&mut self, n: usize, first: u64, inputs: &impl Inputs, points: &mut impl Points) {
-        let n = n.min(MAX_BLOCK);
+        self.process_range(0, n, first, inputs, points);
+    }
+
+    /// Runs frames `start..end` of a block whose first sample is graph-clock `first`: the part of a block before or
+    /// after a swap. The inputs hold the whole block; the buffers' frames `start..end` are written.
+    pub(crate) fn process_range(
+        &mut self,
+        start: usize,
+        end: usize,
+        first: u64,
+        inputs: &impl Inputs,
+        points: &mut impl Points,
+    ) {
+        let end = end.min(MAX_BLOCK);
+        let start = start.min(end);
         for bus in &mut self.buses {
-            bus.buf[0][..n].fill(0.0);
-            bus.buf[1][..n].fill(0.0);
+            bus.buf[0][start..end].fill(0.0);
+            bus.buf[1][start..end].fill(0.0);
         }
         for out in &mut self.outputs {
-            out.buf[0][..n].fill(0.0);
-            out.buf[1][..n].fill(0.0);
+            out.buf[0][start..end].fill(0.0);
+            out.buf[1][start..end].fill(0.0);
         }
+        let span = start..end;
         for at in 0..self.buses.len() {
             let (_, rest) = self.buses.split_at_mut(at);
             let Some((bus, later)) = rest.split_first_mut() else { break };
-            add_sources(bus, n, inputs);
-            points.reached(Stage::PreChain, &bus.id, bus.channels, [&bus.buf[0][..n], &bus.buf[1][..n]]);
-            run_chain(bus, n, first, &self.previous);
-            points.reached(Stage::PostChain, &bus.id, bus.channels, [&bus.buf[0][..n], &bus.buf[1][..n]]);
-            fade_and_send(bus, at, later, n, first, &mut self.rules, &mut self.triggers, &mut self.outputs);
+            add_sources(bus, span.clone(), inputs);
+            points.reached(
+                Stage::PreChain,
+                &bus.id,
+                bus.channels,
+                [&bus.buf[0][span.clone()], &bus.buf[1][span.clone()]],
+            );
+            run_chain(bus, span.clone(), first, &self.previous);
+            bus.fade.apply(&mut bus.buf, bus.channels, start, end);
+            points.reached(
+                Stage::PostChain,
+                &bus.id,
+                bus.channels,
+                [&bus.buf[0][span.clone()], &bus.buf[1][span.clone()]],
+            );
+            fade_and_send(bus, at, later, span.clone(), first, &mut self.rules, &mut self.triggers, &mut self.outputs);
             let reduction = bus.chain.iter().filter(|l| l.enabled).map(|l| l.node.report().gain_reduction_db).sum();
             let reading = if bus.channels == 2 {
-                bus.meter_state.measure(&[&bus.post[0][..n], &bus.post[1][..n]], reduction)
+                bus.meter_state.measure(&[&bus.post[0][span.clone()], &bus.post[1][span.clone()]], reduction)
             } else {
-                bus.meter_state.measure(&[&bus.post[0][..n]], reduction)
+                bus.meter_state.measure(&[&bus.post[0][span.clone()]], reduction)
             };
             bus.meter.store(reading);
-            points.reached(Stage::PostFader, &bus.id, bus.channels, [&bus.post[0][..n], &bus.post[1][..n]]);
+            points.reached(
+                Stage::PostFader,
+                &bus.id,
+                bus.channels,
+                [&bus.post[0][span.clone()], &bus.post[1][span.clone()]],
+            );
         }
         // A sidechain reads the previous block, so the new ones replace the old only after every bus has run.
         for (bus, (previous, len)) in self.buses.iter().zip(&mut self.previous) {
-            for (i, slot) in previous[..n].iter_mut().enumerate() {
+            for (slot, i) in previous.iter_mut().zip(span.clone()) {
                 // The pinned arithmetic is the f32 sum, then the halving (design section 3.6).
                 #[allow(clippy::manual_midpoint)]
                 {
                     *slot = if bus.channels == 2 { (bus.post[0][i] + bus.post[1][i]) / 2.0 } else { bus.post[0][i] };
                 }
             }
-            *len = n;
+            *len = end - start;
+        }
+        points.ran(self, end - start);
+    }
+
+    /// Marks, in this running graph, the buses `next` changes or drops, so they fade out before `next` takes over.
+    /// A bus already fading keeps fading from where it is.
+    pub(crate) fn leave_for(&mut self, next: &Self) {
+        for bus in &mut self.buses {
+            let kept = next.buses.iter().any(|b| b.id == bus.id && b.shape == bus.shape);
+            if !kept {
+                bus.fade = match bus.fade {
+                    Fade::Steady => Fade::Out(0),
+                    Fade::In(done) => Fade::Out(FADE - done),
+                    out @ Fade::Out(_) => out,
+                };
+            }
+        }
+    }
+
+    /// Samples until every fading-out bus is silent: 0 when `next` can take over at once.
+    pub(crate) fn fade_out_left(&self) -> usize {
+        self.buses.iter().map(|b| b.fade.out_left()).max().map_or(0, |left| usize::try_from(left).unwrap_or(0))
+    }
+
+    /// Takes over from `old` at a block boundary or mid-block (audio thread). Every node that survives (same bus, id,
+    /// kind and config) moves across with its state and gets this graph's parameters; every bus that survives keeps its
+    /// ramps, meter, trigger history and sidechain reference (and its nodes, if its channel count is the same); every rule with the same trigger and target keeps its
+    /// envelope; the outputs keep what `old` wrote of this block (frames before `split`). The fresh nodes go the other
+    /// way, so `old` is freed whole on the control thread. Allocates and frees nothing.
+    pub(crate) fn adopt(&mut self, old: &mut Self, split: usize) {
+        let Self { buses, triggers, previous, .. } = self;
+        for (at, bus) in buses.iter_mut().enumerate() {
+            let Some(from) = old.buses.iter().position(|b| b.id == bus.id) else {
+                bus.fade = Fade::In(0);
+                continue;
+            };
+            let prev = &mut old.buses[from];
+            bus.fade = if prev.shape == bus.shape { prev.fade.resume() } else { Fade::In(0) };
+            // A node is made for its bus's channel count, so it survives only on a bus that keeps it.
+            let same_channels = prev.channels == bus.channels;
+            for link in bus.chain.iter_mut().filter(|_| same_channels) {
+                let Some(survivor) = prev.chain.iter_mut().find(|l| l.id == link.id && l.print == link.print) else {
+                    continue;
+                };
+                std::mem::swap(&mut link.node, &mut survivor.node);
+                std::mem::swap(&mut link.hold, &mut survivor.hold);
+                for &(param, value) in &link.params {
+                    link.node.set_param(param, value);
+                }
+            }
+            let gain = bus.gain.target();
+            bus.gain = prev.gain;
+            bus.gain.set_target(gain);
+            bus.mute = prev.mute;
+            bus.private_out = prev.private_out;
+            std::mem::swap(&mut bus.meter_state, &mut prev.meter_state);
+            for send in &mut bus.sends {
+                if let Some(same) = prev.sends.iter().find(|s| s.to_id == send.to_id && s.pre_fader == send.pre_fader) {
+                    send.ramp = same.ramp;
+                }
+            }
+            if let (Some(mine), Some(theirs)) = (triggers[at].as_mut(), old.triggers[from].as_mut()) {
+                std::mem::swap(mine, theirs);
+            }
+            std::mem::swap(&mut previous[at], &mut old.previous[from]);
+        }
+        for rule in &mut self.rules {
+            if let Some(same) = old.rules.iter().find(|r| r.key == rule.key) {
+                let [depth, attack, hold, release] = rule.numbers;
+                rule.envelope = same.envelope;
+                rule.envelope.set_params(depth, attack, hold, release);
+            }
+        }
+        for out in &mut self.outputs {
+            if let Some(same) = old.outputs.iter().find(|o| o.role == out.role) {
+                let channels = out.channels.min(same.channels);
+                for c in 0..channels {
+                    out.buf[c][..split].copy_from_slice(&same.buf[c][..split]);
+                }
+            }
+        }
+        self.retarget();
+    }
+}
+
+impl Rule {
+    fn new(duck: &omuzaki_audio_api::graph::DuckRule, trigger: RuleTrigger) -> Self {
+        Self {
+            envelope: DuckEnvelope::new(duck.depth_db, duck.attack_ms, duck.hold_ms, duck.release_ms),
+            trigger,
+            key: print(&(&duck.trigger, &duck.target)),
+            numbers: [duck.depth_db, duck.attack_ms, duck.hold_ms, duck.release_ms],
         }
     }
 }
@@ -424,19 +673,25 @@ fn compile_chain(bus: &BusSpec, position: &BTreeMap<&BusId, usize>) -> Result<Ve
             ),
             None => None,
         };
+        let params = info
+            .params
+            .iter()
+            .filter_map(|p| Some((info.param_index(p.name)?, n.params.get(p.name).copied().unwrap_or(p.default))))
+            .collect();
         let hold = HoldDelay::new(node.latency(), channels);
-        chain.push(Link { node, enabled: n.enabled, hold, sidechain });
+        let print = print(&(&n.kind, &n.config));
+        chain.push(Link { node, enabled: n.enabled, id: n.id.clone(), print, params, hold, sidechain });
     }
     Ok(chain)
 }
 
 /// Adds the bus's sources into its input (sends from earlier buses are already there).
-fn add_sources(bus: &mut Bus, n: usize, inputs: &impl Inputs) {
+fn add_sources(bus: &mut Bus, span: std::ops::Range<usize>, inputs: &impl Inputs) {
     let channels = bus.channels;
     let [left, right] = &mut bus.buf;
     for source in &bus.sources {
-        let Some((from, block)) = inputs.source(source, n) else { continue };
-        for i in 0..n {
+        let Some((from, block)) = inputs.source(source, span.end) else { continue };
+        for i in span.clone() {
             let frame = [block[0][i], if from == 2 { block[1][i] } else { 0.0 }];
             let frame = convert(frame, from, channels);
             left[i] += frame[0];
@@ -448,14 +703,15 @@ fn add_sources(bus: &mut Bus, n: usize, inputs: &impl Inputs) {
 }
 
 /// Runs the chain over the bus's input in place.
-fn run_chain(bus: &mut Bus, n: usize, first: u64, previous: &[(Vec<f32>, usize)]) {
+fn run_chain(bus: &mut Bus, span: std::ops::Range<usize>, first: u64, previous: &[(Vec<f32>, usize)]) {
     let stereo = bus.channels == 2;
+    let at = first + span.start as u64;
     for link in &mut bus.chain {
         let [left, right] = &mut bus.buf;
         let mut block = if stereo {
-            BlockMut::stereo(&mut left[..n], &mut right[..n], first)
+            BlockMut::stereo(&mut left[span.clone()], &mut right[span.clone()], at)
         } else {
-            BlockMut::mono(&mut left[..n], first)
+            BlockMut::mono(&mut left[span.clone()], at)
         };
         if let Some((reference, len)) = link.sidechain.and_then(|at| previous.get(at)).filter(|(_, len)| *len > 0) {
             block = block.with_sidechain(&reference[..*len]);
@@ -475,14 +731,14 @@ fn fade_and_send(
     bus: &mut Bus,
     at: usize,
     later: &mut [Bus],
-    n: usize,
+    span: std::ops::Range<usize>,
     first: u64,
     rules: &mut [Rule],
     triggers: &mut [Option<Trigger>],
     outputs: &mut [Output],
 ) {
     let channels = bus.channels;
-    for i in 0..n {
+    for i in span {
         let index = first + i as u64;
         let gain = bus.gain.next_gain();
         let mute = bus.mute.next_gain();
@@ -607,7 +863,7 @@ mod tests {
             }],
             ..GraphSpec::default()
         };
-        let (mut mix, _) = Mix::compile(&graph, 1, MicMode::Live).unwrap();
+        let (mut mix, _) = Mix::compile(&graph, 1, MicMode::Live, None).unwrap();
         let tone = Tone((0..MAX_BLOCK).map(|i| (f32::from(u16::try_from(i).unwrap()) * 0.05).sin() * 0.5).collect());
         let mut first = 0u64;
         let count = allocations_during(&mut || {
@@ -689,7 +945,7 @@ mod tests {
             outputs: Vec::new(),
         };
         let graph = GraphSpec { buses: vec![bus(PROGRAM_BUS, true), bus("game", true)], ..GraphSpec::default() };
-        let (mut mix, _) = Mix::compile(&graph, 1, MicMode::Live).unwrap();
+        let (mut mix, _) = Mix::compile(&graph, 1, MicMode::Live, None).unwrap();
         let tone = Tone(vec![0.5; MAX_BLOCK]);
         mix.process(64, 0, &tone, &mut Nowhere);
         let program = mix.buses.iter().find(|b| b.id.as_str() == PROGRAM_BUS).unwrap().meter.load();
@@ -700,7 +956,7 @@ mod tests {
 
         // Switched off, it reports nothing.
         let off = GraphSpec { buses: vec![bus(PROGRAM_BUS, false)], ..GraphSpec::default() };
-        let (mut mix, _) = Mix::compile(&off, 1, MicMode::Live).unwrap();
+        let (mut mix, _) = Mix::compile(&off, 1, MicMode::Live, None).unwrap();
         mix.process(64, 0, &tone, &mut Nowhere);
         assert_eq!(mix.buses[0].meter.load().limiter_gain_reduction_db, 0.0);
     }

@@ -146,7 +146,7 @@ fn append(total: &mut Planar, channels: usize, block: &[Vec<f32>; 2], n: usize) 
 
 impl OfflineRender for OfflineMix {
     fn render(&self, graph: &GraphSpec, input: &OfflineInput, plan: BlockPlan) -> Result<OfflineOutput, AudioError> {
-        let (mut mix, _) = Mix::compile(graph, 0, input.mic_mode)?;
+        let (mut mix, _) = Mix::compile(graph, 0, input.mic_mode, None)?;
         let mut taps = Taps { taps: Vec::with_capacity(input.taps.len()), mode: input.mic_mode };
         for (requested, format) in &input.taps {
             let (point, voice) = resolve(graph, requested)?;
