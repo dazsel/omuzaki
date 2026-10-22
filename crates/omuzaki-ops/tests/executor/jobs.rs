@@ -245,7 +245,10 @@ impl Op for TestJob {
         if matches!(self.how, How::SlowFinish) {
             let flag = FLAGS.lock().unwrap().get(&self.key).cloned().unwrap();
             GATES.lock().unwrap().get(&self.key).unwrap().announce();
+            // Bounded, so a cancel that never comes fails the test with what it saw instead of hanging the run (#2312).
+            let since = std::time::Instant::now();
             while !omuzaki_ops_api::Cancel::is_cancelled(&flag) {
+                assert!(since.elapsed() < std::time::Duration::from_secs(20), "the job's cancel flag never flipped");
                 std::thread::yield_now();
             }
         }
