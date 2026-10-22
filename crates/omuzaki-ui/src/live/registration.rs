@@ -95,11 +95,15 @@ omuzaki_ui_api::register_panel! {
 }
 
 /// The Perform workspace's default layout (`shell.md` section 12): the inputs and their controls (the Live panel) on
-/// the left, the stage in the middle, the channels on the right with Health in a tab beside them.
+/// the left, the stage in the middle, the channels on the right with Health and Input in tabs beside them.
 fn perform_layout() -> Node {
     Node::split(
         Dir::Horizontal,
-        vec![Node::pane(LIVE_PANEL), Node::pane(STAGE_PANEL), Node::tabs(&[CHANNELS_PANEL, HEALTH_PANEL])],
+        vec![
+            Node::pane(LIVE_PANEL),
+            Node::pane(STAGE_PANEL),
+            Node::tabs(&[CHANNELS_PANEL, HEALTH_PANEL, crate::input::registration::INPUT_PANEL]),
+        ],
         &[300.0, 746.0, 320.0],
     )
 }

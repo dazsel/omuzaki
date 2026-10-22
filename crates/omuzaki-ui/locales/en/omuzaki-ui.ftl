@@ -1468,6 +1468,232 @@ ui-generate-why-private = private test material
 # Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
 ui-generate-why-unknown = unknown licence
 
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+# $n (id, never translated): "hair-b"
+ui-input-action-emote = Emote { $n }
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+# $op (id, never translated): "hair-b"
+ui-input-action-hold = Holds { $op }
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-action-jump = Jump
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-action-move = Move
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+# $op (id, never translated): "hair-b"
+ui-input-action-op = Runs { $op }
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-action-other = Another action
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-action-run = Run
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-action-sit = Sit
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+# $n (id, never translated): "hair-b"
+ui-input-action-trigger = Trigger { $n }
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-add = Add
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+# $preset (id, never translated): "hair-b"
+ui-input-add-preset = Add the { $preset } preset
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+# $first (id, never translated): "hair-b"
+# $last (id, never translated): "hair-b"
+ui-input-and = { $first } and { $last }
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+# $backend (id, never translated): "hair-b"
+# $reason (id, never translated): "hair-b"
+ui-input-backend-failed = { $backend } stopped: { $reason }
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-bindings = Bindings
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-capture = Capture
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-check-again = Check again
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+# $name (id, never translated): "hair-b"
+ui-input-clear-keys = Clear keys for { $name }
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-clear-short = Clear
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-conflict = Shares its keys with another binding
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+# $classes (id, never translated): "hair-b"
+ui-input-degraded = { $classes } unavailable
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-detail-hands = hands only
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-detail-zones = zones only
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-every-device = every device
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+# $reason (id, never translated): "hair-b"
+ui-input-failed = Input capture failed: { $reason }
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-gamepad = gamepad
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-keyboard = keyboard
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+# $name (id, never translated): "hair-b"
+ui-input-keys-of = Keys for { $name }
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+# $reason (id, never translated): "hair-b"
+ui-input-learn-failed = No keys were set: { $reason }
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-midi = MIDI
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-mouse = mouse
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-needs-group = Linux needs you in the input group to read the keyboard on Wayland: add yourself to it, sign out and in, then check again.
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-needs-monitoring = macOS needs Input Monitoring: open System Settings, Privacy and Security, Input Monitoring, turn Omuzaki on, then check again.
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-no-bindings = No bindings yet
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-no-bindings-how = Add a preset below, or bind an expression from the Live panel's hotkeys.
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-no-hub = OS input isn't available
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-no-hub-how = This studio started without the input hub, so bindings and capture are off.
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-no-keys = No keys
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-no-programs = No programs yet
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-not-capturing = Setting keys reads your keyboard, so it needs input capture on: start it under Capture, then set the keys.
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-off = Input capture: off
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+# $classes (id, never translated): "hair-b"
+# $detail (id, never translated): "hair-b"
+ui-input-on = Reading { $classes }: { $detail }
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-osc = OSC
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-paused = Input capture: paused
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-paused-hidden = Input capture: paused while Omuzaki was hidden
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+# $program (id, never translated): "hair-b"
+ui-input-paused-program = Input capture: paused while { $program } runs
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-paused-protected = Input capture: paused while a protected program runs
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-pen = pen
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+# $name (id, never translated): "hair-b"
+ui-input-press-keys = Press the keys for { $name }
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-program = Program name
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-program-hint = For example, a password manager
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-protected = Protected programs
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-protected-how = Capture pauses while one of these runs, and resumes when it closes. Only you see this list.
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+# $action (id, never translated): "hair-b"
+# $reason (id, never translated): "hair-b"
+ui-input-refused = { $action } did not run: { $reason }
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+# $name (id, never translated): "hair-b"
+ui-input-remove = Remove { $name }
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+# $program (id, never translated): "hair-b"
+ui-input-remove-program = Remove { $program }
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-remove-short = Remove
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-resume = Resume
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-set-keys = Set keys
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+# $name (id, never translated): "hair-b"
+ui-input-set-keys-for = Set keys for { $name }
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-start = Start
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-start-tip = Read the keyboard, mouse and gamepad for bindings and motion while Omuzaki shows this
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-stop = Stop
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+# $class (id, never translated): "hair-b"
+# $support (id, never translated): "hair-b"
+ui-input-support = { $class }: { $support }
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-support-no = not on this system
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-support-opt-in = needs an opt-in
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-support-permission = needs a permission
+
+# OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.
+ui-input-support-portal = through the desktop portal
+
 # The Live workspace: the camera, tracking, the stage, expressions and outputs.
 ui-live-budget-cpu = CPU
 

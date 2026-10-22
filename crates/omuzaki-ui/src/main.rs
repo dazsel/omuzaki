@@ -356,6 +356,9 @@ fn main() -> eframe::Result {
             if let Some(live) = live.as_ref() {
                 shell.insert_view(live.channel_feed());
                 shell.insert_view(live.metrics());
+                if let Some(hub) = live.input_hub() {
+                    shell.insert_view(omuzaki_ui::input::InputSurface::install(hub));
+                }
                 if let Some(approver) = live.show_approver() {
                     shell.insert_view(approver);
                 }

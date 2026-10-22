@@ -33,6 +33,7 @@ pub fn entries() -> Vec<(String, &'static str)> {
     named(crate::theatre::text::PREFIX, crate::theatre::text::ALL, &mut out);
     named(crate::generate::text::PREFIX, crate::generate::text::ALL, &mut out);
     named(crate::script::text::PREFIX, crate::script::text::ALL, &mut out);
+    named(crate::input::text::PREFIX, crate::input::text::ALL, &mut out);
     named("ui-live-channel", crate::live::text::CHANNEL_NAMES, &mut out);
     out
 }
@@ -61,6 +62,10 @@ pub fn note_of(id: &str) -> &'static str {
         (
             "ui-script-",
             "The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.",
+        ),
+        (
+            "ui-input-",
+            "OS input: the capture indicator in the status bar, and the Input panel's capture, bindings and protected programs.",
         ),
         ("ui-panel-", "A panel's title (a short tab label), or what its body says while it can't work."),
         ("ui-workspace-", "A workspace's name on its tab: keep it short."),

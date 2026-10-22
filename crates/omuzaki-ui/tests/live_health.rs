@@ -158,7 +158,7 @@ fn the_perform_workspace_has_health_in_a_tab_beside_the_channels() {
     let perform = host.registry().workspace("perform").expect("registered");
     let layout = (perform.default_layout)();
     let Node::Split { children, .. } = &layout else { panic!("a split") };
-    assert!(children.contains(&Node::tabs(&["live-channels", "live-health"])), "{layout:?}");
+    assert!(children.contains(&Node::tabs(&["live-channels", "live-health", "input"])), "{layout:?}");
     assert!(host.registry().panel("live-health").is_some());
     assert!(host.registry().stories().iter().any(|story| story.id == "live-health"));
 }

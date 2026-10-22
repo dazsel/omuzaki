@@ -1201,6 +1201,11 @@ impl Shell {
                 } else {
                     ui.label(small(say(&ctx, Word::StatusFence, &[])));
                 }
+                // The OS input capture indicator: drawn in every state while the hub runs, and its heartbeat.
+                if let Some(surface) = self.models.get::<crate::input::InputSurface>() {
+                    ui.separator();
+                    crate::input::indicator::badge(ui, surface, self.runner.as_ref(), &self.actor);
+                }
                 ui.with_layout(Flow::right_to_left(Align::Center), |ui| {
                     ui.label(small(say(&ctx, Word::StatusHealth, &[])));
                     if self.models.get::<crate::script::Scripting>().is_some_and(crate::script::Scripting::recording) {
