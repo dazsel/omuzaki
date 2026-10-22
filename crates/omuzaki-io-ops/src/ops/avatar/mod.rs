@@ -13,6 +13,7 @@
 //! (`VrmMeta::perform_findings`, D5's table), timed per stage (`AvatarSummary::timings`) and sealed by the
 //! [`confirm`] token.
 
+pub mod attach;
 pub mod confirm;
 pub mod describe;
 pub mod import;

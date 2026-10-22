@@ -3,7 +3,7 @@
 //! An imported character's `avatar.parts` are kit parts (a halo, a hairpin, a prop), each fixed by the kit's own
 //! [`Attach`](omuzaki_char_api::Attach) path to a bone or to one of the avatar's anchors
 //! ([`derive_anchors`](omuzaki_avatar_api::anchors::derive_anchors)). [`attach_parts`] builds them the way the kit builds
-//! any part ([`plan`], [`build_part`], [`Assembler`]), against one part standing for the model itself,
+//! any part ([`plan`], [`build_part`], [`Assembler`]), for the stage and for export alike, against one part standing for the model itself,
 //! [`AVATAR_PART`], which publishes what an attachment reads of a body: the avatar's joints in its bind pose and its
 //! anchors. The meshes that come out are in the avatar's bind space, so each joins the avatar's meshes with the inverse
 //! of its bone's bind matrix, and the stage, recording and export see one body.
@@ -24,7 +24,10 @@ use omuzaki_char_api::{
     Section, build_part, plan,
 };
 use omuzaki_core::glam::{Mat4, Vec3};
+use omuzaki_doc_api::DocRead;
 use omuzaki_ops_api::OpError;
+
+use super::read_def;
 
 /// The kind of the part that stands for the model. No kind is registered under it: the part is never built, only fed.
 const MODEL_KIND: &str = "imported-model";
@@ -157,6 +160,14 @@ pub fn attach_parts(
     avatar.materials.extend(built.materials);
     avatar.textures.extend(built.textures);
     Ok(())
+}
+
+/// The attachments of imported character `id`: its `avatar.parts`, empty when it has none.
+///
+/// # Errors
+/// As reading the avatar node: `NotFound` for no such character, `Invalid` for a node that does not read.
+pub fn attachments(doc: &dyn DocRead, id: &CharId) -> Result<BTreeMap<PartId, PartDef>, OpError> {
+    read_def(doc, id).map(|def| def.parts)
 }
 
 /// What the model publishes for its attachments: its joints at its bind pose ([`FitFact`]) and its anchors
