@@ -13,7 +13,7 @@ use crate::ds::icons;
 use crate::ds::paint::{self, RingPlacement};
 use crate::ds::strings::Msg;
 use crate::ds::theme::{Ds, ds};
-use crate::ds::tokens::{radius, size, space};
+use crate::ds::tokens::{Status, radius, size, space};
 
 /// A single-line text input.
 #[must_use = "a text field does nothing until it is added to a Ui"]
@@ -180,18 +180,30 @@ impl Widget for TextField<'_> {
         if let Some(message) = self.error {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = space::S4;
-                ui.label(egui::RichText::new(icons::WARNING).font(ds.text.icon(12.0, true)).color(t.danger));
+                // The danger icon goes with the colour (P9), as on chips, banners and toasts.
+                let icon = icons::status(Status::Danger);
+                ui.label(egui::RichText::new(icon).font(ds.text.icon(12.0, true)).color(t.danger));
                 ui.label(egui::RichText::new(message).font(ds.text.small.clone()).color(t.danger));
             });
         }
         let (label, hint, reason) = (self.label, self.hint, self.disabled);
+        // An error is read as "Error: the message", the word a screen reader says where the colour is the cue.
+        let invalid = self.error.is_some();
+        let error = self.error.map(|message| format!("{}: {message}", ds.status_word(Status::Danger)));
         ctx.accesskit_node_builder(response.id, |node| {
             node.set_label(label);
             if !hint.is_empty() {
                 node.set_placeholder(hint);
             }
-            if let Some(reason) = reason {
-                node.set_description(reason);
+            let description = match (error, reason) {
+                (Some(error), Some(reason)) => Some(format!("{error}. {reason}")),
+                (error, reason) => error.or_else(|| reason.map(str::to_owned)),
+            };
+            if let Some(description) = description {
+                node.set_description(description);
+            }
+            if invalid {
+                node.set_invalid(egui::accesskit::Invalid::True);
             }
         });
         response
@@ -255,5 +267,35 @@ impl TextField<'_> {
             |_| {},
         );
         clear.clicked()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use egui::accesskit::{Invalid, Role};
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+
+    use super::TextField;
+    use crate::ds::Settings;
+    use crate::ds::testing::harness_state;
+
+    #[test]
+    fn an_error_is_read_with_its_status_word_and_marks_the_field_invalid() {
+        let h = harness_state(Settings::default(), egui::vec2(320.0, 90.0), String::from("a b"), |ui, text| {
+            ui.add(TextField::new("Name", text).error("Use letters and numbers"));
+        });
+        let field = h.get_by_role_and_label(Role::TextInput, "Name");
+        let node = field.accesskit_node();
+        assert_eq!(node.description().as_deref(), Some("Error: Use letters and numbers"));
+        assert_eq!(node.data().invalid(), Some(Invalid::True));
+    }
+
+    #[test]
+    fn a_field_without_an_error_is_not_invalid() {
+        let h = harness_state(Settings::default(), egui::vec2(320.0, 60.0), String::new(), |ui, text| {
+            ui.add(TextField::new("Name", text));
+        });
+        let field = h.get_by_role_and_label(Role::TextInput, "Name");
+        assert_eq!(field.accesskit_node().data().invalid(), None);
     }
 }

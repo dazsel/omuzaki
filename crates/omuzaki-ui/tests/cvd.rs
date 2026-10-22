@@ -220,14 +220,6 @@ const KNOWN: &[Known] = &[
         why: DESTRUCTIVE,
     },
     Known {
-        story: "text_field",
-        status: Status::Danger,
-        size: (220, 28),
-        needs: &["Use letters and numbers"],
-        zone: Zone::Near(40.0),
-        why: "the error border; the message is the cue, with no status icon yet (follow-up filed)",
-    },
-    Known {
         story: "palette",
         status: Status::Warn,
         size: (64, 52),
