@@ -695,8 +695,8 @@ fn request(
     op: &str,
     need: omuzaki_ops_api::Need,
 ) -> omuzaki_ops_api::PendingApproval {
-    let path = DocPath::parse("characters/kit/name").unwrap_or_else(|e| panic!("{e}"));
-    let patch = omuzaki_doc_api::Patch::new().with(path, Some(json!("Kit")), Some(json!("Kit for the stream")));
+    let name = DocPath::parse("characters/kit/name").unwrap_or_else(|e| panic!("{e}"));
+    let patch = omuzaki_doc_api::Patch::new().with(name, Some(json!("Kit")), Some(json!("Kit for the stream")));
     omuzaki_ops_api::PendingApproval {
         id: omuzaki_ops_api::ApprovalId(id),
         session: session.id,
