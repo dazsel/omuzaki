@@ -172,7 +172,9 @@ impl Host {
     /// What stops the connector from being reached.
     pub fn ping(&self, id: &ConnectorId, progress: &dyn Progress) -> Result<(), RunError> {
         let entry =
-            self.parts.set.get(id).ok_or_else(|| RunError::Preview(omuzaki_connect_api::PreviewError::UnknownConnector(id.to_string())))?;
+            self.parts.set.get(id).ok_or_else(|| {
+                RunError::Preview(omuzaki_connect_api::PreviewError::UnknownConnector(id.to_string()))
+            })?;
         let resolved = self.resolve(entry);
         if !resolved.config.enabled {
             return Err(RunError::Preview(omuzaki_connect_api::PreviewError::Disabled(id.clone())));

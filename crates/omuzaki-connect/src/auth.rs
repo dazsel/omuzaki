@@ -229,7 +229,8 @@ impl<'a> AuthedHttp<'a> {
         }
         let ours = self.header.as_ref().map(|(name, _)| name.as_str());
         if req.headers.iter().any(|(name, _)| {
-            AUTH_HEADERS.iter().any(|h| name.eq_ignore_ascii_case(h)) || ours.is_some_and(|o| name.eq_ignore_ascii_case(o))
+            AUTH_HEADERS.iter().any(|h| name.eq_ignore_ascii_case(h))
+                || ours.is_some_and(|o| name.eq_ignore_ascii_case(o))
         }) {
             return Err(HttpError::Refused("connectors never set auth headers".to_owned()));
         }

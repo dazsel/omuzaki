@@ -103,9 +103,7 @@ pub(crate) fn plan_call(ctx: &OpCtx<'_>, request: &Request, limits: &Limits) -> 
     }
     let version = host.describe(&preview.connector).map(|m| m.version);
     let reuse = match (limits.reuse, &version) {
-        (Some(run), Some(version)) => {
-            reused(ctx.doc, store, run, &preview.connector, version, request)?.map(|_| run)
-        }
+        (Some(run), Some(version)) => reused(ctx.doc, store, run, &preview.connector, version, request)?.map(|_| run),
         _ => None,
     };
     let cost = CostHint {
@@ -200,7 +198,10 @@ fn reused(
             (None, Some(seed)) => request.clone().with_seed(seed),
             _ => request.clone(),
         };
-        c.connector == *connector && c.connector_version == *version && c.request == compared && store.contains(&c.asset)
+        c.connector == *connector
+            && c.connector_version == *version
+            && c.request == compared
+            && store.contains(&c.asset)
     };
     Ok((!old.is_empty() && old.iter().all(same)).then_some(old))
 }

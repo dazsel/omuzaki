@@ -28,7 +28,8 @@ impl Op for ConnectDescribe {
     fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
         let host = super::connectors(ctx)?;
         let manifest = host.describe(&self.connector).ok_or_else(|| super::unknown(&self.connector, host))?;
-        let json = serde_json::to_value(manifest).map_err(|e| OpError::internal(format!("writing the manifest: {e}")))?;
+        let json =
+            serde_json::to_value(manifest).map_err(|e| OpError::internal(format!("writing the manifest: {e}")))?;
         Ok(Plan::answer(json))
     }
 }

@@ -45,9 +45,9 @@ pub struct ConnectRegenerate {
 impl ConnectRegenerate {
     /// The request to send: the candidate's, changed, its seed cleared unless the same one is wanted.
     fn request(&self, doc: &dyn DocRead) -> Result<(Request, Limits), OpError> {
-        let c = tray::get(doc, &self.candidate)
-            .map_err(super::tray_error)?
-            .ok_or_else(|| OpError::not_found(format!("no tray candidate {}", self.candidate)).hint("connect.tray_list shows them"))?;
+        let c = tray::get(doc, &self.candidate).map_err(super::tray_error)?.ok_or_else(|| {
+            OpError::not_found(format!("no tray candidate {}", self.candidate)).hint("connect.tray_list shows them")
+        })?;
         let mut json =
             serde_json::to_value(&c.request).map_err(|e| OpError::internal(format!("reading the request: {e}")))?;
         if let Some(changes) = &self.changes {

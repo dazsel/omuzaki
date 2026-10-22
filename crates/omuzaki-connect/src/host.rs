@@ -110,8 +110,9 @@ impl Host {
 
     /// The key behind `label`.
     pub(crate) fn key(&self, label: &SecretLabel) -> Result<SecretValue, ConnectError> {
-        let l = keychain_label(label)
-            .ok_or_else(|| ConnectError::auth(format!("the key label {} is not one the keychain takes", label.label())))?;
+        let l = keychain_label(label).ok_or_else(|| {
+            ConnectError::auth(format!("the key label {} is not one the keychain takes", label.label()))
+        })?;
         match self.parts.secrets.get(&l) {
             Ok(Some(value)) => Ok(value),
             Ok(None) => Err(ConnectError::auth("the key is not in the keychain; add it on the Connectors page")),

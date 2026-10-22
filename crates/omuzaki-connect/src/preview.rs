@@ -44,7 +44,9 @@ impl Host {
         let m = &r.entry.manifest;
         let id = m.id.clone();
         let capability = req.capability();
-        let decl = m.declares(capability).ok_or_else(|| PreviewError::Unsupported(format!("{id} does not make {capability}")))?;
+        let decl = m
+            .declares(capability)
+            .ok_or_else(|| PreviewError::Unsupported(format!("{id} does not make {capability}")))?;
         let mut problems = req.check();
         if req.count() > u32::from(decl.max_count) {
             problems.push(RequestProblem::new("count", format!("{id} makes at most {} at a time", decl.max_count)));
@@ -94,13 +96,8 @@ impl Host {
 
         let outbound = self.outbound(req, &assets)?;
         let estimate = r.entry.connector.estimate(m, target, req).map_err(PreviewError::Connector)?;
-        let rights_in = RightsInputs {
-            manifest: m,
-            config: &r.config,
-            inputs: &rights,
-            voice_clone,
-            consent: consent.as_ref(),
-        };
+        let rights_in =
+            RightsInputs { manifest: m, config: &r.config, inputs: &rights, voice_clone, consent: consent.as_ref() };
         let (commercial, licence) = output_rights(&rights_in, None, request_model(req));
 
         let warnings = warnings(m, &r.config, target, commercial);

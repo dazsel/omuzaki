@@ -33,6 +33,7 @@ omuzaki-http-mock = { path = "../omuzaki-http-mock" }
 omuzaki-secrets-mock = { path = "../omuzaki-secrets-mock" }
 omuzaki-settings-mock = { path = "../omuzaki-settings-mock" }
 omuzaki-store-mock = { path = "../omuzaki-store-mock" }
+toml.workspace = true
 
 [lints]
 workspace = true
