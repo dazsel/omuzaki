@@ -1,7 +1,7 @@
 //! The perform loop into the frame loop (spec v3 §8 frame order): each step's pose and channels become the input of
 //! the stage's next frame.
 //!
-//! [`PerformFrame::run`] advances the [`PerformControl`] to `now` and, when a step ran, ticks the [`Stage`] with that
+//! [`PerformFrame::run`] advances the [`PerformControl`] to `now` and, when a step ran, ticks the stage ([`FrameLoop`]) with that
 //! step's pose (the rig reads it) and bus (the face reads it), then renders. When no step is due it renders nothing,
 //! so a render loop faster than the step rate never shows the same pose twice and the stage's simulations advance in
 //! step with the performer's: in simulation time, every run of the same trace gives the same frames.
@@ -13,7 +13,8 @@ use omuzaki_render_api::Renderer;
 use super::host::PerformControl;
 use super::{Performer, STEP_HZ};
 use crate::error::StageError;
-use crate::frame::{FrameInput, FrameOutput, Stage};
+use crate::frame::{FrameInput, FrameOutput};
+use crate::stages::FrameLoop;
 
 /// The input the stage's frames are built from, carried between frames: what the performer does not drive (the root,
 /// the wind, the goals) stays as the caller set it.
@@ -53,12 +54,12 @@ impl PerformFrame {
     /// its own rate. Allocates nothing beyond what the performer and the stage cost.
     ///
     /// # Errors
-    /// What [`Stage::tick`] reports. The performer has stepped; the next call carries on.
-    pub fn run(
+    /// What the stage's [`tick`](FrameLoop::tick) reports. The performer has stepped; the next call carries on.
+    pub fn run<S: FrameLoop>(
         &mut self,
         control: &mut PerformControl,
         performer: &mut Performer,
-        stage: &mut Stage,
+        stage: &mut S,
         renderer: &mut dyn Renderer,
         now: Seconds,
     ) -> Result<Option<FrameOutput>, StageError> {

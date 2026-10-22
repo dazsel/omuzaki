@@ -1,0 +1,13 @@
+kind = "op.run"
+pos = [440.0, -80.0]
+
+[in]
+in = "cool.out"
+
+[params]
+op = "throw.item"
+
+[params.args]
+at = "head"
+item = "pillow"
+strength = 0.8

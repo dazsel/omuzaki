@@ -385,6 +385,28 @@ fn a_transparent_background_stays_transparent_through_depth_of_field() {
     }
 }
 
+/// An opaque scene keeps each pixel's circle of confusion in the alpha of the colour the gather reads (one fetch a tap); a
+/// scene with any transparency keeps it in an image of its own. A background one level short of opaque takes the second
+/// route and must draw the same picture, so the packed gather is the same blur as the general one.
+#[test]
+fn the_packed_gather_of_an_opaque_scene_draws_the_general_gathers_picture() {
+    let mut r = support::renderer();
+    let mut scene = exact_depth_scene(&mut r);
+    scene.post.depth_of_field = Some(focus(1.5));
+    let packed = render(&mut r, &scene, &offline());
+    scene.background = Background::Solid { colour: Colour::rgba(0x30, 0x2a, 0x3a, 254) };
+    let general = render(&mut r, &scene, &offline());
+    save("rust_dof_packed.png", &packed);
+    save("rust_dof_general.png", &general);
+    let worst = max_difference(&packed, &general);
+    assert!(worst <= 3, "the two gathers differ by {worst} levels");
+    let sharp = {
+        scene.post.depth_of_field = None;
+        edge_energy(&render(&mut r, &scene, &offline()), WALL)
+    };
+    assert!(edge_energy(&packed, WALL) < 0.1 * sharp, "and the picture is blurred, or the comparison proves nothing");
+}
+
 #[test]
 fn depth_of_field_works_with_and_without_multisampled_depth() {
     let mut r = support::renderer();

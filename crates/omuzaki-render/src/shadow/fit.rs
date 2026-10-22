@@ -55,6 +55,26 @@ impl Aabb {
         self.min.x > self.max.x || self.min.y > self.max.y || self.min.z > self.max.z
     }
 
+    /// The box of `points`. Four boxes grow side by side and join at the end: one box is a chain of dependent min and max
+    /// operations a vertex long, and a mesh's refit runs it over every vertex.
+    pub(crate) fn of_points(points: &[Vec3]) -> Self {
+        let mut lanes = [Self::EMPTY; 4];
+        let (chunks, rest) = points.as_chunks::<4>();
+        for chunk in chunks {
+            for (lane, point) in lanes.iter_mut().zip(chunk) {
+                lane.include(*point);
+            }
+        }
+        for point in rest {
+            lanes[0].include(*point);
+        }
+        let [mut all, b, c, d] = lanes;
+        for other in [&b, &c, &d] {
+            all.union(other);
+        }
+        all
+    }
+
     /// Grows the box to hold `point`.
     pub(crate) fn include(&mut self, point: Vec3) {
         self.min = self.min.min(point);
@@ -168,6 +188,19 @@ pub(crate) fn fit(to_light: Vec3, casters: &Aabb, receivers: &Aabb, map_size: u3
 #[allow(clippy::cast_precision_loss)] // map sizes are far below 2^24
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_box_of_points_holds_every_point_whatever_the_count() {
+        let point = |i: u32| Vec3::new(i as f32, -(i as f32) * 2.0, (i % 5) as f32);
+        for count in [0u32, 1, 3, 4, 5, 8, 9, 101] {
+            let points: Vec<Vec3> = (0..count).map(point).collect();
+            let mut want = Aabb::EMPTY;
+            for p in &points {
+                want.include(*p);
+            }
+            assert_eq!(Aabb::of_points(&points), want, "{count} points");
+        }
+    }
 
     const SIZE: u32 = 1024;
     const BIAS: f32 = 0.01;

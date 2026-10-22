@@ -474,6 +474,28 @@ The render, char, face and anim contracts are being designed in parallel. Nothin
 | `io.export` | job | `publish` + `fs` | gather → bake → `run_export` → host writes the files; `Purpose` from the request |
 | `licence.derive`, `licence.describe`, `licence.set`, `licence.set_source` | query, query, edit, edit | `read`, `read`, `edit:character`, `edit:character` | the character's licence record, the parts' source rows and the library's application records (D10) |
 
+### The asset record
+
+`io.import` records each original it stores at `assets/<content hash>`: the original's hash, its images' and sidecars'
+hashes, the file's name and format, the characters it serves, and its own provenance. Two rules settle what two imports
+that share bytes do (#1792, #1773):
+
+- **One asset serves several characters.** `characters` lists every character the asset is a reference for (or, for an
+  avatar import, the character it became), each once, in name order. Importing the same bytes for another character
+  adds that character; importing without one changes nothing; undoing an import removes only what it added. A record
+  written before this had a single `character`; it reads as a list of one and becomes `characters` when the record next
+  changes, so no migration step is needed.
+- **Rights belong to the reference, not the object.** The store keeps one record per object, the first it was given
+  (`Store::put`), so an identical texture shipped by two models under different licences or credit lines would otherwise
+  carry the first model's rights for both. The asset record therefore keeps its own model's provenance, and that record
+  is what the model's images are used under: both imports succeed, each asset carries its own model's licence and
+  credit, and the result is the same in either order. Readers of a reference's rights read the asset record, never the
+  store's record of a shared object. The original file is the one exception: identical bytes derive an identical record,
+  so an original already stored under another record is refused (fail closed).
+
+A failed `put` part way through an import (an I/O error) leaves the objects already put whole and referenced by nothing,
+since the record is written only when the job finishes; garbage collection removes them, as after a cancel.
+
 ## 6. Crate layout this implies
 
 | Crate | Kind | Depends on |

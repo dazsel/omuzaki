@@ -17,6 +17,7 @@ use omuzaki_render_api::limits::MAX_LIGHTS;
 use omuzaki_stage_api::GroundKind;
 
 use super::resolve::{ResolvedGround, ResolvedScene};
+use omuzaki_render_api::Camera;
 
 /// Makes room in `scene` for the most lights a scene may have, so [`fill`] never grows the list. Cold.
 pub fn reserve(scene: &mut Scene) {
@@ -99,6 +100,63 @@ impl Applier {
         }
         if let Some(skin_floor) = owed.skin_floor {
             self.skin_floor = skin_floor;
+        }
+    }
+}
+
+/// A stage's side of the scene: what it has committed to the renderer, what the last scene still owes, and the
+/// scratch to work that debt out again after a commit. Every stage (a kit character's, an imported avatar's) keeps
+/// one, so the rules of [`Applier`] are written once.
+///
+/// Sized when it is made, so setting a scene allocates nothing, the first one included.
+#[derive(Debug)]
+pub(crate) struct SceneLink {
+    applier: Applier,
+    owed: Owed,
+    /// What the last scene wants (its ground and skin floor), in a resolved scene that is never rendered, and a scene
+    /// to work the debt out in. Behind a box so the stage stays small.
+    debt: Box<Debt>,
+}
+
+#[derive(Debug)]
+struct Debt {
+    wanted: ResolvedScene,
+    scratch: Scene,
+    /// Whether a scene was ever set: until then nothing is wanted.
+    set: bool,
+}
+
+impl SceneLink {
+    /// Nothing committed, nothing owed. Cold: allocates the scratch.
+    pub(crate) fn new() -> Self {
+        Self {
+            applier: Applier::new(),
+            owed: Owed::default(),
+            debt: Box::new(Debt { wanted: ResolvedScene::new(), scratch: Scene::new(Camera::default()), set: false }),
+        }
+    }
+
+    /// Copies `resolved` into `scene` and returns what it owes the renderer beyond the copy, which stays owed until
+    /// [`commit`](Self::commit). Allocation-free once [`reserve`] has run on `scene`.
+    pub(crate) fn set(&mut self, resolved: &ResolvedScene, scene: &mut Scene) -> Owed {
+        self.owed = self.applier.apply(resolved, scene);
+        // Only the two things a debt is made of are kept, for `commit` to compare again.
+        self.debt.wanted.ground = resolved.ground;
+        self.debt.wanted.skin_floor = resolved.skin_floor;
+        self.debt.set = true;
+        self.owed
+    }
+
+    /// What the last [`set`](Self::set) still owes the renderer.
+    pub(crate) fn owed(&self) -> Owed {
+        self.owed
+    }
+
+    /// Records that the renderer did the work in `owed` and works out again what the current scene still owes.
+    pub(crate) fn commit(&mut self, owed: &Owed) {
+        self.applier.commit(owed);
+        if self.debt.set {
+            self.owed = self.applier.apply(&self.debt.wanted, &mut self.debt.scratch);
         }
     }
 }
