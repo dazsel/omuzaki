@@ -110,6 +110,7 @@ fn kokoro_installs_after_its_round_trip_and_speaks_in_every_voice() {
 /// schedule, the pump on its own thread): a turn of four chunks plays gapless with each chunk synthesised while the
 /// one before it plays, and what came out of the `ai_voice` bus is understood by Whisper.
 #[test]
+#[allow(clippy::too_many_lines)]
 fn kokoro_speaks_a_turn_through_the_tts_host_in_real_time() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -121,7 +122,7 @@ fn kokoro_speaks_a_turn_through_the_tts_host_in_real_time() {
     use omuzaki_audio_mock::MockEngine;
     use omuzaki_core::time::Seconds;
     use omuzaki_performer_api::ids::VoiceId;
-    use omuzaki_performer_api::speech::{SpeakHow, SpeechState, Voice};
+    use omuzaki_performer_api::speech::{SpeakHow, SpeechHandle, SpeechState, Voice};
     use omuzaki_speech::tts::{FEEDS, TtsHost, TtsVoice};
 
     let Some(files) = tts_folders() else { return };
@@ -183,22 +184,20 @@ fn kokoro_speaks_a_turn_through_the_tts_host_in_real_time() {
     let started = Instant::now();
     let handles: Vec<_> = turn.iter().map(|s| host.speak(s, &voice, &SpeakHow::default()).unwrap()).collect();
     while !handles.iter().all(|h| h.state().is_final()) {
-        assert!(started.elapsed().as_secs() < 120, "{:?}", handles.iter().map(|h| h.state()).collect::<Vec<_>>());
+        assert!(started.elapsed().as_secs() < 120, "{:?}", handles.iter().map(SpeechHandle::state).collect::<Vec<_>>());
         std::thread::yield_now();
     }
     running.store(false, Ordering::Release);
     audio.join().unwrap();
 
-    let states: Vec<SpeechState> = handles.iter().map(|h| h.state()).collect();
-    let mut gaps = Vec::new();
+    let states: Vec<SpeechState> = handles.iter().map(SpeechHandle::state).collect();
     for pair in states.windows(2) {
-        let (SpeechState::Done { at, .. }, SpeechState::Playing { .. } | SpeechState::Done { .. }) = (pair[0], pair[1])
+        let (SpeechState::Done { .. }, SpeechState::Playing { .. } | SpeechState::Done { .. }) = (pair[0], pair[1])
         else {
             panic!("{states:?}")
         };
-        gaps.push(at);
     }
-    let froms: Vec<f64> = handles
+    let ends: Vec<f64> = handles
         .iter()
         .zip(&states)
         .map(|(_, s)| match s {
@@ -206,15 +205,15 @@ fn kokoro_speaks_a_turn_through_the_tts_host_in_real_time() {
             other => panic!("{other:?}"),
         })
         .collect();
-    let stats = host.stats();
+    let counts = host.stats();
     eprintln!(
         "kokoro turn: {} chunks synthesised, {} late, ends at {:?} s",
-        stats.synthesised,
-        stats.late_chunks,
-        froms.iter().map(|t| (t * 100.0).round() / 100.0).collect::<Vec<_>>()
+        counts.synthesised,
+        counts.late_chunks,
+        ends.iter().map(|t| (t * 100.0).round() / 100.0).collect::<Vec<_>>()
     );
-    assert_eq!(stats.synthesised, 4);
-    assert_eq!(stats.late_chunks, 0, "every chunk was synthesised while the one before it played");
+    assert_eq!(counts.synthesised, 4);
+    assert_eq!(counts.late_chunks, 0, "every chunk was synthesised while the one before it played");
 
     let mut heard = vec![0.0f32; tap.available()];
     let read = tap.read(&mut heard).len;
