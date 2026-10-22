@@ -48,7 +48,7 @@ pub struct Status {}
 /// Read the levels of the audio buses, or of one bus or one device input: numbers only, never audio.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(extend("examples" = [{}, { "bus": "mic" }, { "input": "mic" }]))]
+#[schemars(extend("examples" = [{}]))]
 pub struct Levels {
     /// One bus, by id (`mic`, `program`). Default: every bus.
     #[serde(default, skip_serializing_if = "Option::is_none")]

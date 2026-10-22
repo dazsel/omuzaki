@@ -114,13 +114,22 @@ macro_rules! switch_node {
                 self.0.handle(&input, cx)
             }
         }
-        register_node!($name);
     };
 }
 
-switch_node!(Enable, "group.enable", "Turn a group of automations on.", "Turns the group on.", Switch::Enable);
-switch_node!(Disable, "group.disable", "Turn a group of automations off.", "Turns the group off.", Switch::Disable);
-switch_node!(Toggle, "group.toggle", "Flip a group of automations on or off.", "Flips the group.", Switch::Toggle);
+switch_node!(GroupEnable, "group.enable", "Turn a group of automations on.", "Turns the group on.", Switch::Enable);
+switch_node!(
+    GroupDisable,
+    "group.disable",
+    "Turn a group of automations off.",
+    "Turns the group off.",
+    Switch::Disable
+);
+switch_node!(GroupToggle, "group.toggle", "Flip a group of automations on or off.", "Flips the group.", Switch::Toggle);
+// At the top level, where the link gate's scan sees them (ADR 0015).
+register_node!(GroupEnable);
+register_node!(GroupDisable);
+register_node!(GroupToggle);
 
 // ── group.is_enabled ───────────────────────────────────────────────────────────────────────────────────────────
 

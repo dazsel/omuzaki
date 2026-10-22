@@ -143,6 +143,10 @@ fn package_violations(workspace: &Workspace, package: &Package) -> Vec<Violation
 }
 
 fn violation(workspace: &Workspace, package: &Package, from: CrateKind, dependency: &Dependency) -> Option<Violation> {
+    // A crate's own tests may enable its testing kit through a dev-dependency on itself: that couples nothing.
+    if dependency.name == package.name && dependency.kind == DepKind::Dev {
+        return None;
+    }
     let target = workspace.package(&dependency.name)?;
     // A dependency whose own layer is invalid is reported on that crate; here it counts as its name says.
     let to = CrateKind::of_package(target).unwrap_or_else(|_| CrateKind::of(&target.name));
@@ -332,6 +336,12 @@ mod tests {
     #[test]
     fn implementation_dev_dependency_on_implementation_is_still_caught() {
         assert_eq!(found(&[("omuzaki-audio", &[("omuzaki-render", Dev)]), ("omuzaki-render", &[])]).len(), 1);
+    }
+
+    #[test]
+    fn a_dev_dependency_on_itself_is_fine_and_only_under_dev() {
+        assert_clean(&[("omuzaki-stream", &[("omuzaki-stream", Dev)])]);
+        assert_eq!(found(&[("omuzaki-stream", &[("omuzaki-stream", Normal)])]).len(), 1);
     }
 
     #[test]
