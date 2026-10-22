@@ -1,6 +1,7 @@
 section = "rust"
 item = "libc"
 kind = "crate"
-used_for = "process CPU time (`getrusage`) on macOS in `spikes/mascot-window`"
+used_for = "the Linux virtual camera's device calls (`omuzaki-vcam`: open, ioctl, write on a v4l2loopback device), and process CPU time (`getrusage`) on macOS in `spikes/mascot-window`"
 status = "yes"
 audit = "(crates.io: libc 0.2.190, MIT OR Apache-2.0)"
+crates = ["libc"]

@@ -8,9 +8,9 @@
 use std::f32::consts::PI;
 
 use omuzaki_core::glam::Vec2;
-use omuzaki_face_api::{BrowParams, BrowStyle, Colour, ColourRef, FaceLayerId, FaceRect, Paint, narrow};
+use omuzaki_face_api::{BrowParams, BrowStyle, Colour, FaceLayerId, FaceRect, Paint, narrow};
 
-use crate::painter::PaintCtx;
+use crate::painter::{PaintCtx, fixed_colour};
 
 /// Segments along each brow (the prototype's `N`).
 const SEGMENTS: usize = 22;
@@ -19,8 +19,17 @@ const STATIONS: usize = SEGMENTS + 1;
 /// Points in a brow's closed outline: the top edge, then the bottom edge back to the inner end.
 const OUTLINE: usize = 2 * STATIONS;
 
-/// Height change per unit of [`BrowParams::height`].
-const HEIGHT_STEP: f32 = 0.012;
+/// Height change per unit of [`BrowParams::height`] at the inner end, the middle and the outer end, in metres, for a
+/// raise and for a lower. A brow does not move rigidly: the inner end leads (about 4x the outer end on a raise, about
+/// 9x on a lower) and the outer end hardly moves. Measured on the CC0 reference rig the Director published on #1863
+/// (comment 6197276885: 10.7 / 7.8 / 2.6 % and 18.2 / 16.9 / 2.1 % of the eye-to-chin height) and scaled to this
+/// face (0.17 m); the prototype's own travel is a uniform 0.012. A height of 0 is the prototype's brow either way.
+const HEIGHT_RAISE: [f32; 3] = [0.018, 0.013, 0.004];
+/// See [`HEIGHT_RAISE`].
+const HEIGHT_LOWER: [f32; 3] = [0.031, 0.029, 0.004];
+/// The arch grows by this much at a height of +1 (the reference measures 9.1 % of the brow's length at rest and 11.3 %
+/// raised) and is gone at -1 (it measures 0.0 % lowered): the brow flattens as it comes down.
+const ARCH_RAISED: f32 = 0.25;
 /// Tilt change across the brow's length, per unit of [`BrowParams::tilt`].
 const TILT_STEP: f32 = 0.016;
 /// Slight rise along the brow, so the outer end sits a little higher than the inner.
@@ -60,10 +69,7 @@ struct Style {
 
 impl Style {
     fn new(brows: &BrowStyle) -> Self {
-        let colour = match &brows.colour {
-            ColourRef::Fixed(c) => *c,
-            ColourRef::Slot(_) => FALLBACK_COLOUR,
-        };
+        let colour = fixed_colour(&brows.colour, FALLBACK_COLOUR);
         Self {
             inner: narrow(brows.inner_x),
             outer: narrow(brows.outer_x),
@@ -79,17 +85,41 @@ impl Style {
 fn outline(style: &Style, rect: &FaceRect, brow_y: f32, arch: f32, side: f32, brow: BrowParams) -> [Vec2; OUTLINE] {
     let lo = Vec2::new(rect.x0, rect.y0);
     let hi = Vec2::new(rect.x1, rect.y1);
-    let base = brow_y + brow.height * HEIGHT_STEP;
+    let arch_scale = arch_scale(brow.height);
     let mut points = [Vec2::ZERO; OUTLINE];
     for i in 0..STATIONS {
         let t = station(i);
         let x = side * (style.inner + (style.outer - style.inner) * t);
-        let y = base + style.arch * (PI * t).sin() * (1.0 + arch) + RISE * t + brow.tilt * (t - 0.5) * TILT_STEP;
+        let y = brow_y
+            + height_shift(brow.height, t)
+            + style.arch * arch_scale * (PI * t).sin() * (1.0 + arch)
+            + RISE * t
+            + brow.tilt * (t - 0.5) * TILT_STEP;
         let half = half_thickness(style.thickness, t);
         points[i] = Vec2::new(x, y + half).clamp(lo, hi);
         points[OUTLINE - 1 - i] = Vec2::new(x, y - half).clamp(lo, hi);
     }
     points
+}
+
+/// How far a brow of `height` has moved at `t` along it, in metres: the height times the travel per unit there, which
+/// runs from the inner end through the middle to the outer end as the parabola through the three measured values. A
+/// lowered brow straightens as it comes down, like its arch (see [`arch_scale`]): the parabola's middle dips well below
+/// the chord between the ends, so the shift is blended to the straight line between the ends, and at -1 the brow is flat.
+fn height_shift(height: f32, t: f32) -> f32 {
+    let [inner, middle, outer] = if height >= 0.0 { HEIGHT_RAISE } else { HEIGHT_LOWER };
+    let bend = 4.0 * (middle - inner) - (outer - inner);
+    let curve = (outer - inner) - bend;
+    let line = inner + (outer - inner) * t;
+    let parabola = inner + bend * t + curve * t * t;
+    let straight = (-height).clamp(0.0, 1.0);
+    height * (parabola + (line - parabola) * straight)
+}
+
+/// The arch's scale for a brow of `height`: 1 at rest, [`ARCH_RAISED`] more raised by one unit, none left lowered by
+/// one unit, and held at those beyond.
+fn arch_scale(height: f32) -> f32 {
+    if height >= 0.0 { 1.0 + ARCH_RAISED * height.min(1.0) } else { (1.0 + height).max(0.0) }
 }
 
 /// The position along the brow of station `i`, `0..=1`.

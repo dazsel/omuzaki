@@ -17,7 +17,7 @@ use omuzaki_anim_api::{Channel, ChannelBuf};
 use omuzaki_core::glam::Vec2;
 use omuzaki_core::time::Seconds;
 use omuzaki_face::raster::SkiaRasterizer;
-use omuzaki_face::{MouthPiece, RealPainter};
+use omuzaki_face::{MouthPiece, RealPainter, Section};
 use omuzaki_face_api::{
     Cmd, DEFAULT_PX_PER_M, DrawList, ExpressionSet, FaceDrawing, FaceInput, FaceLayerId, FaceLayerSpec, FaceMapping,
     FaceProfile, FaceProjection, FaceRasterizer, FaceRect, FaceView, MouthParams, Paint, PaintParams, PathEl, Raster,
@@ -280,15 +280,125 @@ fn a_pucker_with_a_nearly_shut_jaw_is_a_kiss_of_four_strokes() {
 }
 
 #[test]
-fn the_kiss_starts_above_a_pucker_of_one_third_and_ends_at_an_opening_of_a_quarter() {
+fn the_kiss_starts_above_a_pucker_of_one_third_and_is_all_gone_at_an_opening_of_a_quarter() {
     let is_kiss =
         |pucker: f32, open: f32| paint(&flat(), &params(|m| (m.pucker, m.open) = (pucker, open))).cmds().len() == 4;
     assert!(!is_kiss(0.35, 0.0), "the threshold itself is not a kiss");
     assert!(is_kiss(0.36, 0.0));
-    assert!(is_kiss(1.0, 0.24));
+    assert!(is_kiss(1.0, 0.2), "a plain kiss up to the start of the band (0.21)");
+    assert!(!is_kiss(1.0, 0.24), "the lens shows too inside the band");
     assert!(!is_kiss(1.0, 0.25), "an opening of a quarter is an open shape");
     // The same opening with a pucker below the threshold is the open shape too.
     assert!(!is_kiss(0.3, 0.2));
+}
+
+// ------------------------------------------------------------------------------------------------ kiss to open
+
+/// The whole mouth section for `pucker` 1 at `open`, on the lip-rim look.
+fn mouth_section(open: f32, pucker: f32) -> DrawList {
+    let profile = glossy();
+    let p = params(|m| (m.open, m.pucker) = (open, pucker));
+    let input = FaceInput { profile: &profile, params: &p, time: Seconds(0.0), view: FaceView::default() };
+    let mut out = FaceDrawing::new();
+    painter().paint_section(Section::Mouth, &input, &mut out).unwrap();
+    out[FaceLayerId::Base].clone()
+}
+
+/// The mouth's ink: the sum of the premultiplied alpha of every pixel of its Base layer, in pixels.
+fn ink(list: &DrawList) -> f32 {
+    let spec = FaceLayerSpec::for_layer(FaceLayerId::Base, &projection(), DEFAULT_PX_PER_M);
+    let mut raster = Raster::new(1, 1);
+    SkiaRasterizer::new().rasterize(&spec, list, DEFAULT_PX_PER_M, &mut raster).unwrap();
+    raster.pixels.as_chunks::<4>().0.iter().map(|px| f32::from(px[3])).sum::<f32>() / 255.0
+}
+
+/// The horizontal extent, in pixels, of the shape's own outlines (the slit and the lens; strokes' widths not counted),
+/// over the commands that show at all.
+fn shape_width_px(open: f32) -> f32 {
+    let list = paint_shape_only(open);
+    let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+    for cmd in list.cmds() {
+        let (path, opacity) = match cmd {
+            Cmd::Stroke { path, opacity, .. } | Cmd::Fill { path, opacity, .. } => (*path, *opacity),
+            _ => continue,
+        };
+        if opacity <= 0.0 {
+            continue;
+        }
+        for p in points(&list, path) {
+            lo = lo.min(p.x);
+            hi = hi.max(p.x);
+        }
+    }
+    (hi - lo) * DEFAULT_PX_PER_M
+}
+
+fn paint_shape_only(open: f32) -> DrawList {
+    paint(&glossy(), &params(|m| (m.open, m.pucker) = (open, 1.0)))
+}
+
+#[test]
+fn the_kiss_gives_way_to_the_open_lens_over_a_band_below_a_quarter() {
+    // The band is 0.04 wide (a sweep in steps of 0.001 must not step by more than a tenth of the old jump).
+    const FROM: f32 = 0.21;
+    assert!(!paint_shape_only(0.209).cmds().iter().any(|c| matches!(c, Cmd::Fill { .. })), "no lens before the band");
+    assert!(
+        paint_shape_only(0.2101).cmds().iter().any(|c| matches!(c, Cmd::Fill { .. })),
+        "the lens starts in the band"
+    );
+    let opacity_of = |list: &DrawList, pick: fn(&Cmd) -> bool| {
+        list.cmds().iter().find(|c| pick(c)).map(|c| match c {
+            Cmd::Fill { opacity, .. } | Cmd::Stroke { opacity, .. } => *opacity,
+            _ => unreachable!(),
+        })
+    };
+    let (mid, late) = (paint_shape_only(0.23), paint_shape_only(0.2499));
+    let lens = |c: &Cmd| matches!(c, Cmd::Fill { .. });
+    let slit = |c: &Cmd| matches!(c, Cmd::Stroke { .. });
+    assert!(
+        (opacity_of(&mid, lens).unwrap() - 0.5).abs() < 1e-3,
+        "half the lens halfway, where the easing is symmetric"
+    );
+    assert!((opacity_of(&mid, slit).unwrap() - 0.5).abs() < 1e-3, "and half the slit");
+    assert!(opacity_of(&late, lens).unwrap() > 0.999 && opacity_of(&late, slit).unwrap() < 0.001);
+    let _ = FROM;
+}
+
+#[test]
+fn a_sweep_of_the_opening_through_the_kiss_to_open_switch_never_steps_by_more_than_a_tenth_of_the_old_jump() {
+    // The prototype's switch at 0.25 changed the width by 12.5 % and the ink by about 9 %: no step of 0.001 may change
+    // either by more than a tenth of that (1.25 % and 0.9 %), from the start of the band to 0.26.
+    let (mut widest_step, mut inkiest_step) = (0.0_f32, 0.0_f32);
+    let mut previous: Option<(f32, f32)> = None;
+    for step in 0..=50_u8 {
+        let open = 0.21 + f32::from(step) * 0.001;
+        let (width, ink) = (shape_width_px(open), ink(&mouth_section(open, 1.0)));
+        if let Some((w, i)) = previous {
+            let (dw, di) = ((width - w).abs() / w, (ink - i).abs() / i);
+            widest_step = widest_step.max(dw);
+            inkiest_step = inkiest_step.max(di);
+            assert!(dw <= 0.0125 && di <= 0.009, "at open {open}: width step {dw:.4}, ink step {di:.4}");
+        }
+        previous = Some((width, ink));
+    }
+    println!(
+        "kiss-to-open sweep: largest width step {:.2} %, largest ink step {:.2} %",
+        widest_step * 100.0,
+        inkiest_step * 100.0
+    );
+}
+
+#[test]
+fn from_a_quarter_up_the_open_shape_is_the_same_as_without_a_kiss() {
+    // The lens is fully there (reveal 1) and no slit is drawn: the list is the open mouth's, whatever the pucker's
+    // value, as long as the pucker's own narrowing is the same.
+    for open in [0.25, 0.3, 0.6] {
+        let list = paint_shape_only(open);
+        assert!(list.cmds().iter().all(|c| match c {
+            Cmd::Fill { opacity, .. } | Cmd::Stroke { opacity, .. } => (*opacity - 1.0).abs() < f32::EPSILON,
+            _ => true,
+        }));
+    }
 }
 
 #[test]
@@ -705,12 +815,17 @@ fn painting_the_mouth_allocates_nothing_once_the_list_is_warm() {
 #[test]
 fn painting_the_mouth_across_the_switch_allocates_nothing_once_the_list_is_warm() {
     let profile = glossy();
-    // The openings the rim and the closed fang ease over, every piece that reads the fade.
-    let openings: Vec<PaintParams> = [0.05, 0.0601, 0.1, 0.15, 0.2]
+    // The openings the rim and the closed fang ease over, every piece that reads the fade or the reveal.
+    let mut openings: Vec<PaintParams> = [0.05, 0.0601, 0.1, 0.15, 0.2]
         .into_iter()
         .map(|open| params(|m| (m.open, m.fangs, m.smile_left) = (open, 1.0, 0.8)))
         .collect();
-    let pieces = [MouthPiece::Shape, MouthPiece::Interior, MouthPiece::Gloss, MouthPiece::Rim];
+    // And the kiss giving way to the lens (openings 0.21 to 0.25 with a pucker), teeth and tongue on.
+    openings.extend(
+        [0.215, 0.23, 0.245]
+            .map(|open| params(|m| (m.open, m.pucker, m.teeth_upper, m.tongue, m.fangs) = (open, 1.0, 1.0, 1.0, 1.0))),
+    );
+    let pieces = [MouthPiece::Shape, MouthPiece::Interior, MouthPiece::Gloss, MouthPiece::Rim, MouthPiece::Tongue];
     let mut out = FaceDrawing::new();
     let mut painter = painter();
     let mut paint_all = |out: &mut FaceDrawing, i: usize| {

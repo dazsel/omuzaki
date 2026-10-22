@@ -11,7 +11,11 @@
 //!   [`stream::Turn`]) and [`stream::Cancel`], which holds on the very next call.
 //! - **[`usage`]**: [`usage::Usage`], integer [`usage::MicroUsd`] from a dated [`usage::PriceTable`], and the
 //!   [`usage::Ledger`]'s pre-request cost bound that needs no network.
+//! - **[`mcp`]**: the MCP `tools/list` and `tools/call` mapping to [`message::ToolDef`] and tool-result blocks, over JSON
+//!   shapes with no `rmcp` dependency.
 //! - **[`error`]**: [`error::LlmError`].
+//! - **[`validate`]**: [`validate::request`], the checks every client (and `FakeLlm`) makes before it sends; **[`image`]**
+//!   reads an image's size from its header.
 //! - **[`provider`]**: providers register themselves with [`register_llm_provider!`]; the secret types there are local
 //!   stand-ins until `omuzaki-secrets-api` and `omuzaki-settings-api` land.
 //!
@@ -19,10 +23,13 @@
 #![deny(missing_docs)]
 
 pub mod error;
+pub mod image;
+pub mod mcp;
 pub mod message;
 pub mod provider;
 pub mod stream;
 pub mod usage;
+pub mod validate;
 
 #[doc(hidden)]
 pub use inventory as __inventory;

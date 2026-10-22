@@ -1,0 +1,8 @@
+section = "rust"
+item = "libfuzzer-sys 0.4 (with arbitrary 1.x)"
+kind = "crate"
+used_for = "the fuzz targets in `fuzz/` (the TFLite and ONNX model scans, the file-access path parser; #1653) and in `crates/omuzaki-script/fuzz/` (the script check and run): LLVM's libFuzzer and its Rust bindings, with `arbitrary` as their input type"
+status = "yes"
+condition = "fuzz-only: `fuzz/` is its own workspace and nothing in it ships. libfuzzer-sys is `(MIT OR Apache-2.0) AND NCSA` (NCSA for the bundled libFuzzer, LLVM's earlier permissive licence), allowed for this one crate by its `deny.toml` exception; arbitrary is MIT OR Apache-2.0"
+audit = "(crates.io: libfuzzer-sys 0.4.13 `(MIT OR Apache-2.0) AND NCSA`, arbitrary 1.5.0 `MIT OR Apache-2.0`)"
+paths = ["fuzz/Cargo.toml", "crates/omuzaki-script/fuzz/Cargo.toml"]

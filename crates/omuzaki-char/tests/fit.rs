@@ -15,11 +15,15 @@ use omuzaki_core::rng::Rng;
 
 const TEMPLATES: [&str; 4] = ["soft-sd", "mini", "standard", "tall"];
 const VIEWS: [FitView; 3] = [FitView::Front, FitView::Side, FitView::Back];
-/// Rows of a synthetic sheet view in the recovery test, and in the smaller tests that only need the fit to behave.
-const HEIGHT: usize = 256;
+/// Rows of a synthetic sheet view in the recovery test. At 256 rows a hip edge that runs along the pixel grid places
+/// `curves` only to about 0.05 of its range (the silhouette cannot tell the rest), wider than the test's bound; 384
+/// rows tell it to within about 0.02.
+const HEIGHT: usize = 384;
+/// Rows in the smaller tests that only need the fit to behave.
 const SMALL: usize = 112;
-/// Seconds a release-build fit may take in the recovery test before it counts as a regression.
-const REGRESSION_LIMIT_S: f64 = 30.0;
+/// Seconds a release-build fit may take in the recovery test before it counts as a hang. The four templates' fits run
+/// at once, each reading 2 by 2 coverage of three 384-row views, so one takes a few times what it takes alone.
+const REGRESSION_LIMIT_S: f64 = 120.0;
 /// The seeded draw the recovery test fits. Other draws land between about 0.95 and 0.99 (see the PR body).
 const SEED: u64 = 2;
 /// How far from the default the random characters reach, as a fraction of each parameter's half-range.
@@ -73,27 +77,52 @@ fn block(min: Vec3, max: Vec3) -> MeshData {
 
 // ------------------------------------------------------------------------------------------------ recovery
 
-/// The templates the recovery test fits: all four in a release build, one in a debug build (a fit is minutes there).
-fn recovery_templates() -> &'static [&'static str] {
-    if cfg!(debug_assertions) { &TEMPLATES[1..2] } else { &TEMPLATES }
-}
-
 /// Recovery of a seeded random character from its three silhouettes.
 ///
 /// What the silhouette identifies is asserted, nothing else: `IoU`, the widths, arm length, foot size, curves, and the share of
 /// the leg against the torso. Sole and crown are aligned, so `leg_length`, `torso_length` and the `height` axis trade
 /// off (the combination is what shows); `neck_length` is inside the torso loft and `hand_size` has no mesh yet
 /// (`hands::build` is a stub), so neither is visible and neither is asserted.
+///
+/// All four templates are fitted, in every build: the four fits are independent, so they run side by side, and a debug
+/// build (CI's) takes about the time of one.
 #[test]
 fn recovers_a_random_character_on_each_template() {
     let truth = random_params(SEED);
     let ratio = |p: &FitParams| (p.proportions.leg_length / p.proportions.torso_length).ln();
-    for template in recovery_templates() {
-        let tg = targets(template, &truth, &[], &VIEWS, HEIGHT);
-        let start = Instant::now();
-        let r = run(template, &tg, &[]);
-        let took = start.elapsed();
-        eprintln!("{template}: {took:?}, {} evaluations, IoU {:.4} -> {:.4}", r.evaluations, r.iou_before, r.iou_after);
+    let fits = std::thread::scope(|s| {
+        let truth = &truth;
+        let running: Vec<_> = TEMPLATES
+            .iter()
+            .map(|&template| {
+                s.spawn(move || {
+                    let tg = targets(template, truth, &[], &VIEWS, HEIGHT);
+                    let start = Instant::now();
+                    let r = run(template, &tg, &[]);
+                    (template, r, start.elapsed())
+                })
+            })
+            .collect();
+        running.into_iter().map(|fit| fit.join().unwrap()).collect::<Vec<_>>()
+    });
+    let asserted = [Param::ShoulderWidth, Param::HipWidth, Param::ArmLength, Param::FootSize, Param::Curves];
+    let error = |p: Param, r: &FitResult| {
+        let (lo, hi) = p.range();
+        (p.get(&r.params) - p.get(&truth)).abs() / (hi - lo)
+    };
+    // Every template's numbers first, so a failure shows all four.
+    for (template, r, took) in &fits {
+        let errors: Vec<String> = asserted.iter().map(|&p| format!("{} {:.4}", p.name(), error(p, r))).collect();
+        eprintln!(
+            "{template}: {took:?}, {} evaluations, IoU {:.4} -> {:.4}, off by {}, leg to torso {:.4}",
+            r.evaluations,
+            r.iou_before,
+            r.iou_after,
+            errors.join(", "),
+            (ratio(&r.params) - ratio(&truth)).abs()
+        );
+    }
+    for (template, r, took) in fits {
         assert!(r.evaluations <= MAX_EVALUATIONS);
         assert!(r.iou_after >= 0.985, "{template}: IoU {}", r.iou_after);
         assert_eq!(r.per_view.len(), 3);
@@ -101,9 +130,8 @@ fn recovers_a_random_character_on_each_template() {
             assert_eq!(v.view, want);
             assert!(v.iou_after >= v.iou_before, "{template} {:?}", v.view);
         }
-        for p in [Param::ShoulderWidth, Param::HipWidth, Param::ArmLength, Param::FootSize, Param::Curves] {
-            let (lo, hi) = p.range();
-            let err = (p.get(&r.params) - p.get(&truth)).abs() / (hi - lo);
+        for p in asserted {
+            let err = error(p, &r);
             assert!(err < 0.03, "{template}: {p:?} off by {err}");
         }
         let share = (ratio(&r.params) - ratio(&truth)).abs();

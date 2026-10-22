@@ -190,11 +190,27 @@ enum Answer {
 /// moved on meanwhile: it chooses again, keeping the session it loaded in case it is still the choice.
 ///
 /// A replacement whose runtime panics while it is reset counts as a load failure: it is recorded, dropped and skipped
-/// for the rest of this pass, so the chain goes on to the next model.
+/// for the rest of this pass, so the chain goes on to the next model. While a model that failed in `run` hasn't been
+/// reported yet, nothing is chosen.
 fn choose(registry: &Registry, session: &Shared, mut in_hand: Option<Active>, graveyard: &mut Vec<Box<dyn Session>>) {
     let mut failed: Vec<ModelRef> = Vec::new();
     loop {
         let view = View::of(session, &session.mailbox());
+        // Silent with a usable model applied: that model failed in `run`, and its report hasn't reached the registry
+        // (it is still on the run side, or in the mailbox since this pass collected it). Choosing now would load it
+        // again, or publish a fallback the health meter can't explain yet. Nothing is lost by waiting: a report in the
+        // mailbox has asked for another pass, and one still on the run side is handed over, with that ask, by the next
+        // `run`, the only thing that applies an answer anyway.
+        // The model is read first: the records' lock must not be held while the registry's is taken, the order a
+        // commit takes them in (`Registry::changed`, then `Shared::withdraw`).
+        let failed_unreported = view.applied & SILENT != 0 && {
+            let applied = session.applied_model(&session.records());
+            applied.is_some_and(|m| registry.is_usable(&m))
+        };
+        if failed_unreported {
+            graveyard.extend(in_hand.take().map(|a| a.session));
+            return;
+        }
         let held: Vec<ModelRef> = [in_hand.as_ref().map(|a| &a.model), view.pending_model(), view.answering.as_ref()]
             .into_iter()
             .flatten()
@@ -256,6 +272,7 @@ fn settle(
             Answer::Confirm(_) | Answer::Nothing => None,
         });
     }
+    let published = matches!(answer, Answer::Publish(..));
     let displaced = match answer {
         Answer::Nothing => None,
         Answer::Confirm(model) if view.pending_model() == Some(&model) => {
@@ -282,6 +299,9 @@ fn settle(
         }
     };
     drop(mailbox);
+    if published {
+        registry.count_publication();
+    }
     Ok(displaced.and_then(|r| r.replacement).map(|a| a.session))
 }
 

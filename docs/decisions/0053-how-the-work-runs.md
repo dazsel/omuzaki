@@ -6,7 +6,7 @@ area: decisions
 
 # 0053: How the work runs: finish before starting, schedule for disjoint work, structure code so parallel PRs can't collide (2026-10-13)
 
-**Status:** accepted (2026-10-14). **Context:** spec v3 §39 (parallel development), `CONTRIBUTING.md`, `CLAUDE.md`,
+**Status:** accepted (2026-10-14); §2, §4, §5 and §6.2 superseded by ADR 0067 (spine first, 2026-10-21). **Context:** spec v3 §39 (parallel development), `CONTRIBUTING.md`, `CLAUDE.md`,
 ADR 0054 (how features are added without editing shared files).
 
 ## Context

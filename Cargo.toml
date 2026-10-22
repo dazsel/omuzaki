@@ -23,8 +23,8 @@ bytemuck = { version = "1.25", features = ["derive"] }
 bytes = "1"
 clap = { version = "4.6", features = ["derive"] }
 constant_time_eq = "0.4"
+directories = "6.0"   # the OS config and local data folders (MIT OR Apache-2.0; pulls dirs-sys and option-ext MPL-2.0, unmodified), omuzaki-settings
 criterion = "0.8"
-directories = "6"   # the OS cache folder (MIT OR Apache-2.0), omuzaki-http `app_cache_dir`
 ed25519-dalek = { version = "2.2", default-features = false, features = ["std"] }   # verifies library item signatures (BSD-3-Clause), omuzaki-library-api; signing only in tests
 eframe = { version = "0.36", default-features = false, features = ["wgpu", "wayland", "x11", "accesskit", "default_fonts"] }
 egui = "0.36"
@@ -35,8 +35,10 @@ flate2 = { version = "1.1", default-features = false, features = ["rust_backend"
 fluent-bundle = "0.16" # Fluent message formatting (Apache-2.0 OR MIT), omuzaki-l10n-api catalog
 fluent-langneg = "0.14" # locale negotiation (Apache-2.0), omuzaki-l10n-api
 fluent-syntax = "0.12" # Fluent parser for the l10n checks (Apache-2.0 OR MIT), omuzaki-l10n-api
+futures-util = { version = "0.3", default-features = false, features = ["std"] }   # drives the response body stream (MIT OR Apache-2.0), omuzaki-llm; already in the lock
 getrandom = "0.4"
-intl-memoizer = "0.5"   # named for the exact-integer FluentType in omuzaki-l10n-api (Apache-2.0 OR MIT; already a fluent-bundle dependency)
+keyring = "4.2"   # OS keychain: Windows Credential Manager, macOS Keychain, Linux Secret Service (MIT OR Apache-2.0), omuzaki-secrets
+intl-memoizer ="0.5"   # named for the exact-integer FluentType in omuzaki-l10n-api (Apache-2.0 OR MIT; already a fluent-bundle dependency)
 harfrust = "0.14"   # OpenType shaping (MIT): Arabic joining, Devanagari conjuncts, Thai marks in the sheet text fallback, omuzaki-stage
 glam = { version = "0.34", features = ["serde", "bytemuck"] }
 httpdate = "1"   # `Retry-After` HTTP dates (MIT OR Apache-2.0), omuzaki-http; already in the lock through hyper
@@ -46,7 +48,9 @@ hyper = { version = "1", default-features = false, features = ["http1", "server"
 hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 inventory = "0.3"
+libc = "0.2"   # the Linux virtual camera's device calls (open, ioctl, write) (MIT OR Apache-2.0), omuzaki-vcam; already in the lock
 libm = "0.2"   # transcendental maths bit-identical on every platform (the CPU rasteriser's stroker, ADR 0009)
+loom = "0.7"   # model checker for the metrics seqlock (MIT), omuzaki-metrics-api dev-dependency; only built with --cfg loom
 # ONNX Runtime wrapper. `load-dynamic`: the app loads Microsoft's official MIT library from a path we choose, so Pyke's prebuilt binaries
 # (and the TLS stack `download-binaries` drags in) never enter the build (register: ort). omuzaki-audio.
 nalgebra = { version = "0.35", default-features = false, features = ["std"] }   # matrix and rotation maths for the head-pose fit (Apache-2.0), omuzaki-track
@@ -62,6 +66,7 @@ schemars = "1.2"
 semver = { version = "1", features = ["serde"] } # versions in the updater contract (MIT OR Apache-2.0), omuzaki-update-api
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] } # recorded tracks must replay bit-identically after a save
+sse-stream = "0.2"   # Server-Sent Events framing for the LLM providers (MIT OR Apache-2.0), omuzaki-llm; already in the lock through rmcp
 sha2 = "0.10"   # pins the lazily downloaded fallback fonts by SHA-256 (MIT OR Apache-2.0), omuzaki-stage
 tar = { version = "0.4", default-features = false } # unpacks the ONNX Runtime.tgz archives (MIT OR Apache-2.0), omuzaki-ai-native
 sys-locale = "0.3" # the OS language list (MIT OR Apache-2.0), omuzaki-l10n-api
@@ -81,8 +86,11 @@ wgpu = "30"
 windows = { version = "0.62", features = ["Win32_Media_MediaFoundation", "Win32_System_Com", "Win32_Foundation", "Win32_Security", "Win32_System_Threading"] }   # Media Foundation and COM (MIT OR Apache-2.0), omuzaki-camera-mf
 windows-core = "0.62"   # the `implement` macro for the camera's COM callback (MIT OR Apache-2.0), omuzaki-camera-mf
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem"] } # the Windows side of the same: reparse-point-aware opens, final-path checks
+zeroize = "1.9"   # zeroes a secret value on drop (Apache-2.0 OR MIT; already in the lock), omuzaki-secrets-api
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] } # unpacks the ONNX Runtime Windows.zip archives (MIT), omuzaki-ai-native
 vello = { version = "=0.11.0", default-features = false, features = ["wgpu"] }   # GPU vector face painter (Apache-2.0 OR MIT), omuzaki-face's GPU rasteriser (#1433)
+vello_encoding = "=0.11.0"   # Vello's scene packing and buffer sizing, for omuzaki-face's own run of Vello's stages (Apache-2.0 OR MIT, #2074)
+vello_shaders = { version = "=0.11.0", default-features = false, features = ["wgsl"] }   # Vello's compute shaders as WGSL, run by omuzaki-face with persistent resources (Apache-2.0 OR MIT, #2074)
 whisper-rs = "0.16"   # whisper.cpp built from source (Unlicense crate, MIT library); omuzaki-audio
 zune-jpeg = "0.5"   # pure-Rust JPEG decoder (MIT OR Apache-2.0 OR Zlib), MJPG webcam frames, omuzaki-pixfmt
 

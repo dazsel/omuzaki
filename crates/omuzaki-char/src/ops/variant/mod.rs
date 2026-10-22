@@ -11,7 +11,7 @@
 //! | [`delete`] | `variant.delete`, refused while another variant extends it |
 //! | [`list`], [`preview`] | `variant.list` and `variant.preview`: queries that write nothing |
 //! | [`select`] | `VariantSelector`: the stage's pick of a variant from head coverage, over `select_variant` |
-//! | [`access`] | reading variants from the character's own `variants/` sub-tree, and the shared refusals |
+//! | `access` | reading variants from the character's own `variants/` sub-tree, and the shared refusals |
 
 pub mod clear_override;
 pub mod create;

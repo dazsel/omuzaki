@@ -17,6 +17,10 @@ omuzaki-ai-api = { path = "../omuzaki-ai-api" }
 omuzaki-ai-native = { path = "../omuzaki-ai-native" }
 omuzaki-core = { path = "../omuzaki-core" }
 
+[features]
+# Re-exports the model scan (`scan_model`) for the fuzz target in `fuzz/` (#1653); never on in a build.
+fuzzing = []
+
 [dev-dependencies]
 flate2.workspace = true
 tar.workspace = true

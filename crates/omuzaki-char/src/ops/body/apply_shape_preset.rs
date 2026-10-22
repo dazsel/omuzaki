@@ -15,6 +15,12 @@ use crate::ops::character::access;
 /// keeps the preset's name only at the ends (or when the shape is already that preset).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "preset": "athletic", "blend": 0.5}
+    ],
+    "x-omuzaki-fixture" = "character"
+))]
 pub struct ApplyShapePreset {
     /// The character whose body changes.
     pub character: CharId,

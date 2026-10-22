@@ -1,7 +1,7 @@
 section = "models"
 item = "hound 3.5"
 kind = "crate"
-used_for = "WAV reading in the `omuzaki-audio` host benchmark and tests (dev-dependency only, not in shipped builds)"
+used_for = "writes the audio tracks of recordings as 32-bit float WAV (`omuzaki-stream` sinks), and reads WAV in the `omuzaki-audio` host benchmark and tests"
 status = "yes"
 condition = "Apache-2.0"
 audit = "(crates.io)"

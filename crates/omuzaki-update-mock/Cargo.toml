@@ -1,0 +1,20 @@
+[package]
+name = "omuzaki-update-mock"
+description = "Deterministic stand-ins for the updater contract: a scripted updater with a real hold registry, an in-memory server, a disk that fails on cue and a settable wall clock (SE-08)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+omuzaki-ai-api = { path = "../omuzaki-ai-api" }
+omuzaki-update-api = { path = "../omuzaki-update-api" }
+
+[lints]
+workspace = true
+
+[package.metadata.omuzaki]
+kind = "Mock"
+summary = "`MockUpdater` (scripted check, download and stage results, a real hold registry, events), `FakeServer` (an in-memory `Fetcher` that truncates, flips a byte, ignores ranges or goes offline), `FakeDisk` (an in-memory `Disk` that fails on cue and loses unsynced files on `revive`) and a settable `FakeWallClock`"

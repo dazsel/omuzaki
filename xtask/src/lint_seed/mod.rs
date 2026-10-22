@@ -316,7 +316,7 @@ fn report(workspace: &Workspace, base: &str) -> Result<bool> {
     let (sources, mut problems) = library_sources(&workspace.root);
     let merge_base = merge_base(&workspace.root, base)?;
     let previous = previous_releases(&workspace.root, &merge_base)?;
-    problems.extend(lint(&sources, &previous, &PrivateList::policy()));
+    problems.extend(lint(&sources, &previous, &PrivateList::load(&workspace.root)?));
     for problem in &problems {
         println!("{problem}");
     }

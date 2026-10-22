@@ -8,6 +8,38 @@ use omuzaki_face_api::{
 };
 
 use crate::layer::{FaceLayerPainter, GpuRasterizer};
+use crate::painter::{LayerSections, RealPainter};
+
+/// The painter a system owns. The real one is kept by value so its section ranges reach the GPU rasteriser (Q2 of #1433);
+/// any other (the mock) goes through the contract only.
+enum Painter {
+    Real(Box<RealPainter>),
+    Other(Box<dyn FacePainter>),
+}
+
+impl Painter {
+    fn layers(&self) -> &[FaceLayerSpec] {
+        match self {
+            Self::Real(painter) => painter.layers(),
+            Self::Other(painter) => painter.layers(),
+        }
+    }
+
+    fn paint(&mut self, input: &FaceInput<'_>, out: &mut FaceDrawing) -> Result<(), FaceError> {
+        match self {
+            Self::Real(painter) => painter.paint(input, out),
+            Self::Other(painter) => painter.paint(input, out),
+        }
+    }
+
+    /// Where each section sits in `layer`'s list, if the painter records it.
+    fn sections(&self, layer: FaceLayerId) -> Option<&LayerSections> {
+        match self {
+            Self::Real(painter) => Some(painter.sections().layer(layer)),
+            Self::Other(_) => None,
+        }
+    }
+}
 
 /// What one layer's texture last showed, and the CPU raster of the current picture.
 pub(crate) struct LayerSlot {
@@ -72,7 +104,7 @@ impl FaceUpdate {
 /// The per-frame face: owns the painter, the rasterisers, the draw lists, and for every layer the fingerprint it last
 /// showed and its CPU raster. Nothing in [`update`](Self::update) allocates once the painter's lists have warmed up.
 pub struct FaceSystem {
-    painter: Box<dyn FacePainter>,
+    painter: Painter,
     cpu: Box<dyn FaceRasterizer>,
     gpu: Option<Box<dyn GpuRasterizer>>,
     clock: Box<dyn Clock>,
@@ -84,6 +116,16 @@ pub struct FaceSystem {
 impl FaceSystem {
     /// A system painting with `painter` and rasterising on the CPU with `cpu`, timed by the real clock.
     pub fn new(painter: Box<dyn FacePainter>, cpu: Box<dyn FaceRasterizer>) -> Self {
+        Self::with(Painter::Other(painter), cpu)
+    }
+
+    /// A system around the real painter, which it keeps by value so that a registered GPU rasteriser gets each section's
+    /// command range and repaints only the sections that changed.
+    pub fn real(painter: RealPainter, cpu: Box<dyn FaceRasterizer>) -> Self {
+        Self::with(Painter::Real(Box::new(painter)), cpu)
+    }
+
+    fn with(painter: Painter, cpu: Box<dyn FaceRasterizer>) -> Self {
         Self {
             painter,
             cpu,
@@ -106,6 +148,35 @@ impl FaceSystem {
     /// the fallback.
     pub fn set_gpu_rasterizer(&mut self, gpu: Option<Box<dyn GpuRasterizer>>) {
         self.gpu = gpu;
+    }
+
+    /// Takes the registered GPU rasteriser out, leaving none: the stage moves it from a face system it replaces to the
+    /// new one, so the rasteriser's pipelines are compiled once, not once per system.
+    pub fn take_gpu_rasterizer(&mut self) -> Option<Box<dyn GpuRasterizer>> {
+        self.gpu.take()
+    }
+
+    /// Tells the registered GPU rasteriser (if any) that the renderer's device was lost or rebuilt, so it drops what it
+    /// made on the old one ([`GpuRasterizer::device_lost`]). The stage calls it when it rebuilds the renderer.
+    pub fn gpu_device_lost(&mut self) {
+        if let Some(gpu) = self.gpu.as_mut() {
+            gpu.device_lost();
+        }
+    }
+
+    /// Whether the registered GPU rasteriser (if any) needs `layer` painted again although nothing changed
+    /// ([`GpuRasterizer::repaint_needed`]): an earlier GPU paint of it drew it wrong. The stage asks once a frame.
+    pub fn gpu_repaint_needed(&mut self, layer: FaceLayerId) -> bool {
+        self.gpu.as_mut().is_some_and(|gpu| gpu.repaint_needed(layer))
+    }
+
+    /// Tells the registered GPU rasteriser (if any) that the renderer refused the last paint of `layer`
+    /// ([`GpuRasterizer::paint_failed`]), so the next paint redraws it whole. The stage calls it when
+    /// `Renderer::paint_texture` fails.
+    pub fn gpu_paint_failed(&mut self, layer: FaceLayerId) {
+        if let Some(gpu) = self.gpu.as_mut() {
+            gpu.paint_failed(layer);
+        }
     }
 
     /// The layers the painter fills and where they sit; the stage creates one texture per layer a material uses.
@@ -182,6 +253,7 @@ impl FaceSystem {
         let spec = *self.painter.layers().get(at)?;
         let slot = self.slots.get_mut(at)?;
         let gpu = self.gpu.as_mut().map(|gpu| &mut **gpu as &mut dyn GpuRasterizer);
-        Some(FaceLayerPainter::new(spec, &self.drawing[layer], slot, self.cpu.as_mut(), gpu))
+        let sections = self.painter.sections(layer);
+        Some(FaceLayerPainter::new(spec, &self.drawing[layer], sections, slot, self.cpu.as_mut(), gpu))
     }
 }

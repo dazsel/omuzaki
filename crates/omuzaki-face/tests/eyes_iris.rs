@@ -332,7 +332,8 @@ fn eyes_outline(list: &DrawList) -> Vec<PathEl> {
 fn a_shut_eye_draws_no_iris() {
     let shut = EyeParams { close: 1.0, ..open() };
     let drawing = paint(&profile(), &PaintParams { left_eye: shut, right_eye: shut, ..base() });
-    assert!(drawing[FaceLayerId::Base].is_empty());
+    // A shut eye draws its closed curve (see `eyes_lash.rs`), and no iris: nothing is clipped to an aperture.
+    assert_eq!(inside(&drawing[FaceLayerId::Base]).len(), 0);
     let wink = paint(&profile(), &PaintParams { left_eye: shut, ..base() });
     assert_eq!(inside(&wink[FaceLayerId::Base]).len(), 1, "only the open eye has an iris");
 }
@@ -388,7 +389,9 @@ fn the_ring_is_a_stroke_of_the_iris_outline_in_the_ring_colour() {
         .cmds()
         .iter()
         .filter_map(|c| match *c {
-            Cmd::Stroke { path, paint, width, .. } => Some((list.elements(path).to_vec(), paint, width)),
+            Cmd::Stroke { path, paint, width, .. } if paint == Paint::Solid(Colour::rgba(9, 8, 7, 140)) => {
+                Some((list.elements(path).to_vec(), paint, width))
+            }
             _ => None,
         })
         .collect();
@@ -452,11 +455,23 @@ fn the_catchlight_takes_the_profile_shape_and_the_effects_switch_it() {
     let heart = shape_of(&|f, _| f.eyes.highlights.shape = CatchlightShape::Heart);
     assert_eq!(heart[0].iter().filter(|e| matches!(e, PathEl::Cubic(..))).count(), 2);
     assert_eq!(shape_of(&|f, _| f.eyes.highlights.shape = CatchlightShape::None).len(), 0);
-    // The heart and star channels switch the shape (above one half), the heart first.
-    assert_eq!(shape_of(&|_, p| p.effects.heart = 0.7), heart);
-    assert_eq!(shape_of(&|_, p| p.effects.star = 0.7), star);
-    assert_eq!(shape_of(&|_, p| (p.effects.heart, p.effects.star) = (0.7, 0.9)), heart);
-    assert_eq!(shape_of(&|_, p| p.effects.heart = 0.4), blob, "below one half the profile's shape stays");
+    // The heart and star channels crossfade the shape in (the prototype switched at 0.5, which pops): at 1 it is the
+    // effect's alone, at 0.7 the effect's at 0.7 of the light and the profile's own at the 0.3 left.
+    assert_eq!(shape_of(&|_, p| p.effects.heart = 1.0), heart);
+    assert_eq!(shape_of(&|_, p| p.effects.star = 1.0), star);
+    let opacities = |amount: f32| {
+        let (profile, mut params) = (profile(), base());
+        params.effects.heart = amount;
+        let eyes = inside(&paint(&profile, &params)[FaceLayerId::Base]);
+        let blob_alpha = fills(&eyes[0]).filter(|f| f.0 == blob[0].as_slice()).map(|f| f.2).next();
+        let heart_alpha = fills(&eyes[0]).filter(|f| f.0 == heart[0].as_slice()).map(|f| f.2).next();
+        (blob_alpha, heart_alpha)
+    };
+    assert_eq!(opacities(0.0), (Some(0.95), None), "no effect draws no heart");
+    let (blob_alpha, heart_alpha) = opacities(0.7);
+    assert!((blob_alpha.unwrap() - 0.95 * 0.3).abs() < 1e-5 && (heart_alpha.unwrap() - 0.95 * 0.7).abs() < 1e-5);
+    // The two together never add up to more than a full catchlight, so nothing flashes at the middle.
+    assert!(blob_alpha.unwrap() + heart_alpha.unwrap() <= 0.95 + 1e-5);
 }
 
 #[test]

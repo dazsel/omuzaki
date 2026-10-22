@@ -371,7 +371,7 @@ A hairstyle is `HairParams { shading, physics, groups }`. Each group has `enable
 |---|---|---|
 | `cap` | scalp shell | hairline front and back (degrees from the top), ear notch, thickness |
 | `part_sweep` | scalp locks from the part line | part angles, count, end angles and heights, width, thickness |
-| `framing` | locks framing the face (tuck behind the ear on one side, hang to the chest on the other) | side, count, spread, an `[y, x]` inner-edge outline traced from the sheet, a free `tail` of guide points, wave |
+| `framing` | locks framing the face (tuck behind the ear on one side, hang to the chest on the other) | side, count, spread, an `[y, x]` inner-edge outline traced from the sheet, a free `tail` of guide points, wave, and optional `locks` (the prototype's own heights: `top`, `upper`, `lower`, `cheek`, `tuck_a`, `tuck_b`, `tuck_max_x`, the ear points `ear_top` and `ear_back`, `drop`, `end`); with `locks` unset the outline's rows and the `tail` are used |
 | `braid` | braid crown | path angles and heights, strands, lobes, swing, strand width |
 | `curtain` | long wavy hair | count, spread, root heights, lengths, a body-axis `envelope`, wave and curl, columns per strip |
 | `bangs` | close-up fringe | layers (count, spread, per-lock tip heights, width, hook, offsets, shade), wisps, sweep |
@@ -448,7 +448,7 @@ Body types (CB-04) and five-finger hands (RG-09) are P0, so the body kind's para
 | `hair_root` `hair_mid` `hair_tip` | the hair gradient |
 | `outfit_a` `outfit_b` `trim` | garments: two main colours and the accent |
 
-**Hooks for non-human templates (CB-05) and exploration (CB-93).** `BodyRegion` is `#[non_exhaustive]` so non-human regions (wings, tails, extra limbs) arrive as new variants. `Skeleton::new` in anim-api requires the 15 humanoid bones, so a non-human template needs a generic constructor there (under CB-05). Exploration needs every parameter's range: today `Check::range` only validates, so the inspector and CB-93 wait for range introspection (index gap G10: `Check` records ranges once it moves to `omuzaki-core`).
+**Hooks for non-human templates (CB-05) and exploration (CB-93).** `BodyRegion` is `#[non_exhaustive]` so non-human regions (wings, tails, extra limbs) arrive as new variants. `Skeleton::new` in anim-api requires the 15 humanoid bones, so a non-human template needs a generic constructor there (under CB-05). Exploration needs every parameter's range, and for the face profile it has them: `Check::range` records each range it checks as a `FieldRange`, `Validate::ranges` returns them (so they cannot drift from the checks), and `face.describe_style` exposes them. The inspector and CB-93 still wait for the same for body parameters (index gap G10: `Check` records ranges once it moves to `omuzaki-core`).
 
 ## Prototype crosswalk
 
@@ -481,7 +481,7 @@ Implemented by `omuzaki-char` and `omuzaki-face` (vertical slices, §39.1 rule 3
 |---|---|
 | `character.create`, `part.add`, `part.remove`, `part.set_enabled`, `part.reorder`, `part.duplicate` | `parts/<id>`, `enabled`, `layer`, `parent` (`part.duplicate` also copies `weight_brushes/<id>`) |
 | `character.rename { character, name }` | `name` |
-| `part.set_param { character, part, path, value }` | `parts/<id>/params/<path>`, validated through the kind's `check` |
+| `part.set_param { character, part, path, value, replace? }` | `parts/<id>/params/<path>`, validated through the kind's `check`. An object merges into the current one unless `replace` is true; setting a tagged enum's tag switches the variant; `null` removes an optional parameter or a map entry |
 | `face.set_profile { character, profile, blend }` | head `outline` and face `layout` together |
 | `face.set_style { character, path, value }` | `face/eyes`, `brows`, `mouth`, `nose`, `cheeks`, `marks` |
 | `face.set_mapping { character, path, value }` | `face/mapping/...` (exaggeration profiles) |
