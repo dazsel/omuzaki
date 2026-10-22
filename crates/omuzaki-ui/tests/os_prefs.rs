@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use omuzaki_ui::ds::os_prefs::{
     MotionPrefs, OsMotionSource, parse_gnome_enable_animations, parse_macos_defaults, parse_portal_reduced_motion,
-    parse_windows_mask, run_probe,
+    run_probe,
 };
 use omuzaki_ui::ds::{Settings, apply_settings, ds};
 
@@ -99,15 +99,6 @@ fn resolve_keeps_the_other_settings() {
     let out = p.resolve(base);
     assert!(out.reduce_motion);
     assert_eq!((out.theme, out.scale, out.density), (base.theme, base.scale, base.density));
-}
-
-#[test]
-fn windows_mask_parser() {
-    let on = "\nHKEY_CURRENT_USER\\Control Panel\\Desktop\n    UserPreferencesMask    REG_BINARY    9E3E078012000000\n";
-    let off = "    UserPreferencesMask    REG_BINARY    9C12038010000000\n";
-    assert_eq!(parse_windows_mask(on), Some(false));
-    assert_eq!(parse_windows_mask(off), Some(true));
-    assert_eq!(parse_windows_mask("nothing"), None);
 }
 
 #[test]

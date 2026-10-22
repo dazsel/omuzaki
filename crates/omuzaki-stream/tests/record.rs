@@ -27,7 +27,7 @@ use omuzaki_ops_api::{Actor, OpCtx, Services, ServicesBuilder, find};
 use omuzaki_render_api::{AlphaEncoding, Image};
 use omuzaki_settings_api::service::{Layer, Settings, SettingsExt as _};
 use omuzaki_stream::alpha::unpremultiply_u8;
-use omuzaki_stream::record::runtime::{AudioTrack, RecordPlan};
+use omuzaki_stream::record::runtime::{AudioTrack, RecordPlan, TrackStart};
 use omuzaki_stream::record::settings::{Dir, RecordFormat};
 use omuzaki_stream::record::take::{GapCause, TakeReport};
 use omuzaki_stream::service::{Program, PushOutcome, StreamService};
@@ -103,14 +103,21 @@ fn a_take_lands_on_disk_with_alpha_audio_and_a_manifest() {
         (TapRead { start_sample: 300, muted: true, ..TapRead::default() }, vec![0.9; 100]),
         (TapRead { start_sample: 450, gap_before: 50, ..TapRead::default() }, vec![0.25; 150]),
     ]));
-    let track =
-        AudioTrack { name: "mic".into(), source: Box::new(mic), rate: 1000, channels: 1, start_sample: Some(100) };
+    let track = AudioTrack {
+        name: "mic".into(),
+        source: Box::new(mic),
+        rate: 1000,
+        channels: 1,
+        start: TrackStart::Sample(100),
+    };
     let started = service
         .record_start(RecordPlan {
             dir: dir.path().to_owned(),
             stem: "take".into(),
             format: RecordFormat::PngSequence,
             tracks: vec![track],
+            hold: None,
+            guard: None,
         })
         .unwrap();
     assert_eq!((started.size, started.fps), ([64, 36], [30, 1]));
@@ -156,6 +163,47 @@ fn a_take_lands_on_disk_with_alpha_audio_and_a_manifest() {
 }
 
 #[test]
+fn a_track_waiting_for_the_first_frame_starts_where_that_frame_was_captured() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = StreamService::new().unwrap();
+    service.set_program(Program { size: SIZE, fps: (30, 1) });
+    // A 1 kHz source whose every sample holds its stream position, from 1500 (1.5 s): the tap opened before the take.
+    let positions: Vec<f32> = (1500..3000).map(|p| p as f32).collect();
+    let mic =
+        Runs(std::collections::VecDeque::from([(TapRead { start_sample: 1500, ..TapRead::default() }, positions)]));
+    // The engine clock in this test: sample n at n milliseconds.
+    let align = Box::new(|t: Ticks| u64::try_from(t.0 / 1_000_000).unwrap());
+    let track = AudioTrack {
+        name: "mic".into(),
+        source: Box::new(mic),
+        rate: 1000,
+        channels: 1,
+        start: TrackStart::FirstFrame(align),
+    };
+    let plan = RecordPlan {
+        dir: dir.path().to_owned(),
+        stem: "take".into(),
+        format: RecordFormat::PngSequence,
+        tracks: vec![track],
+        hold: None,
+        guard: None,
+    };
+    service.record_start(plan).unwrap();
+    // The first frame is captured at 2 s.
+    for n in 0..6u8 {
+        let outcome = service.push(&picture(n), Ticks(2_000_000_000 + i64::from(n) * FRAME_NS));
+        assert_eq!(outcome, PushOutcome::Queued);
+        wait_pumped(&service, u64::from(n) + 1);
+    }
+    let report = service.record_stop().unwrap();
+    let samples: Vec<f32> =
+        hound::WavReader::open(&report.tracks[0].files[0]).unwrap().samples::<f32>().map(Result::unwrap).collect();
+    assert_eq!(samples.first().copied(), Some(2000.0), "the track's first sample is the first frame's");
+    assert_eq!(samples.len(), 1000);
+    assert!(report.tracks[0].gaps.is_empty(), "{:?}", report.tracks[0].gaps);
+}
+
+#[test]
 fn skipped_slots_are_repeats_and_a_second_take_waits_for_the_first() {
     let dir = tempfile::tempdir().unwrap();
     let service = StreamService::new().unwrap();
@@ -165,6 +213,8 @@ fn skipped_slots_are_repeats_and_a_second_take_waits_for_the_first() {
         stem: stem.into(),
         format: RecordFormat::PngSequence,
         tracks: Vec::new(),
+        hold: None,
+        guard: None,
     };
     service.record_start(plan("gappy")).unwrap();
     assert!(matches!(service.record_start(plan("other")), Err(omuzaki_stream_api::error::StreamError::Busy)));

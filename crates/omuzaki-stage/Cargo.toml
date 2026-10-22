@@ -80,12 +80,18 @@ omuzaki-http = { path = "../omuzaki-http" }
 # without a third-party file (`tests/avatar_stage.rs`, `tests/fbx_avatar.rs`).
 omuzaki-io-fbx = { path = "../omuzaki-io-fbx" }
 omuzaki-io-vrm = { path = "../omuzaki-io-vrm" }
+# CIELAB for the measurement rig's flatness test (`tests/measure_flat.rs`).
+omuzaki-measure = { path = "../omuzaki-measure" }
+# The executor the history thumbnails follow (`tests/history_thumbs.rs`).
+omuzaki-ops = { path = "../omuzaki-ops" }
 omuzaki-render-mock = { path = "../omuzaki-render-mock" }
 omuzaki-settings = { path = "../omuzaki-settings" }
 omuzaki-stream = { path = "../omuzaki-stream" }
 omuzaki-store-mock = { path = "../omuzaki-store-mock" }
 omuzaki-track-mock = { path = "../omuzaki-track-mock" }
 omuzaki-track-net = { path = "../omuzaki-track-net" }
+# The steady-clock load `examples/live_times.rs --steady` runs in front of each frame.
+wgpu.workspace = true
 # The registration scan behind the link gate (`tests/registrations.rs`, ADR 0015).
 xtask = { path = "../../xtask" }
 
@@ -102,6 +108,11 @@ harness = false
 [[bench]]
 name = "perform"
 harness = false
+
+# The live loop's frame times on a real GPU against the spec §10 budgets: the kit character and its imported VRM.
+[[example]]
+name = "live_times"
+required-features = ["wgpu"]
 
 [lints]
 workspace = true

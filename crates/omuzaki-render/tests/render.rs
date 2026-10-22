@@ -365,6 +365,20 @@ fn aces_with_exposure_matches_the_three_js_curve_on_saturated_colours() {
     }
     println!("ACES on the GPU vs three.js: worst {worst:.2} levels over {} colours at 2 exposures", colours.len());
 
+    // The mock is the reference other tests compare against, so it draws the same curve (#630).
+    let mut mock = MockRenderer::new();
+    let mut worst_mock = 0.0f64;
+    for exposure in [1.0f32, 2.0] {
+        let cells = aces_cells(&mut mock, &colours, exposure);
+        for (&rgb, cell) in colours.iter().zip(&cells) {
+            let want = three_js_aces(rgb, f64::from(exposure));
+            let error = (0..3).map(|c| (f64::from(cell[c]) - want[c]).abs()).fold(0.0, f64::max);
+            assert!(error <= 1.0, "{rgb:?} at exposure {exposure}: mock {cell:?}, three.js {want:?}");
+            worst_mock = worst_mock.max(error);
+        }
+    }
+    println!("ACES in the mock vs three.js: worst {worst_mock:.2} levels");
+
     // Two values written out, so the test reads without the formula: mid grey, and a saturated green at exposure 2.
     let grey = aces_cells(&mut r, &[[128, 128, 128]], 1.0);
     assert_close(grey[0], [141, 141, 141, 255], 1, "grey 128 at exposure 1");

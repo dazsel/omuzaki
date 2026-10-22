@@ -2,3 +2,4 @@
 pub mod png;
 pub mod wav;
 pub mod webm;
+pub mod webm_mux;

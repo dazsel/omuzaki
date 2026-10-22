@@ -115,7 +115,7 @@ impl MockRenderer {
                 dynamic_meshes: true,
                 morph_targets: true,
                 max_morph_targets: MAX_MORPH_TARGETS,
-                mtoon: MtoonSupport::NONE,
+                mtoon: MtoonSupport::OUTLINE_STYLE,
             },
             meshes: Arena::default(),
             textures: Arena::default(),
@@ -162,7 +162,7 @@ impl MockRenderer {
             frame,
             render_size: drawn.render_size,
             cpu,
-            gpu: Some(GpuTimings { frame, passes: gpu }),
+            gpu: Some(GpuTimings { frame, passes: gpu, painters: None }),
             draw_calls: drawn.draw_calls,
             triangles: drawn.triangles,
         }

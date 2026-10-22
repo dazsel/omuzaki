@@ -15,9 +15,10 @@ use image::{ExtendedColorType, ImageEncoder, codecs::png::PngEncoder};
 use crate::avatar::AvatarStage;
 use crate::body::Body;
 use crate::error::StageError;
-use crate::frame::face::{FaceRig, SETTLE_STEPS};
+use crate::frame::face::{FacePoints, FaceRig, SETTLE_STEPS};
 use crate::frame::pose::seed_base_pose;
 use crate::frame::{FrameInput, Stage, StageClock};
+use crate::scene::alone::StagedScene;
 use crate::upload::UploadOptions;
 
 /// The stage clock's rate for stills: a still has no real time, so the clock only has to be fixed and nonzero.
@@ -62,13 +63,33 @@ pub struct StillSpec {
     pub size: UVec2,
     /// The render quality of every still.
     pub quality: Quality,
+    /// A stored scene the character stands in (its ground, backdrop, lights and post look, and where the subject
+    /// stands); `None` for `light` alone, with the character at the origin.
+    pub scene: Option<StagedScene>,
+    /// The pose every still shows; `None` for the body's own (as sculpted, or an imported avatar at ease).
+    pub pose: Option<HumanoidPose>,
 }
 
 impl StillSpec {
     /// A spec of `size` pixels, lit by `light`, rendered at `quality`.
     #[must_use]
     pub fn new(light: StillLight, size: UVec2, quality: Quality) -> Self {
-        Self { light, size, quality }
+        Self { light, size, quality, scene: None, pose: None }
+    }
+
+    /// A spec of `size` pixels in `scene`: its light and look, its ground disc and the subject's place on the floor.
+    #[must_use]
+    pub fn in_scene(scene: StagedScene, size: UVec2, quality: Quality) -> Self {
+        let r = &scene.resolved;
+        let light = StillLight::new(r.lights.as_slice().to_vec(), r.background, r.post).with_outline_light(r.outline_light);
+        Self { light, size, quality, scene: Some(scene), pose: None }
+    }
+
+    /// The same spec with every still in `pose`, when there is one.
+    #[must_use]
+    pub fn with_pose(mut self, pose: Option<HumanoidPose>) -> Self {
+        self.pose = pose;
+        self
     }
 }
 
@@ -105,6 +126,9 @@ pub struct Still {
     pub image: Image,
     /// The renderer's report for the frame that made the picture.
     pub report: FrameReport,
+    /// Where the painted face's eyes, mouth and chin are in the picture; `None` without a painted face (an imported
+    /// avatar) or when it isn't visible ([`Stage::face_points`]).
+    pub face: Option<FacePoints>,
 }
 
 /// Stages `built` on `renderer` once, settles it, and renders one still per shot, in order.
@@ -158,7 +182,13 @@ pub fn render_body_stills(
         .map_err(|source| StageError::render("the still's target", source))?;
     let outcome = AvatarStage::new(renderer, *avatar, still_scene(spec), target, spec.quality, StageClock::fixed(STILL_FPS))
         .and_then(|mut stage| {
-            let base = FrameInput { pose: stage.base_pose(), ..FrameInput::default() };
+            if let Some(staged) = &spec.scene {
+                stage.set_scene(&staged.resolved, staged.subject_root);
+                if let Err(error) = stage.pay_scene(renderer) {
+                    return first_error(Err(error), stage.release(renderer));
+                }
+            }
+            let base = FrameInput { pose: spec.pose.unwrap_or_else(|| stage.base_pose()), ..FrameInput::default() };
             // As the kit's stills: a frame at the base pose, the springs settled from rest under it, and every shot a
             // redraw of that state, so a shot's pixels don't depend on the shots before it.
             let shot = stage.tick(renderer, &base).and_then(|_| {
@@ -168,7 +198,7 @@ pub fn render_body_stills(
                     stage.scene_mut().camera = shot.camera;
                     let frame = stage.redraw(renderer, &base)?;
                     let image = renderer.read_target(target).map_err(|source| StageError::render("the still", source))?;
-                    stills.push(Still { image, report: frame.report });
+                    stills.push(Still { image, report: frame.report, face: None });
                 }
                 Ok(stills)
             });
@@ -216,6 +246,9 @@ fn shoot_on(
     // landmarks that framing reads are measured in; the T-pose of `FrameInput::default()` would put the hands elsewhere.
     let mut base = HumanoidPose::REST;
     seed_base_pose(&built.rig, &mut base);
+    if let Some(pose) = spec.pose {
+        base = pose;
+    }
     let mut stage = Stage::new(
         renderer,
         built,
@@ -225,17 +258,25 @@ fn shoot_on(
         spec.quality,
         StageClock::fixed(STILL_FPS),
     )?;
-    let outcome = render_shots(renderer, &mut stage, has_face, &base, shots);
+    let outcome = spec
+        .scene
+        .as_ref()
+        .map_or(Ok(()), |staged| {
+            stage.set_scene(&staged.resolved, staged.subject_root);
+            stage.pay_scene(renderer)
+        })
+        .and_then(|()| render_shots(renderer, &mut stage, has_face, &base, spec.size, shots));
     let released = stage.release(renderer);
     first_error(outcome, released)
 }
 
-/// Binds the face, settles the stage and renders each shot in order.
+/// Binds the face, settles the stage and renders each shot in order, with where the face is in each picture of `size`.
 fn render_shots(
     renderer: &mut dyn Renderer,
     stage: &mut Stage,
     has_face: bool,
     base: &HumanoidPose,
+    size: UVec2,
     shots: &[Shot],
 ) -> Result<Vec<Still>, StageError> {
     if has_face {
@@ -256,7 +297,7 @@ fn render_shots(
         let input = FrameInput { channels: channels_of(stage, shot)?, pose: *base, ..FrameInput::default() };
         let frame = stage.redraw(renderer, &input)?;
         let image = renderer.read_target(target).map_err(|source| StageError::render("the still", source))?;
-        stills.push(Still { image, report: frame.report });
+        stills.push(Still { image, report: frame.report, face: stage.face_points(size) });
     }
     Ok(stills)
 }
@@ -305,15 +346,20 @@ pub fn encode_png(image: &Image) -> Result<Vec<u8>, StageError> {
         let reason = format!("{} bytes for a {width}x{height} RGBA image (needs {expected:?})", image.rgba8.len());
         return Err(StageError::render("the PNG", RenderError::invalid("image", reason)));
     }
-    let straight = match image.alpha {
-        AlphaEncoding::Straight => image.rgba8.clone(),
-        AlphaEncoding::Premultiplied => unpremultiply(&image.rgba8),
-    };
+    let straight = straight_rgba(image);
     let mut bytes = Vec::new();
     PngEncoder::new(&mut bytes)
         .write_image(&straight, width, height, ExtendedColorType::Rgba8)
         .map_err(|error| StageError::render("the PNG", RenderError::invalid("image", error.to_string())))?;
     Ok(bytes)
+}
+
+/// `image`'s pixels with straight alpha: as they are, or unpremultiplied ([`unpremultiply`]).
+pub fn straight_rgba(image: &Image) -> Vec<u8> {
+    match image.alpha {
+        AlphaEncoding::Straight => image.rgba8.clone(),
+        AlphaEncoding::Premultiplied => unpremultiply(&image.rgba8),
+    }
 }
 
 /// The straight-alpha pixels of premultiplied `rgba8`: each colour channel `c` with alpha `a` becomes `c * 255 / a`,

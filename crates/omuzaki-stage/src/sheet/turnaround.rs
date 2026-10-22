@@ -3,7 +3,8 @@
 //!
 //! Every view uses the same camera, lights, pose and settled simulation; the character turns on the spot, so the
 //! lighting is identical in all four and hair that was settled under one yaw is settled under the others. A cell is
-//! framed by the character's height (crown to sole plus a margin), so `px_per_m` is the same in every view, and the
+//! framed by the pose as drawn in all four views (crown to sole, or its widest reach across when the cell is narrower
+//! than that, plus a margin), so `px_per_m` is the same in every view, and the
 //! [`Framing`] of each view says where the head and the eye line landed, for the hair trace tool and the character
 //! builder to reuse.
 //!
@@ -90,8 +91,8 @@ pub enum SheetPose {
     /// A confident stance, [`hero_pose`].
     Hero,
     /// Any pose, in the normalised space of [`HumanoidPose`]: what the pose library (RG-06) will hand a sheet. The
-    /// shot is framed by the bind-pose height, so a pose that leaves that frame (sitting, jumping, a raised arm) is
-    /// refused with [`TurnaroundError::Unsupported`], never clipped or reframed; posed framing is follow-up #1854.
+    /// shot is framed from the pose as drawn (#1854), so sitting, jumping or a raised arm fills the cell as the rest
+    /// pose does; only hair or cloth that settles beyond the margin is refused with [`TurnaroundError::Unsupported`].
     Custom(Box<HumanoidPose>),
 }
 
@@ -228,8 +229,9 @@ pub enum TurnaroundError {
     /// The cell is empty, or the character has no height to frame.
     #[error("{0}")]
     Invalid(String),
-    /// The pose, as drawn, reaches outside the frame the shot was made for, so the sheet would be clipped. The shot is
-    /// framed by the character's bind-pose height; framing a pose that sits, jumps or reaches is follow-up #1854.
+    /// A view, as drawn once settled, reaches outside the frame the shot was made for, so the sheet would be clipped. The
+    /// shot is framed from the pose as drawn before settling (#1854), so this is what the hair and cloth settle to
+    /// beyond the margin.
     #[error("{0}")]
     Unsupported(String),
     /// The cell needs tiles but the lens is a perspective one, whose sub-windows are off-axis.
@@ -283,10 +285,12 @@ pub struct TurnaroundSheet {
     pub views: Vec<TurnaroundView>,
 }
 
-/// The vertical extent of the character in the pose it was built in, and its head joint: the facts framing needs.
+/// The extent framing fits into the cell: the character's sole and crown heights, how far it reaches to either side of
+/// its axis, and its head joint (bind space, for the eye line and head centre).
 struct Subject {
     sole: f32,
     crown: f32,
+    half_width: f32,
     head_joint: Vec3,
 }
 
@@ -307,8 +311,51 @@ impl Subject {
             .ok_or_else(|| TurnaroundError::Invalid("the character has no head bone".to_owned()))?;
         let bind_head = built.rig.inverse_bind().get(head.index()).map(|m| m.inverse().transform_point3(Vec3::ZERO));
         let head_joint = bind_head.ok_or_else(|| TurnaroundError::Invalid("the head bone has no bind".to_owned()))?;
-        Ok(Self { sole, crown, head_joint })
+        Ok(Self { sole, crown, half_width: 0.0, head_joint })
     }
+
+    /// Fits the subject to `posed`, the extent of the pose as drawn over the four views (see [`posed_extent`]): its
+    /// width always, so a pose that reaches sideways widens the shot instead of being clipped; its height for a custom
+    /// pose, which may sit, jump or reach up; a built-in pose keeps the bind pose's height, so every character's rest
+    /// and hero sheets are framed alike.
+    fn fit(mut self, posed: Extent, custom: bool) -> Self {
+        if custom {
+            (self.sole, self.crown) = (posed.sole, posed.crown);
+        }
+        self.half_width = posed.half_width;
+        self
+    }
+}
+
+/// The world-space extent of the character's drawn vertices: lowest and highest points, and the farthest any point is
+/// from the vertical axis across the screen of a view.
+#[derive(Copy, Clone, Debug)]
+struct Extent {
+    sole: f32,
+    crown: f32,
+    half_width: f32,
+}
+
+/// The extent of `pose` as drawn in all four views: each view's tick turns and poses the character, the spring bones,
+/// hair and cloth are put at rest under it (so the extent depends on the pose alone, not on earlier frames; what they
+/// settle to is the margin's to hold), and its drawn vertices are measured. The camera looks along -Z, so a point's
+/// distance across the screen is its `x`.
+fn posed_extent(stage: &mut Stage, renderer: &mut dyn Renderer, pose: &HumanoidPose) -> Result<Extent, TurnaroundError> {
+    let mut extent = Extent { sole: f32::INFINITY, crown: f32::NEG_INFINITY, half_width: 0.0 };
+    for view in View::ALL {
+        let root = Mat4::from_rotation_y(view.yaw_deg().to_radians());
+        stage.tick(renderer, &FrameInput { pose: *pose, root, ..FrameInput::default() })?;
+        stage.settle_from_rest(0);
+        for p in stage.drawn_vertices() {
+            extent.sole = extent.sole.min(p.y);
+            extent.crown = extent.crown.max(p.y);
+            extent.half_width = extent.half_width.max(p.x.abs());
+        }
+    }
+    if extent.crown.partial_cmp(&extent.sole) != Some(std::cmp::Ordering::Greater) {
+        return Err(TurnaroundError::Invalid("the posed character has no extent to frame".to_owned()));
+    }
+    Ok(extent)
 }
 
 /// The camera of a view, and the maths that puts world points in its cell.
@@ -319,9 +366,13 @@ struct Shot {
 }
 
 impl Shot {
-    /// Frames `subject` so its height plus [`MARGIN`] fills the cell's height, looking along -Z at its mid-height.
+    /// Frames `subject` so its height plus [`MARGIN`] fills the cell's height, looking along -Z at its mid-height, unless
+    /// its width plus the margin needs more: then the width fills the cell's width.
     fn new(subject: &Subject, spec: &TurnaroundSpec) -> Self {
-        let framed = (subject.crown - subject.sole) * (1.0 + 2.0 * MARGIN);
+        let cell = spec.cell.as_vec2();
+        let tall = (subject.crown - subject.sole) * (1.0 + 2.0 * MARGIN);
+        let wide = 2.0 * subject.half_width * (1.0 + 2.0 * MARGIN) * cell.y / cell.x;
+        let framed = tall.max(wide);
         let mid = Vec3::new(0.0, f32::midpoint(subject.crown, subject.sole), 0.0);
         let distance = 0.5 * framed / (0.5 * TELEPHOTO_FOV_DEG.to_radians()).tan();
         let (near, far) = (0.5 * distance, 2.0 * distance);
@@ -413,6 +464,8 @@ fn cell_bytes(cell: UVec2) -> Option<usize> {
 ///   ([`restore_settings`]);
 /// - the stage's last frame: its pin (an outer caller's, if any), `tick`, `root`, `pose` and `goals`, and with them the
 ///   rig, the scene's `instances` and `joints`, and `frame` ([`Stage::unpin_time`]);
+/// - the face: the sheet's frames paint the neutral face, so the caller's last channels are painted again at the
+///   caller's last tick, into the face rig the stage has after the sheet (a variant may have swapped in);
 /// - the sheet's own target, released.
 ///
 /// What it does not give back is what the hair and cloth settled to.
@@ -422,6 +475,8 @@ struct SheetScope<'a> {
     target: TargetId,
     saved: Option<Scene>,
     pin: Option<TimePin>,
+    /// The face channels and tick of the caller's last frame, if it painted a face.
+    face: Option<(omuzaki_anim_api::ChannelBuf, omuzaki_anim_api::Tick)>,
 }
 
 impl<'a> SheetScope<'a> {
@@ -438,21 +493,27 @@ impl<'a> SheetScope<'a> {
             .create_target(&TargetDesc { size: UVec2::splat(1), alpha: AlphaEncoding::Straight })
             .map_err(|e| StageError::render("the sheet's target", e))?;
         let saved = stage.scene().clone();
+        let face = stage.face_state();
         *stage.scene_mut() = neutral_scene(&saved, Camera::default(), lights, look, background);
         let pin = stage.pin_time(SHEET_TICK);
-        Ok(Self { stage, renderer, target, saved: Some(saved), pin: Some(pin) })
+        Ok(Self { stage, renderer, target, saved: Some(saved), pin: Some(pin), face })
     }
 
     /// Gives everything back, once.
     ///
     /// # Errors
-    /// [`StageError::Render`] if the renderer refuses to release the target; the rest is restored regardless.
+    /// [`StageError::Render`] if the renderer refuses to release the target, or what repainting the caller's face
+    /// reports; the rest is restored regardless.
     fn restore(&mut self) -> Result<(), StageError> {
         let (Some(saved), Some(pin)) = (self.saved.take(), self.pin.take()) else { return Ok(()) };
         self.stage.unpin_time(&pin);
+        let face = match self.face.take() {
+            Some((channels, tick)) => self.stage.repaint_face(self.renderer, &channels, tick),
+            None => Ok(()),
+        };
         let released = self.renderer.release(ResourceRef::from(self.target));
         restore_settings(self.stage.scene_mut(), saved);
-        released.map_err(|e| StageError::render("the sheet's target", e))
+        released.map_err(|e| StageError::render("the sheet's target", e)).and(face)
     }
 
     /// Gives everything back and reports a failed release.
@@ -464,7 +525,7 @@ impl<'a> SheetScope<'a> {
 impl Drop for SheetScope<'_> {
     fn drop(&mut self) {
         if let Err(cleanup) = self.restore() {
-            tracing::warn!(%cleanup, "releasing the turnaround sheet's target failed");
+            tracing::warn!(%cleanup, "giving the stage back after the turnaround sheet failed");
         }
     }
 }
@@ -476,8 +537,6 @@ fn draw_sheet(scope: &mut SheetScope<'_>, spec: &TurnaroundSpec) -> Result<Turna
     // A face variant staged before the call swaps in at the next tick, and with it the character's meshes and rig, so
     // that tick comes first and everything the sheet measures is read from the character it will draw.
     stage.tick(renderer, &FrameInput::default())?;
-    let subject = Subject::of(stage.built())?;
-    let shot = Shot::new(&subject, spec);
     let tile = tile_side(renderer, spec);
     if matches!(spec.lens, Lens::Telephoto) && (spec.cell.x > tile || spec.cell.y > tile) {
         return Err(TurnaroundError::TilingNeedsOrthographic { cell: spec.cell, tile });
@@ -487,6 +546,9 @@ fn draw_sheet(scope: &mut SheetScope<'_>, spec: &TurnaroundSpec) -> Result<Turna
         SheetPose::Hero => hero_pose(&stage.built().rig.bind),
         SheetPose::Custom(pose) => **pose,
     };
+    let posed = posed_extent(stage, renderer, &pose)?;
+    let subject = Subject::of(stage.built())?.fit(posed, matches!(spec.pose, SheetPose::Custom(_)));
+    let shot = Shot::new(&subject, spec);
     stage.scene_mut().camera = shot.camera;
     let run = Run { spec, subject, shot, pose, target, tile };
     let views = View::ALL.into_iter().map(|view| run.view(stage, renderer, view)).collect::<Result<Vec<_>, _>>()?;
@@ -568,17 +630,17 @@ impl Run<'_> {
         Ok(TurnaroundView { view, image, framing: framing(stage, &self.subject, &self.shot, root, &drawn) })
     }
 
-    /// Refuses a view whose drawn vertices leave the cell vertically: the shot is framed by the bind-pose height, so
-    /// a pose that sits, jumps or reaches can fall outside it, and a clipped sheet is never returned. The width is the
-    /// cell's own: the shot frames height, and how wide a figure fits is the caller's cell shape.
+    /// Refuses a view whose drawn vertices leave the cell on either axis, so a clipped sheet is never returned. The
+    /// shot is framed from the pose as drawn before settling, so only what the hair and cloth settle to beyond the
+    /// margin (or a perspective lens's nearest points) can still fall outside.
     fn check_fits(&self, view: View, drawn: &[Vec3]) -> Result<(), TurnaroundError> {
         let (min, max) = pixel_bounds(drawn, &self.shot);
-        let rows = self.shot.cell.as_vec2().y;
-        if min.y < 0.0 || max.y > rows {
+        let cell = self.shot.cell.as_vec2();
+        if min.x < 0.0 || min.y < 0.0 || max.x > cell.x || max.y > cell.y {
             return Err(TurnaroundError::Unsupported(format!(
-                "the {view:?} view's pose spans rows {:.0} to {:.0}, outside the {} rows of the cell the shot was framed \
-                 for from the bind pose's height; posed framing is follow-up #1854",
-                min.y, max.y, self.shot.cell.y
+                "the {view:?} view spans columns {:.0} to {:.0} and rows {:.0} to {:.0} once settled, outside the \
+                 {}x{} cell it was framed for: the hair or cloth settles beyond the margin",
+                min.x, max.x, min.y, max.y, self.shot.cell.x, self.shot.cell.y
             )));
         }
         Ok(())

@@ -26,6 +26,8 @@
 //! | [`ops::scene`] | the `stage.*` scene ops |
 //! | [`recipe`] | the recipe type with its post settings, [`lights`](recipe::lights), [`camera`](recipe::camera), [`ground`](recipe::ground) |
 //! | [`ops::render`] | `render.preview`, `render.turnaround`, `render.contact_sheet`, `render.compare` |
+//! | [`ops::golden`] | `render.golden.bless`, `render.golden.check`, `render.golden.set_scene`: the project's goldens |
+//! | [`history`] | [`thumbs`](history::thumbs): a thumbnail per committed transaction, off the UI and frame threads, and its [`index`](history::index) |
 //! | [`sheet`] | [`layout`](sheet::layout), [`turnaround`](sheet::turnaround), [`expressions`](sheet::expressions), [`export`](sheet::export) |
 //! | [`ops::sheet`] | the `sheet.*` ops |
 //!

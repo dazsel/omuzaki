@@ -1,7 +1,7 @@
 section = "rust"
 item = "tungstenite 0.30"
 kind = "crate"
-used_for = "the WebSocket handshake and framing of the in-process mock VTube Studio server and its test client (`omuzaki-vts`, feature `testing`, never in a default build); the OBS WebSocket client (BR-19) can reuse it, or its async wrapper tokio-tungstenite"
+used_for = "the OBS WebSocket client (`omuzaki-obs`, BR-19: one sync connection thread to OBS on this machine or the LAN), and the WebSocket handshake and framing of the in-process mock VTube Studio server and its test client (`omuzaki-vts`, feature `testing`, never in a default build)"
 status = "yes"
 condition = "MIT OR Apache-2.0 (the `license` field of tungstenite 0.30.0, checked 2026-10-15): keep the notices; pulls in data-encoding, http, httparse, sha1 and their permissive dependencies, all MIT OR Apache-2.0 (verified by `cargo deny`)"
 audit = "#726"

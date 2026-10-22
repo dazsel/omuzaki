@@ -1,0 +1,250 @@
+//! `render.preview` in a scene (#416, design scenes D5, D9, D10): the character stands alone in a copy of a stored
+//! scene, in its subject's place, lit, backed and grounded as the scene is, and shot from one of its cameras or a preset
+//! framing, optionally under another light rig. The document never changes. On the GPU: the kit's four body templates
+//! in the default scene against the light-rig path it replaces, and every library rig.
+
+// Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+#![allow(clippy::cast_precision_loss)]
+
+#[path = "render/support.rs"]
+mod support;
+
+use omuzaki_char_api::CharId;
+use omuzaki_core::time::{FakeClock, Seconds};
+use omuzaki_doc_api::DocWrite;
+use omuzaki_doc_mock::MemDoc;
+use omuzaki_ops_api::{Actor, ErrorCode, Op, OpCtx, OpError};
+use omuzaki_stage::ops::render::preview::{Preview, PreviewResult};
+use omuzaki_stage::scene::alone::{ShotChoice, cast_alone};
+use omuzaki_stage::scene::default::scene_for;
+use omuzaki_stage_api::{Anchor, CameraId, Framing, MemberId, SceneId};
+use serde::de::DeserializeOwned;
+use serde_json::{Value, json};
+
+use support::{Harness, TestDoc, mock_doc};
+
+/// Plans `args` as op `T` on `doc` and applies its patch.
+fn apply<T: Op + DeserializeOwned>(doc: &mut MemDoc, args: Value) {
+    let actor = Actor::Person { name: "test".to_owned() };
+    let clock = FakeClock::new(Seconds(0.0));
+    let op: T = serde_json::from_value(args).expect("the arguments read");
+    let plan = op.plan(&OpCtx::new(doc, &actor, &clock)).unwrap_or_else(|e| panic!("{}: {e:?}", T::meta().name));
+    doc.apply(&plan.patch).expect("applies");
+}
+
+/// The mock character in a project with two scenes: `main` (the default, casting it as `mock`, the studio rig) and
+/// `night` (a transparent backdrop, no ground, the candle rig, opening on a `close` camera).
+fn project() -> MemDoc {
+    use omuzaki_stage::ops::scene::camera::{AddCamera, SetActiveCamera};
+    use omuzaki_stage::ops::scene::create::CreateScene;
+    use omuzaki_stage::ops::scene::light::SetLightRig;
+    use omuzaki_stage::ops::scene::look::{SetBackdrop, SetGround};
+
+    let TestDoc(mut doc) = mock_doc();
+    apply::<CreateScene>(&mut doc, json!({ "id": "main", "cast": ["mock"] }));
+    apply::<CreateScene>(&mut doc, json!({ "id": "night", "cast": [] }));
+    apply::<SetBackdrop>(&mut doc, json!({ "scene": "night", "kind": "transparent" }));
+    apply::<SetGround>(&mut doc, json!({ "scene": "night", "kind": "none" }));
+    apply::<SetLightRig>(&mut doc, json!({ "scene": "night", "rig": "viewer-candle" }));
+    apply::<AddCamera>(&mut doc, json!({ "scene": "night", "id": "close", "framing": "face", "yaw": -20.0 }));
+    apply::<SetActiveCamera>(&mut doc, json!({ "scene": "night", "camera": "close" }));
+    doc
+}
+
+fn run(harness: &Harness, args: Value) -> Result<PreviewResult, OpError> {
+    let op: Preview = serde_json::from_value(args).expect("the arguments read");
+    let (plan, value) = harness.run(&op)?;
+    assert!(plan.patch.is_empty(), "a preview changes nothing in the document");
+    Ok(serde_json::from_value(value).expect("the result reads"))
+}
+
+#[test]
+fn a_preview_stands_in_the_opening_scene_by_default_and_the_same_call_gives_the_same_bytes() {
+    // A job reads the document and its plan's patch is empty (checked in `run`), so the document stays as it was.
+    let harness = Harness::new(TestDoc(project()));
+    let args = json!({ "character": "mock", "size": [64, 96], "quality": "offline" });
+    let first = run(&harness, args.clone()).unwrap();
+    assert_eq!((first.scene.as_deref(), first.camera.as_str()), (Some("main"), "full"), "the opening scene and camera");
+    let again = run(&harness, args).unwrap();
+    assert_eq!(first.hash, again.hash, "the same document and arguments give the same bytes");
+
+    let night = run(&harness, json!({ "character": "mock", "scene": "night", "size": [64, 96] })).unwrap();
+    assert_eq!((night.scene.as_deref(), night.camera.as_str()), (Some("night"), "close"));
+    assert_ne!(night.hash, first.hash, "another scene, another picture");
+}
+
+#[test]
+fn a_project_without_scenes_previews_in_the_built_in_default_scene() {
+    let harness = Harness::new(mock_doc());
+    let result = run(&harness, json!({ "character": "mock", "size": [64, 96] })).unwrap();
+    assert_eq!((result.scene, result.camera.as_str()), (None, "full"));
+    let framed = run(&harness, json!({ "character": "mock", "framing": "bust", "size": [64, 96] })).unwrap();
+    assert_eq!(framed.camera, "shot", "a framing without a camera is a fresh camera from the front");
+}
+
+#[test]
+fn camera_framing_and_light_rig_are_checked_before_the_render() {
+    let harness = Harness::new(TestDoc(project()));
+    let refused = |args: Value| run(&harness, args).expect_err("refused");
+    let e = refused(json!({ "character": "mock", "camera": "nope" }));
+    assert_eq!((e.code, e.field.as_deref()), (ErrorCode::Invalid, Some("camera")));
+    assert!(e.message.contains("full"), "names the cameras it has: {}", e.message);
+    let e = refused(json!({ "character": "mock", "framing": "free" }));
+    assert_eq!(e.field.as_deref(), Some("framing"));
+    let e = refused(json!({ "character": "mock", "light_rig": "disco" }));
+    assert_eq!(e.field.as_deref(), Some("light_rig"));
+    let e = refused(json!({ "character": "mock", "scene": "nowhere" }));
+    assert_eq!(e.code, ErrorCode::NotFound);
+    let e = refused(json!({ "character": "nobody" }));
+    assert_eq!(e.code, ErrorCode::NotFound);
+
+    let rigged = run(
+        &harness,
+        json!({ "character": "mock", "light_rig": "viewer-moonlit", "camera": "bust", "size": [64, 96] }),
+    )
+    .unwrap();
+    assert_eq!(rigged.camera, "bust");
+}
+
+#[test]
+fn alone_takes_the_subjects_place_and_its_anchors() {
+    let mut doc = project();
+    apply::<omuzaki_stage::ops::scene::cast::PlaceCharacter>(
+        &mut doc,
+        json!({ "character": "mock", "id": "guest", "position": [1.5, 0.3], "yaw": 40.0 }),
+    );
+    apply::<omuzaki_stage::ops::scene::cast::SetSubject>(&mut doc, json!({ "member": "guest" }));
+    apply::<omuzaki_stage::ops::scene::light::SetLight>(&mut doc, json!({ "light": "rim", "anchor": "member:mock" }));
+    let (_, mut def) = scene_for(&doc, Some(&SceneId::new("main").unwrap())).unwrap();
+    let member = cast_alone(&mut def, &CharId::new("mock").unwrap(), None).unwrap();
+    assert_eq!(member, MemberId::new("guest").unwrap(), "the subject's id");
+    assert_eq!(def.cast.len(), 1);
+    let stands = &def.cast[&member];
+    assert_eq!((stands.position, stands.yaw), ([1.5, 0.3], 40.0), "the subject's place");
+    assert_eq!(def.lighting.lights[&"rim".parse().unwrap()].anchor, Anchor::Subject, "another member's light follows");
+    def.check().expect("the copy keeps the rules");
+
+    let mut choice = ShotChoice::default();
+    choice.camera = Some(CameraId::new("bust").unwrap());
+    choice.framing = Some(Framing::Face);
+    choice.yaw = Some(15.0);
+    let id = choice.apply(&mut def).unwrap();
+    let camera = &def.cameras[&id];
+    assert_eq!((camera.framing, camera.yaw), (Framing::Face, 15.0));
+    assert_eq!(def.scene.camera.as_ref(), Some(&id));
+}
+
+/// On lavapipe: contact sheet 1 is the kit's four body templates at `full`, `bust` and `face`, each the light-rig path
+/// `render.preview` took before (left) beside the default scene it stands in now (right); contact sheet 2 is every
+/// library rig through `light_rig` on `soft-sd` and `standard`. Set `OMUZAKI_EVIDENCE_DIR` to keep the sheets.
+#[cfg(feature = "wgpu")]
+#[test]
+#[allow(clippy::disallowed_methods, reason = "the evidence images are written beside the test, not by an op")]
+fn on_the_gpu_the_default_scene_and_every_rig() {
+    use omuzaki_char::ops::character::create::CharacterCreate;
+    use omuzaki_core::glam::UVec2;
+    use omuzaki_render::{AdapterPreference, HeadlessOptions, WgpuRenderer};
+    use omuzaki_stage::ops::render::contact_sheet::{ContactSheet, ContactSheetResult};
+    use omuzaki_stage::ops::render::job::{DEFAULT_LIGHT_RIG, RenderQuality, still_light, store_png};
+    use omuzaki_stage::ops::render::still::{Shot, StillSpec, encode_png, render_body_stills};
+    use omuzaki_stage::recipe::LightRig;
+    use omuzaki_stage::scene::frame::frame;
+    use omuzaki_stage_api::CameraDef;
+    use omuzaki_store_api::Store;
+
+    const SIZE: [u32; 2] = [192, 256];
+    const TEMPLATES: [&str; 4] = ["soft-sd", "mini", "standard", "tall"];
+    let mut doc = MemDoc::from_value(json!({}));
+    for template in TEMPLATES {
+        let id = template.replace('-', "_");
+        apply::<CharacterCreate>(&mut doc, json!({ "id": id, "name": template, "template": template, "seed": 7 }));
+    }
+    let renderer =
+        WgpuRenderer::headless(&HeadlessOptions { adapter: AdapterPreference::Software }).expect("lavapipe opens");
+    let harness = Harness::on(TestDoc(doc), Box::new(renderer));
+    let sheet = |uris: Vec<String>, columns: usize| -> ContactSheetResult {
+        let op: ContactSheet = serde_json::from_value(json!({ "images": uris, "columns": columns })).unwrap();
+        serde_json::from_value(harness.run(&op).expect("lays out").1).unwrap()
+    };
+    let keep = |name: &str, hash: &str| {
+        if let Some(dir) = std::env::var_os("OMUZAKI_EVIDENCE_DIR") {
+            let png = harness.store.get(&hash.parse().unwrap()).unwrap();
+            std::fs::write(std::path::Path::new(&dir).join(format!("{name}.png")), png).unwrap();
+        }
+    };
+
+    // Sheet 1: before (the rig alone, the character at the origin, no ground) and after (the default scene).
+    let clock = FakeClock::new(Seconds(0.0));
+    let mut cells = Vec::new();
+    for template in TEMPLATES {
+        let id = template.replace('-', "_");
+        for framing in ["full", "bust", "face"] {
+            let before = harness.with_job(|job| {
+                let body = job
+                    .read(|doc| {
+                        let services = omuzaki_stage::body::BodyServices::new(
+                            job.service::<dyn omuzaki_char_api::CharacterBuilder>()?,
+                            job.service::<omuzaki_char_api::BuildServices>()?,
+                            job.service::<dyn omuzaki_store_api::Store>()?,
+                            omuzaki_render_api::MtoonSupport::NONE,
+                            &clock,
+                        );
+                        omuzaki_stage::body::load_body(
+                            doc,
+                            &services,
+                            &CharId::new(&id).unwrap(),
+                            None,
+                            RenderQuality::Offline.detail(),
+                        )
+                    })
+                    .unwrap();
+                let landmarks = body.landmarks().unwrap();
+                let framing: Framing = serde_json::from_value(json!(framing)).unwrap();
+                let camera = frame(framing, &landmarks, &CameraDef::preset(framing), 0.75).unwrap();
+                let spec = StillSpec::new(
+                    still_light(DEFAULT_LIGHT_RIG).unwrap(),
+                    UVec2::from(SIZE),
+                    RenderQuality::Offline.quality(),
+                );
+                let stills = omuzaki_stage::ops::render::job::with_renderer(job, |r| {
+                    render_body_stills(r, body, &spec, &[Shot::new(camera)])
+                })
+                .unwrap();
+                store_png(job, &encode_png(&stills[0].image).unwrap()).unwrap().uri
+            });
+            let after =
+                run(&harness, json!({ "character": id, "framing": framing, "size": SIZE, "quality": "offline" }))
+                    .unwrap();
+            cells.push(before);
+            cells.push(after.uri);
+        }
+    }
+    let one = sheet(cells, 6);
+    keep("preview-default-scene-sheet", &one.hash);
+
+    // Sheet 2: every rig on soft-sd and standard, bust, with few clipped pixels on the character.
+    let mut cells = Vec::new();
+    for rig in LightRig::names() {
+        for id in ["soft_sd", "standard"] {
+            let shot = run(
+                &harness,
+                json!({ "character": id, "light_rig": rig, "framing": "bust", "size": SIZE, "quality": "offline" }),
+            )
+            .unwrap();
+            let png = harness.store.get(&shot.hash.parse().unwrap()).unwrap();
+            let image = image::load_from_memory(&png).unwrap().to_rgba8();
+            let corner = *image.get_pixel(0, 0);
+            let figure: Vec<_> =
+                image.pixels().filter(|p| p.0.iter().zip(corner.0).any(|(a, b)| a.abs_diff(b) > 8)).collect();
+            let clipped = figure.iter().filter(|p| p.0[..3].iter().all(|c| *c == 255)).count();
+            let share = clipped as f64 / figure.len().max(1) as f64;
+            println!("{rig} on {id}: {} figure pixels, {clipped} clipped white ({share:.4})", figure.len());
+            assert!(figure.len() > (SIZE[0] * SIZE[1]) as usize / 10, "{rig} on {id}: the character shows");
+            assert!(share < 0.01, "{rig} on {id}: {share:.4} of the character is clipped white");
+            cells.push(shot.uri);
+        }
+    }
+    let two = sheet(cells, 2);
+    keep("preview-light-rigs-sheet", &two.hash);
+}

@@ -29,9 +29,12 @@ use omuzaki_stream_api::error::StreamError;
 use omuzaki_stream_api::output::{
     AlphaNeed, Lanes, Output, OutputConfig, OutputInfo, OutputState, OutputStatus, SubmitReport,
 };
+use omuzaki_stream_api::time::Ticks;
+use omuzaki_update_api::hold::Hold;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::disk::{DiskSlot, DiskState, GuardPlan, estimate_rate};
 use super::settings::RecordFormat;
 use super::take::{Gap, GapCause, StopCause, TakeReport, TrackReport};
 use crate::i420;
@@ -63,11 +66,27 @@ pub struct AudioTrack {
     pub rate: u32,
     /// Interleaved channels.
     pub channels: u16,
-    /// The stream position (in samples, as [`AudioSource`] counts them) that lines up with the first video frame.
-    /// Earlier samples are dropped, and silence fills up to it if the source starts later. `None` takes the source
-    /// from its first sample.
-    pub start_sample: Option<u64>,
+    /// Which stream position lines up with the first video frame.
+    pub start: TrackStart,
 }
+
+/// Which stream position of a track (in samples, as [`AudioSource`] counts them) lines up with the take's first video
+/// frame. Earlier samples are dropped, and silence fills up to it if the source starts later.
+pub enum TrackStart {
+    /// The source's first sample.
+    First,
+    /// This stream position.
+    Sample(u64),
+    /// The position this gives for the first frame's capture time: for an engine tap, the engine clock's sample at
+    /// that time plus the tap's capture offset. The track waits (its tap buffers) until the first frame arrives.
+    FirstFrame(Align),
+}
+
+/// Maps the first frame's capture time to a track's stream position.
+pub type Align = Box<dyn FnOnce(Ticks) -> u64 + Send>;
+
+/// A track's start before the first frame has fixed it.
+const START_PENDING: u64 = u64::MAX;
 
 /// What to record, with the format already chosen.
 pub struct RecordPlan {
@@ -79,6 +98,10 @@ pub struct RecordPlan {
     pub format: RecordFormat,
     /// The audio tracks.
     pub tracks: Vec<AudioTrack>,
+    /// The update hold the take keeps until it stops or fails, so the app never restarts into an update mid-take.
+    pub hold: Option<Hold>,
+    /// The disk guard: refuse to start, and stop cleanly, before the disk fills. `None` runs unguarded.
+    pub guard: Option<GuardPlan>,
 }
 
 /// What the video half of a take does with frames.
@@ -404,6 +427,10 @@ struct TrackState {
     written: u64,
     /// Whether the first sample has been lined up with `start_sample`.
     aligned: bool,
+    /// The stream position that lines up with the first frame, if fixed.
+    start_sample: Option<u64>,
+    /// Set by the recorder at the first frame, for a [`TrackStart::FirstFrame`] track: [`START_PENDING`] until then.
+    pending: Option<Arc<AtomicU64>>,
 }
 
 impl TrackState {
@@ -428,8 +455,17 @@ impl TrackState {
         Ok(())
     }
 
-    /// Reads everything the source has now into the file.
-    fn drain(&mut self, buf: &mut [f32]) -> Result<(), StreamError> {
+    /// Reads everything the source has now into the file. A track still waiting for the first frame reads nothing,
+    /// unless this is the `last` pass (a take with no frames), which takes the source from its first sample.
+    fn drain(&mut self, buf: &mut [f32], last: bool) -> Result<(), StreamError> {
+        if let Some(pending) = &self.pending {
+            match pending.load(Ordering::Acquire) {
+                START_PENDING if !last => return Ok(()),
+                START_PENDING => {}
+                s0 => self.start_sample = Some(s0),
+            }
+            self.pending = None;
+        }
         loop {
             let run = self.track.source.read(buf);
             if run.len == 0 {
@@ -438,7 +474,7 @@ impl TrackState {
             let mut skip = 0usize;
             if self.aligned {
                 self.silence(run.gap_before, GapCause::Lost)?;
-            } else if let Some(s0) = self.track.start_sample {
+            } else if let Some(s0) = self.start_sample {
                 let end = run.start_sample + run.len as u64;
                 if end <= s0 {
                     continue;
@@ -483,7 +519,7 @@ impl AudioPump {
                 loop {
                     let last = flag.load(Ordering::Acquire);
                     for state in &mut states {
-                        state.drain(&mut buf)?;
+                        state.drain(&mut buf, last)?;
                     }
                     if last {
                         break;
@@ -511,6 +547,8 @@ pub struct Recorder {
     stem: String,
     format: RecordFormat,
     tracks: Vec<AudioTrack>,
+    /// The first-frame starts still to fix, each with the cell its track reads.
+    aligners: Vec<(Align, Arc<AtomicU64>)>,
     cfg: Option<OutputConfig>,
     state: OutputState,
     video: Option<Box<dyn VideoWriter>>,
@@ -521,6 +559,13 @@ pub struct Recorder {
     full: u64,
     last_error: Option<StreamError>,
     report: ReportSlot,
+    /// Released when the take stops, fails or is dropped.
+    hold: Option<Hold>,
+    guard: Option<GuardPlan>,
+    /// The take's planning rate, bytes per second, fixed at start.
+    rate: u64,
+    disk: DiskSlot,
+    next_disk_check: Option<Instant>,
 }
 
 impl Recorder {
@@ -531,6 +576,7 @@ impl Recorder {
             stem: plan.stem,
             format: plan.format,
             tracks: plan.tracks,
+            aligners: Vec::new(),
             cfg: None,
             state: OutputState::Idle,
             video: None,
@@ -540,7 +586,37 @@ impl Recorder {
             full: 0,
             last_error: None,
             report: Arc::new(Mutex::new(None)),
+            hold: plan.hold,
+            guard: plan.guard,
+            rate: 0,
+            disk: Arc::new(Mutex::new(None)),
+            next_disk_check: None,
         }
+    }
+
+    /// Where the take's disk state appears while it records.
+    pub fn disk_slot(&self) -> DiskSlot {
+        Arc::clone(&self.disk)
+    }
+
+    /// Asks the disk, records the answer and returns it; `None` without a guard or when the disk can't be asked.
+    fn check_disk(&mut self, now: Instant) -> Option<DiskState> {
+        let guard = self.guard.as_ref()?;
+        self.next_disk_check = Some(now + guard.every);
+        let state = guard.check(&self.dir, self.rate);
+        *lock(&self.disk) = state;
+        state
+    }
+
+    /// Closes the take with `cause` and keeps its report.
+    fn close(&mut self, cause: StopCause) {
+        let result = self.finish(cause);
+        if let Err(e) = &result {
+            self.last_error = Some(e.clone());
+        }
+        self.state = if result.is_ok() { OutputState::Stopped } else { OutputState::Failed };
+        *lock(&self.report) = Some(result);
+        self.hold = None;
     }
 
     /// Where the take's report appears once the recorder stops.
@@ -566,7 +642,7 @@ impl Recorder {
         }
     }
 
-    fn finish(&mut self) -> Result<TakeReport, StreamError> {
+    fn finish(&mut self, cause: StopCause) -> Result<TakeReport, StreamError> {
         let cfg = self.cfg.clone().ok_or(StreamError::Stopped)?;
         let tracks = match self.audio.take() {
             Some(audio) => audio.finish()?,
@@ -580,7 +656,7 @@ impl Recorder {
             }
         }
         let duration_s = seconds_of(self.frames, cfg.fps);
-        let stop_cause = if self.last_error.is_some() { StopCause::WriteFailed } else { StopCause::Requested };
+        let stop_cause = if self.last_error.is_some() { StopCause::WriteFailed } else { cause };
         let report = TakeReport {
             kind: "take".into(),
             stem: self.stem.clone(),
@@ -602,6 +678,15 @@ impl Recorder {
     }
 }
 
+fn video_fps(cfg: Option<&OutputConfig>) -> (u32, u32) {
+    cfg.map_or((30, 1), |c| c.fps)
+}
+
+#[allow(clippy::cast_possible_truncation)] // Seconds of a take: far below 2^63 ns.
+fn seconds_to_ticks(seconds: f64) -> i64 {
+    (seconds * 1e9).round() as i64
+}
+
 #[allow(clippy::cast_precision_loss)] // Frame counts far below 2^52.
 fn seconds_of(frames: u64, fps: (u32, u32)) -> f64 {
     frames as f64 * f64::from(fps.1) / f64::from(fps.0.max(1))
@@ -618,12 +703,41 @@ impl Output for Recorder {
         }
         std::fs::create_dir_all(&self.dir)
             .map_err(|e| StreamError::Io(format!("could not create {}: {e}", self.dir.display())))?;
+        self.rate = estimate_rate(self.format, cfg.size, cfg.fps);
+        if self.check_disk(Instant::now()) == Some(DiskState::Stop) {
+            let keep = self.guard.as_ref().map_or(0, |g| g.guard.min_free >> 20);
+            self.hold = None;
+            return Err(StreamError::Unavailable {
+                what: "room on the recordings disk".into(),
+                hint: format!(
+                    "free space on the disk holding {} (a take keeps {keep} MiB free, record.min_free_mb), or choose another folder in record.dir",
+                    self.dir.display()
+                ),
+            });
+        }
         let video = self.open_video(cfg)?;
         let mut states = Vec::with_capacity(self.tracks.len());
-        for track in self.tracks.drain(..) {
+        for mut track in self.tracks.drain(..) {
             let sink =
                 WavSink::create(&self.dir.join(format!("{}_{}", self.stem, track.name)), track.rate, track.channels)?;
-            states.push(TrackState { track, sink, gaps: Vec::new(), written: 0, aligned: false });
+            let (start_sample, pending) = match std::mem::replace(&mut track.start, TrackStart::First) {
+                TrackStart::First => (None, None),
+                TrackStart::Sample(s) => (Some(s), None),
+                TrackStart::FirstFrame(align) => {
+                    let cell = Arc::new(AtomicU64::new(START_PENDING));
+                    self.aligners.push((align, Arc::clone(&cell)));
+                    (None, Some(cell))
+                }
+            };
+            states.push(TrackState {
+                track,
+                sink,
+                gaps: Vec::new(),
+                written: 0,
+                aligned: false,
+                start_sample,
+                pending,
+            });
         }
         self.audio = if states.is_empty() { None } else { Some(AudioPump::start(states)?) };
         self.video = Some(video);
@@ -638,7 +752,18 @@ impl Output for Recorder {
         }
         let started = Instant::now();
         let image = frame.cpu.ok_or_else(|| StreamError::Config("the recorder reads the CPU image".into()))?;
+        // Once a second by default: the disk about to fill ends the take cleanly, before this frame, with every file readable.
+        if self.next_disk_check.is_some_and(|at| started >= at) && self.check_disk(started) == Some(DiskState::Stop) {
+            self.close(StopCause::DiskLow);
+            return Ok(SubmitReport::new(started.elapsed().as_secs_f32() * 1000.0, 0.0, 0));
+        }
         let video = self.video.as_mut().ok_or(StreamError::Stopped)?;
+        // The first frame fixes where the waiting tracks start: frame 0 is the take's first frame (the pacer's zero).
+        for (align, cell) in self.aligners.drain(..) {
+            let ticks =
+                Ticks(frame.capture_time.0 - seconds_to_ticks(seconds_of(frame.index, video_fps(self.cfg.as_ref()))));
+            cell.store(align(ticks).min(START_PENDING - 1), Ordering::Release);
+        }
         self.frames = self.frames.max(frame.index + 1);
         let dropped = match video.submit(frame.index, image) {
             Ok(true) => {
@@ -652,6 +777,7 @@ impl Output for Recorder {
             Err(e) => {
                 self.last_error = Some(e.clone());
                 self.state = OutputState::Failed;
+                self.hold = None;
                 return Err(e);
             }
         };
@@ -672,12 +798,7 @@ impl Output for Recorder {
         if !matches!(self.state, OutputState::Running | OutputState::Failed) || self.video.is_none() {
             return;
         }
-        let result = self.finish();
-        if let Err(e) = &result {
-            self.last_error = Some(e.clone());
-        }
-        self.state = if result.is_ok() { OutputState::Stopped } else { OutputState::Failed };
-        *lock(&self.report) = Some(result);
+        self.close(StopCause::Requested);
     }
 }
 
@@ -689,6 +810,7 @@ pub(crate) struct ActiveTake {
     video: PathBuf,
     started: Instant,
     report: ReportSlot,
+    disk: DiskSlot,
 }
 
 /// What `record.start` answers.
@@ -727,6 +849,10 @@ pub struct RecordStatus {
     pub queue_fill: f32,
     /// The take's last error, if any.
     pub error: Option<String>,
+    /// The disk's state while a guarded take records: `low` gives the seconds of space left.
+    pub disk: Option<DiskState>,
+    /// Why the take ended on its own (the disk was about to fill, a write failed); `record.stop` returns its report.
+    pub ended: Option<StopCause>,
 }
 
 impl StreamService {
@@ -736,17 +862,35 @@ impl StreamService {
     /// [`StreamError::Busy`] while another take records, or what [`Recorder`]'s start reports.
     pub fn record_start(&self, plan: RecordPlan) -> Result<RecordStarted, StreamError> {
         let mut active = lock(&self.recording);
-        if active.is_some() {
-            return Err(StreamError::Busy);
+        if let Some(take) = active.as_ref() {
+            // A take that ended on its own (its report is in its manifest) makes way for the next.
+            if lock(&take.report).is_none() {
+                return Err(StreamError::Busy);
+            }
+            let id = take.id;
+            *active = None;
+            let _ = self.stop(id);
         }
         let program = self.program();
         let recorder = Recorder::new(plan);
-        let (stem, format, video, report) =
-            (recorder.stem.clone(), recorder.format, recorder.video_path(), recorder.report_slot());
+        let (stem, format, video, report, disk) = (
+            recorder.stem.clone(),
+            recorder.format,
+            recorder.video_path(),
+            recorder.report_slot(),
+            recorder.disk_slot(),
+        );
         let cfg = OutputConfig::new(stem.clone(), program.size, program.fps)?;
         let id = self.start(Box::new(recorder), cfg)?;
-        *active =
-            Some(ActiveTake { id, stem: stem.clone(), format, video: video.clone(), started: Instant::now(), report });
+        *active = Some(ActiveTake {
+            id,
+            stem: stem.clone(),
+            format,
+            video: video.clone(),
+            started: Instant::now(),
+            report,
+            disk,
+        });
         Ok(RecordStarted {
             stem,
             format,
@@ -781,11 +925,18 @@ impl StreamService {
                 dropped_frames: 0,
                 queue_fill: 0.0,
                 error: None,
+                disk: None,
+                ended: None,
             };
         };
         let status = self.outputs().into_iter().find(|o| o.id == take.id);
+        let ended = match lock(&take.report).as_ref() {
+            Some(Ok(report)) => Some(report.stop_cause),
+            Some(Err(_)) => Some(StopCause::WriteFailed),
+            None => None,
+        };
         RecordStatus {
-            recording: true,
+            recording: ended.is_none(),
             stem: Some(take.stem.clone()),
             format: Some(take.format),
             video: Some(take.video.clone()),
@@ -794,6 +945,8 @@ impl StreamService {
             dropped_frames: status.as_ref().map_or(0, |s| s.dropped),
             queue_fill: status.as_ref().map_or(0.0, |s| s.queue_fill),
             error: status.and_then(|s| s.error),
+            disk: *lock(&take.disk),
+            ended,
         }
     }
 }

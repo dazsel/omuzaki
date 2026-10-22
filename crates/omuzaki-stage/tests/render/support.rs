@@ -85,7 +85,16 @@ impl Harness {
 
     /// A harness over `doc` that leaves out `missing`, if given.
     pub fn without(doc: TestDoc, missing: Option<Missing>) -> Self {
-        let renderer: Arc<Mutex<Box<dyn Renderer>>> = Arc::new(Mutex::new(Box::new(MockRenderer::new())));
+        Self::build(doc, missing, Box::new(MockRenderer::new()))
+    }
+
+    /// A harness over `doc` with every service, rendering on `renderer` (the wgpu one, for the GPU tests).
+    pub fn on(doc: TestDoc, renderer: Box<dyn Renderer>) -> Self {
+        Self::build(doc, None, renderer)
+    }
+
+    fn build(doc: TestDoc, missing: Option<Missing>, renderer: Box<dyn Renderer>) -> Self {
+        let renderer: Arc<Mutex<Box<dyn Renderer>>> = Arc::new(Mutex::new(renderer));
         let store = Arc::new(MemStore::new());
         let mut builder = ServicesBuilder::new();
         if missing != Some(Missing::Renderer) {
@@ -109,6 +118,32 @@ impl Harness {
         let signal = TestSignal;
         let job = JobCtx::new(JobId(1), &actor, &self.doc, &signal).with_services(&self.services);
         f(&job)
+    }
+
+    /// The document the jobs read.
+    pub fn doc(&self) -> &MemDoc {
+        &self.doc.0
+    }
+
+    /// The document, to edit between jobs.
+    pub fn doc_mut(&mut self) -> &mut MemDoc {
+        &mut self.doc.0
+    }
+
+    /// Runs `op` to the end as the executor does: plans it as a dry run, runs its work, finishes it against the
+    /// document and applies the finished patch. Returns the dry run's plan and the finished one.
+    ///
+    /// # Errors
+    /// Whatever planning, the work or finishing fails with.
+    pub fn run_to_end<O: Op>(&mut self, op: &O) -> Result<(Plan, Plan), OpError> {
+        let (plan, value) = self.run(op)?;
+        let actor = Actor::Person { name: "test".to_owned() };
+        let clock = FakeClock::new(Seconds(0.0));
+        let ctx = OpCtx::new(&self.doc.0, &actor, &clock).with_services(&self.services);
+        let finished = op.finish(&ctx, value)?;
+        omuzaki_doc_api::DocWrite::apply(&mut self.doc.0, &finished.patch)
+            .map_err(|e| OpError::internal(format!("applying the finished patch: {e}")))?;
+        Ok((plan, finished))
     }
 
     /// Plans `op` as a dry run, then runs its work, as a job would. Returns the plan and the work's result.

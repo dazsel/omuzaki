@@ -26,6 +26,7 @@ use omuzaki_ui::panels::io::Io;
 use omuzaki_ui::panels::viewport::camera::OrbitCamera;
 use omuzaki_ui::panels::viewport::gpu::Gpu;
 use omuzaki_ui::panels::viewport::{Viewport, ViewportServices};
+use omuzaki_ui::shell::history::{Preview, Viewing};
 use serde_json::json;
 
 /// How many pointer moves the drag test makes.
@@ -354,6 +355,41 @@ fn a_preview_shows_on_the_next_frame() {
         "restage and draw on the frame after an edit: median {:.1} ms, worst {:.1} ms (UI frame with the character build {:.1} ms; the rest is the stage's render and the software readback)",
         frames[3], frames[5], builds[3]
     );
+}
+
+#[test]
+fn a_past_state_from_history_is_drawn_in_place_of_the_document_until_back() {
+    let Some(mut h) = rig() else { return };
+    h.try_run().unwrap_or_else(|e| panic!("{e}"));
+    render(&mut h);
+    let now = render(&mut h);
+    let preview = Preview::default();
+    h.state_mut().viewport.set_preview(Some(preview.clone()));
+    h.step();
+    render(&mut h);
+    let before = renders(&h);
+    // A past document whose character has its garment eased far out: what History hands over when a row is opened.
+    let mut past = json!({"characters": {"mock": node()}});
+    if let Some(ease) = past.pointer_mut("/characters/mock/parts/vest/params/ease") {
+        *ease = json!(0.03);
+    }
+    preview.view(Viewing { seq: 1, label: "Set ease".to_owned(), doc: Arc::new(past) });
+    h.step();
+    let shown = render(&mut h);
+    assert_eq!(renders(&h), before + 1, "the past state was built and drawn by the next frame");
+    assert!(h.query_by_label_contains("Viewing a past state: after Set ease").is_some(), "the viewport says so");
+    assert!(h.state().runner.records().is_empty(), "viewing ran no op: the document is untouched");
+    let (_, changed) = compare(&now, &shown);
+    eprintln!("the past state differs from now in {changed} pixels");
+    h.get_by_label("Back to now").click();
+    h.step();
+    h.step();
+    let back = render(&mut h);
+    assert!(preview.seq().is_none(), "Back to now leaves the preview");
+    assert!(h.query_by_label_contains("Viewing a past state").is_none(), "the line went with it");
+    // The simulated hair curtain keeps settling, so "as it is" is near, not exact: far nearer than the past state was.
+    let (_, apart) = compare(&now, &back);
+    assert!(apart * 20 < changed, "back to now draws the document as it is: {apart} pixels apart, the past {changed}");
 }
 
 #[test]

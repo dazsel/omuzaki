@@ -10,15 +10,17 @@ use omuzaki_char_api::{
 };
 use omuzaki_core::glam::UVec2;
 use omuzaki_doc_api::DocRead;
-use omuzaki_ops_api::{CostHint, JobCtx, OpError};
-use omuzaki_render_api::{Quality, Renderer, ShadowQuality};
+use omuzaki_ops_api::{CostHint, JobCtx, OpCtx, OpError};
+use omuzaki_render_api::{Capabilities, MtoonSupport, Quality, Renderer, ShadowQuality};
 use omuzaki_store_api::{Commercial, ContentHash, Provenance, Source, Store};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::still::StillLight;
+use crate::body::{BodyServices, load_body};
 use crate::error::StageError;
 use crate::recipe::LightRig;
+use crate::upload::UploadOptions;
 
 /// The smallest side of a render, pixels.
 pub const MIN_SIDE: u32 = 16;
@@ -52,6 +54,16 @@ impl RenderQuality {
         }
     }
 
+    /// The preset's name, as the arguments spell it.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Live => "live",
+            Self::High => "high",
+            Self::Offline => "offline",
+        }
+    }
+
     /// The character's level of detail. High uses the offline build too: a denser mesh than the live one is what
     /// `High` asks for.
     #[must_use]
@@ -63,25 +75,95 @@ impl RenderQuality {
     }
 }
 
-/// `size` as a target size.
+/// The largest side of a texture every renderer supports (wgpu's guaranteed `max_texture_dimension_2d`): the limit on a
+/// render's internal size, which is its output size times the preset's render scale.
+pub const MAX_TEXTURE_SIDE: u32 = 4096;
+
+/// `size` as a target size for a render at `quality`.
 ///
 /// # Errors
-/// `Invalid` for field `size`, naming the limits, when a side is outside [`MIN_SIDE`]`..=`[`MAX_SIDE`].
-pub fn check_size(size: [u32; 2]) -> Result<UVec2, OpError> {
+/// `Invalid` for field `size`, naming the limits, when a side is outside [`MIN_SIDE`]`..=`[`MAX_SIDE`], or when the
+/// preset's internal size (the side times its render scale, rounded up) is above [`MAX_TEXTURE_SIDE`]: `high` renders at
+/// 1.5 times the output, so its largest side is 2730.
+pub fn check_size(size: [u32; 2], quality: RenderQuality) -> Result<UVec2, OpError> {
     let [x, y] = size;
     let within = |side: u32| (MIN_SIDE..=MAX_SIDE).contains(&side);
-    if within(x) && within(y) {
-        return Ok(UVec2::new(x, y));
+    if !(within(x) && within(y)) {
+        return Err(OpError::invalid(
+            "size",
+            format!("size {x}x{y} is outside the limits: each side is {MIN_SIDE} to {MAX_SIDE} pixels"),
+        )
+        .hint("pick a size between the limits; the offline quality is slowest at the largest"));
     }
-    Err(OpError::invalid("size", format!("size {x}x{y} is outside the limits: each side is {MIN_SIDE} to {MAX_SIDE} pixels"))
-        .hint("pick a size between the limits; the offline quality is slowest at the largest"))
+    let largest = max_side(quality);
+    if x.max(y) > largest {
+        let scale = quality.quality().render_scale;
+        return Err(OpError::invalid(
+            "size",
+            format!(
+                "size {x}x{y} is too large for {} quality, which renders at {scale} times the size: each side is at most \
+                 {largest} pixels, for an internal size within the {MAX_TEXTURE_SIDE} pixel texture limit",
+                quality.name()
+            ),
+        )
+        .hint("pick a smaller size, or the live or offline quality, which render at the output size"));
+    }
+    Ok(UVec2::new(x, y))
+}
+
+/// The largest output side `quality` can render: the largest whose internal side is within [`MAX_TEXTURE_SIDE`], and
+/// never above [`MAX_SIDE`]. The internal side is worked out as `omuzaki-render` does (`internal_size`: the side times
+/// the render scale, rounded).
+#[must_use]
+pub fn max_side(quality: RenderQuality) -> u32 {
+    let scale = quality.quality().render_scale;
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "sides of at most 4096 and a positive scale, as the renderer computes them"
+    )]
+    let internal = |side: u32| (side as f32 * scale).round() as u32;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "a positive quotient below 2^14")]
+    let mut side = ((f64::from(MAX_TEXTURE_SIDE) / f64::from(scale)).floor() as u32).clamp(MIN_SIDE, MAX_SIDE);
+    // The rounding can put the quotient's side one over; step down until the internal side fits.
+    while side > MIN_SIDE && internal(side) > MAX_TEXTURE_SIDE {
+        side -= 1;
+    }
+    side
 }
 
 /// One mebibyte, in bytes.
 const MIB: u64 = 1 << 20;
-/// MiB the character's own GPU data takes (meshes and textures), added to a render's images. An allowance, not a
-/// measurement.
-const CHARACTER_MIB: u64 = 64;
+/// What a render charges for its character when its plan has no builder to load it with ([`character_bytes`]): an
+/// allowance, not a measurement. A job without the builder cannot run, so only a bare plan sees it.
+const CHARACTER_ALLOWANCE: u64 = 64 * MIB;
+
+/// The GPU memory character `id` takes on a render's renderer, for its cost hint (#2092): the character loaded as
+/// the job will load it (`variant` applied, at `quality`'s detail) and counted at the renderer's bounds
+/// ([`Body::gpu_bytes`](crate::body::Body::gpu_bytes)), with the face layers at the stills' density. With the
+/// caching builder the load is mostly the cache's, and the job's own load after it is too.
+///
+/// [`CHARACTER_ALLOWANCE`] when `ctx` has no builder, store or build services: a bare plan.
+///
+/// # Errors
+/// What [`load_body`](crate::body::load_body) reports: a character that doesn't exist, read, build or prepare.
+pub fn character_bytes(
+    ctx: &OpCtx<'_>,
+    id: &CharId,
+    variant: Option<&VariantId>,
+    quality: RenderQuality,
+) -> Result<u64, OpError> {
+    let (Ok(builder), Ok(build), Ok(store)) =
+        (ctx.service::<dyn CharacterBuilder>(), ctx.service::<BuildServices>(), ctx.service::<dyn Store>())
+    else {
+        return Ok(CHARACTER_ALLOWANCE);
+    };
+    let mtoon = ctx.service::<Capabilities>().map_or(MtoonSupport::NONE, |c| c.mtoon);
+    let services = BodyServices::new(builder, build, store, mtoon, ctx.clock);
+    let body = load_body(ctx.doc, &services, id, variant, quality.detail())?;
+    Ok(body.gpu_bytes(UploadOptions::default()))
+}
 
 // The sizes and formats below mirror `omuzaki-render`, which the stage does not depend on. Change them together with the
 // renderer: the test `the_cost_hint_counts_every_image_the_render_allocates` pins the arithmetic.
@@ -136,8 +218,9 @@ fn bloom_bytes(target: UVec2) -> u64 {
     (bright + mips) * HALF_RGBA_BYTES
 }
 
-/// The cost hint of `images` stills of `size`: an upper bound for the GPU memory a render's images take at peak, plus
-/// [`CHARACTER_MIB`] for the character's meshes and textures. It counts, at the preset's sizes and formats:
+/// The cost hint of `images` stills of `size` of a character taking `character` bytes on the GPU
+/// ([`character_bytes`]): an upper bound for the GPU memory a render takes at peak. Besides the character, it counts
+/// the render's images, at the preset's sizes and formats:
 ///
 /// - the scene attachments at the internal size (`size` times the preset's render scale, rounded up), with the preset's
 ///   sample count, the most it asks for, so the renderer's own choice can only be lower;
@@ -149,13 +232,12 @@ fn bloom_bytes(target: UVec2) -> u64 {
 ///   every preset, and it is the cache's worst case: the job's own chain is one of its three slots.
 ///
 /// Not counted: depth of field, whose layers are cached the same way but which no still enables (`LightRig::post`);
-/// environment maps, which a still's scene never names; and the morph buffers, which are character data and so fall in
-/// the [`CHARACTER_MIB`] allowance with the meshes and textures.
+/// environment maps, which a still's scene never names. The morph buffers are the character's, in `character`.
 ///
 /// Worked: a 4096 by 4096 high still at 4 samples. Its internal size is 6144 by 6144, at 56 bytes a pixel: 2016 MiB of
 /// attachments. The shadow map is 2048 by 2048 at 4 bytes: 16 MiB. The output is 64 MiB and the read-back 64 MiB. The
-/// bloom chain of a 4096 target is 117 MiB, and three of them are 352 MiB. Together with the 64 MiB allowance, the total
-/// is 2576 MiB.
+/// bloom chain of a 4096 target is 117 MiB, and three of them are 352 MiB. With a character of 64 MiB, the total is
+/// 2576 MiB.
 ///
 /// Seconds per still: 0.2 live, 0.5 high, 2.0 offline. No money is spent. Setting `gpu_mib` puts the job on the GPU
 /// lane.
@@ -166,7 +248,7 @@ fn bloom_bytes(target: UVec2) -> u64 {
     clippy::cast_sign_loss,
     reason = "a job's image count stays far below 2^24, and a rounded-up pixel count is a non-negative whole number"
 )]
-pub fn cost(size: UVec2, images: u32, quality: RenderQuality) -> CostHint {
+pub fn cost(size: UVec2, images: u32, quality: RenderQuality, character: u64) -> CostHint {
     let preset = quality.quality();
     let internal = |side: u32| (f64::from(side) * f64::from(preset.render_scale)).ceil() as u64;
     let target = u64::from(size.x) * u64::from(size.y);
@@ -176,14 +258,32 @@ pub fn cost(size: UVec2, images: u32, quality: RenderQuality) -> CostHint {
     let readback = (u64::from(size.x) * OUTPUT_BYTES).next_multiple_of(COPY_ROW_ALIGNMENT) * u64::from(size.y);
     let largest = UVec2::splat(MAX_TARGET_SIDE);
     let bloom = BLOOM_CACHED_CHAINS * bloom_bytes(largest);
-    let bytes = attachments + shadow + output + readback + bloom;
-    let mib = u32::try_from(bytes.div_ceil(MIB) + CHARACTER_MIB).unwrap_or(u32::MAX);
+    let bytes = attachments + shadow + output + readback + bloom + character;
+    let mib = u32::try_from(bytes.div_ceil(MIB)).unwrap_or(u32::MAX);
     let per_image = match quality {
         RenderQuality::Live => 0.2,
         RenderQuality::High => 0.5,
         RenderQuality::Offline => 2.0,
     };
     CostHint { seconds: Some(images as f32 * per_image), gpu_mib: Some(mib), usd: None }
+}
+
+/// Refuses `expression` for `body` unless its face profile has it, naming `expression` with the ones it has: an
+/// imported avatar has no face profile, and a kit character only the expressions of its own.
+///
+/// # Errors
+/// `Invalid` naming `expression`.
+pub fn check_expression(body: &crate::body::Body, expression: &omuzaki_face_api::ExpressionId) -> Result<(), OpError> {
+    let crate::body::Body::Kit(built) = body else {
+        return Err(OpError::invalid("expression", "an imported avatar has no face profile to take an expression from"));
+    };
+    let expressions = built.face.as_ref().map(|face| &face.profile.expressions.0);
+    if expressions.is_some_and(|set| set.contains_key(expression)) {
+        return Ok(());
+    }
+    let known: Vec<String> = expressions.into_iter().flat_map(|set| set.keys().map(ToString::to_string)).collect();
+    Err(OpError::invalid("expression", format!("the character's face has no expression '{expression}'"))
+        .hint(if known.is_empty() { "the character has no expressions".to_owned() } else { format!("its expressions are {}", known.join(", ")) }))
 }
 
 /// The light rig `name` as a still's light.

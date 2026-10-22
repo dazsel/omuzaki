@@ -8,12 +8,16 @@
 mod common;
 
 use common::{add_skinned_mesh, def, humanoid, through_vrm};
-use omuzaki_avatar_api::avatar::ImportedAvatar;
+use omuzaki_anim_api::HumanoidBone;
+use omuzaki_avatar_api::anchors::bind_matrices;
+use omuzaki_avatar_api::avatar::{AvatarMesh, ImportedAvatar};
 use omuzaki_avatar_api::body::BodyView;
 use omuzaki_avatar_api::def::{AvatarDef, MaterialEdit, NodeChoice};
-use omuzaki_char_api::MaterialName;
-use omuzaki_core::glam::Vec4;
-use omuzaki_io_api::{ARKIT_52, Expression, ExpressionName, HumanBoneName, IoScene, Material, Pbr, Shading};
+use omuzaki_char_api::{JointRef, MaterialName, MaterialSpec, PartId, PartMesh};
+use omuzaki_core::colour::Colour;
+use omuzaki_core::glam::{Mat4, Vec2, Vec3, Vec4};
+use omuzaki_core::mesh::MeshData;
+use omuzaki_io_api::{ARKIT_52, Expression, ExpressionName, HumanBoneName, IoScene, Material, NodeIx, Pbr, Shading};
 use omuzaki_io_ops::gather::avatar_import::gather_imported;
 use omuzaki_io_ops::prepare::avatar::to_avatar;
 use omuzaki_render_api::MtoonSupport;
@@ -381,4 +385,109 @@ fn a_rigid_morphed_mesh_on_a_scaled_node_keeps_its_morphed_normals() {
         assert!(morphed(&now).distance(morphed(&was)) < 1e-6, "the morphed normal keeps its direction at 2×");
         assert!((now.mesh.normals[v].length() - 1.0).abs() < 1e-6, "the base normal stays a unit normal");
     }
+}
+
+/// One triangle a kit part made, in the avatar's bind space, following `joints` with `weights` per vertex.
+fn attached_mesh(avatar: &ImportedAvatar, joints: &[HumanoidBone], weights: [f32; 4]) -> AvatarMesh {
+    let bind = bind_matrices(&avatar.skeleton, &avatar.bind);
+    let head = bind[avatar.skeleton.humanoid_bone(HumanoidBone::Head).unwrap().index()].transform_point3(Vec3::ZERO);
+    let geometry = MeshData {
+        positions: vec![head + Vec3::Y * 0.1, head + Vec3::new(0.05, 0.1, 0.0), head + Vec3::new(0.0, 0.15, 0.0)],
+        normals: vec![Vec3::Z; 3],
+        uvs: vec![Vec2::ZERO; 3],
+        joints: vec![[0, 1, 0, 0]; 3],
+        weights: vec![weights; 3],
+        indices: vec![0, 1, 2],
+        ..MeshData::default()
+    };
+    let mesh = PartMesh {
+        name: "hat".to_owned(),
+        geometry,
+        joint_bones: joints.iter().map(|b| JointRef::Humanoid(*b)).collect(),
+        material: MaterialName::new("hat").unwrap(),
+        casts_shadow: true,
+        render_order: 0,
+        dynamic: false,
+    };
+    let inverse_bind =
+        joints.iter().map(|b| bind[avatar.skeleton.humanoid_bone(*b).unwrap().index()].inverse()).collect();
+    AvatarMesh::new(mesh).with_inverse_bind(inverse_bind).with_part(PartId::new("hat").unwrap())
+}
+
+/// `avatar` with `mesh` added by hand, as the kit adds an attachment, and its material.
+fn with_attachment(mut avatar: ImportedAvatar, mesh: AvatarMesh) -> ImportedAvatar {
+    avatar.materials.insert(MaterialName::new("hat").unwrap(), MaterialSpec::toon(Colour::rgb(204, 51, 51)));
+    avatar.meshes.push(mesh);
+    avatar.validate().expect("an attached avatar validates");
+    avatar
+}
+
+#[test]
+fn an_attached_part_exports_under_its_anchor_bone() {
+    let original = perfect_sync();
+    let (avatar, _) = to_avatar(&original, &def(), MtoonSupport::NONE).expect("imports");
+    let mesh = attached_mesh(&avatar, &[HumanoidBone::Head], [1.0, 0.0, 0.0, 0.0]);
+    let at_bind = mesh.mesh.geometry.positions.clone();
+    let avatar = with_attachment(avatar, mesh);
+    let scene = exported(&avatar, &original);
+
+    // Everything the file had is still there, first and in its order; the hat comes after.
+    assert_eq!(
+        scene.nodes[..original.nodes.len()].iter().map(|n| &n.name).collect::<Vec<_>>(),
+        original.nodes.iter().map(|n| &n.name).collect::<Vec<_>>()
+    );
+    let hat = scene.nodes.iter().position(|n| n.name == "hat").expect("a node for the part");
+    let head = scene.avatar.as_ref().unwrap().humanoid.bones[&HumanBoneName::new("head").unwrap()];
+    assert!(scene.nodes[head.index()].children.iter().any(|c| c.index() == hat), "the hat hangs from the head bone");
+    assert!(scene.nodes[hat].skin.is_none(), "a part on one bone is a plain child of it");
+    let mesh = &scene.meshes[scene.nodes[hat].mesh.unwrap().index()];
+    let material = &scene.materials[mesh.primitives[0].material.unwrap().index()];
+    assert_eq!(material.name, "hat");
+    // In the file the hat sits where the runtime shows it: the head node's world matrix carries it back.
+    let world = world_of(&scene, head);
+    for (local, expected) in mesh.primitives[0].mesh.positions.iter().zip(&at_bind) {
+        assert!(world.transform_point3(*local).abs_diff_eq(*expected, 1e-5), "{local} → {expected}");
+    }
+}
+
+#[test]
+fn an_attached_part_spread_over_bones_exports_skinned_at_the_root() {
+    let original = perfect_sync();
+    let (avatar, _) = to_avatar(&original, &def(), MtoonSupport::NONE).expect("imports");
+    let mesh = attached_mesh(&avatar, &[HumanoidBone::Head, HumanoidBone::Neck], [0.5, 0.5, 0.0, 0.0]);
+    let inverse_bind = mesh.inverse_bind.clone();
+    let avatar = with_attachment(avatar, mesh);
+    let scene = exported(&avatar, &original);
+    let hat = scene.nodes.iter().position(|n| n.name == "hat").expect("a node for the part");
+    assert!(scene.roots.iter().any(|r| r.index() == hat), "at the root, as a skinned mesh belongs");
+    let skin = &scene.skins[scene.nodes[hat].skin.expect("skinned").index()];
+    let bones = &scene.avatar.as_ref().unwrap().humanoid.bones;
+    let joints: Vec<NodeIx> = ["head", "neck"].iter().map(|b| bones[&HumanBoneName::new(b).unwrap()]).collect();
+    assert_eq!(skin.joints, joints);
+    assert_eq!(skin.inverse_bind, inverse_bind);
+}
+
+/// `avatar` exported and read back, with the file's own record as the export op would take it from the source row.
+fn exported(avatar: &ImportedAvatar, original: &IoScene) -> IoScene {
+    let mut out = gather_imported(&BodyView::imported(avatar), &def(), &|_| None).expect("gathers");
+    out.provenance.clone_from(&original.provenance);
+    through_vrm(&out)
+}
+
+/// The world matrix of `node` in `scene`, walking up from the roots.
+fn world_of(scene: &IoScene, node: NodeIx) -> Mat4 {
+    let mut parent = vec![None; scene.nodes.len()];
+    for (i, n) in scene.nodes.iter().enumerate() {
+        for c in &n.children {
+            parent[c.index()] = Some(i);
+        }
+    }
+    let mut world = Mat4::IDENTITY;
+    let mut at = Some(node.index());
+    while let Some(i) = at {
+        let t = scene.nodes[i].transform;
+        world = Mat4::from_scale_rotation_translation(t.scale, t.rotation, t.translation) * world;
+        at = parent[i];
+    }
+    world
 }

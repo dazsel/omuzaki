@@ -7,6 +7,10 @@ pub const DEFAULT_PORT: u16 = 4455;
 pub const RPC_VERSION: u32 = 1;
 /// The `requestStatus.code` of a request that succeeded.
 pub const STATUS_SUCCESS: u32 = 100;
+/// The `requestStatus.code` for an output (stream, record, replay buffer) that is already running.
+pub const STATUS_OUTPUT_RUNNING: u32 = 500;
+/// The `requestStatus.code` for an output that isn't running.
+pub const STATUS_OUTPUT_NOT_RUNNING: u32 = 501;
 /// The `requestStatus.code` for a scene, item or other resource that does not exist.
 pub const STATUS_RESOURCE_NOT_FOUND: u32 = 600;
 

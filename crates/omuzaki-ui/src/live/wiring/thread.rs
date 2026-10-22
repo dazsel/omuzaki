@@ -19,6 +19,10 @@ use omuzaki_stage::perform::{Performer, STEP_HZ};
 use super::clock::PerformClock;
 use super::mailbox::{FrameReader, FrameWriter, LiveFrame, frame_mailbox};
 
+/// A consumer of every published frame, called on the perform thread right after the frame is published (the
+/// `VTube Studio` bridge's feed). It must not block or allocate in steady state: it runs inside the 60 Hz step.
+pub type FrameTap = Box<dyn FnMut(&LiveFrame) + Send>;
+
 /// The perform thread's name, as debuggers and profilers show it.
 pub const THREAD_NAME: &str = "omuzaki-perform";
 
@@ -58,6 +62,9 @@ impl std::error::Error for WiringError {
 pub struct LoopReport {
     /// Passes that ran at least one step (and published its frame).
     pub published: u64,
+    /// Steps run, the catch-up steps of a late pass included: a pass that wakes two steps late runs both and publishes
+    /// once, so this, not `published`, is what adds up with `skipped` to the steps that fell due.
+    pub stepped: u64,
     /// Steps the control dropped because the loop fell more than four steps behind.
     pub skipped: u64,
 }
@@ -65,12 +72,17 @@ pub struct LoopReport {
 #[derive(Default)]
 struct Stats {
     published: AtomicU64,
+    stepped: AtomicU64,
     skipped: AtomicU64,
 }
 
 impl Stats {
     fn report(&self) -> LoopReport {
-        LoopReport { published: self.published.load(Ordering::Acquire), skipped: self.skipped.load(Ordering::Acquire) }
+        LoopReport {
+            published: self.published.load(Ordering::Acquire),
+            stepped: self.stepped.load(Ordering::Acquire),
+            skipped: self.skipped.load(Ordering::Acquire),
+        }
     }
 }
 
@@ -91,6 +103,18 @@ impl PerformThread {
     /// # Errors
     /// [`WiringError::Spawn`] if the OS refuses the thread.
     pub fn spawn(performer: Performer, clock: Box<dyn PerformClock>) -> Result<(Self, FrameReader), WiringError> {
+        Self::spawn_tapped(performer, clock, None)
+    }
+
+    /// [`spawn`](Self::spawn), with `tap` handed each frame as it is published.
+    ///
+    /// # Errors
+    /// [`WiringError::Spawn`] if the OS refuses the thread.
+    pub fn spawn_tapped(
+        performer: Performer,
+        clock: Box<dyn PerformClock>,
+        tap: Option<FrameTap>,
+    ) -> Result<(Self, FrameReader), WiringError> {
         let (handle, control) = perform_channel(&performer);
         let (writer, reader) = frame_mailbox();
         let sources = Arc::new(SourceSlot::new());
@@ -102,6 +126,8 @@ impl PerformThread {
             sources: Arc::clone(&sources),
             stats: Arc::clone(&stats),
             arrival: None,
+            last: None,
+            tap,
         };
         let flag = Arc::clone(&stop);
         let thread = std::thread::Builder::new()
@@ -170,6 +196,15 @@ impl std::fmt::Debug for PerformThread {
     }
 }
 
+/// The steps a pass ran that ended on step `index` with `skipped` steps dropped so far, after one that ended on `last`:
+/// the steps since, less the ones dropped since. A reset (a new source) starts the timeline and its skip count again.
+fn steps_run(last: Option<(u64, u64)>, index: u64, skipped: u64) -> u64 {
+    match last {
+        Some((before, dropped)) if index > before && skipped >= dropped => (index - before) - (skipped - dropped),
+        _ => (index + 1).saturating_sub(skipped),
+    }
+}
+
 /// Everything the perform thread owns.
 struct PerformLoop {
     performer: Performer,
@@ -179,6 +214,10 @@ struct PerformLoop {
     stats: Arc<Stats>,
     /// When the newest tracker frame arrived, on the loop's clock.
     arrival: Option<Seconds>,
+    /// The last step this loop ran and the control's skip count then, to count the steps each pass runs.
+    last: Option<(u64, u64)>,
+    /// Handed each published frame.
+    tap: Option<FrameTap>,
 }
 
 impl PerformLoop {
@@ -203,9 +242,30 @@ impl PerformLoop {
             if out.frame.is_some() {
                 self.arrival = Some(now);
             }
-            self.writer.publish(&LiveFrame::from_output(&out, self.arrival));
+            let frame = LiveFrame::from_output(&out, self.arrival);
+            self.writer.publish(&frame);
+            if let Some(tap) = &mut self.tap {
+                tap(&frame);
+            }
             self.stats.published.fetch_add(1, Ordering::Release);
+            let (index, skipped) = (out.tick.index, self.control.skipped_steps());
+            self.stats.stepped.fetch_add(steps_run(self.last, index, skipped), Ordering::Release);
+            self.last = Some((index, skipped));
         }
         self.stats.skipped.store(self.control.skipped_steps(), Ordering::Release);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::steps_run;
+
+    #[test]
+    fn a_late_pass_counts_its_catch_up_steps_and_a_reset_starts_again() {
+        assert_eq!(steps_run(None, 0, 0), 1, "the first step");
+        assert_eq!(steps_run(Some((0, 0)), 1, 0), 1, "on time");
+        assert_eq!(steps_run(Some((1, 0)), 3, 0), 2, "two steps late, it ran both");
+        assert_eq!(steps_run(Some((3, 0)), 10, 3), 4, "seven late: four ran and three were skipped");
+        assert_eq!(steps_run(Some((10, 3)), 2, 0), 3, "a new source restarts the timeline at step 0");
     }
 }

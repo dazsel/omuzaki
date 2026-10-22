@@ -21,6 +21,8 @@ toml.workspace = true
 omuzaki-anim-api = { path = "../omuzaki-anim-api" }
 omuzaki-avatar-api = { path = "../omuzaki-avatar-api" }
 omuzaki-char-api = { path = "../omuzaki-char-api" }
+# The tray: an `asset` import refuses a pending or rejected candidate and uses its effective rights (#1231).
+omuzaki-connect-api = { path = "../omuzaki-connect-api" }
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-doc-api = { path = "../omuzaki-doc-api" }
 omuzaki-face-api = { path = "../omuzaki-face-api" }
@@ -34,8 +36,11 @@ omuzaki-store-api = { path = "../omuzaki-store-api" }
 
 [dev-dependencies]
 tempfile.workspace = true
+# A tray record's connector version (`tests/import_tray.rs`).
+omuzaki-ai-api = { path = "../omuzaki-ai-api" }
 omuzaki-char-mock = { path = "../omuzaki-char-mock" }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
+omuzaki-face-mock = { path = "../omuzaki-face-mock" }
 omuzaki-io-mock = { path = "../omuzaki-io-mock" }
 omuzaki-store-mock = { path = "../omuzaki-store-mock" }
 

@@ -147,6 +147,10 @@ pub struct StreamService {
     pump: Mutex<Option<JoinHandle<()>>>,
     /// The take in progress (`record::runtime`).
     pub(crate) recording: Mutex<Option<ActiveTake>>,
+    /// The replay buffer while it runs (`replay::control`).
+    pub(crate) replay: Mutex<Option<crate::replay::control::ActiveReplay>>,
+    /// The update hold the live outputs share (`live_hold`).
+    live_holds: crate::live_hold::LiveHolds,
 }
 
 impl StreamService {
@@ -155,6 +159,21 @@ impl StreamService {
     /// # Errors
     /// [`StreamError::Io`] if the pump thread cannot be started.
     pub fn new() -> Result<Self, StreamError> {
+        Self::with_epoch(Instant::now())
+    }
+
+    /// The update hold the live outputs share: `output.start` wraps each live output in it.
+    pub fn live_holds(&self) -> &crate::live_hold::LiveHolds {
+        &self.live_holds
+    }
+
+    /// As [`new`](Self::new), with the pipeline clock's zero at `epoch`. The app gives the stream service and the
+    /// audio engine the same epoch, so a frame's capture time and the engine clock's time are on one timeline and a
+    /// take's audio lines up with its video.
+    ///
+    /// # Errors
+    /// [`StreamError::Io`] if the pump thread cannot be started.
+    pub fn with_epoch(epoch: Instant) -> Result<Self, StreamError> {
         let (full_tx, full_rx) = sync_channel::<Slot>(POOL_SLOTS);
         let (free_tx, free_rx) = sync_channel::<Slot>(POOL_SLOTS);
         for _ in 0..POOL_SLOTS {
@@ -174,19 +193,35 @@ impl StreamService {
             pumped: AtomicU64::new(0),
             program: Mutex::new(Program::default()),
             key: Mutex::new(DEFAULT_KEY),
-            epoch: Instant::now(),
+            epoch,
         });
         let pump_inner = Arc::clone(&inner);
         let pump = std::thread::Builder::new()
             .name("omuzaki-stream-pump".into())
             .spawn(move || pump(&pump_inner, &full_rx, &free_tx))
             .map_err(|e| StreamError::Io(format!("the stream pump thread could not start: {e}")))?;
-        Ok(Self { inner, pump: Mutex::new(Some(pump)), recording: Mutex::new(None) })
+        Ok(Self {
+            inner,
+            pump: Mutex::new(Some(pump)),
+            recording: Mutex::new(None),
+            replay: Mutex::new(None),
+            live_holds: crate::live_hold::LiveHolds::new(),
+        })
     }
 
     /// The time now on the service's clock, for callers with no capture time of their own.
     pub fn now(&self) -> Ticks {
         Ticks(i64::try_from(self.inner.epoch.elapsed().as_nanos()).unwrap_or(i64::MAX))
+    }
+
+    /// Whether any output runs: [`push`](Self::push) copies nothing while none does.
+    pub fn active(&self) -> bool {
+        self.inner.active.load(Ordering::Acquire)
+    }
+
+    /// The pipeline clock's zero.
+    pub fn epoch(&self) -> Instant {
+        self.inner.epoch
     }
 
     /// Sets the program picture's format, which new outputs use unless they ask otherwise.
@@ -306,6 +341,10 @@ impl StreamService {
         // A take still recording is finished properly (its manifest written) before everything else stops.
         if lock(&self.recording).is_some() {
             let _ = self.record_stop();
+        }
+        // Saves the replay buffer was asked for complete before it stops.
+        if lock(&self.replay).is_some() {
+            let _ = self.replay_stop();
         }
         let drained: Vec<Running> = {
             let mut outputs = lock(&self.inner.outputs);

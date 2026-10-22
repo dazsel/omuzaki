@@ -2,7 +2,8 @@
 
 use std::ops::RangeInclusive;
 
-use omuzaki_ops_api::{Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo};
+use omuzaki_anim_api::RetargetConfig;
+use omuzaki_ops_api::{Effect, Op, OpCall, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -19,7 +20,9 @@ pub const HEAD_GAIN: RangeInclusive<f32> = 0.0..=3.0;
 
 /// Change the retarget's settings; fields left out stay as they are. The change is queued, not waited for (the op
 /// runs under the document lock): it returns the settings as requested and a `seq`, and `perform.status` shows the
-/// settings the performer is using, with `retarget_seq` reaching `seq` once it has applied this change.
+/// settings the performer is using, with `retarget_seq` reaching `seq` once it has applied this change. The dials live
+/// in the performer, not the document, so the step records the calls that put them back (an undo sets all four as
+/// they were requested before).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct SetRetarget {
     /// Smoothing, `0` raw to `1` very smooth.
@@ -53,7 +56,7 @@ impl Op for SetRetarget {
             summary: "Queue a change to the live face retarget (smoothing, exaggeration, head gain, mirror); returns the requested settings and a seq, and perform.status shows when it is applied.",
             kind: OpKind::Edit,
             scope: Scope::Perform,
-            undo: Undo::None,
+            undo: Undo::Explicit,
         }
     }
 
@@ -71,9 +74,34 @@ impl Op for SetRetarget {
         if ctx.dry_run {
             return Ok(Plan::answer(json!({ "dry_run": true, "change": change })));
         }
+        let before = Self::all(&host.requested_retarget());
         let receipt = host.set_retarget(change).map_err(op_error)?;
+        let after = Self::all(&host.requested_retarget());
+        let effect = Effect {
+            summary: "changed the live retarget".to_owned(),
+            undo: before.call()?,
+            redo: after.call()?,
+        };
         let receipt = serde_json::to_value(receipt).map_err(|e| OpError::internal(e.to_string()))?;
-        Ok(Plan::answer(receipt))
+        Ok(Plan { effect: Some(effect), ..Plan::answer(receipt) })
+    }
+}
+
+impl SetRetarget {
+    /// The change that sets every dial to what `config` holds.
+    fn all(config: &RetargetConfig) -> Self {
+        Self {
+            smoothing: Some(config.smoothing),
+            exaggeration: Some(config.exaggeration),
+            head_gain: Some(config.head_gain),
+            mirror: Some(config.mirror),
+        }
+    }
+
+    /// This change as a stored call.
+    fn call(&self) -> Result<OpCall, OpError> {
+        let args = serde_json::to_value(self).map_err(|e| OpError::internal(e.to_string()))?;
+        Ok(OpCall { op: Self::meta().name.to_owned(), args })
     }
 }
 

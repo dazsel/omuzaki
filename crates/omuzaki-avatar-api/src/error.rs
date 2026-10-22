@@ -194,8 +194,12 @@ pub enum AvatarError {
         /// The runtime mesh it lists.
         mesh: usize,
     },
-    /// A runtime mesh is listed by no instance of a retained source mesh, or by more than one.
-    #[error("mesh {mesh} is listed by {groups} source-mesh instances; every mesh comes from exactly one")]
+    /// A runtime mesh of the model is listed by no instance of a retained source mesh, or by more than one; or an
+    /// attachment's mesh is listed by one.
+    #[error(
+        "mesh {mesh} is listed by {groups} source-mesh instances; every mesh of the model comes from exactly one, and \
+         an attachment's from none"
+    )]
     #[non_exhaustive]
     MeshGrouping {
         /// The runtime mesh.

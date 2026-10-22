@@ -121,6 +121,115 @@ words! {
     HealthLost = "live-health-lost" => "Face lost",
     HealthLostLine = "live-health-lost-line" => "The life layer moves your character until the camera finds you again.",
     HealthUnknown = "live-health-unknown" => "Waiting for the performer",
+    OpFailed = "live-op-failed" => "{op} did not run: {reason}",
+
+    ChannelsTitle = "live-channels-title" => "Channels",
+    ChannelsFace = "live-channels-face" => "Face",
+    ChannelsHead = "live-channels-head" => "Head",
+    ChannelsBody = "live-channels-body" => "Body",
+    ChannelsGroup = "live-channels-group" => "Channel group",
+    ChannelsSearch = "live-channels-search" => "Search channels",
+    ChannelsGrid = "live-channels-grid" => "{group} channels",
+    ChannelsNone = "live-channels-none" => "No channel matches",
+    ChannelsNoneLine = "live-channels-none-line" => "Try another word, or clear the search.",
+    ChannelsIdle = "live-channels-idle" => "No channels yet",
+    ChannelsIdleLine = "live-channels-idle-line" => "The meters move once the performer runs.",
+    ChannelsLegend = "live-channels-legend" => "Fill: what the character shows. Icon: who drives it.",
+    ChannelCustom = "live-channel-custom" => "Custom {n}",
+
+    StripItem = "live-strip-item" => "{name}  {key}",
+    StripPress = "live-strip-press" => "Show {name} ({key})",
+}
+
+/// The names the Channels panel shows, by the channel's stable name (`omuzaki_anim_api::Channel::name`). The custom
+/// slots are named from [`Word::ChannelCustom`].
+const CHANNEL_NAMES: &[(&str, &str)] = &[
+    ("browDownLeft", "Brow down L"),
+    ("browDownRight", "Brow down R"),
+    ("browInnerUp", "Brow inner up"),
+    ("browOuterUpLeft", "Brow outer up L"),
+    ("browOuterUpRight", "Brow outer up R"),
+    ("cheekPuff", "Cheek puff"),
+    ("cheekSquintLeft", "Cheek squint L"),
+    ("cheekSquintRight", "Cheek squint R"),
+    ("eyeBlinkLeft", "Blink L"),
+    ("eyeBlinkRight", "Blink R"),
+    ("eyeLookDownLeft", "Look down L"),
+    ("eyeLookDownRight", "Look down R"),
+    ("eyeLookInLeft", "Look in L"),
+    ("eyeLookInRight", "Look in R"),
+    ("eyeLookOutLeft", "Look out L"),
+    ("eyeLookOutRight", "Look out R"),
+    ("eyeLookUpLeft", "Look up L"),
+    ("eyeLookUpRight", "Look up R"),
+    ("eyeSquintLeft", "Eye squint L"),
+    ("eyeSquintRight", "Eye squint R"),
+    ("eyeWideLeft", "Eye wide L"),
+    ("eyeWideRight", "Eye wide R"),
+    ("jawForward", "Jaw forward"),
+    ("jawLeft", "Jaw left"),
+    ("jawOpen", "Jaw open"),
+    ("jawRight", "Jaw right"),
+    ("mouthClose", "Mouth close"),
+    ("mouthDimpleLeft", "Dimple L"),
+    ("mouthDimpleRight", "Dimple R"),
+    ("mouthFrownLeft", "Frown L"),
+    ("mouthFrownRight", "Frown R"),
+    ("mouthFunnel", "Mouth funnel"),
+    ("mouthLeft", "Mouth left"),
+    ("mouthLowerDownLeft", "Lower lip down L"),
+    ("mouthLowerDownRight", "Lower lip down R"),
+    ("mouthPressLeft", "Lip press L"),
+    ("mouthPressRight", "Lip press R"),
+    ("mouthPucker", "Pucker"),
+    ("mouthRight", "Mouth right"),
+    ("mouthRollLower", "Roll lower lip"),
+    ("mouthRollUpper", "Roll upper lip"),
+    ("mouthShrugLower", "Shrug lower lip"),
+    ("mouthShrugUpper", "Shrug upper lip"),
+    ("mouthSmileLeft", "Smile L"),
+    ("mouthSmileRight", "Smile R"),
+    ("mouthStretchLeft", "Stretch L"),
+    ("mouthStretchRight", "Stretch R"),
+    ("mouthUpperUpLeft", "Upper lip up L"),
+    ("mouthUpperUpRight", "Upper lip up R"),
+    ("noseSneerLeft", "Sneer L"),
+    ("noseSneerRight", "Sneer R"),
+    ("tongueOut", "Tongue out"),
+    ("headYaw", "Turn"),
+    ("headPitch", "Nod"),
+    ("headRoll", "Tilt"),
+    ("headShiftX", "Shift sideways"),
+    ("headShiftY", "Shift up"),
+    ("lean", "Lean"),
+    ("bodyTurn", "Body turn"),
+    ("breath", "Breath"),
+    ("eyeArcLeft", "Happy eye L"),
+    ("eyeArcRight", "Happy eye R"),
+    ("eyesHeart", "Heart eyes"),
+    ("eyesStar", "Star eyes"),
+    ("eyesGloom", "Gloom eyes"),
+    ("eyesShock", "Shock eyes"),
+    ("eyesSqueeze", "Squeezed eyes"),
+    ("eyesSpiral", "Spiral eyes"),
+    ("sparkle", "Sparkle"),
+    ("tears", "Tears"),
+    ("sweatDrop", "Sweat drop"),
+    ("blush", "Blush"),
+    ("fangs", "Fangs"),
+];
+
+/// The name the Channels panel shows for the channel whose stable name is `stable` ("Blink L" for `eyeBlinkLeft`), in
+/// the language the design system speaks. A custom slot is "Custom 1" to "Custom 16"; a name the table lacks is shown
+/// as it is, since it names the channel in every language.
+pub fn channel_name(ctx: &Context, stable: &str) -> String {
+    if let Some(n) = stable.strip_prefix("custom").and_then(|n| n.parse::<u32>().ok()) {
+        return say(ctx, Word::ChannelCustom, &[("n", &(n + 1).to_string())]);
+    }
+    let Some((_, english)) = CHANNEL_NAMES.iter().find(|(name, _)| *name == stable) else {
+        return stable.to_owned();
+    };
+    if ds(ctx).strings.locale() == PSEUDO_LOCALE { pseudo(english) } else { (*english).to_owned() }
 }
 
 /// The text of `word` with `{name}` placeholders filled from `args`, in the language the design system speaks.
@@ -151,6 +260,18 @@ mod tests {
             assert!(seen.insert(id), "duplicate message id {id}");
             assert!(id.starts_with("live-") && id.chars().all(|c| c.is_ascii_lowercase() || c == '-'), "{id}");
             assert!(!word.english().is_empty(), "{id} has no English text");
+        }
+    }
+
+    #[test]
+    fn every_channel_has_a_name_of_its_own() {
+        let ctx = Context::default();
+        apply_settings(&ctx, Settings::default());
+        let mut seen = std::collections::HashSet::new();
+        for info in omuzaki_anim_api::CHANNELS {
+            let name = channel_name(&ctx, info.name);
+            assert_ne!(name, info.name, "{} has no name in the table", info.name);
+            assert!(seen.insert(name.clone()), "two channels are called {name}");
         }
     }
 

@@ -3,8 +3,12 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-use omuzaki_char_api::{BuiltCharacter, BuiltMesh, CharacterRig, MaterialName, PartMesh, TextureName};
+use omuzaki_char_api::{
+    BuiltCharacter, BuiltMesh, CharacterRig, MaterialClass, MaterialName, MaterialSpec, PartMesh, TextureName,
+};
+use omuzaki_core::glam::Vec3;
 use omuzaki_io_api::{self as io, Finding, IoScene, MaterialIx, Mesh, Node, Primitive, Report, Skin, SkinIx};
+use omuzaki_render_api as render;
 
 use super::{GatherError, GatherOptions, GatherPurpose, Gathered, skeleton};
 use crate::convert::material::{SceneTexture, export_material};
@@ -152,10 +156,29 @@ fn add_materials(
     for name in used {
         let Some(spec) = built.materials.get(name) else { continue };
         let at = format!("materials/{}", scene.materials.len());
-        let material = export_material(name.as_str(), spec, &|texture| textures.get(texture).copied(), &at, report)?;
+        let mut material =
+            export_material(name.as_str(), spec, &|texture| textures.get(texture).copied(), &at, report)?;
+        draw_program_in_look(built, name, spec, &mut material);
         indices.insert(name.clone(), scene.add_material(material));
     }
     Ok(indices)
+}
+
+/// A shading program (the kit's hair) exports as its toon approximation, which the look's softness and rim scales
+/// never reached: the look draws a program by its parameters. Scales the exported terminator and rim as the look scales
+/// a toon material's, so the file carries the look on every material (#713).
+fn draw_program_in_look(built: &BuiltCharacter, name: &MaterialName, spec: &MaterialSpec, material: &mut io::Material) {
+    let (render::Shading::Program { .. }, io::Shading::Toon(toon)) = (&spec.shading, &mut material.shading) else {
+        return;
+    };
+    let class = built.material_classes.get(name).copied().unwrap_or(MaterialClass::Cloth);
+    let look = built.look().class(class);
+    if let Some(scale) = look.softness_scale {
+        toon.shading_toony = 1.0 - ((1.0 - toon.shading_toony) * scale).clamp(0.0, 1.0);
+    }
+    if let Some(scale) = look.rim_scale {
+        toon.rim_color = (toon.rim_color * scale.max(0.0)).min(Vec3::ONE);
+    }
 }
 
 #[cfg(test)]

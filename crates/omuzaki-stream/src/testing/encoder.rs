@@ -287,10 +287,13 @@ mod tests {
         let vp9 = EncodeConfig::new(VideoSpec { size: SIZE, fps: (30, 1), alpha: AlphaKind::None }, CodecId::Vp9Alpha)
             .unwrap();
         assert!(matches!(factory.create(&vp9), Err(StreamError::Unavailable { .. })));
-        let alpha =
-            EncodeConfig::new(VideoSpec { size: SIZE, fps: (30, 1), alpha: AlphaKind::Straight }, CodecId::H264)
-                .unwrap();
-        assert!(matches!(factory.create(&alpha), Err(StreamError::Unavailable { .. })));
+        // H.264 can't carry alpha, so the contract refuses that config before the factory sees it (#1615).
+        let straight = VideoSpec { size: SIZE, fps: (30, 1), alpha: AlphaKind::Straight };
+        assert!(EncodeConfig::new(straight, CodecId::H264).is_err());
+        let mut alpha =
+            EncodeConfig::new(VideoSpec { size: SIZE, fps: (30, 1), alpha: AlphaKind::None }, CodecId::H264).unwrap();
+        alpha.video.alpha = AlphaKind::Straight;
+        assert!(matches!(factory.create(&alpha), Err(StreamError::Config(_))));
         let ntsc =
             EncodeConfig::new(VideoSpec { size: SIZE, fps: (30000, 1001), alpha: AlphaKind::None }, CodecId::H264)
                 .unwrap();

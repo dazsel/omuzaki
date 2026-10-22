@@ -20,6 +20,8 @@
 pub mod app;
 pub mod class;
 pub mod dock;
+pub mod handles;
+pub mod history;
 pub mod host;
 pub mod keys;
 pub mod layout;
@@ -29,6 +31,7 @@ pub mod persist;
 pub mod registry;
 pub mod requests;
 pub mod saver;
+pub mod sheet;
 pub mod stub;
 pub mod text;
 

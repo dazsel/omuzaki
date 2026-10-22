@@ -187,6 +187,44 @@ struct State {
     log: usize,
 }
 
+/// Stand-ins for the studio's `ui.scale` and `ui.theme` (declared in `omuzaki-ui`, which the CLI doesn't link), the
+/// keys the `settings.*` examples name, declared as the studio does: taste, free for an agent, applied at once.
+mod ui_settings {
+    use omuzaki_settings_api::meta::{AgentWrite, Apply, InProfile, SettingMeta, SettingScope};
+    use omuzaki_settings_api::register_setting;
+    use omuzaki_settings_api::setting::Setting;
+
+    const fn taste(key: &'static str) -> SettingMeta {
+        SettingMeta::new(key, "a stand-in", SettingScope::User, AgentWrite::Free, InProfile::Member, Apply::Live, 1)
+    }
+
+    pub struct UiScale;
+
+    impl Setting for UiScale {
+        type Value = u16;
+        const META: SettingMeta = taste("ui.scale");
+
+        fn default() -> u16 {
+            100
+        }
+    }
+
+    register_setting!(UiScale);
+
+    pub struct UiTheme;
+
+    impl Setting for UiTheme {
+        type Value = String;
+        const META: SettingMeta = taste("ui.theme");
+
+        fn default() -> String {
+            "dark".to_owned()
+        }
+    }
+
+    register_setting!(UiTheme);
+}
+
 /// The performer an op's example runs against: none. It lists no triggers and refuses every request, which is all a
 /// dry-run of the `trigger.*` examples reaches (`trigger.list` is the one that reads it). Its character has the starter
 /// expressions, so a `trigger.bind` dry run finds the ones its examples name.
@@ -303,6 +341,27 @@ impl Rig {
                     // against it as they would in the app.
                     .insert::<omuzaki_stream::service::StreamService>(Arc::new(
                         omuzaki_stream::service::StreamService::new().expect("the stream service starts"),
+                    ))
+                    // The mock audio engine: the `audio.*` examples bind its default microphone.
+                    .insert::<dyn omuzaki_audio_api::engine::AudioEngine>(Arc::new(
+                        omuzaki_audio_mock::MockEngine::new(),
+                    ))
+                    // No OBS connection: the `obs.*` examples dry-run and say they would need one.
+                    .insert::<omuzaki_obs::service::ObsService>(Arc::new(omuzaki_obs::service::ObsService::new()))
+                    // No VTube Studio bridge: the `vts.*` examples dry-run and say they would need a connection.
+                    .insert::<omuzaki_vts::service::VtsService>(Arc::new(
+                        omuzaki_vts::service::VtsService::new().expect("the built-in channel map parses"),
+                    ))
+                    .insert::<omuzaki_live::Automation>(Arc::new(omuzaki_live::Automation::new()))
+                    // A Twitch service on a transport that answers nothing: the `twitch.*` examples dry-run and
+                    // report that no token is stored.
+                    .insert::<omuzaki_twitch::TwitchService>(Arc::new(omuzaki_twitch::TwitchService::new(
+                        Arc::new(omuzaki_http_mock::FakeHttp::new()),
+                        Arc::new(omuzaki_live::Automation::new()),
+                    )))
+                    // Settings in memory: the `settings.*` examples read and write them as they would in the app.
+                    .insert::<dyn omuzaki_settings_api::service::Settings>(Arc::new(
+                        omuzaki_settings_mock::MemorySettings::default(),
                     ))
                     .insert::<dyn PerformHost>(Arc::new(IdleHost))
                     .insert::<dyn InputHost>(Arc::new(IdleInput))

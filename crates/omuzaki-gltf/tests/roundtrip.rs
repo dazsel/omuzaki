@@ -300,3 +300,27 @@ fn non_finite_morph_deltas_are_refused() {
     };
     assert!(report.has_rule("gltf.non_finite"));
 }
+
+#[test]
+fn hyphenated_custom_attributes_survive_export_import_and_re_export() {
+    // The kit's hair writes `hair-uv` and `hair-info` (#667): `_HAIR-UV` in the file must read back as `hair-uv`.
+    let mut scene = (0..200)
+        .map(random_scene)
+        .find(|s| s.meshes.iter().any(|m| m.primitives.iter().any(|p| !p.mesh.extra.is_empty())))
+        .expect("a generated scene has custom attributes");
+    let mut renamed = 0;
+    for primitive in scene.meshes.iter_mut().flat_map(|m| m.primitives.iter_mut()) {
+        for extra in &mut primitive.mesh.extra {
+            extra.name = omuzaki_core::id::Slug::new(extra.name.as_str().replace('_', "-")).unwrap();
+            renamed += 1;
+        }
+    }
+    assert!(renamed > 0);
+    let glb = export_glb(&scene);
+    let (doc, _) = glb_parts(&glb).unwrap();
+    assert!(doc.to_string().contains("\"_STRAND-"), "the file keeps the name, in upper case");
+    let back = import(&glb);
+    assert!(!back.report.has_rule("gltf.attribute_dropped"), "{:?}", back.report);
+    assert_same_scene(&back.scene, &scene);
+    assert_eq!(export_glb(&back.scene), glb, "the re-export is byte for byte the export");
+}

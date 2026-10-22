@@ -1,9 +1,9 @@
 //! One frame, start to finish: pose instances, draw the passes in contract order, resolve to bytes.
 
-use omuzaki_core::glam::{Mat4, UVec2, Vec2, Vec3, Vec4};
+use omuzaki_core::glam::{Mat3, Mat4, UVec2, Vec2, Vec3, Vec4};
 use omuzaki_render_api::{
-    AlphaEncoding, Camera, Image, Instance, Material, Pass, Post, Projection, Quality, RenderError, Scene, TargetDesc,
-    Tonemap, srgb_encode, to_byte,
+    AlphaEncoding, Camera, Image, Instance, Material, Outline, OutlineWidthMode, Pass, Post, Projection, Quality,
+    RenderError, Scene, TargetDesc, Tonemap, srgb_encode, to_byte,
 };
 
 use crate::TextureData;
@@ -12,7 +12,7 @@ use crate::environment::{EnvLight, EnvironmentData};
 use crate::morph::morph_vertices;
 use crate::raster::{Cull, Mode, Surface, Varying, Vertex, Write, draw_triangle};
 use crate::resources::{MeshEntry, weld_normals};
-use crate::shade::{FogLight, Lights, Lit, Textures, light_triangle, shade_pixel};
+use crate::shade::{FogLight, Lights, Lit, Textures, light_triangle, mask_keeps, shade_pixel};
 
 /// The internal buffer may hold at most this many pixels (a 4096x4096 frame): the mock keeps 20 bytes per pixel.
 const MAX_INTERNAL_PIXELS: u64 = 1 << 24;
@@ -154,11 +154,12 @@ pub(crate) fn draw_frame(
         }
     }
 
+    let hull = HullCx { scene, lights: &lights, textures: &textures, fog, view, view_proj, aspect };
     for (inst, mesh, material, posed) in &outlined {
         out.ran[Pass::Outlines.index()] = true;
         out.draw_calls += 1;
         out.triangles += mesh.data.triangle_count() as u64;
-        draw_hull(&mut surface, inst, mesh, material, posed, scene, fog, &view, &view_proj);
+        draw_hull(&mut surface, &hull, inst, mesh, material, posed);
     }
 
     // Back to front, authored order first; a stable sort keeps submission order for exact ties.
@@ -265,31 +266,95 @@ fn blend_joints(palette: &[Mat4], joints: [u16; 4], weights: [f32; 4]) -> Result
     Ok(sum)
 }
 
-/// Inverted hull: the mesh pushed out along its smooth normals, back faces only, in the outline colour.
-#[allow(clippy::too_many_arguments)] // one cohesive draw: splitting it would only move the arguments around
+/// What every hull of a frame is drawn with.
+struct HullCx<'a> {
+    scene: &'a Scene,
+    lights: &'a Lights<'a>,
+    textures: &'a Textures<'a>,
+    fog: FogLight,
+    view: Mat4,
+    view_proj: Mat4,
+    /// The target's width over its height.
+    aspect: f32,
+}
+
+/// Where a hull vertex goes in clip space: the posed vertex `p` pushed along its outline direction `dir` by the
+/// material's `width` (already multiplied by its width texture) as its `OutlineStyle` measures it (#647). `Screen` pushes
+/// in clip space along the projected direction, normalised in pixels and scaled by clip w, as `outline.wgsl` does.
+fn hull_clip(cx: &HullCx<'_>, outline: Outline, mode: OutlineWidthMode, p: Vec3, dir: Vec3) -> Vec4 {
+    let metres = match mode {
+        OutlineWidthMode::WorldByDistance => outline.world_width(-cx.view.transform_point3(p).z),
+        OutlineWidthMode::World => outline.width,
+        OutlineWidthMode::Screen => {
+            let clip = cx.view_proj * p.extend(1.0);
+            let projected = (cx.view_proj * dir.extend(0.0)).truncate().truncate();
+            let in_pixels = Vec2::new(projected.x * cx.aspect, projected.y);
+            let along = in_pixels.length();
+            if along < 1e-6 {
+                return clip;
+            }
+            let offset = Vec2::new(in_pixels.x / cx.aspect, in_pixels.y) / along * 2.0 * outline.width * clip.w;
+            return clip + offset.extend(0.0).extend(0.0);
+        }
+    };
+    cx.view_proj * (p + dir * metres).extend(1.0)
+}
+
+/// Inverted hull: the mesh pushed out along its smooth normals, back faces only, in the outline colour, tinted toward
+/// the lit surface by the style's lighting mix.
 fn draw_hull(
     surface: &mut Surface,
+    cx: &HullCx<'_>,
     inst: &Instance,
     mesh: &MeshEntry,
     material: &Material,
     posed: &Posed,
-    scene: &Scene,
-    fog: FogLight,
-    view: &Mat4,
-    view_proj: &Mat4,
 ) {
     let Some(outline) = material.outline else { return };
-    let colour = (outline.colour.to_linear() * scene.outline_light).extend(1.0);
-    let pushed: Vec<Vec3> = posed
-        .world
-        .iter()
-        .zip(&posed.hull_dir)
-        .map(|(&p, &dir)| p + dir * outline.world_width(-view.transform_point3(p).z))
+    let style = material.outline_style;
+    let uv = |i: usize| mesh.data.uvs.get(i).copied().unwrap_or(Vec2::ZERO);
+    let clips: Vec<Vec4> = (0..posed.world.len())
+        .map(|i| {
+            let multiplier =
+                style.width_texture.map_or(1.0, |id| cx.textures.sample(id, material.uv_transform.apply(uv(i))).y);
+            let outline = Outline { width: outline.width * multiplier, ..outline };
+            hull_clip(cx, outline, style.width_mode, posed.world[i], posed.hull_dir[i])
+        })
         .collect();
-    let mode = Mode { cull: Cull::Front, mirrored: inst.transform.determinant() < 0.0, write: Write::Opaque };
+    let mirrored = inst.transform.determinant() < 0.0;
+    let mode = Mode { cull: Cull::Front, mirrored, write: Write::Opaque };
+    let line = outline.colour.to_linear();
     for &ids in mesh.data.indices.as_chunks::<3>().0 {
-        let verts = ids.map(|i| vertex(mesh, i as usize, pushed[i as usize], view, view_proj));
-        draw_triangle(surface, &verts, mode, &mut |v: Varying| Some(fog.apply(colour, v.depth)));
+        let verts = ids.map(|i| {
+            let i = i as usize;
+            // The fog reads the pushed vertex's depth, except a screen-space push, which leaves the depth alone.
+            let mut v = vertex(mesh, i, posed.world[i], &cx.view, &cx.view_proj);
+            v.clip = clips[i];
+            v
+        });
+        // The surface's light for the lighting mix: the triangle lit from outside, as the surface it grows from.
+        let lit = (style.lighting_mix > 0.0).then(|| {
+            let world = ids.map(|i| posed.world[i as usize]);
+            let facing = (world[1] - world[0]).cross(world[2] - world[0]).normalize_or_zero();
+            let outward = if mirrored { -facing } else { facing };
+            let centroid = (world[0] + world[1] + world[2]) / 3.0;
+            light_triangle(material, cx.lights, outward, centroid, towards_viewer(&cx.scene.camera, centroid))
+        });
+        // A masked material's hull is cut like its surface: the line follows what is visible (#649).
+        draw_triangle(surface, &verts, mode, &mut |v: Varying| {
+            if !mask_keeps(material, cx.textures, v) {
+                return None;
+            }
+            let base = Vec3::splat(cx.scene.outline_light);
+            let light = match lit {
+                Some(lit) => {
+                    let surface = shade_pixel(material, lit, cx.textures, v).map_or(base, Vec4::truncate);
+                    base.lerp(surface, style.lighting_mix)
+                }
+                None => base,
+            };
+            Some(cx.fog.apply((line * light).extend(1.0), v.depth))
+        });
     }
 }
 
@@ -323,13 +388,28 @@ fn resolve(surface: &Surface, desc: &TargetDesc, factor: u32, post: &Post) -> Im
 fn tonemap(c: Vec3, mode: Tonemap) -> Vec3 {
     match mode {
         Tonemap::None => c.clamp(Vec3::ZERO, Vec3::ONE),
-        // Narkowicz's fit of the ACES filmic curve; the GPU renderer may use the full ACES transform, so goldens
-        // compare the two with a tolerance.
-        Tonemap::Aces => {
-            let fit = |x: f32| (x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14);
-            Vec3::new(fit(c.x), fit(c.y), fit(c.z)).clamp(Vec3::ZERO, Vec3::ONE)
-        }
+        Tonemap::Aces => aces(c),
     }
+}
+
+/// three.js's `ACESFilmicToneMapping`, the curve the GPU renderer and the prototype use (#630): the `1 / 0.6`
+/// pre-scale, `ACESInputMat`, the RRT and ODT fit, `ACESOutputMat`, clamped. `c` already carries the exposure.
+fn aces(c: Vec3) -> Vec3 {
+    // three.js declares the matrices by column; these are its columns, so `INPUT * v` is its `ACESInputMat * v`.
+    const INPUT: Mat3 = Mat3::from_cols(
+        Vec3::new(0.59719, 0.07600, 0.02840),
+        Vec3::new(0.35458, 0.90834, 0.13383),
+        Vec3::new(0.04823, 0.01566, 0.83777),
+    );
+    const OUTPUT: Mat3 = Mat3::from_cols(
+        Vec3::new(1.60475, -0.10208, -0.00327),
+        Vec3::new(-0.53108, 1.10813, -0.07276),
+        Vec3::new(-0.07367, -0.00605, 1.07602),
+    );
+    let v = INPUT * (c / 0.6);
+    let a = v * (v + 0.024_578_6) - 0.000_090_537;
+    let b = v * (0.983_729 * v + 0.432_951) + 0.238_081;
+    (OUTPUT * (a / b)).clamp(Vec3::ZERO, Vec3::ONE)
 }
 
 #[cfg(test)]
@@ -384,5 +464,31 @@ mod tests {
         let bright = tonemap(Vec3::splat(8.0), Tonemap::Aces);
         assert!(bright.x > 0.95 && bright.x <= 1.0);
         assert_eq!(tonemap(Vec3::splat(2.0), Tonemap::None), Vec3::ONE);
+    }
+
+    /// three.js's own values (its shader chunk evaluated outside a renderer; the same table pins the GPU renderer in
+    /// `omuzaki-render`'s `render.rs`): `(sRGB colour, exposure, levels per channel)`.
+    #[test]
+    fn aces_matches_three_js_within_a_level() {
+        const THREE_JS: &[([u8; 3], f32, [f32; 3])] = &[
+            ([128, 128, 128], 1.0, [140.7; 3]),
+            ([128, 128, 128], 2.0, [188.4; 3]),
+            ([201, 184, 240], 1.0, [205.2, 195.3, 220.8]),
+            ([255, 255, 255], 1.0, [226.4; 3]),
+            ([60, 200, 120], 1.0, [108.7, 204.7, 142.4]),
+            ([60, 200, 120], 2.0, [173.7, 231.4, 190.8]),
+            ([240, 120, 40], 1.0, [234.0, 140.3, 50.0]),
+            // Pure cyan, where the old per-channel fit kept red at 0 and missed by 204 levels.
+            ([0, 255, 255], 1.0, [153.4, 227.4, 225.7]),
+            ([0, 255, 255], 2.0, [204.2, 242.7, 241.6]),
+        ];
+        for &(rgb, exposure, want) in THREE_JS {
+            let linear = Vec3::from(rgb.map(|c| omuzaki_core::colour::srgb_decode(f32::from(c) / 255.0)));
+            let display = tonemap(linear * exposure, Tonemap::Aces);
+            let got = [display.x, display.y, display.z].map(|c| srgb_encode(c) * 255.0);
+            for (g, w) in got.iter().zip(want) {
+                assert!((g - w).abs() <= 1.0, "{rgb:?} at {exposure}: {got:?} vs three.js {want:?}");
+            }
+        }
     }
 }

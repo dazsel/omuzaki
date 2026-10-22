@@ -103,3 +103,21 @@ fn a_redraw_before_any_tick_renders_the_stage_clock_frame() {
     assert_eq!(stage.scene().frame, FrameInfo { index: 0, time: Seconds(0.0) }, "the frame is the stage's first tick");
     stage.release(&mut renderer).expect("the stage releases");
 }
+
+#[test]
+fn a_redraw_after_a_pin_runs_at_the_pinned_time_and_unpinning_restores_the_clock() {
+    let mut renderer = MockRenderer::new();
+    let mut stage = staged(&mut renderer);
+    let before = stage.tick(&mut renderer, &turned()).expect("the frame renders");
+    let pinned = omuzaki_anim_api::Tick { index: 9000, time: Seconds(150.0), dt: 1.0 / FPS };
+    let pin = stage.pin_time(pinned);
+    // No tick in between: the redraw alone must see the pin.
+    let redrawn = stage.redraw(&mut renderer, &turned()).expect("the redraw renders");
+    assert_eq!(redrawn.tick, pinned, "the face and the frame are given the pinned tick");
+    assert_eq!(stage.scene().frame, FrameInfo { index: pinned.index, time: pinned.time });
+    stage.unpin_time(&pin);
+    assert_eq!(stage.scene().frame, FrameInfo { index: before.tick.index, time: before.tick.time });
+    let after = stage.redraw(&mut renderer, &turned()).expect("the redraw renders");
+    assert_eq!(after.tick, before.tick, "unpinned, a redraw is back on the last frame's time");
+    stage.release(&mut renderer).expect("the stage releases");
+}

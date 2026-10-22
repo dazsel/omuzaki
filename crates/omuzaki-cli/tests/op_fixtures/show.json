@@ -1,0 +1,6 @@
+{
+  "about": "One empty show, `main`, the project's default: for the ops that add graphs to a show.",
+  "steps": [
+    { "op": "show.create", "args": { "id": "main" } }
+  ]
+}

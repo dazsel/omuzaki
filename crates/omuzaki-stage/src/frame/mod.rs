@@ -24,7 +24,7 @@ pub(crate) mod runtimes;
 pub(crate) mod scene;
 
 use omuzaki_anim_api::{ChannelBuf, HumanoidPose, IkGoals, Tick};
-use omuzaki_char_api::{BuiltCharacter, StepCtx};
+use omuzaki_char_api::{BuiltCharacter, LookParams, StepCtx};
 use omuzaki_core::glam::{Mat4, Vec3};
 use omuzaki_core::time::Seconds;
 use omuzaki_render_api::{FrameInfo, FrameReport, Quality, Renderer, Scene, TargetId};
@@ -429,15 +429,17 @@ impl Stage {
     /// or whatever the face update reports.
     pub fn redraw(&mut self, renderer: &mut dyn Renderer, input: &FrameInput) -> Result<FrameOutput, StageError> {
         let uploads = self.dynamic.upload(&self.built.runtimes, renderer)?;
-        self.update_face(renderer, self.tick, input)?;
+        // A pin set since the last tick holds here too: the face and the frame info see the pinned time.
+        let tick = self.pinned.unwrap_or(self.tick);
+        self.update_face(renderer, tick, input)?;
         self.plan.fill(&mut self.scene, self.rig.skin(), self.root);
         self.ground.push(&mut self.scene);
         // What the last tick wrote into the scene, so a redraw before any tick doesn't render the caller's frame info.
-        self.scene.frame = self.frame_info(self.tick);
+        self.scene.frame = self.frame_info(tick);
         let report = renderer
             .render(self.target, &self.scene, &self.quality)
             .map_err(|source| StageError::render("the still", source))?;
-        Ok(FrameOutput { tick: self.tick, report, uploads })
+        Ok(FrameOutput { tick, report, uploads })
     }
 
     /// The scene as last rendered.
@@ -478,16 +480,42 @@ impl Stage {
         self.character.release(renderer).and(ground)
     }
 
-    /// Does the renderer work the last [`set_scene`](Self::set_scene) owes for the ground (a new disc, or none) and
-    /// records it as done. The skin floor stays owed: the materials don't take it yet. Cold.
+    /// Draws the character in `look` (LK-06, #714): the materials the look changes are updated on the renderer in
+    /// place, with no mesh or texture created and nothing rebuilt, so a `look.*` edit shows on the next frame. Cold.
+    /// Returns how many materials were updated.
     ///
     /// # Errors
-    /// [`StageError::Render`] if the renderer refuses the disc; the ground stays owed.
+    /// [`StageError::Rebuild`] for a look the materials can't take (nothing changes then); what
+    /// [`StageCharacter`]'s update refuses, after which the previous look is put back on the character and the renderer.
+    pub fn apply_look(&mut self, renderer: &mut dyn Renderer, look: &LookParams) -> Result<u32, StageError> {
+        let before = self.built.look().clone();
+        let changed =
+            self.built.apply_look(look).map_err(|e| StageError::Rebuild { reason: format!("the look can't be drawn: {e}") })?;
+        self.character.update_materials(renderer, &self.built, &changed).inspect_err(|_| {
+            // The previous look was drawable a moment ago, so this restores both sides.
+            if let Ok(back) = self.built.apply_look(&before)
+                && let Err(error) = self.character.update_materials(renderer, &self.built, &back)
+            {
+                tracing::warn!(%error, "restoring the previous look after a refused look edit failed too");
+            }
+        })
+    }
+
+    /// Does the renderer work the last [`set_scene`](Self::set_scene) owes and records it as done: the ground (a new
+    /// disc, or none) and the skin floor (every toon skin material updated in place to the scene's floor, or back to
+    /// its own). The floor stays on the materials through palette changes, variant swaps and look edits. Cold.
+    ///
+    /// # Errors
+    /// [`StageError::Render`] if the renderer refuses the disc or a material; that part stays owed.
     pub fn pay_scene(&mut self, renderer: &mut dyn Renderer) -> Result<(), StageError> {
         let owed = self.link.owed();
         if let Some(ground) = owed.ground {
             self.ground.set(renderer, &ground)?;
             self.link.commit(&Owed { ground: Some(ground), skin_floor: None });
+        }
+        if let Some(floor) = owed.skin_floor {
+            self.character.set_skin_floor(renderer, &self.built, floor)?;
+            self.link.commit(&Owed { ground: None, skin_floor: Some(floor) });
         }
         Ok(())
     }

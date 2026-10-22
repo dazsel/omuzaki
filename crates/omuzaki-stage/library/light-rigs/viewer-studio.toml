@@ -2,6 +2,9 @@
 # Three.js units (render-api D10): the numbers are copied, not rescaled.
 name = "viewer-studio"
 source = "js/viewer.js LIGHTS.studio"
+title = "Studio"
+summary = "A warm three-point studio: key with a shadow, rim and fill on a dark warm backdrop. The default."
+tags = ["studio", "neutral", "default"]
 exposure = 0.9
 background = "#4a3b31"
 skin_floor = 0.48

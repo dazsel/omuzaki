@@ -18,7 +18,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use eframe::egui_wgpu;
 use egui::{Key, Modifiers, PointerButton, Rect, Sense, Ui, WidgetInfo, WidgetType};
-use omuzaki_char_api::{BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder, PartId, Quality};
+use omuzaki_char_api::{
+    BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder, CharacterDef, PartId, Quality,
+};
 use omuzaki_core::glam::UVec2;
 use omuzaki_stage::ops::render::job::{DEFAULT_LIGHT_RIG, still_light};
 
@@ -31,6 +33,7 @@ use crate::ds::a11y;
 use crate::ds::icons;
 use crate::ds::theme::ds;
 use crate::ds::widgets::{Button, EmptyState};
+use crate::shell::history::{Preview, Viewing};
 
 /// The viewport's id, as the shell registers it.
 pub const ID: &str = "viewport";
@@ -63,6 +66,10 @@ pub struct Viewport {
     job: SharedJob,
     /// Why the GPU side couldn't start, or the character couldn't build.
     problem: Option<String>,
+    /// The past state History shows, read in place of the document while it is set.
+    preview: Option<Preview>,
+    /// The step whose state the last build showed, by `seq`; `None` for the document as it is.
+    built_preview: Option<u64>,
 }
 
 impl std::fmt::Debug for Viewport {
@@ -85,6 +92,8 @@ impl Viewport {
             parts: BTreeMap::new(),
             job: Arc::new(Mutex::new(Job::default())),
             problem: None,
+            preview: None,
+            built_preview: None,
         }
     }
 
@@ -134,6 +143,7 @@ impl Viewport {
         }
         self.rebuild(&character, io);
         self.toolbar(ui, &ds);
+        self.viewing_line(ui, &ds);
         // What is left of the panel, and only what shows of it: the render is the size of what is seen.
         let rect = ui.available_rect_before_wrap().intersect(ui.clip_rect());
         let response = ui.allocate_rect(rect, Sense::click_and_drag());
@@ -151,6 +161,11 @@ impl Viewport {
         }
     }
 
+    /// Shows the past state `preview` holds in place of the document while it holds one (History's preview).
+    pub fn set_preview(&mut self, preview: Option<Preview>) {
+        self.preview = preview;
+    }
+
     /// Builds the character again when the document or the open character changed, and hands it to the GPU side.
     ///
     /// A change shows on the next frame, as `shell.md` section 5 asks: there is no throttle, so a slider dragged in
@@ -158,11 +173,17 @@ impl Viewport {
     /// cost) and never later than the frame after the edit.
     fn rebuild(&mut self, character: &CharId, io: Io<'_>) {
         let other = self.character.as_ref() != Some(character);
-        if !self.watch.stale(io.events) && !other {
+        let viewing = self.preview.as_ref().and_then(Preview::seq);
+        if !self.watch.stale(io.events) && !other && viewing == self.built_preview {
             return;
         }
         self.watch.built();
-        let built = io.character(character).map_err(|e| e.message).and_then(|def| {
+        self.built_preview = viewing;
+        let def = match &self.preview {
+            Some(preview) if viewing.is_some() => preview.with(|v| past_character(v, character)),
+            _ => io.character(character).map_err(|e| e.message),
+        };
+        let built = def.and_then(|def| {
             let def = def.ok_or_else(|| format!("there is no character '{character}'"))?;
             let options = BuildOptions { variant: None, quality: Quality::Live, rig_export: false };
             self.services.builder.build(character, &def, &options, &self.services.build).map_err(|e| e.to_string())
@@ -231,6 +252,19 @@ impl Viewport {
         });
     }
 
+    /// While a past state is on show: what it is, and the way back.
+    fn viewing_line(&mut self, ui: &mut Ui, ds: &crate::ds::Ds) {
+        let Some(preview) = self.preview.clone() else { return };
+        let Some(label) = preview.with(|v| v.map(|v| v.label.clone())) else { return };
+        ui.horizontal_wrapped(|ui| {
+            let line = say(ds, text::VIEWING_PAST, &[("label", &label)]);
+            ui.add(egui::Label::new(egui::RichText::new(line.as_ref()).color(ds.theme.accent)).truncate());
+            if ui.add(Button::new(&say(ds, text::BACK_TO_NOW, &[])).icon(icons::ARROW_U_UP_LEFT)).clicked() {
+                preview.back();
+            }
+        });
+    }
+
     /// The camera gestures and keys (`shell.md` section 5).
     fn input(&mut self, ui: &Ui, response: &egui::Response) {
         if response.clicked() || response.drag_started() {
@@ -294,6 +328,15 @@ fn fallback_light() -> omuzaki_stage::ops::render::still::StillLight {
     omuzaki_stage::ops::render::still::StillLight::new(scene.lights, scene.background, scene.post)
 }
 
+/// Character `id` as `viewing` holds it.
+fn past_character(viewing: Option<&Viewing>, id: &CharId) -> Result<Option<CharacterDef>, String> {
+    let Some(viewing) = viewing else { return Ok(None) };
+    let Some(node) = omuzaki_doc_api::lookup(&viewing.doc, &omuzaki_char_api::paths::character(id)) else {
+        return Ok(None);
+    };
+    CharacterDef::from_node(node).map(Some).map_err(|e| e.to_string())
+}
+
 /// The viewport as the shell shows it, over the shell's [`EditFocus`] and [`ViewportServices`]. It makes its
 /// [`Viewport`] on the first frame the services are there, so a shell that shares them after the panel opened works.
 struct ViewportPanel {
@@ -307,6 +350,7 @@ impl omuzaki_ui_api::panel::Panel for ViewportPanel {
             self.viewport = ctx.view::<ViewportServices>().map(|s| Viewport::new(self.focus.clone(), s.clone()));
         }
         if let Some(viewport) = &mut self.viewport {
+            viewport.set_preview(ctx.view::<Preview>().cloned());
             viewport.ui(ui, Io::from_ctx(ctx));
         } else {
             let ds = ds(ui.ctx());

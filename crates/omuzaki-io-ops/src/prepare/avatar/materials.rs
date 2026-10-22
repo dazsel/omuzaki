@@ -7,21 +7,23 @@
 //! `import_material`'s per-field notes for that group. Every other `material.*` finding passes through. A group the
 //! renderer draws gets no finding: once an LK-07 task sets its capability bit, the finding disappears by itself.
 //!
-//! Only base-colour textures are decoded (the renderer draws nothing else of a material yet), once each, in the colour
-//! space of their slot, at full size: nothing is downscaled. `retained` keeps every source material, texture and
+//! Only base-colour textures, and outline width textures for a renderer that draws them, are decoded (the renderer
+//! draws nothing else of a material yet), once each, in the colour space of their slot, at full size: nothing is
+//! downscaled. A material's `MToon` outline beyond the kit's line (its width mode, width texture and lighting mix, #647)
+//! goes in `avatar.outlines`, as far as the renderer draws it. `retained` keeps every source material, texture and
 //! image exactly as read, so export writes the file's own values, never one converted back from the runtime.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
-use omuzaki_avatar_api::avatar::ImportedAvatar;
+use omuzaki_avatar_api::avatar::{AvatarOutline, ImportedAvatar};
 use omuzaki_avatar_api::def::{AvatarDef, MaterialEdit};
 use omuzaki_avatar_api::retained::{RetainedImage, RetainedMaterial};
 use omuzaki_char_api::{MaterialName, MaterialSpec, TextureName};
 use omuzaki_core::colour::Colour;
 use omuzaki_core::time::Clock;
 use omuzaki_io_api::{self as io, Finding, IoScene, Report};
-use omuzaki_render_api::{MtoonSupport, UvTransform};
+use omuzaki_render_api::{MtoonSupport, OutlineWidthMode, UvTransform};
 use omuzaki_store_api::ContentHash;
 
 use super::skeleton::{slug_stem, unique_slug};
@@ -63,8 +65,8 @@ struct Group {
     notes: &'static [&'static str],
 }
 
-/// The seven groups of D7, in the order the design lists them.
-const GROUPS: [Group; 7] = [
+/// The groups of D7, in the order the design lists them, and the outline width texture (#647).
+const GROUPS: [Group; 8] = [
     Group {
         bit: MtoonSupport::MATCAP,
         name: "the matcap",
@@ -113,6 +115,12 @@ const GROUPS: [Group; 7] = [
         },
         notes: &["outline_lighting_mix"],
     },
+    Group {
+        bit: MtoonSupport::OUTLINE_WIDTH_TEXTURE,
+        name: "the outline width texture",
+        used: |t| t.outline_mode != io::OutlineMode::None && t.outline_width_texture.is_some(),
+        notes: &["outline_width_texture"],
+    },
 ];
 
 /// How far a value read from a file may differ from a default and still be the default (file floats pass through
@@ -148,7 +156,20 @@ pub fn convert(
         })
         .collect();
     let started = clock.map(Clock::now);
-    let textures = decode_textures(scene, avatar, report);
+    let mut taken_textures = BTreeSet::new();
+    let base_used = scene.materials.iter().filter_map(|m| m.base_color_texture.map(|t| t.texture.0)).collect();
+    let textures = decode_textures(scene, &base_used, BASE_SLOT, &mut taken_textures, avatar, report);
+    // Outline width textures are decoded only for a renderer that draws them, as linear data.
+    let width_used = if mtoon.contains(MtoonSupport::OUTLINE_WIDTH_TEXTURE) {
+        scene
+            .materials
+            .iter()
+            .filter_map(|m| toon_of(m).and_then(|t| t.outline_width_texture).map(|t| t.texture.0))
+            .collect()
+    } else {
+        BTreeSet::new()
+    };
+    let width_textures = decode_textures(scene, &width_used, WIDTH_SLOT, &mut taken_textures, avatar, report);
     if let Some((start, clock)) = started.zip(clock) {
         *decode = super::between(start, clock.now());
     }
@@ -160,6 +181,9 @@ pub fn convert(
         let mut spec = import_material(material, &resolve, &at, &mut notes);
         let carried = carry_uv_transform(material, &mut spec);
         report.extend(mtoon_findings(material, mtoon, &at, carried, notes));
+        if let Some(outline) = outline_of(material, mtoon, &width_textures) {
+            avatar.outlines.insert(name.clone(), outline);
+        }
         avatar.materials.insert(name.clone(), spec);
     }
     let needs_default = scene.meshes.iter().flat_map(|m| &m.primitives).any(|p| p.material.is_none());
@@ -180,23 +204,67 @@ pub fn convert(
     MaterialNames { by_index, default, edited }
 }
 
-/// Decodes every texture a material uses as its base colour, once, as sRGB; returns each one's runtime name by scene
-/// texture index. A texture that cannot be decoded is reported (`texture.unreadable`) and left out, so the material
-/// that uses it reports it missing.
-fn decode_textures(scene: &IoScene, avatar: &mut ImportedAvatar, report: &mut Report) -> BTreeMap<u32, TextureName> {
-    let used: BTreeSet<u32> =
-        scene.materials.iter().filter_map(|m| m.base_color_texture.map(|t| t.texture.0)).collect();
-    let mut taken = BTreeSet::new();
+/// The glTF slot of a base colour texture, which fixes its colour space (sRGB).
+const BASE_SLOT: &str = "baseColorTexture";
+/// The `MToon` slot of an outline width texture (linear data).
+const WIDTH_SLOT: &str = "outlineWidthMultiplyTexture";
+
+/// The `MToon` block of a material, if it is toon.
+fn toon_of(material: &io::Material) -> Option<&io::Toon> {
+    match &material.shading {
+        io::Shading::Toon(toon) => Some(toon),
+        _ => None,
+    }
+}
+
+/// The outline of `material` as far as the renderer draws its `MToon` outline (#647), or `None` for no outline. A
+/// world width is drawn as metres at any distance on every renderer; a screen width, the lighting mix and the width
+/// texture only where `mtoon` says so, and otherwise the kit line's approximation stands (`import_material`).
+fn outline_of(
+    material: &io::Material,
+    mtoon: MtoonSupport,
+    width_textures: &BTreeMap<u32, TextureName>,
+) -> Option<AvatarOutline> {
+    let toon = toon_of(material)?;
+    let mut outline = match toon.outline_mode {
+        io::OutlineMode::WorldCoordinates => AvatarOutline::new(OutlineWidthMode::World, toon.outline_width),
+        io::OutlineMode::ScreenCoordinates if mtoon.contains(MtoonSupport::OUTLINE_WIDTH_SCREEN) => {
+            AvatarOutline::new(OutlineWidthMode::Screen, toon.outline_width)
+        }
+        // No line, or a screen width this renderer can't draw: the kit line's approximation stands.
+        io::OutlineMode::None | io::OutlineMode::ScreenCoordinates => return None,
+    };
+    if !(outline.width >= 0.0 && outline.width.is_finite()) {
+        return None;
+    }
+    if mtoon.contains(MtoonSupport::OUTLINE_LIGHTING_MIX) {
+        outline.lighting_mix = toon.outline_lighting_mix.clamp(0.0, 1.0);
+    }
+    outline.width_texture = toon.outline_width_texture.and_then(|t| width_textures.get(&t.texture.0).cloned());
+    Some(outline)
+}
+
+/// Decodes each texture in `used` once, in the colour space of `slot`; returns each one's runtime name by scene texture
+/// index, unique among `taken`. A texture that cannot be decoded is reported (`texture.unreadable`) and left out, so
+/// the material that uses it reports it missing.
+fn decode_textures(
+    scene: &IoScene,
+    used: &BTreeSet<u32>,
+    slot: &str,
+    taken: &mut BTreeSet<String>,
+    avatar: &mut ImportedAvatar,
+    report: &mut Report,
+) -> BTreeMap<u32, TextureName> {
     let mut names = BTreeMap::new();
-    for index in used {
+    for &index in used {
         let at = format!("textures/{index}");
         let Some(texture) = usize::try_from(index).ok().and_then(|i| scene.textures.get(i)) else { continue };
         let Some(image) = scene.images.get(texture.image.index()) else { continue };
-        match decode_png(image, slot_colour_space("baseColorTexture"), &texture.sampler, &at, report) {
+        match decode_png(image, slot_colour_space(slot), &texture.sampler, &at, report) {
             Ok(data) => {
                 let stem = slug_stem(&image.name);
                 let stem = if stem.is_empty() { format!("texture_{index}") } else { stem };
-                let name = TextureName(unique_slug(&stem, &mut taken));
+                let name = TextureName(unique_slug(&stem, taken));
                 avatar.textures.insert(name.clone(), data);
                 names.insert(index, name);
             }

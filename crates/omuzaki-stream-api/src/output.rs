@@ -188,6 +188,14 @@ pub trait Output: Send {
     fn stop(&mut self);
 }
 
+/// Says whether OBS is running on this computer, for the output recommendation (`output.recommend`). The app provides
+/// one when it knows better than the default probe (an OBS connection it holds); without one, `omuzaki-stream` tries
+/// OBS WebSocket's port on this computer.
+pub trait ObsProbe: Send + Sync {
+    /// Whether OBS runs now.
+    fn obs_running(&self) -> bool;
+}
+
 /// One kind of live output a person or an agent can start by name (`output.start { kind }`): a virtual camera, a
 /// Spout sender, an NDI source. Registered with [`register_output!`](crate::register_output) next to its code, never
 /// in a central list (ADR 0054), so a new output adds a file and not an edit here.

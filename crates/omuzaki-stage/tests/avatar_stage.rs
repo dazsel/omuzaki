@@ -2,7 +2,7 @@
 //! file to a rendered frame, with no third-party model. The kit's mock character is exported as a VRM 1.0 file, read
 //! back and prepared as an [`ImportedAvatar`], exactly as `io.import {as: avatar}` does with a person's file, and then
 //! staged: skinned by its own inverse binds, its expressions turned into morph weights, posed by the rig. On the GPU
-//! (`--features wgpu`) the imported copy renders with the kit character's silhouette.
+//! (`--features wgpu`) the imported copy renders with the kit character's silhouette and hair colour.
 
 // Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
 #![allow(clippy::expect_used, clippy::unwrap_used)]
@@ -56,13 +56,20 @@ fn driven_morph(avatar: &ImportedAvatar) -> (ExprIx, Channel) {
         .expect("a channel drives the morph expression")
 }
 
-/// The bone behind each entry of the scene's joint palette, mesh after mesh, as the stage fills it.
+/// The bone behind each entry of the scene's joint palette, as the stage fills it: each distinct joint run once (the
+/// same joints with the same inverse binds), in the meshes' draw order.
 fn palette_bones(avatar: &ImportedAvatar) -> Vec<BoneId> {
     let mut order: Vec<_> = avatar.meshes.iter().collect();
     order.sort_by_key(|m| m.mesh.render_order);
-    order
-        .iter()
-        .flat_map(|m| &m.mesh.joint_bones)
+    let mut runs: Vec<(&[JointRef], &[Mat4])> = Vec::new();
+    for mesh in order {
+        let run = (mesh.mesh.joint_bones.as_slice(), mesh.inverse_bind.as_slice());
+        if !run.0.is_empty() && !runs.contains(&run) {
+            runs.push(run);
+        }
+    }
+    runs.iter()
+        .flat_map(|(joints, _)| *joints)
         .map(|joint| match joint {
             JointRef::Humanoid(bone) => avatar.skeleton.humanoid_bone(*bone).expect("a mapped bone"),
             JointRef::Named(name) => avatar.skeleton.find(name.as_str()).expect("a named bone"),
@@ -85,7 +92,7 @@ fn at_its_bind_pose_every_joint_of_the_imported_kit_is_the_identity() {
     stage.tick(&mut renderer, &input_at(&base)).expect("a frame");
     let scene = stage.scene();
     assert_eq!(scene.instances.len(), stage.avatar().meshes.len(), "one instance per mesh");
-    assert_eq!(scene.joints.len(), bones.len(), "one palette entry per joint of every mesh");
+    assert_eq!(scene.joints.len(), bones.len(), "one palette entry per joint of every distinct run");
     // The meshes are stored in their bind pose: each bone's model matrix at bind undoes its inverse bind exactly. The
     // spring bones are the exception: on the first step they settle out of the head's collider, as they would in any
     // VRM runtime.
@@ -234,9 +241,41 @@ fn on_the_gpu_the_imported_kit_has_the_kit_characters_silhouette() {
     let either = a.iter().zip(&b).filter(|(x, y)| **x || **y).count();
     assert!(either > 1000, "the character is in frame: {either} pixels");
     let iou = both as f64 / either as f64;
-    // Not 1: the file carries the hair as spring bones where the kit sways it with its own runtime, and its shading
-    // program as the default toon look (MToon can't hold it), so the hair's edge differs by a pixel or two.
+    // Not 1: the file carries the hair as spring bones where the kit sways it with its own runtime, so the hair's edge
+    // differs by a pixel or two.
     assert!(iou > 0.95, "the imported kit covers the kit's pixels: intersection over union {iou:.4}");
+
+    // The hair keeps its colour (#2270). The mock's hair hangs as a curtain beside the torso: over the middle fifth of
+    // the rows both cover, the outer sixth of each row's span on either side is hair. There the mean colour of the
+    // pixels both cover is the kit's to within the gradient and ring MToon can't hold.
+    let width = size.x as usize;
+    let both_at = |x: usize, y: usize| a[y * width + x] && b[y * width + x];
+    let rows: Vec<usize> = (0..size.y as usize).filter(|&y| (0..width).any(|x| both_at(x, y))).collect();
+    let middle = &rows[rows.len() * 2 / 5..rows.len() * 3 / 5];
+    let hair: Vec<usize> = middle
+        .iter()
+        .flat_map(|&y| {
+            let span: Vec<usize> = (0..width).filter(|&x| both_at(x, y)).collect();
+            let strip = span.len() / 6;
+            let (left, right) = (span[..strip].to_vec(), span[span.len() - strip..].to_vec());
+            left.into_iter().chain(right).map(move |x| y * width + x)
+        })
+        .collect();
+    assert!(hair.len() > 50, "the hair is in frame: {} pixels", hair.len());
+    let mean = |rgba: &[u8]| {
+        let pixels = rgba.as_chunks::<4>().0;
+        let mut sum = [0.0_f64; 3];
+        for &i in &hair {
+            for (s, c) in sum.iter_mut().zip(pixels[i]) {
+                *s += f64::from(c);
+            }
+        }
+        sum.map(|s| s / hair.len() as f64)
+    };
+    let (kit_hair, imported_hair) = (mean(&kit_image.rgba8), mean(&avatar_image.rgba8));
+    let worst = kit_hair.iter().zip(&imported_hair).map(|(k, i)| (k - i).abs()).fold(0.0, f64::max);
+    eprintln!("hair: the kit's mean {kit_hair:.1?}, the imported copy's {imported_hair:.1?}");
+    assert!(worst < 12.0, "the imported hair is {worst:.1} levels off the kit's in a channel");
 
     kit_stage.release(&mut renderer).unwrap();
     avatar_stage.release(&mut renderer).unwrap();

@@ -37,14 +37,15 @@
 //! # Findings
 //!
 //! Export (rules `material.*`): `program_dropped` (a shading program exports as the default toon look, which is also
-//! what a renderer without the program draws), `skin_dropped`, `vertex_colours_ignored` (`MToon` ignores them; the
+//! what a renderer without the program draws; the kit's hair program instead exports as its mean strand colour and
+//! toon, reported as `approximated`), `skin_dropped`, `vertex_colours_ignored` (`MToon` ignores them; the
 //! mesh keeps its colours), `outline_dropped` (unlit materials), `not_exported` (face overlays, which the face baker
 //! paints into the base texture first; shadow reception; the outline's distance scaling), `approximated` (a value
 //! outside the file's range was capped), `texture_colour_space`. Import: `not_drawn` (the file's GI equalisation,
 //! matcap, UV animation, render queue and the other fields the renderer has no counterpart for, one finding per
 //! field), `approximated`, `texture_missing`. Locations are `<at>/<field>`.
 
-use omuzaki_char_api::{MaterialSpec, TextureName};
+use omuzaki_char_api::{HAIR_PROGRAM, MaterialSpec, TextureName};
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::Vec3;
 use omuzaki_io_api::{self as io, Finding, Report};
@@ -148,11 +149,22 @@ pub fn export_material(
         notes.warn("material.texture_colour_space", "base_texture", msg);
     }
     let tex = base_texture.map(|t| t.tex);
-    let base = to_linear(spec.base);
+    let mut base = to_linear(spec.base);
 
-    let look = match &spec.shading {
-        render::Shading::Toon(toon) => Some(*toon),
-        render::Shading::Program { name: program, params } => {
+    let hair = match &spec.shading {
+        render::Shading::Program { name, params } if name.as_str() == HAIR_PROGRAM => hair_look(params),
+        _ => None,
+    };
+    let look = match (&spec.shading, hair) {
+        (render::Shading::Toon(toon), _) => Some(*toon),
+        (render::Shading::Program { .. }, Some((strand, toon))) => {
+            base = (base.truncate() * strand).extend(base.w);
+            let msg = "the hair program exports as MToon in its mean strand colour with its shading; the root-to-tip \
+                       gradient, strand lines and angel ring aren't in the file";
+            notes.warn("material.approximated", "shading", msg);
+            Some(toon)
+        }
+        (render::Shading::Program { name: program, params }, None) => {
             let msg = format!(
                 "shading program '{program}' ({} parameters) can't be written to a file; the default toon look was",
                 params.len()
@@ -160,7 +172,7 @@ pub fn export_material(
             notes.warn("material.program_dropped", "shading", msg);
             Some(render::Toon::default())
         }
-        render::Shading::Unlit => None,
+        (render::Shading::Unlit, _) => None,
     };
     let shading = if let Some(toon) = &look {
         io::Shading::Toon(Box::new(export_toon(toon, spec, base.truncate(), tex, &mut notes)))
@@ -183,6 +195,35 @@ pub fn export_material(
     };
     material.double_sided = spec.double_sided;
     Ok(material)
+}
+
+/// The kit's hair program (`omuzaki-render` `program/hair.rs`) as a plain toon: the strand colour averaged over the
+/// lock, in linear light, and the program's own toon base. `None` when the parameters lack a strand colour.
+///
+/// The shader runs `root` to `mid` over the first quarter of a lock (`smoothstep(0, 0.25)`) and then to `tip` over
+/// `smoothstep(0.55, 1)`; averaged along the lock those weigh 0.125, 0.65 and 0.225. Clump edges darken by
+/// `edge-darkening` over `smoothstep(0.55, 1)` of the width, 0.225 of it on average. The toon numbers are the program's
+/// (`shift -0.05`, `softness 0.22`, a `#ffe2cc` rim at 0.12, power 3), with its `shade` parameter.
+fn hair_look(params: &render::ProgramParams) -> Option<(Vec3, render::Toon)> {
+    let colour = |name: &str| match params.iter().find(|(key, _)| key.as_str() == name)?.1 {
+        render::ParamValue::Colour(colour) => Some(*colour),
+        _ => None,
+    };
+    let float = |name: &str, default: f32| match params.iter().find(|(key, _)| key.as_str() == name).map(|(_, v)| v) {
+        Some(render::ParamValue::Float(value)) => *value,
+        _ => default,
+    };
+    let linear = |c: Colour| to_linear(c).truncate();
+    let strand = linear(colour("root")?) * 0.125 + linear(colour("mid")?) * 0.65 + linear(colour("tip")?) * 0.225;
+    let edges = 1.0 - float("edge-darkening", 0.14).clamp(0.0, 1.0) * 0.225;
+    let toon = render::Toon {
+        shade: colour("shade").unwrap_or(Colour::hex(0x00b0_8e88)),
+        shift: -0.05,
+        softness: 0.22,
+        rim: Rim { colour: Colour::hex(0x00ff_e2cc), power: 3.0, strength: 0.12 },
+        ..render::Toon::default()
+    };
+    Some((strand * edges, toon))
 }
 
 /// The `MToon` parameters of a renderer toon. Fields the renderer lacks keep the `MToon` defaults, which are written

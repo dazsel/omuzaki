@@ -40,6 +40,8 @@ use serde_json::json;
 
 use self::rows::{Collapsed, Row, Rows};
 use self::tree::Tree;
+use super::agent::AgentFeed;
+use super::agent::fences::FenceBoard;
 use super::edit::EditFocus;
 use super::io::{DocWatch, Io};
 use super::text::{self, say};
@@ -119,6 +121,10 @@ pub struct Outliner {
     anchor: Option<PartId>,
     /// Parts an agent touched since the person last selected them, with the agent's id.
     touched: BTreeMap<PartId, String>,
+    /// Parts a live agent session's fence claims, with the session's name; and what they were worked out from
+    /// (the feed's version and the tree build).
+    held: BTreeMap<PartId, String>,
+    held_from: Option<(u64, u64)>,
     drag: Option<Drag>,
     /// The cursor row had keyboard focus last frame.
     keyboard: bool,
@@ -148,6 +154,8 @@ impl Outliner {
             cursor: None,
             anchor: None,
             touched: BTreeMap::new(),
+            held: BTreeMap::new(),
+            held_from: None,
             drag: None,
             keyboard: false,
             follow: false,
@@ -226,6 +234,36 @@ impl Outliner {
         }
     }
 
+    /// Marks the parts a live agent session holds (its fence claims them), from the studio's copy of the sessions.
+    /// Worked out again only when the sessions or the tree change.
+    pub fn follow_fences(&mut self, feed: Option<&AgentFeed>) {
+        let Some(feed) = feed else {
+            self.held.clear();
+            return;
+        };
+        let from = (feed.version(), self.built);
+        if self.held_from == Some(from) {
+            return;
+        }
+        self.held_from = Some(from);
+        self.held.clear();
+        let board = FenceBoard::from_feed(feed);
+        let Some(character) = self.character.as_ref().filter(|_| !board.is_empty()) else { return };
+        for node in self.tree.nodes() {
+            let path = format!("characters/{character}/parts/{}", node.id);
+            if let Ok(path) = omuzaki_doc_api::DocPath::parse(&path)
+                && let Some(holder) = board.holder_of(&path)
+            {
+                self.held.insert(node.id.clone(), holder.name.clone());
+            }
+        }
+    }
+
+    /// The parts a live agent session holds, with its name.
+    pub const fn held(&self) -> &BTreeMap<PartId, String> {
+        &self.held
+    }
+
     /// Marks the parts an agent changed this frame (the violet dot), until the person selects them.
     fn note_agents(&mut self, character: &CharId, events: &[Event]) {
         for event in events {
@@ -295,7 +333,7 @@ impl Outliner {
         if let Some(d) = self.drag.as_mut() {
             d.target = None;
         }
-        let (tree, focus, touched, drag) = (&self.tree, &self.focus, &self.touched, &mut self.drag);
+        let (tree, focus, touched, held, drag) = (&self.tree, &self.focus, &self.touched, &self.held, &mut self.drag);
         let (mut keyboard, mut refocus) = (false, false);
         let output = ui.scope(|ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
@@ -307,7 +345,8 @@ impl Outliner {
                     // The drop line is found from the pointer before the row is painted: the row paints it.
                     let slot = Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), height));
                     let line = drop_line(ui, slot, tree, row.node, drag);
-                    let drawn = draw_row(ui, ds, node, row, focus, touched, &invalid, tab_stop, line);
+                    let marks = Marks { touched, held, invalid: &invalid };
+                    let drawn = draw_row(ui, ds, node, row, focus, &marks, tab_stop, line);
                     // A row that kept the keyboard after the cursor moved on (a copy was selected, a part was
                     // removed) hands it to the cursor row next frame.
                     if !tab_stop && drawn.response.has_focus() {
@@ -377,8 +416,9 @@ impl Outliner {
 
     /// Does what the person asked for.
     fn perform(&mut self, action: Action, character: &CharId, io: Io<'_>, ds: &Ds) {
-        // An action taken from the keyboard leaves the keyboard on the cursor row, wherever the cursor went.
-        if self.keyboard && action != Action::StartFilter {
+        // An action taken from the keyboard leaves the keyboard on the cursor row, wherever the cursor went; the two
+        // that send it elsewhere (the filter, the inspector) do not pull it back.
+        if self.keyboard && !matches!(action, Action::StartFilter | Action::ToInspector) {
             self.follow = true;
         }
         let id_of = |tree: &Tree, node: usize| tree.node(node).map(|n| n.id.clone());
@@ -567,6 +607,13 @@ impl Outliner {
     }
 }
 
+/// What a row marks besides its visibility: an agent's recent change, a fence's claim, a failed check.
+struct Marks<'a> {
+    touched: &'a BTreeMap<PartId, String>,
+    held: &'a BTreeMap<PartId, String>,
+    invalid: &'a str,
+}
+
 /// Draws one row.
 #[allow(clippy::too_many_arguments, reason = "one row's inputs, borrowed apart from the panel")]
 fn draw_row(
@@ -575,19 +622,23 @@ fn draw_row(
     node: &tree::Node,
     row: Row,
     focus: &EditFocus,
-    touched: &BTreeMap<PartId, String>,
-    invalid: &str,
+    marks: &Marks<'_>,
     tab_stop: bool,
     line: DropLine,
 ) -> TreeRowOutput {
-    let mut icons: [RowIcon<'_>; 3] = [RowIcon::Visible(node.enabled); 3];
+    let mut icons: [RowIcon<'_>; 4] = [RowIcon::Visible(node.enabled); 4];
     let mut count = 1;
-    if let Some(by) = touched.get(&node.id) {
+    if let Some(by) = marks.touched.get(&node.id) {
         icons[count] = RowIcon::AgentTouched { by };
         count += 1;
     }
+    // Who holds the part, in words as well as the lock (never the icon alone).
+    if let Some(owner) = marks.held.get(&node.id) {
+        icons[count] = RowIcon::Locked { owner };
+        count += 1;
+    }
     if node.invalid {
-        icons[count] = RowIcon::GateWarning { text: invalid };
+        icons[count] = RowIcon::GateWarning { text: marks.invalid };
         count += 1;
     }
     let mut tree_row = TreeRow::new((ROW, node.id.as_str()), node.id.as_str(), node.icon)
@@ -744,6 +795,7 @@ struct OutlinerPanel(Outliner);
 
 impl omuzaki_ui_api::panel::Panel for OutlinerPanel {
     fn ui(&mut self, ui: &mut Ui, ctx: &omuzaki_ui_api::panel::PanelCtx<'_>) {
+        self.0.follow_fences(ctx.view::<AgentFeed>());
         self.0.ui(ui, Io::from_ctx(ctx));
     }
 

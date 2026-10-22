@@ -64,7 +64,8 @@ pub const CAP_IS_CHECKED_FIRST: &str = "cap_is_checked_first";
 /// A declared request succeeds with at least one output, and every output fits the capability's declaration, has a
 /// model and a media type of its kind ([`media_type_fits`]), and the first carries the seed.
 pub const OUTPUTS_MATCH_MANIFEST: &str = "outputs_match_manifest";
-/// A request of an undeclared capability is `Unsupported`: no panic, no request.
+/// A request of an undeclared capability, or a DCC request for another program, is `Unsupported`: no panic, no
+/// request.
 pub const UNSUPPORTED_IS_REFUSED: &str = "unsupported_is_refused";
 /// The probe key appears in no output, error or header, and the connector sets no auth header.
 pub const SECRETS_STAY_OUT: &str = "secrets_stay_out";
@@ -141,8 +142,28 @@ pub fn check(c: &dyn Connector, m: &ConnectorManifest, env: &Env<'_>) -> Vec<Fin
 /// The bytes of [`sample_request`]'s vision image; a test adds them to its inputs.
 pub const SAMPLE_IMAGE: &[u8] = b"conformance sample image";
 
+/// A small valid request of `capability` for `m`: [`sample_request`], except that a DCC request names `m`'s id as its
+/// program and the first `dcc` tool its MCP section maps (`run` when it maps none).
+pub fn sample_request_for(m: &ConnectorManifest, capability: Capability) -> Request {
+    match capability {
+        Capability::Dcc => Request::Dcc(dcc_request(m)),
+        other => sample_request(other),
+    }
+}
+
+/// A DCC call to `m`'s own program: its id as `tool`, its first mapped `dcc` tool (or `run`) as `action`.
+fn dcc_request(m: &ConnectorManifest) -> DccRequest {
+    let action = m
+        .mcp
+        .as_ref()
+        .and_then(|mcp| mcp.tools.iter().find(|t| t.capability == Capability::Dcc))
+        .map_or_else(|| "run".to_owned(), |t| t.tool.clone());
+    DccRequest { tool: m.id.as_str().to_owned(), action, ..DccRequest::default() }
+}
+
 /// A small valid request of `capability`, seeded where the kind has a seed. A vision request names
-/// [`SAMPLE_IMAGE`]; a DCC request names the tool `dcc` and the action `run`.
+/// [`SAMPLE_IMAGE`]; a DCC request names the tool `dcc` and the action `run` (use [`sample_request_for`] to address a
+/// given connector).
 pub fn sample_request(capability: Capability) -> Request {
     let seed = Some(7);
     match capability {
@@ -475,14 +496,25 @@ impl Suite<'_, '_> {
     }
 
     fn unsupported_is_refused(&mut self, target: &Target) {
-        let Some(capability) = Capability::ALL.into_iter().find(|c| self.m.declares(*c).is_none()) else { return };
+        if let Some(capability) = Capability::ALL.into_iter().find(|c| self.m.declares(*c).is_none()) {
+            self.refused(target, &sample_request(capability), &format!("an undeclared {capability} request"));
+        }
+        if self.m.declares(Capability::Dcc).is_some() {
+            let foreign = format!("not-{}", self.m.id);
+            let req = Request::Dcc(DccRequest { tool: foreign.clone(), ..dcc_request(self.m) });
+            self.refused(target, &req, &format!("a DCC request for {foreign}"));
+        }
+    }
+
+    /// `req`, described as `what`, must be `Unsupported` without a request.
+    fn refused(&mut self, target: &Target, req: &Request, what: &str) {
         let before = self.seen();
-        let (ran, _) = self.plain(target, &sample_request(capability), self.env.http, u64::MAX);
+        let (ran, _) = self.plain(target, req, self.env.http, u64::MAX);
         if self.seen() != before {
-            self.finding(UNSUPPORTED_IS_REFUSED, format!("an undeclared {capability} request was sent"));
+            self.finding(UNSUPPORTED_IS_REFUSED, format!("{what} was sent"));
         }
         if !matches!(ran, Ok(Err(ConnectError::Unsupported { .. }))) {
-            self.finding(UNSUPPORTED_IS_REFUSED, format!("an undeclared {capability} request gave {}", describe(&ran)));
+            self.finding(UNSUPPORTED_IS_REFUSED, format!("{what} gave {}", describe(&ran)));
         }
     }
 

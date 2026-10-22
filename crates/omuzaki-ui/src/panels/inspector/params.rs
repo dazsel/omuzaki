@@ -49,7 +49,7 @@ pub fn read(answer: &Value, query: &str) -> Params {
             continue;
         };
         if let Some(props) = section.get_mut("properties").and_then(Value::as_object_mut) {
-            props.insert((*last).to_owned(), field_schema(entry, ty, last));
+            props.insert((*last).to_owned(), field_schema(entry, ty, last, parents.last().copied()));
         }
         if let Some(current) = entry.get("current") {
             holder.insert((*last).to_owned(), current.clone());
@@ -112,10 +112,10 @@ fn value_at<'a>(value: &'a mut Value, parents: &[&str]) -> Option<&'a mut Map<St
     at.as_object_mut()
 }
 
-/// The schema of one value.
-fn field_schema(entry: &Value, ty: &str, key: &str) -> Value {
+/// The schema of one value, `key` in the section or list `parent`.
+fn field_schema(entry: &Value, ty: &str, key: &str, parent: Option<&str>) -> Value {
     let mut field = Map::new();
-    field.insert("title".to_owned(), Value::String(title_of(key)));
+    field.insert("title".to_owned(), Value::String(item_title(key, parent)));
     let copy = |field: &mut Map<String, Value>, keys: &[&str]| {
         for k in keys {
             if let Some(v) = entry.get(*k) {
@@ -148,6 +148,15 @@ fn field_schema(entry: &Value, ty: &str, key: &str) -> Value {
         field.insert("x-ui".to_owned(), json!({"unit": unit}));
     }
     Value::Object(field)
+}
+
+/// A field's label. A list item is named by its list and its place from 1 (`centre/0` reads "Centre 1"): an index
+/// alone would be read out as a bare "0", the same in every list of the part.
+fn item_title(key: &str, parent: Option<&str>) -> String {
+    match (key.parse::<usize>(), parent) {
+        (Ok(index), Some(list)) => format!("{} {}", title_of(list), index.saturating_add(1)),
+        _ => title_of(key),
+    }
 }
 
 /// A key as a label: `half_width` reads "Half width". A list index stays a number.
@@ -190,6 +199,8 @@ mod tests {
         assert_eq!(params.schema["properties"]["cranium"]["description"], json!("The cranium."));
         assert_eq!(params.value["cranium"]["half_width"], json!(0.2));
         assert_eq!(params.value["cranium"]["centre"]["0"], json!(0.0), "a list item is a field keyed by its index");
+        let first = &params.schema["properties"]["cranium"]["properties"]["centre"]["properties"]["0"];
+        assert_eq!(first["title"], json!("Centre 1"), "and named by its list and its place");
         assert_eq!(params.value["groups"]["a-cap"]["dynamics"]["follow"], json!("head"));
         assert_eq!(params.schema["properties"]["tags"]["type"], json!("array"), "a list set whole is shown");
     }

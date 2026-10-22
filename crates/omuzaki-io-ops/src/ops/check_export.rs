@@ -25,13 +25,16 @@
 
 use omuzaki_avatar_api::body::BodyView;
 use omuzaki_char_api::{
-    BuildError, BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder, CharacterDef, PartId, Quality,
-    RegistryBuilder, paths,
+    BuildError, BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder, CharacterDef, JointRef,
+    LookDef, PartCategory, PartId, Quality, RegistryBuilder, VariantError, VariantId, VariantSet, find_kind, paths,
+    resolve_variant,
 };
+use omuzaki_core::glam::Vec3;
 use omuzaki_doc_api::DocPath;
+use omuzaki_face_api::{FaceProfile, FaceProjection};
 use omuzaki_io_api::{
-    ExportOptions, Exporter, Finding, FormatId, PerfectSync, Purpose, Report, Severity, find_exporter, formats,
-    preflight,
+    ExportOptions, Exporter, Finding, FormatId, IoScene, NodeIx, PerfectSync, Purpose, Report, Severity,
+    find_exporter, formats, preflight,
 };
 use omuzaki_ops_api::{Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
 use omuzaki_store_api::{Provenance, Store};
@@ -44,8 +47,9 @@ use super::licence::derive::load;
 use super::licence::findings::against_stored_record;
 use super::licence::source::{PartSource, source_path};
 use crate::gather::avatar_import::gather_imported;
+use crate::ops::avatar::attach::attach_parts;
 use crate::gather::avatar::{LicenceRecord, add_avatar, add_rights, record_path};
-use crate::gather::{GatherError, GatherOptions, GatherPurpose, gather};
+use crate::gather::{GatherError, GatherOptions, GatherPurpose, Gathered, gather};
 
 /// Checks whether a character would export cleanly, and says how to fix what would not. Writes nothing.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -59,6 +63,62 @@ pub struct CheckExport {
     /// it, and the licence gate must pass.
     #[serde(default)]
     pub purpose: Purpose,
+}
+
+/// How `io.export` builds the character it writes; the check itself builds the stored character at its own size.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Shape {
+    /// The variant to apply.
+    pub variant: Option<VariantId>,
+    /// The height to scale to, in metres (`GatherOptions::target_height`).
+    pub target_height: Option<f32>,
+}
+
+/// The verdict on an export and the scene it would write, before the face is baked.
+pub(crate) struct ExportScene {
+    /// What `io.check_export` answers.
+    pub check: ExportCheck,
+    /// The scene, `None` when it can't be gathered (the check holds the error).
+    pub scene: Option<IoScene>,
+    /// The painted face to bake into it: `None` for an imported model, which carries its own expressions, and for a
+    /// character without a face or a head mesh.
+    pub face: Option<FaceToBake>,
+}
+
+/// What the face baker needs: the face, where it lands on the head, and the head's mesh node in the scene.
+pub(crate) struct FaceToBake {
+    /// The face design, palette slots resolved.
+    pub profile: FaceProfile,
+    /// Where the painted layers land on the head.
+    pub projection: FaceProjection,
+    /// The head bone's bind position, in the scene's (scaled) units.
+    pub head_centre: Vec3,
+    /// The node whose mesh receives the face's morph targets.
+    pub target: NodeIx,
+}
+
+/// The face `built` would bake into `gathered`: its face binding, the head bone and the node of its head part's head
+/// mesh (`<part>.<mesh>`, the mesh named `head` or `*-head`, as the stage frames the head). `None` when any is missing.
+fn face_to_bake(built: &BuiltCharacter, gathered: &Gathered) -> Option<FaceToBake> {
+    let binding = built.face.as_ref()?;
+    let profile = binding.profile.resolve_colours(&built.palette).ok()?;
+    let head_part = built.def.parts.iter().find_map(|(id, part)| {
+        let category = (find_kind(part.kind.as_str())?.meta)().category;
+        (part.enabled && category == PartCategory::Head).then_some(id)
+    })?;
+    let mesh = built.meshes.iter().find(|m| {
+        &m.part == head_part && (m.mesh.name == "head" || m.mesh.name.ends_with("-head"))
+    })?;
+    let name = format!("{}.{}", mesh.part, mesh.mesh.name);
+    let node = gathered.scene.nodes.iter().position(|n| n.name == name && n.mesh.is_some())?;
+    let bone = built.rig.bone(&JointRef::HEAD)?.index();
+    let head = built.rig.inverse_bind().get(bone)?.inverse().w_axis.truncate();
+    Some(FaceToBake {
+        profile,
+        projection: binding.projection,
+        head_centre: head * gathered.scale,
+        target: NodeIx(u32::try_from(node).ok()?),
+    })
 }
 
 /// What `io.check_export` returns.
@@ -109,16 +169,31 @@ impl CheckExport {
     /// `NotFound` for a character the document lacks; `Invalid` for a character that does not read or build, a record
     /// or a source row that does not read, and everything [`check`](Self::check) refuses.
     pub(crate) fn run(&self, ctx: &OpCtx<'_>) -> Result<ExportCheck, OpError> {
+        self.run_scene(ctx, &Shape::default()).map(|exported| exported.check)
+    }
+
+    /// [`run`](Self::run) for `io.export`: the same verdict, and the scene the file is written from (built in `shape`,
+    /// before the face is baked) with what the face bake needs. The scene is `None` only when the verdict already holds
+    /// the error that stops the export (a creature cannot be a VRM).
+    ///
+    /// # Errors
+    /// As [`run`](Self::run); `Invalid` for a variant the character lacks.
+    pub(crate) fn run_scene(&self, ctx: &OpCtx<'_>, shape: &Shape) -> Result<ExportScene, OpError> {
         if ctx.doc.get(&paths::character(&self.character).join("avatar")).is_some() {
-            return self.run_imported(ctx);
+            return self.run_imported(ctx, shape);
         }
-        let def = read_character(ctx, &self.character)?;
+        let mut def = read_character(ctx, &self.character)?;
+        if let Some(variant) = &shape.variant {
+            def = with_variant(ctx, &self.character, &def, variant)?;
+        }
         let record = read_record(ctx, &self.character)?;
         let parts = load(ctx, &self.character)?;
-        let built = build(&self.character, &def)?;
-        let mut check = self.check(&built, record.as_ref())?;
+        let mut built = build(&self.character, &def, shape.variant.clone())?;
+        apply_look(ctx, &self.character, &mut built)?;
+        let (mut check, gathered) = self.check_gathered(&built, record.as_ref(), shape.target_height)?;
         check.add_findings(against_stored_record(&self.character, self.purpose, record.as_ref(), &parts));
-        Ok(check)
+        let face = gathered.as_ref().and_then(|g| face_to_bake(&built, g));
+        Ok(ExportScene { check, scene: gathered.map(|g| g.scene), face })
     }
 
     /// Checks `built` against the exporter of `self.format` under the rights in `record`, and nothing about the parts:
@@ -130,27 +205,42 @@ impl CheckExport {
     /// # Errors
     /// `Invalid` for a `format` with no exporter and for a character that cannot be gathered into a scene.
     pub fn check(&self, built: &BuiltCharacter, record: Option<&LicenceRecord>) -> Result<ExportCheck, OpError> {
+        self.check_gathered(built, record, None).map(|(check, _)| check)
+    }
+
+    /// [`check`](Self::check), keeping the gathered scene (with its rights and, for a VRM, its avatar block) that the
+    /// verdict is about, scaled to `target_height` if given; `None` when it can't be gathered (the verdict says why).
+    fn check_gathered(
+        &self,
+        built: &BuiltCharacter,
+        record: Option<&LicenceRecord>,
+        target_height: Option<f32>,
+    ) -> Result<(ExportCheck, Option<Gathered>), OpError> {
         let (exporter, options, vrm) = self.exporter()?;
         let purpose = if vrm { GatherPurpose::Vrm } else { GatherPurpose::Gltf };
         let mut report = Report::new();
-        match gather(built, &GatherOptions { target_height: None, purpose }) {
+        let kept = match gather(built, &GatherOptions { target_height, purpose }) {
             Ok(mut gathered) => {
                 add_rights(&mut gathered.scene, built, record);
                 if vrm {
                     add_avatar(&mut gathered, built).map_err(|e| gather_failed(&self.character, &e))?;
                 }
-                report.extend(gathered.report);
+                report.extend(std::mem::take(&mut gathered.report));
                 report.extend(preflight(&gathered.scene, &options));
                 report.extend(exporter.check(&gathered.scene, &options));
+                Some(gathered)
             }
             // A creature cannot be a VRM: that is the answer to the question asked, not a failure to answer it.
-            Err(GatherError::NotHumanoid(why)) => report.push(
-                Finding::error("vrm.not_humanoid", format!("{why}; a VRM needs a humanoid skeleton"))
-                    .at("skeleton")
-                    .hint("export it as glb, or build the character from a humanoid body template"),
-            ),
+            Err(GatherError::NotHumanoid(why)) => {
+                report.push(
+                    Finding::error("vrm.not_humanoid", format!("{why}; a VRM needs a humanoid skeleton"))
+                        .at("skeleton")
+                        .hint("export it as glb, or build the character from a humanoid body template"),
+                );
+                None
+            }
             Err(other) => return Err(gather_failed(&self.character, &other)),
-        }
+        };
         if vrm {
             let msg = "the 52 face channels are baked when the file is written, so this check does not look for them";
             report
@@ -162,7 +252,7 @@ impl CheckExport {
             let msg = "this check can't tell whether a real person's likeness or voice is involved, so the consent rule is not applied";
             report.push(Finding::info("rights.consent_not_checked", msg));
         }
-        Ok(self.answer(report))
+        Ok((self.answer(report), kept))
     }
 
     /// The check of an imported avatar (see the module docs): the scene its export writes, with the provenance of its
@@ -171,19 +261,29 @@ impl CheckExport {
     /// # Errors
     /// `Invalid` for a `format` with no exporter, an avatar node or source row that does not read, and an avatar that
     /// does not gather; `NotFound` for an original the store lacks, and no store service is an error too.
-    fn run_imported(&self, ctx: &OpCtx<'_>) -> Result<ExportCheck, OpError> {
+    fn run_imported(&self, ctx: &OpCtx<'_>, shape: &Shape) -> Result<ExportScene, OpError> {
+        if shape.variant.is_some() {
+            return Err(OpError::invalid("variant", "an imported character has no variants: export it without one"));
+        }
+        if shape.target_height.is_some() {
+            return Err(OpError::invalid("target_height", "an imported character exports at the size its file has")
+                .hint("leave target_height out; resize the model in the tool that made it"));
+        }
         let (exporter, options, _) = self.exporter()?;
         let def = read_def(ctx.doc, &self.character)?;
-        let prepared = rebuild(ctx, def.clone())?;
+        let mut avatar = rebuild(ctx, def.clone())?.avatar;
+        // Its attachments, built as the stage builds them: what a person sees on the model is what the file carries.
+        attach_parts(&mut avatar, &self.character, &def.parts, &BuildServices::default(), Quality::Offline)?;
         let store = ctx.service::<dyn Store>()?;
-        let mut scene = gather_imported(&BodyView::imported(&prepared.avatar), &def, &|hash| store.get(hash).ok())
+        let mut scene = gather_imported(&BodyView::imported(&avatar), &def, &|hash| store.get(hash).ok())
             .map_err(|e| {
                 OpError::invalid("character", format!("character '{}' can't be written to a file: {e}", self.character))
             })?;
         scene.provenance = imported_provenance(ctx, &self.character)?;
         let mut report = preflight(&scene, &options);
         report.extend(exporter.check(&scene, &options));
-        Ok(self.answer(report))
+        // Its face is the model's own expressions, which the scene already carries: there is nothing to bake.
+        Ok(ExportScene { check: self.answer(report), scene: Some(scene), face: None })
     }
 
     /// The exporter of `self.format`, the options the check runs it with, and whether the format is a VRM one.
@@ -303,6 +403,43 @@ fn read_character(ctx: &OpCtx<'_>, id: &CharId) -> Result<CharacterDef, OpError>
         .map_err(|e| OpError::invalid("character", format!("character '{id}' doesn't read as a character: {e}")))
 }
 
+/// Draws `built` in the character's look (`characters/<id>/look`), so the file carries it: a VRM exported in cel-flat
+/// looks cel-flat in any `MToon` renderer. A character with no look node is left as built, the default look.
+///
+/// # Errors
+/// `Invalid` (field `look`) for a look node that doesn't read or resolve, or that the materials can't take.
+fn apply_look(ctx: &OpCtx<'_>, id: &CharId, built: &mut BuiltCharacter) -> Result<(), OpError> {
+    let Some(node) = ctx.doc.get(&paths::look(id)) else { return Ok(()) };
+    let look = LookDef::from_node(Some(node)).and_then(|def| def.resolve()).map_err(|e| {
+        OpError::invalid("look", format!("the look of '{id}' doesn't resolve: {e}"))
+            .hint("set it again with look.set_preset or look.set_param")
+    })?;
+    built.apply_look(&look).map(drop).map_err(|e| {
+        OpError::invalid("look", format!("the look of '{id}' can't be drawn: {e}"))
+            .hint("set it again with look.set_preset or look.set_param")
+    })
+}
+
+/// `base` with `variant` applied, from the variants stored under the character.
+fn with_variant(ctx: &OpCtx<'_>, id: &CharId, base: &CharacterDef, variant: &VariantId) -> Result<CharacterDef, OpError> {
+    let variants: VariantSet = match ctx.doc.get(&paths::variants(id)) {
+        Some(node) => serde_json::from_value(node.clone())
+            .map_err(|e| OpError::invalid("variant", format!("the variants of '{id}' don't read: {e}")))?,
+        None => VariantSet::new(),
+    };
+    resolve_variant(base, &variants, variant).map_err(|e| match e {
+        VariantError::Unknown(missing) if &missing == variant => {
+            let names: Vec<&str> = variants.keys().map(VariantId::as_str).collect();
+            OpError::not_found(format!("there is no variant '{variant}' on '{id}'")).hint(if names.is_empty() {
+                "the character has no variants".to_owned()
+            } else {
+                format!("its variants: {}", names.join(", "))
+            })
+        }
+        other => OpError::invalid("variant", format!("variant '{variant}' of '{id}' doesn't resolve: {other}")),
+    })
+}
+
 /// The character's licence record, if the project holds one. The licence ops read it the same way.
 pub(crate) fn read_record(ctx: &OpCtx<'_>, id: &CharId) -> Result<Option<LicenceRecord>, OpError> {
     let path = record_path(id);
@@ -313,9 +450,9 @@ pub(crate) fn read_record(ctx: &OpCtx<'_>, id: &CharId) -> Result<Option<Licence
     })
 }
 
-fn build(id: &CharId, def: &CharacterDef) -> Result<BuiltCharacter, OpError> {
+fn build(id: &CharId, def: &CharacterDef, variant: Option<VariantId>) -> Result<BuiltCharacter, OpError> {
     // What an export needs: offline detail, and the spring chains and skinned meshes that hair and cloth bake for it.
-    let options = BuildOptions { variant: None, quality: Quality::Offline, rig_export: true };
+    let options = BuildOptions { variant, quality: Quality::Offline, rig_export: true };
     RegistryBuilder.build(id, def, &options, &BuildServices::default()).map_err(|e: BuildError| {
         OpError::invalid("character", format!("character '{id}' doesn't build: {e}"))
             .hint("fix the part the message names, then check again")

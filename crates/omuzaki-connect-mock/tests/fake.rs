@@ -71,8 +71,10 @@ fn the_cap_stops_before_the_output_that_would_pass_it() {
 fn a_cancel_keeps_what_is_complete() {
     let m = manifest("mock-image");
     let fake = FakeConnector::image(Script { latency_s: 1.0, ..Script::default() });
+    // Cancelled during the second wait: the first output is kept and the second is never made.
     let out = run_with(&fake, &m, &images(4, None), u64::MAX, 2).result.unwrap();
-    assert_eq!((out.outputs.len(), out.stopped), (2, Some(ConnectError::Cancelled)));
+    assert_eq!((out.outputs.len(), out.stopped), (1, Some(ConnectError::Cancelled)));
+    assert_eq!(run_with(&fake, &m, &images(4, None), u64::MAX, 1).result, Err(ConnectError::Cancelled));
     assert_eq!(run_with(&fake, &m, &images(4, None), u64::MAX, 0).result, Err(ConnectError::Cancelled));
 }
 

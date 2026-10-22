@@ -42,6 +42,23 @@ pub trait GpuRasterizer: Send {
         self.rasterize_native(spec, list, native)
     }
 
+    /// A new frame begins: the face system calls it, then [`stage`](Self::stage) for every layer whose list changed,
+    /// before any of the frame's paints. The default does nothing.
+    fn begin_frame(&mut self) {}
+
+    /// The changed `list` of a layer the frame is about to paint, with its sections, before any of the frame's paints. A
+    /// rasteriser may encode it now and, on the frame's first paint, rasterise every staged layer together, leaving each
+    /// layer's own paint only the copy into its texture. A layer that is not staged is painted as before. The default
+    /// does nothing.
+    ///
+    /// # Errors
+    /// As [`rasterize_native`](Self::rasterize_native): a list it can't draw. The layer is then painted on its own,
+    /// where the same error is reported.
+    fn stage(&mut self, spec: &FaceLayerSpec, list: &DrawList, sections: &LayerSections) -> Result<(), FaceError> {
+        let _ = (spec, list, sections);
+        Ok(())
+    }
+
     /// The renderer's device was lost or rebuilt: drop everything made on the old one (renderers, pipelines, textures,
     /// caches) and decide afresh on the next paint. The stage calls this when it rebuilds the renderer, because a
     /// rasteriser can't always tell the new device from the old one by comparing them (wgpu numbers its resources per

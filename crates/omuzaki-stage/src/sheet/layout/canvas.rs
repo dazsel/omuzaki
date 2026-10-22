@@ -136,6 +136,22 @@ pub(super) fn resample_premultiplied(src: &RgbaImage, premultiplied: bool, w: u3
         }
     };
     let raw = src.as_raw();
+    let pixel = |acc: [f32; 4], out: &mut [u8]| {
+        let a = (acc[3] + 0.5).clamp(0.0, 255.0);
+        for c in 0..3 {
+            out[c] = (acc[c] + 0.5).clamp(0.0, a) as u8;
+        }
+        out[3] = a as u8;
+    };
+
+    // At its own size a picture is copied, not filtered: the cubic would soften it.
+    if (sw, sh) == (dw, dh) {
+        let mut out = vec![0_u8; dw * dh * 4];
+        for (to, from) in out.as_chunks_mut::<4>().0.iter_mut().zip(raw.as_chunks::<4>().0) {
+            pixel(channels(from), to);
+        }
+        return out;
+    }
 
     // Horizontal pass: sw x sh -> dw x sh.
     let hw = axis_weights(sw, dw);
@@ -166,11 +182,7 @@ pub(super) fn resample_premultiplied(src: &RgbaImage, premultiplied: bool, w: u3
                     acc[c] += p[c] * wt;
                 }
             }
-            let a = (acc[3] + 0.5).clamp(0.0, 255.0);
-            for c in 0..3 {
-                out[(y * dw + x) * 4 + c] = (acc[c] + 0.5).clamp(0.0, a) as u8;
-            }
-            out[(y * dw + x) * 4 + 3] = a as u8;
+            pixel(acc, &mut out[(y * dw + x) * 4..][..4]);
         }
     }
     out

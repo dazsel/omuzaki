@@ -1,4 +1,5 @@
 //! Behaviour of the store against real folders: load, write, migrate, race and recover.
+#![allow(clippy::disallowed_methods, reason = "tests set up and read the store's folders on disk")]
 
 use std::fs;
 use std::io::{BufRead, BufReader, Read};

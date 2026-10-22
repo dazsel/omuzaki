@@ -272,6 +272,53 @@ fn posts_from_other_threads_arrive() {
     assert_eq!(mine, posted);
 }
 
+/// #2160: one thread posts 20,000 scenes while another takes as fast as it can. Every scene taken is whole (its
+/// fields all say the same post), posts arrive in order, the last one arrives, and the take side never allocates.
+#[test]
+fn a_stress_of_posts_and_takes_never_shows_a_torn_scene() {
+    const POSTS: u16 = 20_000;
+    let mailbox = std::sync::Arc::new(Mailbox::new());
+    let stamped = |n: u16| {
+        let mut scene = ResolvedScene::new();
+        let [hi, lo] = n.to_be_bytes();
+        scene.background = Background::Solid { colour: Colour::rgb(hi, lo, 7) };
+        scene.outline_light = f32::from(n);
+        scene.skin_floor = Some(f32::from(n));
+        scene
+    };
+    let poster = {
+        let mailbox = std::sync::Arc::clone(&mailbox);
+        std::thread::spawn(move || {
+            for n in 1..=POSTS {
+                mailbox.post(stamped(n));
+            }
+        })
+    };
+    let mut mine = ResolvedScene::new();
+    let (mut last, mut handed_over, mut allocations) = (0_u16, 0_u32, 0_usize);
+    while last < POSTS {
+        let (taken, counted_now) = counted(|| mailbox.take_into(&mut mine));
+        allocations += counted_now;
+        if !taken {
+            std::hint::spin_loop();
+            continue;
+        }
+        handed_over += 1;
+        // Lossless: the outline light holds every value up to 20,000 exactly.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let n = mine.outline_light as u16;
+        let [hi, lo] = n.to_be_bytes();
+        assert_eq!(mine.background, Background::Solid { colour: Colour::rgb(hi, lo, 7) }, "post {n} is whole");
+        assert_eq!(mine.skin_floor, Some(f32::from(n)), "post {n} is whole");
+        assert!(n > last, "posts arrive in order: {n} after {last}");
+        last = n;
+    }
+    poster.join().unwrap();
+    assert!(!mailbox.take_into(&mut mine), "the last post was taken once");
+    assert_eq!(allocations, 0, "{handed_over} takes allocated nothing");
+    println!("{handed_over} takes of {POSTS} posts, every one whole");
+}
+
 #[test]
 fn work_that_failed_stays_owed_until_it_is_committed() {
     let mut resolved = resolve(&scene());

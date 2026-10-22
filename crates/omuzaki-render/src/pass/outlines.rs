@@ -5,17 +5,17 @@
 //! `Outline::world_width`, and only the faces turned away from the camera are kept. Drawn after `Opaque` into the same
 //! colour and depth, the hull shows as a band around the silhouette and creases and hides behind the surface
 //! everywhere else. The colour is `Outline::colour` times `Scene::outline_light`, so lines dim with the scene and
-//! never glow. `shader/outline.wgsl` has the shader.
+//! never glow (unless the lighting mix asks for the surface's light). `shader/outline.wgsl` has the shader.
 //!
-//! The width scales with distance (`clamp(depth / 2 m, 0.6, 3)`), so a character that steps back keeps a readable
-//! line, and it is measured in world metres, so it follows the model's own scale. A material's `alpha` mask is not
-//! applied to the hull: the line follows the geometry, as in the prototype. A width of 0 draws nothing, and a frame
-//! with no outlined instance leaves the pass `Skipped` without opening a render pass.
-//!
-//! What the contract does not carry yet is `MToon`'s other width modes: a screen-space width, a width that does not scale
-//! with distance, and a per-texel width mask (`Outline` has only the one world width, `docs/design/render-api.md`).
-//! `omuzaki-io-ops` converts a screen-space `MToon` width to metres at 2 m. The width is computed in one function of the
-//! shader, `outline_width`, which is where a width mode would go once the contract has one.
+//! The material's `OutlineStyle` says what the width measures (#647, `MToon`'s outline). By default (the kit's line) it is
+//! world metres scaled with distance (`clamp(depth / 2 m, 0.6, 3)`), so a character that steps back keeps a readable line
+//! that follows the model's own scale; `World` is metres at any distance; `Screen` is a fraction of the target's height,
+//! pushed in clip space, the same on screen at any distance. A width texture multiplies the width per texel (its green
+//! channel, read in the vertex stage), and the lighting mix tints the line toward the surface's own lit colour, so the
+//! pass binds the lit passes' shadow and environment groups. A material's `alpha` mask cuts the hull where it cuts the
+//! surface (#649), as three-vrm's `MToon` outline does, so a cut-out card's line follows its visible shape instead of
+//! the whole card. A width of 0 draws nothing, and a frame with no outlined instance leaves the pass `Skipped` without
+//! opening a render pass.
 
 use std::collections::HashMap;
 
@@ -24,12 +24,16 @@ use omuzaki_render_api::{Pass, RenderError};
 use super::{FramePass, Outcome, PassCx};
 use crate::frame::FrameView;
 use crate::gpu::{DEPTH_FORMAT, SCENE_FORMAT};
+use crate::program::opaque_source;
 use crate::resource::SceneResources;
 use crate::resource::material::GpuMaterial;
 use crate::resource::mesh::{GpuMesh, smooth_normal_layout, vertex_layouts};
 use crate::shared::Shared;
 
-const SOURCE: &str = concat!(include_str!("../shader/common.wgsl"), include_str!("../shader/outline.wgsl"));
+/// The Opaque pass's toon shader with no program (which the lighting mix lights the surface with), then the hull's.
+fn source() -> String {
+    format!("{}\n{}", opaque_source(None), include_str!("../shader/outline.wgsl"))
+}
 
 /// What distinguishes one pipeline from another: the state that varies per draw. The hull always culls the front
 /// faces, whatever the material's sidedness: a double-sided sheet is outlined by its back faces too.
@@ -80,11 +84,16 @@ impl Outlines {
         Self {
             module: device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("outlines"),
-                source: wgpu::ShaderSource::Wgsl(SOURCE.into()),
+                source: wgpu::ShaderSource::Wgsl(source().into()),
             }),
             layout: device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("outlines"),
-                bind_group_layouts: &[Some(&shared.layouts.frame), Some(&shared.layouts.material)],
+                bind_group_layouts: &[
+                    Some(&shared.layouts.frame),
+                    Some(&shared.layouts.material),
+                    Some(&shared.layouts.shadow_receiver),
+                    Some(&shared.layouts.environment),
+                ],
                 immediate_size: 0,
             }),
             pipelines: HashMap::new(),
@@ -103,7 +112,7 @@ fn build_pipeline(
         layout: Some(layout),
         vertex: wgpu::VertexState {
             module,
-            entry_point: Some("vs_main"),
+            entry_point: Some("vs_outline"),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             buffers: &{
                 let [shape, surface] = vertex_layouts();
@@ -129,7 +138,7 @@ fn build_pipeline(
         multisample: wgpu::MultisampleState { count: variant.samples, ..Default::default() },
         fragment: Some(wgpu::FragmentState {
             module,
-            entry_point: Some("fs_main"),
+            entry_point: Some("fs_outline"),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             targets: &[Some(wgpu::ColorTargetState {
                 format: SCENE_FORMAT,
@@ -163,8 +172,11 @@ impl FramePass for Outlines {
             return Ok(Outcome::Skipped);
         }
 
+        let environment = cx.environment_group();
         let mut pass = cx.attachments.geometry_pass(cx.encoder, "outlines", frame.clear_colour());
         pass.set_bind_group(0, frame.bind_group, &[]);
+        pass.set_bind_group(2, cx.attachments.shadow.receiver_group(), &[]);
+        pass.set_bind_group(3, environment, &[]);
         for hull in hulls(frame, resources) {
             let Some(pipeline) = self.pipelines.get(&hull.variant) else { continue };
             pass.set_pipeline(pipeline);
