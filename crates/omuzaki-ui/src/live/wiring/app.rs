@@ -17,6 +17,7 @@ use omuzaki_live::Automation;
 use omuzaki_live::approvals::DiskApprovals;
 use omuzaki_live::vars::DiskVariables;
 use omuzaki_live_api::event::EventSink;
+use omuzaki_live_api::services::Approvals;
 use omuzaki_obs::service::ObsService;
 use omuzaki_ops_api::{Actor, Runner, ServicesBuilder};
 use omuzaki_render::WgpuRenderer;
@@ -99,6 +100,8 @@ pub struct LiveApp {
     feed: Option<ProgramFeed>,
     /// Runs the shows' rules (the `automation.*` and `show.*` ops reach it through the runner).
     automation: Arc<Automation>,
+    /// What this machine approved for each show; only the approval card and Settings write it (never an op).
+    approvals: Option<Arc<DiskApprovals>>,
 }
 
 /// The frame rate the program is fed to the outputs at (spec §10's budget scene).
@@ -277,10 +280,12 @@ impl LiveApp {
         automation.attach_sessions(&core.sessions);
         // What this machine approved and the shows' variables live in the app's data folder, never in the project.
         // Without one, nothing is approved and variables last one run.
-        if let Some(data) = &data {
+        let approvals = data.as_ref().map(|data| {
             automation.set_variables(Arc::new(DiskVariables::new(data)), project);
-            automation.set_approvals(Arc::new(DiskApprovals::new(data)));
-        }
+            let approvals = Arc::new(DiskApprovals::new(data));
+            automation.set_approvals(Arc::clone(&approvals) as Arc<dyn Approvals>);
+            approvals
+        });
         Ok(Self {
             rig: Some(rig),
             channel_reader: reader.clone(),
@@ -294,6 +299,7 @@ impl LiveApp {
             hotkeys: Hotkeys::new(),
             feed: stream.map(ProgramFeed::new),
             automation,
+            approvals,
         })
     }
 
@@ -301,6 +307,12 @@ impl LiveApp {
     /// [`Automation::rearm`], which no op can do.
     pub fn automation(&self) -> &Arc<Automation> {
         &self.automation
+    }
+
+    /// The approvals store the approval card writes a person's answer to (then [`Automation::rearm`]); `None` without
+    /// a data folder, when nothing can be approved.
+    pub fn approvals(&self) -> Option<&Arc<DiskApprovals>> {
+        self.approvals.as_ref()
     }
 
     /// Starts drawing the stage: `stage` (from [`project_stage`](crate::live::viewport::project_stage), made on

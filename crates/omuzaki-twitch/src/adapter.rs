@@ -1,9 +1,12 @@
 //! The adapter's connection thread: validate the token, open the socket, subscribe to every topic the token allows
 //! within the ten seconds Twitch gives, then turn each notification into an automation event and publish it.
 //!
-//! - **Reconnects.** `session_reconnect` moves to the new URL and keeps the subscriptions; a dropped connection, a
-//!   close or a missed keepalive starts over at the base URL with fresh subscriptions, after a backoff (1 s doubling to
-//!   30 s, reset by a healthy session).
+//! - **Reconnects.** `session_reconnect` moves to the new URL and keeps the subscriptions; the old connection keeps
+//!   delivering until the new one says welcome. A dropped connection, a close or a missed keepalive starts over at
+//!   the base URL with fresh subscriptions, after a backoff (1 s doubling to 30 s, reset by a healthy session).
+//! - **The token is checked** when the adapter starts, before each fresh start, hourly while connected (as Twitch
+//!   asks) and at once when Twitch revokes an authorisation. A token Twitch refuses stops the adapter with an error
+//!   saying to store a new one; a check that can't reach Twitch is tried again.
 //! - **Nothing is lost to a slow show.** A redeem, a sub or a raid the inbox can't take now (`Full`) is kept in a
 //!   buffer of [`PRODUCER_BUFFER`] and retried on a backoff from 100 ms to 1 s, in order (design D9); past the
 //!   buffer the oldest is dropped and counted with `producer_dropped`. Chat, which the inbox may shed, is not kept.
@@ -20,7 +23,7 @@ use omuzaki_live_api::limits::{PRODUCER_BUFFER, PRODUCER_RETRY_MAX_SECONDS, PROD
 use omuzaki_secrets_api::value::SecretValue;
 use schemars::JsonSchema;
 use serde::Serialize;
-use tungstenite::Message;
+use tungstenite::{Message, WebSocket};
 
 use crate::error::TwitchError;
 use crate::eventsub::{Frame, TOPICS, Topic, normalise, parse};
@@ -35,6 +38,11 @@ const KEEPALIVE_GRACE: Duration = Duration::from_secs(3);
 const FIRST_BACKOFF: Duration = Duration::from_secs(1);
 /// The longest wait before reconnecting.
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
+/// How often the token is checked again while connected: Twitch asks apps to validate their tokens hourly, and an
+/// expired or revoked token then stops the adapter with a clear error.
+const REVALIDATE: Duration = Duration::from_secs(3600);
+/// How soon a check that couldn't reach Twitch is tried again.
+const RECHECK: Duration = Duration::from_secs(60);
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
@@ -112,6 +120,7 @@ impl Adapter {
             pending: VecDeque::new(),
             retry_at: None,
             retry_wait: Duration::from_secs_f64(PRODUCER_RETRY_SECONDS),
+            next_check: Instant::now(),
         };
         let thread = std::thread::Builder::new()
             .name("twitch-eventsub".to_owned())
@@ -137,10 +146,12 @@ impl Drop for Adapter {
 
 /// How a session ended.
 enum Ended {
-    /// Move to this URL; the subscriptions carry over.
-    Moved(String),
+    /// Move to this URL; the subscriptions carry over. The old connection delivers until the new one is open.
+    Moved(String, Box<WebSocket<Stream>>),
     /// Start over at the base URL.
     Dropped(String),
+    /// The token no longer works.
+    Refused(String),
     /// Asked to stop.
     Stopped,
 }
@@ -155,6 +166,8 @@ struct Worker {
     pending: VecDeque<LiveEvent>,
     retry_at: Option<Instant>,
     retry_wait: Duration,
+    /// When the token is checked next.
+    next_check: Instant,
 }
 
 impl Worker {
@@ -174,11 +187,24 @@ impl Worker {
         }
     }
 
-    fn run(mut self) {
-        let info = match self.endpoints.helix.validate(self.token.expose()) {
-            Ok(info) => info,
-            Err(e) => return self.report(|s| s.error = Some(e.to_string())),
-        };
+    /// Checks the token with Twitch, and books the next check.
+    fn check(&mut self) -> Result<TokenInfo, TwitchError> {
+        let info = self.endpoints.helix.validate(self.token.expose())?;
+        let expires = (info.expires_in > 0).then(|| Duration::from_secs(info.expires_in.saturating_add(1)));
+        self.next_check = Instant::now() + expires.map_or(REVALIDATE, |e| e.min(REVALIDATE));
+        Ok(info)
+    }
+
+    /// Stops for good: the token no longer works, and only a person with a new one can fix that.
+    fn refused(&self, why: &str) {
+        self.report(|s| {
+            s.connected = false;
+            s.error = Some(format!("{why}; store a new token and run twitch.connect"));
+        });
+    }
+
+    /// Takes in what a (new) token check says: the account and the subscriptions its scopes allow.
+    fn accept(&self, info: &TokenInfo) -> Vec<&'static Topic> {
         let (allowed, skipped): (Vec<&Topic>, Vec<&Topic>) = TOPICS.iter().partition(|t| t.allowed(&info.scopes));
         self.report(|s| {
             s.login = Some(info.login.clone());
@@ -191,9 +217,30 @@ impl Worker {
                 })
                 .collect();
         });
-        let mut url = self.endpoints.socket.clone();
-        let mut subscribe = true;
+        allowed
+    }
+
+    fn run(mut self) {
         let mut backoff = FIRST_BACKOFF;
+        // A token Twitch refuses ends the adapter; anything else (no network yet, Twitch down) is tried again.
+        let mut info = loop {
+            match self.check() {
+                Ok(info) => break info,
+                Err(TwitchError::Token(why)) => return self.refused(&why),
+                Err(e) => {
+                    self.report(|s| s.error = Some(e.to_string()));
+                    self.pause(backoff);
+                    backoff = (backoff * 2).min(MAX_BACKOFF);
+                    if self.stopping() {
+                        return;
+                    }
+                }
+            }
+        };
+        let mut allowed = self.accept(&info);
+        backoff = FIRST_BACKOFF;
+        let mut url = self.endpoints.socket.clone();
+        let mut old = None;
         let mut opened = false;
         while !self.stopping() {
             if opened {
@@ -201,11 +248,13 @@ impl Worker {
             }
             opened = true;
             let healthy_since = Instant::now();
-            match self.session(&url, subscribe, &info, &allowed) {
+            let subscribe = old.is_none();
+            match self.session(&url, subscribe, &info, &allowed, old.take()) {
                 Ended::Stopped => break,
-                Ended::Moved(next) => {
+                Ended::Refused(why) => return self.refused(&why),
+                Ended::Moved(next, socket) => {
                     url = next;
-                    subscribe = false;
+                    old = Some(socket);
                 }
                 Ended::Dropped(why) => {
                     self.report(|s| {
@@ -218,15 +267,32 @@ impl Worker {
                     self.pause(backoff);
                     backoff = (backoff * 2).min(MAX_BACKOFF);
                     url = self.endpoints.socket.clone();
-                    subscribe = true;
+                    // Starting over makes fresh subscriptions: check the token first, so an expired one stops here
+                    // instead of being refused topic by topic on every reconnect.
+                    match self.check() {
+                        Ok(fresh) => {
+                            allowed = self.accept(&fresh);
+                            info = fresh;
+                        }
+                        Err(TwitchError::Token(why)) => return self.refused(&why),
+                        Err(_) => {}
+                    }
                 }
             }
         }
         self.report(|s| s.connected = false);
     }
 
-    /// One connection, from the handshake to its end.
-    fn session(&mut self, url: &str, subscribe: bool, info: &TokenInfo, topics: &[&Topic]) -> Ended {
+    /// One connection, from the handshake to its end. `old` is the connection Twitch asked to move from: it keeps
+    /// delivering until the new one says welcome, then closes (the inbox drops an event both deliver).
+    fn session(
+        &mut self,
+        url: &str,
+        subscribe: bool,
+        info: &TokenInfo,
+        topics: &[&Topic],
+        mut old: Option<Box<WebSocket<Stream>>>,
+    ) -> Ended {
         let mut socket = match socket::connect(url) {
             Ok(socket) => socket,
             Err(e) => return Ended::Dropped(e.to_string()),
@@ -239,12 +305,25 @@ impl Worker {
             if Instant::now() > deadline {
                 return Ended::Dropped("Twitch didn't open the session in time".to_owned());
             }
+            if let Some(previous) = old.as_mut() {
+                match read(previous) {
+                    // A second move before the first lands has nowhere to go but the address already being opened.
+                    Ok(Some(frame)) => drop(self.take(frame)),
+                    Ok(None) => {}
+                    Err(_) => old = None,
+                }
+            }
             match read(&mut socket) {
                 Ok(Some(Frame::Welcome { session, keepalive })) => break (session, keepalive),
-                Ok(_) => {}
+                Ok(Some(frame)) => drop(self.take(frame)),
+                Ok(None) => {}
                 Err(why) => return Ended::Dropped(why),
             }
         };
+        if let Some(mut previous) = old.take() {
+            let _ = previous.close(None);
+            let _ = previous.flush();
+        }
         if subscribe {
             let mut events = Vec::new();
             let mut refused = Vec::new();
@@ -271,6 +350,16 @@ impl Worker {
                 let _ = socket.close(None);
                 return Ended::Stopped;
             }
+            if Instant::now() >= self.next_check {
+                match self.check() {
+                    Ok(_) => {}
+                    Err(TwitchError::Token(why)) => {
+                        let _ = socket.close(None);
+                        return Ended::Refused(why);
+                    }
+                    Err(_) => self.next_check = Instant::now() + RECHECK,
+                }
+            }
             if heard.elapsed() > quiet {
                 return Ended::Dropped("Twitch went quiet past the keepalive time".to_owned());
             }
@@ -280,19 +369,36 @@ impl Worker {
                 Err(why) => return Ended::Dropped(why),
             };
             heard = Instant::now();
-            match frame {
-                Frame::Notification { message_id, kind, event } => {
-                    if let Some(live) = normalise(&kind, &event, &message_id, Seconds(self.clock.now().0)) {
-                        self.report(|s| s.received += 1);
-                        self.publish(live);
-                    }
-                }
-                Frame::Reconnect { url } if !url.is_empty() => return Ended::Moved(url),
-                Frame::Revocation { kind, status } => {
-                    self.report(|s| s.refused.push(format!("Twitch ended the {kind} subscription: {status}")));
-                }
-                Frame::Welcome { .. } | Frame::Keepalive | Frame::Reconnect { .. } | Frame::Other(_) => {}
+            if let Some(next) = self.take(frame) {
+                return Ended::Moved(next, Box::new(socket));
             }
+        }
+    }
+
+    /// Acts on one message; the address to move to when Twitch asks for a move.
+    fn take(&mut self, frame: Frame) -> Option<String> {
+        match frame {
+            Frame::Notification { message_id, kind, event } => {
+                if let Some(live) = normalise(&kind, &event, &message_id, Seconds(self.clock.now().0)) {
+                    self.report(|s| s.received += 1);
+                    self.publish(live);
+                }
+                None
+            }
+            Frame::Reconnect { url } if !url.is_empty() => Some(url),
+            Frame::Revocation { kind, status } => {
+                // A revoked authorisation usually means the token is gone: check it now rather than in an hour.
+                if status == "authorization_revoked" {
+                    self.next_check = Instant::now();
+                }
+                let event = TOPICS.iter().find(|t| t.kind == kind).map(|t| t.event);
+                self.report(|s| {
+                    s.events.retain(|e| Some(e.as_str()) != event);
+                    s.refused.push(format!("Twitch ended the {kind} subscription: {status}"));
+                });
+                None
+            }
+            Frame::Welcome { .. } | Frame::Keepalive | Frame::Reconnect { .. } | Frame::Other(_) => None,
         }
     }
 
@@ -343,7 +449,7 @@ impl Worker {
 }
 
 /// The next message, `None` when the read timed out; `Err` with a reason when the connection ended.
-fn read(socket: &mut tungstenite::WebSocket<Stream>) -> Result<Option<Frame>, String> {
+fn read(socket: &mut WebSocket<Stream>) -> Result<Option<Frame>, String> {
     match socket.read() {
         Ok(Message::Text(text)) => {
             parse(text.as_str()).map(Some).map_err(|e| format!("Twitch sent something unreadable: {e}"))
