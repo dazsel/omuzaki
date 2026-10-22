@@ -40,7 +40,10 @@ fn cases() -> Vec<(String, VoiceSpec)> {
         .map(|f| (format!("steady {f} Hz"), spec(3, 1.5, Trajectory::constant(*f))))
         .collect();
     for (from, to) in [(60.0, 120.0), (120.0, 240.0), (200.0, 400.0), (400.0, 200.0), (240.0, 120.0)] {
-        cases.push((format!("glide {from} to {to} Hz in 1 s"), spec(5, 1.5, Trajectory::new(vec![(0.25, from), (1.25, to)]))));
+        cases.push((
+            format!("glide {from} to {to} Hz in 1 s"),
+            spec(5, 1.5, Trajectory::new(vec![(0.25, from), (1.25, to)])),
+        ));
     }
     cases
 }
@@ -67,7 +70,10 @@ fn the_f0_track_has_under_1_percent_gross_errors_and_under_10_cents_rms() {
         }
         let rms = (squares / fine.max(1) as f64).sqrt();
         let share = gross as f64 / voiced.max(1) as f64;
-        eprintln!("f0: {name}: {voiced} voiced hops, {gross} gross errors ({:.2}%), fine error {rms:.2} cents RMS", 100.0 * share);
+        eprintln!(
+            "f0: {name}: {voiced} voiced hops, {gross} gross errors ({:.2}%), fine error {rms:.2} cents RMS",
+            100.0 * share
+        );
         assert!(voiced > 200 && share < 0.01 && rms < 10.0, "{name}");
     }
 }
@@ -91,7 +97,9 @@ fn marks_sit_within_a_quarter_millisecond_of_the_glottal_closures() {
             }
         }
         let far: Vec<i64> = offsets.iter().copied().filter(|d| d.abs() > 12).collect();
-        if !far.is_empty() { eprintln!("   far: {far:?}"); }
+        if !far.is_empty() {
+            eprintln!("   far: {far:?}");
+        }
         offsets.sort_unstable();
         let share = near as f64 / total as f64;
         eprintln!(

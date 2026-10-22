@@ -113,12 +113,11 @@ impl NodeKind for LimiterKind {
 /// The true peak (linear) of the stretch the newest `TAPS` samples of `history` centre, `history[k]` being `x[n − k]`
 /// read from a ring at `at`.
 fn true_peak(phases: &[[f64; TAPS]; OVERSAMPLE], history: &[f64; TAPS], at: usize) -> f64 {
-    let mut peak =
-        history[(at + DETECTOR_DELAY) % TAPS].abs().max(history[(at + DETECTOR_DELAY - 1) % TAPS].abs());
+    let mut peak = history[(at + DETECTOR_DELAY) % TAPS].abs().max(history[(at + DETECTOR_DELAY - 1) % TAPS].abs());
     for phase in &phases[1..] {
         let mut sum = 0.0;
         for (k, c) in phase.iter().enumerate() {
-            sum = c.mul_add(history[(at + k) % TAPS], sum);
+            sum += c * history[(at + k) % TAPS];
         }
         peak = peak.max(sum.abs());
     }
@@ -231,7 +230,7 @@ impl Limiter {
         self.gain = average.min(if 1.0 - released < 1e-12 { 1.0 } else { released });
 
         let mix = self.on.next();
-        self.applied = mix.mul_add(self.gain - 1.0, 1.0);
+        self.applied = mix * (self.gain - 1.0) + 1.0;
         let d = self.delay_at;
         for (c, ch) in self.channels.iter_mut().enumerate().take(self.count) {
             let old = std::mem::replace(&mut ch.delay[d], frame[c]);

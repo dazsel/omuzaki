@@ -46,12 +46,15 @@ fn shifts_land_within_10_cents_and_keep_the_formants() {
         assert!(cents(median, target).abs() <= 10.0, "{semitones}: {median}");
         if semitones == 12.0 {
             let (xs, ys) = (hann(&x[48_000..72_000]), hann(&y[48_000 + LATENCY as usize..72_000 + LATENCY as usize]));
-            let differences: Vec<f64> = (2..=15).map(|k| db(dtft(&ys, 240.0 * f64::from(k))) - db(dtft(&xs, 240.0 * f64::from(k)))).collect();
+            let differences: Vec<f64> =
+                (2..=15).map(|k| db(dtft(&ys, 240.0 * f64::from(k))) - db(dtft(&xs, 240.0 * f64::from(k)))).collect();
             let mut sorted = differences.clone();
             sorted.sort_by(f64::total_cmp);
             let level = sorted[sorted.len() / 2];
             let worst = differences.iter().map(|d| (d - level).abs()).fold(0.0, f64::max);
-            eprintln!("fx.pitch: +12 st: the output's harmonics 480 to 3,600 Hz follow the input's envelope within {worst:.2} dB (level {level:+.2} dB)");
+            eprintln!(
+                "fx.pitch: +12 st: the output's harmonics 480 to 3,600 Hz follow the input's envelope within {worst:.2} dB (level {level:+.2} dB)"
+            );
             assert!(worst <= 1.5, "{differences:?}");
         } else {
             for (a, b) in input.iter().zip(&output) {
@@ -70,7 +73,10 @@ fn a_formant_factor_of_1_2_moves_f1_to_f3_up_20_percent_and_keeps_the_pitch() {
     let output = formants(&y[LATENCY as usize + 14_400..]);
     let (median, _) = measure(&y[LATENCY as usize..], 120.0, 10.0);
     let moved: Vec<f64> = input.iter().zip(&output).map(|(a, b)| b / a).collect();
-    eprintln!("fx.pitch: formant 1.2: F1 to F3 {input:.0?} became {output:.0?} (x{moved:.3?}); F0 {median:.2} Hz ({:+.2} cents)", cents(median, 120.0));
+    eprintln!(
+        "fx.pitch: formant 1.2: F1 to F3 {input:.0?} became {output:.0?} (x{moved:.3?}); F0 {median:.2} Hz ({:+.2} cents)",
+        cents(median, 120.0)
+    );
     assert!(cents(median, 120.0).abs() <= 10.0, "{median}");
     for m in moved {
         assert!((m - 1.2).abs() <= 0.06, "{m}");
@@ -101,7 +107,10 @@ fn a_glide_shifted_7_semitones_has_almost_no_octave_errors() {
         }
     }
     let share = f64::from(octave) / f64::from(voiced);
-    eprintln!("fx.pitch: 100 to 300 Hz glide +7 st: {octave} octave errors in {voiced} voiced frames ({:.2}%)", 100.0 * share);
+    eprintln!(
+        "fx.pitch: 100 to 300 Hz glide +7 st: {octave} octave errors in {voiced} voiced frames ({:.2}%)",
+        100.0 * share
+    );
     assert!(share < 0.01, "{octave} of {voiced}");
 }
 
@@ -114,7 +123,12 @@ fn curvature(x: &[f32], from: usize) -> f64 {
 fn shifted_speech_has_no_clicks() {
     let mut spec = VoiceSpec::steady(47, 3.0);
     spec.f0 = Trajectory::new(vec![(0.0, 110.0), (1.0, 180.0), (2.0, 95.0), (3.0, 140.0)]);
-    spec.vowels = vec![(0.0, omuzaki_audio_mock::signals::Vowel::A), (1.0, omuzaki_audio_mock::signals::Vowel::I), (2.0, omuzaki_audio_mock::signals::Vowel::O), (3.0, omuzaki_audio_mock::signals::Vowel::E)];
+    spec.vowels = vec![
+        (0.0, omuzaki_audio_mock::signals::Vowel::A),
+        (1.0, omuzaki_audio_mock::signals::Vowel::I),
+        (2.0, omuzaki_audio_mock::signals::Vowel::O),
+        (3.0, omuzaki_audio_mock::signals::Vowel::E),
+    ];
     let x = voice(&spec);
     let natural = curvature(&x, 0);
     for (semitones, formant) in [(5.0f32, 1.0f32), (-5.0, 1.0), (0.0, 0.85), (0.0, 1.2), (7.0, 1.15)] {
@@ -125,7 +139,9 @@ fn shifted_speech_has_no_clicks() {
         // The conformance suite's rule: three times the curvature the signal already has (here scaled to the output's
         // level).
         let allowed = 3.0 * natural * level;
-        eprintln!("fx.pitch: {semitones:+} st, formant {formant}: largest second difference {found:.4} against {allowed:.4} allowed");
+        eprintln!(
+            "fx.pitch: {semitones:+} st, formant {formant}: largest second difference {found:.4} against {allowed:.4} allowed"
+        );
         assert!(found <= allowed, "{semitones} {formant}: {found} > {allowed}");
     }
 }

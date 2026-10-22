@@ -15,7 +15,12 @@ pub fn node(kind: &dyn NodeKind, params: &[(&str, f32)]) -> Box<dyn Node> {
 }
 
 /// The same, with a config and a channel count.
-pub fn node_with(kind: &dyn NodeKind, config: &NodeConfig, channels: Channels, params: &[(&str, f32)]) -> Box<dyn Node> {
+pub fn node_with(
+    kind: &dyn NodeKind,
+    config: &NodeConfig,
+    channels: Channels,
+    params: &[(&str, f32)],
+) -> Box<dyn Node> {
     let mut node = kind.create(config, channels).expect("the node is created");
     set(&mut *node, kind, params);
     node.reset();
@@ -185,7 +190,8 @@ pub fn formants(x: &[f32]) -> [f64; 3] {
     while start + FRAME <= x.len() {
         let w: Vec<f64> = (0..FRAME)
             .map(|i| {
-                let pre = f64::from(x[start + i]) - if start + i > 0 { 0.97 * f64::from(x[start + i - 1]) } else { 0.0 };
+                let pre =
+                    f64::from(x[start + i]) - if start + i > 0 { 0.97 * f64::from(x[start + i - 1]) } else { 0.0 };
                 pre * (0.5 - 0.5 * (2.0 * PI * i as f64 / FRAME as f64).cos())
             })
             .collect();

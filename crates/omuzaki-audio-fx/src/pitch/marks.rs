@@ -90,7 +90,8 @@ impl Marks {
                 // stretch the phase is unknown, so the whole next period is searched.
                 let (lo, hi) = if last.voiced { (1.0 - SEARCH, 1.0 + SEARCH) } else { (0.0, 1.0) };
                 #[allow(clippy::cast_possible_truncation)] // a few hundred samples
-                let (from, to) = (last.at + ((period * lo).ceil() as i64).max(1), last.at + (period * hi).floor() as i64);
+                let (from, to) =
+                    (last.at + ((period * lo).ceil() as i64).max(1), last.at + (period * hi).floor() as i64);
                 if k < to {
                     return;
                 }
@@ -111,7 +112,11 @@ impl Marks {
                     let v = residual(j).abs();
                     if v > b.1 { (j, v) } else { b }
                 });
-                if last.voiced && value > 2.0 * residual(best.0).abs() && strongest > last.at + 16 && (strongest < from || strongest > to) {
+                if last.voiced
+                    && value > 2.0 * residual(best.0).abs()
+                    && strongest > last.at + 16
+                    && (strongest < from || strongest > to)
+                {
                     best.0 = strongest;
                 }
                 last = Mark { at: best.0, period, voiced: true };

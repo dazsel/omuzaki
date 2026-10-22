@@ -11,7 +11,7 @@
 use std::f64::consts::PI;
 
 use super::analysis::{Analysis, HOP, PRE_EMPHASIS, Ring};
-use super::lpc::{IDENTITY, ORDER, Poly, from_lsf, warp};
+use super::lpc::{IDENTITY, ORDER, Poly, from_lsf, power_gain, warp};
 use super::marks::Mark;
 use crate::dsp::FS;
 
@@ -42,8 +42,8 @@ pub struct Shift {
     pub beta: f64,
 }
 
-/// Frequencies at which a predictor's power gain is sampled.
-const GAIN_GRID: usize = 96;
+/// Hops over which the formant warp fades in when a voice starts (48 ms): a warped filter switched on at once rings.
+const WARP_IN: u32 = 12;
 
 /// How fast the synthesis gain follows a new hop's, in milliseconds.
 const GAIN_MS: f64 = 2.0;
@@ -55,14 +55,14 @@ pub struct Synth {
     next: f64,
     ola: Ring,
     a: Poly,
-    /// `cos` and `sin` of `ω_k i` for the gain grid: `[k][i]`.
-    grid: Box<[[(f64, f64); ORDER + 1]; GAIN_GRID]>,
     gain: f64,
     gain_target: f64,
     gain_coef: f64,
     history: [f64; 32],
     at: usize,
     de: f64,
+    /// Consecutive hops with a warpable frame: the warp fades in over [`WARP_IN`] of them after silence.
+    warm: u32,
 }
 
 impl Default for Synth {
@@ -71,48 +71,49 @@ impl Default for Synth {
     }
 }
 
+/// `a` with its poles pulled in by `γ`: `a_k γ^k`, which widens every resonance.
+fn expand(a: &Poly, gamma: f64) -> Poly {
+    let mut out = *a;
+    let mut g = 1.0;
+    for c in out.iter_mut().skip(1) {
+        g *= gamma;
+        *c *= g;
+    }
+    out
+}
+
+/// `a` widened (by bisection on `γ` from 0.9 to 1) until its energy is at most `target`, with that energy.
+fn widen(a: &Poly, target: f64) -> (Poly, f64) {
+    let (mut lo, mut hi) = (0.9, 1.0);
+    for _ in 0..14 {
+        let mid = 0.5 * (lo + hi);
+        if power_gain(&expand(a, mid)).is_none_or(|e| e > target) {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    let widened = expand(a, lo);
+    let energy = power_gain(&widened).unwrap_or(target);
+    (widened, energy)
+}
+
 impl Synth {
     /// A silent synthesis.
     #[must_use]
     pub fn new() -> Self {
-        let mut grid = Box::new([[(0.0, 0.0); ORDER + 1]; GAIN_GRID]);
-        for (k, row) in grid.iter_mut().enumerate() {
-            #[allow(clippy::cast_precision_loss)]
-            let w = PI * (k as f64 + 0.5) / GAIN_GRID as f64;
-            for (i, cs) in row.iter_mut().enumerate() {
-                #[allow(clippy::cast_precision_loss)]
-                let (s, c) = (w * i as f64).sin_cos();
-                *cs = (c, s);
-            }
-        }
         Self {
             next: 0.0,
             ola: Ring::new(4096),
             a: IDENTITY,
-            grid,
             gain: 1.0,
             gain_target: 1.0,
             gain_coef: crate::dsp::one_pole(GAIN_MS),
             history: [0.0; 32],
             at: 0,
             de: 0.0,
+            warm: 0,
         }
-    }
-
-    /// The mean power gain of `1 / A(z)` over the grid.
-    fn power_gain(&self, a: &Poly) -> f64 {
-        let mut sum = 0.0;
-        for row in self.grid.iter() {
-            let (mut re, mut im) = (0.0, 0.0);
-            for (c, (co, si)) in a.iter().zip(row) {
-                re += c * co;
-                im -= c * si;
-            }
-            sum += 1.0 / (re * re + im * im).max(1e-30);
-        }
-        #[allow(clippy::cast_precision_loss)]
-        let mean = sum / GAIN_GRID as f64;
-        mean
     }
 
     /// Back to silence.
@@ -125,6 +126,7 @@ impl Synth {
         self.history = [0.0; 32];
         self.at = 0;
         self.de = 0.0;
+        self.warm = 0;
     }
 
     /// The output sample at `t` (the analysis has taken every sample up to `t + LATENCY`).
@@ -148,7 +150,7 @@ impl Synth {
         }
         self.history[self.at] = y;
         self.at = (self.at + 1) & 31;
-        self.de = PRE_EMPHASIS.mul_add(self.de, y);
+        self.de = PRE_EMPHASIS * self.de + y;
         if self.de.abs() < 1e-30 {
             self.de = 0.0;
         }
@@ -159,10 +161,27 @@ impl Synth {
     /// as the analysis one (the residual is close to white, so the power gains decide the loudness).
     fn retune(&mut self, analysis: &Analysis, t: i64, beta: f64) {
         let frame = analysis.frame_at(t);
+        self.warm = if frame.lsf.is_some() { (self.warm + 1).min(WARP_IN) } else { 0 };
+        let beta = 1.0 + (beta - 1.0) * f64::from(self.warm) / f64::from(WARP_IN);
         match frame.lsf {
             Some(lsf) if beta != 1.0 => {
-                self.a = from_lsf(&warp(&lsf, beta, MIN_GAP, CEILING));
-                self.gain_target = (self.power_gain(&frame.a) / self.power_gain(&self.a)).sqrt().clamp(0.01, 100.0);
+                let warped = from_lsf(&warp(&lsf, beta, MIN_GAP, CEILING));
+                // Squeezing the line spectral frequencies together (β < 1) narrows the resonances, by up to 50 dB of
+                // energy on a voice whose spectrum falls steeply above 4 kHz: the warped filter is widened (its poles
+                // pulled in) until it has no more energy than the original, and then it keeps the original's power for
+                // a white excitation, so moving the formants doesn't move the level. Either filter unstable (a
+                // degenerate frame): keep the original, unwarped.
+                match (power_gain(&frame.a), power_gain(&warped)) {
+                    (Some(original), Some(moved)) => {
+                        let (a, moved) = if moved > original { widen(&warped, original) } else { (warped, moved) };
+                        self.a = a;
+                        self.gain_target = (original / moved).sqrt().clamp(1.0 / 256.0, 256.0);
+                    }
+                    _ => {
+                        self.a = frame.a;
+                        self.gain_target = 1.0;
+                    }
+                }
             }
             _ => {
                 self.a = frame.a;

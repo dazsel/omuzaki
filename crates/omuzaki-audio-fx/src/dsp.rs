@@ -120,6 +120,40 @@ pub(crate) fn noise(seed: u64, n: u64) -> f64 {
     unit.mul_add(2.0, -1.0)
 }
 
+/// The dot product of `a` and `b` over the shorter's length, in four running sums so the compiler can vectorise it
+/// (the target has no fused multiply-add to rely on, and one running sum is a chain it may not reorder).
+pub(crate) fn dot(a: &[f64], b: &[f64]) -> f64 {
+    let n = a.len().min(b.len());
+    let (a, b) = (&a[..n], &b[..n]);
+    let rest = n / 4 * 4;
+    let mut sums = [0.0f64; 4];
+    for (qa, qb) in a.chunks_exact(4).zip(b.chunks_exact(4)) {
+        let (Ok(qa), Ok(qb)) = (<&[f64; 4]>::try_from(qa), <&[f64; 4]>::try_from(qb)) else { continue };
+        for k in 0..4 {
+            sums[k] += qa[k] * qb[k];
+        }
+    }
+    let tail: f64 = a[rest..].iter().zip(&b[rest..]).map(|(x, y)| x * y).sum();
+    (sums[0] + sums[1]) + (sums[2] + sums[3]) + tail
+}
+
+/// The sum of squared differences of `a` and `b` over the shorter's length, vectorised like [`dot`].
+pub(crate) fn distance(a: &[f64], b: &[f64]) -> f64 {
+    let n = a.len().min(b.len());
+    let (a, b) = (&a[..n], &b[..n]);
+    let rest = n / 4 * 4;
+    let mut sums = [0.0f64; 4];
+    for (qa, qb) in a.chunks_exact(4).zip(b.chunks_exact(4)) {
+        let (Ok(qa), Ok(qb)) = (<&[f64; 4]>::try_from(qa), <&[f64; 4]>::try_from(qb)) else { continue };
+        for k in 0..4 {
+            let d = qa[k] - qb[k];
+            sums[k] += d * d;
+        }
+    }
+    let tail: f64 = a[rest..].iter().zip(&b[rest..]).map(|(x, y)| (x - y) * (x - y)).sum();
+    (sums[0] + sums[1]) + (sums[2] + sums[3]) + tail
+}
+
 /// Clamps a parameter to its declared range (the graph validates presets, so this only guards the audio thread).
 pub(crate) fn clamp(value: f32, min: f32, max: f32) -> f64 {
     f64::from(if value.is_nan() { min } else { value.clamp(min, max) })

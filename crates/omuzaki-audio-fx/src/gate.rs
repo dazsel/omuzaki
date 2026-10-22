@@ -11,8 +11,8 @@
 
 use omuzaki_audio_api::graph::Channels;
 use omuzaki_audio_api::node::{
-    BlockMut, ChannelSupport, LatencyRange, Node, NodeConfig, NodeError, NodeKind, NodeKindInfo, ParamIndex,
-    ParamSpec, Unit,
+    BlockMut, ChannelSupport, LatencyRange, Node, NodeConfig, NodeError, NodeKind, NodeKindInfo, ParamIndex, ParamSpec,
+    Unit,
 };
 use omuzaki_audio_api::register_node_kind;
 

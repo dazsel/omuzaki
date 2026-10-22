@@ -28,7 +28,8 @@ fn a_440_hz_sine_through_a_60_hz_carrier_becomes_380_and_500_hz() {
 #[test]
 fn the_comb_echoes_at_multiples_of_its_delay_with_powers_of_its_feedback() {
     for (comb_ms, feedback) in [(6.0f32, 0.5f32), (2.0, 0.9), (12.0, 0.3)] {
-        let mut robot = node(&RobotKind, &[("ring_mix", 0.0), ("comb_ms", comb_ms), ("feedback", feedback), ("mix", 1.0)]);
+        let mut robot =
+            node(&RobotKind, &[("ring_mix", 0.0), ("comb_ms", comb_ms), ("feedback", feedback), ("mix", 1.0)]);
         let mut x = vec![0.0f32; 48_000];
         x[0] = 1.0;
         let y = run(&mut *robot, &x);
@@ -39,7 +40,9 @@ fn the_comb_echoes_at_multiples_of_its_delay_with_powers_of_its_feedback() {
             worst = worst.max((f64::from(y[k as usize * d]) - expected).abs());
         }
         let between = y.iter().enumerate().filter(|(n, _)| n % d != 0).fold(0.0f32, |m, (_, s)| m.max(s.abs()));
-        eprintln!("fx.robot: comb {comb_ms} ms feedback {feedback}: worst echo error {worst:e}, largest sample between echoes {between:e}");
+        eprintln!(
+            "fx.robot: comb {comb_ms} ms feedback {feedback}: worst echo error {worst:e}, largest sample between echoes {between:e}"
+        );
         assert!(worst < 1e-4 && between < 1e-6, "{worst} {between}");
     }
 }

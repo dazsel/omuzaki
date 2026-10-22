@@ -64,6 +64,41 @@ pub struct Pitch {
     params: [Smoothed; 4],
     /// 1 while every parameter is at its identity (the dry signal, delayed, goes out exactly), 0 otherwise.
     identity: Fade,
+    /// The level match: the dry and wet signals' short-term powers, and the gain that brings the wet to the dry's.
+    level: Level,
+}
+
+/// Keeps the shifted voice as loud as the voice it came from. Moving the formants changes how the envelope's peaks
+/// line up with the harmonics, which moves the level by several dB either way; the power followers (100 ms) see that
+/// and the gain (20 ms) undoes it, within ±12 dB. Near silence both powers sit on the floor and the gain stays put.
+#[derive(Clone, Debug)]
+struct Level {
+    dry: f64,
+    wet: f64,
+    gain: Smoothed,
+    coef: f64,
+}
+
+/// The power floor of the level match: -80 dBFS.
+const LEVEL_FLOOR: f64 = 1e-8;
+
+impl Level {
+    fn new() -> Self {
+        Self { dry: 0.0, wet: 0.0, gain: Smoothed::new(1.0, 20.0), coef: crate::dsp::one_pole(100.0) }
+    }
+
+    fn apply(&mut self, dry: f64, wet: f64) -> f64 {
+        self.dry = self.coef * self.dry + (1.0 - self.coef) * dry * dry;
+        self.wet = self.coef * self.wet + (1.0 - self.coef) * wet * wet;
+        if self.dry < 1e-30 {
+            self.dry = 0.0;
+        }
+        if self.wet < 1e-30 {
+            self.wet = 0.0;
+        }
+        self.gain.set(((self.dry + LEVEL_FLOOR) / (self.wet + LEVEL_FLOOR)).sqrt().clamp(0.25, 4.0));
+        wet * self.gain.next()
+    }
 }
 
 impl Pitch {
@@ -75,6 +110,7 @@ impl Pitch {
             synth: Synth::new(),
             params: PARAMS.map(|p| Smoothed::new(f64::from(p.default), f64::from(p.smooth_ms))),
             identity: Fade::new(true, 30.0),
+            level: Level::new(),
         }
     }
 
@@ -101,10 +137,10 @@ impl Pitch {
             monotone_hz,
             beta: formant,
         };
-        let wet = self.synth.next(&self.analysis, t, shift);
         let dry = self.analysis.x.get(t);
+        let wet = self.level.apply(dry, self.synth.next(&self.analysis, t, shift));
         let amount = mix * (1.0 - identity);
-        if amount == 0.0 { dry } else { amount.mul_add(wet - dry, dry) }
+        if amount == 0.0 { dry } else { amount * (wet - dry) + dry }
     }
 }
 
@@ -135,5 +171,6 @@ impl Node for Pitch {
         self.params.iter_mut().for_each(Smoothed::snap);
         self.identity.set(self.at_identity());
         self.identity.snap();
+        self.level = Level::new();
     }
 }

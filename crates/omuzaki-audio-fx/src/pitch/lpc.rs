@@ -66,6 +66,28 @@ pub fn power(a: &Poly, w: f64) -> f64 {
     re * re + im * im
 }
 
+/// The energy of the impulse response of `1 / A(z)`, exactly: `1 / Π (1 − k_i²)` over the reflection coefficients
+/// `k_i` the step-down recursion finds. `None` when `A` is not minimum phase (some `|k_i| ≥ 1`).
+#[must_use]
+pub fn power_gain(a: &Poly) -> Option<f64> {
+    let mut a = *a;
+    let mut gain = 1.0;
+    for m in (1..=ORDER).rev() {
+        let k = a[m];
+        let rest = 1.0 - k * k;
+        if rest <= 1e-12 || !rest.is_finite() {
+            return None;
+        }
+        gain /= rest;
+        let previous = a;
+        for i in 1..m {
+            a[i] = (previous[i] - k * previous[m - i]) / rest;
+        }
+        a[m] = 0.0;
+    }
+    Some(gain)
+}
+
 const HALF: usize = ORDER / 2;
 
 /// The two symmetric halves of `A(z)` with their trivial roots divided out: `P(z) / (1 + z^-1)` and
@@ -102,33 +124,40 @@ const GRID: usize = 480;
 #[must_use]
 pub fn to_lsf(a: &Poly) -> Option<Lsf> {
     let (p, q) = halves(a);
+    let grid = grid();
     let mut out = [0.0; ORDER];
     let mut found = 0;
-    #[allow(clippy::cast_precision_loss)] // a grid index
-    let at = |i: usize| PI * i as f64 / GRID as f64;
     let (mut fp, mut fq) = (cheb(&p, 1.0), cheb(&q, 1.0));
     for i in 1..=GRID {
-        let w = at(i);
-        let x = w.cos();
+        let x = grid[i];
         let (np, nq) = (cheb(&p, x), cheb(&q, x));
         for (poly, before, now) in [(&p, fp, np), (&q, fq, nq)] {
             if before * now < 0.0 || (now == 0.0 && before != 0.0) {
                 if found == ORDER {
                     return None;
                 }
-                // Bisection in ω between the grid points.
-                let (mut lo, mut hi, mut flo) = (at(i - 1), w, before);
-                for _ in 0..40 {
-                    let mid = 0.5 * (lo + hi);
-                    let fm = cheb(poly, mid.cos());
-                    if fm * flo <= 0.0 {
-                        hi = mid;
-                    } else {
-                        lo = mid;
-                        flo = fm;
+                // The root in x = cos ω between the grid points (cos falls monotonically on [0, π]), by the Illinois
+                // variant of regula falsi: a few polynomial evaluations and no trigonometry per step.
+                let (mut a, mut b, mut fa, mut fb) = (grid[i - 1], x, before, now);
+                let mut root = b;
+                for _ in 0..48 {
+                    let next = (a * fb - b * fa) / (fb - fa);
+                    if !next.is_finite() || (next - root).abs() < 1e-14 {
+                        break;
                     }
+                    root = next;
+                    let f = cheb(poly, root);
+                    if f == 0.0 {
+                        break;
+                    }
+                    if f * fb < 0.0 {
+                        (a, fa) = (b, fb);
+                    } else {
+                        fa *= 0.5;
+                    }
+                    (b, fb) = (root, f);
                 }
-                out[found] = 0.5 * (lo + hi);
+                out[found] = root.clamp(-1.0, 1.0).acos();
                 found += 1;
             }
         }
@@ -140,6 +169,15 @@ pub fn to_lsf(a: &Poly) -> Option<Lsf> {
     }
     out.sort_by(f64::total_cmp);
     Some(out)
+}
+
+/// `cos(π i / GRID)` for `i` in `0..=GRID`, computed once.
+fn grid() -> &'static [f64; GRID + 1] {
+    static GRID_COS: std::sync::OnceLock<[f64; GRID + 1]> = std::sync::OnceLock::new();
+    GRID_COS.get_or_init(|| {
+        #[allow(clippy::cast_precision_loss)] // a grid index
+        std::array::from_fn(|i| (PI * i as f64 / GRID as f64).cos())
+    })
 }
 
 /// The predictor whose line spectral frequencies are `lsf` (ascending, alternating between the two halves, the lowest

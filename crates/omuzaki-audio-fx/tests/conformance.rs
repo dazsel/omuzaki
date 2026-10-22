@@ -2,6 +2,8 @@
 //! no allocation, finite and stable, silence decay, reset, parameter sweeps without clicks), on every channel count it
 //! claims and at its default, minimum and maximum settings.
 
+use omuzaki_audio_api::graph::Channels;
+use omuzaki_audio_api::node::{BlockMut, ConfigValue, NodeConfig};
 use omuzaki_audio_api::node::{NodeKind, node_kinds};
 use omuzaki_audio_fx::compressor::CompressorKind;
 use omuzaki_audio_fx::eq::EqKind;
@@ -10,8 +12,6 @@ use omuzaki_audio_fx::limiter::LimiterKind;
 use omuzaki_audio_fx::pitch::PitchKind;
 use omuzaki_audio_fx::radio::RadioKind;
 use omuzaki_audio_fx::robot::RobotKind;
-use omuzaki_audio_api::graph::Channels;
-use omuzaki_audio_api::node::{BlockMut, ConfigValue, NodeConfig};
 use omuzaki_audio_mock::conformance::{Check, CheckResult, Config, CountingAlloc, Report, Setting, check_with};
 
 #[global_allocator]

@@ -6,7 +6,9 @@
 //! (-90 is off), and the dry/wet `mix`.
 //!
 //! `mode` sets the voice's defaults when it changes (0 telephone: 300 to 3,400 Hz, a +3 dB bell at 1.5 kHz, drive 1.5;
-//! 1 radio: 200 to 5,000 Hz, +4 dB at 2 kHz, drive 2); the parameters set after it override them.
+//! 1 radio: 200 to 5,000 Hz, +4 dB at 2 kHz, drive 2). A band, bell or drive parameter that has been set overrides the
+//! mode whichever came first, so a preset means the same in any order (the engine sets a preset's parameters in name
+//! order, and `mode` sorts after the ones it moves).
 //!
 //! The noise bed is keyed by the voice, the way a transmission's hiss is: it fades in within 5 ms while the input is
 //! above -60 dBFS and out over 150 ms after, so silence in stays silence out. It is a counter-based generator on the
@@ -107,6 +109,8 @@ pub struct Radio {
     seed: u64,
     mode: usize,
     smooth: [Smoothed; 10],
+    /// The mode's parameters that have been set, which a mode change leaves alone.
+    overridden: [bool; 10],
     bits: f64,
     rate_div: u64,
     filters: [Biquad; 5],
@@ -123,6 +127,7 @@ impl Radio {
         let mut radio = Self {
             seed,
             mode: 0,
+            overridden: [false; 10],
             smooth: PARAMS.map(|p| Smoothed::new(stored(p.unit, f64::from(p.default)), f64::from(p.smooth_ms))),
             bits: f64::from(PARAMS[at::BITS].default),
             rate_div: 1,
@@ -174,7 +179,7 @@ impl Radio {
         if noise_db > -90.0 && self.key > 0.0 {
             y += gain(noise_db) * self.key * noise(self.seed, index);
         }
-        mix.mul_add(y - x, x)
+        mix * (y - x) + x
     }
 }
 
@@ -193,15 +198,21 @@ impl Node for Radio {
                 let mode = v.round() as usize;
                 if mode != self.mode {
                     self.mode = mode;
-                    for (i, value) in [at::LOW, at::HIGH, at::MID, at::MID_DB, at::DRIVE].into_iter().zip(VOICES[mode]) {
-                        self.smooth[i].set(stored(PARAMS[i].unit, value));
+                    for (i, value) in [at::LOW, at::HIGH, at::MID, at::MID_DB, at::DRIVE].into_iter().zip(VOICES[mode])
+                    {
+                        if !self.overridden[i] {
+                            self.smooth[i].set(stored(PARAMS[i].unit, value));
+                        }
                     }
                 }
             }
             at::BITS => self.bits = v.round(),
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // 1 to 16
             at::RATE_DIV => self.rate_div = v.round() as u64,
-            _ => self.smooth[at].set(stored(spec.unit, v)),
+            _ => {
+                self.overridden[at] = true;
+                self.smooth[at].set(stored(spec.unit, v));
+            }
         }
     }
 

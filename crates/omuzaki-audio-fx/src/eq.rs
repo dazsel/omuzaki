@@ -28,11 +28,46 @@ const PER_BAND: usize = 5;
 macro_rules! band {
     ($n:literal) => {
         [
-            ParamSpec { name: concat!("b", $n, ".type"), unit: Unit::None, min: 0.0, max: 4.0, default: 4.0, smooth_ms: 0.0 },
-            ParamSpec { name: concat!("b", $n, ".freq"), unit: Unit::Hz, min: 20.0, max: 20_000.0, default: 1000.0, smooth_ms: 20.0 },
-            ParamSpec { name: concat!("b", $n, ".q"), unit: Unit::None, min: 0.1, max: 18.0, default: 0.707, smooth_ms: 20.0 },
-            ParamSpec { name: concat!("b", $n, ".gain_db"), unit: Unit::Db, min: -24.0, max: 24.0, default: 0.0, smooth_ms: 20.0 },
-            ParamSpec { name: concat!("b", $n, ".on"), unit: Unit::None, min: 0.0, max: 1.0, default: 1.0, smooth_ms: 5.0 },
+            ParamSpec {
+                name: concat!("b", $n, ".type"),
+                unit: Unit::None,
+                min: 0.0,
+                max: 4.0,
+                default: 4.0,
+                smooth_ms: 0.0,
+            },
+            ParamSpec {
+                name: concat!("b", $n, ".freq"),
+                unit: Unit::Hz,
+                min: 20.0,
+                max: 20_000.0,
+                default: 1000.0,
+                smooth_ms: 20.0,
+            },
+            ParamSpec {
+                name: concat!("b", $n, ".q"),
+                unit: Unit::None,
+                min: 0.1,
+                max: 18.0,
+                default: 0.707,
+                smooth_ms: 20.0,
+            },
+            ParamSpec {
+                name: concat!("b", $n, ".gain_db"),
+                unit: Unit::Db,
+                min: -24.0,
+                max: 24.0,
+                default: 0.0,
+                smooth_ms: 20.0,
+            },
+            ParamSpec {
+                name: concat!("b", $n, ".on"),
+                unit: Unit::None,
+                min: 0.0,
+                max: 1.0,
+                default: 1.0,
+                smooth_ms: 5.0,
+            },
         ]
     };
 }
@@ -181,7 +216,7 @@ impl Node for Eq {
                 }
                 for (c, x) in x.iter_mut().enumerate().take(if stereo { 2 } else { 1 }) {
                     let wet = band.filters[c].run(*x);
-                    *x = if mix >= 1.0 { wet } else { mix.mul_add(wet - *x, *x) };
+                    *x = if mix >= 1.0 { wet } else { mix * (wet - *x) + *x };
                 }
             }
             left[i] = x[0] as f32;

@@ -11,10 +11,22 @@ repository.workspace = true
 [dependencies]
 omuzaki-audio-api = { path = "../omuzaki-audio-api" }
 omuzaki-core = { path = "../omuzaki-core" }
+# The `audio.fx.*` ops: presets in the document, the render jobs and their WAVs in the asset store.
+omuzaki-doc-api = { path = "../omuzaki-doc-api" }
+omuzaki-ops-api = { path = "../omuzaki-ops-api" }
+omuzaki-store-api = { path = "../omuzaki-store-api" }
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
 omuzaki-audio-mock = { path = "../omuzaki-audio-mock" }
+# The budget harness: `examples/voice_fx_budget.rs` reports `voice.fx`, `voice.fx.pitch` and `voice.fx.cpu` with it.
+omuzaki-test = { path = "../omuzaki-test" }
+omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
+toml.workspace = true
 
 [lints]
 workspace = true

@@ -45,7 +45,8 @@ fn times(attack_ms: f32, release_ms: f32) -> (f64, f64) {
         let start = gain(from - 1);
         let end = gain(from + len - 1);
         let mark = start + 0.632 * (end - start);
-        (from..from + len).position(|n| if end < start { gain(n) <= mark } else { gain(n) >= mark }).unwrap() as f64 / 48.0
+        (from..from + len).position(|n| if end < start { gain(n) <= mark } else { gain(n) >= mark }).unwrap() as f64
+            / 48.0
     };
     (time_to(len), time_to(2 * len))
 }

@@ -111,7 +111,7 @@ impl Compressor {
     /// The gain for a sample whose (linked) magnitude is `peak`.
     fn step(&mut self, peak: f64) -> f64 {
         let level = if self.rms {
-            self.mean_square = (peak * peak).mul_add(1.0 - self.rms_coef, self.rms_coef * self.mean_square);
+            self.mean_square = peak * peak * (1.0 - self.rms_coef) + self.rms_coef * self.mean_square;
             if self.mean_square < 1e-30 {
                 self.mean_square = 0.0;
             }

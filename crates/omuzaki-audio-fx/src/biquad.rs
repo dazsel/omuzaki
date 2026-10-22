@@ -60,7 +60,9 @@ impl Coefs {
         let alpha = sin / (2.0 * q.max(1e-3));
         let a = 10f64.powf(gain_db / 40.0);
         let (b, a_) = match shape {
-            Shape::LowPass => ([(1.0 - cos) / 2.0, 1.0 - cos, (1.0 - cos) / 2.0], [1.0 + alpha, -2.0 * cos, 1.0 - alpha]),
+            Shape::LowPass => {
+                ([(1.0 - cos) / 2.0, 1.0 - cos, (1.0 - cos) / 2.0], [1.0 + alpha, -2.0 * cos, 1.0 - alpha])
+            }
             Shape::HighPass => {
                 ([(1.0 + cos) / 2.0, -(1.0 + cos), (1.0 + cos) / 2.0], [1.0 + alpha, -2.0 * cos, 1.0 - alpha])
             }
@@ -75,7 +77,11 @@ impl Coefs {
                         2.0 * a * ((a - 1.0) - (a + 1.0) * cos),
                         a * ((a + 1.0) - (a - 1.0) * cos - k),
                     ],
-                    [(a + 1.0) + (a - 1.0) * cos + k, -2.0 * ((a - 1.0) + (a + 1.0) * cos), (a + 1.0) + (a - 1.0) * cos - k],
+                    [
+                        (a + 1.0) + (a - 1.0) * cos + k,
+                        -2.0 * ((a - 1.0) + (a + 1.0) * cos),
+                        (a + 1.0) + (a - 1.0) * cos - k,
+                    ],
                 )
             }
             Shape::HighShelf => {
@@ -86,7 +92,11 @@ impl Coefs {
                         -2.0 * a * ((a - 1.0) + (a + 1.0) * cos),
                         a * ((a + 1.0) + (a - 1.0) * cos - k),
                     ],
-                    [(a + 1.0) - (a - 1.0) * cos + k, 2.0 * ((a - 1.0) - (a + 1.0) * cos), (a + 1.0) - (a - 1.0) * cos - k],
+                    [
+                        (a + 1.0) - (a - 1.0) * cos + k,
+                        2.0 * ((a - 1.0) - (a + 1.0) * cos),
+                        (a + 1.0) - (a - 1.0) * cos - k,
+                    ],
                 )
             }
         };
@@ -102,8 +112,10 @@ impl Coefs {
             self.b[0] + self.b[1] * w.cos() + self.b[2] * (2.0 * w).cos(),
             -(self.b[1] * w.sin() + self.b[2] * (2.0 * w).sin()),
         );
-        let (den_re, den_im) =
-            (1.0 + self.a[0] * w.cos() + self.a[1] * (2.0 * w).cos(), -(self.a[0] * w.sin() + self.a[1] * (2.0 * w).sin()));
+        let (den_re, den_im) = (
+            1.0 + self.a[0] * w.cos() + self.a[1] * (2.0 * w).cos(),
+            -(self.a[0] * w.sin() + self.a[1] * (2.0 * w).sin()),
+        );
         10.0 * ((num_re * num_re + num_im * num_im) / (den_re * den_re + den_im * den_im)).log10()
     }
 }
@@ -133,9 +145,9 @@ impl Biquad {
     /// One sample through, in `f64`.
     pub fn run(&mut self, x: f64) -> f64 {
         let Coefs { b, a } = self.coefs;
-        let y = b[0].mul_add(x, self.s1);
-        self.s1 = b[1].mul_add(x, (-a[0]).mul_add(y, self.s2));
-        self.s2 = b[2].mul_add(x, -a[1] * y);
+        let y = b[0] * x + self.s1;
+        self.s1 = b[1] * x - a[0] * y + self.s2;
+        self.s2 = b[2] * x - a[1] * y;
         // Denormals and the last crumbs of a decaying tail are flushed, so silence after sound is exact silence.
         if self.s1.abs() < 1e-30 {
             self.s1 = 0.0;

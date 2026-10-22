@@ -10,8 +10,8 @@ use std::f64::consts::TAU;
 
 use omuzaki_audio_api::graph::Channels;
 use omuzaki_audio_api::node::{
-    BlockMut, ChannelSupport, LatencyRange, Node, NodeConfig, NodeError, NodeKind, NodeKindInfo, ParamIndex,
-    ParamSpec, Unit,
+    BlockMut, ChannelSupport, LatencyRange, Node, NodeConfig, NodeError, NodeKind, NodeKindInfo, ParamIndex, ParamSpec,
+    Unit,
 };
 use omuzaki_audio_api::register_node_kind;
 
@@ -92,7 +92,7 @@ impl Robot {
         let frac = delay - whole as f64;
         // `comb[at]` is `y[n - 1]`.
         let back = |n: usize| self.comb[(self.at + 1 + COMB_LEN - n) % COMB_LEN];
-        frac.mul_add(back(whole + 1) - back(whole), back(whole))
+        frac * (back(whole + 1) - back(whole)) + back(whole)
     }
 }
 
@@ -113,18 +113,18 @@ impl Node for Robot {
         for s in block.left.iter_mut() {
             let [carrier, ring_mix, comb_ms, feedback, mix] = self.params.each_mut().map(Smoothed::next);
             let x = f64::from(*s);
-            let r = x * ring_mix.mul_add(self.phase.sin(), 1.0 - ring_mix);
+            let r = x * (ring_mix * self.phase.sin() + 1.0 - ring_mix);
             self.phase += TAU * carrier / FS;
             if self.phase >= TAU {
                 self.phase -= TAU;
             }
-            let mut y = feedback.mul_add(self.read(comb_ms * FS / 1000.0), r);
+            let mut y = feedback * self.read(comb_ms * FS / 1000.0) + r;
             if y.abs() < 1e-30 {
                 y = 0.0;
             }
             self.at = (self.at + 1) % COMB_LEN;
             self.comb[self.at] = y;
-            *s = mix.mul_add(y - x, x) as f32;
+            *s = (mix * (y - x) + x) as f32;
         }
     }
 

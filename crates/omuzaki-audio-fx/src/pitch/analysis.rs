@@ -12,7 +12,7 @@ use super::f0::{DECIMATION, Estimate, SPAN, Yin};
 use super::lpc::{IDENTITY, Lsf, ORDER, Poly, levinson, to_lsf};
 use super::marks::Marks;
 use crate::biquad::{Biquad, Coefs, Shape};
-use crate::dsp::FS;
+use crate::dsp::{FS, dot};
 
 /// The analysis hop, in samples (4 ms).
 pub const HOP: i64 = 192;
@@ -99,6 +99,8 @@ pub struct Analysis {
     frames: [Frame; FRAMES],
     a: Poly,
     last_lsf: Option<Lsf>,
+    /// Whether the hop before this one had a fit (not the identity).
+    fitted: bool,
     decimator: [Biquad; 2],
     dec: Ring,
     dec_count: i64,
@@ -141,6 +143,7 @@ impl Analysis {
             frames: [Frame { a: IDENTITY, lsf: None }; FRAMES],
             a: IDENTITY,
             last_lsf: None,
+            fitted: false,
             decimator: [Biquad::new(lp); 2],
             dec: Ring::new(DEC_RING),
             dec_count: 0,
@@ -161,6 +164,7 @@ impl Analysis {
         self.frames = [Frame { a: IDENTITY, lsf: None }; FRAMES];
         self.a = IDENTITY;
         self.last_lsf = None;
+        self.fitted = false;
         self.decimator.iter_mut().for_each(Biquad::reset);
         self.dec.clear();
         self.dec_count = 0;
@@ -197,7 +201,7 @@ impl Analysis {
     pub fn push(&mut self, x: f64, want_lsf: bool) {
         let n = self.n;
         self.x.set(n, x);
-        self.xp.set(n, PRE_EMPHASIS.mul_add(-self.previous, x));
+        self.xp.set(n, x - PRE_EMPHASIS * self.previous);
         self.previous = x;
         let low = self.decimator.iter_mut().fold(x, |v, f| f.run(v));
         if n % DECIMATION as i64 == 0 {
@@ -210,7 +214,7 @@ impl Analysis {
         }
         let mut e = self.xp.get(n);
         for i in 1..=ORDER {
-            e = self.a[i].mul_add(self.xp.get(n - i as i64), e);
+            e += self.a[i] * self.xp.get(n - i as i64);
         }
         self.e.set(n, e);
         let (residual, estimate) = (&self.e, self.estimate);
@@ -225,12 +229,20 @@ impl Analysis {
             *g = self.xp.get(start + i as i64) * self.window[i];
         }
         let mut r = [0.0; ORDER + 1];
-        for (k, r) in r.iter_mut().enumerate() {
-            let sum = self.grain[k..].iter().zip(self.grain.iter()).fold(0.0, |acc, (a, b)| a.mul_add(*b, acc));
+        // Until the window has filled, the grain is mostly the zeros before the first sample: no fit, the identity.
+        let filled = self.n >= LPC_WINDOW as i64;
+        for (k, r) in r.iter_mut().enumerate().filter(|_| filled) {
+            let sum = dot(&self.grain[k..], &self.grain);
             *r = sum * self.lag[k];
         }
         self.a = levinson(&r);
-        let lsf = if want_lsf {
+        // No fit (silence, or a window not yet full) leaves the identity, which whitens nothing: warping its evenly
+        // spaced frequencies would put resonances on an unwhitened signal, so it has none. Nor does the first fit after
+        // one: the grains around it still hold unwhitened samples, which a warped filter would ring on.
+        let fitted = self.a != IDENTITY;
+        let warpable = fitted && self.fitted;
+        self.fitted = fitted;
+        let lsf = if want_lsf && warpable {
             let found = to_lsf(&self.a).or(self.last_lsf);
             self.last_lsf = found;
             found

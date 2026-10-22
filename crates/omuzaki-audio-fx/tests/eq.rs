@@ -20,11 +20,19 @@ fn cookbook(shape: u8, f0: f64, q: f64, gain_db: f64) -> ([f64; 3], [f64; 3]) {
         0 => ([(1.0 - c) / 2.0, 1.0 - c, (1.0 - c) / 2.0], [1.0 + alpha, -2.0 * c, 1.0 - alpha]),
         1 => ([(1.0 + c) / 2.0, -(1.0 + c), (1.0 + c) / 2.0], [1.0 + alpha, -2.0 * c, 1.0 - alpha]),
         2 => (
-            [a * ((a + 1.0) - (a - 1.0) * c + sq), 2.0 * a * ((a - 1.0) - (a + 1.0) * c), a * ((a + 1.0) - (a - 1.0) * c - sq)],
+            [
+                a * ((a + 1.0) - (a - 1.0) * c + sq),
+                2.0 * a * ((a - 1.0) - (a + 1.0) * c),
+                a * ((a + 1.0) - (a - 1.0) * c - sq),
+            ],
             [(a + 1.0) + (a - 1.0) * c + sq, -2.0 * ((a - 1.0) + (a + 1.0) * c), (a + 1.0) + (a - 1.0) * c - sq],
         ),
         3 => (
-            [a * ((a + 1.0) + (a - 1.0) * c + sq), -2.0 * a * ((a - 1.0) + (a + 1.0) * c), a * ((a + 1.0) + (a - 1.0) * c - sq)],
+            [
+                a * ((a + 1.0) + (a - 1.0) * c + sq),
+                -2.0 * a * ((a - 1.0) + (a + 1.0) * c),
+                a * ((a + 1.0) + (a - 1.0) * c - sq),
+            ],
             [(a + 1.0) - (a - 1.0) * c + sq, 2.0 * ((a - 1.0) - (a + 1.0) * c), (a + 1.0) - (a - 1.0) * c - sq],
         ),
         _ => ([1.0 + alpha * a, -2.0 * c, 1.0 - alpha * a], [1.0 + alpha / a, -2.0 * c, 1.0 - alpha / a]),
@@ -49,7 +57,13 @@ fn frequencies() -> Vec<f64> {
 
 #[test]
 fn every_shape_matches_the_cookbook_within_a_tenth_of_a_db() {
-    let cases = [(0u8, 2000.0, 0.707, 0.0), (1, 200.0, 2.0, 0.0), (2, 300.0, 0.9, 9.0), (3, 4000.0, 0.707, -12.0), (4, 1000.0, 4.0, 15.0)];
+    let cases = [
+        (0u8, 2000.0, 0.707, 0.0),
+        (1, 200.0, 2.0, 0.0),
+        (2, 300.0, 0.9, 9.0),
+        (3, 4000.0, 0.707, -12.0),
+        (4, 1000.0, 4.0, 15.0),
+    ];
     let mut worst = 0.0f64;
     for (shape, freq, q, gain) in cases {
         let mut eq = node(
@@ -68,7 +82,10 @@ fn every_shape_matches_the_cookbook_within_a_tenth_of_a_db() {
             if expected > -80.0 {
                 let error = (measured - expected).abs();
                 worst = worst.max(error);
-                assert!(error < 0.1, "shape {shape} at {hz:.0} Hz: measured {measured:.3} dB, cookbook {expected:.3} dB");
+                assert!(
+                    error < 0.1,
+                    "shape {shape} at {hz:.0} Hz: measured {measured:.3} dB, cookbook {expected:.3} dB"
+                );
             }
         }
     }

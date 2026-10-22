@@ -71,7 +71,10 @@ fn a_level_between_the_thresholds_changes_the_state_at_most_once() {
     // From closed: the same level never opens it.
     let mut closed = Gate::new();
     feed(&mut closed, &alternating(-47.0, -49.0, 2.0));
-    eprintln!("fx.gate: -47/-49 dB every 20 ms for 2 s: {opened} change(s) from open, {} from closed", closed.changes());
+    eprintln!(
+        "fx.gate: -47/-49 dB every 20 ms for 2 s: {opened} change(s) from open, {} from closed",
+        closed.changes()
+    );
     assert!(opened <= 1 && closed.changes() <= 1, "{opened} {}", closed.changes());
 }
 

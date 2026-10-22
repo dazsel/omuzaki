@@ -17,8 +17,8 @@
 
 use omuzaki_audio_api::engine::AudioEngine;
 use omuzaki_audio_api::graph::{
-    Bindings, BusSpec, CapturedSource, Channels, DuckRule, DuckTrigger, Egress, GraphSpec, MAX_GAIN_DB, MicMode,
-    SendSpec, SourceRef, egress_pairs,
+    Bindings, BusSpec, CapturedSource, Channels, DuckRule, DuckTrigger, Egress, GRAPH_DOC_PATH, GraphSpec, MAX_GAIN_DB,
+    MicMode, SendSpec, SourceRef, egress_pairs,
 };
 use omuzaki_audio_api::ids::{BusId, DeviceRole};
 use omuzaki_doc_api::{Change, DocPath, DocRead, Patch, Value};
@@ -33,7 +33,7 @@ pub const DEFAULT_CEILING_DB: f32 = 0.0;
 /// Where the document keeps the graph.
 #[must_use]
 pub fn graph_path() -> DocPath {
-    DocPath::root().join("audio").join("graph")
+    GRAPH_DOC_PATH.iter().fold(DocPath::root(), |path, segment| path.join(*segment))
 }
 
 fn ceiling_path(bus: &BusId) -> DocPath {

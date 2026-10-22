@@ -2,6 +2,8 @@
 //! decimated to 16 kHz, with a 0.15 threshold, parabolic refinement, a voiced/unvoiced decision with hysteresis, and
 //! continuity against octave jumps.
 
+use crate::dsp::distance;
+
 /// The decimation from 48 kHz to the analysis rate.
 pub const DECIMATION: usize = 3;
 
@@ -100,11 +102,7 @@ impl Yin {
         self.d[0] = 1.0;
         let mut running = 0.0;
         for tau in 1..=TAU_MAX {
-            let mut sum = 0.0;
-            for j in 0..WINDOW {
-                let diff = y[j] - y[j + tau];
-                sum += diff * diff;
-            }
+            let sum = distance(&y[..WINDOW], &y[tau..tau + WINDOW]);
             running += sum;
             #[allow(clippy::cast_precision_loss)] // a lag
             let norm = if running > 0.0 { sum * tau as f64 / running } else { 1.0 };
