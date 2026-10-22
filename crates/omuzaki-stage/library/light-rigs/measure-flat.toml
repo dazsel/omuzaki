@@ -1,0 +1,26 @@
+# measure-flat: a rig for measuring, not for looks (docs/design/likeness-measures.md D10, #290). One frontal key from
+# the camera's direction and an even ambient, no rim, no fill and no bloom, so the face front reads as one tone and
+# shading is not a confound for the `measure.*` ops. Three.js units (render-api D10), like every rig in the library.
+name = "measure-flat"
+source = "docs/design/likeness-measures.md D10 (the measure preset's canonical even frontal light)"
+title = "Measure (flat)"
+summary = "Flat, even frontal light with no rim, fill or bloom, for renders that measure a face (measure.* ops), not for looks."
+tags = ["measure", "flat", "neutral"]
+exposure = 1.0
+background = "#9a9a9a"
+skin_floor = 1.0
+
+[hemisphere]
+sky = "#ffffff"
+ground = "#ffffff"
+intensity = 1.8
+
+[key]
+colour = "#ffffff"
+intensity = 1.2
+position = [0.0, 0.5, 4.0]
+
+[bloom]
+strength = 0.0
+radius = 0.0
+threshold = 1.0

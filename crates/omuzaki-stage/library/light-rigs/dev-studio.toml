@@ -2,6 +2,9 @@
 # Three.js units (render-api D10): the numbers are copied, not rescaled.
 name = "dev-studio"
 source = "prototype dev viewer, studio rig"
+title = "Grey studio"
+summary = "An even studio on mid grey, for checking a character's materials and shapes."
+tags = ["studio", "neutral", "grey"]
 exposure = 1.0
 background = "#8a8f99"
 skin_floor = 0.42

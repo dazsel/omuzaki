@@ -429,11 +429,11 @@ fn dropped_message(name: &str) -> String {
     }
 }
 
-/// `_STRAND_UV` becomes the slug `strand_uv`. Only the names the exporter writes back exactly (`[A-Z0-9_]`) convert,
-/// so a round trip restores them.
+/// `_STRAND_UV` becomes the slug `strand_uv`, and `_HAIR-UV` the slug `hair-uv` (#667). Only the names the exporter
+/// writes back exactly (`[A-Z0-9_-]`, a slug in upper case) convert, so a round trip restores them.
 fn custom_slug(name: &str) -> Option<Slug> {
     let rest = name.strip_prefix('_')?;
-    let canonical = rest.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+    let canonical = rest.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_' || c == '-');
     if !canonical {
         return None;
     }

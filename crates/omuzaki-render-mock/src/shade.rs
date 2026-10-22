@@ -183,7 +183,7 @@ pub(crate) struct Textures<'a>(pub(crate) &'a Arena<TextureData>);
 impl Textures<'_> {
     /// The texel at `uv` as straight, linear RGBA.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
-    fn sample(&self, id: TextureId, uv: Vec2) -> Vec4 {
+    pub(crate) fn sample(&self, id: TextureId, uv: Vec2) -> Vec4 {
         let Some(tex) = self.0.get(id.index(), id.generation()) else {
             return Vec4::ZERO;
         };
@@ -220,6 +220,21 @@ fn skin_adjust(lit: Vec3, albedo: Vec3, skin: Skin) -> Vec3 {
     // Keep the albedo's hue under coloured light, then never fall below a fraction of the albedo.
     let keep_hue = albedo * (lit.dot(LUMA) / albedo.dot(LUMA).max(1e-3));
     lit.lerp(keep_hue, skin.hue_keep).max(albedo * skin.floor)
+}
+
+/// Whether a material with an alpha mask keeps the pixel at `v`: its coverage (the base colour's alpha, times the vertex
+/// colour's and the base texture's, which is the albedo's alpha in [`shade_pixel`]) is at least the cutoff. Always true
+/// for a material without a mask. The outline hull asks it, so a cut-out card's line follows the visible shape (#649).
+pub(crate) fn mask_keeps(material: &Material, textures: &Textures<'_>, v: Varying) -> bool {
+    let AlphaMode::Mask { cutoff } = material.alpha else { return true };
+    let mut coverage = material.base.alpha();
+    if material.vertex_colours {
+        coverage *= v.colour.w;
+    }
+    if let Some(texture) = material.base_texture {
+        coverage *= textures.sample(texture, material.uv_transform.apply(v.uv)).w;
+    }
+    coverage >= cutoff
 }
 
 /// The pixel's final straight linear RGBA, or `None` if the material discards it.

@@ -131,3 +131,38 @@ fn on_the_gpu_both_bodies_frame_inside_the_picture() {
         }
     }
 }
+
+/// #2092: the plan charges the character it will render, loaded as the job loads it: a preview's hint is its images'
+/// plus the body's bound, for a kit character and for an imported one alike.
+#[test]
+fn a_preview_plan_charges_the_character_it_loads() {
+    use omuzaki_char_api::{BuildServices, CharId, CharacterBuilder, Quality as BuildQuality};
+    use omuzaki_core::glam::UVec2;
+    use omuzaki_core::time::{FakeClock, Seconds};
+    use omuzaki_render_api::MtoonSupport;
+    use omuzaki_stage::UploadOptions;
+    use omuzaki_stage::body::{BodyServices, load_body};
+    use omuzaki_stage::ops::render::job::{RenderQuality, cost};
+
+    let harness = harness();
+    let clock = FakeClock::new(Seconds(0.0));
+    for id in ["mock", "mock_vrm"] {
+        let args = json!({ "character": id, "framing": "full", "size": [64, 96], "quality": "live" });
+        let (plan, _) = harness.run(&preview(args)).unwrap();
+        let charged = harness.with_job(|job| {
+            let services = BodyServices::new(
+                job.service::<dyn CharacterBuilder>().unwrap(),
+                job.service::<BuildServices>().unwrap(),
+                job.service::<dyn Store>().unwrap(),
+                MtoonSupport::NONE,
+                &clock,
+            );
+            let id = CharId::new(id).unwrap();
+            let body = job.read(|doc| load_body(doc, &services, &id, None, BuildQuality::Live)).unwrap();
+            body.gpu_bytes(UploadOptions::default())
+        });
+        let size = UVec2::new(64, 96);
+        assert_eq!(plan.cost, Some(cost(size, 1, RenderQuality::Live, charged)), "{id}");
+        assert!(charged > 0, "{id}: the character takes memory");
+    }
+}

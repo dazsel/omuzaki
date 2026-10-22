@@ -14,7 +14,7 @@ use omuzaki_anim_api::{ChannelMask, ConstraintSet, HumanoidBone, HumanoidPose, R
 use omuzaki_char_api::{Anchor, AnchorId, JointRef, MaterialName, MaterialSpec, PartMesh, TextureData, TextureName};
 use omuzaki_core::glam::Mat4;
 use omuzaki_io_api::{ExpressionName, FirstPersonFlag, LookAtKind};
-use omuzaki_render_api::MorphSet;
+use omuzaki_render_api::{MorphSet, OutlineWidthMode};
 use omuzaki_store_api::ContentHash;
 
 use crate::error::AvatarError;
@@ -65,6 +65,30 @@ impl AvatarMesh {
     }
 }
 
+/// How one imported material's outline is drawn, as its `MToon` block says (#647): what the kit's line in
+/// [`MaterialSpec::outline`] cannot carry. The importer fills it only with what the renderer draws (its
+/// `Capabilities::mtoon`); the rest stays the kit line's approximation, reported as `look.mtoon_not_drawn`.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct AvatarOutline {
+    /// What `width` measures: metres for `World` (`MToon`'s `worldCoordinates`), a fraction of the target's height for
+    /// `Screen`.
+    pub width_mode: OutlineWidthMode,
+    /// The file's `outlineWidthFactor`, in the unit `width_mode` says; it replaces the material's outline width.
+    pub width: f32,
+    /// The decoded `outlineWidthMultiplyTexture` (linear data), if the file has one.
+    pub width_texture: Option<TextureName>,
+    /// The file's `outlineLightingMixFactor`, `0..=1`.
+    pub lighting_mix: f32,
+}
+
+impl AvatarOutline {
+    /// An outline `width` wide as `width_mode` measures it, with no width texture and no lighting mix.
+    pub fn new(width_mode: OutlineWidthMode, width: f32) -> Self {
+        Self { width_mode, width, width_texture: None, lighting_mix: 0.0 }
+    }
+}
+
 /// An imported avatar, ready to perform.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
@@ -80,6 +104,8 @@ pub struct ImportedAvatar {
     pub meshes: Vec<AvatarMesh>,
     /// Materials by name, as the renderer draws them.
     pub materials: BTreeMap<MaterialName, MaterialSpec>,
+    /// The `MToon` outline of each material that has one beyond the kit's line, by material name (#647).
+    pub outlines: BTreeMap<MaterialName, AvatarOutline>,
     /// Decoded textures by name.
     pub textures: BTreeMap<TextureName, TextureData>,
     /// The expressions, in file order, names kept.
@@ -114,6 +140,7 @@ impl ImportedAvatar {
             bind: HumanoidPose::default(),
             meshes: Vec::new(),
             materials: BTreeMap::new(),
+            outlines: BTreeMap::new(),
             textures: BTreeMap::new(),
             expressions: Vec::new(),
             drivers: ChannelDrivers::new(),

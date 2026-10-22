@@ -381,6 +381,33 @@ fn a_program_exports_as_the_default_toon_look_with_a_finding_naming_it() {
 }
 
 #[test]
+fn the_kit_hair_exports_in_its_mean_strand_colour_with_its_toon() {
+    let colour = |hex: u32| render::ParamValue::Colour(Colour::hex(hex));
+    let slug = |name: &str| omuzaki_core::id::Slug::new(name).unwrap();
+    let (root, mid, tip, shade) = (0x0030_2010, 0x0060_4020, 0x0090_6030, 0x0080_7060);
+    let params = std::collections::BTreeMap::from([
+        (slug("root"), colour(root)),
+        (slug("mid"), colour(mid)),
+        (slug("tip"), colour(tip)),
+        (slug("shade"), colour(shade)),
+        (slug("edge-darkening"), render::ParamValue::Float(0.0)),
+    ]);
+    let mut spec = MaterialSpec::toon(Colour::WHITE);
+    spec.shading = render::Shading::Program { name: slug("hair"), params };
+    let (file, report) = export(&spec);
+
+    let linear = |hex: u32| to_linear(Colour::hex(hex)).truncate();
+    let strand = linear(root) * 0.125 + linear(mid) * 0.65 + linear(tip) * 0.225;
+    assert!((file.base_color.truncate() - strand).abs().max_element() < 1e-5, "{:?}", file.base_color);
+    let toon = toon_of(&import(&file).0);
+    assert!((toon.shift - -0.05).abs() < 1e-5 && (toon.softness - 0.22).abs() < 1e-5, "the program's terminator");
+    assert!((toon.shade.to_linear() - linear(shade)).abs().max_element() < 0.0045, "the shade parameter");
+    assert!(!report.has_rule("material.program_dropped"));
+    let finding = report.findings.iter().find(|f| f.rule == "material.approximated").expect("a finding");
+    assert_eq!(finding.location.as_deref(), Some("materials/0/shading"));
+}
+
+#[test]
 fn skin_has_no_mtoon_field_and_says_so() {
     let mut spec = MaterialSpec::toon(Colour::hex(0x00f9_d3c5));
     spec.shading =
