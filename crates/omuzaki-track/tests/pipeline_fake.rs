@@ -274,3 +274,20 @@ fn track_roi_skips_the_detector_and_rejects_a_region_with_no_area() {
         FaceTrackError::Shape { graph: "roi" }
     );
 }
+
+#[test]
+fn track_roi_timed_splits_the_landmark_stage_and_matches_track_roi() {
+    let pose = Pose::facing(0.1, -0.05, 0.02);
+    let (mut timed, _) = tracker_for(&pose, Mode::Image, 10.0);
+    let (mut plain, _) = tracker_for(&pose, Mode::Image, 10.0);
+    let pixels = grey_pixels();
+    let (sample, timings) = timed.track_roi_timed(&frame(&pixels), FACE_ROI, Seconds(0.0)).unwrap();
+    let expected = plain.track_roi(&frame(&pixels), FACE_ROI, Seconds(0.0)).unwrap();
+    assert_eq!(sample.landmarks, expected.landmarks);
+    assert_eq!(sample.blendshapes, expected.blendshapes);
+    // The parts never exceed the stage they split, and the detector did not run.
+    assert!(timings.warp_us + timings.landmark_run_us <= timings.landmarks_us, "{timings:?}");
+    assert_eq!(timings.landmark_decode_us(), timings.landmarks_us - timings.warp_us - timings.landmark_run_us);
+    assert_eq!(timings.detect_us, 0);
+    assert_eq!(timings.total_us(), timings.landmarks_us + timings.blendshapes_us + timings.geometry_us);
+}

@@ -2,6 +2,7 @@
 //! imported, installed, selected and rolled back like shipped ones, refreshes change nothing, and a poisoned or
 //! colliding import is revoked when the root raises the epoch. Offline; every scenario is checked after a restart of
 //! the registry too.
+#![allow(clippy::disallowed_methods, reason = "tests set up their fixtures on disk; the fence is for ops")]
 #![allow(clippy::unwrap_used)] // helpers outside `#[test]` fns: a panic is a clear test failure
 
 mod common;

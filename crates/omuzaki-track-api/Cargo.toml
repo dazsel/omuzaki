@@ -28,4 +28,4 @@ workspace = true
 
 [package.metadata.omuzaki]
 kind = "API"
-summary = "the tracker contract (PF-01): the camera seam (`Camera`, `CameraStream`, borrowed `CameraFrame`s in NV12, YUY2, MJPG, RGB8 or BGRA8, `CameraFormatRequest::pick`), the `Tracker` device trait with `LatencyStats`, `ClockMap` (device time onto the stage clock: drift fit, lower-envelope offset, backwards times rejected) and the wait-free newest-wins mailbox behind anim-api's `FrameSource`; `TrackFrame` stays in anim-api; design in `docs/design/track-api.md`"
+summary = "the tracker contract (PF-01): the camera seam (`Camera`, `CameraStream`, borrowed `CameraFrame`s in NV12, YUY2, MJPG, RGB8 or BGRA8, `CameraFormatRequest::pick`), the `Tracker` device trait with `LatencyStats`, `ClockMap` (device time onto the stage clock: drift fit, lower-envelope offset, backwards times rejected), the wait-free newest-wins mailbox behind anim-api's `FrameSource`, and the tracking doctor (PF-28: `Finding`, `Diagnosis`, the averaged `Doctor` and the `DoctorBoard` a tracker's thread publishes to); `TrackFrame` stays in anim-api; design in `docs/design/track-api.md`"

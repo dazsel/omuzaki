@@ -24,6 +24,10 @@ omuzaki-ai-ort = { path = "../omuzaki-ai-ort" }
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-track = { path = "../omuzaki-track" }
 
+# The timing probe's CPU-per-frame column on Windows (`GetProcessTimes`).
+[target.'cfg(windows)'.dev-dependencies]
+windows.workspace = true
+
 [[bench]]
 name = "track"
 harness = false
