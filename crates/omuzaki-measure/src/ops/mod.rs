@@ -1,5 +1,5 @@
 //! The measure ops (design 5 and 6.2): `measure.face_outline`, `measure.feature_spacing` and `measure.likeness` read an
-//! image and change nothing; `measure.face_overlay` writes its evidence image to the store; `measure.target.set` and
+//! image and change nothing, as do the readability measures `measure.silhouette` and `measure.readability` (VF-06); `measure.face_overlay` writes its evidence image to the store; `measure.target.set` and
 //! `measure.target.remove` keep a character's likeness targets.
 //!
 //! Every measure op takes a subject: a face (an image and its landmarks), or a likeness target, by its asset's hash or
@@ -7,6 +7,7 @@
 
 mod measure;
 mod overlay;
+mod readability;
 mod target;
 
 use omuzaki_core::id::Slug;
@@ -28,6 +29,7 @@ use crate::target::Target;
 
 pub use measure::{MeasureFaceOutline, MeasureFeatureSpacing, MeasureLikeness};
 pub use overlay::FaceOverlay;
+pub use readability::{MeasureReadability, MeasureSilhouette, NamedImage};
 pub use target::{TargetRemove, TargetSet};
 
 /// One face to measure.
@@ -142,7 +144,7 @@ fn refusal(at: &str, r: &Refusal) -> OpError {
 }
 
 /// Whether the stored asset `hash` is private test material; a file or an asset without provenance is not.
-fn asset_private(ctx: &OpCtx<'_>, image: &ImageRef) -> bool {
+pub(crate) fn asset_private(ctx: &OpCtx<'_>, image: &ImageRef) -> bool {
     match image {
         ImageRef::Asset { asset } => ctx
             .service::<dyn Store>()

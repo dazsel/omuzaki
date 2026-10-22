@@ -13,8 +13,9 @@
 //! | [`messages`] | the refusals of design 7.3 and the three image refusals, declared as localised messages (ADR 0023) |
 //!
 //! | [`face`] | the face measures of design 4: frame, segmentation, snap, outline, spacing and likeness |
+//! | [`readability`] | the readability measures of VF-06: a silhouette at 64 px against others, and expressions at emote sizes |
 //! | [`target`] | the likeness target asset (design 6.1): its TOML, its cache and its staleness |
-//! | [`ops`] | `measure.face_outline`, `measure.feature_spacing`, `measure.likeness`, `measure.face_overlay` and the likeness targets |
+//! | [`ops`] | `measure.face_outline`, `measure.feature_spacing`, `measure.likeness`, `measure.face_overlay`, the likeness targets, `measure.silhouette` and `measure.readability` |
 //!
 //! The message table and the ops are registrations (the link gate counts them), so the crate defines its `link()`
 //! (ADR 0015).
@@ -27,4 +28,5 @@ pub mod face;
 pub mod image;
 pub mod messages;
 pub mod ops;
+pub mod readability;
 pub mod target;

@@ -62,6 +62,9 @@ omuzaki-io-mock = { path = "../omuzaki-io-mock" }
 omuzaki-io-ops = { path = "../omuzaki-io-ops" }
 # The ARKit-52 synthesis through the real VRM exporter (tests/prepare_arkit_vrm.rs, #1663).
 omuzaki-io-vrm = { path = "../omuzaki-io-vrm" }
+omuzaki-face = { path = "../omuzaki-face" }
+omuzaki-face-api = { path = "../omuzaki-face-api" }
+omuzaki-measure = { path = "../omuzaki-measure" }
 
 # `link()` calls for the crates that register and are linked here (`omuzaki-cli`, `omuzaki-mcp`): ADR 0015, ADR 0054 section 6.
 [build-dependencies]
