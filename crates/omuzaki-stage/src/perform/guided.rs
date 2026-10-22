@@ -83,25 +83,34 @@ impl GuidedStatus {
     }
 }
 
-/// Where the perform side copies the frames it polls, for a guided run to read: [`tee`](Self::tee) wraps each source
-/// the input posts. The perform thread only publishes into a newest-wins mailbox (wait-free, no allocation); the reader
-/// sits behind a lock on the cold side, replaced with each new source.
+/// Where the perform side copies the frames it polls, for the cold-side readers: a guided run and the gesture watch
+/// ([`super::gesture`]) each have their own mailbox. [`tee`](Self::tee) wraps each source the input posts. The perform
+/// thread only publishes into newest-wins mailboxes (wait-free, no allocation); the readers sit behind locks on the
+/// cold side, replaced with each new source.
 #[derive(Default)]
 pub struct FrameTap {
-    reader: Mutex<Option<MailboxReader>>,
+    calibration: Mutex<Option<MailboxReader>>,
+    gestures: Mutex<Option<MailboxReader>>,
 }
 
 impl FrameTap {
     /// `source`, copying every frame it gives into this tap from now on.
     pub fn tee(&self, source: Box<dyn FrameSource>) -> Box<dyn FrameSource> {
-        let (writer, reader) = mailbox();
-        *self.reader.lock().unwrap_or_else(PoisonError::into_inner) = Some(reader);
-        Box::new(Tee { source, writer })
+        let (calibration, calibration_reader) = mailbox();
+        let (gestures, gestures_reader) = mailbox();
+        *self.calibration.lock().unwrap_or_else(PoisonError::into_inner) = Some(calibration_reader);
+        *self.gestures.lock().unwrap_or_else(PoisonError::into_inner) = Some(gestures_reader);
+        Box::new(Tee { source, writers: [calibration, gestures] })
     }
 
-    /// The newest frame since the last poll, from the source posted last.
+    /// The newest frame since the last poll, from the source posted last, for a guided run.
     fn poll(&self) -> Option<TrackFrame> {
-        self.reader.lock().unwrap_or_else(PoisonError::into_inner).as_mut()?.poll(Seconds(0.0))
+        self.calibration.lock().unwrap_or_else(PoisonError::into_inner).as_mut()?.poll(Seconds(0.0))
+    }
+
+    /// The same, for the gesture watch.
+    pub(super) fn poll_gestures(&self) -> Option<TrackFrame> {
+        self.gestures.lock().unwrap_or_else(PoisonError::into_inner).as_mut()?.poll(Seconds(0.0))
     }
 }
 
@@ -114,13 +123,15 @@ impl std::fmt::Debug for FrameTap {
 /// A source that copies what it gives into a tap.
 struct Tee {
     source: Box<dyn FrameSource>,
-    writer: MailboxWriter,
+    writers: [MailboxWriter; 2],
 }
 
 impl FrameSource for Tee {
     fn poll(&mut self, now: Seconds) -> Option<TrackFrame> {
         let frame = self.source.poll(now)?;
-        self.writer.publish(&frame);
+        for writer in &mut self.writers {
+            writer.publish(&frame);
+        }
         Some(frame)
     }
 }

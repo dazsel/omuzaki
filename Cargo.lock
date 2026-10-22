@@ -5150,6 +5150,8 @@ dependencies = [
  "omuzaki-pixfmt",
  "omuzaki-track-api",
  "omuzaki-track-mock",
+ "schemars",
+ "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
