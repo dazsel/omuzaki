@@ -94,6 +94,8 @@ words! {
     HistoryRedo = "shell-history-redo" => "Redo",
     HistoryUndone = "shell-history-undone" => "undone",
     HistoryYou = "shell-history-you" => "You",
+    DockSplitter = "shell-dock-splitter" => "Resize {first} and {second}",
+    DockTabs = "shell-dock-tabs" => "{panels} tabs",
     HistorySystem = "shell-history-system" => "Omuzaki",
     HistoryUnavailable = "shell-history-unavailable" => "History is not available: {why}",
     HistoryFilter = "shell-history-filter" => "Filter history",

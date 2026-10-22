@@ -26,6 +26,7 @@ use omuzaki_ui_api::registry::{PanelDef, PanelKind, Region, Registry, WorkspaceD
 
 use super::class::{DockMode, Plan, RAIL, STATUS_BAR, TOP_BAR};
 use super::dock::{self, Dock};
+use super::handles;
 use super::history::{HistoryLog, step_label};
 use super::host::Bodies;
 use super::keys::{self, Action};
@@ -647,7 +648,12 @@ impl Shell {
             focus: &mut self.focus,
         };
         view.tree.ui(&mut dock, ui);
+        let moved = handles::name_handles(ui, &mut view.tree, &self.registry);
+        let moved = moved.then(|| Layout::from_tree(&view.tree).map(|l| l.without(&[]))).flatten();
         self.drawer(&ctx, rect);
+        if let Some(layout) = moved {
+            self.record(&layout);
+        }
     }
 
     /// Saves the arrangement when a drag or click ends and it differs from the one before. The full-size arrangement

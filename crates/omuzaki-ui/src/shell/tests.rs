@@ -643,3 +643,78 @@ fn the_status_bar_names_what_is_selected() {
     harness.run_steps(2);
     assert_shows(&harness, "2 parts selected");
 }
+
+/// The keyboard focus, by role and name.
+fn focused(harness: &Harness<'_, Shell>) -> Option<(Role, String)> {
+    use egui_kittest::kittest::NodeT as _;
+    harness.query_all(egui_kittest::kittest::by()).find(egui_kittest::Node::is_focused).map(|n| {
+        let node = n.accesskit_node();
+        (node.role(), node.label().unwrap_or_default())
+    })
+}
+
+#[test]
+fn every_tab_stop_is_named_and_the_dividers_and_tab_strips_say_what_they_are() {
+    // #707: egui_tiles' dividers and tab strip backgrounds were unnamed stops.
+    let mut harness = plain(vec2(1920.0, 1080.0));
+    let mut stops = Vec::new();
+    for _ in 0..40 {
+        press(&mut harness, Modifiers::NONE, Key::Tab);
+        harness.run_steps(1);
+        let stop = focused(&harness).expect("Tab always lands on something");
+        if stops.contains(&stop) {
+            break;
+        }
+        stops.push(stop);
+    }
+    let unnamed: Vec<_> = stops.iter().filter(|(_, name)| name.is_empty()).collect();
+    assert!(unnamed.is_empty(), "unnamed stops {unnamed:?} in {stops:?}");
+    assert!(stops.contains(&(Role::Splitter, "Resize Inspector and Agent".to_owned())), "{stops:?}");
+    assert!(stops.iter().filter(|(role, _)| *role == Role::Splitter).count() >= 3, "{stops:?}");
+    assert!(stops.contains(&(Role::TabList, "Outliner, Library tabs".to_owned())), "{stops:?}");
+    // On a strip, Left and Right switch its tab.
+    for _ in 0..40 {
+        if focused(&harness).is_some_and(|(role, _)| role == Role::TabList) {
+            break;
+        }
+        press(&mut harness, Modifiers::NONE, Key::Tab);
+        harness.run_steps(1);
+    }
+    assert!(!shows(&harness, "The library is empty"));
+    press(&mut harness, Modifiers::NONE, Key::ArrowRight);
+    harness.run_steps(2);
+    assert_shows(&harness, "The library is empty");
+    assert_eq!(focused(&harness).map(|(role, _)| role), Some(Role::TabList), "the strip keeps the keyboard");
+}
+
+/// The root columns' widths at 1920 wide, from their shares (to a point or two: the dock area is a little narrower).
+fn widths(harness: &Harness<'_, Shell>) -> Vec<f32> {
+    let shares = shares(&harness.state().shown_layout().expect("built"));
+    let total: f32 = shares.iter().sum();
+    shares.iter().map(|s| s / total * 1920.0).collect()
+}
+
+#[test]
+fn a_focused_divider_moves_with_the_arrow_keys_and_the_arrangement_is_saved() {
+    let (_keep, store) = store();
+    let mut harness = shell_at(vec2(1920.0, 1080.0), Some(store.clone()), Arc::new(NullRunner));
+    let before = widths(&harness);
+    for _ in 0..40 {
+        press(&mut harness, Modifiers::NONE, Key::Tab);
+        harness.run_steps(1);
+        if focused(&harness).is_some_and(|(role, name)| role == Role::Splitter && name.starts_with("Resize Outliner")) {
+            break;
+        }
+    }
+    assert!(focused(&harness).is_some_and(|(role, _)| role == Role::Splitter), "Tab reaches the left divider");
+    press(&mut harness, Modifiers::NONE, Key::ArrowRight);
+    press(&mut harness, Modifiers::SHIFT, Key::ArrowRight);
+    harness.run_steps(3);
+    let after = widths(&harness);
+    assert!((after[0] - before[0] - 80.0).abs() < 3.0, "16 then 64 points wider: {before:?} {after:?}");
+    harness.state().flush();
+    assert!(store.load("build").expect("readable").is_some(), "the new arrangement is saved");
+    press(&mut harness, Modifiers::NONE, Key::ArrowLeft);
+    harness.run_steps(3);
+    assert!((widths(&harness)[0] - after[0] + 16.0).abs() < 3.0, "and back");
+}
