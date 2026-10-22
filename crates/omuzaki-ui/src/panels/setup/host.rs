@@ -58,7 +58,7 @@ pub trait SetupHost {
     fn stage_import(&mut self, path: String);
 
     /// Carries out `effect`. Answers known at once come back now; the rest come from [`poll`](Self::poll).
-    fn apply(&mut self, runner: &dyn Runner, actor: &Actor, effect: &Effect) -> Vec<Event>;
+    fn run_effect(&mut self, runner: &dyn Runner, actor: &Actor, effect: &Effect) -> Vec<Event>;
 
     /// Answers that came later: a calibration run ending.
     fn poll(&mut self) -> Vec<Event>;
@@ -263,7 +263,7 @@ impl SetupHost for LiveHost {
         self.import = Some(path);
     }
 
-    fn apply(&mut self, runner: &dyn Runner, actor: &Actor, effect: &Effect) -> Vec<Event> {
+    fn run_effect(&mut self, runner: &dyn Runner, actor: &Actor, effect: &Effect) -> Vec<Event> {
         let answers = self.carry_out(runner, actor, effect);
         if answers.iter().any(|a| matches!(a, Event::Refused { .. } | Event::CalibrationFailed { .. })) {
             self.failure = self.model.failure().map(|f| (f.op.to_owned(), f.message.clone()));

@@ -76,7 +76,7 @@ impl SetupHost for Fake {
 
     fn stage_import(&mut self, _: String) {}
 
-    fn apply(&mut self, _: &dyn Runner, _: &Actor, effect: &Effect) -> Vec<Event> {
+    fn run_effect(&mut self, _: &dyn Runner, _: &Actor, effect: &Effect) -> Vec<Event> {
         self.asked.borrow_mut().push(effect.clone());
         match *effect {
             Effect::SelectInput { request, .. }

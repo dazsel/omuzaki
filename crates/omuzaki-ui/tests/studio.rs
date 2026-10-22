@@ -410,7 +410,7 @@ impl omuzaki_ui::panels::setup::SetupHost for EvidenceHost {
 
     fn stage_import(&mut self, _: String) {}
 
-    fn apply(&mut self, _: &dyn Runner, _: &Actor, effect: &omuzaki_setup::Effect) -> Vec<omuzaki_setup::Event> {
+    fn run_effect(&mut self, _: &dyn Runner, _: &Actor, effect: &omuzaki_setup::Effect) -> Vec<omuzaki_setup::Event> {
         use omuzaki_setup::{Effect, Event};
         match *effect {
             Effect::SelectInput { request, .. }

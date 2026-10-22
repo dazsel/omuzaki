@@ -93,7 +93,7 @@ impl SetupHost for Still {
 
     fn stage_import(&mut self, _: String) {}
 
-    fn apply(&mut self, _: &dyn Runner, _: &Actor, effect: &Effect) -> Vec<Event> {
+    fn run_effect(&mut self, _: &dyn Runner, _: &Actor, effect: &Effect) -> Vec<Event> {
         match *effect {
             Effect::SelectInput { request, .. }
             | Effect::ShowTestPattern { request, .. }

@@ -223,7 +223,7 @@ impl SetupPanel {
                     _ => {}
                 }
                 // Answers go first: the flow numbers its requests and expects each answered before the next event.
-                for answer in host.apply(runner, actor, &effect).into_iter().rev() {
+                for answer in host.run_effect(runner, actor, &effect).into_iter().rev() {
                     events.push_front(answer);
                 }
             }
