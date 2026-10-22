@@ -18,3 +18,6 @@
   missing when it starts.
 - The model registry opens with the studio, so the `model.*` ops work in the app: add your own model, accept its
   notice, select, check and remove it.
+- Face gestures show expressions: bind an expression to `gesture:tongue_out`, `gesture:wink_left`,
+  `gesture:wink_right`, `gesture:cheek_puff` or `gesture:mouth_wide` with `trigger.bind`, and holding that face
+  shows it. `input.gestures` lists them, what each is bound to and which show now. The tongue needs a phone tracker.

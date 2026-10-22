@@ -28,6 +28,7 @@ use omuzaki_ops_api::Mode;
 use omuzaki_settings_api::meta::{AgentWrite, Apply, InProfile, SettingMeta, SettingScope};
 use omuzaki_settings_api::register_setting;
 use omuzaki_settings_api::setting::Setting;
+use omuzaki_track::gesture::Gesture;
 use omuzaki_track_api::camera::CameraId;
 use omuzaki_metrics_api::budget::{BudgetKey, BudgetUse, TRACK_FACE};
 use omuzaki_track_api::doctor::{Diagnosis, Finding};
@@ -37,6 +38,7 @@ use omuzaki_track_api::tracker::{Tracker, TrackerConfig};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::gesture::GestureWatch;
 use super::guided::{FrameTap, GuidedRun, GuidedStatus};
 use super::host::PerformHost;
 use super::{Performer, Tracking};
@@ -362,6 +364,11 @@ pub trait InputHost: Send + Sync {
     fn pose_out(&self) -> PoseOutStatus {
         PoseOutStatus::default()
     }
+
+    /// The face gestures showing now (PF-25): each presses its trigger key while it shows.
+    fn gestures(&self) -> Vec<Gesture> {
+        Vec::new()
+    }
 }
 
 /// A source that never delivers a frame: what the performer reads with no capture running (the life layer moves the
@@ -609,6 +616,8 @@ pub struct LiveInput {
     slot: Arc<SourceSlot>,
     perform: Arc<dyn PerformHost>,
     guided: GuidedRun,
+    /// The gesture watch, from the first capture on (PF-25).
+    gestures: Mutex<Option<GestureWatch>>,
 }
 
 impl LiveInput {
@@ -634,7 +643,7 @@ impl LiveInput {
             tap: Arc::default(),
             pose_out: None,
         };
-        Self { inner: Mutex::new(inner), slot, perform, guided: GuidedRun::default() }
+        Self { inner: Mutex::new(inner), slot, perform, guided: GuidedRun::default(), gestures: Mutex::default() }
     }
 
     /// With `phone` as the tracker the iPhone source starts (`omuzaki-track-net`'s `NetTracker`: its one device is
@@ -643,7 +652,7 @@ impl LiveInput {
     pub fn with_phone(self, phone: Box<dyn Tracker>) -> Self {
         let mut inner = self.inner.into_inner().unwrap_or_else(PoisonError::into_inner);
         inner.phone = Some(phone);
-        Self { inner: Mutex::new(inner), slot: self.slot, perform: self.perform, guided: self.guided }
+        Self { inner: Mutex::new(inner), slot: self.slot, perform: self.perform, guided: self.guided, gestures: self.gestures }
     }
 
     /// With `output` as the pose output `input.vmc_out` starts (`omuzaki-track-net`'s `VmcOut`). Without one, that
@@ -652,7 +661,16 @@ impl LiveInput {
     pub fn with_pose_out(self, output: Box<dyn PoseOutput>) -> Self {
         let mut inner = self.inner.into_inner().unwrap_or_else(PoisonError::into_inner);
         inner.pose_out = Some(output);
-        Self { inner: Mutex::new(inner), slot: self.slot, perform: self.perform, guided: self.guided }
+        Self { inner: Mutex::new(inner), slot: self.slot, perform: self.perform, guided: self.guided, gestures: self.gestures }
+    }
+
+    /// Starts the gesture watch over `tap` if it isn't running. A watch that can't start leaves gestures off and the
+    /// capture running.
+    fn watch_gestures(&self, tap: &Arc<FrameTap>) {
+        let mut watch = self.gestures.lock().unwrap_or_else(PoisonError::into_inner);
+        if watch.is_none() {
+            *watch = GestureWatch::start(Arc::clone(tap), Arc::clone(&self.perform)).ok();
+        }
     }
 
     fn inner(&self) -> MutexGuard<'_, Inner> {
@@ -719,6 +737,7 @@ impl InputHost for LiveInput {
         let (device, id) = inner.startable()?;
         if mode == Mode::Apply {
             inner.start_on(device, id, &self.slot)?;
+            self.watch_gestures(&inner.tap);
         }
         Ok(before)
     }
@@ -849,6 +868,10 @@ impl InputHost for LiveInput {
 
     fn pose_out(&self) -> PoseOutStatus {
         self.inner().pose_out.as_ref().map(|output| output.status()).unwrap_or_default()
+    }
+
+    fn gestures(&self) -> Vec<Gesture> {
+        self.gestures.lock().unwrap_or_else(PoisonError::into_inner).as_ref().map(GestureWatch::active).unwrap_or_default()
     }
 }
 
