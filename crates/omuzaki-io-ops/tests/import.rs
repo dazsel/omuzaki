@@ -27,6 +27,10 @@ use omuzaki_store_mock::MemStore;
 use omuzaki_store_mock::conformance::sample_provenance;
 use serde_json::{Value, json};
 
+/// An absolute path in this host's grammar that no grant covers. (`/etc/hostname` on Windows is root-relative, which
+/// the file-access gate refuses as `Invalid`, not `Denied`: docs/design/ops-api.md section 5.)
+const OUTSIDE: &str = if cfg!(windows) { r"C:\Windows\win.ini" } else { "/etc/hostname" };
+
 /// A file that starts `PROBE`, then the number of images, then how many of them are distinct. Its meta is a VRM 1.0
 /// licence page with `PersonalProfit` terms, and it leaves the provenance for `run_import` to derive.
 #[derive(Default)]
@@ -501,7 +505,7 @@ fn a_file_is_read_through_the_jobs_file_access() {
     let entry = rig.doc.get(&doc_path(&format!("assets/{original}"))).unwrap();
     assert_eq!(entry["characters"], json!(["mira"]));
 
-    let outside = rig.work(&Rig::op(json!({ "path": "/etc/hostname" })), &Signal::new(None)).unwrap_err();
+    let outside = rig.work(&Rig::op(json!({ "path": OUTSIDE })), &Signal::new(None)).unwrap_err();
     assert_eq!(outside.code, ErrorCode::Denied, "a path outside the project folder needs the fs grant");
 }
 

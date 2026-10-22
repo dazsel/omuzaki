@@ -67,6 +67,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] } # recorded tracks must replay bit-identically after a save
 sse-stream = "0.2"   # Server-Sent Events framing for the LLM providers (MIT OR Apache-2.0), omuzaki-llm; already in the lock through rmcp
 sha2 = "0.10"   # pins the lazily downloaded fallback fonts by SHA-256 (MIT OR Apache-2.0), omuzaki-stage
+ufbx = "0.11"   # FBX import (MIT OR Unlicense; compiles the bundled ufbx.c with cc), omuzaki-io-fbx
 tar = { version = "0.4", default-features = false } # unpacks the ONNX Runtime.tgz archives (MIT OR Apache-2.0), omuzaki-ai-native
 sys-locale = "0.3" # the OS language list (MIT OR Apache-2.0), omuzaki-l10n-api
 tempfile = "3.27"

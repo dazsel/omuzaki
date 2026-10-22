@@ -221,11 +221,12 @@ fn the_mock_character_under_two_skies_matches_its_goldens() {
             .unwrap_or_else(|e| panic!("{} (bless with OMUZAKI_BLESS=1): {e}", path.display()))
             .to_rgba8();
         assert_eq!(golden.dimensions(), (image.size.x, image.size.y));
-        let worst = golden.as_raw().iter().zip(&image.rgba8).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
+        let diff = support::Diff::of(golden.as_raw(), &image.rgba8);
         assert!(
-            worst <= 2,
-            "{} differs from its golden by up to {worst} levels (bless with OMUZAKI_BLESS=1)",
-            shot.name
+            diff.max <= 2,
+            "{} differs from its golden by up to {} levels ({diff}; bless with OMUZAKI_BLESS=1)",
+            shot.name,
+            diff.max
         );
     }
 }
