@@ -14,12 +14,14 @@ use serde::Deserialize as _;
 
 use super::model::{OP_TRIGGER_LIST, OP_TRIGGER_PRESS, object, run};
 
+/// The modifiers' names in a chord, as printed on keys: part of the binding's name, never translated.
+const MODIFIERS: [&str; 4] = ["Ctrl", "Alt", "Shift", "Cmd"]; // key name
+
 /// The name a key press is bound under: its modifiers, then the key, as `Ctrl+Shift+F12`.
 pub fn chord(modifiers: Modifiers, key: Key) -> String {
     let mut name = String::new();
-    for (held, word) in
-        [(modifiers.ctrl, "Ctrl"), (modifiers.alt, "Alt"), (modifiers.shift, "Shift"), (modifiers.mac_cmd, "Cmd")]
-    {
+    let held = [modifiers.ctrl, modifiers.alt, modifiers.shift, modifiers.mac_cmd];
+    for (held, word) in held.into_iter().zip(MODIFIERS) {
         if held {
             name.push_str(word);
             name.push('+');

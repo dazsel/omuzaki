@@ -643,3 +643,147 @@ fn the_status_bar_names_what_is_selected() {
     harness.run_steps(2);
     assert_shows(&harness, "2 parts selected");
 }
+
+/// The keyboard focus, by role and name.
+fn focused(harness: &Harness<'_, Shell>) -> Option<(Role, String)> {
+    use egui_kittest::kittest::NodeT as _;
+    harness.query_all(egui_kittest::kittest::by()).find(egui_kittest::Node::is_focused).map(|n| {
+        let node = n.accesskit_node();
+        (node.role(), node.label().unwrap_or_default())
+    })
+}
+
+#[test]
+fn every_tab_stop_is_named_and_the_dividers_and_tab_strips_say_what_they_are() {
+    // #707: egui_tiles' dividers and tab strip backgrounds were unnamed stops.
+    let mut harness = plain(vec2(1920.0, 1080.0));
+    let mut stops = Vec::new();
+    for _ in 0..40 {
+        press(&mut harness, Modifiers::NONE, Key::Tab);
+        harness.run_steps(1);
+        let stop = focused(&harness).expect("Tab always lands on something");
+        if stops.contains(&stop) {
+            break;
+        }
+        stops.push(stop);
+    }
+    let unnamed: Vec<_> = stops.iter().filter(|(_, name)| name.is_empty()).collect();
+    assert!(unnamed.is_empty(), "unnamed stops {unnamed:?} in {stops:?}");
+    assert!(stops.contains(&(Role::Splitter, "Resize Inspector and Agent".to_owned())), "{stops:?}");
+    assert!(stops.iter().filter(|(role, _)| *role == Role::Splitter).count() >= 3, "{stops:?}");
+    assert!(stops.contains(&(Role::TabList, "Outliner, Library tabs".to_owned())), "{stops:?}");
+    // On a strip, Left and Right switch its tab.
+    for _ in 0..40 {
+        if focused(&harness).is_some_and(|(role, _)| role == Role::TabList) {
+            break;
+        }
+        press(&mut harness, Modifiers::NONE, Key::Tab);
+        harness.run_steps(1);
+    }
+    assert!(!shows(&harness, "The library is empty"));
+    press(&mut harness, Modifiers::NONE, Key::ArrowRight);
+    harness.run_steps(2);
+    assert_shows(&harness, "The library is empty");
+    assert_eq!(focused(&harness).map(|(role, _)| role), Some(Role::TabList), "the strip keeps the keyboard");
+}
+
+/// The root columns' widths at 1920 wide, from their shares (to a point or two: the dock area is a little narrower).
+fn widths(harness: &Harness<'_, Shell>) -> Vec<f32> {
+    let shares = shares(&harness.state().shown_layout().expect("built"));
+    let total: f32 = shares.iter().sum();
+    shares.iter().map(|s| s / total * 1920.0).collect()
+}
+
+#[test]
+fn a_focused_divider_moves_with_the_arrow_keys_and_the_arrangement_is_saved() {
+    let (_keep, store) = store();
+    let mut harness = shell_at(vec2(1920.0, 1080.0), Some(store.clone()), Arc::new(NullRunner));
+    let before = widths(&harness);
+    for _ in 0..40 {
+        press(&mut harness, Modifiers::NONE, Key::Tab);
+        harness.run_steps(1);
+        if focused(&harness).is_some_and(|(role, name)| role == Role::Splitter && name.starts_with("Resize Outliner")) {
+            break;
+        }
+    }
+    assert!(focused(&harness).is_some_and(|(role, _)| role == Role::Splitter), "Tab reaches the left divider");
+    press(&mut harness, Modifiers::NONE, Key::ArrowRight);
+    press(&mut harness, Modifiers::SHIFT, Key::ArrowRight);
+    harness.run_steps(3);
+    let after = widths(&harness);
+    assert!((after[0] - before[0] - 80.0).abs() < 3.0, "16 then 64 points wider: {before:?} {after:?}");
+    harness.state().flush();
+    assert!(store.load("build").expect("readable").is_some(), "the new arrangement is saved");
+    press(&mut harness, Modifiers::NONE, Key::ArrowLeft);
+    harness.run_steps(3);
+    assert!((widths(&harness)[0] - after[0] + 16.0).abs() < 3.0, "and back");
+}
+
+#[test]
+fn ctrl_slash_and_the_help_menu_open_the_shortcut_sheet_and_esc_closes_it() {
+    let mut harness = plain(vec2(1366.0, 768.0));
+    press(&mut harness, Modifiers::COMMAND, Key::Slash);
+    harness.run_steps(2);
+    assert!(harness.state().sheet_open());
+    for line in [
+        "Keyboard shortcuts",
+        "Search or run anything",
+        "Pause or resume the agent",
+        "Move a focused divider (arrow keys)",
+    ] {
+        assert_shows(&harness, line);
+    }
+    press(&mut harness, Modifiers::NONE, Key::Escape);
+    harness.run_steps(2);
+    assert!(!harness.state().sheet_open(), "Esc closes it");
+    harness.get_by_label("Menu").click();
+    harness.run_steps(2);
+    for heading in ["Edit", "View", "Agents", "Help"] {
+        assert_shows(&harness, heading);
+    }
+    harness.get_by_role_and_label(Role::Button, "Keyboard shortcuts").click();
+    harness.run_steps(2);
+    assert!(harness.state().sheet_open(), "Help, Keyboard shortcuts opens it too");
+}
+
+#[test]
+fn ctrl_alt_p_with_no_agent_says_so() {
+    let mut harness = plain(vec2(1366.0, 768.0));
+    press(&mut harness, Modifiers::COMMAND | Modifiers::ALT, Key::P);
+    harness.run_steps(2);
+    assert_shows(&harness, "No agent is connected");
+}
+
+#[test]
+fn the_menus_undo_names_the_step_and_is_off_with_nothing_to_undo() {
+    use egui_kittest::kittest::NodeT as _;
+    let mut harness = plain(vec2(1366.0, 768.0));
+    harness.get_by_label("Menu").click();
+    harness.run_steps(2);
+    let undo = harness.get_by_role_and_label(Role::Button, "Undo");
+    assert!(undo.accesskit_node().is_disabled(), "nothing to undo on a fresh shell");
+}
+
+#[test]
+fn a_panels_menu_moves_it_to_the_other_side_or_closes_it_without_a_drag() {
+    // shell.md section 4 rule 4 (WCAG 2.5.7): every drag has a menu equivalent.
+    let mut harness = plain(vec2(1920.0, 1080.0));
+    assert!(harness.query_by_label("Viewport options").is_none(), "the primary panel never moves, so it has no menu");
+    harness.get_by_label("Outliner options").click();
+    harness.run_steps(2);
+    assert!(harness.query_by_label("Move to the left").is_none(), "it is on the left already");
+    harness.get_by_role_and_label(Role::Button, "Move to the right").click();
+    harness.run_steps(3);
+    let layout = harness.state().shown_layout().expect("built");
+    assert_eq!(layout.panels().last().copied(), Some("history"), "{:?}", layout.panels());
+    let panels = layout.panels();
+    let at = |p: &str| panels.iter().position(|x| *x == p).expect("shown");
+    assert!(at("outliner") > at("viewport"), "the Outliner is right of the viewport: {panels:?}");
+    assert_eq!(harness.state().focused_panel(), Some("outliner"));
+    assert_shows(&harness, "No character is open");
+    harness.get_by_label("Library options").click();
+    harness.run_steps(2);
+    harness.get_by_role_and_label(Role::Button, "Close panel").click();
+    harness.run_steps(3);
+    assert!(!harness.state().shown_layout().expect("built").contains("library"));
+}

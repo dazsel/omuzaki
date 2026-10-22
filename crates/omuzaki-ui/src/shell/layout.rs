@@ -95,6 +95,21 @@ impl Node {
         children.iter().map(Self::from_api).collect()
     }
 
+    /// Whether `panel` is in this node.
+    fn contains(&self, panel: &str) -> bool {
+        let mut all = Vec::new();
+        self.collect(&mut all);
+        all.contains(&panel)
+    }
+
+    /// The first panel in reading order.
+    fn first_panel(&self) -> Option<&str> {
+        match self {
+            Self::Pane { panel } => Some(panel),
+            Self::Tabs { children, .. } | Self::Split { children, .. } => children.iter().find_map(Self::first_panel),
+        }
+    }
+
     fn collect<'a>(&'a self, out: &mut Vec<&'a str>) {
         match self {
             Self::Pane { panel } => out.push(panel),
@@ -255,6 +270,37 @@ impl Layout {
             shares.push(share);
         }
         Self::new(Node::Split { dir: Dir::Horizontal, children, shares })
+    }
+
+    /// This layout with `panel` moved to the left or right of `primary` (a panel's menu, Move to the left or right, the
+    /// keyboard's way to do what a drag does): it joins the outermost column on that side, or becomes a new one there.
+    /// Unchanged when the panel is the primary one or is not in the layout.
+    #[must_use]
+    pub fn moved(&self, panel: &str, left: bool, primary: &str) -> Self {
+        if panel == primary || !self.contains(panel) {
+            return self.clone();
+        }
+        let rest = self.without(&[panel]);
+        let anchor = match &rest.root {
+            Node::Split { dir: Dir::Horizontal, children, .. } => {
+                let at = children.iter().position(|c| c.contains(primary));
+                let edge = if left { children.first() } else { children.last() };
+                let beside = |i: usize| at.is_some_and(|p| if left { i < p } else { i > p });
+                let index = if left { 0 } else { children.len().saturating_sub(1) };
+                edge.filter(|_| beside(index)).and_then(|c| c.first_panel().map(str::to_owned))
+            }
+            _ => None,
+        };
+        rest.with_panel(panel, anchor.as_deref(), left)
+    }
+
+    /// Which side of `primary` `panel` is on: `Some(true)` left of it, `Some(false)` right, `None` in its column or not
+    /// in a side-by-side split with it.
+    pub fn side_of(&self, panel: &str, primary: &str) -> Option<bool> {
+        let Node::Split { dir: Dir::Horizontal, children, .. } = &self.root else { return None };
+        let at = |p: &str| children.iter().position(|c| c.contains(p));
+        let (here, centre) = (at(panel)?, at(primary)?);
+        (here != centre).then_some(here < centre)
     }
 
     /// This layout without `panels`. A layout that would be left empty is returned unchanged.
@@ -610,6 +656,30 @@ mod tests {
         // Already there: unchanged.
         assert_eq!(build().with_panel("viewport", None, true), build());
         build().with_panel("notes", None, false).to_tree("t");
+    }
+
+    #[test]
+    fn moving_a_panel_puts_it_in_the_outermost_column_on_that_side_or_a_new_one() {
+        let layout = build();
+        let right = layout.moved("outliner", false, "viewport");
+        let Node::Split { children, .. } = &right.root else { panic!("a split") };
+        assert!(children.last().is_some_and(|c| c.contains("outliner") && c.contains("inspector")), "{right:?}");
+        assert!(children.first().is_some_and(|c| !c.contains("outliner")), "{right:?}");
+        // The only panel on the left moves away: the right column takes it, and moving it back makes a new column.
+        let alone = Layout::new(Node::split(
+            Dir::Horizontal,
+            vec![Node::pane("outliner"), Node::pane("viewport"), Node::pane("inspector")],
+            &[1.0, 3.0, 1.0],
+        ));
+        let away = alone.moved("outliner", false, "viewport");
+        assert_eq!(away.panels(), ["viewport", "inspector", "outliner"]);
+        let back = away.moved("outliner", true, "viewport");
+        assert_eq!(back.panels(), ["outliner", "viewport", "inspector"]);
+        assert_eq!(layout.side_of("library", "viewport"), Some(true));
+        assert_eq!(right.side_of("outliner", "viewport"), Some(false));
+        assert_eq!(layout.side_of("expressions", "viewport"), None, "below the viewport, in its column");
+        assert_eq!(layout.moved("viewport", true, "viewport"), layout, "the primary panel stays");
+        assert_eq!(layout.moved("nowhere", true, "viewport"), layout);
     }
 
     #[test]

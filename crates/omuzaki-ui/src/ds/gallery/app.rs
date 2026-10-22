@@ -92,7 +92,8 @@ impl Gallery {
         CentralPanel::default().frame(Frame::new().fill(ds.theme.bg0)).show(ui, |ui| {
             let scrolled = ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
                 ui.add_space(GAP);
-                Frame::new().inner_margin(Margin::symmetric(16, 0)).show(ui, |ui| self.body(ui, &ds));
+                let margin = Margin::symmetric(BODY_MARGIN, 0);
+                Frame::new().inner_margin(margin).show(ui, |ui| self.body(ui, &ds));
                 ui.add_space(GAP);
             });
             self.content_height = header_height + scrolled.content_size.y;
@@ -182,10 +183,7 @@ impl Gallery {
     }
 
     fn body(&mut self, ui: &mut Ui, ds: &Ds) {
-        let width = ui.available_width();
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "a small positive column count")]
-        let columns = (((width + GAP) / (CARD_MIN_WIDTH + GAP)).floor() as usize).max(1);
-        let column_width = (width - GAP * (columns as f32 - 1.0)) / columns as f32;
+        let (columns, column_width) = columns(ui.available_width());
         let layout = self.assign(columns);
         let ids: Vec<Vec<&'static str>> = layout.iter().map(|column| column.iter().map(|s| s.id).collect()).collect();
         if ids != self.layout {
@@ -221,6 +219,17 @@ impl Gallery {
         }
         out
     }
+}
+
+/// The gallery's body margin on each side of the columns, in points.
+pub const BODY_MARGIN: i8 = 16;
+
+/// How many columns of cards a body `width` points wide holds, and how wide each is: as many as fit at
+/// [`CARD_MIN_WIDTH`], sharing the width less the gaps between them. The scale audit lays each story out at this width.
+pub fn columns(width: f32) -> (usize, f32) {
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "a small positive column count")]
+    let columns = (((width + GAP) / (CARD_MIN_WIDTH + GAP)).floor() as usize).max(1);
+    (columns, (width - GAP * (columns as f32 - 1.0)) / columns as f32)
 }
 
 /// One story's card; returns its height so the next frame can balance the columns.

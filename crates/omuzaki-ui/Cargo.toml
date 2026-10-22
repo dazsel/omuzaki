@@ -72,6 +72,8 @@ rustix = { workspace = true, features = ["process"] }
 [target.'cfg(windows)'.dependencies]
 # The webcam on Windows, for the studio's inputs (live/wiring/inputs.rs).
 omuzaki-camera-mf = { path = "../omuzaki-camera-mf" }
+# The reduce-motion setting, read without starting a process (ds/os_prefs.rs).
+windows-sys.workspace = true
 
 [dev-dependencies]
 egui_kittest.workspace = true

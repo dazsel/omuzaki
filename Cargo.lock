@@ -5630,6 +5630,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "wgpu",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
