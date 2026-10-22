@@ -43,6 +43,9 @@ omuzaki-store-api = { path = "../omuzaki-store-api" }
 
 [dev-dependencies]
 tempfile.workspace = true
+# The power-loss harness (tests/power_loss.rs) opens the app core over the simulated disk, as the studio and the CLI do.
+omuzaki-app = { path = "../omuzaki-app" }
+omuzaki-history-api = { path = "../omuzaki-history-api" }
 # The eval check library's tests (tests/eval_checks.rs): the shared mock runner over an in-memory document, with demo ops.
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 omuzaki-ops-mock = { path = "../omuzaki-ops-mock" }

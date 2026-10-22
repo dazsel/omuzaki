@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use omuzaki_core::time::SystemClock;
-use omuzaki_doc::journal::{JournalOptions, ProjectJournal, Recover, SessionStart, SystemWall, reopen_with};
+use omuzaki_doc::journal::{JournalFs, JournalOptions, ProjectJournal, Recover, SessionStart, SystemWall, reopen_with};
 use omuzaki_doc::snapshot::{SessionSnapshots, Snapshotter, snapshot_dir};
 use omuzaki_doc::{Project, ProjectLock};
 use omuzaki_doc_api::{DocPath, Value};
@@ -52,6 +52,18 @@ pub struct AppOptions {
     pub services: Services,
     /// What opening after a crash does with the files: restore (the default) or open them as they are.
     pub recover: Recover,
+    /// The journal writer's file operations: the real file system unless a harness sets its own.
+    pub journal_fs: JournalFsChoice,
+}
+
+/// The file operations a core's journal writer makes (see [`AppOptions::with_journal_fs`]).
+#[derive(Clone, Default)]
+pub struct JournalFsChoice(Option<Arc<dyn JournalFs>>);
+
+impl std::fmt::Debug for JournalFsChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() { "JournalFsChoice(custom)" } else { "JournalFsChoice(std)" })
+    }
 }
 
 impl AppOptions {
@@ -65,6 +77,7 @@ impl AppOptions {
             app_version: env!("CARGO_PKG_VERSION").to_owned(),
             services: Services::none(),
             recover: Recover::Restore,
+            journal_fs: JournalFsChoice::default(),
         }
     }
 
@@ -92,6 +105,14 @@ impl AppOptions {
     #[must_use]
     pub fn with_recover(mut self, recover: Recover) -> Self {
         self.recover = recover;
+        self
+    }
+
+    /// These options with the journal writer's file operations going through `fs`: the power-loss harness simulates a
+    /// power cut under it.
+    #[must_use]
+    pub fn with_journal_fs(mut self, fs: Arc<dyn JournalFs>) -> Self {
+        self.journal_fs = JournalFsChoice(Some(fs));
         self
     }
 
@@ -193,6 +214,10 @@ impl AppCore {
             snapshots,
         )
         .with_last_job(reopened.last_job);
+        let start = match options.journal_fs.0 {
+            Some(fs) => start.with_fs(fs),
+            None => start,
+        };
         recover::remove_job_scratch(dir);
         let journal = ProjectJournal::start(shadow, start, options.journal)?;
         recover::end_interrupted(&journal, &reopened.interrupted, &mut recovery);
@@ -281,6 +306,12 @@ impl AppCore {
     /// What opening had to recover, empty after a clean close.
     pub fn recovery(&self) -> &RecoveryReport {
         &self.recovery
+    }
+
+    /// The project's journal: what every change is written to before the files follow. `sync` on it returns once
+    /// everything applied before the call is durable.
+    pub fn journal(&self) -> &Arc<ProjectJournal> {
+        &self.journal
     }
 
     /// Whether changes are being saved: for the status banner.

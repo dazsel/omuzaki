@@ -55,6 +55,14 @@ jobs:
       - name: Full matrix
         run: tools/ci/nightly-check.sh
 
+      # The power-loss harness at length (#366): the full matrix ran its 200 seeds; this runs 5,000 in release. Runs even
+      # when the matrix failed.
+      - name: Power loss, 5,000 seeds
+        if: ${{ !cancelled() }}
+        env:
+          OMUZAKI_POWER_SEEDS: "5000"
+        run: timeout 1800 cargo test --release -p omuzaki-test --test power_loss
+
       # The WebAssembly link proof (ADR 0015) in the release profile the web player ships, where the linker drops
       # unreferenced code hardest, and its --unlinked counterpart so the proof can fail. Pull requests run both in dev;
       # the optimised build is too slow for them. Runs even when the matrix above failed, so one report shows both.

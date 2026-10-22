@@ -714,15 +714,22 @@ impl Writer {
                 }
                 Some(_) => self.segment.append(buffer, how).map_err(|e| e.to_string()),
             };
-            match written {
+            let reason = match written {
                 Ok(()) => return Ok(()),
                 Err(reason) => {
                     let mut progress = lock(&self.shared.progress);
                     progress.write_error = Some(format!("changes can't be saved: {reason}"));
                     self.shared.progressed.notify_all();
+                    reason
                 }
+            };
+            // Wait out the backoff, unless the journal is stopped meanwhile: then what can't be written stays unwritten,
+            // and the next open recovers from what is durable.
+            let queue = lock(&self.shared.queue);
+            if queue.stop {
+                return Err(format!("the journal stopped while a write was failing: {reason}"));
             }
-            thread::sleep(backoff);
+            drop(self.shared.wake.wait_timeout(queue, backoff).unwrap_or_else(PoisonError::into_inner));
             backoff = (backoff * 2).min(MAX_BACKOFF);
         }
     }
