@@ -33,6 +33,7 @@ omuzaki_core::define_link! {
     omuzaki_audio_engine::link();
     omuzaki_char::link();
     omuzaki_char_api::link();
+    omuzaki_connect::link();
     omuzaki_live::link();
     omuzaki_live_api::link();
     omuzaki_live_nodes::link();
