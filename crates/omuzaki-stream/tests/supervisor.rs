@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use omuzaki_core::time::{Seconds, SystemClock};
+use omuzaki_stream::watchdog::launch::task::TaskLauncher;
 use omuzaki_stream::watchdog::launch::thread::ThreadLauncher;
 use omuzaki_stream::watchdog::launch::{
     ControlSend, ExitInfo, Fault, LaunchError, Waker, WorkerHandle, WorkerLauncher,
@@ -540,4 +541,60 @@ fn a_launcher_of_another_kind_is_refused() {
     )
     .unwrap_err();
     assert!(err.is_permanent());
+}
+
+#[test]
+fn task_workers_restart_after_a_panic_and_a_hang_is_aborted() {
+    let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_time().build().unwrap();
+    let runs = Arc::new(AtomicU32::new(0));
+    let count = Arc::clone(&runs);
+    let panicky = TaskLauncher::new(WorkerKind::Adapter, runtime.handle().clone(), move |w| {
+        let run = count.fetch_add(1, Ordering::SeqCst) + 1;
+        async move {
+            w.beat();
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert!(run > 1, "the first run panics");
+            loop {
+                w.beat();
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }
+    });
+    let hangs = Arc::new(AtomicU32::new(0));
+    let hung = Arc::clone(&hangs);
+    let hanging = TaskLauncher::new(WorkerKind::Adapter, runtime.handle().clone(), move |mut w| {
+        let first = hung.fetch_add(1, Ordering::SeqCst) == 0;
+        async move {
+            // The first run beats for 300 ms, then waits on a message that never comes: abortable.
+            let start = Instant::now();
+            loop {
+                w.beat();
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                if first && start.elapsed() > Duration::from_millis(300) {
+                    let _ = w.recv().await;
+                    std::future::pending::<()>().await;
+                }
+            }
+        }
+    });
+    let sup = start(
+        vec![
+            (spec("panicky", WorkerKind::Adapter), Box::new(panicky)),
+            (spec("hanging", WorkerKind::Adapter), Box::new(hanging)),
+        ],
+        Arc::new(Calls::default()),
+    );
+    let (p, h) = (sup.ids()[0], sup.ids()[1]);
+    let events = sup.events();
+    wait_for(Duration::from_secs(4), || runs.load(Ordering::SeqCst) >= 2 && health(&sup, p) == Health::Healthy)
+        .unwrap();
+    let crash = sup.log().into_iter().find(|r| r.worker == p).unwrap();
+    assert_eq!(crash.reason, RestartReason::crashed(Some(101)));
+    wait_for(Duration::from_secs(4), || hangs.load(Ordering::SeqCst) >= 2 && health(&sup, h) == Health::Healthy)
+        .unwrap();
+    let record = sup.log().into_iter().find(|r| r.worker == h).unwrap();
+    assert!(matches!(record.reason, RestartReason::Hung { .. }), "{:?}", record.reason);
+    // Aborted at its `.await`, so it ended: replaced without being abandoned.
+    assert!(!events.try_iter().any(|e| matches!(e, HealthEvent::Abandoned { .. })));
+    sup.stop();
 }

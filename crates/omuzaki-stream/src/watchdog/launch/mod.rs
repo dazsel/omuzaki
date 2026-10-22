@@ -1,6 +1,6 @@
 //! How the supervisor launches a worker generation: as a process speaking the worker protocol
-//! ([`process::ProcessLauncher`]) or as a thread ([`thread::ThreadLauncher`]) (`docs/design/supervisor.md` §4.2,
-//! §15.4).
+//! ([`process::ProcessLauncher`]), as a thread ([`thread::ThreadLauncher`]) or as an async task
+//! ([`task::TaskLauncher`]) (`docs/design/supervisor.md` §4.2, §15.4).
 //!
 //! Every spawn is a new **generation** with fresh shared objects, made by the worker's [`Peer`] (the host-side
 //! companion that keeps the host's ends and takes the worker's messages). A process handle reads the worker's
@@ -14,6 +14,7 @@ use omuzaki_stream_api::worker::{ChannelHandle, ChannelNames, HostMsg, StartPara
 use super::policy::HeartbeatCell;
 
 pub mod process;
+pub mod task;
 pub mod thread;
 
 /// How an instance ended.

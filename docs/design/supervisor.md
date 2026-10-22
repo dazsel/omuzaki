@@ -7,8 +7,8 @@ area: design
 # The live-show supervisor
 
 **Status:** built for row 16 (#2305): the status types and the worker protocol (§15.1, §15.2), `omuzaki-shm` (§15.3),
-the policy and the runtime with fake workers (§15.4), and the remote encoder (§15.5). Still to come: output pacing
-(§12), `TaskLauncher`, the Windows control pipe, and the acceptance run on the real workers (#1456).
+the policy and the runtime with fake workers (§15.4), and the remote encoder (§15.5). Output pacing
+(§12) and `TaskLauncher` are in too. Still to come: the Windows control pipe, and the acceptance run on the real workers (#1456).
 **Feature:** BR-23 (the live-show watchdog). **Issue:** #1023.
 **Spec:** v3 §25 (BR-23), §8 (runtime model, threads), §10 (`startup.live`), §22 (PF-23 source ownership, PF-26 health
 meter).

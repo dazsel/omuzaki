@@ -35,6 +35,9 @@ omuzaki-shm = { path = "../omuzaki-shm" }
 getrandom.workspace = true
 # Worker logs, read with fixed limits (docs/design/supervisor.md §4.2).
 tracing.workspace = true
+# Adapter workers as async tasks on the studio's runtime (`TaskLauncher`, docs/design/supervisor.md §2).
+tokio = { workspace = true, default-features = false, features = ["rt", "sync"] }
+futures-util.workspace = true
 # The update hold a take or the replay buffer keeps while it runs (`docs/design/updates.md` §7).
 omuzaki-update-api = { path = "../omuzaki-update-api" }
 
@@ -49,6 +52,8 @@ windows-sys.workspace = true
 [dev-dependencies]
 # Itself with the testing kit, so integration tests see it and the `fake-worker` binary is built for them.
 omuzaki-stream = { path = ".", features = ["testing"] }
+# A multi-threaded runtime for the adapter task tests (`tests/supervisor.rs`).
+tokio = { workspace = true, features = ["time"] }
 criterion.workspace = true
 proptest.workspace = true
 # A settings service for the `output.window` setting's tests (`tests/ops_window.rs`).
