@@ -28,13 +28,16 @@
 //! | [`raster`] | the CPU rasteriser (`cpu`) and the GPU one (`gpu/`) |
 //! | [`preview`] | pictures of a face for the tools (sweep, range test): paint, compare, contact sheets |
 //! | [`underlay`] | tracing a sheet face under the painted one |
-//! | [`ops`] | the registered face ops: `style`, `mapping`, `rest`, `expression`, `sweep`, `range_test` |
-//! | [`exaggeration`] | exaggeration profiles |
+//! | [`ops`] | the registered face ops: `style`, `mapping`, `rest`, `expression`, `exaggeration`, `sweep`, `range_test` |
+//! | [`player`] | the expression player: fades, auto-stop, exclusive groups, layers and the default expression |
+//! | [`exaggeration`] | the exaggeration dial: presets from realistic through anime to chibi extreme |
 //! | [`bake`] | the expression bakers (`morph`, `flipbook`) |
+//! | [`atlas`] | the atlas-scale controller: the layers' density stepped with the face's GPU budget pressure |
 //!
 //! Benchmarks sit in `benches/` (one pre-declared target per hot path) and each change adds its own files under `tests/`.
 #![deny(missing_docs)]
 
+pub mod atlas;
 pub mod bake;
 pub mod exaggeration;
 pub mod layer;
@@ -43,6 +46,7 @@ pub mod ops;
 /// every folder there `pub`, and these are crate-private.
 mod ops_shared;
 pub mod painter;
+pub mod player;
 pub mod preview;
 pub mod raster;
 pub mod system;

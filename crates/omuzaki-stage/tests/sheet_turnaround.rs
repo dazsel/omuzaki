@@ -700,9 +700,8 @@ fn a_pending_variant_gives_the_sheet_a_swapped_stage_would() {
     let a = render_turnaround(&mut pending, &mut renderer, &spec()).expect("the pending stage's sheet");
     let b = render_turnaround(&mut swapped, &mut renderer, &spec()).expect("the swapped stage's sheet");
     assert_eq!(pixels(&a), pixels(&b));
-    for stage in [pending, swapped] {
-        stage.release(&mut renderer).expect("released");
-    }
+    pending.release(&mut renderer).expect("released");
+    swapped.release(&mut renderer).expect("released");
 }
 
 #[test]

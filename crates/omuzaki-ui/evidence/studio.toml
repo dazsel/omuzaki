@@ -11,9 +11,69 @@ images = ["studio-1920x1080.png", "studio-1366x768.png"]
 
 [[case]]
 name = "first-run"
-description = "The whole app on a first start (spine/ui): the live slice with the project's sample character on the Perform stage, and the setup flow beside it at 1366x768, on its welcome and its character step."
+description = "First run over the real studio (spine/ui, #1184, #989): the setup flow beside the Perform stage with the sample character, through every step (welcome, character, input with a camera, no camera, a refused camera and a downloading tracker, calibrate, output, go live) at 1366x768 and 1920x1080, in dark, light and high contrast, the pseudo-locale and 200%. The setup host is simulated so every state renders; the Live panel beside it shows the CI machine as it is."
 env = { OMUZAKI_EVIDENCE_OUT = "{out}" }
 steps = [
     { run = ["cargo", "test", "--locked", "-p", "omuzaki-ui", "--test", "studio", "--", "--ignored", "--exact", "first_run_evidence"] },
 ]
-images = ["first-run-welcome-1366x768.png", "first-run-character-1366x768.png"]
+images = [
+    "setup-welcome-dark-1366x768.png",
+    "setup-welcome-light-1920x1080.png",
+    "setup-welcome-contrast-1366x768.png",
+    "setup-welcome-200pct-1920x1080.png",
+    "setup-character-dark-1366x768.png",
+    "setup-character-pseudo-1366x768.png",
+    "setup-input-face-dark-1366x768.png",
+    "setup-input-no-camera-dark-1366x768.png",
+    "setup-input-refused-pseudo-1366x768.png",
+    "setup-input-downloading-dark-1366x768.png",
+    "setup-calibrate-dark-1366x768.png",
+    "setup-output-dark-1366x768.png",
+    "setup-go-live-light-1920x1080.png",
+    "setup-go-live-contrast-1920x1080.png",
+]
+
+[[case]]
+name = "palette"
+description = "The command palette over the real studio at 1366x768 (spine/ui, #153): results for \"rename\", then character.rename's form generated from its schema with the open character filled in, the live dry-run preview, and the MCP tool it is the same as."
+env = { OMUZAKI_EVIDENCE_OUT = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-ui", "--test", "studio", "--", "--ignored", "--exact", "palette_evidence"] },
+]
+images = ["palette-search-1366x768.png", "palette-form-1366x768.png"]
+
+[[case]]
+name = "history"
+description = "History over the real studio at 1920x1080 (spine/ui, #446): the person's and an agent's steps newest first, each with who and when, the status bar naming what Ctrl+Z undoes, and the agent's step's details open beside its row."
+env = { OMUZAKI_EVIDENCE_OUT = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-ui", "--test", "studio", "--", "--ignored", "--exact", "history_evidence"] },
+]
+images = ["history-1920x1080.png"]
+
+[[case]]
+name = "agents"
+description = "The Agent panel over the real studio (spine/ui, #390, #420, #969): two agent sessions on the real executor, in Build at 1920x1080, dark and light, with four requests waiting (three alike, batched into one card), the head selected so the inspector shows the fence note, the outliner its lock and the status bar who holds what; the grants popover for one session; and in Perform, where no Agent panel is docked, the approval stack at the top right."
+env = { OMUZAKI_EVIDENCE_OUT = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-ui", "--test", "studio", "--", "--ignored", "--exact", "agents_evidence"] },
+]
+images = ["agents-dark-1920x1080.png", "agents-light-1920x1080.png", "agents-grants-1920x1080.png", "agents-stack-1920x1080.png"]
+
+[[case]]
+name = "review"
+description = "The review card over the real studio at 1366x768, dark and light (spine/ui, #1374): a publish a two-reviewer policy holds, one approval of two, an open comment thread and the licence check, in the Perform workspace's approval stack."
+env = { OMUZAKI_EVIDENCE_OUT = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-ui", "--test", "studio", "--", "--ignored", "--exact", "review_evidence"] },
+]
+images = ["review-dark-1366x768.png", "review-light-1366x768.png"]
+
+[[case]]
+name = "fence"
+description = "Who holds what over the real studio at 1366x768, dark and light (spine/ui, #969): an agent session holds the kit's head; with the head selected, the inspector shows the note (the person's edit still goes through), the outliner a lock on the head's row, and the status bar \"claude_code holds head\"."
+env = { OMUZAKI_EVIDENCE_OUT = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-ui", "--test", "studio", "--", "--ignored", "--exact", "fence_evidence"] },
+]
+images = ["fence-dark-1366x768.png", "fence-light-1366x768.png"]

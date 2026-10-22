@@ -59,6 +59,7 @@ nalgebra = { version = "0.35", default-features = false, features = ["std"] }   
 ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "load-dynamic", "api-27"] }
 pollster = "1"
 proptest = "1.12"
+regex = "1.13"   # JSON Schema `pattern` checks in the studio's forms (MIT OR Apache-2.0), omuzaki-ui; already in the lock through criterion
 reqwest = { version = "0.13", default-features = false }
 rhai = { version = "=1.26.1", default-features = false, features = ["std", "serde", "sync", "internals"] }   # the script runtime (MIT OR Apache-2.0); exact pin because `internals` is unstable API, omuzaki-script
 rmcp = { version = "3.5", features = ["server", "transport-io", "transport-streamable-http-server"] }

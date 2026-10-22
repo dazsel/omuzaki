@@ -28,12 +28,12 @@ pub mod underlay;
 pub use baker::{BakerInput, FaceBakerConflict, FaceBakerFactory, FaceBakerRegistration, face_baker};
 pub use check::{Check, FieldRange, ParamError, ParamErrors, Validate};
 pub use expression::{
-    ChannelValues, Expression, ExpressionId, ExpressionKind, ExpressionSet, IntensityCurve, UnknownExpression, VISEMES,
-    Weight,
+    ChannelValues, Expression, ExpressionId, ExpressionKind, ExpressionSet, IntensityCurve, Playback, PlaybackLayer,
+    UnknownExpression, VISEMES, Weight,
 };
 pub use grammar::{GrammarRules, RESERVED_RULES, RuleConfig, RuleId};
 pub use mapping::{
-    BrowMap, BrowParams, CheekMap, EyeEffects, EyeMap, EyeParams, FaceMapping, GazeMap, MouthMap, MouthParams,
+    Amplify, BrowMap, BrowParams, CheekMap, EyeEffects, EyeMap, EyeParams, FaceMapping, GazeMap, MouthMap, MouthParams,
     PaintParams, RestShape, UNMAPPED,
 };
 pub use omuzaki_core::colour::Colour;

@@ -22,6 +22,7 @@ egui_tiles.workspace = true
 egui_kittest = { workspace = true, optional = true }
 image = { workspace = true, optional = true }
 inventory.workspace = true
+regex.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -31,6 +32,12 @@ omuzaki-anim = { path = "../omuzaki-anim" }
 omuzaki-ai = { path = "../omuzaki-ai" }
 omuzaki-ai-api = { path = "../omuzaki-ai-api" }
 omuzaki-anim-api = { path = "../omuzaki-anim-api" }
+# The live slice's microphone (the `audio.*` ops and the engine a take's mic track taps), OBS control and the virtual
+# camera (`live/wiring/app.rs`).
+omuzaki-audio-api = { path = "../omuzaki-audio-api" }
+omuzaki-audio-engine = { path = "../omuzaki-audio-engine" }
+omuzaki-obs = { path = "../omuzaki-obs" }
+omuzaki-vcam = { path = "../omuzaki-vcam" }
 omuzaki-char = { path = "../omuzaki-char" }
 omuzaki-char-api = { path = "../omuzaki-char-api" }
 omuzaki-core = { path = "../omuzaki-core" }
@@ -43,6 +50,7 @@ omuzaki-ops = { path = "../omuzaki-ops" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-render = { path = "../omuzaki-render" }
 omuzaki-render-api = { path = "../omuzaki-render-api" }
+omuzaki-setup = { path = "../omuzaki-setup" }
 omuzaki-stage = { path = "../omuzaki-stage" }
 omuzaki-stage-api = { path = "../omuzaki-stage-api" }
 omuzaki-stream = { path = "../omuzaki-stream" }

@@ -29,6 +29,15 @@ omuzaki-render-api = { path = "../omuzaki-render-api" }
 # The `output.window` setting the open op keeps (`src/ops/window.rs`).
 omuzaki-settings-api = { path = "../omuzaki-settings-api" }
 omuzaki-stream-api = { path = "../omuzaki-stream-api" }
+# The update hold a take or the replay buffer keeps while it runs (`docs/design/updates.md` §7).
+omuzaki-update-api = { path = "../omuzaki-update-api" }
+
+# Free space on the take's disk, so a take never fills it (`src/record/disk.rs`).
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
 
 [dev-dependencies]
 # Itself with the testing kit, so integration tests see it and the `fake-worker` binary is built for them.
@@ -41,6 +50,8 @@ tempfile.workspace = true
 # Writes the `output.window` setting as TOML the way the settings store does (`tests/settings.rs`).
 toml.workspace = true
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
+# Counts the update holds (`tests/holds.rs`).
+omuzaki-update-mock = { path = "../omuzaki-update-mock" }
 # Reads the recorded frames and tracks back (`tests/record.rs`).
 image.workspace = true
 hound.workspace = true

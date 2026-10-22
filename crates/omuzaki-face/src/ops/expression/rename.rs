@@ -49,10 +49,16 @@ impl Op for RenameExpression {
         }
         let (from, to) = (self.id.as_str().to_owned(), self.to.as_str().to_owned());
         let moved = to_json(&expression)?;
-        let working = edited_face(face.as_ref(), |entries| {
+        let mut working = edited_face(face.as_ref(), |entries| {
             entries.remove(&from);
-            entries.insert(to, moved);
+            entries.insert(to.clone(), moved);
         })?;
+        // The default expression follows its expression to the new name.
+        if let Some(default) = working.get_mut("default_expression")
+            && default.as_str() == Some(self.id.as_str())
+        {
+            *default = serde_json::Value::String(to);
+        }
         let mut plan = Plan::edit(patch_to(&self.character, face.as_ref(), &working));
         plan.output = Some(json!({
             "from": self.id.as_str(),

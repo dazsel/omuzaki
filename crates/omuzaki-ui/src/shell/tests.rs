@@ -205,6 +205,34 @@ fn a_left_panel_shown_while_the_dock_is_a_rail_joins_the_rail_and_is_still_there
 }
 
 #[test]
+fn a_panel_shown_or_closed_in_a_folded_window_stays_so_when_the_fold_changes() {
+    // 1366 merges Agent and History into the Inspector group: a fold, but the left dock stays open.
+    let mut harness = shell_at(vec2(1366.0, 768.0), None, Arc::new(NullRunner));
+    harness.state_mut().show_panel("test.extra");
+    harness.run_steps(3);
+    assert_shows(&harness, "Extra body");
+    for size in [vec2(1280.0, 720.0), vec2(1920.0, 1080.0)] {
+        harness.set_size(size);
+        harness.run_steps(4);
+        let rail = rail_shows(&harness, "Extra");
+        let docked = harness.state().shown_layout().is_some_and(|l| l.contains("test.extra"));
+        assert!(rail || docked, "{size:?}: the panel shown at 1366 is still there");
+        // The panel the person was in stays open: docked, or as the drawer when its dock folds into the rail.
+        assert!(shows(&harness, "Extra body"), "{size:?}: the panel the person was in is open");
+    }
+    harness.set_size(vec2(1366.0, 768.0));
+    harness.run_steps(4);
+    harness.state_mut().close_panel("test.extra");
+    harness.run_steps(3);
+    for size in [vec2(1280.0, 720.0), vec2(1920.0, 1080.0)] {
+        harness.set_size(size);
+        harness.run_steps(4);
+        assert!(!rail_shows(&harness, "Extra"), "{size:?}: closed at 1366, so not on the rail");
+        assert!(!harness.state().shown_layout().is_some_and(|l| l.contains("test.extra")), "{size:?}: nor docked");
+    }
+}
+
+#[test]
 fn a_left_panel_added_to_the_rail_is_there_in_the_next_session() {
     let (_keep, store) = store();
     let size = vec2(1280.0, 720.0);
@@ -596,4 +624,22 @@ fn a_layout_reset_without_a_saver_is_still_not_read_back_from_its_file() {
     assert!(harness.state().stored("build-compact-a", &layout).is_some(), "the file is read before the reset");
     harness.state_mut().reset_layout();
     assert_eq!(harness.state().stored("build-compact-a", &layout), None, "a reset layout reads as absent");
+}
+
+#[test]
+fn the_status_bar_names_what_is_selected() {
+    use crate::panels::edit::EditFocus;
+    use omuzaki_char_api::{CharId, PartId};
+    let part = |id: &str| PartId::new(id).expect("a part id");
+    let focus = EditFocus::new(CharId::new("kit").expect("a character id"));
+    let mut harness = plain(vec2(1920.0, 1080.0));
+    harness.state_mut().insert_view(focus.clone());
+    harness.run_steps(2);
+    assert_shows(&harness, "Nothing selected");
+    focus.select(part("head"));
+    harness.run_steps(2);
+    assert_shows(&harness, "Selected: head");
+    focus.set(vec![part("head"), part("hair")]);
+    harness.run_steps(2);
+    assert_shows(&harness, "2 parts selected");
 }

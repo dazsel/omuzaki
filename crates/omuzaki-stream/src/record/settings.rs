@@ -4,6 +4,8 @@
 //! |---|---|---|---|
 //! | `record.format` | User | Free | taste and quality |
 //! | `record.dir` | Machine | Never | a file root on this computer |
+//! | `record.min_free_mb` | Machine | Never | protects this computer's disk |
+//! | `record.name_template` | User | Free | how takes are named |
 
 use std::path::PathBuf;
 
@@ -82,6 +84,58 @@ impl Setting for Dir {
 }
 
 register_setting!(Dir);
+
+/// `record.min_free_mb`: the free space a take always leaves on its disk, in MiB (`record/disk.rs`).
+pub struct MinFreeMb;
+
+impl Setting for MinFreeMb {
+    type Value = u64;
+    const META: SettingMeta = SettingMeta::new(
+        "record.min_free_mb",
+        "The free space a recording always leaves on its disk, in MiB; it stops cleanly before going below",
+        SettingScope::Machine,
+        AgentWrite::Never,
+        InProfile::Excluded,
+        Apply::Live,
+        1,
+    );
+
+    fn default() -> u64 {
+        super::disk::DEFAULT_MIN_FREE_MB
+    }
+
+    fn check(value: &u64) -> Result<(), SettingError> {
+        if *value <= 1 << 30 { Ok(()) } else { Err(SettingError::invalid(Self::META.key, "keep at most 1 PiB free")) }
+    }
+}
+
+register_setting!(MinFreeMb);
+
+/// `record.name_template`: how new takes are named (`take::file_stem`).
+pub struct NameTemplate;
+
+impl Setting for NameTemplate {
+    type Value = String;
+    const META: SettingMeta = SettingMeta::new(
+        "record.name_template",
+        "How new recordings are named, from {date} {time} {scene} {take} {format} {name}",
+        SettingScope::User,
+        AgentWrite::Free,
+        InProfile::Member,
+        Apply::Live,
+        1,
+    );
+
+    fn default() -> String {
+        super::take::DEFAULT_TEMPLATE.into()
+    }
+
+    fn check(value: &String) -> Result<(), SettingError> {
+        super::take::check_template(value).map_err(|e| SettingError::invalid(Self::META.key, e.to_string()))
+    }
+}
+
+register_setting!(NameTemplate);
 
 /// The folder takes go into: `record.dir` when not empty, else `<videos>/Omuzaki`, else `<home>/Omuzaki`, else
 /// `Omuzaki` in the current folder (a machine with no home folder at all).

@@ -1,7 +1,7 @@
 //! The GPU rasteriser: draws a `DrawList` through Vello. [`SceneEncoder`] is the CPU half, which turns a list into a
 //! `vello::Scene` and does no GPU work; [`VelloRasterizer`] rasterises that scene with Vello's compute stages (`engine`,
 //! on resources kept between repaints) and resolves it into the renderer's face texture, recording both into the
-//! renderer's encoder. Strokes beyond the basic mapping (hairline parity) are [`stroke`]'s.
+//! renderer's encoder. Strokes thinner than a pixel are drawn as Skia's hairlines, in `stroke`.
 
 pub mod clip;
 mod engine;
@@ -10,7 +10,7 @@ pub mod gradient;
 pub mod resolve;
 mod sections;
 mod snap;
-pub mod stroke;
+mod stroke;
 
 use std::any::Any;
 use std::future::Future;
@@ -32,6 +32,7 @@ use self::gradient::brush;
 use self::resolve::Resolve;
 use self::sections::{LayerCache, check_tiling, fingerprint};
 use self::snap::snapped_path;
+use self::stroke::hairline;
 use crate::layer::GpuRasterizer;
 use crate::painter::LayerSections;
 use crate::raster::cpu::check;
@@ -171,9 +172,29 @@ impl SceneEncoder {
                 scene.fill(Fill::NonZero, Affine::IDENTITY, &paint, Some(GRADIENT_SHIFT * to_px), &self.path);
             }
             Cmd::Stroke { path, ref paint, width, cap, join, opacity } => {
-                fill_bez(list.elements(path), &mut self.path);
+                let els = list.elements(path);
+                // A zero or negative width draws nothing on the canvas (a width that is not a number was rejected by
+                // `check`).
+                if width <= 0.0 {
+                    return Ok(());
+                }
+                let round = cap == Cap::Round;
+                if let Some(factor) = hairline(els, width, to_px, paint, opacity, &mut self.path) {
+                    if factor <= 0.0 {
+                        return Ok(());
+                    }
+                    // The line's own half width, and a round cap's half pixel past the end.
+                    self.bounds.add(&self.path, Affine::IDENTITY, 1.0);
+                    let mut style = Stroke::new(1.0);
+                    style.start_cap = if round { KCap::Round } else { KCap::Butt };
+                    style.end_cap = style.start_cap;
+                    let brush = brush(paint, opacity * factor, &mut self.stops);
+                    scene.stroke(&style, Affine::IDENTITY, &brush, Some(GRADIENT_SHIFT * to_px), &self.path);
+                    return Ok(());
+                }
+                fill_bez(els, &mut self.path);
                 let mut style = Stroke::new(f64::from(width));
-                style.start_cap = if cap == Cap::Round { KCap::Round } else { KCap::Butt };
+                style.start_cap = if round { KCap::Round } else { KCap::Butt };
                 style.end_cap = style.start_cap;
                 style.join = if join == Join::Round { KJoin::Round } else { KJoin::Miter };
                 style.miter_limit = MITER_LIMIT;
@@ -237,6 +258,63 @@ struct LayerState {
     target: Option<(wgpu::Texture, wgpu::TextureView)>,
     /// The target shows what the cached scenes encode, so only changed sections need drawing again.
     painted: bool,
+    /// What [`stage_frame`](GpuRasterizer::stage_frame) encoded and no paint has drawn yet.
+    pending: Option<Pending>,
+    /// The resolve's bind group for the batch atlas (and the atlas's generation it was made for).
+    batch_bind: Option<(u64, wgpu::BindGroup)>,
+}
+
+/// Sections a frame's staging encoded for a layer that no paint has drawn yet: how many, the rectangle they cover now or
+/// covered before (`None`: nothing changed), and the layer's size in pixels.
+#[derive(Copy, Clone)]
+struct Pending {
+    encoded: usize,
+    damage: Option<Rect>,
+    size: (u32, u32),
+}
+
+impl Pending {
+    /// `self` and `later`, which staged the same layer again before a paint drew `self`.
+    fn merge(self, later: Self) -> Self {
+        let damage = match (self.damage, later.damage) {
+            (Some(a), Some(b)) if self.size == later.size => Some(a.union(b)),
+            (a, b) => b.or(a),
+        };
+        Self { encoded: self.encoded + later.encoded, damage, size: later.size }
+    }
+}
+
+/// The atlas a batch rasterises into: every member's rectangle, stacked top to bottom from the left edge.
+struct Atlas {
+    size: (u32, u32),
+    view: wgpu::TextureView,
+    /// Counts the atlases made, so a layer's bind group knows when its atlas was replaced.
+    generation: u64,
+}
+
+/// Where one layer of a batch sits: its rectangle in the layer, and the atlas row its copy starts at.
+#[derive(Copy, Clone, PartialEq, Eq)]
+struct Member {
+    rect: [u32; 4],
+    row: u32,
+}
+
+/// The changed layers of one frame, rasterised together in the frame's first paint so Vello's stages run once, not once
+/// per layer: each layer's own paint then only resolves its part of the atlas into its texture.
+#[derive(Default)]
+struct Batch {
+    atlas: Option<Atlas>,
+    /// The batch's uploads and bind groups in the engine.
+    vello: Option<LayerTarget>,
+    /// Whether this frame's first paint has decided on a batch.
+    decided: bool,
+    /// This frame's batch: the layer whose paint recorded it, and the layers it holds.
+    recorded: Option<(usize, [Option<Member>; FaceLayerId::COUNT])>,
+    /// How many layers this frame's batch holds.
+    batched: usize,
+    /// Layers a batch that outgrew Vello's buffers drew wrong, not yet reported by `repaint_needed`.
+    repaint: [bool; FaceLayerId::COUNT],
+    generations: u64,
 }
 
 /// Everything that needs a device. Created on the first paint, because the engine compiles Vello's pipelines.
@@ -282,6 +360,7 @@ pub struct VelloRasterizer {
     scene: Scene,
     gpu: Option<Gpu>,
     layers: [LayerState; FaceLayerId::COUNT],
+    batch: Batch,
     /// The device the rasteriser declines on: paints on it decline, and a paint on another device tries again.
     unavailable: Option<wgpu::Device>,
     /// Decline software adapters (the stage's choice); tests that check pixels on lavapipe leave it off.
@@ -316,6 +395,12 @@ impl VelloRasterizer {
         self.encoded
     }
 
+    /// How many layers this frame's batch rasterised together (0 when the frame drew each layer on its own): for tests
+    /// and tools that check the frame ran Vello's stages once.
+    pub fn layers_batched(&self) -> usize {
+        self.batch.batched
+    }
+
     /// Starts Vello's bump-allocated buffers (lines, bins, tiles, segment counts, segments, blend spill, command lists)
     /// at `capacity` instead of Vello's sizes, so a test can make a scene outgrow them. However they start, a repaint that
     /// outgrows any of them is found from its counters a frame or two later, without waiting on the GPU (on a later
@@ -329,8 +414,8 @@ impl VelloRasterizer {
 
     /// Makes the next paints write GPU timestamps around their two passes into `queries`, from index `at`: the
     /// rasterisation's begin and end (`at`, `at + 1`), then the resolve's (`at + 2`, `at + 3`). For the timing probe
-    /// (`examples/gpu_face_timing.rs`), which needs `wgpu::Features::TIMESTAMP_QUERY`; `None` stops it. A paint that
-    /// draws nothing writes none.
+    /// (`omuzaki-test-face`'s `gpu_face_timing` example), which needs `wgpu::Features::TIMESTAMP_QUERY`; `None` stops
+    /// it. A paint that draws nothing writes none.
     pub fn time_passes(&mut self, queries: Option<(wgpu::QuerySet, u32)>) {
         self.pass_timestamps = queries;
     }
@@ -439,6 +524,7 @@ impl VelloRasterizer {
     pub fn reset(&mut self) {
         self.gpu = None;
         self.layers = Default::default();
+        self.batch = Batch::default();
         self.unavailable = None;
         self.encoded = 0;
         self.damage = [0; 4];
@@ -487,14 +573,19 @@ impl VelloRasterizer {
         if !self.prepare(device, target, index, (width, height))? {
             return Ok(false);
         }
-        let (Some(gpu), layer) = (self.gpu.as_mut(), &mut self.layers[index]) else {
+        let (Some(_), layer) = (self.gpu.as_ref(), &mut self.layers[index]) else {
             return Err(FaceError::Raster("the GPU state is missing after it was made".to_owned()));
         };
 
         // From here the target no longer shows the cached scenes until the repaint below finishes.
         let was_painted = std::mem::replace(&mut layer.painted, false);
         self.damage = [0; 4];
-        let (count, damage) = layer.encode_changed(&mut self.encoder, spec, list, sections)?;
+        // Staged this frame: the sections are encoded already. Otherwise encode what changed now.
+        let staged = layer.pending.take();
+        let (count, damage) = match staged {
+            Some(pending) if pending.size == (width, height) => (pending.encoded, pending.damage),
+            _ => layer.encode_changed(&mut self.encoder, spec, list, sections)?,
+        };
         self.encoded = count;
         let damage = if was_painted {
             let Some(damage) = damage else {
@@ -509,6 +600,13 @@ impl VelloRasterizer {
         let Some(rect) = pixel_rect(damage, width, height) else {
             layer.painted = true;
             return Ok(true);
+        };
+        if was_painted && staged.is_some() && self.resolve_batched(index, rect, device, queue, commands)? {
+            self.damage = rect;
+            return Ok(true);
+        }
+        let (Some(gpu), layer) = (self.gpu.as_mut(), &mut self.layers[index]) else {
+            return Err(FaceError::Raster("the GPU state is missing after it was made".to_owned()));
         };
 
         self.scene.reset();
@@ -554,6 +652,7 @@ impl VelloRasterizer {
         if self.gpu.as_ref().is_some_and(|gpu| &gpu.device != device) {
             self.gpu = None;
             self.layers = Default::default();
+            self.batch = Batch::default();
         }
         if self.gpu.is_none() {
             match self.make_gpu(device, target.format()) {
@@ -573,6 +672,7 @@ impl VelloRasterizer {
         if gpu.resolve.format() != target.format() {
             gpu.resolve = Resolve::new(device, target.format());
             self.layers = Default::default();
+            self.batch = Batch::default();
         }
         let layer = &mut self.layers[at];
         layer.ensure_private(device, &gpu.resolve, width, height);
@@ -587,11 +687,34 @@ impl VelloRasterizer {
     /// the layer is marked for a whole repaint, or, when the device can't hold the scene, the rasteriser declines the
     /// device, so the repaint falls to the CPU raster.
     fn check_layer(&mut self, at: usize) -> bool {
-        let (Some(gpu), Some(layer)) = (self.gpu.as_mut(), self.layers.get_mut(at)) else { return false };
+        let reported = self.batch.repaint.get_mut(at).is_some_and(|flag| std::mem::replace(flag, false));
+        let (Some(gpu), Some(layer)) = (self.gpu.as_mut(), self.layers.get_mut(at)) else { return reported };
         let Some(recovery) = layer.vello.as_mut().and_then(|vello| gpu.engine.check_overflow(vello)) else {
-            return false;
+            return reported;
         };
         layer.painted = false;
+        self.recover(recovery);
+        true
+    }
+
+    /// Reads the counters of earlier batches that have come back. One that outgrew Vello's buffers drew every layer in
+    /// it wrong: all of them are drawn again, whole, and `repaint_needed` reports each. Called when a frame begins, so
+    /// every batch read was submitted (a probe may submit a frame's paints together, after all of them).
+    fn check_batch(&mut self) {
+        let Some(gpu) = self.gpu.as_mut() else { return };
+        let Some(recovery) = self.batch.vello.as_mut().and_then(|vello| gpu.engine.check_overflow(vello)) else {
+            return;
+        };
+        self.batch.repaint = [true; FaceLayerId::COUNT];
+        for layer in &mut self.layers {
+            layer.painted = false;
+        }
+        self.recover(recovery);
+    }
+
+    /// Logs a recovery from a repaint that outgrew Vello's buffers, and declines the device if they can't grow.
+    fn recover(&mut self, recovery: Recovery) {
+        let Some(gpu) = self.gpu.as_ref() else { return };
         match recovery {
             Recovery::Repaint => {
                 if !std::mem::replace(&mut self.logged_overflow, true) {
@@ -608,7 +731,6 @@ impl VelloRasterizer {
                 self.unavailable = Some(gpu.device.clone());
             }
         }
-        true
     }
 
     /// Whether a `width` x `height` layer has more bins than Vello's coarse stage draws right (logged once).
@@ -620,6 +742,130 @@ impl VelloRasterizer {
             );
         }
         too_many
+    }
+}
+
+impl VelloRasterizer {
+    /// Resolves layer `index`'s `rect` from this frame's batch into the paint's target, recording the batch first if
+    /// this is the frame's first paint. `false` when the layer is not in a batch (the caller then draws it alone).
+    fn resolve_batched(
+        &mut self,
+        index: usize,
+        rect: [u32; 4],
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        commands: &mut wgpu::CommandEncoder,
+    ) -> Result<bool, FaceError> {
+        let stamps = self.pass_timestamps.as_ref().map(|(queries, at)| (queries.clone(), *at));
+        let mut recorded_here = false;
+        if !std::mem::replace(&mut self.batch.decided, true) {
+            recorded_here = self.record_batch(index, rect, device, queue, commands)?;
+        }
+        let Some((_, members)) = self.batch.recorded.as_mut() else { return Ok(false) };
+        let Some(member) = members[index].take().filter(|m| m.rect == rect) else { return Ok(false) };
+        let (Some(gpu), Some(atlas), layer) = (self.gpu.as_ref(), self.batch.atlas.as_ref(), &mut self.layers[index])
+        else {
+            return Ok(false);
+        };
+        let (Some(private), Some((_, level_zero))) = (layer.private.as_ref(), layer.target.as_ref()) else {
+            return Ok(false);
+        };
+        if layer.batch_bind.as_ref().is_none_or(|(generation, _)| *generation != atlas.generation) {
+            layer.batch_bind = Some((atlas.generation, gpu.resolve.bind(device, &atlas.view, &private.origin)));
+        }
+        let Some((_, bind)) = layer.batch_bind.as_ref() else { return Ok(false) };
+        // The atlas holds the rectangle from its row, at the left edge.
+        let origin = [i64::from(rect[0]), i64::from(rect[1]) - i64::from(member.row)];
+        Resolve::set_origin_signed(queue, &private.origin, origin);
+        if let Some((queries, at)) = stamps.as_ref().filter(|_| !recorded_here) {
+            // The probe reads a raster span for every layer: a batched layer's is empty (its raster is the recorder's).
+            let span = wgpu::ComputePassTimestampWrites {
+                query_set: queries,
+                beginning_of_pass_write_index: Some(*at),
+                end_of_pass_write_index: Some(at + 1),
+            };
+            drop(commands.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("face-vello-batched"),
+                timestamp_writes: Some(span),
+            }));
+        }
+        gpu.resolve.encode(commands, bind, level_zero, rect, stamps.as_ref().map(|(queries, at)| (queries, at + 2)));
+        layer.painted = true;
+        Ok(true)
+    }
+
+    /// Rasterises every layer staged this frame whose target already shows its cached scenes (layer `index`, whose
+    /// paint this is, with `rect`; the others with their pending rectangles) into the batch atlas, in one run of Vello's
+    /// stages recorded into `commands`. `false` when fewer than two layers qualify (each is then drawn alone).
+    fn record_batch(
+        &mut self,
+        index: usize,
+        rect: [u32; 4],
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        commands: &mut wgpu::CommandEncoder,
+    ) -> Result<bool, FaceError> {
+        let mut members = [None; FaceLayerId::COUNT];
+        let (mut width, mut height) = (0, 0);
+        for (at, layer) in self.layers.iter().enumerate() {
+            let rect = if at == index {
+                Some(rect)
+            } else {
+                layer
+                    .pending
+                    .filter(|_| layer.painted && layer.private.is_some() && layer.target.is_some())
+                    .and_then(|p| p.damage.and_then(|d| pixel_rect(d, p.size.0, p.size.1)))
+            };
+            if let Some(rect) = rect {
+                members[at] = Some(Member { rect, row: height });
+                (width, height) = (width.max(rect[2]), height + rect[3]);
+            }
+        }
+        if members.iter().flatten().count() < 2 || self.too_many_bins(width, height) {
+            return Ok(false);
+        }
+        let Some(gpu) = self.gpu.as_mut() else { return Ok(false) };
+        let batch = &mut self.batch;
+        if batch.atlas.as_ref().is_none_or(|a| a.size.0 < width || a.size.1 < height) {
+            let size = batch.atlas.as_ref().map_or((width, height), |a| (a.size.0.max(width), a.size.1.max(height)));
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("face-vello-batch"),
+                size: wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            batch.generations += 1;
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            batch.atlas = Some(Atlas { size, view, generation: batch.generations });
+            batch.vello.get_or_insert_with(|| LayerTarget::new(device)).out_changed();
+        }
+        let (Some(atlas), Some(vello)) = (batch.atlas.as_ref(), batch.vello.as_mut()) else { return Ok(false) };
+
+        // Each layer's sections, moved to its rows and clipped to its rectangle there, so nothing it draws outside the
+        // rectangle reaches another layer's rows.
+        self.scene.reset();
+        for (layer, member) in self.layers.iter().zip(&members) {
+            let Some(Member { rect, row }) = *member else { continue };
+            let shift = Affine::translate((-f64::from(rect[0]), f64::from(row) - f64::from(rect[1])));
+            let rows = Rect::new(0.0, f64::from(row), f64::from(rect[2]), f64::from(row + rect[3]));
+            self.scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &rows);
+            for cache in &layer.sections {
+                self.scene.append(&cache.scene, Some(shift));
+            }
+            self.scene.pop_layer();
+        }
+        let stamps = self.pass_timestamps.as_ref().map(|(queries, at)| (queries, *at));
+        let frame = Frame { scene: &self.scene, width, height, out: &atlas.view, timestamps: stamps };
+        gpu.engine
+            .record(device, queue, commands, vello, &frame)
+            .map_err(|e| FaceError::Raster(format!("Vello could not rasterise the face's layers: {e}")))?;
+        batch.recorded = Some((index, members));
+        batch.batched = members.iter().flatten().count();
+        Ok(true)
     }
 }
 
@@ -637,6 +883,22 @@ impl GpuRasterizer for VelloRasterizer {
 
     fn device_lost(&mut self) {
         self.reset();
+    }
+
+    fn begin_frame(&mut self) {
+        self.check_batch();
+        self.batch.decided = false;
+        self.batch.recorded = None;
+        self.batch.batched = 0;
+    }
+
+    fn stage(&mut self, spec: &FaceLayerSpec, list: &DrawList, sections: &LayerSections) -> Result<(), FaceError> {
+        check_tiling(sections, list.cmds().len())?;
+        let state = &mut self.layers[spec.id as usize];
+        let (encoded, damage) = state.encode_changed(&mut self.encoder, spec, list, sections)?;
+        let staged = Pending { encoded, damage, size: spec.size_px() };
+        state.pending = Some(state.pending.map_or(staged, |earlier| earlier.merge(staged)));
+        Ok(())
     }
 
     fn rasterize_native_sections(
@@ -659,6 +921,13 @@ impl GpuRasterizer for VelloRasterizer {
     }
 
     fn paint_failed(&mut self, layer: FaceLayerId) {
+        // A batch this paint recorded was dropped with it: the other layers draw on their own.
+        if self.batch.recorded.as_ref().is_some_and(|(recorder, _)| *recorder == layer as usize) {
+            self.batch.recorded = None;
+            if let Some(vello) = self.batch.vello.as_mut() {
+                vello.paint_dropped();
+            }
+        }
         // The renderer dropped what the last paint recorded: the target shows whatever it showed before, so the next paint
         // redraws the layer whole.
         if let Some(state) = self.layers.get_mut(layer as usize) {

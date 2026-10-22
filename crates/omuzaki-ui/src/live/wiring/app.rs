@@ -7,14 +7,19 @@ use std::sync::Arc;
 use egui::Context;
 use omuzaki_ai_api::ModelRegistry;
 use omuzaki_anim_api::{ChannelBuf, HumanoidPose};
+use omuzaki_audio_api::engine::AudioEngine;
+use omuzaki_audio_engine::{CpalBackend, LiveEngine};
 use omuzaki_core::glam::UVec2;
 use omuzaki_core::time::{Clock, Seconds, SystemClock};
 use omuzaki_face_api::ExpressionSet;
+use omuzaki_obs::service::ObsService;
 use omuzaki_ops_api::{Actor, Runner, ServicesBuilder};
 use omuzaki_render::WgpuRenderer;
 use omuzaki_stage::frame::Stage;
 use omuzaki_stage::perform::host::{PerformError, PerformHost};
 use omuzaki_stage::perform::input::{InputHost, NoSource};
+use omuzaki_stream::feed::ProgramFeed;
+use omuzaki_stream::service::{Program as StreamProgram, StreamService};
 use omuzaki_stream_api::window::WindowHost;
 use omuzaki_track_api::camera::{CameraId, CameraInfo};
 use omuzaki_track_api::error::TrackError;
@@ -75,7 +80,12 @@ pub struct LiveApp {
     tracker: SharedTracker,
     viewport: Option<LiveViewport>,
     hotkeys: Hotkeys,
+    /// Feeds the program frame to the recorder, the replay buffer and the live outputs while any of them runs.
+    feed: Option<ProgramFeed>,
 }
+
+/// The frame rate the program is fed to the outputs at (spec §10's budget scene).
+const STREAM_FPS: (u32, u32) = (30, 1);
 
 impl LiveApp {
     /// Starts the perform thread and the life layer, timed by `clock`, and the tracking input over `tracker` (idle until
@@ -171,9 +181,26 @@ impl LiveApp {
         let mut services = ServicesBuilder::new()
             .insert::<dyn PerformHost>(host)
             .insert::<dyn InputHost>(input)
-            .insert::<dyn WindowHost>(Arc::new(window.clone()));
+            .insert::<dyn WindowHost>(Arc::new(window.clone()))
+            .insert::<ObsService>(Arc::new(ObsService::new()));
         if let Some(models) = models {
             services = services.insert::<dyn ModelRegistry>(models);
+        }
+        // Frames and the microphone count from one zero, so a take's audio lines up with its video.
+        let epoch = std::time::Instant::now();
+        let stream = match StreamService::with_epoch(epoch) {
+            Ok(stream) => Some(Arc::new(stream)),
+            Err(error) => {
+                tracing::warn!(%error, "the stream service did not start: recording and the live outputs are unavailable");
+                None
+            }
+        };
+        if let Some(stream) = &stream {
+            services = services.insert::<StreamService>(Arc::clone(stream));
+        }
+        match LiveEngine::with_epoch(Arc::new(CpalBackend::new(epoch)), None, epoch) {
+            Ok(audio) => services = services.insert::<dyn AudioEngine>(Arc::new(audio)),
+            Err(error) => tracing::warn!(%error, "the audio engine did not start: the microphone is unavailable"),
         }
         let services = services.build();
         let core = wiring::core_on(document, services).map_err(StartError::Ops)?;
@@ -187,6 +214,7 @@ impl LiveApp {
             tracker,
             viewport: None,
             hotkeys: Hotkeys::new(),
+            feed: stream.map(ProgramFeed::new),
         })
     }
 
@@ -208,6 +236,9 @@ impl LiveApp {
             }
             return Err(ViewportError::Stopped);
         };
+        if let Some(feed) = &self.feed {
+            feed.service().set_program(StreamProgram { size, fps: STREAM_FPS });
+        }
         let view =
             LiveViewport::new(renderer, stage, size, reader, presenter, self.clock.clone(), Some(self.tracker.clone()));
         self.viewport = Some(view);
@@ -239,6 +270,12 @@ impl LiveApp {
         self.reader.as_mut()
     }
 
+    /// The stream service the recorder, the replay buffer and the live outputs run in (the `record.*` and `output.*`
+    /// ops reach it through the runner). `None` when it could not start, or after [`shutdown`](Self::shutdown).
+    pub fn stream(&self) -> Option<&Arc<StreamService>> {
+        self.feed.as_ref().map(ProgramFeed::service)
+    }
+
     /// The output window, which the `output.window.*` ops open and close through the runner.
     pub fn output_mut(&mut self) -> &mut OutputWindow {
         &mut self.output
@@ -253,7 +290,9 @@ impl LiveApp {
         // the program carries the character alone, with alpha. Requests the ops queued are carried out first so the
         // frame drawn now already follows them; a context that can't open an OS window keeps the window closed.
         self.host.take_requests(&mut self.output);
-        let clean = self.output.status().open && !ctx.embed_viewports();
+        // A take, the replay buffer or a live output carries the character alone with alpha too.
+        let streaming = self.feed.as_ref().is_some_and(ProgramFeed::wanted);
+        let clean = (self.output.status().open && !ctx.embed_viewports()) || streaming;
         let program = self.viewport.as_mut().and_then(|view| {
             view.set_clean(clean);
             match view.frame(ctx, ctx.input(|i| i.unstable_dt)) {
@@ -264,6 +303,11 @@ impl LiveApp {
                 }
             }
         });
+        if let (Some(feed), Some(view)) = (self.feed.as_mut(), self.viewport.as_mut())
+            && let Err(error) = feed.offer(|| view.snapshot())
+        {
+            tracing::warn!(%error, "the program frame could not be read back for the outputs");
+        }
         if self.viewport.is_some() {
             // The perform thread steps at 60 Hz whether or not anything is moving on screen.
             ctx.request_repaint_after(std::time::Duration::from_millis(8));
@@ -293,6 +337,10 @@ impl LiveApp {
     /// # Errors
     /// [`WiringError::Panicked`] if the perform thread had panicked.
     pub fn shutdown(&mut self) -> Result<LoopReport, WiringError> {
+        // A take still recording is finished (its manifest written) before the frames stop.
+        if let Some(feed) = self.feed.take() {
+            feed.service().shutdown();
+        }
         self.output.set_open(false);
         self.host.publish(&self.output, WindowHost::surface(&self.host).scale_factor);
         if let Some(view) = self.viewport.take()
