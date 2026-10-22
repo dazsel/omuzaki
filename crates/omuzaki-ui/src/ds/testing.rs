@@ -66,21 +66,32 @@ fn queue_key<S>(harness: &Harness<'_, S>, modifiers: Modifiers, key: Key) {
     }
 }
 
-/// Moves the pointer, presses, moves along `path`, releases: one drag gesture, one frame per step.
+/// Moves the pointer, presses, moves along `path`, releases: one drag gesture, running until idle after each step.
 pub fn drag<S>(harness: &mut Harness<'_, S>, path: &[Pos2]) {
+    drag_with(harness, path, |h| {
+        h.run();
+    });
+}
+
+/// [`drag`] with `frames` frames after each step, for a UI that never goes idle (see [`press_for`]).
+pub fn drag_for<S>(harness: &mut Harness<'_, S>, path: &[Pos2], frames: usize) {
+    drag_with(harness, path, |h| h.run_steps(frames));
+}
+
+fn drag_with<S>(harness: &mut Harness<'_, S>, path: &[Pos2], settle: impl Fn(&mut Harness<'_, S>)) {
     let Some(&start) = path.first() else { return };
     harness.hover_at(start);
-    harness.run();
+    settle(harness);
     harness.event(Event::PointerButton {
         pos: start,
         button: egui::PointerButton::Primary,
         pressed: true,
         modifiers: Modifiers::NONE,
     });
-    harness.run();
+    settle(harness);
     for &p in &path[1..] {
         harness.event(Event::PointerMoved(p));
-        harness.run();
+        settle(harness);
     }
     let end = *path.last().unwrap_or(&start);
     harness.event(Event::PointerButton {
@@ -89,7 +100,7 @@ pub fn drag<S>(harness: &mut Harness<'_, S>, path: &[Pos2]) {
         pressed: false,
         modifiers: Modifiers::NONE,
     });
-    harness.run();
+    settle(harness);
 }
 
 /// Every AccessKit node a person can operate that has no accessible name.
