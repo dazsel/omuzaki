@@ -162,7 +162,7 @@ Each probe is a query op of the owning feature (scope `read`, allowed to agents,
 | Cameras and permission | `input.cameras` → `[{id, name, permission}]` | PF-01 | None / One / Several; permission drives the notes (§3.2). Listing names does not open a camera. |
 | Tracker model readiness | `model.status {slot: "face_tracker@1"}` → `{state: ready \| downloading{percent} \| unavailable}`; `model.list` (ADR 0017) names the slot but carries no progress, so this query is new and reads the percent from `FileSource::get`'s progress callback (ai-api.md §8) | ML-01 (T-D) | Ready, Downloading with a percent, or Unavailable |
 | iPhone pairing | `input.iphone.pairing` → `{address, code, paired}` | PF-02 | shows the QR or address; `paired` flips the step chip |
-| Recommended output | `broadcast.outputs.recommend` → `{kind?, others[], obs_hint}` | BR-01, BR-02 | one card; none recommended leaves Output out |
+| Recommended output | `output.recommend` → `{kind?, others[], obs, obs_hint, unavailable[]}` | BR-01, BR-02 | one card; none recommended leaves Output out |
 | Test pattern | an action, not a probe: `broadcast.test_pattern` (§4) | BR-01, BR-02 | `Effect::ShowTestPattern` |
 | Assistant configured | `agent.connection` → `{configured}` | agent-sessions tasks | Welcome shows "Let an assistant set this up" or "Connect an agent" |
 | Language offer | the host's `negotiate()` result (l10n-ops §6), not an op | SE-03 | `SimplifiedChineseOnTraditionalSystem` shows the one-click 简体中文 picker; everything else follows the OS silently |
