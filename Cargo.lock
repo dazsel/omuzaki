@@ -4351,6 +4351,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sys-locale",
+ "tempfile",
  "thiserror 2.0.21",
  "tracing",
  "unic-langid",
