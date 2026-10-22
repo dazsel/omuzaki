@@ -34,6 +34,8 @@ struct Rig {
     tokens: Arc<MemoryTokens>,
     client: Option<VtsClient>,
     map: ChannelMap,
+    /// What the mock had received when the current client started.
+    received_before: usize,
 }
 
 impl Rig {
@@ -45,13 +47,15 @@ impl Rig {
         let clock = FakeClock::default();
         let config = MockConfig { model: Some(model()), clock: Arc::new(clock.clone()), ..MockConfig::default() };
         let mock = MockVts::start(&config).unwrap();
-        let mut rig = Self { mock, clock, tokens: Arc::new(MemoryTokens::default()), client: None, map };
+        let mut rig =
+            Self { mock, clock, tokens: Arc::new(MemoryTokens::default()), client: None, map, received_before: 0 };
         rig.spawn();
         rig
     }
 
     fn spawn(&mut self) {
         self.client = None;
+        self.received_before = self.mock.received().len();
         let config = ClientConfig { port: Some(self.mock.port()), ..ClientConfig::default() };
         let client = VtsClient::spawn(config, self.tokens.clone(), Arc::new(self.clock.clone()), &self.map).unwrap();
         self.client = Some(client);
@@ -77,6 +81,14 @@ impl Rig {
     fn step(&self, by: Duration) {
         self.clock.advance(by);
         assert!(self.client().status().wait_polls(2, WAIT), "the bridge thread stopped polling");
+        // The mock stamps a request with the fake clock when it reads it: wait until it has read everything sent,
+        // so no request is stamped with a later step's time.
+        let sent = usize::try_from(self.client().status().sent()).unwrap();
+        let deadline = Instant::now() + WAIT;
+        while self.mock.received().len() < self.received_before + sent {
+            assert!(Instant::now() < deadline, "the mock stopped reading");
+            std::thread::yield_now();
+        }
     }
 
     fn count(&self, kind: &str) -> usize {

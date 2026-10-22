@@ -34,6 +34,10 @@ slug_id!(
     PlayerId
 );
 slug_id!(
+    /// A sound in the player bank (a soundboard item, a music track).
+    SoundId
+);
+slug_id!(
     /// A ducking gate a source raises (the soundboard raises one for each sound marked "ducks").
     GateId
 );

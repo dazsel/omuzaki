@@ -9,7 +9,7 @@
 
 use omuzaki_audio_api::device::{Binding, ChannelMap, DeviceId, Direction};
 use omuzaki_audio_api::engine::{AudioEngine, AudioError};
-use omuzaki_audio_api::graph::{BusSpec, Channels, GraphSpec, MIC_BUS, MicMode, SourceRef};
+use omuzaki_audio_api::graph::{BusSpec, Channels, GraphSpec, MIC_BUS, MicMode, PROGRAM_BUS, SourceRef};
 use omuzaki_audio_api::ids::{BusId, DeviceRole};
 use omuzaki_audio_api::report::MeterPoint;
 use omuzaki_ops_api::{Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
@@ -71,14 +71,14 @@ fn audio_error(e: AudioError) -> OpError {
     }
 }
 
-fn ids() -> Result<(DeviceRole, BusId), OpError> {
+pub(crate) fn ids() -> Result<(DeviceRole, BusId), OpError> {
     let role = DeviceRole::new(MIC_ROLE).map_err(|e| OpError::internal(e.to_string()))?;
     let bus = BusId::new(MIC_BUS).map_err(|e| OpError::internal(e.to_string()))?;
     Ok((role, bus))
 }
 
 /// `graph` with a mono mic bus fed by the `mic` role added, if it has no mic bus yet.
-fn with_mic_bus(graph: &GraphSpec, role: &DeviceRole, bus: &BusId) -> Option<GraphSpec> {
+pub(crate) fn with_mic_bus(graph: &GraphSpec, role: &DeviceRole, bus: &BusId) -> Option<GraphSpec> {
     if graph.bus(bus).is_some() {
         return None;
     }
@@ -254,9 +254,6 @@ impl Op for Levels {
         Ok(Plan::answer(json!({ "meters": meters })))
     }
 }
-
-/// The bus whose meters carry loudness, true peak and limiter reduction.
-const PROGRAM_BUS: &str = "program";
 
 /// A level for JSON: silence (−∞ dBFS) as `null`.
 fn finite(db: f32) -> Option<f32> {
