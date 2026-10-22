@@ -462,3 +462,42 @@ fn every_pause_reason_is_hidden_from_actors_without_process_but_not_the_state() 
     let on = CaptureState::on(DeviceMask::ALL, DeviceMask::NONE);
     assert_eq!(on.clone().redacted(), on);
 }
+
+#[test]
+fn capture_reads_only_the_classes_asked_and_a_new_set_is_a_new_run() {
+    let mut rig = Rig::new();
+    rig.indicator.beat();
+    rig.control.start(DeviceMask::NONE.with(DeviceClass::Keyboard)).unwrap();
+    rig.desk.device_up(KEYBOARD, DeviceClass::Keyboard);
+    rig.desk.device_up(support::MOUSE, DeviceClass::Mouse);
+    rig.desk.device_up(PEN, DeviceClass::Pen);
+    rig.desk.key(KEYBOARD, A, true);
+    rig.desk.motion(support::MOUSE, 400, 0, 1.0);
+    rig.desk.buttons(support::MOUSE, DeviceClass::Mouse, 1, 0);
+    rig.desk.pen(PEN, 0.5, 0.5, 1.0, true);
+    rig.advance(0.02);
+    rig.desk.idle();
+    let events = rig.motion().0;
+    let classes: Vec<DeviceClass> = events
+        .iter()
+        .filter_map(|e| match *e {
+            omuzaki_input_api::event::MotionEvent::SourceUp { class, .. } => Some(class),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(classes, [DeviceClass::Keyboard], "only the keyboard is announced: {events:?}");
+    assert_eq!(keys(&events).len(), 1);
+    assert_eq!(events.len(), 2, "no pointer, button or pen event: {events:?}");
+
+    // Asking for the mouse too starts a new run: the mouse is announced and read, and the key held over stays inert.
+    rig.control.start(DeviceMask::NONE.with(DeviceClass::Keyboard).with(DeviceClass::Mouse)).unwrap();
+    rig.desk.motion(support::MOUSE, 400, 0, 0.0);
+    rig.desk.key(KEYBOARD, A, false);
+    rig.advance(0.02);
+    rig.desk.idle();
+    let events = rig.motion().0;
+    let ups = events.iter().filter(|e| matches!(e, omuzaki_input_api::event::MotionEvent::SourceUp { .. })).count();
+    assert_eq!(ups, 2, "{events:?}");
+    assert!(events.iter().any(|e| matches!(e, omuzaki_input_api::event::MotionEvent::Pointer { .. })), "{events:?}");
+    assert!(keys(&events).is_empty(), "the release of a key held over the new run is not seen: {events:?}");
+}

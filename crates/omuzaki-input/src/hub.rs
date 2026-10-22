@@ -495,7 +495,12 @@ impl InputControl for Core {
         if !self.indicators.shown() {
             return Err(InputError::NoIndicator);
         }
-        control.classes = classes;
+        if classes != control.classes {
+            // A new set of classes is a new run: what the old one held ends with it.
+            self.shared.capture.close();
+            control.classes = classes;
+            self.shared.set_asked(classes);
+        }
         self.open_backends(classes);
         control.next_protect = Seconds(self.shared.now().0 + PROTECT_EVERY.0);
         self.resume(&mut control);

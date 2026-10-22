@@ -11,7 +11,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use omuzaki_core::time::{Clock, Seconds};
 use omuzaki_input_api::binding::{BindingAction, BindingId, MAX_BINDINGS};
 use omuzaki_input_api::capture::{BackendState, Detail};
-use omuzaki_input_api::event::{MAX_PADS, PadId, PadState, PadZones, SourceMask, SourceTag};
+use omuzaki_input_api::event::{DeviceClass, DeviceMask, MAX_PADS, PadId, PadState, PadZones, SourceMask, SourceTag};
 
 use crate::entry::{BINDING_WORDS, MOTION_WORDS};
 use crate::epoch::{Epoch, is_open};
@@ -265,6 +265,9 @@ pub(crate) struct Shared {
     pub(crate) snapshots: [Snapshot; SourceTag::MAX],
     pub(crate) pads: [PadSlot; MAX_PADS],
     pub(crate) pad_ids: AtomicU8,
+    /// The classes the person asked for, as [`DeviceClass::bit`]s: set before the run that reads them opens, and
+    /// read by the sinks, so a backend serving several classes reads only the asked ones (design §4).
+    pub(crate) asked: AtomicU8,
     /// [`Detail`] as 0 (zones) or 1 (hand only).
     pub(crate) detail: AtomicU8,
     /// Bumped on every detail change (design §4).
@@ -295,6 +298,7 @@ impl Shared {
             snapshots: std::array::from_fn(|_| Snapshot::default()),
             pads: std::array::from_fn(|_| PadSlot::default()),
             pad_ids: AtomicU8::new(0),
+            asked: AtomicU8::new(0),
             detail: AtomicU8::new(0),
             detail_generation: AtomicU32::new(0),
             tables: Tables::default(),
@@ -307,6 +311,16 @@ impl Shared {
 
     pub(crate) fn now(&self) -> Seconds {
         self.clock.now()
+    }
+
+    /// The classes the person asked for.
+    pub(crate) fn asked(&self) -> DeviceMask {
+        let bits = self.asked.load(Ordering::Acquire);
+        DeviceClass::ALL.into_iter().filter(|c| bits & c.bit() != 0).fold(DeviceMask::NONE, DeviceMask::with)
+    }
+
+    pub(crate) fn set_asked(&self, classes: DeviceMask) {
+        self.asked.store(classes.iter().fold(0, |bits, c| bits | c.bit()), Ordering::Release);
     }
 
     pub(crate) fn detail(&self) -> Detail {

@@ -261,6 +261,18 @@ impl RawSink {
             return false;
         }
         self.sync_table();
+        let class = match raw {
+            RawEvent::DeviceUp { class, .. } | RawEvent::Buttons { class, .. } => Some(class),
+            RawEvent::DeviceGone { .. } => None,
+            RawEvent::Key { .. } => Some(DeviceClass::Keyboard),
+            RawEvent::Motion { .. } => Some(DeviceClass::Mouse),
+            RawEvent::Pen { .. } => Some(DeviceClass::Pen),
+            RawEvent::Pad { .. } => Some(DeviceClass::Gamepad),
+        };
+        // A class the person did not ask for is read by nobody; its devices are known but never announced.
+        if class.is_some_and(|c| !self.shared.asked().contains(c)) && !matches!(raw, RawEvent::DeviceUp { .. }) {
+            return false;
+        }
         match raw {
             RawEvent::DeviceUp { device, class } => self.device_up(device, class),
             RawEvent::DeviceGone { device } => self.device_gone(device),
@@ -352,8 +364,9 @@ impl RawSink {
         self.seen = (capture, backend);
         self.running = true;
         let at = self.at();
+        let asked = self.shared.asked();
         for i in 0..self.devices.len() {
-            if let Some(d) = self.devices.get(i) {
+            if let Some(d) = self.devices.get(i).filter(|d| asked.contains(d.class)) {
                 let event = MotionEvent::source_up(d.src, d.class, d.pad, at);
                 self.emit(event, Keep::Always);
             }
@@ -442,8 +455,10 @@ impl RawSink {
             unknown_zones: PadZones::NONE,
         });
         self.publish_sources();
-        let at = self.at();
-        self.emit(MotionEvent::source_up(src, class, pad, at), Keep::Always);
+        if self.shared.asked().contains(class) {
+            let at = self.at();
+            self.emit(MotionEvent::source_up(src, class, pad, at), Keep::Always);
+        }
     }
 
     fn device_gone(&mut self, handle: u64) {
@@ -466,7 +481,9 @@ impl RawSink {
             self.shared.free_pad(pad);
         }
         self.write_snapshot(device.src);
-        self.emit(MotionEvent::source_gone(device.src, at), Keep::Always);
+        if self.shared.asked().contains(device.class) {
+            self.emit(MotionEvent::source_gone(device.src, at), Keep::Always);
+        }
         self.publish_sources();
         self.out.free.push(device.src);
     }
