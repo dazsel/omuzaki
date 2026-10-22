@@ -33,7 +33,7 @@ pub use expression::{
 };
 pub use grammar::{GrammarRules, RESERVED_RULES, RuleConfig, RuleId};
 pub use mapping::{
-    BrowMap, BrowParams, CheekMap, EyeEffects, EyeMap, EyeParams, FaceMapping, GazeMap, MouthMap, MouthParams,
+    Amplify, BrowMap, BrowParams, CheekMap, EyeEffects, EyeMap, EyeParams, FaceMapping, GazeMap, MouthMap, MouthParams,
     PaintParams, RestShape, UNMAPPED,
 };
 pub use omuzaki_core::colour::Colour;

@@ -114,6 +114,7 @@ Every ARKit channel and every anime extra reaches at least one paint parameter, 
 | `tongueOut`, `fangs` | `mouth.tongue`, `mouth.fangs` | none |
 | `cheekPuff`, `cheekSquint*`, `blush` | `blush`, `cheek_puff` | `cheeks.puff_blush`, `cheeks.squint_blush`, `cheeks.blush`; base `rest.blush` |
 | `sweatDrop` | `sweat` | none |
+| every `ARKit` channel, before the rows above | the channel itself | `amplify.knee`, `amplify.gain`: the subtle-movement expander (FE-06), off by default. Below the knee a channel is multiplied by the gain, above it the curve runs straight to 1. Per-channel response curves are retarget calibration (PF-22), not this. |
 
 **No painted effect (`UNMAPPED`):** `jawForward`, `mouthShrugLower`, `mouthShrugUpper`. They move lips in depth, which a front-facing 2D face can't show. They stay in the bus (trackers send them), painters ignore them, and a VRM bake writes empty targets for them (perfect sync lists them as inert, which io-api allows). Art can decide to give them a small effect (question Q3).
 
