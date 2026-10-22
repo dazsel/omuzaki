@@ -19,6 +19,7 @@ use crate::painter::RealPainter;
 use crate::raster::SkiaRasterizer;
 
 pub mod metrics;
+pub mod range;
 pub mod sheet;
 pub mod sweep;
 
