@@ -55,8 +55,13 @@ pub fn branch_root(project_dir: &Path, branch: &BranchId) -> PathBuf {
 /// Never in practice: the id is made of hex digits.
 pub fn new_branch_id() -> Result<BranchId, omuzaki_history_api::branch::BranchIdError> {
     let mut bytes = [0u8; 8];
-    if getrandom::fill(&mut bytes).is_err() {
-        // Without OS randomness the id only has to differ from the others in this project, which the time does.
+    #[cfg(any(unix, windows))]
+    let random = getrandom::fill(&mut bytes).is_ok();
+    #[cfg(not(any(unix, windows)))]
+    let random = false;
+    if !random {
+        // Without OS randomness (or on wasm) the id only has to differ from the others in this project, which the time
+        // does.
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
         bytes.copy_from_slice(&(nanos ^ u128::from(std::process::id())).to_le_bytes()[..8]);
     }
