@@ -71,14 +71,14 @@ fn audio_error(e: AudioError) -> OpError {
     }
 }
 
-fn ids() -> Result<(DeviceRole, BusId), OpError> {
+pub(crate) fn ids() -> Result<(DeviceRole, BusId), OpError> {
     let role = DeviceRole::new(MIC_ROLE).map_err(|e| OpError::internal(e.to_string()))?;
     let bus = BusId::new(MIC_BUS).map_err(|e| OpError::internal(e.to_string()))?;
     Ok((role, bus))
 }
 
 /// `graph` with a mono mic bus fed by the `mic` role added, if it has no mic bus yet.
-fn with_mic_bus(graph: &GraphSpec, role: &DeviceRole, bus: &BusId) -> Option<GraphSpec> {
+pub(crate) fn with_mic_bus(graph: &GraphSpec, role: &DeviceRole, bus: &BusId) -> Option<GraphSpec> {
     if graph.bus(bus).is_some() {
         return None;
     }

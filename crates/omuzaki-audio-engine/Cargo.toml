@@ -12,10 +12,12 @@ repository.workspace = true
 cpal.workspace = true
 omuzaki-audio-api = { path = "../omuzaki-audio-api" }
 omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-doc-api = { path = "../omuzaki-doc-api" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 omuzaki-audio-mock = { path = "../omuzaki-audio-mock" }
@@ -27,7 +29,7 @@ workspace = true
 # Native only: device audio and real-time threads.
 [package.metadata.omuzaki]
 kind = "Implementation"
-summary = "the live audio engine: `CpalBackend` (ALSA, WASAPI, CoreAudio through cpal) and `LiveEngine`, the real-time executor of the mixer graph (sources, chains of registered nodes, faders, mutes, sends, the mic mode) run on the clock device's callback, with bridges for other inputs, taps at 48 and 16 kHz, feeds, meters and the engine clock; the ops `audio.devices`, `audio.mic`, `audio.status` and `audio.meters`"
+summary = "the live audio engine: `CpalBackend` (ALSA, WASAPI, CoreAudio through cpal) and `LiveEngine`, the real-time executor of the mixer graph (sources, chains of registered nodes, faders, mutes, sends, the mic mode) run on the clock device's callback, with bridges for other inputs, taps at 48 and 16 kHz, feeds, meters and the engine clock; the ops `audio.devices`, `audio.mic`, `audio.status`, `audio.meters` and `audio.bus.*`, and the follower that keeps the engine on the document's graph"
 wasm = false
 # The audio ops register themselves (ADR 0015, `cargo xtask lint-registers`).
 registers = true

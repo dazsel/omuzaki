@@ -4054,11 +4054,13 @@ dependencies = [
  "omuzaki-audio-api",
  "omuzaki-audio-mock",
  "omuzaki-core",
+ "omuzaki-doc-api",
  "omuzaki-doc-mock",
  "omuzaki-ops-api",
  "schemars",
  "serde",
  "serde_json",
+ "tracing",
 ]
 
 [[package]]
