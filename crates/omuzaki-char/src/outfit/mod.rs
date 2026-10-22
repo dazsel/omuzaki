@@ -32,6 +32,7 @@ pub mod blazer;
 pub mod boots;
 pub mod cloak;
 pub mod common;
+pub mod drape;
 pub mod dress;
 pub mod hood;
 pub mod legwear;

@@ -865,13 +865,14 @@ fn the_build_budget_holds_in_the_test_profile_too() {
 fn common_settings_validate_and_round_trip() {
     let common = GarmentCommon::default();
     common.validate().unwrap();
-    assert!(!common.cloth.enabled, "garments are skinned until cloth lands");
+    assert!(!common.cloth.enabled, "cloth is off until a garment turns it on");
     let value = serde_json::to_value(&common).unwrap();
     assert_eq!(serde_json::from_value::<GarmentCommon>(value).unwrap(), common);
     let bad = |v: serde_json::Value| serde_json::from_value::<GarmentCommon>(v).map(|c| c.validate().is_err());
     assert!(bad(json!({ "ease": 0.0 })).unwrap(), "no ease");
     assert!(bad(json!({ "ease": 0.2 })).unwrap(), "too much ease");
-    assert!(bad(json!({ "cloth": { "enabled": true } })).unwrap(), "cloth is off");
+    assert!(!bad(json!({ "cloth": { "enabled": true, "preset": "heavy" } })).unwrap(), "cloth turns on");
+    assert!(bad(json!({ "cloth": { "overrides": { "damping": -1.0 } } })).unwrap(), "a bad cloth override");
     assert!(
         bad(json!({ "fabric": { "kind": "stripes", "ground": "#000000", "stripe": "#ffffff", "period": 0.01,
         "width": 0.02, "direction": "vertical" } }))

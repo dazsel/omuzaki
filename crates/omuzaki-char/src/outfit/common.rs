@@ -63,7 +63,8 @@ pub struct GarmentCommon {
     pub ease: f64,
     /// The cloth it is made of: a plain colour or a woven pattern.
     pub fabric: FabricStyle,
-    /// Cloth simulation; off (the garment is skinned to the skeleton).
+    /// Cloth simulation: off (the garment is skinned to the skeleton) unless enabled; a garment that cannot drape
+    /// ignores it.
     pub cloth: ClothSpec,
 }
 
@@ -81,22 +82,7 @@ impl Validate for GarmentCommon {
     }
 }
 
-/// Cloth simulation for a garment. Garments are skinned for now: simulation arrives with the cloth presets, which add
-/// their settings here.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields, default)]
-pub struct ClothSpec {
-    /// Whether the garment is simulated. Must be `false` until garments can be simulated.
-    pub enabled: bool,
-}
-
-impl Validate for ClothSpec {
-    fn check(&self, c: &mut Check) {
-        if self.enabled {
-            c.fail("enabled", "garment cloth simulation isn't available yet: leave it false");
-        }
-    }
-}
+pub use super::drape::ClothSpec;
 
 // ---------------------------------------------------------------------------------------------------------- fabrics
 
