@@ -472,6 +472,7 @@ impl Worker {
         if live.ws.send(WsMessage::text(text)).is_err() {
             return false;
         }
+        self.watch.sent_one();
         live.pending.insert(id, pending);
         true
     }
@@ -487,6 +488,7 @@ impl Worker {
         let id = self.request_id();
         let text = serde_json::to_string(&Envelope::new(id.clone(), data)).map_err(|e| End::Failed(e.to_string()))?;
         ws.send(WsMessage::text(text)).map_err(|_| End::Lost)?;
+        self.watch.sent_one();
         let deadline = Instant::now() + timeout;
         loop {
             match self.rx.try_recv() {

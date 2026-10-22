@@ -208,6 +208,7 @@ struct WatchState {
     status: BridgeStatus,
     version: u64,
     polls: u64,
+    sent: u64,
 }
 
 /// The bridge's status, readable from any thread.
@@ -217,7 +218,7 @@ pub struct StatusWatch(Arc<(Mutex<WatchState>, Condvar)>);
 impl StatusWatch {
     fn new() -> Self {
         Self(Arc::new((
-            Mutex::new(WatchState { status: BridgeStatus::Disconnected, version: 0, polls: 0 }),
+            Mutex::new(WatchState { status: BridgeStatus::Disconnected, version: 0, polls: 0, sent: 0 }),
             Condvar::new(),
         )))
     }
@@ -243,6 +244,13 @@ impl StatusWatch {
     #[must_use]
     pub fn polls(&self) -> u64 {
         self.lock().polls
+    }
+
+    /// How many requests the bridge has written to the socket: a test waits until the other side has read them
+    /// all, so their arrival times are the times they were sent.
+    #[must_use]
+    pub fn sent(&self) -> u64 {
+        self.lock().sent
     }
 
     /// Waits up to `timeout` for a status `pred` accepts, and returns it.
@@ -304,6 +312,10 @@ impl StatusWatch {
     fn poll(&self) {
         self.lock().polls += 1;
         self.0.1.notify_all();
+    }
+
+    fn sent_one(&self) {
+        self.lock().sent += 1;
     }
 }
 
