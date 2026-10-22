@@ -4,6 +4,8 @@
 
 #![allow(clippy::expect_used)]
 
+#[path = "../examples/track_roi_timing/cpu.rs"]
+mod cpu;
 #[path = "../examples/track_roi_timing/percentile.rs"]
 mod percentile;
 #[path = "../examples/track_roi_timing/probe.rs"]
