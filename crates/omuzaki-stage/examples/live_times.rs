@@ -203,6 +203,8 @@ struct Samples {
     changes: Vec<String>,
     draw_calls: u32,
     triangles: u64,
+    /// The face layers the body paints, with their sizes in pixels.
+    face_layers: Vec<String>,
 }
 
 fn ms(s: Seconds) -> f64 {
@@ -263,6 +265,14 @@ fn measure(
 
     let base = body.base_pose();
     let has_face = matches!(&body, Body::Kit(character) if character.face.is_some());
+    let face_layers: Vec<String> = match &body {
+        Body::Kit(character) => character
+            .face_textures(UploadOptions::default().face_px_per_m)
+            .iter()
+            .map(|(spec, desc)| format!("{:?} {}x{}", spec.id, desc.size.x, desc.size.y))
+            .collect(),
+        Body::Avatar(_) => Vec::new(),
+    };
     let target = renderer.create_target(&TargetDesc { size: args.size, alpha: AlphaEncoding::Straight })?;
     let mut stage = body.stage(
         renderer,
@@ -290,7 +300,7 @@ fn measure(
     input.bind_camera(Some(CameraId("webcam".to_owned())), Mode::Apply)?;
     input.preview(true, Mode::Apply)?;
 
-    let mut samples = Samples::default();
+    let mut samples = Samples { face_layers, ..Samples::default() };
     let mut per_pass: BTreeMap<usize, Vec<f64>> = BTreeMap::new();
     let period = 1.0 / args.fps;
     let deadline = period * 1000.0;
@@ -401,6 +411,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         let name = if *id == KIT { "the kit character" } else { "the kit character imported from its VRM" };
         let samples = measure(&mut renderer, &doc, &store, &clock, id, &args, load.as_ref())?;
         println!("\n{name} ({id}): {} draw calls, {} triangles a frame", samples.draw_calls, samples.triangles);
+        if !samples.face_layers.is_empty() {
+            println!("  face layers painted: {}", samples.face_layers.join(", "));
+        }
         summary("gpu.frame", samples.gpu_frame, Some(ms(budget::LIVE_GPU)));
         summary("gpu.face_paint", samples.gpu_paint, Some(ms(budget::FACE_PAINT_GPU)));
         summary("  the painters", samples.gpu_painters, None);

@@ -117,6 +117,7 @@ fn the_cost_hint_charges_at_least_what_the_character_takes_on_the_renderer() {
     let charged = body.gpu_bytes(UploadOptions::default());
     let Body::Kit(built) = body else { panic!("a kit character") };
 
+    #[cfg_attr(not(feature = "wgpu"), allow(unused_mut, reason = "the GPU renderer joins with the wgpu feature"))]
     let mut renderers: Vec<(&str, Box<dyn Renderer>)> =
         vec![("mock", Box::new(omuzaki_render_mock::MockRenderer::new()))];
     #[cfg(feature = "wgpu")]
