@@ -1197,8 +1197,9 @@ impl Default for HairShading {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Streak {
-    /// Share of the eligible clumps that take the streak, `0..=1`. Each clump is picked by a hash of `seed` and its
-    /// position among the eligible clumps, so the same seed picks the same clumps on every build.
+    /// Share of the eligible clumps that take the streak, `0..=1`: exactly that share, rounded. The clumps are ranked
+    /// by a hash of `seed` and their position among the eligible clumps, and the lowest ranked take it, so the same
+    /// seed picks the same clumps on every build.
     pub fraction: f64,
     /// The streak colour: a palette slot or a literal.
     pub colour: ColourRef,
@@ -1354,15 +1355,20 @@ impl HairShading {
         let mid = palette.resolve(&self.mid)?.to_linear();
         for streak in &self.streaks {
             let colour = palette.resolve(&streak.colour)?.to_linear();
-            let eligible = groups
+            let mut eligible: Vec<(f64, &mut Option<Colour>)> = groups
                 .iter()
                 .zip(tints.iter_mut())
-                .filter(|(group, _)| streak.groups.is_empty() || streak.groups.contains(group));
-            for (index, (_, tint)) in eligible.enumerate() {
-                if unit(streak.seed, index) < streak.fraction {
-                    let current = tint.map_or(mid, Colour::to_linear);
-                    *tint = Some(Colour::from_linear(streak.paint(current, colour), 1.0));
-                }
+                .filter(|(group, _)| streak.groups.is_empty() || streak.groups.contains(group))
+                .enumerate()
+                .map(|(index, (_, tint))| (unit(streak.seed, index), tint))
+                .collect();
+            // Exactly the share asked for, rounded: the eligible clumps with the lowest draws.
+            #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let take = ((streak.fraction.clamp(0.0, 1.0) * eligible.len() as f64).round() as usize).min(eligible.len());
+            eligible.sort_by(|a, b| a.0.total_cmp(&b.0));
+            for (_, tint) in eligible.into_iter().take(take) {
+                let current = tint.map_or(mid, Colour::to_linear);
+                *tint = Some(Colour::from_linear(streak.paint(current, colour), 1.0));
             }
         }
         Ok(())
