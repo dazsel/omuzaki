@@ -173,6 +173,23 @@ impl FaceProjection {
             fade_to: fade_to + head_centre.z,
         }
     }
+
+    /// Where a window that [`planar`](Self::planar) made from this projection scaled by some factor places the head:
+    /// the head centre and the factor (mesh-local metres per head-local unit), or `None` for a window with no width.
+    /// The inverse of `planar(layer, centre)` on `FaceProjection { rect: rect × scale, front_fade: front_fade × scale }`,
+    /// which is how a character's materials carry the face at its stature, so a file's bake can find the face where the
+    /// renderer draws it.
+    pub fn placed(&self, layer: FaceLayerId, window: &PlanarWindow) -> Option<(Vec3, f32)> {
+        let scale = (window.max.x - window.min.x) / self.rect.width();
+        if !(scale.is_finite() && scale > 0.0) {
+            return None;
+        }
+        let z = match layer.composite().fade {
+            Fade::Soft => window.fade_from - self.front_fade[0] * scale,
+            Fade::Hard => window.fade_from,
+        };
+        Some((Vec3::new(window.min.x - self.rect.x0 * scale, window.min.y - self.rect.y0 * scale, z), scale))
+    }
 }
 
 /// Narrows a parameter (`f64`, as documents and ops see it) to the `f32` the real-time side uses: the boundary
@@ -805,6 +822,30 @@ mod tests {
         l.scale_opacity_from(99, 0.0);
         assert!(matches!(l.cmds()[2], Cmd::Fill { opacity, .. } if (opacity - 0.25).abs() < 1e-6));
         assert!(matches!(l.cmds()[0], Cmd::Fill { opacity, .. } if (opacity - 1.0).abs() < 1e-6));
+    }
+
+    #[test]
+    fn placed_inverts_planar_at_any_scale_for_soft_and_hard_layers() {
+        let projection =
+            FaceProjection { rect: FaceRect { x0: -0.08, x1: 0.08, y0: -0.07, y1: 0.05 }, front_fade: [0.02, 0.05] };
+        let centre = Vec3::new(0.01, 1.52, 0.03);
+        for scale in [0.7_f32, 1.0, 1.3] {
+            let scaled = FaceProjection {
+                rect: FaceRect {
+                    x0: projection.rect.x0 * scale,
+                    x1: projection.rect.x1 * scale,
+                    y0: projection.rect.y0 * scale,
+                    y1: projection.rect.y1 * scale,
+                },
+                front_fade: projection.front_fade.map(|z| z * scale),
+            };
+            for layer in FaceLayerId::ALL {
+                let (found, s) = projection.placed(layer, &scaled.planar(layer, centre)).unwrap();
+                assert!((s - scale).abs() < 1e-5 && (found - centre).length() < 1e-5, "{layer:?} at {scale}");
+            }
+        }
+        let flat = PlanarWindow { min: Vec2::ZERO, max: Vec2::new(0.0, 1.0), fade_from: 0.0, fade_to: 0.0 };
+        assert!(projection.placed(FaceLayerId::Base, &flat).is_none(), "a window with no width places nothing");
     }
 
     fn sample(rx: f32) -> DrawList {

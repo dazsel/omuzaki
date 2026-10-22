@@ -74,7 +74,12 @@ fn scene() -> IoScene {
 }
 
 fn baker() -> FaceBaker {
-    FaceBaker::new(BakerInput { profile: &mock_profile(), projection: mock_projection(), head_centre: CENTRE })
+    FaceBaker::new(BakerInput {
+        profile: &mock_profile(),
+        projection: mock_projection(),
+        head_centre: CENTRE,
+        scale: 1.0,
+    })
 }
 
 fn arkit() -> Vec<ExpressionName> {
@@ -182,7 +187,7 @@ fn the_registry_finds_the_real_baker_and_its_bake_exports() {
     assert_eq!(factory.priority(), 10, "the real baker outranks the mock");
     let profile = mock_profile();
     let baker = factory
-        .create(BakerInput { profile: &profile, projection: mock_projection(), head_centre: CENTRE })
+        .create(BakerInput { profile: &profile, projection: mock_projection(), head_centre: CENTRE, scale: 1.0 })
         .expect("the baker");
     let mut scene = scene();
     let report = baker.bake(&mut scene, &BakeRequest::new(arkit(), BODY_NODE), &NoProgress).expect("bake");
@@ -309,7 +314,12 @@ fn a_named_expression_is_baked_from_its_deltas() {
         playback: Playback::default(),
     };
     profile.expressions.0.insert(ExpressionId::new("smug").unwrap(), smug);
-    let baker = FaceBaker::new(BakerInput { profile: &profile, projection: mock_projection(), head_centre: CENTRE });
+    let baker = FaceBaker::new(BakerInput {
+        profile: &profile,
+        projection: mock_projection(),
+        head_centre: CENTRE,
+        scale: 1.0,
+    });
     let name = ExpressionName::parse("omuzaki_smug").unwrap();
     let mut channels = arkit();
     channels.push(name.clone());

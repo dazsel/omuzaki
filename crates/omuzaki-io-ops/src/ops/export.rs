@@ -244,7 +244,12 @@ fn bake_face(
     let (Some(face), Ok(Some(factory))) = (&exported.face, face_baker()) else {
         return Ok((PerfectSync::Off, None, Some(not_baked("the face can't be baked".to_owned()))));
     };
-    let input = BakerInput { profile: &face.profile, projection: face.projection, head_centre: face.head_centre };
+    let input = BakerInput {
+        profile: &face.profile,
+        projection: face.projection,
+        head_centre: face.head_centre,
+        scale: face.scale,
+    };
     let baker = factory.create(input).map_err(|e| from_io(e, "character"))?;
     let mut channels = arkit_channels()?;
     channels.extend(named_expressions(&face.profile));

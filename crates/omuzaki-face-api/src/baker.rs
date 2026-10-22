@@ -21,6 +21,9 @@ pub struct BakerInput<'a> {
     pub projection: FaceProjection,
     /// The head centre in bind space: the head-local origin that [`FaceProjection::planar`] is measured from.
     pub head_centre: Vec3,
+    /// Bind-space metres per head-local unit: the character's stature against its template's (and any export scale),
+    /// 1 at the template's size. The projection stays in head-local units, so the painted features keep their pixels.
+    pub scale: f32,
 }
 
 /// Builds the face's [`ExpressionBaker`] for one character. Implement it on a stateless type and register that type
