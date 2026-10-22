@@ -206,6 +206,7 @@
 mod access;
 mod agent;
 mod approvals;
+pub mod bridge;
 mod builtin;
 mod catalog;
 mod changes;
@@ -235,7 +236,7 @@ mod suggest;
 pub use access::{AccessToken, RECORD_VERSION, TokenId, TokenInfo, TokenRecord};
 pub use connection::Connections;
 pub use error::ServerError;
-pub use http::{HttpOptions, HttpServer, RevokedHook};
+pub use http::{HttpOptions, HttpServer, PairedHook, RevokedHook};
 pub use in_app::{InAppEnd, InAppLink, InAppSpec};
 pub use prompts::{PromptArg, PromptDef};
 pub use resources::{

@@ -17,7 +17,7 @@ use omuzaki_ops_api::{
 };
 use serde_json::json;
 
-use crate::approvals::{self, Entry};
+use crate::approvals::{self, Ask, Entry};
 use crate::executor::Executor;
 use crate::gate::{Allowance, queued};
 use crate::state::State;
@@ -134,6 +134,37 @@ impl Sessions for Executor {
                         .hint("raise the session's budget in advance")
                 }
             })
+        })
+    }
+
+    fn request_pairing(&self, id: SessionId) -> Result<ApprovalId, OpError> {
+        let at = self.env.clock.now();
+        self.with_state(|state| {
+            let index = state.sessions.index(id)?;
+            if state.sessions.has_ended(index) {
+                return Err(OpError::conflict(format!("session {} has ended", id.0)));
+            }
+            let info = state.sessions.info(index);
+            let (principal, actor, client) = (info.on_behalf_of.clone(), info.actor.clone(), info.client.clone());
+            if !state.sessions.pause_one(index, principal, PauseReason::Pairing, at) {
+                return Err(OpError::conflict(format!("session {} is already paused", id.0))
+                    .hint("ask for pairing as the session opens"));
+            }
+            changed(state, id, SessionChange::Paused)?;
+            let ask = Ask {
+                session: id,
+                actor,
+                need: Need::Pairing { client },
+                request: None,
+                grant: None,
+                required: 1,
+                carried: Allowance::default(),
+                at,
+            };
+            let pending = state.approvals.push(ask);
+            let approval = pending.id;
+            state.queue_event(Event::approval_requested(pending));
+            Ok(approval)
         })
     }
 
@@ -487,18 +518,15 @@ mod tests {
     use omuzaki_ops_api::{ErrorCode, Limits, SessionState, Transport};
 
     use super::*;
-    use crate::approvals::Ask;
 
-    /// An executor with one session paused for pairing and its `Pairing` approval queued. Nothing public queues one
-    /// yet (the transport's `request_pairing`, `bridges.md` §4, is a later contract change), so the test puts it there
-    /// the way that call will.
+    /// An executor with one session paused for pairing and its `Pairing` approval queued.
     fn paired() -> (Executor, SessionId, ApprovalId) {
         let clock = Arc::new(FakeClock::new(Seconds(0.0)));
         let exec = Executor::new(Box::new(MemDoc::new()), clock).unwrap();
         let alice = Actor::Person { name: "alice".into() };
         let spec = SessionSpec {
-            transport: Transport::Http { token: "bridge".into() },
-            client: "vts-tool".into(),
+            transport: Transport::Stdio,
+            client: "bridge-tool".into(),
             model: None,
             on_behalf_of: alice.clone(),
             grants: Grants::agent_default(),
@@ -509,21 +537,12 @@ mod tests {
             fence: Vec::new(),
         };
         let info = exec.open(spec).unwrap();
-        let id = {
-            let mut state = lock(&exec.env.state);
-            assert!(state.sessions.pause_one(0, alice, PauseReason::Pairing, Seconds(0.0)));
-            let ask = Ask {
-                session: info.id,
-                actor: info.actor.clone(),
-                need: Need::Pairing { client: info.client.clone() },
-                request: None,
-                grant: None,
-                required: 1,
-                carried: Allowance::default(),
-                at: Seconds(0.0),
-            };
-            state.approvals.push(ask).id
-        };
+        let id = exec.request_pairing(info.id).unwrap();
+        let state = exec.session(info.id).unwrap().state;
+        assert_eq!(state, SessionState::Paused { by: alice, reason: PauseReason::Pairing });
+        let pending = exec.approvals();
+        assert!(matches!(&pending[..], [a] if a.id == id && a.need == Need::Pairing { client: "bridge-tool".into() }));
+        assert_eq!(exec.request_pairing(info.id).unwrap_err().code, ErrorCode::Conflict, "one card at a time");
         (exec, info.id, id)
     }
 

@@ -447,6 +447,20 @@ pub trait Sessions: Send + Sync {
         Err(OpError::unsupported("this executor does not support Sessions::request_budget"))
     }
 
+    /// Holds a new session until a person pairs its credential (`agent-sessions.md` 10.2, `bridges.md` 4): under the
+    /// executor's lock, pauses it `Paused { by: <its principal>, reason: Pairing }` and queues
+    /// [`Need::Pairing`](crate::Need::Pairing) `{ client }`. Called by a transport for a connection whose credential no
+    /// person has paired yet. Only a person resolves the approval: Approve resumes the session, Reject ends it
+    /// revoked, and [`resume`](Self::resume) refuses a pairing pause.
+    ///
+    /// # Errors
+    /// `NotFound` for an unknown session; `Conflict` if it has ended or is already paused (for pairing or otherwise);
+    /// `Unsupported` from an executor without pairing (the default).
+    fn request_pairing(&self, id: SessionId) -> Result<ApprovalId, OpError> {
+        let _ = id;
+        Err(OpError::unsupported("this executor does not support Sessions::request_pairing"))
+    }
+
     /// The person's Stop. Person-only: `by` must be the session's principal, as for every control. In this order,
     /// under the executor:
     /// 1. **Pause and cancel.** Under the lock, atomically: pause the session ([`PauseReason::Person`], or keep a

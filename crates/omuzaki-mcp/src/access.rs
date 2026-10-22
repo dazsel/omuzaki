@@ -128,8 +128,14 @@ impl fmt::Debug for AccessToken {
     }
 }
 
-/// The newest [`TokenRecord::version`] this build reads.
-pub const RECORD_VERSION: u32 = 1;
+/// The newest [`TokenRecord::version`] this build reads. A bridge credential's record is version 2, so a build that
+/// doesn't know [`TokenRecord::bridge`] refuses it rather than admit it without its pairing; other records stay
+/// version 1.
+pub const RECORD_VERSION: u32 = 2;
+
+/// How many bridge credentials may wait to be paired at once. A bridge stores its credential before it connects, so
+/// one client needs one; more than this is something requesting credentials in a loop.
+pub(crate) const MAX_UNPAIRED_BRIDGES: usize = 8;
 
 /// What the host stores to re-admit an access token after a restart (see [`HttpServer::admit`](crate::HttpServer::admit)).
 ///
@@ -161,6 +167,11 @@ pub struct TokenRecord {
     /// True on a tombstone: the token was revoked and must never be admitted again.
     #[serde(default)]
     pub revoked: bool,
+    /// True for a bridge credential: one `omuzaki mcp` asked for to relay a client's stdio into the studio
+    /// (`agent-sessions.md` 10.2). Its sessions are stdio sessions, and each waits for a person to pair the credential
+    /// in Omuzaki's window until it is [`paired`](Self::paired). Version 2.
+    #[serde(default)]
+    pub bridge: bool,
     /// The keyed BLAKE3 hash of the secret, 64 lowercase hex digits.
     pub hash: String,
 }
@@ -172,7 +183,11 @@ const fn first_version() -> u32 {
 impl TokenRecord {
     fn new(label: String, grants: Grants, issuer: Actor, secret: &str) -> Self {
         let hash = to_hex(&hash_secret(secret));
-        Self { version: RECORD_VERSION, label, grants, issuer, paired: false, revoked: false, hash }
+        Self { version: 1, label, grants, issuer, paired: false, revoked: false, bridge: false, hash }
+    }
+
+    fn new_bridge(client: String, grants: Grants, issuer: Actor, secret: &str) -> Self {
+        Self { version: 2, bridge: true, ..Self::new(client, grants, issuer, secret) }
     }
 
     /// The hash as bytes, or why this record can't be admitted.
@@ -281,6 +296,17 @@ pub(crate) struct Registry {
     limits: Limits,
     /// Where a session's credential revocation (the registry asked for it) is sent; the port revokes the token.
     revocations: mpsc::UnboundedSender<TokenId>,
+    /// Where a bridge credential the person paired is sent; the port marks it paired and tells the host.
+    pairings: mpsc::UnboundedSender<TokenId>,
+    /// The key that lets a local `omuzaki mcp` ask for a bridge credential, once the host has enabled pairing.
+    pairing: RwLock<Option<PairingKey>>,
+}
+
+/// What [`Registry::enable_pairing`] set up: the hash of the key, and what the credentials it hands out hold.
+struct PairingKey {
+    hash: [u8; HASH_BYTES],
+    grants: Grants,
+    issuer: Actor,
 }
 
 impl Registry {
@@ -290,6 +316,7 @@ impl Registry {
         limits: Limits,
         cancel: CancellationToken,
         revocations: mpsc::UnboundedSender<TokenId>,
+        pairings: mpsc::UnboundedSender<TokenId>,
     ) -> Self {
         Self {
             server,
@@ -299,6 +326,8 @@ impl Registry {
             allowed_origins,
             limits,
             revocations,
+            pairings,
+            pairing: RwLock::default(),
         }
     }
 
@@ -324,6 +353,43 @@ impl Registry {
         let record = TokenRecord::new(label, grants, issuer, &secret);
         let id = self.insert(record.clone())?;
         Ok(AccessToken { id, secret, record })
+    }
+
+    /// Lets a local bridge ask for its own credential (see [`issue_bridge`](Self::issue_bridge)) by presenting the
+    /// returned key; the credentials it gets hold `grants` on behalf of `issuer`. A second call replaces the key.
+    pub(crate) fn enable_pairing(&self, grants: Grants, issuer: Actor) -> Result<String, ServerError> {
+        let key = new_secret()?;
+        let pairing = PairingKey { hash: hash_secret(&key), grants, issuer };
+        *self.pairing.write().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(pairing);
+        Ok(key)
+    }
+
+    /// Whether the request presents the pairing key.
+    pub(crate) fn authorize_pairing(&self, headers: &HeaderMap) -> Result<(), Denied> {
+        let presented = hash_secret(bearer(headers).ok_or(Denied::Missing)?);
+        let pairing = self.pairing.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        match &*pairing {
+            Some(key) if constant_time_eq(&key.hash, &presented) => Ok(()),
+            _ => Err(Denied::Unknown),
+        }
+    }
+
+    /// Creates a bridge credential for `client`, unpaired: every session opened with it waits for a person to pair it.
+    /// `None` when pairing isn't enabled or [`MAX_UNPAIRED_BRIDGES`] already wait.
+    pub(crate) fn issue_bridge(&self, client: String) -> Result<Option<AccessToken>, ServerError> {
+        let (grants, issuer) = {
+            let pairing = self.pairing.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(key) = &*pairing else { return Ok(None) };
+            (key.grants.clone(), key.issuer.clone())
+        };
+        let waiting = self.read().iter().filter(|e| e.record.bridge && !e.record.paired).count();
+        if waiting >= MAX_UNPAIRED_BRIDGES {
+            return Ok(None);
+        }
+        let secret = new_secret()?;
+        let record = TokenRecord::new_bridge(client, grants, issuer, &secret);
+        let id = self.insert(record.clone())?;
+        Ok(Some(AccessToken { id, secret, record }))
     }
 
     /// Registers a stored token without ever seeing its secret. The client's old secret works again.
@@ -460,7 +526,7 @@ impl Registry {
     fn endpoint(&self, id: TokenId, record: &TokenRecord) -> Result<Endpoint, ServerError> {
         let label = record.label.clone();
         let revocations = self.revocations.clone();
-        let credential = Arc::new(Credential::new(
+        let mut credential = Credential::new(
             label.clone(),
             record.issuer.clone(),
             record.paired,
@@ -469,7 +535,14 @@ impl Registry {
                 // The port is gone when nobody listens; then there is nothing left to revoke.
                 let _ = revocations.send(id);
             })),
-        ));
+        );
+        if record.bridge {
+            let pairings = self.pairings.clone();
+            credential = credential.bridge(Box::new(move || {
+                let _ = pairings.send(id);
+            }));
+        }
+        let credential = Arc::new(credential);
         let server = self.server.with_credential(record.grants.clone(), Some(Arc::clone(&credential)))?;
         let cancel = self.cancel.child_token();
         // Sessions that go quiet (a crashed client never sends DELETE) are dropped after the idle timeout, which also
@@ -636,7 +709,7 @@ mod tests {
         let back: TokenRecord = serde_json::from_str(&serde_json::to_string(&record()).unwrap()).unwrap();
         assert_eq!(back, record());
         let mut value = serde_json::to_value(record()).unwrap();
-        for field in ["version", "paired", "revoked"] {
+        for field in ["version", "paired", "revoked", "bridge"] {
             value.as_object_mut().unwrap().remove(field);
         }
         let old: TokenRecord = serde_json::from_value(value).unwrap();
@@ -700,7 +773,8 @@ mod tests {
             max_body_bytes: 4 * 1024 * 1024,
             body_timeout: Duration::from_secs(30),
         };
-        Registry::new(server, Vec::new(), limits, CancellationToken::new(), tokio::sync::mpsc::unbounded_channel().0)
+        let (revocations, pairings) = (tokio::sync::mpsc::unbounded_channel().0, tokio::sync::mpsc::unbounded_channel().0);
+        Registry::new(server, Vec::new(), limits, CancellationToken::new(), revocations, pairings)
     }
 
     #[test]

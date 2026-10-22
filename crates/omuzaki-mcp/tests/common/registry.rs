@@ -532,6 +532,34 @@ impl Sessions for Studio {
         self.lock().approvals.clone()
     }
 
+    fn request_pairing(&self, id: SessionId) -> Result<ApprovalId, OpError> {
+        let (info, approval) = {
+            let mut state = self.lock();
+            let approval = ApprovalId(state.next_approval);
+            let session =
+                state.sessions.iter_mut().find(|s| s.id == id).ok_or_else(|| OpError::not_found("no such session"))?;
+            if session.state != SessionState::Active {
+                return Err(OpError::conflict("the session is not active"));
+            }
+            session.state = SessionState::Paused { by: session.on_behalf_of.clone(), reason: PauseReason::Pairing };
+            session.pending.push(approval);
+            let info = session.clone();
+            state.next_approval += 1;
+            state.approvals.push(PendingApproval {
+                id: approval,
+                session: id,
+                actor: info.actor.clone(),
+                request: None,
+                need: Need::Pairing { client: info.client.clone() },
+                batch: String::new(),
+                requested_at: Seconds(1.0),
+            });
+            (info, approval)
+        };
+        self.emit(&Event::session_changed(info, SessionChange::Paused));
+        Ok(approval)
+    }
+
     fn resolve(&self, id: ApprovalId, decision: Decision, by: &Actor) -> Result<Resolution, OpError> {
         let (pending, request) = {
             let mut state = self.lock();

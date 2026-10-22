@@ -230,7 +230,13 @@ impl Session {
                 // The person who issued the token, unless the host issued it as itself.
                 let issuer = credential.issuer();
                 let person = if matches!(issuer, Actor::Person { .. }) { issuer.clone() } else { host.person.clone() };
-                (Transport::Http { token: credential.label().to_owned() }, person)
+                // A bridge relays a stdio client: the session is that client's, and says so (design 10.3).
+                let transport = if credential.is_bridge() {
+                    Transport::Stdio
+                } else {
+                    Transport::Http { token: credential.label().to_owned() }
+                };
+                (transport, person)
             }
             None if self.http => (Transport::Http { token: "mcp".to_owned() }, host.person.clone()),
             None => (Transport::Stdio, host.person.clone()),
@@ -255,6 +261,24 @@ impl Session {
             .inspect_err(|e| tracing::warn!(error = %e, "couldn't open a session for a connection"))?;
         let link = Link { id: Some(info.id), actor: info.actor };
         self.watch_registry(host, &link, after);
+        // A bridge credential no person has paired yet: the session waits, paused, on a pairing card (design 10.2).
+        if let Some(credential) = self.view.credential.as_ref().filter(|c| c.is_bridge() && !c.paired()) {
+            match host.sessions.request_pairing(info.id) {
+                Ok(_) => agent::watch_pairing(
+                    Arc::clone(&self.shared.hub),
+                    Arc::clone(&host.sessions),
+                    info.id,
+                    Arc::clone(credential),
+                    self.alive.clone(),
+                ),
+                Err(error) => {
+                    // Unpaired, the credential must not act: end the session rather than let it run unpaired.
+                    tracing::warn!(%error, "couldn't hold a bridge session for pairing; ending it");
+                    let _ = host.sessions.end(info.id, EndReason::Closed);
+                    return Err(error);
+                }
+            }
+        }
         Ok(link)
     }
 
