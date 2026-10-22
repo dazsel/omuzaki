@@ -812,7 +812,11 @@ fn the_thighs_read_as_two_at_every_corner_of_the_cube() {
 #[test]
 fn every_corner_at_the_slider_extremes_keeps_every_bone_a_sensible_length() {
     // The conformance suite's bone-length rule (0.4 to 2.5 times the default, 2.8 for the lateral roots), over all 32
-    // corners of the shape cube at all 256 corners of the proportion sliders (its own samples are random).
+    // corners of the shape cube at all 256 corners of the proportion sliders (its own samples are random). That is
+    // every pair in the nightly run (`OMUZAKI_FULL_TESTS`); the pull request gate, whose test shards have a time limit
+    // (#2300), takes every seventh pair, from a different start on each template. Seven and 256 share no factor, so each
+    // template still meets every shape corner and every slider corner.
+    let stride = if std::env::var_os("OMUZAKI_FULL_TESTS").is_some() { 1 } else { 7 };
     let lateral = [
         HumanoidBone::LeftUpperLeg,
         HumanoidBone::RightUpperLeg,
@@ -821,35 +825,34 @@ fn every_corner_at_the_slider_extremes_keeps_every_bone_a_sensible_length() {
         HumanoidBone::LeftUpperArm,
         HumanoidBone::RightUpperArm,
     ];
-    for id in templates() {
+    for (n, id) in templates().into_iter().enumerate() {
         let template = registry::find(id).unwrap();
         let lengths = |l: &BodyLayout| -> Vec<(HumanoidBone, f64)> {
             l.joints().filter_map(|(b, p)| Some((b, p.distance(l.joint64(b.parent()?)?)))).collect()
         };
         let default = lengths(&layout_of(id, &BodyShape::default()));
-        for shape_corner in 0..32 {
-            for slider_corner in 0..256_u32 {
-                let pick = |bit: u32| if slider_corner >> bit & 1 == 1 { 2.0 } else { 0.5 };
-                let p = Proportions {
-                    neck_length: pick(0),
-                    torso_length: pick(1),
-                    shoulder_width: pick(2),
-                    hip_width: pick(3),
-                    arm_length: pick(4),
-                    leg_length: pick(5),
-                    hand_size: pick(6),
-                    foot_size: pick(7),
-                };
-                let l = template.layout(&p, &corner(shape_corner), &HandParams::default());
-                for ((bone, now), (_, was)) in lengths(&l).into_iter().zip(&default) {
-                    let (low, high) =
-                        (0.4, if lateral.contains(&bone) { f64::from(LATERAL_ROOT_MAX_RATIO) } else { 2.5 });
-                    assert!(
-                        (low..=high).contains(&(now / was)),
-                        "{id}: {bone} is {:.2} times its default length at shape corner {shape_corner} and {p:?}",
-                        now / was
-                    );
-                }
+        for pair in (n % stride..32 * 256).step_by(stride) {
+            let (shape_corner, slider_corner) =
+                (u32::try_from(pair / 256).unwrap(), u32::try_from(pair % 256).unwrap());
+            let pick = |bit: u32| if slider_corner >> bit & 1 == 1 { 2.0 } else { 0.5 };
+            let p = Proportions {
+                neck_length: pick(0),
+                torso_length: pick(1),
+                shoulder_width: pick(2),
+                hip_width: pick(3),
+                arm_length: pick(4),
+                leg_length: pick(5),
+                hand_size: pick(6),
+                foot_size: pick(7),
+            };
+            let l = template.layout(&p, &corner(shape_corner), &HandParams::default());
+            for ((bone, now), (_, was)) in lengths(&l).into_iter().zip(&default) {
+                let (low, high) = (0.4, if lateral.contains(&bone) { f64::from(LATERAL_ROOT_MAX_RATIO) } else { 2.5 });
+                assert!(
+                    (low..=high).contains(&(now / was)),
+                    "{id}: {bone} is {:.2} times its default length at shape corner {shape_corner} and {p:?}",
+                    now / was
+                );
             }
         }
     }

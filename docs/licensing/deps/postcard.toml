@@ -1,0 +1,7 @@
+section = "rust"
+item = "postcard 1.1 (with cobs, embedded-io)"
+kind = "crate"
+used_for = "the live-show worker protocol's frame bodies between the output host and its supervised workers (`omuzaki-stream-api::worker`, docs/design/supervisor.md §4.2): compact, non-self-describing serde over a length-prefixed frame; default features off, `use-std` only"
+status = "yes"
+audit = "(crates.io: MIT OR Apache-2.0; cobs MIT OR Apache-2.0; embedded-io MIT OR Apache-2.0)"
+crates = ["postcard"]
