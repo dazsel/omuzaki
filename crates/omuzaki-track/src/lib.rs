@@ -15,8 +15,9 @@
 //! | [`geometry`] | the head-pose fit (Procrustes through a virtual camera) |
 //! | [`smoothing`] | the One-Euro landmark filter |
 //! | [`models`] | [`models::ModelDir`]: the verified model folder and its three loaded graphs |
-//! | [`provision`] | the app's face tracker: the official graphs through its verified cache and a runtime |
+//! | [`provision`] | the app's face tracker: the shipped model folder through the runtime it is made for |
 //! | [`task`] | the official `face_landmarker.task`, pinned, unpacked into a TFLite model folder |
+//! | [`doctor`] | [`doctor::Doctor`]: what is hurting tracking (light, glare, the frame edge, drops, load, jitter) and the fix |
 //! | [`pipeline`] | [`FaceTracker`]: the three graphs, tracking between frames, [`Mode`] |
 //! | [`sample`] | [`FaceSample`], [`StageTimings`] and [`to_track_frame`] |
 //! | [`error`] | [`FaceTrackError`] |
@@ -30,6 +31,7 @@
 pub mod blendshapes;
 pub mod calibration;
 pub mod detector;
+pub mod doctor;
 pub mod error;
 pub mod frame;
 pub mod geometry;

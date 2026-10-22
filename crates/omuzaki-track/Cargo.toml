@@ -32,6 +32,10 @@ tempfile.workspace = true
 zip.workspace = true
 
 [[bench]]
+name = "doctor"
+harness = false
+
+[[bench]]
 name = "pipeline"
 harness = false
 
