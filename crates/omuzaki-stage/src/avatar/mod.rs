@@ -31,6 +31,7 @@ use self::draw::AvatarPlan;
 use self::gaze::EyeGaze;
 use self::upload::AvatarUpload;
 use crate::error::StageError;
+use crate::frame::face::SETTLE_DT;
 use crate::frame::rig::RigFrame;
 use crate::frame::{FrameInput, FrameOutput, StageClock};
 use crate::scene::apply::{Owed, SceneLink, reserve};
@@ -154,6 +155,23 @@ impl AvatarStage {
     /// As [`tick`](Self::tick).
     pub fn redraw(&mut self, renderer: &mut dyn Renderer, input: &FrameInput) -> Result<FrameOutput, StageError> {
         self.draw(renderer, input, self.tick, "the still")
+    }
+
+    /// Steps the spring bones `steps` times at [`SETTLE_DT`] under the last frame's pose, goals and root, as the kit
+    /// stage's [`settle`](crate::frame::Stage::settle) does: the clock doesn't move and nothing is rendered.
+    pub fn settle(&mut self, steps: u32) {
+        for step in 0..steps {
+            let time = Seconds(f64::from(step) * f64::from(SETTLE_DT));
+            self.rig.solve(Tick { index: u64::from(step), time, dt: SETTLE_DT }, &self.pose, &self.goals);
+        }
+    }
+
+    /// [`settle`](Self::settle) from a clean start: the spring bones are reset to rest under the last frame's pose
+    /// first, so a still depends on that pose and `steps` alone, never on the frames before it.
+    pub fn settle_from_rest(&mut self, steps: u32) {
+        self.rig.reset();
+        self.rig.solve(Tick { dt: 0.0, ..self.tick }, &self.pose, &self.goals);
+        self.settle(steps);
     }
 
     /// Steps 4 and 5: expressions, the scene, the render.

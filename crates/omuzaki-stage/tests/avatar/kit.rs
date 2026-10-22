@@ -27,8 +27,8 @@ pub fn kit() -> BuiltCharacter {
         .expect("the mock character builds")
 }
 
-/// `built` as a VRM 1.0 file and read back: what a person would drop on the studio.
-pub fn as_vrm(built: &BuiltCharacter) -> IoScene {
+/// `built` as a VRM 1.0 file: what a person would drop on the studio.
+pub fn vrm_bytes(built: &BuiltCharacter) -> Vec<u8> {
     let mut gathered =
         gather(built, &GatherOptions { target_height: None, purpose: GatherPurpose::Vrm }).expect("gathers");
     add_avatar(&mut gathered, built).expect("the avatar block");
@@ -37,7 +37,15 @@ pub fn as_vrm(built: &BuiltCharacter) -> IoScene {
     meta.name = "Kit".into();
     meta.authors = vec!["Omuzaki".into()];
     meta.license_url = "https://vrm.dev/licenses/1.0/".into();
-    gathered.scene.provenance = Some(Provenance {
+    gathered.scene.provenance = Some(provenance());
+    let options = ExportOptions::default().with_perfect_sync(PerfectSync::Off);
+    let outcome = run_export(&Vrm1Exporter, &gathered.scene, &ExportCtx::new(&options)).expect("exports");
+    outcome.files.into_iter().next().expect("the .vrm file").bytes
+}
+
+/// The record of a character the project made itself.
+pub fn provenance() -> Provenance {
+    Provenance {
         source: Source::Authored,
         author: Some("Omuzaki".into()),
         licence: "LicenseRef-Omuzaki-User".into(),
@@ -45,10 +53,12 @@ pub fn as_vrm(built: &BuiltCharacter) -> IoScene {
         commercial: Commercial::Ok,
         consent: None,
         private_test: false,
-    });
-    let options = ExportOptions::default().with_perfect_sync(PerfectSync::Off);
-    let outcome = run_export(&Vrm1Exporter, &gathered.scene, &ExportCtx::new(&options)).expect("exports");
-    let bytes = outcome.files.into_iter().next().expect("the .vrm file").bytes;
+    }
+}
+
+/// `built` as a VRM 1.0 file, read back.
+pub fn as_vrm(built: &BuiltCharacter) -> IoScene {
+    let bytes = vrm_bytes(built);
     run_import(&Vrm1Importer, &ImportInput::new(&bytes), &ImportCtx::new(&ImportOptions::default()))
         .expect("reads back")
         .scene

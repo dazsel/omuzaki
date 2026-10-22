@@ -7,6 +7,7 @@
 // Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 #![allow(clippy::cast_precision_loss)]
+#![allow(clippy::disallowed_methods, reason = "the evidence images are written beside the test, not by an op")]
 
 use omuzaki_anim_api::{BoneId, Channel, HumanoidBone, HumanoidPose};
 use omuzaki_avatar_api::avatar::ImportedAvatar;
@@ -41,8 +42,8 @@ fn stage_on(renderer: &mut dyn Renderer, avatar: ImportedAvatar, size: UVec2) ->
     (stage, target)
 }
 
-fn input_at(pose: HumanoidPose) -> FrameInput {
-    FrameInput { pose, ..FrameInput::default() }
+fn input_at(pose: &HumanoidPose) -> FrameInput {
+    FrameInput { pose: *pose, ..FrameInput::default() }
 }
 
 /// The expression with a morph bind, and a channel that drives it.
@@ -81,7 +82,7 @@ fn at_its_bind_pose_every_joint_of_the_imported_kit_is_the_identity() {
     let bones = palette_bones(&avatar);
     let mut renderer = MockRenderer::new();
     let (mut stage, target) = stage_on(&mut renderer, avatar, UVec2::new(32, 32));
-    stage.tick(&mut renderer, &input_at(base)).expect("a frame");
+    stage.tick(&mut renderer, &input_at(&base)).expect("a frame");
     let scene = stage.scene();
     assert_eq!(scene.instances.len(), stage.avatar().meshes.len(), "one instance per mesh");
     assert_eq!(scene.joints.len(), bones.len(), "one palette entry per joint of every mesh");
@@ -108,11 +109,11 @@ fn a_turned_head_moves_only_the_joints_of_the_head() {
     let base = avatar.bind;
     let mut renderer = MockRenderer::new();
     let (mut stage, target) = stage_on(&mut renderer, avatar, UVec2::new(32, 32));
-    stage.tick(&mut renderer, &input_at(base)).expect("a frame at rest");
+    stage.tick(&mut renderer, &input_at(&base)).expect("a frame at rest");
     let rest = stage.scene().joints.clone();
     let mut turned = base;
     turned.set(HumanoidBone::Head, Quat::from_rotation_y(0.5) * base.get(HumanoidBone::Head));
-    stage.tick(&mut renderer, &input_at(turned)).expect("a frame");
+    stage.tick(&mut renderer, &input_at(&turned)).expect("a frame");
     let skeleton = &stage.avatar().skeleton;
     for (i, ((now, before), bone)) in stage.scene().joints.iter().zip(&rest).zip(&bones).enumerate() {
         let moved = !now.abs_diff_eq(*before, 1e-4);
@@ -129,7 +130,7 @@ fn a_driven_channel_reaches_the_scene_as_its_morph_weight() {
     let base = avatar.bind;
     let mut renderer = MockRenderer::new();
     let (mut stage, target) = stage_on(&mut renderer, avatar, UVec2::new(32, 32));
-    let mut input = input_at(base);
+    let mut input = input_at(&base);
     stage.tick(&mut renderer, &input).expect("a neutral frame");
     assert!(stage.scene().morph_weights.iter().all(|w| *w == 0.0), "a neutral face moves no morph");
     input.channels.set(channel, 0.75);
@@ -159,8 +160,8 @@ fn any_stage_runs_an_avatar_through_the_one_frame_loop() {
     let mut renderer = MockRenderer::new();
     let (stage, target) = stage_on(&mut renderer, avatar, UVec2::new(32, 32));
     let mut any = AnyStage::from(stage);
-    let first = any.tick(&mut renderer, &input_at(base)).expect("a frame");
-    let second = any.tick(&mut renderer, &input_at(base)).expect("a frame");
+    let first = any.tick(&mut renderer, &input_at(&base)).expect("a frame");
+    let second = any.tick(&mut renderer, &input_at(&base)).expect("a frame");
     assert_eq!(second.tick.index, first.tick.index + 1, "the fixed clock steps once a frame");
     assert!(any.trigger_expressions().0.is_empty(), "an imported face has no painted expressions for the triggers");
     any.release(&mut renderer).expect("released");
@@ -208,7 +209,7 @@ fn on_the_gpu_the_imported_kit_has_the_kit_characters_silhouette() {
         StageClock::fixed(60.0),
     )
     .expect("the kit stages");
-    kit_stage.tick(&mut renderer, &input_at(base)).expect("the kit renders");
+    kit_stage.tick(&mut renderer, &input_at(&base)).expect("the kit renders");
     let kit_image = renderer.read_target(kit_target).expect("read");
 
     let avatar_base = avatar.bind;
@@ -216,7 +217,7 @@ fn on_the_gpu_the_imported_kit_has_the_kit_characters_silhouette() {
     let mut avatar_stage =
         AvatarStage::new(&mut renderer, avatar, scene, avatar_target, Quality::offline(), StageClock::fixed(60.0))
             .expect("the avatar stages");
-    avatar_stage.tick(&mut renderer, &input_at(avatar_base)).expect("the avatar renders");
+    avatar_stage.tick(&mut renderer, &input_at(&avatar_base)).expect("the avatar renders");
     let avatar_image = renderer.read_target(avatar_target).expect("read");
 
     if let Some(dir) = std::env::var_os("OMUZAKI_EVIDENCE_DIR") {
@@ -227,7 +228,7 @@ fn on_the_gpu_the_imported_kit_has_the_kit_characters_silhouette() {
         }
     }
 
-    let covered = |rgba: &[u8]| rgba.chunks_exact(4).map(|p| p[3] > 127).collect::<Vec<_>>();
+    let covered = |rgba: &[u8]| rgba.as_chunks::<4>().0.iter().map(|p| p[3] > 127).collect::<Vec<_>>();
     let (a, b) = (covered(&kit_image.rgba8), covered(&avatar_image.rgba8));
     let both = a.iter().zip(&b).filter(|(x, y)| **x && **y).count();
     let either = a.iter().zip(&b).filter(|(x, y)| **x || **y).count();

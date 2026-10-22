@@ -1,5 +1,5 @@
 //! The bone route of an imported avatar's gaze (`docs/design/byom.md` D4; VRM 1.0 `lookAt.md`): the eight `eyeLook*`
-//! channels turn the eye bones through the file's range maps. The other routes need nothing here: the native ARKit and
+//! channels turn the eye bones through the file's range maps. The other routes need nothing here: the native `ARKit` and
 //! presets routes are expressions, which the evaluator drives.
 //!
 //! Axes are the normalised humanoid space the pose is written in: the character faces +Z, its left is +X, so each eye

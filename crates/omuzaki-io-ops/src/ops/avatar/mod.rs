@@ -336,13 +336,17 @@ impl Stored<'_> {
 /// # Errors
 /// `NotFound` when the original is not in the store; no store service is an error too.
 pub(crate) fn stored<'a>(ctx: &omuzaki_ops_api::OpCtx<'a>, def: &AvatarDef) -> Result<Stored<'a>, OpError> {
-    let store = ctx.service::<dyn Store>()?;
+    stored_in(ctx.doc, ctx.service::<dyn Store>()?, def)
+}
+
+/// [`stored`] from a document and a store, outside an op.
+fn stored_in<'a>(doc: &dyn DocRead, store: &'a dyn Store, def: &AvatarDef) -> Result<Stored<'a>, OpError> {
     let hash = def.source.hash;
     let bytes = store.get(&hash).map_err(|e| {
         OpError::not_found(format!("the original of this avatar ({hash}) isn't in the store: {e}"))
             .hint("import the model again")
     })?;
-    let sidecars = StoredSidecars { store, sidecars: recorded_sidecars(ctx.doc, &hash) };
+    let sidecars = StoredSidecars { store, sidecars: recorded_sidecars(doc, &hash) };
     Ok(Stored { bytes, name: def.source.file.clone(), format: importer_id(def.source.format), sidecars })
 }
 
@@ -355,6 +359,34 @@ pub(crate) fn rebuild(ctx: &omuzaki_ops_api::OpCtx<'_>, def: AvatarDef) -> Resul
     let original = stored(ctx, &def)?;
     let mtoon = mtoon(ctx.service::<Capabilities>().ok());
     prepare(&original.source(), Some(def), &ImportOptions::default(), mtoon, ctx.clock, ctx.doc)
+}
+
+/// The imported character `id` as the stage runs it: its avatar node read from `doc` and the avatar rebuilt from the
+/// original in `store` (D5: the avatar is rebuilt on every load, never stored). `mtoon` is what the renderer draws
+/// ([`Capabilities::mtoon`]). This is how the studio, the CLI and the outputs put an imported character on a stage;
+/// the findings of the rebuild were shown at import and are not repeated here.
+///
+/// # Errors
+/// `NotFound` for no such character or an original missing from the store; `Invalid` for a character built from parts
+/// or a model that no longer prepares.
+pub fn load_avatar(
+    doc: &dyn DocRead,
+    store: &dyn Store,
+    id: &CharId,
+    mtoon: MtoonSupport,
+    clock: &dyn Clock,
+) -> Result<ImportedAvatar, OpError> {
+    let def = read_def(doc, id)?;
+    let original = stored_in(doc, store, &def)?;
+    let prepared = prepare(&original.source(), Some(def), &ImportOptions::default(), mtoon, clock, doc)?;
+    require_clean(&prepared.report, "character")?;
+    Ok(prepared.avatar)
+}
+
+/// True if character `id` in `doc` was imported as an avatar rather than built from parts.
+#[must_use]
+pub fn is_imported(doc: &dyn DocRead, id: &CharId) -> bool {
+    doc.get(&paths::character(id)).is_some_and(|node| node.get("avatar").is_some())
 }
 
 /// The patch that replaces the avatar node of `id` with `def`, or an empty patch when it is already exactly that.
