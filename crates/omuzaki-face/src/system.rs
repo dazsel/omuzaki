@@ -260,6 +260,15 @@ impl FaceSystem {
                 slot.stale = false;
             }
         }
+        // A GPU rasteriser gets the changed layers before their paints, so it can draw them together.
+        if let (Some(gpu), Painter::Real(painter)) = (self.gpu.as_mut(), &self.painter) {
+            gpu.begin_frame();
+            for spec in layers.iter().filter(|spec| update.changed[spec.id as usize]) {
+                if let Err(e) = gpu.stage(spec, &self.drawing[spec.id], painter.sections().layer(spec.id)) {
+                    tracing::debug!("the {:?} face layer is painted on its own: {e}", spec.id);
+                }
+            }
+        }
         // Recorded only now that every layer succeeded: a failure above leaves all of them to be reported next time.
         for (slot, spec) in self.slots.iter_mut().zip(layers) {
             if update.changed[spec.id as usize] {

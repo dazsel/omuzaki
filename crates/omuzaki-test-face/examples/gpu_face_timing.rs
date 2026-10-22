@@ -5,14 +5,16 @@
 //!
 //! ```text
 //! cargo run --release -p omuzaki-test-face --example gpu_face_timing -- [--frames N] [--probe] [--report DIR]
-//!     [--class reported|measured|scaled|relative] [--previous report.json] [--strict] [--paced FPS]
+//!     [--class reported|measured|scaled|relative] [--previous report.json] [--strict] [--paced FPS] [--alone]
 //! ```
 //!
 //! `--frames` is how many repaints each case is timed over (2,000 by default); `--probe` uses the 256 px wide probe size
 //! instead of the layers' real size. A repaint alternates the neutral face with the case's face, through the sections
 //! path (`VelloRasterizer`, one for all layers as the face system keeps it), so a mouth-only change repaints only the
 //! mouth. Each repaint is recorded into the encoders the renderer lends through `PaintTarget::native`, one per layer
-//! texture, and submitted together.
+//! texture, and submitted together. Like the face system, the probe first stages the frame's changed layers
+//! (`GpuRasterizer::stage`), so the first layer's paint rasterises all of them in one run of Vello's stages and every
+//! layer's paint resolves its own part; `--alone` paints each layer on its own instead, one run per layer.
 //!
 //! Every repaint follows a load: a compute pass that keeps the GPU busy for about 2 ms, submitted just before it. That
 //! does two things. The GPU runs at the clocks of a busy frame (with nothing else to do it drops to its idle clock, and
@@ -210,6 +212,8 @@ struct Arguments {
     strict: bool,
     /// The frame rate of the paced reading, if one is asked for.
     paced: Option<u32>,
+    /// Paint each layer on its own (no staging, one Vello run per layer).
+    alone: bool,
 }
 
 /// The command line, from `std::env::args`.
@@ -222,6 +226,7 @@ fn arguments() -> Result<Arguments, String> {
         previous: None,
         strict: false,
         paced: None,
+        alone: false,
     };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -229,6 +234,7 @@ fn arguments() -> Result<Arguments, String> {
         match arg.as_str() {
             "--probe" => parsed.probe = true,
             "--strict" => parsed.strict = true,
+            "--alone" => parsed.alone = true,
             "--report" => parsed.report = Some(PathBuf::from(value()?)),
             "--previous" => parsed.previous = Some(PathBuf::from(value()?)),
             "--class" => parsed.class = Class::parse(&value()?).map_err(|e| e.to_string())?,
@@ -250,7 +256,7 @@ fn arguments() -> Result<Arguments, String> {
             other => {
                 return Err(format!(
                     "unknown argument {other:?}; use --frames N, --probe, --report DIR, --class CLASS, --previous FILE \
-                     --strict and --paced FPS"
+                     --strict, --paced FPS and --alone"
                 ));
             }
         }
@@ -551,6 +557,8 @@ struct Bench<'a> {
     load: &'a Load,
     /// The time between paced repaints; `None` for the steady reading (the load in front of each, no pause).
     pace: Option<Duration>,
+    /// Stage each frame's layers first, as the face system does, so they rasterise in one run.
+    staged: bool,
 }
 
 /// What the renderer lends a face painter through `PaintTarget::native`: the device, the queue, the layer's texture and
@@ -590,7 +598,17 @@ impl Bench<'_> {
                     }
                     Some(_) => Some(marker(device, &self.stamps.set, base)),
                 };
-                let (mut elapsed, mut sections) = (0.0, 0);
+                // As the face system does: the frame's changed layers are staged, so the first paint rasterises them
+                // together and each layer's paint resolves its part.
+                let staging = Instant::now();
+                if self.staged {
+                    rasterizer.begin_frame();
+                    for spec in specs {
+                        let (list, layer_sections) = (&frame.drawing[spec.id], &frame.sections[spec.id as usize]);
+                        rasterizer.stage(spec, list, layer_sections).map_err(|e| e.to_string())?;
+                    }
+                }
+                let (mut elapsed, mut sections) = (staging.elapsed().as_secs_f64() * 1e3, 0);
                 for (at, (spec, native)) in specs.iter().zip(&mut natives).enumerate() {
                     let first = base + 1 + u32::try_from(at * LAYER_STAMPS).map_err(|e| e.to_string())?;
                     rasterizer.time_passes(Some((self.stamps.set.clone(), first)));
@@ -719,12 +737,14 @@ fn run() -> Result<(), String> {
 
     println!(
         "Graphics backend: {backend:?}{}. Layers {}; {} repaints per case after {WARM_UP} warm-up, each after a \
-         {LOAD_MS} ms GPU load. Times in ms, p50 / p95.",
+         {LOAD_MS} ms GPU load{}. Times in ms, p50 / p95.",
         if software { " (a software adapter: not a timing)" } else { "" },
         sizes.join(", "),
-        args.frames
+        args.frames,
+        if args.alone { "; each layer on its own" } else { "; the changed layers in one Vello run" }
     );
-    let steady = Bench { device: &device, queue: &queue, stamps: &stamps, load: &load, pace: None };
+    let steady =
+        Bench { device: &device, queue: &queue, stamps: &stamps, load: &load, pace: None, staged: !args.alone };
     let mut metrics = table(&steady, &mut painter, &neutral, &args)?;
     if let Some(fps) = args.paced {
         println!();
@@ -742,6 +762,11 @@ fn run() -> Result<(), String> {
          repaint after a {LOAD_MS} ms GPU load (the steady-clock reading of spec §10); the other `{BUDGET_KEY}.*` rows \
          are the lighter cases, reported only. Graphics backend {backend:?}.",
     )];
+    if args.alone {
+        notes.push(
+            "`--alone`: each layer painted on its own, one Vello run per layer (the path before the batch)".to_owned(),
+        );
+    }
     if let Some(fps) = args.paced {
         notes.push(format!(
             "the `.paced` rows time the same repaints at {fps} fps with no load, the paced reading of spec §10: the GPU \
