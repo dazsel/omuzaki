@@ -21,16 +21,23 @@ use omuzaki_render_api::{ParamValue, Toon};
 
 use super::{ParamSpec, ProgramSpec, register_shading_program};
 
-register_shading_program!(ProgramSpec {
-    name: "band-highlight",
-    params: &[
-        ParamSpec { name: "dir", default: ParamValue::Vec3(Vec3::new(-0.32, 0.58, 0.75)), range: Some((-1.0, 1.0)) },
-        ParamSpec::colour("colour", 0x00ff_f2c8),
-        ParamSpec::float("edge0", 0.86, 0.0, 1.0),
-        ParamSpec::float("edge1", 0.90, 0.0, 1.0),
-        ParamSpec::float("strength", 0.6, 0.0, 1.0),
-    ],
-    attributes: &[],
-    toon: |_| Toon::default(),
-    wgsl: include_str!("../shader/program_band_highlight.wgsl"),
-});
+register_shading_program!(
+    "band-highlight",
+    ProgramSpec {
+        name: "band-highlight",
+        params: &[
+            ParamSpec {
+                name: "dir",
+                default: ParamValue::Vec3(Vec3::new(-0.32, 0.58, 0.75)),
+                range: Some((-1.0, 1.0))
+            },
+            ParamSpec::colour("colour", 0x00ff_f2c8),
+            ParamSpec::float("edge0", 0.86, 0.0, 1.0),
+            ParamSpec::float("edge1", 0.90, 0.0, 1.0),
+            ParamSpec::float("strength", 0.6, 0.0, 1.0),
+        ],
+        attributes: &[],
+        toon: |_| Toon::default(),
+        wgsl: include_str!("../shader/program_band_highlight.wgsl"),
+    }
+);
