@@ -9,7 +9,8 @@
 //! Angles follow the kit's [`loft_y`](crate::kit::loft::loft_y): `phi = 0` is the front of the section and `pi / 2` its
 //! `across` side, which is the character's left (+x) for every region.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use omuzaki_anim_api::HumanoidBone;
 use omuzaki_char_api::{BodyFit, BodyRegion, JointRef, RegionEnd, Section};
@@ -277,14 +278,14 @@ fn clear_section(ring: &mut Ring, region: BodyRegion, section: &Section, offset:
 /// Grows `ring`, keeping its shape and centre, until it holds every one of `points` (in its plane): of the rings that
 /// do, the one of least area, widened and deepened by as little as each needs.
 fn grow_to_hold(ring: &mut Ring, points: &[DVec2]) {
-    let points: Vec<DVec2> = points.iter().copied().filter(|q| q.is_finite()).collect();
     let e = ring.exponent;
     let r = ring.radii;
     let level = |q: DVec2, r: DVec2| ((q.x / r.x).abs().powf(e) + (q.y / r.y).abs().powf(e)).powf(1.0 / e);
-    let scale = points.iter().map(|q| level(*q, r)).fold(1.0_f64, f64::max);
-    if scale <= 1.0 {
-        return;
-    }
+    // A ring only grows, so what it holds already it holds at every size tried.
+    let points: Vec<(DVec2, f64)> =
+        points.iter().filter(|q| q.is_finite()).map(|q| (*q, level(*q, r))).filter(|(_, l)| *l > 1.0).collect();
+    let Some(scale) = points.iter().map(|(_, l)| *l).reduce(f64::max) else { return };
+    let points: Vec<DVec2> = points.into_iter().map(|(q, _)| q).collect();
     // For each width from the ring's own to the whole scale's, the least depth that holds every point there: a point
     // needs `|q_y| / (1 - |q_x / r_x|^e)^(1/e)`, and can't be held at a width it lies beyond.
     let depth = |width: f64| {
@@ -431,6 +432,9 @@ pub struct Surface {
     offset: f64,
     shape: Option<Arc<ShapeFn>>,
     weights: RegionWeights,
+    /// The plain rings already worked out, by `t`: clearing a neighbour searches the fit, and a garment asks for the
+    /// same rings many times over (every projection walks the same samples).
+    rings: Arc<Mutex<HashMap<u64, Ring>>>,
 }
 
 impl std::fmt::Debug for Surface {
@@ -455,7 +459,7 @@ impl Surface {
             return Err(GarmentError::invalid("offset", format!("{offset} must be finite")));
         }
         let weights = RegionWeights::of(fit.as_ref(), region)?;
-        Ok(Self { fit, region, exponent, offset, shape: None, weights })
+        Ok(Self { fit, region, exponent, offset, shape: None, weights, rings: Arc::default() })
     }
 
     /// The same surface reshaped by `shape`.
@@ -490,7 +494,14 @@ impl Surface {
     /// # Errors
     /// As [`ring_at`].
     pub fn ring(&self, t: f64) -> Result<Ring, GarmentError> {
-        ring_at(self.fit.as_ref(), self.region, t, self.exponent, self.offset)
+        if let Some(ring) = self.rings.lock().ok().and_then(|rings| rings.get(&t.to_bits()).copied()) {
+            return Ok(ring);
+        }
+        let ring = ring_at(self.fit.as_ref(), self.region, t, self.exponent, self.offset)?;
+        if let Ok(mut rings) = self.rings.lock() {
+            rings.insert(t.to_bits(), ring);
+        }
+        Ok(ring)
     }
 
     /// The point at `(t, phi)`.

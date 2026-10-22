@@ -10,7 +10,8 @@
 //! [`enclosing_scale`], so the parts that hang on the shirt (collar, tie) read the shirt's own surface back with
 //! [`shirt_shell`], which undoes that widening.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use omuzaki_anim_api::HumanoidPose;
 use omuzaki_char_api::{BodyFit, BodyRegion, JointRef, RegionEnd, Section};
@@ -65,6 +66,9 @@ pub struct Column {
     torso: Span,
     neck: Span,
     exponent: f64,
+    /// The rings already worked out, by height and offset: clearing the thighs searches the fit, and a garment asks for
+    /// the same rings row after row.
+    rings: Arc<Mutex<HashMap<(u64, u64), Ring>>>,
 }
 
 impl Column {
@@ -77,7 +81,7 @@ impl Column {
         crate::outfit::loft::check_exponent(exponent)?;
         let torso = Span::of(fit.as_ref(), BodyRegion::Torso)?;
         let neck = Span::of(fit.as_ref(), BodyRegion::Neck)?;
-        Ok(Self { fit, torso, neck, exponent })
+        Ok(Self { fit, torso, neck, exponent, rings: Arc::default() })
     }
 
     /// The fit the column reads.
@@ -115,8 +119,16 @@ impl Column {
             return Err(GarmentError::invalid("height", "a ring's height is not a number".to_owned()));
         }
         let y = y.clamp(self.torso.bottom, self.neck.top);
+        let key = (y.to_bits(), offset.to_bits());
+        if let Some(ring) = self.rings.lock().ok().and_then(|rings| rings.get(&key).copied()) {
+            return Ok(ring);
+        }
         let span = if y <= self.torso.top { self.torso } else { self.neck };
-        ring_at(self.fit.as_ref(), span.region, span.t(y).clamp(0.0, 1.0), self.exponent, offset)
+        let ring = ring_at(self.fit.as_ref(), span.region, span.t(y).clamp(0.0, 1.0), self.exponent, offset)?;
+        if let Ok(mut rings) = self.rings.lock() {
+            rings.insert(key, ring);
+        }
+        Ok(ring)
     }
 
     /// The point at height `y` and angle `phi` (`0` the front, `pi / 2` the left), `offset` metres out: the
