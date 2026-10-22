@@ -16,6 +16,13 @@ use crate::ops::character::access::not_found;
 /// enabled, mirrored and dynamic as it was; undo restores the fringe it had.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "part": "hair", "group": "b-bangs", "preset": "side-swept"},
+        {"character": "kit", "part": "hair", "group": "b-bangs", "preset": "blunt"}
+    ],
+    "x-omuzaki-fixture" = "character"
+))]
 pub struct HairBangsPreset {
     /// The character the hair belongs to.
     pub character: CharId,

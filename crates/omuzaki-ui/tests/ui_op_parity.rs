@@ -14,7 +14,7 @@ use egui::accesskit::Role;
 use egui::{Event, Key, Modifiers, Rect, Ui, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
-use omuzaki_char_api::{BuildServices, RegistryBuilder};
+use omuzaki_char_api::{BuildServices, PartId, RegistryBuilder};
 use omuzaki_ops_api::{Actor, Grants, Mode, Request, Runner, Services};
 use omuzaki_ui::ds::icons;
 use omuzaki_ui::ds::testing::{drag_for, press_for};
@@ -68,9 +68,14 @@ min_size: [240.0, 160.0], order: 991, build: |_| Box::new(Planted) }
 
 const WINDOW: egui::Vec2 = vec2(1920.0, 1080.0);
 
+/// The kit character's part the inspector is audited on.
+const INSPECTED: &str = "head";
+
 struct Studio {
     shell: Shell,
     recorder: Arc<Recorder>,
+    /// The selection the edit panels share.
+    focus: EditFocus,
 }
 
 /// The studio as `main.rs` builds it, with the kit character open, its runner the recorder over the executor. With
@@ -84,7 +89,8 @@ fn studio(back_door: bool) -> Harness<'static, Studio> {
     }
     let recorder = Recorder::new(Arc::clone(&core.runner)).unwrap_or_else(|e| panic!("{e}"));
     let mut shell = Shell::new(Arc::clone(&recorder) as Arc<dyn Runner>, None);
-    shell.insert_view(EditFocus::new(character));
+    let focus = EditFocus::new(character);
+    shell.insert_view(focus.clone());
     shell.insert_view(Agents(Arc::clone(&core.sessions)));
     shell.insert_view(ViewportServices {
         gpu: None,
@@ -95,7 +101,7 @@ fn studio(back_door: bool) -> Harness<'static, Studio> {
         .with_size(WINDOW)
         .with_pixels_per_point(1.0)
         .with_step_dt(1.0 / 60.0)
-        .build_ui_state(|ui: &mut Ui, s: &mut Studio| s.shell.ui(ui), Studio { shell, recorder });
+        .build_ui_state(|ui: &mut Ui, s: &mut Studio| s.shell.ui(ui), Studio { shell, recorder, focus });
     h.run_steps(4);
     h.state().recorder.settle();
     h
@@ -206,6 +212,11 @@ fn audit(h: &mut Harness<'_, Studio>, only: Option<&str>) -> Audit {
     let (mut operated, mut changed) = (0, 0);
     for def in registry.panels().iter().filter(|d| only.is_none_or(|id| d.id == id)) {
         h.state_mut().shell.show_panel(def.id);
+        if def.id == "inspector" {
+            // The inspector edits the selected part; select one with plenty to edit rather than whichever part the
+            // outliner's rows left selected, which depends on the order the kit's parts build in.
+            h.state().focus.select(PartId::new(INSPECTED).unwrap_or_else(|e| panic!("{e}")));
+        }
         h.run_steps(4);
         let Some((_, body)) = h.state().shell.panel_rects().into_iter().find(|(id, _)| id == def.id) else {
             problems.push(format!("{}: not on screen after it was shown", def.id));

@@ -217,6 +217,13 @@ fn missing_pose<'a>(id: &str, names: impl IntoIterator<Item = &'a String>) -> Op
 /// when `mirror` is set. Setting an existing name replaces it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "id": "wave", "from": "wave-right"},
+        {"character": "kit", "id": "wave-left", "from": "wave-right", "mirror": true}
+    ],
+    "x-omuzaki-fixture" = "character"
+))]
 pub struct SetPose {
     /// The character whose set changes.
     pub character: CharId,
@@ -298,6 +305,12 @@ register_op!(SetPose);
 /// `pose.delete`: removes a pose from a character's set. The library is not touched.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "id": "wave"}
+    ],
+    "x-omuzaki-fixture" = "character-pose"
+))]
 pub struct DeletePose {
     /// The character whose set changes.
     pub character: CharId,
@@ -334,6 +347,12 @@ register_op!(DeletePose);
 /// before it falls back to the library.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit"}
+    ],
+    "x-omuzaki-fixture" = "character-pose"
+))]
 pub struct ListCharacterPoses {
     /// The character whose set is listed.
     pub character: CharId,
