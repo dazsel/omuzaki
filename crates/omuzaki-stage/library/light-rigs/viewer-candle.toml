@@ -2,6 +2,9 @@
 # Three.js units (render-api D10): the numbers are copied, not rescaled.
 name = "viewer-candle"
 source = "js/viewer.js LIGHTS.candle (flame key from the candle, cool rim, warm fill, flickering candle point light at t = 0)"
+title = "Candlelight"
+summary = "Lit by a candle: a flame key and a warm point light, with a cool rim, on a dark amber backdrop."
+tags = ["warm", "night", "moody"]
 exposure = 0.92
 background = "#2a1810"
 skin_floor = 0.42

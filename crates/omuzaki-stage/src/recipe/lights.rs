@@ -53,6 +53,13 @@ pub struct LightRig {
     pub name: String,
     /// Where the numbers were read from, for whoever checks them next (`js/viewer.js LIGHTS.studio`).
     pub source: String,
+    /// The name people read in the library (`Studio`).
+    pub title: String,
+    /// One sentence on the mood it makes, for people and agents choosing a rig.
+    pub summary: String,
+    /// Words to find it by (`warm`, `night`, `stream`).
+    #[serde(default)]
+    pub tags: Vec<String>,
     /// Scene-light multiplier before tone mapping, `>= 0`.
     pub exposure: f32,
     /// The flat background colour.
