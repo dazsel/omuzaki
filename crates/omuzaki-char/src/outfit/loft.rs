@@ -741,7 +741,8 @@ impl Surface {
             return Err(GarmentError::invalid("ring", format!("t = {t} must be in 0..=1")));
         }
         #[allow(clippy::cast_possible_truncation)] // a fit is sampled in f32
-        let section = self.fit.section(self.region, t as f32).ok_or(GarmentError::NoSection { region: self.region, t })?;
+        let section =
+            self.fit.section(self.region, t as f32).ok_or(GarmentError::NoSection { region: self.region, t })?;
         plain_ring(&section, self.region, t, self.exponent, self.offset)
     }
 

@@ -25,9 +25,11 @@
 //! of their union.
 
 use omuzaki_anim_api::HumanoidBone;
+use std::sync::Arc;
+
 use omuzaki_char_api::{
-    Anchor, AnchorId, AnchorsFact, BodyRegion, BuildCtx, BuildError, JointRef, MaterialSpec, PartCategory, PartKind,
-    PartMeta, PartOutput,
+    Anchor, AnchorId, AnchorsFact, BodyFit, BodyRegion, BuildCtx, BuildError, FitFact, JointRef, MaterialSpec,
+    PartCategory, PartKind, PartMeta, PartOutput,
 };
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::{DVec2, DVec3, Quat};
@@ -37,7 +39,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use self::frame::Column;
-use super::common::{DEFAULT_EASE, Garment, GarmentCommon, GarmentError, GarmentOutput};
+use super::common::{DEFAULT_EASE, Envelope, Garment, GarmentCommon, GarmentError, GarmentOutput};
 use super::loft::{RegionWeights, Ring};
 use crate::kit::grid::{Grid, MeshBuilder};
 
@@ -78,6 +80,8 @@ const OUTLINE_WIDTH: f32 = 0.0015;
 const HEM_RANGE: (f64, f64) = (0.02, 0.55);
 /// The most a hips end may be pulled in, as a fraction of its radius.
 const MAX_TUCK: f64 = 0.12;
+/// How far below the hem, as a fraction of the torso's length, the layers over the shirt have come back in to the body.
+const HEM_FADE: f64 = 0.08;
 /// The range of a sleeve's length, as a fraction of the arm.
 const SLEEVE_LENGTH_RANGE: (f64, f64) = (0.3, 1.0);
 /// The most a sleeve may stand off the arm beyond the shirt's ease, metres.
@@ -334,6 +338,14 @@ impl PartKind for Shirt {
             }
         }
         let mut output = out.finish(ctx, &p.common, &SHIRT_REGIONS, SHIRT_EXPONENT)?;
+        // The layers over the shirt (trousers on the hips) come back in to the body below its hem.
+        let envelope = Envelope::new(ctx.fit()?, &SHIRT_REGIONS, p.common.ease, SHIRT_EXPONENT)
+            .map_err(|e| ctx.fail(e.to_string()))?
+            .ending(BodyRegion::Torso, p.length, HEM_FADE);
+        let envelope: Arc<dyn BodyFit> = Arc::new(envelope);
+        for fit in output.publishes.values_mut::<FitFact>() {
+            *fit = Arc::clone(&envelope);
+        }
         tune_cloth(&mut output, ctx, p)?;
         let sleeves = left.rows * (sleeve::SEGMENTS + 1);
         weld_shoulders(&mut output, ctx, &column, &left.arm, p.common.ease, [torso_vertices, side_vertices, sleeves])?;

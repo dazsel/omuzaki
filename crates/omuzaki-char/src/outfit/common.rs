@@ -431,6 +431,9 @@ pub struct Envelope {
     /// The covered sections already worked out, by region and `t`: a garment's ring clears its neighbours with a search
     /// of the fit inside it, and the layers over it ask for the same sections many times.
     known: Arc<Mutex<Known>>,
+    /// Where the garment ends partway down a region it covers ([`Envelope::ending`]): the region, the `t` of its edge,
+    /// and how far below that, in `t`, the envelope has eased back onto the fit inside it.
+    end: Option<(BodyRegion, f32, f32)>,
 }
 
 impl Envelope {
@@ -464,7 +467,19 @@ impl Envelope {
             exponent,
             scale: enclosing_scale(exponent) as f32,
             known: Arc::default(),
+            end: None,
         })
+    }
+
+    /// The same envelope for a garment whose edge lies at `t` of `region` (a shirt's hem on the torso): below it the
+    /// envelope eases back onto the fit inside it over `fade` (in `t`), so a layer over the garment comes back in
+    /// to the body under the edge instead of standing out where there is no garment, and doesn't step where it does.
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation)] // a fit is f32
+    pub fn ending(mut self, region: BodyRegion, t: f64, fade: f64) -> Self {
+        self.end = Some((region, t as f32, fade.max(f64::EPSILON) as f32));
+        self.known = Arc::default();
+        self
     }
 
     /// The fit inside this one.
@@ -496,8 +511,14 @@ impl BodyFit for Envelope {
         let section = self.inner.section(region, t).map(|inner| {
             let ring =
                 super::loft::ring_at(self.inner.as_ref(), region, f64::from(t), self.exponent, f64::from(self.ease));
-            let radii = ring.map_or(inner.radii + Vec2::splat(self.ease), |ring| ring.radii.as_vec2());
-            Section { radii: radii * self.scale, ..inner }
+            let radii = ring.map_or(inner.radii + Vec2::splat(self.ease), |ring| ring.radii.as_vec2()) * self.scale;
+            // Below the garment's edge, the radii ease back onto the inner fit's.
+            let cover = match self.end {
+                Some((edge, at, fade)) if edge == region => ((t - (at - fade)) / fade).clamp(0.0, 1.0),
+                _ => 1.0,
+            };
+            let cover = cover * cover * (3.0 - 2.0 * cover);
+            Section { radii: inner.radii + (radii - inner.radii) * cover, ..inner }
         });
         if let Ok(mut known) = self.known.lock() {
             known.insert(key, section);
