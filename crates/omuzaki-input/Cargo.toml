@@ -14,6 +14,7 @@ repository.workspace = true
 test-hooks = []
 
 [dependencies]
+gilrs.workspace = true
 inventory.workspace = true
 schemars.workspace = true
 serde.workspace = true

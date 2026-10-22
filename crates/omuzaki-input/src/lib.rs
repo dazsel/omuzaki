@@ -20,6 +20,8 @@ include!(concat!(env!("OUT_DIR"), "/crate_mods.rs"));
 pub use hub::{Hub, HubConfig};
 
 #[cfg(feature = "test-hooks")]
-pub use test_hooks::{FakeProcesses, Injector, TestBackend, keys_in_zone};
+pub use test_hooks::{
+    FakeProcesses, Injector, PadAxis, PadButton, PadScript, TestBackend, keys_in_zone, pad_button_bit,
+};
 
 omuzaki_core::define_link!();

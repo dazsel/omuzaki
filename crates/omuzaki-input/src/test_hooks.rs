@@ -12,6 +12,10 @@ use omuzaki_input_api::capture::{BackendState, CaptureCaps, InputError, Support}
 use omuzaki_input_api::event::{DeviceClass, DeviceMask, PadZones};
 use omuzaki_input_api::zones::KeyZone;
 
+pub use crate::gamepad::script::PadScript;
+pub use gilrs::{Axis as PadAxis, Button as PadButton};
+
+use crate::gamepad;
 use crate::hub::{Hub, HubConfig, InputBackend, spawn_capture};
 use crate::kill_switch::Processes;
 use crate::matcher::{Chord, Mods};
@@ -83,6 +87,11 @@ impl Processes for FakeProcesses {
     }
 }
 
+/// A pad button's bit in a pad chord (`Hub::bind_pad`).
+pub fn pad_button_bit(button: PadButton) -> u32 {
+    gamepad::button_bit(button)
+}
+
 /// The keys of a zone, by usage: the zone-equivalence test swaps keys inside one zone.
 pub fn keys_in_zone(zone: KeyZone) -> Vec<u16> {
     zone_map::in_zone(zone)
@@ -105,6 +114,14 @@ impl Hub {
     pub fn run_backend(&self, backend: usize, f: impl FnOnce(&mut Injector) + Send + 'static) -> Option<JoinHandle<()>> {
         let shared = Arc::clone(&self.core.shared);
         spawn_capture(shared, backend, "test", move |sink| f(&mut Injector { sink }))
+    }
+
+    /// Runs the gamepad backend's capture loop on `backend` over a script instead of gilrs, with `connected` pads
+    /// there from the start. The loop ends when the script is dropped.
+    pub fn run_pads(&self, backend: usize, connected: &[u64]) -> Option<(PadScript, JoinHandle<()>)> {
+        let (script, source) = gamepad::script::script(connected);
+        let shared = Arc::clone(&self.core.shared);
+        spawn_capture(shared, backend, "pads", move |sink| gamepad::run_with(sink, source)).map(|t| (script, t))
     }
 
     /// Fails backend `backend` as a panic on its thread would.

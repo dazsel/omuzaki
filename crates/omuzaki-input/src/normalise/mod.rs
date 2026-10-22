@@ -214,6 +214,18 @@ impl RawSink {
         !self.shutting_down()
     }
 
+    /// The global and backend epochs now: a backend that sees them change knows a new run began, even when a pause
+    /// came and went between two of its looks.
+    pub(crate) fn epochs(&self) -> (u32, u32) {
+        let backend = self.shared.backends.get(self.backend).map_or(0, |s| s.epoch.get());
+        (self.shared.capture.get(), backend)
+    }
+
+    /// The handles of the devices of `class` the sink knows, so a backend can tell it which left while it read nothing.
+    pub(crate) fn devices(&self, class: DeviceClass) -> Vec<u64> {
+        self.devices.iter().filter(|d| d.class == class).map(|d| d.handle).collect()
+    }
+
     /// Reports the backend's state (running, a permission it needs, a fixed failure reason).
     pub(crate) fn set_state(&self, state: BackendState) {
         if let Some(slot) = self.shared.backends.get(self.backend) {
