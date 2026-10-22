@@ -19,6 +19,8 @@ use crate::replay::ring::{MAX_SPAN, MIN_SPAN};
 use crate::replay::runtime::{ReplayError, ReplayPlan};
 use crate::replay::settings::{self, ReplaySettings};
 use crate::service::StreamService;
+use omuzaki_update_api::hold::HoldReason;
+use omuzaki_update_api::updater::Updater;
 
 /// The folder under the clips folder a disk-backed buffer keeps its segments in.
 const CACHE_SUBDIR: &str = ".cache";
@@ -122,7 +124,8 @@ impl Op for ReplayStart {
         }
         crate::vp9::available().map_err(op_error)?;
         let tracks = mic_track(ctx)?.into_iter().collect();
-        let plan = ReplayPlan::vp9(limits, dir.clone(), dir.join(CACHE_SUBDIR), tracks);
+        let mut plan = ReplayPlan::vp9(limits, dir.clone(), dir.join(CACHE_SUBDIR), tracks);
+        plan.hold = ctx.service::<dyn Updater>().ok().map(|u| u.hold(HoldReason::Capturing));
         let status = service.replay_start(plan).map_err(|e| match e {
             omuzaki_stream_api::error::StreamError::Busy => OpError::conflict("the replay buffer already runs"),
             other => op_error(other),

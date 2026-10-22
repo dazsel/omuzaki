@@ -23,6 +23,8 @@ use crate::record::runtime::{AudioTrack, RecordPlan, TrackStart};
 use crate::record::settings::{self, RecordFormat};
 use crate::record::take::{check_name, stem, unique_stem};
 use crate::service::StreamService;
+use omuzaki_update_api::hold::HoldReason;
+use omuzaki_update_api::updater::Updater;
 
 /// Maps a stream error to the op error a person or an agent can act on.
 pub(crate) fn op_error(e: StreamError) -> OpError {
@@ -159,7 +161,8 @@ impl Op for Start {
             })));
         }
         let tracks = mic_track(ctx)?.into_iter().collect();
-        let started = service.record_start(RecordPlan { dir, stem, format, tracks }).map_err(op_error)?;
+        let hold = ctx.service::<dyn Updater>().ok().map(|u| u.hold(HoldReason::Recording));
+        let started = service.record_start(RecordPlan { dir, stem, format, tracks, hold }).map_err(op_error)?;
         let mut answer = to_json(&started)?;
         answer["started"] = json!(true);
         Ok(Plan::answer(answer))

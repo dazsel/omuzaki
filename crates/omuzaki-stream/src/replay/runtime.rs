@@ -35,6 +35,7 @@ use omuzaki_stream_api::output::{
 };
 use omuzaki_stream_api::packet::{Packet, StreamId};
 use omuzaki_stream_api::time::{Ticks, Timebase};
+use omuzaki_update_api::hold::Hold;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -574,6 +575,9 @@ pub struct ReplayPlan {
     pub encoders: Arc<dyn EncoderFactory>,
     /// The audio tracks.
     pub tracks: Vec<AudioTrack>,
+    /// The update hold the buffer keeps while it captures (`Capturing`), so the app never restarts into an update
+    /// with a clip still to save.
+    pub hold: Option<Hold>,
 }
 
 impl ReplayPlan {
@@ -591,6 +595,7 @@ impl ReplayPlan {
             codec: CodecId::Vp9Alpha,
             encoders: Arc::new(crate::vp9::alpha::Vp9AlphaFactory),
             tracks,
+            hold: None,
         }
     }
 }
@@ -720,6 +725,8 @@ pub struct ReplayBuffer {
     writer: Option<JoinHandle<()>>,
     submitted: u64,
     last_error: Option<StreamError>,
+    /// Released when the buffer stops or is dropped.
+    hold: Option<Hold>,
 }
 
 impl ReplayBuffer {
@@ -737,6 +744,7 @@ impl ReplayBuffer {
             writer: None,
             submitted: 0,
             last_error: None,
+            hold: None,
         }
     }
 
@@ -746,8 +754,9 @@ impl ReplayBuffer {
     }
 
     fn launch(&mut self, cfg: &OutputConfig) -> Result<(), StreamError> {
-        let plan = self.plan.take().ok_or(StreamError::Busy)?;
+        let mut plan = self.plan.take().ok_or(StreamError::Busy)?;
         let control = self.control.take().ok_or(StreamError::Busy)?;
+        self.hold = plan.hold.take();
         // Only the VP9 alpha codec keeps alpha; any other ring codec gets the picture as it is (D9).
         let alpha = if plan.codec == CodecId::Vp9Alpha { AlphaKind::Straight } else { AlphaKind::None };
         let video = VideoSpec { size: cfg.size, fps: cfg.fps, alpha };
@@ -867,6 +876,7 @@ impl Output for ReplayBuffer {
         if let Err(e) = self.launch(cfg) {
             self.state = OutputState::Failed;
             self.last_error = Some(e.clone());
+            self.hold = None;
             return Err(e);
         }
         self.state = OutputState::Running;
@@ -927,6 +937,7 @@ impl Output for ReplayBuffer {
             let _ = writer.join();
         }
         self.free = None;
+        self.hold = None;
         self.handle.shared.running.store(false, Ordering::Release);
         if matches!(self.state, OutputState::Running) {
             self.state = OutputState::Stopped;

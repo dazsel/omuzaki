@@ -30,6 +30,7 @@ use omuzaki_stream_api::output::{
     AlphaNeed, Lanes, Output, OutputConfig, OutputInfo, OutputState, OutputStatus, SubmitReport,
 };
 use omuzaki_stream_api::time::Ticks;
+use omuzaki_update_api::hold::Hold;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -96,6 +97,8 @@ pub struct RecordPlan {
     pub format: RecordFormat,
     /// The audio tracks.
     pub tracks: Vec<AudioTrack>,
+    /// The update hold the take keeps until it stops or fails, so the app never restarts into an update mid-take.
+    pub hold: Option<Hold>,
 }
 
 /// What the video half of a take does with frames.
@@ -553,6 +556,8 @@ pub struct Recorder {
     full: u64,
     last_error: Option<StreamError>,
     report: ReportSlot,
+    /// Released when the take stops, fails or is dropped.
+    hold: Option<Hold>,
 }
 
 impl Recorder {
@@ -573,6 +578,7 @@ impl Recorder {
             full: 0,
             last_error: None,
             report: Arc::new(Mutex::new(None)),
+            hold: plan.hold,
         }
     }
 
@@ -717,6 +723,7 @@ impl Output for Recorder {
             Err(e) => {
                 self.last_error = Some(e.clone());
                 self.state = OutputState::Failed;
+                self.hold = None;
                 return Err(e);
             }
         };
@@ -743,6 +750,7 @@ impl Output for Recorder {
         }
         self.state = if result.is_ok() { OutputState::Stopped } else { OutputState::Failed };
         *lock(&self.report) = Some(result);
+        self.hold = None;
     }
 }
 

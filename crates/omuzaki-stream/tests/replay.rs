@@ -403,6 +403,7 @@ fn threaded(dir: &Path, cache: &Path) -> (ReplayBuffer, Arc<AtomicU64>) {
         codec: CodecId::H264,
         encoders: fake(60_000, 6_000, None),
         tracks: vec![mic(&available)],
+        hold: None,
     };
     let mut buffer = ReplayBuffer::new(plan);
     buffer.start(&OutputConfig::new("replay", SIZE, (30, 1)).unwrap()).unwrap();
