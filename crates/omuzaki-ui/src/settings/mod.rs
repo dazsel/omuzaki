@@ -11,6 +11,7 @@
 //! `settings.set` or `settings.reset` run as the person: one op in history, undone like any other. The schemas come from
 //! the registry, the same ones `settings.get` gives an agent, so the window and MCP cannot drift.
 
+pub mod connectors;
 pub mod models;
 pub mod text;
 
@@ -22,6 +23,7 @@ use omuzaki_settings_api::registry;
 use schemars::Schema;
 use serde_json::{Map, Value, json};
 
+use self::connectors::ConnectorsPage;
 use self::models::ModelsPage;
 use self::text::{Word, area_title, humanise, say, title};
 use crate::ds::icons;
@@ -70,6 +72,8 @@ pub enum Page {
     Settings,
     /// The model slots and their models.
     Models,
+    /// The connections to other apps: `VTube Studio`.
+    Connectors,
 }
 
 /// The Settings window's state. Make it when the window opens and drop it when it closes.
@@ -77,6 +81,7 @@ pub enum Page {
 pub struct SettingsWindow {
     page: Page,
     models: ModelsPage,
+    connectors: ConnectorsPage,
     query: String,
     rows: Vec<Row>,
     /// When the settings were last read, on egui's clock.
@@ -119,6 +124,11 @@ impl SettingsWindow {
         &mut self.models
     }
 
+    /// The Connectors page.
+    pub fn connectors(&mut self) -> &mut ConnectorsPage {
+        &mut self.connectors
+    }
+
     /// The keys on show, for the search, in the order drawn.
     pub fn listed(&self) -> Vec<&str> {
         let needle = self.query.trim().to_lowercase();
@@ -151,12 +161,18 @@ impl SettingsWindow {
             .show(ctx, |ui| {
                 let label = say(ctx, Word::Pages, &[]);
                 let (settings, models) = (say(ctx, Word::PageSettings, &[]), say(ctx, Word::PageModels, &[]));
-                let pages = [Segment::new(Page::Settings, &settings), Segment::new(Page::Models, &models)];
+                let connectors = say(ctx, Word::PageConnectors, &[]);
+                let pages = [
+                    Segment::new(Page::Settings, &settings),
+                    Segment::new(Page::Models, &models),
+                    Segment::new(Page::Connectors, &connectors),
+                ];
                 ui.add(Segmented::new(&label, &mut self.page, &pages).id_salt("settings.page"));
                 ui.add_space(space::S8);
                 match self.page {
                     Page::Settings => self.body(ui, runner.as_ref(), actor, now),
                     Page::Models => self.models.show(ui, runner, actor, now),
+                    Page::Connectors => self.connectors.show(ui, runner, actor, now),
                 }
             });
         let escaped = !ctx.text_edit_focused() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape));
