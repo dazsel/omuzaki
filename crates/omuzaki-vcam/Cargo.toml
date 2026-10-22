@@ -1,0 +1,27 @@
+[package]
+name = "omuzaki-vcam"
+description = "Virtual cameras behind the Output trait (spec v3 BR-02): the picture as a webcam other apps open. Linux writes to a v4l2loopback device; Windows and macOS follow."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-render-api = { path = "../omuzaki-render-api" }
+omuzaki-stream-api = { path = "../omuzaki-stream-api" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
+
+[lints]
+workspace = true
+
+# Native only: a virtual camera is an OS device.
+[package.metadata.omuzaki]
+kind = "Implementation"
+summary = "virtual cameras (BR-02) behind `omuzaki-stream-api`'s `Output`, registered as the `vcam` output kind: the opaque picture converted to YUYV (BT.601, limited range, exact integer maths) on its own thread with a newest-frame-wins hand-off, written to a v4l2loopback device on Linux (found by its driver name, or `OMUZAKI_VCAM_DEVICE`); other OSes report the kind unavailable with a hint"
+wasm = false
+registers = true

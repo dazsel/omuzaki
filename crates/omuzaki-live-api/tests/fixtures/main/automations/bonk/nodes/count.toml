@@ -1,0 +1,8 @@
+kind = "var.add"
+pos = [440.0, 80.0]
+
+[in]
+in = "cool.out"
+
+[params]
+variable = "bonks"

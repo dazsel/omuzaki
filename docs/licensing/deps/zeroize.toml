@@ -1,0 +1,8 @@
+section = "rust"
+item = "zeroize 1.9"
+kind = "crate"
+used_for = "zeroes a secret value when it is dropped (`SecretValue` in `omuzaki-secrets-api`, CN-05)"
+status = "yes"
+condition = "Apache-2.0 OR MIT (the `license` field of zeroize 1.9.1, checked 2026-10-15): keep the notices; already in the lock through the crypto crates, so no new crate"
+audit = "(crates.io: zeroize 1.9.1, Apache-2.0 OR MIT)"
+crates = ["zeroize"]

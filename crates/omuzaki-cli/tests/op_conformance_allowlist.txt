@@ -2,6 +2,11 @@
 # One op name per line. This list may only shrink: give an op examples, then delete its line. A new op must ship with
 # examples, so it never belongs here. `tests/op_conformance.rs` fails on a missing op and on a stale line.
 agent.connection
+# The imported-avatar ops need a project holding an imported model, which the conformance rig can't build until
+# `io.export` places model files (#335: it gives these ops runnable examples and deletes these lines; ruling on #2214).
+avatar.describe
+avatar.map_channel
+avatar.remap
 # Deleting a document key and undoing it re-appends the key in the TOML file (omuzaki-doc keeps a hand-edited file's order,
 # and re-adds an emptied parent table with its own header), so the file is not byte-identical after undo: these four edits
 # fail the exact-undo rule on any example. They get examples when omuzaki-doc restores a removed key to its place (#2233).

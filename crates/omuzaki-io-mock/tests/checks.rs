@@ -10,6 +10,7 @@ use omuzaki_io_api::{
     JointLimit, MeshIx, MorphTarget, Node, NodeConstraint, NodeIx, Purpose, Report, RollAxis, Severity, SpringChain,
     SpringJoint, VrmVersion, preflight, vrm_profile,
 };
+use omuzaki_io_mock::MockVrm1Exporter;
 use omuzaki_io_mock::fixtures::{BODY_NODE, authored_provenance, options_without_face_channels, tiny_avatar};
 use omuzaki_store_api::{Commercial, Consent};
 
@@ -251,10 +252,17 @@ fn vrm_profile_reports_extended_spring_losses_per_version() {
         ids.sort();
         ids
     };
-    assert_eq!(rules(VrmVersion::V1), ["vrm.collider_dropped", "vrm.limit_dropped"]);
+    // VRM 1.0 carries the shapes and limits (the real writer writes both extensions), so the profile reports no loss;
+    // 0.x cannot, and says so. The mock's own VRM 1.0 writer reports what it leaves out from its exporter's check.
+    assert!(rules(VrmVersion::V1).is_empty(), "{:?}", rules(VrmVersion::V1));
     assert_eq!(rules(VrmVersion::V0), ["vrm0.collider_unsupported", "vrm0.limit_unsupported"]);
+    let mock = omuzaki_io_api::Exporter::check(&MockVrm1Exporter, &s, &options_without_face_channels());
+    assert!(mock.has_rule("vrm.collider_dropped") && mock.has_rule("vrm.limit_dropped"), "{mock:#?}");
     let plain = tiny_avatar();
-    assert!(!vrm_profile(&plain, VrmVersion::V1).has_rule("vrm.collider_dropped"));
+    assert!(
+        !omuzaki_io_api::Exporter::check(&MockVrm1Exporter, &plain, &options_without_face_channels())
+            .has_rule("vrm.collider_dropped")
+    );
 }
 
 #[test]

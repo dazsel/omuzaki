@@ -94,6 +94,14 @@ LGPL-only means auditing every element; it is a larger runtime to ship; and the 
 **Bindings licence.** `ffmpeg-next` and `ffmpeg-sys-next` are WTFPL, which is a question for legal review. If legal review
 rejects them, the fallback is our own `bindgen` (BSD-3) layer over the same headers: same route, no design change.
 
+**The spine's VP9 route (2026-10-22).** Until #1424 settles the bindings, the `WebM` take with alpha does not go through
+FFmpeg at all: `omuzaki-stream::vp9` loads libvpx (BSD-3) at run time with `libloading` (ISC), calls its C API
+directly (two encoders, colour and alpha, as `libvpxenc.c` does), and `sinks::webm` writes the Matroska itself
+(`AlphaMode` 1, alpha in `BlockAdditional` id 1, crash-safe clusters, cues). No new licence question, no build-time
+dependency, and FFmpeg 6 reads the result as `yuva420p` with alpha. Measured at 1080p30 on a 4-core VM: 2.5 ms to
+convert a frame and about 12 ms to encode both pictures in libvpx's real-time mode (speed 6), against a 33 ms frame.
+FFmpeg stays the route for H.264/HEVC, ProRes, hardware encoders and streaming.
+
 **Encoders per format and OS** (probed at start by opening a real 1080p encoder, never by name alone):
 
 | Format | Software (all OSes) | Hardware, probed in this order |

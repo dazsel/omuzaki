@@ -39,7 +39,8 @@ pub enum AlphaEncoding {
     /// Colour is independent of alpha (PNG files, canvases, `#rrggbbaa`).
     #[default]
     Straight,
-    /// Colour is already multiplied by alpha (GPU painters, live outputs).
+    /// Colour is already multiplied by alpha (GPU painters, compositing; each live output converts to what it carries,
+    /// see `docs/design/render-api.md`, "The rendered frame").
     Premultiplied,
 }
 

@@ -251,6 +251,11 @@ impl Rig {
             .map_err(|e| e.to_string())?
             .with_services(
                 window_host::with_window(ServicesBuilder::new())
+                    // The stream service with nothing running: the `record.*` and `output.*` examples dry-run
+                    // against it as they would in the app.
+                    .insert::<omuzaki_stream::service::StreamService>(Arc::new(
+                        omuzaki_stream::service::StreamService::new().expect("the stream service starts"),
+                    ))
                     .insert::<dyn PerformHost>(Arc::new(IdleHost))
                     .insert::<dyn InputHost>(Arc::new(IdleInput))
                     .build(),

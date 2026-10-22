@@ -20,6 +20,8 @@ pub const FULL_FILL: f32 = 0.80;
 pub const HANDS_FILL: f32 = 0.70;
 /// The eyes sit this share of the frame height below its top edge in a face shot.
 pub const FACE_EYES_FROM_TOP: f32 = 0.45;
+/// Where a face shot takes the eye line of a body without eye bones: this share of the head's height above the chin.
+pub const EYES_WITHOUT_BONES: f32 = 0.45;
 /// The crown sits this share of the frame height below its top edge in a bust shot.
 pub const BUST_CROWN_FROM_TOP: f32 = 0.08;
 
@@ -89,7 +91,10 @@ fn shot(framing: Framing, l: &Landmarks) -> Result<Shot, StageError> {
     let missing = |what: &str| StageError::Framing { reason: format!("a {framing:?} shot needs {what}, which the character lacks") };
     match framing {
         Framing::Face => {
-            let (head, eyes) = (l.head.ok_or_else(|| missing("a head"))?, l.eyes.ok_or_else(|| missing("eyes"))?);
+            let head = l.head.ok_or_else(|| missing("a head"))?;
+            // A body without eye bones (a VRM may have none) still has a face shot: its eye line is taken at
+            // `EYES_WITHOUT_BONES` of the head's height, where an anime face's eyes sit.
+            let eyes = l.eyes.unwrap_or(head.min.y + EYES_WITHOUT_BONES * head.height());
             Ok(Shot::aimed(head.min.y, head.max.y, head, FACE_FILL, eyes, FACE_EYES_FROM_TOP))
         }
         Framing::Bust => {
@@ -264,7 +269,7 @@ fn distance_where_it_fits(floor: f32, excess: impl Fn(f32) -> f32) -> Fit {
 ///
 /// # Errors
 /// [`StageError::Framing`] for [`Framing::Free`], which has its own position. Also for a landmark the framing needs and
-/// the character lacks: `face` without a head or eyes, `bust` without a chest or head, `hands` without hands. Also
+/// the character lacks: `face` without a head (without eyes it frames on [`EYES_WITHOUT_BONES`]), `bust` without a chest or head, `hands` without hands. Also
 /// for a non-finite or out-of-range input: `aspect <= 0`, `fov` outside (0, 180), `zoom <= 0`, `|pitch| > 90`, `|yaw| > 180` (the ranges `SceneDef::check` enforces); for
 /// landmarks that aren't a finite, upright box or a character height that isn't finite and above zero; for a span
 /// with no height and no width, which has no distance to frame it from; and for a camera that comes out non-finite or

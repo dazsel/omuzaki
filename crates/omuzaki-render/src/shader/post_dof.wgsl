@@ -11,6 +11,10 @@
 // images; CoC is negative in front of the focal plane and positive behind it. Premultiplied RGBA is blurred as a whole, so
 // a transparent background stays transparent.
 //
+// `packed` is a pipeline constant: when the scene is opaque (alpha is 1 everywhere) the prepass keeps each pixel's CoC in the
+// alpha of the colour image, so the gather reads one texture a tap instead of two, and writes alpha 1 (all that Resolve
+// reads of it). A scene with transparency keeps the CoC in an image of its own and the real alpha in the colour.
+//
 // DEPTH_TYPE is replaced when the module is built: `texture_depth_multisampled_2d` or `texture_depth_2d`, whichever the
 // frame's depth attachment is.
 
@@ -36,6 +40,10 @@ struct Params {
 @group(0) @binding(1) var linear_sampler: sampler;
 @group(0) @binding(2) var coc_image: texture_2d<f32>;
 @group(1) @binding(0) var<uniform> params: Params;
+// The gather's golden-angle spiral, once for every frame: tap `i` looks in direction `spiral[i].xy` (cos and sin of
+// `i * GOLDEN_ANGLE`), which the pixel's own rotation then turns, so no tap computes a sine or a cosine.
+@group(1) @binding(1) var<uniform> spiral: array<vec4<f32>, 128>;
+override packed: bool = false;
 @group(2) @binding(0) var depth: DEPTH_TYPE;     // prepass
 @group(2) @binding(1) var tiles: texture_2d<f32>; // gather: see fs_tiles
 
@@ -93,6 +101,9 @@ fn fs_prepass(@builtin(position) position: vec4<f32>) -> Prepass {
     var out: Prepass;
     out.colour = sum / f32(params.colour_taps * params.colour_taps);
     out.coc = coc_of(distance_of(nearest));
+    if (packed) {
+        out.colour.a = out.coc;
+    }
     return out;
 }
 
@@ -133,18 +144,35 @@ fn rotation_at(pixel: vec2<f32>) -> f32 {
     return 6.2831853 * fract(52.9829189 * fract(dot(pixel, vec2<f32>(0.06711056, 0.00583715))));
 }
 
-const GOLDEN_ANGLE: f32 = 2.3999632;
-
 struct Gathered {
     @location(0) colour: vec4<f32>,
     @location(1) reach: f32,
 }
 
+// One place in the prepass image: its colour (alpha 1 when the CoC is packed in it) and its CoC.
+struct Sample {
+    colour: vec4<f32>,
+    coc: f32,
+}
+
+fn sample_at(uv: vec2<f32>) -> Sample {
+    var out: Sample;
+    out.colour = textureSampleLevel(colour, linear_sampler, uv, 0.0);
+    if (packed) {
+        out.coc = out.colour.a;
+        out.colour.a = 1.0;
+    } else {
+        out.coc = textureSampleLevel(coc_image, linear_sampler, uv, 0.0).r;
+    }
+    return out;
+}
+
 @fragment
 fn fs_gather(@builtin(position) position: vec4<f32>) -> Gathered {
     let uv = position.xy / params.size;
-    let centre = textureSampleLevel(colour, linear_sampler, uv, 0.0);
-    let centre_coc = textureSampleLevel(coc_image, linear_sampler, uv, 0.0).r;
+    let middle = sample_at(uv);
+    let centre = middle.colour;
+    let centre_coc = middle.coc;
     let own = abs(centre_coc);
     let reach = max(own, foreground_reach(position.xy));
     var out: Gathered;
@@ -155,25 +183,28 @@ fn fs_gather(@builtin(position) position: vec4<f32>) -> Gathered {
     }
     var sum = centre;
     var weights = 1.0;
+    // The spiral turned by this pixel's angle: (cos a, sin a) of each tap rotated by (cos r, sin r).
     let rotation = rotation_at(position.xy);
+    let turn = vec2<f32>(cos(rotation), sin(rotation));
+    let inverse_taps = 1.0 / f32(params.taps);
     for (var i = 0u; i < params.taps; i++) {
         // A golden-angle spiral covers the disc evenly whatever the number of taps.
-        let radius = sqrt((f32(i) + 0.5) / f32(params.taps)) * reach;
-        let angle = f32(i) * GOLDEN_ANGLE + rotation;
-        let at = (position.xy + radius * vec2<f32>(cos(angle), sin(angle))) / params.size;
-        let tap = textureSampleLevel(colour, linear_sampler, at, 0.0);
-        let tap_coc = textureSampleLevel(coc_image, linear_sampler, at, 0.0).r;
+        let radius = sqrt((f32(i) + 0.5) * inverse_taps) * reach;
+        let step = spiral[i].xy;
+        let direction = vec2<f32>(step.x * turn.x - step.y * turn.y, step.y * turn.x + step.x * turn.y);
+        let at = (position.xy + radius * direction) / params.size;
+        let tap = sample_at(at);
         // A neighbour in front of this pixel only reaches it if its own blur is wide enough: a sharp foreground (the
         // character) never bleeds into the blurred background behind it, and a blurred foreground spreads over what it
         // covers, by the share of this pixel's disc it fills. A neighbour at or behind this pixel counts as itself
         // within this pixel's own blur; beyond it (only a pixel near a blurred foreground looks that far) the pixel
         // stands in for it, so what is behind the foreground stays as sharp as it was.
-        if (tap_coc < centre_coc - 0.25) {
-            let weight = clamp(abs(tap_coc) - radius + 1.0, 0.0, 1.0);
-            sum += tap * weight;
+        if (tap.coc < centre_coc - 0.25) {
+            let weight = clamp(abs(tap.coc) - radius + 1.0, 0.0, 1.0);
+            sum += tap.colour * weight;
             weights += weight;
         } else {
-            sum += select(centre, tap, radius <= own);
+            sum += select(centre, tap.colour, radius <= own);
             weights += 1.0;
         }
     }

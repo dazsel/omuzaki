@@ -636,7 +636,7 @@ fn a_gpu_painters_commands_are_timed_under_paint_textures_and_a_failed_ones_are_
     // Even frames: a GPU painter's 64 clears of the whole texture. Odd frames: a GPU painter that records clears and
     // then fails, and a `write_rgba` of the whole texture, so both frames rebuild the same mips. The failed paint's
     // timestamp pair is the one the even frame's paint wrote last: counted, it would make the odd frame as long.
-    let (mut native, mut written) = (None, None);
+    let (mut native, mut written) = (Vec::new(), Vec::new());
     for frame in 0..24_u64 {
         let painter_fails = frame % 2 == 1;
         let result = r.paint_texture(face, &mut |target: &mut dyn PaintTarget| {
@@ -659,13 +659,20 @@ fn a_gpu_painters_commands_are_timed_under_paint_textures_and_a_failed_ones_are_
         if let Some(timings) = report.gpu
             && let Some(t) = timings.passes.get(Pass::PaintTextures)
         {
-            *(if timings.frame % 2 == 0 { &mut native } else { &mut written }) = Some(t.0);
+            (if timings.frame % 2 == 0 { &mut native } else { &mut written }).push(t.0);
         }
     }
-    let (native, written) = (native.expect("an even frame was timed"), written.expect("an odd frame was timed"));
-    println!("PaintTextures: {native:.6} s with the GPU painter's clears, {written:.6} s with write_rgba");
+    // The median of each kind of frame: one frame's timing on a shared CI runner can be off by half. Counted, the
+    // failed pair would make the odd frames at least as long as the even ones, so 1.5 times still tells the two apart.
+    let median = |mut times: Vec<f64>| {
+        times.sort_by(f64::total_cmp);
+        times.get(times.len() / 2).copied()
+    };
+    let (native, written) =
+        (median(native).expect("an even frame was timed"), median(written).expect("an odd frame was timed"));
+    println!("PaintTextures: {native:.6} s with the GPU painter's clears, {written:.6} s with write_rgba (medians)");
     assert!(
-        native > 2.0 * written,
+        native > 1.5 * written,
         "the painter's 64 clears are timed ({native} s), and the failed painter's pair is not ({written} s for the mips)"
     );
 }

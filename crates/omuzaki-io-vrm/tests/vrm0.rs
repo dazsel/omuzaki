@@ -567,21 +567,35 @@ fn extended_colliders_and_limits_are_dropped_with_warnings() {
     assert_eq!(back.avatar.unwrap().spring_bones.colliders.len(), before, "the plane is not written");
 }
 
-/// The warning counts every unsupported collider once: an ungrouped one is dropped too, a shared one is one collider.
-#[test]
-fn unsupported_colliders_are_counted_once_each_grouped_or_not() {
+/// Adds one unsupported (plane) collider to the fixture and puts it in each of `groups`; returns the count the export's
+/// `vrm0.collider_unsupported` warning states.
+fn unsupported_count_with_one_plane_in(groups: &[usize]) -> String {
     let (mut scene, ids) = vrm0_friendly(avatar());
     let head = ids.node("head");
     let sb = &mut scene.avatar.as_mut().unwrap().spring_bones;
     let shape = omuzaki_io_api::ColliderShape::Plane { offset: Vec3::ZERO, normal: Vec3::Y };
-    let first = sb.colliders.len();
-    sb.colliders.push(omuzaki_io_api::Collider { node: head, shape }); // in two groups
-    sb.colliders.push(omuzaki_io_api::Collider { node: head, shape }); // in none
-    sb.collider_groups[0].colliders.push(first as u32);
-    sb.collider_groups[1].colliders.push(first as u32);
+    let index = sb.colliders.len();
+    sb.colliders.push(omuzaki_io_api::Collider { node: head, shape });
+    for &g in groups {
+        sb.collider_groups[g].colliders.push(index as u32);
+    }
     let (_, report) = export_with(&Vrm0Exporter, &scene, &options()).unwrap();
     let finding = report.findings.iter().find(|f| f.rule == "vrm0.collider_unsupported").expect("the warning");
-    assert!(finding.message.contains(" 2 "), "two colliders, not three or one: {}", finding.message);
+    finding.message.clone()
+}
+
+/// One unsupported collider shared by two groups is one collider: counting per group reference would say two.
+#[test]
+fn a_shared_unsupported_collider_is_counted_once() {
+    let message = unsupported_count_with_one_plane_in(&[0, 1]);
+    assert!(message.contains("; 1 inside-out"), "{message}");
+}
+
+/// One unsupported collider in no group is dropped too and counted once: counting only grouped ones would say none.
+#[test]
+fn an_ungrouped_unsupported_collider_is_counted_once() {
+    let message = unsupported_count_with_one_plane_in(&[]);
+    assert!(message.contains("; 1 inside-out"), "{message}");
 }
 
 /// As for 1.0: the 0.x `secondaryAnimation` of a scene without extended shapes or limits is what `main` wrote before

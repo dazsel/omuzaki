@@ -8,10 +8,22 @@ publish.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# An in-process mock VTube Studio server for tests (`testing`): off in every normal build.
+testing = ["dep:tungstenite"]
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+# Sync WebSocket, the layer under tokio-tungstenite: the mock needs no async runtime. BR-19 lifts it into
+# `[workspace.dependencies]` (the root manifest is out of this task's fence) when `omuzaki-obs` needs it too.
+tungstenite = { version = "0.30", optional = true }
+
+[dev-dependencies]
+# The mock's tests drive it with a raw WebSocket client; they live in `src/testing/tests.rs`, not `tests/`, because an
+# integration test would need this crate as a dev-dependency of itself (`cargo xtask lint-deps` forbids that).
+tungstenite = "0.30"
 
 [lints]
 workspace = true
