@@ -114,13 +114,25 @@ src/window.rs: pub const DEFAULT_TITLE: &str = "Omuzaki Output";
 src/window.rs: pub const DEFAULT_KEY: Colour = Colour::hex(0x0000_b140);
 src/window.rs: pub const MIN_TITLE_CHARS: usize = 1;
 src/window.rs: pub const MAX_TITLE_CHARS: usize = 64;
+src/window.rs: pub const MIN_OPACITY: f32 = 0.1;
+src/window.rs: pub const DESKTOP_SCALE: f32 = 0.5;
 src/window.rs: pub const MIN_SCALE_FACTOR: f64 = 0.5;
 src/window.rs: pub const MAX_SCALE_FACTOR: f64 = 4.0;
 src/window.rs: pub const MIN_SCALE: f32 = 0.1;
 src/window.rs: pub const MAX_SCALE: f32 = 2.0;
 src/window.rs: pub enum Backdrop {
 src/window.rs: pub enum SizePolicy {
+src/window.rs: pub enum WindowMode {
+src/window.rs: pub enum ClickThrough {
+src/window.rs: pub struct DesktopSettings {
+src/window.rs: pub const fn new(opacity: f32, click_through: ClickThrough) -> Self {
+src/window.rs: pub fn check(&self) -> Result<(), WindowError> {
+src/window.rs: pub struct ModeSupport {
+src/window.rs: pub mode: WindowMode,
+src/window.rs: pub const fn available(mode: WindowMode) -> Self {
+src/window.rs: pub fn unavailable(mode: WindowMode, reason: impl Into<String>) -> Self {
 src/window.rs: pub struct WindowSettings {
+src/window.rs: pub mode: WindowMode,
 src/window.rs: pub struct WindowPlan {
 src/window.rs: pub enum WindowError {
 src/window.rs: pub struct WindowCaps {
@@ -130,6 +142,8 @@ src/window.rs: pub const fn new(physical: UVec2, logical: (f64, f64), scale_fact
 src/window.rs: pub const fn new(transparent: bool, always_on_top: bool) -> Self {
 src/window.rs: pub const fn new(size: UVec2, scale_factor: f64) -> Self {
 src/window.rs: pub const fn open(physical: UVec2, backdrop: Backdrop) -> Self {
+src/window.rs: pub const fn with_mode(self, settings: &WindowSettings) -> Self {
+src/window.rs: pub const fn with_desktop(self, desktop: DesktopSettings) -> Self {
 src/window.rs: pub const fn with_minimised(self, minimised: bool) -> Self {
 src/window.rs: pub trait WindowHost: Service {
 src/window.rs: pub trait PaletteSource: Service {

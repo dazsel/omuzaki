@@ -70,6 +70,7 @@ output.start
 output.stop
 output.window.close
 output.window.open
+output.window.set
 record.replay_start
 record.replay_stop
 record.save_replay
