@@ -92,6 +92,12 @@ pub trait PartKind: 'static {
         KindProvenance::External
     }
 
+    /// The layer a new part of the kind goes on ([`PartDef::layer`](crate::PartDef)), when its place among the other
+    /// garments matters (a shirt under trousers, boots over both); `None` leaves it to the kind's category.
+    fn layer() -> Option<i32> {
+        None
+    }
+
     /// Builds the part. Must be a pure function of `params` and the context: same inputs, same output, on every
     /// platform (use `ctx.rng`, never global state or the clock).
     ///
@@ -177,6 +183,8 @@ pub struct PartKindRegistration {
     pub meta: fn() -> PartMeta,
     /// Who holds the rights to what the kind builds.
     pub provenance: fn() -> KindProvenance,
+    /// The layer a new part of the kind goes on, if the kind names one ([`PartKind::layer`]).
+    pub layer: fn() -> Option<i32>,
     /// The JSON Schema of its parameters (fully inlined; this is the MCP tool schema for edits).
     pub schema: fn() -> Schema,
     /// The parameters of a new part, as stored.
@@ -196,6 +204,7 @@ impl PartKindRegistration {
         Self {
             meta: K::meta,
             provenance: K::provenance,
+            layer: K::layer,
             schema: schema_of::<K::Params>,
             defaults: defaults_of::<K::Params>,
             check: check_as::<K>,

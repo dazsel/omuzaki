@@ -53,7 +53,7 @@ use support::{Cameras, mid_step, performer};
 const TEMPLATES: [&str; 2] = ["soft-sd", "standard"];
 
 /// The parts `character.create` gives a new character, in build order.
-const DEFAULT_PARTS: [&str; 6] = ["body", "head", "hair", "boots", "shirt", "trousers"];
+const DEFAULT_PARTS: [&str; 6] = ["body", "head", "hair", "shirt", "trousers", "boots"];
 
 /// The live loop's rate: the performer steps at it, and so do the springs and runtimes.
 const HZ: u64 = STEP_HZ as u64;

@@ -165,6 +165,10 @@ pub struct Trousers;
 impl PartKind for Trousers {
     type Params = TrousersParams;
 
+    fn layer() -> Option<i32> {
+        Some(LAYER_TROUSERS)
+    }
+
     fn meta() -> PartMeta {
         PartMeta {
             id: "trousers",

@@ -114,7 +114,8 @@ fn create_round_trips_and_builds_for_every_registered_template() {
             json!({"id": "mira", "name": " Mira ", "template": template, "seed": 7}),
         );
         assert_eq!(planned.patch.changes.len(), 2, "the first character also creates the `characters` table");
-        let dressed = ["body", "head", "hair", "boots", "shirt", "trousers"];
+        // In build order: the garments by their layers, the shirt under the trousers and the boots over both.
+        let dressed = ["body", "head", "hair", "shirt", "trousers", "boots"];
         assert_eq!(names(&planned.output.as_ref().unwrap()["parts"]), dressed);
 
         let def = definition(&doc, "mira");

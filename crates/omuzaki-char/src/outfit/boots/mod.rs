@@ -544,6 +544,10 @@ fn outline(colour: Colour, width: f32) -> Outline {
 impl PartKind for Boots {
     type Params = BootsParams;
 
+    fn layer() -> Option<i32> {
+        Some(LAYER_FOOTWEAR)
+    }
+
     fn meta() -> PartMeta {
         PartMeta {
             id: "boots",

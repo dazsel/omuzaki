@@ -204,18 +204,18 @@ impl Hull {
 
     /// How far the outline lies from the centre in the plane's direction `dir` (unit): where the ray leaves the hull.
     fn reach(&self, dir: DVec2) -> Option<f64> {
-        let n = self.corners.len();
-        (0..n).find_map(|i| {
-            let (a, b) = (self.corners[i], self.corners[(i + 1) % n]);
-            let e = b - a;
-            // The ray `dir * s` meets the edge `a + e * u`: solve `dir * s - e * u = a`.
-            let det = e.x * dir.y - e.y * dir.x;
+        let count = self.corners.len();
+        (0..count).find_map(|i| {
+            let (start, end) = (self.corners[i], self.corners[(i + 1) % count]);
+            let edge = end - start;
+            // The ray `dir * far` meets the edge `start + edge * along`: solve `dir * far - edge * along = start`.
+            let det = edge.perp_dot(dir);
             if det.abs() <= f64::EPSILON {
                 return None;
             }
-            let s = (e.x * a.y - e.y * a.x) / det;
-            let u = (dir.x * a.y - dir.y * a.x) / det;
-            (s > 0.0 && (-1e-12..=1.0 + 1e-12).contains(&u)).then_some(s)
+            let far = edge.perp_dot(start) / det;
+            let along = dir.perp_dot(start) / det;
+            (far > 0.0 && (-1e-12..=1.0 + 1e-12).contains(&along)).then_some(far)
         })
     }
 

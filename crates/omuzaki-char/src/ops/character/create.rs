@@ -127,7 +127,7 @@ impl Starter {
             kind: built_in("part kind", self.kind, PartKindId::new(self.kind))?,
             parent: None,
             enabled: true,
-            layer: tree::default_layer((kind.meta)().category),
+            layer: tree::layer_of(kind),
             attach: None,
             params,
         };

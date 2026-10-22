@@ -254,6 +254,10 @@ pub struct Shirt;
 impl PartKind for Shirt {
     type Params = ShirtParams;
 
+    fn layer() -> Option<i32> {
+        Some(super::common::LAYER_SHIRT)
+    }
+
     fn meta() -> PartMeta {
         PartMeta {
             id: "shirt",

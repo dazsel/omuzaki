@@ -341,6 +341,10 @@ pub struct Skirt;
 impl PartKind for Skirt {
     type Params = SkirtParams;
 
+    fn layer() -> Option<i32> {
+        Some(LAYER_SKIRT)
+    }
+
     fn meta() -> PartMeta {
         PartMeta {
             id: "skirt",

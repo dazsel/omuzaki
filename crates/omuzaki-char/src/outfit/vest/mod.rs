@@ -223,6 +223,10 @@ pub struct Vest;
 impl PartKind for Vest {
     type Params = VestParams;
 
+    fn layer() -> Option<i32> {
+        Some(LAYER_VEST)
+    }
+
     fn meta() -> PartMeta {
         PartMeta {
             id: "vest",

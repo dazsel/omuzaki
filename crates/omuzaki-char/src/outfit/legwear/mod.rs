@@ -158,6 +158,10 @@ pub struct Legwear;
 impl PartKind for Legwear {
     type Params = LegwearParams;
 
+    fn layer() -> Option<i32> {
+        Some(LAYER_LEGWEAR)
+    }
+
     fn meta() -> PartMeta {
         PartMeta {
             id: "legwear",
