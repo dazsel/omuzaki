@@ -75,6 +75,13 @@ pub struct Surfaces {
     pub seam: Surface,
 }
 
+impl Surfaces {
+    /// How far the shell's outside stands over the lining: the cloth's thickness, metres.
+    pub fn thickness(&self) -> f64 {
+        self.outer.offset() - self.inner.offset()
+    }
+}
+
 /// The points of a shell grid for `surface`: row `i` of the `SHELL_INTERVALS + 1` runs from the hem to the rim of each
 /// column, `t[i][j]` heights along the torso.
 fn shell_points(profile: &Profile, surface: &Surface, phis: &[f64]) -> Result<(Vec<f64>, Vec<DVec3>), GarmentError> {
@@ -128,11 +135,25 @@ pub fn add_shell(
 ) -> Result<(), GarmentError> {
     let phis = profile.columns(SHELL_SEGMENTS);
     let cols = phis.len();
-    for (surface, lining) in [(&surfaces.outer, false), (&surfaces.inner, true)] {
-        let (heights, points) = shell_points(profile, surface, &phis)?;
+    let surface = &surfaces.outer;
+    let (heights, outer) = shell_points(profile, surface, &phis)?;
+    let rings = heights.iter().map(|&t| surface.ring(t)).collect::<Result<Vec<_>, _>>()?;
+    let centres: Vec<DVec3> = rings.iter().map(|r| r.centre).collect();
+    let skins: Vec<Skinning> = heights.iter().map(|&t| surface.weights().at(t)).collect();
+    // The lining is the shell pushed in by the cloth's thickness, along the ray from its section's centre in the
+    // section's plane: the two lie the thickness apart, and the lining is never nearer the layer below than its ease.
+    let thickness = surfaces.thickness();
+    let lining_points: Vec<DVec3> = outer
+        .iter()
+        .zip(&rings)
+        .map(|(p, ring)| {
+            let d = *p - ring.centre;
+            let d = d - ring.axis * d.dot(ring.axis);
+            *p - d.normalize_or_zero() * thickness
+        })
+        .collect();
+    for (points, lining) in [(outer, false), (lining_points, true)] {
         let grid = Grid::new(SHELL_INTERVALS + 1, cols, points)?;
-        let centres = heights.iter().map(|&t| surface.ring(t).map(|r| r.centre)).collect::<Result<Vec<_>, _>>()?;
-        let skins: Vec<Skinning> = heights.iter().map(|&t| surface.weights().at(t)).collect();
         let uvs = tile.filter(|t| t.is_finite() && *t > 0.0).map(|t| tile_uvs(&grid, t));
         let inside = |i: usize, j: usize| centres[i * cols + j];
         let uv = |i: usize, j: usize| uvs.as_ref().map_or(DVec2::ZERO, |u| u[i * cols + j]);

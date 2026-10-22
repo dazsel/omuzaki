@@ -186,7 +186,7 @@ pub fn ring_at(
 }
 
 /// Points taken round a neighbour's section that a ring clears.
-const CLEAR_SAMPLES: usize = 48;
+const CLEAR_SAMPLES: usize = 36;
 /// Widths tried between a ring's own and its whole scale when it grows to clear a neighbour.
 const CLEAR_WIDTHS: usize = 32;
 /// Steps that find a neighbour's section through a ring's centre, and how near its plane must pass, metres.
@@ -448,20 +448,18 @@ fn grow_to_hold(ring: &mut Ring, points: &[DVec2]) {
     let e = ring.exponent;
     let r = ring.radii;
     let level = |q: DVec2, r: DVec2| ((q.x / r.x).abs().powf(e) + (q.y / r.y).abs().powf(e)).powf(1.0 / e);
-    // A ring only grows, so what it holds already it holds at every size tried.
-    let points: Vec<(DVec2, f64)> =
-        points.iter().filter(|q| q.is_finite()).map(|q| (*q, level(*q, r))).filter(|(_, l)| *l > 1.0).collect();
-    let Some(scale) = points.iter().map(|(_, l)| *l).reduce(f64::max) else { return };
     // The ring is symmetric across both its axes, and holds a point whenever it holds one further out both ways: only
-    // the points no other passes in both `|x|` and `|y|` matter.
-    let mut points: Vec<DVec2> = points.into_iter().map(|(q, _)| q.abs()).collect();
+    // the points no other passes in both `|x|` and `|y|` matter. And as it only grows, those it holds already it holds
+    // at every size tried.
+    let mut points: Vec<DVec2> = points.iter().filter(|q| q.is_finite()).map(|q| q.abs()).collect();
     points.sort_unstable_by(|a, b| b.x.total_cmp(&a.x).then(b.y.total_cmp(&a.y)));
     let mut highest = f64::NEG_INFINITY;
     points.retain(|q| {
         let keep = q.y > highest;
         highest = highest.max(q.y);
-        keep
+        keep && level(*q, r) > 1.0
     });
+    let Some(scale) = points.iter().map(|q| level(*q, r)).reduce(f64::max) else { return };
     // For each width from the ring's own to the whole scale's, the least depth that holds every point there: a point
     // needs `|q_y| / (1 - |q_x / r_x|^e)^(1/e)`, and can't be held at a width it lies beyond.
     let depth = |width: f64| {
