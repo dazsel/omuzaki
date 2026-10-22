@@ -5393,6 +5393,7 @@ dependencies = [
  "bytes",
  "criterion",
  "directories",
+ "getrandom 0.4.3",
  "hound",
  "image",
  "libloading 0.9.0",
@@ -5403,6 +5404,7 @@ dependencies = [
  "omuzaki-render-api",
  "omuzaki-settings-api",
  "omuzaki-settings-mock",
+ "omuzaki-shm",
  "omuzaki-stream",
  "omuzaki-stream-api",
  "omuzaki-update-api",
@@ -5415,6 +5417,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "toml",
+ "tracing",
  "windows-sys 0.61.2",
 ]
 

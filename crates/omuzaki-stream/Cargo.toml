@@ -29,12 +29,19 @@ omuzaki-render-api = { path = "../omuzaki-render-api" }
 # The `output.window` setting the open op keeps (`src/ops/window.rs`).
 omuzaki-settings-api = { path = "../omuzaki-settings-api" }
 omuzaki-stream-api = { path = "../omuzaki-stream-api" }
+# The live show's shared memory: the remote encoder's frame slots and packet channel (docs/design/supervisor.md §4.3).
+omuzaki-shm = { path = "../omuzaki-shm" }
+# The monitor's instance nonce (docs/design/supervisor.md §15.1).
+getrandom.workspace = true
+# Worker logs, read with fixed limits (docs/design/supervisor.md §4.2).
+tracing.workspace = true
 # The update hold a take or the replay buffer keeps while it runs (`docs/design/updates.md` §7).
 omuzaki-update-api = { path = "../omuzaki-update-api" }
 
 # Free space on the take's disk, so a take never fills it (`src/record/disk.rs`).
+# Reaping and the parent-death signal of process workers (`src/watchdog`).
 [target.'cfg(unix)'.dependencies]
-rustix.workspace = true
+rustix = { workspace = true, features = ["process"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
