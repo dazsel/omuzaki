@@ -4,3 +4,4 @@ kind = "crate"
 used_for = "certificate checks against the operating system's trust store on Windows, macOS and Linux"
 status = "yes"
 audit = "(crates.io: MIT OR Apache-2.0)"
+crates = ["rustls-platform-verifier"]

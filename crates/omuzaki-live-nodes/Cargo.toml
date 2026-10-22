@@ -1,0 +1,36 @@
+[package]
+name = "omuzaki-live-nodes"
+description = "The first-party automation nodes (BR-11, BR-26; design docs/design/automation.md §6): triggers (`on.event`, `chat.command`, `var.changed`), flow, logic, math, text, variables, groups, timers and schedules, `event.emit` and `op.run`."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+jiff.workspace = true
+omuzaki-anim-api = { path = "../omuzaki-anim-api" }
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-l10n-api = { path = "../omuzaki-l10n-api" }
+omuzaki-live-api = { path = "../omuzaki-live-api" }
+omuzaki-ops-api = { path = "../omuzaki-ops-api" }
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+unicode-normalization.workspace = true
+
+[dev-dependencies]
+omuzaki-live-mock = { path = "../omuzaki-live-mock" }
+proptest.workspace = true
+
+[lints]
+workspace = true
+
+# Native only, like the engine that runs the nodes (design D1).
+[package.metadata.omuzaki]
+kind = "Implementation"
+summary = "the first-party automation nodes: triggers (`on.event`, `chat.command`, `var.changed`, `schedule.at`), flow (wait, random, sequence, switch, branch, cooldown, gate), logic, math, text, variables, groups, timers, date and time conditions, `event.emit` and `op.run` (any op allowed for automations)"
+wasm = false
+# The nodes register themselves (ADR 0015, `cargo xtask lint-registers`).
+registers = true

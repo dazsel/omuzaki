@@ -276,6 +276,9 @@ pub enum InertReason {
     },
     /// An `op.run` whose op isn't registered, isn't allowed, or whose arguments don't decode.
     OpNotAllowed,
+    /// Its wiring breaks a rule the document ops refuse (a missing port, a type that never converts, two sources on a
+    /// value input, a `set` constant that doesn't fit, a value cycle): a show edited by hand on disk.
+    BadWiring,
     /// A variable or group it names isn't declared, or a global's type conflicts.
     Undeclared,
     /// A trigger on an event kind nobody registered.
@@ -313,6 +316,9 @@ pub struct Dropped {
     pub reload: u64,
     /// Tokens, wakes and replies dropped while paused.
     pub paused: u64,
+    /// Platform redeliveries dropped by the inbox: the same (platform, kind, origin id) within ten minutes.
+    #[serde(default)]
+    pub duplicate: u64,
 }
 
 /// What `automation.values` returns: the values monitor (design D10). Refreshed into a one-slot mailbox, so the

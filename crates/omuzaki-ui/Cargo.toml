@@ -27,6 +27,9 @@ serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
 omuzaki-anim = { path = "../omuzaki-anim" }
+# The model registry and the `model.*` ops, over the HTTP fetcher (live/wiring/inputs.rs).
+omuzaki-ai = { path = "../omuzaki-ai" }
+omuzaki-ai-api = { path = "../omuzaki-ai-api" }
 omuzaki-anim-api = { path = "../omuzaki-anim-api" }
 omuzaki-char = { path = "../omuzaki-char" }
 omuzaki-char-api = { path = "../omuzaki-char-api" }
@@ -34,6 +37,7 @@ omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-doc = { path = "../omuzaki-doc" }
 omuzaki-doc-api = { path = "../omuzaki-doc-api" }
 omuzaki-face-api = { path = "../omuzaki-face-api" }
+omuzaki-http = { path = "../omuzaki-http" }
 omuzaki-l10n-api = { path = "../omuzaki-l10n-api" }
 omuzaki-ops = { path = "../omuzaki-ops" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
@@ -43,8 +47,12 @@ omuzaki-stage = { path = "../omuzaki-stage" }
 omuzaki-stage-api = { path = "../omuzaki-stage-api" }
 omuzaki-stream = { path = "../omuzaki-stream" }
 omuzaki-stream-api = { path = "../omuzaki-stream-api" }
+# The studio's live inputs: the webcam from the install, the phone link and VMC out (live/wiring/app.rs).
+omuzaki-track = { path = "../omuzaki-track" }
 omuzaki-track-api = { path = "../omuzaki-track-api" }
+omuzaki-track-net = { path = "../omuzaki-track-net" }
 omuzaki-ui-api = { path = "../omuzaki-ui-api" }
+sha2.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 wgpu.workspace = true
@@ -52,6 +60,10 @@ wgpu.workspace = true
 # Unix only: signal a probe's whole process group when it ends
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["process"] }
+
+[target.'cfg(windows)'.dependencies]
+# The webcam on Windows, for the studio's inputs (live/wiring/inputs.rs).
+omuzaki-camera-mf = { path = "../omuzaki-camera-mf" }
 
 [dev-dependencies]
 egui_kittest.workspace = true

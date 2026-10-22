@@ -49,6 +49,15 @@ omuzaki-stage = { path = "../omuzaki-stage" }
 omuzaki-stream = { path = "../omuzaki-stream" }
 # The `vcam` output kind (`output.start { kind: "vcam" }`).
 omuzaki-vcam = { path = "../omuzaki-vcam" }
+# The audio ops (`audio.devices`, `audio.mic`, `audio.status`).
+omuzaki-audio-engine = { path = "../omuzaki-audio-engine" }
+# The OBS remote-control ops (`obs.*`).
+omuzaki-obs = { path = "../omuzaki-obs" }
+# The automation engine and its ops (`show.create`, `automation.*`), and the first-party nodes (`on.event`, `op.run`).
+omuzaki-live = { path = "../omuzaki-live" }
+omuzaki-live-nodes = { path = "../omuzaki-live-nodes" }
+# The Twitch adapter and its ops (`twitch.connect`, `twitch.disconnect`, `twitch.status`).
+omuzaki-twitch = { path = "../omuzaki-twitch" }
 omuzaki-store = { path = "../omuzaki-store" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
 
@@ -76,6 +85,19 @@ omuzaki-face-api = { path = "../omuzaki-face-api" }
 omuzaki-track-api = { path = "../omuzaki-track-api" }
 # The output window and palette the conformance rig gives the `output.window.*` examples (`tests/window_host/`).
 omuzaki-stream-api = { path = "../omuzaki-stream-api" }
+# The mock audio engine the conformance rig gives the `audio.*` and `record.*` examples.
+omuzaki-audio-api = { path = "../omuzaki-audio-api" }
+omuzaki-audio-mock = { path = "../omuzaki-audio-mock" }
+# The scripted transport the conformance rig's Twitch service stands on (it never makes a call: the examples dry-run).
+omuzaki-http-mock = { path = "../omuzaki-http-mock" }
+# The broadcast end-to-end test (`tests/live_e2e.rs`): a fake OBS, the secret store a token is read from, and a fake
+# Twitch EventSub socket.
+omuzaki-obs = { path = "../omuzaki-obs", features = ["testing"] }
+omuzaki-secrets-api = { path = "../omuzaki-secrets-api" }
+omuzaki-secrets-mock = { path = "../omuzaki-secrets-mock" }
+omuzaki-live-api = { path = "../omuzaki-live-api" }
+omuzaki-http-api = { path = "../omuzaki-http-api" }
+tungstenite = "0.30"
 # The registration scan behind the link gate (`tests/registrations.rs`, ADR 0015).
 xtask = { path = "../../xtask" }
 
@@ -93,4 +115,4 @@ summary = "the `omuzaki` command: ops, help, run (dry-run/JSON), undo/redo, all 
 wasm = false
 # Held only to link their registrations in (`omuzaki_cli::link`, ADR 0015); this crate's source calls none of their API.
 # A change to one of them runs just `tests/registrations.rs` here (`cargo xtask check --affected`), not every test.
-link_only = ["omuzaki-io-fbx", "omuzaki-io-gltf", "omuzaki-io-ops", "omuzaki-io-vrm", "omuzaki-stage", "omuzaki-stream", "omuzaki-vcam"]
+link_only = ["omuzaki-io-fbx", "omuzaki-io-gltf", "omuzaki-io-ops", "omuzaki-io-vrm", "omuzaki-stage", "omuzaki-stream", "omuzaki-vcam", "omuzaki-audio-engine", "omuzaki-obs", "omuzaki-live", "omuzaki-live-nodes", "omuzaki-twitch"]

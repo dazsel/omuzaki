@@ -14,6 +14,7 @@
 //! | `input.calibrate {cancel}` | `perform` | Confirm to start (it reads the face); anyone may cancel | none: calibrating again replaces it |
 //! | `input.calibration` | `read` | free | none (a query) |
 //! | `input.health` | `read` | free | none (a query) |
+//! | `input.gestures` | `read` | free | none (a query) |
 //! | `input.vmc_out {to}` | `perform` | Confirm to start (it sends the performance out); anyone may stop | the inverse `input.vmc_out` |
 //!
 //! The two choices are Machine settings (`input.source`, `input.camera`): when the App registers a
@@ -35,6 +36,7 @@ pub mod bind_camera;
 pub mod calibrate;
 pub mod calibration;
 pub mod doctor;
+pub mod gestures;
 pub mod health;
 pub mod preview;
 pub mod recheck;

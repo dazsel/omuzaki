@@ -1,0 +1,23 @@
+[package]
+name = "omuzaki-input-api"
+description = "Contract for the OS input source (ADR 0060): zones, motion events, bindings, capture state and the feeds, with no key identity in any public type."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+omuzaki-core = { path = "../omuzaki-core" }
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
+
+[package.metadata.omuzaki]
+kind = "API"
+summary = "the OS input contract (ADR 0060, PF-05, PF-25, PF-29, PF-30): the sixteen keyboard `KeyZone`s with their `ZoneInfo` (position only, never the usage-to-zone map), `MotionEvent` (zones, buttons, relative pointer, coarse pen, pad edges, sources), `PadState`, bindings as `BindingId` and `BindingAction` with `BindingHit` and `IntentEvent`, `CaptureState`, `BackendState` and `CaptureCaps`, the fixed `MotionFrame` and `IntentFrame`, the `IndicatorHandle` (heartbeat and view), `ChordLabel` (display text only: no serde, no `Display`), and the traits `MotionFeed`, `IntentFeed`, `BindingFeed`, `InputControl`, `IndicatorHost`, `ChordStore`, `ProtectList` and `InputHub`; design in `docs/design/input-motion.md`"

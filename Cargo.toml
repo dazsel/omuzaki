@@ -37,6 +37,7 @@ fluent-langneg = "0.14" # locale negotiation (Apache-2.0), omuzaki-l10n-api
 fluent-syntax = "0.12" # Fluent parser for the l10n checks (Apache-2.0 OR MIT), omuzaki-l10n-api
 futures-util = { version = "0.3", default-features = false, features = ["std"] }   # drives the response body stream (MIT OR Apache-2.0), omuzaki-llm; already in the lock
 getrandom = "0.4"
+jiff = "0.2"   # wall-clock schedules and date conditions in IANA time zones, DST-aware, with a bundled tzdb on Windows (Unlicense OR MIT), omuzaki-live-nodes
 keyring = "4.2"   # OS keychain: Windows Credential Manager, macOS Keychain, Linux Secret Service (MIT OR Apache-2.0), omuzaki-secrets
 intl-memoizer ="0.5"   # named for the exact-integer FluentType in omuzaki-l10n-api (Apache-2.0 OR MIT; already a fluent-bundle dependency)
 harfrust = "0.14"   # OpenType shaping (MIT): Arabic joining, Devanagari conjuncts, Thai marks in the sheet text fallback, omuzaki-stage
@@ -48,6 +49,7 @@ hyper = { version = "1", default-features = false, features = ["http1", "server"
 hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 inventory = "0.3"
+cpal = { version = "0.18", default-features = false }   # audio device I/O for the live engine (Apache-2.0); `asio` stays off (docs/licensing/deps/cpal.toml), omuzaki-audio-engine
 libc = "0.2"   # the Linux virtual camera's device calls (open, ioctl, write) (MIT OR Apache-2.0), omuzaki-vcam; already in the lock
 libm = "0.2"   # transcendental maths bit-identical on every platform (the CPU rasteriser's stroker, ADR 0009)
 loom = "0.7"   # model checker for the metrics seqlock (MIT), omuzaki-metrics-api dev-dependency; only built with --cfg loom
@@ -62,6 +64,7 @@ rhai = { version = "=1.26.1", default-features = false, features = ["std", "serd
 rmcp = { version = "3.5", features = ["server", "transport-io", "transport-streamable-http-server"] }
 rustix = { version = "1.1", default-features = false, features = ["std", "fs"] } # opens beneath a folder handle, never through a link (openat2, O_NOFOLLOW), omuzaki-ops-api; safe renameat2(RENAME_EXCHANGE), omuzaki-doc (Linux)
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] } # TLS with `ring` as its one crypto provider (rustls MIT OR Apache-2.0 OR ISC; ring Apache-2.0 AND ISC), omuzaki-http; omuzaki-mcp tests (llm-api D11)
+rustls-platform-verifier = "0.7"   # checks TLS certificates against the OS trust store (MIT OR Apache-2.0), omuzaki-twitch; already in the lock through reqwest
 schemars = "1.2"
 semver = { version = "1", features = ["serde"] } # versions in the updater contract (MIT OR Apache-2.0), omuzaki-update-api
 serde = { version = "1", features = ["derive"] }
@@ -86,7 +89,16 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 wgpu = "30"
 windows = { version = "0.62", features = ["Win32_Media_MediaFoundation", "Win32_System_Com", "Win32_Foundation", "Win32_Security", "Win32_System_Threading"] }   # Media Foundation and COM (MIT OR Apache-2.0), omuzaki-camera-mf
 windows-core = "0.62"   # the `implement` macro for the camera's COM callback (MIT OR Apache-2.0), omuzaki-camera-mf
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem"] } # the Windows side of the same: reparse-point-aware opens, final-path checks
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_UI_Input", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Input_XboxController", "Win32_Devices_HumanInterfaceDevice", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_System_Threading"] } # the Windows side of the same: reparse-point-aware opens, final-path checks; Raw Input, HID and XInput for omuzaki-input (ADR 0060)
+# The OS input backends of omuzaki-input (ADR 0060, docs/design/input-motion.md §13 DEP-0); licences in docs/licensing/deps/
+gilrs = { version = "0.11", default-features = false, features = ["xinput"] }   # gamepads on Windows (XInput, not WGI) and Linux (Apache-2.0/MIT; links the system libudev dynamically)
+x11rb = { version = "0.13", features = ["xinput"] }   # XInput2 raw events on Linux X11, pure-Rust connection; the version winit already locks (MIT OR Apache-2.0)
+evdev = "0.13"   # the opt-in evdev capture on Linux (Apache-2.0 OR MIT)
+objc2 = "0.6"   # macOS runtime bindings (MIT)
+objc2-core-graphics = "0.3"   # the listen-only CGEventTap on macOS (Zlib OR Apache-2.0 OR MIT)
+objc2-game-controller = "0.3"   # GameController pads with background events on macOS (Zlib OR Apache-2.0 OR MIT)
+objc2-io-kit = "0.3"   # the Input Monitoring check and the IOHID fallback on macOS (Zlib OR Apache-2.0 OR MIT)
+ashpd = { version = "0.13", default-features = false, features = ["tokio", "global_shortcuts"] }   # the GlobalShortcuts portal for bindings on Wayland (MIT)
 url = "2"   # WHATWG URL parsing (MIT OR Apache-2.0), the xtask models gate; already in the lock
 zeroize = "1.9"   # zeroes a secret value on drop (Apache-2.0 OR MIT; already in the lock), omuzaki-secrets-api
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] } # unpacks the ONNX Runtime Windows.zip archives (MIT), omuzaki-ai-native

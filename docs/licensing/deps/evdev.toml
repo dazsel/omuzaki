@@ -1,0 +1,8 @@
+section = "rust"
+item = "evdev 0.13"
+kind = "crate"
+used_for = "the opt-in evdev capture on Linux, for Wayland typing and pointer motion when the person is in the `input` group (`omuzaki-input`, ADR 0060)"
+status = "yes"
+condition = "Apache-2.0 OR MIT: keep the notices"
+audit = "(crates.io: Apache-2.0 OR MIT, 2026-10-22)"
+crates = []
