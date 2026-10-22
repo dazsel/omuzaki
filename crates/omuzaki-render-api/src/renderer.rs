@@ -226,6 +226,21 @@ pub trait Renderer: Send {
         Err(RenderError::Unsupported("dynamic meshes"))
     }
 
+    /// Replaces the vertex colours of a mesh created with colours (`MeshData::colours` not empty), static or
+    /// dynamic. A palette change that moves a tint baked into vertex colours (hair streaks) recolours the mesh in place
+    /// rather than creating a new one. Positions, normals, UVs, skinning data and morph targets stay; a morphed copy
+    /// of the mesh shows the new colours too.
+    ///
+    /// The default says [`RenderError::Unsupported`]; a caller then creates a new mesh instead.
+    ///
+    /// # Errors
+    /// `UnknownHandle`; `Invalid` for a mesh created without colours, a `colours` length that isn't the mesh's vertex
+    /// count, or a non-finite value; `Unsupported`; `DeviceLost`.
+    fn update_colours(&mut self, mesh: MeshId, colours: &[[f32; 4]]) -> Result<(), RenderError> {
+        let _ = (mesh, colours);
+        Err(RenderError::Unsupported("vertex colour updates"))
+    }
+
     /// Creates a texture, optionally with initial pixels (`desc.byte_len()` bytes of RGBA8, rows top to bottom).
     /// With `None` it starts fully transparent black.
     ///
