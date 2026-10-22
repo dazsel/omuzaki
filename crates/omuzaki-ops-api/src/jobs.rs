@@ -309,6 +309,7 @@ pub struct JobCtx<'a> {
     signal: &'a dyn JobSignal,
     services: &'a Services,
     grants: &'a Grants,
+    cause: Option<&'a Cause>,
     project_dir: Option<&'a ProjectDir>,
     calls: Option<&'a dyn JobCalls>,
     plan_output: Option<&'a Value>,
@@ -325,6 +326,7 @@ impl<'a> JobCtx<'a> {
             signal,
             services: &NO_SERVICES,
             grants: &NO_GRANTS,
+            cause: None,
             project_dir: None,
             calls: None,
             plan_output: None,
@@ -343,6 +345,14 @@ impl<'a> JobCtx<'a> {
     #[must_use]
     pub fn with_grants(mut self, grants: &'a Grants) -> Self {
         self.grants = grants;
+        self
+    }
+
+    /// The same context carrying the request's `cause`, so work that calls on someone else's behalf (a plugin command,
+    /// ADR 0058) can label what it does with why it ran.
+    #[must_use]
+    pub fn with_cause(mut self, cause: &'a Cause) -> Self {
+        self.cause = Some(cause);
         self
     }
 
@@ -382,6 +392,17 @@ impl<'a> JobCtx<'a> {
     /// Who started the job.
     pub fn actor(&self) -> &'a Actor {
         self.actor
+    }
+
+    /// The grants the context acts with: those given to [`with_grants`](Self::with_grants), or none.
+    pub fn grants(&self) -> &'a Grants {
+        self.grants
+    }
+
+    /// The request's cause, when [`with_cause`](Self::with_cause) set one. An `Option` because a request's cause is
+    /// optional too ([`Request`](crate::Request)'s `cause`).
+    pub fn cause(&self) -> Option<&'a Cause> {
+        self.cause
     }
 
     /// Reads the document. The lock is held only while `f` runs, so keep it short and copy out what `work` needs.

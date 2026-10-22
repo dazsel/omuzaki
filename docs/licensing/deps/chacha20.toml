@@ -1,0 +1,8 @@
+section = "rust"
+item = "chacha20 0.10 (`cipher` only)"
+kind = "crate"
+used_for = "the seeded, deterministic `wasi:random/insecure` stream of plugins in `omuzaki-plugin` (ADR 0058, design §4.1); already in the lock through `rand`"
+status = "yes"
+condition = ""
+audit = "(crates.io: MIT OR Apache-2.0; the package carries LICENSE-APACHE and LICENSE-MIT, checked 2026-10-15) #1999"
+crates = ["chacha20"]
